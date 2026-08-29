@@ -13,13 +13,19 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { decodeCrdt } from '../../../src/crdt/DistributedData.js';
-import { MAX_MV_REGISTER_ENTRIES } from '../../../src/crdt/Constants.js';
+import {
+  MAX_COUNTER_SLOT,
+  MAX_CRDT_ENTRIES,
+  MAX_MV_REGISTER_ENTRIES,
+} from '../../../src/crdt/Constants.js';
 import { CrdtDecodeError } from '../../../src/crdt/CrdtWireValidation.js';
 import { GCounter } from '../../../src/crdt/GCounter.js';
+import { GCounterMap } from '../../../src/crdt/GCounterMap.js';
 import { LWWMap } from '../../../src/crdt/LWWMap.js';
 import { LWWRegister } from '../../../src/crdt/LWWRegister.js';
 import { MVRegister } from '../../../src/crdt/MVRegister.js';
 import { ORSet } from '../../../src/crdt/ORSet.js';
+import { PNCounter } from '../../../src/crdt/PNCounter.js';
 
 /** A payload the type system would reject but the wire happily carries. */
 const wire = (value: unknown): never => value as never;
@@ -59,6 +65,97 @@ describe('GCounter payloads (#720)', () => {
   test('a well-formed counter still decodes', () => {
     const counter = GCounter.fromJSON(wire({ kind: 'GCounter', state: { a: 3, b: 4 } }));
     expect(counter.value()).toBe(7);
+  });
+});
+
+describe('GCounter slot ceiling (#720)', () => {
+  test('MAX_SAFE_INTEGER is refused — being a safe integer was never a bound', () => {
+    // The title's impact: `merge` is a componentwise max, so a slot accepted
+    // once is that replica's floor for the lifetime of the key, and no exposed
+    // API lowers it again.  `Number.MAX_SAFE_INTEGER` passes every other rule
+    // in the decoder, which is exactly why it is the value the attack writes.
+    expect(() => GCounter.fromJSON(wire({
+      kind: 'GCounter', state: { 'sys@10.0.0.5:2552': Number.MAX_SAFE_INTEGER },
+    }))).toThrow(CrdtDecodeError);
+  });
+
+  test('the ceiling itself decodes and the first value past it does not', () => {
+    const atCeiling = GCounter.fromJSON(wire({
+      kind: 'GCounter', state: { a: MAX_COUNTER_SLOT },
+    }));
+    expect(atCeiling.value()).toBe(MAX_COUNTER_SLOT);
+    expect(() => GCounter.fromJSON(wire({
+      kind: 'GCounter', state: { a: MAX_COUNTER_SLOT + 1 },
+    }))).toThrow(CrdtDecodeError);
+  });
+
+  test('no wire-valid counter can sum outside the safe range', () => {
+    // This is the property the ceiling is derived from, and the reason it is
+    // not a taste judgement: the bound has to hold against the SUM, because
+    // `value()` adds the slots and `safeEntries` admits MAX_CRDT_ENTRIES of
+    // them.  Eight MAX_SAFE_INTEGER slots — well inside the entry cap — sum to
+    // 72057594037927930, which is not a safe integer, so `value()` used to
+    // return a rounded number from state every rule in the decoder had passed.
+    const lossy: Record<string, number> = {};
+    for (let i = 0; i < 8; i++) lossy[`r${i}`] = Number.MAX_SAFE_INTEGER;
+    expect(() => GCounter.fromJSON(wire({ kind: 'GCounter', state: lossy })))
+      .toThrow(CrdtDecodeError);
+
+    // And the largest counter the decoder does accept still sums exactly, so
+    // the ceiling is the tight bound rather than a round number under it.
+    const state: Record<string, number> = {};
+    for (let i = 0; i < MAX_CRDT_ENTRIES; i++) state[`r${i}`] = MAX_COUNTER_SLOT;
+    const saturated = GCounter.fromJSON(wire({ kind: 'GCounter', state }));
+    expect(Number.isSafeInteger(saturated.value())).toBe(true);
+    expect(saturated.value()).toBe(MAX_CRDT_ENTRIES * MAX_COUNTER_SLOT);
+  });
+
+  test('the PNCounter frame from the exploit walkthrough is refused', () => {
+    // Verbatim from the report: a decrement slot pinned at MAX_SAFE_INTEGER
+    // made `value()` report ~-9e15 for a key the attacker never owned.
+    expect(() => PNCounter.fromJSON(wire({
+      kind: 'PNCounter',
+      p: { kind: 'GCounter', state: {} },
+      n: { kind: 'GCounter', state: { 'sys@10.0.0.7:2552': Number.MAX_SAFE_INTEGER } },
+    }))).toThrow(CrdtDecodeError);
+  });
+
+  test('GCounterMap inherits the ceiling through its per-key counters', () => {
+    expect(() => GCounterMap.fromJSON<string>(wire({
+      kind: 'GCounterMap',
+      counters: { '"sku-1"': { kind: 'GCounter', state: { a: Number.MAX_SAFE_INTEGER } } },
+      keyValues: { '"sku-1"': '"sku-1"' },
+    }))).toThrow(CrdtDecodeError);
+  });
+
+  test('a vector-clock entry is bounded by the same rule', () => {
+    // Same shape of harm one type over: an entry claiming 2^53 - 1 writes
+    // dominates every honest entry in `MVRegister.merge` and is never
+    // superseded, so the register wedges on the attacker's value.
+    expect(() => MVRegister.fromJSON(wire({
+      kind: 'MVRegister', entries: [{ value: 1, vc: { a: Number.MAX_SAFE_INTEGER } }],
+    }))).toThrow(CrdtDecodeError);
+  });
+
+  test('increment refuses to build a slot its own decoder would reject', () => {
+    // A cap enforced only on the way in would be a new instance of the defect
+    // it is meant to close: locally-legal state that gossips to nobody and
+    // stops its own durable record reloading, with a warn line as its only
+    // symptom.  The ceiling is a property of the type, so `empty`, `increment`
+    // and `fromJSON` all agree on it.
+    const nearly = GCounter.empty().increment('a', MAX_COUNTER_SLOT);
+    expect(nearly.value()).toBe(MAX_COUNTER_SLOT);
+    expect(() => nearly.increment('a', 1)).toThrow(/ceiling/);
+    expect(() => GCounter.empty().increment('a', Number.MAX_SAFE_INTEGER)).toThrow(/ceiling/);
+    // Whatever the local API accepts, the decoder accepts back.
+    expect(GCounter.fromJSON(nearly.toJSON()).equals(nearly)).toBe(true);
+  });
+
+  test('the counters an application actually keeps are untouched', () => {
+    // The bound is only worth having if it is invisible in ordinary use: a
+    // billion page views per replica is four orders of magnitude clear of it.
+    const busy = GCounter.empty().increment('sys@a:1', 1_000_000_000).increment('sys@b:1', 5);
+    expect(GCounter.fromJSON(busy.toJSON()).value()).toBe(1_000_000_005);
   });
 });
 
@@ -227,7 +324,7 @@ describe('LWWRegister replica ids (#724)', () => {
     // A number: `>` between a string and a number is false in BOTH
     // directions, so `a.merge(b)` and `b.merge(a)` each keep their own value
     // and the replicas never converge on that key.
-    expect(5 > 'sys@a:1').toBe(false);
+    expect((5 as unknown as string) > 'sys@a:1').toBe(false);
     expect('sys@a:1' > (5 as unknown as string)).toBe(false);
     // An array: coerces to its single element, so it wins every tie while
     // not being a string — exploit step 3, delivered past a `typeof` check

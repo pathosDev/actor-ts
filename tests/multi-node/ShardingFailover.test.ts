@@ -205,6 +205,9 @@ describe('multi-node sharding failover', () => {
         c: startRegion(spec, 'c'),
       };
 
+      // Warm up the initial shard allocation.  Nothing is asserted on the wait
+      // itself — the asks below carry their own 8 s budget — so a still-running
+      // allocation is absorbed rather than misread, and a fixed sleep is honest.
       await sleep(300);
 
       // Start a batch of 32 asks against region 'a', then crash 'c' during
@@ -248,6 +251,9 @@ describe('multi-node sharding failover', () => {
         c: startRegion(spec, 'c'),
       };
 
+      // Warm up the initial shard allocation before cutting the partition, so
+      // the rebalance under test starts from an allocated state.  Nothing is
+      // asserted on the wait; the 2-member view below is the real signal.
       await sleep(300);
 
       // Cut 'c' from both 'a' and 'b' — c becomes unreachable, then with
@@ -322,6 +328,8 @@ describe('multi-node sharding failover', () => {
         c: startRegion(spec, 'c'),
       };
 
+      // Warm up the initial shard allocation.  Nothing is asserted on the wait
+      // itself — every ask below carries its own 4 s budget.
       await sleep(300);
 
       // A burst of asks while the cluster topology shifts.  Bounded by a
@@ -342,6 +350,10 @@ describe('multi-node sharding failover', () => {
             replies++;
           } catch { failures++; }
           issued++;
+          // Pacing, not a wait on an outcome: it spreads the 60 asks over the
+          // churn window instead of firing them in one event-loop burst.  The
+          // loop is bounded by `totalAsks`, so the delay's length is not load
+          // bearing (#477 makes the real quantum ~15.6 ms on Windows anyway).
           await sleep(5);
         }
       })();
@@ -421,10 +433,37 @@ describe('multi-node sharding failover', () => {
         );
       }
 
-      // Wait for all 6 to fire preStart somewhere.
+      const latestHostOf = (index: number): string | undefined => {
+        const list = startsByIndex.get(index);
+        return list?.[list.length - 1];
+      };
+      const hostsInUse = (): Set<string> => {
+        const hosts = new Set<string>();
+        for (const index of startsByIndex.keys()) {
+          const where = latestHostOf(index);
+          if (where !== undefined) hosts.add(where);
+        }
+        return hosts;
+      };
+
+      // Wait for all 6 to fire preStart AND for the rebalancer to have spread
+      // them over all three nodes.
+      //
+      // "At least 2 per node by LeastShard" is an eventual guarantee, not a
+      // property of the first allocation: the coordinator allocates against
+      // whichever regions have registered when it handles the request, and
+      // since #409 it handles a batch of requests per turn rather than one.
+      // On a cold start that legitimately puts all 6 on the node that
+      // registered first, and `rebalance-interval` then moves them out.  This
+      // case needs 'c' to actually host something before it crashes 'c', so it
+      // has to wait for the converged distribution rather than assume it.
       await awaitCondition(
-        () => startsByIndex.size === 6,
-        { timeoutMs: 10_000, intervalMs: 25, label: 'all six daemons fired preStart' },
+        () => startsByIndex.size === 6 && hostsInUse().size === 3,
+        {
+          timeoutMs: 20_000,
+          intervalMs: 25,
+          label: 'all six daemons started and spread over all three nodes',
+        },
       );
       expect(startsByIndex.size).toBe(6);
 

@@ -113,7 +113,7 @@ export class UdpSocketActor
     });
   }
 
-  override onReceive(command: UdpSocketCommand): void {
+  protected override onCommand(command: UdpSocketCommand): void {
     match(command)
       .with({ kind: 'send' }, (c) => this.onSend(c))
       .exhaustive();

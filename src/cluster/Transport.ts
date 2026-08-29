@@ -34,6 +34,30 @@ export type { TlsTransportOptionsType };
  */
 export interface Transport {
   readonly self: NodeAddress;
+  /**
+   * Per-frame payload cap this transport enforces, when it enforces one —
+   * `undefined` where framing does not apply at all.
+   *
+   * Published so a *sender* can size its own payload before handing it over.
+   * Nothing else on this interface reports failure: `send` is fire-and-forget
+   * and the cap is checked on the far side, by a `FrameDecoder` whose throw
+   * costs {@link TcpTransport} the whole association — heartbeats, membership
+   * gossip and every cross-node `tell` along with the offending frame.  A
+   * sender that keeps producing oversized frames therefore kills the link once
+   * per attempt and never learns that it did (#691).
+   *
+   * Optional rather than a number every implementation must invent, because
+   * three of the four in this repository genuinely frame nothing: the
+   * in-memory, `MessageChannel` and multi-node transports hand the message
+   * *object* to the peer, so there is no length prefix to overflow and any
+   * figure here would be fiction.  Read it as "the cap this transport will
+   * reject on", not "how large a message may be".
+   *
+   * It is the *local* cap.  There is no protocol negotiation yet (#823), so a
+   * peer configured lower than this node is still able to reject a frame this
+   * node considered safe; homogeneous configuration is the assumption.
+   */
+  readonly maxFrameBytes?: number;
   start(): Promise<void>;
   shutdown(): Promise<void>;
   setHandler(handler: WireHandler): void;
@@ -123,8 +147,24 @@ export class TcpTransport implements Transport {
      * {@link FrameDecoder}.  Default: {@link DEFAULT_MAX_FRAME_BYTES}
      * (16 MiB).  Raise it only if you genuinely send larger
      * envelopes; the cap is per-frame, not aggregate.
+     *
+     * Public because a sender has to be able to read it — see
+     * {@link Transport.maxFrameBytes} for why the send side needs the number
+     * at all.
      */
-    private readonly maxFrameBytes: number = DEFAULT_MAX_FRAME_BYTES,
+    readonly maxFrameBytes: number = DEFAULT_MAX_FRAME_BYTES,
+    /**
+     * Interface to bind, when it differs from the one {@link self} advertises
+     * — a container binds `0.0.0.0` and tells its peers a single dialable
+     * address (#944).
+     *
+     * Defaults to `self.host`, which is what every caller that has no opinion
+     * gets and what this class did before the two were separable.  It is used
+     * for exactly one thing, the `listen` call: `self` stays the identity
+     * everywhere else, in the handshake announcement and in the peer keys,
+     * because a wildcard would identify nothing there.
+     */
+    private readonly bindHost: string = self.host,
   ) {}
 
   setHandler(handler: WireHandler): void { this.handler = handler; }
@@ -132,7 +172,7 @@ export class TcpTransport implements Transport {
   async start(): Promise<void> {
     this.backend = await getTcpBackend();
     this.listener = await this.backend.listen({
-      host: this.self.host,
+      host: this.bindHost,
       port: this.self.port,
       tls: this.tls ?? undefined,
       handlers: {
@@ -142,7 +182,15 @@ export class TcpTransport implements Transport {
         onError: (_sock, err) => this.log.warn('inbound socket error', err),
       },
     });
-    this.log.info(`cluster transport listening on ${this.self.host}:${this.self.port}`);
+    // Both addresses when they differ: one line that answers "what did it
+    // bind" and "what will peers dial", which are the two questions a node
+    // that binds a wildcard makes separable.
+    this.log.info(
+      this.bindHost === this.self.host
+        ? `cluster transport listening on ${this.self.host}:${this.self.port}`
+        : `cluster transport listening on ${this.bindHost}:${this.self.port}, `
+          + `advertising ${this.self.host}:${this.self.port}`,
+    );
   }
 
   async shutdown(): Promise<void> {
@@ -163,7 +211,7 @@ export class TcpTransport implements Transport {
     if (this.stopped) return;
     const connection = this.byPeer.get(to.toString()) ?? this.openOutbound(to);
     if (connection.peer && connection.socket) {
-      connection.socket.write(encodeFrame(message));
+      this.writeFrame(connection, message);
     } else {
       // Wait for hello / hello-ack, but never without a bound.
       if (connection.pending.length >= MAX_PENDING_FRAMES) {
@@ -196,6 +244,37 @@ export class TcpTransport implements Transport {
   }
 
   /* --------------------------- internals -------------------------------- */
+
+  /**
+   * Encode and write one frame, dropping it if it cannot be encoded.
+   *
+   * `send` is reached from `RemoteActorRef.tell`, which is reached from user
+   * code, and `tell` is fire-and-forget — it must not throw the way a failed
+   * `ask` rejects.  Before the frame codec carried tagged values a `bigint`
+   * anywhere in the body raised a bare `TypeError` from `JSON.stringify` that
+   * travelled all the way back into the sending actor's `onReceive` (#450);
+   * the codec refuses a narrower set now (functions, symbols, `Promise`,
+   * `WeakMap` / `WeakSet`, cycles) but it still refuses, and the same route out
+   * would still be there.  It is also reached from the gossip and heartbeat
+   * timers, where a throw has no caller at all to catch it.
+   *
+   * Dropping is the only honest outcome — there is no dead-letter queue at this
+   * layer — so it is logged at `error`, naming the frame kind and the peer.
+   */
+  private writeFrame(connection: Connection, message: WireMessage): void {
+    let frame: Uint8Array;
+    try {
+      frame = encodeFrame(message);
+    } catch (err) {
+      this.log.error(
+        `dropping a '${message.kind}' frame for ${connection.peer ?? connection.targetKey ?? '<unknown peer>'}: `
+        + `its payload cannot be serialised`,
+        err as Error,
+      );
+      return;
+    }
+    connection.socket?.write(frame);
+  }
 
   /**
    * Register an inbound socket, unless {@link MAX_INBOUND_CONNECTIONS} is
@@ -414,7 +493,7 @@ export class TcpTransport implements Transport {
       this.clearHandshakeTimer(connection);
       this.byPeer.set(peerKey, connection);
       const buffered = connection.pending.splice(0, connection.pending.length);
-      for (const bufferedMessage of buffered) connection.socket?.write(encodeFrame(bufferedMessage));
+      for (const bufferedMessage of buffered) this.writeFrame(connection, bufferedMessage);
       return;
     }
     if (!connection.peer) {

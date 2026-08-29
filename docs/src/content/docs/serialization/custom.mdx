@@ -1,6 +1,6 @@
 ---
 title: Custom serializers
-description: Plug in Protobuf, Avro, MessagePack, or any other format. Avro and Protobuf ship ready-made — you bring the compiled schema; anything else is an implementation of `Serializer<T>` bound to specific message classes via the SerializationExtension.
+description: Plug in Protobuf, Avro, MessagePack, or any other format. Avro and Protobuf ship ready-made — you bring the compiled schema; anything else is an implementation of `Serializer<T>`, routed into a persistence store through that store's own withSerializer option.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -202,8 +202,8 @@ import { Order } from './generated/order.js';          // generated static code
 ```
 
 <Aside type="note" title="Cluster wire">
-  These serializers cover **persistence**.  The cluster wire still
-  frames remote messages as JSON and does not consult the
+  These serializers cover **persistence**.  The cluster wire frames
+  remote messages as the tagged JSON tree and does not consult the
   `SerializationExtension` — see the
   [serialization overview](/serialization/overview/).
 </Aside>
@@ -332,6 +332,11 @@ ext.register(s); ext.bind(Class, s.id)  → route only that class through s
 ext.setDefault(s)                        → the default the extension uses for unbound values
 ```
 
+Both only affect `ext.encode(value)` — nothing in the framework
+calls it yet, so neither reaches the wire or a store; see the
+cluster-wire note above and
+[#450](https://github.com/pathosDev/actor-ts/issues/450).
+
 Per-class is **safer** — keeps the default fallback for things
 you didn't think to bind.  System-wide is **uniform** — every
 unbound value goes through the same serializer.
@@ -391,13 +396,20 @@ unregistered id throws.
   registry.
 </Aside>
 
-<Aside type="caution" title="Adding bindings mid-flight">
+<Aside type="caution" title="Rolling out a store serializer">
   ```ts
-  // Cluster up; pod-2 binds new serializer; pod-1 doesn't know about it
+  // pod-2's store starts writing {"__serialized__":{"id":100,…}} rows;
+  // pod-1 replays the same stream with no serializer configured
   ```
-  Roll out custom-serializer changes via standard upgrade
-  procedures.  Pods missing a binding can't decode messages from
-  pods that have it.
+  A row written through `withSerializer(...)` is self-describing, so
+  it names the id it needs — and `decodePayload` throws a
+  `SerializationError` rather than guessing when the reader has no
+  serializer, or one with a different id.  Configure every process
+  that replays a stream before the first writer starts producing
+  those rows.  Note where the hazard is *not*: a class binding never
+  reaches the cluster wire, so a pod that lacks one cannot fail to
+  decode a peer's message
+  ([#450](https://github.com/pathosDev/actor-ts/issues/450)).
 </Aside>
 
 <Aside type="caution" title="Serializer state across restart">

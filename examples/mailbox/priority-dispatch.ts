@@ -13,19 +13,25 @@ import {
   PriorityMailbox,
   ActorOptions,
 } from '../../src/index.js';
-import { attachDevTools } from '../devtools.js';
 
 type HeartbeatMessage = { kind: 'heartbeat'; ts: number };
 type CommandMessage = { kind: 'command'; id: string };
 type LogMessage = { kind: 'log'; line: string };
 type Message = HeartbeatMessage | CommandMessage | LogMessage;
 
+// `.otherwise` rather than `.exhaustive()`, and not for tidiness: the
+// framework hands `priorityFor` messages this union does not describe.
+// `ref.stop()` and `ref.kill()` post `PoisonPill` / `Kill` as *user* messages,
+// and an exhaustive match throws on both.  Since #733 the mailbox contains that
+// throw and queues the message last, so the graceful drain-then-stop survives
+// either way — but ranking them explicitly says what should happen instead of
+// relying on the guard.
 const priorityFor = (m: Message): number =>
   match(m)
     .with({ kind: 'heartbeat' }, () => 0)
     .with({ kind: 'command' }, () => 1)
     .with({ kind: 'log' }, () => 10)
-    .exhaustive();
+    .otherwise(() => 5);
 
 class Dispatcher extends Actor<Message> {
   override async onReceive(m: Message): Promise<void> {
@@ -52,7 +58,6 @@ class Dispatcher extends Actor<Message> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('pri-dispatch');
-  const devtools = await attachDevTools(system);
   const dispatcherOptions = ActorOptions.create<Message>()
     .withMailbox(() => new PriorityMailbox<Message>({ priorityFor }) as never);
   const ref = system.spawnAnonymous(Dispatcher, dispatcherOptions);
@@ -63,9 +68,9 @@ async function main(): Promise<void> {
   ref.tell({ kind: 'command', id: 'SHUTDOWN' });
   for (let i = 6; i < 10; i++) ref.tell({ kind: 'log', line: `bulk-${i}` });
 
-  // Wait for the actor to drain.
-  await Bun.sleep(300);
-  await devtools.holdOpen();
+  // No sleep: the twelve messages are queued before terminate() runs, and the
+  // drain follows the handler's own `await` — the cell counts as busy for the
+  // whole turn — so every tier is dispatched in priority order first.
   await system.terminate();
 }
 

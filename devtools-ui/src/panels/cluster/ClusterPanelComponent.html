@@ -1,0 +1,75 @@
+<h1 class="dt-panel__title">Cluster</h1>
+<p class="dt-panel__subtitle">Who is in the cluster, who leads it, and where the shards live.</p>
+
+<div class="dt-topology">
+  @if (topologyNodes().length === 0) {
+    <p class="dt-empty">Waiting for cluster state…</p>
+  } @else {
+    <devtools-echart class="dt-topology__chart" [option]="topologyOption()" height="340px" />
+    <p class="dt-topology__legend">Larger circle = leader · thick outline = this node</p>
+  }
+</div>
+
+<div class="dt-members">
+  @for (row of memberRows(); track row.member.address) {
+    <div class="dt-member" [class.dt-member--gone]="row.member.gone">
+      <span class="dt-state" [style.background]="row.color"></span>
+      <span class="dt-member__address">{{ row.member.address }}</span>
+      <span class="dt-member__status">{{ row.statusLabel }}</span>
+      @if (row.lastSeen) { <span class="dt-badge dt-badge--error">last seen {{ row.lastSeen }}</span> }
+      @if (row.isLeader) { <span class="dt-badge">leader</span> }
+      @if (row.member.isSelf) { <span class="dt-badge">self</span> }
+      @for (role of row.member.roles; track role) {
+        <span class="dt-badge dt-badge--muted">{{ role }}</span>
+      }
+    </div>
+  }
+</div>
+
+<h2 class="dt-section">Shard distribution</h2>
+<div class="dt-shards">
+  @if (shardMaps().length === 0) {
+    <p class="dt-empty">
+      No shard map yet. Sharded types appear once their coordinator republishes.
+    </p>
+  } @else {
+    @for (shardMap of shardMaps(); track shardMap.typeName) {
+      <div class="dt-shardmap">
+        <div class="dt-shardmap__head">
+          <strong>{{ shardMap.typeName }}</strong>
+          <span class="dt-tile__label">{{ shardMap.summary }}</span>
+        </div>
+        @for (region of shardMap.regions; track region.regionKey) {
+          <div class="dt-hotrow">
+            <span class="dt-hotrow__name" [title]="region.regionKey">{{ region.label }}</span>
+            <span class="dt-hotrow__bar">
+              <span
+                class="dt-hotrow__fill"
+                [style.width.%]="region.percent"
+                [style.background]="region.color"
+              ></span>
+            </span>
+            <span class="dt-hotrow__value">{{ count(region.count) }}</span>
+          </div>
+        }
+      </div>
+    }
+  }
+</div>
+
+<h2 class="dt-section">Membership history</h2>
+<div class="dt-timeline">
+  @if (timeline().length === 0) {
+    <p class="dt-empty">No membership changes since you attached.</p>
+  } @else {
+    @for (event of timeline(); track $index) {
+      <div class="dt-timeline__row">
+        <span class="dt-timeline__time">{{ at(event.atMs) }}</span>
+        <span class="dt-badge {{ tone(event.event) }}">{{ event.event }}</span>
+        <span class="dt-timeline__subject">
+          {{ event.member?.address ?? event.leader ?? '—' }}
+        </span>
+      </div>
+    }
+  }
+</div>

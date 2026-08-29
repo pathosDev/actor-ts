@@ -9,9 +9,10 @@ import {
   ProcessTerminateReason,
   UnknownReason,
 } from '../../src/CoordinatedShutdown.js';
+import { EVENT_LOOP_KEEPALIVE_INTERVAL_MS } from '../../src/Constants.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
+import { sleep } from '../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSystem = (name = 'cs-unit'): ActorSystem => {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -64,11 +65,18 @@ describe('CoordinatedShutdown basics', () => {
     const starts: string[] = [];
     const ends: string[] = [];
 
+    // Equal delays are the fixture: both tasks have to be in flight at the same
+    // time, or "within a phase run in parallel" has nothing to observe.  The
+    // recorded start/end order and the elapsed bound below are the assertions.
     cs.addTask(Phases.BeforeServiceUnbind, 'slow-1', async () => {
-      starts.push('1'); await sleep(30); ends.push('1');
+      starts.push('1');
+      await sleep(30); // the overlap, not a wait — see above
+      ends.push('1');
     });
     cs.addTask(Phases.BeforeServiceUnbind, 'slow-2', async () => {
-      starts.push('2'); await sleep(30); ends.push('2');
+      starts.push('2');
+      await sleep(30); // the overlap, not a wait — see above
+      ends.push('2');
     });
 
     const t0 = Date.now();
@@ -125,6 +133,8 @@ describe('CoordinatedShutdown error handling', () => {
     // the race must reject via timeout and the pipeline must continue.
     cs.setPhaseTimeout(Phases.ServiceUnbind, 5);
     const seen: string[] = [];
+    // The 50 ms IS the assertion: it has to outrun the 5 ms phase budget set
+    // above, which is what makes the timeout fire.
     cs.addTask(Phases.ServiceUnbind, 'slow', () => Bun.sleep(50));
     cs.addTask(Phases.ServiceRequestsDone, 'next', () => { seen.push('next'); });
     await cs.run();
@@ -275,5 +285,170 @@ describe('CoordinatedShutdown process hooks', () => {
     system.extension(CoordinatedShutdownId).removeProcessHooks();
     expect(process.listenerCount('SIGTERM')).toBe(before);
     void system.terminate();
+  });
+
+  // The hooks now go through `src/runtime/signals/`, which skips a signal
+  // the platform cannot deliver instead of registering it.  Nothing on Bun
+  // or Node is skipped; the assertion is that the filter did not start
+  // silently dropping ordinary ones.
+  test('a signal no process can catch is skipped, not registered', () => {
+    const system = newSystem('hooks-uncatchable');
+    system.extension(CoordinatedShutdownId).installProcessHooks(['SIGKILL', 'SIGTERM']);
+    expect(process.listenerCount('SIGKILL')).toBe(0);
+    system.extension(CoordinatedShutdownId).removeProcessHooks();
+    void system.terminate();
+  });
+});
+
+// #549 — the one-liner that replaces a hand-rolled `process.on('SIGTERM', …)`
+// in every service's `main`.
+describe('ActorSystem.runUntilTerminated', () => {
+  test('resolves once the system is down and detaches its handlers', async () => {
+    const before = process.listenerCount('SIGTERM');
+    const system = newSystem('run-until-terminated');
+
+    const running = system.runUntilTerminated(['SIGTERM']);
+    // Installed while it is waiting…
+    expect(process.listenerCount('SIGTERM')).toBe(before + 1);
+
+    await system.extension(CoordinatedShutdownId).run(ActorSystemTerminateReason.instance);
+    await running;
+
+    expect(system.isTerminated).toBe(true);
+    // …and gone once it returns.  Not housekeeping: on Deno a signal
+    // listener holds the event loop open with no `unref`, so leaving one
+    // behind means the process never exits.
+    expect(process.listenerCount('SIGTERM')).toBe(before);
+  });
+
+  test('holds the event loop open while it waits, and lets go on the way out', async () => {
+    // The failure this pins cannot be observed from inside a process: Node
+    // unrefs its signal handles, so an idle service that had installed
+    // SIGTERM and nothing else drained its event loop and exited *instead of*
+    // waiting for the signal it had just armed itself for.  Bun — which runs
+    // this suite — refs its handles, so the suite could never have shown it;
+    // only Node's smoke arm did, with `code=13`, an unsettled top-level await
+    // and no shutdown at all.
+    //
+    // What is assertable here is the wiring, and it is the half that can
+    // regress silently: a hold is taken for exactly as long as the promise is
+    // pending.  That a *referenced timer* is what keeps all three runtimes
+    // alive is the claim `tests/smoke/cases/28-graceful-shutdown-signals.mjs`
+    // exists to prove, in a real process, per runtime.
+    const realSetInterval = globalThis.setInterval;
+    const realClearInterval = globalThis.clearInterval;
+    const held = new Set<unknown>();
+    globalThis.setInterval = ((handler: () => void, delayMs?: number): unknown => {
+      const timer = realSetInterval(handler, delayMs);
+      // Only the keep-alive, identified by its interval: the system under
+      // test is free to run timers of its own while this is patched.
+      if (delayMs === EVENT_LOOP_KEEPALIVE_INTERVAL_MS) held.add(timer);
+      return timer;
+    }) as unknown as typeof globalThis.setInterval;
+    globalThis.clearInterval = ((timer?: unknown): void => {
+      held.delete(timer);
+      realClearInterval(timer as Parameters<typeof globalThis.clearInterval>[0]);
+    }) as unknown as typeof globalThis.clearInterval;
+
+    try {
+      const system = newSystem('run-until-terminated-keepalive');
+      const running = system.runUntilTerminated(['SIGTERM']);
+      expect(held.size).toBe(1);
+
+      await system.terminate();
+      await running;
+
+      // Released in the same `finally` as the handlers.  A keep-alive that
+      // outlived the wait would be the mirror image of the bug it fixes: a
+      // process that can no longer exit.
+      expect(held.size).toBe(0);
+    } finally {
+      globalThis.setInterval = realSetInterval;
+      globalThis.clearInterval = realClearInterval;
+    }
+  });
+
+  test('a plain terminate() also releases it', async () => {
+    const before = process.listenerCount('SIGINT');
+    const system = newSystem('run-until-terminated-direct');
+
+    const running = system.runUntilTerminated(['SIGINT']);
+    expect(process.listenerCount('SIGINT')).toBe(before + 1);
+
+    await system.terminate();
+    await running;
+
+    expect(process.listenerCount('SIGINT')).toBe(before);
+  });
+
+  test('waits for tasks that share the final phase with the terminator', async () => {
+    const system = newSystem('run-until-terminated-final-phase');
+    let sibling = false;
+    system.extension(CoordinatedShutdownId).addTask(
+      Phases.ActorSystemTerminate,
+      'slow-sibling',
+      // The delay is the fixture: it is what keeps the sibling in flight past
+      // the point `whenTerminated()` alone would have resolved.
+      async () => { await sleep(30); sibling = true; },
+    );
+
+    const running = system.runUntilTerminated(['SIGTERM']);
+    void system.extension(CoordinatedShutdownId).run(ActorSystemTerminateReason.instance);
+    await running;
+
+    // `whenTerminated()` alone would have resolved while this was still in
+    // flight — the phase runs its tasks in parallel.
+    expect(sibling).toBe(true);
+  });
+
+  test('returns immediately for a system that is already down', async () => {
+    const before = process.listenerCount('SIGTERM');
+    const system = newSystem('run-until-terminated-late');
+    await system.terminate();
+
+    await system.runUntilTerminated(['SIGTERM']);
+
+    expect(process.listenerCount('SIGTERM')).toBe(before);
+  });
+});
+
+describe('framework task auto-registration', () => {
+  const withAutoRegister = (value: boolean): ActorSystem => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { 'coordinated-shutdown': { 'auto-register-tasks': value } } });
+    return ActorSystem.create('auto-register', sysOptions);
+  };
+
+  test('defaults to on', async () => {
+    const system = newSystem('auto-register-default');
+    const shutdown = system.extension(CoordinatedShutdownId);
+    expect(shutdown.autoRegisterTasks).toBe(true);
+    expect(shutdown.addFrameworkTask(Phases.ServiceStop, 'framework', () => {})).toBe(true);
+    await system.terminate();
+  });
+
+  test('off drops the framework task and keeps the explicit one', async () => {
+    const system = withAutoRegister(false);
+    const shutdown = system.extension(CoordinatedShutdownId);
+    const ran: string[] = [];
+
+    expect(shutdown.addFrameworkTask(Phases.ServiceStop, 'framework', () => {
+      ran.push('framework');
+    })).toBe(false);
+    shutdown.addTask(Phases.ServiceStop, 'mine', () => { ran.push('mine'); });
+
+    await shutdown.run(UnknownReason.instance);
+    expect(ran).toEqual(['mine']);
+  });
+
+  test('off does not disable the phases themselves', async () => {
+    const system = withAutoRegister(false);
+    const shutdown = system.extension(CoordinatedShutdownId);
+    await shutdown.run(UnknownReason.instance);
+    // The built-in terminator is not a framework task — opting out of
+    // auto-registration is not opting out of shutting down.
+    expect(system.isTerminated).toBe(true);
   });
 });

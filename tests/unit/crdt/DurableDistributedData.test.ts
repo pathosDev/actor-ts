@@ -32,17 +32,17 @@ import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { InMemoryDurableStateStore } from '../../../src/persistence/durable-state-stores/InMemoryDurableStateStore.js';
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(pred: () => boolean, timeoutMs = 3_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await sleep(20);
-  }
-  if (!pred()) throw new Error(`waitFor timeout after ${timeoutMs}ms`);
-}
+/**
+ * Thin wrapper over the shared helper (#418) — this file predates it and had
+ * its own deadline loop, which named neither the condition nor how long it
+ * really waited.  4 s is the largest budget the old call sites asked for, and
+ * it bounds only the broken case: a passing wait returns on the first poll
+ * that holds.
+ */
+const waitFor = (predicate: () => boolean, label: string): Promise<void> =>
+  awaitCondition(predicate, { timeoutMs: 4_000, intervalMs: 20, label });
 
 type NodeSetup = {
   sys: ActorSystem;
@@ -125,7 +125,10 @@ describe('DurableDistributedData — actor integration', () => {
       .withDurableStore(durable);
     const dd2 = a2.sys.extension(DistributedDataId).start(a2.cluster, ddOptions2);
     // Wait for preStart's load() to populate the view.
-    await waitFor(() => dd2.get<GCounter>('counter') !== undefined);
+    await waitFor(
+      () => dd2.get<GCounter>('counter') !== undefined,
+      'the restarted replica loaded its durable view',
+    );
 
     expect(dd2.get<GCounter>('counter')!.value()).toBe(7);
     expect(dd2.get<ORSet<string>>('cart')!.has('apple')).toBe(true);
@@ -140,7 +143,10 @@ describe('DurableDistributedData — actor integration', () => {
     // Phase 1: both replicas come up, each writes its own contribution.
     const a1 = await startNode('ddata-2', 75_011);
     const b1 = await startNode('ddata-2', 75_012, { seeds: ['ddata-2@h:75011'] });
-    await waitFor(() => a1.cluster.upMembers().length === 2 && b1.cluster.upMembers().length === 2);
+    await waitFor(
+      () => a1.cluster.upMembers().length === 2 && b1.cluster.upMembers().length === 2,
+      'both replicas see the two-node cluster',
+    );
 
     const ddOptions = DistributedDataOptions.create()
       .withGossipInterval(80)
@@ -156,10 +162,10 @@ describe('DurableDistributedData — actor integration', () => {
       (c) => c.increment(ddB1.selfReplicaId(), 3));
 
     // Wait for gossip convergence on both sides — value should be 8 everywhere.
-    await waitFor(() =>
-      ddA1.get<GCounter>('shared')?.value() === 8 &&
-      ddB1.get<GCounter>('shared')?.value() === 8,
-      4_000,
+    await waitFor(
+      () => ddA1.get<GCounter>('shared')?.value() === 8
+        && ddB1.get<GCounter>('shared')?.value() === 8,
+      'both replicas converged on 8 before the shutdown',
     );
 
     // Allow durable saves to settle.
@@ -173,7 +179,10 @@ describe('DurableDistributedData — actor integration', () => {
     // Phase 3: cold restart — both nodes come back up.
     const a2 = await startNode('ddata-2', 75_011);
     const b2 = await startNode('ddata-2', 75_012, { seeds: ['ddata-2@h:75011'] });
-    await waitFor(() => a2.cluster.upMembers().length === 2 && b2.cluster.upMembers().length === 2);
+    await waitFor(
+      () => a2.cluster.upMembers().length === 2 && b2.cluster.upMembers().length === 2,
+      'the cold-restarted cluster re-formed',
+    );
 
     const ddOptions3 = DistributedDataOptions.create()
       .withGossipInterval(80)
@@ -186,10 +195,10 @@ describe('DurableDistributedData — actor integration', () => {
 
     // Each replica recovered its own contribution from disk; gossip
     // re-merges them across the cluster.  Result: 8 everywhere again.
-    await waitFor(() =>
-      ddA2.get<GCounter>('shared')?.value() === 8 &&
-      ddB2.get<GCounter>('shared')?.value() === 8,
-      4_000,
+    await waitFor(
+      () => ddA2.get<GCounter>('shared')?.value() === 8
+        && ddB2.get<GCounter>('shared')?.value() === 8,
+      'both replicas converged on 8 again after the cold restart',
     );
 
     await stopNode(a2);
@@ -207,8 +216,13 @@ describe('DurableDistributedData — actor integration', () => {
       (c) => c.increment(dd1.selfReplicaId(), 1));
     dd1.update<GCounter>('to-delete', GCounter.empty,
       (c) => c.increment(dd1.selfReplicaId(), 99));
+    // Both saves are fire-and-forget with no completion the handle exposes, and
+    // the delete has to land *after* the write it removes — otherwise the
+    // restart below would prove nothing, because the key was never saved.
     await sleep(60);
     dd1.delete('to-delete');
+    // Same, for the delete's own save: it has to reach the store before
+    // `stopNode` tears the actor down.
     await sleep(60);
     await stopNode(a1);
 
@@ -218,7 +232,10 @@ describe('DurableDistributedData — actor integration', () => {
       .withGossipInterval(80)
       .withDurableStore(durable);
     const dd2 = a2.sys.extension(DistributedDataId).start(a2.cluster, ddOptions2);
-    await waitFor(() => dd2.get<GCounter>('to-keep') !== undefined);
+    await waitFor(
+      () => dd2.get<GCounter>('to-keep') !== undefined,
+      'the restarted replica loaded the surviving key',
+    );
 
     expect(dd2.get<GCounter>('to-keep')!.value()).toBe(1);
     expect(dd2.get<GCounter>('to-delete')).toBeUndefined();
@@ -244,7 +261,7 @@ describe('DurableDistributedDataStore.load failure (#725)', () => {
     const restarted = new DurableDistributedDataStore(store, 'replica-a');
     // Corrupt one entry the way a peer or a version skew could.
     const raw = await store.load<{ entries: Record<string, unknown> }>('ddata|replica-a');
-    await store.upsert('ddata|replica-a', raw.value.revision, {
+    await store.upsert('ddata|replica-a', raw.toNullable()!.revision, {
       entries: { counter: { kind: 'GCounter', state: { a: 'not-a-number' } } },
     });
 
@@ -256,7 +273,7 @@ describe('DurableDistributedDataStore.load failure (#725)', () => {
 
     const survived = await store.load<{ entries: Record<string, unknown> }>('ddata|replica-a');
     expect(survived.isSome()).toBe(true);
-    expect(Object.keys(survived.value.state.entries)).toEqual(['counter']);
+    expect(Object.keys(survived.toNullable()!.state.entries)).toEqual(['counter']);
   });
 
   test('a clean load still adopts the revision and can save', async () => {
@@ -271,6 +288,6 @@ describe('DurableDistributedDataStore.load failure (#725)', () => {
 
     await restarted.save(new Map([['counter', GCounter.empty().increment('a', 9)]]));
     const after = await store.load<{ entries: Record<string, { state: Record<string, number> }> }>('ddata|replica-b');
-    expect(after.value.state.entries['counter']!.state['a']).toBe(9);
+    expect(after.toNullable()!.state.entries['counter']!.state['a']).toBe(9);
   });
 });

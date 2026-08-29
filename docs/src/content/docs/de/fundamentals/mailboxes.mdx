@@ -32,16 +32,38 @@ Speicherdecke gewinnen", und er ging nicht auf:
   System-Nachrichten — Lifecycle, Supervision, Watch — waren nie
   gedeckelt, ein Node konnte den Heap also trotzdem ausschöpfen.
 - **Eine Mailbox weiß nicht, was sie verwirft.**  `drop-head` passt zu
-  Telemetrie, wo nur der frischeste Messwert zählt.  Zu einem
-  `Terminated`-Signal, einer Delivery-Bestätigung oder einem
-  WebSocket-`close` passt es nicht — und die liefen durch dieselbe
-  Queue.  Aus jedem dieser Fälle wurde ein gemeldeter Defekt.
+  Telemetrie, wo nur der frischeste Messwert zählt.  Zu einer
+  Delivery-Bestätigung oder einem WebSocket-`close` passt es nicht — und
+  die liefen durch dieselbe Queue.  Aus jedem dieser Fälle wurde ein
+  gemeldeter Defekt.
+
+  Zwei Nachrichten, die das Framework in deinem Namen sendet, sind
+  inzwischen für jede Policy unerreichbar: das `Terminated` der Death
+  Watch und das Kommando, das den Actor einer
+  [WebSocket](/de/http/websocket/#die-mailbox-des-hubs-begrenzen)-Verbindung
+  spawnt.  Beide nehmen eine Spur, die keine Schranke abwerfen kann
+  (siehe [Death Watch](/de/fundamentals/death-watch/) und *Eine eigene
+  Mailbox* weiter unten).  Der Test, den sie bestehen: das Framework hat
+  sie gebaut, genau einmal gesendet und nichts behalten, womit es sie
+  erneut senden könnte.  Der Rest ist Anwendungsverkehr, und nur du
+  weißt, welcher davon verzichtbar ist.
 
 Der Verlust ist jetzt also etwas, das du pro Actor anforderst, und das
 Wachstum etwas, von dem du erfährst: ein Actor, dessen Queue 10 000
 Nachrichten erreicht, loggt eine Warnung — und erneut bei jeder
 Verdopplung.  Mit aktivierten Metriken meldet `actor_mailbox_size` die
-Tiefe pro Actor.
+Tiefe pro Actor oberhalb dieser Marke, und `actor_mailbox_depth` die
+gesamte Verteilung darunter — ein Ausschlag, der die Warnschwelle nie
+erreicht, bleibt damit trotzdem sichtbar.
+
+Eine Queue ohne Decke muss billig bleiben, wenn sie tief wird — deshalb
+liegt beiden Queues einer Mailbox ein
+[`RingBuffer`](/de/reference/utility-helpers/) zugrunde und kein einfaches
+Array: die nächste Nachricht zu entnehmen rückt einen Index vor, statt
+alles dahinter neu zu indizieren.  Die Kosten, eine Nachricht
+auszuliefern, wachsen also nicht mit dem Backlog, der dahinter wartet.
+Von außen ist das unsichtbar — auch für eine eigene `Mailbox`-Subklasse,
+die nur die Methoden sieht.
 
 ### Wann eine Mailbox begrenzen
 
@@ -55,7 +77,12 @@ aufnehmen**, und du sagen kannst, welche Nachrichten verzichtbar sind:
   angenommen hast, `reject` sagt dem Sender, er soll zurückstecken.
 - Jeder Actor, der einem Producer ausgesetzt ist, den du nicht
   kontrollierst — dort ist eine unbegrenzte Queue eine
-  Denial-of-Service-Fläche.
+  Denial-of-Service-Fläche.  Lies den dritten Punkt mit den ersten
+  beiden: er sagt, wo ein Bound eine *Überlegung* wert ist, nicht dass
+  der Verkehr dort verzichtbar wäre.  Ein WebSocket-Hub ist der
+  deutlichste Fall von beidem zugleich — siehe
+  [Die Mailbox des Hubs begrenzen](/de/http/websocket/#die-mailbox-des-hubs-begrenzen)
+  dazu, was ein Bound dort kostet und was nicht.
 
 ```ts
 import { ActorOptions } from 'actor-ts';
@@ -78,8 +105,23 @@ Die drei Policies und wie du zwischen ihnen wählst, stehen unten unter
 `reject` den *Sender* scheitern lässt und nicht den langsamen Actor.
 
 Drops aus einer Kapazität, die du gesetzt hast, zählt
-`actor_mailbox_dropped_total`, gelabelt mit Klasse, Pfad und der Policy,
-die gegriffen hat.
+`actor_mailbox_dropped_total`, gelabelt mit Klasse und der Policy, die
+gegriffen hat. Pro Klasse, nicht pro Actor: Abwerfen ist das, wofür
+eine beschränkte Mailbox *da* ist — ein Label pro Actor würde also für
+jeden Actor, der sich exakt wie vorgesehen verhält, eine dauerhafte
+Metrik-Serie erzeugen. Um zu sehen, welche Instanz abwirft, ergänze ein
+eigenes `onDrop`; es läuft neben dem Stock-Counter statt an seiner
+Stelle — und es bekommt den verworfenen Envelope, kann also sagen, was
+verloren ging, und nicht nur, dass etwas verloren ging.
+
+Um diesen Envelope zu behalten statt ihn nur im Vorbeigehen anzusehen,
+baue die Mailbox mit `deadLetterDrops: true`: Jede verworfene Nachricht
+wird dann zu einem [Dead Letter](/de/operations/dead-letters/), mit
+erhaltenem Sender. Der Schalter ist standardmäßig aus und nur von einer
+selbst konstruierten Mailbox aus erreichbar — der Drop läuft auf dem Stack
+des Senders, jeden abgeworfenen Envelope zu leiten ist also Arbeit, die
+genau dem Burst berechnet wird, den die Schranke billig abfedern sollte.
+Siehe [Mailbox-Sizing](/de/operations/tuning/mailbox-sizing/#behalten-was-du-verworfen-hast).
 
 ### Eine eigene Mailbox mitbringen
 
@@ -102,18 +144,19 @@ registriert einen Observer auf dem, was du zurückgibst — sofern es
 eigene `Mailbox`-Subklasse kann es mit einer Methode:
 
 ```ts
-import { Mailbox, type Envelope, type MailboxDropReason } from 'actor-ts';
+import { Mailbox, type Envelope, type MailboxDropObserver } from 'actor-ts';
 
 class SheddingMailbox<T> extends Mailbox<T> {
-  private readonly observers: Array<(reason: MailboxDropReason) => void> = [];
+  private readonly observers: Array<MailboxDropObserver<T>> = [];
+  readonly deadLetterDrops = true;
 
-  observeDrops(observer: (reason: MailboxDropReason) => void): void {
+  observeDrops(observer: MailboxDropObserver<T>): void {
     this.observers.push(observer);
   }
 
   override enqueue(envelope: Envelope<T>): void {
     if (this.shouldShed()) {
-      for (const observer of this.observers) observer('drop-new');
+      for (const observer of this.observers) observer('drop-new', envelope);
       return;
     }
     super.enqueue(envelope);
@@ -121,10 +164,58 @@ class SheddingMailbox<T> extends Mailbox<T> {
 }
 ```
 
+Eine Meldung trägt neben dem Grund auch den Envelope, und
+`deadLetterDrops` sagt, ob die Cell daraus jeweils einen
+[Dead Letter](/de/operations/dead-letters/) machen soll.  Übergib den
+Envelope, den du wirklich verworfen hast — unter einer Policy in
+`drop-head`-Form ist das der herausgeworfene, nicht der angekommene, sonst
+benennt jeder Letter eine Nachricht, die noch in der Queue liegt.  Beides
+ist optional: Lässt du das Feld weg, wird der Drop gezählt und sonst
+nichts — genau das, was `BoundedMailbox` tut, solange du nichts anderes
+verlangst.
+
 Das Registrieren ist additiv, ein eigenes `BoundedMailboxOptions.onDrop`
 feuert also weiter neben dem Standard-Counter.  Was nicht geht, ist
 `withMailbox` mit `withMailboxCapacity` zu kombinieren — das ist ein
 Konfigurationsfehler, keine stille Vorrangregel.
+
+#### Eine Pflicht: `enqueueSignal`
+
+Eine Queue, die abwirft, hat eine kurze Liste von Dingen, die sie nicht
+abwerfen darf.  Das Framework kündigt einen Tod genau einmal an — siehe
+[Death Watch](/de/fundamentals/death-watch/) — und übergibt einem
+WebSocket-Hub das Kommando, das den Actor einer Verbindung spawnt,
+ebenfalls genau einmal; deshalb kommen beide über `enqueueSignal` statt
+über `enqueue`, und der Vertrag lautet: *reihe es ein, was deine
+Schranke auch sagt*:
+
+```ts
+class SheddingMailbox<T> extends Mailbox<T> {
+  // ...wie oben...
+
+  /** Absichtlich an der Schranke vorbei: dieses eine ist nicht erneut sendbar. */
+  override enqueueSignal(envelope: Envelope<T>): void {
+    super.enqueue(envelope);
+  }
+}
+```
+
+Die Basisimplementierung delegiert an dein `enqueue`, was für eine Queue
+richtig ist, die nichts verwirft, und für eine, die es tut, falsch —
+also **überschreibe sie immer dann, wenn du `enqueue` zum Abwerfen
+überschreibst**.  `BoundedMailbox` und `PriorityMailbox` tun das schon.
+Dass die Basis delegiert statt direkt in die Basis-Queue zu schreiben,
+ist Absicht: eine Subklasse kann ihre Nachrichten ganz woanders halten,
+und ein Envelope, das in einem Speicher versteckt liegt, den dein
+`dequeueUser` nie liest, ist schlimmer als eines, das du verworfen hast.
+
+Das Envelope trägt außerdem `undroppable: true`, was `removeOldest`
+liest — eine Schranke in `drop-head`-Form, die auf dieser Nahtstelle
+aufsetzt, überspringt es damit gratis und muss nicht wissen, warum.
+Wirft dein `enqueue` stattdessen, macht das Framework aus der
+Verweigerung ein [Dead Letter](/de/operations/dead-letters/) und der
+Abbau des sterbenden Actors läuft weiter; was es nicht kann, ist eine
+zweite Kopie der Benachrichtigung erfinden.
 
 ## System-Nachrichten kommen immer zuerst
 
@@ -146,6 +237,12 @@ Das ist wichtig, weil:
 - Die Supervisor-Entscheidung eines fehlschlagenden Actors (Restart
   / Resume / Stop) tritt sofort in Kraft, nicht erst nachdem die
   Queue leer ist.
+- Ein `Terminated` der Death Watch ist ebenfalls eine *User*-Nachricht,
+  aus demselben Grund wie `PoisonPill`: es muss **nach** allem
+  ankommen, was dem Watcher bereits gesagt wurde, damit ein Handler,
+  der auf einen Tod reagiert, die Arbeit davor gesehen hat.  Nicht
+  verwerfbar heißt nicht vordrängeln — es behält seinen Platz in der
+  Reihe und kann nur nicht mehr daraus entfernt werden.
 
 Du siehst diese Unterscheidung normalerweise nicht —
 System-Nachrichten werden vom Framework emittiert, nicht von deinem
@@ -200,6 +297,13 @@ Policy, stellt sich die Frage gar nicht.
 Die Optionen werden bei der Konstruktion validiert: eine fehlende oder
 nicht-positive `capacity` und eine unbekannte Overflow-Policy werfen
 `OptionsError`.
+
+`capacity` begrenzt die Nachrichten, die die Mailbox verwerfen *darf* —
+in einer Mailbox, die nur noch nicht zugestellte Todesmeldungen enthält,
+liegt die Queue also darüber, statt eine davon zu verlieren.  Der
+Überschuss ist durch die Zahl der beobachteten Actors begrenzt und ist
+der Preis der Ausnahme, die [Death Watch](/de/fundamentals/death-watch/)
+beschreibt: bemiss eine Kapazität an deinem Verkehr, nicht aufs Byte.
 
 Die Wahl zwischen ihnen ist ein Backpressure-vs-Verlust-Trade-off:
 
@@ -293,12 +397,142 @@ Häufige Formen für `priorityFor`:
   verteile über einen Router.
 </Aside>
 
+### Wenn `priorityFor` nicht antworten kann
+
+Dein Callback muss nicht total sein.  Wenn er **wirft** oder mit etwas
+antwortet, das keine brauchbare Zahl ist — `undefined`, `NaN`, ein Wert
+eines anderen Typs — landet die Nachricht mit der **niedrigsten**
+Priorität in der Queue, und mehr passiert nicht.  Sie wird nicht
+verworfen, und der Fehlschlag taucht nicht an der `tell`-Stelle auf.
+
+Beide Hälften sind wichtig:
+
+- **Niedrigste, nicht höchste.**  Eine Priorität, die nicht bestimmbar
+  war, darf keine überholen, die angegeben wurde.  Gleichstände brechen
+  weiterhin nach FIFO, unrangierbare Nachrichten bleiben also
+  zueinander in Sende-Reihenfolge.
+- **Eingefangen, nicht geworfen.**  `priorityFor` läuft synchron
+  innerhalb des `tell` des *Senders*.  Der Sender ist ein Unbeteiligter
+  der Mailbox-Konfiguration des Empfängers: er kann gegen ein defektes
+  `priorityFor` nichts tun und kann es nicht von einem eigenen Fehler
+  unterscheiden.  Ein entkommender Throw landete im `onReceive` des
+  Senders und ließ den **Sender** neu starten — dieselbe Verwirrung, die
+  die `reject`-Warnung oben beschreibt, für einen Bug, der mit dem
+  Sender überhaupt nichts zu tun hat.
+
+`±Infinity` ist eine *Rangfolge*, kein Fehlschlag: `-Infinity` bedeutet
+"vor allem anderen", `+Infinity` bedeutet "hinter allem anderen", und
+beide werden so geordnet, wie sie geschrieben sind.  Nur `NaN` und
+Nicht-Zahlen gelten als unbestimmbar.
+
+<Aside type="caution" title="Das Framework ruft `priorityFor` mit `PoisonPill` und `Kill` auf">
+  `ref.stop()` und `ref.kill()` posten `PoisonPill` / `Kill` als
+  gewöhnliche **User**-Nachrichten — genau das macht `stop()` zu einem
+  graziösen Drain-dann-Stop und nicht zu einem Queue-Sprung.  Also sieht
+  `priorityFor` sie ebenfalls, und keine der beiden hat Felder: ein
+  `match(message).…​.exhaustive()` wirft bei beiden, und die Formen
+  **Feld-abgeleitet** und **Caller-getagged** oben liefern `undefined`.
+
+  Das Einfangen macht das überlebbar statt fatal, aber rangiere sie
+  bewusst, statt sich darauf zu verlassen — ein `.otherwise(() => 5)`-Arm
+  oder ein `?? 5` auf dem Feld.  Sonst kostet jedes `stop()` dich einen
+  eingefangenen Fehlschlag und einen Mailbox-Eintrag ganz am Ende der
+  Queue.
+</Aside>
+
+Um einen eingefangenen Fehlschlag zu sehen und nicht nur seine Folgen,
+übergib `onPriorityError`.  Nichts anderes im System meldet einen — die
+Nachricht kommt weiterhin an, nur zuletzt:
+
+```ts
+import { PriorityMailbox, PriorityMailboxOptions } from 'actor-ts';
+
+const triageOptions = PriorityMailboxOptions.create<Message>()
+  .withPriorityFor((message) => message.kind === 'urgent' ? 0 : 10)
+  .withOnPriorityError((cause, message) => {
+    log.warn(`priorityFor could not rank ${JSON.stringify(message)}: ${String(cause)}`);
+  });
+
+const mailbox = new PriorityMailbox<Message>(triageOptions);
+```
+
+`cause` ist, was `priorityFor` geworfen hat, oder ein `TypeError`, der
+den zurückgegebenen Wert beschreibt.  **Aufzeichnen und zurückkehren**
+im Hook: er läuft ebenfalls auf dem Stack des Senders, ein Throw aus ihm
+heraus setzt das Entkommen also wieder ein — und kostet die Nachricht
+ihren Platz in der Queue.
+
 Die aktuelle Implementierung verwendet ein sorted-insertion-Array —
 O(log n) Locate + O(n) Splice bei jedem Enqueue.  In Ordnung für
 Mailboxes, die in den niedrigen Tausenden bleiben; wenn du einen
 nachhaltigen 10.000-Nachrichten-Backlog hast, bei dem
 Priority-Insertion in Profilen auftaucht, ist die Mailbox offen für
 einen Heap-backed-Swap (siehe den Source).
+
+### Eine Priority-Mailbox begrenzen
+
+Eine Priority-Mailbox ist unbounded, solange du ihr keine `capacity`
+gibst — genau wie jede andere Mailbox.  Der Bound liegt auf den Options
+der Mailbox selbst und nicht auf `ActorOptions`, weil `withMailbox` und
+`withMailboxCapacity` sich nicht kombinieren lassen: eine übergebene
+Mailbox bringt ihren eigenen Bound mit:
+
+```ts
+import { ActorOptions, PriorityMailbox, PriorityMailboxOptions } from 'actor-ts';
+
+const triageOptions = PriorityMailboxOptions.create<Message>()
+  .withPriorityFor((message) => message.kind === 'urgent' ? 0 : 10)
+  .withCapacity(10_000)
+  .withOverflow('drop-lowest-priority');
+
+const workerOptions = ActorOptions.create<Message>()
+  .withMailbox(() => new PriorityMailbox<Message>(triageOptions));
+```
+
+Die Policies sind `'drop-lowest-priority'`, `'drop-new'` und `'reject'`,
+und `reject` bekommst du, wenn du eine Capacity ohne Policy nennst — eine
+Capacity zu nennen sagt, wie viel du hältst, nicht was du bereit bist zu
+verlieren.
+
+| Policy | Was bei Overflow passiert |
+| --- | --- |
+| `'drop-lowest-priority'` | Verwirft die Nachricht, die am weitesten von der Auslieferung entfernt ist — die mit der niedrigsten Priorität, unter Gleichen die zuletzt angekommene.  Die eingehende Nachricht tritt zu denselben Bedingungen an: eine, die unter dem gesamten Backlog rangiert, ist selbst die, die geht. |
+| `'drop-new'` | Verwirft die *eingehende* Nachricht, egal welche Priorität sie bekommen hat. |
+| `'reject'` | Wirft `MailboxFullError` an der `tell`-Stelle. |
+
+`drop-head` gibt es hier bewusst **nicht**.  Auf einer FIFO-Queue heißt
+es "verwirf die abgestandenste", und das trägt, weil Ankunftsreihenfolge
+dort die einzige Ordnung ist.  Auf einer Priority-Queue ist der Kopf die
+Nachricht, die dein `priorityFor` als wichtigste bezeichnet hat — sie zu
+verwerfen würde den Grund zunichtemachen, aus dem du diese Mailbox
+gewählt hast.  Drops werden weiterhin als `drop-head` an
+`actor_mailbox_dropped_total` gemeldet (dieses Label hat ein
+geschlossenes Zwei-Werte-Vokabular), außer wenn die verworfene Nachricht
+die eingehende war — dann lautet der Grund `drop-new`.
+
+<Aside type="caution" title="Eine begrenzte Mailbox kann beim Unstash droppen">
+  `PriorityMailbox.prependUser` führt die Priority-Funktion erneut aus,
+  statt vorne einzufügen — `unstashAll()` läuft also durch denselben
+  `enqueue`-Pfad und damit durch denselben Bound.  Auf einer vollen
+  Mailbox kann das Wiedereinspielen des Stash Nachrichten verwerfen.
+  `BoundedMailbox` kommt über einen anderen Weg zur selben Garantie:
+  das Replay geht vorne hinein, und Platz geschaffen wird am *Ende* der
+  Queue — eine volle Mailbox verliert also ihre neuesten Nachrichten
+  statt der bewusst gestashten.  So oder so gilt der Bound für das
+  Replay — und unter `reject` wirft `unstashAll()` `MailboxFullError`,
+  statt irgendetwas zu verwerfen.
+</Aside>
+
+Die Options werden bei der Konstruktion validiert: ein fehlendes oder
+nicht aufrufbares `priorityFor`, eine nicht-positive `capacity`, eine
+unbekannte Policy oder eine Policy ohne Capacity werfen alle
+`OptionsError`.  Was der Callback *zurückgibt*, ist eine Laufzeitfrage
+und wird stattdessen beim Enqueue behandelt — siehe
+[Wenn `priorityFor` nicht antworten kann](#wenn-priorityfor-nicht-antworten-kann).
+Auf einer begrenzten Mailbox treffen sich beide: eine unrangierbare
+Nachricht ist das Unwichtigste in der Queue, unter
+`drop-lowest-priority` wird also die Ankunft abgeworfen und als
+`drop-new` gemeldet.
 
 ## Per-Actor-Mailbox via ActorOptions
 
@@ -366,6 +600,20 @@ Nachrichten werden *re-priorisiert*: eine gestashte
 wenn du sie gestasht hast, während dringende Nachrichten ankamen.
 Stash-Reihenfolge wird innerhalb einer Priority-Schicht bewahrt.
 
+**Ein Bound gilt auch für das Replay.**  Welche begrenzte Mailbox du
+auch gewählt hast: `unstashAll()` unterliegt der Capacity und der
+Overflow-Policy, die du gesetzt hast — ein Replay ist Traffic, der
+wieder in die Queue eintritt, keine Hintertür daran vorbei.
+Unterschiedlich ist nur, woher der Platz kommt: `PriorityMailbox`
+re-priorisiert, und `BoundedMailbox` setzt das Replay an die Front und
+schafft am Ende der Queue Platz — eine volle Mailbox verliert also ihre
+neuesten Nachrichten statt der bewusst geparkten.  Unter `reject` geht
+gar nichts verloren: `unstashAll()` wirft `MailboxFullError`, der
+gesamte Batch bleibt gestasht, und der Fehler erreicht den Supervisor
+deines Actors wie jeder andere.  Dimensioniere die Capacity für den
+Backlog *plus* das, was du zu stashen erwartest — oder nimm die Drops
+als Preis des Bounds in Kauf.
+
 Siehe [Become und Stash](/de/fundamentals/become-and-stash/) für die
 volle Behavior-Switching-Geschichte.
 
@@ -390,8 +638,13 @@ Greife in drei Situationen zu einer Alternative:
    Producer gespeist wird, den du nicht kontrollierst.  Begrenze ihn auf
    eine Zahl, die zu deinem Memory-Budget passt; `drop-head`, wenn die
    neuesten Events am wertvollsten sind, `drop-new`, wenn es die schon
-   angenommenen sind.  Beobachte `actor_mailbox_size`, um das
-   herauszufinden, bevor du es brauchst.
+   angenommenen sind.  Beobachte `actor_mailbox_wait_seconds`, um das
+   herauszufinden, bevor du es brauchst — sie steigt, sobald ein Actor
+   nicht mehr mitkommt, während `actor_mailbox_size` erst meldet, wenn
+   eine Queue 10 000 Nachrichten überschreitet.  Das p99 von
+   `actor_mailbox_depth` ist das, woraus du die Zahl selbst wählst: Eine
+   Kapazität ist eine Wette auf den schlimmsten Ausschlag, und dieses
+   Histogramm ist die Messung davon.
 
 ## Wie es weitergeht
 

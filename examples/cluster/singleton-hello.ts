@@ -19,7 +19,6 @@ import {
   NodeAddress,
   SingletonKey,
 } from '../../src/cluster/index.js';
-import { attachDevTools } from '../devtools.js';
 
 class Echo extends Actor<string> {
   /**
@@ -50,7 +49,6 @@ async function startNode(host: string, port: number, seeds: string[] = []): Prom
       .withGossipIntervalMs(80)
       .withReceptionist(false)
       .withShutdownOnSignals(false));
-  await attachDevTools(system);
   return { sys: system, cluster, name: host };
 }
 
@@ -69,6 +67,7 @@ async function main(): Promise<void> {
     cluster.singleton.start(Echo, () => new Echo(name));
   }
 
+  // Not a drain sleep: waits for the three managers to agree on a leader.
   await Bun.sleep(100);
 
   // Every node forwards "tell from X" through its local proxy — the leader
@@ -77,6 +76,9 @@ async function main(): Promise<void> {
   nodeB.cluster.singleton.ref(Echo).tell('tell from b');
   nodeC.cluster.singleton.ref(Echo).tell('tell from c');
 
+  // Not a drain sleep: each tell crosses the proxy — a `/system` actor — and
+  // then the wire to the leader's node.  terminate() drains only `/user`, on
+  // one system at a time, so none of that is something it waits for.
   await Bun.sleep(150);
   for (const { sys, cluster } of [nodeA, nodeB, nodeC]) {
     await cluster.leave();

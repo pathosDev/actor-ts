@@ -1,6 +1,6 @@
 ---
 title: Dispatcher
-description: Die Komponente, die entscheidet, wann Actors laufen — Microtask vs Immediate vs Throughput, was jeder als Trade-off mitbringt und wie du sie konfigurierst oder ersetzt.
+description: Die Komponente, die entscheidet, wann Actors laufen — Hybrid vs Microtask vs Immediate vs Throughput, was jeder als Trade-off mitbringt und wie du sie konfigurierst oder ersetzt.
 ---
 
 Ein **Dispatcher** plant die Ausführung der
@@ -16,20 +16,75 @@ Primitives für "mach das später": die **Microtask-Queue**
 Aufgabe des Dispatchers, und die Wahl hat reale Konsequenzen für
 Durchsatz, Fairness und Latenz.
 
-## Die drei eingebauten Dispatcher
+## Die vier eingebauten Dispatcher
 
-Das Framework liefert drei aus, exponiert als Klassen, die du
+Das Framework liefert vier aus, exponiert als Klassen, die du
 instanziierst und an `ActorSystem.create` übergibst:
 
 | Dispatcher | Plant via | Trade-off |
 | --- | --- | --- |
-| `MicrotaskDispatcher` | `queueMicrotask` | Am schnellsten.  Kann I/O und Timer bei nachhaltiger Actor-Last aushungern. |
-| `ImmediateDispatcher` *(default)* | `setImmediate` oder `setTimeout(0)` | Lässt I/O + Timer zwischen Actor-Nachrichten verschränken.  Etwas höhere Per-Message-Latenz. |
-| `ThroughputDispatcher` | `setImmediate` mit konfigurierbarem run-N-then-yield-Budget | Wie `ImmediateDispatcher`, verarbeitet aber bis zu `throughput` Nachrichten Back-to-Back, bevor es nachgibt.  Balanciert Durchsatz gegen Fairness. |
+| `HybridDispatcher` *(default)* | `queueMicrotask`, jede 64. Einheit `setImmediate` | Microtask-Tempo mit begrenztem Notausgang, sodass Timer und I/O weiterhin drankommen. |
+| `MicrotaskDispatcher` | `queueMicrotask` | Am schnellsten.  Hungert I/O und Timer bei nachhaltiger Actor-Last aus — siehe die Warnung unten. |
+| `ImmediateDispatcher` | `setImmediate` oder `setTimeout(0)` | Der bisherige Default.  Lässt I/O und Timer zwischen jedem Actor-Turn verschränken, zum Preis von rund 2,4 µs pro Sprung. |
+| `ThroughputDispatcher` | `setImmediate` mit konfigurierbarem run-N-then-yield-Budget | Wie `ImmediateDispatcher`, arbeitet aber bis zu `throughput` eingereihte *Actor-Turns* Back-to-Back ab, bevor es nachgibt.  Balanciert Durchsatz gegen Fairness **zwischen** Actors. |
 
-Der Default ist `ImmediateDispatcher` — Fairness mit I/O ist der
-richtige Default für HTTP-Server und broker-backed Actors, die in
-actor-ts-Anwendungen beide häufig vorkommen.
+### Warum der Default ein Hybrid ist
+
+Die beiden naheliegenden Optionen liegen jeweils in der Hälfte der
+Fälle falsch — und welche Hälfte es ist, hängt an einer Eigenschaft
+deiner Last, die du nicht in der Hand hast.
+
+`setImmediate` kostet rund 2,4 µs.  Ein Actor, der mit Nachrichten
+geflutet wird, verteilt diese Kosten über den Batch, den er pro Turn
+abarbeitet — sie verschwinden.  Ein Actor, der eine Anfrage nach der
+anderen beantwortet, kann gar nichts verteilen: seine Mailbox ist
+zwischen zwei Nachrichten leer, er zahlt den vollen Sprung *pro
+Nachricht*.  Gemessen an einem Frage-Antwort-Volley über 10 000
+Austausche waren das 8,1 µs pro Runde, davon rund 4,8 µs allein die
+beiden Scheduling-Sprünge.  Die eigentliche Arbeit war die kleinere
+Hälfte.
+
+`queueMicrotask` beseitigt diese Kosten — derselbe Volley wurde fast
+viermal so schnell — und ist für sich genommen unbrauchbar, weil
+Microtasks vollständig abgearbeitet werden, bevor die Event-Loop
+überhaupt zu Timern oder I/O kommt.  Zwei Actors, die sich Bälle
+zuspielen, reihen aus einem Microtask heraus den nächsten ein, endlos,
+und nichts sonst im Prozess läuft je wieder.
+
+Der Hybrid nimmt das Tempo und begrenzt die Unfairness.  Er zählt
+aufeinanderfolgende Einheiten, die als Microtask geplant wurden, und
+schickt bei 64 eine über `setImmediate` — die Event-Loop kommt dran,
+danach beginnt die Zählung von vorn.  Eine Einheit ist ein Actor-Turn,
+selbst bis zu `actor-ts.actor.throughput` Nachrichten, also kommt die
+Loop mindestens alle ~1 024 Nachrichten zum Zug.  Der schlechteste Fall
+ist exakt das, was `ImmediateDispatcher` immer getan hat — nie etwas
+Neues.
+
+Der Zähler sitzt am Dispatcher, nicht an den einzelnen Actors, und das
+ist das tragende Detail: die Microtask-Kette ist die Vereinigung über
+alle Actors, die auf ihm geplant sind.  Ein Zähler pro Actor stünde bei
+zwei sich endlos zuspielenden Actors jeweils auf 1 — er würde genau in
+dem Fall zu niedrig zählen, für den das Budget existiert.
+
+:::caution[`MicrotaskDispatcher` ist ein Messwerkzeug, keine Produktionswahl]
+Er hat überhaupt keinen Notausgang.  Jede Last, die Actors beschäftigt
+hält — ein Volley, eine Pipeline, ein Fan-out — hungert Timer, Sockets
+und HTTP-Antworten dauerhaft aus, und das Symptom ist ein Prozess, der
+gesund aussieht, während ausserhalb des Actor-Systems nichts mehr
+vorankommt.  Nimm stattdessen den Hybrid; er ist dasselbe
+Scheduling-Primitive, nur mit einer Schranke.
+:::
+
+:::note[Zwei verschiedene Throughput-Stellschrauben]
+Das `throughput` eines Dispatchers zählt **eingereihte Turns**, und jeder
+Turn gehört einem anderen Actor — ein Actor kann immer nur einen Turn
+gleichzeitig eingereiht haben.  Wie viele *Nachrichten* ein einzelner Actor
+in seinem Turn abarbeitet, ist eine separate Einstellung:
+`ActorOptions.withThroughput()` bzw. systemweit `actor-ts.actor.throughput`.
+Wenn ein einzelner ausgelasteter Actor dein Flaschenhals ist, ist das die
+Stellschraube, die du willst; siehe
+[Dispatcher-Tuning](/de/operations/tuning/dispatcher-tuning/).
+:::
 
 ## Einen Dispatcher wählen
 
@@ -54,6 +109,16 @@ const system = ActorSystem.create('mixed-workload', actorSystemOptions);
   // HTTP-Response-Latenz.
 ```
 
+`ThroughputDispatcher` ist der einzige, der zum Planen eine eigene Queue
+hält — die anderen reichen jede Einheit direkt an die Runtime weiter.
+(Der Hybrid führt ebenfalls eine kurze Liste, aber nur solange ein Yield
+unterwegs ist, damit Einheiten, die währenddessen ankommen, nicht von
+später eingereihten überholt werden.)  Diese Queue ist aus demselben Grund ein
+[`RingBuffer`](/de/reference/utility-helpers/) wie eine Mailbox: sie wird
+pro Tick `throughput`-mal von vorne abgearbeitet und hält die
+ausstehende Einheit jedes Actors, ist also genau dann am tiefsten, wenn
+das System am beschäftigsten ist.
+
 ## Wann die Dispatcher-Wahl wichtig ist
 
 import { Aside } from '@astrojs/starlight/components';
@@ -64,12 +129,15 @@ Situationen, in denen er es nicht ist:
 - **Compute-lastige Actor-Pipelines ohne I/O.**  Ein ETL-artiger Job,
   der aus einem Journal liest, in Actors transformiert, in ein
   anderes Journal schreibt — keine Live-HTTP-Requests, keine
-  Broker-Callbacks.  `MicrotaskDispatcher` entfernt hier ~50 % des
-  Per-Message-Overheads gegenüber Immediate.
+  Broker-Callbacks.  Das Budget des Hybrids anzuheben
+  (`Dispatchers.Hybrid(1_000)`) tauscht die Fairness, die du hier nicht
+  brauchst, gegen weniger Yields.
 - **Latenz-sensitive HTTP-Server.**  HTTP-Responses müssen prompt
   geflusht werden; wenn deine Actors die Event-Loop monopolisieren,
-  wächst die Response-Latenz.  Bleibe bei `ImmediateDispatcher` (dem
-  Default) oder gehe auf ein kleineres Throughput-Budget runter.
+  wächst die Response-Latenz.  Der Default gibt bereits auf ein Budget
+  hin nach; eine Last, die *ausschliesslich* Actor-Arbeit ist und harte
+  Latenzziele hat, kann mit `ImmediateDispatcher` nach jedem Turn
+  nachgeben oder auf ein kleineres Throughput-Budget heruntergehen.
 - **Tests, die deterministisches Ordering brauchen.**  Microtasks
   vervollständigen vor der nächsten Macrotask, `MicrotaskDispatcher`
   wird also für Tests bevorzugt, die "N Nachrichten senden, alle N

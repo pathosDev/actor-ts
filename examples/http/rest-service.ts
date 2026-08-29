@@ -115,12 +115,10 @@ async function main(): Promise<void> {
   const binding = await system.http(8080, { host: '127.0.0.1' }).bind(routes);
   system.log.info(`REST service listening on http://${binding.host}:${binding.port}`);
 
-  process.on('SIGINT', async () => {
-    await binding.unbind();
-    await cluster.leave();
-    await system.terminate();
-    process.exit(0);
-  });
+  // Unbind, leave the cluster, terminate — in that order, and none of it
+  // written here: `bind()` and `Cluster.join()` each registered their own
+  // phase task.  Doing it by hand is how the order drifts.
+  await system.runUntilTerminated();
 }
 
 void main();

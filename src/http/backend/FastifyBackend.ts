@@ -1,7 +1,7 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { HttpError, type HttpRequest, type HttpResponse } from '../Types.js';
-import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
-import { DEFAULT_RESPONSE_SECURITY_HEADERS, PAYLOAD_TOO_LARGE_RESPONSE } from './HttpServerBackend.js';
+import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
+import { DEFAULT_RESPONSE_SECURITY_HEADERS, PAYLOAD_TOO_LARGE_RESPONSE, transportFrameCapOf } from './HttpServerBackend.js';
 import type {
   HttpServerBackend,
   RouteRegistration,
@@ -92,7 +92,31 @@ export class FastifyBackend implements HttpServerBackend {
     await (this.app as { register: (p: unknown, o?: object) => Promise<void> }).register(plugin, options);
   }
 
+  /**
+   * **Every async Fastify handler here must `return reply`.**  Fastify's
+   * `wrap-thenable` inspects what an async handler resolves to: on `undefined`
+   * it re-sends when `reply.sent === false`, and `reply.sent` is still false
+   * right after `reply.send(stream)` because a stream is written
+   * asynchronously.  So an async handler that sends a stream and returns
+   * nothing gets an immediate `reply.send(undefined)` on top of it — the client
+   * receives `200`, `content-length: 0` and an empty body, with no error
+   * anywhere.  Returning the reply is Fastify's documented signal that the
+   * response is already handed over.
+   *
+   * Measured, not inferred: identical on Bun 1.3 and Node 26 with Fastify
+   * 5.10, and only for a body whose first chunk is not ready synchronously —
+   * which is why the pre-existing `StreamBody` cases never caught it (they
+   * enqueue everything up front) and why it surfaced as soon as a static file
+   * became the source (#465).
+   */
   registerRoute(route: RouteRegistration): void {
+    // Ahead of `app.route`, which would also reject this — but with
+    // `FST_ERR_DUPLICATED_ROUTE`, wording that changes with Fastify and that
+    // the other two backends cannot produce.  Rejecting here makes the refusal
+    // the backend's own and identical across all three (#759).
+    if (this.registered.some((r) => r.method === route.method && r.pattern === route.pattern)) {
+      throw new Error(`FastifyBackend: duplicate ${route.method} route for pattern "${route.pattern}".`);
+    }
     this.registered.push(route);
     this.app.route({
       method: route.method,
@@ -105,6 +129,7 @@ export class FastifyBackend implements HttpServerBackend {
         } catch (err) {
           await this.emitError(reply, adapted, err);
         }
+        return reply;
       },
     });
   }
@@ -116,11 +141,14 @@ export class FastifyBackend implements HttpServerBackend {
     this.wsRegistered.push(reg);
   }
 
+  /** `return reply` for the reason spelled out on {@link registerRoute} — a
+   *  not-found handler serving an SPA fallback is a streaming body too. */
   setNotFound(handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse): void {
     this.app.setNotFoundHandler(async (req: FastifyRequest, reply: FastifyReply) => {
       const adapted = this.adaptRequest(req);
       const response = await handler(adapted);
       this.writeResponse(reply, response);
+      return reply;
     });
   }
 
@@ -144,11 +172,15 @@ export class FastifyBackend implements HttpServerBackend {
       // before we add the ws routes below.  (Awaiting does NOT lock the
       // route tree — routes can still be added after.)
       // `options` is forwarded to the underlying `ws` server; `maxPayload`
-      // caps the transport frame size (aligned with the default WS policy) so
-      // an oversized frame is rejected at the protocol level rather than
-      // buffered up to the `ws` 100 MiB default first (security audit WS-3).
+      // caps the transport frame size so an oversized frame is rejected at the
+      // protocol level rather than buffered up to the `ws` 100 MiB default
+      // first (security audit WS-3).  It is the widest frame any registered
+      // route admits rather than the framework default, so the cap an
+      // application configured — per route or in HOCON — is the one the
+      // transport enforces (#373); the plugin is registered once for the whole
+      // instance, so every route shares that single limit.
       await (this.app as { register: (p: unknown, o?: object) => Promise<unknown> })
-        .register(plugin, { options: { maxPayload: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } });
+        .register(plugin, { options: { maxPayload: transportFrameCapOf(this.wsRegistered) } });
       for (const reg of this.wsRegistered) this.attachWebsocketRoute(reg);
     }
     const address = await this.app.listen({ host, port });
@@ -240,7 +272,10 @@ export class FastifyBackend implements HttpServerBackend {
       },
       (socket: WebsocketPackageSocket, req: FastifyRequest) => {
         const adapted = this.adaptRequest(req);
-        reg.onConnection(adapted, websocketPackageAdapter(socket, { remoteAddress: adapted.remoteAddress }));
+        reg.onConnection(adapted, websocketPackageAdapter(socket, {
+          remoteAddress: adapted.remoteAddress,
+          preAttachBuffer: reg.preAttachBuffer,
+        }));
       },
     );
   }
@@ -267,13 +302,16 @@ export class FastifyBackend implements HttpServerBackend {
     this.app.setErrorHandler(async (err: unknown, req: FastifyRequest, reply: FastifyReply) => {
       if (isBodyTooLargeError(err)) {
         this.writeResponse(reply, PAYLOAD_TOO_LARGE_RESPONSE);
-        return;
+        return reply;
       }
       if (!this.userErrorHandler) {
         reply.send(err as Error);
-        return;
+        return reply;
       }
+      // A user error handler may return any body shape, streams included, so
+      // this path needs the same `return reply` as registerRoute.
       await this.emitError(reply, this.adaptRequest(req), err);
+      return reply;
     });
   }
 

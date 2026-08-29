@@ -1,0 +1,80 @@
+---
+title: Event Stream
+description: Ein Live-Tail des System-Event-Busses — Actor-Lifecycle-Events, Dead Letters und was deine Actors selbst publizieren — plus die Cluster-PubSub-Topics.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Der [Event Stream](/de/fundamentals/event-stream/) ist der eigene Bus des
+Systems. Actor-Lifecycle-Events laufen darüber, jeder Dead Letter wird
+darauf publiziert, und ebenso alles, was deine Actors selbst
+publizieren. Dieses Panel ist ein Live-Tail davon.
+
+| Spalte | Bedeutung |
+| --- | --- |
+| **seq** | Zähler pro Sitzung; eine Lücke bedeutet verworfene Events |
+| **time** | Wann das Event publiziert wurde |
+| **event** | Konstruktorname des Events, oder sein `typeof` |
+| **payload** | Eine einzeilige Vorschau; Klick auf die Zeile zeigt alles |
+
+Das Filterfeld greift sowohl auf den Event-Typ als auch auf den
+Payload-Text zu, sodass `OrderPlaced` und `order-4711` beide den Tail
+einengen.
+
+**Clear** leert den Tail und setzt den Verworfen-Zähler zurück.
+
+Um den Tail anzuhalten und ihn zu lesen, nimm **Pause** in der Kopfzeile
+— das hält [alle Panels auf einmal](/de/observability/devtools/overview/#die-zeit-anhalten)
+an, dieses eingeschlossen. Während die Zeit steht publizierte Events
+werden *gehalten* und kommen beim Fortsetzen der Reihe nach an; Pausieren
+kostet dich also nichts außer der Verzögerung.
+
+## Es wird nichts aufgezeichnet, bis du hinsiehst
+
+Der Server installiert seinen Beobachter, wenn dieses Panel abonniert,
+und entfernt ihn, sobald das letzte verschwindet. Das ist anders als beim
+Tracing-Panel, das ab dem Anhängen von DevTools aufzeichnet — und der
+Unterschied ist Absicht: Tracing ist ohnehin schon opt-in, während der
+Event-Bus immer live ist. Ein dauerhaft installierter Beobachter liefe
+also bei jedem Actor-Start und -Stopp für ein Panel, das niemand geöffnet
+hat.
+
+Die Folge: Das Panel öffnet **leer** und füllt sich, während Events
+eintreffen. Ein untätiges System zeigt nichts, und das ist kein Fehler.
+
+## Wenn der Tail zurückfällt
+
+Der Server puffert Events zwischen den Flushes und verwirft jenseits
+seiner Obergrenze die ältesten — und sagt dem Panel, wie viele. Das Panel
+schreibt das über die Tabelle, statt still eine kürzere Liste zu zeigen:
+Ein Leser zieht Schlüsse aus dem, was *nicht* da ist, also ist ein Tail,
+der still überspringt, schlechter als einer, der es zugibt.
+
+Erhöhe den Puffer, wenn dir Events fehlen, die du brauchst:
+
+```ts
+const devtoolsOptions = DevToolsOptions.create()
+  .withEventBufferCapacity(2_000)
+  .withEventFlushIntervalMs(100);
+```
+
+## Cluster-Topics
+
+Unter dem Tail steht die Liste der
+[Distributed-PubSub](/de/cluster/pubsub/)-Topics, die dieser Node kennt.
+Das ist eine Cluster-Extension, also meldet ein Single-Node-System, dass
+sie nie gestartet wurde — eine andere Antwort als „gestartet, ohne
+Topics". Das Panel unterscheidet beides, statt für beide eine leere
+Liste zu zeigen.
+
+Nur Topic-**Namen**: Die `CurrentTopics`-Antwort des Mediators trägt
+keine Abonnentenzahlen, und einen Cluster-Wire-Typ für eine Spalte in
+einem Panel zu ändern ist den Tausch nicht wert.
+
+<Aside type="caution" title="Die Payload sind deine Daten">
+Der Tail zeigt Event-Inhalte und legt damit offen, was deine Events
+transportieren.  Schalte ihn mit `panels: { eventStream: false }`
+überall dort ab, wo das zählt — derselbe Aufruf, den du für das
+Time-Travel- und das Dead-Letter-Panel machen würdest, und aus demselben
+Grund.
+</Aside>

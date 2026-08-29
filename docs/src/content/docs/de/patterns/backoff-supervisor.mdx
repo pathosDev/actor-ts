@@ -89,6 +89,30 @@ Das Framework benennt aufeinanderfolgende Kinder `child-1`,
 `child-2`, `child-3`, … sodass alte Terminierungen nicht mit neuen
 Spawns kollidieren.
 
+### Ein Respawn braucht einen Tod, keine Nachricht darüber
+
+Der Supervisor nimmt beliebige User-Nachrichten entgegen — genau das
+ist sein Zweck, er leitet sie an das Kind weiter — ein `Terminated`,
+das das aktuelle Kind benennt, ist also etwas, das ihm alles schicken
+könnte, was seine Ref hält.  Darauf zu reagieren würde ein lebendes
+Kind aus der Buchführung nehmen, den Backoff-Zähler hochzählen und
+einen Ersatz neben ein `child-1` stellen, das niemand gestoppt hat und
+niemand mehr beobachtet.
+
+Zwei Dinge verhindern das.  Die Runtime
+[lehnt ein `Terminated` ab, das sie nicht ausgelöst hat](/de/fundamentals/death-watch/),
+noch bevor der Supervisor es überhaupt sieht.  Und der Supervisor
+fragt die Zelle des Kindes selbst, ob sie tatsächlich terminiert ist,
+bevor er es aus der Buchführung nimmt — selbst eine echte Notification
+über einen laufenden Actor wird also mit einer Warnung abgelehnt statt
+befolgt.  Ist ein Vorgänger beim Spawnen seines Nachfolgers wider
+Erwarten noch am Leben, wird er gestoppt statt verwaist zurückgelassen.
+
+Nichts davon ist konfigurierbar, und nichts davon kostet auf dem
+normalen Pfad etwas: ein Kind, das wirklich gestorben ist, meldet
+`terminated`, bevor seine Watcher davon erfahren — die Prüfung ist
+also ein Boolean-Read.
+
 ## Konfiguration
 
 Die `BackoffOptions<T>`-Form:
@@ -146,6 +170,20 @@ behandelt.
 Verwerfen ist der richtige Anruf für "transiente Pings, die das
 Aufbewahren nicht wert sind" — Telemetrie, Heartbeats, wo veraltete
 Nachrichten schlimmer als verlorene sind.
+
+**Wenn der Stash voll wird.** Ein Backoff-Fenster, das länger dauert, als
+der Verkehr warten kann, schiebt den Stash irgendwann über `maxStashSize`
+— und die älteste gepufferte Nachricht macht der neuesten Platz. Diese
+Nachricht wird nicht still verworfen: Sie wird zu einem
+[Dead Letter](/de/operations/dead-letters/) und trägt ihre Nutzlast sowie
+den Sender, der die Antwort bekommen hätte. Ein Überlauf ist damit
+hinterher rekonstruierbar statt eine Lücke in der Spur.
+
+Die begleitende Warnung ist **aggregiert**, nicht eine Zeile pro
+Nachricht: Sie feuert bei der ersten Verdrängung und danach bei jeder
+Verdopplung, und trägt die laufende Gesamtzahl. Sonst würde eine Flut
+gegen einen Supervisor, der in einem langen Backoff feststeckt, aus einer
+Nachrichtenflut eine Log-Flut mit genau derselben Rate machen.
 
 ### `resetCounter`
 

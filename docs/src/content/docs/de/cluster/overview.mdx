@@ -3,6 +3,8 @@ title: Cluster — Überblick
 description: Wie sich mehrere Actor-Systeme zu einer logischen Gruppe zusammenschließen — Gossip-getriebene Mitgliedschaft, Failure Detection, Cluster-fähige Refs und die Extensions, die darauf aufbauen (Sharding, Singleton, PubSub, Distributed Data).
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 Ein **Cluster** ist eine Gruppe von `ActorSystem`s — typischerweise
 eines pro Node — die voneinander wissen. Nodes verteilen ihren
 Mitgliedschaftszustand per Gossip, erkennen gegenseitig Ausfälle und
@@ -66,13 +68,28 @@ const cluster = await Cluster.join(
 );
 ```
 
-Drei Einstellungen leisten die meiste Arbeit:
+Einige Einstellungen leisten die meiste Arbeit:
 
 | Einstellung | Zweck |
 | --- | --- |
-| `host` + `port` | Die externe Adresse dieses Nodes. Peers kontaktieren ihn hier. |
+| `host` + `port` | Das Interface, an das dieser Node **bindet**. `0.0.0.0` heißt "jedes Interface" und ist der Default. |
+| `advertisedHost` | Die Adresse, die Peers **wählen** — die Identität dieses Nodes. Ungesetzt wird sie aus `host` abgeleitet, sofern der routebar ist, dann aus `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, dann Loopback. |
 | `seeds` | Adressen anderer Nodes. Beim Start kontaktiert dieser Node sie, um dem bestehenden Cluster beizutreten. Eine leere Liste = "ich bin der erste" (wird automatisch zum Leader). |
 | `roles` | Tags, die dieser Node trägt. Router und Shard-Regionen können danach filtern (`role: 'compute'` überspringt Nodes ohne dieses Tag). |
+
+<Aside type="tip" title="Binden und Verteilen sind zwei verschiedene Adressen">
+  `0.0.0.0` zu binden ist für einen Container richtig: er nimmt Verkehr
+  auf einer Adresse an, die er beim Start noch nicht kennt. Eine
+  Wildcard kann aber keine *Identität* sein — sie benennt jedes
+  Interface, also keines, und jeder Node, der sie beansprucht, würde
+  denselben String beanspruchen. Deshalb wird die Adresse, die ein Node
+  verteilt, getrennt aufgelöst und ist nie eine Wildcard.
+
+  Auf einer einzelnen Maschine kann man das ignorieren — ein genannter
+  routebarer `host` deckt weiterhin beides ab, und ein
+  unkonfigurierter Node verteilt `127.0.0.1`. In Kubernetes setzt man
+  das Paar: `0.0.0.0` binden, `POD_IP` verteilen.
+</Aside>
 
 Nachdem `Cluster.join` aufgelöst ist, befindet sich der Node im
 Cluster (möglicherweise aber noch ein paar Sekunden im Zustand
@@ -119,7 +136,6 @@ einem einfachen, ungeclusterten System laufen muss: das antwortet mit
 ein System, das nach `leave()` erneut beigetreten ist, sieht also immer
 die aktuelle Instanz.
 
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="note" title="Es bleibt bewusst ein Option">
   Ein Cluster bindet einen Transport und startet Timer für Gossip,
@@ -312,11 +328,14 @@ remote.tell({ kind: 'whatever' });
 // → serialisiert, über den Transport gesendet, in die Mailbox des fremden Actors zugestellt
 ```
 
-Der Cluster-Transport serialisiert die Nachricht (standardmäßig
-JSON), nimmt den Routing-Pfad mit, und der Transport des
-Empfängers stellt sie zu. `replyTo`-Refs serialisieren sauber — der
-empfangende Node hängt einen remote-routbaren Handle an, sodass
-Antworten über denselben Transport zurückfließen.
+Der Cluster-Transport rahmt die Nachricht als **getaggten
+JSON-Tree** — dasselbe Format, das die Persistenz-Stores schreiben,
+sodass ein `Date`, eine `Map`, ein `Set`, ein `bigint` oder ein
+`Uint8Array` im Body als es selbst ankommt (#450) —, nimmt den
+Routing-Pfad mit, und der Transport des Empfängers stellt sie zu.
+`replyTo`-Refs serialisieren sauber — der empfangende Node hängt
+einen remote-routbaren Handle an, sodass Antworten über denselben
+Transport zurückfließen.
 
 Siehe [Refs über Nodes hinweg](/de/cluster/refs-across-nodes/) für
 die Details des Wire-Formats.

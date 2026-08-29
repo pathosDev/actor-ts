@@ -202,8 +202,12 @@ class ScatterGatherRouterActor<TMessage> extends Actor<TMessage> {
    * problem, and the message says which.  The rejection type stays
    * `AggregateError` either way — a caller that has to branch on the error
    * *type* to find out how many routees failed learns nothing the `errors`
-   * array does not already carry, and `AggregateError` survives the
-   * cluster wire (see `JsonTree`).
+   * array does not already carry, and the class now survives the cluster
+   * wire, which frames the same `JsonTree` the stores write (#450).  Its
+   * *members* do not: `rebuildError` reconstructs the built-in error classes
+   * and hands everything else back as an `Error` carrying the original
+   * `name`, so `errors.every(e => e instanceof AskTimeoutError)` still only
+   * holds in-process.
    */
   private onEveryRouteeFailed(scatter: PendingScatter, rejection: unknown): void {
     const errors: ReadonlyArray<unknown> = rejection instanceof AggregateError

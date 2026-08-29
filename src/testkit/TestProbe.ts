@@ -15,6 +15,21 @@ let probeCounter = 0;
  * A lightweight ActorRef that captures every `tell` for inspection by tests.
  * Unlike an ordinary actor it is synchronous and not driven by the dispatcher —
  * messages sit in an internal queue until a test asserts on them.
+ *
+ * **Deliberately not generic**, and the decision is recorded here because 28
+ * call sites had drifted into writing `kit.createTestProbe<string>()` — a
+ * form that never compiled, and that only surfaced once `typecheck:dev`
+ * became a gate (#540).  Three reasons it stays this way:
+ *
+ *  - `ActorRef<unknown>` is the point.  A probe's job is to stand in for a
+ *    recipient whose message type is *not* the probe's — the cluster and
+ *    singleton suites hand the same probe to actors with unrelated protocols.
+ *    A `TestProbe<string>` would have to be widened back at every such site.
+ *  - The methods that return a message are already generic one at a time
+ *    (`expectMessage<T>`, `expectMessageType<T>`, `fishForMessage<T>`), so a
+ *    class parameter would either shadow them or force all three to narrow —
+ *    a breaking change to callers that pass their own `<T>`.
+ *  - Every documentation sample uses the bare form.
  */
 export class TestProbe extends ActorRef<unknown> {
   readonly path: ActorPath;

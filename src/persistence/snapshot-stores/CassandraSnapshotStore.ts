@@ -9,7 +9,9 @@ import {
   type CassandraConnection,
 } from '../journals/CassandraClient.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
+import { STORAGE_IDENTITY_TABLE } from '../Constants.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
+import type { StorageLocality } from '../StorageLocality.js';
 import type { CassandraSnapshotStoreOptions, CassandraSnapshotStoreOptionsType } from './CassandraSnapshotStoreOptions.js';
 
 type SnapshotRow = {
@@ -25,6 +27,48 @@ type SnapshotRow = {
  * When `keepN > 0`, excess snapshots are pruned on each `save`.
  */
 export class CassandraSnapshotStore implements SnapshotStore {
+  /** A Cassandra/Scylla cluster any node can reach (#1356). */
+  readonly storageLocality: StorageLocality = 'shared';
+  private cachedStorageIdentity: string | null = null;
+
+  /** Identity of the keyspace's database — journal and snapshot store over one keyspace share it (#1358). */
+  async storageIdentity(): Promise<string> {
+    if (this.cachedStorageIdentity !== null) return this.cachedStorageIdentity;
+    await this.ensureStarted();
+    const table = this.qualifiedStorageIdentityTable();
+    if (this.options.autoCreateTables ?? true) {
+      await this.client.execute(
+        `CREATE TABLE IF NOT EXISTS ${table} ( singleton int PRIMARY KEY, identity text )`,
+      );
+    }
+    // The LWT claim — losing to the journal on the same keyspace is the expected path.
+    await this.client.execute(
+      `INSERT INTO ${table} (singleton, identity) VALUES (?, ?) IF NOT EXISTS`,
+      [1, crypto.randomUUID()],
+      this.readOptions(),
+    );
+    const response = await this.client.execute(
+      `SELECT identity FROM ${table} WHERE singleton = ?`,
+      [1],
+      this.readOptions(),
+    );
+    const identity = (response.rows[0] as { identity?: unknown } | undefined)?.identity;
+    if (typeof identity !== 'string' || identity.length === 0) {
+      throw new JournalError('CassandraSnapshotStore.storageIdentity: identity row missing after insert');
+    }
+    this.cachedStorageIdentity = identity;
+    return identity;
+  }
+
+  private qualifiedStorageIdentityTable(): string {
+    // Same join `qualified()` performs for the snapshots table — including
+    // its behaviour for an unset keyspace — so the identity table always
+    // lands beside the data it identifies.
+    const keyspace = this.options.keyspace;
+    if (keyspace !== undefined) assertSafeIdentifier(keyspace, 'keyspace');
+    return `${keyspace}.${STORAGE_IDENTITY_TABLE}`;
+  }
+
   private readonly options: Partial<CassandraSnapshotStoreOptionsType>;
   private client: CassandraClientLike;
   private started = false;
@@ -84,11 +128,15 @@ export class CassandraSnapshotStore implements SnapshotStore {
         [persistenceId, seq, now, payload],
         this.readOptions(),
       );
-      if (this.keepN > 0) await this.pruneKeepN(persistenceId);
-      return { persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now };
     } catch (e) {
       throw new JournalError(`CassandraSnapshotStore.save failed: ${(e as Error).message}`, e);
     }
+    // Best-effort prune — outside the write's catch on purpose.  See the
+    // retention note on `SnapshotStore.save`.
+    if (this.keepN > 0) {
+      try { await this.pruneKeepN(persistenceId); } catch { /* swallow */ }
+    }
+    return { persistenceId: persistenceId, sequenceNr: seq, state, timestamp: now };
   }
 
   async loadLatest<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {

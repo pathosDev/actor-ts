@@ -145,6 +145,45 @@ keine S3-Kosten.  Richtig für:
 - **Kleine Single-Node-Deployments** — wenn du speziell das
   Object-Storage-Interface ohne S3 willst.
 
+Das Root-Verzeichnis ist die gesamte Welt dieses Backends.  Ein
+Key mit `..`, absolutem Präfix oder NUL-Byte wird direkt
+abgelehnt, und jede Operation kanonisiert zusätzlich den Pfad, den
+sie gleich anfasst — ein Symlink, der im Root liegt und aus ihm
+herauszeigt, wird also abgelehnt statt verfolgt.  Das Root *selbst*
+darf ein Symlink sein: jede Operation löst es auf und misst das
+Containment am Ergebnis, `/var/lib/app -> /mnt/data` funktioniert
+also normal.
+
+„Der Pfad, den sie gleich anfasst“ meint die Objektnamen: den Key
+selbst, die Verzeichnisse darüber und seinen `.meta.json`-Sidecar.
+Der Key und seine Eltern werden aus unterschiedlichen Gründen
+geprüft, und keine der beiden Prüfungen deckt die andere ab —
+`rename` folgt nie einem Link an der letzten Komponente, ein
+verlinktes *Elternverzeichnis* verschiebt also, wo ein Body
+landet, während `get` und das Compare-and-Swap von `put` den Key
+beide mit `readFile` öffnen, und das folgt sehr wohl einem Link.
+
+Drei Grenzen sollte man kennen, denn sonst nimmt man mehr an, als
+die Prüfung leistet.  Sie liest das Dateisystem und handelt
+danach, lehnt also einen bereits vorhandenen Link ab, kann aber
+das Rennen gegen einen nicht gewinnen, der genau dazwischen
+gelegt wird — portables `O_NOFOLLOW` ist über `node:fs` nicht
+erreichbar.  Sie schließt die *eigenen* Operationen des Backends
+ein; sie ist keine Sandbox um ein Verzeichnis, in das andere
+lokale Prozesse schreiben dürfen.  Wenn nicht vertrauenswürdige
+Nutzer Einträge im Storage-Root anlegen können, ist das bereits
+das größere Problem.
+
+Und sie deckt die Lock-Datei pro Key nicht ab.  Das Nehmen des
+Locks ist ein exklusives Create, das einen Link ablehnt statt ihm
+zu folgen — aber die Stale-Lock-Wiederherstellung, die nach
+Ablauf des Acquisition-Timeouts läuft, macht ein `stat` auf diesen
+Namen, und `stat` folgt sehr wohl einem Link.  Ein an `<key>.lock`
+platzierter Link lässt damit eine Datei außerhalb des Roots
+entscheiden, ob das Lock als verwaist gilt, und ein *toter* Link
+dort hält `put` und `delete` auf genau diesem Key im Retry, statt
+sie zurückkehren zu lassen.
+
 ### S3
 
 ```ts
@@ -194,6 +233,7 @@ new S3ObjectStorageBackend(s3ObjectStorage3Options);
 | Kompression (gzip / zstd) | [Kompression](/de/persistence/object-storage/compression/) |
 | Verschlüsselung at rest (AES-GCM) | [Verschlüsselung](/de/persistence/object-storage/encryption/) |
 | Body-Integrität (HMAC-SHA256) | [Body-Integrität](/de/persistence/object-storage/encryption/#body-integrität-hmac) |
+| Storage-Key-Bindung + Rollback-Schutz | [Einen Body an seinen Key binden](/de/persistence/object-storage/encryption/#einen-body-an-seinen-key-binden) |
 | Master-Key-Rotation | [Schlüsselrotation](/de/persistence/object-storage/key-rotation/) |
 | Per-Actor-Kompressions- / Verschlüsselungs-Policies | [Per-Actor-Policies](/de/persistence/object-storage/per-actor-policies/) |
 | Snapshot-Store-Backend | [Snapshot-Store-Backend](/de/persistence/object-storage/snapshot-store-backend/) |
@@ -209,6 +249,16 @@ Grobe Zahlen für S3:
 - **Delete**: 30-50 ms.
 
 Filesystem-Backend: Sub-Millisekunde.
+
+Ein LIST im Filesystem-Backend liest nur das Verzeichnis, das
+sein Prefix benennt — alles bis zum letzten `/` des Prefix —,
+kostet also den getroffenen Teilbaum und nicht das gesamte
+Storage-Root.  Genau das hält ein Prefix pro `persistenceId` wie
+`snapshots/<pid>/` im Sub-Millisekunden-Bereich, egal wie viele
+andere Entities sich das Root teilen.  Ein Prefix ohne `/`
+(`snapshots`) hat kein Verzeichnis, auf das es einschränken
+könnte, und läuft weiterhin über alles — bevorzuge daher Keys mit
+einem Verzeichnis-Segment pro Entity.
 
 Object Storage ist langsamer als SQLite / Cassandra für einzelne
 Operationen.  Kompensiere mit:

@@ -5,7 +5,7 @@ export type { ConfigSeedProviderOptionsType } from './ConfigSeedProviderOptions.
 export { DnsSeedProvider } from './DnsSeedProvider.js';
 export { DnsSeedProviderOptions, DnsSeedProviderOptionsBuilder, DnsSeedProviderOptionsValidator } from './DnsSeedProviderOptions.js';
 export type { DnsSeedProviderOptionsType } from './DnsSeedProviderOptions.js';
-export { AggregateSeedProvider } from './AggregateSeedProvider.js';
+export { AggregateSeedProvider, SeedDiscoveryError } from './AggregateSeedProvider.js';
 export { KubernetesApiSeedProvider } from './KubernetesApiSeedProvider.js';
 export { KubernetesApiSeedProviderOptions, KubernetesApiSeedProviderOptionsBuilder, KubernetesApiSeedProviderOptionsValidator } from './KubernetesApiSeedProviderOptions.js';
 export type { KubernetesApiSeedProviderOptionsType } from './KubernetesApiSeedProviderOptions.js';

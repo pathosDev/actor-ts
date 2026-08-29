@@ -28,6 +28,13 @@
  * source — {@link bucketize} is the helper for the common "known values
  * plus everything else" shape.
  *
+ * Series are also **removable** (#745).  A label tuple whose subject has
+ * gone — an entity that passivated, an actor that stopped — would
+ * otherwise outlive it for the life of the process, since the cap bounds
+ * how many series a family holds but never releases one.  `remove()` is
+ * how the instrument's owner says the tuple is finished; see its contract
+ * on {@link MetricsRegistry} for why that is a call and not a TTL.
+ *
  * Exposition format is decoupled — see {@link PrometheusExporter} for
  * the Prometheus 0.0.4 text format implementation.
  */
@@ -188,6 +195,12 @@ class HistogramImplementation implements Histogram {
  * than recomputing it) is what guarantees a family can only ever gain
  * *one* extra series no matter how many distinct tuples arrive after the
  * cap, and doubles as the one-shot flag for the warning.
+ *
+ * It is never unset, not even when {@link DefaultMetricsRegistry.remove}
+ * takes the family back under its cap.  The freed slot is genuinely
+ * reusable — the next tuple mints a real series again — but the overflow
+ * child stays, because it is the standing record that tuples were
+ * discarded and its counter still holds how many.
  */
 type CounterFamily = {
   readonly kind: 'counter';
@@ -238,8 +251,66 @@ export interface MetricsRegistry {
   /** Snapshot every series as a flat list of {@link MetricSample}s. */
   collect(): ReadonlyArray<MetricSample>;
 
+  /**
+   * Whether {@link MetricsRegistry.collect} is this registry's source of
+   * truth (#744).
+   *
+   * Optional, and **absent means `true`** — a registry that holds its own
+   * samples is collectable and says nothing, which is every implementation
+   * written before this flag existed, here and outside this repository.
+   * A registry sets it to `false` only when it forwards writes to a foreign
+   * collector and keeps no copy: its `collect()` is then empty because the
+   * values live somewhere this interface cannot reach, not because nothing
+   * has happened.
+   *
+   * The distinction has to be declared because an empty snapshot is
+   * otherwise indistinguishable from a quiet system, and rendering it as
+   * one is worse than an error: `exportPrometheus` turns it into a
+   * zero-byte 0.0.4 body, which is a *valid* empty scrape — the target
+   * stays `up=1` and every framework series simply stops existing, so
+   * threshold alerts over them never fire again.  Readers ask
+   * {@link isCollectable} and report the figures as unavailable instead.
+   */
+  readonly collectable?: boolean;
+
+  /**
+   * Drop one series, so a label tuple whose subject no longer exists stops
+   * being exported and stops occupying a slot under the cardinality cap
+   * (#745).  Returns whether a series was actually removed.
+   *
+   * **Caller-driven rather than a TTL, deliberately.**  The registry cannot
+   * know when a tuple is dead — a series that has not moved in an hour is
+   * either a finished entity or a counter for something rare, and those are
+   * indistinguishable from here.  The instrument's owner does know:
+   * {@link MailboxDepthSampler} walks the tree every tick and sees exactly
+   * which paths left it.  An age-based sweep would also need a clock and a
+   * timer in a primitive that has neither and has to stay allocation-cheap,
+   * and it would be wrong for counters specifically: a counter that ages
+   * out and is minted again reads as a reset that never happened.
+   *
+   * Removing a *counter's* series is therefore something to do only when
+   * the thing it counted is gone for good, not to reclaim cardinality — a
+   * scrape that straddles the removal sees the value fall to nothing and
+   * back, which is a real reset to every backend that reads it.  Gauges
+   * carry no such history and are the intended caller.
+   */
+  remove(name: string, labels?: Labels): boolean;
+
   /** Wipe the registry — primarily for tests. */
   clear(): void;
+}
+
+/**
+ * Can `registry.collect()` be believed?
+ *
+ * The default is deliberately optimistic — {@link MetricsRegistry.collectable}
+ * is optional precisely so that every registry predating the flag keeps
+ * meaning "yes" without being edited — so this reads as "not opted out"
+ * rather than "opted in".  A reader that inverted it would report a plain
+ * {@link DefaultMetricsRegistry} as unreadable.
+ */
+export function isCollectable(registry: MetricsRegistry): boolean {
+  return registry.collectable !== false;
 }
 
 /**
@@ -314,6 +385,19 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
       }
     }
     return out;
+  }
+
+  remove(name: string, labels: Labels = {}): boolean {
+    const family = this.families.get(name);
+    if (family === undefined) return false;
+    const key = labelKey(labels);
+    // The overflow child is the one series that is not evictable.  It is the
+    // record that this family discarded tuples, so deleting it would erase
+    // the evidence; and `overflowKey` doubles as the once-per-family flag
+    // for the warning, so a caller that removed it would re-arm a warning
+    // the operator has already been given.
+    if (key === family.overflowKey) return false;
+    return family.children.delete(key);
   }
 
   clear(): void {
@@ -405,7 +489,7 @@ function labelKey(labels: Labels): string {
 
 /**
  * Label **value** every dimension of an overflow series carries, e.g.
- * `actor_mailbox_dropped_total{path="__overflow__",reason="__overflow__"}`.
+ * `actor_mailbox_size{class="__overflow__",path="__overflow__"}`.
  *
  * A value, deliberately, not a label name: Prometheus reserves label
  * names beginning with `__` for its own use and drops them after
@@ -479,11 +563,21 @@ const NOOP_HIST: Histogram = {
  * Used as the default on `ActorSystem.metrics` so instrumentation
  * sprinkled through the codebase pays nothing when metrics aren't
  * enabled.
+ *
+ * The three accessors spell out {@link MetricsRegistry}'s parameters
+ * even though they discard every one of them.  Omitting them still
+ * satisfies `implements` — a function that ignores its arguments is
+ * assignable to one that takes them — but this class is exported, so a
+ * caller holding the concrete type rather than the interface got
+ * `Expected 0 arguments, but got 1` on the ordinary `counter('name')`
+ * call the interface documents (#540).
  */
 export class NoopMetricsRegistry implements MetricsRegistry {
-  counter(): Counter { return NOOP_COUNTER; }
-  gauge(): Gauge { return NOOP_GAUGE; }
-  histogram(): Histogram { return NOOP_HIST; }
+  counter(_name: string, _labels?: Labels, _options?: CounterOptions): Counter { return NOOP_COUNTER; }
+  gauge(_name: string, _labels?: Labels, _options?: GaugeOptions): Gauge { return NOOP_GAUGE; }
+  histogram(_name: string, _labels?: Labels, _options?: HistogramOptions): Histogram { return NOOP_HIST; }
   collect(): ReadonlyArray<MetricSample> { return []; }
+  /** Always `false` — nothing was minted here, so nothing can be removed. */
+  remove(_name: string, _labels?: Labels): boolean { return false; }
   clear(): void {}
 }

@@ -17,7 +17,6 @@ import {
   ShardedDaemonProcess,
   ShardedDaemonProcessOptions,
 } from '../../src/cluster/index.js';
-import { attachDevTools } from '../devtools.js';
 
 class Worker extends Actor<string> {
   constructor(private readonly index: number) { super(); }
@@ -37,19 +36,22 @@ async function main(): Promise<void> {
       .withTransport(new InMemoryTransport(new NodeAddress('daemon-hello', 'local', 1)))
       .withReceptionist(false)
       .withShutdownOnSignals(false));
-  await attachDevTools(system);
 
   const handle = ShardedDaemonProcess.init<string>(system, cluster,
     ShardedDaemonProcessOptions.create<string>()
       .withName('workers')
       .withNumDaemons(6)
       .withActorFor((i) => () => new Worker(i)));
+  // Not a drain sleep: waits for the coordinator to place the six daemons.
   await Bun.sleep(100);
 
   handle.tell(0, 'job-A');
   handle.tell(3, 'job-B');
   handle.tell(5, 'job-C');
 
+  // Not a drain sleep either.  A sharded tell goes shard region → entity, and
+  // both of those live under `/system`, which terminate() deliberately does
+  // not drain — so there is nothing here for the drain to have waited on.
   await Bun.sleep(80);
   await shutdown();
 }

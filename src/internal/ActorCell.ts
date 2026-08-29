@@ -15,9 +15,15 @@ import type { Cluster } from '../cluster/Cluster.js';
 import type { EntityContext } from '../EntityContext.js';
 import { LogContext } from '../LogContext.js';
 import type { Logger } from '../Logger.js';
+import {
+  DISPATCHER_QUEUE_DELAY_BUCKETS_SECONDS,
+  MAILBOX_DEPTH_BUCKETS_MESSAGES,
+  MAILBOX_WAIT_BUCKETS_SECONDS,
+} from '../metrics/Constants.js';
+import type { MetricsRegistry } from '../metrics/Metrics.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
-import { tracerOf } from '../tracing/TracingExtension.js';
-import type { Span } from '../tracing/Tracer.js';
+import { NOOP_TRACER } from '../tracing/NoopTracer.js';
+import type { Span, Tracer } from '../tracing/Tracer.js';
 import type { ActorClassOrFactory } from '../Actor.js';
 import type { ActorOptions } from '../ActorOptions.js';
 import { actorBlueprintOf, type ActorBlueprint } from './ActorBlueprint.js';
@@ -35,6 +41,8 @@ import {
   ActorStarted,
   ActorStopped,
   DeadLetter,
+  frameworkTerminated,
+  isFrameworkTerminated,
   Kill,
   PoisonPill,
   ReceiveTimeout,
@@ -92,7 +100,20 @@ function watchKeyOf(ref: ActorRef): string {
 export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   readonly self: LocalActorRef<TMessage>;
   readonly path: ActorPath;
-  readonly log: Logger;
+  /**
+   * Built on first use rather than at spawn.  Constructing it eagerly cost a
+   * `DisplayNameLogger`, a closure and — through `withSource` — a full render
+   * of the actor's path, for every actor including the ones that never log a
+   * line.  The render is memoized on the path, so deferring it means an actor
+   * that never logs never pays for it at all.
+   */
+  private _log: Logger | null = null;
+  get log(): Logger {
+    return this._log ??= new DisplayNameLogger(
+      this.system.log.withSource(this.path.toString()),
+      () => this._customDisplayName() ?? '',
+    );
+  }
 
   private readonly mailbox: Mailbox<TMessage>;
   /**
@@ -101,6 +122,34 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * {@link MAILBOX_HIGH_WATER_MARK}.
    */
   private _mailboxWarnAt = MAILBOX_HIGH_WATER_MARK;
+  /**
+   * Drops counted before this cell had an actor instance, tallied by reason
+   * and flushed once the class name is known (#745).
+   *
+   * `null` rather than an always-present `Map`, because the window it covers
+   * is a few hundred microseconds at the start of one cell's life and the
+   * overwhelming majority of cells never drop a message in it — allocating a
+   * `Map` per spawn to hold nothing would be a real cost on the spawn path
+   * for a case that is close to never.
+   */
+  private _deferredMailboxDrops: Map<MailboxDropReason, number> | null = null;
+  /**
+   * True once `onCreate` has run to one of its two ends.  After that a null
+   * `actor` is not "the name is still coming" but "there will not be one",
+   * so a drop is counted immediately rather than held for a flush that will
+   * never happen.
+   */
+  private _actorCreationSettled = false;
+  /**
+   * Does this actor's mailbox want its drops dead-lettered (#773)?
+   *
+   * Copied out of the mailbox in {@link _createMailbox} rather than read
+   * through it on every drop, and `false` for the two shapes that cannot ask:
+   * a mailbox that does not report drops at all, and one built by
+   * `withMailboxCapacity`, which has no door onto the switch — that door is
+   * `withMailbox(() => new BoundedMailbox({ …, deadLetterDrops: true }))`.
+   */
+  private _deadLetterMailboxDrops = false;
   private actor: Actor<TMessage> | null = null;
   private _parent: ActorCell<unknown> | null;
   private _children = new Map<string, ActorCell<any>>();
@@ -127,7 +176,11 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    */
   private _watchWithMessages = new Map<string, TMessage>();
 
-  private _failureTimes: number[] = [];
+  /**
+   * Restart timestamps for the supervision window, `null` until the first
+   * failure — which for most actors is never.
+   */
+  private _failureTimes: number[] | null = null;
 
   private _receiveTimeoutMs = 0;
   private _receiveTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -183,7 +236,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   private _displayNameFailed = false;
 
   /** Per-actor timer scheduler. */
-  readonly timers: TimerScheduler<TMessage> = new CellTimerScheduler<TMessage>(this);
+  /**
+   * Lazily constructed: the scheduler allocates a `Map` of its own, and the
+   * overwhelming majority of actors never set a timer.  Two of the three
+   * readers only ever cancel, so they ask the field rather than the getter and
+   * skip building a scheduler in order to tell it there is nothing to cancel.
+   */
+  private _timers: CellTimerScheduler<TMessage> | null = null;
+  get timers(): TimerScheduler<TMessage> {
+    return this._timers ??= new CellTimerScheduler<TMessage>(this);
+  }
 
   /**
    * @internal Child names to stop one after another instead of all at once,
@@ -200,6 +262,17 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /** Cursor into {@link _terminationOrder} while terminating. */
   private _terminationGroupIndex = 0;
 
+  /**
+   * User messages {@link run} handles per dispatcher turn (#409).
+   *
+   * Resolved once, in the constructor, rather than read per turn: the two
+   * layers behind it — the spawn options and the system's HOCON-resolved
+   * default — are both fixed for the cell's lifetime, and this is read on the
+   * hot path.  The blueprint outlives every restart, so a per-actor budget
+   * survives one for free.
+   */
+  private readonly throughput: number;
+
   constructor(
     readonly system: ActorSystem,
     readonly blueprint: ActorBlueprint<TMessage>,
@@ -210,18 +283,13 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this._internal = blueprint.internal === true || parent?._internal === true;
     this._entity = blueprint.entity ?? null;
     this._displayNameOverride = blueprint.displayName ?? null;
+    this.throughput = Math.max(1, blueprint.throughput ?? system._actorThroughput);
     const uid = parent ? parent._nextChildUid() : 0;
     this.path = parent
       ? parent.path.child(name, uid)
       : new ActorPath(name, null, system.name, uid);
     this.mailbox = this._createMailbox(blueprint);
     this.self = new LocalActorRef<TMessage>(this);
-    // Resolved per record rather than bound here: the user's Actor does not
-    // exist yet, and once it does its name may change (state, restart).
-    this.log = new DisplayNameLogger(
-      system.log.withSource(this.path.toString()),
-      () => this._customDisplayName() ?? '',
-    );
     this.enqueueSystem({ kind: 'create' });
   }
 
@@ -391,6 +459,30 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * Only code that lives inside the framework may look.
    */
   get mailboxSize(): number { return this.mailbox.size; }
+
+  /**
+   * @internal Has this cell run out of work it could still make progress on?
+   *
+   * The per-cell half of `ActorSystem.awaitQuiescence`, which is how a
+   * draining `terminate()` decides that the application is finished (#663).
+   *
+   * Two terms, and the second one is the interesting one.  `processing` covers
+   * the turn that is already in flight — it is set synchronously by
+   * {@link schedule}, at `tell` time, so there is no window in which a message
+   * has been handed over but neither sender nor receiver looks busy; that is
+   * what makes the drain transitive across a ping-pong without any extra
+   * bookkeeping.  {@link hasDispatchableWork} then answers for the queue, and
+   * reusing it rather than asking `mailbox.hasUserMessages()` is deliberate:
+   * it already encodes the two ways a queue can be *parked* rather than
+   * pending.  A throttle-paused actor (#83) reports only its system queue, and
+   * a suspended mailbox hides its user queue.  Neither will drain on its own
+   * within any budget worth waiting for — a `qps: 10` bucket means shutdown
+   * would run at ten messages a second — so the drain treats both as done and
+   * lets the ordinary teardown dead-letter what is left.
+   */
+  _isQuiescent(): boolean {
+    return !this.processing && !this.hasDispatchableWork();
+  }
 
   /**
    * @internal Describe this cell for introspection tooling.
@@ -615,11 +707,87 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this._stashBuffer = [];
     // Prepend so stashed messages come out before anything currently queued,
     // preserving the original stash order.
-    this.mailbox.prependUser(drained);
+    //
+    // Marked as replayed on the way back in.  The stamp stays untouched — the
+    // explain plan wants the whole arrival-to-handling span — but
+    // `actor_mailbox_wait_seconds` has to be able to tell this population
+    // apart, because that span includes stash residency the actor chose and
+    // the aggregate has no outcome column to explain it with (see
+    // `Envelope.replayed`).  Copying here rather than at `stash()` keeps the
+    // marker at the moment it becomes true; either way it is a cold batch
+    // path, not the per-message one.
+    try {
+      this.mailbox.prependUser(drained.map((env) => ({ ...env, replayed: true })));
+    } catch (cause) {
+      // A bounded mailbox may now refuse the replay — `reject` throws
+      // `MailboxFullError` rather than admitting a batch that does not fit,
+      // and it refuses the batch whole (#772).  So every envelope is still
+      // the stash's to account for, and the buffer goes back before the error
+      // travels on: the local would otherwise go out of scope with the throw
+      // and `reject`, the policy chosen precisely so nothing is lost
+      // silently, would be the one losing a whole stash.  Restored unmarked,
+      // because none of them re-entered the queue.
+      //
+      // What happens next is ordinary supervision — the throw surfaces inside
+      // the handler that called `unstashAll()` — and `deadLetterStash` covers
+      // the restart and stop paths from there.
+      this._stashBuffer = drained;
+      throw cause;
+    }
     this.schedule();
   }
 
   get stashSize(): number { return this._stashBuffer.length; }
+
+  /**
+   * @internal The replay half of {@link unstashAll}, without the buffer half.
+   *
+   * The typed DSL's `Behaviors.withStash` cannot use `_stashBuffer`: its
+   * capacity is declared per behavior where the cell's is one compiled-in
+   * default for the whole actor, and `StashBuffer.stash(message)` parks an
+   * arbitrary value where {@link stash} can only park the envelope currently
+   * being handled.  So it keeps its own buffer — but the *replay* has to be
+   * this one, or a stashed message loses its place to every message that
+   * arrived after it was parked (#639).
+   *
+   * A terminated cell dead-letters instead of queueing, exactly as
+   * {@link postUserMessage} does: prepending into a mailbox nobody will drain
+   * again is a silent drop.
+   *
+   * The envelopes carry no sender — the typed buffer holds bare messages, so
+   * there is none to carry — and no `enqueuedAtMs`, which matches
+   * {@link unstashAll}: a replayed message is not re-stamped, so an explain
+   * plan reports its mailbox wait as unknown rather than as a fresh arrival.
+   *
+   * A bounded mailbox may refuse the batch (#772), and this path answers that
+   * differently from {@link unstashAll} because it owns nothing: the typed
+   * `StashBuffer` has already emptied itself by the time it calls here, and
+   * the cell cannot put messages back into a buffer that is not its own.
+   * Dead-lettering them is what is left, and it is what this method already
+   * does for a terminated cell — the caller still learns from the throw, and
+   * the messages are visible instead of gone.
+   */
+  prependUserMessages(messages: ReadonlyArray<TMessage>): void {
+    if (messages.length === 0) return;
+    if (this.state === 'terminated') {
+      this.deadLetterMessages(messages);
+      return;
+    }
+    try {
+      this.mailbox.prependUser(messages.map((message) => ({ message, sender: null })));
+    } catch (cause) {
+      this.deadLetterMessages(messages);
+      throw cause;
+    }
+    this.schedule();
+  }
+
+  /** Every message to dead letters, from this actor, with no sender to name. */
+  private deadLetterMessages(messages: ReadonlyArray<TMessage>): void {
+    for (const message of messages) {
+      this.system.deadLetters.tell(new DeadLetter(message, null, this.self));
+    }
+  }
 
   /**
    * Send whatever the stash still holds to dead letters.
@@ -690,10 +858,22 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       return true;
     }
     // 'pause' mode — put the message back at the head of the mailbox
-    // and schedule a resume tick when tokens are due.  No new run()
-    // is dispatched until the timer fires (or someone else schedules
-    // us, which is fine: tryConsume will fail again, message goes
-    // back, timer re-arms idempotently).
+    // and schedule a resume tick when tokens are due.  While the timer
+    // is armed `hasDispatchableWork` reports the user queue as parked,
+    // so no turn is dispatched for it until the timer clears the handle
+    // (#1167).  System commands still get their turn; one of those will
+    // re-dequeue and re-park this message, which is why the prepend
+    // above and the already-armed check below both have to be idempotent.
+    //
+    // This is a re-park, not an arrival, and a bounded mailbox costs it
+    // nothing even though `prependUser` now consults the bound (#772): the
+    // envelope came out of this very queue a few statements ago and nothing
+    // ran in between, so the queue is one below wherever it was and the
+    // capacity check has room by construction.  The one state where it does
+    // not is a queue already over its ceiling — only `enqueueSignal` puts it
+    // there — and a bound that then sheds one message, or refuses under
+    // `reject`, is doing its job rather than inventing a drop here.  A refusal
+    // arrives as a dispatcher error, which `runReported` already answers for.
     this.mailbox.prependUser([env]);
     if (this._throttleResumeTimer) return true; // already armed
     const waitMs = Math.max(1, this._throttleBucket.timeUntilNext(1));
@@ -711,6 +891,16 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /* ============================== Internal API ============================== */
 
   /** @internal */ isTerminated(): boolean { return this.state === 'terminated'; }
+  /**
+   * @internal — terminated, or on the way there.
+   *
+   * The distinction from {@link isTerminated} is the whole point: a cell that
+   * has accepted its `PoisonPill` but has not finished stopping still enqueues
+   * what it is handed, and then dead-letters it from the termination drain.  So
+   * "will this actor still do work?" is answered by this predicate, not by that
+   * one — anything routing or balancing on liveness wants this.
+   */
+  isStopping(): boolean { return this.state === 'terminated' || this.state === 'terminating'; }
   /** @internal */ _nextChildUid(): number { return ++this._childUidCounter; }
 
   /**
@@ -730,13 +920,47 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * an options family — a structural change to the framework's most
    * fundamental primitive, made in passing.  The cell already owns a logger,
    * a path and the enqueue funnel, so it is the cheaper place by every
-   * measure.
+   * measure.  Being the one door is also what makes it the right home for
+   * the arrival stamp, for the reasons the body gives.
    *
-   * Cost is one field read, one getter and one compare — less than the
-   * `BoundedMailbox.enqueue` bound check that used to run here by default.
+   * Cost on the uninstrumented path is two field reads, one getter and two
+   * compares — still less than the `BoundedMailbox.enqueue` bound check that
+   * used to run here by default.
+   *
+   * `exemptFromBound` picks the mailbox door: `enqueueSignal` instead of
+   * `enqueue`, for the one envelope class no load-shedding policy may discard
+   * (see {@link Envelope.undroppable}).  A parameter rather than a second seam
+   * so the stamp, the backlog warning and the `schedule()` still cannot be
+   * forgotten for it — those apply to a `Terminated` exactly as they do to
+   * anything else.
    */
-  private _enqueueUser(env: Envelope<TMessage>): void {
-    this.mailbox.enqueue(env);
+  private _enqueueUser(env: Envelope<TMessage>, exemptFromBound: boolean = false): void {
+    // Attach the arrival stamp here rather than at the two `post*` doors, so
+    // there is exactly one answer to "when did this message arrive" — and so
+    // the replay paths keep getting it right by construction: `unstashAll`
+    // and `prependUserMessages` reach the queue through `mailbox.prependUser`
+    // and never pass this way, which is what lets a replayed message keep
+    // (or lack) the stamp it already has.
+    //
+    // Gated on a reader existing rather than unconditional, and the gate is
+    // written so the uninstrumented path touches as little as possible: two
+    // loads that both fail, and no clock read, no copy.  #411 measured
+    // exactly these off the receive path for systems that instrument
+    // nothing, which is the default, and an unconditional `Date.now()` here
+    // cost ~7 % of ask throughput when it was tried.  The `enqueuedAtMs`
+    // check sits *inside* the gate rather than in front of it for the same
+    // reason — it only matters once something is reading stamps.
+    //
+    // A message already queued when metrics are switched on keeps its
+    // missing stamp and is simply left out of the histogram: the same
+    // transient the explain plan has always had, self-correcting within one
+    // drain, and honest where inventing a wait would not be.
+    let stamped = env;
+    if (this._explain !== null || this.system._metricsRegistry !== null) {
+      if (env.enqueuedAtMs === undefined) stamped = { ...env, enqueuedAtMs: Date.now() };
+    }
+    if (exemptFromBound) this.mailbox.enqueueSignal(stamped);
+    else this.mailbox.enqueue(stamped);
     if (this.mailbox.size >= this._mailboxWarnAt) this._onMailboxHighWaterMark();
     this.schedule();
   }
@@ -747,9 +971,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.system.deadLetters.tell(new DeadLetter(message, sender, this.self));
       return;
     }
-    this._enqueueUser(this._explain === null
-      ? { message, sender }
-      : { message, sender, enqueuedAtMs: Date.now() });
+    this._enqueueUser({ message, sender });
   }
 
   /**
@@ -763,9 +985,35 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
       return;
     }
-    this._enqueueUser(this._explain === null || env.enqueuedAtMs !== undefined
-      ? env
-      : { ...env, enqueuedAtMs: Date.now() });
+    this._enqueueUser(env);
+  }
+
+  /**
+   * @internal — the door a framework lifecycle notification comes through, as
+   * opposed to the `postUserEnvelope` every `tell` uses.
+   *
+   * Same lane, same position: the envelope lands at the tail of the user queue
+   * and reaches `onReceive` like any other message, which is what keeps the
+   * ordering death-watch documents — everything told to this actor before the
+   * watched one died is handled first, then the notification.  What differs is
+   * that no bound may discard it (#729); see {@link Envelope.undroppable}.
+   *
+   * The marker is stamped here rather than by the caller so there is one
+   * answer to "which envelopes are exempt", and so a future notification
+   * cannot be added that takes the exempt door without the marker the eviction
+   * side reads.
+   *
+   * A terminated recipient still dead-letters, exactly as `postUserEnvelope`
+   * does.  That is the honest outcome — there is no actor left to tell — and it
+   * is observable, which is the whole difference from the eviction this
+   * replaces.
+   */
+  postSignalEnvelope(env: Envelope<TMessage>): void {
+    if (this.state === 'terminated') {
+      this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
+      return;
+    }
+    this._enqueueUser({ ...env, undroppable: true }, true);
   }
 
   /** @internal */
@@ -777,7 +1025,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /** @internal */
   _addWatcher(watcher: ActorRef): void {
     if (this.state === 'terminated') {
-      watcher.tell(new Terminated(this.self) as never);
+      this._notifyWatcher(watcher, frameworkTerminated(this.self));
       return;
     }
     this._watchers.add(watcher);
@@ -788,18 +1036,159 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this._watchers.delete(watcher);
   }
 
+  /**
+   * Hand one watcher its death notification, and let nothing about that
+   * watcher's queue affect this actor's teardown.
+   *
+   * Two things happen here that a plain `watcher.tell(...)` did not do (#729).
+   *
+   * A **local** watcher is reached through {@link postSignalEnvelope} rather
+   * than through `tell`, so the notification is exempt from that watcher's
+   * mailbox bound.  It went through `LocalActorRef.tell` before, which is the
+   * ordinary user funnel, so a bounded watcher's overflow policy decided the
+   * fate of a message the framework had promised to deliver and would never
+   * send again.  Anything else ref-shaped — a remote ref, or the mailbox-less
+   * `TerminationWatcher` that `gracefulStop` registers — keeps its plain
+   * `tell`, because there is no cell and no queue to be exempt from.
+   *
+   * And the send is **guarded**, because `tell` into an arbitrary ref can
+   * throw: the `reject` overflow policy raised `MailboxFullError` on this
+   * stack, and a remote transport or a caller's own `Mailbox` subclass may
+   * raise anything at all.  Unguarded, that escaped `finalizeTermination`
+   * mid-loop and skipped everything after it — the remaining watchers, the
+   * `_watchers.clear()`, the `_removeWatcher` sweep and, worst, the parent's
+   * `childTerminated`, so the parent kept a dead child forever and any
+   * teardown waiting on `_children.size === 0` never fired.  One watcher's
+   * full mailbox could hang `terminate()` for the whole system.  A refusal now
+   * costs that watcher its notification — as a **dead letter**, not silence —
+   * and costs the teardown nothing.
+   */
+  private _notifyWatcher(watcher: ActorRef, terminated: Terminated): void {
+    try {
+      if (watcher instanceof LocalActorRef) {
+        watcher.getCell().postSignalEnvelope({ message: terminated, sender: null });
+        return;
+      }
+      watcher.tell(terminated as never);
+    } catch (e) {
+      this.log.error(`watcher ${watcher.path} refused Terminated — dead-lettering it`, e);
+      this.system.deadLetters.tell(new DeadLetter(terminated, this.self, watcher));
+    }
+  }
+
   /* ============================ Message processing ========================== */
 
+  /**
+   * Arm one turn on whichever dispatcher owns this cell.
+   *
+   * The instrumented branch exists to measure **dispatcher scheduling
+   * delay** — how long a turn waited between being handed to a dispatcher and
+   * actually starting.  That is the honest, portable stand-in for the
+   * `dispatcher_saturation_ratio` #196 asked for: a busy/idle ratio has no
+   * primitive here that works on all three supported runtimes
+   * (`performance.eventLoopUtilization` is absent on Bun, real on Node and a
+   * hard-zero stub on Deno), and even where it is real it covers the whole
+   * libuv loop, so it could never carry the per-`dispatcher` label the metric
+   * was specified with.  Delay needs no primitive beyond a clock, so it is the
+   * same measurement everywhere; see
+   * {@link DISPATCHER_QUEUE_DELAY_BUCKETS_SECONDS}.
+   *
+   * **This is the only layer that can take the measurement.**  A `Dispatcher`
+   * is a two-member interface a third party implements (`id`, `execute`) with
+   * no system, no logger and no registry behind it, and adding a required
+   * member to reach one would be a breaking change to a public extension
+   * point.  Measuring here instead covers every dispatcher — the three
+   * built-ins, a per-actor `ActorOptions.withDispatcher(…)`, and a
+   * third-party implementation the framework has never seen — for one clock
+   * read and no API change at all.
+   *
+   * Split into two branches rather than one closure with a conditional inside,
+   * for the reason #411 established: the uninstrumented path keeps exactly the
+   * closure it had, with no captured clock read and nothing extra to allocate.
+   * The gate is evaluated at arming time, so a turn armed just before
+   * `enable()` is left out rather than observed against a registry that did not
+   * exist when its clock was read — the same rule the arrival stamp follows.
+   *
+   * `performance.now()` rather than `Date.now()`, unlike
+   * `actor_mailbox_wait_seconds`: it is monotonic, so no NTP step can put a
+   * negative sample into the sum, and it resolves to 100 ns on all three
+   * runtimes where `Date.now()` resolves to 1 ms — four decades coarser than
+   * the ~1-5 µs an unloaded hand-off takes, which would have reported every
+   * healthy dispatcher as exactly zero.
+   */
   private schedule(): void {
     if (this.processing || this.state === 'terminated') return;
-    if (!this.mailbox.hasMessages()) return;
+    if (!this.hasDispatchableWork()) return;
     this.processing = true;
     const dispatcher = this.blueprint.dispatcher ?? this.system.dispatcher;
-    dispatcher.execute(() => this.runReported(dispatcher.id));
+    const metrics = this.system._metricsRegistry;
+    if (metrics === null) {
+      dispatcher.execute(() => this.runReported(dispatcher.id));
+      return;
+    }
+    const requestedAt = performance.now();
+    dispatcher.execute(() => {
+      this._observeQueueDelay(metrics, dispatcher.id, requestedAt);
+      return this.runReported(dispatcher.id);
+    });
   }
 
   /**
-   * `run()` with its failures attributed.
+   * Record what {@link schedule} armed and this turn finally collected.
+   *
+   * The `dispatcher` label is safe under the stock-label policy #658 set —
+   * a label's values must be bounded by what the *deployment* declares, never
+   * by traffic or by a remote party.  `Dispatcher.id` is a string in the
+   * caller's own source: the three built-ins contribute one value each however
+   * many instances exist, and a custom one is as wide as the code that names
+   * it.  Nothing an entity id or a peer can reach ever appears here, which is
+   * why this family needs neither a reporting floor nor a `bucketize` where
+   * `actor_mailbox_size` needs the former (#745).  The registry's per-family
+   * cap stays the backstop for a deployment that mints an id per actor anyway.
+   */
+  private _observeQueueDelay(
+    metrics: MetricsRegistry, dispatcherId: string, requestedAt: number,
+  ): void {
+    metrics.histogram(
+      'actor_dispatcher_queue_delay_seconds', { dispatcher: dispatcherId },
+      {
+        help: 'Time an actor turn waited between being handed to a dispatcher and starting, seconds.',
+        buckets: DISPATCHER_QUEUE_DELAY_BUCKETS_SECONDS,
+      },
+    ).observe((performance.now() - requestedAt) / 1000);
+  }
+
+  /**
+   * Is there work a turn could actually make progress on?
+   *
+   * Plain `mailbox.hasMessages()` everywhere is what made `throttle('pause')`
+   * spin (#1167).  A parked message is still *in* the mailbox, so every exit
+   * path saw work, dispatched a turn, failed `tryConsume`, put the message
+   * back and came straight round again — at full dispatcher frequency for the
+   * whole wait window.  On the default `setImmediate` dispatcher that burns a
+   * core but still resolves, because macrotask timers interleave; on
+   * `MicrotaskDispatcher` it is a hard livelock, since the microtask queue
+   * never drains and the timer phase is therefore never reached, so the
+   * resume timer never fires at all.
+   *
+   * The armed resume timer *is* the paused flag — a separate boolean could
+   * only drift out of step with it.  While it is armed the user queue is
+   * deliberately parked and nothing there can make progress until the timer
+   * clears it.
+   *
+   * System commands are never throttled, so they still earn a turn: without
+   * this second half a throttled actor could not be stopped, suspended or
+   * supervised until its pause elapsed, which would trade the spin for an
+   * unresponsive lifecycle.
+   */
+  private hasDispatchableWork(): boolean {
+    if (this._throttleResumeTimer) return this.mailbox.hasSystemMessages();
+    return this.mailbox.hasMessages();
+  }
+
+  /**
+   * `run()` with its failures attributed, and with the MDC of whoever armed
+   * this turn left outside it.
    *
    * The catch belongs here rather than in the dispatcher for two reasons.
    * It is the only layer that knows *whose* turn failed, so the report can
@@ -815,64 +1204,162 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * `.catch` rather than an `async` wrapper with a `try`, because this runs
    * once per message: `run()` is already `async` and so cannot throw
    * synchronously, and attaching a handler costs one derived promise where
-   * a second async frame would cost that plus its state machine.
+   * a second async frame would cost that plus its state machine.  It sits
+   * *inside* the `runFresh` so a report about a failed turn is logged under
+   * the same cleared context the turn itself ran under.
+   *
+   * **The `runFresh` is the fix for #718, and the turn is the right grain
+   * for it.**  A turn is armed by `schedule()`, i.e. from inside whichever
+   * async resource enqueued the message — and every dispatcher hands that
+   * callback to `queueMicrotask` / `setImmediate` / `setTimeout`, all of
+   * which propagate the arming `AsyncLocalStorage` store.  So without this,
+   * everything a turn does that does *not* carry its own context inherits
+   * the MDC of whatever happened to wake the cell: a `ReceiveTimeout`
+   * delivery, `preStart` / `postStop`, and — because up to
+   * {@link throughput} envelopes share one turn — any plain `tell` issued
+   * from a context-free scope that lands in the same batch as one carrying a
+   * correlation id.  `LocalActorRef.tell` then re-stamps that inherited
+   * context onto every envelope such a handler sends, so the wrong tenant's
+   * identifiers travel *forward* rather than merely appearing in one log
+   * line.  It compounds too: `run()`'s `finally` re-schedules from inside
+   * the already-poisoned store, so a continuously busy actor keeps the last
+   * correlation id it saw for as long as it stays busy.
+   *
+   * Per turn rather than per message on purpose.  Clearing at the delivery
+   * site instead would cost one closure plus one `AsyncLocalStorage` frame
+   * for *every* context-less message — precisely the allocation #411 took
+   * off that path — where this pays one of each per turn, amortised over the
+   * whole batch, and covers the system-command drain and third-party
+   * dispatchers for free.  An envelope that *does* carry a context still
+   * nests its own `LogContext.run` inside, so propagation is unchanged.
+   *
+   * A process with no MDC anywhere pays neither: `runFresh` returns the
+   * callback's value without opening a store when there is nothing ambient
+   * to shadow, which matters more than the `run` call itself — an active
+   * store is propagated to every async resource created under it, so wrapping
+   * a turn unconditionally taxed all {@link throughput} `await`s inside it and
+   * measured 3-8 % of tell throughput.  See {@link LogContext.runFresh}.
    */
   private runReported(dispatcherId: string): Promise<void> {
-    return this.run().catch(
+    return LogContext.runFresh(() => this.run().catch(
       (error: unknown) => this.system._reportDispatcherError(error, dispatcherId, this.self),
-    );
+    ));
   }
 
+  /**
+   * One dispatcher turn: up to {@link throughput} user messages, with the
+   * system queue drained before each of them.
+   *
+   * The batch is what makes the budget mean anything (#409).  A cell may have
+   * at most one unit queued on a dispatcher at a time — {@link schedule}
+   * returns early while `processing` is set, and `processing` is cleared from
+   * this method's `finally`, a microtask after the synchronous drain loop that
+   * would have picked the cell up again has already found its queue empty.  So
+   * before batching, every message cost a full scheduling round trip no matter
+   * what any dispatcher's throughput was set to, and a *per-actor*
+   * `ThroughputDispatcher` — the shape the tuning docs recommended — was the
+   * one configuration where the batch was provably always exactly 1.
+   *
+   * Every loop condition below is a way the actor's situation can change
+   * underneath a batch, and each one ends it rather than skipping an entry:
+   *
+   * - **system commands first, every iteration.**  They can suspend, restart
+   *   or stop the actor, so re-draining between user messages is what keeps a
+   *   long batch as responsive to lifecycle as an unbatched turn was.
+   * - **`state !== 'running'`** covers a `PoisonPill` handled mid-batch, and
+   *   `failToParent` flipping running -> suspended from inside a handler that
+   *   threw.  Continuing would deliver messages to an actor its supervisor is
+   *   still deciding about.
+   * - **no envelope** means stop, not skip: `dequeueUser` also returns
+   *   `undefined` for a *suspended* mailbox, which is full but parked.
+   * - **an empty throttle bucket** breaks rather than continues, because
+   *   `handleThrottleExcess` puts the envelope back at the head and arms the
+   *   resume timer; looping would re-dequeue the message it just parked and
+   *   spin the rest of the budget against a bucket that cannot refill until a
+   *   later tick (#1167).
+   */
   private async run(): Promise<void> {
     try {
-      // System messages always come first, and they can change the state.
-      while (this.mailbox.hasSystemMessages()) {
-        const env = this.mailbox.dequeueSystem()!;
-        await this.handleSystemCommand(env.message as SystemCommand);
-        if (this.state === 'terminated') return;
-      }
-
-      if (this.state === 'running') {
-        const env = this.mailbox.dequeueUser();
-        if (env) {
-          // Throttle gate (#83) — applies only to user messages, never
-          // to system commands (those ran above and must stay
-          // responsive for lifecycle / supervision / Terminated).
-          if (this._throttleBucket && !this._throttleBucket.tryConsume(1)) {
-            const handled = this.handleThrottleExcess(env);
-            // 'pause' returns the message to the head of the mailbox
-            // and reschedules; 'drop' silently consumes it.  Either
-            // way we don't run the user handler this turn.
-            if (!handled) {
-              // Defensive: 'drop' returned but we still want to
-              // re-schedule if there's more queued.
-              return;
-            }
-          } else {
-            await this.handleUserMessage(env);
-          }
+      for (let handled = 0; handled < this.throughput; handled++) {
+        // System messages always come first, and they can change the state.
+        while (this.mailbox.hasSystemMessages()) {
+          const systemEnvelope = this.mailbox.dequeueSystem()!;
+          const handledSystem = this.handleSystemCommand(systemEnvelope.message as SystemCommand);
+          if (handledSystem !== undefined) await handledSystem;
+          if (this.state === 'terminated') return;
         }
+
+        if (this.state !== 'running') break;
+        const env = this.mailbox.dequeueUser();
+        if (env === undefined) break;
+
+        // Throttle gate (#83) — applies only to user messages, never
+        // to system commands (those ran above and must stay
+        // responsive for lifecycle / supervision).
+        //
+        // Nor to a lifecycle notification, which rides the user lane but is
+        // not user traffic: `onExcess: 'drop'` consumed a `Terminated`
+        // outright, so a rate limit meant to shed load blinded the watcher
+        // instead — the same #729 loss one layer up from the mailbox, and the
+        // opposite of what `ActorContext.throttle` documents.  It consumes no
+        // token either: a notification the framework sends once is not part of
+        // the budget it is metering.
+        if (this._throttleBucket && env.undroppable !== true && !this._throttleBucket.tryConsume(1)) {
+          // 'pause' returns the message to the head of the mailbox and arms a
+          // resume timer; 'drop' silently consumes it.  Either way this turn
+          // runs no user handler and the batch is over.
+          this.handleThrottleExcess(env);
+          break;
+        }
+        // Await only what actually suspended.  A handler that returns nothing
+        // returns nothing all the way up, and the batch moves to the next
+        // message without a microtask in between.
+        const handled = this.handleUserMessage(env);
+        if (handled !== undefined) await handled;
       }
     } finally {
       this.processing = false;
-      if (this.state !== 'terminated' && this.mailbox.hasMessages()) {
+      if (this.state !== 'terminated' && this.hasDispatchableWork()) {
         this.schedule();
       }
     }
   }
 
-  private async handleSystemCommand(command: SystemCommand): Promise<void> {
-    await match(command)
-      .with({ kind: 'create' }, () => this.onCreate())
-      .with({ kind: 'terminate' }, () => this.onTerminate())
-      .with({ kind: 'recreate' }, (signal) => this.onRecreate(signal))
-      .with({ kind: 'suspend' }, () => this.onSuspend())
-      .with({ kind: 'resume' }, () => this.onResume())
-      .with({ kind: 'failure' }, (signal) => this.onFailure(signal))
-      .with({ kind: 'childTerminated' }, (signal) => this.onChildTerminated(signal))
-      .with({ kind: 'watchNotify' }, (signal) => this.onWatchNotify(signal))
-      .with({ kind: 'receiveTimeout' }, async () => this.onReceiveTimeout())
-      .exhaustive();
+  /**
+   * Returns whatever the matched arm returns, awaited by the caller only when
+   * it is thenable.  Four of the nine arms are synchronous — suspend, resume
+   * and the two watch-bookkeeping ones — and an unconditional `await` here
+   * charged each of them a microtask hop to hand back `undefined`.  Two run
+   * per actor lifecycle, so a spawn paid for it twice.
+   */
+  private handleSystemCommand(command: SystemCommand): void | Promise<void> {
+    // switch, not match(): AGENTS.md's measured-hot-path exemption.  Two of
+    // these arms run per actor lifecycle — `create` on the child, then
+    // `childTerminated` on its parent — and `benchmarks/comparison` measures a
+    // full lifecycle at ~15 us, against which building a nine-arm matcher and
+    // its closures twice is worth about 10 %.  The repo measured the same
+    // construct on a message path at 18-22 % of throughput (#27).  The arms
+    // stay one-line delegations, which is what the rule is actually protecting.
+    //
+    // Exhaustiveness moves from run time to compile time rather than being
+    // given up: adding a `SystemCommand` variant without a case here makes the
+    // `never` assignment below fail to compile.
+    switch (command.kind) {
+      case 'create': return this.onCreate();
+      case 'terminate': return this.onTerminate();
+      case 'recreate': return this.onRecreate(command);
+      case 'suspend': return this.onSuspend();
+      case 'resume': return this.onResume();
+      case 'failure': return this.onFailure(command);
+      case 'childTerminated': return this.onChildTerminated(command);
+      case 'watchNotify': return this.onWatchNotify(command);
+      case 'receiveTimeout': return this.onReceiveTimeout();
+      default: {
+        const _exhaustive: never = command;
+        void _exhaustive;
+        return;
+      }
+    }
   }
 
   /**
@@ -905,14 +1392,29 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     for (const child of this._children.values()) child.enqueueSystem({ kind: 'resume' });
   }
 
+  /**
+   * Currently unreachable — nothing in the framework emits `watchNotify`; the
+   * two live notify sites are `finalizeTermination` and `_addWatcher`, both
+   * through {@link _notifyWatcher}.  Kept, and kept exempt from the mailbox
+   * bound like the live paths (#729), so that wiring it later cannot
+   * reintroduce the loss by taking the ordinary door.
+   *
+   * It is also the one branded-notification path that does **not** first drive
+   * its subject to `terminated` — the target is whatever the command names.
+   * That is why a watcher whose bookkeeping matters (see
+   * `BackoffSupervisor.handleTerminated`) verifies the subject is really gone
+   * rather than resting on the brand alone (#769).
+   */
   private onWatchNotify(signal: WatchNotifyCommand): void {
-    this._enqueueUser({ message: new Terminated(signal.target) as unknown as TMessage, sender: null });
+    this.postSignalEnvelope({
+      message: frameworkTerminated(signal.target) as unknown as TMessage,
+      sender: null,
+    });
   }
 
-  private async onReceiveTimeout(): Promise<void> {
-    if (this.state === 'running') {
-      await this.handleUserMessage({ message: ReceiveTimeout.instance as unknown as TMessage, sender: null });
-    }
+  private onReceiveTimeout(): void | Promise<void> {
+    if (this.state !== 'running') return;
+    return this.handleUserMessage({ message: ReceiveTimeout.instance as unknown as TMessage, sender: null });
   }
 
   private async onCreate(): Promise<void> {
@@ -920,20 +1422,42 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       const actor = this.blueprint.factory();
       (actor as unknown as { _attach(context: ActorContext<TMessage>): void })._attach(this);
       this.actor = actor;
+      // Before `preStart`, which can suspend: the assignment above is what
+      // makes further drops count themselves directly, so anything held back
+      // has to be released in the same synchronous stretch or a drop landing
+      // during the await would be counted ahead of the older ones.
+      this._flushDeferredMailboxDrops(actor.constructor.name);
       this.behaviorStack = [(m: TMessage) => actor.onReceive(m)];
       this.state = 'running';
       await actor.preStart();
-      // Stock metric: count actor creations.  Cheap when metrics are
-      // disabled — `metricsOf(...)` returns the noop registry.
-      metricsOf(this.system).counter(
-        'actor_created_total', {},
-        { help: 'Cumulative count of actors successfully started.' },
-      ).inc();
-      this.system.eventStream.publish(
-        new ActorStarted(this.self, actor.constructor.name, this._parent?.path.toString() ?? null),
-      );
+      // Stock metric: count actor creations.  Read off the system rather than
+      // through `metricsOf`, which walks the extension chain — its own JSDoc
+      // reserves it for once-per-event sites, and an actor's creation is
+      // precisely the event a spawn benchmark counts.  `null` here is not "use
+      // the noop": it is "do not build the arguments", the same distinction
+      // the receive path makes for its counters (#411).
+      const metrics = this.system._metricsRegistry;
+      if (metrics !== null) {
+        metrics.counter(
+          'actor_created_total', {},
+          { help: 'Cumulative count of actors successfully started.' },
+        ).inc();
+      }
+      // Gated like its counterpart in `finalizeTermination`: the parent-path
+      // argument alone forces a path render, and nothing renders a path for an
+      // event nobody receives.
+      if (this.system.eventStream.hasSubscribers) {
+        this.system.eventStream.publish(
+          new ActorStarted(this.self, actor.constructor.name, this._parent?.path.toString() ?? null),
+        );
+      }
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
+      // Whatever the factory or `preStart` did, drops held for a name that
+      // will now never arrive still happened, and a counter that swallowed
+      // them would disagree with a caller's own `onDrop` for the same
+      // messages.  A no-op unless the flush above already ran.
+      this._flushDeferredMailboxDrops('unknown');
       this.log.error('Actor initialization failed', err);
       this.failToParent(new ActorInitializationError(`Actor ${this.path} failed to start`, err));
     }
@@ -990,7 +1514,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // Cancel actor-scoped timers before user code runs in postStop so the
     // actor cannot schedule new messages into a mailbox that's about to
     // drain to dead letters.
-    this.timers.cancelAll();
+    this._timers?.cancelAll();
     // Cancel any pending throttle-resume tick — same reasoning as the
     // user timers above.
     this._throttleResumeTimer?.cancel();
@@ -1021,16 +1545,29 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this.system.eventStream.unsubscribe(this.self);
 
     // Stock metric: count terminations (clean stop OR post-failure path).
-    metricsOf(this.system).counter(
-      'actor_terminated_total', {},
-      { help: 'Cumulative count of actors that have been stopped.' },
-    ).inc();
-    this.system.eventStream.publish(new ActorStopped(this.self));
+    // Gated like its counterpart in `onCreate`, and for the same reason.
+    const metrics = this.system._metricsRegistry;
+    if (metrics !== null) {
+      metrics.counter(
+        'actor_terminated_total', {},
+        { help: 'Cumulative count of actors that have been stopped.' },
+      ).inc();
+    }
+    // The event object itself is only worth building if somebody is listening;
+    // an unobserved system publishes one per actor stop and iterates nobody.
+    if (this.system.eventStream.hasSubscribers) {
+      this.system.eventStream.publish(new ActorStopped(this.self));
+    }
 
-    // Notify watchers
-    const term = new Terminated(this.self);
-    for (const watcher of this._watchers) watcher.tell(term as never);
-    this._watchers.clear();
+    // Notify watchers.  One shared `Terminated`, one guarded send each — see
+    // `_notifyWatcher` for why the loop must not be able to throw.  Built only
+    // when there is a watcher to hand it to: most actors are watched by nobody,
+    // and the signal was being allocated for them anyway.
+    if (this._watchers.size > 0) {
+      const terminated = frameworkTerminated(this.self);
+      for (const watcher of this._watchers) this._notifyWatcher(watcher, terminated);
+      this._watchers.clear();
+    }
 
     // Tell watched targets to drop us from their watcher set
     for (const watched of this._watching.values()) {
@@ -1055,7 +1592,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // carry over — the new instance has none of the state that made those
     // messages un-handleable — but it goes to dead letters rather than
     // being dropped, so a restart does not swallow them silently.
-    this.timers.cancelAll();
+    this._timers?.cancelAll();
     this.deadLetterStash();
 
     // Let the old instance clean up.  The default is `postStop()`.
@@ -1129,11 +1666,21 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    *   3. Nothing — the unbounded base `Mailbox`.  #310 made bounded the
    *      default and #1148 reversed it: a ceiling that discards the oldest
    *      queued message is not one an actor framework can impose unasked,
-   *      because the envelope it evicts is as likely to be a `Terminated`
-   *      (#729) or a delivery confirmation (#732) as it is to be telemetry.
-   *      The heap is the ceiling now, and drawing a lower one is the
-   *      caller's decision.  Growth is not silent: the cell warns at
+   *      because the envelope it evicts is as likely to be a delivery
+   *      confirmation (#732) as it is to be telemetry.  The heap is the
+   *      ceiling now, and drawing a lower one is the caller's decision.
+   *      Growth is not silent: the cell warns at
    *      `MAILBOX_HIGH_WATER_MARK` and again at each doubling.
+   *
+   * One class of envelope is out of every policy's reach in all three shapes
+   * since #729, and what defines the class is the door rather than the
+   * message: whatever arrives through {@link postSignalEnvelope} carries
+   * {@link Envelope.undroppable} and takes `Mailbox.enqueueSignal`.  Two
+   * senders use that door — the death-watch `Terminated` this cell raises for
+   * its watchers, and the `websocket-accept` command a hub receives once its
+   * socket is upgraded (#717).  So a caller who bounds an actor is no longer
+   * choosing to lose its lifecycle signals, or a connection it has already
+   * accepted, along with its backlog.
    *
    * Drop reporting is wired *after* the choice rather than inside it, so all
    * three shapes get it on one line.  Wiring it at the construction site is
@@ -1149,7 +1696,13 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    */
   private _createMailbox(blueprint: ActorBlueprint<TMessage>): Mailbox<TMessage> {
     const mailbox = this._buildMailbox(blueprint);
-    if (reportsDrops(mailbox)) mailbox.observeDrops((reason) => this._onMailboxDrop(reason));
+    if (reportsDrops(mailbox)) {
+      // Read once, here, rather than per dropped message: the flag is fixed at
+      // the mailbox's construction, and this observer runs on the sender's
+      // stack at the moment the system is already past its capacity.
+      this._deadLetterMailboxDrops = mailbox.deadLetterDrops === true;
+      mailbox.observeDrops((reason, envelope) => this._onMailboxDrop(reason, envelope));
+    }
     return mailbox;
   }
 
@@ -1185,142 +1738,241 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /**
    * Observer registered on any mailbox that reports its drops — fires once
    * per discarded message.  Increments `actor_mailbox_dropped_total` with
-   * labels {class, path, reason} so operators can spot slow-consumer
-   * signals on the standard observability stack.  Cheap when metrics
-   * are disabled (the noop registry's counter is a single object lookup).
+   * labels {class, reason} so operators can spot slow-consumer signals on
+   * the standard observability stack.  Cheap when metrics are disabled (the
+   * noop registry's counter is a single object lookup).
+   *
+   * **There is deliberately no `path` label** (#658, #745).  It answered a
+   * question operators genuinely ask — *which* actor is shedding — but it
+   * was the one stock label whose values the framework derived per instance
+   * instead of the deployment declaring them: under sharding a path is
+   * `entity-<entityId>`, i.e. chosen by whoever addresses the shard region,
+   * and `spawnAnonymous` mints a fresh one per spawn forever.  Shedding is
+   * a bounded mailbox's *designed* behaviour rather than an anomaly, so
+   * every such actor minted a permanent series in a system doing nothing
+   * wrong.  #745 gave the registry a `remove`, which does not bring the
+   * label back: eviction is honest for a gauge, whose reading is about now,
+   * and not for a counter, whose series disappearing and returning reads
+   * downstream as a reset that never happened.  `class` is a
+   * source-code constant and `reason` a closed pair, so the family is now
+   * bounded by the program instead of by its traffic.  The one value that
+   * is not a class name, `'unknown'`, is reachable only from a cell whose
+   * actor failed to start, which is a distinct condition rather than a
+   * timing artifact — see {@link _flushDeferredMailboxDrops}.
+   *
+   * Per-actor drop counts did not disappear, they moved to where the
+   * cardinality budget belongs: `observeDrops` appends rather than assigns,
+   * so a caller's own `onDrop` still fires alongside this observer and can
+   * mint a path-labelled series they have sized their own monitoring for.
+   *
+   * **The dead letter comes first, and does not depend on metrics** (#773).
+   * Overflow used to be the one loss path in this file that left no forensic
+   * record — {@link deadLetterStash}, the termination drain, a tell to a
+   * terminated cell and a watcher that refused its `Terminated` all
+   * dead-letter — and the rationale written beside those applies here
+   * unchanged: "I told an actor and nothing happened, anywhere" is
+   * unfalsifiable from the outside.  A mailbox opts in because the cost is
+   * real (see {@link _deadLetterMailboxDrops}), and once it has, a system
+   * running without a metrics registry must still get the record — which is
+   * why this sits above the early return rather than below it.
+   *
+   * The letter carries the message, the sender and this actor, exactly as
+   * every other site here builds theirs.  The envelope's MDC `context` and
+   * tracing `trace` do not survive it: `DeadLetter` has no slot for them and
+   * none of the other loss paths preserve them either, so widening the event
+   * is its own change rather than a rider on this one.
    */
-  private _onMailboxDrop(reason: MailboxDropReason): void {
-    const cls = this.actor?.constructor.name ?? 'unknown';
-    metricsOf(this.system).counter(
-      'actor_mailbox_dropped_total',
-      { class: cls, path: this.path.toString(), reason },
-      { help: 'Cumulative count of user messages a mailbox discarded rather than queued.' },
-    ).inc();
+  private _onMailboxDrop(reason: MailboxDropReason, envelope: Envelope<TMessage>): void {
+    if (this._deadLetterMailboxDrops) {
+      this.system.deadLetters.tell(new DeadLetter(envelope.message, envelope.sender, this.self));
+    }
+    // The one metric site here that is hot exactly when the system is in
+    // trouble: a mailbox sheds load under saturation, so this runs per dropped
+    // message.  Walking the extension chain to reach a registry that may not
+    // exist is the wrong thing to do in that moment (#974).
+    const metrics = this.system._metricsRegistry;
+    if (metrics === null) return;
+    const actor = this.actor;
+    // `tell` enqueues on the *sender's* stack, so a burst issued in the same
+    // tick as the spawn overflows before this cell has run its `create` and
+    // before the instance exists.  Counting those under a placeholder class
+    // minted a second, meaningless series for an actor that mints its real
+    // one moments later (#745), so they are held until the name is known.
+    if (actor === null && !this._actorCreationSettled) {
+      const deferred = this._deferredMailboxDrops ?? new Map<MailboxDropReason, number>();
+      deferred.set(reason, (deferred.get(reason) ?? 0) + 1);
+      this._deferredMailboxDrops = deferred;
+      return;
+    }
+    this._countMailboxDrops(metrics, actor?.constructor.name ?? 'unknown', reason, 1);
   }
 
-  private async handleUserMessage(env: Envelope<TMessage>): Promise<void> {
+  /** The single writer of `actor_mailbox_dropped_total`. */
+  private _countMailboxDrops(
+    metrics: MetricsRegistry, className: string, reason: MailboxDropReason, delta: number,
+  ): void {
+    metrics.counter(
+      'actor_mailbox_dropped_total',
+      { class: className, reason },
+      { help: 'Cumulative count of user messages a mailbox discarded rather than queued.' },
+    ).inc(delta);
+  }
+
+  /**
+   * Attribute the drops held back by {@link _onMailboxDrop} now that the
+   * class name is settled.
+   *
+   * Called on both ends of `onCreate`: with the real name when the instance
+   * was built, and with `'unknown'` when it was not.  The second is not the
+   * placeholder this fix removed — it is the same word recovered as a real
+   * signal, because a cell whose actor never came into existence genuinely
+   * has no class, and dropping the counts instead would leave a counter
+   * quietly short of what a caller's own `onDrop` saw.
+   *
+   * Closing the deferral window is the other half of the job, and is why the
+   * flag is set before the early return: a cell whose actor failed to start
+   * can keep receiving and shedding until it finishes terminating, and those
+   * drops must count on the spot rather than pile into a tally nothing will
+   * ever flush.
+   */
+  private _flushDeferredMailboxDrops(className: string): void {
+    this._actorCreationSettled = true;
+    const deferred = this._deferredMailboxDrops;
+    if (deferred === null) return;
+    this._deferredMailboxDrops = null;
+    const metrics = this.system._metricsRegistry;
+    if (metrics === null) return;
+    for (const [reason, count] of deferred) {
+      this._countMailboxDrops(metrics, className, reason, count);
+    }
+  }
+
+  /**
+   * Returns `void | Promise<void>` rather than always a promise, and every
+   * caller awaits only what is actually thenable.
+   *
+   * An `async` method allocates a promise and a heap frame and costs a
+   * microtask hop whether or not anything in it ever suspends — and the
+   * common receive handler does not suspend: it counts something, updates
+   * a field, forwards a message and returns nothing.  Three of these were
+   * stacked on the path of every message (this one, `_dispatchToBehavior`,
+   * and the `await` on the behavior itself), so a handler that returned
+   * `undefined` still paid for two promises, two frames and three microtask
+   * jobs before the next message could be touched.
+   */
+  private handleUserMessage(env: Envelope<TMessage>): void | Promise<void> {
     const message = env.message;
 
     if (message === (PoisonPill.instance as unknown as TMessage)) {
-      await this.onTerminate();
-      return;
+      return this.onTerminate();
     }
     if (message === (Kill.instance as unknown as TMessage)) {
       this.failToParent(new ActorKilledError(), message);
       return;
     }
 
-    const metrics = metricsOf(this.system);
-    metrics.counter(
-      'actor_messages_delivered_total', {},
-      { help: 'Cumulative count of user messages delivered to actor onReceive.' },
-    ).inc();
+    // Both instrumentation handles are read straight off the system rather
+    // than through `metricsOf` / `tracerOf`, which walk the extension chain —
+    // four such lookups per message is what #411 removes.  Read here, once,
+    // and passed down: re-reading them inside the dispatch would reintroduce
+    // the cost, and caching them on the cell would break the runtime swap
+    // (DevTools installs and removes both while cells are draining).
+    const metrics = this.system._metricsRegistry;
+    // `null` is not "use the noop" here — it is "do not build the arguments".
+    // The two literals below are the whole per-message metric allocation, and
+    // they were being built at the call site for a noop that discards them.
+    if (metrics !== null) {
+      metrics.counter(
+        'actor_messages_delivered_total', {},
+        { help: 'Cumulative count of user messages delivered to actor onReceive.' },
+      ).inc();
+      // How long this message sat in the queue before its turn — the
+      // companion to `actor_message_handler_seconds`, which measures only
+      // what happens after.  A slow actor and a busy one look identical in
+      // the handler histogram; they differ here.
+      //
+      // Two populations are skipped rather than mismeasured.  An envelope
+      // with no stamp was queued before anything was reading stamps (metrics
+      // switched on mid-flight, or a `prependUserMessages` replay), and a
+      // replayed one carries the stamp of an arrival that predates its
+      // current residency — see `Envelope.replayed`.  `Math.max` guards the
+      // clock going backwards under an NTP step, which would otherwise put a
+      // negative number into the histogram's sum and make the derived
+      // average nonsense long after the correction.
+      if (env.enqueuedAtMs !== undefined && env.replayed !== true) {
+        metrics.histogram(
+          'actor_mailbox_wait_seconds', {},
+          {
+            help: 'Time user messages spent queued in a mailbox before delivery, seconds.',
+            buckets: MAILBOX_WAIT_BUCKETS_SECONDS,
+          },
+        ).observe(Math.max(0, Date.now() - env.enqueuedAtMs) / 1000);
+      }
+      // How deep the queue was when this message was picked — the
+      // *distribution* `actor_mailbox_size` cannot be.  That gauge samples an
+      // instant every 2 s and mints nothing below
+      // `MAILBOX_DEPTH_REPORTING_FLOOR`, because the `path` label it needs to
+      // say *which* actor is behind is only affordable that far up (#745).
+      // The range it is blind on is 1-9 999, which is the range a burst
+      // actually lives in, and a spike between two of its ticks is recorded
+      // nowhere at all.  This family is the other half: no labels, so the
+      // whole thing costs one series per bucket however many actors or
+      // entities exist, and one observation per delivery, so nothing is
+      // missed between samples.
+      //
+      // `+ 1` because the envelope has already been dequeued by the time it
+      // gets here: `mailbox.size` is what is *still* waiting, and the depth a
+      // reader means is the one that included this message.  It also makes 1
+      // the floor rather than 0, so "quiet" is a bucket rather than an
+      // absence.  `size` is O(1) on every mailbox shape in the tree — the base
+      // reads a ring buffer's length, `PriorityMailbox` its ordered array's.
+      metrics.histogram(
+        'actor_mailbox_depth', {},
+        {
+          help: 'Queued user messages at the moment one was delivered, including itself.',
+          buckets: MAILBOX_DEPTH_BUCKETS_MESSAGES,
+        },
+      ).observe(this.mailbox.size + 1);
+    }
 
-    const tracer = tracerOf(this.system);
+    // The tracer DOES fall back to the noop rather than being skipped: an
+    // envelope can arrive from a peer that traces while this node does not,
+    // and `startSpan` returning `NOOP_SPAN` is what keeps that message's
+    // explain entry the shape it has always been.
+    // Held separately from the noop fallback below: the span condition has to
+    // be able to ask "is anything tracing at all?" without making a call.
+    const activeTracer = this.system._tracer;
+    const tracer = activeTracer ?? NOOP_TRACER;
     // Open a server-kind `actor.receive` span when tracing is enabled
     // and either we have a parent in the envelope or we're starting a
     // root.  Span is the "active" one for the duration of `behavior(message)`
     // so child tells from inside the handler get this span as parent.
-    let span: Span | null = null;
-
-    // Establish the MDC scope for the duration of `behavior(message)`.  Any
-    // `tell`s issued from inside the handler snapshot this same context
-    // (LocalActorRef + RemoteActorRef both read `LogContext.get()`),
-    // so the trail propagates downstream without manual plumbing.
-    // Empty context skips the wrapper entirely — keeps the no-MDC
-    // hot path unchanged.
-    const dispatch = async (): Promise<void> => {
-      this._currentSender = env.sender;
-      this._currentEnvelope = env;
-      const startNs = performance.now();
-      const startedAtMs = Date.now();
-      let failure: Error | null = null;
-      // What the behavior actually sees.  Differs from `message` only for a
-      // `watchWith` registration, which swaps the signal for the watcher's
-      // own domain message just below.
-      let delivered = message;
-      try {
-        if (message instanceof Terminated) {
-          // Only deliver when we are actually watching.
-          const key = watchKeyOf(message.actor);
-          if (!this._watching.has(key)) {
-            this._currentSender = null;
-            this._currentEnvelope = null;
-            return;
-          }
-          this._watching.delete(key);
-          // The substitution belongs on the watcher, not on the dying cell:
-          // that one notifies through `_watchers`, a set of *refs*, and has no
-          // way to reach the per-watcher map.  Doing it here also covers the
-          // immediate `Terminated` that `_addWatcher` sends when the target is
-          // already gone, because `watchWith` records the message before it
-          // registers.  The envelope keeps the original signal, so a trace or
-          // an explain plan still shows the death that caused this dispatch.
-          if (this._watchWithMessages.has(key)) {
-            delivered = this._watchWithMessages.get(key) as TMessage;
-            this._watchWithMessages.delete(key);
-          }
-        }
-        const behavior = this.behaviorStack[this.behaviorStack.length - 1];
-        if (span) {
-          await tracer.withActiveSpan(span, () => behavior(delivered));
-        } else {
-          await behavior(delivered);
-        }
-        this._resetReceiveTimer();
-        if (span) span.setStatus('ok');
-      } catch (e) {
-        const err = e instanceof Error ? e : new Error(String(e));
-        failure = err;
-        if (span) {
-          span.recordException(err);
-          span.setStatus('error', err.message);
-        }
-        // The message supervision is told about is the one the handler
-        // actually choked on — under `watchWith` that is the domain message,
-        // not the `Terminated` it replaced.
-        this.failToParent(err, delivered);
-      } finally {
-        if (span) span.end();
-        const elapsedMs = performance.now() - startNs;
-        // Record handler duration in seconds — Prom convention.  Using
-        // the per-call `metrics` ref keeps a single dispatch through
-        // the extension chain.
-        metrics.histogram(
-          'actor_message_handler_seconds', {},
-          { help: 'Time spent inside actor onReceive handlers, seconds.' },
-        ).observe(elapsedMs / 1000);
-        // One null check on the hot path; the recorder only exists
-        // while somebody is inspecting this actor.
-        if (this._explain !== null) {
-          this._recordExplain(env, startedAtMs, elapsedMs, failure, span);
-        }
-        // A second null check, for the whole-system profiler (#226).
-        // Reading the field directly avoids an extension lookup per
-        // message.
-        const observer = this.system._dispatchObserver;
-        if (observer !== null) this._observeDispatch(observer, env, elapsedMs, failure);
-        this._currentSender = null;
-        this._currentEnvelope = null;
-      }
-    };
-
-    // Lazily start the span once we know tracing is enabled and the
-    // envelope is an "interesting" message (skip Terminated etc?  Spans
-    // for system-message-shaped envelopes are still useful — the path
-    // is what matters).  `null` parent → root span; envelope-supplied
-    // SpanContext → child of the originating tell.
     //
-    // The flag is read before the extension lookup because it is a plain
-    // field: on the ordinary path (no trace, no root recording) this
-    // costs one boolean instead of walking the extension chain.
-    // A tooling actor is never part of the application's trace — not as
-    // a root and not as a child.  Excluding it only from roots was not
-    // enough: DevTools' probes receive event-stream publishes *during* an
-    // application message, so they inherited its trace and reappeared in
-    // the middle of the route.
+    // Lazily started once we know tracing is enabled and the envelope is an
+    // "interesting" message (skip Terminated etc?  Spans for
+    // system-message-shaped envelopes are still useful — the path is what
+    // matters).  `null` parent → root span; envelope-supplied SpanContext →
+    // child of the originating tell.
+    //
+    // A tooling actor is never part of the application's trace — not as a
+    // root and not as a child.  Excluding it only from roots was not enough:
+    // DevTools' probes receive event-stream publishes *during* an application
+    // message, so they inherited its trace and reappeared in the middle of
+    // the route.
+    //
+    // The `_traceRootSpans` read used to be justified in a comment claiming it
+    // "costs one boolean instead of walking the extension chain".  It did the
+    // opposite: `||` short-circuits on a *truthy* operand, so on the ordinary
+    // path — no `env.trace`, no root recording — both earlier terms are falsy
+    // and the third one ran, resolving the tracing extension a second time for
+    // every message (#411).  With `tracer` already in hand it became a method
+    // call on an object we hold — but on the ordinary path that object is the
+    // noop, so it was still a virtual call per message to be told `null`.  The
+    // null check in front of it answers the same question by reading a field
+    // and short-circuits before the call whenever nothing is tracing.
+    let span: Span | null = null;
     if (!this._internal
-      && (env.trace || this.system._traceRootSpans || tracerOf(this.system).activeSpan())) {
+      && (env.trace || this.system._traceRootSpans || (activeTracer !== null && activeTracer.activeSpan()))) {
       // The sender and the payload are what turn a flame graph into a
       // readable message trail; the payload only when something is
       // watching, since serialising every message is not free.
@@ -1340,11 +1992,254 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       });
     }
 
+    // Establish the MDC scope for the duration of `behavior(message)`.  Any
+    // `tell`s issued from inside the handler snapshot this same context
+    // (LocalActorRef + RemoteActorRef both read `LogContext.get()`), so the
+    // trail propagates downstream without manual plumbing.  An empty context
+    // skips the wrapper entirely — and skips the only closure on this path,
+    // since `LogContext.run` needs a thunk and `_dispatchToBehavior` does not
+    // (#411).
+    //
+    // Skipping it is only safe because the *turn* already runs under a cleared
+    // context: `runReported` opens one `LogContext.runFresh` per turn, so the
+    // `else` here means "no context", not "whatever store armed this turn"
+    // (#718).  Reverse that and this branch silently inherits again.
+    // `LogContext.run` is `run<T>(context, () => T): T` — it hands back
+    // whatever the thunk returns, so a synchronous dispatch stays synchronous
+    // through the MDC branch as well as around it.
     if (env.context) {
-      await LogContext.run(env.context, dispatch);
-    } else {
-      await dispatch();
+      return LogContext.run(env.context, () => this._dispatchToBehavior(env, span, tracer, metrics));
     }
+    return this._dispatchToBehavior(env, span, tracer, metrics);
+  }
+
+  /**
+   * Run the current behavior over one envelope, with the instrumentation the
+   * caller already resolved.
+   *
+   * A private method rather than the closure it used to be, because a closure
+   * is allocated per message and this one captured six variables (#411).  The
+   * arguments are the same six, passed rather than captured — which costs
+   * nothing, since arguments live on the stack while a closure's environment
+   * lives on the heap.  It stays a separate method rather than being inlined
+   * into {@link handleUserMessage} because the MDC branch needs to be able to
+   * call it through `LogContext.run`.
+   */
+  private _dispatchToBehavior(
+    env: Envelope<TMessage>,
+    span: Span | null,
+    tracer: Tracer,
+    metrics: MetricsRegistry | null,
+  ): void | Promise<void> {
+    const message = env.message;
+    this._currentSender = env.sender;
+    this._currentEnvelope = env;
+    // This one read stays unconditional, and the reason is a requirement rather
+    // than an oversight: a recorder switched on from *inside* this handler was
+    // off when the message started, so gating the read on "is anything
+    // recording?" would leave that message with no way to know when it began —
+    // and `handleTimeMs` for it would have to be invented.  There is no cheaper
+    // source for the answer; the start of the handler is only knowable by
+    // having read the clock at the start of the handler.  The end read in
+    // {@link _dispatchEpilogue} *is* gated, because nothing reads a duration
+    // nobody asked for.  See `tests/unit/devtools/ExplainPlan.test.ts` — "a
+    // recorder switched on mid-handling still gets a real atMs (#411)" is the
+    // test that forbids it.
+    const startNs = performance.now();
+    // Wall clock at the start — read only when a recorder is already on, so
+    // the uninstrumented message still pays no `Date.now()` here (#411).
+    //
+    // #411 dropped the read outright and rebuilt the stamp in the epilogue as
+    // `Date.now() - elapsedMs`.  That subtraction cannot be exact: the end read
+    // floors to whole milliseconds while `elapsedMs` is fractional, so the
+    // result sits up to 1 ms BEFORE the handling really began — always in that
+    // direction, since truncation is one-sided.  Invisible in `atMs` alone and
+    // fatal one field over, because `mailboxWaitMs` subtracts an integral
+    // `enqueuedAtMs` from it: an idle actor, whose true wait is microseconds,
+    // reported a negative wait for all but a handful of its messages, and
+    // stamps ran backwards through a ring the panel sorts by them.
+    //
+    // So the read comes back, gated on its only reader rather than
+    // unconditional — which is what #411 was actually measuring.
+    const startedAtMs = this._explain !== null ? Date.now() : -1;
+    // What the behavior actually sees.  Differs from `message` only for a
+    // `watchWith` registration, which swaps the signal for the watcher's
+    // own domain message just below.
+    let delivered = message;
+    let failure: Error | null = null;
+    // A `Terminated` this cell is not going to honour is consumed rather than
+    // delivered — but it is still a dispatch, so it still ends in the epilogue,
+    // exactly as it did when that epilogue was a `finally` and this was an
+    // early `return` through it.  Two reasons reach it: the signal has no
+    // provenance, or it names a subject we are not watching.
+    let consumed = false;
+    let result: void | Promise<void> = undefined;
+    try {
+      if (message instanceof Terminated) {
+        // Provenance first, before any watch bookkeeping is touched.  A watch
+        // registration is retired here on the strength of one message, and the
+        // message names its subject rather than proving anything about it — so
+        // a `Terminated` anyone could construct was enough to convince a
+        // watcher that a live actor had died, take its watch with it, and make
+        // the genuine notification arrive later as unwatched (#769).
+        //
+        // Dead-lettered rather than dropped: an unbranded `Terminated` is
+        // either a forgery or a caller forwarding a signal that was never
+        // theirs to forward, and both are worth being able to see.  The
+        // envelope's sender rides along, so the dead letter names whoever sent
+        // it.
+        if (!isFrameworkTerminated(message)) {
+          this.system.deadLetters.tell(new DeadLetter(message, env.sender, this.self));
+          consumed = true;
+        } else {
+          const key = watchKeyOf(message.actor);
+          if (!this._watching.has(key)) {
+            consumed = true;
+          } else {
+            this._watching.delete(key);
+            // The substitution belongs on the watcher, not on the dying cell:
+            // that one notifies through `_watchers`, a set of *refs*, and has
+            // no way to reach the per-watcher map.  Doing it here also covers
+            // the immediate `Terminated` that `_addWatcher` sends when the
+            // target is already gone, because `watchWith` records the message
+            // before it registers.  The envelope keeps the original signal, so
+            // a trace or an explain plan still shows the death that caused this
+            // dispatch.
+            if (this._watchWithMessages.has(key)) {
+              delivered = this._watchWithMessages.get(key) as TMessage;
+              this._watchWithMessages.delete(key);
+            }
+          }
+        }
+      }
+      if (!consumed) {
+        const behavior = this.behaviorStack[this.behaviorStack.length - 1];
+        result = span
+          ? tracer.withActiveSpan(span, () => behavior(delivered))
+          : behavior(delivered);
+      }
+    } catch (e) {
+      // A handler that threw synchronously — or the watch bookkeeping above,
+      // which stays inside the `try` so that a malformed `Terminated` reaches
+      // supervision rather than the dispatcher's error sink, as it always did.
+      failure = this._dispatchFailed(e, delivered, span);
+    }
+
+    if (consumed || failure !== null) {
+      this._dispatchEpilogue(env, span, metrics, startNs, startedAtMs, failure);
+      return;
+    }
+    // The fork, and the only place the two paths diverge.  `undefined` is the
+    // overwhelmingly common return of a receive handler, and testing for a
+    // `then` costs one property read — against the promise, the heap frame and
+    // the microtask that an `await` would have cost unconditionally.
+    if (result !== undefined && typeof (result as Promise<void>).then === 'function') {
+      return (result as Promise<void>).then(
+        () => {
+          this._dispatchSucceeded(span);
+          this._dispatchEpilogue(env, span, metrics, startNs, startedAtMs, null);
+        },
+        (e: unknown) => {
+          const asyncFailure = this._dispatchFailed(e, delivered, span);
+          this._dispatchEpilogue(env, span, metrics, startNs, startedAtMs, asyncFailure);
+        },
+      );
+    }
+    this._dispatchSucceeded(span);
+    this._dispatchEpilogue(env, span, metrics, startNs, startedAtMs, null);
+  }
+
+  /**
+   * The success tail, shared by both paths so that "the handler returned" has
+   * one implementation rather than two transcriptions of it.
+   */
+  private _dispatchSucceeded(span: Span | null): void {
+    this._resetReceiveTimer();
+    if (span) span.setStatus('ok');
+  }
+
+  /**
+   * The failure tail, shared the same way — a synchronous `throw` and a
+   * rejected promise have to reach supervision by the same route, carrying the
+   * same message identity, or the two paths are equivalent only until
+   * something goes wrong.
+   */
+  private _dispatchFailed(cause: unknown, delivered: TMessage, span: Span | null): Error {
+    const err = cause instanceof Error ? cause : new Error(String(cause));
+    if (span) {
+      span.recordException(err);
+      span.setStatus('error', err.message);
+    }
+    // The message supervision is told about is the one the handler
+    // actually choked on — under `watchWith` that is the domain message,
+    // not the `Terminated` it replaced.
+    this.failToParent(err, delivered);
+    return err;
+  }
+
+  /**
+   * Everything that has to happen once a dispatch is over, however it ended.
+   *
+   * This was a `finally` block, and a `finally` is precisely what a fork in the
+   * control flow costs you: the synchronous path and the promise path cannot
+   * share one.  A method keeps the guarantee the `finally` gave — every path
+   * runs it, exactly once — without either path owning a copy of it.
+   */
+  private _dispatchEpilogue(
+    env: Envelope<TMessage>,
+    span: Span | null,
+    metrics: MetricsRegistry | null,
+    startNs: number,
+    startedAtMs: number,
+    failure: Error | null,
+  ): void {
+    if (span) span.end();
+    // The second clock read, and the one that can be skipped: its three
+    // consumers below are each null-gated, so with metrics, the explain
+    // recorder and the dispatch observer all off, this was a `performance.now()`
+    // per message computing a number nobody would look at.  `schedule` has
+    // gated its own read this way since #411.  `0` is never observed — every
+    // reader of `elapsedMs` sits behind the same condition that produced it.
+    const observer = this.system._dispatchObserver;
+    const elapsedMs = metrics !== null || this._explain !== null || observer !== null
+      ? performance.now() - startNs
+      : 0;
+    // Record handler duration in seconds — Prom convention.  Skipped
+    // entirely, not sent to a noop, so the two literals are not built for
+    // a call that discards them (#411).
+    if (metrics !== null) {
+      metrics.histogram(
+        'actor_message_handler_seconds', {},
+        { help: 'Time spent inside actor onReceive handlers, seconds.' },
+      ).observe(elapsedMs / 1000);
+    }
+    // One null check on the hot path; the recorder only exists
+    // while somebody is inspecting this actor.
+    //
+    // The stamp taken on the way in is used whenever there was one.  It is
+    // missing for exactly one message — the one whose own handler switched
+    // the recorder on, so `_explain` was null at the top and is not here —
+    // and for that one the end read minus the duration is the only estimate
+    // available.  `Math.ceil` undoes its bias rather than leaving it: the
+    // error is known to lie in [0, 1) ms and to be one-directional, so
+    // rounding up lands on the millisecond the clock would have shown at
+    // the start, or the one after, and never on the one before.  That is
+    // what keeps `mailboxWaitMs` from going negative here too.
+    if (this._explain !== null) {
+      this._recordExplain(
+        env,
+        startedAtMs >= 0 ? startedAtMs : Math.ceil(Date.now() - elapsedMs),
+        elapsedMs,
+        failure,
+        span,
+      );
+    }
+    // The whole-system profiler (#226).  Read directly off the system rather
+    // than through the extension chain, and read once — the gate above needs
+    // the same answer this call does.
+    if (observer !== null) this._observeDispatch(observer, env, elapsedMs, failure);
+    this._currentSender = null;
+    this._currentEnvelope = null;
   }
 
   /* =============================== Supervision ============================== */
@@ -1419,9 +2314,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     const now = Date.now();
     if (strategy.withinTimeRangeMs > 0) {
       const threshold = now - strategy.withinTimeRangeMs;
-      this._failureTimes = this._failureTimes.filter(t => t >= threshold);
+      this._failureTimes = (this._failureTimes ?? []).filter(t => t >= threshold);
     }
-    this._failureTimes.push(now);
+    (this._failureTimes ??= []).push(now);
     return this._failureTimes.length <= strategy.maxRetries + 1;
   }
 
@@ -1468,8 +2363,18 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /* ========================= Receive-timeout plumbing ======================= */
 
   private _resetReceiveTimer(): void {
+    // Asked before clearing, because this runs after every successfully handled
+    // message and almost no actor sets a receive timeout.  The order is safe by
+    // invariant rather than by luck: `_receiveTimeoutHandle` is only ever armed
+    // below, after this same check, and the only two writers of
+    // `_receiveTimeoutMs` — `setReceiveTimeout` and `cancelReceiveTimeout` —
+    // both clear the handle on their way to a non-positive value.  So a
+    // non-positive timeout always means there is no handle to clear.
+    if (this._receiveTimeoutMs <= 0) {
+      this._clearReceiveTimer();
+      return;
+    }
     this._clearReceiveTimer();
-    if (this._receiveTimeoutMs <= 0) return;
     this._receiveTimeoutHandle = setTimeout(() => {
       this.enqueueSystem({ kind: 'receiveTimeout' });
     }, this._receiveTimeoutMs);

@@ -21,15 +21,20 @@ import {
   offsetGreaterOrEqual,
   offsetStart,
 } from '../../../../../src/persistence/query/PersistenceQuery.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /**
- * The `sleep(2)` calls between appends are deliberate and stay: the
- * offset comparator orders by millisecond timestamp, so the gap is the
- * fixture, not a wait for something to finish.  Load only ever makes
- * them longer, which is harmless (#418).
+ * Push the wall clock past the current millisecond, so the next append lands
+ * on a strictly greater offset timestamp.
+ *
+ * The elapsed time *is* the fixture here — the offset comparator orders by
+ * `(timestamp, persistenceId, sequenceNr)`, so two appends inside one
+ * millisecond tie on the first key and fall back to the id, which is not the
+ * append order these tests assert.  There is nothing to poll for: the clock is
+ * the only thing being waited on, and load only ever widens the gap, which is
+ * harmless (#418).
  */
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+const separateOffsetTimestamps = (): Promise<void> => sleep(2);
 
 describe('Offset comparator', () => {
   test('orders by (timestamp, persistenceId, sequenceNr)', () => {
@@ -54,8 +59,8 @@ describe('Offset comparator', () => {
 describe('InMemoryQuery — currentEventsByPersistenceId', () => {
   test('round-trip: every appended event comes back in order', async () => {
     const journal = new InMemoryJournal();
-    await journal.append('alice', [{ kind: 'in', amount: 10 }, { kind: 'in', amount: 20 }], 0);
-    await journal.append('alice', [{ kind: 'out', amount: 5 }], 2);
+    await journal.append('alice', [{ event: { kind: 'in', amount: 10 } }, { event: { kind: 'in', amount: 20 } }], 0);
+    await journal.append('alice', [{ event: { kind: 'out', amount: 5 } }], 2);
     const query = new InMemoryQuery(journal);
 
     const events = await query.currentEventsByPersistenceId<{ kind: string; amount: number }>('alice', 1);
@@ -65,7 +70,7 @@ describe('InMemoryQuery — currentEventsByPersistenceId', () => {
 
   test('fromSeq filters out earlier events', async () => {
     const journal = new InMemoryJournal();
-    await journal.append('a', [{ n: 1 }, { n: 2 }, { n: 3 }, { n: 4 }], 0);
+    await journal.append('a', [{ event: { n: 1 } }, { event: { n: 2 } }, { event: { n: 3 } }, { event: { n: 4 } }], 0);
     const query = new InMemoryQuery(journal);
     const events = await query.currentEventsByPersistenceId<{ n: number }>('a', 3);
     expect(events.map((e) => e.event.n)).toEqual([3, 4]);
@@ -75,13 +80,13 @@ describe('InMemoryQuery — currentEventsByPersistenceId', () => {
 describe('InMemoryQuery — currentEventsByTag', () => {
   test('returns only events tagged with the requested tag, ordered globally', async () => {
     const journal = new InMemoryJournal();
-    await journal.append('alice', [{ message: 'a1' }], 0, ['accounts']);
-    await sleep(2);
-    await journal.append('bob', [{ message: 'b1' }], 0, ['accounts', 'vip']);
-    await sleep(2);
-    await journal.append('alice', [{ message: 'a2' }], 1, ['internal']);
-    await sleep(2);
-    await journal.append('bob', [{ message: 'b2' }], 1, ['accounts']);
+    await journal.append('alice', [{ event: { message: 'a1' }, tags: ['accounts'] }], 0);
+    await separateOffsetTimestamps();
+    await journal.append('bob', [{ event: { message: 'b1' }, tags: ['accounts', 'vip'] }], 0);
+    await separateOffsetTimestamps();
+    await journal.append('alice', [{ event: { message: 'a2' }, tags: ['internal'] }], 1);
+    await separateOffsetTimestamps();
+    await journal.append('bob', [{ event: { message: 'b2' }, tags: ['accounts'] }], 1);
 
     const query = new InMemoryQuery(journal);
     const accounts = await query.currentEventsByTag<{ message: string }>('accounts', offsetStart);
@@ -93,9 +98,9 @@ describe('InMemoryQuery — currentEventsByTag', () => {
 
   test('fromOffset skips events at-or-before the cursor', async () => {
     const journal = new InMemoryJournal();
-    await journal.append('a', [{ message: '1' }], 0, ['t']);
-    await sleep(2);
-    await journal.append('a', [{ message: '2' }], 1, ['t']);
+    await journal.append('a', [{ event: { message: '1' }, tags: ['t'] }], 0);
+    await separateOffsetTimestamps();
+    await journal.append('a', [{ event: { message: '2' }, tags: ['t'] }], 1);
     const query = new InMemoryQuery(journal);
 
     const all = await query.currentEventsByTag<{ message: string }>('t', offsetStart);
@@ -114,7 +119,7 @@ describe('InMemoryQuery — currentEventsByTag', () => {
 describe('InMemoryQuery — eventsByPersistenceId (live)', () => {
   test('emits past events first, then new appends', async () => {
     const journal = new InMemoryJournal();
-    await journal.append('a', [{ n: 1 }, { n: 2 }], 0);
+    await journal.append('a', [{ event: { n: 1 } }, { event: { n: 2 } }], 0);
     const query = new InMemoryQuery(journal);
 
     const stream = query.eventsByPersistenceId<{ n: number }>('a', 1, { pollIntervalMs: 50 });
@@ -133,14 +138,14 @@ describe('InMemoryQuery — eventsByPersistenceId (live)', () => {
     await awaitCondition(() => got.length === 2, {
       timeoutMs: 4_000, label: 'the consumer drained the two pre-existing events',
     });
-    await journal.append('a', [{ n: 3 }, { n: 4 }], 2);
+    await journal.append('a', [{ event: { n: 3 } }, { event: { n: 4 } }], 2);
     await consumer;
     expect(got).toEqual([1, 2, 3, 4]);
   });
 
   test('iterator return() cancels the polling loop cleanly', async () => {
     const journal = new InMemoryJournal();
-    await journal.append('a', [{ n: 1 }], 0);
+    await journal.append('a', [{ event: { n: 1 } }], 0);
     const query = new InMemoryQuery(journal);
 
     const stream = query.eventsByPersistenceId<{ n: number }>('a', 1, { pollIntervalMs: 50 });
@@ -157,11 +162,11 @@ describe('SqliteQuery — currentEventsByTag uses SQL filter', () => {
     const journalOptions = SqliteJournalOptions.create()
       .withPath(':memory:');
     const journal = new SqliteJournal(journalOptions);
-    await journal.append('a', [{ x: 1 }], 0, ['foo']);
-    await sleep(2);
-    await journal.append('b', [{ x: 2 }], 0, ['foobar']);  // must NOT match 'foo'
-    await sleep(2);
-    await journal.append('c', [{ x: 3 }], 0, ['foo', 'extra']);
+    await journal.append('a', [{ event: { x: 1 }, tags: ['foo'] }], 0);
+    await separateOffsetTimestamps();
+    await journal.append('b', [{ event: { x: 2 }, tags: ['foobar'] }], 0);  // must NOT match 'foo'
+    await separateOffsetTimestamps();
+    await journal.append('c', [{ event: { x: 3 }, tags: ['foo', 'extra'] }], 0);
     const query = new SqliteQuery(journal);
 
     const foo = await query.currentEventsByTag<{ x: number }>('foo', offsetStart);
@@ -177,7 +182,7 @@ describe('SqliteQuery — currentEventsByTag uses SQL filter', () => {
     const journalOptions = SqliteJournalOptions.create()
       .withPath(':memory:');
     const journal = new SqliteJournal(journalOptions);
-    await journal.append('z', [{ k: 1 }, { k: 2 }, { k: 3 }], 0);
+    await journal.append('z', [{ event: { k: 1 } }, { event: { k: 2 } }, { event: { k: 3 } }], 0);
     const query = new SqliteQuery(journal);
 
     const events = await query.currentEventsByPersistenceId<{ k: number }>('z', 2);
@@ -190,9 +195,9 @@ describe('SqliteQuery — currentEventsByTag uses SQL filter', () => {
 describe('PersistenceQuery — currentPersistenceIds', () => {
   test('returns every distinct pid known to the journal', async () => {
     const journal = new InMemoryJournal();
-    await journal.append('a', [{}], 0);
-    await journal.append('b', [{}], 0);
-    await journal.append('a', [{}], 1);
+    await journal.append('a', [{ event: {} }], 0);
+    await journal.append('b', [{ event: {} }], 0);
+    await journal.append('a', [{ event: {} }], 1);
     const query = new InMemoryQuery(journal);
     const ids = await query.currentPersistenceIds();
     expect(ids.sort()).toEqual(['a', 'b']);
@@ -213,18 +218,18 @@ describe('PersistenceQuery — currentPersistenceIds', () => {
  *   5  | inv-2   | type:Invoice, tenant:t2, archived
  *   6  | event-1 | type:Event,  tenant:t1
  */
-async function seedFilterCorpus(journal: { append(persistenceId: string, events: unknown[], expected: number, tags?: string[]): Promise<unknown> }): Promise<void> {
-  await journal.append('order-1', [{ id: 1 }], 0, ['type:Order',   'tenant:t1']);
-  await sleep(2);
-  await journal.append('order-2', [{ id: 2 }], 0, ['type:Order',   'tenant:t2']);
-  await sleep(2);
-  await journal.append('order-3', [{ id: 3 }], 0, ['type:Order',   'tenant:t1', 'archived']);
-  await sleep(2);
-  await journal.append('inv-1',   [{ id: 4 }], 0, ['type:Invoice', 'tenant:t1']);
-  await sleep(2);
-  await journal.append('inv-2',   [{ id: 5 }], 0, ['type:Invoice', 'tenant:t2', 'archived']);
-  await sleep(2);
-  await journal.append('event-1', [{ id: 6 }], 0, ['type:Event',   'tenant:t1']);
+async function seedFilterCorpus(journal: { append(persistenceId: string, entries: ReadonlyArray<{ event: unknown; tags?: string[] }>, expected: number): Promise<unknown> }): Promise<void> {
+  await journal.append('order-1', [{ event: { id: 1 }, tags: ['type:Order',   'tenant:t1'] }], 0);
+  await separateOffsetTimestamps();
+  await journal.append('order-2', [{ event: { id: 2 }, tags: ['type:Order',   'tenant:t2'] }], 0);
+  await separateOffsetTimestamps();
+  await journal.append('order-3', [{ event: { id: 3 }, tags: ['type:Order',   'tenant:t1', 'archived'] }], 0);
+  await separateOffsetTimestamps();
+  await journal.append('inv-1', [{ event: { id: 4 }, tags: ['type:Invoice', 'tenant:t1'] }], 0);
+  await separateOffsetTimestamps();
+  await journal.append('inv-2', [{ event: { id: 5 }, tags: ['type:Invoice', 'tenant:t2', 'archived'] }], 0);
+  await separateOffsetTimestamps();
+  await journal.append('event-1', [{ event: { id: 6 }, tags: ['type:Event',   'tenant:t1'] }], 0);
 }
 
 const ids = (events: ReadonlyArray<{ event: { event: { id: number } } }>): number[] =>
@@ -396,13 +401,15 @@ describe('Multi-tag filter — SqliteQuery parity', () => {
       const tenant = i % 5 === 0 ? 'tenant:t1' : 'tenant:t2';
       tags.push(`${type},${tenant}${i % 7 === 0 ? ',archived' : ''}`);
     }
-    // Append in 100 chunks so each event still gets its own append
-    // call but we don't pay 10k per-pid round-trips.
+    // Append in 100-event chunks so we don't pay 10k round-trips.  Every
+    // event carries its OWN tags — the batch used to be stamped with the
+    // tags of its first event, which made two thirds of the corpus wrong
+    // and the by-tag counts below meaningless (#631).
     let seq = 0;
     for (let i = 0; i < N; i += 100) {
-      const slice = batch.slice(i, i + 100).map((second) => ({ id: second.id }));
-      const tagsForBatch = tags[i]!.split(',');
-      await journal.append('bulk', slice, seq, tagsForBatch);
+      const slice = batch.slice(i, i + 100)
+        .map((second) => ({ event: { id: second.id }, tags: tags[second.id]!.split(',') }));
+      await journal.append('bulk', slice, seq);
       seq += slice.length;
     }
     const query = new SqliteQuery(journal);
@@ -415,9 +422,14 @@ describe('Multi-tag filter — SqliteQuery parity', () => {
     const not_arch = await query.currentEventsByTag({ all: ['type:A'], not: ['archived'] }, offsetStart);
     const t3 = performance.now();
 
-    expect(all_a.length).toBeGreaterThan(0);
+    // Exact counts, now that each event carries the tags it was given:
+    // type:A is every third id (3334 of 10 000), `archived` every seventh,
+    // and their overlap every twenty-first (477) — so type:A minus archived
+    // is 2857.  A regression that re-collapsed tags to the batch would move
+    // all three numbers at once.
+    expect(all_a.length).toBe(3334);
     expect(any_t.length).toBe(N);
-    expect(not_arch.length).toBeGreaterThan(0);
+    expect(not_arch.length).toBe(2857);
     // 1 s ceiling — the indexed path should be ~10-50 ms typical.
     expect(t1 - t0).toBeLessThan(1000);
     expect(t2 - t1).toBeLessThan(1000);

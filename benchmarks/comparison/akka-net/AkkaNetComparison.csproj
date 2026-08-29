@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The .NET arm of the framework comparison (#27).
+
+    Uses the classic actor API rather than the newer typed one, because that is
+    what this framework's own documentation leads with and what a user would
+    reach for.  `RestorePackagesWithLockFile` pins the transitive closure into
+    a committed lock file, so the arm resolves the same way on any machine —
+    the same property the JVM arms get from their pinned pom.
+
+    Licence: Apache-2.0, unlike one of the two JVM arms.  It is carried into
+    every published table next to the number.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Comparison</RootNamespace>
+    <AssemblyName>AkkaNetComparison</AssemblyName>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <!--
+      Workstation GC, matching what a default console application gets.  Server
+      GC would be a tuning choice this benchmark has not made for any other
+      arm, and making it here alone would be measuring the choice.
+    -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Akka" Version="1.5.70" />
+  </ItemGroup>
+
+</Project>

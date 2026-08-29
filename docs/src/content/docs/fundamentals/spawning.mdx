@@ -206,10 +206,9 @@ See [Supervision](/fundamentals/supervision/) for the full semantics.
 ### `withDispatcher`
 
 ```ts
-import { ActorOptions, MicrotaskDispatcher, ThroughputDispatcher } from 'actor-ts';
+import { ActorOptions, MicrotaskDispatcher } from 'actor-ts';
 
 const crunchyOptions = ActorOptions.create().withDispatcher(new MicrotaskDispatcher());
-const bulkOptions = ActorOptions.create().withDispatcher(new ThroughputDispatcher(100));
 ```
 
 Override the system-wide dispatcher for one actor.  Useful when a
@@ -218,6 +217,28 @@ is latency-sensitive while the rest of the system runs on a
 high-throughput dispatcher.  For most apps the system-level dispatcher
 applies uniformly and you never need this — see
 [Dispatchers](/fundamentals/dispatchers/).
+
+Note that giving one actor its own `ThroughputDispatcher` does **not**
+batch its messages — use `withThroughput` below for that.
+
+### `withThroughput`
+
+```ts
+const bulkOptions = ActorOptions.create().withThroughput(64);
+```
+
+How many user messages this actor handles per dispatcher turn before
+yielding.  Unset falls through to `actor-ts.actor.throughput` and then
+to the built-in default of 16.
+
+Raise it for a short-handler actor that is a throughput bottleneck —
+the batch amortises the scheduling round trip that otherwise costs more
+than the handler does.  Lower it toward `1` for an actor whose handler
+is slow enough that a full batch would keep timers and I/O waiting.  A
+batch always ends early on an empty mailbox, a stop or suspend, and a
+throttle bucket that runs out, so the budget is a ceiling rather than a
+commitment.  See
+[Dispatcher tuning](/operations/tuning/dispatcher-tuning/).
 
 ### `withMailboxCapacity`
 
@@ -253,6 +274,11 @@ Full control — return any `Mailbox` subclass.  The factory is called
 outlives every restart.  On restart only the `Actor` instance is
 rebuilt — the same mailbox is resumed in place, so messages queued
 before the crash are still there.
+
+This cannot be combined with `withMailboxCapacity` — a supplied mailbox
+brings its own bound, so a bound on a `PriorityMailbox` goes on
+`PriorityMailboxOptions` (`.withCapacity(...)` plus `.withOverflow(...)`)
+rather than on `ActorOptions`.
 
 See [Mailboxes](/fundamentals/mailboxes/) for the overflow policies and
 priority semantics.

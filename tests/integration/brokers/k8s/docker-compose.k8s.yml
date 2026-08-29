@@ -11,8 +11,8 @@
 #     provider reads from.
 #
 # Run locally:
-#   bun run test:integration:k8s
-#   bun run test:integration:k8s:teardown
+#   bun run test:integration:broker k8s
+#   bun run test:integration:broker:teardown k8s
 
 name: actor-ts-integration-k8s
 

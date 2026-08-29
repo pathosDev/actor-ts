@@ -130,6 +130,44 @@ the timeout or on the first reply — any later reply is silently
 discarded in place (it does not go to dead letters).  The actor
 itself isn't affected — it has no idea the asker gave up.
 
+### There is no "no deadline" mode
+
+`timeoutMs` must be a **positive finite number**.  `0`, a negative
+value, `NaN` and `Infinity` all throw `OptionsError` at the call
+site, synchronously — before the message is sent, and as a thrown
+error rather than a rejected Promise, because an argument outside
+its domain is a bug in the caller rather than a failed request.
+
+```ts
+import { OptionsError } from 'actor-ts';
+
+const budget = deadline - Date.now();   // negative once the deadline passed
+try {
+  await counter.ask({ kind: 'get' }, budget);
+} catch (e) {
+  if (e instanceof OptionsError) {
+    // budget was <= 0 — the deadline is already gone, don't ask at all
+  }
+}
+```
+
+That is stricter than it looks at first, and deliberately so.  The
+timeout is what arms the reply ref's only self-settling path: a ref
+with no timer can be settled by a reply and by nothing else, so an
+unanswered ask would leave the `await` pending for the life of the
+process — and, across the cluster, leave one entry in the per-path
+handler map that every inbound envelope is matched against.  Neither
+value needs a typo to arrive: a computed budget goes negative the
+moment its deadline passes, and an untyped configuration value
+arrives as whatever it parsed to.
+
+To get the 5-second default, **omit the argument** (or pass
+`undefined`) — the parameter default still applies:
+
+```ts
+const value = await counter.ask<number>({ kind: 'get' });
+```
+
 ## Replying with an Error
 
 import { Aside } from '@astrojs/starlight/components';

@@ -203,6 +203,13 @@ Drei Details:
   Publishers.  Halte sie schnell und rein — ein schwerer Predicate
   verlangsamt jedes Publish.
 
+## Live zusehen
+
+DevTools hat ein
+[Event-Stream-Panel](/de/observability/devtools/event-stream/), das den
+Bus im Browser mitliest — nützlich, wenn die Frage ist, ob überhaupt
+etwas publiziert wird.
+
 ## Wann den Event-Stream verwenden
 
 Drei gute Passungen:
@@ -263,8 +270,9 @@ Das Framework publisht mehrere Event-Typen, die du abonnieren kannst:
 
 | Event | Woher es kommt |
 | --- | --- |
-| `DeadLetter` | Jede an `/deadLetters` geroutete Nachricht wird auch publisht.  Nützlich für "Alarme auf verlorene Nachrichten". |
+| `DeadLetter` | Jede an `/deadLetters` geroutete Nachricht wird hier publisht — und Publishen ist *alles*, was mit ihr passiert: nichts loggt sie, nichts bewahrt sie auf, ohne Abonnent ist sie also weg.  Jede trägt den `recipient`, den sie nicht erreicht hat.  Für eine begrenzte, optional dauerhafte Aufzeichnung mit erneutem Zustellen siehe [Dead Letters](/de/operations/dead-letters/). |
 | `DispatcherError` | Eine auf einem Dispatcher geplante Arbeitseinheit hat geworfen, wo kein Supervisor es sehen konnte.  Trägt die `id` des Dispatchers, die `cause` und die `ActorRef`, deren Zug es war (`null` für Arbeit, die zu keinem Actor gehört).  Von Natur aus ruhig — siehe [Dispatcher](/de/fundamentals/dispatchers/#wenn-eine-arbeitseinheit-wirft). |
+| `SchedulerError` | Ein Task, der an `scheduler.scheduleOnceFunction` / `scheduleAtFixedRateFunction` übergeben wurde, hat in einem rohen Timer-Callback geworfen, wo kein Supervisor es sehen konnte.  Trägt die `cause` — und nichts weiter, denn ein geplanter Task ist ein anonymes Closure und ein System hat genau einen Scheduler.  Die Nachrichten-Zustellformen publizieren hier nicht.  Siehe [Timer und Scheduling](/de/fundamentals/timers-and-scheduling/#fehler-in-timer-callbacks). |
 | `MemberUp`, `MemberRemoved`, `MemberUnreachable`, … | Konkrete Cluster-Mitgliedschaftsevents, publisht von der Cluster-Extension.  Abonniere jede Klasse direkt — `ClusterEvent` ist ein Union-Typ, keine abonnierbare Basisklasse.  Siehe [Cluster](/de/cluster/overview/). |
 | `ReachabilityChanged` | Der Failure Detector der publishenden Node hat einen Peer aus den Augen verloren oder wiedergesehen — eine lokale Beobachtung, anders als `MemberUnreachable`, das auch per Gossip angekommen sein kann.  Siehe [Failure Detector](/de/cluster/failure-detector/). |
 | Broker-Events | `BrokerActor`-Subklassen publishen Connect/Disconnect/Lag-Events. |

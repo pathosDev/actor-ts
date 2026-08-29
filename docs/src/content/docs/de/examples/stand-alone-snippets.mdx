@@ -59,12 +59,43 @@ bun install
 bun examples/hello-world.ts
 ```
 
-Jedes Snippet läuft bis zum Ende und beendet sich.  Keine
-langlaufenden Prozesse; keine externen Abhängigkeiten.
+Die meisten Snippets laufen bis zum Ende und beenden sich.  Die
+unter `examples/http/` sowie die Prometheus- und
+Kubernetes-Probe-Snippets sind stattdessen Server — sie binden
+einen Port und bleiben oben, bis du sie stoppst; genau darum geht
+es bei diesen Snippets.
 
 Für cluster-bezogene Snippets (Singleton, Sharding, PubSub, DD)
 nutzen die Snippets **`MultiNodeSpec`**, um einen Cluster
 innerhalb eines Prozesses zu simulieren - kein Docker nötig.
+
+Eine Handvoll braucht doch etwas Externes: die Broker-Snippets
+unter `examples/io/` wollen Kafka, NATS oder MQTT (samt der
+passenden optionalen Peer-Abhängigkeit), und
+`examples/coordination/k8s-lease-singleton.ts` will einen
+Kubernetes-API-Server.  Jedes davon benennt beim Ausführen, was
+ihm fehlt.
+
+## In CI abgesichert
+
+Jedes Snippet auf dieser Seite wird vom
+[Beispiel-Gate](/de/examples/overview/#in-ci-abgesichert) bei jedem
+Push ausgeführt, der `src/` oder `examples/` berührt — eine
+Framework-Änderung, die eines bricht, ist damit ein roter Check:
+
+```bash
+bun run test:examples              # all of them, ~90 s
+bun run test:examples patterns     # just the ones matching a substring
+```
+
+Jedes ist genau einmal in
+[`tests/examples/examples.manifest.json`](https://github.com/pathosDev/actor-ts/blob/main/tests/examples/examples.manifest.json)
+klassifiziert — lauffähig mit einer Ausgabe-Zusicherung oder
+übersprungen mit Begründung.  Die Übersprungenen sind die, die
+einen Broker, Kubernetes oder eine nicht deklarierte optionale
+Peer-Abhängigkeit brauchen; in dieser Datei steht, welche das sind
+und warum.  Ein neues Snippet aufzunehmen heißt, seinen Eintrag
+mitzuliefern — sonst schlägt das Gate wegen der Abweichung fehl.
 
 ## Patterns
 
@@ -82,10 +113,10 @@ const ref = system.spawnAnonymous(MyActor);
 ref.tell({ ... });
 ref.tell({ ... });
 
-// 3. Auf Verarbeitung warten (kleines await oder expect auf einer Probe).
-await new Promise(r => setTimeout(r, 100));
-
-// 4. Ergebnis ausgeben + aufräumen.
+// 3. Ergebnis ausgeben + aufräumen.  `terminate()` leert zuerst die
+//    Mailboxen, es gibt also nichts, wofür man schlafen müsste —
+//    außer das Snippet wartet auf einen Timer oder ein nicht
+//    awaitetes Promise, denen der Drain nicht folgt.
 console.log(...);
 await system.terminate();
 ```

@@ -4,7 +4,6 @@
  *   tsx examples/scheduler.ts
  */
 import { Actor, ActorSystem } from '../src/index.js';
-import { attachDevTools } from './devtools.js';
 
 class TickActor extends Actor<'tick' | 'once'> {
   private count = 0;
@@ -24,7 +23,6 @@ class TickActor extends Actor<'tick' | 'once'> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('scheduler');
-  const devtools = await attachDevTools(system);
   const actor = system.spawn(TickActor, 'ticker');
 
   // Fire once after 100ms.
@@ -33,9 +31,11 @@ async function main(): Promise<void> {
   // Then fire 'tick' every 50ms starting immediately.
   const periodic = system.scheduler.scheduleAtFixedRate(0, 50, actor, 'tick');
 
+  // Not a drain sleep: this waits for scheduler *ticks*.  terminate() drains
+  // the mailboxes, but a scheduled message is not in one yet, so there is
+  // nothing for the drain to wait on — the 500 ms is what produces the ticks.
   await new Promise(resolve => setTimeout(resolve, 500));
   periodic.cancel();
-  await devtools.holdOpen();
   await system.terminate();
 }
 

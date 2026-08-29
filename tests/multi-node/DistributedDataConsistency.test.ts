@@ -24,6 +24,7 @@ import {
 } from '../../src/crdt/index.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
 const TIGHT_FD = {
   heartbeatIntervalMs: 50,
@@ -286,20 +287,18 @@ describe('DistributedData — WriteConsistency / ReadConsistency', () => {
       // convergence — write-requests already propagate, but the
       // *other* originator's view depends on gossip pulling the
       // counterpart back.
-      const deadline = Date.now() + 4_000;
-      while (Date.now() < deadline) {
-        const valueA = ddA.get<GCounter>('race')?.value() ?? 0;
-        const valueB = ddB.get<GCounter>('race')?.value() ?? 0;
-        const valueC = ddC.get<GCounter>('race')?.value() ?? 0;
-        if (valueA === 30 && valueB === 30 && valueC === 30) return;
-        await Bun.sleep(50);
-      }
-      throw new Error(
-        `concurrent WriteMajority did not converge to 30: ` +
-        `a=${ddA.get<GCounter>('race')?.value()}, ` +
-        `b=${ddB.get<GCounter>('race')?.value()}, ` +
-        `c=${ddC.get<GCounter>('race')?.value()}`,
-      );
+      //
+      // `=== 30` is safe to poll on even though it is an exact value: a
+      // GCounter only grows and both writes are bounded, so 30 is the
+      // terminal state, not a value a later arrival could exceed.
+      const replicaValues = (): readonly number[] =>
+        [ddA, ddB, ddC].map((dd) => dd.get<GCounter>('race')?.value() ?? 0);
+      await awaitCondition(() => replicaValues().every((value) => value === 30), {
+        timeoutMs: 4_000,
+        intervalMs: 50,
+        label: 'all three replicas converged on 30 after two concurrent majority writes',
+      });
+      expect(replicaValues()).toEqual([30, 30, 30]);
     });
   }, 15_000);
 });

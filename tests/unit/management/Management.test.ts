@@ -4,16 +4,61 @@ import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
+import {
+  CLUSTER_MEMBERSHIP_CHECK_NAME,
+  CLUSTER_TRANSPORT_CHECK_NAME,
+} from '../../../src/cluster/ClusterHealthChecks.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import { BearerTokenAuth } from '../../../src/http/middleware/BearerToken.js';
 import { IpAllowlist } from '../../../src/http/middleware/IpAllowlist.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import {
+  ACTOR_SYSTEM_LIVENESS_CHECK_NAME,
   HealthCheckRegistry,
+  healthChecksOf,
   isHealthy,
   managementRoutes,
 } from '../../../src/management/index.js';
+import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
+import {
+  DefaultMetricsRegistry,
+  type Counter,
+  type CounterOptions,
+  type Gauge,
+  type GaugeOptions,
+  type Histogram,
+  type HistogramOptions,
+  type Labels,
+  type MetricSample,
+  type MetricsRegistry,
+} from '../../../src/metrics/Metrics.js';
+
+/**
+ * A registry whose writes go to a collector this process cannot read back —
+ * the shape `promClientRegistry` has (#744).  It still has to *work*, since
+ * installing it starts the mailbox-depth sampler against it; only `collect()`
+ * is blind.  The reader-side behaviour lives in
+ * `tests/unit/metrics/NonCollectableRegistry.test.ts`; here it exists only to
+ * make the management route face one.
+ */
+class WriteThroughRegistry implements MetricsRegistry {
+  readonly collectable = false;
+  private readonly foreign = new DefaultMetricsRegistry();
+
+  counter(name: string, labels?: Labels, options?: CounterOptions): Counter {
+    return this.foreign.counter(name, labels, options);
+  }
+  gauge(name: string, labels?: Labels, options?: GaugeOptions): Gauge {
+    return this.foreign.gauge(name, labels, options);
+  }
+  histogram(name: string, labels?: Labels, options?: HistogramOptions): Histogram {
+    return this.foreign.histogram(name, labels, options);
+  }
+  collect(): ReadonlyArray<MetricSample> { return []; }
+  remove(name: string, labels?: Labels): boolean { return this.foreign.remove(name, labels); }
+  clear(): void { this.foreign.clear(); }
+}
 
 describe('HealthCheckRegistry', () => {
   test('aggregates liveness + readiness separately', async () => {
@@ -60,7 +105,7 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/cluster/members returns the current membership as JSON', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster);
+    const routes = managementRoutes(sys, cluster);
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -76,8 +121,8 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/health is 200 when all liveness checks pass', async () => {
     const { sys, cluster } = await startNode();
-    const { routes, health } = managementRoutes(sys, cluster);
-    health.addLiveness(() => ({ name: 'ok', status: true }));
+    const routes = managementRoutes(sys, cluster);
+    healthChecksOf(sys).addLiveness(() => ({ name: 'ok', status: true }));
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -92,8 +137,8 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/health is 503 when a liveness check fails', async () => {
     const { sys, cluster } = await startNode();
-    const { routes, health } = managementRoutes(sys, cluster);
-    health.addLiveness(() => ({ name: 'db', status: false, detail: 'conn refused' }));
+    const routes = managementRoutes(sys, cluster);
+    healthChecksOf(sys).addLiveness(() => ({ name: 'database', status: false, detail: 'connection refused' }));
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -104,9 +149,14 @@ describe('managementRoutes — cluster queries', () => {
     await cluster.leave(); await sys.terminate();
   });
 
-  test('/ready reflects cluster Up state', async () => {
+  // The endpoint no longer computes membership itself — `Cluster._start`
+  // registers that check, and `clusterReady` is read back off the aggregate
+  // (#655).  Asserting both here is what pins the two together: a future
+  // change that recomputes the field in the handler would keep
+  // `clusterReady` true while the check it is supposed to mirror is absent.
+  test('/ready reports the framework readiness checks and mirrors membership in clusterReady', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster);
+    const routes = managementRoutes(sys, cluster);
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -114,9 +164,39 @@ describe('managementRoutes — cluster queries', () => {
     await Bun.sleep(150);
 
     const response = await fetch(`http://127.0.0.1:${binding.port}/ready`);
-    const body = await response.json() as { status: string; clusterReady: boolean };
+    const body = await response.json() as {
+      status: string;
+      clusterReady: boolean;
+      checks: Array<{ name: string; status: boolean }>;
+    };
+    expect(body.checks.map((c) => c.name).sort())
+      .toEqual([CLUSTER_MEMBERSHIP_CHECK_NAME, CLUSTER_TRANSPORT_CHECK_NAME].sort());
+    expect(body.checks.every((c) => c.status)).toBe(true);
     expect(body.clusterReady).toBe(true);
     expect(body.status).toBe('UP');
+    expect(response.status).toBe(200);
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
+  // Liveness must not grow a cluster dependency: the same node that is
+  // `/ready` above is `/health` UP purely on "the actor system is running",
+  // and that is the entire framework-owned liveness list.
+  test('/health carries exactly the framework liveness check', async () => {
+    const { sys, cluster } = await startNode();
+    const routes = managementRoutes(sys, cluster);
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const response = await fetch(`http://127.0.0.1:${binding.port}/health`);
+    const body = await response.json() as {
+      status: string;
+      checks: Array<{ name: string; status: boolean }>;
+    };
+    expect(body.checks.map((c) => c.name)).toEqual([ACTOR_SYSTEM_LIVENESS_CHECK_NAME]);
+    expect(body.status).toBe('UP');
+    expect(response.status).toBe(200);
 
     await binding.unbind();
     await cluster.leave(); await sys.terminate();
@@ -125,12 +205,15 @@ describe('managementRoutes — cluster queries', () => {
   test('/cluster/leave triggers cluster.leave when enabled', async () => {
     const { sys, cluster, port } = await startNode();
     void port;
-    const { routes } = managementRoutes(sys, cluster, { enableLeaveEndpoint: true });
+    const routes = managementRoutes(sys, cluster, { enableLeaveEndpoint: true });
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
     const response = await fetch(`http://127.0.0.1:${binding.port}/cluster/leave`, { method: 'POST' });
     expect(response.status).toBe(202);
+    // `leave` is answered 202 before it has been applied, and what follows is a
+    // disjunction over three acceptable end states (gone, 'leaving', 'removed'),
+    // so there is no single condition to poll for.
     await Bun.sleep(100);
     // After leave, the cluster's started flag is cleared — getMembers() may still show self in 'leaving'.
     const members = cluster.getMembers();
@@ -143,7 +226,7 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/cluster/down 404s for unknown address (endpoint enabled)', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster, { enableDownEndpoint: true });
+    const routes = managementRoutes(sys, cluster, { enableDownEndpoint: true });
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -161,7 +244,7 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/cluster/down rejects body without address field', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster, { enableDownEndpoint: true });
+    const routes = managementRoutes(sys, cluster, { enableDownEndpoint: true });
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -178,7 +261,7 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/cluster/down is 404 when endpoint is disabled', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster);   // defaults — disabled
+    const routes = managementRoutes(sys, cluster);   // defaults — disabled
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -195,7 +278,7 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/cluster/shards 400s without `type` query parameter', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster);
+    const routes = managementRoutes(sys, cluster);
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -206,16 +289,25 @@ describe('managementRoutes — cluster queries', () => {
     await cluster.leave(); await sys.terminate();
   });
 
-  test('/cluster/shards 404s when DistributedData has no shard state for the type', async () => {
+  test('/cluster/shards 404s for a type this node has no region for', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster);
+    const routes = managementRoutes(sys, cluster);
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
     const response = await fetch(`http://127.0.0.1:${binding.port}/cluster/shards?type=Orders`);
     expect(response.status).toBe(404);
-    // Either "DistributedData not started" or "no shard-map recorded"
-    // depending on which path triggers.
+    const body = await response.text();
+    expect(body).toContain('Orders');
+    // The 404 used to be a DistributedData precondition, and it fired on every
+    // default configuration — nothing in `src/` starts that extension, so a
+    // 200 was unreachable out of the box (#682).  The route reads
+    // `ClusterSharding.shardMap()` now, and the only precondition left is
+    // participating in the type, so naming DD here would mean the old data
+    // source is back.  See
+    // `tests/integration/in-process/cluster/sharding/ShardMapEndpoint.test.ts`
+    // for the 200 this makes reachable.
+    expect(body).not.toContain('DistributedData');
 
     await binding.unbind();
     await cluster.leave(); await sys.terminate();
@@ -223,7 +315,7 @@ describe('managementRoutes — cluster queries', () => {
 
   test('/metrics returns Prometheus text format when enabled', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster, { enableMetricsEndpoint: true });
+    const routes = managementRoutes(sys, cluster, { enableMetricsEndpoint: true });
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -236,9 +328,32 @@ describe('managementRoutes — cluster queries', () => {
     await cluster.leave(); await sys.terminate();
   });
 
+  test('/metrics refuses a registry it cannot read, and leaves /health alone', async () => {
+    const { sys, cluster } = await startNode();
+    // The documented "one scrape endpoint" wiring: the operator's own
+    // collector holds the values, and this registry keeps no copy (#744).
+    sys.extension(MetricsExtensionId).useRegistry(new WriteThroughRegistry());
+    const routes = managementRoutes(sys, cluster, { enableMetricsEndpoint: true });
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const metrics = await fetch(`http://127.0.0.1:${binding.port}/metrics`);
+    expect(metrics.status).toBe(503);
+    expect(await metrics.text()).toContain('collect()');
+
+    // The reason the refusal is a per-request status and not a throw from
+    // `managementRoutes`: a startup error would take the probes down too, to
+    // report a metrics problem that costs the node nothing else.
+    const health = await fetch(`http://127.0.0.1:${binding.port}/health`);
+    expect(health.status).toBe(200);
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
   test('/metrics is 404 when disabled (default)', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster);
+    const routes = managementRoutes(sys, cluster);
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -287,6 +402,7 @@ describe('managementRoutes — cluster queries', () => {
     while (Date.now() < deadline) {
       const sees = clA.getMembers().some(m => m.address.equals(clB.selfAddress) && m.status === 'up');
       if (sees) break;
+      // The poll cadence of the loop above, not a wait.
       await Bun.sleep(20);
     }
     // Force-down B from A.
@@ -324,7 +440,7 @@ describe('managementRoutes — auth + IP allowlist (#312)', () => {
 
   test('/cluster/members is 401 without bearer token; 200 with correct token', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster, {
+    const routes = managementRoutes(sys, cluster, {
       auth: BearerTokenAuth({ tokens: ['s3cret-token'] }),
     });
     const http = sys.extension(HttpExtensionId);
@@ -349,10 +465,10 @@ describe('managementRoutes — auth + IP allowlist (#312)', () => {
 
   test('/health and /ready remain anonymous when auth is set (default)', async () => {
     const { sys, cluster } = await startNode();
-    const { routes, health } = managementRoutes(sys, cluster, {
+    const routes = managementRoutes(sys, cluster, {
       auth: BearerTokenAuth({ tokens: ['s3cret-token'] }),
     });
-    health.addLiveness(() => ({ name: 'ok', status: true }));
+    healthChecksOf(sys).addLiveness(() => ({ name: 'ok', status: true }));
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -369,11 +485,11 @@ describe('managementRoutes — auth + IP allowlist (#312)', () => {
 
   test('authProtectHealth: true forces auth on health/ready too', async () => {
     const { sys, cluster } = await startNode();
-    const { routes, health } = managementRoutes(sys, cluster, {
+    const routes = managementRoutes(sys, cluster, {
       auth: BearerTokenAuth({ tokens: ['s3cret-token'] }),
       authProtectHealth: true,
     });
-    health.addLiveness(() => ({ name: 'ok', status: true }));
+    healthChecksOf(sys).addLiveness(() => ({ name: 'ok', status: true }));
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
 
@@ -391,7 +507,7 @@ describe('managementRoutes — auth + IP allowlist (#312)', () => {
 
   test('ipAllowlist gates every endpoint including /health by network', async () => {
     const { sys, cluster } = await startNode();
-    const { routes } = managementRoutes(sys, cluster, {
+    const routes = managementRoutes(sys, cluster, {
       // Allowlist contains nothing useful — we want the middleware to
       // refuse the request, then we'll relax it via getClientIp.
       ipAllowlist: IpAllowlist({

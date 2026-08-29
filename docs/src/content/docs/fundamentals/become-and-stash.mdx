@@ -204,7 +204,7 @@ unstashAll(): void;
 readonly stashSize: number;
 ```
 
-Three details that matter:
+Four details that matter:
 
 - **`stash()` must be called from inside a user-message handler.**
   It parks the *currently-handled* message.  Calling it from
@@ -218,6 +218,14 @@ Three details that matter:
   memory leaks from runaway stashing; overflow throws
   `StashOverflowError`.  The bound is a fixed 1024 messages,
   compiled in — there's no configuration knob for it.
+- **A bounded mailbox bounds the replay too.**  Mailboxes are
+  unbounded by default and none of this applies to them, but if you
+  set one with `withMailboxCapacity(...)`, the replay is subject to
+  it: `unstashAll()` onto a full mailbox drops under `drop-head` /
+  `drop-new` (shedding the *newest* queued messages to make room for
+  the older stashed ones) and throws `MailboxFullError` under
+  `reject`, leaving the batch stashed.  See
+  [Mailboxes](/fundamentals/mailboxes/#mailboxes--stash).
 
 ### `stash` + `become` — the canonical combo
 
@@ -303,6 +311,10 @@ dropped during the initialization window.
   **dead letters**, so the loss is at least visible; if the messages
   matter across failure, persist them (`PersistentActor`) or have a
   parent re-send them once the restart settles.
+
+  The same holds for the typed DSL's
+  [`Behaviors.withStash`](/typed/behaviors/) buffer, including the
+  restart a `Behaviors.supervise` strategy performs on its own.
 </Aside>
 
 ## When to reach for which

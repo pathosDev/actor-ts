@@ -119,6 +119,7 @@ export async function registerObjectStoragePlugins(
       ...(resolvedOptions.encryption !== undefined ? { encryption: resolvedOptions.encryption } : {}),
       ...(resolvedOptions.integrity !== undefined ? { integrity: resolvedOptions.integrity } : {}),
       ...(resolvedOptions.allowUntaggedBodies !== undefined ? { allowUntaggedBodies: resolvedOptions.allowUntaggedBodies } : {}),
+      ...(resolvedOptions.requireContextBinding !== undefined ? { requireContextBinding: resolvedOptions.requireContextBinding } : {}),
       ...(resolvedOptions.maxDecompressedBytes !== undefined ? { maxDecompressedBytes: resolvedOptions.maxDecompressedBytes } : {}),
       ...(resolvedOptions.serializer !== undefined ? { serializer: resolvedOptions.serializer } : {}),
     });
@@ -132,6 +133,8 @@ export async function registerObjectStoragePlugins(
     ...(resolvedOptions.encryption !== undefined ? { encryption: resolvedOptions.encryption } : {}),
     ...(resolvedOptions.integrity !== undefined ? { integrity: resolvedOptions.integrity } : {}),
     ...(resolvedOptions.allowUntaggedBodies !== undefined ? { allowUntaggedBodies: resolvedOptions.allowUntaggedBodies } : {}),
+    ...(resolvedOptions.requireContextBinding !== undefined ? { requireContextBinding: resolvedOptions.requireContextBinding } : {}),
+    ...(resolvedOptions.rejectRevisionRollback !== undefined ? { rejectRevisionRollback: resolvedOptions.rejectRevisionRollback } : {}),
     ...(resolvedOptions.maxDecompressedBytes !== undefined ? { maxDecompressedBytes: resolvedOptions.maxDecompressedBytes } : {}),
     ...(resolvedOptions.serializer !== undefined ? { serializer: resolvedOptions.serializer } : {}),
   });

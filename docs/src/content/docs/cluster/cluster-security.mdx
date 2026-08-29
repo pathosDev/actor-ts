@@ -21,6 +21,19 @@ For the operational context, see
 | Unauthorized join (anyone with port access can join) | mTLS (cert-based peer auth) |
 | Compromised cert (issued for a stolen identity) | Cert rotation + revocation |
 | Replay of a captured gossip frame | TLS, plus the per-sender frame sequence every cluster enforces |
+| A member speaking for another node in a payload | Framework handlers hold a payload's claimed identity against the connection's peer — see [what a replica trusts from its peers](/persistence/replicated-event-sourcing/overview/#what-a-replica-trusts-from-its-peers) |
+
+mTLS is what makes the last row work rather than something it
+duplicates: holding a claim against the connection's peer is only
+worth anything once the peer is authenticated.
+
+That row covers the in-process [worker mesh](/cluster/worker-mesh/)
+too, which used to be the one path where it did not hold: `WorkerBroker`
+re-addresses every frame to the `MessagePort` it arrived on, so a
+worker cannot write a sibling's address into `from`.  Nothing has to be
+configured for it, and no mTLS underwrites it — the host assigns each
+worker's address and holds its port, so the binding is structural
+rather than authenticated.
 
 ## Enabling TLS
 

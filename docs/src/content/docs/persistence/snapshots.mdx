@@ -141,6 +141,28 @@ State is stored in the tagged JSON tree format on every backend, so
 recover as real instances — see
 [what events and state may contain](/persistence/persistent-actor/#what-events-and-state-may-contain).
 
+## Retention is best-effort; the write is not
+
+Stores that bound retention (`keepN`) prune on each save.  That
+retention pass is **best-effort across every backend**: once the
+snapshot itself is durable, `save` resolves, and a prune that fails
+afterwards is swallowed rather than surfaced.
+
+The two halves have opposite failure meanings, which is why they
+are not reported the same way:
+
+- A failed **write** means your snapshot does not exist.  Retrying
+  is the right response, and `save` rejects so you can.
+- A failed **prune** means one row too many exists.  It is
+  harmless, `loadLatest` cannot see it, and the next save tries
+  again.
+
+Reporting the second as the first would tell a caller to retry a
+write that already succeeded — and an actor that treats a snapshot
+failure as fatal would then die over a housekeeping error.  If you
+implement a custom `SnapshotStore`, run the prune outside the
+write's error handling.
+
 ## Recovery flow with snapshots
 
 ```mermaid

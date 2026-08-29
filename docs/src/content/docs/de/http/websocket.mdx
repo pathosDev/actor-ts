@@ -96,6 +96,9 @@ type WebsocketRouteOptions<TOut, TIn> = {
   onBackpressure?:   'drop' | 'close';                // default 'drop'
   allowedOrigins?:   string[];                        // CSWSH-Schutz — siehe unten
   maxConnections?:   number;                          // Limit gleichzeitiger Verbindungen; Default unbegrenzt
+  maxPreAttachFrames?: number;                        // Frame-Limit im Aufbaufenster; Default 256
+  maxPreAttachBytes?:  number;                        // Byte-Limit im Aufbaufenster; Default 4 MiB
+  acceptTimeoutMs?:    number;                        // Aufbau-Frist; Default 10 000, Infinity schaltet ab
 };
 ```
 
@@ -116,33 +119,69 @@ schließen.
 
 `maxFrameBytes` wird zweimal geprüft, zu zwei verschiedenen Zeitpunkten:
 
-- **Im Transport**, bei **1 MiB** — dem eingebauten Default, den das
-  Framework beim Binden an den Socket der Laufzeit weiterreicht.  Ein
-  größerer Frame wird abgewiesen, *während er eintrifft*; ein feindlicher
-  Peer kann den Prozess also nicht dazu bringen, 16 MiB (Bun) oder 100 MiB
-  (`ws`) zu puffern, nur damit das Ergebnis anschließend verworfen wird.
-  Weil die Laufzeit dabei auflegt, statt einen Policy-Close zu senden,
-  sieht der Client hier einen abnormalen Close (**1006**) und keine 1009.
-- **Im Connection-Actor**, bei deinem `maxFrameBytes` — am vollständig
+- **Im Transport**, bei deinem aufgelösten `maxFrameBytes` — das Framework
+  reicht es beim Binden an den Socket der Laufzeit weiter.  Ein größerer
+  Frame wird abgewiesen, *während er eintrifft*; ein feindlicher Peer kann
+  den Prozess also nicht dazu bringen, 16 MiB (Bun) oder 100 MiB (`ws`) zu
+  puffern, nur damit das Ergebnis anschließend verworfen wird.  Weil die
+  Laufzeit dabei auflegt, statt einen Policy-Close zu senden, sieht der
+  Client hier einen abnormalen Close (**1006**) und keine 1009.
+  Zwei Laufzeit/Backend-Paare haben diese Ebene nicht — siehe den
+  Warnhinweis weiter unten.
+- **Im Connection-Actor**, bei demselben `maxFrameBytes` — am vollständig
   empfangenen Frame, vor dem Dekodieren, mit Close **1009**.
 
-Wichtig dabei: Das Transport-Limit ist der Framework-Default, nicht die
-Zahl deiner Route.  `maxFrameBytes` zu **senken** wirkt genau wie
-geschrieben; es **über 1 MiB anzuheben, hebt das Transport-Limit nicht
-mit** — Frames zwischen 1 MiB und deinem Limit werden weiterhin
-abgeschnitten.  Backends sehen die Policy einer Route beim Binden nicht;
-sie wird erst bei der ersten Verbindung aufgelöst.  Genau das muss ein
-konfigurierbares Transport-Limit noch lösen.
+Nur die zweite Ebene ist eine Zusage.  Sie läuft überall und hält den zu
+großen Frame von deinem Actor fern; das Transport-Limit ist eine
+Optimierung darüber, die dem Prozess die Pufferung erspart.
 
-<Aside type="caution" title="Deno hat kein Transport-Limit">
-Auf Deno existiert die erste Ebene nicht.  `Deno.upgradeWebSocket` nimmt
-ein Subprotokoll und ein Idle-Timeout entgegen und kein Payload-Limit — es
-gibt also nichts, das das Framework setzen könnte: Ein zu großer Frame wird
-von der Laufzeit vollständig gepuffert und erst danach vom
-Connection-Actor abgewiesen.  Die Zusage gilt weiterhin — der Frame
-erreicht deinen Actor nie —, aber der Speicher ist ausgegeben, bevor
-abgelehnt wird.  Für einen aus dem Internet erreichbaren WebSocket-Endpunkt
-unter Deno gehört ein Proxy mit eigenem Frame-Limit davor.
+Die Zahl ist in beide Richtungen deine: `maxFrameBytes` zu senken
+verkleinert auch das Puffer-Fenster, und es über den 1-MiB-Default
+anzuheben, lässt Frames dieser Größe tatsächlich durch.  Aufgelöst wird
+wie üblich — Route-Options, dann `actor-ts.http.websocket.maxFrameBytes`,
+dann der eingebaute Default —, und zwar beim Binden des Servers; ein
+ungültiger Wert ist damit ein Fehler in `bind()` und nicht erst beim
+ersten Upgrade.
+
+Das Transport-Limit gilt **pro Server, nicht pro Route**.  Ein Server hat
+genau einen Transport für alle seine WebSocket-Routen (ein
+`WebSocketServer` auf Express, eine Plugin-Registrierung auf Fastify, ein
+`Bun.serve`).  Wo mehrere Routen sich unterscheiden, nimmt der Transport
+deshalb das **größte** ihrer Limits.  Was eine strengere Route annimmt,
+ändert das nicht — der Connection-Actor weist ihre zu großen Frames
+weiterhin mit 1009 ab —, sie bekommt nur nicht das engere Puffer-Fenster,
+das sie allein gehabt hätte.
+
+Das ist eine Entscheidung und keine Lücke.  Fastify und `Bun.serve` können
+immer nur ein einziges Limit halten; Express könnte strukturell eines pro
+Route halten, und es dort zu tun hieße, dass dieselbe Konfiguration je
+nach Backend etwas anderes bedeutet — bei einem Limit, dessen ganze
+Aufgabe es ist zu begrenzen, was eine feindliche Gegenstelle allozieren
+kann, ist eine Form überall mehr wert als ein engeres Fenster auf einem
+Backend von dreien.
+
+<Aside type="caution" title="Zwei Paare haben kein Transport-Limit">
+Auf **Deno** nimmt `Deno.upgradeWebSocket` ein Subprotokoll und ein
+Idle-Timeout entgegen und kein Payload-Limit — es gibt also nichts, das das
+Framework setzen könnte.
+
+Auf **Bun** mit dem **Express**- oder **Fastify**-Backend wird das Limit
+zwar gesetzt, aber nicht beachtet.  Beide reichen `maxPayload` an einen
+`ws`-`WebSocketServer` weiter, und auf Bun löst der Spezifizierer `ws` auf
+Buns eigenen eingebauten Shim auf statt auf das npm-Paket.  Der Shim nimmt
+die Option an und liefert sie unverändert zurück — von außen sieht also
+nichts falsch aus —, setzt sie aber nicht durch: Hier gemessen erreichte
+ein 2-MiB-Frame gegen ein 1-MiB-Limit den Handler unversehrt, während
+derselbe Code auf Node ihn am Socket abwies und mit 1009 schloss.  (Bun mit
+dem **Hono**-Backend ist nicht betroffen: Es geht über
+`maxPayloadLength` von `Bun.serve` statt über `ws`.)
+
+In allen drei Fällen wird der Frame von der Laufzeit vollständig gepuffert
+und erst danach vom Connection-Actor abgewiesen.  Die Zusage gilt weiterhin
+— der Frame erreicht deinen Actor nie, und der Client bekommt weiterhin
+sein 1009 —, aber der Speicher ist ausgegeben, bevor abgelehnt wird.  Für
+einen aus dem Internet erreichbaren WebSocket-Endpunkt auf einem dieser
+Paare gehört ein Proxy mit eigenem Frame-Limit davor.
 </Aside>
 
 <Aside type="note" title="Hono auf Node braucht @hono/node-ws 1.2.0 oder neuer">
@@ -154,6 +193,42 @@ das Backend den Aufbau der WebSocket-Bridge und nennt die Version im
 Fehler.  Deshalb beginnt der Peer-Range bei 1.2.0; ein einfaches
 `npm install @hono/node-ws` wählt von sich aus eine ausreichend neue Version.
 </Aside>
+
+#### Das Aufbaufenster einer Verbindung
+
+Zwischen dem Abschluss des Handshakes und dem Moment, in dem der
+Connection-Actor seine Listener anhängt, liegt ein kurzes Fenster — zwei
+Mailbox-Schritte —, in dem der Socket lebt und niemand mitliest.  Frames,
+die darin ankommen, werden gehalten und in dem Moment nachgespielt, in dem
+der Actor anhängt; verloren geht also nichts.  Zwei Stellschrauben
+begrenzen, was dieses Fenster kosten darf, und beide gibt es, weil sein
+Ende nicht garantiert ist: den Actor spawnt der Hub, und ein Hub, der
+gestoppt wurde, hängt oder umkonfiguriert wurde, liefert unter Umständen
+nie einen.
+
+- **`maxPreAttachFrames` / `maxPreAttachBytes`** begrenzen, was gehalten
+  wird.  Jenseits davon wird der Socket mit **1013** ("try again later")
+  geschlossen statt weiter gepuffert.  Ein legitimer Client schickt in
+  dieses Fenster nichts oder eine Begrüßung, die Defaults — 256 Frames,
+  4 MiB — liegen also um Größenordnungen über normalem Verkehr; abgewiesen
+  wird ein Peer, der in eine noch gar nicht angenommene Verbindung
+  hineinstreamt.  Der **erste** Frame wird immer angenommen, unabhängig von
+  seiner Größe (`maxFrameBytes` begrenzt ihn ohnehin bereits) — eine Route,
+  die `maxFrameBytes` über 4 MiB hebt, muss `maxPreAttachBytes` also nur
+  mitheben, wenn ihre Clients *mehrere* solcher Frames auf einmal senden.
+- **`acceptTimeoutMs`** begrenzt, wie lange das Fenster offen bleiben darf.
+  Hat sich innerhalb dieser Frist kein Connection-Actor angehängt, wird der
+  Socket mit 1013 geschlossen und sein `maxConnections`-Platz freigegeben.
+  Standardmäßig zehn Sekunden: ein gesunder Hub hängt sich in Mikrosekunden
+  an, das hier ist also ein Auffangnetz und keine Liveness-Regel — und ein
+  Actor, der nach der Frist doch noch auftaucht, bekommt das Close statt
+  eines Sockets, den das Framework längst geschlossen hat.  `Infinity`
+  schaltet es ab.
+
+Beides ist nicht versehentlich erreichbar.  Beides beantwortet dieselbe
+Störung: ein aufgewerteter Socket ohne Actor dahinter, der vorher für die
+Lebensdauer des Prozesses offen blieb, Frames sammelte, die niemand je
+abholt, und einen Platz belegte, den niemand je zurückgibt.
 
 ### Origin-Allowlist (CSWSH-Schutz)
 
@@ -200,6 +275,29 @@ withMiddleware(BearerTokenAuth({ /* ... */ }), websocket('/ws', chat));
 
 Die Middleware-Sammlung steht in der
 [HTTP-Übersicht](/de/http/overview/).
+
+#### Antwort-dekorierende Middleware funktioniert ebenfalls
+
+Middleware, die `next()` aufruft und eine **dekorierte** Kopie des
+Ergebnisses zurückgibt — `securityHeaders()`, `contentSecurityPolicy()`,
+`strictTransportSecurity()`, `requestId()`, `csrfProtection()` —,
+komponiert ebenso über einer `websocket()`-Route.  Ein einziges Wrap kann
+damit einen ganzen Baum härten, ohne den Socket herauszuschneiden:
+
+```ts
+import { requestId, securityHeaders, websocket, withMiddleware } from 'actor-ts/http';
+
+withMiddleware(securityHeaders(), withMiddleware(requestId(), websocket('/ws', chat)));
+// Both run at upgrade time.  The socket opens.
+```
+
+Die Header, die solche Middleware setzt, erreichen einen **erfolgreichen**
+Handshake **nicht** — diese 101-Antwort schreibt das Backend selbst, und
+eine WebSocket-Verbindung ist kein Dokument, auf das ein Browser
+`X-Frame-Options` oder eine CSP anwenden würde.  Auf einer **Ablehnung**
+fahren sie dagegen mit: Ein 401 einer inneren `BearerTokenAuth` kommt mit
+den Security-Headern zurück — und genau das ist der Fall, auf den es
+ankommt, denn diese Antwort rendert ein Browser tatsächlich.
 
 ### Backend-eigene Middleware läuft ebenfalls
 
@@ -289,6 +387,49 @@ nebenläufige Handler-Ausführung, keine Locks.
   Hooks.
 </Aside>
 
+### Die Mailbox des Hubs begrenzen
+
+Ein Hub trägt jeden eingehenden Frame jeder Verbindung der Route und
+ist damit der Musterfall für eine
+[begrenzte Mailbox](/de/fundamentals/mailboxes/#wann-eine-mailbox-begrenzen):
+ein Actor, der einem Produzenten ausgesetzt ist, den du nicht
+kontrollierst.  Auf ihm läuft aber auch der verbindungsinterne Verkehr
+des Frameworks.  Daraus folgen zwei Dinge.
+
+**Das Kommando, das den Actor einer Verbindung spawnt, kann nicht
+verworfen werden.**  Es nimmt dieselbe Spur wie ein `Terminated` der
+Death-Watch — es wird wie alles andere am Ende der Schlange eingereiht,
+ist aber von jeder Overflow-Policy ausgenommen, sodass `drop-head`,
+`drop-new`, `reject` und auch eine eigene `PriorityMailbox` es
+unangetastet lassen.  Das ist wichtig, weil dieses Kommando genau
+einmal gesendet wird — aus dem Upgrade-Callback des Backends — und die
+einzige Referenz auf einen Socket trägt, dessen Handshake bereits
+abgeschlossen ist.  Es zu verlieren würde diesen Socket aufgewertet
+zurücklassen, ohne dass etwas daran hängt: keine Listener, eingehende
+Frames stapeln sich ungelesen, und sein `maxConnections`-Platz bleibt
+belegt, bis der Client aufgibt.  Einen Hub, der aus einem anderen Grund
+nicht antworten kann — er ist gestoppt, oder er kommt nie zu dem Kommando —,
+fängt stattdessen [das Aufbaufenster](#das-aufbaufenster-einer-verbindung)
+ab: es schließt den Socket und gibt den Platz zurück.
+
+**Was eine Begrenzung dagegen weiterhin verwirft, ist der Rest.**
+Eingehende Frames und die Signale `onClientConnected` /
+`onClientDisconnected`, die die Connection-Actors melden — ein
+begrenzter Hub unter Last kann dir also einen Client liefern, der nie in
+`this.clients` erscheint, oder einen, der sie nie verlässt.  Beides ist
+dein Protokoll, und nur du weißt, ob ein Verlust akzeptabel ist.
+
+<Aside type="tip" title="Bevorzuge die Caps pro Route">
+  Greife bei einem Hub zu `maxConnections` und `maxFrameBytes`, bevor du
+  `withMailboxCapacity()` verwendest.  Sie begrenzen die *Eingabe* — wie
+  viele Peers sich verbinden dürfen und wie groß ein Frame sein darf —
+  wo eine Mailbox-Kapazität den Rückstau begrenzt und dafür mit dem
+  Verwerfen bereits angenommener Nachrichten bezahlt.  Der unbegrenzte
+  Standard schweigt über Wachstum nicht: eine Queue, die 10 000
+  Nachrichten erreicht, protokolliert eine Warnung, und erneut bei jeder
+  Verdopplung.
+</Aside>
+
 ## `WebsocketConnection`
 
 Jede Verbindung ist eine `WebsocketConnection<TOut>`, die
@@ -335,8 +476,7 @@ Der Route-Codec dekodiert eingehende Frames in `TIn` und kodiert
 `TOut`-Antworten.  Der Default ist `jsonCodec()`:
 
 ```ts
-import { WebsocketRouteOptions } from 'actor-ts/http';
-import { jsonCodec } from 'actor-ts/persistence';
+import { WebsocketRouteOptions, jsonCodec } from 'actor-ts/http';
 
 const webSocketRouteOptions = WebsocketRouteOptions.create().withCodec(jsonCodec<ServerMessage, ClientMessage>({
     validate: (v: unknown): ClientMessage => ClientMsgSchema.parse(v),
@@ -402,6 +542,9 @@ actor-ts.http.websocket {
   onInvalidMessage = close
   maxBufferedBytes = 4194304
   onBackpressure   = drop
+  maxPreAttachFrames = 256
+  maxPreAttachBytes  = 4M
+  acceptTimeoutMs    = 10s
 }
 ```
 

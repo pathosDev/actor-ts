@@ -19,6 +19,33 @@ export type ClusterSingletonManagerOptionsType<T> = {
   readonly lease?: Lease;
   /** Retry interval for `lease.acquire()` after a failed attempt.  Default: 5 s. */
   readonly acquireRetryIntervalMs?: number;
+  /**
+   * How long to wait for every eligible peer to confirm it is not hosting
+   * before spawning anyway — see
+   * {@link StartSingletonOptionsType.handOverTimeoutMs}.  Default: 10 s.
+   */
+  readonly handOverTimeoutMs?: number;
+  /**
+   * Cap on a warm-hand-over snapshot's size in bytes — see
+   * {@link StartSingletonOptionsType.maxHandOverStateBytes}.  Default: 1 MiB.
+   */
+  readonly maxHandOverStateBytes?: number;
+  /**
+   * Whether the manager re-spawns the singleton after its child dies
+   * *unexpectedly* — `context.stopSelf()`, or a supervision budget exhausted
+   * — as opposed to the planned teardown of a handover.  Default: `true`.
+   *
+   * `true` is the availability-preserving answer, and the reason it is the
+   * default: without it the singleton is gone cluster-wide until the next
+   * leader change, which in a stable cluster may be never (#1175).
+   *
+   * Set it to `false` when the actor uses `stopSelf()` as a terminal state
+   * and "done" genuinely means done.  The manager then releases its lease
+   * instead, so another node *could* host — rather than holding a lease over
+   * a dead child, which is the one shape that makes the outage unrecoverable
+   * without a restart.
+   */
+  readonly restartOnTermination?: boolean;
 };
 
 /**
@@ -67,6 +94,21 @@ export class ClusterSingletonManagerOptionsBuilder<T> extends OptionsBuilder<Clu
   withAcquireRetryIntervalMs(ms: number): this {
     return this.set('acquireRetryIntervalMs', ms);
   }
+
+  /** How long to wait for eligible peers to stand down before spawning.  Default 10 s. */
+  withHandOverTimeoutMs(ms: number): this {
+    return this.set('handOverTimeoutMs', ms);
+  }
+
+  /** Cap on a warm-hand-over snapshot's size in bytes.  Default 1 MiB. */
+  withMaxHandOverStateBytes(bytes: number): this {
+    return this.set('maxHandOverStateBytes', bytes);
+  }
+
+  /** Re-spawn the singleton after an unexpected child death?  Default `true`. */
+  withRestartOnTermination(restartOnTermination: boolean): this {
+    return this.set('restartOnTermination', restartOnTermination);
+  }
 }
 
 /**
@@ -94,6 +136,8 @@ export class ClusterSingletonManagerOptionsValidator<T>
     this.nonEmptyString('typeName');
     this.nonEmptyString('role');
     this.positiveNumber('acquireRetryIntervalMs');
+    this.positiveNumber('handOverTimeoutMs');
+    this.positiveInt('maxHandOverStateBytes');
   }
 }
 

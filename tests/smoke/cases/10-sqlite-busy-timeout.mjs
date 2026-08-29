@@ -76,7 +76,7 @@ export async function run({ actorTs, loadEntry }) {
     .withBusyTimeoutMs(500);
   const journal = new SqliteJournal(journalOptions);
   try {
-    const written = await journal.append('account-1', ['created', 'deposited:10'], 0);
+    const written = await journal.append('account-1', [{ event: 'created' }, { event: 'deposited:10' }], 0);
     if (written.map((e) => e.sequenceNr).join(',') !== '1,2') {
       throw new Error(`expected seq 1,2 — got ${written.map((e) => e.sequenceNr).join(',')}`);
     }

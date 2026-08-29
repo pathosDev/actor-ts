@@ -47,6 +47,7 @@ interface AmqpOptionsType extends BrokerCommonOptionsType {
   prefetch?:  number;                          // unacked messages per consumer; default 1
   autoAcknowledge?:      boolean;                         // ack on delivery vs after processing; default true
   bindings?:  ReadonlyArray<AmqpQueueBinding>; // queue ↔ exchange ↔ routingKey ↔ target
+  tls?:       TlsTransportOptionsType;         // cert material for an amqps:// dial; code-only
 }
 
 type AmqpQueueBinding = {
@@ -124,6 +125,34 @@ consumer at a time.  (The raw AMQP protocol default is 0 =
 unlimited, but the actor sets `prefetch` to 1 unless you override
 it.)  Raise it to a sensible batch size (10-50) to keep the
 consumer busy without overwhelming it.
+
+## TLS
+
+An `amqps://` URL starts the handshake and amqplib verifies the
+broker against the **system trust store**.  Behind a private CA, or
+when the broker asks for a client certificate, add `withTls` — it
+reaches amqplib as its `socketOptions` argument:
+
+```ts
+const amqpOptions = AmqpOptions.create()
+  .withUrl('amqps://rabbitmq.example.com:5671')
+  .withTls({
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+    cert: fs.readFileSync('./tls/client.crt', 'utf8'),
+    key: fs.readFileSync('./tls/client.key', 'utf8'),
+  });
+new AmqpActor(amqpOptions);
+```
+
+Every field carries **the material itself**, never a path to it,
+which is why the example reads the files.  `cert` and `key` only
+mean anything together, and one without the other is rejected when
+the actor starts rather than throwing inside the handshake.
+
+AMQP URL query parameters carry `heartbeat`, `frameMax`,
+`channelMax` and `locale` — never certificate material — so
+`withTls` is the only way to express this.  It has no config key on
+purpose: a private key does not belong in `application.conf`.
 
 ## Peer dependency
 

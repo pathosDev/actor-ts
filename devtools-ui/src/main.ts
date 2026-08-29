@@ -1,73 +1,39 @@
 /**
  * DevTools UI bootstrap.
  *
- * Registration is the only place that knows the full panel roster:
- * every later phase adds one entry here plus its own directory, and
- * the shell, router and dashboard pick it up without changes.  Panels
- * are declared even before their server side exists — the handshake
- * decides whether each one is usable, so an unimplemented panel shows
- * up as an explained card rather than vanishing.
+ * Angular owns the whole application from #485 on: the shell is components
+ * reading signals, every panel is a component, and the router mounts them.
+ * Nothing hand-rolled survives — `core/signal.ts`, `core/dom.ts`,
+ * `core/router.ts`, `shell/PanelRegistry.ts` and the migration's own adapters
+ * are gone with the last panel that needed them.
+ *
+ * `withHashLocation()` is mandatory, not a style choice.  `UiAssetRoutes.ts`
+ * deliberately serves no SPA fallback, so a request for a PATH that is not an
+ * asset has to 404 rather than return this document — which is what lets the
+ * same bundle be served at the server root (`DevTools.attach`) and under a
+ * prefix (`DevTools.mount('/devtools')`).  Keeping every navigation target in
+ * the hash is what preserves that while still giving the panels real URLs.
+ *
+ * Zoneless: there is no `zone.js` in `angular.json`'s `polyfills` and nothing
+ * needs it.  The reactive model is Angular signals throughout, which is the
+ * reason this framework was the one picked — the previous `signal`/`computed`/
+ * `effect` layer ported across rather than being rewritten.
+ *
+ * The stylesheet is not imported here.  `base.css` is a global sheet listed in
+ * `angular.json`'s `styles`, which is how Angular's builder extracts it; a
+ * side-effect `import './styles/base.css'` was Bun's mechanism and would now
+ * produce a second, component-scoped copy.
  */
-import './styles/base.css';
-import { connectTap, tapUrl } from './core/tapClient.js';
-import { registerPanel } from './shell/PanelRegistry.js';
-import { mountAppShell } from './shell/AppShell.js';
+import { provideZonelessChangeDetection } from '@angular/core';
+import { bootstrapApplication } from '@angular/platform-browser';
+import { provideRouter, withHashLocation } from '@angular/router';
 
-registerPanel({
-  id: 'dashboard',
-  title: 'Overview',
-  description: 'System at a glance and the way into every tool.',
-  order: 0,
-  load: () => import('./panels/dashboard/dashboardPanel.js'),
+import { AppShellComponent } from './app/AppShellComponent.js';
+import { APP_ROUTES } from './app/panelRoutes.js';
+
+await bootstrapApplication(AppShellComponent, {
+  providers: [
+    provideZonelessChangeDetection(),
+    provideRouter(APP_ROUTES, withHashLocation()),
+  ],
 });
-
-registerPanel({
-  id: 'actors',
-  title: 'Actors',
-  description: 'Live actor tree, mailbox depths and the busiest actors.',
-  order: 10,
-  load: () => import('./panels/actors/actorsPanel.js'),
-});
-
-registerPanel({
-  id: 'cluster',
-  title: 'Cluster',
-  description: 'Node topology, shard distribution and membership history.',
-  order: 20,
-  load: () => import('./panels/cluster/clusterPanel.js'),
-});
-
-registerPanel({
-  id: 'tracing',
-  title: 'Tracing',
-  description: 'Flame graph and waterfall over recorded message spans.',
-  order: 30,
-  load: () => import('./panels/tracing/tracingPanel.js'),
-});
-
-registerPanel({
-  id: 'explain',
-  title: 'Explain plan',
-  description: 'The last messages one actor handled, with timings.',
-  order: 40,
-  load: () => import('./panels/explain/explainPanel.js'),
-});
-
-registerPanel({
-  id: 'time-travel',
-  title: 'Time travel',
-  description: 'Browse a journal and reconstruct state at any point.',
-  order: 50,
-  load: () => import('./panels/timetravel/timeTravelPanel.js'),
-});
-
-registerPanel({
-  id: 'profiler',
-  title: 'Profiler',
-  description: 'Sample where the actor system spends its time.',
-  order: 60,
-  load: () => import('./panels/profiler/profilerPanel.js'),
-});
-
-const root = document.getElementById('app');
-if (root !== null) mountAppShell(root, connectTap(tapUrl()));

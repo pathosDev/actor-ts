@@ -4,16 +4,19 @@ import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
   JournalError,
+  type JournalEntry,
   type PersistentEvent,
 } from '../JournalTypes.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
-import { assertValidTags } from '../storage/TagValidator.js';
+import { assertValidEntryTags } from '../storage/TagValidator.js';
+import { STORAGE_IDENTITY_TABLE } from '../Constants.js';
 import { applySqliteBusyTimeout } from './SqliteClient.js';
 import { SqliteJournalOptionsValidator } from './SqliteJournalOptions.js';
 import type { SqliteJournalOptions, SqliteJournalOptionsType } from './SqliteJournalOptions.js';
+import type { StorageLocality } from '../StorageLocality.js';
 
 type Stmts = {
   insert: SqliteStatement;
@@ -65,6 +68,27 @@ export class SqliteJournal implements Journal {
    * limit of in-process notifications.
    */
   readonly events: JournalEventBus = new InProcessJournalEventBus();
+  /** A local file (or `:memory:`) no other node can reach (#1356). */
+  readonly storageLocality: StorageLocality = 'node-local';
+  private cachedStorageIdentity: string | null = null;
+
+  /** Identity of the database file — see `STORAGE_IDENTITY_TABLE` for why it is unprefixed (#1358). */
+  async storageIdentity(): Promise<string> {
+    if (this.cachedStorageIdentity !== null) return this.cachedStorageIdentity;
+    await this.ensureOpen();
+    const database = this.db!;
+    database
+      .prepare(`INSERT OR IGNORE INTO ${STORAGE_IDENTITY_TABLE}(singleton, identity) VALUES (1, ?)`)
+      .run(crypto.randomUUID());
+    const row = database
+      .prepare(`SELECT identity FROM ${STORAGE_IDENTITY_TABLE} WHERE singleton = 1`)
+      .get() as { identity: string } | null | undefined;
+    if (row == null || typeof row.identity !== 'string' || row.identity.length === 0) {
+      throw new JournalError('SqliteJournal.storageIdentity: identity row missing after insert');
+    }
+    this.cachedStorageIdentity = row.identity;
+    return row.identity;
+  }
 
   private db: SqliteDb | null = null;
   private stmts: Stmts | null = null;
@@ -85,18 +109,17 @@ export class SqliteJournal implements Journal {
 
   async append<E>(
     persistenceId: string,
-    events: ReadonlyArray<E>,
+    entries: ReadonlyArray<JournalEntry<E>>,
     expectedSeq: number,
-    tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
     assertValidPersistenceId(persistenceId, 'SqliteJournal.append');
-    assertValidTags(tags);
+    assertValidEntryTags(entries);
     await this.ensureOpen();
-    if (events.length === 0) return [];
+    if (entries.length === 0) return [];
     const db = this.db!;
     const stmts = this.stmts!;
     const now = Date.now();
-    const txn = (items: unknown[]): PersistentEvent<E>[] => this.inWriteTransaction(db, () => {
+    const txn = (items: ReadonlyArray<JournalEntry<E>>): PersistentEvent<E>[] => this.inWriteTransaction(db, () => {
       const row = stmts.highestSeq.get(persistenceId) as { hi: number | null } | undefined;
       const del = (stmts.deletedTo.get(persistenceId) as { d: number | null } | undefined)?.d ?? 0;
       const actualSeq = Math.max(row?.hi ?? 0, del);
@@ -105,25 +128,32 @@ export class SqliteJournal implements Journal {
       }
       const out: PersistentEvent<E>[] = [];
       let seq = actualSeq;
-      for (const ev of items as E[]) {
+      for (const entry of items) {
         seq++;
-        const payload = encodePayload(ev, this.options.serializer);
+        const tags = entry.tags;
+        const payload = encodePayload(entry.event, this.options.serializer);
         const tagString = tags && tags.length ? tags.join(',') : null;
         stmts.insert.run(persistenceId, seq, payload, tagString, now);
         // Also populate the tags join table so SqliteQuery's
         // tag-search can do an indexed lookup instead of a CSV scan.
         // Both inserts run inside the same transaction — partial
         // writes are impossible.
+        //
+        // No empty-tag filter here: `assertValidEntryTags` above rejected the
+        // append outright, so the list reaching this loop cannot hold one.
+        // The filter used to live here *instead* of at the choke point, which
+        // meant the CSV column on the line above kept the empty member the
+        // join table dropped — the same append recorded two different ways
+        // (#740).
         if (tags) {
           for (const tag of tags) {
-            if (tag.length === 0) continue;
             stmts.insertTag.run(persistenceId, seq, tag, now);
           }
         }
         out.push({
           persistenceId: persistenceId,
           sequenceNr: seq,
-          event: ev,
+          event: entry.event,
           timestamp: now,
           tags: tags ? [...tags] : undefined,
         });
@@ -132,7 +162,7 @@ export class SqliteJournal implements Journal {
     });
     let written: PersistentEvent<E>[];
     try {
-      written = txn([...events]);
+      written = txn(entries);
     } catch (e) {
       if (e instanceof JournalConcurrencyError) throw e;
       throw new JournalError(`SqliteJournal.append failed: ${(e as Error).message}`, e);
@@ -203,6 +233,19 @@ export class SqliteJournal implements Journal {
       this.stmts!.upsertDeletedTo.run(persistenceId, toSeq);
     } catch (e) {
       throw new JournalError(`SqliteJournal.delete failed: ${(e as Error).message}`, e);
+    }
+  }
+
+  /**
+   * The same upsert `delete` ends with, without the two DELETEs in front of
+   * it — `MAX(deleted_to, excluded.deleted_to)` makes it monotonic on its own.
+   */
+  async raiseCompactionMark(persistenceId: string, throughSeq: number): Promise<void> {
+    await this.ensureOpen();
+    try {
+      this.stmts!.upsertDeletedTo.run(persistenceId, throughSeq);
+    } catch (e) {
+      throw new JournalError(`SqliteJournal.raiseCompactionMark failed: ${(e as Error).message}`, e);
     }
   }
 
@@ -314,6 +357,10 @@ export class SqliteJournal implements Journal {
         persistence_id TEXT PRIMARY KEY,
         deleted_to     INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS ${STORAGE_IDENTITY_TABLE} (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        identity  TEXT NOT NULL
+      );
     `);
     if (this.options.wal) db.exec('PRAGMA journal_mode = WAL;');
 
@@ -402,6 +449,13 @@ export class SqliteJournal implements Journal {
 
     const fill = db.transaction((items: CsvRow[]) => {
       for (const row of items) {
+        // The empty-member filter stays, and only here.  These rows were
+        // written before `assertValidTags` rejected an empty tag (#740), so a
+        // legacy CSV really can carry `'orders,'` — and the tags table's `tag`
+        // column is NOT NULL and part of the primary key, so an `''` member
+        // would index the whole stream under one useless key.  Dropping it on
+        // backfill is not a rewrite: `read` still returns the CSV verbatim, so
+        // the stored event keeps the tag list it was written with.
         const tagList = row.tags.split(',').filter((t) => t.length > 0);
         for (const tag of tagList) {
           stmts.insertTag.run(row.persistence_id, row.sequence_nr, tag, row.timestamp);

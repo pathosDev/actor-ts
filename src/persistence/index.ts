@@ -10,7 +10,9 @@ export type { EventDispatcherBuilder, EventDispatcherIncomplete } from './EventD
 
 export type { Journal } from './Journal.js';
 export type { SnapshotStore } from './SnapshotStore.js';
-export type { PersistentEvent, Snapshot } from './JournalTypes.js';
+export type { StorageLocality, StorageUseKind } from './StorageLocality.js';
+export { StorageLocalityError } from './StorageLocality.js';
+export type { JournalEntry, PersistentEvent, Snapshot } from './JournalTypes.js';
 export { JournalConcurrencyError, JournalError } from './JournalTypes.js';
 // The two integrity failures a recovery can raise.  Exported because
 // `onRecoveryFailure` is documented as discriminating on them, which needs the
@@ -33,6 +35,11 @@ export {
   assertValidPersistenceId,
   persistenceIdRejection,
 } from './storage/PersistenceIdValidator.js';
+// Same reason, for tags: #740 made an empty or repeated tag a rejected write,
+// so a `tagsFor` an application cannot check ahead of time is a `persist` that
+// throws in production instead.  The caps behind it stay internal — the rules
+// are what a caller checks against, not the numbers.
+export { assertValidTags } from './storage/TagValidator.js';
 export { MAX_PERSISTENCE_ID_LENGTH } from './Constants.js';
 export { StoreSerializerOptionsBuilder } from './storage/StoreSerializerOptions.js';
 export type { StoreSerializerOptionsBase } from './storage/StoreSerializerOptions.js';
@@ -46,6 +53,11 @@ export {
 } from './journals/SqliteJournalOptions.js';
 export type { SqliteJournalOptionsType } from './journals/SqliteJournalOptions.js';
 export { InMemorySnapshotStore } from './snapshot-stores/InMemorySnapshotStore.js';
+export {
+  InMemorySnapshotStoreOptions,
+  InMemorySnapshotStoreOptionsBuilder,
+} from './snapshot-stores/InMemorySnapshotStoreOptions.js';
+export type { InMemorySnapshotStoreOptionsType } from './snapshot-stores/InMemorySnapshotStoreOptions.js';
 export { SqliteSnapshotStore } from './snapshot-stores/SqliteSnapshotStore.js';
 export {
   SqliteSnapshotStoreOptions,
@@ -114,6 +126,9 @@ export type { LazyStoreConfig } from './LazyStore.js';
 // durable-state trio comes with it, instead of a third copy of three stores.
 export { RelationalJournal } from './relational/RelationalJournal.js';
 export type { RelationalJournalConfig } from './relational/RelationalJournal.js';
+// #391 — the seam `RelationalQuery` reads the tags index through, exported so an
+// out-of-tree `SqlDialect` can be queried by the same class the in-repo backends use.
+export type { RelationalQueryAccess } from './relational/RelationalJournal.js';
 export { RelationalSnapshotStore } from './relational/RelationalSnapshotStore.js';
 export type { RelationalSnapshotStoreConfig } from './relational/RelationalSnapshotStore.js';
 export { RelationalDurableStateStore } from './relational/RelationalDurableStateStore.js';
@@ -453,6 +468,7 @@ export type {
   SchemaRegistration,
   SchemaDescriptor,
   // #87 — journal-to-journal + snapshot-store-to-snapshot-store copy.
+  InvalidTagPolicy,
   MigrateJournalsOptions,
   MigrateJournalsResult,
   MigrateSnapshotStoresOptions,
@@ -490,6 +506,10 @@ export {
   migrateBetweenJournals,
   migrateBetweenSnapshotStores,
   InMemoryMigrationProgressStore,
+  // #630 — a compacted source the target journal cannot represent.
+  CompactedSourceError,
+  // #740 — a source tag list the target's `append` refuses.
+  MigrationTagError,
 } from './migration/index.js';
 
 // Persistence Query — read-side query layer for projections.
@@ -520,10 +540,24 @@ export { persistenceIdPage } from './Journal.js';
 export { InMemoryQuery } from './query/InMemoryQuery.js';
 export { SqliteQuery } from './query/SqliteQuery.js';
 export { CassandraQuery } from './query/CassandraQuery.js';
+// #391 — indexed tag queries over the relational tags join table.  `RelationalQuery`
+// is dialect-neutral and serves any `RelationalJournal`; the two named subclasses
+// exist so an error names the backend the caller actually constructed.
+export { RelationalQuery } from './query/RelationalQuery.js';
+export { PostgresQuery } from './query/PostgresQuery.js';
+export { MariaDbQuery } from './query/MariaDbQuery.js';
 
 // Replicated Event Sourcing — multi-master event-sourced actors.
 export { ReplicatedEventSourcedActor } from './ReplicatedEventSourcedActor.js';
 export type { ReplicatedEventEnvelope } from './ReplicatedEventSourcedActor.js';
+// The two bounds a subclass can actually reach: one it can exceed by
+// overriding `replicaId`, one it may want to scale when overriding
+// `maxObservedEvents()`.  The decode-side bounds stay internal, the same
+// split `MAX_PERSISTENCE_ID_LENGTH` and `MAX_TAG_LENGTH` already have.
+export {
+  DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS,
+  MAX_REPLICA_ID_LENGTH,
+} from './Constants.js';
 export { VectorClock } from './replicated/VectorClock.js';
 export type { VectorClockData, VectorClockOrder } from './replicated/VectorClock.js';
 export {
@@ -542,13 +576,24 @@ export {
 export {
   ProjectionOptions,
   ProjectionOptionsBuilder,
+  ProjectionOptionsValidator,
   ByPersistenceIdProjectionOptions,
   ByPersistenceIdProjectionOptionsBuilder,
   ByTagProjectionOptions,
   ByTagProjectionOptionsBuilder,
+  PROJECTION_RECOVERY_STRATEGIES,
+  DEFAULT_PROJECTION_RECOVERY_STRATEGY,
+  DEFAULT_PROJECTION_MAX_RETRIES,
+  DEFAULT_PROJECTION_RETRY_BACKOFF_MS,
+  DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS,
+  defaultProjectionRecoveryOptions,
 } from './projection/ProjectionOptions.js';
 export type {
   ProjectionOptionsType,
+  ProjectionRecoveryStrategy,
+  ProjectionRecoveryOptionsType,
+  ProjectionFailure,
+  ProjectionFailureAction,
   ByPersistenceIdProjectionOptionsType,
   ByTagProjectionOptionsType,
 } from './projection/ProjectionOptions.js';
@@ -613,6 +658,7 @@ export type {
 export {
   reEncryptObjectStorage,
   InMemoryReEncryptProgressStore,
+  ReEncryptIncompleteError,
 } from './object-storage/ReEncryptionSweep.js';
 export type {
   ReEncryptOptions,

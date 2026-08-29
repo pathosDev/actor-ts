@@ -17,6 +17,7 @@
  */
 import type { DurableStateStore } from '../../../../src/persistence/DurableStateStore.js';
 import type { Journal } from '../../../../src/persistence/Journal.js';
+import type { PersistenceQuery } from '../../../../src/persistence/query/PersistenceQuery.js';
 import type { SnapshotStore } from '../../../../src/persistence/SnapshotStore.js';
 import {
   durableStateContractScenarios,
@@ -34,6 +35,12 @@ export interface SqlPersistenceContext extends BrokerScenarioContext {
   readonly label: string;
   /** Build a journal against the live database.  Each scenario gets its own. */
   makeJournal(): Promise<Journal>;
+  /**
+   * Build the read side over a journal this context made.  Optional, and left
+   * unset by a backend with no query class — the query-side scenarios then skip
+   * rather than pass vacuously.  See `JournalHarness.makeQuery`.
+   */
+  makeQuery?(journal: Journal): PersistenceQuery;
   /** Build a snapshot store; `keepN` must be honoured so the prune scenarios are meaningful. */
   makeSnapshotStore(keepN?: number): Promise<SnapshotStore>;
   makeDurableStateStore(): Promise<DurableStateStore>;
@@ -75,6 +82,15 @@ export function sqlPersistenceScenarios(): BrokerScenario<SqlPersistenceContext>
       label: context.label,
       pid: namespacer(context, 'journal'),
       make: () => context.makeJournal(),
+      // Forwarded, not decided here: this adapter serves relational *and*
+      // document backends (DynamoDB and MongoDB run through it too), so which
+      // query class fits is the runner's call.  A context that leaves it unset
+      // skips the query-side scenarios rather than passing them vacuously.
+      // Wrapped rather than passed by reference so `this` stays the context,
+      // the same way `make` is — the scenario calls it off the harness.
+      makeQuery: context.makeQuery === undefined
+        ? undefined
+        : (journal) => context.makeQuery!(journal),
     }))),
     ...snapshotContractScenarios().map((scenario) => adapt('snapshot', scenario, (context): SnapshotHarness => ({
       label: context.label,

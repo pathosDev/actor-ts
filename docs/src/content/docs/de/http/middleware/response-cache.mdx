@@ -195,14 +195,30 @@ import { Aside } from '@astrojs/starlight/components';
   kontrolliert — einem Pfadparameter, einem Mandanten-Header.  Wer das
   variiert, erzeugt pro Request einen neuen Eintrag.  Hier ist das
   harmlos: die LRU-Schranke ist genau das, was den Response-Cache am
-  unbegrenzten Wachsen hindert.  In einer Instanz, die mit `rateLimit`
-  oder `idempotent` geteilt wird, ist es das nicht — die Eviction nimmt
-  den am längsten nicht genutzten Eintrag, ohne zu wissen, dass er
-  einen Rate-Limit-Zähler oder einen Record hält, der eine doppelte
-  Zahlung verhindert.  Gib dieser Middleware eine eigene Instanz — oder
+  unbegrenzten Wachsen hindert.  Jeder dieser Einträge ist ein
+  einfaches `set`, `InMemoryCache` behandelt sie also als die billigen
+  Opfer und leert sie, bevor er einen Rate-Limit-Zähler oder einen
+  Record anfasst, der eine doppelte Zahlung verhindert — genau das macht
+  diese Flut in einer geteilten Instanz überhaupt überlebbar.  Verlass
+  dich nicht darauf: die Schranke bleibt hart, die Einträge dieser
+  Middleware sind der einzige Spielraum der geteilten Map, und Memcached
+  sowie Redis unter `allkeys-lru` haben keine solche Politik.  Gib
+  dieser Middleware eine eigene Instanz — oder
   `ext.cache('response-cache')` — statt der, die eine Garantie
-  durchsetzt.  Siehe
-  [Eviction ist blind dafür, was ein Eintrag schützt](/de/cache/in-memory/#eviction-ist-blind-dafür-was-ein-eintrag-schützt).
+  durchsetzt.  Wo eine Instanz geteilt werden muss, gib ihr eine
+  `prefixQuotas`-Reservierung für den `keyPrefix` dieser Middleware; das
+  begrenzt die Flut auf diesen Anteil, egal was die Map sonst hält:
+
+  ```hocon
+  actor-ts.cache.shared.in-memory {
+    maxEntries = 10000
+    prefixQuotas { "rsp:" = 7000, "idem:" = 2000, "rl:" = 1000 }
+  }
+  ```
+
+  Siehe
+  [was Eviction schützt und was nicht](/de/cache/in-memory/#was-eviction-schützt-und-was-nicht)
+  und [eine Instanz nach Key-Präfix aufteilen](/de/cache/in-memory/#eine-instanz-nach-key-präfix-aufteilen).
 </Aside>
 
 ## Wohin als Nächstes

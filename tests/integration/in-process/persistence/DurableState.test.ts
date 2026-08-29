@@ -11,9 +11,8 @@ import {
   type DurableStateStore,
 } from '../../../../src/persistence/index.js';
 
+import { gracefulStop } from '../../../../src/pattern/GracefulStop.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 type KV = { readonly map: Record<string, string>; };
 type Command =
@@ -104,9 +103,10 @@ describe('DurableStateActor', () => {
     await awaitCondition(() => reply.length === 1, {
       timeoutMs: 4_000, label: 'the set was acknowledged after persisting',
     });
-    ref.stop();
-    // Precondition only — nothing reads what postStop produces.
-    await sleep(30);
+    // The restart below reuses the same persistence id, so the first instance has
+    // to be really gone and not merely asked to stop.  `gracefulStop` resolves on
+    // the termination itself, which is what the 30 ms was guessing at (#418).
+    expect(await gracefulStop(ref, 4_000)).toBe(true);
 
     const restarted = sys.spawnAnonymous(kvActor(store, 'user-1'));
     restarted.tell({ kind: 'get', key: 'name', replyTo: sink });

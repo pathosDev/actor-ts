@@ -48,6 +48,41 @@ own knobs.
 the same cap the Express and Hono backends apply, so which requests are
 accepted does not change with the backend. Passing your own still wins.
 
+## Behind a reverse proxy
+
+`HttpRequest.remoteAddress` comes from Fastify's `req.ip`, which without
+`trustProxy` is the socket peer. Because the constructor's options pass
+straight through to Fastify, `trustProxy` is configurable here — and if
+you set it, give it the **addresses** of your proxies:
+
+```ts
+new FastifyBackend({
+  trustProxy: '10.9.9.0/24',   // ✓ trusted-subnet form
+});
+```
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="danger" title="trustProxy: true resolves to the client-controlled entry">
+  ```ts
+  new FastifyBackend({ trustProxy: true });   // ✗
+  new FastifyBackend({ trustProxy: 2 });      // ✗ address-blind
+  ```
+  `true` trusts every hop, so `proxy-addr` never truncates the address
+  list and `req.ip` becomes the **leftmost** `X-Forwarded-For` entry —
+  the one the client sent. A numeric hop count only compares indexes and
+  never addresses, so it believes the header on a request that passed no
+  proxy at all.
+</Aside>
+
+<Aside type="tip" title="Or keep the decision in the allowlist">
+  [`IpAllowlist`'s `trustedProxies`](/http/middleware/ip-allowlist/) applies
+  the same trust-by-address rule one layer up, needs nothing from the
+  backend, and therefore reads identically on Express and Hono — where
+  `trustProxy` is either awkward or absent. Prefer it when the client
+  address is a *policy* input rather than something every handler needs.
+</Aside>
+
 ## Security headers
 
 Every response this backend writes carries
@@ -142,8 +177,6 @@ Rough numbers for trivial routes:
 Fastify is one of the fastest Node HTTP frameworks; the
 framework's actor-routing overhead is the next bottleneck for
 hot routes.
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Don't use Fastify's logger and actor-ts log together">
   ```ts

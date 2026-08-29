@@ -47,11 +47,17 @@ export async function run({ actorTs }) {
     const shellType = shell.headers.get('content-type') ?? '';
     if (!shellType.includes('text/html')) throw new Error(`shell content-type: ${shellType}`);
     const html = await shell.text();
-    if (!html.includes('id="app"')) throw new Error('shell is missing its mount point');
-    if (!html.includes('assets/main.js')) throw new Error('shell does not reference its bundle');
+    if (!html.includes('<devtools-root>')) throw new Error('shell is missing its mount point');
+    // Angular content-hashes the entry, so the name is discovered from the
+    // document rather than hard-coded (#483).  What this checks is that the
+    // shell references a bundle and the server then serves it, which is the
+    // property that matters; the name is not.
+    const entry = /src="(main-[A-Za-z0-9_-]+[.]js)"/.exec(html);
+    if (!entry) throw new Error('shell does not reference its bundle');
+    const entryUrl = `${base}/${entry[1]}`;
 
     // 2. The bundle itself decodes out of the embedded module.
-    const bundle = await fetch(`${base}/assets/main.js`);
+    const bundle = await fetch(entryUrl);
     if (bundle.status !== 200) throw new Error(`bundle status ${bundle.status}`);
     const bundleBody = await bundle.text();
     if (bundleBody.length === 0) throw new Error('bundle decoded to an empty body');
@@ -59,12 +65,12 @@ export async function run({ actorTs }) {
     // 3. Content-hashed ETags survive a conditional request.
     const etag = bundle.headers.get('etag');
     if (!etag) throw new Error('bundle has no ETag');
-    const conditional = await fetch(`${base}/assets/main.js`, { headers: { 'if-none-match': etag } });
+    const conditional = await fetch(entryUrl, { headers: { 'if-none-match': etag } });
     if (conditional.status !== 304) throw new Error(`conditional expected 304, got ${conditional.status}`);
 
     // 4. Identity encoding works for a client that cannot take gzip —
     //    this is the path that decompresses on the server.
-    const identity = await fetch(`${base}/assets/main.js`, { headers: { 'accept-encoding': 'identity' } });
+    const identity = await fetch(entryUrl, { headers: { 'accept-encoding': 'identity' } });
     if (identity.status !== 200) throw new Error(`identity status ${identity.status}`);
     if ((await identity.text()).length === 0) throw new Error('identity body was empty');
 
@@ -117,6 +123,11 @@ function handshake(url, protocolVersion) {
     });
     socket.addEventListener('error', () => {
       clearTimeout(timer);
+      // Release it here too, not just on the two paths above: a socket
+      // abandoned mid-handshake keeps the event loop alive on Deno, which
+      // would turn this failure into a hung run rather than a red one
+      // (#1196).
+      socket.close();
       reject(new Error('DevTools websocket failed to open'));
     });
   });

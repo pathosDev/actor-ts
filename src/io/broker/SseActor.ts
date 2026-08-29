@@ -50,11 +50,42 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
       }
       out.headers = headers;
     }
+    if (config.hasPath('idleTimeoutMs')) out.idleTimeoutMs = config.getDuration('idleTimeoutMs');
+    if (config.hasPath('connectTimeoutMs')) out.connectTimeoutMs = config.getDuration('connectTimeoutMs');
     return out;
   }
   protected requiredOptions(): ReadonlyArray<keyof SseOptionsType> { return ['url', 'target']; }
   protected override optionsValidator(): SseOptionsValidator { return new SseOptionsValidator(); }
   protected endpointLabel(): string { return this.options.url ?? '<unknown>'; }
+
+  protected override idleTimeoutMs(): number | undefined { return this.options.idleTimeoutMs; }
+  protected override connectTimeoutMs(): number | undefined { return this.options.connectTimeoutMs; }
+
+  /**
+   * Abandon the stream the same way a breached buffer cap does — the abort is
+   * what unparks `consume`'s `await reader.read()`, which otherwise waits on a
+   * server that will never speak again.  `streamRunning` goes first so the
+   * unparked loop reports nothing on its way out; this call owns the report.
+   */
+  protected override handleIdleTimeout(cause: Error): void {
+    this.streamRunning = false;
+    try { this.aborter?.abort(); } catch { /* ignore */ }
+    this.handleConnectionLost(cause);
+  }
+
+  /**
+   * Fail the in-flight `fetch` the base class has given up on.
+   *
+   * The abort signal is already threaded through the request, so this needs
+   * no second mechanism: aborting rejects the `await fetch(...)` inside
+   * `connectImplementation`, and the base class's catch does the rest.  The
+   * cause is dropped deliberately — `fetch` raises its own `AbortError`, and
+   * the message the deadline built cannot be attached to it without wrapping
+   * a promise this method does not hold.
+   */
+  protected override abortConnectAttempt(_cause: Error): void {
+    try { this.aborter?.abort(); } catch { /* ignore */ }
+  }
 
   protected async connectImplementation(): Promise<void> {
     this.aborter = new AbortController();
@@ -81,7 +112,7 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
     throw new Error('SseActor is read-only');
   }
 
-  override onReceive(_command: SseCommand): void { /* no commands */ }
+  protected override onCommand(_command: SseCommand): void { /* no commands */ }
 
   /* ----------------------------- internals ----------------------------- */
 
@@ -93,6 +124,10 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
       while (this.streamRunning) {
         const { done, value } = await reader.read();
         if (done) break;
+        // Any chunk counts, including a `: keepalive` comment that parses to
+        // no event at all — which is exactly how a well-behaved server holds
+        // an idle feed open (#753).
+        this.noteInboundActivity();
         buffer += decoder.decode(value, { stream: true });
         // Cap the pending buffer: a hostile / MITM'd endpoint that streams
         // bytes without an event delimiter (`\n\n`) would otherwise grow it

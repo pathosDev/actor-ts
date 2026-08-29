@@ -11,6 +11,9 @@
  *     `new HttpClientOptions()` resolve to it.
  *   - {@link HttpClientOptionsValidator} — the consume-time domain check,
  *     run once by the `HttpClient` constructor on the merged settings.
+ *   - {@link HttpClientRequestLimits} / {@link HttpClientRequestLimitsValidator}
+ *     — the same bounds as they appear on a single request, and their own
+ *     (deliberately different) rule set.
  *
  *     const clientOptions = HttpClientOptions.create()
  *       .withMaxResponseBytes(32 * 1024 * 1024)
@@ -19,8 +22,13 @@
  *
  * Every field here is a **fallback**, not a fixed policy: the matching field
  * on an individual `HttpClientRequest` wins, so one large download does not
- * force the whole client's ceiling up.  There is no HOCON layer — see
- * `HttpExtension.newClient`.
+ * force the whole client's ceiling up.
+ *
+ * Three layers, in the project's usual precedence — request > these options >
+ * HOCON (`actor-ts.http.client`) > the built-in defaults below.  The HOCON
+ * layer is applied by `HttpExtension`, which is the only thing that holds a
+ * system to read config from; a `new HttpClient()` constructed directly (the
+ * D1 transport, a test) gets the built-in defaults and names its own bounds.
  */
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
@@ -135,6 +143,76 @@ export type HttpClientOptionsType = {
    */
   readonly maxRedirects?: number;
 };
+
+/**
+ * The bounds one `HttpClientRequest` may override, and the exact shape
+ * {@link HttpClientRequestLimitsValidator} checks.
+ *
+ * Declared here rather than inline on the request type so the per-request
+ * domain and the client-wide one sit in the same file: they are deliberately
+ * *not* the same rule set, and anyone about to unify them should have to read
+ * both first.
+ */
+export type HttpClientRequestLimits = {
+  /**
+   * Abort the request after this many milliseconds.  Falls back to the
+   * client's `defaultTimeoutMs` (30 s); `0` opts this one call out of any
+   * deadline.  The deadline spans the whole redirect chain, not each hop.
+   */
+  readonly timeoutMs?: number;
+  /**
+   * Abort the request once the response body passes this many bytes.  Falls
+   * back to the client's `maxResponseBytes` (8 MiB) — raise it here for the
+   * one call that legitimately downloads more, rather than on the shared
+   * client.
+   */
+  readonly maxResponseBytes?: number;
+  /**
+   * What to do with a 3xx carrying a `Location`.  Falls back to the client's
+   * `redirect` (`'follow'`).
+   */
+  readonly redirect?: HttpRedirectMode;
+  /**
+   * Hops a followed chain may take before the call is refused.  Falls back to
+   * the client's `maxRedirects` (5); `0` refuses the first redirect.
+   */
+  readonly maxRedirects?: number;
+};
+
+/**
+ * Validates the overrides carried by a single request, once per call.
+ *
+ * Without this the bound is trivially disarmed from the caller's side, which
+ * is the very defect #602 is about rather than a nitpick: `timeoutMs` is
+ * consumed as `if (timeoutMs > 0)`, so `NaN` or a negative arms no timer at
+ * all and the call is unbounded in time; `maxResponseBytes` is consumed as
+ * `if (total > maxBytes)`, so `NaN` or `Infinity` never trips and the body
+ * buffers without limit; and `maxRedirects` is consumed as
+ * `if (hops >= maxRedirects)`, so `NaN` there follows a hostile chain
+ * forever.  None of the three needs a typo to happen — a computed budget
+ * (`deadline - Date.now()` gone negative) or an untyped config value gets
+ * there on its own.
+ *
+ * **The rules are deliberately not {@link HttpClientOptionsValidator}'s, and
+ * the two must not be merged.**  `timeoutMs: 0` is the documented way to opt
+ * one call out of the deadline, so zero is *valid* here — while a client-wide
+ * `defaultTimeoutMs` of 0 would silently disarm every call that names no
+ * deadline of its own and stays rejected there.  Unifying the rule sets
+ * breaks whichever half is not being looked at.
+ */
+export class HttpClientRequestLimitsValidator extends OptionsValidator<HttpClientRequestLimits> {
+  constructor() {
+    super('HttpClientRequest');
+  }
+  protected rules(_s: Partial<HttpClientRequestLimits>): void {
+    // Non-negative rather than positive: 0 is the opt-out, NaN and negatives
+    // are the silent no-timer.
+    this.nonNegativeNumber('timeoutMs');
+    this.positiveInt('maxResponseBytes');
+    this.oneOf('redirect', ['follow', 'error', 'manual']);
+    this.nonNegativeInt('maxRedirects');
+  }
+}
 
 /** Fluent builder for {@link HttpClientOptionsType}. */
 export class HttpClientOptionsBuilder extends OptionsBuilder<HttpClientOptionsType> {

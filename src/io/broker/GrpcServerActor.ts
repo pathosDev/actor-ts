@@ -5,6 +5,7 @@ import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { Actor } from '../../Actor.js';
+import { isHealthy } from '../../management/HealthCheck.js';
 import type { HealthCheckRegistry, HealthCheckResult } from '../../management/HealthCheck.js';
 import { BrokerOptionsError } from './BrokerOptions.js';
 import type { GrpcServerOptions, GrpcServerOptionsType } from './GrpcServerOptions.js';
@@ -465,14 +466,15 @@ const HEALTH_SERVICE_DESCRIPTOR = {
 };
 
 /**
- * Aggregate readiness results into a serving status — `SERVING` only if
- * every check passes, exactly the rule the management server's `/ready`
- * endpoint applies.  An empty registry is `SERVING`: registering no checks
- * is a statement that nothing gates readiness, and disagreeing with `/ready`
- * here would give the deployment two answers to the same question.
+ * Aggregate readiness results into a serving status.
+ *
+ * Delegates to {@link isHealthy} rather than re-deriving the rule, which is
+ * the point: `/ready` calls the same function, so the two probes cannot give
+ * a deployment two answers to the same question.  The empty-registry case in
+ * particular is a decision documented there, not a property of `every`.
  */
 export function servingStatusOf(results: ReadonlyArray<HealthCheckResult>): GrpcServingStatus {
-  return results.every((r) => r.status) ? 'SERVING' : 'NOT_SERVING';
+  return isHealthy(results) ? 'SERVING' : 'NOT_SERVING';
 }
 
 /**

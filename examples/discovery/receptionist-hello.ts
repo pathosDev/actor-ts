@@ -16,7 +16,6 @@ import {
   Register,
   ServiceKey,
 } from '../../src/discovery/index.js';
-import { attachDevTools } from '../devtools.js';
 
 class Echo extends Actor<string> {
   override onReceive(m: string): void { console.log(`[echo] received ${m}`); }
@@ -31,7 +30,6 @@ class Client extends Actor<Listing<string>> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('recp-hello');
-  const devtools = await attachDevTools(system);
   const receptionist = system.extension(ReceptionistId).start(null);
 
   const echoKey = ServiceKey.of<string>('echo');
@@ -41,8 +39,11 @@ async function main(): Promise<void> {
   const client = system.spawn(Client, 'client');
   receptionist.tell(new Find(echoKey, client));
 
+  // Not a drain sleep, and measurably load-bearing: the receptionist is a
+  // `/system` actor, and terminate() only drains `/user`.  Both tells above
+  // land in a mailbox the drain never inspects, so without this the echo
+  // reply is lost — it survived 2 runs in 12 when the wait was removed.
   await Bun.sleep(50);
-  await devtools.holdOpen();
   await system.terminate();
 }
 

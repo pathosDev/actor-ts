@@ -3,6 +3,7 @@ import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { Actor } from '../../../../src/Actor.js';
 import { AskResponseRef, Nobody } from '../../../../src/ActorRef.js';
+import { AskTimeoutError } from '../../../../src/SystemMessages.js';
 import { Cluster } from '../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
@@ -15,9 +16,25 @@ import {
   type WireActorRef,
 } from '../../../../src/cluster/RefCodec.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
-import { awaitCondition } from '../../../util/AwaitCondition.js';
+import { BidirectionalMap } from '../../../../src/util/BidirectionalMap.js';
+import { BidirectionalMultiMap } from '../../../../src/util/BidirectionalMultiMap.js';
+import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
 class Noop extends Actor<unknown> { override onReceive(): void {} }
+
+/** The per-path envelope-handler map `Cluster._registerEnvelopeHandler` writes to. */
+type ClusterInternals = { readonly _envelopeHandlersByPath: Map<string, unknown> };
+
+/**
+ * Read that map directly, the same reach-into-privates shape
+ * `tests/unit/devtools/ClusterFederation.test.ts` uses.
+ *
+ * The registration tests below it infer the entry's fate from the catch-all
+ * handler, which is a fair proxy but one hop removed.  #765 turns on the map
+ * itself not growing, so the #765 cases read the map.
+ */
+const envelopeHandlersOf = (cluster: Cluster): Map<string, unknown> =>
+  (cluster as unknown as ClusterInternals)._envelopeHandlersByPath;
 
 async function buildCluster(
   sysName: string,
@@ -118,6 +135,37 @@ describe('RefCodec — encodeRefs', () => {
     expect(encoded.bytes).toBe(bytes);
   });
 
+  // #450 — the walker used to end in a generic `Object.entries` rebuild, which
+  // is destructive for every value whose data is not own-enumerable.  It ran
+  // *before* the frame codec, so tagging these on the wire would have carried
+  // a faithful copy of `{}`.
+  test('values whose data is not own-enumerable pass through by reference', () => {
+    const pattern = /^ab+c$/giu;
+    const url = new URL('https://example.test/a?b=1');
+    const failure = new Error('boom');
+    const counters = new Int32Array([7, 8, 9]);
+    const encoded = encodeRefs({ pattern, url, failure, counters }, cluster) as Record<string, unknown>;
+    expect(encoded.pattern).toBe(pattern);
+    expect(encoded.url).toBe(url);
+    expect(encoded.failure).toBe(failure);
+    expect(encoded.counters).toBe(counters);
+  });
+
+  test('the framework collections keep their class and their embedded refs', () => {
+    const ref = system.spawn(Noop, 'collection-target');
+    const oneToOne = new BidirectionalMap<string, unknown>([['a', ref]]);
+    const manyToMany = new BidirectionalMultiMap<string, unknown>([['left', ref]]);
+    const encoded = encodeRefs({ oneToOne, manyToMany }, cluster) as Record<string, unknown>;
+
+    const encodedOneToOne = encoded.oneToOne as BidirectionalMap<string, unknown>;
+    expect(encodedOneToOne).toBeInstanceOf(BidirectionalMap);
+    expect(isWireActorRef(encodedOneToOne.get('a'))).toBe(true);
+
+    const encodedManyToMany = encoded.manyToMany as BidirectionalMultiMap<string, unknown>;
+    expect(encodedManyToMany).toBeInstanceOf(BidirectionalMultiMap);
+    expect([...encodedManyToMany.get('left')].every((entry) => isWireActorRef(entry))).toBe(true);
+  });
+
   test('cyclic structures do not infinite-loop (cycle replaced with null)', () => {
     const refA: Record<string, unknown> = { name: 'a' };
     const refB: Record<string, unknown> = { name: 'b', other: refA };
@@ -171,6 +219,62 @@ describe('RefCodec — encodeRefs', () => {
         label: 'the late reply falls through to the catch-all',
       });
       expect(unrouted).toEqual(['late']);
+    });
+
+    // #765 — the whole cross-node half of that issue rests on `_onSettled`
+    // removing the entry, and until now nothing asserted on the map itself in
+    // either direction.  These three do: two settle paths that must clear it,
+    // and the one that cannot, which is why `ActorRef.ask` refuses a deadline
+    // it could not arm a timer for.
+    describe('teardown of the per-path registration (#765)', () => {
+      const encodeAskRef = (ref: AskResponseRef<string>): string =>
+        ((encodeRefs({ replyTo: ref }, cluster) as Record<string, unknown>).replyTo as WireActorRef).path;
+
+      test('a reply drops the entry', async () => {
+        const ref = new AskResponseRef<string>('enc-test', 'askResp-cccccccccccc', 1_000, 'target');
+        const path = encodeAskRef(ref);
+        const handlers = envelopeHandlersOf(cluster);
+        expect(handlers.has(path)).toBe(true);
+
+        new RemoteActorRef<string>(cluster.selfAddress, path, cluster).tell('pong');
+        expect(await ref.promise).toBe('pong');
+        expect(handlers.has(path)).toBe(false);
+      });
+
+      test('an expiring deadline drops the entry too — the only other settle path', async () => {
+        const ref = new AskResponseRef<string>('enc-test', 'askResp-dddddddddddd', 20, 'target');
+        const path = encodeAskRef(ref);
+        const handlers = envelopeHandlersOf(cluster);
+        expect(handlers.has(path)).toBe(true);
+
+        let caught: unknown = null;
+        try { await ref.promise; } catch (e) { caught = e; }
+        expect(caught).toBeInstanceOf(AskTimeoutError);
+        expect(handlers.has(path)).toBe(false);
+      });
+
+      test('a ref with no deadline keeps its entry — the leak ask() now refuses to create', async () => {
+        // Stated against the primitive because `ActorRef.ask` no longer lets a
+        // caller reach this state: a non-positive `timeoutMs` arms no timer, so
+        // nothing runs the teardown and the entry outlives the ask.  Keeping the
+        // negative case here is what makes the guard's reason legible from the
+        // cluster side rather than only from the unit suite.
+        const ref = new AskResponseRef<string>('enc-test', 'askResp-eeeeeeeeeeee', 0, 'target');
+        const path = encodeAskRef(ref);
+        const handlers = envelopeHandlersOf(cluster);
+        expect(handlers.has(path)).toBe(true);
+
+        // The elapsed time IS the assertion, so this cannot become an
+        // `awaitCondition`: the claim is that the entry is still there after
+        // time has passed, and there is no TTL sweep whose tick could be
+        // polled for instead.
+        await sleep(60);
+        expect(handlers.has(path)).toBe(true);
+
+        // Settle it by hand — the ref is otherwise immortal, and so is its entry.
+        ref.tell('drain');
+        expect(handlers.has(path)).toBe(false);
+      });
     });
   });
 });
@@ -251,6 +355,55 @@ describe('RefCodec — decodeRefs', () => {
     expect(peers[0]).toBe(local);
     expect(peers[1]).toBe(Nobody);
     expect((decoded.meta as Record<string, unknown>).primary).toBe(local);
+  });
+
+  // #450 — the decode direction was the lossier of the two: `walk` rebuilt a
+  // `Map` as a `Map`, but `walkDecode` had no container branch at all, so
+  // every collection that survived encode, the transport and the frame codec
+  // was flattened to `{}` on arrival.
+  test('containers survive the decode walk instead of flattening to {}', () => {
+    const local = system.spawn(Noop, 'container-target');
+    const self = cluster.selfAddress;
+    const wire: WireActorRef = {
+      $ref: 'actor',
+      path: local.path.toString(),
+      host: self.host,
+      port: self.port,
+      system: self.systemName,
+    };
+    const wireMessage = {
+      byName: new Map<string, unknown>([['primary', wire]]),
+      seen: new Set<unknown>([wire]),
+      oneToOne: new BidirectionalMap<string, unknown>([['a', wire]]),
+      manyToMany: new BidirectionalMultiMap<string, unknown>([['left', wire]]),
+    };
+    const decoded = decodeRefs(wireMessage, cluster) as Record<string, unknown>;
+
+    const byName = decoded.byName as Map<string, unknown>;
+    expect(byName).toBeInstanceOf(Map);
+    expect(byName.get('primary')).toBe(local);
+
+    const seen = decoded.seen as Set<unknown>;
+    expect(seen).toBeInstanceOf(Set);
+    expect([...seen]).toEqual([local]);
+
+    const oneToOne = decoded.oneToOne as BidirectionalMap<string, unknown>;
+    expect(oneToOne).toBeInstanceOf(BidirectionalMap);
+    expect(oneToOne.get('a')).toBe(local);
+
+    const manyToMany = decoded.manyToMany as BidirectionalMultiMap<string, unknown>;
+    expect(manyToMany).toBeInstanceOf(BidirectionalMultiMap);
+    expect([...manyToMany.get('left')]).toEqual([local]);
+  });
+
+  test('values whose data is not own-enumerable arrive intact', () => {
+    const pattern = /^ab+c$/giu;
+    const url = new URL('https://example.test/a?b=1');
+    const counters = new Int32Array([7, 8, 9]);
+    const decoded = decodeRefs({ pattern, url, counters }, cluster) as Record<string, unknown>;
+    expect(decoded.pattern).toBe(pattern);
+    expect(decoded.url).toBe(url);
+    expect(decoded.counters).toBe(counters);
   });
 });
 

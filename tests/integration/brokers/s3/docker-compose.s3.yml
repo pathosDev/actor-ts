@@ -9,8 +9,8 @@
 #   - The Bitnami / minio/minio images are stable and tagged.
 #
 # Run locally:
-#   bun run test:integration:s3
-#   bun run test:integration:s3:teardown
+#   bun run test:integration:broker s3
+#   bun run test:integration:broker:teardown s3
 #
 # References #297 — LocalStack S3 is an optional secondary target
 # that can be layered on later as a separate suite if S3-quirks

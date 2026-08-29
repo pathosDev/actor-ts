@@ -45,6 +45,29 @@ Lies das
 [CHANGELOG](https://github.com/pathosDev/actor-ts/blob/main/CHANGELOG.md)
 vor dem Upgrade von Minor-Versionen.
 
+Ein Minor-Bump kann auch den **Cluster-Wire** ändern. Das CHANGELOG hält
+das pro Release fest, fasst es aber nicht über Releases hinweg zusammen —
+und wenn ein Release ihn ändert, ist ein Rolling Deployment nicht sicher:
+der Cluster muss in einem Schritt aktualisiert werden.
+[Upgrade-Strategien](/de/operations/upgrades/upgrade-strategies/#cluster-wire-kompatibilität-pro-release)
+trägt die Tabelle pro Release; zwei aufeinanderfolgende Releases stehen darauf.
+
+## Security-Fixes
+
+Es gibt **keine Maintenance-Branches**, "supported" heißt also die
+jeweils letzte veröffentlichte Version und sonst nichts. Ein
+Security-Fix landet auf `develop` und geht mit dem nächsten
+Release raus; er wird nie auf ein älteres `0.x` zurückportiert.
+
+[`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md)
+ist der Meldekanal und — vor dem Melden noch nützlicher — die
+Scope-Grenze: Der klartextige, nicht authentifizierte
+Cluster-Transport-Default ist ein dokumentierter Default und keine
+Schwachstelle, eine dokumentierte Gegenmaßnahme, die nicht hält,
+was sie verspricht, dagegen schon. Was die Release-Pipeline selbst
+garantiert, steht auf der Seite
+[Supply Chain](/de/operations/security/supply-chain/).
+
 ## Nach 1.0
 
 Sobald 1.0 ausgeliefert ist, gilt **striktes SemVer**:

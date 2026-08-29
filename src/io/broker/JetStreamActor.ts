@@ -4,6 +4,8 @@ import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { toBrokerDriverTls } from './BrokerTls.js';
+import type { BrokerDriverTlsOptions } from './BrokerTls.js';
 import { JetStreamOptionsValidator } from './JetStreamOptions.js';
 import type { JetStreamOptions, JetStreamOptionsType } from './JetStreamOptions.js';
 
@@ -207,13 +209,19 @@ export class JetStreamActor extends BrokerActor<
     return `nats://${typeof servers === 'string' ? servers : ''}`;
   }
 
+  /** @internal Test seam — override to inject a fake `nats` module. */
+  protected natsModule(): Promise<NatsModuleLike> { return natsLazy.get(); }
+
   /**
    * Build a `NatsConnectionLike`.  Override in a test subclass to
    * inject a mock connection (the `nats` peer-dep is heavy and not
    * necessary for unit tests).
+   *
+   * Overriding this replaces the connect options, TLS included — override
+   * {@link natsModule} instead when a test wants to *observe* them.
    */
   protected async createNatsConnection(): Promise<NatsConnectionLike> {
-    const nats = await natsLazy.get();
+    const nats = await this.natsModule();
     const servers = Array.isArray(this.options.servers)
       ? [...this.options.servers]
       : [this.options.servers as string];
@@ -223,6 +231,7 @@ export class JetStreamActor extends BrokerActor<
       user: this.options.user,
       pass: this.options.password,
       name: this.options.name,
+      tls: toBrokerDriverTls(this.options.tls),
     });
   }
 
@@ -310,7 +319,7 @@ export class JetStreamActor extends BrokerActor<
     });
   }
 
-  override onReceive(command: JetStreamCommand): void {
+  protected override onCommand(command: JetStreamCommand): void {
     // Compile-time exhaustiveness: adding a new JetStreamCommand variant
     // forces this site to handle it explicitly (TS error otherwise).
     match(command)
@@ -558,6 +567,17 @@ function extractHeaders(headers: HeadersLike | undefined): Record<string, string
 }
 
 /* -------------------- nats peer-dep type stubs --------------------- */
+/*
+ * Hand-written on purpose — not a placeholder for the real `nats` types.
+ * `nats` is declared only in `tests/integration/brokers/package.json`, which
+ * the root install deliberately does not materialise, so the build compile
+ * cannot resolve it; and these types are exported through `src/io/index.ts`,
+ * so importing the module here would emit that specifier into a published
+ * `.d.ts` a consumer who took the "optional" peer at its word cannot resolve
+ * either. Widen the stub instead. The drift a real import would have caught
+ * is covered by the live broker under `tests/integration/brokers/nats/`, and
+ * `tests/unit/ci/OptionalPeerDeclarations.test.ts` asserts the boundary. #676.
+ */
 
 /**
  * Minimal `NatsConnection` surface the actor depends on.  Exported so
@@ -662,9 +682,16 @@ export type JetStreamManagerLike = {
   };
 };
 
-interface NatsModuleLike {
+/** The `nats` module surface we use.  Exported as a test seam. */
+export interface NatsModuleLike {
   connect(options: {
     servers: string[]; token?: string; user?: string; pass?: string; name?: string;
+    /**
+     * Certificate material.  nats.js reads the option object's *presence* as
+     * "negotiate TLS", so this stays `undefined` when nothing was configured
+     * rather than being an empty object (#743).
+     */
+    tls?: BrokerDriverTlsOptions;
   }): Promise<NatsConnectionLike>;
 }
 

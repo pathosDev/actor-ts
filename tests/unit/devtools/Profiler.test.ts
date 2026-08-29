@@ -16,6 +16,8 @@ import type {
 class WorkerActor extends Actor<string> {
   override async onReceive(message: string): Promise<void> {
     if (message === 'boom') throw new Error('handler exploded');
+    // A fixture: the profiler samples handling time, so this handler has to
+    // actually occupy the actor for a measurable span.
     if (message === 'slow') await new Promise((resolve) => setTimeout(resolve, 25));
   }
 }
@@ -52,6 +54,15 @@ function fakeServer(): {
   };
 }
 
+/**
+ * Give the profiled actors time to handle everything told to them.
+ *
+ * A fixed delay and not `awaitCondition`, because what follows are *exact*
+ * counts — `expect(result.sampleCount).toBe(2)` beside
+ * `expect(worker.count).toBe(2)`.  A poll on "two samples so far" returns on the
+ * second and can never observe a third, which is precisely the failure those
+ * assertions exist to catch.
+ */
 const settle = (ms = 120): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** The extras the panel reads off a wallclock profile. */

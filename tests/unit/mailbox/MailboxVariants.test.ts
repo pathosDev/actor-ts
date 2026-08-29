@@ -8,13 +8,13 @@ import {
   BoundedMailboxOptions,
   MailboxFullError,
   PriorityMailbox,
+  PriorityMailboxOptions,
+  type MailboxDropReason,
 } from '../../../src/mailbox/index.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
-import { awaitCondition } from '../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
 describe('BoundedMailbox — overflow policies', () => {
   test('drop-head replaces the oldest queued message', () => {
@@ -81,6 +81,29 @@ describe('BoundedMailbox — overflow policies', () => {
 
   test('capacity < 1 throws in constructor', () => {
     expect(() => new BoundedMailbox({ capacity: 0 })).toThrow(/capacity/);
+  });
+
+  test('the bound applies to the unstash path too', () => {
+    // The mirror of the `PriorityMailbox` case below.  `prependUser` used to
+    // inherit the base implementation and write straight to the queue, so a
+    // replay arrived past the capacity, the policy and the counter (#772).
+    // It sheds at the *tail* here: a replay lands at the head, so the far end
+    // is the one that makes room — the alternative is a bound that discards
+    // the messages `unstashAll()` just put back.
+    const mbox = new BoundedMailbox<string>({ capacity: 2, overflow: 'drop-head' });
+    for (const s of ['a', 'b']) mbox.enqueue({ message: s, sender: null });
+    mbox.prependUser([{ message: 's1', sender: null }, { message: 's2', sender: null }]);
+    expect(mbox.drainUser().map(e => e.message)).toEqual(['s1', 's2']);
+    expect(mbox.droppedCount).toBe(2);
+  });
+
+  test('reject refuses an unstash that does not fit, whole', () => {
+    const mbox = new BoundedMailbox<string>({ capacity: 2 });
+    for (const s of ['a', 'b']) mbox.enqueue({ message: s, sender: null });
+    expect(() => mbox.prependUser([{ message: 's1', sender: null }])).toThrow(MailboxFullError);
+    // Nothing admitted, nothing counted — the caller still owns the batch.
+    expect(mbox.drainUser().map(e => e.message)).toEqual(['a', 'b']);
+    expect(mbox.droppedCount).toBe(0);
   });
 });
 
@@ -209,13 +232,372 @@ describe('PriorityMailbox', () => {
   });
 });
 
+// #647 — a priority mailbox could not be bounded at all, and `ActorOptions`
+// forbids `withMailbox` + `withMailboxCapacity`, so there was no route to one.
+describe('PriorityMailbox — capacity and overflow', () => {
+  test('unbounded by default — a capacity is something you ask for', () => {
+    const mbox = new PriorityMailbox<number>({ priorityFor: (n) => n });
+    for (let i = 0; i < 20_000; i++) mbox.enqueue({ message: i, sender: null });
+    expect(mbox.size).toBe(20_000);
+    expect(mbox.droppedCount).toBe(0);
+  });
+
+  test('drop-lowest-priority sheds the tail, not the head', () => {
+    // The head is the message the priority function called most important —
+    // dropping it would defeat the reason for choosing this mailbox.
+    const mbox = new PriorityMailbox<number>({
+      priorityFor: (n) => n,
+      capacity: 3,
+      overflow: 'drop-lowest-priority',
+    });
+    for (const n of [1, 2, 3]) mbox.enqueue({ message: n, sender: null });
+    mbox.enqueue({ message: 0, sender: null });
+    expect(mbox.size).toBe(3);
+    expect(mbox.drainUser().map((e) => e.message)).toEqual([0, 1, 2]);
+    expect(mbox.droppedCount).toBe(1);
+  });
+
+  test('drop-lowest-priority reports drop-new when the arrival is the least important', () => {
+    // Insert-then-evict lets the arrival compete on the same terms, and the
+    // identity check then reports honestly rather than claiming a queued
+    // message was destroyed.
+    const reasons: MailboxDropReason[] = [];
+    const mbox = new PriorityMailbox<number>({
+      priorityFor: (n) => n,
+      capacity: 2,
+      overflow: 'drop-lowest-priority',
+      onDrop: (reason) => reasons.push(reason),
+    });
+    for (const n of [1, 2]) mbox.enqueue({ message: n, sender: null });
+    mbox.enqueue({ message: 9, sender: null });   // worse than everything queued
+    mbox.enqueue({ message: 0, sender: null });   // better than everything queued
+    expect(mbox.drainUser().map((e) => e.message)).toEqual([0, 1]);
+    expect(reasons).toEqual(['drop-new', 'drop-head']);
+  });
+
+  test('drop-lowest-priority keeps the older of an equal-priority pair', () => {
+    const mbox = new PriorityMailbox<string>({
+      priorityFor: () => 5,
+      capacity: 2,
+      overflow: 'drop-lowest-priority',
+    });
+    for (const s of ['a', 'b', 'c']) mbox.enqueue({ message: s, sender: null });
+    expect(mbox.drainUser().map((e) => e.message)).toEqual(['a', 'b']);
+  });
+
+  test('drop-new discards the arrival whatever priority it was given', () => {
+    const mbox = new PriorityMailbox<number>({
+      priorityFor: (n) => n,
+      capacity: 2,
+      overflow: 'drop-new',
+    });
+    for (const n of [5, 6]) mbox.enqueue({ message: n, sender: null });
+    mbox.enqueue({ message: 0, sender: null });   // urgent, and dropped anyway
+    expect(mbox.drainUser().map((e) => e.message)).toEqual([5, 6]);
+    expect(mbox.droppedCount).toBe(1);
+  });
+
+  test('reject is the default once a capacity is named', () => {
+    const mbox = new PriorityMailbox<number>({ priorityFor: (n) => n, capacity: 2 });
+    mbox.enqueue({ message: 1, sender: null });
+    mbox.enqueue({ message: 2, sender: null });
+    expect(() => mbox.enqueue({ message: 0, sender: null })).toThrow(MailboxFullError);
+    expect(mbox.droppedCount).toBe(0);   // refusing is not dropping
+  });
+
+  test('the bound holds while the actor is suspended — #407 parity', () => {
+    // Suspension is the supervision window: the actor has failed and messages
+    // keep arriving.  `dequeueUser` refuses then, so the eviction goes through
+    // `removeOldest`, which does not.
+    const mbox = new PriorityMailbox<number>({
+      priorityFor: (n) => n,
+      capacity: 2,
+      overflow: 'drop-lowest-priority',
+    });
+    for (const n of [5, 6]) mbox.enqueue({ message: n, sender: null });
+    mbox.suspend();
+    for (const n of [1, 2, 3]) mbox.enqueue({ message: n, sender: null });
+    expect(mbox.size).toBe(2);
+    mbox.resume();
+    expect(mbox.drainUser().map((e) => e.message)).toEqual([1, 2]);
+    expect(mbox.droppedCount).toBe(3);
+  });
+
+  test('the bound applies to the unstash path too', () => {
+    // `prependUser` re-enters `enqueue` here, where `BoundedMailbox` sheds at
+    // the tail instead (#772) — two routes to the same guarantee.  Either way
+    // `unstashAll()` on a full bounded mailbox can drop, which is worth
+    // knowing before it surprises someone.
+    const mbox = new PriorityMailbox<number>({
+      priorityFor: (n) => n,
+      capacity: 2,
+      overflow: 'drop-lowest-priority',
+    });
+    for (const n of [1, 2]) mbox.enqueue({ message: n, sender: null });
+    mbox.prependUser([{ message: 9, sender: null }, { message: 0, sender: null }]);
+    expect(mbox.drainUser().map((e) => e.message)).toEqual([0, 1]);
+    expect(mbox.droppedCount).toBe(2);
+  });
+
+  test('drops reach observeDrops alongside the caller onDrop', () => {
+    // The additive contract the cell relies on: wiring the stock counter must
+    // not unhook a metric the caller wired at construction.
+    const mine: MailboxDropReason[] = [];
+    const framework: MailboxDropReason[] = [];
+    const mbox = new PriorityMailbox<number>({
+      priorityFor: (n) => n,
+      capacity: 1,
+      overflow: 'drop-lowest-priority',
+      onDrop: (reason) => mine.push(reason),
+    });
+    mbox.observeDrops((reason) => framework.push(reason));
+    for (const n of [3, 1, 2]) mbox.enqueue({ message: n, sender: null });
+    expect(mine.length).toBe(2);
+    expect(framework).toEqual(mine);
+    expect(mbox.droppedCount).toBe(2);
+  });
+});
+
+// #733 — `priorityFor` is user code running on the SENDER's stack, and the
+// framework itself hands it messages no application wrote (`PoisonPill` /
+// `Kill` go out as user messages).  Before this, a callback that could not
+// answer put its message at the HEAD — the highest-priority slot — and a
+// callback that threw took out whoever called `tell`.
+describe('PriorityMailbox — a priority the callback cannot produce', () => {
+  type Tagged = { readonly label: string; readonly priority?: number };
+  const drain = (mbox: PriorityMailbox<Tagged>): string[] =>
+    mbox.drainUser().map((envelope) => envelope.message.label);
+
+  test('an undefined priority sorts LAST, not first', () => {
+    const mbox = new PriorityMailbox<Tagged>({ priorityFor: (m) => m.priority as number });
+    for (const message of [
+      { label: 'urgent', priority: 0 },
+      { label: 'normal', priority: 5 },
+      { label: 'unrankable-a' },
+      { label: 'unrankable-b' },
+    ]) mbox.enqueue({ message, sender: null });
+    // The class documents "lower is higher priority", so a priority that
+    // could not be determined must not outrank one that was stated.
+    expect(drain(mbox)).toEqual(['urgent', 'normal', 'unrankable-a', 'unrankable-b']);
+  });
+
+  test('a NaN priority sorts last, and unrankable messages keep FIFO among themselves', () => {
+    // NaN needs no cast to get here: `Number(m.priority)` is a type-correct
+    // callback over an optional field.  It also broke the `sequence`
+    // tie-break, for the same reason it broke the comparison — so the two
+    // unrankable messages used to come out reversed.
+    const mbox = new PriorityMailbox<Tagged>({ priorityFor: (m) => Number(m.priority) });
+    for (const message of [
+      { label: 'unrankable-a' },
+      { label: 'ranked', priority: 7 },
+      { label: 'unrankable-b' },
+    ]) mbox.enqueue({ message, sender: null });
+    expect(drain(mbox)).toEqual(['ranked', 'unrankable-a', 'unrankable-b']);
+  });
+
+  test('a non-number priority sorts last — a string compares false exactly like NaN', () => {
+    const mbox = new PriorityMailbox<Tagged>({
+      priorityFor: (m) => (m.priority ?? ('high' as unknown as number)),
+    });
+    // The string arrives AFTER the ranked messages on purpose.  Before the
+    // guard, an already-queued unrankable entry drifted tailward as later
+    // inserts pushed past it, so enqueuing it first happened to produce the
+    // right order for the wrong reason — the head-insert only shows when the
+    // unrankable message is the arriving one.
+    for (const message of [
+      { label: 'one', priority: 1 },
+      { label: 'nine', priority: 9 },
+      { label: 'stringly' },
+    ]) mbox.enqueue({ message, sender: null });
+    expect(drain(mbox)).toEqual(['one', 'nine', 'stringly']);
+  });
+
+  test('±Infinity is a ranking and is respected — it is not treated as unrankable', () => {
+    // The recorded decision: `Number.isFinite` is the wrong predicate here.
+    // -Infinity is a caller saying "ahead of everything" and the comparison
+    // orders it correctly; only NaN and non-numbers are undeterminable.
+    const mbox = new PriorityMailbox<Tagged>({ priorityFor: (m) => m.priority as number });
+    for (const message of [
+      { label: 'last', priority: Number.POSITIVE_INFINITY },
+      { label: 'middle', priority: 0 },
+      { label: 'first', priority: Number.NEGATIVE_INFINITY },
+      { label: 'unrankable' },
+    ]) mbox.enqueue({ message, sender: null });
+    // An explicit +Infinity still sorts behind the unrankable sentinel, which
+    // is MAX_SAFE_INTEGER — "we could not tell" is not worse than a caller's
+    // deliberate "absolutely last".
+    expect(drain(mbox)).toEqual(['first', 'middle', 'unrankable', 'last']);
+  });
+
+  test('placement no longer depends on insertion order', () => {
+    // The head-insert broke the sorted-array invariant, so an unrankable
+    // entry drifted tailward as later messages arrived: the same four
+    // messages came out `neg | five | ten | nan` or `nan | neg | five | ten`
+    // depending only on the order they were enqueued in.
+    const orders: ReadonlyArray<ReadonlyArray<string>> = [
+      ['unrankable', 'minus-one', 'five', 'ten'],
+      ['minus-one', 'five', 'ten', 'unrankable'],
+      ['minus-one', 'unrankable', 'ten', 'five'],
+    ];
+    const priorities: Readonly<Record<string, number | undefined>> = {
+      'minus-one': -1, five: 5, ten: 10, unrankable: undefined,
+    };
+    for (const order of orders) {
+      const mbox = new PriorityMailbox<Tagged>({ priorityFor: (m) => priorities[m.label] as number });
+      for (const label of order) mbox.enqueue({ message: { label }, sender: null });
+      expect(drain(mbox)).toEqual(['minus-one', 'five', 'ten', 'unrankable']);
+    }
+  });
+
+  test('a throwing priorityFor does not reach the enqueue caller, and the message survives', () => {
+    // The sender is a bystander to the receiver's mailbox configuration: it
+    // has nothing to do about a broken `priorityFor` and no way to tell that
+    // from a failure of its own.  Same shape that ruled `reject` out as the
+    // framework's default overflow policy (#919).
+    const mbox = new PriorityMailbox<Tagged>({
+      priorityFor: (m) => {
+        if (m.priority === undefined) throw new TypeError('no pattern matches value {}');
+        return m.priority;
+      },
+    });
+    expect(() => mbox.enqueue({ message: { label: 'thrower' }, sender: null })).not.toThrow();
+    mbox.enqueue({ message: { label: 'ranked', priority: 3 }, sender: null });
+    expect(drain(mbox)).toEqual(['ranked', 'thrower']);
+  });
+
+  test('onPriorityError reports the throw, with the message it could not rank', () => {
+    const failures: Array<{ cause: unknown; label: string }> = [];
+    const thrown = new Error('boom');
+    const priorityOptions = PriorityMailboxOptions.create<Tagged>()
+      .withPriorityFor(() => { throw thrown; })
+      .withOnPriorityError((cause, message) => failures.push({ cause, label: message.label }));
+    const mbox = new PriorityMailbox<Tagged>(priorityOptions);
+    mbox.enqueue({ message: { label: 'thrower' }, sender: null });
+    expect(failures).toEqual([{ cause: thrown, label: 'thrower' }]);
+    // Contained, not swallowed: the message is still there to be handled.
+    expect(drain(mbox)).toEqual(['thrower']);
+  });
+
+  test('onPriorityError reports a non-numeric return as a TypeError naming the type', () => {
+    const causes: unknown[] = [];
+    const mbox = new PriorityMailbox<Tagged>({
+      priorityFor: (m) => m.priority as number,
+      onPriorityError: (cause) => causes.push(cause),
+    });
+    mbox.enqueue({ message: { label: 'undefined-priority' }, sender: null });
+    mbox.enqueue({ message: { label: 'nan-priority', priority: Number.NaN }, sender: null });
+    mbox.enqueue({ message: { label: 'fine', priority: 1 }, sender: null });
+    expect(causes.length).toBe(2);
+    expect(causes[0]).toBeInstanceOf(TypeError);
+    expect((causes[0] as TypeError).message).toContain('type undefined');
+    expect((causes[1] as TypeError).message).toContain('NaN');
+  });
+
+  test('an unrankable burst no longer evicts the whole backlog under drop-lowest-priority', () => {
+    // #647's bound made the head-insert worse rather than better: the arrival
+    // went in at the head and the eviction pops the TAIL, so the arrival
+    // always survived and a genuine message always died — reported as an
+    // ordinary `drop-head`.  A full mailbox lost its entire backlog to four
+    // messages the priority function could not rank.
+    const reasons: MailboxDropReason[] = [];
+    const mbox = new PriorityMailbox<Tagged>({
+      priorityFor: (m) => Number(m.priority),
+      capacity: 4,
+      overflow: 'drop-lowest-priority',
+      onDrop: (reason) => reasons.push(reason),
+    });
+    for (const message of [
+      { label: 'urgent', priority: 0 },
+      { label: 'command', priority: 1 },
+      { label: 'normal', priority: 5 },
+      { label: 'bulk', priority: 9 },
+    ]) mbox.enqueue({ message, sender: null });
+    for (let index = 0; index < 4; index++) {
+      mbox.enqueue({ message: { label: `unrankable-${index}` }, sender: null });
+    }
+    expect(drain(mbox)).toEqual(['urgent', 'command', 'normal', 'bulk']);
+    // Each arrival is now the least important thing in the queue, so the
+    // honest reason is `drop-new` and not a claim that a queued message died.
+    expect(reasons).toEqual(['drop-new', 'drop-new', 'drop-new', 'drop-new']);
+  });
+
+  test('a lifecycle notification still reaches the queue when priorityFor throws (#729)', () => {
+    // `enqueueSignal` goes straight to the insertion, past the capacity
+    // check — so it is the third path through the same unguarded call, and
+    // the framework has no second copy of a `Terminated` to send.
+    const mbox = new PriorityMailbox<Tagged>({
+      priorityFor: () => { throw new Error('cannot rank a Terminated'); },
+      capacity: 1,
+      overflow: 'drop-lowest-priority',
+    });
+    expect(() => mbox.enqueueSignal({
+      message: { label: 'terminated' },
+      sender: null,
+      undroppable: true,
+    })).not.toThrow();
+    expect(mbox.size).toBe(1);
+    expect(drain(mbox)).toEqual(['terminated']);
+  });
+});
+
+describe('PriorityMailbox — options validation', () => {
+  test('builder form is equivalent to a plain object', () => {
+    const priorityOptions = PriorityMailboxOptions.create<number>()
+      .withPriorityFor((n) => n)
+      .withCapacity(2)
+      .withOverflow('drop-lowest-priority');
+    const mbox = new PriorityMailbox<number>(priorityOptions);
+    for (const n of [3, 1, 2]) mbox.enqueue({ message: n, sender: null });
+    expect(mbox.drainUser().map((e) => e.message)).toEqual([1, 2]);
+    expect(mbox.droppedCount).toBe(1);
+  });
+
+  test('a missing priorityFor throws OptionsError at construction', () => {
+    // It used to type-check (the accepted union includes Partial<...>) and
+    // fail as `this.priorityFor is not a function` on the first enqueue —
+    // inside the sender's `tell`, a long way from the mistake.
+    expect(() => new PriorityMailbox({})).toThrow(OptionsError);
+    expect(() => new PriorityMailbox({})).toThrow(/priorityFor/);
+    expect(() => new PriorityMailbox(PriorityMailboxOptions.create<number>().withCapacity(2)))
+      .toThrow(/priorityFor/);
+  });
+
+  test('a non-callable priorityFor throws OptionsError', () => {
+    expect(() => new PriorityMailbox({ priorityFor: 7 as never })).toThrow(OptionsError);
+    expect(() => new PriorityMailbox({ priorityFor: 7 as never })).toThrow(/priorityFor/);
+  });
+
+  test('rejects a non-positive / non-integer capacity', () => {
+    const priorityFor = (n: number): number => n;
+    expect(() => new PriorityMailbox<number>({ priorityFor, capacity: 0 })).toThrow(OptionsError);
+    expect(() => new PriorityMailbox<number>({ priorityFor, capacity: -3 })).toThrow(/capacity/);
+    expect(() => new PriorityMailbox<number>({ priorityFor, capacity: 1.5 })).toThrow(/capacity/);
+  });
+
+  test('rejects an unknown overflow policy — including BoundedMailbox drop-head', () => {
+    // `drop-head` is deliberately absent: the head here is the message the
+    // priority function called most important.
+    const priorityFor = (n: number): number => n;
+    expect(() => new PriorityMailbox<number>({ priorityFor, capacity: 2, overflow: 'drop-head' as never }))
+      .toThrow(OptionsError);
+    expect(() => new PriorityMailbox<number>({ priorityFor, capacity: 2, overflow: 'drop-head' as never }))
+      .toThrow(/overflow/);
+  });
+
+  test('rejects an overflow policy without a capacity', () => {
+    const priorityFor = (n: number): number => n;
+    expect(() => new PriorityMailbox<number>({ priorityFor, overflow: 'drop-new' })).toThrow(OptionsError);
+    expect(() => new PriorityMailbox<number>({ priorityFor, overflow: 'drop-new' })).toThrow(/overflow/);
+  });
+});
+
 describe('ActorOptions.withMailbox — end-to-end via actor', () => {
   test('actor uses the custom priority mailbox', async () => {
     const kitOptions = TestKitOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('mbox-pri', kitOptions);
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     class Worker extends Actor<{ label: string; pri: number }> {
       override onReceive(m: { label: string; pri: number }): void { probe.tell(m.label); }
@@ -260,6 +642,8 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
     const kit = TestKit.create('mbox-overflow-option', kitOptions);
 
     class Slow extends Actor<number> {
+      // A fixture: the handler has to still be busy while the sends arrive, or the
+      // capacity-2 mailbox never overflows and `reject` is never exercised.
       override async onReceive(_m: number): Promise<void> { await sleep(50); }
     }
     const options = ActorOptions.create<number>()
@@ -322,7 +706,11 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
     expect(handled[0]).toBe(0);
     expect(handled[COUNT - 1]).toBe(COUNT - 1);
     await kit.system.terminate();
-  });
+    // Draining 20 000 messages is what the 30 s budget is for, and under bun's
+    // 5 s default cap the run could only ever report a bare timeout — the one
+    // reading that looks identical to the bounded-mailbox regression this test
+    // exists to catch.
+  }, 45_000);
 
   test('a bound is opt-in via withMailboxCapacity, and its drops reach onDrop', async () => {
     // The inverse of the guard above, and the only non-Docker coverage of
@@ -355,6 +743,91 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
     await kit.system.terminate();
   });
 
+  // #733 end to end.  `ActorRef.stop()` posts `PoisonPill` as a *user*
+  // message, and `PoisonPill` has no own enumerable properties — so the
+  // "field-derived" `priorityFor` the docs recommend sees `{}`, and before
+  // this the pill head-inserted and the actor stopped on the spot.  No
+  // attacker and no malformed traffic: the framework's own shutdown path.
+  test('ref.stop() still drains the backlog first with a field-derived priorityFor', async () => {
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('mbox-pri-poison-pill', kitOptions);
+
+    let release: () => void = () => {};
+    const latch = new Promise<void>((resolve) => { release = resolve; });
+    const handled: string[] = [];
+
+    type Work = { readonly label: string; readonly priority: number };
+    class Worker extends Actor<Work> {
+      override async onReceive(m: Work): Promise<void> {
+        if (m.label === 'w0') await latch;
+        handled.push(m.label);
+      }
+      override postStop(): void { handled.push('STOPPED'); }
+    }
+    // Field-derived is one of the three shapes the mailboxes page recommends,
+    // and it is the one that returns `undefined` for a PoisonPill.
+    const options = ActorOptions.create<Work>()
+      .withMailbox(() => new PriorityMailbox<Work>({ priorityFor: (m) => m.priority }) as never);
+    const ref = kit.system.spawnAnonymous(Worker, options);
+
+    // Wedge the actor on w0 so w1..w4 are genuinely queued when the pill
+    // arrives — otherwise the drain would be trivially in order.
+    for (let index = 0; index < 5; index++) ref.tell({ label: `w${index}`, priority: 5 });
+    ref.stop();
+    release();
+
+    await awaitCondition(() => handled.includes('STOPPED'), {
+      timeoutMs: 4_000,
+      label: 'the actor stopped after its PoisonPill was handled',
+    });
+    // The documented guarantee: a graceful drain-then-stop, not a stop that
+    // jumped a five-message queue.
+    expect(handled).toEqual(['w0', 'w1', 'w2', 'w3', 'w4', 'STOPPED']);
+    await kit.system.terminate();
+  });
+
+  test('a throwing priorityFor faults nothing in the sender — the tell returns', async () => {
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('mbox-pri-throwing-callback', kitOptions);
+    const failures: unknown[] = [];
+    const handled: string[] = [];
+
+    type Work = { readonly kind: 'work'; readonly label: string };
+    class Worker extends Actor<Work> {
+      override onReceive(m: Work): void { handled.push(m.label); }
+      override postStop(): void { handled.push('STOPPED'); }
+    }
+    // The shape the repo's own example used: an exhaustive match, which throws
+    // on anything it was not written for — including the framework's own
+    // PoisonPill.
+    const priorityOptions = PriorityMailboxOptions.create<Work>()
+      .withPriorityFor((m) => {
+        if (m.kind !== 'work') throw new Error(`Pattern matching error: no pattern matches value ${JSON.stringify(m)}`);
+        return 5;
+      })
+      .withOnPriorityError((cause) => failures.push(cause));
+    const options = ActorOptions.create<Work>()
+      .withMailbox(() => new PriorityMailbox<Work>(priorityOptions) as never);
+    const ref = kit.system.spawnAnonymous(Worker, options);
+
+    ref.tell({ kind: 'work', label: 'a' });
+    // `stop()` is a `tell` of PoisonPill, so the throw would land here, in
+    // this test's own stack — which is exactly where a sender sees it.
+    expect(() => ref.stop()).not.toThrow();
+
+    await awaitCondition(() => handled.includes('STOPPED'), {
+      timeoutMs: 4_000,
+      label: 'the actor drained and then stopped',
+    });
+    expect(handled).toEqual(['a', 'STOPPED']);
+    expect(failures.length).toBe(1);
+    await kit.system.terminate();
+  });
+
   test('bounded mailbox with drop-new tolerates a burst without throwing', async () => {
     const kitOptions = TestKitOptions.create()
       .withLogger(new NoopLogger())
@@ -364,6 +837,8 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
 
     class Slow extends Actor<number> {
       override async onReceive(m: number): Promise<void> {
+        // A fixture: the handler has to be slow enough that the eight sends below
+        // overrun a capacity-3 mailbox, which is the case under test.
         await sleep(10);
         received.push(m);
       }
@@ -373,6 +848,9 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
     const ref = kit.system.spawnAnonymous(Slow, options);
 
     for (let i = 0; i < 8; i++) ref.tell(i);
+    // An upper bound, so it cannot be polled: `received.length` has to end up in
+    // [1, 8] once the sends are over, and a poll on ">= 1" returns on the first
+    // delivery, long before drop-new has decided anything.
     await sleep(200);
 
     // At most (capacity + already-processed) messages will land — the

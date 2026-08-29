@@ -120,7 +120,7 @@ describe('DevTools protocol — vocabulary guards', () => {
 
   test('every declared method is namespaced by its owning panel', () => {
     for (const method of DEVTOOLS_REQUEST_METHODS) {
-      expect(method).toMatch(/^(explain|journal|replay|profiler|tracing|stats)\.[a-z]+$/);
+      expect(method).toMatch(/^(explain|journal|replay|profiler|tracing|stats|deadletters|pubsub|config|actors)\.[a-z]+$/);
     }
   });
 });
@@ -154,6 +154,10 @@ describe('DevTools protocol — server frames', () => {
   });
 
   test('stats samples are cumulative counters the UI can differentiate', () => {
+    const topMailboxes = [{ path: '/user/a', size: 5, stashSize: 0, suspended: false }];
+    // The payload grew `messagesProcessed`, `mailboxDrops`, `stashedTotal`,
+    // `suspendedActors` and the per-node breakdown after this literal was
+    // written, and nothing compiled it — the sample is a whole one again.
     const sample = statsSamplePayload({
       atMs: 1_000,
       uptimeMs: 500,
@@ -163,8 +167,35 @@ describe('DevTools protocol — server frames', () => {
       actorsStopped: 7,
       actorsRestarted: 1,
       deadLetters: 2,
+      messagesProcessed: 42,
+      mailboxDrops: 0,
       mailboxBacklog: 5,
-      topMailboxes: [{ path: '/user/a', size: 5, stashSize: 0, suspended: false }],
+      stashedTotal: 0,
+      suspendedActors: 0,
+      topMailboxes,
+      // Always at least the serving node, so the overview renders the same
+      // way clustered or not.
+      nodes: [{
+        figures: {
+          address: 'local',
+          systemName: 'devtools-protocol',
+          uptimeMs: 500,
+          actorCount: 3,
+          actorsStarted: 10,
+          actorsStopped: 7,
+          actorsRestarted: 1,
+          deadLetters: 2,
+          messagesProcessed: 42,
+          mailboxDrops: 0,
+          mailboxBacklog: 5,
+          stashedTotal: 0,
+          suspendedActors: 0,
+          topMailboxes,
+        },
+        receivedAtMs: 1_000,
+        stale: false,
+        isSelf: true,
+      }],
     });
     expect(sample.kind).toBe('stats-sample');
     expect(sample.cluster).toBeUndefined();

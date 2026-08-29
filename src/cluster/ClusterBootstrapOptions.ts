@@ -1,5 +1,9 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+import type { Config } from '../config/Config.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
+import { ClusterReadinessOptionsValidator } from './ClusterReadiness.js';
+import type { ClusterReadinessOptions } from './ClusterReadiness.js';
 import type { ActorSystemOptionsType } from '../ActorSystemOptions.js';
 import type { SeedProvider } from '../discovery/index.js';
 import type { ClusterOptionsType } from './ClusterOptions.js';
@@ -13,6 +17,19 @@ import type { ProcessSignal } from '../util/ProcessSignal.js';
  * toolchain's firewall rules and runbooks carry over unchanged.
  */
 export const DEFAULT_PORT = 2552;
+
+/**
+ * Built-in default for {@link ClusterBootstrapOptionsType.host} — the
+ * interface a node binds when neither the options nor the environment name
+ * one.
+ *
+ * A wildcard is the right answer for *binding*, and only for binding: a
+ * container accepts traffic on an address it does not know at start-up, so
+ * "every interface" is what it has to say.  What this value must never become
+ * is the node's identity — see
+ * {@link ClusterBootstrapOptionsType.advertisedHost} and #944.
+ */
+export const DEFAULT_BIND_HOST = '0.0.0.0';
 
 /**
  * Built-in timeout for {@link ClusterBootstrapOptionsType.awaitReady} when it
@@ -50,13 +67,47 @@ export type ClusterBootstrapOptionsType = {
   /* ----------------------------- Cluster ------------------------------- */
 
   /**
-   * Bind host.  Default resolution order:
+   * The interface to bind — **and, unless {@link advertisedHost} says
+   * otherwise, the address this node gossips for peers to dial back.**
+   *
+   * That second half is the part worth reading twice.  The value does not stay
+   * a bind target: it becomes `selfAddress`, which travels in every gossip
+   * frame, every heartbeat and every member record, and which the
+   * stable-observation election orders on.  Naming one routable host here is
+   * the ordinary case and covers both jobs; naming a wildcard binds every
+   * interface and leaves the advertised address to be derived (#944).
+   *
+   * Resolution order for the bind host:
    *   1. `options.host`
-   *   2. `process.env.POD_IP` (Kubernetes)
-   *   3. `process.env.HOSTNAME`
-   *   4. `'0.0.0.0'`
+   *   2. `process.env.CLUSTER_HOST`
+   *   3. `process.env.POD_IP` (Kubernetes, via the downward API)
+   *   4. `process.env.HOSTNAME`
+   *   5. {@link DEFAULT_BIND_HOST}
+   *
+   * Two caveats on the environment stages, both of which cost a cluster when
+   * they are assumed away.  `POD_IP` exists only if the pod spec exports it —
+   * it is not automatic.  And `HOSTNAME` is a *shell* variable: Docker and
+   * Kubernetes put it in the environment, but a service started by systemd or
+   * a process manager on a plain host sees `process.env.HOSTNAME === undefined`.
+   * Even when present it is the pod name, which resolves under a StatefulSet
+   * with a headless service and nowhere else — under a Deployment it is a name
+   * no peer can dial.
    */
   readonly host?: string;
+
+  /**
+   * The address peers dial, when it differs from the bound interface (#944).
+   *
+   * The Kubernetes shape, and the reason the two are separate fields: bind
+   * `0.0.0.0` because the pod does not know its address, advertise `POD_IP`
+   * because that is the one the platform assigned. A wildcard is rejected
+   * here — an address meaning "every interface" identifies nothing, and every
+   * node that claimed it would claim the same string.
+   *
+   * Unset resolves through {@link host} (when that is not a wildcard), then
+   * `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, then loopback.
+   */
+  readonly advertisedHost?: string;
 
   /**
    * Bind port.  Default: `process.env.CLUSTER_PORT` (when present and
@@ -134,17 +185,25 @@ export type ClusterBootstrapOptionsType = {
   readonly receptionist?: boolean;
 
   /**
-   * Wait for this node's `SelfUp` event before resolving.
+   * Wait for the cluster to be **ready** — self a full member (`up`) and at
+   * least `minimumMembers` members up — before resolving.
    *
-   *   - `true` (default) — wait up to 5 000 ms.
-   *   - `false` / `0`    — return immediately.
-   *   - a number         — wait at most that many ms.
+   *   - `true` (default) — wait with the computed budget:
+   *     `actor-ts.cluster.bootstrap.await-ready` if set, else the
+   *     self-election grace + 5 000 ms behind stable observation, else a
+   *     flat 5 000 ms.
+   *   - `false` / `0`    — return immediately, without waiting.
+   *   - a number         — the budget in ms.
+   *   - a {@link ClusterReadinessOptions} bag — full control; unset fields
+   *     fall through to the HOCON layer and then the computed budget.
    *
-   * On timeout the returned promise still resolves — the cluster
-   * keeps trying in the background.  Set a custom value when seed
-   * contact is slow (e.g. K8s pod start lag).
+   * **On timeout the bootstrap runs the coordinated-shutdown pipeline and
+   * rejects with `ClusterReadyTimeoutError`** — a resolved `bootstrap()` now
+   * means a formed cluster, never a node still `joining` (#943).  To restore
+   * the old fire-and-forget shape, pass `awaitReady: false` and wait (or
+   * don't) yourself via `cluster.awaitReady().catch(…)`.
    */
-  readonly awaitReady?: boolean | number;
+  readonly awaitReady?: boolean | number | ClusterReadinessOptions;
 };
 
 /**
@@ -207,9 +266,21 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
 
   /* ----------------------------- Cluster ------------------------------- */
 
-  /** Bind host.  Defaults resolve via `POD_IP` / `HOSTNAME` / `0.0.0.0`. */
+  /**
+   * The interface to bind — and, unless {@link withAdvertisedHost} overrides
+   * it, the address gossiped for peers to dial back.  Defaults resolve via
+   * `CLUSTER_HOST` / `POD_IP` / `HOSTNAME` / `0.0.0.0`.
+   */
   withHost(host: string): this {
     return this.set('host', host);
+  }
+
+  /**
+   * The address peers dial, when it differs from the bound interface — bind
+   * `0.0.0.0`, advertise the pod IP.  A wildcard is rejected (#944).
+   */
+  withAdvertisedHost(advertisedHost: string): this {
+    return this.set('advertisedHost', advertisedHost);
   }
 
   /** Bind port.  Defaults to `CLUSTER_PORT` env or `2552`. */
@@ -266,10 +337,12 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
   }
 
   /**
-   * Wait for this node's `SelfUp` before resolving — `true` (5 000 ms),
-   * `false`/`0` (immediate), or a millisecond budget.
+   * Wait for cluster readiness before resolving — `true` (computed budget),
+   * `false`/`0` (skip), a millisecond budget, or a full
+   * {@link ClusterReadinessOptions} bag.  On timeout the bootstrap tears the
+   * system down and rejects; see {@link ClusterBootstrapOptionsType.awaitReady}.
    */
-  withAwaitReady(awaitReady: boolean | number): this {
+  withAwaitReady(awaitReady: boolean | number | ClusterReadinessOptions): this {
     return this.set('awaitReady', awaitReady);
   }
 }
@@ -281,15 +354,57 @@ export class ClusterBootstrapOptionsValidator extends OptionsValidator<ClusterBo
   }
   protected rules(s: Partial<ClusterBootstrapOptionsType>): void {
     this.nonEmptyString('name');
+    this.nonEmptyString('host');
+    // Only non-emptiness here; the wildcard rule lives on
+    // `ClusterOptionsValidator`, which every path reaches — including a direct
+    // `Cluster.join` that never sees these options at all (#944).
+    this.nonEmptyString('advertisedHost');
     // Positive integer (not the TCP 1..65535 range) — the bootstrap port may
     // be a synthetic InMemoryTransport node id, same as ClusterOptions.port.
     this.positiveInt('port');
     this.positiveNumber('gossipIntervalMs');
-    // awaitReady is boolean | number(ms); a numeric budget must be >= 0 (0 = immediate).
+    // awaitReady is boolean | number(ms) | readiness bag; a numeric budget
+    // must be >= 0 (0 = skip), and a bag is held to the readiness rules here
+    // — before the ActorSystem exists — rather than only at consume time.
     if (typeof s.awaitReady === 'number' && (!Number.isFinite(s.awaitReady) || s.awaitReady < 0)) {
-      this.fail('awaitReady', 'must be a boolean or a non-negative number of ms', s.awaitReady);
+      this.fail('awaitReady', 'must be a boolean, a non-negative number of ms, or a readiness options object', s.awaitReady);
+    }
+    if (typeof s.awaitReady === 'object' && s.awaitReady !== null) {
+      new ClusterReadinessOptionsValidator().validate(s.awaitReady);
     }
   }
+}
+
+/**
+ * The readiness knobs of the `actor-ts.cluster.bootstrap` block, in the
+ * shape {@link bootstrapCluster} and `Cluster.awaitReady` layer between the
+ * explicit options and the built-in defaults.  `awaitReadyMs` has no
+ * `reference.conf` value on purpose: a leaf that is always present could not
+ * express "unset", and unset is what selects the grace-aware computed
+ * default (#1086) — the same reasoning as `advertised-host`.
+ */
+export type ClusterBootstrapConfigDefaults = {
+  readonly awaitReadyMs?: number;
+  readonly minimumMembers?: number;
+};
+
+/**
+ * Read the readiness pair of the bootstrap block.  Only keys actually
+ * present are returned, so an absent one falls through to the computed /
+ * built-in default instead of landing as an explicit `undefined`.
+ */
+export function readClusterBootstrapDefaultsFromConfig(
+  config: Config,
+): ClusterBootstrapConfigDefaults {
+  const keys = ConfigKeys.cluster.bootstrap;
+  // Mutable while being filled; consumers see the readonly shape.
+  const out: {
+    -readonly [K in keyof ClusterBootstrapConfigDefaults]:
+    ClusterBootstrapConfigDefaults[K]
+  } = {};
+  if (config.hasPath(keys.awaitReady)) out.awaitReadyMs = config.getDuration(keys.awaitReady);
+  if (config.hasPath(keys.minimumMembers)) out.minimumMembers = config.getInt(keys.minimumMembers);
+  return out;
 }
 
 /**

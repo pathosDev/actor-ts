@@ -15,6 +15,36 @@ export const DEFAULT_MAX_PENDING_QUORUM_REQUESTS = 1_000;
 /** Built-in default ceiling on a caller-supplied quorum `timeoutMs`. */
 export const DEFAULT_MAX_QUORUM_TIMEOUT_MS = 30_000;
 
+/**
+ * Built-in default budget for one `ddata-gossip` frame's payload — 1 MiB.
+ *
+ * Not the wire cap, and deliberately far below it.  The wire cap
+ * (`actor-ts.remote.max-frame-bytes`, 16 MiB) is where the *link dies*: a
+ * frame past it is rejected on its 4-byte length prefix, and the transport
+ * answers the decoder's throw by dropping the whole association (#691).  This
+ * budget is where gossip *stops packing*, so the two are one order of
+ * magnitude apart on purpose — the association also carries heartbeats, and
+ * `failure-detector.unreachable-after` is 2 s, so a gossip frame sized to the
+ * wire cap would be a head-of-line stall long enough to be mistaken for a
+ * dead node (#846 is the general form of that).
+ *
+ * 1 MiB measured against the real `toJSON` shapes and the real encoder: a
+ * three-replica `GCounter` under an `actor-ts@host:port` replica id costs
+ * ~131 bytes on the wire, so a tick carries ~8 000 such keys and a
+ * 100 000-key store sweeps in ~13 default-interval ticks.  Convergence is
+ * unaffected — state-based CRDT merge is idempotent and commutative, and
+ * `onGossip` treats an absent key as "no information" — so spreading the key
+ * set over ticks costs latency, not agreement.
+ *
+ * A store that already fits in one frame is unaffected by the number; raise
+ * it (or set `0`) only where a large store must converge in fewer rounds and
+ * the link has nothing latency-sensitive to lose.  The effective budget is
+ * always clamped to the transport's own {@link Transport.maxFrameBytes}, so
+ * *lowering* the wire cap lowers this with it and no setting can put gossip
+ * back over the edge.
+ */
+export const DEFAULT_MAX_GOSSIP_BYTES = 1024 * 1024;
+
 /** Plain options-object shape accepted by {@link DistributedData.start}. */
 export type DistributedDataOptionsType = {
   /** Period between gossip pushes.  Default: 1 s. */
@@ -51,6 +81,33 @@ export type DistributedDataOptionsType = {
    * and locks every later request out of the cap it never reached itself.
    */
   readonly maxQuorumTimeout?: number;
+  /**
+   * Byte budget for one gossip frame's payload.  A store larger than this is
+   * pushed a slice at a time, resuming where the previous tick stopped, so
+   * every key is gossiped within `ceil(store / budget)` ticks instead of all
+   * of them in one frame nobody can receive.  `0` removes the budget.
+   *
+   * Default: {@link DEFAULT_MAX_GOSSIP_BYTES} (1 MiB) — see that constant for
+   * why it sits an order of magnitude under the wire cap rather than at it.
+   *
+   * **The effective budget is the smaller of this and the transport's
+   * `maxFrameBytes`**, and that clamp is the point rather than a detail.
+   * Lowering `actor-ts.remote.max-frame-bytes` is the documented advice for a
+   * network crossing a semi-trusted boundary; a DistributedData budget that
+   * ignored it would leave a store sized for the old cap gossiping frames the
+   * peer now rejects on the length prefix, killing the association once per
+   * tick with nothing logged on the sending side (#691).
+   *
+   * A single key whose own encoding exceeds the budget cannot be sliced —
+   * `entries` is keyed per CRDT and the unit is one key's full state.  It is
+   * skipped, warned about (rate-limited, naming the key and both sizes) and
+   * counted in `distributed_data_gossip_skipped_keys_total`.  That key does
+   * not converge; the honest options were a divergent key that says so and a
+   * dead link that does not, and the alternative to bounding the value is
+   * bounding nothing.  `MAX_CRDT_ENTRIES` bounds an entry *count*, never a
+   * byte size, so one legitimate `ORSet` can reach this on its own.
+   */
+  readonly maxGossipBytes?: number;
   /**
    * Optional durable backend.  When provided, the local CRDT view
    * is loaded from the store on `preStart` and re-saved after every
@@ -100,6 +157,11 @@ export class DistributedDataOptionsBuilder extends OptionsBuilder<DistributedDat
     return this.set('maxQuorumTimeout', ms);
   }
 
+  /** Byte budget for one gossip frame's payload.  `0` removes it. */
+  withMaxGossipBytes(maxGossipBytes: number): this {
+    return this.set('maxGossipBytes', maxGossipBytes);
+  }
+
   /** Durable per-replica backend — load on start, re-save after each mutation. */
   withDurableStore(store: DurableStateStore): this {
     return this.set('durableStore', store);
@@ -113,10 +175,14 @@ export class DistributedDataOptionsValidator extends OptionsValidator<Distribute
   }
   protected rules(_s: Partial<DistributedDataOptionsType>): void {
     this.positiveNumber('gossipInterval');
-    // Non-negative rather than positive on both: `0` is the documented
+    // Non-negative rather than positive on all three: `0` is the documented
     // "disabled" spelling, which the project prefers over `Infinity`.
     this.nonNegativeInt('maxPendingQuorumRequests');
     this.nonNegativeNumber('maxQuorumTimeout');
+    // An integer because it is a byte count, and `getBytes` already resolves
+    // `1M` to one.  A fractional budget would be arithmetic that never
+    // matches a frame length.
+    this.nonNegativeInt('maxGossipBytes');
   }
 }
 
@@ -144,6 +210,9 @@ export function readDistributedDataOptionsFromConfig(
   }
   if (config.hasPath(keys.maxQuorumTimeout)) {
     out.maxQuorumTimeout = config.getDuration(keys.maxQuorumTimeout);
+  }
+  if (config.hasPath(keys.maxGossipBytes)) {
+    out.maxGossipBytes = config.getBytes(keys.maxGossipBytes);
   }
   return out;
 }

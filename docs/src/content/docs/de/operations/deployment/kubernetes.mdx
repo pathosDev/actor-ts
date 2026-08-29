@@ -229,25 +229,35 @@ Die
 [Management-Routen](/de/observability/management/overview/)
 des Frameworks stellen diese Endpunkte bereit.
 
-- **`/ready`** — "soll dieser Pod Traffic bekommen?"
-  Liefert während des Shutdowns 503, damit der LB ihn vor SIGTERM
-  rauswirft. Nutze, um App-spezifische Health-Checks abzusichern
-  (DB erreichbar, Dependencies warm etc.).
-- **`/health`** — "ist dieser Pod grundlegend kaputt?"
-  Schlägt fehl → K8s startet den Pod neu. Reserviere für wirklich
-  unrettbare Zustände — Actor-System läuft nicht, OOM-artige
-  Bedingungen.
+- **`/ready`** — „soll ein Load Balancer diesem Pod Traffic
+  schicken?" Bereits durch die Checks des Frameworks abgesichert:
+  `cluster-membership` (dieser Knoten ist `up`) und
+  `cluster-transport` (er ist nicht von jedem Peer abgeschnitten).
+  App-spezifische Checks — Datenbank erreichbar, Dependencies warm —
+  kommen mit `healthChecksOf(system).addReadiness` dazu.
+  Prozessintern gated `Cluster.bootstrap` genauso:
+  `actor-ts.cluster.bootstrap.minimum-members` (oder
+  `awaitReady: { minimumMembers }` im Code) sorgt dafür, dass ein
+  aufgelöster Bootstrap nichts Geringeres bedeutet als „das Cluster hat
+  seine erwartete Größe erreicht" — auf die Replica-Anzahl setzen, genau
+  wie `required-contact-points`.
+- **`/health`** — „würde ein Neustart dieses Pods helfen?"
+  Schlägt er fehl, startet K8s den Pod neu; er hängt deshalb von
+  nichts außerhalb des Prozesses ab — der einzige Liveness-Check des
+  Frameworks ist `actor-system`.  Niemals eine Datenbank oder einen
+  Downstream-Dienst hier eintragen: ein gemeinsamer Ausfall würde
+  die ganze Flotte neu starten, und die Neustarts würden nichts
+  reparieren.
 
 ## App-seitige Verdrahtung
 
 ```ts
-import { ActorSystem, CoordinatedShutdownId } from 'actor-ts';
+import { ActorSystem } from 'actor-ts';
 import { Cluster, ClusterOptions } from 'actor-ts/cluster';
 import { KubernetesApiSeedProvider, KubernetesApiSeedProviderOptions } from 'actor-ts/discovery';
 import { managementRoutes } from 'actor-ts/management';
 
 const system = ActorSystem.create('my-app');
-const cs     = system.extension(CoordinatedShutdownId);
 
 // 1. Cluster-Join mit K8s-API-Seed-Discovery
 const kubernetesApiSeedProviderOptions = KubernetesApiSeedProviderOptions.create()
@@ -265,21 +275,18 @@ const clusterOptions = ClusterOptions.create()
 const cluster = await Cluster.join(system, clusterOptions);
 
 // 2. Management-Endpunkte
-const { routes: mgmtRoutes } = managementRoutes(system, cluster);
+const mgmtRoutes = managementRoutes(system, cluster);
 await system.http(8558).bind(mgmtRoutes);
 
 // 3. App-HTTP-Server
 const http = system.extension(HttpExtensionId);
 await http.newServerAt('0.0.0.0', 8080).bind(routes);
 
-// 4. SIGTERM → Coordinated Shutdown
-cs.installProcessHooks();
-
-// 5. Prozess am Leben halten
-await new Promise(() => {});
+// 4. Laufen, bis das Kubelet Stopp sagt, dann geordnet herunterfahren
+await system.runUntilTerminated();
 ```
 
-Fünf Schritte in der Reihenfolge:
+Vier Schritte in der Reihenfolge:
 
 1. **Cluster-Join mit Seed-Discovery** — der K8s-API-Seed-Provider
    fragt Pods ab, die `app=actor-ts` matchen, und nutzt deren IPs
@@ -288,9 +295,13 @@ Fünf Schritte in der Reihenfolge:
 2. **Management-Endpunkte** — `/health` + `/ready` für die K8s-Probes,
    `/cluster/members` zum Debuggen.
 3. **App-HTTP** — deine Routes, getrennter Port vom Management.
-4. **SIGTERM-Hooks** — Coordinated Shutdown installiert Hooks, die
-   bei SIGTERM zum graceful Drain feuern.
-5. **Am Leben halten** — der Prozess hängt, bis SIGTERM kommt.
+4. **Bis zum Terminieren laufen** — installiert die
+   SIGTERM/SIGINT-Handler, blockiert, führt dann die Pipeline aus und
+   löst auf, wenn das System unten ist.  Es gibt keinen separaten
+   Teardown-Schritt zu schreiben: beide `bind()`-Aufrufe haben ihr
+   Unbind in der `service-unbind`-Phase registriert und `Cluster.join`
+   den Leave in `cluster-leave` — der Pod fällt also aus den
+   Service-Endpoints und aus dem Cluster, bevor die Actors stoppen.
 
 Siehe [Discovery — Kubernetes API](/de/discovery/seed-providers/kubernetes-api/)
 für die vollständigen Optionen des Seed-Providers.
@@ -308,12 +319,16 @@ Für jeden Pod, der Reihe nach (StatefulSet) oder beliebig
 2. **10-Sekunden-LB-Drain**.
 3. SIGTERM kommt an.
 4. Coordinated Shutdown läuft:
-   - Keine neuen HTTP-Requests mehr annehmen.
-   - In-flight Requests drainen.
-   - `cluster.leave()` ausgeben.
-   - Auf Bestätigung des Leaves durch den Cluster warten.
-   - Das Actor-System terminieren.
-5. Prozess beendet sich sauber.
+   - Keine neuen HTTP-Requests mehr annehmen (`service-unbind`,
+     verdrahtet von `bind()`).
+   - In-flight Requests drainen (`service-requests-done`, deins).
+   - Broker-Verbindungen schließen (`service-stop`, verdrahtet von
+     jedem Broker-Actor).
+   - `cluster.leave()` ausgeben (`cluster-leave`, verdrahtet von
+     `Cluster.join`).
+   - Das Actor-System terminieren (`actor-system-terminate`).
+5. `runUntilTerminated()` löst auf, seine Signal-Handler gehen ab, und
+   der Prozess beendet sich sauber.
 6. K8s startet einen neuen Pod aus dem neuen Image.
 7. Der neue Pod tritt dem Cluster via Seed-Provider bei.
 
@@ -337,8 +352,11 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Wenn der Shutdown länger braucht, schickt K8s mittendrin SIGKILL —
   der Cluster bekommt kein sauberes Leave, Journals werden nicht
-  geflusht, in-flight Requests gekillt. Sorg dafür, dass die Grace
-  länger ist als deine längste Shutdown-Phase.
+  geflusht, in-flight Requests gekillt. Die Grace-Period muss den
+  `preStop`-Sleep **plus** die Pipeline abdecken, und der Worst Case
+  der Pipeline ist `default-phase-timeout` (5 s) mal der Anzahl der
+  Phasen, die tatsächlich Tasks haben — nicht mal zwölf, denn eine
+  leere Phase ist ein No-Op, der nichts kostet.
 </Aside>
 
 <Aside type="caution" title="Pre-1.0 des Kubernetes-Lease-Providers">

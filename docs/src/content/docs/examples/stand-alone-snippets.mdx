@@ -59,12 +59,40 @@ bun install
 bun examples/hello-world.ts
 ```
 
-Each snippet runs to completion and exits.  No long-running
-processes; no external dependencies.
+Most snippets run to completion and exit.  The ones under
+`examples/http/`, plus the Prometheus and Kubernetes-probe ones,
+are servers instead — they bind a port and stay up until you stop
+them, which is the point of those particular snippets.
 
 For cluster-related snippets (singleton, sharding, pubsub, DD),
 the snippets use **`MultiNodeSpec`** to simulate a cluster
 inside one process — no Docker required.
+
+A handful do need something external: the broker snippets under
+`examples/io/` want Kafka, NATS or MQTT (and the matching optional
+peer dependency), and `examples/coordination/k8s-lease-singleton.ts`
+wants a Kubernetes API server.  Each of those names what it needs
+when you run it.
+
+## Verified in CI
+
+Every snippet on this page is run by
+[the example gate](/examples/overview/#verified-in-ci) on each push
+that touches `src/` or `examples/`, so a framework change that
+breaks one is a red check:
+
+```bash
+bun run test:examples              # all of them, ~90 s
+bun run test:examples patterns     # just the ones matching a substring
+```
+
+Each is classified once in
+[`tests/examples/examples.manifest.json`](https://github.com/pathosDev/actor-ts/blob/main/tests/examples/examples.manifest.json)
+— runnable with an output assertion, or skipped with the reason.
+The ones needing a broker, Kubernetes, or an undeclared optional
+peer are the skipped set; that file is where to look for which,
+and why.  Adding a snippet means adding its entry, or the gate
+fails on the mismatch.
 
 ## Patterns
 
@@ -82,10 +110,10 @@ const ref = system.spawnAnonymous(MyActor);
 ref.tell({ ... });
 ref.tell({ ... });
 
-// 3. Wait for processing (a small await or expect on a probe).
-await new Promise(r => setTimeout(r, 100));
-
-// 4. Print result + clean up.
+// 3. Print result + clean up.  `terminate()` drains the mailboxes
+//    first, so there is nothing to sleep for — unless the snippet
+//    waits on a timer or an un-awaited promise, which the drain does
+//    not follow.
 console.log(...);
 await system.terminate();
 ```

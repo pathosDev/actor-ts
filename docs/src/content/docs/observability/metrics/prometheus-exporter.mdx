@@ -51,7 +51,7 @@ The easiest path is via the
 import { managementRoutes } from 'actor-ts/management';
 
 // cluster can be null when you only need the metrics endpoint
-const { routes } = managementRoutes(system, null, {
+const routes = managementRoutes(system, null, {
   enableMetricsEndpoint: true,   // ← exposes GET /metrics
 });
 await system.http(8558).bind(routes);
@@ -69,6 +69,16 @@ scrape_configs:
 The management server runs on a **separate port** from your app's
 main HTTP server.  Typical pattern: app on 8080 (public), management
 on 8558 (internal-only).
+
+This route reads the registry through `collect()`, so it needs a
+registry that can be read that way — the framework's own can. The
+[prom-client bridge](/observability/metrics/prom-client-adapter/)
+cannot: it forwards its writes and keeps no snapshot. With that
+bridge installed the route answers **`503`** naming the conflict,
+rather than `200` with an empty body that Prometheus would accept
+as a healthy target with no series. Scrape prom-client's own
+`/metrics` route in that setup and leave `enableMetricsEndpoint`
+off.
 
 ## Manual wiring
 

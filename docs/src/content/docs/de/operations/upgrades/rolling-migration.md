@@ -195,6 +195,18 @@ dem Hot Path mehr gelesen werden dürften, kannst du:
     });
     ```
 
+    Sequenznummern überleben die Kopie, kompaktierte Quellen
+    eingeschlossen — das Target übernimmt die Kompaktierungsmarke
+    der Quelle, sodass eine Entity, deren Journal über einen
+    Snapshot hinaus kompaktiert wurde, genau die Nummerierung
+    behält, auf die ihr Snapshot und ihre Projektions-Cursor
+    verweisen.  Führe die Journal-Kopie **vor** der Snapshot-Kopie
+    aus, und übergib `sourcePersistenceOptions` /
+    `targetPersistenceOptions` an `migrateBetweenSnapshotStores`,
+    wann immer der Master-Key vom Actor statt aus der Konfiguration
+    des Stores kommt — siehe
+    [Migrations-Rezepte](/de/persistence/migration/recipes/).
+
 2. **Den v1-Schritt** aus der `MigrationChain` droppen, sobald
    der Backfill durch ist:
 
@@ -282,6 +294,14 @@ der Sweep ist idempotent und nach einem teilweisen Fehlschlag
 sicher wieder ausführbar. `If-Match` wird intern genutzt, damit ein
 gleichzeitiger Writer nicht still überschrieben wird.
 
+Ist am Bucket zusätzlich der Integritäts-HMAC aktiv, übergib
+`integrity` — dieselbe Konfiguration, die auch der Store hat. Das
+Tag deckt die Manifest-Bytes ab; der Sweep muss es prüfen, um einen
+Body zu lesen, und neu berechnen, um einen zurückzuschreiben. Ohne
+den Schlüssel verweigert er vor dem ersten Write, statt auf halbem
+Weg abzubrechen. Ein Bucket mitten in der Umstellung auf Integrität
+ergänzt zusätzlich `allowUntaggedBodies: true`.
+
 #### Durable Resume-Tokens + Completeness-Check
 
 Für Millionen-Objekt-Buckets hat der naive Sweep oben zwei
@@ -336,6 +356,14 @@ const result = await reEncryptObjectStorage(backend, {
   // einziges PUT schreibt.
   verifyKeyringCompleteness: true,
   // sampleSize: 200,   // optionaler Override; Default = min(100, total)
+
+  // — Integrität (#116) —
+  // Pflicht, wenn Bodies ein HMAC-Tag tragen: Derselbe Check oben
+  // verweigert den Lauf, wenn ein gesampeltes getaggtes Objekt
+  // keinen Schlüssel zur Prüfung hat. Tags werden nur dort neu
+  // gesetzt, wo der Body schon eines trug — nichts wird befördert.
+  integrity: { mode: 'hmac-sha256', integrityKey },
+  // allowUntaggedBodies: true,   // nur solange der Korpus gemischt ist
 
   // — Durable Resume —
   // Persistiert den State alle 500 Rewrites. Nach einem Crash
@@ -409,7 +437,7 @@ wiederherstellbar.
 | `migrateInMemoryJournal(journal, manifestFor)` | Bulk-Rewrite jedes Events unter einem Journal |
 | `migrateSnapshotStore(store, persistenceIds, manifestFor)` | Dito für Snapshots             |
 | `MasterKeyRing` `{ active, retired? }`    | Multi-Version-Encryption-Key-Ring           |
-| `reEncryptObjectStorage(backend, options)`   | Sweep: jeden Body unter einem Prefix mit dem Active-Key neu verschlüsseln |
+| `reEncryptObjectStorage(backend, options)`   | Sweep: jeden Body unter einem Prefix mit dem Active-Key neu verschlüsseln — `integrity` übergeben, wenn das Bucket HMAC-Tags trägt (#739) |
 | `ReEncryptProgressStore` / `InMemoryReEncryptProgressStore` | Durable Resume-Tokens für den Sweep (#109) — plug eine Datei-/Redis-/Object-Storage-backed Implementation für Millionen-Objekt-Buckets |
 
 Alle werden aus dem Top-Level-`actor-ts`-Barrel exportiert.

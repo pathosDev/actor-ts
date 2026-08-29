@@ -22,7 +22,7 @@ export class TracingExtension implements Extension {
 
   /** Plug in a tracer.  Idempotent if you re-pass the same instance. */
   enable(tracer: Tracer): Tracer {
-    this.tracer = tracer;
+    this.install(tracer);
     return tracer;
   }
 
@@ -75,10 +75,27 @@ export class TracingExtension implements Extension {
 
   /** Reset back to the noop — primarily for tests. */
   disable(): void {
-    this.tracer = NOOP_TRACER;
+    this.install(NOOP_TRACER);
     // Both are pure cost without a tracer, so they go with it.
     this._system._traceRootSpans = false;
     this._system._traceMessagePayloads = false;
+  }
+
+  /**
+   * The one writer of {@link ActorSystem._tracer}, so the field and this
+   * extension's own `tracer` cannot drift apart.
+   *
+   * The field is the hot-path mirror: `null` exactly when {@link isEnabled} is
+   * false, so the receive path resolves a tracer with one field read instead
+   * of walking the extension chain twice per message (#411).  Assigning both
+   * here rather than at the call sites is what keeps "enabled" meaning the
+   * same thing to `tracerOf(...)` and to the per-message read — and this
+   * extension is swapped at runtime with live cells draining, so the two
+   * agreeing at every instant is the actual requirement.
+   */
+  private install(tracer: Tracer): void {
+    this.tracer = tracer;
+    this._system._tracer = tracer === NOOP_TRACER ? null : tracer;
   }
 }
 

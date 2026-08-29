@@ -13,8 +13,19 @@ import { CassandraQuery } from '../../../../src/persistence/query/CassandraQuery
 import { offsetStart } from '../../../../src/persistence/query/PersistenceQuery.js';
 import { tagIndexDdl } from '../../../../src/persistence/journals/CassandraClient.js';
 import { FakeCassandraClient } from './FakeCassandraClient.js';
+import { sleep } from '../../../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+/**
+ * Push the wall clock past the current millisecond, so the next append lands on
+ * a strictly greater offset timestamp.
+ *
+ * The elapsed time *is* the fixture: `Offset` orders by millisecond timestamp
+ * and the journal stamps one `Date.now()` per append, so without the gap the
+ * corpus has no defined order and the oracle comparison below would be over two
+ * arbitrarily ordered result sets.  Nothing to poll for — the clock is the only
+ * thing being waited on (#418).
+ */
+const separateOffsetTimestamps = (): Promise<void> => sleep(2);
 
 type CorpusEvent = { id: number };
 
@@ -36,17 +47,17 @@ type CorpusEvent = { id: number };
  *   6  | event-1 | type:Event,  tenant:t1
  */
 async function seedCorpus(j: CassandraJournal): Promise<void> {
-  await j.append('order-1', [{ id: 1 }], 0, ['type:Order', 'tenant:t1']);
-  await sleep(2);
-  await j.append('order-2', [{ id: 2 }], 0, ['type:Order', 'tenant:t2']);
-  await sleep(2);
-  await j.append('order-3', [{ id: 3 }], 0, ['type:Order', 'tenant:t1', 'archived']);
-  await sleep(2);
-  await j.append('inv-1',   [{ id: 4 }], 0, ['type:Invoice', 'tenant:t1']);
-  await sleep(2);
-  await j.append('inv-2',   [{ id: 5 }], 0, ['type:Invoice', 'tenant:t2', 'archived']);
-  await sleep(2);
-  await j.append('event-1', [{ id: 6 }], 0, ['type:Event',  'tenant:t1']);
+  await j.append('order-1', [{ event: { id: 1 }, tags: ['type:Order', 'tenant:t1'] }], 0);
+  await separateOffsetTimestamps();
+  await j.append('order-2', [{ event: { id: 2 }, tags: ['type:Order', 'tenant:t2'] }], 0);
+  await separateOffsetTimestamps();
+  await j.append('order-3', [{ event: { id: 3 }, tags: ['type:Order', 'tenant:t1', 'archived'] }], 0);
+  await separateOffsetTimestamps();
+  await j.append('inv-1', [{ event: { id: 4 }, tags: ['type:Invoice', 'tenant:t1'] }], 0);
+  await separateOffsetTimestamps();
+  await j.append('inv-2', [{ event: { id: 5 }, tags: ['type:Invoice', 'tenant:t2', 'archived'] }], 0);
+  await separateOffsetTimestamps();
+  await j.append('event-1', [{ event: { id: 6 }, tags: ['type:Event',  'tenant:t1'] }], 0);
 }
 
 const ids = (events: ReadonlyArray<{ event: { event: CorpusEvent } }>): number[] =>
@@ -85,9 +96,88 @@ describe('CassandraJournal — useTagIndex dual-write', () => {
 
   test('events without tags don\'t produce side-table rows', async () => {
     const { journal, client } = makeJournal(true);
-    await journal.append('untagged', [{ id: 1 }, { id: 2 }], 0);
+    await journal.append('untagged', [{ event: { id: 1 } }, { event: { id: 2 } }], 0);
     expect(client.countRows('ks.events_by_tag')).toBe(0);
     expect(client.countRows('ks.events')).toBe(2);
+    await journal.close();
+  });
+
+  test('a mixed batch indexes each event under its OWN tags (#631)', async () => {
+    const { journal, client } = makeJournal(true);
+    // One atomic append, three different tag sets.  The dual-write used to
+    // fan the batch's single tag list over every event, so the side table
+    // held rows claiming `paymentCaptured` was tagged 'order'.
+    await journal.append('checkout-1', [
+      { event: { id: 1 }, tags: ['order', 'audit'] },
+      { event: { id: 2 }, tags: ['payment'] },
+      { event: { id: 3 } },
+    ], 0);
+    // 2 + 1 + 0 pairs.  Collapsing to the first event's tags would write 6.
+    expect(client.countRows('ks.events_by_tag')).toBe(3);
+    expect(client.countRows('ks.events')).toBe(3);
+
+    // And the index answers by tag with exactly the right event.
+    const query = new CassandraQuery(journal);
+    const byPayment = await query.currentEventsByTag<CorpusEvent>({ all: ['payment'] }, offsetStart);
+    expect(byPayment.map((e) => e.event.event.id)).toEqual([2]);
+    const byOrder = await query.currentEventsByTag<CorpusEvent>({ all: ['order'] }, offsetStart);
+    expect(byOrder.map((e) => e.event.event.id)).toEqual([1]);
+    await journal.close();
+  });
+
+  test('delete compacts the side table, not just the events table (#654)', async () => {
+    const { journal, client } = makeJournal(true);
+    await seedCorpus(journal);
+    expect(client.countRows('ks.events_by_tag')).toBe(14);
+
+    // Compact three of the six streams away entirely.
+    await journal.delete('order-1', 1);   // 2 tags
+    await journal.delete('order-3', 1);   // 3 tags
+    await journal.delete('inv-2', 1);     // 3 tags
+
+    // The side table carries the FULL payload of every (event, tag) pair, so
+    // a row left behind is retained data and not merely a stale index entry —
+    // which is why this asserts the physical row count rather than only what
+    // the query returns.  14 - (2 + 3 + 3) = 6.
+    expect(client.countRows('ks.events_by_tag')).toBe(6);
+    expect(client.countRows('ks.events')).toBe(3);
+
+    // The untouched streams keep every one of their rows.
+    const query = new CassandraQuery(journal);
+    const remaining = await query.currentEventsByTag<CorpusEvent>({ all: ['type:Order'] }, offsetStart);
+    expect(ids(remaining)).toEqual([2]);
+    const stillTagged = await query.currentEventsByTag<CorpusEvent>({ all: ['tenant:t1'] }, offsetStart);
+    expect(ids(stillTagged)).toEqual([4, 6]);
+    await journal.close();
+  });
+
+  test('a partial delete leaves the surviving events\' tag rows alone', async () => {
+    const { journal, client } = makeJournal(true);
+    await journal.append('multi', [
+      { event: { id: 1 }, tags: ['keep', 'drop'] },
+      { event: { id: 2 }, tags: ['keep'] },
+    ], 0);
+    expect(client.countRows('ks.events_by_tag')).toBe(3);
+
+    // Only the first event is compacted — the delete must reach exactly its
+    // two rows and stop, which a range delete on `tag` alone could not do.
+    await journal.delete('multi', 1);
+    expect(client.countRows('ks.events_by_tag')).toBe(1);
+
+    const query = new CassandraQuery(journal);
+    expect(ids(await query.currentEventsByTag<CorpusEvent>('keep', offsetStart))).toEqual([2]);
+    expect(await query.currentEventsByTag<CorpusEvent>('drop', offsetStart)).toEqual([]);
+    await journal.close();
+  });
+
+  test('with the index off, delete touches only the events table', async () => {
+    // The read-back the tag cleanup needs costs a SELECT per partition, so it
+    // must not run for a journal that never dual-wrote anything.
+    const { journal, client } = makeJournal(false);
+    await seedCorpus(journal);
+    await journal.delete('order-1', 1);
+    expect(client.countRows('ks.events')).toBe(5);
+    expect(client.countRows('ks.events_by_tag')).toBe(0);
     await journal.close();
   });
 

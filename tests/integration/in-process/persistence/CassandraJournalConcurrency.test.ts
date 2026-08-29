@@ -49,7 +49,7 @@ async function race(
   count: number,
 ): Promise<RaceOutcome<string>> {
   const settled = await Promise.allSettled(
-    Array.from({ length: count }, (_, i) => journal.append(persistenceId, [`event-${i}`], expectedSeq)),
+    Array.from({ length: count }, (_, i) => journal.append(persistenceId, [{ event: `event-${i}` }], expectedSeq)),
   );
   const winners: RaceOutcome<string>['winners'] = [];
   const losers: RaceOutcome<string>['losers'] = [];
@@ -99,7 +99,7 @@ describe('CassandraJournal — concurrent appends are serialized', () => {
 
   test('the same holds mid-stream, where the claim is an UPDATE ... IF', async () => {
     const journal = journalWith(new FakeCassandraClient());
-    await journal.append('pid', ['e1', 'e2', 'e3'], 0);
+    await journal.append('pid', [{ event: 'e1' }, { event: 'e2' }, { event: 'e3' }], 0);
 
     const { winners, losers } = await race(journal, 'pid', 3, 5);
 
@@ -115,9 +115,9 @@ describe('CassandraJournal — concurrent appends are serialized', () => {
   test('a multi-event winner lands its whole batch, losers land nothing', async () => {
     const journal = journalWith(new FakeCassandraClient());
     const settled = await Promise.allSettled([
-      journal.append('pid', ['a1', 'a2', 'a3'], 0),
-      journal.append('pid', ['b1', 'b2', 'b3'], 0),
-      journal.append('pid', ['c1', 'c2', 'c3'], 0),
+      journal.append('pid', [{ event: 'a1' }, { event: 'a2' }, { event: 'a3' }], 0),
+      journal.append('pid', [{ event: 'b1' }, { event: 'b2' }, { event: 'b3' }], 0),
+      journal.append('pid', [{ event: 'c1' }, { event: 'c2' }, { event: 'c3' }], 0),
     ]);
     const winners = settled.filter((r) => r.status === 'fulfilled');
     expect(winners).toHaveLength(1);
@@ -133,9 +133,9 @@ describe('CassandraJournal — concurrent appends are serialized', () => {
   test('races on different persistence ids do not interfere', async () => {
     const journal = journalWith(new FakeCassandraClient());
     const settled = await Promise.allSettled([
-      journal.append('pid-a', ['a'], 0),
-      journal.append('pid-b', ['b'], 0),
-      journal.append('pid-c', ['c'], 0),
+      journal.append('pid-a', [{ event: 'a' }], 0),
+      journal.append('pid-b', [{ event: 'b' }], 0),
+      journal.append('pid-c', [{ event: 'c' }], 0),
     ]);
 
     expect(settled.every((r) => r.status === 'fulfilled')).toBe(true);
@@ -146,8 +146,8 @@ describe('CassandraJournal — concurrent appends are serialized', () => {
 
   test('sequential appends are unaffected', async () => {
     const journal = journalWith(new FakeCassandraClient());
-    await journal.append('pid', ['e1', 'e2'], 0);
-    await journal.append('pid', ['e3'], 2);
+    await journal.append('pid', [{ event: 'e1' }, { event: 'e2' }], 0);
+    await journal.append('pid', [{ event: 'e3' }], 2);
 
     expect(await journal.highestSeq('pid')).toBe(3);
     expect((await journal.read<string>('pid', 1)).map((e) => e.event)).toEqual(['e1', 'e2', 'e3']);
@@ -177,12 +177,12 @@ describe('CassandraJournal — a failed event batch releases its claim', () => {
     const journal = journalWith(client);
 
     client.failNextBatch = true;
-    await expect(journal.append('pid', ['e1'], 0)).rejects.toThrow('simulated write timeout');
+    await expect(journal.append('pid', [{ event: 'e1' }], 0)).rejects.toThrow('simulated write timeout');
     // The claim was rolled back, so the head is back where it started and
     // the retry may re-claim the same range instead of leaving a gap.
     expect(await journal.highestSeq('pid')).toBe(0);
 
-    const retried = await journal.append('pid', ['e1'], 0);
+    const retried = await journal.append('pid', [{ event: 'e1' }], 0);
     expect(retried[0]!.sequenceNr).toBe(1);
     expect((await journal.read<string>('pid', 1)).map((e) => e.event)).toEqual(['e1']);
   });
@@ -190,13 +190,13 @@ describe('CassandraJournal — a failed event batch releases its claim', () => {
   test('mid-stream, the release rewinds to the previous head', async () => {
     const client = new FlakyBatchClient();
     const journal = journalWith(client);
-    await journal.append('pid', ['e1', 'e2'], 0);
+    await journal.append('pid', [{ event: 'e1' }, { event: 'e2' }], 0);
 
     client.failNextBatch = true;
-    await expect(journal.append('pid', ['e3'], 2)).rejects.toThrow('simulated write timeout');
+    await expect(journal.append('pid', [{ event: 'e3' }], 2)).rejects.toThrow('simulated write timeout');
     expect(await journal.highestSeq('pid')).toBe(2);
 
-    const retried = await journal.append('pid', ['e3'], 2);
+    const retried = await journal.append('pid', [{ event: 'e3' }], 2);
     expect(retried[0]!.sequenceNr).toBe(3);
   });
 });
@@ -222,7 +222,7 @@ describe('CassandraJournal — lightweightTransactions opt-out', () => {
 
   test('LWT is on by default — the append claims its range conditionally', async () => {
     const client = new RecordingClient();
-    await journalWith(client).append('pid', ['e1'], 0);
+    await journalWith(client).append('pid', [{ event: 'e1' }], 0);
 
     expect(conditionals(client)).toHaveLength(1);
     expect(conditionals(client)[0]).toContain('IF NOT EXISTS');
@@ -231,9 +231,9 @@ describe('CassandraJournal — lightweightTransactions opt-out', () => {
   test('mid-stream the claim is conditional on the current head', async () => {
     const client = new RecordingClient();
     const journal = journalWith(client);
-    await journal.append('pid', ['e1'], 0);
+    await journal.append('pid', [{ event: 'e1' }], 0);
     client.statements.length = 0;
-    await journal.append('pid', ['e2'], 1);
+    await journal.append('pid', [{ event: 'e2' }], 1);
 
     expect(conditionals(client)).toHaveLength(1);
     expect(conditionals(client)[0]).toContain('IF max_sequence_nr = ?');
@@ -242,8 +242,8 @@ describe('CassandraJournal — lightweightTransactions opt-out', () => {
   test('opting out issues no conditional statement and still round-trips', async () => {
     const client = new RecordingClient();
     const journal = journalWith(client, false);
-    await journal.append('pid', ['e1', 'e2'], 0);
-    await journal.append('pid', ['e3'], 2);
+    await journal.append('pid', [{ event: 'e1' }, { event: 'e2' }], 0);
+    await journal.append('pid', [{ event: 'e3' }], 2);
 
     expect(conditionals(client)).toEqual([]);
     expect(await journal.highestSeq('pid')).toBe(3);
@@ -291,7 +291,7 @@ describe('CassandraJournal — serial consistency for the claim', () => {
         .withSerialConsistency(9)
         .withClient(client),
     );
-    await journal.append('pid', ['e1'], 0);
+    await journal.append('pid', [{ event: 'e1' }], 0);
 
     const claims = conditionalCalls(client);
     expect(claims).toHaveLength(1);
@@ -308,7 +308,7 @@ describe('CassandraJournal — serial consistency for the claim', () => {
   test('unset means the driver keeps its own default', async () => {
     const client = new OptionsSpyClient();
     const journal = journalWith(client);
-    await journal.append('pid', ['e1'], 0);
+    await journal.append('pid', [{ event: 'e1' }], 0);
 
     for (const call of client.calls) {
       expect(call.options?.serialConsistency).toBeUndefined();
@@ -331,7 +331,7 @@ describe('CassandraJournal — a driver that ignores the conditional fails loudl
 
   test('a missing [applied] marker raises instead of assuming success', async () => {
     const journal = journalWith(new NonConditionalClient());
-    await expect(journal.append('pid', ['e1'], 0)).rejects.toThrow(/\[applied\] marker/);
+    await expect(journal.append('pid', [{ event: 'e1' }], 0)).rejects.toThrow(/\[applied\] marker/);
     // Nothing was written — failing closed beats silently overwriting.
     expect(await journal.read('pid', 1)).toHaveLength(0);
   });

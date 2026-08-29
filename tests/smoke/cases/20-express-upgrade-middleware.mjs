@@ -93,17 +93,33 @@ export async function run({ actorTs, loadEntry }) {
  * The timeout is a real outcome, not a safety net: on Deno a refused upgrade
  * reaches the client as neither a response nor a close, so the wait is the
  * only signal there — which is why this case takes ~5 s on that runtime.
+ *
+ * Which makes releasing the socket on *every* outcome load-bearing, not
+ * hygiene (#1196).  Deciding the outcome from the timer leaves the socket in
+ * CONNECTING, and a Deno client parked there holds both its own `op_ws_create`
+ * and — because the connection it opened never ends, so the server's graceful
+ * `server.close()` never completes — the backend's `op_http_close`.  Two
+ * pending ops nothing will ever resolve: the whole smoke run then hangs after
+ * its last line instead of exiting, on the one runtime that needs the timer.
  */
 function settle(url, timeoutMs = 5000) {
   return new Promise((resolve) => {
     const socket = new WebSocket(url);
     let done = false;
-    const finish = (outcome) => { if (!done) { done = true; resolve(outcome); } };
+    const finish = (outcome) => {
+      // Doubles as the re-entrancy guard: some runtimes dispatch 'close'
+      // synchronously from the close() below, straight back into here.
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      // Settle before closing, so the outcome is the one that actually
+      // happened rather than the close we just asked for.
+      resolve(outcome);
+      try { socket.close(); } catch { /* already closing, or never opened */ }
+    };
     const timer = setTimeout(() => finish('closed'), timeoutMs);
-    // Record the outcome *before* closing: some runtimes dispatch 'close'
-    // synchronously from close(), which would otherwise overwrite it.
-    socket.onopen = () => { clearTimeout(timer); finish('open'); try { socket.close(); } catch { /* ignore */ } };
-    socket.onerror = () => { clearTimeout(timer); finish('closed'); };
-    socket.onclose = () => { clearTimeout(timer); finish('closed'); };
+    socket.onopen = () => finish('open');
+    socket.onerror = () => finish('closed');
+    socket.onclose = () => finish('closed');
   });
 }

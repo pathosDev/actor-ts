@@ -70,6 +70,22 @@ the supervise strategy and timer scheduler across the actor's
 lifetime; the `setup` factory only runs the first time and on
 restart.
 
+"Remembers" is a stack, not a slot: a walk that passes two
+`supervise` wrappers records two scopes, innermost last.  A failure
+is offered to them innermost-first and `Directive.Escalate` moves
+one scope out, so an outer wrapper is not silently displaced by an
+inner one — see
+[Nesting](/typed/behaviors/#nesting-the-scopes-layer).  A restart
+shortens the stack, and only below the scope that decided it,
+because re-resolving that scope's child rebuilds the wrappers
+underneath.
+
+The signal handler is the one thing the walk does *not* remember
+across a transition: it belongs to the `receive` node that declared
+it, so adopting a `receive` without an `onSignal` unregisters it.
+Only the sentinels leave it alone, which is what lets a behavior
+answer `Behaviors.stopped` and still see its `post-stop`.
+
 A wrapper cycle (a `setup` that returns itself, or a `supervise`
 that recurses) is bounded at 64 hops — after that the resolver
 throws, surfacing the misconfiguration loud rather than spinning
@@ -123,6 +139,14 @@ The signal handler is invoked from the framework's `postStop` /
 The return value works the same as the receive handler — `same` to
 keep the current behavior, a new behavior to swap.
 
+The handler is scoped to the behavior that declared it.  Transition
+to a `Behaviors.receive` with no `onSignal` and the registration is
+gone: `post-stop` and `pre-restart` fire nowhere, and a watched
+actor's death arrives at the receive handler as an ordinary
+`Terminated` message again.  Re-declare `onSignal` in each state that
+needs it — see
+[`receiveWithSignal`](/typed/behaviors/#receivewithsignal--handler--lifecycle-signals).
+
 ## Where the seams show
 
 `TypedActor` is the bridge — and at the seam between typed and
@@ -132,7 +156,12 @@ untyped, a few details surface:
   first.**  If the handler is wrapped in
   `Behaviors.supervise(...).onFailure(strategy)`, that strategy
   handles the error.  If not, it propagates to the *parent's*
-  supervisor — same as untyped.
+  supervisor — same as untyped.  So does a failure the wrapper has
+  run out of restarts for: once `maxRetries` is spent within
+  `withinTimeRangeMs`, the typed level stops absorbing and the
+  error carries on.  With `supervise` wrappers nested, "carries on"
+  means the next wrapper out gets its turn first; the parent's
+  supervisor is what lies past the outermost one.
 - **`context.spawn(behavior)` returns a fully-typed `ActorRef<U>`.**
   The runtime wraps the child in another `TypedActor<U>`.  This
   is the cast-free child spawning the typed form provides.

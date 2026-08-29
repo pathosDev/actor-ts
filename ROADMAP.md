@@ -4,60 +4,148 @@ This document tracks the planned direction.  Nothing here is committed work — 
 
 ## Status
 
-- **v0.16.0 is out** — the *entry points, logging and old defects* release,
-  and the largest window so far at 181 commits.  Three things landed
-  together.
+- **v0.17.0 is out** — the *dead letters, DevTools and the wire* release, and
+  by a wide margin the largest window the project has had: 820 commits
+  against v0.16.0's 181, and 290 changelog entries, 53 of them breaking.
+  Three things landed together.
 
-  **The root export is core-only (#414).**  `'actor-ts'` used to re-export
-  every subsystem through one barrel, which shipped the testkit in the
-  production entry (#685) and made `import { ActorSystem }` pay for whatever
-  any subsystem pulled in eagerly (#1005).  Core stays at the root; the
-  eighteen subsystems each get their own entry (`actor-ts/persistence`,
-  `/cluster`, `/http`, …), the subpaths the documentation already used
-  finally resolve, and the smoke suite loads every declared entry on Bun,
-  Node and Deno (#1003).  This is the migration cost of the release —
-  `CHANGELOG.md` carries the note.
+  **The cluster wire is a tagged JSON tree (#450).**  Frames were a bare
+  `JSON.stringify`, so the framework contradicted itself across its own
+  boundaries: a `Map` an actor could persist and recover verbatim arrived at
+  a peer as `{}`, a `Date` as a string whose `.getTime()` throws, a
+  `Uint8Array` as an index-keyed object, and a `bigint` threw straight out of
+  the user's `ref.tell`.  One walker now serves all three boundaries — HTTP
+  bodies, journal rows and the wire — so there is no per-transport list of
+  what a message may contain to keep in sync.  This is the migration cost of
+  the release, and it makes this the **second consecutive release to break
+  rolling upgrade**: #112 did it to gossip in v0.16.0, this does it to the
+  frame format, and here a legacy body already shaped like a reserved tag
+  costs the whole connection rather than the one frame.
+  `upgrade-strategies.mdx` now carries a per-release table (#1304).
 
-  **Logging grew a sink architecture (#1150).**  The logger wrote to exactly
-  one place; it now fans one record out to as many destinations as you
-  configure — console, rotating files (#1153), and ten log platforms
-  (#1154–#1161) — each with its own minimum level, bounded delivery and a
-  flush on shutdown.  Every integration is dependency-free, and nothing
-  about the existing surface changed: a system whose config nobody edited
-  logs exactly what it logged yesterday.
+  **Dead letters got somewhere to go (#1000, #433).**  An undeliverable
+  message was published to an event stream that nothing subscribed to by
+  default — which is to say it produced no output at all, while two docs
+  pages claimed the system logged it.  There is now a bounded, optionally
+  durable queue with inspection and replay, including replay to a recipient
+  other than the one the message was addressed to, configured through
+  `withDeadLetters(…)`.
 
-  **The 50-oldest bug/security wave**, 42 of the 50 oldest open defects
-  resolved, including most of the 2026-08-01 security catalogue (#575–#626).
-  The gossip frame gains a required field, so **a rolling upgrade across
-  this release does not converge in either direction** (#112): an upgraded
-  peer refuses an old node's frames, an old node ignores the new one.
-  Upgrade the cluster in one step, or accept that membership does not
-  converge while both versions are running.
+  **DevTools became a tool rather than a demo (#482).**  The UI moved to
+  Angular and gained four panels — dead letters, a live event-stream tail,
+  the resolved configuration with every HOCON key and where it came from,
+  and a send-message action that is off by default (#553) — plus the ability
+  to pause and resume time (#1349).  It also gained roughly 3 000 lines of
+  tests, having had none.
 
-  Alongside, the packaging surface was brought in line with what actually
-  ships: no more dangling source maps (#1007, 1262 files and 35 % of the
-  tarball that could not work), `NodeNext` resolution so the compiler checks
-  the specifiers the real resolver will (#1008), and `@types/node` no longer
-  a silent requirement for reading the public API (#1006).
+  Underneath, the measuring got honest.  `typecheck:dev` went from 320
+  errors to zero and became a gated job (#540) — the only gate that sees the
+  library from a caller's side, and it immediately turned up five exported
+  declarations no caller could use.  The comparison benchmarks are complete
+  at nine arms across three runtimes, measured as a hundred interleaved
+  rounds on one Linux machine rather than ten on a Windows desktop, which
+  moved every absolute number by a factor of two to five (#27, #1327).  The
+  toolchain is pinned to Bun 1.4.0 (#1328), and the coverage gate stopped
+  being two implementations of one parse: CI and `test:coverage:gate` now
+  run the same script, with per-module floors that a rollup of per-file
+  percentages could not express (#541, #1016).
 
 - Next window is open (`[Unreleased]`).  The obvious heads from here: the
   `reference.conf` expansion tracked in #887; the residual security items
-  the wave narrowed rather than closed (#112 needs the incarnation identity
-  from #940; #607 needs the eviction policy from #1080); #766, whose titled
-  fix turns out to be insufficient on its own; and the fresh audit round
-  #1166–#1193, which is unstarted and holds several `priority: high`
-  correctness defects — `PersistentActor` has no fencing (#1166),
-  `throttle('pause')` livelocks the `MicrotaskDispatcher` (#1167),
-  `KeepMajority` leaves both sides running on an exact tie (#1170), a
-  singleton that exhausts its restart budget is never re-spawned (#1175),
-  and `ShardCoordinator` ignores the configured shard count (#1026).
-- ~6 250 tests green (unit + multi-node + in-process integration) + 15 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
+  the wave narrowed rather than closed (#112 needs a **required** incarnation
+  on the wire, which is #823's wire break and not #940's optional field, and
+  #823 is now also the change that would make a mixed-version cluster a
+  supported state rather than a hazard); #766, whose titled fix turns out to
+  be insufficient on its own; and the test-methodology review #1368–#1386
+  under meta #1387, which is unstarted and is the first round to ask what the
+  suite *cannot* find rather than what it has not covered — mutation testing
+  (#1368), generative input for the decoders (#1369), controlled
+  promise-resolution order (#1370), a global factor for the testkit's
+  millisecond deadlines (#1376), and a message that silently loses its
+  prototype on a worker hop (#1386).  Two correctness defects sit outside
+  that round and are worth naming on their own: `ShardCoordinator` hands over
+  on `LeaderChanged` with no acknowledgment from the incoming coordinator, so
+  a leader move reopens the dual-authority window #949 closed for the
+  singleton (#1272); and `ReplicatedEventSourcedActor` never consults
+  `resolver()`, so every documented `ConflictResolver` override is a silent
+  no-op (#1245).
+- **Wave 3 (2026-08-18/19) left eighteen tracked residuals, #1211–#1228.**
+  Three are worth reading first, because each is a defect the wave measured
+  rather than inferred and then deliberately did not fold in: a broker
+  connection survives a CoordinatedShutdown `service-stop` and is never
+  closed, on the path `runUntilTerminated()` installs (#1223); the
+  coordinator's per-shard `GetShardHome` queue is uncapped and any
+  authenticated member can grow it (#1219); and a gRPC stream whose peer
+  never closes it is never reaped, which is why #577 stayed open until
+  #1222 existed.  Four more (#1224–#1226, #1227) are behaviour the wave
+  shipped that no test binds — found by reverting one line at a time, not
+  by reading — and they are the honest measure of what a green suite did
+  not prove.
+- ~8 470 tests green (unit + multi-node + in-process integration) + 16 real-network multi-node integration scenarios green; open bugs are tracked as `[Bug]` issues in the tracker.
 - A full audit-catalog of follow-up items is tracked in the issue tracker — security findings, framework features, code-quality refactors.  Filter by label `security` + `severity: <tier>` or by title prefix `[Security] ` / `[Feature] `.
 
 ## Done since the last roadmap update
 
-- **`[Unreleased]` — the 50-oldest bug/security wave:** the 50 oldest open
-  `bug` / `security` issues worked as one unit, in seven batches grouped by
+- **v0.17.0 — the 50-oldest `production-goal` wave:** the 50 oldest
+  open `production-goal` issues — the label that answers "what is still
+  between us and running this for real" — worked as one unit, in nine batches
+  cut by which files they touch rather than by module label.  **14 closed,
+  11 carried forward with the remainder written down, 12 needed a comment
+  and no code, 14 deferred to a second wave with the reason recorded.**
+  - **Triage before code, and it was the expensive half.** Every issue was
+    read against today's tree by an independent pass asking "are the
+    acceptance criteria met" rather than "does the defect still exist" —
+    **277 claims in the issue bodies did not survive it**, a little over five
+    per issue.  Two issues were already fixed and open only because a commit
+    said `Refs` where it meant `Closes`; #461 was already specified in #849;
+    #121's remaining criteria would have *reverted* the stronger fix that
+    closed it in v0.14.0.  Two recorded blockers dissolved on inspection —
+    #290's helper was already on disk, and #638's second half **is** #928
+  - **`typecheck:dev` is green and gated (#540)**, from 320 errors.  The
+    burn-down is not the point: it was hiding five exported declarations that
+    no caller could use.  `NoopLogger`, `NoopMetricsRegistry` and
+    `HashAllocationStrategy` each declared fewer parameters than the
+    interface they implement — `implements` accepts that — so
+    `new NoopLogger().info('hello')` did not compile for a user.
+    `OtelContextLike` had only optional properties, which trips the weak-type
+    check, so *nothing* satisfied it, the real OTel `Context` included.  Each
+    compiled for the library and broke only for a caller, which is exactly
+    what a configuration that never runs cannot catch
+  - **Independent verification found two regressions the wave put into its
+    own work**, both repaired with the failing test written first.  #637's
+    widened trigger set included `MemberUnreachable`, which makes the peer
+    that lost contact promote itself while the incumbent — never told it is
+    considered unreachable — keeps its child: a sustained two-host state,
+    the exact condition that issue exists to prevent.  It reproduced with the
+    implementer's *own* test, which asserted the handover and not the
+    invariant its sibling four lines above asserts.  And `bun run smoke` was
+    left red on Node by a new case that fails four runs in five — a single
+    green run had been taken as evidence
+  - **Unreachability is now deliberately *not* reconciled**, and that is the
+    fix rather than a gap.  On the no-lease path "hosted somewhere" and "at
+    most one" cannot both be had, because reaching the incumbent to ask it to
+    stand down is precisely what failed.  A quorum gate was designed and
+    rejected: it is a split-brain resolver at a layer with no downing state,
+    and the two failure detectors fire independently, so a window remains in
+    which both host.  Configure a `lease` where the invariant must survive a
+    partition
+  - **What the wave narrowed rather than closed**, so it is not re-derived:
+    #545's POSIX process-group teardown has never executed (the development
+    machine is Windows) and its proof is the first CI run; #539's workflows
+    and #538's nightly have both been green since 2026-08-16 — CodeQL 8/8
+    on develop with zero open alerts, and the nightly green on 08-17 and
+    08-18, 2 of the 14 consecutive nights its exit criterion needs;
+    #612's rollback floor is in-process and does not survive a restart;
+    #631 fixes the code and
+    leaves existing journals holding the collapsed tags
+  - **Three counts were wrong in the direction that flatters, and got
+    measured.** #663's report claimed four sleeps remained under `examples/`
+    and none was a drain sleep; the real figures are 108 delay sites of which
+    **7** were drain sleeps — and the boundary a grep cannot see is that
+    `terminate()` drains `/user` while eleven framework actors live under
+    `/system`, so a sleep crossing that hop is load-bearing.  One candidate
+    removal passed on the first run and survived only **2 of 12** repeats,
+    which is how it would have reached CI
   which files they touch rather than by module label.  **42 resolved** — 38
   closing on this window's push plus four closed by hand — and 12 left open on
   purpose, each with a comment saying why.  The bulk is the 2026-08-01 audit
@@ -91,14 +179,28 @@ This document tracks the planned direction.  Nothing here is committed work — 
     not the copy — 95 % of the remaining cost) and #586 (a hard throw on
     `@hono/node-ws` versions `package.json` still declared supported)
   - **What the wave narrowed rather than closed**, stated so it is not
-    re-derived later: #112's guard holds only while the sender is still a
-    member — deleting a member drops its high-water mark, so once the sender
-    is also evicted a recording replays again, and closing that needs #940's
-    incarnation identity.  #607's key bound is necessary but not sufficient
-    without #1080's eviction policy.  #602 deliberately has no HOCON key,
-    because one would reach `HttpExtension.client` and silently not the
-    `HttpClient` inside `D1Client` — a bound that applies to some clients and
-    not others is worse than none
+    re-derived later: #112's guard refuses a recording only to a receiver
+    that already holds a high-water mark for its sender.  This entry used to
+    say the guard holds "while the sender is still a member" — that was
+    wrong, and the security page now withdraws it.  The mark has one writer
+    and it runs in the gossip path, so it exists for a peer this node has
+    accepted a frame *from* and for nobody else, and three kinds of receiver
+    hold none: one whose sender was itself evicted (the mark is dropped with
+    the member), a fresh or restarted process, and — the ordinary case, not
+    an edge — one that learned the subject **third-party**, where the sender
+    is a full member throughout and nothing was evicted anywhere.  Each is
+    asserted by execution in `GossipReplayGuard.test.ts`, the last two as
+    exploits; closing them needs a **required** incarnation on the wire,
+    which is #823's wire break rather than the optional field #940 landed.
+    #607's key bound was necessary but not sufficient; #1080's guarantee
+    split and #607's own `prefixQuotas` are the rest of it, and what
+    survives both is a flood inside a single key prefix — an attacker who
+    chooses the `Idempotency-Key`s evicts other callers' records out of the
+    reservation they share, which no eviction policy fixes and Redis or a
+    larger bound does.  #602 deliberately has no HOCON key, because one would
+    reach `HttpExtension.client` and silently not the `HttpClient` inside
+    `D1Client` — a bound that applies to some clients and not others is
+    worse than none
   - **Eleven release notes were corrected** after the fact, most of them
     overclaims by the wave's own hand.  #121's migration note named the wrong
     safe version (v0.13.0 for v0.14.0), which would have had an operator roll
@@ -258,8 +360,11 @@ This document tracks the planned direction.  Nothing here is committed work — 
 
 ## Documentation
 
-- Performance benchmarks vs JVM actor frameworks (#27) — `benchmarks/` has the
-  micro-benches; what is missing is the side-by-side comparison run
+- ~~Performance benchmarks vs JVM actor frameworks (#27)~~ — done.
+  `benchmarks/comparison/` measures actor-ts against eight arms (nact, XState,
+  Akka and Pekko each through both their Java and Scala 3 APIs, Akka.NET and
+  Orleans) and publishes to the README, `reference/benchmarks` (EN+DE) and a
+  generated `RESULTS.md`
 
 ## Explicitly out of scope
 

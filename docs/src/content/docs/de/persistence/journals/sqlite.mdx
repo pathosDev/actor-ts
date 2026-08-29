@@ -390,14 +390,35 @@ import { Aside } from '@astrojs/starlight/components';
   In-Memory-`JournalEventBus` ist lokal zum Prozess, sodass
   Push-basierte Queries Cross-Process-Events verpassen.
 
-  Für Multi-Process-Setups verwende **Cassandra** (gebaut für
-  Shared State) oder **ein SQLite pro Prozess** mit strikter
-  pid-Partitionierung.
-
   Wenn du eine Datei trotzdem teilst, entscheidet `busyTimeoutMs`,
   ob ein vom anderen Prozess blockierter Write wartet oder
   scheitert — und weil der Treiber synchron ist, friert dieses
   Warten deine Event-Loop für seine ganze Dauer ein.
+</Aside>
+
+<Aside type="danger" title="Gib Cluster-Knoten nicht je eine eigene SQLite-Datei — das scheitert lautlos">
+  Das umgekehrte Setup ist das gefährliche, weil nie etwas
+  fehlschlägt.  Zwei Cluster-Knoten mit je einer gesunden
+  `events.db`: eine gesharde Entity, die auf den anderen Knoten
+  rebalanced wird, replayt *dessen* Datei — der Zustand springt
+  zurück oder fehlt, ihre nächsten Events forken eine zweite
+  Historie unter derselben Persistence-Id, und der optimistische
+  Append-Check kann nie feuern, weil jeder Knoten gegen seine
+  eigene Datei prüft.  „Ein SQLite pro Prozess mit strikter
+  pid-Partitionierung" hält nur, solange eine Entity nie wandert —
+  und Rebalance und Singleton-Failover existieren genau dafür, sie
+  wandern zu lassen.
+
+  Seit dem Storage-Lokalitäts-Guard sagt das Framework das laut:
+  Clustering mit Remote-Peers über einem node-lokalen Store loggt
+  eine Warnung (Nadel: `node-local storage`), und
+  `rememberEntities: true` auf dem Auto-Pfad verweigert den Start.
+  Die Lösung ist ein Backend, das wirklich jeder Knoten teilt —
+  siehe [die Spalte „Über Knoten geteilt" und *Storage-Lokalität &
+  Identität*](/de/persistence/overview/#storage-lokalität--identität)
+  — oder [Replicated Event
+  Sourcing](/de/persistence/replicated-event-sourcing/overview/),
+  wo Pro-Knoten-Journale das gewollte Design sind.
 </Aside>
 
 <Aside type="caution" title="Das Filesystem zählt">
@@ -430,8 +451,14 @@ import { Aside } from '@astrojs/starlight/components';
 Drei Signale, dass du dem Single-File-SQLite entwachsen bist:
 
 1. **Multi-Node** — du brauchst Actors auf N Nodes, die sich
-   denselben Event-Stream teilen.  SQLite pro Node funktioniert
-   nicht; wechsle zu Cassandra.
+   denselben Event-Stream teilen.  SQLite pro Node skaliert hier
+   nicht bloß schlecht, es korrumpiert lautlos: jeder Knoten
+   replayt seine eigene Datei, eine verschobene Entity recovert
+   also eine andere Historie, ohne Fehler irgendwo (das Cluster
+   warnt —
+   [Storage-Lokalität](/de/persistence/overview/#storage-lokalität--identität)).
+   Wechsle zu einem geteilten Backend: Cassandra, PostgreSQL oder
+   jede Zeile „Über Knoten geteilt" der Backend-Matrix.
 2. **Anhaltend 100K+ Events/sec** — SQLite kann das mit Tuning
    handhaben, aber du bist an den Rändern; spaltenorientierte /
    verteilte Engines sind dafür entworfen.

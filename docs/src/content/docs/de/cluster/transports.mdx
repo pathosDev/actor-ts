@@ -53,7 +53,12 @@ const cluster = await Cluster.join(
 
 Was er tut:
 
-- **Lauscht** auf `host:port` auf eingehende Verbindungen.
+- **Lauscht** auf `host:port` auf eingehende Verbindungen — `host` ist
+  das Interface, an das gebunden wird, eine Wildcard gehört also hierher.
+- **Kündigt** `advertisedHost:port` in seinem Handshake an und schlüsselt
+  Peers danach. Das ist die Identität des Nodes, wird deshalb getrennt
+  aufgelöst und ist nie eine Wildcard; ungesetzt folgt sie `host`, sofern
+  der routebar ist. Siehe [Cluster — Überblick](/de/cluster/overview/).
 - **Verbindet** sich nach Bedarf mit Peers (beim ersten Send oder
   zu Seeds bei Join-Zeit).
 - **Frame-Größen-Cap** (Standard 16 MiB) — Frames, die größer sind,
@@ -177,12 +182,15 @@ Multi-Node-Test-Harness — verwendet, um Multi-Node-Cluster in
 - **Latenz.** Die Zustellung ist synchron innerhalb einer
   Event-Loop-Drehung.
 - **Serialisierung.** Nachrichten werden per Referenz, nicht in
-  Bytes übergeben. Um den echten Framing-Round-Trip (`encodeFrame` /
-  `FrameDecoder`) zu üben, nutze stattdessen `TcpTransport` über
-  Loopback — das gibt dir das JSON-Framing, das jeder
-  Cluster-Transport verwendet. Der CBOR-Codec ist von *keinem*
-  Cluster-Transport aus erreichbar; teste ihn direkt oder über
-  [HTTP-Marshalling](/de/http/marshalling/).
+  Bytes übergeben — und `TcpTransport` ist der einzige Transport,
+  der überhaupt serialisiert: `MessageChannelTransport` reicht das
+  Envelope an `postMessage`, dieser hier gibt das Objekt direkt an
+  den Handler des Empfängers. Um also den echten
+  Framing-Round-Trip (`encodeFrame` / `FrameDecoder`, der einen
+  **getaggten JSON-Tree** rahmt, nicht rohes JSON) zu üben,
+  brauchst du `TcpTransport` über Loopback. Der CBOR-Codec ist von
+  *keinem* Cluster-Transport aus erreichbar; teste ihn direkt oder
+  über [HTTP-Marshalling](/de/http/marshalling/).
 
 ## Eigener Transport
 
@@ -205,6 +213,17 @@ Cluster erwartet.
 ```ts
 const peers = transport.peers();   // aktuell verbundene Adressen
 ```
+
+`peers()` ist auch das, was der Readiness-Check
+`cluster-transport` des Frameworks liest: ein Knoten, der noch
+Member erwartet und zu keinem davon eine Verbindung hat, ist
+abgeschnitten — `/ready` antwortet dann mit 503, damit ein Load
+Balancer nicht mehr dorthin routet.  Siehe
+[Health Checks](/de/observability/management/health-checks/).
+Beachte: `InMemoryTransport.peers()` meldet jeden im Prozess
+registrierten Transport unabhängig vom Verbindungszustand — ein
+dagegen geschriebener Test kann dieses Fehlschlagen nicht
+beobachten.
 
 Der Transport legt keine Metriken pro Verbindung direkt offen —
 nutze die Metrik-Extension des Clusters, um Verbindungszahlen und

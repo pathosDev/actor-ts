@@ -62,7 +62,9 @@ describe('DefaultMetricsRegistry — Histogram', () => {
   test('default buckets match the documented Prom defaults', () => {
     const histogram = new DefaultMetricsRegistry().histogram('latency');
     // The +Inf bucket is appended internally.
-    expect(histogram.buckets.slice(0, -1)).toEqual(DEFAULT_HISTOGRAM_BUCKETS);
+    // Spread rather than widen the constant: `DEFAULT_HISTOGRAM_BUCKETS` is
+    // `readonly number[]` on purpose, and `toEqual` wants a mutable array.
+    expect(histogram.buckets.slice(0, -1)).toEqual([...DEFAULT_HISTOGRAM_BUCKETS]);
     expect(histogram.buckets[histogram.buckets.length - 1]).toBe(Number.POSITIVE_INFINITY);
   });
 
@@ -133,6 +135,63 @@ describe('DefaultMetricsRegistry — collect()', () => {
   });
 });
 
+describe('DefaultMetricsRegistry — remove', () => {
+  test('drops one series and leaves its siblings alone (#745)', () => {
+    const registry = new DefaultMetricsRegistry();
+    registry.gauge('depth', { path: '/a' }).set(7);
+    registry.gauge('depth', { path: '/b' }).set(9);
+
+    expect(registry.remove('depth', { path: '/a' })).toBe(true);
+
+    const series = registry.collect().filter((s) => s.name === 'depth');
+    expect(series).toHaveLength(1);
+    expect(series[0]!.labels).toEqual({ path: '/b' });
+  });
+
+  test('the tuple is the key, so label order is irrelevant', () => {
+    const registry = new DefaultMetricsRegistry();
+    registry.gauge('depth', { class: 'Sink', path: '/a' }).set(7);
+    expect(registry.remove('depth', { path: '/a', class: 'Sink' })).toBe(true);
+    expect(registry.collect()).toEqual([]);
+  });
+
+  test('a removed tuple comes back fresh rather than at its old reading', () => {
+    // This is the whole difference between removing and zeroing, and the
+    // reason the depth sampler wanted it: a path that falls behind again must
+    // not inherit the spike it left behind the last time it did.
+    const registry = new DefaultMetricsRegistry();
+    registry.gauge('depth', { path: '/a' }).set(7);
+    registry.remove('depth', { path: '/a' });
+    expect(registry.gauge('depth', { path: '/a' }).value).toBe(0);
+  });
+
+  test('answers false for an unknown family and for a tuple never minted', () => {
+    const registry = new DefaultMetricsRegistry();
+    registry.counter('hits', { route: '/a' }).inc();
+    expect(registry.remove('nothing-here', { route: '/a' })).toBe(false);
+    expect(registry.remove('hits', { route: '/b' })).toBe(false);
+    // The unlabeled tuple is a tuple like any other, and this family has no
+    // series under it.
+    expect(registry.remove('hits')).toBe(false);
+    expect(registry.collect()).toHaveLength(1);
+  });
+
+  test('the family outlives its last series, help text and all', () => {
+    // Only the child goes.  Dropping the family with it would silently lose
+    // the `help` an exporter prints, and would let the next call re-register
+    // it as a different kind without the mismatch being caught.
+    const registry = new DefaultMetricsRegistry();
+    registry.gauge('depth', { path: '/a' }, { help: 'queued messages' }).set(1);
+    registry.remove('depth', { path: '/a' });
+    registry.gauge('depth', { path: '/b' }).set(2);
+
+    const series = registry.collect().filter((s) => s.name === 'depth');
+    expect(series).toHaveLength(1);
+    expect(series[0]!.help).toBe('queued messages');
+    expect(() => registry.counter('depth')).toThrow(/already registered as gauge/);
+  });
+});
+
 describe('NoopMetricsRegistry', () => {
   test('counter / gauge / histogram are no-ops; collect returns empty', () => {
     const registry = new NoopMetricsRegistry();
@@ -140,6 +199,13 @@ describe('NoopMetricsRegistry', () => {
     registry.gauge('b').set(10);
     registry.histogram('c').observe(0.5);
     expect(registry.collect()).toEqual([]);
+  });
+
+  test('remove() answers false — nothing was minted, so nothing can be dropped', () => {
+    const registry = new NoopMetricsRegistry();
+    registry.gauge('a', { path: '/x' }).set(1);
+    expect(registry.remove('a', { path: '/x' })).toBe(false);
+    expect(registry.remove('a')).toBe(false);
   });
 
   test('reads return zero / empty', () => {

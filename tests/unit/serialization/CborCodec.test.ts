@@ -643,12 +643,15 @@ describe('CBOR toJSON (#1036)', () => {
       constructor(private readonly cents: number) {}
       toJSON(): unknown { return { amount: this.cents / 100, currency: 'EUR' }; }
     }
-    expect(rt({ price: new Money(1250) })).toEqual({ price: { amount: 12.5, currency: 'EUR' } });
+    // `expect<unknown>`: `rt<T>(v: T): T` is exactly what a `toJSON` breaks —
+    // a `Money` goes in and its JSON shape comes back, which is the claim.
+    expect<unknown>(rt({ price: new Money(1250) }))
+      .toEqual({ price: { amount: 12.5, currency: 'EUR' } });
   });
 
   test('nested values inside a toJSON() result still get the full treatment', () => {
     const wrapper = { toJSON: (): unknown => ({ at: new Date(0), tags: new Set(['a']) }) };
-    const decoded = rt(wrapper) as { at: Date; tags: Set<string> };
+    const decoded = rt<unknown>(wrapper) as { at: Date; tags: Set<string> };
     expect(decoded.at).toBeInstanceOf(Date);
     expect(decoded.tags).toBeInstanceOf(Set);
   });
@@ -721,7 +724,7 @@ describe('CBOR encoder limits (#1036)', () => {
       };
 
       let deepest = 0;
-      let deepestBytes = new Uint8Array();
+      let deepestBytes: Uint8Array<ArrayBufferLike> = new Uint8Array();
       for (let levels = 1; levels <= 300; levels++) {
         try {
           deepestBytes = enc.encode(nested(levels));

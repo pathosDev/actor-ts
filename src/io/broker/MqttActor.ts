@@ -6,6 +6,7 @@ import { Terminated } from '../../SystemMessages.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { toBrokerDriverTls } from './BrokerTls.js';
 import { mqttJsonCodec, MqttDecodeError, type MqttCodec } from './MqttCodec.js';
 import { MqttOptionsValidator } from './MqttOptions.js';
 import type { MqttOptions, MqttOptionsType } from './MqttOptions.js';
@@ -117,7 +118,12 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     );
   }
 
-  /** App-level message told to this actor's ref (reachable only when TSelf ≠ never). */
+  /**
+   * App-level message told to this actor's ref (reachable only when TSelf ≠ never).
+   *
+   * A `Terminated` from a `context.watch` of your own no longer arrives here —
+   * `BrokerActor` intercepts it and offers `onTerminated` instead (#709).
+   */
   protected onSelfMessage(message: TSelf): void | Promise<void> {
     this.log.warn(`MqttActor: unhandled self message: ${String(message)}`);
   }
@@ -195,13 +201,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   /* ----------------------- sealed dispatch ----------------------- */
 
   /** @internal Sealed — override onMessage + hooks instead. */
-  override onReceive(command: MqttActorMessage<T, TSelf>): void | Promise<void> {
-    // Terminated is delivered through onReceive (ActorCell) but isn't part
-    // of the typed mailbox union — narrow via a guard.
-    if (isTerminated(command)) {
-      this.removeTerminatedTarget(command.actor);
-      return;
-    }
+  protected override onCommand(command: MqttActorMessage<T, TSelf>): void | Promise<void> {
     // Uniform `kind` dispatch over internal signals + external commands.
     //
     // Matched against the envelope union rather than the mailbox type: `TSelf`
@@ -317,6 +317,14 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     }
   }
 
+  /**
+   * The base class prunes what {@link subscribeRef} registered; this actor keeps
+   * its own per-pattern target registry, so it still has to hear about a death.
+   */
+  protected override onTerminated(signal: Terminated): void {
+    this.removeTerminatedTarget(signal.actor);
+  }
+
   private removeTerminatedTarget(ref: ActorRef): void {
     const key = ref.path.toString();
     const watchEntry = this.watched.get(key);
@@ -427,6 +435,10 @@ export abstract class MqttActor<T = unknown, TSelf = never>
       clean: this.options.cleanSession,
       keepalive: this.options.keepAlive,
       protocolVersion: this.options.protocolVersion ?? 4,
+      // mqtt.js hands its connect options straight to `tls.connect` for the
+      // `mqtts` / `wss` transports, so the certificate material sits flat
+      // beside the protocol fields rather than under a `tls` key (#743).
+      ...(toBrokerDriverTls(this.options.tls) ?? {}),
     };
     if (this.options.will) {
       connectOptions.will = {
@@ -512,13 +524,6 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   }
 }
 
-/* --------------------------- helpers ---------------------------- */
-
-/** Terminated arrives via onReceive but isn't in the typed mailbox union. */
-function isTerminated(message: unknown): message is Terminated {
-  return message instanceof Terminated;
-}
-
 /* --------------------------- MQTT 5.0 helpers -------------------------- */
 
 /**
@@ -568,6 +573,11 @@ type MqttConnectOptions = {
   /** mqtt.js: 4 (3.1.1), 5 (5.0).  We allow 4 and 5. */
   protocolVersion?: 4 | 5;
   will?: { topic: string; payload: Uint8Array | string; qos: MqttQos; retain: boolean };
+  ca?: string | Uint8Array;
+  cert?: string | Uint8Array;
+  key?: string | Uint8Array;
+  rejectUnauthorized?: boolean;
+  servername?: string;
 };
 
 type MqttPubOpts = {

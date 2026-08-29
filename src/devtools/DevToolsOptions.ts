@@ -29,6 +29,44 @@ export type DevToolsPanelOptionsType = {
   readonly timeTravel?: boolean;
   /** Actor profiler (#226).  Default `true`. */
   readonly profiler?: boolean;
+  /**
+   * Undelivered messages, from the dead-letter queue (#553).  Default
+   * `true`, but the panel only reports itself active when the queue is
+   * actually recording — `deadLetters.store` defaults to `'off'`.
+   *
+   * Shows message payloads, so it is switched off alongside
+   * {@link timeTravel} anywhere the payloads are not the operator's to
+   * read.
+   */
+  readonly deadLetters?: boolean;
+  /**
+   * Live tail of the event bus and the cluster PubSub topics (#553).
+   * Default `true`.
+   *
+   * Shows every published event, payload included, so it is switched off
+   * alongside {@link timeTravel} and {@link deadLetters} anywhere those
+   * payloads are not the operator's to read.  Nothing is observed until a
+   * panel actually subscribes.
+   */
+  readonly eventStream?: boolean;
+  /**
+   * Resolved HOCON configuration, with the source of each key (#553).
+   * Default `true`.
+   *
+   * Values whose key names a secret are redacted before they leave the
+   * process, but a configuration tree still says a great deal about a
+   * deployment — hosts, ports, seed nodes, storage paths.
+   */
+  readonly config?: boolean;
+  /**
+   * Send-message action (#553).  Default `true` — but the panel is only
+   * usable when {@link DevToolsOptionsType.allowMessageSending} is also
+   * set, which is a separate switch on purpose.
+   *
+   * This one hides the panel; that one grants the capability.  A view
+   * being hidden and a system being writable are different decisions.
+   */
+  readonly send?: boolean;
 };
 
 /** Plain options-object shape accepted by `DevTools.attach`. */
@@ -55,6 +93,21 @@ export type DevToolsOptionsType = {
    * {@link allowUngatedMount}.
    */
   readonly allowRemote?: boolean;
+  /**
+   * Acknowledge that DevTools may **send messages into the running
+   * system** from the browser (#553).  Default `false`.
+   *
+   * Every other thing DevTools does is a read.  This one writes, so it
+   * is off until someone says otherwise in code — and while it is off
+   * the `actors.send` method is never registered, so a client that
+   * knows the name is told there is no such method rather than being
+   * refused by a guard.
+   *
+   * Two bounds hold even when it is on: the message is JSON, so it
+   * cannot be a `PoisonPill` or any other class the system treats
+   * specially; and the recipient must be under `/user`.
+   */
+  readonly allowMessageSending?: boolean;
   /**
    * Acknowledge that `DevTools.mount()` may return a route tree DevTools
    * does not gate itself.  Default `false`, and the validator rejects a
@@ -127,6 +180,15 @@ export type DevToolsOptionsType = {
   /** How often buffered spans are flushed to the panel, in ms.  Default `250`. */
   readonly spanFlushIntervalMs?: number;
   /**
+   * Ceiling on events the bus tail buffers between flushes.  Default `500`.
+   *
+   * Past it the oldest are dropped and the panel is told how many — a tail
+   * that silently skips is worse than one that admits it.
+   */
+  readonly eventBufferCapacity?: number;
+  /** How often buffered events are flushed to the panel, in ms.  Default `250`. */
+  readonly eventFlushIntervalMs?: number;
+  /**
    * Folds the time-travel panel uses to reconstruct state.
    *
    * Only needed for persistence ids whose actor is not running — a live
@@ -171,6 +233,11 @@ export class DevToolsOptionsBuilder extends OptionsBuilder<DevToolsOptionsType> 
   /** Acknowledge binding a non-loopback interface without auth. */
   withAllowRemote(allow = true): this {
     return this.set('allowRemote', allow);
+  }
+
+  /** Acknowledge that DevTools may send messages into the system. */
+  withAllowMessageSending(allow = true): this {
+    return this.set('allowMessageSending', allow);
   }
 
   /** Acknowledge mounting a route tree DevTools does not gate itself. */
@@ -226,6 +293,16 @@ export class DevToolsOptionsBuilder extends OptionsBuilder<DevToolsOptionsType> 
   /** Ceiling on retained spans, in messages. */
   withSpanBufferCapacity(capacity: number): this {
     return this.set('spanBufferCapacity', capacity);
+  }
+
+  /** Ceiling on events the bus tail buffers between flushes. */
+  withEventBufferCapacity(capacity: number): this {
+    return this.set('eventBufferCapacity', capacity);
+  }
+
+  /** How often buffered events are flushed to the panel, in ms. */
+  withEventFlushIntervalMs(intervalMs: number): this {
+    return this.set('eventFlushIntervalMs', intervalMs);
   }
 
   /** How often buffered spans are flushed to the panel, in ms. */
@@ -287,6 +364,8 @@ export class DevToolsOptionsValidator extends OptionsValidator<DevToolsOptionsTy
     this.positiveInt('mailboxSampleLimit');
     this.positiveInt('spanBufferCapacity');
     this.positiveNumber('spanFlushIntervalMs');
+    this.positiveInt('eventBufferCapacity');
+    this.positiveNumber('eventFlushIntervalMs');
 
     // The security rule this whole validator exists for: DevTools can
     // read every actor's class, mailbox and (with time travel) persisted

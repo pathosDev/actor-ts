@@ -104,8 +104,34 @@ Tags are `vX.Y.Z`; GitHub Releases are cut as normal **Latest** releases
    `package.json` and move `[Unreleased]` → `[X.Y.Z]` (dated) in `CHANGELOG.md`;
    commit (`chore(release): vX.Y.Z`). Merge it into `develop` (`--no-ff`) and
    push `develop`.
-2. Merge `develop` → `main` with `git merge --no-ff`, then push `main`.
-3. `gh release create vX.Y.Z --target main` (a normal **Latest** release, no
+2. **Re-measure the comparison benchmarks and carry the figures to every
+   surface that quotes them.** Those numbers name the version that produced
+   them — `environment.actorTsVersion` in each result file comes from
+   `package.json`, and the docs tables label their columns with it — so a
+   release that skips this ships figures attributed to a version that never
+   ran. **Order matters:** bump and commit first (step 1), *then* measure, so
+   the results carry the new version and a clean commit rather than recording
+   themselves as `-dirty`.
+
+   ```sh
+   bun run bench:compare -- --rounds=100  # every arm, machine otherwise idle, hours
+   bun run bench:compare:report           # regenerates RESULTS.md
+   ```
+
+   Then update the five hand-maintained surfaces in a second commit on the
+   release branch: `README.md`, `docs/.../reference/benchmarks.mdx` (EN + DE)
+   and the `tell`/`ask` figures quoted in `docs/.../reference/faq.mdx`
+   (EN + DE). **Version labels belong in the docs tables and in `RESULTS.md`,
+   never in `README.md`** — the README is the summary and links to the full
+   tables for the pins. #1322.
+
+   The cross-language arms need a JDK and a .NET SDK; if a toolchain is
+   missing, re-measure the arms you can rather than skipping the step. Each
+   result file carries its own date and commit and `RESULTS.md` prints one
+   environment row per arm, precisely so a stale arm is visible as stale
+   instead of averaging in silently.
+3. Merge `develop` → `main` with `git merge --no-ff`, then push `main`.
+4. `gh release create vX.Y.Z --target main` (a normal **Latest** release, no
    `--prerelease`) with **emoji-sectioned notes** (`## 🚀 New features`,
    `## ⚠️ Breaking changes`, `## 🔒 Security`, `## 🐛 Fixed`, …) matching the
    style of prior releases.
@@ -137,21 +163,166 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   [skip ci]` commits directly to `develop` after test runs. Do NOT edit
   those numbers by hand (the bot overwrites them, with CI-measured values
   that skip the quarantined multi-node suites via
-  `ACTOR_TS_SKIP_FLAKY_MNS`, so they differ slightly from a local full
-  run). After pushing `develop`, fetch again before branching — a bot
-  commit may already have landed on top.
+  `ACTOR_TS_SKIP_FLAKY_MNS` — see *Verification gates* — so they differ
+  slightly from a local full run). After pushing `develop`, fetch again
+  before branching — a bot commit may already have landed on top.
 - Adding a page: keep `docs/scripts/scaffold.mjs` and the Astro sidebar
   (`docs/astro.config.mjs`) in sync — same path and label.
+
+## Knowledge graph (`graphify-out/`)
+
+`graphify-out/` holds a committed knowledge graph of the repository —
+`graph.json`, `graph.html`, `GRAPH_REPORT.md` and `cache/`. It is tracked
+**on purpose** (`.gitignore` says why): the cache keys on repo-relative
+paths plus a hash of the extraction prompt, so a fresh clone replays it
+instead of paying a ~7.2M-token semantic re-extraction of `docs/`. Only
+run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
+
+- **The graph is bot-maintained.** `.github/workflows/graphify.yml` runs
+  weekly (and on `workflow_dispatch`), re-extracts the **code** side, and
+  pushes `chore(graphify): refresh knowledge graph [skip ci]` to `develop`
+  — the same shape as the README badge bot above, so the same caveat
+  applies: fetch again before branching.
+- **Weekly, not per push, and that is deliberate.** `graph.json` is ~36 MB
+  and reorders on rebuild, so it deltas poorly; a commit per push would add
+  gigabytes to the history. Landing a large refactor is what the manual
+  dispatch is for.
+- **CI refreshes code nodes only.** Documentation nodes come from semantic
+  extraction, which needs an LLM — run `/graphify . --update` in an agent
+  session after a docs sweep. Community labels are re-derived on every
+  rebuild (Louvain ids move when nodes change), so hand-curated labels do
+  not survive automation. #1345.
+- **The graphify version in that workflow is pinned** because the AST cache
+  lives under `cache/ast/v<version>/`. Bumping it orphans the committed
+  cache and commits a second copy — a deliberate change, never a drive-by.
+- **Local git hooks are deliberately not used.** `graphify hook install`
+  offers `post-commit`/`post-checkout`; the checkout hook runs a full
+  re-extraction on every branch switch and leaves the tree dirty, which with
+  several worktrees in play fires constantly. The merge driver it registers
+  (`.gitattributes`, `merge=graphify`) is kept — it union-merges two branches
+  that both rebuilt the graph. Configure it **directly**, once per clone;
+  do not reach for `graphify hook install`, which would reinstate the hooks
+  along with it:
+
+  ```sh
+  git config merge.graphify.name 'graphify graph.json union merge'
+  git config merge.graphify.driver 'graphify merge-driver %O %A %B'
+  ```
+
+  Without it git just falls back to a normal merge, which on a 36 MB
+  reordered JSON means a conflict you resolve by rebuilding.
 
 ## Verification gates (before every commit)
 
 - **`bun run typecheck`** (build tsconfig — excludes `examples/`,
-  `tests/` and `benchmarks/`) passes. `bun run typecheck:dev`
-  additionally checks those.
-- **`bun test`** is green. Line coverage floor is **≥ 80 %** —
+  `tests/` and `benchmarks/`) passes.
+- **`bun run typecheck:dev`** passes too — same compile plus those three
+  trees. Green since #540 and gated by the `typecheck (dev)` workflow, so
+  a regression is a red check rather than a number that drifts. It is the
+  only gate that sees the library from a *caller's* side, which is a whole
+  class of defect on its own: an exported class narrower than the interface
+  it implements still satisfies `implements`, and an exported type whose
+  properties are all optional is satisfied by nothing at all. Neither shows
+  up in `bun test` (which transpiles without checking) or in `bun run
+  typecheck` (which never compiles a call site).
+
+  `tsconfig.dev.json` excludes the three trees whose imports another
+  manifest resolves — the example frontends, the broker runners, and three
+  examples demonstrating an undeclared optional peer. Its header says which
+  CI job covers each. Adding to that list is not a way to make a compile
+  error go away: the rule is a *different manifest*, not a difficult error.
+- **`bun test`** is green. Line coverage floor is **≥ 90 %** —
   `bun run test:coverage:gate`.
+
+  That command enforces **two kinds** of floor, from the two artifacts of one
+  `bun test --coverage` run. The aggregate ≥ 90 % comes from the `All files`
+  row of bun's text table. Per-module floors — **`src/cluster/` ≥ 90 %** and
+  **`src/persistence/` ≥ 90 %** — come from the lcov report, as
+  `Σ LH / Σ LF` per path prefix, because a rollup of bun's per-file
+  percentages would average a ten-line barrel against a thousand-line
+  coordinator. **All three numbers are configured in
+  `scripts/coverage-gate.mjs` and nowhere else**, deliberately: an environment
+  override in a workflow file is a second place the number lives and a way to
+  loosen the gate without the loosening showing up in a diff of the gate.
+
+  **CI runs that same script** — `test.yml` runs the suite once with both
+  coverage reporters and hands the captured log and the lcov report to
+  `bun scripts/coverage-gate.mjs --log=… --lcov=…`, which is also where the
+  README badge's coverage figure now comes from. The workflow used to
+  re-derive the aggregate in bash and gate on that, so the number CI enforced
+  and the number `test:coverage:gate` enforced were two implementations of one
+  parse; the module floors ran in neither. The script refuses `--log` without
+  `--lcov`, so a CI step can never report a pass having evaluated half the
+  gate. #541, #1016.
+
+  **Ratchet policy: a floor may be raised, never lowered silently.** Raising
+  one is ordinary work — do it when a release is cut, or when a module has
+  held well above its floor for a while. Lowering one requires the measured
+  figure that forces it, written down beside the number, and it is worth
+  asking first whether the honest change is a test rather than a floor. The
+  history here is the reason: the aggregate floor was 89 until `83b0a4af`
+  dropped it to 80, because quarantining the worker-thread suites (#538) had
+  taken hosted CI to 86 % — a defensible call, but one whose reasoning lived
+  only in a commit message, with nothing under `tests/` even naming
+  `COVERAGE_LINE_FLOOR`. Every floor is now pinned from below by
+  `tests/unit/ci/CoverageGate.test.ts`, which also fails when the script and
+  this file stop quoting the same aggregate number, and when `test.yml` starts
+  quoting it again — so lowering a floor means editing that test, in the same
+  commit, on purpose.
+
+  The aggregate went **80 → 90 on 2026-08-25** (#541), and the measurement the
+  policy above asks for lives beside the constant in `scripts/coverage-gate.mjs`:
+  93.63 % on the CI population locally (bun 1.4.0, `ACTOR_TS_SKIP_FLAKY_MNS=1`)
+  against 93 % from the badge bot's hosted run, with the same lcov reduced to
+  `Σ LH / Σ LF` reading 92.85 %. The 13-point band the old floor left is a
+  3-point one, and 90 clears every candidate statistic, so #1016 changing which
+  one the aggregate *is* cannot turn CI red on its own fix.
+- **Three suites do not run in CI at all.** `ACTOR_TS_SKIP_FLAKY_MNS=1` in
+  `test.yml`, `multi-runtime.yml` and `publish.yml` skips
+  `tests/multi-node/LeaseMajority.test.ts`,
+  `tests/multi-node/ParallelPubSub.test.ts` and
+  `tests/unit/testkit/ParallelMultiNodeSpec.test.ts` — Bun on GitHub's hosted
+  runners cannot respawn functional worker threads after the first worker
+  test, which also starves LeaseMajority's lease arbitration into a false
+  split-brain. **A local `bun test` runs them; a green CI check says nothing
+  about them.** `.github/workflows/nightly-flakes.yml` runs them nightly with
+  the flag OFF; its header carries the exit criterion (14 consecutive green
+  nights), and `docs/…/testing/diagnosing-flakes.mdx` states it in prose.
+  #538.
+- **Repeat-run flake hunting:** `bun run test:stress`
+  (`scripts/stress-test.mjs`) loops the suite N times and aggregates failures
+  by test identity, splitting *flaky* (failed in some runs) from
+  *consistently failing* (broken, not flaky). It **drops
+  `ACTOR_TS_SKIP_FLAKY_MNS` from the child environment by default** — a
+  harness that inherited it would report a reliable pass rate over exactly
+  the tests known not to be reliable. Not a per-commit gate; reach for it
+  when a test fails intermittently, or when a nightly names one. #290.
 - **Cross-runtime:** `bun run smoke` runs `tests/smoke/cases/*.mjs` on
   Bun, Node, and Deno. Add a smoke case for anything runtime-sensitive.
+  A case must release every handle it opens **on every path**, not just the
+  happy one: a socket abandoned on a timeout or an error keeps Deno's event
+  loop alive, and the run then hangs after its last green line instead of
+  exiting — no exit code, so the gate stops being a gate (#1196). The
+  runner's watchdog demotes that to a warning after 15 s; it does not excuse
+  it. `deno test -A --trace-leaks` over the suspect case names the op.
+- **Examples:** `bun run test:examples` spawns every runnable snippet under
+  `examples/` and asserts on its output (~90 s). A change to a `src/` API
+  that an example calls needs it; the `examples` workflow gates it, and its
+  path filter carries `src/**` for that reason.
+
+  Every standalone example is classified in
+  `tests/examples/examples.manifest.json` — either runnable, with a
+  substring of its output that must appear, or skipped with the reason it
+  cannot run (a Docker broker, cloud credentials, an optional peer nothing
+  declares). The runner fails when the manifest and the tree disagree in
+  either direction, so **a new example is not finished until it has an
+  entry**. The output assertion is not decoration: `exited 0` is also what
+  `examples/io/grpc-sensor.ts` does after ten failed actor starts, so a
+  runnable case without an `expect` would gate on nothing.
+
+  Runs on Bun only, deliberately — the cross-runtime question belongs to
+  `bun run smoke`, whose cases are written runtime-neutral; the examples
+  are written for Bun.
 - **Benchmarks:** a change to a `src/` API that `benchmarks/` calls also
   needs `bun run typecheck:bench` (benchmarks-only compile) and, for
   anything that could break at runtime, `bun run bench:smoke` (~30 s —
@@ -159,7 +330,28 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   `benchmarks/`, so nothing else catches an orphaned benchmark; the
   `benchmarks` workflow gates both. The benchmarks are part of the
   adoption sweep for a breaking change, exactly like tests and examples.
-- **DevTools UI:** a change under `devtools-ui/` needs **`bun run
+- **DevTools UI:** the UI has its own Angular toolchain in a nested
+  `devtools-ui/` package, installed once with **`bun run ui:install`** and
+  deliberately not a bun workspace — hoisting would put `@angular/core` in the
+  root `node_modules` and in Dependabot's view of a manifest that ships two
+  runtime dependencies, and Angular pins a TypeScript the library does not use
+  (#483). `bun run build:ui` fails hard without it; `bun run typecheck` skips
+  the UI half with a warning locally and fails hard under CI, which is what
+  keeps `typecheck`, `bun test` and `bun run smoke` working from a fresh clone.
+  `bun run build:lib` is `tsc` alone, for the jobs that want `dist/` and have
+  no opinion about the UI.
+
+  The UI has **two test runners, and their file patterns must stay disjoint**.
+  The framework-free half (`format`, `history`, `flamegraph`, `profileTree`,
+  `stateDiff`, `actorsTree`, `uptime`, and the chart-option builders) runs
+  under `bun test` from `devtools-ui/tests/*.test.ts` and needs no DOM. The
+  Angular half runs under Vitest in jsdom, as `bun run test:ui`, from
+  `devtools-ui/src/**/*.ng-spec.ts`. The `.ng-spec.ts` suffix is not a style
+  choice: `bun test` collects `*.spec.ts` anywhere in the tree and would try
+  to run specs that need Vitest and a DOM. Renaming them back breaks the root
+  suite, not just the UI one (#487).
+
+  A change under `devtools-ui/` needs **`bun run
   build:ui`** in the same commit — `src/devtools/generated/UiAssets.ts`
   is generated but committed, and a stale one is valid TypeScript, so
   nothing else notices. **`bun run check:ui`** asserts it (and gates the
@@ -173,6 +365,20 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   bytes) removes the last check on them; the `git show` noise it saves is
   a per-clone problem with per-clone fixes (`git diff --stat`, a pathspec
   exclude, `.git/info/attributes`).
+- **Security scanning is CI-side, with one local half.** `bun run
+  lint:audit` is `bun audit --audit-level=high` over `bun.lock` and gates
+  `package-health.yml`; run it after any dependency change, because that
+  is the one that can turn it red. It reads the lockfile deliberately —
+  GitHub's dependency graph resolves only the ranges in `package.json`,
+  so Dependabot and `dependency-review-action` are blind to the shipped
+  closure and are not used as gates here. Advisories that predate the
+  gate are suppressed by ID in the script *and* listed in `SECURITY.md`;
+  `tests/unit/ci/SecurityPolicy.test.ts` fails if the two sets differ, so
+  never silence one without the other. **CodeQL** (`codeql.yml`, pull
+  requests + weekly) and the workflow-hygiene invariants asserted by
+  `tests/unit/ci/WorkflowHygiene.test.ts` — SHA-pinned actions, explicit
+  read-only workflow permissions, frozen installs — are the rest of it.
+  A new workflow file has to satisfy that test on the first `bun test`.
 - **Don't hand-edit** the README test/coverage badges — CI updates them
   on push to `develop`.
 
@@ -182,9 +388,74 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   primitives (HTTP serve, sockets, workers, SQLite, …) live behind small
   abstractions in **`src/runtime/`** and auto-detect at startup.
 - **Optional peer dependencies:** `import()` them lazily with a clear
-  *"install it with `bun add …`"* error on failure. Declare them in
-  `peerDependencies` **and** `peerDependenciesMeta.<pkg>.optional = true`,
-  and add a matching `devDependency` so the test suite can exercise them.
+  *"install it with `bun add …`"* error on failure, and declare them in
+  `peerDependencies` **and** `peerDependenciesMeta.<pkg>.optional = true`.
+
+  Then declare the package a **second** time, in **one of exactly two
+  dependency contexts**. Which one is not a preference — it follows from how
+  the adapter is actually exercised:
+
+  - **Root `devDependencies`** when a suite under `bun test`, or a
+    `tests/smoke/` case, imports the **real** module. What that buys is
+    narrower than it looks, and worth stating exactly, because the obvious
+    answer is wrong: installing a package makes **no** existing suite
+    exercise it. Nothing in `tests/` is conditioned on module availability,
+    and every adapter path runs against a hand-rolled fake
+    (`FakeCassandraClient`, `FakeMemcached`, `mock.module('@aws-sdk/client-s3',
+    …)`) — which is the right shape for fast feedback and stays. What the
+    fakes cannot cover is the seam between themselves and reality: each
+    adapter reaches its peer through a hand-written structural type
+    (`MemjsClientStatic`, `CassandraDriver`, `WebsocketServerLike`), and a
+    fake satisfies that stub by construction, so the stub is checked against
+    nothing. A **root devDependency is justified by a test that imports the
+    real module and asserts the shape the adapter destructures** — see
+    `tests/unit/ci/OptionalPeerModuleShapes.test.ts`. Use a **literal**
+    specifier there: it is the only form that pins the package at the install,
+    and the only one `knip` can attribute to the manifest entry, which is what
+    keeps it out of `knip.jsonc`'s `ignoreDependencies`.
+  - **`tests/integration/brokers/package.json`** when the adapter earns its
+    coverage against a live broker in Docker. Those packages are absent from
+    the root `node_modules` **by design** — the rationale is in
+    `tsconfig.dev.json`'s exclude entry and
+    `tests/integration/brokers/README.md` — and that is what keeps the root
+    install tiny (two runtime dependencies) and keeps heavyweight driver
+    closures out of `bun audit`'s surface.
+
+  A peer in **neither** context is the defect (#676): nothing installs it, so
+  the structural stub standing in for its types is checked against nothing,
+  and no gate notices — `bun run typecheck` never compiles a call site and the
+  adapter suites all pass against their fakes.
+  `tests/unit/ci/OptionalPeerDeclarations.test.ts` asserts the split, in both
+  directions, so it cannot rot silently again.
+
+  Three traps, all silent:
+
+  - **`bun add <pkg>` no-ops** when `<pkg>` is already an optional peer — bun
+    treats it as declared and does nothing. Write the `devDependencies` entry
+    **by hand** and materialise it with `bun install`.
+  - **A package that ships no types of its own** (`ws`, `memjs`) needs its
+    `@types/*` alongside, or the literal import fails `typecheck:dev` under
+    `noImplicitAny`.
+  - **A root devDependency enters `bun audit`'s surface**, so `bun run
+    lint:audit` is the gate that decides whether a peer *can* live there at
+    all — a driver whose closure carries an unfixable high advisory cannot,
+    and that is a security decision, not a packaging one. Do not reach for a
+    new `--ignore`: every suppression in `lint:audit` predates the gate, and
+    adding one to get a change through is how a gate stops gating. Record the
+    gap in the guard's allow-list instead and raise it.
+
+    `cassandra-driver` is the worked example, and how it ended is the lesson.
+    No published version clears the gate — 4.9.0 hard-pins `adm-zip: ~0.5.10`
+    and GHSA-xcpc-8h2w-3j85 is fixed only in 0.6.0 — so it spent two waves in
+    the allow-list, declared nowhere and typed against nothing. The answer was
+    not a suppression and not an `overrides` pin (which would clear *our*
+    audit and leave every consumer resolving the same range): it was the
+    **second context**. `tests/integration/brokers/package.json` declares it
+    and `tests/integration/brokers/cassandra/` earns the coverage against a
+    live cluster, so the driver's closure is never in the root lockfile for
+    `bun audit` to read. An unfixable advisory is a reason to move a peer to
+    the brokers manifest, not a reason to silence a gate or to leave a stub
+    unchecked (#676).
 
 ## Code style
 
@@ -205,6 +476,24 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
   a scannable dispatch table. **Exempt:** matches on *internal state* (a state
   machine / behavior / directive reducer) or that *compute a value* in a helper
   (config, codec, route, priority) stay inline.
+- **Measured-hot-path exemption.** Where a `match(…)` dispatches on a path a
+  benchmark **in this repository** has measured as hot, it may be a `switch` on
+  `kind` instead — every `case` still a thin `onXxx` delegation, exhaustiveness
+  restored by a `default` that assigns the scrutinee to `never` (the shape
+  `decodeCrdt` in `crdt/DistributedData.ts` documents as the reference) — and
+  the site **must** carry a comment naming the benchmark and the measured
+  delta. The exemption is per-site and evidence-carrying: a `switch` without
+  that comment is a style violation, and the comment is the token the
+  pattern-matching conformance sweep (#494) recognises as exempt and must not
+  convert back.
+
+  The rule it bends is a good one — a matcher reads as a dispatch table where a
+  chain of ifs reads as logic — and the arms staying delegations is what keeps
+  that. What changes is the construct, and only where a number justifies it:
+  building a matcher and one closure per arm is free at a call rate of one per
+  request and is not at one per actor lifecycle. Two sites qualify today
+  (`ActorCell.handleSystemCommand`, `BoundedMailbox.enqueue`), and a third
+  needs its own measurement, not an appeal to these.
 - **`interface` for contracts and heritage, `type` for everything else.** A
   declaration is an `interface` when it prescribes **function heads** — any
   method, call or construct signature — or when it **`extends`** another
@@ -265,6 +554,38 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 - **JSDoc explains the *why*** — constraints, rationale, non-obvious
   trade-offs — not a restatement of the code. Match the surrounding
   comment density; no narration or noise.
+
+### Angular components (`devtools-ui/`)
+
+- **The template is always a separate `.html` file — never an inline
+  string.** Every `@Component` uses `templateUrl: './XComponent.html'`,
+  pointing at a file named after the component and sitting beside it. This
+  holds without exception, including for a component that renders no markup
+  of its own: `EChartComponent.html` is a lone HTML comment explaining why
+  it is empty, which says more than `template: ''` did and keeps the rule
+  free of edge cases to argue about.
+
+  The reason is that markup and logic are read, reviewed and edited by
+  different motions. A hundred-line template inside a decorator pushes the
+  class it belongs to off the screen, gives the markup no HTML tooling —
+  no formatter, no tag matching, no syntax awareness — and makes a diff
+  that touches one `<span>` look like a change to the component. It also
+  puts HTML inside a template literal, where a stray backtick or `${`
+  terminates the string and the error surfaces as `NG1010: template must
+  be a string`, nowhere near the character that caused it. That has
+  actually happened here, twice, both times from a backtick inside an HTML
+  comment.
+
+  `styles` may stay inline: they are usually a line or two of `:host`
+  rules, and the UI's real styling lives in `devtools-ui/src/styles/`.
+
+- **Nothing else needs adjusting when a template moves out.** The
+  `source-hash` behind `bun run check:ui` hashes *every* file under
+  `devtools-ui/src`, extension-blind, so a template-only edit already
+  marks the committed bundle stale — verified by making one and watching
+  the check fail. Size budgets are unaffected too: the compiler inlines
+  the template into the component's chunk, so attribution and the
+  per-panel numbers do not move.
 
 ### Constants
 

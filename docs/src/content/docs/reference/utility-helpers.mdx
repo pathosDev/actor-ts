@@ -1,14 +1,15 @@
 ---
 title: Utilities
-description: Everything the root entry point exports from its own toolbox — Option, Try and Either for results without null; Lazy for compute-once values; BidirectionalMap and BidirectionalMultiMap for relations with a maintained inverse; randomString, safeStringify and lazyImportModule for naming, logging and optional peer dependencies.
+description: Everything the root entry point exports from its own toolbox — Option, Try and Either for results without null; Lazy for compute-once values; RingBuffer for a queue that stays fast when it gets deep; BidirectionalMap and BidirectionalMultiMap for relations with a maintained inverse; randomString, safeStringify and lazyImportModule for naming, logging and optional peer dependencies.
 ---
 
 The framework solves a handful of problems for itself that turn up again in the
 code you write on top of it: representing "there might be no value" without
 `null`, carrying a failure without throwing, computing something once on first
-use, looking a pair up from either end, naming something unguessably, printing a
-value on a path where throwing would replace the error you were reporting, and
-depending on a package you do not want to make mandatory.
+use, draining a queue that keeps growing, looking a pair up from either end,
+naming something unguessably, printing a value on a path where throwing would
+replace the error you were reporting, and depending on a package you do not
+want to make mandatory.
 
 These are the answers it already uses, exported from the root entry point. None
 of them are required to use `actor-ts` — reach for one when you have the problem
@@ -19,6 +20,7 @@ import {
   BidirectionalMap,
   BidirectionalMultiMap,
   Lazy,
+  RingBuffer,
   none,
   safeStringify,
   some,
@@ -129,6 +131,43 @@ computed, `getSync()` unwraps a resolved async cell, and `map` / `flatMap` /
 tests — they are the reason a lazily-imported backend can be swapped for a fake
 without touching the production path.
 
+## RingBuffer — a queue that stays fast when it gets deep
+
+`RingBuffer<T>` is a first-in-first-out queue whose removal from the front is
+O(1). It exists because `Array.prototype.shift()` is not: it reindexes every
+element still queued, so the cost of taking one item grows with the number of
+items behind it. That is invisible on a queue of ten and expensive on a queue
+of a hundred thousand — which is what an actor's mailbox becomes when it falls
+behind its producers, since the default mailbox has no ceiling.
+
+```ts
+import { RingBuffer } from 'actor-ts';
+
+const pending = new RingBuffer<string>();
+pending.push('a');
+pending.push('b');
+pending.shift();                    // 'a'
+pending.unshiftAll(['x', 'y']);     // both go in front of 'b', in this order
+pending.length;                     // 3
+pending.drain();                    // ['x', 'y', 'b'] — and the ring is empty
+```
+
+Four operations and nothing else. `push` appends (amortised O(1) — the
+backing array doubles, and is not allocated at all until the first push, so an
+unused ring costs what an empty `[]` costs). `shift` takes the front. `drain`
+empties it into a fresh array and releases the backing store, so a queue that
+grew to a million gives the memory back. `unshiftAll(items)` puts a whole batch
+in front in one move, without a spread — the framework uses it to replay a
+stash of up to a thousand messages, where `unshift(...items)` would both
+reindex the queue once per message and push the batch onto the call stack as
+arguments.
+
+It is not a general-purpose deque, deliberately: every extra operation is
+another index-wrapping edge case in a type that sits on the message path of
+every actor in the system. Both queues inside a
+[`Mailbox`](/fundamentals/mailboxes/) are one, and so is the
+`ThroughputDispatcher` work queue.
+
 ## BidirectionalMap — a map with a maintained inverse
 
 `BidirectionalMap<K, V>` is a `Map<K, V>` that also answers `value → key`. It
@@ -159,6 +198,7 @@ It implements `Map<K, V>` in full, so it drops into anything that takes one —
 | `reverseEntries()` | `[value, key]` pairs. |
 | `getOrInsertKey(value, defaultKey)` | Like `getOrInsert`, from the value side; returns a **key**. |
 | `getOrInsertComputedKey(value, callback)` | The same, minting the key on demand. `callback` runs at most once. |
+| `keySize` / `valueSize` | Distinct keys and distinct values. Both always equal `size`, because the relation is 1:1 — they exist so this type and `BidirectionalMultiMap`, where the counts genuinely differ, read alike. |
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -225,6 +265,8 @@ subscriptions.add('sport', 'ada');
 subscriptions.get('news');        // Set { 'ada', 'grace' }
 subscriptions.getKeys('ada');     // Set { 'news', 'sport' }  ← the reverse direction
 subscriptions.size;               // 3 — pairs, not participants
+subscriptions.leftSize;           // 2 — distinct topics
+subscriptions.rightSize;          // 2 — distinct subscribers
 
 subscriptions.deleteRight('ada'); // ada leaves every topic at once
 subscriptions.hasLeft('sport');   // false — sport held only ada, so it is gone too
@@ -243,6 +285,7 @@ would let `inverse()` hand back something related to nothing.
 | `deleteLeft(left)` / `deleteRight(right)` | Drop one participant entirely — the `Terminated` case. |
 | `hasLeft(left)` / `hasRight(right)` | Whether that participant has at least one partner. |
 | `lefts()` / `rights()` | The participants, each listed once. |
+| `size` / `leftSize` / `rightSize` | Pairs, distinct lefts, distinct rights. All three O(1) — reach for one of the participant counts rather than measuring `[...lefts()]`. |
 | `inverse()` | The relation read the other way round — a view, not a copy. `size` stays true on both. |
 
 Equality is **SameValueZero**, as with `BidirectionalMap`, and for the same
@@ -426,8 +469,24 @@ that rejects a URL.
 scheme, host, port and path, with the userinfo *and* the query string dropped —
 a WebSocket endpoint is commonly authenticated with a `?token=…`. The path is
 kept deliberately, since it is what tells two connections to the same host
-apart. Use it for a line you emit repeatedly, such as a per-frame warning; the
-`WebsocketClientActor` uses it for exactly that.
+apart. Use it wherever a remote peer influences how often a line is written —
+which is to say wherever the URL would otherwise be replayed into the log at
+someone else's discretion. The `WebsocketClientActor` uses it for its
+oversize-frame warning. That line is no longer written per frame: the breach
+closes the connection, so a peer gets one line per dial. The redaction stands
+regardless, because a peer that provokes reconnects still decides how many
+dials there are.
+
+`BrokerActor` is the other consumer, and its case is not a log at all:
+`redactedEndpointLabel()` is what reaches `BrokerConnected`,
+`BrokerDisconnected`, `BrokerReconnectFailed` and `BrokerReconnectAttempt`,
+which are published on the system-wide `EventStream`. That audience is wider
+than a log file — `subscribe` has no authorization concept — and the events
+fire on the happy path, once per connect and once per reconnect attempt. It
+also shows the fallback doing real work: a joined server list is not a
+parseable URL, so it takes the scan path and comes back as
+`nats://***@a:4222,nats://***@b:4222` rather than being flattened to one
+host.
 
 <Aside type="tip" title="One place to catch what slipped through">
   Neither function can help with a credential that reached a log record's

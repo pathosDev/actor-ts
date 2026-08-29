@@ -21,7 +21,6 @@ import {
   ShardedDaemonProcess,
   ShardedDaemonProcessOptions,
 } from '../../src/cluster/index.js';
-import { attachDevTools } from '../devtools.js';
 
 class PartitionWorker extends Actor<string> {
   constructor(private readonly partition: number, private readonly host: string) { super(); }
@@ -48,7 +47,6 @@ async function startNode(host: string, port: number, seeds: string[] = []): Prom
       .withGossipIntervalMs(80)
       .withReceptionist(false)
       .withShutdownOnSignals(false));
-  await attachDevTools(system);
   return { sys: system, cluster, name: host };
 }
 
@@ -56,6 +54,7 @@ async function main(): Promise<void> {
   const nodeA = await startNode('a', 10_001);
   const nodeB = await startNode('b', 10_002, ['fixed-workers@a:10001']);
   const nodeC = await startNode('c', 10_003, ['fixed-workers@a:10001']);
+  // Not a drain sleep: waits for the three nodes to converge on a leader.
   await Bun.sleep(300);
 
   // Each node calls init — the coordinator (on the leader) places each

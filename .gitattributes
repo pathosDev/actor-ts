@@ -31,3 +31,20 @@ src/devtools/generated/UiAssets.ts linguist-generated diff text eol=lf
 # fails for half the contributors.  The build normalises what it reads
 # as well; this is the other half of that pair.
 devtools-ui/** text eol=lf
+
+# The JVM arms' committed build-tool launcher (#1229).  Both of these are
+# parsed, not just executed, so a checkout that rewrites their line endings
+# breaks them in ways that read as anything but a line-ending problem.
+#
+# `.mill-version` is read as a string and spliced into a download URL: a
+# trailing CR asks Maven Central for a version that does not exist.  The POSIX
+# launcher is worse — `#!/usr/bin/env sh\r` is not an interpreter, so the file
+# fails to start at all, and only on the platforms where it is the only entry
+# point.  Neither is hypothetical here: `core.autocrlf=true` is the Windows
+# default, and it rewrites both on checkout.
+#
+# The Windows launcher keeps CRLF on purpose — it is a batch file.
+benchmarks/comparison/**/.mill-version text eol=lf
+benchmarks/comparison/**/mill          text eol=lf
+benchmarks/comparison/**/mill.bat      text eol=crlf
+graphify-out/graph.json merge=graphify

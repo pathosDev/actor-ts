@@ -1,0 +1,329 @@
+---
+title: Benchmarks
+description: Measured comparison of actor-ts against neighbouring JavaScript actor frameworks — the numbers, the methodology that produced them, and what is deliberately not measured yet.
+---
+
+How does actor-ts compare to the other options?  This page answers that with
+measurements rather than adjectives — and is equally explicit about what has
+**not** been measured, because a comparison that lists only its wins is an
+advertisement.
+
+Everything here comes from
+[`benchmarks/comparison/`](https://github.com/pathosDev/actor-ts/tree/main/benchmarks/comparison),
+which you can run yourself.  The generated
+[`RESULTS.md`](https://github.com/pathosDev/actor-ts/blob/main/benchmarks/comparison/RESULTS.md)
+is the source of truth; this page is the readable version of it.
+
+## The numbers
+
+Bun 1.3.14 · 10 cores of an Intel i9-12900K · Linux · **mean of one hundred
+interleaved rounds**, with the spread those rounds varied by.  A gap smaller
+than the spread beside it is not a difference.
+
+The machine changed with this run — ten rounds on a Windows desktop became a
+hundred on Linux — and every absolute figure moved by a factor of two to five.
+Compare the columns with each other, never with a figure quoted here before.
+Three findings did not survive the move, and each is marked below as a
+correction rather than quietly restated.
+
+### JavaScript — same machine, same harness
+
+| scenario | actor-ts 0.16.0 | nact 7.6.2 | XState 5.32.5 |
+| -------- | --------------- | ---------- | ------------- |
+| tell throughput, batch 1k | **13.82M/s** ±15 % | 1.59M/s ±2 % | 878k/s ±3 % |
+| tell throughput, batch 10k | **19.05M/s** ±6 % | 1.64M/s ±2 % | 961k/s ±2 % |
+| ping-pong, 10k exchanges | **2.82M/s** ±3 % | 811k/s ±2 % | 508k/s ±1 % |
+| spawn → started → stopped | 355k/s ±9 % | **698k/s** ±8 % | 332k/s ±8 % |
+| ask round-trip, p50 | **0.9 µs** | 1.5 µs | 2.2 µs |
+
+### Cross-language — another virtual machine, mirrored harness
+
+Kept in its own table on purpose.  The JavaScript arms above all run through
+*literally the same* measurement code; this one reproduces the protocol by
+hand, on a different runtime, and that is a weaker claim.
+
+Each JVM framework appears twice — through its **Java** API and through its
+**Scala 3** API, at the identical pinned version, built by the same toolchain
+on the same pinned JDK.  Everything is held constant except the binding, which
+is what lets the gap inside a pair be read as the binding.
+
+| scenario | actor-ts 0.16.0 (Bun) | Akka 2.8.8 (Java) | Akka 2.8.8 (Scala 3) | Pekko 1.6.0 (Java) | Pekko 1.6.0 (Scala 3) | Akka.NET 1.5.70 | Orleans 10.2.2 |
+| -------- | --------------------- | ----------------- | -------------------- | ------------------ | --------------------- | --------------- | -------------- |
+| tell throughput, batch 1k | **13.82M/s** ±15 % | 7.23M/s ±12 % | 5.37M/s ±26 % | 6.76M/s ±16 % | 4.34M/s ±24 % | 5.96M/s ±5 % | 695k/s ±10 % |
+| tell throughput, batch 10k | **19.05M/s** ±6 % | 9.18M/s ±7 % | 9.03M/s ±8 % | 9.36M/s ±7 % | 9.37M/s ±15 % | 6.37M/s ±3 % | 792k/s ±30 % |
+| ping-pong, 10k exchanges | **2.82M/s** ±3 % | 1.99M/s ±3 % | 1.94M/s ±3 % | 1.99M/s ±3 % | 1.99M/s ±2 % | 499k/s ±8 % | 357k/s ±11 % |
+| spawn → started → stopped | **355k/s** ±9 % | 105k/s ±5 % | 97k/s ±5 % | 102k/s ±5 % | 90k/s ±5 % | 85k/s ±2 % | 30k/s ±4 % |
+| ask round-trip, p50 | **0.9 µs** | 3.7 µs | 3.5 µs | 3.6 µs | 3.5 µs | 3.2 µs | 5.5 µs |
+| licence | MIT | BUSL-1.1 | BUSL-1.1 | Apache-2.0 | Apache-2.0 | Apache-2.0 | MIT |
+
+Four things are readable from this table that no single row shows.
+
+**The same actor model appears on three runtimes** — JVM, CLR and JavaScript —
+which is what makes the runtime's own contribution visible rather than
+inferred.  On this machine the JavaScript arm leads every row: about twice the
+best JVM arm on bulk messaging, 1.4× on the alternating volley, three times on
+the lifecycle row and four times faster on the round trip.  It is also the
+finding that has moved most over time — this paragraph once said the JVM led
+bulk throughput with actor-ts at roughly a third of it, and most of that gap
+turned out to be a scheduling hop and an async state machine on the receive
+path rather than anything the runtime imposed.
+
+**The language binding costs on exactly one row, and nothing at all on the
+next.**  Each JVM framework is measured through both its Java and its Scala 3
+API at the same version, so a gap inside a pair is the binding.  At a batch of
+1 000 the Scala arms run **26 % and 36 % behind their Java siblings** — both
+pairs independently, and across a hundred rounds far outside any doubt
+(t = 11 and 16).  At a batch of 10 000 the effect is *gone*: −1.5 % and +0.1 %,
+neither of them distinguishable from zero.
+
+That is the shape a per-message allocation makes when a JIT learns to remove
+it.  An actor advancing its state by returning a new behavior allocates one per
+message where a mutable field allocates none, and a batch of a thousand does
+not hand the compiler enough profile to eliminate it.  The earlier ten-round
+run could only say the gap "narrowed to 7–11 %"; a hundred rounds say it
+disappears, which is a far better reason to believe the explanation.
+
+**The two JVM lineages are the same framework either side of its licence
+change**: the Apache-licensed fork against the BUSL-1.1 original.  Neither has
+a systematic advantage — the fork leads some rows and trails others, and the
+volley row matches to three digits.  **Staying on an OSI-approved licence still
+costs nothing worth having**: at the Java binding the largest gap is 6 % and
+most are inside 2 %.  Because those arms differ only in which dependency they
+pull, each is a control on the other.
+
+One correction.  This paragraph used to say the two "agree to within the noise
+on every row" — a claim about the noise as much as about the frameworks, and a
+hundred rounds leave far less of it.  Differences of a few per cent are now
+measurable rather than invisible.  They remain differences nobody would choose
+a framework over.
+
+**The round-trip row no longer splits by runtime — a correction.**  This page
+reported the four JVM arms at 32–38 µs against under 8 µs elsewhere, and
+explained it as the cost of a non-actor thread parking on a future where an
+event loop waits on a microtask.  On Linux the same arms at the same versions
+sit at 3.5–3.7 µs, beside 3.2 µs for the CLR arm.  The mechanism is real, but on
+this host it is worth a fraction of a microsecond — the rest belonged to the
+previous machine's thread parking, and the explanation was carrying far more
+weight than the measurement could support.  What survives is narrower and still
+useful: actor-ts is about four times faster than every other arm on this row, on
+a runtime that has no thread to park.
+
+### What the numbers say
+
+**actor-ts leads the JavaScript field on every row except spawning** — twelve
+times nact and twenty times XState at a batch of 10 000, three and a half times
+nact's throughput on the alternating volley, and under two thirds of its
+round-trip latency.
+
+**It trails on spawning**, by about two times, and the reason is
+structural rather than a missing optimisation.  nact constructs an actor
+synchronously inside `spawn()` and puts it in two maps.  This row waits for a
+confirmed `preStart`, then a `stop()`, then a confirmed `postStop`, and the
+teardown notifies the parent so supervision stays correct.  Those are the
+things an actor system does, and a benchmark that skipped them would be
+measuring a different feature.
+
+**Against the JVM the answer changed**, and it is worth saying plainly that it
+changed rather than quietly restating it.  This section previously read
+"expect roughly a third of the throughput", which was accurate when it was
+written.  Most of that gap was not the runtime: it was a `setImmediate` per
+actor turn, which an actor answering one request at a time cannot amortise,
+and three nested `async` functions on the delivery path that a handler
+returning nothing still paid for.  With those gone, bulk messaging runs ahead
+of every JVM arm.
+
+**The volley is no longer a tie either — the third correction.**  When the JVM
+arms began forking a clean process instead of measuring inside their build
+tool's warm one, their volley spreads ran from ±27 % to ±82 %, and the honest
+reading was that nobody was clearly ahead.  A hundred rounds on this host bring
+those spreads to ±2–3 %, and at that resolution actor-ts leads the best JVM arm
+by 1.4× on the row.  The tie was a statement about the measurement rather than
+about the frameworks, and the measurement improved.
+
+What has not changed is that this is a local, in-process, single-node
+measurement on one machine.  A JVM actor system has two decades of work in its
+clustering, persistence and back-pressure paths, none of which appears here.
+And Akka 2.7 and later ship under BUSL-1.1, which restricts production use;
+that belongs in the same decision as any throughput figure.
+
+**There is deliberately no "no framework" column.**  One used to close these
+tables — plain objects and direct method calls, meant as a floor showing what
+the abstraction costs.  It was removed for two reasons.  A column two to three
+orders of magnitude above everything else is read as "these frameworks are
+wasteful" rather than as "a direct call does none of this work — no queue, no
+scheduler, no supervision, no lifecycle, no back-pressure", and no caveat
+printed beside it changed which of those a reader took away.  It was also the
+least trustworthy figure in the suite: a loop a JIT can flatten moved 16 %
+between consecutive runs, more than any real arm.  A comparison should help
+someone choose between the options in front of them, and "use no framework" is
+not one of them.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Ratios, not absolutes">
+These are single-machine measurements.  They say nothing about a production
+deployment on real hardware with real networks.  Compare the columns, treat
+the last digit of every figure as fiction, and read a 10 % gap as "about the
+same" — the measured run-to-run spread still reaches 26–30 % on the noisiest
+rows, which is exactly why every figure above is a mean of a hundred and
+carries its spread.
+</Aside>
+
+## Methodology
+
+The parts that make the table worth reading:
+
+- **One harness, literally — on the JavaScript side.**  Every JavaScript arm
+  runs through the same measurement code: same warmup, same clock, same
+  percentile maths, only the four operation bodies differing.  That is a
+  stronger claim than "we used the same methodology", and it is why those rows
+  share a table.  The JVM arm cannot import that code, so it reproduces the
+  protocol by hand — which is exactly why its rows are kept separate.
+- **Warmup is part of the workload.**  Explicit per case and identical across
+  arms, because the harness default works out at three unmeasured iterations
+  for the largest batch — fine for JavaScript, and measuring a JIT-compiled
+  runtime mid-compilation.  Fixing it moved the JVM arm's tell rate by 130 %.
+- **Completed work, never requested work.**  Each arm reports what the system
+  was *observed* to do — the counter read back, the reply checked, the
+  lifecycle confirmed — and the report generator refuses to render a row whose
+  completed count disagrees with what was asked for.  This is not
+  hypothetical: a figure this project published previously was about 10× too
+  high because the mailbox silently dropped most of the messages and the
+  harness counted the request.
+- **One workload, cross-checked.**  Batch sizes and iteration counts live in
+  one file, and the generator fails if any arm reports different ones.
+- **Interleaved rounds, averaged.**  Round 1 of every arm, then round 2, so
+  background load lands on all arms rather than on whichever one happened to
+  run during it.  Each published figure is the mean of a hundred rounds, and
+  each carries the spread those rounds varied by — publishing the median would
+  report one round and discard the rest, while publishing a mean without its
+  spread would hide that some of these figures still move by a quarter between
+  runs.
+- **One framework per subprocess**, so module state, JIT profiles and GC
+  pressure do not cross arms.
+- **Logging off everywhere.**  An arm that writes log lines measures its
+  logger.
+
+## Per-framework caveats
+
+These travel with the numbers rather than sitting in a footnote nobody reads.
+
+**XState v5** is a statechart library whose actors are the delivery mechanism,
+not an actor framework with statecharts added.  It has no request/response
+primitive, so its ask row is `send` followed by a snapshot wait — idiomatic,
+but not a native ask.  Its event processing is synchronous, so its tell rows
+do not measure a mailbox at all.
+
+**nact** creates actors synchronously and has no ambient sender: a reply
+address travels inside the message.  It is also effectively unmaintained, so
+its numbers are a snapshot of 7.6.2 rather than of a moving target.
+
+**Orleans** is a virtual-actor runtime, and the arm whose semantics diverge
+most.  Grains activate on first call, there is no caller-visible create or
+stop, and a grain call is an RPC — so three of its four rows measure a named
+near-equivalent: first-call activation for spawn (with fresh grain identities
+every iteration, since calling an already-activated grain would measure a warm
+dispatch), a one-way RPC for tell, and a driven chain of awaited calls for
+ping-pong.  Its strong ask row and weak tell row are the same fact seen twice:
+request/response is what a grain call *is*.
+
+**Akka.NET** is the classic actor API on the CLR, the model its own
+documentation leads with.
+
+**The Scala 3 arms** measure the same frameworks at the same versions through
+their native-language API, in the idiomatic functional style: state carried in
+behavior parameters and advanced by returning a new behavior, rather than the
+mutable fields the Java arms use.  Transliterating the Java shape would have
+measured Java idioms spoken with a Scala accent and answered nothing the Java
+arms do not.  The rows where that style can move a number carry a note saying
+so.  Brace-less Scala 3.3.8, and the *sending* side is deliberately identical
+to the Java arms — both hoist a single message instance out of the send loop,
+because a pair that differs in two things measures neither.
+
+**All four JVM arms fork a clean process.**  They used to run inside their
+build tool's own JVM, which was warm — its JIT exercised, its heap grown —
+while every other arm in this suite started fresh.  Isolating it by running the
+same compiled classes three ways showed the difference is the fork rather than
+the tool or the JDK, and it was worth up to half of the alternating-volley
+figure.  So the JVM volley numbers published before this change were flattered
+by the harness, and the ones that replaced them were both lower and far
+noisier: a cold JVM is a more variable one, and at ten rounds those columns
+carried spreads from ±27 % to ±82 %.  A hundred rounds on a quieter host bring
+them back to ±2–3 %, so the fork costs accuracy in the figure but not, at this
+sample size, confidence in it.
+
+**Akka and Pekko** are the same lineage either side of a licence change, and
+at the same binding are measured from sources identical apart from the package
+prefix — so any gap between them is the fork rather than the benchmark.  Akka
+is measured at 2.8.8, the newest release still published to Maven Central,
+since 2.9 and later live only on a repository that refuses anonymous
+requests.  Pekko is at 1.6.0, its newest *stable* release; a 2.0 milestone
+exists and is deliberately not used, because comparing a released framework
+against an unreleased one is a different claim.  A version nobody else can resolve would make the row
+unreproducible.  Its harness is hand-written to mirror the JavaScript one
+rather than using JMH: JMH is the better microbenchmark tool but measures
+differently, and two sides using different methodologies cannot be read as one
+table.
+
+**actor-ts** is measured with plain conditional dispatch in the message
+handlers, matching the other arms.  Dispatching with `ts-pattern` instead — the
+style this project uses in its own source — costs a further 18-22 % of tell
+throughput, which is worth knowing if you follow that style in a hot path.
+
+## What is not measured
+
+Stated plainly, because a benchmark page that lists only what it ran reads as
+a comparison of everything:
+
+- **No clustering or sharding.**  A throughput regression is open against
+  sharding, and publishing a sharded comparison now would bake it into the
+  first number anyone sees.
+- **No persistence.**  The persistence benchmarks cover in-memory and SQLite
+  only, so a comparable arm would be a storage-engine comparison wearing a
+  framework label.
+- **Six cross-language arms, all on one machine.**  Cross-language rows stay
+  in their own table because they are a weaker claim than same-harness ones,
+  and are never mixed into the JavaScript ranking.
+- **One runtime.**  Every arm runs on Bun.  The measurement harness reaches
+  into the framework's source, which Node cannot load without a build step, so
+  running the neighbours on Node would mean not running them through the same
+  harness.  An identical measurement path was judged the more valuable
+  property; the cost is that these libraries are written for Node and their
+  numbers there may differ.
+- **No regression gate.**  Nothing fails when a number moves between releases.
+
+## Reproducing
+
+```bash
+bun install --cwd benchmarks/comparison
+```
+
+```bash
+bun run bench:compare -- --rounds=100
+```
+
+```bash
+bun run bench:compare:report
+```
+
+The first command installs the comparison tree's own manifest — the frameworks
+being measured are deliberately not part of the root install, so they never
+enter the shipped dependency closure.  The second measures; the third
+validates the results and regenerates `RESULTS.md`.
+
+To work on a single arm:
+
+```bash
+bun run bench:compare -- --framework=nact
+```
+
+## Where to next
+
+- **[Migration overview](/migration/overview/)** — coming from another actor
+  framework.
+- **[FAQ](/reference/faq/)** — including the per-message overhead these
+  numbers now source.
+- **[Dispatcher tuning](/operations/tuning/dispatcher-tuning/)** — the knob
+  that moves the throughput figures most.
+- **[Mailbox sizing](/operations/tuning/mailbox-sizing/)** — bounded versus
+  unbounded, and what each costs.

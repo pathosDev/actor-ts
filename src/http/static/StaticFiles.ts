@@ -1,16 +1,33 @@
 /**
  * Static file serving directives — the backend-agnostic replacement for
- * reaching into `@fastify/static`.  Bodies are buffered into memory
- * (bounded by `maxFileSize`); path handling is decode-once-then-validate
- * with root confinement (see {@link resolveStaticPath}).
+ * reaching into `@fastify/static`.  Path handling is
+ * decode-once-then-validate with root confinement (see
+ * {@link resolveStaticPath}).
+ *
+ * **How much of a file is held in memory.**  By default a body is buffered,
+ * bounded by `maxFileSize` (larger → 413) — except that a `Range` now reads
+ * only the requested window instead of the whole file (#969).  Set
+ * `streamThreshold` and a body at or above it is a `ReadableStream` read in
+ * fixed chunks, which is what makes a file larger than memory servable at
+ * all; that also retires the 413, because with the threshold enforced at or
+ * below `maxFileSize` nothing can buffer past it.
+ *
+ * **Why streaming is opt-in and not the default (#465).**  A stream body is
+ * one-shot and two first-party middlewares still mishandle one: `cached()` /
+ * `idempotent()` serialise a body by testing for `Uint8Array` and store a
+ * stream as `{}` (#674), and `ExpressBackend` pipes it with no error handler
+ * (#979).  Turning streaming on by default would make both live for the
+ * out-of-the-box static route rather than latent.  The default stays buffered
+ * until those land; flipping it is then a one-line change here.
  */
 import { basename, join, sep } from 'node:path';
 import { concat, get, path, redirect, type Route } from '../Route.js';
 import { Status, type HttpRequest, type HttpResponse } from '../Types.js';
 import { contentTypeFor } from '../MimeTypes.js';
-import { readDirectory, readFileBytes, realPath, statPath, type FileStat } from './FsAccess.js';
+import { readDirectory, readFileBytes, readFileRange, readFileStream, realPath, statPath, type FileStat } from './FsAccess.js';
 import { resolveStaticPath } from './StaticPath.js';
 import { renderDirectoryListing, type ListingEntry } from './DirectoryListing.js';
+import { stripSurrounding } from '../../util/StripCharacters.js';
 import {
   resolveStaticOptions,
   type ResolvedStaticOptions,
@@ -76,6 +93,11 @@ function parseRange(header: string, size: number): ParsedRange {
   return { start, end };
 }
 
+/** Is a body of `byteLength` streamed rather than read into one buffer? */
+function streamsAt(settings: ResolvedStaticOptions, byteLength: number): boolean {
+  return settings.streamThreshold !== undefined && byteLength >= settings.streamThreshold;
+}
+
 /** Build the response for a resolved, confirmed-regular file. */
 async function serveResolvedFile(
   fsPath: string,
@@ -84,7 +106,13 @@ async function serveResolvedFile(
   settings: ResolvedStaticOptions,
   servedName: string,
 ): Promise<HttpResponse> {
-  if (stat.size > settings.maxFileSize) return tooLarge();
+  // `maxFileSize` bounds what is read into memory, so it only says anything
+  // about a *buffered* body.  Once `streamThreshold` is set the validator has
+  // already rejected a threshold above the cap, so no response can buffer more
+  // than the threshold and this refusal is unreachable — skipping it drops no
+  // bound.  Leaving it in would instead refuse exactly the large files
+  // streaming exists to serve.
+  if (settings.streamThreshold === undefined && stat.size > settings.maxFileSize) return tooLarge();
   const isHead = request.method === 'HEAD';
   const etag = settings.etag ? weakEtag(stat) : undefined;
   const lastModified = settings.lastModified ? new Date(stat.mtimeMs).toUTCString() : undefined;
@@ -127,13 +155,28 @@ async function serveResolvedFile(
           'content-length': String(length),
         };
         if (isHead) return { status: 206, headers: rangeHeaders, contentType, body: null };
-        const bytes = await readFileBytes(fsPath);
-        return { status: 206, headers: rangeHeaders, contentType, body: bytes.subarray(parsed.start, parsed.end + 1) };
+        // Only the requested window, never the whole file: reading everything
+        // and handing back a `subarray` pinned the entire `ArrayBuffer` behind
+        // the view for the life of the response, so `bytes=0-0` on a 50 MiB
+        // file cost 50 MiB per in-flight request (#969).
+        const partial = streamsAt(settings, length)
+          ? readFileStream(fsPath, parsed.start, length)
+          : await readFileRange(fsPath, parsed.start, length);
+        return { status: 206, headers: rangeHeaders, contentType, body: partial };
       }
     }
   }
 
   if (isHead) return { status: Status.OK, headers: { ...headers, 'content-length': String(stat.size) }, contentType, body: null };
+  if (streamsAt(settings, stat.size)) {
+    // `content-length` has to be stated here.  Every backend derives it from a
+    // `Uint8Array` body and has nothing to measure on a stream, so without it
+    // each streamed download silently becomes chunked — no progress bar, and a
+    // client cannot tell a truncated transfer from a complete one.  All three
+    // apply `response.headers` before they touch the body, so this survives.
+    const streamHeaders = { ...headers, 'content-length': String(stat.size) };
+    return { status: Status.OK, headers: streamHeaders, contentType, body: readFileStream(fsPath, 0, stat.size) };
+  }
   return { status: Status.OK, headers, contentType, body: await readFileBytes(fsPath) };
 }
 
@@ -215,7 +258,7 @@ async function serveFromDirectory(root: string, rawRest: string, request: HttpRe
       if (realRoot !== null && !(await isWithinRoot(indexPath, realRoot))) continue;
       return serveResolvedFile(indexPath, indexStat, request, settings, index);
     }
-    const atMountRoot = rawRest.replace(/^\/+|\/+$/g, '') === '';
+    const atMountRoot = stripSurrounding(rawRest, '/') === '';
     if (settings.browse) return renderListing(resolved.fsPath, request, atMountRoot, settings, realRoot);
     return notFound();
   }

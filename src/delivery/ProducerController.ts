@@ -5,9 +5,20 @@ import type { Cancellable } from '../Scheduler.js';
 import { ProducerControllerOptionsValidator } from './ProducerControllerOptions.js';
 import type { ProducerControllerOptions, ProducerControllerOptionsType } from './ProducerControllerOptions.js';
 import type { Acknowledgment, ConfirmationCallback, Delivery } from './Messages.js';
+import { GENERATED_PRODUCER_ID_LENGTH, PRODUCER_INCARNATION_LENGTH } from './Constants.js';
+import { randomId } from '../util/RandomString.js';
 
-let producerSeed = 0;
-const nextProducerId = (): string => `producer-${++producerSeed}`;
+/**
+ * Mints the `producerId` for a controller whose caller did not supply one.
+ *
+ * The `producer-` prefix is kept because this string is read far more often
+ * than it is compared — a log line, a metric label, a key in the consumer's
+ * dedup map — and a bare hex blob there says nothing about what it names.
+ * Only the counter that used to follow it is gone; see
+ * {@link GENERATED_PRODUCER_ID_LENGTH} for why an enumerable, process-shared
+ * id was the wrong default (#730).
+ */
+const nextProducerId = (): string => `producer-${randomId(GENERATED_PRODUCER_ID_LENGTH)}`;
 
 /** Message sent to the ProducerController by the publishing user code. */
 export type ProducerSend<T> = {
@@ -34,6 +45,23 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
   private readonly pending: ProducerSend<T>[] = [];
   private nextSeq = 1;
   private readonly id: string;
+  /**
+   * Identity of *this* construction of the controller, minted in the field
+   * initialiser so a restart cannot inherit the previous one.
+   *
+   * `nextSeq` above is an instance field with no seed, so every incarnation
+   * starts numbering at 1 again, while `id` is read from the options object
+   * the spawn closure captured and therefore survives a restart unchanged.
+   * Those two facts in one class were #726: the consumer's dedup entry for
+   * `id` outlived the producer, so the whole post-restart prefix satisfied
+   * `seq <= contiguous`, was answered with an ordinary ack, and drove
+   * `confirm(null)` for messages the consumer's handler never saw.  The
+   * incarnation is the discriminator that makes a restart distinguishable
+   * from a retransmit, and — being unguessable — is also what an
+   * {@link Acknowledgment} has to echo before this actor will act on it
+   * (#730).
+   */
+  private readonly incarnation = randomId(PRODUCER_INCARNATION_LENGTH);
   private readonly resendTimeoutMs: number;
   private readonly windowSize: number;
 
@@ -92,6 +120,7 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
     const delivery: Delivery<T> = {
       kind: 'reliable-delivery.delivery',
       producerId: this.id,
+      incarnation: this.incarnation,
       seq: inflight.seq,
       body: inflight.body,
       replyTo: this.self as unknown as ActorRef<Acknowledgment>,
@@ -108,8 +137,30 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
     );
   }
 
+  /**
+   * Acting on an acknowledgment is destructive — it cancels the retransmit
+   * that is the entire at-least-once guarantee and tells the caller the
+   * message landed — so it needs evidence, and `(producerId, seq)` is not
+   * evidence.  Both are enumerable, so before #730 anything that could tell
+   * this actor could downgrade the stream to at-most-once *and* report
+   * success while doing it.  The incarnation closes that: it is crypto-random
+   * and leaves this process only on the deliveries this incarnation sent.
+   *
+   * The check is here rather than on `this.sender`, which is `None` for every
+   * acknowledgment the producer will ever see — the consumer tells with one
+   * argument and so does the cluster's envelope dispatch — and rather than
+   * against `options.consumer`, which the documented relay topology makes a
+   * forwarder rather than the acker.
+   *
+   * It also rejects an ack from the *previous* incarnation of this
+   * `producerId`, which is a real message and not an attack: a delivery still
+   * on the wire when the producer restarted can be acked afterwards, and
+   * without this the ack would settle whatever the new incarnation happened
+   * to have parked under the same seq.
+   */
   private onAcknowledgment(message: Acknowledgment): void {
     if (message.producerId !== this.id) return;
+    if (message.incarnation !== this.incarnation) return;
     const inflight = this.inflight.get(message.seq);
     if (!inflight) return;
     inflight.timer?.cancel();

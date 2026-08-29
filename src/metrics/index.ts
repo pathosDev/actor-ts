@@ -4,6 +4,7 @@ export {
   DEFAULT_HISTOGRAM_BUCKETS,
   METRICS_OVERFLOW_LABEL_VALUE,
   bucketize,
+  isCollectable,
 } from './Metrics.js';
 export {
   DEFAULT_MAX_SERIES_PER_FAMILY,
@@ -32,7 +33,10 @@ export {
 export { MailboxDepthSampler } from './MailboxDepthSampler.js';
 export {
   DEFAULT_MAILBOX_DEPTH_SAMPLE_INTERVAL_MS,
+  DISPATCHER_QUEUE_DELAY_BUCKETS_SECONDS,
+  MAILBOX_DEPTH_BUCKETS_MESSAGES,
   MAILBOX_DEPTH_REPORTING_FLOOR,
+  MAILBOX_WAIT_BUCKETS_SECONDS,
 } from './Constants.js';
 export {
   exportPrometheus,

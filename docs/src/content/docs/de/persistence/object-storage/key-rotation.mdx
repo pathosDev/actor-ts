@@ -174,6 +174,50 @@ sich unter keinem von beiden entschlüsseln, wird der
 ursprüngliche Entschlüsselungsfehler geworfen — ein wirklich
 defekter Bestand wird also nicht stillschweigend übersprungen.
 
+## Einen integritätsgeschützten Korpus sweepen
+
+Ein Bucket mit aktiviertem [Integritäts-HMAC](/de/persistence/object-storage/encryption/#integrität-und-master-key-rotation)
+braucht diesen Schlüssel auch hier.  Das Tag deckt die
+Manifest-Bytes ab; der Sweep muss es also prüfen, um einen Body
+überhaupt zu lesen, und neu berechnen, um einen zurückzuschreiben:
+
+```ts
+await reEncryptObjectStorage(backend, {
+  keyPrefix: 'state/',
+  keyring,
+  info: 'acme/prod/durable-state/v1',
+  integrity: { mode: 'hmac-sha256', integrityKey },
+});
+```
+
+`integrity` nimmt dieselbe Form an wie der Store — eine flache
+Config oder denselben Resolver pro `persistenceId` —, sodass ein
+Deployment mit Integrität pro Tenant hier denselben Schlüssel
+auflöst wie sein Store.
+
+Lässt du es bei einem getaggten Korpus weg, verweigert der Sweep
+den Start vor dem ersten Write und nennt einen der betroffenen
+Keys.  Tags werden nur dort neu gesetzt, wo der Body schon eines
+trug — ein ungetaggter Body wird also nie befördert; ein Korpus
+mitten in der Integritätsmigration ergänzt `allowUntaggedBodies:
+true`, das Sweep-seitige Gegenstück zur gleichnamigen
+Store-Option.
+
+Den Integritätsschlüssel selbst rotiert der Sweep **nicht**, und es
+gibt auch kein Migrationsfenster, das es dir erlaubte.  Auf der
+Leitung ist nirgends festgehalten, welcher Integritätsschlüssel einen
+Body versiegelt hat; ein halb gesweepter Korpus wäre also nicht von
+einem manipulierten zu unterscheiden — und `allowUntaggedBodies` ist
+nicht der Weg daran vorbei, denn es lässt Bodies wieder zu, die *gar
+kein* Tag tragen, während ein unter dem alten Schlüssel getaggter Body
+weiterhin am HMAC-Vergleich scheitert, bevor dieser Zweig erreicht
+wird.  Was funktioniert, ist das `integrity`-Override pro Aufruf,
+unabhängig für Lesen und Schreiben, eine `persistenceId` nach der
+anderen: siehe [Integrität und
+Master-Key-Rotation](/de/persistence/object-storage/encryption/#integrität-und-master-key-rotation)
+sowie [#1354](https://github.com/pathosDev/actor-ts/issues/1354) für
+die Form, die ein echter Roll bräuchte.
+
 ## Teilrotation mit `skip`
 
 `skip(key) => boolean` **schließt** passende Keys aus — die
@@ -193,14 +237,45 @@ Nützlich für Rotation pro Tenant, pro Actor-Typ oder in Phasen.
 
 ## Keyring-Vollständigkeits-Vorabprüfung
 
-Standardmäßig sampelt der Sweep die ersten verschlüsselten
-Objekte und **verweigert den Start**, wenn die Key-Version eines
-Payloads im Keyring fehlt — das fängt den „Operator hat den
-retired-Key zu früh entfernt"-Fallstrick ab, *bevor* ein
-Mid-Sweep-Decrypt-Fehler den Korpus halb umgeschrieben
-zurücklässt.  Mit `verifyKeyringCompleteness: false` abschalten —
-nur, wenn du unabhängig sicher bist, dass der Keyring vollständig
-ist.
+Standardmäßig sampelt der Sweep die ersten Objekte, die er
+umschreiben würde, und **verweigert den Start**, wenn die
+Key-Version eines Payloads im Keyring fehlt — das fängt den
+„Operator hat den retired-Key zu früh entfernt"-Fallstrick ab,
+*bevor* ein Mid-Sweep-Decrypt-Fehler den Korpus halb umgeschrieben
+zurücklässt.  Derselbe Durchgang beantwortet die Integritätsfrage:
+Ein gesampeltes Objekt mit Tag, für das `integrity` keinen
+Schlüssel auflöst, stoppt den Sweep hier statt mitten im Korpus.
+Mit `verifyKeyringCompleteness: false` abschalten — nur, wenn du
+unabhängig sicher bist, dass der Keyring vollständig ist.
+
+Beide Hälften sampeln, statt aufzuzählen; beide sind also ein
+Fallstrick-Fänger und kein Beweis — ein Nachzügler jenseits von
+`sampleSize` bricht den Sweep weiterhin mitten im Korpus ab.
+
+## Welche Keys der Sweep verarbeiten kann
+
+Der Sweep leitet sein HKDF-Salt aus dem **Key** des Objekts ab und
+schreibt den Body anschließend neu — ein Key, den er nicht
+verlässlich lesen kann, ist also ein Body, den er nicht anfassen
+darf. Daraus folgen zwei Regeln, beide werden erzwungen:
+
+- **Keine Control-Characters.** Jedes Object-Storage-Backend weist
+  sie bei `put` zurück; ein Key, den dieses Framework schreibt, ist
+  damit immer ein Key, den der Sweep akzeptiert. Lesen und Löschen
+  bleiben permissiv, sodass ein von einer älteren Version
+  geschriebenes Objekt weiterhin erreichbar ist.
+- **Exakt `<keyPrefix><persistenceId>/<leaf>`.** Das ist das
+  Layout beider eingebauter Stores — `<pid>/<seq>.json` für
+  Snapshots, `<pid>/state.json` für Durable State. Ein Key mit einer
+  zusätzlichen Ebene wird verweigert statt auf sein erstes Segment
+  reduziert: eine `persistenceId` mit `/` darin oder ein `keyPrefix`,
+  der kürzer ist als der `prefix` des Stores, ergäbe sonst ein
+  *plausibles, aber falsches* Salt für den gesamten Korpus. Ein
+  abweichendes Layout bringt sein eigenes `pidFromKey` mit.
+
+Setze `keyPrefix` exakt auf den `prefix` des Stores. `'snapshots/'`
+zu sweepen, während der Store unter `'snapshots/prod/'` schreibt,
+ist genau der zweite Fall — und der Sweep verweigert ihn.
 
 ## Abschluss bestätigen
 
@@ -217,8 +292,33 @@ if (result.rewrote === 0) {
 }
 ```
 
-Es gibt keinen separaten „Stragglers auflisten"-Helper; die
-Zähler sind die Wahrheit.
+Diese Gleichung lässt `skippedMalformedKey` bewusst weg: **ein
+zurückkehrender Sweep hat den Zähler immer auf null.** Ein Lauf, der
+auf so einen Key trifft, rotiert alles Übrige fertig und wirft dann
+`ReEncryptIncompleteError`, statt zurückzukehren — denn diese Objekte
+liegen noch unter dem Schlüssel, den du gleich ausmustern wolltest.
+Der Fehler trägt das vollständige `result` plus eine Stichprobe der
+betroffenen Keys.
+
+```ts
+import { ReEncryptIncompleteError } from 'actor-ts/persistence';
+
+try {
+  await reEncryptObjectStorage(backend, { keyPrefix: 'state/', keyring, info });
+} catch (thrown) {
+  if (thrown instanceof ReEncryptIncompleteError) {
+    console.error(thrown.message);          // names the keys, says not to drop the key
+    console.error(thrown.malformedKeys);    // a bounded sample
+    console.error(thrown.result.rewrote);   // what did get rotated
+  }
+  throw thrown;
+}
+```
+
+Korrigiere diese Keys — oder schließe sie, falls es gar keine
+Objekte dieses Frameworks sind, mit dem `skip`-Prädikat oben aus —
+und lass den Sweep erneut laufen. Es gibt keinen separaten
+„Stragglers auflisten"-Helper; die Zähler sind die Wahrheit.
 
 ## Nach dem Sweep
 

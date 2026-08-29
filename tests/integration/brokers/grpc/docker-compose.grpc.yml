@@ -6,8 +6,8 @@
 # echo.proto.  The single service is the runner.
 #
 # Run locally:
-#   bun run test:integration:grpc
-#   bun run test:integration:grpc:teardown
+#   bun run test:integration:broker grpc
+#   bun run test:integration:broker:teardown grpc
 
 name: actor-ts-integration-grpc
 

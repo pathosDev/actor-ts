@@ -2,10 +2,11 @@ import { Lazy } from '../../util/Lazy.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { randomId } from '../../util/RandomString.js';
 import { wrapError } from '../../util/WrapError.js';
-import { makeKeyValidator } from '../storage/KeyValidator.js';
+import { makeKeyValidator, ObjectStorageWriteKeyRules } from '../storage/KeyValidator.js';
 import {
   ObjectStorageBackendError,
   ObjectStorageConcurrencyError,
+  resolveObjectStorageIdentity,
   type ObjectFetched,
   type ObjectInfo,
   type ObjectStorageBackend,
@@ -17,6 +18,7 @@ import {
   FilesystemObjectStorageOptionsValidator,
 } from './FilesystemObjectStorageOptions.js';
 import type { FilesystemObjectStorageOptions, FilesystemObjectStorageOptionsType } from './FilesystemObjectStorageOptions.js';
+import type { StorageLocality } from '../StorageLocality.js';
 
 /**
  * Filesystem-backed `ObjectStorageBackend` — stores each object as a file
@@ -53,12 +55,26 @@ import type { FilesystemObjectStorageOptions, FilesystemObjectStorageOptionsType
  *    incorrect if a real writer is taking longer than `staleLockMs` for a
  *    single `put` — which shouldn't happen for the small payloads this
  *    backend targets.
+ *  - **Prefix-scoped `list`.**  A listing reads only the directory its
+ *    prefix names — everything up to the prefix's last `/` — so its cost
+ *    tracks the matched subtree rather than the number of objects in the
+ *    store.  Walking from the root and filtering afterwards made a snapshot
+ *    `loadLatest` read every *other* entity's directory, turning an O(1)
+ *    lookup into O(N) in the entity count (#746).  A positive `limit` stops
+ *    the walk rather than trimming a finished array.
  *  - **Atomic body writes.**  `put` writes to a per-process tmp file
  *    (`<key>.tmp.<pid>.<random>`), then renames over the target.  On
  *    POSIX `rename(2)` is atomic on the same filesystem; on Windows
  *    `MoveFileEx(MOVEFILE_REPLACE_EXISTING)` provides equivalent
  *    behaviour.  Concurrent readers always see either the old body or
  *    the new body, never a truncated buffer.
+ *  - **Containment is checked twice, at two different layers.**
+ *    {@link assertSafeKey} and {@link assertWithinRoot} are string work and
+ *    cannot see a symlink; {@link realPathWithinRoot} canonicalises through
+ *    the OS and is what actually confines an operation to the root.  The
+ *    guarantee it gives is bounded — see its JSDoc — and the bound is stated
+ *    there rather than glossed over, because a confinement comment that
+ *    overclaims is what #748 was about.
  */
 
 /**
@@ -73,13 +89,14 @@ import type { FilesystemObjectStorageOptions, FilesystemObjectStorageOptionsType
  * Node's `path.join` interprets it as a full path and effectively
  * ignores the root prefix on POSIX).
  *
- * This helper is the front-line syntactic check; {@link assertWithin
- * Root} below is the defense-in-depth post-resolve check.
+ * This helper is the front-line syntactic check.  {@link assertWithinRoot}
+ * below is the lexical backstop for the same class of input, and
+ * {@link realPathWithinRoot} is the filesystem-level one — the only of the
+ * three that can see a symlink.
  */
 /**
- * Filesystem key-validation rules.  Same checks the pre-refactor
- * `assertSafeKey` enforced — exported so other FS-style backends
- * (S3, GCS) can reuse or extend.
+ * Filesystem key-validation rules for the **read** paths — `get`, `delete`,
+ * `list`.  Same checks the pre-refactor `assertSafeKey` enforced.
  *
  * See `src/persistence/storage/KeyValidator.ts` for the factory.
  */
@@ -91,30 +108,167 @@ const FilesystemKeyRules = {
   rejectRelativeTraversal: true,
 } as const;
 
+/**
+ * Filesystem key-validation rules for `put`, i.e. {@link FilesystemKeyRules}
+ * plus `rejectControlChars` (#747).
+ *
+ * POSIX filenames may legally contain 0x01–0x1F, so before this rule the
+ * backend wrote such a key without complaint — while the master-key rotation
+ * sweep, which validates with `rejectControlChars` on, refused it on the way
+ * back out.  That gap is the actual defect: the framework could write a key
+ * its own rotation tool would not process, so those bodies stayed under the
+ * retired key while the sweep reported success.  (NTFS rejects the same range
+ * outright, which is why the gap only ever opened on POSIX.)
+ *
+ * Write path only.  `get` and `delete` keep the looser set on purpose:
+ * tightening them would not reject a new bad key, it would strand an object
+ * already on disk — unreadable and undeletable through this backend — for a
+ * key the previous version wrote happily.
+ */
+const FilesystemWriteKeyRules = {
+  ...FilesystemKeyRules,
+  ...ObjectStorageWriteKeyRules,
+} as const;
+
 const assertSafeKey = makeKeyValidator(FilesystemKeyRules);
+const assertSafeWriteKey = makeKeyValidator(FilesystemWriteKeyRules);
 
 /**
- * Defense-in-depth post-`path.resolve` check that the computed
- * absolute path stays under the configured root.  Catches edge cases
- * the syntactic {@link assertSafeKey} might miss (e.g., URL-encoded
- * traversal, symlinks resolved at OS level).
+ * Lexical containment: does `candidate` normalise to `root` itself, or to
+ * something beneath it?
+ *
+ * Shared by both containment call sites so the comparison cannot drift
+ * between them — the pre-write lexical check in {@link assertWithinRoot} and
+ * the post-`realpath` check in {@link realPathWithinRoot}.
  */
-function assertWithinRoot(
-  pathMod: { resolve: (...p: string[]) => string; readonly sep: string },
-  root: string,
-  fullPath: string,
-): void {
-  const normRoot = pathMod.resolve(root);
-  const normFull = pathMod.resolve(fullPath);
-  if (normFull !== normRoot && !normFull.startsWith(normRoot + pathMod.sep)) {
+function isWithinRoot(pathMod: FsModule['path'], root: string, candidate: string): boolean {
+  const normalizedRoot = pathMod.resolve(root);
+  const normalizedCandidate = pathMod.resolve(candidate);
+  return normalizedCandidate === normalizedRoot
+    || normalizedCandidate.startsWith(normalizedRoot + pathMod.sep);
+}
+
+/**
+ * Lexical containment check on `path.join(dir, key)`, run before any write.
+ *
+ * **What it does not do.**  This JSDoc used to claim the check "catches edge
+ * cases the syntactic `assertSafeKey` might miss (e.g., URL-encoded
+ * traversal, symlinks resolved at OS level)".  Both examples were false, and
+ * saying so is the substance of #748: `path.resolve` is a pure string
+ * operation.  It collapses `.` and `..` textually and makes the path
+ * absolute, and that is all — it does not URL-decode (measured:
+ * `path.posix.resolve('/root', '%2e%2e/secret')` is `'/root/%2e%2e/secret'`),
+ * and it never opens anything, so it cannot dereference a link.  Everything
+ * the filesystem resolves at open time is {@link realPathWithinRoot}'s job.
+ *
+ * **And it cannot currently fire at all.**  {@link assertSafeKey} (and its
+ * strict superset {@link assertSafeWriteKey}) already reject the complete set
+ * of inputs that could make `path.join(dir, key)` leave `dir` — absolute
+ * paths, drive-letter prefixes, and `..` segments — and `path.join` cannot
+ * escape without one of them.  So the `/path-traversal/` rejections in the
+ * suite are satisfied by the key validator, whose message carries the same
+ * phrase, and say nothing about this function.  It stays as a structural
+ * backstop for the day those rules are relaxed or a new caller reaches
+ * `path.join` without them; it is not load-bearing today, and the previous
+ * text implying otherwise is exactly what stopped anyone from adding the
+ * check that is.
+ */
+function assertWithinRoot(pathMod: FsModule['path'], root: string, fullPath: string): void {
+  if (!isWithinRoot(pathMod, root, fullPath)) {
     throw new ObjectStorageBackendError(
-      `path-traversal blocked: resolved path "${normFull}" escapes root "${normRoot}"`,
+      `path-traversal blocked: resolved path "${pathMod.resolve(fullPath)}" ` +
+      `escapes root "${pathMod.resolve(root)}"`,
     );
   }
 }
 
+/**
+ * Canonicalise `candidate` — every component dereferenced by the OS — or
+ * `null` when there is nothing at that name.
+ *
+ * Only `ENOENT` and `ENOTDIR` become `null`.  Those two mean the path, or a
+ * component of it, is genuinely absent, which every caller here already
+ * treats as "no object stored under this name" (a dangling link lands here
+ * too, and reads as absent for the same reason `readFile` would have).
+ * Anything else — `EACCES`, `ELOOP`, `EIO` — is surfaced, because a
+ * containment check that reads an unreadable path as "absent" has quietly
+ * turned itself off.
+ */
+async function realPathOrNull(
+  fs: FsModule['fs'],
+  candidate: string,
+  key: string,
+): Promise<string | null> {
+  try {
+    return await fs.realpath(candidate);
+  } catch (e) {
+    const code = (e as { code?: string })?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+    throw wrapError(e, ObjectStorageBackendError, `filesystem realpath failed for ${key}`);
+  }
+}
+
+/**
+ * Filesystem-level containment for one hop: `candidate` is resolved through
+ * the OS — every component, including a link at the final one — and the
+ * result must be `realRoot` or sit beneath it.  Returns the canonical path,
+ * or `null` when `candidate` does not resolve at all.
+ *
+ * This is the check the lexical one cannot be.  A link planted at any segment
+ * of a key — `<root>/snapshots/tenant-1` pointing at `/home/app/.ssh` — moves
+ * the write out of the root while every string comparison still says it is
+ * inside, and `mkdir(recursive)` traverses such a link happily.  `realpath`
+ * is what sees it.
+ *
+ * Two bounds on the claim, both deliberate:
+ *
+ *  - **It narrows the race, it does not close it.**  A link can be planted
+ *    between this call and the `rename` or `readFile` that follows.  Closing
+ *    that needs `O_NOFOLLOW` or `openat`; `node:fs/promises` exposes neither
+ *    portably, and `O_NOFOLLOW` does not exist on Windows at all.  So the
+ *    guarantee is "a link already in place is refused", not "a link can never
+ *    win".
+ *  - **`realRoot` must already be canonical.**  A root that is itself a
+ *    symlink is legitimate and common (`/var/lib/app -> /mnt/data`), so the
+ *    comparison is against the *resolved* root; comparing against the
+ *    configured spelling would reject every write into such a root.
+ */
+async function realPathWithinRoot(
+  fs: FsModule['fs'],
+  pathMod: FsModule['path'],
+  realRoot: string,
+  candidate: string,
+  key: string,
+): Promise<string | null> {
+  const realCandidate = await realPathOrNull(fs, candidate, key);
+  if (realCandidate === null) return null;
+  if (!isWithinRoot(pathMod, realRoot, realCandidate)) {
+    throw new ObjectStorageBackendError(
+      `path-traversal blocked for key ${key}: "${candidate}" resolves to ` +
+      `"${realCandidate}", outside root "${realRoot}"`,
+    );
+  }
+  return realCandidate;
+}
+
 export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
+  /**
+   * A directory on this machine's disk — `'node-local'` by default.  The
+   * multi-process safety above is per-machine (advisory file locks); a
+   * genuinely shared mount may declare `'shared'` after construction, the
+   * same escape hatch the in-memory stores carry (#1356).
+   */
+  storageLocality: StorageLocality = 'node-local';
+  private mintedStorageIdentity: string | null = null;
   private readonly dir: string;
+
+  /** Identity of the directory — every store over this backend shares it (#1358). */
+  async storageIdentity(): Promise<string> {
+    if (this.mintedStorageIdentity === null) {
+      this.mintedStorageIdentity = await resolveObjectStorageIdentity(this);
+    }
+    return this.mintedStorageIdentity;
+  }
   private readonly lockTimeoutMs: number;
   private readonly staleLockMs: number;
 
@@ -127,19 +281,73 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
   }
 
   async put(key: string, body: Uint8Array, options: PutOptions = {}): Promise<{ etag: string }> {
-    assertSafeKey(key);
+    assertSafeWriteKey(key);
     const { fs, path } = await fsLazy.get();
     const fullPath = path.join(this.dir, key);
     assertWithinRoot(path, this.dir, fullPath);
     const lockPath = fullPath + '.lock';
+    const parentDirectory = path.dirname(fullPath);
 
     // Parent directory must exist before lock acquisition (the lock file
     // lives there).  `mkdir(recursive)` is idempotent across processes,
     // so concurrent puts to a fresh dir don't race here.
-    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+    await fs.mkdir(parentDirectory, { recursive: true });
+
+    // …and it must be the directory it claims to be.  Placed before the lock
+    // is taken, so a refused key never leaves a `<key>.lock` outside the root
+    // either — that would be an arbitrary-file *create* even though no body
+    // ever lands.
+    //
+    // One residual, written down rather than left for the next reader to
+    // discover: `mkdir(recursive)` has already run by this point, so a link
+    // planted at a key segment can still cause *empty directories* to appear
+    // under its target before the write is refused.  Checking first instead
+    // would not remove it — the deepest existing ancestor is what a check can
+    // canonicalise, and `mkdir` creates everything below it either way.
+    const realRoot = await this.requireCanonicalRoot(fs, key, 'put');
+    await realPathWithinRoot(fs, path, realRoot, parentDirectory, key);
 
     const release = await acquireLock(fs, lockPath, this.lockTimeoutMs, this.staleLockMs);
     try {
+      // `<key>` itself is a second hop, and the parent's canonical path does
+      // not cover it — the two checks answer different questions and neither
+      // subsumes the other.  The parent governs where the body *lands*:
+      // `rename` replaces the destination entry and never follows a link
+      // sitting at it, so the write goes wherever the parent really is.  This
+      // one governs what the CAS read below *opens*, and `readFile` does
+      // follow a link at the final component, exactly as it does in `get`.
+      // Without it a link planted at `<key>` and pointing out of the root was
+      // read and hashed, and the mismatch message handed the caller the
+      // target's exact byte length and its FNV-1a — an oracle for a file this
+      // backend is documented as unable to reach.  `ifNoneMatch: '*'` leaked
+      // the coarser half of the same fact.
+      //
+      // **Inside the lock, unlike the parent check, and that is load-bearing
+      // on Windows.**  Canonicalising a path opens a handle to it, and
+      // `MoveFileEx(MOVEFILE_REPLACE_EXISTING)` refuses with `EPERM` while
+      // another handle is open on the destination.  Run before the lock, this
+      // hop is one every contending writer performs on the *same* name the
+      // lock winner is about to rename over — so the winner's own `put` starts
+      // failing with `filesystem put-write failed … EPERM`, on a key with no
+      // link anywhere near it.  Measured on this file's 10-way CAS race, 60
+      // attempts per variant: 0/60 before the hop existed, 8/60 with it before
+      // the lock, 0/60 with it here.
+      //
+      // Under the lock it is also the *narrower* check, not merely the
+      // survivable one: the window this class of guard cannot close is the gap
+      // between canonicalising and opening, and here that gap is two
+      // statements rather than a lock acquisition — up to `lockTimeoutMs`.
+      // What the parent check needs from its own position is unchanged: it is
+      // what makes `<key>.lock` provably land inside the root, so it has to
+      // precede the file that proves it.
+      //
+      // `null` is the ordinary first write: nothing at that name to
+      // canonicalise, and nothing for `readFile` to open either.  Note this
+      // resolves against the *resolved* root, not the configured spelling — a
+      // root that is itself a link is legitimate, and comparing against the
+      // spelling would pass every first write and refuse every overwrite.
+      await realPathWithinRoot(fs, path, realRoot, fullPath, key);
+
       // Read current state from disk — disk is canonical, no in-memory
       // shadow that could disagree with another process's writes.
       let currentEtag: string | undefined;
@@ -186,15 +394,32 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
       }
 
       // Metadata sidecar.  Best-effort — a crash between rename(body) and
-      // writeFile(meta) leaves the body without metadata, which `get`
-      // tolerates by treating the sidecar as optional.
+      // the sidecar's own rename leaves the body without metadata, which
+      // `get` tolerates by treating the sidecar as optional.
+      //
+      // Written through the same temp+rename as the body, and for the second
+      // of that pattern's two reasons rather than the first: this name is
+      // fully deterministic, so unlike the CSPRNG temp path it *can* be
+      // pre-planted as a symlink, and `writeFile`'s default `'w'` flag
+      // (`O_CREAT|O_TRUNC`) follows one and truncates its target.  `rename`
+      // replaces the destination entry itself and never follows a link
+      // sitting there, so a planted link is overwritten instead.  `{ flag:
+      // 'wx' }` — what #748 originally suggested — cannot be used here:
+      // `get` reads this exact name back, so a re-put of the same key must
+      // legitimately replace it, and an exclusive create would fail every
+      // time.
       if (options.contentEncoding || options.contentType) {
         const meta = JSON.stringify({
           contentEncoding: options.contentEncoding,
           contentType: options.contentType,
         });
-        try { await fs.writeFile(fullPath + '.meta.json', meta); }
-        catch (e) {
+        const metaPath = fullPath + '.meta.json';
+        const metaTmpPath = `${metaPath}.tmp.${process.pid}.${randomId(12)}`;
+        try {
+          await fs.writeFile(metaTmpPath, meta);
+          await fs.rename(metaTmpPath, metaPath);
+        } catch (e) {
+          try { await fs.unlink(metaTmpPath); } catch { /* may not exist */ }
           throw wrapError(e, ObjectStorageBackendError, `filesystem put-meta failed for ${key}`);
         }
       }
@@ -210,6 +435,16 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
     const { fs, path } = await fsLazy.get();
     const fullPath = path.join(this.dir, key);
     assertWithinRoot(path, this.dir, fullPath);
+    // The read path needs the same containment as the write path, and one
+    // hop more: `readFile` follows a link at the *final* component, so
+    // `<key>` itself being a link out of the root leaks the target's bytes.
+    // Resolving `fullPath` covers that and the linked-parent case in one
+    // call, since `realpath` walks every component.  An unresolvable root
+    // means nothing is stored at all — the same `none` the missing-file
+    // branch below returns.
+    const realRoot = await realPathOrNull(fs, this.dir, key);
+    if (realRoot === null) return none;
+    if ((await realPathWithinRoot(fs, path, realRoot, fullPath, key)) === null) return none;
     let body: Uint8Array;
     let stat;
     try {
@@ -221,12 +456,20 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
     }
     let contentEncoding: string | undefined;
     let contentType: string | undefined;
-    try {
-      const metaRaw = await fs.readFile(fullPath + '.meta.json', 'utf8');
-      const meta = JSON.parse(metaRaw) as { contentEncoding?: string; contentType?: string };
-      contentEncoding = meta.contentEncoding;
-      contentType = meta.contentType;
-    } catch { /* no metadata sidecar → leave undefined */ }
+    // The sidecar is a hop of its own: `<key>` can canonicalise inside the
+    // root while `<key>.meta.json` is a link out of it.  An escaping sidecar
+    // is refused rather than skipped — a planted link inside the storage root
+    // is a compromise indicator, not a missing-metadata case, and swallowing
+    // it here would leave the only symptom in a `catch {}`.
+    const metaPath = fullPath + '.meta.json';
+    if ((await realPathWithinRoot(fs, path, realRoot, metaPath, key)) !== null) {
+      try {
+        const metaRaw = await fs.readFile(metaPath, 'utf8');
+        const meta = JSON.parse(metaRaw) as { contentEncoding?: string; contentType?: string };
+        contentEncoding = meta.contentEncoding;
+        contentType = meta.contentType;
+      } catch { /* unreadable or malformed sidecar → leave undefined */ }
+    }
     return some({
       body,
       etag: computeEtag(body),
@@ -242,11 +485,18 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
     const fullPath = path.join(this.dir, key);
     assertWithinRoot(path, this.dir, fullPath);
     const lockPath = fullPath + '.lock';
+    const parentDirectory = path.dirname(fullPath);
 
     // Lock so a concurrent put doesn't see a half-deleted state mid-CAS.
     // We may be deleting a never-written key (idempotent), but the
     // serialization vs. concurrent puts still matters.
-    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+    await fs.mkdir(parentDirectory, { recursive: true });
+    // Only the parent needs canonicalising here: `unlink` does not follow a
+    // link at the final component, so `delete('<key>')` where `<key>` is a
+    // link removes the link and leaves its target alone.  A linked *parent*
+    // is the reachable half, and would unlink a file outside the root.
+    const realRoot = await this.requireCanonicalRoot(fs, key, 'delete');
+    await realPathWithinRoot(fs, path, realRoot, parentDirectory, key);
     const release = await acquireLock(fs, lockPath, this.lockTimeoutMs, this.staleLockMs);
     try {
       try { await fs.unlink(fullPath); }
@@ -268,17 +518,65 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
     if (options.prefix !== '') assertSafeKey(options.prefix);
     const { fs, path } = await fsLazy.get();
     const root = this.dir;
-    // Prefix may include a directory portion.  We walk from root and filter.
+    // The prefix's directory portion — see `listStartDirectory` below for why
+    // the split is at the last `/`.  Starting the walk there rather than at
+    // the root is the whole of #746.
+    const startDirectory = listStartDirectory(options.prefix);
+    // Same defense-in-depth check `put` / `get` / `delete` run.  It is new
+    // here because until the walk was seeded from the prefix, `list` never
+    // joined caller-supplied text into a path at all.
+    //
+    // The seed is also the one hop of this walk a symlink can move, so it
+    // gets the filesystem-level check too (#748): `readdir` resolves the
+    // directory it is handed, links included, so a prefix naming a linked
+    // segment would enumerate the link's target — names, sizes and mtimes
+    // from outside the root.  Before the walk was seeded from the prefix
+    // that was unreachable, which is why the check arrives with the seed.
+    //
+    // Nothing *below* the seed needs one.  A `withFileTypes` dirent describes
+    // the entry itself and not what it points at — for a symlink `isFile()`
+    // and `isDirectory()` are both false — so a linked subdirectory is never
+    // descended into and a linked file is never `stat`ed.  That also fails
+    // closed on a filesystem answering `DT_UNKNOWN` (some network and FUSE
+    // mounts), where every `isX()` is false and entries drop out of the
+    // listing rather than being followed.
+    if (startDirectory !== '') {
+      assertWithinRoot(path, root, path.join(root, startDirectory));
+      const realRoot = await realPathOrNull(fs, root, `list prefix ${options.prefix}`);
+      // An unresolvable root has nothing to list — the same empty answer the
+      // walk's own ENOENT branch gives.
+      if (realRoot === null) return [];
+      await realPathWithinRoot(
+        fs, path, realRoot, path.join(root, startDirectory), `list prefix ${options.prefix}`,
+      );
+    }
+    // Only a positive limit can prune the walk.  `0` and negatives keep
+    // whatever the `slice` below has always done with them.
+    const stopAt = options.limit !== undefined && options.limit > 0 ? options.limit : undefined;
     const out: ObjectInfo[] = [];
     const walk = async (rel: string): Promise<void> => {
       const full = path.join(root, rel);
-      let entries;
+      let entries: DirectoryEntry[];
       try { entries = await fs.readdir(full, { withFileTypes: true }); }
       catch (e) {
-        if ((e as { code?: string })?.code === 'ENOENT') return;
+        const code = (e as { code?: string })?.code;
+        // A prefix naming a directory nothing ever wrote to is an empty
+        // listing, not a fault — reachable only now that the walk starts at
+        // that directory instead of at the always-present root.  ENOTDIR is
+        // the same case one level up: a prefix whose directory portion is an
+        // ordinary file, which the root-anchored walk used to drop silently
+        // via the `startsWith` filter.
+        if (code === 'ENOENT' || code === 'ENOTDIR') return;
         throw e;
       }
-      for (const ent of entries) {
+      // Ordering only matters when the walk may stop early: the early exit
+      // keeps whichever entries it reached first, so depth-first order has to
+      // agree with the ascending-by-key order the contract promises.  Without
+      // a limit the walk is exhaustive and the sort below is authoritative,
+      // so we skip the per-directory sort entirely.
+      const ordered = stopAt === undefined ? entries : sortEntriesByKeyOrder(entries, rel);
+      for (const ent of ordered) {
+        if (stopAt !== undefined && out.length >= stopAt) return;
         const childRel = rel ? `${rel}/${ent.name}` : ent.name;
         if (ent.isDirectory()) {
           await walk(childRel);
@@ -293,7 +591,7 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
         }
       }
     };
-    await walk('');
+    await walk(startDirectory);
     out.sort((a, b) => a.key.localeCompare(b.key));
     return options.limit ? out.slice(0, options.limit) : out;
   }
@@ -301,11 +599,44 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
   async close(): Promise<void> {
     /* No in-memory state to clear — disk is canonical. */
   }
+
+  /**
+   * The configured root with every symlink dereferenced, for a caller that
+   * has just guaranteed the root exists (`put` and `delete` both `mkdir` the
+   * key's parent, which creates the root on the way).  A `null` from
+   * {@link realPathOrNull} therefore means the root was removed underneath
+   * the operation, and writing blind into whatever now sits at that name is
+   * exactly what the containment check exists to prevent — so it is refused
+   * rather than skipped.
+   *
+   * `get` and `list` do not use this: for a read, an absent root simply means
+   * nothing is stored, so they take the `null` and answer empty.
+   */
+  private async requireCanonicalRoot(
+    fs: FsModule['fs'],
+    key: string,
+    operation: string,
+  ): Promise<string> {
+    const realRoot = await realPathOrNull(fs, this.dir, key);
+    if (realRoot === null) {
+      throw new ObjectStorageBackendError(
+        `filesystem ${operation} failed for ${key}: root "${this.dir}" does not resolve`,
+      );
+    }
+    return realRoot;
+  }
 }
 
 /* ----------------------------- internals -------------------------------- */
 
-type FsModule = {
+/** The subset of `node:fs`'s `Dirent` that `list`'s directory walk consumes. */
+export interface DirectoryEntry {
+  readonly name: string;
+  isFile(): boolean;
+  isDirectory(): boolean;
+}
+
+export type FsModule = {
   fs: {
     mkdir(p: string, opts?: { recursive?: boolean }): Promise<void>;
     writeFile(
@@ -316,11 +647,10 @@ type FsModule = {
     readFile(p: string): Promise<Buffer>;
     readFile(p: string, encoding: 'utf8'): Promise<string>;
     stat(p: string): Promise<{ size: number; mtime: Date }>;
-    readdir(p: string, opts: { withFileTypes: true }): Promise<Array<{
-      name: string; isFile(): boolean; isDirectory(): boolean;
-    }>>;
+    readdir(p: string, opts: { withFileTypes: true }): Promise<DirectoryEntry[]>;
     unlink(p: string): Promise<void>;
     rename(oldPath: string, newPath: string): Promise<void>;
+    realpath(p: string): Promise<string>;
   };
   path: {
     join(...parts: string[]): string;
@@ -332,7 +662,21 @@ type FsModule = {
 
 interface Buffer extends Uint8Array {}
 
-const fsLazy: Lazy<Promise<FsModule>> = Lazy.of(async () => {
+/**
+ * The backend's single route to `node:fs/promises` / `node:path`, memoised
+ * for the process lifetime.
+ *
+ * Exported — but deliberately *not* re-exported from `src/persistence/index.ts`
+ * — so a test can seed it via `Lazy.setOverride` with a counting wrapper.  The
+ * property #746 is about is how many directories a prefixed `list` reads, and
+ * that is invisible in the value `list` returns: two implementations with
+ * wildly different cost hand back byte-identical arrays.  Counting the reads
+ * is the only way to assert it, and `mock.module('node:fs/promises', …)` is not
+ * an option — replacing that module out from under Bun's own test runner hangs
+ * the run before the first test reports.  Same seam shape as
+ * `websocketClientConstructor` in `src/http/websocket/WebsocketConstructor.ts`.
+ */
+export const fsLazy: Lazy<Promise<FsModule>> = Lazy.of(async () => {
   const fsName = 'node:fs/promises';
   const pathName = 'node:path';
   const fs = (await import(fsName)) as FsModule['fs'];
@@ -341,12 +685,84 @@ const fsLazy: Lazy<Promise<FsModule>> = Lazy.of(async () => {
 });
 
 /**
+ * The deepest directory guaranteed to hold every key `prefix` can match —
+ * the prefix up to its last `/`, as canonical path segments.
+ *
+ * Seeding `list`'s walk here instead of at the storage root is the whole of
+ * #746: the listing then costs the subtree the prefix names rather than the
+ * entire store, which is what took a snapshot `loadLatest` from O(1) in the
+ * entity count to O(N) — every other entity's directory got read to answer a
+ * question about one.
+ *
+ * The split is at the **last** `/` because the trailing piece is a *partial*
+ * segment, not a directory: `mine/e` still has to match `mine/e0/…` and
+ * `mine/e10/…` alike, so `mine` is the deepest safe entry point and the
+ * `startsWith` filter in the walk remains the correctness backstop.
+ *
+ * Empty and `.` segments are dropped so the relative paths the walk builds
+ * stay canonical — the single-slash form a root-anchored walk produced, and
+ * the form every key already on disk was written under.  A prefix carrying
+ * either can match no such key anyway (`a//b` would need a `//` in the key),
+ * so narrowing past it only skips work that could never yield a hit.  `..`
+ * never reaches here — {@link assertSafeKey} rejects it first.
+ */
+function listStartDirectory(prefix: string): string {
+  const lastSlash = prefix.lastIndexOf('/');
+  if (lastSlash === -1) return '';
+  return prefix
+    .slice(0, lastSlash)
+    .split('/')
+    .filter((segment) => segment !== '' && segment !== '.')
+    .join('/');
+}
+
+/**
+ * Order one directory's entries so a depth-first walk emits keys in the same
+ * ascending order `list` sorts by — the precondition the early exit under
+ * `limit` needs, since it keeps whichever entries the walk reached first.
+ *
+ * A directory sorts under its own name plus a trailing `/`, because it stands
+ * for every key beneath it and those all carry that separator.  Without it the
+ * order is wrong wherever a directory and a file share a stem: raw names put
+ * `d` before `d.txt`, while the keys `d/x` and `d.txt` sort the other way
+ * round (`.` precedes `/`), so a `limit: 1` would have returned `d/x` where
+ * the full listing starts with `d.txt`.
+ *
+ * Standing in a directory for its subtree this way assumes the comparator is
+ * prefix-monotone — that `D/` sorting before a sibling file `F` implies every
+ * `D/…` beneath it does too.  `localeCompare` is not lexicographic and does
+ * not guarantee that in general: a name holding a character that collates
+ * *primary-equal* to `/`, such as U+FF0F FULLWIDTH SOLIDUS, makes `D/` a
+ * collation-prefix of `F` and the two orders can then disagree.  Measured over
+ * every printable-ASCII sibling pair (~70k comparisons) there is no such
+ * disagreement, so the exit is exact for any key a caller is plausibly using;
+ * the exotic case still returns the right *number* of entries, correctly
+ * sorted, just not necessarily the same subset the unlimited listing starts
+ * with.  Making it exact everywhere would mean changing the comparator `list`
+ * sorts by — a contract-wide ordering decision affecting the S3 backend too,
+ * not something this walk may settle on its own.
+ */
+function sortEntriesByKeyOrder(entries: DirectoryEntry[], rel: string): DirectoryEntry[] {
+  const keyed = entries.map((entry) => {
+    const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+    return { entry, sortKey: entry.isDirectory() ? `${childRel}/` : childRel };
+  });
+  keyed.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+  return keyed.map((k) => k.entry);
+}
+
+/**
  * Pattern emitted by `put`'s temp-file scheme — recognised by `list` to skip.
  *
  * Must be kept in lockstep with the `tmpPath` template in `put`: the suffix
  * moved to `randomId` when the predictable `Math.random()` one was replaced,
  * and this pattern did not follow, so for one release window `list` reported a
  * crashed writer's partial file as a real object (#909).
+ *
+ * It covers *both* temp writes, and that is why the metadata sidecar's temp
+ * name is `<key>.meta.json.tmp.<pid>.<random>` and not some third shape: the
+ * `.meta.json` suffix rule alone would not match it, this rule does, and one
+ * pattern that both writers satisfy is one fewer thing to keep in lockstep.
  */
 const TMP_FILE_RE = /\.tmp\.\d+\.[0-9a-f]+$/;
 

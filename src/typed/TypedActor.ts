@@ -1,8 +1,9 @@
 import { match } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
-import { Directive } from '../Supervision.js';
-import { Terminated } from '../SystemMessages.js';
+import { Directive, RestartBudget } from '../Supervision.js';
+import { DeadLetter, Terminated } from '../SystemMessages.js';
+import { LocalActorRef } from '../internal/LocalActorRef.js';
 import {
   StashOverflowError,
   type TimerScheduler,
@@ -56,6 +57,43 @@ type ConcreteInterceptBehavior<T> = {
 type ResolvedBehavior<T> = ConcreteBehavior<T> | SameBehavior;
 
 /**
+ * One `Behaviors.supervise` wrapper the actor is currently running under.
+ *
+ * A *stack* of these replaces the single slot the interpreter used to hold, and
+ * that is what makes nesting work at all: `resolve` walks the wrapper chain in
+ * one loop, so the innermost `supervise` overwrote every outer one and an outer
+ * strategy was unreachable on every path — including an inner
+ * `Directive.Escalate`, which is the one path a layered design would consult it
+ * on (#638, #928).
+ */
+type SupervisionScope<T> = {
+  readonly node: SuperviseBehavior<T>;
+  /**
+   * Restart allowance for this scope's strategy.
+   *
+   * Owned per scope rather than recomputed per failure, because the whole point
+   * of a budget is that it *accumulates* across the restarts it counts — and a
+   * typed restart never leaves this instance, so nothing else would carry the
+   * tally.
+   */
+  readonly budget: RestartBudget;
+  /**
+   * How many interceptor layers of `current` sit *outside* this scope.
+   *
+   * A restart re-resolves the wrapper's child, which rebuilds every interceptor
+   * that lives *inside* it — so only the ones above it still have to be put
+   * back.  Counted while resolving because that is the only place the nesting is
+   * visible: once resolved, an interceptor around `supervise` and one under it
+   * are the same node.
+   *
+   * Mutable, unlike its siblings: the same wrapper re-adopted from a different
+   * position sits at a different depth, and it is the depth of the *current*
+   * resolve that a later restart has to undo.
+   */
+  interceptorDepth: number;
+};
+
+/**
  * Runtime host for a Behavior<T>.  Bridges the typed DSL to the OO Actor —
  * the actor's `onReceive` delegates into whichever Behavior is currently
  * active, and transitions follow whatever the handler returns.
@@ -65,17 +103,18 @@ type ResolvedBehavior<T> = ConcreteBehavior<T> | SameBehavior;
  */
 export class TypedActor<T> extends Actor<T> {
   private current!: ConcreteBehavior<T>;
-  private activeSupervise: SuperviseBehavior<T> | null = null;
   /**
-   * How many interceptor layers of `current` sit *outside* `activeSupervise`.
+   * Every `supervise` wrapper the actor is running under, outermost first.
    *
-   * A restart re-resolves `supervise.child`, which rebuilds every interceptor
-   * that lives *inside* the wrapper — so only the ones above it still have to
-   * be put back.  Counted while resolving because that is the only place the
-   * nesting is visible: once resolved, an interceptor around `supervise` and
-   * one under it are the same node.
+   * Nothing pops on a plain transition, and that is the documented contract
+   * rather than an omission: a wrapper contributes its side effect once and the
+   * framework remembers the strategy for the actor's lifetime, exactly the way
+   * `Behaviors.intercept` stays installed across the transitions of the
+   * behavior it wraps.  `Behaviors.stopped` is the way out of a supervision
+   * scope; a transition is not.  Only a restart shortens the stack, and only
+   * below the scope that decided it.
    */
-  private superviseInterceptorDepth = 0;
+  private readonly supervisionScopes: SupervisionScope<T>[] = [];
   private readonly stashBuffers: StashBufferImplementation<T>[] = [];
   private typedContext!: TypedActorContext<T>;
   private signalHandler: ((context: TypedActorContext<T>, signal: Signal) => Behavior<T>) | null = null;
@@ -131,22 +170,56 @@ export class TypedActor<T> extends Actor<T> {
   }
 
   override postStop(): void {
-    if (this.signalHandler) {
-      try {
-        const next = this.signalHandler(this.typedContext, { kind: 'post-stop' });
-        void next; // we are stopping anyway — nothing to transition into.
-      } catch { /* swallow */ }
-    }
+    this.notifySignalHandler({ kind: 'post-stop' });
+    // After the handler, so a `post-stop` that still calls `unstashAll()`
+    // wins over the drain — and so the ordering matches `ActorCell.postStop`,
+    // which dead-letters its own stash once `Actor.postStop` has returned.
+    this.deadLetterStashBuffers();
   }
 
   override preRestart(reason: Error, _message?: T): void {
-    if (this.signalHandler) {
-      try { this.signalHandler(this.typedContext, { kind: 'pre-restart', reason }); }
-      catch { /* swallow */ }
-    }
+    this.notifySignalHandler({ kind: 'pre-restart', reason });
+    this.deadLetterStashBuffers();
   }
 
   /* ---------------- internal ---------------- */
+
+  /**
+   * Hand a terminal signal to the user's handler, if one is registered.
+   *
+   * Whatever it returns is discarded: both callers sit on a path where this
+   * instance is going away, so there is nothing to transition into.  A throw
+   * is swallowed for the same reason — failing while stopping would only mask
+   * why the actor was stopping.
+   */
+  private notifySignalHandler(signal: Signal): void {
+    if (!this.signalHandler) return;
+    try { this.signalHandler(this.typedContext, signal); }
+    catch { /* swallow — see above */ }
+  }
+
+  /**
+   * Send whatever the typed stash buffers still hold to dead letters.
+   *
+   * The typed counterpart of `ActorCell.deadLetterStash`, and it has to be a
+   * counterpart rather than a delegation: these buffers live on this
+   * instance, not in the cell's `_stashBuffer`, so the cell's own drain never
+   * sees them.  Until this existed they were simply garbage-collected on both
+   * the stop and the restart path (#639) — the worst shape a lost message can
+   * take, because a stashed message arrived *before* everything still queued
+   * and is the one a sender is most likely waiting on.
+   *
+   * The dead letter cannot name the original sender the way the cell's can:
+   * `StashBuffer.stash(message)` takes any value, not necessarily the one
+   * being handled, so there is no one sender to attribute it to.
+   */
+  private deadLetterStashBuffers(): void {
+    for (const buffer of this.stashBuffers) {
+      for (const message of buffer.drain()) {
+        this.system.deadLetters.tell(new DeadLetter(message, null, this.self));
+      }
+    }
+  }
 
   /**
    * Run one message against an already-resolved behavior and answer what its
@@ -245,33 +318,118 @@ export class TypedActor<T> extends Actor<T> {
     this.maybeHandleTerminalSentinel();
   }
 
+  /**
+   * Route a failure through the supervision scopes the actor is running under,
+   * innermost first.
+   *
+   * `true` says a scope dealt with it and `onReceive` can return; `false` says
+   * every scope declined, so the error is rethrown and the *cell's* supervisor
+   * gets it.  Declining is exactly what `Directive.Escalate` means — "hand this
+   * to my own supervisor" — and a spent restart budget amounts to the same
+   * answer, so both walk one scope further out.  Reaching the cell is therefore
+   * falling off the end of the stack rather than a shortcut past the wrappers in
+   * between, which is what a `supervise` around a `supervise` was before (#638,
+   * #928).  A non-nested actor has a one-entry stack and sees no change.
+   */
   private handleSupervise(err: Error): boolean {
-    if (!this.activeSupervise) return false;
-    const supervise = this.activeSupervise;
-    const directive = supervise.strategy.decider(err);
-    return match(directive)
-      .with(Directive.Resume, () => true)
-      .with(Directive.Restart, () => {
-        // Read the depth before resolving: a nested `supervise` inside the
-        // child would overwrite the field on the way through.
-        const outerLayers = this.superviseInterceptorDepth;
-        const resolved = this.resolve(supervise.child, outerLayers);
-        const restarted: ConcreteBehavior<T> = resolved.kind === 'same' ? { kind: 'empty' } : resolved;
-        // Interceptors installed *outside* the supervise wrapper are not part
-        // of what restarts — they keep observing the fresh behavior.  The ones
-        // *inside* it are, and `restarted` already carries them, so only the
-        // outer layers go back on; re-installing the whole stack would add a
-        // second copy of every inner interceptor on every restart.
-        this.current = this.reinstallInterceptors(this.current, restarted, outerLayers);
-        this.maybeHandleTerminalSentinel();
-        return true;
-      })
-      .with(Directive.Stop, () => {
-        this.context.stopSelf();
-        return true;
-      })
-      .with(Directive.Escalate, () => false)
+    for (let index = this.supervisionScopes.length - 1; index >= 0; index--) {
+      if (this.applyDirective(index, err)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Ask the scope at `index` what to do about `err` and do it; `false` when it
+   * declined and the next scope out should be tried.
+   */
+  private applyDirective(index: number, err: Error): boolean {
+    const scope = this.supervisionScopes[index];
+    return match(scope.node.strategy.decider(err))
+      .with(Directive.Resume, () => this.onResume())
+      .with(Directive.Restart, () => this.onRestart(index))
+      .with(Directive.Stop, () => this.onStop())
+      .with(Directive.Escalate, () => this.onEscalate())
       .exhaustive();
+  }
+
+  /** Keep the behavior and its state; the failing message is simply dropped. */
+  private onResume(): boolean { return true; }
+
+  /** Terminate the actor.  The failure ends here, so nothing is rethrown. */
+  private onStop(): boolean {
+    this.context.stopSelf();
+    return true;
+  }
+
+  /**
+   * Decline, so {@link handleSupervise} tries the next scope out and — past the
+   * outermost — rethrows to the cell.
+   */
+  private onEscalate(): boolean { return false; }
+
+  /**
+   * Restart the supervised behavior in place — unless the strategy's restart
+   * budget is spent, in which case the failure escalates.
+   *
+   * Escalating rather than stopping is the deliberate half of this: a typed
+   * `supervise` is not a separate supervisor actor, it is a wrapper *inside*
+   * the failing actor, so `stopSelf()` here would kill the actor silently and
+   * throw the error away — nobody upstream would ever learn why it went.
+   * Answering `false` is the same answer `Directive.Escalate` gives, so
+   * `onReceive` rethrows and the failure travels the ordinary supervision
+   * hierarchy: the cell's parent applies *its* strategy, logs, and gets to
+   * decide.  (`ActorCell.registerRestart` stops instead, but there the
+   * decision is made by a live parent that stays around to observe the
+   * `Terminated`; here there would be no such observer.)
+   *
+   * The two budgets then compose rather than compete: a restart the cell
+   * grants builds a *fresh* `TypedActor` via the factory, so this per-instance
+   * allowance starts over and the outer bound is the parent's strategy
+   * (10 restarts/minute by default).  A behavior that always throws therefore
+   * stops looping in place after `maxRetries`, and stops entirely once the
+   * parent's own budget runs out.
+   *
+   * With scopes nested, "escalates" gains one hop: a spent budget hands the
+   * failure to the next `supervise` out before it ever reaches the cell, which
+   * is the same treatment `Directive.Escalate` gets.
+   */
+  private onRestart(index: number): boolean {
+    const scope = this.supervisionScopes[index];
+    if (!scope.budget.registerRestart()) {
+      const { maxRetries, withinTimeRangeMs } = scope.node.strategy;
+      this.log.warn(
+        `Typed supervise restart budget exhausted (${maxRetries} in ${withinTimeRangeMs}ms) — escalating`,
+      );
+      return false;
+    }
+    // Read the depth before resolving: the re-resolve below re-enters this
+    // scope's own child, which can install nested scopes of its own.
+    const outerLayers = scope.interceptorDepth;
+    // Everything nested *inside* this scope is part of what restarts, so its
+    // scopes go with it and the re-resolve re-pushes whatever the child declares
+    // — with a full allowance, by the same reasoning that makes an interceptor
+    // inside the wrapper part of the fresh behavior.  This scope keeps the tally
+    // it just spent; truncating below it would restore unlimited restarts, the
+    // regression the budget exists to prevent.  And it happens *after* the
+    // budget check, so a refused restart leaves the stack untouched for the next
+    // scope out to decide on.
+    this.supervisionScopes.length = index + 1;
+    // A typed restart re-resolves `supervise.child` in place — the cell
+    // never sees it, so `onRecreate`'s drain does not run.  The stash
+    // still cannot carry over (the re-resolved behavior has none of the
+    // state that made those messages un-handleable), so it goes to dead
+    // letters here for exactly the reason it does there.
+    this.deadLetterStashBuffers();
+    const resolved = this.resolve(scope.node.child, outerLayers);
+    const restarted: ConcreteBehavior<T> = resolved.kind === 'same' ? { kind: 'empty' } : resolved;
+    // Interceptors installed *outside* the supervise wrapper are not part
+    // of what restarts — they keep observing the fresh behavior.  The ones
+    // *inside* it are, and `restarted` already carries them, so only the
+    // outer layers go back on; re-installing the whole stack would add a
+    // second copy of every inner interceptor on every restart.
+    this.current = this.reinstallInterceptors(this.current, restarted, outerLayers);
+    this.maybeHandleTerminalSentinel();
+    return true;
   }
 
   /**
@@ -304,8 +462,7 @@ export class TypedActor<T> extends Actor<T> {
           return { step: 'continue', next: n.factory(buffer) };
         })
         .with({ kind: 'supervise' }, (n): ResolveStep => {
-          this.activeSupervise = n;
-          this.superviseInterceptorDepth = interceptorDepth;
+          this.enterSupervisionScope(n, interceptorDepth);
           return { step: 'continue', next: n.child };
         })
         // The one wrapper that does not collapse: resolve what it wraps (its
@@ -315,7 +472,18 @@ export class TypedActor<T> extends Actor<T> {
           step: 'done', final: wrapIntercepted(n.interceptor, this.resolve(n.inner, interceptorDepth + 1)),
         }))
         .with({ kind: 'receive' }, (n): ResolveStep => {
-          if (n.onSignal) this.signalHandler = n.onSignal;
+          // The handler belongs to the behavior that declared it, so adopting a
+          // `receive` that declares none unregisters it.  It used to only ever
+          // be *installed*, which made a state machine written as
+          // `receiveWithSignal` → plain `receive` per state keep the first
+          // state's handler for the rest of the actor's life — and go on having
+          // every `Terminated` taken away from its receive handler (#928).
+          //
+          // Only this arm touches the field: the sentinels leave it alone, so a
+          // behavior that answers `Behaviors.stopped` still reaches the
+          // `post-stop` handler it was adopted with, which is the whole point of
+          // registering one.
+          this.signalHandler = n.onSignal ?? null;
           return { step: 'done', final: n };
         })
         .with({ kind: 'same' }, (n): ResolveStep => ({ step: 'done', final: n }))
@@ -331,12 +499,48 @@ export class TypedActor<T> extends Actor<T> {
     throw new Error('Behavior resolution exceeded 64 hops — likely a cycle between deferred factories');
   }
 
+  /**
+   * Record that the resolve walk passed through `node`, so a failure reaching
+   * {@link handleSupervise} can find its strategy.
+   *
+   * Keyed on the node's identity, not on the strategy: a *different* `supervise`
+   * node is a different supervision scope and starts with a full allowance,
+   * while the same node arriving again keeps the tally it has built up.  That
+   * distinction is what makes the budget bite at all — a restart re-resolves
+   * `supervise.child`, never the wrapper, so the node reaching here twice means
+   * user code really did install a scope again rather than the supervisor merely
+   * doing its job.
+   *
+   * A node not yet on the stack goes on *top*, because a wrapper reached by the
+   * walk is nested inside everything the walk passed on the way — including a
+   * wrapper a running behavior returns, which is the case the single slot used
+   * to destroy outright.
+   */
+  private enterSupervisionScope(node: SuperviseBehavior<T>, interceptorDepth: number): void {
+    const active = this.supervisionScopes.find((scope) => scope.node === node);
+    if (active !== undefined) {
+      active.interceptorDepth = interceptorDepth;
+      return;
+    }
+    this.supervisionScopes.push({ node, budget: new RestartBudget(node.strategy), interceptorDepth });
+  }
+
   private maybeHandleTerminalSentinel(): void {
     if (this.current.kind === 'stopped') this.context.stopSelf();
   }
 
+  /**
+   * A behavior answered `unhandled`, so the message dies at this actor.
+   *
+   * Wrapped here rather than left to `DeadLetterRef`: the ref would name
+   * itself as the recipient, and "something, somewhere, did not handle
+   * this" is not a diagnosis.  `self` is — it is the actor whose behavior
+   * declined the message, which is the one fact worth recording.  The
+   * sender comes from the turn being processed, matching what the
+   * untyped cell records for its own unhandled paths.
+   */
   private forwardToDeadLetters(message: T): void {
-    this.system.deadLetters.tell(message as never);
+    this.system.deadLetters.tell(new DeadLetter(message, this.sender.toNullable(), this.self));
   }
 }
 
@@ -393,20 +597,58 @@ class TypedActorContextImplementation<T> implements TypedActorContext<T> {
 
 /* ---------------- StashBuffer ---------------- */
 
+/**
+ * The typed DSL's own stash.
+ *
+ * It keeps an array rather than delegating to `context.stash()` because the
+ * OO API cannot serve either half of this contract: `stash(message)` takes an
+ * arbitrary value where the cell can only park the envelope it is currently
+ * handling, and the capacity is declared per `withStash` behavior where the
+ * cell has one compiled-in default for the whole actor.
+ *
+ * The *replay*, though, is the cell's.  `self.tell` appends to the tail of the
+ * user queue, so every message that arrived while the stash was filling got
+ * handled before the replay did — the exact inversion stashing exists to
+ * prevent (#639).  `prependUserMessages` puts them back at the head instead,
+ * matching `ActorContext.unstashAll`.
+ */
 class StashBufferImplementation<T> implements StashBuffer<T> {
   private readonly buffer: T[] = [];
   constructor(
     private readonly capacity: number,
     private readonly self: ActorRef<T>,
   ) {}
+
   stash(message: T): void {
     if (this.buffer.length >= this.capacity) throw new StashOverflowError(this.capacity);
     this.buffer.push(message);
   }
+
   unstashAll(): void {
-    const drained = this.buffer.splice(0, this.buffer.length);
+    const drained = this.drain();
+    if (drained.length === 0) return;
+    // A `TypedActor`'s `self` is minted by its own cell, so this is the branch
+    // that actually runs.  The `tell` fallback covers an `ActorRef` the
+    // framework did not produce, where appending is at least better than
+    // dropping the replay on the floor.
+    if (this.self instanceof LocalActorRef) {
+      this.self.getCell().prependUserMessages(drained);
+      return;
+    }
     for (const message of drained) this.self.tell(message);
   }
+
+  /**
+   * Empty the buffer and answer what it held.
+   *
+   * Not part of {@link StashBuffer} — it exists for `TypedActor`'s stop and
+   * restart paths, which have to take the contents *away* from the buffer to
+   * dead-letter them, and for `unstashAll` itself.
+   */
+  drain(): T[] {
+    return this.buffer.splice(0, this.buffer.length);
+  }
+
   get isEmpty(): boolean { return this.buffer.length === 0; }
   get isFull(): boolean { return this.buffer.length >= this.capacity; }
   get size(): number { return this.buffer.length; }

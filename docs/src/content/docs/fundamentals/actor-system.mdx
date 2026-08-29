@@ -154,9 +154,13 @@ unsubscribing from the pub-sub mediator, handing a shard back — instead
 of racing them into dead letters.
 
 The `/deadLetters` "actor" is special — messages to a `tell` on a
-stopped ref, or to a ref that never existed, route there.  By
-default the system logs dead letters at `debug` level; subscribe to
-the event stream if you want to react programmatically.
+stopped ref, or to a ref that never existed, route there.  Each one is
+published on the event stream as a `DeadLetter` naming the recipient it
+failed to reach, and that is **all** that happens by default: nothing
+logs them and nothing keeps them, so with no subscriber the message is
+gone.  Subscribe to react programmatically, or turn on the bounded —
+optionally durable — queue that keeps and replays them; see
+[Dead letters](/operations/dead-letters/).
 
 ## Extensions
 
@@ -218,29 +222,66 @@ await system.terminate();
 
 1. Notify the cluster (if joined) — gossip "I'm leaving" so peers
    stop routing to this node.
-2. Stop `/user` recursively — your actors get `postStop`, children
+2. **Drain `/user`** — wait until no actor there has a turn in flight or
+   a message queued, so `ref.tell(x); await system.terminate()` handles
+   `x`.  The wait is transitive: a cell is marked busy the moment
+   something tells it, so replies, router fan-outs and restarts keep the
+   drain going instead of flushing each mailbox once.
+3. Stop `/user` recursively — your actors get `postStop`, children
    first.  Actors with in-flight async `onReceive`s finish their
    current message before stopping.
-3. Stop `/system` — framework internals unwind.  This starts only once
-   `/user` is fully drained, so a `postStop` in step 2 can still talk to
+4. Stop `/system` — framework internals unwind.  This starts only once
+   `/user` is fully drained, so a `postStop` in step 3 can still talk to
    the sharding, pub-sub or delivery actors it depends on.
-4. Close the dispatcher and scheduler — no new messages, no new
+5. Close the dispatcher and scheduler — no new messages, no new
    timers.
-5. Resolve the returned promise.
+6. Resolve the returned promise.
 
-For production apps you typically wrap this in a SIGTERM handler:
+The drain in step 2 is bounded by
+`actor-ts.system.shutdown-drain-timeout` (2 s by default), and it
+returns the instant the tree goes quiet — an idle system pays a tick,
+not the budget.  Set it to `0` to skip draining entirely; anything
+still queued when the budget runs out is dead-lettered by step 3, which
+is what happened to the whole backlog before draining existed.
+
+Three things are deliberately **not** waited for:
+
+- a mailbox parked by `context.throttle(...)`, and one suspended while
+  a supervisor decides — neither drains at a rate a shutdown can wait
+  for, so both count as quiet;
+- anything under `/system` — heartbeats, failure detectors and broker
+  reconnect loops are never quiet by design;
+- work that is not in a mailbox yet — a `context.timers` tick that has
+  not fired, or a `tell` from a promise a handler started without
+  `await`ing it.
+
+To stop **one** actor after its mailbox drains and wait for that, use
+`gracefulStop(ref, timeoutMs)` — see
+[PoisonPill & Kill](/fundamentals/poison-pill-and-kill/).
+
+### Running until the process is asked to stop
+
+For a service, `terminate()` is not what you call — it is what happens
+at the end.  The whole of a `main` after the actors are wired is:
 
 ```ts
-process.on('SIGTERM', async () => {
-  await system.terminate();
-  process.exit(0);
-});
+await system.runUntilTerminated();
 ```
 
-…but the framework provides a richer pattern for that — see
-[Coordinated shutdown](/fundamentals/coordinated-shutdown/)
-for the 12-phase ordered-shutdown DSL, which handles K8s PreStop
-hooks, in-flight HTTP requests, draining brokers, etc.
+That installs SIGTERM/SIGINT handlers, resolves once the system is
+down, and detaches the handlers on the way out.  A hand-rolled
+`process.on('SIGTERM', () => system.terminate())` looks equivalent and
+is not: it stops the actors *first*, and only then — if you remembered
+to write it — releases the HTTP port and leaves the cluster.
+`runUntilTerminated()` runs the [coordinated
+shutdown](/fundamentals/coordinated-shutdown/) pipeline, which unbinds
+listeners, closes brokers and leaves the cluster **before** the actors
+stop, so a rolling deploy takes the node out of rotation while its
+actors can still finish what they are holding.
+
+It is also the version that works everywhere: Deno delivers signals
+through `Deno.addSignalListener`, not `process.on`, and a listener
+there keeps the event loop alive until it is removed.
 
 import { Aside } from '@astrojs/starlight/components';
 

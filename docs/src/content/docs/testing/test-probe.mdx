@@ -45,6 +45,15 @@ accepts every message kind).  Cast if needed:
 ref.tell({ kind: 'get', replyTo: probe as ActorRef<number> });
 ```
 
+There is deliberately **no `createTestProbe<T>()`**.  A probe's
+value is standing in for recipients whose message types differ —
+the same probe is handed to actors with unrelated protocols in one
+test — so pinning it to a single `T` would have to be widened back
+at most call sites.  The methods that hand a message back are
+generic individually instead: `expectMessage<T>`,
+`expectMessageType<T>` and `fishForMessage<T>` each return the type
+you ask for.
+
 ## Expectations
 
 ### `expectMessage(expected)`

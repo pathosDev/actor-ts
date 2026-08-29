@@ -25,9 +25,8 @@ const routes = path('api', post(limited(apiHandler)));
 Each distinct key (here: per client IP taken from the socket peer,
 `request.remoteAddress`) gets a 100/minute budget.  Excess requests get 429
 with a `Retry-After` header.  **Key on a value the client can't forge** —
-don't use `x-forwarded-for` unless a trusted proxy sets it (see the
-security note below), or an attacker rotates it per request to bypass the
-limit.
+never key on a raw `x-forwarded-for` (see the security note below), or an
+attacker rotates it per request to bypass the limit.
 
 ## Configuration
 
@@ -170,10 +169,12 @@ import { Aside } from '@astrojs/starlight/components';
   key: (request) => request.headers['x-forwarded-for'];   // ✗ spoofable
   ```
   Behind a load balancer / proxy, the real IP is in
-  `X-Forwarded-For` (or similar).  But clients can set this
-  header themselves if the proxy isn't configured to strip it.
-  Trust only when **your proxy is in the chain and overwrites**
-  the header.
+  `X-Forwarded-For` (or similar) — but not at a position the request can
+  be trusted to name: NGINX, AWS ALB and Cloudflare all **append** to the
+  header, so whatever the client typed stays at its left.  Key on
+  `request.remoteAddress`, or resolve the client address the way
+  [`IpAllowlist`](/http/middleware/ip-allowlist/) does — name the proxies
+  and read the chain from the socket end inwards.
 </Aside>
 
 <Aside type="caution" title="In-memory cache across pods">
@@ -189,20 +190,52 @@ import { Aside } from '@astrojs/starlight/components';
   ```ts
   const limiterCache = new InMemoryCache();   // ✓ the limiter's own instance
   ```
-  The counter that enforces the limit is an ordinary cache entry, and
-  `InMemoryCache` evicts the least-recently-used one once `maxEntries`
-  is reached — without knowing which entries carry security state.
-  Share one instance with `cached` or `idempotent` and a caller who
-  mints distinct keys through either of those (a response-cache key
-  derived from the request, an attacker-chosen `Idempotency-Key`)
-  evicts **other** clients' counters, handing each of them a fresh
-  budget.  The flooder's own counter is safe: `incr` marks it
-  most-recently-used on every request, so it is never the victim.
+  `InMemoryCache` counts the counter as carrying a guarantee — `incr`
+  with a `windowMs` created it — and evicts entries that carry none
+  first, so a `cached` key flood no longer resets other clients'
+  windows.  That ranks what an entry is for, not whose it is: on an
+  undivided instance shared with `idempotent`, a flood of
+  attacker-chosen `Idempotency-Key`s is a flood of claims, and once the
+  map holds nothing cheaper the counters go too.
+
+  **A flooder can reset its own limit, but only from outside the
+  limiter.**  Requests that pass *through* this middleware run `incr`
+  before the `max` comparison, which marks the flooder's counter
+  most-recently-used, so a flood travelling through the limiter can
+  never evict its own counter — not even after the 429s start.  A
+  key-minting route on the same `Cache` that the limiter does **not**
+  wrap gives no such bump: the counter ages like everyone else's, and if
+  the flood carries a guarantee of its own (a flood of `idempotent`
+  claims, say) the counters are what is left to take once the
+  opportunistic half is empty.  Measured on one shared
+  `maxEntries: 4` instance: a client answered 429 by `max: 2` was
+  answered 200 again after twenty off-limiter `Idempotency-Key`
+  requests.
 
   Pass a dedicated instance — or `ext.cache('rate-limit')` — and size
   its `maxEntries` above the number of distinct keys you expect inside
-  one `windowMs`.  See
-  [eviction is blind to what an entry protects](/cache/in-memory/#eviction-is-blind-to-what-an-entry-protects).
+  one `windowMs`, under that cache's own name:
+
+  ```hocon
+  actor-ts.cache.rate-limit.in-memory.maxEntries = 50000
+  ```
+
+  Where one instance genuinely has to be shared, reserve this
+  middleware's `keyPrefix` out of it instead — the same twenty
+  off-limiter requests then evict inside `idem:` and the 429 stands:
+
+  ```hocon
+  actor-ts.cache.shared.in-memory {
+    maxEntries = 10000
+    prefixQuotas { "rl:" = 5000, "idem:" = 5000 }
+  }
+  ```
+
+  Neither buys protection from a co-tenant of the same prefix: a client
+  with an IPv6 `/64` mints counters all day, and every one is a counter
+  the cache protects under the same `rl:` reservation.  See
+  [what eviction protects and what it does not](/cache/in-memory/#what-eviction-protects-and-what-it-does-not)
+  and [dividing one instance by key prefix](/cache/in-memory/#dividing-one-instance-by-key-prefix).
 </Aside>
 
 <Aside type="caution" title="Fixed-window edge effects">

@@ -10,12 +10,14 @@ import {
 import type { ShardCoordinatorOptions, ShardCoordinatorOptionsType } from './ShardCoordinatorOptions.js';
 import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
 import { NodeAddress, type NodeAddressData } from '../NodeAddress.js';
+import type { EnvelopeMessage } from '../Protocol.js';
 import { RemoteActorRef } from '../RemoteActorRef.js';
 import { HashAllocationStrategy } from './AllocationStrategy.js';
 import type {
   CoordinatorStateData,
   RegionInfoData,
 } from './CoordinatorState.js';
+import { AuthenticatedShardingMessage, isShardingMessage } from './ShardingProtocol.js';
 import type {
   BeginHandOffAcknowledgment,
   ClusterShardingStats,
@@ -27,6 +29,7 @@ import type {
   HandOffComplete,
   RegionTerminated,
   RegisterAcknowledgment,
+  RegisterRefused,
   RegisterRegion,
   ShardingMessage,
   ShardLocation,
@@ -47,13 +50,55 @@ type CoordinatorEvent =
   | { kind: 'lease-lost'; reason: string }
   | { kind: 'acquire-retry' };
 
-type CoordinatorInbox = ShardingMessage | CoordinatorEvent;
+type CoordinatorInbox = ShardingMessage | AuthenticatedShardingMessage | CoordinatorEvent;
 
 function isCoordinatorEvent(message: CoordinatorInbox): message is CoordinatorEvent {
   if (!message || typeof message !== 'object') return false;
   const discriminator = (message as { kind?: unknown }).kind;
   return discriminator === 'reconcile' || discriminator === 'lease-acquire-result'
     || discriminator === 'lease-lost' || discriminator === 'acquire-retry';
+}
+
+/**
+ * The node a coordinator-inbound frame claims to speak for, or `null` when the
+ * kind carries no address at all.
+ *
+ * Six of the ten kinds a coordinator accepts name a node in their payload, and
+ * every one of them is a statement only that node can truthfully make: which
+ * shards it hosts, that its region is gone, that a hand-off finished, where to
+ * send a shard home or a statistics reply.  This is the lookup the authority
+ * gate compares against the authenticated peer (#712).
+ *
+ * The four that return `null` — `EntityStarted`, `EntityStopped`,
+ * `GetRememberedEntities`, `BeginHandOffAcknowledgment` — have no address to
+ * compare, so attribution is all the gate can require of them.
+ */
+function claimedNode(message: ShardingMessage): NodeAddressData | null {
+  return match(message)
+    .with({ kind: 'sharding.Register' }, (m) => m.node)
+    .with({ kind: 'sharding.RegionTerminated' }, (m) => m.node)
+    .with({ kind: 'sharding.HandOffComplete' }, (m) => m.node)
+    .with({ kind: 'sharding.GetShardHome' }, (m) => m.requesterNode)
+    .with({ kind: 'sharding.GetClusterShardingStats' }, (m) => m.requesterNode)
+    .with({ kind: 'sharding.ShardRegionStats' }, (m) => m.node)
+    .otherwise(() => null);
+}
+
+/**
+ * Whether a payload-supplied address names exactly the peer whose connection
+ * carried it.
+ *
+ * Compared field-wise rather than through `NodeAddress.fromJSON`, which
+ * *throws* on a shape the wire is free to send — a gate that the frame it is
+ * gating can make throw is not a gate.  The comparison is the one `equals()`
+ * performs, so a payload that would not have rebuilt into a valid address
+ * cannot match a peer that did.
+ */
+function namesPeer(claimed: NodeAddressData, peer: NodeAddress): boolean {
+  if (typeof claimed !== 'object' || claimed === null) return false;
+  return claimed.systemName === peer.systemName
+    && claimed.host === peer.host
+    && claimed.port === peer.port;
 }
 
 type RegionInfo = {
@@ -104,10 +149,19 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   private readonly entitiesPerShard = new Map<number, Set<string>>();
   private readonly statsQueries = new Map<number, StatsQuery>();
   private nextStatsQuery = 0;
+  /**
+   * Region keys refused for a `numShards` mismatch (#633).  Refusing the
+   * registration is not enough on its own: `onGetShardHome` never required one,
+   * so a refused region's first buffered message would still get a home
+   * allocated — under *its* hash of the entity id, which is the split the
+   * refusal exists to prevent.
+   */
+  private readonly refusedRegions = new Set<string>();
 
   private rebalanceTimer: Cancellable | null = null;
   private unsubscribeCluster: (() => void) | null = null;
   private unsubscribeLeaseLost: (() => void) | null = null;
+  private unsubscribeEnvelope: (() => void) | null = null;
   private acquireRetryTimer: Cancellable | null = null;
 
   /**
@@ -168,6 +222,19 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   override async preStart(): Promise<void> {
+    // 0. Claim the coordinator's own well-known path on the envelope router
+    //    before anything can arrive, so every inbound frame is stamped with the
+    //    peer whose connection carried it.  #584 did exactly this for the
+    //    region; the coordinator kept taking raw bodies through generic path
+    //    resolution, which resolves the path and calls `ref.tell(body)` with no
+    //    sender at all — throwing away the one field of an inbound frame the
+    //    sender cannot choose, and the only thing that could have told a
+    //    region's own claims apart from a peer's claims about it (#712).
+    this.unsubscribeEnvelope = this.options.cluster._registerEnvelopeHandler(
+      this.self.path.toString(),
+      (envelope, from) => this.onRemoteEnvelope(envelope, from),
+    );
+
     // 1. Replay the persisted remembered-entities log so the
     //    in-memory map is populated BEFORE we accept any messages.
     //    Without this, a fresh-cluster start would treat every
@@ -230,6 +297,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   override async postStop(): Promise<void> {
     this.unsubscribeCluster?.();
     this.unsubscribeLeaseLost?.();
+    this.unsubscribeEnvelope?.();
     this.rebalanceTimer?.cancel();
     this.acquireRetryTimer?.cancel();
     this.shardMapPublishTimer?.cancel();
@@ -243,6 +311,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   override onReceive(message: CoordinatorInbox): void {
+    if (message instanceof AuthenticatedShardingMessage) {
+      this.receiveShardingMessage(message.message, message.peer);
+      return;
+    }
     // Internal coordinator events drive the lease state machine — they
     // run regardless of `isActive()` because they're how we transition
     // INTO `isActive()` in the first place.
@@ -250,7 +322,42 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       this.handleCoordinatorEvent(message);
       return;
     }
+    this.receiveShardingMessage(message, null);
+  }
+
+  /**
+   * An envelope addressed to this coordinator arrived from `from`, whose
+   * identity the transport authenticated.
+   *
+   * Re-enqueued through `self.tell` so the coordinator still processes it on its
+   * own turn — the handler runs on the receive path, not in the actor.  A
+   * coordinator is not a routing target for anything but sharding traffic, so a
+   * body that is not a sharding frame is junk and goes no further.
+   */
+  private onRemoteEnvelope(envelope: EnvelopeMessage, from: NodeAddress): void {
+    if (!isShardingMessage(envelope.body)) {
+      this.log.debug(
+        `[sharding] dropping a non-sharding envelope addressed to the '${this.options.typeName}' `
+        + `coordinator from ${from}`,
+      );
+      return;
+    }
+    this.self.tell(new AuthenticatedShardingMessage(from, envelope.body));
+  }
+
+  /**
+   * @param peer the node whose authenticated connection carried the frame, or
+   *   `null` for one that reached the mailbox unattributed — a bare local
+   *   `tell`, or an inbound envelope that dodged the per-path handler.  Every
+   *   coordinator-inbound kind refuses the second case outright.
+   */
+  private receiveShardingMessage(message: ShardingMessage, peer: NodeAddress | null): void {
     if (!this.isLeader()) return;
+    // Refused before the lease buffer, not after: an unauthorised frame is
+    // never going to be dispatched, and letting it take a slot in a bounded
+    // buffer would let a flood of forgeries crowd out the registrations the
+    // buffer exists to keep.
+    if (!this.maySpeakFor(message, peer)) return;
     if (this.options.lease && this.leaseState !== 'held') {
       // Leader, but lease not yet held — buffer instead of drop so
       // regions don't need to retry on the next cluster event.
@@ -260,6 +367,56 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       return;
     }
     this.dispatchShardingMessage(message);
+  }
+
+  /**
+   * Whether `peer` is allowed to say `message` on behalf of the region it names.
+   *
+   * The coordinator's only gate used to be `isLeader()` plus, with a lease,
+   * `leaseState === 'held'` — which answers *"am I the authoritative
+   * coordinator?"*, never *"may this sender speak for that region?"*.  So one
+   * well-formed `Register` frame naming somebody else's node seized every shard
+   * of a type, and one `RegionTerminated` evicted its region; the authenticated
+   * peer was in the transport's hand the whole time and discarded on the way in
+   * (#712).
+   *
+   * Two conditions, mirroring `ShardRegion.fromCoordinator` in the other
+   * direction (#584).  The frame must have arrived inside an
+   * {@link AuthenticatedShardingMessage}, which a JSON body cannot mint — so
+   * the wrapper is proof the frame came through the per-path envelope handler
+   * (or from a region on this very node) rather than out of an attacker's
+   * `body`, and it survives the non-canonical-`to` bypass, where a trailing
+   * slash misses the handler and generic path resolution delivers unwrapped.
+   * And the address the payload claims must be the peer's own.
+   *
+   * Refusing is safe: a region re-registers and re-asks for every buffered
+   * shard on the next leader or membership event, so a frame dropped during a
+   * leadership handover is re-sent rather than lost.
+   *
+   * The internal `onMemberRemoved` → `onRegionTerminated` path deliberately does
+   * not come through here — it synthesises its message from the cluster event's
+   * own address, which is not a claim anyone made over the wire.
+   */
+  private maySpeakFor(message: ShardingMessage, peer: NodeAddress | null): boolean {
+    if (peer === null) {
+      this.log.warn(
+        `[sharding] refusing an unattributed '${message.kind}' for type `
+        + `"${this.options.typeName}" — a coordinator directive has to arrive on an `
+        + `authenticated connection`,
+      );
+      return false;
+    }
+    const claimed = claimedNode(message);
+    if (claimed === null || namesPeer(claimed, peer)) return true;
+    // The claimed address is deliberately not interpolated: it is caller-chosen
+    // and unbounded, and this log line is reachable by anyone who can complete a
+    // `hello`.  The peer is the transport's own value, which is enough to find
+    // the sender.
+    this.log.warn(
+      `[sharding] refusing '${message.kind}' for type "${this.options.typeName}" from ${peer} — `
+      + `it names a different node, and only that node may speak for its region`,
+    );
+    return false;
   }
 
   private dispatchShardingMessage(message: ShardingMessage): void {
@@ -453,16 +610,61 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     /* other ShardingMessage variants are region-side */
   }
 
+  /**
+   * A region claiming a different shard count than this coordinator governs is
+   * refused outright (#633).
+   *
+   * `hash(entityId) % numShards` is computed independently on every node, so
+   * two counts split the routing: entity `x` hashes to 45 under 64 shards and
+   * to 13 under 32, both nodes own the shard their own hash produced, and both
+   * instantiate `x` — at `shard-13/x` and `shard-45/x`, paths that never
+   * collide, which is why nothing warned.  The bound added in #583 catches only
+   * one direction of this (a region asking for an id above the coordinator's
+   * range) and turns it into a silent hang; the other direction passes cleanly
+   * and double-homes.  Refusing the registration is what makes both directions
+   * fail the same, loud way: an unregistered region is never a placement
+   * candidate, so it can never be handed a shard to double-home.
+   *
+   * Compared against the coordinator's own configured count rather than the
+   * first registrant's, which is not a durable authority — `onLeaderChanged`
+   * clears `regions` wholesale and `loadCoordinatorState` restores no shard
+   * count, so "first" would be re-decided at every election.
+   */
+  private isAgreedNumShards(message: RegisterRegion): boolean {
+    const key = regionKey(NodeAddress.fromJSON(message.node), message.region);
+    if (message.numShards === this.options.numShards) {
+      this.refusedRegions.delete(key);
+      return true;
+    }
+    this.refusedRegions.add(key);
+    this.log.error(
+      `refusing to register region ${message.region} on ${message.node.host}:${message.node.port} `
+      + `for type "${this.options.typeName}": it hashes with numShards=${message.numShards} but this `
+      + `coordinator governs the type with numShards=${this.options.numShards}. Routing would split `
+      + `and the same entity id would run on both nodes at once.`,
+    );
+    const refusal: RegisterRefused = {
+      kind: 'sharding.RegisterRefused',
+      coordinator: this.self.path.toString(),
+      numShards: this.options.numShards,
+      regionNumShards: message.numShards,
+    };
+    this.replyTo(message.region, message.node, refusal);
+    return false;
+  }
+
   private onRegister(message: RegisterRegion): void {
+    if (!this.isAgreedNumShards(message)) return;
+    const hostedShards = this.acceptedHostedShards(message);
     const node = NodeAddress.fromJSON(message.node);
     const key = regionKey(node, message.region);
     this.regions.set(key, {
       node,
       path: message.region,
       proxy: message.proxy,
-      shards: new Set(message.hostedShards),
+      shards: new Set(hostedShards),
     });
-    for (const shardId of message.hostedShards) {
+    for (const shardId of hostedShards) {
       this.shardHome.set(shardId, key);
     }
     const ack: RegisterAcknowledgment = {
@@ -471,12 +673,57 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     };
     this.replyTo(message.region, message.node, ack);
 
-    for (const shardId of message.hostedShards) this.flushPending(shardId);
+    for (const shardId of hostedShards) this.flushPending(shardId);
 
     if (this.options.rememberEntities) {
-      for (const shardId of message.hostedShards) this.shipRememberedEntities(shardId);
+      for (const shardId of hostedShards) this.shipRememberedEntities(shardId);
     }
     this.afterShardMapChange();
+  }
+
+  /**
+   * The ids from a `Register` claim this coordinator is willing to record.
+   *
+   * `hostedShards` is the one coordinator input that is a caller-*sized* array,
+   * and `onRegister` used to write a `shardHome` entry for every entry in it
+   * with no range check and no length cap — while `onGetShardHome`, the other
+   * write path into the same map, has had the bound since #583.  So a single
+   * frame could plant millions of out-of-range ids in state that is broadcast to
+   * every region and persisted to `coordinatorStateStore`, and the growth
+   * survived restarts (#712, #948).
+   *
+   * Both bounds fall out of one rule.  A shard id is `hash(entityId) %
+   * numShards`, so the accepted set can only ever hold ids in
+   * `0 .. numShards - 1` — which means it is *full* at `numShards` entries and
+   * nothing later in the array can add to it.  The range check is therefore the
+   * length cap as well, and the early exit is what keeps an over-long claim from
+   * costing a `flushPending` and a `shipRememberedEntities` per entry.  Iterating
+   * the set rather than the array does the same for duplicates.
+   *
+   * The surplus is dropped rather than the whole registration refused: a region
+   * that disagrees about `numShards` already has its own loud verdict (#633),
+   * and refusing here would take a misbehaving region's *legitimate* shards down
+   * with the bad ids.
+   */
+  private acceptedHostedShards(message: RegisterRegion): ReadonlySet<number> {
+    const claimed: readonly unknown[] = Array.isArray(message.hostedShards) ? message.hostedShards : [];
+    const accepted = new Set<number>();
+    let scanned = 0;
+    for (const shardId of claimed) {
+      if (accepted.size >= this.options.numShards) break;
+      scanned += 1;
+      if (this.isShardIdInRange(shardId)) accepted.add(shardId);
+    }
+    if (accepted.size !== claimed.length) {
+      // One line per registration, never one per id: the claim is caller-sized,
+      // so a per-id warning is itself the amplification.
+      this.log.warn(
+        `[sharding] region ${message.region} claimed ${claimed.length} hosted shard(s) for type `
+        + `"${this.options.typeName}"; keeping ${accepted.size} after scanning ${scanned} — the rest `
+        + `were duplicates or outside 0..${this.options.numShards - 1}`,
+      );
+    }
+    return accepted;
   }
 
   /**
@@ -497,7 +744,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * peer could grow it without limit, and the growth survived restarts (#583).
    */
   private isKnownShardId(shardId: number): boolean {
-    if (Number.isInteger(shardId) && shardId >= 0 && shardId < this.options.numShards) return true;
+    if (this.isShardIdInRange(shardId)) return true;
     this.log.warn(
       `ignoring a shard request for id ${shardId} — outside 0..${this.options.numShards - 1} `
       + `for type "${this.options.typeName}"`,
@@ -505,8 +752,27 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     return false;
   }
 
+  /**
+   * The range rule itself, without the log line — `acceptedHostedShards` checks
+   * a caller-sized array against it and cannot afford a warning per entry, so
+   * the rule has to live somewhere both callers can reach it.  `unknown` rather
+   * than `number` because the wire is free to put anything in either field.
+   */
+  private isShardIdInRange(shardId: unknown): shardId is number {
+    return typeof shardId === 'number' && Number.isInteger(shardId)
+      && shardId >= 0 && shardId < this.options.numShards;
+  }
+
   private onGetShardHome(message: GetShardHome): void {
     if (!this.isKnownShardId(message.shardId)) return;
+    // A refused region's shard ids are drawn from a different modulus, so
+    // answering one places the *same* entity id in a second shard — the exact
+    // split refusing its registration was meant to stop.  It stays buffered
+    // instead, which is the fail-stop; the error the region logged on the
+    // refusal says why.
+    if (this.refusedRegions.has(regionKey(NodeAddress.fromJSON(message.requesterNode), message.requester))) {
+      return;
+    }
     const home = this.shardHome.get(message.shardId);
     if (home && this.regions.has(home)) {
       const info = this.regions.get(home)!;
@@ -589,8 +855,8 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     // *host* — and the registry has to outlive the move for `tryAllocate` to
     // hand it to the new owner.  The departing region no longer announces its
     // entities as stopped (#632), but an entity passivating on its own in the
-    // window between `BeginHandOff` and `HandOffComplete` still would, and
-    // that one would be just as wrongly forgotten.
+    // window between `HandOff` and `HandOffComplete` still would, and that one
+    // would be just as wrongly forgotten.
     if (this.rebalanceInProgress.has(message.shardId)) return;
     this.applyRememberEvent({ kind: 'stopped', shardId: message.shardId, entityId: message.entityId });
     this.persistRememberEvent({ kind: 'stopped', shardId: message.shardId, entityId: message.entityId });
@@ -756,6 +1022,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       this.regions.clear();
       this.shardHome.clear();
       this.pending.clear();
+      // A refusal is a verdict of *this* leader term.  Every region
+      // re-registers on the leader change, so the next term re-derives it.
+      this.refusedRegions.clear();
       this.acquireBuffer = [];
       for (const rebalance of this.rebalanceInProgress.values()) rebalance.timer.cancel();
       this.rebalanceInProgress.clear();
@@ -797,6 +1066,23 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * otherwise we'd happily route shards to dead pods.  Existing
    * pending queries get a fresh allocation pass via the regular
    * onMessage flow.
+   *
+   * Two things a snapshot may not do, both of them ways round the `numShards`
+   * refusal (#633).  It may not carry a *different* modulus than this
+   * coordinator governs — every shard id in it was produced by
+   * `hash(entityId) % numShards`, so the whole allocation map is meaningless
+   * under another count, and adopting it hands regions shards under two
+   * different hashes at once.  And it may not restore a region this coordinator
+   * has already refused: `candidates()` is built from `regions` and
+   * `tryAllocate` pushes a `ShardHome` at whoever the strategy picks, so a
+   * restored refusal is a full placement candidate again.
+   *
+   * The refusal check sits *inside* the loop rather than in front of it because
+   * the load is fire-and-forget (`void this.loadCoordinatorState()` on the
+   * promotion) — a `Register` refused while the store call is still in flight
+   * leaves `regions.has(key)` false when the loop finally runs, so a guard
+   * hoisted above the loop would read an empty refusal set and let the entry
+   * through anyway.
    */
   private async loadCoordinatorState(): Promise<void> {
     const store = this.options.coordinatorStateStore;
@@ -812,6 +1098,15 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       return;
     }
     if (!data) return;
+    if (data.numShards !== this.options.numShards) {
+      this.log.warn(
+        `[sharding] ignoring the coordinator-state snapshot for '${this.options.typeName}' written by `
+        + `${data.leader}: it was taken with numShards=${data.numShards ?? 'unstated'} and this `
+        + `coordinator governs the type with numShards=${this.options.numShards}, so every shard id `
+        + `in it was hashed under a different modulus. Rebuilding from region registrations instead.`,
+      );
+      return;
+    }
 
     // If we already have local state (e.g. preStart already absorbed
     // some Register messages), merge — keep what we know AND what
@@ -827,6 +1122,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
         // — skip the entry; the dead region won't be re-resurrected.
         continue;
       }
+      if (this.refusedRegions.has(region.key)) continue; // refused this term; see the note above
       const node = NodeAddress.fromJSON(region.node);
       if (this.regions.has(region.key)) continue; // already known via Register
       this.regions.set(region.key, {
@@ -930,6 +1226,9 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       takenAt: Date.now(),
       regions,
       shardHome,
+      // The modulus every id above was produced under, so the next leader can
+      // tell whether the map means anything to it — see `loadCoordinatorState`.
+      numShards: this.options.numShards,
     };
   }
 
@@ -1007,11 +1306,22 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     this.replyTo(info.path, info.node.toJSON(), message);
   }
 
+  /**
+   * Every reply here goes to a region, and a region only honours a
+   * coordinator directive that arrives inside an
+   * {@link AuthenticatedShardingMessage} naming the coordinator's node (#584).
+   * The remote leg gets that for free — the receiving node's per-path envelope
+   * handler stamps the connection's peer on the way in — but a bare local
+   * `ref.tell` is byte-identical to what an attacker's frame produces after the
+   * generic path walk, so the local leg has to build the wrapper itself.
+   * Without it a single-node cluster could not rebalance at all.
+   */
   private replyTo(path: string, nodeData: NodeAddressData, message: ShardingMessage): void {
     const node = NodeAddress.fromJSON(nodeData);
     if (node.equals(this.options.cluster.selfAddress)) {
-      const ref = this.options.localResolver(path) as ActorRef<ShardingMessage> | null;
-      if (ref) ref.tell(message);
+      const ref = this.options.localResolver(path) as
+        ActorRef<ShardingMessage | AuthenticatedShardingMessage> | null;
+      if (ref) ref.tell(new AuthenticatedShardingMessage(this.options.cluster.selfAddress, message));
       return;
     }
     const remote = new RemoteActorRef<ShardingMessage>(node, path, this.options.cluster);

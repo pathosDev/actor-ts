@@ -5,8 +5,8 @@
 # `@aws-sdk/client-dynamodb`.
 #
 # Run locally:
-#   bun run test:integration:dynamodb
-#   bun run test:integration:dynamodb:teardown
+#   bun run test:integration:broker dynamodb
+#   bun run test:integration:broker:teardown dynamodb
 
 name: actor-ts-integration-dynamodb
 

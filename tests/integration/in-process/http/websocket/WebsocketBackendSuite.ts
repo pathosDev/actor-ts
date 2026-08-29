@@ -20,12 +20,13 @@ import {
   type Middleware,
   type Route,
 } from '../../../../../src/http/Route.js';
+import { requestId, securityHeaders } from '../../../../../src/http/middleware/index.js';
 import { Status } from '../../../../../src/http/Types.js';
 import { WebsocketServerActor } from '../../../../../src/http/websocket/WebsocketServerActor.js';
 import { websocket } from '../../../../../src/http/websocket/WebsocketRoute.js';
 import { WebsocketRouteOptions } from '../../../../../src/http/websocket/WebsocketRouteOptions.js';
 import type { WebsocketConnection } from '../../../../../src/http/websocket/WebsocketConnection.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 type SIn = { kind: 'ping'; n: number } | { kind: 'broadcast'; text: string };
 type SOut = { kind: 'pong'; n: number } | { kind: 'bcast'; text: string };
@@ -45,8 +46,6 @@ class TestServer extends WebsocketServerActor<SOut, SIn> {
     this.events.push(`disconnect:${c.id}`);
   }
 }
-
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 function wsOpen(url: string, timeoutMs = 3000): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
@@ -147,7 +146,7 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
       const { base } = await bindServer([], (s) => websocket('/ws', s));
       const ws = await wsOpen(`${base}/ws`);
       ws.send(JSON.stringify({ kind: 'ping', n: 42 }));
-      expect(await nextMessage(ws)).toEqual({ kind: 'pong', n: 42 });
+      expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 42 });
       ws.close();
     });
 
@@ -175,7 +174,7 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
       wsB.close();
     });
 
-    test('oversize inbound frame closes the connection (1009)', async () => {
+    test('oversize inbound frame closes the connection', async () => {
       const { base } = await bindServer([], (s) => {
         const routeOptions = WebsocketRouteOptions.create()
           .withMaxFrameBytes(64 * 1024);
@@ -184,7 +183,45 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
       const ws = await wsOpen(`${base}/ws`);
       const closed = nextClose(ws);
       ws.send(JSON.stringify({ kind: 'broadcast', text: 'x'.repeat(80 * 1024) }));
-      expect(await closed).toBe(1009);
+      // Which layer refuses it — and therefore which close code the client
+      // sees — is a property of the runtime, not of the guarantee.  Since #373
+      // the transport is asked for the route's own 64 KiB rather than the 1 MiB
+      // framework default, and where that is honoured the frame never reaches
+      // the connection actor: Hono on Bun drops the connection and the client
+      // synthesises 1006, Hono on Node gets a clean 1009 out of `ws`.  On
+      // **Bun with Express or Fastify** it is not honoured — `ws` is Bun's
+      // built-in shim there and ignores `maxPayload` — so the frame is
+      // buffered whole and the connection actor sends the 1009 itself.  That
+      // is the only runtime this suite ever executes on
+      // (`package.json`: `test = bun test`), so on two of the three backends
+      // the code below is the actor's, not the transport's.  Either way the
+      // frame is refused before it is decoded, which is what this pins;
+      // `BackendTransportFrameCap.test.ts` is where the layers are told apart.
+      expect([1006, 1009]).toContain(await closed);
+    });
+
+    test('a route that raises maxFrameBytes past the framework default receives that frame (#373)', async () => {
+      // The transport cap used to be the 1 MiB framework default on every
+      // backend whatever the route asked for, so a frame in this band was cut
+      // off by the runtime before the connection actor — which admits it —
+      // ever saw it.  2 MiB is over that default and well under the route's
+      // own cap, so only a transport sized from the route can deliver it.
+      const { base } = await bindServer([], (s) => {
+        const routeOptions = WebsocketRouteOptions.create()
+          .withMaxFrameBytes(8 * 1024 * 1024);
+        return websocket('/ws', s, routeOptions);
+      });
+      const ws = await wsOpen(`${base}/ws`);
+      const text = 'x'.repeat(2 * 1024 * 1024);
+      const echoed = nextMessage<{ kind: string; text: string }>(ws, 10_000);
+      ws.send(JSON.stringify({ kind: 'broadcast', text }));
+
+      const reply = await echoed;
+      expect(reply.kind).toBe('bcast');
+      // Compared by length: a mismatch on two megabytes of 'x' is unreadable
+      // as a diff, and the length is what the cap is about anyway.
+      expect(reply.text.length).toBe(text.length);
+      ws.close();
     });
 
     test('invalid JSON closes the connection (1003) under the default policy', async () => {
@@ -252,9 +289,12 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
       const { base, binding } = await bindServer([], (s) => websocket('/ws', s));
       await wsOpen(`${base}/ws`);
       await wsOpen(`${base}/ws`);
+      // Not a wait before an assertion — the elapsed time IS the assertion:
+      // the claim is that `unbind` resolves rather than hanging on the two open
+      // sockets, and this delay is the losing arm of the race that proves it.
       const done = await Promise.race([
         binding.unbind(500).then(() => 'unbound'),
-        sleep(4000).then(() => 'timeout'),
+        sleep(4000).then(() => 'timeout'),  // the elapsed time IS the assertion
       ]);
       expect(done).toBe('unbound');
     });
@@ -268,7 +308,28 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
 
       const ws = await wsOpen(`${base}/ws?token=secret`);
       ws.send(JSON.stringify({ kind: 'ping', n: 1 }));
-      expect(await nextMessage(ws)).toEqual({ kind: 'pong', n: 1 });
+      expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 1 });
+      ws.close();
+    });
+
+    test('a response-decorating middleware above the route still lets the upgrade complete (#757)', async () => {
+      // The unit test proves this at the `compile()` seam; this one proves
+      // it end to end, through the backend's real upgrade path and a real
+      // client, on every backend the suite parameterises — which is the
+      // half a `compile()`-level assertion cannot reach, since "authorize
+      // returned null" is not yet "the socket opened".
+      //
+      // Reverting the fix fails this on all three backends with `ws errored
+      // before open`: the decorated sentinel read as a rejection, so the
+      // backend answered the upgrade with an ordinary 101-status response
+      // carrying no `Sec-WebSocket-Accept` instead of handing the socket
+      // over, and the handshake never completed.
+      const { base } = await bindServer([], (s) =>
+        withMiddleware(securityHeaders(), withMiddleware(requestId(), websocket('/ws', s))));
+
+      const ws = await wsOpen(`${base}/ws`);
+      ws.send(JSON.stringify({ kind: 'ping', n: 3 }));
+      expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 3 });
       ws.close();
     });
 
@@ -286,7 +347,7 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
 
       const ws = await wsOpen(`${base}/ws`);
       ws.send(JSON.stringify({ kind: 'ping', n: 7 }));
-      expect(await nextMessage(ws)).toEqual({ kind: 'pong', n: 7 });
+      expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 7 });
       ws.close();
     });
   });

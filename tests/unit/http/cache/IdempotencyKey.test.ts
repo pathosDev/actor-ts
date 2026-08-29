@@ -121,6 +121,8 @@ describe('idempotent — TTL / config guards', () => {
       return complete(Status.OK, { n: ran });
     });
     await handler(makeReq({ 'idempotency-key': 'short' }));
+    // The elapsed time IS the assertion: 50 ms outlasts the 30 ms record TTL, and
+    // the cache expires lazily, so there is no eviction event to poll for.
     await Bun.sleep(50);
     await handler(makeReq({ 'idempotency-key': 'short' }));
     expect(ran).toBe(2);
@@ -136,6 +138,12 @@ describe('idempotent — TTL / config guards', () => {
     const cache = new InMemoryCache();
     expect(() => idempotent({ cache, maxKeyLength: 0 })).toThrow();
     expect(() => idempotent({ cache, maxKeyLength: 1.5 })).toThrow();
+  });
+
+  test('rejects invalid maxScopeLength', () => {
+    const cache = new InMemoryCache();
+    expect(() => idempotent({ cache, maxScopeLength: 0 })).toThrow();
+    expect(() => idempotent({ cache, maxScopeLength: 1.5 })).toThrow();
   });
 });
 

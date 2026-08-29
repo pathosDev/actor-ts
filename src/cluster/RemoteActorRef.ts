@@ -1,7 +1,6 @@
 import { ActorPath, parsePathSegments } from '../ActorPath.js';
 import { ActorRef } from '../ActorRef.js';
 import { LogContext } from '../LogContext.js';
-import { tracerOf } from '../tracing/TracingExtension.js';
 import type { Cluster } from './Cluster.js';
 import type { NodeAddress } from './NodeAddress.js';
 import type { EnvelopeMessage } from './Protocol.js';
@@ -32,16 +31,21 @@ export class RemoteActorRef<TMessage = unknown> extends ActorRef<TMessage> {
     // local actor (#53, #10).  Empty values are omitted so the wire
     // envelope stays unchanged on the no-instrumentation hot path.
     const context = LogContext.get();
-    const trace = tracerOf(this.cluster.system).injectContext();
+    const tracer = this.cluster.system._tracer;
+    const trace = tracer === null ? null : tracer.injectContext();
     const envelope: EnvelopeMessage = {
       kind: 'envelope',
       to: this.targetPath,
       from: sender ? sender.path.toString() : null,
       body: message as unknown,
       tag: (message as { constructor?: { name?: string } })?.constructor?.name,
-      ...(Object.keys(context).length > 0 ? { context: context } : {}),
-      ...(trace ? { trace } : {}),
     };
+    // Conditional assignment rather than a conditional spread.  `...(cond ? {x}
+    // : {})` allocates the empty object on the *false* branch too, so the two
+    // fields cost two throwaway objects on every send that carries neither —
+    // which is every send on an uninstrumented system (#411).
+    if (!LogContext.isEmpty(context)) envelope.context = context;
+    if (trace) envelope.trace = trace;
     this.cluster._sendEnvelope(this.targetNode, envelope);
   }
 

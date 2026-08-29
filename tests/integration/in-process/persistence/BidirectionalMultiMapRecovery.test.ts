@@ -15,9 +15,8 @@ import {
 } from '../../../../src/persistence/index.js';
 import { BidirectionalMultiMap } from '../../../../src/util/BidirectionalMultiMap.js';
 
+import { gracefulStop } from '../../../../src/pattern/GracefulStop.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 /**
  * The same promise #1035 made for the 1:1 map, made again for the
@@ -61,7 +60,7 @@ class TopicRegistry extends PersistentActor<Command, Event, State> {
     return { subscriptions: new BidirectionalMultiMap<string, string>() };
   }
 
-  override snapshotPolicy(): SnapshotPolicy {
+  override snapshotPolicy(): SnapshotPolicy<State, Event> {
     return everyNEvents(2);
   }
 
@@ -138,8 +137,10 @@ describe('PersistentActor — a BidirectionalMultiMap in state, with no adapter 
     expect(storedSnapshot?.state.subscriptions).toBeInstanceOf(BidirectionalMultiMap);
     expect(storedSnapshot?.state.subscriptions.size).toBe(4);
 
-    system.stop(writer);
-    await sleep(50);
+    // The reader below recovers the same persistenceId, so the writer has to be
+    // really gone and not merely asked to stop.  `gracefulStop` resolves on the
+    // termination itself, which is what the 50 ms was guessing at (#418).
+    expect(await gracefulStop(writer, 4_000)).toBe(true);
 
     let recovered: State | undefined;
     system.spawn(() => new TopicRegistry('registry-1', (s) => { recovered = s; }), 'reader');

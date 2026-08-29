@@ -12,6 +12,7 @@ import {
   path,
   post,
 } from '../../../src/http/Route.js';
+import type { Route } from '../../../src/http/Route.js';
 import { entity } from '../../../src/http/Marshalling.js';
 import type { ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 import { HttpError, Status } from '../../../src/http/Types.js';
@@ -23,7 +24,7 @@ afterEach(async () => {
   while (bindings.length) await bindings.shift()!.unbind();
 });
 
-async function startServer(routes: Parameters<ReturnType<ReturnType<typeof newHttp>['newServerAt']>['bind']>[0]): Promise<{ url: string; system: ActorSystem; binding: ServerBinding }> {
+async function startServer(routes: Route): Promise<{ url: string; system: ActorSystem; binding: ServerBinding }> {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off);
@@ -33,11 +34,6 @@ async function startServer(routes: Parameters<ReturnType<ReturnType<typeof newHt
   const binding = await ext.newServerAt('127.0.0.1', 0).useBackend(backend).bind(routes);
   bindings.push(binding);
   return { url: `http://${binding.host}:${binding.port}`, system, binding };
-}
-
-function newHttp(): ReturnType<ActorSystem['extension']> extends object ? any : never {
-  // Only used for the type inference helper above.
-  return null as unknown as never;
 }
 
 describe('FastifyBackend — plain routes', () => {
@@ -73,6 +69,37 @@ describe('FastifyBackend — plain routes', () => {
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ hi: 'world' });
+  });
+
+  // #669 — the backend hands raw bytes to the DSL for every content-type, so
+  // a form POST must decode rather than die in JSON.parse, and a type nothing
+  // decodes must be a 415 that names what it would have taken.
+  test('entity() decodes a urlencoded form POST (#669)', async () => {
+    const { url } = await startServer(path('form', post(async (request) => {
+      const body = entity<{ name: string }>(request);
+      return completeJson(Status.OK, { hi: body.name });
+    })));
+    const response = await fetch(`${url}/form`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'name=Ada&age=36',
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ hi: 'Ada' });
+  });
+
+  test('an unknown content-type answers 415 with the accepted types (#669)', async () => {
+    const { url } = await startServer(path('echo', post(async (request) =>
+      completeJson(Status.OK, entity(request) as object))));
+    const response = await fetch(`${url}/echo`, {
+      method: 'POST',
+      headers: { 'content-type': 'text/xml' },
+      body: '<order/>',
+    });
+    expect(response.status).toBe(415);
+    expect(response.headers.get('accept')).toContain('application/x-www-form-urlencoded');
+    const payload = await response.json() as { accepted: string[] };
+    expect(payload.accepted).toContain('application/json');
   });
 
   test('path parameters are exposed on request.params', async () => {
@@ -218,7 +245,7 @@ describe('HttpExtension — client round-trip', () => {
     const client = system.extension(HttpExtensionId).client;
     const response = await client.get(`${url}/`);
     expect(response.status).toBe(200);
-    expect(response.json()).toEqual({ pong: true });
+    expect(response.json<{ pong: boolean }>()).toEqual({ pong: true });
   });
 
   test('HttpClient.post round-trips a JSON body', async () => {
@@ -228,6 +255,6 @@ describe('HttpExtension — client round-trip', () => {
     const client = system.extension(HttpExtensionId).client;
     const response = await client.post(`${url}/echo`, { body: { hello: 'world' } });
     expect(response.status).toBe(200);
-    expect(response.json()).toEqual({ hello: 'world' });
+    expect(response.json<{ hello: string }>()).toEqual({ hello: 'world' });
   });
 });

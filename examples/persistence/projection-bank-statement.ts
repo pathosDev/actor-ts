@@ -16,6 +16,9 @@
  *   - Restart-safe offset persistence via InMemoryOffsetStore (swap
  *     for `DurableStateOffsetStore(new SqliteDurableStateStore(...))`
  *     in production so the cursor survives a process restart).
+ *   - A handler-failure recovery strategy + `onFailure` hook — the
+ *     ledger below never throws, but this is the wiring a real read
+ *     model needs so one bad event cannot wedge the whole projection.
  *
  *   bun run examples/persistence/projection-bank-statement.ts
  */
@@ -33,7 +36,6 @@ import {
   PersistentActor,
   ProjectionActor,
 } from '../../src/persistence/index.js';
-import { attachDevTools } from '../devtools.js';
 
 /* --------------------------- write side ------------------------------- */
 
@@ -137,16 +139,29 @@ async function main(): Promise<void> {
 
   const sysOptions = ActorSystemOptions.create().withPersistence({ journal });
   const sys = ActorSystem.create('bank', sysOptions);
-  const devtools = await attachDevTools(sys);
 
   // Spawn the projection FIRST so it picks up every event from the
   // start of the run.  In production you'd persist the offset (see
   // DurableStateOffsetStore) so a fresh restart resumes mid-stream.
+  // `withRecoveryStrategy` is what a handler failure runs into.  The default
+  // is `retry-and-fail` — retry, then stop rather than block the read model
+  // forever on one bad event.  A statement is better slightly incomplete than
+  // frozen at yesterday, so this one skips instead: the offending event goes
+  // to the dead-letter stream and `onFailure` names it.
   const projectionOptions = ByTagProjectionOptions.create<AccountEvent>()
     .withName('bank-statement')
     .withQuery(new InMemoryQuery(journal))
     .withOffsetStore(new InMemoryOffsetStore())
     .withTag('account')
+    .withRecoveryStrategy('retry-and-skip')
+    .withMaxRetries(2)
+    .withOnFailure((failure) => {
+      console.error(
+        `  ! ${failure.projection}: ${failure.event.persistenceId}#${failure.event.sequenceNr} `
+        + `failed (attempt ${failure.attempt}) → ${failure.action}`,
+        failure.error,
+      );
+    })
     .withHandle((ev) => {
       ledger.record(ev.persistenceId, ev.sequenceNr, ev.event);
     })
@@ -161,12 +176,15 @@ async function main(): Promise<void> {
   for (const amt of [200, 75]) await bob.ask({ kind: 'deposit', amount: amt }, 500);
   await bob.ask({ kind: 'withdraw', amount: 25 }, 500);
 
-  // Give the projection a beat to drain the last batch.
+  // "Drain" here is the projection's own polling batch, not a mailbox — do not
+  // mistake it for the wait terminate() now does.  The projection is a
+  // `/system` actor reading the journal on a timer, so neither half is
+  // something the `/user` drain covers, and it has to finish before the stop
+  // on the next line.  Without this the ledger prints empty.
   await Bun.sleep(250);
   projectionRef.stop();
   ledger.print();
 
-  await devtools.holdOpen();
   await sys.terminate();
   await journal.close();
 }

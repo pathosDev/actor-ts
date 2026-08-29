@@ -46,8 +46,12 @@ registry.register('Deposited', 2, {
   (typischerweise ein `zodCodec`) wird sowohl auf dem Schreib- als
   auch dem Lesepfad erzwungen.
 - **Adapter zu bauen** — `registry.eventAdapter(manifest)` schreibt
-  bei der neuesten Version und liest jede ältere Version, indem es
-  die registrierten Upcaster nach vorne verkettet.
+  bei der neuesten Version und liest jede ältere Version *desselben
+  Manifests*, indem es die registrierten Upcaster nach vorne
+  verkettet.  Ein gespeicherter Frame mit einem anderen Manifest
+  wird mit einem `MigrationError` abgewiesen, selbst wenn dieses
+  Manifest ebenfalls registriert ist — siehe
+  [Ein Adapter, ein Manifest](#ein-adapter-ein-manifest).
 - **Tooling anzutreiben** — Admin-Dashboards, Dev-Tools, die
   Journal-Inhalte zeigen.
 
@@ -95,21 +99,21 @@ bevor er die Upcaster nach vorne zur neuesten Form verkettet.
 
 ```ts
 interface SchemaRegistry {
-  register<Wire, Upcasted>(
+  register<Wire = unknown, Upcasted = unknown, Previous = unknown>(
     manifest: string,
     version: number,
-    registration: SchemaRegistration<Wire, Upcasted>,
+    registration: SchemaRegistration<Wire, Upcasted, Previous>,
   ): void;
   get(manifest: string, version: number): SchemaDescriptor | undefined;
   latestVersion(manifest: string): number | undefined;
   list(): ReadonlyArray<SchemaDescriptor>;
-  eventAdapter<E>(manifest: string): EventAdapter<E, unknown>;
-  snapshotAdapter<S>(manifest: string): SnapshotAdapter<S, unknown>;
+  eventAdapter<E, JournalShape = E>(manifest: string): EventAdapter<E, JournalShape>;
+  snapshotAdapter<S, StoredShape = S>(manifest: string): SnapshotAdapter<S, StoredShape>;
 }
 
-type SchemaRegistration<Wire, Upcasted> = {
+type SchemaRegistration<Wire = unknown, Upcasted = unknown, Previous = unknown> = {
   readonly codec: Codec<Wire>;
-  readonly upcastFromPrev?: (prev: unknown) => Upcasted;
+  readonly upcastFromPrev?: (prev: Previous) => Upcasted;
   readonly compatibility?: 'none' | 'backward' | 'sample';
   readonly sample?: unknown;
 };
@@ -132,6 +136,59 @@ Implementierung ist `InMemorySchemaRegistry`
 (`new InMemorySchemaRegistry()`), die den gesamten State in einem
 Prozess hält.  Implementiere das Interface selbst, wenn du einen
 anderen Backing-Store brauchst.
+
+## Ein Adapter, ein Manifest
+
+Ein von `eventAdapter(m)` oder `snapshotAdapter(m)` gebauter Adapter
+ist auf **beiden** Pfaden an `m` gebunden.  Er schreibt `m`, und er
+liest ausschließlich `m`: ein gespeicherter Frame mit einem anderen
+Manifest löst einen `MigrationError` aus, selbst wenn dieses andere
+Manifest in derselben Registry registriert ist.
+
+```ts
+const registry = new InMemorySchemaRegistry();
+registry.register('Account.Deposited', 1, { codec: zodCodec(DepositedV1) });
+registry.register('Account.Closed', 1, { codec: zodCodec(ClosedV1) });
+
+const adapter = registry.eventAdapter<DepositedV1>('Account.Deposited');
+
+// Reads its own manifest, at any registered version.
+adapter.fromJournal({ manifest: 'Account.Deposited', version: 1, payload });
+
+// Refused — MigrationError: manifest mismatch: schema-registry adapter
+// is for 'Account.Deposited', got 'Account.Closed'
+adapter.fromJournal({ manifest: 'Account.Closed', version: 1, payload });
+```
+
+Ohne diese Prüfung würde der zweite Read sauber durch den Codec von
+`Account.Closed` dekodieren und einem statisch als `DepositedV1`
+typisierten Aufrufer ein `ClosedV1` zurückgeben — eine
+Typverwechslung, die der Aufrufer nicht erkennen kann, weil die
+Payload gültig ist und der statische Typ behauptet, er habe das
+Erwartete bekommen.  Auf einem Recovery-Pfad heißt das: ein fremdes
+Event landet in `onEvent` und erzeugt einen State, den es nie gab.
+`MigrationChain.upcast` und `defaultsAdapter` haben das immer schon
+abgewiesen; der Registry-Adapter stimmt jetzt mit ihnen überein.
+
+Der realistische Auslöser ist eine **Fehlverdrahtung**, kein
+Angreifer: vertauschte Manifest-Strings von `eventAdapter(...)` und
+`snapshotAdapter(...)`, oder ein zwischen zwei Deploys geändertes
+Argument, während alte Rows noch den alten Wert tragen.  Was die
+Registry selbst geschrieben hat, kann die Prüfung nie auslösen, denn
+`toJournal` taggt immer mit dem eigenen Manifest des Adapters.
+
+Die Konsequenz, die du einplanen solltest: **ein Actor, dessen
+Event-Union mehrere Manifeste umfasst, kann keinen einzelnen von der
+Registry gebauten Adapter verwenden.** Wirklich unterstützt war das
+nie — `toJournal` taggt jedes Event mit dem einen Manifest und
+validiert es gegen den Codec dieses Manifests, ein solcher Actor
+konnte seine anderen Event-Typen also ohnehin nicht persistieren —
+aber der Lesepfad ist früher stillschweigend fehlgeschlagen und
+schlägt jetzt laut fehl.  Schreib ein `fromJournal`, das auf
+`stored.manifest` verzweigt und an einen Adapter pro Typ delegiert,
+so wie es
+[`MigrationChain`](/de/persistence/migration/migrating-adapter/) für
+ein Journal mit mehreren Typen erwartet.
 
 ## Kompatibilitäts-Checks
 

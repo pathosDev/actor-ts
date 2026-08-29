@@ -67,6 +67,45 @@ If you don't already use prom-client, prefer the framework's
 native [Prometheus exporter](/observability/metrics/prometheus-exporter/) —
 no extra dependency.
 
+## One registry, one reader
+
+The bridge keeps **no copy** of what it writes. prom-client holds
+the values, so `collect()` on the returned registry is empty —
+permanently, by design — and the registry says so by declaring
+`collectable: false`.
+
+That is fine for the path this adapter exists for: you read the
+metrics through `register.metrics()`, exactly as you read your own.
+It matters for anything in the framework that reads the *other*
+way, through `collect()`. There are two, and both refuse rather
+than report zero:
+
+- The management [`GET /metrics`](/observability/management/http-endpoints/#get-metrics)
+  route answers **`503`** while this bridge is installed, instead of
+  `200` with an empty body. An empty body is a valid Prometheus
+  scrape — the target stays `up=1` and the framework's series simply
+  stop existing, so alerts written over them never fire again.
+- The DevTools overview shows **`unavailable`** for the three
+  figures it reads from the registry — processed messages, mailbox
+  drops and handler latency. Its **Throughput** chart leaves the
+  `messages / s` line out for the same reason and names it in the
+  legend, rather than drawing a flat line at zero: a chart is more
+  persuasive than a tile, and that line would be making exactly the
+  claim the tile beside it refuses to make. The dead-letter line
+  next to it is counted off the event stream and stays, as does
+  everything else on the page — it comes from the actor tree and
+  the event stream and stays correct.
+
+So: don't enable `enableMetricsEndpoint` alongside this bridge —
+scrape your own prom-client route instead, which has all the same
+series. And read framework metrics in DevTools only on a system
+using the framework's own registry.
+
+Nothing about the *writes* is affected. Every framework counter,
+gauge and histogram is on your prom-client route, live, including
+`actor_mailbox_dropped_total` — the drop counter the DevTools tile
+cannot show you.
+
 ## Configuration
 
 ```ts
@@ -125,6 +164,21 @@ very call meant to contain the damage.
 
 See [cardinality discipline](/observability/metrics/core-metrics/#cardinality-discipline)
 for `bucketize`, the way to not reach the cap in the first place.
+
+## Removing a series
+
+[`remove`](/observability/metrics/core-metrics/#removing-a-series)
+forwards to prom-client's own `Metric.remove(labels)`, so a tuple whose
+subject is gone leaves both sides at once — the bridge's cap tally and
+the exposition prom-client renders.  Dropping only one of the two would
+be worse than not removing at all: a freed slot with the series still
+being scraped, or the reverse.
+
+That is the one place the adapter needs more of `prom-client` than the
+construct-and-mutate surface, so the `client` you pass in must expose
+`remove` on its `Counter` / `Gauge` / `Histogram` — every release since
+v11.2 does.  A hand-rolled stand-in that omits it is a compile error
+rather than a silent divergence.
 
 ## Peer dependency
 

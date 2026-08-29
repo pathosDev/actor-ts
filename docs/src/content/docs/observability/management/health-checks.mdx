@@ -1,6 +1,6 @@
 ---
 title: Health checks
-description: Custom liveness + readiness checks registered on the management server's HealthCheckRegistry and surfaced at `/health` + `/ready`. Each check returns `{ name, status, detail? }`; the endpoint returns 200 iff every check's status is true.
+description: Liveness + readiness checks on the ActorSystem's HealthCheckRegistry, surfaced at `/health` + `/ready`. The framework registers its own; each check returns `{ name, status, detail? }` and the endpoint returns 200 iff every check's status is true.
 ---
 
 The management routes expose two health endpoints:
@@ -8,43 +8,97 @@ The management routes expose two health endpoints:
 - **`GET /health`** — **liveness**.  Returns 200 if the process
   is operational.
 - **`GET /ready`** — **readiness**.  Returns 200 if the pod is
-  ready to receive traffic (cluster up + every readiness check
-  passes).
+  ready to receive traffic.
 
-`managementRoutes(...)` hands you a `HealthCheckRegistry` (the
-`health` field) where you register **custom checks** for
-app-specific health:
+Both aggregate one registry per `ActorSystem`, reached with
+`healthChecksOf(system)`.  Framework components register into it as
+they start; you register your own checks on the same object:
 
 ```ts
-import { managementRoutes } from 'actor-ts/management';
+import { healthChecksOf, managementRoutes } from 'actor-ts/management';
 
-const { routes, health } = managementRoutes(system, cluster);
+const health = healthChecksOf(system);
 
 health.addReadiness(async () => {
-  const ok = await db.ping();
-  return { name: 'database', status: ok, detail: ok ? undefined : 'db unreachable' };
+  const ok = await database.ping();
+  return { name: 'database', status: ok, detail: ok ? undefined : 'database unreachable' };
 });
 
 health.addReadiness(async () => {
   try {
-    await redis.ping();
+    await cache.ping();
     return { name: 'cache', status: true };
   } catch (e) {
     return { name: 'cache', status: false, detail: (e as Error).message };
   }
 });
 
-await system.http(8558).bind(routes);
+await system.http(8558).bind(managementRoutes(system, cluster));
 ```
 
 When **any check returns `status: false`**, the corresponding
 endpoint returns **503** with a JSON body listing every check's
 result.
 
+## The built-in checks
+
+The framework registers these itself — you get them without asking,
+and they are in the aggregate `/ready` reads.  The gRPC
+[`grpc.health.v1.Health`](/io/grpc/) service reads the registry you
+hand it, so pass `healthChecksOf(system)` and the two can never
+disagree about what "ready" means; a fresh `HealthCheckRegistry`
+there forks them.
+
+| Check | Kind | Registered by | Fails when |
+| --- | --- | --- | --- |
+| `actor-system` | liveness | the registry itself | `system.terminate()` has completed |
+| `cluster-membership` | readiness | `Cluster.join` | this node is not `up` in its own member view |
+| `cluster-transport` | readiness | `Cluster.join` | the node can reach **none** of the peers it still expects |
+
+`cluster-transport` is deliberately a *total isolation* test, not
+"every peer is reachable".  A partial partition leaves the node able
+to gossip, converge and route, so dropping it from the load balancer
+would remove capacity from a cluster that is coping.  Being cut off
+from all of it is the case where continuing to serve is the
+split-brain hazard — and the case a node cannot see from its
+membership view alone, because no peer is allowed to downgrade this
+node's own record.  A single-node cluster expects nobody and always
+passes.
+
+"Reachable" means **an open connection to a peer the failure detector
+has not written off**, and it needs both halves.  An open socket on
+its own proves nothing: the canonical partition — `iptables -j DROP`,
+a black-holed route, a wedged peer — takes the traffic away without
+producing a FIN or an RST, so the sockets stay established for as long
+as the kernel keeps retrying while nothing at all is being exchanged.
+Requiring the peer to be reachable as well hands that judgement to the
+failure detector, which is the component that notices silence.
+
+What the check does **not** catch, so you can plan around it:
+
+- **the failure detector's own latency** — between the partition
+  starting and the detector firing, the node still reports ready.
+  That is the same window the rest of the cluster reacts on.
+- **a one-way partition in which this node still receives.**  Its
+  peers keep looking `Up`, so it keeps looking ready while nothing it
+  sends arrives.  Catching that needs an acknowledged round trip.
+
+### Leaving does not silence the checks
+
+`cluster.leave()` leaves both checks **registered and failing** —
+`/ready` answers 503 for the rest of the process's life, which is
+exactly what drains a pod before it stops.  Nothing in the framework
+removes a readiness check on its way out of service: an empty
+aggregate reads as *healthy* (see below), so un-registering would make
+"everything passes" and "nothing is reporting any more" the same
+answer.  A later `Cluster.join` on the same system retires the old
+pair and installs its own, so a process that leaves and re-joins
+recovers normally.
+
 ## The check signature
 
 ```ts
-type HealthCheckFn = () => Promise<HealthCheckResult> | HealthCheckResult;
+type HealthCheckFunction = () => Promise<HealthCheckResult> | HealthCheckResult;
 
 type HealthCheckResult = {
   name:    string;         // identifies the check in the response
@@ -70,48 +124,67 @@ Long-running checks block the response, so keep them fast
 
 | Probe | What it answers | What K8s does on failure |
 | --- | --- | --- |
-| **Liveness** (`/health`) | "Is this process fundamentally broken?" | **Restart** the pod. |
-| **Readiness** (`/ready`) | "Should this pod receive traffic right now?" | **Stop routing** to this pod (keep it running). |
+| **Liveness** (`/health`) | "Would restarting this process help?" | **Restart** the pod. |
+| **Readiness** (`/ready`) | "Should a load balancer send this pod traffic?" | **Stop routing** to this pod (keep it running). |
 
 A check is liveness or readiness depending on **which method you
 call** — `addLiveness` or `addReadiness`.  They are separate
 lists; to run the same check for both, register it with both.
 
-Different semantics drive different checks:
+The difference is not a matter of taste — it decides what may go in
+each list:
 
-- **Liveness** should only fail for **unrecoverable** issues —
-  actor system crashed, deadlock detected, fundamental invariants
-  broken.  Restart is the only fix.  Register these with
-  `addLiveness`.
-- **Readiness** can fail for **transient** issues — DB briefly
-  unreachable, cache warming up, cluster rejoining.  No restart
-  needed; just don't route here yet.  Register these with
-  `addReadiness`.
+- **Liveness** may depend on **nothing outside this process**.  A
+  failing liveness check gets the pod killed, so a check that goes
+  red when a shared database blinks turns one dependency's outage
+  into a fleet-wide restart storm, and the restarts cannot fix what
+  broke.  This is why the only framework liveness check is
+  "the actor system has not shut down".
+- **Readiness** is the right home for exactly what liveness must not
+  touch — the dependencies a request needs.  It takes the node out
+  of rotation and leaves it running, so a database blip, a warming
+  cache or a cluster rejoin belong here.
 
-**Don't register DB / downstream checks as liveness** — restarting
-a pod because the external DB blipped is wrong; the blip will pass.
+A readiness probe that answers 200 while the node cannot reach what
+it needs is **worse than no probe at all**: it keeps taking traffic
+it cannot serve.
 
 ## Cluster readiness
 
-`/ready` also reports a `clusterReady` flag, computed from cluster
-membership — **independent of your registered checks**.  It's
-`false` until the local node reaches the `Up` state (and always
-`true` when the routes were built without a cluster):
+`/ready` reports a `clusterReady` flag alongside the check list.  It
+is the `cluster-membership` check's own result, read back out of the
+aggregate rather than computed separately — so the flag and the
+check can never contradict each other.  It is `false` until the local
+node reaches the `Up` state, and always `true` on a system that never
+joined a cluster:
 
 ```
 GET /ready
 → 503
-{ "status": "DOWN", "clusterReady": false, "checks": [] }
+{
+  "status": "DOWN",
+  "clusterReady": false,
+  "checks": [
+    { "name": "cluster-membership", "status": false, "detail": "this node is 'joining' in its own member view, not 'up'" },
+    { "name": "cluster-transport",  "status": true }
+  ]
+}
 ```
 
-Returns `clusterReady: true` (and 200, if your readiness checks
-also pass) once the node is `Up` — the canonical "wait for the
-cluster" gate.
+The in-process counterpart is `cluster.awaitReady()` /
+`cluster.isReady()` — the same `up`-only membership semantics, awaited
+from code instead of scraped over HTTP (see
+[Cluster bootstrap → Waiting for readiness](/cluster/cluster-bootstrap/#waiting-for-readiness)).
+The two are deliberately not coupled: `awaitReady` looks at membership
+alone, never at the readiness aggregate, because app-registered checks
+may only pass after initialisation that runs *after* bootstrap — waiting
+on them from inside `Cluster.bootstrap` could deadlock the start.
+`/ready` remains the load balancer's view.
 
 ## Multiple checks
 
 ```ts
-health.addReadiness(dbCheck);
+health.addReadiness(databaseCheck);
 health.addReadiness(cacheCheck);
 health.addReadiness(downstreamApiCheck);
 ```
@@ -124,29 +197,58 @@ The response lists each check's result:
   "status": "DOWN",
   "clusterReady": true,
   "checks": [
-    { "name": "database",       "status": false, "detail": "connection refused" },
-    { "name": "cache",          "status": true },
-    { "name": "downstream-api", "status": true }
+    { "name": "cluster-membership", "status": true },
+    { "name": "cluster-transport",  "status": true },
+    { "name": "database",           "status": false, "detail": "connection refused" },
+    { "name": "cache",              "status": true },
+    { "name": "downstream-api",     "status": true }
   ]
 }
 ```
 
-The aggregate is `UP` iff `clusterReady` **and every** check's
-`status` is true.
+The aggregate is `UP` iff **every** check's `status` is true.
+
+### An empty check list is `UP`
+
+Registering no checks is a statement that nothing gates the probe, so
+a system with an empty readiness list answers 200 — otherwise every
+plain, cluster-free service behind `managementRoutes` would be 503 for
+its whole life.  `/ready`, `/health` and the gRPC health service all
+apply that rule through the same exported function:
+
+```ts
+import { isHealthy } from 'actor-ts/management';
+
+isHealthy([]);                                   // true
+isHealthy([{ name: 'database', status: false }]); // false
+```
+
+The rule is only safe because nothing *empties* the list.  If a
+component could un-register on its way down, "healthy" and "no longer
+reporting" would be indistinguishable — a component going quiet
+reports `status: false` and stays registered instead.  Use the undo
+returned by `addReadiness` for replacement, or when the thing the
+check observes is being torn down, never to signal trouble.
 
 ## Testing checks
 
 ```ts
 import { HealthCheckRegistry } from 'actor-ts/management';
 
-it('readiness fails when the DB is down', async () => {
+it('readiness fails when the database is down', async () => {
   const health = new HealthCheckRegistry();
-  health.addReadiness(async () => ({ name: 'db', status: false, detail: 'mock' }));
+  health.addReadiness(async () => ({ name: 'database', status: false, detail: 'mock' }));
 
   const results = await health.checkReadiness();
-  expect(results).toEqual([{ name: 'db', status: false, detail: 'mock' }]);
+  expect(results).toEqual([{ name: 'database', status: false, detail: 'mock' }]);
 });
 ```
+
+A bare `new HealthCheckRegistry()` is the right thing in a unit test
+— it holds only what the test puts in it, with none of the
+framework's own checks.  In production, always go through
+`healthChecksOf(system)`: a second registry is a second notion of
+"ready", and only one of them is the one the endpoints read.
 
 `checkLiveness()` / `checkReadiness()` run the registered checks
 and return the `HealthCheckResult[]` the endpoints aggregate —
@@ -176,24 +278,24 @@ timeout (10 s default) and triggers a restart.  Keep checks fast.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Don't restart pods for transient DB outages">
+<Aside type="caution" title="Don't restart pods for transient database outages">
   ```ts
-  health.addLiveness(dbPing);   // ✗ a DB blip → K8s restarts → restart loop
-  health.addReadiness(dbPing);  // ✓ a DB blip just stops routing here
+  health.addLiveness(databasePing);   // ✗ a blip → K8s restarts → restart loop
+  health.addReadiness(databasePing);  // ✓ a blip just stops routing here
   ```
-  A DB checked in **liveness** makes a blip restart the pod; the new
-  pod also can't reach the DB → restart loop.  Register DB checks
-  with `addReadiness`.
+  A database checked in **liveness** makes a blip restart the pod; the
+  new pod also can't reach the database → restart loop.  Register
+  database checks with `addReadiness`.
 </Aside>
 
 <Aside type="caution" title="Checks are unauthenticated">
   ```ts
   // Anyone with port 8558 access can hit /health and see check results
   ```
-  Check responses can leak detail (DB hostnames in error messages).
-  Don't expose 8558 publicly; restrict to the internal network, or
-  attach the `auth` / `ipAllowlist` settings (`authProtectHealth`
-  to cover the probes too).
+  Check responses can leak detail (database hostnames in error
+  messages).  Don't expose 8558 publicly; restrict to the internal
+  network, or attach the `auth` / `ipAllowlist` settings
+  (`authProtectHealth` to cover the probes too).
 </Aside>
 
 <Aside type="caution" title="Slow checks delay responses">

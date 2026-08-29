@@ -12,9 +12,8 @@ import {
   type SupervisorStrategy,
 } from '../../src/Supervision.js';
 import { ActorStopped, Terminated } from '../../src/SystemMessages.js';
-import { awaitCondition } from '../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSystem = (name = 'watch-unit'): ActorSystem => {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -87,6 +86,8 @@ describe('watch / unwatch', () => {
       timeoutMs: 4_000,
       label: 'the unwatched target stopped',
     });
+    // The settle window itself: an absence cannot be polled, so this is the span
+    // in which a `Terminated` that should not exist would have arrived.
     await sleep(20);
     expect(terminatedReceived).toBe(0);
     await sys.terminate();
@@ -321,6 +322,8 @@ describe('watchWith', () => {
       timeoutMs: 4_000,
       label: 'the unwatched worker stopped',
     });
+    // The settle window itself: an absence cannot be polled, so this is the span
+    // in which a notification the `unwatch` should have cancelled would arrive.
     await sleep(20);
     expect(seen).toEqual([]);
     await sys.terminate();

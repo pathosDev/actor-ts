@@ -187,7 +187,7 @@ private working = (message) => {
 
 `ReceiveTimeout.instance` wird über denselben Pfad wie jede andere
 User-Nachricht ausgeliefert — sie wird enqueued, dispatched, an
-`onReceive` übergeben.  Drei Nebeneffekte:
+`onReceive` übergeben.  Vier Nebeneffekte:
 
 - **Eine gestaute Mailbox verzögert Receive-Timeouts.**  Wenn der
   Actor 100 User-Nachrichten in der Queue hat und sie langsam
@@ -202,6 +202,15 @@ User-Nachricht ausgeliefert — sie wird enqueued, dispatched, an
   Instanz ohne konfigurierten Receive-Timeout; rufe
   `setReceiveTimeout` in `preStart` (oder `postRestart`) auf, um
   neu zu armieren.
+- **Sie trägt keinen diagnostischen Kontext.**  Ein
+  `ReceiveTimeout`-Handler läuft mit **leerer** MDC, nicht mit dem
+  Kontext der letzten echten Nachricht, die der Actor behandelt hat —
+  und ein `tell` aus diesem Handler trägt folglich auch nichts.  Der
+  Unterschied zählt, weil du diesen Timer nie selbst scharfmachst: das
+  Framework armiert ihn nach jeder Nachricht neu, es gibt also keine
+  Aufrufstelle, an der du den Kontext hättest leeren können.
+  Untätigkeit gehört zu keinem Request.  Siehe
+  [Logging — was das Framework garantiert](/de/fundamentals/logging/#was-das-framework-garantiert).
 
 import { Aside } from '@astrojs/starlight/components';
 

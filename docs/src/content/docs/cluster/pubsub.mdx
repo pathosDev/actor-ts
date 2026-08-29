@@ -124,6 +124,49 @@ On `Publish(topic, message)`:
 This gives **at-most-one-remote-hop** delivery: a publish never
 chains through multiple nodes to reach a subscriber.
 
+## Knowing which node published
+
+A topic fan-out carries no sender: `tell` is one-way, the publisher is
+usually not the interesting party, and every subscriber's `onReceive`
+is written against the bare body.  A subscriber that has to *authorise*
+on the publisher needs more than that, and asks for it at subscribe
+time:
+
+```ts
+mediator.tell(new Subscribe('ledger', auditor, null, /* deliverWithOrigin= */ true));
+```
+
+Every message for that subscriber then arrives as a `PubSubEnvelope`
+instead of the bare body:
+
+```ts
+override onReceive(message: PubSubEnvelope<LedgerEntry>): void {
+  const { topic, message: entry, origin } = message;
+  if (origin === null) return;             // no authenticated sender
+  if (!this.mayWrite(entry.author, origin)) return;
+  this.apply(entry);
+}
+```
+
+`origin` is **never** a value out of the payload.  For a message that
+crossed the wire it is the connection's peer — the identity the cluster
+handshake established — and for one published on this node it is
+`cluster.selfAddress`.  `null` means the mediator had no authenticated
+identity to attach, and a subscriber that authorises on `origin` must
+read that as *unauthenticated*, not as *local*.
+
+The comparison is only meaningful because of the at-most-one-hop rule
+above: the node a subscriber sees is the node that published, not a
+relay that forwarded on someone else's behalf.
+
+The flag belongs to the **subscriber**, not to the subscription — one
+actor has one `onReceive`, so a mixture of shapes across its topics
+would be a discrimination problem it could not solve.  A later
+`Subscribe` from the same actor restates the shape for all of its
+topics.  `ReplicatedEventSourcedActor` is the in-tree user: an event
+envelope names its own author, and without the publishing node there is
+nothing to hold that name against.
+
 ## Anycast — one subscriber instead of all
 
 A third argument switches `Publish` from broadcast to **anycast**:

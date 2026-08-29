@@ -42,6 +42,10 @@ export type {
 export {
   BearerTokenAuth,
   IpAllowlist,
+  DEFAULT_FORWARDED_HEADER,
+  IpAllowlistOptions,
+  IpAllowlistOptionsBuilder,
+  IpAllowlistOptionsValidator,
   strictTransportSecurity,
   hsts,
   HstsOptions,
@@ -82,7 +86,7 @@ export {
 } from './middleware/index.js';
 export type {
   BearerTokenAuthOptions,
-  IpAllowlistOptions,
+  IpAllowlistOptionsType,
   HstsOptionsType,
   CspOptionsType,
   CspDirectives,
@@ -99,6 +103,11 @@ export type {
 } from './middleware/index.js';
 
 export { entity, marshal, pickRequestSerializer, pickResponseSerializer } from './Marshalling.js';
+
+// HTML form bodies — `application/x-www-form-urlencoded`, the one request
+// media type that is not also a cluster-wire codec, hence its home here.
+export { FormUrlEncodedSerializer } from './FormUrlEncodedSerializer.js';
+export type { FormFields } from './FormUrlEncodedSerializer.js';
 
 // MIME-type registry — extension → content-type for static-file responses.
 export { contentTypeFor, DEFAULT_MIME_TYPES } from './MimeTypes.js';
@@ -127,12 +136,17 @@ export {
   HttpClientOptions,
   HttpClientOptionsBuilder,
   HttpClientOptionsValidator,
+  HttpClientRequestLimitsValidator,
   DEFAULT_HTTP_CLIENT_MAX_REDIRECTS,
   DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES,
   DEFAULT_HTTP_CLIENT_REDIRECT_MODE,
   DEFAULT_HTTP_CLIENT_TIMEOUT_MS,
 } from './HttpClientOptions.js';
-export type { HttpClientOptionsType, HttpRedirectMode } from './HttpClientOptions.js';
+export type {
+  HttpClientOptionsType,
+  HttpClientRequestLimits,
+  HttpRedirectMode,
+} from './HttpClientOptions.js';
 
 export { FastifyBackend } from './backend/FastifyBackend.js';
 export { ExpressBackend } from './backend/ExpressBackend.js';
@@ -149,7 +163,11 @@ export type {
   WebsocketRouteRegistration,
   ServerBinding,
 } from './backend/HttpServerBackend.js';
-export type { WebsocketSocketAdapter, WebsocketListeners } from './websocket/SocketAdapter.js';
+export type {
+  WebsocketSocketAdapter,
+  WebsocketListeners,
+  PreAttachBufferLimits,
+} from './websocket/SocketAdapter.js';
 
 // Typed WebSocket stack — websocket() directive, server actor, codecs.
 export * from './websocket/index.js';
@@ -168,6 +186,7 @@ export {
   RateLimitOptionsValidator,
   idempotent,
   DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH,
+  DEFAULT_IDEMPOTENCY_MAX_SCOPE_LENGTH,
   IdempotencyOptions,
   IdempotencyOptionsBuilder,
   IdempotencyOptionsValidator,

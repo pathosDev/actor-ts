@@ -3,11 +3,13 @@ import { persistenceIdPage } from '../Journal.js';
 import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
+  type JournalEntry,
   type PersistentEvent,
 } from '../JournalTypes.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
-import { assertValidTags } from '../storage/TagValidator.js';
+import { assertValidEntryTags } from '../storage/TagValidator.js';
+import type { StorageLocality } from '../StorageLocality.js';
 
 /**
  * In-process journal backed by plain arrays.  The default plug-in used by
@@ -34,20 +36,34 @@ export class InMemoryJournal implements Journal {
    */
   private readonly highWater = new Map<string, number>();
   readonly events: JournalEventBus = new InProcessJournalEventBus();
+  /**
+   * Process-private maps — `'node-local'` by default.  Writable on purpose:
+   * a fixture that hands ONE instance to several in-process systems (the
+   * multi-node suites do) genuinely is shared storage and declares itself
+   * `'shared'` after construction (#1356).
+   */
+  storageLocality: StorageLocality = 'node-local';
+  /**
+   * Minted per instance (#1358) — which makes the shared-fixture case exact
+   * for free: one instance handed to several in-process systems is one
+   * database and reports one identity; two instances report two.
+   */
+  private readonly mintedStorageIdentity: string = crypto.randomUUID();
+
+  async storageIdentity(): Promise<string> { return this.mintedStorageIdentity; }
 
   async append<E>(
     persistenceId: string,
-    events: ReadonlyArray<E>,
+    entries: ReadonlyArray<JournalEntry<E>>,
     expectedSeq: number,
-    tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
     assertValidPersistenceId(persistenceId, 'InMemoryJournal.append');
-    assertValidTags(tags);
+    assertValidEntryTags(entries);
     // Nothing is being written, so there is nothing to conflict over — an
     // empty append is a no-op, and notably does NOT run the optimistic-
     // concurrency check.  Every other journal returns early here; the
     // in-memory one used to fall through and reject a stale expectedSeq.
-    if (events.length === 0) return [];
+    if (entries.length === 0) return [];
     const stream = this.streams.get(persistenceId) ?? [];
     const actualSeq = this.highWater.get(persistenceId) ?? 0;
     if (actualSeq !== expectedSeq) {
@@ -56,18 +72,19 @@ export class InMemoryJournal implements Journal {
     // Round-trip every payload BEFORE touching the stream: a real store's
     // transaction rolls back when one event of a batch fails to encode, and
     // mutating incrementally here would leave a partial append behind.
-    const roundTripped = events.map((ev) => decodePayload(encodePayload(ev)));
+    const roundTripped = entries.map((entry) => decodePayload(encodePayload(entry.event)));
     const now = Date.now();
     const appended: PersistentEvent<E>[] = [];
     let seq = actualSeq;
-    for (let index = 0; index < events.length; index++) {
+    for (let index = 0; index < entries.length; index++) {
       seq++;
+      const entry = entries[index]!;
       const pe: PersistentEvent<E> = {
         persistenceId: persistenceId,
         sequenceNr: seq,
-        event: events[index]!,
+        event: entry.event,
         timestamp: now,
-        tags: tags ? [...tags] : undefined,
+        tags: entry.tags ? [...entry.tags] : undefined,
       };
       appended.push(pe);
       stream.push({ ...pe, event: roundTripped[index] } as PersistentEvent<unknown>);
@@ -101,6 +118,17 @@ export class InMemoryJournal implements Journal {
     // rewind, so a subsequent append still expects seq > the highest ever.
     const next = stream.filter(e => e.sequenceNr > toSeq);
     this.streams.set(persistenceId, next);
+  }
+
+  async raiseCompactionMark(persistenceId: string, throughSeq: number): Promise<void> {
+    const current = this.highWater.get(persistenceId) ?? 0;
+    if (throughSeq > current) this.highWater.set(persistenceId, throughSeq);
+    // Materialise the (empty) stream as well, so the id shows up in
+    // `persistenceIds()`.  That is the shape a compacted stream has here —
+    // `delete` leaves the emptied array behind rather than dropping the key —
+    // and a migration target that has adopted a mark but holds no events yet
+    // is the same thing: known, currently without surviving history.
+    if (!this.streams.has(persistenceId)) this.streams.set(persistenceId, []);
   }
 
   async persistenceIds(): Promise<string[]> {

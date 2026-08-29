@@ -6,7 +6,6 @@
  *   bun run examples/selection/hello-selection.ts
  */
 import { Actor, ActorSystem } from '../../src/index.js';
-import { attachDevTools } from '../devtools.js';
 
 class Greeter extends Actor<string> {
   override onReceive(name: string): void { console.log(`Hello, ${name}!`); }
@@ -14,7 +13,6 @@ class Greeter extends Actor<string> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('selection-hello');
-  const devtools = await attachDevTools(system);
   system.spawn(Greeter, 'greeter');
 
   // Tell without resolving — fire-and-forget; delivers or drops to dead letters.
@@ -24,8 +22,8 @@ async function main(): Promise<void> {
   const ref = await system.actorSelection('/user/greeter').resolveOne(500);
   ref.tell('again');
 
-  await Bun.sleep(30);
-  await devtools.holdOpen();
+  // No sleep: a selection resolves and tells synchronously, so both greetings
+  // are on the greeter's mailbox before terminate() starts draining it.
   await system.terminate();
 }
 

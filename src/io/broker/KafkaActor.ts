@@ -5,6 +5,8 @@ import type { ActorRef } from '../../ActorRef.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { toBrokerDriverTls } from './BrokerTls.js';
+import type { BrokerDriverTlsOptions } from './BrokerTls.js';
 import { KafkaOptionsValidator } from './KafkaOptions.js';
 import type { KafkaOptions, KafkaOptionsType } from './KafkaOptions.js';
 
@@ -201,24 +203,34 @@ export class KafkaActor
     return Array.isArray(brokers) ? `kafka://${brokers.join(',')}` : `kafka://${brokers ?? ''}`;
   }
 
+  /** @internal Test seam — override to inject a fake kafkajs module. */
+  protected kafkaModule(): Promise<KafkajsModule> { return kafkaLazy.get(); }
+
   /**
    * Build a `KafkaInstanceLike` from the configured options.  Override
    * in a subclass for tests that want to inject mock producers /
    * consumers without going through the kafkajs peer dep — that's the
    * test seam used by `tests/unit/io/broker/KafkaActor.test.ts`.
+   *
+   * Overriding this replaces the client config, `ssl` included — override
+   * {@link kafkaModule} instead when a test wants to *observe* it.
    */
   protected async createKafkaInstance(): Promise<KafkaInstanceLike> {
-    const kafkajs = await kafkaLazy.get();
+    const kafkajs = await this.kafkaModule();
     const Constructor = kafkajs.Kafka ?? (kafkajs as unknown as { default: { Kafka: KafkaConstructor } }).default.Kafka;
     const brokersRaw = this.options.brokers;
     const brokers: ReadonlyArray<string> = Array.isArray(brokersRaw)
       ? brokersRaw
       : (typeof brokersRaw === 'string' ? brokersRaw : '')
           .split(',').map((s: string) => s.trim()).filter(Boolean);
+    const ssl = this.options.ssl;
     return new Constructor({
       clientId: this.options.clientId,
       brokers: [...brokers],
-      ssl: this.options.ssl,
+      // kafkajs's `ssl` is `boolean | tls.ConnectionOptions`; the material
+      // form goes through the same driver mapping as every other broker so
+      // `serverName` reaches it under Node's `servername` spelling (#743).
+      ssl: typeof ssl === 'object' ? toBrokerDriverTls(ssl) : ssl,
       sasl: this.options.sasl,
     });
   }
@@ -361,7 +373,7 @@ export class KafkaActor
     });
   }
 
-  override onReceive(command: KafkaCommand): void {
+  protected override onCommand(command: KafkaCommand): void {
     // Compile-time exhaustiveness: adding a new KafkaCommand variant
     // forces this site to handle it explicitly.
     match(command)
@@ -475,11 +487,12 @@ function pendingKey(topic: string, partition: number, offset: string): string {
   return `${topic}|${partition}|${offset}`;
 }
 
-interface KafkaConstructor {
+export interface KafkaConstructor {
   new (config: {
     clientId?: string;
     brokers: string[];
-    ssl?: boolean;
+    /** kafkajs's own union — `true` for the system trust store, or material. */
+    ssl?: boolean | BrokerDriverTlsOptions;
     sasl?: { mechanism: string; username: string; password: string };
   }): KafkaInstanceLike;
 }
@@ -539,7 +552,8 @@ export interface KafkaConsumerLike {
   }>): Promise<void>;
 }
 
-type KafkajsModule = {
+/** The `kafkajs` module surface we use.  Exported as a test seam. */
+export type KafkajsModule = {
   Kafka?: KafkaConstructor;
 };
 

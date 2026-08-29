@@ -119,6 +119,35 @@ export type {
   WireSpanStatus,
 } from './TracingStreamFrames.js';
 
+export { SEND_MESSAGE_MAX_BYTES } from './SendFrames.js';
+export type { SendMessageParameters, SendMessageResult } from './SendFrames.js';
+
+export { CONFIG_REDACTED, CONFIG_SECRET_PATTERN } from './ConfigFrames.js';
+export type {
+  ConfigSource,
+  ResolvedConfigEntry,
+  ResolvedConfigResult,
+} from './ConfigFrames.js';
+
+export {
+  BUS_EVENT_BUFFER_DEFAULT,
+  BUS_EVENT_TAIL_ROWS,
+  busEventBatchPayload,
+} from './EventStreamFrames.js';
+export type {
+  BusEvent,
+  BusEventBatchPayload,
+  BusEventStreamPayload,
+  PubSubTopicsResult,
+} from './EventStreamFrames.js';
+
+export { DEAD_LETTER_ROWS, deadLetterView } from './DeadLetterFrames.js';
+export type {
+  DeadLettersParameters,
+  DeadLettersResult,
+  DeadLetterView,
+} from './DeadLetterFrames.js';
+
 export { explainEntriesPayload } from './ExplainFrames.js';
 export type {
   ExplainEnableParameters,

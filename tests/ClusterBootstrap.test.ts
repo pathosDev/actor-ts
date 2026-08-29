@@ -7,10 +7,14 @@ import {
 import {
   Cluster,
   ClusterBootstrapOptions,
+  ClusterReadyTimeoutError,
   InMemoryTransport,
   NodeAddress,
   bootstrapCluster,
+  type Transport,
+  type WireHandler,
 } from '../src/cluster/index.js';
+import type { WireMessage } from '../src/cluster/Protocol.js';
 import {
   AggregateSeedProvider,
   AutoDiscoveryOptions,
@@ -18,10 +22,37 @@ import {
   DnsSeedProvider,
   KubernetesApiSeedProvider,
   KubernetesApiSeedProviderOptions,
+  SeedDiscoveryError,
   autoDiscovery,
   singleProviderDiscovery,
   type SeedProvider,
 } from '../src/discovery/index.js';
+import { awaitCondition } from './util/AwaitCondition.js';
+
+/**
+ * Delegating transport that counts `shutdown()` calls — the observable that
+ * proves the coordinated-shutdown pipeline ran when a bootstrap rejects.
+ */
+class RecordingTransport implements Transport {
+  startCalls = 0;
+  shutdownCalls = 0;
+
+  constructor(private readonly inner: InMemoryTransport) {}
+
+  get self(): NodeAddress { return this.inner.self; }
+  async start(): Promise<void> {
+    this.startCalls++;
+    await this.inner.start();
+  }
+  async shutdown(): Promise<void> {
+    this.shutdownCalls++;
+    await this.inner.shutdown();
+  }
+  setHandler(handler: WireHandler): void { this.inner.setHandler(handler); }
+  send(to: NodeAddress, message: WireMessage): void { this.inner.send(to, message); }
+  disconnect(peer: NodeAddress): void { this.inner.disconnect(peer); }
+  peers(): NodeAddress[] { return this.inner.peers(); }
+}
 
 /* -------------------------------------------------------------------------- */
 /* Cluster.bootstrap — high-level entry point                                  */
@@ -40,18 +71,75 @@ describe('Cluster.bootstrap', () => {
       .withShutdownOnSignals(false)
       .withGossipIntervalMs(50)
       .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 });
-    const { system, cluster, receptionist, shutdown } = await Cluster.bootstrap(
+    const { system, cluster, receptionist, shutdown, formedNewCluster } = await Cluster.bootstrap(
       clusterBootstrapOptions,
     );
     try {
       expect(system.name).toBe('bootstrap-1');
       expect(cluster.selfAddress.toString()).toBe('bootstrap-1@127.0.0.1:50100');
-      // awaitReady defaults to true → SelfUp has fired (single-node self-elects).
+      // awaitReady defaults to true → resolved means ready (single-node self-elects).
       expect(cluster.upMembers().length).toBe(1);
+      expect(cluster.isReady()).toBe(true);
+      expect(formedNewCluster).toBe(true);
       expect(receptionist).toBeNull();
     } finally {
       await shutdown();
       await shutdown();   // idempotent
+    }
+  });
+
+  test('binds the wildcard and advertises the host it was given (#944)', async () => {
+    // The Kubernetes shape: the pod does not know its address at start-up, so
+    // it binds every interface — but what it gossips has to be the one address
+    // peers can dial back, or every node advertises the same string and none
+    // of them ever sees another member.
+    const transport = new InMemoryTransport(new NodeAddress('bootstrap-split', '10.0.0.5', 50120));
+    const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-split')
+      .withHost('0.0.0.0')
+      .withAdvertisedHost('10.0.0.5')
+      .withPort(50120)
+      .withTransport(transport)
+      .withReceptionist(false)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withShutdownOnSignals(false);
+    const { cluster, shutdown } = await Cluster.bootstrap(clusterBootstrapOptions);
+    try {
+      expect(cluster.selfAddress.toString()).toBe('bootstrap-split@10.0.0.5:50120');
+    } finally {
+      await shutdown();
+    }
+  });
+
+  test('a bare wildcard bind host resolves to a dialable address, never a wildcard', async () => {
+    // What this used to do was carry `0.0.0.0` straight into `selfAddress`.
+    // Loopback is the last resort now: reachable from this machine only, which
+    // is honest about an unconfigured node instead of colliding with every
+    // other one.
+    const saved = ['CLUSTER_HOST', 'POD_IP', 'HOSTNAME']
+      .map((name) => [name, process.env[name]] as const);
+    for (const [name] of saved) delete process.env[name];
+    const transport = new InMemoryTransport(new NodeAddress('bootstrap-wild', '127.0.0.1', 50121));
+    const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-wild')
+      .withHost('0.0.0.0')
+      .withPort(50121)
+      .withTransport(transport)
+      .withReceptionist(false)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withShutdownOnSignals(false);
+    try {
+      const { cluster, shutdown } = await Cluster.bootstrap(clusterBootstrapOptions);
+      try {
+        expect(cluster.selfAddress.toString()).toBe('bootstrap-wild@127.0.0.1:50121');
+      } finally {
+        await shutdown();
+      }
+    } finally {
+      for (const [name, value] of saved) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
     }
   });
 
@@ -108,39 +196,80 @@ describe('Cluster.bootstrap', () => {
       clusterBootstrapOptions2,
     );
     try {
-      // Both nodes should converge — each sees two up members.
-      const deadline = Date.now() + 2_000;
-      while (Date.now() < deadline) {
-        if (nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2) break;
-        await Bun.sleep(25);
-      }
+      // Both nodes should converge — each sees two up members.  The
+      // hand-rolled deadline loop this replaces fell through silently, so a
+      // convergence that merely took longer than the budget failed as
+      // "expected 2, got 1" — indistinguishable from never converging at all.
+      await awaitCondition(
+        () => nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2,
+        { timeoutMs: 4_000, label: 'both bootstrapped nodes see a 2-member cluster' },
+      );
       expect(nodeA.cluster.upMembers().length).toBe(2);
       expect(nodeB.cluster.upMembers().length).toBe(2);
+      // Joined-vs-formed (#943): A founded the cluster, B was promoted into it.
+      expect(nodeA.formedNewCluster).toBe(true);
+      expect(nodeB.formedNewCluster).toBe(false);
     } finally {
       await nodeA.shutdown();
       await nodeB.shutdown();
     }
-  });
+    // The 4 s budget fits bun's 5 s default with exactly 1 s to spare, and two
+    // `Cluster.bootstrap` calls run before the wait even starts.  That is not a
+    // failure budget, it is a coin toss over which message a stalled
+    // convergence reports.  15 s leaves the budget as the thing that fires.
+  }, 15_000);
 
-  test('awaitReady=false returns before SelfUp', async () => {
+  test('awaitReady=false resolves without waiting — and says the node is not ready', async () => {
+    // Seeds nobody answers: with awaitReady disabled the bootstrap returns a
+    // handle to a node that is still joining, and the readiness surface says
+    // so instead of the old assert-nothing shape this test had.
     const transport = new InMemoryTransport(new NodeAddress('bootstrap-4', '127.0.0.1', 50104));
-    // With no seeds, self-elects to up fast — but with awaitReady: false
-    // the bootstrap should not actively wait.  The cluster might still
-    // be up by the time we check (joining is synchronous-ish), so we
-    // just assert the call resolves without throwing.
     const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-4')
       .withHost('127.0.0.1')
       .withPort(50104)
       .withTransport(transport)
+      .withSeeds(['127.0.0.1:59104'])
       .withReceptionist(false)
       .withAwaitReady(false)
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off)
       .withShutdownOnSignals(false);
-    const { shutdown } = await Cluster.bootstrap(
-      clusterBootstrapOptions,
-    );
-    await shutdown();
+    const node = await Cluster.bootstrap(clusterBootstrapOptions);
+    try {
+      expect(node.cluster.selfMember()?.status).toBe('joining');
+      expect(node.cluster.isReady()).toBe(false);
+      expect(node.formedNewCluster).toBe(false);
+    } finally {
+      await node.shutdown();
+    }
+  });
+
+  test('dead seeds reject with ClusterReadyTimeoutError and tear the system down', async () => {
+    const address = new NodeAddress('bootstrap-4b', '127.0.0.1', 50114);
+    const transport = new RecordingTransport(new InMemoryTransport(address));
+    const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-4b')
+      .withHost('127.0.0.1')
+      .withPort(50114)
+      .withTransport(transport)
+      .withSeeds(['127.0.0.1:59114'])
+      .withReceptionist(false)
+      .withAwaitReady(300)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withShutdownOnSignals(false);
+    let caught: unknown;
+    try {
+      await Cluster.bootstrap(clusterBootstrapOptions);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ClusterReadyTimeoutError);
+    expect((caught as ClusterReadyTimeoutError).selfStatus).toBe('joining');
+    expect((caught as ClusterReadyTimeoutError).timeoutMs).toBe(300);
+    // The coordinated-shutdown pipeline ran before the rejection surfaced:
+    // cluster-leave shut the transport down.  Without it the caller would
+    // hold no handle to a system that keeps gossiping forever.
+    expect(transport.shutdownCalls).toBe(1);
   });
 
   test('custom SeedProvider via discovery: SeedProvider', async () => {
@@ -181,11 +310,13 @@ describe('Cluster.bootstrap', () => {
       clusterBootstrapOptions2,
     );
     try {
-      const deadline = Date.now() + 2_000;
-      while (Date.now() < deadline) {
-        if (nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2) break;
-        await Bun.sleep(25);
-      }
+      // The hand-rolled deadline loop this replaces fell through silently, so a
+      // convergence that never happened arrived at the assertion below as a bare
+      // `2 !== 1` with no hint that the wait had expired (#418).
+      await awaitCondition(
+        () => nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2,
+        { timeoutMs: 4_000, intervalMs: 25, label: 'both nodes saw a two-member cluster' },
+      );
       expect(nodeA.cluster.upMembers().length).toBe(2);
       expect(nodeB.cluster.upMembers().length).toBe(2);
     } finally {
@@ -225,23 +356,51 @@ describe('autoDiscovery', () => {
       .toEqual(['app@10.0.0.1:2552', 'app@10.0.0.2:2552']);
   });
 
-  test('K8s + DNS chain order — K8s wins when both apply', async () => {
+  test('K8s + DNS chain order — an all-threw chain rejects with SeedDiscoveryError', async () => {
     const autoDiscoveryOptions = AutoDiscoveryOptions.create()
       .withSystemName('app')
       .withPort(2552)
       .withEnv({ KUBERNETES_SERVICE_HOST: '10.0.0.1', CLUSTER_SERVICE_NAME: 'definitely-not-a-real-host.invalid', });
-    // K8s provider's default fetchEndpoints would touch the network; the
-    // aggregate wraps each lookup() in try/catch and falls through.  So
-    // K8s fails (no token in test env) and DNS picks up next.  We can
-    // verify the aggregate is wired by checking that an unparsable DNS
-    // host throws on lookup, proving DNS was reached.
     const provider = autoDiscovery(
       autoDiscoveryOptions,
     );
-    // K8s throws (no ServiceAccount token) → DNS resolves an
-    // invalid host → throws too → aggregate returns [].
-    const seeds = await provider.lookup();
-    expect(Array.isArray(seeds)).toBe(true);
+    // K8s throws (no ServiceAccount token in a test env) → DNS resolves an
+    // invalid host → throws too.  Since #943 an all-threw chain is a startup
+    // failure rather than [], and the error carrying both rungs' failures is
+    // also a stronger traversal proof than the old "returns an array"
+    // assertion, which could not tell the chain from a no-op.
+    let caught: unknown;
+    try {
+      await provider.lookup();
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(SeedDiscoveryError);
+    expect((caught as SeedDiscoveryError).errors.length).toBe(2);
+  });
+
+  test('a discovery provider whose lookup rejects fails the bootstrap (#943)', async () => {
+    const address = new NodeAddress('bootstrap-9', '127.0.0.1', 50119);
+    const transport = new RecordingTransport(new InMemoryTransport(address));
+    const failingProvider: SeedProvider = {
+      async lookup(): Promise<NodeAddress[]> {
+        throw new Error('EAI_AGAIN app.cluster.svc');
+      },
+    };
+    const clusterBootstrapOptions = ClusterBootstrapOptions.create('bootstrap-9')
+      .withHost('127.0.0.1')
+      .withPort(50119)
+      .withTransport(transport)
+      .withDiscovery(failingProvider)
+      .withReceptionist(false)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withShutdownOnSignals(false);
+    // The old catch degraded this to [] and a self-elected one-node leader in
+    // milliseconds; now the provider's own error surfaces and the system is
+    // torn down before the transport ever started.
+    await expect(Cluster.bootstrap(clusterBootstrapOptions)).rejects.toThrow('EAI_AGAIN app.cluster.svc');
+    expect(transport.startCalls).toBe(0);
   });
 
   test('CLUSTER_NAMESPACE defaults to "default"', () => {

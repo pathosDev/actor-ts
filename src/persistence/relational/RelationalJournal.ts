@@ -1,15 +1,17 @@
 import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
+  type JournalEntry,
   type PersistentEvent,
 } from '../JournalTypes.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
-import { assertValidTags } from '../storage/TagValidator.js';
-import { expandPlaceholders, type JournalTableNames } from './SqlDialect.js';
+import { assertValidEntryTags } from '../storage/TagValidator.js';
+import type { Serializer } from '../../serialization/Serializer.js';
+import { expandPlaceholders, type JournalTableNames, type SqlDialect } from './SqlDialect.js';
 import { RelationalStore, type RelationalStoreConfig } from './RelationalStore.js';
-import type { SqlExecutor } from './SqlPool.js';
+import type { SqlExecutor, SqlPool } from './SqlPool.js';
 
 type EventRow = {
   persistence_id: string;
@@ -25,6 +27,23 @@ export interface RelationalJournalConfig extends RelationalStoreConfig {
   /** Tags join table.  Default `` `${eventsTable}_tags` ``. */
   readonly tagsTable?: string;
 }
+
+/**
+ * Everything an indexed tag query needs from the journal it reads — handed out
+ * by {@link RelationalJournal.openForQuery}.
+ *
+ * It is four things rather than one because that is how many access barriers
+ * sit between a query object and the tags table: the pool is behind
+ * `LazyStore.ensureOpen` (protected), `tables` is private to `RelationalJournal`,
+ * and `dialect` and `serializer` are protected on `RelationalStore`.  Bundling
+ * them keeps the widening to a single method instead of four loosened members.
+ */
+export type RelationalQueryAccess = {
+  readonly pool: SqlPool;
+  readonly tables: JournalTableNames;
+  readonly dialect: SqlDialect;
+  readonly serializer?: Serializer;
+};
 
 /**
  * Journal over any SQL database, parameterized by `SqlDialect`.
@@ -101,13 +120,12 @@ export class RelationalJournal extends RelationalStore implements Journal {
 
   async append<E>(
     persistenceId: string,
-    events: ReadonlyArray<E>,
+    entries: ReadonlyArray<JournalEntry<E>>,
     expectedSeq: number,
-    tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
-    if (events.length === 0) return [];
+    if (entries.length === 0) return [];
     assertValidPersistenceId(persistenceId, 'RelationalJournal.append');
-    assertValidTags(tags);
+    assertValidEntryTags(entries);
     const pool = await this.ensureOpen();
     const now = Date.now();
     try {
@@ -117,23 +135,28 @@ export class RelationalJournal extends RelationalStore implements Journal {
           throw new JournalConcurrencyError(persistenceId, expectedSeq, actualSeq);
         }
         const written: PersistentEvent<E>[] = [];
-        const tagString = tags && tags.length ? tags.join(',') : null;
         let seq = actualSeq;
-        for (const event of events) {
+        for (const entry of entries) {
           seq++;
+          const tags = entry.tags;
+          const tagString = tags && tags.length ? tags.join(',') : null;
           await transaction.query(this.statements.insertEvent, [
-            persistenceId, seq, encodePayload(event, this.serializer), tagString, now,
+            persistenceId, seq, encodePayload(entry.event, this.serializer), tagString, now,
           ]);
+          // No empty-tag filter here: `assertValidEntryTags` above rejected
+          // the append outright, so the list cannot hold one.  The filter used
+          // to live here *instead* of at the choke point, which left the CSV
+          // column on the line above carrying the empty member the tags table
+          // dropped — one append recorded two different ways (#740).
           if (tags) {
             for (const tag of tags) {
-              if (tag.length === 0) continue;
               await transaction.query(this.statements.insertTag, [persistenceId, seq, tag, now]);
             }
           }
           written.push({
             persistenceId,
             sequenceNr: seq,
-            event,
+            event: entry.event,
             timestamp: now,
             tags: tags ? [...tags] : undefined,
           });
@@ -208,6 +231,21 @@ export class RelationalJournal extends RelationalStore implements Journal {
     }
   }
 
+  /**
+   * The same `deleted_to` upsert `delete` ends with, without the two DELETEs
+   * in front of it.  Every dialect spells it monotonically (`GREATEST`,
+   * `MAX`, a `MERGE` guarded on `<`), so a mark already at or above
+   * `throughSeq` is left alone by the statement itself.
+   */
+  async raiseCompactionMark(persistenceId: string, throughSeq: number): Promise<void> {
+    const pool = await this.ensureOpen();
+    try {
+      await pool.query(this.statements.upsertDeletedTo, [persistenceId, throughSeq]);
+    } catch (e) {
+      this.fail('raiseCompactionMark', e);
+    }
+  }
+
   async persistenceIds(): Promise<string[]> {
     const pool = await this.ensureOpen();
     try {
@@ -232,6 +270,25 @@ export class RelationalJournal extends RelationalStore implements Journal {
     } catch (e) {
       this.fail('persistenceIdsPaginated', e);
     }
+  }
+
+  /**
+   * Open the store and hand the query layer what it needs to read the tags
+   * join table — the one seam `RelationalQuery` has into an otherwise private
+   * surface, mirroring `MongoJournal.openForQuery`.
+   *
+   * Awaiting `ensureOpen` here is the point, not a side effect: the table names
+   * are only useful once the DDL that created those tables has run, and a query
+   * is very often the *first* call against a freshly constructed journal.
+   *
+   * An accessor rather than loosening the four members it exposes, and rather
+   * than the `as unknown as { … }` cast `SqliteQuery` resorts to — that cast
+   * reads fields without opening the store and goes silently stale the moment
+   * one is renamed, because nothing type-checks the shape it asserts.
+   */
+  async openForQuery(): Promise<RelationalQueryAccess> {
+    const pool = await this.ensureOpen();
+    return { pool, tables: this.tables, dialect: this.dialect, serializer: this.serializer };
   }
 
   /* --------------------------- internals -------------------------------- */

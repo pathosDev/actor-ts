@@ -12,12 +12,21 @@ import { WebsocketClientActor } from '../../../../../src/http/websocket/Websocke
 import { WebsocketClientOptions } from '../../../../../src/http/websocket/WebsocketClientOptions.js';
 import { websocketSend, type WebsocketClientMessage } from '../../../../../src/http/websocket/WebsocketMessages.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 type CMessage = { kind: 'ping'; n: number };
 type SMessage = { kind: 'pong'; n: number };
 
 class PingServer extends WebsocketServerActor<SMessage, CMessage> {
   onMessage(m: CMessage): void { this.reply({ kind: 'pong', n: m.n }); }
+}
+
+/**
+ * Accepts the connection and never answers — the observable half of a peer
+ * whose path was silently dropped: no `close`, no `error`, no frames (#753).
+ */
+class MuteServer extends WebsocketServerActor<SMessage, CMessage> {
+  onMessage(_m: CMessage): void { /* deliberately mute */ }
 }
 
 type Rec = { events: string[]; messages: SMessage[] };
@@ -37,14 +46,25 @@ class RecordingClient extends WebsocketClientActor<CMessage, SMessage> {
   protected override onDisconnected(): void { this.rec.events.push('disconnected'); }
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-async function waitUntil(cond: () => boolean, timeoutMs = 4000): Promise<void> {
-  const start = Date.now();
-  while (!cond()) {
-    if (Date.now() - start > timeoutMs) throw new Error('waitUntil timed out');
-    await sleep(25);
+/**
+ * A client with a read-idle deadline.  Records the *cause* it was given, which
+ * is what tells an idle timeout apart from an observed `close` (#753).
+ */
+class LivenessClient extends WebsocketClientActor<CMessage, SMessage> {
+  constructor(url: string, idleTimeoutMs: number, private readonly rec: Rec) {
+    const clientOptions = WebsocketClientOptions.create<CMessage, SMessage>()
+      .withUrl(url)
+      .withIdleTimeoutMs(idleTimeoutMs)
+      .withReconnect(false);
+    super(clientOptions);
+  }
+  onMessage(m: SMessage): void { this.rec.messages.push(m); }
+  protected override onConnected(): void { this.rec.events.push('connected'); }
+  protected override onDisconnected(cause?: Error): void {
+    this.rec.events.push(`disconnected: ${cause?.message ?? '<none>'}`);
   }
 }
+
 
 describe('WebsocketClientActor', () => {
   const systems: ActorSystem[] = [];
@@ -76,7 +96,9 @@ describe('WebsocketClientActor', () => {
     const cliSys = mkSystem('cli');
     cliSys.spawn(() => new RecordingClient(`ws://127.0.0.1:${binding.port}/ws`, rec), 'client');
 
-    await waitUntil(() => rec.messages.length >= 1);
+    await awaitCondition(() => rec.messages.length >= 1, {
+      timeoutMs: 4_000, label: 'the first pong reached the client',
+    });
     expect(rec.events).toContain('connected');
     expect(rec.messages[0]).toEqual({ kind: 'pong', n: 1 });
   });
@@ -91,9 +113,13 @@ describe('WebsocketClientActor', () => {
     const clientRef: ActorRef<WebsocketClientMessage<CMessage, SMessage>> =
       cliSys.spawn(() => new RecordingClient(`ws://127.0.0.1:${binding.port}/ws`, rec), 'client');
 
-    await waitUntil(() => rec.events.includes('connected'));
+    await awaitCondition(() => rec.events.includes('connected'), {
+      timeoutMs: 4_000, label: 'the client reported its first connect',
+    });
     clientRef.tell(websocketSend({ kind: 'ping', n: 99 }));
-    await waitUntil(() => rec.messages.some((m) => m.n === 99));
+    await awaitCondition(() => rec.messages.some((m) => m.n === 99), {
+      timeoutMs: 4_000, label: 'the pong for the pushed ping reached the client',
+    });
     expect(rec.messages.some((m) => m.n === 99)).toBe(true);
   });
 
@@ -106,22 +132,81 @@ describe('WebsocketClientActor', () => {
     const rec: Rec = { events: [], messages: [] };
     const cliSys = mkSystem('cli3');
     cliSys.spawn(() => new RecordingClient(`ws://127.0.0.1:${port}/ws`, rec), 'client');
-    await waitUntil(() => rec.events.includes('connected'));
+    await awaitCondition(() => rec.events.includes('connected'), {
+      timeoutMs: 4_000, label: 'the client reported its first connect',
+    });
 
     // Take the server down; the client should notice and start reconnecting.
     await b1.unbind();
-    await waitUntil(() => rec.events.includes('disconnected'), 6000);
+    await awaitCondition(() => rec.events.includes('disconnected'), {
+      timeoutMs: 6_000, label: 'the client noticed the server going away',
+    });
 
     // Bring a fresh server up on the same port; the client should reconnect.
     const srvSys2 = mkSystem('cli-srv3b');
     const server2 = srvSys2.spawn(PingServer, 'srv');
     await bindServer(srvSys2, websocket('/ws', server2), '127.0.0.1', port);
 
-    await waitUntil(() => rec.events.filter((e) => e === 'connected').length >= 2, 8000);
+    await awaitCondition(() => rec.events.filter((e) => e === 'connected').length >= 2, {
+      timeoutMs: 8_000, label: 'the client reconnected to the replacement server',
+    });
     const connects = rec.events.filter((e) => e === 'connected').length;
     expect(connects).toBeGreaterThanOrEqual(2);
     // A ping was sent on the second connect → expect a matching pong.
-    await waitUntil(() => rec.messages.some((m) => m.n >= 2), 4000);
+    await awaitCondition(() => rec.messages.some((m) => m.n >= 2), {
+      timeoutMs: 4_000, label: 'the pong for the second connect reached the client',
+    });
     expect(rec.messages.some((m) => m.n >= 2)).toBe(true);
+    // The 8 000 ms budget above is the largest here, and bun kills a test at
+    // 5 000 ms unless told otherwise — so without this third argument the
+    // reconnect budget could never report its own label
+    // (`tests/unit/ci/AwaitConditionBudgets.test.ts`).
+  }, 15_000);
+
+  /* --------------------- read-idle deadline (#753) --------------------- */
+
+  test('a server that accepts and then says nothing is reported as lost', async () => {
+    const srvSys = mkSystem('cli-mute-srv');
+    const server = srvSys.spawn(MuteServer, 'srv');
+    const binding = await bindServer(srvSys, websocket('/ws', server));
+
+    const rec: Rec = { events: [], messages: [] };
+    const cliSys = mkSystem('cli-mute');
+    cliSys.spawn(() => new LivenessClient(`ws://127.0.0.1:${binding.port}/ws`, 80, rec), 'client');
+
+    // `close` and `error` never fire, so before the deadline existed this
+    // client reported `connected` for as long as the process ran.
+    await awaitCondition(() => rec.events.some((e) => e.startsWith('disconnected')), {
+      timeoutMs: 4_000, label: 'the idle deadline reported the mute server as lost',
+    });
+    expect(rec.events).toContain('connected');
+    // Routed through onSocketDown, so the user hook sees the real reason
+    // rather than nothing at all.
+    expect(rec.events.find((e) => e.startsWith('disconnected'))).toContain('idle timeout');
   });
+
+  test('inbound frames keep the deadline from firing', async () => {
+    const srvSys = mkSystem('cli-busy-srv');
+    const server = srvSys.spawn(PingServer, 'srv');
+    const binding = await bindServer(srvSys, websocket('/ws', server));
+
+    const rec: Rec = { events: [], messages: [] };
+    const cliSys = mkSystem('cli-busy');
+    const clientRef: ActorRef<WebsocketClientMessage<CMessage, SMessage>> =
+      cliSys.spawn(() => new LivenessClient(`ws://127.0.0.1:${binding.port}/ws`, 500, rec), 'client');
+    await awaitCondition(() => rec.events.includes('connected'), {
+      timeoutMs: 2_000, label: 'the client reported its first connect',
+    });
+
+    // Traffic every 50 ms against a 500 ms deadline — a tenfold margin, so a
+    // failure here is the deadline ignoring inbound frames rather than a slow
+    // machine.  The window spans two deadlines, which is what makes the
+    // absence of a disconnect mean something.
+    for (let round = 1; round <= 24; round++) {
+      clientRef.tell(websocketSend({ kind: 'ping', n: round }));
+      await new Promise<void>((resolve) => { setTimeout(resolve, 50); });  // the elapsed time IS the assertion: two deadline windows of traffic
+    }
+    expect(rec.messages.length).toBeGreaterThan(0);
+    expect(rec.events.filter((e) => e.startsWith('disconnected'))).toEqual([]);
+  }, 10_000);
 });

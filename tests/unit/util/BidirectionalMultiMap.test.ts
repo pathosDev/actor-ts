@@ -39,6 +39,14 @@ function expectConsistent<L, R>(map: BidirectionalMultiMap<L, R>): void {
   expect(reverseCount).toBe(map.size);
 
   for (const left of map.lefts()) expect(map.get(left).size).toBeGreaterThan(0);
+
+  // The participant counts (#1199), each against the iterator it summarises.
+  // Reading them from the same state every other assertion above just checked
+  // is the point: they are the numbers a caller uses *instead* of spreading, so
+  // they have to agree with the spread everywhere, not merely where a dedicated
+  // case looks.
+  expect(map.leftSize).toBe([...map.lefts()].length);
+  expect(map.rightSize).toBe([...map.rights()].length);
 }
 
 describe('BidirectionalMultiMap (#1037)', () => {
@@ -78,13 +86,36 @@ describe('BidirectionalMultiMap (#1037)', () => {
     expectConsistent(map);
   });
 
-  test('size counts pairs, not participants', () => {
+  test('size counts pairs, leftSize and rightSize count participants (#1199)', () => {
     const map = new BidirectionalMultiMap<string, string>();
     map.add('news', 'ada').add('news', 'grace').add('sport', 'ada');
-    // Two lefts, two rights, three pairs.
-    expect([...map.lefts()]).toHaveLength(2);
-    expect([...map.rights()]).toHaveLength(2);
+    // Two lefts, two rights, three pairs — the three counts read straight off
+    // the object, which is what the accessors are for.  This case named the gap
+    // before they existed: it had to spread both iterators to say it.
+    expect(map.leftSize).toBe(2);
+    expect(map.rightSize).toBe(2);
     expect(map.size).toBe(3);
+    expectConsistent(map);
+  });
+
+  test('an empty relation reports zero for all three counts (#1199)', () => {
+    const map = new BidirectionalMultiMap<string, number>();
+    expect(map.size).toBe(0);
+    expect(map.leftSize).toBe(0);
+    expect(map.rightSize).toBe(0);
+  });
+
+  test('clear zeroes the participant counts along with the pair count (#1199)', () => {
+    const map = new BidirectionalMultiMap([
+      ['news', 'ada'],
+      ['news', 'grace'],
+      ['sport', 'ada'],
+    ]);
+    map.clear();
+    expect(map.size).toBe(0);
+    expect(map.leftSize).toBe(0);
+    expect(map.rightSize).toBe(0);
+    expectConsistent(map);
   });
 
   test('add returns the map so calls chain', () => {
@@ -168,6 +199,28 @@ describe('BidirectionalMultiMap participant pruning (#1037)', () => {
     expect(map.has('news', 'ada')).toBe(false);
     expectConsistent(map);
   });
+
+  test('pruning moves the participant counts, not only the pair count (#1199)', () => {
+    // The leak this block is about, stated in the counts: dropping `ada` takes
+    // `sport` with it, because `sport` held nobody else.  A `leftSize` that
+    // still answered 2 would be reporting a participant related to nothing —
+    // exactly what an empty leftover set looks like from the outside.
+    const map = new BidirectionalMultiMap([
+      ['news', 'ada'],
+      ['news', 'grace'],
+      ['sport', 'ada'],
+    ]);
+    expect(map.leftSize).toBe(2);
+    expect(map.rightSize).toBe(2);
+
+    expect(map.deleteRight('ada')).toBe(true);
+
+    expect(map.size).toBe(1);
+    expect(map.leftSize).toBe(1);
+    expect(map.rightSize).toBe(1);
+    expect([...map.lefts()]).toEqual(['news']);
+    expectConsistent(map);
+  });
 });
 
 describe('BidirectionalMultiMap falsy participants (#1037)', () => {
@@ -242,6 +295,9 @@ describe('BidirectionalMultiMap falsy participants (#1037)', () => {
     expect(map.size).toBe(1);
     map.add(-0, -0);
     expect(map.size).toBe(1);
+    // One participant per side, not two — the counts see the collapse too.
+    expect(map.leftSize).toBe(1);
+    expect(map.rightSize).toBe(1);
     expectConsistent(map);
   });
 });
@@ -379,6 +435,44 @@ describe('BidirectionalMultiMap.inverse (#1037)', () => {
   test('inverting twice restores the original orientation', () => {
     const map = new BidirectionalMultiMap([['news', 'ada']]);
     expect([...map.inverse().inverse().get('news')]).toEqual(['ada']);
+  });
+
+  test('the participant counts swap on a view (#1199)', () => {
+    // Two topics, three subscribers: counts that differ, so a getter reading
+    // the wrong map cannot pass by coincidence.
+    const map = new BidirectionalMultiMap([
+      ['news', 'ada'],
+      ['news', 'grace'],
+      ['sport', 'ada'],
+      ['sport', 'alan'],
+    ]);
+    const inverse = map.inverse();
+
+    expect(map.leftSize).toBe(2);
+    expect(map.rightSize).toBe(3);
+    expect(inverse.leftSize).toBe(3);
+    expect(inverse.rightSize).toBe(2);
+    expectConsistent(inverse);
+  });
+
+  test('a write through a view moves the participant counts on both sides (#1199)', () => {
+    // Unlike the pair counter, these need no shared box — the view's forward map
+    // *is* the original's reverse one, so both read live storage.  This is what
+    // proves that, rather than a snapshot taken at inverse() time.
+    const map = new BidirectionalMultiMap([['news', 'ada']]);
+    const inverse = map.inverse();
+
+    inverse.add('grace', 'sport');
+    expect(map.leftSize).toBe(2);
+    expect(map.rightSize).toBe(2);
+    expect(inverse.leftSize).toBe(2);
+    expect(inverse.rightSize).toBe(2);
+
+    map.deleteLeft('news');
+    expect(inverse.rightSize).toBe(1);
+    expect(inverse.leftSize).toBe(1);
+    expectConsistent(map);
+    expectConsistent(inverse);
   });
 });
 

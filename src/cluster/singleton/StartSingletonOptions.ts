@@ -42,6 +42,56 @@ export type StartSingletonOptionsType<T> = {
    */
   readonly acquireRetryIntervalMs?: number;
   /**
+   * How long this node waits for every other eligible node to confirm it is
+   * not running the singleton, before hosting it anyway.  Default: `10_000` ms.
+   *
+   * The wait is what makes "at most one instance" a cluster property: without
+   * it the incoming host spawns off its own gossip view while the incumbent is
+   * still draining the instance it was told to stop, so a routine scale-up
+   * runs two (#949).  A healthy hand-over costs one network round trip and
+   * never reaches this number.
+   *
+   * Reaching it means some eligible peer did not answer — it is unreachable,
+   * or it believes it is still the host and declined.  The manager then
+   * **spawns anyway** and logs at `warn`: availability is chosen over an
+   * invariant it could not prove.  Where the invariant must survive that,
+   * configure a {@link StartSingletonOptionsType.lease} — a third party both
+   * sides can reach is the only thing that can arbitrate when reaching the
+   * incumbent is what failed.
+   */
+  readonly handOverTimeoutMs?: number;
+  /**
+   * Largest warm-hand-over snapshot this singleton will put on the wire, in
+   * bytes.  Default: `1_048_576` (1 MiB).
+   *
+   * Only consulted when the singleton actor implements
+   * {@link WarmHandOverActor} — warm hand-over is opted into on the actor, not
+   * here, so this field turns nothing on.  What it does is bound what an
+   * opted-in actor may ship: a snapshot above it is not sent, and the incoming
+   * instance starts cold, which is what every singleton did before the feature
+   * existed.
+   *
+   * Raising it is measured against the *transport's* frame cap rather than
+   * against this number.  A snapshot is base64 inside a JSON frame, so it
+   * costs about a third more on the wire, and a frame over the receiving
+   * node's cap costs the whole inter-node connection rather than the message —
+   * so an oversized snapshot is refused independently of this setting, however
+   * high it is set.  See
+   * `ClusterOptions.maxFrameBytes` for the other half of that arithmetic.
+   */
+  readonly maxHandOverStateBytes?: number;
+  /**
+   * Whether the singleton is re-spawned after its instance dies
+   * *unexpectedly* — `context.stopSelf()`, or a supervision budget exhausted
+   * — as opposed to the planned teardown of a handover.  Default: `true`.
+   *
+   * Leave it on unless the actor uses `stopSelf()` as a terminal state.  With
+   * it off the manager releases its lease instead of re-spawning, so another
+   * node could host; what it will not do is hold a lease over a dead child
+   * (#1175).
+   */
+  readonly restartOnTermination?: boolean;
+  /**
    * How many messages the proxy holds while the cluster has no host for this
    * singleton, before it starts dropping them to dead letters.  Default:
    * `1_000`.
@@ -101,6 +151,21 @@ export class StartSingletonOptionsBuilder<T> extends OptionsBuilder<StartSinglet
     return this.set('acquireRetryIntervalMs', ms);
   }
 
+  /** How long to wait for eligible peers to stand down before hosting.  Default 10 s. */
+  withHandOverTimeoutMs(ms: number): this {
+    return this.set('handOverTimeoutMs', ms);
+  }
+
+  /** Cap on a warm-hand-over snapshot's size in bytes.  Default 1 MiB. */
+  withMaxHandOverStateBytes(bytes: number): this {
+    return this.set('maxHandOverStateBytes', bytes);
+  }
+
+  /** Re-spawn the singleton after an unexpected instance death?  Default `true`. */
+  withRestartOnTermination(restartOnTermination: boolean): this {
+    return this.set('restartOnTermination', restartOnTermination);
+  }
+
   /** Messages the proxy buffers while no node hosts the singleton.  Default 1000. */
   withBufferSize(messages: number): this {
     return this.set('bufferSize', messages);
@@ -122,6 +187,8 @@ export class StartSingletonOptionsValidator<T> extends OptionsValidator<StartSin
     this.nonEmptyString('typeName');
     this.nonEmptyString('role');
     this.positiveNumber('acquireRetryIntervalMs');
+    this.positiveNumber('handOverTimeoutMs');
+    this.positiveInt('maxHandOverStateBytes');
     this.positiveInt('bufferSize');
   }
 }

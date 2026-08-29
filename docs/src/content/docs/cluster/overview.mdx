@@ -3,6 +3,8 @@ title: Cluster overview
 description: How multiple actor systems combine into one logical group — gossip-driven membership, failure detection, cluster-aware refs, and the extensions that build on top (sharding, singleton, pubsub, distributed data).
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 A **cluster** is a group of `ActorSystem`s — typically one per node —
 that know about each other.  Nodes gossip their membership state,
 detect each other's failures, and route messages across the network.
@@ -62,13 +64,28 @@ const cluster = await Cluster.join(
 );
 ```
 
-Three settings are doing most of the work:
+A few settings are doing most of the work:
 
 | Setting | Purpose |
 | --- | --- |
-| `host` + `port` | This node's external address.  Peers contact it here. |
+| `host` + `port` | The interface this node **binds**.  `0.0.0.0` means "every interface" and is the default. |
+| `advertisedHost` | The address peers **dial** — this node's identity.  Unset, it is derived from `host` when that is routable, then from `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, then loopback. |
 | `seeds` | Other nodes' addresses.  At startup, this node contacts them to join the existing cluster.  An empty list = "I'm the first one" (auto-promotes to leader). |
 | `roles` | Tags this node carries.  Routers and shard regions can filter on these (`role: 'compute'` skips nodes without the tag). |
+
+<Aside type="tip" title="Bind and advertise are two different addresses">
+  Binding `0.0.0.0` is right for a container: it accepts traffic on an
+  address it does not know at start-up.  But a wildcard cannot be an
+  *identity* — it names every interface, which is to say none of them, so
+  every node claiming it would claim the same string.  That is why what
+  a node gossips is resolved separately, and never comes out as a
+  wildcard.
+
+  On a single machine you can ignore this — naming one routable `host`
+  still covers both jobs, and an unconfigured node advertises
+  `127.0.0.1`.  In Kubernetes, set the pair: bind `0.0.0.0`, advertise
+  `POD_IP`.
+</Aside>
 
 After `Cluster.join` resolves, the node is in the cluster
 (though possibly still in `joining` state for a few seconds until
@@ -112,7 +129,6 @@ Both read through to `system.cluster` on each access, so an actor that
 outlived the join, or a system that rejoined after `leave()`, always
 sees the current instance.
 
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="note" title="It stays an Option on purpose">
   A cluster binds a transport and starts gossip, heartbeat and
@@ -295,8 +311,10 @@ remote.tell({ kind: 'whatever' });
 // → serialized, sent over the transport, delivered to the foreign actor's mailbox
 ```
 
-The cluster transport serializes the message (JSON by default),
-includes the routing path, and the destination's transport
+The cluster transport frames the message as a **tagged JSON tree** —
+the same format the persistence stores write, so a `Date`, `Map`,
+`Set`, `bigint` or `Uint8Array` in the body arrives as itself
+(#450) — includes the routing path, and the destination's transport
 delivers it.  Reply-to refs serialize cleanly — the receiving node
 re-attaches a remote-routable handle so replies flow back over
 the same transport.

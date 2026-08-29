@@ -1,12 +1,13 @@
 ---
 title: Utilities
-description: Alles, was der Haupteinstiegspunkt aus seinem eigenen Werkzeugkasten exportiert — Option, Try und Either für Ergebnisse ohne null; Lazy für einmalig berechnete Werte; BidirectionalMap und BidirectionalMultiMap für Relationen mit gepflegter Umkehrung; randomString, safeStringify und lazyImportModule für Benennung, Logging und optionale Peer-Dependencies.
+description: Alles, was der Haupteinstiegspunkt aus seinem eigenen Werkzeugkasten exportiert — Option, Try und Either für Ergebnisse ohne null; Lazy für einmalig berechnete Werte; RingBuffer für eine Queue, die schnell bleibt, wenn sie tief wird; BidirectionalMap und BidirectionalMultiMap für Relationen mit gepflegter Umkehrung; randomString, safeStringify und lazyImportModule für Benennung, Logging und optionale Peer-Dependencies.
 ---
 
 Das Framework löst für sich selbst eine Handvoll Probleme, die in dem Code
 wieder auftauchen, den du darauf aufbaust: „es gibt vielleicht keinen Wert"
 ausdrücken, ohne `null` zu benutzen; einen Fehlschlag tragen, ohne zu werfen;
-etwas einmalig bei der ersten Nutzung berechnen; ein Paar von beiden Enden her
+etwas einmalig bei der ersten Nutzung berechnen; eine Queue abarbeiten, die
+immer weiter wächst; ein Paar von beiden Enden her
 nachschlagen; etwas so benennen, dass der Name nicht erraten werden kann; einen
 Wert auf einem Pfad ausgeben, auf dem ein Wurf den gerade gemeldeten Fehler
 ersetzen würde; und von einem Paket abhängen, das du nicht verpflichtend machen
@@ -21,6 +22,7 @@ import {
   BidirectionalMap,
   BidirectionalMultiMap,
   Lazy,
+  RingBuffer,
   none,
   safeStringify,
   some,
@@ -133,6 +135,45 @@ und `map` / `flatMap` / `forEach` komponieren, ohne zu erzwingen. `reset()` und
 importiertes Backend gegen ein Fake getauscht werden kann, ohne den
 Produktionspfad anzufassen.
 
+## RingBuffer — eine Queue, die schnell bleibt, wenn sie tief wird
+
+`RingBuffer<T>` ist eine First-in-first-out-Queue, deren Entnahme vorne O(1)
+ist. Sie existiert, weil `Array.prototype.shift()` das nicht ist: es indiziert
+jedes noch eingereihte Element neu, die Kosten einer Entnahme wachsen also mit
+der Zahl der Elemente dahinter. Auf einer Queue von zehn ist das unsichtbar,
+auf einer von hunderttausend teuer — und genau das wird die Mailbox eines
+Actors, der hinter seine Producer zurückfällt, denn die Default-Mailbox hat
+keine Decke.
+
+```ts
+import { RingBuffer } from 'actor-ts';
+
+const pending = new RingBuffer<string>();
+pending.push('a');
+pending.push('b');
+pending.shift();                    // 'a'
+pending.unshiftAll(['x', 'y']);     // beide vor 'b', in dieser Reihenfolge
+pending.length;                     // 3
+pending.drain();                    // ['x', 'y', 'b'] — und der Ring ist leer
+```
+
+Vier Operationen und sonst nichts. `push` hängt hinten an (amortisiert O(1) —
+das Backing-Array verdoppelt sich, und es wird bis zum ersten `push` gar nicht
+erst allokiert, ein ungenutzter Ring kostet also so viel wie ein leeres `[]`).
+`shift` entnimmt vorne. `drain` leert ihn in ein frisches Array und gibt den
+Backing-Store frei, eine Queue, die auf eine Million gewachsen ist, gibt den
+Speicher also zurück. `unshiftAll(items)` setzt einen ganzen Stapel in einem
+Zug nach vorne, ohne Spread — das Framework spielt damit einen Stash von bis zu
+tausend Nachrichten wieder ein, wo `unshift(...items)` die Queue einmal pro
+Nachricht neu indizieren und den Stapel als Argumente auf den Call-Stack legen
+würde.
+
+Bewusst kein allgemeiner Deque: jede weitere Operation ist ein weiterer
+Index-Umlauf-Sonderfall in einem Typ, der auf dem Nachrichtenpfad jedes Actors
+im System sitzt. Beide Queues in einer
+[`Mailbox`](/de/fundamentals/mailboxes/) sind einer, und die Work-Queue des
+`ThroughputDispatcher` ebenfalls.
+
 ## BidirectionalMap — eine Map mit gepflegter Umkehrung
 
 `BidirectionalMap<K, V>` ist eine `Map<K, V>`, die zusätzlich `value → key`
@@ -165,6 +206,7 @@ wo eine `Map` erwartet wird — `new Map(bidirectionalMap)`, Spread, `for…of`,
 | `reverseEntries()` | `[value, key]`-Paare. |
 | `getOrInsertKey(value, defaultKey)` | Wie `getOrInsert`, von der Wertseite aus; liefert einen **Key**. |
 | `getOrInsertComputedKey(value, callback)` | Dasselbe, der Key wird bei Bedarf erzeugt. `callback` läuft höchstens einmal. |
+| `keySize` / `valueSize` | Verschiedene Keys und verschiedene Werte. Beide sind immer gleich `size`, weil die Relation 1:1 ist — sie existieren, damit dieser Typ und die `BidirectionalMultiMap`, wo sich die Zahlen wirklich unterscheiden, sich gleich lesen. |
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -233,6 +275,8 @@ subscriptions.add('sport', 'ada');
 subscriptions.get('news');        // Set { 'ada', 'grace' }
 subscriptions.getKeys('ada');     // Set { 'news', 'sport' }  ← die Rückrichtung
 subscriptions.size;               // 3 — Paare, nicht Teilnehmer
+subscriptions.leftSize;           // 2 — verschiedene Topics
+subscriptions.rightSize;          // 2 — verschiedene Subscriber
 
 subscriptions.deleteRight('ada'); // ada verlässt alle Topics auf einmal
 subscriptions.hasLeft('sport');   // false — sport hielt nur ada und ist mit weg
@@ -252,6 +296,7 @@ steht.
 | `deleteLeft(left)` / `deleteRight(right)` | Einen Teilnehmer vollständig entfernen — der `Terminated`-Fall. |
 | `hasLeft(left)` / `hasRight(right)` | Ob dieser Teilnehmer mindestens einen Partner hat. |
 | `lefts()` / `rights()` | Die Teilnehmer, jeder genau einmal. |
+| `size` / `leftSize` / `rightSize` | Paare, verschiedene Linke, verschiedene Rechte. Alle drei O(1) — nimm eine der Teilnehmerzahlen, statt `[...lefts()]` auszumessen. |
 | `inverse()` | Die Relation andersherum gelesen — eine Sicht, keine Kopie. `size` stimmt auf beiden Seiten. |
 
 Verglichen wird per **SameValueZero**, wie bei `BidirectionalMap` und aus
@@ -443,8 +488,24 @@ schreibt, der eine URL ablehnt.
 Identität: Schema, Host, Port und Pfad, ohne Userinfo *und* ohne Query-String —
 ein WebSocket-Endpunkt wird üblicherweise mit einem `?token=…` authentifiziert.
 Der Pfad bleibt bewusst erhalten, denn er unterscheidet zwei Verbindungen zum
-selben Host. Nimm die Funktion für eine Zeile, die du wiederholt ausgibst, etwa
-eine Warnung pro Frame; genau dafür setzt der `WebsocketClientActor` sie ein.
+selben Host. Nimm die Funktion überall dort, wo eine Gegenstelle beeinflusst,
+wie oft eine Zeile geschrieben wird — also überall dort, wo die URL sonst nach
+fremdem Gutdünken ins Log gespiegelt würde. Der `WebsocketClientActor` setzt sie
+für seine Warnung über zu große Frames ein. Diese Zeile entsteht nicht mehr pro
+Frame: Der Verstoß schließt die Verbindung, eine Gegenstelle bekommt also eine
+Zeile pro Verbindungsaufbau. Die Redaktion bleibt trotzdem nötig, denn wie viele
+Verbindungsaufbauten es gibt, entscheidet weiterhin die Gegenstelle.
+
+Der zweite Konsument ist `BrokerActor`, und dort geht es gar nicht um ein Log:
+`redactedEndpointLabel()` ist das, was `BrokerConnected`, `BrokerDisconnected`,
+`BrokerReconnectFailed` und `BrokerReconnectAttempt` erreicht — Events auf dem
+systemweiten `EventStream`. Dieses Publikum ist größer als eine Log-Datei
+(`subscribe` kennt keinen Autorisierungsbegriff), und die Events entstehen auf
+dem Erfolgspfad: einmal pro Verbindungsaufbau und einmal pro Reconnect-Versuch.
+Der Fall zeigt außerdem, dass der Fallback echte Arbeit leistet: Eine
+zusammengesetzte Server-Liste ist keine parsebare URL, nimmt also den Scan-Pfad
+und kommt als `nats://***@a:4222,nats://***@b:4222` zurück, statt auf einen
+einzigen Host eingedampft zu werden.
 
 <Aside type="tip" title="Eine Stelle für das, was durchgerutscht ist">
   Beiden Funktionen hilft nichts gegen ein Geheimnis, das in den Feldern eines

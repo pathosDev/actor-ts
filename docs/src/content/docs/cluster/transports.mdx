@@ -52,7 +52,12 @@ const cluster = await Cluster.join(
 
 What it does:
 
-- **Listens** on `host:port` for incoming connections.
+- **Listens** on `host:port` for incoming connections — `host` is the
+  interface to bind, so a wildcard belongs here.
+- **Announces** `advertisedHost:port` in its handshake, and keys peers on
+  it.  That is the node's identity, so it is resolved separately and is
+  never a wildcard; unset, it follows `host` when `host` is routable.
+  See [Cluster overview](/cluster/overview/).
 - **Connects** to peers as needed (on first send, or to seeds at
   join time).
 - **Per-frame size cap** (default 16 MiB) — frames larger than this
@@ -170,12 +175,15 @@ process**.
   For fault injection, you'd implement a custom `Transport` with drop /
   delay / reorder logic.
 - **Latency.**  Delivery is synchronous within an event-loop turn.
-- **Serialization.**  Messages are passed by reference, not bytes.
-  To exercise the real framing round-trip (`encodeFrame` /
-  `FrameDecoder`), use `TcpTransport` over loopback instead — that
-  gives you the JSON framing every cluster transport uses.  The CBOR
-  codec is not reachable from *any* cluster transport; test it
-  directly, or through [HTTP marshalling](/http/marshalling/).
+- **Serialization.**  Messages are passed by reference, not bytes —
+  and `TcpTransport` is the only transport that serializes at all:
+  `MessageChannelTransport` hands the envelope to `postMessage`, and
+  this one hands the object straight to the recipient's handler.  So
+  to exercise the real framing round-trip (`encodeFrame` /
+  `FrameDecoder`, which frames a **tagged JSON tree**, not bare
+  JSON) you need `TcpTransport` over loopback.  The CBOR codec is
+  not reachable from *any* cluster transport; test it directly, or
+  through [HTTP marshalling](/http/marshalling/).
 
 ## Custom transport
 
@@ -196,6 +204,15 @@ heartbeat semantics the cluster expects.
 ```ts
 const peers = transport.peers();   // currently-connected addresses
 ```
+
+`peers()` is also what the framework's `cluster-transport` readiness
+check reads: a node with members it still expects and no connection
+to any of them is cut off, and `/ready` answers 503 so a load
+balancer stops routing to it.  See
+[Health checks](/observability/management/health-checks/).  Note
+that `InMemoryTransport.peers()` reports every transport registered
+in the process regardless of connection state — a test written
+against it cannot observe that check failing.
 
 The transport doesn't expose per-connection metrics directly —
 use the cluster's metrics extension to get connection counts and

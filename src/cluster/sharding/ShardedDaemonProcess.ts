@@ -5,9 +5,11 @@ import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { Cancellable } from '../../Scheduler.js';
 import type { Cluster } from '../Cluster.js';
+import { PersistenceExtensionId } from '../../persistence/PersistenceExtension.js';
 import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
 import { LeastShardAllocationStrategy } from './AllocationStrategy.js';
 import { ClusterSharding } from './ClusterSharding.js';
+import { JournalRememberEntitiesStore } from './RememberEntitiesStore.js';
 import { StartShardingOptions } from './StartShardingOptions.js';
 import { ShardedDaemonProcessOptionsValidator } from './ShardedDaemonProcessOptions.js';
 import type { ShardedDaemonProcessOptions, ShardedDaemonProcessOptionsType } from './ShardedDaemonProcessOptions.js';
@@ -58,6 +60,18 @@ export class ShardedDaemonProcess {
     new ShardedDaemonProcessOptionsValidator<T>().validate(resolvedOptions);
     const sharding = ClusterSharding.get(system, cluster);
 
+    // The registry is wired explicitly, not left to ClusterSharding's auto
+    // path, because the #1356 refusal there protects a property SDP does not
+    // depend on: plain rememberEntities IS the respawn mechanism, so a
+    // node-local registry silently loses it on coordinator failover — here
+    // the liveness tick and the topology re-wake below respawn every daemon
+    // regardless, and the registry only accelerates.  Same journal, same
+    // store as before; the storage advisory still notes the degraded half at
+    // warning level instead of refusing a self-healing setup.
+    const persistenceExtension = system.extension(PersistenceExtensionId);
+    const registryJournal = persistenceExtension.journal;
+    persistenceExtension.noteStoreUse('remember-entities', registryJournal);
+
     const startOptions = StartShardingOptions.create<DaemonEnvelope<T>>()
       .withTypeName(`daemon-${resolvedOptions.name}`)
       .withEntityActor(() => new DaemonHost<T>(resolvedOptions.actorFor) as unknown as Actor<DaemonEnvelope<T>>)
@@ -65,6 +79,7 @@ export class ShardedDaemonProcess {
       .withExtractEntityMessage((env) => env.body)
       .withNumShards(resolvedOptions.numDaemons)
       .withRememberEntities(true)
+      .withRememberEntitiesStore(new JournalRememberEntitiesStore(registryJournal))
       // A daemon is supposed to run continuously, so the node-wide idle sweep
       // must not apply to it: a daemon that only wakes on its own schedule
       // looks idle, and passivating it would both drop it from the

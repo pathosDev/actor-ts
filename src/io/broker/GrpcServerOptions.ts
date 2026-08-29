@@ -30,15 +30,20 @@ export interface GrpcServerOptionsType extends BrokerCommonOptionsType {
     | { readonly kind: 'tls'; readonly cert: Uint8Array; readonly key: Uint8Array; readonly rootCerts?: Uint8Array };
   /**
    * Serve the standard `grpc.health.v1.Health` service next to the user's
-   * service, answering `Check` from this registry's **readiness** checks —
-   * the same source the management server's `/ready` endpoint aggregates.
+   * service, answering `Check` from this registry's **readiness** checks.
    *
    * There is deliberately no boolean toggle and no HOCON leaf: the status
    * has to come from somewhere, and a health service that answers
    * `SERVING` unconditionally is worse than none at all — a Kubernetes
    * probe would keep the pod in rotation straight through an outage.
-   * Supplying the registry IS the opt-in, and it makes the framework
-   * carry one notion of "ready" rather than two that can disagree.
+   * Supplying a registry IS the opt-in.
+   *
+   * Pass `healthChecksOf(system)` — the same instance the management
+   * server's `/ready` endpoint aggregates — unless you mean otherwise:
+   * that is what makes the framework carry one notion of "ready" rather
+   * than two that can disagree.  A bare `new HealthCheckRegistry()` here
+   * is accepted and forks them, and only one of the two is then the answer
+   * a load balancer acts on.
    */
   readonly health?: HealthCheckRegistry;
 }

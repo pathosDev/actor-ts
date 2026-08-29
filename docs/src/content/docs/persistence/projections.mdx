@@ -85,6 +85,38 @@ Tag-based is the common case — the `PersistentActor` calls
 the tag.  Per-pid is useful for narrow views (one user's
 activity).
 
+`tagsFor` is asked **per event**, so a projection filtering on a tag
+sees exactly the events that carry it — including when the events
+were written together by one `persistAll`.
+
+### Filtering on more than one tag
+
+`withTag` accepts a **`TagFilter`**, so a projection is not limited to a
+single tag:
+
+```ts
+import type { TagFilter } from 'actor-ts/persistence';
+
+const eitherOne: TagFilter = { any: ['debit', 'credit'] };
+const bothOfThem: TagFilter = { all: ['account', 'production'] };
+const allButCancelled: TagFilter = { all: ['orders'], not: ['cancelled'] };
+
+const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
+  .withName('open-orders-view')
+  .withTag(allButCancelled);
+```
+
+Each operator is optional and they combine with AND.  An empty `{}`
+matches every event.
+
+**The filter is part of the cursor identity.**  A bare string keeps the
+cursor it already has, but the two spellings do not share one:
+`.withTag('orders')` stores its offset under `orders`, while
+`.withTag({ all: ['orders'] })` stores it under `all(orders)`.  Both
+select the same events, so rewriting one as the other looks harmless —
+and it silently replays the projection from the beginning.  Pick a
+spelling before the projection first runs, and keep it.
+
 ## At-least-once delivery
 
 ```ts
@@ -110,6 +142,83 @@ Handlers must be **idempotent**:
 If you can't make the handler idempotent, the projection has to
 participate in a 2-phase commit with the offset save — much more
 complex, not provided out of the box.
+
+## When the handler throws
+
+The cursor only advances after `handle` returns, so a failing
+handler is **head-of-line blocking** by construction: every later
+event waits behind the one that failed.  `recoveryStrategy` decides
+how long that lasts.
+
+| Strategy | Retries | Then | Pick it when |
+| --- | --- | --- | --- |
+| **`retry-and-fail`** *(default)* | yes | stops the projection | A silently stale view is worse than an obviously stopped one. |
+| **`retry-and-skip`** | yes | steps past the event | Liveness beats completeness — a dashboard, a search index. |
+| **`fail`** | no | stops immediately | The handler already retries internally. |
+| **`skip`** | no | steps past immediately | Some events are simply expected to be undeliverable. |
+
+```ts
+const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
+  .withName('account-balance-view')
+  .withTag('account')
+  .withRecoveryStrategy('retry-and-skip')
+  .withMaxRetries(5)
+  .withRetryBackoffMs(2_000)
+  .withMaxRetryBackoffMs(60_000)
+  .withOnFailure((failure) => {
+    console.error(
+      `${failure.projection}: ${failure.event.persistenceId}#${failure.event.sequenceNr} `
+      + `→ ${failure.action} (attempt ${failure.attempt})`,
+      failure.error,
+    );
+  });
+```
+
+Retries are **not immediate**.  The next attempt is deferred by
+`retryBackoffMs`, doubling each time up to `maxRetryBackoffMs`.
+`maxRetries` counts attempts *after* the first, so the default of 3
+means a bad event reaches the handler four times before the
+projection gives up on it.
+
+### What a failure produces
+
+- **`onFailure`** — called on every attempt with the offending
+  `PersistentEvent`, the error, the attempt number, and the action
+  taken (`retry` / `skip` / `stop`).  This is the structured signal;
+  wire it to your alerting.  A hook that throws is logged and
+  swallowed — a broken reporter cannot take the projection with it.
+- **A dead letter** — a skipped event is published on the system
+  event stream wrapped in a `DeadLetter` naming the projection as its
+  recipient, so nothing vanishes without a trace:
+
+  ```ts
+  import { DeadLetter } from 'actor-ts';
+
+  system.eventStream.subscribe(auditRef, DeadLetter);
+  ```
+
+  Publishing is all that happens by default — with no subscriber the
+  event is gone.  Turning on the
+  [dead-letter queue](/operations/dead-letters/) keeps skipped events
+  instead, filterable by the projection that skipped them and
+  replayable once the handler is fixed.
+
+- **Metrics** — `persistence_projection_stalled`,
+  `persistence_projection_failures_total` and
+  `persistence_projection_events_skipped_total`; see
+  [Stock metrics](/observability/metrics/stock-metrics/).
+- **Logs** — one error line when a failure streak opens and one when
+  it ends.  The retries in between go to `debug`, so a projection
+  stuck for a day costs two error lines instead of one per poll.
+
+`fail` **stops the actor** rather than letting the error escape the
+tick.  That is deliberate: the projection group's supervisor
+restarts its children, so an escaping error would reload the same
+cursor and fail on the same event — a restart loop, which is louder
+than the spin it replaced and no more useful.
+
+A stopped projection keeps its cursor, so fixing the cause and
+starting it again resumes at exactly the event that failed.
 
 ## OffsetStore
 
@@ -137,6 +246,14 @@ projection name + scope.  Implementations:
 For real production setups, **co-locate the offset store with
 the read model** so they crash together — that minimizes the
 re-processing window.
+
+In a cluster, the offset store needs the same property the journal
+does: **one database, not one per node.**  A
+`DurableStateOffsetStore` over node-local storage gives every node
+its own cursor, and a projection that moves between nodes then
+re-processes events one node already handled — or skips the ones
+the other node's cursor is past.  See [storage locality &
+identity](/persistence/overview/#storage-locality--identity).
 
 ## Polling
 

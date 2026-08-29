@@ -24,10 +24,13 @@ export class LocalActorRef<TMessage = unknown> extends ActorRef<TMessage> {
     // omitted from the envelope when their respective extensions are
     // not enabled, keeping the no-instrumentation hot path lean.
     const context = LogContext.get();
-    const tracer = tracerOf(this.cell.system);
-    const span = tracer.activeSpan();
+    // The tracer comes off the system field rather than `tracerOf`, which
+    // walks the extension chain, and `null` here means nothing can be active
+    // — so the ordinary send resolves both fields without a lookup (#411).
+    const tracer = this.cell.system._tracer;
+    const span = tracer === null ? null : tracer.activeSpan();
     const env: import('./Mailbox.js').Envelope<TMessage> = { message, sender };
-    if (Object.keys(context).length > 0) (env as { context?: typeof context }).context = context;
+    if (!LogContext.isEmpty(context)) (env as { context?: typeof context }).context = context;
     if (span) (env as { trace?: ReturnType<typeof span.context> }).trace = span.context();
     this.cell.postUserEnvelope(env);
   }

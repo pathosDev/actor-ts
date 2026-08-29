@@ -96,6 +96,9 @@ type WebsocketRouteOptions<TOut, TIn> = {
   onBackpressure?:   'drop' | 'close';                // default 'drop'
   allowedOrigins?:   string[];                        // CSWSH defence — see below
   maxConnections?:   number;                          // concurrent-connection cap; default unlimited
+  maxPreAttachFrames?: number;                        // setup-window frame cap; default 256
+  maxPreAttachBytes?:  number;                        // setup-window byte cap; default 4 MiB
+  acceptTimeoutMs?:    number;                        // setup deadline; default 10 000, Infinity to disable
 };
 ```
 
@@ -115,30 +118,61 @@ The frame-size cap is enforced on the **raw frame before decode**.
 
 `maxFrameBytes` is checked twice, at two different moments:
 
-- **In the transport**, at **1 MiB** — the built-in default, handed to the
+- **In the transport**, at your resolved `maxFrameBytes` — handed to the
   runtime's own socket when the server binds.  A frame over it is refused
   *while it arrives*, so a hostile peer cannot make the process buffer a
   16 MiB (Bun) or 100 MiB (`ws`) frame just to have it thrown away
   afterwards.  Because the runtime hangs up rather than sending a policy
   close, the client sees an abnormal close (**1006**) here, not 1009.
-- **In the connection actor**, at your `maxFrameBytes` — on the fully
+  Two runtime/backend pairs have no such layer — see the caution below.
+- **In the connection actor**, at the same `maxFrameBytes` — on the fully
   received frame, before the codec decodes it, closing with **1009**.
 
-The consequence worth knowing: the transport cap is the framework default,
-not your route's number.  Lowering `maxFrameBytes` works exactly as
-written; **raising it above 1 MiB does not raise the transport cap**, so
-frames between 1 MiB and your limit are still cut off.  Backends cannot see
-a route's policy at bind time — it is resolved on the first connection —
-which is what a configurable transport cap still has to solve.
+Only the second layer is a guarantee.  It runs everywhere and it is what
+keeps an oversize frame away from your actor; the transport cap is an
+optimisation on top of it that spares the process the buffering.
 
-<Aside type="caution" title="Deno has no transport cap">
-On Deno the first layer does not exist.  `Deno.upgradeWebSocket` accepts a
-subprotocol and an idle timeout and no payload limit, so there is nothing
-for the framework to set: an oversize frame is fully buffered by the
-runtime and only then rejected by the connection actor.  The guarantee
-holds — the frame never reaches your actor — but the memory is spent
-before it is refused.  For an internet-facing WebSocket endpoint under
-Deno, put a proxy with its own frame limit in front of it.
+The number is yours in both directions: lowering `maxFrameBytes` narrows
+the buffering window too, and raising it above the 1 MiB default really
+does let frames that large through.  It is resolved the usual way — route
+options, then `actor-ts.http.websocket.maxFrameBytes`, then the built-in
+default — and the resolution happens when the server binds, so a
+malformed value is an error at `bind()` rather than on the first upgrade.
+
+The transport cap is **per server, not per route**.  A server has a single
+transport shared by all its WebSocket routes (one `WebSocketServer` on
+Express, one plugin registration on Fastify, one `Bun.serve`), so where
+several routes disagree the transport takes the **widest** of their caps.
+A stricter route is unaffected in what it accepts — the connection actor
+still refuses its oversize frames with 1009 — it just does not get the
+narrower buffering window it would have had on its own.
+
+That is a decision rather than a gap.  Fastify and `Bun.serve` can hold
+only one limit at a time; Express structurally could hold one per route,
+and taking it up there would make the same configuration mean different
+things on different backends — for a limit whose whole job is bounding
+what a hostile peer can allocate, one shape everywhere beats a narrower
+window on one backend of three.
+
+<Aside type="caution" title="Two pairs have no transport cap">
+On **Deno**, `Deno.upgradeWebSocket` accepts a subprotocol and an idle
+timeout and no payload limit, so there is nothing for the framework to set.
+
+On **Bun** with the **Express** or **Fastify** backend, the cap is set but
+not honoured.  Both hand `maxPayload` to a `ws` `WebSocketServer`, and on
+Bun the `ws` specifier resolves to Bun's own built-in shim rather than the
+npm package.  The shim accepts the option and reads it back unchanged — so
+nothing looks wrong from the outside — while enforcing nothing: measured
+here, a 2 MiB frame against a 1 MiB cap reached the handler intact, where
+the same code on Node refused it at the socket and closed with 1009.
+(Bun with the **Hono** backend is unaffected: it goes through
+`Bun.serve`'s own `maxPayloadLength` instead of `ws`.)
+
+In all three cases the frame is fully buffered by the runtime and only then
+rejected by the connection actor.  The guarantee holds — the frame never
+reaches your actor, and the client still gets its 1009 — but the memory is
+spent before it is refused.  For an internet-facing WebSocket endpoint on
+one of these pairs, put a proxy with its own frame limit in front of it.
 </Aside>
 
 <Aside type="note" title="Hono on Node needs @hono/node-ws 1.2.0 or newer">
@@ -149,6 +183,38 @@ uncapped socket, the backend refuses to build the WebSocket bridge and
 names the version in the error.  That is why the peer range starts at
 1.2.0; a plain `npm install @hono/node-ws` already picks a new enough one.
 </Aside>
+
+#### The connection setup window
+
+Between the handshake completing and the connection's actor attaching its
+listeners there is a short window — two mailbox hops — in which the socket
+is live and nothing is reading it.  Frames that arrive there are held and
+replayed the moment the actor attaches, so nothing is lost.  Two knobs
+bound what that window may cost, and both exist because the window's exit
+is not guaranteed: the actor is spawned by the hub, and a hub that has
+stopped, stalled or been reconfigured may never produce one.
+
+- **`maxPreAttachFrames` / `maxPreAttachBytes`** bound what is held.  Past
+  either the socket is closed with **1013** ("try again later") rather than
+  buffered further.  A legitimate client sends nothing or a greeting into
+  this window, so the defaults — 256 frames, 4 MiB — are orders of
+  magnitude above ordinary traffic; what they refuse is a peer that streams
+  into a connection nobody has accepted yet.  The **first** frame is always
+  admitted whatever its size (it is already bounded by `maxFrameBytes`), so
+  a route that raises `maxFrameBytes` above 4 MiB only needs to raise
+  `maxPreAttachBytes` if its clients send *several* such frames at once.
+- **`acceptTimeoutMs`** bounds how long the window may stay open.  If no
+  connection actor has attached within it, the socket is closed with 1013
+  and its `maxConnections` slot is released.  Ten seconds by default: a
+  healthy hub attaches in microseconds, so this is a fallback, not a
+  liveness policy — and an actor that turns up after the deadline is handed
+  the close rather than a socket the framework already killed.  Set
+  `Infinity` to switch it off.
+
+Neither is reachable by accident.  Both answer the same failure: an
+upgraded socket with no actor behind it, which before they existed stayed
+open for the process lifetime, accumulated frames nothing would ever drain,
+and held an admission slot nothing would ever return.
 
 ### Origin allowlist (CSWSH defence)
 
@@ -189,6 +255,28 @@ withMiddleware(BearerTokenAuth({ /* ... */ }), websocket('/ws', chat));
 ```
 
 See the [HTTP overview](/http/overview/) for the middleware set.
+
+#### Response-decorating middleware works too
+
+A middleware that calls `next()` and returns a **decorated** copy of the
+result — `securityHeaders()`, `contentSecurityPolicy()`,
+`strictTransportSecurity()`, `requestId()`, `csrfProtection()` — composes
+over a `websocket()` route as well, so one wrap can harden a whole tree
+without carving the socket out of it:
+
+```ts
+import { requestId, securityHeaders, websocket, withMiddleware } from 'actor-ts/http';
+
+withMiddleware(securityHeaders(), withMiddleware(requestId(), websocket('/ws', chat)));
+// Both run at upgrade time.  The socket opens.
+```
+
+The headers such a middleware adds do **not** reach a *successful*
+handshake — the backend writes that 101 response itself, and a WebSocket
+connection is not a document a browser would apply `X-Frame-Options` or a
+CSP to. They do ride on a **rejection**: a 401 from an inner
+`BearerTokenAuth` comes back with the security headers on it, which is the
+case that matters, since that response really is rendered by a browser.
 
 ### Backend-native middleware runs too
 
@@ -273,6 +361,44 @@ usual guarantee — no concurrent handler execution, no locks.
   `onMessage` and the hooks instead.
 </Aside>
 
+### Bounding the hub's mailbox
+
+One hub carries every inbound frame from every connection on the
+route, which makes it the textbook case for
+[bounding a mailbox](/fundamentals/mailboxes/#when-to-bound-a-mailbox):
+an actor exposed to a producer you do not control.  It is also where
+the framework's own connection traffic rides.  Two things follow.
+
+**The command that spawns a connection's actor cannot be shed.**  It
+travels the same lane a death-watch `Terminated` takes — queued at the
+tail like anything else, but exempt from every overflow policy, so
+`drop-head`, `drop-new`, `reject` and a `PriorityMailbox` of your own
+all leave it alone.  This matters because that command is sent exactly
+once, from the backend's upgrade callback, and it carries the only
+reference to a socket whose handshake has already completed.  Losing it
+would leave that socket upgraded with nothing attached to it: no
+listeners, inbound frames piling up unread, and its `maxConnections`
+slot held until the client gave up.  A hub that cannot answer for a
+different reason — it has stopped, or it never gets to the command — is
+caught by [the connection setup window](#the-connection-setup-window)
+instead, which closes the socket and gives the slot back.
+
+**What a bound does still shed is the rest.**  Inbound frames, and the
+`onClientConnected` / `onClientDisconnected` signals the connection
+actors report — so a bounded hub under load can hand you a client that
+never appears in `this.clients`, or one that never leaves it.  Both are
+your protocol, and only you know whether losing one is acceptable.
+
+<Aside type="tip" title="Prefer the per-route caps">
+  For a hub, reach for `maxConnections` and `maxFrameBytes` before
+  `withMailboxCapacity()`.  They bound the *input* — how many peers may
+  connect and how large one frame may be — where a mailbox capacity
+  bounds the backlog and pays for it by discarding messages that have
+  already been accepted.  The unbounded default is not silent about
+  growth: a queue reaching 10 000 messages logs a warning, and again at
+  each doubling.
+</Aside>
+
 ## `WebsocketConnection`
 
 Each connection is a `WebsocketConnection<TOut>`, which extends
@@ -318,8 +444,7 @@ The route codec decodes inbound frames into `TIn` and encodes
 `TOut` replies.  Default is `jsonCodec()`:
 
 ```ts
-import { WebsocketRouteOptions } from 'actor-ts/http';
-import { jsonCodec } from 'actor-ts/persistence';
+import { WebsocketRouteOptions, jsonCodec } from 'actor-ts/http';
 
 const webSocketRouteOptions = WebsocketRouteOptions.create().withCodec(jsonCodec<ServerMessage, ClientMessage>({
     validate: (v: unknown): ClientMessage => ClientMsgSchema.parse(v),
@@ -385,6 +510,9 @@ actor-ts.http.websocket {
   onInvalidMessage = close
   maxBufferedBytes = 4194304
   onBackpressure   = drop
+  maxPreAttachFrames = 256
+  maxPreAttachBytes  = 4M
+  acceptTimeoutMs    = 10s
 }
 ```
 

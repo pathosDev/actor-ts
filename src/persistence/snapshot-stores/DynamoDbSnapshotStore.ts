@@ -1,4 +1,4 @@
-import { DYNAMODB_MAX_BATCH_ITEMS } from '../Constants.js';
+import { DYNAMODB_MAX_BATCH_ITEMS, DYNAMODB_STORAGE_IDENTITY_KEY } from '../Constants.js';
 import { type Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
@@ -32,6 +32,17 @@ import {
  * `PersistenceOptions` (compression, encryption) are ignored, matching the SQL,
  * Cassandra and MongoDB stores; the object-storage store is the one that honours
  * them.
+ *
+ * **The two loads are strong reads; the two prune/delete queries are not.**  A
+ * stale `loadLatest` is not merely "an older snapshot, so a longer replay": once
+ * the journal has been compacted past the newest snapshot, folding from an older
+ * one starts the replay at a point the surviving events no longer adjoin, and
+ * `assertTrustworthyHistory` aborts recovery with a `JournalIntegrityError` over
+ * a store that is perfectly intact.  The retention queries stay eventually
+ * consistent because a stale read there can only shift the keep-window
+ * *downwards*, i.e. under-delete, which loses nothing and lies about nothing —
+ * unlike the journal's compaction, this store raises no mark that a surviving
+ * row would contradict.
  */
 export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStore {
   private readonly tableName: string;
@@ -60,6 +71,13 @@ export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStor
     return [{ tableName: this.tableName, partitionKey: 'pid', sortKey: { name: 'seq', type: 'N' } }];
   }
 
+  async storageIdentity(): Promise<string> {
+    return this.storageIdentityFromTable(this.tableName, {
+      pid: stringAttribute(DYNAMODB_STORAGE_IDENTITY_KEY),
+      seq: numberAttribute(0),
+    });
+  }
+
   async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
     const operations = await this.ensureOpen();
     const now = Date.now();
@@ -73,11 +91,15 @@ export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStor
           ts: numberAttribute(now),
         },
       });
-      if (this.keepN > 0) await this.prune(operations, persistenceId);
-      return { persistenceId, sequenceNr: seq, state, timestamp: now };
     } catch (e) {
       this.fail('save', e);
     }
+    // Best-effort prune — outside the write's catch on purpose.  See the
+    // retention note on `SnapshotStore.save`.
+    if (this.keepN > 0) {
+      try { await this.prune(operations, persistenceId); } catch { /* swallow */ }
+    }
+    return { persistenceId, sequenceNr: seq, state, timestamp: now };
   }
 
   async loadLatest<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
@@ -88,6 +110,9 @@ export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStor
       ExpressionAttributeValues: { ':pid': stringAttribute(persistenceId) },
       ScanIndexForward: false,
       Limit: 1,
+      // This picks the point recovery folds from, so a stale answer is a wrong
+      // starting point rather than a slower one — see the class docs.
+      ConsistentRead: true,
     });
     const item = found.Items?.[0];
     return item ? some(toSnapshot<S>(item, this.serializer)) : none;
@@ -104,6 +129,9 @@ export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStor
       },
       ScanIndexForward: false,
       Limit: 1,
+      // Same as `loadLatest`: DevTools time travel folds from whatever this
+      // returns, and a stale answer changes the state it reconstructs.
+      ConsistentRead: true,
     });
     const item = found.Items?.[0];
     return item ? some(toSnapshot<S>(item, this.serializer)) : none;
@@ -127,6 +155,10 @@ export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStor
    * Prune-on-save.  DynamoDB has no `OFFSET`, so the newest `keepN + 1` keys are
    * read descending and everything from the last one down is deleted — one
    * bounded query plus a batch delete, independent of how long the history is.
+   *
+   * Left eventually consistent, unlike the two loads: a replica missing the
+   * newest snapshots yields a *lower* cutoff, so the window over-keeps rather
+   * than over-deletes.  The next `save` prunes again.
    */
   private async prune(operations: DynamoDbOperations, persistenceId: string): Promise<void> {
     const newest = await operations.query({
@@ -150,7 +182,14 @@ export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStor
     await this.batchDelete(operations, doomed);
   }
 
-  /** Query for keys only, paging to exhaustion. */
+  /**
+   * Query for keys only, paging to exhaustion.
+   *
+   * Feeds `delete` and `prune`, both of which only ever remove rows — so the
+   * eventually-consistent read is deliberate here too: a stale page under-deletes,
+   * and a snapshot that outlives its retention window is still a truthful
+   * snapshot of state that really existed.
+   */
   private async queryKeys(
     operations: DynamoDbOperations,
     input: Record<string, unknown>,

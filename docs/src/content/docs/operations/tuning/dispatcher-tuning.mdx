@@ -44,19 +44,29 @@ problem — it's that HTTP requests can't get a turn.
 messages so fast that HTTP handlers wait for a turn.
 
 **Fix**: stick with `ImmediateDispatcher` (the default) and
-**bound the busy actors with a throughput dispatcher per-actor**:
+**lower the busy actor's own batch budget**:
 
 ```ts
-import { ActorOptions, ThroughputDispatcher } from 'actor-ts';
+import { ActorOptions } from 'actor-ts';
 
-const heavyOptions = ActorOptions.create().withDispatcher(new ThroughputDispatcher(100));
+const heavyOptions = ActorOptions.create().withThroughput(4);
 
 const heavyActor = system.spawnAnonymous(HeavyWorker, heavyOptions);
 ```
 
-The heavy actor processes 100 messages, yields, lets HTTP
-catch up, processes 100 more.  HTTP latency drops; throughput
-on the heavy actor is barely affected.
+The heavy actor handles 4 messages, yields, lets HTTP catch up,
+handles 4 more.  HTTP latency drops; throughput on the heavy actor
+falls off only as far as the smaller batch costs it.
+
+:::caution[Not `withDispatcher(new ThroughputDispatcher(...))`]
+This page used to recommend giving the busy actor its own
+`ThroughputDispatcher`.  That does **not** batch anything (#409): a
+dispatcher's queue holds one *turn* per actor, and an actor may only have
+one turn queued at a time — so a dispatcher dedicated to a single actor
+never has a second unit to drain, and its batch is always exactly 1.
+`withThroughput()` is the per-actor knob; see
+[Per-actor throughput](#per-actor-throughput) below.
+:::
 
 ## Symptom: low actor throughput, low CPU usage
 
@@ -90,30 +100,101 @@ Microtasks bypass the event loop, ~50× faster scheduling.
 ## ThroughputDispatcher options
 
 ```ts
-new ThroughputDispatcher(100); // messages per batch
+new ThroughputDispatcher(100); // queued actor turns per tick
 ```
 
 The constructor is positional — `throughput` first, an
 optional dispatcher `id` second:
 
-- **`throughput`** — messages processed per actor before
-  yielding.  Higher = more throughput, worse I/O interleaving.
-  Common values: 10-1000.  Defaults to 16.
+- **`throughput`** — queued **turns** drained per tick, across
+  every actor sharing this dispatcher.  Not messages, and not
+  per actor: each turn belongs to a different actor, because an
+  actor may only have one turn queued at a time.  Higher = more
+  throughput, worse I/O interleaving.  Common values: 10-1000.
+  Defaults to 16.
 - Between batches it always yields via `setImmediate` (falling
   back to `setTimeout(0)` where `setImmediate` is unavailable),
   so I/O and timers interleave.  This isn't configurable.
 
-For a batch processor handling broker messages: `throughput: 200`
-is a reasonable starting point.
+For a batch processor with many actors handling broker messages:
+`throughput: 200` is a reasonable starting point.
 
-## Per-actor dispatcher
+## Per-actor throughput
+
+How many messages **one** actor handles per turn before it yields
+is a separate setting from anything on the dispatcher:
 
 ```ts
 import { ActorOptions } from 'actor-ts';
 
-const bulkOptions = ActorOptions.create().withDispatcher(new ThroughputDispatcher(500));
+const bulkOptions = ActorOptions.create().withThroughput(64);
 
-const heavy = system.spawnAnonymous(BulkProcessor, bulkOptions);
+const bulk = system.spawnAnonymous(BulkProcessor, bulkOptions);
+```
+
+System-wide, the same knob is `actor-ts.actor.throughput`:
+
+```hocon
+actor-ts {
+  actor {
+    throughput = 64
+  }
+}
+```
+
+Precedence is the usual one — `withThroughput()` beats HOCON beats
+the built-in default of 16.
+
+**This is the setting that removes scheduling overhead for a busy
+actor.**  Every message used to cost a full `setImmediate` round
+trip (~2.4 µs) regardless of any dispatcher setting; batching
+amortises that across the whole batch, which is worth roughly
+2-3× on a `tell`-driven workload.
+
+The trade-off is fairness, and it is direct: a batch runs to its
+budget without yielding, so `budget × handler time` is the delay
+every timer, socket read and other actor can see.  Lower it toward
+`1` for an actor with a slow handler that shares a system with
+latency-sensitive work; raise it for a short-handler actor that is
+a throughput bottleneck.  A batch always ends early on an empty
+mailbox, a stop or suspend, and a throttle bucket that runs out —
+so the budget is a ceiling, never a commitment.
+
+## What a message costs when nothing is watching
+
+Worth knowing before you tune anything, because it sets the scale
+everything else is measured against.
+
+On the default dispatcher the **scheduling round trip dominates
+everything else on the message path** — about 2.4 µs against a raw
+mailbox operation of tens of nanoseconds.  That is why
+[per-actor throughput](#per-actor-throughput) is the setting with the
+largest effect on a `tell`-driven workload, and why a faster queue or a
+leaner handler moves the number far less than it feels like it should.
+
+Below that sits the framework's own per-message overhead with metrics
+and tracing **off**.  It used to be four extension-registry lookups,
+four metric label objects built for a registry that discards them, a
+closure, a throwaway array, and two clock reads — per message, on every
+system, whether or not anything was observing.  #411 removed all of it;
+what remains is a handful of field reads and null checks.  Both
+extensions are still free to switch on at runtime, and a message is
+either wholly instrumented or wholly not — the handles are resolved once
+per message rather than at each instrumentation point.
+
+If you are chasing allocation pressure rather than latency,
+`benchmarks/memory/receive-path.ts` is the arm that isolates this, and
+its header explains why the effect shows up as throughput rather than as
+heap.
+
+## Per-actor dispatcher
+
+```ts
+import { ActorOptions, MicrotaskDispatcher } from 'actor-ts';
+
+const computeOptions = ActorOptions.create().withDispatcher(new MicrotaskDispatcher());
+
+const heavy = system.spawnAnonymous(BulkProcessor, computeOptions);
 
 const httpHandler = system.spawn(
   HttpHandler,
@@ -121,9 +202,15 @@ const httpHandler = system.spawn(
 );
 ```
 
-Mix freely.  Heavy actors get their own throughput-tuned
-dispatcher; HTTP handlers stay on the default.  This is the
-**recommended production pattern**.
+Mix freely: a compute-only actor can run on microtasks while HTTP
+handlers stay on the default.
+
+What a per-actor dispatcher is **not** good for is batching.  A
+`ThroughputDispatcher` given to one actor drains a queue that never
+holds more than that actor's single pending turn, so its budget is
+unreachable — use [`withThroughput()`](#per-actor-throughput)
+instead.  A `ThroughputDispatcher` earns its keep when a *group* of
+actors shares it.
 
 ## System-wide dispatcher
 
@@ -138,30 +225,85 @@ traffic.
 
 ## Measuring
 
-Use the
-[stock metric](/observability/metrics/stock-metrics/)
-`actor_message_duration_ms`:
+Two [stock metrics](/observability/metrics/stock-metrics/) split a
+message's latency at the moment it is picked up:
 
 ```
-P50 ≈ work time
-P99 - P50 ≈ dispatcher latency (queueing)
+actor_mailbox_wait_seconds     — queued, waiting its turn
+actor_message_handler_seconds  — inside onReceive
 ```
 
-If P99 is far higher than P50 with little work-time variance,
-**dispatcher tuning helps**.
+Read them together; the pair is what tells you whether tuning the
+dispatcher can help at all:
 
-The
-`actor_mailbox_size` gauge under load shows whether actors are
-keeping up.  Persistently growing depth = either a slow handler
-or a misconfigured dispatcher.
+- **Wait p99 high, handler p99 low** — the actor is fine and messages
+  are sitting in the queue.  **Dispatcher tuning helps**: raise the
+  per-actor throughput budget so each turn drains more of the backlog,
+  or move the actor off a dispatcher it is sharing with slow work.
+- **Handler p99 high** — the handler itself is the cost.  No dispatcher
+  setting makes it faster; that is a code or downstream problem, and
+  raising the budget makes latency *worse* for everything sharing the
+  runtime.
+
+Queueing delay used to have to be inferred from the spread between p50
+and p99 of the handler histogram, which conflated it with variance in
+the work itself.  It is now measured directly.
+
+The `actor_mailbox_size` gauge under load shows whether actors are
+keeping up.  Persistently growing depth = either a slow handler or a
+misconfigured dispatcher.  It is the *later* signal of the two — a
+series only exists above 10 000 queued messages, where wait starts
+climbing as soon as an actor falls behind.  `actor_mailbox_depth` fills
+that gap: a label-free histogram observed once per delivery, so a burst
+that never reaches 10 000 still shows its tail.
+
+### Is the dispatcher itself the queue?
+
+Both metrics above are about an actor's *mailbox*.  A message can also
+wait one level up — in the dispatcher, after the cell has asked for a
+turn and before that turn starts:
+
+```
+actor_dispatcher_queue_delay_seconds{dispatcher="..."}
+```
+
+At rest this is a single scheduling hand-off, microseconds.  When it
+climbs, the actor is not the problem and neither is its mailbox: turns
+are queued behind other turns, which is what dispatcher tuning is for.
+
+```promql
+histogram_quantile(0.99,
+  rate(actor_dispatcher_queue_delay_seconds_bucket[5m]))
+# Per dispatcher. A high p99 on one and not the others tells you which
+# pool to split, and which actors to move off it.
+```
+
+Reading it beside the mailbox pair completes the diagnosis:
+
+- **Delay p99 high** — turns are competing.  Either something on this
+  dispatcher is not yielding (a `ThroughputDispatcher` with too high a
+  budget, or a handler that blocks), or too many actors share it.  Split
+  the dispatcher, or lower its throughput so it yields more often.
+- **Delay p99 low, mailbox wait p99 high** — the turns start promptly and
+  one actor's own queue is the backlog.  Raise *that actor's*
+  `withThroughput` so each turn drains more, rather than touching the
+  dispatcher.
+
+There is deliberately no `dispatcher_saturation_ratio` — a 0–1 busy
+fraction cannot be computed honestly on all three supported runtimes, and
+[Stock metrics](/observability/metrics/stock-metrics/#why-there-is-no-saturation-ratio)
+records the measurements behind that decision.  `MicrotaskDispatcher` is
+the one case where a low delay is not evidence of headroom, for the
+reason noted there.
 
 ## Heuristics
 
 ```
 HTTP server + actors        → ImmediateDispatcher (default)
 Compute-heavy + no HTTP     → MicrotaskDispatcher
-Batch processing            → ThroughputDispatcher (throughput 100-500)
-Mixed: heavy actor + HTTP   → ImmediateDispatcher default + ThroughputDispatcher per heavy actor
+Batch processing, many actors → ThroughputDispatcher (throughput 100-500)
+One actor is the bottleneck → default dispatcher + withThroughput(64...256)
+Mixed: heavy actor + HTTP   → default dispatcher + withThroughput(2...8) on the heavy actor
 ```
 
 import { Aside } from '@astrojs/starlight/components';

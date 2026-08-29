@@ -11,7 +11,6 @@ import {
   CircuitBreaker,
   CircuitBreakerOpenError,
 } from '../../src/index.js';
-import { attachDevTools } from '../devtools.js';
 
 type Command = { kind: 'ping'; id: number } | { kind: 'hang' };
 
@@ -25,7 +24,6 @@ class FlakyService extends Actor<Command> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('cb-realistic');
-  const devtools = await attachDevTools(system);
   const svc = system.spawn(FlakyService, 'svc');
 
   const breaker = new CircuitBreaker({
@@ -57,7 +55,6 @@ async function main(): Promise<void> {
   const result = await breaker.call(() => svc.ask<string>({ kind: 'ping', id: 99 }, 100));
   console.log(`probe succeeded → ${result}, state=${breaker.state}`);
 
-  await devtools.holdOpen();
   await system.terminate();
 }
 

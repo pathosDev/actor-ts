@@ -24,7 +24,6 @@ import {
   Register,
   ServiceKey,
 } from '../../src/discovery/index.js';
-import { attachDevTools } from '../devtools.js';
 
 class Worker extends Actor<string> {
   constructor(private readonly host: string) { super(); }
@@ -40,7 +39,6 @@ class StreamClient extends Actor<Listing<string>> {
 
 async function startNode(host: string, port: number, seeds: string[] = []): Promise<{ sys: ActorSystem; cluster: Cluster; name: string }> {
   const sys = ActorSystem.create('service-locator');
-  await attachDevTools(sys);
   const clusterOptions = ClusterOptions.create()
     .withHost(host)
     .withPort(port)
@@ -57,6 +55,7 @@ async function main(): Promise<void> {
   const nodeB = await startNode('b', 11_002, ['service-locator@a:11001']);
   const nodeC = await startNode('c', 11_003, ['service-locator@a:11001']);
 
+  // Not a drain sleep: waits for the three nodes to see each other.
   await Bun.sleep(300);
 
   const key = ServiceKey.of<string>('workers');
@@ -69,10 +68,14 @@ async function main(): Promise<void> {
   }
 
   // Subscribe on node A; expect to see 1, then 2, then 3 workers over time.
-  const aReceptionist = nodeA.sys.extension(ReceptionistId).get()!;
+  // `get()` hands back an `Option` — `!` alone does not unwrap one.
+  const aReceptionist = nodeA.sys.extension(ReceptionistId).get().toNullable()!;
   const client = nodeA.sys.spawn(StreamClient, 'client');
   aReceptionist.tell(new Subscribe(key, client));
 
+  // Not a drain sleep: the receptionist gossips its registry every 80 ms, and
+  // that is a `/system` actor on three separate systems — nothing terminate()
+  // drains.  This is the several rounds it takes for A to see all three.
   await Bun.sleep(500);
   console.log('--- node C leaves ---');
   await nodeC.cluster.leave();

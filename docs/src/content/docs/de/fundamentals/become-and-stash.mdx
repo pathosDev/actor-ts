@@ -209,7 +209,7 @@ unstashAll(): void;
 readonly stashSize: number;
 ```
 
-Drei Details, die zählen:
+Vier Details, die zählen:
 
 - **`stash()` muss aus einem User-Nachrichten-Handler heraus
   aufgerufen werden.**  Es parkt die *gerade behandelte* Nachricht.
@@ -226,6 +226,15 @@ Drei Details, die zählen:
   wirft `StashOverflowError`.  Der Bound ist fest auf 1024
   Nachrichten einkompiliert — es gibt keinen Konfigurations-Knopf
   dafür.
+- **Eine begrenzte Mailbox begrenzt auch das Replay.**  Mailboxes sind
+  standardmäßig unbegrenzt, dann gilt nichts davon; setzt du aber eine
+  Grenze mit `withMailboxCapacity(...)`, unterliegt ihr auch das
+  Replay: `unstashAll()` auf eine volle Mailbox droppt unter
+  `drop-head` / `drop-new` (und schafft Platz, indem es die *neuesten*
+  eingereihten Nachrichten verwirft, nicht die älteren gestashten) und
+  wirft unter `reject` `MailboxFullError`, wobei der Batch gestasht
+  bleibt.  Siehe
+  [Mailboxes](/de/fundamentals/mailboxes/#mailboxes--stash).
 
 ### `stash` + `become` — die kanonische Kombination
 
@@ -312,6 +321,10 @@ Initialisierungs-Fensters kein Traffic verloren geht.
   die Nachrichten über den Fehler hinweg wichtig sind, persistiere sie
   (`PersistentActor`) oder lass einen Parent sie erneut senden, sobald
   der Restart durch ist.
+
+  Dasselbe gilt für den Puffer von
+  [`Behaviors.withStash`](/de/typed/behaviors/) im typed-DSL — auch für
+  den Restart, den eine `Behaviors.supervise`-Strategie selbst ausführt.
 </Aside>
 
 ## Wann zu welchem greifen

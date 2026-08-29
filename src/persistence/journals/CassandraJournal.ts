@@ -2,6 +2,7 @@ import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
   JournalError,
+  type JournalEntry,
   type PersistentEvent,
 } from '../JournalTypes.js';
 import {
@@ -14,8 +15,10 @@ import { CassandraJournalOptionsValidator } from './CassandraJournalOptions.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
+import { STORAGE_IDENTITY_TABLE } from '../Constants.js';
 import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
-import { assertValidTags } from '../storage/TagValidator.js';
+import { assertValidEntryTags } from '../storage/TagValidator.js';
+import type { StorageLocality } from '../StorageLocality.js';
 import type { CassandraJournalOptions, CassandraJournalOptionsType } from './CassandraJournalOptions.js';
 
 type EventRow = {
@@ -24,6 +27,17 @@ type EventRow = {
   sequence_nr: string | number;
   timestamp: string | number;
   payload: string;
+  tags: string[] | null;
+};
+
+/**
+ * The narrow projection `delete` reads back to rebuild the `events_by_tag`
+ * primary key `(tag, timestamp, persistence_id, sequence_nr)` — deliberately
+ * payload-free, see `deleteTagIndexRows`.
+ */
+type TagIndexKeyRow = {
+  sequence_nr: string | number;
+  timestamp: string | number;
   tags: string[] | null;
 };
 
@@ -46,6 +60,40 @@ type EventRow = {
  * guarantee back for the round-trip.
  */
 export class CassandraJournal implements Journal {
+  /** A Cassandra/Scylla cluster any node can reach (#1356). */
+  readonly storageLocality: StorageLocality = 'shared';
+  private cachedStorageIdentity: string | null = null;
+
+  /** Identity of the keyspace's database — journal and snapshot store over one keyspace share it (#1358). */
+  async storageIdentity(): Promise<string> {
+    if (this.cachedStorageIdentity !== null) return this.cachedStorageIdentity;
+    await this.ensureStarted();
+    const table = this.qualified(STORAGE_IDENTITY_TABLE);
+    if (this.options.autoCreateTables ?? true) {
+      await this.client.execute(
+        `CREATE TABLE IF NOT EXISTS ${table} ( singleton int PRIMARY KEY, identity text )`,
+      );
+    }
+    // The same LWT the append path trusts — losing the claim to a sibling
+    // store on the same keyspace is the expected path.
+    await this.client.execute(
+      `INSERT INTO ${table} (singleton, identity) VALUES (?, ?) IF NOT EXISTS`,
+      [1, crypto.randomUUID()],
+      this.conditionalOptions(),
+    );
+    const response = await this.client.execute(
+      `SELECT identity FROM ${table} WHERE singleton = ?`,
+      [1],
+      this.readOptions(),
+    );
+    const identity = (response.rows[0] as { identity?: unknown } | undefined)?.identity;
+    if (typeof identity !== 'string' || identity.length === 0) {
+      throw new JournalError('CassandraJournal.storageIdentity: identity row missing after insert');
+    }
+    this.cachedStorageIdentity = identity;
+    return identity;
+  }
+
   private readonly options: Partial<CassandraJournalOptionsType>;
   private client: CassandraClientLike;
   /** True once `ensureStarted()` has run keyspace + table DDL. */
@@ -125,13 +173,12 @@ export class CassandraJournal implements Journal {
 
   async append<E>(
     persistenceId: string,
-    events: ReadonlyArray<E>,
+    entries: ReadonlyArray<JournalEntry<E>>,
     expectedSeq: number,
-    tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
-    if (events.length === 0) return [];
+    if (entries.length === 0) return [];
     assertValidPersistenceId(persistenceId, 'CassandraJournal.append');
-    assertValidTags(tags);
+    assertValidEntryTags(entries);
     await this.ensureStarted();
 
     // 1) Read current max-seq from metadata; throw on mismatch.  Under LWT
@@ -147,9 +194,8 @@ export class CassandraJournal implements Journal {
 
     const now = Date.now();
     const partitionSize = this.options.partitionSize ?? 500_000;
-    const tagList = tags ? Array.from(tags) : null;
     const written: PersistentEvent<E>[] = [];
-    const lastSeq = actualSeq + events.length;
+    const lastSeq = actualSeq + entries.length;
 
     // 2) Claim the whole range [actualSeq+1, lastSeq] on the metadata row
     //    BEFORE writing any event.  Ordering matters: the events insert is
@@ -182,12 +228,13 @@ export class CassandraJournal implements Journal {
 
     let seq = actualSeq;
     try {
-      for (const ev of events) {
+      for (const entry of entries) {
         seq++;
         const partition = Math.floor((seq - 1) / partitionSize);
         if (batchPartition !== null && partition !== batchPartition) await flush();
         batchPartition = partition;
-        const payload = encodePayload(ev, this.options.serializer);
+        const tagList = entry.tags ? Array.from(entry.tags) : null;
+        const payload = encodePayload(entry.event, this.options.serializer);
         batchOps.push({
           query:
             `INSERT INTO ${this.qualified(this.eventsTable)} (persistence_id, partition_nr, sequence_nr, timestamp, payload, tags) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -209,7 +256,7 @@ export class CassandraJournal implements Journal {
         written.push({
           persistenceId: persistenceId,
           sequenceNr: seq,
-          event: ev,
+          event: entry.event,
           timestamp: now,
           tags: tagList ? [...tagList] : undefined,
         });
@@ -292,12 +339,28 @@ export class CassandraJournal implements Journal {
     return this.readHighestSeq(persistenceId);
   }
 
+  /**
+   * Compaction has to reach the tag index too (#654).  `events_by_tag` is a
+   * separate physical table this class dual-writes in `append` — not a
+   * secondary index Cassandra maintains — so nothing removes its rows when
+   * the events go, and each of them carries the **full payload**.  Left
+   * behind, a compacted event stayed both readable through
+   * `CassandraQuery.currentEventsByTag` and stored forever, which is a
+   * correctness defect and a data-retention one at the same time.
+   *
+   * The tag rows go first, matching `SqliteJournal` and `RelationalJournal`:
+   * a crash between the two deletes then leaves events whose tag rows are
+   * already gone — a re-run of the same `delete` still reaches them — rather
+   * than tag rows pointing at events that no longer exist, which no later
+   * compaction could ever find.
+   */
   async delete(persistenceId: string, toSeq: number): Promise<void> {
     await this.ensureStarted();
     const partitionSize = this.options.partitionSize ?? 500_000;
     const lastPartition = Math.floor(Math.max(toSeq - 1, 0) / partitionSize);
     for (let partition = 0; partition <= lastPartition; partition++) {
       try {
+        if (this.useTagIndex) await this.deleteTagIndexRows(persistenceId, partition, toSeq);
         await this.client.execute(
           `DELETE FROM ${this.qualified(this.eventsTable)} WHERE persistence_id = ? AND partition_nr = ? AND sequence_nr <= ?`,
           [persistenceId, partition, toSeq],
@@ -307,6 +370,89 @@ export class CassandraJournal implements Journal {
         throw new JournalError(`CassandraJournal.delete failed: ${(e as Error).message}`, e);
       }
     }
+  }
+
+  /**
+   * Drop the `events_by_tag` rows of one partition's compacted prefix.
+   *
+   * It has to be read-then-delete rather than a range delete: the side table
+   * is partitioned by `(tag)` and clustered on `timestamp` first, and neither
+   * is derivable from `(persistenceId, toSeq)`.  The events row is the only
+   * place the `(timestamp, tags)` pair is recorded — which is also why this
+   * runs *before* the events are deleted rather than after.
+   *
+   * One statement per (event, tag) pair, deliberately not a batch: every tag
+   * is its own partition, so batching them is exactly the multi-partition
+   * batch `append` splits itself up to avoid.
+   */
+  private async deleteTagIndexRows(
+    persistenceId: string,
+    partition: number,
+    toSeq: number,
+  ): Promise<void> {
+    // Only the three columns the side table's key is rebuilt from — pulling
+    // `payload` back for a prefix being compacted would be the largest read
+    // in the delete path and nothing here reads it.
+    const response = await this.client.execute(
+      `SELECT sequence_nr, timestamp, tags FROM ${this.qualified(this.eventsTable)} WHERE persistence_id = ? AND partition_nr = ? AND sequence_nr <= ?`,
+      [persistenceId, partition, toSeq],
+      this.readOptions(),
+    );
+    for (const row of response.rows as unknown as TagIndexKeyRow[]) {
+      // A CQL `set<text>` comes back null (or empty) for an untagged event,
+      // which never produced a side-table row in the first place.
+      if (!row.tags || row.tags.length === 0) continue;
+      for (const tag of row.tags) {
+        await this.client.execute(
+          `DELETE FROM ${this.qualified(this.tagIndexTable)} WHERE tag = ? AND timestamp = ? AND persistence_id = ? AND sequence_nr = ?`,
+          [tag, Number(row.timestamp), persistenceId, Number(row.sequence_nr)],
+          this.readOptions(),
+        );
+      }
+    }
+  }
+
+  /**
+   * Here the high-water mark IS `max_sequence_nr` — there is no separate
+   * `deleted_to` column, which is why `delete` leaves the metadata row alone
+   * and why raising the mark goes through the very same claim `append` uses.
+   * Taking the LWT rather than a bare `INSERT` matters: the metadata row is
+   * the append serializer, so an unconditional write would clobber a
+   * concurrent writer's claim and hand two writers the same sequence range.
+   * A losing claim surfaces as `JournalConcurrencyError`, exactly as it does
+   * for an append that raced.
+   */
+  async raiseCompactionMark(persistenceId: string, throughSeq: number): Promise<void> {
+    await this.ensureStarted();
+    const metadata = await this.readMetadata(persistenceId);
+    const current = metadata?.maxSequenceNr ?? 0;
+    // Monotonic: a mark already at or above `throughSeq` is left alone rather
+    // than rewound, and a re-run of a migration is therefore free.
+    if (current >= throughSeq) return;
+    const now = Date.now();
+    if (this.lightweightTransactions) {
+      await this.claimSequenceRange(persistenceId, metadata !== null, current, throughSeq, now);
+    } else {
+      try {
+        await this.client.execute(
+          `INSERT INTO ${this.qualified(this.metadataTable)} (persistence_id, max_sequence_nr, updated_at) VALUES (?, ?, ?)`,
+          [persistenceId, throughSeq, now],
+          this.readOptions(),
+        );
+      } catch (e) {
+        throw new JournalError(`CassandraJournal.raiseCompactionMark failed: ${(e as Error).message}`, e);
+      }
+    }
+    // Index the id the way `append` does at seq 0, so a stream that carries a
+    // mark but no surviving events still enumerates — which is what a fully
+    // compacted stream looks like once it has been migrated.
+    try {
+      await this.client.execute(
+        `INSERT INTO ${this.qualified(this.allIdsTable)} (tag, persistence_id) VALUES (?, ?)`,
+        ['_all', persistenceId],
+        this.readOptions(),
+      );
+    } catch { /* non-fatal — listing is best-effort */ }
   }
 
   async persistenceIds(): Promise<string[]> {

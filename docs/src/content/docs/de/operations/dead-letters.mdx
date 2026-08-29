@@ -1,0 +1,302 @@
+---
+title: Dead Letters
+description: Was ein Dead Letter ist, was actor-ts standardmäßig damit macht und wie man die begrenzte — optional dauerhafte — Queue einschaltet, die sie aufbewahrt, filtert und erneut zustellt.
+---
+
+Ein **Dead Letter** ist eine Nachricht, die das System nicht zustellen
+konnte: ein `tell` an eine Ref, deren Actor gestoppt ist, eine Selection,
+die ins Leere lief, ein Behavior, das mit `unhandled` geantwortet hat, ein
+Cluster-Singleton ohne Host. Nichts ist aus Versehen verloren gegangen —
+das Framework hat es bemerkt, und so sagt es das.
+
+## Was standardmäßig passiert
+
+Jedes Dead Letter wird in ein `DeadLetter` verpackt und **auf dem
+[Event-Stream](/de/fundamentals/event-stream/) veröffentlicht**. Das ist
+das gesamte Standardverhalten.
+
+Insbesondere **loggt** das Framework Dead Letters **nicht**.
+`DeadLetterRef` hält keinen Logger; wenn niemand den Stream abonniert, ist
+das Letter weg. Für einen Entwicklungslauf ist das in Ordnung und eine
+schlechte Antwort auf „was haben wir während des Vorfalls letzte Nacht
+verworfen?“ — genau dafür gibt es die Queue weiter unten.
+
+```ts
+import { DeadLetter } from 'actor-ts';
+
+class Watcher extends Actor<DeadLetter> {
+  override preStart(): void {
+    this.system.eventStream.subscribe(this.self, DeadLetter);
+  }
+  override onReceive(letter: DeadLetter): void {
+    this.system.log.warn(`undelivered: ${letter.message} -> ${letter.recipient.path}`);
+  }
+}
+```
+
+Jedes Dead Letter nennt seinen **Empfänger** — den Actor, den die Nachricht
+nicht erreicht hat, nicht das Dead-Letter-Büro. Das macht ein Letter von
+einem anderen unterscheidbar, und darauf bauen die Filter und das
+erneute Zustellen weiter unten auf.
+
+## Die Queue einschalten
+
+`system.deadLetterQueue` existiert immer und bewahrt standardmäßig nichts
+auf. Vier Stores, eine Achse — wie viel vom Letter aufbewahrt wird:
+
+| `store` | Bewahrt auf | Übersteht einen Neustart |
+| --- | --- | --- |
+| `off` (Standard) | nichts | — |
+| `metrics` | einen Counter, keine Payload | — |
+| `memory` | einen begrenzten Ring | nein |
+| `persistent` | denselben Ring, plus ein Append-only-Log im Journal | ja |
+
+`metrics` gibt es, weil **eine Payload aufzubewahren eine andere
+Entscheidung ist, als eine Rate zu beobachten**. Ein Ring hält eine starke
+Referenz auf jede unzustellbare Nachricht — eine Datenschutzfrage, sobald
+eine Payload etwas über eine Person aussagt; ein Counter nicht. `list()`
+bleibt leer und `replay` antwortet für jede id mit `unknown-entry`: es wurde
+nichts aufbewahrt, es gibt also nichts zurückzugeben. Mit einem winzigen
+Ring lässt sich das nicht annähern — `max-entries` muss positiv sein, also
+bewahrt selbst der kleinste eine lebende Payload für ein ganzes
+Retention-Fenster auf.
+
+```hocon
+actor-ts.dead-letters {
+  store       = "memory"
+  max-entries = 1000
+  retention   = 1h
+  max-replays = 3
+}
+```
+
+Dieselben Stellschrauben gibt es als Options-Familie, die dem System bei
+seiner Erzeugung übergeben wird:
+
+```ts
+import { ActorSystem, ActorSystemOptions, DeadLetterQueueOptions } from 'actor-ts';
+
+const deadLetterOptions = DeadLetterQueueOptions.create()
+  .withStore('persistent')
+  .withMaxEntries(5_000)
+  .withRetentionMs(6 * 60 * 60 * 1_000);
+
+const systemOptions = ActorSystemOptions.create()
+  .withDeadLetters(deadLetterOptions);
+
+const system = ActorSystem.create('orders', systemOptions);
+```
+
+Die Vorrangregel ist die übliche — **explizite Options schlagen HOCON
+schlagen die eingebauten Standardwerte** — und sie gilt feldweise: eine im
+Code benannte Stellschraube lässt den Rest des Blocks
+`actor-ts.dead-letters` in Kraft.
+
+:::caution
+`withDeadLetters` ist der einzige Weg, die Queue zu konfigurieren, die das
+**System benutzt**. `new DeadLetterQueue(system, options)` erzeugt ein
+gültiges Objekt, aber niemand installiert es als Capture-Sink, es erhält
+also nie ein Letter — es gibt einen Sink-Slot, und den besitzt das System.
+:::
+
+:::note
+`store` ist eine **Speicher**-Entscheidung, keine Fehlerstrategie. Was eine
+Projection tun soll, wenn ein Handler wirft, ist
+[`recoveryStrategy`](/de/persistence/projections/) — `retry-and-skip`,
+`skip` und Verwandte. Sobald eine Projection ein Event übersprungen hat,
+veröffentlicht sie ein Dead Letter, und diese Einstellung entscheidet, ob
+es jemand aufbewahrt. Beide ergänzen sich; keine ersetzt die andere.
+:::
+
+Jeder Key in diesem Block entscheidet, **was aufbewahrt wird** — deshalb
+liegen sie unter `actor-ts.dead-letters` und nicht neben den künftigen
+Stellschrauben für Logging und Rate-Limiting: Die entscheiden, wie laut ein
+Letter *angekündigt* wird, werden auf dem Publish-Pfad gelesen und nicht von
+der Queue, und sitzen bewusst hinter dem Erfassen — eine
+Unterdrückungseinstellung kann diese Aufzeichnung also nie still
+unvollständig machen.
+
+## Inspizieren
+
+Die Queue hat auch ein Panel: Sobald sie eingeschaltet ist, zeigt der
+[Dead-Letter-Inspektor](/de/observability/devtools/dead-letters/) in
+DevTools dieselben Einträge im Browser, samt Payloads.  Im Code:
+
+`list()` liefert Einträge **neueste zuerst**, eingeengt durch einen
+optionalen Filter. Alles wird `await`ed, weil eine `persistent`-Queue noch
+das Log eines vorherigen Laufs zurücklesen kann.
+
+```ts
+const recent = await system.deadLetterQueue.list({
+  recipient: 'actor-ts://orders/user/checkout',
+  sinceMs: Date.now() - 15 * 60 * 1_000,
+  limit: 20,
+});
+
+for (const entry of recent) {
+  console.log(entry.id, entry.timestampMs, entry.recipientPath, entry.payload);
+}
+```
+
+`recipient` trifft einen Pfad **oder seinen Teilbaum**, sodass
+`actor-ts://orders/user` alles auswählt, was die Anwendung gespawnt hat.
+
+Das `payload` eines Eintrags hat eine von zwei Formen:
+
+- `{ kind: 'captured', message }` — die Originalnachricht, unverändert.
+- `{ kind: 'degraded', className, reason }` — die Payload konnte nicht ins
+  Journal geschrieben werden. Der Tagged-JSON-Encoder verweigert
+  Funktionen, Symbols, `Promise`, Weak-Collections und Zyklen, statt sie
+  still zu beschädigen — also bewahrt eine `persistent`-Queue die Herkunft
+  auf, statt das Letter zu verlieren. Ein solcher Eintrag kann nicht erneut
+  zugestellt werden: es ist nichts mehr da, was man senden könnte.
+
+## Erneut zustellen
+
+```ts
+const result = await system.deadLetterQueue.replay(entry.id);
+if (result.kind !== 'replayed') {
+  console.warn('not replayed:', result.kind);
+}
+```
+
+Das erneute Zustellen löst den Empfängerpfad **neu auf**, statt eine zum
+Fehlerzeitpunkt festgehaltene Ref wiederzuverwenden — der ganze Sinn ist ja,
+dass der Actor inzwischen zurück ist, unter derselben Adresse als neue
+Instanz.
+
+Jeder Ausgang hat einen Namen, damit nichts still scheitert:
+
+| `kind` | Bedeutung |
+| --- | --- |
+| `replayed` | Zurückgegeben; der Eintrag hat die Queue verlassen. `recipientPath` ist, wohin es tatsächlich ging. |
+| `unknown-entry` | Keine solche id — bereits zugestellt oder gealtert. |
+| `unresolved-recipient` | Unter dem Zielpfad ist nichts; der Eintrag bleibt. |
+| `degraded-payload` | Nur Herkunft; es gibt nichts erneut zuzustellen. |
+| `quarantined` | Bereits `max-replays`-mal erneut zugestellt. |
+
+### An einen anderen Empfänger zustellen
+
+Ein zweites Argument schickt das Letter an eine andere Adresse als die, an
+die es ursprünglich gesendet wurde — der Actor wurde umbenannt, der Shard ist
+umgezogen, der Pfad war ein Tippfehler:
+
+```ts
+const result = await system.deadLetterQueue.replay(
+  entry.id,
+  'actor-ts://orders/user/checkout-v2',
+);
+```
+
+Drei Dinge sind an einer Umleitung wissenswert:
+
+- **Nur das Ziel ändert sich.** Der Sender bleibt der aufgezeichnete, sodass
+  `sender` beim Empfänger weiterhin den Actor nennt, der die Nachricht
+  gesendet hat, und eine Antwort dorthin geht, wo eine Antwort immer
+  hingeht.
+- **Der aufgezeichnete Pfad wird überhaupt nicht aufgelöst.** Eine Umleitung
+  ist genau dann am nützlichsten, wenn die ursprüngliche Adresse endgültig
+  weg ist — zu verlangen, dass sie noch existiert, würde also gerade die
+  Fälle verweigern, die sie am meisten brauchen.
+- **Die Replay-Schranke gilt weiter.** `max-replays` begrenzt, wie oft
+  *dieses Letter* erneut zugestellt wird, nicht wie oft ein Empfänger
+  gefragt wird — ein Letter in Quarantäne bleibt verweigert, egal wie es
+  adressiert wird. Sonst gäbe abwechselndes Zustellen an zwei Pfade die
+  unbegrenzte Wiederholungsschleife zurück, die die Schranke schließen soll.
+
+Landet das Letter beim alternativen Empfänger wieder im Dead Letter, kommt es
+als derselbe Eintrag zurück, der nun den alternativen Pfad als
+`recipientPath` führt — dort ist die Nachricht dieses Mal gescheitert.
+
+### Giftige Nachrichten können die Queue nicht wachsen lassen
+
+Eine erneut zugestellte Nachricht, die wieder im Dead Letter landet, kommt
+als **derselbe Eintrag** mit höherem `replayCount` zurück — nicht als neuer.
+Ohne das würde ein Betreiber (oder ein Skript), der eine Nachricht erneut
+versucht, die der Empfänger schlicht nicht verarbeiten kann, pro Versuch
+einen Eintrag hinzufügen, während jeder einzelne Versuch weiterhin wie ein
+erster aussähe. Jenseits von `max-replays` wird das Letter in Quarantäne
+gestellt und `replay` verweigert es.
+
+## Dauerhaftigkeit
+
+Mit `store = "persistent"` schreibt die Queue ein Append-only-Log ins
+konfigurierte [Journal](/de/persistence/overview/) und liest es beim
+nächsten Start zurück, sodass ein Redeploy nicht verliert, was der
+vorherige Prozess erfasst hat.
+
+Ausgeliefert wird **Dauerhaftigkeit über ein geordnetes Herunterfahren,
+keine Crash-Dauerhaftigkeit** — und der Unterschied ist es wert, genau
+benannt zu werden:
+
+- **Der Stream wird aus dem Systemnamen abgeleitet**, sodass zwei Systeme,
+  die sich ein Journal teilen, getrennte Queues behalten. Überschreibe ihn
+  mit `actor-ts.dead-letters.persistence-id`, wenn du etwas anderes willst.
+- **Schreibvorgänge werden beim Eintreffen ausgelöst und beim Herunterfahren
+  abgeschlossen** — einmal in der Phase `before-actor-system-terminate` von
+  [CoordinatedShutdown](/de/fundamentals/coordinated-shutdown/) und noch
+  einmal, nachdem der Actor-Baum unten ist, weil das Herunterfahren selbst
+  noch Dead Letters erzeugt, nachdem die letzte Phase gelaufen ist. Alles,
+  was vor einem `terminate()` erfasst wurde, steht danach im Journal — egal
+  wie groß der Schub war.
+- **Ein harter Kill verliert den Rückstau, was nicht dasselbe ist wie einen
+  einzelnen Schreibvorgang zu verlieren.** `tell` ist synchron und kann
+  nicht auf ein Journal warten, Appends werden also „abschicken und
+  vergessen" in eine *serialisierte* Kette gegeben. Ein Schub, der schneller
+  eintrifft als das Journal ihn annimmt, lässt daher viele unabgeschlossene
+  Appends offen, und ein `SIGKILL`, ein Stromausfall oder ein OOM-Kill
+  verliert sie alle — nicht nur den gerade laufenden.
+
+Die Queue ist eine Diagnoseaufzeichnung, kein transaktionaler Outbox. Wenn
+ein Letter einen unkontrollierten Stopp überleben muss, gehört der
+Journal-Schreibvorgang auf den Sendepfad — ein anderer Entwurf, und nicht
+dieser hier.
+
+## Metriken
+
+`actor_dead_letters_total{outcome}` zählt, was die Queue gesehen hat —
+`outcome` ist `captured`, `replayed` oder `replay-failed`. Siehe
+[Stock-Metriken](/de/observability/metrics/stock-metrics/).
+
+Es trägt **kein Recipient-Label**. Das wäre eine dauerhafte Zeitreihe pro
+unzustellbarem Pfad, und unter Sharding ist der Pfad `entity-<entityId>`
+— ein Wert, den derjenige wählt, der die Shard-Region adressiert, zum
+Preis einer verlorenen Nachricht pro Serie. An welchen Actor ein Letter
+adressiert war, wird dort beantwortet, wo es nichts pro Serie kostet:
+`list({ recipient })` oben und das `DeadLetter` auf dem Event-Stream.
+
+## Was die Queue nur auf Anforderung sieht
+
+Eine Nachricht, die eine **Bounded- oder Priority-Mailbox** verwirft, wird
+genau dann zu einem Dead Letter, wenn diese Mailbox mit `deadLetterDrops`
+gebaut wurde — und nur dann:
+
+```ts
+import { ActorOptions, BoundedMailbox, BoundedMailboxOptions } from 'actor-ts';
+
+const sheddingMailbox = BoundedMailboxOptions.create()
+  .withCapacity(1_000)
+  .withOverflow('drop-head')
+  .withDeadLetterDrops(true);
+
+const workerOptions = ActorOptions.create()
+  .withMailbox(() => new BoundedMailbox(sheddingMailbox));
+```
+
+Bleibt der Schalter aus — das ist die Voreinstellung —, taucht der Überlauf
+in `actor_mailbox_dropped_total` auf und hier nirgends.
+
+Der Schalter existiert, weil ein Drop auf dem Stack des **Senders**
+passiert und ein Dead Letter eine dauerhafte Erfassung mit anschließender
+synchroner Veröffentlichung ist: Jeden abgeworfenen Envelope dorthin zu
+leiten macht aus Load Shedding Arbeit pro Nachricht — und zwar genau unter
+dem Druck, den die Schranke abfedern sollte. Schalte ihn für die Actors
+ein, deren Verluste du hinterher erklären müsstest — ein Command-Stream,
+eine Zustellbestätigung — und lass ihn für den Telemetrie-Feuerwehrschlauch
+aus, für den die Schranke gedacht ist. Siehe
+[Mailbox-Sizing](/de/operations/tuning/mailbox-sizing/).
+
+Der Letter trägt die Nachricht, ihren Sender und den Actor, den sie nie
+erreicht hat — dieselben drei Felder, die jeder andere Verlustpfad
+festhält. Der MDC-Kontext des Envelopes und sein Tracing-Span überleben ihn
+nicht; `DeadLetter` hat für beides keinen Platz.

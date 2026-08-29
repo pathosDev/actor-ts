@@ -9,12 +9,18 @@ export { Mailbox } from '../internal/Mailbox.js';
 export type {
   DropReportingMailbox,
   Envelope,
+  MailboxDropObserver,
   MailboxDropReason,
 } from '../internal/Mailbox.js';
-export { BoundedMailbox, MailboxFullError } from './BoundedMailbox.js';
+// The shared drop bookkeeping both built-in bounds sit on — public for the
+// same reason `Mailbox` is: a mailbox of your own that discards messages
+// should not have to re-derive the counter, the hook and the observer list to
+// reach `actor_mailbox_dropped_total` (#647).
+export { DroppingMailbox, MailboxFullError } from './DroppingMailbox.js';
+export { BoundedMailbox } from './BoundedMailbox.js';
 export { BoundedMailboxOptions, BoundedMailboxOptionsBuilder, BoundedMailboxOptionsValidator } from './BoundedMailboxOptions.js';
 export type { BoundedMailboxOptionsType, BoundedMailboxOverflow } from './BoundedMailboxOptions.js';
 export { PriorityMailbox } from './PriorityMailbox.js';
-export { PriorityMailboxOptions, PriorityMailboxOptionsBuilder } from './PriorityMailboxOptions.js';
-export type { PriorityMailboxOptionsType } from './PriorityMailboxOptions.js';
+export { PriorityMailboxOptions, PriorityMailboxOptionsBuilder, PriorityMailboxOptionsValidator } from './PriorityMailboxOptions.js';
+export type { PriorityMailboxOptionsType, PriorityMailboxOverflow } from './PriorityMailboxOptions.js';
 export type { PriorityFunction } from './PriorityMailbox.js';

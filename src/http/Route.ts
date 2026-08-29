@@ -2,7 +2,9 @@ import { match } from 'ts-pattern';
 import type { ActorSystem } from '../ActorSystem.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse, Status } from './Types.js';
 import type { WebsocketSocketAdapter } from './websocket/SocketAdapter.js';
+import type { ResolvedWebsocketPolicy } from './websocket/WebsocketPolicy.js';
 import { expandCors, type CorsRouteOptions } from './middleware/Cors.js';
+import { stripSurrounding } from '../util/StripCharacters.js';
 
 /**
  * A compiled HTTP route — the Route-DSL reduces to a list of these
@@ -29,6 +31,20 @@ export type WebsocketConnectHandler = (
 ) => void;
 
 /**
+ * Resolve a WebSocket route's policy against a system's configuration —
+ * route options > HOCON > built-in defaults.
+ *
+ * Carried on the route rather than hidden inside `connect` because the
+ * *transport* needs the answer at bind time, one process-wide moment before
+ * any connection exists, while `connect` only ever runs per connection.
+ * `HttpExtension.bind` is where both the routes and the `ActorSystem` are in
+ * scope, so that is the one place able to call this (#373).  Resolution is
+ * memoised per route, so calling it at bind time and again on the first
+ * connection yields the same object.
+ */
+export type WebsocketPolicyResolver = (system: ActorSystem) => ResolvedWebsocketPolicy;
+
+/**
  * A compiled WebSocket route.  Occupies the `GET` verb at its pattern
  * (that's how the HTTP upgrade arrives).  `authorize` folds any
  * enclosing `withMiddleware(...)` — it runs once, against the upgrade
@@ -40,6 +56,7 @@ export type CompiledWebsocketRoute = {
   readonly method: 'GET';
   readonly pattern: string;
   readonly connect: WebsocketConnectHandler;
+  readonly resolvePolicy: WebsocketPolicyResolver;
   readonly authorize: (request: HttpRequest) => Promise<HttpResponse | null>;
 };
 
@@ -71,9 +88,10 @@ export type CompiledEndpoint = CompiledRoute | CompiledWebsocketRoute | Compiled
  * Examples (all shipped in `src/http/middleware/`):
  *   - `BearerTokenAuth({ tokens })` — checks `Authorization: Bearer`,
  *     short-circuits with 401 on mismatch.
- *   - `IpAllowlist({ allow })` — checks `remoteAddress` (or a
- *     configured extractor) against a CIDR list, short-circuits
- *     with 403 if not allowed.
+ *   - `IpAllowlist({ allow })` — checks `remoteAddress` (or, with
+ *     `trustedProxies` set, the client address resolved from the
+ *     forwarded chain) against a CIDR list, short-circuits with 403
+ *     if not allowed.
  *
  * Throwing `HttpError(status, message)` is the idiomatic short-circuit:
  * the global error handler catches it and emits the right response.
@@ -92,7 +110,7 @@ export type Route =
   | { readonly kind: 'path'; readonly segment: string; readonly child: Route }
   | { readonly kind: 'concat'; readonly routes: ReadonlyArray<Route> }
   | { readonly kind: 'middleware'; readonly middleware: Middleware; readonly child: Route }
-  | { readonly kind: 'websocket'; readonly connect: WebsocketConnectHandler; readonly authorize?: (request: HttpRequest) => HttpResponse | null }
+  | { readonly kind: 'websocket'; readonly connect: WebsocketConnectHandler; readonly resolvePolicy: WebsocketPolicyResolver; readonly authorize?: (request: HttpRequest) => HttpResponse | null }
   | { readonly kind: 'fallback'; readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse }
   | { readonly kind: 'cors'; readonly settings: CorsRouteOptions; readonly child: Route };
 
@@ -200,8 +218,7 @@ export function fallback(handler: (request: HttpRequest) => Promise<HttpResponse
 }
 
 function normalizeSegment(s: string): string {
-  const trimmed = s.replace(/^\/+|\/+$/g, '');
-  return trimmed;
+  return stripSurrounding(s, '/');
 }
 
 /* -------------------------- Method combinators ---------------------------- */
@@ -353,12 +370,50 @@ export function defaultErrorResponse(err: unknown): HttpResponse {
 /* ------------------------------- Compilation ----------------------------- */
 
 /**
- * Sentinel returned by a WS route's inner `authorize` to mean "proceed
- * with the upgrade".  Middleware that calls `next()` and passes the
- * result through untouched yields this exact frozen object (identity
- * check) → accept; anything else → reject the upgrade with that response.
+ * Marks a response as *the* "proceed with the upgrade" sentinel.  A symbol
+ * key is what makes the mark survive the object spread every decorating
+ * middleware performs (`{ ...response, headers: merged }` copies own
+ * enumerable symbol properties), so acceptance can be read structurally
+ * rather than by reference identity.
+ *
+ * Module-private and unforgeable on purpose: nothing outside this file can
+ * name the symbol, so no handler or middleware can mint a response that
+ * claims to be an accepted upgrade (#757).
  */
-const WS_ACCEPT: HttpResponse = Object.freeze({ status: 101, body: null });
+const WEBSOCKET_ACCEPT = Symbol('actor-ts.websocket-accept');
+
+/** A response carrying the accept mark — the shape {@link isWebsocketAccept} reads. */
+type WebsocketAcceptResponse = HttpResponse & { readonly [WEBSOCKET_ACCEPT]: true };
+
+/**
+ * Sentinel returned by a WS route's inner `authorize` to mean "proceed with
+ * the upgrade".  Middleware that calls `next()` and returns the result —
+ * untouched, or decorated with headers via the usual spread — accepts;
+ * anything else rejects the upgrade with that response.
+ *
+ * Frozen so the mark cannot be deleted in place; the spread that copies it
+ * onto a decorated response produces an ordinary mutable object, which is
+ * fine — forging one still requires the symbol.
+ */
+const WEBSOCKET_ACCEPT_SENTINEL: WebsocketAcceptResponse =
+  Object.freeze({ status: 101, body: null, [WEBSOCKET_ACCEPT]: true as const });
+
+/**
+ * Read acceptance off a middleware's return value.
+ *
+ * Both halves are required.  The mark alone would accept a response that a
+ * middleware spread the sentinel into and then *overrode* the status on —
+ * a deliberate answer, not a pass-through — and `status === 101` alone
+ * would accept any response a handler happened to build with that status.
+ * Requiring both means only a response descended from this file's sentinel,
+ * with the protocol-switch status intact, counts as "proceed"; everything
+ * else stays a rejection, which keeps the fail-closed direction the
+ * identity check had.
+ */
+function isWebsocketAccept(response: HttpResponse): boolean {
+  return (response as Partial<WebsocketAcceptResponse>)[WEBSOCKET_ACCEPT] === true
+    && response.status === WEBSOCKET_ACCEPT_SENTINEL.status;
+}
 
 /** Flatten a Route tree into the list of concrete endpoint registrations. */
 export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[] {
@@ -380,6 +435,7 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
         method: 'GET',
         pattern: buildPattern(prefix),
         connect: r.connect,
+        resolvePolicy: r.resolvePolicy,
         authorize: gate
           ? async (request): Promise<HttpResponse | null> => gate(request)
           : async (): Promise<HttpResponse | null> => null,
@@ -415,10 +471,22 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
         const inner = c.authorize;
         const authorize = async (request: HttpRequest): Promise<HttpResponse | null> => {
           try {
-            const response = await r.middleware(request, async (override?: HttpRequest) => (await inner(override ?? request)) ?? WS_ACCEPT);
-            // Identity: middleware passed the sentinel through → accept.
-            // Any other response (short-circuit or transform) → reject.
-            return response === WS_ACCEPT ? null : response;
+            const response = await r.middleware(request, async (override?: HttpRequest) => (await inner(override ?? request)) ?? WEBSOCKET_ACCEPT_SENTINEL);
+            // Structural: the middleware returned something descended from
+            // the sentinel → accept.  That covers both passing it through
+            // untouched and decorating it (`securityHeaders()`, `hsts()`,
+            // `requestId()`, … all spread, which carries the mark), which a
+            // reference-identity check refused (#757).  Any other response
+            // — a short-circuit, or a replacement built from scratch — is
+            // the middleware answering the request itself → reject the
+            // upgrade with it.
+            //
+            // Headers a decorator added to the sentinel are dropped on the
+            // accept path: `null` means "proceed" and the backend writes the
+            // handshake response itself, so there is nowhere to put them.
+            // Nothing is lost that reached the wire before — the decorated
+            // sentinel used to be a *rejection*.
+            return isWebsocketAccept(response) ? null : response;
           } catch (err) {
             return defaultErrorResponse(err);
           }

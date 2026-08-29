@@ -7,7 +7,6 @@
  *   bun run examples/selection/lookup-named-workers.ts
  */
 import { Actor, ActorSystem } from '../../src/index.js';
-import { attachDevTools } from '../devtools.js';
 
 type Job = { readonly kind: string; readonly payload: unknown; };
 
@@ -38,7 +37,6 @@ class Dispatcher extends Actor<Job> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('selection-realistic');
-  const devtools = await attachDevTools(system);
 
   // Spawn workers under a shared "workers" parent so the path prefix is stable.
   class WorkersRoot extends Actor<never> {
@@ -52,7 +50,12 @@ async function main(): Promise<void> {
   system.spawn(WorkersRoot, 'workers');
   const dispatcher = system.spawn(Dispatcher, 'dispatcher');
 
-  // Let the workers finish preStart (they were spawned asynchronously).
+  // Not a drain sleep — the drain only runs inside terminate(), and this is
+  // about *creation*: WorkersRoot's `preStart` is what spawns the three
+  // workers, on its own dispatcher tick.  Deleting it happens to still work,
+  // because the guardian runs the two `create`s in spawn order, but that is
+  // cross-cell scheduling order rather than a guarantee the way one mailbox's
+  // FIFO is.  Kept so the routes cannot resolve to nothing and dead-letter.
   await Bun.sleep(20);
 
   dispatcher.tell({ kind: 'resize', payload: { file: 'avatar.png', width: 256 } });
@@ -60,8 +63,9 @@ async function main(): Promise<void> {
   dispatcher.tell({ kind: 'write-audit', payload: { actor: 'alice', action: 'signup' } });
   dispatcher.tell({ kind: 'unknown', payload: null });
 
-  await Bun.sleep(40);
-  await devtools.holdOpen();
+  // No sleep: a selection resolves and tells synchronously inside the
+  // dispatcher's own turn, so each worker is already marked busy when the
+  // drain looks — it follows the fan-out rather than flushing one mailbox.
   await system.terminate();
 }
 

@@ -10,7 +10,6 @@
 import { Actor, ActorSystem, ActorSystemOptions } from '../../src/index.js';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { attachDevTools } from '../devtools.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appConf = resolve(here, 'application.conf');
@@ -37,11 +36,8 @@ async function main(): Promise<void> {
     // A code override still wins over the file contents.
     .withConfig({ 'actor-ts': { logger: { level: 'info' } } });
   const system = ActorSystem.create('from-file', systemOptions);
-  const devtools = await attachDevTools(system);
   const diag = system.spawn(DiagActor, 'diag');
   diag.tell('report');
-  await new Promise(resolve => setTimeout(resolve, 50));
-  await devtools.holdOpen();
   await system.terminate();
 }
 

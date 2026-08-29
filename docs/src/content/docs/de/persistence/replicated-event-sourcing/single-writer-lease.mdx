@@ -107,6 +107,31 @@ Für einen Client, der Writes transparent routet, ist das hart.
 Das übliche Muster ist ein **Proxy-Actor**, der den Lease-Besitz
 beobachtet + Writes an den aktuellen Writer routet.
 
+### Das Lease gattert `persist`, nicht eintreffende Envelopes
+
+Das Lease ist ein **lokales** Write-Gate: es entscheidet, ob *diese*
+Replica `persist` aufrufen darf.  Es sagt nichts darüber, welche Nodes
+Events in das Replikations-Topic publizieren dürfen, und der
+Remote-Empfangspfad zieht es nie zurate.  Ein Event, das von einem Peer
+eintrifft, wird validiert und dedupliziert (siehe
+[das Trust-Modell](/de/persistence/replicated-event-sourcing/overview/#was-eine-replica-ihren-peers-glaubt))
+und dann gefaltet — Holder oder nicht.
+
+Single-Writer-Modus ist damit ein **Konsistenz**-Upgrade, keine
+Autorisierungsgrenze.  Er verhindert, dass N Replicas *deiner*
+Anwendung gleichzeitig schreiben; er verhindert nicht, dass ein
+Cluster-Mitglied einen Envelope unter **seiner eigenen** Replica-Id
+publiziert, und er lässt eine Observer-Replica keinen ablehnen.
+
+Geprüft *wird* auf dem Remote-Pfad die Autorschaft: ein Envelope muss
+von einem Node kommen, der unter der genannten `replica` schreiben
+darf — ein Mitglied kann also kein Event verfassen, das dem
+Lease-Holder zugeschrieben wird.  Das ist eine andere Frage als "wer
+darf schreiben", und die beiden ersetzen einander nicht.  Wenn du "nur
+die Events dieses Nodes zählen" brauchst, ist das
+Cluster-Zugangskontrolle — mTLS und Mitgliedschaft — und nicht das
+Lease.
+
 ## Failover-Sequenz
 
 ```mermaid

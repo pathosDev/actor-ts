@@ -1,7 +1,114 @@
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { PersistentEvent } from '../JournalTypes.js';
 import type { LiveQueryOptions, PersistenceQuery, TagFilter } from '../query/PersistenceQuery.js';
 import type { OffsetStore } from './OffsetStore.js';
+
+/* ---------------------- handler-failure recovery ---------------------- */
+
+/**
+ * What a projection does when the user `handle` callback throws.
+ *
+ * The four values are the cross product of the only two decisions there
+ * are: whether to try the same event again, and what to do once trying is
+ * over.  Everything a projection can sensibly do about a bad event is one
+ * of them — which is the point, because what the framework shipped with was
+ * an unnamed fifth: retry forever.  The cursor only advances after a
+ * successful `handle`, so one poison event blocked every event behind it
+ * indefinitely while the failure was re-logged once per poll (#650).
+ *
+ *   - `fail` — stop the projection at the offending event.  The cursor
+ *     stays put, so a restart resumes exactly there once the cause is
+ *     fixed.  Nothing is silently dropped and nothing is silently stale.
+ *   - `skip` — step over the offending event, publish it as a dead letter,
+ *     and carry on.  Trades a hole in the read model for liveness.
+ *   - `retry-and-fail` — retry with exponential backoff, then `fail`.
+ *   - `retry-and-skip` — retry with exponential backoff, then `skip`.
+ */
+export type ProjectionRecoveryStrategy =
+  | 'fail'
+  | 'skip'
+  | 'retry-and-fail'
+  | 'retry-and-skip';
+
+/** Every accepted {@link ProjectionRecoveryStrategy} — the set the validator checks against. */
+export const PROJECTION_RECOVERY_STRATEGIES: readonly ProjectionRecoveryStrategy[] = [
+  'fail',
+  'skip',
+  'retry-and-fail',
+  'retry-and-skip',
+];
+
+/** What a projection actually did about one handler failure. */
+export type ProjectionFailureAction = 'retry' | 'skip' | 'stop';
+
+/**
+ * Everything an application needs to act on a projection handler failure,
+ * handed to {@link ProjectionOptionsType.onFailure}.
+ *
+ * Carries the offending event and not just the error, because the event is
+ * the part the application cannot recover for itself: by the time the hook
+ * runs the projection may already have stepped past it, and nothing else in
+ * the process still names which one it was.
+ */
+export type ProjectionFailure<E> = {
+  /** The projection's `name`. */
+  readonly projection: string;
+  /** The event whose handler threw. */
+  readonly event: PersistentEvent<E>;
+  /** Whatever `handle` threw — not necessarily an `Error`. */
+  readonly error: unknown;
+  /** 1 on the first failure for this event, 2 on the first retry, and so on. */
+  readonly attempt: number;
+  /** What the configured strategy did about it. */
+  readonly action: ProjectionFailureAction;
+};
+
+/**
+ * Default {@link ProjectionRecoveryStrategy}.
+ *
+ * Deliberately not `fail`.  A projection is a background pull loop feeding a
+ * read model, and the overwhelmingly common failure is transient — the read
+ * model is restarting, a pooled connection was reset.  Stopping on the first
+ * blip would make every read-model deploy a dead projection that nobody
+ * notices until the view is visibly stale.  Retrying and *then* stopping
+ * keeps transient faults invisible while still refusing to spin forever on a
+ * genuine poison event.
+ */
+export const DEFAULT_PROJECTION_RECOVERY_STRATEGY: ProjectionRecoveryStrategy = 'retry-and-fail';
+
+/** Default retry budget for the two `retry-*` strategies — attempts *after* the first. */
+export const DEFAULT_PROJECTION_MAX_RETRIES = 3;
+
+/** First retry delay in milliseconds; doubles per attempt up to {@link DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS}. */
+export const DEFAULT_PROJECTION_RETRY_BACKOFF_MS = 1_000;
+
+/**
+ * Ceiling on the retry delay, in milliseconds.
+ *
+ * The delay doubles, so an uncapped `retry-and-skip` with a generous budget
+ * would eventually schedule its next attempt hours out — at which point the
+ * projection is indistinguishable from a stopped one for anybody watching.
+ */
+export const DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS = 60_000;
+
+/** The handler-failure half of a projection's settings, with every field resolved. */
+export type ProjectionRecoveryOptionsType = {
+  readonly recoveryStrategy: ProjectionRecoveryStrategy;
+  readonly maxRetries: number;
+  readonly retryBackoffMs: number;
+  readonly maxRetryBackoffMs: number;
+};
+
+/** Built-in defaults for {@link ProjectionRecoveryOptionsType}. */
+export const defaultProjectionRecoveryOptions: ProjectionRecoveryOptionsType = {
+  recoveryStrategy: DEFAULT_PROJECTION_RECOVERY_STRATEGY,
+  maxRetries: DEFAULT_PROJECTION_MAX_RETRIES,
+  retryBackoffMs: DEFAULT_PROJECTION_RETRY_BACKOFF_MS,
+  maxRetryBackoffMs: DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS,
+};
+
+/* ---------------------------- options shapes -------------------------- */
 
 /** Plain options-object shape shared by every projection. */
 export type ProjectionOptionsType<E> = {
@@ -15,6 +122,22 @@ export type ProjectionOptionsType<E> = {
   readonly handle: (event: PersistentEvent<E>) => void | Promise<void>;
   /** Tunables passed to the underlying live query. */
   readonly liveOptions?: LiveQueryOptions;
+  /** What to do when `handle` throws.  Default: {@link DEFAULT_PROJECTION_RECOVERY_STRATEGY}. */
+  readonly recoveryStrategy?: ProjectionRecoveryStrategy;
+  /** Retries after the first attempt, for the `retry-*` strategies.  Default: 3. */
+  readonly maxRetries?: number;
+  /** First retry delay in ms; doubles per attempt.  Default: 1000. */
+  readonly retryBackoffMs?: number;
+  /** Ceiling on the doubling retry delay, in ms.  Default: 60000. */
+  readonly maxRetryBackoffMs?: number;
+  /**
+   * Called for every handler failure, with the offending event and what the
+   * strategy did about it.  The structured counterpart to the log line —
+   * this is what an application wires to its own alerting or dead-letter
+   * table.  Exceptions out of the hook are logged and swallowed: a broken
+   * reporter must not be able to take the projection down with it.
+   */
+  readonly onFailure?: (failure: ProjectionFailure<E>) => void;
 };
 
 /** Options for a per-persistenceId projection.  One cursor per pid. */
@@ -71,6 +194,31 @@ export class ProjectionOptionsBuilder<E> extends OptionsBuilder<ProjectionOption
   withLiveOptions(liveOptions: LiveQueryOptions): this {
     return this.set('liveOptions', liveOptions);
   }
+
+  /** What to do when `handle` throws.  Default: `retry-and-fail`. */
+  withRecoveryStrategy(recoveryStrategy: ProjectionRecoveryStrategy): this {
+    return this.set('recoveryStrategy', recoveryStrategy);
+  }
+
+  /** Retries after the first attempt, for the `retry-*` strategies.  Default: 3. */
+  withMaxRetries(maxRetries: number): this {
+    return this.set('maxRetries', maxRetries);
+  }
+
+  /** First retry delay in ms; doubles per attempt.  Default: 1000. */
+  withRetryBackoffMs(retryBackoffMs: number): this {
+    return this.set('retryBackoffMs', retryBackoffMs);
+  }
+
+  /** Ceiling on the doubling retry delay, in ms.  Default: 60000. */
+  withMaxRetryBackoffMs(maxRetryBackoffMs: number): this {
+    return this.set('maxRetryBackoffMs', maxRetryBackoffMs);
+  }
+
+  /** Structured report for every handler failure — see {@link ProjectionFailure}. */
+  withOnFailure(onFailure: (failure: ProjectionFailure<E>) => void): this {
+    return this.set('onFailure', onFailure);
+  }
 }
 
 /**
@@ -114,6 +262,31 @@ export class ByPersistenceIdProjectionOptionsBuilder<E> extends OptionsBuilder<B
   /** Tunables passed to the underlying live query. */
   withLiveOptions(liveOptions: LiveQueryOptions): this {
     return this.set('liveOptions', liveOptions);
+  }
+
+  /** What to do when `handle` throws.  Default: `retry-and-fail`. */
+  withRecoveryStrategy(recoveryStrategy: ProjectionRecoveryStrategy): this {
+    return this.set('recoveryStrategy', recoveryStrategy);
+  }
+
+  /** Retries after the first attempt, for the `retry-*` strategies.  Default: 3. */
+  withMaxRetries(maxRetries: number): this {
+    return this.set('maxRetries', maxRetries);
+  }
+
+  /** First retry delay in ms; doubles per attempt.  Default: 1000. */
+  withRetryBackoffMs(retryBackoffMs: number): this {
+    return this.set('retryBackoffMs', retryBackoffMs);
+  }
+
+  /** Ceiling on the doubling retry delay, in ms.  Default: 60000. */
+  withMaxRetryBackoffMs(maxRetryBackoffMs: number): this {
+    return this.set('maxRetryBackoffMs', maxRetryBackoffMs);
+  }
+
+  /** Structured report for every handler failure — see {@link ProjectionFailure}. */
+  withOnFailure(onFailure: (failure: ProjectionFailure<E>) => void): this {
+    return this.set('onFailure', onFailure);
   }
 
   /** The entity whose event log this projection follows.  One cursor per pid. */
@@ -166,6 +339,31 @@ export class ByTagProjectionOptionsBuilder<E> extends OptionsBuilder<ByTagProjec
     return this.set('liveOptions', liveOptions);
   }
 
+  /** What to do when `handle` throws.  Default: `retry-and-fail`. */
+  withRecoveryStrategy(recoveryStrategy: ProjectionRecoveryStrategy): this {
+    return this.set('recoveryStrategy', recoveryStrategy);
+  }
+
+  /** Retries after the first attempt, for the `retry-*` strategies.  Default: 3. */
+  withMaxRetries(maxRetries: number): this {
+    return this.set('maxRetries', maxRetries);
+  }
+
+  /** First retry delay in ms; doubles per attempt.  Default: 1000. */
+  withRetryBackoffMs(retryBackoffMs: number): this {
+    return this.set('retryBackoffMs', retryBackoffMs);
+  }
+
+  /** Ceiling on the doubling retry delay, in ms.  Default: 60000. */
+  withMaxRetryBackoffMs(maxRetryBackoffMs: number): this {
+    return this.set('maxRetryBackoffMs', maxRetryBackoffMs);
+  }
+
+  /** Structured report for every handler failure — see {@link ProjectionFailure}. */
+  withOnFailure(onFailure: (failure: ProjectionFailure<E>) => void): this {
+    return this.set('onFailure', onFailure);
+  }
+
   /**
    * The tag — or {@link TagFilter} — this projection follows across the whole
    * journal.  One cursor per filter.
@@ -186,3 +384,34 @@ export class ByTagProjectionOptionsBuilder<E> extends OptionsBuilder<ByTagProjec
 export type ByTagProjectionOptions<E> = ByTagProjectionOptionsBuilder<E> | Partial<ByTagProjectionOptionsType<E>>;
 /** Value alias so `ByTagProjectionOptions.create()` / `new ByTagProjectionOptions()` resolve to the builder. */
 export const ByTagProjectionOptions = ByTagProjectionOptionsBuilder;
+
+/**
+ * Bounds on the handler-failure fields, shared by both projection shapes.
+ *
+ * Run by `ProjectionActor.byPersistenceId` / `byTag` on the merged settings
+ * — see the note there for why the static factory rather than the actor's
+ * constructor is the consume point for a projection.
+ */
+export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOptionsType<E>> {
+  constructor() { super('ProjectionOptions'); }
+
+  protected rules(s: Partial<ProjectionOptionsType<E>>): void {
+    this.oneOf('recoveryStrategy', PROJECTION_RECOVERY_STRATEGIES);
+    // 0 is meaningful: `retry-and-skip` with no retries is a `skip` that
+    // still reports every attempt through `onFailure`.
+    this.nonNegativeInt('maxRetries');
+    this.positiveNumber('retryBackoffMs');
+    this.positiveNumber('maxRetryBackoffMs');
+    // The delay doubles *up to* the cap, so a cap below the first delay does
+    // not shorten the backoff curve — it flattens it to a constant at the
+    // cap, which is the opposite of what someone lowering it intends.
+    if (s.retryBackoffMs !== undefined && s.maxRetryBackoffMs !== undefined
+      && s.maxRetryBackoffMs < s.retryBackoffMs) {
+      this.fail(
+        'maxRetryBackoffMs',
+        `must be >= retryBackoffMs (${s.retryBackoffMs})`,
+        s.maxRetryBackoffMs,
+      );
+    }
+  }
+}

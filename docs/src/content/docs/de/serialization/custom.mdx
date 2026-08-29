@@ -1,6 +1,6 @@
 ---
 title: Eigene Serializer
-description: Protobuf, Avro, MessagePack oder jedes andere Format einklinken. Avro und Protobuf werden fertig mitgeliefert — du bringst das kompilierte Schema mit; alles andere ist eine Implementierung von `Serializer<T>`, über die SerializationExtension an bestimmte Nachrichtenklassen gebunden.
+description: Protobuf, Avro, MessagePack oder jedes andere Format einklinken. Avro und Protobuf werden fertig mitgeliefert — du bringst das kompilierte Schema mit; alles andere ist eine Implementierung von `Serializer<T>`, die über die withSerializer-Option eines Persistenz-Stores in dessen Rows geroutet wird.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -212,7 +212,7 @@ import { Order } from './generated/order.js';          // generierter statischer
 
 <Aside type="note" title="Cluster-Wire">
   Diese Serializer decken die **Persistenz** ab.  Der Cluster-Wire
-  rahmt Remote-Nachrichten weiterhin als JSON und zieht die
+  rahmt Remote-Nachrichten als getaggten JSON-Tree und zieht die
   `SerializationExtension` nicht heran — siehe
   [Serialization im Überblick](/de/serialization/overview/).
 </Aside>
@@ -347,6 +347,11 @@ ext.register(s); ext.bind(Class, s.id)  → nur diese Klasse über s routen
 ext.setDefault(s)                        → der Default, den die Extension für ungebundene Werte nutzt
 ```
 
+Beides wirkt nur auf `ext.encode(value)` — nichts im Framework ruft
+das bisher auf, also erreicht keines davon den Wire oder einen
+Store; siehe den Cluster-Wire-Hinweis oben und
+[#450](https://github.com/pathosDev/actor-ts/issues/450).
+
 Pro Klasse ist **sicherer** — behält den Default-Fallback für
 Dinge, die du nicht zu binden gedacht hast.  Systemweit ist
 **einheitlich** — jeder ungebundene Wert geht durch denselben
@@ -409,13 +414,21 @@ registrierten ID wirft.
   Protobuf-Field-Register.
 </Aside>
 
-<Aside type="caution" title="Bindungen mitten im Flug hinzufügen">
+<Aside type="caution" title="Einen Store-Serializer ausrollen">
   ```ts
-  // Cluster steht; pod-2 bindet einen neuen Serializer; pod-1 weiß nichts davon
+  // Der Store von pod-2 schreibt {"__serialized__":{"id":100,…}}-Rows;
+  // pod-1 spielt denselben Stream ohne konfigurierten Serializer ab
   ```
-  Rolle Änderungen an eigenen Serializern über Standard-Upgrade-
-  Prozeduren aus.  Pods, denen eine Bindung fehlt, können
-  Nachrichten von Pods, die sie haben, nicht dekodieren.
+  Eine über `withSerializer(...)` geschriebene Row ist
+  selbstbeschreibend und nennt die ID, die sie braucht — und
+  `decodePayload` wirft einen `SerializationError`, statt zu raten,
+  wenn der Leser keinen Serializer hat oder einen mit anderer ID.
+  Konfiguriere jeden Prozess, der einen Stream abspielt, bevor der
+  erste Writer solche Rows produziert.  Beachte, wo die Gefahr
+  *nicht* liegt: eine Klassenbindung erreicht den Cluster-Wire nie,
+  ein Pod ohne sie kann also nicht daran scheitern, die Nachricht
+  eines Peers zu dekodieren
+  ([#450](https://github.com/pathosDev/actor-ts/issues/450)).
 </Aside>
 
 <Aside type="caution" title="Serializer-State über Neustart">

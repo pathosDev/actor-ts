@@ -24,9 +24,7 @@ import {
 } from '../../../../../src/cluster/router/index.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Broadcast } from '../../../../../src/Router.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /**
  * The router builds its routee set in `preStart` and rebuilds it on

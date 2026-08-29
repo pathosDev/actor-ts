@@ -99,6 +99,12 @@ a:hover { text-decoration: underline; }
 
 /* ------------------------------- shell -------------------------------- */
 
+/* Angular's root element replaced the `<div id="app">` the shell used to
+   mount into (#483).  An unknown element is `display: inline` by default,
+   which would leave `.dt-app`'s grid in an inline formatting context; this
+   restores exactly what the div gave it. */
+devtools-root { display: block; }
+
 .dt-app { display: grid; grid-template-rows: auto 1fr; min-height: 100vh; }
 
 .dt-header {
@@ -124,6 +130,17 @@ a:hover { text-decoration: underline; }
 .dt-status--connecting .dt-status__dot { background: var(--dt-state-warn); }
 .dt-status--closed .dt-status__dot,
 .dt-status--incompatible .dt-status__dot { background: var(--dt-state-error); }
+/* Time stopped on purpose.  Accent, not a state colour: nothing is wrong, and
+   painting it like a fault would teach the reader to ignore the fault colours. */
+.dt-status--paused .dt-status__dot { background: var(--dt-accent); }
+
+/* What the pause is costing, beside the badge rather than inside it — the badge
+   is one word wide and this reading grows. */
+.dt-header__pausenote {
+  font-size: 12.5px;
+  color: var(--dt-text-muted);
+  font-variant-numeric: tabular-nums;
+}
 
 .dt-iconbutton {
   background: transparent;
@@ -167,6 +184,11 @@ a:hover { text-decoration: underline; }
 .dt-dialog__actions { display: flex; justify-content: flex-end; padding: 14px 22px 18px; }
 /* Frozen figures should not read as live ones once the dialog is gone. */
 .dt-app--offline .dt-panel { opacity: 0.55; }
+
+/* A held view is marked at the edge of the panel, not by dimming it: the whole
+   point of pausing is to read what is there, and the offline treatment above
+   makes that harder rather than easier (#1349). */
+.dt-app--paused .dt-panel { box-shadow: inset 0 2px 0 0 var(--dt-accent); }
 
 .dt-body { display: grid; grid-template-columns: 208px 1fr; min-height: 0; }
 
@@ -226,42 +248,6 @@ a:hover { text-decoration: underline; }
 
 .dt-section { margin: 0 0 12px; font-size: 15px; color: var(--dt-text-strong); }
 
-.dt-cards {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: var(--dt-gap);
-}
-.dt-card {
-  display: block;
-  background: var(--dt-bg-elevated);
-  border: 1px solid var(--dt-border);
-  border-left: 3px solid var(--dt-card-accent, var(--dt-accent));
-  border-radius: 0;
-  padding: 15px 17px;
-  color: var(--dt-text);
-  box-shadow: var(--dt-shadow);
-}
-.dt-card:hover { border-color: var(--dt-accent); text-decoration: none; }
-.dt-card--unavailable {
-  --dt-card-accent: var(--dt-state-idle);
-  opacity: 0.62;
-  cursor: not-allowed;
-}
-.dt-card--unavailable:hover { border-color: var(--dt-border); }
-.dt-card__title { font-weight: 600; color: var(--dt-text-strong); margin-bottom: 3px; }
-.dt-card__text { font-size: 13px; color: var(--dt-text-muted); }
-.dt-card__badge {
-  display: inline-block;
-  margin-top: 9px;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  padding: 2px 7px;
-  border-radius: 0;
-  background: var(--dt-accent-low);
-  color: var(--dt-accent-strong);
-}
-.dt-card__badge--unavailable { background: transparent; border: 1px solid var(--dt-border-strong); color: var(--dt-text-muted); }
 
 /* ------------------------------- notices ------------------------------ */
 
@@ -362,6 +348,9 @@ a:hover { text-decoration: underline; }
 }
 .dt-legend__item { display: inline-flex; align-items: center; gap: 6px; }
 .dt-legend__swatch { width: 10px; height: 3px; border-radius: 0; }
+/* A series the chart is not drawing, in the same warn colour the tiles use for
+   the same reason — the two are one reading, split across the page (#744). */
+.dt-legend__missing { color: var(--dt-state-warn); }
 .dt-legend__peak { margin-left: auto; font-family: var(--dt-font-mono); }
 
 /* -------------------------- horizontal bar rows ------------------------- */
@@ -508,10 +497,10 @@ a:hover { text-decoration: underline; }
 /* -------------------------------- cluster ------------------------------- */
 
 .dt-topology { display: flex; flex-direction: column; align-items: center; margin-bottom: 18px; }
-.dt-topology__svg { width: 100%; max-width: 360px; height: auto; }
-.dt-topology__edge { stroke: var(--dt-border); stroke-width: 1; }
-.dt-topology__circle { stroke: var(--dt-bg); }
-.dt-topology__label { fill: var(--dt-text-muted); font-size: 11px; font-family: var(--dt-font-mono); }
+/* The ring is an ECharts graph since #486. It needs an explicit width:
+   .dt-topology centres its children, so a block element with no intrinsic
+   size would collapse to zero and the chart would never get a canvas. */
+.dt-topology__chart { width: 100%; max-width: 360px; }
 .dt-topology__legend { font-size: 12px; color: var(--dt-text-muted); margin: 4px 0 0; }
 
 .dt-member { display: flex; align-items: center; gap: 10px; font-size: 13px; }
@@ -671,6 +660,219 @@ a:hover { text-decoration: underline; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ------------------------------ dead letters ----------------------------- */
+
+.dt-deadletters {
+  border: 1px solid var(--dt-border);
+  background: var(--dt-bg-elevated);
+  overflow: auto;
+  max-height: 62vh;
+}
+.dt-deadletters__row {
+  display: grid;
+  grid-template-columns: 78px minmax(120px, 1fr) minmax(120px, 1.4fr) minmax(90px, 1fr) 72px;
+  gap: 12px;
+  align-items: center;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-family: var(--dt-font-mono);
+  border-bottom: 1px solid color-mix(in srgb, var(--dt-border) 45%, transparent);
+  cursor: pointer;
+}
+.dt-deadletters__row:last-child { border-bottom: none; }
+.dt-deadletters__row:hover { background: var(--dt-bg-inset); }
+.dt-deadletters__row--open { background: var(--dt-bg-inset); }
+.dt-deadletters__row--head {
+  position: sticky;
+  top: 0;
+  background: var(--dt-bg-inset);
+  color: var(--dt-text-muted);
+  font-family: var(--dt-font);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: default;
+}
+.dt-deadletters__row--head:hover { background: var(--dt-bg-inset); }
+.dt-deadletters__type {
+  color: var(--dt-text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-deadletters__detail {
+  padding: 8px 12px 12px;
+  background: var(--dt-bg-inset);
+  border-bottom: 1px solid color-mix(in srgb, var(--dt-border) 45%, transparent);
+}
+.dt-deadletters__degraded {
+  margin: 0 0 8px;
+  color: var(--dt-text-muted);
+  font-size: 12.5px;
+}
+.dt-deadletters__payload {
+  margin: 0;
+  overflow-x: auto;
+  font-family: var(--dt-font-mono);
+  font-size: 12.5px;
+  color: var(--dt-text);
+}
+
+/* ------------------------------ event stream ----------------------------- */
+
+.dt-events {
+  border: 1px solid var(--dt-border);
+  background: var(--dt-bg-elevated);
+  overflow: auto;
+  max-height: 46vh;
+}
+.dt-events__row {
+  display: grid;
+  grid-template-columns: 62px 78px minmax(120px, 1fr) minmax(140px, 2fr);
+  gap: 12px;
+  align-items: center;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-family: var(--dt-font-mono);
+  border-bottom: 1px solid color-mix(in srgb, var(--dt-border) 45%, transparent);
+  cursor: pointer;
+}
+.dt-events__row:last-child { border-bottom: none; }
+.dt-events__row:hover { background: var(--dt-bg-inset); }
+.dt-events__row--open { background: var(--dt-bg-inset); }
+.dt-events__row--head {
+  position: sticky;
+  top: 0;
+  background: var(--dt-bg-inset);
+  color: var(--dt-text-muted);
+  font-family: var(--dt-font);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: default;
+}
+.dt-events__row--head:hover { background: var(--dt-bg-inset); }
+.dt-events__type { color: var(--dt-text-strong); }
+.dt-events__type, .dt-events__preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-events__preview { color: var(--dt-text-muted); }
+.dt-events__detail {
+  padding: 8px 12px 12px;
+  background: var(--dt-bg-inset);
+  border-bottom: 1px solid color-mix(in srgb, var(--dt-border) 45%, transparent);
+}
+.dt-events__degraded {
+  margin: 0 0 8px;
+  color: var(--dt-text-muted);
+  font-size: 12.5px;
+}
+.dt-events__payload {
+  margin: 0;
+  overflow-x: auto;
+  font-family: var(--dt-font-mono);
+  font-size: 12.5px;
+  color: var(--dt-text);
+}
+.dt-section__title {
+  margin: var(--dt-gap) 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--dt-text-strong);
+}
+.dt-topics { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px; }
+.dt-topics__item {
+  padding: 3px 9px;
+  border: 1px solid var(--dt-border);
+  background: var(--dt-bg-elevated);
+  font-family: var(--dt-font-mono);
+  font-size: 12.5px;
+}
+
+/* ------------------------------ configuration ---------------------------- */
+
+.dt-config {
+  border: 1px solid var(--dt-border);
+  background: var(--dt-bg-elevated);
+  overflow: auto;
+  max-height: 62vh;
+}
+.dt-config__row {
+  display: grid;
+  grid-template-columns: minmax(200px, 1.4fr) minmax(140px, 1fr) 150px;
+  gap: 12px;
+  align-items: center;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-family: var(--dt-font-mono);
+  border-bottom: 1px solid color-mix(in srgb, var(--dt-border) 45%, transparent);
+}
+.dt-config__row:last-child { border-bottom: none; }
+.dt-config__row--head {
+  position: sticky;
+  top: 0;
+  background: var(--dt-bg-inset);
+  color: var(--dt-text-muted);
+  font-family: var(--dt-font);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.dt-config__key { color: var(--dt-text-strong); }
+.dt-config__key, .dt-config__value {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-config__source { display: inline-flex; align-items: center; gap: 7px; color: var(--dt-text-muted); }
+.dt-config__origin { margin: 0 0 10px; color: var(--dt-text-muted); font-size: 12.5px; }
+.dt-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--dt-text-muted);
+  white-space: nowrap;
+}
+
+/* ------------------------------ send message ----------------------------- */
+
+.dt-send__label {
+  display: block;
+  margin: 0 0 6px;
+  color: var(--dt-text-muted);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.dt-send__body {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 9px 11px;
+  border: 1px solid var(--dt-border);
+  background: var(--dt-bg-elevated);
+  color: var(--dt-text);
+  font-family: var(--dt-font-mono);
+  font-size: 13px;
+  resize: vertical;
+}
+.dt-send__body:focus { outline: 1px solid var(--dt-accent); outline-offset: -1px; }
+.dt-send__log { border: 1px solid var(--dt-border); background: var(--dt-bg-elevated); }
+.dt-send__row {
+  display: grid;
+  grid-template-columns: 78px minmax(110px, 1fr) minmax(140px, 2fr);
+  gap: 12px;
+  align-items: center;
+  padding: 4px 12px;
+  font-size: 13px;
+  font-family: var(--dt-font-mono);
+  border-bottom: 1px solid color-mix(in srgb, var(--dt-border) 45%, transparent);
+}
+.dt-send__row:last-child { border-bottom: none; }
+.dt-send__type { color: var(--dt-text-strong); }
 
 /* ------------------------------ time travel ------------------------------ */
 

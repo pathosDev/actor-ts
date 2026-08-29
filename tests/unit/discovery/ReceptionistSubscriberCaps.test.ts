@@ -51,7 +51,10 @@ class Subscriber extends Actor<unknown> {
  */
 interface ReceptionistInternals {
   readonly keys: Map<string, unknown>;
-  /** keyId ↔ subscriber path (#1037).  `size` is what the total cap reads. */
+  /**
+   * keyId ↔ subscriber path (#1037).  `size` — the pair count — is what the
+   * total cap reads, which is why it is named `maxSubscriptionsTotal` (#1200).
+   */
   readonly subscriptions: BidirectionalMultiMap<string, string>;
   readonly subscriberRefs: Map<string, unknown>;
 }
@@ -61,7 +64,7 @@ describe('Receptionist — subscriber caps (#137)', () => {
     const kit = newKit('recp-cap-key');
     const receptionistOptions = ReceptionistOptions.create()
       .withMaxSubscribersPerKey(2)
-      .withMaxSubscribersTotal(100);
+      .withMaxSubscriptionsTotal(100);
     const receptionist = kit.system.extension(ReceptionistId).start(null, receptionistOptions);
     const key = ServiceKey.of<string>('capped');
 
@@ -87,11 +90,11 @@ describe('Receptionist — subscriber caps (#137)', () => {
     await kit.system.terminate();
   });
 
-  test('maxSubscribersTotal counts across keys and names itself in the refusal', async () => {
+  test('maxSubscriptionsTotal counts across keys and names itself in the refusal', async () => {
     const kit = newKit('recp-cap-total');
     const receptionistOptions = ReceptionistOptions.create()
       .withMaxSubscribersPerKey(50)
-      .withMaxSubscribersTotal(2);
+      .withMaxSubscriptionsTotal(2);
     const receptionist = kit.system.extension(ReceptionistId).start(null, receptionistOptions);
 
     const first = kit.createTestProbe();
@@ -106,15 +109,45 @@ describe('Receptionist — subscriber caps (#137)', () => {
     const third = kit.createTestProbe();
     receptionist.tell(new Subscribe(ServiceKey.of<string>('gamma'), third));
     const rejected = await third.expectMessageType(SubscribeRejected, 500);
-    expect(rejected.reason).toBe('maxSubscribersTotal');
+    expect(rejected.reason).toBe('maxSubscriptionsTotal');
     expect(rejected.limit).toBe(2);
+
+    await kit.system.terminate();
+  });
+
+  test('one subscriber on three keys spends three of the total (#1200)', async () => {
+    // The distinction the rest of this block is blind to: every other total-cap
+    // case here gives each subscriber exactly one key, so pairs and subscribers
+    // coincide and the assertions hold whichever the cap counts.  This one
+    // separates them — a single subscriber, four keys, a cap of three — and so
+    // it is the case that would fail if the check ever moved to the
+    // distinct-subscriber count the option used to be named after.  Which is not
+    // a hypothetical: that count is now one getter away.
+    const kit = newKit('recp-cap-pairs');
+    const receptionistOptions = ReceptionistOptions.create()
+      .withMaxSubscribersPerKey(50)
+      .withMaxSubscriptionsTotal(3);
+    const receptionist = kit.system.extension(ReceptionistId).start(null, receptionistOptions);
+
+    const solo = kit.createTestProbe();
+    for (const id of ['alpha', 'beta', 'gamma']) {
+      receptionist.tell(new Subscribe(ServiceKey.of<string>(id), solo));
+      await solo.expectMessageType(Listing, 500);
+    }
+
+    // The per-key cap has 49 slots free on every key, so only the total can
+    // refuse this — and it refuses a subscriber the receptionist already knows.
+    receptionist.tell(new Subscribe(ServiceKey.of<string>('delta'), solo));
+    const rejected = await solo.expectMessageType(SubscribeRejected, 500);
+    expect(rejected.reason).toBe('maxSubscriptionsTotal');
+    expect(rejected.limit).toBe(3);
 
     await kit.system.terminate();
   });
 
   test('unsubscribing frees a slot the total cap was holding', async () => {
     const kit = newKit('recp-cap-release');
-    const receptionistOptions = ReceptionistOptions.create().withMaxSubscribersTotal(1);
+    const receptionistOptions = ReceptionistOptions.create().withMaxSubscriptionsTotal(1);
     const receptionist = kit.system.extension(ReceptionistId).start(null, receptionistOptions);
     const key = ServiceKey.of<string>('one-at-a-time');
 
@@ -207,7 +240,7 @@ describe('Receptionist — subscriber caps (#137)', () => {
     // one level up and grows the key map instead.
     const kit = newKit('recp-cap-no-residue');
     let captured: Receptionist | null = null;
-    const receptionistOptions = ReceptionistOptions.create().withMaxSubscribersTotal(1);
+    const receptionistOptions = ReceptionistOptions.create().withMaxSubscriptionsTotal(1);
     const receptionist = kit.system.spawn(() => {
       captured = new Receptionist(receptionistOptions);
       return captured;

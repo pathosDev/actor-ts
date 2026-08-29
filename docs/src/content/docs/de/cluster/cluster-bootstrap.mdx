@@ -160,6 +160,67 @@ falsche Menge einpendeln. Der Default `1` existiert, damit
 Einzelknoten-Entwicklung ohne Konfiguration läuft; in Produktion auf die
 erwartete Replica-Anzahl setzen.
 
+## Auf Readiness warten
+
+Ein aufgelöstes `bootstrapCluster` bedeutet ein **bereites** Cluster:
+Dieser Knoten ist volles Mitglied (`up`), und mindestens
+`minimum-members` Mitglieder sind up. Wird das innerhalb des Budgets
+nicht erreicht, fährt der Bootstrap die Coordinated-Shutdown-Pipeline
+und lehnt mit einem `ClusterReadyTimeoutError` ab, der Self-Status,
+Up-Zähler und die Messlatte nennt — er löst nie für einen Knoten auf,
+der noch `joining` ist.
+
+```ts
+const bootstrapOptions = ClusterBootstrapOptions.create('my-app')
+  .withHost(process.env.POD_IP!)
+  .withDiscovery('kubernetes')
+  .withStableObservation(true)
+  .withAwaitReady({ minimumMembers: 3, timeoutMs: 30_000 });
+const node = await bootstrapCluster(bootstrapOptions);
+node.formedNewCluster; // false — joined an existing cluster rather than founding one
+```
+
+`awaitReady` nimmt `true` (Default — mit dem berechneten Budget warten),
+`false` oder `0` (nicht warten), eine Zahl (das Budget in ms) oder das
+Options-Objekt oben. Ungesetzte Felder fallen auf HOCON und dann auf das
+berechnete Budget durch:
+
+| Feld | Default | Was |
+| --- | --- | --- |
+| `minimumMembers` | 1 | Wenigste `up`-Mitglieder — self eingeschlossen —, bevor das Cluster als bereit gilt. Wie `requiredContactPoints` dimensionieren: auf die Replica-Anzahl. |
+| `timeoutMs` | abgeleitet | `await-ready`, wenn gesetzt; sonst `self-election-grace` + 5 s hinter Stable Observation — das Budget, an dem die Readiness jedes Knotens tatsächlich hängt, Gewinner oder nicht — sonst flache 5 s. |
+
+```hocon
+actor-ts.cluster.bootstrap {
+  minimum-members = 3
+  # await-ready   = 30s   # unset selects the grace-aware computed default
+}
+```
+
+Dasselbe Warten gibt es eigenständig — nach einem von Hand verdrahteten
+`Cluster.join` oder später im Prozess, vor einem
+Rebalancing-empfindlichen Schritt:
+
+```ts
+await cluster.awaitReady({ minimumMembers: 3, timeoutMs: 30_000 });
+cluster.isReady();      // synchronous probe of the same predicate
+cluster.selfMember();   // this node's own record, tombstone included
+cluster.selfElected;    // true — this node founded its cluster
+```
+
+Ohne `timeoutMs` wartet das Promise unbegrenzt, wie
+`system.whenTerminated()` — überall dort mit einer Deadline paaren, wo
+das Cluster legitim ausbleiben kann; ein Knoten, der das Cluster
+verlassen hat oder entfernt wurde, wird nie bereit. Readiness heißt hier
+bewusst *Mitgliedschaft*: App-registrierte Readiness-Checks (das
+Aggregat des `/ready`-Endpoints) können von Initialisierung abhängen,
+die erst nach dem Bootstrap läuft — auf sie zu warten könnte genau den
+Aufruf verklemmen, der zuerst kommt. `/ready` bleibt die Sicht des Load
+Balancers; `awaitReady` ist die prozessinterne.
+
+Das alte Fire-and-forget-Verhalten liefert `awaitReady: false` plus ein
+eigenes `cluster.awaitReady().catch(…)`.
+
 ## Was die Phase verweigert
 
 <Aside type="caution" title="Sie wirft, statt trotzdem zu joinen">
@@ -177,11 +238,22 @@ erwartete Replica-Anzahl setzen.
 <Aside type="caution" title="Sie verweigert einen Wildcard-Host">
   Die Wahl sortiert nach der Adresse dieses Nodes, also muss das die
   Adresse sein, die Peers anwählen. `0.0.0.0` (ebenso `::` und der
-  leere String) ist eine *Bind*-Adresse: jeder Node, der darauf
-  zurückgefallen ist, sortiert identisch, jeder hält sich für den
-  Gewinner, und jeder bildet seinen eigenen Cluster. Die Phase lehnt das
-  vorab ab. Setze `withHost(...)` explizit oder die Umgebungsvariable
-  `CLUSTER_HOST` / `POD_IP`.
+  leere String) ist eine *Bind*-Adresse: jeder Node, der sie
+  beanspruchte, sortierte identisch, jeder hielte sich für den
+  Gewinner, und jeder bildete seinen eigenen Cluster. Die Phase lehnt
+  das vorab ab.
+
+  Dorthin zu gelangen erfordert Absicht, denn ein Wildcard-Bind-Host
+  wird nicht mehr zu einer Wildcard-Identität: mit `withHost('0.0.0.0')`
+  und sonst nichts löst sich die verteilte Adresse über `CLUSTER_HOST` /
+  `POD_IP` / `HOSTNAME` und dann auf Loopback auf. Was dieser Guard
+  abfängt, ist ein bewusst geschriebenes
+  `withAdvertisedHost('0.0.0.0')` — und eine handgebaute `NodeAddress`,
+  die direkt an `StableObservation` geht und diese Kette nie durchläuft.
+
+  In Produktion benenne sie: `0.0.0.0` binden, `POD_IP` verteilen.
+  Loopback hält einen Single-Node-Lauf am Leben; es macht keinen
+  zweiten Node erreichbar.
 </Aside>
 
 ## Bootstrap oder einfacher Seed-Join?

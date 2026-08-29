@@ -68,8 +68,10 @@ concat(
 ```
 
 OR-Kombinator — mehrere Routen auf derselben Ebene.  Das Matching
-ist First-Match-Wins; die Reihenfolge zählt, wenn Patterns
-überlappen.
+ist First-Match-Wins, die Reihenfolge zählt also bei *überlappenden*
+Patterns — zwei Routen mit **derselben Methode und demselben Pfad**
+sind dagegen ein Konflikt und keine Frage der Reihenfolge: `bind()`
+weist sie zurück.
 
 ```ts
 // Mehrere Methoden auf demselben Pfad:
@@ -291,7 +293,8 @@ import { entity } from 'actor-ts/http';
 
 post(async (req) => {
   const order = entity<NewOrder>(req);
-  // ↑ dekodiert JSON / CBOR je nach Content-Type, wirft 400 bei Malformed.
+  // ↑ dekodiert JSON / CBOR / Form je nach Content-Type, wirft 400 bei
+  //   Malformed und 415 bei einem Typ, den nichts dekodiert.
 });
 ```
 
@@ -404,16 +407,35 @@ import { Aside } from '@astrojs/starlight/components';
   pro Codebase einen Stil.
 </Aside>
 
-<Aside type="caution" title="First-Match-Wins in concat">
+<Aside type="caution" title="Überlappende vs. doppelte Routen">
   ```ts
   concat(
     get(handlerA),
-    get(handlerB),   // ← läuft nie; handlerA matched immer zuerst
+    get(handlerB),   // ← gleiche Methode, gleicher Pfad: bind() wirft
   );
   ```
-  `concat` ist OR mit First-Match-Semantik.  Zwei Routen, die
-  denselben Request matchen — nur die erste läuft.  Das Framework
-  warnt nicht davor; prüf deinen Routenbaum.
+  Ein **exaktes Duplikat** — dieselbe Methode *und* dasselbe
+  Pattern — weist `bind()` zurück, auf jedem Backend:
+
+  ```text
+  Route conflict: GET / is declared more than once — a duplicate
+  would resolve by declaration order, so one route would silently
+  shadow the other.
+  ```
+
+  Diese Zurückweisung ist eine Sicherheitsmaßnahme, keine
+  Ordnungsliebe.  Überlässt man sie dem Router, gewinnt die zuerst
+  registrierte Route — die Argumentreihenfolge eines `concat(...)`
+  würde also entscheiden, ob eine auth-geschützte Route oder ihr
+  ungeschützter Zwilling ausliefert, und nirgends stünde das.
+
+  Patterns, die sich lediglich **überlappen**, sind etwas anderes
+  und werden weiterhin vom Router des Backends aufgelöst:
+  `/users/:id` gegen `/users/me`, eine Wildcard gegen ein Literal.
+  Die Tie-Break-Regeln unterscheiden sich dort zwischen Fastify,
+  Express und Hono — verlass dich also nicht auf die
+  Deklarationsreihenfolge, sondern mach die Patterns disjunkt oder
+  falte den Spezialfall in den allgemeinen Handler.
 </Aside>
 
 ## Wohin als Nächstes

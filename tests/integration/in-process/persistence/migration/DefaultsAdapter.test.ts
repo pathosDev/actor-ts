@@ -138,7 +138,10 @@ describe('defaultsAdapter — writeVersion (#7)', () => {
       defaults: { 1: { currency: 'USD' } },
     });
     const out = adapter.toJournal({ kind: 'deposited', amount: 100, currency: 'USD' });
-    expect(out).toEqual({
+    // `expect<unknown>`: writing below `currentVersion` is exactly the case
+    // where the frame's payload is NOT the domain type the adapter declares
+    // — that is what "currency stripped" means, and what this asserts.
+    expect<unknown>(out).toEqual({
       manifest: 'BankAccount.Deposited',
       version: 1,
       payload: { kind: 'deposited', amount: 100 }, // currency stripped
@@ -159,7 +162,7 @@ describe('defaultsAdapter — writeVersion (#7)', () => {
       kind: 'deposited', amount: 75, currency: 'EUR', channel: 'mobile',
     });
     expect(out.version).toBe(1);
-    expect(out.payload).toEqual({ kind: 'deposited', amount: 75 });
+    expect<unknown>(out.payload).toEqual({ kind: 'deposited', amount: 75 });
   });
 
   test('rolling-deploy round-trip: writer A emits v1, reader B upcasts back to v3', () => {
@@ -267,6 +270,9 @@ describe('defaultsSnapshotAdapter — symmetric variant', () => {
       currentVersion: 2,
       defaults: { 1: { currency: 'USD' } },
     });
-    expect(adapter.manifest()).toBe('BankAccount.State');
+    // `manifest` takes the value — implementations may pick a manifest per
+    // variant.  This one ignores it, which is what the assertion pins.
+    expect(adapter.manifest({ kind: 'deposited', amount: 1, currency: 'USD' }))
+      .toBe('BankAccount.State');
   });
 });

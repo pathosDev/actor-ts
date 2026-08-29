@@ -6,7 +6,6 @@
  */
 import { match } from 'ts-pattern';
 import { Actor, ActorSystem } from '../src/index.js';
-import { attachDevTools } from './devtools.js';
 
 type PingMessage = { kind: 'ping'; n: number };
 type PongMessage = { kind: 'pong'; n: number };
@@ -55,16 +54,14 @@ class Ponger extends Actor<PingPong> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('ping-pong');
-  const devtools = await attachDevTools(system);
 
   const ponger = system.spawn(Ponger, 'ponger');
   const pinger = system.spawn(() => new Pinger(() => ponger), 'pinger');
 
   pinger.tell({ kind: 'start' });
 
-  // Let them finish, then clean up.
-  await new Promise(resolve => setTimeout(resolve, 100));
-  await devtools.holdOpen();
+  // No sleep: terminate() waits for the two of them to go quiet, and each
+  // bounce keeps the other busy, so the whole rally completes first.
   await system.terminate();
 }
 

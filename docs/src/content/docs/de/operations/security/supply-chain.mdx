@@ -1,0 +1,161 @@
+---
+title: Supply Chain
+description: Was die Release-Pipeline über eine veröffentlichte actor-ts-Version garantiert — npm-Provenance, eine CycloneDX-SBOM ab dem nächsten Release, CodeQL-Analyse und ein Advisory-Gate über die echte Lockfile — und wie du jeden Punkt selbst nachprüfst.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Auf dieser Seite geht es um das Paket, das du installierst, nicht
+um Code, den du schreibst. Sie beantwortet eine Frage: **Wie viel
+an `actor-ts` kannst du nachprüfen, statt es zu glauben?**
+
+## Was jedes Release mitbringt
+
+| Artefakt | Wo | Was es beweist |
+| --- | --- | --- |
+| **npm-Provenance-Attestation** | Die npm-Registry, am veröffentlichten Tarball | Welcher Commit und welcher Workflow-Run diese Bytes erzeugt hat. |
+| **CycloneDX-SBOM** | Am GitHub-Release als `actor-ts-sbom.cyclonedx.json`, ab dem nächsten Release | Die exakte Dependency-Closure, die beim Bauen des Releases installiert war. |
+| **CHANGELOG-Eintrag** | `CHANGELOG.md` | Sicherheitsrelevante Änderungen bekommen einen eigenen `Security`-Abschnitt. |
+
+<Aside type="note" title="Die SBOM beginnt mit dem nächsten Release">
+Die beiden Jobs, die sie bauen und anhängen, sind *nach* der
+Veröffentlichung von v0.16.0 in `publish.yml` gelandet — kein Release,
+das du heute herunterladen kannst, trägt das Asset also:
+`gh release view v0.16.0 --json assets` antwortet mit einer leeren Liste.
+Das erste Release aus der aktuellen Pipeline ist das erste, das sie
+mitbringt. Die anderen beiden Zeilen gelten für jedes bereits
+veröffentlichte Release.
+</Aside>
+
+Veröffentlicht wird über **npm Trusted Publishing (OIDC)** — der
+Workflow tauscht ein kurzlebiges GitHub-Identity-Token gegen ein
+Einmal-Publish-Token. Es liegt nirgends ein langlebiges
+npm-Token, also kann auch keins abfließen.
+
+### Provenance prüfen
+
+```sh
+npm audit signatures
+```
+
+In einem Projekt ausgeführt, das `actor-ts` installiert hat,
+prüft das die Registry-Signatur und die Provenance-Attestation
+jedes installierten Pakets, dieses eingeschlossen.
+
+### Die SBOM lesen
+
+Die SBOM ist ein Release-Asset, braucht also keine Installation. Setze
+das Release ein, um das es dir geht:
+
+```sh
+gh release download vX.Y.Z --pattern 'actor-ts-sbom.cyclonedx.json'
+```
+
+Jedes Release bis einschließlich v0.16.0 ist älter als die Jobs, die das
+Asset erzeugen — dort gibt es also nichts zu holen. `gh release view
+vX.Y.Z --json assets` sagt dir vorher, ob ein bestimmtes Release es
+mitbringt.
+
+Es ist ein CycloneDX-1.x-JSON-Dokument, das jedes SCA-Tool liest.
+Der Sinn: Du kannst "war Release X von Advisory Y betroffen?"
+beantworten, ohne die Closure aus einer Lockfile zu
+rekonstruieren, die du dafür erst auschecken müsstest.
+
+<Aside type="caution" title="Der Dependency-Graph ist nicht die SBOM">
+GitHubs Dependency-Graph für dieses Repository löst die
+Bun-Lockfile im Root **nicht** auf — er verzeichnet die
+unaufgelösten Ranges aus der `package.json` (`fastify ^5.10.0`)
+und übergeht transitive Pakete ganz. Alles, was aus diesem Graphen
+abgeleitet ist, inklusive Dependabot-Alerts und
+`actions/dependency-review-action`, beschreibt etwas anderes als
+das, was ausgeliefert wurde. Die SBOM wird stattdessen aus dem
+installierten Baum erzeugt.
+</Aside>
+
+## Was CI absichert
+
+Vier Checks stehen zwischen einer Änderung und einem Release. Sie laufen
+auf Pull Requests — das Advisory-Gate nur, wenn der Pull Request `src/**`
+oder ein Manifest berührt, das ist sein Path-Filter, ein reiner
+Docs-Request wartet also nicht darauf; die beiden, die ohne einen Commit
+veralten können, laufen zusätzlich nach Zeitplan.
+
+### CodeQL
+
+`.github/workflows/codeql.yml` analysiert das gesamte Repository
+mit CodeQLs `javascript-typescript`-Pack bei jedem Pull Request,
+bei Pushes auf `main` und `develop` und wöchentlich. Funde landen
+in den Code-Scanning-Alerts des Repositorys.
+
+Die Query-Suite ist `security-extended`. Das war nicht immer so:
+Zuerst lief bewusst die engere Standard-Suite, damit die allererste
+Analyse eines Codebestands dieser Größe eine Triage ergab, die man
+auch abschließen kann. Nachdem diese Baseline sauber war, wurde die
+Suite erweitert.
+
+Der wöchentliche Lauf ist nicht redundant: CodeQL liefert
+laufend neue Queries aus, eine Datei kann also Monate nach ihrer
+Entstehung markiert werden, ohne dass jemand sie angefasst hat.
+
+### Advisory-Gate
+
+`bun audit` läuft in `.github/workflows/package-health.yml` mit
+`--audit-level=high` und lässt den Job bei jedem neuen High- oder
+Critical-Advisory fehlschlagen. Du kannst genau das ausführen, was
+CI ausführt:
+
+```sh
+bun run lint:audit
+```
+
+Es liest `bun.lock`, sieht also die Versionen, die tatsächlich
+ausgeliefert werden — und genau deshalb ist es `bun audit` und
+nicht `actions/dependency-review-action`. Es läuft außerdem
+wöchentlich per Cron, denn ein Advisory wird upstream gegen eine
+Lockfile veröffentlicht, die sich nicht geändert hat; ein rein
+Push-getriebenes Gate würde es erst beim nächsten unabhängigen
+Commit bemerken.
+
+Advisories, die beim Einführen des Gates schon vorhanden waren,
+sind per ID unterdrückt und in
+[`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md)
+aufgelistet, zusammen mit dem Issue, das sie entfernt. Ein Test
+schlägt fehl, wenn Unterdrückungsliste und Tabelle auseinander
+laufen — die Menge kann also nicht stillschweigend wachsen.
+
+### Gepinnte Actions
+
+Jedes `uses:` in jedem Workflow ist auf einen vollständigen
+40-stelligen Commit-SHA gepinnt, mit dem Release-Tag in einem
+nachgestellten Kommentar. Ein Tag ist ein veränderlicher Zeiger:
+Wer `actions/checkout@v7` umbiegen kann, führt beliebigen Code in
+dem Job aus, der nach npm veröffentlicht. Ein SHA lässt sich nicht
+umbiegen. Der nachgestellte Kommentar ist das, was Dependabot die
+Pins aktuell halten lässt.
+
+`tests/unit/ci/WorkflowHygiene.test.ts` prüft das bei jedem
+`bun test` — Workflow-YAML ist für den Typechecker unsichtbar,
+ohne diesen Test verfällt eine Härtungsentscheidung also beim
+ersten Edit von jemandem, der nichts davon weiß.
+
+### Frozen Installs, geringste Rechte
+
+Jede Installation in CI läuft mit `--frozen-lockfile`, ein grüner
+Check bedeutet also nie "gegen ein Dependency-Set bestanden, das
+niemand reproduzieren kann". Job-Tokens sind standardmäßig
+read-only; ein Write-Scope sitzt an genau dem einen Job, der ihn
+braucht, und kein Job, der ins Repository schreiben darf, führt
+zugleich fremde Install-Skripte aus. Dieselbe Testdatei prüft alle
+drei Punkte.
+
+## Etwas melden
+
+[`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md)
+ist die Policy: der private Meldekanal, die Erwartung an die
+Antwortzeit und — der Teil, der sich vor dem Melden zu lesen lohnt
+— die Scope-Grenze. Der Cluster-Transport läuft **bewusst** als
+klartextiges TCP ohne Peer-Authentifizierung, dokumentiert neben
+dem Rezept unter
+[Cluster-Sicherheit](/de/operations/security/cluster-security/),
+dieser Default ist also keine Schwachstelle. Eine dokumentierte
+Gegenmaßnahme, die nicht hält, was sie verspricht, schon.

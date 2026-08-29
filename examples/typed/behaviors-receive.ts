@@ -9,7 +9,6 @@
  */
 import { match } from 'ts-pattern';
 import { ActorSystem, Behaviors, type Behavior, type TypedActorContext } from '../../src/index.js';
-import { attachDevTools } from '../devtools.js';
 
 type IncrementCommand = { kind: 'increment' };
 type GetCommand = { kind: 'get' };
@@ -48,7 +47,6 @@ function onGet(context: TypedActorContext<CounterCommand>, n: number) {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('typed-counter');
-  const devtools = await attachDevTools(system);
   const ref = system.spawnTyped(counter(0, 3), 'counter');
 
   ref.tell({ kind: 'increment' });
@@ -56,8 +54,8 @@ async function main(): Promise<void> {
   ref.tell({ kind: 'increment' });
   ref.tell({ kind: 'increment' }); // reaches limit, actor stops
 
-  await Bun.sleep(60);
-  await devtools.holdOpen();
+  // No sleep: terminate() drains the four queued commands before it stops
+  // anything, including the `Behaviors.stopped` the last one returns.
   await system.terminate();
 }
 

@@ -11,16 +11,19 @@ import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorFactory } from '../../../../../src/Actor.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-async function waitFor(pred: () => boolean, timeoutMs = 3_000, stepMs = 25): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await sleep(stepMs);
-  }
-  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418), which names the awaited state in its timeout message
+ * and — unlike the deadline loop it replaces — cannot fall through silently.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 3_000,
+  stepMs = 25,
+  label = 'the awaited daemon-process state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: stepMs, label });
 
 type NodeSetup = {
   system: ActorSystem;
@@ -46,7 +49,7 @@ describe('ShardedDaemonProcess — single node', () => {
   test('spawns exactly N daemons and routes messages by index', async () => {
     const nodeA = await startNode('sdp-1', 'h', 53001);
     const kit = nodeA.kit;
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     class Worker extends Actor<string> {
       private readonly index: number;
@@ -60,8 +63,10 @@ describe('ShardedDaemonProcess — single node', () => {
       .withNumDaemons(4)
       .withActorFor((i) => () => new Worker(i));
     const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
-    await sleep(150);
 
+    // No warm-up wait: the four `receiveOne(1_000)` calls below each wait for
+    // their own message, so a fixed delay in front of them only ever added
+    // 150 ms to a passing run (#418).
     const starts: string[] = [];
     for (let i = 0; i < 4; i++) starts.push(await probe.receiveOne(1_000) as string);
     expect(new Set(starts)).toEqual(new Set(['start-0', 'start-1', 'start-2', 'start-3']));
@@ -120,21 +125,40 @@ describe('ShardedDaemonProcess — multi-node', () => {
     for (const shardId of [hostedByA, hostedByB, hostedByC]) for (const i of shardId) all.add(i);
     expect(all.size).toBe(9);
 
-    // LeastShardAllocationStrategy should give every node at least one daemon.
+    // LeastShardAllocationStrategy should give every node at least one daemon —
+    // but that is an *eventual* guarantee, delivered by the rebalancer, not a
+    // property of the first allocation.
+    //
+    // The coordinator allocates against the regions that have registered by
+    // the time it handles the request, and since #409 it handles a batch of
+    // requests per turn rather than one.  So on a cold start the node whose
+    // region registers first can legitimately take every shard — measured
+    // here as 9/0/0 immediately, converging to 3/3/3 once
+    // `rebalance-interval` (2s) has fired twice, since
+    // `maxSimultaneousRebalance` moves 3 at a time.  Asserting on the
+    // immediate split only ever passed because one message per turn left
+    // enough room for the other two registrations to interleave.
+    //
+    // These sets are cumulative — a worker adds its index in `preStart` and
+    // nothing removes it — so the condition is monotone and safe to poll.
+    await waitFor(
+      () => hostedByA.size >= 1 && hostedByB.size >= 1 && hostedByC.size >= 1,
+      20_000,
+    );
     const counts = [hostedByA.size, hostedByB.size, hostedByC.size].sort();
     expect(counts[0]).toBeGreaterThanOrEqual(1);
 
     await nodeA.cluster.leave(); await nodeA.system.terminate();
     await nodeB.cluster.leave(); await nodeB.system.terminate();
     await nodeC.cluster.leave(); await nodeC.system.terminate();
-  });
+  }, 30_000);
 });
 
 describe('ShardedDaemonProcess — liveness heartbeat', () => {
   test('handle.stop() cancels the heartbeat without leaking timers', async () => {
     const nodeA = await startNode('sdp-live', 'h', 53201);
     const kit = nodeA.kit;
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     class W extends Actor<string> {
       constructor(private readonly i: number) { super(); }
@@ -171,7 +195,7 @@ describe('ShardedDaemonProcess — liveness heartbeat', () => {
   test('livenessIntervalMs: 0 disables the heartbeat', async () => {
     const nodeA = await startNode('sdp-noheart', 'h', 53202);
     const kit = nodeA.kit;
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     class W extends Actor<string> {
       constructor(private readonly i: number) { super(); }

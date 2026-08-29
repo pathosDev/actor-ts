@@ -184,7 +184,7 @@ import { managementRoutes } from 'actor-ts/management';
 const system = ActorSystem.create('my-app');
 
 // cluster is optional — pass null to skip the /cluster/* endpoints
-const { routes, health } = managementRoutes(system, cluster);
+const routes = managementRoutes(system, cluster);
 await system.http(8558).bind(routes);
 ```
 
@@ -194,9 +194,9 @@ server) that exposes endpoints for operations:
 | Endpoint | What |
 | --- | --- |
 | `GET /health` | Liveness — is the process up? |
-| `GET /ready` | Readiness — ready for traffic (cluster up + checks)? |
+| `GET /ready` | Readiness — ready for traffic (framework + your checks)? |
 | `GET /cluster/members` | List of cluster members (when a cluster is passed). |
-| `GET /cluster/shards?type=<name>` | Shard placement for a sharded type. |
+| `GET /cluster/shards?type=<name>` | Shard placement for a sharded type (404 unless this node started a region or proxy for it). |
 | `GET /metrics` | Prometheus exposition (opt-in via `enableMetricsEndpoint`). |
 
 Useful for K8s probes (liveness + readiness) and ad-hoc

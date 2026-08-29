@@ -49,6 +49,7 @@ interface RedisStreamsOptionsType extends BrokerCommonOptionsType {
   };
   blockMs?:      number;                          // XREADGROUP block; default 5_000
   target?:       ActorRef<RedisStreamEntry>;      // consumer-actor for inbound entries
+  tls?:          TlsTransportOptionsType;         // cert material; also enables TLS; code-only
 }
 ```
 
@@ -126,6 +127,82 @@ processing, and a consumer that crashes mid-processing simply
 leaves the entry in the PEL — the next consumer that starts
 with the same group can pick up where the previous one stopped
 (via XPENDING + XCLAIM).
+
+## Connection loss and reconnect
+
+The actor opens two connections — one producer, one consumer — and
+routes both onto the shared [`BrokerActor`](/io/broker-actor-base/)
+lifecycle, so `reconnect` and `circuitBreaker` mean the same thing here
+as for every other broker:
+
+```ts
+const redisStreamsOptions = RedisStreamsOptions.create()
+  .withUrl('redis://localhost:6379')
+  .withStreams(['orders'])
+  .withConsumerGroup({ group: 'workers', consumer: 'worker-1' })
+  .withTarget(handler)
+  .withReconnect({ initialDelayMs: 250, maxDelayMs: 30_000, factor: 2 })
+  .withCircuitBreaker(5, 60_000);
+```
+
+What that buys, concretely:
+
+- **A refused connection fails the connect.** The clients are opened
+  lazily and the handshake is awaited, so an unreachable Redis produces
+  a failed attempt and a backoff — not a `BrokerConnected` for a broker
+  nothing has reached.
+- **A dropped connection is reported.** The driver's `error` / `close` /
+  `end` signals land on `BrokerDisconnected`, so a consume-only actor —
+  one that never publishes — is as visible to a health check as a
+  producing one.
+- **A failed `XREADGROUP` is classified.** A connection-level rejection
+  (socket closed, `ECONNREFUSED`, ioredis exhausting its per-request
+  retries) ends the consumer loop and hands the outage to the configured
+  backoff. A command-level rejection retries in place, and repeats of an
+  identical failure are collapsed into one log record carrying the count
+  of what it stood in for.
+- **The consumer group is re-created.** `XGROUP CREATE … MKSTREAM` runs
+  on every connect, so a Redis restart that lost the group heals on the
+  next reconnect instead of spinning on `NOGROUP`. This is also why a
+  `NOGROUP` reply is treated as connection-level: nothing else re-runs
+  the bootstrap.
+
+`ioredis` also reconnects underneath, and the two layers do not fight:
+its retries are what a command-level rejection waits on, and the
+framework's take over once it gives up.
+
+What it does **not** buy is redelivery: entries already handed to
+`target` but not yet acked when the connection drops stay in the PEL,
+and the reconnect does not replay them. Recovery is `XPENDING` +
+`XCLAIM`, exactly as for a consumer crash.
+
+## TLS
+
+A `rediss://` URL (note the double-s) starts the handshake and
+ioredis verifies the server against the **system trust store**.
+Behind a private CA, or for client-certificate auth, add `withTls`:
+
+```ts
+const redisStreamsOptions = RedisStreamsOptions.create()
+  .withUrl('rediss://redis.example.com:6380')
+  .withTls({
+    ca: fs.readFileSync('./tls/ca.crt', 'utf8'),
+    cert: fs.readFileSync('./tls/client.crt', 'utf8'),
+    key: fs.readFileSync('./tls/client.key', 'utf8'),
+  });
+new RedisStreamsActor(redisStreamsOptions);
+```
+
+Every field carries **the material itself**, never a path to it.
+`cert` and `key` only mean anything together, and one without the
+other is rejected when the actor starts.
+
+The producer and the consumer client are built from the same
+material — they dial the same server, so they need the same trust.
+ioredis reads the option's presence as "negotiate TLS", so `withTls`
+also works against a plain `redis://` URL; `rediss://` is the clearer
+way to say the same thing.  It has no config key on purpose: a
+private key does not belong in `application.conf`.
 
 ## Peer dependency
 

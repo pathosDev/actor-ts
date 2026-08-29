@@ -53,7 +53,8 @@ to be special after the join.
 
 ```ts
 type ClusterOptionsType = {
-  host:                       string;       // this node's address
+  host:                       string;       // interface to bind (wildcard ok)
+  advertisedHost?:            string;       // address peers dial (never a wildcard)
   port:                       number;       // this node's TCP port
   seeds?:                     string[];     // peer addresses for bootstrap
   roles?:                     string[];     // role tags
@@ -85,6 +86,13 @@ const cluster = await Cluster.join(
   clusterOptions,
 );
 ```
+
+`0.0.0.0` there is the *bind* address.  What this node gossips is
+resolved separately and is never a wildcard — with nothing else
+configured it advertises `127.0.0.1`, which is exactly right for a
+single-node development run and is why the pair needs no attention
+until there is a second machine.  See
+[Cluster overview](/cluster/overview/).
 
 An empty `seeds` list (or one that's all-unreachable) means **this
 node bootstraps the cluster by itself**.  It auto-promotes to
@@ -137,6 +145,19 @@ The `seedRetryIntervalMs` retry loop still matters, but it solves a
 different problem: a seed that is reachable *eventually*.  It cannot
 manufacture a first member.
 
+It does, however, carry the diagnosis.  A node still `joining` after a
+few contact rounds, with no `up` member in sight and no self-election
+due, logs one WARN naming what it can see and what to change — the
+unanswered seed addresses when nothing has replied, or the seed list and
+`selfElection` pairing above when the peers are all present and all
+waiting.  It is reported once, not per round.
+
+That line is worth knowing about because the *symptom* is nowhere near
+the cause: a cluster stuck this way has no `up` member, a
+[cluster singleton](/cluster/singleton/overview/) picks its host from
+the `up` members, and so the first thing most applications notice is
+an `AskTimeoutError` from a singleton proxy.
+
 ## Seed discovery — beyond a static list
 
 A hard-coded seed list works for tests and small clusters.  For
@@ -180,6 +201,24 @@ provider model.
 
 ## Watching the join progress
 
+The one-call gate first — `awaitReady` resolves once this node is `up`
+and, with `minimumMembers`, once the cluster has reached its expected
+size; `isReady` is the synchronous probe:
+
+```ts
+await cluster.awaitReady({ minimumMembers: 3, timeoutMs: 30_000 });
+cluster.isReady();     // probe the same predicate without waiting
+cluster.selfMember();  // this node's own record — status included
+```
+
+With `timeoutMs` set it rejects with `ClusterReadyTimeoutError` instead
+of leaving you to guess; without it, it waits indefinitely.  See
+[Cluster bootstrap → Waiting for readiness](/cluster/cluster-bootstrap/#waiting-for-readiness)
+for how `Cluster.bootstrap` applies the same wait by default.
+
+For logic that reacts to *individual* transitions, subscribe to the
+events:
+
 ```ts
 import { SelfUp, MemberUp } from 'actor-ts/cluster';
 
@@ -195,13 +234,11 @@ cluster.subscribe((evt) => {
 Two key events:
 
 - **`SelfUp`** fires once when *this* node transitions to `up`.
-  Useful gate for starting work that requires cluster
-  membership.
 - **`MemberUp`** fires every time *any* member reaches `up`.
 
-For startup logic that needs other members ("wait until at least 3
-nodes are up before serving traffic"), count `MemberUp`s after
-`SelfUp`.
+Counting `MemberUp`s by hand to answer "are at least 3 nodes up?" is
+exactly what `awaitReady({ minimumMembers: 3 })` replaces — the
+subscription is for reacting to changes, not for gating startup.
 
 ## What can go wrong
 

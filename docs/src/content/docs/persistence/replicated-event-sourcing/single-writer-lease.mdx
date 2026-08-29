@@ -102,6 +102,30 @@ For a client transparently routing writes, this is harsh.  The
 common pattern is a **proxy actor** that watches lease
 ownership + routes writes to the current writer.
 
+### The lease gates `persist`, not arriving envelopes
+
+The lease is a **local** write gate: it decides whether *this* replica
+may call `persist`.  It says nothing about which nodes may publish
+events into the replication topic, and the remote-receive path never
+consults it.  An event that arrives from a peer is validated and
+deduplicated (see
+[the trust model](/persistence/replicated-event-sourcing/overview/#what-a-replica-trusts-from-its-peers))
+and then folded, holder or not.
+
+So single-writer mode is a **consistency** upgrade, not an
+authorization boundary.  It stops N replicas of *your* application
+writing at once; it does not stop a cluster member from publishing an
+envelope under **its own** replica id, and it does not make an
+observer replica reject one.
+
+What *is* checked on the remote path is authorship: an envelope must
+come from a node allowed to write under the `replica` it names, so a
+member cannot publish an event attributed to the lease holder.  That
+is a different question from "who may write", and the two do not
+substitute for one another.  If what you need is "only this node's
+events count", that is cluster admission control — mTLS and membership
+— not the lease.
+
 ## Failover sequence
 
 ```mermaid

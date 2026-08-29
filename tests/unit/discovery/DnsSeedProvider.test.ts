@@ -2,8 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { DnsSeedProvider } from '../../../src/discovery/DnsSeedProvider.js';
 import { DnsSeedProviderOptions } from '../../../src/discovery/DnsSeedProviderOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { sleep } from '../../util/AwaitCondition.js';
 
 describe('DnsSeedProvider — basic lookup', () => {
   test('A-record mode pairs IPs with the configured port', async () => {
@@ -70,6 +69,9 @@ describe('DnsSeedProvider — TTL cache', () => {
       dnsOptions,
     );
     await provider.lookup();
+    // The elapsed time IS the assertion: the 30 ms cache TTL has to expire, and
+    // expiry has no observable of its own — the only way to see it is that the
+    // *next* lookup goes to DNS, which is what the count below asserts.
     await sleep(50);
     await provider.lookup();
     expect(calls).toBe(2);

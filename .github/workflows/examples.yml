@@ -1,6 +1,19 @@
 name: examples
 
-# Installs and builds the six bundled example frontends (#903).
+# Two jobs over `examples/`, answering two different questions.
+#
+#   frontend — do the eight bundled example frontends still install and
+#              build?  (#903)
+#   snippets — do the standalone examples still *run*?  (#545)
+#
+# Installs and builds the eight bundled example frontends (#903).
+#
+# The two React legs were added by #540.  `tsconfig.dev.json` excludes
+# every `examples/*/frontend-*` directory — their dependencies come from
+# the per-directory `npm ci` below and are unresolvable from the root
+# install — and React was the only pair this matrix did not already
+# cover, so without them those two directories would have had no check
+# of any kind.
 #
 # These directories had no CI coverage at all until now: no workflow
 # carried `examples/**` in a path filter, so a PR touching only the
@@ -19,10 +32,12 @@ name: examples
 #                       than quietly rewriting it.
 #   - `npm run build` — a dependency bump that breaks the build.
 #
-# What this job deliberately does NOT do is rebuild the committed
-# bundles under `examples/*/static/**` and diff the bytes.  That is not
-# a judgement call — for four of the six it is impossible.  Two builds
-# from an identical tree were compared:
+# There is no committed bundle here to check for staleness any more: the
+# output under `examples/*/static/{angular,next,react,svelte}/` is gitignored
+# (#559), so what this job builds from source is the only copy that exists.
+# The measurement that used to justify not diffing it is what made committing
+# it untenable in the first place, and is kept because it is the evidence.
+# Two builds from an identical tree were compared:
 #
 #   - Next   — a fresh build id every run (`Kb3j7R17-emTNVLO8IAvl` ->
 #              `BcT-Fi9UF2LGQStSayjG0`), which renames the build-id
@@ -31,24 +46,42 @@ name: examples
 #              `index.html` embeds it.
 #   - Angular — byte-identical, the only deterministic one.
 #
-# So a rebuild-and-diff gate would be permanently red on four legs
-# regardless of staleness, which is the same conclusion `check:ui`
-# reached for `UiAssets.ts` by a different route.  A content-independent
-# freshness gate (a source hash over the inputs, the way `UiAssets.ts`
-# has one) is the open question in #903.
+# So a rebuild-and-diff gate would have been permanently red on four legs
+# regardless of staleness, and keeping the committed copies honest would have
+# needed a content-independent freshness gate — a source hash over the inputs,
+# the way `UiAssets.ts` has one.  Not committing them dissolves the question
+# rather than answering it, which is why no such gate was ever built.
+#
+# `static/plain/` and `static/lit/` stay committed and need no gate: they have
+# no build step, so those files are source, not output.
 
+# `src/**` is in the filter because of the `snippets` job, and it is the
+# whole point of it: the failure this gate exists to catch is a framework
+# change that breaks an example, and an `examples/**`-only filter — which
+# is all `frontend` ever needed — would produce zero checks for exactly
+# that case.  The `frontend` job pays for the wider trigger by running on
+# `src/**` pushes that cannot affect it; eight cached `npm ci` legs are
+# cheaper than the alternative of two workflows that drift apart.
 on:
-  # Same path-filter discipline as build.yml / package-health.yml: this
-  # can only change when an example frontend or this workflow changes.
   push:
     branches: ['**']
     paths:
+      - 'src/**'
       - 'examples/**'
+      - 'tests/examples/**'
+      - 'package.json'
+      - '.bun-version'
+      - 'bun.lock'
       - '.github/workflows/examples.yml'
   pull_request:
     branches: [main, develop]
     paths:
+      - 'src/**'
       - 'examples/**'
+      - 'tests/examples/**'
+      - 'package.json'
+      - '.bun-version'
+      - 'bun.lock'
       - '.github/workflows/examples.yml'
   workflow_dispatch:
 
@@ -73,9 +106,11 @@ jobs:
         directory:
           - examples/chat/frontend-angular
           - examples/chat/frontend-next
+          - examples/chat/frontend-react
           - examples/chat/frontend-svelte
           - examples/voice/frontend-angular
           - examples/voice/frontend-next
+          - examples/voice/frontend-react
           - examples/voice/frontend-svelte
     name: ${{ matrix.directory }}
     steps:
@@ -103,3 +138,37 @@ jobs:
       - name: Build
         working-directory: ${{ matrix.directory }}
         run: npm run build
+
+  # #545 — until this job existed, nothing in CI ever executed an example.
+  # A framework change could break every snippet in the tree and the only
+  # signal would be a user running one.
+  #
+  # `tests/examples/examples.manifest.json` classifies all 78 standalone
+  # scripts as runnable-with-an-assertion or skipped-with-a-reason, and the
+  # runner fails when the manifest and the tree disagree in either
+  # direction — so a new example cannot silently opt out of the gate.
+  #
+  # Bun only.  The cross-runtime question is `bun run smoke`'s, over cases
+  # written to be runtime-neutral; the examples are written for Bun (they
+  # reach for `Bun.sleep`, and they import `.ts` directly), so running them
+  # on Node and Deno would test the examples' portability rather than the
+  # framework's.
+  snippets:
+    runs-on: ubuntu-latest
+    # ~90 s of actual work; the ceiling is here so a snippet that learns to
+    # hang takes the job down with a red mark instead of burning the
+    # runner's default six hours.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Run the examples
+        run: bun run test:examples

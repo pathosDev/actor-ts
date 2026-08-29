@@ -5,9 +5,11 @@ description: Wie DistributedData Zustand zwischen Nodes gossipt — periodisches
 
 DistributedData repliziert Zustand via **Gossip**:
 
-- Alle `gossipIntervalMs` wählt jeder Node einen zufälligen Peer.
+- Alle `gossipInterval` wählt jeder Node einen zufälligen Peer.
 - Der Node sendet einen **vollständigen Snapshot** jedes Keys, den
-  er aktuell hält.
+  er aktuell hält — oder so viel davon, wie in ein Frame passt, und
+  setzt beim nächsten Tick fort (siehe
+  [Was gegossipt wird](#was-gegossipt-wird)).
 - Der Peer merged jeden Eintrag; wenn sich sein Zustand geändert
   hat, benachrichtigt er die lokalen Subscriber.
 
@@ -42,7 +44,7 @@ const dd = system.extension(DistributedDataId).start(
 );
 ```
 
-Der Default für `gossipIntervalMs` ist 1 Sekunde — gewählt als
+Der Default für `gossipInterval` ist 1 Sekunde — gewählt als
 Balance zwischen Propagation-Geschwindigkeit und Gossip-Bandbreite.
 Kleinere Intervalle → schnellere Konvergenz + mehr Traffic.
 Größere → weniger Traffic, langsamere Konvergenz.
@@ -69,11 +71,12 @@ Den Rest des Blocks findest du unter
 
 ## Was gegossipt wird
 
-**Der vollständige State** — bei jedem Tick serialisiert
-DistributedData jeden Key seiner lokalen Replika und pusht den
-gesamten Snapshot an einen zufälligen Peer.  Es gibt kein
-Delta-Tracking und keine Empfangs-Historie pro Peer; jedes Gossip
-trägt die komplette Menge.
+**Der vollständige State, auf ein Frame zugeschnitten** — bei jedem
+Tick serialisiert DistributedData so viele Keys, wie in
+`max-gossip-bytes` passen, und pusht sie an einen zufälligen Peer;
+beim nächsten Tick geht es dort weiter, wo dieser aufgehört hat.  Es
+gibt kein Delta-Tracking und keine Empfangs-Historie pro Peer — ein
+Store, der ins Budget passt, reist also bei jedem Tick vollständig.
 
 So ist das Gossip-Volumen proportional zur **Gesamt-State-Größe**,
 nicht zur Update-Rate.  Eine Map mit einer Million Einträgen kostet
@@ -81,11 +84,36 @@ jedes Mal, wenn sie gegossipt wird, ihre volle serialisierte Größe
 — egal ob sie sich geändert hat; ein kleiner Counter kostet fast
 nichts, egal wie oft er inkrementiert wird.
 
-Das ist bewusst simpel — kein Digest, kein Delta — was billig zu
-implementieren und für die kleinen bis mittleren Stores, für die
-DistributedData gedacht ist, gut genug ist.  Wenn dein Store groß
-wird, erhöhe `gossipIntervalMs`, um die Kosten über die Zeit zu
-verteilen.
+Das Zuschneiden ist sicher, weil **pro Key** gemerged wird und ein
+Key, der in einem Frame fehlt, "keine Information über ihn in dieser
+Runde" bedeutet — nicht "gelöscht".  CRDT-Merge ist idempotent und
+kommutativ: Ein Key, der einen Tick später oder zweimal ankommt,
+ändert nichts daran, *wohin* der Cluster konvergiert, nur *wann*.
+
+### Warum es das Budget gibt
+
+`max-gossip-bytes` hat den Default 1 MiB und wird immer **auf
+`remote.max-frame-bytes` heruntergeschnitten** (Default 16 MiB).
+Ohne das Budget erzeugte ein großer Store ein Frame jenseits des
+Wire-Caps — und so ein Frame wird beim Empfänger schon an seinem
+4-Byte-**Längenpräfix** abgelehnt, bevor ein einziger Key geparst
+wird.  Der empfangende Transport verwirft daraufhin die Verbindung,
+und über die laufen auch Heartbeats, Membership-Gossip und jedes
+`tell` über Knotengrenzen.  Der Store konvergierte also nicht
+langsam, sondern überhaupt nicht — und riss pro Tick eine
+Peer-Verbindung mit.
+
+Ein einzelner Key, dessen eigene Kodierung das Budget
+überschreitet, lässt sich nicht weiter aufteilen — die Einheit ist
+der vollständige State eines Keys.  Er wird übersprungen, die
+Replika warnt (ratenbegrenzt, mit Key-Name und beiden Größen) und
+zählt `distributed_data_gossip_skipped_keys_total` hoch.  **Dieser
+Key konvergiert nicht.**  Teile den Wert auf, oder erhöhe
+`max-gossip-bytes` *und* `remote.max-frame-bytes`.
+
+Wenn dein Store groß wird, verteilt ein höheres `gossip-interval`
+die Kosten über die Zeit; ein kleineres `max-gossip-bytes` verteilt
+die Kosten eines Ticks über mehr Ticks.
 
 ## Auswahl des Peers pro Runde
 
@@ -162,22 +190,24 @@ konvergieren.
 Grobe Zahlen für einen 10-Node-Cluster mit Default-Gossip von 1
 Sekunde:
 
-- **Pro Tick, pro Node** — eine Nachricht, die den vollständig
-  serialisierten Store trägt, geht an einen einzigen zufälligen
-  Peer.  Ihre Größe wird durch den **Gesamt-State** bestimmt, nicht
-  dadurch, wie viel sich seit dem letzten Tick geändert hat, sodass
-  ein Idle-Store das trotzdem bei jedem Tick zahlt; die Kosten
-  wachsen nur nicht mit der Write-Rate.
+- **Pro Tick, pro Node** — eine Nachricht mit bis zu
+  `max-gossip-bytes` an serialisiertem Store geht an einen einzigen
+  zufälligen Peer.  Ihre Größe wird durch den **Gesamt-State**
+  bestimmt, nicht dadurch, wie viel sich seit dem letzten Tick
+  geändert hat, sodass ein Idle-Store das trotzdem bei jedem Tick
+  zahlt; die Kosten wachsen nur nicht mit der Write-Rate.
 - **Skalierungs-Stellschrauben** — die Store-Größe treibt die
-  Kosten pro Nachricht und `gossipIntervalMs` treibt, wie oft du
-  sie zahlst.  Ein großer Store bei einem schnellen Intervall ist
-  die teure Kombination.
+  Kosten pro Nachricht, `gossip-interval` treibt, wie oft du sie
+  zahlst, und `max-gossip-bytes` begrenzt jede einzelne Zahlung.
+  Ein großer Store bei einem schnellen Intervall ist die teure
+  Kombination; ein großer Store bei einem kleinen Budget die
+  langsam konvergierende.
 
 Für sehr große Cluster (50+ Nodes) kann das Gossip-Volumen
 relevant werden.  Das Gossip des Frameworks ist im
 **Anti-Entropy**-Stil — all-to-all über die Zeit — was O(N) pro
 Node pro Runde skaliert.  Größere Cluster wollen vielleicht ein
-größeres `gossipIntervalMs` oder eine andere Gossip-Topologie
+größeres `gossipInterval` oder eine andere Gossip-Topologie
 (aktuell nicht konfigurierbar; bei Bedarf ein Issue).
 
 ## Langsame Propagation diagnostizieren
@@ -194,7 +224,7 @@ Wenn dich das überrascht:
 
 1. **Warte eine Gossip-Runde** (Default 1 s).  Die meiste
    sichtbare Veraltung löst sich in 1-2 Gossip-Zyklen.
-2. **Prüfe `gossipIntervalMs`** — wenn höher als der Default
+2. **Prüfe `gossipInterval`** — wenn höher als der Default
    gesetzt, ist die Wartezeit proportional.
 3. **Nutze `getAsync` mit `consistency: 'majority'`** für Reads,
    die den letzten bekannten Stand über die Replikas hinweg

@@ -43,6 +43,14 @@ function expectConsistent<K, V>(map: BidirectionalMap<K, V>): void {
     expect(normalize(map.get(key))).toBe(normalize(value));
     expect(map.getKey(value)).toBe(key);
   }
+
+  // The 1:1 accessors (#1199).  They are documented as always equal to `size`,
+  // and asserting that here rather than in one case is what makes the claim
+  // real: `valueSize` reads the reverse map, so on any path where a
+  // hand-maintained inverse would drift, this is the assertion that catches it —
+  // and the displacement suite drives every one of those paths.
+  expect(map.keySize).toBe(map.size);
+  expect(map.valueSize).toBe(map.size);
 }
 
 describe('BidirectionalMap (#1035)', () => {
@@ -174,6 +182,12 @@ describe('BidirectionalMap displacement (#1035)', () => {
     expect(map.size).toBe(1);
     expect(map.has('a')).toBe(false);
     expect(map.getKey(1)).toBe('b');
+    // All three counts agree at 1 (#1199).  This is the displacement the class
+    // docs single out, and the one place a forgotten reverse delete would leave
+    // `valueSize` at 2 while `size` said 1 — the drift the type exists to make
+    // impossible, now visible as a number rather than only as a stale lookup.
+    expect(map.keySize).toBe(1);
+    expect(map.valueSize).toBe(1);
     expectConsistent(map);
   });
 

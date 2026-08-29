@@ -17,7 +17,7 @@
 import { describe, expect, test } from 'bun:test';
 import { persistenceIdPage } from '../../../../../src/persistence/Journal.js';
 import type { Journal } from '../../../../../src/persistence/Journal.js';
-import type { PersistentEvent } from '../../../../../src/persistence/JournalTypes.js';
+import type { JournalEntry, PersistentEvent } from '../../../../../src/persistence/JournalTypes.js';
 import { InMemoryJournal } from '../../../../../src/persistence/journals/InMemoryJournal.js';
 import { SqliteJournal } from '../../../../../src/persistence/journals/SqliteJournal.js';
 import { SqliteJournalOptions } from '../../../../../src/persistence/journals/SqliteJournalOptions.js';
@@ -33,14 +33,14 @@ import { CassandraQuery } from '../../../../../src/persistence/query/CassandraQu
 import { FakeCassandraClient } from '../FakeCassandraClient.js';
 import { FakePgPool } from '../FakePgPool.js';
 import { FakeMsSqlPool } from '../FakeMsSqlPool.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /** Ids chosen so sorted order differs from insertion order in every test. */
 const CORPUS = ['order-9', 'account-1', 'user-x', 'order-10', 'account-2'];
 const SORTED = [...CORPUS].sort();
 
 async function seed(journal: Journal, ids: ReadonlyArray<string> = CORPUS): Promise<void> {
-  for (const persistenceId of ids) await journal.append(persistenceId, [{ seeded: true }], 0);
+  for (const persistenceId of ids) await journal.append(persistenceId, [{ event: { seeded: true } }], 0);
 }
 
 async function collect(stream: AsyncIterable<string>): Promise<string[]> {
@@ -63,9 +63,9 @@ class CountingJournal implements Journal {
   constructor(private readonly inner: InMemoryJournal) {}
 
   append<E>(
-    persistenceId: string, events: ReadonlyArray<E>, expectedSeq: number, tags?: ReadonlyArray<string>,
+    persistenceId: string, entries: ReadonlyArray<JournalEntry<E>>, expectedSeq: number,
   ): Promise<PersistentEvent<E>[]> {
-    return this.inner.append(persistenceId, events, expectedSeq, tags);
+    return this.inner.append(persistenceId, entries, expectedSeq);
   }
   read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
     return this.inner.read<E>(persistenceId, fromSeq, toSeq);
@@ -90,9 +90,9 @@ class UnpaginatedJournal implements Journal {
   constructor(private readonly inner: InMemoryJournal) {}
 
   append<E>(
-    persistenceId: string, events: ReadonlyArray<E>, expectedSeq: number, tags?: ReadonlyArray<string>,
+    persistenceId: string, entries: ReadonlyArray<JournalEntry<E>>, expectedSeq: number,
   ): Promise<PersistentEvent<E>[]> {
-    return this.inner.append(persistenceId, events, expectedSeq, tags);
+    return this.inner.append(persistenceId, entries, expectedSeq);
   }
   read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
     return this.inner.read<E>(persistenceId, fromSeq, toSeq);
@@ -183,7 +183,7 @@ describe('allPersistenceIds — push path (journal with an event bus)', () => {
     await awaitCondition(() => seen.length === 2, {
       label: 'the catch-up sweep delivered both pre-existing ids',
     });
-    await journal.append('account-3', [{}], 0);
+    await journal.append('account-3', [{ event: {} }], 0);
     await awaitCondition(() => seen.length === 3, { label: 'the new id arrived over the bus' });
 
     await iterator.return!();
@@ -204,10 +204,10 @@ describe('allPersistenceIds — push path (journal with an event bus)', () => {
       }
     })();
 
-    await journal.append('busy', [{}], 0);
-    await journal.append('busy', [{}], 1);
-    await journal.append('busy', [{}], 2);
-    await journal.append('quiet', [{}], 0);
+    await journal.append('busy', [{ event: {} }], 0);
+    await journal.append('busy', [{ event: {} }], 1);
+    await journal.append('busy', [{ event: {} }], 2);
+    await journal.append('quiet', [{ event: {} }], 0);
     await awaitCondition(() => seen.length === 2, { label: 'both ids were emitted' });
 
     await iterator.return!();
@@ -233,7 +233,7 @@ describe('allPersistenceIds — push path (journal with an event bus)', () => {
     })();
 
     await awaitCondition(() => seen.length === 1, { label: 'the catch-up sweep delivered zebra' });
-    await journal.append('aardvark', [{}], 0);
+    await journal.append('aardvark', [{ event: {} }], 0);
     await awaitCondition(() => seen.length === 2, { label: 'the lexicographically-earlier id arrived' });
 
     await iterator.return!();
@@ -268,7 +268,7 @@ describe('allPersistenceIds — poll path (journal without an event bus)', () =>
     })();
 
     await awaitCondition(() => seen.length === 1, { label: 'the first sweep delivered account-1' });
-    await journal.append('account-2', [{}], 0);
+    await journal.append('account-2', [{ event: {} }], 0);
     await awaitCondition(() => seen.length === 2, {
       timeoutMs: 4_000, label: 'a later sweep picked up account-2',
     });
@@ -293,11 +293,13 @@ describe('allPersistenceIds — poll path (journal without an event bus)', () =>
     })();
 
     await awaitCondition(() => seen.length === 2, { label: 'both ids were delivered' });
-    // Let several more sweeps run; a stream that re-emitted would grow here.
-    await awaitCondition(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      return true;
-    }, { label: 'several poll intervals elapsed' });
+    // An absence, and therefore a fixed wait: a stream that re-emitted would
+    // grow `seen` over the next several 5 ms sweeps.  The condition is already
+    // true at t=0 and has to still hold afterwards, so there is nothing to poll
+    // for — the previous shape wrapped this very sleep in an `awaitCondition`
+    // that returned `true` unconditionally, which is a sleep with extra steps
+    // (#418).
+    await sleep(30);
     await iterator.return!();
     await consumer;
     expect(seen).toEqual(['a', 'b']);
@@ -388,7 +390,7 @@ describe('Backend parity — the push-downs agree with persistenceIdPage', () =>
     })();
 
     await awaitCondition(() => seen.length === 2, { label: 'the sweep delivered both ids' });
-    await journal.append('c', [{}], 0);
+    await journal.append('c', [{ event: {} }], 0);
     await awaitCondition(() => seen.length === 3, {
       timeoutMs: 4_000, label: 'a later sweep picked up the third id',
     });

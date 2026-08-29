@@ -238,7 +238,7 @@ Jede Strategie hat zwei numerische Knöpfe, die "give up"-Verhalten
 steuern:
 
 - **`maxRetries`** — wie viele Restart-Versuche der Supervisor
-  toleriert, bevor er eskaliert.  `-1` = unbegrenzt.
+  toleriert, bevor er aufgibt.  `-1` = unbegrenzt.
 - **`withinTimeRangeMs`** — ein gleitendes Zeitfenster in
   Millisekunden zum Zählen von Retries.  `0` = kein Fenster (Zählungen
   werden nie zurückgesetzt, `maxRetries` ist also ein Lifetime-Cap
@@ -251,10 +251,34 @@ new OneForOneStrategy(
 );
 ```
 
-Wenn ein Kind 11-mal in einer Minute restartet, eskaliert der 11.
-Fehler stattdessen — der Supervisor selbst wirft den Fehler an seinen
-Parent.  Das schützt vor unendlichen Restart-Loops (ein Kind, das
-permanent auf einem dauerhaft-kaputten Zustand crasht).
+Jenseits der Grenze gibt der Supervisor das Restarten auf, und die
+betroffenen Kinder werden stattdessen **gestoppt**.  Genau das
+durchbricht unendliche Restart-Loops — ein Kind, das permanent auf
+einem dauerhaft-kaputten Zustand crasht.  Beachte: der Zähler auf
+der Parent-Seite schließt den auslösenden Fehler mit ein,
+`maxRetries: 10` toleriert also elf Restarts, bevor der zwölfte
+Fehler das Kind stoppt.
+
+<Aside type="caution" title="Der typed-Wrapper zählt anders">
+  [`Behaviors.supervise(...).onFailure(strategy)`](/de/typed/behaviors/)
+  beachtet dieselben zwei Knöpfe, liest `maxRetries` aber wörtlich —
+  `maxRetries: 10` gewährt zehn Restarts — und **eskaliert** jenseits
+  der Grenze, statt zu stoppen.  Das muss so sein: der typed-Wrapper
+  sitzt *innerhalb* des fehlschlagenden Actors, nicht in einem
+  Parent, der den Tod beobachten könnte; ein Stopp dort würde den
+  Fehler verwerfen, ohne dass es weiter oben jemand erführe.  Die
+  Eskalation übergibt ihn dem eigenen Parent des Actors, dessen
+  Strategie dann greift — und dessen Restart einen frischen Actor
+  mit frischem typed-Kontingent baut.
+
+  Wrapper **verschachteln sich**, und dann ist "der Parent" einen
+  Sprung weiter weg: der innerste Wrapper entscheidet, ein `Escalate`
+  oder ein aufgebrauchtes Kontingent übergibt denselben Fehler an den
+  nächsten Wrapper nach außen, und erst wenn er hinter dem äußersten
+  herausfällt, erreicht er die Zelle.  Eine typed-Wrapper-Kette ist
+  also eine Supervisions-Hierarchie *innerhalb* eines Actors,
+  geschichtet über die Hierarchie zwischen Actors.
+</Aside>
 
 Für Exponential-Backoff-Retries verwende das
 [BackoffSupervisor-Pattern](/de/patterns/backoff-supervisor/) — es

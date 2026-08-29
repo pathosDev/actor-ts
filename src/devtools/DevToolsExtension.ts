@@ -121,7 +121,7 @@ export class DevToolsExtension implements Extension {
     // Tear down with the rest of the service layer, so a SIGTERM
     // releases the port and stops the taps instead of leaving a
     // half-instrumented system behind.
-    this.system.extension(CoordinatedShutdownId).addTask(
+    this.system.extension(CoordinatedShutdownId).addFrameworkTask(
       Phases.ServiceUnbind,
       'devtools-detach',
       () => this.detach(),

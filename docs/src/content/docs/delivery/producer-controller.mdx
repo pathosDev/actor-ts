@@ -37,7 +37,7 @@ type ProducerControllerOptionsType<T> = {
   consumer:          ActorRef<Delivery<T>>;
   resendTimeout?:  number;       // default 500
   windowSize?:       number;       // default 16
-  producerId?:       string;       // auto-generated if omitted
+  producerId?:       string;       // randomly generated if omitted
 };
 ```
 
@@ -46,7 +46,20 @@ type ProducerControllerOptionsType<T> = {
 | `consumer` | The `ConsumerController` ref to deliver to. |
 | `resendTimeout` | How long to wait for an ack before retransmitting. |
 | `windowSize` | Flow-control window — pauses queueing after N unacked messages in flight. |
-| `producerId` | Stable identifier used by the consumer to dedup across restarts. Auto-generated if omitted, but for persisted producers you'll want a stable string so recovery matches up. |
+| `producerId` | Stable identifier the consumer keys its dedup state on. Randomly generated if omitted; pin it when you want one identity across restarts in logs, metrics and the consumer's map. It does **not** carry a dedup *window* across a restart — see *Restart and the producer incarnation*. |
+
+**A generated `producerId` is random, not sequential.**  It used to be a module
+counter — `producer-1`, `producer-2`, … — which was wrong twice over.  An
+`Acknowledgment` names a `producerId` and a `seq`, and the seq is a small
+integer by construction, so a counter left neither half of that pair to guess.
+The counter was also shared: two processes running the same service each minted
+`producer-1`, stamped one identity onto their deliveries, and then kept
+resetting each other's dedup window at a consumer they had in common.  The
+framework now draws 16 hex characters instead.
+
+That id is minted fresh on every construction, so leaving `producerId` unset
+means there is no identity to be stable about — set it yourself whenever
+something downstream is supposed to recognise this producer after a restart.
 
 ## Backpressure
 
@@ -94,15 +107,38 @@ at t=1000 → retransmit seq 5
 ... until ack arrives or producer stops
 ```
 
-Retransmits use the **same seq** as the original.  The consumer
-dedups based on the seq.
+Retransmits use the **same seq** as the original, and carry the same
+producer incarnation, so the consumer recognises them as the same message.
 
-## State + restart
+## Restart and the producer incarnation
+
+Every construction of a `ProducerController` mints a fresh, unguessable
+**incarnation** token and stamps it onto each `Delivery`.  Nothing configures
+it; it exists because `producerId` alone cannot answer two questions.
+
+**Is this a retransmit or a restarted producer?**  The sequence counter is
+in-memory, so a restarted producer numbers from 1 again while `producerId`
+stays as configured.  A consumer keyed on `producerId` alone would see the
+whole post-restart prefix as sequence numbers it had already handled, absorb
+them as duplicates, and — because an absorbed delivery is still acked — report
+each one back as successfully delivered.  The consumer keys on `(producerId,
+incarnation)` instead, so a new incarnation starts a fresh dedup window and
+its messages reach the handler.
+
+**Did this acknowledgment come from a real delivery?**  `producerId` and `seq`
+are both guessable, so a three-field ack could be manufactured by anything able
+to address the producer, cancelling its retransmit and firing your `confirm`
+with success.  The incarnation travels only on deliveries the producer actually
+sent, so echoing it back is the evidence the producer requires.
+
+An ack that names the wrong incarnation — forged, or a straggler from the
+previous incarnation of the same `producerId` — is ignored.
 
 ```ts
 // Without persistence:
 producer crashes → buffer lost → unacked messages are gone
-// On restart, send resumes from seq 1 (no resume)
+// On restart, send resumes from seq 1 under a new incarnation, so the
+// consumer treats those sends as new rather than as duplicates
 
 // With ProducerController + PersistentActor wrapper:
 producer crashes → recovery rebuilds buffer + last-acked-seq

@@ -1,3 +1,4 @@
+import { isWildcardHost } from '../ClusterOptions.js';
 import type { SelfElectionPolicy } from '../ClusterOptions.js';
 import type { NodeAddress } from '../NodeAddress.js';
 import {
@@ -6,7 +7,6 @@ import {
   DEFAULT_REQUIRED_CONTACT_POINTS,
   DEFAULT_SELF_ELECTION_GRACE_MS,
   DEFAULT_STABLE_MARGIN_MS,
-  isWildcardHost,
   StableObservationOptionsValidator,
 } from './StableObservationOptions.js';
 import type {
@@ -63,6 +63,14 @@ export type JoinTargets = {
    * one mistake that reintroduces the split brain.
    */
   readonly selfElection: SelfElectionPolicy;
+  /**
+   * The configured election grace, carried for **every** node: the winner's
+   * {@link selfElection} equals it, and the non-winners need it to size
+   * their readiness budget — on a genuine cold start their promotion cannot
+   * arrive before the winner's grace has elapsed, so a wait shorter than
+   * this is one that expires while nothing is wrong (#1086).
+   */
+  readonly selfElectionGraceMs: number;
   /** The settled set, self included, in election order. */
   readonly contactPoints: ReadonlyArray<NodeAddress>;
   /** How many `lookup()` polls it took to settle. */
@@ -293,6 +301,7 @@ export class StableObservation {
       seeds,
       isInitialSeed,
       selfElection: isInitialSeed ? selfElectionGraceMs : 'never',
+      selfElectionGraceMs,
       contactPoints,
       polls,
     };

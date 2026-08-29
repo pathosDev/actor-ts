@@ -1,14 +1,15 @@
-import { DYNAMODB_MAX_BATCH_ITEMS, DYNAMODB_MAX_TRANSACTION_ITEMS } from '../Constants.js';
+import { DYNAMODB_MAX_BATCH_ITEMS, DYNAMODB_MAX_TRANSACTION_ITEMS, DYNAMODB_STORAGE_IDENTITY_KEY } from '../Constants.js';
 import type { Journal } from '../Journal.js';
 import {
   JournalConcurrencyError,
   JournalError,
+  type JournalEntry,
   type PersistentEvent,
 } from '../JournalTypes.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
-import { assertValidTags } from '../storage/TagValidator.js';
+import { assertValidEntryTags } from '../storage/TagValidator.js';
 import {
   buildDynamoDbOperations,
   isConditionalCheckFailed,
@@ -47,11 +48,29 @@ const META_SEQ = 0;
  * partial append: the transaction is atomic across all items, so either the
  * whole batch lands or none of it does, and the cancellation is translated into
  * `JournalConcurrencyError`.  The preceding head read is only an optimization
- * that turns the common stale-append into one cheap query instead of a rejected
- * transaction.
+ * *for the write's safety* — it turns the common stale-append into one cheap
+ * query instead of a rejected transaction — but its **value** is load-bearing
+ * everywhere else, which is why it is a strong read (below).
  *
  * That atomicity is why this backend needs no equivalent of MongoDB's
  * "a mid-batch failure can persist a prefix" caveat.
+ *
+ * **Every read that feeds recovery or a sequence-number decision is strong.**
+ * DynamoDB defaults to eventually-consistent reads, and a stale one here is not
+ * "slightly old data": a head read served by a lagging replica reports a stream
+ * that has *rewound*, so the next `append` is rejected against a sequence number
+ * that already exists and `PersistentActor` attributes it to a second writer;
+ * a stale replay page truncates history, which nothing downstream can detect
+ * because `assertTrustworthyHistory` has no independent statement of where the
+ * stream ends.  So `read`, `readHead` and `delete`'s doomed-key query all set
+ * `ConsistentRead: true`.  `persistenceIds`' scan does not, deliberately and
+ * with a comment saying why — an unexplained weak read is how #736 arose.
+ *
+ * The cost is real and is not paid once per recovery: `read` and `highestSeq`
+ * are also the query layer's catch-up path and projection tooling's, so a strong
+ * read doubles the consumed capacity of those too.  It is the right trade —
+ * a projection that silently misses the newest events is its own defect — but it
+ * is a trade, and the DynamoDB docs page states it.
  *
  * **The high-water mark is an item, not a table.**  Compaction stores
  * `deletedTo` at the reserved sort key 0, updated with
@@ -92,21 +111,27 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
     return [{ tableName: this.tableName, partitionKey: 'pid', sortKey: { name: 'seq', type: 'N' } }];
   }
 
+  async storageIdentity(): Promise<string> {
+    return this.storageIdentityFromTable(this.tableName, {
+      pid: stringAttribute(DYNAMODB_STORAGE_IDENTITY_KEY),
+      seq: numberAttribute(0),
+    });
+  }
+
   async append<E>(
     persistenceId: string,
-    events: ReadonlyArray<E>,
+    entries: ReadonlyArray<JournalEntry<E>>,
     expectedSeq: number,
-    tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]> {
-    if (events.length === 0) return [];
+    if (entries.length === 0) return [];
     assertValidPersistenceId(persistenceId, 'DynamoDbJournal.append');
-    assertValidTags(tags);
-    if (events.length > DYNAMODB_MAX_TRANSACTION_ITEMS) {
+    assertValidEntryTags(entries);
+    if (entries.length > DYNAMODB_MAX_TRANSACTION_ITEMS) {
       // Chunking would break atomicity, which is the property this backend's
       // concurrency rests on — so refuse clearly instead of silently degrading.
       throw new JournalError(
         `DynamoDbJournal.append: DynamoDB caps an atomic transaction at ${DYNAMODB_MAX_TRANSACTION_ITEMS} items, `
-        + `got ${events.length} events.  Persist them in smaller batches.`,
+        + `got ${entries.length} events.  Persist them in smaller batches.`,
       );
     }
     const operations = await this.ensureOpen();
@@ -119,15 +144,16 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
       const written: PersistentEvent<E>[] = [];
       const transactItems: Array<Record<string, unknown>> = [];
       let seq = actualSeq;
-      for (const event of events) {
+      for (const entry of entries) {
         seq++;
+        const tags = entry.tags;
         transactItems.push({
           Put: {
             TableName: this.tableName,
             Item: {
               pid: stringAttribute(persistenceId),
               seq: numberAttribute(seq),
-              payload: stringAttribute(encodePayload(event, this.serializer)),
+              payload: stringAttribute(encodePayload(entry.event, this.serializer)),
               ts: numberAttribute(now),
               // A DynamoDB set cannot be empty, so an untagged event simply has
               // no `tags` attribute.
@@ -139,7 +165,7 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
         written.push({
           persistenceId,
           sequenceNr: seq,
-          event,
+          event: entry.event,
           timestamp: now,
           tags: tags ? [...tags] : undefined,
         });
@@ -175,6 +201,12 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
           ':from': numberAttribute(lowerBound),
           ':to': numberAttribute(upperBound),
         },
+        // Recovery folds whatever this returns, and a missing *tail* is
+        // undetectable downstream: `assertTrustworthyHistory` catches a hole, a
+        // wrong order and an out-of-window event, but nothing states where the
+        // stream should end.  An eventually-consistent page therefore truncates
+        // a replay in silence, and the actor resumes on superseded state.
+        ConsistentRead: true,
       });
       return items.map((item) => ({
         persistenceId: readString(item, 'pid'),
@@ -210,11 +242,26 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
         },
         // Only the keys are needed to delete.
         ProjectionExpression: 'pid, seq',
+        // The mark below is raised over the whole range regardless of what came
+        // back, so a stale page here leaves events alive *below* a mark that says
+        // they are gone.  Same class of defect the `UnprocessedItems` retry loop
+        // in `batchDelete` exists to prevent, reached by a different route.
+        ConsistentRead: true,
       });
       await this.batchDelete(operations, doomed);
       await this.raiseDeletedTo(operations, persistenceId, toSeq);
     } catch (e) {
       this.fail('delete', e);
+    }
+  }
+
+  /** The mark half of `delete`, without the query-and-batch-delete in front of it. */
+  async raiseCompactionMark(persistenceId: string, throughSeq: number): Promise<void> {
+    const operations = await this.ensureOpen();
+    try {
+      await this.raiseDeletedTo(operations, persistenceId, throughSeq);
+    } catch (e) {
+      this.fail('raiseCompactionMark', e);
     }
   }
 
@@ -236,9 +283,20 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
       const found = new Set<string>();
       let startKey: DynamoDbItem | undefined;
       do {
+        // No `ConsistentRead` here, and that is the deliberate exception rather
+        // than the oversight it looks like: a strong scan doubles the capacity of
+        // the store's most expensive call, and no sequence-number decision hangs
+        // on the result — an id surfacing one call later costs a projection a
+        // poll interval, whereas a truncated stream costs correctness.
         const page = await operations.scan({
           TableName: this.tableName,
           ProjectionExpression: 'pid',
+          // The identity item (#1358) lives in this table under a sentinel
+          // key — it is metadata, not a stream, so enumeration skips it.
+          FilterExpression: 'pid <> :storageIdentitySentinel',
+          ExpressionAttributeValues: {
+            ':storageIdentitySentinel': stringAttribute(DYNAMODB_STORAGE_IDENTITY_KEY),
+          },
           ...(startKey ? { ExclusiveStartKey: startKey } : {}),
         });
         for (const item of page.Items ?? []) found.add(readString(item, 'pid'));
@@ -265,6 +323,14 @@ export class DynamoDbJournal extends DynamoDbStore implements Journal {
       ScanIndexForward: false,
       Limit: 1,
       ProjectionExpression: 'seq',
+      // Strong for the same reason the mark below is, and it has to be the same
+      // reason: this value is `append`'s `expectedSeq` comparand and the bound
+      // `assertTrustworthySnapshot` believes, so a head from a lagging replica
+      // makes an intact stream look rewound — the next `persist` is then read as
+      // a second writer and the entity is stopped, and a legitimate snapshot is
+      // accused of tampering.  Reading the mark strongly and the head weakly
+      // only hides the first case, on streams that have been compacted.
+      ConsistentRead: true,
     });
     const headSeq = head.Items?.[0] ? readNumber(head.Items[0], 'seq') : 0;
     const mark = await operations.getItem({

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
+import type { TestProbe } from '../../../src/testkit/TestProbe.js';
 
 describe('TestKit', () => {
   test('creates a usable ActorSystem and probes', async () => {
@@ -24,6 +25,9 @@ describe('TestKit', () => {
       }
       const ref = tk.system.spawn(Loud, 'loud');
       ref.tell('world');
+      // An absence: the TestKit's default logger must print nothing.  `lines` is
+      // empty when the wait starts, so the window is the only thing that can catch
+      // a line written a turn later.
       await Bun.sleep(30);
       expect(lines).toEqual([]);
       await tk.shutdown();
@@ -42,7 +46,9 @@ describe('TestKit', () => {
     const { kit, scheduler } = TestKit.withManualScheduler('timer-kit');
     const probe = kit.createTestProbe();
     class T extends Actor<string> {
-      constructor(private readonly probe: typeof probe) { super(); }
+      // `typeof probe` here resolved to the field's own declaration, not to
+      // the outer `const probe` it was reaching for.
+      constructor(private readonly probe: TestProbe) { super(); }
       override preStart(): void {
         this.context.timers.startSingleTimer('k', 'tick', 100);
       }

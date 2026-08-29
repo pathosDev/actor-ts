@@ -23,7 +23,6 @@ import {
   NodeAddress,
   SingletonKey,
 } from '../../src/cluster/index.js';
-import { attachDevTools } from '../devtools.js';
 
 type SubscribeCommand = { kind: 'subscribe'; sub: ActorRef<CronEvent> };
 type TickCommand = { kind: 'tick' };
@@ -82,7 +81,6 @@ async function startNode(host: string, port: number, seeds: string[] = []): Prom
       .withGossipIntervalMs(80)
       .withReceptionist(false)
       .withShutdownOnSignals(false));
-  await attachDevTools(system);
   return { sys: system, cluster, name: host };
 }
 

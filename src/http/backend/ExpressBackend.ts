@@ -8,11 +8,12 @@ import { Lazy } from '../../util/Lazy.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
 import { ExpressBackendOptionsValidator } from './ExpressBackendOptions.js';
 import type { ExpressBackendOptions, ExpressBackendOptionsType } from './ExpressBackendOptions.js';
-import { DEFAULT_HTTP_MAX_BODY_BYTES, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
+import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
   PAYLOAD_TOO_LARGE_RESPONSE,
+  transportFrameCapOf,
 } from './HttpServerBackend.js';
 import type {
   HttpServerBackend,
@@ -72,9 +73,14 @@ type ExpressRequestLike = {
   rawBody?: Uint8Array | null;
   body?: unknown;
   /**
-   * Express's IP accessor — by default the socket peer; when
-   * `app.set('trust proxy', ...)` is configured, the leftmost
-   * `X-Forwarded-For` entry.  Forwarded into `HttpRequest.remoteAddress`.
+   * Express's IP accessor — by default the socket peer.  With
+   * `app.set('trust proxy', ...)` it is whatever `proxy-addr` resolves,
+   * and *which* entry that is depends entirely on the value: a subnet
+   * list (or a hop count) yields the rightmost entry outside the trusted
+   * set, while `true` trusts every hop and therefore yields the
+   * **leftmost**, client-controlled entry.  Forwarded into
+   * `HttpRequest.remoteAddress` either way, so `true` is never the right
+   * setting under an `IpAllowlist` (#715).
    */
   ip?: string;
   /** Raw socket — fallback when `req.ip` isn't populated. */
@@ -203,6 +209,9 @@ export class ExpressBackend implements HttpServerBackend {
   }
 
   registerRoute(route: RouteRegistration): void {
+    if (this.registered.some((r) => r.method === route.method && r.pattern === route.pattern)) {
+      throw new Error(`ExpressBackend: duplicate ${route.method} route for pattern "${route.pattern}".`);
+    }
     this.registered.push(route);
   }
 
@@ -304,10 +313,15 @@ export class ExpressBackend implements HttpServerBackend {
    */
   private async attachWebsocketRoutes(app: ExpressAppLike): Promise<void> {
     const WebsocketServerConstructor = await wsServerConstructorLazy.get();
-    // Cap the transport payload at the default WS frame size so an oversized
-    // frame is rejected at the protocol level instead of being buffered up to
-    // the `ws` default of 100 MiB first (security audit WS-3).
-    const wss = new WebsocketServerConstructor({ noServer: true, maxPayload: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES });
+    // Cap the transport payload so an oversized frame is rejected at the
+    // protocol level instead of being buffered up to the `ws` default of
+    // 100 MiB first (security audit WS-3).  The number is the widest frame any
+    // registered route admits, not the framework default, so a route or a
+    // HOCON setting that moves `maxFrameBytes` moves this with it (#373) —
+    // one `WebSocketServer` serves every route on this app.  A server per
+    // route is structurally available here, unlike on Fastify and Bun, and is
+    // deliberately not built: `transportFrameCapOf` carries the reasoning.
+    const wss = new WebsocketServerConstructor({ noServer: true, maxPayload: transportFrameCapOf(this.wsRegistered) });
     this.wss = wss;
     for (const registration of this.wsRegistered) {
       app.get(registration.pattern, (req, res, next) => {
@@ -416,7 +430,10 @@ export class ExpressBackend implements HttpServerBackend {
     wss.handleUpgrade(pending.request, pending.socket, pending.head, (ws) => {
       // Keep wss.clients populated so the unbind terminate-walk works.
       wss.emit('connection', ws, pending.request);
-      registration.onConnection(adapted, websocketPackageAdapter(ws, { remoteAddress: adapted.remoteAddress }));
+      registration.onConnection(adapted, websocketPackageAdapter(ws, {
+        remoteAddress: adapted.remoteAddress,
+        preAttachBuffer: registration.preAttachBuffer,
+      }));
     });
   }
 

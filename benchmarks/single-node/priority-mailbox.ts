@@ -1,11 +1,15 @@
 /**
  * Priority mailbox vs. default mailbox — what's the cost of ordering?
  *
- * Comparable since #1148.  `PriorityMailbox` has never had a capacity, so
- * while the default was bounded this measured a sorted-insertion queue that
- * kept every message against a FIFO one that discarded past 10 000 — the
- * batch stays under that ceiling, but the two arms no longer differ in
- * anything except the ordering the benchmark is named for.
+ * Comparable since #1148.  While the default mailbox was bounded, this
+ * measured a sorted-insertion queue that kept every message against a FIFO
+ * one that discarded past 10 000 — the batch stays under that ceiling, but
+ * the two arms no longer differ in anything except the ordering the benchmark
+ * is named for.
+ *
+ * Both arms stay unbounded on purpose.  `PriorityMailbox` can take a capacity
+ * since #647, and naming one here would put an eviction on the enqueue path
+ * of one arm and not the other, which is a different measurement.
  *
  *   bun run benchmarks/single-node/priority-mailbox.ts
  */

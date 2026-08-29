@@ -16,9 +16,8 @@ import {
 import { CborSerializer } from '../../../../src/serialization/CborSerializer.js';
 import { BidirectionalMap } from '../../../../src/util/BidirectionalMap.js';
 
+import { gracefulStop } from '../../../../src/pattern/GracefulStop.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 /**
  * The scenario #1036 was filed about: a store configured with
@@ -83,7 +82,7 @@ class Telemetry extends PersistentActor<Command, Event, State> {
     };
   }
 
-  override snapshotPolicy(): SnapshotPolicy {
+  override snapshotPolicy(): SnapshotPolicy<State, Event> {
     return everyNEvents(2);
   }
 
@@ -172,8 +171,10 @@ describe('PersistentActor — rich types through a CBOR store serializer (#1036)
     const storedSnapshot = (await snapshots.loadLatest<State>('telemetry-1')).toNullable();
     expect(storedSnapshot?.sequenceNr).toBe(2);
 
-    system.stop(writer);
-    await sleep(50);
+    // The reader below recovers the same persistenceId, so the writer has to be
+    // really gone and not merely asked to stop.  `gracefulStop` resolves on the
+    // termination itself, which is what the 50 ms was guessing at (#418).
+    expect(await gracefulStop(writer, 4_000)).toBe(true);
 
     let recovered: State | undefined;
     system.spawn(() => new Telemetry('telemetry-1', (s) => { recovered = s; }), 'reader');

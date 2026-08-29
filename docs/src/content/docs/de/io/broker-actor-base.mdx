@@ -70,6 +70,19 @@ einer bereits toten Verbindung aufgerufen werden und muss ausschließlich
 die lebenden Handles verwerfen, niemals die gewünschten Subscriptions
 (siehe unten).
 
+Wird der Aktor gestoppt, während ein Reconnect-Versuch läuft, wird diese
+Verbindung **verworfen** statt übernommen.  Reconnect läuft auf dem
+System-Scheduler, entkoppelt von der Mailbox — ein Versuch, der schon in
+`connectImplementation` steckt, lässt sich nicht mehr abbrechen und läuft
+weiter, nachdem `postStop` zurückgekehrt ist.  Die Basisklasse prüft daher
+beim Verlassen des Handshakes erneut, ob der Aktor noch lebt, und ruft
+andernfalls ein weiteres Mal `disconnectImplementation` auf und bleibt
+`disconnected`: kein `BrokerConnected`, kein Leeren des Puffers, kein
+weiterer Retry.  Ohne diese Prüfung installierte ein *erfolgreicher*
+Handshake lebende Handles auf einem beendeten Aktor, und ein
+*gescheiterter* stellte den Backoff-Timer neu und verband sich endlos
+weiter, denn `maxAttempts` ist standardmäßig `Infinity` (#708).
+
 ## Subklassen-Kontrakt
 
 ```ts
@@ -84,10 +97,15 @@ abstract class BrokerActor<S, Command, P, Subscription = never> extends Actor<Co
   protected abstract connectImplementation(): Promise<void>;
   protected abstract disconnectImplementation(): Promise<void>;
   protected abstract dispatchOutgoing(envelope: OutboundEnvelope<P>): Promise<void>;
+
+  protected abstract onCommand(command: Command): void | Promise<void>;
+
+  // Optional — nur für Refs, die die Subklasse selbst beobachtet:
+  protected onTerminated(signal: Terminated): void | Promise<void> {}
 }
 ```
 
-Drei Kategorien:
+Vier Kategorien:
 
 - **Settings-Glue** (`configKey`, `builtInDefaultOptions`,
   `readOptionsFromConfig`, `requiredOptions`,
@@ -96,10 +114,33 @@ Drei Kategorien:
   wie validiert wird.
 - **Protokoll-Hooks** (`connectImplementation`, `disconnectImplementation`,
   `dispatchOutgoing`) — die protokollspezifische Arbeit.
+- **Nachrichtenverarbeitung** (`onCommand`) — ein Command aus der Mailbox.
+  Hier lebt die `match(...).exhaustive()`-Dispatch-Tabelle einer Subklasse.
+- **Death-Watch** (`onTerminated`) — optional; siehe *Subscriber-Tracking*.
 
 `endpointLabel` ist die menschenlesbare Verbindungs-Identität
 ("amqp://localhost:5672", "kafka-cluster-1"), die in Log-Zeilen und
 Lifecycle-Events auftaucht.
+
+**Gib den Verbindungs-String so zurück, wie er konfiguriert ist —
+redigiere ihn nicht selbst.** Die Basisklasse schickt jede
+Verwendung durch `redactedEndpointLabel()`, was Userinfo und
+Query-String entfernt; `amqp://svc:pw@rabbit:5671/orders` erreicht
+`BrokerConnected` also als `amqp://rabbit:5671/orders`. Das wiegt
+schwerer, als es aussieht: Die vier Lifecycle-Events landen auf dem
+systemweiten `EventStream`, der keinen Autorisierungsbegriff kennt
+— jeder Actor im System kann sie also lesen — und eine
+Reconnect-Schleife publiziert sie bei jedem Backoff-Tick erneut,
+über die gesamte Dauer eines Ausfalls. Eine zusammengesetzte
+Server-Liste behält ihre Gestalt und verliert jede Credential
+(`nats://***@a:4222,nats://***@b:4222`), ein Label ohne Credential
+kommt unverändert zurück. Rufe `redactedEndpointLabel()` auch in
+deinen eigenen Log-Zeilen auf.
+
+`onReceive` ist **versiegelt** — die Basisklasse besitzt die Methode, damit
+sie `Terminated` abfangen kann, bevor deine Dispatch-Tabelle es sieht.
+Implementiere stattdessen `onCommand`; dort kommt alles außer dem
+Death-Watch-Signal an.
 
 ## Was die Basisklasse für dich erledigt
 
@@ -128,46 +169,68 @@ verworfen und ein `BrokerNotConnected`-Event publisht.
 ### Subscriber-Tracking
 
 ```ts
-this.onReceive(message) {
-  // `Terminated` erreicht onReceive, gehört aber nicht zur getypten
-  // Command-Union — warum dieser Arm deiner ist, steht unten.
-  if (message instanceof Terminated) {
-    this.pruneTerminatedSubscriber(message.actor);
-    return;
-  }
-  match(message)
-    .with({ kind: 'subscribe' }, (m) => this.onSubscribe(m))
-    .with({ kind: 'unsubscribe' }, (m) => this.onUnsubscribe(m))
+import { match } from 'ts-pattern';
+
+protected override onCommand(command: MyCommand): void {
+  match(command)
+    .with({ kind: 'subscribe' }, (c) => this.onSubscribe(c))
+    .with({ kind: 'unsubscribe' }, (c) => this.onUnsubscribe(c))
     .exhaustive();
 }
 
-private onSubscribe(message: SubscribeCommand): void {
-  this.subscribeRef(message.topic, message.subscriber);
+private onSubscribe(command: SubscribeCommand): void {
+  this.subscribeRef(command.topic, command.subscriber);
 }
 
-private onUnsubscribe(message: UnsubscribeCommand): void {
-  this.unsubscribeRef(message.topic, message.subscriber);
+private onUnsubscribe(command: UnsubscribeCommand): void {
+  this.unsubscribeRef(command.topic, command.subscriber);
 }
 ```
 
 `subscribeRef(topic, ref)` registriert `ref` als interessiert an den
-eingehenden Nachrichten von `topic` und **death-watcht** die Ref.
+eingehenden Nachrichten von `topic` und **death-watcht** die Ref — für eine
+lokale Ref; siehe den Hinweis weiter unten.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Der Terminated-Arm ist nicht optional">
-  `subscribeRef` startet die Death-Watch, aber die Basisklasse kann für dich
-  nicht darauf reagieren: `onReceive` ist abstrakt, jede Unterklasse besitzt
-  also ihr eigenes Dispatch, und die Basis sieht nie eine Nachricht.  Ohne den
-  Arm oben bleibt ein gestoppter Subscriber in jedem Topic, das er hielt, und
-  kostet bei jedem Fan-out ein `tell` in die Dead Letters — das war ein echter
-  Defekt (#1111), kein hypothetischer.
+<Aside type="tip" title="Das Entfernen beim Tod erledigt die Basisklasse">
+  Oben steht nirgends `Terminated`, und das muss es auch nicht: `onReceive`
+  ist versiegelt, die Basisklasse fängt das Signal also ab, entfernt den
+  Subscriber aus jedem Topic, das er hielt, und reicht an `onCommand` nur
+  echte Commands weiter.  Deine Dispatch-Tabelle beschreibt allein dein
+  eigenes Protokoll, und `.exhaustive()` ist darauf genau richtig.
 
-  `pruneTerminatedSubscriber(ref)` entfernt den Subscriber aus allen Topics und
-  liefert zurück, ob überhaupt etwas entfernt wurde — so kannst du den Tod eines
-  Subscribers von dem jedes anderen beobachteten Actors unterscheiden.  Es macht
-  **kein** `unwatch`: die Zelle hat die Watch bereits fallen gelassen, als sie
-  `Terminated` zugestellt hat.
+  Früher war das Aufgabe der Subklasse, und man konnte es in beide Richtungen
+  falsch machen: ein Matcher ohne `Terminated`-Arm *wirft* auf dem
+  ungematchten Signal, was der Standard-Supervisor mit einem Restart
+  beantwortet — ein voller Broker-Reconnect pro Subscriber-Tod, bis
+  `maxRetries: 10` die Bridge endgültig stoppt — und einer, der es mit
+  `.otherwise()` verschluckte, leckte stattdessen: die tote Ref blieb in
+  jedem Topic und kostete bei jedem Fan-out ein `tell` in die Dead Letters
+  (#1111, #709).
+
+  `pruneTerminatedSubscriber(ref)` gibt es weiterhin, für eine Subklasse, die
+  einen Subscriber bewusst entfernt statt auf die Death-Watch zu warten.  Es
+  liefert zurück, ob überhaupt etwas entfernt wurde, und macht **kein**
+  `unwatch`: auf dem Todespfad hat die Zelle die Watch bereits fallen
+  gelassen, wenn das Signal ankommt.
+</Aside>
+
+<Aside type="note" title="Eigene Refs beobachten">
+  Überschreibe `onTerminated(signal)`, wenn dein Aktor `context.watch` für
+  etwas anderes als einen Subscriber aufruft — ein Zustellziel, den
+  Absender einer Anfrage.  Der Hook läuft **nach** dem Entfernen durch die
+  Basisklasse, die Subscriber-Registry hat die tote Ref also bereits
+  vergessen.  `MqttActor` nutzt ihn für seine Zustellziele pro Pattern.
+</Aside>
+
+<Aside type="caution" title="Die Death-Watch feuert nur für einen lokalen Subscriber">
+  `context.watch` registriert einen Watcher, wenn die Ref eine `LocalActorRef`
+  ist, und ist andernfalls ein stiller No-op — ein **entfernter** Subscriber
+  erzeugt also nie ein `Terminated`: er bleibt in jedem Topic, das er hielt,
+  bis der Broker-Aktor selbst stoppt, und kostet bei jedem Fan-out weiter ein
+  `tell` über die Node-Grenze.  Keine `Terminated`-basierte Bereinigung kann
+  daran etwas ändern — das Signal kommt nie an.  Nachverfolgt als #918.
 </Aside>
 
 `unsubscribeRef` vergleicht über den Pfad der Ref statt über das Ref-Objekt —
@@ -251,17 +314,76 @@ reconnect: {
   maxDelayMs:     30_000,
   factor:         2,
   maxAttempts:    Infinity,   // der Default — endlos wiederholen
+  randomFactor:   0.2,        // der Default — ±20 % Jitter
 }
 ```
 
 Pro Actor konfigurierbar (oder `reconnect: false`, um
 Auto-Reconnect ganz zu deaktivieren).  Jeder Versuch wartet
-`min(initialDelayMs * factor^(attempt - 1), maxDelayMs)` — reines
-exponentielles Backoff, ohne Jitter.
+`min(initialDelayMs * factor^(attempt - 1), maxDelayMs)`, multipliziert
+mit einem zufälligen `1 ± randomFactor`.
+
+Der Jitter ist das, was eine **Flotte** davon abhält, im Gleichschritt zu
+wiederholen.  Ohne ihn ist die Verzögerung eine reine Funktion des
+Versuchszählers und dieser Optionen — jeder Broker-Actor, der denselben
+Broker im selben Moment verloren hat, wacht also in derselben Millisekunde
+auf, Welle für Welle, und die Herde kann den sich erholenden Broker unten
+halten.  `randomFactor: 0` stellt den vollständig deterministischen
+Zeitplan wieder her.
+
+Dieselbe Streuung gilt für den **Circuit Breaker**: Ist der Breaker offen,
+prüft der Actor irgendwo in
+`[resetMs, resetMs × (1 + randomFactor)]` erneut statt exakt zum Stichtag.
+Dieser Jitter ist einseitig — ein Breaker wird nie zu früh erneut versucht.
 
 Jeder Versuch löst `BrokerReconnectAttempt` auf dem Event-Stream
-aus; nachdem `maxAttempts` erschöpft sind (sofern endlich), löst
+aus (dessen `delayMs` ist der tatsächlich eingeplante, gejitterte Wert);
+nachdem `maxAttempts` erschöpft sind (sofern endlich), löst
 `BrokerReconnectFailed` aus und der Actor bleibt getrennt.
+
+Für einen deterministischen Test lässt sich die Zufallsquelle injizieren —
+`random: () => 0.5` fixiert jede Verzögerung auf ihren ungejitterten Wert:
+
+```ts
+reconnect: { initialDelayMs: 100, random: () => 0.5 }
+```
+
+### Liveness-Deadlines
+
+Alles oben Beschriebene wird von `handleConnectionLost` ausgelöst, und
+das wird nur aufgerufen, wenn der Transport ein Ende **meldet** — ein
+`close`-Event, ein `error`, ein Stream, der `done` gemeldet hat.  Ein
+Peer, der ohne FIN oder RST verschwindet, meldet nichts davon.  Ein
+verfallener NAT-Eintrag, ein mit `SIGKILL` beendeter Container, eine
+Route, die anfängt zu verschlucken: der Socket bleibt offen, der Actor
+bleibt `connected`, und die Reconnect-Maschinerie läuft nie.
+
+Zwei Uhren schließen diese Lücke.  Beide sind **pro Protokoll
+opt-in**, weil nur die Anwendung weiß, wie still ihr Peer sein darf:
+
+- **`idleTimeoutMs`** — eine **Lese**-Deadline.  Kommt so lange nichts
+  vom Peer, wird die Verbindung über den gewöhnlichen
+  `handleConnectionLost`-Pfad als verloren gemeldet; alles auf dieser
+  Seite gilt damit unverändert: `BrokerDisconnected`, Backoff, Puffer,
+  Breaker.  Zurückgesetzt wird sie von eingehenden Bytes und
+  ausdrücklich *nicht* von ausgehenden: ein Client, der in ein
+  schwarzes Loch schreibt, ist genau der Fall, der sie auslösen muss.
+- **`connectTimeoutMs`** — eine Deadline für einen einzelnen
+  `connectImplementation`-Aufruf.  Jedes Protokoll beendet seinen
+  Connect über ein Event (`connect`, `open`, Response-Header), und
+  keines hat eine Uhr — ein Peer, der den Handshake abschließt und dann
+  stehen bleibt, hält den Actor unbegrenzt in `connecting`.  Läuft die
+  Deadline ab, wird der Versuch abgebrochen, und der Fehler nimmt den
+  Weg, den ein abgelehnter Connect ohnehin nimmt.
+
+`TcpSocketActor`, `SseActor` und `WebsocketClientActor` bieten beide
+an.  Setze `idleTimeoutMs` **oberhalb** des Heartbeats, den der Peer
+ohnehin sendet; darunter kappt die Deadline gesunde Verbindungen in
+Endlosschleife.  `0` (der Default) schaltet beide ab.
+
+Protokolle mit eigener Liveness auf Protokollebene brauchen das nicht:
+`MqttActor` hat MQTT-`keepAlive`, und `KafkaActor` fährt einen
+Consumer-Heartbeat.
 
 ### Lifecycle-Events
 
@@ -270,7 +392,7 @@ Publisht auf `system.eventStream`:
 | Event | Wann |
 | --- | --- |
 | `BrokerConnected` | Ein `connectImplementation` war erfolgreich. |
-| `BrokerDisconnected` | Ein `disconnectImplementation` lief oder eine Verbindung ist fehlgeschlagen. |
+| `BrokerDisconnected` | Eine bestehende Verbindung ging verloren. Ein geordneter Stopp publisht es nicht. |
 | `BrokerReconnectAttempt` | Ein Reconnect-Versuch startet gerade. |
 | `BrokerReconnectFailed` | `maxAttempts` erschöpft. |
 | `BrokerBufferOverflow` | Der Outbound-Buffer hat ein Envelope verworfen. |
@@ -305,6 +427,7 @@ bevor er überhaupt versucht, sich zu verbinden.
 ## Einen eigenen Protokoll-Actor schreiben
 
 ```ts
+import { match } from 'ts-pattern';
 import { BrokerActor, type OutboundEnvelope, type BrokerCommonOptionsType } from 'actor-ts/io';
 
 interface MyProtocolOptionsType extends BrokerCommonOptionsType {
@@ -334,6 +457,17 @@ class MyProtocolActor extends BrokerActor<MyProtocolOptionsType, Command, MyPayl
 
   protected async dispatchOutgoing(env: OutboundEnvelope<MyPayload>): Promise<void> {
     await this.connection!.send(env.payload);
+  }
+
+  // `onReceive` ist von der Basisklasse versiegelt — implementiere `onCommand`.
+  protected override onCommand(command: Command): void {
+    match(command)
+      .with({ kind: 'subscribe' }, (c) => this.onSubscribe(c))
+      .exhaustive();
+  }
+
+  private onSubscribe(command: SubscribeCommand): void {
+    this.subscribeRef(command.topic, command.subscriber);
   }
 }
 ```

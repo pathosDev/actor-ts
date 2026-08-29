@@ -24,6 +24,8 @@ import { match } from 'ts-pattern';
 import {
   Actor,
   ActorSystem,
+  CoordinatedShutdownId,
+  Phases,
 } from '../../src/index.js';
 import {
   CacheExtensionId,
@@ -110,13 +112,14 @@ async function main(): Promise<void> {
     .withHost('127.0.0.1')
     .withPort(2552);
   const cluster = await Cluster.join(system, clusterOptions);
-  // ONE CACHE PER MIDDLEWARE — never a single shared instance.  A bounded
-  // cache evicts on recency alone, with no idea which entries carry a
-  // guarantee, so in a shared instance a caller who varies the
-  // response-cache key or the `Idempotency-Key` header pushes OTHER
-  // clients' rate-limit counters and idempotency records out: their limits
-  // reset and their retries re-run the handler.  Registering each under a
-  // name also lets the rest of the app reach the same instance via
+  // ONE CACHE PER MIDDLEWARE — never a single shared instance.
+  // `InMemoryCache` evicts entries that carry no guarantee before it
+  // touches a rate-limit counter or an idempotency record, but it does not
+  // rank guarantees against each other: in a shared instance a caller who
+  // varies the `Idempotency-Key` header still pushes OTHER clients'
+  // counters and records out once nothing cheaper is left in the map, and
+  // Redis under `allkeys-lru` has no such policy at all.  Registering each
+  // under a name also lets the rest of the app reach the same instance via
   // `system.extension(CacheExtensionId).cache('response-cache')`.
   const limiterCache = pickCache('rate-limit');
   const responseStore = pickCache('response-cache');
@@ -178,13 +181,19 @@ async function main(): Promise<void> {
   system.log.info(`REST+cache service listening on http://${binding.host}:${binding.port}`);
   system.log.info(`Cache backend: ${process.env.ACTOR_TS_CACHE === 'redis' ? 'Redis' : 'InMemory'}`);
 
-  process.on('SIGINT', async () => {
-    await binding.unbind();
-    await cluster.leave();
-    await Promise.all([limiterCache, responseStore, idempotencyStore].map((c) => c.close?.()));
-    await system.terminate();
-    process.exit(0);
-  });
+  // The three caches are the only thing the framework does not already know
+  // about, so they are the only thing left to register — in `service-stop`,
+  // with the other outbound connections, after the HTTP server has stopped
+  // accepting requests that would use them.
+  system.extension(CoordinatedShutdownId).addTask(
+    Phases.ServiceStop,
+    'close-caches',
+    async () => {
+      await Promise.all([limiterCache, responseStore, idempotencyStore].map((c) => c.close?.()));
+    },
+  );
+
+  await system.runUntilTerminated();
 }
 
 void main();

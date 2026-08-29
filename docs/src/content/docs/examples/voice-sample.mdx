@@ -111,6 +111,22 @@ hold a group card's button (1:N group), or enter a room and toggle
 "Talk" (N:N room). Kill the node currently holding the `http-ingress`
 singleton and a survivor rebinds `:8081` within ~5-10 s.
 
+### Verifying the relay
+
+`smoke-test.ts` needs no browser and no setup — it spawns its own
+one-node cluster on isolated ports, opens two WebSocket clients and
+walks all three modes with a fake 32-byte audio payload, checking
+the envelope round-trip and the self-filter for room mode:
+
+```bash
+bun examples/voice/smoke-test.ts
+```
+
+Because it brings its own backend, it runs unattended in the
+[example gate](/examples/overview/#verified-in-ci) on every push
+that touches `src/` or `examples/`. It does not exercise audio
+playback — that part is a browser concern.
+
 ## Key patterns demonstrated
 
 ### 1:1 push-to-talk via the Receptionist

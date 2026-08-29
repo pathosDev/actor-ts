@@ -139,21 +139,49 @@ nicht die Buchhaltung des Frameworks.
 
 ### Was ist der Overhead pro Nachricht?
 
-Grob:
+Gemessen auf Bun 1.3.14, 10 Kernen eines Intel i9-12900K unter Linux,
+Mittelwert aus hundert Runden —
+Methodik und Vergleich mit anderen Frameworks stehen unter
+[Benchmarks](/de/reference/benchmarks/):
 
-- **`tell`** — ~50 ns pro Aufruf auf Hot Path
-  (Microtask-Dispatcher).  Speicher: ~200 Bytes pro Envelope.
-- **`ask`** — ~5 μs pro Aufruf (temporäre Ref-Konstruktion).
-  Speicher: ~500 Bytes plus Promise-Maschinerie.
+- **`tell`, Ende zu Ende** — rund **53 ns** pro Nachricht bei einer
+  Mailbox mit Tiefe (grob 19 Millionen Nachrichten/Sekunde dauerhaft).  Das
+  ist der gesamte Pfad: einreihen, einplanen, zustellen, behandeln.
+  Der `tell()`-Aufruf selbst kehrt noch schneller zurück — er reiht nur
+  ein.  „Wie lange dauert `tell`?" und „wie viele Nachrichten pro
+  Sekunde?" sind also zwei Fragen, deren Antworten eine Größenordnung
+  auseinanderliegen.
+- **`ask`-Roundtrip** — **0,9 µs** im p50, Tiefe 1.
 - **Cross-Cluster `tell`** — begrenzt durch Netzwerk- +
-  Serialisierungs-Kosten.  Sub-Millisekunde auf Localhost,
-  ms-Bereich über LAN.
+  Serialisierungs-Kosten.  Sub-Millisekunde auf Localhost, ms-Bereich
+  über LAN.  Noch nicht gemessen; die Cluster-Benchmarks verlassen den
+  Prozess nicht.
 
-Zum Vergleich: Ein roher `function call` ist ~1 ns.
-Actor-Messaging kostet 50-200× einen direkten Aufruf — was für
-die meisten Workloads in Ordnung ist, aber sichtbar wird, wenn
-Du denselben Actor mit Millionen von Nachrichten pro Sekunde
-bombardieren würdest.
+**Den größten Teil der ersten Zahl leistet die Mailbox-Tiefe**, und dieser
+Unterschied gehört verstanden, bevor man darauf hin entwirft.  Ein Actor
+arbeitet pro Scheduling-Durchlauf einen Batch eingereihter Nachrichten ab,
+eine tiefe Mailbox verteilt das Aufwecken also über den ganzen Batch.  Ein
+Actor, der eine Anfrage nach der anderen beantwortet, kann nichts verteilen —
+seine Mailbox ist zwischen zwei Nachrichten leer.  Genau deshalb misst sich
+der ask-Roundtrip in Mikrosekunden und ein geflutetes `tell` in Hunderten von
+Nanosekunden.  Keine der beiden Zahlen ist falsch; sie beschreiben
+verschiedene Lastformen.
+
+Was Du für diese Zeit bekommst, ist eine Queue, ein Scheduler, Supervision und
+Ortstransparenz — nichts davon leistet ein direkter Methodenaufruf.  Beide zu
+vergleichen, als wären sie Alternativen, ist genau der Grund, warum die
+Benchmarks keine „ohne Framework"-Zahl mehr veröffentlichen: sie ist keine der
+Optionen, zwischen denen Du wählst.
+
+Die Zahl, gegen die man tatsächlich entwirft: einige Millionen Nachrichten pro
+Sekunde durch einen Actor sind erreichbar, hundert Millionen nicht.
+
+<Aside type="note" title="Der Dispatch-Stil ist auch nicht umsonst">
+Diese Zahlen verwenden eine einfache `if`-Verzweigung im Handler.
+Mit `ts-pattern` zu dispatchen — der Stil, den dieses Projekt in seinem
+eigenen Quellcode nutzt — kostet weitere 18-22 % tell-Durchsatz, was
+auf einem heißen Pfad zu wissen lohnt.
+</Aside>
 
 ### Sollte ich mir um Garbage Collection Sorgen machen?
 

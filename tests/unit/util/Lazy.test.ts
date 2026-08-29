@@ -89,6 +89,9 @@ describe('Lazy', () => {
 
   test('async thunk caches the Promise — concurrent callers share work', async () => {
     let calls = 0;
+    // A fixture: the initialiser has to still be in flight when the other two
+    // `get()` calls land, or 'concurrent callers share work' has no overlap to
+    // observe and `calls === 1` would hold for the wrong reason.
     const lazyValue = Lazy.of(async () => { calls++; await Bun.sleep(5); return 'async-ok'; });
     const [otherLazy, b, c] = await Promise.all([lazyValue.get(), lazyValue.get(), lazyValue.get()]);
     expect(otherLazy).toBe('async-ok');
@@ -107,7 +110,7 @@ describe('Lazy.getSync (#279)', () => {
   test('returns the cached value for sync Lazy', () => {
     const lazyValue = Lazy.of(() => 'hello');
     lazyValue.get();
-    expect(lazyValue.getSync()).toBe('hello');
+    expect(lazyValue.getSync<string>()).toBe('hello');
   });
 
   test('throws when called before evaluation', () => {
@@ -118,7 +121,7 @@ describe('Lazy.getSync (#279)', () => {
   test('respects setOverride — returns the override value', () => {
     const lazyValue = Lazy.of(() => 'real');
     lazyValue.setOverride('fake');
-    expect(lazyValue.getSync()).toBe('fake');
+    expect(lazyValue.getSync<string>()).toBe('fake');
   });
 
   test('re-throws the cached error from the thunk', () => {
@@ -140,6 +143,8 @@ describe('Lazy.getSync (#279)', () => {
 
   test('async Lazy: returns the resolved value after the Promise settles', async () => {
     const lazyValue = Lazy.of(async () => {
+      // A fixture: the thunk has to be genuinely asynchronous, so that `getSync`
+      // below is read after a real settle rather than off an already-plain value.
       await Bun.sleep(5);
       return { sdk: 'loaded' };
     });

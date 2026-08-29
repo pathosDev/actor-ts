@@ -1,6 +1,6 @@
 ---
 title: Marshalling
-description: Wie HTTP-Request-Bodies zu typisierten Werten werden (`entity<T>(req)`) und typisierte Werte zu Responses werden (`completeJson` / `marshal`). Content-Type steuert die Request-Seite, `Accept` die Response-Seite. JSON und CBOR eingebaut.
+description: Wie HTTP-Request-Bodies zu typisierten Werten werden (`entity<T>(req)`) und typisierte Werte zu Responses werden (`completeJson` / `marshal`). Content-Type steuert die Request-Seite, `Accept` die Response-Seite. JSON, CBOR und urlencodierte Formulare eingebaut; ein unbekannter Request-Typ ergibt eine 415.
 ---
 
 Zwei Hälften der Marshalling-Geschichte:
@@ -25,24 +25,84 @@ type NewOrder = { sku: string; quantity: number; };
 post(async (req) => {
   const order = entity<NewOrder>(req);
   // ↑ wirft HTTP 400, wenn der Body fehlt oder malformed ist
+  // ↑ wirft HTTP 415, wenn nichts diesen Content-Type dekodiert
   // ↑ wählt den Serializer basierend auf Content-Type:
-  //     application/json → JsonSerializer
-  //     application/cbor → CborSerializer
-  //     alles andere     → JsonSerializer (Fallback)
+  //     application/json                  → JsonSerializer
+  //     application/cbor                  → CborSerializer
+  //     application/x-www-form-urlencoded → FormUrlEncodedSerializer
+  //     gar kein Content-Type             → JsonSerializer
   // ...
 });
 ```
 
 Der `entity<T>(req)`-Aufruf:
 
-1. Liest `req.headers['content-type']`.
-2. Wählt den passenden Serializer.
+1. Liest `req.headers['content-type']` und reduziert ihn auf den
+   reinen Media-Type — aus `application/json; charset=utf-8` wird
+   `application/json`.
+2. Wählt den passenden Serializer, oder wirft `HttpError(415, ...)`.
 3. Dekodiert `req.body` (eine `Uint8Array`).
 4. Gibt den dekodierten Wert gecastet auf `T` zurück.
 
 Wenn der Body fehlt oder malformed ist, wirft `entity` einen
 `HttpError(400, ...)` — das Framework fängt ihn und produziert
 eine 400-Response mit der Fehlermeldung.
+
+### Nicht unterstützte Media-Types
+
+Ein Content-Type, den nichts dekodiert — `text/xml`,
+`application/pdf`, `multipart/form-data` — ergibt eine **415**,
+nicht den Versuch, den Body als JSON zu parsen:
+
+```json
+{
+  "error": "Unsupported Content-Type: text/xml",
+  "accepted": [
+    "application/json",
+    "application/cbor",
+    "application/x-cbor",
+    "application/x-www-form-urlencoded"
+  ]
+}
+```
+
+Dieselbe Liste geht als `Accept`-Response-Header raus — genau das,
+was [RFC 9110 §12.5.1](https://www.rfc-editor.org/rfc/rfc9110#field.accept)
+in einer Response bedeutet: was beim nächsten Mal zu senden ist.
+
+Zwei bewusste Ausnahmen von der Ablehnung:
+
+- **Ein fehlender Content-Type wird weiterhin als JSON dekodiert.**
+  Wenn der Sender nichts angibt, lässt RFC 9110 dem Empfänger die
+  Freiheit zu raten — und `HttpClient` setzt den Header nur für
+  Objekt-Bodies, ein String-Body geht also ohne ihn raus.
+- **Structured-Syntax-Suffixe folgen ihrem Basistyp.**
+  `application/vnd.api+json`, `application/merge-patch+json` und
+  `application/problem+json` werden alle als JSON dekodiert, gemäß
+  [RFC 6839](https://www.rfc-editor.org/rfc/rfc6839).
+
+Beachte, dass gegen den *geparsten* Media-Type gematcht wird: einen
+bekannten Typ in einem Parameter zu nennen — `multipart/form-data;
+boundary=----application/cbor` — wählt diesen Serializer nicht aus.
+
+### Form-Bodies
+
+`application/x-www-form-urlencoded` wird zu einem flachen Record
+aus Strings dekodiert, ein HTML-`<form>` postet also direkt in
+einen Handler:
+
+```ts
+post(async (req) => {
+  const form = entity<{ name: string; tags: string | string[] }>(req);
+  // 'name=Ada&tags=a&tags=b' → { name: 'Ada', tags: ['a', 'b'] }
+});
+```
+
+Jeder Wert ist ein **String** — Form-Encoding transportiert keine
+Typen.  Ein wiederholtes Feld weitet sich zu einem Array, genau wie
+`req.query` einen wiederholten Query-Parameter schon behandelt.
+Verschachtelung ist in diesem Format nicht ausdrückbar; nimm JSON,
+wenn du sie brauchst.
 
 ### Type-Checking
 
@@ -161,28 +221,30 @@ interface Serializer {
 ```
 
 Du kannst deinen eigenen einklinken (Protobuf, MessagePack usw.),
-indem du dieses Interface implementierst — aber das MIME-zu-
-Serializer-Mapping des HTTP-Moduls ist derzeit eine private
-Konstante.  Für eigene Serializer in HTTP-Handlern mach die
-Auswahl manuell:
+indem du dieses Interface implementierst — aber das
+Media-Type-zu-Serializer-Mapping des HTTP-Moduls ist derzeit eine
+private Konstante.  Für eigene Serializer in HTTP-Handlern mach die
+Auswahl manuell.  Ein Typ, den das eingebaute Mapping nicht kennt,
+ergibt eine 415 — verzweige also *vor* dem `entity`-Aufruf:
 
 ```ts
 import { ProtobufSerializer } from './my-protobuf';
 
 post(async (req) => {
-  const ct = req.headers['content-type'] ?? '';
+  const mediaType = (req.headers['content-type'] ?? '').split(';')[0]!.trim();
   let value: MyMessage;
-  if (ct.includes('application/x-protobuf')) {
+  if (mediaType === 'application/x-protobuf') {
     value = new ProtobufSerializer().fromBinary(req.body!, '') as MyMessage;
   } else {
-    value = entity<MyMessage>(req);   // JSON-Fallback
+    value = entity<MyMessage>(req);   // JSON / CBOR / Form, sonst 415
   }
   // ...
 });
 ```
 
-Für die Cluster-Wire-Serialisierung (zwischen Nodes, nicht HTTP)
-ist die `SerializationExtension` der richtige Hook — siehe
+Für den Cluster-Wire (zwischen Nodes, nicht HTTP) gibt es keinen
+entsprechenden Hook: er rahmt immer den getaggten JSON-Tree und
+konsultiert die `SerializationExtension` nie — siehe
 [Serialization-Übersicht](/de/serialization/overview/).
 
 ## Fehler beim Encoden
@@ -237,12 +299,18 @@ del(async (req) => {
 `entity` wirft, wenn der Body leer ist — ruf es nicht auf, wenn
 du keinen Body erwartest.
 
-### Content-Type vorab validieren
+### Die akzeptierten Content-Types einschränken
+
+`entity` antwortet bereits mit 415 auf alles außerhalb des
+eingebauten Sets — dafür brauchst du keinen Guard mehr.  Eine
+Prüfung lohnt sich weiterhin, wenn ein Endpunkt **weniger**
+akzeptiert als das Framework — eine reine JSON-API, die CBOR- und
+Form-Bodies ablehnen soll:
 
 ```ts
 post(async (req) => {
-  const ct = req.headers['content-type'] ?? '';
-  if (!ct.startsWith('application/json')) {
+  const mediaType = (req.headers['content-type'] ?? '').split(';')[0]!.trim();
+  if (mediaType !== '' && mediaType !== 'application/json') {
     reject(Status.UnsupportedMediaType, 'expected JSON');
   }
   const order = entity<NewOrder>(req);
@@ -250,8 +318,9 @@ post(async (req) => {
 });
 ```
 
-Nur sinnvoll, wenn du einen bestimmten Content-Type explizit
-ablehnen willst, statt durch den JSON-Fallback zu gehen.
+Beachte das `!== ''`: ein Request ganz ohne Content-Type wird als
+JSON dekodiert statt abgelehnt — ein Guard, der den leeren Fall
+vergisst, weist also Clients ab, die den Header nie setzen.
 
 ### Streaming-Responses
 
@@ -273,6 +342,15 @@ Ohne expliziten `Content-Type` fällt ein Stream auf
 `application/octet-stream` zurück.  Streams sind einmalig; leite
 eine streamende Response daher nicht durch die Caching-Middleware.
 Für SSE nimm den [`SseActor`](/de/io/sse/).
+
+Setze `Content-Length` selbst, wenn du sie kennst.  Ein Backend
+leitet die Länge aus einem `Uint8Array`-Body ab, hat bei einem Stream
+aber nichts zu messen — ohne den Header geht die Response also
+chunked hinaus.  Fastify und Express übernehmen eine gesetzte Länge;
+Hono gibt seine `Response` an den Server der Runtime, und
+`Bun.serve` framet einen Stream ohnehin chunked (`node:http` und
+`Deno.serve` behalten sie).
+[Statische Dateien](/de/http/static-files/) machen das für dich.
 
 import { Aside } from '@astrojs/starlight/components';
 

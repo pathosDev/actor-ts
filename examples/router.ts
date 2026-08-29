@@ -5,7 +5,6 @@
  *   tsx examples/router.ts
  */
 import { Actor, ActorSystem, Broadcast, Router } from '../src/index.js';
-import { attachDevTools } from './devtools.js';
 
 class Worker extends Actor<string> {
   override onReceive(job: string): void {
@@ -15,7 +14,6 @@ class Worker extends Actor<string> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('router-demo');
-  const devtools = await attachDevTools(system);
 
   const pool = system.spawn(
     Router.roundRobin(4, Worker),
@@ -27,8 +25,8 @@ async function main(): Promise<void> {
   // Broadcast a message to every worker.
   pool.tell(new Broadcast('shutdown-notice'));
 
-  await new Promise(resolve => setTimeout(resolve, 100));
-  await devtools.holdOpen();
+  // The drain follows the fan-out: the router's own queue empties into the
+  // routees', and terminate() waits for those too.
   await system.terminate();
 }
 

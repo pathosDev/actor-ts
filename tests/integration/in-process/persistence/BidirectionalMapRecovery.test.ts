@@ -15,9 +15,8 @@ import {
 } from '../../../../src/persistence/index.js';
 import { BidirectionalMap } from '../../../../src/util/BidirectionalMap.js';
 
+import { gracefulStop } from '../../../../src/pattern/GracefulStop.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 /**
  * The promise #1035 makes is that a `BidirectionalMap` can simply be held in
@@ -57,7 +56,7 @@ class SeatingPlan extends PersistentActor<Command, Event, State> {
     return { seats: new BidirectionalMap<string, number>() };
   }
 
-  override snapshotPolicy(): SnapshotPolicy {
+  override snapshotPolicy(): SnapshotPolicy<State, Event> {
     return everyNEvents(2);
   }
 
@@ -119,8 +118,10 @@ describe('PersistentActor — a BidirectionalMap in state, with no adapter (#103
     const storedSnapshot = (await snapshots.loadLatest<State>('seating-1')).toNullable();
     expect(storedSnapshot?.sequenceNr).toBe(2);
 
-    system.stop(writer);
-    await sleep(50);
+    // The reader below recovers the same persistenceId, so the writer has to be
+    // really gone and not merely asked to stop.  `gracefulStop` resolves on the
+    // termination itself, which is what the 50 ms was guessing at (#418).
+    expect(await gracefulStop(writer, 4_000)).toBe(true);
 
     let recovered: State | undefined;
     system.spawn(() => new SeatingPlan('seating-1', (s) => { recovered = s; }), 'reader');

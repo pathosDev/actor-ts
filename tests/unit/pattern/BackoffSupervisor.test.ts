@@ -21,18 +21,20 @@
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
+import type { ActorRef } from '../../../src/ActorRef.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { LocalActorRef } from '../../../src/internal/LocalActorRef.js';
+import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
+import type { LogContextData } from '../../../src/LogContext.js';
+import { DeadLetter, Terminated } from '../../../src/SystemMessages.js';
 import type { ActorClassOrFactory } from '../../../src/Actor.js';
 import {
   BackoffSupervisor,
   type BackoffOptions,
 } from '../../../src/pattern/BackoffSupervisor.js';
 import type { BackoffPolicy } from '../../../src/pattern/BackoffPolicy.js';
-import { awaitCondition } from '../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
 /** Records each `delayFor(n)` call so tests can assert exact restart counts. */
 class RecordingPolicy implements BackoffPolicy {
@@ -408,6 +410,8 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
         timeoutMs: 4_000,
         label: 'the child stopped itself cleanly',
       });
+      // The settle window named above: 'no respawn' is an absence, so this is the
+      // span in which a respawn would have moved `lifecycleSpawns`.
       await sleep(60);
       expect(lifecycleStops).toBe(1);
       // No respawn happened: spawn count stays put.
@@ -451,6 +455,8 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
         timeoutMs: 4_000,
         label: 'the child handled the crash message',
       });
+      // The settle window: the assertion is that the spawn count did NOT move, and
+      // the poll above returns on the crash itself, before a respawn could happen.
       await sleep(60);
       expect(lifecycleSpawns).toBe(spawnsBeforeCrash);
     } finally {
@@ -483,8 +489,11 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
       // gets stashed — and stays there across subsequent crashes —
       // until the eventually-successful child drains the queue.
       const firstAsk = supervisor.ask<number>({ kind: 'echo', value: 1 }, 4_000,).then((r) => replies.push(r));
+      // Staggering the asks IS the fixture: each one has to land at a different
+      // point of the crash/respawn cascade for the stash to be exercised at all.
       await sleep(50);
       const secondAsk = supervisor.ask<number>({ kind: 'echo', value: 2 }, 4_000,).then((r) => replies.push(r));
+      // Same: the third ask has to arrive a cascade step later than the second.
       await sleep(50);
       const thirdAsk = supervisor.ask<number>({ kind: 'echo', value: 3 }, 4_000,).then((r) => replies.push(r));
 
@@ -555,4 +564,243 @@ describe('BackoffSupervisor — triggerOn modes (#68)', () => {
       await sys.terminate();
     }
   }, 5_000);
+});
+
+/**
+ * #769 — the supervisor must not retire a live child on the word of a
+ * `Terminated`.  Two layers, and one test each, because they fail
+ * independently: `ActorCell` refuses a signal the runtime did not emit, and
+ * `handleTerminated` refuses one whose subject is demonstrably still running.
+ */
+describe('BackoffSupervisor — Terminated provenance', () => {
+  /** The supervisor's children, by name, straight off its cell. */
+  const childNames = (supervisor: ActorRef<unknown>): string[] =>
+    (supervisor as unknown as LocalActorRef).getCell().children.map((c) => c.path.name);
+
+  const currentChild = (supervisor: ActorRef<unknown>): ActorRef =>
+    (supervisor as unknown as LocalActorRef).getCell().children[0] as ActorRef;
+
+  test('a fabricated Terminated neither orphans the live child nor drives a respawn', async () => {
+    crashesObserved = 0; flakyStarts = 0;
+    const sys = newSystem('backoff-forged-terminated');
+    const policy = new RecordingPolicy([10]);
+    const supervisor = sys.spawn(
+      BackoffSupervisor.factory(withDefaults({ child: Flaky, policy, resetCounter: 'never' })),
+      'sup-forged',
+    );
+    try {
+      await awaitCondition(() => flakyStarts === 1, {
+        timeoutMs: 4_000,
+        label: 'the first child started',
+      });
+      const child = currentChild(supervisor as ActorRef<unknown>);
+      expect(child.path.name).toBe('child-1');
+
+      // The exploit, in one line: anything holding the supervisor's ref can
+      // build this, and before #769 it retired the watch, bumped the backoff
+      // counter and spawned `child-2` alongside a `child-1` nobody stopped.
+      supervisor.tell(new Terminated(child) as never);
+
+      // Round-trip a real message so the assertions follow the forgery
+      // through the supervisor's mailbox rather than racing it.
+      const echoed = await supervisor.ask<number>({ kind: 'echo', value: 7 }, 1_000);
+      expect(echoed).toBe(7);
+
+      expect(flakyStarts).toBe(1);
+      expect(policy.calls).toEqual([]);
+      expect(childNames(supervisor as ActorRef<unknown>)).toEqual(['child-1']);
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 5_000);
+
+  test('a runtime-emitted Terminated naming a child that is still running is refused', async () => {
+    crashesObserved = 0; flakyStarts = 0;
+    const sys = newSystem('backoff-live-terminated');
+    const policy = new RecordingPolicy([10]);
+    const supervisor = sys.spawn(
+      BackoffSupervisor.factory(withDefaults({ child: Flaky, policy, resetCounter: 'never' })),
+      'sup-live',
+    );
+    try {
+      await awaitCondition(() => flakyStarts === 1, {
+        timeoutMs: 4_000,
+        label: 'the first child started',
+      });
+      const cell = (supervisor as unknown as LocalActorRef).getCell();
+      const child = cell.children[0] as ActorRef;
+
+      // `watchNotify` is the one door that builds a *branded* `Terminated` for
+      // an arbitrary target, so it is the only way to hand the supervisor a
+      // signal whose provenance is genuine and whose claim is false.  That is
+      // exactly what the supervisor's own liveness check is for: the cell's
+      // brand says who sent it, not whether the subject died.
+      cell.enqueueSystem({ kind: 'watchNotify', target: child });
+
+      // Two round-trips, not one.  `enqueueSystem` only queues the command,
+      // and the notification it produces is appended to the *user* queue when
+      // the command runs — so a single echo sent now sits in front of the
+      // signal and would resolve before the supervisor had seen it, which is
+      // a test that passes for no reason.  The first ask flushes the command;
+      // the second is behind the notification the command produced.
+      expect(await supervisor.ask<number>({ kind: 'echo', value: 11 }, 1_000)).toBe(11);
+      expect(await supervisor.ask<number>({ kind: 'echo', value: 12 }, 1_000)).toBe(12);
+
+      expect(flakyStarts).toBe(1);
+      expect(policy.calls).toEqual([]);
+      expect(childNames(supervisor as ActorRef<unknown>)).toEqual(['child-1']);
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 5_000);
+
+  test('a genuine respawn leaves exactly one child and dead-letters nothing', async () => {
+    // The backstop added for #769 stops the child it is replacing if that
+    // child is somehow still alive — and `context.stop` is a `PoisonPill`,
+    // which a terminated cell turns into a dead letter.  So the liveness
+    // check inside that backstop is the whole reason an ordinary respawn
+    // stays silent, and this is what says so.
+    crashesObserved = 0; flakyStarts = 0;
+    const letters: unknown[] = [];
+    const subscribed = { value: false };
+    class Listener extends Actor<DeadLetter> {
+      override preStart(): void {
+        this.system.eventStream.subscribe(this.self, DeadLetter);
+        subscribed.value = true;
+      }
+      override onReceive(letter: DeadLetter): void { letters.push(letter.message); }
+    }
+
+    const sys = newSystem('backoff-respawn-silent');
+    const policy = new RecordingPolicy([10]);
+    const supervisor = sys.spawn(
+      BackoffSupervisor.factory(withDefaults({ child: Flaky, policy, resetCounter: 'never' })),
+      'sup-silent',
+    );
+    try {
+      sys.spawn(Listener, 'listener');
+      await awaitCondition(() => subscribed.value && flakyStarts === 1, {
+        timeoutMs: 4_000,
+        label: 'the listener subscribed and the first child started',
+      });
+
+      supervisor.tell({ kind: 'crash' });
+      await awaitCondition(() => flakyStarts === 2, {
+        timeoutMs: 4_000,
+        label: 'the crashed child was respawned',
+      });
+      expect(await supervisor.ask<number>({ kind: 'echo', value: 3 }, 1_000)).toBe(3);
+
+      expect(childNames(supervisor as ActorRef<unknown>)).toEqual(['child-2']);
+      expect(letters).toEqual([]);
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 5_000);
+});
+
+/* ============================================================== */
+/* Stash overflow (#773)                                          */
+/* ============================================================== */
+
+/**
+ * Collects `warn` calls with their structured fields.
+ *
+ * `withSource` / `withFields` return `this` the way `NoopLogger` does, so a
+ * line the supervisor emits through its own actor-scoped logger still lands
+ * in the same list.
+ */
+class WarnCollector implements Logger {
+  readonly level = LogLevel.Warn;
+  readonly warnings: Array<{ readonly message: string; readonly args: unknown[] }> = [];
+
+  debug(): void { /* discarded */ }
+  info(): void { /* discarded */ }
+  error(): void { /* discarded */ }
+  warn(message: string, ...args: unknown[]): void { this.warnings.push({ message, args }); }
+  withSource(_source: string): Logger { return this; }
+  withFields(_fields: LogContextData): Logger { return this; }
+
+  /** The warnings whose message mentions `fragment`. */
+  about(fragment: string): Array<{ readonly message: string; readonly args: unknown[] }> {
+    return this.warnings.filter((w) => w.message.includes(fragment));
+  }
+}
+
+describe('BackoffSupervisor — stash overflow (#773)', () => {
+  test('an evicted stash entry dead-letters, and the warning aggregates', async () => {
+    // Before #773 this path was the framework's other silent loss: `shift()`
+    // threw the entry away and emitted one `log.warn` per message, so a flood
+    // against a supervisor in a backoff window destroyed the payload and
+    // amplified into the log at the same rate.
+    crashesObserved = 0; flakyStarts = 0;
+    const log = new WarnCollector();
+    const letters: unknown[] = [];
+    const subscribed = { value: false };
+    class Listener extends Actor<DeadLetter> {
+      override preStart(): void {
+        this.system.eventStream.subscribe(this.self, DeadLetter);
+        subscribed.value = true;
+      }
+      override onReceive(letter: DeadLetter): void { letters.push(letter.message); }
+    }
+
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(log)
+      .withLogLevel(LogLevel.Warn);
+    const sys = ActorSystem.create('backoff-stash-overflow', sysOptions);
+    // Long enough that the respawn timer never fires inside this test: the
+    // stash has to still be the only place those messages live when the
+    // assertions run.
+    const policy = new RecordingPolicy([30_000]);
+    const supervisor = sys.spawn(
+      BackoffSupervisor.factory(withDefaults({
+        child: Flaky,
+        policy,
+        forward: 'stash',
+        maxStashSize: 2,
+        resetCounter: 'never',
+      })),
+      'sup-stash-overflow',
+    );
+    try {
+      sys.spawn(Listener, 'listener');
+      await awaitCondition(() => subscribed.value && flakyStarts === 1, {
+        timeoutMs: 4_000,
+        label: 'the listener subscribed and the first child started',
+      });
+
+      supervisor.tell({ kind: 'crash' });
+      await awaitCondition(() => policy.calls.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the supervisor entered its backoff window',
+      });
+
+      // Five messages into a stash of two: 1 and 2 fill it, then 3, 4 and 5
+      // each evict the oldest — so 1, 2 and 3 are the ones lost.
+      for (const value of [1, 2, 3, 4, 5]) supervisor.tell({ kind: 'echo', value });
+      await awaitCondition(() => letters.length >= 3, {
+        timeoutMs: 4_000,
+        label: 'the three evicted messages were dead-lettered',
+      });
+
+      expect(letters).toEqual([
+        { kind: 'echo', value: 1 },
+        { kind: 'echo', value: 2 },
+        { kind: 'echo', value: 3 },
+      ]);
+      // Doubling, not one line per message: evictions 1 and 2 warn, eviction
+      // 3 does not.  The count is the assertion — three warnings would mean
+      // the flood is back.
+      const overflowWarnings = log.about('stash full');
+      expect(overflowWarnings).toHaveLength(2);
+      expect(overflowWarnings[1]!.args[0]).toEqual({ stashLimit: 2, droppedTotal: 2 });
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 8_000);
 });

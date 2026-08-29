@@ -49,6 +49,10 @@ nichts soll sich hinter einem Klick verstecken, der ins Leere läuft.
 | **Explain-Plan** | Die letzten Nachrichten eines Actors, mit Timings |
 | **Time Travel** | Journal durchsehen, Zustand zu beliebigem Zeitpunkt rekonstruieren |
 | **Profiler** | Wo das Actor-System seine Zeit verbringt |
+| **Dead Letters** | Nachrichten, die das System nicht zustellen konnte, und warum |
+| **Event Stream** | Live-Tail des Event-Busses und die Cluster-Topics |
+| **Konfiguration** | Jeder aufgelöste HOCON-Key und die setzende Schicht |
+| **Nachricht senden** | JSON an einen Actor — aus, außer bestätigt |
 
 Alle sprechen ein gemeinsames
 [Tap-Protokoll](/de/observability/devtools/protocol/) über einen
@@ -71,6 +75,58 @@ in der man die Fragen tatsächlich stellt:
 - **Charts** — dieselben Zahlen über die letzten Minuten, auf drei
   Diagramme verteilt, damit sich ein Füllstand und eine Rate nie eine
   y-Achse teilen, dazu die aktuell vollsten Mailboxen.
+
+## Die Zeit anhalten
+
+Jedes Panel hier ist eine Live-Ansicht — und genau das ist falsch in dem
+Moment, in dem es interessant wird: die Zeile, die du lesen willst, ist
+weg, bevor du sie gelesen hast.  **Pause** in der Kopfzeile — oder die
+Taste <kbd>P</kbd>, überall außerhalb eines Textfelds — hält die ganze
+Ansicht auf einmal an.  **Resume** lässt sie weiterlaufen.
+
+Zwei Dinge stehen still, und das zweite ist der eigentliche Punkt:
+
+- **Die Daten.**  Kein Panel faltet Neues ein, solange die Zeit steht.
+- **Die Uhr, gegen die die Panels gelesen werden.**  Jede „vor wie
+  langer Zeit"-Angabe der UI hält mit der Ansicht still, die sie
+  beschreibt — Uptime, das *zuletzt gesehen* eines fortgegangenen
+  Knotens und das *stopped 12s ago* an einem beendeten Aktor.  Das
+  macht die Pause erst brauchbar statt bloß still: das Actors-Panel
+  behält einen gestoppten Aktor 30 Sekunden lang und kehrt ihn dann
+  weg — und 30 Sekunden sind deutlich weniger, als das Lesen eines
+  Supervisionsbaums dauert.  Pausiert bleibt er stehen.
+
+Nichts, was während der Pause passiert ist, geht verloren; die beiden
+Arten von Strom kommen aber unterschiedlich dorthin:
+
+| Ströme | Während der Pause | Beim Fortsetzen |
+| --- | --- | --- |
+| Event-Stream, Tracing-Spans, Profiler | gehalten, ältestes fällt ab einer Obergrenze weg | der Reihe nach nachgereicht |
+| Overview-Zahlen, Actors, Cluster, Mailboxen | verworfen | frischer Snapshot — die Ansicht springt auf jetzt |
+
+Die Aufteilung ist kein Kompromiss, sondern das, was die jeweiligen
+Daten sind.  Ein Tail *ist* seine Frames, und der Server hält keine
+Vergangenheit vor, aus der sie sich zurückholen ließen — Halten ist
+dort die einzige Art, sie nicht zu verlieren.  Ein Baum oder eine
+Mitgliederliste beantwortet immer nur „was gilt jetzt", und ein
+frischer Snapshot beantwortet genau das — billiger, als jedes Delta
+nachzuspielen.  Die Kopfzeile sagt, wie viele Frames gehalten werden,
+und benennt, was die Obergrenze verwerfen musste.
+
+In den Charts entsteht dabei kein Loch.  Der Server zeichnet seine
+Zahlen durchgehend auf, ob jemand hinsieht oder nicht; beim Fortsetzen
+wird das Fenster neu gelesen und die pausierte Strecke füllt sich.
+
+Zwei Dinge halten bewusst **nicht** an:
+
+- **Die Verbindungsprüfung.**  Ein Knoten, der während deiner Pause
+  stirbt, löst weiterhin den Dialog *No node reachable* aus.  Ein
+  pausierter und ein toter Bildschirm sehen gleich aus, also muss der,
+  den du nicht angefordert hast, sich melden.
+- **Der Server.**  Die Taps laufen weiter; Pausieren ist eine
+  Eigenschaft deiner Ansicht, nicht des beobachteten Systems.  Deshalb
+  kostet eine Pause das Aktorsystem auch nichts zusätzlich und darf
+  beliebig lange dauern.
 
 ## Attachen
 
@@ -117,7 +173,7 @@ const devtoolsOptions = DevToolsOptions.create()
   .withAuth(BearerTokenAuth({ tokens: [process.env.DEVTOOLS_TOKEN!] }));
 
 const routes = concat(
-  managementRoutes(system, cluster).routes,
+  managementRoutes(system, cluster),
   path('devtools', DevTools.mount(system, devtoolsOptions)),
 );
 await system.http(8558, { host: '127.0.0.1' }).bind(routes);
@@ -176,11 +232,14 @@ ein Client anfragt:
 
 ```ts
 const devtoolsOptions = DevToolsOptions.create()
-  .withPanels({ timeTravel: false, profiler: false });
+  .withPanels({ timeTravel: false, deadLetters: false });
 ```
 
 Über Time Travel solltest du zuerst nachdenken: Das ist das Panel, das
-rohe persistierte Events sichtbar macht.
+rohe persistierte Events sichtbar macht — dicht gefolgt von
+[Dead Letters](/de/observability/devtools/dead-letters/) und dem
+[Event Stream](/de/observability/devtools/event-stream/), die beide
+Nachrichten-Payloads zeigen.
 
 ## Sicherheit
 
@@ -218,6 +277,22 @@ DevTools ist ein Debugger, und die Defaults behandeln es auch so.
   Die Bindung an Loopback ersetzt das nicht. Ein WebSocket-Handshake
   unterliegt nicht der Same-Origin-Policy, jede Seite im Browser der
   entwickelnden Person erreicht also `127.0.0.1`.
+- **Ein verbundener Client kann den Tap nicht fluten.** Requests werden
+  außerhalb der Mailbox des Hubs beantwortet, damit ein langsamer
+  Journal-Read nicht die übrigen Tabs blockiert — womit die Mailbox die
+  Arbeit auch nicht mehr begrenzt. Stattdessen zählt der Hub sie: 32
+  offene Requests pro Verbindung und 256 über den ganzen Tap. Ein
+  Request darüber hinaus wird mit einem `unavailable`-Fehler abgelehnt
+  statt eingereiht. Auch die Sockets sind gedeckelt, bei 32
+  gleichzeitigen Verbindungen; ein Upgrade darüber hinaus wird mit 1013
+  geschlossen, bevor es verdrahtet wird.
+
+  An diese Zahlen kommt ein Panel nie heran. Ein Client, der Tausende
+  gleichzeitiger Journal-Replays anfordert, schon — und der Tap läuft im
+  selben Prozess wie die Actors, die du untersuchst. Was er aushungern
+  könnte, ist also deine Anwendung, nicht nur der Debugger. Was ein
+  Client bei einer Ablehnung tun sollte, steht in der
+  [Protokoll-Referenz](/de/observability/devtools/protocol/).
 - **Die Cluster-Seite richtet sich nach der Verbindung.** Übergibst du
   einen `Cluster`, beantwortet jeder Knoten über den Cluster-Transport
   die Frage „Wie geht es deinem Knoten?“, und der ausliefernde Knoten
@@ -250,11 +325,12 @@ const devtoolsOptions = DevToolsOptions.create()
 
 ## An den Examples ausprobieren
 
-Jedes Example im Repository ist für DevTools verdrahtet, und keines
-zahlt dafür, solange du nicht fragst:
+Für DevTools verdrahtet sind die Examples, die laufen, bis du sie
+stoppst — die HTTP- und Cache-Services, die Sharding-Demo, die Chat- und
+Voice-Backends —, und keines zahlt dafür, solange du nicht fragst:
 
 ```bash
-bun run examples/hello-world.ts --devtools
+bun run examples/http/rest-service.ts --devtools
 ```
 
 `--devtools` funktioniert in jeder Shell. `DEVTOOLS=1 bun run …` tut
@@ -262,30 +338,55 @@ dasselbe in einer POSIX-Shell, aber `VAR=wert befehl` ist in PowerShell
 ein Parser-Fehler — dort setzt du die Variable separat:
 
 ```powershell
-$env:DEVTOOLS = '1'; bun run examples/hello-world.ts
+$env:DEVTOOLS = '1'; bun run examples/http/rest-service.ts
 ```
 
-Die meisten Examples sind Skripte, die nach ein paar hundert
-Millisekunden fertig sind — zu schnell, um einen Browser zu öffnen. Mit
-aktivierten DevTools halten sie kurz vor dem Herunterfahren an, geben die
-URL aus und warten auf `Ctrl+C`, damit es überhaupt etwas zu sehen gibt.
-Ohne bleiben Timing und Ausgabe exakt wie vorher.
+Diese Grenze ist die ganze Regel: Ein Example, das von selbst fertig
+wird, enthält keinerlei Bezug auf DevTools mehr, du kannst also eines
+unverändert in ein Projekt kopieren und laufen lassen. Bis dahin waren es
+zwei Durchläufe — wissenswert, falls dir die ältere Formulierung noch im
+Kopf ist. Der Durchlauf, der die Verdrahtung entfernt hat (#552), ging
+danach, welche Examples sich vor dem Herunterfahren ausdrücklich geparkt
+hatten, damit DevTools überhaupt zu öffnen war — hello-world, die
+`patterns/`- und `persistence/`-Durchläufe und der Rest der kurzen
+Skripte. Sieben blieben dabei zurück, die sich nie geparkt, sondern nur
+angebunden hatten:
+`cluster/singleton-hello.ts`, `cluster/singleton-cron.ts`,
+`cluster/sharded-daemon-hello.ts`,
+`cluster/sharded-daemon-fixed-workers.ts`,
+`discovery/service-locator-cluster.ts`, `pubsub/event-bus-across-nodes.ts`
+und `management/opentelemetry-tracing.ts`. Sie banden einen Port und
+protokollierten eine URL, die tot war, bevor ein Browser sie öffnen
+konnte — `singleton-hello` gab drei solcher URLs aus und beendete sich
+nach rund 1,3 s. Auch sie sind jetzt entkoppelt.
 
-Examples mit mehreren Systemen geben jedem System einen eigenen Port,
-aufsteigend ab `--devtools-port` / `DEVTOOLS_PORT` (Default `9333`) — ein Drei-Knoten-Cluster
-läuft also auf `9333`, `9334`, `9335`:
+Diesen sieben beizubringen, oben zu bleiben, wäre der andere Weg gewesen,
+die Lücke zu schließen — und er ist es nicht geworden: Jedes von ihnen
+endet damit, den Cluster zu verlassen und seine Systeme zu terminieren.
+Danach zu parken hieße, dem Browser ein bereits verschwundenes System
+hinzuhalten — und *statt* des Teardowns zu parken hieße, die Demonstration
+zu löschen, die in dreien von ihnen genau dieser Teardown ist. Wenn es
+wirklich etwas zu sehen geben soll, nimm einen der Services oben oder
+einen Cluster-Knoten unten.
+
+Jede Anbindung nimmt sich ihren eigenen Port, aufsteigend ab
+`--devtools-port` / `DEVTOOLS_PORT` (Default `9333`). Dieser Zähler gilt
+pro Prozess — ein Cluster aus *getrennten Terminals*, in dem jeder Knoten
+bei `9333` anfinge, nimmt deshalb den ersten freien Port im Bereich,
+genauso wie der Cluster-Transport seinen eigenen sucht:
 
 ```bash
-bun run examples/cluster/singleton-hello.ts --devtools
+bun run examples/cluster/counter-node.ts --devtools --port 9001
+bun run examples/cluster/counter-node.ts --devtools --port 9002 --seeds 127.0.0.1:9001
+bun run examples/cluster/counter-node.ts --devtools --port 9003 --seeds 127.0.0.1:9001
 ```
 
-Ein Cluster aus *getrennten Terminals* funktioniert genauso, obwohl jeder
-Prozess seine eigene Kopie dieses Zählers hat: Genommen wird der erste
-freie Port im Bereich. Drei Mal `bun run examples/voice/backend/main.ts
---devtools` ergeben also `9333`, `9334` und `9335`, ganz ohne Flags. Ist
-keiner frei — oder scheitert an DevTools sonst etwas —, protokolliert das
-Example eine Warnung und startet trotzdem. Ein Debugger, der nicht binden
-kann, ist kein Grund, das zu debuggende Programm sterben zu lassen.
+Drei Terminals, ein Cluster aus drei Knoten und DevTools auf `9333`,
+`9334` und `9335`, ganz ohne DevTools-Port-Flag — `--port` ist dort der
+*Cluster*-Port des Knotens. Ist keiner frei — oder scheitert an DevTools
+sonst etwas —, protokolliert das Example eine Warnung und startet
+trotzdem. Ein Debugger, der nicht binden kann, ist kein Grund, das zu
+debuggende Programm sterben zu lassen.
 
 Gebunden wird auf `127.0.0.1`. `--devtools-host` / `DEVTOOLS_HOST` ändert
 das — das Flag für den Fall, dass der Browser nicht auf der Maschine
@@ -293,7 +394,7 @@ läuft, auf der das Example läuft: ein Container, eine VM, eine WSL- oder
 Remote-Dev-Box.
 
 ```bash
-bun run examples/hello-world.ts --devtools --devtools-host 0.0.0.0
+bun run examples/http/rest-service.ts --devtools --devtools-host 0.0.0.0
 ```
 
 Einen Nicht-Loopback-Host dort hinzuschreiben ist genau die bewusste
@@ -302,14 +403,10 @@ ergänzt deshalb `allowRemote`, und DevTools bindet — mit der Warnung,
 dass es ohne Auth erreichbar ist — statt sich zu verweigern und dich
 rätseln zu lassen, warum. Dieser Handel taugt für ein Example und sonst
 nichts: Alles mit echtem State gehört hinter `auth` oder eine
-`ipAllowlist`. Ein Wildcard-Bind meldet sich als Loopback-URL zurück,
-denn `http://0.0.0.0:9333` ist keine Adresse, die ein Browser öffnen
-kann.
+`ipAllowlist`.
 
-Langlaufende Examples (die Chat- und Voice-Backends, die HTTP-Services)
-halten nicht an — sie laufen ohnehin, bis du sie stoppst. Die Verdrahtung
-liegt in `examples/devtools.ts`, rund dreißig Zeilen, falls du das Muster
-in deine eigene App übernehmen willst.
+Die Verdrahtung liegt in `examples/devtools.ts`, falls du das Muster in
+deine eigene App übernehmen willst.
 
 ## Wenn nichts mehr antwortet
 
@@ -347,9 +444,28 @@ unangetastet — DevTools liest sie und schaltet sie nie ab.
 
 ## An der UI arbeiten
 
-Die UI ist reines TypeScript, gebündelt von `Bun.build` und in das
-veröffentlichte Paket eingebettet: kein UI-Framework zur Laufzeit, kein
-Netzwerkzugriff. Um an einem Panel zu arbeiten:
+Die UI ist eine Angular-Anwendung, deren Charts von Apache ECharts gezeichnet
+werden, gebaut von ihrer eigenen Toolchain und als gzip-Bundle in das
+veröffentlichte Paket eingebettet. Beide sind reine Build-Zeit-Abhängigkeiten:
+Keines taucht in `dependencies` oder `peerDependencies` von `actor-ts` auf,
+niemand installiert sie beim Konsumieren des Pakets, und die ausgelieferte
+Seite lädt nichts über das Netz. Es gibt also weiterhin kein UI-Framework zur
+Laufzeit und keinen Netzwerkzugriff — geändert hat sich, wie das Bundle
+entsteht, nicht was ausgeliefert wird.
+
+ECharts wird lazy in einem eigenen Chunk geladen: Wer ein Panel öffnet, das
+nichts zeichnet, zahlt nichts davon.
+
+Diese Toolchain ist eine eigene Installation und bewusst kein Workspace. Genau
+deshalb kann ein frischer Clone ohne sie typechecken, testen und smoken — das
+gebaute Bundle ist eingecheckt. Einmalig installieren, bevor du an der UI
+arbeitest:
+
+```bash
+bun run ui:install
+```
+
+Um an einem Panel zu arbeiten:
 
 ```bash
 bun run build:ui -- --dev --watch

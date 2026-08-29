@@ -98,11 +98,20 @@ ext.setDefault(new CborSerializer());
 This changes which serializer the `SerializationExtension` treats
 as its default — the one `ext.encode(value)` uses for any value
 without a specific class binding.  It does **not** retrofit CBOR
-onto the cluster wire or the persistence stores: cross-node
-`tell`s still go over the wire as `JSON.stringify` (see the
-[overview](/serialization/overview/)), and the journal /
-durable-state / snapshot stores write their own JSON.  To get CBOR
-bytes for a specific payload, use `CborSerializer` directly (see
+onto the cluster wire or the persistence stores: both write the
+tagged JSON tree, and neither consults the registry (see the
+[overview](/serialization/overview/)).  The supported route into a
+persistence store is that store's own `withSerializer(...)` option:
+
+```ts
+const journalOptions = SqliteJournalOptions.create()
+  .withPath('./journal.db')
+  .withSerializer(new CborSerializer());
+```
+
+The cluster wire has no equivalent yet — that half is tracked in
+[#450](https://github.com/pathosDev/actor-ts/issues/450).  For CBOR
+bytes of one specific payload, use `CborSerializer` directly (see
 *Per-call serialization* below).
 
 Per-class binding still works — `register` the serializer, then
@@ -161,27 +170,33 @@ import { Aside } from '@astrojs/starlight/components';
   # cat events.cbor — gibberish
   ```
   Debugging requires CBOR tools.  For staging / dev, consider
-  JSON; switch to CBOR only in prod.  Or run both: JSON for
-  on-disk persistence, CBOR for wire.
+  JSON; switch to CBOR only in prod.  Or run both — the choice is
+  per store and per call, so a CBOR journal can sit beside a JSON
+  snapshot store.  The cluster wire is not one of the choices; it
+  always frames the tagged JSON tree.
 </Aside>
 
-<Aside type="caution" title="Receiver must use the same serializer">
+<Aside type="caution" title="Every reader of a store needs the same serializer">
   ```ts
-  // Sender: CborSerializer; Receiver: JsonSerializer
+  // Writer: withSerializer(new CborSerializer());  Reader: no serializer
   ```
-  Cross-node messages need the same serializer on both ends.
-  Roll out CBOR cluster-wide before relying on it.
+  A row written through `withSerializer(...)` names the serializer
+  id it needs, and `decodePayload` throws rather than guessing — so
+  every process that replays that stream needs the same serializer
+  configured.  Cross-node `tell`s are *not* affected either way:
+  the wire frames the tagged JSON tree whatever the registry holds.
 </Aside>
 
 <Aside type="caution" title="Float precision in CBOR">
   ```ts
-  ref.tell({ price: 99.99 });
+  // Reached per call, or through a store's withSerializer(...) — never a tell.
+  new CborSerializer().toBinary({ price: 99.99 });
   // JSON: "99.99" (string-precise)
   // CBOR: IEEE 754 double — `99.9900000000000091...`
   ```
   Floats serialize as IEEE 754.  Both JSON and CBOR have this
   issue; CBOR is more visible because the bytes are exact.
-  For money, **use strings or integer cents** in messages.
+  For money, **use strings or integer cents**.
 </Aside>
 
 ## Where to next

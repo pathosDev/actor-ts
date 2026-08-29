@@ -136,7 +136,7 @@ async function seedUnrecoverable(
   snapshots: InMemorySnapshotStore,
   persistenceId: string,
 ): Promise<void> {
-  await journal.append<Event>(persistenceId, [{ kind: 'deposited', amount: 10 }], 0);
+  await journal.append<Event>(persistenceId, [{ event: { kind: 'deposited', amount: 10 } }], 0);
   await snapshots.save<State>(persistenceId, Number.MAX_SAFE_INTEGER, { balance: 99_999 });
 }
 
@@ -219,7 +219,7 @@ describe('PersistentActor — a throwing onRecoveryComplete', () => {
     const { system, journal } = makeSystem('recovery-complete-throws');
     // A perfectly healthy journal — recovery itself must succeed, so any
     // failure that surfaces belongs to the hook and nothing else.
-    await journal.append<Event>('acct-hook', [{ kind: 'deposited', amount: 10 }], 0);
+    await journal.append<Event>('acct-hook', [{ event: { kind: 'deposited', amount: 10 } }], 0);
     await spawnListeners(system);
 
     const observations = newObservations();
@@ -282,5 +282,7 @@ describe('PersistentActor — the default onRecoveryFailure', () => {
     );
     expect(observations.recovered).toEqual([]);
     await system.terminate();
-  });
+    // The 5 s restart-budget wait exactly equals bun's default cap; without a
+    // declared cap the runner won the race and the label never printed.
+  }, 15_000);
 });

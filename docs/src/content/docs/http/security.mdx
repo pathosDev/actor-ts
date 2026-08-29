@@ -93,8 +93,14 @@ the whole server does.
   regardless — browsers ignore it over plain HTTP. Don't gate security
   headers on a scheme the app can't see.
 - **Trusting client IPs.** `req.remoteAddress` is the socket peer, not a
-  spoofable `X-Forwarded-For`. Trust a forwarded header only when your proxy
-  overwrites it (`IpAllowlist`'s `getClientIp` option).
+  spoofable `X-Forwarded-For` — and "does my proxy overwrite the header" is
+  the wrong question, because NGINX, AWS ALB and Cloudflare all **append**
+  to it. The client's own text stays at the left of the chain forever. Name
+  the proxies instead ([`IpAllowlist`'s
+  `trustedProxies`](/http/middleware/ip-allowlist/)) and the client address
+  is resolved from the socket end inwards, which is the only end
+  infrastructure controls. Never trust every hop: on Express and Fastify
+  `trust proxy: true` resolves to that leftmost, client-chosen entry.
 - **Secrets from the environment**, not HOCON files — the CSRF secret, Basic
   credentials, and bearer tokens all take values you load at startup.
 
@@ -170,19 +176,46 @@ the [Route DSL](/http/route-dsl/).
   because a size cap is a transport decision rather than an application error.
   Raise it where an endpoint genuinely takes more: `withMaxBodyBytes(bytes)` on
   the Express and Hono backend options, `bodyLimit` in the options bag of
-  `FastifyBackend`. A chunked body that declares no `Content-Length` is the one
-  case still measured while it arrives rather than refused up front.
-- **WebSocket frames** are capped by `maxFrameBytes` (1 MiB default), and the
-  default is also handed to the runtime's own socket so an oversize frame is
-  refused *while it arrives* rather than after the process has buffered it —
-  otherwise a peer could force 16 MiB (Bun) or 100 MiB (`ws`) of buffering per
-  frame that the framework would then discard. The one exception is Hono on
-  **Deno**, whose `upgradeWebSocket` exposes no payload limit: there the frame
-  is buffered first and rejected second. Raising `maxFrameBytes` past 1 MiB
-  does not raise the transport limit with it. See
-  [WebSocket](/http/websocket/).
+  `FastifyBackend`. A body that declares an over-cap `Content-Length` is refused
+  before a byte of it is read; a chunked body declares no length, so all three
+  backends count it as it arrives and abandon the read at the cap — the bytes
+  past it are never received.
+- **WebSocket frames** are capped by `maxFrameBytes` (1 MiB default). The
+  framework always refuses an oversize frame before it reaches your actor; on
+  most runtime/backend pairs the resolved cap is *also* handed to the runtime's
+  own socket, so the frame is refused *while it arrives* rather than after the
+  process has buffered it — otherwise a peer could force 16 MiB (Bun) or
+  100 MiB (`ws`) of buffering per frame that the framework would then discard.
+  Lowering the cap — per route or via `actor-ts.http.websocket.maxFrameBytes` —
+  narrows that buffering window with it. **Three places have no transport cap**
+  and buffer the frame before rejecting it: Hono on **Deno**, whose
+  `upgradeWebSocket` exposes no payload limit at all; **Bun** with the
+  Express or Fastify backend, where `ws` resolves to Bun's built-in shim, which
+  accepts `maxPayload` and reports it back but does not enforce it; and the
+  **outbound** [`WebsocketClientActor`](/io/websocket/) on *every* runtime — no
+  native client `WebSocket` honours a payload limit passed to its constructor,
+  measured on Bun, Node and Deno, where the option is accepted, reads back
+  `undefined`, and a 4 MiB frame is still delivered whole. On the client the
+  cap is therefore post-hoc only, and what it buys is that the breach is
+  *terminal*: an oversize frame closes the connection with 1009, so the peer
+  cannot repeat the allocation on that socket. Note the threat model differs
+  there — the peer is an endpoint you chose to dial, or a MITM on a plaintext
+  `ws://` link. See [WebSocket](/http/websocket/).
 - **Untrusted HTML** — escape with the [`html`](/http/html-xss/) template;
   to accept rich markup, sanitise with a dedicated library before `rawHtml`.
+- **Responses you fetch** are untrusted input too, and the direction this list
+  is easiest to forget. `HttpClient` materialises a whole response body in
+  memory before a caller sees it, so without a bound the peer decides how much
+  of this process's heap it takes — a `Content-Length` is a claim rather than a
+  limit, and a chunked response declares no length at all. Every call carries a
+  **30 s deadline** and an **8 MiB response ceiling**; the body is counted as it
+  is read and abandoned *while it arrives*, with the connection torn down so the
+  rest never lands, and the call throws `HttpResponseTooLargeError`. Raise
+  either per call (`maxResponseBytes`, `timeoutMs`), per integration
+  (`newClient(...)`), or fleet-wide under `actor-ts.http.client`. Redirects are
+  bounded with them — 5 hops, and `authorization` / `cookie` dropped on any hop
+  that crosses origins, so one hostile `Location` cannot walk a bearer token to
+  a host of its choosing. See [the HTTP client](/http/overview/).
 
 ## Static files
 
@@ -195,6 +228,12 @@ structure. See [Static files](/http/static-files/).
 Wrap a `websocket()` route in `cors(...)` to reject cross-origin upgrades,
 and put auth middleware around it — `withMiddleware` runs at upgrade time,
 so it gates the handshake.
+
+A `websocket()` route needs no special treatment in the hardening stack
+above: `securityHeaders()`, `requestId()` and the rest may sit over it like
+they sit over any other route, and the upgrade still completes. Their
+headers land on a rejected handshake, not an accepted one — the backend
+writes the 101 itself. See [WebSocket](/http/websocket/).
 
 ## Checklist
 
@@ -210,6 +249,8 @@ so it gates the handshake.
 | Request correlation | `requestId()` |
 | Bounded latency | `requestTimeout(...)` |
 | Safe file serving | `getFromDirectory` defaults (dotfiles deny, symlink confinement) |
+| Outbound responses bounded | nothing — 30 s and 8 MiB on every `HttpClient` call; per call, per `newClient(...)`, or `actor-ts.http.client` |
+| Outbound redirects bounded | nothing — 5 hops, credentials dropped cross-origin; `redirect: 'error'` to refuse them |
 
 ## Where to next
 

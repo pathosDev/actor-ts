@@ -11,10 +11,10 @@ import { AggregateSeedProvider } from '../discovery/AggregateSeedProvider.js';
 import { ConfigSeedProvider } from '../discovery/ConfigSeedProvider.js';
 import { ConfigSeedProviderOptions } from '../discovery/ConfigSeedProviderOptions.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
+import { ClusterLeavingReason, CoordinatedShutdownId, type CoordinatedShutdown } from '../CoordinatedShutdown.js';
 import { Cluster } from './Cluster.js';
-import { ClusterOptions } from './ClusterOptions.js';
+import { ClusterOptions, resolveAdvertisedHost } from './ClusterOptions.js';
 import type { SelfElectionPolicy } from './ClusterOptions.js';
-import { SelfUp, type ClusterEvent } from './ClusterEvents.js';
 import { NodeAddress } from './NodeAddress.js';
 import { StableObservation } from './bootstrap/StableObservation.js';
 import { readStableObservationOptionsFromConfig } from './bootstrap/StableObservationOptions.js';
@@ -23,9 +23,16 @@ import type { StableObservationTuning } from './bootstrap/StableObservationOptio
 import {
   ClusterBootstrapOptionsValidator,
   DEFAULT_AWAIT_READY_MS,
+  DEFAULT_BIND_HOST,
   DEFAULT_PORT,
+  readClusterBootstrapDefaultsFromConfig,
 } from './ClusterBootstrapOptions.js';
-import type { ClusterBootstrapOptions, ClusterBootstrapOptionsType } from './ClusterBootstrapOptions.js';
+import type {
+  ClusterBootstrapConfigDefaults,
+  ClusterBootstrapOptions,
+  ClusterBootstrapOptionsType,
+} from './ClusterBootstrapOptions.js';
+import type { ClusterReadinessOptions } from './ClusterReadiness.js';
 
 /** Return value of {@link Cluster.bootstrap}. */
 export type BootstrappedCluster = {
@@ -34,11 +41,26 @@ export type BootstrappedCluster = {
   /** `null` when `receptionist: false` was passed. */
   readonly receptionist: ActorRef<unknown> | null;
   /**
-   * Graceful shutdown — leaves the cluster, then terminates the
-   * system.  Idempotent; safe to call multiple times.  Bound to
-   * SIGTERM/SIGINT by default (see {@link ClusterBootstrapOptionsType.shutdownOnSignals}).
+   * Graceful shutdown — runs the {@link CoordinatedShutdown} pipeline, which
+   * unbinds HTTP servers, closes brokers, leaves the cluster and terminates
+   * the system, in that order.  Idempotent; safe to call multiple times.
+   * Bound to SIGTERM/SIGINT by default (see
+   * {@link ClusterBootstrapOptionsType.shutdownOnSignals}).
+   *
+   * It used to leave and terminate directly, which skipped every other
+   * registered task; anything a bootstrapped node had registered — an HTTP
+   * unbind, a DevTools detach — simply never ran on SIGTERM (#549).
    */
   readonly shutdown: () => Promise<void>;
+  /**
+   * Whether this node **formed a new cluster** (it self-elected to `up`)
+   * rather than joining an existing one (a peer's leader promoted it) —
+   * the distinction #943 asks for.  A live view of `cluster.selfElected`,
+   * not a snapshot: under `awaitReady: false` a deferred election can fire
+   * after `bootstrap()` has returned, and a snapshot taken at return time
+   * would be stale exactly then.
+   */
+  readonly formedNewCluster: boolean;
 };
 
 /** Stands in for discovery when the caller passed an explicit empty seed list. */
@@ -59,7 +81,13 @@ export async function bootstrapCluster(
 ): Promise<BootstrappedCluster> {
   const resolvedOptions = options as ClusterBootstrapOptionsType;
   new ClusterBootstrapOptionsValidator().validate(resolvedOptions);
-  const host = resolveHost(resolvedOptions);
+  const host = resolveBindHost(resolvedOptions);
+  // The two are the same value whenever one routable host was named, and
+  // differ exactly where the bind target is a wildcard.  Resolved here as well
+  // as in `Cluster.join` because three things upstream of the join need the
+  // identity: the election orders on it, the seed filter compares against it,
+  // and both run before `join` is called.
+  const advertisedHost = resolveAdvertisedHost({ host, advertisedHost: resolvedOptions.advertisedHost });
   const port = resolvePort(resolvedOptions);
 
   const system = ActorSystem.create(resolvedOptions.name, extractSystemOptions(resolvedOptions));
@@ -78,7 +106,7 @@ export async function bootstrapCluster(
         tuning: resolvedOptions.stableObservation === true ? {} : resolvedOptions.stableObservation,
         fromConfig: readStableObservationOptionsFromConfig(system.config),
         seedProvider: buildSeedProviderFor(resolvedOptions, port, log),
-        selfAddress: new NodeAddress(resolvedOptions.name, host, port),
+        selfAddress: new NodeAddress(resolvedOptions.name, advertisedHost, port),
         log: (message) => system.log.info(message),
       })
       : {
@@ -87,7 +115,7 @@ export async function bootstrapCluster(
           discovery: resolvedOptions.discovery,
           systemName: resolvedOptions.name,
           port,
-          selfHost: host,
+          selfHost: advertisedHost,
           log,
         }),
       };
@@ -101,6 +129,15 @@ export async function bootstrapCluster(
     .withHost(host)
     .withPort(port)
     .withSeeds([...seeds]);
+  // Forward only what the caller actually named, never the value derived from
+  // it.  `Cluster.join` runs the same chain over the same `host` and the same
+  // environment, so it arrives at the same answer — and it can still tell that
+  // nobody named one, which is what the startup diagnostic is keyed on.
+  // Passing the derived value would suppress that warning on the path most
+  // deployments take.
+  if (resolvedOptions.advertisedHost !== undefined) {
+    clusterOptions.withAdvertisedHost(resolvedOptions.advertisedHost);
+  }
   if (selfElection !== undefined) clusterOptions.withSelfElection(selfElection);
   if (resolvedOptions.roles) clusterOptions.withRoles([...resolvedOptions.roles]);
   if (resolvedOptions.transport) clusterOptions.withTransport(resolvedOptions.transport);
@@ -115,22 +152,45 @@ export async function bootstrapCluster(
     ? (system.extension(ReceptionistId).start(cluster) as ActorRef<unknown>)
     : null;
 
-  await awaitSelfUp(cluster, resolvedOptions.awaitReady ?? defaultAwaitReady(joinPlan));
+  // Wire shutdown.  The pipeline is the whole implementation now: `leave()`
+  // is a `cluster-leave` task registered by `Cluster.join`, and terminating
+  // the system is the built-in `actor-system-terminate` task.  Doing it by
+  // hand here is what made a SIGTERM on a bootstrapped node skip every other
+  // registered task — the HTTP unbind above all, which is registered
+  // correctly and never fired (#549).  `run()` hands back the same in-flight
+  // promise on every call, so this stays idempotent without a latch.
+  const coordinatedShutdown = system.extension(CoordinatedShutdownId);
+  const shutdown = (): Promise<void> => coordinatedShutdown.run(ClusterLeavingReason.instance);
 
-  // Wire shutdown.
-  let shuttingDown: Promise<void> | null = null;
-  const shutdown = async (): Promise<void> => {
-    if (shuttingDown) return shuttingDown;
-    shuttingDown = (async () => {
-      try { await cluster.leave(); } catch { /* best-effort */ }
-      await system.terminate();
-    })();
-    return shuttingDown;
+  const readiness = resolveAwaitReady(
+    resolvedOptions.awaitReady,
+    readClusterBootstrapDefaultsFromConfig(system.config),
+    joinPlan,
+  );
+  if (readiness !== null) {
+    try {
+      await cluster.awaitReady(readiness);
+    } catch (err) {
+      // Unlike the JoinPlan-throw path above, `Cluster.join` HAS completed
+      // here: the cluster-leave task is registered and the receptionist may
+      // be running.  The pipeline is therefore the right teardown — a bare
+      // `system.terminate()` would skip both, the exact #549 shape.  A
+      // teardown failure must not mask the readiness error, so it is
+      // swallowed; the error the caller gets is the one that matters.
+      await shutdown().catch(() => {});
+      throw err;
+    }
+  }
+
+  installSignalHandlers(resolvedOptions.shutdownOnSignals ?? true, coordinatedShutdown);
+
+  return {
+    system,
+    cluster,
+    receptionist,
+    shutdown,
+    get formedNewCluster(): boolean { return cluster.selfElected; },
   };
-
-  installSignalHandlers(resolvedOptions.shutdownOnSignals ?? true, shutdown);
-
-  return { system, cluster, receptionist, shutdown };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -138,22 +198,21 @@ export async function bootstrapCluster(
 /* -------------------------------------------------------------------------- */
 
 /**
- * The host this node **advertises** — not merely the one it binds.  The value
- * becomes `selfAddress`, so it is what peers dial back and what the bootstrap
- * election orders on (#944).
+ * The interface this node **binds**.
+ *
+ * The chain is unchanged from when this function resolved one value for both
+ * jobs, and that is deliberate: naming a single routable host still binds and
+ * advertises it, so no configuration that works today moves.  What changed is
+ * only the last resort — `'0.0.0.0'` now stops at the socket instead of
+ * travelling on into `selfAddress`, where it was never an identity (#944).
  *
  * `CLUSTER_HOST` leads the env vars because it is the only one that means
  * *"this is my address"*: `POD_IP` is right by construction but exists only
  * where the pod spec exports it, and `HOSTNAME` is a pod name that resolves
  * under a StatefulSet with a headless service and nowhere else.  Naming it
  * after `CLUSTER_PORT` keeps the pair symmetric.
- *
- * `'0.0.0.0'` survives as the last resort so a single-node development run
- * still starts with no configuration at all — with more than one node it is
- * not an identity, which the stable-observation phase refuses outright rather
- * than letting an election run on it.
  */
-function resolveHost(resolvedOptions: ClusterBootstrapOptionsType): string {
+function resolveBindHost(resolvedOptions: ClusterBootstrapOptionsType): string {
   if (resolvedOptions.host) return resolvedOptions.host;
   const clusterHost = (process.env.CLUSTER_HOST ?? '').trim();
   if (clusterHost) return clusterHost;
@@ -161,7 +220,7 @@ function resolveHost(resolvedOptions: ClusterBootstrapOptionsType): string {
   if (podIp) return podIp;
   const hostname = (process.env.HOSTNAME ?? '').trim();
   if (hostname) return hostname;
-  return '0.0.0.0';
+  return DEFAULT_BIND_HOST;
 }
 
 function resolvePort(resolvedOptions: ClusterBootstrapOptionsType): number {
@@ -200,10 +259,11 @@ async function resolveSeeds(args: {
     port: args.port,
     log: args.log,
   });
-  const addrs = await provider.lookup().catch((err) => {
-    args.log('seed provider lookup failed', err);
-    return [] as NodeAddress[];
-  });
+  // A rejection propagates — into bootstrapCluster's JoinPlan catch, which
+  // terminates the just-created system and rethrows.  Catching it here and
+  // returning [] is what turned a DNS blip into a self-elected one-node
+  // cluster: an empty list reads as "we are the first node" (#943).
+  const addrs = await provider.lookup();
   return addrs
     // Filter out our own address — gossiping at ourselves is harmless but
     // adds noise to the log.
@@ -216,6 +276,12 @@ type JoinPlan = {
   readonly seeds: string[];
   /** Absent on the legacy path — `Cluster` then keeps its `'immediate'` default. */
   readonly selfElection?: SelfElectionPolicy;
+  /**
+   * The election grace, present exactly when stable observation ran —
+   * carried for winners and `'never'` nodes alike, because the readiness
+   * budget of a non-winner depends on the winner's grace (#1086).
+   */
+  readonly selfElectionGraceMs?: number;
 };
 
 /**
@@ -244,22 +310,46 @@ async function observeStableSeeds(args: {
   return {
     seeds: targets.seeds.map((address) => address.toString()),
     selfElection: targets.selfElection,
+    selfElectionGraceMs: targets.selfElectionGraceMs,
   };
 }
 
 /**
- * How long an unconfigured `awaitReady` waits.
+ * Normalise the `awaitReady` option into what `cluster.awaitReady` takes —
+ * or `null` for "do not wait".
  *
- * `true` — five seconds — everywhere except behind an election this node won:
- * there, `SelfUp` is not due until the self-election grace has elapsed, so the
- * flat default would time out on every genuine cold start and report a node
- * that is still `joining` as ready.  The budget is the grace plus the usual
- * five seconds of slack for the join round it is waiting on.
+ * The computed budget is five seconds — except behind stable observation,
+ * where the readiness of **every** node hangs on the election grace, not
+ * only the winner's: the winner's `SelfUp` is not due until its grace has
+ * elapsed, and a non-winner's promotion cannot arrive before that same
+ * deadline fires on the winner.  A flat default therefore expired on N-1 of
+ * N nodes of every genuine cold start while nothing was wrong (#1086).
+ *
+ * Precedence per field: explicit option > `actor-ts.cluster.bootstrap.*` >
+ * the computed budget.  Layered by hand rather than through `mergeOptions`
+ * because the lowest layer is plan-dependent, not a constant.  A HOCON
+ * `await-ready = 0s` disables the wait, mirroring `awaitReady: 0`.
  */
-function defaultAwaitReady(plan: JoinPlan): boolean | number {
-  return typeof plan.selfElection === 'number'
-    ? plan.selfElection + DEFAULT_AWAIT_READY_MS
-    : true;
+function resolveAwaitReady(
+  option: ClusterBootstrapOptionsType['awaitReady'],
+  fromConfig: ClusterBootstrapConfigDefaults,
+  plan: JoinPlan,
+): ClusterReadinessOptions | null {
+  const computedTimeoutMs = (): number => (
+    plan.selfElectionGraceMs !== undefined
+      ? plan.selfElectionGraceMs + DEFAULT_AWAIT_READY_MS
+      : DEFAULT_AWAIT_READY_MS
+  );
+  if (option === false || option === 0) return null;
+  const timeoutMs = typeof option === 'number'
+    ? option
+    : (typeof option === 'object' ? option.timeoutMs : undefined)
+      ?? fromConfig.awaitReadyMs
+      ?? computedTimeoutMs();
+  if (timeoutMs === 0) return null;
+  const minimumMembers = (typeof option === 'object' ? option.minimumMembers : undefined)
+    ?? fromConfig.minimumMembers;
+  return minimumMembers !== undefined ? { timeoutMs, minimumMembers } : { timeoutMs };
 }
 
 /**
@@ -310,48 +400,18 @@ function buildSeedProvider(
   return spec;
 }
 
-async function awaitSelfUp(cluster: Cluster, mode: boolean | number): Promise<void> {
-  if (mode === false || mode === 0) return;
-  const timeoutMs = mode === true ? DEFAULT_AWAIT_READY_MS : mode;
-  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return;
-
-  await new Promise<void>((resolve) => {
-    let done = false;
-    // `unsubscribe` is assigned AFTER cluster.subscribe() returns, but the
-    // subscribe callback may fire synchronously during replay (when
-    // self is already up).  Hold `unsubscribe` in a mutable slot so the
-    // callback can both read it without a TDZ error and clear it
-    // safely once.
-    let unsubscribe: (() => void) | null = null;
-    const finish = (): void => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      if (unsubscribe) { unsubscribe(); unsubscribe = null; }
-      resolve();
-    };
-    const timer = setTimeout(finish, timeoutMs);
-    if (typeof (timer as { unref?: () => void }).unref === 'function') {
-      (timer as { unref: () => void }).unref();
-    }
-    unsubscribe = cluster.subscribe((evt: ClusterEvent) => {
-      if (evt instanceof SelfUp) finish();
-    });
-    // If replay already fired SelfUp synchronously, finish() ran with
-    // `unsubscribe === null` and resolved — clean up the listener now.
-    if (done && unsubscribe) { (unsubscribe as () => void)(); unsubscribe = null; }
-  });
-}
-
+/**
+ * Hand the signal wiring to {@link CoordinatedShutdown}, which installs it
+ * through the `src/runtime/signals/` backend.
+ *
+ * The raw `process.once` this replaces registered nothing at all on Deno —
+ * its `process` shim carries no signal events — and could not be detached,
+ * so a bootstrapped system was un-embeddable: nothing gave the handlers back.
+ */
 function installSignalHandlers(
   mode: boolean | ReadonlyArray<ProcessSignal>,
-  shutdown: () => Promise<void>,
+  coordinatedShutdown: CoordinatedShutdown,
 ): void {
   if (mode === false) return;
-  const signals: ReadonlyArray<ProcessSignal> = Array.isArray(mode)
-    ? mode
-    : (['SIGTERM', 'SIGINT'] as const);
-  for (const sig of signals) {
-    process.once(sig, () => { void shutdown(); });
-  }
+  coordinatedShutdown.installProcessHooks(Array.isArray(mode) ? mode : undefined);
 }

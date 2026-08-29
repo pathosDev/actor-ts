@@ -19,7 +19,6 @@ import {
   websocket,
   websocketSend,
 } from '../../src/http/index.js';
-import { attachDevTools } from '../devtools.js';
 
 type Up = { kind: 'tick'; n: number };   // client → server
 type Down = { kind: 'ack'; n: number };  // server → client
@@ -43,7 +42,6 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('ws-feed-demo');
-  const devtools = await attachDevTools(system);
 
   const server = system.spawn(EchoServer, 'echo');
   const binding = await system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(websocket('/ws', server));
@@ -51,6 +49,10 @@ async function main(): Promise<void> {
 
   const client = system.spawn(() => new Feed(`ws://127.0.0.1:${binding.port}/ws`), 'feed');
 
+  // None of these three is a drain sleep — they wait on a real socket, not a
+  // mailbox.  The connect handshake, then each round-trip, then the last ack
+  // coming back: every one of those arrives from outside the actor system, so
+  // the tree is quiet while it is in flight and the drain would not wait.
   await sleep(200);
   for (let i = 0; i < 5; i++) {
     client.tell(websocketSend({ kind: 'tick', n: i }));
@@ -59,7 +61,6 @@ async function main(): Promise<void> {
 
   await sleep(400);
   await binding.unbind();
-  await devtools.holdOpen();
   await system.terminate();
 }
 

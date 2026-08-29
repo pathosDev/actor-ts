@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import {
+  type Dispatcher,
   Dispatchers,
+  HybridDispatcher,
   ImmediateDispatcher,
   MicrotaskDispatcher,
   ThroughputDispatcher,
 } from '../../src/Dispatcher.js';
-import { awaitCondition } from '../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
 describe('MicrotaskDispatcher', () => {
   test('executes the work asynchronously (not synchronously)', async () => {
@@ -252,6 +252,110 @@ describe('dispatcher error reporting', () => {
   });
 });
 
+/**
+ * A chain of units that each schedule the next — the shape an alternating
+ * volley between two actors produces, and the one an unbounded microtask
+ * dispatcher cannot escape.
+ *
+ * Returns how many units had run when a macrotask armed *before* the chain
+ * started finally ran.  That number is the whole fairness question: below the
+ * chain length, the event loop got a turn part-way through; equal to it, the
+ * chain ran to completion first and every queued callback in the process
+ * waited behind it.
+ *
+ * The competing work is a `setImmediate` and not a `setTimeout(…, 0)`, which
+ * is the obvious choice and the wrong one: a zero-millisecond timer is clamped
+ * to one millisecond, and a chain of forty trivial units finishes far inside
+ * that.  A timer probe therefore reports "starved" for a dispatcher that is
+ * yielding perfectly well — it measures the clamp, not the fairness.  An
+ * immediate lands in the same phase the yield does and answers the question
+ * that was asked.
+ */
+const runSelfPerpetuatingChain = async (
+  dispatcher: Dispatcher,
+  units: number,
+): Promise<number> => {
+  let ran = 0;
+  let competingRanAfter = -1;
+  setImmediate(() => { competingRanAfter = ran; });
+  const step = (): void => {
+    ran++;
+    if (ran < units) dispatcher.execute(step);
+  };
+  dispatcher.execute(step);
+  await awaitCondition(() => ran >= units && competingRanAfter >= 0, {
+    timeoutMs: 4_000,
+    label: `the ${units}-unit chain finished and the competing callback ran`,
+  });
+  return competingRanAfter;
+};
+
+describe('HybridDispatcher', () => {
+  test('lets other queued work through part-way along a self-perpetuating chain', async () => {
+    // 8 rather than the default 64 only to keep the chain short; the property
+    // is the same at any budget.
+    const firedAfter = await runSelfPerpetuatingChain(new HybridDispatcher(8), 40);
+    expect(firedAfter).toBeGreaterThan(0);
+    expect(firedAfter).toBeLessThan(40);
+  });
+
+  test('…where an unbounded microtask dispatcher does not — the same probe, starved', async () => {
+    // The other half of the test above, and the reason it is a guard rather
+    // than an assertion that happens to hold.  If this one ever stops starving,
+    // the fairness test above has stopped testing anything.
+    const firedAfter = await runSelfPerpetuatingChain(new MicrotaskDispatcher(), 40);
+    expect(firedAfter).toBe(40);
+  });
+
+  test('runs units in the order they were handed over, across a yield', async () => {
+    // The yield is where a naive implementation reorders: the unit that spends
+    // the budget goes on a macrotask while the next arrival starts a fresh
+    // microtask burst and overtakes it.
+    const dispatcher = new HybridDispatcher(3);
+    const seen: number[] = [];
+    for (let i = 0; i < 12; i++) dispatcher.execute(() => { seen.push(i); });
+    await awaitCondition(() => seen.length === 12, {
+      timeoutMs: 4_000,
+      label: 'all twelve units ran',
+    });
+    expect(seen).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+  });
+
+  test('keeps its ordering when the queue outlasts more than one budget', async () => {
+    const dispatcher = new HybridDispatcher(2);
+    const seen: number[] = [];
+    for (let i = 0; i < 20; i++) dispatcher.execute(() => { seen.push(i); });
+    await awaitCondition(() => seen.length === 20, {
+      timeoutMs: 4_000,
+      label: 'all twenty units ran',
+    });
+    expect(seen).toEqual(Array.from({ length: 20 }, (_, i) => i));
+  });
+
+  test('executes asynchronously, and reports a throw like every other dispatcher', async () => {
+    const dispatcher = new HybridDispatcher();
+    const trace: string[] = [];
+    const reported: unknown[] = [];
+    dispatcher.onError = (error) => { reported.push(error); };
+    dispatcher.execute(() => { trace.push('work'); });
+    expect(trace).toEqual([]);
+    dispatcher.execute(() => { throw new Error('boom'); });
+    dispatcher.execute(async () => { throw new Error('async boom'); });
+    await awaitCondition(() => reported.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both failures reached the sink',
+    });
+    expect(trace).toEqual(['work']);
+    expect((reported[0] as Error).message).toBe('boom');
+    expect((reported[1] as Error).message).toBe('async boom');
+  });
+
+  test('has a descriptive id and a default budget', () => {
+    expect(new HybridDispatcher().id).toContain('hybrid');
+    expect(new HybridDispatcher().yieldEvery).toBe(64);
+  });
+});
+
 describe('Dispatchers factory', () => {
   test('Immediate returns ImmediateDispatcher instance', () => {
     expect(Dispatchers.Immediate()).toBeInstanceOf(ImmediateDispatcher);
@@ -259,6 +363,12 @@ describe('Dispatchers factory', () => {
 
   test('Microtask returns MicrotaskDispatcher instance', () => {
     expect(Dispatchers.Microtask()).toBeInstanceOf(MicrotaskDispatcher);
+  });
+
+  test('Hybrid forwards the yield budget', () => {
+    const dispatcher = Dispatchers.Hybrid(7) as HybridDispatcher;
+    expect(dispatcher).toBeInstanceOf(HybridDispatcher);
+    expect(dispatcher.yieldEvery).toBe(7);
   });
 
   test('Throughput forwards the throughput value', () => {

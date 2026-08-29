@@ -5,7 +5,6 @@
  *   tsx examples/become.ts
  */
 import { Actor, ActorSystem } from '../src/index.js';
-import { attachDevTools } from './devtools.js';
 
 class LampActor extends Actor<'toggle'> {
   override preStart(): void {
@@ -35,13 +34,10 @@ class LampActor extends Actor<'toggle'> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('become-demo');
-  const devtools = await attachDevTools(system);
   const lamp = system.spawn(LampActor, 'lamp');
 
   for (let i = 0; i < 6; i++) lamp.tell('toggle');
 
-  await new Promise(resolve => setTimeout(resolve, 80));
-  await devtools.holdOpen();
   await system.terminate();
 }
 

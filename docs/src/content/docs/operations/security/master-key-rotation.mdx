@@ -125,7 +125,13 @@ const result = await reEncryptObjectStorage(backend, {
 });
 
 console.log(`re-encrypted ${result.rewrote} of ${result.scanned} objects`);
+console.log(`skipped, still under the old key: ${result.skippedMalformedKey}`);
 ```
+
+`keyPrefix` must be the store's own `prefix`, exactly.  A shorter
+one shifts every key's persistence-id segment by a level, and the
+sweep refuses the whole corpus rather than salt on the wrong
+segment.
 
 `info` is required and must be the exact value the encrypting
 store uses.  It is the HKDF context, i.e. half of what the subkey
@@ -153,6 +159,18 @@ Useful options:
 - **`newInfo`** — rotates the HKDF context instead of (or
   alongside) the key; see
   [rotating the HKDF context](/persistence/object-storage/key-rotation/#rotating-the-hkdf-context).
+- **`integrity`** — the integrity configuration the corpus was
+  written under, in the same shape the store takes.  **Required on
+  a bucket that has the integrity HMAC turned on:** the tag covers
+  the manifest bytes, so the sweep verifies it on read and
+  recomputes it on write, and without the key it refuses before
+  the first write rather than aborting mid-corpus.  See
+  [sweeping an integrity-protected corpus](/persistence/object-storage/key-rotation/#sweeping-an-integrity-protected-corpus).
+- **`allowUntaggedBodies`** — re-admits untagged bodies while
+  `integrity` is set, for a bucket still part-way through turning
+  integrity on.  Off by default, deliberately: from the sweep's
+  position a tag that was never written and a tag that was
+  stripped look the same.
 
 The sweep is **idempotent + resumable** — an object already at
 the `active` version is skipped without a write, so re-running
@@ -160,7 +178,43 @@ after an interruption is safe.  By default a resumed run re-lists
 and re-checks every key; pass a `progress` store to skip straight
 past the objects already done.
 
+### A returning sweep is the certificate
+
+The sweep does not hand back a result you have to audit.  If any
+object's key could not yield a usable persistence id, it finishes
+rotating everything else and then throws
+`ReEncryptIncompleteError` — because every one of those objects is
+still encrypted under the key Step 4 is about to drop, and a
+counter you have to remember to read is not a safeguard.
+
+```ts
+import { ReEncryptIncompleteError } from 'actor-ts/persistence';
+
+try {
+  const result = await reEncryptObjectStorage(backend, { /* … */ });
+  // Reaching here means skippedMalformedKey === 0.  Step 4 is cleared.
+} catch (thrown) {
+  if (thrown instanceof ReEncryptIncompleteError) {
+    console.error(thrown.malformedKeys);  // a bounded sample of the offenders
+    console.error(thrown.result);         // what the pass did manage to rotate
+  }
+  throw thrown;                           // do NOT proceed to Step 4
+}
+```
+
+Reaching that catch means one of three things: a key written
+out-of-band, a key written by a version older than the one that
+started rejecting control characters on `put`, or a `keyPrefix`
+that does not match the store's own `prefix`.  Correct the keys, or
+exclude genuinely foreign objects with `skip`, then re-run.
+
 ## Step 4 — retire the old key
+
+**Precondition: the Step 3 sweep returned.**  It throws rather than
+returns while any object is still under the retired key, so a
+sweep that completed normally — and only that — clears this step.
+If you are inspecting a result object instead, the field to check
+is `skippedMalformedKey`, and it must be `0`.
 
 After the sweep completes (every item encrypted under v2):
 
@@ -215,6 +269,10 @@ import { Aside } from '@astrojs/starlight/components';
   before it starts, but nothing guards the live read path —
   always finish the sweep + retain the old key for a rollback
   window before retiring.
+
+  The same reasoning is why a bucket with the integrity HMAC on
+  cannot be swept without `integrity`: refusing the whole run is
+  the only outcome that leaves the corpus in one piece.
 </Aside>
 
 <Aside type="caution" title="Re-using a version number that is still live">

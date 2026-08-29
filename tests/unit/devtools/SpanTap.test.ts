@@ -23,6 +23,17 @@ function newSystem(name: string): ActorSystem {
   return system;
 }
 
+/**
+ * Give the tap time to emit whatever the exchange above produced.
+ *
+ * A fixed delay and not `awaitCondition`, because the two things this file
+ * checks are both unpollable.  Several assertions are absences — a filtered tap
+ * must emit *nothing* (`expect(emitted).toHaveLength(0)`), and a predicate over
+ * an already-empty array is true at t = 0.  The rest are exact:
+ * `expect(batch.spans).toHaveLength(3)` beside `expect(batch.dropped).toBe(3)`
+ * is the drop accounting, and a poll that stopped at three spans would never see
+ * a fourth leak through.
+ */
 const settle = (ms = 60): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Collect every span across the flushed batches. */

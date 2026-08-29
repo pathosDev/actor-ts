@@ -22,6 +22,7 @@ import {
   NodeAddress,
 } from '../../src/cluster/index.js';
 import {
+  healthChecksOf,
   managementRoutes,
 } from '../../src/management/index.js';
 import { attachDevTools } from '../devtools.js';
@@ -35,42 +36,49 @@ async function main(): Promise<void> {
     .withTransport(new InMemoryTransport(new NodeAddress('k8s-probes', 'pod', 2552)));
   const cluster = await Cluster.join(system, clusterOptions);
 
-  const { routes, health } = managementRoutes(system, cluster, {
+  const routes = managementRoutes(system, cluster, {
     enableLeaveEndpoint: true,
   });
 
-  // Liveness stays independent of cluster — only says "process alive, not deadlocked".
-  health.addLiveness(() => ({ name: 'event-loop', status: true }));
+  // The system-wide registry — `Cluster.join` already put the framework's
+  // two cluster readiness checks in it, and the framework's liveness check
+  // is there too.  Application checks join them here.
+  const health = healthChecksOf(system);
 
-  // Readiness gate: app config loaded + simulated DB connection + cluster already covered.
-  let dbConnected = false;
+  // Liveness stays independent of every dependency — a failing liveness
+  // probe restarts the pod, and no restart fixes someone else's outage.
+  health.addLiveness(() => ({ name: 'warm-caches', status: true }));
+
+  // Readiness gate: app config loaded + simulated DB connection.  Cluster
+  // membership and cluster connectivity are already covered by the
+  // framework's own checks.
+  let databaseConnected = false;
   health.addReadiness(() => ({ name: 'config', status: true }));
-  health.addReadiness(() => ({ name: 'db', status: dbConnected, detail: dbConnected ? '' : 'connecting' }));
+  health.addReadiness(() => ({
+    name: 'database',
+    status: databaseConnected,
+    detail: databaseConnected ? '' : 'connecting',
+  }));
 
   const binding = await system.http(8558).bind(routes);
   console.log(`Kubernetes probes on http://${binding.host}:${binding.port}`);
   console.log(`  Liveness:  GET  /health`);
-  console.log(`  Readiness: GET  /ready   (currently DOWN — db not connected)`);
+  console.log(`  Readiness: GET  /ready   (currently DOWN — database not connected)`);
   console.log(`  Members:   GET  /cluster/members`);
   console.log(`  PreStop:   POST /cluster/leave`);
 
-  // Simulate the DB coming online after 2s — readiness flips to UP.
+  // Simulate the database coming online after 2s — readiness flips to UP.
   setTimeout(() => {
-    dbConnected = true;
-    console.log('-- db now ready — readiness probe will return 200 --');
+    databaseConnected = true;
+    console.log('-- database now ready — readiness probe will return 200 --');
   }, 2_000);
 
-  // Graceful shutdown hook (SIGINT).
-  process.on('SIGINT', async () => {
-    console.log('\nSIGINT — leaving cluster and unbinding HTTP');
-    await binding.unbind();
-    await cluster.leave();
-    await system.terminate();
-    process.exit(0);
-  });
-
-  // Keep the process alive indefinitely for demo purposes.
-  await new Promise(() => { /* park */ });
+  // Graceful shutdown.  Nothing to hand-roll: `system.http(...).bind(...)`
+  // registered the unbind in the `service-unbind` phase and `Cluster.join`
+  // registered the leave in `cluster-leave`, so a SIGTERM from the kubelet
+  // takes the pod out of the Service endpoints and out of the cluster before
+  // the actors stop — which is exactly the order a rolling update needs.
+  await system.runUntilTerminated();
 }
 
 void main();

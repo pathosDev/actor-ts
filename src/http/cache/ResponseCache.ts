@@ -32,13 +32,20 @@ import type { HttpRequest, HttpResponse } from '../Types.js';
  * client controls (a path parameter, a tenant header), so a caller who
  * varies it mints a new cache entry per request.  That is harmless here
  * — `InMemoryCache`'s LRU bound is what keeps the response cache from
- * growing without limit — but it is NOT harmless in a `Cache` shared
- * with `rateLimit` or `idempotent`: eviction picks the least-recently-
- * used entry with no idea that it is holding a rate-limit counter or a
- * record that stops a payment being taken twice.  This middleware is the
- * key-minting side of that trade, so hand it a dedicated instance
+ * growing without limit — and since #1080 it is survivable in a shared
+ * `Cache` too, because every entry this middleware writes is a plain
+ * `set` and eviction drains those before it touches a rate-limit counter
+ * or a record that stops a payment being taken twice.  Do not lean on
+ * that: this middleware's entries are the only slack a shared map has,
+ * the `maxEntries` bound is still hard once they run out, and a remote
+ * backend (Memcached, or Redis under `maxmemory-policy allkeys-lru`)
+ * evicts server-side where no such policy reaches.  This middleware is
+ * the key-minting side of the trade, so hand it a dedicated instance
  * (`ext.cache('response-cache')`) rather than the one enforcing a
- * security guarantee.
+ * security guarantee — or, where one instance has to be shared, give the
+ * instance a `prefixQuotas` reservation for this middleware's
+ * {@link ResponseCacheOptions.keyPrefix} (#607), which bounds the flood
+ * to that share whatever else the map is holding.
  */
 
 export type ResponseCacheOptions = {

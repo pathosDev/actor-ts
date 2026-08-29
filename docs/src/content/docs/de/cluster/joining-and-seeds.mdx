@@ -54,7 +54,8 @@ Seeds müssen nach dem Join nicht mehr besonders sein.
 
 ```ts
 type ClusterOptionsType = {
-  host:                       string;       // Adresse dieses Nodes
+  host:                       string;       // Interface zum Binden (Wildcard ok)
+  advertisedHost?:            string;       // Adresse, die Peers wählen (nie Wildcard)
   port:                       number;       // TCP-Port dieses Nodes
   seeds?:                     string[];     // Peer-Adressen fürs Bootstrap
   roles?:                     string[];     // Rollen-Tags
@@ -86,6 +87,13 @@ const cluster = await Cluster.join(
   clusterOptions,
 );
 ```
+
+`0.0.0.0` ist dort die *Bind*-Adresse. Was dieser Node per Gossip
+verteilt, wird getrennt aufgelöst und ist nie eine Wildcard — ohne
+weitere Konfiguration verteilt er `127.0.0.1`, was für einen
+Single-Node-Entwicklungslauf genau richtig ist und der Grund, warum
+das Paar keine Beachtung braucht, solange es keine zweite Maschine
+gibt. Siehe [Cluster — Überblick](/de/cluster/overview/).
 
 Eine leere `seeds`-Liste (oder eine, die komplett unerreichbar ist)
 bedeutet, dass **dieser Node den Cluster selbst bootstrapt**. Er
@@ -139,6 +147,20 @@ Die Retry-Schleife über `seedRetryIntervalMs` bleibt wichtig, löst aber
 ein anderes Problem: einen Seed, der *irgendwann* erreichbar ist. Ein
 erstes Mitglied kann sie nicht herbeizaubern.
 
+Sie trägt aber die Diagnose. Ein Node, der nach ein paar Kontaktrunden
+immer noch `joining` ist, kein `up`-Mitglied kennt und auf keine
+Selbstwahl mehr wartet, loggt eine WARN-Zeile, die benennt, was er sieht
+und was zu ändern ist — die unbeantworteten Seed-Adressen, wenn niemand
+geantwortet hat, oder die Kombination aus Seed-Liste und `selfElection`
+von oben, wenn alle Peers da sind und alle warten. Sie erscheint einmal,
+nicht pro Runde.
+
+Diese Zeile ist deshalb wichtig, weil das *Symptom* weit von der Ursache
+entfernt auftritt: einem so blockierten Cluster fehlt jedes `up`-Mitglied,
+ein [Cluster-Singleton](/de/cluster/singleton/overview/) wählt seinen Host
+aus den `up`-Mitgliedern, und das Erste, was die meisten Anwendungen
+bemerken, ist deshalb ein `AskTimeoutError` von einem Singleton-Proxy.
+
 ## Seed-Discovery — jenseits einer statischen Liste
 
 Eine hartcodierte Seed-Liste reicht für Tests und kleine Cluster.
@@ -181,6 +203,24 @@ Framework nutzt sie, um den Join zu bootstrappen. Siehe
 
 ## Den Join-Fortschritt beobachten
 
+Zuerst das Ein-Aufruf-Gate — `awaitReady` löst auf, sobald dieser Node
+`up` ist und, mit `minimumMembers`, sobald das Cluster seine erwartete
+Größe erreicht hat; `isReady` ist die synchrone Probe:
+
+```ts
+await cluster.awaitReady({ minimumMembers: 3, timeoutMs: 30_000 });
+cluster.isReady();     // probe the same predicate without waiting
+cluster.selfMember();  // this node's own record — status included
+```
+
+Mit gesetztem `timeoutMs` lehnt es mit `ClusterReadyTimeoutError` ab,
+statt raten zu lassen; ohne wartet es unbegrenzt. Siehe
+[Cluster-Bootstrap → Auf Readiness warten](/de/cluster/cluster-bootstrap/#auf-readiness-warten)
+dafür, wie `Cluster.bootstrap` dasselbe Warten standardmäßig anwendet.
+
+Für Logik, die auf *einzelne* Übergänge reagiert, die Events
+abonnieren:
+
 ```ts
 import { SelfUp, MemberUp } from 'actor-ts/cluster';
 
@@ -195,15 +235,14 @@ cluster.subscribe((evt) => {
 
 Zwei zentrale Events:
 
-- **`SelfUp`** feuert einmal, wenn *dieser* Node auf `up`
-  übergeht. Nützliches Gate, um Arbeit zu starten, die
-  Cluster-Mitgliedschaft erfordert.
+- **`SelfUp`** feuert einmal, wenn *dieser* Node auf `up` übergeht.
 - **`MemberUp`** feuert jedes Mal, wenn *irgendein* Mitglied `up`
   erreicht.
 
-Für Startup-Logik, die andere Mitglieder braucht ("warte, bis
-mindestens 3 Nodes up sind, bevor Traffic bedient wird"), zähle
-`MemberUp`s nach `SelfUp`.
+`MemberUp`s von Hand zu zählen, um "sind mindestens 3 Nodes up?" zu
+beantworten, ist genau das, was `awaitReady({ minimumMembers: 3 })`
+ersetzt — die Subscription ist zum Reagieren auf Änderungen da, nicht
+als Startup-Gate.
 
 ## Was schiefgehen kann
 

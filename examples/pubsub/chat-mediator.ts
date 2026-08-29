@@ -9,7 +9,6 @@
 import { Actor, ActorSystem } from '../../src/index.js';
 import { Cluster, ClusterOptions, InMemoryTransport, NodeAddress } from '../../src/cluster/index.js';
 import { DistributedPubSubId, Publish, Subscribe } from '../../src/cluster/pubsub/index.js';
-import { attachDevTools } from '../devtools.js';
 
 type ChatMessage = { readonly from: string; readonly text: string; };
 
@@ -22,7 +21,6 @@ class Subscriber extends Actor<ChatMessage> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('chat');
-  const devtools = await attachDevTools(system);
   // Single-node in-memory cluster — pub-sub also works cluster-wide (see event-bus-across-nodes.ts).
   const clusterOptions = ClusterOptions.create()
     .withHost('local')
@@ -44,9 +42,11 @@ async function main(): Promise<void> {
   mediator.tell(new Publish('chat', { from: 'bob', text: 'morning!' }));
   mediator.tell(new Publish('chat', { from: 'carol', text: 'ready for standup?' }));
 
+  // Not a drain sleep, and load-bearing: the mediator is a `/system` actor and
+  // terminate() drains only `/user`, so the three Publishes sit in a mailbox
+  // the drain never looks at.  Without this only the first one is delivered.
   await Bun.sleep(50);
   await cluster.leave();
-  await devtools.holdOpen();
   await system.terminate();
 }
 

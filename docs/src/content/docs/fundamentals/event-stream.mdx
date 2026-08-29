@@ -196,6 +196,12 @@ Three details:
 - **Predicates run at publish time**, on the publisher's stack.
   Keep them fast and pure — a heavy predicate slows every publish.
 
+## Watching it live
+
+DevTools has an [event-stream panel](/observability/devtools/event-stream/)
+that tails the bus in a browser — useful when the question is whether
+anything is being published at all.
+
 ## When to use the event stream
 
 Three good fits:
@@ -252,8 +258,9 @@ The framework publishes several event types you can subscribe to:
 
 | Event | Where it comes from |
 | --- | --- |
-| `DeadLetter` | Every message routed to `/deadLetters` is also published.  Useful for "alarms on lost messages." |
+| `DeadLetter` | Every message routed to `/deadLetters` is published here, and publishing is *all* that happens to it — nothing logs or keeps it, so with no subscriber it is gone.  Each carries the `recipient` it failed to reach.  For a bounded, optionally durable record with replay, see [Dead letters](/operations/dead-letters/). |
 | `DispatcherError` | A unit of work scheduled on a dispatcher threw where no supervisor could see it.  Carries the dispatcher `id`, the `cause`, and the `ActorRef` whose turn it was (`null` for work belonging to no actor).  Quiet by design — see [Dispatchers](/fundamentals/dispatchers/#when-a-work-unit-throws). |
+| `SchedulerError` | A task handed to `scheduler.scheduleOnceFunction` / `scheduleAtFixedRateFunction` threw inside a raw timer callback, where no supervisor could see it.  Carries the `cause` — and nothing else, because a scheduled task is an anonymous closure and a system has exactly one scheduler.  The message-delivery forms do not publish here.  See [Timers and scheduling](/fundamentals/timers-and-scheduling/#errors-inside-timer-callbacks). |
 | `MemberUp`, `MemberRemoved`, `MemberUnreachable`, … | Concrete cluster membership events published by the cluster extension.  Subscribe to each class directly — `ClusterEvent` is a union type, not a subscribable base class.  See [Cluster](/cluster/overview/). |
 | `ReachabilityChanged` | The publishing node's own failure detector gained or lost sight of a peer — a local observation, unlike `MemberUnreachable`, which may have arrived in gossip.  See [Failure detector](/cluster/failure-detector/). |
 | Broker events | `BrokerActor` subclasses publish connect/disconnect/lag events. |

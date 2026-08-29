@@ -1,6 +1,6 @@
 ---
 title: I/O im Überblick
-description: Wie Actors mit der Außenwelt sprechen — Broker-Actors (Kafka, MQTT, AMQP, NATS, Redis Streams, gRPC, SSE, TCP, UDP) erben alle von `BrokerActor` und teilen sich ein gemeinsames Muster für Lifecycle + Reconnect + Buffer.
+description: Wie Actors mit der Außenwelt sprechen — Broker-Actors (Kafka, MQTT, AMQP, NATS, Redis Streams, gRPC, SSE, TCP, UDP, E-Mail) erben alle von `BrokerActor` und teilen sich ein gemeinsames Muster für Lifecycle + Reconnect + Buffer.
 ---
 
 Actors erledigen In-Process-Arbeit sauber; die **Außenwelt** ist
@@ -63,6 +63,7 @@ Subklassen implementieren drei Hooks (`connectImplementation`, `disconnectImplem
 | `TcpSocketActor` | Raw TCP | Eigene Protokolle — ausgehende Verbindung. |
 | `TcpServerActor` | Raw TCP | Eigene Protokolle — bindet einen Port, bedient jede angenommene Verbindung. |
 | `UdpSocketActor` | Raw UDP | Telemetrie, Datagramme mit niedriger Latenz. |
+| `EmailBridgeActor` | IMAP (rein) + SMTP (raus) | Ops-/Alerting-Bridge — ein Postfach als Quelle, gepooltes SMTP als Senke. |
 
 Jeder hat seine eigene Seite in diesem Abschnitt.  Diese Übersicht
 behandelt das **gemeinsame Muster**, das sie alle teilen.
@@ -129,12 +130,18 @@ Konfigurierbar über `BrokerCommonOptionsType`:
     initialDelayMs: 200,
     maxDelayMs:     30_000,
     factor:         2,
+    randomFactor:   0.2,
     // maxAttempts weggelassen → Infinity (endlos wiederholen); eine
     // endliche positive Zahl begrenzt die Versuche.  reconnect: false
     // schaltet ihn ab.
   }
 }
 ```
+
+Jede Verzögerung wird mit `1 ± randomFactor` gejittert (Default ±20 %),
+damit eine Flotte von Broker-Actors, die denselben Broker gemeinsam
+verloren hat, nicht im Gleichschritt wiederholt; `randomFactor: 0`
+schaltet das ab.
 
 Jeder Versuch löst ein `BrokerReconnectAttempt`-Event aus.  Wenn
 `maxAttempts` überschritten wird (sofern endlich), meldet der Actor
@@ -265,6 +272,10 @@ class MyProtocolActor extends BrokerActor<MyOutbound> {
   protected async dispatchOutgoing(env: OutboundEnvelope<MyOutbound>): Promise<void> {
     // Payload über die Verbindung senden.
   }
+  // `onReceive` ist versiegelt — die Basisklasse fängt `Terminated` ab.
+  protected override onCommand(command: MyCommand): void {
+    // Auf der eigenen Command-Union der Subklasse dispatchen.
+  }
 }
 ```
 
@@ -282,7 +293,7 @@ protokollspezifischen Teile.
   [gRPC](/de/io/grpc/), [WebSocket-Client](/de/io/websocket/),
   [WebSocket-Server](/de/http/websocket/),
   [SSE](/de/io/sse/), [TCP](/de/io/tcp/),
-  [UDP](/de/io/udp/).
+  [UDP](/de/io/udp/), [E-Mail-Bridge](/de/io/email-bridge/).
 - **[BrokerActor-Basisklasse](/de/io/broker-actor-base/)** —
   der gemeinsame Lifecycle und die gemeinsame Konfiguration.
 - **[HTTP-Übersicht](/de/http/overview/)** — das separate

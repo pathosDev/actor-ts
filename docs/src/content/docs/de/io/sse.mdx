@@ -47,6 +47,8 @@ interface SseOptionsType extends BrokerCommonOptionsType {
   url?:      string;                          // required — the SSE endpoint
   headers?:  Readonly<Record<string, string>>; // optional custom request headers
   target?:   ActorRef<SseEvent>;             // required — subscriber for inbound events
+  idleTimeoutMs?:    number;                 // read-idle deadline; default 0 (off)
+  connectTimeoutMs?: number;                 // connect deadline; default 0 (off)
 }
 ```
 
@@ -55,6 +57,8 @@ interface SseOptionsType extends BrokerCommonOptionsType {
 | `url`      | ja           | Der SSE-Endpoint, mit dem der Actor sich verbindet (`GET`, `Accept: text/event-stream`). |
 | `target`   | ja           | Der Actor, der jedes geparste `SseEvent` empfängt.                |
 | `headers`  | nein         | Zusätzliche Request-Header — z. B. `authorization` für einen geschützten Feed. |
+| `idleTimeoutMs` | nein    | Den Stream als verloren melden, wenn so lange kein einziges Byte eintrifft. |
+| `connectTimeoutMs` | nein | Einen Connect abbrechen, der nicht rechtzeitig Response-Header liefert. |
 
 `requiredOptions` ist `['url', 'target']`; beide müssen vorhanden
 sein, sonst schlägt der Actor beim Start sofort fehl.
@@ -116,8 +120,8 @@ SseOptions.create()
   .withCircuitBreaker(5, 30_000);   // failureThreshold, resetMs
 ```
 
-Wenn der Stream endet oder die Verbindung abbricht, greift die
-Reconnect-Maschinerie der Basisklasse.  Übergib
+Wenn der Stream endet oder die Verbindung **beobachtbar** abbricht,
+greift die Reconnect-Maschinerie der Basisklasse.  Übergib
 `.withReconnect(false)`, um nach dem Stream-Ende zu stoppen statt
 erneut zu versuchen — praktisch für endliche Feeds oder Tests:
 
@@ -127,6 +131,45 @@ SseOptions.create()
   .withTarget(target)
   .withReconnect(false);   // stop when the stream closes
 ```
+
+### Wenn der Server einfach aufhört
+
+„Beobachtbar“ leistet in diesem Satz echte Arbeit.  `consume` parkt auf
+`reader.read()`, und ein Server, der verschwindet, ohne die Response zu
+schließen — ein beendeter Container, ein verfallener NAT-Eintrag, eine
+verschluckende Route — liefert kein `done`, keinen Fehler und keine
+Bytes.  SSE ist read-only, also kann nichts sonst im Actor das von
+einem Feed unterscheiden, der gerade nichts zu melden hat: der Stream
+bleibt `connected`, solange der Prozess läuft, und das Monitoring ist
+blind.
+
+`idleTimeoutMs` ist die Uhr, die dem ein Ende setzt:
+
+```ts
+const sseOptions = SseOptions.create()
+  .withUrl('https://example.com/events')
+  .withTarget(target)
+  .withIdleTimeoutMs(60_000)      // no bytes for 60 s → reconnect
+  .withConnectTimeoutMs(10_000);  // no response headers in 10 s → fail the attempt
+```
+
+Jeder Chunk setzt sie zurück, **auch ein Kommentar** — `: ping\n\n`
+parst zu gar keinem Event, und genau so hält ein wohlerzogener Server
+einen leerlaufenden Feed offen.  Setze `idleTimeoutMs` daher deutlich
+über das Keepalive-Intervall des Servers (15–30 s ist die übliche
+Konvention); darunter kappt die Deadline gesunde Streams in
+Endlosschleife.  Standardmäßig aus, weil nur du dieses Intervall
+kennst.
+
+`connectTimeoutMs` ist die andere Hälfte: `fetch` hat keine eigene
+Deadline, also hält ein Server, der die TCP-Verbindung annimmt und den
+Request nie beantwortet, den Actor unbegrenzt in `connecting`.
+
+Beide melden den Verlust über den gewöhnlichen
+`handleConnectionLost`-Pfad, sodass Backoff, Circuit Breaker und
+`BrokerDisconnected` sich exakt so verhalten wie bei einem beendeten
+Stream — siehe
+[BrokerActor-Basis](/de/io/broker-actor-base/#liveness-deadlines).
 
 ## Konfiguration über HOCON
 
@@ -138,6 +181,8 @@ HOCON > eingebaute Defaults**.  Der HOCON-Pfad ist
 actor-ts.io.broker.sse {
   url = "https://example.com/events"
   headers { authorization = "Bearer …" }
+  idleTimeoutMs    = 60000
+  connectTimeoutMs = 10000
 }
 ```
 

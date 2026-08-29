@@ -8,10 +8,24 @@ coverage/
 *.tsbuildinfo
 bun.lockb
 
+# Per-run JUnit reports, logs and summary.json from `bun run test:stress`
+# (scripts/stress-test.mjs).  A nightly job uploads them as an artifact; a
+# local run leaves ~10 copies of the whole suite's report behind.
+.stress/
+
 # Astro / Starlight build cache (docs site under docs/).  `dist/` +
 # `node_modules/` are already covered by the top-level patterns; the
 # `.astro/`-cache is a separate folder Astro recreates on each build.
 .astro/
+
+# Build output of the cross-language comparison arms (#27).  `results/` and
+# `RESULTS.md` under the same tree ARE committed — they are the measurement,
+# and a result nobody can read later is not one.
+benchmarks/comparison/**/bin/
+benchmarks/comparison/**/obj/
+# The JVM arms' build cache.  It appears before a build even starts — the
+# committed launcher script downloads itself into it (#1229).
+benchmarks/comparison/**/out/
 
 # Bun + benchmark artefacts
 .bun-cache/
@@ -27,6 +41,12 @@ examples/chat/data/*.db*
 examples/chat/frontend-*/node_modules/
 examples/chat/frontend-*/dist/
 examples/chat/frontend-*/.next/
+
+# Angular's build cache, written at the repository root by the DevTools UI half
+# of `bun run typecheck` and by `bun run build:ui` — 7 MB of it, and untracked
+# until now. The examples' own `.angular/` directories were already ignored;
+# this is the one the root toolchain produces.
+.angular/
 
 # Voice-sample runtime data (currently empty — voice persists nothing — but kept
 # for parity with chat in case a future iteration adds recording / voicemail).
@@ -45,6 +65,21 @@ examples/chat/frontend-*/build/
 examples/chat/frontend-*/.angular/
 examples/chat/frontend-*/.svelte-kit/
 
+# Where those four frontends each publish their build (#559).  Listed one
+# directory at a time rather than as `examples/*/static/` because `static/` is
+# not purely output: `plain/` and `lit/` have no build step, so their
+# `index.html` IS the source and stays tracked.  Build them with
+# `npm ci && npm run build` in the matching `frontend-*` directory — the same
+# commands `.github/workflows/examples.yml` runs.
+examples/chat/static/angular/
+examples/chat/static/next/
+examples/chat/static/react/
+examples/chat/static/svelte/
+examples/voice/static/angular/
+examples/voice/static/next/
+examples/voice/static/react/
+examples/voice/static/svelte/
+
 # Internal staging area used while building the initial commit history
 .staging/
 
@@ -54,8 +89,41 @@ examples/chat/frontend-*/.svelte-kit/
 # Throwaway scratch space (release-note drafts, smoke-test files etc.).
 tmp/
 
-# DevTools UI bundler scratch.  `.build/` feeds the generated embedded
-# module (src/devtools/generated/uiAssets.ts, which IS committed);
-# `.dev/` is the unminified output served via `uiDevelopmentRoot`.
-devtools-ui/.build/
+# DevTools UI toolchain and build scratch (#483).  `node_modules/` is the
+# nested Angular install, deliberately not hoisted into the root tree;
+# `.angular-build/` feeds the generated embedded module
+# (src/devtools/generated/UiAssets.ts, which IS committed), and `.dev/` is
+# the unminified output served via `uiDevelopmentRoot`.
+devtools-ui/node_modules/
+devtools-ui/.angular-build/
 devtools-ui/.dev/
+devtools-ui/.angular-out/
+devtools-ui/.angular/
+
+# Extracted documentation samples, written and deleted by
+# `scripts/check-doc-samples.mjs` on every run.  Present on disk only while
+# tsc is looking at them, or afterwards when it was run with `--keep`.
+.doc-samples/
+
+# graphify knowledge graph, built by the `/graphify` skill.
+#
+# `graph.json`, `graph.html`, `GRAPH_REPORT.md` and `cache/` ARE committed.
+# The cache is worth carrying: its entries key on repo-relative paths and a
+# hash of the extraction prompt, contain no absolute paths, and let a fresh
+# clone skip the ~7.2M-token semantic re-extraction of `docs/`.  It is
+# invalidated on purpose when graphify or the prompt changes (the
+# `ast/<version>/` and `semantic/<prompt-hash>/` directories).
+#
+# Everything below is machine- or run-local and churns on every build:
+graphify-out/manifest.json
+graphify-out/cost.json
+graphify-out/.graphify_labels.json
+graphify-out/.graphify_labels.json.sig
+graphify-out/.graphify_python
+graphify-out/.graphify_root
+graphify-out/cache/last_query_stamp
+
+# Per-round working files from `bun run bench:compare -- --rounds=N`.  The
+# published artefact is the median in `results/*.json`; committing every
+# round would bury it.
+benchmarks/comparison/results/.rounds/

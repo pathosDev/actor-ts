@@ -185,23 +185,37 @@ describe('caller 1: seed pinning — a smuggled address is not a pinned seed', (
 });
 
 describe('caller 2: HTTP IP allowlist — a smuggled X-Forwarded-For is not allowed', () => {
-  // The extractor is the one `IpAllowlist`'s own JSDoc and the docs page
-  // print for deployments behind a trusted proxy.  The proxy is trusted
-  // to *set* the header; nothing downstream re-validates the value.
+  // The configuration `IpAllowlist`'s own JSDoc and the docs page print for
+  // deployments behind a trusted proxy: the proxy is named by address, and
+  // the client is resolved from the chain's socket end inwards (#715).  The
+  // spellings below have to die at the *matching* step, which is this
+  // file's subject — they are in the chain the trusted proxy appended to,
+  // so nothing upstream has already thrown them away.
   const allowlist = IpAllowlist({
     allow: ['10.0.0.0/8'],
-    getClientIp: (request) => request.headers['x-forwarded-for']?.split(',')[0]?.trim() ?? null,
+    trustedProxies: ['203.0.113.0/24'],
   });
+  const behindProxy = (headers: Record<string, string>): HttpRequest =>
+    ({ ...httpRequest(headers), remoteAddress: '203.0.113.7' });
 
   test('every smuggled spelling gets a 403', async () => {
     for (const spelling of SMUGGLED_SPELLINGS) {
-      await expect(allowlist(httpRequest({ 'x-forwarded-for': spelling }), next)).rejects.toThrow(HttpError);
+      await expect(allowlist(behindProxy({ 'x-forwarded-for': spelling }), next)).rejects.toThrow(HttpError);
     }
   });
 
   test('a canonical in-range address still passes', async () => {
-    expect(await allowlist(httpRequest({ 'x-forwarded-for': '10.1.2.3' }), next)).toBe(okResponse);
-    await expect(allowlist(httpRequest({ 'x-forwarded-for': '192.168.1.1' }), next)).rejects.toThrow(HttpError);
+    expect(await allowlist(behindProxy({ 'x-forwarded-for': '10.1.2.3' }), next)).toBe(okResponse);
+    await expect(allowlist(behindProxy({ 'x-forwarded-for': '192.168.1.1' }), next)).rejects.toThrow(HttpError);
+  });
+
+  test('a header alone decides nothing — no socket peer, no client address', async () => {
+    // The inversion of the case above, and the reason it is worth its own
+    // test: before #715 this file asserted that a bare `x-forwarded-for:
+    // 10.1.2.3` with no peer at all *passed*.  A canonical spelling was
+    // never the hole; believing an unanchored chain was.
+    await expect(allowlist(httpRequest({ 'x-forwarded-for': '10.1.2.3' }), next))
+      .rejects.toThrow(/no client address/);
   });
 
   test('a socket peer is checked the same way', async () => {

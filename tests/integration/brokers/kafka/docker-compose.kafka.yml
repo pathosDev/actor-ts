@@ -7,8 +7,8 @@
 # speaks pure Kafka protocol so it can't tell the difference.
 #
 # Run locally:
-#   bun run test:integration:kafka
-#   bun run test:integration:kafka:teardown
+#   bun run test:integration:broker kafka
+#   bun run test:integration:broker:teardown kafka
 
 name: actor-ts-integration-kafka
 

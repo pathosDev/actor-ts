@@ -25,7 +25,7 @@ describe('CassandraJournal — append / read', () => {
       .withClient(client)
       .withAutoCreateKeyspace(true);
     const journal = new CassandraJournal(journalOptions);
-    const written = await journal.append('acc-1', ['created', 'deposited:10', 'deposited:20'], 0);
+    const written = await journal.append('acc-1', [{ event: 'created' }, { event: 'deposited:10' }, { event: 'deposited:20' }], 0);
     expect(written.map((e) => e.sequenceNr)).toEqual([1, 2, 3]);
 
     const read = await journal.read<string>('acc-1', 1);
@@ -41,9 +41,9 @@ describe('CassandraJournal — append / read', () => {
       .withClient(new FakeCassandraClient())
       .withAutoCreateKeyspace(true);
     const journal = new CassandraJournal(journalOptions);
-    await journal.append('acc-2', ['a'], 0);
+    await journal.append('acc-2', [{ event: 'a' }], 0);
     let caught: unknown = null;
-    try { await journal.append('acc-2', ['b'], 0); } catch (e) { caught = e; }
+    try { await journal.append('acc-2', [{ event: 'b' }], 0); } catch (e) { caught = e; }
     expect(caught).toBeInstanceOf(JournalConcurrencyError);
     await journal.close();
   });
@@ -55,9 +55,9 @@ describe('CassandraJournal — append / read', () => {
       .withClient(new FakeCassandraClient());
     const journal = new CassandraJournal(journalOptions);
     expect(await journal.highestSeq('nobody')).toBe(0);
-    await journal.append('acc-3', ['a', 'b', 'c'], 0);
+    await journal.append('acc-3', [{ event: 'a' }, { event: 'b' }, { event: 'c' }], 0);
     expect(await journal.highestSeq('acc-3')).toBe(3);
-    await journal.append('acc-3', ['d'], 3);
+    await journal.append('acc-3', [{ event: 'd' }], 3);
     expect(await journal.highestSeq('acc-3')).toBe(4);
     await journal.close();
   });
@@ -68,7 +68,18 @@ describe('CassandraJournal — append / read', () => {
       .withKeyspace('ks')
       .withClient(new FakeCassandraClient());
     const journal = new CassandraJournal(journalOptions);
-    await journal.append('acc-4', [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], 0);
+    await journal.append('acc-4', [
+      { event: 1 },
+      { event: 2 },
+      { event: 3 },
+      { event: 4 },
+      { event: 5 },
+      { event: 6 },
+      { event: 7 },
+      { event: 8 },
+      { event: 9 },
+      { event: 10 },
+    ], 0);
     const slice = await journal.read<number>('acc-4', 3, 6);
     expect(slice.map((e) => e.event)).toEqual([3, 4, 5, 6]);
     await journal.close();
@@ -80,7 +91,7 @@ describe('CassandraJournal — append / read', () => {
       .withKeyspace('ks')
       .withClient(new FakeCassandraClient());
     const journal = new CassandraJournal(journalOptions);
-    await journal.append('acc-5', ['a', 'b', 'c', 'd'], 0);
+    await journal.append('acc-5', [{ event: 'a' }, { event: 'b' }, { event: 'c' }, { event: 'd' }], 0);
     await journal.delete('acc-5', 2);
     const left = await journal.read<string>('acc-5', 1);
     expect(left.map((e) => e.event)).toEqual(['c', 'd']);
@@ -93,9 +104,9 @@ describe('CassandraJournal — append / read', () => {
       .withKeyspace('ks')
       .withClient(new FakeCassandraClient());
     const journal = new CassandraJournal(journalOptions);
-    await journal.append('one', ['x'], 0);
-    await journal.append('two', ['y'], 0);
-    await journal.append('three', ['z'], 0);
+    await journal.append('one', [{ event: 'x' }], 0);
+    await journal.append('two', [{ event: 'y' }], 0);
+    await journal.append('three', [{ event: 'z' }], 0);
     const ids = await journal.persistenceIds();
     expect(new Set(ids)).toEqual(new Set(['one', 'two', 'three']));
     await journal.close();
@@ -109,8 +120,8 @@ describe('CassandraJournal — append / read', () => {
       .withClient(client)
       .withPartitionSize(3); // tiny so we force rollover
     const journal = new CassandraJournal(journalOptions);
-    await journal.append('pid', [1, 2, 3], 0);
-    await journal.append('pid', [4, 5, 6, 7], 3);
+    await journal.append('pid', [{ event: 1 }, { event: 2 }, { event: 3 }], 0);
+    await journal.append('pid', [{ event: 4 }, { event: 5 }, { event: 6 }, { event: 7 }], 3);
     const all = await journal.read<number>('pid', 1);
     expect(all.map((e) => e.event)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     await journal.close();
@@ -211,7 +222,7 @@ describe('registerCassandraPlugins — config-driven selection', () => {
     expect(ext.snapshotStore).toBeInstanceOf(CassandraSnapshotStore);
 
     // Round-trip through the extension-selected journal.
-    await ext.journal.append('x', ['hello'], 0);
+    await ext.journal.append('x', [{ event: 'hello' }], 0);
     const read = await ext.journal.read<string>('x', 1);
     expect(read[0]!.event).toBe('hello');
 
@@ -235,9 +246,9 @@ describe('CassandraJournal + SnapshotStore — integration', () => {
       .withClient(client);
     const snaps = new CassandraSnapshotStore(snapshotStoreOptions);
 
-    await journal.append('acc', ['ev1', 'ev2', 'ev3'], 0);
+    await journal.append('acc', [{ event: 'ev1' }, { event: 'ev2' }, { event: 'ev3' }], 0);
     await snaps.save('acc', 3, { sum: 3 });
-    await journal.append('acc', ['ev4', 'ev5'], 3);
+    await journal.append('acc', [{ event: 'ev4' }, { event: 'ev5' }], 3);
 
     const snap = (await snaps.loadLatest<{ sum: number }>('acc')).toNullable();
     const tail = await journal.read<string>('acc', snap!.sequenceNr + 1);
@@ -246,5 +257,41 @@ describe('CassandraJournal + SnapshotStore — integration', () => {
 
     await journal.close();
     await snaps.close();
+  });
+});
+
+describe('Cassandra storage identity (#1358)', () => {
+  test('one keyspace, one identity: shared by both stores, stable across store instances', async () => {
+    const client = new FakeCassandraClient();
+    const journalOptions = CassandraJournalOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('ks')
+      .withClient(client);
+    const journal = new CassandraJournal(journalOptions);
+    const identity = await journal.storageIdentity();
+    expect(identity).toMatch(/^[0-9a-f-]{36}$/);
+    expect(await journal.storageIdentity()).toBe(identity);
+
+    // The snapshot store on the same keyspace reads the same row — the
+    // identity belongs to the database, not to the store family.
+    const snapshotStoreOptions = CassandraSnapshotStoreOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('ks')
+      .withClient(client);
+    const snapshotStore = new CassandraSnapshotStore(snapshotStoreOptions);
+    expect(await snapshotStore.storageIdentity()).toBe(identity);
+
+    // A fresh store over the same database loses the LWT claim and adopts
+    // the stored row — minted once, never re-minted.
+    const reopenedOptions = CassandraJournalOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('ks')
+      .withClient(client);
+    const reopened = new CassandraJournal(reopenedOptions);
+    expect(await reopened.storageIdentity()).toBe(identity);
+
+    await journal.close();
+    await snapshotStore.close();
+    await reopened.close();
   });
 });

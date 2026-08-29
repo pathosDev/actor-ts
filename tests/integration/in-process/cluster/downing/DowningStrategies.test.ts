@@ -15,6 +15,7 @@ import { OptionsError } from '../../../../../src/util/OptionsValidator.js';
 import type { Lease } from '../../../../../src/coordination/Lease.js';
 import { Member } from '../../../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
+import { sleep } from '../../../../util/AwaitCondition.js';
 
 const addr = (port: number, host = 'h'): NodeAddress => new NodeAddress('sys', host, port);
 
@@ -47,9 +48,39 @@ describe('KeepMajority', () => {
     expect(decision.has(addr(5).toString())).toBe(true);
   });
 
-  test('tie stays pending (no decision)', () => {
-    const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
-    expect(new KeepMajority().decide(clusterView).size).toBe(0);
+  test('exact 50/50 tie — each side downs itself, so the cluster stops whole', () => {
+    // The 2-2 split, seen from both halves.  Neither reaches `needed`, and
+    // the answer has to be symmetric: if one side stayed up while the other
+    // downed itself the outcome would depend on which view we asked.
+    const members = [{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }];
+
+    const fromOneTwo = new KeepMajority().decide(view(members, [3, 4], 1));
+    expect(fromOneTwo).toEqual(new Set([addr(1).toString(), addr(2).toString()]));
+
+    const fromThreeFour = new KeepMajority().decide(view(members, [1, 2], 3));
+    expect(fromThreeFour).toEqual(new Set([addr(3).toString(), addr(4).toString()]));
+
+    // Together the two halves down every member — a stopped cluster, not a
+    // forked one.  This is the property #1170 was about; "pending" left both
+    // halves live for the duration of the partition.
+    const downed = new Set([...fromOneTwo, ...fromThreeFour]);
+    expect(downed.size).toBe(members.length);
+  });
+
+  test('odd member count always reaches a verdict on a partition', () => {
+    // With an odd count one side always holds `floor(n/2) + 1`, so the tie
+    // path is unreachable and a real split is always decided one way or the
+    // other.  This is what makes an odd cluster the recommended shape rather
+    // than merely the tidy one.
+    const members = [{ port: 1 }, { port: 2 }, { port: 3 }];
+    for (const unreachablePorts of [[3], [2, 3], [1], [1, 2]]) {
+      const decision = new KeepMajority().decide(view(members, unreachablePorts, 1));
+      expect(decision.size).toBeGreaterThan(0);
+    }
+
+    // A view with nothing unreachable is not a partition: there is simply
+    // nothing to down, and an empty decision is the right answer.
+    expect(new KeepMajority().decide(view(members, [])).size).toBe(0);
   });
 
   test('role filter only counts tagged members', () => {
@@ -177,8 +208,13 @@ class FakeLease implements Lease {
   onLost(): () => void { return () => {}; }
 }
 
-const flushMicrotasks = (): Promise<void> =>
-  new Promise((r) => setTimeout(r, 0));
+/**
+ * A zero-length turn boundary, not a wait on an outcome: `decide()` starts an
+ * `acquire()` whose `.then` has to run before the next assertion reads
+ * `lease.released`.  There is no state to poll for — the point is to yield the
+ * event loop once, and 0 ms is the shortest way to say that.
+ */
+const flushMicrotasks = (): Promise<void> => sleep(0);
 
 describe('LeaseMajority', () => {
   test('strict majority: returns the unreachable side without touching the lease', () => {
@@ -412,7 +448,9 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     expect(lease.pendingCount()).toBe(1);
 
     // 2. Simulate the local timeout firing — advance past the deadline.
-    await new Promise((r) => setTimeout(r, 60));
+    //    The elapsed time IS the assertion: the strategy's `acquireTimeoutMs`
+    //    is 30 ms and only a real 60 ms can put the clock past it.
+    await sleep(60);
 
     // 3. Another decide() detects the deadline passed → bumps the epoch
     //    and abandons attempt #1.  No fresh acquire starts while that
@@ -460,8 +498,9 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     expect(strat.decide(clusterView).size).toBe(0);
     expect(lease.released).toBe(false);
 
-    // Cross the deadline and abandon the attempt.
-    await new Promise((r) => setTimeout(r, 50));
+    // Cross the deadline and abandon the attempt.  The elapsed time IS the
+    // assertion — `acquireTimeoutMs` is 30 ms.
+    await sleep(50);
     strat.decide(clusterView);
     await flushMicrotasks();
     // Releasing here would be a no-op against every real backend, so the
@@ -484,7 +523,9 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
 
     expect(strat.decide(clusterView).size).toBe(0);
-    await new Promise((r) => setTimeout(r, 50));
+    // The elapsed time IS the assertion: 50 ms puts the clock past the 30 ms
+    // `acquireTimeoutMs`, which is what makes the next `decide()` abandon.
+    await sleep(50);
     strat.decide(clusterView);
 
     lease.resolveAt(0, false);
@@ -505,7 +546,8 @@ describe('LeaseMajority — #142 split-brain hardening', () => {
     const clusterView = view([{ port: 1 }, { port: 2 }, { port: 3 }, { port: 4 }], [3, 4]);
 
     expect(strat.decide(clusterView).size).toBe(0);
-    await new Promise((r) => setTimeout(r, 50));
+    // The elapsed time IS the assertion: past the 30 ms `acquireTimeoutMs`.
+    await sleep(50);
 
     // First post-timeout decide: notices the deadline and abandons the
     // attempt.  The attempt then lands, so the undo runs — and rejects,

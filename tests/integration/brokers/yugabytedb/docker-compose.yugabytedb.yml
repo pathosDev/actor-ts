@@ -11,8 +11,8 @@
 # is aborted as `40001` before it ever reaches the primary key (#479).
 #
 # Run locally:
-#   bun run test:integration:yugabytedb
-#   bun run test:integration:yugabytedb:teardown
+#   bun run test:integration:broker yugabytedb
+#   bun run test:integration:broker:teardown yugabytedb
 
 name: actor-ts-integration-yugabytedb
 

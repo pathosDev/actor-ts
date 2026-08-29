@@ -10,6 +10,7 @@ import {
   type Route,
 } from '../../../src/http/Route.js';
 import { HttpError, Status, type HttpRequest } from '../../../src/http/Types.js';
+import { DEFAULT_WEBSOCKET_POLICY } from '../../../src/http/websocket/WebsocketPolicy.js';
 
 const request: HttpRequest = {
   method: 'GET',
@@ -127,7 +128,11 @@ describe('handleErrors', () => {
   test('a throwing middleware over a websocket route rejects the upgrade', async () => {
     // The websocket authorize fold maps a thrown HttpError to a rejection
     // response via defaultErrorResponse — pins that refactor.
-    const wsLiteral: Route = { kind: 'websocket', connect: () => {} };
+    const wsLiteral: Route = {
+      kind: 'websocket',
+      connect: () => {},
+      resolvePolicy: () => DEFAULT_WEBSOCKET_POLICY,
+    };
     const compiled = compile(withMiddleware(
       () => { throw new HttpError(Status.Unauthorized, 'nope'); },
       wsLiteral,

@@ -11,7 +11,7 @@ das Sharding schicken, aber es nichts fragen: nicht "welche Shards gibt
 es", nicht "wo liegt Shard 7", nicht "gib mir einen Handle auf Entity
 `user-42`".
 
-Drei APIs auf `ClusterSharding` schließen diese Lücke, dazu ein
+Vier APIs auf `ClusterSharding` schließen diese Lücke, dazu ein
 Cluster-Event für die Push-Seite.
 
 ## Die Shards auflisten
@@ -55,10 +55,11 @@ ein Node tatsächlich hält.
 Der Eintrag trägt eine **lebende Ref**, nicht nur Platzierungsdaten —
 eine Abfrage beantwortet also sowohl "was gibt es da draußen" als auch
 "wie rede ich damit". Der Preis: `ShardInfo` ist nicht
-JSON-serialisierbar. Wenn du eine serialisierbare Sicht brauchst,
-liefert der Management-Endpunkt
-[`GET /cluster/shards`](/de/observability/management/http-endpoints/)
-stattdessen eine reine Datenform.
+JSON-serialisierbar. Wenn du eine serialisierbare Sicht brauchst, nimm
+[`shardMap(typeName)`](#die-letzte-karte-ohne-abfrage) oder den
+Management-Endpunkt
+[`GET /cluster/shards`](/de/observability/management/http-endpoints/),
+der genau diese serialisiert.
 
 Shards ohne Zuhause **fehlen** in der Liste. Niemand hat nach ihnen
 gefragt, also hatte der Koordinator keinen Anlass, sie zu platzieren:
@@ -203,6 +204,39 @@ Broadcasts werden **zusammengefasst**. Allokationsänderungen kommen
 einzeln pro Shard, und ein frischer Cluster platziert alle Shards auf
 einmal — `version` zählt deshalb Broadcasts, nicht einzelne Zuweisungen.
 Lies sie nicht als "wie viele Shards sind umgezogen".
+
+### Die letzte Karte, ohne Abfrage
+
+Weil das Event jeden Node erreicht, kann `ClusterSharding` sich einfach
+das letzte merken — genau das gibt `shardMap(typeName)` als reines JSON
+zurück:
+
+```ts
+const map = cluster.sharding.shardMap('cart');
+if (map !== null) {
+  // map.regions   — one entry per region, with its shard ids
+  // map.shardHome — [{ shard, regionKey }], one per placed shard
+  // map.version   — the coordinator's broadcast counter
+  // map.leader, map.takenAt — who published it, and when it arrived here
+}
+```
+
+Synchron und kostenlos: kein Round-Trip, kein `DistributedData`, kein
+`coordinatorStateStore`. Es ist das, was der Endpunkt
+[`GET /cluster/shards`](/de/observability/management/http-endpoints/)
+serialisiert.
+
+Der Rückgabewert ist `null`, bis der Koordinator einmal für den Typ
+publiziert hat — das schließt jeden Node ein, der weder Region noch
+Proxy dafür gestartet hat, denn der Koordinator broadcastet nur an
+registrierte Regionen. Und `shardHome` bleibt leer, bis wirklich ein
+Shard platziert ist, während sich `regions` schon bei der Registrierung
+füllt: lies `regions` für "wer nimmt teil", `shardHome` für "was ist
+platziert".
+
+Greif stattdessen zu [`shards()`](#die-shards-auflisten), wenn du
+Entity-Zahlen oder lebende Refs brauchst, und zu `ShardMapChanged`, wenn
+du die Änderungen statt des letzten Stands willst.
 
 ## Wohin als Nächstes
 

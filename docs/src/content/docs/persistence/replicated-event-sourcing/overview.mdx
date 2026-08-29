@@ -118,8 +118,84 @@ only when the id has to survive a re-address, e.g. a fixed region name:
 override get replicaId(): string { return process.env.REPLICA_ID!; }
 ```
 
-Two replicas that ever share an id will dedupe each other's events
-away, so the default is the safe one.
+Two replicas that ever share an id will share a vector-clock
+component, so the default is the safe one.
+
+## What a replica trusts from its peers
+
+Cross-replica delivery rides on `DistributedPubSub`, so every field
+of an arriving event envelope was written by another node.  Anything
+that can complete the cluster handshake can reach a replicated actor
+— through the pub-sub mediator, or straight at its actor path — and
+membership is not a precondition.  Three properties follow, and all
+three matter operationally.
+
+**An envelope is validated whole, before anything is applied.**
+`replica` and `eventId` must be non-empty and bounded, `seqAtReplica`
+a positive integer, `timestamp` finite, and the vector clock a plain
+object of finite non-negative components with a bounded entry count.
+A failure drops that one envelope and logs a `WARN` naming the field;
+it never fails the actor and never leaves a half-applied event in the
+history.
+
+**Event identity comes from entropy, not from the payload's
+counters.**  Each event carries an `eventId` minted at `persist` time
+— the replica id, a `#`, and 96 bits of randomness — and that is what
+deduplication compares.  It has to be unguessable because a
+deduplication hit means *silently discard*: an identity derived from
+`replica` and `seqAtReplica` is arithmetic to predict, so a peer could
+claim identities a replica had not issued yet and its real events
+would then be dropped by everyone, permanently, since the identity set
+is snapshotted.  `seqAtReplica` is still on the envelope, but only as
+the last tie-break in the canonical order.
+
+**An envelope's author is the node that sent it.**  `replica` is a
+value the sender chose, so it is held against the node the *connection*
+authenticated rather than believed.  A replicated actor subscribes to
+its topic asking for the publishing node, and `isAuthorizedAuthor`
+decides whether that node may write under the arriving `replica` id;
+the default is the equality that the default `replicaId` makes true.
+An envelope that reaches the actor without an authenticated origin —
+which is what a frame aimed straight at the actor's path produces,
+bypassing pub-sub — is refused for that reason alone.
+
+The binding is sound because a replicated event crosses **at most one
+hop**: `persist` is the only publisher and no mediator re-forwards what
+it received, so the node an arriving envelope came from is the node
+that wrote it.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="A custom replicaId needs a custom author check">
+  ```ts
+  override get replicaId(): ReplicaId { return 'eu-west'; }
+
+  protected override isAuthorizedAuthor(replica: ReplicaId, origin: NodeAddress): boolean {
+    return REPLICA_NODES[replica] === origin.toString();
+  }
+  ```
+  The default check compares `replica` against the sending node's
+  address, which is exactly right while `replicaId` *is* that address
+  and refuses every honest envelope once it is not.  Override the two
+  together: they are the replica-to-node mapping, and the framework
+  cannot infer its second half.  A `return true` restores the old
+  behaviour in full — a member may then author events under any
+  replica's id — and is worth writing only for a cluster whose every
+  member is as trusted as this process.
+</Aside>
+
+<Aside type="note" title="The event history is bounded by refusal">
+  ```ts
+  protected override maxObservedEvents(): number { return 10_000; }
+  ```
+  There is no compaction yet, so the canonical history only grows —
+  and every remote event also costs a journal write.  At the ceiling
+  (100 000 by default) further *remote* events are **refused**, with one
+  `WARN` saying so; local `persist` calls are never refused.  Refusal
+  rather than eviction is deliberate: dropping events changes the fold,
+  and dropping identities re-opens double-apply.  Lower the hook for an
+  entity whose legitimate history is small.
+</Aside>
 
 ## The pieces
 
@@ -133,8 +209,6 @@ away, so the default is the safe one.
 Each gets its own deep-dive page.
 
 ## When NOT to use it
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Sharded entities are simpler">
   ```ts

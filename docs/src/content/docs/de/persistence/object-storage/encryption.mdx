@@ -3,6 +3,8 @@ title: Verschlüsselung
 description: AES-GCM-Verschlüsselung at rest für Object-Storage-Payloads — Schlüssel werden als einzelner Master-Key oder als versionierter Key-Ring für Online-Rotation verwaltet. Jeder Blob ist unter einem Per-persistenceId-Subkey verschlüsselt; die Schlüsselversion wird im Body-Manifest mitgeführt.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 Object-Storage-Payloads unterstützen
 **Client-Side-AES-GCM-Verschlüsselung** — das Framework
 verschlüsselt vor dem Put, entschlüsselt beim Get, Schlüssel
@@ -42,7 +44,8 @@ verschlüsseln?
 | Bedrohung | Server-Side | Client-Side |
 | --- | --- | --- |
 | Storage-Kompromittierung (jemand liest von der Disk) | ✓ | ✓ |
-| Account-Kompromittierung (jemand hat S3-Credentials) | ✗ | ✓ |
+| Account-Kompromittierung — **Lesen** (jemand hat S3-Credentials) | ✗ | ✓ |
+| Account-Kompromittierung — **Schreiben** (siehe unten) | ✗ | teilweise |
 | Cloud-Provider-Kompromittierung | ✗ | ✓ |
 | Audit / Compliance, die "wir halten die Schlüssel" verlangt | ✗ | ✓ |
 
@@ -50,6 +53,30 @@ verschlüsseln?
 kostet aber mehr (CPU pro Op, Schlüsselverwaltungs-Overhead).
 Die meisten Apps sollten beides verwenden: Server-Side als
 Baseline + Client-Side für sensible Payloads.
+
+### Was Verschlüsselung nicht abdeckt
+
+Wer in den Bucket **schreiben** kann, ist ein anderer Angreifer als
+jemand, der ihn nur lesen kann — und Verschlüsselung beantwortet nur
+die Hälfte dessen, was er tun kann.  Fälschen kann er keinen Body,
+dafür braucht es den Schlüssel; aber er kann die vorhandenen echten
+Bodies **verschieben und erneut einspielen**, und das Auth-Tag reist mit
+den Bytes mit.
+
+Zwei Ausprägungen davon, beide seit
+[#612](https://github.com/pathosDev/actor-ts/issues/612) geschlossen und
+keine davon durch Verschlüsselung allein:
+
+- **Einen Body auf ein anderes Objekt einspielen.**  Der State einer
+  `persistenceId` auf den Key einer anderen kopiert, oder ein Snapshot
+  über eine spätere Sequenznummer.  Der Storage-Key wird jetzt zusammen
+  mit dem Body authentifiziert, die Kopie verifiziert also nicht mehr —
+  siehe [Einen Body an seinen Key binden](#einen-body-an-seinen-key-binden).
+- **Einen älteren Body über einen neueren einspielen.**  Gleicher Key,
+  alles gleich, nur veraltet.  Kein Authentifikator kann das sehen: Die
+  Revision liegt *innerhalb* der authentifizierten Bytes.  Der
+  DurableState-Store führt stattdessen eine prozesslokale Untergrenze —
+  siehe [Rollback-Schutz](#rollback-schutz-durable-state).
 
 ## Konfiguration
 
@@ -339,14 +366,153 @@ während neue getaggte Snapshots entstehen — das Fenster lässt sich also
 meist nach `keepN` Saves pro `persistenceId` schließen statt nach einem
 eigenen Sweep.
 
-**Integrität und Master-Key-Rotation greifen noch nicht ineinander.**
-`reEncryptObjectStorage` übergibt keinen Integritätsschlüssel, kann
-getaggte Bodies also nicht lesen, und ein Sweep darüber scheitert
-([#739](https://github.com/pathosDev/actor-ts/issues/739)).  Schließe
-eine anstehende Schlüsselrotation ab, bevor du Integrität auf einem
-Bucket aktivierst.
+### Integrität und Master-Key-Rotation
 
-import { Aside } from '@astrojs/starlight/components';
+Die beiden greifen ineinander.  Übergib dem Sweep dieselbe
+Integritätskonfiguration, die auch der Store hat — eine flache Config
+oder genau denselben Resolver pro `persistenceId` —, und jedes Tag wird
+beim Lesen geprüft und beim Schreiben neu berechnet:
+
+```ts
+await reEncryptObjectStorage(backend, {
+  keyPrefix: 'state/',
+  keyring,
+  info: 'acme/prod/durable-state/v1',
+  integrity: { mode: 'hmac-sha256', integrityKey },
+});
+```
+
+Lässt du `integrity` bei einem getaggten Korpus weg, **verweigert der
+Sweep den Start, bevor er irgendetwas anfasst**, und nennt einen der
+betroffenen Keys: Ohne den Schlüssel kann er einen getaggten Body weder
+lesen noch zurückschreiben, und das Objekt für Objekt herauszufinden
+hinterließe einen halb rotierten Korpus
+([#739](https://github.com/pathosDev/actor-ts/issues/739)).
+
+Zwei Dinge tut der Sweep bewusst nicht:
+
+- **Er versieht keinen ungetaggten Body nachträglich mit einem Tag.**
+  Er versiegelt nur neu, was schon eines trug.  Den Rest zu befördern
+  machte jedes neu geschriebene Objekt für jeden Leser unlesbar, dem du
+  den Integritätsschlüssel noch nicht gegeben hast — und eine Rotation
+  läuft, während die Anwendung bedient.  Integrität korpusweit zu
+  aktivieren ist die Migration oben, kein Nebeneffekt einer
+  Schlüsselrotation.
+- **Er rotiert den Integritätsschlüssel selbst nicht**, und es gibt kein
+  Fenster, das es erlauben würde.  Für den Integritätsschlüssel gibt es
+  kein Versions-Byte, ein halb gesweepter Korpus wäre also nicht von
+  einem manipulierten zu unterscheiden — und `allowUntaggedBodies` hilft
+  nicht, denn es lässt Bodies *ohne* Tag wieder zu.  Ein unter dem alten
+  Schlüssel getaggter Body trägt weiterhin `FLAG_INTEGRITY_HMAC` und
+  scheitert am Vergleich, bevor dieser Zweig erreicht wird — mit neuem
+  Schlüssel wie ohne.  Der Sweep ist hier fail-closed statt still halb zu
+  rollen, was die richtige Richtung ist, aber es heißt: einen
+  sweep-förmigen Weg, den Schlüssel zu wechseln, gibt es nicht.
+
+  Was funktioniert, ist die Per-Call-Überschreibung
+  `PersistenceOptions.integrity`, lesend und schreibend getrennt:
+  `load(pid, { integrity: alt })`, dann
+  `upsert(pid, revision, state, { integrity: neu })`.  Sie wirkt pro
+  `persistenceId`, hebt über das CAS die Revision jeder Entity an und hat
+  kein Snapshot-Gegenstück.  #1354 trägt die Form, die eine echte
+  Rotation bräuchte.
+
+Einen Korpus zu sweepen, der *mitten* in der Integritätsmigration steckt
+— manche Bodies getaggt, manche nicht —, braucht `allowUntaggedBodies:
+true` auch am Sweep, aus demselben Grund wie am Store.  Ohne das hält
+der Sweep beim ersten ungetaggten Body an, statt anzunehmen, das Tag
+habe nie existiert.
+
+## Einen Body an seinen Key binden
+
+Ein Tag beantwortet „hat der Inhaber des Schlüssels diese Bytes
+erzeugt?“ und sonst nichts.  Es beantwortet nicht „wurden sie *für
+dieses Objekt* erzeugt?“ — ein echter Body, der auf einen anderen
+Storage-Key verschoben wurde, verifizierte dort also genauso.
+
+Am schwersten wog das in der reinen HMAC-Konfiguration.  `integrityKey`
+ist ein einziges flaches Geheimnis für das gesamte Deployment, ohne
+jede Ableitung pro `persistenceId`, und `load` liefert die
+**angefragte** `persistenceId` mit dem State **des Bodys** zurück.  Das
+Objekt eines Kontos auf den Key eines anderen kopiert kam also als der
+State dieses anderen Kontos zurück.  Client-Side-Verschlüsselung
+verengte das, ohne es zu schließen: HKDF salzt den Subkey mit der
+`persistenceId`, was zwei pids trennt, aber nicht zwei Objekte einer
+pid — ein Snapshot ließ sich also weiterhin auf eine andere
+Sequenznummer desselben Actors einspielen.
+
+Jeder Write bindet jetzt den Storage-Key ein.  Er geht bei einem
+verschlüsselten Body in die Additional Authenticated Data von AES-GCM
+und bei einem getaggten, längenpräfigiert, in die HMAC-Eingabe; ein
+Manifest-Bit hält fest, dass es geschehen ist.  Nichts zu konfigurieren
+— beide Object-Storage-Stores kennen den Key, auf den sie schreiben.
+
+### Die Bindung verlangen
+
+Bodies, die vor dieser Änderung geschrieben wurden, tragen keine Bindung
+und werden weiterhin dekodiert: Ein alter Bucket funktioniert weiter.
+Genau das ist auch die Lücke, denn das Bit, das „dieser Body ist
+gebunden“ sagt, ist ein Manifest-Byte wie jedes andere — ein einziger
+echter Body von vor der Bindung bleibt also ein Replay-Token für jeden
+Key im Bucket, solange ungebundene Bodies akzeptiert werden:
+
+```ts
+const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
+  .withBackend(backend)
+  .withIntegrity({ mode: 'hmac-sha256', integrityKey })
+  .withRequireContextBinding();
+```
+
+Schreibe den Korpus zuerst neu, sonst beginnen die Reads zu scheitern.
+Für DurableState ist das ein `load` + `upsert` pro `persistenceId`;
+Snapshots kommen über das `keepN`-Pruning dorthin; ein Bucket mitten in
+einer Rotation über `reEncryptObjectStorage`, das jeden passierten Body
+neu bindet und einen nicht mehr allein deshalb überspringt, weil seine
+Schlüsselversion aktuell ist.  Das schließt die Konfiguration aus HMAC
+ohne Verschlüsselung ein, in der es gar keinen Master-Key zu rotieren
+gibt: Ein solcher Body wird einmal für seinen Key neu gerahmt und bei
+jedem späteren Durchlauf in Ruhe gelassen.
+
+<Aside type="caution" title="Der Prefix gehört zum Key">
+  Die Bindung umfasst den gesamten Storage-Key, `prefix` eingeschlossen.
+  Den `prefix` eines Stores nachträglich zu ändern führt dazu, dass
+  bestehende Bodies nicht mehr verifizieren — behandle es wie eine
+  Änderung von `info` und lass notfalls `reEncryptObjectStorage` laufen.
+</Aside>
+
+## Rollback-Schutz (Durable State)
+
+Ein Replay bleibt für jeden Authentifikator unsichtbar: **derselbe**
+Body am **selben** Key, nur ein älterer.  Er wurde vom legitimen
+Schreiber erzeugt, sein Tag ist echt, und die `revision`, die ein
+Angreifer zurückdrehen will, liegt in den Bytes, die das Tag abdeckt.
+Es gibt nichts zu erkennen — außer dass dieser Prozess bereits eine
+höhere Revision gesehen hat.
+
+`ObjectStorageDurableStateStore` merkt sich diese höchste Revision pro
+`persistenceId` und weigert sich, darunter zu laden.  Standardmäßig
+aktiv:
+
+```ts
+const objectStorageDurableStateStoreOptions = ObjectStorageDurableStateStoreOptions.create()
+  .withBackend(backend)
+  .withRejectRevisionRollback(false);   // opt out
+```
+
+Zwei Grenzen, die man kennen sollte:
+
+- **Sie gilt je Store-Instanz, nicht je Prozess.**  Ein Neustart vergisst
+  die Untergrenze — und alles andere, was einen neuen Store baut, ebenso,
+  denn jeder Knoten legt seinen eigenen an.  Ein Shard-Rebalance übergibt
+  dem nächsten Schreiber daher eine kalte Untergrenze, ohne dass irgendwo
+  ein Neustart stattfand.  Eine dauerhafte Untergrenze bräuchte
+  vertrauenswürdigen Zustand außerhalb des Buckets, wofür das Framework
+  noch keine Naht hat.
+- **Sie schlägt bei einem legitimen Delete-and-Recreate eines anderen
+  Schreibers an.**  Ein neu angelegter Record beginnt wieder bei
+  Revision 1.  Ein Delete über *diesen* Store nimmt die Untergrenze mit,
+  es betrifft also nur den prozessübergreifenden Fall — und genau dafür
+  gibt es `withRejectRevisionRollback(false)`.
 
 <Aside type="caution" title="Schlüssel verlieren, Daten verlieren">
   ```ts

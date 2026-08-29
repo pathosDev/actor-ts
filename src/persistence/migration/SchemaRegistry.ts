@@ -11,9 +11,11 @@ import { MigrationError } from './Envelope.js';
  *   - **Writes** at the latest registered version using that
  *     version's codec — so encode-time validation catches bad
  *     domain values before they hit the journal.
- *   - **Reads** by looking up the stored version, decoding with
- *     that version's codec, then chaining the registered upcasters
- *     forward to the latest version.
+ *   - **Reads** its own manifest only — a stored frame tagged with
+ *     any other manifest is refused with a `MigrationError` rather
+ *     than decoded into the wrong type — then looks up the stored
+ *     version, decodes with that version's codec and chains the
+ *     registered upcasters forward to the latest version.
  *
  * Confluent-style HTTP schema registries (subject-versioned with
  * remote compat checks) are out-of-scope for v1.  The interface
@@ -56,8 +58,20 @@ import { MigrationError } from './Envelope.js';
  *     deployment time.
  */
 
-/** What a single registered version contributes to the registry. */
-export type SchemaRegistration<Wire = unknown, Upcasted = unknown> = {
+/**
+ * What a single registered version contributes to the registry.
+ *
+ * `Previous` is the previous version's domain type, inferred from the
+ * `upcastFromPrev` you pass.  It exists because the parameter used to be
+ * hard-typed `unknown`, which made the form this file documents —
+ * `(v1: DepositedV1): DepositedV2 => …` — fail to compile: a function
+ * taking `DepositedV1` is not assignable to one taking `unknown`.  The
+ * registry does not verify the claim (it hands over whatever the previous
+ * codec decoded, and stores the upcaster erased to `unknown`), exactly as
+ * `Codec<Wire>` does not verify `Wire`.  Writing `(prev: unknown) => …`
+ * still works and leaves `Previous` at its default.
+ */
+export type SchemaRegistration<Wire = unknown, Upcasted = unknown, Previous = unknown> = {
   /** Codec used to validate / shape payloads at this version. */
   readonly codec: Codec<Wire>;
   /**
@@ -65,7 +79,7 @@ export type SchemaRegistration<Wire = unknown, Upcasted = unknown> = {
    * the read path to bring data forward.  Required for any version
    * > 1 if reads from older data are expected to succeed.
    */
-  readonly upcastFromPrev?: (prev: unknown) => Upcasted;
+  readonly upcastFromPrev?: (prev: Previous) => Upcasted;
   /** Compatibility-check mode applied at register time.  Default `'none'`. */
   readonly compatibility?: 'none' | 'backward' | 'sample';
   /**
@@ -90,9 +104,9 @@ export interface SchemaRegistry {
    * registry doesn't enforce immutability, that's an operator
    * concern.
    */
-  register<Wire = unknown, Upcasted = unknown>(
+  register<Wire = unknown, Upcasted = unknown, Previous = unknown>(
     manifest: string, version: number,
-    registration: SchemaRegistration<Wire, Upcasted>,
+    registration: SchemaRegistration<Wire, Upcasted, Previous>,
   ): void;
 
   /** Look up the registration for `(manifest, version)`, if any. */
@@ -106,13 +120,25 @@ export interface SchemaRegistry {
 
   /**
    * Build an `EventAdapter` that writes at the latest registered
-   * version of `manifest` and reads any registered version by
-   * chaining upcasters forward.
+   * version of `manifest` and reads any registered version of *that
+   * same* manifest by chaining upcasters forward.  A stored frame
+   * carrying a different manifest raises a `MigrationError`: the
+   * adapter is bound to one manifest on both paths, so an actor whose
+   * event union spans manifests needs a hand-written `fromJournal`
+   * that switches on `stored.manifest` (#737).
+   *
+   * `JournalShape` follows `EventAdapter`'s own convention and defaults
+   * to the domain type — pass it only when the latest codec encodes to
+   * something else.  It used to be hard-typed `unknown`, which meant the
+   * result could not be returned from `PersistentActor.eventAdapter()`
+   * (declared `EventAdapter<Event>`): the form this file's header, the
+   * `examples/persistence/schema-registry.ts` sample and both schema
+   * registry documentation pages all show did not compile (#540).
    */
-  eventAdapter<E>(manifest: string): EventAdapter<E, unknown>;
+  eventAdapter<E, JournalShape = E>(manifest: string): EventAdapter<E, JournalShape>;
 
   /** Same as `eventAdapter` but typed for snapshot/state actors. */
-  snapshotAdapter<S>(manifest: string): SnapshotAdapter<S, unknown>;
+  snapshotAdapter<S, StoredShape = S>(manifest: string): SnapshotAdapter<S, StoredShape>;
 }
 
 /* ============================== impl ================================== */
@@ -121,9 +147,9 @@ export interface SchemaRegistry {
 export class InMemorySchemaRegistry implements SchemaRegistry {
   private readonly entries = new Map<string, Map<number, SchemaDescriptor>>();
 
-  register<Wire = unknown, Upcasted = unknown>(
+  register<Wire = unknown, Upcasted = unknown, Previous = unknown>(
     manifest: string, version: number,
-    registration: SchemaRegistration<Wire, Upcasted>,
+    registration: SchemaRegistration<Wire, Upcasted, Previous>,
   ): void {
     if (!Number.isInteger(version) || version < 1) {
       throw new Error(`SchemaRegistry.register: version must be a positive integer, got ${version}`);
@@ -151,7 +177,12 @@ export class InMemorySchemaRegistry implements SchemaRegistry {
         try {
           const wirePrev = prev.codec.encode(registration.sample);
           const decodedPrev = prev.codec.decode(wirePrev);
-          const upcasted = registration.upcastFromPrev(decodedPrev);
+          // The one place the `Previous` claim is taken on trust: what the
+          // previous codec decoded is `unknown` here, and the sample check
+          // exists precisely to find out at register time whether feeding
+          // it to this upcaster works.
+          const upcast = registration.upcastFromPrev as (prev: unknown) => Upcasted;
+          const upcasted = upcast(decodedPrev);
           // Re-encode through the new codec — if the upcasted value
           // doesn't match the new schema, the register fails loud.
           registration.codec.encode(upcasted as unknown as Wire);
@@ -196,10 +227,10 @@ export class InMemorySchemaRegistry implements SchemaRegistry {
     return out;
   }
 
-  eventAdapter<E>(manifest: string): EventAdapter<E, unknown> {
-    const adapter: EventAdapter<E, unknown> = {
+  eventAdapter<E, JournalShape = E>(manifest: string): EventAdapter<E, JournalShape> {
+    const adapter: EventAdapter<E, JournalShape> = {
       manifest: () => manifest,
-      toJournal: (event: E): OutboundFrame<unknown> => {
+      toJournal: (event: E): OutboundFrame<JournalShape> => {
         const latest = this.latestVersion(manifest);
         if (latest === undefined) {
           throw new MigrationError(
@@ -208,10 +239,33 @@ export class InMemorySchemaRegistry implements SchemaRegistry {
           );
         }
         const desc = this.get(manifest, latest)!;
-        const validated = desc.codec.encode(event as unknown);
+        // The descriptor map is heterogeneous — keyed by manifest and
+        // version, not by type — so the latest codec's wire type is not
+        // recoverable here.  `JournalShape` is the caller's claim about
+        // it, in the same way `Codec<Wire>` is a claim about the codec.
+        const validated = desc.codec.encode(event as unknown) as JournalShape;
         return { manifest, version: latest, payload: validated };
       },
       fromJournal: (stored: StoredFrame): E => {
+        // Bound to one manifest on the read path too, not just on the write
+        // path: everything below resolves from `stored.manifest`, so without
+        // this compare a row tagged with another manifest registered in the
+        // same registry decodes cleanly and returns as `E` — type confusion
+        // the caller cannot detect, since the payload is valid and the static
+        // type claims it got what it asked for.  Throwing (rather than
+        // dead-lettering) is what `MigrationChain.upcast` and `defaultsAdapter`
+        // already do, and is the only option on the recovery path anyway:
+        // `Replay` has no per-event error channel, so this surfaces through
+        // `onRecoveryFailure` like a `JournalIntegrityError` — the entity's
+        // state is not reconstructible from what is on disk.  The message
+        // avoids naming `eventAdapter` because `snapshotAdapter` delegates
+        // here (#737).
+        if (stored.manifest !== manifest) {
+          throw new MigrationError(
+            `manifest mismatch: schema-registry adapter is for '${manifest}', got '${stored.manifest}'`,
+            stored.manifest, stored.version,
+          );
+        }
         const startDesc = this.get(stored.manifest, stored.version);
         if (!startDesc) {
           throw new MigrationError(
@@ -243,8 +297,8 @@ export class InMemorySchemaRegistry implements SchemaRegistry {
     return adapter;
   }
 
-  snapshotAdapter<S>(manifest: string): SnapshotAdapter<S, unknown> {
+  snapshotAdapter<S, StoredShape = S>(manifest: string): SnapshotAdapter<S, StoredShape> {
     // Same shape as eventAdapter — keep one implementation, two types.
-    return this.eventAdapter<S>(manifest) as unknown as SnapshotAdapter<S, unknown>;
+    return this.eventAdapter<S, StoredShape>(manifest) as unknown as SnapshotAdapter<S, StoredShape>;
   }
 }

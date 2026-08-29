@@ -316,6 +316,115 @@ that wraps old-manifest events as new-manifest envelopes.  Use
 this — read from the old, write the transformed copy to a fresh
 target.
 
+### "What if the source has been compacted?"
+
+It is copied as it stands, including the compaction.  A journal
+that has been compacted past a snapshot no longer starts at
+sequence 1, and one that was compacted completely holds no events
+at all while its high-water mark still remembers the numbers it
+handed out.  `migrateBetweenJournals` reproduces both: it raises
+the target's compaction mark to just below the first surviving
+event before appending, so every event lands on the sequence
+number it had in the source.
+
+That matters because a sequence number is a **reference**, not
+just an ordinal — the paired snapshot, every read-side offset and
+every projection cursor names `(persistenceId, sequenceNr)`.
+Renumbering the surviving tail detaches all of them at once, and
+in the layout compaction normally leaves behind (the snapshot
+sitting *at* the compaction point) nothing fails loudly: recovery
+folds a later tail onto an earlier state and the actor serves
+commands from a state that never existed.
+
+Two consequences for a paired run:
+
+- **Copy the journal first, then the snapshots.**  A snapshot is
+  written at the sequence number it already has, and only means
+  anything against a journal numbered the same way.
+- **A third-party target journal must implement
+  `Journal.raiseCompactionMark`.**  All ten built-in journals do.
+  One that does not makes the copy throw `CompactedSourceError`
+  rather than renumber the stream — refusing is the only honest
+  answer a target that cannot record a mark can give.
+
+### "What if the source has tags `append` no longer accepts?"
+
+It is refused, and the refusal arrives before anything is written.
+
+Tag validation runs on writes only, so a journal written before
+those rules landed replays unchanged forever — that promise is not
+going anywhere.  A copy is where it stops being enough: it reads a
+historical list and hands it to the target's `append`, which is a
+write.  The two shapes an older release commonly left behind are an
+**empty** tag (`['orders', '']`, from a
+`[category, subCategory ?? '']` whose second slot was never filled)
+and the **same tag twice**.
+
+`migrateBetweenJournals` walks the source in a read-only preflight
+first, so it refuses with `MigrationTagError` — naming the
+persistence ID and the sequence number — with the target and the
+progress store still untouched.  What it used to do was worse than
+refusing: it met the bad list on the `append` that rejected it,
+leaving a partly populated target, one truncated stream, and
+progress entries claiming the streams before it were done.  A
+re-run with `skipExistingPersistenceIds` then walked straight past
+the truncated one, because the target held *some* data for it.
+
+Two ways through.  Rewrite the lists yourself:
+
+```ts
+await migrateBetweenJournals(oldJournal, newJournal, {
+  eventTransform: (e) => ({ ...e, tags: e.tags?.filter((tag) => tag.length > 0) }),
+});
+```
+
+Or opt into the two repairs that need no judgement — an empty
+member dropped, a repeat collapsed:
+
+```ts
+const copied = await migrateBetweenJournals(oldJournal, newJournal, {
+  invalidTags: 'sanitize',
+});
+console.log(`${copied.eventsWithSanitizedTags} tag lists rewritten`);
+```
+
+The count is in the result on purpose: repairing historical data is
+a change to it, so a run that expected clean tags can assert the
+number is zero.  `'sanitize'` stops there — a comma, a control
+character, an over-long tag or too many tags on one event still
+refuse under it, because repairing those means inventing a tag or
+discarding one the caller meant.  `eventTransform` is where that
+decision belongs, in code someone can read.
+
+The preflight covers every refusal the copy has, not only tags: a
+hole in the source's sequence numbers and a compacted prefix the
+target cannot represent are decided there too.  It costs one extra
+read of the source — on a resume, only of what is left to copy.
+
+### "My snapshots are encrypted — does the copy handle that?"
+
+Only if you tell it which keys to use, and you tell it **twice**:
+
+```ts
+await migrateBetweenSnapshotStores(oldSnapshots, newSnapshots, {
+  persistenceIds: await oldJournal.persistenceIds(),
+  sourcePersistenceOptions: { encryption: oldEncryption },
+  targetPersistenceOptions: { encryption: newEncryption },
+});
+```
+
+The two sides are separate on purpose: a re-key sweep is an
+ordinary reason to migrate, so source and target routinely hold
+different keys or keyrings.
+
+You only need these when the master key is supplied **per call**
+— by a `PersistentActor`'s `encryption()` hook, say.  A store
+built with `withEncryption(...)` falls back to its own
+configuration and needs neither.  But do not omit
+`targetPersistenceOptions` on a target that encrypts per call:
+the write silently resolves to `{ mode: 'none' }` and the
+migrated snapshot lands in the bucket as plaintext.
+
 ---
 
 ## Reference

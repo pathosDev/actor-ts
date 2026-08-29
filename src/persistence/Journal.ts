@@ -1,5 +1,6 @@
 import type { JournalEventBus } from './JournalEventBus.js';
-import type { PersistentEvent } from './JournalTypes.js';
+import type { JournalEntry, PersistentEvent } from './JournalTypes.js';
+import type { StorageLocality } from './StorageLocality.js';
 
 /**
  * Pluggable event journal — the persistence-plugin boundary.  Core ships
@@ -9,16 +10,20 @@ import type { PersistentEvent } from './JournalTypes.js';
  */
 export interface Journal {
   /**
-   * Append `events` to the stream of `persistenceId`, enforcing optimistic
+   * Append `entries` to the stream of `persistenceId`, enforcing optimistic
    * concurrency: the current highest sequence number MUST equal `expectedSeq`
    * or the call throws `JournalConcurrencyError`.  Returns the written events
    * with their assigned sequence numbers.
+   *
+   * **Tags are per entry, not per batch** ({@link JournalEntry}).  A batch is
+   * still one atomic append — splitting it by tag set is explicitly not the
+   * contract (#959) — but each event carries only the tags it was given, and
+   * the per-event tag cap is enforced per event rather than per call (#631).
    */
   append<E = unknown>(
     persistenceId: string,
-    events: ReadonlyArray<E>,
+    entries: ReadonlyArray<JournalEntry<E>>,
     expectedSeq: number,
-    tags?: ReadonlyArray<string>,
   ): Promise<PersistentEvent<E>[]>;
 
   /**
@@ -53,10 +58,79 @@ export interface Journal {
    * a snapshot.  Only ever a prefix, so what survives is a suffix that
    * `read` still returns contiguously, and sequence numbers never rewind:
    * `highestSeq` keeps reporting the high-water mark afterwards.
+   *
+   * **A deleted event must leave the read side too** (#654).  Whatever a
+   * backend maintains so that `currentEventsByTag` can answer without
+   * scanning the journal — a join table, a side table, a secondary index —
+   * is part of what `delete` compacts.  This is easy to miss precisely
+   * because it is invisible to `read` and `highestSeq`: the two things a
+   * delete test naturally asserts still pass while a by-tag query keeps
+   * serving the event, and where that structure carries its own copy of the
+   * payload (Cassandra's `events_by_tag`) the bytes are retained as well, so
+   * the miss is a data-retention defect and not only a stale read.  Backends
+   * whose index is over the event record itself (Mongo's multikey `tags`)
+   * satisfy this for free; ones with a separate physical structure must
+   * delete from it explicitly, and before the events, so a crash mid-delete
+   * cannot strand rows whose key can no longer be reconstructed.
    */
   delete(persistenceId: string, toSeq: number): Promise<void>;
 
-  /** Persistence IDs currently known to the journal (useful for projections). */
+  /**
+   * Raise the compaction high-water mark to `throughSeq` without deleting
+   * anything — the write half of what `delete` leaves behind, for a stream
+   * whose prefix was compacted somewhere else.
+   *
+   * **Monotonic.**  A `throughSeq` at or below the current mark is a no-op,
+   * never a rewind: a sequence number handed out once may never be handed
+   * out again, which is why every backend's underlying primitive is a
+   * `GREATEST` / `MAX` / `$max` / conditional update rather than a plain
+   * assignment.
+   *
+   * **Why the contract needs it.**  A journal-to-journal copy is the caller
+   * (#630).  `append` derives the sequence it writes from `expectedSeq`
+   * alone, so copying a compacted stream — one whose first surviving event
+   * is 5, not 1 — into a fresh target renumbered it from 1, and the paired
+   * snapshot then referred to a sequence that no longer meant what it said:
+   * either loud (`SnapshotIntegrityError`) or, in the layout
+   * `PersistentActor.deleteHistory` actually produces, silent, folding the
+   * wrong tail onto the snapshot's state.  Seeding the mark first makes the
+   * target's `expectedSeq` line up with the source's numbering, so the copy
+   * preserves it and every read-side offset, projection cursor and snapshot
+   * that refers to `(persistenceId, sequenceNr)` still points at the same
+   * event.
+   *
+   * **Optional, and absence is meaningful.**  Every in-tree journal
+   * implements it — all of them already store the mark (`deleted_to`,
+   * `deletedTo`, `max_sequence_nr`); they simply had no way to be told one.
+   * A third-party journal that cannot record a mark independently of its
+   * events omits the method, and `migrateBetweenJournals` refuses a
+   * compacted stream rather than silently renumbering it.
+   */
+  raiseCompactionMark?(persistenceId: string, throughSeq: number): Promise<void>;
+
+  /**
+   * Persistence IDs currently known to the journal (useful for projections).
+   * Distinct — one entry per id, not one per event.
+   *
+   * **Whether a fully compacted stream still enumerates is deliberately not
+   * specified** (#654), and the two in-tree answers are both intentional.
+   * `InMemoryJournal` and `CassandraJournal` keep the id: a stream whose
+   * events are all gone but whose high-water mark stands is *known to the
+   * journal*, just without surviving history, and `raiseCompactionMark`
+   * materialises exactly that shape.  The backends that enumerate by reading
+   * their events table — SQLite, the relational family, Mongo, DynamoDB —
+   * drop it, because for them "known" and "holds an event" are the same
+   * query.
+   *
+   * The difference is observable, and one caller cares:
+   * `migrateBetweenJournals` walks the source with this method, so on a
+   * journal of the first kind a fully compacted stream carries its mark
+   * across the copy and on one of the second kind it is not visited at all.
+   * Do not build on either answer without passing an explicit
+   * `persistenceIds` list. Converging them means teaching the second group
+   * to enumerate a mark-only stream — a separate change, not something to
+   * settle by dropping the row on the first group.
+   */
   persistenceIds(): Promise<string[]>;
 
   /**
@@ -93,6 +167,32 @@ export interface Journal {
    * the polling loop.
    */
   readonly events?: JournalEventBus;
+
+  /**
+   * Where this journal's data lives relative to cluster nodes — `'node-local'`
+   * storage no other node can reach, or a `'shared'` database service.  See
+   * {@link StorageLocality} for the full semantics.  Optional, and absence is
+   * meaningful like {@link raiseCompactionMark}: an undeclared journal is
+   * unknown, and the cluster's storage advisory stays silent instead of
+   * guessing (#1356).  Instance-level on purpose — one in-memory journal
+   * shared across in-process systems genuinely is `'shared'`.
+   */
+  readonly storageLocality?: StorageLocality;
+
+  /**
+   * The identity of the database behind this journal — a random value minted
+   * on first contact and persisted **in the database itself**, stable across
+   * restarts and identical for every store that opens the same database.  It
+   * answers the question {@link storageLocality} cannot: whether two nodes'
+   * `'shared'`-capable stores actually reached the *same instance* (#1358).
+   * Two nodes each on their own Postgres mint two identities; the cluster
+   * compares them and says so out loud.
+   *
+   * Optional like the locality, and absence means unknown.  Implementations
+   * may reject (missing DDL rights, operator-managed schema) — callers treat
+   * a rejection as unknown, never as fatal.
+   */
+  storageIdentity?(): Promise<string>;
 
   /** Best-effort teardown; idempotent. */
   close?(): Promise<void>;

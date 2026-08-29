@@ -155,6 +155,64 @@ three pods will settle happily on the wrong set.  The default of `1`
 exists so single-node development needs no configuration; in production
 set it to the replica count you expect.
 
+## Waiting for readiness
+
+A resolved `bootstrapCluster` means a **ready** cluster: this node is a
+full member (`up`) and at least `minimum-members` members are up.  When
+that is not reached within the budget, the bootstrap runs the
+coordinated-shutdown pipeline and rejects with a
+`ClusterReadyTimeoutError` naming self's status, the up count and the
+bar — it never resolves for a node that is still `joining`.
+
+```ts
+const bootstrapOptions = ClusterBootstrapOptions.create('my-app')
+  .withHost(process.env.POD_IP!)
+  .withDiscovery('kubernetes')
+  .withStableObservation(true)
+  .withAwaitReady({ minimumMembers: 3, timeoutMs: 30_000 });
+const node = await bootstrapCluster(bootstrapOptions);
+node.formedNewCluster; // false — joined an existing cluster rather than founding one
+```
+
+`awaitReady` takes `true` (the default — wait with the computed budget),
+`false` or `0` (skip the wait), a number (the budget in ms), or the
+options bag above.  Unset fields fall through to HOCON and then to the
+computed budget:
+
+| Field | Default | What |
+| --- | --- | --- |
+| `minimumMembers` | 1 | Fewest `up` members — self included — before the cluster counts as ready.  Size it like `requiredContactPoints`: to the replica count. |
+| `timeoutMs` | derived | `await-ready` when set; else `self-election-grace` + 5 s behind stable observation — the budget every node's readiness actually hangs on, winner or not — else a flat 5 s. |
+
+```hocon
+actor-ts.cluster.bootstrap {
+  minimum-members = 3
+  # await-ready   = 30s   # unset selects the grace-aware computed default
+}
+```
+
+The same wait exists standalone — after a hand-wired `Cluster.join`, or
+later in the process before a rebalancing-sensitive step:
+
+```ts
+await cluster.awaitReady({ minimumMembers: 3, timeoutMs: 30_000 });
+cluster.isReady();      // synchronous probe of the same predicate
+cluster.selfMember();   // this node's own record, tombstone included
+cluster.selfElected;    // true — this node founded its cluster
+```
+
+Without `timeoutMs` the promise waits indefinitely, like
+`system.whenTerminated()` — pair it with a deadline wherever the cluster
+may legitimately never form; a node that has left or been removed never
+becomes ready.  Readiness here deliberately means *membership*:
+app-registered readiness checks (the `/ready` endpoint's aggregate) may
+depend on initialisation that runs after bootstrap, so waiting on them
+could deadlock the very call that comes first.  `/ready` stays the load
+balancer's view; `awaitReady` is the in-process one.
+
+To restore the old fire-and-forget shape, pass `awaitReady: false` and
+watch membership yourself via `cluster.awaitReady().catch(…)`.
+
 ## What it refuses to do
 
 <Aside type="caution" title="It throws rather than joining anyway">
@@ -170,10 +228,21 @@ set it to the replica count you expect.
 <Aside type="caution" title="It refuses a wildcard advertised host">
   The election is ordered on this node's address, so that address has
   to be the one peers dial.  `0.0.0.0` (and `::`, and an empty string)
-  is a *bind* address: every node that fell back to it sorts
-  identically, every node believes it won, and every node forms its own
-  cluster.  The phase rejects it up front.  Set `withHost(...)`
-  explicitly, or the `CLUSTER_HOST` / `POD_IP` environment variable.
+  is a *bind* address: every node that claimed it would sort
+  identically, every node would believe it won, and every node would
+  form its own cluster.  The phase rejects it up front.
+
+  Getting there takes deliberate effort, because a wildcard bind host no
+  longer becomes a wildcard identity: with `withHost('0.0.0.0')` and
+  nothing else, the advertised address resolves through `CLUSTER_HOST` /
+  `POD_IP` / `HOSTNAME` and then to loopback.  What this guard catches is
+  a `withAdvertisedHost('0.0.0.0')` written on purpose — and a
+  hand-built `NodeAddress` handed straight to `StableObservation`, which
+  never passes through that chain.
+
+  In production, name it: bind `0.0.0.0`, advertise `POD_IP`.  Loopback
+  keeps a single-node run working; it does not make a second node
+  reachable.
 </Aside>
 
 ## Bootstrap or a plain seed join?

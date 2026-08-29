@@ -133,6 +133,10 @@ describe('Cluster bootstrap — stable observation', () => {
     });
     const targets = await observation.resolveJoinTargets();
     expect(targets.isInitialSeed).toBe(true);
+    // Bind the DEFERRAL, not just the win: a regression to 'immediate' is a
+    // no-op on this join path (non-empty seeds), so the counts below would
+    // still reach 3 and the title's claim would go unproven (#1087).
+    expect(targets.selfElection).toBe(10_000);
 
     const newcomerSystem = quietSystem(name);
     const newcomerOptions = fastCluster(ClusterOptions.create()
@@ -151,6 +155,11 @@ describe('Cluster bootstrap — stable observation', () => {
       () => existing.every((cluster) => cluster.upMembers().length === 3),
       { timeoutMs: 3_000, intervalMs: 20, label: 'the existing cluster absorbed the newcomer' },
     );
+    // The mechanism, not the merge: selfElect() provably never fired — the
+    // newcomer reached `up` through the running cluster's leader.  A rival
+    // cluster that gossip later merged would reach the same counts with
+    // `selfElected === true`, which is exactly the blind spot #1087 names.
+    expect(newcomer.selfElected).toBe(false);
 
     await newcomer.leave();
     await newcomerSystem.terminate();
@@ -190,6 +199,10 @@ describe('Cluster bootstrap — stable observation', () => {
     const self = loser.getMembers().find((member) => member.address.equals(loser.selfAddress));
     expect(self?.status).toBe('joining');
     expect(loser.upMembers()).toHaveLength(0);
+    // The two policies, told apart by the mechanism observable: the winner
+    // founded (its grace expired and selfElect fired), the loser never did.
+    expect(winner.selfElected).toBe(true);
+    expect(loser.selfElected).toBe(false);
 
     await loser.leave();
     await winner.leave();
@@ -272,16 +285,27 @@ describe('bootstrapCluster — stableObservation', () => {
       { timeoutMs: 6_000, intervalMs: 20, label: 'all three bootstrapped nodes joined one cluster' },
     );
 
+    // Exactly one founder — the elected lowest address; the other two were
+    // promoted into its cluster.  Everyone reports ready (#1087, end to end).
+    expect(started.map(({ cluster }) => cluster.selfElected)).toEqual([true, false, false]);
+    expect(started.map((node) => node.formedNewCluster)).toEqual([true, false, false]);
+    expect(started.every(({ cluster }) => cluster.isReady())).toBe(true);
+
     for (const { shutdown } of started) await shutdown();
   }, 30_000);
 
   test('refuses to elect on a wildcard advertised host', async () => {
-    // `resolveHost`'s last-resort '0.0.0.0' is a bind address, not an
-    // identity: ordered on it, every node sorts first (#944).  The phase says
-    // so instead of running a meaningless election.
+    // A bind address is not an identity: ordered on it, every node sorts first
+    // (#944).  The phase says so instead of running a meaningless election.
+    //
+    // The wildcard has to be named as the *advertised* host to get here.  A
+    // bare `withHost('0.0.0.0')` no longer reaches this guard at all —
+    // `resolveAdvertisedHost` turns it into a dialable address before the
+    // election ever sees it, which is the other half of the same fix.
     const name = 'stable-wildcard';
     const bootstrapOptions = ClusterBootstrapOptions.create(name)
       .withHost('0.0.0.0')
+      .withAdvertisedHost('0.0.0.0')
       .withPort(56501)
       .withSeeds([`${name}@h:56502`])
       .withStableObservation(true)

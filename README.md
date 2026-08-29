@@ -5,7 +5,7 @@
 <p align="center">
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml"><img alt="build workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/build.yml/badge.svg?branch=main"/></a>
   <a href="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml"><img alt="tests workflow" src="https://github.com/pathosDev/actor-ts/actions/workflows/test.yml/badge.svg?branch=main"/></a>
-  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-6251%20of%206251-22c55e?style=flat-square&logo=bun"/></a>
+  <a href="#"><img alt="tests" src="https://img.shields.io/badge/tests-8440%20of%208440-22c55e?style=flat-square&logo=bun"/></a>
   <a href="#"><img alt="coverage" src="https://img.shields.io/badge/coverage-~93%25-22c55e?style=flat-square"/></a>
 </p>
 
@@ -28,10 +28,18 @@
 > the actor-model stack (actors, supervision, cluster, sharding, persistence,
 > HTTP) to TypeScript, running on Bun, Node.js, and Deno.  Large parts were
 > written with AI pair-programming and **have not been battle-tested in
-> production**.  Test coverage is good (~6251 tests, ~93 % line) but the
+> production**.  Test coverage is good (~8440 tests, ~93 % line) but the
 > surface area is enormous.  **Do not deploy this to anything that matters
 > yet.**  Use it to learn, to prototype, to benchmark ideas — not to handle
 > real money, users, or data.
+>
+> Those figures are measured on GitHub's hosted runners, where **three
+> multi-node suites are skipped** — Bun there cannot respawn functional
+> worker threads after the first worker test, so `ACTOR_TS_SKIP_FLAKY_MNS=1`
+> removes `LeaseMajority`, `ParallelPubSub` and the `ParallelMultiNodeSpec`
+> self-tests from the run.  They execute on a local `bun test` and in Docker,
+> and a nightly job re-runs them with the flag off; see
+> [Diagnosing test flakes](https://actor-ts.dev/testing/diagnosing-flakes/).
 
 ---
 
@@ -47,13 +55,15 @@ A short tour of what's in the box:
 - **Actors** — single-threaded per-mailbox processing, lifecycle hooks, stash,
   timers, become/unbecome, supervision (restart / resume / stop / escalate).
 - **Cluster** — gossip membership, φ-accrual failure detection, split-brain
-  resolvers, weakly-up, multiple transports (TCP, MessageChannel, in-memory).
+  resolvers, weakly-up, readiness gating (`cluster.awaitReady`), multiple
+  transports (TCP, MessageChannel, in-memory).
 - **Cluster sharding + singleton + pub-sub + reliable delivery + receptionist**
   — production patterns from the actor-model tradition.
 - **Distributed Data** — nine CRDTs (counters, registers, sets, maps) with
   durable-storage backend, quorum reads/writes, automatic gossip.
-- **Persistence** — `PersistentActor`, `DurableState`, snapshots, projections,
-  persistence-query, replicated event sourcing.  Journals for in-memory,
+- **Persistence** — `PersistentActor`, `DurableState`, snapshots, projections
+  (with a per-projection handler-failure strategy: retry with backoff, skip to
+  dead letters, or stop), persistence-query, replicated event sourcing.  Journals for in-memory,
   SQLite (built-in driver on every runtime — `bun:sqlite`, `node:sqlite`, or
   `better-sqlite3`), libSQL / Turso, PostgreSQL, MariaDB,
   Microsoft SQL Server, MongoDB, DynamoDB, Cloudflare D1,
@@ -73,7 +83,8 @@ A short tour of what's in the box:
   `getFromDirectory` — MIME detection, conditional requests, Range,
   directory browsing).
 - **Message brokers** — single `BrokerActor` base with Kafka, MQTT, AMQP,
-  NATS, Redis-Streams, gRPC, SSE, raw TCP/UDP integrations.
+  NATS, Redis-Streams, gRPC, SSE, raw TCP/UDP and IMAP/SMTP email
+  integrations.
   Reconnect-with-backoff, outbound buffer, subscriber fan-out are baked in.
 - **Caching** — pluggable Cache with in-memory, Redis, Memcached backends.
 - **Typed options + fail-fast validation** — one fluent `XOptions` builder per
@@ -97,6 +108,12 @@ A short tour of what's in the box:
   (a `JSON.stringify` for log and error paths that cannot throw),
   `lazyImportModule` (import an optional peer dependency, or fail with a
   message naming the install command).
+- **Dead letters** — every undeliverable message is published on the event
+  stream naming the actor it failed to reach.  Opt in to
+  `system.deadLetterQueue` and they are also *kept*: a bounded ring, or a
+  journal-backed one that survives a restart, filterable by recipient and
+  time and replayable by id — with a replay cap so a poison message cannot
+  be retried into an ever-growing queue.
 - **Observability** — Prometheus exporter, OTel tracing, management
   HTTP endpoints (`/health`, `/ready`, `/cluster/members`, `/sharding/regions`),
   out-of-the-box stock metrics.
@@ -111,9 +128,17 @@ A short tour of what's in the box:
 - **DevTools** — `DevTools.attach(system)` opens an embedded web UI: live
   actor tree and mailbox depths, cluster topology and shard distribution,
   a span flame graph, a per-actor explain plan, time travel over a
-  persistence journal, and a profiler.  Vanilla TypeScript bundled into the
-  package — no UI framework, no CDN.  Loopback-only and unauthenticated by
-  default, and it refuses a routable bind without a gate.
+  persistence journal, a profiler, a dead-letter inspector, and a live tail
+  of the event bus, and a resolved-configuration inspector.  One **Pause**
+  in the header stops every panel at once — and the clock they are read
+  against, so a stopped actor is still on screen when you get to it.  It
+  reads only — sending a message into the system is a separate,
+  off-by-default acknowledgement.  Built with
+  Angular and ECharts and embedded as a gzipped bundle — both are
+  build-time only, so neither appears in this package's dependencies and
+  the served page loads nothing over the network.  Loopback-only and
+  unauthenticated by default, and it refuses a routable bind without a
+  gate.
 - **TestKit** — `TestProbe`, `ManualScheduler`, `MultiNodeSpec` for
   deterministic tests including cluster scenarios.
 
@@ -145,7 +170,6 @@ const ref    = system.spawn(Greeter, 'greeter');
 
 ref.tell('world');
 
-await new Promise(r => setTimeout(r, 20));
 await system.terminate();
 ```
 
@@ -380,6 +404,67 @@ Run either with `bun examples/chat/backend/main.ts --port 2551` (then
 
 ---
 
+## Benchmarks
+
+Measured rather than asserted: one machine, one harness, one workload, a
+hundred interleaved rounds, and every row verified against work the system
+actually completed rather than work it was asked for.  Each figure is the mean
+of those rounds; 🥇 marks the best value in its row.
+
+Bun 1.3.14 · 10 cores of an Intel i9-12900K · Linux.
+
+### Against JavaScript
+
+| Scenario                    | actor-ts        | nact          | XState   |
+| --------------------------- | --------------- | ------------- | -------- |
+| tell throughput (batch 1k)  | **13.82M/s** 🥇 | 1.59M/s       | 878k/s   |
+| tell throughput (batch 10k) | **19.05M/s** 🥇 | 1.64M/s       | 961k/s   |
+| ping-pong (10k exchanges)   | **2.82M/s** 🥇  | 811k/s        | 508k/s   |
+| spawn → started → stopped   | 355k/s          | **698k/s** 🥇 | 332k/s   |
+| ask round-trip (p50)        | **0.9 µs** 🥇   | 1.5 µs        | 2.2 µs * |
+
+<sub>\* XState has no request/response primitive — that row is `send` plus a
+snapshot wait.</sub>
+
+### Against the JVM
+
+Each framework appears through both its Java and its Scala API at the same
+pinned version, so a gap inside a pair is the language binding.
+
+| Scenario                    | actor-ts (Bun)  | Akka (Java) | Akka (Scala) | Pekko (Java) | Pekko (Scala) |
+| --------------------------- | --------------- | ----------- | ------------ | ------------ | ------------- |
+| tell throughput (batch 1k)  | **13.82M/s** 🥇 | 7.23M/s     | 5.37M/s      | 6.76M/s      | 4.34M/s       |
+| tell throughput (batch 10k) | **19.05M/s** 🥇 | 9.18M/s     | 9.03M/s      | 9.36M/s      | 9.37M/s       |
+| ping-pong (10k exchanges)   | **2.82M/s** 🥇  | 1.99M/s     | 1.94M/s      | 1.99M/s      | 1.99M/s       |
+| spawn → started → stopped   | **355k/s** 🥇   | 105k/s      | 97k/s        | 102k/s       | 90k/s         |
+| ask round-trip (p50)        | **0.9 µs** 🥇   | 3.7 µs      | 3.5 µs       | 3.6 µs       | 3.5 µs        |
+| Licence                     | MIT             | BUSL-1.1    | BUSL-1.1     | Apache-2.0   | Apache-2.0    |
+
+### Against .NET
+
+| Scenario                    | actor-ts (Bun)  | Akka.NET (C#) | Orleans (C#) |
+| --------------------------- | --------------- | ------------- | ------------ |
+| tell throughput (batch 1k)  | **13.82M/s** 🥇 | 5.96M/s       | 695k/s       |
+| tell throughput (batch 10k) | **19.05M/s** 🥇 | 6.37M/s       | 792k/s       |
+| ping-pong (10k exchanges)   | **2.82M/s** 🥇  | 499k/s        | 357k/s       |
+| spawn → started → stopped   | **355k/s** 🥇   | 85k/s         | 30k/s ‡      |
+| ask round-trip (p50)        | **0.9 µs** 🥇   | 3.2 µs        | 5.5 µs       |
+| Licence                     | MIT             | Apache-2.0    | MIT          |
+
+<sub>‡ Orleans has no caller-visible create or stop; grains activate on first
+call, so that row is activation latency rather than a comparable lifecycle.</sub>
+
+These are **ratios, not absolutes**, on one machine, over local in-process
+message paths only — nothing here says anything about clustering, persistence
+or a real network.
+
+**[Full tables and methodology](./benchmarks/comparison/RESULTS.md)** ·
+**[what the numbers mean](https://actor-ts.dev/reference/benchmarks/)** — the
+spread behind every figure, the pinned version of every arm, and what is
+deliberately not measured yet.  Reproduce with
+`bun run bench:compare -- --rounds=100`.
+
+---
 ## Roadmap & status
 
 See [`ROADMAP.md`](./ROADMAP.md) for what's done and what's planned.  The
@@ -387,7 +472,10 @@ See [`ROADMAP.md`](./ROADMAP.md) for what's done and what's planned.  The
 bumps are potentially breaking; check the changelog before upgrading.
 
 Issues and feature requests live on
-[GitHub](https://github.com/pathosDev/actor-ts/issues).
+[GitHub](https://github.com/pathosDev/actor-ts/issues).  A vulnerability
+goes through [`SECURITY.md`](./SECURITY.md) instead, which names the
+private reporting channel, the supported versions, and what is in and out
+of scope.
 
 ---
 

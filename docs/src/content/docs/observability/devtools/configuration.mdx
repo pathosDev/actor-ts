@@ -1,0 +1,64 @@
+---
+title: Configuration
+description: Every resolved HOCON key, its effective value, and which layer put it there — the bundled default, application.conf, or a code override.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+A merged configuration tree answers *what is this setting now*. The
+question that actually brings you here is *why is it not what I wrote* —
+and that needs the layer as well as the value.
+
+| Column | Meaning |
+| --- | --- |
+| **key** | Full dotted path, e.g. `actor-ts.cluster.seed-nodes` |
+| **value** | The effective value, after the merge |
+| **from** | Which layer won: `reference.conf`, `application.conf`, or `code` |
+
+Hover a row for the whole story: the layer, whether it displaced a lower
+one, and whether the value was truncated for the wire.
+
+**Changed from defaults only** hides everything still at its bundled
+value, which is usually all but a handful of keys. If that leaves the
+table empty, the panel says so — nothing overriding the defaults is a
+worthwhile answer in itself, and a different one from "no key matches
+that filter".
+
+## The three layers
+
+Precedence, highest first:
+
+1. **`code`** — what you passed as `ActorSystemOptions.config`.
+2. **`application.conf`** — resolved from `configFile`, then
+   `ACTOR_TS_CONFIG`, then `./application.conf`.
+3. **`reference.conf`** — bundled with the package.
+
+The panel names where `application.conf` was read from, or says none was
+found. That distinction matters more than it looks: *my file is being
+ignored* and *my file says something else* are different problems, and
+the path is what separates them.
+
+<Aside type="note" title="Code options are not HOCON">
+Per-consumer options — `MqttOptions.create().withQos(1)`, and every other
+`XOptions` builder — override HOCON at the call site and never pass
+through the configuration tree.  So a key shown here may still be
+overridden by an explicit option in your code, and this panel cannot see
+that.  What it shows is the HOCON resolution, exactly.
+</Aside>
+
+## Secrets
+
+A value whose **key** names a secret — anything matching `pass`,
+`secret`, `token`, `key`, `credential` or `auth` — is replaced with
+`<redacted>` before it leaves the process. By key rather than by value,
+because a password that happens to look ordinary is still a password and
+the key is what names it.
+
+That is a blunt instrument on purpose. A configuration tree still says a
+great deal about a deployment even redacted — hosts, ports, seed nodes,
+storage paths — so switch the panel off where that matters:
+
+```ts
+const devtoolsOptions = DevToolsOptions.create()
+  .withPanels({ config: false });
+```

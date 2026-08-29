@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { promClientRegistry } from '../../../src/metrics/PromClientAdapter.js';
 import { PromClientAdapterOptions } from '../../../src/metrics/PromClientAdapterOptions.js';
-import { METRICS_OVERFLOW_LABEL_VALUE } from '../../../src/metrics/Metrics.js';
+import { METRICS_OVERFLOW_LABEL_VALUE, isCollectable } from '../../../src/metrics/Metrics.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
 /**
@@ -33,6 +33,8 @@ type FakePromMetric = {
     registers?: unknown[];
   };
   readonly calls: RecordedCall[];
+  /** Tuples handed to `remove` — prom-client's own per-child eviction. */
+  readonly removed: Record<string, string | number>[];
 };
 
 interface FakePromRegistry {
@@ -62,10 +64,11 @@ function makeFakeClient(reg: FakePromRegistry): {
   }
   function instance(type: 'counter' | 'gauge' | 'histogram', allowed: RecordedCall['type'][]) {
     return function FakeMetric(this: Record<string, unknown>, options: FakePromMetric['options']) {
-      const metric: FakePromMetric = { options, calls: [] };
+      const metric: FakePromMetric = { options, calls: [], removed: [] };
       reg.registered.push(metric);
       this['__metric'] = metric;
       this['labels'] = (labels: Record<string, string | number>) => makeChild(metric, labels, allowed);
+      this['remove'] = (labels: Record<string, string | number>) => { metric.removed.push(labels); };
       // Direct (no-labels) mutators land on `{}`-keyed series.
       if (allowed.includes('inc')) this['inc'] = (v: number = 1) => metric.calls.push({ type: 'inc', labels: {}, value: v });
       if (allowed.includes('dec')) this['dec'] = (v: number = 1) => metric.calls.push({ type: 'dec', labels: {}, value: v });
@@ -180,6 +183,60 @@ describe('promClientRegistry', () => {
       'actor_ts_members_up',
       'actor_ts_messages_delivered_total',
     ]);
+  });
+
+  test('remove forwards to prom-client and frees the slot it held (#745)', () => {
+    const reg = makeFakeRegistry();
+    const client = makeFakeClient(reg);
+    const promOptions = PromClientAdapterOptions.create()
+      .withClient(client as never)
+      .withRegistry(reg)
+      .withMaxSeriesPerFamily(2);
+    const adapted = promClientRegistry(promOptions);
+
+    adapted.gauge('depth', { path: '/a' }).set(1);
+    adapted.gauge('depth', { path: '/b' }).set(2);
+
+    expect(adapted.remove('depth', { path: '/a' })).toBe(true);
+    const metric = reg.registered.find((m) => m.options.name === 'depth')!;
+    expect(metric.removed).toEqual([{ path: '/a' }]);
+
+    // The freed slot is the point: without dropping the tuple from the
+    // bridge's own tally the family would still read as full and fold the
+    // next path into `__overflow__`.
+    adapted.gauge('depth', { path: '/c' }).set(3);
+    const written = metric.calls.map((c) => String(c.labels['path']));
+    expect(written).toEqual(['/a', '/b', '/c']);
+    expect(written).not.toContain(METRICS_OVERFLOW_LABEL_VALUE);
+  });
+
+  test('remove answers false for tuples this bridge never minted, and never for the overflow one', () => {
+    const reg = makeFakeRegistry();
+    const client = makeFakeClient(reg);
+    const promOptions = PromClientAdapterOptions.create()
+      .withClient(client as never)
+      .withRegistry(reg)
+      .withMaxSeriesPerFamily(1);
+    const adapted = promClientRegistry(promOptions);
+
+    adapted.counter('hits', { route: '/a' }).inc();
+    const originalWarn = console.warn;
+    console.warn = (): void => {};
+    try {
+      adapted.counter('hits', { route: '/b' }).inc();   // folds into overflow
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    expect(adapted.remove('nothing-here', { route: '/a' })).toBe(false);
+    expect(adapted.remove('hits', { route: '/b' })).toBe(false);
+    // The overflow tuple is deliberately never counted against the cap, so it
+    // is not in the tally either — which is what refuses it here, with no
+    // special case of its own.
+    expect(adapted.remove('hits', { route: METRICS_OVERFLOW_LABEL_VALUE })).toBe(false);
+
+    const metric = reg.registered.find((m) => m.options.name === 'hits')!;
+    expect(metric.removed).toEqual([]);
   });
 
   test('registering the same name with two types throws', () => {
@@ -346,5 +403,48 @@ describe('promClientRegistry — cardinality cap', () => {
       .withRegistry(registry)
       .withMaxSeriesPerFamily(-5);
     expect(() => promClientRegistry(badOptions)).toThrow(OptionsError);
+  });
+});
+
+/**
+ * The bridge's read-back side (#744).
+ *
+ * `collect()` returning `[]` was always the intent, and until now nothing
+ * asserted it in either direction — so neither the choice nor an accidental
+ * regression of it would have been visible.  What was missing besides the
+ * assertion is the *declaration*: the framework's own readers went through
+ * `collect()` and had no way to tell an empty snapshot from an idle system.
+ *
+ * `tests/unit/metrics/NonCollectableRegistry.test.ts` covers what those
+ * readers do about it; this pins the bridge to the shape they look for.
+ */
+describe('promClientRegistry — collect() is not a source of truth', () => {
+  function bridge(): { registry: FakePromRegistry; adapted: ReturnType<typeof promClientRegistry> } {
+    const registry = makeFakeRegistry();
+    const client = makeFakeClient(registry);
+    const promOptions = PromClientAdapterOptions.create()
+      .withClient(client as never)
+      .withRegistry(registry);
+    return { registry, adapted: promClientRegistry(promOptions) };
+  }
+
+  test('declares itself non-collectable', () => {
+    expect(bridge().adapted.collectable).toBe(false);
+    expect(isCollectable(bridge().adapted)).toBe(false);
+  });
+
+  test('collect() stays empty even after the writes landed on prom-client', () => {
+    const { registry, adapted } = bridge();
+    adapted.counter('hits_total', { node: 'a' }, { help: 'hits' }).inc(3);
+    adapted.gauge('depth', { node: 'a' }).set(7);
+    adapted.histogram('latency_seconds', { node: 'a' }).observe(0.02);
+
+    // Every mutation is on the prom-client side — this is a bridge that
+    // works, not one that dropped the writes.
+    const hits = registry.registered.find((m) => m.options.name === 'hits_total')!;
+    expect(hits.calls).toHaveLength(1);
+    // ... and none of it is readable back through the framework's interface,
+    // which is precisely what `collectable: false` exists to announce.
+    expect(adapted.collect()).toEqual([]);
   });
 });

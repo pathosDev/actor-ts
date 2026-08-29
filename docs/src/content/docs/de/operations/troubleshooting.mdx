@@ -162,6 +162,42 @@ override snapshotPolicy() { return everyNEvents(100); }
 
 Siehe [Snapshots](/de/persistence/snapshots/).
 
+### Symptom: der State einer Entity hängt davon ab, welcher Knoten antwortet
+
+**State springt nach einem Rebalance oder Deploy zurück;
+Remembered Entities verschwinden nach einem Coordinator-Failover;
+eine Projektion verarbeitet Events doppelt.**
+
+Ursache: **jeder Knoten liest seine eigene Datenbank.**
+Pro-Knoten-Storage (je eine SQLite-Datei, getrennte
+In-Memory-Stores, zwei Knoten mit je *ihrem eigenen* Postgres)
+heißt: eine verschobene Entity replayt, was ihr neuer Knoten
+gerade hält.  Nichts schlägt fehl — der optimistische Append-Check
+läuft gegen die lokale Datenbank und kann über Knoten hinweg
+strukturell nicht feuern.
+
+Diagnose — zwei Log-Nadeln, beide einmal pro Knoten:
+
+```
+node-local storage        # der Store kann nie geteilt sein (#1356)
+storage identity differs  # teilbar, aber zwei Instanzen (#1358)
+```
+
+Die zweite fängt auch Fehlkonfiguration, die man dem Backend-Namen
+nicht ansieht: veraltete Connection-Strings, ein zurückgespieltes
+Backup, zwei „identische" Datenbank-Container.
+
+Fix: alle Knoten auf **dieselbe Datenbank-Instanz** zeigen lassen —
+siehe [Storage-Lokalität &
+Identität](/de/persistence/overview/#storage-lokalität--identität)
+— oder [Replicated Event
+Sourcing](/de/persistence/replicated-event-sourcing/overview/)
+nutzen, wo Pro-Knoten-Journale das gewollte Design sind.  Für
+bereits divergierte Historien gibt es **keine automatische
+Reparatur**: pro Persistence-Id die überlebende Datenbank wählen,
+die anderen daraus neu befüllen (`migrateBetweenJournals`) und die
+Verdrahtung vor dem Neustart fixen.
+
 ### Symptom: Events wiederhergestellt, aber State ist falsch
 
 **Nach Restart entspricht der State des Actors nicht dem, was er
@@ -205,6 +241,25 @@ Diagnostik:
 ```promql
 actor_mailbox_size{class=...}
 # Finde Actors mit dauerhaft großen Queues
+
+histogram_quantile(0.99, rate(actor_mailbox_wait_seconds_bucket[5m]))
+# …und wie lange Nachrichten warten, bis jemand sie annimmt.
+# Eine Serie entsteht erst ab 10 000 wartenden Nachrichten — dies
+# ist also das Signal, das sich zuerst bewegt: ein Rückstau zeigt
+# sich als Wartezeit, lange bevor er sich als Größe zeigt.
+
+histogram_quantile(0.99, rate(actor_mailbox_depth_bucket[5m]))
+# Wie tief die Queues tatsächlich wurden. Anders als das Gauge hat
+# dies keine Untergrenze — ein Ausschlag von einigen Tausend zeigt
+# sich hier und nirgends sonst. Und anders als das Gauge ist es eine
+# Verteilung: ein Ausschlag zwischen zwei 2-Sekunden-Samples wird
+# trotzdem festgehalten.
+
+histogram_quantile(0.99,
+  rate(actor_dispatcher_queue_delay_seconds_bucket[5m]))
+# Eine Ebene höher: Züge, die auf den Dispatcher warten, statt
+# Nachrichten, die auf den Actor warten. Hoch hier und niedrig oben
+# heißt, die Actors sind in Ordnung und das Scheduling ist die Queue.
 ```
 
 ```bash
@@ -248,16 +303,62 @@ afterEach(async () => {
 
 Siehe [TestKit](/de/testing/testkit/).
 
+### Symptom: Shutdown hat meine Nachrichten verworfen
+
+**Arbeit, die beim Aufruf von `terminate()` in der Queue stand, lief
+nie und taucht stattdessen im Dead-Letter-Stream auf.**
+
+`terminate()` leert zuerst die Actors unter `/user`, ein einfacher
+Rückstau wird also verarbeitet.  Auf vier Dinge wartet es nicht:
+
+- **Das Drain-Budget ist abgelaufen.**  Es ist
+  `actor-ts.system.shutdown-drain-timeout`, Default 2 s.  Ein Actor,
+  der beim Leeren immer neue Arbeit erzeugt — eine Self-Tell-Schleife,
+  ein Ballwechsel zwischen zwei Actors — wird nie ruhig, nur das Budget
+  beendet ihn.  Erhöhe das Budget, und mit ihm
+  `actor-ts.coordinated-shutdown.default-phase-timeout`, wenn du über
+  die Pipeline herunterfährst.
+- **Die Mailbox war geparkt.**  `context.throttle(...)` und eine vom
+  Supervisor suspendierte Mailbox gelten beide als ruhig, weil keine
+  von beiden sich in einem Tempo leert, auf das ein Shutdown warten
+  kann.  Brich den Throttle vor dem Herunterfahren ab, wenn der
+  Rückstau zählt.
+- **Die Arbeit lag noch in keiner Mailbox.**  Ein noch nicht gefeuerter
+  `context.timers`-Tick oder ein `tell` aus einem Promise, das ein
+  Handler ohne `await` gestartet hat, kommt an, nachdem der Baum ruhig
+  aussieht.  Awaite es oder schicke es stattdessen als Nachricht.
+- **Sie war an `/system` adressiert.**  Framework-Actors sind
+  konstruktionsbedingt nie ruhig und daher nicht Teil des Drains.
+
+Um herauszufinden, welcher Fall vorliegt, abonniere vor dem
+Herunterfahren `DeadLetter` auf dem Event-Stream — der Dead Letter
+nennt Nachricht und Empfänger.  Das Abonnieren muss *vorher*
+passieren, denn Publishen ist standardmäßig alles, was passiert:
+nichts bewahrt ein Dead Letter auf, es gibt also nachträglich nichts
+nachzulesen.  Setze
+`actor-ts.dead-letters.store = "persistent"`, wenn du die
+Aufzeichnung lieber hättest, ohne vorher zu wissen, dass du sie
+brauchen wirst — siehe
+[Dead Letters](/de/operations/dead-letters/).
+
 ### Symptom: Flaky timing-sensitive Tests
 
 **Tests sind lokal grün, fallen aber in CI um.**
 
-Ursache: Real-Clock-Timing in Tests. CI-Maschinen sind langsamer /
-anders.
+Die übliche Ursache ist Real-Clock-Timing: ein fester Sleep, der auf
+einer unbeschäftigten Maschine lang genug ist und auf einem
+ausgelasteten CI-Runner zu kurz. Nutze
+[ManualScheduler](/de/testing/manual-scheduler/), um Zeit
+deterministisch zu steuern, oder warte auf den beobachtbaren Zustand
+statt auf eine Dauer.
 
-Fix: Nutze
-[ManualScheduler](/de/testing/manual-scheduler/) und steuere Zeit
-deterministisch.
+Das ist nicht die einzige Ursache, und zwischen ihnen zu raten kostet
+einen Nachmittag.
+[Test-Flakes diagnostizieren](/de/testing/diagnosing-flakes/) hat das
+Repeat-Run-Harness, das einen Flake von einem kaputten Test trennt,
+dazu die katalogisierten Ursachen — ein Timer-Quantum, das zu früh
+feuert, ein Dispatcher-Hop, den kein Poll-Intervall gewinnt, und die
+drei Multi-Node-Suites, die CI gar nicht ausführt.
 
 ## Womit anfangen, wenn nichts offensichtlich ist
 

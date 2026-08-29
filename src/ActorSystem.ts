@@ -1,31 +1,49 @@
 import { match } from 'ts-pattern';
 import { ActorRef } from './ActorRef.js';
 import { ActorSelection, parseSelectionPath } from './ActorSelection.js';
-import { DEFAULT_DISPATCHER_THROUGHPUT } from './Constants.js';
+import {
+  DEFAULT_ACTOR_THROUGHPUT,
+  DEFAULT_DISPATCHER_THROUGHPUT,
+  DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
+  EVENT_LOOP_KEEPALIVE_INTERVAL_MS,
+  QUIESCENCE_POLL_INTERVAL_MS,
+  QUIESCENCE_POLL_MAX_INTERVAL_MS,
+} from './Constants.js';
 import { Config } from './config/Config.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
+import { CoordinatedShutdownId, Phases } from './CoordinatedShutdown.js';
+import type { ProcessSignal } from './util/ProcessSignal.js';
 import { none, some, type Option } from './util/Option.js';
+import { mergeOptions } from './util/OptionsMerge.js';
 import { Extensions, type Extension, type ExtensionId } from './Extension.js';
 import {
   Dispatcher,
   DispatcherErrorSink,
+  HybridDispatcher,
   ImmediateDispatcher,
   MicrotaskDispatcher,
   ThroughputDispatcher,
 } from './Dispatcher.js';
 import { EventStream } from './EventStream.js';
 import { ConsoleLogger, Logger } from './Logger.js';
-import { DispatcherError } from './SystemMessages.js';
+import { DispatcherError, SchedulerError } from './SystemMessages.js';
 import { buildLoggerFromConfig, readLoggerLevelFromConfig } from './logging/LoggerFromConfig.js';
 import { MultiSinkLogger } from './logging/MultiSinkLogger.js';
 import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from './logging/MultiSinkLoggerOptions.js';
 import type { ActorClassOrFactory } from './Actor.js';
 import type { ActorOptions } from './ActorOptions.js';
-import { Scheduler } from './Scheduler.js';
+import { Scheduler, type SchedulerErrorSink } from './Scheduler.js';
 import type { ActorSystemOptions, ActorSystemOptionsType } from './ActorSystemOptions.js';
 import { ActorCell } from './internal/ActorCell.js';
 import type { CellInspection, DispatchObserver } from './internal/Instrumentation.js';
+import type { MetricsRegistry } from './metrics/Metrics.js';
+import type { Tracer } from './tracing/Tracer.js';
 import { DeadLetterRef } from './internal/DeadLetterRef.js';
+import { DeadLetterQueue } from './deadletters/DeadLetterQueue.js';
+import {
+  readDeadLetterQueueOptionsFromConfig,
+  type DeadLetterQueueOptionsType,
+} from './deadletters/DeadLetterQueueOptions.js';
 import {
   GUARDIAN_SHUTDOWN_ORDER,
   Guardian,
@@ -64,7 +82,32 @@ export class ActorSystem {
   readonly log: Logger;
   /** How long `terminate()` waits for the logger to flush and close. */
   private readonly loggerCloseTimeoutMs: number;
+  /**
+   * How long `terminate()` lets `/user` finish its queued work before the
+   * stop cascade starts.  0 skips the drain — see {@link terminate}.
+   */
+  private readonly shutdownDrainTimeoutMs: number;
+  /**
+   * @internal Default batch budget for every cell that does not set its own
+   * `ActorOptions.throughput` (#409).
+   *
+   * Resolved here and not in `ActorCell` because a cell reads no config at
+   * all — it has never needed to, and giving the framework's most-created
+   * object a `Config` lookup per construction to answer one integer would be
+   * the expensive way round.  Public-but-`@internal` for the same reason
+   * {@link _dispatchObserver} is: the cell is the only reader, and it is not
+   * in this file.
+   */
+  readonly _actorThroughput: number;
   readonly deadLetters: ActorRef;
+  /**
+   * Bounded record of the messages this system could not deliver.
+   *
+   * Always present, and capturing nothing unless `actor-ts.dead-letters.store`
+   * says otherwise — so `list()` on a default system answers "nothing kept",
+   * which is the truth, rather than throwing or being `undefined`.
+   */
+  readonly deadLetterQueue: DeadLetterQueue;
   /** Full merged configuration in effect for this system. */
   readonly config: Config;
   /** Per-system extension registry (serialization, sharding, pubsub, …). */
@@ -88,6 +131,37 @@ export class ActorSystem {
    * {@link DispatchObserver}.
    */
   _dispatchObserver: DispatchObserver | null = null;
+
+  /**
+   * @internal The live metrics registry, or `null` while metrics are off.
+   *
+   * Owned by `MetricsExtension`, which is the only writer.  A field rather
+   * than a `metricsOf(system)` call because the receive path reads it once per
+   * message, and `metricsOf` is a `Map.get` plus two calls through the
+   * extension chain (#411).
+   *
+   * **`null` rather than the noop registry**, which is the half that matters:
+   * a caller that has to null-check anyway will skip building the label and
+   * help objects for a call that would discard them, and those literals were
+   * the bulk of what the uninstrumented path allocated per message.  Handing
+   * back a noop instead makes the call site look free and quietly is not.
+   *
+   * Read fresh every message, never cached per cell, because both extensions
+   * swap their backing object at runtime with live cells draining — DevTools
+   * does it whenever a panel opens or closes.
+   */
+  _metricsRegistry: MetricsRegistry | null = null;
+
+  /**
+   * @internal The installed tracer, or `null` while tracing is off.
+   *
+   * Owned by `TracingExtension`; same reasoning as {@link _metricsRegistry},
+   * except that a reader must fall back to `NOOP_TRACER` rather than skip the
+   * work: an envelope can carry a trace context from a remote peer that traces
+   * while this node does not, and the noop tracer's span is what keeps that
+   * message's explain entry shaped the way it has always been.
+   */
+  _tracer: Tracer | null = null;
 
   /**
    * @internal Open a span for every message, not only for ones that
@@ -120,6 +194,12 @@ export class ActorSystem {
    */
   private readonly dispatcherErrorSink: DispatcherErrorSink;
 
+  /**
+   * The sink this system installed on {@link scheduler}, kept so termination
+   * can tell it apart from one the owner installed.
+   */
+  private readonly schedulerErrorSink: SchedulerErrorSink;
+
   private constructor(name: string | undefined, options: ActorSystemOptionsType) {
     this.startedAtMs = Date.now();
     // Config first: the name may come out of it, and nothing in the build
@@ -130,6 +210,8 @@ export class ActorSystem {
     this.scheduler = options.scheduler ?? new Scheduler();
     this.eventStream = new EventStream();
     this.loggerCloseTimeoutMs = loggerCloseTimeoutFromConfig(this.config);
+    this.shutdownDrainTimeoutMs = shutdownDrainTimeoutFromConfig(this.config);
+    this._actorThroughput = actorThroughputFromConfig(this.config);
     this.log = resolveLogger(options, this.config, this.loggerCloseTimeoutMs);
     // Sinks are built before any system exists, so anything system-shaped —
     // the scheduler a batching sink ticks on, the name a remote sink sends
@@ -149,8 +231,36 @@ export class ActorSystem {
     this.dispatcherErrorSink = (error, dispatcherId) =>
       this._reportDispatcherError(error, dispatcherId, null);
     this.dispatcher.onError ??= this.dispatcherErrorSink;
-    this.deadLetters = new DeadLetterRef(this.name, this.eventStream);
+    // And the same again for the scheduler, which had the identical hole:
+    // a throwing `scheduleOnceFunction` task reached only `console.error`
+    // (#678).  `??=` for the same lent-instance reason — `withScheduler` is
+    // documented as "typically a ManualScheduler in tests", so the instance
+    // is even more often the caller's than the dispatcher is.
+    this.schedulerErrorSink = (error) => this._reportSchedulerError(error);
+    this.scheduler.onError ??= this.schedulerErrorSink;
+    const deadLetterRef = new DeadLetterRef(this.name, this.eventStream);
+    this.deadLetters = deadLetterRef;
     this.extensions = new Extensions(this);
+    // Built here, before the guardians exist, because the first dead letter
+    // can be produced by the very first `spawn` — a queue installed later
+    // would be missing exactly the letters an early failure produced.
+    //
+    // The built-in-defaults layer is empty on purpose: `DeadLetterQueue`'s
+    // constructor applies them itself, because a queue someone builds
+    // directly has to get them too.  So all this merge has to settle is
+    // explicit-over-HOCON, field by field — `withDeadLetters` naming one
+    // knob must not blank the rest of the config block out.
+    this.deadLetterQueue = new DeadLetterQueue(
+      this,
+      mergeOptions<DeadLetterQueueOptionsType>(
+        {},
+        readDeadLetterQueueOptionsFromConfig(this.config),
+        { ...(options.deadLetters as Partial<DeadLetterQueueOptionsType> | undefined) },
+      ),
+    );
+    if (this.deadLetterQueue.store !== 'off') {
+      deadLetterRef._setSink((deadLetter) => this.deadLetterQueue._capture(deadLetter));
+    }
 
     // Construct the supervisor chain: /  ->  /user, /system.
     this.rootCell = new ActorCell<unknown>(
@@ -184,6 +294,17 @@ export class ActorSystem {
       const ext = this.extensions.get(PersistenceExtensionId);
       if (options.persistence.journal) ext.setJournal(options.persistence.journal);
       if (options.persistence.snapshotStore) ext.setSnapshotStore(options.persistence.snapshotStore);
+    }
+
+    // Only when the operator asked for a queue.  Off — the default — this
+    // would construct `CoordinatedShutdown` for every system in the process
+    // to register a task with nothing to do.
+    if (this.deadLetterQueue.store !== 'off') {
+      this.extensions.get(CoordinatedShutdownId).addFrameworkTask(
+        Phases.BeforeActorSystemTerminate,
+        'flush-dead-letter-queue',
+        () => this.deadLetterQueue.flush(),
+      );
     }
   }
 
@@ -424,23 +545,115 @@ export class ActorSystem {
     return some(cell.self);
   }
 
-  /** Stop any actor by reference. Returns a promise that resolves once it is fully terminated. */
+  /**
+   * Stop an actor once it has worked through its mailbox — fire and forget.
+   *
+   * The same graceful stop `ActorRef.stop()` performs, and like it this
+   * returns nothing: the JSDoc promised a promise for a signature that never
+   * had one (#663).  Await the stop with `gracefulStop(ref, timeoutMs)`.
+   */
   stop(ref: ActorRef): void {
     ref.stop();
   }
 
   /**
-   * Shut down: stops `/user` (children first), then `/system`, and resolves
-   * once everything is drained.  The two guardians go in sequence so a user
-   * actor's `postStop` can still reach the framework actors it depends on —
-   * see `GUARDIAN_SHUTDOWN_ORDER`.
+   * Shut down: drains `/user`, stops it (children first), then `/system`, and
+   * resolves once everything is torn down.  The two guardians go in sequence
+   * so a user actor's `postStop` can still reach the framework actors it
+   * depends on — see `GUARDIAN_SHUTDOWN_ORDER`.
+   *
+   * The drain in front is what makes `ref.tell(x); await system.terminate()`
+   * deliver `x` (#663).  It has to be here rather than inside the cascade
+   * because a `terminate` is a *system* command: `ActorCell.run()` re-checks
+   * its system queue after every `await`, so a terminate that lands in a
+   * running turn's await window is picked up before the user message queued
+   * behind it — and the cell that has flipped to `terminating` no longer
+   * dequeues user messages at all, so the rest went to dead letters.  Waiting
+   * for quiescence *before* the first `terminate` is enqueued is the only
+   * ordering that does not fight that, and it leaves the teardown itself
+   * exactly as it was.
+   *
+   * Bounded by `actor-ts.system.shutdown-drain-timeout`; set it to 0 to skip
+   * the drain entirely.  See {@link awaitQuiescence} for what "quiet" means
+   * and which mailboxes are deliberately not waited on.
    */
   terminate(): Promise<void> {
     if (this._terminated) return Promise.resolve();
     if (this._terminating) return this.whenTerminated();
     this._terminating = true;
-    this.rootCell.enqueueSystem({ kind: 'terminate' });
-    return this.whenTerminated();
+    const terminated = this.whenTerminated();
+    if (this.shutdownDrainTimeoutMs <= 0) {
+      this.rootCell.enqueueSystem({ kind: 'terminate' });
+      return terminated;
+    }
+    // Not awaited: `terminate()` stays synchronous up to its first suspension
+    // point so `_terminating` is set before any caller can re-enter, and the
+    // promise it hands back is `whenTerminated()` either way.
+    const startTeardown = (): void => { this.rootCell.enqueueSystem({ kind: 'terminate' }); };
+    // Same handler on both settlements on purpose.  Nothing in the drain is
+    // supposed to throw, and if something ever does, the failure mode must not
+    // be a system that never tears down and a `terminate()` that never
+    // settles — the drain is an optimisation over the teardown, not a
+    // precondition for it.
+    void this.awaitQuiescence(this.shutdownDrainTimeoutMs).then(startTeardown, startTeardown);
+    return terminated;
+  }
+
+  /**
+   * Wait until nothing under `/user` has work left it can dispatch, or until
+   * `timeoutMs` elapses.  Resolves `true` if the tree went quiet, `false` if
+   * the budget ran out first.
+   *
+   * "Quiet" is per cell: no turn in flight and no dispatchable message queued.
+   * Because a cell is marked busy at `tell` time — synchronously, by the
+   * sender's turn — a reply that has been sent but not yet run already counts,
+   * which is what carries the wait across a ping-pong, a router fan-out or a
+   * supervision restart instead of flushing one mailbox once.
+   *
+   * Two kinds of mailbox are deliberately *not* waited on, because neither
+   * drains at a rate a shutdown could wait for: one parked by
+   * `context.throttle(...)`, and one suspended while its actor's supervisor
+   * decides. Both are treated as quiet, and whatever is still queued in them
+   * is dead-lettered by the ordinary teardown.
+   *
+   * Only `/user` is inspected.  Framework actors under `/system` — cluster
+   * heartbeats, failure detectors, broker reconnect loops — are never quiet by
+   * design, so including them would spend the whole budget on every shutdown.
+   *
+   * Work that is not in a mailbox yet is not waited for either: a scheduled
+   * tick, or a `tell` from a promise the handler did not await, can still
+   * arrive after this resolves.
+   */
+  async awaitQuiescence(
+    timeoutMs: number = this.shutdownDrainTimeoutMs,
+  ): Promise<boolean> {
+    if (this._terminated) return true;
+    // Probed once before any sleep, so an already-idle system pays nothing at
+    // all — which matters because every `terminate()` goes through here.  It
+    // is safe to look this early precisely because a cell is marked busy
+    // synchronously by the sender: `ref.tell(x)` has already scheduled the
+    // receiving cell by the time this runs, so the message queued a line
+    // earlier cannot read as quiet.
+    if (this.isUserTreeQuiescent()) return true;
+    const deadline = Date.now() + timeoutMs;
+    let intervalMs = QUIESCENCE_POLL_INTERVAL_MS;
+    while (Date.now() < deadline) {
+      await sleep(intervalMs);
+      if (this.isUserTreeQuiescent()) return true;
+      intervalMs = Math.min(intervalMs * 2, QUIESCENCE_POLL_MAX_INTERVAL_MS);
+    }
+    return this.isUserTreeQuiescent();
+  }
+
+  /** Is every cell under `/user` — the guardian included — out of work? */
+  private isUserTreeQuiescent(): boolean {
+    const busy = (cell: ActorCell<unknown>): boolean => {
+      if (!cell._isQuiescent()) return true;
+      let childBusy = false;
+      cell._eachChildCell((child) => { childBusy ||= busy(child); });
+      return childBusy;
+    };
+    return !busy(this.userGuardianCell);
   }
 
   /** Promise that resolves when the system has finished shutting down. */
@@ -452,6 +665,76 @@ export class ActorSystem {
   }
 
   get isTerminated(): boolean { return this._terminated; }
+
+  /**
+   * Run until the process is asked to stop, then shut down gracefully —
+   * the whole of a service's `main` after the actors are wired:
+   *
+   * ```ts
+   * const system = ActorSystem.create('orders');
+   * await system.http.bind(routes);
+   * await system.runUntilTerminated();
+   * ```
+   *
+   * Installs SIGTERM/SIGINT handlers that start
+   * {@link CoordinatedShutdown}, resolves once the system is fully down,
+   * and detaches the handlers on the way out.  That last step is why this
+   * exists as a method rather than a documented three-liner: the handlers
+   * have to come off in a `finally`, or a Deno program that shuts down for
+   * any *other* reason — a `terminate()` from inside, an operator command —
+   * never exits, because a `Deno.addSignalListener` listener holds the event
+   * loop open and has no `unref`.
+   *
+   * What replaces the hand-rolled `process.on('SIGTERM', () => { … })` is
+   * not just the signal plumbing but the **ordering**.  A handler that
+   * calls `terminate()` stops the actors first and only then, if ever,
+   * releases the port and leaves the cluster; the pipeline unbinds in
+   * `service-unbind`, closes brokers in `service-stop` and leaves the
+   * cluster in `cluster-leave`, all before `actor-system-terminate` — so a
+   * rolling deploy takes the node out of rotation while its actors can
+   * still finish what they are holding.
+   *
+   * Resolves when the pipeline is finished, not merely when the system is
+   * down: a task registered alongside the built-in terminator in the final
+   * phase runs in parallel with it, and returning while one of those is
+   * still going would hand back a "shutdown complete" that is not.
+   *
+   * **The process stays alive for as long as this promise is pending**, and
+   * that is a guarantee this method makes rather than one it inherits.  A
+   * signal handler is not a reason for a runtime to keep running: Node's
+   * signal handles are unref'd, so a system with nothing else on the event
+   * loop — no bound port, no open socket, every timer unref'd — used to
+   * drain its loop the moment it started waiting and exit instead of ever
+   * receiving the SIGTERM it had just armed itself for.  Bun refs its
+   * handles and Deno's `Deno.addSignalListener` cannot be unref'd at all, so
+   * the same program waited correctly on two runtimes out of three (#549).
+   * A keep-alive timer, released in the same `finally` as the handlers,
+   * makes the three agree.
+   *
+   * @param signals Which signals to listen for.  Defaults to SIGTERM and
+   *   SIGINT.  One the runtime cannot deliver is skipped — Windows has no
+   *   SIGTERM under any runtime — so this never fails to start over a
+   *   platform difference.  Note that skipping them *all* does not turn this
+   *   into a no-op: the promise still waits, and the process still stays
+   *   alive, until something shuts the system down from inside.
+   */
+  async runUntilTerminated(
+    signals?: ReadonlyArray<ProcessSignal>,
+  ): Promise<void> {
+    const coordinatedShutdown = this.extension(CoordinatedShutdownId);
+    coordinatedShutdown.installProcessHooks(signals);
+    const releaseEventLoop = holdEventLoopOpen();
+    try {
+      await this.whenTerminated();
+      // Only when one is already in flight: `run()` on an idle pipeline
+      // would *start* it, which would be a second shutdown of a system that
+      // has just finished its first.
+      if (coordinatedShutdown.isRunning) await coordinatedShutdown.run();
+    } finally {
+      coordinatedShutdown.removeProcessHooks();
+      releaseEventLoop();
+    }
+  }
 
   /**
    * @internal Surface a work unit that threw on a dispatcher — through the
@@ -493,6 +776,41 @@ export class ActorSystem {
     }
   }
 
+  /**
+   * @internal Surface a scheduled task that threw — through the system
+   * logger, and on the {@link EventStream} as a {@link SchedulerError}.
+   *
+   * The scheduler twin of {@link _reportDispatcherError}, with one channel
+   * fewer: there is no `actor` to attribute a bare closure to, and no
+   * scheduler id to name because a system has exactly one.
+   *
+   * **Why this does not need a rate limit, and why it does not feed back into
+   * the logger.**  The logging subsystem's own flush ticker is armed through
+   * `scheduleAtFixedRateFunction` (`BatchingSink`), so the framework's log
+   * flush ticks on the very scheduler whose failures now go to the log — the
+   * shape `logging/SinkReporter.ts` warns about.  It does not close, for two
+   * independent reasons.  The ticker body is a length check that `void`s an
+   * async `flush()`, so a *delivery* failure is not a throw on this path at
+   * all; `BatchingSink` reports those through its own `SinkReporter`, which
+   * writes to the console deliberately and rate-limits itself.  And a ticker
+   * body that did throw would produce one report per tick — one for one with
+   * the failures, exactly as the `console.error` this replaces, not an
+   * amplification.  The `catch` is for the loop that *can* close: this runs
+   * inside the scheduler's own guard, so a logger or a subscriber that throws
+   * here would otherwise be reported as a scheduler error from inside the
+   * report of one.  Catching ends that in one hop and still prints both.
+   */
+  _reportSchedulerError(error: unknown): void {
+    const cause = error instanceof Error ? error : new Error(String(error));
+    try {
+      this.log.error('Unhandled scheduler error', cause);
+      this.eventStream.publish(new SchedulerError(cause));
+    } catch (reportFailure) {
+      console.error('[actor-ts] unhandled scheduler error:', cause);
+      console.error('[actor-ts] reporting that scheduler error failed:', reportFailure);
+    }
+  }
+
   /** @internal — called by the root cell once it has finished terminating. */
   _rootTerminated(_cell: ActorCell<any>): void {
     this._terminated = true;
@@ -502,23 +820,62 @@ export class ActorSystem {
     // `ActorSystemOptions` outlives this system, and one the owner wired
     // themselves is theirs to keep.
     if (this.dispatcher.onError === this.dispatcherErrorSink) this.dispatcher.onError = undefined;
+    // Same for the scheduler.  `shutdown()` above already disarmed every
+    // handle this system owns, so nothing of ours can still fire — but a
+    // `ManualScheduler` handed in through `ActorSystemOptions` outlives the
+    // system and is advanced by the test afterwards, and its ticks must not
+    // report into a logger that is about to be closed.
+    if (this.scheduler.onError === this.schedulerErrorSink) this.scheduler.onError = undefined;
     const resolvers = this._terminationResolvers;
     this._terminationResolvers = [];
     const finish = (): void => { for (const resolve of resolvers) resolve(); };
 
-    // Flush the log sinks before anyone learns the system is down.  This is
-    // the only seam that catches both shutdown paths: `CoordinatedShutdown`
-    // ends by calling `terminate()`, so a task registered in a phase would
-    // miss every program that terminates directly.  It also runs *after*
-    // every `postStop`, so a last message from a stopping actor is still in
-    // the queue being drained.  Structural, so any logger with a `close()`
-    // is flushed — not just the framework's own.
+    // Settle the dead-letter queue's writes, then flush the log sinks,
+    // before anyone learns the system is down.  This is the only seam that
+    // catches both shutdown paths: `CoordinatedShutdown` ends by calling
+    // `terminate()`, so a task registered in a phase would miss every
+    // program that terminates directly.  It also runs *after* every
+    // `postStop`, so a last message from a stopping actor is still in the
+    // queue being drained.  Structural, so any logger with a `close()` is
+    // flushed — not just the framework's own.
+    //
+    // Ordering matters for the queue and not only for tidiness: the bulk of
+    // a shutdown's dead letters — stashes discarded, mailboxes emptied past
+    // their cell — are produced by this very teardown, which is *after* the
+    // last shutdown phase ran.  The phase task settles what a running system
+    // produced; this settles what stopping it produced.  Both are needed.
+    // The queue goes first so a failure it reports still reaches a sink.
+    //
+    // The queue borrows the logger's close budget rather than owning one.
+    // Both answer the same question — how long may a flush hold the
+    // shutdown open — and inventing a second knob for the second flush
+    // would ask an operator to tune a number they have no separate
+    // information about.
     const closeLogger = closeOf(this.log);
-    if (closeLogger === undefined) {
-      finish();
+    const closeSinks = (): Promise<void> => closeLogger === undefined
+      ? Promise.resolve()
+      : withinBudget(closeLogger, this.loggerCloseTimeoutMs, 'logger close');
+
+    if (this.deadLetterQueue.store === 'off') {
+      // The overwhelmingly common path, and deliberately kept free of the
+      // extra timer `withinBudget` would arm for a flush with nothing to do.
+      if (closeLogger === undefined) { finish(); return; }
+      void closeSinks().then(finish, finish);
       return;
     }
-    void withinBudget(closeLogger, this.loggerCloseTimeoutMs).then(finish, finish);
+    void withinBudget(
+      () => this.deadLetterQueue.flush(),
+      this.loggerCloseTimeoutMs,
+      'dead-letter flush',
+    )
+      .then(() => {
+        // After the flush, so a letter produced by the teardown itself is
+        // still captured; before the sinks close, so nothing starts a write
+        // nobody will await.
+        this.deadLetterQueue._close();
+        return closeSinks();
+      })
+      .then(finish, finish);
   }
 }
 
@@ -542,6 +899,51 @@ function systemNameFromConfig(config: Config): string {
   return config.hasPath(ConfigKeys.system.name)
     ? config.getString(ConfigKeys.system.name)
     : 'default';
+}
+
+/** `actor-ts.system.shutdown-drain-timeout` — the `terminate()` drain budget. */
+function shutdownDrainTimeoutFromConfig(config: Config): number {
+  return config.hasPath(ConfigKeys.system.shutdownDrainTimeout)
+    ? config.getDuration(ConfigKeys.system.shutdownDrainTimeout)
+    : DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS;
+}
+
+/**
+ * Gap between two quiescence probes.
+ *
+ * A bare `setTimeout` rather than the system {@link Scheduler}: this runs on
+ * the shutdown path, where the scheduler is about to be — and on a second
+ * `terminate()` already has been — shut down, and a drain that silently
+ * stopped ticking would hand back "quiet" for a system that is merely
+ * unscheduled.  Referenced, not `unref`'d, for the same reason `withinBudget`
+ * below is: the wait exists to be waited out, and an unreferenced timer in an
+ * otherwise empty loop is not guaranteed to fire at all.
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => { setTimeout(resolve, ms); });
+}
+
+/**
+ * Keep the process running until the returned release is called.
+ *
+ * The one thing every runtime agrees on is that a referenced timer holds the
+ * event loop open; almost nothing else about idle-process lifetime is
+ * portable.  Signal handlers in particular are not: Node unrefs its signal
+ * handles, so `process.on('SIGTERM', …)` buys a Node process no lifetime at
+ * all, while Bun refs its and Deno offers no way to unref a
+ * `Deno.addSignalListener` listener even if you wanted one.
+ * {@link ActorSystem.runUntilTerminated} needs the strongest of those three
+ * behaviours on all three, so it takes a hold of its own rather than relying
+ * on the handlers it installed (#549).
+ *
+ * The callback is empty on purpose — the *reference* is the whole mechanism,
+ * and the tick is only how a timer expresses one.  Deliberately not the
+ * system {@link Scheduler}: this has to outlive the scheduler's own shutdown,
+ * which happens inside the pipeline this is waiting for.
+ */
+function holdEventLoopOpen(): () => void {
+  const keepAlive = setInterval(() => {}, EVENT_LOOP_KEEPALIVE_INTERVAL_MS);
+  return () => { clearInterval(keepAlive); };
 }
 
 /* ----------------------------- Logger helpers ----------------------------- */
@@ -599,31 +1001,61 @@ function closeOf(log: Logger): (() => Promise<void>) | undefined {
  * not `unref`'d: the loop is empty at that point, and an unreferenced timer
  * in an empty loop is not guaranteed to fire — the timeout that exists to
  * break a hang would hang.  It is cleared in the `finally`.
+ *
+ * `what` names the operation in the two failure lines.  Both go to
+ * `console` rather than to `this.log`, because the one caller that is not
+ * about the logger runs beside the one that is — and a message about a
+ * flush that timed out must not depend on the sink being flushed.
  */
-async function withinBudget(operation: () => Promise<void>, budgetMs: number): Promise<void> {
+async function withinBudget(
+  operation: () => Promise<void>,
+  budgetMs: number,
+  what: string,
+): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
       Promise.resolve(operation()),
       new Promise<void>((resolve) => {
         timer = setTimeout(() => {
-          console.error(`[actor-ts] logger close timed out after ${budgetMs} ms; some records may be lost`);
+          console.error(`[actor-ts] ${what} timed out after ${budgetMs} ms; some records may be lost`);
           resolve();
         }, budgetMs);
       }),
     ]);
   } catch (error) {
-    console.error('[actor-ts] logger close failed:', error);
+    console.error(`[actor-ts] ${what} failed:`, error);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
 }
 
+/**
+ * Resolve the system-wide per-actor batch budget (#409).
+ *
+ * A non-positive value is clamped rather than rejected: `0` would leave every
+ * actor accepting mail and never reading it, and a config file is exactly the
+ * place that mistake is made far from the code that suffers it.  Clamping to
+ * `1` reproduces the pre-#409 message-at-a-time loop, which is the honest
+ * reading of "as little batching as possible".
+ */
+function actorThroughputFromConfig(config: Config): number {
+  if (!config.hasPath(ConfigKeys.actor.throughput)) return DEFAULT_ACTOR_THROUGHPUT;
+  return Math.max(1, config.getInt(ConfigKeys.actor.throughput));
+}
+
+/**
+ * The absent-key case and the unrecognised-value case both land on the default
+ * rather than on a named kind, so "what runs when nobody chose?" has exactly
+ * one answer — including for a typo, which is the case most likely to reach
+ * someone wondering why their tuning did nothing.
+ */
 function dispatcherFromConfig(config: Config): Dispatcher {
   const kind = config.hasPath(ConfigKeys.dispatcher.default)
     ? config.getString(ConfigKeys.dispatcher.default).toLowerCase()
-    : 'immediate';
+    : 'hybrid';
   return match(kind)
+    .with('immediate',  () => new ImmediateDispatcher() as Dispatcher)
     .with('microtask',  () => new MicrotaskDispatcher() as Dispatcher)
     .with('throughput', () => {
       const throughput = config.hasPath(ConfigKeys.dispatcher.throughput)
@@ -631,5 +1063,5 @@ function dispatcherFromConfig(config: Config): Dispatcher {
         : DEFAULT_DISPATCHER_THROUGHPUT;
       return new ThroughputDispatcher(throughput) as Dispatcher;
     })
-    .otherwise(() => new ImmediateDispatcher() as Dispatcher);
+    .otherwise(() => new HybridDispatcher() as Dispatcher);
 }

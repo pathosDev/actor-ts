@@ -74,13 +74,24 @@ KubernetesLease für Produktion.
 
 | Setup | Singleton-Einzigartigkeitsgarantie |
 | --- | --- |
-| Kein Downing, keine Lease | Best-Effort. Partitionen = doppelte Singletons. |
-| Nur Downing-Strategie | Stark in stabilen Netzwerken. |
-| Downing + Lease | **Paranoid-sicher**. Beide Invarianten erzwungen. |
+| Kein Downing, keine Lease | Hält, solange der abtretende Host den Hand-over beantwortet. Eine Partition läuft in den Timeout, danach hosten beide Hälften. |
+| Nur Downing-Strategie | Dasselbe, aber die Partition wird innerhalb von `downAfterMs` aufgelöst statt anzuhalten. |
+| Downing + Lease | Das Stärkste, was hier verfügbar ist: Arbitrierung durch eine dritte Instanz, die beide Seiten erreichen können, und die Lease wird erst freigegeben, wenn die abtretende Instanz terminiert ist. |
 
 Für Singletons, bei denen Doppelausführung **echten Schaden**
 anrichten würde (Kunden doppelt belasten, Events doppelt
 veröffentlichen), nutze beides.
+
+Keine dieser Zeilen sagt „unmöglich“, und das ist Absicht. Ohne Lease macht
+der [Hand-over](/de/cluster/singleton/manager/#ohne-lease-default)
+„höchstens eine“ wahr, solange der Amtsinhaber erreichbar ist und
+antwortet — und einen Peer, der nicht antworten kann, kann man auch nicht
+bitten zurückzutreten. Der eintretende Host nimmt dann
+`handOverTimeoutMs` in Kauf und hostet trotzdem, mit einer Warnung, dass
+die Invariante nicht bewiesen wurde. Mit einer Lease liegt der
+Schiedsrichter außerhalb beider Hälften, und genau das ändert die Antwort;
+was bleibt, ist die Garantie des Lease-Providers selbst — der nächste
+Abschnitt beschreibt, wie ein Ausfall *davon* sich verhält.
 
 ## Behandlung von Lease-Verlust
 
@@ -94,14 +105,27 @@ lease.onLost((reason) => {
 Wenn die Lease widerrufen wird (TTL abgelaufen, anderer Halter
 hat sie übernommen):
 
-- Der Manager **stoppt den Singleton sofort** — kein geordnetes
-  Drainen.
+- Der Manager stoppt den Singleton **mit einem `PoisonPill`** — die
+  Instanz arbeitet also zuerst ab, was schon in ihrer Mailbox liegt. Das
+  ist ein geordnetes Drainen, kein sofortiger Abbruch: wie lange es
+  dauert, ist die Größe dieses Rückstaus plus `postStop`.
 - Der `postStop` des Singletons läuft.
-- Der Manager versucht Acquire periodisch erneut.
+- **Erst dann** versucht der Manager Acquire erneut. Neu zu erwerben,
+  während die alte Instanz noch drainiert, hat den Manager früher dauerhaft
+  eine Lease über gar keinen Singleton halten lassen.
 
 Bedeutet: wenn das Lease-Backend kurz hickst und sie kurzfristig
 widerruft, **startet der Singleton neu** während der Erholung —
 gleicher Effekt wie ein kurzer Actor-Neustart.
+
+Wichtig, in welche Richtung die Ehrlichkeit hier schneidet: auf diesem Pfad
+*ist* Promptheit die Sicherheitseigenschaft, und ein Drain ist nicht prompt.
+Ein Singleton mit langer Mailbox und langsamem `postStop` läuft nach dem
+Widerruf seiner Lease genau so lange weiter — ein Fenster, in dem ein
+anderer Halter schon gestartet sein kann. Halte `postStop` in einem
+Singleton mit Lease kurz, und behandle den Widerruf als den Moment, ab dem
+die Instanz nicht mehr autoritativ ist, nicht als den Moment, in dem sie
+stoppt.
 
 ## Verfügbarkeit des Lease-Backends
 

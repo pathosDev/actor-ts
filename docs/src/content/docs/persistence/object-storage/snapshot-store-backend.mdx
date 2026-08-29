@@ -55,14 +55,15 @@ is faster + simpler.
 
 ```ts
 type ObjectStorageSnapshotStoreOptionsType = {
-  backend:               ObjectStorageBackend;
-  prefix?:               string;   // default ''
-  keepN?:                number;   // default 3
-  compression?:          CompressionConfig | CompressionResolver;
-  encryption?:           EncryptionConfig | EncryptionResolver;
-  integrity?:            IntegrityConfig | IntegrityResolver;
-  allowUntaggedBodies?:  boolean;  // default false
-  maxDecompressedBytes?: number;   // default 512 MiB
+  backend:                ObjectStorageBackend;
+  prefix?:                string;   // default ''
+  keepN?:                 number;   // default 3
+  compression?:           CompressionConfig | CompressionResolver;
+  encryption?:            EncryptionConfig | EncryptionResolver;
+  integrity?:             IntegrityConfig | IntegrityResolver;
+  allowUntaggedBodies?:   boolean;  // default false
+  requireContextBinding?: boolean;  // default false
+  maxDecompressedBytes?:  number;   // default 512 MiB
 };
 ```
 
@@ -75,6 +76,7 @@ type ObjectStorageSnapshotStoreOptionsType = {
 | `encryption` | At-rest encryption — see [Encryption](/persistence/object-storage/encryption/). |
 | `integrity` | HMAC-SHA256 tag over each snapshot body — signs writes and requires a tag on reads.  See [Body integrity](/persistence/object-storage/encryption/#body-integrity-hmac). |
 | `allowUntaggedBodies` | Accept untagged snapshots while `integrity` is set — the migration window for a bucket written before integrity.  Default false. |
+| `requireContextBinding` | Refuse snapshots not bound to the key they were read from — closes replay onto another persistenceId or sequence number.  Turn on once the bucket is rewritten.  See [Binding a body to its key](/persistence/object-storage/encryption/#binding-a-body-to-its-key).  Default false. |
 | `maxDecompressedBytes` | Decompression-bomb guard — cap on a decoded snapshot's size.  Default 512 MiB. |
 
 ## Key layout
@@ -92,12 +94,16 @@ snapshots/account-42/seq-300
 ```
 
 The framework lists keys under `<prefix>/<persistenceId>/` to
-find the latest snapshot.
+find the latest snapshot.  The listing is ascending by key and
+carries no limit: the zero-padded sequence number makes the
+*last* entry the newest one, so a `limit: 1` would hand back the
+oldest instead.
 
 For very-large `persistenceId` spaces, listing per-pid is
 typically fast in S3 (per-prefix throughput).  Avoid putting
 all entity types under the same prefix without per-pid
-subdirectories.
+subdirectories — that directory segment is the only thing
+bounding what a load has to enumerate.
 
 ## Performance
 
@@ -106,6 +112,15 @@ GET.  Numbers for S3 same-region:
 
 - **Save** — 20-50 ms per snapshot.
 - **Load latest** — 1 LIST + 1 GET = 30-60 ms.
+
+That LIST is what the per-`persistenceId` directory in the key
+buys.  Both shipped backends scope it to
+`<prefix>/<persistenceId>/` — S3 through `Prefix` / `MaxKeys`,
+the filesystem backend by reading only that directory — so a
+load costs one entity's own snapshots and stays flat as the
+number of entities grows.  `keepN` pruning issues the same LIST
+after every save, so a backend that did not scope it would put
+that growth on the write path too.
 
 For **hot-path snapshot loading** (frequent actor restarts),
 wrap with
@@ -144,7 +159,8 @@ PersistentActor.persist(event) succeeds
 backend.put('snapshots/<pid>/seq-N', serialized state)
 
 PersistentActor.preStart
-  ↓ list 'snapshots/<pid>/' to find latest seq
+  ↓ list 'snapshots/<pid>/' — that directory only, ascending
+  ↓ last key = latest seq
   ↓ backend.get(latest) → decode → onEvent from seq+1 onwards
 ```
 

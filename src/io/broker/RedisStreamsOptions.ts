@@ -8,6 +8,8 @@
  */
 import { BrokerOptionsBuilder, BrokerOptionsValidator } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerOptions.js';
+import { findBrokerTlsProblem } from './BrokerTls.js';
+import type { TlsTransportOptionsType } from '../../runtime/tcp/TcpBackend.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { RedisStreamEntry } from './RedisStreamsActor.js';
 
@@ -27,6 +29,17 @@ export interface RedisStreamsOptionsType extends BrokerCommonOptionsType {
   readonly blockMs?: number;
   /** Subscriber for inbound entries.  Required to consume. */
   readonly target?: ActorRef<RedisStreamEntry>;
+  /**
+   * TLS material forwarded to ioredis as its `tls` option — a private CA to
+   * trust, or a client certificate for mTLS.  Carries the material itself,
+   * never a path to it.
+   *
+   * Setting it also *enables* TLS on the ioredis side, so it works with a
+   * plain `redis://` URL; `rediss://` remains the clearer way to say the same
+   * thing.  Deliberately has no HOCON leaf — a config file is the wrong place
+   * for a private key.
+   */
+  readonly tls?: TlsTransportOptionsType;
 }
 
 export class RedisStreamsOptionsBuilder extends BrokerOptionsBuilder<RedisStreamsOptionsType> {
@@ -59,6 +72,11 @@ export class RedisStreamsOptionsBuilder extends BrokerOptionsBuilder<RedisStream
   withTarget(target: ActorRef<RedisStreamEntry>): this {
     return this.set('target', target);
   }
+
+  /** TLS material for the Redis dial.  Pass the material, not a file path. */
+  withTls(tls: TlsTransportOptionsType): this {
+    return this.set('tls', tls);
+  }
 }
 
 /** Validates resolved {@link RedisStreamsOptionsType} settings. */
@@ -70,6 +88,8 @@ export class RedisStreamsOptionsValidator extends BrokerOptionsValidator<RedisSt
     this.commonRules(s);
     this.url('url', ['redis', 'rediss']);
     this.nonNegativeInt('blockMs'); // 0 = block indefinitely (Redis XREAD semantics)
+    const tlsProblem = findBrokerTlsProblem(s.tls);
+    if (tlsProblem !== null) this.fail('tls', tlsProblem);
   }
 }
 

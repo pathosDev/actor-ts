@@ -16,24 +16,59 @@ Zwei Varianten:
 
 ## Implementierungen
 
-Jedes Journal hat eine passende Query:
-
 | Query | Paart sich mit |
 | --- | --- |
-| `InMemoryQuery` | `InMemoryJournal` |
+| `InMemoryQuery` | `InMemoryJournal` — **und jedem Journal ohne eigene Query** |
 | `SqliteQuery` | `SqliteJournal` |
+| `PostgresQuery` | `PostgresJournal` |
+| `MariaDbQuery` | `MariaDbJournal` (auch MySQL) |
 | `CassandraQuery` | `CassandraJournal` |
+| `MongoQuery` | `MongoJournal` |
+| `RelationalQuery` | jedes `RelationalJournal` — die dialektneutrale Basis, von der die beiden SQL-Zeilen darüber benannte Subklassen sind |
 
-Das Interface ist über alle hinweg gleich — konstruiere einfach
-die passende Query für dein Journal-Backend.
+Das Interface ist über alle hinweg gleich — konstruiere die Query für
+dein Journal-Backend und übergib ihr die Journal-*Instanz*, nicht einen
+Connection-String:
 
 ```ts
-import { SqliteJournal, SqliteJournalOptions, SqliteQuery } from 'actor-ts/persistence';
+import { PostgresJournal, PostgresJournalOptions, PostgresQuery } from 'actor-ts/persistence';
 
-// SqliteQuery liest dasselbe Journal, in das deine PersistentActors schreiben.
-const journal = new SqliteJournal(SqliteJournalOptions.create().withPath('/var/lib/events.db'));
-const query = new SqliteQuery(journal);
+// PostgresQuery liest dasselbe Journal, in das deine PersistentActors schreiben.
+const journalOptions = PostgresJournalOptions.create().withUrl(process.env.DATABASE_URL!);
+const journal = new PostgresJournal(journalOptions);
+const query = new PostgresQuery(journal);
 ```
+
+### Wenn es für dein Backend keine Query gibt
+
+`InMemoryQuery` funktioniert gegen **jedes** `Journal` — sie ist die
+Referenzimplementierung, nicht die Nur-für-In-Memory-Variante.  Ein
+Backend, das in der Tabelle oben fehlt, ist also nicht von Projektionen
+ausgeschlossen.  Was fehlt, ist der Index, und zwar nur bei den
+By-Tag-Methoden:
+
+- `currentEventsByPersistenceId` und die Id-Methoden delegieren direkt
+  ans Journal und kosten daher in beiden Fällen gleich viel.
+- `currentEventsByTag` hat keinen Index, in den der Filter geschoben
+  werden könnte.  Die Methode listet jede Persistence-Id auf, spielt
+  jede davon ab Sequenznummer 1 erneut ab und filtert im Prozess — das
+  gesamte Journal, pro Aufruf, und eine By-Tag-Projektion wiederholt das
+  alle `pollIntervalMs`.
+
+Das ist bei jedem Volumen korrekt und nur bei kleinem schnell.  Eine
+eigene Query-Klasse gibt es genau dort, wo das Backend einen Tag-Index
+führt, der sich zu lesen lohnt: die SQL-Backends pflegen eine
+`events_tags`-Join-Tabelle, Cassandra eine `events_by_tag`-Seitentabelle,
+MongoDB einen Index auf dem `tags`-Array.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Es warnt dich nichts">
+  Ein Journal mit `InMemoryQuery` zu paaren, obwohl eine schnellere Query
+  existiert, passiert lautlos — die Ergebnisse sind identisch, nur die
+  Last verrät es.  Hat dein Backend eine Zeile in der Tabelle oben, nutze
+  sie.
+</Aside>
 
 ## Die Methoden
 
@@ -319,6 +354,19 @@ Query-API direkt.
 - **Tag-Indexes sind wichtig** — der `events_tags`-Index ist das,
   was By-Tag-Queries schnell macht.  Das SQLite-Journal erstellt
   diesen automatisch.
+- **Ein kompaktiertes Event verlässt auch den Tag-Index.**
+  `delete` ist gegen die Read-Seite genauso spezifiziert wie gegen
+  `read`: sobald ein Präfix kompaktiert ist, gibt
+  `currentEventsByTag` es nicht mehr zurück.  Backends, deren Index
+  auf dem Event-Datensatz selbst sitzt (MongoDBs Multikey-`tags`),
+  bekommen das geschenkt; die mit einer separaten Struktur — die
+  Tags-Tabelle von SQLite und den SQL-Backends, Cassandras
+  `events_by_tag` — löschen im selben Aufruf daraus, und zwar vor
+  den Events, damit ein Crash mitten im Delete keine Zeilen
+  zurücklässt, deren Schlüssel sich nicht mehr rekonstruieren
+  lassen.  Wichtig zu wissen, wenn du ein eigenes Journal
+  schreibst: `read` und `highestSeq` sehen völlig korrekt aus,
+  während ein vergessener Index gelöschte Events weiter ausliefert.
 
 ## Wie geht's weiter
 

@@ -164,7 +164,7 @@ Aus Sicht des Aufrufers ist die `cartRegion` ein einzelner
 | --- | --- |
 | **Region** | Eine pro Node. Routet Nachrichten an den Besitzer des richtigen Shards und entscheidet, wann lokale Entities — und leer gewordene Shards — passiviert werden. |
 | **Shard** | Einer pro hier gehostetem Shard, Kind der Region. Besitzt die Entity-Actors: spawnt sie, stoppt sie, puffert für eine, die gerade geht. Verschwindet selbst, sobald er sein Fenster lang leer stand, und kommt mit der nächsten Nachricht zurück. |
-| **Koordinator** | Einer pro Cluster (Singleton, auf dem Leader). Entscheidet, welcher Node welchen Shard besitzt. Behandelt Rebalancing bei Mitgliedschaftsänderungen. |
+| **Koordinator** | Einer pro Cluster (Singleton, auf dem Leader). Entscheidet, welcher Node welchen Shard besitzt. Behandelt Rebalancing bei Mitgliedschaftsänderungen und beim Herunterfahren einer Region. |
 | **Entity** | Eine pro `entityId`. Kind ihres Shards, auf dem Node, dem aktuell der Shard gehört, in den die ID hasht. |
 
 Damit haben Entities einen echten Pfad —
@@ -277,7 +277,7 @@ type ShardingOptionsType<TMessage> = {
 | `typeName` | Ein String, der diesen sharded Typ identifiziert. Verschiedene Typen können im selben Cluster koexistieren (`cart`, `session`, `order`). |
 | `extractEntityId(message)` | Zieh die Entity-ID aus einer Nachricht. Das ist der Key, der zu einem Shard gehasht wird. |
 | `extractEntityMessage(message)` | *(Optional)* Wenn der Nachrichten-Envelope Routing-Info plus eine Payload enthält, entfernt das den Envelope, bevor die Entity ihn sieht. Default ist die Nachricht unverändert. |
-| `numShards` | In wie viele Shards der Entity-Raum aufgeteilt wird. 64 reichen für die meisten Cluster; setze auf 1000 für sehr große Cluster (>50 Nodes). |
+| `numShards` | In wie viele Shards der Entity-Raum aufgeteilt wird. 64 reichen für die meisten Cluster; setze auf 1000 für sehr große Cluster (>50 Nodes). **Muss auf jedem Node identisch sein, der diesen Typ startet oder proxyt** — siehe unten. |
 | `role` | Nur Mitglieder mit dieser Rolle hosten Shards dieses Typs. Nützlich, um compute-schwere Entities auf dedizierten Nodes zu platzieren. |
 | `proxy` | Dieser Node *leitet* Nachrichten an die Region weiter, hostet aber nie lokale Entities. Wird für Client-Nodes in einem asymmetrischen Cluster verwendet. |
 | `rememberEntities` | Persistiere die Menge der *aktiven* Entity-IDs. Nach einem Koordinator-Failover (oder vollem Cluster-Neustart) werden diese IDs eager gespawnt, sodass Nachrichten nicht die gesamte Flotte neu erstellen müssen. |
@@ -288,6 +288,87 @@ type ShardingOptionsType<TMessage> = {
 Die Defaults sind sinnvoll für kleine Cluster. Für Produktion
 willst du meistens `rememberEntities: true` und ein
 `passivationIdleMs` passend zu deinem Verkehrsmuster.
+
+### `numShards` ist eine clusterweite Vereinbarung
+
+Eine Shard-ID ist `hash(entityId) % numShards`, und jeder Node
+berechnet sie für sich. Zwei Nodes mit unterschiedlichen Werten legen
+dieselbe Entity-ID also in unterschiedliche Shards, jeder besitzt am
+Ende den Shard, den seine eigene Rechnung ergeben hat, und beide
+betreiben eine lebende Instanz der Entity — unter
+`shard-6/entity-user-7` und `shard-50/entity-user-7`, Pfaden, die
+niemals kollidieren. Bei einer persistenten Entity heißt das zwei
+Schreiber auf einer `persistenceId`.
+
+Deshalb reist der Wert in der Registrierung der Region mit, und der
+Koordinator **verweigert** eine Region, die nicht übereinstimmt:
+
+```text
+ERROR [sharding] the coordinator refused to register region 'counter':
+numShards must match across the cluster, but this node is configured
+with 32 and the coordinator governs the type with 64.
+```
+
+Eine verweigerte Region bleibt oben und puffert weiter — sie bekommt
+nie einen Shard zugewiesen, die Fehlkonfiguration ist also ein
+Stillstand mit einem Fehler daneben statt eines stillen Splits.
+Korrigiere den Wert und starte den Node neu.
+
+Eine Region, die vorher *schon* Shards gehostet hat, gibt sie auf der
+Stelle ab. Dieser Fall ist nicht exotisch: Genau ihn erzeugt ein
+Rolling Deploy in dem Moment, in dem die Leader-Rolle einen bereits
+aktualisierten Node erreicht. Die Region wurde vom vorherigen Leader
+akzeptiert, hält also echte Shards und echte Entities, und der neue
+Koordinator verweigert sie. Sie stoppt jeden dieser Shards — ein
+richtiger Stopp, damit die Entities darunter ihr `postStop` durchlaufen
+und eine persistente flusht — und gibt im selben Schritt den Besitz ab.
+Das macht aus der Verweigerung einen Stillstand auf diesem Node statt
+einer Hälfte eines Splits. Zurück kommt nichts, bevor die Werte
+übereinstimmen; der gepufferte Verkehr wartet.
+
+Das ist naturgemäß asynchron: Eine Region registriert sich, nachdem
+`start(...)` zurückgekehrt ist, versucht es erneut, bis der Koordinator
+antwortet, und registriert sich bei jedem Leader-Wechsel neu. Es gibt
+keinen Aufruf, aus dem geworfen werden könnte — deshalb kommt das
+Urteil als Log-Zeile und nicht als Exception.
+
+Zwei Konsequenzen, die man kennen sollte:
+
+- Ein **Proxy**-Node zählt mit. `startProxy` hasht genau wie eine
+  hostende Region und braucht deshalb dasselbe `numShards`; wer einen
+  aus einem bloßen Key in einem Cluster startet, der nicht den Default
+  verwendet, bekommt ihn verweigert.
+- `actor-ts.sharding.number-of-shards` in einer von allen Nodes
+  geteilten Konfigurationsdatei zu setzen ist der fehlerärmste Weg, sie
+  im Gleichschritt zu halten.
+
+Die Verweigerung übersteht auch einen
+[`coordinatorStateStore`](/de/cluster/sharding/introspection/). Dieser
+Store erlaubt einem neuen Leader, den Reallokations-Sturm zu
+überspringen, indem er die Allokationskarte seines Vorgängers übernimmt,
+und jede Shard-ID in so einem Snapshot entstand unter dem Wert des
+*schreibenden* Koordinators — deshalb trägt ein Snapshot diesen Wert
+jetzt als Stempel, und einer, der unter einem anderen (oder, bei einem
+vor dem Stempel geschriebenen Snapshot, unter einem ungenannten) Wert
+entstand, wird als Ganzes verworfen, mit einem `WARN`, das beide Zahlen
+nennt. Eine Region, die der Koordinator bereits verweigert hat, wird
+übersprungen, auch wenn der Snapshot sie nennt. Ohne diese beiden
+Prüfungen setzte der Ladepfad die verweigerten Regionen direkt zurück in
+den Platzierungs-Pool: Ein Rolling Deploy, der den Wert ändert, hätte das
+Split-Routing über den Snapshot wiederhergestellt statt über den
+Registrierungs-Handshake — die einzige Stelle, an der die Werte
+verglichen werden.
+
+Einen Snapshot zu verwerfen kostet einen Reallokationsdurchlauf, also
+genau das, was jeder Cluster ohne Store bei einem Leader-Wechsel schon
+immer tut — und die nächste Allokationsänderung unter dem neuen Leader
+schreibt einen gestempelten Snapshot, es passiert also einmal.
+
+Denselben Typ auf einem Node zweimal zu starten — `start()` nach
+`startProxy()` oder umgekehrt — wirft. Der zweite Aufruf gab bisher die
+Region des ersten zurück, sodass ein Node, der eine hostende Region
+wollte, den Proxy bekam — dessen Platzhalter-Entity-Factory wirft, sobald
+lokal ein Shard landet.
 
 Fünf davon sind auch HOCON-Keys — `number-of-shards`,
 `remember-entities`, `passivation-idle`, `shard-passivation-idle` und
@@ -419,7 +500,8 @@ einem bloß leeren unterscheidet.
 ## Rebalancing
 
 Wenn sich die Cluster-Topologie ändert (ein Node tritt bei oder
-geht), führt der Koordinator einen Rebalance-Lauf durch:
+geht) — oder wenn eine Region stoppt und sich dabei beim Koordinator
+abmeldet —, führt der Koordinator einen Rebalance-Lauf durch:
 
 1. Berechne die neue Shard-zu-Node-Zuordnung aus der aktiven
    Allokationsstrategie (Default: Hash modulo Regionen).

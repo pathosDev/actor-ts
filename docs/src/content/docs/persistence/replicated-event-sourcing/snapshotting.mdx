@@ -62,7 +62,7 @@ A `ReplicatedSnapshot` carries more than state + clock:
 {
   state:                State,
   vc:                   { A: 100, B: 95, C: 60 },  // current vector-clock view
-  seenIds:              [ ... ],  // dedupe set: (replica, seqAtReplica)
+  seenIds:              [ ... ],  // dedupe set, keyed by each event's `eventId`
   events:               [ ... ],  // canonical sorted history — the heaviest field
   localSeq:             205,  // _localSeq at snapshot time
   journalSeqAtSnapshot: 4096,  // recovery resumes from here + 1
@@ -78,6 +78,17 @@ full deduped `events` history and the `seenIds` dedupe set — not
 just state + clock — so an out-of-order remote arrival can refold
 without re-reading the whole journal.  `events` is the heaviest
 field: a 100k-event actor snapshots 100k envelopes on disk.
+
+`seenIds` holds one entry per event ever observed, keyed by that
+event's `eventId`.  Snapshotting it is what makes deduplication
+survive a restart — and, before event ids were minted from entropy,
+was also what made a forged identity a *permanent* suppression of the
+real event that would later claim it (see
+[the trust model](/persistence/replicated-event-sourcing/overview/#what-a-replica-trusts-from-its-peers)).
+A snapshot written before that change carries
+`${replica}#${seqAtReplica}` keys instead; both shapes coexist in one
+set after an upgrade, which is harmless because a key is only ever
+compared for equality.
 
 ## Recovery flow
 

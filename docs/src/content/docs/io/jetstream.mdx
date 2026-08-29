@@ -72,6 +72,7 @@ interface JetStreamOptionsType extends BrokerCommonOptionsType {
   user?:     string;
   password?: string;
   name?:     string;                  // client identifier
+  tls?:      TlsTransportOptionsType; // cert material; also enables TLS; code-only
   stream?:   JetStreamStreamConfig;   // set when this actor owns the stream
   consumer?: JetStreamConsumerConfig; // required to start a subscription
   target?:   ActorRef<JetStreamMessage>; // receives every consumed message
@@ -83,6 +84,13 @@ The builder is the primary style; a plain object works too.  Common
 broker fields — `withReconnect`, `withCircuitBreaker`,
 `withOutboundBuffer` — come from the shared
 [BrokerActor base](/io/broker-actor-base/).  `servers` is required.
+
+`tls` carries the certificate **material** — a private CA to trust,
+or a client certificate for mTLS — never a path to it.  NATS has no
+`tls://` URL scheme, so setting it is also what asks nats.js to
+negotiate TLS.  It is identical to
+[`NatsOptions.withTls`](/io/nats/#tls), and like it has no config key:
+a private key does not belong in `application.conf`.
 
 ### Stream config
 

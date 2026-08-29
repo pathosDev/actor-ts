@@ -214,10 +214,9 @@ Die vollständige Semantik steht unter
 ### `withDispatcher`
 
 ```ts
-import { ActorOptions, MicrotaskDispatcher, ThroughputDispatcher } from 'actor-ts';
+import { ActorOptions, MicrotaskDispatcher } from 'actor-ts';
 
 const crunchyOptions = ActorOptions.create().withDispatcher(new MicrotaskDispatcher());
-const bulkOptions = ActorOptions.create().withDispatcher(new ThroughputDispatcher(100));
 ```
 
 Überschreibt den systemweiten Dispatcher für einen Actor.  Nützlich,
@@ -226,6 +225,30 @@ profitiert, oder latenzempfindlich ist, während der Rest des Systems auf
 einem Durchsatz-Dispatcher läuft.  In den meisten Anwendungen gilt der
 System-Dispatcher einheitlich und man braucht das nie — siehe
 [Dispatcher](/de/fundamentals/dispatchers/).
+
+Beachte: Einem einzelnen Actor einen eigenen `ThroughputDispatcher` zu
+geben, batcht seine Nachrichten **nicht** — dafür ist `withThroughput`
+weiter unten da.
+
+### `withThroughput`
+
+```ts
+const bulkOptions = ActorOptions.create().withThroughput(64);
+```
+
+Wie viele User-Nachrichten dieser Actor pro Dispatcher-Turn vor dem
+Yield abarbeitet.  Ohne Angabe greift `actor-ts.actor.throughput` und
+danach der eingebaute Default von 16.
+
+Erhöhe es für einen Actor mit kurzem Handler, der ein
+Durchsatz-Flaschenhals ist — der Batch amortisiert den
+Scheduling-Roundtrip, der sonst mehr kostet als der Handler selbst.
+Senke es Richtung `1` für einen Actor, dessen Handler so langsam ist,
+dass ein voller Batch Timer und I/O warten ließe.  Ein Batch endet
+immer vorzeitig bei leerer Mailbox, bei Stop oder Suspend und bei einem
+leerlaufenden Throttle-Bucket — das Budget ist also eine Obergrenze und
+keine Zusage.  Siehe
+[Dispatcher-Tuning](/de/operations/tuning/dispatcher-tuning/).
 
 ### `withMailboxCapacity`
 
@@ -262,6 +285,12 @@ Factory wird **einmal** aufgerufen, beim Konstruieren der Zelle des
 Actors; die Mailbox überlebt danach jeden Neustart.  Bei einem Neustart
 wird nur die `Actor`-Instanz neu gebaut — dieselbe Mailbox läuft weiter,
 vor dem Absturz eingereihte Nachrichten sind also noch da.
+
+Mit `withMailboxCapacity` lässt sich das nicht kombinieren — eine
+übergebene Mailbox bringt ihren eigenen Bound mit.  Ein Bound auf einer
+`PriorityMailbox` liegt daher auf `PriorityMailboxOptions`
+(`.withCapacity(...)` plus `.withOverflow(...)`) und nicht auf
+`ActorOptions`.
 
 Die Überlaufstrategien und die Prioritätssemantik stehen unter
 [Mailboxes](/de/fundamentals/mailboxes/).

@@ -123,6 +123,16 @@ alloziert also nie zu Ende.  Jenseits der Deadline bricht er
 genauso ab wie bisher schon bei explizitem `timeoutMs`; neu ist
 nur, dass ein Aufruf ohne genannte Deadline jetzt eine hat.
 
+Jeder Override wird beim Aufruf geprüft, nicht nur beim Bau des
+Clients.  Jede Schranke wird über einen Vergleich durchgesetzt, und
+ein `NaN` verliert jeden Vergleich lautlos: Ein `timeoutMs` von
+`NaN` scharft keinen Timer, ein `maxResponseBytes` von `Infinity`
+löst nie aus, und beides meldet nichts — die Schranke hört einfach
+auf zu existieren.  Ein Wert außerhalb des Wertebereichs wirft
+deshalb `OptionsError`, bevor ein Socket geöffnet wird.
+`timeoutMs: 0` bleibt der eine legitime Weg zu keiner Deadline und
+`maxRedirects: 0` der Weg, den ersten Redirect abzulehnen.
+
 Hebe sie pro Aufruf an, wenn ein einzelner Endpunkt die Ausnahme
 ist:
 
@@ -145,6 +155,23 @@ const exportClientOptions = HttpClientOptions.create()
 
 const exportClient = system.extension(HttpExtensionId).newClient(exportClientOptions);
 ```
+
+Oder verschiebe die Zahlen, die das ganze Deployment erbt, ohne Code
+anzufassen — unter `actor-ts.http.client`:
+
+```hocon
+actor-ts.http.client {
+  maxResponseBytes = 32M
+  defaultTimeoutMs = 60s
+}
+```
+
+Die Reihenfolge ist die übliche: Ein Request schlägt den Client, auf
+dem er gemacht wurde, der schlägt HOCON, das schlägt die eingebauten
+Defaults.  Der gemeinsame `HttpExtensionId`-Client liest diesen Block
+ebenfalls — den Boden anzuheben heißt also nicht, ihn aufzugeben.  Ein
+direkt gebautes `new HttpClient()` hat kein System, aus dem es Config
+lesen könnte, und behält die eingebauten Zahlen.
 
 ### Wohin ein Redirect dich bringen darf
 
@@ -243,16 +270,20 @@ import { Aside } from '@astrojs/starlight/components';
   rateLimit({ cache, /* ... */ });   // ✗ same instance
   cached({ cache, /* ... */ });      // ✗ — one floods, the other loses its state
   ```
-  `InMemoryCache` ist LRU-begrenzt (Default 10 000 Einträge), und seine
-  Eviction ist blind dafür, was ein Eintrag schützt.  Teilst du eine
-  Instanz, evictet ein Aufrufer, der den Response-Cache-Key — oder den
-  `Idempotency-Key`-Header — variiert, die Rate-Limit-Zähler und
-  Idempotency-Records *anderer* Clients: deren Limits setzen sich
-  zurück, und deren Retries führen Handler erneut aus.  Getrennte
-  Instanzen (oder `ext.cache('rate-limit')` / `ext.cache('idempotency')`)
-  halten die Key-Flut der einen Middleware aus dem State der anderen
-  heraus.  Siehe
-  [Eviction ist blind dafür, was ein Eintrag schützt](/de/cache/in-memory/#eviction-ist-blind-dafür-was-ein-eintrag-schützt).
+  `InMemoryCache` ist LRU-begrenzt (Default 10 000 Einträge).  Seine
+  Eviction leert zuerst die Einträge, die keine Garantie tragen — ein
+  Aufrufer, der den Response-Cache-Key variiert, erreicht die
+  Rate-Limit-Zähler und Idempotency-Records *anderer* Clients also nicht
+  mehr.  Diese Ordnung ist aber blind dafür, wem ein Eintrag gehört: in
+  einer ungeteilten Instanz evictet, wer den `Idempotency-Key`-Header
+  variiert, Zähler und Records weiterhin, sobald nichts Billigeres mehr
+  in der Map liegt.  Getrennte Instanzen (oder `ext.cache('rate-limit')`
+  / `ext.cache('idempotency')`) halten die Key-Flut der einen Middleware
+  vollständig aus dem State der anderen heraus; wo eine Instanz geteilt
+  werden muss, reserviert `prefixQuotas` den Anteil jeder Middleware
+  daran.  Siehe
+  [was Eviction schützt und was nicht](/de/cache/in-memory/#was-eviction-schützt-und-was-nicht)
+  und [eine Instanz nach Key-Präfix aufteilen](/de/cache/in-memory/#eine-instanz-nach-key-präfix-aufteilen).
 </Aside>
 
 ## HTTP an Actors anschließen

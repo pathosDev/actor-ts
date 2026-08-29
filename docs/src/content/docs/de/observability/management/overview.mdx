@@ -19,7 +19,7 @@ import { managementRoutes } from 'actor-ts/management';
 
 // Build the routes (cluster is optional — pass null to skip /cluster/*),
 // then bind them on a dedicated port.
-const { routes, health } = managementRoutes(system, cluster, {
+const routes = managementRoutes(system, cluster, {
   enableMetricsEndpoint: true,
 });
 
@@ -27,11 +27,14 @@ const binding = await system.http(8558, { host: '0.0.0.0' }).bind(routes);
 // management endpoints now serve on http://0.0.0.0:8558
 ```
 
-`managementRoutes` gibt `{ routes, health }` zurück: `routes` ist
-der [Route](/de/http/route-dsl/)-Baum, den du bindest, und `health`
-ist die
-[HealthCheckRegistry](/de/observability/management/health-checks/),
-auf der du Liveness- / Readiness-Checks registrierst.
+`managementRoutes` gibt den [Route](/de/http/route-dsl/)-Baum
+zurück, den du bindest — sonst nichts.  Die Checks hinter `/health`
+und `/ready` liegen auf der
+[HealthCheckRegistry](/de/observability/management/health-checks/)
+des ActorSystems, erreichbar über `healthChecksOf(system)`: die
+Komponenten, denen ein Gesundheitssignal gehört, registrieren sich
+dort beim Start — lange bevor irgendwer einen Route-Baum baut — und
+deine eigenen Checks kommen auf dasselbe Objekt.
 
 ## Konfiguration
 
@@ -54,7 +57,7 @@ type ManagementRoutesOptionsType = {
 Eine typische Produktions-Verdrahtung:
 
 ```ts
-const { routes, health } = managementRoutes(system, cluster, {
+const routes = managementRoutes(system, cluster, {
   enableMetricsEndpoint: true,    // for Prometheus
   enableLeaveEndpoint:   false,   // admin-only; gate behind auth
   enableDownEndpoint:    false,
@@ -67,10 +70,10 @@ await system.http(8558).bind(routes);
 | Endpunkt | Immer an? | Zweck |
 | --- | --- | --- |
 | `GET /health` | ✓ | Liveness — 200 wenn jeder Liveness-Check besteht. |
-| `GET /ready` | ✓ | Readiness — 200 wenn Cluster up + jeder Readiness-Check besteht. |
+| `GET /ready` | ✓ | Readiness — 200 wenn jeder Readiness-Check besteht (Cluster-Mitgliedschaft + -Konnektivität registriert das Framework selbst). |
 | `GET /cluster/members` | Wenn `cluster` gesetzt | Membership-JSON. |
 | `GET /cluster/leader` | Wenn `cluster` gesetzt | Leader-Adresse. |
-| `GET /cluster/shards?type=<name>` | Wenn `cluster` gesetzt | Shard-Verteilung für einen sharded Typ. |
+| `GET /cluster/shards?type=<name>` | Wenn `cluster` gesetzt, für einen Typ, an dem dieser Node teilnimmt | Shard-Verteilung für einen sharded Typ. |
 | `POST /cluster/leave` | Opt-in (`enableLeaveEndpoint`) | Graceful Cluster-Leave auslösen. |
 | `POST /cluster/down` | Opt-in (`enableDownEndpoint`) | Peer per Adresse force-downen. |
 | `GET /metrics` | Opt-in (`enableMetricsEndpoint`) | Prometheus-Textformat. |
@@ -80,16 +83,21 @@ für die volle Oberfläche + Response-Shapes.
 
 ## Health Checks
 
+Drei registriert das Framework bereits selbst — einen
+`actor-system`-Liveness-Check sowie die Readiness-Checks
+`cluster-membership` und `cluster-transport`, die `Cluster.join`
+installiert.  Deine kommen dazu:
+
 ```ts
-const { routes, health } = managementRoutes(system, cluster);
+import { healthChecksOf, managementRoutes } from 'actor-ts/management';
 
 // Readiness — gates traffic; return { name, status, detail? }.
-health.addReadiness(async () => {
-  const ok = await db.ping();
-  return { name: 'database', status: ok, detail: ok ? undefined : 'db unreachable' };
+healthChecksOf(system).addReadiness(async () => {
+  const ok = await database.ping();
+  return { name: 'database', status: ok, detail: ok ? undefined : 'database unreachable' };
 });
 
-await system.http(8558).bind(routes);
+await system.http(8558).bind(managementRoutes(system, cluster));
 ```
 
 Checks hängen sich in `/health` (Liveness) und `/ready`
@@ -163,7 +171,7 @@ gar keinen eigenen Port — `concat` sie in die bestehenden
 import { concat } from 'actor-ts/http';
 import { managementRoutes } from 'actor-ts/management';
 
-const { routes: mgmt } = managementRoutes(system, cluster);
+const mgmt = managementRoutes(system, cluster);
 await system.http(8080).bind(concat(appRoutes, mgmt));
 ```
 

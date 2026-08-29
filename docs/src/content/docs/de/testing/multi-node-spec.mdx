@@ -216,8 +216,11 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Serialisierungsabhängige Bugs (Funktionen in Nachrichten,
   nicht-serialisierbare Typen) tauchen in MultiNodeSpec nicht
-  auf. Nutze ParallelMultiNodeSpec oder Echt-Cluster-
-  Integrationstests für Serialisierungs-Abdeckung.
+  auf — und ParallelMultiNodeSpec schließt die Lücke nur zur
+  Hälfte, denn Structured Clone akzeptiert Payloads, die der
+  Wire ablehnt. Für echte Abdeckung round-trippe die Nachricht
+  in einem Unit-Test durch `JsonSerializer` oder fahre einen
+  Echt-Cluster-Integrationstest.
 </Aside>
 
 <Aside type="caution" title="Echte Netzwerk-Fehlermodi">

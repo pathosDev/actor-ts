@@ -1,11 +1,47 @@
 // Cluster entry points.
 export { Cluster, inMemoryTransport } from './Cluster.js';
 export { ClusterExtension, ClusterExtensionId, clusterOf } from './ClusterExtension.js';
-export { ClusterOptions, ClusterOptionsBuilder, ClusterOptionsValidator } from './ClusterOptions.js';
+export {
+  CLUSTER_MEMBERSHIP_CHECK_NAME,
+  CLUSTER_TRANSPORT_CHECK_NAME,
+  clusterMembershipResult,
+  clusterTransportResult,
+  registerClusterHealthChecks,
+  selfIsFullMember,
+  transportReachesCluster,
+} from './ClusterHealthChecks.js';
+// In-process readiness (#1355) — the wait `bootstrapCluster` uses, public so
+// hand-wired `Cluster.join` callers get the same one.
+export {
+  ClusterReadinessOptionsValidator,
+  ClusterReadyTimeoutError,
+  DEFAULT_MINIMUM_MEMBERS,
+  awaitClusterReady,
+  clusterIsReady,
+  isClusterReadyNow,
+} from './ClusterReadiness.js';
+export type { ClusterReadinessOptions } from './ClusterReadiness.js';
+export {
+  ClusterOptions,
+  ClusterOptionsBuilder,
+  ClusterOptionsValidator,
+  // Declared beside the validator that refuses it, not in `bootstrap/` where
+  // it started: the advertised host is a `ClusterOptions` concept and the
+  // election is only its loudest consumer (#944).
+  isWildcardHost,
+  resolveAdvertisedHost,
+  ADVERTISED_HOST_ENV_VARS,
+  DEFAULT_ADVERTISED_HOST,
+} from './ClusterOptions.js';
 export type { ClusterOptionsType, SelfElectionPolicy } from './ClusterOptions.js';
 export { bootstrapCluster } from './ClusterBootstrap.js';
-export { ClusterBootstrapOptions, ClusterBootstrapOptionsBuilder, ClusterBootstrapOptionsValidator } from './ClusterBootstrapOptions.js';
-export type { ClusterBootstrapOptionsType } from './ClusterBootstrapOptions.js';
+export {
+  ClusterBootstrapOptions,
+  ClusterBootstrapOptionsBuilder,
+  ClusterBootstrapOptionsValidator,
+  readClusterBootstrapDefaultsFromConfig,
+} from './ClusterBootstrapOptions.js';
+export type { ClusterBootstrapOptionsType, ClusterBootstrapConfigDefaults } from './ClusterBootstrapOptions.js';
 export type { BootstrappedCluster } from './ClusterBootstrap.js';
 
 // Stable-observation bootstrap (#148).
@@ -16,7 +52,6 @@ export {
   StableObservationOptionsBuilder,
   StableObservationOptionsValidator,
   readStableObservationOptionsFromConfig,
-  isWildcardHost,
 } from './bootstrap/index.js';
 export type {
   JoinTargets,
@@ -115,6 +150,8 @@ export {
   SingletonKey,
   singletonKeyOf,
   singletonManagerPath,
+  asWarmHandOverActor,
+  handOverStateFitsFrame,
 } from './singleton/index.js';
 export type {
   StartSingletonOptionsType,
@@ -123,6 +160,7 @@ export type {
   SingletonReference,
   ClusterSingletonManagerOptionsType,
   SingletonDeliver,
+  WarmHandOverActor,
 } from './singleton/index.js';
 
 // Distributed Pub-Sub.
@@ -185,6 +223,25 @@ export type {
   RememberEntitiesStore,
   RememberEvent,
 } from './sharding/RememberEntitiesStore.js';
+// The coordinator-state opt-in.  Exported because the option JSDoc on
+// `StartShardingOptionsType.coordinatorStateStore` tells the user to pass
+// `new DistributedDataCoordinatorStateStore(...)`, and until now that
+// instruction was impossible to follow from outside this repository — the
+// class reached no public entry point (#682).
+export {
+  DistributedDataCoordinatorStateStore,
+} from './sharding/CoordinatorState.js';
+export type {
+  CoordinatorStateStore,
+  CoordinatorStateData,
+  RegionInfoData,
+} from './sharding/CoordinatorState.js';
+export { shardMapViewOf } from './sharding/ShardMapView.js';
+export type {
+  ShardMapView,
+  ShardMapViewRegion,
+  ShardMapViewAssignment,
+} from './sharding/ShardMapView.js';
 export {
   CassandraRememberEntitiesStore,
   rememberEntitiesDdl,

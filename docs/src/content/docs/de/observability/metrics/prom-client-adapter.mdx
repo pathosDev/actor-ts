@@ -69,6 +69,48 @@ Wenn du prom-client noch nicht nutzt, bevorzuge den nativen
 [Prometheus-Exporter](/de/observability/metrics/prometheus-exporter/)
 des Frameworks — keine zusätzliche Dependency.
 
+## Eine Registry, ein Leser
+
+Die Bridge behält **keine Kopie** dessen, was sie schreibt.
+prom-client hält die Werte, also ist `collect()` auf der
+zurückgegebenen Registry leer — dauerhaft und absichtlich — und die
+Registry sagt das, indem sie `collectable: false` deklariert.
+
+Für den Weg, für den es diesen Adapter gibt, ist das in Ordnung: du
+liest die Metriken über `register.metrics()`, genau wie deine
+eigenen. Relevant wird es für alles im Framework, das in die
+*andere* Richtung liest, über `collect()`. Davon gibt es zwei, und
+beide verweigern die Antwort, statt Null zu melden:
+
+- Die Management-Route [`GET /metrics`](/de/observability/management/http-endpoints/#get-metrics)
+  antwortet mit **`503`**, solange diese Bridge installiert ist,
+  statt mit `200` und leerem Body. Ein leerer Body ist ein gültiger
+  Prometheus-Scrape — das Target bleibt `up=1`, und die Serien des
+  Frameworks hören schlicht auf zu existieren, sodass darauf
+  geschriebene Alerts nie wieder feuern.
+- Die DevTools-Übersicht zeigt **`unavailable`** für die drei Werte,
+  die sie aus der Registry liest: verarbeitete Nachrichten,
+  Mailbox-Drops und Handler-Latenz. Ihr **Throughput**-Diagramm
+  lässt die Linie `messages / s` aus demselben Grund weg und nennt
+  sie in der Legende, statt eine flache Null zu zeichnen: Ein
+  Diagramm überzeugt stärker als eine Kachel, und diese Linie würde
+  genau die Behauptung aufstellen, die die Kachel daneben
+  verweigert. Die Dead-Letter-Linie daneben wird aus dem
+  Event-Stream gezählt und bleibt — ebenso alles andere auf dieser
+  Seite: Es stammt aus dem Aktorenbaum und dem Event-Stream und
+  bleibt korrekt.
+
+Also: aktiviere `enableMetricsEndpoint` nicht zusammen mit dieser
+Bridge — scrape stattdessen deine eigene prom-client-Route, die
+dieselben Serien enthält. Und lies Framework-Metriken in den
+DevTools nur auf einem System, das die eigene Registry des
+Frameworks nutzt.
+
+An den *Schreibvorgängen* ändert sich nichts. Jeder Counter, jede
+Gauge und jedes Histogram des Frameworks liegt live auf deiner
+prom-client-Route, einschließlich `actor_mailbox_dropped_total` —
+dem Drop-Counter, den die DevTools-Kachel dir nicht zeigen kann.
+
 ## Konfiguration
 
 ```ts
@@ -132,6 +174,23 @@ begrenzen soll.
 
 Siehe [Kardinalitätsdisziplin](/de/observability/metrics/core-metrics/#kardinalitätsdisziplin)
 für `bucketize`, den Weg, die Grenze gar nicht erst zu erreichen.
+
+## Eine Serie entfernen
+
+[`remove`](/de/observability/metrics/core-metrics/#eine-serie-entfernen)
+reicht an prom-clients eigenes `Metric.remove(labels)` weiter — ein
+Tupel, dessen Gegenstand weg ist, verlässt damit beide Seiten
+gleichzeitig: die Serien-Zählung der Bridge und die Exposition, die
+prom-client rendert. Nur eine von beiden zu treffen wäre schlimmer als
+gar nicht zu entfernen: ein freigegebener Platz, während die Serie
+weiter gescrapt wird, oder umgekehrt.
+
+Das ist die eine Stelle, an der der Adapter mehr von `prom-client`
+braucht als die Konstruieren-und-Mutieren-Oberfläche. Der `client`, den
+du übergibst, muss also `remove` auf seinen `Counter` / `Gauge` /
+`Histogram` anbieten — jedes Release seit v11.2 tut das. Ein
+selbstgebauter Ersatz, der es weglässt, ist ein Compile-Fehler statt
+eines stillen Auseinanderlaufens.
 
 ## Peer-Dependency
 

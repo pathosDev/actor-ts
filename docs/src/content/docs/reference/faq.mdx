@@ -129,19 +129,46 @@ bookkeeping.
 
 ### What's the per-message overhead?
 
-Roughly:
+Measured on Bun 1.3.14, 10 cores of an Intel i9-12900K under Linux, mean of
+a hundred rounds — see
+[Benchmarks](/reference/benchmarks/) for the methodology and the
+comparison against other frameworks:
 
-- **`tell`** — ~50 ns per call on hot path (microtask
-  dispatcher).  Memory: ~200 bytes per envelope.
-- **`ask`** — ~5 μs per call (temporary ref construction).
-  Memory: ~500 bytes plus Promise machinery.
+- **`tell`, end to end** — about **53 ns** per message with a mailbox
+  that has depth (roughly 19 million messages/second sustained).  That is
+  the cost of the whole path: enqueue, schedule, deliver, handle.  The
+  `tell()` call on its own returns faster still — it only enqueues — so
+  "how long does `tell` take" and "how many messages per second" are
+  different questions with answers an order of magnitude apart.
+- **`ask` round trip** — **0.9 µs** at p50, depth 1.
 - **Cross-cluster `tell`** — bounded by network + serialization
-  cost.  Sub-millisecond on localhost, ms-range over LAN.
+  cost.  Sub-millisecond on localhost, ms-range over LAN.  Not yet
+  measured; the cluster benchmarks do not leave the process.
 
-For comparison: a raw `function call` is ~1 ns.  Actor messaging
-costs 50-200× a direct call — which is fine for most workloads
-but visible if you'd hammer the same actor with millions of
-messages per second.
+**A mailbox with depth is doing most of the work in that first figure**, and
+the difference is worth understanding before designing around it.  An actor
+handles a batch of queued messages per scheduling turn, so a deep mailbox
+amortises the wakeup across the batch.  An actor answering one request at a
+time cannot amortise anything — its mailbox is empty between messages — which
+is why the ask round trip is measured in microseconds while a flooded `tell`
+is measured in hundreds of nanoseconds.  Neither number is wrong; they
+describe different shapes of load.
+
+What you are buying for that time is a queue, a scheduler, supervision and
+location transparency — none of which a direct method call does.  Comparing
+the two as though they were alternatives is the reason the benchmarks no
+longer publish a "no framework" figure at all: it is not one of the options
+you are choosing between.
+
+The number that *is* worth designing against: several million messages a
+second through one actor is reachable, a hundred million is not.
+
+<Aside type="note" title="Dispatch style is not free either">
+These figures use plain conditional dispatch in the message handler.
+Dispatching with `ts-pattern` — the style this project uses in its own
+source — costs a further 18-22 % of tell throughput, which is worth
+knowing on a hot path.
+</Aside>
 
 ### Should I worry about garbage collection?
 

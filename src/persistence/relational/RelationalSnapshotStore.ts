@@ -74,14 +74,16 @@ export class RelationalSnapshotStore extends RelationalStore implements Snapshot
     const now = Date.now();
     try {
       await pool.query(this.statements.upsert, [persistenceId, seq, encodePayload(state, this.serializer), now]);
-      if (this.keepN > 0) {
-        const { sql, params } = this.statements.prune;
-        await pool.query(sql, params(persistenceId, this.keepN));
-      }
-      return { persistenceId, sequenceNr: seq, state, timestamp: now };
     } catch (e) {
       this.fail('save', e);
     }
+    // Best-effort prune — outside the write's catch on purpose.  See the
+    // retention note on `SnapshotStore.save`.
+    if (this.keepN > 0) {
+      const { sql, params } = this.statements.prune;
+      try { await pool.query(sql, params(persistenceId, this.keepN)); } catch { /* swallow */ }
+    }
+    return { persistenceId, sequenceNr: seq, state, timestamp: now };
   }
 
   async loadLatest<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {

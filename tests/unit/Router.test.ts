@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
+import { ActorOptions } from '../../src/ActorOptions.js';
 import { ActorStopped, AskTimeoutError, DeadLetter } from '../../src/SystemMessages.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
@@ -23,9 +24,8 @@ import {
 import type { ActorRef } from '../../src/ActorRef.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../../src/util/Constants.js';
 import { OptionsError } from '../../src/util/OptionsValidator.js';
-import { awaitCondition } from '../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 /** Total deliveries recorded by the counting/registering routees. */
 const totalHits = (hits: Map<string, number>): number =>
   Array.from(hits.values()).reduce((sum, count) => sum + count, 0);
@@ -48,7 +48,7 @@ function countingWorker(hits: Map<string, number>) {
 
 describe('roundRobinStrategy', () => {
   test('cycles through routees deterministically', () => {
-    const routees = ['a', 'b', 'c'].map(name => ({ path: { name: name } } as never));
+    const routees = ['a', 'b', 'c'].map(name => ({ path: { name } }) as unknown as ActorRef);
     const strategy = roundRobinStrategy();
     const chosen = [0, 1, 2, 3, 4, 5].map(i =>
       Array.from(strategy(routees, { messageIndex: i }))[0]!,
@@ -63,7 +63,7 @@ describe('roundRobinStrategy', () => {
 
 describe('randomStrategy', () => {
   test('returns one routee per call from the given set', () => {
-    const routees = ['a', 'b', 'c'].map(name => ({ path: { name: name } } as never));
+    const routees = ['a', 'b', 'c'].map(name => ({ path: { name } }) as unknown as ActorRef);
     for (let i = 0; i < 20; i++) {
       const picked = Array.from(randomStrategy()(routees, { messageIndex: i }));
       expect(picked.length).toBe(1);
@@ -78,7 +78,7 @@ describe('randomStrategy', () => {
 
 describe('broadcastStrategy', () => {
   test('returns every routee', () => {
-    const routees = ['a', 'b', 'c'].map(name => ({ path: { name: name } } as never));
+    const routees = ['a', 'b', 'c'].map(name => ({ path: { name } }) as unknown as ActorRef);
     const out = Array.from(broadcastStrategy()(routees, { messageIndex: 0 }));
     expect(out).toEqual(routees);
   });
@@ -148,7 +148,7 @@ describe('smallestMailboxStrategy (#154)', () => {
     // A ref that is not locally hosted has no mailbox this process can read.
     // The strategy must still route — silently dropping would be worse than
     // degrading to round-robin.
-    const routees = ['a', 'b', 'c'].map(name => ({ path: { name: name } } as never));
+    const routees = ['a', 'b', 'c'].map(name => ({ path: { name } }) as unknown as ActorRef);
     const strategy = smallestMailboxStrategy();
     const chosen = [0, 1, 2, 3, 4, 5].map(i =>
       Array.from(strategy(routees, { messageIndex: i }))[0]!,
@@ -300,7 +300,16 @@ describe('Router.smallestMailbox (integration, #154)', () => {
         refs.set(this.self.path.name, this.self as unknown as ActorRef<string>);
       }
     };
-    const pool = sys.spawn(Router.smallestMailbox(3, routee), 'pool');
+    // The routees drain one message per turn, which is what makes the depths
+    // below hold still long enough for the router to route against them.
+    // `release()` necessarily happens before the router's turn — a `tell` only
+    // queues — so with the default batch budget (#409) the deep routee empties
+    // its whole backlog in the microtask the resolving gate hands it, and the
+    // router then correctly sees three idle routees.  That is the scheduler
+    // changing, not the strategy: what this case is about is which routee
+    // `smallestMailbox` picks for a *given* set of depths.
+    const routeeOptions = ActorOptions.create<string>().withThroughput(1);
+    const pool = sys.spawn(Router.smallestMailbox(3, routee, routeeOptions), 'pool');
 
     // Three messages over an idle pool tie on depth 0 and therefore rotate,
     // one per routee — each parks on the gate, leaving all depths at 0.
@@ -410,7 +419,10 @@ describe('Router.smallestMailbox (integration, #154)', () => {
     expect(handled.has('routee-2')).toBe(false);
 
     await sys.terminate();
-  });
+    // The 8 s delivery budget was unreachable under bun's 5 s default cap, and
+    // it is the wait that distinguishes "the burst is still draining" from the
+    // dead-routee regression — exactly the distinction a bare timeout erases.
+  }, 20_000);
 });
 
 describe('Router.roundRobin (integration)', () => {
@@ -544,6 +556,8 @@ describe('Router — terminated routees (#449)', () => {
       timeoutMs: 4_000,
       label: 'the routee being removed stopped',
     });
+    // The one-hop settle named above: the prune is private state, so there is
+    // nothing to poll between the stop and the router having acted on it.
     await sleep(30);
 
     hits.clear();
@@ -592,6 +606,8 @@ describe('Router — terminated routees (#449)', () => {
       timeoutMs: 4_000,
       label: 'the routee being removed stopped',
     });
+    // The one-hop settle named above: the prune is private state, so there is
+    // nothing to poll between the stop and the router having acted on it.
     await sleep(30);
 
     hits.clear();
@@ -601,6 +617,8 @@ describe('Router — terminated routees (#449)', () => {
       timeoutMs: 4_000,
       label: 'the broadcast reached the surviving routees',
     });
+    // The settle window itself: `deadLetters` staying empty is an absence, and a
+    // poll that stopped at two accounted-for messages could not see a third.
     await sleep(20);
 
     // A broadcast reaches every routee in the pool, so a stale member is one
@@ -777,6 +795,8 @@ describe('Router.scatterGatherFirstCompleted (#153)', () => {
       timeoutMs: 4_000,
       label: 'both routees answered, winner and loser',
     });
+    // The settle window itself: both assertions below are absences — exactly one
+    // record, and no dead letter for the loser's reply.
     await sleep(20);
 
     // Exactly one reply, attributed to the routee that produced it — the
@@ -991,6 +1011,8 @@ describe('Router.scatterGatherFirstCompleted (#153)', () => {
       timeoutMs: 4_000,
       label: 'both routees stopped',
     });
+    // The one-hop settle: the router prunes on the `Terminated` that follows the
+    // stop, and that prune is private state with nothing to poll on.
     await sleep(30);
 
     let caught: unknown = null;

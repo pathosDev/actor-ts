@@ -23,7 +23,6 @@ import {
   registerCassandraPlugins,
 } from '../../src/persistence/index.js';
 import { FakeCassandraClient } from '../../tests/integration/in-process/persistence/FakeCassandraClient.js';
-import { attachDevTools } from '../devtools.js';
 
 type IncrementCommand = { kind: 'increment'; amount: number };
 type GetCommand = { kind: 'get' };
@@ -67,7 +66,6 @@ async function main(): Promise<void> {
       },
     });
   const system = ActorSystem.create('cassandra-hello', systemOptions);
-  const devtools = await attachDevTools(system);
   const ext = system.extension(PersistenceExtensionId);
   const journalOptions = CassandraJournalOptions.create()
     .withContactPoints(['fake']).withKeyspace('app').withAutoCreateKeyspace(true);
@@ -82,6 +80,11 @@ async function main(): Promise<void> {
   let counter = system.spawnAnonymous(Counter);
   counter.tell({ kind: 'increment', amount: 10 });
   counter.tell({ kind: 'increment', amount: 32 });
+  // None of the three below is a drain sleep: they bracket the crash, not a
+  // terminate(), and the drain runs inside terminate() and nowhere else.
+  // `stop()` is fire-and-forget, so nothing orders the old actor's last
+  // journal write against the new one's replay of the same persistence id.
+  // Deleting them makes the replay report the wrong counter.
   await Bun.sleep(60);
 
   // "Crash and restart" — the new actor replays events from the journal.
@@ -94,7 +97,6 @@ async function main(): Promise<void> {
   const value = await counter.ask<number>({ kind: 'get' }, 500);
   console.log(`counter after replay: ${value}`); // expect 42
 
-  await devtools.holdOpen();
   await system.terminate();
 }
 

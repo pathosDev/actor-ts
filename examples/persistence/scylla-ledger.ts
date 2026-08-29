@@ -28,7 +28,6 @@ import {
   registerCassandraPlugins,
   type SnapshotPolicy,
 } from '../../src/persistence/index.js';
-import { attachDevTools } from '../devtools.js';
 
 type DepositCommand = { kind: 'deposit'; amount: number };
 type WithdrawCommand = { kind: 'withdraw'; amount: number };
@@ -115,7 +114,6 @@ async function main(): Promise<void> {
       },
     });
   const system = ActorSystem.create('ledger', systemOptions);
-  const devtools = await attachDevTools(system);
 
   const ext = system.extension(PersistenceExtensionId);
   const journalOptions = CassandraJournalOptions.create()
@@ -144,6 +142,9 @@ async function main(): Promise<void> {
   console.log('balance    →', await alice.ask({ kind: 'balance' }, 3_000));
 
   // "Crash" — stop the actor, rebuild, replay.
+  // Not a drain sleep: `stop()` is fire-and-forget and this is not a
+  // terminate(), so nothing else orders the old actor's last write against
+  // the replay `alice2` does from the same persistence id.
   alice.stop();
   await Bun.sleep(50);
   console.log('--- second run (state replayed from Scylla) ---');
@@ -152,7 +153,6 @@ async function main(): Promise<void> {
 
   await ext.journal.close?.();
   await ext.snapshotStore.close?.();
-  await devtools.holdOpen();
   await system.terminate();
 }
 

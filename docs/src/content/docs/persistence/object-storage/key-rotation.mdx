@@ -167,6 +167,46 @@ counted as `skippedCurrent`.  An object that decrypts under
 neither raises the original decrypt error, so a genuinely broken
 corpus is not quietly skipped.
 
+## Sweeping an integrity-protected corpus
+
+A bucket with the [integrity
+HMAC](/persistence/object-storage/encryption/#integrity-and-master-key-rotation)
+turned on needs that key here too.  The tag covers the manifest bytes,
+so the sweep has to verify it to read a body at all and recompute it to
+write one back:
+
+```ts
+await reEncryptObjectStorage(backend, {
+  keyPrefix: 'state/',
+  keyring,
+  info: 'acme/prod/durable-state/v1',
+  integrity: { mode: 'hmac-sha256', integrityKey },
+});
+```
+
+`integrity` takes the same shape the store takes — a flat config, or the
+same per-`persistenceId` resolver — so a deployment that keys integrity
+per tenant resolves the same key here that its store does.
+
+Leave it out on a tagged corpus and the sweep refuses before the first
+write, naming an offending key.  Tags are re-applied only where the body
+already carried one, so an untagged body is never promoted; a corpus
+that is still mid-integrity-migration adds `allowUntaggedBodies: true`,
+the sweep-side counterpart of the store option of the same name.
+
+The sweep does **not** rotate the integrity key itself, and no migration
+window lets you either.  Nothing on the wire records which integrity key
+sealed a body, so a half-swept corpus would be indistinguishable from a
+tampered one — and `allowUntaggedBodies` is not the way round it, because
+it re-admits bodies carrying *no* tag, while a body tagged under the old
+key still fails the HMAC comparison before that branch is reached.  What
+does work is the per-call `PersistenceOptions.integrity` override, read
+and write independently, one `persistenceId` at a time: see [integrity
+and master-key
+rotation](/persistence/object-storage/encryption/#integrity-and-master-key-rotation),
+and [#1354](https://github.com/pathosDev/actor-ts/issues/1354) for the
+shape a real roll would need.
+
 ## Partial rotation with `skip`
 
 `skip(key) => boolean` **excludes** matching keys — the inverse of
@@ -185,13 +225,42 @@ Useful for per-tenant, per-actor-type, or phased rotations.
 
 ## Keyring-completeness pre-check
 
-By default the sweep samples the first encrypted objects and
+By default the sweep samples the first objects it would rewrite and
 **refuses to start** if any payload's key version is missing from
 the keyring — catching the "operator dropped the retired key too
 soon" footgun *before* a mid-sweep decrypt failure leaves the
-corpus half-rewritten.  Disable with `verifyKeyringCompleteness:
-false` only if you have independent assurance the keyring is
-complete.
+corpus half-rewritten.  The same pass answers the integrity
+question: a sampled body carrying a tag that `integrity` resolves
+no key for stops the sweep here rather than in the middle of the
+corpus.  Disable with `verifyKeyringCompleteness: false` only if
+you have independent assurance the keyring is complete.
+
+Both halves sample rather than enumerate, so both are a footgun
+catcher and not a proof — a straggler past `sampleSize` still
+aborts mid-corpus.
+
+## Which keys the sweep can process
+
+The sweep derives its HKDF salt from the object's **key** and then
+rewrites the body, so a key it cannot read reliably is a body it
+must not touch.  Two rules follow, and both are enforced:
+
+- **No control characters.**  Every object-storage backend rejects
+  them on `put`, so a key this framework writes is always a key the
+  sweep accepts.  Reads and deletes stay permissive, so an object
+  written by an older version is still reachable.
+- **Exactly `<keyPrefix><persistenceId>/<leaf>`.**  That is the
+  layout both built-in stores use — `<pid>/<seq>.json` for
+  snapshots, `<pid>/state.json` for durable state.  A key with an
+  extra level is refused rather than read as its first segment: a
+  `persistenceId` containing `/`, or a `keyPrefix` shorter than the
+  store's own `prefix`, would otherwise yield a *plausible but
+  wrong* salt for the whole corpus.  A different layout supplies its
+  own `pidFromKey`.
+
+Set `keyPrefix` to the store's `prefix` exactly.  Sweeping
+`'snapshots/'` when the store writes under `'snapshots/prod/'` is
+the second case above, and the sweep refuses it.
 
 ## Confirming completion
 
@@ -208,8 +277,32 @@ if (result.rewrote === 0) {
 }
 ```
 
-There is no separate "list stragglers" helper; the counts are the
-source of truth.
+That equation leaves out `skippedMalformedKey` on purpose: **a
+returning sweep always has it at zero.**  A pass that met such a key
+finishes rotating everything else and then throws
+`ReEncryptIncompleteError` instead of returning, because those
+objects are still under the key you were about to retire.  The error
+carries the full `result` plus a sample of the offending keys.
+
+```ts
+import { ReEncryptIncompleteError } from 'actor-ts/persistence';
+
+try {
+  await reEncryptObjectStorage(backend, { keyPrefix: 'state/', keyring, info });
+} catch (thrown) {
+  if (thrown instanceof ReEncryptIncompleteError) {
+    console.error(thrown.message);          // names the keys, says not to drop the key
+    console.error(thrown.malformedKeys);    // a bounded sample
+    console.error(thrown.result.rewrote);   // what did get rotated
+  }
+  throw thrown;
+}
+```
+
+Fix those keys, or — if they are not this framework's objects —
+exclude them with the `skip` predicate above and re-run.  There is
+no separate "list stragglers" helper; the counts are the source of
+truth.
 
 ## After the sweep
 

@@ -112,8 +112,28 @@ export const LogContext = {
    * Starting from empty is cheaper to reason about than remembering to
    * strip individual keys, and it fails safe: a field nobody set cannot
    * leak.
+   *
+   * **The framework applies it to its own seams of that shape** (#718): a
+   * dispatcher turn (`ActorCell.runReported`), a fired schedule
+   * (`Scheduler`), and an inbound cluster frame that carries no context
+   * (`Cluster.onEnvelope`).  So the deferred work still needing this by hand
+   * is the work *you* defer — an un-awaited promise, a buffer flushed later,
+   * a raw `setTimeout` — not anything the framework hands you.
+   *
+   * **No store means no wrapper.**  With nothing ambient, `get()` already
+   * returns {@link EMPTY}, so running `callback` bare is observably identical
+   * to running it inside `storage.run(EMPTY, …)` — and it keeps the runtime's
+   * no-store fast path, which is what makes the framework's own three seams
+   * affordable.  The cost of an active store is not the `run` call: it is that
+   * every async resource created under one propagates it, so wrapping a turn
+   * unconditionally taxed each `await` inside it.  Measured on
+   * `benchmarks/single-node/tell-throughput.ts`, an unconditional wrapper cost
+   * 3-8 % of tell throughput in a process with no MDC at all; this guard takes
+   * that back, and a process that does open scopes pays only where there is
+   * something to shadow.
    */
   runFresh<T>(callback: () => T): T {
+    if (storage.getStore() === undefined) return callback();
     return storage.run(EMPTY, callback);
   },
 
@@ -169,6 +189,27 @@ export const LogContext = {
    */
   get(): LogContextData {
     return storage.getStore() ?? EMPTY;
+  },
+
+  /**
+   * Does this context carry nothing?
+   *
+   * For the envelope builders, which ask once per `tell` and are the reason
+   * this exists (#411).  `Object.keys(context).length === 0` answers the same
+   * question and allocates an array to do it — on the overwhelmingly common
+   * path, where no `run` is active at all, purely to discover that a frozen
+   * empty object is empty.
+   *
+   * The identity check is therefore a fast path *in front of* the general one,
+   * not a replacement for it.  `LogContext.run({}, cb)` installs a store that
+   * is empty but is not {@link EMPTY}, and callers must keep omitting
+   * `context` for it: attaching `{}` instead would route every such message
+   * through `LogContext.run(env.context, …)` on delivery, adding an
+   * `AsyncLocalStorage` frame per message where the point was to remove work.
+   */
+  isEmpty(context: LogContextData): boolean {
+    if (context === EMPTY) return true;
+    return Object.keys(context).length === 0;
   },
 
   /**

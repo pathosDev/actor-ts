@@ -1,0 +1,99 @@
+<div class="dt-app" [class.dt-app--offline]="offline()" [class.dt-app--paused]="paused()">
+  <header class="dt-header">
+    <span class="dt-header__logo" role="img" aria-label="actor-ts" [innerHTML]="logo"></span>
+    <span class="dt-header__system">{{ systemName() }}</span>
+    <span class="dt-header__spacer"></span>
+    @if (pauseNote(); as note) {
+      <span class="dt-header__pausenote">{{ note }}</span>
+    }
+    <span class="dt-status dt-status--{{ paused() ? 'paused' : status() }}" [title]="badgeTitle()">
+      <span class="dt-status__dot"></span>{{ statusLabel() }}
+    </span>
+    <!-- Stopping time is a property of the whole view, not of one panel, so it
+         lives beside the status badge rather than in each panel's toolbar. -->
+    <button
+      class="dt-iconbutton"
+      [class.dt-iconbutton--active]="paused()"
+      type="button"
+      [attr.aria-pressed]="paused()"
+      [title]="pauseTitle()"
+      (click)="onTogglePause()"
+    >{{ paused() ? 'Resume' : 'Pause' }}</button>
+    <button class="dt-iconbutton" type="button" (click)="onToggleTheme()">
+      {{ theme() === 'dark' ? 'Light mode' : 'Dark mode' }}
+    </button>
+  </header>
+
+  <div class="dt-body">
+    <nav class="dt-nav">
+      @for (item of navigation(); track item.id) {
+        @if (item.usable) {
+          <a
+            class="dt-nav__item"
+            [class.dt-nav__item--current]="item.current"
+            [routerLink]="['/', item.id]"
+          >{{ item.title }}</a>
+        } @else {
+          <span
+            class="dt-nav__item dt-nav__item--unavailable"
+            [class.dt-nav__item--current]="item.current"
+            [title]="item.reason"
+            [attr.aria-label]="item.title + ' — ' + item.reason"
+            aria-disabled="true"
+          >{{ item.title }}</span>
+        }
+      }
+    </nav>
+
+    <main class="dt-panel">
+      <!-- Availability is decided by the SERVER, not the bundle: the UI
+           ships every panel, but whether one can do anything depends on the
+           system being looked at. A route guard would send the reader
+           somewhere else instead of saying why. -->
+      @if (unavailable(); as blocked) {
+        <div class="dt-notice">
+          <div class="dt-notice__title">{{ blocked.title }} is not available</div>
+          <div>{{ blocked.reason }}</div>
+        </div>
+      } @else {
+        <router-outlet />
+      }
+    </main>
+  </div>
+
+  <dialog class="dt-dialog" #offlineDialog (cancel)="onDialogCancel($event)">
+    <div class="dt-dialog__body">
+      @if (status() === 'incompatible') {
+        <h2 class="dt-dialog__title">This UI does not match the server</h2>
+        <p>
+          The bundled panels and the tap protocol disagree on their version, so the
+          connection was refused rather than half-understood. Rebuild the UI bundle.
+        </p>
+      } @else {
+        <h2 class="dt-dialog__title">No node reachable</h2>
+        <p>
+          Nothing has answered for {{ offlineFor() }}. Everything behind this is the
+          last thing the node said, frozen at that moment — it is not live. Still
+          retrying, and this closes by itself the moment something answers.
+        </p>
+        <!-- Raised over the pause on purpose. A paused screen and a dead node
+             look identical, so the one the reader did NOT ask for has to say so. -->
+        @if (paused()) {
+          <p class="dt-dialog__hint">
+            You also have time paused. That is not why nothing is answering — the
+            connection is read against the real clock, which never stops.
+          </p>
+        }
+        <p class="dt-dialog__hint">
+          Each node serves its own DevTools, so another node's port may still answer
+          while this one does not.
+        </p>
+      }
+    </div>
+    <div class="dt-dialog__actions">
+      <button class="dt-iconbutton" type="button" (click)="onDismissOffline()">
+        Look at the last data anyway
+      </button>
+    </div>
+  </dialog>
+</div>

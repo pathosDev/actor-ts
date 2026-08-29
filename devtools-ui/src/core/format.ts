@@ -17,10 +17,19 @@ export function formatDuration(milliseconds: number): string {
   return `${hours} h ${String(minutes % 60).padStart(2, '0')} min`;
 }
 
-/** Thousands-separated integer: `1 204`. */
+/**
+ * Thousands-separated integer: `1 204`.
+ *
+ * Grouped by hand rather than through `toLocaleString`, which is not the
+ * same function on every host: the separator comes from the runtime's ICU
+ * data, so `'en-US'` yields a comma under Bun and a THIN SPACE (U+2009)
+ * under the Node that runs the Vitest suite.  Rewriting `,` therefore left
+ * one host with a character no test expected, and the UI grouped its
+ * numbers differently depending on where it ran.
+ */
 export function formatCount(value: number): string {
   if (!Number.isFinite(value)) return '—';
-  return Math.round(value).toLocaleString('en-US').replace(/,/g, ' ');
+  return String(Math.round(value)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
 }
 
 /** Local wall-clock time: `14:03:21`. */

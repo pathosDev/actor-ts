@@ -5,8 +5,8 @@
 # `mssql` (tedious) driver.
 #
 # Run locally:
-#   bun run test:integration:mssql
-#   bun run test:integration:mssql:teardown
+#   bun run test:integration:broker mssql
+#   bun run test:integration:broker:teardown mssql
 
 name: actor-ts-integration-mssql
 

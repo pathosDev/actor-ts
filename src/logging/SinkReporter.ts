@@ -7,10 +7,12 @@ import { SINK_REPORT_INTERVAL_MS } from './Constants.js';
  * framework logger, so reporting a delivery failure through it feeds the
  * failure back into the thing that failed, and a destination that is down
  * would generate an unbounded storm of records about being down.  So a
- * sink writes to `console.error` directly — the same answer `Scheduler`
- * still gives, and the one `Dispatcher` keeps as its *last resort* now
- * that it reports through an injected sink when it has one (#410).  A
- * sink has no equivalent: there is no layer above it to inject.
+ * sink writes to `console.error` directly — the answer `Dispatcher` (#410)
+ * and `Scheduler` (#678) both keep as their *last resort* now that each
+ * reports through an injected sink when it has one.  A sink has no
+ * equivalent: there is no layer above it to inject, which is why the last
+ * resort is the only resort here and why the rate limit below has to live
+ * in this class rather than in the layer that would otherwise absorb it.
  *
  * What this class adds is the rate limit.  Failures come in floods — one
  * per batch while an endpoint is unreachable, one per record while a queue

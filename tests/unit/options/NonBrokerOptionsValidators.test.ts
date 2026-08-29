@@ -41,6 +41,11 @@ import {
   ProducerControllerOptionsValidator,
   type ProducerControllerOptionsType,
 } from '../../../src/delivery/ProducerControllerOptions.js';
+import {
+  ConsumerControllerOptionsValidator,
+  type ConsumerControllerOptionsType,
+} from '../../../src/delivery/ConsumerControllerOptions.js';
+import { MAX_DELIVERY_IDENTIFIER_LENGTH } from '../../../src/delivery/Constants.js';
 import { AutoDiscoveryOptionsValidator, type AutoDiscoveryOptionsType } from '../../../src/discovery/AutoDiscoveryOptions.js';
 import {
   ConfigSeedProviderOptionsValidator,
@@ -147,6 +152,13 @@ describe('ClusterBootstrapOptionsValidator', () => {
     expect(() => check({ name: 'app', awaitReady: 5_000 })).not.toThrow();
     expect(() => check({ name: 'app', awaitReady: -1 })).toThrow(/awaitReady/);
   });
+
+  test('awaitReady accepts a readiness bag and holds it to the readiness rules', () => {
+    expect(() => check({ name: 'app', awaitReady: { minimumMembers: 3, timeoutMs: 30_000 } })).not.toThrow();
+    expect(() => check({ name: 'app', awaitReady: {} })).not.toThrow();
+    expect(() => check({ name: 'app', awaitReady: { minimumMembers: 0 } })).toThrow(OptionsError);
+    expect(() => check({ name: 'app', awaitReady: { timeoutMs: 0 } })).toThrow(OptionsError);
+  });
 });
 
 describe('WebsocketClientOptionsValidator', () => {
@@ -166,6 +178,15 @@ describe('WebsocketClientOptionsValidator', () => {
 
   test('rejects an unknown onInvalidMessage policy', () => {
     expect(() => check({ onInvalidMessage: 'explode' as unknown as 'drop' })).toThrow(/onInvalidMessage/);
+  });
+
+  // #753 — `0` is the documented "off" for both deadlines, so the rule is
+  // non-negative rather than positive: rejecting `0` would leave a HOCON-set
+  // timeout with no way to switch it off per instance.
+  test('accepts 0 for either liveness deadline and rejects a negative one', () => {
+    expect(() => check({ idleTimeoutMs: 0, connectTimeoutMs: 0 })).not.toThrow();
+    expect(() => check({ idleTimeoutMs: -1 })).toThrow(/idleTimeoutMs/);
+    expect(() => check({ connectTimeoutMs: -1 })).toThrow(/connectTimeoutMs/);
   });
 });
 
@@ -351,6 +372,14 @@ describe('StartSingletonOptionsValidator', () => {
     expect(() => check({ ...required, role: '' })).toThrow(/role/);
   });
 
+  test('rejects a non-positive handOverTimeoutMs (#949)', () => {
+    // A zero or negative wait is not "no hand-over" — it is a hand-over whose
+    // deadline has already passed, so the manager would host without ever
+    // reading an answer, which is the defect the option exists to bound.
+    expect(() => check({ ...required, handOverTimeoutMs: 0 })).toThrow(/handOverTimeoutMs/);
+    expect(() => check({ ...required, handOverTimeoutMs: -1 })).toThrow(OptionsError);
+  });
+
   test('rejects a singleton missing typeName or actor', () => {
     // Both used to pass: the check helpers no-op on `undefined`, so a
     // singleton with no actor validated cleanly and blew up at the spawn.
@@ -364,8 +393,24 @@ describe('StartSingletonOptionsValidator', () => {
     expect(() => check({ ...required, bufferSize: 1.5 })).toThrow(/bufferSize/);
   });
 
+  test('rejects a non-positive or fractional maxHandOverStateBytes (#194)', () => {
+    // A byte count, so fractional is as meaningless as negative.  Zero is worth
+    // rejecting rather than reading as "never ship state": warm hand-over is
+    // turned off by not implementing the hooks, and a cap that silently means
+    // "off" would leave an actor that does implement them looking broken.
+    expect(() => check({ ...required, maxHandOverStateBytes: 0 })).toThrow(/maxHandOverStateBytes/);
+    expect(() => check({ ...required, maxHandOverStateBytes: -1 })).toThrow(/maxHandOverStateBytes/);
+    expect(() => check({ ...required, maxHandOverStateBytes: 1.5 })).toThrow(/maxHandOverStateBytes/);
+  });
+
   test('accepts a valid singleton config', () => {
-    expect(() => check({ ...required, acquireRetryIntervalMs: 5_000, bufferSize: 10 })).not.toThrow();
+    expect(() => check({
+      ...required,
+      acquireRetryIntervalMs: 5_000,
+      handOverTimeoutMs: 10_000,
+      maxHandOverStateBytes: 65_536,
+      bufferSize: 10,
+    })).not.toThrow();
   });
 });
 
@@ -393,8 +438,30 @@ describe('ClusterSingletonManagerOptionsValidator', () => {
     expect(() => check({ ...required, acquireRetryIntervalMs: 0 })).toThrow(/acquireRetryIntervalMs/);
   });
 
+  test('rejects a non-positive handOverTimeoutMs (#949)', () => {
+    // The manager's own copy of the bound: `ClusterSingleton` builds these
+    // options field by field, so both surfaces have to reject the same value or
+    // the one nobody validates is the one a caller reaches.
+    expect(() => check({ ...required, handOverTimeoutMs: 0 })).toThrow(/handOverTimeoutMs/);
+    expect(() => check({ ...required, handOverTimeoutMs: -1 })).toThrow(OptionsError);
+  });
+
+  test('rejects a non-positive maxHandOverStateBytes (#194)', () => {
+    // Same reasoning as `handOverTimeoutMs` above: the extension copies this
+    // field across by hand, so a bound only one of the two surfaces enforces is
+    // a bound a caller can walk around.
+    expect(() => check({ ...required, maxHandOverStateBytes: 0 })).toThrow(/maxHandOverStateBytes/);
+    expect(() => check({ ...required, maxHandOverStateBytes: 1.5 })).toThrow(OptionsError);
+  });
+
   test('accepts a valid manager config', () => {
-    expect(() => check({ ...required, role: 'worker', acquireRetryIntervalMs: 1_000 })).not.toThrow();
+    expect(() => check({
+      ...required,
+      role: 'worker',
+      acquireRetryIntervalMs: 1_000,
+      handOverTimeoutMs: 10_000,
+      maxHandOverStateBytes: 65_536,
+    })).not.toThrow();
   });
 });
 
@@ -412,6 +479,31 @@ describe('WorkerClusterOptionsValidator', () => {
     expect(() => check({ basePort: 70_000 })).toThrow(OptionsError);
     expect(() => check({ readyTimeoutMs: 0 })).toThrow(OptionsError);
   });
+
+  test('accepts the restart-budget knobs at their edges', () => {
+    // A zero floor means "respawn on the next turn"; a zero window means the
+    // counts are never reset; -1 restarts restores the unbounded behaviour.
+    expect(() => check({ restartMinBackoffMs: 0, restartMaxBackoffMs: 0 })).not.toThrow();
+    expect(() => check({ restartRandomFactor: 0 })).not.toThrow();
+    expect(() => check({ restartRandomFactor: 1 })).not.toThrow();
+    expect(() => check({ maxRestarts: -1 })).not.toThrow();
+    expect(() => check({ maxRestarts: 0 })).not.toThrow();
+    expect(() => check({ restartWindowMs: 0 })).not.toThrow();
+  });
+
+  test('rejects out-of-domain restart-budget knobs', () => {
+    expect(() => check({ restartMinBackoffMs: -1 })).toThrow(OptionsError);
+    expect(() => check({ restartMaxBackoffMs: -1 })).toThrow(OptionsError);
+    expect(() => check({ restartRandomFactor: 1.5 })).toThrow(OptionsError);
+    expect(() => check({ restartWindowMs: -1 })).toThrow(OptionsError);
+    expect(() => check({ maxRestarts: -2 })).toThrow(OptionsError);
+    expect(() => check({ maxRestarts: 2.5 })).toThrow(OptionsError);
+  });
+
+  test('rejects a maximum respawn backoff below the minimum', () => {
+    expect(() => check({ restartMinBackoffMs: 500, restartMaxBackoffMs: 100 }))
+      .toThrow(/restartMaxBackoffMs must be >= restartMinBackoffMs \(500\)/);
+  });
 });
 
 describe('ProducerControllerOptionsValidator', () => {
@@ -425,6 +517,48 @@ describe('ProducerControllerOptionsValidator', () => {
 
   test('accepts sensible flow-control values', () => {
     expect(() => check({ resendTimeout: 500, windowSize: 16 })).not.toThrow();
+  });
+
+  test('rejects an empty or over-long producerId', () => {
+    // The consumer refuses an identifier past this bound, so accepting one
+    // here would turn every delivery from this producer into a silent dead
+    // letter instead of a construction-time error (#727, #728).
+    expect(() => check({ producerId: '' })).toThrow(OptionsError);
+    expect(() => check({ producerId: 'x'.repeat(MAX_DELIVERY_IDENTIFIER_LENGTH + 1) })).toThrow(OptionsError);
+    expect(() => check({ producerId: 'x'.repeat(MAX_DELIVERY_IDENTIFIER_LENGTH) })).not.toThrow();
+    expect(() => check({ producerId: 'orders' })).not.toThrow();
+  });
+});
+
+describe('ConsumerControllerOptionsValidator', () => {
+  const check = (s: Partial<ConsumerControllerOptionsType<unknown>>): void =>
+    new ConsumerControllerOptionsValidator<unknown>().validate(s);
+
+  test('rejects a maxProducers that is not a positive integer', () => {
+    expect(() => check({ maxProducers: 0 })).toThrow(OptionsError);
+    expect(() => check({ maxProducers: -1 })).toThrow(OptionsError);
+    expect(() => check({ maxProducers: 2.5 })).toThrow(/maxProducers/);
+    expect(() => check({ maxProducers: Number.NaN })).toThrow(/maxProducers/);
+  });
+
+  test('rejects a non-positive or non-finite producerIdleTtlMs', () => {
+    expect(() => check({ producerIdleTtlMs: 0 })).toThrow(OptionsError);
+    expect(() => check({ producerIdleTtlMs: -1 })).toThrow(/producerIdleTtlMs/);
+    expect(() => check({ producerIdleTtlMs: Number.NaN })).toThrow(/producerIdleTtlMs/);
+  });
+
+  test('accepts Infinity on both bounds — it is the documented opt-out', () => {
+    // `Infinity` is the value that says "no cap" / "no sweep", so the generic
+    // positiveInt / positiveNumber helpers cannot be used: they reject it.
+    expect(() => check({ maxProducers: Infinity })).not.toThrow();
+    expect(() => check({ producerIdleTtlMs: Infinity })).not.toThrow();
+  });
+
+  test('accepts the built-in defaults and an unset options object', () => {
+    expect(() => check({ maxProducers: 1_024, producerIdleTtlMs: 300_000 })).not.toThrow();
+    // Every helper is a no-op on `undefined`; `handler` is required rather
+    // than bounded, and asserting it at construction is #1234.
+    expect(() => check({})).not.toThrow();
   });
 });
 
@@ -508,8 +642,8 @@ describe('discovery option validators', () => {
       new ReceptionistOptionsValidator().validate(s);
     expect(() => check({ maxSubscribersPerKey: 0 })).toThrow(/maxSubscribersPerKey/);
     expect(() => check({ maxSubscribersPerKey: 1.5 })).toThrow(OptionsError);
-    expect(() => check({ maxSubscribersTotal: -1 })).toThrow(/maxSubscribersTotal/);
-    expect(() => check({ maxSubscribersPerKey: 1_000, maxSubscribersTotal: 10_000 })).not.toThrow();
+    expect(() => check({ maxSubscriptionsTotal: -1 })).toThrow(/maxSubscriptionsTotal/);
+    expect(() => check({ maxSubscribersPerKey: 1_000, maxSubscriptionsTotal: 10_000 })).not.toThrow();
     // Unset stays valid — the actor's built-in defaults apply.
     expect(() => check({})).not.toThrow();
   });
@@ -536,11 +670,15 @@ describe('gossip-interval validators', () => {
     })).not.toThrow();
   });
 
-  test('DistributedData: non-positive gossipInterval', () => {
+  test('DistributedData: non-positive gossipInterval / fractional maxGossipBytes', () => {
     const check = (s: Partial<DistributedDataOptionsType>): void =>
       new DistributedDataOptionsValidator().validate(s);
     expect(() => check({ gossipInterval: -1 })).toThrow(/gossipInterval/);
     expect(() => check({ gossipInterval: 1_000 })).not.toThrow();
+    // A byte budget compared against a frame length has to be a whole number;
+    // `0` is the documented "no budget" spelling and stays legal.
+    expect(() => check({ maxGossipBytes: 1.5 })).toThrow(/maxGossipBytes/);
+    expect(() => check({ maxGossipBytes: 0 })).not.toThrow();
   });
 });
 

@@ -2,6 +2,7 @@ import { complete } from '../Route.js';
 import { type HttpRequest, type HttpResponse, Status } from '../Types.js';
 import {
   DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH,
+  DEFAULT_IDEMPOTENCY_MAX_SCOPE_LENGTH,
   IdempotencyOptionsValidator,
   type IdempotencyOptions,
   type IdempotencyOptionsType,
@@ -32,25 +33,44 @@ import {
  * **Security — give this middleware its own cache (security audit
  * HTTP-8).**  The `Idempotency-Key` header is attacker-chosen, so every
  * request can mint a new cache key.  `InMemoryCache` is LRU-bounded
- * (10 000 entries by default) and its eviction is blind to what an entry
- * protects: whichever key is least-recently-used goes, whether it holds a
- * response body or the record that stops a payment from being taken
- * twice.  A record written by {@link idempotent} is only moved to the
- * most-recently-used end when it is READ — a claimed-but-not-yet-answered
- * key is never bumped at all, because `setIfAbsent` does not count as a
- * use.
+ * (10 000 entries by default), and its eviction now asks two questions
+ * before recency: which key prefix the entry belongs to (#607) and
+ * whether it carries a guarantee (#1080).  The claim this middleware
+ * writes with `setIfAbsent` and the record that replaces it both carry
+ * one, so a flood minted through `cached` cannot reach a stored response;
+ * and a shared instance configured with `prefixQuotas` confines a flood
+ * of rate-limit counters to the `rl:` reservation, so it cannot reach one
+ * either.  Two things still do:
+ *
+ *   - **Without a quota**, an instance shared with `rateLimit` has no
+ *     ranking between two guarantee-carrying consumers: once the map
+ *     holds nothing cheaper, a counter flood takes records.  Configure
+ *     `prefixQuotas` on a shared instance, or do not share it.
+ *   - **This middleware's OWN key space is attacker-controlled**, and no
+ *     quota fixes that — attacker and victim both write under `idem:`,
+ *     so they share whatever reservation is drawn around it.  A flood of
+ *     distinct `Idempotency-Key`s evicts other callers' records out of a
+ *     dedicated instance just as it does out of a shared one.
+ *     {@link IdempotencyOptionsType.maxKeyLength} and
+ *     {@link IdempotencyOptionsType.maxScopeLength} bound how big each
+ *     minted key is — between them they bound the whole composed key —
+ *     but neither bounds how many of them there are.
+ *
+ * A record is also only moved to the most-recently-used end when it is
+ * READ — a claimed-but-not-yet-answered key is never bumped at all,
+ * because `setIfAbsent` does not count as a use — so it is the first
+ * thing dropped within its own half once a cap is reached.
  *
  * So hand this middleware a cache nothing else writes to —
  * `ext.cache('idempotency')` resolves a separate named instance — and
  * size that cache's `maxEntries` for the number of in-flight keys you
- * expect times the TTL.  Sharing one `Cache` with `rateLimit` or
- * `cached` means a flood of keys minted through either of those pushes
- * idempotency records out, and an honest client's retry then re-executes
- * the handler instead of replaying its stored response.  Naming a
- * separate cache narrows the blast radius; it does not remove it,
- * because this middleware's OWN key space is attacker-controlled too —
- * {@link IdempotencyOptionsType.maxKeyLength} bounds how big each minted
- * key is, not how many of them there are.
+ * expect times the TTL, under `actor-ts.cache.idempotency.in-memory`
+ * (#607: that per-name block is what makes the advice reachable; before
+ * it, every named instance shared the one global bound).  Where one
+ * instance genuinely has to be shared, reserve this middleware's share of
+ * it with `prefixQuotas` instead.  Neither removes the last exposure:
+ * where the guarantee has to hold under an adversary who chooses the
+ * keys, back it with Redis rather than an in-process LRU.
  */
 
 type CachedResponse = {
@@ -84,6 +104,7 @@ export function idempotent(options: IdempotencyOptions) {
   const missing = resolvedOptions.missingHeader ?? 'reject';
   const identity = resolvedOptions.identity;
   const maxKeyLength = resolvedOptions.maxKeyLength ?? DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH;
+  const maxScopeLength = resolvedOptions.maxScopeLength ?? DEFAULT_IDEMPOTENCY_MAX_SCOPE_LENGTH;
 
   return function wrap(handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse) {
     return async function deduplicated(request: HttpRequest): Promise<HttpResponse> {
@@ -102,8 +123,19 @@ export function idempotent(options: IdempotencyOptions) {
       }
       // Fold the caller scope into the key so a cached response can't be
       // replayed to a different caller (HTTP-4).  Empty when no `identity`
-      // is configured — identical key space to before.
+      // is configured — identical key space to before, and an empty string
+      // passes both rules, so the check below costs that case nothing.
       const scope = identity ? await identity(request) : '';
+      // The scope is the OTHER half of the key, and it reaches the cache from
+      // the same place the header does — `identity`'s own recipe reads a raw
+      // client header.  Checking only the header left a 255-character cap
+      // over one half of a key whose other half was unbounded (#607).
+      const scopeRejection = keyRejectionReason(scope, maxScopeLength);
+      if (scopeRejection !== undefined) {
+        return complete(Status.BadRequest, {
+          error: `invalid caller scope: ${scopeRejection}`,
+        });
+      }
       const cacheKey = `${prefix}${scope}${scope ? ':' : ''}${userKey}`;
       const fingerprint = await computeRequestFingerprint(request);
 
@@ -160,16 +192,18 @@ export function idempotent(options: IdempotencyOptions) {
 /* ------------------------------ internals -------------------------------- */
 
 /**
- * Why the client-supplied `Idempotency-Key` is unacceptable, or
- * `undefined` when it may become a cache key.
+ * Why `value` may not go into a cache key, or `undefined` when it may.
  *
- * Two independent rules, both about what an attacker gets to put into a
- * cache that other requests depend on:
+ * Applied to **both** parts the key is composed from — the client's
+ * `Idempotency-Key` header and the `identity` scope — because both are
+ * concatenated into the same string and the weaker of the two is what an
+ * attacker aims at.  Two independent rules, both about what an attacker
+ * gets to put into a cache that other requests depend on:
  *
- *   - **Length.** The header value is concatenated verbatim into the
- *     cache key, so an unbounded header means an unbounded key.  The cap
- *     turns "how much cache does one minted key cost" from a client
- *     decision into a server one.
+ *   - **Length.** The value is concatenated verbatim into the cache key,
+ *     so an unbounded value means an unbounded key.  The cap turns "how
+ *     much cache does one minted key cost" from a client decision into a
+ *     server one.
  *   - **Charset.** ASCII control characters and the space are command
  *     delimiters in Memcached's text protocol — the same reason
  *     `makeKeyValidator`'s memcached rule set refuses them — and CR/LF
@@ -177,16 +211,19 @@ export function idempotent(options: IdempotencyOptions) {
  *     the guarantee does not depend on which `Cache` implementation
  *     happens to be wired in behind the middleware.
  *
- * The reason never echoes the key back, only where and what went wrong:
+ * An empty value passes both, which is what keeps the unscoped
+ * configuration (no `identity`) unaffected.
+ *
+ * The reason never echoes the value back, only where and what went wrong:
  * this string is returned to the caller, and reflecting attacker bytes
  * into a response body is how a rejection message becomes a payload.
  */
-function keyRejectionReason(userKey: string, maxKeyLength: number): string | undefined {
-  if (userKey.length > maxKeyLength) {
-    return `exceeds the ${maxKeyLength}-character limit (got ${userKey.length})`;
+function keyRejectionReason(value: string, maxLength: number): string | undefined {
+  if (value.length > maxLength) {
+    return `exceeds the ${maxLength}-character limit (got ${value.length})`;
   }
-  for (let i = 0; i < userKey.length; i++) {
-    const charCode = userKey.charCodeAt(i);
+  for (let i = 0; i < value.length; i++) {
+    const charCode = value.charCodeAt(i);
     if (charCode <= 0x20 || charCode === 0x7F) {
       return `contains a control character or space at index ${i} (charCode=${charCode})`;
     }

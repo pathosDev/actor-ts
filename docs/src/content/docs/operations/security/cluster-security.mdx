@@ -255,7 +255,7 @@ Only `app=actor-ts` pods can reach port 2552 on each other.
 | Sockets opened in bulk that send nothing at all, to fill the inbound cap | Handshake deadline on every accepted socket, so no slot is held open-ended |
 | Peer growing a node's registries without bound | Per-registry caps on pub-sub and the receptionist |
 | Address claimed before the node that owns it exists | Tight version-skew cap on every gossiped member version |
-| Gossip frame captured off the wire and played back later | Per-sender frame sequence — a frame must out-number the last one accepted |
+| Gossip frame captured off the wire and played back later | Per-sender frame sequence — a frame must out-number the last one accepted from that sender (partial: only once one has been) |
 | Spoofed discovery answer steering the bootstrap | mTLS, plus `pinnedAddresses` on the seed provider |
 | Compromised pod inside the cluster | Application-level auth (out of scope here) |
 
@@ -336,7 +336,41 @@ callback.
 
 Frame kinds registered by extensions (sharding, pub-sub, the
 receptionist, DistributedData, DevTools) pass this layer and
-validate their own payloads.
+validate their own payloads. So does replicated event sourcing,
+whose event envelopes ride on pub-sub rather than on a frame kind
+of their own — see
+[what a replica trusts from its peers](/persistence/replicated-event-sourcing/overview/#what-a-replica-trusts-from-its-peers).
+
+Validation is only half of it. A frame can be perfectly well-formed
+and still **speak for a node that did not send it**, and that class of
+defect is closed the same way everywhere in this codebase: the
+identity is taken from the connection, not from the payload. A `leave`
+may only retire the node that sent it; gossip replaces the sending
+peer's contribution and no one else's; a sharding or singleton
+directive is honoured only when it arrived wrapped by the per-path
+envelope handler, which is the one place the authenticated address
+exists; and a replicated event's `replica` is held against the node
+that published it. A frame that reaches an actor by generic path
+resolution instead — which strips nothing but does carry no sender —
+is treated as unauthenticated rather than as trusted.
+
+A CRDT's own state is the one place that rule does not reach.
+DistributedData validates a decoded payload for **shape and
+plausibility**: a counter slot must be a non-negative integer at
+or under `MAX_COUNTER_SLOT` (≈ 2.2e12 — the largest per-slot
+value for which a full counter's `value()` is still an exact
+integer), a register timestamp may be no more than five minutes
+ahead of local time, a collection is capped at 4 096 entries, and
+a `__proto__` key is refused. It does **not** check that the
+sending peer had any business writing the slot it wrote.
+Grow-only counters merge by maximum, so any peer able to gossip
+can raise **any** replica's slot inside those bounds — the owning
+node cannot lower it again, the value is written through to the
+durable record, and `delete(key)` is best-effort because a peer
+still holding the key re-gossips it. A DistributedData counter is
+therefore trustworthy exactly as far as the set of peers you let
+onto the wire, which makes the mTLS setup above a prerequisite
+for a quota or billing counter rather than a hardening step.
 
 Every rejection is logged at `WARN` naming the peer and the
 offending field, so a dropped frame is diagnosable — a
@@ -431,7 +465,7 @@ path as much as to local calls:
 | Pub-sub topics | `cluster.pub-sub.max-topics` | `10000` |
 | Pub-sub remote claimants per topic | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` |
 | Receptionist subscribers per key | `cluster.receptionist.max-subscribers-per-key` | `1000` |
-| Receptionist subscribers total | `cluster.receptionist.max-subscribers-total` | `10000` |
+| Receptionist subscriptions total | `cluster.receptionist.max-subscriptions-total` | `10000` |
 
 A claim over a cap is dropped and logged rather than refused on
 the wire — the frame is well-formed, and dropping the connection
@@ -559,6 +593,98 @@ trusted — under mTLS the claimed address must match the peer's
 certificate, which is what gives these rules a real subject.
 :::
 
+### A sharding directive needs the coordinator behind it
+
+The same reasoning reaches one layer up, into the extensions
+whose frames pass the wire edge and validate their own
+payloads. A `ShardRegion` used to treat any message whose
+`kind` began with `sharding.` as a framework directive —
+including the five only the coordinator may issue. `HandOff`
+stops every entity under a shard; `ShardHome` moves ownership;
+`RememberedEntities` pre-creates entities; `ShardMapUpdate`
+publishes an allocation map to every local subscriber, DevTools
+panel and application listener included. One small frame from
+anyone who had completed `hello` did any of that, repeatably.
+
+The region could not have checked: sharding registered no
+per-path envelope handler, so an inbound frame reached the
+actor through generic path resolution, which delivers with no
+sender at all. It now claims its own path on the envelope
+router, which hands the handler the **connection's** peer, and
+wraps the frame in a class instance before putting it in its
+own mailbox — a shape a JSON wire body cannot mint, so the
+directive arms can tell a routed frame from a forged one.
+A tagged `{ kind }` object would not have been enough: it is
+reproducible verbatim from a payload.
+
+Both halves are load-bearing. Without the wrapper check, a
+frame addressed non-canonically — a trailing slash, a doubled
+separator — misses the exact-string handler lookup, still
+resolves to the same region through the actor tree, and
+arrives unwrapped. And without the origin check, an
+authenticated peer is any cluster member, so every member
+could issue directives to every region.
+
+Refused frames are dropped and logged at `WARN`. The
+coordinator's own local leg builds the same wrapper, so a
+single-node cluster rebalances exactly as before.
+
+### A region can only speak for its own node
+
+The same gap ran in the other direction, and it was the more
+expensive one. Every message a `ShardCoordinator` accepts is a
+claim about the **sender's own** node: which shards its region
+hosts, that its region is gone, that a hand-off finished, where
+to send a shard home or a statistics reply. The coordinator read
+all of that out of the payload. Its only gate was `isLeader()`
+plus, with a lease, holding the lease — which answers *"am I the
+authoritative coordinator?"*, never *"may this sender speak for
+that region?"*.
+
+So one well-formed `sharding.Register` naming somebody else's
+address seized every shard of a type, and one
+`sharding.RegionTerminated` evicted its region. The eviction is
+the worse half: it sends no `HandOff`, so the victim keeps its
+shard actors and its entities running. The result is two owners
+for one live shard — the same entity id instantiated twice, and
+for a persistent entity two writers on one `persistenceId`.
+
+The region-side origin check above does not blunt this, because
+the attacker never sends a `ShardHome`. It poisons the
+coordinator's allocation map with one forged frame and the
+*genuine* coordinator then emits the redirect itself, from the
+leader's own node, inside a wrapper every region rightly
+accepts. One forgery, every subsequent hop authentic.
+
+The coordinator now claims its own well-known path on the
+envelope router and applies the same two conditions: the frame
+arrived inside the wrapper, and the address its payload names is
+the peer's own. Both directions of the register loop are
+therefore attributed, which also fixed how a region addresses
+the coordinator — by the **leader's** system name, not its own,
+since an actor path carries the system it belongs to.
+
+`hostedShards` is bounded and capped on top of that. It was the
+only caller-*sized* input the coordinator had — one `Register`
+wrote an allocation entry per array element, with no range check
+and no length cap, into state that is broadcast to every region
+and persisted to the coordinator-state store, so the growth
+survived restarts. Entries outside `0 .. numShards - 1` are now
+dropped and the accepted set cannot exceed `numShards`.
+
+<Aside type="caution" title="What this is, and is not">
+  Under mTLS the peer is certificate-backed — the `hello`
+  handshake refuses a claimed address the peer certificate does
+  not vouch for — so comparing the payload against it **is**
+  authentication. On a plaintext cluster it is defence in depth:
+  it stops a member speaking for *another* member, not a member
+  speaking for itself. Four coordinator-inbound kinds
+  (`EntityStarted`, `EntityStopped`, `GetRememberedEntities`,
+  `BeginHandOffAcknowledgment`) carry no address at all, so
+  attribution is the only thing that can be asked of them — any
+  authenticated member can still send those.
+</Aside>
+
 ### A version cannot claim an address in advance
 
 Version is a logical clock seeded from `Date.now()`, so
@@ -610,11 +736,19 @@ node's second gossip frame.
 Refused records are reported once per frame rather than once per
 record — a WARN naming the peer and the count, and the counter
 `cluster_gossip_records_refused_total{reason}`, whose `reason`
-label is closed at `version-skew`, `map-cap`, `timestamp-skew`
-and `replayed-frame`. Logging per record would hand a peer log
-amplification in place of the growth it just lost.
+label is closed at `version-skew`, `map-cap`, `timestamp-skew`,
+`replayed-frame` and `self-claim`. Logging per record would hand a
+peer log amplification in place of the growth it just lost.
 
-### A recorded frame cannot be played back while its sender is a member
+`self-claim` is the rule above, seen from the counter: a peer
+asserting a status for the receiving node that is neither the one
+it already holds nor the leader promoting it to `up`. A peer
+echoing the status the node *does* hold is the ordinary content of
+every gossip round — its own record travels back to it in every
+frame — so that one is refused without being counted or logged, and
+the counter still reads zero on a healthy cluster.
+
+### A recorded frame cannot be played back to a receiver that has heard from its sender
 
 A gossip frame is a snapshot of the member map, and a member's
 version only moves when its status does — so a frame captured
@@ -639,31 +773,106 @@ stamps — seeded from that node's wall clock at startup and
 incremented once per frame — and a receiver remembers the
 highest one it has accepted from each connection peer. A frame
 that does not out-number that mark is dropped whole, before any
-record in it is looked at. There is no knob: the comparison is
-between a peer and *itself*, so it needs no clock-skew budget,
-and a sequence too far ahead of the receiver's clock to be
-plausible is merged but never adopted as the mark — otherwise
-one frame numbered `Number.MAX_SAFE_INTEGER` would silence the
-real node forever, which is the exploit the version cap above
-exists to prevent.
+record in it is looked at. The comparison itself needs no knob:
+it is between a peer and *itself*, so no clock-skew budget comes
+into it.
 
-Two things this does **not** close. First, a peer that has earned
+The mark is written in exactly one place — the gossip path, as it
+accepts a frame — so it exists for a peer this node has accepted a
+frame **from**, and for no other address. That is the bound, and
+the third residual below is what falls outside it.
+
+A sequence must also be **plausible** — a finite number no
+further ahead of the receiver's clock than `maxVersionSkewMs`,
+the same budget a gossiped version gets, because the number is
+stamped from the author's wall clock. A frame outside that budget
+is refused, exactly like a repeat.
+
+That started out as the weaker rule: the frame was merged, and
+only *adopting* its number as the mark was refused, on the
+argument that a frame numbered `Number.MAX_SAFE_INTEGER` cannot
+be a recording of a real frame. Only the *sequence* is fabricated
+in that attack. The `members` array is still the recording, and
+nothing on this wire binds the two together — so a captured frame
+with one field rewritten was merged, left the mark untouched, and
+was therefore merged again on every delivery, without limit,
+against a receiver that held a mark for a sender that was still
+alive. Refusing it loses nothing: the mark stays where the last
+plausible frame put it, so the real node's next frame still
+out-numbers it and still lands. Silencing the real node forever —
+the exploit the version cap above exists to prevent — is closed
+from both sides rather than one.
+
+An address additionally carries an **incarnation**: which
+*process* is answering at that `system@host:port`, minted once
+per `Cluster.join`. It is deliberately carried and not yet acted
+on. The field is optional on the wire, so that a node running
+either version understands one running the other — and an
+optional field is bypassed by *stripping* it, which means a
+refusal keyed on a mismatch would be one an attacker opts out of
+while a legitimate peer of the previous version walks into it.
+Requiring the field breaks all eight address-bearing frame fields
+at once and waits on the wire-protocol versioning work. It stays
+out of `toString`, `equals` and `compareTo`, so nothing keyed on
+a node's identity changes.
+
+The one comparison that needs no agreement is made: a record a
+peer sends *about this node* keeps this node's own incarnation.
+The leader's promotion is the single claim about itself a node
+accepts, and it is merged wholesale, address included — so
+without that substitution the local record's identifier would be
+whatever the last peer to promote it happened to say.
+
+Three things this does **not** close. First, a peer that has earned
 standing and composes a *fresh* frame naming a deleted address at
 its old version: that is a forgery rather than a replay, and
-telling it apart from a genuine re-discovery needs an incarnation
-identity on the address itself — a node's restart has to be a
-*different* member at the same `host:port`.
+refusing it needs the incarnation to be **required** rather than
+carried, which is the wire break above.
 
-Second — and it is the same missing incarnation identity — the
-mark lives only as long as the sender does. Deleting a member
-drops its mark, and a missing mark admits everything, so once the
-**sender** has itself been evicted (an ordinary partition takes
-out sender and subject together) the recorded conversation can be
-replayed in capture order: the sender's own self-record is always
-admitted, which revives it *and* re-seeds the mark from the old
-frame, and the next recorded frame then speaks for the subject.
+Second, a missing mark admits everything, and there are three ways
+to be missing one — only one of which is the sender's own
+eviction. An evicted member's mark is dropped with it, for the
+reason above — and an ordinary partition takes out sender and
+subject together, so that route arrives ready to use. A fresh or
+restarted process starts with none at all. And a member learned
+**third-party** never had one: gossip is epidemic, so a node files
+C as `up` on B's word and has still never seen a frame *from* C.
+In that last case the sender is a full member the whole time and
+nothing anywhere was evicted — which is why this guard cannot be
+described as holding "while its sender is a member". The earlier
+wording of this section, and of the changelog and roadmap entries,
+said exactly that, and it was wrong.
 
-Both residuals are tracked separately.
+Refusing a frame from a peer with no mark is not the missing
+check: the first frame from *every* peer is one, so a receiver that
+refused them would never learn a cluster exists. What a recording
+gets from an empty mark is a two-frame bootstrap — the first frame
+buys standing and installs the mark, off its own recorded number,
+and the second out-numbers it and speaks for the subject. Against
+a member learned third-party it is shorter still, because the
+standing is already there and one frame does it.
+
+Third, and this is why the two above stay open: nothing keyed on
+the sender's own counter can separate a recording from a live
+frame, because both were stamped by the same counter. What
+separates them is *which process* emitted them, and the only
+receiver-checkable statement of that is the incarnation — which
+has to be **required** before a refusal can rest on it, and that
+waits on the wire-protocol versioning work.
+
+Requiring it would close a recording of a **previous** incarnation
+outright, which is the ordinary restart case and the bulk of the
+exposure. Two edges would survive even then, and they are worth
+stating so nobody expects more: a node downed while still running
+answers under the same incarnation its recording carries; and a
+freshly started receiver holds no earlier incarnation of the
+subject to compare a first sighting against, so a record about a
+member it has never heard of remains admissible. On a correctly
+configured mTLS cluster neither edge is reachable by an outsider —
+`hello` is bound to the peer certificate — so the exposure is
+plaintext and server-only-TLS deployments, plus a compromised peer.
+
+All three residuals are tracked separately.
 
 ## Per-deployment recipe
 

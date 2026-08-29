@@ -5,7 +5,7 @@
 # driver it needs is `pg`, because this suite exercises the existing Postgres
 # stores against a different server rather than a new backend.
 
-FROM oven/bun:1.3-debian
+FROM oven/bun:1.4-debian
 
 RUN apt-get update  && apt-get install -y --no-install-recommends ca-certificates curl  && rm -rf /var/lib/apt/lists/*
 

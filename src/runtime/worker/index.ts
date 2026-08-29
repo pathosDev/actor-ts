@@ -1,7 +1,14 @@
 import { detectRuntime, type RuntimeKind } from '../Detect.js';
 import type { WorkerBackend } from './WorkerBackend.js';
 
-export type { WorkerBackend, WorkerLike, WorkerCloseEvent, WorkerMessageEvent, WorkerSpawnOptions } from './WorkerBackend.js';
+export type {
+  WorkerBackend,
+  WorkerLike,
+  WorkerCloseEvent,
+  WorkerErrorEvent,
+  WorkerMessageEvent,
+  WorkerSpawnOptions,
+} from './WorkerBackend.js';
 export { WebWorkerBackend } from './WebWorkerBackend.js';
 export { NodeWorkerBackend } from './NodeWorkerBackend.js';
 

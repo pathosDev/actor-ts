@@ -157,6 +157,17 @@ cluster.singleton.start(JobScheduler, singletonOptions);
 the cap (default 1000) messages go to dead letters with a warning
 rather than growing the buffer forever.
 
+The buffer drains on the first cluster event that can have produced a
+host — a leader change, but equally a member coming up, going down, or
+leaving.  That full set matters for a role-restricted singleton: the
+first member carrying the role can join without the leader changing at
+all, and before v0.17.0 that left the buffer undrained indefinitely
+while every later send routed normally.
+
+A member going *unreachable* is deliberately not in that set, on either
+side — see
+[Unreachability is deliberately not a trigger](/cluster/singleton/manager/#unreachability-is-deliberately-not-a-trigger).
+
 :::note[There is deliberately no `SingletonActor` interface]
 TypeScript's `implements` clause constrains only the **instance** side
 of a class — there is no `static implements`, and `abstract static` is
@@ -215,19 +226,38 @@ When the host node leaves the cluster:
    `MemberRemoved` for the leaving node.
 2. **Election**: the cluster elects a new leader (deterministic
    based on member sort order).
-3. **Spawn**: the new leader's manager spawns the singleton.
-4. **Routing shift**: proxies on every node see the leader
+3. **Hand-over**: the new leader's manager asks every node eligible
+   to host to stand down, and waits for each to confirm its instance
+   has actually terminated.
+4. **Spawn**: only then does it spawn the singleton.
+5. **Routing shift**: proxies on every node see the leader
    change and update their forwarding target.
 
 In flight messages during the transition land in dead letters
 unless you've configured durability — see "State across failover"
-below.
+below.  Messages that reach the *incoming* host while it is waiting
+on step 3 are held and handed to the new instance.
 
 The transition window is bounded by the failure detector's
 timeout (typically a few seconds for unreachable detection).
 Singletons aren't a low-latency-failover tool; they trade
-some unavailability during failover for the strong invariant
-of "exactly one instance."
+some unavailability during failover for uniqueness.
+
+**How strong that uniqueness is depends on what you configure**, and
+it is worth knowing which one you have:
+
+- **Default (no lease).** The hand-over makes "at most one instance"
+  hold whenever the outgoing host can be *reached and answers*.  When
+  it cannot — it is unreachable, or a partition split the cluster —
+  the incoming host waits `handOverTimeoutMs` (10 s) and then hosts
+  anyway, logging a warning: availability is chosen over an invariant
+  it could not prove.  Two instances are possible for the length of
+  that condition.
+- **With a `lease`.** Arbitration moves to a third party both sides
+  can reach, so exactly one of them holds it — and the lease is
+  released only once the outgoing instance has genuinely terminated.
+  This is the configuration to use when dual execution would do real
+  damage.  See [Singleton with lease](/cluster/singleton/with-lease/).
 
 ## State across failover
 
@@ -247,6 +277,77 @@ actor on a single node.  For state that should survive:
 Without one of these, every failover is a fresh start.  For a
 short-lived coordinator that just routes incoming work, that's
 often fine; for stateful workflows, persist.
+
+### Warm hand-over
+
+There is one case none of the three answers well: state that is
+*expensive to rebuild but cheap to copy* — thousands of events to
+replay, a large read-through cache.  Persistence makes the state
+survive; it does not make the successor fast, because the successor
+still has to replay.
+
+Warm hand-over closes that gap on a **planned** move.  Implement two
+methods and the outgoing instance's state travels to the incoming one
+on the hand-over that was already happening:
+
+```ts
+import { Actor } from 'actor-ts';
+import { SingletonKey, type WarmHandOverActor } from 'actor-ts/cluster';
+
+class PriceCacheActor extends Actor<PriceCommand> implements WarmHandOverActor {
+  static readonly singleton = SingletonKey.of<PriceCommand>('price-cache');
+  private prices = new Map<string, number>();
+
+  override async preStart(): Promise<void> {
+    // Skipped entirely when a predecessor handed its cache over.
+    if (this.prices.size === 0) await this.loadEveryPrice();
+  }
+
+  serializeForHandOver(): Uint8Array {
+    return new TextEncoder().encode(JSON.stringify([...this.prices]));
+  }
+
+  restoreFromHandOver(state: Uint8Array): void {
+    this.prices = new Map(JSON.parse(new TextDecoder().decode(state)));
+  }
+}
+```
+
+The conditional in `preStart` is the part that matters. `restoreFromHandOver`
+runs **after the constructor and before `preStart`**, which is the only
+position from which recovery can still be skipped — a `preStart` that
+recovers unconditionally pays the cost anyway and then overwrites what
+arrived.
+
+Four things are worth knowing before relying on it:
+
+- **It is opted into on the actor, not in the options.** There is no
+  flag to set. An actor that does not implement both methods behaves
+  exactly as it did before.
+- **It is allowed not to happen.** No hooks, a snapshot over the cap, a
+  serializer or a restore that throws, a host that was downed rather
+  than asked, a peer that never answered — every one of those falls back
+  to today's cold start and logs at `warn`. Never write a singleton whose
+  correctness depends on the state arriving; a singleton that cannot
+  survive losing its host is a singleton that cannot do its job.
+- **`serializeForHandOver` is called after `postStop`,** so the snapshot
+  is final: no further message will be folded in, and anything still in
+  the mailbox has gone to dead letters rather than into it. An instance
+  that died to a crash or an exhausted supervision budget is never asked
+  — the state that survives such a death is the state that caused it.
+- **The snapshot is capped, at 1 MiB by default**
+  (`withMaxHandOverStateBytes`). It travels while the singleton is
+  running nowhere, so a very large one lengthens the outage instead of
+  shortening it. A snapshot is base64 inside a JSON frame and so costs
+  about a third more on the wire; one that would not fit the transport's
+  `maxFrameBytes` is refused regardless of the cap, because an oversized
+  frame costs the whole inter-node connection rather than the message.
+
+A `PersistentActor` singleton needs one extra thought: a warm-started
+instance holds state that never came from a replay, so its sequence
+number has to travel in the snapshot too. Otherwise its first `persist`
+writes at a position the journal has already used, which fencing
+correctly reads as a second writer.
 
 ## Split-brain and the optional lease
 

@@ -25,14 +25,17 @@ import {
 import { LeaseOptions } from '../../src/coordination/LeaseOptions.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
+import { sleep } from '../util/AwaitCondition.js';
 
 // Quarantined on GitHub's hosted runners (ACTOR_TS_SKIP_FLAKY_MNS=1): the
 // in-process arbitration here is starved into a false split-brain by the
 // same hosted-runner resource issue that kills the worker-thread suites
 // (the lease holder's renewal timer is delayed past the TTL, so both
 // sides acquire).  Not reproducible locally or in Docker.  Runs there;
-// the real-network `integration` suite is the multi-node CI gate.  See
-// the [CI] tracking issue.
+// the real-network `integration` suite is the multi-node CI gate.  #538
+// tracks the quarantine: `.github/workflows/nightly-flakes.yml` runs this
+// suite nightly with the flag OFF, and 14 consecutive green nights are what
+// removes this line.
 const describeMns = process.env.ACTOR_TS_SKIP_FLAKY_MNS === '1' ? describe.skip : describe;
 
 const TIGHT_FD = {
@@ -131,7 +134,12 @@ describeMns('LeaseMajority — end-to-end split-brain', () => {
         rightAlive = ['c', 'd'].filter(isClusterAlive);
         // One side fully self-downed → arbitration has converged.
         if (leftAlive.length === 0 || rightAlive.length === 0) break;
-        await Bun.sleep(50);
+        // Deliberately not an `awaitCondition`: falling through is *meaningful*
+        // here.  A run in which neither side dies leaves both `leftAlive` and
+        // `rightAlive` non-empty, and the anti-split-brain assertion below then
+        // fails with the finding — "both sides survived" — instead of with a
+        // generic "condition never became true".
+        await sleep(50);
       }
 
       // At least one node survived — the lease arbitration produced

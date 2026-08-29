@@ -680,6 +680,7 @@ export default defineConfig({
                 { label: 'WebSocket client', slug: 'io/websocket',         translations: { de: 'WebSocket-Client', es: 'Cliente WebSocket', fr: 'Client WebSocket', ja: 'WebSocket クライアント', ko: 'WebSocket 클라이언트', 'pt-BR': 'Cliente WebSocket', ru: 'WebSocket-клиент', 'zh-CN': 'WebSocket 客户端' } },
                 { label: 'TCP',              slug: 'io/tcp',               translations: { de: 'TCP', es: 'TCP', fr: 'TCP', ja: 'TCP', ko: 'TCP', 'pt-BR': 'TCP', ru: 'TCP', 'zh-CN': 'TCP' } },
                 { label: 'UDP',              slug: 'io/udp',               translations: { de: 'UDP', es: 'UDP', fr: 'UDP', ja: 'UDP', ko: 'UDP', 'pt-BR': 'UDP', ru: 'UDP', 'zh-CN': 'UDP' } },
+                { label: 'Email bridge',     slug: 'io/email-bridge',      translations: { de: 'E-Mail-Bridge', es: 'Puente de correo', fr: 'Passerelle e-mail', ja: 'メールブリッジ', ko: '이메일 브리지', 'pt-BR': 'Ponte de e-mail', ru: 'Почтовый мост', 'zh-CN': '邮件桥接' } },
               ],
             },
             {
@@ -809,6 +810,10 @@ export default defineConfig({
                 { label: 'Explain plan', slug: 'observability/devtools/explain-plan', translations: { de: 'Explain-Plan', es: 'Plan de explicación', fr: 'Plan d’explication', ja: '実行計画', ko: '실행 계획', 'pt-BR': 'Plano de explicação', ru: 'План выполнения', 'zh-CN': '执行计划' } },
                 { label: 'Time travel', slug: 'observability/devtools/time-travel', translations: { de: 'Time Travel', es: 'Viaje en el tiempo', fr: 'Voyage dans le temps', ja: 'タイムトラベル', ko: '타임 트래블', 'pt-BR': 'Viagem no tempo', ru: 'Путешествие во времени', 'zh-CN': '时间旅行' } },
                 { label: 'Profiler', slug: 'observability/devtools/profiler', translations: { de: 'Profiler', es: 'Profiler', fr: 'Profiler', ja: 'プロファイラ', ko: '프로파일러', 'pt-BR': 'Profiler', ru: 'Профилировщик', 'zh-CN': '性能分析器' } },
+                { label: 'Send message', slug: 'observability/devtools/send-message', translations: { de: 'Nachricht senden', es: 'Enviar mensaje', fr: 'Envoyer un message', ja: 'メッセージ送信', ko: '메시지 보내기', 'pt-BR': 'Enviar mensagem', ru: 'Отправка сообщения', 'zh-CN': '发送消息' } },
+                { label: 'Configuration', slug: 'observability/devtools/configuration', translations: { de: 'Konfiguration', es: 'Configuración', fr: 'Configuration', ja: '設定', ko: '설정', 'pt-BR': 'Configuração', ru: 'Конфигурация', 'zh-CN': '配置' } },
+                { label: 'Event stream', slug: 'observability/devtools/event-stream', translations: { de: 'Event Stream', es: 'Flujo de eventos', fr: 'Flux d’événements', ja: 'イベントストリーム', ko: '이벤트 스트림', 'pt-BR': 'Fluxo de eventos', ru: 'Поток событий', 'zh-CN': '事件流' } },
+                { label: 'Dead letters', slug: 'observability/devtools/dead-letters', translations: { de: 'Dead Letters', es: 'Cartas muertas', fr: 'Lettres mortes', ja: 'デッドレター', ko: '데드 레터', 'pt-BR': 'Cartas mortas', ru: 'Мёртвые письма', 'zh-CN': '死信' } },
                 { label: 'Tap protocol',  slug: 'observability/devtools/protocol', translations: { de: 'Tap-Protokoll', es: 'Protocolo del tap', fr: 'Protocole du tap', ja: 'Tap プロトコル', ko: 'Tap 프로토콜', 'pt-BR': 'Protocolo do tap', ru: 'Протокол tap', 'zh-CN': 'Tap 协议' } },
               ],
             },
@@ -825,6 +830,7 @@ export default defineConfig({
             { label: 'ManualScheduler',       slug: 'testing/manual-scheduler',    translations: { de: 'ManualScheduler', es: 'ManualScheduler', fr: 'ManualScheduler', ja: 'ManualScheduler', ko: 'ManualScheduler', 'pt-BR': 'ManualScheduler', ru: 'ManualScheduler', 'zh-CN': 'ManualScheduler' } },
             { label: 'MultiNodeSpec',         slug: 'testing/multi-node-spec',     translations: { de: 'MultiNodeSpec', es: 'MultiNodeSpec', fr: 'MultiNodeSpec', ja: 'MultiNodeSpec', ko: 'MultiNodeSpec', 'pt-BR': 'MultiNodeSpec', ru: 'MultiNodeSpec', 'zh-CN': 'MultiNodeSpec' } },
             { label: 'ParallelMultiNodeSpec', slug: 'testing/parallel-multi-node', translations: { de: 'ParallelMultiNodeSpec', es: 'ParallelMultiNodeSpec', fr: 'ParallelMultiNodeSpec', ja: 'ParallelMultiNodeSpec', ko: 'ParallelMultiNodeSpec', 'pt-BR': 'ParallelMultiNodeSpec', ru: 'ParallelMultiNodeSpec', 'zh-CN': 'ParallelMultiNodeSpec' } },
+            { label: 'Diagnosing flakes',     slug: 'testing/diagnosing-flakes',   translations: { de: 'Flakes diagnostizieren', es: 'Diagnosticar tests inestables', fr: 'Diagnostiquer les tests instables', ja: 'フレーキーテストの診断', ko: '불안정한 테스트 진단', 'pt-BR': 'Diagnosticar testes instáveis', ru: 'Диагностика нестабильных тестов', 'zh-CN': '诊断不稳定测试' } },
           ],
         },
         {
@@ -862,6 +868,7 @@ export default defineConfig({
                 { label: 'Cluster security',    slug: 'operations/security/cluster-security',    translations: { de: 'Cluster-Sicherheit', es: 'Seguridad del Cluster', fr: 'Sécurité du Cluster', ja: 'クラスタセキュリティ', ko: '클러스터 보안', 'pt-BR': 'Segurança do Cluster', ru: 'Безопасность кластера', 'zh-CN': '集群安全' } },
                 { label: 'Master key rotation', slug: 'operations/security/master-key-rotation', translations: { de: 'Master-Key-Rotation', es: 'Rotación de clave maestra', fr: 'Rotation de la clé maître', ja: 'マスターキーローテーション', ko: '마스터 키 로테이션', 'pt-BR': 'Rotação de chave mestra', ru: 'Ротация мастер-ключа', 'zh-CN': '主密钥轮换' } },
                 { label: 'TLS everywhere',      slug: 'operations/security/tls-everywhere',      translations: { de: 'TLS überall', es: 'TLS en todas partes', fr: 'TLS partout', ja: 'TLS everywhere', ko: '전 구간 TLS', 'pt-BR': 'TLS em todos os lugares', ru: 'TLS везде', 'zh-CN': '全链路 TLS' } },
+                { label: 'Supply chain',       slug: 'operations/security/supply-chain',       translations: { de: 'Supply Chain', es: 'Cadena de suministro', fr: 'Chaîne d\'approvisionnement', ja: 'サプライチェーン', ko: '공급망', 'pt-BR': 'Cadeia de suprimentos', ru: 'Цепочка поставок', 'zh-CN': '供应链' } },
               ],
             },
             {
@@ -873,6 +880,7 @@ export default defineConfig({
                 { label: 'Upgrade strategies', slug: 'operations/upgrades/upgrade-strategies', translations: { de: 'Upgrade-Strategien', es: 'Estrategias de actualización', fr: 'Stratégies de mise à niveau', ja: 'アップグレード戦略', ko: '업그레이드 전략', 'pt-BR': 'Estratégias de atualização', ru: 'Стратегии обновления', 'zh-CN': '升级策略' } },
               ],
             },
+            { label: 'Dead letters', slug: 'operations/dead-letters', translations: { de: 'Dead Letters', es: 'Dead letters', fr: 'Dead letters', ja: 'デッドレター', ko: '데드 레터', 'pt-BR': 'Dead letters', ru: 'Dead letters', 'zh-CN': '死信' } },
             { label: 'Troubleshooting', slug: 'operations/troubleshooting', translations: { de: 'Troubleshooting', es: 'Solución de problemas', fr: 'Dépannage', ja: 'トラブルシューティング', ko: '트러블슈팅', 'pt-BR': 'Solução de problemas', ru: 'Устранение неполадок', 'zh-CN': '故障排查' } },
             {
               label: 'Runtime',
@@ -921,6 +929,7 @@ export default defineConfig({
             { label: 'Full reference.conf', slug: 'reference/reference-conf', translations: { de: 'Vollständige reference.conf', es: 'reference.conf completo', fr: 'reference.conf complet', ja: '完全な reference.conf', ko: '전체 reference.conf', 'pt-BR': 'reference.conf completo', ru: 'Полный reference.conf', 'zh-CN': '完整 reference.conf' } },
             { label: 'Utilities', slug: 'reference/utility-helpers', translations: { de: 'Utilities', es: 'Utilidades', fr: 'Utilitaires', ja: 'ユーティリティ', ko: '유틸리티', 'pt-BR': 'Utilitários', ru: 'Утилиты', 'zh-CN': '实用工具' } },
             { label: 'Version policy', slug: 'reference/version-policy', translations: { de: 'Versionsrichtlinie', es: 'Política de versiones', fr: 'Politique de versions', ja: 'バージョンポリシー', ko: '버전 정책', 'pt-BR': 'Política de versionamento', ru: 'Политика версионирования', 'zh-CN': '版本策略' } },
+            { label: 'Benchmarks', slug: 'reference/benchmarks', translations: { de: 'Benchmarks', es: 'Benchmarks', fr: 'Benchmarks', ja: 'ベンチマーク', ko: '벤치마크', 'pt-BR': 'Benchmarks', ru: 'Бенчмарки', 'zh-CN': '基准测试' } },
             { label: 'FAQ',            slug: 'reference/faq',            translations: { de: 'FAQ', es: 'FAQ', fr: 'FAQ', ja: 'FAQ', ko: 'FAQ', 'pt-BR': 'FAQ', ru: 'FAQ', 'zh-CN': 'FAQ' } },
             { label: 'Glossary',       slug: 'reference/glossary',       translations: { de: 'Glossar', es: 'Glosario', fr: 'Glossaire', ja: '用語集', ko: '용어집', 'pt-BR': 'Glossário', ru: 'Глоссарий', 'zh-CN': '术语表' } },
           ],

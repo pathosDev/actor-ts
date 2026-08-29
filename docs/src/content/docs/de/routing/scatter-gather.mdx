@@ -119,12 +119,17 @@ Um gezielt auf "zu langsam" zu prüfen, sieh dir die Mitglieder an:
 const allTimedOut = aggregate.errors.every((e) => e instanceof AskTimeoutError);
 ```
 
-`AggregateError` übersteht die Cluster-Leitung **nicht**. Envelopes werden
-mit einem blanken `JSON.stringify` gerahmt, das keinen Serializer erreicht
-und keine Typidentität erhält — ein Scatter hinter einem `ClusterRouter`
-liefert dem aufrufenden Knoten also ein einfaches Objekt, wo ein lokaler
-Scatter einen `AggregateError` liefert; die `instanceof`-Prüfung oben trägt
-über Knotengrenzen hinweg nicht (#450).
+`AggregateError` übersteht die Cluster-Leitung **doch** — Envelopes werden
+als getaggter JSON-Tree gerahmt, der Fehler über ihren Namen trägt und einen
+`AggregateError` samt intaktem `errors`-Array wiederherstellt (#450).  Seine
+Mitglieder behalten ihre Klassen nicht: ein Framework-Fehler wie
+`AskTimeoutError` kommt als einfacher `Error` an, dessen `name` weiterhin
+`'AskTimeoutError'` ist — die `instanceof`-Prüfung oben trägt also nur
+in-process.  Über Knotengrenzen hinweg vergleichst du den Namen:
+
+```ts
+const allTimedOut = aggregate.errors.every((e) => e.name === 'AskTimeoutError');
+```
 
 Ein Routee, der *wirft* statt zu antworten, produziert hier keinen
 Fehler direkt: Sein Supervisor restartet ihn, und der Ask des Routers

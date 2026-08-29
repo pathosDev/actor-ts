@@ -61,6 +61,8 @@ async function waitStable<T>(
   let prev = read();
   let stableFor = 0;
   while (Date.now() < deadline) {
+    // The elapsed time IS the measurement here: "no further message arrived"
+    // can only be established by letting a tick pass without one.
     await sleep(tickMs);
     const cur = read();
     if (Object.is(cur, prev)) {

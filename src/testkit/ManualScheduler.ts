@@ -1,4 +1,5 @@
 import type { ActorRef } from '../ActorRef.js';
+import { LogContext } from '../LogContext.js';
 import { Scheduler, type Cancellable } from '../Scheduler.js';
 
 type Task = {
@@ -93,9 +94,20 @@ export class ManualScheduler extends Scheduler {
       const next = this.peekNext(target);
       if (!next) break;
       this._now = next.fireAt;
-      try { next.run(); } catch (e) {
-        // Mirror the real scheduler: log, do not propagate.
-        console.error('[ManualScheduler] task threw:', e);
+      // Mirror the real scheduler in all three respects: a fired task runs
+      // with the MDC cleared (#718 — here it would otherwise inherit whatever
+      // store `advance()` was called from, which is the same defect one layer
+      // up), a throwing task is reported rather than propagated, and the
+      // report goes through the inherited `onError` sink so a system that
+      // took this scheduler through `ActorSystemOptions.withScheduler` sees
+      // the failure on its logger and its event stream (#678).  Every
+      // scheduling method here is an override, so `Scheduler.runGuarded`
+      // never runs on this path — without this call the testkit would keep
+      // the raw-console behaviour the framework just abandoned, and a double
+      // that diverges from the real scheduler is a double that lets a
+      // regression pass.
+      try { LogContext.runFresh(next.run); } catch (e) {
+        this.reportTaskError(e);
       }
       if (next.repeat) {
         next.fireAt = this._now + next.repeat.intervalMs;

@@ -1,14 +1,39 @@
 {
-  "//": "Type-checks the browser bundle. Separate from the root config because rootDir there is `src/` — compiling DOM code into dist/ would ship dead JavaScript and .d.ts files. Checked by `bun run typecheck`; the emit is Bun.build's job, so this config never writes anything.",
-  "extends": "../tsconfig.json",
+  "//": [
+    "Base config for the DevTools UI, compiled by the nested Angular toolchain",
+    "(#483).  It no longer extends ../tsconfig.json, and could not: that config",
+    "is NodeNext for a tsc that emits ESM into dist/, and it is read by the",
+    "root's TypeScript ^7.0.2, while Angular 22 pins >=6.0 <6.1.  The two",
+    "compilers cannot share a config, so the UI's lives here and the root's",
+    "typecheck reaches it through scripts/ui-toolchain.mjs instead of running",
+    "tsc over this directory directly.",
+    "",
+    "Strictness deliberately mirrors the root's rather than Angular's scaffold",
+    "defaults: this issue swaps a build toolchain, and turning on",
+    "noPropertyAccessFromIndexSignature at the same time would bury that change",
+    "under an unrelated migration.  Tightening is its own commit."
+  ],
+  "compileOnSave": false,
   "compilerOptions": {
-    "noEmit": true,
-    "rootDir": "..",
-    "outDir": "../.tsbuild-devtools-ui",
-    "declaration": false,
-    "declarationMap": false,
-    "sourceMap": false
+    "target": "ES2022",
+    "module": "preserve",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": [],
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "importHelpers": true
   },
-  "include": ["src/**/*.ts", "../src/devtools/protocol/**/*.ts"],
-  "exclude": ["node_modules", ".build", ".dev"]
+  "angularCompilerOptions": {
+    "strictTemplates": true,
+    "strictInjectionParameters": true,
+    "enableI18nLegacyMessageIdFormat": false
+  }
 }

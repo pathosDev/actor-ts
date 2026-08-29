@@ -133,8 +133,12 @@ describe('generated UI bundle', () => {
   test('contains a shell entry point', () => {
     const paths = UI_ASSETS.map((entry) => entry.path);
     expect(paths).toContain('index.html');
-    expect(paths.some((entry) => /^assets\/main\.js$/.test(entry))).toBe(true);
-    expect(paths.some((entry) => /^assets\/main\.css$/.test(entry))).toBe(true);
+    // Patterns, not literals: Angular's builder content-hashes the entry and
+    // the stylesheet, and the build re-derives those hashes from the bytes
+    // actually shipped (#483).  What has to hold is that a shell entry point
+    // and a stylesheet are present, not what they happen to be called.
+    expect(paths.some((entry) => /^main-[A-Za-z0-9_-]+[.]js$/.test(entry))).toBe(true);
+    expect(paths.some((entry) => /^styles-[A-Za-z0-9_-]+[.]css$/.test(entry))).toBe(true);
   });
 
   test('every asset decompresses to its recorded size', async () => {
@@ -155,7 +159,10 @@ describe('generated UI bundle', () => {
     const { gunzipSync } = await import('node:zlib');
     const index = UI_ASSETS.find((entry) => entry.path === 'index.html')!;
     const html = new TextDecoder().decode(gunzipSync(Buffer.from(index.gzipBase64, 'base64')));
-    expect(html).toContain('id="app"');
-    expect(html).toContain('assets/main.js');
+    expect(html).toContain('<devtools-root>');
+    // The entry is content-hashed by the builder and then re-hashed from the
+    // shipped bytes (#483), so the document is checked for a reference to an
+    // entry rather than to a fixed name.
+    expect(html).toMatch(/src="main-[A-Za-z0-9_-]+[.]js"/);
   });
 });

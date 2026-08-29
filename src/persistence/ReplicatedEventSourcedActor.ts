@@ -4,10 +4,19 @@ import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import { DistributedPubSubId, DistributedPubSubOptions } from '../cluster/pubsub/index.js';
 import type { Lease } from '../coordination/Lease.js';
+import type { NodeAddress } from '../cluster/NodeAddress.js';
 import {
-  Publish, Subscribe, type SubscribeAcknowledgment,
+  Publish, PubSubEnvelope, Subscribe, type SubscribeAcknowledgment,
 } from '../cluster/pubsub/Messages.js';
 import type { ReplicaId } from '../crdt/Crdt.js';
+import { randomId } from '../util/RandomString.js';
+import {
+  DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS,
+  MAX_REPLICA_ID_LENGTH,
+  MAX_REPLICATED_EVENT_ID_LENGTH,
+  MAX_VECTOR_CLOCK_ENTRIES,
+  REPLICATED_EVENT_ID_ENTROPY_CHARACTERS,
+} from './Constants.js';
 import type { Journal } from './Journal.js';
 import type { PersistentEvent } from './JournalTypes.js';
 import { PersistenceExtensionId } from './PersistenceExtension.js';
@@ -39,8 +48,26 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
  * replica subscribes to a topic derived from its `persistenceId` and
  * publishes its own persisted events to that same topic.  PubSub
  * already gives at-least-once gossip-replicated fan-out; the actor
- * dedupes by `(replica, sequenceAtReplica)`, so re-delivery is
- * harmless.
+ * dedupes on the envelope's `eventId`, so re-delivery is harmless.
+ *
+ * **The remote path is untrusted.**  Anything that can complete the
+ * cluster handshake can address this actor — through the pub-sub
+ * mediator or straight at its path — so an arriving envelope is
+ * validated whole before any state is touched and dropped with a
+ * `WARN` if it fails, never absorbed halfway (#706).
+ *
+ * **And its author is checked, not believed.**  An envelope's `replica`
+ * is a value the sender chose, so it is held against the node the
+ * *connection* authenticated: the actor subscribes with
+ * `deliverWithOrigin`, so every topic delivery arrives as a
+ * {@link PubSubEnvelope} naming its origin, and
+ * {@link ReplicatedEventSourcedActor.isAuthorizedAuthor} decides whether
+ * that node may write under that replica id.  An envelope that reaches
+ * this mailbox with no origin at all — which is what
+ * `Cluster.dispatchEnvelope`'s generic path resolution produces, the
+ * route that bypasses pub-sub entirely — is refused for that reason
+ * alone.  Overriding {@link ReplicatedEventSourcedActor.replicaId}
+ * without overriding the predicate beside it is what re-opens this.
  *
  * **Local journal**: each replica still appends every event it
  * **observes** to its local journal (its own + every remote it
@@ -62,24 +89,54 @@ import { VectorClock, type VectorClockData } from './replicated/VectorClock.js';
  *
  * **Out of scope (for v1):**
  *   - Cross-DC replication (PubSub gossip is intra-cluster only).
- *   - Vector-clock garbage collection.  VC entries grow with replicas
- *     ever seen — fine for a stable cluster, but a node-churn-heavy
- *     deployment will eventually want compaction.
- *   - Snapshotting (the local journal is replayed in full on every
- *     restart).
+ *   - Vector-clock garbage collection, and compaction of the event
+ *     history.  Both grow monotonically — VC entries with replicas
+ *     ever seen, the history with events observed — which is fine for
+ *     a stable cluster and eventually wants #535.  Until then
+ *     {@link ReplicatedEventSourcedActor.maxObservedEvents} bounds
+ *     what a peer can make the history grow to.
  */
 
 /**
  * Wire envelope for a single replicated event.  Persisted to the
- * journal and broadcast over PubSub.  `seqAtReplica` is monotonic
- * within a replica — the (replica, seqAtReplica) pair uniquely
- * identifies an event across the whole cluster, which is what we
- * dedupe on.
+ * journal and broadcast over PubSub.
+ *
+ * `eventId` identifies the event across the whole cluster and is what
+ * deduplication keys on.  It is minted from crypto-grade entropy at
+ * `persist` time and never re-derived, because the value has to be
+ * both **unguessable** and **stable across a re-delivery of the same
+ * event**:
+ *
+ *   - Unguessable, because a hit in the deduplication set means
+ *     *silently discard*.  The key used to be
+ *     `${replica}#${seqAtReplica}` off a plain counter that travelled
+ *     in this very payload, so a peer could compute a victim's future
+ *     keys by arithmetic and pre-claim them — after which the victim's
+ *     genuine events were dropped by every peer, permanently, since the
+ *     forgery is journaled and the set is snapshotted (#706).
+ *   - Stable, because pub-sub fan-out is at-least-once.  A key derived
+ *     at the *receiver* (arrival time, a local counter) would differ per
+ *     delivery and double-apply the event.
+ *
+ * `seqAtReplica` stays on the envelope: it is monotonic within a
+ * replica and is the last tie-break in the canonical order.  It is no
+ * longer an identity, and nothing may treat it as one — see
+ * {@link ReplicatedEventSourcedActor} on why a per-replica
+ * "exactly one past the highest seen" rule is *not* wanted here.
+ *
+ * **Every field is peer-supplied**, including `replica`, and nothing
+ * *in* the envelope can change that — a signature would only move the
+ * question to a key nothing in `src/cluster/` mints.  The binding is
+ * therefore made outside the payload: delivery carries the connection's
+ * peer alongside it, and
+ * {@link ReplicatedEventSourcedActor.isAuthorizedAuthor} holds `replica`
+ * against that node before a single field here is acted on.
  */
 export type ReplicatedEventEnvelope<E> = {
   readonly persistenceId: string;
   readonly replica: ReplicaId;
   readonly seqAtReplica: number;
+  readonly eventId: string;
   readonly vc: VectorClockData;
   readonly timestamp: number;
   readonly event: E;
@@ -89,6 +146,38 @@ const REPLICATED_TAG = 'replicated-es';
 
 function topicFor(persistenceId: string): string {
   return `replicated-es:${persistenceId}`;
+}
+
+/**
+ * Why a peer-supplied vector clock is unacceptable, or `null`.
+ *
+ * Separate from the envelope check because it is the one field whose
+ * *contents* matter rather than its type: `VectorClock.fromData` is
+ * `new Map(Object.entries(data))`, so `undefined` throws a `TypeError`
+ * and a non-numeric value silently poisons a component that is merged
+ * into local state and re-broadcast from then on.
+ *
+ * A rejection reason rather than a boolean, so the `WARN` names the
+ * offending field the way the cluster's own frame validation does —
+ * a version mismatch and a hostile peer must not look alike in a log.
+ */
+function vectorClockRejection(vc: unknown): string | null {
+  if (vc === null || typeof vc !== 'object' || Array.isArray(vc)) {
+    return 'vc must be a plain object';
+  }
+  const entries = Object.entries(vc as Record<string, unknown>);
+  if (entries.length > MAX_VECTOR_CLOCK_ENTRIES) {
+    return `vc carries ${entries.length} entries, at most ${MAX_VECTOR_CLOCK_ENTRIES} are accepted`;
+  }
+  for (const [replica, version] of entries) {
+    if (replica.length === 0 || replica.length > MAX_REPLICA_ID_LENGTH) {
+      return `a vc key is empty or longer than ${MAX_REPLICA_ID_LENGTH} characters`;
+    }
+    if (typeof version !== 'number' || !Number.isFinite(version) || version < 0) {
+      return `vc entry '${replica}' must be a finite non-negative number`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -118,22 +207,72 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
   abstract readonly persistenceId: string;
 
   /**
-   * Stable id for this replica — one half of the `(replica,
-   * seqAtReplica)` pair that identifies an event cluster-wide, and a
-   * tie-breaker in the deterministic event order.
+   * Stable id for this replica — the prefix of every event id this
+   * replica mints, its vector-clock component, and a tie-breaker in the
+   * deterministic event order.
    *
    * Defaults to this node's cluster address, which is what every replica
    * wanted anyway.  Override only when the id must survive a re-address
    * — a fixed datacenter or region name, say — because two replicas that
-   * ever share an id will dedupe each other's events away:
+   * ever share an id share a vector-clock component:
    *
    *     override get replicaId(): ReplicaId { return 'eu-west'; }
    *
+   * **Overriding this means overriding
+   * {@link ReplicatedEventSourcedActor.isAuthorizedAuthor} too.**  Its
+   * default holds an arriving envelope's `replica` against the node the
+   * connection authenticated, which is exactly right while the id *is*
+   * the node address and rejects every honest envelope once it is not.
+   * The pair is the replica-to-node mapping; the framework cannot infer
+   * the second half of it.
+   *
    * A getter rather than a field, so the default can read the cluster:
    * the context is attached after construction.  Read from `preStart`
-   * onwards.
+   * onwards.  Must be non-empty and at most
+   * {@link MAX_REPLICA_ID_LENGTH} characters — `preStart` checks, so an
+   * over-long id fails on the node that chose it rather than being
+   * silently rejected by every peer.
    */
   get replicaId(): ReplicaId { return this.cluster.selfAddress.toString(); }
+
+  /**
+   * Whether `origin` — the cluster node the *connection* authenticated —
+   * may write events under `replica` (#706).
+   *
+   * This is the whole of the authorship check, and the default is an
+   * equality: with the default {@link replicaId} a replica id *is* its
+   * node's address, so a member that sets `replica` to a peer's id is
+   * refused by the one party that can tell the difference, the receiver
+   * holding the socket.  Without it, a member could author events
+   * attributed to any replica and — with a large enough `timestamp` —
+   * make them win the deterministic order for everyone.
+   *
+   * **Override it whenever you override {@link replicaId}.**  A fixed
+   * region name is not an address, so the default equality would refuse
+   * every honest envelope; the mapping has to come from the deployment:
+   *
+   *     private static readonly NODES: Record<string, string> = {
+   *       'eu-west': 'orders@10.0.1.7:2551',
+   *       'us-east': 'orders@10.0.2.9:2551',
+   *     };
+   *     override get replicaId(): ReplicaId { return 'eu-west'; }
+   *     protected override isAuthorizedAuthor(replica: ReplicaId, origin: NodeAddress): boolean {
+   *       return OrderEntity.NODES[replica] === origin.toString();
+   *     }
+   *
+   * A `return true` here restores the pre-#706 behaviour in full, and is
+   * worth writing only for a cluster whose every member is as trusted as
+   * this actor's own process.
+   *
+   * **Sound because a replicated event crosses at most one hop.**
+   * `persist` is the only publisher and no mediator re-forwards what it
+   * received, so `origin` is the node that authored the event rather
+   * than a relay.  A store-and-forward path would have to carry the
+   * author separately for this comparison to keep its meaning.
+   */
+  protected isAuthorizedAuthor(replica: ReplicaId, origin: NodeAddress): boolean {
+    return replica === origin.toString();
+  }
 
   abstract initialState(): State;
   abstract onEvent(state: State, event: Event): State;
@@ -150,6 +289,29 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
    * tests for snappier convergence.
    */
   protected pubsubGossipIntervalMs(): number { return 250; }
+
+  /**
+   * Ceiling on the canonical event history, in events — how far a peer
+   * may make this actor's history grow.  Default
+   * {@link DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS} (100 000).
+   *
+   * The history has no compaction yet (#535) and every remote envelope
+   * also costs a journal write and a deduplication-set entry, so
+   * without a bound one member can grow another's memory, disk and
+   * refold cost without limit (#706).
+   *
+   * At the ceiling, remote envelopes are **refused, not evicted**, and
+   * one `WARN` says so: dropping from the history would change the
+   * fold, and dropping from the deduplication set would reopen
+   * double-apply — a bounded leak traded for unbounded divergence.
+   * Local `persist` is never refused; the application is not the
+   * untrusted party, and losing a write the caller was told succeeded
+   * is worse than an unbounded history.
+   *
+   * Lower it for an entity whose legitimate history is small — that is
+   * the tightest honest bound and the cheapest one to reason about.
+   */
+  protected maxObservedEvents(): number { return DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS; }
 
   /**
    * Snapshot policy — return true after applying an event to take a
@@ -206,9 +368,17 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
 
   private _state!: State;
   private _vc = VectorClock.empty();
-  /** Strict order: every observed event, deduped, sorted via resolver. */
+  /** Strict order: every observed event, deduplicated, sorted by `_compare`. */
   private _events: Array<ReplicatedEventEnvelope<Event>> = [];
+  /** Every observed event's `eventId`.  A hit means "already applied". */
   private _seenIds = new Set<string>();
+  /**
+   * Whether the "history is full, remote events refused" `WARN` has
+   * been emitted.  One line rather than one per refused envelope: a
+   * peer chooses how many it sends, and a log this actor cannot bound
+   * is the same denial of service in a different resource.
+   */
+  private _observedCapacityWarned = false;
 
   private _journal!: Journal;
   private _snapshotStore!: SnapshotStore;
@@ -249,6 +419,18 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     // a storage key does not first claim the single-writer slot and then
     // block a corrected restart from taking it.
     assertValidPersistenceId(this.persistenceId, 'ReplicatedEventSourcedActor');
+    // Same bound peers enforce on an arriving envelope's `replica` (#706).
+    // Checked here so an over-long id fails on the node that chose it, at
+    // startup, rather than showing up as every peer silently dropping this
+    // replica's events — a one-way divergence with nothing in this node's log.
+    const replicaId = this.replicaId;
+    if (typeof replicaId !== 'string' || replicaId.length === 0 || replicaId.length > MAX_REPLICA_ID_LENGTH) {
+      throw new Error(
+        `ReplicatedEventSourcedActor '${this.persistenceId}': replicaId must be a non-empty string of at most ` +
+        `${MAX_REPLICA_ID_LENGTH} characters (got ${typeof replicaId === 'string' ? `${replicaId.length} characters` : typeof replicaId}). ` +
+        `It prefixes every event id, keys the vector clock, and every peer validates it on arrival.`,
+      );
+    }
     // Single-writer-per-pid invariant (#58).  Two ReplicatedEventSourcedActors
     // with the same persistenceId on the same node race their
     // `_appendOne` calls; the second silently drops via
@@ -343,12 +525,20 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     //    that the first user-issued persist a few hundred ms after
     //    construction reaches peer replicas.  Tests can dial this
     //    tighter; production should leave the default.
+    //
+    //    `deliverWithOrigin` is what makes the authorship check possible
+    //    at all: a bare topic fan-out carries no sender, so every
+    //    delivery arrives wrapped in the node the connection
+    //    authenticated (#706).  No `replyTo` — the acknowledgment is
+    //    informational and `onReceive` drops it.
     const pubsub = this.system.extension(DistributedPubSubId).start(
       this.cluster,
       DistributedPubSubOptions.create().withGossipIntervalMs(this.pubsubGossipIntervalMs()),
     );
     this._mediator = pubsub as unknown as ActorRef<Subscribe | Publish | unknown>;
-    pubsub.tell(new Subscribe(topicFor(this.persistenceId), this.self));
+    pubsub.tell(new Subscribe(
+      topicFor(this.persistenceId), this.self, null, /* deliverWithOrigin= */ true,
+    ));
 
     await this.onRecoveryComplete(this._state);
   }
@@ -374,16 +564,50 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     this._lease = null;
   }
 
-  override async onReceive(message: Command | ReplicatedEventEnvelope<Event> | SubscribeAcknowledgment): Promise<void> {
+  override async onReceive(
+    message: Command
+      | ReplicatedEventEnvelope<Event>
+      | PubSubEnvelope<ReplicatedEventEnvelope<Event>>
+      | SubscribeAcknowledgment,
+  ): Promise<void> {
     // Ignore PubSub ack frames — they're informational.
     if (message && typeof message === 'object' && (message as { subscribe?: unknown }).subscribe instanceof Subscribe) {
       return;
     }
+    // A topic delivery, with the node the connection authenticated attached.
+    // `instanceof` is the load-bearing part: the wire carries JSON, so this
+    // class is a shape only the local mediator can have produced (#706).
+    if (message instanceof PubSubEnvelope) {
+      this._handleTopicDelivery(message);
+      return;
+    }
     if (this._isEnvelope(message)) {
-      this._handleRemote(message as ReplicatedEventEnvelope<Event>);
+      // Envelope-shaped, but it did not come in on the topic — the generic
+      // path-resolution route through `Cluster.dispatchEnvelope`, or a local
+      // `tell`.  Neither carries an identity, so `_handleRemote` refuses it;
+      // it is passed on rather than ignored so the refusal is logged.
+      this._handleRemote(message as ReplicatedEventEnvelope<Event>, null);
       return;
     }
     await this.onCommand(this._state, message as Command);
+  }
+
+  /**
+   * Unwrap a topic delivery.  A message on this actor's own topic that is
+   * not an envelope claim is not a command either — the topic is the
+   * cross-replica channel and nothing else publishes to it — so it is
+   * dropped rather than handed to `onCommand`, where a peer would be
+   * choosing which of the application's commands to run.
+   */
+  private _handleTopicDelivery(delivery: PubSubEnvelope<ReplicatedEventEnvelope<Event>>): void {
+    if (!this._isEnvelope(delivery.message)) {
+      this.log.warn(
+        `replicated-es '${this.persistenceId}': dropped a message on the replication topic — `
+        + 'it does not claim to be an event envelope',
+      );
+      return;
+    }
+    this._handleRemote(delivery.message, delivery.origin);
   }
 
   /**
@@ -410,6 +634,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       persistenceId: this.persistenceId,
       replica: this.replicaId,
       seqAtReplica: this._localSeq,
+      eventId: this._mintEventId(),
       vc: this._vc.toJSON(),
       timestamp: Date.now(),
       event,
@@ -417,6 +642,28 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     await this._appendOne(envelope);
     this._absorb(envelope, /* persistLocally= */ false, /* broadcast= */ true);
     afterPersist?.(this._state);
+  }
+
+  /**
+   * A fresh cluster-wide event id: this replica's id, a `#`, and
+   * {@link REPLICATED_EVENT_ID_ENTROPY_CHARACTERS} hex characters.
+   *
+   * The prefix is for reading — a log line or a snapshot dump still
+   * says who authored the event — and carries no authority: the
+   * entropy is the whole of the guarantee, exactly as in `ORSet.add`
+   * (#722).
+   *
+   * Drawn against the observed set.  96 bits make a repeat
+   * near-impossible, but the consequence of one is the same silent
+   * discard the entropy exists to prevent, and the set is already in
+   * hand.
+   */
+  private _mintEventId(): string {
+    const prefix = `${this.replicaId}#`;
+    return prefix + randomId(
+      REPLICATED_EVENT_ID_ENTROPY_CHARACTERS,
+      (suffix) => this._seenIds.has(prefix + suffix),
+    );
   }
 
   /**
@@ -432,7 +679,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
   private async _appendOne(envelope: ReplicatedEventEnvelope<Event>): Promise<void> {
     const head = await this._journal.highestSeq(this.persistenceId);
     const written = await this._journal.append(
-      this.persistenceId, [envelope], head, [REPLICATED_TAG],
+      this.persistenceId, [{ event: envelope, tags: [REPLICATED_TAG] }], head,
     );
     const lastWrittenSeq = written[written.length - 1]?.sequenceNr ?? head + 1;
     if (lastWrittenSeq > this._journalSeq) this._journalSeq = lastWrittenSeq;
@@ -440,15 +687,142 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
 
   /* ----------------------------- absorb event --------------------------- */
 
-  private _handleRemote(envelope: ReplicatedEventEnvelope<Event>): void {
+  /**
+   * The untrusted entry point.  Everything an envelope claims arrives
+   * here from a peer — through the pub-sub mediator, or straight at
+   * this actor's path — so nothing it says is acted on before the whole
+   * shape has been checked (#706).
+   *
+   * Reject, log, return; never throw.  A malformed envelope used to
+   * take `_absorb` half-way through — deduplication key added, event
+   * spliced in, state refolded — and *then* die inside
+   * `VectorClock.fromData`, escaping into supervision from an actor
+   * whose in-memory history no longer matched anything.  One frame did
+   * that, repeatably, from any member.  Dropping the frame and keeping
+   * the actor is the same policy the cluster's own frame validation
+   * follows.
+   */
+  private _handleRemote(envelope: ReplicatedEventEnvelope<Event>, origin: NodeAddress | null): void {
     if (envelope.persistenceId !== this.persistenceId) return; // not for us
     if (envelope.replica === this.replicaId) return; // our own broadcast — ignore
+    const rejection = this._envelopeRejection(envelope) ?? this._authorshipRejection(envelope, origin);
+    if (rejection !== null) {
+      this.log.warn(
+        `replicated-es '${this.persistenceId}': dropped a remote envelope — ${rejection}`,
+      );
+      return;
+    }
+    if (this._events.length >= this.maxObservedEvents()) {
+      if (!this._observedCapacityWarned) {
+        this._observedCapacityWarned = true;
+        this.log.warn(
+          `replicated-es '${this.persistenceId}': the event history reached ${this._events.length} events ` +
+          `(maxObservedEvents() = ${this.maxObservedEvents()}); remote envelopes are refused from here on. ` +
+          `Refused rather than evicted — dropping history changes the fold and dropping deduplication keys ` +
+          `reopens double-apply. Raise the hook, or snapshot and compact (#535).`,
+        );
+      }
+      return;
+    }
     void this._absorb(envelope, /* persistLocally= */ true, /* broadcast= */ false);
   }
 
   /**
-   * Insert an envelope into the canonical event list, dedupe by
-   * (replica, seqAtReplica), refold state from the divergence point.
+   * Why this envelope is unacceptable, or `null`.
+   *
+   * Only reached from {@link _handleRemote}: replay and own persists
+   * come from this node's own journal and this node's own `persist`,
+   * and a check there would reject historical data rather than an
+   * attacker.
+   *
+   * Typed as the envelope but read through `unknown` casts, because
+   * the value is whatever a peer put on the wire — the static type is
+   * a claim, not a fact.
+   */
+  private _envelopeRejection(envelope: ReplicatedEventEnvelope<Event>): string | null {
+    const claim = envelope as {
+      replica?: unknown;
+      seqAtReplica?: unknown;
+      eventId?: unknown;
+      timestamp?: unknown;
+      vc?: unknown;
+    };
+    if (typeof claim.replica !== 'string' || claim.replica.length === 0) {
+      return 'replica must be a non-empty string';
+    }
+    if (claim.replica.length > MAX_REPLICA_ID_LENGTH) {
+      return `replica is ${claim.replica.length} characters, at most ${MAX_REPLICA_ID_LENGTH} are accepted`;
+    }
+    // No `eventId` means either a hostile envelope or a peer that predates the
+    // field.  Both are refused: accepting one would restore the guessable
+    // `${replica}#${seqAtReplica}` key on the one path where guessing it is the
+    // attack, which would make the entropy decorative.  A pre-1.0 hard cut, so
+    // a mixed-version cluster loses cross-replica delivery until every node is
+    // upgraded — loudly, one WARN per envelope, not silently.
+    if (typeof claim.eventId !== 'string' || claim.eventId.length === 0) {
+      return 'eventId must be a non-empty string (a peer older than #706 does not send one)';
+    }
+    if (claim.eventId.length > MAX_REPLICATED_EVENT_ID_LENGTH) {
+      return `eventId is ${claim.eventId.length} characters, at most ${MAX_REPLICATED_EVENT_ID_LENGTH} are accepted`;
+    }
+    // Positive integer, not "exactly one past the highest seen": pub-sub
+    // dead-letters a publish with no live subscriber and nothing anywhere
+    // retransmits, so gaps are normal AND permanent.  A strict successor rule
+    // would turn one dropped publish into that replica being suppressed
+    // forever — worse than the attack it would prevent.
+    if (!Number.isSafeInteger(claim.seqAtReplica) || (claim.seqAtReplica as number) < 1) {
+      return 'seqAtReplica must be a positive safe integer';
+    }
+    // Finite only, and deliberately not "close to now".  Every check in this
+    // function has to reach the same verdict on every replica, or the two fold
+    // different histories and convergence — the guarantee the class exists for
+    // — is gone.  A shape check does; a check against the receiver's clock does
+    // not, so a skewed pair of nodes would silently disagree about which events
+    // exist.  The sort key stays the sender's timestamp for the same reason:
+    // an arrival-time stamp is local.  What makes that acceptable is authorship
+    // (see `_authorshipRejection`) — a member can still stamp
+    // `Number.MAX_SAFE_INTEGER` on an event and win the order, but only under
+    // its *own* replica id, which it could always do by writing honestly.
+    if (typeof claim.timestamp !== 'number' || !Number.isFinite(claim.timestamp)) {
+      return 'timestamp must be a finite number';
+    }
+    return vectorClockRejection(claim.vc);
+  }
+
+  /**
+   * Why this envelope's claimed author is unacceptable, or `null`.
+   *
+   * Runs after {@link _envelopeRejection}, so `replica` is already known
+   * to be a plausible string and the message names the field rather than
+   * whatever a peer put there.
+   *
+   * **A missing origin is a refusal, not a pass.**  Two routes reach this
+   * actor from a peer: the replication topic, which now carries the
+   * connection's peer, and `Cluster.dispatchEnvelope`'s generic path
+   * resolution, which delivers the raw body to any resolvable path with
+   * no identity whatsoever.  Treating the second as trusted would leave
+   * the whole attack reachable one path over from the one that was
+   * closed, so the absence of an identity is itself the reason (#706).
+   * The same rule makes a locally-`tell`ed envelope inert, which is the
+   * correct reading of it: nothing on this node may speak for a peer.
+   */
+  private _authorshipRejection(
+    envelope: ReplicatedEventEnvelope<Event>, origin: NodeAddress | null,
+  ): string | null {
+    if (origin === null) {
+      return `replica '${envelope.replica}' claims an author, but the envelope arrived with no `
+        + 'authenticated origin — it did not come in on the replication topic';
+    }
+    if (!this.isAuthorizedAuthor(envelope.replica, origin)) {
+      return `replica '${envelope.replica}' may not be written by ${origin}, the node this `
+        + 'connection authenticated (isAuthorizedAuthor said no)';
+    }
+    return null;
+  }
+
+  /**
+   * Insert an envelope into the canonical event list, deduplicate on
+   * its `eventId`, refold state from the divergence point.
    *
    * `persistLocally` controls whether we also append the event to
    * our local journal (true for events received from peers; false
@@ -462,9 +836,9 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     persistLocally: boolean,
     broadcast: boolean,
   ): void {
-    const id = `${envelope.replica}#${envelope.seqAtReplica}`;
-    if (this._seenIds.has(id)) return;
-    this._seenIds.add(id);
+    const deduplicationKey = this._deduplicationKeyFor(envelope);
+    if (this._seenIds.has(deduplicationKey)) return;
+    this._seenIds.add(deduplicationKey);
 
     // Fast path: envelope sorts after every existing event → just append.
     const last = this._events[this._events.length - 1];
@@ -493,7 +867,7 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
       // pid means we can read highestSeq + append in one mailbox
       // tick without races.
       void this._appendOne(envelope).catch((err) => {
-        this.log.warn(`replicated-es: failed to persist remote event from ${envelope.replica}#${envelope.seqAtReplica}`, err);
+        this.log.warn(`replicated-es: failed to persist remote event ${deduplicationKey}`, err);
       });
     }
 
@@ -557,6 +931,30 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     }
   }
 
+  /**
+   * The key this envelope occupies in the observed set.
+   *
+   * `eventId` for anything minted since #706.  The
+   * `${replica}#${seqAtReplica}` fallback exists for one case only:
+   * envelopes written to **this node's own journal or snapshot** before
+   * the field existed.  Refusing those would make an upgrade lose the
+   * entity's history, and accepting them costs nothing, because a
+   * guessable key is only a weapon on the path a peer can reach — and
+   * {@link _envelopeRejection} refuses an `eventId`-less envelope there.
+   *
+   * A legacy envelope and its re-broadcast from an upgraded peer would
+   * therefore double-apply, since the two carry different keys for the
+   * same event.  Accepted: nothing re-broadcasts a historical event
+   * (`persist` is the only publisher, at mint time), so the window is a
+   * peer's in-flight redelivery across the upgrade itself.
+   */
+  private _deduplicationKeyFor(envelope: ReplicatedEventEnvelope<Event>): string {
+    const eventId = (envelope as { eventId?: unknown }).eventId;
+    return typeof eventId === 'string' && eventId.length > 0
+      ? eventId
+      : `${envelope.replica}#${envelope.seqAtReplica}`;
+  }
+
   private _findInsertIndex(envelope: ReplicatedEventEnvelope<Event>): number {
     // Linear scan — for small histories this is cheaper than a
     // binary search's branch overhead.  Swap for binary if profiling
@@ -567,6 +965,19 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     return this._events.length;
   }
 
+  /**
+   * The canonical order: payload `timestamp`, then `replica`, then
+   * `seqAtReplica`.
+   *
+   * All three come out of the envelope, and that is required rather than
+   * merely tolerated — the order has to be a function of the events alone
+   * or two replicas holding the same set compute different states.  A
+   * receive-time key would be local to each replica and would break that
+   * outright, which is why #706's "use a receive-time timestamp for
+   * ordering" is refused here and answered by binding the author instead:
+   * a forged `timestamp` is now traceable to the member that sent it and
+   * can no longer be attributed to a victim.
+   */
   private _compare(
     a: ReplicatedEventEnvelope<Event>, b: ReplicatedEventEnvelope<Event>,
   ): number {
@@ -575,6 +986,19 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
     return a.seqAtReplica - b.seqAtReplica;
   }
 
+  /**
+   * Routing only — "does this message *claim* to be a replicated
+   * envelope", not "is it a valid one".  Deliberately unchanged and
+   * deliberately loose: narrowing it would hand a rejected-but-
+   * envelope-shaped message to the user's `onCommand`, where it is
+   * invisible, instead of to {@link _envelopeRejection}, which names the
+   * offending field in a `WARN` and drops it.
+   *
+   * The cost is that a user `Command` carrying a matching
+   * `persistenceId` and a numeric `seqAtReplica` is read as an envelope
+   * claim and dropped rather than delivered. That was true before #706
+   * too, where it was absorbed as an event instead — worse, and silent.
+   */
   private _isEnvelope(x: unknown): x is ReplicatedEventEnvelope<Event> {
     return !!x && typeof x === 'object'
       && (x as ReplicatedEventEnvelope<Event>).persistenceId === this.persistenceId

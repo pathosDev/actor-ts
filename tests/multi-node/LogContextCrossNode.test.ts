@@ -24,17 +24,18 @@ import { RemoteActorRef } from '../../src/cluster/RemoteActorRef.js';
 import { InMemoryTransport } from '../../src/cluster/Transport.js';
 import { LogContext } from '../../src/LogContext.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
+import { awaitCondition } from '../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(pred: () => boolean, timeoutMs = 5_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await sleep(25);
-  }
-  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418).  The hand-rolled loop's own `sleep` shim went with
+ * it — it existed only to drive this poll.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 5_000,
+  label = 'the cross-node context reached the awaited state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: 25, label });
 
 type Node = {
   readonly sys: ActorSystem;

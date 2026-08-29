@@ -4,11 +4,11 @@ import { ActorSelection } from '../../src/ActorSelection.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
+import type { DeadLetter } from '../../src/SystemMessages.js';
 import { TestKit } from '../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../src/testkit/TestKitOptions.js';
 import { awaitCondition } from '../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 const newSys = (n = 'sel'): ActorSystem => {
   const sysOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
@@ -54,7 +54,7 @@ describe('ActorSelection — basics', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('tell-sel', kitOptions);
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     class Echo extends Actor<string> { override onReceive(m: string): void { probe.tell(m); } }
     kit.system.spawn(Echo, 'echo');
@@ -74,8 +74,13 @@ describe('ActorSelection — basics', () => {
     kit.system.eventStream.subscribe(probe, DeadLetter);
 
     kit.system.actorSelection('/user/ghost').tell('boo');
-    const dl = await probe.receiveOne(500) as { message: unknown };
+    const dl = await probe.receiveOne(500) as DeadLetter;
     expect(dl.message).toBe('boo');
+    // The recipient is the address that resolved to nothing, not the
+    // dead-letter office.  Asserting only on `.message` passed before #433
+    // precisely *because* the recipient was wrong — every letter named
+    // `/deadLetters`, so nothing could tell one selection from another.
+    expect(dl.recipient.path.toString()).toBe(`actor-ts://${kit.system.name}/user/ghost`);
     await kit.system.terminate();
   });
 });
@@ -86,7 +91,7 @@ describe('ActorSelection — nested paths', () => {
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
     const kit = TestKit.create('nested-sel', kitOptions);
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     class Leaf extends Actor<string> { override onReceive(m: string): void { probe.tell(m); } }
     const leafSpawned = { value: false };

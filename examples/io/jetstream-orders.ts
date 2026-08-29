@@ -117,8 +117,10 @@ async function main(): Promise<void> {
   }
 
   console.log('press Ctrl+C to exit');
-  await new Promise<void>((resolve) => process.on('SIGINT', () => resolve()));
-  await system.terminate();
+  // The JetStream actor closes its connection in the `service-stop` phase —
+  // before anything else goes — because it registered itself there when it
+  // started.
+  await system.runUntilTerminated();
 }
 
 void main();

@@ -2,7 +2,6 @@ import { describe, expect, test } from 'bun:test';
 import {
   PROFILE_ROW_HEIGHT,
   buildProfileTree,
-  hitTestProfile,
   hottestLeaves,
   layoutProfile,
   profileDepth,
@@ -113,20 +112,6 @@ describe('layoutProfile', () => {
 
   test('reports the number of rows needed', () => {
     expect(profileDepth(layoutProfile(root, 100))).toBe(4);
-  });
-});
-
-describe('hitTestProfile', () => {
-  const root = buildProfileTree([stack(['user', 'a', 'Work'], 10)]);
-  const rectangles = layoutProfile(root, 100);
-
-  test('finds the frame under the point', () => {
-    const hit = hitTestProfile(rectangles, 50, PROFILE_ROW_HEIGHT + 5);
-    expect(hit?.node.name).toBe('user');
-  });
-
-  test('returns null below the deepest row', () => {
-    expect(hitTestProfile(rectangles, 50, 500)).toBeNull();
   });
 });
 

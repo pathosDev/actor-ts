@@ -6,7 +6,6 @@
  *   bun run examples/patterns/futures/pipe-to-hello.ts
  */
 import { Actor, ActorSystem, Success, Failure, after, pipeTo } from '../../../src/index.js';
-import { attachDevTools } from '../../devtools.js';
 
 class ResultHandler extends Actor<Success<number> | Failure> {
   override onReceive(message: Success<number> | Failure): void {
@@ -17,7 +16,6 @@ class ResultHandler extends Actor<Success<number> | Failure> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('pipe-hello');
-  const devtools = await attachDevTools(system);
   const ref = system.spawn(ResultHandler, 'handler');
 
   // Promise that resolves to a number — arrives as Success.
@@ -29,8 +27,10 @@ async function main(): Promise<void> {
   // "after" delays the creation of the promise itself.
   pipeTo(after(30, () => Promise.resolve(99)), ref);
 
+  // Not a drain sleep: `pipeTo` tells the actor from a promise nobody awaits,
+  // so at terminate() time the handler's mailbox is empty and the tree looks
+  // quiet.  The drain has nothing to follow here — this 80 ms does the waiting.
   await Bun.sleep(80);
-  await devtools.holdOpen();
   await system.terminate();
 }
 

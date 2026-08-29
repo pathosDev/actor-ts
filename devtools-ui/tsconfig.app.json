@@ -1,0 +1,18 @@
+{
+  "//": [
+    "What `ng build` compiles, and what `bun run typecheck` reaches through",
+    "scripts/ui-toolchain.mjs.  Entry-driven rather than glob-driven: `files`",
+    "names the bootstrap and everything else is pulled in by import, so a module",
+    "that nothing reaches is not silently type-checked into looking alive."
+  ],
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // The UI imports the wire protocol from ../src/devtools/protocol/, which
+    // sits outside this directory; without an explicit rootDir tsc infers
+    // devtools-ui/ and rejects every one of those imports with TS6059.
+    "rootDir": "..",
+    "outDir": "./.angular-out"
+  },
+  "files": ["src/main.ts"],
+  "include": ["src/**/*.d.ts"]
+}

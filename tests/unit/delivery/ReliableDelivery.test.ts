@@ -1,14 +1,67 @@
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
+import type { ActorRef } from '../../../src/ActorRef.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { ReliableDelivery, ProducerControllerOptions } from '../../../src/delivery/index.js';
-import type { Delivery } from '../../../src/delivery/index.js';
+import { Scheduler } from '../../../src/Scheduler.js';
+import type { Cancellable } from '../../../src/Scheduler.js';
+import { ActorRestarted, DeadLetter } from '../../../src/SystemMessages.js';
+import {
+  ConsumerController,
+  ReliableDelivery,
+  ProducerControllerOptions,
+  ProducerControllerOptionsBuilder,
+  MAX_DELIVERY_IDENTIFIER_LENGTH,
+} from '../../../src/delivery/index.js';
+import type { ConsumerControllerOptionsType, Delivery } from '../../../src/delivery/index.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
-import { awaitCondition } from '../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+/**
+ * A silent TestKit — every case here would otherwise log its own warnings.
+ *
+ * The optional scheduler is how a case observes what an actor's `preStart`
+ * did: a schedule that was never armed leaves no other trace.
+ */
+const quietKit = (name: string, scheduler?: Scheduler): TestKit => {
+  const kitOptions = TestKitOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off);
+  if (scheduler !== undefined) kitOptions.withScheduler(scheduler);
+  return TestKit.create(name, kitOptions);
+};
+
+/** One repeating schedule, as the actor that armed it asked for it. */
+type ArmedFixedRate = { readonly initialDelayMs: number; readonly intervalMs: number };
+
+/**
+ * A real {@link Scheduler} that additionally records every repeating
+ * schedule armed on it.
+ *
+ * A `preStart` that *refuses* to arm leaves nothing else to assert on.  The
+ * sweep it would otherwise arm is harmless every time it fires — with an
+ * infinite TTL the cutoff is `-Infinity`, so the very first entry is fresh
+ * and the loop breaks — so no counter, no map size and no amount of waiting
+ * can tell an armed schedule from an absent one.  The arm itself is the only
+ * observable, which is why the test watches the seam it happens on.
+ *
+ * It delegates to `super` rather than swallowing the call: a schedule that
+ * *is* armed has to keep behaving exactly as it does in production, or the
+ * positive control below would prove nothing about the real thing.
+ */
+class RecordingScheduler extends Scheduler {
+  readonly armedFixedRates: ArmedFixedRate[] = [];
+
+  override scheduleAtFixedRateFunction(
+    initialDelayMs: number,
+    intervalMs: number,
+    task: () => void,
+  ): Cancellable {
+    this.armedFixedRates.push({ initialDelayMs, intervalMs });
+    return super.scheduleAtFixedRateFunction(initialDelayMs, intervalMs, task);
+  }
+}
 
 describe('ReliableDelivery — happy path', () => {
   test('producer → consumer delivers every message exactly once', async () => {
@@ -85,6 +138,7 @@ describe('ReliableDelivery — resilience', () => {
     const dup1: Delivery<string> = {
       kind: 'reliable-delivery.delivery',
       producerId: 'test-producer',
+      incarnation: 'test-incarnation',
       seq: 1,
       body: 'once',
       replyTo: selfProbe as never,
@@ -129,8 +183,15 @@ describe('ReliableDelivery — resilience', () => {
         seen++;
         if (seen < 3) return; // drop
         delivered = d.body;
-        // Acknowledgment manually to match ConsumerController's protocol.
-        d.replyTo.tell({ kind: 'reliable-delivery.ack', producerId: d.producerId, seq: d.seq });
+        // Acknowledgment manually to match ConsumerController's protocol —
+        // including echoing the incarnation, without which the producer
+        // rejects it as unauthenticated (#730).
+        d.replyTo.tell({
+          kind: 'reliable-delivery.ack',
+          producerId: d.producerId,
+          incarnation: d.incarnation,
+          seq: d.seq,
+        });
       }
     }
     const consumerRef = kit.system.spawn(Flaky, 'flaky');
@@ -150,7 +211,11 @@ describe('ReliableDelivery — resilience', () => {
       label: 'a resend finally got through to the flaky consumer',
     });
     expect(seen).toBeGreaterThanOrEqual(3);
-    expect(delivered).toBe('persistent-message');
+    // Explicit `expect<T>`: the only writer is the actor's `onReceive`, a
+    // nested function, so the compiler's flow analysis still has `delivered`
+    // at its `null` initialiser here.  The `awaitCondition` above is the
+    // runtime proof it is not.
+    expect<string | null>(delivered).toBe('persistent-message');
     producer.stop();
     await kit.system.terminate();
   });
@@ -220,6 +285,8 @@ describe('ReliableDelivery — shutdown (#451)', () => {
       timeoutMs: 4_000,
       label: 'the window-sized batch reached the consumer',
     });
+    // The assertion is an absence: the window must NOT advance past two, so
+    // this is a settle period rather than a condition that becomes true.
     await sleep(30);
 
     // Two delivered and awaiting an ack that never comes, two still queued.
@@ -301,5 +368,817 @@ describe('ReliableDelivery — generated controller names', () => {
 
     await first.system.terminate();
     await second.system.terminate();
+  });
+});
+
+describe('ReliableDelivery — producer restart (#726)', () => {
+  test('a re-created producer with the same producerId is not absorbed as duplicates', async () => {
+    // No crash and no supervision needed: stop-and-recreate is the plainest
+    // application pattern there is, and `nextSeq` is an instance field with no
+    // seed while `producerId` comes off the captured options object — so the
+    // second controller numbers from 1 again against a consumer whose dedup
+    // entry for that id never went away.
+    const kit = quietKit('rd-restart-recreate');
+    const received: string[] = [];
+    const confirmedDelivered: string[] = [];
+    const consumer = ReliableDelivery.consumer<string>(kit.system, {
+      handler: (m) => { received.push(m); },
+    });
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(consumer.ref as never)
+      .withProducerId('orders')
+      .withResendTimeout(200)
+      .withWindowSize(4);
+
+    const first = ReliableDelivery.producer<string>(kit.system, producerOptions, 'orders-first');
+    for (const s of ['a', 'b', 'c']) {
+      first.tell(s, (err) => { if (err === null) confirmedDelivered.push(s); });
+    }
+    await awaitCondition(() => confirmedDelivered.length === 3, {
+      timeoutMs: 4_000,
+      label: 'the first incarnation delivered and confirmed three messages',
+    });
+    first.stop();
+
+    const second = ReliableDelivery.producer<string>(kit.system, producerOptions, 'orders-second');
+    for (const s of ['d', 'e', 'f']) {
+      second.tell(s, (err) => { if (err === null) confirmedDelivered.push(s); });
+    }
+    await awaitCondition(() => received.length === 6, {
+      timeoutMs: 4_000,
+      label: 'the second incarnation reached the handler too',
+    });
+    expect(received).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
+
+    // The worst symptom was not the loss, it was the lie: an absorbed message
+    // is answered with an ordinary ack, so `confirm(null)` reported success
+    // for a body the handler never saw.  Every confirmed body must be one the
+    // handler actually ran.
+    await awaitCondition(() => confirmedDelivered.length === 6, {
+      timeoutMs: 4_000,
+      label: 'both incarnations confirmed all six sends',
+    });
+    for (const body of confirmedDelivered) expect(received).toContain(body);
+
+    second.stop(); consumer.stop();
+    await kit.system.terminate();
+  });
+
+  test('a supervised restart of the producer does not silently absorb what follows', async () => {
+    // The trigger is ordinary: `onAcknowledgment` runs the caller's `confirm`
+    // synchronously inside `onReceive`, so a throwing callback faults the
+    // producer.  The default strategy is one-for-one, so only the producer is
+    // recreated and the consumer keeps its dedup entry — which is the exact
+    // shape the issue describes.
+    const kit = quietKit('rd-restart-supervised');
+    const received: string[] = [];
+    const restarts: string[] = [];
+    const subscribed = { value: false };
+
+    class RestartListener extends Actor<ActorRestarted> {
+      override preStart(): void {
+        this.system.eventStream.subscribe(this.self, ActorRestarted);
+        subscribed.value = true;
+      }
+      override onReceive(event: ActorRestarted): void { restarts.push(event.actor.path.toString()); }
+    }
+    kit.system.spawn(RestartListener, 'restart-listener');
+    await awaitCondition(() => subscribed.value, {
+      timeoutMs: 4_000,
+      label: 'the restart listener subscribed to the event stream',
+    });
+
+    const consumer = ReliableDelivery.consumer<string>(kit.system, {
+      handler: (m) => { received.push(m); },
+    });
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(consumer.ref as never)
+      .withProducerId('orders')
+      .withResendTimeout(2_000)
+      .withWindowSize(4);
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions, 'orders-supervised');
+    const producerPath = producer.ref.path.toString();
+
+    let blewUp = false;
+    producer.tell('before', () => {
+      if (blewUp) return;
+      blewUp = true;
+      throw new Error('confirmation callback blew up');
+    });
+
+    // Assert the restart really happened.  Without this the test would pass
+    // just as happily if the producer had never faulted at all, which is the
+    // one thing that would make it prove nothing.
+    await awaitCondition(() => restarts.includes(producerPath), {
+      timeoutMs: 4_000,
+      label: 'the throwing confirmation callback restarted the producer',
+    });
+    expect(received).toEqual(['before']);
+
+    producer.tell('after-1');
+    producer.tell('after-2');
+    await awaitCondition(() => received.length === 3, {
+      timeoutMs: 4_000,
+      label: 'the restarted producer still reached the handler',
+    });
+    expect(received).toEqual(['before', 'after-1', 'after-2']);
+
+    producer.stop(); consumer.stop();
+    await kit.system.terminate();
+  });
+
+  test('the same seq from a different incarnation is fresh; from the same one it is a duplicate', async () => {
+    // The discriminating case.  A guard keyed on `producerId` alone cannot
+    // tell these two apart, so a fix that only widened the *value* stored
+    // under the key would pass the suite above and fail here.
+    const kit = quietKit('rd-incarnation-key');
+    const received: string[] = [];
+    const consumer = ReliableDelivery.consumer<string>(kit.system, {
+      handler: (m) => { received.push(m); },
+    });
+    const probe = kit.createTestProbe();
+    const base = {
+      kind: 'reliable-delivery.delivery',
+      producerId: 'orders',
+      seq: 1,
+      replyTo: probe as never,
+    } as const;
+
+    consumer.ref.tell({ ...base, incarnation: 'first', body: 'from-first' } as never);
+    await awaitCondition(() => received.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the first incarnation delivery was handled',
+    });
+
+    consumer.ref.tell({ ...base, incarnation: 'second', body: 'from-second' } as never);
+    await awaitCondition(() => received.length === 2, {
+      timeoutMs: 4_000,
+      label: 'the second incarnation is not treated as a duplicate of the first',
+    });
+    expect(received).toEqual(['from-first', 'from-second']);
+
+    // The property the fix must not break: a genuine retransmit — same
+    // incarnation, same seq — is still absorbed and still re-acked, so the
+    // producer can release its window slot.
+    consumer.ref.tell({ ...base, incarnation: 'second', body: 'retransmitted' } as never);
+    await awaitCondition(() => probe.messageCount === 3, {
+      timeoutMs: 4_000,
+      label: 'all three deliveries were acknowledged',
+    });
+    // The assertion is an absence: exactly two of the three reach the handler
+    // and the third must stay absorbed, so the settle period IS the assertion.
+    await sleep(30);
+    expect(received).toEqual(['from-first', 'from-second']);
+
+    consumer.stop();
+    await kit.system.terminate();
+  });
+});
+
+describe('ReliableDelivery — acknowledgment authentication (#730)', () => {
+  test('an ack that does not echo the producer incarnation is ignored', async () => {
+    const kit = quietKit('rd-forged-ack');
+    const confirmations: Array<Error | null> = [];
+    const probe = kit.createTestProbe();
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(probe as never)
+      .withResendTimeout(80)
+      .withWindowSize(1);
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+    producer.tell('payment-instruction', (err) => { confirmations.push(err); });
+
+    const first = await probe.receiveOne(4_000) as Delivery<string>;
+    expect(first.seq).toBe(1);
+    expect(first.incarnation.length).toBeGreaterThan(0);
+
+    // Everything an arbitrary sender can derive on its own: the kind, the
+    // enumerable producer id, and the sequence number.  Acting on this would
+    // cancel the retransmit and report success for a message that may never
+    // have been handled at all.
+    producer.ref.tell({
+      kind: 'reliable-delivery.ack',
+      producerId: first.producerId,
+      incarnation: 'forged-incarnation',
+      seq: first.seq,
+    } as never);
+
+    // The retransmit is the observable proof: the resend timer only fires
+    // while the send is still in flight, so a second delivery means the
+    // forged ack changed nothing.
+    const retransmitted = await probe.receiveOne(4_000) as Delivery<string>;
+    expect(retransmitted.seq).toBe(1);
+    expect(confirmations).toHaveLength(0);
+
+    // The honest ack — the same two fields plus the incarnation it read off
+    // the wire — still settles it exactly once.
+    producer.ref.tell({
+      kind: 'reliable-delivery.ack',
+      producerId: first.producerId,
+      incarnation: first.incarnation,
+      seq: first.seq,
+    } as never);
+    await awaitCondition(() => confirmations.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the honest acknowledgment settled the send',
+    });
+    expect(confirmations).toEqual([null]);
+
+    producer.stop();
+    await kit.system.terminate();
+  });
+
+  test('two producers sharing a producerId cannot settle sends for one another', async () => {
+    // Not an attack — two processes that both left `producerId` at the same
+    // configured string.  Before the incarnation check either one's ack would
+    // release the other's window slot and fire the other caller's `confirm`.
+    const kit = quietKit('rd-crossed-acks');
+    const confirmations: Array<Error | null> = [];
+    const probeA = kit.createTestProbe();
+    const probeB = kit.createTestProbe();
+    const optionsFor = (consumer: unknown): ProducerControllerOptionsBuilder<string> =>
+      ProducerControllerOptions.create<string>()
+        .withConsumer(consumer as never)
+        .withProducerId('shared-id')
+        .withResendTimeout(5_000)
+        .withWindowSize(1);
+
+    const producerA = ReliableDelivery.producer<string>(kit.system, optionsFor(probeA), 'crossed-a');
+    const producerB = ReliableDelivery.producer<string>(kit.system, optionsFor(probeB), 'crossed-b');
+    producerA.tell('a-body', (err) => { confirmations.push(err); });
+    producerB.tell('b-body', () => {});
+
+    const deliveryB = await probeB.receiveOne(4_000) as Delivery<string>;
+    expect(deliveryB.producerId).toBe('shared-id');
+
+    // B's own, entirely honest acknowledgment, delivered to A.
+    producerA.ref.tell({
+      kind: 'reliable-delivery.ack',
+      producerId: deliveryB.producerId,
+      incarnation: deliveryB.incarnation,
+      seq: deliveryB.seq,
+    } as never);
+    // The assertion is an absence: the forged acknowledgment must settle
+    // nothing, so there is no condition to poll for, only one not to meet.
+    await sleep(80);
+    expect(confirmations).toHaveLength(0);
+
+    producerA.stop(); producerB.stop();
+    await kit.system.terminate();
+  });
+
+  test('a generated producerId is drawn at random, not from a module counter', async () => {
+    // A `producerId` is one of the two fields an Acknowledgment carries, and
+    // the other one is a small integer — so a default of `producer-1`,
+    // `producer-2`, … handed anyone who could count the half of the pair that
+    // is not the sequence number.  The same counter was module-global, so two
+    // processes running the same service both minted `producer-1` and then
+    // shared — and kept resetting — one dedup entry in the consumer's map.
+    //
+    // The assertion reads the id off the wire rather than off the controller,
+    // because the wire is where both of those problems live.
+    const kit = quietKit('rd-generated-producer-id');
+    const identifiers: string[] = [];
+
+    for (let i = 0; i < 3; i++) {
+      const probe = kit.createTestProbe();
+      const producerOptions = ProducerControllerOptions.create<string>()
+        .withConsumer(probe as never)
+        .withResendTimeout(5_000);
+      const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+      producer.tell('body');
+      const delivery = await probe.receiveOne(4_000) as Delivery<string>;
+      identifiers.push(delivery.producerId);
+      producer.stop();
+    }
+
+    for (const identifier of identifiers) {
+      // GENERATED_PRODUCER_ID_LENGTH hex characters behind the prefix.
+      expect(identifier).toMatch(/^producer-[0-9a-f]{16}$/);
+      // Spelled out separately because the shape above is what would change
+      // silently if someone reinstated a counter with a wider format.  The
+      // bound keeps this from ever colliding with an all-digit random draw.
+      expect(identifier).not.toMatch(/^producer-[0-9]{1,4}$/);
+      // A generated id the consumer would refuse dead-letters every delivery
+      // it stamps, so the default has to sit inside the admission bound.
+      expect(identifier.length).toBeLessThanOrEqual(MAX_DELIVERY_IDENTIFIER_LENGTH);
+    }
+    expect(new Set(identifiers).size).toBe(3);
+
+    await kit.system.terminate();
+  });
+});
+
+describe('ReliableDelivery — malformed delivery (#727)', () => {
+  /**
+   * Collects dead letters off the event stream.  Returns once the listener has
+   * actually subscribed, so a refusal cannot race the subscription.
+   */
+  const watchDeadLetters = async (kit: TestKit): Promise<DeadLetter[]> => {
+    const seen: DeadLetter[] = [];
+    const subscribed = { value: false };
+    class DeadLetterListener extends Actor<DeadLetter> {
+      override preStart(): void {
+        this.system.eventStream.subscribe(this.self, DeadLetter);
+        subscribed.value = true;
+      }
+      override onReceive(letter: DeadLetter): void { seen.push(letter); }
+    }
+    kit.system.spawn(DeadLetterListener, 'dead-letter-listener');
+    await awaitCondition(() => subscribed.value, {
+      timeoutMs: 4_000,
+      label: 'the dead-letter listener subscribed to the event stream',
+    });
+    return seen;
+  };
+
+  test('a delivery with no replyTo is dead-lettered, and the consumer keeps working', async () => {
+    // `replyTo` is declared non-optional, which is exactly why nothing
+    // guarded it: a wire body that omits it satisfies the type and
+    // dereferences to `undefined`.  Because the handling is detached from
+    // `onReceive`, that TypeError settled as a rejection nothing was
+    // watching — process exit, not a supervised fault.
+    const kit = quietKit('rd-malformed-replyto');
+    const deadLetters = await watchDeadLetters(kit);
+    const received: string[] = [];
+    const consumer = ReliableDelivery.consumer<string>(kit.system, {
+      handler: (m) => { received.push(m); },
+    });
+
+    consumer.ref.tell({
+      kind: 'reliable-delivery.delivery',
+      producerId: 'orders',
+      incarnation: 'incarnation-1',
+      seq: 1,
+      body: 'unroutable',
+    } as never);
+    await awaitCondition(() => deadLetters.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the replyTo-less delivery was dead-lettered',
+    });
+    expect(received).toEqual([]);
+
+    // Still alive and still stateful: a restart would have wiped the dedup
+    // window, so proving the next delivery lands is proving it was refused
+    // rather than escalated.
+    const probe = kit.createTestProbe();
+    consumer.ref.tell({
+      kind: 'reliable-delivery.delivery',
+      producerId: 'orders',
+      incarnation: 'incarnation-1',
+      seq: 1,
+      body: 'well-formed',
+      replyTo: probe as never,
+    } as never);
+    await awaitCondition(() => received.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the consumer still handles a well-formed delivery',
+    });
+    expect(received).toEqual(['well-formed']);
+
+    consumer.stop();
+    await kit.system.terminate();
+  });
+
+  test('a seq that is not a positive safe integer is refused', async () => {
+    const kit = quietKit('rd-malformed-seq');
+    const deadLetters = await watchDeadLetters(kit);
+    const received: string[] = [];
+    const consumer = ReliableDelivery.consumer<string>(kit.system, {
+      handler: (m) => { received.push(m); },
+    });
+    const probe = kit.createTestProbe();
+    const badSequences = [0, -1, 1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1];
+
+    for (const seq of badSequences) {
+      consumer.ref.tell({
+        kind: 'reliable-delivery.delivery',
+        producerId: 'orders',
+        incarnation: 'incarnation-1',
+        seq,
+        body: `seq-${String(seq)}`,
+        replyTo: probe as never,
+      } as never);
+    }
+    await awaitCondition(() => deadLetters.length === badSequences.length, {
+      timeoutMs: 4_000,
+      label: 'every malformed seq was dead-lettered',
+    });
+    expect(received).toEqual([]);
+    // A refused envelope is never acknowledged — acking it would tell the
+    // sender the framework accepted a sequence it will never track.
+    expect(probe.messageCount).toBe(0);
+
+    consumer.stop();
+    await kit.system.terminate();
+  });
+
+  test('an over-long or empty identifier is refused before it becomes a map key', async () => {
+    const kit = quietKit('rd-malformed-identifier');
+    const deadLetters = await watchDeadLetters(kit);
+    const received: string[] = [];
+    const consumer = ReliableDelivery.consumer<string>(kit.system, {
+      handler: (m) => { received.push(m); },
+    });
+    const probe = kit.createTestProbe();
+    const tooLong = 'x'.repeat(MAX_DELIVERY_IDENTIFIER_LENGTH + 1);
+
+    for (const [producerId, incarnation, body] of [
+      [tooLong, 'incarnation-1', 'long-producer-id'],
+      ['orders', tooLong, 'long-incarnation'],
+      ['', 'incarnation-1', 'empty-producer-id'],
+    ] as const) {
+      consumer.ref.tell({
+        kind: 'reliable-delivery.delivery',
+        producerId,
+        incarnation,
+        seq: 1,
+        body,
+        replyTo: probe as never,
+      } as never);
+    }
+
+    await awaitCondition(() => deadLetters.length === 3, {
+      timeoutMs: 4_000,
+      label: 'all three malformed identifiers were dead-lettered',
+    });
+    expect(received).toEqual([]);
+    expect(probe.messageCount).toBe(0);
+
+    // An identifier exactly at the bound is admitted — the cap must be the one
+    // the producer-side validator enforces, not one notch tighter, or a
+    // legally configured producerId would dead-letter every delivery.
+    consumer.ref.tell({
+      kind: 'reliable-delivery.delivery',
+      producerId: 'x'.repeat(MAX_DELIVERY_IDENTIFIER_LENGTH),
+      incarnation: 'incarnation-1',
+      seq: 1,
+      body: 'at-the-bound',
+      replyTo: probe as never,
+    } as never);
+    await awaitCondition(() => received.length === 1, {
+      timeoutMs: 4_000,
+      label: 'an identifier exactly at the bound is admitted',
+    });
+    expect(received).toEqual(['at-the-bound']);
+
+    consumer.stop();
+    await kit.system.terminate();
+  });
+});
+
+/** Mutable slot the spawn factory writes the live controller into. */
+type ControllerSlot = { controller: ConsumerController<string> | null };
+
+describe('ReliableDelivery — dedup map resource budget (#728)', () => {
+  /**
+   * Spawn a ConsumerController and keep hold of the instance.
+   *
+   * `ReliableDelivery.consumer` hands back only a ref, and these cases assert
+   * on `trackedProducers` — the counter the map's growth had no equivalent of
+   * before this — so they need the object and not just its address.
+   */
+  const spawnBoundedConsumer = (
+    kit: TestKit,
+    slot: ControllerSlot,
+    options: ConsumerControllerOptionsType<string>,
+    name: string,
+  ): ActorRef<Delivery<string>> => kit.system.spawn<Delivery<string>>(() => {
+    slot.controller = new ConsumerController<string>(options);
+    return slot.controller;
+  }, name);
+
+  /**
+   * Hand-rolled envelope, because the point of every case here is a
+   * `producerId` the *sender* chose.  A `ProducerController` mints one per
+   * construction and would need one actor per key.
+   */
+  const deliver = (
+    consumer: ActorRef<Delivery<string>>,
+    replyTo: unknown,
+    producerId: string,
+    seq: number,
+    body: string,
+  ): void => {
+    consumer.tell({
+      kind: 'reliable-delivery.delivery',
+      producerId,
+      incarnation: 'incarnation-1',
+      seq,
+      body,
+      replyTo,
+    } as never);
+  };
+
+  test('maxProducers evicts the least-recently-used producer, and the map never grows past it', async () => {
+    const kit = quietKit('rd-max-producers');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    // The sweep is off, so age cannot be what reclaims here — only the cap.
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: 2,
+      producerIdleTtlMs: Infinity,
+    }, 'lru-consumer');
+
+    deliver(consumer, probe, 'producer-a', 1, 'a-1');
+    deliver(consumer, probe, 'producer-b', 1, 'b-1');
+    await awaitCondition(() => received.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both producers were handled',
+    });
+    expect(slot.controller?.trackedProducers).toBe(2);
+
+    // Touch producer-a again before the eviction below, which is the whole
+    // difference between least-recently-used and first-in-first-out: a and b
+    // arrived in that order, so arrival order condemns a and recency condemns
+    // b.  Without this delivery the two policies pick the same victim and
+    // every assertion that follows holds under either — which is what made
+    // the map's insertion order deletable with the suite still green.
+    deliver(consumer, probe, 'producer-a', 2, 'a-2');
+    await awaitCondition(() => received.length === 3, {
+      timeoutMs: 4_000,
+      label: 'the second delivery from producer-a was handled',
+    });
+
+    // A third producer needs a slot and the map is full, so the least
+    // recently used of the two goes — b, not a.
+    deliver(consumer, probe, 'producer-c', 1, 'c-1');
+    await awaitCondition(() => received.length === 4, {
+      timeoutMs: 4_000,
+      label: 'the third producer was handled',
+    });
+    expect(slot.controller?.trackedProducers).toBe(2);
+
+    // producer-c is still remembered: its seq 1 is absorbed as a duplicate,
+    // so `received` does not move and the ack count is what to wait on.
+    deliver(consumer, probe, 'producer-c', 1, 'c-1-again');
+    await awaitCondition(() => probe.messageCount === 5, {
+      timeoutMs: 4_000,
+      label: 'the duplicate from producer-c was re-acknowledged',
+    });
+    expect(received).toEqual(['a-1', 'b-1', 'a-2', 'c-1']);
+
+    // And so is producer-a, because it was used after b: its already-seen
+    // seq 1 is a duplicate too.  Under first-in-first-out a is the entry that
+    // was dropped instead, and this delivery runs the handler again.
+    deliver(consumer, probe, 'producer-a', 1, 'a-1-again');
+    await awaitCondition(() => probe.messageCount === 6, {
+      timeoutMs: 4_000,
+      label: 'the duplicate from producer-a was re-acknowledged',
+    });
+    expect(received).toEqual(['a-1', 'b-1', 'a-2', 'c-1']);
+
+    // producer-b is the one that lost its window: the same
+    // (producerId, incarnation, seq) runs the handler a second time.  That is
+    // what an eviction costs, and it is the at-least-once duplicate this
+    // protocol already permits — unbounded growth is what it did not.
+    deliver(consumer, probe, 'producer-b', 1, 'b-1-again');
+    await awaitCondition(() => received.length === 5, {
+      timeoutMs: 4_000,
+      label: 'the evicted producer was handled again',
+    });
+    expect(received).toEqual(['a-1', 'b-1', 'a-2', 'c-1', 'b-1-again']);
+    expect(slot.controller?.trackedProducers).toBe(2);
+
+    await kit.system.terminate();
+  });
+
+  test('a flood of distinct producer ids leaves the map at the cap, not at the message count', async () => {
+    // The issue's variant A in miniature: before the cap, the map held one
+    // permanent entry per distinct producerId ever admitted — so its size was
+    // a function of the message count, which the sender picks.
+    const kit = quietKit('rd-producer-flood');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: 8,
+      producerIdleTtlMs: Infinity,
+    }, 'flood-consumer');
+
+    const flood = 200;
+    for (let i = 0; i < flood; i++) deliver(consumer, probe, `flood-${i}`, 1, `m-${i}`);
+
+    await awaitCondition(() => received.length === flood, {
+      timeoutMs: 4_000,
+      intervalMs: 20,
+      label: 'every flooded delivery was handled',
+    });
+    // Every one of them ran the handler — the cap bounds retention, not
+    // admission — and the map is still at eight entries.
+    expect(slot.controller?.trackedProducers).toBe(8);
+
+    await kit.system.terminate();
+  });
+
+  test('producerIdleTtlMs releases a producer that has gone quiet', async () => {
+    const kit = quietKit('rd-producer-idle-ttl');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    // No cap at all, so nothing but age can reclaim: the LRU half only
+    // evicts when a *new* producer needs the slot, which is why a consumer
+    // that saw a burst and then went quiet needed a second mechanism.
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: Infinity,
+      producerIdleTtlMs: 50,
+    }, 'idle-consumer');
+
+    deliver(consumer, probe, 'quiet-producer', 1, 'first');
+    await awaitCondition(() => received.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the first delivery was handled',
+    });
+    expect(slot.controller?.trackedProducers).toBe(1);
+
+    await awaitCondition(() => slot.controller?.trackedProducers === 0, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'the idle producer entry was swept',
+    });
+
+    // The window is genuinely gone rather than just uncounted: the same
+    // (producerId, incarnation, seq) runs the handler again.
+    deliver(consumer, probe, 'quiet-producer', 1, 'after-sweep');
+    await awaitCondition(() => received.length === 2, {
+      timeoutMs: 4_000,
+      label: 'the swept producer was handled again',
+    });
+    expect(received).toEqual(['first', 'after-sweep']);
+
+    await kit.system.terminate();
+  });
+
+  test('the sweep reaches an idle producer parked behind a busy one', async () => {
+    // The other half of what the map's least-recently-used ordering buys, and
+    // the one that is a leak rather than a policy change when it goes.  Every
+    // entry moving to the back on use is what keeps the map ascending by
+    // `lastSeenAtMs`, which is the premise `sweepIdleProducers` breaks on —
+    // so in arrival order a stale entry sitting behind a continuously
+    // refreshed one is never reached, and #728 is back for exactly the
+    // producer that stopped talking.
+    const kit = quietKit('rd-sweep-behind-busy');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    // No cap, so the sweep is the only thing that can reclaim anything.
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: Infinity,
+      producerIdleTtlMs: 120,
+    }, 'sweep-order-consumer');
+
+    // busy-producer first, so it is the entry an arrival-ordered map parks in
+    // front of the idle one.
+    deliver(consumer, probe, 'busy-producer', 1, 'busy-first');
+    deliver(consumer, probe, 'idle-producer', 1, 'idle-first');
+    await awaitCondition(() => received.length === 2, {
+      timeoutMs: 4_000,
+      label: 'both producers were handled',
+    });
+    expect(slot.controller?.trackedProducers).toBe(2);
+
+    // Keep busy-producer fresh across every sweep, six ticks to a TTL.  A
+    // re-delivery of a seq it has already seen is enough: the entry is looked
+    // up — and moved to the back — before the duplicate check refuses it, so
+    // this costs no handler call and `received` stays at two.
+    const busyTicker = kit.system.scheduler.scheduleAtFixedRateFunction(20, 20, () => {
+      deliver(consumer, probe, 'busy-producer', 1, 'busy-again');
+    });
+    try {
+      // Both halves matter.  The size is what the ordering fixes; `received`
+      // staying at two is what says the survivor is the *busy* one, so a
+      // sweep that took both and let the ticker re-add one cannot pass for a
+      // sweep that reached past a fresh entry.
+      await awaitCondition(
+        () => slot.controller?.trackedProducers === 1 && received.length === 2,
+        {
+          timeoutMs: 4_000,
+          intervalMs: 10,
+          label: 'the idle producer was swept from behind the busy one',
+        },
+      );
+    } finally {
+      busyTicker.cancel();
+    }
+
+    // The idle one's window is genuinely gone rather than merely uncounted.
+    deliver(consumer, probe, 'idle-producer', 1, 'idle-after-sweep');
+    await awaitCondition(() => received.length === 3, {
+      timeoutMs: 4_000,
+      label: 'the swept producer was handled again',
+    });
+    expect(received).toEqual(['busy-first', 'idle-first', 'idle-after-sweep']);
+
+    await kit.system.terminate();
+  });
+
+  test('Infinity on both bounds is the documented opt-out', async () => {
+    // Retention only: five distinct producers, no cap to evict them and no
+    // sweep to age them out.  This case cannot see whether `preStart` armed
+    // a sweep, and a comment here used to claim that it could — an armed
+    // one deletes nothing when it fires on an infinite TTL, so the map looks
+    // identical either way, and waiting longer only makes that more true.
+    // `producerIdleTtlMs: Infinity arms no sweep at all` holds that ground.
+    const kit = quietKit('rd-unbounded-optout');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: Infinity,
+      producerIdleTtlMs: Infinity,
+    }, 'unbounded-consumer');
+
+    for (let i = 0; i < 5; i++) deliver(consumer, probe, `unbounded-${i}`, 1, `m-${i}`);
+    await awaitCondition(() => received.length === 5, {
+      timeoutMs: 4_000,
+      label: 'all five producers were handled',
+    });
+    expect(slot.controller?.trackedProducers).toBe(5);
+
+    await kit.system.terminate();
+  });
+
+  test('producerIdleTtlMs: Infinity arms no sweep at all', async () => {
+    // `Infinity` is the documented way to switch the sweep off, and
+    // `preStart` has to refuse to arm rather than hand the value on:
+    // `setInterval` clamps a non-finite delay to a millisecond, so a sweep
+    // armed on it is a busy timer for the life of the consumer.  It would
+    // also be harmless on every one of those ticks, which is the reason
+    // nothing downstream of the arm can notice it — see the note on
+    // `RecordingScheduler` above.
+    const scheduler = new RecordingScheduler();
+    const kit = quietKit('rd-no-sweep-armed', scheduler);
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+
+    const sweepOffSlot: ControllerSlot = { controller: null };
+    const armedBeforeSweepOff = scheduler.armedFixedRates.length;
+    const sweepOff = spawnBoundedConsumer(kit, sweepOffSlot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: Infinity,
+      producerIdleTtlMs: Infinity,
+    }, 'sweep-off-consumer');
+    // Wait on a handled delivery, so "nothing was armed" cannot be satisfied
+    // by a `preStart` that simply had not run yet.
+    deliver(sweepOff, probe, 'sweep-off-producer', 1, 'off');
+    await awaitCondition(() => received.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the consumer with the sweep off started and handled a delivery',
+    });
+    expect(scheduler.armedFixedRates.slice(armedBeforeSweepOff)).toEqual([]);
+
+    // The positive control, on the same seam: a finite TTL arms exactly one
+    // schedule, on exactly the interval the option names.  Without it,
+    // "nothing was armed" would hold just as well for a probe that records
+    // nothing at all.  Its TTL is long enough that it never fires here.
+    const sweepOnSlot: ControllerSlot = { controller: null };
+    const armedBeforeSweepOn = scheduler.armedFixedRates.length;
+    const sweepOn = spawnBoundedConsumer(kit, sweepOnSlot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: Infinity,
+      producerIdleTtlMs: 30_000,
+    }, 'sweep-on-consumer');
+    deliver(sweepOn, probe, 'sweep-on-producer', 1, 'on');
+    await awaitCondition(() => received.length === 2, {
+      timeoutMs: 4_000,
+      label: 'the consumer with the sweep on started and handled a delivery',
+    });
+    expect(scheduler.armedFixedRates.slice(armedBeforeSweepOn)).toEqual([
+      { initialDelayMs: 30_000, intervalMs: 30_000 },
+    ]);
+
+    await kit.system.terminate();
+  });
+
+  test('stopping the consumer releases the whole map', async () => {
+    const kit = quietKit('rd-stop-releases-map');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: Infinity,
+      producerIdleTtlMs: Infinity,
+    }, 'stopped-consumer');
+
+    for (let i = 0; i < 3; i++) deliver(consumer, probe, `stopped-${i}`, 1, `m-${i}`);
+    await awaitCondition(() => received.length === 3, {
+      timeoutMs: 4_000,
+      label: 'the three producers were handled',
+    });
+    expect(slot.controller?.trackedProducers).toBe(3);
+
+    consumer.stop();
+    await awaitCondition(() => slot.controller?.trackedProducers === 0, {
+      timeoutMs: 4_000,
+      label: 'postStop cleared the dedup map',
+    });
+
+    await kit.system.terminate();
   });
 });

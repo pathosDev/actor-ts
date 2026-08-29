@@ -1,0 +1,35 @@
+{
+  // Comparison-benchmarks-only typecheck — `bun run typecheck:compare`.
+  //
+  // This tree is excluded from BOTH `tsconfig.bench.json` and
+  // `tsconfig.dev.json` for the reason those files already state for the
+  // example frontends and the broker runners: a file whose imports are
+  // resolved by a manifest other than the root `package.json` can never
+  // compile there, no matter how much of it is fixed.  The comparison arms
+  // import `nact`, `xstate` and friends from
+  // `benchmarks/comparison/node_modules`, which the root install does not
+  // and must not carry.
+  //
+  // So this config is the one that DOES own them, and the `comparison`
+  // job in `.github/workflows/benchmarks.yml` is the one that DOES run it —
+  // after installing this directory's manifest.  Without it the tree would
+  // be type-checked by nothing at all, which is exactly how ten benchmark
+  // suites sat broken on a removed export for months (#506).
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    // Type-only run — nothing here is ever emitted or shipped.
+    "noEmit": true,
+    // The arms are Bun/Node scripts: `Bun.sleep`, `process`, `node:*`.  The
+    // build config's empty `types` makes none of that visible.
+    "types": ["bun", "node"],
+    "rootDir": "../.."
+  },
+  // `src/` and `../lib/` arrive transitively through the arms' imports;
+  // listing them again would only re-check what `typecheck` and
+  // `typecheck:bench` already compile, in a third place that could then go
+  // red for a reason having nothing to do with this tree.
+  "include": ["*.ts", "js/**/*.ts"],
+  // Stated explicitly because `exclude` is not merged with the base config's
+  // — and the base excludes `benchmarks`, which is this whole directory.
+  "exclude": ["node_modules", "../../node_modules", "../../dist"]
+}

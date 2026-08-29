@@ -87,6 +87,39 @@ Tag-basiert ist der häufige Fall — der `PersistentActor` ruft
 abonniert das Tag.  Per-pid ist nützlich für schmale Views (die
 Aktivität eines Users).
 
+`tagsFor` wird **pro Event** gefragt, eine Projektion, die auf ein Tag
+filtert, sieht also genau die Events, die es tragen — auch dann, wenn
+die Events gemeinsam von einem `persistAll` geschrieben wurden.
+
+### Auf mehr als ein Tag filtern
+
+`withTag` nimmt einen **`TagFilter`**, eine Projektion ist also nicht auf
+ein einzelnes Tag beschränkt:
+
+```ts
+import type { TagFilter } from 'actor-ts/persistence';
+
+const eitherOne: TagFilter = { any: ['debit', 'credit'] };
+const bothOfThem: TagFilter = { all: ['account', 'production'] };
+const allButCancelled: TagFilter = { all: ['orders'], not: ['cancelled'] };
+
+const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
+  .withName('open-orders-view')
+  .withTag(allButCancelled);
+```
+
+Jeder Operator ist optional, verknüpft werden sie mit UND.  Ein leeres
+`{}` matcht jedes Event.
+
+**Der Filter gehört zur Cursor-Identität.**  Ein blanker String behält
+den Cursor, den er schon hat, aber die beiden Schreibweisen teilen sich
+keinen: `.withTag('orders')` legt seinen Offset unter `orders` ab,
+`.withTag({ all: ['orders'] })` unter `all(orders)`.  Beide wählen
+dieselben Events aus, das Umschreiben der einen in die andere sieht also
+harmlos aus — und spielt die Projektion stillschweigend von vorn ab.
+Entscheide dich für eine Schreibweise, bevor die Projektion das erste
+Mal läuft, und bleib dabei.
+
 ## At-least-once Delivery
 
 ```ts
@@ -115,6 +148,90 @@ Wenn du den Handler nicht idempotent machen kannst, muss die
 Projektion an einem 2-Phase-Commit mit dem Offset-Save teilnehmen —
 viel komplexer, nicht out-of-the-box bereitgestellt.
 
+## Wenn der Handler wirft
+
+Der Cursor rückt erst vor, nachdem `handle` zurückgekehrt ist — ein
+fehlschlagender Handler blockiert also **konstruktionsbedingt den
+Kopf der Warteschlange**: jedes spätere Event wartet hinter dem, das
+fehlgeschlagen ist.  `recoveryStrategy` entscheidet, wie lange das
+so bleibt.
+
+| Strategie | Retries | Danach | Wähle sie, wenn |
+| --- | --- | --- | --- |
+| **`retry-and-fail`** *(Default)* | ja | stoppt die Projektion | Eine still veraltete View schlimmer ist als eine sichtbar gestoppte. |
+| **`retry-and-skip`** | ja | überspringt das Event | Verfügbarkeit vor Vollständigkeit geht — ein Dashboard, ein Suchindex. |
+| **`fail`** | nein | stoppt sofort | Der Handler bereits intern wiederholt. |
+| **`skip`** | nein | überspringt sofort | Manche Events schlicht erwartbar nicht zustellbar sind. |
+
+```ts
+const byTagProjectionOptions = ByTagProjectionOptions.create<AccountEvent>()
+  .withName('account-balance-view')
+  .withTag('account')
+  .withRecoveryStrategy('retry-and-skip')
+  .withMaxRetries(5)
+  .withRetryBackoffMs(2_000)
+  .withMaxRetryBackoffMs(60_000)
+  .withOnFailure((failure) => {
+    console.error(
+      `${failure.projection}: ${failure.event.persistenceId}#${failure.event.sequenceNr} `
+      + `→ ${failure.action} (attempt ${failure.attempt})`,
+      failure.error,
+    );
+  });
+```
+
+Retries erfolgen **nicht sofort**.  Der nächste Versuch wird um
+`retryBackoffMs` verzögert und verdoppelt sich jedes Mal, bis
+`maxRetryBackoffMs` erreicht ist.  `maxRetries` zählt die Versuche
+*nach* dem ersten — der Default von 3 bedeutet also, dass ein
+schlechtes Event den Handler viermal erreicht, bevor die Projektion
+es aufgibt.
+
+### Was ein Fehlschlag erzeugt
+
+- **`onFailure`** — wird bei jedem Versuch aufgerufen, mit dem
+  betroffenen `PersistentEvent`, dem Fehler, der Versuchsnummer und
+  der getroffenen Aktion (`retry` / `skip` / `stop`).  Das ist das
+  strukturierte Signal; häng dein Alerting daran.  Ein Hook, der
+  selbst wirft, wird geloggt und verschluckt — ein kaputter Reporter
+  darf die Projektion nicht mitreißen.
+- **Ein Dead Letter** — ein übersprungenes Event wird, in einen
+  `DeadLetter` verpackt, auf dem System-Event-Stream veröffentlicht
+  und nennt die Projektion als seinen Empfänger, damit nichts spurlos
+  verschwindet:
+
+  ```ts
+  import { DeadLetter } from 'actor-ts';
+
+  system.eventStream.subscribe(auditRef, DeadLetter);
+  ```
+
+  Publishen ist standardmäßig alles, was passiert — ohne Abonnent ist
+  das Event weg.  Schaltet man die
+  [Dead-Letter-Queue](/de/operations/dead-letters/) ein, werden
+  übersprungene Events stattdessen aufbewahrt, filterbar nach der
+  Projektion, die sie übersprungen hat, und erneut zustellbar, sobald
+  der Handler repariert ist.
+
+- **Metriken** — `persistence_projection_stalled`,
+  `persistence_projection_failures_total` und
+  `persistence_projection_events_skipped_total`; siehe
+  [Stock-Metriken](/de/observability/metrics/stock-metrics/).
+- **Logs** — eine Error-Zeile, wenn eine Fehlerserie beginnt, und
+  eine, wenn sie endet.  Die Retries dazwischen gehen nach `debug` —
+  eine einen Tag lang festhängende Projektion kostet also zwei
+  Error-Zeilen statt einer pro Poll.
+
+`fail` **stoppt den Actor**, statt den Fehler aus dem Tick
+entkommen zu lassen.  Das ist Absicht: der Supervisor der
+Projektions-Gruppe startet seine Kinder neu, ein entkommender Fehler
+würde also denselben Cursor neu laden und am selben Event scheitern
+— eine Restart-Schleife, die lauter ist als das ersetzte Drehen und
+kein bisschen nützlicher.
+
+Eine gestoppte Projektion behält ihren Cursor: Ursache beheben und
+neu starten setzt genau bei dem Event fort, das fehlgeschlagen ist.
+
 ## OffsetStore
 
 ```ts
@@ -142,6 +259,15 @@ Projection-Name + Scope gespeichert.  Implementierungen:
 Für echte Produktions-Setups **kollokiere den Offset-Store mit
 dem Read-Model**, sodass sie zusammen abstürzen — das minimiert
 das Re-Processing-Fenster.
+
+Im Cluster braucht der Offset-Store dieselbe Eigenschaft wie das
+Journal: **eine Datenbank, nicht eine pro Knoten.**  Ein
+`DurableStateOffsetStore` über node-lokalem Storage gibt jedem
+Knoten seinen eigenen Cursor — eine Projektion, die zwischen
+Knoten wandert, verarbeitet dann Events erneut, die ein Knoten
+schon abgearbeitet hat, oder überspringt die, hinter denen der
+Cursor des anderen bereits steht.  Siehe [Storage-Lokalität &
+Identität](/de/persistence/overview/#storage-lokalität--identität).
 
 ## Polling
 

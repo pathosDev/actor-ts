@@ -8,7 +8,7 @@ import type { FailureDetectorOptionsType } from '../cluster/FailureDetectorOptio
 import type { Member } from '../cluster/Member.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
 import { LogLevel } from '../Logger.js';
-import { getWorkerBackend, type WorkerLike } from '../runtime/worker/index.js';
+import { getWorkerBackend, type WorkerErrorEvent, type WorkerLike } from '../runtime/worker/index.js';
 import type {
   WorkerHelloMessage,
   WorkerInitMessage,
@@ -122,9 +122,9 @@ export class ParallelMultiNodeSpec {
       // suites that use this harness are QUARANTINED on GitHub's hosted
       // runners — Bun there cannot respawn functional workers after the
       // first test (they spawn + handshake, then never run; reproducible
-      // only on the hosted runners, never locally or in Docker).  See the
-      // [CI] tracking issue.  They run locally + in Docker, where this
-      // budget is ample (convergence is ~4-5s).
+      // only on the hosted runners, never locally or in Docker).  See #538
+      // for the quarantine and its exit criterion.  They run locally + in
+      // Docker, where this budget is ample (convergence is ~4-5s).
       awaitTimeoutMs: options.awaitTimeoutMs ?? 30_000,
       logLevel: options.logLevel ?? LogLevel.Off,
       addresses: options.addresses,
@@ -370,6 +370,18 @@ export class ParallelMultiNodeSpec {
       data: initData,
     };
 
+    // Subscribe `error` BEFORE the handshake, because without a subscriber an
+    // uncaught throw inside this worker takes the whole test process with it.
+    // Containment is not a property of the runtime, it is a property of having
+    // a subscriber at all: the Web-Worker adapter cancels the event from
+    // inside the listener it installs — Deno re-raises the worker's throw as
+    // an unhandled rejection and exits 1 otherwise — and the Node adapter only
+    // registers `on('error')` when something subscribes, without which Node
+    // re-raises on the host and exits 1 (#700).  `WorkerCluster` already
+    // subscribes; this harness did not, so the framework's own multi-node
+    // suites died with the host on a worker throw.
+    worker.addEventListener('error', (e) => this.onWorkerError(role, e));
+
     // Hello/init/ready handshake — exactly mirrors WorkerCluster.
     await this.handshake(worker, init, address);
 
@@ -392,6 +404,21 @@ export class ParallelMultiNodeSpec {
     });
 
     return { role, address, worker, port, removed: false };
+  }
+
+  /**
+   * A worker threw where nothing else could see it.
+   *
+   * Reported rather than swallowed.  A silent handler would contain the crash
+   * just as well and leave the run looking like a plain control-RPC timeout
+   * thirty seconds later, which is the harder of the two failures to
+   * diagnose.  The console is the only destination available: the harness owns
+   * no `ActorSystem` — every system lives inside a worker — so there is no
+   * logger to route this to, which is the same reason
+   * `internal/ParallelMultiNodeBootstrap.ts` writes to the console.
+   */
+  private onWorkerError(role: string, event: WorkerErrorEvent): void {
+    console.error(`ParallelMultiNodeSpec: worker '${role}' threw:`, event.error ?? event.message);
   }
 
   private brokerFacade(worker: WorkerLike): PortLike {

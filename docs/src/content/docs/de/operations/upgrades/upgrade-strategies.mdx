@@ -7,11 +7,39 @@ Zwei Arten von Produktions-Upgrade:
 
 | Art | Muster |
 | --- | --- |
-| **Code-only-Upgrade** | Neue Binary, gleiche Schemas. Rolling Deployment — alte + neue Versionen koexistieren kurz. |
+| **Code-only-Upgrade** | Neue Binary, gleiche Schemas. Rolling Deployment — alte + neue Versionen koexistieren kurz, **außer über ein Release hinweg, das den Cluster-Wire ändert** (siehe unten). |
 | **Schema-brechendes Upgrade** | Neue Shapes für Events / State / Messages. Erst Migration, dann Rolling Deployment. |
 
 Wähle die Art, folge dem Muster. Naiv zu mischen bricht Produktion
 — alte Nodes können neue Schemas nicht lesen oder umgekehrt.
+
+## Cluster-Wire-Kompatibilität pro Release
+
+Ein Rolling Deployment setzt voraus, dass das Mixed-Version-Fenster
+überlebbar ist — für ein paar Minuten reden alte und neue Nodes
+miteinander. Diese Annahme ist eine Eigenschaft des **Releases**, nicht
+deines Codes, und **zwei aufeinanderfolgende Releases brechen sie**. Keiner
+der beiden Brüche ist eine Schema-Änderung in dem Sinn, in dem diese Seite
+das Wort benutzt — Events, State und Konfiguration bleiben unangetastet —,
+also greift auch keines der additiven Muster weiter unten.
+
+| Upgrade | Mixed-Version-Fenster | Wie das Scheitern aussieht |
+| --- | --- | --- |
+| **v0.15.x → v0.16.0** | **Nicht sicher** (#112) | Jeder Gossip-Frame trägt eine `sequence`, und `GossipMessage` bekommt ein Pflichtfeld. Ein aktualisierter Peer weist die Frames eines alten Nodes zurück; ein alter Node ignoriert die eines aktualisierten. Nichts wirft einen Fehler — **die Membership konvergiert still nie**, solange beide Versionen laufen, der Cluster einigt sich also nie darauf, wer dazugehört. |
+| **v0.16.0 → v0.17.0** | **Nicht sicher** (#450) | Frames sind ein getaggter JSON-Baum statt blanker `JSON.stringify`-Ausgabe. Der meiste Alt-Verkehr dekodiert unverändert; ein Legacy-Body, der bereits die Gestalt eines reservierten Tags hatte, nicht. `__map__`, `__set__`, `__regexp__`, `__bigint__`, `__url__`, `__number__` und `__error__` **werfen in beliebiger Tiefe**, und ein Decoder-Throw kostet die **ganze Verbindung** mitsamt jedem Frame, der in denselben Chunk gebatcht wurde. Zwei scheitern stattdessen still: `__bytes__` dekodiert zu einem `Uint8Array`, `__date__` zu einer Invalid Date. Die Gegenrichtung ist schlicht verlustbehaftet — ein älterer Node liest den Tag-Wrapper als gewöhnliche Daten. |
+
+**Aktualisiere den Cluster in einem Schritt.** Alle Nodes stoppen, dann alle
+Nodes auf der neuen Version starten. Keine Zwischenversion macht eine der
+beiden Etappen rollbar, ein Sprung von v0.15.x direkt auf v0.17.0 kreuzt
+also beide Brüche und braucht dieselbe Behandlung — einmal statt zweimal.
+
+**Wann das endet.** Beide Brüche existieren aus demselben Grund: Das
+Cluster-Protokoll hat keine Versionsaushandlung, ein Node kann einen Peer
+also nicht fragen, was der spricht, und sich darauf einstellen.
+[#823](https://github.com/pathosDev/actor-ts/issues/823) fügt diesen
+Handshake hinzu. Bis dahin ist ein Mixed-Version-Fenster eine Gefahr und
+kein unterstützter Zustand, und diese Tabelle ist das, was vor einem Upgrade
+zu prüfen ist.
 
 ## Code-only-Upgrades
 

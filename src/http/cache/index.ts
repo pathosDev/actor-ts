@@ -4,6 +4,7 @@ export type { RateLimitOptionsType, RateLimitContext } from './RateLimitOptions.
 export { idempotent } from './IdempotencyKey.js';
 export {
   DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH,
+  DEFAULT_IDEMPOTENCY_MAX_SCOPE_LENGTH,
   IdempotencyOptions,
   IdempotencyOptionsBuilder,
   IdempotencyOptionsValidator,

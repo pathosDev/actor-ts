@@ -57,6 +57,22 @@ export interface Cache {
    * page); nor does it coordinate across Redis instances that are not
    * the same logical keyspace.
    *
+   * And atomicity says nothing about **durability for the entry's TTL**:
+   * any backend that evicts under pressure can drop the winning write
+   * early, at which point the next caller wins the same key while the
+   * first still believes it holds it.  This is not an exotic
+   * configuration — it is the default one.  `InMemoryCache` is
+   * LRU-bounded at 10 000 entries out of the box (it prefers to evict
+   * entries that carry no guarantee, which covers this method's writes,
+   * and it can reserve a share of the map per key prefix, but the bound
+   * is still hard); Memcached's eviction is server-side LRU with no
+   * client-side policy at all; and Redis under `maxmemory-policy
+   * allkeys-lru` behaves the same.  So size the cache for the number of
+   * live claims and don't share the instance with a consumer whose key
+   * space a caller can enumerate — or, when you must, reserve this
+   * consumer's prefix out of it (`InMemoryCache`'s `prefixQuotas`, which
+   * has no equivalent on a backend that evicts server-side).
+   *
    * `ttlMs` is applied **only on the write that wins** — a losing call
    * leaves the incumbent entry's expiry untouched, so a retry loop can
    * never extend someone else's hold.  Sub-second precision is
@@ -68,10 +84,12 @@ export interface Cache {
    * the holder crashes, is paused past its deadline, or loses the
    * network before it deletes the key, nothing else will ever remove
    * that entry.  Without a TTL the lock is wedged until an operator
-   * intervenes; with one, the TTL *is* the recovery mechanism and its
-   * length is the maximum stall.  See `acquireLock` in `CacheLock.ts`
-   * for a helper that wraps this in a token-checked release, so a
-   * holder whose TTL already lapsed cannot free the next owner's lock.
+   * intervenes; with one, the TTL bounds the maximum stall.  It is not
+   * the *only* way the entry can vanish, though — eviction is the other
+   * one, and it needs no crash and respects no deadline.  See
+   * `acquireLock` in `CacheLock.ts` for a helper that wraps this in a
+   * token-checked release, so a holder whose TTL already lapsed cannot
+   * free the next owner's lock.
    */
   setIfAbsent<V = unknown>(key: string, value: V, ttlMs?: number): Promise<boolean>;
 

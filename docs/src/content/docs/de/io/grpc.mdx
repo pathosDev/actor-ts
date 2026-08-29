@@ -381,13 +381,16 @@ können, ob er bereit ist.
 
 Der Status ist **kein zweiter Begriff von „gesund“**: er stammt aus
 derselben [`HealthCheckRegistry`](/de/observability/management/health-checks/),
-die auch den `/ready`-Endpunkt des Management-Servers speist.  Reiche
-die Registry an `withHealth` — genau das *ist* das Opt-in:
+die auch den `/ready`-Endpunkt des Management-Servers speist — der
+einen pro `ActorSystem`, erreichbar über `healthChecksOf(system)`
+und bereits mit den Cluster-Readiness-Checks des Frameworks
+bestückt.  Genau diese Registry an `withHealth` zu reichen *ist* das
+Opt-in:
 
 ```ts
-import { HealthCheckRegistry } from 'actor-ts/management';
+import { healthChecksOf } from 'actor-ts/management';
 
-const health = new HealthCheckRegistry();
+const health = healthChecksOf(system);
 health.addReadiness(() => ({ name: 'journal', status: journal.isConnected() }));
 
 const grpcServerOptions = GrpcServerOptions.create()
@@ -401,11 +404,20 @@ const grpcServerOptions = GrpcServerOptions.create()
 
 `Check` antwortet nur dann `SERVING`, wenn **jeder**
 Readiness-Check besteht, und `NOT_SERVING`, sobald einer
-fehlschlägt — dieselbe Regel, die `/ready` anwendet.  Ausgewertet
-wird pro Aufruf, es wird also nichts zwischengespeichert.  Wenn du
-ohnehin den Management-Server betreibst, gib ihm die Registry, die
-`managementRoutes(...)` zurückgegeben hat — dann bleiben beide
-Endpunkte im Gleichschritt.
+fehlschlägt — buchstäblich dieselbe Regel, die `/ready` anwendet, das
+exportierte
+[`isHealthy`](/de/observability/management/health-checks/#eine-leere-check-liste-ist-up).
+Ausgewertet wird pro Aufruf, es wird also nichts zwischengespeichert.
+Weil beide `healthChecksOf(system)` lesen, bleiben der gRPC-Dienst und
+`/ready` schon von der Konstruktion her im Gleichschritt; ein
+blankes `new HealthCheckRegistry()` an dieser Stelle würde sie
+auseinanderlaufen lassen, und nur eine der beiden wäre die Antwort,
+auf die ein Load Balancer reagiert.
+
+Das gilt auch für den Weg aus dem Betrieb: Nach `cluster.leave()`
+bleiben die Readiness-Checks des Clusters registriert und schlagen
+fehl.  `Check` antwortet für einen drainierten Knoten also
+`NOT_SERVING` statt `SERVING` auf einer leeren Registry.
 
 Das Feld `HealthCheckRequest.service` wählt aus, wonach gefragt
 wird:

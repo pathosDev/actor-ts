@@ -36,11 +36,103 @@ export const DEFAULT_HTTP_MAX_BODY_BYTES = 1024 * 1024;
  *
  * It lives here rather than in one options file because it is the fallback of
  * *two* separate options families — the server-side route policy
- * (`WebsocketPolicy`) and the client (`WebsocketClientOptions`) — and, since
- * #586, also the number every backend hands its runtime as the *transport*
- * frame limit, so that a frame over it is refused while it arrives instead of
- * after it has been fully buffered.  No single `XOptions.ts` owns all three
- * readers, and writing the number down per reader is what let the transport
- * side drift open in the first place.
+ * (`WebsocketPolicy`) and the client (`WebsocketClientOptions`).  No single
+ * `XOptions.ts` owns both readers, and writing the number down per reader is
+ * what let the transport side drift open in the first place.
+ *
+ * What a *server* backend hands its runtime as the transport frame limit is
+ * derived from the routes it registered, not from this constant:
+ * `transportFrameCapOf` takes the widest cap any of them resolved to, so a
+ * route or a HOCON setting that moves `maxFrameBytes` moves the buffering
+ * window with it (#373).  This number is where that resolution starts when
+ * nothing else says otherwise, and `transportFrameCapOf`'s own fallback for a
+ * server with no WebSocket routes.
+ *
+ * **On the client that second sentence does not hold, and the paragraph above
+ * has to be read narrowly there.**  `WebsocketClientActor` dials through the
+ * runtime's native `WebSocket`, which on every supported runtime ignores a
+ * payload limit passed to its constructor (measured — see
+ * `WebsocketConstructor.ts`).  So there is no client transport cap to move:
+ * the peer's frame is buffered in full at whatever ceiling the runtime's own
+ * receiver imposes, and `maxFrameBytes` decides only what happens next.  What
+ * it delivers there is that the decoder and the mailbox never see the payload,
+ * and that the connection is closed with 1009 so the peer cannot spend the
+ * heap twice on one socket (#750) — not the "exhausts the process" protection
+ * the first paragraph promises, which is a server-side property.
  */
 export const DEFAULT_WEBSOCKET_MAX_FRAME_BYTES = 1 * 1024 * 1024;
+
+/**
+ * Default cap on how many inbound frames the pre-attach buffer holds — 256.
+ *
+ * **Why this exists (security, #717):** between an upgrade completing and the
+ * connection actor attaching its listeners, every arriving frame is held in
+ * `bufferWebsocketEvents`' array.  That array is drained by `setListeners` and
+ * by nothing else, so a socket whose actor never spawns — a hub that was
+ * stopped, one whose queue the accept never survived — turns an attacker's
+ * frame stream into heap growth with no ceiling at all.  The per-frame
+ * `maxFrameBytes` check lives in the actor that has not spawned yet and cannot
+ * bound the aggregate.
+ *
+ * 256 rather than a handful because the window is two mailbox hops wide, so a
+ * legitimate client sends nothing or a greeting into it and the cap has to be
+ * generous enough that no ordinary burst ever meets it; and rather than
+ * thousands because past a couple of hundred frames the peer is no longer
+ * talking to a connection it expects to be listening.
+ *
+ * It lives here rather than in `WebsocketPolicy.ts` for the same reason
+ * {@link DEFAULT_WEBSOCKET_MAX_FRAME_BYTES} does: two readers, and neither is
+ * subordinate to the other.  The route policy defaults to it, and
+ * `websocketPackageAdapter` falls back to it for an adapter built without a
+ * policy at all — a backend or a test that constructs one directly still gets
+ * a bounded buffer rather than the unbounded one this replaces.
+ */
+export const DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES = 256;
+
+/**
+ * Default cap on the bytes the pre-attach buffer holds — 4 MiB.
+ *
+ * The byte half of {@link DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES}: a count
+ * alone bounds nothing when each frame may be a megabyte.
+ *
+ * 4 MiB is four times the default `maxFrameBytes`, so a route on defaults may
+ * buffer several maximum-size frames before the connection is refused, and it
+ * matches the outbound `maxBufferedBytes` default so both directions of one
+ * connection cost the same worst case.  A route that raises `maxFrameBytes`
+ * above this should raise this with it — the *first* frame is admitted
+ * whatever its size (a single frame is already bounded by the transport's own
+ * payload limit, which is derived from `maxFrameBytes`), so a lone oversized
+ * greeting still works, but the second one meets the cap.
+ */
+export const DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Bytes a streamed static response reads per `pull` — 64 KiB.
+ *
+ * Not an option: it is the memory a streamed download costs, and the point of
+ * streaming is that the number does not scale with the file.  Two chunks are
+ * live at once (the queued one plus the one being read), so this is the whole
+ * per-response cost regardless of whether the file is 1 MiB or 100 GiB.
+ *
+ * 64 KiB rather than something larger because it is already well past the
+ * point where syscall overhead matters for sequential reads, and rather than
+ * something smaller because a 4 KiB chunk turns a 1 GiB download into 262 144
+ * round trips through the stream queue.  It lives here rather than in
+ * `StaticFilesOptions.ts` because it is not the default of any options field —
+ * `streamThreshold` decides *whether* a body streams; this decides how the
+ * bytes are fetched once it does.
+ */
+export const STATIC_FILE_READ_CHUNK_BYTES = 64 * 1024;
+
+/**
+ * Longest constructor name `WebsocketClientActor` puts in the line that reports
+ * an inbound payload it could not turn into a frame — 32 characters.
+ *
+ * The line names the *shape* (`Blob`, `MessageEvent`, `Number`) and never the
+ * value, because it is written from a path a peer triggers.  A constructor name
+ * is not peer-supplied on any supported runtime, but the socket behind the
+ * actor is a replaceable seam, so the length is bounded rather than trusted.
+ * 32 clears every name the three runtimes produce with room to spare, and a
+ * name longer than that is not a diagnostic anyway.
+ */
+export const MAXIMUM_INBOUND_SHAPE_LABEL_LENGTH = 32;

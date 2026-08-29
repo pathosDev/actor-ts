@@ -24,6 +24,7 @@ import {
   type ServerBinding,
 } from '../http/index.js';
 import {
+  BUS_EVENT_BUFFER_DEFAULT,
   DEVTOOLS_PROTOCOL_VERSION,
   type DevToolsPanelDescriptor,
   type DevToolsPanelId,
@@ -39,12 +40,17 @@ import {
   type DevToolsHubContext,
 } from './internal/DevToolsHubActor.js';
 import { isLoopbackHost, type DevToolsOptionsType, type DevToolsPanelOptionsType } from './DevToolsOptions.js';
+import { MAXIMUM_HUB_CONNECTIONS } from './Constants.js';
 import { uiAssetRoutes } from './UiAssetRoutes.js';
 import { ActorTreeTap } from './taps/ActorTreeTap.js';
 import { ClusterTap } from './taps/ClusterTap.js';
 import { ExplainMethods } from './taps/ExplainTap.js';
 import { ReplayRegistry } from './replay/ReplayRegistry.js';
 import { TimeTravelMethods } from './replay/TimeTravelMethods.js';
+import { DeadLetterMethods } from './deadletters/DeadLetterMethods.js';
+import { EventStreamTap } from './taps/EventStreamTap.js';
+import { ConfigMethods } from './config/ConfigMethods.js';
+import { SendMethods } from './send/SendMethods.js';
 import { PersistenceExtensionId } from '../persistence/PersistenceExtension.js';
 import { MailboxSamplerTap } from './taps/MailboxSamplerTap.js';
 import { ProfilerTap } from './taps/ProfilerTap.js';
@@ -75,7 +81,7 @@ import { ClusterMembership } from './internal/ClusterMembership.js';
  *
  * @internal
  */
-export const DEVTOOLS_SERVER_VERSION = '0.16.0';
+export const DEVTOOLS_SERVER_VERSION = '0.17.0';
 
 /** Panels that can be switched off individually, in dashboard order. */
 const OPTIONAL_PANELS: ReadonlyArray<{
@@ -88,6 +94,10 @@ const OPTIONAL_PANELS: ReadonlyArray<{
   { id: 'explain', option: 'explain' },
   { id: 'time-travel', option: 'timeTravel' },
   { id: 'profiler', option: 'profiler' },
+  { id: 'dead-letters', option: 'deadLetters' },
+  { id: 'event-stream', option: 'eventStream' },
+  { id: 'config', option: 'config' },
+  { id: 'send', option: 'send' },
 ];
 
 /**
@@ -258,6 +268,55 @@ export class DevToolsServer implements DevToolsHubContext {
       this.registerPanel({ id: 'tracing', status: 'active' });
     }
 
+    if (this.isPanelEnabled('send')) {
+      // Two switches, and only one of them is a security decision.  The
+      // panel toggle above hides the view; this acknowledgement grants
+      // the capability, and without it the method is never registered.
+      if (settings.allowMessageSending === true) {
+        new SendMethods(this.system).install(this);
+        this.registerPanel({ id: 'send', status: 'active' });
+      } else {
+        this.registerPanel({
+          id: 'send',
+          status: 'unavailable',
+          reason: 'sending is off — set `allowMessageSending` in DevToolsOptions',
+        });
+      }
+    }
+
+    if (this.isPanelEnabled('config')) {
+      new ConfigMethods(this.system).install(this);
+      this.registerPanel({ id: 'config', status: 'active' });
+    }
+
+    if (this.isPanelEnabled('event-stream')) {
+      const events = new EventStreamTap(
+        this.system,
+        settings.eventBufferCapacity ?? BUS_EVENT_BUFFER_DEFAULT,
+        settings.eventFlushIntervalMs ?? 250,
+      );
+      this.registerTap(events);
+      events.installMethods(this);
+      this.registerPanel({ id: 'event-stream', status: 'active' });
+    }
+
+    if (this.isPanelEnabled('dead-letters')) {
+      const deadLetters = new DeadLetterMethods(this.system);
+      deadLetters.install(this);
+      // Registered either way, so a client that asks gets an empty
+      // answer rather than `unknown method`.  The status is what
+      // carries the reason, and a queue left `off` cannot be turned
+      // on from here — `store` is fixed when the system is built.
+      this.registerPanel(deadLetters.recording
+        ? { id: 'dead-letters', status: 'active' }
+        : {
+            id: 'dead-letters',
+            status: 'unavailable',
+            reason: "dead-letter queue is off — set `deadLetters.store` to "
+              + "'memory' or 'persistent' on the ActorSystem",
+          });
+    }
+
     if (this.isPanelEnabled('profiler')) {
       const profiler = new ProfilerTap(this.system);
       this.registerTap(profiler);
@@ -298,11 +357,20 @@ export class DevToolsServer implements DevToolsHubContext {
     // to the same-origin policy, so binding to loopback keeps the tap off
     // the network but does nothing about the page the developer is browsing.
     // `allowedOrigins` widens this; it does not replace it.
+    //
+    // `maxConnections` is the socket half of #758: the route default is
+    // `Infinity`, and the hub keeps a session per connection.  The work a
+    // connection can start is capped in the hub itself; this caps how many
+    // may ask at all.
     const socket = websocket(
       this.hubRef as never,
       this.settings.allowedOrigins === undefined
-        ? { requireSameOrigin: true }
-        : { requireSameOrigin: true, allowedOrigins: this.settings.allowedOrigins },
+        ? { requireSameOrigin: true, maxConnections: MAXIMUM_HUB_CONNECTIONS }
+        : {
+          requireSameOrigin: true,
+          allowedOrigins: this.settings.allowedOrigins,
+          maxConnections: MAXIMUM_HUB_CONNECTIONS,
+        },
     );
 
     const api = path('api', concat(

@@ -103,7 +103,7 @@ function makeSystem(name: string): { system: ActorSystem; journal: InMemoryJourn
 describe('journal append — the last line of defence', () => {
   test('refuses an id with a path separator and writes nothing', async () => {
     const journal = new InMemoryJournal();
-    await expect(journal.append('tenant/../root', [{ kind: 'deposited', amount: 1 }], 0))
+    await expect(journal.append('tenant/../root', [{ event: { kind: 'deposited', amount: 1 } }], 0))
       .rejects.toThrow(/path separator/);
     expect(await journal.highestSeq('tenant/../root')).toBe(0);
     expect(await journal.read('tenant/../root', 1)).toEqual([]);
@@ -111,7 +111,7 @@ describe('journal append — the last line of defence', () => {
 
   test('refuses an empty id, which every stream would otherwise share', async () => {
     const journal = new InMemoryJournal();
-    await expect(journal.append('', [{ kind: 'deposited', amount: 1 }], 0))
+    await expect(journal.append('', [{ event: { kind: 'deposited', amount: 1 } }], 0))
       .rejects.toThrow(/non-empty string/);
   });
 
@@ -128,7 +128,7 @@ describe('journal append — the last line of defence', () => {
   test('accepts the pipe-separated id the chat example ships', async () => {
     const journal = new InMemoryJournal();
     const written = await journal.append(
-      'dm-channel-alice|bob', [{ kind: 'deposited', amount: 1 }], 0,
+      'dm-channel-alice|bob', [{ event: { kind: 'deposited', amount: 1 } }], 0,
     );
     expect(written.map((e) => e.sequenceNr)).toEqual([1]);
   });
@@ -168,11 +168,14 @@ describe('PersistentActor — an id that cannot be a storage key', () => {
     expect(observations.recoveryFailures).toEqual([]);
     expect(observations.recovered).toEqual([]);
     await system.terminate();
-  });
+    // The 5 s restart-budget wait exactly equals bun's default cap, so the two
+    // deadlines raced and the runner usually won — reporting a bare timeout for
+    // the one wait whose label ("the restart budget ran out") is the diagnosis.
+  }, 15_000);
 
   test('recovers normally with the pipe-separated id the chat example ships', async () => {
     const { system, journal } = makeSystem('persistence-id-pipe');
-    await journal.append<Event>('dm-channel-alice|bob', [{ kind: 'deposited', amount: 3 }], 0);
+    await journal.append<Event>('dm-channel-alice|bob', [{ event: { kind: 'deposited', amount: 3 } }], 0);
 
     const observations = newObservations();
     system.spawn(() => new Account('dm-channel-alice|bob', observations), 'channel');

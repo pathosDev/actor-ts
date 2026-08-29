@@ -163,6 +163,19 @@ unbegrenzt.  Jenseits des Limits (Default 1000) gehen Nachrichten mit
 einer Warnung in die Dead Letters, statt den Puffer ewig wachsen zu
 lassen.
 
+Der Puffer wird beim ersten Cluster-Event geleert, das einen Host
+hervorgebracht haben kann — bei einem Leader-Wechsel, genauso aber,
+wenn ein Mitglied hochkommt, gedownt wird oder geht.  Diese
+vollständige Menge ist für ein rollenbeschränktes Singleton
+entscheidend: Das erste Mitglied, das die Rolle trägt, kann beitreten,
+ohne dass sich der Leader überhaupt ändert — und vor v0.17.0 blieb der
+Puffer dadurch unbegrenzt ungeleert, während jeder spätere Versand
+normal geroutet wurde.
+
+Dass ein Mitglied *unerreichbar* wird, steht bewusst nicht in dieser
+Menge — auf keiner der beiden Seiten; siehe
+[Unerreichbarkeit ist bewusst kein Trigger](/de/cluster/singleton/manager/#unerreichbarkeit-ist-bewusst-kein-trigger).
+
 :::note[Es gibt bewusst kein `SingletonActor`-Interface]
 TypeScripts `implements`-Klausel prüft ausschließlich die
 **Instanzseite** einer Klasse — es gibt kein `static implements`, und
@@ -223,19 +236,41 @@ Wenn der Host-Node den Cluster verlässt:
    `MemberRemoved` für den gehenden Node.
 2. **Wahl**: der Cluster wählt einen neuen Leader (deterministisch
    basierend auf der Mitglieder-Sortierreihenfolge).
-3. **Spawn**: der Manager des neuen Leaders spawnt den Singleton.
-4. **Routing-Verschiebung**: Proxies auf jedem Node sehen den
+3. **Hand-over**: der Manager des neuen Leaders bittet jeden Node, der
+   hosten könnte, zurückzutreten, und wartet, bis jeder bestätigt hat,
+   dass seine Instanz wirklich terminiert ist.
+4. **Spawn**: erst dann spawnt er den Singleton.
+5. **Routing-Verschiebung**: Proxies auf jedem Node sehen den
    Leader-Wechsel und aktualisieren ihr Forwarding-Ziel.
 
 In-Flight-Nachrichten während des Übergangs landen in Dead
 Letters, es sei denn, du hast Durability konfiguriert — siehe
-"State über Failover" weiter unten.
+"State über Failover" weiter unten. Nachrichten, die den
+*eintretenden* Host erreichen, während er auf Schritt 3 wartet, werden
+zurückgehalten und der neuen Instanz übergeben.
 
 Das Übergangsfenster wird vom Timeout des Failure Detectors
 begrenzt (typisch ein paar Sekunden für Unreachable-Erkennung).
 Singletons sind kein Low-Latency-Failover-Werkzeug; sie tauschen
-etwas Unverfügbarkeit beim Failover gegen die starke Invariante
-"genau eine Instanz".
+etwas Unverfügbarkeit beim Failover gegen Einzigartigkeit.
+
+**Wie stark diese Einzigartigkeit ist, hängt von deiner Konfiguration
+ab**, und es lohnt sich zu wissen, welche du hast:
+
+- **Default (ohne Lease).** Der Hand-over macht „höchstens eine
+  Instanz“ wahr, solange der abtretende Host *erreichbar ist und
+  antwortet*. Wenn er das nicht kann — er ist unerreichbar, oder eine
+  Partition hat den Cluster geteilt — wartet der eintretende Host
+  `handOverTimeoutMs` (10 s) und hostet dann trotzdem, mit einer
+  Warnung im Log: Verfügbarkeit wird einer Invariante vorgezogen, die
+  nicht bewiesen werden konnte. Für die Dauer dieses Zustands sind zwei
+  Instanzen möglich.
+- **Mit einer `lease`.** Die Arbitrierung wandert zu einer dritten
+  Instanz, die beide Seiten erreichen können, also hält sie genau eine
+  von ihnen — und die Lease wird erst freigegeben, wenn die abtretende
+  Instanz wirklich terminiert ist. Das ist die Konfiguration für den
+  Fall, dass Doppelausführung echten Schaden anrichtet. Siehe
+  [Singleton mit Lease](/de/cluster/singleton/with-lease/).
 
 ## State über Failover
 
@@ -256,6 +291,83 @@ gestarteter Actor auf einem einzelnen Node. Für State, der
 Ohne eine dieser Lösungen ist jedes Failover ein Frischstart. Für
 einen kurzlebigen Koordinator, der nur eingehende Arbeit routet,
 ist das oft in Ordnung; für stateful Workflows persistiere.
+
+### Warme Übergabe
+
+Einen Fall beantwortet keine der drei Lösungen gut: Zustand, der
+*teuer wiederherzustellen, aber billig zu kopieren* ist — tausende
+Events zum Replay, ein großer Read-Through-Cache. Persistenz lässt
+den Zustand überleben; schnell macht sie den Nachfolger nicht, denn
+der muss trotzdem replayen.
+
+Die warme Übergabe schließt diese Lücke bei einem **geplanten**
+Wechsel. Implementiere zwei Methoden, und der Zustand der
+abgehenden Instanz reist auf der Übergabe mit, die ohnehin
+stattfindet:
+
+```ts
+import { Actor } from 'actor-ts';
+import { SingletonKey, type WarmHandOverActor } from 'actor-ts/cluster';
+
+class PriceCacheActor extends Actor<PriceCommand> implements WarmHandOverActor {
+  static readonly singleton = SingletonKey.of<PriceCommand>('price-cache');
+  private prices = new Map<string, number>();
+
+  override async preStart(): Promise<void> {
+    // Skipped entirely when a predecessor handed its cache over.
+    if (this.prices.size === 0) await this.loadEveryPrice();
+  }
+
+  serializeForHandOver(): Uint8Array {
+    return new TextEncoder().encode(JSON.stringify([...this.prices]));
+  }
+
+  restoreFromHandOver(state: Uint8Array): void {
+    this.prices = new Map(JSON.parse(new TextDecoder().decode(state)));
+  }
+}
+```
+
+Auf die Bedingung in `preStart` kommt es an. `restoreFromHandOver`
+läuft **nach dem Konstruktor und vor `preStart`** — die einzige
+Position, von der aus die Wiederherstellung noch übersprungen werden
+kann. Ein `preStart`, das bedingungslos wiederherstellt, zahlt die
+Kosten trotzdem und überschreibt danach das Angekommene.
+
+Vier Dinge solltest du wissen, bevor du dich darauf verlässt:
+
+- **Aktiviert wird sie am Actor, nicht in den Options.** Es gibt
+  kein Flag. Ein Actor, der nicht beide Methoden implementiert,
+  verhält sich genau wie vorher.
+- **Sie darf ausbleiben.** Keine Hooks, ein Snapshot über der
+  Grenze, ein Serializer oder ein Restore, der wirft, ein Host, der
+  gedownt statt gefragt wurde, ein Peer, der nie geantwortet hat —
+  jeder dieser Fälle fällt auf den heutigen Kaltstart zurück und
+  loggt auf `warn`. Schreibe niemals einen Singleton, dessen
+  Korrektheit vom Ankommen des Zustands abhängt; ein Singleton, der
+  den Verlust seines Hosts nicht übersteht, kann seine Aufgabe nicht
+  erfüllen.
+- **`serializeForHandOver` wird nach `postStop` gerufen**, der
+  Snapshot ist also endgültig: Keine weitere Nachricht wird noch
+  eingerechnet, und was in der Mailbox lag, ist in Dead Letters
+  gegangen statt hinein. Eine Instanz, die an einem Crash oder einem
+  erschöpften Supervision-Budget gestorben ist, wird nie gefragt —
+  der Zustand, der so einen Tod übersteht, ist der Zustand, der ihn
+  verursacht hat.
+- **Der Snapshot ist begrenzt, standardmäßig auf 1 MiB**
+  (`withMaxHandOverStateBytes`). Er reist, während der Singleton
+  nirgends läuft — ein sehr großer verlängert den Ausfall also,
+  statt ihn zu verkürzen. Ein Snapshot liegt als base64 in einem
+  JSON-Frame und kostet auf der Leitung rund ein Drittel mehr; einer,
+  der nicht in `maxFrameBytes` des Transports passt, wird unabhängig
+  von der Grenze abgelehnt, denn ein zu großer Frame kostet die
+  ganze Node-zu-Node-Verbindung und nicht bloß die Nachricht.
+
+Bei einem `PersistentActor`-Singleton kommt ein Gedanke hinzu: Eine
+warm gestartete Instanz hält Zustand, der nie aus einem Replay kam —
+ihre Sequenznummer muss also mit im Snapshot reisen. Sonst schreibt
+ihr erstes `persist` an eine Position, die das Journal schon benutzt
+hat, und genau das liest das Fencing korrekt als zweiten Writer.
 
 ## Split-Brain und die optionale Lease
 

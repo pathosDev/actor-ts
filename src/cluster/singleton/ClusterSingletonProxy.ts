@@ -2,10 +2,15 @@ import { match, P } from 'ts-pattern';
 import { ActorPath } from '../../ActorPath.js';
 import { ActorRef } from '../../ActorRef.js';
 import type { Cluster } from '../Cluster.js';
-import { LeaderChanged } from '../ClusterEvents.js';
 import { NodeAddress } from '../NodeAddress.js';
+import { DeadLetter } from '../../SystemMessages.js';
 import { singletonProxyName } from '../../internal/SystemPaths.js';
-import { singletonHost, singletonManagerPath, type SingletonDeliver } from './ClusterSingletonManager.js';
+import {
+  changesSingletonHost,
+  singletonHost,
+  singletonManagerPath,
+  type SingletonDeliver,
+} from './ClusterSingletonManager.js';
 import { DEFAULT_BUFFER_SIZE } from './StartSingletonOptions.js';
 import type { SingletonKey } from './SingletonKey.js';
 
@@ -13,8 +18,9 @@ import type { SingletonKey } from './SingletonKey.js';
  * Location-transparent handle to a cluster-wide singleton.  Every call to
  * `tell` looks up the current host and forwards to that node's
  * ClusterSingletonManager (via direct `tell` if local, via envelope if
- * remote).  Messages sent before the cluster has a host are
- * buffered and drained when the first `LeaderChanged` event fires.
+ * remote).  Messages sent before the cluster has a host are buffered and
+ * drained on the first cluster event that can have produced one — see
+ * {@link changesSingletonHost}.
  *
  * The proxy extends ActorRef<T> so it can be passed anywhere an ActorRef is
  * expected (e.g. as a sender for ask patterns).  It is not backed by a real
@@ -59,21 +65,21 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
       .child(singletonProxyName(key.typeName));
     this.unsubscribe = cluster.subscribe((evt) =>
       match(evt)
-        .with(P.instanceOf(LeaderChanged), () => this.onLeaderChanged())
+        .with(P.when(changesSingletonHost), () => this.onSingletonHostMayHaveChanged())
         .otherwise(() => this.onOtherClusterEvent()),
     );
     // Drain in case a leader is already known by the time we start.
     queueMicrotask(() => this.drainBuffer());
   }
 
-  override tell(message: TCommand, _sender: ActorRef | null = null): void {
+  override tell(message: TCommand, sender: ActorRef | null = null): void {
     if (!this.forwarding) return;
     const hostOpt = singletonHost(this.cluster, this.role);
     if (hostOpt.isNone()) {
-      this.bufferUntilHosted(message);
+      this.bufferUntilHosted(message, sender);
       return;
     }
-    this.deliver(message, hostOpt.value.address);
+    this.deliver(message, hostOpt.value.address, sender);
   }
 
   /**
@@ -89,8 +95,13 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
    * Drops the *newest* rather than evicting the oldest: the buffer exists to
    * preserve the order a caller sent in, and dropping from the front would
    * hand the singleton a torn prefix of it.
+   *
+   * `sender` is threaded in only to attribute the drop.  Nothing is done with
+   * it on the *buffered* path, because the proxy does not forward a sender in
+   * the first place — a `deliver` puts the body on the wire and the manager
+   * hands it on unattributed.  What is repairable here is the letter.
    */
-  private bufferUntilHosted(message: TCommand): void {
+  private bufferUntilHosted(message: TCommand, sender: ActorRef | null): void {
     if (this.buffer.length >= this.bufferSize) {
       this.droppedCount++;
       if (!this.warnedBufferFull) {
@@ -102,7 +113,7 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
           + 'why the cluster has no host.',
         );
       }
-      this.cluster.system.deadLetters.tell(message as never);
+      this.cluster.system.deadLetters.tell(new DeadLetter(message, sender, this));
       return;
     }
     this.buffer.push(message);
@@ -153,11 +164,20 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
   /** True if at least one message is currently buffered. */
   hasPending(): boolean { return this.buffer.length > 0; }
 
-  private deliver(message: TCommand, hostAddress: NodeAddress): void {
+  private deliver(message: TCommand, hostAddress: NodeAddress, sender: ActorRef | null): void {
     if (!hostAddress.equals(this.cluster.selfAddress)) {
       this.cluster._sendEnvelope(hostAddress, {
         kind: 'envelope',
-        to: singletonManagerPath(this.cluster.system.name, this.key.typeName),
+        // `hostAddress.systemName`, not this node's: the manager path embeds the
+        // *hosting* system's name, and a cluster's members do not have to share
+        // one — `MultiNodeSpec` names every node's system after its role so a
+        // test can tell them apart.  Addressed with the sender's name, the frame
+        // misses the recipient's per-path handler and falls through to
+        // `Cluster.dispatchEnvelope`'s generic path resolution, which hands the
+        // manager the bare user body instead of a `singleton-deliver` — so the
+        // manager logs it as unrecognised and drops it, with nothing on the
+        // dead-letter stream to say a message was lost (#949).
+        to: singletonManagerPath(hostAddress.systemName, this.key.typeName),
         from: null,
         body: message,
         tag: 'Singleton',
@@ -170,18 +190,18 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
       manager.tell(payload as never);
       return;
     }
-    this.onMissingHost(message);
+    this.onMissingHost(message, sender);
   }
 
   /**
    * This node is the elected host but runs no manager, so nothing anywhere is
    * hosting the singleton.  Dead-letter rather than buffer: unlike "no host
-   * yet" — which the buffer above handles and `LeaderChanged` drains — this
-   * state does not heal on its own, it heals when someone changes the
+   * yet" — which the buffer above handles and a host-changing event drains —
+   * this state does not heal on its own, it heals when someone changes the
    * deployment, so a buffer would just grow.  The warning is latched so a hot
    * path cannot flood the log.
    */
-  private onMissingHost(message: TCommand): void {
+  private onMissingHost(message: TCommand, sender: ActorRef | null): void {
     if (!this.warnedMissingHost) {
       this.warnedMissingHost = true;
       const scope = this.role === undefined
@@ -193,15 +213,28 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
         + `dead-lettering — a ref() proxy cannot host.  Call start() on ${scope}.`,
       );
     }
-    this.cluster.system.deadLetters.tell(message as never);
+    this.cluster.system.deadLetters.tell(new DeadLetter(message, sender, this));
   }
 
-  private onLeaderChanged(): void {
+  /**
+   * A host-changing event landed, so whatever is buffered may be routable now.
+   *
+   * This used to be `LeaderChanged` alone, which left a buffer that never
+   * drained rather than one that drained late (#637): a role-restricted
+   * singleton on a cluster whose only member is a role-less leader buffers
+   * every `tell`, and the first role-carrying member to join changes no
+   * leader — so nothing fired, and those messages sat there indefinitely
+   * while every `tell` sent afterwards routed normally.
+   */
+  private onSingletonHostMayHaveChanged(): void {
     this.drainBuffer();
   }
 
   private onOtherClusterEvent(): void {
-    /* leader-change is the only event we react to */
+    /* Not "nothing else can move the host": `MemberUnreachable` can, and is
+       deliberately not acted on — draining to a host the managers have not
+       promoted would hand every buffered message to a node that will
+       dead-letter it.  See `changesSingletonHost`. */
   }
 
   private drainBuffer(): void {
@@ -213,6 +246,10 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
     // condition it reports genuinely recovers — unlatch it here so a second,
     // later outage is reported too rather than passing silently.
     this.warnedBufferFull = false;
-    for (const message of drained) this.deliver(message, hostAddress);
+    // `null` sender, because the buffer never held one: the proxy stores bare
+    // messages, since a `deliver` puts the body on the wire unattributed
+    // anyway.  A drained message that dead-letters therefore names no sender —
+    // truthfully, rather than by naming the wrong one.
+    for (const message of drained) this.deliver(message, hostAddress, null);
   }
 }

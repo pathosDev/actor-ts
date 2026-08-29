@@ -265,7 +265,7 @@ export class JetStreamObjectStoreActor extends BrokerActor<
     // The one throw the base class is meant to see: no transport, so the
     // envelope goes back at the head of the buffer and a reconnect starts.
     if (!store) throw new Error('JetStreamObjectStoreActor: not connected');
-    // The real command dispatcher: `onReceive` only buffers, so every
+    // The real command dispatcher: `onCommand` only buffers, so every
     // JetStreamObjectStoreCommand variant is handled here.
     await match(env.payload)
       .with({ kind: 'put' },    (c) => this.onPut(c, store))
@@ -283,7 +283,7 @@ export class JetStreamObjectStoreActor extends BrokerActor<
    * `dispatchOutgoing`, and duplicating it here would only make the
    * admission check look like a second protocol.
    */
-  override onReceive(command: JetStreamObjectStoreCommand): void {
+  protected override onCommand(command: JetStreamObjectStoreCommand): void {
     const admitted = command.kind === 'put' ? this.admitPut(command) : command;
     if (admitted) this.enqueueOutbound(admitted);
   }
@@ -449,6 +449,17 @@ function objectInfoOf(info: ObjectInfoLike): JetStreamObjectInfo {
 }
 
 /* -------------------- nats peer-dep type stubs --------------------- */
+/*
+ * Hand-written on purpose — not a placeholder for the real `nats` types.
+ * `nats` is declared only in `tests/integration/brokers/package.json`, which
+ * the root install deliberately does not materialise, so the build compile
+ * cannot resolve it; and these types are exported through `src/io/index.ts`,
+ * so importing the module here would emit that specifier into a published
+ * `.d.ts` a consumer who took the "optional" peer at its word cannot resolve
+ * either. Widen the stub instead. The drift a real import would have caught
+ * is covered by the live broker under `tests/integration/brokers/nats/`, and
+ * `tests/unit/ci/OptionalPeerDeclarations.test.ts` asserts the boundary. #676.
+ */
 
 /**
  * Minimal `NatsConnection` surface the object-store actor depends on.

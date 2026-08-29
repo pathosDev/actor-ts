@@ -13,18 +13,19 @@ import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(pred: () => boolean, timeoutMs = 3_000, stepMs = 25): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await sleep(stepMs);
-  }
-  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418), which names the awaited state in its timeout message
+ * and — unlike the deadline loop it replaces — cannot fall through silently.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 3_000,
+  stepMs = 25,
+  label = 'the awaited singleton state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: stepMs, label });
 
 type Node = {
   system: ActorSystem;
@@ -55,7 +56,7 @@ describe('ClusterSingleton — single node', () => {
   test('singleton is hosted on the sole leader', async () => {
     const nodeA = await startNode('sng-1', 'h', 52001);
     const kit = nodeA.kit;
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     class Echo extends Actor<string> {
       override onReceive(m: string): void { probe.tell(`got:${m}`); }
@@ -81,7 +82,7 @@ describe('ClusterSingleton — single node', () => {
     // circuited to it — returning a proxy that silently dropped everything.
     const nodeA = await startNode('sng-restart', 'h', 52003);
     const kit = nodeA.kit;
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     class Echo extends Actor<string> {
       override onReceive(m: string): void { probe.tell(`got:${m}`); }
@@ -153,7 +154,7 @@ describe('ClusterSingleton — single node', () => {
     // lost across the observer window.
     const nodeA = await startNode('sng-buf', 'h', 52002);
     const kit = nodeA.kit;
-    const probe = kit.createTestProbe<string>();
+    const probe = kit.createTestProbe();
 
     class Echo extends Actor<string> {
       override onReceive(m: string): void { probe.tell(m); }
@@ -293,7 +294,7 @@ describe('ClusterSingleton — two nodes', () => {
         // Slow shutdown — keeps the cell in the parent's _children
         // map well past the reconcile that fires when the other node
         // leaves, so the spawn-vs-stop race is deterministic.
-        await Bun.sleep(200);
+        await sleep(200);
       }
       override onReceive(): void {}
     }

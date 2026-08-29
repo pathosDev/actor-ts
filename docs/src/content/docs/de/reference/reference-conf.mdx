@@ -31,6 +31,19 @@ vollständige Liste, jene die Erklärung.
 actor-ts {
   system {
     name = "default"
+
+    # How long terminate() lets the actors under /user finish the work they
+    # already have before the stop cascade starts.  The wait ends as soon as
+    # the tree goes quiet, so an idle system pays a tick rather than the
+    # budget; what is still queued when the budget runs out is dead-lettered
+    # exactly as it was before.  Keep it under
+    # coordinated-shutdown.default-phase-timeout — the last phase awaits
+    # terminate(), so a drain as long as the phase leaves no room to stop
+    # anything.  0 disables draining and restores the pre-#663 behaviour.
+    #
+    # A throttled or suspended mailbox is never waited on: neither drains at
+    # a rate a shutdown can wait for.
+    shutdown-drain-timeout = 2s
   }
 
   logger {
@@ -234,9 +247,65 @@ actor-ts {
     }
   }
 
-  dispatcher {
-    default = "immediate"   # immediate | microtask | throughput
+  actor {
+    # User messages ONE actor handles per dispatcher turn before it yields.
+    # Distinct from dispatcher.throughput below, which bounds how many queued
+    # units — each belonging to a different actor — a ThroughputDispatcher
+    # drains per tick.  This is the knob that amortises the scheduling round
+    # trip, because a cell may only ever have one unit queued at a time.
+    # 1 restores the pre-#409 message-at-a-time interleaving; raising it trades
+    # fairness for throughput, since nothing else on the event loop runs until
+    # the actor yields.  Override per actor with ActorOptions.withThroughput().
     throughput = 16
+  }
+
+  dispatcher {
+    # hybrid | immediate | microtask | throughput
+    #
+    # hybrid wakes actors on the microtask queue and spends every 64th unit on
+    # a macrotask so timers and I/O still run; immediate is the previous
+    # default, one setImmediate per turn — fair, and ~2.4 us a hop that a
+    # request/response actor cannot amortise.  microtask is the unbounded form
+    # and starves the event loop under a sustained volley; it is kept for
+    # measurement, not for production.
+    default = "hybrid"
+    # Queued units a ThroughputDispatcher drains per tick, ACROSS actors —
+    # see actor.throughput above for the per-actor batch.
+    throughput = 16
+  }
+
+  # Bounded record of the messages the system could not deliver, inspectable
+  # and replayable through system.deadLetterQueue.  Undeliverable messages are
+  # published on the event stream either way -- this decides whether anything
+  # KEEPS them, which by default nothing does.
+  dead-letters {
+    # One axis, ordered by how much of the letter is kept:
+    # off        = publish only, keep nothing (the behaviour before #433)
+    # metrics    = count them and keep no payload, for the alert without the
+    #              evidence locker (retaining a message is a data-protection
+    #              decision; observing a rate is not)
+    # memory     = keep in a bounded ring, lost with the process
+    # persistent = additionally write to the configured journal, so the queue
+    #              is still there after a restart
+    store = "off"
+
+    # Letters held before the oldest is evicted.  The queue is a diagnostic
+    # ring: an unbounded one turns a delivery outage into an out-of-memory.
+    # Ignored by the off and metrics stores, which hold no letters.
+    max-entries = 1000
+
+    # Age letters out after this long.  0 disables ageing and leaves
+    # max-entries as the only bound.
+    retention = 1h
+
+    # How often one letter may be replayed before it is quarantined.  A
+    # replayed message that dead-letters again comes back as the SAME entry
+    # with a higher count, so a poison message cannot be retried forever.
+    max-replays = 3
+
+    # Journal stream the persistent store writes to.  Empty = derive it from
+    # the system name, so two systems sharing a journal keep separate queues.
+    persistence-id = ""
   }
 
   cluster {
@@ -278,6 +347,20 @@ actor-ts {
       max-wait                = 60s
       required-contact-points = 1
       self-election-grace     = 10s
+
+      # Fewest up members -- self included -- before bootstrapCluster's
+      # awaitReady (and Cluster.awaitReady / isReady) counts the cluster as
+      # ready.  1 keeps single-node development working; a deployment states
+      # its replica count here, for the same reason as
+      # required-contact-points.
+      minimum-members         = 1
+
+      # await-ready ships no value on purpose -- a key that is always present
+      # could not express "unset", and unset is what selects the computed
+      # default: self-election-grace + 5s behind stable observation, 5s
+      # otherwise (#1086).  Set a duration to pin the budget regardless:
+      #
+      #   await-ready = 30s
     }
 
     # Cluster-wide publish/subscribe (DistributedPubSub).  The caps bound what
@@ -296,10 +379,12 @@ actor-ts {
 
     # Cluster-wide service registry (Receptionist).  Subscribers are watched,
     # so a stopped one is dropped; the caps bound the ones that are still alive.
+    # The total counts key/subscriber pairs, not distinct subscribers — one
+    # subscriber on three keys spends three of it.
     receptionist {
       gossip-interval = 1s
       max-subscribers-per-key = 1000
-      max-subscribers-total = 10000
+      max-subscriptions-total = 10000
     }
   }
 
@@ -310,15 +395,38 @@ actor-ts {
   # the unsettled set itself: every entry holds a promise, a timer and a
   # target set until its deadline passes, so refusing past the cap turns what
   # would be a timeout storm into immediate, attributable rejections.
+  #
+  # max-gossip-bytes bounds one outbound gossip frame instead; a larger store
+  # is pushed a slice per tick.  It is clamped down to remote.max-frame-bytes,
+  # because a frame past that cap is rejected on its length prefix and costs
+  # the whole peer association -- heartbeats included.  0 removes the budget
+  # (the clamp still applies).
   distributed-data {
     gossip-interval = 1s
     max-pending-quorum-requests = 1000
     max-quorum-timeout = 30s
+    max-gossip-bytes = 1M
   }
 
   remote {
     # Bind address of this node.  Cluster.join reads these when its options
     # leave host/port unset, so a deployment can move the address into config.
+    #
+    # host is the interface to BIND, and the wildcard below is the right
+    # default for it.  It is not an identity: what peers dial is
+    # advertised-host, which falls back to host only when host is not a
+    # wildcard, then to CLUSTER_HOST / POD_IP / HOSTNAME, then to 127.0.0.1.
+    # advertised-host ships no value on purpose -- a key that is always
+    # present could not express "unset", and unset is what makes that
+    # fallback chain reachable.  Set it wherever the bound interface and the
+    # dialable address differ, which in Kubernetes is every pod:
+    #
+    #   advertised-host = ${?POD_IP}
+    #
+    # Leaving it at the wildcard in a multi-node deployment is the failure it
+    # exists to prevent: every node advertises the identical
+    # system@0.0.0.0:2552, each reads the others' announcements as claims
+    # about itself, and every member map ends up holding one entry.
     tcp {
       host = "0.0.0.0"
       port = 2552
@@ -339,6 +447,18 @@ actor-ts {
     # want in-flight requests to finish on shutdown.
     shutdown-grace-period = 0ms
 
+    # Outbound HttpClient defaults — the system's shared client and any
+    # newClient(...) that leaves a field unset.  Leaf names match the
+    # HttpClientOptions fields (camelCase) and are validated on read (a bad
+    # value throws OptionsError).  A request may still override each of them
+    # per call; these are the floor the fleet inherits without a code change.
+    client {
+      maxResponseBytes = 8M       # buffered response body ceiling
+      defaultTimeoutMs = 30s      # deadline for a call that names none
+      redirect         = "follow" # follow | error | manual
+      maxRedirects     = 5        # hops a followed chain may take
+    }
+
     # Server-side defaults for websocket() routes (per-connection policy).
     # Leaf names match the WebsocketRouteOptions fields (camelCase); a route
     # may override any of them, and the resolved values are validated
@@ -350,6 +470,14 @@ actor-ts {
       maxBufferedBytes = 4M       # outbound buffer cap before backpressure
       onBackpressure   = "drop"   # drop | close
       # maxConnections is unlimited by default; set a positive integer to cap.
+      # Inbound frames held while the connection actor starts; past either cap
+      # the socket is closed with 1013 instead of buffered without bound.
+      maxPreAttachFrames = 256
+      maxPreAttachBytes  = 4M
+      # How long an admitted upgrade waits for its connection actor before the
+      # socket is closed and its maxConnections slot released.  Infinity to
+      # disable (code only — HOCON has no Infinity literal).
+      acceptTimeoutMs  = 10s
     }
   }
 
@@ -362,6 +490,27 @@ actor-ts {
       maxEntries = 10000   # LRU cap on entries (Infinity/unbounded only settable in code)
       cleanupMs  = 60000   # background expired-entry sweep interval, ms (0 disables the sweep)
     }
+    # Per-instance overrides live under the cache's own name and win over the
+    # block above, so one consumer can be sized for its own key space:
+    #
+    #   actor-ts.cache.idempotency.in-memory.maxEntries = 200000
+    #
+    # The name is the application's, so these paths cannot be listed here.
+    # actor-ts.cache.<name>.plugin selects the backend the same way.
+    #
+    # prefixQuotas splits ONE instance between the consumers writing into it,
+    # so a flood of keys under one prefix evicts only that prefix's entries
+    # (#607).  Each quota is a cap and a reservation; they must sum to at most
+    # that instance's maxEntries.  Off by default — an undivided map is the
+    # behaviour every release before it had.  Quote the prefixes, they contain
+    # a colon:
+    #
+    #   actor-ts.cache.shared.in-memory {
+    #     maxEntries = 10000
+    #     prefixQuotas { "rsp:" = 7000, "idem:" = 2000, "rl:" = 1000 }
+    #   }
+    #
+    # A per-name table replaces the global one rather than merging with it.
   }
 
   persistence {
@@ -395,6 +544,14 @@ actor-ts {
     default-phase-timeout = 5s
     terminate-actor-system = true
     exit-process = false   # call process.exit(0) once the pipeline completes
+
+    # Framework components register their own teardown in the pipeline: the
+    # HTTP server unbinds in service-unbind, broker actors close their
+    # connections in service-stop, a joined cluster leaves in cluster-leave,
+    # DevTools detaches with the rest of the service layer.  Set false to keep
+    # the phases and register everything yourself -- for an embedder that owns
+    # the lifecycle of the resources it handed the system.
+    auto-register-tasks = true
   }
 }
 ```

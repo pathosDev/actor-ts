@@ -2,6 +2,7 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { Delivery } from './Messages.js';
+import { MAX_DELIVERY_IDENTIFIER_LENGTH } from './Constants.js';
 
 /** Plain options-object shape accepted by a {@link ProducerController}. */
 export type ProducerControllerOptionsType<T> = {
@@ -16,7 +17,26 @@ export type ProducerControllerOptionsType<T> = {
    * Default: 16.
    */
   readonly windowSize?: number;
-  /** Stable identifier used by consumers to dedup across restarts. */
+  /**
+   * Stable identifier the consumer keys its dedup state on.  Generated when
+   * omitted — randomly, and freshly per construction, so leaving it unset
+   * means there is no identity to be stable *about*: pin it whenever anything
+   * downstream is supposed to recognise this producer across a restart.
+   *
+   * The generated form is deliberately not derivable from anything else.  An
+   * id that a peer can enumerate is half of the `(producerId, seq)` pair an
+   * `Acknowledgment` carries (#730), and a shared one silently corrupts the
+   * consumer's dedup window when two producers that both left this unset
+   * reach the same consumer.
+   *
+   * It deliberately does **not** carry a dedup *window* across a producer
+   * restart.  Each incarnation of the controller stamps its own token onto
+   * every delivery, and the consumer resets the window when that token
+   * changes — which is what stops a restarted producer's messages being
+   * absorbed as duplicates (#726).  What a stable id buys is that two
+   * distinct producers stay distinguishable, and that a recovered producer
+   * keeps one identity in logs, metrics and the consumer's map.
+   */
   readonly producerId?: string;
 };
 
@@ -51,7 +71,7 @@ export class ProducerControllerOptionsBuilder<T> extends OptionsBuilder<Producer
     return this.set('windowSize', size);
   }
 
-  /** Stable identifier used by consumers to dedup across restarts. */
+  /** Stable identifier the consumer keys its dedup state on.  Generated when omitted. */
   withProducerId(producerId: string): this {
     return this.set('producerId', producerId);
   }
@@ -62,9 +82,20 @@ export class ProducerControllerOptionsValidator<T> extends OptionsValidator<Prod
   constructor() {
     super('ProducerControllerOptions');
   }
-  protected rules(_s: Partial<ProducerControllerOptionsType<T>>): void {
+  protected rules(s: Partial<ProducerControllerOptionsType<T>>): void {
     this.positiveNumber('resendTimeout');
     this.positiveInt('windowSize');
+    this.nonEmptyString('producerId');
+    // The consumer refuses an identifier longer than this, so accepting one
+    // here would turn every delivery into a silent dead letter.  A cap is
+    // only useful where it fails loudly, and that is at construction.
+    if (s.producerId !== undefined && s.producerId.length > MAX_DELIVERY_IDENTIFIER_LENGTH) {
+      this.fail(
+        'producerId',
+        `must be at most ${MAX_DELIVERY_IDENTIFIER_LENGTH} characters`,
+        s.producerId.length,
+      );
+    }
   }
 }
 

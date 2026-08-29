@@ -1,15 +1,14 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { createServer, type Server } from 'node:net';
+import { createServer, Socket, type Server } from 'node:net';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { Actor } from '../../../../../src/Actor.js';
 import { TcpSocketActor } from '../../../../../src/io/broker/TcpSocketActor.js';
 import { TcpSocketOptions } from '../../../../../src/io/broker/TcpSocketOptions.js';
-import { BrokerConnected } from '../../../../../src/io/broker/BrokerEvents.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { BrokerConnected, BrokerDisconnected } from '../../../../../src/io/broker/BrokerEvents.js';
+import { DEFAULT_TCP_KEEP_ALIVE_MS } from '../../../../../src/io/broker/TcpSocketOptions.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /**
  * Settle window for the assertions that also carry an *upper* bound
@@ -275,5 +274,198 @@ describe('TcpSocketActor — options validation', () => {
     expect((captured as unknown as Error).message).toContain('host');
     expect((captured as unknown as Error).message).toContain('port');
     await sys.terminate();
+  });
+});
+
+/* --------------------- liveness: read-idle + keepalive (#753) ------------ */
+
+/**
+ * A server that accepts the connection and then says nothing — the observable
+ * half of a peer that has vanished without FIN/RST.  It never writes and never
+ * closes, so `data`, `close` and `error` all stay silent and the actor has
+ * nothing but a clock to go on.
+ */
+async function startSilentServer(): Promise<EchoServer> {
+  const silent: Server = createServer((sock) => {
+    sock.on('error', () => { /* ignore client disconnects */ });
+  });
+  await new Promise<void>((resolve) => silent.listen(0, '127.0.0.1', () => resolve()));
+  const addr = silent.address();
+  if (typeof addr === 'string' || !addr) throw new Error('no port assigned');
+  return {
+    port: addr.port,
+    close: () => new Promise<void>((resolve) => silent.close(() => resolve())),
+  };
+}
+
+/** Records the cause of every `BrokerDisconnected` the system publishes. */
+function disconnectCauses(sys: ActorSystem): string[] {
+  const causes: string[] = [];
+  sys.eventStream.subscribe(
+    sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+      override onReceive(m: unknown): void {
+        causes.push((m as BrokerDisconnected).cause?.message ?? '<no cause>');
+      }
+    })()),
+    BrokerDisconnected,
+  );
+  return causes;
+}
+
+describe('TcpSocketActor — read-idle timeout (#753)', () => {
+  test('a peer that accepts and then goes silent is reported as lost', async () => {
+    const silent = await startSilentServer();
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('tcp-idle-1', sysOptions);
+    try {
+      const target = sys.spawnAnonymous(() => new CollectActor());
+      const causes = disconnectCauses(sys);
+      const tcpOptions = TcpSocketOptions.create()
+        .withHost('127.0.0.1')
+        .withPort(silent.port)
+        .withTarget(target)
+        .withIdleTimeoutMs(60)
+        .withReconnect(false);
+      sys.spawnAnonymous(() => new TcpSocketActor(tcpOptions));
+
+      await awaitCondition(() => causes.length > 0, {
+        timeoutMs: 4_000, label: 'the idle deadline reported the silent peer as lost',
+      });
+      expect(causes[0]).toContain('idle timeout');
+    } finally {
+      await sys.terminate();
+      await silent.close();
+    }
+  });
+
+  test('idleTimeoutMs 0 leaves a quiet connection alone', async () => {
+    const silent = await startSilentServer();
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('tcp-idle-2', sysOptions);
+    try {
+      const target = sys.spawnAnonymous(() => new CollectActor());
+      const causes = disconnectCauses(sys);
+      const link = connectionWatcher(sys);
+      const tcpOptions = TcpSocketOptions.create()
+        .withHost('127.0.0.1')
+        .withPort(silent.port)
+        .withTarget(target)
+        .withIdleTimeoutMs(0)
+        .withReconnect(false);
+      sys.spawnAnonymous(() => new TcpSocketActor(tcpOptions));
+      await awaitConnected(link, 'idle timeout disabled');
+
+      // `0` is the documented way to turn the deadline off, and the only thing
+      // that can prove it is a stretch of silence in which nothing happens.
+      await sleep(200);
+      expect(causes).toEqual([]);
+    } finally {
+      await sys.terminate();
+      await silent.close();
+    }
+  });
+
+  test('inbound bytes keep the deadline from firing', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('tcp-idle-3', sysOptions);
+    try {
+      const collector = new CollectActor();
+      const target = sys.spawnAnonymous(() => collector);
+      const causes = disconnectCauses(sys);
+      const link = connectionWatcher(sys);
+      const tcpOptions = TcpSocketOptions.create()
+        .withHost('127.0.0.1')
+        .withPort(server.port)  // the module-level echo server
+        .withTarget(target)
+        .withIdleTimeoutMs(500)
+        .withReconnect(false);
+      const ref = sys.spawnAnonymous(() => new TcpSocketActor(tcpOptions));
+      await awaitConnected(link, 'idle timeout with traffic');
+
+      // Traffic every 50 ms against a 500 ms deadline — a tenfold margin, so a
+      // failure here is the deadline ignoring inbound bytes rather than a slow
+      // machine.  The window spans two deadlines, which is what makes the
+      // absence of a disconnect mean something.
+      for (let round = 1; round <= 24; round++) {
+        ref.tell({ kind: 'send', payload: `tick-${round}` });
+        await sleep(50);  // the elapsed time IS the assertion: two deadline windows of traffic
+      }
+      expect(collector.received.length).toBeGreaterThan(0);
+      expect(causes).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  }, 10_000);
+});
+
+/**
+ * Observes `setKeepAlive` on the socket the actor actually opened.
+ *
+ * Patching the prototype is the only seam: `connectImplementation` creates the
+ * socket itself and never hands it out, and the effect of keepalive — an OS
+ * probe minutes later — is not observable from a test at all.  The original is
+ * restored in a `finally`, and the patch delegates, so the socket behaves
+ * exactly as it would have.
+ */
+async function recordKeepAliveCalls(body: () => Promise<void>): Promise<Array<[boolean, number]>> {
+  const calls: Array<[boolean, number]> = [];
+  const original = Socket.prototype.setKeepAlive;
+  Socket.prototype.setKeepAlive = function patched(
+    this: Socket, enable?: boolean, initialDelay?: number,
+  ): Socket {
+    calls.push([enable ?? false, initialDelay ?? 0]);
+    return original.call(this, enable, initialDelay);
+  };
+  try { await body(); } finally { Socket.prototype.setKeepAlive = original; }
+  return calls;
+}
+
+describe('TcpSocketActor — TCP keepalive (#753)', () => {
+  test('enables OS keepalive on the connected socket by default', async () => {
+    const calls = await recordKeepAliveCalls(async () => {
+      const sysOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off);
+      const sys = ActorSystem.create('tcp-keepalive-1', sysOptions);
+      const target = sys.spawnAnonymous(() => new CollectActor());
+      const link = connectionWatcher(sys);
+      const tcpOptions = TcpSocketOptions.create()
+        .withHost('127.0.0.1')
+        .withPort(server.port)
+        .withTarget(target);
+      sys.spawnAnonymous(() => new TcpSocketActor(tcpOptions));
+      await awaitConnected(link, 'keepalive default');
+      await sys.terminate();
+    });
+    // On by default: it is the one liveness knob that cannot be wrong about a
+    // healthy peer, because a probe is answered by the peer's kernel whether
+    // or not its application has anything to say.
+    expect(calls).toEqual([[true, DEFAULT_TCP_KEEP_ALIVE_MS]]);
+  });
+
+  test('keepAliveMs 0 leaves keepalive off', async () => {
+    const calls = await recordKeepAliveCalls(async () => {
+      const sysOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off);
+      const sys = ActorSystem.create('tcp-keepalive-2', sysOptions);
+      const target = sys.spawnAnonymous(() => new CollectActor());
+      const link = connectionWatcher(sys);
+      const tcpOptions = TcpSocketOptions.create()
+        .withHost('127.0.0.1')
+        .withPort(server.port)
+        .withTarget(target)
+        .withKeepAliveMs(0);
+      sys.spawnAnonymous(() => new TcpSocketActor(tcpOptions));
+      await awaitConnected(link, 'keepalive disabled');
+      await sys.terminate();
+    });
+    expect(calls).toEqual([]);
   });
 });

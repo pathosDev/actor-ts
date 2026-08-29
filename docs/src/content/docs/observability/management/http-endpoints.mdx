@@ -25,7 +25,7 @@ GET /health
 {
   "status": "UP",
   "checks": [
-    { "name": "event-loop", "status": true }
+    { "name": "actor-system", "status": true }
   ]
 }
 ```
@@ -44,14 +44,20 @@ GET /ready
   "status": "UP",
   "clusterReady": true,
   "checks": [
-    { "name": "database", "status": true }
+    { "name": "cluster-membership", "status": true },
+    { "name": "cluster-transport",  "status": true },
+    { "name": "database",           "status": true }
   ]
 }
 ```
 
-`clusterReady` is `false` until the local node reaches `Up`; the
-readiness checks you register contribute the `checks` array.  503
-if the cluster isn't ready or any check fails.
+The `checks` array holds every readiness check on the system's
+registry — the framework's `cluster-membership` and
+`cluster-transport` plus whatever you registered.  `clusterReady` is
+`cluster-membership`'s own result, read back out of that array
+rather than computed separately, so it is `false` until the local
+node reaches `Up` and `true` when there is no cluster at all.  503
+if any check fails.
 
 ## Cluster info
 
@@ -102,10 +108,11 @@ GET /cluster/shards?type=cart
 {
   "typeName": "cart",
   "leader":   "my-app@10.0.0.5:2552",
+  "version":  7,
   "takenAt":  1710000000000,
   "regions": [
     {
-      "key":     "my-app@10.0.0.5:2552",
+      "key":     "my-app@10.0.0.5:2552|/system/cluster/sharding/region-cart",
       "address": "my-app@10.0.0.5:2552",
       "path":    "/system/cluster/sharding/region-cart",
       "proxy":   false,
@@ -113,7 +120,10 @@ GET /cluster/shards?type=cart
     },
     ...
   ],
-  "shardHome": [ { "shard": 0, "regionKey": "my-app@10.0.0.5:2552" }, ... ]
+  "shardHome": [
+    { "shard": 0, "regionKey": "my-app@10.0.0.5:2552|/system/cluster/sharding/region-cart" },
+    ...
+  ]
 }
 ```
 
@@ -123,6 +133,40 @@ for:
 - **Verifying even distribution** after a rebalance.
 - **Diagnosing hot regions** (one region with too many shards).
 - **Manual rebalance triggers** in development.
+
+**Where the answer comes from.**  The node answers from
+`ClusterSharding.shardMap(typeName)` — the last map the coordinator
+broadcast to this node's region.  Nothing needs configuring: no
+`DistributedData` extension, no `coordinatorStateStore`, no round trip
+to the leader.  The one precondition is that the answering node takes
+part in the type — it has called `sharding.start(...)` or
+`sharding.startProxy(...)` for it — because the coordinator broadcasts
+only to regions that registered.  A node that never mentioned `cart`
+has nothing to report and answers **404**.
+
+This endpoint used to read the coordinator's `DistributedData`
+snapshot, which made a 200 unreachable in a default configuration:
+nothing in the framework starts that extension, and the snapshot is
+only written when you opt into a `coordinatorStateStore`.  The store
+is still available and still optional — it shortens leader failover —
+but this endpoint no longer depends on it.
+
+Reading the body:
+
+- `version` counts coordinator *broadcasts*, not shard assignments —
+  one bump per publish, and a publish coalesces a burst of moves.
+  Compare it across two readouts to tell "the map moved" from "the map
+  is the same".
+- `takenAt` and `leader` are stamped by the answering node when the
+  map arrived, so two nodes can report the same `version` with
+  slightly different timestamps.
+- `regions[].key` is `<address>|<region path>`, the same key
+  `shardHome[].regionKey` uses.  A region that hosts nothing is still
+  listed, with an empty `shards` — "registered and given no shards" is
+  the interesting half of a rebalance question.
+- A **200 with an empty `shardHome`** is normal, not an error:
+  `regions` fills as soon as regions register, while a shard only gets
+  a home once an entity in it is addressed.
 
 ## Metrics
 
@@ -143,6 +187,26 @@ actor_messages_processed_total{class="Worker",path="..."} 12345
 
 Prometheus text format.  See
 [Prometheus exporter](/observability/metrics/prometheus-exporter/).
+
+Answers `503` instead when the installed `MetricsRegistry` cannot be
+read back through `collect()` — the
+[prom-client bridge](/observability/metrics/prom-client-adapter/) is
+the one in the framework that cannot, because it forwards its writes
+to prom-client and keeps no snapshot:
+
+```
+GET /metrics
+→ 503 Service Unavailable
+
+metrics endpoint unavailable: the installed MetricsRegistry does not
+support collect() — ...
+```
+
+A `200` with an empty body would be worse than the error: an empty
+exposition is a *valid* scrape, so Prometheus records the target as
+up and every framework series quietly stops existing. The check runs
+per request, because the registry can be swapped at any point in the
+system's life.
 
 ## Admin (opt-in)
 
@@ -204,7 +268,7 @@ Use for:
 import { path, get, concat, completeJson } from 'actor-ts/http';
 import { managementRoutes } from 'actor-ts/management';
 
-const baseRoutes = managementRoutes(system, cluster).routes;
+const baseRoutes = managementRoutes(system, cluster);
 
 const customRoutes = concat(
   baseRoutes,
@@ -285,7 +349,7 @@ import {
   managementRoutes,
 } from 'actor-ts/management';
 
-const { routes } = managementRoutes(system, cluster, {
+const routes = managementRoutes(system, cluster, {
   enableLeaveEndpoint: true,
   enableDownEndpoint: true,
   enableMetricsEndpoint: true,
@@ -298,10 +362,11 @@ const { routes } = managementRoutes(system, cluster, {
   // the application at all.
   ipAllowlist: IpAllowlist({
     allow: ['10.0.0.0/8', '127.0.0.1/32'],
-    // Operators behind a trusted reverse-proxy: pass a custom
-    // extractor that reads x-forwarded-for (the default reads
-    // the socket peer and ignores forwarded headers).
-    // getClientIp: (req) => req.headers['x-forwarded-for']?.split(',')[0]?.trim(),
+    // Behind a reverse proxy, name the proxies: the client address
+    // is then resolved from the forwarded chain's socket end
+    // inwards.  Without this the default reads the socket peer,
+    // which behind a proxy is the proxy.
+    // trustedProxies: ['10.9.9.0/24'],
   }),
 });
 ```

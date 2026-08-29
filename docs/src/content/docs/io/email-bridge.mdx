@@ -1,0 +1,281 @@
+---
+title: Email bridge (IMAP + SMTP)
+description: EmailBridgeActor turns a mailbox into a message source and SMTP into a sink — IMAP IDLE inbound with at-least-once delivery settled by IMAP flags, pooled SMTP outbound, plus EmailTemplate for HTML bodies. Wraps `imapflow` and `nodemailer`.
+---
+
+`EmailBridgeActor` is the ops/alerting bridge that otherwise gets
+hand-rolled in every project: a mailbox becomes a message source, SMTP
+becomes a sink.  Inbound mail is delivered to a target actor and is
+**at-least-once** — a message is only marked done once that actor says so.
+
+```ts
+import { ActorSystem, Actor } from 'actor-ts';
+import {
+  EmailBridgeActor,
+  EmailBridgeOptions,
+  type EmailBridgeCommand,
+  type EmailMessage,
+} from 'actor-ts/io';
+
+class AlertHandler extends Actor<EmailMessage> {
+  constructor(private readonly bridge: ActorRef<EmailBridgeCommand>) { super(); }
+
+  override async onReceive(message: EmailMessage): Promise<void> {
+    try {
+      await raiseIncident(message.subject ?? '(no subject)', message.text ?? '');
+      this.bridge.tell({ kind: 'acknowledgment', ackToken: message.ackToken });
+    } catch {
+      // Left unflagged — the next sweep delivers it again.
+      this.bridge.tell({ kind: 'negativeAcknowledgment', ackToken: message.ackToken });
+    }
+  }
+}
+
+const emailOptions = EmailBridgeOptions.create()
+  .withImap({
+    host: 'imap.example.com',
+    user: 'alerts@example.com',
+    password: process.env.IMAP_PASSWORD,
+    mailbox: 'INBOX',
+  })
+  .withSmtp({
+    host: 'smtp.example.com',
+    user: 'alerts@example.com',
+    password: process.env.SMTP_PASSWORD,
+    from: 'alerts@example.com',
+  })
+  .withTarget(handler);
+const bridge = system.spawn(() => new EmailBridgeActor(emailOptions), 'email');
+
+// Send:
+bridge.tell({
+  kind: 'send',
+  email: { to: 'oncall@example.com', subject: 'Disk almost full', text: report },
+});
+```
+
+## Settings
+
+```ts
+interface EmailBridgeOptionsType extends BrokerCommonOptionsType {
+  imap?:   EmailImapOptionsType;      // presence enables the inbound half
+  smtp?:   EmailSmtpOptionsType;      // presence enables the outbound half
+  target?: ActorRef<EmailMessage>;    // required with `imap`; code-only
+}
+
+type EmailImapOptionsType = {
+  host?:                    string;             // required when the group is present
+  port?:                    number;             // default 993
+  secure?:                  boolean;            // default true (implicit TLS)
+  user?:                    string;
+  password?:                string;
+  mailbox?:                 string;             // default 'INBOX'
+  onProcessed?:             'markSeen' | 'move';// default 'markSeen'
+  moveToMailbox?:           string;             // required for 'move'
+  disableIdle?:             boolean;            // default false — force polling
+  maxIdleTimeMs?:           number;             // default 300000
+  pollIntervalMs?:          number;             // default 30000
+  maxMessageBytes?:         number;             // default 1048576
+  acknowledgmentTimeoutMs?: number;             // default 30000
+};
+
+type EmailSmtpOptionsType = {
+  host?:           string;   // required when the group is present
+  port?:           number;   // default 587
+  secure?:         boolean;  // default false (STARTTLS on 587; true for 465)
+  user?:           string;
+  password?:       string;
+  from?:           string;   // default From for messages without one
+  maxConnections?: number;   // default 5
+  maxMessages?:    number;   // default 100
+};
+```
+
+Either half alone is a valid bridge: an alert sink with no mailbox, or a
+mailbox reader that never sends.  Configuring neither is rejected at
+startup, as is an `imap` half without a `target` (and a `target` without
+an `imap` half) — both are configurations that connect successfully and
+then do nothing.
+
+## At-least-once, settled by IMAP flags
+
+The bridge sweeps the mailbox for unprocessed mail and delivers each
+message with an `ackToken`.  Only `{ kind: 'acknowledgment', ackToken }`
+marks it done:
+
+| Outcome | What happens to the message |
+| --- | --- |
+| `acknowledgment` | Marked `\Seen` (or moved) — not delivered again. |
+| `negativeAcknowledgment` | Left unflagged — redelivered on the next sweep. |
+| `negativeAcknowledgment` with `drop: true` | Settled **without** having been processed — the escape hatch for a message that fails every time. |
+| No answer within `acknowledgmentTimeoutMs` | Left unflagged — redelivered. |
+| Connection lost, or the process died | Left unflagged — redelivered after reconnect. |
+
+There is no in-memory bookkeeping behind this: "processed" is a fact on
+the server (`\Seen`, or absence from the watched mailbox), which is why a
+crashed consumer sees the message again rather than losing it.
+
+Two `onProcessed` modes decide what "done" looks like:
+
+- **`markSeen`** (default) adds the `\Seen` flag, and the sweep asks for
+  unseen mail.  The mailbox should be a dedicated one — anything that
+  marks mail read behind the bridge's back (a human with a mail client, a
+  second reader) makes it skip messages.
+- **`move`** moves the message to `moveToMailbox`, and the sweep looks at
+  everything still present.  The destination is created on connect if it
+  does not exist.  It must differ from the watched mailbox, which the
+  validator enforces: moving mail into the mailbox it is swept from
+  redelivers it forever, and every individual IMAP command in that loop
+  succeeds.
+
+## IDLE, polling, and reconnection
+
+The inbound loop sweeps, then waits for whichever comes first: the server
+announcing new mail over IDLE, the IDLE stretch ending, or
+`pollIntervalMs` elapsing.  A server that does not advertise IDLE — or
+`disableIdle: true` for one that advertises it and ignores it — is polled
+on the same interval instead, which is a fully working mode rather than a
+degraded one.
+
+`pollIntervalMs` therefore also bounds how long a refused or unanswered
+message waits before it is redelivered.
+
+`imapflow` performs no reconnection of its own; its `close` event is
+handed to the `BrokerActor` lifecycle, so backoff, jitter and the circuit
+breaker are the shared ones and need no knob here.
+
+## One actor, one mailbox
+
+An IMAP connection can IDLE only on the mailbox it has selected, so a
+bridge watches exactly one.  Watching two means spawning two actors.
+
+## Sending
+
+Outbound goes through a pooled `nodemailer` transport (`pool: true`), so
+TLS connections stay warm across messages.  While the transport is down,
+messages are held in the shared outbound buffer and sent after reconnect.
+
+A message the server *rejects* (a 5xx or 4xx response, a bad envelope) is
+dropped with an error log rather than retried: re-queueing it would park
+the poisoned message at the head of the buffer and tear down a healthy
+pool.  Connection-level failures do the opposite — the message is
+re-queued and the pool rebuilt.
+
+## HTML bodies
+
+`EmailTemplate` fills a stored HTML snippet — one from HOCON, a database
+row, or a file an operator edits:
+
+```ts
+import { EmailTemplate, rawHtml } from 'actor-ts/io';
+
+const alert = new EmailTemplate('<h1>{{title}}</h1><p>{{detail}}</p>');
+
+const html = alert.clone()
+  .setValue('title', 'Disk almost full')
+  .setValue('detail', report)          // escaped, whatever `report` contains
+  .render();
+
+bridge.tell({ kind: 'send', email: { to: 'oncall@example.com', html } });
+```
+
+Values are HTML-escaped by default.  The one opt-out is the `SafeHtml`
+brand the rest of the framework uses — `setValue('row', rawHtml(fragment))`
+inserts verbatim and says so at the call site.
+
+`setValue` with a name the template does not declare throws, and `render`
+throws when any placeholder is still unset, naming all of them.  Both
+failures would otherwise only show up in a mail that had already been
+sent.
+
+Reach for `EmailTemplate` when the markup is a **runtime string**; when it
+is a literal in your code, the `html` tagged template is the better tool
+and needs no placeholders.  It is deliberately logic-less — no loops, no
+conditionals — so a repeated fragment is built with `html` and passed in
+as a `SafeHtml` value.
+
+## HOCON
+
+Settings resolve with the usual precedence — explicit options override
+HOCON, which overrides the built-in defaults.  The config namespace is
+`actor-ts.io.broker.email-bridge`:
+
+```hocon
+actor-ts.io.broker.email-bridge {
+  imap {
+    host                    = "imap.example.com"
+    port                    = 993
+    secure                  = true
+    user                    = "alerts@example.com"
+    password                = ${?ACTOR_TS_IMAP_PASSWORD}
+    mailbox                 = "INBOX"
+    onProcessed             = "markSeen"
+    pollIntervalMs          = 30s
+    maxIdleTimeMs           = 5m
+    maxMessageBytes         = 1048576
+    acknowledgmentTimeoutMs = 30s
+  }
+  smtp {
+    host           = "smtp.example.com"
+    port           = 587
+    secure         = false
+    user           = "alerts@example.com"
+    password       = ${?ACTOR_TS_SMTP_PASSWORD}
+    from           = "alerts@example.com"
+    maxConnections = 5
+    maxMessages    = 100
+  }
+}
+```
+
+`target` has no leaf — an `ActorRef` can only come from code.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="The `imap` and `smtp` blocks replace, they do not merge">
+  ```ts
+  // HOCON sets imap.host + imap.mailbox; this replaces BOTH
+  EmailBridgeOptions.create().withImap({ host: 'other.example.com' })
+  ```
+  Options merge one level deep, so supplying a group in code replaces the
+  configured group wholesale rather than overriding single fields.  Set
+  the whole group in whichever layer owns it.
+</Aside>
+
+<Aside type="caution" title="Passwords are plain config leaves">
+  Substitute them from the environment (`password = ${?ACTOR_TS_IMAP_PASSWORD}`)
+  rather than committing them.  A rejected login fails the connect, which
+  the reconnect machinery answers with backoff — check the first
+  connection error rather than the retries.
+</Aside>
+
+## Peer dependencies
+
+```bash
+npm install imapflow nodemailer
+# or: bun add imapflow nodemailer
+```
+
+Both are optional and loaded on first connect — only the half you
+configure is imported, so a send-only bridge never pulls in `imapflow`.
+
+## When to use the email bridge
+
+1. **Alerting out** — the service already has SMTP credentials and
+   on-call wants mail, not another dashboard.
+2. **Mail as an inbound queue** — ticket submissions, bounce processing,
+   or any workflow whose front door is an address, with the mailbox
+   itself providing the durability.
+3. **Bridging a system that only speaks mail** — appliances and vendors
+   that emit notification mail and nothing else.
+
+For anything high-volume or latency-sensitive, a real broker is the right
+tool: IMAP polling is measured in seconds and a mailbox is not a queue.
+
+## Where to next
+
+- **[I/O overview](/io/overview/)** — the bigger picture.
+- **[BrokerActor base](/io/broker-actor-base/)** — the shared lifecycle,
+  reconnect and buffering.
+- **[AMQP](/io/amqp/)** / **[NATS JetStream](/io/jetstream/)** — the same
+  acknowledgment shape on a real broker.

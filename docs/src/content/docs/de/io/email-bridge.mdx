@@ -1,0 +1,296 @@
+---
+title: E-Mail-Bridge (IMAP + SMTP)
+description: EmailBridgeActor macht ein Postfach zur Nachrichtenquelle und SMTP zur Senke — eingehend per IMAP IDLE mit At-least-once-Zustellung, die über IMAP-Flags quittiert wird, ausgehend über gepooltes SMTP, dazu EmailTemplate für HTML-Inhalte. Kapselt `imapflow` und `nodemailer`.
+---
+
+`EmailBridgeActor` ist die Ops-/Alerting-Bridge, die sonst in jedem
+Projekt von Hand gebaut wird: Ein Postfach wird zur Nachrichtenquelle,
+SMTP zur Senke.  Eingehende Mails werden an einen Ziel-Actor zugestellt,
+und zwar **at-least-once** — eine Nachricht gilt erst dann als erledigt,
+wenn dieser Actor das bestätigt.
+
+```ts
+import { ActorSystem, Actor } from 'actor-ts';
+import {
+  EmailBridgeActor,
+  EmailBridgeOptions,
+  type EmailBridgeCommand,
+  type EmailMessage,
+} from 'actor-ts/io';
+
+class AlertHandler extends Actor<EmailMessage> {
+  constructor(private readonly bridge: ActorRef<EmailBridgeCommand>) { super(); }
+
+  override async onReceive(message: EmailMessage): Promise<void> {
+    try {
+      await raiseIncident(message.subject ?? '(no subject)', message.text ?? '');
+      this.bridge.tell({ kind: 'acknowledgment', ackToken: message.ackToken });
+    } catch {
+      // Left unflagged — the next sweep delivers it again.
+      this.bridge.tell({ kind: 'negativeAcknowledgment', ackToken: message.ackToken });
+    }
+  }
+}
+
+const emailOptions = EmailBridgeOptions.create()
+  .withImap({
+    host: 'imap.example.com',
+    user: 'alerts@example.com',
+    password: process.env.IMAP_PASSWORD,
+    mailbox: 'INBOX',
+  })
+  .withSmtp({
+    host: 'smtp.example.com',
+    user: 'alerts@example.com',
+    password: process.env.SMTP_PASSWORD,
+    from: 'alerts@example.com',
+  })
+  .withTarget(handler);
+const bridge = system.spawn(() => new EmailBridgeActor(emailOptions), 'email');
+
+// Send:
+bridge.tell({
+  kind: 'send',
+  email: { to: 'oncall@example.com', subject: 'Disk almost full', text: report },
+});
+```
+
+## Einstellungen
+
+```ts
+interface EmailBridgeOptionsType extends BrokerCommonOptionsType {
+  imap?:   EmailImapOptionsType;      // presence enables the inbound half
+  smtp?:   EmailSmtpOptionsType;      // presence enables the outbound half
+  target?: ActorRef<EmailMessage>;    // required with `imap`; code-only
+}
+
+type EmailImapOptionsType = {
+  host?:                    string;             // required when the group is present
+  port?:                    number;             // default 993
+  secure?:                  boolean;            // default true (implicit TLS)
+  user?:                    string;
+  password?:                string;
+  mailbox?:                 string;             // default 'INBOX'
+  onProcessed?:             'markSeen' | 'move';// default 'markSeen'
+  moveToMailbox?:           string;             // required for 'move'
+  disableIdle?:             boolean;            // default false — force polling
+  maxIdleTimeMs?:           number;             // default 300000
+  pollIntervalMs?:          number;             // default 30000
+  maxMessageBytes?:         number;             // default 1048576
+  acknowledgmentTimeoutMs?: number;             // default 30000
+};
+
+type EmailSmtpOptionsType = {
+  host?:           string;   // required when the group is present
+  port?:           number;   // default 587
+  secure?:         boolean;  // default false (STARTTLS on 587; true for 465)
+  user?:           string;
+  password?:       string;
+  from?:           string;   // default From for messages without one
+  maxConnections?: number;   // default 5
+  maxMessages?:    number;   // default 100
+};
+```
+
+Jede Hälfte für sich ist eine gültige Bridge: eine Alarm-Senke ohne
+Postfach oder ein Postfach-Leser, der nie sendet.  Gar keine Hälfte zu
+konfigurieren wird beim Start abgelehnt — ebenso eine `imap`-Hälfte ohne
+`target` (und ein `target` ohne `imap`-Hälfte).  Beides sind
+Konfigurationen, die sich erfolgreich verbinden und danach nichts tun.
+
+## At-least-once, quittiert über IMAP-Flags
+
+Die Bridge durchsucht das Postfach nach unverarbeiteten Mails und stellt
+jede Nachricht mit einem `ackToken` zu.  Erst
+`{ kind: 'acknowledgment', ackToken }` markiert sie als erledigt:
+
+| Ausgang | Was mit der Nachricht passiert |
+| --- | --- |
+| `acknowledgment` | Wird als `\Seen` markiert (oder verschoben) — keine erneute Zustellung. |
+| `negativeAcknowledgment` | Bleibt ungeflaggt — wird beim nächsten Durchlauf erneut zugestellt. |
+| `negativeAcknowledgment` mit `drop: true` | Wird quittiert, **ohne** verarbeitet worden zu sein — der Notausgang für eine Nachricht, die jedes Mal scheitert. |
+| Keine Antwort innerhalb `acknowledgmentTimeoutMs` | Bleibt ungeflaggt — erneute Zustellung. |
+| Verbindung verloren oder Prozess gestorben | Bleibt ungeflaggt — erneute Zustellung nach dem Reconnect. |
+
+Dahinter steckt keine Buchführung im Speicher: „verarbeitet" ist eine
+Tatsache auf dem Server (`\Seen` bzw. Abwesenheit aus dem beobachteten
+Postfach).  Genau deshalb sieht ein abgestürzter Consumer die Nachricht
+wieder, statt sie zu verlieren.
+
+Zwei `onProcessed`-Modi bestimmen, wie „erledigt" aussieht:
+
+- **`markSeen`** (Standard) setzt das `\Seen`-Flag, und der Durchlauf
+  fragt nach ungelesenen Mails.  Das Postfach sollte ein eigens dafür
+  vorgesehenes sein — alles, was Mails hinter dem Rücken der Bridge als
+  gelesen markiert (ein Mensch mit Mail-Client, ein zweiter Leser), lässt
+  sie Nachrichten überspringen.
+- **`move`** verschiebt die Nachricht nach `moveToMailbox`, und der
+  Durchlauf betrachtet alles noch Vorhandene.  Das Ziel wird beim
+  Verbinden angelegt, falls es nicht existiert.  Es muss sich vom
+  beobachteten Postfach unterscheiden, was der Validator erzwingt: Mails
+  in genau das Postfach zu verschieben, aus dem sie gelesen werden, stellt
+  sie endlos erneut zu — und jeder einzelne IMAP-Befehl in dieser
+  Schleife ist erfolgreich.
+
+## IDLE, Polling und Reconnect
+
+Die Eingangsschleife durchsucht das Postfach und wartet dann auf das,
+was zuerst eintritt: die Ankündigung neuer Mail per IDLE, das Ende des
+IDLE-Abschnitts oder den Ablauf von `pollIntervalMs`.  Ein Server, der
+IDLE nicht anbietet — oder `disableIdle: true` für einen, der es anbietet
+und ignoriert —, wird stattdessen im selben Intervall abgefragt.  Das ist
+ein vollwertiger Modus, kein eingeschränkter.
+
+`pollIntervalMs` begrenzt damit zugleich, wie lange eine abgelehnte oder
+unbeantwortete Nachricht auf ihre erneute Zustellung wartet.
+
+`imapflow` verbindet sich nicht selbst neu; sein `close`-Ereignis wird an
+den `BrokerActor`-Lebenszyklus übergeben.  Backoff, Jitter und Circuit
+Breaker sind daher die gemeinsamen und brauchen hier keinen eigenen
+Schalter.
+
+## Ein Actor, ein Postfach
+
+Eine IMAP-Verbindung kann IDLE nur auf dem Postfach ausführen, das sie
+ausgewählt hat — eine Bridge beobachtet also genau eines.  Zwei Postfächer
+bedeuten zwei Actors.
+
+## Senden
+
+Ausgehend läuft alles über einen gepoolten `nodemailer`-Transport
+(`pool: true`), sodass TLS-Verbindungen über Nachrichten hinweg warm
+bleiben.  Solange der Transport ausgefallen ist, werden Nachrichten im
+gemeinsamen Ausgangspuffer gehalten und nach dem Reconnect gesendet.
+
+Eine Nachricht, die der Server *zurückweist* (eine 5xx- oder
+4xx-Antwort, ein fehlerhafter Umschlag), wird mit einem Fehler-Log
+verworfen statt erneut versucht: Sie zurückzustellen würde die vergiftete
+Nachricht an den Anfang des Puffers setzen und einen funktionierenden Pool
+abreißen.  Bei Verbindungsfehlern ist es umgekehrt — die Nachricht wird
+zurückgestellt und der Pool neu aufgebaut.
+
+## HTML-Inhalte
+
+`EmailTemplate` füllt ein hinterlegtes HTML-Snippet — eines aus HOCON,
+einer Datenbankzeile oder einer Datei, die jemand im Betrieb pflegt:
+
+```ts
+import { EmailTemplate, rawHtml } from 'actor-ts/io';
+
+const alert = new EmailTemplate('<h1>{{title}}</h1><p>{{detail}}</p>');
+
+const html = alert.clone()
+  .setValue('title', 'Disk almost full')
+  .setValue('detail', report)          // escaped, whatever `report` contains
+  .render();
+
+bridge.tell({ kind: 'send', email: { to: 'oncall@example.com', html } });
+```
+
+Werte werden standardmäßig HTML-escaped.  Der einzige Ausweg ist die
+`SafeHtml`-Markierung, die auch der Rest des Frameworks verwendet —
+`setValue('row', rawHtml(fragment))` fügt unverändert ein und macht das
+an der Aufrufstelle sichtbar.
+
+`setValue` mit einem Namen, den das Template nicht deklariert, wirft einen
+Fehler, und `render` wirft, solange noch ein Platzhalter ungesetzt ist —
+unter Nennung aller.  Beide Fehler würden sonst erst in einer Mail
+auffallen, die bereits versendet ist.
+
+`EmailTemplate` ist das Mittel der Wahl, wenn das Markup ein **String zur
+Laufzeit** ist; steht es als Literal im Code, ist das Tagged Template
+`html` das bessere Werkzeug und kommt ohne Platzhalter aus.  Die Klasse
+ist bewusst logikfrei — keine Schleifen, keine Bedingungen —, ein
+wiederholtes Fragment wird also mit `html` gebaut und als
+`SafeHtml`-Wert übergeben.
+
+## HOCON
+
+Einstellungen werden mit der üblichen Rangfolge aufgelöst — explizite
+Optionen schlagen HOCON, HOCON schlägt die eingebauten Standardwerte.  Der
+Konfigurationsnamensraum ist `actor-ts.io.broker.email-bridge`:
+
+```hocon
+actor-ts.io.broker.email-bridge {
+  imap {
+    host                    = "imap.example.com"
+    port                    = 993
+    secure                  = true
+    user                    = "alerts@example.com"
+    password                = ${?ACTOR_TS_IMAP_PASSWORD}
+    mailbox                 = "INBOX"
+    onProcessed             = "markSeen"
+    pollIntervalMs          = 30s
+    maxIdleTimeMs           = 5m
+    maxMessageBytes         = 1048576
+    acknowledgmentTimeoutMs = 30s
+  }
+  smtp {
+    host           = "smtp.example.com"
+    port           = 587
+    secure         = false
+    user           = "alerts@example.com"
+    password       = ${?ACTOR_TS_SMTP_PASSWORD}
+    from           = "alerts@example.com"
+    maxConnections = 5
+    maxMessages    = 100
+  }
+}
+```
+
+`target` hat kein Blatt — eine `ActorRef` kann nur aus dem Code kommen.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Die Blöcke `imap` und `smtp` ersetzen, sie mischen nicht">
+  ```ts
+  // HOCON sets imap.host + imap.mailbox; this replaces BOTH
+  EmailBridgeOptions.create().withImap({ host: 'other.example.com' })
+  ```
+  Optionen werden nur eine Ebene tief zusammengeführt.  Eine im Code
+  übergebene Gruppe ersetzt die konfigurierte Gruppe daher vollständig,
+  statt einzelne Felder zu überschreiben.  Setze die ganze Gruppe in der
+  Ebene, der sie gehört.
+</Aside>
+
+<Aside type="caution" title="Passwörter sind einfache Konfigurationswerte">
+  Setze sie aus der Umgebung ein (`password = ${?ACTOR_TS_IMAP_PASSWORD}`),
+  statt sie einzuchecken.  Eine abgelehnte Anmeldung lässt den
+  Verbindungsaufbau scheitern, worauf die Reconnect-Mechanik mit Backoff
+  reagiert — sieh dir den ersten Verbindungsfehler an, nicht die
+  Wiederholungen.
+</Aside>
+
+## Peer-Abhängigkeiten
+
+```bash
+npm install imapflow nodemailer
+# or: bun add imapflow nodemailer
+```
+
+Beide sind optional und werden beim ersten Verbinden geladen — importiert
+wird nur die Hälfte, die du konfiguriert hast.  Eine reine Sende-Bridge
+zieht `imapflow` also nie herein.
+
+## Wann die E-Mail-Bridge passt
+
+1. **Alarmierung nach außen** — der Dienst hat ohnehin
+   SMTP-Zugangsdaten, und die Rufbereitschaft will Mail statt eines
+   weiteren Dashboards.
+2. **Mail als Eingangswarteschlange** — Ticket-Einreichungen,
+   Bounce-Verarbeitung oder jeder Ablauf, dessen Eingangstür eine Adresse
+   ist; die Dauerhaftigkeit liefert das Postfach selbst.
+3. **Anbindung eines Systems, das nur Mail spricht** — Geräte und
+   Anbieter, die Benachrichtigungsmails senden und sonst nichts.
+
+Für alles mit hohem Volumen oder knapper Latenz ist ein echter Broker das
+richtige Werkzeug: IMAP-Polling bewegt sich im Sekundenbereich, und ein
+Postfach ist keine Queue.
+
+## Wie geht es weiter
+
+- **[I/O-Überblick](/de/io/overview/)** — das große Bild.
+- **[BrokerActor-Basis](/de/io/broker-actor-base/)** — der gemeinsame
+  Lebenszyklus, Reconnect und Pufferung.
+- **[AMQP](/de/io/amqp/)** / **[NATS JetStream](/de/io/jetstream/)** —
+  dieselbe Quittierungsform auf einem echten Broker.

@@ -118,6 +118,21 @@ CREATE TABLE events (
 -- events_tags, snapshots, durable_state: wie bei Postgres, mit den Typen oben
 ```
 
+## Tag-Queries
+
+`MariaDbQuery` liest den `events_tags`-Index genau so wie
+`PostgresQuery` — dieselben Statements, dieselben drei Pläne, nur die
+Platzhalter unterscheiden sich.  Die Formen stehen unter
+[Tag-Queries auf der Postgres-Seite](/de/persistence/journals/postgres/#tag-queries).
+
+```ts
+import { MariaDbJournal, MariaDbJournalOptions, MariaDbQuery } from 'actor-ts/persistence';
+
+const journalOptions = MariaDbJournalOptions.create().withUrl(process.env.MARIADB_URL!);
+const eventsJournal = new MariaDbJournal(journalOptions);
+const query = new MariaDbQuery(eventsJournal);
+```
+
 ## Dialekt-Unterschiede ggü. Postgres
 
 Das Verhalten ist identisch; das SQL unterscheidet sich:
@@ -169,6 +184,18 @@ import { Aside } from '@astrojs/starlight/components';
   Der `events_tags`-Primary-Key umfasst zwei `VARCHAR(255)`-Spalten.  Bei
   `utf8mb4` im Hinterkopf behalten, wenn du das Schema anpasst — sehr lange
   eigene Identifier können an InnoDBs Index-Größen-Limit stoßen.
+</Aside>
+
+<Aside type="caution" title="Tags vergleichen im Index case-insensitiv">
+  `tag` ist ohne explizites `COLLATE` deklariert und erbt damit den
+  Server-Standard — auf einer Standardinstallation case-insensitiv.  Der
+  Index liefert deshalb auch Zeilen für Tags, die sich nur in der
+  Groß-/Kleinschreibung unterscheiden.  Die Ergebnisse bleiben korrekt:
+  `MariaDbQuery` prüft jede Zeile erneut gegen die Tag-Liste des Events
+  selbst, und die vergleicht exakt.  Der Preis ist ein weniger selektiver
+  Vorfilter als bei derselben Query auf Postgres.  Deklariere die Spalte
+  als `COLLATE utf8mb4_bin`, wenn du das Schema vorab anlegst und den
+  Index die ganze Arbeit machen lassen willst.
 </Aside>
 
 ## Wie geht's weiter

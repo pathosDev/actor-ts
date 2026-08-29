@@ -73,6 +73,19 @@ export class EventStream {
   private subs: Subscription[] = [];
 
   /**
+   * A single observer that sees every published event (#553).
+   *
+   * DevTools' bus viewer needs the events themselves, not a subscription to
+   * one channel — and it has to see them even when nothing else is
+   * listening, which is why this is checked BEFORE the empty-stream return
+   * below.  A system nobody observes pays one null check per publish.
+   *
+   * One slot rather than a list: this is a debugger seam, and a second
+   * observer would be a second DevTools.
+   */
+  private observer: ((event: object) => void) | null = null;
+
+  /**
    * Optional logger used to surface predicate failures.  Assigned by
    * `ActorSystem` once its main logger has been constructed; tests
    * that instantiate `EventStream` directly can leave it `undefined`
@@ -156,15 +169,20 @@ export class EventStream {
    * cleanup that believed it had done its job (#645, #763).
    */
   unsubscribe<TEvent>(subscriber: ActorRef, channel?: EventChannel<TEvent>): boolean {
+    // Resolved *before* the emptiness check below, not after: an invalid
+    // channel has to throw whether or not anything is subscribed.  Otherwise a
+    // cleanup with a typo in it reports success against an empty stream and
+    // only starts failing once somebody subscribes — which is the shape of
+    // #645 and #763, one layer up.
+    const scoped = channel !== undefined ? resolveChannel(channel, 'unsubscribe') : null;
     const before = this.subs.length;
-    if (channel !== undefined) {
-      const { channelId } = resolveChannel(channel, 'unsubscribe');
-      this.subs = this.subs.filter(
-        (s) => !(s.subscriber.equals(subscriber) && s.channelId === channelId),
-      );
-    } else {
-      this.subs = this.subs.filter((s) => !s.subscriber.equals(subscriber));
-    }
+    // Nothing subscribed: `filter` would allocate a second empty array to say
+    // so, and a `false` return needs no array at all.  Every actor stop calls
+    // this to drop the subscriptions it may never have made.
+    if (before === 0) return false;
+    this.subs = scoped !== null
+      ? this.subs.filter((s) => !(s.subscriber.equals(subscriber) && s.channelId === scoped.channelId))
+      : this.subs.filter((s) => !s.subscriber.equals(subscriber));
     return this.subs.length !== before;
   }
 
@@ -201,7 +219,42 @@ export class EventStream {
    * every actor stop and every dead-lettered `tell`, so it turned `ref.tell`,
    * an API that does not throw by contract, into one that did.
    */
+  /**
+   * Whether anything is listening at all.
+   *
+   * Coarse on purpose — any channel, any subscriber.  Callers use it to skip
+   * *constructing* an event, which is only sound when the answer covers every
+   * channel; a per-channel query would let a caller skip building an event a
+   * different channel's subscriber was entitled to.  With DevTools attached the
+   * cost comes back, which is the intended trade.
+   */
+  get hasSubscribers(): boolean { return this.subs.length > 0; }
+
+  /**
+   * Install the observer, replacing any previous one.  `null` removes it.
+   *
+   * @internal  DevTools only — not part of the public bus contract.
+   */
+  _observe(observer: ((event: object) => void) | null): void {
+    this.observer = observer;
+  }
+
   publish(event: object): void {
+    if (this.observer !== null) {
+      // Guarded like any subscription: a bug in a diagnostic must not reach
+      // `ref.tell`, which does not throw by contract.
+      try {
+        this.observer(event);
+      } catch {
+        /* an observer is an observer; its failures are its own */
+      }
+    }
+    // The snapshot below exists to fix the recipient set for the duration of
+    // the loop.  An empty stream has no set to fix, and this is the ordinary
+    // state of a system nobody is observing — yet `publish` runs on every
+    // actor start, every actor stop, every restart and every dead letter, so
+    // the copy was an allocation per lifecycle event to iterate nothing.
+    if (this.subs.length === 0) return;
     for (const subscription of [...this.subs]) {
       try {
         if (!this.accepts(subscription, event)) continue;

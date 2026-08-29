@@ -18,6 +18,12 @@ export {
   BrokerBufferOverflow,
   BrokerNotConnected,
 } from './BrokerEvents.js';
+// Client-side TLS material (#743).  `TlsTransportOptionsType` is the shape
+// every `withTls` on this side takes; re-exported here because reaching it
+// through `actor-ts/cluster` to configure a message broker made no sense.
+export { toBrokerDriverTls, findBrokerTlsProblem } from './BrokerTls.js';
+export type { BrokerDriverTlsOptions } from './BrokerTls.js';
+export type { TlsTransportOptionsType } from '../../runtime/tcp/TcpBackend.js';
 
 // Phase 1 actors
 export { TcpSocketActor } from './TcpSocketActor.js';
@@ -25,7 +31,12 @@ export type {
   TcpSocketCommand,
   TcpOutbound,
 } from './TcpSocketActor.js';
-export { TcpSocketOptions, TcpSocketOptionsBuilder, TcpSocketOptionsValidator } from './TcpSocketOptions.js';
+export {
+  DEFAULT_TCP_KEEP_ALIVE_MS,
+  TcpSocketOptions,
+  TcpSocketOptionsBuilder,
+  TcpSocketOptionsValidator,
+} from './TcpSocketOptions.js';
 export type { TcpSocketOptionsType } from './TcpSocketOptions.js';
 // Framing is shared by the client and the listener, so it lives on its own.
 export type { TcpFraming, TcpFrame } from './TcpFraming.js';
@@ -92,6 +103,9 @@ export type {
   KafkaCommand,
   KafkaRecord,
   KafkaPublish,
+  // Test seams (re-exported so subclasses can satisfy the mock shape).
+  KafkajsModule,
+  KafkaConstructor,
 } from './KafkaActor.js';
 export { KafkaOptions, KafkaOptionsBuilder, KafkaOptionsValidator } from './KafkaOptions.js';
 export type { KafkaOptionsType } from './KafkaOptions.js';
@@ -101,6 +115,11 @@ export type {
   AmqpDelivery,
   AmqpPublish,
   AmqpQueueBinding,
+  // Test seams (re-exported so subclasses can satisfy the mock shape).
+  AmqpModuleLike,
+  AmqpConnectionLike,
+  AmqpChannelLike,
+  AmqpRawMessage,
 } from './AmqpActor.js';
 export { AmqpOptions, AmqpOptionsBuilder, AmqpOptionsValidator } from './AmqpOptions.js';
 export type { AmqpOptionsType } from './AmqpOptions.js';
@@ -242,6 +261,12 @@ export type {
   RedisStreamsCommand,
   RedisStreamEntry,
   RedisStreamPublish,
+  // Test seams (re-exported so subclasses can satisfy the mock shape).
+  IoredisModuleLike,
+  IoredisConstructor,
+  IoredisClientLike,
+  IoredisClientEvent,
+  IoredisClientOptionsLike,
 } from './RedisStreamsActor.js';
 export { RedisStreamsOptions, RedisStreamsOptionsBuilder, RedisStreamsOptionsValidator } from './RedisStreamsOptions.js';
 export type { RedisStreamsOptionsType } from './RedisStreamsOptions.js';
@@ -252,3 +277,60 @@ export type {
 } from './SseActor.js';
 export { SseOptions, SseOptionsBuilder, SseOptionsValidator } from './SseOptions.js';
 export type { SseOptionsType } from './SseOptions.js';
+
+// Email bridge (#1133) — IMAP IDLE in, pooled SMTP out.
+export { EmailBridgeActor, isMessageLevelSmtpFailure, pickTextParts } from './EmailBridgeActor.js';
+export type {
+  EmailBridgeCommand,
+  // The variants too, not just the union: the target actor handles them one
+  // by one, and a handler takes the named variant type (#1095).
+  EmailSendCommand,
+  EmailAcknowledgmentCommand,
+  EmailNegativeAcknowledgmentCommand,
+  EmailMessage,
+  EmailSend,
+  EmailAddress,
+  EmailAttachment,
+  EmailTextPart,
+  // Test seams (re-exported so a fake can satisfy the driver shape).
+  ImapFlowModuleLike,
+  ImapFlowClientLike,
+  ImapFlowOptionsLike,
+  ImapEnvelopeLike,
+  ImapEnvelopeAddressLike,
+  ImapBodyStructureLike,
+  ImapFetchedMessageLike,
+  ImapSearchQueryLike,
+  NodemailerModuleLike,
+  NodemailerTransportOptionsLike,
+  NodemailerMessage,
+  NodemailerAttachment,
+  SmtpTransporterLike,
+} from './EmailBridgeActor.js';
+export {
+  DEFAULT_EMAIL_ACKNOWLEDGMENT_TIMEOUT_MS,
+  DEFAULT_EMAIL_MAX_MESSAGE_BYTES,
+  DEFAULT_IMAP_MAILBOX,
+  DEFAULT_IMAP_MAX_IDLE_TIME_MS,
+  DEFAULT_IMAP_POLL_INTERVAL_MS,
+  DEFAULT_IMAP_PORT,
+  DEFAULT_SMTP_MAX_CONNECTIONS,
+  DEFAULT_SMTP_MAX_MESSAGES,
+  DEFAULT_SMTP_PORT,
+  EmailBridgeOptions,
+  EmailBridgeOptionsBuilder,
+  EmailBridgeOptionsValidator,
+} from './EmailBridgeOptions.js';
+export type {
+  EmailBridgeOptionsType,
+  EmailImapOptionsType,
+  EmailSmtpOptionsType,
+  EmailProcessedAction,
+} from './EmailBridgeOptions.js';
+export { EmailTemplate, EmailTemplateError } from './EmailTemplate.js';
+export type { EmailTemplateValue } from './EmailTemplate.js';
+// Re-exported beside the template: filling one with markup on purpose goes
+// through the same `SafeHtml` brand the HTTP side uses, and reaching for it
+// should not mean importing from `actor-ts/http` to send a mail.  Escaping
+// itself is not re-exported — the template already does it.
+export { rawHtml, html, SafeHtml } from '../../util/Html.js';

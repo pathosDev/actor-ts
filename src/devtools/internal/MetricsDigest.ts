@@ -12,9 +12,13 @@ import type { HandlerLatencySummary } from '../protocol/index.js';
 
 /**
  * Total of every series in a counter family.  Labelled families
- * (`actor_mailbox_dropped_total` carries class/path/reason) collapse to
- * the one number the dashboard shows; an absent family reads 0, which
- * is what "nothing has happened yet" means for a counter.
+ * (`actor_mailbox_dropped_total` carries class/reason) collapse to the
+ * one number the dashboard shows; an absent family reads 0, which is
+ * what "nothing has happened yet" means for a counter.
+ *
+ * Summing across tuples is why the dashboard was untouched by #658
+ * dropping that family's `path` label: the digest never read a label,
+ * only the values.
  */
 export function counterTotal(samples: ReadonlyArray<MetricSample>, name: string): number {
   let total = 0;

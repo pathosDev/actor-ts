@@ -267,7 +267,7 @@ erreichen.
 | Massenhaft geöffnete Sockets, die gar nichts senden, um die Obergrenze zu füllen | Handshake-Deadline auf jedem angenommenen Socket, damit kein Slot unbefristet gehalten wird |
 | Peer lässt die Registries eines Knotens unbegrenzt wachsen | Obergrenzen pro Registry in PubSub und Receptionist |
 | Adresse beansprucht, bevor der zugehörige Knoten existiert | Enge Versions-Skew-Grenze auf jeder gegossipten Member-Version |
-| Vom Draht mitgeschnittener Gossip-Frame wird später erneut gesendet | Sequence pro Sender — ein Frame muss den zuletzt akzeptierten überbieten |
+| Vom Draht mitgeschnittener Gossip-Frame wird später erneut gesendet | Sequence pro Sender — ein Frame muss den zuletzt von diesem Sender akzeptierten überbieten (teilweise: erst wenn einer akzeptiert wurde) |
 | Gefälschte Discovery-Antwort lenkt den Bootstrap um | mTLS, dazu `pinnedAddresses` am Seed-Provider |
 | Kompromittierter Pod im Cluster | Application-Level-Auth (hier nicht abgedeckt) |
 
@@ -353,7 +353,46 @@ Socket-Callback des Runtimes entkommen.
 
 Frame-Kinds, die Extensions registrieren (Sharding, PubSub,
 Receptionist, DistributedData, DevTools), passieren diese
-Schicht und prüfen ihr eigenes Payload selbst.
+Schicht und prüfen ihr eigenes Payload selbst. Replicated Event
+Sourcing ebenso, dessen Event-Envelopes über PubSub laufen statt
+über einen eigenen Frame-Kind — siehe
+[was eine Replica ihren Peers glaubt](/de/persistence/replicated-event-sourcing/overview/#was-eine-replica-ihren-peers-glaubt).
+
+Validierung ist nur die Hälfte. Ein Frame kann völlig wohlgeformt
+sein und trotzdem **für einen Node sprechen, der ihn nicht gesendet
+hat**, und diese Fehlerklasse wird in dieser Codebase überall gleich
+geschlossen: die Identität kommt aus der Verbindung, nicht aus dem
+Payload. Ein `leave` darf nur den Node abmelden, der es gesendet hat;
+Gossip ersetzt den Beitrag des sendenden Peers und den sonst
+niemandes; eine Sharding- oder Singleton-Direktive wird nur befolgt,
+wenn sie vom Envelope-Handler des jeweiligen Pfads eingepackt ankam —
+der einzigen Stelle, an der die authentifizierte Adresse existiert;
+und die `replica` eines replizierten Events wird gegen den Node
+gehalten, der es publiziert hat. Ein Frame, der einen Actor
+stattdessen über die generische Pfadauflösung erreicht — die nichts
+entfernt, aber auch keinen Sender mitführt —, gilt als nicht
+authentifiziert und nicht als vertrauenswürdig.
+
+Der Zustand eines CRDTs ist die eine Stelle, an die diese Regel
+nicht reicht. DistributedData prüft ein dekodiertes Payload auf
+**Form und Plausibilität**: ein Counter-Slot muss eine
+nichtnegative Ganzzahl höchstens `MAX_COUNTER_SLOT` sein
+(≈ 2,2e12 — der größte Wert pro Slot, bei dem `value()` eines
+vollen Counters noch eine exakte Ganzzahl ist), ein
+Register-Timestamp darf höchstens fünf Minuten vor der lokalen
+Zeit liegen, eine Collection ist auf 4 096 Einträge gedeckelt,
+und ein `__proto__`-Key wird abgewiesen. Was es **nicht** prüft,
+ist, ob der sendende Peer überhaupt etwas in dem Slot zu suchen
+hatte, den er beschrieben hat. Grow-only-Counter mergen per
+Maximum, also kann jeder Peer, der gossipen darf, **jeden**
+Replika-Slot innerhalb dieser Schranken anheben — der besitzende
+Node bekommt ihn nicht wieder herunter, der Wert wandert in den
+durablen Record, und `delete(key)` ist Best-Effort, weil ein Peer,
+der den Key noch hält, ihn zurückgossipt. Ein
+DistributedData-Counter ist damit genau so vertrauenswürdig wie
+die Menge der Peers, die du auf die Leitung lässt — was das
+mTLS-Setup oben für einen Quota- oder Billing-Counter zur
+Voraussetzung macht statt zur Härtungsmaßnahme.
 
 Jede Abweisung wird auf `WARN` mit Peer und beanstandetem Feld
 geloggt, damit ein verworfener Frame diagnostizierbar bleibt —
@@ -456,7 +495,7 @@ den Gossip-Pfad genauso wie für lokale Aufrufe:
 | PubSub-Topics | `cluster.pub-sub.max-topics` | `10000` |
 | PubSub-Remote-Ansprüche pro Topic | `cluster.pub-sub.max-remote-nodes-per-topic` | `1000` |
 | Receptionist-Subscriber pro Key | `cluster.receptionist.max-subscribers-per-key` | `1000` |
-| Receptionist-Subscriber insgesamt | `cluster.receptionist.max-subscribers-total` | `10000` |
+| Receptionist-Subscriptions insgesamt | `cluster.receptionist.max-subscriptions-total` | `10000` |
 
 Ein Anspruch über einer Grenze wird verworfen und geloggt, statt
 auf der Wire abgewiesen zu werden — der Frame ist wohlgeformt,
@@ -598,6 +637,109 @@ zum Zertifikat des Peers passen, und genau das gibt diesen Regeln
 ein echtes Subjekt.
 :::
 
+### Eine Sharding-Direktive braucht den Koordinator dahinter
+
+Dieselbe Überlegung reicht eine Schicht höher, in die
+Extensions, deren Frames die Wire-Kante passieren und ihre
+Payload selbst validieren. Eine `ShardRegion` behandelte jede
+Nachricht, deren `kind` mit `sharding.` begann, als
+Framework-Direktive — inklusive der fünf, die ausschließlich
+der Koordinator aussprechen darf. `HandOff` stoppt jede Entity
+unter einem Shard; `ShardHome` verschiebt den Besitz;
+`RememberedEntities` legt Entities vorab an; `ShardMapUpdate`
+veröffentlicht eine Allokationskarte an jeden lokalen
+Subscriber, DevTools-Panel und Anwendungs-Listener inklusive.
+Ein kleiner Frame von jedem, der `hello` abgeschlossen hatte,
+löste das aus — beliebig oft.
+
+Die Region *konnte* gar nicht prüfen: Sharding registrierte
+keinen pfadgebundenen Envelope-Handler, ein eingehender Frame
+erreichte den Actor also über die generische Pfadauflösung, und
+die stellt ohne jeden Absender zu. Die Region beansprucht jetzt
+ihren eigenen Pfad im Envelope-Router, der dem Handler den Peer
+der **Verbindung** übergibt, und verpackt den Frame in eine
+Klasseninstanz, bevor sie ihn in die eigene Mailbox legt — eine
+Form, die ein JSON-Wire-Body nicht erzeugen kann, sodass die
+Direktiven-Arme einen geroutet zugestellten Frame von einem
+gefälschten unterscheiden können. Ein getaggtes
+`{ kind }`-Objekt hätte nicht gereicht: Das lässt sich aus einer
+Payload wortgleich nachbilden.
+
+Beide Hälften tragen. Ohne die Wrapper-Prüfung verfehlt ein
+nicht-kanonisch adressierter Frame — ein Slash am Ende, ein
+doppelter Trenner — den exakten String-Lookup des Handlers,
+löst sich über den Actor-Baum trotzdem auf dieselbe Region auf
+und kommt unverpackt an. Und ohne die Herkunftsprüfung ist ein
+authentifizierter Peer schlicht jedes Cluster-Mitglied, sodass
+jedes Mitglied jeder Region Direktiven erteilen könnte.
+
+Verworfene Frames werden gedroppt und auf `WARN` geloggt. Der
+lokale Zweig des Koordinators baut denselben Wrapper, ein
+Ein-Node-Cluster rebalanciert also genau wie zuvor.
+
+### Eine Region kann nur für ihren eigenen Node sprechen
+
+Dieselbe Lücke lief auch in die andere Richtung, und dort war
+sie teurer. Jede Nachricht, die ein `ShardCoordinator`
+annimmt, ist eine Aussage über den **eigenen** Node des
+Absenders: welche Shards seine Region hostet, dass seine Region
+weg ist, dass ein Hand-off fertig ist, wohin ein Shard-Home oder
+eine Statistik-Antwort geht. Der Koordinator las das alles aus
+der Payload. Sein einziges Gate war `isLeader()` — plus, mit
+Lease, das gehaltene Lease — und das beantwortet *„bin ich der
+autoritative Koordinator?"*, nie *„darf dieser Absender für jene
+Region sprechen?"*.
+
+Ein einziges wohlgeformtes `sharding.Register` mit der Adresse
+eines anderen riss damit jeden Shard eines Typs an sich, und ein
+`sharding.RegionTerminated` warf dessen Region hinaus. Die
+Räumung ist die schlimmere Hälfte: Sie verschickt kein
+`HandOff`, das Opfer behält seine Shard-Actors und seine
+Entities also im Betrieb. Ergebnis sind zwei Besitzer für einen
+lebenden Shard — dieselbe Entity-Id zweimal instanziiert und,
+bei einer persistenten Entity, zwei Schreiber auf einer
+`persistenceId`.
+
+Die Herkunftsprüfung der Region oben mildert das nicht, denn der
+Angreifer schickt gar kein `ShardHome`. Er vergiftet die
+Allokationskarte des Koordinators mit einem gefälschten Frame,
+und der *echte* Koordinator verschickt die Umleitung dann selbst
+— vom Node des Leaders, in einem Wrapper, den jede Region
+zu Recht annimmt. Eine Fälschung, jeder weitere Hop echt.
+
+Der Koordinator beansprucht jetzt seinen eigenen well-known Pfad
+im Envelope-Router und wendet dieselben zwei Bedingungen an: Der
+Frame kam im Wrapper an, und die Adresse in seiner Payload ist
+die des Peers. Beide Richtungen der Register-Schleife sind damit
+attribuiert — was auch korrigiert hat, wie eine Region den
+Koordinator adressiert: über den Systemnamen des **Leaders**,
+nicht über den eigenen, denn ein Actor-Pfad trägt das System, zu
+dem er gehört.
+
+`hostedShards` ist obendrein begrenzt und gedeckelt. Es war die
+einzige Eingabe des Koordinators, deren *Größe* der Aufrufer
+bestimmte — ein `Register` schrieb einen Allokationseintrag pro
+Array-Element, ohne Bereichsprüfung und ohne Längenlimit, in
+Zustand, der an jede Region gesendet und in den
+Coordinator-State-Store persistiert wird; das Wachstum überlebte
+also Neustarts. Einträge außerhalb `0 .. numShards - 1` werden
+jetzt verworfen, und die akzeptierte Menge kann `numShards` nicht
+überschreiten.
+
+<Aside type="caution" title="Was das ist — und was nicht">
+  Unter mTLS ist der Peer zertifikatsgestützt — der
+  `hello`-Handshake weist eine behauptete Adresse ab, für die
+  das Peer-Zertifikat nicht bürgt —, der Vergleich mit der
+  Payload **ist** dort also Authentifizierung. In einem
+  Klartext-Cluster ist er Defence in Depth: Er verhindert, dass
+  ein Mitglied für ein *anderes* Mitglied spricht, nicht, dass
+  es für sich selbst spricht. Vier Koordinator-Eingangsarten
+  (`EntityStarted`, `EntityStopped`, `GetRememberedEntities`,
+  `BeginHandOffAcknowledgment`) tragen überhaupt keine Adresse,
+  von ihnen lässt sich also nur Attribution verlangen — die
+  darf weiterhin jedes authentifizierte Mitglied senden.
+</Aside>
+
 ### Eine Version kann keine Adresse im Voraus beanspruchen
 
 Die Version ist eine logische Uhr, gesät aus `Date.now()` — und
@@ -651,12 +793,21 @@ zweiten Gossip-Frame des Knotens aufgehoben zu werden.
 Abgewiesene Records werden einmal pro Frame gemeldet, nicht
 einmal pro Record — eine WARN-Zeile mit Peer und Anzahl, dazu der
 Zähler `cluster_gossip_records_refused_total{reason}`, dessen
-Label `reason` auf `version-skew`, `map-cap`, `timestamp-skew`
-und `replayed-frame` geschlossen ist. Pro Record zu loggen würde
-einem Peer Log-Verstärkung schenken statt des Wachstums, das er
-gerade verloren hat.
+Label `reason` auf `version-skew`, `map-cap`, `timestamp-skew`,
+`replayed-frame` und `self-claim` geschlossen ist. Pro Record zu
+loggen würde einem Peer Log-Verstärkung schenken statt des
+Wachstums, das er gerade verloren hat.
 
-### Ein mitgeschnittener Frame lässt sich nicht erneut abspielen, solange sein Absender Member ist
+`self-claim` ist die Regel von oben, aus Sicht des Zählers: ein
+Peer behauptet einen Status für den empfangenden Knoten, der
+weder der bereits gehaltene ist noch die Beförderung nach `up`
+durch den Leader. Dass ein Peer den Status zurückspiegelt, den der
+Knoten *tatsächlich* hält, ist der gewöhnliche Inhalt jeder
+Gossip-Runde — der eigene Record kommt in jedem Frame zurück —, und
+genau der wird abgewiesen, ohne gezählt oder geloggt zu werden. In
+einem gesunden Cluster steht der Zähler damit weiterhin auf null.
+
+### Ein mitgeschnittener Frame lässt sich nicht bei einem Empfänger abspielen, der von seinem Absender gehört hat
 
 Ein Gossip-Frame ist eine Momentaufnahme der Member-Map, und die
 Version eines Members bewegt sich nur, wenn sich sein Status
@@ -683,35 +834,120 @@ Autor stempelt — beim Start aus dessen Wanduhr gesetzt und pro
 Frame um eins erhöht — und ein Empfänger merkt sich die höchste,
 die er von jedem Verbindungs-Peer akzeptiert hat. Ein Frame, der
 diese Marke nicht überbietet, wird als Ganzes verworfen, bevor
-ein einziger Record darin angesehen wird. Es gibt keinen
-Stellknopf: verglichen wird ein Peer mit *sich selbst*, das
-braucht kein Uhren-Skew-Budget. Und eine Sequence, die zu weit
-vor der Uhr des Empfängers liegt, um plausibel zu sein, wird zwar
-gemerged, aber nie als Marke übernommen — sonst würde ein
-einziger Frame mit `Number.MAX_SAFE_INTEGER` den echten Knoten
-für immer verstummen lassen, genau der Exploit, den die
-Versionsgrenze oben verhindert.
+ein einziger Record darin angesehen wird. Der Vergleich selbst
+braucht keinen Stellknopf: verglichen wird ein Peer mit *sich
+selbst*, damit kommt kein Uhren-Skew-Budget ins Spiel.
 
-Zwei Dinge schließt das **nicht**. Erstens einen Peer, der sich
+Die Marke wird an genau einer Stelle geschrieben — im Gossip-Pfad,
+während er einen Frame annimmt — sie existiert also für einen Peer,
+von dem dieser Knoten einen Frame angenommen hat, und für keine
+andere Adresse. Das ist die Grenze, und das dritte Restrisiko
+unten ist das, was außerhalb davon liegt.
+
+Eine Sequence muss außerdem **plausibel** sein — eine endliche
+Zahl, die nicht weiter vor der Uhr des Empfängers liegt als
+`maxVersionSkewMs`, dasselbe Budget, das eine gegossipte Version
+bekommt, denn die Zahl wird aus der Wanduhr des Autors gestempelt.
+Ein Frame außerhalb dieses Budgets wird abgewiesen, genau wie eine
+Wiederholung.
+
+Angefangen hat das als die schwächere Regel: der Frame wurde
+gemerged, und nur das *Übernehmen* seiner Zahl als Marke wurde
+verweigert — mit dem Argument, ein Frame mit
+`Number.MAX_SAFE_INTEGER` könne kein Mitschnitt eines echten
+Frames sein. Gefälscht ist bei diesem Angriff aber nur die
+*Sequence*. Das `members`-Array ist weiterhin der Mitschnitt, und
+nichts auf diesem Draht bindet beides aneinander — ein
+mitgeschnittener Frame mit einem umgeschriebenen Feld wurde also
+gemerged, ließ die Marke unangetastet und wurde deshalb bei jeder
+Zustellung erneut gemerged, unbegrenzt, gegen einen Empfänger, der
+eine Marke für einen noch lebenden Absender hielt. Ihn abzuweisen
+kostet nichts: die Marke bleibt dort, wo der letzte plausible
+Frame sie hinterlassen hat, der nächste Frame des echten Knotens
+überbietet sie also weiterhin und landet. Den echten Knoten für
+immer verstummen zu lassen — der Exploit, den die Versionsgrenze
+oben verhindert — ist damit von beiden Seiten geschlossen statt
+von einer.
+
+Eine Adresse trägt zusätzlich eine **Inkarnation**: welcher
+*Prozess* unter diesem `system@host:port` antwortet, einmal pro
+`Cluster.join` geprägt. Sie wird bewusst mitgeführt und noch nicht
+ausgewertet. Das Feld ist auf dem Draht optional, damit ein Knoten
+jeder der beiden Versionen einen der anderen versteht — und ein
+optionales Feld umgeht man durch *Weglassen*, eine auf eine
+Abweichung gestützte Ablehnung wäre also eine, aus der ein
+Angreifer aussteigt und in die ein legitimer Peer der Vorversion
+hineinläuft. Das Feld verpflichtend zu machen bricht alle acht
+adresstragenden Frame-Felder auf einmal und wartet auf die
+Versionierung des Wire-Protokolls. Aus `toString`, `equals` und
+`compareTo` bleibt es heraus, an der Identität eines Knotens
+ändert sich also nichts.
+
+Der eine Vergleich, der keine Einigung braucht, wird gezogen: Ein
+Record, den ein Peer *über diesen Knoten* schickt, behält die
+eigene Inkarnation dieses Knotens. Die Beförderung durch den
+Leader ist die einzige Aussage über sich selbst, die ein Knoten
+annimmt, und sie wird als Ganzes gemerged, Adresse inklusive —
+ohne diese Ersetzung wäre der Identifikator des lokalen Records
+also das, was der letzte befördernde Peer gerade behauptet hat.
+
+Drei Dinge schließt das **nicht**. Erstens einen Peer, der sich
 Standing erworben hat und einen *frischen* Frame komponiert, der
 eine gelöschte Adresse mit ihrer alten Version nennt: Das ist eine
-Fälschung, kein Replay, und um sie von einer echten
-Wiederentdeckung zu unterscheiden, braucht die Adresse selbst
-eine Inkarnationsidentität — der Neustart eines Knotens muss ein
-*anderes* Member unter demselben `host:port` sein.
+Fälschung, kein Replay, und um sie abzuweisen, müsste die
+Inkarnation **verpflichtend** sein statt nur mitgeführt — also
+genau der Wire-Bruch von oben.
 
-Zweitens — und es ist dieselbe fehlende Inkarnationsidentität —
-lebt die Marke nur so lange wie ihr Absender. Ein gelöschtes
-Member verliert seine Marke, und eine fehlende Marke lässt alles
-zu. Sobald also der **Absender** selbst evakuiert wurde (eine
-gewöhnliche Partition trifft Absender und Subjekt gemeinsam),
-lässt sich die mitgeschnittene Konversation in Aufnahmereihenfolge
-abspielen: Der Selbstdatensatz des Absenders wird immer
-zugelassen, wodurch er wiederbelebt *und* die Marke aus dem alten
-Frame neu gesetzt wird — und der nächste mitgeschnittene Frame
-spricht dann für das Subjekt.
+Zweitens lässt eine fehlende Marke alles zu, und es gibt drei Wege,
+keine zu haben — nur einer davon ist die Evakuierung des Absenders
+selbst. Ein gelöschtes Member verliert seine Marke, aus dem Grund
+von oben — und eine gewöhnliche Partition trifft Absender und
+Subjekt gemeinsam, dieser Weg kommt also gebrauchsfertig. Ein
+frischer oder neu gestarteter Prozess hat von Anfang an keine. Und
+ein Member, von dem man **über Dritte** erfahren hat, hatte noch
+nie eine: Gossip ist epidemisch, ein Knoten legt C also auf Bs
+Wort hin als `up` ab und hat trotzdem noch nie einen Frame *von* C
+gesehen. Im letzten Fall ist der Absender die ganze Zeit volles
+Member und nirgends wurde etwas evakuiert — deshalb lässt sich
+dieser Schutz nicht so beschreiben, dass er gilt, „solange sein
+Absender Member ist". Genau das stand vorher in diesem Abschnitt
+sowie in den Changelog- und Roadmap-Einträgen, und es war falsch.
 
-Beide Restrisiken werden separat verfolgt.
+Einen Frame von einem Peer ohne Marke abzuweisen ist nicht die
+fehlende Prüfung: Der erste Frame *jedes* Peers ist einer, ein
+Empfänger, der sie abweist, würde also nie erfahren, dass ein
+Cluster existiert. Was ein Mitschnitt aus einer leeren Marke zieht,
+ist ein Bootstrap über zwei Frames — der erste kauft Standing und
+setzt die Marke, aus seiner eigenen mitgeschnittenen Zahl, und der
+zweite überbietet sie und spricht für das Subjekt. Gegen ein über
+Dritte erfahrenes Member geht es noch kürzer, weil das Standing
+schon da ist und ein Frame genügt.
+
+Drittens, und das ist der Grund, warum die beiden oben offen
+bleiben: Nichts, was sich auf den eigenen Zähler des Absenders
+stützt, kann einen Mitschnitt von einem lebenden Frame trennen —
+beide wurden von demselben Zähler gestempelt. Was sie trennt, ist,
+*welcher Prozess* sie abgeschickt hat, und die einzige für den
+Empfänger prüfbare Aussage darüber ist die Inkarnation. Die muss
+**verpflichtend** sein, bevor eine Ablehnung darauf ruhen kann, und
+das wartet auf die Versionierung des Wire-Protokolls.
+
+Verpflichtend würde sie einen Mitschnitt einer **früheren**
+Inkarnation rundheraus abweisen — das ist der gewöhnliche
+Restart-Fall und der Großteil der Exposition. Zwei Kanten blieben
+auch dann, und sie sind es wert, genannt zu werden, damit niemand
+mehr erwartet: Ein Knoten, der heruntergefahren wurde, während er
+noch läuft, antwortet unter derselben Inkarnation, die der
+Mitschnitt trägt; und ein frisch gestarteter Empfänger hat keine
+frühere Inkarnation des Subjekts, gegen die er eine Erstsichtung
+vergleichen könnte, ein Record über ein Member, von dem er noch nie
+gehört hat, bleibt also zulässig. In einem korrekt konfigurierten
+mTLS-Cluster ist keine der beiden Kanten von außen erreichbar —
+`hello` ist an das Peer-Zertifikat gebunden — die Exposition sind
+also Plaintext- und Server-only-TLS-Deployments plus ein
+kompromittierter Peer.
+
+Alle drei Restrisiken werden separat verfolgt.
 
 ## Per-Deployment-Rezept
 

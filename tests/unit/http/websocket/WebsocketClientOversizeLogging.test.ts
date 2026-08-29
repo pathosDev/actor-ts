@@ -1,12 +1,19 @@
 /**
  * What the oversize-frame warning is allowed to say (#592).
  *
- * The line is remote-driven: a peer decides how often it is written, because
- * the drop path has no latch and no rate limit.  Whatever the URL carries is
- * therefore replayed into the log at the peer's discretion — which is why the
- * warning names a *label* (scheme, host, port, path) rather than
- * `options.url`, and why the query string goes with the userinfo: a WebSocket
- * endpoint is commonly authenticated with a `?token=…`.
+ * The line is remote-driven: a peer decides when it is written.  Whatever the
+ * URL carries is therefore replayed into the log at the peer's discretion —
+ * which is why the warning names a *label* (scheme, host, port, path) rather
+ * than `options.url`, and why the query string goes with the userinfo: a
+ * WebSocket endpoint is commonly authenticated with a `?token=…`.
+ *
+ * #750 bounded the volume of that channel without touching its content: the
+ * breach now closes the connection, so the peer gets one line per dial instead
+ * of one per frame — which is why the latch #592 also asked for was never
+ * built.  The redaction is unaffected, because a peer that provokes reconnects
+ * still decides how many lines there are.  What the close itself guarantees is
+ * pinned next door in `WebsocketClientOversizeClose.test.ts`; this suite stays
+ * on the wording.
  *
  * Driven through a fake socket rather than a real server: the size branch sits
  * in `handleInbound`, before the codec, so a real round-trip would have to
@@ -24,6 +31,7 @@ import {
   type WebsocketClientConstructor,
   type WebsocketLike,
 } from '../../../../src/http/websocket/WebsocketConstructor.js';
+import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
 type Emitted = { readonly level: string; readonly message: string };
 
@@ -84,16 +92,6 @@ class OversizeClient extends WebsocketClientActor<string, string> {
   onMessage(_message: string): void {}
 }
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function waitUntil(condition: () => boolean, timeoutMs = 4000): Promise<void> {
-  const start = Date.now();
-  while (!condition()) {
-    if (Date.now() - start > timeoutMs) throw new Error('waitUntil timed out');
-    await sleep(10);
-  }
-}
-
 describe('WebsocketClientActor — oversize-frame warning (#592)', () => {
   const systems: ActorSystem[] = [];
 
@@ -123,12 +121,15 @@ describe('WebsocketClientActor — oversize-frame warning (#592)', () => {
     systems.push(system);
     system.spawn(OversizeClient, 'client');
 
-    await waitUntil(() => socket.isOpen);
+    await awaitCondition(() => socket.isOpen, {
+      timeoutMs: 4_000,
+      label: 'the client actor opened its socket',
+    });
     return { socket, log };
   }
 
   const oversizeWarning = (log: RecordingLogger): Emitted => {
-    const warning = log.records.find((record) => record.message.includes('dropped oversize inbound frame'));
+    const warning = log.records.find((record) => record.message.includes('oversize inbound frame'));
     if (warning === undefined) {
       throw new Error(`no oversize warning among ${log.records.length} records`);
     }
@@ -139,11 +140,15 @@ describe('WebsocketClientActor — oversize-frame warning (#592)', () => {
     const { socket, log } = await connectedClient('ws-oversize');
     socket.fire('message', { data: 'x'.repeat(64) });
 
-    await waitUntil(() => log.records.some((r) => r.message.includes('dropped oversize inbound frame')));
+    await awaitCondition(
+      () => log.records.some((r) => r.message.includes('oversize inbound frame')),
+      { timeoutMs: 4_000, label: 'the oversize-frame warning was logged' },
+    );
     const warning = oversizeWarning(log);
     expect(warning.level).toBe('warn');
     expect(warning.message).toBe(
-      'WebsocketClientActor: dropped oversize inbound frame (> 8 bytes) from wss://feed.example.com/ws/orders',
+      'WebsocketClientActor: oversize inbound frame (> 8 bytes) '
+      + 'from wss://feed.example.com/ws/orders — closing with 1009',
     );
   });
 
@@ -151,7 +156,10 @@ describe('WebsocketClientActor — oversize-frame warning (#592)', () => {
     const { socket, log } = await connectedClient('ws-oversize-secrets');
     socket.fire('message', { data: 'x'.repeat(64) });
 
-    await waitUntil(() => log.records.some((r) => r.message.includes('dropped oversize inbound frame')));
+    await awaitCondition(
+      () => log.records.some((r) => r.message.includes('oversize inbound frame')),
+      { timeoutMs: 4_000, label: 'the oversize-frame warning was logged' },
+    );
     // Every line, not just the warning: the point is that this connection
     // produced no copy of the secret anywhere in the log.
     const everything = log.records.map((record) => record.message).join('\n');
@@ -166,7 +174,10 @@ describe('WebsocketClientActor — oversize-frame warning (#592)', () => {
     const { socket, log } = await connectedClient('ws-oversize-identity');
     socket.fire('message', { data: 'x'.repeat(64) });
 
-    await waitUntil(() => log.records.some((r) => r.message.includes('dropped oversize inbound frame')));
+    await awaitCondition(
+      () => log.records.some((r) => r.message.includes('oversize inbound frame')),
+      { timeoutMs: 4_000, label: 'the oversize-frame warning was logged' },
+    );
     const warning = oversizeWarning(log);
     expect(warning.message).toContain('feed.example.com');
     expect(warning.message).toContain('/ws/orders');
@@ -176,7 +187,10 @@ describe('WebsocketClientActor — oversize-frame warning (#592)', () => {
     const { socket, log } = await connectedClient('ws-oversize-under');
     socket.fire('message', { data: '"ok"' });
 
+    // An absence, so it cannot be polled: an under-cap frame must produce no
+    // warning at all.  The predicate is already false when the wait starts, and
+    // the window is what gives a spurious warning time to appear.
     await sleep(100);
-    expect(log.records.some((r) => r.message.includes('dropped oversize inbound frame'))).toBe(false);
+    expect(log.records.some((r) => r.message.includes('oversize inbound frame'))).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 ---
 title: I/O overview
-description: How actors talk to the outside world — broker actors (Kafka, MQTT, AMQP, NATS, Redis Streams, gRPC, SSE, TCP, UDP) all extend `BrokerActor`, sharing one lifecycle + reconnect + buffer pattern.
+description: How actors talk to the outside world — broker actors (Kafka, MQTT, AMQP, NATS, Redis Streams, gRPC, SSE, TCP, UDP, email) all extend `BrokerActor`, sharing one lifecycle + reconnect + buffer pattern.
 ---
 
 Actors handle in-process work cleanly; the **outside world** is
@@ -62,6 +62,7 @@ Subclasses implement three hooks (`connectImplementation`, `disconnectImplementa
 | `TcpSocketActor` | Raw TCP | Custom protocols — outbound connection. |
 | `TcpServerActor` | Raw TCP | Custom protocols — binds a port, serves every accepted connection. |
 | `UdpSocketActor` | Raw UDP | Telemetry, low-latency datagrams. |
+| `EmailBridgeActor` | IMAP (in) + SMTP (out) | Ops/alerting bridge — a mailbox as source, pooled SMTP as sink. |
 
 Each has its own page in this section.  This overview covers the
 **common pattern** they all share.
@@ -128,11 +129,16 @@ schedules a reconnect with exponential backoff.  Configurable via
     initialDelayMs: 200,
     maxDelayMs:     30_000,
     factor:         2,
+    randomFactor:   0.2,
     // maxAttempts omitted → Infinity (retry forever); set a finite
     // positive number to cap attempts.  reconnect: false disables it.
   }
 }
 ```
+
+Every delay is jittered by `1 ± randomFactor` (default ±20 %), so a
+fleet of broker actors that lost the same broker together does not
+retry in lockstep; `randomFactor: 0` opts out.
 
 Each attempt fires a `BrokerReconnectAttempt` event.  When
 `maxAttempts` is exceeded (if finite), the actor surfaces
@@ -258,6 +264,10 @@ class MyProtocolActor extends BrokerActor<MyOutbound> {
   protected async dispatchOutgoing(env: OutboundEnvelope<MyOutbound>): Promise<void> {
     // Send the payload over the connection.
   }
+  // `onReceive` is sealed by the base class, which intercepts `Terminated`.
+  protected override onCommand(command: MyCommand): void {
+    // Dispatch on the subclass's own command union.
+  }
 }
 ```
 
@@ -275,7 +285,7 @@ parts.
   [gRPC](/io/grpc/), [WebSocket client](/io/websocket/),
   [WebSocket server](/http/websocket/),
   [SSE](/io/sse/), [TCP](/io/tcp/),
-  [UDP](/io/udp/).
+  [UDP](/io/udp/), [Email bridge](/io/email-bridge/).
 - **[BrokerActor base class](/io/broker-actor-base/)** —
   the shared lifecycle and configuration.
 - **[HTTP overview](/http/overview/)** — the separate

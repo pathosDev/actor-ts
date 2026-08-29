@@ -61,7 +61,7 @@ actor-ts {
     receptionist {
       gossip-interval         = 1s
       max-subscribers-per-key = 1000
-      max-subscribers-total   = 10000
+      max-subscriptions-total   = 10000
     }
   }
 
@@ -69,6 +69,7 @@ actor-ts {
     gossip-interval             = 1s
     max-pending-quorum-requests = 1000    # 0 = no cap
     max-quorum-timeout          = 30s     # 0 = no ceiling
+    max-gossip-bytes            = 1M      # per gossip frame; 0 = no budget
   }
 
   remote {
@@ -106,6 +107,7 @@ Place this at the project root.  The framework auto-loads it on
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `system.name` | `"default"` | System name — used in actor paths and cluster identification.  Applies when `ActorSystem.create()` is called without a name; an explicit `create('billing')` wins. |
+| `system.shutdown-drain-timeout` | `2s` | How long `terminate()` lets the actors under `/user` finish queued work before the stop cascade starts.  Returns as soon as the tree is quiet, so an idle system pays a tick.  Keep it under `coordinated-shutdown.default-phase-timeout`; `0` disables draining. |
 
 ### `actor-ts.logger`
 
@@ -113,12 +115,34 @@ Place this at the project root.  The framework auto-loads it on
 | --- | --- | --- |
 | `logger.level` | `"info"` | One of `debug` / `info` / `warn` / `error` / `off`. |
 
+### `actor-ts.actor`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `actor.throughput` | `16` | User messages **one** actor handles per dispatcher turn before yielding.  Override per actor with `ActorOptions.withThroughput()`. |
+
 ### `actor-ts.dispatcher`
 
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `dispatcher.default` | `"immediate"` | `immediate` (default) / `microtask` / `throughput`. |
-| `dispatcher.throughput` | `16` | Messages a `ThroughputDispatcher` processes before yielding. |
+| `dispatcher.throughput` | `16` | Queued actor **turns** a `ThroughputDispatcher` drains per tick, across actors — not messages, and not per actor.  See `actor.throughput` above for the per-actor batch. |
+
+### `actor-ts.dead-letters`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `dead-letters.store` | `"off"` | Ordered by how much is kept: `off` = publish only, keep nothing / `metrics` = count them, keep no payload / `memory` = a bounded ring / `persistent` = also write to the journal, so the queue survives a restart. |
+| `dead-letters.max-entries` | `1000` | Letters held before the oldest is evicted.  Ignored by `off` and `metrics`, which hold none. |
+| `dead-letters.retention` | `1h` | Age letters out after this long.  `0` disables ageing and leaves `max-entries` as the only bound. |
+| `dead-letters.max-replays` | `3` | How often one letter may be replayed before it is quarantined. |
+| `dead-letters.persistence-id` | `""` | Journal stream the `persistent` store writes to.  Empty derives it from the system name, so two systems sharing a journal keep separate queues. |
+
+Every key here is also settable in code, field by field, through
+`ActorSystemOptions.withDeadLetters(…)` — which wins over this block, as
+explicit options always do. See [Dead
+letters](/operations/dead-letters/) for what the queue holds and how to
+replay from it.
 
 ### `actor-ts.cluster`
 
@@ -183,7 +207,7 @@ name on every receiver, with no local `Subscribe` involved.  See
 | --- | --- | --- |
 | `cluster.receptionist.gossip-interval` | `1s` | How often the receptionist gossips its local registrations. |
 | `cluster.receptionist.max-subscribers-per-key` | `1000` | Cap on subscribers for one service key.  A `Subscribe` past it is answered with `ReceptionistSubscribeRejected`. |
-| `cluster.receptionist.max-subscribers-total` | `10000` | Cap on subscribers across every key on this node. |
+| `cluster.receptionist.max-subscriptions-total` | `10000` | Cap on key/subscriber pairs across every key on this node — one subscriber on three keys counts as three. |
 
 Both blocks layer under whatever the extension's `start(...)` was passed,
 so an explicit `withMaxTopics(…)` still wins.  Stopped subscribers are
@@ -193,9 +217,21 @@ released by death watch and do not count against either cap.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `distributed-data.gossip-interval` | `1s` | How often a replica pushes its full key set to a random peer. |
+| `distributed-data.gossip-interval` | `1s` | How often a replica pushes its key set to a random peer. |
 | `distributed-data.max-pending-quorum-requests` | `1000` | Cap on unsettled quorum requests — `updateAsync` and `getAsync` share one budget.  A request past it is rejected outright.  `0` disables the cap. |
 | `distributed-data.max-quorum-timeout` | `30s` | Ceiling on a caller's per-call `timeoutMs`; a larger value is clamped down to this one.  `0` disables the ceiling. |
+| `distributed-data.max-gossip-bytes` | `1M` | Byte budget for one gossip frame's payload.  A larger store is pushed a slice per tick, resuming where the last one stopped.  `0` removes the budget. |
+
+`max-gossip-bytes` is always **clamped down to `remote.max-frame-bytes`**, so
+lowering the wire cap lowers the gossip budget with it and no setting can put
+gossip back over the edge.  It matters because the two failures are not
+comparable: a frame past the wire cap is rejected on its 4-byte length prefix
+and the receiving transport drops the whole peer association — heartbeats,
+membership gossip and every cross-node `tell` along with it — while a budget
+merely spreads the same state over more ticks.  A single key whose own encoding
+exceeds the budget cannot be sliced; it is skipped with a rate-limited warning
+naming the key and both sizes, counted in
+`distributed_data_gossip_skipped_keys_total`, and it does **not** converge.
 
 The block is top-level rather than under `cluster.*` (where `pub-sub` and
 `receptionist` live) because the module is: `DistributedData` ships from
@@ -250,10 +286,19 @@ the transport is tracked separately as
 lands, treat the cluster network as something you have to secure by other
 means.
 
+The value is type-checked, like every other key on this page.  `true`, `on`
+and `yes` all ask for TLS and all produce the warning; `false`, `no` and `off`
+all decline and stay silent.  Anything else — `maybe`, or a bare `1` — throws
+a `ConfigError` out of `Cluster.join` and the node does not start.  A security
+toggle is the wrong place to guess at what a typo meant: the forgiving reading
+is "not enabled", which would leave the node on plaintext while your config
+says TLS — exactly the state this warning exists to rule out.
+
 The warning is about the transport the cluster builds for itself.  Pass your
 own via `ClusterOptions.withTransport(…)` and the node stays quiet about this
 key: what that transport does with TLS is yours to decide, and the framework
-cannot tell from the outside whether it is encrypted.
+cannot tell from the outside whether it is encrypted.  The key is then not
+read at all, so a malformed value does not stop that node either.
 :::
 
 ### `actor-ts.http`
@@ -262,6 +307,7 @@ cannot tell from the outside whether it is encrypted.
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | One of `fastify` / `express` / `hono`. |
 | `http.shutdown-grace-period` | `0ms` | How long `unbind()` lets in-flight requests drain before connections are forced.  `0` forces immediately. |
+| `http.client` | *(see below)* | Outbound [`HttpClient`](/http/overview/) defaults. |
 | `http.websocket` | *(see below)* | Server-side WebSocket defaults for [`websocket()`](/http/websocket/) routes. |
 
 `http.backend` only decides what `newServerAt(...).bind()` uses when the
@@ -281,6 +327,30 @@ settle — Express holding a live WebSocket, for one — the window becomes a
 deadline that is always reached, so a large value there is time you always
 pay.  A caller that passes its own value — `binding.unbind(1_000)` —
 overrides the config.
+
+The system's shared `HttpClient` — and any `newClient(...)` that leaves a
+field unset — reads its bounds from `actor-ts.http.client`:
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `http.client.maxResponseBytes` | `8M` | Largest response body buffered before the request is aborted. |
+| `http.client.defaultTimeoutMs` | `30s` | Deadline for a call that names no `timeoutMs` of its own. |
+| `http.client.redirect` | `"follow"` | What to do with a 3xx carrying a `Location` — `follow` / `error` / `manual`. |
+| `http.client.maxRedirects` | `5` | Hops a followed chain may take before the call is refused.  `0` refuses the first. |
+
+These are a floor, not a policy: an integration passes its own bounds to
+`newClient(...)`, and a single call overrides them with `maxResponseBytes` /
+`timeoutMs` / `redirect` / `maxRedirects`.  What the block buys is the ability
+to move the fleet-wide numbers without a code change — an endpoint that turns
+out to need 60 s, or a deployment on a link where 8 MiB is the wrong ceiling,
+used to force every caller off the shared client.
+
+Values are validated on read, on the merged settings, so a bad one throws
+`OptionsError` naming the field rather than failing later inside a request.
+`maxResponseBytes` and `defaultTimeoutMs` must both be positive here — unlike
+a *request's* `timeoutMs`, where `0` is the documented way to opt one call out
+of any deadline.  A `0` in this block would disarm every call that named no
+deadline of its own, which is the state the defaults exist to prevent.
 
 Server-side WebSocket routes (`websocket(path, actorRef)`) read their
 defaults from `actor-ts.http.websocket`:
@@ -313,15 +383,22 @@ the per-plugin keys.
 | --- | --- | --- |
 | `cache.in-memory.maxEntries` | `10000` | Max entries before LRU eviction ([in-memory cache](/cache/in-memory/)). |
 | `cache.in-memory.cleanupMs` | `60000` | Interval (ms) of the background sweep for expired entries. |
+| `cache.<name>.in-memory.*` | *(the block above)* | Same two leaves, for the single instance `cache('<name>')` resolves — overrides the global block leaf by leaf. |
+| `cache.<name>.plugin` | `"...in-memory"` | Which backend `cache('<name>')` resolves to. |
 
 Redis and Memcached caches read their connection settings from
 `actor-ts.cache.redis` / `actor-ts.cache.memcached`.
+
+The two `<name>` paths take the name your code asks `cache(name)` for,
+so they cannot be enumerated in `reference.conf`.  Sizing one consumer
+for its own key space is what the [one cache per
+consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 
 ### `actor-ts.sharding`
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `sharding.number-of-shards` | `64` | How many shards the entity space is divided into. |
+| `sharding.number-of-shards` | `64` | How many shards the entity space is divided into.  Every node that starts or proxies a type must agree on it — the coordinator refuses a region that does not, see [numShards is a cluster-wide agreement](/cluster/sharding/overview/#numshards-is-a-cluster-wide-agreement). |
 | `sharding.rebalance-interval` | `2s` | Gap between coordinator-driven rebalance passes. |
 | `sharding.hand-off-timeout` | `10s` | How long to wait for HandOffComplete before force-reallocating. |
 | `sharding.remember-entities` | `false` | Persist the set of active entity IDs. |
@@ -404,6 +481,7 @@ pages for the keys:
 | `io.broker.sse` | [SSE](/io/sse/) |
 | `io.broker.tcp` | [TCP](/io/tcp/) |
 | `io.broker.udp` | [UDP](/io/udp/) |
+| `io.broker.email-bridge` | [Email bridge](/io/email-bridge/) |
 
 ## HOCON-specific syntax
 

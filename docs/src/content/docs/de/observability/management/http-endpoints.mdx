@@ -25,7 +25,7 @@ GET /health
 {
   "status": "UP",
   "checks": [
-    { "name": "event-loop", "status": true }
+    { "name": "actor-system", "status": true }
   ]
 }
 ```
@@ -45,14 +45,20 @@ GET /ready
   "status": "UP",
   "clusterReady": true,
   "checks": [
-    { "name": "database", "status": true }
+    { "name": "cluster-membership", "status": true },
+    { "name": "cluster-transport",  "status": true },
+    { "name": "database",           "status": true }
   ]
 }
 ```
 
-`clusterReady` ist `false`, bis der lokale Node `Up` erreicht; die
-Readiness-Checks, die du registrierst, füllen das `checks`-Array.
-503, wenn der Cluster nicht bereit ist oder ein Check fehlschlägt.
+Das `checks`-Array enthält jeden Readiness-Check auf der Registry
+des Systems — die Framework-Checks `cluster-membership` und
+`cluster-transport` plus alles, was du registriert hast.
+`clusterReady` ist das Ergebnis von `cluster-membership` selbst, aus
+diesem Array zurückgelesen statt separat berechnet: es ist also
+`false`, bis der lokale Node `Up` erreicht, und `true`, wenn es gar
+keinen Cluster gibt.  503, wenn ein Check fehlschlägt.
 
 ## Cluster-Info
 
@@ -104,10 +110,11 @@ GET /cluster/shards?type=cart
 {
   "typeName": "cart",
   "leader":   "my-app@10.0.0.5:2552",
+  "version":  7,
   "takenAt":  1710000000000,
   "regions": [
     {
-      "key":     "my-app@10.0.0.5:2552",
+      "key":     "my-app@10.0.0.5:2552|/system/cluster/sharding/region-cart",
       "address": "my-app@10.0.0.5:2552",
       "path":    "/system/cluster/sharding/region-cart",
       "proxy":   false,
@@ -115,7 +122,10 @@ GET /cluster/shards?type=cart
     },
     ...
   ],
-  "shardHome": [ { "shard": 0, "regionKey": "my-app@10.0.0.5:2552" }, ... ]
+  "shardHome": [
+    { "shard": 0, "regionKey": "my-app@10.0.0.5:2552|/system/cluster/sharding/region-cart" },
+    ...
+  ]
 }
 ```
 
@@ -126,6 +136,44 @@ Nutze für:
 - **Diagnostizieren heißer Regionen** (eine Region mit zu vielen
   Shards).
 - **Manuelle Rebalance-Trigger** in der Entwicklung.
+
+**Woher die Antwort kommt.**  Der Node antwortet aus
+`ClusterSharding.shardMap(typeName)` — der letzten Karte, die der
+Coordinator an die Region dieses Nodes gesendet hat.  Dafür ist keine
+Konfiguration nötig: keine `DistributedData`-Extension, kein
+`coordinatorStateStore`, kein Round-Trip zum Leader.  Die einzige
+Voraussetzung ist, dass der antwortende Node an dem Typ teilnimmt —
+also `sharding.start(...)` oder `sharding.startProxy(...)` dafür
+aufgerufen hat —, denn der Coordinator sendet nur an Regionen, die
+sich registriert haben.  Ein Node, der `cart` nie erwähnt hat, hat
+nichts zu berichten und antwortet mit **404**.
+
+Früher las dieser Endpunkt den `DistributedData`-Snapshot des
+Coordinators, wodurch eine 200 in einer Standardkonfiguration
+unerreichbar war: nichts im Framework startet diese Extension, und der
+Snapshot wird nur geschrieben, wenn man sich per
+`coordinatorStateStore` dafür entscheidet.  Der Store existiert
+weiterhin und bleibt optional — er verkürzt den Leader-Failover —,
+aber dieser Endpunkt hängt nicht mehr davon ab.
+
+Den Body lesen:
+
+- `version` zählt *Broadcasts* des Coordinators, keine
+  Shard-Zuweisungen — eine Erhöhung pro Publish, und ein Publish
+  fasst einen Schwung Verschiebungen zusammen.  Vergleiche den Wert
+  über zwei Abfragen, um „die Karte hat sich bewegt“ von „die Karte
+  ist unverändert“ zu unterscheiden.
+- `takenAt` und `leader` stempelt der antwortende Node beim Eintreffen
+  der Karte, zwei Nodes können also dieselbe `version` mit leicht
+  verschiedenen Zeitstempeln melden.
+- `regions[].key` ist `<Adresse>|<Region-Pfad>`, derselbe Key, den
+  `shardHome[].regionKey` verwendet.  Eine Region, die nichts hostet,
+  steht trotzdem in der Liste, mit leerem `shards` — „registriert und
+  ohne Shards“ ist die interessante Hälfte einer Rebalance-Frage.
+- Eine **200 mit leerem `shardHome`** ist normal und kein Fehler:
+  `regions` füllt sich, sobald sich Regionen registrieren, während ein
+  Shard erst dann ein Zuhause bekommt, wenn eine Entity darin
+  adressiert wird.
 
 ## Metriken
 
@@ -146,6 +194,27 @@ actor_messages_processed_total{class="Worker",path="..."} 12345
 
 Prometheus-Textformat. Siehe
 [Prometheus-Exporter](/de/observability/metrics/prometheus-exporter/).
+
+Antwortet stattdessen mit `503`, wenn die installierte
+`MetricsRegistry` sich nicht über `collect()` zurücklesen lässt —
+die [prom-client-Bridge](/de/observability/metrics/prom-client-adapter/)
+ist die eine im Framework, die das nicht kann, weil sie ihre
+Schreibvorgänge an prom-client weiterleitet und keinen Snapshot
+behält:
+
+```
+GET /metrics
+→ 503 Service Unavailable
+
+metrics endpoint unavailable: the installed MetricsRegistry does not
+support collect() — ...
+```
+
+Ein `200` mit leerem Body wäre schlimmer als der Fehler: eine leere
+Exposition ist ein *gültiger* Scrape, also verbucht Prometheus das
+Target als erreichbar, und jede Serie des Frameworks hört still auf
+zu existieren. Die Prüfung läuft pro Request, weil die Registry zu
+jedem Zeitpunkt im Leben des Systems ausgetauscht werden kann.
 
 ## Admin (Opt-in)
 
@@ -207,7 +276,7 @@ Nutze für:
 import { path, get, concat, completeJson } from 'actor-ts/http';
 import { managementRoutes } from 'actor-ts/management';
 
-const baseRoutes = managementRoutes(system, cluster).routes;
+const baseRoutes = managementRoutes(system, cluster);
 
 const customRoutes = concat(
   baseRoutes,
@@ -291,7 +360,7 @@ import {
   managementRoutes,
 } from 'actor-ts/management';
 
-const { routes } = managementRoutes(system, cluster, {
+const routes = managementRoutes(system, cluster, {
   enableLeaveEndpoint: true,
   enableDownEndpoint: true,
   enableMetricsEndpoint: true,
@@ -304,11 +373,12 @@ const { routes } = managementRoutes(system, cluster, {
   // erreichen die Anwendung überhaupt.
   ipAllowlist: IpAllowlist({
     allow: ['10.0.0.0/8', '127.0.0.1/32'],
-    // Operatoren hinter einem trusted Reverse-Proxy: gib einen
-    // Custom-Extractor mit, der x-forwarded-for liest (der
-    // Default liest die Socket-Peer und ignoriert
-    // Forwarded-Header).
-    // getClientIp: (req) => req.headers['x-forwarded-for']?.split(',')[0]?.trim(),
+    // Hinter einem Reverse-Proxy: benenne die Proxys — die
+    // Client-Adresse wird dann vom Socket-Ende der
+    // Forwarded-Kette nach innen aufgelöst.  Ohne das liest der
+    // Default den Socket-Peer, und der ist hinter einem Proxy
+    // der Proxy.
+    // trustedProxies: ['10.9.9.0/24'],
   }),
 });
 ```

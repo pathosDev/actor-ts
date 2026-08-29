@@ -24,6 +24,8 @@ class IdleActor extends Actor<string> {
 
 class SlowActor extends Actor<string> {
   override async onReceive(): Promise<void> {
+    // A fixture: this actor exists to still be busy when the stats tap samples
+    // it, so the delay has to outlast the sampling window on purpose.
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
 }
@@ -54,6 +56,15 @@ function newSystem(name: string): ActorSystem {
   return system;
 }
 
+/**
+ * Give the taps time to publish whatever the step above should have produced.
+ *
+ * A fixed delay and not `awaitCondition`, because the sharpest call sites assert
+ * an *absence*: an unsubscribed tap and a below-threshold sample must both leave
+ * `payloads` empty (`toHaveLength(0)`), and that predicate is already true when
+ * the wait starts, so a poll would return immediately and check nothing.  The
+ * positive sites share the helper to wait the same span.
+ */
 const settle = (ms = 60): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
@@ -74,7 +85,7 @@ function startedSampler(system: ActorSystem): NodeSampler {
 describe('ActorTreeTap', () => {
   test('snapshots the whole tree', () => {
     const system = newSystem('tap-tree-snapshot');
-    const tap = new ActorTreeTap(system);
+    const tap = new ActorTreeTap(system, 1_000);
     tap.install(() => {});
     try {
       const [payload] = tap.snapshot() as [ActorTreeSnapshotPayload];
@@ -88,7 +99,7 @@ describe('ActorTreeTap', () => {
   test('emits a delta when an actor starts, carrying live figures', async () => {
     const system = newSystem('tap-tree-start');
     const emitted: DevToolsStreamPayload[] = [];
-    const tap = new ActorTreeTap(system);
+    const tap = new ActorTreeTap(system, 1_000);
     tap.install((payload) => emitted.push(payload));
     try {
       system.spawn(IdleActor, 'watched');
@@ -108,7 +119,7 @@ describe('ActorTreeTap', () => {
   test('emits a delta when an actor stops', async () => {
     const system = newSystem('tap-tree-stop');
     const emitted: DevToolsStreamPayload[] = [];
-    const tap = new ActorTreeTap(system);
+    const tap = new ActorTreeTap(system, 1_000);
     tap.install((payload) => emitted.push(payload));
     try {
       const ref = system.spawn(IdleActor, 'doomed');
@@ -126,7 +137,7 @@ describe('ActorTreeTap', () => {
   test('carries the display name, and null when the actor never named itself', async () => {
     const system = newSystem('tap-tree-display-name');
     const emitted: DevToolsStreamPayload[] = [];
-    const tap = new ActorTreeTap(system);
+    const tap = new ActorTreeTap(system, 1_000);
     tap.install((payload) => emitted.push(payload));
     try {
       system.spawn(IdleActor, 'anonymous');
@@ -149,7 +160,7 @@ describe('ActorTreeTap', () => {
   test('stops emitting once uninstalled', async () => {
     const system = newSystem('tap-tree-uninstall');
     const emitted: DevToolsStreamPayload[] = [];
-    const tap = new ActorTreeTap(system);
+    const tap = new ActorTreeTap(system, 1_000);
     tap.install((payload) => emitted.push(payload));
     tap.uninstall();
 

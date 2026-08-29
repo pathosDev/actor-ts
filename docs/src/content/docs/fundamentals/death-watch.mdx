@@ -60,6 +60,17 @@ Three things going on:
    watched actor stopped are processed in order, then the
    `Terminated` follows.
 
+"Like any other message" covers ordering, and only ordering.  A death
+is announced **once** — the framework has no way to send it again — so
+the notification is exempt from everything that discards user messages
+on the way in: a [mailbox bound](/fundamentals/mailboxes/) of any
+policy, and a `throttle({ onExcess: 'drop' })`.  Bounding a watcher
+costs it backlog, never the deaths it is watching for.  And if the
+notification genuinely cannot be delivered — the watcher itself has
+already stopped, or its mailbox refuses the message — it becomes a
+[dead letter](/operations/dead-letters/), so the loss is visible
+rather than silent.
+
 ## The `Terminated` message
 
 ```ts
@@ -92,6 +103,39 @@ an entire node — not just one actor — goes away.  It is currently
 always `false`: the framework does not yet raise node-level
 `Terminated` notifications.  See [Cluster](/cluster/overview/) for
 the membership story.
+
+## Only the runtime can announce a death
+
+`Terminated` is an ordinary exported class, so nothing stops you
+constructing one — but constructing one is not the same as causing one.
+A `Terminated` the runtime did not emit is **refused**: the receiving
+cell consumes it, sends it to
+[dead letters](/operations/dead-letters/) with the sender attached, and
+leaves the watch registration exactly as it was.
+
+The reason is that the notification carries a ref and nothing else, so
+"that actor is dead" is a claim rather than a proof — and honouring an
+unfounded one costs the watcher twice.  It acts on a death that has not
+happened, *and* the registration goes with it, so the genuine
+notification arrives later against a watch that is no longer there and
+is dropped as unwatched.  One fabricated message would blind a watcher
+to that subject for the rest of its life.
+
+Two consequences worth knowing:
+
+- **Do not forward a `Terminated` to another watcher.**  It will not
+  count for them — and it never bought anything: an actor that watches
+  the subject already gets its own notification, and one that does not
+  was never meant to hear about it.  Send a domain message of your own
+  instead.
+- **A hand-built `Terminated` does not exercise death watch in a test.**
+  Stop the actor for real; the notification that follows is the one your
+  handler will see in production.
+
+`watchWith` substitutions are covered by the same rule.  The substituted
+message lives in the watcher's own cell and is released by the same
+gate, so a fabricated signal cannot quietly consume it and downgrade the
+next real death to a `Terminated` the watcher has no arm for.
 
 ## Custom termination messages — `watchWith`
 
@@ -171,7 +215,10 @@ are handled in two different places.
 Everything else is unchanged: the message arrives through the mailbox
 with the same ordering guarantees, watching an already-stopped ref
 delivers immediately, and a watcher that stops has its registrations
-cleaned up for it.
+cleaned up for it.  Your domain message inherits the exemption the
+`Terminated` it replaces has — a bound or a throttle cannot discard it
+either, because it is still the announcement of a death that happens
+once.
 
 ### One registration, one death
 
@@ -213,6 +260,15 @@ delivers a `{ kind: 'terminated' }` **Signal**, which
 `watchWith` message is a value of `T` and goes to the ordinary receive
 handler even when a signal handler is registered.  Registering one
 does not quietly reroute the message you asked for.
+
+"When a signal handler is registered" is per behavior, not per actor.
+A signal handler belongs to the `receiveWithSignal` that declared it,
+so a state that is a plain `Behaviors.receive` has none — and a plain
+`watch`'s death arrives there as a `Terminated` **message**, exactly as
+it does for an actor that never registered a handler at all.  If a
+later state still wants the death as a signal, it declares its own
+`onSignal`; if it wants it as a message, `watchWith` says so
+explicitly and holds in every state.
 
 ## `unwatch`
 

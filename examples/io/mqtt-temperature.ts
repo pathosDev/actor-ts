@@ -33,7 +33,6 @@ import {
   MqttOptionsBuilder,
   type MqttMessage,
 } from '../../src/io/index.js';
-import { attachDevTools } from '../devtools.js';
 
 type Reading = { sensor: string; celsius: number };
 
@@ -91,15 +90,16 @@ async function main(): Promise<void> {
       },
     });
   const system = ActorSystem.create('mqtt-demo', systemOptions);
-  const devtools = await attachDevTools(system);
 
   system.spawn(
     () => new TemperatureHub(MqttOptions.create()),
     'temperature-hub',
   );
 
+  // Not a drain sleep: nothing is told to the hub from here.  Every reading
+  // arrives from the broker over the network, so the tree is quiet the whole
+  // time and terminate() would stop the hub before a single message landed.
   await Bun.sleep(3_000);
-  await devtools.holdOpen();
   await system.terminate();
 }
 

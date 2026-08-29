@@ -96,8 +96,15 @@ braucht.
   trotzdem — Browser ignorieren es über reines HTTP. Gate Security-Header
   nicht an einem Scheme, das die App nicht sieht.
 - **Client-IPs vertrauen.** `req.remoteAddress` ist der Socket-Peer, kein
-  fälschbares `X-Forwarded-For`. Vertraue einem Forwarded-Header nur, wenn
-  dein Proxy ihn überschreibt (`getClientIp`-Option von `IpAllowlist`).
+  fälschbares `X-Forwarded-For` — und „überschreibt mein Proxy den Header"
+  ist die falsche Frage, denn NGINX, AWS ALB und Cloudflare **hängen** alle
+  daran an. Der eigene Text des Clients bleibt für immer links in der Kette.
+  Benenne stattdessen die Proxys
+  ([`trustedProxies` von `IpAllowlist`](/de/http/middleware/ip-allowlist/)),
+  dann wird die Client-Adresse vom Socket-Ende nach innen aufgelöst — dem
+  einzigen Ende, das die Infrastruktur kontrolliert. Traue niemals jedem
+  Hop: bei Express und Fastify löst `trust proxy: true` genau zu diesem
+  linkesten, client-gewählten Eintrag auf.
 - **Secrets aus der Umgebung**, nicht aus HOCON-Dateien — das CSRF-Secret,
   Basic-Zugangsdaten und Bearer-Tokens nehmen alle Werte, die du beim Start
   lädst.
@@ -176,21 +183,55 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   zu fragen, denn ein Size-Cap ist eine Transport-Entscheidung und kein
   Anwendungsfehler. Heb ihn dort an, wo ein Endpunkt wirklich mehr annimmt:
   `withMaxBodyBytes(bytes)` in den Express- und Hono-Backend-Options,
-  `bodyLimit` in der Options-Bag von `FastifyBackend`. Der einzige Fall, der
-  weiterhin beim Eintreffen gemessen statt vorab abgewiesen wird, ist ein
-  gechunkter Body ohne `Content-Length`.
-- **WebSocket-Frames** werden durch `maxFrameBytes` gekappt (1 MiB Default),
-  und dieser Default geht zusätzlich an den Socket der Laufzeit selbst: Ein zu
-  großer Frame wird abgewiesen, *während er eintrifft*, statt erst nachdem der
-  Prozess ihn gepuffert hat — sonst könnte ein Peer pro Frame 16 MiB (Bun) oder
-  100 MiB (`ws`) Pufferung erzwingen, die das Framework anschließend verwirft.
-  Die einzige Ausnahme ist Hono auf **Deno**, dessen `upgradeWebSocket` kein
-  Payload-Limit anbietet: Dort wird zuerst gepuffert und danach abgewiesen.
-  `maxFrameBytes` über 1 MiB anzuheben, hebt das Transport-Limit nicht mit an.
-  Siehe [WebSocket](/de/http/websocket/).
+  `bodyLimit` in der Options-Bag von `FastifyBackend`. Ein Body mit einer
+  `Content-Length` über dem Limit wird abgewiesen, bevor ein Byte davon gelesen
+  wird; ein gechunkter Body deklariert keine Länge, also zählen ihn alle drei
+  Backends beim Eintreffen mit und brechen den Read am Limit ab — die Bytes
+  dahinter werden nie entgegengenommen.
+- **WebSocket-Frames** werden durch `maxFrameBytes` gekappt (1 MiB Default).
+  Das Framework weist einen zu großen Frame immer ab, bevor er deinen Actor
+  erreicht; auf den meisten Laufzeit/Backend-Paaren geht das aufgelöste Limit
+  *zusätzlich* an den Socket der Laufzeit selbst, sodass der Frame schon
+  abgewiesen wird, *während er eintrifft*, statt erst nachdem der Prozess ihn
+  gepuffert hat — sonst könnte ein Peer pro Frame 16 MiB (Bun) oder 100 MiB
+  (`ws`) Pufferung erzwingen, die das Framework anschließend verwirft. Das
+  Limit zu senken — pro Route oder über
+  `actor-ts.http.websocket.maxFrameBytes` — verkleinert dieses Puffer-Fenster
+  mit. **Drei Stellen haben kein Transport-Limit** und puffern den Frame,
+  bevor sie ihn abweisen: Hono auf **Deno**, dessen `upgradeWebSocket`
+  überhaupt kein Payload-Limit anbietet; **Bun** mit dem Express- oder
+  Fastify-Backend, wo `ws` auf Buns eingebauten Shim auflöst, der `maxPayload`
+  zwar annimmt und zurückliefert, aber nicht durchsetzt; und der **ausgehende**
+  [`WebsocketClientActor`](/de/io/websocket/) auf *jeder* Laufzeit — kein
+  natives Client-`WebSocket` beachtet ein Payload-Limit, das man seinem
+  Konstruktor übergibt, gemessen auf Bun, Node und Deno, wo die Option
+  angenommen wird, als `undefined` zurückkommt und ein 4-MiB-Frame trotzdem
+  vollständig zugestellt wird. Auf dem Client greift das Limit also nur im
+  Nachhinein, und was es bringt, ist, dass der Verstoß *endgültig* ist: Ein zu
+  großer Frame schließt die Verbindung mit 1009, sodass das Gegenüber die
+  Allokation auf diesem Socket nicht wiederholen kann. Beachte, dass das
+  Bedrohungsmodell dort ein anderes ist — das Gegenüber ist ein Endpunkt, den
+  du selbst gewählt hast, oder ein MITM auf einer unverschlüsselten
+  `ws://`-Verbindung. Siehe [WebSocket](/de/http/websocket/).
 - **Untrusted HTML** — mit dem [`html`](/de/http/html-xss/)-Template escapen;
   für Rich-Markup vor `rawHtml` mit einer dedizierten Bibliothek
   sanitisieren.
+- **Antworten, die du selbst abrufst**, sind ebenfalls Untrusted Input — und
+  die Richtung, die in so einer Liste am leichtesten vergessen wird. Der
+  `HttpClient` materialisiert einen ganzen Response-Body im Speicher, bevor ein
+  Aufrufer ihn sieht; ohne Schranke entscheidet also die Gegenstelle, wie viel
+  Heap dieses Prozesses sie sich nimmt — eine `Content-Length` ist eine
+  Behauptung und keine Grenze, und eine gechunkte Antwort deklariert überhaupt
+  keine Länge. Jeder Aufruf bringt eine **30-s-Deadline** und eine
+  **8-MiB-Obergrenze** für den Body mit; der Body wird beim Lesen mitgezählt und
+  *während er eintrifft* abgebrochen, die Verbindung wird abgerissen, damit der
+  Rest nie ankommt, und der Aufruf wirft `HttpResponseTooLargeError`. Heb die
+  Werte pro Aufruf an (`maxResponseBytes`, `timeoutMs`), pro Integration
+  (`newClient(...)`) oder flottenweit unter `actor-ts.http.client`. Redirects
+  sind mitbegrenzt — 5 Hops, und `authorization` / `cookie` fallen bei jedem
+  Origin-Wechsel weg, damit eine feindliche `Location` kein Bearer-Token zu
+  einem Host ihrer Wahl tragen kann. Siehe
+  [den HTTP-Client](/de/http/overview/).
 
 ## Statische Dateien
 
@@ -203,6 +244,13 @@ deine Verzeichnisstruktur offen. Siehe [Statische Dateien](/de/http/static-files
 Wickle eine `websocket()`-Route in `cors(...)`, um Cross-Origin-Upgrades
 abzuweisen, und lege Auth-Middleware darum — `withMiddleware` läuft zur
 Upgrade-Zeit und gated damit den Handshake.
+
+Im Härtungs-Stack oben braucht eine `websocket()`-Route keine
+Sonderbehandlung: `securityHeaders()`, `requestId()` und der Rest dürfen
+darüber liegen wie über jeder anderen Route, und das Upgrade kommt trotzdem
+zustande.  Ihre Header landen auf einem abgelehnten Handshake, nicht auf
+einem angenommenen — die 101 schreibt das Backend selbst.  Siehe
+[WebSocket](/de/http/websocket/).
 
 ## Checkliste
 
@@ -218,6 +266,8 @@ Upgrade-Zeit und gated damit den Handshake.
 | Request-Korrelation | `requestId()` |
 | Begrenzte Latenz | `requestTimeout(...)` |
 | Sichere Dateiauslieferung | `getFromDirectory`-Defaults (dotfiles deny, Symlink-Confinement) |
+| Ausgehende Antworten begrenzt | nichts — 30 s und 8 MiB bei jedem `HttpClient`-Aufruf; pro Aufruf, pro `newClient(...)` oder `actor-ts.http.client` |
+| Ausgehende Redirects begrenzt | nichts — 5 Hops, Credentials fallen bei Origin-Wechsel weg; `redirect: 'error'` weist sie ab |
 
 ## Wie weiter
 

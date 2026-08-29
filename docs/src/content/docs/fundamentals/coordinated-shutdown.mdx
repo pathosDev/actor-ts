@@ -3,6 +3,8 @@ title: Coordinated shutdown
 description: A phased shutdown DSL — register tasks against named phases (drain HTTP, leave cluster, flush journals, terminate the system), the framework runs them in dependency order with per-phase timeouts, recovery, and built-in SIGTERM hooks.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 `system.terminate()` stops the actor system, but a production app
 usually has work to do *before* that: drain in-flight HTTP requests,
 tell the cluster you're leaving, flush a journal, close broker
@@ -37,7 +39,7 @@ coordinatedShutdown.addTask(Phases.ServiceRequestsDone, 'drain-in-flight', async
   await waitForInFlightRequests(/* up to 10s */);
 });
 
-coordinatedShutdown.installProcessHooks();   // SIGTERM/SIGINT → coordinatedShutdown.run(ProcessTerminateReason)
+await system.runUntilTerminated();   // SIGTERM/SIGINT → the pipeline → resolves when it is done
 ```
 
 Three things happen when SIGTERM lands:
@@ -49,31 +51,51 @@ Three things happen when SIGTERM lands:
 3. The pipeline finishes with the built-in `actor-system-terminate`
    task, which calls `system.terminate()` for you.
 
-Everything in between — HTTP unbinding, cluster leave, journal
-flush — is whatever you added.
+Some of what happens in between is already wired for you; the rest
+is whatever you added.
 
 ## The 12 canonical phases
 
-Listed in execution order:
+Listed in execution order.  **Wired** marks the phases the framework
+populates by itself — everything else is empty until you register
+something.
 
-| # | Phase name | Typical tasks |
-| --- | --- | --- |
-| 1 | `before-service-unbind` | Last-chance announcements before the server stops accepting connections. |
-| 2 | `service-unbind` | Stop the HTTP server / gRPC server / WebSocket listener from accepting new connections. |
-| 3 | `service-requests-done` | Wait for in-flight requests to finish; abort the rest. |
-| 4 | `service-stop` | Close client connections, release sockets. |
-| 5 | `before-cluster-shutdown` | Optional pre-cluster-leave hooks. |
-| 6 | `cluster-sharding-shutdown-region` | Tell the sharding region to hand off entities. |
-| 7 | `cluster-leave` | Issue a `Cluster.leave()` — gossip leaving status. |
-| 8 | `cluster-exiting` | Wait for the cluster to acknowledge the leave. |
-| 9 | `cluster-exiting-done` | Confirm cluster transition is complete. |
-| 10 | `cluster-shutdown` | Tear down cluster transports. |
-| 11 | `before-actor-system-terminate` | Last-chance app-level cleanup (flush journals, close brokers). |
-| 12 | `actor-system-terminate` | The built-in `system.terminate()` task. |
+| # | Phase name | Wired | Typical tasks |
+| --- | --- | --- | --- |
+| 1 | `before-service-unbind` | — | Last-chance announcements before the server stops accepting connections. |
+| 2 | `service-unbind` | `system.http(...).bind(...)`, DevTools | Stop the HTTP server / gRPC server / WebSocket listener from accepting new connections. |
+| 3 | `service-requests-done` | — | Wait for in-flight requests to finish; abort the rest. |
+| 4 | `service-stop` | broker actors (MQTT, Kafka, NATS, AMQP, …) | Close client connections, release sockets. |
+| 5 | `before-cluster-shutdown` | — | Optional pre-cluster-leave hooks. |
+| 6 | `cluster-sharding-shutdown-region` | — | Tell the sharding region to hand off entities. |
+| 7 | `cluster-leave` | `Cluster.join(...)` | Issue a `Cluster.leave()` — gossip leaving status. |
+| 8 | `cluster-exiting` | — | Wait for the cluster to acknowledge the leave. |
+| 9 | `cluster-exiting-done` | — | Confirm cluster transition is complete. |
+| 10 | `cluster-shutdown` | — | Tear down cluster transports. |
+| 11 | `before-actor-system-terminate` | — | Last-chance app-level cleanup (flush journals, close brokers). |
+| 12 | `actor-system-terminate` | the built-in terminator | The built-in `system.terminate()` task. |
 
 You don't have to use every phase.  Empty phases are no-ops; only
-phases with registered tasks do anything.  In a single-node app
-without cluster, only phases 1-4 and 11-12 see tasks.
+phases with registered tasks do anything.
+
+<Aside type="note" title="Phase 8 does not wait for an acknowledgment">
+  `cluster.leave()` is a single best-effort broadcast: it flips this
+  node to `leaving`, tells every reachable peer, and stops the
+  transport.  There is no leader-sequenced removal to wait for, so a
+  task you register in `cluster-exiting` has nothing to await and the
+  phase is a pure app-level hook.  Size your Kubernetes grace period
+  on that basis, not on an acknowledgment that is not coming.
+</Aside>
+
+### Opting out of the wired tasks
+
+Set `actor-ts.coordinated-shutdown.auto-register-tasks = false` and the
+framework registers none of them.  The phases stay, the built-in
+terminator stays, and every resource above is yours to register — for
+an embedder that owns the lifecycle of what it handed the system.  It
+is one switch rather than one per subsystem, because the reason to
+reach for it is "I own the lifecycle", never "unbind the HTTP server
+but leave the brokers to me".
 
 The `Phases` constant exports the canonical names — prefer it over
 string literals for autocomplete:
@@ -125,12 +147,12 @@ type ShutdownTask = (reason: Reason) => Promise<void> | void;
 The `reason` lets a task branch on **why** shutdown was triggered:
 
 ```ts
-coordinatedShutdown.addTask(Phases.ClusterLeave, 'gossip-leave', async (reason) => {
+coordinatedShutdown.addTask(Phases.BeforeClusterShutdown, 'deregister', async (reason) => {
   if (reason instanceof ClusterDowningReason) {
-    // We were downed — don't bother gossiping a leave.
+    // We were downed — the registry has already written us off.
     return;
   }
-  await cluster.leave();
+  await serviceRegistry.deregister(cluster.selfAddress.toString());
 });
 ```
 
@@ -138,11 +160,11 @@ Built-in `Reason` classes:
 
 | Class | When |
 | --- | --- |
-| `ProcessTerminateReason(signal)` | SIGTERM/SIGINT via `installProcessHooks`. |
-| `ActorSystemTerminateReason` | User called `system.terminate()` directly. |
-| `ClusterLeavingReason` | Cluster initiated a graceful leave. |
-| `ClusterDowningReason` | Cluster forced this node out. |
-| `UnknownReason` | Trigger not specified. |
+| `ProcessTerminateReason(signal)` | SIGTERM/SIGINT, from `runUntilTerminated()` or `installProcessHooks()`. |
+| `ActorSystemTerminateReason` | Pass it yourself when the trigger is an ordinary shutdown. |
+| `ClusterLeavingReason` | What `Cluster.bootstrap`'s `shutdown()` passes. |
+| `ClusterDowningReason` | Pass it when you run the pipeline because the cluster forced this node out. |
+| `UnknownReason` | The default when `run()` is called with no argument. |
 
 You can subclass `Reason` for app-specific triggers
 (`AdminEndpointReason`, `HotReloadReason`, etc.).
@@ -182,19 +204,69 @@ coordinatedShutdown.addPhase({
 });
 ```
 
+### The drain budget sits inside the last phase
+
+`actor-system-terminate` is a task that awaits `system.terminate()`,
+and `terminate()` begins by draining the actors under `/user` — see
+[Terminating](/fundamentals/actor-system/#terminating).  So two budgets
+are nested, and the inner one has to be the smaller:
+
+| Budget | Key | Default |
+| --- | --- | --- |
+| The whole `actor-system-terminate` phase | `actor-ts.coordinated-shutdown.default-phase-timeout` | 5 s |
+| The drain inside it | `actor-ts.system.shutdown-drain-timeout` | 2 s |
+
+Raise the drain budget above the phase timeout and the phase is
+abandoned while the drain is still running — before a single actor has
+been told to stop. Raise both together, or raise the phase timeout
+first.
+
 ## SIGTERM / SIGINT hooks
 
+Almost every service wants the same thing — install the handlers,
+wait, shut down, exit — so that whole shape is one call:
+
 ```ts
-coordinatedShutdown.installProcessHooks();
-// Or: coordinatedShutdown.installProcessHooks(['SIGTERM', 'SIGINT', 'SIGUSR2']);
+await system.runUntilTerminated();
+// Or, to listen for something else as well:
+await system.runUntilTerminated(['SIGTERM', 'SIGINT', 'SIGUSR2']);
 ```
 
-This attaches handlers that call `coordinatedShutdown.run(new ProcessTerminateReason(signal))`.
-Calling twice is harmless (idempotent).  Tests usually skip the
-hooks; production always wires them up.
+It installs the handlers, resolves once the system is down **and**
+the pipeline has finished, and detaches the handlers on the way out.
+That last step is not housekeeping: on Deno a signal listener holds
+the event loop open and has no `unref`, so a program that shuts down
+for any other reason — a `terminate()` from inside, an admin endpoint
+— would never exit.
 
-`removeProcessHooks()` undoes them — useful for tests that
-instantiate a system, run, and tear down inside a single process.
+A signal the platform cannot deliver is skipped rather than
+registered.  Windows has no SIGTERM under any runtime, and Deno
+*throws* on a signal it cannot deliver instead of ignoring it, so
+asking for one is never a startup failure.
+
+**The process stays alive for as long as the promise is pending**, and
+that is a guarantee the call makes rather than one it inherits from the
+handlers it installed.  A signal handler is not by itself a reason for a
+runtime to keep running: Node unrefs its signal handles, so a service
+with nothing else on the event loop — no bound port, no open socket, no
+referenced timer — would otherwise drain its loop the moment it started
+waiting, and exit *before* the SIGTERM it had just armed itself for
+could arrive.  So the call holds the loop open itself and lets go in the
+same step that detaches the handlers.  A headless node needs no
+`setInterval` of your own to stay up.
+
+The two halves are still available separately when you are embedding
+the system in a host that owns the process lifetime:
+
+```ts
+coordinatedShutdown.installProcessHooks();   // → run(new ProcessTerminateReason(signal))
+coordinatedShutdown.removeProcessHooks();    // detaches exactly what it installed
+```
+
+Calling either twice is harmless.  `removeProcessHooks()` never
+touches a listener it did not install, so a second `ActorSystem` in
+the same process — or the application's own SIGTERM handling — is
+left alone.
 
 ## K8s PreStop integration
 
@@ -210,7 +282,7 @@ The standard recipe:
 
 ```ts
 // On SIGTERM, run coordinated shutdown:
-coordinatedShutdown.installProcessHooks();
+await system.runUntilTerminated();
 
 // PreStop hook script (in your container image):
 //   #!/bin/sh
@@ -238,7 +310,7 @@ shutdown paths:
 
 ```ts
 // SIGTERM path:
-coordinatedShutdown.installProcessHooks();
+await system.runUntilTerminated();
 
 // Admin-endpoint path:
 app.post('/shutdown', async (req, res) => {
@@ -246,10 +318,23 @@ app.post('/shutdown', async (req, res) => {
   res.send('ok');
 });
 
-// Cluster downing path is auto-wired by the cluster extension.
+// A cluster downing is not one of them — see below.
 ```
 
-All three end up running the same shutdown sequence once.
+Both end up running the same shutdown sequence once.
+
+Being *downed by the cluster* does not start the pipeline: no reason
+class runs it for you, and `ClusterDowningReason` exists for a
+`run()` you make yourself.  If you want a downed node to shut itself
+down, subscribe and say so:
+
+```ts
+cluster.subscribe((event) => {
+  if (event instanceof MemberDown && event.member.address.equals(cluster.selfAddress)) {
+    void coordinatedShutdown.run(ClusterDowningReason.instance);
+  }
+});
+```
 
 ## What runs after `coordinatedShutdown.run()` completes
 
@@ -268,19 +353,16 @@ By the time the promise resolves:
 - The process is free to exit (`process.exit(0)`).  Nothing left
   to do.
 
-A common shell of a production main:
+A whole production main:
 
 ```ts
 async function main() {
   const system = ActorSystem.create('my-app');
-  const coordinatedShutdown = system.extension(CoordinatedShutdownId);
 
-  // Register tasks...
+  await system.http(8080).bind(routes);   // registers its own unbind
+  // Register anything the framework does not own...
 
-  coordinatedShutdown.installProcessHooks();
-
-  // Block until shutdown completes (e.g. via SIGTERM).
-  await new Promise(() => {});   // never resolves; the hooks drive shutdown
+  await system.runUntilTerminated();
 }
 
 main().catch((err) => {
@@ -289,13 +371,11 @@ main().catch((err) => {
 });
 ```
 
-When SIGTERM arrives, the hook fires `coordinatedShutdown.run(...)`, the pipeline
-runs, the system terminates, and Node exits cleanly because there
-are no more handles keeping the loop alive.
+When SIGTERM arrives the pipeline runs, the system terminates,
+`runUntilTerminated()` resolves, its handlers come off, and the
+process exits because nothing is keeping the loop alive.
 
 ## Common pitfalls
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Task ordering within a phase">
   ```ts
@@ -348,10 +428,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 - **[Actor system](/fundamentals/actor-system/)** —
   the `terminate()` that runs at the end of the pipeline.
-- **[Cluster overview](/cluster/overview/)** — the
-  cluster phases (`cluster-leave`, `cluster-exiting`, …) wire
-  themselves up automatically when the cluster extension is
-  active.
+- **[Cluster overview](/cluster/overview/)** — `Cluster.join()`
+  registers the `cluster-leave` task; the other cluster phases are
+  yours to fill.
 - **[Kubernetes deployment](/operations/deployment/kubernetes/)** —
   the full PreStop + SIGTERM + grace-period recipe.
 - **[Persistence — Migration](/persistence/migration/overview/)** —

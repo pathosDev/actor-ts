@@ -159,6 +159,35 @@ import { Aside } from '@astrojs/starlight/components';
   nach DD.
 </Aside>
 
+<Aside type="danger" title="Jeder Peer, der gossipen darf, kann jeden Slot anheben">
+  ```ts
+  // arriving from a peer, naming a slot it does not own
+  { kind: 'GCounter', state: { 'sys@10.0.0.5:2552': 2_199_023_255_551 } }
+  ```
+  `merge` ist ein Maximum pro Replika, ein Slot geht also immer
+  nur nach oben: was ein Peer für eine Replika behauptet, wird
+  clusterweit zum Beitrag dieser Replika.  Der besitzende Node
+  bekommt ihn nicht wieder herunter, `increment` zählt vom
+  angehobenen Wert weiter, und `delete(key)` ist Best-Effort —
+  ein Peer, der den Key noch hält, gossipt ihn zurück.  Mit
+  konfiguriertem `durableStore` wird der Wert persistiert.
+
+  Der Decoder begrenzt, **wie weit**: ein Slot über
+  `MAX_COUNTER_SLOT` (≈ 2,2e12) wird abgewiesen, und genau das
+  hält `value()` eines gesättigten Counters bei einer exakten
+  Ganzzahl.  Er begrenzt nicht, **wer** — ein Counter ist genau
+  so vertrauenswürdig wie die Peers, die du auf die Cluster-
+  Leitung lässt.  Authentifiziere den Transport
+  ([Cluster-Sicherheit](/de/operations/security/cluster-security/)),
+  bevor du einen Quota- oder Billing-Counter in DistributedData
+  legst.
+
+  Die Obergrenze greift in der Praxis bei einer Sorte Counter:
+  rohen Bytes auf einer langlebigen Replika.  Zähle stattdessen
+  Kibibytes — die Summe hätte den exakten Bereich von float64
+  ohnehin verlassen.
+</Aside>
+
 ## Wohin als Nächstes
 
 - **[Distributed Data im Überblick](/de/distributed-data/overview/)** —

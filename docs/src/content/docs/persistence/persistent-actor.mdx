@@ -427,6 +427,98 @@ a read-side view that subscribes to `'account'` events.
 Returning `undefined` (the default) means "no tags" — fine if you
 don't have projections yet.
 
+`tagsFor` is asked **once per event**, including inside a
+`persistAll`.  So a batch that mixes event kinds is tagged per kind,
+and a projection filtering on one of them sees exactly its own
+events:
+
+```ts
+override tagsFor(event: Event): ReadonlyArray<string> | undefined {
+  return event.kind === 'paymentCaptured' ? ['payment'] : ['order'];
+}
+
+await this.persistAll([
+  { kind: 'orderPlaced' },       // → ['order']
+  { kind: 'paymentCaptured' },   // → ['payment']
+]);
+```
+
+The batch is still written atomically — per-event tags do not split
+it into several appends.
+
+### What a tag may contain
+
+Like a persistence ID, a tag is rarely a constant — it is usually
+built from the event (`` `tenant-${event.tenantId}` ``, an optional
+label).  And like an ID it is more than a value: every backend
+turns the list into a *storage shape*, and they do not all pick the
+same one.  `journal.append()` therefore refuses a list that cannot
+mean the same thing everywhere, before a single row is written:
+
+| Rejected | Why |
+| --- | --- |
+| an empty tag | it means something different on every store — dropped from the tag table but kept in the comma-separated column the SQL journals read back from, indexed as a queryable `''` bucket on MongoDB, one hot `tag = ''` partition on the Cassandra tag index, and a rejected item on DynamoDB, whose string sets may not hold an empty member.  The usual source is a `[category, subCategory ?? '']` shape with the second slot unfilled |
+| the same tag twice on one event | the same spread: Cassandra's `set<text>` and the tag table's idempotent insert collapse it, MongoDB and the CSV column keep it, and DynamoDB fails the whole append, since a string set may not repeat a member |
+| longer than **255** characters | a tag is indexed, and an unbounded one bloats both the event row and every index built over it |
+| more than **64** tags on one event | the same bound, counted per event — a `persistAll` of ten events may carry 64 each, not 64 between them |
+| a comma | the SQLite and relational journals store tags as a comma-separated column, so a `,` inside one would split into extra tags on read — a caller could append entries to a peer event's tag list |
+| control characters | tags are interpolated into log lines, so a newline lets a caller forge log records |
+
+Everything else is allowed.  Tags are compared byte for byte, so
+`'Order'` and `'order'` are two tags and not a repeat, and a
+trailing space makes a third.
+
+Check your own tags against these rules without starting an actor:
+
+```ts
+import { assertValidTags } from 'actor-ts/persistence';
+
+assertValidTags(tagsFor(event));
+```
+
+**Reading is never refused.**  Only `append` validates, so a stream
+written before these rules — one that already carries an empty or
+repeated tag — replays unchanged, and `journal.read(id, 1)` hands
+back exactly the list it stored.  What changes is that new appends
+with such a list now throw, so filter them in `tagsFor` rather than
+letting the journal decide.
+
+**Copying such a stream counts as a write.**  Read and append are
+the two halves the rule above splits, and a journal-to-journal copy
+is both at once: `migrateBetweenJournals` reads a historical tag
+list and offers it straight to the target's `append`.  So a legacy
+stream replays forever but cannot be copied *as it stands* — the
+one case the split does not cover on its own.
+
+The copy says so before it writes anything.  It walks the source in
+a read-only preflight and raises `MigrationTagError`, naming the
+persistence ID and the sequence number, with the target and the
+progress store untouched; a run that gets as far as its first
+`append` goes on to finish.  Two ways forward, both on the copy:
+
+```ts
+import { migrateBetweenJournals } from 'actor-ts/persistence';
+
+// Decide for yourself what the legacy list should have been …
+await migrateBetweenJournals(oldJournal, newJournal, {
+  eventTransform: (e) => ({ ...e, tags: e.tags?.filter((tag) => tag.length > 0) }),
+});
+
+// … or take the two repairs that need no judgement.  Empty members
+// are dropped and repeats collapsed.
+const result = await migrateBetweenJournals(oldJournal, newJournal, {
+  invalidTags: 'sanitize',
+});
+console.log(`${result.eventsWithSanitizedTags} tag lists rewritten`);
+```
+
+`'sanitize'` fixes only those two shapes.  A comma, a control
+character, an over-long tag or too many tags still refuses under it,
+because repairing those means inventing a tag or discarding one the
+caller meant — `eventTransform` is where that decision belongs.
+See [Migration recipes](/persistence/migration/recipes/) for the
+full copy story.
+
 ## Schema evolution — event adapters
 
 When event shapes change over time (a field is renamed, a value
@@ -498,6 +590,79 @@ Rows written by earlier actor-ts versions used bare
 `JSON.stringify`; they keep decoding unchanged — the tags only
 appear in newly written rows where plain JSON would corrupt the
 value.
+
+## Two writers for one entity
+
+Sharding gives you one entity instance per persistence ID — until it
+doesn't.  A network partition plus a rebalance, or an orchestration
+mistake that spawns the same entity twice, and two instances both
+recover and both accept commands.
+
+The journal survives that: appends are conditional on the sequence
+number, so one writer loses with `JournalConcurrencyError`.  One
+prerequisite carries all of it: **both writers must be appending to
+the same journal.**  Two nodes each on their own database cannot
+conflict — each head check runs against its own file — which is why
+per-node storage in a cluster forks history silently instead of
+losing a race loudly, and why the framework warns about it
+([storage locality &
+identity](/persistence/overview/#storage-locality--identity)).  The
+damage is **outside** the journal.  By the time the loser finds out it
+has already run `onCommand` for the command that triggered the write —
+and if that handler charged a card, sent a mail or called a downstream
+service, nothing rolls it back.  Until its next `persist` it also
+answers reads from state the other writer has moved past.
+
+### The backstop: a lost race stops the actor
+
+A `JournalConcurrencyError` is treated as what it is — evidence that
+this instance lost an ownership race — and the actor **stops**.  It
+does not restart.  That distinction is the point: the default
+supervision answer to an error is a restart, and a restarted loser
+recovers the now-foreign journal head and carries on serving as though
+it owned the entity.
+
+This costs nothing and needs no configuration.  What it cannot do is
+undo the side effect that already ran.
+
+### The fence: a lease
+
+For entities whose commands have external effects, bind writes to one
+holder by overriding `lease()`:
+
+```ts
+class PaymentEntity extends PersistentActor<Command, Event, State> {
+  readonly persistenceId: string;
+
+  constructor(entityId: string, private readonly entityLease: Lease) {
+    super();
+    this.persistenceId = `payment-${entityId}`;
+  }
+
+  override lease(): Lease | null { return this.entityLease; }
+
+  // ...
+}
+```
+
+The lease is acquired in `preStart`, **before recovery** — an instance
+that does not own the entity never even reads its history, so it
+cannot serve stale answers in the meantime.  A non-holder's `persist`
+throws immediately instead of discovering the conflict at the journal,
+which is what keeps the duplicate side effect from firing at all.
+
+Gate on `this.isLeaseHolder` if you would rather branch than catch.
+Losing a held lease flips the actor to non-holder and calls
+`onLeaseLost(reason)`, whose default is to stop — a `PersistentActor`
+that may not write is rarely usefully alive.  Override it to keep
+serving reads.
+
+<Aside type="note" title="Which layer do I need?">
+  The backstop is always on.  Add a lease when a duplicated
+  `onCommand` would do something you cannot take back — money,
+  messages, external calls.  For pure state that only ever reaches the
+  journal, the backstop alone is enough.
+</Aside>
 
 ## Common pitfalls
 

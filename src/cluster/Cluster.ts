@@ -8,19 +8,28 @@ import { metricsOf } from '../metrics/MetricsExtension.js';
 import { tracerOf } from '../tracing/TracingExtension.js';
 import type { Cancellable } from '../Scheduler.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
-import { MAX_WALL_CLOCK_SKEW_MS } from './Constants.js';
+import { COLD_START_STALL_AFTER_SEED_ROUNDS, MAX_WALL_CLOCK_SKEW_MS } from './Constants.js';
 import { none, some, type Option } from '../util/Option.js';
+import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { ClusterExtensionId } from './ClusterExtension.js';
+import { registerClusterHealthChecks } from './ClusterHealthChecks.js';
+import { awaitClusterReady, isClusterReadyNow } from './ClusterReadiness.js';
+import type { ClusterReadinessOptions } from './ClusterReadiness.js';
+import { healthChecksOf } from '../management/HealthCheckExtension.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import {
+  ADVERTISED_HOST_ENV_VARS,
   ClusterOptionsValidator,
+  DEFAULT_ADVERTISED_HOST,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_MAX_VERSION_SKEW_MS,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
+  advertisedHostWasDerived,
   isRemoteTlsRequested,
+  resolveAdvertisedHost,
   withClusterConfigDefaults,
 } from './ClusterOptions.js';
 import type { ClusterOptions, ClusterOptionsType, SelfElectionPolicy } from './ClusterOptions.js';
@@ -60,6 +69,7 @@ import type {
   LeaveMessage,
   MemberData,
   MemberStatus,
+  StorageIdentitiesData,
   WireMessage,
 } from './Protocol.js';
 import { decodeRefs, encodeRefs } from './RefCodec.js';
@@ -78,7 +88,7 @@ type EnvelopeHandler = (env: EnvelopeMessage, from: NodeAddress) => void;
  * series an operator carries forever.
  */
 const GOSSIP_REFUSAL_REASONS = [
-  'map-cap', 'version-skew', 'timestamp-skew', 'replayed-frame',
+  'map-cap', 'version-skew', 'timestamp-skew', 'replayed-frame', 'self-claim',
 ] as const;
 
 /** One of {@link GOSSIP_REFUSAL_REASONS}. */
@@ -107,10 +117,32 @@ type GossipRefusalCounts = Record<GossipRefusalReason, number>;
 export type ClusterSubscriptionReplayMode = 'events' | 'snapshot';
 
 /**
+ * Name of the `cluster-leave` phase task {@link Cluster.join} registers and
+ * {@link Cluster.leave} takes back out.
+ *
+ * Module-local rather than in `Constants.ts`: it is not a cap, bound, timeout
+ * or cadence, and only this file reads it.  It is a constant at all so the
+ * two ends of that register/unregister pair cannot drift into two spellings —
+ * which would leave a task behind that a re-join then collides with.
+ */
+const CLUSTER_LEAVE_TASK_NAME = 'cluster-leave';
+
+/**
  * The Cluster is a single-instance "extension" attached to an ActorSystem.
  * It owns a Transport, a gossip-based membership view, a failure detector
  * and the plumbing that dispatches inbound envelope messages to local actors.
  */
+
+/** The three store kinds a member's identity claims cover (#1358). */
+const STORAGE_IDENTITY_FIELDS = ['journal', 'snapshotStore', 'durableStateStore'] as const;
+
+/** Wire field → the store-kind word the mismatch warning speaks (#1358). */
+const STORAGE_IDENTITY_FIELD_LABELS: Record<keyof StorageIdentitiesData, string> = {
+  journal: 'journal',
+  snapshotStore: 'snapshot-store',
+  durableStateStore: 'durable-state-store',
+};
+
 export class Cluster {
   readonly selfAddress: NodeAddress;
   readonly selfRoles: ReadonlySet<string>;
@@ -173,12 +205,19 @@ export class Cluster {
     'version-skew': 0,
     'timestamp-skew': 0,
     'replayed-frame': 0,
+    'self-claim': 0,
   };
 
   /**
    * The highest {@link GossipMessage.sequence} accepted from each connection
-   * peer — the high-water mark that makes a captured gossip frame worthless
-   * on a second delivery (#112).
+   * peer — the high-water mark that makes a captured gossip frame worthless on
+   * a second delivery **to a receiver that holds a mark for its sender** (#112).
+   *
+   * That qualifier is the whole bound, and it is narrower than it looks:
+   * {@link rememberGossipSequence} is the only writer and it runs in the gossip
+   * path, so an entry exists for a peer this node has *accepted a frame from*
+   * and for no other address.  A member learned third-party has none — see the
+   * residuals on {@link admitsGossipSequence}.
    *
    * Keyed on the **connection's** peer, exactly like every authority rule
    * since #562, and not on the frame's `from` field: the payload is the one
@@ -209,6 +248,16 @@ export class Cluster {
   private weaklyUpTimer: Cancellable | null = null;
   private tombstonePruneTimer: Cancellable | null = null;
   private selfElectionTimer: Cancellable | null = null;
+  /** Fruitless seed-contact rounds so far, and whether the stall was reported (#1351). */
+  private seedRounds = 0;
+  private coldStartStallReported = false;
+  /**
+   * Whether {@link selfElect} promoted this node, as opposed to a peer's
+   * leader doing it — the joined-vs-formed distinction #943 asks for.  Never
+   * reset: election happens at most once per incarnation, and "formed a
+   * cluster, then merged with another" is still a formation.
+   */
+  private _selfElected = false;
   private currentLeader: Option<Member> = none;
   private readonly weaklyUpAfterMs: number;
   private readonly selfElection: SelfElectionPolicy;
@@ -229,14 +278,36 @@ export class Cluster {
 
   private constructor(system: ActorSystem, options: ClusterOptionsType) {
     this.system = system;
-    this.selfAddress = new NodeAddress(system.name, options.host, options.port);
+    // The incarnation is minted here rather than in `_start` so that it is
+    // established before anything can be sent or received: the transport is
+    // constructed with `selfAddress` two lines down and ships it in every
+    // `hello`, and a `Cluster` that changed its own identity between
+    // construction and start would have peers holding two of them (#940).
+    // One per `Cluster` instance is one per `Cluster.join`, which is the
+    // granularity the identifier is *for* — two runs on the same `host:port`
+    // are two incarnations.
+    // The advertised host, not the bound one: `selfAddress` is what goes into
+    // every gossip frame, heartbeat and member record as the address peers
+    // dial back, and a wildcard is not an address (#944).  `join` fills
+    // `advertisedHost` in before constructing, so the `??` is for the private
+    // constructor's other callers rather than a second policy.
+    this.selfAddress = new NodeAddress(
+      system.name,
+      options.advertisedHost ?? resolveAdvertisedHost(options),
+      options.port,
+      NodeAddress.mintIncarnation(),
+    );
     this.selfRoles = new Set(options.roles ?? []);
     this.log = system.log.withSource(`cluster@${this.selfAddress}`);
     // The frame cap only reaches a transport this constructor builds; an
     // injected one was constructed with its own, and silently re-capping
     // someone else's transport would be a surprise.
+    // `options.host` is the *bind* target and may be a wildcard; `selfAddress`
+    // is the identity the transport announces in its handshake and keys peers
+    // on.  Passing both is what lets a container bind every interface and
+    // still tell its peers a single address to dial back (#944).
     this.transport = options.transport
-      ?? new TcpTransport(this.selfAddress, this.log, null, options.maxFrameBytes);
+      ?? new TcpTransport(this.selfAddress, this.log, null, options.maxFrameBytes, options.host);
     // That `null` is the transport's TLS argument, and it is hard-coded: the
     // transport this constructor builds is always plaintext until #941 wires
     // the option up.  An operator who set the HOCON flag asked for the
@@ -245,9 +316,18 @@ export class Cluster {
     // built the transport: an injected one was constructed by the caller and
     // may well carry its own TLS material, and warning about that would be a
     // false alarm.
-    if (options.transport === undefined && isRemoteTlsRequested(system.config)) {
+    //
+    // `== null` and not `=== undefined`, so the guard accepts exactly what the
+    // `??` above falls through on.  A `transport: null` is unreachable from
+    // typed code, but it builds the plaintext transport all the same, and a
+    // guard that missed it would go quiet in the one case it exists for.
+    //
+    // "asks for TLS" rather than "is true": HOCON spells a boolean `true`,
+    // `on` or `yes`, and quoting back a spelling the operator did not write
+    // sends them looking through their config for a line that is not in it.
+    if (options.transport == null && isRemoteTlsRequested(system.config)) {
       this.log.warn(
-        `${ConfigKeys.remote.tls.enabled} is true, but the cluster transport this node `
+        `${ConfigKeys.remote.tls.enabled} asks for TLS, but the cluster transport this node `
         + 'built is plaintext — TLS for it is not implemented yet (#941). The wire is '
         + 'unencrypted; keep the cluster on a trusted network until it lands.',
       );
@@ -300,8 +380,19 @@ export class Cluster {
     system: ActorSystem,
     options: ClusterOptions,
   ): Promise<Cluster> {
-    const resolvedOptions = withClusterConfigDefaults(system.config, options as ClusterOptionsType);
+    const merged = withClusterConfigDefaults(system.config, options as ClusterOptionsType);
+    // Resolved here rather than in the constructor, for two reasons: the
+    // validator has to see the address the node will actually advertise (a
+    // wildcard reaching `selfAddress` is the whole of #944), and this is the
+    // one place both entry points pass through — `bootstrapCluster` calls
+    // `join`, so deriving it here is what keeps the two from answering the
+    // question differently.
+    const resolvedOptions: ClusterOptionsType = {
+      ...merged,
+      advertisedHost: resolveAdvertisedHost(merged),
+    };
     new ClusterOptionsValidator().validate(resolvedOptions);
+    if (advertisedHostWasDerived(merged)) reportDerivedAdvertisedHost(system, resolvedOptions);
     const cluster = new Cluster(system, resolvedOptions);
     const extension = system.extension(ClusterExtensionId);
     const previous = extension.get();
@@ -315,6 +406,17 @@ export class Cluster {
       );
       throw e;
     }
+    // Leaving is part of shutting down, and until now nothing said so: the
+    // `cluster-leave` phase was empty in every deployment, so a SIGTERM took
+    // the node down while its peers still counted it a member and kept
+    // routing to it until the failure detector gave up (#549).  Registered
+    // after a successful `_start` on purpose — a cluster that never bound its
+    // transport has nothing to leave.
+    system.extension(CoordinatedShutdownId).addFrameworkTask(
+      Phases.ClusterLeave,
+      CLUSTER_LEAVE_TASK_NAME,
+      () => cluster.leave(),
+    );
     return cluster;
   }
 
@@ -462,6 +564,135 @@ export class Cluster {
     return Array.from(this.members.values()).filter((member) => member.status !== 'removed');
   }
 
+  /**
+   * This node's own membership record, or `undefined` before the join has
+   * created it.  Unlike {@link getMembers} it does **not** filter a `removed`
+   * self: the tombstoned record — status and all — is exactly the diagnostic
+   * a caller holding a stale handle after {@link leave} is asking for.
+   */
+  selfMember(): Member | undefined {
+    return this.members.get(this.selfAddress.toString());
+  }
+
+  /**
+   * `true` once {@link selfElect} turned this node `up`: it formed a new
+   * cluster (of one, until others join it) rather than being promoted by an
+   * existing cluster's leader.  This is the observable behind
+   * `BootstrappedCluster.formedNewCluster`, and the mechanism a test binds to
+   * when "joined instead of forming a rival" is the claim (#1087).
+   */
+  get selfElected(): boolean {
+    return this._selfElected;
+  }
+
+  /**
+   * Whether this node is, or is configured to become, part of a multi-node
+   * cluster: a member with an address other than our own is known, or seed
+   * addresses are configured.  `seedAddrs` is self-excluding (`_start` skips
+   * our own address), so a standalone single node stays `false` by
+   * construction.  The persistence storage advisory keys on this (#1356):
+   * per-node storage is the documented default on a single node and a
+   * silent history fork on more than one.
+   */
+  expectsRemotePeers(): boolean {
+    if (this.seedAddrs.length > 0) return true;
+    return this.getMembers().some((member) => !member.address.equals(this.selfAddress));
+  }
+
+  /**
+   * THIS node's resolved store identities — the facts
+   * {@link publishStorageIdentity} gossips on the self member and
+   * {@link checkStorageIdentityAgreement} compares peers against (#1358).
+   * Filled lazily as stores resolve; a value that arrives before `_start`
+   * mints the self member waits here and seeds it.
+   */
+  private readonly selfStorageIdentities: { journal?: string; snapshotStore?: string; durableStateStore?: string } = {};
+  /** One mismatch warning per store kind per node lifetime — same latch shape as the #1356 advisory. */
+  private readonly storageIdentityMismatchReported = new Set<keyof StorageIdentitiesData>();
+
+  /**
+   * Record one of this node's store identities (#1358).  Deliberately NOT a
+   * version-bumped member update: the version clock has one lane and the
+   * leader is already writing in it — a self bump here raced the leader's
+   * `joining → up` promotion to the same `version + 1`, and with no
+   * equal-version tie-break in `mergeMember` (#935's class) the two sides
+   * wedged, each ignoring the other's record forever.  Instead the claims
+   * ride as an overlay: {@link memberDataForGossip} stamps them onto every
+   * self record this node sends, and receivers fill them in version-neutrally
+   * ({@link adoptStorageIdentities}).  The next gossip round spreads them; no
+   * membership event fires — nothing about the topology changed.
+   */
+  publishStorageIdentity(field: keyof StorageIdentitiesData, identity: string): void {
+    this.selfStorageIdentities[field] = identity;
+  }
+
+  /**
+   * The gossiped form of a member — the self record leaves stamped with the
+   * current identity claims, whatever version it carries.  See
+   * {@link publishStorageIdentity} for why this is a stamp and not a stored
+   * member update.
+   */
+  private memberDataForGossip(member: Member): MemberData {
+    if (!member.address.equals(this.selfAddress)) return member.toData();
+    const identities = this.selfStorageIdentitiesSnapshot();
+    if (identities === undefined) return member.toData();
+    return { ...member.toData(), storageIdentities: identities };
+  }
+
+  /**
+   * Fill identity claims into a record we otherwise ignore (equal or older
+   * version).  Fill-only and version-neutral on purpose: the claims are the
+   * subject node's own statement riding an overlay lane, so adopting them
+   * must neither advance the merge clock nor overwrite claims we already
+   * hold — a genuinely changed identity arrives with a new incarnation's
+   * higher version and takes the full merge path.
+   */
+  private adoptStorageIdentities(existing: Member, incoming: Member): void {
+    if (incoming.storageIdentities === undefined) return;
+    if (existing.storageIdentities !== undefined) return;
+    if (incoming.address.equals(this.selfAddress)) return;
+    this.setMember(existing.withStorageIdentities(incoming.storageIdentities));
+    this.checkStorageIdentityAgreement(incoming);
+  }
+
+  private selfStorageIdentitiesSnapshot(): StorageIdentitiesData | undefined {
+    const { journal, snapshotStore, durableStateStore } = this.selfStorageIdentities;
+    if (journal === undefined && snapshotStore === undefined && durableStateStore === undefined) return undefined;
+    return { ...this.selfStorageIdentities };
+  }
+
+  /**
+   * Two members claiming different identities for the same store kind are
+   * not reading the same database — the failure #1358 exists to surface,
+   * and the one that no locality declaration can catch: two nodes each on
+   * their own Postgres, a stale connection string, a restored backup.  Once
+   * per kind per node lifetime, at warn: by the time this fires the
+   * divergence may already be real, and the operator needs the pointer, not
+   * a page per gossip round.  Only claims both sides actually make are
+   * compared — absence stays silent (mixed versions, undeclared stores,
+   * replicated event sourcing, which publishes nothing).
+   */
+  private checkStorageIdentityAgreement(member: Member): void {
+    if (member.address.equals(this.selfAddress)) return;
+    const claims = member.storageIdentities;
+    if (claims === undefined) return;
+    for (const field of STORAGE_IDENTITY_FIELDS) {
+      const ours = this.selfStorageIdentities[field];
+      const theirs = claims[field];
+      if (ours === undefined || theirs === undefined || ours === theirs) continue;
+      if (this.storageIdentityMismatchReported.has(field)) continue;
+      this.storageIdentityMismatchReported.add(field);
+      this.log.warn(
+        `persistence: ${STORAGE_IDENTITY_FIELD_LABELS[field]} storage identity differs between this node `
+        + `and ${member.address} — the two are not reading the same database, so an entity that moves `
+        + 'between them recovers a different history: two nodes, two histories, no error on either '
+        + '(#1358). Point every node at the SAME database instance (matching connection strings, one '
+        + 'bucket, one keyspace), or use replicated event sourcing where per-node journals are the '
+        + 'intended design.',
+      );
+    }
+  }
+
   /** Members in the `up` state, ordered by address — the "active set". */
   upMembers(): Member[] {
     return Array.from(this.members.values())
@@ -502,6 +733,26 @@ export class Cluster {
   /** True if this node is currently the leader. */
   isLeader(): boolean {
     return this.leader().exists((l) => l.address.equals(this.selfAddress));
+  }
+
+  /**
+   * Resolve once this node is a full member (`up`) and at least
+   * `minimumMembers` members are `up`; with `timeoutMs` set, reject with
+   * `ClusterReadyTimeoutError` when the deadline fires first.  Without
+   * `timeoutMs` it waits indefinitely, like `ActorSystem.whenTerminated()` —
+   * see {@link ClusterReadinessOptions.timeoutMs} for why no default
+   * deadline exists at this layer.
+   */
+  awaitReady(options?: ClusterReadinessOptions): Promise<void> {
+    return awaitClusterReady(this, options);
+  }
+
+  /**
+   * Synchronous probe of the same predicate {@link awaitReady} waits on.
+   * `timeoutMs` is ignored — a probe has no deadline.
+   */
+  isReady(options?: ClusterReadinessOptions): boolean {
+    return isClusterReadyNow(this, options);
   }
 
   /**
@@ -591,6 +842,23 @@ export class Cluster {
   async leave(): Promise<void> {
     if (!this.started) return;
     this.started = false;
+    // Drop the pipeline's task with the membership it named.  A process that
+    // leaves and re-joins — a test, a reconfiguration — would otherwise hit
+    // `addTask`'s duplicate-name check on the second `Cluster.join`.  Safe to
+    // do here even though `leave()` is usually *called by* that task:
+    // `runPhase` snapshots the list before invoking anything.
+    this.system.extension(CoordinatedShutdownId)
+      .removeTask(Phases.ClusterLeave, CLUSTER_LEAVE_TASK_NAME);
+    // The readiness checks stay registered, and this is the whole point of
+    // them.  Leaving used to un-register the pair here — before self had even
+    // been moved to `leaving` — which left `checkReadiness()` empty on a node
+    // whose only readiness checks were the cluster's.  An empty aggregate
+    // reads as healthy at every consumer, so `/ready` answered 200 and the
+    // gRPC health service answered SERVING for a node that had deliberately
+    // gone out of service: the load balancer kept sending it traffic right up
+    // to the moment the process died (#655).  Both checks report DOWN from
+    // here on instead — self stays `leaving` in its own view — and a re-`join`
+    // retires them at its own registration point.
     const me = this.members.get(this.selfAddress.toString());
     if (me) {
       this.updateMember(me.withStatus('leaving'));
@@ -628,7 +896,12 @@ export class Cluster {
     // version is still a monotonically-increasing logical clock;
     // the epoch only ensures a fresh process starts above any
     // version that previous incarnation could have reached.
-    const me = new Member(this.selfAddress, 'joining', Date.now(), this.selfRoles);
+    const me = new Member(
+      this.selfAddress, 'joining', Date.now(), this.selfRoles,
+      // Store identities that resolved before the join seed the member here;
+      // later ones arrive through `publishStorageIdentity` (#1358).
+      undefined, this.selfStorageIdentitiesSnapshot(),
+    );
     // Same seed, same argument: peers hold a high-water mark per sender, so a
     // fresh process has to start above every frame the previous incarnation of
     // this address ever sent (#112).
@@ -649,12 +922,16 @@ export class Cluster {
         `contacting ${this.seedAddrs.length} seed(s): [${this.seedAddrs.map((a) => a.toString()).join(',')}]`,
       );
       this.contactSeeds();
-      // Keep retrying seed contact until self has transitioned to up,
-      // covering the case where a seed hasn't started yet.
+      // Keep retrying seed contact until self has transitioned to up, covering
+      // the case where a seed hasn't started yet — and, since this is the one
+      // timer that runs exactly while the node is stuck, carry the diagnosis
+      // for the case where it never will (#1351).
       this.seedTimer = this.system.scheduler.scheduleAtFixedRateFunction(
         this.seedRetryIntervalMs, this.seedRetryIntervalMs, () => {
           const self = this.members.get(this.selfAddress.toString());
           if (!self || self.status !== 'joining') { this.seedTimer?.cancel(); this.seedTimer = null; return; }
+          this.seedRounds += 1;
+          this.reportColdStartStall();
           this.contactSeeds();
         },
       );
@@ -691,6 +968,17 @@ export class Cluster {
       this.tombstonePruneIntervalMs, this.tombstonePruneIntervalMs,
       () => this.tombstonePruneTick(),
     );
+
+    // Last, so a start that threw earlier leaves nothing registered: the
+    // rollback in `join` puts the extension slot back but has no cluster to
+    // take checks off, and a half-started one answering `/ready` would be
+    // worse than a system with none at all (#655).
+    //
+    // The undo is deliberately dropped.  Nothing on the way out of service
+    // calls it — `leave()` leaves both checks reporting DOWN — and the one
+    // caller that must, a later `join` on this same system, retires the
+    // previous pair from inside `registerClusterHealthChecks`.
+    registerClusterHealthChecks(this, healthChecksOf(this.system));
   }
 
   private contactSeeds(): void {
@@ -703,7 +991,7 @@ export class Cluster {
       kind: 'gossip',
       from: this.selfAddress.toJSON(),
       sequence: this.nextGossipSequence(),
-      members: [me.toData()],
+      members: [this.memberDataForGossip(me)],
     };
     for (const seed of this.seedAddrs) {
       this.failureDetector.register(seed);
@@ -784,7 +1072,92 @@ export class Cluster {
     if (me.status !== 'joining' && me.status !== 'weakly-up') return;
     const message = `self-electing as first cluster member — ${reason}`;
     if (level === 'info') this.log.info(message); else this.log.debug(message);
+    this._selfElected = true;
     this.updateMember(me.withStatus('up'));
+  }
+
+  /**
+   * Say why this node is still `joining`, once, when nothing is going to
+   * change that (#1351).
+   *
+   * The condition is exact rather than a heuristic. `joining → up` is the
+   * leader's decision, `leader()` is the first of {@link upMembers}, and the
+   * only way a node reaches `up` without one is self-election. So a node that
+   * knows no `up` member and has no self-election pending cannot be promoted
+   * by anything: no leader exists to promote it, and none can come into being
+   * through it. The cluster is not slow, it is finished.
+   *
+   * `selfElectionTimer === null` is what covers both policies that strand a
+   * node here. `'never'` arms no timer at all. `'immediate'` arms none either,
+   * and its one chance has already passed: it self-elects only on an *empty*
+   * seed list, and this loop exists only when the list is non-empty. A
+   * deferred policy is the one that does hold a timer and will resolve this
+   * without help — which is why a pending one is the signal to stay quiet.
+   *
+   * Held back {@link COLD_START_STALL_AFTER_SEED_ROUNDS} rounds because the
+   * same condition is true, and harmless, for the first seconds of an ordinary
+   * simultaneous start, while the peer that will form the cluster is still
+   * coming up.
+   *
+   * Reported once. The condition holds on every round from here on, and this
+   * is a verdict on the configuration rather than an event — repeating it per
+   * round would bury the one line that matters, which is the noise this whole
+   * area was cleaned of in #1352.
+   *
+   * **Not reachable from `weakly-up`.** The retry loop cancels itself on any
+   * status but `joining`, so a node auto-promoted by `weaklyUpAfterMs` leaves
+   * this behind and can stall unreported. That gap is real, but it belongs to
+   * the loop's cancel condition rather than here, and `weaklyUpAfterMs`
+   * defaults to 0, so nothing reaches it without being configured to.
+   */
+  private reportColdStartStall(): void {
+    if (this.coldStartStallReported) return;
+    if (this.seedRounds < COLD_START_STALL_AFTER_SEED_ROUNDS) return;
+    if (this.selfElectionTimer !== null) return;
+    if (this.upMembers().length > 0) return;
+    this.coldStartStallReported = true;
+    // Every member but our own record — what this node has actually heard from,
+    // which is the half of the diagnosis it cannot state from configuration.
+    const peers = this.members.size - 1;
+    this.log.warn(
+      `still "joining" after ${this.seedRounds} seed-contact round(s), and nothing can promote `
+      + `this node: no member is "up", so there is no leader, and only a leader moves a node `
+      + `from "joining" to "up" — ${this.coldStartStallRemedy(peers)}`,
+    );
+  }
+
+  /**
+   * The half of the stall report that depends on what this node can see.
+   *
+   * Split by peer count first, because it separates two failures that look
+   * identical in the member map but have nothing else in common: seeds nobody
+   * is answering on, and seeds answering perfectly while every node waits for
+   * a leader none of them will elect.
+   */
+  private coldStartStallRemedy(peers: number): string {
+    if (peers === 0) {
+      return 'no seed has answered at all. Seeds: '
+        + `[${this.seedAddrs.map((a) => a.toString()).join(', ')}]. Check that these are the `
+        + 'addresses those nodes advertise (not their bind addresses), that their processes are '
+        + 'running, and that the port is reachable from here';
+    }
+    return match(this.selfElection)
+      .with('immediate', () =>
+        `${peers} peer(s) are known and every one of them is stuck the same way. Each node was `
+        + "started with a non-empty seed list and selfElection: 'immediate', which self-elects "
+        + 'only on an *empty* one — so no node will ever form the cluster. Give exactly one node '
+        + 'seeds: [], or pass stableObservation: true to Cluster.bootstrap, which elects an '
+        + 'initial seed and derives the selfElection pairing itself')
+      .with('never', () =>
+        `${peers} peer(s) are known but none is "up". This node has selfElection: 'never', so it `
+        + 'waits to be promoted — the node elected to form the cluster has not reached "up"')
+      // Unreachable in practice, and kept for exhaustiveness rather than for
+      // the message: a deferred election that has already fired left this node
+      // `up`, which cancels the loop that calls this.
+      .with(P.number, (afterMs) =>
+        `${peers} peer(s) are known but none is "up", and this node's ${afterMs} ms `
+        + 'self-election grace elapsed without forming one')
+      .exhaustive();
   }
 
   private handleWire(from: NodeAddress, message: WireMessage): void {
@@ -803,9 +1176,20 @@ export class Cluster {
     /* already bumped fd */
   }
 
+  /**
+   * A frame whose `kind` is not one of the core ones — every extension's is.
+   * `receptionist-gossip`, `pubsub-gossip`, `cluster-client-envelope` and
+   * DistributedData's kinds all arrive here and are dispatched from
+   * `wireHandlers`; falling through silently when nothing is registered is
+   * deliberate, because an extension a node has not started is exactly the case.
+   *
+   * The comment here used to name `'shard-map'` as registry-handled. Nothing
+   * ever registered it — sharding fans its allocation map out as a
+   * `sharding.ShardMapUpdate` inside an envelope, not as a wire kind of its own
+   * — so the frame was validated, arrived here, matched nothing and was dropped.
+   * The type went with the comment (#681).
+   */
   private onUnhandledWire(message: WireMessage, from: NodeAddress): void {
-    // 'shard-map' and any custom extension wire-msgs handled by the
-    // registry; we intentionally fall through when no handler is set.
     const custom = this.wireHandlers.get(message.kind);
     if (custom) custom(message, from);
   }
@@ -944,8 +1328,9 @@ export class Cluster {
 
   /**
    * Whether this frame is newer than the last one accepted from the same
-   * connection peer — the guard that makes a captured gossip frame worthless
-   * on a second delivery (#112).
+   * connection peer — the guard that makes a captured gossip frame worthless on
+   * a second delivery, **to a receiver that holds a mark for that sender**
+   * (#112).  The qualifier is load-bearing; see *What it does not close*.
    *
    * **What a replay buys without it.**  A gossip frame carries a snapshot of
    * the member map, and a member's `version` only moves when its status does,
@@ -971,12 +1356,69 @@ export class Cluster {
    * only against itself, so it is skew-free, needs no knob, and refuses every
    * replay rather than those older than a window.
    *
-   * **What it does not close.**  A peer that has earned standing can still
-   * *compose* a fresh frame naming a deleted address at its old version — that
-   * is not a replay, and only an incarnation identity on `NodeAddress` closes
-   * it (#940).
+   * **A sequence must also be plausible, and refusing is what makes the guard
+   * hold.**  The number is stamped from the author's wall clock, so it gets the
+   * same clock-skew budget a gossiped `version` gets
+   * ({@link ClusterOptionsType.maxVersionSkewMs}) and for the same reason.  This
+   * check used to sit one step later — the frame was admitted and only *adopting*
+   * it as the mark was refused, on the argument that a frame numbered
+   * `Number.MAX_SAFE_INTEGER` "is by definition not a recording of a real frame".
+   * That argument does not survive the observation that only the **sequence** is
+   * fabricated: the `members` array is still the recording, and there is no MAC
+   * or signature anywhere on this wire to stop one field being rewritten.  So a
+   * captured frame restamped absurdly far ahead was merged, left the mark
+   * untouched, and was therefore merged **again on every delivery, without
+   * limit** — against a warm receiver with a live sender, which is the one
+   * configuration the guard was claimed to hold in (#940).
+   *
+   * Refusing it instead keeps the property the old split was reaching for and
+   * loses nothing: the mark stays where the last plausible frame left it, so the
+   * real node's next frame still out-numbers it and still merges.  What a peer
+   * can no longer do is pin the mark *or* replay through it — the pinning
+   * exploit #114 closed on `version` is not reintroduced one field to the left,
+   * it is closed on both sides.
+   *
+   * `Number.isFinite` is checked here as well as by the frame guard
+   * ({@link wireFrameProblem}) — `NaN` loses every `>` comparison, so an
+   * unchecked one would sail past both the mark and the budget.  Local to the
+   * decision that depends on it, for the reason `Member.fromData` re-checks
+   * `status`.
+   *
+   * **What it does not close.**  Three things, and the second is why the
+   * headline above carries a qualifier.
+   *
+   * 1. A peer that has earned standing can still *compose* a fresh frame naming
+   *    a deleted address at its old version — that is not a replay at all.
+   * 2. **A missing mark admits everything, and eviction of the sender is only
+   *    one of three ways to be missing one.**  {@link deleteMember} drops an
+   *    evicted member's mark; a fresh or restarted process starts with the map
+   *    empty; and a member learned **third-party** never had one, because
+   *    {@link rememberGossipSequence} only ever runs for the connection the
+   *    frame arrived on.  Gossip is epidemic — this node files C as `up` on B's
+   *    word — so that third case has the sender a full member throughout, with
+   *    nothing evicted anywhere.  Refusing a frame from a peer with no mark is
+   *    *not* the missing check: the first frame from every peer is one, so a
+   *    receiver that refused them would never converge.  What an empty mark
+   *    concedes is a two-frame bootstrap, the first frame installing the mark
+   *    off its own recorded number — and against a third-party-learned sender,
+   *    one frame, since the standing is already there.
+   * 3. Which is why 1 and 2 both stay open: nothing keyed on the sender's own
+   *    counter separates a recording from a live frame, because one counter
+   *    stamped both.  What separates them is *which process* emitted them, and
+   *    the only receiver-checkable statement of that is
+   *    {@link NodeAddress.incarnation} — deliberately optional today, so a
+   *    refusal resting on it is one an attacker opts out of by stripping the
+   *    field.  Requiring it breaks every address-bearing frame field at once and
+   *    waits on protocol versioning (#940, #823).  It would close a recording of
+   *    a *previous* incarnation, which is the restart case and the bulk of the
+   *    exposure; a node downed while still running, and a first sighting at a
+   *    receiver holding no earlier incarnation of the subject, would survive it.
+   *
+   * Both counterfactuals are asserted in
+   * `tests/unit/cluster/GossipReplayGuard.test.ts`.
    */
   private admitsGossipSequence(from: NodeAddress, sequence: number): boolean {
+    if (!Number.isFinite(sequence) || sequence > Date.now() + this.maxVersionSkewMs) return false;
     const lastAccepted = this.acceptedGossipSequences.get(from.toString());
     return lastAccepted === undefined || sequence > lastAccepted;
   }
@@ -984,24 +1426,27 @@ export class Cluster {
   /**
    * Raise the high-water mark for a peer whose frame was just merged.
    *
-   * Two conditions, both about not turning a replay guard into a denial of
-   * service:
+   * **The only writer of {@link acceptedGossipSequences}, and it runs only
+   * here** — inside the gossip path, for the connection the frame arrived on.
+   * So a mark tracks the peers this node has *heard from*, never the peers it
+   * merely knows about; that asymmetry is residual 2 on
+   * {@link admitsGossipSequence} and is not an oversight to be fixed in this
+   * method, because the number a third party reports about C says nothing about
+   * where C's own counter has reached.
    *
-   * - **Only for an address the member map holds**, which is what bounds this
-   *   map by the same caps as that one — the sender fallback above has already
-   *   run, so an honest peer is on file by the time this is asked.
-   * - **Only for a sequence that is plausible**, held to the same budget as a
-   *   gossiped version.  A frame numbered `Number.MAX_SAFE_INTEGER` is still
-   *   *accepted* — it is by definition not a recording of a real frame, so the
-   *   guard has no business refusing it — but it must not become the mark, or
-   *   one frame would pin a member's address and refuse everything the real
-   *   node says from then on.  That is exactly the exploit #114 closed on
-   *   `version`, and it would be reintroduced one field to the left.
+   * **Only for an address the member map holds**, which is what bounds this map
+   * by the same caps as that one — the sender fallback above has already run, so
+   * an honest peer is on file by the time this is asked.
+   *
+   * Plausibility is not re-checked here: {@link admitsGossipSequence} refuses an
+   * implausible frame outright, so nothing that reaches this point carries a
+   * number the mark should not take.  Keeping the bound in one place is the
+   * point — two copies of it is how the frame came to be admitted under a number
+   * the mark itself rejected.
    */
   private rememberGossipSequence(from: NodeAddress, sequence: number): void {
     const key = from.toString();
     if (!this.members.has(key)) return;
-    if (sequence > Date.now() + this.maxVersionSkewMs) return;
     this.acceptedGossipSequences.set(key, sequence);
   }
 
@@ -1010,8 +1455,8 @@ export class Cluster {
    *
    * The reason is a label rather than a metric name so an operator can alert
    * on "records are being refused at all" without knowing which guard fired,
-   * and it is drawn from a closed union so the series count stays at three no
-   * matter what a peer sends — the cardinality trap #131 put a cap on.
+   * and it is drawn from a closed union so the series count is fixed by this
+   * file and not by what a peer sends — the cardinality trap #131 put a cap on.
    */
   private reportRefusals(from: NodeAddress, reason: GossipRefusalReason, count: number): void {
     if (count <= 0) return;
@@ -1034,7 +1479,12 @@ export class Cluster {
       .with('timestamp-skew', () =>
         `implausible removedAt — more than ${MAX_WALL_CLOCK_SKEW_MS}ms ahead, or not a number`)
       .with('replayed-frame', () =>
-        'the frame does not out-number the last one accepted from that peer — a replay or a duplicate')
+        'the frame does not out-number the last one accepted from that peer, or its sequence is not '
+        + `a finite number within maxVersionSkewMs (${this.maxVersionSkewMs}ms) of this clock — `
+        + 'a replay, a duplicate, or a capture with its sequence rewritten')
+      .with('self-claim', () =>
+        'a status for this node itself that is neither the one it already holds nor the leader '
+        + 'promoting it to up — this node is the author of its own status (#562)')
       .exhaustive();
   }
 
@@ -1043,7 +1493,8 @@ export class Cluster {
     // duration of dispatch (#53, #10).  Local refs that the
     // dispatcher subsequently `tell`s capture this same context onto
     // the next envelope, so both trails keep flowing across hops.
-    // Empty / missing contexts skip the corresponding wrapper.
+    // A missing trace skips its wrapper; a missing MDC gets a *cleared*
+    // one rather than none at all (#718, below).
     let dispatch: () => void = (): void => this.dispatchEnvelope(from, message);
 
     // Tracing: if the envelope carries a parent context, open a
@@ -1079,10 +1530,27 @@ export class Cluster {
     // spreads the context last — and put a newline in any value, which forges
     // whole extra lines in ConsoleLogger's one-line-per-record output (#573).
     const context = message.context ? sanitizeWireLogContext(message.context) : undefined;
-    if (context && Object.keys(context).length > 0) {
+    // The same emptiness question the two `tell` paths ask, through the same
+    // helper.  Its identity fast path cannot fire here — the sanitiser hands
+    // back a fresh object every time — but a peer that sends `context: {}`, or
+    // one whose every key the sanitiser rejected, must still be treated as
+    // having sent nothing, rather than having its emptiness installed as a
+    // context of its own.  What the two branches now differ in is *whose*
+    // emptiness that is (#718) — and the `else` still costs no
+    // `AsyncLocalStorage` frame on a node with no MDC open, because `runFresh`
+    // skips the wrapper when there is no store to shadow.
+    if (context && !LogContext.isEmpty(context)) {
       LogContext.run(context, dispatch);
     } else {
-      dispatch();
+      // `runFresh`, not a bare call: an inbound frame that carries no context
+      // must be dispatched under a *cleared* one, and there is a store to clear
+      // (#718).  `TcpTransport.send` opens the outbound socket lazily, so the
+      // socket — and every `onData` callback on it — is bound to the
+      // `AsyncLocalStorage` store of whichever request first sent to that peer.
+      // Unwrapped, `dispatchEnvelope`'s `ref.tell(body)` snapshots that store
+      // onto the local envelope, and a peer's context-free frame is delivered
+      // under one of *our* earlier requests' correlation ids.
+      LogContext.runFresh(dispatch);
     }
   }
 
@@ -1168,7 +1636,7 @@ export class Cluster {
       kind: 'gossip',
       from: this.selfAddress.toJSON(),
       sequence: this.nextGossipSequence(),
-      members: Array.from(this.members.values()).map(member => member.toData()),
+      members: Array.from(this.members.values()).map(member => this.memberDataForGossip(member)),
     };
     this.transport.send(target.address, gossip);
     // Stock metric: gossip rounds count.
@@ -1380,10 +1848,19 @@ export class Cluster {
   ): boolean {
     if (subject.equals(this.selfAddress)) {
       if (this.isOwnPromotion(incomingStatus)) return true;
-      this.log.warn(
-        `merge: refusing ${from}'s claim that we are "${incomingStatus}" — `
-        + `this node is the author of its own status, promotion aside`,
-      );
+      // A peer echoing the status we already hold is the ordinary content of
+      // every round, not an event: our own record travels back to us in each
+      // frame, and refusing it changes nothing the version comparison in
+      // `mergeMember` would not have dropped anyway.  Logged, it is one WARN
+      // per gossip interval per peer describing a healthy cluster — which is
+      // how it came to be read as the cause of a failure that lay elsewhere.
+      //
+      // A peer that *contradicts* us is the #562 case and still surfaces, but
+      // through `refusalCounts` like every other guard on this path: one line
+      // and one counter increment per frame rather than per record (#131).
+      if (incomingStatus !== this.members.get(this.selfAddress.toString())?.status) {
+        this.refusalCounts['self-claim']++;
+      }
       return false;
     }
     if (subject.equals(from)) return true;      // a node announcing itself
@@ -1541,7 +2018,7 @@ export class Cluster {
   }
 
   private mergeMember(from: NodeAddress, senderStatus: MemberStatus | undefined, data: MemberData): void {
-    const incoming = Member.fromData(data);
+    const incoming = this.withLocalSelfIdentity(Member.fromData(data));
 
     if (!this.maySpeakFor(from, senderStatus, incoming.address, incoming.status)) return;
 
@@ -1589,6 +2066,7 @@ export class Cluster {
       // record that was going to be dropped anyway never consumes cap headroom.
       if (!this.admitsMember(incoming, existing)) return;
       this.setMember(incoming);
+      this.checkStorageIdentityAgreement(incoming);
       this.failureDetector.register(incoming.address);
       this.emit(new MemberJoined(incoming));
       // If we first learn about the member already in a terminal or
@@ -1623,6 +2101,7 @@ export class Cluster {
         `merge: ${incoming.address} re-incarnation (was removed v${existing.version}, now ${incoming.status} v${incoming.version})`,
       );
       this.setMember(incoming);
+      this.checkStorageIdentityAgreement(incoming);
       this.failureDetector.register(incoming.address);
       this.emit(new MemberJoined(incoming));
       if (incoming.status !== 'joining') {
@@ -1631,7 +2110,13 @@ export class Cluster {
       return;
     }
 
-    if (incoming.version <= existing.version) return; // older or equal, ignore
+    if (incoming.version <= existing.version) {
+      // Ignored for membership — but the identity overlay still lands, or a
+      // claim published after a member's last status change would never
+      // spread (#1358).
+      this.adoptStorageIdentities(existing, incoming);
+      return;
+    }
     // The mirror of the revival check: a live member gossiped as `removed`
     // moves into the tombstone bucket, which frees a live slot for the next
     // flood while keeping the map entry.  Refused when the bucket is full, and
@@ -1643,7 +2128,45 @@ export class Cluster {
       );
     }
     this.setMember(incoming);
+    this.checkStorageIdentityAgreement(incoming);
     this.emitStatusTransition(existing, incoming);
+  }
+
+  /**
+   * A gossiped record *about this node* keeps this node's own address object,
+   * incarnation included (#940).
+   *
+   * {@link maySpeakFor} already refuses every claim about `selfAddress` except
+   * an own promotion, and a promotion is merged wholesale — the incoming
+   * record's version, roles **and address** replace the local ones.  For the
+   * three fields the string form is built from that is invisible, because they
+   * had to match for the record to be about this node at all.  For the
+   * incarnation it is not: a peer running the previous version sends none, and
+   * a hostile one can send whatever it likes, so the self record's identifier
+   * would be whatever the last peer to promote us happened to say.
+   *
+   * Substituting the local address is the one incarnation comparison that needs
+   * no distributed agreement, because it only ever discards a peer's claim in
+   * favour of a fact this node owns.  It is not a refusal: the promotion still
+   * lands, which is what keeps a node joining a cluster whose leader predates
+   * the field.
+   */
+  private withLocalSelfIdentity(member: Member): Member {
+    if (!member.address.equals(this.selfAddress)) return member;
+    // The store identities get the same substitution as the incarnation, for
+    // the same reason (#1358): they are a fact this node owns.  A leader
+    // promoting us from a view that predates our publication would otherwise
+    // merge a self record without them — wholesale, per the rule above — and
+    // wipe what only this node can know.
+    const ownIdentities = this.selfStorageIdentitiesSnapshot() ?? member.storageIdentities;
+    if (member.address.incarnation === this.selfAddress.incarnation
+      && ownIdentities === member.storageIdentities) {
+      return member;
+    }
+    return new Member(
+      this.selfAddress, member.status, member.version, member.roles, member.removedAt,
+      ownIdentities,
+    );
   }
 
   /**
@@ -1777,6 +2300,41 @@ export class Cluster {
       );
     }
   }
+}
+
+/**
+ * Say out loud that nothing named this node's advertised address, and what was
+ * used instead (#944).
+ *
+ * The failure this replaces was silent by construction: a node that gossiped a
+ * wildcard produced no error, no warning and a member map of one, and the only
+ * way to tell a cluster that had not converged *yet* from one that never would
+ * was to know this defect existed.  So the derivation announces itself, and
+ * the level splits on whether the answer can be dialled from another machine:
+ * a value from the environment is a working address and reads as information,
+ * where the loopback fallback means no peer off this host can reach this node
+ * — fine for a development run, a silent outage for anything else.
+ *
+ * Emitted from `join` rather than the constructor because only `join` holds
+ * both the options as written and the value derived from them; the constructor
+ * receives one field and cannot tell which it is.
+ */
+function reportDerivedAdvertisedHost(system: ActorSystem, options: ClusterOptionsType): void {
+  const advertised = `${options.advertisedHost}:${options.port}`;
+  const looked = ADVERTISED_HOST_ENV_VARS.join(', ');
+  if (options.advertisedHost === DEFAULT_ADVERTISED_HOST) {
+    system.log.warn(
+      `cluster: nothing named this node's advertised address (no routable host, no `
+      + `advertisedHost, none of ${looked}), so it will tell peers to dial ${advertised} — reachable from this `
+      + `machine only. Set ClusterOptions.withAdvertisedHost(...), ${ConfigKeys.remote.tcp.advertisedHost}, `
+      + 'or the CLUSTER_HOST / POD_IP env var before running more than one node.',
+    );
+    return;
+  }
+  system.log.info(
+    `cluster: binding ${options.host}:${options.port} and advertising ${advertised}, `
+    + `taken from the environment (${looked}) because the bind host is a wildcard.`,
+  );
 }
 
 /** Helper — creates an InMemoryTransport for tests. */

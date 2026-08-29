@@ -63,7 +63,7 @@ actor-ts {
     receptionist {
       gossip-interval         = 1s
       max-subscribers-per-key = 1000
-      max-subscribers-total   = 10000
+      max-subscriptions-total   = 10000
     }
   }
 
@@ -71,6 +71,7 @@ actor-ts {
     gossip-interval             = 1s
     max-pending-quorum-requests = 1000    # 0 = kein Cap
     max-quorum-timeout          = 30s     # 0 = keine Obergrenze
+    max-gossip-bytes            = 1M      # pro Gossip-Frame; 0 = kein Budget
   }
 
   remote {
@@ -108,6 +109,7 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `system.name` | `"default"` | Systemname — verwendet in Actor-Pfaden und zur Cluster-Identifikation.  Greift, wenn `ActorSystem.create()` ohne Namen aufgerufen wird; ein explizites `create('billing')` gewinnt. |
+| `system.shutdown-drain-timeout` | `2s` | Wie lange `terminate()` den Actors unter `/user` gibt, die eingereihte Arbeit zu beenden, bevor die Stop-Kaskade startet.  Kehrt zurück, sobald der Baum ruhig ist — ein untätiges System zahlt einen Tick.  Halte den Wert unter `coordinated-shutdown.default-phase-timeout`; `0` schaltet den Drain ab. |
 
 ### `actor-ts.logger`
 
@@ -115,12 +117,34 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 | --- | --- | --- |
 | `logger.level` | `"info"` | Einer von `debug` / `info` / `warn` / `error` / `off`. |
 
+### `actor-ts.actor`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `actor.throughput` | `16` | User-Nachrichten, die **ein** Actor pro Dispatcher-Turn vor dem Yield abarbeitet.  Pro Actor überschreibbar mit `ActorOptions.withThroughput()`. |
+
 ### `actor-ts.dispatcher`
 
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `dispatcher.default` | `"immediate"` | `immediate` (Default) / `microtask` / `throughput`. |
-| `dispatcher.throughput` | `16` | Nachrichten, die ein `ThroughputDispatcher` verarbeitet, bevor er nachgibt. |
+| `dispatcher.throughput` | `16` | Eingereihte Actor-**Turns**, die ein `ThroughputDispatcher` pro Tick abarbeitet, über Actors hinweg — keine Nachrichten und nicht pro Actor.  Siehe `actor.throughput` oben für den Per-Actor-Batch. |
+
+### `actor-ts.dead-letters`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `dead-letters.store` | `"off"` | Geordnet danach, wie viel aufbewahrt wird: `off` = nur publishen, nichts aufbewahren / `metrics` = zählen, keine Payload aufbewahren / `memory` = ein begrenzter Ring / `persistent` = zusätzlich ins Journal schreiben, sodass die Queue einen Neustart übersteht. |
+| `dead-letters.max-entries` | `1000` | Aufbewahrte Letters, bevor das älteste verdrängt wird.  Von `off` und `metrics` ignoriert, die keine aufbewahren. |
+| `dead-letters.retention` | `1h` | Letters nach dieser Zeit altern lassen.  `0` schaltet das Altern ab und lässt `max-entries` als einzige Schranke. |
+| `dead-letters.max-replays` | `3` | Wie oft ein Letter erneut zugestellt werden darf, bevor es in Quarantäne kommt. |
+| `dead-letters.persistence-id` | `""` | Journal-Stream, in den der `persistent`-Store schreibt.  Leer leitet ihn aus dem Systemnamen ab, sodass zwei Systeme mit gemeinsamem Journal getrennte Queues behalten. |
+
+Jeder Key hier ist auch im Code setzbar, feldweise, über
+`ActorSystemOptions.withDeadLetters(…)` — was diesen Block überstimmt, wie
+explizite Options es immer tun. Siehe [Dead
+Letters](/de/operations/dead-letters/) dafür, was die Queue enthält und wie
+man daraus erneut zustellt.
 
 ### `actor-ts.cluster`
 
@@ -187,7 +211,7 @@ angelegt — ganz ohne lokales `Subscribe`.  Siehe
 | --- | --- | --- |
 | `cluster.receptionist.gossip-interval` | `1s` | Wie oft der Receptionist seine lokalen Registrierungen gossipt. |
 | `cluster.receptionist.max-subscribers-per-key` | `1000` | Obergrenze für Subscriber eines Service Keys.  Ein `Subscribe` darüber wird mit `ReceptionistSubscribeRejected` beantwortet. |
-| `cluster.receptionist.max-subscribers-total` | `10000` | Obergrenze für Subscriber über alle Keys dieses Nodes. |
+| `cluster.receptionist.max-subscriptions-total` | `10000` | Obergrenze für Key/Subscriber-Paare über alle Keys dieses Nodes — ein Subscriber mit drei Keys zählt dreifach. |
 
 Beide Blöcke liegen unter dem, was dem `start(...)` der Extension
 übergeben wurde — ein explizites `withMaxTopics(…)` gewinnt also
@@ -198,9 +222,23 @@ zählen gegen keine der Grenzen.
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `distributed-data.gossip-interval` | `1s` | Wie oft eine Replika ihren kompletten Key-Satz an einen zufälligen Peer schickt. |
+| `distributed-data.gossip-interval` | `1s` | Wie oft eine Replika ihren Key-Satz an einen zufälligen Peer schickt. |
 | `distributed-data.max-pending-quorum-requests` | `1000` | Obergrenze für offene Quorum-Requests — `updateAsync` und `getAsync` teilen sich ein Budget.  Ein Request darüber wird direkt abgelehnt.  `0` deaktiviert das Cap. |
 | `distributed-data.max-quorum-timeout` | `30s` | Obergrenze für das `timeoutMs` eines Aufrufs; ein größerer Wert wird darauf heruntergeschnitten.  `0` deaktiviert die Obergrenze. |
+| `distributed-data.max-gossip-bytes` | `1M` | Byte-Budget für die Payload eines Gossip-Frames.  Ein größerer Store wird pro Tick in Scheiben geschickt und setzt dort fort, wo der letzte Tick aufgehört hat.  `0` entfernt das Budget. |
+
+`max-gossip-bytes` wird immer **auf `remote.max-frame-bytes` heruntergeschnitten**:
+Wer das Wire-Cap senkt, senkt damit auch das Gossip-Budget, und keine
+Einstellung kann Gossip wieder darüber schieben.  Das ist wichtig, weil die
+beiden Fehlerbilder nicht vergleichbar sind: Ein Frame über dem Wire-Cap wird
+schon an seinem 4-Byte-Längenpräfix abgelehnt, und der empfangende Transport
+verwirft die komplette Peer-Verbindung — Heartbeats, Membership-Gossip und
+jedes `tell` über Knotengrenzen inklusive — während ein Budget denselben Zustand
+lediglich über mehr Ticks verteilt.  Ein einzelner Key, dessen eigene Kodierung
+das Budget überschreitet, lässt sich nicht weiter aufteilen: Er wird
+übersprungen, mit einer ratenbegrenzten Warnung samt Key-Name und beiden Größen
+gemeldet, in `distributed_data_gossip_skipped_keys_total` gezählt — und er
+konvergiert **nicht**.
 
 Der Block liegt auf oberster Ebene statt unter `cluster.*` (wo `pub-sub`
 und `receptionist` wohnen), weil das Modul dort liegt: `DistributedData`
@@ -258,10 +296,21 @@ Transport zu verschlüsseln ist separat verfolgt als
 landet, behandle das Cluster-Netz als etwas, das du anderweitig absichern
 musst.
 
+Der Wert wird typgeprüft, wie jeder andere Key auf dieser Seite.  `true`, `on`
+und `yes` fordern alle TLS an und erzeugen alle die Warnung; `false`, `no` und
+`off` lehnen alle ab und bleiben still.  Alles andere — `maybe` oder ein
+nacktes `1` — wirft einen `ConfigError` aus `Cluster.join` heraus, und der Node
+startet nicht.  Ein Security-Schalter ist der falsche Ort, um zu raten, was
+ein Tippfehler gemeint hat: die nachsichtige Lesart wäre „nicht aktiviert",
+und damit stünde der Node wieder auf Klartext, während die Config TLS sagt —
+genau der Zustand, den diese Warnung ausschließen soll.
+
 Die Warnung gilt für den Transport, den der Cluster sich selbst baut.
 Übergibst du per `ClusterOptions.withTransport(…)` einen eigenen, bleibt der
 Node zu diesem Key still: was dieser Transport mit TLS macht, entscheidest
 du, und das Framework kann von außen nicht erkennen, ob er verschlüsselt ist.
+Der Key wird dann gar nicht gelesen, ein fehlerhafter Wert hält also auch
+diesen Node nicht auf.
 :::
 
 ### `actor-ts.http`
@@ -270,6 +319,7 @@ du, und das Framework kann von außen nicht erkennen, ob er verschlüsselt ist.
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | Einer von `fastify` / `express` / `hono`. |
 | `http.shutdown-grace-period` | `0ms` | Wie lange `unbind()` in-flight Requests leerlaufen lässt, bevor Verbindungen erzwungen geschlossen werden.  `0` erzwingt sofort. |
+| `http.client` | *(siehe unten)* | Defaults des ausgehenden [`HttpClient`](/de/http/overview/). |
 | `http.websocket` | *(siehe unten)* | Serverseitige WebSocket-Defaults für [`websocket()`](/de/http/websocket/)-Routen. |
 
 `http.backend` entscheidet nur darüber, was `newServerAt(...).bind()`
@@ -290,6 +340,32 @@ Backends nicht settlen kann — etwa Express mit einem lebenden WebSocket —
 wird das Fenster zu einer Deadline, die immer erreicht wird; ein großer Wert
 ist dort also Zeit, die du immer bezahlst.  Ein Aufrufer, der einen eigenen
 Wert übergibt — `binding.unbind(1_000)` — überschreibt die Config.
+
+Der gemeinsame `HttpClient` des Systems — und jedes `newClient(...)`, das ein
+Feld offen lässt — liest seine Schranken aus `actor-ts.http.client`:
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `http.client.maxResponseBytes` | `8M` | Größter Response-Body, der gepuffert wird, bevor der Request abgebrochen wird. |
+| `http.client.defaultTimeoutMs` | `30s` | Deadline für einen Aufruf, der kein eigenes `timeoutMs` nennt. |
+| `http.client.redirect` | `"follow"` | Was mit einem 3xx samt `Location` passiert — `follow` / `error` / `manual`. |
+| `http.client.maxRedirects` | `5` | Hops, die eine verfolgte Kette gehen darf, bevor der Aufruf abgelehnt wird.  `0` lehnt den ersten ab. |
+
+Das ist ein Boden und keine Policy: Eine Integration übergibt ihre eigenen
+Schranken an `newClient(...)`, und ein einzelner Aufruf überschreibt sie mit
+`maxResponseBytes` / `timeoutMs` / `redirect` / `maxRedirects`.  Was der Block
+bringt, ist die Möglichkeit, die flottenweiten Zahlen ohne Codeänderung zu
+bewegen — ein Endpunkt, der doch 60 s braucht, oder ein Deployment auf einer
+Strecke, auf der 8 MiB die falsche Obergrenze sind, zwang bisher jeden Aufrufer
+weg vom gemeinsamen Client.
+
+Die Werte werden beim Lesen auf den gemergten Settings validiert; ein falscher
+Wert wirft also `OptionsError` mit dem Feldnamen, statt später mitten im
+Request zu scheitern.  `maxResponseBytes` und `defaultTimeoutMs` müssen hier
+beide positiv sein — anders als das `timeoutMs` eines *Requests*, wo `0` der
+dokumentierte Weg ist, einen einzelnen Aufruf von jeder Deadline auszunehmen.
+Eine `0` in diesem Block würde jeden Aufruf ohne eigene Deadline entschärfen —
+genau der Zustand, den die Defaults verhindern sollen.
 
 Serverseitige WebSocket-Routen (`websocket(path, actorRef)`) lesen
 ihre Defaults aus `actor-ts.http.websocket`:
@@ -322,15 +398,23 @@ des SQLite-Journals.  Siehe jede Journal-Seite in
 | --- | --- | --- |
 | `cache.in-memory.maxEntries` | `10000` | Max. Einträge vor LRU-Eviction ([In-Memory-Cache](/de/cache/in-memory/)). |
 | `cache.in-memory.cleanupMs` | `60000` | Intervall (ms) des Hintergrund-Sweeps für abgelaufene Einträge. |
+| `cache.<name>.in-memory.*` | *(der Block oben)* | Dieselben zwei Blätter, für die einzelne Instanz, die `cache('<name>')` auflöst — überschreibt den globalen Block Blatt für Blatt. |
+| `cache.<name>.plugin` | `"...in-memory"` | Welches Backend `cache('<name>')` auflöst. |
 
 Redis- und Memcached-Caches lesen ihre Verbindungs-Settings aus
 `actor-ts.cache.redis` / `actor-ts.cache.memcached`.
+
+Die beiden `<name>`-Pfade nehmen den Namen, den dein Code an
+`cache(name)` übergibt, und lassen sich deshalb nicht in
+`reference.conf` aufzählen.  Einen Consumer allein für seinen eigenen
+Key-Raum zu dimensionieren ist genau das, was die Empfehlung [ein Cache
+pro Consumer](/de/cache/in-memory/#ein-cache-pro-consumer) braucht.
 
 ### `actor-ts.sharding`
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `sharding.number-of-shards` | `64` | In wie viele Shards der Entity-Raum geteilt wird. |
+| `sharding.number-of-shards` | `64` | In wie viele Shards der Entity-Raum geteilt wird. Jeder Node, der einen Typ startet oder proxyt, muss denselben Wert haben — der Koordinator verweigert eine Region, die abweicht, siehe [numShards ist eine clusterweite Vereinbarung](/de/cluster/sharding/overview/#numshards-ist-eine-clusterweite-vereinbarung). |
 | `sharding.rebalance-interval` | `2s` | Abstand zwischen koordinator-getriebenen Rebalance-Passes. |
 | `sharding.hand-off-timeout` | `10s` | Wie lange auf HandOffComplete gewartet wird, bevor zwangsumverteilt wird. |
 | `sharding.remember-entities` | `false` | Persistiere die Menge aktiver Entity-IDs. |
@@ -415,6 +499,7 @@ per-Protokoll-Seiten für die Keys:
 | `io.broker.sse` | [SSE](/de/io/sse/) |
 | `io.broker.tcp` | [TCP](/de/io/tcp/) |
 | `io.broker.udp` | [UDP](/de/io/udp/) |
+| `io.broker.email-bridge` | [E-Mail-Bridge](/de/io/email-bridge/) |
 
 ## HOCON-spezifische Syntax
 

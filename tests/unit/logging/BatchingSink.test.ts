@@ -344,6 +344,10 @@ describe('BatchingSink lifecycle', () => {
     const sink = new FakeBatchedSink({ flushIntervalMs: 5 });
     sink.write(record('a'));
 
+    // The elapsed time IS the assertion: 40 ms outlasts the 5 ms flush interval
+    // several times over, which is what makes the sink's own timer the only
+    // possible cause of the batch.  A poll on "one batch so far" would leave the
+    // exact-array assertion below unable to see a second one.
     await new Promise((resolve) => setTimeout(resolve, 40));
 
     expect(sink.batches.flat().map((r) => r.message)).toEqual(['a']);

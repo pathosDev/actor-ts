@@ -8,6 +8,7 @@ import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import {
   DistributedPubSubId,
   Publish,
+  PubSubEnvelope,
   Subscribe,
   Unsubscribe,
   UnsubscribeAll,
@@ -18,15 +19,18 @@ import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { BidirectionalMultiMap } from '../../../../../src/util/BidirectionalMultiMap.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(pred: () => boolean, timeoutMs = 2000, stepMs = 25): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) { if (pred()) return; await sleep(stepMs); }
-  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418).
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 2_000,
+  stepMs = 25,
+  label = 'the awaited pubsub membership state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: stepMs, label });
 
 /**
  * Cross-node delivery depends on a gossip round having carried the
@@ -43,6 +47,10 @@ async function awaitPublishReaches(
   label: string,
 ): Promise<void> {
   await awaitCondition(
+    // The inner wait is the one part that cannot be a poll: `publish()` is a
+    // `tell`, so the delivery it may produce lands in a *later* turn than the
+    // call.  Checking `hasMessage()` in the same turn would read the state
+    // before this round's publish could ever have arrived (#1145).
     async () => { publish(); await sleep(25); return probe.hasMessage(); },
     { timeoutMs: 4_000, intervalMs: 25, label },
   );
@@ -82,6 +90,12 @@ describe('DistributedPubSub — local', () => {
     const nodeA = await startNode('ps-local', 'h', 51001);
     const probe = nodeA.kit.createTestProbe();
     nodeA.mediator.tell(new Subscribe('news', probe));
+    // Positioning, not a wait on an outcome: the subscription must be in place
+    // before the publish, and the extension-owned mediator exposes no handle on
+    // its subscriber set (the audit block at the bottom of this file reaches it
+    // only through a private-field cast).  Belt-and-braces rather than a bet:
+    // both tells go to the same mailbox and `onSubscribe` is synchronous, so
+    // FIFO already orders them.
     await sleep(20);
     nodeA.mediator.tell(new Publish('news', 'headline-1'));
     expect(await probe.expectMessage('headline-1', 500));
@@ -94,6 +108,8 @@ describe('DistributedPubSub — local', () => {
     const p2 = nodeA.kit.createTestProbe();
     nodeA.mediator.tell(new Subscribe('t', p1));
     nodeA.mediator.tell(new Subscribe('t', p2));
+    // Positioning: both subscriptions in place before the publish.  Same
+    // reasoning as above — no observable on the mediator's subscriber set.
     await sleep(20);
     nodeA.mediator.tell(new Publish('t', 'ping'));
     expect(await p1.expectMessage('ping', 500));
@@ -105,10 +121,14 @@ describe('DistributedPubSub — local', () => {
     const nodeA = await startNode('ps-unsub', 'h', 51003);
     const probe = nodeA.kit.createTestProbe();
     nodeA.mediator.tell(new Subscribe('t', probe));
+    // Positioning: subscription before the first publish (no observable).
     await sleep(20);
     nodeA.mediator.tell(new Publish('t', 'first'));
     await probe.expectMessage('first', 500);
     nodeA.mediator.tell(new Unsubscribe('t', probe));
+    // Positioning for an absence: the unsubscribe has to be applied before the
+    // second publish, and what follows is `expectNoMessage` — already true at
+    // t=0, so there is nothing a poll could wait for.
     await sleep(20);
     nodeA.mediator.tell(new Publish('t', 'second'));
     await probe.expectNoMessage(60);
@@ -126,12 +146,16 @@ describe('DistributedPubSub — local', () => {
     nodeA.mediator.tell(new Subscribe('alpha', leaving));
     nodeA.mediator.tell(new Subscribe('beta', leaving));
     nodeA.mediator.tell(new Subscribe('alpha', staying));
+    // Positioning: all three subscriptions in place before the publish.
     await sleep(20);
     nodeA.mediator.tell(new Publish('alpha', 'first'));
     await leaving.expectMessage('first', 500);
     await staying.expectMessage('first', 500);
 
     (nodeA.mediator as ActorRef<UnsubscribeAll>).tell(new UnsubscribeAll(leaving));
+    // Positioning for a mixed claim: `leaving` must be dropped before the two
+    // publishes below, one of which is asserted as an absence
+    // (`leaving.expectNoMessage`) and therefore cannot be polled for.
     await sleep(20);
 
     nodeA.mediator.tell(new Publish('alpha', 'second'));
@@ -147,6 +171,8 @@ describe('DistributedPubSub — local', () => {
   test('publishing to a topic with no subscribers is a no-op', async () => {
     const nodeA = await startNode('ps-empty', 'h', 51004);
     nodeA.mediator.tell(new Publish('nobody', 'fwiw'));
+    // An absence: publishing into a topic nobody holds must not raise.  The
+    // node being up is already true at t=0, so only a window can disprove it.
     await sleep(30);
     // Nothing to assert — just verify no crash.
     expect(nodeA.cluster.upMembers().length).toBe(1);
@@ -197,6 +223,9 @@ describe('DistributedPubSub — cluster-wide', () => {
 
     // Publish shouldn't throw; the remote entry was pruned from A's view.
     nodeA.mediator.tell(new Publish('telemetry', 'after-leave'));
+    // An absence: forwarding to the departed node must not raise.  A's
+    // one-member view is already true at t=0 — the window is what would expose
+    // a throw from the pruned remote entry.
     await sleep(30);
     expect(nodeA.cluster.upMembers().length).toBe(1);
     await stopNode(nodeA);
@@ -369,6 +398,86 @@ describe('DistributedPubSub — gossip-payload audit (#80)', () => {
     const frame = internals.buildGossip();
     expect(Array.isArray(frame.entries)).toBe(true);
     expect([...frame.entries].sort()).toEqual(['topic-a', 'topic-b']);
+
+    await stopNode(nodeA);
+  });
+});
+
+/**
+ * A topic fan-out used to carry no sender at all: the `from` that
+ * `Cluster.dispatchEnvelope` authenticated was dropped by the extension's
+ * envelope handler one line after it arrived, and `deliverLocal` handed
+ * subscribers the bare body.  A subscriber that needs to know *who* published
+ * — `ReplicatedEventSourcedActor`, which otherwise takes an event's author out
+ * of the author's own payload — had nothing to check against (#706).
+ */
+describe('DistributedPubSub — the publishing node', () => {
+  test('a subscriber that asked for the origin is told which node published', async () => {
+    const nodeA = await startNode('ps-origin', 'h', 51401);
+    const nodeB = await startNode('ps-origin', 'h', 51402, ['ps-origin@h:51401']);
+    await waitFor(() => nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2, 2000);
+
+    const probeB = nodeB.kit.createTestProbe();
+    nodeB.mediator.tell(new Subscribe('audit', probeB, null, /* deliverWithOrigin= */ true));
+
+    await awaitPublishReaches(
+      () => nodeA.mediator.tell(new Publish('audit', { entry: 'x' })),
+      probeB,
+      "gossip carried B's subscription so A's publish reaches it",
+    );
+    const delivered = await probeB.receiveOne(1_000) as PubSubEnvelope<{ entry: string }>;
+    expect(delivered).toBeInstanceOf(PubSubEnvelope);
+    expect(delivered.topic).toBe('audit');
+    expect(delivered.message).toEqual({ entry: 'x' });
+    expect(
+      delivered.origin?.toString(),
+      'the delivery named no origin, or named the wrong node',
+    ).toBe(nodeA.cluster.selfAddress.toString());
+
+    await stopNode(nodeA); await stopNode(nodeB);
+  });
+
+  test('the origin survives a cluster whose nodes do not share a system name', async () => {
+    // The shape `MultiNodeSpec` builds, and the one that exposed the bug: the
+    // sending mediator addressed the envelope with *its own* system name, so
+    // it missed the receiver's per-path handler and arrived through generic
+    // path resolution instead — same mediator, same delivery, no sender.
+    const nodeA = await startNode('ps-origin-a', 'h', 51411);
+    const nodeB = await startNode('ps-origin-b', 'h', 51412, ['ps-origin-a@h:51411']);
+    await waitFor(() => nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2, 2000);
+
+    const probeB = nodeB.kit.createTestProbe();
+    nodeB.mediator.tell(new Subscribe('audit', probeB, null, /* deliverWithOrigin= */ true));
+
+    await awaitPublishReaches(
+      () => nodeA.mediator.tell(new Publish('audit', 'across-names')),
+      probeB,
+      "gossip carried B's subscription so A's publish reaches it",
+    );
+    const delivered = await probeB.receiveOne(1_000) as PubSubEnvelope<string>;
+    expect(delivered.message).toBe('across-names');
+    expect(
+      delivered.origin?.toString(),
+      'the publish was delivered without an authenticated sender',
+    ).toBe(nodeA.cluster.selfAddress.toString());
+
+    await stopNode(nodeA); await stopNode(nodeB);
+  });
+
+  test('a local publish names this node, and a subscriber that did not ask still gets the bare body', async () => {
+    const nodeA = await startNode('ps-origin-local', 'h', 51421);
+    const wrapped = nodeA.kit.createTestProbe();
+    const bare = nodeA.kit.createTestProbe();
+    nodeA.mediator.tell(new Subscribe('news', wrapped, null, /* deliverWithOrigin= */ true));
+    nodeA.mediator.tell(new Subscribe('news', bare));
+
+    nodeA.mediator.tell(new Publish('news', 'hello'));
+    const delivered = await wrapped.receiveOne(1_000) as PubSubEnvelope<string>;
+    expect(delivered.message).toBe('hello');
+    expect(delivered.origin?.toString()).toBe(nodeA.cluster.selfAddress.toString());
+    // Opt-in, so the shape every other subscriber in this file expects is
+    // unchanged even on the very same publish.
+    expect(await bare.receiveOne(1_000)).toBe('hello');
 
     await stopNode(nodeA);
   });

@@ -1,0 +1,152 @@
+---
+title: Supply chain
+description: What the release pipeline guarantees about a published actor-ts version — npm provenance, a CycloneDX SBOM from the next release onward, CodeQL analysis and an advisory gate over the real lockfile — and how to verify each of them yourself.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Everything on this page is about the package you install, not
+about code you write. It answers one question: **how much of
+`actor-ts` can you check rather than trust?**
+
+## What each release carries
+
+| Artifact | Where | What it proves |
+| --- | --- | --- |
+| **npm provenance attestation** | The npm registry, on the published tarball | Which commit and which workflow run produced these bytes. |
+| **CycloneDX SBOM** | Attached to the GitHub Release as `actor-ts-sbom.cyclonedx.json`, from the next release onward | The exact dependency closure that was installed when the release was built. |
+| **CHANGELOG entry** | `CHANGELOG.md` | Security-relevant changes get their own `Security` section. |
+
+<Aside type="note" title="The SBOM starts with the next release">
+The two jobs that build and attach it landed in `publish.yml` *after*
+v0.16.0 was published, so no release you can download today carries the
+asset — `gh release view v0.16.0 --json assets` answers with an empty
+list. The first release cut by the current pipeline is the first one to
+carry it. The other two rows hold for every release already published.
+</Aside>
+
+Publishing runs through **npm Trusted Publishing (OIDC)** — the
+workflow exchanges a short-lived GitHub identity token for a
+one-shot publish token. There is no long-lived npm token stored
+anywhere, so there is none to leak.
+
+### Verifying provenance
+
+```sh
+npm audit signatures
+```
+
+Run in a project that has `actor-ts` installed, this checks the
+registry signature and the provenance attestation for every
+installed package, including this one.
+
+### Reading the SBOM
+
+The SBOM is a release asset, so it does not need an install. Substitute
+the release you are asking about:
+
+```sh
+gh release download vX.Y.Z --pattern 'actor-ts-sbom.cyclonedx.json'
+```
+
+Every release up to and including v0.16.0 predates the jobs that produce
+the asset, so for those there is nothing to fetch. `gh release view
+vX.Y.Z --json assets` tells you whether a given release carries it before
+you try.
+
+It is a CycloneDX 1.x JSON document, which every SCA tool reads.
+Its point is that you can answer "was release X affected by
+advisory Y" without reconstructing the closure from a lockfile
+you would first have to check out.
+
+<Aside type="caution" title="The dependency graph is not the SBOM">
+GitHub's dependency graph for this repository does **not** resolve
+the root Bun lockfile — it records the unresolved ranges out of
+`package.json` (`fastify ^5.10.0`), and misses transitive packages
+entirely. Anything derived from that graph, including Dependabot
+alerts and `actions/dependency-review-action`, is describing
+something other than what shipped. The SBOM is generated from the
+installed tree instead.
+</Aside>
+
+## What CI gates
+
+Four checks stand between a change and a release. They run on pull
+requests — the advisory gate only when the pull request touches
+`src/**` or a manifest, which is its path filter, so a docs-only
+one does not wait for it; the two that can go stale without anybody
+committing also run on a schedule.
+
+### CodeQL
+
+`.github/workflows/codeql.yml` analyses the whole repository with
+CodeQL's `javascript-typescript` pack on every pull request, on
+pushes to `main` and `develop`, and weekly. Findings land in the
+repository's code-scanning alerts.
+
+The query suite is `security-extended`. It was not always: the
+narrower default suite ran first, on purpose, so that the very
+first analysis of a codebase this size produced a triage you
+could finish. Once that baseline was clean the suite was
+widened.
+
+The weekly run is not redundant: CodeQL ships new queries
+continuously, so a file that was clean when it was written can be
+flagged months later with nobody having touched it.
+
+### Advisory gate
+
+`bun audit` runs in `.github/workflows/package-health.yml` at
+`--audit-level=high` and fails the job on any new high or critical
+advisory. You can run exactly what CI runs:
+
+```sh
+bun run lint:audit
+```
+
+It reads `bun.lock`, so it sees the versions that actually ship —
+which is the whole reason it is `bun audit` rather than
+`actions/dependency-review-action`. It also runs on a weekly cron,
+because an advisory is published upstream against a lockfile that
+did not change; a push-triggered gate would not notice one until
+the next unrelated commit.
+
+Advisories that were already present when the gate was introduced
+are suppressed by ID and listed in
+[`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md),
+with the issue that removes them. A test fails if the suppression
+list and that table drift apart, so the set cannot grow quietly.
+
+### Pinned actions
+
+Every `uses:` in every workflow is pinned to a full 40-character
+commit SHA with its release tag in a trailing comment. A tag is a
+mutable pointer: whoever can move `actions/checkout@v7` runs
+arbitrary code inside the job that publishes to npm. A SHA cannot
+be repointed. The trailing comment is what keeps Dependabot
+updating the pins.
+
+`tests/unit/ci/WorkflowHygiene.test.ts` asserts this on every
+`bun test` — workflow YAML is invisible to the type checker, so
+without it a hardening decision decays the first time somebody
+edits a file without knowing about it.
+
+### Frozen installs, least privilege
+
+Every CI install is `--frozen-lockfile`, so a green check never
+means "passed against a dependency set nobody can reproduce". Job
+tokens are read-only by default; a write scope sits on the single
+job that needs it, and no job that can write to the repository
+also runs third-party install scripts. The same test file asserts
+all three.
+
+## Reporting something
+
+[`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md)
+is the policy: the private reporting channel, the response
+expectation, and — the part worth reading before you file — the
+scope boundary. The cluster transport ships as plain TCP without
+peer authentication **on purpose**, documented alongside the
+[cluster security](/operations/security/cluster-security/) recipe,
+so that default is not a vulnerability. A documented mitigation
+that does not deliver what it promises is one.

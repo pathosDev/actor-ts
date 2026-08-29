@@ -2,9 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { ActorRef } from '../../src/ActorRef.js';
 import { ActorPath } from '../../src/ActorPath.js';
 import { Scheduler } from '../../src/Scheduler.js';
-import { awaitCondition } from '../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
 /** Captures `tell` calls into an array for verification. */
 class RecordingRef<T = unknown> extends ActorRef<T> {
@@ -34,6 +32,9 @@ describe('Scheduler.scheduleOnceFunction', () => {
     const cancellable = scheduler.scheduleOnceFunction(20, () => { fired = true; });
     expect(cancellable.cancel()).toBe(true);
     expect(cancellable.isCancelled).toBe(true);
+    // An absence, so it cannot be polled: the window has to outlast the 20 ms
+    // the cancelled timer was armed for, and `fired === false` is already true
+    // when the wait starts.
     await sleep(50);
     expect(fired).toBe(false);
   });
@@ -50,21 +51,27 @@ describe('Scheduler.scheduleOnceFunction', () => {
     let fired = false;
     scheduler.scheduleOnceFunction(30, () => { fired = true; });
     scheduler.shutdown();
+    // An absence: the wait has to outlast the 30 ms delay so that a timer the
+    // shutdown failed to clear would have fired by now.
     await sleep(60);
     expect(fired).toBe(false);
   });
 
-  test('exceptions in the callback do not propagate', async () => {
-    const originalError = console.error;
-    console.error = () => {};
-    try {
-      const scheduler = new Scheduler();
-      scheduler.scheduleOnceFunction(10, () => { throw new Error('boom'); });
-      await sleep(30);
-      expect(true).toBe(true);
-    } finally {
-      console.error = originalError;
-    }
+  test('a throwing callback is reported to the sink instead of propagating', async () => {
+    // The old shape of this test stubbed `console.error` to a no-op and then
+    // asserted `expect(true).toBe(true)`, so it could not tell a working error
+    // channel from no channel at all.  The destination is the claim (#678):
+    // with a sink wired, the console branch is not taken and the failure is
+    // observable.
+    const scheduler = new Scheduler();
+    const reported: unknown[] = [];
+    scheduler.onError = (error) => { reported.push(error); };
+    scheduler.scheduleOnceFunction(10, () => { throw new Error('boom'); });
+    await awaitCondition(() => reported.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the throwing callback was reported to the scheduler error sink',
+    });
+    expect((reported[0] as Error).message).toBe('boom');
   });
 });
 
@@ -88,6 +95,8 @@ describe('Scheduler.scheduleOnce (message to actor)', () => {
     const ref = new RecordingRef<string>();
     const cancellable = scheduler.scheduleOnce(10, ref, 'hi');
     cancellable.cancel();
+    // An absence: the wait outlasts the 10 ms delay so a `tell` the cancel
+    // failed to prevent would have landed in `received` by now.
     await sleep(30);
     expect(ref.received).toEqual([]);
   });
@@ -104,6 +113,8 @@ describe('Scheduler.scheduleAtFixedRateFunction', () => {
     });
     cancellable.cancel();
     const snapshot = count;
+    // An absence: two further 20 ms periods would have elapsed, so a schedule
+    // the cancel did not clear would have moved `count` past the snapshot.
     await sleep(50);
     expect(snapshot).toBeGreaterThanOrEqual(3);
     // After cancel the count must not grow further.
@@ -136,29 +147,32 @@ describe('Scheduler.scheduleAtFixedRateFunction', () => {
     });
     scheduler.shutdown();
     const snapshot = count;
+    // An absence: four further 20 ms periods would have elapsed, so a schedule
+    // the shutdown did not suppress would have moved `count` past the snapshot.
     await sleep(80);
     expect(count).toBe(snapshot);
   });
 
   test('exceptions in the callback do not stop the schedule', async () => {
-    const originalError = console.error;
-    console.error = () => {}; // suppress expected "scheduler error" log
-    try {
-      const scheduler = new Scheduler();
-      let count = 0;
-      const cancellable = scheduler.scheduleAtFixedRateFunction(0, 20, () => {
-        count++;
-        if (count === 2) throw new Error('transient');
-      });
-      await awaitCondition(() => count >= 3, {
-        timeoutMs: 4_000,
-        label: 'the schedule kept firing past the throwing tick',
-      });
-      cancellable.cancel();
-      expect(count).toBeGreaterThanOrEqual(3);
-    } finally {
-      console.error = originalError;
-    }
+    const scheduler = new Scheduler();
+    const reported: unknown[] = [];
+    scheduler.onError = (error) => { reported.push(error); };
+    let count = 0;
+    const cancellable = scheduler.scheduleAtFixedRateFunction(0, 20, () => {
+      count++;
+      if (count === 2) throw new Error('transient');
+    });
+    await awaitCondition(() => count >= 3, {
+      timeoutMs: 4_000,
+      label: 'the schedule kept firing past the throwing tick',
+    });
+    cancellable.cancel();
+    expect(count).toBeGreaterThanOrEqual(3);
+    // Surviving the throw was this test's whole claim, and it stayed true
+    // whether the error went anywhere or not.  The other half is that the tick
+    // was reported exactly once (#678).
+    expect(reported.length).toBe(1);
+    expect((reported[0] as Error).message).toBe('transient');
   });
 });
 
@@ -196,6 +210,8 @@ describe('Scheduler.shutdown', () => {
     expect(once.isCancelled).toBe(true);
     expect(repeating.isCancelled).toBe(true);
 
+    // An absence: the wait outlasts both the 20 ms one-shot and several 10 ms
+    // periods, so anything the shutdown failed to clear would be in `fired`.
     await new Promise((resolve) => setTimeout(resolve, 80));
     expect(fired).toEqual([]);
   });
@@ -205,6 +221,8 @@ describe('Scheduler.shutdown', () => {
     let fired = false;
     scheduler.scheduleOnceFunction(15, () => { fired = true; });
     scheduler.shutdown();
+    // An absence: the wait outlasts the 15 ms the timer was armed for, so a
+    // firing the shutdown did not prevent would have happened by now.
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(fired).toBe(false);
   });

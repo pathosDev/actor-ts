@@ -73,7 +73,7 @@ export class Unsubscribe<T = unknown> {
 /** Which cap refused a {@link Subscribe} — named after the option that set it. */
 export type ReceptionistSubscribeRejectionReason =
   | 'maxSubscribersPerKey'
-  | 'maxSubscribersTotal';
+  | 'maxSubscriptionsTotal';
 
 /**
  * Refusal sent to a `Subscribe`'s `replyTo` when a subscriber cap is full.

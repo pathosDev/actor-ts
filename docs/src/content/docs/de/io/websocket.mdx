@@ -62,16 +62,19 @@ interface WebsocketClientOptionsType<TOut, TIn> extends BrokerCommonOptionsType 
   url:              string;                        // required — ws:// or wss://
   protocols?:       string | string[];             // subprotocols
   codec?:           WebsocketCodec<TOut, TIn>;             // default jsonCodec()
-  maxFrameBytes?:   number;                         // default 1 MiB; oversize inbound dropped with a warning
+  maxFrameBytes?:   number;                         // default 1 MiB; oversize inbound closes with 1009
   onInvalidMessage?: 'drop' | 'hook' | 'disconnect'; // default 'drop'
   pingIntervalMs?:  number;                         // application-level ping; default off
+  idleTimeoutMs?:   number;                         // read-idle deadline; default 0 (off)
+  connectTimeoutMs?: number;                        // connect deadline; default 0 (off)
 }
 ```
 
 Da die Settings `BrokerCommonOptionsType` erweitern, gelten die
-Blöcke `reconnect` (`{ initialDelayMs, maxDelayMs, factor, maxAttempts }`),
-`outboundBuffer` und `circuitBreaker` allesamt — ihre Semantik
-steht in der [BrokerActor-Basis](/de/io/broker-actor-base/).
+Blöcke `reconnect` (`{ initialDelayMs, maxDelayMs, factor, maxAttempts,
+randomFactor }`), `outboundBuffer` und `circuitBreaker` allesamt —
+ihre Semantik steht in der
+[BrokerActor-Basis](/de/io/broker-actor-base/).
 
 ## Senden und Empfangen
 
@@ -124,6 +127,12 @@ Der Rest sind optionale Overrides:
 | `onDisconnected(cause?: Error)` | Die Verbindung ist abgerissen; `cause` ist bei fehlergetriebenen Abbrüchen gesetzt. |
 | `onInvalidMessage(error: WebsocketDecodeError)` | Ein Frame ließ sich nicht dekodieren (nur bei `onInvalidMessage: 'hook'`). |
 | `onSelfMessage(message: TSelf)` | Behandelt den optionalen dritten Typparameter — Nachrichten, die der Actor an sich selbst sendet. |
+| `onTerminated(signal: Terminated)` | Ein Aktor, den du mit `context.watch` beobachtest, hat gestoppt.  Von `BrokerActor` geerbt. |
+
+`onReceive` und `onCommand` sind **versiegelt** — die Basisklassen
+dispatchen an die Hooks oben; überschreibe sie nicht.  Ein `Terminated`
+aus einer eigenen Watch landet bei `onTerminated`, nicht bei
+`onSelfMessage`.
 
 ## Codecs
 
@@ -132,7 +141,7 @@ Wire-Frames zurück in `TIn`-Nachrichten.  Der Default ist
 `jsonCodec()`:
 
 ```ts
-import { jsonCodec } from 'actor-ts/persistence';
+import { jsonCodec } from 'actor-ts/http';
 
 new Feed(); // uses jsonCodec() — text frames <-> JSON
 
@@ -184,14 +193,42 @@ Ein `WebsocketFrame` ist `{ kind: 'text'; data: string }` oder
 einen `WebsocketDecodeError`; das Frame-Größenlimit (`maxFrameBytes`)
 wird am **rohen Frame vor dem Dekodieren** durchgesetzt.
 
-Ein zu großer Frame wird mit einer Warnung verworfen, eine pro Frame — das
-Gegenüber bestimmt also, wie oft diese Zeile geschrieben wird.  Sie benennt
-die Verbindung deshalb mit einem redigierten Label
-(`wss://feed.example.com/ws/orders`) statt mit `url`: Userinfo und
-Query-String fallen weg, denn ein WebSocket-Endpunkt wird üblicherweise mit
-einem `?token=…` authentifiziert, und der Pfad bleibt erhalten, weil er zwei
-Verbindungen zum selben Host unterscheidet.  Dieselbe Maskierung steht
-deinem eigenen Code als
+`data` ist auf jeder Laufzeitumgebung ein schlichtes `Uint8Array`.  Der
+Client setzt beim Verbindungsaufbau `binaryType` des Sockets auf
+`'arraybuffer'`, denn die Laufzeitumgebungen sind sich über den
+Standardwert uneins — Bun liefert einen Node-`Buffer`, Node und Deno
+liefern ein `Blob` —, und ein `Blob` gibt seine Bytes nur asynchron
+heraus, was der Eingangspfad nicht bezahlen kann: Darauf zu warten würde
+die `maxFrameBytes`-Prüfung hinter einen Microtask schieben und die
+Garantie aufgeben, dass Frames in Ankunftsreihenfolge bei `onMessage`
+landen.  Zwei Folgen sind wissenswert.  Die Bytes gehören immer dem Frame
+selbst und sind nie ein Ausschnitt aus einem gepoolten Puffer,
+`frame.data.buffer` darfst du also weiterreichen.  Und der Wert ist auch
+auf Bun ein `Uint8Array` und kein `Buffer` — für `toString('hex')` und
+Verwandte greifst du also zu `Buffer.from(frame.data)`.
+
+Ein zu großer Frame **schließt die Verbindung** mit Code 1009 ("Message Too
+Big") und startet den üblichen Reconnect, statt an Ort und Stelle verworfen
+zu werden.  Sei dir im Klaren darüber, was das bringt und was nicht: Die
+Allokation verhindert es **nicht**.  Anders als die Server-Backends hat der
+Client kein Transport-Limit, an das er die Grenze durchreichen könnte — kein
+natives `WebSocket` der unterstützten Runtimes beachtet ein Payload-Limit,
+das man seinem Konstruktor übergibt.  Wenn `maxFrameBytes` geprüft wird, hat
+die Runtime den Frame also längst vollständig auf dem Heap zusammengesetzt.
+Was das Schließen bringt: Das Gegenüber kann diesen Heap nicht *erneut* auf
+derselben Verbindung ausgeben — ohne den Close ließe sich eine einzige
+Verbindung dazu bringen, die Allokation für jeden beliebigen weiteren Frame
+zu wiederholen.  Eine weitere Runde kostet das Gegenüber jetzt einen
+vollständigen Reconnect, den der `reconnect`-Backoff und der Circuit Breaker
+bereits drosseln.  Siehe
+[Untrusted Input begrenzen](/de/http/security/#untrusted-input-begrenzen).
+
+Begleitet wird der Close von einer Warnzeile.  Sie benennt die Verbindung
+mit einem redigierten Label (`wss://feed.example.com/ws/orders`) statt mit
+`url`: Userinfo und Query-String fallen weg, denn ein WebSocket-Endpunkt
+wird üblicherweise mit einem `?token=…` authentifiziert, und der Pfad bleibt
+erhalten, weil er zwei Verbindungen zum selben Host unterscheidet.
+Dieselbe Maskierung steht deinem eigenen Code als
 [`redactedUrlLabel`](/de/reference/utility-helpers/) zur Verfügung.
 
 ## Reconnect und Buffering
@@ -203,7 +240,8 @@ Eine unerwartete Trennung übernimmt der
   `BrokerDisconnected` auf dem Event-Stream aus.
 - Der Reconnect-Zyklus startet, mit exponentiellem Backoff gemäß
   den `reconnect`-Settings (`initialDelayMs`, `maxDelayMs`,
-  `factor`, `maxAttempts`).
+  `factor`, `maxAttempts`) — gejittert um `randomFactor` (Default
+  ±20 %), damit eine Flotte nicht im Gleichschritt reconnectet.
 - Nach einem erfolgreichen Reconnect läuft `onConnected()` und
   `BrokerConnected` wird ausgelöst.
 
@@ -236,6 +274,41 @@ WebSocket-Ping auf Protokollebene (Control-Frame) ist separat und
 wird von der Runtime übernommen; der Ping auf Anwendungsebene ist
 für **Proxies, die Payloads inspizieren, keine Frames**.
 
+## Eine still gekappte Verbindung erkennen
+
+Ein Ping verhindert, dass ein Proxy die Verbindung *schließt*.  Er sagt
+dir nicht, wann eine trotzdem gekappt wurde — ein verfallener
+NAT-Eintrag, ein Load-Balancer, der den Flow vergessen hat, ein mit
+`SIGKILL` beendeter Peer.  Keine Seite wird benachrichtigt, also feuern
+`close` und `error` nie, `onDisconnected` läuft nie, und der Actor
+meldet `connected`, während jedes `send` ins Leere geht.
+
+`idleTimeoutMs` ist die Deadline, die diesen Zustand beendet:
+
+```ts
+const webSocketClientOptions = WebsocketClientOptions.create<ClientMessage, ServerMessage>()
+  .withUrl('wss://realtime.example.com/feed')
+  .withIdleTimeoutMs(90_000)      // no inbound frame for 90 s → reconnect
+  .withConnectTimeoutMs(10_000);  // handshake stalled for 10 s → fail the attempt
+```
+
+Läuft sie ab, wird der Socket geschlossen, `onDisconnected` läuft mit
+einer `idle timeout`-Ursache, und der gewöhnliche Reconnect-Zyklus
+startet — derselbe Pfad, den ein beobachtetes `close` nimmt.
+
+**Gezählt werden Anwendungsnachrichten, keine Pongs.**  Ein Pong auf
+Protokollebene wird auf keiner unterstützten Runtime als
+`message`-Event zugestellt, `pingIntervalMs` frischt diese Deadline
+also **nicht** auf.  Bemiss `idleTimeoutMs` am Heartbeat-Intervall des
+*Servers*, nicht an deinem Ping-Intervall; darunter kappt die Deadline
+gesunde Verbindungen in Endlosschleife.  Genau deshalb ist sie
+standardmäßig aus.
+
+`connectTimeoutMs` deckt das andere Ende ab: der Handshake endet nur
+über `open` oder `error`, also hält ein Server, der die TCP-Verbindung
+annimmt und den Upgrade nie abschließt, den Actor unbegrenzt in
+`connecting`.
+
 ## HOCON-Config
 
 Client-Defaults lassen sich unter
@@ -246,8 +319,10 @@ actor-ts.io.broker.websocket {
   url             = "wss://realtime.example.com/feed"
   protocols       = ["my-proto-v1"]
   pingIntervalMs  = 30000
+  idleTimeoutMs   = 90000
+  connectTimeoutMs = 10000
   maxFrameBytes   = 1048576
-  reconnect       { initialDelayMs = 500, maxDelayMs = 30000, factor = 2.0 }   // maxAttempts omitted = unlimited (the default)
+  reconnect       { initialDelayMs = 500, maxDelayMs = 30000, factor = 2.0, randomFactor = 0.2 }   // maxAttempts omitted = unlimited (the default)
   circuitBreaker  { /* ... */ }
   outboundBuffer  { /* ... */ }
 }

@@ -9,7 +9,6 @@
  *   bun run examples/config/hello-config.ts
  */
 import { Actor, ActorSystem, ActorSystemOptions } from '../../src/index.js';
-import { attachDevTools } from '../devtools.js';
 
 class DiagActor extends Actor<'report'> {
   override onReceive(_: 'report'): void {
@@ -31,12 +30,9 @@ async function main(): Promise<void> {
       },
     });
   const system = ActorSystem.create('hello-config', systemOptions);
-  const devtools = await attachDevTools(system);
 
   const diag = system.spawn(DiagActor, 'diag');
   diag.tell('report');
-  await new Promise(resolve => setTimeout(resolve, 50));
-  await devtools.holdOpen();
   await system.terminate();
 }
 

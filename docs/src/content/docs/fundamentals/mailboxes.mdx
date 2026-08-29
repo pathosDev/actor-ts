@@ -32,14 +32,33 @@ not hold up:
   so a node could still exhaust its heap.
 - **A mailbox cannot tell what it is discarding.**  `drop-head` suits
   telemetry, where the freshest reading is the only one that matters.
-  It does not suit a `Terminated` signal, a delivery confirmation, or a
-  WebSocket `close` — and those went through the same queue.  Each of
-  those turned into a filed defect.
+  It does not suit a delivery confirmation or a WebSocket `close` — and
+  those went through the same queue.  Each of those turned into a filed
+  defect.
+
+  Two messages the framework sends on your behalf are now out of every
+  policy's reach: the death-watch `Terminated`, and the command that
+  spawns a [WebSocket](/http/websocket/#bounding-the-hubs-mailbox)
+  connection's actor.  Both take a lane no bound can shed (see
+  [Death watch](/fundamentals/death-watch/) and *A mailbox of your own*
+  below).  The test they pass is that the framework built them, sent
+  them once, and kept nothing it could re-send.  The rest is still
+  application traffic, and only you know which of it is safe to lose.
 
 So the loss is now something you ask for, per actor, and the growth is
 something you are told about: an actor whose queue reaches 10 000
 messages logs a warning, and again at each doubling.  With metrics
-enabled, `actor_mailbox_size` reports the depth per actor.
+enabled, `actor_mailbox_size` reports the depth per actor above that
+mark, and `actor_mailbox_depth` reports the whole distribution below it —
+so a burst that never reaches the warning threshold is still visible.
+
+A queue with no ceiling has to stay cheap when it is deep, so both of a
+mailbox's queues are backed by a [`RingBuffer`](/reference/utility-helpers/)
+rather than a plain array: taking the next message advances an index instead
+of reindexing everything behind it, so the cost of delivering one message
+does not grow with the backlog waiting behind it.  This is invisible from
+the outside — including to a `Mailbox` subclass of your own, which sees only
+the methods.
 
 ### When to bound a mailbox
 
@@ -52,7 +71,12 @@ and you can say which messages are safe to lose:
   would rather refuse work than queue it.  `drop-new` keeps what you
   already accepted, `reject` tells the sender to back off.
 - Any actor exposed to a producer you do not control, where an
-  unbounded queue is a denial-of-service surface.
+  unbounded queue is a denial-of-service surface.  Read the third bullet
+  with the first two: it says where a bound is *worth* considering, not
+  that the traffic there is expendable.  A WebSocket hub is the clearest
+  case of both at once — see
+  [Bounding the hub's mailbox](/http/websocket/#bounding-the-hubs-mailbox)
+  for what a bound there does and does not cost.
 
 ```ts
 import { ActorOptions } from 'actor-ts';
@@ -74,8 +98,22 @@ The three policies and how to choose between them are covered under
 the *sender* rather than the slow actor.
 
 Drops from a capacity you set are counted by
-`actor_mailbox_dropped_total`, labelled with the actor's class, path and
-the policy that fired.
+`actor_mailbox_dropped_total`, labelled with the actor's class and the
+policy that fired.  Per class, not per actor: shedding is what a bounded
+mailbox is *for*, so a per-actor label would mint a permanent metric
+series for every actor behaving exactly as designed.  To see which
+instance is shedding, add an `onDrop` of your own — it runs alongside the
+stock counter rather than replacing it, and it is handed the envelope that
+was discarded, so it can say what was lost and not only that something
+was.
+
+To keep that envelope rather than inspect it in passing, build the mailbox
+with `deadLetterDrops: true` and each dropped message becomes a
+[dead letter](/operations/dead-letters/) with its sender intact.  It is
+off by default, and only reachable from a mailbox you construct yourself:
+the drop runs on the sender's stack, so routing every shed envelope is
+work charged to exactly the burst the bound was meant to absorb cheaply.
+See [mailbox sizing](/operations/tuning/mailbox-sizing/#keeping-what-you-dropped).
 
 ### Bringing your own mailbox
 
@@ -98,18 +136,19 @@ an observer on whatever you return, provided it implements
 your own can by adding one method:
 
 ```ts
-import { Mailbox, type Envelope, type MailboxDropReason } from 'actor-ts';
+import { Mailbox, type Envelope, type MailboxDropObserver } from 'actor-ts';
 
 class SheddingMailbox<T> extends Mailbox<T> {
-  private readonly observers: Array<(reason: MailboxDropReason) => void> = [];
+  private readonly observers: Array<MailboxDropObserver<T>> = [];
+  readonly deadLetterDrops = true;
 
-  observeDrops(observer: (reason: MailboxDropReason) => void): void {
+  observeDrops(observer: MailboxDropObserver<T>): void {
     this.observers.push(observer);
   }
 
   override enqueue(envelope: Envelope<T>): void {
     if (this.shouldShed()) {
-      for (const observer of this.observers) observer('drop-new');
+      for (const observer of this.observers) observer('drop-new', envelope);
       return;
     }
     super.enqueue(envelope);
@@ -117,10 +156,55 @@ class SheddingMailbox<T> extends Mailbox<T> {
 }
 ```
 
+A report carries the envelope as well as the reason, and `deadLetterDrops`
+says whether the cell should turn each one into a
+[dead letter](/operations/dead-letters/).  Hand over the envelope you
+actually discarded — under a `drop-head`-shaped policy that is the one you
+evicted, not the one that arrived, or every letter will name a message that
+is still queued.  Both are optional: omit the field and the drop is counted
+and nothing more, which is what `BoundedMailbox` does unless you ask
+otherwise.
+
 Registration is additive, so a `BoundedMailboxOptions.onDrop` of your own
 keeps firing alongside the stock counter.  What you cannot do is combine
 `withMailbox` with `withMailboxCapacity` — that is a configuration error
 rather than a silent precedence rule.
+
+#### One obligation: `enqueueSignal`
+
+A queue that sheds has a short list of things it must not shed.  The
+framework announces a death exactly once — see
+[Death watch](/fundamentals/death-watch/) — and hands a WebSocket hub the
+command that spawns a connection's actor exactly once, so both arrive
+through `enqueueSignal` rather than `enqueue`, and the contract is
+*queue it whatever your bound says*:
+
+```ts
+class SheddingMailbox<T> extends Mailbox<T> {
+  // ...as above...
+
+  /** Past the bound, deliberately: this one cannot be re-sent. */
+  override enqueueSignal(envelope: Envelope<T>): void {
+    super.enqueue(envelope);
+  }
+}
+```
+
+The base implementation delegates to your `enqueue`, which is correct for
+a queue that discards nothing and wrong for one that does — so **override
+it whenever you override `enqueue` to shed**.  `BoundedMailbox` and
+`PriorityMailbox` already do.  Delegating rather than writing straight to
+the base queue is deliberate: a subclass may keep its messages somewhere
+else entirely, and an envelope hidden in a store your `dequeueUser` never
+reads is worse than one you dropped.
+
+The envelope also carries `undroppable: true`, which `removeOldest` reads
+— so a `drop-head`-shaped bound built on that seam steps over it for
+free, and does not have to know why.  If your `enqueue` throws instead,
+the framework turns the refusal into a
+[dead letter](/operations/dead-letters/) and the dying actor's teardown
+continues; what it cannot do is invent a second copy of the
+notification.
 
 ## System messages always come first
 
@@ -140,6 +224,12 @@ This matters because:
   messages get the absolute precedence above.
 - A failing actor's supervisor decision (Restart / Resume / Stop)
   takes effect immediately, not after the queue clears.
+- A death-watch `Terminated` is a *user* message too, for the same
+  reason `PoisonPill` is: it must arrive **after** everything already
+  told to the watcher, so a handler that reacts to a death sees the
+  work that preceded it.  Undroppable is not the same as
+  queue-jumping — it keeps its place in line and merely cannot be
+  discarded from it.
 
 You don't normally see this distinction — system messages are
 emitted by the framework, not by your code.  But understanding it
@@ -186,6 +276,13 @@ policy either way and the question does not arise.
 
 The options are validated at construction: a missing or non-positive
 `capacity` and an unknown overflow policy throw `OptionsError`.
+
+`capacity` bounds the messages the mailbox is allowed to *discard*, which
+in a mailbox holding nothing but undelivered death notifications means the
+queue sits above it rather than losing one.  The overshoot is bounded by
+how many actors this one watches, and it is the price of the exemption
+[Death watch](/fundamentals/death-watch/) describes: size a capacity for
+your traffic, not to the byte.
 
 Picking between them is a backpressure-vs-loss trade-off:
 
@@ -271,11 +368,131 @@ Common shapes for `priorityFor`:
   funnel via a router.
 </Aside>
 
+### When `priorityFor` cannot answer
+
+Your callback does not have to be total.  If it **throws**, or if it
+answers with something that is not a usable number — `undefined`, `NaN`,
+a value of another type — the message is queued at the **lowest**
+priority and nothing else happens.  It is not dropped and the failure
+does not surface at the `tell` site.
+
+Both halves matter:
+
+- **Lowest, not highest.**  A priority that could not be determined must
+  not outrank one that was stated.  Ties still break by FIFO, so
+  unrankable messages stay in send-order relative to each other.
+- **Contained, not thrown.**  `priorityFor` runs synchronously inside the
+  *sender's* `tell`.  A sender is a bystander to the receiver's mailbox
+  configuration: it has nothing to do about a broken `priorityFor` and no
+  way to tell that from a failure of its own.  An escaping throw landed
+  in the sender's `onReceive` and got the **sender** restarted — the same
+  confusion the `reject` caution above describes, for a bug that has
+  nothing to do with the sender at all.
+
+`±Infinity` is a *ranking*, not a failure: `-Infinity` means "ahead of
+everything", `+Infinity` means "behind everything", and both are ordered
+as written.  Only `NaN` and non-numbers count as undeterminable.
+
+<Aside type="caution" title="The framework calls `priorityFor` with `PoisonPill` and `Kill`">
+  `ref.stop()` and `ref.kill()` post `PoisonPill` / `Kill` as ordinary
+  **user** messages — that is what makes `stop()` a graceful
+  drain-then-stop rather than a queue-jump.  So `priorityFor` sees them
+  too, and neither has any fields: a `match(message).…​.exhaustive()`
+  throws on both, and the **field-derived** and **caller-tagged** shapes
+  above return `undefined`.
+
+  The containment means that is survivable rather than fatal, but rank
+  them deliberately instead of relying on it — an `.otherwise(() => 5)`
+  arm, or a `?? 5` on the field.  Otherwise every `stop()` costs you a
+  contained failure and a mailbox entry at the very back of the queue.
+</Aside>
+
+To see a contained failure rather than only its consequences, pass
+`onPriorityError`.  Nothing else in the system reports one — the message
+still arrives, just last:
+
+```ts
+import { PriorityMailbox, PriorityMailboxOptions } from 'actor-ts';
+
+const triageOptions = PriorityMailboxOptions.create<Message>()
+  .withPriorityFor((message) => message.kind === 'urgent' ? 0 : 10)
+  .withOnPriorityError((cause, message) => {
+    log.warn(`priorityFor could not rank ${JSON.stringify(message)}: ${String(cause)}`);
+  });
+
+const mailbox = new PriorityMailbox<Message>(triageOptions);
+```
+
+`cause` is whatever `priorityFor` threw, or a `TypeError` describing the
+value it returned.  **Record and return** from the hook: it runs on the
+sender's stack too, so a throw from inside it puts the escape back — and
+costs the message its place in the queue.
+
 The current implementation uses a sorted-insertion array — O(log n)
 locate + O(n) splice on each enqueue.  Fine for mailboxes that stay
 in the low thousands; if you have a sustained 10 000-message backlog
 where priority insertion shows up in profiles, the mailbox is open
 to a heap-backed swap (see the source).
+
+### Bounding a priority mailbox
+
+A priority mailbox is unbounded unless you give it a `capacity`, exactly
+like every other mailbox.  The bound lives on the mailbox's own options
+rather than on `ActorOptions`, because `withMailbox` and
+`withMailboxCapacity` cannot be combined — a supplied mailbox brings its
+own bound:
+
+```ts
+import { ActorOptions, PriorityMailbox, PriorityMailboxOptions } from 'actor-ts';
+
+const triageOptions = PriorityMailboxOptions.create<Message>()
+  .withPriorityFor((message) => message.kind === 'urgent' ? 0 : 10)
+  .withCapacity(10_000)
+  .withOverflow('drop-lowest-priority');
+
+const workerOptions = ActorOptions.create<Message>()
+  .withMailbox(() => new PriorityMailbox<Message>(triageOptions));
+```
+
+The policies are `'drop-lowest-priority'`, `'drop-new'` and `'reject'`, and
+`reject` is what you get when you name a capacity without one — naming a
+capacity says how much you will hold, not what you are willing to lose.
+
+| Policy | What happens on overflow |
+| --- | --- |
+| `'drop-lowest-priority'` | Discard the message furthest from delivery — the lowest-priority one, and among equals the one that arrived last.  The arriving message competes on the same terms, so a message ranked below the whole backlog is the one that goes. |
+| `'drop-new'` | Discard the *incoming* message, whatever priority it was given. |
+| `'reject'` | Throw `MailboxFullError` at the `tell` site. |
+
+`drop-head` is deliberately **not** offered here.  On a FIFO queue it means
+"discard the stalest", which works because arrival order is the only order
+there is.  On a priority queue the head is the message your `priorityFor`
+called most important — dropping it would defeat the reason you chose this
+mailbox.  Drops are still reported as `drop-head` on
+`actor_mailbox_dropped_total` (that label has a closed two-value
+vocabulary), except when the discarded message was the arriving one, which
+reports `drop-new`.
+
+<Aside type="caution" title="A bounded mailbox can drop on unstash">
+  `PriorityMailbox.prependUser` re-runs the priority function rather than
+  pushing to the front, so `unstashAll()` goes through the same `enqueue`
+  path — and therefore through the same bound.  On a full mailbox, replaying
+  the stash can discard messages.  `BoundedMailbox` arrives at the same
+  guarantee by a different route: the replay goes in at the head and the
+  mailbox sheds at the *tail* to make room, so what a full queue costs is its
+  newest messages rather than the ones you stashed.  Either way the bound
+  applies to the replay — and under `reject`, `unstashAll()` throws
+  `MailboxFullError` rather than dropping anything.
+</Aside>
+
+The options are validated at construction: a missing or non-callable
+`priorityFor`, a non-positive `capacity`, an unknown policy, or a policy
+without a capacity all throw `OptionsError`.  What the callback *returns*
+is a runtime question and is handled at the enqueue instead — see
+[When `priorityFor` cannot answer](#when-priorityfor-cannot-answer).  On a
+bounded mailbox the two meet: an unrankable message is the least important
+thing in the queue, so under `drop-lowest-priority` it is the arrival that
+gets shed, reported as `drop-new`.
 
 ## Per-actor mailbox via ActorOptions
 
@@ -339,6 +556,19 @@ reinsert.  Notably for `PriorityMailbox`, unstashed messages are
 even if you stashed it while urgent messages were arriving.  Stash
 order is preserved within a priority tier.
 
+**A bound applies to the replay.**  Whichever bounded mailbox you
+chose, `unstashAll()` is subject to the capacity and the overflow
+policy you set — a replay is traffic re-entering the queue, not a
+back door around it.  What differs is only where the room comes
+from: `PriorityMailbox` re-ranks, and `BoundedMailbox` puts the
+replay at the head and sheds at the tail, so a full queue loses its
+newest messages rather than the ones you deliberately parked.  Under
+`reject` nothing is lost at all — `unstashAll()` throws
+`MailboxFullError`, the whole batch stays stashed, and the failure
+reaches your actor's supervisor like any other.  Size the capacity
+for the backlog *plus* whatever you expect to stash, or accept the
+drops as the price of the bound.
+
 See [Become and stash](/fundamentals/become-and-stash/) for
 the full behavior-switching story.
 
@@ -361,8 +591,12 @@ alternative in three situations:
    producer you do not control.  Bound it at a number that matches your
    memory budget; `drop-head` if the latest events are most valuable,
    `drop-new` if the ones you already accepted are.  Watch
-   `actor_mailbox_size` to find out whether you need this before you
-   need it.
+   `actor_mailbox_wait_seconds` to find out whether you need this
+   before you need it — it climbs as soon as an actor stops keeping up,
+   where `actor_mailbox_size` only reports once a queue passes 10 000
+   messages.  `actor_mailbox_depth`'s p99 is what to pick the number
+   itself from: a capacity is a bet on the worst-case burst, and that
+   histogram is the measurement of it.
 
 ## Where to next
 

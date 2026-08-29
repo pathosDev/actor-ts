@@ -32,7 +32,13 @@ function discover(): Suite[] {
   const out: Suite[] = [];
   for (const entry of readdirSync(root)) {
     const full = join(root, entry);
-    if (entry === 'lib' || entry === 'run-all.ts' || entry.endsWith('.md')) continue;
+    // `comparison/` is skipped by name rather than by the `_` convention:
+    // it is a whole tree with its own manifest, its own lockfile and its
+    // own driver (#27).  Its arms import the frameworks they measure
+    // against, which the root install deliberately does not carry — so
+    // discovering them here would break `bun run bench` on every clean
+    // clone and every CI run, for suites this driver cannot run anyway.
+    if (entry === 'lib' || entry === 'comparison' || entry === 'run-all.ts' || entry.endsWith('.md')) continue;
     if (!statSync(full).isDirectory()) continue;
     for (const f of readdirSync(full)) {
       // Skip helpers (prefix `_`) and non-TS files.  Helpers are referenced

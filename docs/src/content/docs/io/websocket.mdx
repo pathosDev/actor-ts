@@ -61,16 +61,19 @@ interface WebsocketClientOptionsType<TOut, TIn> extends BrokerCommonOptionsType 
   url:              string;                        // required — ws:// or wss://
   protocols?:       string | string[];             // subprotocols
   codec?:           WebsocketCodec<TOut, TIn>;             // default jsonCodec()
-  maxFrameBytes?:   number;                         // default 1 MiB; oversize inbound dropped with a warning
+  maxFrameBytes?:   number;                         // default 1 MiB; oversize inbound closes with 1009
   onInvalidMessage?: 'drop' | 'hook' | 'disconnect'; // default 'drop'
   pingIntervalMs?:  number;                         // application-level ping; default off
+  idleTimeoutMs?:   number;                         // read-idle deadline; default 0 (off)
+  connectTimeoutMs?: number;                        // connect deadline; default 0 (off)
 }
 ```
 
 Because the settings extend `BrokerCommonOptionsType`, the
-`reconnect` (`{ initialDelayMs, maxDelayMs, factor, maxAttempts }`),
-`outboundBuffer`, and `circuitBreaker` blocks all apply — see the
-[BrokerActor base](/io/broker-actor-base/) for their semantics.
+`reconnect` (`{ initialDelayMs, maxDelayMs, factor, maxAttempts,
+randomFactor }`), `outboundBuffer`, and `circuitBreaker` blocks all
+apply — see the [BrokerActor base](/io/broker-actor-base/) for their
+semantics.
 
 ## Sending and receiving
 
@@ -123,6 +126,11 @@ rest are optional overrides:
 | `onDisconnected(cause?: Error)` | The connection dropped; `cause` is set on error-driven drops. |
 | `onInvalidMessage(error: WebsocketDecodeError)` | A frame failed to decode (only when `onInvalidMessage: 'hook'`). |
 | `onSelfMessage(message: TSelf)` | Handle the optional third type parameter — messages the actor sends to itself. |
+| `onTerminated(signal: Terminated)` | An actor you `context.watch`ed stopped.  Inherited from `BrokerActor`. |
+
+`onReceive` and `onCommand` are **sealed** — the base classes dispatch to
+the hooks above; do not override them.  A `Terminated` from a watch of your
+own arrives at `onTerminated`, not at `onSelfMessage`.
 
 ## Codecs
 
@@ -130,7 +138,7 @@ The codec turns `TOut` messages into wire frames and wire frames
 back into `TIn` messages.  The default is `jsonCodec()`:
 
 ```ts
-import { jsonCodec } from 'actor-ts/persistence';
+import { jsonCodec } from 'actor-ts/http';
 
 new Feed(); // uses jsonCodec() — text frames <-> JSON
 
@@ -182,9 +190,34 @@ A `WebsocketFrame` is `{ kind: 'text'; data: string }` or
 `WebsocketDecodeError`; the inbound frame-size cap (`maxFrameBytes`) is
 enforced on the **raw frame before decode**.
 
-An oversize frame is dropped with a warning, one per frame — so the peer
-decides how often that line is written.  It therefore names the connection
-by a redacted label (`wss://feed.example.com/ws/orders`) rather than by
+`data` is a plain `Uint8Array` on every runtime.  The client sets the
+socket's `binaryType` to `'arraybuffer'` when it dials, because the
+runtimes disagree about the default — Bun hands over a Node `Buffer`,
+Node and Deno hand over a `Blob` — and a `Blob` yields its bytes only
+asynchronously, which the inbound path cannot afford: awaiting it would
+move the `maxFrameBytes` check behind a microtask and stop guaranteeing
+that frames reach `onMessage` in arrival order.  Two consequences worth
+knowing.  The bytes are always the frame's own, never a window into a
+pooled buffer, so `frame.data.buffer` is safe to hand on.  And the value
+is a `Uint8Array` and not a `Buffer` even on Bun, so reach for
+`Buffer.from(frame.data)` if you want `toString('hex')` and friends.
+
+An oversize frame **closes the connection** with code 1009 ("Message Too
+Big") and starts the usual reconnect, rather than being dropped in place.
+Be clear about what that does and does not buy you: it does **not** stop
+the allocation.  Unlike the server backends, the client has no transport
+cap to push the limit down to — no supported runtime's native `WebSocket`
+honours a payload limit passed to its constructor, so by the time
+`maxFrameBytes` is checked the runtime has already reassembled the frame
+on the heap.  What closing buys is that the peer cannot spend that heap
+*again* on the same socket: without it, one connection could be made to
+repeat the allocation for every frame it felt like sending.  Another round
+now costs the peer a full reconnect, which the `reconnect` backoff and the
+circuit breaker already throttle.  See
+[Capping untrusted input](/http/security/#capping-untrusted-input).
+
+The close is accompanied by one warning line.  It names the connection by
+a redacted label (`wss://feed.example.com/ws/orders`) rather than by
 `url`: the userinfo and the query string are stripped, since a WebSocket
 endpoint is commonly authenticated with a `?token=…`, and the path is kept
 because it is what tells two connections to the same host apart.  The same
@@ -200,7 +233,8 @@ An unexpected disconnect is handled by the
   `BrokerDisconnected` on the event stream.
 - The reconnect cycle starts, with exponential backoff per the
   `reconnect` settings (`initialDelayMs`, `maxDelayMs`, `factor`,
-  `maxAttempts`).
+  `maxAttempts`) — jittered by `randomFactor` (default ±20 %) so a
+  fleet does not reconnect in lockstep.
 - After a successful re-connect, `onConnected()` runs and
   `BrokerConnected` fires.
 
@@ -232,6 +266,40 @@ WebSocket ping (control frame) is separate and handled by the
 runtime; the application-level ping is for **proxies that inspect
 payload, not frames**.
 
+## Detecting a connection that was silently dropped
+
+A ping keeps a proxy from *closing* the connection.  It does not tell
+you when one was dropped anyway — an expired NAT entry, a load
+balancer that forgot the flow, a peer killed with `SIGKILL`.  Neither
+side is notified, so `close` and `error` never fire, `onDisconnected`
+never runs, and the actor reports `connected` while every `send` goes
+nowhere.
+
+`idleTimeoutMs` is the deadline that ends that state:
+
+```ts
+const webSocketClientOptions = WebsocketClientOptions.create<ClientMessage, ServerMessage>()
+  .withUrl('wss://realtime.example.com/feed')
+  .withIdleTimeoutMs(90_000)      // no inbound frame for 90 s → reconnect
+  .withConnectTimeoutMs(10_000);  // handshake stalled for 10 s → fail the attempt
+```
+
+On expiry the socket is closed, `onDisconnected` runs with an
+`idle timeout` cause, and the ordinary reconnect cycle starts — the
+same path an observed `close` takes.
+
+**It counts application messages, not pongs.**  A protocol-level pong
+is not delivered as a `message` event on any supported runtime, so
+`pingIntervalMs` does **not** refresh this deadline.  Size
+`idleTimeoutMs` against the *server's* own heartbeat interval, not
+against your ping interval; below that, the deadline severs healthy
+connections in a loop.  Off by default for exactly that reason.
+
+`connectTimeoutMs` covers the other end: the handshake settles only on
+`open` or `error`, so a server that accepts the TCP connection and
+never completes the upgrade holds the actor in `connecting`
+indefinitely.
+
 ## HOCON config
 
 Client defaults can be set under
@@ -242,8 +310,10 @@ actor-ts.io.broker.websocket {
   url             = "wss://realtime.example.com/feed"
   protocols       = ["my-proto-v1"]
   pingIntervalMs  = 30000
+  idleTimeoutMs   = 90000
+  connectTimeoutMs = 10000
   maxFrameBytes   = 1048576
-  reconnect       { initialDelayMs = 500, maxDelayMs = 30000, factor = 2.0 }   // maxAttempts omitted = unlimited (the default)
+  reconnect       { initialDelayMs = 500, maxDelayMs = 30000, factor = 2.0, randomFactor = 0.2 }   // maxAttempts omitted = unlimited (the default)
   circuitBreaker  { /* ... */ }
   outboundBuffer  { /* ... */ }
 }

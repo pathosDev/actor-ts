@@ -1,0 +1,45 @@
+// The fork's Scala-binding JVM arm of the framework comparison (#27, #1229).
+//
+// The fourth corner of a two-by-two: two frameworks either side of a licence
+// change, each measured through both its Java and its Scala API. Reading down a
+// column gives the licence question; reading across a row gives the binding
+// question. Neither is legible unless everything else is held constant, which
+// is why this shares its launcher, its pinned JDK, its Scala version, its
+// harness and its workload with the other three.
+//
+// Version 1.6.0 is the newest STABLE release, matching ../pekko-java exactly.
+// 2.0.0-M3 exists and is newer, and is deliberately not used: publishing a
+// comparison against a milestone would compare a released framework to an
+// unreleased one.
+//
+// LICENCE: Apache-2.0, as for ../pekko-java.
+package build
+
+import mill.*
+import mill.scalalib.*
+
+object `package` extends ScalaModule:
+
+  // Identical to the other three arms. Pekko's `_3` artifacts carry TASTy from
+  // 3.3.7, Akka's from 3.2.2; forward compatibility means one compiler reads
+  // both, and pinning it means the pair differs in the framework and nothing
+  // else.
+  def scalaVersion = "3.3.8"
+
+  def scalacOptions = Seq("-java-output-version:21")
+
+  def jvmId = "zulu:21.0.10"
+
+  def mainClass = Some("comparison.Main")
+
+  def mvnDeps = Seq(
+    // `::` appends the Scala suffix, so this resolves pekko-actor-typed_3.
+    mvn"org.apache.pekko::pekko-actor-typed:1.6.0",
+    // 2.0.x where the Akka-lineage arms pin 1.7.x: Pekko binds the SLF4J 2.x
+    // API. Getting this wrong is visible rather than silent — the wrong
+    // generation leaves a substitute-logger warning on stderr, which is what
+    // the smoke run checks for.
+    mvn"org.slf4j:slf4j-nop:2.0.16",
+  )
+
+end `package`

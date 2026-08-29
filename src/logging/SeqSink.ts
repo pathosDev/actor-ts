@@ -11,6 +11,7 @@ import {
   type SeqSinkOptions,
   type SeqSinkOptionsType,
 } from './SeqSinkOptions.js';
+import { stripTrailing } from '../util/StripCharacters.js';
 
 /**
  * CLEF level names.  Seq requires a **string** here, and it uses Serilog's
@@ -46,7 +47,7 @@ export class SeqSink extends BatchingSink {
   constructor(options: SeqSinkOptions = {}) {
     const settings = validated(options);
     super('seq', settings.minLevel ?? DEFAULT_SEQ_MIN_LEVEL, settings.delivery);
-    this.endpoint = `${(settings.url ?? '').replace(/\/+$/, '')}/ingest/clef`;
+    this.endpoint = `${stripTrailing(settings.url ?? '', '/')}/ingest/clef`;
     this.apiKey = settings.apiKey;
     this.requestTimeoutMs = settings.requestTimeoutMs ?? DEFAULT_SEQ_REQUEST_TIMEOUT_MS;
     this.fetchFn = settings.fetchFn;

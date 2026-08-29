@@ -25,6 +25,7 @@ on:
       - 'src/**'
       - 'benchmarks/**'
       - 'package.json'
+      - '.bun-version'
       - 'bun.lock'
       - 'tsconfig.json'
       - 'tsconfig.bench.json'
@@ -35,6 +36,7 @@ on:
       - 'src/**'
       - 'benchmarks/**'
       - 'package.json'
+      - '.bun-version'
       - 'bun.lock'
       - 'tsconfig.json'
       - 'tsconfig.bench.json'
@@ -64,7 +66,7 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: latest
+          bun-version-file: .bun-version
 
       # Frozen, like every other install in CI: an unfrozen resolve can
       # green-light a dependency set no lockfile records, so the check
@@ -87,8 +89,54 @@ jobs:
         #
         # `worker` is excluded on hosted runners for the same reason the
         # worker-thread multi-node test suites are quarantined there (see
-        # test.yml + #325): Bun on GitHub's runners cannot respawn functional
+        # test.yml + #538): Bun on GitHub's runners cannot respawn functional
         # worker threads after the first, and worker-count-scaling.ts spawns
         # 1 → 2 → 4 → 8 → auto in one process.  It runs locally via
-        # `bun run bench:smoke`.
+        # `bun run bench:smoke`.  The exclusion shares the quarantine's exit
+        # criterion — `nightly-flakes.yml` is what measures it.
         run: bun run bench:smoke -- --exclude=worker
+
+  # The framework-comparison tree (#27) is invisible to every job above: it
+  # carries its OWN package.json and lockfile, so `run-all.ts` skips it and
+  # both benchmark tsconfigs exclude it.  Without this job it would be checked
+  # by nothing at all — which is exactly how ten benchmark suites sat broken on
+  # a removed export for months (#506), and the reason that tree's README
+  # promises this job exists.
+  comparison:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      # Two installs, two manifests.  The root one is what the arms import
+      # actor-ts from; the nested one carries the frameworks it is measured
+      # against, which deliberately never enter the root closure.  Both frozen,
+      # for the reason the job above states.  #622
+      - name: Install (root)
+        run: bun install --frozen-lockfile
+
+      - name: Install (comparison tree)
+        run: bun install --frozen-lockfile --cwd benchmarks/comparison
+
+      - name: Typecheck comparison arms
+        # The only check that compiles this tree.  It cannot live in
+        # `typecheck:bench` or `typecheck:dev`: those resolve imports against
+        # the root manifest, and these arms import from the nested one.
+        run: bun run typecheck:compare
+
+      - name: Run comparison arms (smoke mode, JavaScript only)
+        # `--javascript-only` skips the JVM and .NET arms, which need a JDK and
+        # a .NET SDK this runner does not install.  Adding those toolchains
+        # would buy nothing: benchmark numbers from a shared runner are noise,
+        # and what this job checks is that the arms still EXECUTE against the
+        # current `src/` API.
+        #
+        # Smoke mode writes no result files — a single unwarmed iteration
+        # measures the JIT, and letting it reach `results/` would replace a
+        # committed nine-round median with noise.
+        run: ACTOR_TS_BENCH_SMOKE=1 bun run bench:compare -- --javascript-only

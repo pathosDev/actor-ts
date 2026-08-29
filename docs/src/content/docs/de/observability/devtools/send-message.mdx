@@ -1,0 +1,80 @@
+---
+title: Nachricht senden
+description: Sende eine JSON-Nachricht aus dem Browser an einen deiner Actors — standardmäßig aus, und nur nach expliziter Bestätigung im Code.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Jedes andere DevTools-Panel liest. Dieses **schreibt**: Es sendet eine
+Nachricht in das laufende System. Das macht es zu einer anderen Art von
+Funktion — und gibt ihm einen anderen Default.
+
+<Aside type="caution" title="Aus, solange du nichts anderes sagst">
+Die Aktion ist deaktiviert, bis du sie im Code bestätigst.  Solange sie
+aus ist, wird die Methode `actors.send` gar nicht erst registriert — ein
+Client, der den Namen kennt, bekommt „diese Methode gibt es nicht"
+statt einer Abweisung durch eine Wache.
+</Aside>
+
+```ts
+const devtoolsOptions = DevToolsOptions.create()
+  .withAllowMessageSending();
+
+await DevTools.attach(system, devtoolsOptions);
+```
+
+Es gibt **zwei** Schalter, und nur einer davon ist eine
+Sicherheitsentscheidung:
+
+| Schalter | Wirkung |
+| --- | --- |
+| `panels: { send: false }` | Blendet das Panel aus |
+| `allowMessageSending` | Gewährt die Fähigkeit |
+
+Eine Ansicht auszublenden und ein System schreibbar zu machen sind
+verschiedene Entscheidungen, also sind es verschiedene Einstellungen.
+Ohne die Bestätigung erscheint das Panel weiterhin in der Navigation —
+als deaktivierter Eintrag, der die zu ändernde Einstellung benennt,
+statt still zu fehlen.
+
+## Verwendung
+
+Actor auswählen, JSON schreiben, **Send** drücken. Die Auswahlliste
+speist sich aus dem Live-Actor-Baum, sodass ein gestoppter Actor
+verschwindet, statt auswählbar zu bleiben, bis das Senden fehlschlägt.
+
+Das Panel führt ein kurzes Protokoll dieser Sitzung — Zeit,
+Nachrichtentyp und Empfänger — sodass eine Folge von Versuchen
+nachvollziehbar bleibt.
+
+## Was der Server akzeptiert
+
+Der Body wird auf dem Server validiert, und das Panel gibt dessen
+Ablehnung wörtlich wieder, statt die Regeln zu wiederholen — zwei Kopien
+einer Regel sind der Weg, auf dem sie auseinanderlaufen.
+
+- **Nur JSON-Objekt oder -Array.** Eine nackte `42` oder ein `"hello"`,
+  das in `onReceive` ankommt, ist weit eher ein vertippter Body als eine
+  Absicht.
+- **Höchstens 64 KiB.** Ein unbegrenztes Feld an einem Schreib-Endpunkt
+  ist ein Weg, beliebig viel Speicher aus einem Browser in eine Mailbox
+  zu schieben.
+- **Nur unterhalb von `/user`.** System-Actors sind die Maschinerie des
+  Frameworks — Mailboxen, Cluster-Gossip, der DevTools-Hub selbst — und
+  eine handgeschriebene Nachricht an sie wird bestenfalls ignoriert.
+- **Kein Absender.** Der `sender` des Empfängers ist `None`. Einen zu
+  fälschen würde ihn auf einen Actor zeigen lassen, der nie etwas
+  gesendet hat, und eine Antwort ginge irgendwohin, wo sie niemand
+  erwartet.
+
+## Was es nicht kann
+
+Die Nachricht ist **JSON**, also ein einfaches Objekt. Sie kann keine
+`PoisonPill`, kein `Kill` und keine andere Klasse sein, die das System
+besonders behandelt — das sind Instanzen, und JSON kann keine
+konstruieren. Diese Grenze ist strukturell statt durch eine Prüfung
+erzwungen, und genau deshalb hält sie.
+
+Was es *kann*: deinen Actors Nachrichten schicken, auf die sie reagieren.
+Behandle die Bestätigung so, wie du jeden Schreibzugriff auf ein
+laufendes System behandeln würdest.

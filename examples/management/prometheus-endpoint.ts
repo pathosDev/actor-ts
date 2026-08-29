@@ -16,6 +16,8 @@
 import {
   Actor,
   ActorSystem,
+  CoordinatedShutdownId,
+  Phases,
 } from '../../src/index.js';
 import {
   MetricsExtensionId,
@@ -54,9 +56,12 @@ const server = Bun.serve({
 console.log(`prometheus endpoint: http://localhost:${server.port}/metrics`);
 console.log('press Ctrl+C to exit');
 
-process.on('SIGINT', async () => {
-  clearInterval(interval);
-  server.stop();
-  await system.terminate();
-  process.exit(0);
-});
+// This server is `Bun.serve`, not `system.http(...)`, so the framework does
+// not know about it — which is exactly the case the pipeline is for: register
+// it in the phase where every other listener goes and it is torn down in the
+// same order as one the framework owns.
+const coordinatedShutdown = system.extension(CoordinatedShutdownId);
+coordinatedShutdown.addTask(Phases.ServiceUnbind, 'stop-metrics-server', () => { server.stop(); });
+coordinatedShutdown.addTask(Phases.BeforeServiceUnbind, 'stop-load', () => { clearInterval(interval); });
+
+await system.runUntilTerminated();

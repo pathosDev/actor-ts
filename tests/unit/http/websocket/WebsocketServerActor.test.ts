@@ -14,9 +14,7 @@ import type {
 } from '../../../../src/http/websocket/SocketAdapter.js';
 import type { WebsocketConnection } from '../../../../src/http/websocket/WebsocketConnection.js';
 import type { WebsocketServerRef } from '../../../../src/http/websocket/WebsocketMessages.js';
-import { awaitCondition } from '../../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
 /**
  * In-memory socket adapter with test hooks.  Like the real adapters, it
@@ -227,7 +225,12 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     const { rec, hub, system } = setup('ws-hub-oversize');
     const sock = new MockSocket();
     wire(system, hub, sock);
-    await sleep(40);
+    // The connection has to be registered before a frame can be emitted, and
+    // `onClientConnected` records exactly that — so poll it instead of guessing
+    // how long the wiring takes.
+    await awaitCondition(() => rec.events.some((e) => e.startsWith('connect:')), {
+      label: 'the mock connection was registered with the hub',
+    });
 
     const big = 'x'.repeat(DEFAULT_WEBSOCKET_MAX_FRAME_BYTES + 16);
     sock.emit(JSON.stringify({ kind: 'shout', text: big }));
@@ -244,7 +247,12 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     const { rec, hub, system } = setup('ws-hub-subcap');
     const sock = new MockSocket();
     wire(system, hub, sock);
-    await sleep(40);
+    // The connection has to be registered before a frame can be emitted, and
+    // `onClientConnected` records exactly that — so poll it instead of guessing
+    // how long the wiring takes.
+    await awaitCondition(() => rec.events.some((e) => e.startsWith('connect:')), {
+      label: 'the mock connection was registered with the hub',
+    });
 
     sock.emit(JSON.stringify({ kind: 'shout', text: 'small' }));
     await awaitCondition(() => rec.events.includes('shout:small'), {
@@ -258,10 +266,15 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
   });
 
   test('invalid JSON closes with 1003 under the default policy', async () => {
-    const { hub, system } = setup('ws-hub-badjson');
+    const { rec, hub, system } = setup('ws-hub-badjson');
     const sock = new MockSocket();
     wire(system, hub, sock);
-    await sleep(40);
+    // The connection has to be registered before a frame can be emitted, and
+    // `onClientConnected` records exactly that — so poll it instead of guessing
+    // how long the wiring takes.
+    await awaitCondition(() => rec.events.some((e) => e.startsWith('connect:')), {
+      label: 'the mock connection was registered with the hub',
+    });
 
     sock.emit('not json {');
     await awaitCondition(() => sock.closeCalls.some((c) => c.code === 1003), {
@@ -284,6 +297,9 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     const sock = new MockSocket();
     const policy: ResolvedWebsocketPolicy = { ...DEFAULT_WEBSOCKET_POLICY, onInvalidMessage: 'hook' };
     wireConnection(system, hub, request(), sock, jsonCodec<Out, In>(), policy);
+    // Unlike the cases above, `HookServer` records no connect, so there is no
+    // registration signal to poll: the frame below simply must not be emitted
+    // before the connection can exist.
     await sleep(40);
 
     sock.emit('garbage{');
@@ -337,15 +353,34 @@ describe('WebsocketServerActor via wireConnection (child-per-connection)', () =>
     expect(rec.connections).toHaveLength(2);
     expect(Math.max(...rec.childCounts)).toBeGreaterThanOrEqual(2);
 
-    // Closing one stops its child → the hub's child count drops.
+    // Closing one stops its child, and the hub's child count drops.
+    //
+    // Read at the *next* event rather than inside `onClientDisconnected`, and
+    // that distinction is the interesting part.  A connection actor reports its
+    // disconnect from `postStop`, while the `childTerminated` that unregisters
+    // it from the parent is sent afterwards, from the rest of the same
+    // termination.  So the hook can run before the child is off the parent's
+    // list — the hub's own `clients` map is already correct, but the raw
+    // `context.children` view still counts a child that is finishing stopping,
+    // because it genuinely is still finishing stopping.  Whether the hook sees
+    // that transient depends purely on how fast the hub's next turn is
+    // scheduled, so asserting on it pins the scheduler rather than the
+    // cleanup.  Connecting a third socket reads the count once the dust has
+    // settled, which is the durable property this test is named for: 2 means
+    // B and C, with A's child gone; a leak would read 3.
     socketA.close(1000, 'bye');
-    await awaitCondition(() => rec.childCounts[rec.childCounts.length - 1] === 1, {
+    await awaitCondition(() => rec.events.some((e) => e.startsWith('disconnect:')), {
       timeoutMs: 4_000,
-      label: 'the hub child count dropped back to one',
+      label: 'the disconnect hook fired',
     });
-    expect(rec.events.some((e) => e.startsWith('disconnect:'))).toBe(true);
-    const afterDisconnect = rec.childCounts[rec.childCounts.length - 1]!;
-    expect(afterDisconnect).toBe(1);
+
+    const socketC = new MockSocket();
+    wire(system, hub, socketC);
+    await awaitCondition(() => rec.connections.length === 3, {
+      timeoutMs: 4_000,
+      label: 'the third socket connected',
+    });
+    expect(rec.childCounts[rec.childCounts.length - 1]).toBe(2);
   });
 
   test('connection exposes upgrade info (path, params, query, remoteAddress)', async () => {

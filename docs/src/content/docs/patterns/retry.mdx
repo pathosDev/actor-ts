@@ -32,6 +32,8 @@ type RetryOptions = {
   delayMs?:        number;     // base delay between attempts
   factor?:         number;     // multiplier for exponential backoff (default 1)
   maxDelayMs?:     number;     // ceiling for any individual delay
+  randomFactor?:   number;     // jitter fraction in [0, 1] (default 0 — none)
+  random?:         () => number;                   // override Math.random in tests
   shouldRetry?:    (err: Error, attempt: number) => boolean;
   onAttempt?:      (err: Error, attempt: number) => void;
   sleep?:          (ms: number) => Promise<void>;  // how the delay is awaited
@@ -44,13 +46,14 @@ runs up to 3 times.
 
 ## Configuring the backoff
 
-Three knobs cooperate to control the delay between attempts:
+Four knobs cooperate to control the delay between attempts:
 
 | Setting | What it does |
 | --- | --- |
 | `delayMs` | Base delay between attempts.  Default `0` (no wait). |
 | `factor` | Multiplier per attempt.  Delay on attempt N is `delayMs × factor^(N-1)`.  Default `1` (constant). |
-| `maxDelayMs` | Upper bound on any single delay.  Default unbounded. |
+| `maxDelayMs` | Upper bound on any single delay.  Default unbounded — but never past the 32-bit timer limit, which `retry` clamps to unconditionally (see the overflow note at the end of this page). |
+| `randomFactor` | Jitter fraction in `[0, 1]`.  The delay is spread to `delay × (1 ± randomFactor)`.  Default `0` (no jitter). |
 
 ```ts
 // Constant 500ms between attempts:
@@ -63,26 +66,34 @@ retry(factory, { attempts: 6, delayMs: 200, factor: 2, maxDelayMs: 5_000 });
 retry(factory, { attempts: 5, delayMs: 100, factor: 1.6 });
 ```
 
-No jitter — the delay is deterministic per attempt.  If you need
-jittered retries (recommended for high-concurrency scenarios that
-might synchronize), wrap the policy:
+## Jitter — `randomFactor`
+
+Without jitter the delay is a pure function of the attempt number,
+so every caller that failed on the same upstream event comes back
+in the same millisecond, wave after wave — and a synchronized herd
+can hold a recovering service down.  `randomFactor` spreads each
+delay to `delay × (1 ± randomFactor)`:
 
 ```ts
-import { retry, exponentialBackoff } from 'actor-ts';
-
-const policy = exponentialBackoff({ minMs: 200, maxMs: 5_000, randomFactor: 0.2 });
-
-async function jitteredRetry<T>(factory: () => Promise<T>, attempts: number): Promise<T> {
-  for (let i = 0; i < attempts; i++) {
-    try { return await factory(); }
-    catch (e) {
-      if (i === attempts - 1) throw e;
-      await new Promise(r => setTimeout(r, policy.delayFor(i)));
-    }
-  }
-  throw new Error('unreachable');
-}
+// 200ms, 400ms, 800ms … each ±20%, capped at 5s:
+retry(factory, {
+  attempts:     6,
+  delayMs:      200,
+  factor:       2,
+  maxDelayMs:   5_000,
+  randomFactor: 0.2,
+});
 ```
+
+It defaults to `0`, so a `retry` written before this option keeps
+its exact schedule.  Turn it on whenever more than one caller can
+fail on the same event — a fleet of pods talking to one database, a
+fan-out of workers behind one API.  `0.2` is the spread
+[`exponentialBackoff`](/patterns/backoff-policy/) and the broker
+reconnect loop both default to.
+
+`random` overrides `Math.random`, so a jittered schedule stays
+exactly assertable in a test — same escape hatch as `sleep`, below.
 
 Or use `BackoffSupervisor` if the thing being retried is an actor
 restart.
@@ -171,8 +182,8 @@ a 30 ms `setTimeout` lands anywhere between roughly 19 ms and
 which is wide enough that a capped delay is indistinguishable
 from an uncapped one.
 
-Same escape hatch as [`exponentialBackoff`'s
-`random`](/patterns/backoff-policy/) — inject the
+Same escape hatch as `random` above, and as
+[`exponentialBackoff`'s](/patterns/backoff-policy/) — inject the
 non-determinism, then pin it.
 
 ## Compared to BackoffSupervisor
@@ -257,10 +268,19 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="`delayMs * factor^N` can overflow">
   ```ts
   retry(factory, { attempts: 50, delayMs: 100, factor: 2 });
-  // Attempt 30: delay = 100 × 2^29 ≈ 1.6 years
+  // Attempt 26: delay = 100 × 2^25 ≈ 38.8 days
   ```
-  Always set `maxDelayMs` for `factor > 1`.  Otherwise a high
-  `attempts` count produces absurd delays.
+  `setTimeout` coerces its argument to a 32-bit signed integer, so
+  a delay above `2_147_483_647` ms (~24.9 days) does **not** wait
+  longer — it fires after 1 ms.  Left unguarded, the backoff would
+  invert into a hot loop against the failing dependency at exactly
+  the attempt the operator believes is most conservative.
+
+  `retry` clamps every delay to that limit before awaiting it, so
+  an overflowing configuration degrades to "waits ~24.9 days" —
+  visible and fixable — rather than to "waits not at all".  Set
+  `maxDelayMs` anyway for `factor > 1`: the clamp is a floor under
+  the failure mode, not a backoff policy.
 </Aside>
 
 ## Where to next

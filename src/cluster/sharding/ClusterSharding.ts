@@ -1,8 +1,10 @@
+import { match, P } from 'ts-pattern';
 import type { Actor, ActorClassOrFactory } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { ActorSystem } from '../../ActorSystem.js';
 import { actorFactoryOf } from '../../internal/ActorBlueprint.js';
 import { PersistenceExtensionId } from '../../persistence/PersistenceExtension.js';
+import { StorageLocalityError } from '../../persistence/StorageLocality.js';
 import { mergeOptions } from '../../util/OptionsMerge.js';
 import {
   SystemGroups,
@@ -11,6 +13,7 @@ import {
   shardRegionName,
 } from '../../internal/SystemPaths.js';
 import type { Cluster } from '../Cluster.js';
+import { ShardMapChanged, type ClusterEvent } from '../ClusterEvents.js';
 import type { EnvelopeMessage } from '../Protocol.js';
 import { HashAllocationStrategy } from './AllocationStrategy.js';
 import {
@@ -20,6 +23,7 @@ import {
 import { EntityRef } from './EntityRef.js';
 import type { ShardMessage } from './Shard.js';
 import type { ShardInfo } from './ShardInfo.js';
+import { shardMapViewOf, type ShardMapView } from './ShardMapView.js';
 import { DEFAULT_NUM_SHARDS } from './ShardingOptions.js';
 import {
   ShardRegion,
@@ -64,12 +68,32 @@ export class ClusterSharding {
   private readonly coordinators = new Map<string, ActorRef<unknown>>();
   /** Shard count per started type — the entity→shard hash needs it. */
   private readonly numShardsByType = new Map<string, number>();
+  /** Whether the region started for a type is a proxy — see {@link start}. */
+  private readonly proxyByType = new Map<string, boolean>();
+  /**
+   * Type name → the last shard map this node was told about.  Read by
+   * {@link shardMap}, fed by the `ShardMapChanged` subscription below.
+   *
+   * Kept here rather than derived on demand because the map has no local
+   * owner to ask: the coordinator holds it, runs only on the leader, and
+   * answers over the wire.  Every node's region already receives the
+   * broadcast and republishes it, so remembering the last one costs one
+   * assignment per publish and turns a round trip into a field read (#682).
+   */
+  private readonly shardMapsByType = new Map<string, ShardMapView>();
 
   private constructor(
     public readonly system: ActorSystem,
     public readonly cluster: Cluster,
   ) {
     cluster._setEnvelopeHandler((env: EnvelopeMessage) => this.dispatchEnvelope(env));
+    // Subscribed here, not on the first `start`, so no publish can slip past
+    // between construction and the first region: a type started later still
+    // sees its own first broadcast.  `snapshot` replay because this listener
+    // discards membership anyway — one event to ignore instead of N.  Never
+    // unsubscribed: the instance is memoised per ActorSystem and both it and
+    // the listener die with the Cluster that holds them.
+    cluster.subscribe((event) => this.onClusterEvent(event), { replayMode: 'snapshot' });
   }
 
   private static instances = new WeakMap<ActorSystem, ClusterSharding>();
@@ -135,16 +159,47 @@ export class ClusterSharding {
     const options = this.withConfigDefaults(this.resolveStartOptions<TMessage>(arg1, arg2, arg3));
     new StartShardingOptionsValidator<TMessage>().validate(options);
 
-    this.ensureCoordinator(options as StartShardingOptionsType<unknown>);
-    const existing = this.findRegionByType(options.typeName);
-    if (existing) return existing as ActorRef<TMessage>;
-
+    // Resolve the config BEFORE anything reads a shard count.  This used to
+    // sit below `ensureCoordinator`, which read `numShardsByType` — a map
+    // `start` does not populate until the line after this one, so on the
+    // first (and only) start of a type the lookup always missed and every
+    // coordinator was built with `DEFAULT_NUM_SHARDS` whatever the caller
+    // configured (#1026).  The region hashed with the real value while the
+    // coordinator bounded with 64, so every `GetShardHome` for a shard id at
+    // or above 64 was refused and its messages piled up in the region's
+    // unbounded buffer.  `settingsToConfig` is pure, so hoisting it is safe;
+    // the count now travels as an argument and no longer depends on which
+    // statement ran first.
     const config = ShardRegion.settingsToConfig(
       options,
       this.cluster,
       (path: string) => this.regionsByPath.get(path) ?? null,
     );
+
+    this.ensureCoordinator(options as StartShardingOptionsType<unknown>, config.numShards);
+    const existing = this.findRegionByType(options.typeName);
+    if (existing) {
+      // A second call for a type this node already started is a no-op — except
+      // when the two disagree about hosting.  `startProxy` then `start` handed
+      // the caller the *proxy* back, and a proxy throws from its placeholder
+      // entity factory, so the first message for a local shard died in a spawn
+      // the caller never wrote.  The reverse order is just as wrong: the caller
+      // asked for a routing-only node and got one that hosts entities.
+      const existingProxy = this.proxyByType.get(options.typeName) ?? false;
+      const requestedProxy = options.proxy ?? false;
+      if (existingProxy !== requestedProxy) {
+        throw new Error(
+          `[sharding] type '${options.typeName}' is already started on this node as `
+          + `${existingProxy ? 'a proxy region' : 'a hosting region'} — `
+          + `${requestedProxy ? 'startProxy()' : 'start()'} cannot change that. `
+          + `Start each type once per node, as either a hosting region or a proxy.`,
+        );
+      }
+      return existing as ActorRef<TMessage>;
+    }
+
     this.numShardsByType.set(options.typeName, config.numShards);
+    this.proxyByType.set(options.typeName, config.proxy);
     const ref = this.system._spawnSystemActor<TMessage>(
       // ShardRegion internally handles extra envelope types; cast to Actor<TMessage>
       // so the returned ref presents the user-facing signature.
@@ -377,6 +432,36 @@ export class ClusterSharding {
   }
 
   /**
+   * The last shard map this node was told about, as plain JSON — the
+   * serialisable counterpart to {@link shards} (#682).
+   *
+   * ```ts
+   * const map = cluster.sharding.shardMap('counter');
+   * if (map) console.log(map.regions.length, map.shardHome.length);
+   * ```
+   *
+   * Synchronous and free: the coordinator broadcasts the map to every
+   * registered region on each change, each region republishes it as a local
+   * `ShardMapChanged`, and this returns the last one. So it needs no round
+   * trip, no DistributedData and no `coordinatorStateStore` — which is what
+   * the `/cluster/shards` management endpoint reads it for.
+   *
+   * `null` until the coordinator has published once for the type, which
+   * includes every case where this node has started neither a region nor a
+   * proxy for it: nothing broadcasts to a node that never registered. Use
+   * {@link shards} when you need entity counts or live refs, and subscribe to
+   * `ShardMapChanged` when you need the changes rather than the latest state.
+   *
+   * `shardHome` is empty until a shard has been placed — nothing asks the
+   * coordinator to allocate one before an entity is addressed — while
+   * `regions` is populated from the first registration. Read `regions` to
+   * answer "who is participating", `shardHome` to answer "what is placed".
+   */
+  shardMap(typeName: string): ShardMapView | null {
+    return this.shardMapsByType.get(typeName) ?? null;
+  }
+
+  /**
    * A ref to one shard.  Allocates the shard if it has no home yet — the same
    * thing a first message for it would have done.
    *
@@ -414,13 +499,49 @@ export class ClusterSharding {
 
   /* ------------------------------- Internal -------------------------------- */
 
-  private ensureCoordinator(options: StartShardingOptionsType<unknown>): void {
+  /**
+   * The cluster event stream, of which exactly one event is ours.  Membership
+   * belongs to whoever else subscribed; sharding only reacts to the shard map
+   * its own regions republish.
+   */
+  private onClusterEvent(event: ClusterEvent): void {
+    match(event)
+      .with(P.instanceOf(ShardMapChanged), (e) => this.onShardMapChanged(e))
+      .otherwise(() => this.onOtherClusterEvent());
+  }
+
+  /**
+   * Stamped with the receiving node's clock and its own view of the leader,
+   * because that is what this node can honestly claim: the event carries
+   * neither, and the coordinator that produced it publishes only while it is
+   * the active one, so the leader at arrival time is the map's author.
+   */
+  private onShardMapChanged(event: ShardMapChanged): void {
+    const leader = this.cluster.leader().fold(() => '', (member) => member.address.toString());
+    this.shardMapsByType.set(event.type, shardMapViewOf(event, leader, Date.now()));
+  }
+
+  /**
+   * Membership, leadership, a replayed snapshot.  All of them can move the
+   * shard map, and none of them says how — the coordinator recomputes and
+   * publishes `ShardMapChanged`, which is the only event that can.
+   */
+  private onOtherClusterEvent(): void {}
+
+  /**
+   * @param numShards Resolved by the caller from the same options the region
+   *   is built with.  Passed rather than looked up: reading it back out of
+   *   `numShardsByType` made the result depend on whether `start` had reached
+   *   the line that populates that map, and on the first start of a type it
+   *   had not (#1026).
+   */
+  private ensureCoordinator(options: StartShardingOptionsType<unknown>, numShards: number): void {
     if (this.coordinators.has(options.typeName)) return;
     const coordinatorOptions = ShardCoordinatorOptions.create()
       .withTypeName(options.typeName)
       .withCluster(this.cluster)
       .withAllocationStrategy(options.allocationStrategy ?? new HashAllocationStrategy())
-      .withNumShards(this.numShardsByType.get(options.typeName) ?? DEFAULT_NUM_SHARDS)
+      .withNumShards(numShards)
       .withLocalResolver((path) =>
         this.regionsByPath.get(path)
         ?? this.coordinators.get(this.typeNameFromCoordinatorPath(path) ?? '')
@@ -464,7 +585,28 @@ export class ClusterSharding {
     if (!options.rememberEntities) return undefined;
     if (options.rememberEntitiesStore === null) return undefined;
     if (options.rememberEntitiesStore) return options.rememberEntitiesStore;
-    const journal = this.system.extension(PersistenceExtensionId).journal;
+    const persistenceExtension = this.system.extension(PersistenceExtensionId);
+    const journal = persistenceExtension.journal;
+    // The one fail-fast of the storage-locality guard (#1356), and only on
+    // this auto path — an explicit store or `null` above is the user's own
+    // wiring.  The registry must be one database for the whole cluster: the
+    // coordinator is leader-hosted, and on failover the next leader calls
+    // `store.load(typeName)` against whatever ITS node's journal holds — the
+    // multi-node suite hand-injects one shared journal into every role
+    // precisely because of this, and nothing else checks it.
+    if (journal.storageLocality === 'node-local' && this.cluster.expectsRemotePeers()) {
+      throw new StorageLocalityError(
+        `cluster.sharding: rememberEntities=true auto-wired its registry from this node's journal, `
+        + `but '${journal.constructor.name}' declares node-local storage and the cluster expects remote `
+        + 'peers — on coordinator failover the next leader replays ITS OWN journal and forgets every '
+        + 'remembered entity (#1356). Wire a shared journal, pass an explicit rememberEntitiesStore '
+        + '(e.g. CassandraRememberEntitiesStore), or pass rememberEntitiesStore: null to keep the '
+        + 'registry in memory only.',
+      );
+    }
+    // Wired while standalone it cannot be un-wired later, so the arrival of
+    // the first remote peer surfaces this note at error level instead.
+    persistenceExtension.noteStoreUse('remember-entities', journal, 'error');
     return new JournalRememberEntitiesStore(journal);
   }
 

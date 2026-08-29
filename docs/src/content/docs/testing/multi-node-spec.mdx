@@ -213,9 +213,12 @@ import { Aside } from '@astrojs/starlight/components';
   // Messages pass by reference between nodes in MultiNodeSpec
   ```
   Serialization-dependent bugs (functions in messages,
-  non-serializable types) don't surface in MultiNodeSpec.
-  Use ParallelMultiNodeSpec or real-cluster integration tests
-  for serialization coverage.
+  non-serializable types) don't surface in MultiNodeSpec —
+  and ParallelMultiNodeSpec only half-closes the gap, since
+  structured clone accepts payloads the wire refuses.  For
+  real coverage, round-trip the message through
+  `JsonSerializer` in a unit test, or run a real-cluster
+  integration test.
 </Aside>
 
 <Aside type="caution" title="Real network failure modes">

@@ -57,6 +57,30 @@ describe('ActorSystem — config integration', () => {
     await sys.terminate();
   });
 
+  test('per-actor throughput defaults, reads config, and clamps to at least 1', async () => {
+    const plainOptions = ActorSystemOptions.create().withLogger(new NoopLogger());
+    const plain = ActorSystem.create('cfg', plainOptions);
+    expect(plain._actorThroughput).toBe(16);
+    await plain.terminate();
+
+    const tunedOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfig({ 'actor-ts': { actor: { throughput: 64 } } });
+    const tuned = ActorSystem.create('cfg', tunedOptions);
+    expect(tuned._actorThroughput).toBe(64);
+    await tuned.terminate();
+
+    // 0 would leave every actor accepting mail and never reading it, which is
+    // a mistake a config file makes far from the code that suffers it — so it
+    // is clamped to the pre-#409 one-at-a-time loop rather than rejected.
+    const zeroOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfig({ 'actor-ts': { actor: { throughput: 0 } } });
+    const zero = ActorSystem.create('cfg', zeroOptions);
+    expect(zero._actorThroughput).toBe(1);
+    await zero.terminate();
+  });
+
   test('picks log level from config', async () => {
     // Use NoopLogger-like shim so nothing is printed; just verify derived LogLevel.
     const captured: number[] = [];
@@ -64,7 +88,8 @@ describe('ActorSystem — config integration', () => {
       .withConfig({ 'actor-ts': { logger: { level: 'warn' } } })
       .withLogger({
         level: LogLevel.Off, // unused in this assertion
-        debug() {}, info() {}, warn() {}, error() {}, withSource() { return this; },
+        debug() {}, info() {}, warn() {}, error() {},
+        withSource() { return this; }, withFields() { return this; },
       });
     const sys = ActorSystem.create('cfg', sysOptions);
     void captured;
@@ -91,8 +116,9 @@ describe('ActorSystem — config integration', () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger());
     const sys = ActorSystem.create('cfg', sysOptions);
-    // Default dispatcher is "immediate" (per reference.conf).
-    expect(sys.dispatcher.constructor.name).toBe('ImmediateDispatcher');
+    // Default dispatcher is "hybrid" (per reference.conf): microtask wakeups
+    // with a macrotask yield every 64 units.
+    expect(sys.dispatcher.constructor.name).toBe('HybridDispatcher');
     await sys.terminate();
   });
 });

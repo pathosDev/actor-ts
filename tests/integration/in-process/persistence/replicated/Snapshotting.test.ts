@@ -35,7 +35,7 @@ import { InMemorySnapshotStore } from '../../../../../src/persistence/snapshot-s
 import { PersistenceExtensionId } from '../../../../../src/persistence/PersistenceExtension.js';
 import type { ReplicatedSnapshot } from '../../../../../src/persistence/replicated/ReplicatedSnapshot.js';
 import type { ReplicatedEventEnvelope } from '../../../../../src/persistence/ReplicatedEventSourcedActor.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 type Command = { kind: 'add'; n: number };
 type Event = { kind: 'added'; n: number };
@@ -62,8 +62,6 @@ class CountingCounter extends ReplicatedEventSourcedActor<Command, Event, State>
   /** Test hook — read state without ask(). */
   getValue(): number { return this.state.value; }
 }
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
 
 const WAIT = { timeoutMs: 4_000, intervalMs: 10 } as const;
 
@@ -156,7 +154,7 @@ describe('ReplicatedEventSourcedActor — snapshotting', () => {
       actorRef.instance.persistenceId,
     );
     expect(stored.isSome()).toBe(true);
-    const snap = stored.value!.state;
+    const snap = stored.toNullable()!.state;
     // Most recent snapshot is at the second policy hit (observedCount = 10).
     expect(snap.events.length).toBe(10);
     expect(snap.state.value).toBe(10);
@@ -206,15 +204,22 @@ describe('ReplicatedEventSourcedActor — snapshotting', () => {
 
     // Pre-seed the journal with an event whose `replica` id matches
     // a peer (not us) — so it ends up in `_seenIds` after recovery.
-    const peerEnvelope: ReplicatedEventEnvelope<Event> = {
+    //
+    // Deliberately without an `eventId`, which makes this the on-disk
+    // legacy-format guard as well (#706): an envelope journalled before that
+    // field existed must still recover, and must still deduplicate, on the
+    // `${replica}#${seqAtReplica}` fallback.  Refusing it here is what an
+    // upgrade losing an entity's history would look like.  The *remote* path
+    // refuses the same shape — the fallback is scoped to this node's own disk.
+    const peerEnvelope = {
       persistenceId: 'snap-counter',
       replica: 'peer-x',
       seqAtReplica: 1,
       vc: { 'peer-x': 1 },
       timestamp: Date.now(),
       event: { kind: 'added', n: 100 },
-    };
-    await journal.append('snap-counter', [peerEnvelope], 0, ['replicated-es']);
+    } as unknown as ReplicatedEventEnvelope<Event>;
+    await journal.append('snap-counter', [{ event: peerEnvelope, tags: ['replicated-es'] }], 0);
 
     const a1 = await startActor('snap-3', 70_021, journal, snapshotStore);
     // After preStart: the peer event was absorbed once → state.value = 100,
@@ -238,11 +243,13 @@ describe('ReplicatedEventSourcedActor — snapshotting', () => {
 
     // Restart — recovery loads snapshot (seenIds includes 'peer-x#1').
     // We then replay the journal delta which DOES NOT include the peer
-    // event again (it was already in the snapshot's `events`).  But to
-    // simulate a re-broadcast, we manually re-append the same peer
-    // event to the journal under a fresh local seq — this would
-    // happen in production if peer-x re-broadcast its event.
-    await journal.append('snap-counter', [peerEnvelope], await journal.highestSeq('snap-counter'), ['replicated-es']);
+    // event again (it was already in the snapshot's `events`).  So we
+    // re-append the same envelope under a fresh journal seq: the same
+    // event appearing twice on disk, which is what the snapshot's
+    // `seenIds` exists to absorb.  (Not a re-broadcast — a live peer
+    // re-publishing carries the same `eventId` and is deduplicated on
+    // that; this is the on-disk duplicate, on the legacy key.)
+    await journal.append('snap-counter', [{ event: peerEnvelope, tags: ['replicated-es'] }], await journal.highestSeq('snap-counter'));
 
     CountingCounter.onEventCallCount = 0;
     const a2 = await startActor('snap-3-restart', 70_022, journal, snapshotStore);

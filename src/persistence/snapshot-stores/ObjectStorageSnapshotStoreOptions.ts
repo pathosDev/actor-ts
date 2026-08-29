@@ -62,6 +62,20 @@ export type ObjectStorageSnapshotStoreOptionsType = StoreSerializerOptionsBase &
    */
   readonly allowUntaggedBodies?: boolean;
   /**
+   * Refuse a snapshot body that is not bound to the storage key it was
+   * read from (#612).  Default `false`.
+   *
+   * Writes bind unconditionally; this is about refusing unbound reads.
+   * The snapshot key carries both the `persistenceId` and the sequence
+   * number, so an unbound snapshot is one that could have been lifted
+   * from another pid — or another point in this pid's history — and
+   * dropped here.  Opt in once the bucket holds only bound snapshots,
+   * which for a pruning store is `keepN` saves per persistenceId.
+   *
+   * Inert without an `encryption` or `integrity` config.
+   */
+  readonly requireContextBinding?: boolean;
+  /**
    * Cap on the decompressed size of a stored body in bytes — the
    * decompression-bomb guard on read (security audit #3).  Default 512 MiB
    * (`DEFAULT_MAX_DECOMPRESSED_BYTES`); `Infinity` opts out.  Raise it to
@@ -122,6 +136,11 @@ export class ObjectStorageSnapshotStoreOptionsBuilder extends StoreSerializerOpt
   /** Accept untagged snapshot bodies while integrity is configured — the legacy-corpus migration window (#579).  Default: false. */
   withAllowUntaggedBodies(allowUntaggedBodies = true): this {
     return this.set('allowUntaggedBodies', allowUntaggedBodies);
+  }
+
+  /** Refuse snapshot bodies not bound to the storage key they were read from (#612) — turn on once the bucket is rewritten.  Default: false. */
+  withRequireContextBinding(requireContextBinding = true): this {
+    return this.set('requireContextBinding', requireContextBinding);
   }
 
   /**

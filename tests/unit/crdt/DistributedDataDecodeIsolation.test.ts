@@ -21,8 +21,7 @@ import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { DistributedDataId, GCounter } from '../../../src/crdt/index.js';
 import type { WireMessage } from '../../../src/cluster/Protocol.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
 const systems: ActorSystem[] = [];
 const clusters: Cluster[] = [];
@@ -58,19 +57,27 @@ async function attacker(name: string, port: number): Promise<InMemoryTransport> 
 
 describe('DistributedData decode isolation', () => {
   test('twelve malformed gossip entries do not kill the replica (#699)', async () => {
-    const victim = await startNode('decode-victim', 47_201);
+    const victim = await startNode('decode-victim', 48_201);
     const data = victim.system.extension(DistributedDataId).start(victim);
+    // A startup settle with no state to poll: `start()` registers the wire
+    // handlers synchronously and buffers frames in the actor's mailbox until
+    // `preStart` has run, so there is nothing observable to wait on here.
     await sleep(80);
 
-    const evil = await attacker('decode-evil', 47_202);
+    const evil = await attacker('decode-evil', 48_202);
     // Twelve is the number that used to exhaust the restart budget.
     for (let round = 0; round < 12; round++) {
       evil.send(victim.selfAddress, {
         kind: 'ddata-gossip',
-        from: new NodeAddress('decode-evil', 'h', 47_202).toJSON(),
+        from: new NodeAddress('decode-evil', 'h', 48_202).toJSON(),
         entries: { [`bad-${round}`]: { kind: 'NotACrdtKind', nonsense: round } },
       } as unknown as WireMessage);
     }
+    // Every one of the twelve has to be *handled* before the good frame goes
+    // out, and a dropped entry leaves no trace the test can see — the
+    // `droppedFrames` counter is private to the actor.  So this is an absence
+    // window by construction: nothing observable changes, and the point is
+    // that the twelfth did not terminate the replica.
     await sleep(300);
 
     // The replica is still alive, and still merges a well-formed value from
@@ -79,35 +86,46 @@ describe('DistributedData decode isolation', () => {
     // frame and this merge never happened.
     evil.send(victim.selfAddress, {
       kind: 'ddata-gossip',
-      from: new NodeAddress('decode-evil', 'h', 47_202).toJSON(),
+      from: new NodeAddress('decode-evil', 'h', 48_202).toJSON(),
       entries: { good: GCounter.empty().increment('decode-evil', 7).toJSON() },
     } as unknown as WireMessage);
-    await sleep(200);
+    // Poll the presence of the key, not its value: the exact count is what the
+    // assertion is for, and a predicate reading `=== 7` would make it a
+    // restatement of the wait.
+    await awaitCondition(() => data.get<GCounter>('good') !== undefined, {
+      label: 'the well-formed value from the same peer was merged',
+    });
 
-    const merged = await data.get('good', () => GCounter.empty());
-    expect(merged.value()).toBe(7);
+    expect(data.get<GCounter>('good')?.value()).toBe(7);
   });
 
   test('a malformed entry does not cost the other entries of the same frame (#699)', async () => {
-    const victim = await startNode('decode-victim2', 47_211);
+    const victim = await startNode('decode-victim2', 48_211);
     const data = victim.system.extension(DistributedDataId).start(victim);
+    // A startup settle with no state to poll — see the note in the test above.
     await sleep(80);
 
-    const evil = await attacker('decode-evil2', 47_212);
+    const evil = await attacker('decode-evil2', 48_212);
     // One frame, one bad entry between two good ones.  They are independent
     // CRDTs that merely travel together.
     evil.send(victim.selfAddress, {
       kind: 'ddata-gossip',
-      from: new NodeAddress('decode-evil2', 'h', 47_212).toJSON(),
+      from: new NodeAddress('decode-evil2', 'h', 48_212).toJSON(),
       entries: {
         first: GCounter.empty().increment('decode-evil2', 3).toJSON(),
         broken: { kind: 'GCounter', state: 'not-an-object' },
         last: GCounter.empty().increment('decode-evil2', 5).toJSON(),
       },
     } as unknown as WireMessage);
-    await sleep(250);
+    // `onGossip` merges the whole frame in one turn without awaiting, so `last`
+    // becoming visible means `first` and `broken` have both been through
+    // `decodeOrDrop` already.  Presence, not value: the two exact assertions
+    // below are the test.
+    await awaitCondition(() => data.get<GCounter>('last') !== undefined, {
+      label: 'the frame carrying the broken middle entry was merged',
+    });
 
-    expect((await data.get('first', () => GCounter.empty())).value()).toBe(3);
-    expect((await data.get('last', () => GCounter.empty())).value()).toBe(5);
+    expect(data.get<GCounter>('first')?.value()).toBe(3);
+    expect(data.get<GCounter>('last')?.value()).toBe(5);
   });
 });

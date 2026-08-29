@@ -2,9 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { InMemoryTransport } from '../../src/cluster/Transport.js';
 import { NodeAddress } from '../../src/cluster/NodeAddress.js';
 import type { HelloMessage, WireMessage } from '../../src/cluster/Protocol.js';
-import { awaitCondition } from '../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
 function newTransport(port: number): InMemoryTransport {
   return new InMemoryTransport(new NodeAddress('imt', 'localhost', port));
@@ -70,6 +68,9 @@ describe('InMemoryTransport', () => {
     await transportB.start();
     await transportA.shutdown();
     transportA.send(transportB.self, helloFrom(40301));
+    // An absence, so it cannot be polled: a shut-down transport must drop the
+    // send.  `seen` is empty when the wait starts and has to still be empty
+    // after a window long enough for a delivery to have happened.
     await sleep(20);
     expect(seen).toEqual([]);
     await transportB.shutdown();
@@ -84,17 +85,47 @@ describe('InMemoryTransport', () => {
     await transportB.start();
     transportA.send(transportB.self, helloFrom(40401));
     // Immediately after send, delivery has not happened yet — it's a microtask.
+    // That half is an absence, so it stays a synchronous read; the delivery
+    // half waits on the array the assertion reads.
     expect(seen.length).toBe(0);
-    await sleep(10);
+    await awaitCondition(() => seen.length === 1, { label: 'the microtask delivered the message' });
     expect(seen.length).toBe(1);
     await transportA.shutdown(); await transportB.shutdown();
   });
 
-  test('peers list is empty after shutdown', async () => {
+  /**
+   * Read through B rather than through A's own `peers()`, and this is the whole
+   * point of the test rather than a stylistic preference.
+   *
+   * `InMemoryTransport.registry` is a `private static Map` and `peers()` returns
+   * every entry in it except self, so the previous form —
+   * `expect(transportA.peers()).toEqual([])` after A's shutdown — asserted that
+   * **no transport was registered anywhere in the process**.  `bun test` runs the
+   * whole tree in one process and 75 test files construct one, so any suite that
+   * left a registration behind falsified it.  That is why it passed alone and
+   * failed only in a whole-suite run, with nothing in flight and no wait that
+   * could have helped (#290).
+   *
+   * Narrowing it to the transition this test causes also makes it bind
+   * `shutdown()`, which the old form did not.  Measured, by deleting the
+   * `registry.delete(…)` line in `src/cluster/Transport.ts`: the old assertion
+   * *alone in a fresh process* passes with the deletion and without it — it
+   * cannot see A's own leftover registration, because `peers()` filters self out.
+   * It did go red inside this file, but only because the tests above it leave
+   * registrations behind, so what it detected was its siblings and not its own
+   * subject.  The form below goes red on the mutation either way.
+   */
+  test('shutdown removes the transport from a live peer\'s view', async () => {
     const transportA = newTransport(40501);
+    const transportB = newTransport(40502);
     await transportA.start();
-    expect(transportA.peers()).toBeDefined();
-    await transportA.shutdown();
-    expect(transportA.peers()).toEqual([]);
+    await transportB.start();
+    try {
+      expect(transportB.peers().some(p => p.port === 40501)).toBe(true);
+      await transportA.shutdown();
+      expect(transportB.peers().some(p => p.port === 40501)).toBe(false);
+    } finally {
+      await transportB.shutdown();
+    }
   });
 });

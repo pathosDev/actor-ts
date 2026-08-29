@@ -6,7 +6,6 @@
  *   bun run examples/patterns/timers-heartbeat.ts
  */
 import { Actor, ActorSystem } from '../../src/index.js';
-import { attachDevTools } from '../devtools.js';
 
 type Message = 'heartbeat' | 'shutdown';
 
@@ -31,10 +30,11 @@ class Monitor extends Actor<Message> {
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('timers-demo');
-  const devtools = await attachDevTools(system);
   system.spawn(Monitor, 'monitor');
+  // Not a drain sleep: nothing is ever told to the monitor.  Every heartbeat
+  // comes from the timer it arms in preStart, and the drain does not wait for
+  // work that is not enqueued yet — this 400 ms *is* the five heartbeats.
   await new Promise(r => setTimeout(r, 400));
-  await devtools.holdOpen();
   await system.terminate();
 }
 

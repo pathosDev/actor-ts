@@ -190,7 +190,51 @@ Same methods apply when the snapshot store is backed by
 object-storage.  Persistent actors and durable-state actors
 both honor them.
 
+## Per-actor integrity
+
+`integrity()` is the third hook, alongside `compression()` and
+`encryption()`.  It signs the stored body with HMAC-SHA256 so
+tamper-in-place is detected at read time — worthwhile even for
+data that isn't secret:
+
+```ts
+class LedgerActor extends DurableStateActor<Command, State> {
+  protected integrity() {
+    return { mode: 'hmac-sha256' as const, integrityKey: ledgerIntegrityKey };
+  }
+}
+
+class Account extends PersistentActor<Command, Event, State> {
+  override integrity() {
+    return { mode: 'hmac-sha256' as const, integrityKey: accountIntegrityKey };
+  }
+}
+```
+
+Configuring `hmac-sha256` makes the tag **mandatory on read**: a
+body that carries none is refused rather than waved through.  For
+a corpus written before integrity was enabled, open the migration
+window with the store-level `allowUntaggedBodies` and drop it once
+the read-then-write sweep is done.
+
 import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="danger" title="Only the object-storage stores read this hook">
+  Ten of the eleven snapshot stores and nine of the ten
+  durable-state stores accept `PersistenceOptions` and never look
+  at it ([#960](https://github.com/mknorr/actor-ts/issues/960)).
+  On SQLite, Postgres, Cassandra, Mongo, DynamoDB and the
+  in-memory reference store, an `integrity()` override **buys no
+  tamper detection and raises no error** — the directive is
+  dropped on the floor.  The same is true of `encryption()` and
+  `compression()`.
+
+  Do not read this page as a promise that the framework enforces
+  the control everywhere.  Verify it against the store you
+  actually run: today that means the object-storage snapshot and
+  durable-state stores, which honour all three hooks on both the
+  write and the read path.
+</Aside>
 
 <Aside type="caution" title="Different keyRings across cluster nodes">
   ```ts

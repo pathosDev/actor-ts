@@ -139,21 +139,6 @@ export function layoutProfile(
   return out;
 }
 
-/** Deepest rectangle covering the point, or `null`. */
-export function hitTestProfile(
-  rectangles: ReadonlyArray<ProfileRectangle>,
-  x: number,
-  y: number,
-): ProfileRectangle | null {
-  for (const rectangle of rectangles) {
-    if (x >= rectangle.x && x <= rectangle.x + rectangle.width
-      && y >= rectangle.y && y <= rectangle.y + rectangle.height) {
-      return rectangle;
-    }
-  }
-  return null;
-}
-
 /** How many rows the laid-out tree needs. */
 export function profileDepth(rectangles: ReadonlyArray<ProfileRectangle>): number {
   return rectangles.reduce((deepest, rectangle) => Math.max(deepest, rectangle.node.depth), 0) + 1;

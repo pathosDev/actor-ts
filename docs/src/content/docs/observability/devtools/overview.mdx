@@ -48,6 +48,10 @@ fails.
 | **Explain plan** | The last messages one actor handled, with timings |
 | **Time travel** | Browse a journal, reconstruct state at any point |
 | **Profiler** | Where the actor system spends its time |
+| **Dead letters** | Messages the system could not deliver, and why |
+| **Event stream** | Live tail of the event bus, and the cluster topics |
+| **Configuration** | Every resolved HOCON key, and which layer set it |
+| **Send message** | Send JSON to an actor — off unless acknowledged |
 
 All of them speak one [tap protocol](/observability/devtools/protocol/)
 over a single WebSocket, so they share a connection rather than each
@@ -67,6 +71,54 @@ the questions:
 - **Charts** — the same figures over the last few minutes, split across
   three plots so a level and a rate never share a y-axis, plus the
   busiest mailboxes right now.
+
+## Pausing time
+
+Every panel here is a live view, which is exactly wrong at the moment it
+becomes interesting: the row you want to read is gone before you have
+read it.  **Pause** in the header — or the <kbd>P</kbd> key, anywhere
+outside a text field — stops the whole view at once.  **Resume** starts
+it again.
+
+Two things stop, and the second one is the point:
+
+- **The data.** No panel folds anything new in while time is stopped.
+- **The clock the panels are read against.**  Every "how long ago"
+  reading in the UI holds still with the view it describes — uptime, a
+  departed node's *last seen*, and the *stopped 12s ago* badge on a
+  terminated actor.  This is what makes the pause useful rather than
+  merely quiet: the actors panel keeps a stopped actor for 30 seconds
+  and then sweeps it away, and 30 seconds is well inside the time it
+  takes to read a supervision tree.  Paused, it stays.
+
+Nothing that happened during the pause is lost, but the two kinds of
+stream get there differently:
+
+| Streams | While paused | On resume |
+| --- | --- | --- |
+| Event stream, tracing spans, profiler | held, oldest dropped past a cap | delivered in order |
+| Overview figures, actors, cluster, mailboxes | discarded | fresh snapshot — the view jumps to now |
+
+The split is not a compromise, it is what each kind of data is.  A tail
+*is* its frames and the server keeps no past to recover them from, so
+holding them is the only way not to lose them.  A tree or a membership
+list only ever answers "what is true now", and a fresh snapshot answers
+that exactly — and more cheaply than replaying every delta.  The header
+says how many frames are being held, and names anything the cap had to
+throw away.
+
+The charts do not end up with a hole.  The server records its figures
+continuously whether or not anyone is watching, so resuming re-reads the
+window and the paused stretch fills in.
+
+Two things deliberately do **not** stop:
+
+- **The connection check.**  A node that dies while you are paused still
+  raises the *No node reachable* dialog.  A paused screen and a dead one
+  look identical, so the one you did not ask for has to say so.
+- **The server.**  The taps keep running; pausing is a property of your
+  view, not of the system being watched.  It is also why a pause costs
+  the actor system nothing extra and can be held as long as you like.
 
 ## Attaching
 
@@ -110,7 +162,7 @@ const devtoolsOptions = DevToolsOptions.create()
   .withAuth(BearerTokenAuth({ tokens: [process.env.DEVTOOLS_TOKEN!] }));
 
 const routes = concat(
-  managementRoutes(system, cluster).routes,
+  managementRoutes(system, cluster),
   path('devtools', DevTools.mount(system, devtoolsOptions)),
 );
 await system.http(8558, { host: '127.0.0.1' }).bind(routes);
@@ -167,11 +219,14 @@ client asks for:
 
 ```ts
 const devtoolsOptions = DevToolsOptions.create()
-  .withPanels({ timeTravel: false, profiler: false });
+  .withPanels({ timeTravel: false, deadLetters: false });
 ```
 
 Time travel is the one to think about first: it is the panel that
-surfaces raw persisted events.
+surfaces raw persisted events — closely followed by
+[dead letters](/observability/devtools/dead-letters/) and the
+[event stream](/observability/devtools/event-stream/), which both show
+message payloads.
 
 ## Security
 
@@ -205,6 +260,21 @@ DevTools is a debugger, and the defaults treat it as one.
   Binding to loopback is not a substitute for this. A WebSocket
   handshake is not subject to the same-origin policy, so any page in
   the developer's browser can reach `127.0.0.1`.
+- **A connected client cannot flood the tap.** Requests are answered off
+  the hub's mailbox, so one slow journal read cannot stall the other
+  tabs — which also means the mailbox is not what bounds the work. The
+  hub counts it instead: 32 requests in flight per connection and 256
+  across the tap. A request past either is refused with an `unavailable`
+  error rather than queued. The sockets are capped too, at 32
+  concurrent connections; an upgrade past that is closed with 1013
+  before it is wired up.
+
+  A panel never comes near those numbers. A client asking for thousands
+  of concurrent journal replays does, and the tap runs in the same
+  process as the actors you are debugging — so what it could starve is
+  your application, not just the debugger. See the
+  [protocol reference](/observability/devtools/protocol/) for what a
+  client should do when it is refused.
 - **The cluster side goes by the connection.** When you pass a
   `Cluster`, every node answers "how is your node doing?" over the
   cluster transport and the serving node collects the answers.  Both
@@ -234,11 +304,12 @@ const devtoolsOptions = DevToolsOptions.create()
 
 ## Try it on the examples
 
-Every example in the repository is wired for DevTools, and none of them
-pay for it unless you ask:
+The examples wired for DevTools are the ones that run until you stop
+them — the HTTP and cache services, the sharding demo, the chat and voice
+backends — and none of them pay for it unless you ask:
 
 ```bash
-bun run examples/hello-world.ts --devtools
+bun run examples/http/rest-service.ts --devtools
 ```
 
 `--devtools` works in every shell.  `DEVTOOLS=1 bun run …` does the same
@@ -246,37 +317,59 @@ on a POSIX shell, but `VAR=value command` is a parser error in
 PowerShell — there, set it separately:
 
 ```powershell
-$env:DEVTOOLS = '1'; bun run examples/hello-world.ts
+$env:DEVTOOLS = '1'; bun run examples/http/rest-service.ts
 ```
 
-Most examples are scripts that finish in a few hundred milliseconds —
-too fast to open a browser.  With DevTools enabled they park just before
-shutting down, print the URL, and wait for `Ctrl+C`, so there is
-something to look at.  Without it, their timing and output are exactly
-as before.
+That dividing line is the whole rule: an example that finishes on its own
+carries no reference to DevTools at all, so you can copy one into a
+project and run it unchanged.  It took two passes to get there, which is
+worth knowing if you remember the older wording.  The sweep that removed
+the wiring (#552) keyed on which examples had explicitly parked
+themselves before shutdown so DevTools could be opened at all —
+hello-world, the `patterns/` and `persistence/` walkthroughs, and the
+rest of the short scripts.  That left seven behind that had never parked
+themselves and only ever attached: `cluster/singleton-hello.ts`,
+`cluster/singleton-cron.ts`,
+`cluster/sharded-daemon-hello.ts`,
+`cluster/sharded-daemon-fixed-workers.ts`,
+`discovery/service-locator-cluster.ts`, `pubsub/event-bus-across-nodes.ts`
+and `management/opentelemetry-tracing.ts`.  They bound a port and logged a
+URL that was dead before a browser could open it — `singleton-hello`
+printed three such URLs and exited after about 1.3 s.  They are unwired
+now too.
 
-Multi-system examples give each system its own port, counting up from
-`--devtools-port` / `DEVTOOLS_PORT` (default `9333`) — so a three-node cluster demo is
-`9333`, `9334`, `9335`:
+Teaching those seven to stay up was the other way to close that gap, and
+it is not what happened: each one ends by leaving the cluster and
+terminating its systems, so parking afterwards would hand the browser a
+system that is already gone — and parking *instead* of the teardown would
+delete the demonstration, which in three of them is exactly that
+teardown.  For something to actually look at, reach for one of the
+services above or for a cluster node below.
+
+Each attachment takes its own port, counting up from `--devtools-port` /
+`DEVTOOLS_PORT` (default `9333`).  That counter is per process, so a
+cluster built from *separate terminals* — where every node would start at
+`9333` — takes the first free port in the range instead, the same way the
+cluster transport scans for its own:
 
 ```bash
-bun run examples/cluster/singleton-hello.ts --devtools
+bun run examples/cluster/counter-node.ts --devtools --port 9001
+bun run examples/cluster/counter-node.ts --devtools --port 9002 --seeds 127.0.0.1:9001
+bun run examples/cluster/counter-node.ts --devtools --port 9003 --seeds 127.0.0.1:9001
 ```
 
-A cluster built from *separate terminals* works the same way, even
-though each process has its own copy of that counter: the first free
-port in the range is taken, so three `bun run examples/voice/backend/main.ts
---devtools` give you `9333`, `9334` and `9335` without any flags. If
-none is free — or anything else about DevTools fails — the example logs
-a warning and starts anyway. A debugger that cannot bind is not a reason
-for the program under debug to die.
+Three terminals, one three-node cluster, and DevTools on `9333`, `9334`
+and `9335` without a single DevTools port flag — `--port` there is the
+node's *cluster* port.  If none is free — or anything else about DevTools
+fails — the example logs a warning and starts anyway. A debugger that
+cannot bind is not a reason for the program under debug to die.
 
 The bind interface is `127.0.0.1`.  `--devtools-host` / `DEVTOOLS_HOST`
 changes it — the flag for when the browser is not on the machine running
 the example: a container, a VM, a WSL or remote dev box.
 
 ```bash
-bun run examples/hello-world.ts --devtools --devtools-host 0.0.0.0
+bun run examples/http/rest-service.ts --devtools --devtools-host 0.0.0.0
 ```
 
 Typing a non-loopback host there is the deliberate act
@@ -284,14 +377,10 @@ Typing a non-loopback host there is the deliberate act
 `allowRemote` and DevTools binds — and warns that it is reachable
 without auth — instead of refusing and leaving you to guess why.  That
 trade is fine for an example and for nothing else: anything with real
-state in it wants `auth` or an `ipAllowlist` in front of the port.  A
-wildcard bind reports itself back as a loopback URL, since
-`http://0.0.0.0:9333` is not an address a browser can open.
+state in it wants `auth` or an `ipAllowlist` in front of the port.
 
-Long-running examples (the chat and voice backends, the HTTP services)
-do not park — they already run until you stop them.  The wiring lives
-in `examples/devtools.ts`, which is about thirty lines if you want to
-copy the pattern into your own app.
+The wiring lives in `examples/devtools.ts` if you want to copy the
+pattern into your own app.
 
 ## When nothing answers
 
@@ -328,9 +417,26 @@ it and never disables it.
 
 ## Working on the UI
 
-The UI is vanilla TypeScript bundled by `Bun.build` and embedded into
-the published package, so it needs no UI framework at runtime and no
-network access.  To work on a panel:
+The UI is an Angular application whose charts are drawn by Apache ECharts,
+built by its own toolchain and embedded into the published package as a
+gzipped bundle.  Both are build-time dependencies only: neither appears in
+`actor-ts`'s `dependencies` or `peerDependencies`, nothing a consumer installs
+carries them, and the served page loads nothing over the network.  So the UI
+still needs no framework at runtime and no network access — what changed is
+how the bundle is produced, not what ships.
+
+ECharts is loaded lazily, in a chunk of its own, so opening a panel that draws
+nothing costs none of it.
+
+That toolchain is a separate install, deliberately not a workspace, which is
+why a fresh clone can typecheck, test and smoke without it — the built bundle
+is committed.  Install it once before working on the UI:
+
+```bash
+bun run ui:install
+```
+
+To work on a panel:
 
 ```bash
 bun run build:ui -- --dev --watch

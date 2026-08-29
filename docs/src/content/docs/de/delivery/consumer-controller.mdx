@@ -8,14 +8,20 @@ Zustellung.  Er:
 
 - Empfängt `Delivery<T>`-Envelopes von einem oder mehreren
   `ProducerController`n.
-- Dedupliziert Duplikate (gleiches `producerId` + `seq`).
+- Dedupliziert Duplikate (gleiches `producerId` + gleiche Producer-Inkarnation
+  + gleiche `seq`) und hält diese Buchführung dabei auf einem begrenzten
+  Budget — höchstens `maxProducers` Producer, und Einträge, die
+  `producerIdleTtlMs` lang untätig waren, werden weggeräumt.
+- Weist ein fehlerhaftes Envelope ab — ohne `replyTo`, mit einer `seq`, die
+  keine positive Safe-Integer ist, oder mit einem leeren bzw. zu langen
+  Identifier — als Dead Letter, ohne den Handler zu rufen und ohne zu ACKen.
 - Ruft eine User-**Handler-Funktion** mit dem Message-Body auf.
 - ACKt **automatisch** an den Producer zurück, sobald der
   Handler resolved; wirft der Handler, kein ACK — der Producer
   retransmittiert.
 
 ```ts
-import { ConsumerController } from 'actor-ts/delivery';
+import { ConsumerController, ConsumerControllerOptions } from 'actor-ts/delivery';
 
 const consumer = system.spawn(
   () => new ConsumerController<OrderEvent>({
@@ -46,20 +52,88 @@ flowchart LR
 ```ts
 type ConsumerControllerOptionsType<T> = {
   handler: (body: T) => void | Promise<void>;
+  maxProducers?: number;         // default 1024,   Infinity = no cap
+  producerIdleTtlMs?: number;    // default 300000, Infinity = no sweep
 };
 ```
 
-Die einzige Einstellung ist der Handler.  Den Dedup-State pro
-Producer hält der Controller intern — Du konfigurierst weder
-eine Buffer-Größe noch eine Consumer-ID.
+| Option | Wirkung |
+| --- | --- |
+| `handler` | Wird für jeden neuen (nicht duplizierten) Message-Body aufgerufen.  Pflichtfeld. |
+| `maxProducers` | Wie viele Producer die Dedup-Map gleichzeitig hält.  Darüber hinaus wird der Eintrag des am längsten nicht genutzten Producers verdrängt. |
+| `producerIdleTtlMs` | Wie lange der Eintrag eines Producers ohne Delivery von ihm überlebt.  Ein Hintergrund-Sweep räumt die abgelaufenen weg. |
+
+Du konfigurierst weiterhin weder eine Buffer-Größe noch eine Consumer-ID, und
+die Grenzen dafür, was ein eingehendes *Envelope* enthalten darf, bleiben nicht
+konfigurierbar: sie existieren, um Wire-Input zu begrenzen, und ein Limit, das
+der Sender anheben könnte, ist kein Limit.  Die beiden Optionen oben sind eine
+andere Art von Grenze — ein Budget, das dieser Consumer auf seinen eigenen Heap
+anwendet, und genau so etwas sollte ein Betreiber einstellen können.
+
+```ts
+const consumerOptions = ConsumerControllerOptions.create<OrderEvent>()
+  .withHandler(async (order) => { await processOrder(order); })
+  .withMaxProducers(64)
+  .withProducerIdleTtlMs(60_000);
+
+const consumer = system.spawn(
+  () => new ConsumerController<OrderEvent>(consumerOptions),
+  'orders-consumer',
+);
+```
+
+Ein einfaches Objekt funktioniert überall dort, wo auch der Builder
+funktioniert — `{ handler, maxProducers }` — und ist die Kurzform, die der Rest
+dieser Seite verwendet.
+
+### Warum der Dedup-State ein Budget hat
+
+Der Schlüssel der Map ist die `producerId` aus dem Envelope, und die wählt
+der **Sender**.  Früher kostete jede einzelne davon einen permanenten Eintrag,
+die Größe der Map war also eine Funktion davon, wie viele IDs jemals angekommen
+waren, und nicht davon, wie viele Producer es gibt.  Das ist ein Leck, ganz ohne
+Angreifer: ein `ProducerController`, dessen Aufrufer `producerId` nicht setzt,
+zieht pro Konstruktion eine frische Zufalls-ID — ein langlebiger Consumer, den
+kurzlebige Producer bedienen, sammelt also einen Eintrag pro Producer an und
+gibt keinen wieder her.  Über einen Cluster-Port ist derselbe Pfad ein
+Verstärker: ein behaltener Eintrag pro Delivery.
+
+Verdrängung ist nicht gratis — deshalb warnt der Controller darüber, statt
+Fenster stillschweigend zu verlieren (getaktet auf höchstens eine Zeile pro
+Minute, damit eine Flut aus einem begrenzten Heap kein unbegrenztes Log macht).
+Einen Eintrag zu verwerfen verwirft die Duplikat-Unterdrückung dieses Producers,
+ein danach eintreffender Retransmit lässt Deinen Handler also ein zweites Mal
+laufen.  Dieses Protokoll ist At-least-once und erlaubt das ohnehin; was es
+nicht erlaubt hat, war unbegrenztes Wachstum.
+
+`maxProducers` gibt nur dann etwas frei, wenn ein *neuer* Producer einen Slot
+braucht — dafür gibt es zusätzlich `producerIdleTtlMs`: ein Consumer, der einen
+Schwall von Producern gesehen hat und danach still wurde, hat nichts, was eine
+Verdrängung auslöst, und nur das Alter gibt diese Einträge wieder frei.  Halte
+die TTL deutlich über dem `resendTimeout` Deiner Producer (Default 500 ms) — ein
+Eintrag, der verworfen wird, während sein Producer dieselbe Seq noch
+retransmittiert, kostet einen doppelten Handler-Aufruf.  Der Sweep läuft im
+Takt der TTL selbst, ein untätiger Eintrag verschwindet also nach ein bis zwei
+davon.
+
+`consumer.trackedProducers` liefert die aktuelle Anzahl der Einträge.  Sie
+sollte nahe an der Zahl der Producer liegen, die tatsächlich mit diesem
+Consumer sprechen; steigt sie mit der Nachrichtenzahl, ist genau das das
+Symptom, das dieses Budget verhindern soll.
 
 ## Handler-Kontrakt
 
 Der Controller ruft `handler(body)` einmal pro *neuem*
-`(producerId, seq)`-Paar auf.  Sobald der Handler resolved,
+`(producerId, incarnation, seq)`-Tripel auf.  Sobald der Handler resolved,
 schickt der Controller ein ACK zurück an den Producer (via
 `Delivery.replyTo`), und der Producer gibt seinen In-Flight-Slot
 frei.
+
+Die Inkarnation ist es, die einen *neu gestarteten* Producer aus dem
+Dedup-Fenster heraushält: er verwendet seine Sequenznummern wieder, seine
+Inkarnation aber nicht — seine Nachrichten sind also neu und keine Duplikate.
+Siehe *Restart und die Producer-Inkarnation* auf der Seite
+[ProducerController](/de/delivery/producer-controller/).
 
 ```ts
 new ConsumerController<OrderEvent>({
@@ -90,11 +164,11 @@ schickt dieselbe Seq erneut.  Das ist der einzige
 
 ### Duplikat-Behandlung läuft automatisch
 
-Wenn dasselbe `(producerId, seq)` erneut ankommt (z. B. weil der
+Wenn dasselbe `(producerId, incarnation, seq)` erneut ankommt (z. B. weil der
 Producer retransmittiert hat, bevor unser ACK ihn erreicht hat),
 überspringt der Controller den Handler und schickt einfach
 nochmal das ACK.  Kein Applikations-Code nötig — der Controller
-hält `contiguous` und Out-of-order-Seqs pro Producer intern fest.
+hält `contiguous` und Out-of-order-Seqs pro Producer-Inkarnation intern fest.
 
 Für **fachliche Idempotenz** (z. B. "eine Kreditkarte nicht
 doppelt belasten, auch nicht über Consumer-Neustarts hinweg")
@@ -119,9 +193,12 @@ wurden.  Jede neu ankommende Seq wird gegen beides geprüft —
 Duplikate überspringen den Handler und re-ACKen; neue Seqs
 führen den Handler aus und updaten danach den State.
 
-Es gibt keine feste Buffer-Größe und keine stillen Drops — der
-Producer retransmittiert ungeACKte Nachrichten weiter, bis der
-Handler resolved und das ACK ankommt.
+Es gibt keine feste Buffer-Größe für Nachrichten und keinen stillen Drop einer
+solchen — der Producer retransmittiert ungeACKte Nachrichten weiter, bis der
+Handler resolved und das ACK ankommt.  Begrenzt ist die Dedup-Buchführung
+dahinter: siehe [Warum der Dedup-State ein Budget
+hat](#warum-der-dedup-state-ein-budget-hat).  Ein verlorener Eintrag verwirft
+nie eine Nachricht, er kostet ein Duplikat.
 
 ## Failure-Semantik
 
@@ -157,9 +234,21 @@ const p2 = system.spawnAnonymous(() =>
 Jeder Producer pflegt seine eigene Seq.  Der Consumer
 dedupliziert **pro Producer** automatisch — er hält einen
 separaten `(contiguous, above)`-Dedup-State pro `producerId`,
-sodass die Seq-Räume zweier Producer nicht kollidieren.
+sodass die Seq-Räume zweier Producer nicht kollidieren.  Der Eintrag hält
+außerdem fest, welche *Inkarnation* dieser `producerId` die Zähler beschreiben —
+ein Delivery einer neuen Inkarnation ersetzt ihn, statt einen zweiten Eintrag
+anzulegen.  Damit bleibt ein neu startender Producer bei einem Eintrag statt
+einem pro Neustart, zum Preis eines möglichen weiteren Duplikats: ein
+nachlaufendes Delivery der ausscheidenden Inkarnation setzt das Fenster erneut
+zurück, ein paar schon behandelte Seqs können um den Wechsel herum also zweimal
+laufen.
 
-Dein Handler sieht nur den Body — `producerId` und `seq` sind
+Wie viele Einträge es insgesamt gibt, ist Sache von `maxProducers` und nicht der
+Inkarnation — bei mehr verschiedenen Producern als das werden die am längsten
+nicht gehörten verdrängt.  Hebe den Wert an, wenn ein Consumer legitim mehr
+Producer bedient als die voreingestellten 1 024.
+
+Dein Handler sieht nur den Body — `producerId`, `incarnation` und `seq` sind
 die Sache des Controllers.  Falls Du sie für Business-Logik
 brauchst, persistiere einen Wrapper, der sie durch Deine
 Verarbeitungs-Pipeline trägt.

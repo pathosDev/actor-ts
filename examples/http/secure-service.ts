@@ -86,11 +86,7 @@ async function main(): Promise<void> {
   const binding = await system.http(8080, { host: '127.0.0.1' }).bind(routes);
   system.log.info(`secure-service on http://${binding.host}:${binding.port}/`);
 
-  process.on('SIGINT', async () => {
-    await binding.unbind();
-    await system.terminate();
-    process.exit(0);
-  });
+  await system.runUntilTerminated();
 }
 
 void main();

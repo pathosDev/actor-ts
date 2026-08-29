@@ -142,6 +142,42 @@ S3 cost.  Right for:
 - **Small single-node deployments** — if you specifically want
   the object-storage interface without S3.
 
+The root directory is the whole of this backend's world.  A key
+carrying `..`, an absolute prefix or a NUL byte is rejected
+outright, and every operation additionally canonicalises the path
+it is about to touch — so a symlink sitting inside the root and
+pointing out of it is refused rather than followed.  The root
+*itself* may be a symlink: each operation resolves it and measures
+containment against the result, so `/var/lib/app -> /mnt/data`
+works normally.
+
+"The path it is about to touch" means the object names: the key
+itself, the directories above it, and its `.meta.json` sidecar.
+The key and its parents are checked for different reasons, and
+neither check covers the other — `rename` never follows a link at
+the final component, so a linked *parent* is what moves where a
+body lands, while `get` and `put`'s compare-and-swap both open the
+key with `readFile`, which does follow one.
+
+Three limits are worth knowing, because the alternative is
+assuming more than the check delivers.  It reads the filesystem
+and then acts on it, so it refuses a link that is already in place
+but cannot win a race against one planted in between — portable
+`O_NOFOLLOW` is not reachable through `node:fs`.  It confines the
+backend's *own* operations; it is not a sandbox around a directory
+other local processes may write to.  If untrusted users can create
+entries inside the storage root, that is already the larger
+problem.
+
+And it does not cover the per-key lock file.  Taking the lock is
+an exclusive create, which refuses a link rather than following
+it — but the stale-lock recovery that runs once the acquisition
+timeout is exhausted `stat`s that name, and `stat` does follow
+one.  So a link planted at `<key>.lock` lets a file outside the
+root decide whether the lock is treated as abandoned, and a
+*dangling* link there keeps `put` and `delete` on that one key
+retrying instead of returning.
+
 ### S3
 
 ```ts
@@ -191,6 +227,7 @@ new S3ObjectStorageBackend(s3ObjectStorage3Options);
 | Compression (gzip / zstd) | [Compression](/persistence/object-storage/compression/) |
 | Encryption at rest (AES-GCM) | [Encryption](/persistence/object-storage/encryption/) |
 | Body integrity (HMAC-SHA256) | [Body integrity](/persistence/object-storage/encryption/#body-integrity-hmac) |
+| Storage-key binding + rollback protection | [Binding a body to its key](/persistence/object-storage/encryption/#binding-a-body-to-its-key) |
 | Master-key rotation | [Key rotation](/persistence/object-storage/key-rotation/) |
 | Per-actor compression / encryption policies | [Per-actor policies](/persistence/object-storage/per-actor-policies/) |
 | Snapshot store backend | [Snapshot store backend](/persistence/object-storage/snapshot-store-backend/) |
@@ -206,6 +243,15 @@ Rough numbers for S3:
 - **Delete**: 30-50 ms.
 
 Filesystem backend: sub-millisecond.
+
+A LIST on the filesystem backend reads only the directory its
+prefix names — everything up to the prefix's last `/` — so it
+costs the matched subtree, not the whole storage root.  That is
+what keeps a per-`persistenceId` prefix such as
+`snapshots/<pid>/` sub-millisecond however many other entities
+share the root.  A prefix with no `/` in it (`snapshots`) has no
+directory to narrow to and still walks everything, so prefer
+keys with a per-entity directory segment.
 
 Object-storage is slower than SQLite / Cassandra for single
 operations.  Compensate with:

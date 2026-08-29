@@ -9,10 +9,12 @@ import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { hashShardId } from '../../../../../src/cluster/sharding/ShardAllocator.js';
 import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
+import { AuthenticatedShardingMessage } from '../../../../../src/cluster/sharding/ShardingProtocol.js';
 import type { ShardingMessage } from '../../../../../src/cluster/sharding/ShardingProtocol.js';
 import { regionSegments } from '../../../../util/SystemPaths.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /**
  * `completeHandOff` used to clear `shardHomes` without ever replaying the
@@ -25,6 +27,16 @@ import type { ActorRef } from '../../../../../src/ActorRef.js';
  * by provoking a rebalance: it is the same message the coordinator sends, and
  * it makes the buffering window deterministic instead of a race against the
  * rebalance timer.
+ *
+ * Since #584 "the same message the coordinator sends" includes its wrapper.  A
+ * region honours a coordinator directive only inside an
+ * {@link AuthenticatedShardingMessage} naming the node it believes hosts the
+ * coordinator, and `ShardCoordinator.replyTo` builds exactly that on its local
+ * leg — so a bare `tell` here would no longer be the coordinator's message, it
+ * would be the *attacker's*, and the region would refuse it.  Both cases below
+ * would then still go green while testing nothing, which is why each one now
+ * also asserts on the entity: it must be torn down and re-created (case 1), or
+ * torn down and left down (case 2).  Neither holds if the handoff was refused.
  */
 
 type WorkCommand = { id: string; kind: 'work' };
@@ -36,8 +48,11 @@ const NUM_SHARDS = 4;
 const ENTITY_ID = 'user-1';
 
 let delivered = 0;
+let created = 0;
 
 class Entity extends Actor<Command> {
+  override preStart(): void { created++; }
+
   override onReceive(message: Command): void {
     match(message)
       .with({ kind: 'work' }, () => this.onWork())
@@ -47,16 +62,17 @@ class Entity extends Actor<Command> {
   private onWork(): void { delivered++; }
 }
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(predicate: () => boolean, timeoutMs = 5_000, stepMs = 10): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await sleep(stepMs);
-  }
-  if (!predicate()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418), which names the awaited state in its timeout message
+ * and — unlike the deadline loop it replaces — cannot fall through silently.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 5_000,
+  stepMs = 10,
+  label = 'the awaited hand-off/buffer state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: stepMs, label });
 
 type Node = {
   system: ActorSystem;
@@ -94,10 +110,27 @@ async function startNode(systemName: string, port: number): Promise<Node> {
 }
 
 /** The region actor itself, so a test can hand it a coordinator-side message. */
-function regionRef(node: Node): ActorRef<ShardingMessage> {
+function regionRef(node: Node): ActorRef<ShardingMessage | AuthenticatedShardingMessage> {
   const resolved = node.system._resolvePath(regionSegments(node.system.name, TYPE_NAME));
   if (resolved.isNone()) throw new Error('region actor not found');
-  return resolved.value as ActorRef<ShardingMessage>;
+  return resolved.value as ActorRef<ShardingMessage | AuthenticatedShardingMessage>;
+}
+
+/**
+ * Hand the region a directive the way its coordinator would.  Single node, so
+ * the coordinator's node — the only origin the region accepts — is this one.
+ */
+function tellAsCoordinator(node: Node, message: ShardingMessage): void {
+  regionRef(node).tell(new AuthenticatedShardingMessage(node.cluster.selfAddress, message));
+}
+
+/** Whether the entity actor is currently materialised under its shard. */
+function entityIsUp(node: Node, shardId: number): boolean {
+  return node.system._resolvePath([
+    ...regionSegments(node.system.name, TYPE_NAME),
+    `shard-${shardId}`,
+    `entity-${ENTITY_ID}`,
+  ]).isSome();
 }
 
 afterEach(async () => {
@@ -107,6 +140,7 @@ afterEach(async () => {
     running = null;
   }
   delivered = 0;
+  created = 0;
 });
 
 describe('ClusterSharding — handoff buffer (#893)', () => {
@@ -120,13 +154,16 @@ describe('ClusterSharding — handoff buffer (#893)', () => {
     // Begin the handoff, then queue behind it. The region is single-threaded,
     // so by the time it reads this second message the shard is already marked
     // `'handing-off'` and the message can only be buffered.
-    regionRef(node).tell({ kind: 'sharding.HandOff', shardId });
+    tellAsCoordinator(node, { kind: 'sharding.HandOff', shardId });
     node.region.tell({ id: ENTITY_ID, kind: 'work' });
 
     // Single node, so the coordinator hands the shard straight back — the only
     // thing that can keep this message from arriving is nobody replaying it.
     await waitFor(() => delivered === 2);
     expect(delivered).toBe(2);
+    // A second `preStart` is what makes this a replay and not a straight
+    // delivery: the handoff really did take the entity down first.
+    expect(created).toBe(2);
   });
 
   test('a handoff with nothing buffered asks for nothing', async () => {
@@ -137,12 +174,20 @@ describe('ClusterSharding — handoff buffer (#893)', () => {
 
     node.region.tell({ id: ENTITY_ID, kind: 'work' });
     await waitFor(() => delivered === 1);
+    expect(entityIsUp(node, shardId)).toBe(true);
 
-    regionRef(node).tell({ kind: 'sharding.HandOff', shardId });
+    tellAsCoordinator(node, { kind: 'sharding.HandOff', shardId });
+    await waitFor(() => !entityIsUp(node, shardId));
+    // An absence: nothing was queued, so nothing may be delivered.  Both counts
+    // already hold at t=0 and a poll on them would return immediately.
     await sleep(200);
 
     // Nothing was queued, so nothing may be delivered — and the shard stays
     // wherever the coordinator put it.
     expect(delivered).toBe(1);
+    expect(created).toBe(1);
+    // The entity going down and staying down is what says the handoff ran and
+    // then genuinely asked for nothing back.
+    expect(entityIsUp(node, shardId)).toBe(false);
   });
 });

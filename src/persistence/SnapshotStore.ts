@@ -1,5 +1,6 @@
 import type { Snapshot } from './JournalTypes.js';
 import type { PersistenceOptions } from './PersistenceOptions.js';
+import type { StorageLocality } from './StorageLocality.js';
 import type { Option } from '../util/Option.js';
 
 /**
@@ -13,6 +14,26 @@ export interface SnapshotStore {
    * applied.  Optional `options` carry per-call preferences from the
    * caller (e.g. compression/encryption set on the actor).  Stores that
    * cannot honour them silently ignore the field.
+   *
+   * ### Retention is best-effort; the write is not
+   *
+   * A store that prunes on save (`keepN` and friends) MUST NOT let a
+   * failing prune fail the save.  Once the snapshot itself is durable,
+   * `save` resolves — the retention pass runs afterwards and its errors
+   * are swallowed.
+   *
+   * The two operations have opposite failure semantics, which is why
+   * they cannot share a `try`.  A failed write means the caller's
+   * snapshot does not exist and retrying is correct.  A failed prune
+   * means one row too many exists — harmless, self-correcting on the
+   * next save, and invisible to `loadLatest`.  Reporting the second as
+   * the first tells the caller to retry a write that already succeeded,
+   * and an actor that treats a snapshot failure as fatal then dies over
+   * a housekeeping error.
+   *
+   * Implementations must therefore run the prune *outside* the write's
+   * error handling.  `save` is still permitted to reject for a genuine
+   * write failure, and only for that.
    */
   save<S = unknown>(
     persistenceId: string,
@@ -34,6 +55,20 @@ export interface SnapshotStore {
 
   /** Delete snapshots up to and including `toSeq`.  Useful for pruning. */
   delete(persistenceId: string, toSeq: number): Promise<void>;
+
+  /**
+   * Where this store's data lives relative to cluster nodes — see
+   * {@link StorageLocality}.  Optional; absence means unknown and keeps the
+   * cluster's storage advisory silent (#1356).
+   */
+  readonly storageLocality?: StorageLocality;
+
+  /**
+   * Identity of the database behind this store, minted on first contact and
+   * persisted in the database itself — see {@link Journal.storageIdentity}
+   * for the full semantics (#1358).  Optional; absence means unknown.
+   */
+  storageIdentity?(): Promise<string>;
 
   /** Best-effort teardown. */
   close?(): Promise<void>;

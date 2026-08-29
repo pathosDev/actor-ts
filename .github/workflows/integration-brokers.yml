@@ -23,7 +23,9 @@ on:
     paths:
       - 'src/**'
       - 'tests/integration/brokers/**'
+      - 'scripts/integration-compose.mjs'
       - 'package.json'
+      - '.bun-version'
       - 'bun.lock'
       - 'tsconfig.json'
       - '.github/workflows/integration-brokers.yml'
@@ -32,7 +34,9 @@ on:
     paths:
       - 'src/**'
       - 'tests/integration/brokers/**'
+      - 'scripts/integration-compose.mjs'
       - 'package.json'
+      - '.bun-version'
       - 'bun.lock'
       - 'tsconfig.json'
       - '.github/workflows/integration-brokers.yml'
@@ -59,30 +63,40 @@ jobs:
       # in the PR view.
       fail-fast: false
       matrix:
-        # `dir` is the directory under tests/integration/brokers/
-        # (also the docker-compose filename suffix).  `npm` is the
-        # `test:integration:<npm>` script name — usually the same
-        # as `dir`, except redis-streams uses the short `redis`
-        # script name.  `image` is just the display label.
+        # `dir` is the directory under tests/integration/brokers/, which is
+        # also the docker-compose filename suffix and the name the driver
+        # takes.  There used to be a second `npm` column mapping it to a
+        # per-suite script name, needed only because redis-streams ran through
+        # a short `redis` script; `scripts/integration-compose.mjs` takes the
+        # directory name directly, so the mapping is gone (#559).
+        #
+        # `image` is the display label — the one thing nothing can derive, and
+        # the reason this list still exists.  It is not a second source of
+        # truth: `tests/unit/ci/IntegrationBrokerSuites.test.ts` fails when
+        # this matrix and the tree disagree in either direction, so a backend
+        # added without a leg here is a red test rather than a suite that
+        # silently never runs.
         broker:
-          - { dir: s3,            npm: s3,    image: "MinIO" }
-          - { dir: mqtt,          npm: mqtt,  image: "Mosquitto" }
-          - { dir: kafka,         npm: kafka, image: "Redpanda" }
-          - { dir: amqp,          npm: amqp,  image: "RabbitMQ" }
-          - { dir: nats,          npm: nats,  image: "NATS" }
-          - { dir: redis-streams, npm: redis, image: "Redis Streams" }
-          - { dir: grpc,          npm: grpc,  image: "gRPC echo" }
-          - { dir: k8s,           npm: k8s,   image: "k3s" }
-          - { dir: postgres,      npm: postgres, image: "PostgreSQL" }
-          - { dir: mariadb,       npm: mariadb,  image: "MariaDB" }
-          - { dir: libsql,        npm: libsql,   image: "libSQL (sqld)" }
-          - { dir: mssql,         npm: mssql,    image: "SQL Server 2022" }
-          - { dir: mongodb,       npm: mongodb,  image: "MongoDB" }
-          - { dir: dynamodb,      npm: dynamodb, image: "DynamoDB Local" }
+          - { dir: s3,            image: "MinIO" }
+          - { dir: mqtt,          image: "Mosquitto" }
+          - { dir: kafka,         image: "Redpanda" }
+          - { dir: amqp,          image: "RabbitMQ" }
+          - { dir: nats,          image: "NATS" }
+          - { dir: redis-streams, image: "Redis Streams" }
+          - { dir: grpc,          image: "gRPC echo" }
+          - { dir: k8s,           image: "k3s" }
+          - { dir: postgres,      image: "PostgreSQL" }
+          - { dir: mariadb,       image: "MariaDB" }
+          - { dir: libsql,        image: "libSQL (sqld)" }
+          - { dir: mssql,         image: "SQL Server 2022" }
+          - { dir: mongodb,       image: "MongoDB" }
+          - { dir: cassandra,     image: "Cassandra" }
+          - { dir: dynamodb,      image: "DynamoDB Local" }
+          - { dir: email,         image: "GreenMail (SMTP + IMAP)" }
           # Postgres-wire certifications (#401): the existing Postgres
           # stores against a different server, not new backends.
-          - { dir: cockroachdb,   npm: cockroachdb, image: "CockroachDB (pg wire)" }
-          - { dir: yugabytedb,    npm: yugabytedb,  image: "YugabyteDB (pg wire)" }
+          - { dir: cockroachdb,   image: "CockroachDB (pg wire)" }
+          - { dir: yugabytedb,    image: "YugabyteDB (pg wire)" }
 
     name: ${{ matrix.broker.image }} (${{ matrix.broker.dir }})
 
@@ -90,11 +104,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Bun
-        # Only needed to expose `bun run test:integration:<broker>`
-        # — the actual scenarios run INSIDE the Docker containers.
+        # Only needed to run the compose driver — the actual scenarios
+        # run INSIDE the Docker containers.
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: latest
+          bun-version-file: .bun-version
 
       # Docker is preinstalled on `ubuntu-latest`.  Surface the
       # version in the log so a future Docker-on-Actions outage
@@ -103,20 +117,20 @@ jobs:
         run: docker version
 
       - name: Run ${{ matrix.broker.image }} suite
-        # `--exit-code-from runner` propagates the runner's exit
-        # status from inside the container, so a failing scenario
-        # turns this step red.
-        run: bun run test:integration:${{ matrix.broker.npm }}
+        # The driver passes `--exit-code-from runner`, which propagates
+        # the runner's exit status from inside the container, so a
+        # failing scenario turns this step red.
+        run: bun run test:integration:broker ${{ matrix.broker.dir }}
 
       - name: Capture container logs on failure
         if: failure()
-        run: |
-          # Dump every container's stdout/stderr so a flaky scenario
-          # is debuggable from the workflow logs alone — no need to
-          # re-run locally and pray for repro.  JSON-formatted by
-          # JsonLogger where applicable.
-          docker compose -f tests/integration/brokers/${{ matrix.broker.dir }}/docker-compose.${{ matrix.broker.dir }}.yml logs --no-color || true
+        # Dump every container's stdout/stderr so a flaky scenario is
+        # debuggable from the workflow logs alone — no need to re-run
+        # locally and pray for repro.  JSON-formatted by JsonLogger where
+        # applicable.  Through the driver so the compose path is built in
+        # exactly one place.
+        run: bun scripts/integration-compose.mjs ${{ matrix.broker.dir }} --logs || true
 
       - name: Tear down
         if: always()
-        run: bun run test:integration:${{ matrix.broker.npm }}:teardown
+        run: bun run test:integration:broker:teardown ${{ matrix.broker.dir }}

@@ -207,10 +207,40 @@ ohnehin publiziert: dieselben Events, die schon die Metriken
 
 ## Ausprobieren
 
+`examples/cluster/counter-node.ts` ist die Sharding-Demo, und sie läuft,
+bis du sie stoppst — genau das brauchen beide Panels:
+
 ```bash
-bun run examples/cluster/singleton-hello.ts --devtools
+bun run examples/cluster/counter-node.ts --devtools --port 9001
 ```
 
-Jedes Example ist für DevTools verdrahtet; ein Drei-Knoten-Cluster-Demo
-gibt dir drei Ports ab `9333`. Details im
+Öffne `http://127.0.0.1:9333`. Der Baum füllt sich unter
+`/system/cluster/sharding/region-counter` — ein `Shard` je Shard, den der
+Knoten hält, darunter jeweils eine `CounterEntity` — Knoten für Knoten,
+während der eigene Timer des Examples nacheinander acht Entity-IDs
+anspricht. `/user` bleibt hier leer: Sharded Entities hostet das
+Sharding-Subsystem, nicht dein Guardian. Cluster zeigt einen Ring mit
+einem Mitglied, diesem Knoten als Leader.
+
+Starte einen zweiten und dritten Knoten, damit es etwas umzuverteilen
+gibt:
+
+```bash
+bun run examples/cluster/counter-node.ts --devtools --port 9002 --seeds 127.0.0.1:9001
+bun run examples/cluster/counter-node.ts --devtools --port 9003 --seeds 127.0.0.1:9001
+```
+
+Sie nehmen die nächsten freien DevTools-Ports, `9334` und `9335` — alle
+drei Bäume sind also gleichzeitig offen. Das Interessante ist dann, einen
+davon zu killen: Beobachte, wie seine Shards unter den Überlebenden
+wieder auftauchen. Die Flags stehen im
 [Überblick](/de/observability/devtools/overview/).
+
+Die meisten Examples sind **nicht** für DevTools verdrahtet: Der Harness
+steckt nur in denen, die laufen, bis du sie stoppst. `--devtools` wird in
+einem Snippet, das von selbst fertig wird, deshalb gar nicht gelesen — es
+bindet keinen Port mehr, den du ohnehin nicht rechtzeitig erreichst.
+`cluster/singleton-hello.ts` und sechs weitere waren bis vor Kurzem die
+Ausnahme; der
+[Überblick](/de/observability/devtools/overview/#an-den-examples-ausprobieren)
+hat diese Vorgeschichte und die vollständige Menge.

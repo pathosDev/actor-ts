@@ -20,6 +20,7 @@ import type { Cluster } from './Cluster.js';
  */
 export class ClusterExtension implements Extension {
   private cluster: Cluster | null = null;
+  private readonly registrationListeners: Array<(cluster: Cluster) => void> = [];
 
   /** The joined cluster, or `None` on a system that never joined one. */
   get(): Option<Cluster> {
@@ -37,6 +38,20 @@ export class ClusterExtension implements Extension {
    */
   _register(cluster: Cluster): void {
     this.cluster = cluster;
+    for (const listener of [...this.registrationListeners]) listener(cluster);
+  }
+
+  /**
+   * @internal Observe every future registration — including the rollback
+   * re-register of a failed join and the fresh instance of a rejoin.  The
+   * storage advisory (#1356) uses this because a `PersistentActor` may
+   * resolve its stores before any cluster exists, and `_register` runs
+   * *before* `_start` reads the seed list, so a listener must evaluate the
+   * cluster lazily rather than snapshot it here.  Listeners run inside
+   * `Cluster.join` and must not throw.
+   */
+  _onRegister(listener: (cluster: Cluster) => void): void {
+    this.registrationListeners.push(listener);
   }
 
   /**

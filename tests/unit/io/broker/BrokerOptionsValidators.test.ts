@@ -3,6 +3,7 @@ import { OptionsError } from '../../../../src/util/OptionsValidator.js';
 import { KafkaOptionsValidator, type KafkaOptionsType } from '../../../../src/io/broker/KafkaOptions.js';
 import { AmqpOptionsValidator, type AmqpOptionsType } from '../../../../src/io/broker/AmqpOptions.js';
 import { RedisStreamsOptionsValidator, type RedisStreamsOptionsType } from '../../../../src/io/broker/RedisStreamsOptions.js';
+import { MqttOptionsValidator, type MqttOptionsType } from '../../../../src/io/broker/MqttOptions.js';
 import { NatsOptionsValidator, type NatsOptionsType } from '../../../../src/io/broker/NatsOptions.js';
 import { JetStreamOptionsValidator, type JetStreamOptionsType } from '../../../../src/io/broker/JetStreamOptions.js';
 import { JetStreamKeyValueOptionsValidator, type JetStreamKeyValueOptionsType } from '../../../../src/io/broker/JetStreamKeyValueOptions.js';
@@ -11,6 +12,9 @@ import { SseOptionsValidator, type SseOptionsType } from '../../../../src/io/bro
 import { TcpSocketOptionsValidator, type TcpSocketOptionsType } from '../../../../src/io/broker/TcpSocketOptions.js';
 import { UdpSocketOptionsValidator, type UdpSocketOptionsType } from '../../../../src/io/broker/UdpSocketOptions.js';
 import { GrpcClientOptionsValidator, type GrpcClientOptionsType } from '../../../../src/io/broker/GrpcClientOptions.js';
+import { EmailBridgeOptionsValidator, type EmailBridgeOptionsType } from '../../../../src/io/broker/EmailBridgeOptions.js';
+import type { EmailMessage } from '../../../../src/io/broker/EmailBridgeActor.js';
+import type { ActorRef } from '../../../../src/ActorRef.js';
 
 // Direct validator tests. The optionsValidator() hook is proven to fire in
 // preStart end-to-end by the MqttOptions integration test; here we exercise
@@ -34,6 +38,23 @@ describe('BrokerOptionsValidator — common broker fields (via Kafka)', () => {
 
   test('allows reconnect.maxAttempts = Infinity (retry forever)', () => {
     expect(() => check({ ...ok, reconnect: { maxAttempts: Infinity } })).not.toThrow();
+  });
+
+  // #652 — the jitter fraction is bounded here so a nonsensical value is
+  // rejected at construction rather than producing an absurd delay during
+  // the outage that triggers the reconnect.
+  test('rejects reconnect.randomFactor outside [0, 1]', () => {
+    for (const randomFactor of [-0.1, 1.5, Number.NaN]) {
+      expect(
+        () => check({ ...ok, reconnect: { randomFactor } }),
+        `randomFactor=${randomFactor} was accepted`,
+      ).toThrow(/reconnect\.randomFactor/);
+    }
+  });
+
+  test('accepts reconnect.randomFactor at both ends of the band', () => {
+    expect(() => check({ ...ok, reconnect: { randomFactor: 0 } })).not.toThrow();
+    expect(() => check({ ...ok, reconnect: { randomFactor: 1 } })).not.toThrow();
   });
 
   test('rejects circuitBreaker.failureThreshold < 1', () => {
@@ -184,6 +205,16 @@ describe('SseOptionsValidator', () => {
   test('rejects a non-http url', () => {
     expect(() => check({ url: 'ws://host/events' })).toThrow(OptionsError);
   });
+
+  // #753 — `0` is the documented "off" for both deadlines, so the rule has to
+  // be non-negative rather than positive: rejecting `0` would leave a
+  // HOCON-set timeout with no way to switch it off per instance.
+  test('accepts 0 for either liveness deadline and rejects a negative one', () => {
+    expect(() => check({ url: 'http://host/events', idleTimeoutMs: 0 })).not.toThrow();
+    expect(() => check({ url: 'http://host/events', connectTimeoutMs: 0 })).not.toThrow();
+    expect(() => check({ url: 'http://host/events', idleTimeoutMs: -1 })).toThrow(/idleTimeoutMs/);
+    expect(() => check({ url: 'http://host/events', connectTimeoutMs: -1 })).toThrow(/connectTimeoutMs/);
+  });
 });
 
 describe('TcpSocketOptionsValidator', () => {
@@ -196,6 +227,16 @@ describe('TcpSocketOptionsValidator', () => {
 
   test('accepts a valid host/port', () => {
     expect(() => check({ host: 'localhost', port: 9000 })).not.toThrow();
+  });
+
+  // #753 — see the SSE case above for why `0` has to pass.
+  test('accepts 0 for each liveness knob and rejects a negative one', () => {
+    const base = { host: 'h', port: 9000 } as const;
+    expect(() => check({ ...base, idleTimeoutMs: 0, connectTimeoutMs: 0, keepAliveMs: 0 }))
+      .not.toThrow();
+    expect(() => check({ ...base, idleTimeoutMs: -1 })).toThrow(/idleTimeoutMs/);
+    expect(() => check({ ...base, connectTimeoutMs: -1 })).toThrow(/connectTimeoutMs/);
+    expect(() => check({ ...base, keepAliveMs: -1 })).toThrow(/keepAliveMs/);
   });
 
   // #372 — the nested framing caps were unvalidated.  Both are applied as
@@ -261,5 +302,155 @@ describe('GrpcClientOptionsValidator', () => {
 
   test('accepts a positive deadlineMs', () => {
     expect(() => check({ deadlineMs: 30_000 })).not.toThrow();
+  });
+});
+
+describe('EmailBridgeOptionsValidator', () => {
+  const check = (s: Partial<EmailBridgeOptionsType>): void => new EmailBridgeOptionsValidator().validate(s);
+  // The validator only ever checks the ref for presence.
+  const target = {} as ActorRef<EmailMessage>;
+  const imap = { host: 'imap.example.test' };
+  const smtp = { host: 'smtp.example.test' };
+
+  test('accepts either side alone, and both together', () => {
+    expect(() => check({ imap, target })).not.toThrow();
+    expect(() => check({ smtp })).not.toThrow();
+    expect(() => check({ imap, smtp, target })).not.toThrow();
+  });
+
+  test('rejects a bridge with neither side configured', () => {
+    expect(() => check({})).toThrow(/at least one side/);
+  });
+
+  // Both directions: each half of the inbound pair is useless alone.
+  test('rejects an imap side with no target', () => {
+    expect(() => check({ imap })).toThrow(/target/);
+  });
+
+  test('rejects a target with no imap side', () => {
+    expect(() => check({ smtp, target })).toThrow(/imap/);
+  });
+
+  test('rejects an empty or missing host on either side', () => {
+    expect(() => check({ imap: { host: '' }, target })).toThrow(/imap\.host/);
+    expect(() => check({ imap: {}, target })).toThrow(/imap\.host/);
+    expect(() => check({ smtp: { host: '' } })).toThrow(/smtp\.host/);
+  });
+
+  test('rejects out-of-range ports', () => {
+    expect(() => check({ imap: { ...imap, port: 0 }, target })).toThrow(/imap\.port/);
+    expect(() => check({ smtp: { ...smtp, port: 70_000 } })).toThrow(/smtp\.port/);
+  });
+
+  test('rejects an unknown onProcessed action', () => {
+    expect(() => check({ imap: { ...imap, onProcessed: 'delete' as 'move' }, target }))
+      .toThrow(/imap\.onProcessed/);
+  });
+
+  test('rejects move mode without a destination', () => {
+    expect(() => check({ imap: { ...imap, onProcessed: 'move' }, target }))
+      .toThrow(/imap\.moveToMailbox/);
+  });
+
+  // Moving mail into the mailbox it is swept from redelivers it forever —
+  // and the move itself succeeds, so nothing downstream would report it.
+  test('rejects moving into the watched mailbox', () => {
+    expect(() => check({
+      imap: { ...imap, onProcessed: 'move', mailbox: 'Alerts', moveToMailbox: 'Alerts' },
+      target,
+    })).toThrow(/must differ from the watched mailbox/);
+    // Same trap via the default mailbox name.
+    expect(() => check({
+      imap: { ...imap, onProcessed: 'move', moveToMailbox: 'INBOX' },
+      target,
+    })).toThrow(/must differ from the watched mailbox/);
+  });
+
+  test('accepts move mode with a different destination', () => {
+    expect(() => check({
+      imap: { ...imap, onProcessed: 'move', mailbox: 'INBOX', moveToMailbox: 'Processed' },
+      target,
+    })).not.toThrow();
+  });
+
+  test('rejects non-positive timings and sizes', () => {
+    expect(() => check({ imap: { ...imap, pollIntervalMs: 0 }, target })).toThrow(/pollIntervalMs/);
+    expect(() => check({ imap: { ...imap, maxIdleTimeMs: -1 }, target })).toThrow(/maxIdleTimeMs/);
+    expect(() => check({ imap: { ...imap, maxMessageBytes: 0 }, target })).toThrow(/maxMessageBytes/);
+    expect(() => check({ imap: { ...imap, acknowledgmentTimeoutMs: 0 }, target }))
+      .toThrow(/acknowledgmentTimeoutMs/);
+  });
+
+  test('rejects non-positive pool sizing', () => {
+    expect(() => check({ smtp: { ...smtp, maxConnections: 0 } })).toThrow(/maxConnections/);
+    expect(() => check({ smtp: { ...smtp, maxMessages: 1.5 } })).toThrow(/maxMessages/);
+  });
+
+  test('rejects an empty default From', () => {
+    expect(() => check({ smtp: { ...smtp, from: '' } })).toThrow(/smtp\.from/);
+  });
+
+  test('unset optionals always pass', () => {
+    expect(() => check({ imap, smtp, target })).not.toThrow();
+  });
+});
+
+/**
+ * Client TLS material, on every broker that now takes it (#743).
+ *
+ * A certificate without its key is the one mistake catchable before the
+ * handshake, and it is worth catching *here* rather than letting the driver
+ * throw: a throw from `connectImplementation` is a connection failure to
+ * `BrokerActor`, and `reconnect.maxAttempts` defaults to Infinity — so the
+ * mistake would retry forever instead of failing the actor's start.
+ */
+describe('broker TLS material', () => {
+  const halfCertificate = { cert: 'client-certificate' } as const;
+  const halfKey = { key: 'client-key' } as const;
+  const whole = { ca: 'private-ca', cert: 'client-certificate', key: 'client-key' } as const;
+
+  test('AmqpOptions rejects a half-configured client certificate', () => {
+    const check = (s: Partial<AmqpOptionsType>): void => new AmqpOptionsValidator().validate(s);
+    expect(() => check({ url: 'amqps://host:5671', tls: halfCertificate })).toThrow(/tls/);
+    expect(() => check({ url: 'amqps://host:5671', tls: halfKey })).toThrow(/tls/);
+    expect(() => check({ url: 'amqps://host:5671', tls: whole })).not.toThrow();
+    expect(() => check({ url: 'amqps://host:5671', tls: { ca: 'private-ca' } })).not.toThrow();
+    expect(() => check({ url: 'amqps://host:5671' })).not.toThrow();
+  });
+
+  test('RedisStreamsOptions rejects a half-configured client certificate', () => {
+    const check = (s: Partial<RedisStreamsOptionsType>): void =>
+      new RedisStreamsOptionsValidator().validate(s);
+    expect(() => check({ url: 'rediss://host:6379', tls: halfCertificate })).toThrow(/tls/);
+    expect(() => check({ url: 'rediss://host:6379', tls: whole })).not.toThrow();
+  });
+
+  test('MqttOptions rejects a half-configured client certificate', () => {
+    const check = (s: Partial<MqttOptionsType>): void => new MqttOptionsValidator().validate(s);
+    expect(() => check({ brokerUrl: 'mqtts://host:8883', tls: halfCertificate })).toThrow(/tls/);
+    expect(() => check({ brokerUrl: 'mqtts://host:8883', tls: whole })).not.toThrow();
+  });
+
+  test('NatsOptions rejects a half-configured client certificate', () => {
+    const check = (s: Partial<NatsOptionsType>): void => new NatsOptionsValidator().validate(s);
+    expect(() => check({ servers: 'nats://host:4222', tls: halfCertificate })).toThrow(/tls/);
+    expect(() => check({ servers: 'nats://host:4222', tls: whole })).not.toThrow();
+  });
+
+  test('JetStreamOptions rejects a half-configured client certificate', () => {
+    const check = (s: Partial<JetStreamOptionsType>): void =>
+      new JetStreamOptionsValidator().validate(s);
+    expect(() => check({ servers: 'nats://host:4222', tls: halfCertificate })).toThrow(/tls/);
+    expect(() => check({ servers: 'nats://host:4222', tls: whole })).not.toThrow();
+  });
+
+  // Kafka carries the material inside `ssl`, because that is kafkajs's own
+  // union — so the rule has to look through the boolean arm without tripping.
+  test('KafkaOptions checks the material arm of ssl and leaves the boolean alone', () => {
+    const check = (s: Partial<KafkaOptionsType>): void => new KafkaOptionsValidator().validate(s);
+    expect(() => check({ brokers: ['k:9093'], ssl: halfCertificate })).toThrow(/ssl/);
+    expect(() => check({ brokers: ['k:9093'], ssl: whole })).not.toThrow();
+    expect(() => check({ brokers: ['k:9093'], ssl: true })).not.toThrow();
+    expect(() => check({ brokers: ['k:9093'], ssl: false })).not.toThrow();
   });
 });

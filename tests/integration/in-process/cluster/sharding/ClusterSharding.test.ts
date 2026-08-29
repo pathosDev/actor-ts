@@ -11,7 +11,7 @@ import { ClusterSharding } from '../../../../../src/cluster/sharding/ClusterShar
 import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 type PingCommand = { id: string; kind: 'ping'; payload?: string };
 type EchoCommand = { id: string; kind: 'echo'; payload?: string };
@@ -35,16 +35,17 @@ class Entity extends Actor<Command> {
   }
 }
 
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
-
-async function waitFor(pred: () => boolean, timeoutMs = 5_000, stepMs = 20): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (pred()) return;
-    await sleep(stepMs);
-  }
-  if (!pred()) throw new Error(`waitFor timed out after ${timeoutMs}ms`);
-}
+/**
+ * Kept as a name so every call site here stays unchanged; the body forwards to
+ * the shared helper (#418), which names the awaited state in its timeout message
+ * and — unlike the deadline loop it replaces — cannot fall through silently.
+ */
+const waitFor = (
+  predicate: () => boolean,
+  timeoutMs = 5_000,
+  stepMs = 20,
+  label = 'the awaited sharding/membership state',
+): Promise<void> => awaitCondition(predicate, { timeoutMs, intervalMs: stepMs, label });
 
 type Node = {
   sys: ActorSystem;
@@ -84,6 +85,10 @@ describe('ClusterSharding — initialization after convergence', () => {
     const nodes = [seed, n1];
 
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
+    // Membership has converged above, but the region's registration with the
+    // coordinator has no observable of its own, and an ask issued before it
+    // lands races the coordinator instead of being buffered.  Nothing is
+    // asserted on the wait itself — every ask below carries its own budget.
     await sleep(200);
 
     const reply = await seed.region.ask<string>({ id: 'warm-0', kind: 'ping' }, 3_000);
@@ -100,6 +105,10 @@ describe('ClusterSharding — initialization after convergence', () => {
     const nodes = [seed, n1];
 
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
+    // Membership has converged above, but the region's registration with the
+    // coordinator has no observable of its own, and an ask issued before it
+    // lands races the coordinator instead of being buffered.  Nothing is
+    // asserted on the wait itself — every ask below carries its own budget.
     await sleep(200);
 
     // 16 shards, HashAllocationStrategy splits ~50/50.  All asks must succeed
@@ -122,6 +131,10 @@ describe('ClusterSharding — initialization after convergence', () => {
     const nodes = [seed, n1];
 
     await waitFor(() => nodes.every((node) => node.cluster.upMembers().length === 2));
+    // Membership has converged above, but the region's registration with the
+    // coordinator has no observable of its own, and an ask issued before it
+    // lands races the coordinator instead of being buffered.  Nothing is
+    // asserted on the wait itself — every ask below carries its own budget.
     await sleep(200);
 
     for (let i = 0; i < 8; i++) {
@@ -303,7 +316,7 @@ describe('ClusterSharding — LRU passivation (#82)', () => {
       // their tag stays stable.  (We DON'T check 'c' because the
       // exact eviction count depends on serialised mailbox timing.)
       const eAgain = await node.region.ask<string>({ id: 'e', kind: 'ping' }, 3_000,);
-      expect(eAgain).toBe(firstTags.get('e'));
+      expect(eAgain).toBe(firstTags.get('e')!);
     } finally {
       await stopAll([node]);
     }
@@ -315,6 +328,8 @@ describe('ClusterSharding — LRU passivation (#82)', () => {
     // eviction, no recreation.
     const node = await startLruNode('lru-uncapped', 46_101, 0);
     try {
+      // Settle the single-node convergence, exactly as the sibling LRU case
+      // above does: the asks that follow carry their own 3 s budget.
       await sleep(60);
       const ids = ['p', 'q', 'r', 's', 't'];
       const firstTags = new Map<string, string>();
@@ -329,7 +344,7 @@ describe('ClusterSharding — LRU passivation (#82)', () => {
       });
       for (const id of ids) {
         const same = await node.region.ask<string>({ id, kind: 'ping' }, 3_000,);
-        expect(same).toBe(firstTags.get(id));
+        expect(same).toBe(firstTags.get(id)!);
       }
     } finally {
       await stopAll([node]);
@@ -342,10 +357,14 @@ describe('ClusterSharding — LRU passivation (#82)', () => {
     // (round-trip ask succeeds) must hold even after eviction.
     const node = await startLruNode('lru-recreate', 46_201, 2);
     try {
+      // Settle the single-node convergence; the asks below carry their own
+      // 3 s budget.
       await sleep(60);
       const t1 = await node.region.ask<string>({ id: 'evictee', kind: 'ping' }, 3_000,);
       // Drive enough fresh ids to push 'evictee' out of the cap.
       for (const id of ['f1', 'f2', 'f3']) {
+        // Tiny gap so each entity's `lastActivity` is distinguishable — the
+        // elapsed time IS what the LRU order is computed from.
         await sleep(5);
         await node.region.ask<string>({ id, kind: 'ping' }, 3_000,);
       }

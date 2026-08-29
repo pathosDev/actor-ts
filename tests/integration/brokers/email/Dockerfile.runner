@@ -1,0 +1,22 @@
+# Runner image for the EmailBridgeActor live-integration suite (#1133).
+# Identical shape across all broker runners — see
+# tests/integration/brokers/README.md for the full rationale.
+
+FROM oven/bun:1.4-debian
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY tests/integration/brokers/package.json ./package.json
+RUN bun install --no-progress --ignore-scripts
+
+COPY tsconfig.json ./
+COPY src/ src/
+COPY tests/ tests/
+
+ENV NODE_ENV=production
+
+CMD ["bun", "tests/integration/brokers/email/Runner.ts"]

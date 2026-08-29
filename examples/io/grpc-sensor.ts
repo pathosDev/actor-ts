@@ -44,7 +44,6 @@ import {
   type StreamErrorMessage,
   type StreamStartedMessage,
 } from '../../src/io/index.js';
-import { attachDevTools } from '../devtools.js';
 
 // --- proto definition (inlined for self-contained example) -----------------
 
@@ -173,7 +172,6 @@ async function main(): Promise<void> {
 
   try {
     const sys = ActorSystem.create('grpc-demo');
-    const devtools = await attachDevTools(sys);
 
     // Server side.
     const getHandler = sys.spawn(GetSensorHandler, 'get');
@@ -209,7 +207,7 @@ async function main(): Promise<void> {
       'collector',
     );
 
-    await Bun.sleep(300);
+    await Bun.sleep(300);  // let the client finish its connect handshake
 
     client.tell({ kind: 'unary', method: 'GetSensor', request: { id: 'rt-7' }, target: collector });
     client.tell({
@@ -220,8 +218,11 @@ async function main(): Promise<void> {
     // handle up from the `stream-started` frame and pushes the readings.
     client.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: collector });
 
+    // Not a drain sleep: the three calls above return over the wire, and gRPC
+    // hands each response back through a callback that tells the collector
+    // from outside any turn.  The tree looks quiet while they are in flight,
+    // so terminate()'s drain has nothing to wait on — this does the waiting.
     await Bun.sleep(1_500);
-    await devtools.holdOpen();
     await sys.terminate();
   } finally {
     try { unlinkSync(protoPath); } catch { /* ignore */ }

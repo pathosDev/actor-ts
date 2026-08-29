@@ -119,15 +119,16 @@ Praktische Faustregeln:
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Keine Funktionen / Klassen mit Methoden in Nachrichten">
-  Keine Prozessgrenze trägt Funktionszeiger.  Der Cluster-Wire und die
-  HTTP-über-WebSocket-Bridge rahmen beide mit `JSON.stringify`, was
-  eine Funktion verwirft; ein Worker Thread nutzt `postMessage`, dessen
-  Structured-Clone-Algorithmus bei einer Funktion einen
-  `DataCloneError` *wirft*.  Einen Callback in eine Nachricht zu packen
-  funktioniert im Prozess und bricht — still unter JSON, laut unter
-  Structured Clone —, sobald der Actor auf einen anderen Node wandert.
-  Verwende `replyTo: ActorRef<...>` für Callback-artiges Verhalten;
-  Refs serialisieren korrekt über Nodes hinweg.
+  Keine Prozessgrenze trägt Funktionszeiger.  Der Cluster-Wire rahmt
+  mit dem getaggten JSON-Tree, der eine Funktion **ablehnt** und den
+  Frame mit einer `error`-Logzeile verwirft; die
+  HTTP-über-WebSocket-Bridge rahmt mit `JSON.stringify`, das sie still
+  verwirft; ein Worker Thread nutzt `postMessage`, dessen
+  Structured-Clone-Algorithmus einen `DataCloneError` *wirft*.  Einen
+  Callback in eine Nachricht zu packen funktioniert im Prozess und
+  bricht, sobald der Actor auf einen anderen Node wandert.  Verwende
+  `replyTo: ActorRef<...>` für Callback-artiges Verhalten; Refs
+  serialisieren korrekt über Nodes hinweg.
 </Aside>
 
 ## Request/Response: die Reply-to-Ref

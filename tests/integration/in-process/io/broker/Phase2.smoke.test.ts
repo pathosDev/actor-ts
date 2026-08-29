@@ -22,8 +22,7 @@ import { GrpcClientOptions } from '../../../../../src/io/broker/GrpcClientOption
 import { GrpcServerActor } from '../../../../../src/io/broker/GrpcServerActor.js';
 import { GrpcServerOptions } from '../../../../../src/io/broker/GrpcServerOptions.js';
 import { BrokerOptionsError } from '../../../../../src/io/broker/BrokerOptions.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 function makeSys(name = 'phase2'): ActorSystem {
   const sysOptions = ActorSystemOptions.create()
@@ -73,7 +72,9 @@ describe('Phase 2 actors — options validation', () => {
       };
       return actor as unknown as Actor<unknown>;
     });
-    await sleep(30);
+    await awaitCondition(() => captured !== null, {
+      label: "preStart rejected the KafkaActor's options",
+    });
     expect(captured).toBeInstanceOf(BrokerOptionsError);
     expect((captured as unknown as Error).message).toContain('brokers');
     await sys.terminate();
@@ -94,7 +95,9 @@ describe('Phase 2 actors — options validation', () => {
       };
       return actor as unknown as Actor<unknown>;
     });
-    await sleep(30);
+    await awaitCondition(() => captured !== null, {
+      label: "preStart rejected the GrpcClientActor's options",
+    });
     expect(captured).toBeInstanceOf(BrokerOptionsError);
     expect((captured as unknown as Error).message).toContain('endpoint');
     await sys.terminate();
@@ -128,8 +131,9 @@ describe('Phase 2 actors — options precedence (constructor wins over HOCON)', 
       };
       return actor as unknown as Actor<unknown>;
     });
+    // `ready` resolves in the statement after `captured = actor`, so there is
+    // nothing left to wait for once it settles.
     await ready;
-    await sleep(20);
     expect(captured).not.toBeNull();
     const options = (captured as unknown as { options: { brokers: string[]; clientId?: string } }).options;
     // Constructor `brokers` override takes precedence.

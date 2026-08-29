@@ -1,0 +1,62 @@
+# CodeQL analysis configuration for `actor-ts` (#539, #1297).
+#
+# Referenced by `.github/workflows/codeql.yml` via `config-file:`.
+#
+# **`security-extended` since 2026-08-29 (#1297).**  This file shipped with
+# no `queries:` key at all, which left CodeQL on its `default` suite — the
+# high-precision security queries — and recorded the condition for changing
+# that rather than a preference: the first analysis of a codebase this size
+# produces an alert set of unknown volume, every alert has to be fixed or
+# dismissed with a recorded reason before the baseline means anything, and a
+# wider suite makes that first triage larger without making it more
+# valuable.  "Widen it once the default baseline is clean, not before."
+#
+# The condition is met, and it was measured rather than assumed.
+# `gh api repos/pathosDev/actor-ts/code-scanning/alerts` returns nine alerts
+# in total — eight `fixed`, one `dismissed`, **zero open** (2026-08-29),
+# against a first analysis that ran on 2026-08-16.  The triage the deferral
+# was protecting has therefore already happened, and what the wider suite
+# adds now arrives against a clean baseline instead of being buried in one.
+#
+# **Not `security-and-quality`,** deliberately.  Its extra queries are
+# maintainability findings, and this repository already gates those with
+# tools that understand its conventions — `knip`, `bun run typecheck:dev`,
+# and the repo-file guards under `tests/unit/ci/`.  Routing a second opinion
+# on style through the code-scanning alert list would dilute the list that
+# `SECURITY.md` points a reporter at.
+#
+# If the widened suite proves too noisy to triage, the way back is to write
+# the alert count that forced it down *here* and revert the key — not to
+# drop silently back to `default`.
+
+name: actor-ts
+
+queries:
+  - uses: security-extended
+
+# Everything below is either generated, vendored, or build output: real
+# alerts cannot be filed against it, because the fix is never an edit to
+# the file the alert points at.
+paths-ignore:
+  # `bunx tsc` output.  Present in a CI checkout only if something built
+  # before the analysis, but a local `codeql database create` would pick
+  # it up and double-report every finding in `src/`.
+  - dist
+
+  # Generated but committed (see AGENTS.md): a single module that inlines
+  # the entire bundled DevTools UI.  The sources it is built from live in
+  # `devtools-ui/` and are analysed; an alert here would point at a byte
+  # blob whose only legitimate edit is `bun run build:ui`.
+  - src/devtools/generated
+
+  # Astro build output and its cache.
+  - docs/dist
+  - docs/.astro
+
+  # Framework scaffolding in the example front-ends, and dependencies.
+  # `examples/**` source itself stays in scope — it is what a reader
+  # copies from, so an injection in it propagates.
+  - '**/node_modules'
+  - '**/.next'
+  - '**/.svelte-kit'
+  - '**/.angular'

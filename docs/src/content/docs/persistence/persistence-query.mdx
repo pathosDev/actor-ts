@@ -16,24 +16,56 @@ Two flavors:
 
 ## Implementations
 
-Each journal has a matching query:
-
 | Query | Pairs with |
 | --- | --- |
-| `InMemoryQuery` | `InMemoryJournal` |
+| `InMemoryQuery` | `InMemoryJournal` — **and any journal without its own query** |
 | `SqliteQuery` | `SqliteJournal` |
+| `PostgresQuery` | `PostgresJournal` |
+| `MariaDbQuery` | `MariaDbJournal` (MySQL too) |
 | `CassandraQuery` | `CassandraJournal` |
+| `MongoQuery` | `MongoJournal` |
+| `RelationalQuery` | any `RelationalJournal` — the dialect-neutral base the two SQL rows above are named subclasses of |
 
-The interface is the same across all of them — just construct the
-matching query for your journal backend.
+The interface is the same across all of them — construct the query for
+your journal backend and pass it the journal *instance*, not a
+connection string:
 
 ```ts
-import { SqliteJournal, SqliteJournalOptions, SqliteQuery } from 'actor-ts/persistence';
+import { PostgresJournal, PostgresJournalOptions, PostgresQuery } from 'actor-ts/persistence';
 
-// SqliteQuery reads the same journal your PersistentActors write to.
-const journal = new SqliteJournal(SqliteJournalOptions.create().withPath('/var/lib/events.db'));
-const query = new SqliteQuery(journal);
+// PostgresQuery reads the same journal your PersistentActors write to.
+const journalOptions = PostgresJournalOptions.create().withUrl(process.env.DATABASE_URL!);
+const journal = new PostgresJournal(journalOptions);
+const query = new PostgresQuery(journal);
 ```
+
+### When there is no query for your backend
+
+`InMemoryQuery` works against **any** `Journal` — it is the reference
+implementation, not the in-memory-only one — so a backend missing from
+the table above is not blocked from running projections.  What you lose
+is the index, and only on the by-tag methods:
+
+- `currentEventsByPersistenceId` and the id methods delegate straight to
+  the journal, so they cost the same either way.
+- `currentEventsByTag` has no index to push the filter into.  It lists
+  every persistence id, replays each one from sequence 1, and filters in
+  process — the whole journal, per call, with a by-tag projection
+  repeating that every `pollIntervalMs`.
+
+That is correct at any volume and fast only at small ones.  A dedicated
+query class exists exactly where the backend keeps a tag index worth
+reading: the SQL backends maintain an `events_tags` join table,
+Cassandra an `events_by_tag` side table, MongoDB an index on the `tags`
+array.
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Nothing warns you">
+  Pairing a journal with `InMemoryQuery` when a faster query exists is
+  silent — the results are identical, so only the load tells you.  If
+  your backend has a row in the table above, use it.
+</Aside>
 
 ## The methods
 
@@ -304,6 +336,17 @@ API directly.
 - **Tag indexes matter** — `events_tags` index is what makes
   by-tag queries fast.  The SQLite journal creates this
   automatically.
+- **A compacted event leaves the tag index too.**  `delete` is
+  specified against the read side as well as `read`: once a prefix
+  is compacted, `currentEventsByTag` stops returning it.  Backends
+  whose index sits on the event record itself (MongoDB's multikey
+  `tags`) get that for free; the ones with a separate structure —
+  SQLite's and the SQL backends' tags table, Cassandra's
+  `events_by_tag` — delete from it as part of the same call, and
+  before the events, so a crash mid-delete cannot strand rows whose
+  keys are no longer reconstructible.  Worth knowing when you write
+  your own journal: `read` and `highestSeq` will look perfectly
+  correct while a forgotten index keeps serving deleted events.
 
 ## Where to next
 

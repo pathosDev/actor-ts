@@ -1,8 +1,6 @@
 import type { ManagementRoutesOptions, ManagementRoutesOptionsType } from './ManagementRoutesOptions.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import type { Cluster } from '../cluster/Cluster.js';
-import { DistributedDataId } from '../crdt/DistributedData.js';
-import { LWWRegister } from '../crdt/LWWRegister.js';
 import {
   complete,
   completeJson,
@@ -17,8 +15,10 @@ import {
 } from '../http/index.js';
 import { exportPrometheus } from '../metrics/PrometheusExporter.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
-import type { HealthCheckResult } from './HealthCheck.js';
-import { HealthCheckRegistry } from './HealthCheck.js';
+import { isCollectable } from '../metrics/Metrics.js';
+import { CLUSTER_MEMBERSHIP_CHECK_NAME } from '../cluster/ClusterHealthChecks.js';
+import { isHealthy } from './HealthCheck.js';
+import { healthChecksOf } from './HealthCheckExtension.js';
 
 
 /**
@@ -30,19 +30,42 @@ import { HealthCheckRegistry } from './HealthCheck.js';
  *   - `GET /cluster/members`                  →  current membership JSON
  *   - `GET /cluster/leader`                   →  leader info
  *   - `GET /cluster/shards?type=<typeName>`   →  shard-to-region map for one type (#56)
+ *     — from `ClusterSharding`, so it needs no configuration beyond a region
+ *     or proxy for the type on this node (#682)
  *   - `GET /health`                           →  liveness (200 iff all checks pass)
- *   - `GET /ready`                            →  readiness (200 iff cluster is up + all checks pass)
+ *   - `GET /ready`                            →  readiness (200 iff all checks pass)
  *   - `POST /cluster/leave`                   →  graceful leave (optional, off by default)
  *   - `POST /cluster/down`  body `{address}`  →  force-down a peer (optional, off by default) (#56)
  *   - `GET /metrics`                          →  Prometheus text format (optional, off by default) (#56)
+ *
+ * The checks behind `/health` and `/ready` come from
+ * `healthChecksOf(system)`; this function only *reads* that registry, it
+ * does not own one.  Register application checks on it whenever you like —
+ * before this call or long after — and the framework's own are already in
+ * it, put there by the components that can observe them (#655).
+ *
+ * Which means the `cluster` argument selects which endpoints exist, not
+ * what readiness means: passing `null` on a system that *did* join a
+ * cluster still leaves `/ready` gated on that cluster's checks.  Deliberate
+ * — readiness is a property of the node, and a second answer that differs
+ * from the one the gRPC health service gives is the failure mode this
+ * whole seam exists to prevent.
+ *
+ * **Module dependencies point one way**: `src/management/` reads
+ * `src/cluster/`, `src/http/`, `src/metrics/` — and never `src/crdt/`.  The
+ * shard-map route used to reach into the CRDT store for the coordinator's
+ * DistributedData snapshot, which coupled observability to a replication
+ * backend it has no business knowing about and made the endpoint's answer
+ * depend on the operator having wired one up.  It asks `ClusterSharding`
+ * now (#557, #682).
  */
 export function managementRoutes(
   system: ActorSystem,
   cluster: Cluster | null,
   optionsInput: ManagementRoutesOptions = {},
-): { routes: Route; health: HealthCheckRegistry } {
+): Route {
   const options = optionsInput as ManagementRoutesOptionsType;
-  const health = new HealthCheckRegistry();
+  const health = healthChecksOf(system);
 
   const clusterMembers = get(async () => {
     if (!cluster) return complete(Status.ServiceUnavailable, 'no cluster');
@@ -68,19 +91,34 @@ export function managementRoutes(
 
   const liveness = get(async () => {
     const results = await health.checkLiveness();
-    const ok = results.every((r) => r.status);
+    const ok = isHealthy(results);
     return completeJson(ok ? Status.OK : Status.ServiceUnavailable, {
       status: ok ? 'UP' : 'DOWN',
       checks: results,
     });
   });
 
+  /**
+   * `clusterReady` is *read back out of* the aggregate rather than
+   * recomputed here.  `Cluster._start` registers the membership check
+   * itself (#655), so evaluating the same predicate a second time in this
+   * handler would give the endpoint a private answer that the gRPC health
+   * service — which sees only the registry — could contradict.
+   *
+   * The check is absent only on a system that never joined a cluster, and
+   * there cluster membership is not a constraint on readiness at all —
+   * hence `true`.  It is *not* absent on a node that has left: leaving
+   * leaves both cluster checks registered and failing, which is what stops
+   * a drained node reporting itself ready (#655).
+   *
+   * `ok` comes from {@link isHealthy}, the same rule the gRPC health
+   * service applies, so the two probes cannot diverge.
+   */
   const readiness = get(async () => {
     const results = await health.checkReadiness();
-    const clusterReady = cluster
-      ? cluster.getMembers().some((m) => m.address.equals(cluster.selfAddress) && m.status === 'up')
-      : true;
-    const ok = clusterReady && results.every((r) => r.status);
+    const membership = results.find((r) => r.name === CLUSTER_MEMBERSHIP_CHECK_NAME);
+    const clusterReady = membership === undefined ? true : membership.status;
+    const ok = isHealthy(results);
     return completeJson(ok ? Status.OK : Status.ServiceUnavailable, {
       status: ok ? 'UP' : 'DOWN',
       clusterReady,
@@ -99,12 +137,22 @@ export function managementRoutes(
     : get(async () => complete(Status.NotFound, 'leave endpoint disabled'));
 
   /**
-   * GET /cluster/shards?type=<typeName> — returns the current shard map
-   * for one sharded type as recorded by the coordinator in DistributedData.
-   * Backed by the same store the coordinator reads on leader failover
-   * (`sharding-coordinator-state|<typeName>`), so the view is at most
-   * one gossip-tick stale.  Returns 404 if DD isn't started or the
-   * type isn't known.
+   * GET /cluster/shards?type=<typeName> — the current shard map for one
+   * sharded type, read from `ClusterSharding.shardMap()`: the last map the
+   * coordinator broadcast to this node's region, so the view is at most one
+   * coordinator publish stale and needs no configuration at all.
+   *
+   * It used to read the coordinator's DistributedData snapshot instead, which
+   * made it 404 out of the box twice over — nothing in the framework starts
+   * the DistributedData extension, and the snapshot is only written when the
+   * operator opts into a `coordinatorStateStore`.  Both preconditions are
+   * gone; what remains is that this node must participate in the type, i.e.
+   * have called `sharding.start()` or `sharding.startProxy()` for it, because
+   * the coordinator broadcasts only to regions that registered (#682).
+   *
+   * Returns 404 while no map has arrived for the type.  A 200 with an empty
+   * `shardHome` is the normal answer for a type nobody has addressed yet:
+   * `regions` fills on registration, `shardHome` only once a shard is placed.
    */
   const clusterShards = get(async (request) => {
     if (!cluster) return complete(Status.ServiceUnavailable, 'no cluster');
@@ -113,36 +161,16 @@ export function managementRoutes(
     if (!typeName) {
       return complete(Status.BadRequest, 'missing query param `type`');
     }
-    const dd = system.extension(DistributedDataId);
-    if (!dd.isStarted()) {
-      return complete(Status.NotFound, 'DistributedData not started — shard map unavailable');
+    const view = cluster.sharding.shardMap(typeName);
+    if (!view) {
+      return complete(
+        Status.NotFound,
+        `no shard map for type "${typeName}" on this node yet — `
+        + 'the coordinator has not published one, or no region/proxy for the type '
+        + 'was started here',
+      );
     }
-    const reg = dd.get().get<LWWRegister<{
-      leader: string;
-      takenAt: number;
-      regions: ReadonlyArray<{
-        key: string; node: { systemName: string; host: string; port: number };
-        path: string; proxy: boolean; shards: ReadonlyArray<number>;
-      }>;
-      shardHome: ReadonlyArray<readonly [number, string]>;
-    }>>(`sharding-coordinator-state|${typeName}`);
-    const state = reg?.value();
-    if (!state) {
-      return complete(Status.NotFound, `no shard-map recorded for type "${typeName}" yet`);
-    }
-    return completeJson(Status.OK, {
-      typeName,
-      leader: state.leader,
-      takenAt: state.takenAt,
-      regions: state.regions.map((r) => ({
-        key: r.key,
-        address: `${r.node.systemName}@${r.node.host}:${r.node.port}`,
-        path: r.path,
-        proxy: r.proxy,
-        shards: r.shards,
-      })),
-      shardHome: state.shardHome.map(([shard, regionKey]) => ({ shard, regionKey })),
-    });
+    return completeJson(Status.OK, view);
   });
 
   /**
@@ -171,13 +199,44 @@ export function managementRoutes(
     })
     : get(async () => complete(Status.NotFound, 'down endpoint disabled'));
 
-  /** GET /metrics — Prometheus text format. */
+  /**
+   * GET /metrics — Prometheus text format, or 503 when the installed
+   * registry cannot be read back (#744).
+   *
+   * A registry that forwards its writes elsewhere and keeps no copy — the
+   * `promClientRegistry` bridge is the one in the tree — collects to an
+   * empty list.  Rendered, that is a zero-byte body, and a zero-byte body
+   * is a *valid* empty 0.0.4 scrape: Prometheus records `up=1`, raises no
+   * target error, and every framework series silently stops existing, so a
+   * `rate(actor_mailbox_dropped_total[5m]) > 0` rule never fires again.  A
+   * 503 is the honest answer, because it is the one a scraper already knows
+   * how to treat as "this target is not serving metrics".
+   *
+   * The check is **per request, not at wiring time**, because
+   * `MetricsExtension.useRegistry` can install the bridge at any point —
+   * commonly after this function has returned.  A startup throw would
+   * therefore be a guard that holds for one wiring order and not the other,
+   * while taking `/health` and `/ready` down with it on the order it does
+   * catch; the route that is actually wrong is the one that should fail.
+   */
   const metricsRoute: Route = options.enableMetricsEndpoint
-    ? get(async () => ({
-      status: Status.OK,
-      body: exportPrometheus(metricsOf(system)),
-      contentType: 'text/plain; version=0.0.4; charset=utf-8',
-    }))
+    ? get(async () => {
+      const registry = metricsOf(system);
+      if (!isCollectable(registry)) {
+        return complete(
+          Status.ServiceUnavailable,
+          'metrics endpoint unavailable: the installed MetricsRegistry does not '
+          + 'support collect() — its metrics live in the collector it forwards to '
+          + '(with promClientRegistry, scrape prom-client\'s own registry instead). '
+          + 'Set enableMetricsEndpoint: false to stop exposing this route.',
+        );
+      }
+      return {
+        status: Status.OK,
+        body: exportPrometheus(registry),
+        contentType: 'text/plain; version=0.0.4; charset=utf-8',
+      };
+    })
     : get(async () => complete(Status.NotFound, 'metrics endpoint disabled'));
 
   let clusterSubtree: Route = path('cluster', concat(
@@ -218,18 +277,13 @@ export function managementRoutes(
   // IP allowlist wraps EVERY management endpoint, including health/
   // ready — network-level isolation is independent of who's allowed
   // to authenticate.  Probes that should reach the endpoint despite
-  // the allowlist must come from an allowed network or the operator
-  // must override `getClientIp` to inspect a trusted header.
+  // the allowlist must come from an allowed network; behind a reverse
+  // proxy that means naming the proxy in the allowlist's
+  // `trustedProxies` so the client's own address is resolved instead
+  // of the proxy's.
   if (options.ipAllowlist) {
     all = withMiddleware(options.ipAllowlist, all);
   }
 
-  // Suppress unused warning in case the caller doesn't use the system reference.
-  void system;
-
-  return { routes: all, health };
-}
-
-export function isHealthy(results: HealthCheckResult[]): boolean {
-  return results.every((r) => r.status);
+  return all;
 }

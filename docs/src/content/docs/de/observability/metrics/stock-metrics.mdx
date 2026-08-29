@@ -43,16 +43,92 @@ Handler".
 | Metrik | Typ | Labels | Bedeutung |
 | --- | --- | --- | --- |
 | `actor_mailbox_size` | gauge | `class`, `path` | Wartende User-Nachrichten, gesampelt. Nur Actors ab 10 000 sind vertreten. |
-| `actor_mailbox_dropped_total` | counter | `class`, `path`, `reason` | Von der Overflow-Policy einer beschränkten Mailbox verworfene Nachrichten. |
+| `actor_mailbox_depth` | histogram | — | Wartende User-Nachrichten im Moment einer Zustellung, sie selbst eingeschlossen. |
+| `actor_mailbox_wait_seconds` | histogram | — | Zeit, die eine User-Nachricht vor der Zustellung in der Queue wartete, in Sekunden. |
+| `actor_mailbox_dropped_total` | counter | `class`, `reason` | Von der Overflow-Policy einer beschränkten Mailbox verworfene Nachrichten. |
 
 `actor_mailbox_size` ist das **Rückstau**-Signal. Mailboxes sind per
 Default unbounded, ein zurückfallender Actor sammelt also an, statt
 abzuwerfen — und eine Serie entsteht erst, wenn einer 10 000 wartende
 Nachrichten überschreitet. Ihr *Vorhandensein* ist damit der Alarm: auf
 einem gesunden System ist die Metrik leer. Eine Mailbox, die wieder
-unter die Schwelle fällt, liest 0 statt ihres letzten Ausschlags, und
-dieselbe Schwelle erzeugt eine Log-Warnung (wiederholt bei jeder
+unter die Schwelle fällt — oder deren Actor stoppt —, verliert ihre
+Serie: sie wird **entfernt**, nicht auf 0 gesetzt. „Gesundes System,
+keine Serie" gilt damit auch nach einer Störung und nicht nur davor.
+Dieselbe Schwelle erzeugt eine Log-Warnung (wiederholt bei jeder
 Verdopplung), unabhängig davon ob Metriken aktiv sind.
+
+Das Entfernen ist der Grund, warum die Breite der Familie *gleichzeitige*
+Störungen zählt und nicht jemals dagewesene: ein Actor, der sich erholt,
+gibt seinen Platz unter der
+[Kardinalitätsgrenze](/de/observability/metrics/core-metrics/#eine-serie-entfernen)
+zurück. Alarmiere auf der Existenz der Serie (`count(actor_mailbox_size)
+> 0`) oder auf ihrem Wert, nicht auf einem Übergang nach 0 — es gibt
+keine 0, in die übergegangen werden könnte.
+
+`actor_mailbox_depth` ist die **Verteilung**, die der Gauge nicht sein
+kann — und beide sind so entworfen, dass sie sich an genau einer Zahl
+treffen. Der Gauge sagt dir, *welcher* Actor zurückhängt, und bezahlt das
+mit einem `path`-Label, das er sich erst oberhalb von 10 000 leisten
+kann; darunter meldet er überhaupt nichts, und das ist der gesamte
+Bereich 1–9 999. Ein Ausschlag zwischen zwei seiner 2-Sekunden-Samples
+wird nirgends festgehalten. Das Histogramm deckt genau diesen Bereich ab:
+Es beobachtet einmal pro Zustellung, es geht also nichts zwischen zwei
+Samples verloren, und es trägt keine Labels — die ganze Familie kostet
+eine Serie pro Bucket, egal wie viele Actors oder Entities existieren.
+Seine letzte Bucket-Grenze *ist* die Schwelle des Gauges, alles im
+`+Inf`-Überlauf ist also per Konstruktion ein Actor, den der Gauge schon
+mit Pfad meldet.
+
+Lies das Histogramm, um zu erfahren, dass ein Rückstau existiert und wie
+tief sein Ausläufer reicht; lies den Gauge, um zu erfahren, wessen er
+ist.
+
+Die Buckets laufen auf einer 1-2-5-Leiter von 1 bis 10 000 Nachrichten.
+Die Untergrenze ist 1 und nicht 0, weil die Beobachtung die gerade
+zugestellte Nachricht mitzählt: Ein ruhiger Actor liest genau 1, es gibt
+also keinen Bucket, in den nichts fallen kann. Sein Count entspricht
+`actor_messages_delivered_total` exakt — eine Beobachtung pro Zustellung,
+ohne die Ausnahmen, die das Wait-Histogramm hat.
+
+`actor_mailbox_wait_seconds` ist das **Latenz**-Signal und die Hälfte,
+die `actor_message_handler_seconds` nicht liefern kann: jenes Histogramm
+misst erst, wenn eine Nachricht bereits bearbeitet wird — ein langsamer
+Actor und ein bloß zurückhängender sehen darin identisch aus. Lies beide
+zusammen: hohes Handler-p99 bei niedrigem Wait-p99 heißt, der Handler
+selbst ist das Problem; hohes Wait-p99 bei niedrigem Handler-p99 heißt,
+der Actor ist in Ordnung und es kommt schlicht mehr Arbeit an, als er
+annehmen kann.
+
+Seine Buckets sind **nicht** die standardmäßige Sekunden-Leiter. Sie
+laufen von 1 ms bis 10 s, denn eine Mailbox, die mitkommt, leert sich
+deutlich unterhalb der 5 ms, bei denen die Defaults beginnen — und ein
+Histogramm, dessen erster Bucket alles enthält, beantwortet nichts. 1 ms
+ist zugleich das Feinste, was die Metrik überhaupt *sein könnte*: der
+Stempel ist Wall-Clock, alles Schnellere wird als Wartezeit von null
+Millisekunden gemeldet und landet im ersten Bucket — was „innerhalb
+einer Millisekunde zugestellt" bedeutet und genau so stimmt.
+
+Zwei Arten von Nachrichten bleiben bewusst außen vor, was zählt, wenn du
+seinen Count gegen `actor_messages_delivered_total` hältst:
+
+- **Wieder eingespielte gestashte Nachrichten.** Eine Nachricht, die aus
+  dem Stash zurückkommt, hat den Stempel ihrer *ursprünglichen* Ankunft
+  behalten; sie mitzuzählen würde also melden, wie lange dein Actor sie
+  festhalten wollte — als Queue-Verzögerung. Ein einzelner Actor, der
+  dreißig Sekunden auf eine Ressource wartet, würde in einer Metrik ohne
+  Labels das Signal aller anderen Actors übertönen. Der
+  [Explain Plan](/de/observability/devtools/explain-plan/) entscheidet
+  umgekehrt — er zeigt die ganze Spanne von Ankunft bis Bearbeitung, denn
+  dort siehst du den `stashed`-Eintrag, der sie erklärt.
+- **Nachrichten, die vor dem Einschalten der Metriken in der Queue
+  standen.** Sie tragen keinen Stempel, ihre Wartezeit wird also
+  weggelassen statt erfunden. Das korrigiert sich innerhalb einer
+  Leerung von selbst.
+
+Gedrosselte Nachrichten werden *mitgezählt*. Eine von der Drosselung
+eines Actors geparkte Nachricht wartet tatsächlich in der Queue auf einen
+Actor, der nicht mitkommt — und genau danach fragt diese Metrik.
 
 `actor_mailbox_dropped_total` ist das **Abwurf**-Signal und taucht nur für
 Actors auf, deren Mailbox etwas verwirft — da der Default unbounded ist,
@@ -60,6 +136,156 @@ also für Actors, die jemand bewusst begrenzt hat. Das `reason`-Label hält
 die ausgelöste Policy fest (`drop-head` / `drop-new`). Beide Wege, zu
 begrenzen, sind abgedeckt: `withMailboxCapacity` und eine selbst gebaute
 Mailbox aus `withMailbox`.
+
+Gezählt wird **pro Klasse, nicht pro Actor**. Es gibt kein
+`path`-Label: eine beschränkte Mailbox wirft im bestimmungsgemäßen
+Normalbetrieb ab, nicht als Anomalie — ein Label pro Actor hätte also
+für jeden Actor, der genau wie vorgesehen arbeitet, eine dauerhafte
+Serie erzeugt, und unter Sharding stammt der Wert von dem, der die
+Shard-Region adressiert hat. Wenn du wissen musst, welche *Instanz*
+abwirft, gib ein eigenes `onDrop` mit; es feuert neben dem
+Stock-Counter statt an seiner Stelle, die Serie gehört also dir — zum
+Labeln und zum Dimensionieren:
+
+```ts
+import { ActorOptions, BoundedMailbox } from 'actor-ts';
+
+// `onDrop` läuft neben dem Stock-Counter, nie an seiner Stelle.
+const workerOptions = ActorOptions.create()
+  .withMailbox(() => new BoundedMailbox({
+    capacity: 1_000,
+    overflow: 'drop-head',
+    onDrop: (reason) => metrics.counter('jobs_shed_total', { entityId, reason }).inc(),
+  }));
+
+system.spawn(Worker, entityId, workerOptions);
+```
+
+Die Kardinalität von `jobs_shed_total` musst du dann selbst
+einplanen — genau das ist der Punkt. Das Framework gibt sie nicht für
+dich aus.
+
+## Dispatcher-Metriken
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `actor_dispatcher_queue_delay_seconds` | histogram | `dispatcher` | Zeit, die ein Actor-Turn zwischen der Übergabe an einen Dispatcher und seinem Start wartete, in Sekunden. |
+
+Das ist das **Sättigungs**-Signal: ob der Dispatcher mit den Turns
+mitkommt, die ihm übergeben werden. Eine Beobachtung pro Turn, nicht pro
+Nachricht — ein Batch von bis zu
+[`throughput`](/de/operations/tuning/dispatcher-tuning/) Nachrichten
+zählt einmal. Das Label `dispatcher` ist `Dispatcher.id`, jeder
+Dispatcher im System meldet also separat — einschließlich eines
+Dispatchers pro Actor via `ActorOptions.withDispatcher(…)`, den sonst
+nichts im Framework überhaupt aufzählen kann.
+
+Im Ruhezustand ist die Verzögerung eine einzige Übergabe: etwa 1 µs über
+den `MicrotaskDispatcher` und 3 µs über den voreingestellten
+`ImmediateDispatcher`. Unter Sättigung wächst sie unbegrenzt, weil sich
+die Turns hintereinander aufstauen. Der Alarm, den du schreiben willst,
+liegt also auf dem Quantil gegen dein eigenes Latenzbudget:
+
+```promql
+histogram_quantile(0.99,
+  rate(actor_dispatcher_queue_delay_seconds_bucket[5m])) > 0.05
+# A turn is waiting 50 ms for a slot. Something on this dispatcher is
+# not yielding, or its throughput budget is too high for the load.
+```
+
+Die Buckets laufen auf einer 1-5-Leiter von 10 µs bis 10 s. Die
+Untergrenze liegt zwei Dekaden unter der 1 ms der Mailbox-Familien, weil
+eine gesunde Übergabe Mikrosekunden dauert: Der erste Bucket bedeutet
+damit „sofort eingeplant", der zweite schon „etwas stand davor in der
+Queue".
+
+Eine Lesart braucht Vorsicht. Die Verzögerung misst die Queue, die der
+Dispatcher *selbst* verwendet, und die Queue des `MicrotaskDispatcher`
+ist die Microtask-Queue, die die Laufzeitumgebung vor jedem Timer und
+jedem I/O leert. Seine Verzögerung bleibt deshalb niedrig, auch während
+Actors die Event-Loop aushungern — was genau die dokumentierte Gefahr
+dieses Dispatchers ist und kein Widerspruch. Eine niedrige Verzögerung
+dort belegt, dass Microtask-Scheduling nicht der Engpass ist, nicht dass
+Luft vorhanden wäre; nimm den `ThroughputDispatcher` oder den Default,
+wenn die Zahl den Druck auf die Loop widerspiegeln soll.
+
+### Warum es keine Sättigungs-Ratio gibt
+
+Ein 0–1-Anteil „wie beschäftigt ist der Dispatcher" wäre die vertrautere
+Zahl, und dieses Framework veröffentlicht keine — weil es keine geben
+kann, die auf allen unterstützten Laufzeitumgebungen ehrlich ist. Das
+einzige Primitiv, das eine liefern könnte, ist
+`performance.eventLoopUtilization`, und es verhält sich auf allen drei
+unterschiedlich:
+
+| Laufzeitumgebung | `performance.eventLoopUtilization` |
+| --- | --- |
+| Bun 1.3 / 1.4 | nicht vorhanden |
+| Node 26 | vorhanden, mit echtem Messwert |
+| Deno 2.6 | vorhanden, dauerhaft `{ idle: 0, active: 0, utilization: 0 }` |
+
+Eine Feature-Prüfung besteht damit auf zwei Laufzeitumgebungen, und eine
+dieser zwei lügt. Eine darauf gebaute Ratio läge auf Deno für immer bei
+flachen 0 %, was schlimmer ist als gar nichts zu veröffentlichen: Ein
+Alarm auf einer Metrik, die niemals auslöst, sieht genauso aus wie ein
+System, das niemals gesättigt ist. Und selbst dort, wo der Messwert echt
+ist, umfasst er die ganze Event-Loop und lässt sich deshalb nie einem von
+mehreren Dispatchern zurechnen.
+
+Scheduling-Verzögerung braucht nichts außer einer Uhr, ist also auf allen
+drei dieselbe Messung — und sie beantwortet dieselbe Frage in einer Form,
+die eine Alarmregel aussprechen kann: statt *„Utilization liegt bei
+100 %"* eben *„Turns warten länger als mein Budget"*.
+
+Wenn du eine echte Loop-Belegung pro **Knoten** willst, ist das ein
+anderes Signal aus einer anderen Quelle — Timer-Verzug, von der
+Laufzeitumgebung gesampelt — und es gehört zum Detektor für
+Event-Loop-Aushungerung, nicht hierher.
+
+## Dead-Letter-Metriken
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `actor_dead_letters_total` | counter | `outcome` | Von der Dead-Letter-Queue erfasste unzustellbare Nachrichten, nach Ausgang. |
+
+Nur vorhanden, sobald
+[`actor-ts.dead-letters.store`](/de/operations/dead-letters/) etwas
+anderes als `off` ist — der Counter wird von der Queue erzeugt, ein System,
+das nichts erfasst, zählt also nichts. `store = "metrics"` ist die
+Einstellung für genau diesen Counter und nichts weiter: sie zählt jedes
+Letter und bewahrt keine Payload auf. `outcome` ist eines von:
+
+- `captured` — ein neues Letter kam in die Queue.
+- `replayed` — ein Letter wurde zurückgegeben.
+- `replay-failed` — ein erneut zugestelltes Letter kam zurück, der
+  Empfänger kann es also weiterhin nicht annehmen. Ein steigendes
+  `replay-failed` bei flachem `captured` ist eine giftige Nachricht, die
+  erneut versucht wird, keine neue Störung.
+
+**Es gibt bewusst kein `recipient`-Label.** Es trug den vollständigen
+Pfad des Actors, den die Nachricht nicht erreicht hat — unter Sharding
+also `entity-<entityId>`, gewählt von dem, der die Shard-Region
+adressiert, und bei einem anonymen Actor ein frischer Pfad pro Spawn.
+Gemessen an der Stock-Label-Regel am Ende dieser Seite ist das ein Wert
+pro Instanz, für den nichts bezahlt: das Geschwister
+`actor_mailbox_size` behält sein `path`, weil eine Serie dort einen
+anhaltenden Rückstau von 10 000 Nachrichten kostet — hier kostete eine
+Serie eine einzige unzustellbare Nachricht.
+
+An welchen Pfad ein Letter adressiert war, ist deshalb nicht verloren —
+es stand nie nur auf dem Counter. Jedes Letter wird auf dem
+[Event-Stream](/de/operations/dead-letters/) als `DeadLetter` mit seiner
+Recipient-Ref veröffentlicht, und unter `store = "memory"` oder
+`"persistent"` hält die Queue `recipientPath` auf dem Eintrag selbst.
+Beides ist pro Ereignis statt pro Serie und kostet damit nichts
+Dauerhaftes; `deadLetterQueue.list({ recipient })` beantwortet „welcher
+Actor", der Counter beantwortet „wie viel, und wohin geht der Trend".
+
+`actor_dead_letters_total` ist ein **Verlust**-Signal, kein Backlog-Signal.
+Jede anhaltend von null verschiedene Rate bedeutet, dass Nachrichten an
+Actors gehen, die nicht da sind — eine über einen Neustart hinaus
+gehaltene veraltete Ref, eine Selection aus einem geänderten Pfad, ein
+Singleton ohne Host.
 
 ## Cluster-Metriken
 
@@ -86,10 +312,13 @@ Zum Monitoring der Cluster-Gesundheit:
   heißt, `max-members` / `max-tombstones` ist voll.
   `reason="timestamp-skew"` ist ein Tombstone, dessen `removedAt` kein
   plausibler Zeitpunkt ist. `reason="replayed-frame"` ist ein ganzer
-  Gossip-Frame, der den letzten von diesem Peer akzeptierten nicht
-  überbietet — ein Duplikat, oder jemand sendet einen vom Draht
-  mitgeschnittenen Frame erneut. Der Zähler wird einmal pro Frame um
-  dessen Anzahl erhöht, und die Label-Menge ist auf diese vier Werte
+  Gossip-Frame, dessen `sequence` den letzten von diesem Peer
+  akzeptierten nicht überbietet oder keine endliche Zahl innerhalb von
+  `maxVersionSkewMs` um die Uhr dieses Knotens ist — ein Duplikat,
+  jemand sendet einen vom Draht mitgeschnittenen Frame erneut, oder
+  jemand sendet einen erneut, dessen `sequence` umgeschrieben wurde, um
+  die Marke zu überspringen. Der Zähler wird einmal pro Frame um dessen
+  Anzahl erhöht, und die Label-Menge ist auf diese vier Werte
   geschlossen.
 - `cluster_envelope_from_mismatch_total` sollte ebenfalls bei null
   liegen. Er bewegt sich, wenn die Payload eines Envelopes einen
@@ -108,9 +337,9 @@ Zum Monitoring der Cluster-Gesundheit:
 
 ## DistributedData-Metriken
 
-Der Quorum-Pfad des CRDT-Replikators — `updateAsync` / `getAsync` — und
-sein Wire-Decoder. Jede Label-Menge hier ist fest und winzig, die vier
-Familien tragen also insgesamt sechs Serien bei:
+Der Quorum-Pfad des CRDT-Replikators — `updateAsync` / `getAsync` — plus
+sein Wire-Decoder und sein Gossip-Packer. Jede Label-Menge hier ist fest
+und winzig, die fünf Familien tragen also insgesamt acht Serien bei:
 
 | Metrik | Typ | Labels | Bedeutung |
 | --- | --- | --- | --- |
@@ -118,9 +347,10 @@ Familien tragen also insgesamt sechs Serien bei:
 | `distributed_data_quorum_timeouts_total` | counter | `operation` | Quorum-Requests, die ihre Deadline erreichten, bevor genug Replikas antworteten. |
 | `distributed_data_quorum_rejected_total` | counter | `operation` | Quorum-Requests, die abgelehnt wurden, weil `max-pending-quorum-requests` erreicht war. |
 | `distributed_data_dropped_values_total` | counter | — | Von Peers gelieferte CRDT-Werte, die diese Replika nicht dekodieren wollte. |
+| `distributed_data_gossip_skipped_keys_total` | counter | `reason` | Lokale Keys, die ein Gossip-Frame nicht tragen konnte — über dem Frame-Budget oder nicht serialisierbar. |
 
 `operation` ist `write` oder `read` — diese beiden Werte und keine
-anderen.
+anderen. `reason` ist `oversize` oder `unserialisable`, ebenso.
 
 - `distributed_data_quorum_pending` dicht an deinem konfigurierten
   `max-pending-quorum-requests` heißt, dass der nächste Aufrufer gleich
@@ -134,6 +364,62 @@ anderen.
 - `distributed_data_dropped_values_total` ist gar kein Tuning-Signal —
   ein Peer schickt Payloads, die diese Replika nicht dekodieren kann,
   also ein kaputter oder feindlicher Knoten.
+- `distributed_data_gossip_skipped_keys_total{reason="oversize"}` über
+  null heißt, dass ein Key **nicht konvergiert**: seine eigene Kodierung
+  überschreitet `max-gossip-bytes` (oder das Wire-Cap, auf das es
+  heruntergeschnitten wird), und der State eines Keys ist die kleinste
+  Einheit, die Gossip senden kann — Aufteilen hilft also nicht. Erhöhe
+  beide Knöpfe oder teile den Wert auf; die begleitende Warnung nennt
+  Key und Größe. `reason="unserialisable"` heißt, der Tagged-JSON-Codec
+  verweigert den Wert — eine Funktion oder ein `Promise` in einem
+  `LWWRegister`, also ein Anwendungs- und kein Tuning-Problem.
+
+## Projektions-Metriken
+
+Eine Projektion ist eine Hintergrund-Schleife, der niemand zusieht —
+also genau die Sorte Sache, die still ausfällt.  Diese drei sagen
+dir, dass ein Read-Model seinem Journal nicht mehr folgt:
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `persistence_projection_stalled` | gauge | `projection` | 1, solange die Projektion an einem Event hängt, dessen Handler fehlschlug. |
+| `persistence_projection_failures_total` | counter | `projection`, `reason` | Projektions-Ticks, die fehlschlugen. |
+| `persistence_projection_events_skipped_total` | counter | `projection` | Events, die eine `skip`-Strategie übersprungen und als Dead Letter veröffentlicht hat. |
+
+`projection` ist der `name`, den du vergeben hast; `reason` ist
+`handler` (dein `handle`-Callback hat geworfen) oder `poll` (die
+Query-Schicht oder der Offset-Store) — diese zwei Werte und keine
+anderen.
+
+- `persistence_projection_stalled` ist der Alarm.  Er wird beim Start
+  einer Projektion als 0 veröffentlicht, damit die Serie für jede
+  laufende Projektion existiert und `== 1` ein funktionierender
+  Alert-Ausdruck ist.  Ein Stall löst sich von selbst, wenn der
+  Handler sich fängt oder die Strategie das Event überspringt; einer,
+  der auf 1 bleibt, hat entweder seine Retries aufgebraucht und
+  gestoppt oder ist auf endloses Wiederholen konfiguriert.
+- `reason="handler"` von `reason="poll"` zu trennen trennt die beiden
+  Behebungen: ein Handler-Fehler ist ein schlechtes Event oder ein
+  kaputtes Read-Model, ein Poll-Fehler ist das Journal darunter.  Nur
+  Handler-Fehler verbrauchen das `maxRetries`-Budget.
+- `persistence_projection_events_skipped_total` ist das
+  **Datenverlust**-Signal.  Jede Bewegung heißt, dem Read-Model fehlt
+  etwas, das eine `skip`-Strategie bewusst nicht blockieren wollte —
+  welche Events es waren, sagen die Dead Letters.
+
+`projection` ist durch die Anzahl der deklarierten Projektionen
+begrenzt, normalerweise eine Handvoll.  Die eine Form, die das
+sprengt, ist der Per-pid-
+[Fan-out](/de/persistence/projections/#fan-out-eine-starten-sobald-eine-entity-auftaucht),
+bei dem der Name aus der Entity-Id abgeleitet wird — dort erbt das
+Label die Entity-Anzahl, und es gilt dieselbe
+[Kardinalitätsgrenze](/de/observability/metrics/core-metrics/#die-kardinalitätsgrenze)
+wie für `actor_mailbox_size{path}`.  Diese Kardinalität hast du selbst
+gewählt, indem du eine Projektion pro Entity deklarierst — deshalb
+bleibt das Label; siehe die Stock-Label-Regel am Ende dieser Seite.
+
+Siehe [Projektionen](/de/persistence/projections/) für die
+Strategien, die diese Metriken beschreiben.
 
 ## Overhead
 
@@ -149,13 +435,24 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Hoch-kardinales `path`-Label">
   ```ts
   // Per-sharded-Entity-Actor: Tausende verschiedene Pfade
-  actor_mailbox_dropped_total{path="actor-ts://.../entity-1"}
-  actor_mailbox_dropped_total{path="actor-ts://.../entity-2"}
+  actor_mailbox_size{class="Order", path="actor-ts://.../entity-1"}
+  actor_mailbox_size{class="Order", path="actor-ts://.../entity-2"}
   ...
   ```
-  `actor_mailbox_dropped_total` trägt ein `path`-Label, das für
-  sharded Entities hoch-kardinal sein kann (ein Pfad pro Actor).
-  Die Serien-Anzahl ist **beschränkt, aber nicht klein**: die
+  `actor_mailbox_size` trägt ein `path`-Label, das für sharded
+  Entities hoch-kardinal sein kann (ein Pfad pro Actor). In Schach
+  hält es die Meldeschwelle von 10 000 Nachrichten: eine Serie
+  existiert nur für einen Actor, der *bereits* tief im Rückstand ist
+  — die Breite der Familie zählt also gleichzeitige Störungen und
+  nicht Entities, und auf einem gesunden System ist sie leer. Bei
+  einer breiten Störung kann sie trotzdem Tausende erreichen.
+
+  *Danach* hält sie in Schach, dass die Serie eines erholten Actors
+  entfernt und nicht auf 0 gesetzt wird: die Breite fällt mit der
+  Störung zurück, statt über die Lebenszeit des Prozesses
+  hochzuratschen.
+
+  Die Serien-Anzahl ist dann **beschränkt, aber nicht klein**: die
   [Kardinalitätsgrenze](/de/observability/metrics/core-metrics/#die-kardinalitätsgrenze)
   der Registry stoppt die Familie bei 10 000 Serien und faltet den
   Rest in `path="__overflow__"` — der Prozess lässt sich über dieses
@@ -164,6 +461,42 @@ import { Aside } from '@astrojs/starlight/components';
   oder strippe das Label downstream, wenn du genug Entities
   betreibst, um dort hinzukommen, und werte das Auftauchen einer
   `__overflow__`-Serie als genau dieses Signal.
+</Aside>
+
+<Aside type="note" title="Was ein Stock-Label werden darf">
+  Eine Regel deckt alles oben ab: **die Werte eines Stock-Labels
+  müssen durch das begrenzt sein, was das Deployment deklariert — nie
+  durch das Verkehrsaufkommen, durch die Anzahl gespawnter Actors
+  oder durch einen Wert, den eine entfernte Partei liefert.** `class`
+  ist eine Konstante im Quelltext, `reason` und `frame` sind
+  geschlossene Mengen, `projection` ist ein Name, den du schreibst.
+
+  Zwei Labels sind pro Instanz und bleiben es aus genannten Gründen.
+  `actor_mailbox_size{path}` hängt an der Meldeschwelle oben, und das
+  Label ist konstitutiv statt beschreibend — ohne es würde in einem
+  Tiefen-Gauge jeder Actor einer Klasse innerhalb eines Sampling-Laufs
+  seine Geschwister überschreiben. `persistence_projection_*{projection}`
+  ist durch die Projektionen begrenzt, die du deklarierst; der
+  Per-pid-Fan-out oben ist deine Entscheidung, eine pro Entity zu
+  deklarieren — eine Kardinalität, die das Deployment verwaltet, keine,
+  die das Framework auferlegt hat.
+
+  Zwei Familien haben ein Label pro Instanz verloren, weil sie diese
+  Regel verletzten. `actor_mailbox_dropped_total` trug früher `path` und
+  bestand keinen der beiden Tests: Abwerfen ist der Normalbetrieb einer
+  beschränkten Mailbox, gesunde Actors erzeugten also dauerhafte Serien,
+  und unter Sharding stammte der Wert von dem, der die Shard-Region
+  adressiert hat. `actor_dead_letters_total` trug früher `recipient` —
+  derselbe Wert unter anderem Namen, zum Preis einer unzustellbaren
+  Nachricht pro Serie.
+
+  Die Regel ist inzwischen ein **Gate statt einer Notiz**. Sie landete
+  einen Commit-Tag, nachdem sie für den Drop-Counter aufgeschrieben
+  worden war, auf dem Dead-Letter-Counter — weil das Einzige, was sie
+  prüfte, ein Test auf dem Label-Satz einer einzelnen Familie war.
+  `tests/unit/metrics/StockMetrics.test.ts` liest jetzt jede
+  Stock-Familie aus `src/` und prüft das gesamte Inventar gegen diese
+  Regel, mit den beiden Labels pro Instanz oben als benannte Ausnahmen.
 </Aside>
 
 <Aside type="caution" title="Counter werden beim Neustart zurückgesetzt">

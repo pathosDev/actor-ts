@@ -188,6 +188,16 @@ be read on the hot path, you can:
     });
     ```
 
+    Sequence numbers survive the copy, compacted sources included —
+    the target inherits the source's compaction mark, so an entity
+    whose journal was compacted past a snapshot keeps the numbering
+    its snapshot and its projection cursors refer to.  Run the
+    journal copy **before** the snapshot copy, and pass
+    `sourcePersistenceOptions` / `targetPersistenceOptions` to
+    `migrateBetweenSnapshotStores` whenever the master key comes
+    from the actor rather than the store's own configuration — see
+    [Migration recipes](/persistence/migration/recipes/).
+
 2. **Drop the v1 step** from the `MigrationChain` once the
    backfill is complete:
 
@@ -271,6 +281,14 @@ idempotent and safe to re-run after a partial failure.
 `If-Match` is used internally so a concurrent writer can't be
 overwritten silently.
 
+If the bucket also has the integrity HMAC turned on, pass
+`integrity` — the same configuration the store has.  The tag
+covers the manifest bytes, so the sweep has to verify it to read
+a body and recompute it to write one back; without the key it
+refuses before the first write instead of aborting half-way
+through.  A bucket still part-way through turning integrity on
+adds `allowUntaggedBodies: true` as well.
+
 #### Durable resume tokens + completeness check
 
 For million-object buckets the naive sweep above has two
@@ -323,6 +341,14 @@ const result = await reEncryptObjectStorage(backend, {
   // retired-key footgun BEFORE the sweep writes a single PUT.
   verifyKeyringCompleteness: true,
   // sampleSize: 200,   // optional override; default = min(100, total)
+
+  // — integrity (#116) —
+  // Required when bodies carry an HMAC tag: the same check above
+  // refuses the run when a sampled tagged body has no key to
+  // verify it with.  Tags are re-applied only where the body
+  // already carried one — nothing is promoted.
+  integrity: { mode: 'hmac-sha256', integrityKey },
+  // allowUntaggedBodies: true,   // only while the corpus is mixed
 
   // — durable resume —
   // Save state every 500 rewrites.  After a crash, the next
@@ -393,7 +419,7 @@ unrecoverable.
 | `migrateInMemoryJournal(journal, manifestFor)` | Bulk-rewrite every event under a journal |
 | `migrateSnapshotStore(store, persistenceIds, manifestFor)` | Same for snapshots           |
 | `MasterKeyRing` `{ active, retired? }`    | Multi-version encryption key ring         |
-| `reEncryptObjectStorage(backend, options)`   | Sweep: re-encrypt every body under a prefix to the active key |
+| `reEncryptObjectStorage(backend, options)`   | Sweep: re-encrypt every body under a prefix to the active key — pass `integrity` when the bucket carries HMAC tags (#739) |
 | `ReEncryptProgressStore` / `InMemoryReEncryptProgressStore` | Durable resume tokens for the sweep (#109) — plug a file/Redis/object-storage backed implementation for million-object buckets |
 
 All of them are exported from the top-level `actor-ts` barrel.

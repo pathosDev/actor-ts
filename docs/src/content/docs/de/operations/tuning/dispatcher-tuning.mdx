@@ -44,21 +44,31 @@ dass HTTP-Requests nicht drankommen.
 **Ursache**: Ein Actor (oder eine Gruppe Actors) verarbeitet
 Nachrichten so schnell, dass HTTP-Handler auf ihren Turn warten.
 
-**Fix**: Beim `ImmediateDispatcher` (Default) bleiben und **die
-beschäftigten Actors mit einem Throughput-Dispatcher pro Actor
-bounden**:
+**Fix**: Beim `ImmediateDispatcher` (Default) bleiben und **das
+Batch-Budget des beschäftigten Actors senken**:
 
 ```ts
-import { ActorOptions, ThroughputDispatcher } from 'actor-ts';
+import { ActorOptions } from 'actor-ts';
 
-const heavyOptions = ActorOptions.create().withDispatcher(new ThroughputDispatcher(100));
+const heavyOptions = ActorOptions.create().withThroughput(4);
 
 const heavyActor = system.spawnAnonymous(HeavyWorker, heavyOptions);
 ```
 
-Der schwere Actor verarbeitet 100 Nachrichten, yieldet, lässt
-HTTP aufholen, verarbeitet 100 weitere. HTTP-Latenz sinkt;
-Durchsatz beim schweren Actor wird kaum beeinträchtigt.
+Der schwere Actor verarbeitet 4 Nachrichten, yieldet, lässt HTTP
+aufholen, verarbeitet 4 weitere. HTTP-Latenz sinkt; der Durchsatz
+des schweren Actors fällt nur so weit, wie der kleinere Batch ihn
+kostet.
+
+:::caution[Nicht `withDispatcher(new ThroughputDispatcher(...))`]
+Diese Seite empfahl früher, dem beschäftigten Actor einen eigenen
+`ThroughputDispatcher` zu geben. Das batcht **nichts** (#409): Die Queue
+eines Dispatchers hält einen *Turn* pro Actor, und ein Actor kann immer nur
+einen Turn gleichzeitig eingereiht haben — ein Dispatcher für einen einzigen
+Actor hat also nie eine zweite Einheit abzuarbeiten, und sein Batch ist
+immer exakt 1. `withThroughput()` ist die Per-Actor-Stellschraube; siehe
+[Per-Actor-Throughput](#per-actor-throughput) weiter unten.
+:::
 
 ## Symptom: niedriger Actor-Durchsatz, niedrige CPU-Nutzung
 
@@ -92,31 +102,105 @@ aushungern** (Netzwerk-Reads, Timer). Nur nutzen, wenn:
 ## ThroughputDispatcher-Optionen
 
 ```ts
-new ThroughputDispatcher(100); // Nachrichten pro Batch
+new ThroughputDispatcher(100); // queued actor turns per tick
 ```
 
 Der Konstruktor ist positional — `throughput` zuerst, eine
 optionale Dispatcher-`id` als zweites:
 
-- **`throughput`** — Nachrichten, die pro Actor vor dem Yield
-  verarbeitet werden. Höher = mehr Durchsatz, schlechtere
+- **`throughput`** — **Turns**, die pro Tick abgearbeitet werden,
+  über alle Actors hinweg, die sich diesen Dispatcher teilen.
+  Keine Nachrichten, und nicht pro Actor: Jeder Turn gehört einem
+  anderen Actor, weil ein Actor immer nur einen Turn gleichzeitig
+  eingereiht haben kann. Höher = mehr Durchsatz, schlechtere
   I/O-Verschränkung. Übliche Werte: 10-1000. Default ist 16.
 - Zwischen Batches yieldet er immer via `setImmediate` (mit
   Fallback auf `setTimeout(0)`, wo `setImmediate` nicht verfügbar
   ist), damit I/O und Timer verschränken. Das ist nicht
   konfigurierbar.
 
-Für einen Batch-Prozessor, der Broker-Nachrichten verarbeitet:
-`throughput: 200` ist ein vernünftiger Startpunkt.
+Für einen Batch-Prozessor mit vielen Actors, die Broker-Nachrichten
+verarbeiten: `throughput: 200` ist ein vernünftiger Startpunkt.
 
-## Per-Actor-Dispatcher
+## Per-Actor-Throughput
+
+Wie viele Nachrichten **ein** Actor pro Turn vor dem Yield
+abarbeitet, ist eine von allem am Dispatcher getrennte Einstellung:
 
 ```ts
 import { ActorOptions } from 'actor-ts';
 
-const bulkOptions = ActorOptions.create().withDispatcher(new ThroughputDispatcher(500));
+const bulkOptions = ActorOptions.create().withThroughput(64);
 
-const heavy = system.spawnAnonymous(BulkProcessor, bulkOptions);
+const bulk = system.spawnAnonymous(BulkProcessor, bulkOptions);
+```
+
+Systemweit heißt dieselbe Stellschraube `actor-ts.actor.throughput`:
+
+```hocon
+actor-ts {
+  actor {
+    throughput = 64
+  }
+}
+```
+
+Die Präzedenz ist die übliche — `withThroughput()` schlägt HOCON
+schlägt den eingebauten Default von 16.
+
+**Das ist die Einstellung, die den Scheduling-Overhead für einen
+beschäftigten Actor beseitigt.** Jede Nachricht kostete früher einen
+vollen `setImmediate`-Roundtrip (~2,4 µs), unabhängig von jeder
+Dispatcher-Einstellung; das Batching amortisiert ihn über den
+gesamten Batch, was bei einer `tell`-getriebenen Last grob 2-3×
+wert ist.
+
+Der Trade-off ist Fairness, und zwar direkt: Ein Batch läuft ohne
+Yield bis zu seinem Budget, also ist `Budget × Handler-Zeit` die
+Verzögerung, die jeder Timer, jeder Socket-Read und jeder andere
+Actor sehen kann. Senke es Richtung `1` für einen Actor mit langsamem
+Handler, der sich ein System mit latenzsensitiver Arbeit teilt; erhöhe
+es für einen Actor mit kurzem Handler, der ein Durchsatz-Flaschenhals
+ist. Ein Batch endet immer vorzeitig bei leerer Mailbox, bei Stop oder
+Suspend und bei einem leerlaufenden Throttle-Bucket — das Budget ist
+also eine Obergrenze, nie eine Zusage.
+
+## Was eine Nachricht kostet, wenn niemand zusieht
+
+Wissenswert, bevor du irgendetwas tunst, weil es den Maßstab setzt, an
+dem alles andere gemessen wird.
+
+Auf dem Default-Dispatcher **dominiert der Scheduling-Roundtrip alles
+andere auf dem Nachrichtenpfad** — rund 2,4 µs gegenüber einer rohen
+Mailbox-Operation von einigen zehn Nanosekunden.  Deshalb ist
+[Per-Actor-Throughput](#per-actor-throughput) die Einstellung mit dem
+größten Effekt auf eine `tell`-getriebene Last, und deshalb bewegt eine
+schnellere Queue oder ein schlankerer Handler die Zahl weit weniger, als
+es sich anfühlt.
+
+Darunter liegt der Per-Message-Overhead des Frameworks selbst, mit
+Metriken und Tracing **aus**.  Das waren früher vier
+Extension-Registry-Lookups, vier Metrik-Label-Objekte, gebaut für eine
+Registry, die sie verwirft, ein Closure, ein Wegwerf-Array und zwei
+Clock-Reads — pro Nachricht, in jedem System, egal ob irgendetwas
+beobachtet wurde.  #411 hat all das entfernt; übrig bleiben eine Handvoll
+Feldzugriffe und Null-Checks.  Beide Extensions lassen sich weiterhin zur
+Laufzeit einschalten, und eine Nachricht ist entweder ganz oder gar nicht
+instrumentiert — die Handles werden einmal pro Nachricht aufgelöst statt
+an jedem Instrumentierungspunkt.
+
+Wenn du Allokationsdruck statt Latenz verfolgst, isoliert
+`benchmarks/memory/receive-path.ts` genau das, und sein Header erklärt,
+warum sich der Effekt als Durchsatz und nicht als Heap zeigt.
+
+## Per-Actor-Dispatcher
+
+```ts
+import { ActorOptions, MicrotaskDispatcher } from 'actor-ts';
+
+const computeOptions = ActorOptions.create().withDispatcher(new MicrotaskDispatcher());
+
+const heavy = system.spawnAnonymous(BulkProcessor, computeOptions);
 
 const httpHandler = system.spawn(
   HttpHandler,
@@ -124,9 +208,16 @@ const httpHandler = system.spawn(
 );
 ```
 
-Frei mischen. Schwere Actors bekommen ihren eigenen
-throughput-getuneten Dispatcher; HTTP-Handler bleiben auf dem
-Default. Das ist das **empfohlene Produktionsmuster**.
+Frei mischen: Ein reiner Compute-Actor kann auf Microtasks laufen,
+während HTTP-Handler auf dem Default bleiben.
+
+Wofür ein Per-Actor-Dispatcher **nicht** taugt, ist Batching. Ein
+`ThroughputDispatcher` für einen einzigen Actor arbeitet eine Queue
+ab, die nie mehr als dessen einen ausstehenden Turn hält — sein
+Budget ist also unerreichbar. Nutze stattdessen
+[`withThroughput()`](#per-actor-throughput). Ein
+`ThroughputDispatcher` lohnt sich, wenn eine *Gruppe* von Actors ihn
+sich teilt.
 
 ## Systemweiter Dispatcher
 
@@ -140,30 +231,90 @@ spezifiziert**. Nützlich für Batch-only-Systeme ohne HTTP-Traffic.
 
 ## Messen
 
-Nutze die
-[Stock-Metrik](/de/observability/metrics/stock-metrics/)
-`actor_message_duration_ms`:
+Zwei [Stock-Metriken](/de/observability/metrics/stock-metrics/) teilen
+die Latenz einer Nachricht genau dort, wo sie angenommen wird:
 
 ```
-P50 ≈ Arbeitszeit
-P99 - P50 ≈ Dispatcher-Latenz (Queueing)
+actor_mailbox_wait_seconds     — in der Queue, wartet auf ihren Zug
+actor_message_handler_seconds  — innerhalb von onReceive
 ```
 
-Wenn P99 deutlich höher als P50 mit kleiner Varianz der Arbeitszeit
-ist, **hilft Dispatcher-Tuning**.
+Lies sie zusammen; das Paar sagt dir, ob Dispatcher-Tuning überhaupt
+helfen kann:
 
-Das Gauge
-`actor_mailbox_size` unter Last zeigt, ob Actors mitkommen.
-Dauerhaft wachsende Tiefe = entweder ein langsamer Handler oder
-ein fehlkonfigurierter Dispatcher.
+- **Wait-p99 hoch, Handler-p99 niedrig** — der Actor ist in Ordnung,
+  die Nachrichten liegen in der Queue. **Dispatcher-Tuning hilft**:
+  erhöhe das Per-Actor-Throughput-Budget, damit jeder Zug mehr
+  Rückstau abbaut, oder nimm den Actor von einem Dispatcher herunter,
+  den er sich mit langsamer Arbeit teilt.
+- **Handler-p99 hoch** — der Handler selbst ist die Kosten. Keine
+  Dispatcher-Einstellung macht ihn schneller; das ist ein Code- oder
+  Downstream-Problem, und ein höheres Budget macht die Latenz für
+  alles, was sich die Runtime teilt, *schlechter*.
+
+Die Queueing-Verzögerung musste früher aus dem Abstand zwischen p50 und
+p99 des Handler-Histogramms erschlossen werden, was sie mit der Varianz
+der Arbeit selbst vermischte. Sie wird jetzt direkt gemessen.
+
+Das Gauge `actor_mailbox_size` unter Last zeigt, ob Actors mitkommen.
+Dauerhaft wachsende Tiefe = entweder ein langsamer Handler oder ein
+fehlkonfigurierter Dispatcher. Es ist das *spätere* der beiden Signale
+— eine Serie entsteht erst ab 10 000 wartenden Nachrichten, während die
+Wartezeit steigt, sobald ein Actor zurückfällt. `actor_mailbox_depth`
+füllt diese Lücke: ein Histogramm ohne Labels, einmal pro Zustellung
+beobachtet, sodass ein Ausschlag, der nie 10 000 erreicht, seinen
+Ausläufer dennoch zeigt.
+
+### Ist der Dispatcher selbst die Queue?
+
+Beide Metriken oben betreffen die *Mailbox* eines Actors. Eine Nachricht
+kann auch eine Ebene höher warten — im Dispatcher, nachdem die Zelle
+einen Zug angefordert hat und bevor dieser Zug beginnt:
+
+```
+actor_dispatcher_queue_delay_seconds{dispatcher="..."}
+```
+
+Im Ruhezustand ist das eine einzige Scheduling-Übergabe, Mikrosekunden.
+Wenn es steigt, ist weder der Actor das Problem noch seine Mailbox: Züge
+stauen sich hinter anderen Zügen, und genau dafür ist Dispatcher-Tuning
+da.
+
+```promql
+histogram_quantile(0.99,
+  rate(actor_dispatcher_queue_delay_seconds_bucket[5m]))
+# Per dispatcher. A high p99 on one and not the others tells you which
+# pool to split, and which actors to move off it.
+```
+
+Neben dem Mailbox-Paar gelesen vervollständigt es die Diagnose:
+
+- **Delay-p99 hoch** — die Züge konkurrieren. Entweder gibt etwas auf
+  diesem Dispatcher nicht ab (ein `ThroughputDispatcher` mit zu hohem
+  Budget oder ein blockierender Handler), oder zu viele Actors teilen ihn
+  sich. Teile den Dispatcher auf, oder senke sein Throughput, damit er
+  häufiger abgibt.
+- **Delay-p99 niedrig, Mailbox-Wait-p99 hoch** — die Züge starten prompt,
+  und die eigene Queue eines Actors ist der Rückstau. Erhöhe
+  `withThroughput` *dieses Actors*, damit jeder Zug mehr abbaut, statt am
+  Dispatcher zu drehen.
+
+Es gibt bewusst kein `dispatcher_saturation_ratio` — ein 0–1-Anteil
+„beschäftigt" lässt sich auf allen drei unterstützten Laufzeitumgebungen
+nicht ehrlich berechnen, und
+[Stock-Metriken](/de/observability/metrics/stock-metrics/#warum-es-keine-sättigungs-ratio-gibt)
+hält die Messungen hinter dieser Entscheidung fest. Der
+`MicrotaskDispatcher` ist der eine Fall, in dem eine niedrige
+Verzögerung kein Beleg für Luft ist — aus dem dort genannten Grund.
 
 ## Heuristiken
 
 ```
 HTTP-Server + Actors        → ImmediateDispatcher (Default)
 Compute-heavy + kein HTTP   → MicrotaskDispatcher
-Batch-Verarbeitung          → ThroughputDispatcher (throughput 100-500)
-Gemischt: schwerer Actor + HTTP   → ImmediateDispatcher-Default + ThroughputDispatcher pro schwerem Actor
+Batch-Verarbeitung, viele Actors → ThroughputDispatcher (throughput 100-500)
+Ein Actor ist der Flaschenhals → Default-Dispatcher + withThroughput(64...256)
+Gemischt: schwerer Actor + HTTP → Default-Dispatcher + withThroughput(2...8) auf dem schweren Actor
 ```
 
 import { Aside } from '@astrojs/starlight/components';

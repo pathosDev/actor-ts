@@ -43,10 +43,23 @@ export type PromClientLabelValues = {
   [k: string]: string | number;
 };
 
+/**
+ * `remove` is prom-client's own per-child eviction — the object-argument
+ * overload of `Metric.remove(...)`, present since v11.2 — and it is what
+ * this bridge forwards {@link MetricsRegistry.remove} onto (#745).
+ *
+ * Declared **required** rather than optional, unlike the registry-level
+ * members below.  An optional method would let a client namespace missing
+ * it type-check and then silently diverge: the bridge would drop the tuple
+ * from its own `series` tally, freeing a cap slot, while the series itself
+ * stayed on the prom-client side and kept being scraped.  A compile error
+ * on a namespace that cannot evict is the honest outcome.
+ */
 export interface PromClientCounter {
   inc(value?: number): void;
   inc(labels: PromClientLabelValues, value?: number): void;
   labels(values: PromClientLabelValues): { inc(value?: number): void };
+  remove(labels: PromClientLabelValues): void;
 }
 
 export interface PromClientGauge {
@@ -61,12 +74,14 @@ export interface PromClientGauge {
     inc(v?: number): void;
     dec(v?: number): void;
   };
+  remove(labels: PromClientLabelValues): void;
 }
 
 export interface PromClientHistogram {
   observe(value: number): void;
   observe(labels: PromClientLabelValues, value: number): void;
   labels(values: PromClientLabelValues): { observe(v: number): void };
+  remove(labels: PromClientLabelValues): void;
 }
 
 export interface PromClientRegistryLike {
@@ -130,9 +145,14 @@ type Entry = CounterEntry | GaugeEntry | HistogramEntry;
  * include the framework's counters / gauges / histograms next to
  * your existing app metrics — same registry, same exposition.
  *
- * `collect()` returns a snapshot translated from the prom-client side
- * for parity; in practice users read via `prom-client.register.metrics()`
- * directly and only call `collect()` from tests.
+ * **`collect()` on the returned registry is empty and always will be** —
+ * prom-client holds the canonical state and this bridge keeps no copy of
+ * it, so the registry declares `collectable: false` (#744).  Read the
+ * framework's metrics the way you read your own: `register.metrics()` on
+ * the prom-client side.  Anything in this framework that reads through
+ * `collect()` — the management `GET /metrics` route, the DevTools
+ * overview — reports the figures as unavailable rather than as zero while
+ * this bridge is installed.
  */
 export function promClientRegistry(
   options: PromClientAdapterOptions,
@@ -355,18 +375,55 @@ export function promClientRegistry(
     },
 
     /**
-     * Translate the prom-client side back into our `MetricSample` shape.
-     * Mostly useful in tests; production users will read via
-     * `register.metrics()` (or `register.getMetricsAsJSON()`) on the
-     * prom-client side directly and skip this round-trip.
+     * **Always empty**, and `collectable` above is how a reader finds that
+     * out before believing it.
+     *
+     * The bridge writes through to prom-client and mirrors nothing, so
+     * there is no snapshot here to hand back: the values are in the
+     * registry the caller owns, and translating them back would put a
+     * second, competing exposition of the same series next to the user's
+     * own `/metrics` handler.  Read them there — `register.metrics()`, or
+     * `register.getMetricsAsJSON()` in a test.
+     *
+     * This used to be documented as a translated snapshot in two places,
+     * which is how both of the framework's own readers came to render the
+     * empty array as a busy system reporting zeros (#744).
      */
     collect(): ReadonlyArray<MetricSample> {
-      // This intentionally returns an empty array: the prom-client
-      // registry holds the canonical state, and exposing
-      // already-translated metrics here would compete with the
-      // user's own /metrics handler.  Tests that need read-back can
-      // call the prom-client registry directly.
       return [];
+    },
+
+    /**
+     * `false`: see {@link collect}.  Declared as a property on the returned
+     * literal rather than by throwing from `collect()`, because a reader has
+     * to be able to ask *before* it commits to an answer — the management
+     * route needs to choose a status code, and the DevTools sampler needs to
+     * choose between a figure and a dash.  A throw would only move the
+     * failure from a silent wrong number to a loud one.
+     */
+    collectable: false,
+
+    /**
+     * Forward a removal to prom-client's own per-child eviction (#745).
+     *
+     * The local `series` tally is dropped first and unconditionally, because
+     * it is the only thing the cardinality cap counts: leaving the key in it
+     * would keep a slot spent on a tuple that no longer exists, which is the
+     * accounting error the cap exists to prevent. `false` therefore means
+     * "this bridge never minted that tuple", not "prom-client refused".
+     *
+     * `DefaultMetricsRegistry`'s refusal to evict the overflow child falls
+     * out of the same tally rather than needing a special case here:
+     * `seriesLabelsOf` deliberately never adds the overflow tuple to
+     * `series` — it is not counted against the cap — so a removal naming it
+     * finds nothing, returns `false`, and never reaches prom-client.
+     */
+    remove(name, labels): boolean {
+      const entry = families.get(fullName(name));
+      if (entry === undefined) return false;
+      if (!entry.series.delete(labelKey(labels))) return false;
+      entry.impl.remove(asPromLabels(labels));
+      return true;
     },
 
     clear(): void {

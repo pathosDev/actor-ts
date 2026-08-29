@@ -25,9 +25,10 @@
  */
 
 export const ConfigKeys = {
-  /** ActorSystem identity — `actor-ts.system.*`. */
+  /** ActorSystem identity and lifecycle — `actor-ts.system.*`. */
   system: {
     name: 'actor-ts.system.name',
+    shutdownDrainTimeout: 'actor-ts.system.shutdown-drain-timeout',
   },
 
   /** Logger root — `actor-ts.logger.*`. */
@@ -53,6 +54,59 @@ export const ConfigKeys = {
     },
   },
 
+  /** Per-actor message-loop tuning — `actor-ts.actor.*`. */
+  actor: {
+    throughput: 'actor-ts.actor.throughput',
+  },
+
+  /**
+   * Dead-letter queue — `actor-ts.dead-letters.*`.  Read once, in the
+   * `ActorSystem` constructor, before any actor exists: a queue installed
+   * later would have missed whatever died in between.
+   *
+   * A top-level block rather than a leaf under `actor-ts.diagnostics.*`
+   * because capture is not a diagnostic switch — `persistent` makes it a
+   * durability guarantee with a journal behind it.  Anything that suppresses
+   * or samples the dead-letter *stream* (#1179) belongs under `diagnostics`
+   * and must gate downstream of this capture, or the queue's completeness
+   * claim is silently false.
+   *
+   * **This namespace is settled, and here is the reasoning it was missing.**
+   * It shipped under #433 while #1179 and #867 were both open, which left it
+   * looking like a decision taken rather than made.  Re-examined against what
+   * those two issues actually propose, they are not rival homes for these
+   * keys and they are not even each other's:
+   *
+   * - #1179 wants a per-recipient token bucket over the *publish* path, and
+   *   sketches it under `actor-ts.diagnostics.*`.
+   * - #867 wants dead-letter *logging* toggles, and sketches them at the
+   *   root — `log-dead-letters`, `log-dead-letters-during-shutdown`,
+   *   `log-dead-letters-suspend-duration` — beside `actor-ts.debug.*`.
+   *
+   * Neither asks for the retention keys to move, and there is no single
+   * alternative block they could move into.  The line that matters is the
+   * **reader**: everything here is read by `DeadLetterQueue` and decides what
+   * is *retained*; everything those two want is read on the publish side by
+   * `DeadLetterRef` and decides how loudly a letter is *announced*.  Merging
+   * them would give one block two readers in two subsystems, and would make a
+   * suppression knob look like it gates capture — which the code deliberately
+   * prevents by capturing before publishing.  Splitting by reader also keeps
+   * the safety property checkable in one place instead of by convention.
+   *
+   * If it is ever renamed anyway, the cost is 21 files and not four: this
+   * file, `Reference.ts`, `DeadLetterQueueOptions.ts`, `ActorSystem.ts`, five
+   * EN docs pages with their five DE twins, and seven test files.  Only the
+   * two `reference-conf.mdx` pages announce themselves, being byte-pinned by
+   * `tests/unit/config/ReferenceConfDocs.test.ts`.
+   */
+  deadLetters: {
+    store: 'actor-ts.dead-letters.store',
+    maxEntries: 'actor-ts.dead-letters.max-entries',
+    retention: 'actor-ts.dead-letters.retention',
+    maxReplays: 'actor-ts.dead-letters.max-replays',
+    persistenceId: 'actor-ts.dead-letters.persistence-id',
+  },
+
   /** Dispatcher root — `actor-ts.dispatcher.*`. */
   dispatcher: {
     default: 'actor-ts.dispatcher.default',
@@ -61,6 +115,13 @@ export const ConfigKeys = {
 
   /** Cache plugin-ids — `actor-ts.cache.*`. */
   cache: {
+    /**
+     * The block every named cache hangs under.  `CacheExtension` composes two
+     * per-name paths from it that cannot be static leaves because the name is
+     * the caller's: `<root>.<name>.plugin` selects the backend and
+     * `<root>.<name>.in-memory` overrides that instance's settings.
+     */
+    root: 'actor-ts.cache',
     inMemory: 'actor-ts.cache.in-memory',
     redis: 'actor-ts.cache.redis',
     memcached: 'actor-ts.cache.memcached',
@@ -70,6 +131,13 @@ export const ConfigKeys = {
   io: {
     broker: {
       amqp: 'actor-ts.io.broker.amqp',
+      /**
+       * The IMAP-in / SMTP-out mail bridge (#1133).  One root for both
+       * halves: they are two sides of one connection lifecycle, and a
+       * bridge configured with only one of them is the normal case rather
+       * than a degenerate one.
+       */
+      emailBridge: 'actor-ts.io.broker.email-bridge',
       grpc: {
         client: 'actor-ts.io.broker.grpc.client',
         server: 'actor-ts.io.broker.grpc.server',
@@ -108,6 +176,8 @@ export const ConfigKeys = {
     shutdownGracePeriod: 'actor-ts.http.shutdown-grace-period',
     /** Server-side WebSocket defaults for `websocket()` routes. */
     websocket: 'actor-ts.http.websocket',
+    /** Outbound `HttpClient` defaults — the shared client and `newClient(...)`. */
+    client: 'actor-ts.http.client',
   },
 
   /** Persistence plugin selection + config — `actor-ts.persistence.*`. */
@@ -167,14 +237,20 @@ export const ConfigKeys = {
     },
 
     /**
-     * Stable-observation bootstrap — `actor-ts.cluster.bootstrap.*` (#148).
-     * Read once per `bootstrapCluster` call with `stableObservation` enabled,
-     * which layers them under the explicit tuning.
+     * Stable-observation bootstrap and readiness —
+     * `actor-ts.cluster.bootstrap.*` (#148, #1355).  The observation timings
+     * are read once per `bootstrapCluster` call with `stableObservation`
+     * enabled, layered under the explicit tuning; the readiness pair
+     * (`await-ready`, `minimum-members`) is read by every `bootstrapCluster`
+     * call and by `Cluster.awaitReady` / `isReady`.
      *
-     * Timing only.  The election's *outcome* (`ClusterOptions.selfElection`)
-     * is deliberately not configurable here: it differs per node by
+     * The election's *outcome* (`ClusterOptions.selfElection`) is
+     * deliberately not configurable here: it differs per node by
      * construction, and one shared value would either stop every node from
-     * starting or have all of them self-elect at once.
+     * starting or have all of them self-elect at once.  `await-ready` ships
+     * comment-only in `reference.conf` for a related reason — a leaf that is
+     * always present could not express "unset", and unset is what selects
+     * the grace-aware computed default (#1086).
      */
     bootstrap: {
       stableMargin: 'actor-ts.cluster.bootstrap.stable-margin',
@@ -182,6 +258,8 @@ export const ConfigKeys = {
       maxWait: 'actor-ts.cluster.bootstrap.max-wait',
       requiredContactPoints: 'actor-ts.cluster.bootstrap.required-contact-points',
       selfElectionGrace: 'actor-ts.cluster.bootstrap.self-election-grace',
+      awaitReady: 'actor-ts.cluster.bootstrap.await-ready',
+      minimumMembers: 'actor-ts.cluster.bootstrap.minimum-members',
     },
 
     /**
@@ -208,7 +286,7 @@ export const ConfigKeys = {
     receptionist: {
       gossipInterval: 'actor-ts.cluster.receptionist.gossip-interval',
       maxSubscribersPerKey: 'actor-ts.cluster.receptionist.max-subscribers-per-key',
-      maxSubscribersTotal: 'actor-ts.cluster.receptionist.max-subscribers-total',
+      maxSubscriptionsTotal: 'actor-ts.cluster.receptionist.max-subscriptions-total',
     },
   },
 
@@ -229,15 +307,28 @@ export const ConfigKeys = {
    * against the mailbox underneath — see
    * `DEFAULT_MAX_PENDING_QUORUM_REQUESTS` for why that framing was dropped
    * (#1078, #1148).
+   *
+   * `max-gossip-bytes` bounds the third thing: what one *outbound* frame may
+   * carry.  It reads as a size (`1M`), and it is clamped down to
+   * `remote.max-frame-bytes` at consume time — a budget above the wire cap is
+   * the configuration that reintroduces #691, so it is not expressible (#691).
    */
   distributedData: {
     gossipInterval: 'actor-ts.distributed-data.gossip-interval',
     maxPendingQuorumRequests: 'actor-ts.distributed-data.max-pending-quorum-requests',
     maxQuorumTimeout: 'actor-ts.distributed-data.max-quorum-timeout',
+    maxGossipBytes: 'actor-ts.distributed-data.max-gossip-bytes',
   },
 
   /**
-   * Cluster bind address and wire limits — `actor-ts.remote.*`.
+   * Cluster addresses and wire limits — `actor-ts.remote.*`.
+   *
+   * `tcp.host` and `tcp.advertised-host` are two different things and only one
+   * of them may be a wildcard: the first is the interface this node binds, the
+   * second is the address it puts in every gossip frame for peers to dial back
+   * (#944).  `advertised-host` deliberately ships no leaf in `reference.conf`,
+   * so an unset one keeps meaning "derive it from `tcp.host`" instead of being
+   * permanently present and empty.
    *
    * `remote.tls.enabled` is read but **not honoured**: the transport
    * `Cluster` builds for itself is always plaintext, so the flag decides
@@ -249,6 +340,7 @@ export const ConfigKeys = {
   remote: {
     tcp: {
       host: 'actor-ts.remote.tcp.host',
+      advertisedHost: 'actor-ts.remote.tcp.advertised-host',
       port: 'actor-ts.remote.tcp.port',
     },
     tls: {
@@ -295,6 +387,7 @@ export const ConfigKeys = {
     defaultPhaseTimeout: 'actor-ts.coordinated-shutdown.default-phase-timeout',
     terminateActorSystem: 'actor-ts.coordinated-shutdown.terminate-actor-system',
     exitProcess: 'actor-ts.coordinated-shutdown.exit-process',
+    autoRegisterTasks: 'actor-ts.coordinated-shutdown.auto-register-tasks',
   },
 
   /**

@@ -439,6 +439,103 @@ für eine Read-Side-View, die `'account'`-Events abonniert.
 `undefined` zurückzugeben (der Default) bedeutet "keine Tags" —
 in Ordnung, wenn du noch keine Projektionen hast.
 
+`tagsFor` wird **einmal pro Event** gefragt, auch innerhalb eines
+`persistAll`.  Ein Batch, der Event-Arten mischt, wird also pro Art
+getaggt, und eine Projektion, die auf eine davon filtert, sieht
+genau ihre eigenen Events:
+
+```ts
+override tagsFor(event: Event): ReadonlyArray<string> | undefined {
+  return event.kind === 'paymentCaptured' ? ['payment'] : ['order'];
+}
+
+await this.persistAll([
+  { kind: 'orderPlaced' },       // → ['order']
+  { kind: 'paymentCaptured' },   // → ['payment']
+]);
+```
+
+Der Batch wird weiterhin atomar geschrieben — Tags pro Event teilen
+ihn nicht in mehrere Appends auf.
+
+### Was ein Tag enthalten darf
+
+Wie eine Persistenz-ID ist ein Tag selten eine Konstante — meist
+wird er aus dem Event gebaut (`` `tenant-${event.tenantId}` ``, ein
+optionales Label).  Und wie eine ID ist er mehr als ein Wert: jedes
+Backend macht aus der Liste eine *Storage-Form*, und sie wählen
+nicht dieselbe.  `journal.append()` weist deshalb eine Liste
+zurück, die nicht überall dasselbe bedeuten kann — bevor eine
+einzige Zeile geschrieben ist:
+
+| Zurückgewiesen | Warum |
+| --- | --- |
+| ein leerer Tag | er bedeutet in jedem Store etwas anderes — aus der Tag-Tabelle verworfen, aber in der kommaseparierten Spalte behalten, aus der die SQL-Journale zurücklesen; auf MongoDB als abfragbarer `''`-Bucket indiziert; auf dem Cassandra-Tag-Index eine einzige heiße `tag = ''`-Partition; und auf DynamoDB ein abgelehntes Item, denn ein String-Set darf kein leeres Element enthalten.  Die übliche Quelle ist eine Form `[category, subCategory ?? '']`, deren zweiter Platz leer geblieben ist |
+| derselbe Tag zweimal an einem Event | dieselbe Spreizung: Cassandras `set<text>` und der idempotente Insert in die Tag-Tabelle falten ihn zusammen, MongoDB und die CSV-Spalte behalten ihn, und DynamoDB lässt den ganzen Append scheitern, weil ein String-Set kein Element wiederholen darf |
+| länger als **255** Zeichen | ein Tag wird indiziert, und ein unbegrenzter bläht sowohl die Event-Zeile als auch jeden darüber gebauten Index auf |
+| mehr als **64** Tags an einem Event | dieselbe Schranke, pro Event gezählt — ein `persistAll` über zehn Events darf je 64 tragen, nicht 64 insgesamt |
+| ein Komma | die SQLite- und die relationalen Journale legen Tags in einer kommaseparierten Spalte ab; ein `,` darin würde beim Lesen in zusätzliche Tags zerfallen — ein Aufrufer könnte Einträge in die Tag-Liste eines Nachbar-Events schreiben |
+| Control-Zeichen | Tags werden in Logzeilen interpoliert — ein Newline lässt einen Aufrufer Log-Einträge fälschen |
+
+Alles andere ist erlaubt.  Tags werden Byte für Byte verglichen:
+`'Order'` und `'order'` sind zwei Tags und keine Wiederholung, und
+ein angehängtes Leerzeichen ergibt einen dritten.
+
+Prüfe deine eigenen Tags gegen diese Regeln, ohne einen Actor zu
+starten:
+
+```ts
+import { assertValidTags } from 'actor-ts/persistence';
+
+assertValidTags(tagsFor(event));
+```
+
+**Lesen wird nie verweigert.**  Nur `append` validiert — ein Stream,
+der vor diesen Regeln geschrieben wurde und bereits einen leeren
+oder wiederholten Tag trägt, spielt unverändert ab, und
+`journal.read(id, 1)` liefert genau die Liste zurück, die gespeichert
+wurde.  Neu ist nur, dass ein Append mit einer solchen Liste jetzt
+wirft — filtere sie also in `tagsFor`, statt das Journal entscheiden
+zu lassen.
+
+**Einen solchen Stream zu kopieren zählt als Schreiben.**  Lesen und
+Append sind die beiden Hälften, die die Regel oben trennt — und eine
+Journal-zu-Journal-Kopie ist beides zugleich: `migrateBetweenJournals`
+liest eine historische Tag-Liste und reicht sie direkt an das `append`
+des Ziels weiter.  Ein Alt-Stream spielt also für immer ab, lässt sich
+aber *so, wie er ist*, nicht kopieren — der eine Fall, den die
+Trennung allein nicht abdeckt.
+
+Die Kopie sagt das, bevor sie irgendetwas schreibt.  Sie geht die
+Quelle in einem rein lesenden Vorlauf durch und wirft
+`MigrationTagError` mit Persistence-ID und Sequenznummer, während Ziel
+und Fortschrittsspeicher unberührt bleiben; ein Lauf, der bis zu
+seinem ersten `append` kommt, läuft auch zu Ende.  Zwei Wege nach
+vorn, beide an der Kopie:
+
+```ts
+import { migrateBetweenJournals } from 'actor-ts/persistence';
+
+// Selbst entscheiden, was die Alt-Liste hätte sein sollen …
+await migrateBetweenJournals(oldJournal, newJournal, {
+  eventTransform: (e) => ({ ...e, tags: e.tags?.filter((tag) => tag.length > 0) }),
+});
+
+// … oder die beiden Reparaturen nehmen, die kein Urteil erfordern.
+// Leere Einträge fallen weg, Wiederholungen werden zusammengefaltet.
+const result = await migrateBetweenJournals(oldJournal, newJournal, {
+  invalidTags: 'sanitize',
+});
+console.log(`${result.eventsWithSanitizedTags} tag lists rewritten`);
+```
+
+`'sanitize'` repariert nur diese beiden Formen.  Ein Komma, ein
+Control-Zeichen, ein zu langer Tag oder zu viele Tags werden auch
+damit zurückgewiesen: Sie zu reparieren hieße, einen Tag zu erfinden
+oder einen zu verwerfen, den der Aufrufer so gemeint hat — diese
+Entscheidung gehört in `eventTransform`.  Die ganze Kopier-Geschichte
+steht in den [Migrations-Rezepten](/de/persistence/migration/recipes/).
+
 ## Schema-Evolution — Event-Adapter
 
 Wenn sich Event-Formen über die Zeit ändern (ein Feld wird umbenannt,
@@ -515,6 +612,81 @@ Rows aus früheren actor-ts-Versionen nutzten rohes
 `JSON.stringify`; sie dekodieren unverändert weiter — die Tags
 erscheinen nur in neu geschriebenen Rows, wo plain JSON den Wert
 korrumpieren würde.
+
+## Zwei Writer für eine Entity
+
+Sharding gibt dir genau eine Entity-Instanz pro Persistence-ID — bis
+es das nicht tut. Eine Netzwerkpartition plus ein Rebalance, oder ein
+Orchestrierungsfehler, der dieselbe Entity zweimal spawnt: schon
+recovern zwei Instanzen und nehmen beide Commands an.
+
+Das Journal übersteht das: Appends sind an die Sequenznummer
+gebunden, also verliert ein Writer mit `JournalConcurrencyError`.
+Eine Voraussetzung trägt das alles: **beide Writer müssen an
+dasselbe Journal appenden.**  Zwei Knoten mit je eigener Datenbank
+können nicht kollidieren — jeder Head-Check läuft gegen die eigene
+Datei — weshalb Pro-Knoten-Storage im Cluster die Historie still
+forkt, statt ein Rennen laut zu verlieren, und weshalb das
+Framework davor warnt ([Storage-Lokalität &
+Identität](/de/persistence/overview/#storage-lokalität--identität)).
+Der Schaden liegt **außerhalb** des Journals. Bis der Verlierer es merkt,
+hat er `onCommand` für das auslösende Command bereits ausgeführt — und
+wenn dieser Handler eine Karte belastet, eine Mail verschickt oder
+einen Downstream aufgerufen hat, macht das nichts rückgängig. Bis zu
+seinem nächsten `persist` beantwortet er außerdem Lesezugriffe aus
+State, über den der andere Writer längst hinaus ist.
+
+### Die Rückfalllinie: ein verlorenes Rennen stoppt den Actor
+
+Ein `JournalConcurrencyError` wird als das behandelt, was er ist —
+Beweis, dass diese Instanz ein Ownership-Rennen verloren hat — und der
+Actor **stoppt**. Er startet nicht neu. Genau darauf kommt es an: Die
+Default-Antwort der Supervision auf einen Fehler ist ein Restart, und
+ein neu gestarteter Verlierer recovert den nun fremden Journal-Head
+und macht weiter, als gehöre ihm die Entity.
+
+Das kostet nichts und braucht keine Konfiguration. Was es nicht kann:
+den bereits gelaufenen Seiteneffekt rückgängig machen.
+
+### Der Zaun: eine Lease
+
+Für Entities, deren Commands externe Effekte haben, binde Schreibzugriffe
+an genau einen Halter — über `lease()`:
+
+```ts
+class PaymentEntity extends PersistentActor<Command, Event, State> {
+  readonly persistenceId: string;
+
+  constructor(entityId: string, private readonly entityLease: Lease) {
+    super();
+    this.persistenceId = `payment-${entityId}`;
+  }
+
+  override lease(): Lease | null { return this.entityLease; }
+
+  // ...
+}
+```
+
+Die Lease wird in `preStart` erworben, **vor der Recovery** — eine
+Instanz, der die Entity nicht gehört, liest deren Historie gar nicht
+erst und kann in der Zwischenzeit also auch keine veralteten Antworten
+geben. Der `persist` eines Nicht-Halters wirft sofort, statt den
+Konflikt erst am Journal zu entdecken; genau das verhindert, dass der
+doppelte Seiteneffekt überhaupt feuert.
+
+Nutze `this.isLeaseHolder`, wenn du lieber verzweigst als fängst. Der
+Verlust einer gehaltenen Lease macht den Actor zum Nicht-Halter und
+ruft `onLeaseLost(reason)` — Default ist Stoppen, denn ein
+`PersistentActor`, der nicht schreiben darf, ist selten sinnvoll am
+Leben. Überschreibe es, um weiter Lesezugriffe zu bedienen.
+
+<Aside type="note" title="Welche Schicht brauche ich?">
+  Die Rückfalllinie ist immer aktiv. Nimm eine Lease dazu, wenn ein
+  doppeltes `onCommand` etwas täte, das du nicht zurücknehmen kannst —
+  Geld, Nachrichten, externe Aufrufe. Für reinen State, der nur ins
+  Journal geht, reicht die Rückfalllinie.
+</Aside>
 
 ## Häufige Stolperfallen
 

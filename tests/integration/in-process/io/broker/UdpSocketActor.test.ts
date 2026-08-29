@@ -7,9 +7,7 @@ import { Actor } from '../../../../../src/Actor.js';
 import { UdpSocketActor, type UdpDatagram } from '../../../../../src/io/broker/UdpSocketActor.js';
 import { UdpSocketOptions } from '../../../../../src/io/broker/UdpSocketOptions.js';
 import { BrokerConnected } from '../../../../../src/io/broker/BrokerEvents.js';
-import { awaitCondition } from '../../../../util/AwaitCondition.js';
-
-const sleep = (ms: number): Promise<void> => Bun.sleep(ms);
+import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /** See `TcpSocketActor.test.ts` — the count assertions need an upper bound too. */
 const SETTLE_MS = 20;
@@ -124,6 +122,7 @@ describe('UdpSocketActor', () => {
     ref.tell({ kind: 'send', datagram: { payload: 'a', host: '127.0.0.1', port: echo.port } });
     ref.tell({ kind: 'send', datagram: { payload: 'b', host: '127.0.0.1', port: echo2.port } });
     await awaitDatagrams(collector, 2, 'two destinations');
+    // "exactly two" is half the claim — give a third a chance to appear.
     await sleep(SETTLE_MS);
 
     expect(collector.received.length).toBe(2);

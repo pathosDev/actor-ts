@@ -14,7 +14,9 @@ import {
   PersistentActor,
   type CompressionConfig,
   type EncryptionConfig,
+  type IntegrityConfig,
 } from '../../../../../src/persistence/index.js';
+import { JournalError } from '../../../../../src/persistence/JournalTypes.js';
 import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
 import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
@@ -27,6 +29,9 @@ import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
 /** HKDF context — required on every client-side encryption config (#108). */
 const info = 'acme/test/snapshot/v1';
+
+/** HMAC signing key for the per-actor integrity hook (#493). */
+const INTEGRITY_KEY = new Uint8Array(32).fill(0x5a);
 
 let dir: string;
 let backend: FilesystemObjectStorageBackend;
@@ -51,10 +56,12 @@ class CountingActor extends PersistentActor<Command, Event, State> {
     readonly persistenceId: string,
     private readonly _compression?: CompressionConfig,
     private readonly _encryption?: EncryptionConfig,
+    private readonly _integrity?: IntegrityConfig,
   ) { super(); }
   initialState(): State { return { count: 0 }; }
   override compression(): CompressionConfig | undefined { return this._compression; }
   override encryption(): EncryptionConfig | undefined { return this._encryption; }
+  override integrity(): IntegrityConfig | undefined { return this._integrity; }
   override snapshotPolicy() { return everyNEvents<State, Event>(1); }
   onEvent(s: State, _e: Event): State { return { count: s.count + 1 }; }
   async onCommand(_s: State, command: Command): Promise<void> {
@@ -163,8 +170,68 @@ describe('PersistentActor — actor-level encryption hook', () => {
     }
     sys2.spawn(() => new Recoverer('a', { algorithm: 'none' }, enc), 'a');
     await awaitCondition(() => recoveredState !== null, { label: 'recovery completed' });
-    expect(recoveredState).toEqual({ count: 2 });
+    // Written only by `onRecoveryComplete`, a nested function, so flow
+    // analysis still has it at its `null` initialiser here.
+    expect<State | null>(recoveredState).toEqual({ count: 2 });
     await sys2.terminate();
+  });
+});
+
+describe('PersistentActor — actor-level integrity hook', () => {
+  /**
+   * The writer store carries no integrity config of its own, so the only
+   * way a tag can reach the body is through the actor hook.  The reader
+   * demands one — a store configured with `hmac-sha256` refuses an
+   * untagged body (#579) — which makes "tag present" and "hook honoured"
+   * the same observation.  The control case below is what keeps this
+   * honest: drop the hook and the identical read must fail.
+   */
+  async function writeSnapshotWith(
+    persistenceId: string,
+    integrity: IntegrityConfig | undefined,
+  ): Promise<void> {
+    const writerOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' });
+    const snapshots = new ObjectStorageSnapshotStore(writerOptions);
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create(`pa-integrity-${persistenceId}`, sysOptions);
+    sys.extension(PersistenceExtensionId).setJournal(new InMemoryJournal());
+    sys.extension(PersistenceExtensionId).setSnapshotStore(snapshots);
+
+    const ref = sys.spawn(
+      () => new CountingActor(persistenceId, { algorithm: 'none' }, undefined, integrity),
+      persistenceId,
+    );
+    ref.tell({ kind: 'increment' });
+    await awaitCondition(
+      async () => (await backend.list({ prefix: `${persistenceId}/` })).length > 0,
+      { label: 'snapshot stored' },
+    );
+    await sys.terminate();
+  }
+
+  function readerDemandingATag(): ObjectStorageSnapshotStore {
+    const readerOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' })
+      .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY });
+    return new ObjectStorageSnapshotStore(readerOptions);
+  }
+
+  test('the hook signs the snapshot body', async () => {
+    await writeSnapshotWith('tagged', { mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY });
+    const loaded = await readerDemandingATag().loadLatest<State>('tagged');
+    expect(loaded.toNullable()?.state).toEqual({ count: 1 });
+  });
+
+  test('without the hook the body stays untagged and the same read is refused', async () => {
+    await writeSnapshotWith('untagged', undefined);
+    let err: Error | null = null;
+    try { await readerDemandingATag().loadLatest<State>('untagged'); } catch (e) { err = e as Error; }
+    expect(err).toBeInstanceOf(JournalError);
   });
 });
 
@@ -179,9 +246,11 @@ class Counter extends DurableStateActor<DsCommand, { v: number }> {
     options: ConstructorParameters<typeof DurableStateActor<DsCommand, { v: number }>>[0],
     private readonly _compression?: CompressionConfig,
     private readonly _encryption?: EncryptionConfig,
+    private readonly _integrity?: IntegrityConfig,
   ) { super(options); }
   protected override compression(): CompressionConfig | undefined { return this._compression; }
   protected override encryption(): EncryptionConfig | undefined { return this._encryption; }
+  protected override integrity(): IntegrityConfig | undefined { return this._integrity; }
   override async onCommand(command: DsCommand): Promise<void> {
     if (command.kind === 'set') { await this.persist({ v: command.v }); command.replyTo.tell({ ok: true } as never); }
     else command.replyTo.tell({ v: this.state.v } as never);
@@ -269,6 +338,57 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
     await awaitCondition(() => probe2.received.length > 0, { label: 'recovered state replied' });
     expect(probe2.received).toContainEqual({ v: 12345 });
     await sys2.terminate();
+  });
+});
+
+describe('DurableStateActor — actor-level integrity hook', () => {
+  /** Same shape as the PersistentActor pair above — see the note there. */
+  async function upsertStateWith(
+    persistenceId: string,
+    integrity: IntegrityConfig | undefined,
+  ): Promise<void> {
+    const writerOptions = ObjectStorageDurableStateStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' });
+    const store = new ObjectStorageDurableStateStore(writerOptions);
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create(`ds-integrity-${persistenceId}`, sysOptions);
+    const probe = makeProbe(sys);
+    const ref = sys.spawn(() => {
+      const durableStateOptions = DurableStateOptions.create<{ v: number }>()
+        .withPersistenceId(persistenceId)
+        .withStore(store)
+        .withEmptyState(() => ({ v: 0 }));
+      return new Counter(
+        durableStateOptions, { algorithm: 'none' }, undefined, integrity,
+      ) as unknown as ActorBase<DsCommand>;
+    }, persistenceId);
+    ref.tell({ kind: 'set', v: 7, replyTo: probe.ref });
+    await awaitCondition(() => probe.received.length > 0, { label: 'persist acknowledged' });
+    await sys.terminate();
+  }
+
+  function readerDemandingATag(): ObjectStorageDurableStateStore {
+    const readerOptions = ObjectStorageDurableStateStoreOptions.create()
+      .withBackend(backend)
+      .withCompression({ algorithm: 'none' })
+      .withIntegrity({ mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY });
+    return new ObjectStorageDurableStateStore(readerOptions);
+  }
+
+  test('the hook signs the state body', async () => {
+    await upsertStateWith('ds-tagged', { mode: 'hmac-sha256', integrityKey: INTEGRITY_KEY });
+    const loaded = await readerDemandingATag().load<{ v: number }>('ds-tagged');
+    expect(loaded.toNullable()?.state).toEqual({ v: 7 });
+  });
+
+  test('without the hook the body stays untagged and the same read is refused', async () => {
+    await upsertStateWith('ds-untagged', undefined);
+    let err: Error | null = null;
+    try { await readerDemandingATag().load<{ v: number }>('ds-untagged'); } catch (e) { err = e as Error; }
+    expect(err).toBeInstanceOf(JournalError);
   });
 });
 

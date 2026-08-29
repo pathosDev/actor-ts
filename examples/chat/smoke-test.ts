@@ -3,6 +3,7 @@
  *
  *   bun examples/chat/smoke-test.ts                          # default :8080
  *   bun examples/chat/smoke-test.ts ws://127.0.0.1:8080/ws   # explicit
+ *   bun examples/chat/smoke-test.ts --spawn-backend          # brings its own
  *
  * Verifies:
  *   1. Login flow via WS.
@@ -31,10 +32,42 @@
  * has its own test (`failover-test.ts`) — that one focuses on the
  * HTTP-singleton fail-over rather than the messaging round-trip.
  *
+ * `--spawn-backend` boots that single node itself, on ports of its own
+ * and against a scratch journal, and shuts it down afterwards.  It is
+ * how the example gate (#545) runs this file unattended: the two-terminal
+ * flow above is fine for a human, but CI has nowhere to type the first
+ * command.  Voice's sibling smoke test has always worked this way; the
+ * flag is opt-in here rather than the default so the documented
+ * "run it against the cluster you already have" invocation keeps
+ * behaving exactly as before.
+ *
  * Exit code 0 on success, non-zero on first failure.
  */
 
-const URL_ARG = process.argv[2] ?? 'ws://127.0.0.1:8080/ws';
+import { spawn, type ChildProcess } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
+/**
+ * Ports for `--spawn-backend`.  Deliberately outside the backend's
+ * auto-discovery window (2551 + `MAX_NODE_SLOTS`) and away from the
+ * default 8080, so a self-spawned run neither joins nor collides with a
+ * cluster someone already has up.
+ */
+const SPAWNED_CLUSTER_PORT = 2590;
+const SPAWNED_HTTP_PORT = 8090;
+/** How long the spawned node gets to bind its HTTP port. */
+const BACKEND_BOOT_TIMEOUT_MS = 30_000;
+
+const spawnBackend = process.argv.includes('--spawn-backend');
+const urlArgument = process.argv.slice(2).find((argument) => !argument.startsWith('--'));
+const URL_ARG = spawnBackend
+  ? `ws://127.0.0.1:${SPAWNED_HTTP_PORT}/ws`
+  : urlArgument ?? 'ws://127.0.0.1:8080/ws';
+
+/** Set once a backend is spawned, so every exit path can take it down. */
+let backend: ChildProcess | null = null;
 
 type ServerMessage = { kind: string; [k: string]: unknown };
 
@@ -88,7 +121,53 @@ class ChatClient {
 
 function fail(message: string): never {
   console.error('✗', message);
+  stopBackend();
   process.exit(1);
+}
+
+/** Idempotent — `fail()` and the normal exit path both call it. */
+function stopBackend(): void {
+  if (backend === null) return;
+  const child = backend;
+  backend = null;
+  try { child.kill('SIGKILL'); } catch { /* already gone */ }
+}
+
+/**
+ * Boot a single-node backend and wait until it is serving.
+ *
+ * Waits on the ingress log line rather than a fixed sleep: the node has
+ * to win the http-ingress singleton before it binds at all, and how long
+ * that takes depends on how fast the cluster reaches UP.
+ */
+async function startBackend(): Promise<void> {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'actor-ts-chat-smoke-'));
+  const child = spawn('bun', [
+    'examples/chat/backend/main.ts',
+    '--port', String(SPAWNED_CLUSTER_PORT),
+    '--http-port', String(SPAWNED_HTTP_PORT),
+    // Explicitly empty: without it the node port-scans for peers and
+    // would join whatever cluster the developer already has running.
+    '--seeds', '',
+    // A scratch journal, so a re-run never replays the previous one's
+    // rooms and the assertions stay deterministic.
+    '--data-dir', dataDir,
+  ], { stdio: ['ignore', 'pipe', 'pipe'] });
+  backend = child;
+
+  let serving = false;
+  child.stdout.on('data', (chunk: Buffer) => {
+    if (chunk.toString('utf-8').includes('HTTP server listening')) serving = true;
+  });
+  child.stderr.on('data', (chunk: Buffer) => process.stderr.write(chunk));
+
+  const deadline = Date.now() + BACKEND_BOOT_TIMEOUT_MS;
+  while (!serving) {
+    if (Date.now() > deadline) fail(`backend did not bind :${SPAWNED_HTTP_PORT} in ${BACKEND_BOOT_TIMEOUT_MS}ms`);
+    if (child.exitCode !== null) fail(`backend exited ${child.exitCode} before binding`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  ok(`spawned backend serving on :${SPAWNED_HTTP_PORT}`);
 }
 function ok(message: string): void { console.log('✔', message); }
 
@@ -112,6 +191,8 @@ function waitForCount(c: ChatClient, pred: (m: ServerMessage) => boolean, n: num
 }
 
 async function main(): Promise<void> {
+  if (spawnBackend) await startBackend();
+
   // ---------- pass 1: login alice + send 3 messages ----------
   console.log('— pass 1: login + send —');
   const clientA = new ChatClient(URL_ARG);
@@ -453,11 +534,22 @@ async function main(): Promise<void> {
   a9.close();
   await new Promise((r) => setTimeout(r, 200));
 
-  // 7d. tampered token (HMAC mismatch) is rejected.  Flip the last
-  // base64 char of the signature half — invalidates the MAC.
+  // 7d. tampered token (HMAC mismatch) is rejected.
+  //
+  // Flip a BYTE of the decoded signature, not a character of its base64.
+  // The signature is 32 bytes, so its base64url is 43 characters = 258 bits
+  // for 256 bits of payload: the final character carries two bits that decode
+  // discards, and `A`/`B`/`C`/`D` all decode to the same trailing byte.  The
+  // previous version flipped exactly that character, so on the 4-in-64 runs
+  // whose token happened to end in one of those four it produced a byte-
+  // identical token, the MAC verified correctly, and the assertion reported
+  // "HMAC verify not running" — the opposite of what had happened.
   const dot = goodToken.indexOf('.');
-  const tampered = goodToken.slice(0, -1) + (goodToken.endsWith('A') ? 'B' : 'A');
-  if (dot < 0 || tampered === goodToken) fail(`couldn't construct tampered token`);
+  if (dot < 0) fail(`couldn't construct tampered token: no '.' in token`);
+  const signature = Buffer.from(goodToken.slice(dot + 1), 'base64url');
+  signature[0] ^= 0xff;
+  const tampered = `${goodToken.slice(0, dot)}.${signature.toString('base64url')}`;
+  if (tampered === goodToken) fail(`couldn't construct tampered token`);
   const a10 = new ChatClient(URL_ARG);
   await a10.open();
   a10.send({ kind: 'resume', token: tampered });
@@ -469,6 +561,8 @@ async function main(): Promise<void> {
   a10.close();
 
   await new Promise((r) => setTimeout(r, 100));
+  console.log('\n✓ chat smoke test passed');
+  stopBackend();
   process.exit(0);
 }
 

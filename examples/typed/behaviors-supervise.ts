@@ -18,7 +18,6 @@ import {
   OneForOneStrategy,
   type Behavior,
 } from '../../src/index.js';
-import { attachDevTools } from '../devtools.js';
 
 type PollerCommand = { kind: 'tick' } | { kind: 'fail-next' };
 
@@ -59,20 +58,21 @@ const poller = (maxTicks: number): Behavior<PollerCommand> =>
 
 async function main(): Promise<void> {
   const system = ActorSystem.create('typed-supervise');
-  const devtools = await attachDevTools(system);
 
   const supervised = Behaviors.supervise(poller(6)).onFailure(
     new OneForOneStrategy(() => Directive.Restart, { maxRetries: 3, withinTimeRangeMs: 5_000 }),
   );
   const ref = system.spawnTyped(supervised, 'poller');
 
+  // Neither of these is a drain sleep.  Every tick comes from the fixed-delay
+  // timer `withTimers` arms, so between ticks the mailbox is empty and the
+  // drain sees a quiet tree — it does not wait for work not yet enqueued.
   // Let a few ticks go by, then cause a crash.
   await Bun.sleep(200);
   ref.tell({ kind: 'fail-next' });
 
   // Watch the restart + continued ticks, then let the actor reach its own limit.
   await Bun.sleep(700);
-  await devtools.holdOpen();
   await system.terminate();
 }
 

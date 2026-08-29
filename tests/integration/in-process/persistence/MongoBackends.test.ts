@@ -37,7 +37,7 @@ describe('MongoJournal — indexes and document shape', () => {
   test('creates the unique concurrency index and the multikey tag index', async () => {
     const client = new FakeMongoClient();
     const journal = journalWith(client);
-    await journal.append('account-1', ['created'], 0);
+    await journal.append('account-1', [{ event: 'created' }], 0);
     // The unique index is not an optimization here — it is the whole
     // optimistic-concurrency backstop, standing in for a primary key.
     expect(client.log).toContain('createIndex actor_ts.events persistenceId,sequenceNr unique');
@@ -50,7 +50,7 @@ describe('MongoJournal — indexes and document shape', () => {
     const client = new FakeMongoClient();
     const first = journalWith(client);
     const second = journalWith(client);
-    await first.append('account-1', ['a'], 0);
+    await first.append('account-1', [{ event: 'a' }], 0);
     // `second` has never read this stream, so its head read sees 1 and it fails
     // the check.  To reach the *index*, give it a head it believes is stale-free
     // by racing two appends that both read 0 — that is what the shared contract's
@@ -71,7 +71,7 @@ describe('MongoJournal — indexes and document shape', () => {
     // Dotted and `$`-prefixed keys are what BSON would reject or mangle — the
     // reason the stores keep JSON text rather than native documents.
     const awkward = { 'a.b': 1, $set: 'not an operator', nested: { 'x.y': [1, 2] } };
-    await journal.append('account-1', [awkward], 0);
+    await journal.append('account-1', [{ event: awkward }], 0);
     const [read] = await journal.read<typeof awkward>('account-1', 1);
     expect(read!.event).toEqual(awkward);
     await journal.close();
@@ -80,8 +80,8 @@ describe('MongoJournal — indexes and document shape', () => {
   test('an untagged event reports no tags rather than an empty array', async () => {
     const client = new FakeMongoClient();
     const journal = journalWith(client);
-    await journal.append('account-1', ['a'], 0);
-    await journal.append('account-1', ['b'], 1, ['ledger']);
+    await journal.append('account-1', [{ event: 'a' }], 0);
+    await journal.append('account-1', [{ event: 'b', tags: ['ledger'] }], 1);
     const events = await journal.read('account-1', 1);
     expect(events[0]!.tags).toBeUndefined();
     expect(events[1]!.tags).toEqual(['ledger']);
@@ -91,7 +91,7 @@ describe('MongoJournal — indexes and document shape', () => {
   test('the compaction mark is monotonic — a lower delete never lowers it', async () => {
     const client = new FakeMongoClient();
     const journal = journalWith(client);
-    await journal.append('account-1', ['a', 'b', 'c'], 0);
+    await journal.append('account-1', [{ event: 'a' }, { event: 'b' }, { event: 'c' }], 0);
     await journal.delete('account-1', 3);
     expect(await journal.highestSeq('account-1')).toBe(3);
     // `$max` must ignore this, exactly as GREATEST does in the SQL dialects.
@@ -105,9 +105,9 @@ describe('MongoQuery — indexed tag path', () => {
   test('all-tag and any-tag filters read through the tag index', async () => {
     const client = new FakeMongoClient();
     const journal = journalWith(client);
-    await journal.append('account-1', ['a'], 0, ['ledger', 'audit']);
-    await journal.append('account-2', ['b'], 0, ['ledger']);
-    await journal.append('account-3', ['c'], 0, ['other']);
+    await journal.append('account-1', [{ event: 'a', tags: ['ledger', 'audit'] }], 0);
+    await journal.append('account-2', [{ event: 'b', tags: ['ledger'] }], 0);
+    await journal.append('account-3', [{ event: 'c', tags: ['other'] }], 0);
     const query = new MongoQuery(journal);
 
     const ledger = await query.currentEventsByTag<string>('ledger', offsetStart);
@@ -131,8 +131,8 @@ describe('MongoQuery — indexed tag path', () => {
   test('a not-only filter falls back to the journal scan', async () => {
     const client = new FakeMongoClient();
     const journal = journalWith(client);
-    await journal.append('account-1', ['a'], 0, ['ledger']);
-    await journal.append('account-2', ['b'], 0, ['audit']);
+    await journal.append('account-1', [{ event: 'a', tags: ['ledger'] }], 0);
+    await journal.append('account-2', [{ event: 'b', tags: ['audit'] }], 0);
     const query = new MongoQuery(journal);
     // Nothing to pre-filter on, so the base class walks the journal — the result
     // must still be correct.
@@ -228,7 +228,7 @@ describe('Mongo* client ownership', () => {
     const journal = journalWith(client);
     const snapshots = new MongoSnapshotStore(MongoSnapshotStoreOptions.create().withClient(client));
     const state = new MongoDurableStateStore(MongoDurableStateStoreOptions.create().withClient(client));
-    await journal.append('account-1', ['a'], 0);
+    await journal.append('account-1', [{ event: 'a' }], 0);
     await snapshots.save('account-1', 1, { v: 1 });
     await state.upsert('account-1', 0, { v: 1 });
 
@@ -277,7 +277,7 @@ describe('registerMongoPlugins', () => {
       expect(persistence.snapshotStore).toBeInstanceOf(MongoSnapshotStore);
       expect(handles.durableStateStore).toBeInstanceOf(MongoDurableStateStore);
 
-      await persistence.journal.append('account-1', ['a'], 0);
+      await persistence.journal.append('account-1', [{ event: 'a' }], 0);
       await persistence.snapshotStore.save('account-1', 1, { v: 1 });
       await handles.durableStateStore.upsert('account-1', 0, { v: 1 });
       // The shared database name reached every leaf.
@@ -302,10 +302,25 @@ describe('registerMongoPlugins', () => {
         .withJournal(journalOptions);
       registerMongoPlugins(persistence, pluginOptions);
 
-      await persistence.journal.append('account-1', ['a'], 0);
+      await persistence.journal.append('account-1', [{ event: 'a' }], 0);
       expect(client.log.some((entry) => entry.includes('ledger_events'))).toBe(true);
     } finally {
       await system.terminate();
     }
+  });
+});
+
+describe('Mongo storage identity (#1358)', () => {
+  test('one database, one identity; a different database differs', async () => {
+    const client = new FakeMongoClient();
+    const journal = journalWith(client);
+    const identity = await journal.storageIdentity();
+    expect(identity).toMatch(/^[0-9a-f-]{36}$/);
+
+    // A second store over the same client loses the $setOnInsert upsert and
+    // adopts the stored document — minted once, never re-minted.
+    expect(await journalWith(client).storageIdentity()).toBe(identity);
+
+    expect(await journalWith(new FakeMongoClient()).storageIdentity()).not.toBe(identity);
   });
 });
