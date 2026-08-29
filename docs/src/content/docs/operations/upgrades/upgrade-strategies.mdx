@@ -7,11 +7,37 @@ Two kinds of production upgrade:
 
 | Kind | Pattern |
 | --- | --- |
-| **Code-only upgrade** | New binary, same schemas.  Rolling deployment — old + new versions coexist briefly. |
+| **Code-only upgrade** | New binary, same schemas.  Rolling deployment — old + new versions coexist briefly, **except across a release that changes the cluster wire** (see below). |
 | **Schema-breaking upgrade** | New shapes for events / state / messages.  Migration first, then rolling deployment. |
 
 Pick the kind, follow the pattern.  Mixing them naively breaks
 production — old nodes can't read new schemas or vice versa.
+
+## Cluster-wire compatibility per release
+
+A rolling deployment assumes the mixed-version window is survivable — for a
+few minutes, old and new nodes talk to each other.  That assumption is a
+property of the **release**, not of your code, and **two consecutive
+releases break it**.  Neither is a schema change in the sense this page uses
+the word — your events, state and config are untouched — so neither is
+caught by the additive patterns below.
+
+| Upgrade | Mixed-version window | What it looks like when it fails |
+| --- | --- | --- |
+| **v0.15.x → v0.16.0** | **Not safe** (#112) | Every gossip frame carries a `sequence`, and `GossipMessage` gains a required field.  An upgraded peer refuses an old node's frames; an old node ignores an upgraded peer's.  Nothing errors — **membership silently never converges** while both versions run, so the cluster never agrees on who is in it. |
+| **v0.16.0 → v0.17.0** | **Not safe** (#450) | Frames are a tagged JSON tree instead of bare `JSON.stringify` output.  Most legacy traffic decodes unchanged; a legacy body that already had a reserved tag's shape does not.  `__map__`, `__set__`, `__regexp__`, `__bigint__`, `__url__`, `__number__` and `__error__` **throw at any depth**, and a decoder throw costs the **whole connection** along with every frame batched into the same chunk.  Two fail silently instead: `__bytes__` decodes to a `Uint8Array`, `__date__` to an Invalid Date.  The other direction is plainly lossy — an older node reads the tag wrapper as ordinary data. |
+
+**Upgrade the cluster in one step.** Stop every node, then start every node
+on the new version.  No intermediate version makes either leg rollable, so a
+hop from v0.15.x straight to v0.17.0 crosses both breaks and needs the same
+treatment — once, rather than twice.
+
+**When this ends.** Both breaks exist for the same reason: the cluster
+protocol has no version negotiation, so a node cannot ask a peer what it
+speaks and adapt.
+[#823](https://github.com/pathosDev/actor-ts/issues/823) adds that
+handshake.  Until it lands, a mixed-version window is a hazard rather than a
+supported state, and this table is what to check before an upgrade.
 
 ## Code-only upgrades
 

@@ -45,6 +45,13 @@ Read the
 [CHANGELOG](https://github.com/pathosDev/actor-ts/blob/main/CHANGELOG.md)
 before upgrading minor versions.
 
+A minor bump can also change the **cluster wire**.  The CHANGELOG records
+that per release but does not summarise it across releases, and when a
+release does change it, a rolling deployment is not safe — the cluster has
+to be upgraded in one step.
+[Upgrade strategies](/operations/upgrades/upgrade-strategies/#cluster-wire-compatibility-per-release)
+carries the per-release table; two consecutive releases are on it.
+
 ## Security fixes
 
 There are **no maintenance branches**, so "supported" means the

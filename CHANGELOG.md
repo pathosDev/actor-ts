@@ -239,6 +239,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The upgrade documentation now names the releases that break the cluster
+  wire** (#1304).  `operations/upgrades/upgrade-strategies.mdx` described a
+  code-only upgrade as a rolling deployment where old and new versions
+  coexist briefly.  That is false for the two most recent releases, and the
+  qualification lived only in two CHANGELOG entries and one JSDoc on
+  `encodeFrame` — a changelog is read forward by release, not sideways
+  across two of them, so nothing joined them up for the operator planning
+  the move.  Both language mirrors gain a per-release table, and the two
+  legs are stated separately because they do not fail alike: v0.15.x →
+  v0.16.0 breaks gossip (#112) and membership silently never converges,
+  nothing erroring at all, while v0.16.0 → v0.17.0 breaks the frame format
+  (#450), where a legacy body already shaped like a reserved tag throws at
+  decode and costs the whole connection along with every frame batched into
+  the same chunk.  The "coexist briefly" row is qualified rather than
+  deleted, since it still describes a release that leaves the wire alone;
+  #823 is named as the change that ends the caveat; and
+  `reference/version-policy.mdx` points at the table from the sentence that
+  already sends a reader to the changelog before a minor bump.
+
 - **BREAKING — `Cluster.bootstrap` rejects when readiness is missed**
   (#943, #1086).  A resolved `bootstrap()` now means a formed cluster.
   `awaitReady` widens to `boolean | number | ClusterReadinessOptions`, its
