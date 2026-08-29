@@ -1,6 +1,6 @@
 ---
 title: Supply chain
-description: What the release pipeline guarantees about a published actor-ts version — npm provenance, a CycloneDX SBOM from the next release onward, CodeQL analysis and an advisory gate over the real lockfile — and how to verify each of them yourself.
+description: What the release pipeline guarantees about a published actor-ts version — npm provenance, a CycloneDX SBOM from v0.17.0 onward, CodeQL analysis and an advisory gate over the real lockfile — and how to verify each of them yourself.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -14,15 +14,16 @@ about code you write. It answers one question: **how much of
 | Artifact | Where | What it proves |
 | --- | --- | --- |
 | **npm provenance attestation** | The npm registry, on the published tarball | Which commit and which workflow run produced these bytes. |
-| **CycloneDX SBOM** | Attached to the GitHub Release as `actor-ts-sbom.cyclonedx.json`, from the next release onward | The exact dependency closure that was installed when the release was built. |
+| **CycloneDX SBOM** | Attached to the GitHub Release as `actor-ts-sbom.cyclonedx.json`, from v0.17.0 onward | The exact dependency closure that was installed when the release was built. |
 | **CHANGELOG entry** | `CHANGELOG.md` | Security-relevant changes get their own `Security` section. |
 
-<Aside type="note" title="The SBOM starts with the next release">
+<Aside type="note" title="The SBOM starts with v0.17.0">
 The two jobs that build and attach it landed in `publish.yml` *after*
-v0.16.0 was published, so no release you can download today carries the
-asset — `gh release view v0.16.0 --json assets` answers with an empty
-list. The first release cut by the current pipeline is the first one to
-carry it. The other two rows hold for every release already published.
+v0.16.0 was published, so **v0.17.0 is the first release that carries the
+asset** — it was the first one cut by the current pipeline. Every earlier
+release has none: `gh release view v0.16.0 --json assets` still answers
+with an empty list. The other two rows hold for every release already
+published.
 </Aside>
 
 Publishing runs through **npm Trusted Publishing (OIDC)** — the
