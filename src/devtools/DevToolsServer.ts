@@ -81,7 +81,7 @@ import { ClusterMembership } from './internal/ClusterMembership.js';
  *
  * @internal
  */
-export const DEVTOOLS_SERVER_VERSION = '0.16.0';
+export const DEVTOOLS_SERVER_VERSION = '0.17.0';
 
 /** Panels that can be switched off individually, in dashboard order. */
 const OPTIONAL_PANELS: ReadonlyArray<{
