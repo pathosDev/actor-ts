@@ -235,8 +235,8 @@ function scenarioSection(
       if (rows.length === 0) continue;
 
       lines.push(`**${heading}**`, '');
-      lines.push('| framework | runtime | throughput | per op | p50 | p99 | ΔRSS |');
-      lines.push('| --------- | ------- | ---------- | ------ | --- | --- | ---- |');
+      lines.push('| framework | runtime | throughput | spread | per op | p50 | p99 | ΔRSS |');
+      lines.push('| --------- | ------- | ---------- | ------ | ------ | --- | --- | ---- |');
       lines.push(...rows);
       lines.push('');
     }
