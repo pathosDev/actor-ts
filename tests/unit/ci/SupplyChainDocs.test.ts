@@ -23,10 +23,10 @@ import { describe, expect, test } from 'bun:test';
  * restating the sentence that was wrong:
  *
  * 1. **A documented download command never names a concrete release tag.**
- *    Not merely "not v0.16.0" — *any* hard-coded tag is wrong here. Every
- *    release that exists today predates the jobs, and a tag pinned in prose
- *    rots at the next release even once one of them does carry the asset. A
- *    `vX.Y.Z` placeholder cannot go stale.
+ *    Not merely "not v0.16.0" — *any* hard-coded tag is wrong here. v0.17.0
+ *    is the first release that carries the asset, and naming it would rot at
+ *    the release after this one exactly as v0.16.0 did. A `vX.Y.Z`
+ *    placeholder cannot go stale.
  * 2. **The claim stays qualified.** The page may not promise the SBOM as an
  *    unconditional property of a release the reader can already download.
  *
@@ -130,17 +130,19 @@ describe('supply-chain documentation', () => {
   test('the SBOM claim stays qualified in both languages', () => {
     expect(
       englishPage,
-      'The English page promises the SBOM "on every release" again. No '
-      + 'published release carries it: the jobs landed after v0.16.0 shipped.',
+      'The English page promises the SBOM "on every release" again. Releases '
+      + 'up to and including v0.16.0 carry none: the jobs landed after v0.16.0 '
+      + 'shipped, so v0.17.0 is the first with the asset.',
     ).not.toMatch(/SBOM on every release/i);
-    expect(englishPage).toContain('from the next release onward');
+    expect(englishPage).toContain('from v0.17.0 onward');
 
     expect(
       germanPage,
-      'Die deutsche Seite verspricht die SBOM wieder "an jedem Release". Kein '
-      + 'veröffentlichtes Release trägt sie: die Jobs sind nach v0.16.0 gelandet.',
+      'Die deutsche Seite verspricht die SBOM wieder "an jedem Release". Releases '
+      + 'bis einschließlich v0.16.0 tragen keine: die Jobs sind nach v0.16.0 '
+      + 'gelandet, v0.17.0 ist das erste mit dem Asset.',
     ).not.toMatch(/SBOM an jedem Release/i);
-    expect(germanPage).toContain('ab dem nächsten Release');
+    expect(germanPage).toContain('ab v0.17.0');
   });
 
   /**
@@ -152,8 +154,8 @@ describe('supply-chain documentation', () => {
   test('the CHANGELOG makes the same qualified SBOM claim', () => {
     expect(
       changelog,
-      'CHANGELOG.md promises the SBOM "on every release" again. No published '
-      + 'release carries it: the jobs landed after v0.16.0 shipped.',
+      'CHANGELOG.md promises the SBOM "on every release" again. Releases up to '
+      + 'and including v0.16.0 carry none; v0.17.0 is the first with the asset.',
     ).not.toMatch(/SBOM on every release/i);
 
     expect(
@@ -162,7 +164,7 @@ describe('supply-chain documentation', () => {
       + 'CycloneDX SBOM. v0.16.0 and everything before it have none.',
     ).not.toMatch(/Every GitHub Release now carries a CycloneDX SBOM/i);
 
-    expect(changelog).toContain('from the next release onward');
+    expect(changelog).toContain('from v0.17.0 onward');
   });
 
   /**

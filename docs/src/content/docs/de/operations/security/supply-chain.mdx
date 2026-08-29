@@ -1,6 +1,6 @@
 ---
 title: Supply Chain
-description: Was die Release-Pipeline über eine veröffentlichte actor-ts-Version garantiert — npm-Provenance, eine CycloneDX-SBOM ab dem nächsten Release, CodeQL-Analyse und ein Advisory-Gate über die echte Lockfile — und wie du jeden Punkt selbst nachprüfst.
+description: Was die Release-Pipeline über eine veröffentlichte actor-ts-Version garantiert — npm-Provenance, eine CycloneDX-SBOM ab v0.17.0, CodeQL-Analyse und ein Advisory-Gate über die echte Lockfile — und wie du jeden Punkt selbst nachprüfst.
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -14,16 +14,16 @@ an `actor-ts` kannst du nachprüfen, statt es zu glauben?**
 | Artefakt | Wo | Was es beweist |
 | --- | --- | --- |
 | **npm-Provenance-Attestation** | Die npm-Registry, am veröffentlichten Tarball | Welcher Commit und welcher Workflow-Run diese Bytes erzeugt hat. |
-| **CycloneDX-SBOM** | Am GitHub-Release als `actor-ts-sbom.cyclonedx.json`, ab dem nächsten Release | Die exakte Dependency-Closure, die beim Bauen des Releases installiert war. |
+| **CycloneDX-SBOM** | Am GitHub-Release als `actor-ts-sbom.cyclonedx.json`, ab v0.17.0 | Die exakte Dependency-Closure, die beim Bauen des Releases installiert war. |
 | **CHANGELOG-Eintrag** | `CHANGELOG.md` | Sicherheitsrelevante Änderungen bekommen einen eigenen `Security`-Abschnitt. |
 
-<Aside type="note" title="Die SBOM beginnt mit dem nächsten Release">
+<Aside type="note" title="Die SBOM beginnt mit v0.17.0">
 Die beiden Jobs, die sie bauen und anhängen, sind *nach* der
-Veröffentlichung von v0.16.0 in `publish.yml` gelandet — kein Release,
-das du heute herunterladen kannst, trägt das Asset also:
-`gh release view v0.16.0 --json assets` antwortet mit einer leeren Liste.
-Das erste Release aus der aktuellen Pipeline ist das erste, das sie
-mitbringt. Die anderen beiden Zeilen gelten für jedes bereits
+Veröffentlichung von v0.16.0 in `publish.yml` gelandet — **v0.17.0 ist
+damit das erste Release, das das Asset trägt**, als erstes aus der
+aktuellen Pipeline. Jedes ältere Release hat keins:
+`gh release view v0.16.0 --json assets` antwortet weiterhin mit einer
+leeren Liste. Die anderen beiden Zeilen gelten für jedes bereits
 veröffentlichte Release.
 </Aside>
 

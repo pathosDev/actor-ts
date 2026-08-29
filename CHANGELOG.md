@@ -9,6 +9,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Fixed
+
+- **The supply-chain page said the SBOM starts "from the next release
+  onward", and then v0.17.0 shipped it — so the sentence began pointing past
+  the release the reader had just downloaded** (#1391).  The claim was
+  correct when written and became wrong on publication, because it was
+  relative to a moving point: read from a repository whose latest release is
+  v0.17.0, "the next release" is v0.18.0.  Both language mirrors now name
+  v0.17.0 as the first release carrying `actor-ts-sbom.cyclonedx.json` — in
+  the frontmatter, the artifact table and the aside — and still say plainly
+  that v0.16.0 and everything before it carry none, so the qualification
+  moves to a fixed point rather than being dropped.  `CHANGELOG.md` gets the
+  same fixed wording, and `tests/unit/ci/SupplyChainDocs.test.ts`, which pins
+  these sentences by literal text so the prose half of #539 cannot rot again,
+  moves in the same commit.  Its no-concrete-tag rule for `gh release
+  download` is untouched: a tag pinned in prose would now rot at v0.18.0
+  exactly as v0.16.0 did.
+
 ## [0.17.0] — 2026-08-29
 
 ### Added
@@ -6716,7 +6734,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   instead of from the first upgrade.
 
 - **Security scanning and a security policy: CodeQL, an advisory gate over
-  `bun.lock`, a CycloneDX SBOM from the next release onward, and a
+  `bun.lock`, a CycloneDX SBOM from v0.17.0 onward, and a
   `SECURITY.md` that names a channel (#539).**
 
   The repository had never been statically analysed once —
