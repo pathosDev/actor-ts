@@ -14,6 +14,7 @@ import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 import { ActorOptions } from '../../../src/ActorOptions.js';
+import { ThrottleOptions } from '../../../src/ThrottleOptions.js';
 import { ImmediateDispatcher, MicrotaskDispatcher } from '../../../src/Dispatcher.js';
 import type { Dispatcher } from '../../../src/Dispatcher.js';
 
@@ -28,9 +29,16 @@ afterEach(async () => { await sys.terminate(); });
 
 type TickMessage = { kind: 'tick' };
 type ConfigureThrottleMessage = { kind: 'configure-throttle' };
+type ConfigureThrottleBuilderMessage = { kind: 'configure-throttle-builder' };
 type CancelThrottleMessage = { kind: 'cancel-throttle' };
+type ClearThrottleWithInfinityMessage = { kind: 'clear-throttle-infinity' };
 
-type CountMessage = TickMessage | ConfigureThrottleMessage | CancelThrottleMessage;
+type CountMessage =
+  | TickMessage
+  | ConfigureThrottleMessage
+  | ConfigureThrottleBuilderMessage
+  | CancelThrottleMessage
+  | ClearThrottleWithInfinityMessage;
 
 class Counter extends Actor<CountMessage> {
   count = 0;
@@ -38,7 +46,9 @@ class Counter extends Actor<CountMessage> {
     match(m)
       .with({ kind: 'tick' }, () => this.onTick())
       .with({ kind: 'configure-throttle' }, () => this.onConfigureThrottle())
+      .with({ kind: 'configure-throttle-builder' }, () => this.onConfigureThrottleBuilder())
       .with({ kind: 'cancel-throttle' }, () => this.onCancelThrottle())
+      .with({ kind: 'clear-throttle-infinity' }, () => this.onClearThrottleWithInfinity())
       .exhaustive();
   }
 
@@ -51,8 +61,23 @@ class Counter extends Actor<CountMessage> {
     this.context.throttle({ qps: 10, burst: 2 });
   }
 
+  /** Same limiter as {@link onConfigureThrottle}, configured via the fluent builder. */
+  private onConfigureThrottleBuilder(): void {
+    const throttleOptions = ThrottleOptions.create()
+      .withQps(10)
+      .withBurst(2)
+      .withOnExcess('pause')
+      .withNow(() => Date.now());
+    this.context.throttle(throttleOptions);
+  }
+
   private onCancelThrottle(): void {
     this.context.cancelThrottle();
+  }
+
+  /** `{ qps: Infinity }` is documented as equivalent to cancelThrottle(). */
+  private onClearThrottleWithInfinity(): void {
+    this.context.throttle({ qps: Infinity });
   }
 }
 
@@ -169,6 +194,54 @@ describe('ActorContext.throttle (#83)', () => {
       label: 'the queue drained once the throttle was cancelled',
     });
     expect(counter.count).toBe(4);
+  }, 5_000);
+
+  test('throttle({ qps: Infinity }) clears an active throttle and drains at full speed', async () => {
+    // The JSDoc documents `{ qps: Infinity }` as equivalent to cancelThrottle().
+    // Before the fix it threw `TokenBucket: qps must be > 0, got Infinity`
+    // straight into the actor (#636); now it removes the limiter, so this
+    // behaves exactly like the cancel-throttle test above.
+    const counter = new Counter();
+    const ref = sys.spawn(() => counter, 'clear-with-infinity');
+    ref.tell({ kind: 'configure-throttle' }); // qps=10, burst=2
+    await sleep(10);
+
+    // 4 ticks under the throttle — burst 2 + 2 paused.
+    for (let i = 0; i < 4; i++) ref.tell({ kind: 'tick' });
+    await sleep(50);
+    expect(counter.count).toBeLessThan(4);
+
+    // Clearing joins the queue (an ordinary user message); once it processes,
+    // the limiter is gone and the remainder drains in one dispatch cycle —
+    // and, critically, nothing throws.
+    ref.tell({ kind: 'clear-throttle-infinity' });
+    await awaitCondition(() => counter.count === 4, {
+      timeoutMs: 4_000,
+      intervalMs: 20,
+      label: 'the queue drained once qps: Infinity cleared the throttle',
+    });
+    expect(counter.count).toBe(4);
+  }, 5_000);
+
+  test('the builder form installs the same throttle as a plain object', async () => {
+    // Exercises ThrottleOptions.create() + every withX through the real
+    // consumer — the repo convention for covering a builder.
+    const counter = new Counter();
+    const ref = sys.spawn(() => counter, 'builder-form');
+    ref.tell({ kind: 'configure-throttle-builder' }); // qps=10, burst=2, via the builder
+    await sleep(10);
+
+    for (let i = 0; i < 6; i++) ref.tell({ kind: 'tick' });
+    // burst=2 lets two through at once; the other four wait for refill at qps=10.
+    await sleep(50);
+    expect(counter.count).toBeLessThan(6);
+
+    await awaitCondition(() => counter.count === 6, {
+      timeoutMs: 4_000,
+      intervalMs: 20,
+      label: 'the builder-configured throttle drained all six ticks',
+    });
+    expect(counter.count).toBe(6);
   }, 5_000);
 
   test('system messages (Terminated, supervision, watch) bypass the throttle', async () => {
