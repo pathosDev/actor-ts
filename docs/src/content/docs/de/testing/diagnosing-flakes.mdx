@@ -144,6 +144,7 @@ Ursachen, die diese Suite tatsächlich hatte, mit ihrem jeweiligen Stand.
 | Fester Sleep vor einer Assertion | Wird umgestellt, mit Ratsche | `await sleep(N)`, dann `expect(...)` auf Zustand, den ein Hintergrundschritt erzeugt |
 | Ein Budget, das der Test-Timeout nie erreicht | Geprüft | `this test timed out after 5000ms`, wo ein `awaitCondition`-Label erwartet war |
 | Echte Arbeit in einem Hook, gegen ein Limit, das niemand gesetzt hat | Geklärt | `(unnamed)` und „a beforeEach/afterEach hook timed out“, ohne Testnamen |
+| Echte Arbeit in einem Test-Body, gegen ein Limit, das niemand gesetzt hat | Geklärt | `this test timed out after 5000ms` mit einem Testnamen, der begrenzte Arbeit tut und allein durchläuft |
 | Buns Timer-Quantum | Geklärt | Eine Elapsed-Time-Assertion fällt um ~15 ms daneben, auf unbeschäftigter Maschine |
 | Dispatcher-Hop zwischen Warten und Prüfen | Geklärt | Isoliert nie reproduzierbar; fällt nur im großen Parallel-Lauf um |
 | Port-Kollisionen | Geklärt | `EADDRINUSE`, nur wenn Suites sich überlappen |
@@ -289,6 +290,71 @@ ist der billigste Weg dorthin), lass dann ein Vielfaches des schlechtesten Werts
 stehen und schreib die Zahlen neben die Konstante — damit die nächste Person ein
 gemessenes Budget von einem unterscheiden kann, das so lange verdoppelt wurde, bis
 das Rot weg war.
+
+### Echte Arbeit in einem Test-Body, gegen ein Limit, das niemand gesetzt hat
+
+Dasselbe Limit, eine Ebene weiter *innen*.  `tests/unit/CoreStaticImports.test.ts`
+sichert die Invariante aus #1005 — `import { ActorSystem }` darf Fastify niemals
+statisch erreichen — indem es den statischen Import-Graphen der Quellen abläuft.
+Dieser Lauf stand im Test-Body: 148 Dateien, 1,28 MiB Quelltext, **29 ms** auf
+unbeschäftigter Maschine.  Ein vollständiger `bun test --coverage`-Lauf hat
+daraus **6 723,89 ms** gemacht (#1392):
+
+```
+(fail) core static import closure (#1005) > ActorSystem never statically
+       reaches fastify [6723.89ms]
+  ^ this test timed out after 5000ms.
+```
+
+Rund 230x — bei einer Datei, die allein 276 ms braucht.  Die Invariante stand
+nie in Frage, die Maschine war beschäftigt.
+
+**Keines der beiden Mittel von oben passt, und danach zu greifen ist die
+Falle.**  Ein drittes Argument bemisst ein *Fehlerbudget*: ein Warten, das
+ablaufen und ein Label ausgeben soll.  Ein Closure-Lauf hat kein Budget — er
+ist begrenzte Arbeit, die immer fertig wird, also gibt es nichts zu melden und
+keine ehrliche Zahl, die man gegen eine Spanne von 230x wählen könnte.
+Gestaffelte Budgets brauchen eine *Spawn-Grenze*, damit die innere Operation ihr
+eigenes Timeout tragen kann — die gibt es hier nicht.
+
+Das Mittel ist, die Arbeit ganz von der Uhr zu nehmen.  **Modul-Scope hat gar
+keinen Test-Timeout:**
+
+```ts
+// Walked once, here, and not inside the tests that assert on it.
+const coreClosure = staticClosure('src/ActorSystem.ts');
+
+describe('core static import closure', () => {
+  test('ActorSystem never statically reaches fastify', () => {
+    const reached = [...coreClosure.files].filter((f) => f.endsWith('FastifyBackend.ts'));
+    expect(reached).toEqual([]);      // the body is an assertion, nothing more
+  });
+});
+```
+
+Das ist gemessen, nicht angenommen: Eine Fixture mit 6 s synchroner Arbeit im
+Modul-Scope **läuft durch**, während dieselben 6 s im Test-Body bei 5 000 ms
+abgebrochen werden.  Es ist außerdem das, was die übrigen Repo-Datei-Prüfungen
+hier längst tun — `AwaitConditionBudgets`, `WorkflowHygiene` und
+`NoDeadConfigKeys` lesen den Baum allesamt im Modul-Scope und halten ihre
+`test()`-Bodies bei Assertions.  Die beiden `CoreStaticImports`-Bodies fielen von
+29,15 ms und 1,24 ms auf **0,41 ms und 0,04 ms**, womit dieselbe Last bei rund
+95 ms gegen den Cap landet.
+
+Der Preis ist, dass ein Wurf im Modul-Scope die ganze Datei umwirft statt eines
+einzelnen Tests.  Für eine Prüfung, die den Baum liest und über das Gefundene
+urteilt, ist das die richtige Seite des Tauschs — die drei Geschwister oben
+gehen ihn längst ein.
+
+**Eine Warnung zum Reproduzieren dieser Familie.**  Der Rat aus dem vorigen
+Abschnitt — mehrere Kopien der Datei gleichzeitig laufen zu lassen — **überträgt
+sich hier nicht**.  Gemessen: Die Datei vor dem Fix lief unter 12 gleichzeitigen
+CPU-Lastprozessen weiterhin in 31,45 ms durch.  Externe Last konkurriert mit
+*gespawnter* Arbeit; Arbeit innerhalb des Bun-Prozesses wird durch dessen
+eigenen Heap, Garbage Collection und Coverage-Zähler langsam, und die stellt nur
+ein echter Lauf der ganzen Suite her.  Klär den Mechanismus stattdessen per
+Messung — die Modul-Scope-Fixture oben entscheidet ihn in einem einzigen Lauf,
+ohne den Flake je zu reproduzieren.
 
 ### Buns Timer-Quantum
 
