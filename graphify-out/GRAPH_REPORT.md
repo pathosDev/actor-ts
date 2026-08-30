@@ -1,16 +1,16 @@
-# Graph Report - actor-ts  (2026-08-23)
+# Graph Report - actor-ts  (2026-08-30)
 
 ## Corpus Check
-- 2206 files · ~2,417,857 words
+- 2255 files · ~2,633,441 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 24575 nodes · 59210 edges · 862 communities (591 shown, 271 thin omitted)
-- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 1629 edges (avg confidence: 0.82)
+- 25637 nodes · 62239 edges · 884 communities (597 shown, 287 thin omitted)
+- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 1690 edges (avg confidence: 0.82)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `7c9f0688`
+- Built from commit: `7fb9ca08`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -18,176 +18,176 @@
 - ActorSystem
 - Actor
 - src/index.ts
-- ObjectStorageSnapshotStore.ts
-- BackendTransportFrameCap.test.ts
-- Lazy.ts
-- Serializer
-- broker/index.ts
+- FilesystemObjectStorageBackend.ts
+- WebsocketClientActor
+- SqliteJournal
+- MongoJournal
+- EmailBridgeActor.ts
 - migration/index.ts
 - src/http/index.ts
-- HonoBackend.ts
-- ActorRef
-- WireMessage
-- ClusterSingletonHandOver.test.ts
-- ProjectionFailureStrategy.test.ts
-- .create
-- DynamoDbJournal.ts
-- testkit/index.ts
-- ShardRegion.ts
-- EventStreamPanelComponent.ng-spec.ts
-- MqttActor.ts
-- Journal
-- MariaDbClient.ts
 - Route.ts
+- ActorPath
+- NodeAddress
+- ClusterSingletonHandOver.test.ts
+- ClusterClient.ts
+- .create
+- DynamoDbOperations
+- ParallelMultiNodeSpecOptionsBuilder
+- DevToolsServer
+- TapClientService.ts
+- broker/index.ts
+- Journal
+- RelationalQuery.test.ts
+- complete
 - Logger
 - Scenario.ts
 - Option
 - ControlRoutes.ts
 - UserSessionActor.ts
-- cluster/index.ts
+- Actor.ts
 - GrpcClientActor.ts
-- ClusterClient
+- FakeCassandraClient.ts
 - DocumentedDefaults.test.ts
-- ShardRegion
+- MdcPropagation.test.ts
 - ShardCountRefusal.test.ts
-- tracing/index.ts
-- downing/index.ts
-- ClusterSharding.ts
-- TracingPanelComponent.ts
+- RecordingTracer.ts
+- DowningProvider
+- ActorRef
+- DashboardPanelComponent.ts
 - DistributedData.ts
 - persistence/index.ts
-- AmqpActor.ts
+- AmqpChannelLike
 - ActorCell
 - D1Backends.test.ts
 - Config
 - Voice sample (walkie-talkie / group / rooms)
-- BrokerActor.test.ts
+- Worker
 - TlsTransportOptionsType
-- MailboxProperties.test.ts
+- Envelope
 - ask (request/response)
 - GrpcServerActor.ts
 - JetStreamKeyValueActor.ts
-- SplunkSinkOptions.ts
+- BatchingSink
 - protocol/index.ts
 - JetStreamActor.ts
 - TimeTravel.test.ts
-- PersistenceContract.test.ts
-- DevToolsStreamPayload
+- WebsocketRoute.ts
+- EventStreamTap
 - LogRecord
 - cluster
 - logging/index.ts
-- DevToolsServer.ts
-- CassandraJournal
-- Glossary
-- BrokerCommonOptionsType
-- FilesystemObjectStorageBackend.ts
+- devtools.ts
+- PersistenceContract.test.ts
+- SqliteSnapshotStore
+- TcpServerActor.ts
+- S3ObjectStorageBackend.ts
 - [Unreleased] window
-- StatsTap.ts
+- DevToolsServer.ts
 - actor-ts framework
-- Router.scatterGatherFirstCompleted
-- http/Types.ts
+- Glossary
+- http/cache/index.ts
 - JetStreamObjectStoreActor.ts
-- ClusterRouterActor
+- router/ClusterRouterSmallestMailbox.test.ts
 - StaticFiles.ts
 - peerDependencies
 - MigrationChain
-- Circuit Breaker
+- BackoffPolicy
 - exports
-- Intro glossary
+- ActorSystem
 - ClusterSingletonManager
 - Log platform integrations
 - Cluster sharding
-- BodyCodec.ts
+- ExpressBackend
 - KubernetesApiSeedProvider
 - MultiNodeSpec
-- TypedActor<T>
-- isLogLevel
+- Behaviors namespace
+- SentrySink.ts
 - Lease interface
 - BoundedMailbox
-- Broker live-integration suites
+- sqlPersistenceScenarios
 - runtime/http/index.ts
 - HttpClient
 - dependencies
 - CassandraJournalOptionsBuilder
 - Stock metrics (page)
-- AcceptCommandUndroppable.test.ts
+- HubInFlightCap.test.ts
 - net10.0
 - withErrorHandler
 - managementRoutes(system, cluster, options)
 - JournalConcurrencyError
 - Framework-comparison benchmarks
-- ActorsPanelComponent.ts
+- ActorsPanelComponent
 - peerDependenciesMeta
-- TcpTransport
+- WebsocketServerActor.test.ts
 - SyslogSink.ts
 - ProjectionActor
 - ClusterSingletonManager
 - ORSet<E> (Observed-Remove Set)
 - BrokerActor
 - Microsoft.Extensions.Configuration.Abstractions
-- KafkaActor.ts
-- ActorSystem
+- BrokerTlsForwarding.test.ts
+- CoordinatedShutdown
 - discovery/index.ts
 - ShardCoordinator
 - Panel navigation with unavailable items
 - ConsumerController
-- ActorOptions
+- Dispatcher (Interface)
 - ProjectionActor.ts
 - devDependencies
 - WorkerCluster.ts
-- Mailbox.ts
+- StorageLocalityAdvisory.test.ts
 - Diagnose-nach-Symptom-Katalog
 - ChatService
 - handleServer (ts-pattern dispatch table)
-- coordination/index.ts
-- RichTypeParity.test.ts
+- LeaseOptionsBuilder
+- Serializer
 - JsonTree.ts
 - Mutual TLS (mTLS)
 - Operations overview
 - VectorClock
 - DistributedDataHandle
 - VoiceService
-- Middleware
+- ShardMapEndpoint.test.ts
 - Actors
 - Actors
-- run-all.ts discovery driver
+- Time travel panel
 - chat/frontend-next/package.json
 - ConfigMethods.ts
 - ConflictResolver
 - SocketAdapter.ts
-- TcpTransport
+- actor-ts
 - CborCodec.ts
 - Tracer API
 - ChatStore
 - startIncoming
 - NatsActor.ts
 - ReplicatedEventSourcedActor.ts
-- runtime/worker/index.ts
+- WorkerLike
 - Gewuenschte Subscriptions (Desired Subscriptions)
-- FakeMsSqlPool.ts
+- PersistenceIds.test.ts
 - scripts
 - build-devtools-ui.mjs
-- UdpSocketActor.ts
+- Lazy
 - VoiceStore
-- ProcessSignal
+- Detect.ts
 - Chat sample app
 - devDependencies
 - dependencies
-- PersistentFSM
+- FSM<SName, SData, Message>
 - MigrationError
 - delivery/index.ts
 - Cancellable
 - Microsoft.Extensions.Options
 - Actor and cluster panels
 - Cluster
-- Lease
-- ProtobufSerializerOptionsBuilder
-- DevToolsOptions
+- LeasedCounter
+- PersistentActorMigration.test.ts
+- Per-panel switches
 - EventStream
 - ping-pong.ts
 - OptionsBuilder
 - K8sApi.ts
-- MemcachedCache.ts
+- MemcachedCache.test.ts
 - DistributedPubSubMediator
 - DeadLetterQueue.ts
 - serialization/index.ts
@@ -196,14 +196,14 @@
 - MetricsExtension
 - rateLimit handler wrapper
 - voice/frontend-next/package.json
-- BackoffSupervisor
+- MigrationChain
 - DistributedDataActor
-- TcpSocketLike
+- WebsocketFrame
 - PersistentActor.test.ts
 - Akka-(JVM)-Konzept-Mapping
 - CborSerializer
 - BidirectionalMultiMap
-- Lazy
+- OutboundEnvelope
 - InMemoryCache
 - Recommended middleware stack and its ordering
 - Versioned envelope { _v, _t, _e }
@@ -211,12 +211,12 @@
 - Microsoft.Extensions.Primitives
 - DistributedPubSub mediator caps
 - JetStreamActor
-- ObjectStorageSnapshotStore
-- Dispatcher
+- ObjectStorageBackend (PUT / GET / DELETE / LIST)
+- Design decisions
 - FastifyBackend (default)
 - check-doc-samples.mjs
-- ClusterBootstrap.ts
-- ParallelMultiNodeSpec
+- StableObservationOptions.ts
+- ParallelMultiNodeSpec.ts
 - DurableStateActor<Command, S>
 - OptionsError
 - ChatRoomDirectoryActor
@@ -229,7 +229,7 @@
 - dependencies
 - FakeDynamoDb
 - chat/frontend-angular/tsconfig.app.json
-- Overflow-Policies (drop-head / drop-new / reject)
+- FastifyBackend
 - idempotent
 - HOCON configuration
 - test:stress repeat-run harness
@@ -238,47 +238,47 @@
 - lib/useVoice.ts
 - StressHarnessAggregation.test.ts
 - src/cache/index.ts
-- .toString
+- Cluster.ts
 - PersistentFSM.test.ts
 - devDependencies
 - repository
 - package.json
-- ObjectStoragePlugin.ts
-- Mailbox
+- DurableStateActorMigration.test.ts
+- JournalMigration.ts
 - MockConsumer
 - ReplicatedEventSourcedActor
 - TypedActor
 - options
 - options
 - DurableStateActor
-- ParallelMultiNodeSpec.ts
-- BrokerOptionsBuilder
+- BaseProjectionActor
+- RedisStreamsActor
 - PersistentActor
 - options
 - csrfProtection(...)
 - VoiceSessionActor
 - statsSamplePayload
-- PromClientAdapter.ts
+- metrics/index.ts
 - Compression.ts
 - Five Cluster-Node Services
-- FakeBroker
+- IdleBroker
 - java.util.List
 - JsonWriter
 - JsonWriter
 - WebsocketClientActor
-- PhiAccrualFailureDetector.ts
+- PhiAccrualOptionsBuilder
 - TracingPanelComponent
-- DeathWatchOnBoundedMailbox.test.ts
+- Terminated
 - docs/tsconfig.json
 - TestProbe
 - Cache interface
 - benchmarks/comparison-Harness
 - src/useChat.ts
 - FSM
-- PriorityMailbox
-- MultiNodeSpec
+- priority-dispatch.ts
+- MultiNodeSpec.ts
 - exclude
-- DeadLetterQueue
+- SyncReceiveFastPath.test.ts
 - Receptionist
 - actor-ts.ts
 - run-comparison.ts
@@ -287,29 +287,29 @@
 - compilerOptions
 - compilerOptions
 - HoconParser
-- failure
+- BackoffSupervisor.test.ts
 - SerializationProperties.test.ts
 - SleepRatchet.test.ts
 - otel-jaeger.ts
-- everyNEvents
+- DirectMessageChannelActor
 - chat/frontend-react/package.json
-- WorkerCluster
+- PersistentFSM
 - CassandraJournal
 - DynamoDbJournal
 - Comparison benchmark suite
 - lib/useChat.ts
 - devDependencies
-- FakeImapClient
+- Codec.ts
 - arm.ts
 - report.ts
-- ClusterRouter
-- RemoteActorRef
+- ActorOptions
+- TcpTransport
 - DynamoDbJournal
-- Type-Tags (__date__, __map__, __set__, __bigint__, __bytes__ …)
+- Dead-Letter-Panel
 - Client-side AES-GCM encryption
 - http/Html.ts
 - CborEncoder
-- OtelLogsAdapter.ts
+- tracing/index.ts
 - Microsoft.Extensions.DependencyInjection.Abstractions
 - MqttActor
 - SqlDialect
@@ -323,58 +323,58 @@
 - Actors
 - Actors
 - compilerOptions
-- TimerScheduler (context.timers)
+- SpanTap.ts
 - docs/io/email-bridge.mdx
-- success
+- DevToolsOptionsBuilder
 - CoverageGate.test.ts
 - ShardingOptionsBuilder
 - Actors
-- RandomString.ts
-- Supervision
+- Replay.ts
+- Journal (Append-only Event-Log)
 - gRPC
 - ExplainTap.ts
-- 24-object-storage-context-binding.mjs
+- RandomString.ts
 - InMemoryCache
 - ClusterBootstrapOptionsBuilder
 - ClusterOptionsBuilder
-- Instrumentation.ts
+- Span
 - xstate.ts
-- PersistenceExtension
+- AcceptCommandUndroppable.test.ts
 - RememberEntitiesStore
-- devtools.ts
-- ObjectStorageDurableStateStoreOptionsBuilder
+- KafkaRecord
+- OtelAdapter.test.ts
 - Migration-Guides
 - HealthCheckRegistry
 - Optional peer dependencies
 - Per-key CRDT merge (idempotent, commutative)
 - chat/frontend-svelte/src/routes/+page.svelte
 - securityHeaders
-- GCounterMap
-- PersistentActorRecoveryFailure.test.ts
+- GCounter
+- PersistenceIdEnforcement.test.ts
 - idempotent middleware
-- MockSocket
-- Shard
-- .emit
+- KubernetesLease.test.ts
+- KubernetesLease.ts
+- BackendTransportFrameCap.test.ts
 - Vier Saeulen der Observability
 - compilerOptions
 - tsconfig.bench.json
-- pattern/index.ts
+- KubernetesLease
 - dependencies
 - Mutual TLS
-- Gossip-Replikation
+- AppShellComponent
 - windowSize (flow-control window)
-- EventStreamPanelComponent
+- timeControl.ts
 - compilerOptions
 - ORSet
 - voice/shared/protocol.ts
 - compilerOptions
 - compilerOptions
 - 17-tcp-refusal-abort.mjs
-- ScatterGatherRouterActor
+- Router.test.ts
 - WorkerClusterOptionsBuilder
 - Controller.ts
 - awaitCondition
-- Behaviors namespace
+- result-file.ts
 - connectTap
 - Das mentale Bild des Actor-Modells
 - EventStream
@@ -382,7 +382,7 @@
 - chat/smoke-test.ts
 - order-workflow.ts
 - UiAssetRoutes.test.ts
-- ShardCoordinatorOptionsBuilder
+- TimerScheduler (context.timers)
 - AMQP (RabbitMQ)
 - Marshalling (request/response halves)
 - Harness
@@ -391,35 +391,35 @@
 - compilerOptions
 - ExplainPanelComponent
 - ProfilerPanelComponent
-- AllocationStrategy
-- router/index.ts
+- ClusterRouter
+- schema-registry.ts
 - EmailBridgeActor
 - SnapshotStore interface
-- Delivery
-- ShardingMessage
+- ConsumerController
+- DispatcherQueueDelay.test.ts
 - dependencies
 - FsmStateData
-- CircuitBreaker.ts
+- pipeTo
 - examples/bank-account.ts
 - OptionalPeerDeclarations.test.ts
 - .main
 - .main
-- ClusterSingletonManagerOptionsBuilder
+- CoordinatedShutdown
 - Account
 - voice/frontend-react/package.json
-- StartSingletonOptionsBuilder
-- ObjectStoragePluginOptionsBuilder
+- ClusterSingletonManager.ts
+- GelfSinkOptionsBuilder
 - PersistentFSM
 - tsconfig.spec.json
 - html tagged template
 - DefaultMetricsRegistry
 - EventDispatcher.ts
-- CensusMarker
+- DeadLetter
 - ReplayMutationFuzz.test.ts
 - LiveBrokerQueryWiring.test.ts
 - nact.ts
 - Program
-- stats.ts
+- run-all.ts
 - LanguageSelect.astro
 - TimeTravelPanelComponent
 - entity<T>(req)
@@ -428,16 +428,16 @@
 - Account
 - replicated-counter.ts
 - Account
-- CassandraRememberEntitiesStoreOptionsBuilder
+- AcceptDeliveryFailure.test.ts
 - ORMap
-- Behaviors.supervise(...).onFailure(...)
-- cluster/ClusterRouterSmallestMailbox.test.ts
+- BackoffSupervisor
+- Migration guides overview
 - FileSinkOptionsBuilder
-- VectorClock
-- CountingSingleton
+- JetStreamObjectStoreOptionsBuilder
+- LogContextData
 - Account
 - GossipReplayBoundDocumented.test.ts
-- MetricsExtension
+- MetricsRegistry
 - ExampleWiringClaims.test.ts
 - PromClientAdapter.test.ts
 - FakeWorker
@@ -449,10 +449,10 @@
 - Journal interface
 - prom-client-shared.ts
 - CircuitBreaker
-- retry-flaky-api.ts
+- UdpGelfTransport
 - WebsocketServerActor
 - .sendServer
-- .onBinaryFrame
+- .onRoomEnter
 - voice/smoke-test.ts
 - IntegrationBrokerSuites.test.ts
 - fsm/index.ts
@@ -466,39 +466,39 @@
 - comparison/tsconfig.json
 - voice/frontend-angular/tsconfig.app.json
 - FakeSocket
-- Tagged JSON tree payload format
+- Router.scatterGatherFirstCompleted
 - ObjectStorageBackend
 - failover-test.ts
 - Account
 - check-doc-samples.d.mts
-- ActorOptionsBuilder
-- DnsSeedProviderOptionsBuilder
+- ActorOptions.ts
+- LinearStringScans.test.ts
 - SendPanelComponent
 - ts-pattern
-- TracingExtension
-- TokenBucket
-- Behaviors.intercept
+- Tracer
+- OtelLoggerImplementation
+- Circuit Breaker
 - TrustCounter
 - StressHarnessClassification.test.ts
 - DocSampleHarnessEndToEnd.test.ts
 - comparison/package.json
 - Harness
 - sbr-hello.ts
-- opentelemetry-tracing.ts
+- RecordingTracer
 - FakeSocket
 - astro.config.mjs
-- actor-ts
+- retry helper
 - RedisStreamsActor
 - de/reference/benchmarks.mdx
 - TypedActor<T>
 - docs/reference/benchmarks.mdx
 - ChatRoomActor
-- chat/backend/config.ts
-- FrameDecoder
-- ClusterRouterOptionsBuilder
-- ClusterMailboxDepthAgent
-- MailboxDepthProbe
-- RingBuffer
+- chat/backend/main.ts
+- Transport.ts
+- websocket-feed.ts
+- StorageLocalityDeclarations.test.ts
+- getFromDirectory
+- Version policy
 - HistogramImplementation
 - RecordingLogger
 - TopicRegistry
@@ -507,28 +507,28 @@
 - scenarios/Types.ts
 - Scenario
 - 28-graceful-shutdown-signals.mjs
-- FakeRedis
+- DisplayNameLogger
 - maps.mdx
 - System.Configuration.ConfigurationManager
 - Program
 - dependencies
-- printResult
-- Behaviors.receiveWithSignal
+- OtlpHttpSinkOptionsBuilder
+- DeadLettersPanelComponent
 - SqliteJournal
 - InMemoryJournal
 - chat/backend/auth/credentials.ts
-- groups.ts
+- KeepMajority
 - coverage-gate.d.mts
 - stress-test.d.mts
 - MongoJournal
 - CellTimerScheduler
 - split-brain-survives.ts
-- Gauge
-- PrometheusExporter.ts
-- DistributedPubSubOptionsBuilder
-- safeStringify
+- LeaseOptionsValidator
+- NonCollectableRegistry.test.ts
+- ParseableSinkOptionsBuilder
+- MultiNodeSpecOptionsBuilder
 - SingleHolderLease
-- TransportInternals
+- RecordingLogger
 - 24-hono-chunked-body-cap.mjs
 - SupplyChainDocs.test.ts
 - RecordingLogger
@@ -537,23 +537,23 @@
 - RecordingLogger
 - RecordingLogger
 - RecordingLogger
-- PeerIdentity.test.ts
-- CI-side security scanning with one local half
+- RecordingLogger
+- RecordingLogger
 - .MeasureAsync
 - net10.0
 - LibSqlJournal
-- ProbeActor
-- Account
+- ActorContext
+- EventAdapter
 - event-migration-chain.ts
 - counters.mdx
-- ClusterClientOptionsBuilder
+- RecordingLogger
 - ProducerController
 - cors() als Route-Direktive
-- Behaviors.setup
+- TransportFrameCap.test.ts
 - FencedFakeLease
 - run-cases.mjs
 - StubNativeWorker
-- CoordinatorStateData
+- RecordingLogger
 - .Main
 - OrleansComparison.csproj
 - System.Drawing.Common
@@ -563,27 +563,27 @@
 - Microsoft.AspNetCore.Connections.Abstractions
 - .Main
 - EnvironmentBlock
-- worker-count-scaling.ts
+- LeaseMajority
 - check-api-drift.mjs
 - NoopMetricsRegistry
 - application.conf
-- Deno (Best-Effort)
+- KubernetesApiSeedProviderOptionsBuilder
 - maxRetries + withinTimeRangeMs
 - SchemaRegistration
 - CompressionConfig
 - traffic-light.ts
-- voice/backend/config.ts
-- ShardedDaemonProcessOptionsBuilder
-- NodeServerLike
+- voice/backend/main.ts
+- Account
+- Ledger
 - Akka
 - config.mdx
-- HttpIngressActor
+- RecordingLogger
 - FlakyWorker
-- FakeLease
-- FilesystemObjectStorageOptionsBuilder
-- BunSocketNative
-- NodeSocketLike
-- Partition.ts
+- DowningStrategies.test.ts
+- RecordingLogger
+- RecordingLogger
+- Future patterns
+- keywords
 - 07-gcounter-concurrent.ts
 - 22-http-client-response-cap.mjs
 - Parent
@@ -604,20 +604,20 @@
 - CounterEntity
 - Cron
 - UserEntity
-- ShardedCounter
+- WarningCollector
 - voice/frontend-angular/scripts/flatten-output.mjs
 - voice/frontend-next/scripts/copy-out.mjs
 - voice/frontend-svelte/scripts/copy-build.mjs
-- ProducerControllerOptionsBuilder
-- CounterSingleton
+- ReliableDelivery.test.ts
+- Singleton.ts
 - FakeSelfScope
-- promClientRegistry
-- CircuitBreakerOptionsBuilder
-- WebWorkerAdapter
+- CapturingLogger
+- SeatingPlan
+- Telemetry
 - AkkaNetComparison.csproj
 - Akka.Analyzers
-- CounterActor
-- SpawnProbeActor
+- RuntimeSocket
+- RecordingSocket
 - 05-singleton-failover.ts
 - 06-sharding-rebalance.ts
 - 08-receptionist-subscribe.ts
@@ -629,7 +629,7 @@
 - 30-metrics-saturation.mjs
 - graceful-shutdown-child.mjs
 - FakeSocket
-- NodeWorkerAdapter
+- FakeMqttClient
 - PingActor
 - Microsoft.CodeAnalysis.Common
 - Microsoft.Orleans.Sdk
@@ -638,10 +638,10 @@
 - concat(...routes)
 - de/observability/devtools/dead-letters.mdx
 - Plugin-Keys sind voll qualifizierte Pfade
-- Decorators collapse, interceptors persist
-- ./cluster
+- CapturingLogger
+- RecordingLogger
 - chat/frontend-svelte/svelte.config.js
-- ./coordination
+- Process manager deployment
 - ./devtools
 - Metrics.ts
 - PromClientGauge
@@ -650,8 +650,8 @@
 - Entity
 - SingletonCensus
 - SingletonCensus
-- ./discovery
-- ./http
+- ._handleRemote
+- OtelSpanLike
 - ./logging
 - 12-pubsub-fanout.ts
 - 02-cluster-formation.mjs
@@ -661,10 +661,10 @@
 - AngularTemplates.test.ts
 - StressHarnessWatchdog.test.ts
 - ./persistence
-- Counter
-- ./tracing
+- Account
+- CountingCounter
 - akka-java/mill
-- KeepOldestOptionsBuilder
+- KeepOldestOptions.ts
 - Microsoft.Win32.SystemEvents
 - Newtonsoft.Json
 - System.Security.Cryptography.ProtectedData
@@ -680,12 +680,12 @@
 - de/observability/devtools/send-message.mdx
 - register(manifest, version, registration)
 - parallel-mns-worker-throws-after-ready.mjs
-- KeepRefereeOptionsBuilder
-- StaticQuorumOptionsBuilder
+- Roster
+- downing/index.ts
 - Entity
 - CounterEntity
 - FilesystemObjectStorageBackend.multiprocess.test.ts
-- PubSubReceiver
+- RecordingLogger
 - Entity
 - Entity
 - 01-core-messaging.mjs
@@ -710,8 +710,8 @@
 - ComparisonLauncherModes.test.ts
 - CoreStaticImports.test.ts
 - Throttled
-- FakeServiceClient
-- AsyncAssertions.test.ts
+- from-file.ts
+- stash-init.ts
 - ShardedDaemonProcessOptions
 - KubernetesLeaseOptions
 - Reply-to-Ref
@@ -734,7 +734,7 @@
 - voice/frontend-next/app/layout.tsx
 - voice/frontend-svelte/src/routes/+layout.ts
 - integration-compose.d.mts
-- pickRendezvous
+- Counter
 - IdentityEntity
 - UiAssetsReviewability.test.ts
 - Entity
@@ -850,20 +850,41 @@
 - Entity
 - 04-ddata-latency-storm.ts
 - Entity
-- PongActor
-- NodeNetModule
-- MockSock
+- AuthorshipCounter
+- .handleUnauthenticated
+- ClusterSecurity.test.ts
+- FakeServiceAccountMount
+- ConsumerControllerOptionsBuilder
+- ConsoleSinkOptionsBuilder
+- DurableStateOptionsBuilder
+- CachedSnapshotStoreOptionsBuilder
+- PartitionWorker
+- ./delivery
+- ./fsm
+- ./metrics
+- ./serialization
+- ./worker
+- W
+- Entity
+- Daemon
+- Marker
+- 33-cluster-await-ready.mjs
+- 34-websocket-binary-frames.mjs
+- Kid
+- Parent
+- Recorder
+- Entity
 
 ## God Nodes (most connected - your core abstractions)
-1. `Actor` - 706 edges
-2. `ActorSystem` - 490 edges
-3. `ActorRef` - 461 edges
-4. `NodeAddress` - 378 edges
-5. `LogLevel` - 349 edges
-6. `awaitCondition()` - 263 edges
-7. `Cluster` - 262 edges
-8. `ActorSystemOptions` - 254 edges
-9. `NoopLogger` - 249 edges
+1. `Actor` - 727 edges
+2. `ActorSystem` - 509 edges
+3. `ActorRef` - 467 edges
+4. `NodeAddress` - 412 edges
+5. `LogLevel` - 371 edges
+6. `awaitCondition()` - 294 edges
+7. `Cluster` - 284 edges
+8. `ActorSystemOptions` - 269 edges
+9. `NoopLogger` - 257 edges
 10. `OptionsBuilder` - 202 edges
 
 ## Surprising Connections (you probably didn't know these)
@@ -871,34 +892,34 @@
   docs/src/content/docs/de/cluster/cluster-client.mdx → package.json
 - `cluster` --references--> `Cluster membership and failure detection`  [INFERRED]
   package.json → README.md
+- `Wallclock profiling mode` --semantically_similar_to--> `lib/harness.ts measurement harness`  [INFERRED] [semantically similar]
+  docs/src/content/docs/observability/devtools/profiler.mdx → benchmarks/README.md
 - `Cluster.bootstrap` --references--> `cluster`  [INFERRED]
   docs/src/content/docs/cluster/overview.mdx → package.json
 - `system.cluster stays an Option` --rationale_for--> `cluster`  [EXTRACTED]
   docs/src/content/docs/cluster/overview.mdx → package.json
-- `DistributedPubSub` --cites--> `cluster`  [EXTRACTED]
-  docs/src/content/docs/cluster/pubsub.mdx → package.json
 
 ## Import Cycles
-- 3-file cycle: `src/ActorSystem.ts -> src/http/HttpExtension.ts -> src/http/Route.ts -> src/ActorSystem.ts`
-- 3-file cycle: `src/ActorContext.ts -> src/ActorSystem.ts -> src/internal/ActorCell.ts -> src/ActorContext.ts`
-- 3-file cycle: `src/ActorSystem.ts -> src/cluster/Cluster.ts -> src/tracing/TracingExtension.ts -> src/ActorSystem.ts`
-- 3-file cycle: `src/ActorSystem.ts -> src/internal/LocalActorRef.ts -> src/tracing/TracingExtension.ts -> src/ActorSystem.ts`
+- 3-file cycle: `src/ActorSystem.ts -> src/typed/Behavior.ts -> src/typed/TypedActorContext.ts -> src/ActorSystem.ts`
+- 3-file cycle: `src/cluster/Cluster.ts -> src/cluster/sharding/ClusterSharding.ts -> src/cluster/sharding/ShardCoordinatorOptions.ts -> src/cluster/Cluster.ts`
+- 3-file cycle: `src/cluster/Cluster.ts -> src/cluster/sharding/ClusterSharding.ts -> src/cluster/sharding/ShardRegion.ts -> src/cluster/Cluster.ts`
+- 3-file cycle: `src/ActorSystem.ts -> src/cluster/Cluster.ts -> src/metrics/MetricsExtension.ts -> src/ActorSystem.ts`
+- 3-file cycle: `src/ActorSystem.ts -> src/deadletters/DeadLetterQueue.ts -> src/metrics/MetricsExtension.ts -> src/ActorSystem.ts`
+- 3-file cycle: `src/ActorSystem.ts -> src/internal/ActorCell.ts -> src/metrics/MetricsExtension.ts -> src/ActorSystem.ts`
+- 3-file cycle: `src/cluster/Cluster.ts -> src/cluster/singleton/ClusterSingleton.ts -> src/cluster/singleton/ClusterSingletonManagerOptions.ts -> src/cluster/Cluster.ts`
+- 3-file cycle: `src/cluster/Cluster.ts -> src/cluster/singleton/ClusterSingleton.ts -> src/cluster/singleton/ClusterSingletonProxy.ts -> src/cluster/Cluster.ts`
+- 3-file cycle: `src/Actor.ts -> src/ActorSystem.ts -> src/typed/Spawn.ts -> src/Actor.ts`
+- 3-file cycle: `src/ActorSystem.ts -> src/cluster/Cluster.ts -> src/management/HealthCheckExtension.ts -> src/ActorSystem.ts`
 - 3-file cycle: `src/cluster/Cluster.ts -> src/cluster/RefCodec.ts -> src/cluster/RemoteActorRef.ts -> src/cluster/Cluster.ts`
 - 3-file cycle: `src/Actor.ts -> src/cluster/Cluster.ts -> src/cluster/sharding/ClusterSharding.ts -> src/Actor.ts`
 - 3-file cycle: `src/ActorSystem.ts -> src/cluster/Cluster.ts -> src/cluster/sharding/ClusterSharding.ts -> src/ActorSystem.ts`
-- 3-file cycle: `src/cluster/Cluster.ts -> src/cluster/sharding/ClusterSharding.ts -> src/cluster/sharding/ShardCoordinatorOptions.ts -> src/cluster/Cluster.ts`
-- 3-file cycle: `src/cluster/Cluster.ts -> src/cluster/sharding/ClusterSharding.ts -> src/cluster/sharding/ShardRegion.ts -> src/cluster/Cluster.ts`
 - 3-file cycle: `src/Actor.ts -> src/cluster/Cluster.ts -> src/cluster/singleton/ClusterSingleton.ts -> src/Actor.ts`
 - 3-file cycle: `src/ActorSystem.ts -> src/cluster/Cluster.ts -> src/cluster/singleton/ClusterSingleton.ts -> src/ActorSystem.ts`
 - 3-file cycle: `src/cluster/Cluster.ts -> src/cluster/singleton/ClusterSingleton.ts -> src/cluster/singleton/ClusterSingletonManager.ts -> src/cluster/Cluster.ts`
-- 3-file cycle: `src/cluster/Cluster.ts -> src/cluster/singleton/ClusterSingleton.ts -> src/cluster/singleton/ClusterSingletonManagerOptions.ts -> src/cluster/Cluster.ts`
-- 3-file cycle: `src/cluster/Cluster.ts -> src/cluster/singleton/ClusterSingleton.ts -> src/cluster/singleton/ClusterSingletonProxy.ts -> src/cluster/Cluster.ts`
-- 3-file cycle: `src/ActorSystem.ts -> src/cluster/Cluster.ts -> src/management/HealthCheckExtension.ts -> src/ActorSystem.ts`
-- 3-file cycle: `src/ActorSystem.ts -> src/cluster/Cluster.ts -> src/metrics/MetricsExtension.ts -> src/ActorSystem.ts`
-- 3-file cycle: `src/Actor.ts -> src/ActorSystem.ts -> src/internal/ActorCell.ts -> src/Actor.ts`
-- 3-file cycle: `src/ActorSystem.ts -> src/internal/ActorCell.ts -> src/metrics/MetricsExtension.ts -> src/ActorSystem.ts`
-- 3-file cycle: `src/ActorSystem.ts -> src/typed/Behavior.ts -> src/typed/TypedActorContext.ts -> src/ActorSystem.ts`
+- 3-file cycle: `src/ActorSystem.ts -> src/cluster/Cluster.ts -> src/tracing/TracingExtension.ts -> src/ActorSystem.ts`
 - 3-file cycle: `src/ActorSelection.ts -> src/ActorSystem.ts -> src/deadletters/DeadLetterQueue.ts -> src/ActorSelection.ts`
+- 3-file cycle: `src/ActorSystem.ts -> src/internal/LocalActorRef.ts -> src/tracing/TracingExtension.ts -> src/ActorSystem.ts`
+- 3-file cycle: `src/Actor.ts -> src/ActorSystem.ts -> src/internal/ActorCell.ts -> src/Actor.ts`
 
 ## Hyperedges (group relationships)
 - **Actor message-turn pipeline** — docs_src_content_docs_fundamentals_messages_discriminatedunion, docs_src_content_docs_intro_glossary_mailbox, docs_src_content_docs_intro_glossary_dispatcher, docs_src_content_docs_fundamentals_actor_privatemailbox, docs_src_content_docs_fundamentals_pattern_matching_matchexhaustive [EXTRACTED 1.00]
@@ -967,375 +988,359 @@
 - **Serializers implementing the Serializer interface** — docs_src_content_docs_serialization_overview_serializer_interface, docs_src_content_docs_serialization_json_jsonserializer, docs_src_content_docs_serialization_cbor_cborserializer, docs_src_content_docs_serialization_custom_avroserializer, docs_src_content_docs_serialization_custom_protobufserializer [INFERRED 0.95]
 - **The XOptions configuration family** — agents_xoptions_family, agents_xoptions_validator, agents_builder_is_its_settings, agents_hocon_config_keys, agents_constants_placement, readme_typed_options, changelog_devtools_config_panel [INFERRED 0.95]
 
-## Communities (862 total, 271 thin omitted)
+## Communities (884 total, 287 thin omitted)
 
 ### Community 0 - "ActorSystem"
 Cohesion: 0.01
-Nodes (338): main(), parsePathSegments(), ActorSystem, ActorSystemOptions, ClusterSubscriptionReplayMode, EnvelopeHandler, GOSSIP_REFUSAL_REASONS, GossipRefusalCounts (+330 more)
+Nodes (217): Message, Message, Command, Event, Message, SIZES, Message, Message (+209 more)
 
 ### Community 1 - "Actor"
-Cohesion: 0.01
-Nodes (169): appConf, DiagActor, here, main(), DiagActor, main(), Child, main() (+161 more)
+Cohesion: 0.00
+Nodes (207): Entity, Entity, Noop, Worker, Noop, Echo, Swapper, Counter (+199 more)
 
 ### Community 2 - "src/index.ts"
 Cohesion: 0.01
-Nodes (205): ParentActor, counter(), CounterCommand, GetCommand, IncrementCommand, main(), onGet(), onIncrement() (+197 more)
+Nodes (116): Command, Shaky, Supervisor, Worker, ParentActor, counter(), CounterCommand, GetCommand (+108 more)
 
-### Community 3 - "ObjectStorageSnapshotStore.ts"
+### Community 3 - "FilesystemObjectStorageBackend.ts"
+Cohesion: 0.01
+Nodes (191): BalanceCommand, Command, DepositCommand, Event, main(), pickBackend(), State, WithdrawCommand (+183 more)
+
+### Community 4 - "WebsocketClientActor"
+Cohesion: 0.04
+Nodes (28): MAXIMUM_INBOUND_SHAPE_LABEL_LENGTH, inboundShapeLabel(), RFC-6455, WebsocketClientActor, WebsocketClientOptions, WebsocketClientOptionsType, WebsocketClientOptionsValidator, WebsocketClientConstructor (+20 more)
+
+### Community 5 - "SqliteJournal"
+Cohesion: 0.02
+Nodes (66): BalanceCommand, Command, DepositCommand, DepositedEvent, Event, main(), State, WithdrawCommand (+58 more)
+
+### Community 6 - "MongoJournal"
 Cohesion: 0.05
-Nodes (48): SEQ_PADDING, authenticates(), CachedEntry, ObjectStorageDurableStateStore, utf8, utf8Decoder, ObjectStorageDurableStateStoreOptions, ObjectStorageDurableStateStoreOptionsType (+40 more)
+Nodes (15): MongoCollectionLike, MongoCursorLike, MongoDeleteResult, MongoDocument, MongoJournal, applyUpdate(), clone(), compare() (+7 more)
 
-### Community 4 - "BackendTransportFrameCap.test.ts"
+### Community 7 - "EmailBridgeActor.ts"
 Cohesion: 0.02
-Nodes (65): Down, Feed, main(), sleep(), Up, DEFAULT_WEBSOCKET_MAX_FRAME_BYTES, frameByteLength(), normalizeInbound() (+57 more)
-
-### Community 5 - "Lazy.ts"
-Cohesion: 0.02
-Nodes (72): BalanceCommand, Command, DepositCommand, DepositedEvent, Event, main(), State, WithdrawCommand (+64 more)
-
-### Community 6 - "Serializer"
-Cohesion: 0.02
-Nodes (58): MongoDurableStateStore, StateDocument, MongoDurableStateStoreOptions, MongoDurableStateStoreOptionsBuilder, MongoDurableStateStoreOptionsType, MongoDurableStateStoreOptionsValidator, buildMongoResource(), DEFAULT_MONGO_DATABASE (+50 more)
-
-### Community 7 - "broker/index.ts"
-Cohesion: 0.03
-Nodes (67): RFC-2177, RFC-6409, RFC-822, RFC-8314, ConnectionState, DEFAULT_OUTBOUND_BUFFER, DEFAULT_RECONNECT, currentUidValidity() (+59 more)
+Nodes (71): RFC-2177, RFC-6409, RFC-822, RFC-8314, currentUidValidity(), EmailAcknowledgmentCommand, EmailAddress, EmailAttachment (+63 more)
 
 ### Community 8 - "migration/index.ts"
-Cohesion: 0.02
-Nodes (142): BalanceCommand, Command, DepositCommand, DepositedV1, DepositedV2, Event, main(), State (+134 more)
+Cohesion: 0.08
+Nodes (44): LegacyDeposited, LegacyEvent, LegacyState, LegacyWithdrawn, main(), JournalEnvelope, OutboundFrame, SnapshotAdapter (+36 more)
 
 ### Community 9 - "src/http/index.ts"
 Cohesion: 0.02
-Nodes (100): CookieAttributes, parseCookies(), serializeCookie(), RFC-1123, RFC-6265, BODY_DESCRIBING_HEADERS, CROSS_ORIGIN_STRIPPED_HEADERS, FOLLOWABLE_SCHEMES (+92 more)
+Nodes (138): RFC-6797, HonoBackendOptionsBuilder, CookieAttributes, parseCookies(), serializeCookie(), RFC-1123, RFC-6265, FormFields (+130 more)
 
-### Community 10 - "HonoBackend.ts"
-Cohesion: 0.03
-Nodes (51): RFC-6455, asNetSocket(), escapeRegExp(), ExpressAppLike, ExpressBackend, ExpressErrorHandler, ExpressHandler, ExpressNext (+43 more)
+### Community 10 - "Route.ts"
+Cohesion: 0.02
+Nodes (160): RFC-6839, RFC-9110, HttpIngressActor, HttpIngressDeps, registerStaticFiles(), StaticFilesOptions, ExpressErrorHandler, ExpressHandler (+152 more)
 
-### Community 11 - "ActorRef"
-Cohesion: 0.01
-Nodes (135): Supervisor, ActorContext, ActorPath, assertValidName(), hasControlCharacter(), RESERVED_NAME_PREFIX, ActorRef, AskResponseRef (+127 more)
-
-### Community 12 - "WireMessage"
+### Community 11 - "ActorPath"
 Cohesion: 0.04
-Nodes (34): isMemberStatus(), WireMessage, Transport, WireHandler, MessageChannelTransport, hasControlCharacters(), isMemberData(), isNodeAddressData() (+26 more)
+Nodes (29): ActorPath, assertUserAssignableName(), assertValidName(), hasControlCharacter(), RESERVED_NAME_PREFIX, NobodyRef, EventChannel, EventClass (+21 more)
+
+### Community 12 - "NodeAddress"
+Cohesion: 0.02
+Nodes (73): main(), DEFAULT_HEARTBEAT_INTERVAL_MS, NodeAddress, defaultPhiAccrualOptions, PeerState, PhiAccrualFailureDetector, standardNormalCdf(), PhiAccrualOptions (+65 more)
 
 ### Community 13 - "ClusterSingletonHandOver.test.ts"
-Cohesion: 0.02
-Nodes (75): main(), worker(), main(), Heartbeat, main(), ActorSystemOptionsType, LeaseOptions, InMemoryLease (+67 more)
+Cohesion: 0.03
+Nodes (33): main(), worker(), main(), ShardCoordinatorOptionsBuilder, ClusterSingletonManagerOptionsBuilder, Lease, LeaseOptions, LeaseOptionsType (+25 more)
 
-### Community 14 - "ProjectionFailureStrategy.test.ts"
-Cohesion: 0.01
-Nodes (110): clusterOptions, DepositEvent, devtoolsOptions, LedgerState, SupervisorActor, system, TickMessage, WorkerActor (+102 more)
+### Community 14 - "ClusterClient.ts"
+Cohesion: 0.06
+Nodes (30): ClusterClient, nextAskId(), _nextAskIdForTest, PendingAsk, syntheticClientPort(), _syntheticClientPortForTest, ClusterClientOptions, ClusterClientOptionsType (+22 more)
 
 ### Community 15 - ".create"
-Cohesion: 0.01
-Nodes (234): buildCluster(), Command, Entity, main(), Node, PingCommand, runSize(), startNode() (+226 more)
-
-### Community 16 - "DynamoDbJournal.ts"
-Cohesion: 0.04
-Nodes (51): DYNAMODB_MAX_BATCH_ITEMS, DynamoDbDurableStateStore, DynamoDbDurableStateStoreOptions, DynamoDbDurableStateStoreOptionsBuilder, DynamoDbDurableStateStoreOptionsType, DynamoDbDurableStateStoreOptionsValidator, adaptDynamoDbClient(), buildDynamoDbOperations() (+43 more)
-
-### Community 17 - "testkit/index.ts"
-Cohesion: 0.03
-Nodes (17): ActorSystemOptionsBuilder, MockClusterOptions, MockClusterOptionsBuilder, MockClusterOptionsType, MultiNodeClusterFixture, TestRunnerHooks, AddressMap, MultiNodeSpecOptions (+9 more)
-
-### Community 18 - "ShardRegion.ts"
-Cohesion: 0.08
-Nodes (38): Passivate, ShardInbox, CoordinatorEvent, CoordinatorInbox, RegionInfo, StatsQuery, DEFAULT_HAND_OFF_TIMEOUT_MS, DEFAULT_REBALANCE_INTERVAL_MS (+30 more)
-
-### Community 19 - "EventStreamPanelComponent.ng-spec.ts"
-Cohesion: 0.05
-Nodes (18): Listener, Listener, TAP_SOCKET_FACTORY, TAP_URL, InertResizeObserver, installDomGaps(), ALL_PANELS_ACTIVE, FAKE_TAP_PROVIDERS (+10 more)
-
-### Community 20 - "MqttActor.ts"
 Cohesion: 0.02
-Nodes (54): main(), Reading, TemperatureHub, Tick, buildPublishProperties(), isTerminated(), matchesMqttPattern(), MqttActor (+46 more)
+Nodes (147): bootstrap(), main(), formTriangle(), main(), BENCH_COLUMNS, BenchmarkSpec, collectGarbage(), measureMemory() (+139 more)
+
+### Community 16 - "DynamoDbOperations"
+Cohesion: 0.03
+Nodes (50): DynamoDbDurableStateStore, DynamoDbDurableStateStoreOptions, DynamoDbDurableStateStoreOptionsBuilder, DynamoDbDurableStateStoreOptionsType, DynamoDbDurableStateStoreOptionsValidator, adaptDynamoDbClient(), buildDynamoDbOperations(), DynamoDbAttribute (+42 more)
+
+### Community 18 - "DevToolsServer"
+Cohesion: 0.06
+Nodes (15): DevToolsServer, DevToolsHubCommand, devToolsPublishCommand, SEND_MESSAGE_MAX_BYTES, SendMessageParameters, SendMessageResult, StatsHistoryResult, TracingBufferResult (+7 more)
+
+### Community 19 - "TapClientService.ts"
+Cohesion: 0.03
+Nodes (67): NavigationItem, Listener, STATUS_LABELS, APP_ROUTES, PANEL_ROSTER, PANEL_ROUTES, PanelRouteData, Listener (+59 more)
+
+### Community 20 - "broker/index.ts"
+Cohesion: 0.02
+Nodes (60): main(), Reading, TemperatureHub, Tick, BrokerBufferOverflow, BrokerNotConnected, BrokerReconnectFailed, NOTE: the client-side WebSocket actor now lives in `src/http/websocket/` (+52 more)
 
 ### Community 21 - "Journal"
 Cohesion: 0.02
-Nodes (54): main(), main(), JournalRememberEntitiesStore, MAX_TAG_LENGTH, MAX_TAGS_PER_EVENT, Journal, persistenceIdPage(), InProcessJournalEventBus (+46 more)
+Nodes (21): main(), Journal, InProcessJournalEventBus, JournalEventBus, CassandraJournal, InMemoryJournal, JournalEntry, PersistentEvent (+13 more)
 
-### Community 22 - "MariaDbClient.ts"
-Cohesion: 0.03
-Nodes (54): MariaDbDurableStateStore, MariaDbDurableStateStoreOptions, MariaDbDurableStateStoreOptionsBuilder, MariaDbDurableStateStoreOptionsType, adaptMariaDbPool(), affectedRowsOf(), buildMariaDbPool(), MariaDbConnection (+46 more)
+### Community 22 - "RelationalQuery.test.ts"
+Cohesion: 0.02
+Nodes (80): PostgresDurableStateStore, PostgresDurableStateStoreOptions, PostgresDurableStateStoreOptionsBuilder, PostgresDurableStateStoreOptionsType, LibSqlTransactionLike, MariaDbConnectionLike, MariaDbRow, adaptPgPool() (+72 more)
 
-### Community 23 - "Route.ts"
-Cohesion: 0.03
-Nodes (153): main(), main(), main(), Harness, main(), makeRoutes(), Routes, runBackend() (+145 more)
+### Community 23 - "complete"
+Cohesion: 0.04
+Nodes (101): main(), main(), main(), Harness, main(), makeRoutes(), Routes, runBackend() (+93 more)
 
 ### Community 24 - "Logger"
-Cohesion: 0.02
-Nodes (26): DisplayNameLogger, LogContextData, ConsoleLogger, DISPLAY_NAME_FIELD, JsonLogger, JsonLogSink, Logger, WarningCollector (+18 more)
+Cohesion: 0.06
+Nodes (6): Logger, WarningCollector, CapturingLogger, RecordingLogger, CapturingLogger, WarnCollector
 
 ### Community 25 - "Scenario.ts"
-Cohesion: 0.04
-Nodes (92): GrpcClientCommand, GrpcClientOptions, service_started gate (bare JRE image), main(), requireEnv(), GreenMail service, Mailpit rejected: no IMAP, Email runner service (+84 more)
+Cohesion: 0.03
+Nodes (122): AmqpCommand, AmqpDelivery, GrpcClientCommand, GrpcClientOptions, NatsMessage, JsonLogger, AmqpContext, InboxActor (+114 more)
 
 ### Community 26 - "Option"
-Cohesion: 0.03
-Nodes (48): InMemoryDurableStateStore, DurableStateConcurrencyError, DurableStateRecord, DurableStateStore, Snapshot, CompressionAlgo, MasterKeyRingEntry, PersistenceOptions (+40 more)
+Cohesion: 0.02
+Nodes (108): Cache, CacheError, releaseIfStillHeld(), Bucket, Entry, MemcachedKeyRules, MemjsClientStatic, memjsLazy (+100 more)
 
 ### Community 27 - "ControlRoutes.ts"
-Cohesion: 0.02
-Nodes (81): Client, Echo, main(), main(), startNode(), StreamClient, Worker, CapRefusal (+73 more)
+Cohesion: 0.03
+Nodes (49): BearerTokenAuth(), ConsoleLogger, displayNameOf(), formatValue(), everyNEvents(), SnapshotPolicy, ControlDeps, CounterStateCollector (+41 more)
 
 ### Community 28 - "UserSessionActor.ts"
 Cohesion: 0.03
-Nodes (95): ChatEvent, ChatRoomCommand, chatRoomTopic(), ChatState, GetHistoryCommand, HISTORY_LIMIT, HistoryReply, MessagePostedEvent (+87 more)
+Nodes (90): ChatEvent, ChatRoomCommand, chatRoomTopic(), ChatState, GetHistoryCommand, HISTORY_LIMIT, HistoryReply, MessagePostedEvent (+82 more)
 
-### Community 29 - "cluster/index.ts"
+### Community 29 - "Actor.ts"
 Cohesion: 0.02
-Nodes (122): ChatMessage, DomainEvent, main(), startNode(), waitUntil(), inMemoryTransport(), BootstrappedCluster, DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS (+114 more)
+Nodes (133): fanout(), main(), Client, main(), main(), startNode(), StreamClient, ChatMessage (+125 more)
 
 ### Community 30 - "GrpcClientActor.ts"
 Cohesion: 0.03
-Nodes (35): BidiCloseCommand, BidiSendCommand, BidiStartCommand, ClientStreamCloseCommand, ClientStreamSendCommand, ClientStreamStartCommand, createGrpcStreamHandle(), createInsecure() (+27 more)
+Nodes (43): BidiCloseCommand, BidiSendCommand, BidiStartCommand, ClientStreamCloseCommand, ClientStreamSendCommand, ClientStreamStartCommand, createGrpcStreamHandle(), createInsecure() (+35 more)
 
-### Community 31 - "ClusterClient"
-Cohesion: 0.18
-Nodes (3): ClusterClient, nextAskId(), syntheticClientPort()
+### Community 31 - "FakeCassandraClient.ts"
+Cohesion: 0.07
+Nodes (28): CassandraBatchQuery, CassandraRowResult, ExecuteOptions, FlakyBatchClient, NonConditionalClient, OptionsSpyClient, race(), RaceOutcome (+20 more)
 
 ### Community 32 - "DocumentedDefaults.test.ts"
 Cohesion: 0.04
-Nodes (64): DEFAULT_MAX_REMOTE_NODES_PER_TOPIC, DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC, DEFAULT_MAX_TOPICS, DEFAULT_MAX_GOSSIP_BYTES, DEFAULT_MAX_PENDING_QUORUM_REQUESTS, DEFAULT_MAX_QUORUM_TIMEOUT_MS, DEFAULT_MAX_SUBSCRIBERS_PER_KEY, DEFAULT_MAX_SUBSCRIPTIONS_TOTAL (+56 more)
+Nodes (61): DEFAULT_NUM_SHARDS, DEFAULT_PASSIVATION_IDLE_MS, DEFAULT_MAX_SUBSCRIBERS_PER_KEY, DEFAULT_MAX_SUBSCRIPTIONS_TOTAL, AppendOnlyFile, codeOf(), deleteFile(), ensureDirectory() (+53 more)
 
-### Community 33 - "ShardRegion"
-Cohesion: 0.08
-Nodes (5): GetShardRegionStats, GetShards, HandOff, ShardLocation, ShardRegion
+### Community 33 - "MdcPropagation.test.ts"
+Cohesion: 0.04
+Nodes (20): Bottom, BufferMessage, CollectorMessage, ContextRecordingSink, DetachedWorker, DrainMessage, IdleReporter, IsolatingCollector (+12 more)
 
 ### Community 34 - "ShardCountRefusal.test.ts"
 Cohesion: 0.03
-Nodes (85): hashCombine(), hashShardId(), moduloAllocator(), rendezvousAllocator(), ShardAllocator, stringHash(), shardRegionName(), systemActorPath() (+77 more)
+Nodes (97): CoordinatorStateData, hashCombine(), hashShardId(), moduloAllocator(), rendezvousAllocator(), ShardAllocator, stringHash(), StartShardingOptionsBuilder (+89 more)
 
-### Community 35 - "tracing/index.ts"
+### Community 35 - "RecordingTracer.ts"
+Cohesion: 0.15
+Nodes (12): highResNow(), highResolutionMs(), RecordedSpan, TeeSpan, TeeTracer, AttributeValue, decodeTraceparent(), SpanContext (+4 more)
+
+### Community 36 - "DowningProvider"
+Cohesion: 0.34
+Nodes (6): addrKey(), ClusterPartitionView, DowningDecision, DowningProvider, KeepOldest, decide()
+
+### Community 37 - "ActorRef"
+Cohesion: 0.02
+Nodes (147): Command, GetCommand, IncrementCommand, main(), parseArgs(), ActorClassOrFactory, ActorRef, assertAskTimeout() (+139 more)
+
+### Community 38 - "DashboardPanelComponent.ts"
 Cohesion: 0.04
-Nodes (43): highResNow(), NOOP_SPAN, NOOP_TRACER, NoopTracer, ZERO_CTX, OtelApiLike, OtelContextApi, OtelContextLike (+35 more)
-
-### Community 36 - "downing/index.ts"
-Cohesion: 0.09
-Nodes (27): addrKey(), ClusterPartitionView, DowningDecision, DowningProvider, KeepMajority, KeepMajorityOptions, KeepMajorityOptionsBuilder, KeepMajorityOptionsType (+19 more)
-
-### Community 37 - "ClusterSharding.ts"
-Cohesion: 0.01
-Nodes (109): Command, GetCommand, IncrementCommand, main(), parseArgs(), main(), PartitionWorker, startNode() (+101 more)
-
-### Community 38 - "TracingPanelComponent.ts"
-Cohesion: 0.03
-Nodes (87): AppShellComponent, NavigationItem, STATUS_LABELS, Component, ChartTheme, ChartThemeService, FALLBACKS, Injectable (+79 more)
+Nodes (67): ChartTheme, ChartThemeService, FALLBACKS, Injectable, EChartComponent, Component, DevToolsChartOption, buildRectanglesOption() (+59 more)
 
 ### Community 39 - "DistributedData.ts"
-Cohesion: 0.03
-Nodes (80): GOSSIP_SKIP_WARN_INTERVAL_MS, MAX_CRDT_ENTRIES, MAX_CRDT_NESTING_DEPTH, MAX_MV_REGISTER_ENTRIES, MAX_TIMESTAMP_SKEW_MS, TAG_ENTROPY_CHARACTERS, Crdt, ReplicaId (+72 more)
+Cohesion: 0.04
+Nodes (72): GOSSIP_SKIP_WARN_INTERVAL_MS, MAX_COUNTER_SLOT, MAX_CRDT_ENTRIES, MAX_CRDT_NESTING_DEPTH, MAX_MV_REGISTER_ENTRIES, MAX_TIMESTAMP_SKEW_MS, TAG_ENTROPY_CHARACTERS, Crdt (+64 more)
 
 ### Community 40 - "persistence/index.ts"
-Cohesion: 0.02
-Nodes (110): LibSqlDurableStateStore, LibSqlDurableStateStoreOptions, LibSqlDurableStateStoreOptionsBuilder, LibSqlDurableStateStoreOptionsType, LibSqlDurableStateStoreOptionsValidator, MsSqlDurableStateStore, MsSqlDurableStateStoreOptions, MsSqlDurableStateStoreOptionsBuilder (+102 more)
-
-### Community 41 - "AmqpActor.ts"
-Cohesion: 0.04
-Nodes (26): AcknowledgmentCommand, AmqpActor, AmqpChannelLike, AmqpCommand, AmqpConnectionLike, AmqpDelivery, AmqpLibModule, AmqpPublish (+18 more)
+Cohesion: 0.01
+Nodes (153): Command, Event, GetCommand, IncrementCommand, main(), BalanceCommand, Command, DepositCommand (+145 more)
 
 ### Community 42 - "ActorCell"
-Cohesion: 0.04
-Nodes (16): ActorBlueprint, ActorCell, watchKeyOf(), describeMessageType(), DispatchObserver, reportsDrops(), ChildTerminatedCommand, CreateCommand (+8 more)
+Cohesion: 0.02
+Nodes (45): Receive, ThrottleOnExcess, ThrottleOptions, DEFAULT_MAILBOX_OVERFLOW, ActorBlueprint, ActorCell, watchKeyOf(), DEFAULT_STASH_CAPACITY (+37 more)
 
 ### Community 43 - "D1Backends.test.ts"
-Cohesion: 0.03
-Nodes (54): DEFAULT_D1_MAX_RESPONSE_BYTES, D1DurableStateStore, D1DurableStateStoreOptions, D1DurableStateStoreOptionsBuilder, D1DurableStateStoreOptionsType, D1DurableStateStoreOptionsValidator, adaptD1Client(), buildD1Client() (+46 more)
+Cohesion: 0.04
+Nodes (44): DEFAULT_D1_MAX_RESPONSE_BYTES, D1DurableStateStore, D1DurableStateStoreOptions, D1DurableStateStoreOptionsBuilder, D1DurableStateStoreOptionsType, D1DurableStateStoreOptionsValidator, adaptD1Client(), buildD1Client() (+36 more)
 
 ### Community 44 - "Config"
 Cohesion: 0.04
-Nodes (52): cloneTree(), Config, ConfigError, defaultApplicationConfPath(), LoadOptions, typeError(), parseDuration(), UNIT_MS (+44 more)
+Nodes (55): cloneTree(), Config, ConfigError, defaultApplicationConfPath(), LoadOptions, typeError(), parseDuration(), UNIT_MS (+47 more)
 
 ### Community 45 - "Voice sample (walkie-talkie / group / rooms)"
-Cohesion: 0.09
-Nodes (53): Group and room fan-out via DistributedPubSub, Real-world voice adaptation, Chat Angular frontend, ChatService (WebSocket + signals), Local protocol mirror, Angular chat host page (chat-root), Chat Lit frontend, Chat Next.js frontend (+45 more)
-
-### Community 46 - "BrokerActor.test.ts"
-Cohesion: 0.04
-Nodes (49): CronActor, main(), main(), Worker, coordinatedShutdown, interval, registry, server (+41 more)
+Cohesion: 0.10
+Nodes (47): Group and room fan-out via DistributedPubSub, Real-world voice adaptation, Chat Angular frontend, ChatService (WebSocket + signals), Local protocol mirror, Angular chat host page (chat-root), Chat Lit frontend, Chat Next.js frontend (+39 more)
 
 ### Community 47 - "TlsTransportOptionsType"
-Cohesion: 0.07
-Nodes (34): BunGlobal, BunTcpBackend, wrappers, wrapSocket(), asString(), DenoConnection, DenoConnectTlsOptions, DenoGlobal (+26 more)
+Cohesion: 0.03
+Nodes (51): certificateVouchesFor(), hostMatches(), TcpTransport, TcpServerActor, RUNTIME_LABELS, TcpGelfTransport, StreamSyslogWire, RuntimeKind (+43 more)
 
-### Community 48 - "MailboxProperties.test.ts"
-Cohesion: 0.04
-Nodes (52): Envelope, applyDequeueSystem(), applyDequeueUser(), applyDrainSystem(), applyDrainUser(), applyEnqueue(), applyEnqueueSystem(), applyEvictOldest() (+44 more)
+### Community 48 - "Envelope"
+Cohesion: 0.02
+Nodes (84): DropReportingMailbox, Envelope, Mailbox, MailboxDropObserver, MailboxDropReason, BoundedMailbox, BoundedMailboxOptions, BoundedMailboxOptionsBuilder (+76 more)
 
 ### Community 49 - "ask (request/response)"
 Cohesion: 0.08
-Nodes (36): maxQuorumTimeout, Kein ADR-Log in diesem Projekt, Wo das Warum lebt, Warum zuerst Bun, Warum explizite replyTo-Refs, Warum HOCON statt YAML / TOML, Warum keine eingebauten Transaktionen ueber Actors hinweg, Warum keine Streams-DSL (+28 more)
+Nodes (34): Kein ADR-Log in diesem Projekt, Wo das Warum lebt, Warum zuerst Bun, Warum explizite replyTo-Refs, Warum HOCON statt YAML / TOML, Warum keine eingebauten Transaktionen ueber Actors hinweg, Warum keine Streams-DSL, Warum ein Single-Threaded-Modell (+26 more)
 
 ### Community 50 - "GrpcServerActor.ts"
-Cohesion: 0.02
-Nodes (78): GetSensorHandler, main(), ReplyCollector, ReportReadingsHandler, WatchSensorHandler, GrpcInbound, ReplyMessage, RpcErrorMessage (+70 more)
+Cohesion: 0.03
+Nodes (68): GetSensorHandler, main(), ReplyCollector, ReportReadingsHandler, WatchSensorHandler, ReplyMessage, RpcErrorMessage, StreamDataMessage (+60 more)
 
 ### Community 51 - "JetStreamKeyValueActor.ts"
 Cohesion: 0.03
-Nodes (35): DeleteCommand, entryMessageOf(), GetCommand, JetStreamKeyValueActor, JetStreamKeyValueCommand, JetStreamKeyValueMessage, KeysCommand, KeyValueBucketOptionsLike (+27 more)
+Nodes (37): DeleteCommand, entryMessageOf(), GetCommand, JetStreamKeyValueActor, JetStreamKeyValueCommand, JetStreamKeyValueMessage, KeysCommand, KeyValueBucketOptionsLike (+29 more)
 
-### Community 52 - "SplunkSinkOptions.ts"
-Cohesion: 0.02
-Nodes (64): SinkDeliveryError, DeliveryOptionsType, GelfSinkOptionsBuilder, basicAuthorization(), FetchLike, globalFetch(), HttpPostRequest, postToEndpoint() (+56 more)
+### Community 52 - "BatchingSink"
+Cohesion: 0.04
+Nodes (19): BatchingSink, SinkDeliveryError, SINK_REPORT_INTERVAL_MS, DEFAULT_DELIVERY_MAX_BACKOFF_MS, DEFAULT_DELIVERY_MAX_RETRIES, DEFAULT_DELIVERY_MIN_BACKOFF_MS, DEFAULT_DELIVERY_RANDOM_FACTOR, DeliveryOptionsType (+11 more)
 
 ### Community 53 - "protocol/index.ts"
-Cohesion: 0.05
-Nodes (64): TapClient, UptimeAnchor, uptimeMillis(), isPanelUsable(), panelStatusOf(), DevToolsHubActor, DevToolsHubContext, DevToolsSession (+56 more)
+Cohesion: 0.04
+Nodes (69): SocketFactory, TapClient, isPanelUsable(), panelStatusOf(), DevToolsHubActor, DevToolsHubContext, DevToolsSession, ActorCellState (+61 more)
 
 ### Community 54 - "JetStreamActor.ts"
-Cohesion: 0.02
-Nodes (44): db_insertOrder(), main(), Order, OrderProcessor, BrokerOptionsValidator, EmailBridgeOptionsValidator, AcknowledgmentCommand, ConsumerAddConfig (+36 more)
+Cohesion: 0.03
+Nodes (42): db_insertOrder(), Order, OrderProcessor, AcknowledgmentCommand, ConsumerAddConfig, extractHeaders(), FetchCommand, HeadersLike (+34 more)
 
 ### Community 55 - "TimeTravel.test.ts"
-Cohesion: 0.04
-Nodes (37): changedOnly(), DiffEntry, DiffKind, diffStates(), isWalkable(), read(), sameValue(), unionOfKeys() (+29 more)
+Cohesion: 0.06
+Nodes (39): changedOnly(), DiffEntry, DiffKind, diffStates(), isWalkable(), read(), sameValue(), unionOfKeys() (+31 more)
 
-### Community 56 - "PersistenceContract.test.ts"
-Cohesion: 0.07
-Nodes (43): DynamoDB Local service, DynamoDB runner service, assert(), assertEqual(), expectThrows(), durableStateContractScenarios(), compactionMarkSkip(), journalContractScenarios() (+35 more)
+### Community 56 - "WebsocketRoute.ts"
+Cohesion: 0.06
+Nodes (16): WebsocketPolicyResolver, WebsocketClientOptionsBuilder, WebsocketCodec, BackpressurePolicy, DEFAULT_WEBSOCKET_POLICY, InvalidMessagePolicy, OversizeFramePolicy, ResolvedWebsocketPolicy (+8 more)
 
-### Community 57 - "DevToolsStreamPayload"
-Cohesion: 0.05
-Nodes (21): DevToolsTap, DevToolsStreamPayload, spanBatchPayload, TRACING_BUFFER_DEFAULT, TRACING_BUFFER_MAXIMUM, TRACING_BUFFER_MINIMUM, TracingBufferParameters, TracingBufferResult (+13 more)
+### Community 57 - "EventStreamTap"
+Cohesion: 0.19
+Nodes (4): PubSubTopicsResult, EventStreamTap, eventTypeOf(), harness()
 
 ### Community 58 - "LogRecord"
-Cohesion: 0.03
-Nodes (32): BatchingSink, LogRecord, LogSinkContext, LokiSink, LogPipeline, MultiSinkLogger, PipelineLogger, MultiSinkLoggerOptions (+24 more)
+Cohesion: 0.02
+Nodes (49): ActorSystemOptionsBuilder, DISPLAY_NAME_FIELD, JsonLogSink, LogRecord, LogRecordTransform, LogSink, LogSinkContext, LokiSink (+41 more)
 
 ### Community 59 - "cluster"
-Cohesion: 0.03
-Nodes (100): bootstrapCluster(), Cluster bootstrap phase, ClusterBootstrapOptions, Deferred self-election, requiredContactPoints, StableObservation, StableObservationError, Wildcard advertised host is refused (+92 more)
+Cohesion: 0.02
+Nodes (111): bootstrapCluster(), Cluster bootstrap phase, ClusterBootstrapOptions, Deferred self-election, requiredContactPoints, StableObservation, StableObservationError, Wildcard advertised host is refused (+103 more)
 
 ### Community 60 - "logging/index.ts"
-Cohesion: 0.02
-Nodes (143): resolveLogger(), AppendOnlyFile, codeOf(), deleteFile(), ensureDirectory(), FileHandleLike, fsLazy, FsModule (+135 more)
-
-### Community 61 - "DevToolsServer.ts"
-Cohesion: 0.05
-Nodes (35): DevTools, DevToolsExtension, DevToolsExtensionId, devtoolsOf(), DEVTOOLS_DEFAULTS, DevToolsExposure, DevToolsOptions, DevToolsOptionsType (+27 more)
-
-### Community 62 - "CassandraJournal"
-Cohesion: 0.02
-Nodes (76): Command, Event, GetCommand, IncrementCommand, main(), BalanceCommand, Command, DepositCommand (+68 more)
-
-### Community 63 - "Glossary"
 Cohesion: 0.03
-Nodes (108): InMemorySnapshotStore, Backend-Matrix (Journal / Durable State / Snapshot / Tag-Index), Indizierte Tag-Query vs. Polling-Scan, Journal (Append-only Event-Log), JournalIntegrityError, Projektion (Read-Side-View), Getaggtes JSON-Tree-Format fuer alle Payloads, EventAdapter (Schema-Evolution) (+100 more)
+Nodes (157): resolveLogger(), ConfigKeys, ConsoleSink, renderArgs(), routeByLevel(), writeLine(), ConsoleSinkFormat, ConsoleSinkOptions (+149 more)
 
-### Community 64 - "BrokerCommonOptionsType"
+### Community 61 - "devtools.ts"
+Cohesion: 0.06
+Nodes (44): argumentValue(), AttachDevToolsOptions, attachScanning(), browsableUrl(), commandLineArguments(), DISABLED, ExampleDevTools, isEnabled() (+36 more)
+
+### Community 62 - "PersistenceContract.test.ts"
 Cohesion: 0.03
-Nodes (67): BrokerCommonOptionsType, BytesFraming, DEFAULT_FRAMING, DEFAULT_LINE_DELIMITER, DEFAULT_MAX_FRAME_LENGTH, DEFAULT_MAX_LINE_LENGTH, extractFrames(), extractLengthPrefixedFrames() (+59 more)
+Nodes (64): CassandraRememberEntitiesStore, rememberEntitiesDdl(), RememberRow, CassandraRememberEntitiesStoreOptions, CassandraRememberEntitiesStoreOptionsBuilder, CassandraRememberEntitiesStoreOptionsType, RememberEvent, StartedEvent (+56 more)
 
-### Community 65 - "FilesystemObjectStorageBackend.ts"
+### Community 63 - "SqliteSnapshotStore"
 Cohesion: 0.04
-Nodes (51): acquireLock(), assertSafeKey, assertWithinRoot(), Buffer, computeEtag(), FilesystemKeyRules, FilesystemObjectStorageBackend, fsLazy (+43 more)
+Nodes (69): InMemorySnapshotStore, ObjectStorageConcurrencyError beim Sweep-CAS, ObjectStorageSnapshotStore, Mit CachedSnapshotStore fuer Hot-Path-Loads einwickeln, Journal und Snapshot-Store sind unabhaengig, Backend-Matrix (Journal / Durable State / Snapshot / Tag-Index), Indizierte Tag-Query vs. Polling-Scan, EventAdapter (Schema-Evolution) (+61 more)
+
+### Community 64 - "TcpServerActor.ts"
+Cohesion: 0.02
+Nodes (66): BytesFraming, DEFAULT_FRAMING, DEFAULT_LINE_DELIMITER, DEFAULT_MAX_FRAME_LENGTH, DEFAULT_MAX_LINE_LENGTH, extractFrames(), extractLengthPrefixedFrames(), extractLineFrames() (+58 more)
+
+### Community 65 - "S3ObjectStorageBackend.ts"
+Cohesion: 0.05
+Nodes (34): S3_MAX_KEY_LENGTH_BYTES, assertSafeKey, assertSafeWriteKey, isS3NotFound(), isS3PreconditionFailed(), ListObjectsV2CommandInput, PutObjectCommandInput, quote() (+26 more)
 
 ### Community 66 - "[Unreleased] window"
-Cohesion: 0.05
-Nodes (89): Dependabot configuration, SHA-pinned actions with trailing tag comment, npm minor+patch update group, @types/node major-bump ignore rule, Blank issues disabled, Documentation issue template, Acceptance criteria field, benchmarks job (typecheck + smoke) (+81 more)
-
-### Community 67 - "StatsTap.ts"
 Cohesion: 0.04
-Nodes (38): CachedReport, DevToolsFederation, DevToolsNodeAgent, FIGURE_COUNTERS, hasFiniteNumbers(), isMailboxDepth(), isNodeFigures(), isNodeQuery() (+30 more)
+Nodes (93): Dependabot configuration, SHA-pinned actions with trailing tag comment, npm minor+patch update group, @types/node major-bump ignore rule, Blank issues disabled, Documentation issue template, Acceptance criteria field, benchmarks job (typecheck + smoke) (+85 more)
+
+### Community 67 - "DevToolsServer.ts"
+Cohesion: 0.03
+Nodes (68): CachedReport, DevToolsFederation, DevToolsNodeAgent, DEVTOOLS_AGENT_PATH, DEVTOOLS_COLLECTOR_PATH, FIGURE_COUNTERS, hasFiniteNumbers(), isMailboxDepth() (+60 more)
 
 ### Community 68 - "actor-ts framework"
-Cohesion: 0.05
-Nodes (61): Optional peer dependency checklist, Pre-filing contact links, Feature request issue template, broker matrix job, integration-brokers workflow, integration scenarios job, integration workflow (real-network multi-node), Spell out abbreviations in identifiers (+53 more)
-
-### Community 69 - "Router.scatterGatherFirstCompleted"
 Cohesion: 0.04
-Nodes (68): Ask, Broadcast, randomId, randomUuid, Wann zu einem Router greifen, Broadcast-Router plus Reply-to-Ref, Broadcast<T>-Wrapper, Router-Factories (+60 more)
+Nodes (77): CodeQL analysis configuration, Default query suite, not security-extended, Generated and vendored path exclusions, Bug report issue template, Optional peer dependency checklist, Security-relevance flag on the bug template, Pre-filing contact links, Feature request issue template (+69 more)
 
-### Community 70 - "http/Types.ts"
-Cohesion: 0.03
-Nodes (66): RFC-6839, RFC-9110, Entry, base64ToBytes(), bytesToBase64(), CachedResponse, canonicalQuery(), computeRequestFingerprint() (+58 more)
+### Community 69 - "Glossary"
+Cohesion: 0.05
+Nodes (61): Projektion (Read-Side-View), size = 0 ist ein Bug, PersistentActor, onCommand(state, command), onEvent(state, event), persist(event, afterPersist), persistenceId, Many projections over one journal (+53 more)
+
+### Community 70 - "http/cache/index.ts"
+Cohesion: 0.06
+Nodes (24): DEFAULT_IDEMPOTENCY_MAX_KEY_LENGTH, DEFAULT_IDEMPOTENCY_MAX_SCOPE_LENGTH, IdempotencyOptions, IdempotencyOptionsBuilder, IdempotencyOptionsType, IdempotencyOptionsValidator, defaultOnLimit(), rateLimit() (+16 more)
 
 ### Community 71 - "JetStreamObjectStoreActor.ts"
 Cohesion: 0.04
-Nodes (36): DeleteCommand, GetCommand, InfoCommand, JetStreamObjectInfo, JetStreamObjectStoreActor, JetStreamObjectStoreCommand, JetStreamObjectStoreMessage, ListCommand (+28 more)
+Nodes (35): DeleteCommand, GetCommand, InfoCommand, JetStreamObjectInfo, JetStreamObjectStoreActor, JetStreamObjectStoreCommand, JetStreamObjectStoreMessage, ListCommand (+27 more)
 
-### Community 72 - "ClusterRouterActor"
-Cohesion: 0.19
-Nodes (4): ClusterRouterActor, isMailboxDepthReport(), MailboxDepthReportMessage, onReport()
+### Community 72 - "router/ClusterRouterSmallestMailbox.test.ts"
+Cohesion: 0.04
+Nodes (30): ClusterRouterActor, ClusterRouterOptions, ClusterRouterOptionsBuilder, fnv1a(), hashCombine(), pickRendezvous(), agentsByCluster, ClusterMailboxDepthAgent (+22 more)
 
 ### Community 73 - "StaticFiles.ts"
-Cohesion: 0.05
-Nodes (55): assets, main(), STATIC_FILE_READ_CHUNK_BYTES, CHARSET_TYPES, contentTypeFor(), DEFAULT_MIME_TYPES, extensionOf(), needsCharset() (+47 more)
+Cohesion: 0.06
+Nodes (45): STATIC_FILE_READ_CHUNK_BYTES, CHARSET_TYPES, contentTypeFor(), DEFAULT_MIME_TYPES, extensionOf(), needsCharset(), readOwnContentType(), assertHeaderSafeTarget() (+37 more)
 
 ### Community 74 - "peerDependencies"
 Cohesion: 0.04
-Nodes (47): better-sqlite3, cassandra-driver, @hono/node-server, better-sqlite3, hono, @hono/node-server, ws, amqplib (+39 more)
+Nodes (47): express, memjs, @types/node, typescript, amqplib, @aws-sdk/client-dynamodb, @aws-sdk/client-s3, cassandra-driver (+39 more)
 
 ### Community 75 - "MigrationChain"
-Cohesion: 0.04
-Nodes (75): Headless Service fuer Cluster-Gossip, Kubernetes-Manifest (StatefulSet, Services, RBAC), preStop-Sleep, Rolling Update mit automatischem Shard-Rebalancing, terminationGracePeriodSeconds, Produktions-Checkliste, verifyKeyringCompleteness, Jede Version kommt genau einmal vor (+67 more)
+Cohesion: 0.06
+Nodes (56): verifyKeyringCompleteness, Jede Version kommt genau einmal vor, migratingSnapshotAdapter, Bestehende Schritte nie aendern, Schema-Registry (InMemorySchemaRegistry), CompactedSourceError, Erst das Journal kopieren, dann die Snapshots, Manifest-Umbenennung bricht jeden historischen Eintrag (+48 more)
 
-### Community 76 - "Circuit Breaker"
-Cohesion: 0.04
-Nodes (81): fibonacciBackoff (eigene Policy), Jitter (randomFactor), random-Override fuer Determinismus, Retry-Budget, BackoffOptions<T>, drainGraceMs + forwardDuringGrace, forward: stash | drop, Backoff-Supervisor nicht schachteln (+73 more)
+### Community 76 - "BackoffPolicy"
+Cohesion: 0.16
+Nodes (15): fibonacciBackoff (eigene Policy), Jitter (randomFactor), random-Override fuer Determinismus, Retry-Budget, sleep-Injection fuer Tests, BackoffPolicy, Custom backoff policies, exponentialBackoff (+7 more)
 
 ### Community 77 - "exports"
 Cohesion: 0.05
 Nodes (42): default, import, types, default, import, types, default, import (+34 more)
 
-### Community 78 - "Intro glossary"
-Cohesion: 0.05
-Nodes (66): Actor, ask, Intro glossary, Journal, Sharding, Singleton, Snapshot, Supervisor strategy (+58 more)
+### Community 78 - "ActorSystem"
+Cohesion: 0.04
+Nodes (80): Chat-Beispiel, ask, Message, tell, One-Shot-Reply-Actor hinter ask, Counter (Discriminated-Union-Commands), Greeter, Hello, Actor (+72 more)
 
 ### Community 79 - "ClusterSingletonManager"
 Cohesion: 0.04
-Nodes (68): Buffered messages during handoff, Only the coordinator may order a handoff, Force-reallocation, HandOff directive, HandOffComplete, handOffTimeoutMs, Ownership and once-only handoff, Split-brain entities (+60 more)
+Nodes (71): Buffered messages during handoff, Only the coordinator may order a handoff, Force-reallocation, HandOff directive, HandOffComplete, handOffTimeoutMs, Ownership and once-only handoff, Split-brain entities (+63 more)
 
 ### Community 80 - "Log platform integrations"
-Cohesion: 0.04
-Nodes (83): Frame-Limits und ihre Durchsetzung, MTU liegt typischerweise um 1500 Bytes, maxFrameBytes am rohen Frame, redactedUrlLabel, TeeTracer neben einem vorhandenen Tracer, Eine Implementierung fuer Bun, Node und Deno, Dauerhaftigkeit, Benennung (+75 more)
+Cohesion: 0.05
+Nodes (81): MTU liegt typischerweise um 1500 Bytes, redactedUrlLabel, TeeTracer neben einem vorhandenen Tracer, Eine Implementierung fuer Bun, Node und Deno, Dauerhaftigkeit, Benennung, Beim Rollover wird nie umbenannt, Kein Record wird auf zwei Dateien aufgeteilt (+73 more)
 
 ### Community 81 - "Cluster sharding"
-Cohesion: 0.05
-Nodes (62): entityRefFor(), ask on a remote shard ref times out, Shard introspection, ClusterSharding.shardMap(), ShardMapChanged event, shardRefFor(), ClusterSharding.shards(), Shards with no home are absent (+54 more)
+Cohesion: 0.06
+Nodes (51): entityRefFor(), ask on a remote shard ref times out, resident flag, Shard introspection, ShardInfo, ClusterSharding.shardMap(), ShardMapChanged event, shardRefFor() (+43 more)
 
-### Community 82 - "BodyCodec.ts"
-Cohesion: 0.05
-Nodes (55): ATS1_MAGIC, COMPRESSION_GZIP, COMPRESSION_NONE, COMPRESSION_ZSTD, decodeBody(), decodeCompression(), DecodedBody, DecodeOptions (+47 more)
+### Community 82 - "ExpressBackend"
+Cohesion: 0.09
+Nodes (7): asNetSocket(), escapeRegExp(), ExpressAppLike, ExpressBackend, ExpressResponseLike, WebsocketServerLike, ExpressBackendOptionsBuilder
 
 ### Community 83 - "KubernetesApiSeedProvider"
-Cohesion: 0.04
-Nodes (72): Hostname vs IP member-identity mismatch, KubernetesApiSeedProvider, A lookup is not yet an answer, Discovery: two separate concerns, Register, ServiceKey, First-Wins-Fallback-Semantik, seedsFromEnv (+64 more)
+Cohesion: 0.05
+Nodes (59): Hostname vs IP member-identity mismatch, KubernetesApiSeedProvider, A lookup is not yet an answer, Discovery: two separate concerns, Register, ServiceKey, First-Wins-Fallback-Semantik, seedsFromEnv (+51 more)
 
 ### Community 84 - "MultiNodeSpec"
+Cohesion: 0.04
+Nodes (53): Downing-Strategie, Gossip, HonoBackend auf Bun, Kompatibilitaets-Matrix, Den Warn-Marker lesen, Deno (Best-Effort), Deno-Permissions-Modell, SQLite auf Deno nicht unterstuetzt (+45 more)
+
+### Community 85 - "Behaviors namespace"
 Cohesion: 0.05
-Nodes (46): Downing-Strategie, Gossip, Teste, was die Grenze überschreitet, awaitCondition (tests/util/AwaitCondition.ts), Ein Budget, das der Test-Timeout nie erreicht, Fester Sleep vor einer Assertion (dominante Familie), SleepRatchet.test.ts, Die await*-Helfer (+38 more)
+Nodes (66): ts-pattern kostet 18-22 % tell-Durchsatz, Typed oder Untyped Actor wählen, Warum ts-pattern, Kompositions-Reihenfolge und die Interceptor-Asymmetrie, Funktionale Zustandsupdates statt Closure-Mutation, Verschachtelte Supervisions-Geltungsbereiche schichten sich, Die fünf Sentinels (same, stopped, unhandled, empty, ignore), Der Signal-Handler gehört zum Behavior, nicht zum Actor (+58 more)
 
-### Community 85 - "TypedActor<T>"
-Cohesion: 0.14
-Nodes (16): system.spawnTypedAnonymous, Mixing typed and untyped actors, State as parameters, not fields, Typed versus untyped API, Anonymous spawn naming, context.spawnTyped, system.spawnTyped, typed context.spawn (+8 more)
-
-### Community 86 - "isLogLevel"
-Cohesion: 0.08
-Nodes (9): validateDeliveryOptions(), GelfSinkOptionsValidator, isLogLevel(), LokiSinkOptionsValidator, OtlpHttpSinkOptionsValidator, ParseableSinkOptionsValidator, SentrySinkOptionsValidator, SeqSinkOptionsValidator (+1 more)
+### Community 86 - "SentrySink.ts"
+Cohesion: 0.11
+Nodes (11): DEFAULT_SENTRY_MIN_LEVEL, safeJson(), SentrySdkLike, sentrySink(), SentrySinkOptions, SentrySinkOptionsBuilder, SentrySinkOptionsType, SentrySinkOptionsValidator (+3 more)
 
 ### Community 87 - "Lease interface"
 Cohesion: 0.04
-Nodes (65): Coordinator-uniqueness guarantee, Downing + lease is paranoid-safe, Coordinator failover window, KubernetesLease, Lease backend as a single point of failure, Sharding single-writer lease, KubernetesLease, The lease backend is a SPOF (+57 more)
+Nodes (67): Coordinator failover window, KubernetesLease, Lease backend as a single point of failure, Sharding single-writer lease, KubernetesLease, The lease backend is a SPOF, Single-writer lease, InMemoryLease (+59 more)
 
 ### Community 88 - "BoundedMailbox"
-Cohesion: 0.06
-Nodes (41): DistributedDataOptions, maxPendingQuorumRequests cap, maxQuorumTimeout ceiling, Unsettled quorum-request set, DistributedData quorum metrics, Extensions (lazy plugin system), Terminated is exempt from every discard policy, BoundedMailbox (+33 more)
+Cohesion: 0.05
+Nodes (49): DistributedDataOptions, maxPendingQuorumRequests cap, maxQuorumTimeout ceiling, Unsettled quorum-request set, DistributedData quorum metrics, Extensions (lazy plugin system), addressTerminated field, Cleanup-coordination pattern (+41 more)
 
-### Community 89 - "Broker live-integration suites"
-Cohesion: 0.07
-Nodes (29): RabbitMQ service (AMQP suite), rabbitmq.conf transient-queue permission, AMQP runner service, greenmail.users.login=email, No external broker (framework is both ends), gRPC runner service, k3s API server service, k3s over kind (+21 more)
+### Community 89 - "sqlPersistenceScenarios"
+Cohesion: 0.04
+Nodes (63): RabbitMQ service (AMQP suite), rabbitmq.conf transient-queue permission, AMQP runner service, DynamoDB Local service, DynamoDB runner service, GreenMail service, Mailpit rejected: no IMAP, Email runner service (+55 more)
 
 ### Community 90 - "runtime/http/index.ts"
 Cohesion: 0.06
 Nodes (30): BunHonoRunner, BunServeGlobal, BunServer, denoArityHandler(), DenoGlobal, DenoHonoRunner, DenoHttpServer, FetchHandler (+22 more)
-
-### Community 91 - "HttpClient"
-Cohesion: 0.18
-Nodes (3): HttpClient, httpClientOptionsFromConfig(), HttpExtension
 
 ### Community 92 - "dependencies"
 Cohesion: 0.08
@@ -1343,11 +1348,11 @@ Nodes (60): Microsoft.AspNetCore.Connections.Abstractions, Microsoft.CodeAnalysi
 
 ### Community 94 - "Stock metrics (page)"
 Cohesion: 0.06
-Nodes (55): The Terminated match arm is not optional, GET /cluster/shards, actor_dispatcher_queue_delay_seconds histogram, actor_mailbox_depth histogram, actor_mailbox_dropped_total counter, actor_mailbox_size gauge, actor_mailbox_wait_seconds histogram, Actor lifecycle and message metrics (+47 more)
+Nodes (50): The Terminated match arm is not optional, actor_dispatcher_queue_delay_seconds histogram, actor_mailbox_depth histogram, actor_mailbox_dropped_total counter, actor_mailbox_size gauge, actor_mailbox_wait_seconds histogram, Actor lifecycle and message metrics, The registry cardinality cap (+42 more)
 
-### Community 95 - "AcceptCommandUndroppable.test.ts"
-Cohesion: 0.07
-Nodes (47): liveConnectionsByHub, postAcceptCommand(), wireConnection(), WebsocketReadyState, WebsocketUpgradeInfo, jsonCodec(), textDecoder, WebsocketDecodeError (+39 more)
+### Community 95 - "HubInFlightCap.test.ts"
+Cohesion: 0.08
+Nodes (34): WebsocketReadyState, normalizeInbound(), WebsocketCloseInfo, WebsocketUpgradeInfo, textDecoder, WebsocketDecodeError, WebsocketEncodeError, CloseCommand (+26 more)
 
 ### Community 96 - "net10.0"
 Cohesion: 0.03
@@ -1358,92 +1363,92 @@ Cohesion: 0.15
 Nodes (16): Drei Fehlerschichten und ihre Präzedenz, Redaktion des generischen 500, handleErrors(handler, child), HttpError, requestIdOf(request), Formpruefung eingehender Request-IDs, RequestId-Optionen (headerName, trustIncoming, generate), requestIdOf(request) (+8 more)
 
 ### Community 98 - "managementRoutes(system, cluster, options)"
-Cohesion: 0.04
-Nodes (70): allowUngatedMount, --devtools-Flag der Examples, Examples ohne DevTools-Verdrahtung (#552), Kosten: ungenutzt keine, DevTools schaltet die Metrics-Registry ein, DevTools.mount, Same-Origin-WebSocket-Pruefung, DevTools-Sicherheitsdefaults (+62 more)
+Cohesion: 0.05
+Nodes (58): auth + ipAllowlist auf managementRoutes (#312), GET /cluster/leader, POST /cluster/leave, GET /cluster/members, GET /cluster/shards?type=<name>, clusterReady, Eigene Routen via concat, GET /health (+50 more)
 
 ### Community 99 - "JournalConcurrencyError"
 Cohesion: 0.05
 Nodes (58): D1Journal, maxResponseBytes, Keine Transaktionen - bedingt durch den Transport, Verifikationsluecke des D1-Backends, Backend ohne Paket-Dependency, InMemoryJournal, Journal (Vertrag), JournalEntry<E> (+50 more)
 
 ### Community 100 - "Framework-comparison benchmarks"
-Cohesion: 0.05
-Nodes (54): Akka 2.8.8 under BUSL-1.1, actor-ts arm, Akka (JVM, Java) arm, Akka.NET arm, Akka (JVM, Scala 3) arm, nact arm, Orleans virtual-actor arm, Pekko (JVM, Java) arm (+46 more)
+Cohesion: 0.04
+Nodes (69): Akka 2.8.8 under BUSL-1.1, actor-ts arm, Akka (JVM, Java) arm, Akka.NET arm, Akka (JVM, Scala 3) arm, nact arm, Orleans virtual-actor arm, Pekko (JVM, Java) arm (+61 more)
 
-### Community 101 - "ActorsPanelComponent.ts"
+### Community 101 - "ActorsPanelComponent"
 Cohesion: 0.08
-Nodes (11): ActorsPanelComponent, byNode(), NodeGroup, panelComponent, STATE_TOKENS, Component, ActorTreeModel, TreeRow (+3 more)
+Nodes (7): ActorsPanelComponent, byNode(), Component, ActorTreeModel, TreeRow, node(), sampleTree()
 
 ### Community 102 - "peerDependenciesMeta"
 Cohesion: 0.04
 Nodes (55): optional, optional, optional, optional, optional, optional, optional, optional (+47 more)
 
+### Community 103 - "WebsocketServerActor.test.ts"
+Cohesion: 0.09
+Nodes (23): AcceptHandoff, ConnectionTracker, decrementOnClose(), guardAcceptHandoff(), liveConnectionsByHub, postAcceptCommand(), trackSocket(), wireConnection() (+15 more)
+
 ### Community 104 - "SyslogSink.ts"
 Cohesion: 0.05
-Nodes (35): DgramSocketLike, DEFAULT_SYSLOG_FACILITY, frameForStream(), messageTextOf(), nilOr(), SEVERITY, SyslogFrameParts, SyslogFraming (+27 more)
+Nodes (36): DgramSocketLike, DEFAULT_SYSLOG_FACILITY, frameForStream(), messageTextOf(), nilOr(), SEVERITY, SyslogFrameParts, SyslogFraming (+28 more)
 
 ### Community 105 - "ProjectionActor"
-Cohesion: 0.04
-Nodes (64): events_by_tag-Seitentabelle, Tags vergleichen im Index case-insensitiv, MariaDbQuery, MongoQuery, Multikey-Tag-Index, events_tags-Index, PostgresQuery, Drei Filterformen, drei Plaene (+56 more)
-
-### Community 106 - "ClusterSingletonManager"
-Cohesion: 0.07
-Nodes (3): changesSingletonHost(), ClusterSingletonManager, ClusterSingletonProxy
+Cohesion: 0.05
+Nodes (54): events_by_tag-Seitentabelle, Tags vergleichen im Index case-insensitiv, MariaDbQuery, MongoQuery, Multikey-Tag-Index, events_tags-Index, PostgresQuery, Drei Filterformen, drei Plaene (+46 more)
 
 ### Community 107 - "ORSet<E> (Observed-Remove Set)"
 Cohesion: 0.07
-Nodes (53): CRDT-Kompositions-Muster, CRDT-Entscheidungsbaum, Was CRDTs nicht koennen, Uhren-Drift bei Last-Writer-Wins, identity-Funktion fuer Element-Dedup, GSet<E>, ORSet-Tag-Generierung, DurableStateStore-Backends fuer DistributedData (+45 more)
+Nodes (55): CRDT-Kompositions-Muster, CRDT-Entscheidungsbaum, Was CRDTs nicht koennen, Uhren-Drift bei Last-Writer-Wins, identity-Funktion fuer Element-Dedup, GSet<E>, ORSet-Tag-Generierung, DurableStateStore-Backends fuer DistributedData (+47 more)
 
 ### Community 108 - "BrokerActor"
-Cohesion: 0.06
-Nodes (3): BrokerActor, readCommonOptions(), RecordingBroker
+Cohesion: 0.04
+Nodes (13): BrokerActor, readCommonOptions(), FanOutCommand, HookBroker, newSystem(), ProbeActor, SealedBroker, SealedCommand (+5 more)
 
 ### Community 109 - "Microsoft.Extensions.Configuration.Abstractions"
 Cohesion: 0.06
 Nodes (40): Microsoft.Extensions.Configuration, Microsoft.Extensions.Configuration.Abstractions, Microsoft.Extensions.Configuration.FileExtensions, Microsoft.Extensions.FileProviders.Abstractions, Microsoft.Extensions.FileProviders.Physical, contentHash, dependencies, resolved (+32 more)
 
-### Community 110 - "KafkaActor.ts"
-Cohesion: 0.05
-Nodes (28): db_insertOrder(), OrderProcessor, OutboundEnvelope, CommitCommand, HeartbeatCommand, KafkaActor, KafkaCommand, KafkaCommitMode (+20 more)
+### Community 110 - "BrokerTlsForwarding.test.ts"
+Cohesion: 0.02
+Nodes (89): AcknowledgmentCommand, AmqpActor, AmqpConnectionLike, AmqpModuleLike, AmqpPublish, AmqpQueueBinding, AmqpRawMessage, NegativeAcknowledgmentCommand (+81 more)
 
-### Community 111 - "ActorSystem"
-Cohesion: 0.05
-Nodes (57): system.runUntilTerminated(), system.terminate(), Die 12 kanonischen Phasen, Verschachtelte Shutdown-Budgets, Reason-Klassen, Klasse statt Instanz spawnen, terminate() leert die Mailboxen, actor-ts.system.shutdown-drain-timeout (+49 more)
+### Community 111 - "CoordinatedShutdown"
+Cohesion: 0.11
+Nodes (27): system.runUntilTerminated(), Reason-Klassen, CoordinatedShutdown, Inside /system, Special top-level paths, /deadLetters, Guardian hierarchy (/user, /system, /deadLetters), runUntilTerminated() (+19 more)
 
 ### Community 112 - "discovery/index.ts"
 Cohesion: 0.04
-Nodes (68): RFC-4291, RFC-5952, isPortFree(), pickFirstFreePort(), SameHostScanSeedProvider, SameHostScanSettings, main(), main() (+60 more)
+Nodes (75): RFC-4291, RFC-5952, main(), main(), bootstrapCluster(), buildSeedProvider(), buildSeedProviderFor(), EMPTY_SEED_PROVIDER (+67 more)
 
 ### Community 113 - "ShardCoordinator"
-Cohesion: 0.09
-Nodes (4): isCoordinatorEvent(), regionKey(), ShardCoordinator, RegisterRegion
+Cohesion: 0.08
+Nodes (6): claimedNode(), isCoordinatorEvent(), namesPeer(), regionKey(), ShardCoordinator, RegisterRegion
 
 ### Community 114 - "Panel navigation with unavailable items"
-Cohesion: 0.04
-Nodes (64): No literal base tag inside the comment, DevTools host document, devtools-root element, Relative asset references and baseHref './', DevTools app shell, Panel navigation with unavailable items, Light/dark theme toggle, Server-decided panel availability (+56 more)
+Cohesion: 0.03
+Nodes (78): No literal base tag inside the comment, DevTools host document, devtools-root element, Relative asset references and baseHref './', DevTools app shell, UI/server protocol version mismatch, Panel navigation with unavailable items, No node reachable dialog (+70 more)
 
 ### Community 115 - "ConsumerController"
-Cohesion: 0.06
-Nodes (43): Was eine verlorene Garantie kostet, maxFrameBytes cap, Frame-Größen-Cap (16 MiB), ACK-Semantik, Backpressure über das Window, Crash-Szenarien, Der Handler als einziger User-Schalter, Cluster-Failover für sharded Consumer (+35 more)
+Cohesion: 0.05
+Nodes (47): Was eine verlorene Garantie kostet, maxFrameBytes cap, RememberEntitiesStore, Two-store split (journal vs remember store), Frame-Größen-Cap (16 MiB), ACK-Semantik, Backpressure über das Window, Crash-Szenarien (+39 more)
 
-### Community 116 - "ActorOptions"
+### Community 116 - "Dispatcher (Interface)"
 Cohesion: 0.04
-Nodes (57): actor-ts.actor.throughput (Nachrichten pro Turn), Dispatcher (Interface), HybridDispatcher, ImmediateDispatcher, Microtask- vs Macrotask-Queue, MicrotaskDispatcher, Per-Actor-Dispatcher via ActorOptions, I/O- und Timer-Starvation (+49 more)
+Nodes (60): Backpressure durch Queuing, confirm-Callback beim Send, actor-ts.actor.throughput (Nachrichten pro Turn), Dispatcher (Interface), HybridDispatcher, ImmediateDispatcher, Microtask- vs Macrotask-Queue, MicrotaskDispatcher (+52 more)
 
 ### Community 117 - "ProjectionActor.ts"
 Cohesion: 0.02
-Nodes (103): AccountCommand, AccountEvent, AccountState, BalanceCommand, BankStatementLedger, DepositCommand, DepositedEvent, main() (+95 more)
+Nodes (90): AccountCommand, AccountEvent, AccountState, BalanceCommand, BankStatementLedger, DepositCommand, DepositedEvent, main() (+82 more)
 
 ### Community 118 - "devDependencies"
 Cohesion: 0.05
 Nodes (38): devDependencies, @angular/build, @angular/cli, @angular/common, @angular/compiler, @angular/compiler-cli, @angular/core, @angular/platform-browser (+30 more)
 
 ### Community 119 - "WorkerCluster.ts"
-Cohesion: 0.10
-Nodes (27): RestartPolicy, RestartState, WorkerHandle, WorkerHelloMessage, WorkerInitMessage, WorkerReadyMessage, DEFAULT_MAX_RESTARTS, DEFAULT_RESTART_MAX_BACKOFF_MS (+19 more)
+Cohesion: 0.07
+Nodes (34): main(), reportWorkerFailure(), resolveWorkerCount(), RestartPolicy, RestartState, terminateQuietly(), unrefTimer(), WorkerCluster (+26 more)
 
-### Community 120 - "Mailbox.ts"
-Cohesion: 0.09
-Nodes (19): DropReportingMailbox, MailboxDropReason, BoundedMailbox, BoundedMailboxOptions, BoundedMailboxOptionsBuilder, BoundedMailboxOptionsType, BoundedMailboxOptionsValidator, BoundedMailboxOverflow (+11 more)
+### Community 120 - "StorageLocalityAdvisory.test.ts"
+Cohesion: 0.08
+Nodes (17): StorageUseKind, ClusterStorageSource, ClusterStorageView, IDENTITY_FIELD_BY_KIND, nodeLocalStorageMessage(), NodeLocalStoreUse, ObservedStore, StorageIdentityField (+9 more)
 
 ### Community 121 - "Diagnose-nach-Symptom-Katalog"
 Cohesion: 0.05
@@ -1457,41 +1462,37 @@ Nodes (18): AppComponent, Component, ChatComponent, Component, ChatService, Inje
 Cohesion: 0.07
 Nodes (48): ChatApp.appendSystem, ChatApp.cancelReconnect, ChatApp (LitElement custom element), ChatApp.connect, ChatApp.connectedCallback (auto-resume), ChatApp.connectWithLogin, ChatApp.connectWithResume, ChatApp.handleServer (ts-pattern dispatcher) (+40 more)
 
-### Community 124 - "coordination/index.ts"
-Cohesion: 0.09
-Nodes (9): LeaseOptionsBuilder, LeaseOptionsType, LeaseOptionsValidator, K8sFetchClient, KubernetesLeaseOptions, KubernetesLeaseOptionsBuilder, KubernetesLeaseOptionsType, KubernetesLeaseOptionsValidator (+1 more)
-
-### Community 125 - "RichTypeParity.test.ts"
+### Community 125 - "Serializer"
 Cohesion: 0.07
-Nodes (22): Greeting, main(), CborSerializer, JsonSerializer, TYPE_TAGS, ClassConstructor, SerializationExtension, SerializationError (+14 more)
+Nodes (18): Greeting, main(), CborSerializer, JsonSerializer, ClassConstructor, SerializationExtension, SerializationError, SerializedValue (+10 more)
 
 ### Community 126 - "JsonTree.ts"
-Cohesion: 0.11
-Nodes (36): decodeBinaryView(), decodeError(), decodeJsonTree(), decodeLiteral(), decodePlainObject(), decodeTagged(), defineOwnProperty(), encodeArray() (+28 more)
+Cohesion: 0.09
+Nodes (41): decodeBinaryView(), decodeError(), decodeJsonTree(), decodeLiteral(), decodePlainObject(), decodeTagged(), defineOwnProperty(), encodeArray() (+33 more)
 
 ### Community 127 - "Mutual TLS (mTLS)"
 Cohesion: 0.04
-Nodes (55): Cluster-Topics, Es wird nichts aufgezeichnet, bis du hinsiehst, Wenn der Tail zurückfällt, Die Cluster-Seite vertraut der Verbindung, nicht der Nachricht, cluster_envelope_from_mismatch_total, cluster_gossip_records_refused_total, Cluster-Metriken (members_up, gossip_rounds_total), Cluster ueber systemd-Hosts (+47 more)
+Nodes (58): Cluster-Topics, Es wird nichts aufgezeichnet, bis du hinsiehst, Wenn der Tail zurückfällt, Die Cluster-Seite vertraut der Verbindung, nicht der Nachricht, Kein Absender (sender ist None), Nur unterhalb von /user, Serverseitige Body-Validierung, cluster_envelope_from_mismatch_total (+50 more)
 
 ### Community 128 - "Operations overview"
-Cohesion: 0.09
-Nodes (34): Tune nicht, wenn du das Symptom nicht benennen kannst, Asymmetrisches Failure-Detector-Tuning ueber Nodes, Verhaeltnis-Regel der Failure-Detector-Schwellen, Failure-Detector-Schwellen, Asymmetrische Gossip-Werte ueber Nodes, Wechselwirkung der Gossip-Kadenz mit anderen Timings, Headless Service for cluster gossip, Logs then metrics then traces (+26 more)
+Cohesion: 0.05
+Nodes (62): Headless Service fuer Cluster-Gossip, Kubernetes-Manifest (StatefulSet, Services, RBAC), preStop-Sleep, Readiness- und Liveness-Probes, Rolling Update mit automatischem Shard-Rebalancing, terminationGracePeriodSeconds, Produktions-Checkliste, Tune nicht, wenn du das Symptom nicht benennen kannst (+54 more)
 
 ### Community 129 - "VectorClock"
 Cohesion: 0.06
-Nodes (43): Authorship is not yet authenticated, ClusterSharding, ConflictResolver, DistributedPubSub replication transport, Whole-envelope validation before apply, Event identity minted from entropy, maxObservedEvents ceiling on remote history, PersistentActor (single-writer) (+35 more)
+Nodes (45): Authorship is not yet authenticated, ClusterSharding, ConflictResolver, DistributedPubSub replication transport, Whole-envelope validation before apply, Event identity minted from entropy, maxObservedEvents ceiling on remote history, PersistentActor (single-writer) (+37 more)
 
 ### Community 130 - "DistributedDataHandle"
-Cohesion: 0.06
-Nodes (16): ddKey(), ReadReceiptsActor, ReceiptsChanged, RoomState, snapshotReceipts(), SubscribeCommand, UnsubscribeCommand, UpdateCommand (+8 more)
+Cohesion: 0.05
+Nodes (19): ddKey(), ReadReceiptsActor, ReadReceiptsCommand, RoomState, snapshotReceipts(), SubscribeCommand, UnsubscribeCommand, UpdateCommand (+11 more)
 
 ### Community 131 - "VoiceService"
 Cohesion: 0.09
 Nodes (16): AppComponent, Component, ClientMessage, decodeIncomingFrame(), GroupName, GroupSummary, IncomingSource, MIME_OPUS (+8 more)
 
-### Community 132 - "Middleware"
-Cohesion: 0.07
-Nodes (33): RFC-6797, DEFAULT_RESPONSE_SECURITY_HEADERS, allowOriginValue(), CorsRouteOptions, decorateResponse(), expandCors(), isAllowed(), isPreflight() (+25 more)
+### Community 132 - "ShardMapEndpoint.test.ts"
+Cohesion: 0.10
+Nodes (15): HealthCheckFunction, HealthCheckResult, isHealthy(), ACTOR_SYSTEM_LIVENESS_CHECK_NAME, actorSystemLiveness(), HealthCheckExtensionId, ManagementRoutesOptions, ManagementRoutesOptionsBuilder (+7 more)
 
 ### Community 133 - "Actors"
 Cohesion: 0.14
@@ -1501,9 +1502,9 @@ Nodes (24): akka.actor.typed.ActorRef, akka.actor.typed.Behavior, akka.actor.typ
 Cohesion: 0.13
 Nodes (24): Actors, ChildStarted, Counter, CounterCommand, Echo, GetRefs, Guardian, GuardianCommand (+16 more)
 
-### Community 135 - "run-all.ts discovery driver"
-Cohesion: 0.07
-Nodes (34): One runtime, named (Bun), Comparative, not absolute numbers, comparison benchmark group, http benchmark group, memory benchmark group, persistence benchmark group, single-node benchmark group, worker benchmark group (+26 more)
+### Community 135 - "Time travel panel"
+Cohesion: 0.22
+Nodes (11): persistence benchmark group, Replay folds and the onEvent requirement, Sequence-number slider, State diff at a sequence number, Time travel panel, Read-only, per Konstruktion, Woher der Fold kommt, Derselbe Fold wie im Actor (+3 more)
 
 ### Community 136 - "chat/frontend-next/package.json"
 Cohesion: 0.08
@@ -1511,19 +1512,19 @@ Nodes (25): dependencies, next, react, react-dom, ts-pattern, devDependencies, @
 
 ### Community 137 - "ConfigMethods.ts"
 Cohesion: 0.07
-Nodes (28): ConfigPanelComponent, displayOf(), Component, ConfigLayers, ConfigMethods, displaced(), entryFor(), isBranch() (+20 more)
+Nodes (26): ConfigPanelComponent, Component, ConfigLayers, ConfigMethods, displaced(), entryFor(), isBranch(), leaves() (+18 more)
 
 ### Community 138 - "ConflictResolver"
 Cohesion: 0.05
-Nodes (44): ConflictCandidate<E> (event, timestamp, replica, vc), ConflictResolver<E>, Zwei harte Vertraege: deterministisch und kommutativ, resolve laeuft nur bei erkanntem nebenlaeufigen Write, Wann ein Merge die falsche Abstraktion ist, Die Autorschaft ist noch nicht authentifiziert, Einfachheit gegen Verfügbarkeit getauscht, ConflictResolver (+36 more)
+Nodes (52): Body-Integrität (HMAC-SHA256, 16 Byte Tag), Rollback-Schutz (Durable State), Das Tag ist Pflicht, nicht bloß geprüft, withAllowUntaggedBodies (Migrationsfenster), withRejectRevisionRollback, CAS ueber ifMatch / ifNoneMatch, ObjectStorageConcurrencyError, ObjectStorageDurableStateStore (+44 more)
 
 ### Community 139 - "SocketAdapter.ts"
-Cohesion: 0.07
-Nodes (18): ConnectionTracker, decrementOnClose(), trackSocket(), BufferedCloseEvent, BufferedErrorEvent, BufferedEvent, BufferedMessageEvent, BufferedWebsocketEvents (+10 more)
+Cohesion: 0.06
+Nodes (24): DEFAULT_WEBSOCKET_MAX_FRAME_BYTES, DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES, DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES, BufferedCloseEvent, BufferedErrorEvent, BufferedEvent, BufferedMessageEvent, BufferedWebsocketEvents (+16 more)
 
-### Community 140 - "TcpTransport"
-Cohesion: 0.11
-Nodes (23): cluster benchmark group, Cluster topology chart, Truncated-to-fit-the-wire payload, Per-frame size cap, InMemoryTransport, MessageChannelTransport, Single-connection multiplexing, Optional TLS on the cluster wire (+15 more)
+### Community 140 - "actor-ts"
+Cohesion: 0.06
+Nodes (45): cluster benchmark group, Cluster topology chart, Death-watching the singleton child, restartOnTermination latch, InMemoryTransport, MessageChannelTransport, peers() cluster-transport readiness check, Transport interface (+37 more)
 
 ### Community 141 - "CborCodec.ts"
 Cohesion: 0.08
@@ -1531,7 +1532,7 @@ Nodes (22): RFC-8746, bigIntToBytes(), buildBidirectionalMap(), buildBinaryView(
 
 ### Community 142 - "Tracer API"
 Cohesion: 0.09
-Nodes (47): Kausale Verkettung ueber tell und W3C-traceparent, Trace-IDs im MDC, pipeTo propagiert den aktiven Span nicht, Sampling auf SDK-Ebene, TraceCarrier (injectContext / extractContext), Logs, dann Metriken, dann Traces, Span buffer, TeeTracer (+39 more)
+Nodes (48): Kausale Verkettung ueber tell und W3C-traceparent, Trace-IDs im MDC, pipeTo propagiert den aktiven Span nicht, Sampling auf SDK-Ebene, TraceCarrier (injectContext / extractContext), Logs, dann Metriken, dann Traces, DevTools actors excluded from traces, Span buffer (+40 more)
 
 ### Community 143 - "ChatStore"
 Cohesion: 0.15
@@ -1543,23 +1544,23 @@ Nodes (44): VoiceApp._beginPress, VoiceApp._connectAndSend, VoiceApp._drainQueue
 
 ### Community 145 - "NatsActor.ts"
 Cohesion: 0.03
-Nodes (43): amqpLazy, imapflowLazy, grpcLazy, protoLoaderLazy, natsLazy, natsLazy, natsLazy, mqttLazy (+35 more)
+Nodes (36): amqpLazy, imapflowLazy, grpcLazy, protoLoaderLazy, natsLazy, natsLazy, natsLazy, kafkaLazy (+28 more)
 
 ### Community 146 - "ReplicatedEventSourcedActor.ts"
 Cohesion: 0.12
-Nodes (19): DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS, DYNAMODB_MAX_TRANSACTION_ITEMS, MAX_PERSISTENCE_ID_LENGTH, MAX_REPLICA_ID_LENGTH, MAX_REPLICATED_EVENT_ID_LENGTH, MAX_VECTOR_CLOCK_ENTRIES, REPLICATED_EVENT_ID_ENTROPY_CHARACTERS, ConflictCandidate (+11 more)
+Nodes (13): ReplicaId, DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS, ConflictCandidate, ConflictResolver, CustomMergeResolver, LastWriterWinsResolver, ReplicatedSnapshot, VectorClock (+5 more)
 
-### Community 147 - "runtime/worker/index.ts"
-Cohesion: 0.14
-Nodes (18): RuntimeKind, getWorkerBackend(), resetWorkerBackendCache(), ctorLazy, NativeEventName, NodeWorkerBackend, WorkerThreadConstructor, NativeWorker (+10 more)
+### Community 147 - "WorkerLike"
+Cohesion: 0.08
+Nodes (22): getWorkerBackend(), resetWorkerBackendCache(), ctorLazy, NativeEventName, NodeWorkerAdapter, NodeWorkerBackend, NodeWorkerThread, WorkerThreadConstructor (+14 more)
 
 ### Community 148 - "Gewuenschte Subscriptions (Desired Subscriptions)"
 Cohesion: 0.12
-Nodes (16): applySubscription(key, subscription), Gewuenschte Subscriptions (Desired Subscriptions), forgetSubscription(key), rememberSubscription(key, payload), revokeSubscription(key), Der Ack-Handshake, ackWaitMs muss die Handler-Zeit uebersteigen, Compare-and-Swap ueber revision (+8 more)
+Nodes (17): applySubscription(key, subscription), Gewuenschte Subscriptions (Desired Subscriptions), forgetSubscription(key), MqttActor behaelt seine eigene Subscription-Registry, rememberSubscription(key, payload), revokeSubscription(key), Der Ack-Handshake, ackWaitMs muss die Handler-Zeit uebersteigen (+9 more)
 
-### Community 149 - "FakeMsSqlPool.ts"
-Cohesion: 0.05
-Nodes (29): LibSqlResultSet, LibSqlStatement, LibSqlTransactionLike, MsSqlRequestLike, MsSqlResult, MsSqlTransactionLike, affected(), EventRow (+21 more)
+### Community 149 - "PersistenceIds.test.ts"
+Cohesion: 0.03
+Nodes (45): MsSqlDurableStateStore, MsSqlDurableStateStoreOptions, MsSqlDurableStateStoreOptionsBuilder, MsSqlDurableStateStoreOptionsType, MsSqlDurableStateStoreOptionsValidator, adaptMsSqlPool(), buildMsSqlPool(), MsSqlConnection (+37 more)
 
 ### Community 150 - "scripts"
 Cohesion: 0.05
@@ -1569,45 +1570,45 @@ Nodes (42): scripts, bench, bench:compare, bench:compare:report, bench:compare:s
 Cohesion: 0.08
 Nodes (40): assertNoCarriageReturns(), assertServableUnderAnyPrefix(), buildDirectory, checkFreshness(), checkOnly, contentTypeOf(), development, developmentDirectory (+32 more)
 
-### Community 152 - "UdpSocketActor.ts"
-Cohesion: 0.06
+### Community 152 - "Lazy"
+Cohesion: 0.05
 Nodes (15): dgramLazy, DgramModule, DgramSocket, SendCommand, UdpDatagram, UdpOutbound, UdpSocketActor, UdpSocketCommand (+7 more)
 
 ### Community 153 - "VoiceStore"
 Cohesion: 0.10
 Nodes (15): ClientMessage, decodeIncomingFrame(), GroupName, GroupSummary, IncomingSource, MIME_OPUS, ServerMessage, TIMESLICE_MS (+7 more)
 
-### Community 154 - "ProcessSignal"
-Cohesion: 0.07
-Nodes (17): CoordinatedShutdown, BunProcessSignals, DENO_UNKNOWN_SIGNALS, DenoProcessSignals, SignalCapableDeno, createProcessSignals(), getProcessSignals(), resetProcessSignalsCache() (+9 more)
+### Community 154 - "Detect.ts"
+Cohesion: 0.08
+Nodes (23): detectRuntime(), globalScope, GlobalShape, hasBun(), hasDeno(), runtimeLazy, setRuntimeOverride(), BunProcessSignals (+15 more)
 
 ### Community 155 - "Chat sample app"
-Cohesion: 0.09
-Nodes (47): Chat-Sample, Examples-Uebersicht, bun run test:examples (Beispiel-Gate), MultiNodeSpec in Snippets, Eigenstaendige Snippets, Voice-Sample, Chat sample app, HttpIngressActor (chat) (+39 more)
+Cohesion: 0.07
+Nodes (54): Chat-Sample, Examples-Uebersicht, bun run test:examples (Beispiel-Gate), MultiNodeSpec in Snippets, Eigenstaendige Snippets, Voice-Sample, dd.subscribe(key, listener), Chat sample app (+46 more)
 
 ### Community 156 - "devDependencies"
 Cohesion: 0.04
-Nodes (46): @arethetypeswrong/cli, fast-check, @fastify/static, @fastify/websocket, @hono/node-ws, knip, devDependencies, @arethetypeswrong/cli (+38 more)
+Nodes (46): @arethetypeswrong/cli, better-sqlite3, fast-check, @fastify/static, @fastify/websocket, @hono/node-server, @hono/node-ws, knip (+38 more)
 
 ### Community 157 - "dependencies"
 Cohesion: 0.05
 Nodes (42): dependencies, @angular/animations, @angular/common, @angular/compiler, @angular/core, @angular/forms, @angular/platform-browser, @angular/router (+34 more)
 
-### Community 158 - "PersistentFSM"
-Cohesion: 0.06
-Nodes (54): this.state nicht direkt mutieren, Erschoepfungspruefung zur Compile-Zeit, eventDispatcher, EventDispatcherBuilder<S, E, Handled>, EventDispatcherIncomplete, onEvent ist rein, FSM<SName, SData, Message>, goto(state, data) (+46 more)
+### Community 158 - "FSM<SName, SData, Message>"
+Cohesion: 0.09
+Nodes (28): this.state nicht direkt mutieren, Erschoepfungspruefung zur Compile-Zeit, eventDispatcher, EventDispatcherBuilder<S, E, Handled>, EventDispatcherIncomplete, onEvent ist rein, FSM<SName, SData, Message>, goto(state, data) (+20 more)
 
 ### Community 159 - "MigrationError"
-Cohesion: 0.07
-Nodes (39): Grenze konstanter Defaults, defaultsAdapter, DefaultsAdapterSpec<E>, defaultsSnapshotAdapter, writeVersion, fromJournal(stored), Manifest-Prüfung auf dem Read-Pfad, migratingAdapter (+31 more)
+Cohesion: 0.06
+Nodes (42): Grenze konstanter Defaults, defaultsAdapter, DefaultsAdapterSpec<E>, defaultsSnapshotAdapter, writeVersion, fromJournal(stored), Manifest-Prüfung auf dem Read-Pfad, migratingAdapter (+34 more)
 
 ### Community 160 - "delivery/index.ts"
-Cohesion: 0.17
-Nodes (14): MAX_DELIVERY_IDENTIFIER_LENGTH, PRODUCER_INCARNATION_LENGTH, DeduplicationState, ConsumerControllerOptions, ConsumerControllerOptionsBuilder, ConsumerControllerOptionsType, Acknowledgment, ConfirmationCallback (+6 more)
+Cohesion: 0.14
+Nodes (18): EVICTION_REPORT_INTERVAL_MS, GENERATED_PRODUCER_ID_LENGTH, MAX_DELIVERY_IDENTIFIER_LENGTH, PRODUCER_INCARNATION_LENGTH, DeduplicationState, ConsumerControllerOptions, ConsumerControllerOptionsType, ConsumerControllerOptionsValidator (+10 more)
 
 ### Community 161 - "Cancellable"
-Cohesion: 0.06
-Nodes (24): MAXIMUM_DURATION_MS, PROGRESS_INTERVAL_MS, ProfilerCapabilitiesResult, profilerCompletedPayload, ProfilerFormat, ProfilerMode, ProfilerModeCapability, profilerProgressPayload (+16 more)
+Cohesion: 0.07
+Nodes (23): MAXIMUM_DURATION_MS, PROGRESS_INTERVAL_MS, ProfilerCapabilitiesResult, profilerCompletedPayload, ProfilerFormat, ProfilerMode, ProfilerModeCapability, profilerProgressPayload (+15 more)
 
 ### Community 162 - "Microsoft.Extensions.Options"
 Cohesion: 0.06
@@ -1615,19 +1616,19 @@ Nodes (39): Microsoft.Extensions.Logging, Microsoft.Extensions.Logging.Abstracti
 
 ### Community 163 - "Actor and cluster panels"
 Cohesion: 0.08
-Nodes (39): Zusammenfassen laengerer Zeitraeume, Busiest mailboxes, Getrennte Diagramme fuer Fuellstand und Rate, Kumulative Zaehler, abgeleitete Raten, Uebersichts-Panel, Client-Frames, Zaehler sind kumulativ, nie Deltas, decodeClientFrame (+31 more)
+Nodes (38): Zusammenfassen laengerer Zeitraeume, Busiest mailboxes, Getrennte Diagramme fuer Fuellstand und Rate, Kumulative Zaehler, abgeleitete Raten, Uebersichts-Panel, Client-Frames, Zaehler sind kumulativ, nie Deltas, decodeClientFrame (+30 more)
 
 ### Community 164 - "Cluster"
-Cohesion: 0.05
-Nodes (12): notClustered(), Cluster, ClusterClientReceptionist, parsePathSegments(), ClusterClientReceptionistOptions, ClusterEvent, EnvelopeMessage, HeartbeatMessage (+4 more)
+Cohesion: 0.03
+Nodes (47): founderOptions, joinerOptions, main(), startNode(), main(), CronCommand, CronEvent, main() (+39 more)
 
-### Community 165 - "Lease"
-Cohesion: 0.05
-Nodes (6): LeaseMajorityOptionsBuilder, Lease, GatedLease, RecordingLease, Ledger, LeasedCounter
-
-### Community 167 - "DevToolsOptions"
+### Community 166 - "PersistentActorMigration.test.ts"
 Cohesion: 0.06
-Nodes (44): allowRemote, The system dead-letter queue behind the panel, DevTools dead-letters panel (page), Filtering, Filtering by recipient subtree, Payload sanitisation and exposure, Payloads, Replaying (+36 more)
+Nodes (20): Account, BalanceCommand, ChainState, ClosedV1, Command, DepositCommand, DepositedV1, DepositedV2 (+12 more)
+
+### Community 167 - "Per-panel switches"
+Cohesion: 0.08
+Nodes (34): The system dead-letter queue behind the panel, DevTools dead-letters panel (page), Filtering, Filtering by recipient subtree, Payload sanitisation and exposure, Payloads, Replaying, store setting: off, memory, persistent (+26 more)
 
 ### Community 168 - "EventStream"
 Cohesion: 0.08
@@ -1639,59 +1640,55 @@ Nodes (7): main(), Pinger, PingMessage, PingPong, Ponger, PongMessage, StartMess
 
 ### Community 170 - "OptionsBuilder"
 Cohesion: 0.02
-Nodes (62): DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES, InMemoryCacheOptions, InMemoryCacheOptionsBuilder, InMemoryCacheOptionsValidator, MemcachedCacheOptionsBuilder, MemcachedCacheOptionsType, MemcachedCacheOptionsValidator (+54 more)
+Nodes (55): MemcachedCacheOptionsType, MemcachedCacheOptionsValidator, RedisCacheOptionsValidator, ClusterClientOptionsBuilder, ClusterClientOptionsValidator, ClusterClientReceptionistOptionsBuilder, ClusterClientReceptionistOptionsType, ClusterClientReceptionistOptionsValidator (+47 more)
 
 ### Community 171 - "K8sApi.ts"
-Cohesion: 0.11
-Nodes (17): createLease(), defaultClient, deleteLease(), fsLazy, getLease(), K8sCredentials, K8sLeaseError, K8sLeaseObject (+9 more)
+Cohesion: 0.25
+Nodes (11): createLease(), defaultClient, deleteLease(), fsLazy, getLease(), k8sRequest(), leasePath(), loadInClusterCredentials() (+3 more)
 
-### Community 172 - "MemcachedCache.ts"
-Cohesion: 0.07
-Nodes (14): assertSafeMemcachedKey, MemcachedCache, MemcachedClientLike, MemcachedKeyRules, MemjsClientStatic, memjsLazy, msToSeconds(), textDecoder (+6 more)
+### Community 172 - "MemcachedCache.test.ts"
+Cohesion: 0.09
+Nodes (8): assertSafeMemcachedKey, MemcachedCache, MemcachedClientLike, msToSeconds(), MemcachedCacheOptions, asText(), FakeMemcached, secondsAhead()
 
 ### Community 174 - "DeadLetterQueue.ts"
-Cohesion: 0.10
-Nodes (27): CapturedPayload, DeadLetterPayload, DeadLetterReplayResult, DegradedPayload, DegradedPayloadResult, QuarantinedResult, ReplayedResult, UnknownEntryResult (+19 more)
+Cohesion: 0.05
+Nodes (35): ActorSelection, parseSelectionPath(), closeOf(), withinBudget(), CapturedPayload, DeadLetterEntry, DeadLetterFilter, DeadLetterPayload (+27 more)
 
 ### Community 175 - "serialization/index.ts"
 Cohesion: 0.05
-Nodes (35): AvroSerializer, reason(), AvroSerializerOptions, AvroSerializerOptionsBuilder, AvroSerializerOptionsType, AvroSerializerOptionsValidator, AvroType, asNodeBuffer() (+27 more)
+Nodes (30): AvroSerializer, reason(), AvroSerializerOptions, AvroSerializerOptionsBuilder, AvroSerializerOptionsType, AvroSerializerOptionsValidator, AvroType, asNodeBuffer() (+22 more)
 
 ### Community 176 - "ClusterTap"
-Cohesion: 0.10
-Nodes (8): badgeToneFor(), ClusterPanelComponent, Component, ClusterMembership, clusterEventPayload, ClusterMemberInfo, ClusterStatsSummary, ClusterTap
+Cohesion: 0.11
+Nodes (6): ClusterPanelComponent, Component, ClusterMembership, clusterEventPayload, ClusterMemberInfo, ClusterTap
 
 ### Community 177 - "BrokerActor (abstrakte Basisklasse)"
-Cohesion: 0.08
-Nodes (33): BrokerActor (abstrakte Basisklasse), Einseitiger Circuit-Breaker-Jitter, connectImplementation, Death-Watch feuert nur fuer einen lokalen Subscriber, disconnectImplementation, dispatchOutgoing(envelope), enqueueOutbound(payload), randomFactor-Jitter (+25 more)
+Cohesion: 0.09
+Nodes (32): BrokerActor (abstrakte Basisklasse), Einseitiger Circuit-Breaker-Jitter, connectImplementation, Death-Watch feuert nur fuer einen lokalen Subscriber, disconnectImplementation, dispatchOutgoing(envelope), enqueueOutbound(payload), randomFactor-Jitter (+24 more)
 
 ### Community 178 - "MetricsExtension"
-Cohesion: 0.10
-Nodes (38): Kardinalitaetsdisziplin, Gauge, Labels, maxSeriesPerFamily (Kardinalitaetsgrenze), Kardinalitaetsgrenze der prom-client-Bruecke, GET /metrics ueber die Management-Routen, Prometheus-Namenskonventionen, Counter / Gauge / Histogram / Timer (+30 more)
+Cohesion: 0.08
+Nodes (42): Kardinalitaetsdisziplin, Gauge, Labels, maxSeriesPerFamily (Kardinalitaetsgrenze), Kardinalitaetsgrenze der prom-client-Bruecke, GET /metrics ueber die Management-Routen, Prometheus-Namenskonventionen, Counter / Gauge / Histogram / Timer (+34 more)
 
 ### Community 179 - "rateLimit handler wrapper"
-Cohesion: 0.06
-Nodes (41): Der Handler laeuft nach dem Timeout weiter, TimeoutOptions, Cluster-aware rate limiting, Do not share the limiter cache, Fixed-window counting via cache incr with TTL, Fixed-window edge effects, Rate limit middleware (page), rateLimit handler wrapper (+33 more)
+Cohesion: 0.05
+Nodes (45): Cluster-aware rate limiting, Do not share the limiter cache, Fixed-window counting via cache incr with TTL, Fixed-window edge effects, Rate limit middleware (page), rateLimit handler wrapper, RateLimitContext, RateLimitOptions (+37 more)
 
 ### Community 180 - "voice/frontend-next/package.json"
 Cohesion: 0.08
 Nodes (25): dependencies, next, react, react-dom, ts-pattern, devDependencies, @types/node, @types/react (+17 more)
 
-### Community 181 - "BackoffSupervisor"
-Cohesion: 0.22
-Nodes (3): main(), BackoffSupervisor, resolveResetThreshold()
+### Community 181 - "MigrationChain"
+Cohesion: 0.07
+Nodes (12): MigrationChain, assertDeepEqual(), SnapshotMigrationTest, buildChain(), DepositedV1, DepositedV2, DepositedV3, CentsAccount (+4 more)
 
-### Community 182 - "DistributedDataActor"
-Cohesion: 0.12
-Nodes (4): clampQuorum(), DistributedDataActor, encodeJsonTree(), encodedFrameBytes()
-
-### Community 183 - "TcpSocketLike"
-Cohesion: 0.10
-Nodes (4): TcpServerActor, TcpGelfTransport, StreamSyslogWire, TcpSocketLike
+### Community 183 - "WebsocketFrame"
+Cohesion: 0.07
+Nodes (10): WebsocketIngressActor, VoicePresenceCommand, InboundFrame, SocketClosed, SessionRef, VoiceWebsocketIngressDeps, WebsocketIngressActor, WebsocketFrame (+2 more)
 
 ### Community 184 - "PersistentActor.test.ts"
 Cohesion: 0.05
-Nodes (19): Account, BalanceCommand, Batch, Checkout, Command, Counter, DepositCommand, DepositedEvent (+11 more)
+Nodes (18): BalanceCommand, Batch, Checkout, Command, Counter, DepositCommand, DepositedEvent, Event (+10 more)
 
 ### Community 185 - "Akka-(JVM)-Konzept-Mapping"
 Cohesion: 0.07
@@ -1699,63 +1696,67 @@ Nodes (36): Akka-(JVM)-Konzept-Mapping, Akka Streams sind nicht portiert, Expliz
 
 ### Community 186 - "CborSerializer"
 Cohesion: 0.06
-Nodes (37): ATS1 body manifest, Key version embedded in the body manifest, CborSerializer Map / Set flattening regression, CBOR is not human-debuggable, CBOR size advantage over JSON, CBOR carries undefined natively, CborSerializer, Float precision in CBOR (+29 more)
+Nodes (42): Lesend sind nur eigene Schlüssel sichtbar, Reservierte Schlüssel (__proto__, constructor, prototype), Typ-Parität zwischen JSON und CBOR, __literal__-Escape für tag-förmige Nutzerdaten, Type-Tags (__date__, __map__, __set__, __bigint__, __bytes__ …), Der Wire-Wechsel ist eine breaking Änderung in beide Richtungen, CborSerializer Map / Set flattening regression, CBOR is not human-debuggable (+34 more)
 
 ### Community 187 - "BidirectionalMultiMap"
-Cohesion: 0.09
-Nodes (6): buildBidirectionalMultiMap(), BidirectionalMultiMap, MediatorInternals, MediatorInternals, ReceptionistInternals, expectConsistent()
+Cohesion: 0.10
+Nodes (5): buildBidirectionalMultiMap(), BidirectionalMultiMap, MediatorInternals, ReceptionistInternals, expectConsistent()
 
-### Community 188 - "Lazy"
-Cohesion: 0.06
-Nodes (13): fetchLazy, FetchModule, parseEventBlock(), SseActor, SseCommand, SseEvent, SseOptions, SseOptionsBuilder (+5 more)
+### Community 188 - "OutboundEnvelope"
+Cohesion: 0.03
+Nodes (13): OutboundEnvelope, fetchLazy, FetchModule, parseEventBlock(), SseActor, SseCommand, SseEvent, SseOptions (+5 more)
 
 ### Community 189 - "InMemoryCache"
-Cohesion: 0.06
-Nodes (40): InMemoryCacheOptions, resident flag, ShardInfo, A snapshot, not a subscription, Shards passivate too, Ein Cache pro Consumer, Eviction leert zuerst die opportunistische Hälfte, Garantie-tragende Einträge (+32 more)
+Cohesion: 0.07
+Nodes (35): InMemoryCacheOptions, Warm start and the journal sequence number, Ein Cache pro Consumer, Eviction leert zuerst die opportunistische Hälfte, Garantie-tragende Einträge, InMemoryCache, Faule TTL plus Hintergrund-Sweep, maxEntries bleibt eine harte Schranke (+27 more)
 
 ### Community 190 - "Recommended middleware stack and its ordering"
-Cohesion: 0.11
-Nodes (18): Idempotency-Key header, identity scope and maxScopeLength, Key validation (length and control characters), cors(...), handleErrors / withErrorHandler, X-Content-Type-Options: nosniff on by default, redactUrlCredentials / redactedUrlLabel, requestTimeout(ms) (+10 more)
+Cohesion: 0.15
+Nodes (13): Idempotency-Key header, identity scope and maxScopeLength, Key validation (length and control characters), cors(...), handleErrors / withErrorHandler, X-Content-Type-Options: nosniff on by default, redactUrlCredentials / redactedUrlLabel, requestTimeout(ms) (+5 more)
 
 ### Community 191 - "Versioned envelope { _v, _t, _e }"
 Cohesion: 0.07
-Nodes (35): Constant defaults are wrong when the value depends on the event, defaultsAdapter, EventAdapter, migrateInMemoryJournal, migratingAdapter, MigrationChain, OutboundFrame, Underscore-prefixed keys are framework-reserved (+27 more)
+Nodes (36): Constant defaults are wrong when the value depends on the event, defaultsAdapter, EventAdapter, migrateInMemoryJournal, migratingAdapter, MigrationChain, OutboundFrame, Underscore-prefixed keys are framework-reserved (+28 more)
 
 ### Community 192 - "Fundamentals concept map"
-Cohesion: 0.06
-Nodes (45): Receptionist (voice-user:<name>), Cluster-Pfade mit Host-Port-Fragment, Spezielle Top-Level-Pfade (/user, /system, /temp, /deadLetters), Guardian-Hierarchie (/user, /system, /deadLetters), ActorPath, Why ts-pattern (not switch or if/else), Actor base class, Async onReceive (+37 more)
+Cohesion: 0.04
+Nodes (63): Receptionist (voice-user:<name>), Cluster-Pfade mit Host-Port-Fragment, Spezielle Top-Level-Pfade (/user, /system, /temp, /deadLetters), Guardian-Hierarchie (/user, /system, /deadLetters), system.terminate(), Die 12 kanonischen Phasen, Verschachtelte Shutdown-Budgets, Klassenform und Factory-Form (+55 more)
 
 ### Community 193 - "Microsoft.Extensions.Primitives"
 Cohesion: 0.06
 Nodes (34): Microsoft.Extensions.FileSystemGlobbing, Microsoft.Extensions.Primitives, contentHash, dependencies, resolved, type, contentHash, dependencies (+26 more)
 
 ### Community 194 - "DistributedPubSub mediator caps"
-Cohesion: 0.08
-Nodes (29): Anycast one-subscriber delivery, Bounded mediator registries, Unrouted publishes go to dead letters, DistributedPubSub, Publish, Subscribe, SubscribeRejected, Topic-to-node gossip deltas (+21 more)
+Cohesion: 0.09
+Nodes (24): Anycast one-subscriber delivery, Bounded mediator registries, Unrouted publishes go to dead letters, Publish, Subscribe, SubscribeRejected, Topic-to-node gossip deltas, Anycast (one-subscriber delivery) (+16 more)
 
 ### Community 195 - "JetStreamActor"
-Cohesion: 0.10
-Nodes (33): Consumer-Konfiguration, Nur Anlegen/Aktualisieren — kein Loeschen, Idempotentes Publish, Push- vs. Pull-Consumer, Stream-Konfiguration, Auth + TLS, KafkaOptionsType, Producen (+25 more)
+Cohesion: 0.09
+Nodes (34): Consumer-Konfiguration, Nur Anlegen/Aktualisieren — kein Loeschen, Idempotentes Publish, Push- vs. Pull-Consumer, Stream-Konfiguration, Auth + TLS, KafkaOptionsType, Producen (+26 more)
 
-### Community 196 - "ObjectStorageSnapshotStore"
-Cohesion: 0.04
-Nodes (55): Faehigkeit durch Aufrufen pruefen, nicht durch Existenzcheck, Komprimieren vor dem Verschluesseln, CompressionConfig (none / gzip / zstd), Dekompressions-Limit (512 MiB Bomb-Schutz), fzstd-Pure-JS-Decompress-Fallback, gzip-Kompression (Store-Default), Per-Actor-compression()-Override, Kompression auf winzigen Objekten lohnt nicht (+47 more)
-
-### Community 197 - "Dispatcher"
+### Community 196 - "ObjectStorageBackend (PUT / GET / DELETE / LIST)"
 Cohesion: 0.08
-Nodes (28): Zweistufige Verarbeitung nach advance, Consistency level (local / majority / all), getAsync — read with consistency, 'majority' is not linearizability, Quorum is evaluated at-the-moment, updateAsync — quorum write, Write majority + read local pattern, Example contribution criteria (+20 more)
+Nodes (28): Faehigkeit durch Aufrufen pruefen, nicht durch Existenzcheck, Komprimieren vor dem Verschluesseln, CompressionConfig (none / gzip / zstd), Dekompressions-Limit (512 MiB Bomb-Schutz), fzstd-Pure-JS-Decompress-Fallback, gzip-Kompression (Store-Default), Per-Actor-compression()-Override, Kompression auf winzigen Objekten lohnt nicht (+20 more)
+
+### Community 197 - "Design decisions"
+Cohesion: 0.11
+Nodes (21): Consistency level (local / majority / all), getAsync — read with consistency, 'majority' is not linearizability, Quorum is evaluated at-the-moment, updateAsync — quorum write, Write majority + read local pattern, Example contribution criteria, MultiNodeSpec in-process cluster snippets (+13 more)
 
 ### Community 198 - "FastifyBackend (default)"
-Cohesion: 0.14
-Nodes (18): ExpressBackend, ExpressBackendOptions, Express throughput (40K-60K req/sec), Express TLS via node:https, app.set('trust proxy', true) is not the safe setting, withApp (bring-your-own Express app), Backend lifecycle (close drains in-flight), Fastify is a hard dependency (+10 more)
+Cohesion: 0.13
+Nodes (19): ExpressBackend, ExpressBackendOptions, Express middleware wraps actor-ts routes, Express throughput (40K-60K req/sec), Express TLS via node:https, app.set('trust proxy', true) is not the safe setting, withApp (bring-your-own Express app), Backend lifecycle (close drains in-flight) (+11 more)
 
 ### Community 199 - "check-doc-samples.mjs"
 Cohesion: 0.14
 Nodes (31): actorTsVocabulary(), bindingsOf(), carriedDeclarations(), carriedNames(), CLASS_MEMBER_FRAGMENT, classify(), classifyDiagnostics(), COMMENT_AS_EXPRESSION_BODY (+23 more)
 
-### Community 200 - "ClusterBootstrap.ts"
-Cohesion: 0.06
-Nodes (38): JoinTargets, ResolvedStableObservationSettings, sleep(), StableObservation, StableObservationError, DEFAULT_MAX_WAIT_MS, DEFAULT_POLL_INTERVAL_MS, DEFAULT_REQUIRED_CONTACT_POINTS (+30 more)
+### Community 200 - "StableObservationOptions.ts"
+Cohesion: 0.08
+Nodes (22): JoinTargets, ResolvedStableObservationSettings, sleep(), StableObservation, StableObservationError, DEFAULT_MAX_WAIT_MS, DEFAULT_POLL_INTERVAL_MS, DEFAULT_REQUIRED_CONTACT_POINTS (+14 more)
+
+### Community 201 - "ParallelMultiNodeSpec.ts"
+Cohesion: 0.08
+Nodes (12): MemberSnapshot, ControlResponse, LeaveResponse, NodeRecord, ParallelMultiNodeSpec, QueryLeaderResponse, QueryMembersResponse, RunCommandResponse (+4 more)
 
 ### Community 202 - "DurableStateActor<Command, S>"
 Cohesion: 0.09
@@ -1763,7 +1764,7 @@ Nodes (29): DurableStateActor<Command, S>, DurableStateOptions, DurableStateOpti
 
 ### Community 203 - "OptionsError"
 Cohesion: 0.07
-Nodes (31): Mit Unterstrich präfixierte Keys sind framework-reserviert, Versionierter Envelope { _v, _t, _e }, Konfiguration (HOCON), redactUrlCredentials (maskierte Zugangsdaten), remote.tls.enabled (gelesen, nicht umgesetzt), Validierung einmal, zur Consume-Zeit, auf den gemergten Settings, FAQ, Keine toten Keys (+23 more)
+Nodes (30): Konfiguration (HOCON), redactUrlCredentials (maskierte Zugangsdaten), remote.tls.enabled (gelesen, nicht umgesetzt), Validierung einmal, zur Consume-Zeit, auf den gemergten Settings, FAQ, Keine toten Keys, Die vollständige reference.conf, lazyImportModule (+22 more)
 
 ### Community 204 - "ChatRoomDirectoryActor"
 Cohesion: 0.10
@@ -1782,36 +1783,36 @@ Cohesion: 0.07
 Nodes (5): Either, eitherOf(), eitherSequence(), left, right
 
 ### Community 208 - "DevTools"
-Cohesion: 0.04
-Nodes (69): UI/server protocol version mismatch, No node reachable dialog, Changed from defaults only, DevTools-Konfigurations-Panel, Die drei Konfigurationsschichten, Die from-Spalte, Redaktion nach Key statt nach Wert, Panel abschalten (panels.config = false) (+61 more)
+Cohesion: 0.05
+Nodes (56): Changed from defaults only, DevTools-Konfigurations-Panel, Die drei Konfigurationsschichten, Die from-Spalte, Redaktion nach Key statt nach Wert, Panel abschalten (panels.config = false), Warum das Panel pollt, withEventBufferCapacity / withEventFlushIntervalMs (+48 more)
 
 ### Community 209 - "JSON-Serializer"
-Cohesion: 0.06
-Nodes (34): pathParam(req, name), Ein binäres Wire-Format pro Version, serializerId reist mit der Zeile mit, serializerCodec, CborSerializer (RFC 8949), Jeder Leser eines Stores braucht denselben Serializer, Größenvergleich JSON gegen CBOR, AvroSerializer (+26 more)
+Cohesion: 0.07
+Nodes (32): pathParam(req, name), Ein binäres Wire-Format pro Version, serializerId reist mit der Zeile mit, serializerCodec, CborSerializer (RFC 8949), Jeder Leser eines Stores braucht denselben Serializer, Größenvergleich JSON gegen CBOR, AvroSerializer (+24 more)
 
 ### Community 210 - "TcpServerActor"
 Cohesion: 0.09
-Nodes (30): Backpressure ist nicht automatisch, Ein Actor, nicht einer pro Verbindung, maxConnections, Kein Connection-Multiplexing, TCP gibt Bytes, keine Nachrichten, TLS ausliefern, TcpFraming, TcpServerMessage (+22 more)
+Nodes (32): Backpressure ist nicht automatisch, Ein Actor, nicht einer pro Verbindung, Frame-Limits und ihre Durchsetzung, maxConnections, Kein Connection-Multiplexing, TCP gibt Bytes, keine Nachrichten, TLS ausliefern, TcpFraming (+24 more)
 
 ### Community 211 - "dependencies"
 Cohesion: 0.05
-Nodes (41): dependencies, amqplib, @aws-sdk/client-dynamodb, @aws-sdk/client-s3, fastify, @grpc/grpc-js, @grpc/proto-loader, imapflow (+33 more)
+Nodes (43): dependencies, amqplib, @aws-sdk/client-dynamodb, @aws-sdk/client-s3, cassandra-driver, fastify, @grpc/grpc-js, @grpc/proto-loader (+35 more)
 
 ### Community 212 - "FakeDynamoDb"
-Cohesion: 0.10
-Nodes (16): DynamoDbBatchWriteResult, DynamoDbGetResult, DynamoDbQueryResult, DynamoDbTableDescription, applyUpdateExpression(), clone(), ConditionalCheckFailed, consistencyOf() (+8 more)
+Cohesion: 0.11
+Nodes (17): DynamoDbBatchWriteResult, DynamoDbGetResult, DynamoDbItem, DynamoDbQueryResult, DynamoDbTableDescription, applyUpdateExpression(), clone(), ConditionalCheckFailed (+9 more)
 
 ### Community 213 - "chat/frontend-angular/tsconfig.app.json"
 Cohesion: 0.20
 Nodes (9): compilerOptions, outDir, types, extends, files, include, src/main.ts, src/**/*.ts (+1 more)
 
-### Community 214 - "Overflow-Policies (drop-head / drop-new / reject)"
-Cohesion: 0.06
-Nodes (39): At-least-once-Vertrag, Backpressure durch Queuing, confirm-Callback beim Send, ConsumerController, In-Memory-Buffer des Producers, ProducerController, ProducerControllerOptions, producerId (+31 more)
+### Community 214 - "FastifyBackend"
+Cohesion: 0.05
+Nodes (49): Anti-Entropy-Gossip-Topologie, Per-Key-CRDT-Merge, Eventual Convergence, Gossip-Replikation, distributed_data_gossip_skipped_keys_total, gossipInterval, max-gossip-bytes, MemberRemoved ist ein No-op fuer DistributedData (+41 more)
 
 ### Community 215 - "idempotent"
 Cohesion: 0.03
-Nodes (78): ExpressBackend, ExpressBackendOptions (withMaxBodyBytes, withApp), Express-Durchsatz 40K-60K req/s, app.set('trust proxy', true) ist nicht die sichere Einstellung, bodyLimit (1 MiB Default), FastifyBackend, Fastifys Logger nicht neben actor-ts-Log, Fastify-TLS / mTLS (+70 more)
+Nodes (78): At-least-once-Vertrag, ConsumerController, In-Memory-Buffer des Producers, Producer-Inkarnation, ProducerController, ProducerControllerOptions, producerId, resendTimeout (+70 more)
 
 ### Community 216 - "HOCON configuration"
 Cohesion: 0.08
@@ -1826,8 +1827,8 @@ Cohesion: 0.07
 Nodes (30): patterns, aliases, patterns, patterns, patterns, fileTypes, patterns, patterns (+22 more)
 
 ### Community 219 - "VoiceSessionActor.ts"
-Cohesion: 0.08
-Nodes (27): AddCommand, GetUsersCommand, KeyState, ONLINE_USERS_KEY, PresenceChanged, RemoveCommand, SubscribeCommand, UnsubscribeCommand (+19 more)
+Cohesion: 0.10
+Nodes (21): BinaryFrame, BinaryInboundFrame, BinaryStreamEnd, CurrentTarget, GroupTarget, IdleTarget, PeerTarget, Phase (+13 more)
 
 ### Community 220 - "lib/useVoice.ts"
 Cohesion: 0.11
@@ -1838,12 +1839,12 @@ Cohesion: 0.13
 Nodes (24): aggregate(), attributesOf(), collectRun(), formatTable(), identityOf(), main(), NAMED_XML_ENTITIES, normalisePath() (+16 more)
 
 ### Community 222 - "src/cache/index.ts"
-Cohesion: 0.04
-Nodes (22): Cache, CacheError, CacheExtension, CacheExtensionId, CacheFactory, IN_MEMORY_CACHE_PLUGIN_ID, MEMCACHED_CACHE_PLUGIN_ID, REDIS_CACHE_PLUGIN_ID (+14 more)
+Cohesion: 0.03
+Nodes (23): CacheExtension, CacheExtensionId, CacheFactory, IN_MEMORY_CACHE_PLUGIN_ID, MEMCACHED_CACHE_PLUGIN_ID, REDIS_CACHE_PLUGIN_ID, acquireLock(), CacheLock (+15 more)
 
-### Community 223 - ".toString"
-Cohesion: 0.09
-Nodes (4): FailureDetector, MockCluster, rawMember(), recordAnycastFrames()
+### Community 223 - "Cluster.ts"
+Cohesion: 0.03
+Nodes (87): RFC-5737, clusterOptions, DepositEvent, devtoolsOptions, LedgerState, system, TickMessage, WorkMessage (+79 more)
 
 ### Community 224 - "PersistentFSM.test.ts"
 Cohesion: 0.07
@@ -1858,27 +1859,23 @@ Cohesion: 0.07
 Nodes (29): aliases, patterns, patterns, fileTypes, patterns, patterns, patterns, name (+21 more)
 
 ### Community 227 - "package.json"
-Cohesion: 0.06
-Nodes (32): author, bugs, url, description, engines, bun, node, files (+24 more)
-
-### Community 228 - "ObjectStoragePlugin.ts"
-Cohesion: 0.10
-Nodes (33): BalanceCommand, Command, DepositCommand, Event, main(), pickBackend(), State, WithdrawCommand (+25 more)
-
-### Community 229 - "Mailbox"
 Cohesion: 0.08
-Nodes (5): Mailbox, ExplodingMailbox, RefusingMailbox, CountingMailbox, TracingMailbox
+Nodes (24): author, bugs, url, description, engines, bun, node, files (+16 more)
 
-### Community 230 - "MockConsumer"
-Cohesion: 0.06
-Nodes (7): KafkaConsumerLike, KafkaInstanceLike, KafkaProducerLike, MockConsumer, MockKafka, MockKafkaActor, MockProducer
+### Community 228 - "DurableStateActorMigration.test.ts"
+Cohesion: 0.08
+Nodes (20): defaultsAdapter(), DefaultsAdapterSpec, defaultsSnapshotAdapter(), downcastByDefaults(), upcastByDefaults(), validateSpec(), DepositedV2, DepositedV3 (+12 more)
+
+### Community 229 - "JournalMigration.ts"
+Cohesion: 0.09
+Nodes (22): AppliedTags, applyTagPolicy(), CompactedSourceError, InMemoryMigrationProgressStore, InvalidTagPolicy, migrateBetweenJournals(), migrateBetweenSnapshotStores(), MigrateJournalsOptions (+14 more)
 
 ### Community 231 - "ReplicatedEventSourcedActor"
-Cohesion: 0.12
-Nodes (4): getLivePersistenceIdsForSystem(), ReplicatedEventSourcedActor, topicFor(), vectorClockRejection()
+Cohesion: 0.14
+Nodes (3): getLivePersistenceIdsForSystem(), ReplicatedEventSourcedActor, topicFor()
 
 ### Community 232 - "TypedActor"
-Cohesion: 0.14
+Cohesion: 0.13
 Nodes (4): interceptorDepthOf(), StashBufferImplementation, TypedActor, wrapIntercepted()
 
 ### Community 233 - "options"
@@ -1890,20 +1887,20 @@ Cohesion: 0.05
 Nodes (39): architect, prefix, projectType, root, schematics, sourceRoot, build, serve (+31 more)
 
 ### Community 235 - "DurableStateActor"
-Cohesion: 0.08
-Nodes (12): Command, DumpCommand, GetCommand, KV, KVStore, main(), SetCommand, DurableStateActor (+4 more)
+Cohesion: 0.12
+Nodes (8): Command, DumpCommand, GetCommand, KV, KVStore, main(), SetCommand, DurableStateActor
 
-### Community 236 - "ParallelMultiNodeSpec.ts"
-Cohesion: 0.08
-Nodes (13): BrokeredMessage, PortLike, MultiNodeBroker, ControlResponse, LeaveResponse, NodeRecord, QueryLeaderResponse, QueryMembersResponse (+5 more)
+### Community 236 - "BaseProjectionActor"
+Cohesion: 0.13
+Nodes (4): BaseProjectionActor, ByPersistenceIdProjectionActor, ByTagProjectionActor, ProjectionFailureAction
 
-### Community 237 - "BrokerOptionsBuilder"
-Cohesion: 0.02
-Nodes (21): BrokerOptionsBuilder, JetStreamKeyValueOptionsBuilder, JetStreamObjectStoreOptionsBuilder, KafkaOptionsBuilder, NatsOptionsBuilder, AcknowledgmentCommand, IoredisClientLike, IoredisConstructor (+13 more)
+### Community 237 - "RedisStreamsActor"
+Cohesion: 0.04
+Nodes (13): IoredisClientEvent, IoredisClientLike, isConnectionLevelRedisError(), RedisStreamEntry, RedisStreamsActor, RedisStreamsOptionsBuilder, RedisStreamsOptionsType, InboxActor (+5 more)
 
 ### Community 238 - "PersistentActor"
-Cohesion: 0.03
-Nodes (10): Counter, Account, LedgerActor, PersistentActor, Ledger, CentsAccount, RawAccount, Account (+2 more)
+Cohesion: 0.05
+Nodes (6): Counter, LedgerActor, PersistentActor, Ledger, Ledger, ProbePersistentActor
 
 ### Community 239 - "options"
 Cohesion: 0.04
@@ -1915,27 +1912,27 @@ Nodes (22): BasicAuthOptions, Konstantzeit-Vergleich der Zugangsdaten, Basic-Aut
 
 ### Community 241 - "VoiceSessionActor"
 Cohesion: 0.15
-Nodes (4): roomUsersKey(), roomTopic(), VoiceSessionActor, isVoiceRoomName()
+Nodes (3): roomTopic(), userServiceKey(), VoiceSessionActor
 
 ### Community 242 - "statsSamplePayload"
-Cohesion: 0.10
-Nodes (12): pointOf(), StatsHistory, HISTORY_MAXIMUM_SPAN_MS, HistoryPoint, merge(), pointOf(), StatsHistoryStore, Tier (+4 more)
+Cohesion: 0.09
+Nodes (16): CounterField, LevelField, peakOf(), pointOf(), SeriesPoint, StatsHistory, HISTORY_MAXIMUM_SPAN_MS, HistoryPoint (+8 more)
 
-### Community 243 - "PromClientAdapter.ts"
+### Community 243 - "metrics/index.ts"
 Cohesion: 0.08
-Nodes (15): CounterOptions, CounterEntry, Entry, EntryBase, GaugeEntry, HistogramEntry, PromClientHistogram, PromClientLabelValues (+7 more)
+Nodes (20): DEFAULT_MAILBOX_DEPTH_SAMPLE_INTERVAL_MS, DISPATCHER_QUEUE_DELAY_BUCKETS_SECONDS, MAILBOX_DEPTH_BUCKETS_MESSAGES, MAILBOX_DEPTH_REPORTING_FLOOR, LabelValue, CounterEntry, Entry, EntryBase (+12 more)
 
 ### Community 244 - "Compression.ts"
-Cohesion: 0.08
-Nodes (26): ObjectStorageDurableStateStoreOptionsValidator, assertWithinCap(), bytesEqual(), capApplies(), clampGzipLevel(), clampZstdLevel(), CompressionAlgo, Compressor (+18 more)
+Cohesion: 0.11
+Nodes (23): assertWithinCap(), bytesEqual(), capApplies(), clampGzipLevel(), clampZstdLevel(), CompressionAlgo, Compressor, decodesZstdCanary() (+15 more)
 
 ### Community 245 - "Five Cluster-Node Services"
 Cohesion: 0.11
 Nodes (28): Cluster Bridge Network, Five Cluster-Node Services, Control-Port Ping Healthcheck, Controller Exit Code as Test Result, Controller Service, Per-Container NET_ADMIN Capability, x-node-defaults YAML Anchor, PEERS List for Shutdown-Trace Hook (+20 more)
 
-### Community 246 - "FakeBroker"
-Cohesion: 0.05
-Nodes (3): FakeBroker, isTerminated(), RecipeBroker
+### Community 246 - "IdleBroker"
+Cohesion: 0.06
+Nodes (3): RecipeBroker, IdleBroker, UnabortableBroker
 
 ### Community 247 - "java.util.List"
 Cohesion: 0.10
@@ -1953,17 +1950,13 @@ Nodes (14): JsonWriter, quote(), Double, Long, Null, Path, String, Unit (+6 more
 Cohesion: 0.10
 Nodes (24): HOCON-Namespace actor-ts.io.broker.sse, Geerbter Reconnect + Circuit Breaker, Nur-Lese — kein Ausgang, SSE-Wire-Format-Parsing, SseEvent, SseOptionsType, Wann SSE passt, Ping auf Anwendungsebene (+16 more)
 
-### Community 251 - "PhiAccrualFailureDetector.ts"
-Cohesion: 0.09
-Nodes (9): FailureDecision, defaultPhiAccrualOptions, PeerState, PhiAccrualFailureDetector, standardNormalCdf(), PhiAccrualOptions, PhiAccrualOptionsBuilder, PhiAccrualOptionsType (+1 more)
-
 ### Community 252 - "TracingPanelComponent"
-Cohesion: 0.11
-Nodes (14): prettyJson(), TracingPanelComponent, Component, durationOf(), groupByTrace(), layoutRectangles(), LayoutSpan, layoutTrace() (+6 more)
+Cohesion: 0.20
+Nodes (3): prettyJson(), TracingPanelComponent, Component
 
-### Community 253 - "DeathWatchOnBoundedMailbox.test.ts"
-Cohesion: 0.05
-Nodes (23): BlockingWatcher, BlockMessage, boundedMailboxOf(), DieMessage, DyingTarget, FillerMessage, Gate, Listener (+15 more)
+### Community 253 - "Terminated"
+Cohesion: 0.02
+Nodes (49): Child, main(), Watcher, RouterActor, Terminated, Watcher, ExhaustiveWatcher, GenerationLostMessage (+41 more)
 
 ### Community 254 - "docs/tsconfig.json"
 Cohesion: 0.22
@@ -1974,8 +1967,8 @@ Cohesion: 0.07
 Nodes (27): Scheduler, bun:test, Buns Timer-Quantum (15,625 ms unter Windows), Date.now() wird nicht virtualisiert, Feuer-Reihenfolge in einem advance, Warum virtuelle Zeit, ManualScheduler, TestKit (+19 more)
 
 ### Community 256 - "Cache interface"
-Cohesion: 0.11
-Nodes (29): application.conf origin line, Configuration panel, HOCON layer attribution per key, actor-ts documentation site, Logo-derived docs theme and fonts, Three-tier reading model for doc pages, What a dropped guarantee costs, Guarantee-carrying cache entries (+21 more)
+Cohesion: 0.13
+Nodes (26): actor-ts documentation site, Logo-derived docs theme and fonts, Three-tier reading model for doc pages, What a dropped guarantee costs, Guarantee-carrying cache entries, InMemoryCache, LRU eviction bounded by maxEntries, One cache per consumer (+18 more)
 
 ### Community 257 - "benchmarks/comparison-Harness"
 Cohesion: 0.07
@@ -1989,29 +1982,29 @@ Nodes (20): App(), ChatHandle, ChatView(), ChatMessage, ClientMessage, DEFAULT_R
 Cohesion: 0.08
 Nodes (9): Command, ConnectionFsm, Data, main(), State, FSM, Broken, Door (+1 more)
 
-### Community 260 - "PriorityMailbox"
-Cohesion: 0.11
-Nodes (8): CommandMessage, Dispatcher, HeartbeatMessage, LogMessage, main(), Message, priorityFor(), PriorityMailbox
+### Community 260 - "priority-dispatch.ts"
+Cohesion: 0.23
+Nodes (7): CommandMessage, Dispatcher, HeartbeatMessage, LogMessage, main(), Message, priorityFor()
 
-### Community 261 - "MultiNodeSpec"
-Cohesion: 0.16
-Nodes (6): main(), MultiNodeSpec, withSpec(), withSpec(), startRegion(), startSpec()
+### Community 261 - "MultiNodeSpec.ts"
+Cohesion: 0.02
+Nodes (71): buildCluster(), Command, main(), Node, PingCommand, runSize(), startNode(), Command (+63 more)
 
 ### Community 262 - "exclude"
 Cohesion: 0.08
 Nodes (23): examples/*/frontend-*/**, examples/management/otel-jaeger.ts, examples/management/prom-client-shared.ts, examples/**/*.ts, tests/integration/brokers/**, compilerOptions, lib, rootDir (+15 more)
 
-### Community 263 - "DeadLetterQueue"
-Cohesion: 0.13
-Nodes (6): closeOf(), withinBudget(), DeadLetterEntry, DeadLetterFilter, classNameOf(), DeadLetterQueue
+### Community 263 - "SyncReceiveFastPath.test.ts"
+Cohesion: 0.07
+Nodes (12): Failing, HandlerKind, Parent, Plain, Recorded, Recorder, Sender, systems (+4 more)
 
 ### Community 265 - "actor-ts.ts"
-Cohesion: 0.12
-Nodes (20): awaitWithin(), CounterMessage, EchoActor, IncrementMessage, LifecycleLatch, main(), PingMessage, PongMessage (+12 more)
+Cohesion: 0.10
+Nodes (15): awaitWithin(), CounterActor, CounterMessage, EchoActor, IncrementMessage, LifecycleLatch, main(), PingMessage (+7 more)
 
 ### Community 266 - "run-comparison.ts"
-Cohesion: 0.16
-Nodes (19): averageScenario(), groupRoundsByArm(), mean(), mergeRounds(), roundsPerArm(), standardDeviation(), ArmBlocker, ARMS (+11 more)
+Cohesion: 0.18
+Nodes (13): ArmBlocker, ARMS, blockerFor(), COMPARISON_ROOT, ComparisonArm, environmentVariables(), ExternalArm, isExecutable() (+5 more)
 
 ### Community 267 - "Grains.cs"
 Cohesion: 0.12
@@ -2029,9 +2022,9 @@ Nodes (12): compilerOptions, allowJs, checkJs, esModuleInterop, forceConsistentC
 Cohesion: 0.08
 Nodes (24): angularCompilerOptions, enableI18nLegacyMessageIdFormat, strictInjectionParameters, strictInputAccessModifiers, strictTemplates, typeCheckHostBindings, compileOnSave, compilerOptions (+16 more)
 
-### Community 272 - "failure"
-Cohesion: 0.10
-Nodes (5): PipeToOptions, failure, Try, tryOf(), trySequence()
+### Community 272 - "BackoffSupervisor.test.ts"
+Cohesion: 0.02
+Nodes (55): Command, FlakyConnector, main(), main(), ResultHandler, FatalError, flakyRemoteCall(), main() (+47 more)
 
 ### Community 273 - "SerializationProperties.test.ts"
 Cohesion: 0.08
@@ -2045,21 +2038,17 @@ Nodes (21): BlankedSource, blankNonCode(), declarations, EMPTY_SCAN, FileScan, F
 Cohesion: 0.08
 Nodes (7): otelAdapterOptions, system, tick, Worker, OtelTraceApi, otelTracer(), rootContext()
 
-### Community 276 - "everyNEvents"
-Cohesion: 0.04
-Nodes (18): Counter, DirectMessageChannelActor, splitPairId(), everyNEvents(), SnapshotPolicy, SeatingPlan, Telemetry, CountingCounter (+10 more)
-
 ### Community 277 - "chat/frontend-react/package.json"
 Cohesion: 0.07
 Nodes (26): dependencies, react, react-dom, ts-pattern, devDependencies, @types/react, @types/react-dom, typescript (+18 more)
 
-### Community 278 - "WorkerCluster"
-Cohesion: 0.14
-Nodes (8): main(), WorkerBroker, reportWorkerFailure(), resolveWorkerCount(), terminateQuietly(), unrefTimer(), WorkerCluster, startNode()
+### Community 278 - "PersistentFSM"
+Cohesion: 0.15
+Nodes (26): Compile-time exhaustiveness, eventDispatcher builder, EventDispatcherIncomplete marker, onEvent is pure and testable in isolation, A plain switch silently swallows new kinds, Errors in enter and exit hooks are logged, not escalated, FSM base class, goto and stay (+18 more)
 
 ### Community 279 - "CassandraJournal"
-Cohesion: 0.12
-Nodes (25): CassandraJournalOptions, CQL-Identifier-Validierung, Zusammengesetzter Partition-Key (partitionSize), DurableStateActor, StatefulSet versus Deployment, Await persist before acknowledging, Build a new state object rather than mutating, Durable state versus event sourcing (+17 more)
+Cohesion: 0.13
+Nodes (23): CassandraJournalOptions, CQL-Identifier-Validierung, Zusammengesetzter Partition-Key (partitionSize), DurableStateActor, Await persist before acknowledging, Build a new state object rather than mutating, Durable state versus event sourcing, Encryption overrides only the object-storage store reads (+15 more)
 
 ### Community 280 - "DynamoDbJournal"
 Cohesion: 0.10
@@ -2077,77 +2066,73 @@ Nodes (19): ChatHandle, ChatView(), Page(), ChatMessage, ClientMessage, DEFAULT_
 Cohesion: 0.07
 Nodes (27): dependencies, ts-pattern, devDependencies, svelte, svelte-check, @sveltejs/adapter-static, @sveltejs/kit, @sveltejs/vite-plugin-svelte (+19 more)
 
-### Community 284 - "FakeImapClient"
-Cohesion: 0.11
-Nodes (3): ImapSearchQueryLike, bytesOf(), FakeImapClient
+### Community 284 - "Codec.ts"
+Cohesion: 0.12
+Nodes (18): Codec, composeCodecs(), jsonCodec(), ParserLike, serializedValue(), serializerCodec(), zodCodec(), twoTypeRegistry() (+10 more)
 
 ### Community 285 - "arm.ts"
-Cohesion: 0.14
-Nodes (16): ArmDefinition, CompletionTally, roundNumber, toScenarioResult(), ComparisonResultFile, FrameworkIdentity, RESULT_SCHEMA_VERSION, resultFileName() (+8 more)
+Cohesion: 0.18
+Nodes (15): ArmDefinition, CompletionTally, roundNumber, runArm(), toScenarioResult(), captureEnvironment(), commitIdentity(), detectRuntime() (+7 more)
 
 ### Community 286 - "report.ts"
-Cohesion: 0.15
-Nodes (22): armsSection(), COMPARISON_ROOT, environmentSection(), footnoteMarker(), FootnoteRegistry, formatCount(), formatMemory(), formatSpread() (+14 more)
+Cohesion: 0.13
+Nodes (22): ScenarioName, WORKLOAD, armsSection(), COMPARISON_ROOT, environmentSection(), footnoteMarker(), FootnoteRegistry, formatCount() (+14 more)
 
-### Community 287 - "ClusterRouter"
-Cohesion: 0.09
-Nodes (26): Right tool by cardinality, Passive participation works, active responsibilities do not, ClusterRouter, ClusterRouterOptions, DeadLetter, Pool, Routee, Router (+18 more)
+### Community 287 - "ActorOptions"
+Cohesion: 0.05
+Nodes (51): Der Options-Builder verändert sich selbst, withInternal, Actor, Supervisionsstrategie, terminate() leert die Mailboxen, Batteries-included, Mentales Modell des Actor-Modells, Warum ein TypeScript-Port (+43 more)
 
-### Community 288 - "RemoteActorRef"
-Cohesion: 0.08
-Nodes (30): ClusterClient, ClusterClientOptions, ClusterClientReceptionist, Replies follow the connection, not the payload, Redacted ask failure with correlation id, CA plus per-node certificate layout, Mutual TLS peer authentication, Kubernetes NetworkPolicy on the cluster port (+22 more)
+### Community 288 - "TcpTransport"
+Cohesion: 0.06
+Nodes (43): Truncated-to-fit-the-wire payload, ClusterClient, ClusterClientOptions, ClusterClientReceptionist, Replies follow the connection, not the payload, Redacted ask failure with correlation id, CA plus per-node certificate layout, Mutual TLS peer authentication (+35 more)
 
 ### Community 289 - "DynamoDbJournal"
 Cohesion: 0.09
 Nodes (23): Symptom: Actor braucht 30 Sekunden zum Starten, Cassandra-Konsistenzmodell, Das Crash-Fenster des Append-Anspruchs, Lightweight Transactions (LWT) als Append-Anspruch, serialConsistency auf Multi-DC, autoCreateTables wartet auf ACTIVE, ConsistentRead auf jedem tragenden Read, Durable-State-CAS als nativer konditionaler Write (+15 more)
 
-### Community 290 - "Type-Tags (__date__, __map__, __set__, __bigint__, __bytes__ …)"
-Cohesion: 0.09
-Nodes (24): Getaggtes JSON-Tree-Format (Envelope-Persistenz), Lesend sind nur eigene Schlüssel sichtbar, Reservierte Schlüssel (__proto__, constructor, prototype), Typ-Parität zwischen JSON und CBOR, __literal__-Escape für tag-förmige Nutzerdaten, Type-Tags (__date__, __map__, __set__, __bigint__, __bytes__ …), Cluster-Wire-Envelope { to, from, body, tag }, Der Wire-Wechsel ist eine breaking Änderung in beide Richtungen (+16 more)
+### Community 290 - "Dead-Letter-Panel"
+Cohesion: 0.11
+Nodes (24): Filtern nach Empfaengerpfad (Teilbaum, serverseitig), Dead-Letter-Panel, Payload-Bereinigung, Die Payload sind deine Daten, Die Dead-Letter-Queue einschalten, Erneutes Zustellen bleibt bewusst im Code, replays-Spalte, store: off meldet sich als nicht verfuegbar (+16 more)
 
 ### Community 291 - "Client-side AES-GCM encryption"
-Cohesion: 0.10
-Nodes (21): Client-side AES-GCM encryption, Compress-then-encrypt ordering, Binding a body to its storage key, encryptionByPrefix per-tenant resolver, EncryptionConfig, HKDF info context binding, MasterKeyRing, reEncryptObjectStorage (+13 more)
+Cohesion: 0.11
+Nodes (21): ATS1 body manifest, Client-side AES-GCM encryption, Compress-then-encrypt ordering, Binding a body to its storage key, encryptionByPrefix per-tenant resolver, EncryptionConfig, HKDF info context binding, Key version embedded in the body manifest (+13 more)
 
 ### Community 292 - "http/Html.ts"
-Cohesion: 0.17
-Nodes (8): EmailTemplate, EmailTemplateError, escapeHtml(), ESCAPES, html(), rawHtml(), render(), SafeHtml
+Cohesion: 0.16
+Nodes (9): EmailTemplate, EmailTemplateError, EmailTemplateValue, escapeHtml(), ESCAPES, html(), rawHtml(), render() (+1 more)
 
-### Community 294 - "OtelLogsAdapter.ts"
-Cohesion: 0.15
-Nodes (9): otelLogger(), OtelLoggerAdapterOptions, OtelLoggerImplementation, OtelLoggerLike, OtelLoggerProviderLike, OtelLogRecord, OtelLogsApiLike, OtelSeverityNumber (+1 more)
+### Community 294 - "tracing/index.ts"
+Cohesion: 0.12
+Nodes (17): OtelApiLike, OtelContextApi, OtelPropagationApi, OtelSpanContextLike, OtelTracerLike, OtelAdapterOptions, OtelAdapterOptionsBuilder, OtelAdapterOptionsType (+9 more)
 
 ### Community 295 - "Microsoft.Extensions.DependencyInjection.Abstractions"
 Cohesion: 0.09
 Nodes (22): Microsoft.Extensions.DependencyInjection.Abstractions, contentHash, dependencies, resolved, type, contentHash, dependencies, resolved (+14 more)
 
 ### Community 296 - "MqttActor"
-Cohesion: 0.10
-Nodes (25): MqttActor behaelt seine eigene Subscription-Registry, cleanSession false braucht dieselbe clientId, MQTT-Codecs, Externe Steuerung ueber MqttCommand, MqttActor-Hooks, MqttOptionsType, Eigene Subscription-Registry des MqttActor, QoS-Level (+17 more)
-
-### Community 297 - "SqlDialect"
-Cohesion: 0.10
-Nodes (3): LazyStore, LazyStoreConfig, SqlDialect
+Cohesion: 0.15
+Nodes (17): cleanSession false braucht dieselbe clientId, MQTT-Codecs, Externe Steuerung ueber MqttCommand, MqttActor-Hooks, MqttOptionsType, Eigene Subscription-Registry des MqttActor, QoS-Level, MQTT-Topic-Wildcards (+9 more)
 
 ### Community 298 - "Bun as the primary runtime"
-Cohesion: 0.11
-Nodes (22): No browser-mode build, No Bun runtime on Lambda / serverless, Bun Node-compatibility edge cases, Bun as the primary runtime, bun:sqlite built-in driver, Bun startup-time advantage, bun:test runner, HonoBackend on Bun (+14 more)
+Cohesion: 0.07
+Nodes (37): Getaggtes JSON-Tree-Format (Envelope-Persistenz), Cluster-Wire-Envelope { to, from, body, tag }, Getaggter JSON-Tree (Wire + Stores), Was der Tree ablehnt, lehnt auch die Leitung ab — laut, No browser-mode build, No Bun runtime on Lambda / serverless, Bun Node-compatibility edge cases, Bun as the primary runtime (+29 more)
 
 ### Community 299 - "dependencies"
 Cohesion: 0.05
 Nodes (42): dependencies, @angular/animations, @angular/common, @angular/compiler, @angular/core, @angular/forms, @angular/platform-browser, @angular/router (+34 more)
 
 ### Community 300 - "Scheduler"
-Cohesion: 0.15
-Nodes (4): Scheduler, SimpleCancellable, RecordingScheduler, ReportableScheduler
+Cohesion: 0.12
+Nodes (5): Scheduler, SimpleCancellable, RecordingScheduler, DrivableScheduler, ReportableScheduler
 
 ### Community 301 - "run-examples.mjs"
 Cohesion: 0.12
 Nodes (20): classified, delay(), discoverExamples(), examplesRoot, filters, harnessDirectory, manifest, manifestProblems (+12 more)
 
 ### Community 302 - "WorkflowHygiene.test.ts"
-Cohesion: 0.10
-Nodes (17): ActionReference, ArtifactUpload, artifactUploads(), badgeStatements, declaresPermissions(), installs, InstallStep, jobs (+9 more)
+Cohesion: 0.07
+Nodes (22): actionGroupPatterns, ActionReference, ArtifactUpload, artifactUploads(), badgeStatements, CoupledAction, coupledActions, declaresPermissions() (+14 more)
 
 ### Community 303 - "compilerOptions"
 Cohesion: 0.06
@@ -2169,65 +2154,65 @@ Nodes (12): Actors, Batch, Echo, Ping, Refs, Any, CounterCommand, GuardianComman
 Cohesion: 0.08
 Nodes (24): angularCompilerOptions, enableI18nLegacyMessageIdFormat, strictInjectionParameters, strictTemplates, compileOnSave, compilerOptions, esModuleInterop, forceConsistentCasingInFileNames (+16 more)
 
-### Community 308 - "TimerScheduler (context.timers)"
+### Community 308 - "SpanTap.ts"
 Cohesion: 0.12
-Nodes (21): Der Kontext gehoert zum Envelope, nicht zur Async-Ressource, LogContext (MDC), LogContextEntry, MDC-Propagation ueber tell und Cluster-Hops, LogContext.runEach, LogContext.runFresh, Aufgeschobene Arbeit und Tenant-Isolation, withFields (statische Felder) (+13 more)
+Nodes (13): SupervisorActor, TRACING_BUFFER_MINIMUM, emptyToNull(), stringAttribute(), toWireSpan(), NOOP_SPAN, NOOP_TRACER, ZERO_CTX (+5 more)
 
 ### Community 309 - "docs/io/email-bridge.mdx"
-Cohesion: 0.18
-Nodes (10): HOCON, HTML bodies, IDLE, polling, and reconnection, IDLE, polling and reconnection, One actor, one mailbox, Peer dependencies, Sending, Settings (+2 more)
-
-### Community 310 - "success"
-Cohesion: 0.10
-Nodes (3): ResultHandler, UserHandler, success
+Cohesion: 0.12
+Nodes (17): connectImplementation hook, Desired subscriptions, At-least-once, settled by IMAP flags, HOCON, HTML bodies, IDLE, polling, and reconnection, IDLE, polling and reconnection, One actor, one mailbox (+9 more)
 
 ### Community 311 - "CoverageGate.test.ts"
-Cohesion: 0.18
-Nodes (17): DEFAULT_LINE_FLOOR, describeModuleVerdict(), evaluateModuleFloors(), main(), MODULE_LINE_FLOORS, normaliseCoveragePath(), parseAggregateLineCoverage(), parseArguments() (+9 more)
+Cohesion: 0.14
+Nodes (22): badgeLineCoverage(), DEFAULT_LINE_FLOOR, describeModuleVerdict(), evaluateModuleFloors(), main(), MODULE_LINE_FLOORS, normaliseCoveragePath(), parseAggregateLineCoverage() (+14 more)
 
 ### Community 313 - "Actors"
 Cohesion: 0.15
 Nodes (19): Actors, ChildStarted, CounterActor, Echo, EchoActor, Increment, Ping, PingActor (+11 more)
 
-### Community 314 - "RandomString.ts"
-Cohesion: 0.22
-Nodes (15): RFC-9562, drawUntilFree(), entropyPool, ExistsPredicate, fromAlphabet(), nextEntropyByte(), randomHex(), randomId() (+7 more)
+### Community 314 - "Replay.ts"
+Cohesion: 0.14
+Nodes (16): decodeEvent(), decodeState(), toFrame(), assertTrustworthyHistory(), assertTrustworthySnapshot(), HistoryBounds, JournalIntegrityError, ReplayRequest (+8 more)
 
-### Community 315 - "Supervision"
-Cohesion: 0.11
-Nodes (19): Cleanup-coordination pattern, context.watch(ref), Death watch, Watch versus supervision, Directive.Restart, Directive.Resume, Directive.Stop, Let it crash (+11 more)
+### Community 315 - "Journal (Append-only Event-Log)"
+Cohesion: 0.12
+Nodes (21): Journal (Append-only Event-Log), JournalIntegrityError, Getaggtes JSON-Tree-Format fuer alle Payloads, Ein kompaktiertes Event verlaesst auch den Tag-Index, currentEventsByTag (One-Shot), LiveQueryOptions (pollIntervalMs), Offset (timestamp, persistenceId, sequenceNr), TagFilter (any / all) (+13 more)
 
 ### Community 316 - "gRPC"
-Cohesion: 0.14
-Nodes (21): In-Band-Bidi-Handshake, Deadline gilt nur fuer Unary-Calls, GrpcInbound, GrpcStreamHandle, Call-Formen der Handler, metadata-Record, Geteilte HealthCheckRegistry, Streaming-Modi (+13 more)
+Cohesion: 0.15
+Nodes (20): In-Band-Bidi-Handshake, Deadline gilt nur fuer Unary-Calls, GrpcInbound, GrpcStreamHandle, Call-Formen der Handler, metadata-Record, Geteilte HealthCheckRegistry, Streaming-Modi (+12 more)
 
 ### Community 317 - "ExplainTap.ts"
-Cohesion: 0.21
-Nodes (10): MAXIMUM_CAPACITY, ExplainEnableParameters, explainEntriesPayload, ExplainEntry, ExplainPathParameters, ExplainStatusResult, clampCapacity(), ExplainMethods (+2 more)
+Cohesion: 0.19
+Nodes (11): MAXIMUM_CAPACITY, ExplainEnableParameters, explainEntriesPayload, ExplainEntry, ExplainPathParameters, ExplainStatusResult, clampCapacity(), ExplainMethods (+3 more)
 
-### Community 318 - "24-object-storage-context-binding.mjs"
-Cohesion: 0.16
-Nodes (16): assert(), description, failureOf(), messageChain(), name, run(), STATE_TEXT, assert() (+8 more)
+### Community 318 - "RandomString.ts"
+Cohesion: 0.06
+Nodes (42): RFC-9562, TerminationWatcher, FsModule, BidirectionalMultiMapJson, LazyImportOptions, drawUntilFree(), entropyPool, ExistsPredicate (+34 more)
 
-### Community 322 - "Instrumentation.ts"
-Cohesion: 0.13
-Nodes (11): DEFAULT_STASH_CAPACITY, MESSAGE_JSON_DEPTH, MESSAGE_JSON_LIMIT, CellState, describeMessagePayload(), ExplainRecorder, MessageExplain, MessageOutcome (+3 more)
+### Community 319 - "InMemoryCache"
+Cohesion: 0.19
+Nodes (4): bucketSize(), InMemoryCache, newBucket(), sizeAfterFilling()
 
 ### Community 323 - "xstate.ts"
 Cohesion: 0.16
 Nodes (11): ArmCase, workloadCase, CounterEvent, counterMachine, idleMachine, installedVersion(), main(), PingEvent (+3 more)
 
-### Community 324 - "PersistenceExtension"
-Cohesion: 0.22
-Nodes (10): registerCassandraPlugins(), registerD1Plugins(), registerDynamoDbPlugins(), registerLibSqlPlugins(), registerMariaDbPlugins(), registerMongoPlugins(), registerMsSqlPlugins(), registerPostgresPlugins() (+2 more)
+### Community 324 - "AcceptCommandUndroppable.test.ts"
+Cohesion: 0.10
+Nodes (13): filler, FillerCommand, GatedHub, Harness, HubMessage, HubState, In, newSystem() (+5 more)
 
 ### Community 325 - "RememberEntitiesStore"
-Cohesion: 0.10
-Nodes (20): Cold-start storm, JournalRememberEntitiesStore, Passivation and the entity registry, RedisRememberEntitiesStore, rememberEntities, RememberEntitiesStore, RememberEvent, Recovery after an unexpected shard death (+12 more)
+Cohesion: 0.11
+Nodes (19): Cold-start storm, JournalRememberEntitiesStore, Passivation and the entity registry, RedisRememberEntitiesStore, rememberEntities, RememberEntitiesStore, RememberEvent, Recovery after an unexpected shard death (+11 more)
 
-### Community 326 - "devtools.ts"
-Cohesion: 0.16
-Nodes (14): argumentValue(), AttachDevToolsOptions, attachScanning(), browsableUrl(), commandLineArguments(), DISABLED, ExampleDevTools, isEnabled() (+6 more)
+### Community 326 - "KafkaRecord"
+Cohesion: 0.10
+Nodes (10): db_insertOrder(), main(), Order, OrderProcessor, KafkaCommand, KafkaRecord, KafkaOptionsBuilder, InboxActor (+2 more)
+
+### Community 327 - "OtelAdapter.test.ts"
+Cohesion: 0.15
+Nodes (13): OtelContextLike, encodeTraceparent(), newSpanId(), newTraceId(), FakeContext, FakeOtelApi, FakeRecordedSpan, makeFakeOtelApi() (+5 more)
 
 ### Community 328 - "Migration-Guides"
 Cohesion: 0.12
@@ -2235,7 +2220,7 @@ Nodes (19): Kern-Triple: Actor / Messages / Pattern Matching, Lernpfad durch die
 
 ### Community 329 - "HealthCheckRegistry"
 Cohesion: 0.18
-Nodes (19): Die eingebauten Checks, Checks sind unauthentifiziert, cluster-transport prueft auf vollstaendige Isolation, Eine leere Check-Liste ist UP, leave() bringt die Checks nicht zum Schweigen, Liveness vs. Readiness, Kein eingebautes Timeout pro Check, actor-system liveness check (+11 more)
+Nodes (18): Die eingebauten Checks, Checks sind unauthentifiziert, cluster-transport prueft auf vollstaendige Isolation, Eine leere Check-Liste ist UP, leave() bringt die Checks nicht zum Schweigen, Liveness vs. Readiness, Kein eingebautes Timeout pro Check, actor-system liveness check (+10 more)
 
 ### Community 330 - "Optional peer dependencies"
 Cohesion: 0.12
@@ -2243,7 +2228,7 @@ Nodes (19): Frozen Installs, geringste Rechte, SHA-gepinnte Actions, npm audit s
 
 ### Community 331 - "Per-key CRDT merge (idempotent, commutative)"
 Cohesion: 0.11
-Nodes (19): (producerId, incarnation, seq) dedup key, Handler contract (once per new triple), contiguous high-watermark + above set, Anti-entropy gossip scaling, Per-key CRDT merge (idempotent, commutative), Full state sliced to fit one frame, Gossip replication, gossipInterval (+11 more)
+Nodes (18): (producerId, incarnation, seq) dedup key, Handler contract (once per new triple), contiguous high-watermark + above set, Anti-entropy gossip scaling, Per-key CRDT merge (idempotent, commutative), Full state sliced to fit one frame, Gossip replication, gossipInterval (+10 more)
 
 ### Community 332 - "chat/frontend-svelte/src/routes/+page.svelte"
 Cohesion: 0.12
@@ -2253,21 +2238,29 @@ Nodes (9): baseUsers, composeText, displayedUsers, newRoomInvalid, newRoomName, 
 Cohesion: 0.13
 Nodes (16): rawHtml, Sanitisieren von untrusted Markup, Das Buendel ergaenzt nur — false entfernt nichts, CSP ist bewusst nicht Teil des Buendels, preload ist eine Verpflichtung, HstsOptions, SecurityHeadersOptions, completeHtml (+8 more)
 
-### Community 334 - "GCounterMap"
-Cohesion: 0.07
-Nodes (9): GCounterMap, GSet, checkLaws(), eq(), Item, REPLICAS, Tag, seedKeys() (+1 more)
+### Community 334 - "GCounter"
+Cohesion: 0.04
+Nodes (18): GCounter, GCounterMap, GSet, LWWRegister, PNCounter, TIGHT_FD, checkLaws(), eq() (+10 more)
 
-### Community 335 - "PersistentActorRecoveryFailure.test.ts"
-Cohesion: 0.03
-Nodes (40): freeActorName(), EventStreamProbe, subscribeToEventStream(), toActorNode(), CellInspection, SystemGroup, systemGroupPath(), ActorLifecycleEvent (+32 more)
+### Community 335 - "PersistenceIdEnforcement.test.ts"
+Cohesion: 0.15
+Nodes (9): Command, DepositCommand, DepositedEvent, Event, makeSystem(), Observations, SetCommand, Setting (+1 more)
 
 ### Community 336 - "idempotent middleware"
-Cohesion: 0.13
-Nodes (16): Express middleware wraps actor-ts routes, WebSocket handshakes go through app.use, Streaming responses from a handler, IdempotencyOptions, idempotent middleware, In-flight claim returns 409 Conflict, InMemoryCache eviction hazards, RedisCache for multi-pod deployments (+8 more)
+Cohesion: 0.22
+Nodes (10): WebSocket handshakes go through app.use, IdempotencyOptions, idempotent middleware, In-flight claim returns 409 Conflict, InMemoryCache eviction hazards, RedisCache for multi-pod deployments, Cache loss equals double processing, Give each middleware its own cache (+2 more)
 
-### Community 339 - ".emit"
-Cohesion: 0.20
-Nodes (4): displayNameOf(), formatValue(), consoleLoggerLine(), jsonLoggerLine()
+### Community 337 - "KubernetesLease.test.ts"
+Cohesion: 0.15
+Nodes (6): K8sCredentials, K8sLeaseObject, K8sRequestOptions, K8sResponse, FakeK8sServer, TEST_CREDS
+
+### Community 338 - "KubernetesLease.ts"
+Cohesion: 0.15
+Nodes (10): K8sFetchClient, K8sLeaseError, MountedCredentialLoader, ExplicitCredentials, InClusterCredentials, isCredentialRejection(), ResolvedCredentials, DEFAULT_TOKEN_RELOAD_INTERVAL_MS (+2 more)
+
+### Community 339 - "BackendTransportFrameCap.test.ts"
+Cohesion: 0.11
+Nodes (15): bind(), bindings, BindRequest, CloseOutcome, EchoedMessage, EchoMessage, ExpressBackendView, FastifyBackendView (+7 more)
 
 ### Community 340 - "Vier Saeulen der Observability"
 Cohesion: 0.11
@@ -2281,10 +2274,6 @@ Nodes (21): compilerOptions, esModuleInterop, isolatedModules, jsx, lib, module,
 Cohesion: 0.12
 Nodes (15): compilerOptions, noEmit, rootDir, types, exclude, extends, include, benchmarks/comparison (+7 more)
 
-### Community 343 - "pattern/index.ts"
-Cohesion: 0.17
-Nodes (6): CancellablePromise, ExponentialBackoffOptions, linearBackoff(), LinearBackoffOptions, validateBaseOpts(), RetryOptions
-
 ### Community 344 - "dependencies"
 Cohesion: 0.12
 Nodes (17): Microsoft.Extensions.Configuration.CommandLine, Microsoft.Extensions.Configuration.EnvironmentVariables, Microsoft.Extensions.Configuration.UserSecrets, Microsoft.Extensions.Diagnostics, Microsoft.Extensions.Logging.EventLog, Microsoft.Extensions.Logging.EventSource, contentHash, dependencies (+9 more)
@@ -2293,29 +2282,29 @@ Nodes (17): Microsoft.Extensions.Configuration.CommandLine, Microsoft.Extensions
 Cohesion: 0.12
 Nodes (17): Bewusst verfasste Ablehnungsantwort, ClusterClient, ClusterClientOptions, ClusterClientReceptionist, Kontaktpunkte, Redaktion von Fehlschlaegen mit Korrelations-Id, Das ist keine Client-Authentifizierung, Antwort geht ueber die Verbindung, nicht ueber ein Absenderfeld (+9 more)
 
-### Community 347 - "Gossip-Replikation"
-Cohesion: 0.12
-Nodes (16): Anti-Entropy-Gossip-Topologie, Per-Key-CRDT-Merge, Eventual Convergence, Gossip-Replikation, distributed_data_gossip_skipped_keys_total, gossipInterval, max-gossip-bytes, MemberRemoved ist ein No-op fuer DistributedData (+8 more)
+### Community 347 - "AppShellComponent"
+Cohesion: 0.14
+Nodes (7): AppShellComponent, isTyping(), Component, apply(), currentTheme, Theme, toggleTheme()
 
 ### Community 348 - "windowSize (flow-control window)"
 Cohesion: 0.13
 Nodes (17): ConfirmationCallback / confirm(err), Ack must echo the producer incarnation, ReliableDelivery facade / ProducerHandle, resendTimeoutMs retransmit window, Slow consumer / flow-control window, Throwing is the only nack mechanism, New incarnation replaces the map entry, Per-producer dedup state (+9 more)
 
-### Community 349 - "EventStreamPanelComponent"
+### Community 349 - "timeControl.ts"
 Cohesion: 0.16
-Nodes (3): EventStreamPanelComponent, previewOf(), Component
+Nodes (5): frozenNow(), PAUSE_BUFFER_FRAMES, PAUSE_POLICIES, PauseBuffer, PauseStreamPolicy
 
 ### Community 350 - "compilerOptions"
 Cohesion: 0.07
 Nodes (27): compilerOptions, allowJs, esModuleInterop, incremental, isolatedModules, jsx, lib, module (+19 more)
 
 ### Community 351 - "ORSet"
-Cohesion: 0.18
-Nodes (7): Item, main(), show(), mapOfSetsEqual(), mapOfSetsToObject(), ORSet, unionMapOfSets()
+Cohesion: 0.10
+Nodes (15): Item, main(), show(), AddCommand, GetUsersCommand, KeyState, ONLINE_USERS_KEY, PresenceChanged (+7 more)
 
 ### Community 352 - "voice/shared/protocol.ts"
-Cohesion: 0.12
-Nodes (14): validateCredentials(), ClientMessage, decodeClient(), GroupSummary, LoginMessage, LogoutMessage, PingMessage, ResumeMessage (+6 more)
+Cohesion: 0.17
+Nodes (11): GroupSummary, LoginMessage, LogoutMessage, PingMessage, ResumeMessage, RoomLeaveMessage, Username, VoiceStopMessage (+3 more)
 
 ### Community 353 - "compilerOptions"
 Cohesion: 0.07
@@ -2329,37 +2318,37 @@ Nodes (21): compilerOptions, esModuleInterop, isolatedModules, jsx, lib, module,
 Cohesion: 0.14
 Nodes (12): description, name, run(), until(), description, dial(), name, run() (+4 more)
 
-### Community 356 - "ScatterGatherRouterActor"
-Cohesion: 0.21
-Nodes (5): emptyPool(), everyRouteeFailed(), everyRouteeTimedOut(), routerStopped(), ScatterGatherRouterActor
+### Community 356 - "Router.test.ts"
+Cohesion: 0.05
+Nodes (30): OmitReplyTo, assertPoolSize(), broadcastStrategy(), randomStrategy(), roundRobinStrategy(), routableDepthOf(), RouterConfig, routerFactory() (+22 more)
 
 ### Community 358 - "Controller.ts"
 Cohesion: 0.15
 Nodes (10): context, CONTROL_PORT, MGMT_PORT, NODES, scenarios, coordinatedShutdown(), scenario, TraceResponse (+2 more)
 
 ### Community 359 - "awaitCondition"
-Cohesion: 0.02
-Nodes (105): ActorSelection, parseSelectionPath(), systemGroupPolicy, awaitTwoUpMembers(), awaitUnreachable(), waitFor(), awaitPublishReaches(), waitFor() (+97 more)
+Cohesion: 0.01
+Nodes (163): main(), main(), reportDerivedAdvertisedHost(), systemGroupPolicy, ClusterInternals, Command, IncrementCommand, NodeHandle (+155 more)
 
-### Community 360 - "Behaviors namespace"
-Cohesion: 0.22
-Nodes (14): ts-pattern kostet 18-22 % tell-Durchsatz, Warum ts-pattern, Behavior<T>, Behaviors namespace, Dead letters for unhandled and orphaned stash, Behaviors.empty (sentinel), Behaviors.ignore (sentinel), Behaviors.receive (+6 more)
+### Community 360 - "result-file.ts"
+Cohesion: 0.25
+Nodes (13): averageScenario(), groupRoundsByArm(), mean(), mergeRounds(), roundsPerArm(), standardDeviation(), ComparisonResultFile, RESULT_SCHEMA_VERSION (+5 more)
 
 ### Community 361 - "connectTap"
 Cohesion: 0.25
 Nodes (14): connectTap(), deliverStreamEvent(), failPending(), handle(), onError(), onEvent(), onResponse(), onUnknownFrame() (+6 more)
 
 ### Community 362 - "Das mentale Bild des Actor-Modells"
-Cohesion: 0.05
-Nodes (48): Producer-Inkarnation, Retransmission, addressTerminated, context.unwatch(ref), context.watch(ref), context.watchWith(ref, message), Dead Letters (unzustellbare Terminated), Death Watch (+40 more)
+Cohesion: 0.06
+Nodes (42): addressTerminated, context.unwatch(ref), context.watch(ref), Dead Letters (unzustellbare Terminated), Death Watch, DeathPactError, exhaustive() ohne Terminated-Arm wird zur Restart-Schleife, existenceConfirmed (+34 more)
 
 ### Community 363 - "EventStream"
 Cohesion: 0.09
 Nodes (25): DispatcherError, Klassen-Channel (instanceof-Hierarchie), Cluster-Mitgliedschaftsevents (MemberUp, ReachabilityChanged, ...), DispatcherError (Event), EventKey.of, EventStream, Kind-Channel, Lose Kopplung fuer Querschnitt-Anliegen (+17 more)
 
 ### Community 364 - "BrokerActor abstract base"
-Cohesion: 0.11
-Nodes (27): JetStreamKeyValueMessage, Object-Store-Kommandos, Eigene Actors fuer KV und Object Store, Die Ganzobjekt-Grenze, BrokerActor abstract base, disconnectImplementation hook, dispatchOutgoing hook, Broker lifecycle events on the event stream (+19 more)
+Cohesion: 0.12
+Nodes (26): JetStreamKeyValueMessage, Object-Store-Kommandos, Eigene Actors fuer KV und Object Store, Die Ganzobjekt-Grenze, BrokerActor abstract base, disconnectImplementation hook, dispatchOutgoing hook, Broker lifecycle events on the event stream (+18 more)
 
 ### Community 365 - "chat/smoke-test.ts"
 Cohesion: 0.22
@@ -2370,16 +2359,20 @@ Cohesion: 0.14
 Nodes (8): main(), OrderCommand, OrderData, OrderEvent, OrderFsm, OrderState, pretty(), FsmTransitionMap
 
 ### Community 367 - "UiAssetRoutes.test.ts"
-Cohesion: 0.23
-Nodes (11): UI_ASSETS, acceptsGzip(), base64ToBytes(), cacheHeaders(), compressedBytes(), identityBytes(), serveIndex(), UiAsset (+3 more)
+Cohesion: 0.21
+Nodes (12): UI_ASSETS, acceptsGzip(), base64ToBytes(), cacheHeaders(), compressedBytes(), identityBytes(), serveIndex(), UiAsset (+4 more)
+
+### Community 368 - "TimerScheduler (context.timers)"
+Cohesion: 0.14
+Nodes (14): Receive timeout is not a heartbeat ticker, Receive-timeout-driven passivation, Receive timeout, ReceiveTimeout.instance singleton, Session-expiry pattern, context.setReceiveTimeout(ms), Only user messages reset the timer, Watchdog for downstream silence (+6 more)
 
 ### Community 369 - "AMQP (RabbitMQ)"
 Cohesion: 0.21
 Nodes (13): ACK / NACK, AmqpOptionsType, Durability ist Alles-oder-nichts, Exchanges und Routing, AmqpActor deklariert keine Exchanges, Prefetch, Wann AMQP, AMQP (RabbitMQ) (+5 more)
 
 ### Community 370 - "Marshalling (request/response halves)"
-Cohesion: 0.17
-Nodes (13): Error-handling precedence, fallback, Generic 500 redaction, handleErrors, HttpError, marshal(req, value), Marshalling (request/response halves), HTTP handler as a thin adapter to actors (+5 more)
+Cohesion: 0.18
+Nodes (12): Error-handling precedence, fallback, Generic 500 redaction, handleErrors, HttpError, marshal(req, value), Marshalling (request/response halves), HTTP handler as a thin adapter to actors (+4 more)
 
 ### Community 371 - "Harness"
 Cohesion: 0.36
@@ -2398,36 +2391,36 @@ Cohesion: 0.15
 Nodes (12): compilerOptions, allowJs, checkJs, esModuleInterop, forceConsistentCasingInFileNames, moduleResolution, resolveJsonModule, skipLibCheck (+4 more)
 
 ### Community 375 - "ExplainPanelComponent"
-Cohesion: 0.19
+Cohesion: 0.21
 Nodes (3): ExplainPanelComponent, Component, MessageOutcome
 
 ### Community 376 - "ProfilerPanelComponent"
-Cohesion: 0.19
+Cohesion: 0.21
 Nodes (3): formatMilliseconds(), ProfilerPanelComponent, Component
 
-### Community 377 - "AllocationStrategy"
-Cohesion: 0.08
-Nodes (26): ClusterMailboxDepthAgent, Consistent-hashing routing (rendezvous), The five cluster routing strategies, Smallest-mailbox routing with cached depths, AllocationStrategy, Custom strategies must converge across coordinators, LeastShardAllocationStrategy, Three rebalance triggers (+18 more)
+### Community 377 - "ClusterRouter"
+Cohesion: 0.07
+Nodes (31): ClusterMailboxDepthAgent, Consistent-hashing routing (rendezvous), The five cluster routing strategies, Smallest-mailbox routing with cached depths, AllocationStrategy, Custom strategies must converge across coordinators, LeastShardAllocationStrategy, Three rebalance triggers (+23 more)
 
-### Community 378 - "router/index.ts"
-Cohesion: 0.28
-Nodes (9): agentsByCluster, ServedAgent, CachedDepth, NodeScopedRoutee, isMailboxDepthQuery(), MAILBOX_DEPTH_AGENT_PATH, MailboxDepthMessage, MailboxDepthQueryMessage (+1 more)
+### Community 378 - "schema-registry.ts"
+Cohesion: 0.14
+Nodes (10): Account, AccountState, DepositedV1, DepositedV2, DepositedV3, main(), registry, v1Schema (+2 more)
 
 ### Community 379 - "EmailBridgeActor"
-Cohesion: 0.11
-Nodes (20): ackToken / acknowledgment / negativeAcknowledgment, At-least-once, quittiert ueber IMAP-Flags, At-least-once, quittiert über IMAP-Flags, Ein Actor, ein Postfach, Einstellungen, HOCON, HTML-Inhalte, IDLE, Polling und Reconnect (+12 more)
+Cohesion: 0.10
+Nodes (22): ackToken / acknowledgment / negativeAcknowledgment, At-least-once, quittiert ueber IMAP-Flags, At-least-once, quittiert über IMAP-Flags, Ein Actor, ein Postfach, Einstellungen, HOCON, HTML-Inhalte, IDLE, Polling und Reconnect (+14 more)
 
 ### Community 380 - "SnapshotStore interface"
-Cohesion: 0.16
-Nodes (15): InMemorySnapshotStore, LibSqlDurableStateStore, MariaDbDurableStateStore, MariaDbSnapshotStore, registerMariaDbPlugins, MongoDurableStateStore, MongoSnapshotStore, registerMongoPlugins (+7 more)
+Cohesion: 0.20
+Nodes (12): InMemorySnapshotStore, LibSqlDurableStateStore, MariaDbDurableStateStore, MariaDbSnapshotStore, registerMariaDbPlugins, PostgresDurableStateStore, PostgresSnapshotStore, registerPostgresPlugins (+4 more)
 
-### Community 381 - "Delivery"
-Cohesion: 0.25
+### Community 381 - "ConsumerController"
+Cohesion: 0.18
 Nodes (3): LossyRelay, ConsumerController, Delivery
 
-### Community 382 - "ShardingMessage"
+### Community 382 - "DispatcherQueueDelay.test.ts"
 Cohesion: 0.17
-Nodes (10): claimedNode(), namesPeer(), ShardingMessage, ShardRegionConfig, AssertNever, CORE_WIRE_KINDS, ListedWireKind, _NoBeginHandOffKind (+2 more)
+Nodes (11): cumulativeAt(), dispatcherLabels(), meanSeconds(), Occupying, Prompt, samplesOf(), totals(), valueFor() (+3 more)
 
 ### Community 383 - "dependencies"
 Cohesion: 0.17
@@ -2437,17 +2430,17 @@ Nodes (12): Microsoft.Extensions.Diagnostics.Abstractions, contentHash, dependen
 Cohesion: 0.18
 Nodes (3): FsmStateData, PaymentFsm, SessionFsm
 
-### Community 385 - "CircuitBreaker.ts"
-Cohesion: 0.20
-Nodes (7): CircuitBreakerOpenError, CircuitBreakerTimeoutError, CircuitState, StateListener, CircuitBreakerOptions, CircuitBreakerOptionsType, CircuitBreakerOptionsValidator
+### Community 385 - "pipeTo"
+Cohesion: 0.15
+Nodes (14): CircuitBreakerOpenError, Open-Zustand, Retry innerhalb eines Breaker-Calls, after, await innerhalb von onReceive blockiert die Mailbox, CancellablePromise<T>, Failure, pipeTo traegt MDC nicht ueber die Grenze (+6 more)
 
 ### Community 386 - "examples/bank-account.ts"
 Cohesion: 0.26
 Nodes (6): AccountActor, BalanceCommand, Command, DepositCommand, main(), WithdrawCommand
 
 ### Community 387 - "OptionalPeerDeclarations.test.ts"
-Cohesion: 0.15
-Nodes (13): brokerDependencies, brokerManifest, DELIBERATELY_UNDECLARED, FOREIGN_MANIFEST_TREES, literallyImportedOptionalPeers(), Manifest, optionalPeers, REPOSITORY_ROOT (+5 more)
+Cohesion: 0.14
+Nodes (16): brokerDependencies, brokerManifest, DELIBERATELY_UNDECLARED, FOREIGN_MANIFEST_TREES, librarySources(), literallyImportedOptionalPeers(), literalSpecifier(), Manifest (+8 more)
 
 ### Community 388 - ".main"
 Cohesion: 0.16
@@ -2461,6 +2454,10 @@ Nodes (9): Main, Array, Int, Long, M, Path, String, T (+1 more)
 Cohesion: 0.07
 Nodes (26): dependencies, react, react-dom, ts-pattern, devDependencies, @types/react, @types/react-dom, typescript (+18 more)
 
+### Community 393 - "ClusterSingletonManager.ts"
+Cohesion: 0.04
+Nodes (54): DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS, DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES, MAX_PENDING_FRAMES, MAX_WALL_CLOCK_SKEW_MS, SHARD_MAP_PUBLISH_DELAY_MS, SINGLETON_HAND_OVER_BUFFER_SIZE, SINGLETON_HAND_OVER_RETRY_INTERVAL_MS, SINGLETON_HAND_OVER_STATE_RETENTION_MS (+46 more)
+
 ### Community 396 - "tsconfig.spec.json"
 Cohesion: 0.18
 Nodes (10): compilerOptions, outDir, rootDir, types, extends, include, src/**/*.d.ts, src/**/*.ng-spec.ts (+2 more)
@@ -2470,16 +2467,16 @@ Cohesion: 0.20
 Nodes (11): Escaping ist kontextspezifisch, Helmet-nahe CSP-Baseline, CspOptions, Injection-Guard für Source-Tokens, Per-Request-Nonces fehlen, Content-Security-Policy-Report-Only, escapeHtml, html tagged template (+3 more)
 
 ### Community 398 - "DefaultMetricsRegistry"
-Cohesion: 0.23
-Nodes (6): DefaultMetricsRegistry, labelKey(), warnCardinalityOverflow(), snapshot(), depthSamples(), seriesOf()
+Cohesion: 0.18
+Nodes (9): DefaultMetricsRegistry, labelKey(), overflowLabelsOf(), warnCardinalityOverflow(), labelKey(), seriesLabelsOf(), snapshot(), depthSamples() (+1 more)
 
 ### Community 399 - "EventDispatcher.ts"
 Cohesion: 0.16
 Nodes (6): eventDispatcher(), EventDispatcherBuilder, EventDispatcherBuilderImplementation, EventDispatcherIncomplete, Event, State
 
-### Community 400 - "CensusMarker"
-Cohesion: 0.14
-Nodes (4): CensusMarker, DeadLetterCollector, QuittingCensusMarker, SlowStoppingCensusMarker
+### Community 400 - "DeadLetter"
+Cohesion: 0.03
+Nodes (27): metricsOf(), DeadLetter, Listener, DeadLetterCollector, CensusMarker, DeadLetterCollector, QuittingCensusMarker, SlowStoppingCensusMarker (+19 more)
 
 ### Community 401 - "ReplayMutationFuzz.test.ts"
 Cohesion: 0.14
@@ -2497,9 +2494,9 @@ Nodes (12): awaitWithin(), CounterMessage, EchoMessage, IncrementMessage, instal
 Cohesion: 0.24
 Nodes (6): ICounterGrain, Program, int, string, IGrainFactory, OneWay
 
-### Community 405 - "stats.ts"
-Cohesion: 0.13
-Nodes (14): BenchmarkSpec, collectGarbage(), runBenchmark(), ansi, ansiResetLine, BenchStats, formatBytes(), formatMemoryDelta() (+6 more)
+### Community 405 - "run-all.ts"
+Cohesion: 0.40
+Nodes (5): ansi, discover(), root, run(), Suite
 
 ### Community 408 - "entity<T>(req)"
 Cohesion: 0.20
@@ -2517,33 +2514,41 @@ Nodes (10): Die API, „Haben sich die Spans korrekt verkettet?", „Hat das Fra
 Cohesion: 0.18
 Nodes (4): Command, Event, ReplicatedCounter, State
 
-### Community 416 - "Behaviors.supervise(...).onFailure(...)"
-Cohesion: 0.25
-Nodes (11): Supervise-Geltungsbereiche als Stack, The escalation chain, The typed wrapper counts differently, Directive.Escalate, Restart budget (maxRetries / withinTimeRangeMs), Behaviors.supervise(...).onFailure(...), Nested supervision scopes layer, TypedActor.preStart (initial resolution) (+3 more)
-
-### Community 417 - "cluster/ClusterRouterSmallestMailbox.test.ts"
-Cohesion: 0.18
-Nodes (5): ClusterRouterOptionsType, postStop(), preStart(), Message, node()
-
-### Community 420 - "CountingSingleton"
+### Community 414 - "AcceptDeliveryFailure.test.ts"
 Cohesion: 0.15
-Nodes (4): CountingSingleton, OversizedSingleton, ThrowingRestoreSingleton, ThrowingSerializerSingleton
+Nodes (7): In, openGates, Out, ParkedHub, RecordingHub, request, systems
+
+### Community 416 - "BackoffSupervisor"
+Cohesion: 0.19
+Nodes (13): BackoffOptions<T>, drainGraceMs + forwardDuringGrace, forward: stash | drop, Backoff-Supervisor nicht schachteln, resetCounter, Nachrichten-Puffer waehrend des Backoff-Fensters, BackoffSupervisor, drainGraceMs and forwardDuringGrace (+5 more)
+
+### Community 417 - "Migration guides overview"
+Cohesion: 0.21
+Nodes (13): Actor-framework conceptual cheatsheet, Different defaults, from-akka-jvm migration guide, from-akka-net migration guide, from-orleans migration guide, from-pekko migration guide, from-vanilla-ts migration guide, Incremental migration (+5 more)
+
+### Community 420 - "LogContextData"
+Cohesion: 0.03
+Nodes (49): WarmHandOverActor, EMPTY, LogContextData, LogContextEntry, storage, MAX_REPLICA_ID_LENGTH, MAX_REPLICATED_EVENT_ID_LENGTH, MAX_VECTOR_CLOCK_ENTRIES (+41 more)
 
 ### Community 421 - "Account"
 Cohesion: 0.18
 Nodes (3): Account, SwallowingAccount, ThrowingCompleteAccount
 
 ### Community 422 - "GossipReplayBoundDocumented.test.ts"
-Cohesion: 0.15
-Nodes (9): BOUND_TEXTS, BoundText, englishPage, englishSection, germanPage, germanSection, guardDocumentation, REPOSITORY_ROOT (+1 more)
+Cohesion: 0.12
+Nodes (12): BOUND_TEXTS, BoundText, englishPage, englishSection, germanPage, germanSection, guardDocumentation, REPOSITORY_ROOT (+4 more)
+
+### Community 423 - "MetricsRegistry"
+Cohesion: 0.18
+Nodes (3): MailboxDepthSampler, MetricsRegistry, MetricsExtension
 
 ### Community 424 - "ExampleWiringClaims.test.ts"
 Cohesion: 0.18
 Nodes (11): DOCUMENTATION_PAGES, documentedInvocations(), EXAMPLES_ROOT, invocations, MANIFEST, ManifestCase, readUtf8(), REPOSITORY_ROOT (+3 more)
 
 ### Community 425 - "PromClientAdapter.test.ts"
-Cohesion: 0.18
-Nodes (9): METRICS_OVERFLOW_LABEL_VALUE, adaptedRegistryWith(), FakePromMetric, FakePromRegistry, makeFakeClient(), instance(), makeChild(), makeFakeRegistry() (+1 more)
+Cohesion: 0.14
+Nodes (15): isCollectable(), promClientRegistry(), fullName(), getOrCreateCounter(), getOrCreateGauge(), getOrCreateHistogram(), adaptedRegistryWith(), bridge() (+7 more)
 
 ### Community 426 - "FakeWorker"
 Cohesion: 0.18
@@ -2566,8 +2571,8 @@ Cohesion: 0.12
 Nodes (16): compilerOptions, lib, noEmit, rootDir, types, exclude, extends, include (+8 more)
 
 ### Community 431 - "maxFrameBytes checked at two moments"
-Cohesion: 0.18
-Nodes (13): withMaxBodyBytes (1 MiB default), bodyLimit, A missing Content-Type still decodes as JSON, Bounds every client call carries, Shared HttpClient (singleRequest), HttpClientOptions / newClient, HttpResponseTooLargeError, Redirect policy (follow / error / manual) (+5 more)
+Cohesion: 0.12
+Nodes (17): withMaxBodyBytes (1 MiB default), bodyLimit, A missing Content-Type still decodes as JSON, Structured-syntax suffixes follow their base type, 415 for an undecodable Content-Type, Bounds every client call carries, Shared HttpClient (singleRequest), HttpClientOptions / newClient (+9 more)
 
 ### Community 432 - "Journal interface"
 Cohesion: 0.27
@@ -2578,24 +2583,24 @@ Cohesion: 0.17
 Nodes (8): coordinatedShutdown, orders, promAdapterOptions, registry, server, system, tick, Worker
 
 ### Community 434 - "CircuitBreaker"
-Cohesion: 0.32
-Nodes (3): main(), main(), CircuitBreaker
+Cohesion: 0.20
+Nodes (5): Command, FlakyService, main(), main(), CircuitBreaker
 
-### Community 435 - "retry-flaky-api.ts"
-Cohesion: 0.27
-Nodes (8): main(), FatalError, flakyRemoteCall(), main(), TransientError, after(), pipeTo(), retry()
+### Community 435 - "UdpGelfTransport"
+Cohesion: 0.19
+Nodes (3): GelfTransport, HttpGelfTransport, UdpGelfTransport
 
 ### Community 436 - "WebsocketServerActor"
-Cohesion: 0.02
-Nodes (34): WebsocketIngressActor, EchoServer, ChatRoom, ClientMessage, SayMessage, ServerMessage, SetNameMessage, HttpIngressActor (+26 more)
+Cohesion: 0.05
+Nodes (14): ChatRoom, WebsocketConnection, WebsocketServerActor, RecordingEchoServer, EchoServer, TestServer, MuteServer, PingServer (+6 more)
 
 ### Community 437 - ".sendServer"
-Cohesion: 0.21
-Nodes (7): groupTopic(), userServiceKey(), isGroupName(), encodeServer(), ServerMessage, VoiceTargetGroupMessage, VoiceTargetPeerMessage
+Cohesion: 0.16
+Nodes (8): groupTopic(), VoiceConnection, groupsForUser(), isGroupName(), encodeServer(), IncomingSource, ServerMessage, VoiceTargetGroupMessage
 
-### Community 438 - ".onBinaryFrame"
-Cohesion: 0.17
-Nodes (5): VoiceConnection, DecodedFrame, encodeIncoming(), groupsForUser(), IncomingSource
+### Community 438 - ".onRoomEnter"
+Cohesion: 0.29
+Nodes (3): roomUsersKey(), RoomEnterMessage, isVoiceRoomName()
 
 ### Community 439 - "voice/smoke-test.ts"
 Cohesion: 0.26
@@ -2637,9 +2642,13 @@ Nodes (14): compilerOptions, noEmit, rootDir, types, exclude, extends, include, 
 Cohesion: 0.20
 Nodes (9): compilerOptions, outDir, types, extends, files, include, src/main.ts, src/**/*.ts (+1 more)
 
-### Community 452 - "Tagged JSON tree payload format"
-Cohesion: 0.25
-Nodes (11): Terminated, Bidirektionale Collections im persistenten State, SameValueZero-Vergleich, withSerializer(serializer) per store, Tagged JSON tree payload format, BidirectionalMap<K, V>, BidirectionalMultiMap<L, R>, safeStringify(value, maxLength?) (+3 more)
+### Community 451 - "FakeSocket"
+Cohesion: 0.18
+Nodes (5): connected(), deliver(), FakeSocket, serviceUnderTest(), welcome()
+
+### Community 452 - "Router.scatterGatherFirstCompleted"
+Cohesion: 0.06
+Nodes (36): Ask, Terminated, Bidirektionale Collections im persistenten State, randomId, randomUuid, SameValueZero-Vergleich, Wann zu einem Router greifen, AggregateError als einziger Fehlertyp (+28 more)
 
 ### Community 453 - "ObjectStorageBackend"
 Cohesion: 0.15
@@ -2653,13 +2662,21 @@ Nodes (10): dataDir, fail(), httpGet(), kill(), main(), NODES, ok(), pidOnPort()
 Cohesion: 0.18
 Nodes (10): CarriedDeclarations, Classification, CompiledFence, Diagnostic, DiagnosticReport, ExemptFence, Fence, HarnessOptions (+2 more)
 
+### Community 457 - "ActorOptions.ts"
+Cohesion: 0.03
+Nodes (37): ActorOptions, ActorOptionsBuilder, ActorOptionsType, ActorOptionsValidator, MailboxFactory, Dispatcher, Dispatchers, HybridDispatcher (+29 more)
+
+### Community 458 - "LinearStringScans.test.ts"
+Cohesion: 0.09
+Nodes (13): DnsSeedProviderOptionsBuilder, fullyDecode(), isUnsafeSegment(), REJECT, resolveStaticPath(), StaticPathResult, allow(), deny() (+5 more)
+
 ### Community 460 - "ts-pattern"
 Cohesion: 0.22
 Nodes (9): P (Pattern-Builder-Namespace), Try<T>, Either<L, R>, Option<T>, dependencies, fastify, ts-pattern, fastify (+1 more)
 
-### Community 463 - "Behaviors.intercept"
-Cohesion: 0.33
-Nodes (9): Kompositions-Reihenfolge und die Interceptor-Asymmetrie, Verschachtelte Supervisions-Geltungsbereiche schichten sich, Der supervise-Geltungsbereich überlebt den Teilbaum, Decorator composition order (outside-in), Behaviors.intercept, Behaviors.logMessages, Behaviors.monitor, TimerScheduler (+1 more)
+### Community 463 - "Circuit Breaker"
+Cohesion: 0.23
+Nodes (12): Ein Breaker pro logischer Abhaengigkeit, CircuitBreakerTimeoutError, Half-open-Zustand, onStateChange, setState (manueller Override), Circuit Breaker, callTimeoutMs, Half-open does not serialize (+4 more)
 
 ### Community 465 - "StressHarnessClassification.test.ts"
 Cohesion: 0.18
@@ -2678,20 +2695,24 @@ Cohesion: 0.29
 Nodes (4): Harness, FunctionalInterface, Operation, ScenarioResult
 
 ### Community 469 - "sbr-hello.ts"
-Cohesion: 0.25
-Nodes (7): addr(), allMembers, keepRefereeOptions, staticQuorumOptions, unreachable, upMember(), view
+Cohesion: 0.18
+Nodes (10): addr(), allMembers, keepRefereeOptions, staticQuorumOptions, unreachable, upMember(), view, KeepReferee (+2 more)
 
-### Community 470 - "opentelemetry-tracing.ts"
-Cohesion: 0.22
-Nodes (7): root, Step, step1, step2, step3, system, tracer
+### Community 470 - "RecordingTracer"
+Cohesion: 0.09
+Nodes (9): root, Step, step1, step2, step3, system, tracer, RecordingSpan (+1 more)
+
+### Community 471 - "FakeSocket"
+Cohesion: 0.23
+Nodes (3): connected(), FakeSocket, welcome()
 
 ### Community 472 - "astro.config.mjs"
 Cohesion: 0.20
 Nodes (8): __dirname, __filename, hoconGrammar, jetbrainsMonoB64, mermaidCssDir, mermaidCssPath, promqlGrammar, [starlightTypeDoc, typeDocSidebarGroup]
 
-### Community 473 - "actor-ts"
-Cohesion: 0.10
-Nodes (21): Failover sequence, Hand-over snapshot cap (1 MiB), Warm start and the journal sequence number, Warm hand-over, WarmHandOverActor, ADD ist pro Server atomar, nicht pro Cluster, Fencing-Token als Absicherung, Topologie-Änderung bricht die Lock-Annahme (+13 more)
+### Community 473 - "retry helper"
+Cohesion: 0.20
+Nodes (12): Closed-Zustand, isFailure-Praedikat, maxDelayMs als Overflow-Schutz, retry weiss nichts ueber Cancellation, RetryOptions, Backoff is for transient failures only, Retry inside the breaker call, Do not retry non-idempotent operations (+4 more)
 
 ### Community 474 - "RedisStreamsActor"
 Cohesion: 0.22
@@ -2702,24 +2723,36 @@ Cohesion: 0.20
 Nodes (9): Die Zahlen, JavaScript — gleiche Maschine, gleicher Harness, Methodik, Nachvollziehen, Sprachübergreifend — andere virtuelle Maschine, gespiegelter Harness, Vorbehalte je Framework, Was die Zahlen sagen, Was nicht gemessen wurde (+1 more)
 
 ### Community 476 - "TypedActor<T>"
-Cohesion: 0.22
-Nodes (10): Wann typed, wann untyped, Typed-API (Behaviors als Werte), Untyped-API (Actor-Subklasse), typedActor(behavior), Behaviors.same, Behaviors.unhandled, Initial-Behavior-Fallstricke, system.spawnTyped / context.spawnTyped / typedActor (+2 more)
+Cohesion: 0.18
+Nodes (12): Wann typed, wann untyped, Typed-API (Behaviors als Werte), Untyped-API (Actor-Subklasse), typedActor(behavior), Behaviors.same, Behaviors.unhandled, Initial-Behavior-Fallstricke, Resolution-Loop (Behavior-Auflösung) (+4 more)
 
 ### Community 477 - "docs/reference/benchmarks.mdx"
 Cohesion: 0.20
 Nodes (9): Cross-language — another virtual machine, mirrored harness, JavaScript — same machine, same harness, Methodology, Per-framework caveats, Reproducing, The numbers, What is not measured, What the numbers say (+1 more)
 
-### Community 479 - "chat/backend/config.ts"
-Cohesion: 0.32
-Nodes (7): BASE_CLUSTER_PORT, ChatNodeConfig, DEFAULT_DATA_DIR, expect(), MAX_NODE_SLOTS, parseArguments(), printUsage()
+### Community 479 - "chat/backend/main.ts"
+Cohesion: 0.19
+Nodes (13): httpIngressFactory(), BASE_CLUSTER_PORT, ChatNodeConfig, DEFAULT_DATA_DIR, expect(), MAX_NODE_SLOTS, parseArguments(), printUsage() (+5 more)
 
-### Community 480 - "FrameDecoder"
-Cohesion: 0.36
-Nodes (3): FrameDecoder, replaceSlab(), bytesCopiedFeeding()
+### Community 480 - "Transport.ts"
+Cohesion: 0.02
+Nodes (133): COLD_START_STALL_AFTER_SEED_ROUNDS, HANDSHAKE_TIMEOUT_MS, INCOMPLETE_FRAME_IDLE_MS, INITIAL_FRAME_BUFFER_BYTES, MAX_CONTEXT_KEYS, MAX_CONTEXT_VALUE_LENGTH, MAX_INBOUND_CONNECTIONS, MAX_NODE_INCARNATION_LENGTH (+125 more)
 
-### Community 485 - "HistogramImplementation"
+### Community 481 - "websocket-feed.ts"
 Cohesion: 0.20
-Nodes (3): Histogram, HistogramImplementation, perMessage()
+Nodes (7): Down, EchoServer, Feed, main(), sleep(), Up, websocketSend()
+
+### Community 482 - "StorageLocalityDeclarations.test.ts"
+Cohesion: 0.18
+Nodes (7): DECLARING_BASES, PERSISTENCE_ROOT, REPOSITORY_ROOT, ScannedStoreFile, scanStoreFiles(), STORE_DIRECTORIES, withoutCommentLines()
+
+### Community 483 - "getFromDirectory"
+Cohesion: 0.18
+Nodes (11): Streaming responses from a handler, Conditional requests (weak ETag, Last-Modified), contentTypeFor(pathOrExt, overrides?), getFromDirectory, maxFileSize (50 MiB, buffered bodies), Path-traversal defence, Range requests (206 / 416), StaticFilesOptions (+3 more)
+
+### Community 484 - "Version policy"
+Cohesion: 0.18
+Nodes (11): Snapshot adapters must match the event adapter, SnapshotAdapter, Deprecation policy: a hard cut pre-1.0, What 'experimental' means, Pull requests are not accepted, Specific roadmap items, Security fixes: no maintenance branches, Post-1.0 strict SemVer (+3 more)
 
 ### Community 490 - "scenarios/Types.ts"
 Cohesion: 0.33
@@ -2749,17 +2782,9 @@ Nodes (8): Program, IActorRef, int, ResultFile, int, IReadOnlyList, ScenarioResu
 Cohesion: 0.22
 Nodes (9): Humanizer.Core, System.Composition, contentHash, dependencies, resolved, type, Microsoft.CodeAnalysis.Workspaces.Common, Humanizer.Core (+1 more)
 
-### Community 498 - "printResult"
-Cohesion: 0.31
-Nodes (3): padVisible(), printResult(), Table
-
-### Community 499 - "Behaviors.receiveWithSignal"
-Cohesion: 0.29
-Nodes (8): Typed oder Untyped Actor wählen, Funktionale Zustandsupdates statt Closure-Mutation, Die fünf Sentinels (same, stopped, unhandled, empty, ignore), Der Signal-Handler gehört zum Behavior, nicht zum Actor, Behaviors.stopped, Signal-Handler ist an sein receive gebunden, watchWith deliberately bypasses onSignal, Behaviors.receiveWithSignal
-
 ### Community 500 - "SqliteJournal"
-Cohesion: 0.33
-Nodes (6): Remote databases only, busyTimeoutMs, Do not share a SQLite file across processes, SQLite driver auto-detection, SqliteJournal, WAL mode
+Cohesion: 0.22
+Nodes (9): No transactions — by transport, not by choice, Remote databases only, No transactions required, BEGIN IMMEDIATE head re-read, busyTimeoutMs, Do not share a SQLite file across processes, SQLite driver auto-detection, SqliteJournal (+1 more)
 
 ### Community 501 - "InMemoryJournal"
 Cohesion: 0.25
@@ -2769,9 +2794,9 @@ Nodes (9): Data dies with the process, InMemoryJournal, Journal contract (append
 Cohesion: 0.33
 Nodes (5): validateCredentials(), SCRYPT_PARAMS, verifyPassword(), TEST_USERS, TestUser
 
-### Community 503 - "groups.ts"
-Cohesion: 0.33
-Nodes (5): GROUP_NAMES, GroupName, GROUPS, TEST_USERS, TestUser
+### Community 503 - "KeepMajority"
+Cohesion: 0.22
+Nodes (5): KeepMajority, KeepMajorityOptions, KeepMajorityOptionsBuilder, KeepMajorityOptionsType, TIGHT_FD
 
 ### Community 504 - "coverage-gate.d.mts"
 Cohesion: 0.22
@@ -2783,39 +2808,23 @@ Nodes (8): AggregatedRuns, CollectedRun, Offender, ParsedReport, ReportedTestCas
 
 ### Community 506 - "MongoJournal"
 Cohesion: 0.25
-Nodes (8): No transactions — by transport, not by choice, mongodb@7 cannot be imported on Bun, MongoJournal, MongoQuery, Multikey tag index, No transactions required, Payloads are JSON text, not BSON documents, BEGIN IMMEDIATE head re-read
+Nodes (8): mongodb@7 cannot be imported on Bun, MongoDurableStateStore, MongoJournal, MongoQuery, MongoSnapshotStore, Multikey tag index, Payloads are JSON text, not BSON documents, registerMongoPlugins
 
 ### Community 508 - "split-brain-survives.ts"
 Cohesion: 0.29
 Nodes (7): addr(), allMembers, decA, decB, strategy, viewA, viewB
 
-### Community 510 - "PrometheusExporter.ts"
-Cohesion: 0.38
-Nodes (8): Labels, escapeHelp(), escapeLabelValue(), exportPrometheus(), formatNumber(), labelKey(), prometheusHandler(), renderLabels()
-
-### Community 512 - "safeStringify"
-Cohesion: 0.39
-Nodes (4): describe(), describeError(), replacer(), safeStringify()
-
-### Community 514 - "TransportInternals"
-Cohesion: 0.25
-Nodes (3): fireHandshakeDeadline(), internals(), TransportInternals
+### Community 510 - "NonCollectableRegistry.test.ts"
+Cohesion: 0.09
+Nodes (18): Counter, CounterImplementation, CounterOptions, Gauge, GaugeOptions, Histogram, HistogramOptions, Labels (+10 more)
 
 ### Community 515 - "24-hono-chunked-body-cap.mjs"
 Cohesion: 0.36
 Nodes (8): assert(), description, freePort(), name, run(), sleep(), statusOf(), streamOverCapBody()
 
 ### Community 516 - "SupplyChainDocs.test.ts"
-Cohesion: 0.22
-Nodes (7): DOCUMENTATION_ROOT, englishPage, germanPage, pages, publishWorkflow, REPOSITORY_ROOT, SUPPLY_CHAIN_PATH
-
-### Community 523 - "PeerIdentity.test.ts"
-Cohesion: 0.38
-Nodes (4): certificateVouchesFor(), hostMatches(), nodeA, nodeB
-
-### Community 524 - "CI-side security scanning with one local half"
-Cohesion: 0.12
-Nodes (19): CodeQL analysis configuration, Default query suite, not security-extended, Generated and vendored path exclusions, Bug report issue template, Security-relevance flag on the bug template, Exploit walkthrough requirement, Pre-disclosure routing to SECURITY.md, Security finding issue template (+11 more)
+Cohesion: 0.20
+Nodes (8): changelog, DOCUMENTATION_ROOT, englishPage, germanPage, pages, publishWorkflow, REPOSITORY_ROOT, SUPPLY_CHAIN_PATH
 
 ### Community 525 - ".MeasureAsync"
 Cohesion: 0.36
@@ -2829,8 +2838,16 @@ Nodes (7): dependencies, net10.0, contentHash, resolved, type, Microsoft.Extensi
 Cohesion: 0.29
 Nodes (8): Interactive-transaction append, LibSqlJournal, LibSqlSnapshotStore, No native binding, registerLibSqlPlugins, SQLite schema compatibility, Dual-table tag design, SQLite dialect schema
 
+### Community 528 - "ActorContext"
+Cohesion: 0.06
+Nodes (4): notAShardedEntity(), ActorContext, EntityContext, ProbeActor
+
+### Community 529 - "EventAdapter"
+Cohesion: 0.06
+Nodes (13): Account, BalanceCommand, Command, DepositCommand, DepositedV1, DepositedV2, Event, main() (+5 more)
+
 ### Community 530 - "event-migration-chain.ts"
-Cohesion: 0.13
+Cohesion: 0.12
 Nodes (10): Account, BalanceCommand, Command, DepositCommand, DepositedV1, DepositedV2, DepositedV3, Event (+2 more)
 
 ### Community 531 - "counters.mdx"
@@ -2841,9 +2858,9 @@ Nodes (5): Auswahl zwischen beiden, GCounter, Mit DistributedData verwenden, PNC
 Cohesion: 0.33
 Nodes (6): cors() als Route-Direktive, CorsOptions, Credentials und Wildcard schließen sich aus, cors() außerhalb der Auth platzieren, Synthetisierte Preflight-Routen, Vary: Origin
 
-### Community 535 - "Behaviors.setup"
-Cohesion: 0.33
-Nodes (6): context.spawn (typed Parent), Resolution-Loop (Behavior-Auflösung), Wrapper-Zyklus-Grenze (64 Hops), context.setDisplayName, Behaviors.setup, TypedActorContext<T>
+### Community 535 - "TransportFrameCap.test.ts"
+Cohesion: 0.20
+Nodes (6): bindEchoServer(), bindEchoServerConfiguredOnly(), bindings, EchoIn, EchoOut, systems
 
 ### Community 537 - "run-cases.mjs"
 Cohesion: 0.25
@@ -2877,9 +2894,9 @@ Nodes (7): Microsoft.Extensions.Features, contentHash, dependencies, resolved, t
 Cohesion: 0.38
 Nodes (4): EnvironmentBlock, Int, Long, String
 
-### Community 549 - "worker-count-scaling.ts"
-Cohesion: 0.48
-Nodes (6): main(), resolveAuto(), runWithWorkers(), send(), spawnWorker(), WorkerHandle
+### Community 549 - "LeaseMajority"
+Cohesion: 0.33
+Nodes (3): LeaseMajority, LeaseMajorityOptions, LeaseMajorityOptionsType
 
 ### Community 550 - "check-api-drift.mjs"
 Cohesion: 0.29
@@ -2888,10 +2905,6 @@ Nodes (4): ALLOWED_IN, DOCS_ROOT, FORBIDDEN, hits
 ### Community 552 - "application.conf"
 Cohesion: 0.29
 Nodes (7): application.conf, Wo der eingebaute Default steht, Environment-Substitution ${?ENV} / ${ENV}, include-Direktiven werden abgelehnt, REFERENCE_CONF (src/config/reference.ts), Drei Auflösungsschichten (Code > Nutzer-Config > Reference), Präzedenz: explizite Optionen > application.conf > reference.conf
-
-### Community 553 - "Deno (Best-Effort)"
-Cohesion: 0.29
-Nodes (7): HonoBackend auf Bun, Kompatibilitaets-Matrix, Den Warn-Marker lesen, Deno (Best-Effort), Deno-Permissions-Modell, SQLite auf Deno nicht unterstuetzt, WebSocket-Server auf Deno via Hono
 
 ### Community 554 - "maxRetries + withinTimeRangeMs"
 Cohesion: 0.29
@@ -2909,9 +2922,9 @@ Nodes (7): CompressionConfig, Decompression cap (bomb protection), Level is an e
 Cohesion: 0.29
 Nodes (5): Color, Command, Data, main(), TrafficLight
 
-### Community 558 - "voice/backend/config.ts"
-Cohesion: 0.38
-Nodes (6): BASE_CLUSTER_PORT, expect(), MAX_NODE_SLOTS, parseArguments(), printUsage(), VoiceNodeConfig
+### Community 558 - "voice/backend/main.ts"
+Cohesion: 0.21
+Nodes (12): httpIngressFactory(), BASE_CLUSTER_PORT, expect(), MAX_NODE_SLOTS, parseArguments(), printUsage(), VoiceNodeConfig, isPortFree() (+4 more)
 
 ### Community 561 - "Akka"
 Cohesion: 0.40
@@ -2921,17 +2934,25 @@ Nodes (5): contentHash, requested, resolved, type, Akka
 Cohesion: 0.40
 Nodes (4): Konfiguration, Wann du ihn einsetzt, Wann NICHT, Wohin als Nächstes
 
-### Community 569 - "Partition.ts"
-Cohesion: 0.57
-Nodes (6): clearAll(), delayAllEgress(), healPeer(), partitionPeer(), resolveIp(), sh()
+### Community 565 - "DowningStrategies.test.ts"
+Cohesion: 0.20
+Nodes (4): addr(), FakeLease, flushMicrotasks(), view()
+
+### Community 568 - "Future patterns"
+Cohesion: 0.46
+Nodes (8): after and CancellablePromise, await inside onReceive blocks the mailbox, Future patterns, pipeTo does not carry MDC across the boundary, pipeTo, Success and Failure envelopes, after versus context.timers, Unwrapped pipe drops rejections
+
+### Community 569 - "keywords"
+Cohesion: 0.25
+Nodes (8): bun, node, keywords, actor, actor-model, concurrency, deno, typescript
 
 ### Community 571 - "22-http-client-response-cap.mjs"
 Cohesion: 0.38
 Nodes (6): assert(), BIG_BODY, description, failureOf(), name, run()
 
 ### Community 573 - "SecurityPolicy.test.ts"
-Cohesion: 0.29
-Nodes (6): documentedAdvisories, REPOSITORY_ROOT, securityPolicy, securityTemplate, suppressedAdvisories, templateProse
+Cohesion: 0.20
+Nodes (8): documentedAdvisories, overriddenPackages, REPOSITORY_ROOT, RootManifest, securityPolicy, securityTemplate, suppressedAdvisories, templateProse
 
 ### Community 574 - "StressHarnessQuarantine.test.ts"
 Cohesion: 0.33
@@ -2985,9 +3006,13 @@ Nodes (4): here, outDir, root, targetDir
 Cohesion: 0.33
 Nodes (4): buildDir, here, root, targetDir
 
-### Community 597 - "promClientRegistry"
-Cohesion: 0.33
-Nodes (8): overflowLabelsOf(), promClientRegistry(), fullName(), getOrCreateCounter(), getOrCreateGauge(), getOrCreateHistogram(), labelKey(), seriesLabelsOf()
+### Community 594 - "ReliableDelivery.test.ts"
+Cohesion: 0.10
+Nodes (8): ProducerControllerOptionsBuilder, ArmedFixedRate, ControllerSlot, DeadLetterListener, Flaky, quietKit(), RecordingScheduler, RestartListener
+
+### Community 595 - "Singleton.ts"
+Cohesion: 0.19
+Nodes (6): SingletonReplyCollector, CounterSingleton, SingletonIncrement, SingletonMessage, SingletonWho, SingletonWhoReply
 
 ### Community 600 - "AkkaNetComparison.csproj"
 Cohesion: 0.50
@@ -3017,10 +3042,6 @@ Nodes (5): awaitUntil(), description, name, run(), sleep()
 Cohesion: 0.33
 Nodes (4): coordinatedShutdown, ran, running, system
 
-### Community 615 - "NodeWorkerAdapter"
-Cohesion: 0.14
-Nodes (3): NodeWorkerAdapter, NodeWorkerThread, StubNodeWorkerThread
-
 ### Community 617 - "Microsoft.CodeAnalysis.Common"
 Cohesion: 0.40
 Nodes (5): contentHash, dependencies, resolved, type, Microsoft.CodeAnalysis.Common
@@ -3049,17 +3070,9 @@ Nodes (4): Die Queue einschalten, Erneut zustellen, Filtern, Payloads
 Cohesion: 0.40
 Nodes (5): Plugin-Keys sind voll qualifizierte Pfade, Debugging: warum ein Actor keine Nachrichten empfängt, Debugging: warum Events nicht abgespielt werden, Was bewusst fehlt (Plugin-Subtrees und Nicht-Werte), Per-Instanz-Cache-Pfade sind nicht auflistbar
 
-### Community 624 - "Decorators collapse, interceptors persist"
-Cohesion: 0.67
-Nodes (4): Decorators collapse, interceptors persist, Signal handlers are scoped to the declaring behavior, Behaviors.stopped (sentinel), Supervision scope outlives the subtree
-
-### Community 625 - "./cluster"
-Cohesion: 0.50
-Nodes (4): default, import, types, ./cluster
-
-### Community 627 - "./coordination"
-Cohesion: 0.50
-Nodes (4): default, import, types, ./coordination
+### Community 627 - "Process manager deployment"
+Cohesion: 0.38
+Nodes (7): Choosing a process manager over Kubernetes, PM2 cluster mode conflicts with the actor cluster, PM2 ecosystem configuration, Process manager deployment, Restart on-failure with RestartSec backoff, Static seed list across systemd hosts, systemd unit for actor-ts
 
 ### Community 628 - "./devtools"
 Cohesion: 0.50
@@ -3067,15 +3080,7 @@ Nodes (4): default, import, types, ./devtools
 
 ### Community 629 - "Metrics.ts"
 Cohesion: 0.10
-Nodes (19): bucketize(), Counter, CounterFamily, CounterImplementation, DEFAULT_HISTOGRAM_BUCKETS, Family, GaugeFamily, GaugeOptions (+11 more)
-
-### Community 636 - "./discovery"
-Cohesion: 0.50
-Nodes (4): default, import, types, ./discovery
-
-### Community 637 - "./http"
-Cohesion: 0.50
-Nodes (4): ./http, default, import, types
+Nodes (15): bucketize(), CounterFamily, Family, GaugeFamily, GaugeImplementation, HistogramFamily, METRICS_OVERFLOW_LABEL_VALUE, NOOP_COUNTER (+7 more)
 
 ### Community 638 - "./logging"
 Cohesion: 0.50
@@ -3109,13 +3114,13 @@ Nodes (3): HANGING_SUITE, HarnessRun, SCRIPT
 Cohesion: 0.50
 Nodes (4): ./persistence, default, import, types
 
-### Community 648 - "./tracing"
-Cohesion: 0.50
-Nodes (4): ./tracing, default, import, types
-
 ### Community 649 - "akka-java/mill"
 Cohesion: 0.83
 Nodes (3): mill script, check_glibc_version(), set_artifact_suffix()
+
+### Community 650 - "KeepOldestOptions.ts"
+Cohesion: 0.25
+Nodes (3): KeepOldestOptions, KeepOldestOptionsBuilder, KeepOldestOptionsType
 
 ### Community 651 - "Microsoft.Win32.SystemEvents"
 Cohesion: 0.50
@@ -3169,9 +3174,21 @@ Nodes (3): Verwendung, Was der Server akzeptiert, Was es nicht kann
 Cohesion: 0.50
 Nodes (4): Kompatibilitäts-Checks (none / backward / sample), register(manifest, version, registration), SchemaRegistration, zodCodec
 
+### Community 667 - "downing/index.ts"
+Cohesion: 0.26
+Nodes (5): StaticQuorum, StaticQuorumOptions, StaticQuorumOptionsBuilder, StaticQuorumOptionsType, StaticQuorumOptionsValidator
+
 ### Community 694 - "CoreStaticImports.test.ts"
 Cohesion: 0.67
 Nodes (3): repoRoot, staticClosure(), staticRelativeImports()
+
+### Community 696 - "from-file.ts"
+Cohesion: 0.33
+Nodes (4): appConf, DiagActor, here, main()
+
+### Community 697 - "stash-init.ts"
+Cohesion: 0.33
+Nodes (3): Command, LoadingRepository, main()
 
 ### Community 698 - "ShardedDaemonProcessOptions"
 Cohesion: 0.67
@@ -3233,43 +3250,67 @@ Nodes (3): Detect zstd by calling it, not by feature-checking, fzstd decompress-
 Cohesion: 0.67
 Nodes (3): ChatApp.onCreateRoom, ROOM_NAME_PATTERN (Lit client mirror), ROOM_NAME_PATTERN (plain client mirror)
 
-### Community 720 - "pickRendezvous"
-Cohesion: 0.83
-Nodes (3): fnv1a(), hashCombine(), pickRendezvous()
+### Community 859 - ".handleUnauthenticated"
+Cohesion: 0.40
+Nodes (3): validateCredentials(), ClientMessage, decodeClient()
+
+### Community 860 - "ClusterSecurity.test.ts"
+Cohesion: 0.09
+Nodes (14): ClusterWirePrivate, inject(), InjectableGossip, injectWire(), MockSock, nextGossipSequence(), NodeHandle, nodes (+6 more)
+
+### Community 868 - "./delivery"
+Cohesion: 0.50
+Nodes (4): default, import, types, ./delivery
+
+### Community 869 - "./fsm"
+Cohesion: 0.50
+Nodes (4): ./fsm, default, import, types
+
+### Community 870 - "./metrics"
+Cohesion: 0.50
+Nodes (4): ./metrics, default, import, types
+
+### Community 871 - "./serialization"
+Cohesion: 0.50
+Nodes (4): ./serialization, default, import, types
+
+### Community 872 - "./worker"
+Cohesion: 0.50
+Nodes (4): ./worker, default, import, types
 
 ## Ambiguous Edges - Review These
+- `Adding a new broker suite` → `scripts/integration-compose.mjs suite discovery`  [AMBIGUOUS]
+  tests/integration/brokers/README.md · relation: conceptually_related_to
+- `Generated and vendored path exclusions` → `examples workflow`  [AMBIGUOUS]
+  .github/codeql/codeql-config.yml · relation: conceptually_related_to
 - `Backend-Matrix (Journal / Durable State / Snapshot / Tag-Index)` → `Eingebaute Snapshot Stores`  [AMBIGUOUS]
   docs/src/content/docs/de/persistence/snapshots.mdx · relation: conceptually_related_to
-- `examples workflow` → `Generated and vendored path exclusions`  [AMBIGUOUS]
-  .github/codeql/codeql-config.yml · relation: conceptually_related_to
 - `Router.scatterGatherFirstCompleted` → `Hinweis 'Kein Scatter-Gather'`  [AMBIGUOUS]
   docs/src/content/docs/de/routing/strategies.mdx · relation: references
 - `Router.scatterGatherFirstCompleted` → `Aside claiming actor-ts ships no scatter-gather router`  [AMBIGUOUS]
   docs/src/content/docs/routing/scatter-gather.mdx · relation: conceptually_related_to
-- `Adding a new broker suite` → `scripts/integration-compose.mjs suite discovery`  [AMBIGUOUS]
-  tests/integration/brokers/README.md · relation: conceptually_related_to
 - `Broker live-integration suites` → `k3s over kind`  [AMBIGUOUS]
   tests/integration/brokers/README.md · relation: conceptually_related_to
 
 ## Knowledge Gaps
-- **4087 isolated node(s):** `PingCommand`, `Command`, `Node`, `PingCommand`, `Command` (+4082 more)
+- **4219 isolated node(s):** `PingCommand`, `Command`, `Node`, `PingCommand`, `Command` (+4214 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **271 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **287 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **What is the exact relationship between `Backend-Matrix (Journal / Durable State / Snapshot / Tag-Index)` and `Eingebaute Snapshot Stores`?**
+- **What is the exact relationship between `Adding a new broker suite` and `scripts/integration-compose.mjs suite discovery`?**
   _Edge tagged AMBIGUOUS (relation: conceptually_related_to) - confidence is low._
-- **What is the exact relationship between `examples workflow` and `Generated and vendored path exclusions`?**
+- **What is the exact relationship between `Generated and vendored path exclusions` and `examples workflow`?**
+  _Edge tagged AMBIGUOUS (relation: conceptually_related_to) - confidence is low._
+- **What is the exact relationship between `Backend-Matrix (Journal / Durable State / Snapshot / Tag-Index)` and `Eingebaute Snapshot Stores`?**
   _Edge tagged AMBIGUOUS (relation: conceptually_related_to) - confidence is low._
 - **What is the exact relationship between `Router.scatterGatherFirstCompleted` and `Hinweis 'Kein Scatter-Gather'`?**
   _Edge tagged AMBIGUOUS (relation: references) - confidence is low._
 - **What is the exact relationship between `Router.scatterGatherFirstCompleted` and `Aside claiming actor-ts ships no scatter-gather router`?**
   _Edge tagged AMBIGUOUS (relation: conceptually_related_to) - confidence is low._
-- **What is the exact relationship between `Adding a new broker suite` and `scripts/integration-compose.mjs suite discovery`?**
-  _Edge tagged AMBIGUOUS (relation: conceptually_related_to) - confidence is low._
 - **What is the exact relationship between `Broker live-integration suites` and `k3s over kind`?**
   _Edge tagged AMBIGUOUS (relation: conceptually_related_to) - confidence is low._
-- **Why does `Actor` connect `Actor` to `ActorSystem`, `src/index.ts`, `ObjectStorageSnapshotStore.ts`, `broker/index.ts`, `migration/index.ts`, `ActorRef`, `WireMessage`, `ClusterSingletonHandOver.test.ts`, `ProjectionFailureStrategy.test.ts`, `.create`, `ProbeActor`, `ShardRegion.ts`, `MqttActor.ts`, `ProducerController`, `Route.ts`, `Logger`, `Scenario.ts`, `ControlRoutes.ts`, `UserSessionActor.ts`, `cluster/index.ts`, `ShardRegion`, `ShardCountRefusal.test.ts`, `ClusterSharding.ts`, `DistributedData.ts`, `AmqpActor.ts`, `ActorCell`, `BrokerActor.test.ts`, `GrpcServerActor.ts`, `HttpIngressActor`, `FlakyWorker`, `JetStreamKeyValueActor.ts`, `JetStreamActor.ts`, `TimeTravel.test.ts`, `Parent`, `BrokerCommonOptionsType`, `LampActor`, `UserEntity`, `ClusterRouterActor`, `JetStreamObjectStoreActor.ts`, `CounterEntity`, `Cron`, `UserEntity`, `ShardedCounter`, `CounterSingleton`, `CounterActor`, `SpawnProbeActor`, `AcceptCommandUndroppable.test.ts`, `Entity`, `PingActor`, `ClusterSingletonManager`, `BrokerActor`, `KafkaActor.ts`, `ShardCoordinator`, `ProjectionActor.ts`, `ClusterProbeActor`, `Entity`, `Entity`, `DistributedDataHandle`, `Counter`, `NatsActor.ts`, `ReplicatedEventSourcedActor.ts`, `UdpSocketActor.ts`, `Entity`, `CounterEntity`, `PubSubReceiver`, `delivery/index.ts`, `Entity`, `Entity`, `Cluster`, `ping-pong.ts`, `OptionsBuilder`, `DistributedPubSubMediator`, `DeadLetterQueue.ts`, `BackoffSupervisor`, `DistributedDataActor`, `Throttled`, `Lazy`, `ChatRoomDirectoryActor`, `IdentityEntity`, `Entity`, `VoiceSessionActor.ts`, `PersistentFSM.test.ts`, `ReplicatedEventSourcedActor`, `TypedActor`, `DurableStateActor`, `BrokerOptionsBuilder`, `PersistentActor`, `VoiceSessionActor`, `DeathWatchOnBoundedMailbox.test.ts`, `FSM`, `PriorityMailbox`, `Receptionist`, `actor-ts.ts`, `otel-jaeger.ts`, `everyNEvents`, `success`, `devtools.ts`, `PersistentActorRecoveryFailure.test.ts`, `Shard`, `Entity`, `Entity`, `PongActor`, `ScatterGatherRouterActor`, `awaitCondition`, `order-workflow.ts`, `Delivery`, `examples/bank-account.ts`, `CensusMarker`, `replicated-counter.ts`, `CountingSingleton`, `prom-client-shared.ts`, `retry-flaky-api.ts`, `WebsocketServerActor`, `fsm/index.ts`, `lossy-network-sim.ts`, `opentelemetry-tracing.ts`?**
-  _High betweenness centrality (0.061) - this node is a cross-community bridge._
+- **Why does `Actor` connect `Actor` to `ActorSystem`, `src/index.ts`, `FilesystemObjectStorageBackend.ts`, `EmailBridgeActor.ts`, `migration/index.ts`, `Route.ts`, `NodeAddress`, `ClusterSingletonHandOver.test.ts`, `ClusterClient.ts`, `.create`, `ActorContext`, `broker/index.ts`, `ProducerController`, `complete`, `Logger`, `Scenario.ts`, `Option`, `ControlRoutes.ts`, `UserSessionActor.ts`, `Actor.ts`, `GrpcClientActor.ts`, `MdcPropagation.test.ts`, `ShardCountRefusal.test.ts`, `ActorRef`, `DistributedData.ts`, `ActorCell`, `Worker`, `Envelope`, `GrpcServerActor.ts`, `JetStreamKeyValueActor.ts`, `FlakyWorker`, `JetStreamActor.ts`, `TimeTravel.test.ts`, `Parent`, `devtools.ts`, `TcpServerActor.ts`, `DevToolsServer.ts`, `LampActor`, `UserEntity`, `router/ClusterRouterSmallestMailbox.test.ts`, `JetStreamObjectStoreActor.ts`, `CounterEntity`, `Cron`, `UserEntity`, `ReliableDelivery.test.ts`, `Singleton.ts`, `HubInFlightCap.test.ts`, `Entity`, `PingActor`, `ClusterSingletonManager`, `BrokerActor`, `BrokerTlsForwarding.test.ts`, `ShardCoordinator`, `ProjectionActor.ts`, `ClusterProbeActor`, `Entity`, `Entity`, `DistributedDataHandle`, `ShardMapEndpoint.test.ts`, `NatsActor.ts`, `ReplicatedEventSourcedActor.ts`, `Lazy`, `Entity`, `CounterEntity`, `delivery/index.ts`, `Entity`, `Entity`, `Cluster`, `ping-pong.ts`, `OptionsBuilder`, `DistributedPubSubMediator`, `DeadLetterQueue.ts`, `DistributedDataActor`, `Throttled`, `from-file.ts`, `stash-init.ts`, `OutboundEnvelope`, `ChatRoomDirectoryActor`, `IdentityEntity`, `Entity`, `VoiceSessionActor.ts`, `Cluster.ts`, `PersistentFSM.test.ts`, `DurableStateActorMigration.test.ts`, `ReplicatedEventSourcedActor`, `TypedActor`, `DurableStateActor`, `BaseProjectionActor`, `RedisStreamsActor`, `PersistentActor`, `VoiceSessionActor`, `Terminated`, `FSM`, `priority-dispatch.ts`, `MultiNodeSpec.ts`, `SyncReceiveFastPath.test.ts`, `Receptionist`, `actor-ts.ts`, `BackoffSupervisor.test.ts`, `otel-jaeger.ts`, `SpanTap.ts`, `KafkaRecord`, `PersistenceIdEnforcement.test.ts`, `Entity`, `Entity`, `ClusterSecurity.test.ts`, `ORSet`, `PartitionWorker`, `Router.test.ts`, `awaitCondition`, `W`, `Entity`, `Daemon`, `Marker`, `order-workflow.ts`, `Kid`, `Parent`, `Recorder`, `Entity`, `schema-registry.ts`, `ConsumerController`, `DispatcherQueueDelay.test.ts`, `examples/bank-account.ts`, `ClusterSingletonManager.ts`, `DeadLetter`, `replicated-counter.ts`, `LogContextData`, `prom-client-shared.ts`, `CircuitBreaker`, `WebsocketServerActor`, `fsm/index.ts`, `lossy-network-sim.ts`, `ActorOptions.ts`, `RecordingTracer`?**
+  _High betweenness centrality (0.077) - this node is a cross-community bridge._
