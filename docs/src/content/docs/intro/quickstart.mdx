@@ -294,8 +294,9 @@ import { Aside } from '@astrojs/starlight/components';
   Wait for those explicitly.
 
   It also does not wait on a mailbox that is deliberately parked — one
-  behind `context.throttle(...)`, or one suspended while a supervisor
-  decides — because neither drains at a rate a shutdown can wait for.
+  behind [`context.throttle(...)`](/fundamentals/throttling/), or one
+  suspended while a supervisor decides — because neither drains at a rate
+  a shutdown can wait for.
   The whole drain is bounded by
   `actor-ts.system.shutdown-drain-timeout` (2 s by default; 0 turns it
   off); anything still queued when the budget runs out goes to dead

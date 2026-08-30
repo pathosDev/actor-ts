@@ -318,10 +318,10 @@ Rückstau wird also verarbeitet.  Auf vier Dinge wartet es nicht:
   beendet ihn.  Erhöhe das Budget, und mit ihm
   `actor-ts.coordinated-shutdown.default-phase-timeout`, wenn du über
   die Pipeline herunterfährst.
-- **Die Mailbox war geparkt.**  `context.throttle(...)` und eine vom
-  Supervisor suspendierte Mailbox gelten beide als ruhig, weil keine
-  von beiden sich in einem Tempo leert, auf das ein Shutdown warten
-  kann.  Brich den Throttle vor dem Herunterfahren ab, wenn der
+- **Die Mailbox war geparkt.**  [`context.throttle(...)`](/de/fundamentals/throttling/)
+  und eine vom Supervisor suspendierte Mailbox gelten beide als ruhig,
+  weil keine von beiden sich in einem Tempo leert, auf das ein Shutdown
+  warten kann.  Brich den Throttle vor dem Herunterfahren ab, wenn der
   Rückstau zählt.
 - **Die Arbeit lag noch in keiner Mailbox.**  Ein noch nicht gefeuerter
   `context.timers`-Tick oder ein `tell` aus einem Promise, das ein

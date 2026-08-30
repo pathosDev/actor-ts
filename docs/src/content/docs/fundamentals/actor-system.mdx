@@ -246,9 +246,9 @@ is what happened to the whole backlog before draining existed.
 
 Three things are deliberately **not** waited for:
 
-- a mailbox parked by `context.throttle(...)`, and one suspended while
-  a supervisor decides — neither drains at a rate a shutdown can wait
-  for, so both count as quiet;
+- a mailbox parked by [`context.throttle(...)`](/fundamentals/throttling/),
+  and one suspended while a supervisor decides — neither drains at a rate
+  a shutdown can wait for, so both count as quiet;
 - anything under `/system` — heartbeats, failure detectors and broker
   reconnect loops are never quiet by design;
 - work that is not in a mailbox yet — a `context.timers` tick that has
