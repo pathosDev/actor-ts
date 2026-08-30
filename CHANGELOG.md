@@ -26,6 +26,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   moves in the same commit.  Its no-concrete-tag rule for `gh release
   download` is untouched: a tag pinned in prose would now rot at v0.18.0
   exactly as v0.16.0 did.
+- **`CoreStaticImports` walked a 148-file import closure inside the test body,
+  so bun's 5 000 ms per-test default killed the #1005 gate under a loaded
+  coverage run** (#1392).  Neither test declared a third argument and
+  `bunfig.toml` raises nothing, so the cap was bun's default; what ran against
+  it was `staticClosure('src/ActorSystem.ts')` — 148 files, 1.28 MiB of source,
+  29 ms of real work on an idle machine.  Observed at 6 723.89 ms in a full
+  `ACTOR_TS_SKIP_FLAKY_MNS=1 bun run test:coverage:gate` run on Windows /
+  bun 1.4.0 — roughly 230x — having passed a gated run earlier the same day and
+  passing standalone in 276 ms: the failure reported the machine, not the
+  invariant.  Both closures are now walked at module scope, which carries no
+  per-test timeout at all (measured), and which is the shape the sibling
+  repo-file guards `AwaitConditionBudgets`, `WorkflowHygiene` and
+  `NoDeadConfigKeys` already use.  The two assertions are untouched — `ActorSystem`
+  is still proven never to statically reach `FastifyBackend.ts` or a bare
+  `fastify`, and the canary still proves the walker is not blind — while the
+  test bodies drop from 29.15 ms and 1.24 ms to 0.41 ms and 0.04 ms, which puts
+  the same contention at ~95 ms against the 5 000 ms cap.  A larger third
+  argument was the other option and is the wrong one here: that remedy is for a
+  *failure budget*, one meant to expire and print a label, and a literal cap
+  would be one more encoded assumption about machine speed — the shared defect
+  #1376 is open to remove.
 
 ## [0.17.0] — 2026-08-29
 
