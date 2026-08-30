@@ -9,6 +9,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Added
+
+- **The flake catalog names the third shape of the fixed-cap failure — real
+  work in a *test body*** (#1393).  `docs/…/testing/diagnosing-flakes.mdx`
+  covered bun's 5 000 ms cap twice, one level apart: a budget that cannot reach
+  it (remedy, a third argument) and real work in a hook (remedy, layered
+  budgets).  #1392 was neither, and a reader who pattern-matches to the nearest
+  entry picks a remedy that does not fit — a third argument sizes a *failure
+  budget*, a wait meant to expire and print a label, and bounded work has none;
+  layered budgets need a spawn boundary the inner operation can carry a timeout
+  across, and there is none.  The remedy that is right — module scope carries no
+  per-test timeout at all — was written nowhere, although three guards already
+  depend on it.  Both mirrors gain a catalog row and a section, with the
+  measured figures and the module-scope fixture that settles the mechanism in
+  one run.  It also records a negative result: the hook section's sizing advice
+  (run several copies of the file at once) does **not** transfer, because the
+  pre-fix file under 12 concurrent CPU hogs still completed in 31.45 ms and
+  passed — external load competes with *spawned* work, while in-process work is
+  slowed by the host process's own heap, garbage collection and coverage
+  counters.
+
 ### Fixed
 
 - **The supply-chain page said the SBOM starts "from the next release
@@ -47,6 +68,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   *failure budget*, one meant to expire and print a label, and a literal cap
   would be one more encoded assumption about machine speed — the shared defect
   #1376 is open to remove.
+- **`TreeShaking` built four bundles inside three test bodies, against the same
+  unset cap — 3.7x the exposure of the test that had already timed out**
+  (#1394).  Caught before it was ever observed failing, rather than after.  None
+  of the three tests declared a third argument, so four `Bun.build` calls raced
+  bun's 5 000 ms default; measured idle with the junit reporter the bodies were
+  0.6 ms, 66.5 ms, 30.1 ms and 109.7 ms, and that heaviest one is 3.7x the
+  29.1 ms `CoreStaticImports` was doing when a full coverage run stretched it
+  ~230x and bun killed it.  The bundles are now built at module scope — top-level
+  await, already used at
+  `tests/integration/in-process/persistence/journals/NodeSqliteDriver.test.ts:22`
+  — which also removed a duplicate: the narrow bundle was built twice from
+  byte-identical source, so three builds now do what four did.  The five
+  assertions are unchanged, and the bodies drop to 0.58 / 0.05 / 0.05 / 0.04 ms.
 
 ## [0.17.0] — 2026-08-29
 
