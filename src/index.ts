@@ -99,6 +99,8 @@ export { ActorSystemOptions, ActorSystemOptionsBuilder } from './ActorSystemOpti
 export type { ActorSystemOptionsType } from './ActorSystemOptions.js';
 export type { ActorContext, Receive, TimerScheduler } from './ActorContext.js';
 export { StashOverflowError, StashOutsideHandlerError } from './ActorContext.js';
+export { ThrottleOptions, ThrottleOptionsBuilder, ThrottleOptionsValidator } from './ThrottleOptions.js';
+export type { ThrottleOptionsType, ThrottleOnExcess } from './ThrottleOptions.js';
 export { ActorOptions, ActorOptionsBuilder, ActorOptionsValidator } from './ActorOptions.js';
 export type { ActorOptionsType, MailboxFactory } from './ActorOptions.js';
 export type { ActorClassOrFactory, ActorFactory } from './Actor.js';

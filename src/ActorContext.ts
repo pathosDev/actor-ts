@@ -6,6 +6,7 @@ import type { ActorOptions } from './ActorOptions.js';
 import type { EntityContext } from './EntityContext.js';
 import type { Logger } from './Logger.js';
 import type { Option } from './util/Option.js';
+import type { ThrottleOptions, ThrottleOnExcess } from './ThrottleOptions.js';
 
 /** Behaviour is just a message handler. Used for become/unbecome. */
 export type Receive<T> = (message: T) => void | Promise<void>;
@@ -268,33 +269,12 @@ export interface ActorContext<TMessage = unknown> {
 }
 
 /**
- * What to do with a user message dequeued while the actor's
- * {@link ActorContext.throttle | throttle} bucket is empty.
+ * The throttle option types live in `./ThrottleOptions.ts` alongside the
+ * rest of the Options family (the fluent builder and the validator);
+ * re-exported here so they travel with the {@link ActorContext.throttle}
+ * method that consumes them.
  */
-export type ThrottleOnExcess =
-  /**
-   * *(default)* Don't dequeue — pause the message-pump until tokens
-   * replenish, then resume normally.  Natural backpressure: the
-   * mailbox queues up, every message eventually processes, latency
-   * grows under load.
-   */
-  | 'pause'
-  /**
-   * Dequeue the message and discard it (with a debug log).  Useful
-   * for telemetry-style traffic where staleness is worse than loss.
-   */
-  | 'drop';
-
-export type ThrottleOptions = {
-  /** Token-refill rate, tokens per second.  Required; must be > 0. */
-  readonly qps: number;
-  /** Bucket capacity.  Default: `qps` (one second of refill). */
-  readonly burst?: number;
-  /** What to do when the bucket is empty.  Default: `'pause'`. */
-  readonly onExcess?: ThrottleOnExcess;
-  /** Time source — pass a deterministic clock for tests.  Default: `Date.now`. */
-  readonly now?: () => number;
-};
+export type { ThrottleOptions, ThrottleOnExcess };
 
 /**
  * Actor-scoped scheduler.  A fresh `startSingleTimer`/`startTimerWithFixedDelay`

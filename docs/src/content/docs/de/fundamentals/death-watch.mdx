@@ -68,7 +68,7 @@ darauf.  Ein Tod wird **einmal** angekündigt, das Framework kann ihn
 nicht erneut senden.  Deshalb ist die Benachrichtigung von allem
 ausgenommen, was User-Nachrichten beim Einreihen verwirft: von einer
 [Mailbox-Schranke](/de/fundamentals/mailboxes/) jeder Policy und von
-einem `throttle({ onExcess: 'drop' })`.  Einen Watcher zu beschränken
+einem [`throttle({ onExcess: 'drop' })`](/de/fundamentals/throttling/).  Einen Watcher zu beschränken
 kostet ihn Backlog, niemals die Tode, auf die er wartet.  Und wenn die
 Benachrichtigung wirklich nicht zugestellt werden kann — der Watcher
 ist selbst schon gestoppt, oder seine Mailbox verweigert die Nachricht

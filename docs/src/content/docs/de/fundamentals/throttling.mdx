@@ -1,0 +1,197 @@
+---
+title: Throttling
+description: Begrenze die Verarbeitung von Benutzernachrichten eines Actors mit einem Token-Bucket — `context.throttle({ qps, burst, onExcess })`, Backpressure via pause vs. drop, `{ qps: Infinity }` / `cancelThrottle()` zum Aufheben, und warum Systemnachrichten und Death-Watch-Benachrichtigungen ausgenommen sind.
+---
+
+Jeder Actor leert seine Mailbox so schnell, wie sein Dispatcher es
+zulässt.  **Throttling** setzt eine Ratenbegrenzung pro Actor davor: einen
+[Token-Bucket](https://de.wikipedia.org/wiki/Token_Bucket), den die
+Runtime vor dem Ausreihen jeder *User*-Nachricht prüft.  So verhinderst du,
+dass ein Actor einen nachgelagerten Dienst, ein Log-Sink oder eine
+ratenbegrenzte API überrollt — ohne irgendetwas an den Actors zu ändern,
+die ihm Nachrichten senden.
+
+## Ein minimales Beispiel
+
+```ts
+import { Actor } from 'actor-ts';
+
+type SampleMessage = { kind: 'sample'; value: number };
+
+class Ingest extends Actor<SampleMessage> {
+  override preStart(): void {
+    // Höchstens 100 User-Nachrichten pro Sekunde, mit einem Burst von 20.
+    this.context.throttle({ qps: 100, burst: 20 });
+  }
+
+  override onReceive(message: SampleMessage): void {
+    // ... läuft mit der gedrosselten Rate
+  }
+}
+```
+
+`throttle` kann von überall aufgerufen werden, wo der Actor läuft —
+`preStart`, einem Nachrichten-Handler, einem Behavior.  Ein erneuter
+Aufruf **ersetzt** den Limiter; es gibt höchstens einen Throttle pro
+Actor.
+
+## Der Token-Bucket
+
+Der Bucket fasst bis zu `burst` Tokens und füllt sich mit `qps` Tokens pro
+Sekunde nach.  Das Ausreihen einer User-Nachricht kostet ein Token.  Der
+Bucket startet **voll**, sodass ein untätiger Actor eine sofortige Spitze
+von bis zu `burst` Nachrichten aufnehmen kann, bevor die Begrenzung
+greift; danach fließen die Nachrichten mit `qps`.
+
+| Feld | Bedeutung |
+| --- | --- |
+| `qps` | Nachfüllrate, Tokens pro Sekunde.  Erforderlich, `> 0`.  `Infinity` entfernt den Throttle (siehe [Den Throttle aufheben](#den-throttle-aufheben)). |
+| `burst` | Bucket-Kapazität.  Default: `qps` (eine Sekunde Nachfüllung). |
+| `onExcess` | Was zu tun ist, wenn der Bucket leer ist — `'pause'` (Default) oder `'drop'`. |
+| `now` | Zeitquelle; übergib eine deterministische Uhr in Tests.  Default: `Date.now`. |
+
+Weil `burst` auf `qps` defaultet, glättet ein bloßes
+`throttle({ qps: 100 })` den Verkehr auf ~100/Sekunde und toleriert dabei
+eine Sekunde Schwankung.
+
+## Wenn der Bucket leer ist — pause vs. drop
+
+`onExcess` entscheidet über das Schicksal einer User-Nachricht, die
+ausgereiht wird, während der Bucket keine Tokens hat:
+
+- **`'pause'`** *(Default)* — natürliche Backpressure.  Die Nachricht
+  bleibt in der Queue, und die Nachrichten-Pumpe des Actors pausiert, bis
+  ein Token fällig ist, und läuft dann weiter.  Jede Nachricht wird
+  irgendwann verarbeitet; die Latenz wächst unter Last.  Die Mailbox
+  übernimmt das Puffern.
+- **`'drop'`** — die Nachricht wird verworfen (mit einem Debug-Log).
+  Nützlich für Telemetrie-artigen Verkehr, bei dem ein veraltetes Sample
+  schlimmer ist als ein verlorenes.
+
+```ts
+import { Actor } from 'actor-ts';
+
+type SampleMessage = { kind: 'sample'; value: number };
+
+class Telemetry extends Actor<SampleMessage> {
+  override preStart(): void {
+    // Last abwerfen statt puffern — eine späte Metrik ist wertlos.
+    this.context.throttle({ qps: 50, burst: 10, onExcess: 'drop' });
+  }
+
+  override onReceive(message: SampleMessage): void {
+    // ... nur ~50 Samples pro Sekunde kommen hier an; der Rest wird verworfen
+  }
+}
+```
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Pause puffert in der Mailbox">
+  `'pause'` hält überschüssige Nachrichten in der Mailbox — kann ein
+  Sender den Actor also unbegrenzt überholen, wächst der Backlog
+  schrankenlos.  Kombiniere einen Pause-Throttle mit einer
+  [beschränkten Mailbox](/de/fundamentals/mailboxes/), wenn das ein Risiko
+  ist: die Schranke wirft den Überlauf ab, den der Throttle gerade
+  zurückhält.
+</Aside>
+
+## Den Throttle aufheben
+
+Zwei äquivalente Wege, einen aktiven Throttle zu entfernen und zur vollen
+Dispatch-Geschwindigkeit zurückzukehren:
+
+```ts
+this.context.cancelThrottle();
+// exakt äquivalent:
+this.context.throttle({ qps: Infinity });
+```
+
+`{ qps: Infinity }` ist der Wert für „keine Begrenzung": eine unbegrenzte
+Rate hat keinen Bucket, also installiert die Runtime keinen.  Das ist
+praktisch, wenn die Rate berechnet wird — eine einzige
+`throttle({ qps: computeRate() })`-Aufrufstelle kann den Limiter
+abschalten, indem sie `Infinity` liefert, ganz ohne Fallunterscheidung an
+der Aufrufstelle.
+
+## Was *nicht* gedrosselt wird
+
+Der Throttle begrenzt ausschließlich **User**-Nachrichten.  Diese umgehen
+ihn vollständig:
+
+- **Systemnachrichten** — create, terminate, Supervision, Timer-Auslösung.
+  Sie laufen auf der System-Queue, vor den User-Nachrichten, sodass ein
+  gedrosselter Actor trotzdem prompt stoppt und seine Timer planmäßig
+  feuern.
+- **Death-Watch-Benachrichtigungen** — ein
+  [`Terminated`](/de/fundamentals/death-watch/) (oder sein
+  `watchWith`-Ersatz) verbraucht kein Token und ist niemals die Nachricht,
+  die ein `onExcess: 'drop'` verwirft.  Ein Tod wird einmal angekündigt,
+  daher lässt die Runtime ihn niemals von einem Throttle verwerfen.
+
+Genau diese Trennung macht es sicher, einen Throttle aggressiv zu setzen:
+er verlangsamt die *Arbeit* des Actors, niemals seinen Lebenszyklus.
+
+## Die Builder-Form
+
+Wie jeder Options-Typ in actor-ts haben auch die Throttle-Optionen einen
+fluenten Builder, der mit dem einfachen Objekt austauschbar ist:
+
+```ts
+import { Actor, ThrottleOptions } from 'actor-ts';
+
+type SampleMessage = { kind: 'sample'; value: number };
+
+class Ingest extends Actor<SampleMessage> {
+  override preStart(): void {
+    const throttleOptions = ThrottleOptions.create()
+      .withQps(100)
+      .withBurst(20)
+      .withOnExcess('drop');
+    this.context.throttle(throttleOptions);
+  }
+
+  override onReceive(message: SampleMessage): void {
+    // ...
+  }
+}
+```
+
+## Validierung
+
+Ungültige Optionen werden vorab mit einem `OptionsError` abgelehnt, der das
+betroffene Feld benennt — ein fehlerhaftes `qps` oder `burst` scheitert
+also am `throttle()`-Aufruf und nicht erst später in der Runtime:
+
+| Eingabe | Ergebnis |
+| --- | --- |
+| `qps: 0`, `qps: -5`, `qps: NaN` | `OptionsError` — *qps must be a positive finite number or Infinity* |
+| `qps: Infinity` | Akzeptiert — hebt den Throttle auf |
+| `burst: 0`, `burst: -1` | `OptionsError` — *burst must be a positive finite number* |
+| `onExcess: 'explode'` | `OptionsError` — *onExcess must be one of pause, drop* |
+
+Aus einem Actor heraus aufgerufen, wandert dieser `OptionsError` wie jeder
+andere geworfene Fehler durch die [Supervision](/de/fundamentals/supervision/).
+
+## Throttling und Shutdown
+
+Eine pause-gedrosselte Mailbox ist *geparkt*, nicht am Leeren — ein
+[System-Shutdown](/de/fundamentals/actor-system/) wartet daher nicht auf
+sie.  Ein `qps: 10`-Actor mit Backlog bräuchte Backlog ÷ 10 Sekunden zum
+Leeren, worauf kein Shutdown warten kann; also behandelt der Drain eine
+throttle-geparkte Queue als ruhig und schickt den Rest an die Dead
+Letters.  Wenn dieser Backlog beim Shutdown wichtig ist, zuerst
+`cancelThrottle()`.  Der [Troubleshooting](/de/operations/troubleshooting/)-Leitfaden
+führt das unter „das System leert sich nicht".
+
+## Wie geht es weiter
+
+- **[Mailboxes](/de/fundamentals/mailboxes/)** — wo Pause-Backpressure
+  puffert; beschränke sie, wenn ein Sender den Actor überholen kann.
+- **[Dispatchers](/de/fundamentals/dispatchers/)** — der Throttle sitzt vor
+  dem Dispatcher, der sonst jede eingereihte Nachricht abarbeiten würde.
+- **[Death Watch](/de/fundamentals/death-watch/)** — warum
+  Termination-Benachrichtigungen vom Throttle ausgenommen sind.
+
+Die [`ActorContext.throttle`](/api/interfaces/actorcontext/)-API-Referenz
+deckt die vollständige Signatur und die Optionen ab.

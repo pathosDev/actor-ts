@@ -81,6 +81,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   — which also removed a duplicate: the narrow bundle was built twice from
   byte-identical source, so three builds now do what four did.  The five
   assertions are unchanged, and the bodies drop to 0.58 / 0.05 / 0.05 / 0.04 ms.
+- **`throttle({ qps: Infinity })` threw `TokenBucket: qps must be > 0, got
+  Infinity` instead of clearing the limiter — flatly contradicting its own
+  JSDoc, which documents `{ qps: Infinity }` as a way to remove a throttle**
+  (#636).  `ActorContext.throttle` promised the sentinel but `ActorCell`
+  passed it straight into a `TokenBucket`, whose constructor rejects any
+  non-finite `qps`, so the throw escaped into user code rather than flowing
+  through supervision.  `qps: Infinity` now removes the throttle (exactly
+  like `cancelThrottle()` — an unlimited rate installs no bucket), and a new
+  `ThrottleOptionsValidator` rejects an invalid `qps` / `burst` / `onExcess`
+  up front with an `OptionsError` naming the field, rather than a bare
+  `Error` from deep in the runtime.  Throttle options gain the standard
+  `XOptions` family (a fluent `ThrottleOptions` builder alongside the plain
+  object), and the per-actor throttle now has a dedicated docs page
+  (`fundamentals/throttling`, EN + DE).
 
 ## [0.17.0] — 2026-08-29
 

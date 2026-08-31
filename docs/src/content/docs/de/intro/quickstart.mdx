@@ -305,9 +305,10 @@ import { Aside } from '@astrojs/starlight/components';
   explizit warten.
 
   Ebenso wenig wartet es auf eine bewusst geparkte Mailbox — eine
-  hinter `context.throttle(...)` oder eine, die suspendiert ist,
-  während ein Supervisor entscheidet — denn keine von beiden leert sich
-  in einem Tempo, auf das ein Shutdown warten kann.  Der gesamte
+  hinter [`context.throttle(...)`](/de/fundamentals/throttling/) oder
+  eine, die suspendiert ist, während ein Supervisor entscheidet — denn
+  keine von beiden leert sich in einem Tempo, auf das ein Shutdown warten
+  kann.  Der gesamte
   Drain ist durch `actor-ts.system.shutdown-drain-timeout` begrenzt
   (Standard 2 s; 0 schaltet ihn ab); was beim Ablauf des Budgets noch
   in der Queue steht, geht in die Dead Letters.
