@@ -188,6 +188,10 @@ export type {
   PubSubSubscribeRejectionReason,
 } from './pubsub/index.js';
 
+// Cluster-wide event stream — the counterpart to `system.eventStream`.
+export { ClusterEventStream, ClusterEventStreamId } from './eventstream/index.js';
+export type { ClusterEventDecoder } from './eventstream/index.js';
+
 // Sharding.
 export { ClusterSharding } from './sharding/ClusterSharding.js';
 export { StartShardingOptions, StartShardingOptionsBuilder, StartShardingOptionsValidator } from './sharding/StartShardingOptions.js';

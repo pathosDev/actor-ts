@@ -57,11 +57,13 @@ import {
 import { FailureDetectorOptions, type FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 import { Member } from './Member.js';
 import { NodeAddress } from './NodeAddress.js';
-// `ClusterSharding` and `ClusterSingleton` only import `Cluster` as a type
-// (erased at runtime), so the value-imports here don't create a runtime
-// cycle — every sharding and singleton file uses `import type { Cluster }`.
+// `ClusterSharding`, `ClusterSingleton` and `ClusterEventStream` only import
+// `Cluster` as a type (erased at runtime), so the value-imports here don't
+// create a runtime cycle — every sharding, singleton and event-stream file
+// uses `import type { Cluster }`.
 import { ClusterSharding } from './sharding/ClusterSharding.js';
 import { ClusterSingleton } from './singleton/ClusterSingleton.js';
+import { ClusterEventStream } from './eventstream/ClusterEventStream.js';
 import type {
   EnvelopeMessage,
   GossipMessage,
@@ -478,6 +480,27 @@ export class Cluster {
    */
   get singleton(): ClusterSingleton {
     return ClusterSingleton.get(this.system, this);
+  }
+
+  /**
+   * The cluster-wide event stream — the counterpart to `system.eventStream`,
+   * which is one `ActorSystem` and therefore one node.  A publish here reaches
+   * subscribers on every node; a publish there never leaves the process.
+   *
+   * ```ts
+   * cluster.eventStream.subscribe(ref, 'order-placed');
+   * cluster.eventStream.publish({ kind: 'order-placed', sku: 'XYZ-1' });
+   * ```
+   *
+   * **Not to be confused with {@link Cluster.subscribe} below**, which is the
+   * narrower and older of the two: it takes a callback rather than a ref,
+   * carries only membership events, and replays the current membership on
+   * subscribe.  This one is a general bus and replays nothing.
+   *
+   * Equivalent to `ClusterEventStream.get(cluster.system, cluster)`.
+   */
+  get eventStream(): ClusterEventStream {
+    return ClusterEventStream.get(this.system, this);
   }
 
   /**
