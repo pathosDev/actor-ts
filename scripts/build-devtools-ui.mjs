@@ -588,9 +588,15 @@ ${entries}
 `;
 
   await mkdir(dirname(generatedModule), { recursive: true });
-  const previous = existsSync(generatedModule)
-    ? await readFile(generatedModule, 'utf8')
-    : null;
+  // Read the current module directly rather than existsSync()+readFile: the
+  // check-then-use pattern races the writeFile() below (CodeQL
+  // js/file-system-race).  A missing file is the only expected error.
+  let previous = null;
+  try {
+    previous = await readFile(generatedModule, 'utf8');
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
   // Skip an identical write so a running `tsc --watch` does not churn.
   if (previous === source) {
     console.log('\nembedded bundle unchanged');
