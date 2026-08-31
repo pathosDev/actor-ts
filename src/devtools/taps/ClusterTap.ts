@@ -35,6 +35,7 @@ import {
   SelfUp,
   ShardMapChanged,
   ShardRegionRegistered,
+  ShardRegionRegistrationRefused,
   type ClusterEvent,
 } from '../../cluster/ClusterEvents.js';
 import { match, P } from 'ts-pattern';
@@ -144,23 +145,30 @@ export class ClusterTap implements DevToolsTap {
       .with(P.instanceOf(ShardMapChanged), (e) => this.onShardMapChanged(e))
       .with(P.instanceOf(CurrentClusterState), () => this.onCurrentClusterState())
       .with(P.instanceOf(ReachabilityChanged), (e) => this.onReachabilityChanged(e))
-      .with(P.instanceOf(ShardRegionRegistered), () => this.onShardRegionRegistered())
+      .with(
+        P.union(
+          P.instanceOf(ShardRegionRegistered),
+          P.instanceOf(ShardRegionRegistrationRefused),
+        ),
+        () => this.onShardRegistrationEvent(),
+      )
       .otherwise((e) => this.onMemberEvent(e));
   }
 
   /**
-   * The cluster panel renders membership, and a region's registration is not
-   * a membership change — it says something about one node's sharding, which
-   * the shard panel already reads from `ShardMapChanged`.
+   * The cluster panel renders membership, and a region's registration — taken
+   * or refused — is not a membership change.  It says something about one
+   * node's sharding, which the shard panel already reads from
+   * `ShardMapChanged`.
    *
-   * An explicit arm rather than letting it fall through: `otherwise` leads to
-   * {@link onMemberEvent}, whose whole contract is that every event it sees
+   * An explicit arm rather than letting these fall through: `otherwise` leads
+   * to {@link onMemberEvent}, whose whole contract is that every event it sees
    * carries a `member`.  Falling through would have been handled at runtime by
-   * the unknown-event path, which is the wrong report — this event is known,
-   * it simply has no panel — and it would have typed `event.member` on
+   * the unknown-event path, which is the wrong report — these events are known,
+   * they simply have no panel — and it would have typed `event.member` on
    * something that has none.
    */
-  private onShardRegionRegistered(): void { /* not a membership change */ }
+  private onShardRegistrationEvent(): void { /* not a membership change */ }
 
   /**
    * The ten member events are structurally identical — every one is
@@ -172,7 +180,7 @@ export class ClusterTap implements DevToolsTap {
     event: Exclude<
       ClusterEvent,
       LeaderChanged | ShardMapChanged | CurrentClusterState | ReachabilityChanged
-      | ShardRegionRegistered
+      | ShardRegionRegistered | ShardRegionRegistrationRefused
     >,
   ): void {
     const name = MEMBER_EVENT_NAMES.get(event.constructor as MemberEventClass);

@@ -276,6 +276,48 @@ cluster.eventStream.bridge(ShardRegionRegistered);
   you need in front of `tell`.
 </Aside>
 
+## When the coordinator refuses a region
+
+A coordinator refuses a region whose `numShards` disagrees with the count it
+governs the type with. That is the shape of a rolling deploy that changed the
+setting on some nodes and not others, and it is the one sharding failure that
+gets worse the longer it goes unnoticed: the refused region keeps running and
+keeps accepting traffic for the type, and everything it accepts **buffers**.
+The end state is a node out of memory.
+
+```ts
+const refusal = cluster.sharding.registrationRefusal('cart');
+if (refusal) {
+  console.error(
+    `refused: this node has ${refusal.regionNumShards},`
+    + ` the coordinator governs ${refusal.coordinatorNumShards}`,
+  );
+}
+```
+
+`null` when there is no refusal, and cleared once a later registration is
+accepted — so a deploy that fixes the mismatch stops reporting one. The same
+refusal is published as a `ShardRegionRegistrationRefused` cluster event, for
+code that wants to react rather than poll.
+
+**The thing to alert on** is the counter, which needs no code of yours:
+
+```
+cluster_sharding_registrations_refused_total{type="cart",reason="num-shards-mismatch"}
+```
+
+Any non-zero value is worth paging on — a refusal is never transient and
+never resolves on its own. It follows the label shape of
+`cluster_gossip_records_refused_total`, and like every metric here it is only
+recorded when metrics are enabled on the system.
+
+<Aside type="caution" title="The log line is not the signal">
+  The refusal also produces one `error` line naming both counts and the HOCON
+  key to set. That line is for the person already reading logs; it is not
+  something an alert can be built on, which is why the counter and the event
+  exist.
+</Aside>
+
 ## Where to next
 
 - **[Sharding overview](/cluster/sharding/overview/)** — the region,

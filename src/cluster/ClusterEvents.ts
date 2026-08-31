@@ -205,6 +205,52 @@ export class ShardRegionRegistered {
   }
 }
 
+/**
+ * Why a coordinator refused a region's registration.
+ *
+ * Closed, and deliberately coarse: it is a metric label, so every value here
+ * is a time series an operator carries forever — the same reasoning as
+ * `GOSSIP_REFUSAL_REASONS`.  One value today, because a `numShards` mismatch
+ * is the only thing a coordinator refuses over (#633).
+ */
+export const SHARD_REGISTRATION_REFUSAL_REASONS = ['num-shards-mismatch'] as const;
+
+/** One of {@link SHARD_REGISTRATION_REFUSAL_REASONS}. */
+export type ShardRegistrationRefusalReason =
+  typeof SHARD_REGISTRATION_REFUSAL_REASONS[number];
+
+/**
+ * The coordinator refused this node's region for a sharded type (#1300).
+ *
+ * The refusal used to be one `log.error` and nothing else: no event, no
+ * counter, no queryable state.  That matters more than a missing diagnostic
+ * usually does, because a refused region keeps running and keeps accepting
+ * traffic for the type, and everything it accepts buffers — so an unnoticed
+ * refusal ends in a node out of memory, and the only thing standing between a
+ * misconfigured rolling deploy and that outcome was whether somebody grepped
+ * for one error string.
+ *
+ * Published node-locally on the refused node, which is the node that has the
+ * problem.  `cluster.eventStream.bridge(ShardRegionRegistrationRefused)`
+ * collects them cluster-wide — a refusal originates on a single node, so it
+ * is a sound thing to bridge.
+ */
+export class ShardRegionRegistrationRefused {
+  constructor(
+    /** The sharded type name whose registration was refused. */
+    public readonly type: string,
+    public readonly reason: ShardRegistrationRefusalReason,
+    /** The shard count this node is configured with. */
+    public readonly regionNumShards: number,
+    /** The shard count the coordinator governs the type with. */
+    public readonly coordinatorNumShards: number,
+  ) {}
+  toString(): string {
+    return `ShardRegionRegistrationRefused(${this.type}, ${this.reason},`
+      + ` region=${this.regionNumShards}, coordinator=${this.coordinatorNumShards})`;
+  }
+}
+
 export type ClusterEvent =
   | SelfUp
   | SelfRemoved
@@ -220,4 +266,5 @@ export type ClusterEvent =
   | MemberLeft
   | MemberRemoved
   | ShardMapChanged
-  | ShardRegionRegistered;
+  | ShardRegionRegistered
+  | ShardRegionRegistrationRefused;

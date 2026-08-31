@@ -11,6 +11,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **A refused sharding registration is observable without scraping the log**
+  (#1300).  When a coordinator refuses a region over a `numShards` mismatch
+  (#633), the whole operator-visible signal was one `log.error` — no metric,
+  no event, no queryable state, and a grep for metric series under
+  `src/cluster/sharding/` returned none at all.  That matters more than a
+  missing diagnostic usually does: a refused region keeps running and keeps
+  accepting traffic for the type, everything it accepts buffers into the
+  still-uncapped region buffer (#461, #849), and the end state of an
+  unnoticed refusal is a node out of memory.  The only thing between a
+  misconfigured rolling deploy and that outcome was whether somebody grepped
+  for one error string.
+
+  Now: a counter `cluster_sharding_registrations_refused_total { type,
+  reason }`, following the label shape of its exact analogue one layer up,
+  `cluster_gossip_records_refused_total`; a `ShardRegionRegistrationRefused`
+  cluster event carrying both shard counts, for code that reacts rather than
+  polls; and `cluster.sharding.registrationRefusal(typeName)`, which returns
+  that event or `null` and is cleared once a later registration is accepted,
+  so a deploy that fixes the mismatch stops reporting one.  Documented under
+  `cluster/sharding/introspection` (EN + DE) as the signal to alert on.
+
 - **A `ShardRegion`'s registration with the coordinator is observable**
   (#1317).  Nothing announced it, so eleven sites across three sharding
   suites waited on a fixed `sleep(200)` under an identical comment saying the

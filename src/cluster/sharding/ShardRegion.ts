@@ -18,7 +18,9 @@ import {
   MemberUp,
   ShardMapChanged,
   ShardRegionRegistered,
+  ShardRegionRegistrationRefused,
 } from '../ClusterEvents.js';
+import { metricsOf } from '../../metrics/MetricsExtension.js';
 import { NodeAddress, type NodeAddressData } from '../NodeAddress.js';
 import { RemoteActorRef, remoteActorPath } from '../RemoteActorRef.js';
 import { hashShardId } from './ShardAllocator.js';
@@ -883,6 +885,24 @@ export class ShardRegion<TMessage = unknown>
       + `No shard will be allocated here and messages for this type will keep buffering until the `
       + `configuration agrees. Set the same numShards on every node that starts or proxies this type `
       + `(explicitly, or via ${ConfigKeys.sharding.numberOfShards}).`,
+    );
+    // The log line above was the *whole* of the operator-visible signal, and a
+    // log line is not something an alert can be built on (#1300).  The counter
+    // follows the label shape of `cluster_gossip_records_refused_total`, which
+    // is the exact analogue one layer up; the event is what a supervisor or a
+    // readiness probe can react to without scraping.
+    metricsOf(this.system).counter(
+      'cluster_sharding_registrations_refused_total',
+      { type: this.config.typeName, reason: 'num-shards-mismatch' },
+      { help: 'Cumulative count of shard-region registrations a coordinator refused.' },
+    ).inc();
+    this.config.cluster._publishClusterEvent(
+      new ShardRegionRegistrationRefused(
+        this.config.typeName,
+        'num-shards-mismatch',
+        message.regionNumShards,
+        message.numShards,
+      ),
     );
     this.releaseShardsAfterRefusal();
   }

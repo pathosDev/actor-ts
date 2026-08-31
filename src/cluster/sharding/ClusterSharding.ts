@@ -13,7 +13,12 @@ import {
   shardRegionName,
 } from '../../internal/SystemPaths.js';
 import type { Cluster } from '../Cluster.js';
-import { ShardMapChanged, ShardRegionRegistered, type ClusterEvent } from '../ClusterEvents.js';
+import {
+  ShardMapChanged,
+  ShardRegionRegistered,
+  ShardRegionRegistrationRefused,
+  type ClusterEvent,
+} from '../ClusterEvents.js';
 import type { EnvelopeMessage } from '../Protocol.js';
 import { HashAllocationStrategy } from './AllocationStrategy.js';
 import {
@@ -94,6 +99,16 @@ export class ClusterSharding {
    * without an `ask`.
    */
   private readonly registeredTypes = new Set<string>();
+
+  /**
+   * The last refusal per type (#1300), fed by `ShardRegionRegistrationRefused`
+   * and cleared when a later registration is accepted.
+   *
+   * The event itself is kept rather than a boolean, because "refused" without
+   * "and here are the two shard counts" is the report that sends an operator
+   * back to the logs — which is the thing this replaces.
+   */
+  private readonly registrationRefusals = new Map<string, ShardRegionRegistrationRefused>();
 
   private constructor(
     public readonly system: ActorSystem,
@@ -502,6 +517,28 @@ export class ClusterSharding {
   }
 
   /**
+   * Why the coordinator refused this node's region for `typeName`, or `null`
+   * if it did not (#1300).
+   *
+   * The refusal used to be one `log.error` and nothing else, which is not
+   * something an alert can be built on — and the consequence of missing it is
+   * not a missing diagnostic: a refused region keeps running and keeps
+   * accepting traffic for the type, everything it accepts buffers, and the end
+   * state of an unnoticed refusal is a node out of memory.
+   *
+   * Carries both shard counts, because "refused" on its own is the report that
+   * sends an operator back to the logs.  There is also a counter,
+   * `cluster_sharding_registrations_refused_total { type, reason }`, for the
+   * alert itself.
+   *
+   * Cleared when a later registration is accepted, so a rolling deploy that
+   * fixes the mismatch stops reporting one.
+   */
+  registrationRefusal(typeName: string): ShardRegionRegistrationRefused | null {
+    return this.registrationRefusals.get(typeName) ?? null;
+  }
+
+  /**
    * A ref to one shard.  Allocates the shard if it has no home yet — the same
    * thing a first message for it would have done.
    *
@@ -548,11 +585,24 @@ export class ClusterSharding {
     match(event)
       .with(P.instanceOf(ShardMapChanged), (e) => this.onShardMapChanged(e))
       .with(P.instanceOf(ShardRegionRegistered), (e) => this.onShardRegionRegistered(e))
+      .with(
+        P.instanceOf(ShardRegionRegistrationRefused),
+        (e) => this.onShardRegionRegistrationRefused(e),
+      )
       .otherwise(() => this.onOtherClusterEvent());
   }
 
   private onShardRegionRegistered(event: ShardRegionRegistered): void {
     this.registeredTypes.add(event.type);
+    // An accepted registration ends the refusal it may have followed: a
+    // rolling deploy that fixes `numShards` re-registers, and a stale refusal
+    // left standing here would keep reporting a problem that is over.
+    this.registrationRefusals.delete(event.type);
+  }
+
+  private onShardRegionRegistrationRefused(event: ShardRegionRegistrationRefused): void {
+    this.registrationRefusals.set(event.type, event);
+    this.registeredTypes.delete(event.type);
   }
 
   /**

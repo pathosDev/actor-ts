@@ -285,6 +285,50 @@ cluster.eventStream.bridge(ShardRegionRegistered);
   Gate vor einem `tell`.
 </Aside>
 
+## Wenn der Coordinator eine Region ablehnt
+
+Ein Coordinator lehnt eine Region ab, deren `numShards` nicht zu der Zahl
+passt, mit der er den Typ verwaltet. Das ist die Signatur eines Rolling
+Deployments, das die Einstellung auf einem Teil der Nodes geändert hat und
+auf dem Rest nicht — und es ist der eine Sharding-Fehler, der schlimmer
+wird, je länger er unbemerkt bleibt: die abgelehnte Region läuft weiter,
+nimmt weiter Traffic für den Typ an, und alles Angenommene **puffert**. Am
+Ende steht eine Node ohne Speicher.
+
+```ts
+const refusal = cluster.sharding.registrationRefusal('cart');
+if (refusal) {
+  console.error(
+    `refused: this node has ${refusal.regionNumShards},`
+    + ` the coordinator governs ${refusal.coordinatorNumShards}`,
+  );
+}
+```
+
+`null`, wenn es keine Ablehnung gibt, und geleert, sobald eine spätere
+Registrierung angenommen wird — ein Deployment, das den Mismatch behebt,
+meldet also keinen mehr. Dieselbe Ablehnung wird als Cluster-Event
+`ShardRegionRegistrationRefused` publisht, für Code, der reagieren statt
+pollen will.
+
+**Alarmieren sollte man auf den Zähler**, der ohne eigenen Code auskommt:
+
+```
+cluster_sharding_registrations_refused_total{type="cart",reason="num-shards-mismatch"}
+```
+
+Jeder Wert ungleich null ist einen Alarm wert — eine Ablehnung ist nie
+vorübergehend und löst sich nie von selbst. Sie folgt dem Label-Schema von
+`cluster_gossip_records_refused_total` und wird, wie jede Metrik hier, nur
+erfasst, wenn Metriken auf dem System aktiviert sind.
+
+<Aside type="caution" title="Die Log-Zeile ist nicht das Signal">
+  Die Ablehnung erzeugt zusätzlich eine `error`-Zeile, die beide Zahlen und
+  den zu setzenden HOCON-Key nennt. Diese Zeile ist für den, der ohnehin
+  gerade Logs liest; auf ihr lässt sich kein Alarm bauen — genau dafür gibt
+  es den Zähler und das Event.
+</Aside>
+
 ## Wohin als Nächstes
 
 - **[Sharding — Überblick](/de/cluster/sharding/overview/)** — die
