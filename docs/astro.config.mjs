@@ -459,6 +459,7 @@ export default defineConfig({
                 { label: 'Weakly-up',          slug: 'cluster/weakly-up',          translations: { de: 'Weakly-Up', es: 'Weakly-up', fr: 'Weakly-up', ja: 'Weakly-up', ko: 'Weakly-up', 'pt-BR': 'Weakly-up', ru: 'Weakly-up', 'zh-CN': 'Weakly-up' } },
                 { label: 'Refs across nodes',  slug: 'cluster/refs-across-nodes',  translations: { de: 'Refs über Nodes hinweg', es: 'Refs entre nodos', fr: 'Refs entre nœuds', ja: 'ノード間の参照', ko: '노드 간 ActorRef', 'pt-BR': 'Refs entre nós', ru: 'Ссылки между узлами', 'zh-CN': '跨节点引用' } },
                 { label: 'Distributed PubSub', slug: 'cluster/pubsub',             translations: { de: 'Distributed PubSub', es: 'Distributed PubSub', fr: 'Distributed PubSub', ja: 'Distributed PubSub', ko: 'Distributed PubSub', 'pt-BR': 'Distributed PubSub', ru: 'Distributed PubSub', 'zh-CN': 'Distributed PubSub' } },
+                { label: 'Cluster event stream', slug: 'cluster/event-stream',     translations: { de: 'Cluster-Event-Stream', es: 'Event stream del cluster', fr: 'Event stream du cluster', ja: 'クラスタイベントストリーム', ko: '클러스터 이벤트 스트림', 'pt-BR': 'Event stream do cluster', ru: 'Событийный поток кластера', 'zh-CN': '集群事件流' } },
                 {
                   label: 'Singleton',
                   translations: { de: 'Singleton', es: 'Singleton', fr: 'Singleton', ja: 'Singleton', ko: 'Singleton', 'pt-BR': 'Singleton', ru: 'Singleton', 'zh-CN': 'Singleton' },

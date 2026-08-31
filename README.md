@@ -59,6 +59,10 @@ A short tour of what's in the box:
   transports (TCP, MessageChannel, in-memory).
 - **Cluster sharding + singleton + pub-sub + reliable delivery + receptionist**
   — production patterns from the actor-model tradition.
+- **Two event streams, and the owner says which** — `system.eventStream` is
+  node-local, `cluster.eventStream` carries the same class and `kind`
+  channels to every node, and a local channel can be bridged onto the
+  cluster one per channel.
 - **Distributed Data** — nine CRDTs (counters, registers, sets, maps) with
   durable-storage backend, quorum reads/writes, automatic gossip.
 - **Persistence** — `PersistentActor`, `DurableState`, snapshots, projections
