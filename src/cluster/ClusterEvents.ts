@@ -172,6 +172,39 @@ export class ShardMapChanged {
   ) {}
 }
 
+/**
+ * A `ShardRegion` on this node finished registering with the coordinator for
+ * its type, so it can now be allocated shards (#1317).
+ *
+ * **Membership convergence is not a proxy for this and never was.**  A region
+ * registers with the coordinator that runs on the *leader*, over a retry timer
+ * of its own; a cluster can be fully converged while a region is still
+ * unregistered, which is why eleven test sites used to sit on a fixed sleep
+ * with no condition to poll.  Beyond tests it is the question a readiness
+ * probe asks: whether a region this node just started can route.
+ *
+ * Published node-locally, like {@link ShardMapChanged} and for the same
+ * reason: it describes something that happened on *this* node.  Bridge it with
+ * `cluster.eventStream.bridge(ShardRegionRegistered)` to watch every node's
+ * registrations from one place — it originates on a single node, so it is a
+ * sound thing to bridge.
+ *
+ * Fires on the *transition*.  The coordinator re-acknowledges on every
+ * re-registration (a leader change re-registers every region), and an event
+ * per acknowledgment would report a state change that did not happen.
+ */
+export class ShardRegionRegistered {
+  constructor(
+    /** The sharded type name this region serves. */
+    public readonly type: string,
+    /** Whether the registered region is a proxy — a proxy is never allocated shards. */
+    public readonly proxy: boolean,
+  ) {}
+  toString(): string {
+    return `ShardRegionRegistered(${this.type}${this.proxy ? ', proxy' : ''})`;
+  }
+}
+
 export type ClusterEvent =
   | SelfUp
   | SelfRemoved
@@ -186,4 +219,5 @@ export type ClusterEvent =
   | MemberDown
   | MemberLeft
   | MemberRemoved
-  | ShardMapChanged;
+  | ShardMapChanged
+  | ShardRegionRegistered;

@@ -11,6 +11,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **A `ShardRegion`'s registration with the coordinator is observable**
+  (#1317).  Nothing announced it, so eleven sites across three sharding
+  suites waited on a fixed `sleep(200)` under an identical comment saying the
+  condition to poll did not exist.  `cluster.sharding.isRegistered(typeName)`
+  is that condition — synchronous, fed by a new node-local
+  `ShardRegionRegistered` cluster event the way `shardMap` is fed by
+  `ShardMapChanged` — and the eleven sleeps now wait on it.  It answers what
+  membership convergence cannot: a converged cluster can still hold a region
+  that has not registered, because a region registers with the coordinator on
+  the leader over a retry timer of its own.
+
+  The event fires on the transition, not on every acknowledgment — a leader
+  change re-registers every region — and a refusal clears the flag, so the
+  acknowledgment after one is a transition again.
+
+  **The claim in those eleven comments was wrong, and is corrected rather
+  than transplanted.**  They said an early `ask` "races the coordinator
+  instead of being buffered"; the region in fact buffers any message whose
+  shard home is unknown and re-asks for everything buffered once it
+  registers, so the message is delivered late rather than dropped.  What the
+  sleep was really protecting is the `ask` wrapped around it, whose own
+  deadline runs while the message waits in that buffer.  Documented that way
+  under `cluster/sharding/introspection` (EN + DE).
+
 - **`cluster.eventStream` — the event stream, cluster-wide** (#1397).
   `system.eventStream` is scoped to one `ActorSystem`, which is one node: a
   publish walks an in-process list and never touches the network.  Nothing

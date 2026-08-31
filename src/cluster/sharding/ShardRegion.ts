@@ -17,6 +17,7 @@ import {
   MemberRemoved,
   MemberUp,
   ShardMapChanged,
+  ShardRegionRegistered,
 } from '../ClusterEvents.js';
 import { NodeAddress, type NodeAddressData } from '../NodeAddress.js';
 import { RemoteActorRef, remoteActorPath } from '../RemoteActorRef.js';
@@ -169,6 +170,27 @@ export class ShardRegion<TMessage = unknown>
    * about yet.
    */
   private registerRefused = false;
+
+  /**
+   * Whether {@link ShardRegionRegistered} has already been published for the
+   * current registration (#1317).
+   *
+   * Held so the event marks the *transition* rather than every acknowledgment:
+   * a leader change re-registers every region, and an event per acknowledgment
+   * would report a state change that did not happen.  Cleared by a refusal, so
+   * the acknowledgment that follows one is a real transition again — the region
+   * became routable a second time.
+   *
+   * **Deliberately not called `registered`.**  #681 removed a field of that
+   * name because it was written and never read, and
+   * `tests/unit/cluster/DeadProtocolSurface.test.ts` pins its absence so it
+   * cannot come back.  This flag is read — it is the guard one line below the
+   * publish — but the name is the one that guard watches, and the more precise
+   * name is the better one anyway: what this records is that the announcement
+   * went out, while "is this region registered" is answered from outside by
+   * `ClusterSharding.isRegistered`.
+   */
+  private registrationAnnounced = false;
 
   /**
    * Senders of messages currently awaiting a reply from a remote shard.
@@ -810,6 +832,15 @@ export class ShardRegion<TMessage = unknown>
     this.registerRefused = false;
     this.registerTimer?.cancel();
     this.registerTimer = null;
+    // Published only on the transition — see the field's own note.  It goes on
+    // the node-local bus like `ShardMapChanged`, because it describes what
+    // happened on this node; `cluster.eventStream.bridge(...)` is how a
+    // watcher collects every node's.
+    if (this.registrationAnnounced) return;
+    this.registrationAnnounced = true;
+    this.config.cluster._publishClusterEvent(
+      new ShardRegionRegistered(this.config.typeName, this.config.proxy),
+    );
   }
 
   /**
@@ -838,6 +869,11 @@ export class ShardRegion<TMessage = unknown>
   private onRegisterRefused(message: RegisterRefused, peer: NodeAddress | null): void {
     if (!this.fromCoordinator(message, peer)) return;
     this.registerRefused = true;
+    // A refused region is not registered, whatever it was a moment ago: the
+    // shards it held are released below, and nothing more will be allocated to
+    // it.  Clearing this is also what makes a later acknowledgment a real
+    // transition again rather than a silent one.
+    this.registrationAnnounced = false;
     this.registerTimer?.cancel();
     this.registerTimer = null;
     this.log.error(

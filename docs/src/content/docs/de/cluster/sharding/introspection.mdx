@@ -238,6 +238,53 @@ Greif stattdessen zu [`shards()`](#die-shards-auflisten), wenn du
 Entity-Zahlen oder lebende Refs brauchst, und zu `ShardMapChanged`, wenn
 du die Änderungen statt des letzten Stands willst.
 
+## Kann die Region schon routen?
+
+Eine Region registriert sich beim Coordinator, der auf dem Leader läuft —
+über einen eigenen Retry-Timer. Das ist ein anderer Schritt als der
+Cluster-Beitritt, und **Membership-Konvergenz ist kein Ersatz dafür**: ein
+vollständig konvergierter Cluster kann sehr wohl eine Region halten, die
+sich noch nicht registriert hat.
+
+```ts
+if (cluster.sharding.isRegistered('cart')) { /* the coordinator knows this region */ }
+```
+
+Synchron und gratis, wie [`shardMap`](#der-karte-folgen), und auf demselben
+Weg gespeist — aus einem `ShardRegionRegistered`-Event, das die Region
+dieser Node publisht, sobald der Coordinator sie bestätigt. `false` für
+einen Typ, den diese Node nie gestartet hat, und für einen, dessen
+Registrierung wegen eines `numShards`-Mismatch abgelehnt wurde.
+
+```ts
+cluster.subscribe((event) => {
+  if (event instanceof ShardRegionRegistered) console.log(event.type, 'can route');
+});
+```
+
+Das Event ist node-lokal wie jedes Cluster-Event: es sagt etwas über die
+Region *dieser* Node. Wer die Registrierungen aller Nodes an einer Stelle
+sehen will, bridgt es — es entsteht auf genau einer Node, ist also ein
+sinnvoller Bridge-Kandidat:
+
+```ts
+cluster.eventStream.bridge(ShardRegionRegistered);
+```
+
+<Aside type="note" title="Keine Voraussetzung fürs Senden">
+  Eine Nachricht, die vor Abschluss der Registrierung gesendet wird, geht
+  **nicht** verloren. Die Region puffert alles, dessen Shard-Home unbekannt
+  ist, und fragt den Coordinator danach; sobald sie registriert ist, fragt
+  sie für alles bereits Gepufferte erneut — die Nachricht kommt also
+  verspätet an, statt verworfen zu werden.
+
+  Ablaufen kann ein `ask`, das um eine solche Nachricht herumliegt: es
+  trägt seine eigene Frist, und die läuft, während die Nachricht im Puffer
+  wartet. Dies ist also das Signal, auf das man vor einem `ask` mit knappem
+  Budget wartet — und das, was eine Readiness-Probe melden sollte — kein
+  Gate vor einem `tell`.
+</Aside>
+
 ## Wohin als Nächstes
 
 - **[Sharding — Überblick](/de/cluster/sharding/overview/)** — die

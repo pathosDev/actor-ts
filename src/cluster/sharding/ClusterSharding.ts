@@ -13,7 +13,7 @@ import {
   shardRegionName,
 } from '../../internal/SystemPaths.js';
 import type { Cluster } from '../Cluster.js';
-import { ShardMapChanged, type ClusterEvent } from '../ClusterEvents.js';
+import { ShardMapChanged, ShardRegionRegistered, type ClusterEvent } from '../ClusterEvents.js';
 import type { EnvelopeMessage } from '../Protocol.js';
 import { HashAllocationStrategy } from './AllocationStrategy.js';
 import {
@@ -81,6 +81,19 @@ export class ClusterSharding {
    * assignment per publish and turns a round trip into a field read (#682).
    */
   private readonly shardMapsByType = new Map<string, ShardMapView>();
+
+  /**
+   * Types whose region on *this* node has registered with the coordinator
+   * (#1317), fed by `ShardRegionRegistered` through the same subscription that
+   * feeds {@link shardMapsByType}.
+   *
+   * A set rather than a per-type flag on some region record, because there is
+   * no such record here: this class holds refs, and the registration state
+   * lives inside the region actor where nothing outside its mailbox can read
+   * it.  Mirroring the one bit through the event is what makes it readable
+   * without an `ask`.
+   */
+  private readonly registeredTypes = new Set<string>();
 
   private constructor(
     public readonly system: ActorSystem,
@@ -462,6 +475,33 @@ export class ClusterSharding {
   }
 
   /**
+   * Has the region this node started for `typeName` registered with the
+   * coordinator (#1317)?
+   *
+   * The question a readiness probe asks, and the one **membership convergence
+   * does not answer**: a region registers with the coordinator on the leader,
+   * over a retry timer of its own, so a fully converged cluster can still hold
+   * an unregistered region.  Synchronous and free — it reads a set fed by the
+   * `ShardRegionRegistered` subscription, the same way {@link shardMap} reads
+   * one fed by `ShardMapChanged`.
+   *
+   * `false` for a type this node never started, and for one whose registration
+   * the coordinator refused over a `numShards` mismatch.
+   *
+   * **What it does *not* gate is message loss.**  A message sent before
+   * registration lands is buffered by the region and delivered once the
+   * coordinator answers with a shard home — `route` buffers whenever the home
+   * is unknown, and `register` re-asks for everything buffered.  What can
+   * still expire is an `ask` wrapped around such a message, because the ask
+   * carries its own deadline and that deadline runs while the message waits.
+   * So this is the signal to wait on before an `ask` with a tight budget, not
+   * a precondition for `tell`.
+   */
+  isRegistered(typeName: string): boolean {
+    return this.registeredTypes.has(typeName);
+  }
+
+  /**
    * A ref to one shard.  Allocates the shard if it has no home yet — the same
    * thing a first message for it would have done.
    *
@@ -507,7 +547,12 @@ export class ClusterSharding {
   private onClusterEvent(event: ClusterEvent): void {
     match(event)
       .with(P.instanceOf(ShardMapChanged), (e) => this.onShardMapChanged(e))
+      .with(P.instanceOf(ShardRegionRegistered), (e) => this.onShardRegionRegistered(e))
       .otherwise(() => this.onOtherClusterEvent());
+  }
+
+  private onShardRegionRegistered(event: ShardRegionRegistered): void {
+    this.registeredTypes.add(event.type);
   }
 
   /**
