@@ -20,5 +20,8 @@
   },
   "dependencies": {
     "ts-pattern": "^5.9.0"
+  },
+  "overrides": {
+    "cookie": "^0.7.0"
   }
 }
