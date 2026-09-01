@@ -397,18 +397,29 @@ Four good fits:
   delay before the first publish across nodes.
 </Aside>
 
-## DistributedPubSub vs event-stream
+## DistributedPubSub vs the event streams
 
-Two pub/sub bus implementations; pick by scope:
+Three pub/sub buses; pick by scope first, then by how a channel is named:
 
-| Bus | Scope | Topic key |
+| Bus | Scope | Channel key |
 | --- | --- | --- |
-| [Event stream](/fundamentals/event-stream/) | One ActorSystem | Class (`instanceof`) |
+| [Event stream](/fundamentals/event-stream/) | One ActorSystem | Class (`instanceof`) or `kind` |
+| [Cluster event stream](/cluster/event-stream/) | Cluster-wide | Class (`instanceof`) or `kind` |
 | `DistributedPubSub` | Cluster-wide | String topic |
 
-Use the event stream for in-system dispatch; use DistributedPubSub
-when topics span nodes.  Both can coexist — many apps use both for
-different concerns.
+Use the event stream for in-system dispatch, and the cluster event
+stream when the *same* channels should reach every node — it is built
+on the mediator described above, so it is this page's machinery with a
+typed façade.
+
+Reach for `DistributedPubSub` directly when a topic is a **string
+chosen at runtime** (a room id, a tenant, a device id — anything a
+class or `kind` cannot enumerate ahead of time), or when you want
+**anycast**: exactly one subscriber cluster-wide rather than all of
+them. The event streams offer neither.
+
+All three can coexist — many apps use more than one for different
+concerns.
 
 ## Where to next
 

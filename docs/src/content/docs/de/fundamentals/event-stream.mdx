@@ -1,13 +1,20 @@
 ---
 title: Event-Stream
-description: Ein systemweiter Pub/Sub-Bus — abonniere eine Klasse von Event oder einen `kind`-diskriminierten Type, empfange es via `tell`, wann immer jemand publisht. Predicate-Filterung, Class-Hierarchy-Auslieferung und wo du ihn statt direkter Messages verwendest.
+description: Der Pub/Sub-Bus eines ActorSystems — abonniere eine Klasse von Event oder einen `kind`-diskriminierten Type, empfange es via `tell`, wann immer jemand publisht. Node-lokal by design, mit Predicate-Filterung, Class-Hierarchy-Auslieferung und wo du ihn statt direkter Messages verwendest.
 ---
 
-Der **Event-Stream** ist ein systemweiter Bus für
+Der **Event-Stream** ist der Bus *eines* `ActorSystem` für
 One-to-Many-Messaging, das nicht in die Eltern-Kind- oder
 Sender-Empfänger-Form passt.  Jeder Actor kann eine Klasse von Event
 oder einen `kind`-diskriminierten Type abonnieren; jeder Code kann
 publishen; der Bus matcht und `tell`t das Event an jeden Subscriber.
+
+**Er ist node-lokal**, und das ist Absicht: ein `ActorSystem` ist eine
+Node, ein Publish hier erreicht also die Subscriber dieser Node und
+sonst niemanden.  Das Gegenstück über Node-Grenzen hinweg ist
+[`cluster.eventStream`](/de/cluster/event-stream/) — dieselben
+Channel-Formen, clusterweit.  Alles Weitere hier betrifft den lokalen
+Bus.
 
 ```ts
 import { Actor, ActorSystem } from 'actor-ts';
@@ -216,10 +223,14 @@ Drei gute Passungen:
 
 1. **Querschnitt-Beobachtung** — Logging, Metriken, Audit.  Viele
    Subscriber, von denen der Publisher keinen kennen soll.
-2. **Systemweite Benachrichtigungen** — "der Cluster hat ein Mitglied
+2. **Node-weite Benachrichtigungen** — "der Cluster hat ein Mitglied
    gewonnen", "der Cache wurde geflusht".  Die Cluster-Extension
    publisht ihre eigenen Events hier; du kannst abonnieren und
-   reagieren.
+   reagieren.  Die Mitgliedschaftsevents lohnen genaues Lesen, weil
+   sie wie eine Ausnahme aussehen und keine sind: du siehst
+   Mitgliedschaftsänderungen anderer Nodes, weil *jede* Node ihre
+   eigene Kopie publisht, abgeleitet aus dem Gossip, den sie gemerged
+   hat — nicht weil das Event über die Leitung gegangen wäre.
 3. **Entkoppeln von Actor-Verdrahtung** in Tests — statt eine
    Spy-Ref durch fünf Schichten zu legen, publishe auf dem Stream
    und lass den Spy direkt abonnieren.
@@ -292,9 +303,13 @@ sie publisht.
 
 ## Wie es weitergeht
 
+- **[Cluster-Event-Stream](/de/cluster/event-stream/)** — dieser Bus,
+  aber clusterweit: dieselben Klassen- und `kind`-Channels, auf jeder
+  Node.  Dort steht auch, wie man einen Channel dieses Busses auf
+  jenen *bridgt*.
 - **[DistributedPubSub](/de/cluster/pubsub/)** —
-  cluster-weites Publish/Subscribe mit Topic-Routing; komplementär
-  zum lokalen Event-Stream.
+  cluster-weites Publish/Subscribe mit Topic-Routing; zur Laufzeit
+  gewählte String-Topics und Anycast.
 - **[Actor-System](/de/fundamentals/actor-system/)** —
   `system.eventStream` ist, wo du den Bus erreichst.
 - **[Nachrichten](/de/fundamentals/messages/)** — die

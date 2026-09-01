@@ -58,6 +58,8 @@ import type {
   CoordinatorStateData,
   CoordinatorStateStore,
 } from '../../../../src/cluster/sharding/CoordinatorState.js';
+import { ShardRegionRegistrationRefused } from '../../../../src/cluster/ClusterEvents.js';
+import { MetricsExtensionId, metricsOf } from '../../../../src/metrics/MetricsExtension.js';
 import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
 import type { ActorRef } from '../../../../src/ActorRef.js';
 import type { LogContextData } from '../../../../src/LogContext.js';
@@ -394,6 +396,79 @@ describe('a refused region gives up the shards it already hosts (#633)', () => {
     await sleep(300);
     expect(delivered).toBe(1);
     expect(shardPresent(node, shardId)).toBe(false);
+  }, 20_000);
+});
+
+/** Refusals recorded for `TYPE_NAME` on this node, as the metric sees them. */
+function refusalsCounted(node: Node): number {
+  return metricsOf(node.system)
+    .counter('cluster_sharding_registrations_refused_total', {
+      type: TYPE_NAME, reason: 'num-shards-mismatch',
+    }).value;
+}
+
+describe('a refusal is observable without scraping the log (#1300)', () => {
+  test('it increments the counter, publishes an event and fills the readout', async () => {
+    const node = await startNode('refusal-observable', 47_610);
+    // Metrics are off unless a system turns them on, which is also the posture
+    // of anyone who would alert on this counter.  Enabling it here is what
+    // makes the reading below a measurement rather than a default.
+    node.system.extension(MetricsExtensionId).enable();
+    const seen: ShardRegionRegistrationRefused[] = [];
+    node.cluster.subscribe((event) => {
+      if (event instanceof ShardRegionRegistrationRefused) seen.push(event);
+    });
+
+    // The counter has to be read *before* the refusal too: a metric that was
+    // already non-zero would make the assertion below pass on the wrong thing.
+    expect(refusalsCounted(node)).toBe(0);
+
+    tellAsCoordinator(node, {
+      kind: 'sharding.RegisterRefused',
+      coordinator: '/system/cluster/sharding/coordinator-entity',
+      numShards: NUM_SHARDS,
+      regionNumShards: NUM_SHARDS + 1,
+    });
+
+    await awaitCondition(() => seen.length > 0, {
+      timeoutMs: 4_000, label: 'the refusal was published as a cluster event',
+    });
+
+    expect(refusalsCounted(node)).toBe(1);
+    expect(seen[0]?.type).toBe(TYPE_NAME);
+    expect(seen[0]?.reason).toBe('num-shards-mismatch');
+    // Both counts, because "refused" on its own is the report that sends an
+    // operator back to the log this replaces.
+    expect(seen[0]?.regionNumShards).toBe(NUM_SHARDS + 1);
+    expect(seen[0]?.coordinatorNumShards).toBe(NUM_SHARDS);
+
+    const readout = node.cluster.sharding.registrationRefusal(TYPE_NAME);
+    expect(readout?.reason).toBe('num-shards-mismatch');
+    expect(readout?.regionNumShards).toBe(NUM_SHARDS + 1);
+    expect(node.cluster.sharding.isRegistered(TYPE_NAME)).toBe(false);
+  }, 20_000);
+
+  test('a normal registration does none of it', async () => {
+    const node = await startNode('refusal-negative', 47_611);
+    // Enabled here too, so the zero below means "counted nothing" rather than
+    // "counted nothing because metrics were off" — which is the reading that
+    // would make this case pass no matter what the refusal path did.
+    node.system.extension(MetricsExtensionId).enable();
+    const seen: ShardRegionRegistrationRefused[] = [];
+    node.cluster.subscribe((event) => {
+      if (event instanceof ShardRegionRegistrationRefused) seen.push(event);
+    });
+
+    // Waiting for the *positive* signal is what makes the three absences below
+    // mean "the registration path ran and refused nothing" rather than "the
+    // registration had not happened yet".
+    await awaitCondition(() => node.cluster.sharding.isRegistered(TYPE_NAME), {
+      timeoutMs: 4_000, label: 'the region registered with the coordinator',
+    });
+
+    expect(refusalsCounted(node)).toBe(0);
+    expect(seen).toHaveLength(0);
+    expect(node.cluster.sharding.registrationRefusal(TYPE_NAME)).toBeNull();
   }, 20_000);
 });
 

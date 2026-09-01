@@ -26,7 +26,8 @@ named identically.  This guide walks through the translation.
 | `PoisonPill` | `PoisonPill.instance` |
 | `Kill` | `Kill.instance` |
 | `setReceiveTimeout(d)` | `context.setReceiveTimeout(ms)` |
-| `EventStream` | `system.eventStream` |
+| `EventStream` | `system.eventStream` (node-local, same as on the JVM) |
+| — | `cluster.eventStream` (the same channels, cluster-wide) |
 | `Cluster.get(system).join(...)` | `Cluster.join(system, settings)` |
 | `ClusterSharding` | `cluster.sharding` (+ `ShardKey`) |
 | `ClusterSingleton` | `cluster.singleton` (+ `SingletonKey`) |

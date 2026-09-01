@@ -13,7 +13,12 @@ import {
   shardRegionName,
 } from '../../internal/SystemPaths.js';
 import type { Cluster } from '../Cluster.js';
-import { ShardMapChanged, type ClusterEvent } from '../ClusterEvents.js';
+import {
+  ShardMapChanged,
+  ShardRegionRegistered,
+  ShardRegionRegistrationRefused,
+  type ClusterEvent,
+} from '../ClusterEvents.js';
 import type { EnvelopeMessage } from '../Protocol.js';
 import { HashAllocationStrategy } from './AllocationStrategy.js';
 import {
@@ -81,6 +86,29 @@ export class ClusterSharding {
    * assignment per publish and turns a round trip into a field read (#682).
    */
   private readonly shardMapsByType = new Map<string, ShardMapView>();
+
+  /**
+   * Types whose region on *this* node has registered with the coordinator
+   * (#1317), fed by `ShardRegionRegistered` through the same subscription that
+   * feeds {@link shardMapsByType}.
+   *
+   * A set rather than a per-type flag on some region record, because there is
+   * no such record here: this class holds refs, and the registration state
+   * lives inside the region actor where nothing outside its mailbox can read
+   * it.  Mirroring the one bit through the event is what makes it readable
+   * without an `ask`.
+   */
+  private readonly registeredTypes = new Set<string>();
+
+  /**
+   * The last refusal per type (#1300), fed by `ShardRegionRegistrationRefused`
+   * and cleared when a later registration is accepted.
+   *
+   * The event itself is kept rather than a boolean, because "refused" without
+   * "and here are the two shard counts" is the report that sends an operator
+   * back to the logs — which is the thing this replaces.
+   */
+  private readonly registrationRefusals = new Map<string, ShardRegionRegistrationRefused>();
 
   private constructor(
     public readonly system: ActorSystem,
@@ -462,6 +490,55 @@ export class ClusterSharding {
   }
 
   /**
+   * Has the region this node started for `typeName` registered with the
+   * coordinator (#1317)?
+   *
+   * The question a readiness probe asks, and the one **membership convergence
+   * does not answer**: a region registers with the coordinator on the leader,
+   * over a retry timer of its own, so a fully converged cluster can still hold
+   * an unregistered region.  Synchronous and free — it reads a set fed by the
+   * `ShardRegionRegistered` subscription, the same way {@link shardMap} reads
+   * one fed by `ShardMapChanged`.
+   *
+   * `false` for a type this node never started, and for one whose registration
+   * the coordinator refused over a `numShards` mismatch.
+   *
+   * **What it does *not* gate is message loss.**  A message sent before
+   * registration lands is buffered by the region and delivered once the
+   * coordinator answers with a shard home — `route` buffers whenever the home
+   * is unknown, and `register` re-asks for everything buffered.  What can
+   * still expire is an `ask` wrapped around such a message, because the ask
+   * carries its own deadline and that deadline runs while the message waits.
+   * So this is the signal to wait on before an `ask` with a tight budget, not
+   * a precondition for `tell`.
+   */
+  isRegistered(typeName: string): boolean {
+    return this.registeredTypes.has(typeName);
+  }
+
+  /**
+   * Why the coordinator refused this node's region for `typeName`, or `null`
+   * if it did not (#1300).
+   *
+   * The refusal used to be one `log.error` and nothing else, which is not
+   * something an alert can be built on — and the consequence of missing it is
+   * not a missing diagnostic: a refused region keeps running and keeps
+   * accepting traffic for the type, everything it accepts buffers, and the end
+   * state of an unnoticed refusal is a node out of memory.
+   *
+   * Carries both shard counts, because "refused" on its own is the report that
+   * sends an operator back to the logs.  There is also a counter,
+   * `cluster_sharding_registrations_refused_total { type, reason }`, for the
+   * alert itself.
+   *
+   * Cleared when a later registration is accepted, so a rolling deploy that
+   * fixes the mismatch stops reporting one.
+   */
+  registrationRefusal(typeName: string): ShardRegionRegistrationRefused | null {
+    return this.registrationRefusals.get(typeName) ?? null;
+  }
+
+  /**
    * A ref to one shard.  Allocates the shard if it has no home yet — the same
    * thing a first message for it would have done.
    *
@@ -507,7 +584,25 @@ export class ClusterSharding {
   private onClusterEvent(event: ClusterEvent): void {
     match(event)
       .with(P.instanceOf(ShardMapChanged), (e) => this.onShardMapChanged(e))
+      .with(P.instanceOf(ShardRegionRegistered), (e) => this.onShardRegionRegistered(e))
+      .with(
+        P.instanceOf(ShardRegionRegistrationRefused),
+        (e) => this.onShardRegionRegistrationRefused(e),
+      )
       .otherwise(() => this.onOtherClusterEvent());
+  }
+
+  private onShardRegionRegistered(event: ShardRegionRegistered): void {
+    this.registeredTypes.add(event.type);
+    // An accepted registration ends the refusal it may have followed: a
+    // rolling deploy that fixes `numShards` re-registers, and a stale refusal
+    // left standing here would keep reporting a problem that is over.
+    this.registrationRefusals.delete(event.type);
+  }
+
+  private onShardRegionRegistrationRefused(event: ShardRegionRegistrationRefused): void {
+    this.registrationRefusals.set(event.type, event);
+    this.registeredTypes.delete(event.type);
   }
 
   /**

@@ -27,7 +27,8 @@ sind identisch benannt.  Dieser Guide führt durch die
 | `PoisonPill` | `PoisonPill.instance` |
 | `Kill` | `Kill.instance` |
 | `setReceiveTimeout(d)` | `context.setReceiveTimeout(ms)` |
-| `EventStream` | `system.eventStream` |
+| `EventStream` | `system.eventStream` (node-lokal, wie auf der JVM) |
+| — | `cluster.eventStream` (dieselben Channels, clusterweit) |
 | `Cluster.get(system).join(...)` | `Cluster.join(system, settings)` |
 | `ClusterSharding` | `cluster.sharding` (+ `ShardKey`) |
 | `ClusterSingleton` | `cluster.singleton` (+ `SingletonKey`) |

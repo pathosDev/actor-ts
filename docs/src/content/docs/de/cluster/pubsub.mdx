@@ -416,19 +416,30 @@ Vier gute Anwendungsfälle:
   ersten cross-node Publish ein.
 </Aside>
 
-## DistributedPubSub vs. Event-Stream
+## DistributedPubSub vs. die Event-Streams
 
-Zwei Pub/Sub-Bus-Implementierungen; wähle nach Scope:
+Drei Pub/Sub-Busse; wähle zuerst nach Scope, dann danach, wie ein
+Channel benannt wird:
 
-| Bus | Scope | Topic-Key |
+| Bus | Scope | Channel-Key |
 | --- | --- | --- |
-| [Event-Stream](/de/fundamentals/event-stream/) | Ein ActorSystem | Klasse (`instanceof`) |
+| [Event-Stream](/de/fundamentals/event-stream/) | Ein ActorSystem | Klasse (`instanceof`) oder `kind` |
+| [Cluster-Event-Stream](/de/cluster/event-stream/) | Clusterweit | Klasse (`instanceof`) oder `kind` |
 | `DistributedPubSub` | Clusterweit | String-Topic |
 
-Nutze den Event-Stream für In-System-Dispatch; nutze
-DistributedPubSub, wenn Topics Node-Grenzen überschreiten. Beide
-können koexistieren — viele Apps nutzen beide für verschiedene
-Belange.
+Nutze den Event-Stream für In-System-Dispatch und den
+Cluster-Event-Stream, wenn *dieselben* Channels jede Node erreichen
+sollen — er setzt auf dem oben beschriebenen Mediator auf, ist also
+die Maschinerie dieser Seite mit einer typisierten Fassade.
+
+Greife direkt zu `DistributedPubSub`, wenn ein Topic ein **zur
+Laufzeit gewählter String** ist (eine Room-Id, ein Tenant, eine
+Device-Id — alles, was eine Klasse oder ein `kind` nicht vorab
+aufzählen kann), oder wenn du **Anycast** willst: genau ein Subscriber
+clusterweit statt aller. Die Event-Streams bieten beides nicht.
+
+Alle drei können koexistieren — viele Apps nutzen mehr als einen für
+verschiedene Belange.
 
 ## Wohin als Nächstes
 

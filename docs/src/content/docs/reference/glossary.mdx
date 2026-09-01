@@ -64,6 +64,11 @@ that fails fast after sustained downstream failures.  See
 route messages across the network.  See
 [Cluster overview](/cluster/overview/).
 
+**Cluster event stream.**  The cluster-wide counterpart to the event
+stream — the same class and `kind` channels, reaching subscribers on
+every node.  Reached as `cluster.eventStream`.  See
+[Cluster event stream](/cluster/event-stream/).
+
 **ClusterSharding.**  Distributes per-key actors across cluster
 nodes with automatic rebalancing.  See
 [Sharding overview](/cluster/sharding/overview/).
@@ -139,9 +144,10 @@ something happened.  Distinct from a command.  See
 by replaying a log of events.  See
 [Persistence overview](/persistence/overview/).
 
-**Event stream.**  System-wide pub/sub bus, scoped to one
-ActorSystem.  See
-[Event stream](/fundamentals/event-stream/).
+**Event stream.**  Pub/sub bus scoped to one ActorSystem, which is
+one node — a publish never leaves the process.  See
+[Event stream](/fundamentals/event-stream/), and *Cluster event
+stream* above for the one that crosses nodes.
 
 **Extension.**  Plugin mechanism — lazy-initialized, system-scoped
 services (cluster, persistence, metrics, …).  See

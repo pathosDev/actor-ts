@@ -404,6 +404,7 @@ const STOCK_LABELS: Readonly<Record<string, ReadonlyArray<string>>> = {
   cluster_members_up: [],
   cluster_gossip_rounds_total: [],
   cluster_gossip_records_refused_total: ['reason'],
+  cluster_sharding_registrations_refused_total: ['reason', 'type'],
   cluster_envelope_from_mismatch_total: ['frame'],
   distributed_data_quorum_pending: [],
   distributed_data_quorum_timeouts_total: ['operation'],
@@ -439,6 +440,11 @@ const PER_INSTANCE_LABELS: Readonly<Record<string, string>> = {
     + 'you declare; a per-pid fan-out is a cardinality the deployment opted into',
   'persistence_projection_failures_total.projection': 'as above',
   'persistence_projection_stalled.projection': 'as above',
+  'cluster_sharding_registrations_refused_total.type': 'the sharded type name, taken '
+    + 'from this node’s own StartShardingOptions and never off the wire, so it is '
+    + 'bounded by the types the deployment starts — the same shape as the '
+    + 'projection rows above, and the label the metric exists to carry, since which '
+    + 'type is misconfigured is the whole of the alert',
 };
 
 /**

@@ -30,6 +30,81 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   slowed by the host process's own heap, garbage collection and coverage
   counters.
 
+- **A refused sharding registration is observable without scraping the log**
+  (#1300).  When a coordinator refuses a region over a `numShards` mismatch
+  (#633), the whole operator-visible signal was one `log.error` — no metric,
+  no event, no queryable state, and a grep for metric series under
+  `src/cluster/sharding/` returned none at all.  That matters more than a
+  missing diagnostic usually does: a refused region keeps running and keeps
+  accepting traffic for the type, everything it accepts buffers into the
+  still-uncapped region buffer (#461, #849), and the end state of an
+  unnoticed refusal is a node out of memory.  The only thing between a
+  misconfigured rolling deploy and that outcome was whether somebody grepped
+  for one error string.
+
+  Now: a counter `cluster_sharding_registrations_refused_total { type,
+  reason }`, following the label shape of its exact analogue one layer up,
+  `cluster_gossip_records_refused_total`; a `ShardRegionRegistrationRefused`
+  cluster event carrying both shard counts, for code that reacts rather than
+  polls; and `cluster.sharding.registrationRefusal(typeName)`, which returns
+  that event or `null` and is cleared once a later registration is accepted,
+  so a deploy that fixes the mismatch stops reporting one.  Documented under
+  `cluster/sharding/introspection` (EN + DE) as the signal to alert on.
+
+- **A `ShardRegion`'s registration with the coordinator is observable**
+  (#1317).  Nothing announced it, so eleven sites across three sharding
+  suites waited on a fixed `sleep(200)` under an identical comment saying the
+  condition to poll did not exist.  `cluster.sharding.isRegistered(typeName)`
+  is that condition — synchronous, fed by a new node-local
+  `ShardRegionRegistered` cluster event the way `shardMap` is fed by
+  `ShardMapChanged` — and the eleven sleeps now wait on it.  It answers what
+  membership convergence cannot: a converged cluster can still hold a region
+  that has not registered, because a region registers with the coordinator on
+  the leader over a retry timer of its own.
+
+  The event fires on the transition, not on every acknowledgment — a leader
+  change re-registers every region — and a refusal clears the flag, so the
+  acknowledgment after one is a transition again.
+
+  **The claim in those eleven comments was wrong, and is corrected rather
+  than transplanted.**  They said an early `ask` "races the coordinator
+  instead of being buffered"; the region in fact buffers any message whose
+  shard home is unknown and re-asks for everything buffered once it
+  registers, so the message is delivered late rather than dropped.  What the
+  sleep was really protecting is the `ask` wrapped around it, whose own
+  deadline runs while the message waits in that buffer.  Documented that way
+  under `cluster/sharding/introspection` (EN + DE).
+
+- **`cluster.eventStream` — the event stream, cluster-wide** (#1397).
+  `system.eventStream` is scoped to one `ActorSystem`, which is one node: a
+  publish walks an in-process list and never touches the network.  Nothing
+  said so at the call site, and the built-in event table listing `MemberUp` /
+  `MemberRemoved` suggested otherwise — those appear on every node because
+  each node publishes its own copy, derived from the gossip it merged, so the
+  state propagates and the event does not.  `cluster.eventStream` is the
+  missing half, and the owner now carries the scope: `system` is a node,
+  `cluster` is the cluster.  It takes the same class, `EventKey` and `kind`
+  channels, including predicates, and it is built on the DistributedPubSub
+  mediator — one channel per topic — so it inherits that machinery's bounded
+  gossip, one-hop delivery and caps, and adds **no new wire kind**.
+
+  A `kind`-discriminated event crosses nodes with no setup.  A **class**
+  channel needs `register(name, class, decode?)`, because only the value's
+  tag travels and an instance would otherwise arrive as a plain object
+  matching no `instanceof`; `decode` falls back to a static `fromJSON`, and
+  one of the two must exist — a generic prototype rebuild would mean writing
+  peer-supplied keys onto a fresh prototype.  `bridge(channel)` mirrors a
+  channel of the node-local bus onto the cluster one, opt-in per channel and
+  without disturbing what already subscribes locally; bridge only events that
+  originate on a single node, since one that every node derives for itself
+  becomes N copies cluster-wide.
+
+  `system.eventStream` is unchanged and no existing publish site moves — the
+  framework's own events all have a reason to stay node-local, from the
+  lifecycle events being the hottest path in the system to broker events
+  still carrying a credential-bearing `cause` (#1388).  A multi-node test now
+  pins that node-local scope as an assertion rather than prose.
+
 ### Fixed
 
 - **The supply-chain page said the SBOM starts "from the next release

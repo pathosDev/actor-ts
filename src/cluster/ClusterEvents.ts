@@ -172,6 +172,85 @@ export class ShardMapChanged {
   ) {}
 }
 
+/**
+ * A `ShardRegion` on this node finished registering with the coordinator for
+ * its type, so it can now be allocated shards (#1317).
+ *
+ * **Membership convergence is not a proxy for this and never was.**  A region
+ * registers with the coordinator that runs on the *leader*, over a retry timer
+ * of its own; a cluster can be fully converged while a region is still
+ * unregistered, which is why eleven test sites used to sit on a fixed sleep
+ * with no condition to poll.  Beyond tests it is the question a readiness
+ * probe asks: whether a region this node just started can route.
+ *
+ * Published node-locally, like {@link ShardMapChanged} and for the same
+ * reason: it describes something that happened on *this* node.  Bridge it with
+ * `cluster.eventStream.bridge(ShardRegionRegistered)` to watch every node's
+ * registrations from one place — it originates on a single node, so it is a
+ * sound thing to bridge.
+ *
+ * Fires on the *transition*.  The coordinator re-acknowledges on every
+ * re-registration (a leader change re-registers every region), and an event
+ * per acknowledgment would report a state change that did not happen.
+ */
+export class ShardRegionRegistered {
+  constructor(
+    /** The sharded type name this region serves. */
+    public readonly type: string,
+    /** Whether the registered region is a proxy — a proxy is never allocated shards. */
+    public readonly proxy: boolean,
+  ) {}
+  toString(): string {
+    return `ShardRegionRegistered(${this.type}${this.proxy ? ', proxy' : ''})`;
+  }
+}
+
+/**
+ * Why a coordinator refused a region's registration.
+ *
+ * Closed, and deliberately coarse: it is a metric label, so every value here
+ * is a time series an operator carries forever — the same reasoning as
+ * `GOSSIP_REFUSAL_REASONS`.  One value today, because a `numShards` mismatch
+ * is the only thing a coordinator refuses over (#633).
+ */
+export const SHARD_REGISTRATION_REFUSAL_REASONS = ['num-shards-mismatch'] as const;
+
+/** One of {@link SHARD_REGISTRATION_REFUSAL_REASONS}. */
+export type ShardRegistrationRefusalReason =
+  typeof SHARD_REGISTRATION_REFUSAL_REASONS[number];
+
+/**
+ * The coordinator refused this node's region for a sharded type (#1300).
+ *
+ * The refusal used to be one `log.error` and nothing else: no event, no
+ * counter, no queryable state.  That matters more than a missing diagnostic
+ * usually does, because a refused region keeps running and keeps accepting
+ * traffic for the type, and everything it accepts buffers — so an unnoticed
+ * refusal ends in a node out of memory, and the only thing standing between a
+ * misconfigured rolling deploy and that outcome was whether somebody grepped
+ * for one error string.
+ *
+ * Published node-locally on the refused node, which is the node that has the
+ * problem.  `cluster.eventStream.bridge(ShardRegionRegistrationRefused)`
+ * collects them cluster-wide — a refusal originates on a single node, so it
+ * is a sound thing to bridge.
+ */
+export class ShardRegionRegistrationRefused {
+  constructor(
+    /** The sharded type name whose registration was refused. */
+    public readonly type: string,
+    public readonly reason: ShardRegistrationRefusalReason,
+    /** The shard count this node is configured with. */
+    public readonly regionNumShards: number,
+    /** The shard count the coordinator governs the type with. */
+    public readonly coordinatorNumShards: number,
+  ) {}
+  toString(): string {
+    return `ShardRegionRegistrationRefused(${this.type}, ${this.reason},`
+      + ` region=${this.regionNumShards}, coordinator=${this.coordinatorNumShards})`;
+  }
+}
+
 export type ClusterEvent =
   | SelfUp
   | SelfRemoved
@@ -186,4 +265,6 @@ export type ClusterEvent =
   | MemberDown
   | MemberLeft
   | MemberRemoved
-  | ShardMapChanged;
+  | ShardMapChanged
+  | ShardRegionRegistered
+  | ShardRegionRegistrationRefused;

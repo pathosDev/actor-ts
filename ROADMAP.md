@@ -86,6 +86,16 @@ This document tracks the planned direction.  Nothing here is committed work — 
 
 ## Done since the last roadmap update
 
+- **The event stream got a cluster-wide half (#1397).**  `system.eventStream`
+  was node-local and nothing at the call site said so — the built-in event
+  table listing `MemberUp` actively suggested otherwise, since every node
+  publishes its own copy derived from the gossip it merged.  There was also
+  no cluster-wide bus to contrast it with: `DistributedPubSub` is
+  string-topic based, so a class or `kind` channel had no cross-node form at
+  all.  `cluster.eventStream` is that form, riding the pub-sub mediator so it
+  adds no wire kind, with `register` for class channels and `bridge` for
+  mirroring a node-local channel onto it.  `system.eventStream` is unchanged.
+
 - **v0.17.0 — the 50-oldest `production-goal` wave:** the 50 oldest
   open `production-goal` issues — the label that answers "what is still
   between us and running this for real" — worked as one unit, in nine batches

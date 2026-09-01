@@ -1,13 +1,19 @@
 ---
 title: Event stream
-description: A system-wide pub/sub bus — subscribe to a class of event or to a `kind`-discriminated type, receive it via `tell` whenever someone publishes. Predicate filtering, class-hierarchy delivery, and where to use it instead of direct messaging.
+description: One ActorSystem's pub/sub bus — subscribe to a class of event or to a `kind`-discriminated type, receive it via `tell` whenever someone publishes. Node-local by design, with predicate filtering, class-hierarchy delivery, and where to use it instead of direct messaging.
 ---
 
-The **event stream** is a system-wide bus for one-to-many messaging
-that doesn't fit the parent-child or sender-receiver shape.  Any
-actor can subscribe to a class of event, or to a `kind`-discriminated
-type; any code can publish; the bus matches and `tell`s the event to
-every subscriber.
+The **event stream** is one `ActorSystem`'s bus for one-to-many
+messaging that doesn't fit the parent-child or sender-receiver shape.
+Any actor can subscribe to a class of event, or to a
+`kind`-discriminated type; any code can publish; the bus matches and
+`tell`s the event to every subscriber.
+
+**It is node-local**, and that is by design: an `ActorSystem` is one
+node, so a publish here reaches that node's subscribers and nobody
+else's.  The counterpart that crosses nodes is
+[`cluster.eventStream`](/cluster/event-stream/) — the same channel
+forms, cluster-wide.  Everything below is about the local bus.
 
 ```ts
 import { Actor, ActorSystem } from 'actor-ts';
@@ -208,9 +214,13 @@ Three good fits:
 
 1. **Cross-cutting observation** — logging, metrics, audit.  Many
    subscribers, none of which the publisher should know about.
-2. **System-wide notifications** — "the cluster gained a member,"
+2. **Node-wide notifications** — "the cluster gained a member,"
    "the cache flushed."  The cluster extension publishes its own
-   events here; you can subscribe and react.
+   events here; you can subscribe and react.  Membership events are
+   worth reading carefully, because they look like an exception and
+   are not: you see other nodes' membership changes because *every*
+   node publishes its own copy, derived from the gossip it merged —
+   not because the event crossed the wire.
 3. **De-coupling actor wiring** in tests — instead of plumbing a
    spy ref through five layers, publish on the stream and let the
    spy subscribe directly.
@@ -280,9 +290,12 @@ publishes.
 
 ## Where to next
 
+- **[Cluster event stream](/cluster/event-stream/)** — this bus, but
+  cluster-wide: the same class and `kind` channels reaching every node.
+  Also how to *bridge* a channel of this bus onto that one.
 - **[DistributedPubSub](/cluster/pubsub/)** — cluster-wide
-  publish/subscribe with topic routing; complementary to the
-  local event stream.
+  publish/subscribe with topic routing; string topics chosen at
+  runtime, and anycast.
 - **[Actor system](/fundamentals/actor-system/)** —
   `system.eventStream` is where you reach the bus.
 - **[Messages](/fundamentals/messages/)** — the shape
