@@ -107,6 +107,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **Two of the three fixed-delay waits `SleepRatchet` flagged in
+  `ActorThrottle.test.ts` were guarding against nothing** (#1399).  The file
+  arrived with #636 carrying three unannotated waits, and `develop` was red on
+  the ratchet.  Two of them sat between a `configure-throttle` tell and the
+  ticks that follow, under a premise repeated four times in the file — "the
+  limiter has to be installed before the ticks are sent".  That premise is
+  false: the throttle gates a message when it is **dequeued**, not when it is
+  enqueued (`ActorCell.handleThrottleExcess`, called from the dispatch path),
+  and both tells go from the test to the same actor, so the FIFO mailbox
+  already guarantees the limiter is installed before any tick is dequeued.
+  The tests prove it themselves — without the limiter every tick would process
+  and the following `toBeLessThan` would fail — so both waits are removed
+  rather than annotated, and the file was run 20× in a row to confirm it.  The
+  third is the absence assertion ("the throttle has NOT let all four through
+  yet") and keeps its wait, with the comment its sibling twelve lines up
+  already had.
+
 - **The supply-chain page said the SBOM starts "from the next release
   onward", and then v0.17.0 shipped it — so the sentence began pointing past
   the release the reader had just downloaded** (#1391).  The claim was
