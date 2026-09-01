@@ -203,11 +203,19 @@ describe('ActorContext.throttle (#83)', () => {
     // behaves exactly like the cancel-throttle test above.
     const counter = new Counter();
     const ref = sys.spawn(() => counter, 'clear-with-infinity');
+    // No wait between configuring and ticking: the mailbox is FIFO and both
+    // tells come from here, so `configure-throttle` is dequeued first and the
+    // limiter is installed before any tick is *dequeued* — which is where the
+    // throttle gates (`ActorCell.handleThrottleExcess`), not at enqueue.  The
+    // assertion below is what proves it: without the limiter all four ticks
+    // would process and the count would reach 4.
     ref.tell({ kind: 'configure-throttle' }); // qps=10, burst=2
-    await sleep(10);
 
     // 4 ticks under the throttle — burst 2 + 2 paused.
     for (let i = 0; i < 4; i++) ref.tell({ kind: 'tick' });
+    // An absence, so it cannot be polled: the claim is that the throttle has
+    // NOT let all four through yet.  `count < 4` holds at t = 0 and has to still
+    // hold once the window has actually elapsed.
     await sleep(50);
     expect(counter.count).toBeLessThan(4);
 
@@ -228,8 +236,9 @@ describe('ActorContext.throttle (#83)', () => {
     // consumer — the repo convention for covering a builder.
     const counter = new Counter();
     const ref = sys.spawn(() => counter, 'builder-form');
+    // FIFO again — see the `qps: Infinity` test above for why no wait is needed
+    // between configuring and ticking.
     ref.tell({ kind: 'configure-throttle-builder' }); // qps=10, burst=2, via the builder
-    await sleep(10);
 
     for (let i = 0; i < 6; i++) ref.tell({ kind: 'tick' });
     // burst=2 lets two through at once; the other four wait for refill at qps=10.
