@@ -64,7 +64,7 @@ Three things going on:
 is announced **once** — the framework has no way to send it again — so
 the notification is exempt from everything that discards user messages
 on the way in: a [mailbox bound](/fundamentals/mailboxes/) of any
-policy, and a `throttle({ onExcess: 'drop' })`.  Bounding a watcher
+policy, and a [`throttle({ onExcess: 'drop' })`](/fundamentals/throttling/).  Bounding a watcher
 costs it backlog, never the deaths it is watching for.  And if the
 notification genuinely cannot be delivered — the watcher itself has
 already stopped, or its mailbox refuses the message — it becomes a

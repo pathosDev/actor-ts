@@ -1,0 +1,188 @@
+---
+title: Throttling
+description: Rate-limit an actor's user-message processing with a token bucket — `context.throttle({ qps, burst, onExcess })`, pause vs drop backpressure, `{ qps: Infinity }` / `cancelThrottle()` to clear, and why system messages and death notifications are exempt.
+---
+
+Every actor drains its mailbox as fast as its dispatcher allows.
+**Throttling** puts a per-actor rate limit in front of that: a
+[token bucket](https://en.wikipedia.org/wiki/Token_bucket) the runtime
+checks before dequeuing each *user* message.  It is how you stop one
+actor from overwhelming a downstream service, a log sink, or a
+rate-limited API — without changing anything about the actors that send
+to it.
+
+## A minimal example
+
+```ts
+import { Actor } from 'actor-ts';
+
+type SampleMessage = { kind: 'sample'; value: number };
+
+class Ingest extends Actor<SampleMessage> {
+  override preStart(): void {
+    // At most 100 user messages a second, tolerating a burst of 20.
+    this.context.throttle({ qps: 100, burst: 20 });
+  }
+
+  override onReceive(message: SampleMessage): void {
+    // ... runs at the throttled rate
+  }
+}
+```
+
+`throttle` can be called from anywhere the actor runs — `preStart`, a
+message handler, a behavior.  Calling it again **replaces** the limiter;
+there is at most one throttle per actor.
+
+## The token bucket
+
+The bucket holds up to `burst` tokens and refills at `qps` tokens per
+second.  Dequeuing a user message costs one token.  The bucket starts
+**full**, so an idle actor can absorb an immediate spike of up to `burst`
+messages before the limit bites; after that, messages flow at `qps`.
+
+| Field | Meaning |
+| --- | --- |
+| `qps` | Refill rate, tokens per second.  Required, `> 0`.  `Infinity` removes the throttle (see [Clearing the throttle](#clearing-the-throttle)). |
+| `burst` | Bucket capacity.  Default: `qps` (one second of refill). |
+| `onExcess` | What to do when the bucket is empty — `'pause'` (default) or `'drop'`. |
+| `now` | Time source; pass a deterministic clock in tests.  Default: `Date.now`. |
+
+Because `burst` defaults to `qps`, a bare `throttle({ qps: 100 })` smooths
+traffic to ~100/second while tolerating one second's worth of variation.
+
+## When the bucket is empty — pause vs drop
+
+`onExcess` decides the fate of a user message dequeued while the bucket
+has no tokens:
+
+- **`'pause'`** *(default)* — natural backpressure.  The message stays
+  queued and the actor's message pump parks until a token is due, then
+  resumes.  Every message is eventually processed; latency grows under
+  load.  The mailbox does the buffering.
+- **`'drop'`** — the message is discarded (with a debug log).  Useful for
+  telemetry-style traffic where a stale sample is worse than a lost one.
+
+```ts
+import { Actor } from 'actor-ts';
+
+type SampleMessage = { kind: 'sample'; value: number };
+
+class Telemetry extends Actor<SampleMessage> {
+  override preStart(): void {
+    // Shed load rather than buffer it — a late metric is worthless.
+    this.context.throttle({ qps: 50, burst: 10, onExcess: 'drop' });
+  }
+
+  override onReceive(message: SampleMessage): void {
+    // ... only ~50 samples a second reach here; the rest are dropped
+  }
+}
+```
+
+import { Aside } from '@astrojs/starlight/components';
+
+<Aside type="caution" title="Pause buffers in the mailbox">
+  `'pause'` holds excess messages in the mailbox, so if a sender can
+  outrun the actor indefinitely the backlog grows without bound.  Pair a
+  pause-mode throttle with a [bounded mailbox](/fundamentals/mailboxes/)
+  when that is a risk — the bound sheds the overflow the throttle is busy
+  holding back.
+</Aside>
+
+## Clearing the throttle
+
+Two equivalent ways to remove an active throttle and return to full
+dispatch speed:
+
+```ts
+this.context.cancelThrottle();
+// exactly equivalent:
+this.context.throttle({ qps: Infinity });
+```
+
+`{ qps: Infinity }` is the "no limit" value: an unlimited rate has no
+bucket, so the runtime installs none.  It is handy when the rate is
+computed — a single `throttle({ qps: computeRate() })` call site can turn
+the limiter off by yielding `Infinity`, with no branching at the call
+site.
+
+## What is *not* throttled
+
+The throttle gates **user** messages only.  These bypass it entirely:
+
+- **System messages** — create, terminate, supervision, timer fires.
+  They run on the system queue, ahead of user messages, so a throttled
+  actor still stops promptly and its timers still fire on schedule.
+- **Death-watch notifications** — a
+  [`Terminated`](/fundamentals/death-watch/) (or its `watchWith`
+  replacement) consumes no token and is never the message an
+  `onExcess: 'drop'` discards.  A death is announced once, so the runtime
+  never lets a throttle drop it.
+
+That separation is what makes a throttle safe to set aggressively: it
+slows the actor's *work*, never its lifecycle.
+
+## The builder form
+
+Like every options type in actor-ts, throttle options have a fluent
+builder that is interchangeable with the plain object:
+
+```ts
+import { Actor, ThrottleOptions } from 'actor-ts';
+
+type SampleMessage = { kind: 'sample'; value: number };
+
+class Ingest extends Actor<SampleMessage> {
+  override preStart(): void {
+    const throttleOptions = ThrottleOptions.create()
+      .withQps(100)
+      .withBurst(20)
+      .withOnExcess('drop');
+    this.context.throttle(throttleOptions);
+  }
+
+  override onReceive(message: SampleMessage): void {
+    // ...
+  }
+}
+```
+
+## Validation
+
+Invalid options are rejected up front with an `OptionsError` that names
+the offending field, so a bad `qps` or `burst` fails at the `throttle()`
+call rather than later inside the runtime:
+
+| Input | Result |
+| --- | --- |
+| `qps: 0`, `qps: -5`, `qps: NaN` | `OptionsError` — *qps must be a positive finite number or Infinity* |
+| `qps: Infinity` | Accepted — clears the throttle |
+| `burst: 0`, `burst: -1` | `OptionsError` — *burst must be a positive finite number* |
+| `onExcess: 'explode'` | `OptionsError` — *onExcess must be one of pause, drop* |
+
+Called from inside an actor, that `OptionsError` travels through
+[supervision](/fundamentals/supervision/) like any other thrown error.
+
+## Throttling and shutdown
+
+A pause-throttled mailbox is *parked*, not draining — so a
+[system shutdown](/fundamentals/actor-system/) does not wait for it.  A
+`qps: 10` actor with a backlog would need backlog ÷ 10 seconds to drain,
+which no shutdown can wait out, so the drain treats a throttle-parked
+queue as quiet and dead-letters whatever is left.  If that backlog
+matters at shutdown, `cancelThrottle()` first.  The
+[Troubleshooting](/operations/troubleshooting/) guide lists this under
+"the system won't drain".
+
+## Where to next
+
+- **[Mailboxes](/fundamentals/mailboxes/)** — where pause-mode
+  backpressure buffers; bound it when a sender can outrun the actor.
+- **[Dispatchers](/fundamentals/dispatchers/)** — the throttle sits in
+  front of the dispatcher that would otherwise run every queued message.
+- **[Death watch](/fundamentals/death-watch/)** — why termination
+  notifications are exempt from the throttle.
+
+The [`ActorContext.throttle`](/api/interfaces/actorcontext/) API
+reference covers the full signature and options.

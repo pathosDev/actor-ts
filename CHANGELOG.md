@@ -11,6 +11,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **The flake catalog names the third shape of the fixed-cap failure — real
+  work in a *test body*** (#1393).  `docs/…/testing/diagnosing-flakes.mdx`
+  covered bun's 5 000 ms cap twice, one level apart: a budget that cannot reach
+  it (remedy, a third argument) and real work in a hook (remedy, layered
+  budgets).  #1392 was neither, and a reader who pattern-matches to the nearest
+  entry picks a remedy that does not fit — a third argument sizes a *failure
+  budget*, a wait meant to expire and print a label, and bounded work has none;
+  layered budgets need a spawn boundary the inner operation can carry a timeout
+  across, and there is none.  The remedy that is right — module scope carries no
+  per-test timeout at all — was written nowhere, although three guards already
+  depend on it.  Both mirrors gain a catalog row and a section, with the
+  measured figures and the module-scope fixture that settles the mechanism in
+  one run.  It also records a negative result: the hook section's sizing advice
+  (run several copies of the file at once) does **not** transfer, because the
+  pre-fix file under 12 concurrent CPU hogs still completed in 31.45 ms and
+  passed — external load competes with *spawned* work, while in-process work is
+  slowed by the host process's own heap, garbage collection and coverage
+  counters.
+
 - **A refused sharding registration is observable without scraping the log**
   (#1300).  When a coordinator refuses a region over a `numShards` mismatch
   (#633), the whole operator-visible signal was one `log.error` — no metric,
@@ -103,6 +122,54 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   moves in the same commit.  Its no-concrete-tag rule for `gh release
   download` is untouched: a tag pinned in prose would now rot at v0.18.0
   exactly as v0.16.0 did.
+- **`CoreStaticImports` walked a 148-file import closure inside the test body,
+  so bun's 5 000 ms per-test default killed the #1005 gate under a loaded
+  coverage run** (#1392).  Neither test declared a third argument and
+  `bunfig.toml` raises nothing, so the cap was bun's default; what ran against
+  it was `staticClosure('src/ActorSystem.ts')` — 148 files, 1.28 MiB of source,
+  29 ms of real work on an idle machine.  Observed at 6 723.89 ms in a full
+  `ACTOR_TS_SKIP_FLAKY_MNS=1 bun run test:coverage:gate` run on Windows /
+  bun 1.4.0 — roughly 230x — having passed a gated run earlier the same day and
+  passing standalone in 276 ms: the failure reported the machine, not the
+  invariant.  Both closures are now walked at module scope, which carries no
+  per-test timeout at all (measured), and which is the shape the sibling
+  repo-file guards `AwaitConditionBudgets`, `WorkflowHygiene` and
+  `NoDeadConfigKeys` already use.  The two assertions are untouched — `ActorSystem`
+  is still proven never to statically reach `FastifyBackend.ts` or a bare
+  `fastify`, and the canary still proves the walker is not blind — while the
+  test bodies drop from 29.15 ms and 1.24 ms to 0.41 ms and 0.04 ms, which puts
+  the same contention at ~95 ms against the 5 000 ms cap.  A larger third
+  argument was the other option and is the wrong one here: that remedy is for a
+  *failure budget*, one meant to expire and print a label, and a literal cap
+  would be one more encoded assumption about machine speed — the shared defect
+  #1376 is open to remove.
+- **`TreeShaking` built four bundles inside three test bodies, against the same
+  unset cap — 3.7x the exposure of the test that had already timed out**
+  (#1394).  Caught before it was ever observed failing, rather than after.  None
+  of the three tests declared a third argument, so four `Bun.build` calls raced
+  bun's 5 000 ms default; measured idle with the junit reporter the bodies were
+  0.6 ms, 66.5 ms, 30.1 ms and 109.7 ms, and that heaviest one is 3.7x the
+  29.1 ms `CoreStaticImports` was doing when a full coverage run stretched it
+  ~230x and bun killed it.  The bundles are now built at module scope — top-level
+  await, already used at
+  `tests/integration/in-process/persistence/journals/NodeSqliteDriver.test.ts:22`
+  — which also removed a duplicate: the narrow bundle was built twice from
+  byte-identical source, so three builds now do what four did.  The five
+  assertions are unchanged, and the bodies drop to 0.58 / 0.05 / 0.05 / 0.04 ms.
+- **`throttle({ qps: Infinity })` threw `TokenBucket: qps must be > 0, got
+  Infinity` instead of clearing the limiter — flatly contradicting its own
+  JSDoc, which documents `{ qps: Infinity }` as a way to remove a throttle**
+  (#636).  `ActorContext.throttle` promised the sentinel but `ActorCell`
+  passed it straight into a `TokenBucket`, whose constructor rejects any
+  non-finite `qps`, so the throw escaped into user code rather than flowing
+  through supervision.  `qps: Infinity` now removes the throttle (exactly
+  like `cancelThrottle()` — an unlimited rate installs no bucket), and a new
+  `ThrottleOptionsValidator` rejects an invalid `qps` / `burst` / `onExcess`
+  up front with an `OptionsError` naming the field, rather than a bare
+  `Error` from deep in the runtime.  Throttle options gain the standard
+  `XOptions` family (a fluent `ThrottleOptions` builder alongside the plain
+  object), and the per-actor throttle now has a dedicated docs page
+  (`fundamentals/throttling`, EN + DE).
 
 ## [0.17.0] — 2026-08-29
 
