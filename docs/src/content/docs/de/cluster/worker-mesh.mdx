@@ -109,7 +109,7 @@ void main();
 
 | Option | Was |
 | --- | --- |
-| `withBootstrap(url)` | Worker-Entrypoint-Modul.  **Pflicht.** |
+| `withBootstrap(url)` | Worker-Entrypoint-Modul.  **Pflicht**, und muss das Schema `file:` tragen — `new URL('./worker-node.js', import.meta.url)` erzeugt genau das, während ein `data:`-, `blob:`- oder entfernter Specifier abgelehnt wird, weil er dem Worker-Konstruktor Code von außerhalb des Deployments übergeben würde. |
 | `withWorkers(n \| 'auto')` | Pool-Größe; `'auto'` nutzt die Hardware-Concurrency.  Default `'auto'`. |
 | `withSystemName(name)` | `ActorSystem`-Name, den jeder Worker hostet.  Default `'worker-cluster'`. |
 | `withHostname(host)` | Hostname-Komponente der Adresse jedes Workers.  Default `'worker'`. |
