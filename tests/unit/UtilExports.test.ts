@@ -18,6 +18,27 @@ import type {
   LazyImportOptions,
   RandomStringOptions,
 } from '../../src/index.js';
+import {
+  DEFAULT_ASK_TIMEOUT_MS,
+  PATH_TRAVERSAL_SEGMENTS,
+  SafeHtml,
+  TokenBucket,
+  addressMatchesPins,
+  addressPinRejection,
+  cidrMatches,
+  escapeHtml,
+  html,
+  isCidrEntry,
+  mergeOptions,
+  parseAddressPin,
+  parseCidr,
+  rawHtml,
+  stripSurrounding,
+  stripTrailing,
+  stripUndefined,
+  wrapError,
+} from '../../src/util/index.js';
+import type { AddressPin, ParsedCidr, TokenBucketOptions } from '../../src/util/index.js';
 
 /**
  * The util helpers are part of the published surface (#1034), and that surface
@@ -167,5 +188,166 @@ describe('BidirectionalMultiMap is reachable from the barrel (#1037)', () => {
     const wire: BidirectionalMultiMapJson<string, string> =
       new BidirectionalMultiMap([['news', 'ada']]).toJSON();
     expect(BidirectionalMultiMap.fromJSON(wire).has('news', 'ada')).toBe(true);
+  });
+});
+
+/**
+ * The other half of the same surface (#1404).  The names imported from the
+ * root above are the ones `src/index.ts` lists, added one at a time by #1034,
+ * #1035, #1037, #1141 and #1199; the ones below are the rest of the directory,
+ * reachable only through the `actor-ts/util` subpath the barrel now publishes.
+ * Imported from `src/util/index.js` for that reason: it is the only door, so
+ * it is the only import form that proves the door opens.
+ *
+ * `tests/unit/ExportSurface.test.ts` asserts the barrel is *complete* — every
+ * value any module in the directory exports, derived from the tree rather than
+ * listed.  What is here instead is the part a derived check cannot do: that a
+ * name resolves to the implementation it claims, and that the types are
+ * exported as types (each is written as an annotation, the only form that
+ * fails to compile when the type export is missing).
+ */
+describe('the rest of the util toolbox is reachable on actor-ts/util (#1404)', () => {
+  describe('OptionsMerge', () => {
+    test('undefined on a higher layer falls through instead of shadowing', () => {
+      type Settings = { retries: number; label: string };
+      // The rule AGENTS.md documents by this function's name, and the whole
+      // reason a consumer writing an options family needs the function rather
+      // than a spread: an explicit object carrying a field it never assigned
+      // must not blank out the config underneath it.
+      const merged = mergeOptions<Settings>(
+        { retries: 1, label: 'built-in' },
+        { retries: 5, label: 'from-hocon' },
+        { retries: undefined, label: 'explicit' },
+      );
+      expect(merged).toEqual({ retries: 5, label: 'explicit' });
+    });
+
+    test('stripUndefined removes the key, not just the value', () => {
+      // `toEqual` treats a present `undefined` and an absent key as equal, so
+      // the assertion has to read the keys — which is also the property the
+      // merge above depends on.
+      expect(Object.keys(stripUndefined({ retries: 1, label: undefined }))).toEqual(['retries']);
+    });
+  });
+
+  describe('WrapError', () => {
+    class CacheError extends Error {
+      constructor(message: string, cause?: unknown) {
+        super(message, { cause });
+      }
+    }
+
+    test('a foreign error is wrapped in the target class, carrying the cause', () => {
+      const original = new Error('ECONNREFUSED');
+      const wrapped = wrapError(original, CacheError, 'RedisCache.get failed');
+      expect(wrapped).toBeInstanceOf(CacheError);
+      expect(wrapped.message).toBe('RedisCache.get failed');
+      expect(wrapped.cause).toBe(original);
+    });
+
+    test('an error already of the target class is returned as-is', () => {
+      // Not re-wrapped: the helper is called at every layer of a call chain,
+      // and a message stack N deep would say nothing the first one did not.
+      const already = new CacheError('boom');
+      expect(wrapError(already, CacheError, 'ignored')).toBe(already);
+    });
+  });
+
+  describe('TokenBucket', () => {
+    test('burst is spent, then refilled from the injected clock', () => {
+      let clock = 0;
+      const options: TokenBucketOptions = { qps: 2, burst: 2, now: () => clock };
+      const bucket = new TokenBucket(options);
+
+      expect(bucket.tryConsume()).toBe(true);
+      expect(bucket.tryConsume()).toBe(true);
+      expect(bucket.tryConsume()).toBe(false);
+
+      // One second at 2 qps refills the whole bucket.  The clock is injected
+      // rather than waited on, which is the property that makes the class
+      // usable in a consumer's own tests too.
+      clock = 1_000;
+      expect(bucket.tryConsume(2)).toBe(true);
+      expect(bucket.tryConsume()).toBe(false);
+    });
+  });
+
+  describe('Html', () => {
+    test('escapeHtml neutralises element content', () => {
+      expect(escapeHtml('<script>alert(1)</script>')).toBe(
+        '&lt;script&gt;alert(1)&lt;/script&gt;',
+      );
+    });
+
+    test('the html tag escapes interpolations and brands the result', () => {
+      const userName = '<script>';
+      const rendered: SafeHtml = html`<li>${userName}</li>`;
+      expect(rendered).toBeInstanceOf(SafeHtml);
+      expect(rendered.toString()).toBe('<li>&lt;script&gt;</li>');
+    });
+
+    test('rawHtml interpolates verbatim, and nests inside the tag', () => {
+      const trusted = rawHtml('<b>ok</b>');
+      expect(html`<p>${trusted}</p>`.value).toBe('<p><b>ok</b></p>');
+    });
+  });
+
+  describe('StripCharacters', () => {
+    test('a run is stripped from the end, and only from the end', () => {
+      expect(stripTrailing('/orders///', '/')).toBe('/orders');
+      expect(stripSurrounding('///orders///', '/')).toBe('orders');
+    });
+
+    test('nothing to strip returns the argument itself', () => {
+      // The allocation-free common case the module header promises; `toBe` is
+      // the assertion that can tell the difference.
+      const untouched = '/orders';
+      expect(stripTrailing(untouched, '/')).toBe(untouched);
+    });
+  });
+
+  describe('CidrMatch', () => {
+    test('a parsed CIDR matches inside its network and not outside', () => {
+      const network: ParsedCidr = parseCidr('10.0.0.0/8', 'UtilExports');
+      expect(cidrMatches('10.1.2.3', network)).toBe(true);
+      expect(cidrMatches('11.0.0.1', network)).toBe(false);
+    });
+
+    test('isCidrEntry is the discriminant between the two pin shapes', () => {
+      expect(isCidrEntry('10.0.0.0/8')).toBe(true);
+      expect(isCidrEntry('svc.cluster.local')).toBe(false);
+    });
+
+    test('a host-suffix pin matches on a label boundary', () => {
+      const pins: readonly AddressPin[] = ['10.0.0.0/8', 'svc.cluster.local'].map((entry) =>
+        parseAddressPin(entry, 'UtilExports'),
+      );
+      expect(addressMatchesPins('10.1.2.3', pins)).toBe(true);
+      expect(addressMatchesPins('api.svc.cluster.local', pins)).toBe(true);
+      // The whole point of the suffix rule: a longer label does not slip past.
+      expect(addressMatchesPins('evilsvc.cluster.local', pins)).toBe(false);
+    });
+
+    test('addressPinRejection returns the reason clause, or null', () => {
+      expect(addressPinRejection('10.0.0.0/8')).toBeNull();
+      expect(addressPinRejection('   ')).toBe('entries must be non-empty');
+    });
+  });
+
+  describe('Constants', () => {
+    test('the cross-subsystem defaults are readable rather than restated', () => {
+      // Deliberately not pinned to a literal: a test that repeats the number
+      // is a second place it lives, and the reason these are exported is that
+      // a consumer sizing its own timeout below the ask timeout should read
+      // the value rather than copy it.
+      expect(DEFAULT_ASK_TIMEOUT_MS).toBeGreaterThan(0);
+      expect(Number.isFinite(DEFAULT_ASK_TIMEOUT_MS)).toBe(true);
+    });
+
+    test('the traversal denylist is the shared set both validators guard with', () => {
+      expect(PATH_TRAVERSAL_SEGMENTS.has('.')).toBe(true);
+      expect(PATH_TRAVERSAL_SEGMENTS.has('..')).toBe(true);
+      expect(PATH_TRAVERSAL_SEGMENTS.has('orders')).toBe(false);
+    });
   });
 });

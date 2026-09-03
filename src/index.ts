@@ -170,6 +170,7 @@ export {
   CircuitBreakerTimeoutError,
   CircuitBreakerOptions,
   CircuitBreakerOptionsBuilder,
+  CircuitBreakerOptionsValidator,
   exponentialBackoff,
   linearBackoff,
   BackoffSupervisor,
@@ -204,15 +205,20 @@ export {
 export type { ScatterGatherOptionsType } from './ScatterGatherOptions.js';
 
 
-// Configuration (HOCON with code overrides).
+// Configuration (HOCON with code overrides).  `ConfigKeys` is the typed list
+// of paths the framework reads — the single source of truth `reference.conf`
+// is checked against — so an application layering its own HOCON on top needs
+// to name it rather than retype the strings (#1403).
 export {
   Config,
   ConfigError,
+  ConfigKeys,
   parseDuration,
   parseSize,
   parseHocon,
   resolveSubstitutions,
   deepMerge,
+  isPlainObject,
   REFERENCE_CONF,
 } from './config/index.js';
 export type { LoadOptions, ConfigObject, ConfigValue } from './config/index.js';
@@ -251,6 +257,7 @@ export {
   DeadLetterQueueOptionsBuilder,
   DeadLetterQueueOptionsValidator,
   defaultDeadLetterPersistenceId,
+  readDeadLetterQueueOptionsFromConfig,
 } from './deadletters/index.js';
 export type {
   CapturedPayload,

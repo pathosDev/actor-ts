@@ -11,6 +11,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`actor-ts/util` — the whole util toolbox, not the two-thirds the root
+  barrel named one at a time** (#1404).  `src/util/` holds 21 modules and had
+  no barrel at all; what a consumer could reach was whatever `src/index.ts`
+  happened to list, grown one name per issue (#1034, #1035, #1037, #1141,
+  #1199).  Eight modules' worth of names were reachable from nothing:
+  `TokenBucket`, the CIDR and address-pin matchers, the HTML escapers,
+  `mergeOptions` / `stripUndefined`, `stripTrailing` / `stripSurrounding`,
+  `wrapError` and the cross-subsystem constants.  `mergeOptions` was the
+  sharpest of them — AGENTS.md documents the options precedence *explicit >
+  HOCON > defaults* **by that function's name**, and the function itself was
+  not in the package.
+
+  The root barrel keeps every name it exports today, so nothing moved and
+  nothing breaks; the subpath is a superset, and the root stays the curated set
+  a reader scans to learn what the framework offers.  Publishing the directory
+  whole is safe for the reason `src/util/Constants.ts` documents at length: it
+  is the one directory under `src/` with no outward import, so one entry point
+  over it drags no subsystem in behind it.  One name is deliberately withheld —
+  `_resetEntropyPool`, whose own doc comment says it exists for a test that
+  substitutes `crypto.getRandomValues`.  Documented on
+  `reference/utility-helpers` (EN + DE).
+
 - **The flake catalog names the third shape of the fixed-cap failure — real
   work in a *test body*** (#1393).  `docs/…/testing/diagnosing-flakes.mdx`
   covered bun's 5 000 ms cap twice, one level apart: a budget that cannot reach
@@ -107,6 +129,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   rather than prose.
 
 ### Fixed
+
+- **`ConfigKeys`, `CircuitBreakerOptionsValidator`, `isPlainObject` and
+  `readDeadLetterQueueOptionsFromConfig` reached no entry point** (#1403).
+  `package.json` ships only `dist/` and its `exports` map has no wildcard, so
+  for the five barrels the core-only root cut (#414) folds into `src/index.ts`
+  — `config`, `deadletters`, `mailbox`, `pattern`, `typed` — the root barrel is
+  the only door, and a name it drops has left the package.  Three of the five
+  dropped one.
+
+  `ConfigKeys` is the one that mattered: AGENTS.md calls it the typed single
+  source of truth for HOCON paths, 47 files under `src/` read it and
+  `reference/reference-conf` names it to the reader, and no consumer could
+  name it.  `CircuitBreakerOptionsValidator` was the only `*OptionsValidator`
+  of a folded subsystem the root dropped — the options contract asks a
+  non-broker consumer to call `new XOptionsValidator().validate(settings)`, and
+  for a circuit breaker that line could not be written against the package.
+
+  All four are additive re-exports.  The durable half is
+  `tests/unit/ExportSurface.test.ts`, which derives the question from the tree
+  instead of a hand-kept list: it diffs each folded barrel's module namespace
+  against the root's, pins which barrels are folded so folding a sixth is a
+  decision rather than a default, checks every published subpath points at a
+  barrel that exists, and asserts the `util` barrel covers its own directory.
+  Same class as #1002 and #1307, which were each found by reading; #819's
+  `.d.ts` rollup supersedes the structural half when it lands, and covers the
+  type-only exports a module namespace cannot see.
 
 - **Two of the three fixed-delay waits `SleepRatchet` flagged in
   `ActorThrottle.test.ts` were guarding against nothing** (#1399).  The file

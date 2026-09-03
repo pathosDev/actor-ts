@@ -11,10 +11,12 @@
 
   // The things that legitimately reach into the tree without being imported by
   // it: the test suites, the smoke cases (discovered at runtime by their own
-  // harness), the build scripts and the benchmarks. The three published entry
-  // points are NOT listed — knip derives `src/index.ts`, `src/testkit/index.ts`
-  // and `src/devtools/index.ts` from the `exports` map itself, and repeating
-  // them here is reported as a redundant pattern.
+  // harness), the build scripts and the benchmarks. The published entry points
+  // are NOT listed — knip derives them from the `exports` map itself (the root
+  // barrel plus one subpath per subsystem), and repeating them here is reported
+  // as a redundant pattern. Deliberately no count: this comment named three
+  // (`src/index.ts`, `src/testkit/index.ts`, `src/devtools/index.ts`) long after
+  // the subsystem subpaths took it past a dozen.
   "entry": [
     "tests/**/*.test.ts",
     "tests/**/*.mjs",

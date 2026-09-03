@@ -1,6 +1,6 @@
 ---
 title: Utilities
-description: Alles, was der Haupteinstiegspunkt aus seinem eigenen Werkzeugkasten exportiert — Option, Try und Either für Ergebnisse ohne null; Lazy für einmalig berechnete Werte; RingBuffer für eine Queue, die schnell bleibt, wenn sie tief wird; BidirectionalMap und BidirectionalMultiMap für Relationen mit gepflegter Umkehrung; randomString, safeStringify und lazyImportModule für Benennung, Logging und optionale Peer-Dependencies.
+description: Der eigene Werkzeugkasten des Frameworks — Option, Try und Either für Ergebnisse ohne null; Lazy für einmalig berechnete Werte; RingBuffer für eine Queue, die schnell bleibt, wenn sie tief wird; BidirectionalMap und BidirectionalMultiMap für Relationen mit gepflegter Umkehrung; randomString, safeStringify und lazyImportModule für Benennung, Logging und optionale Peer-Dependencies. Über den Haupteinstiegspunkt, und vollständig über den Subpath actor-ts/util: mergeOptions, TokenBucket, die HTML-Escaper, die CIDR- und Adress-Pin-Matcher, wrapError und die subsystemübergreifenden Defaults.
 ---
 
 Das Framework löst für sich selbst eine Handvoll Probleme, die in dem Code
@@ -13,9 +13,14 @@ Wert auf einem Pfad ausgeben, auf dem ein Wurf den gerade gemeldeten Fehler
 ersetzen würde; und von einem Paket abhängen, das du nicht verpflichtend machen
 willst.
 
-Das sind die Antworten, die es ohnehin schon benutzt — exportiert über den
-Haupteinstiegspunkt. Keine davon ist Pflicht, um `actor-ts` zu benutzen: greif
-zu einer, wenn du das Problem hast, das sie löst.
+Das sind die Antworten, die es ohnehin schon benutzt. Die, denen du beim
+Benutzen des Frameworks selbst begegnest, werden über den Haupteinstiegspunkt
+exportiert — deshalb importiert alles Folgende aus `'actor-ts'`; das ganze
+Verzeichnis, samt der Teile, die der Haupteinstiegspunkt nicht mitführt, liegt
+auf dem Subpath `actor-ts/util`
+(*[Der ganze Werkzeugkasten](#der-ganze-werkzeugkasten--actor-tsutil)*, unten).
+Keine davon ist Pflicht, um `actor-ts` zu benutzen: greif zu einer, wenn du das
+Problem hast, das sie löst.
 
 ```ts
 import {
@@ -624,6 +629,44 @@ zusammengeführten Settings — damit sind Builder, Plain-Objekt und HOCON
 gleichermaßen abgedeckt, und feldübergreifende Regeln sehen die endgültigen
 Werte. Wie die Schichten auflösen, steht unter
 [Konfiguration](/de/reference/configuration/).
+
+## Der ganze Werkzeugkasten — `actor-ts/util`
+
+Alles oben liegt auf dem Haupteinstiegspunkt, weil du ihm beim Benutzen des
+Frameworks begegnest. Der Rest von `src/util/` löst Probleme, die einen Schritt
+weiter außen liegen, und ist über einen eigenen Subpath erreichbar:
+
+```ts
+import { TokenBucket, mergeOptions, wrapError } from 'actor-ts/util';
+```
+
+Der Subpath ist eine Obermenge: jeder Name, den der Haupteinstiegspunkt
+mitführt, liegt auch dort — eine Datei, die `some` und `mergeOptions` braucht,
+kann also beides aus `actor-ts/util` nehmen statt zweimal zu importieren.
+
+| Export | Was er tut |
+| --- | --- |
+| `mergeOptions(defaults, fromConfig, explicit)` | Die eine Implementierung der Options-Präzedenz *explizit > HOCON > Defaults*. `undefined` auf einer höheren Schicht heißt „nicht gesetzt" und fällt durch, statt die Schicht darunter zu überschreiben — was du willst, und was ein einfacher Spread nicht tut. |
+| `stripUndefined(partial)` | Entfernt die Schlüssel, deren Wert `undefined` ist — so kommt `mergeOptions` zu dieser Eigenschaft. |
+| `TokenBucket` | Rate-Limiting mit `qps` als Nachfüllrate und `burst` als Kapazität, träge aus der verstrichenen Zeit nachgefüllt — kein Hintergrund-Timer. Die Uhr ist injizierbar, ein Test schiebt die Zeit also vor statt auf sie zu warten. |
+| `wrapError(error, ErrorClass, message)` | Eine gefangene Exception als typisierten Framework-Fehler mit kontextbezogener Nachricht weiterwerfen, das Original als `cause`. Ein Fehler, der bereits die Zielklasse hat, wird unverändert zurückgegeben statt doppelt eingepackt. |
+| `escapeHtml`, `html`, `rawHtml`, `SafeHtml` | Escaping für **HTML-Elementinhalt und Attributwerte in Anführungszeichen**. Das Tagged Template `html` escapt jede Interpolation standardmäßig; `rawHtml` ist die Ausnahme für eine Zeichenkette, die du schon sicher gemacht hast. Kein Sanitizer für nicht vertrauenswürdiges *Markup*. |
+| `stripTrailing(value, char)`, `stripSurrounding(value, char)` | Ein wiederholtes Zeichen in linearer Zeit von den Enden abschneiden. Die Regex-Schreibweise backtrackt quadratisch, was zählt, wenn der Wert ein Request-Pfad oder ein Hostname ist, den ein entfernter Peer gewählt hat. |
+| `parseCidr`, `cidrMatches`, `isCidrEntry` | CIDR parsen und matchen, IPv4 und IPv6, mit IPv4-mapped IPv6 so behandelt, dass ein reiner IPv4-Bereich auch einen Dual-Stack-Peer trifft. |
+| `parseAddressPin`, `addressMatchesPins`, `addressPinRejection` | Die darauf aufbauenden Adress-Pin-Regeln: ein Eintrag ist ein CIDR (gegen IPs gematcht) oder ein Host-Suffix (gegen Hostnamen **auf Label-Grenze** gematcht, damit `evilsvc.cluster.local` nicht an `svc.cluster.local` vorbeikommt). `addressPinRejection` gibt den Grund zurück, warum ein Eintrag unbrauchbar ist — für den eigenen Validator zum Melden. |
+| `DEFAULT_ASK_TIMEOUT_MS`, `DEFAULT_GOSSIP_INTERVAL_MS`, `DEFAULT_EXPLAIN_CAPACITY` | Die subsystemübergreifenden Defaults, damit ein eigenes Timeout, das unter dem Ask-Timeout bleiben muss, den Wert lesen kann statt die Zahl zu kopieren. |
+| `PATH_TRAVERSAL_SEGMENTS`, `MAXIMUM_DRAW_ATTEMPTS` | Die Traversal-Denylist, gegen die Aktorpfade und PersistenceIds beide geprüft werden, und die Grenze, bei der ein Eindeutigkeits-Neuziehen aufgibt. |
+
+<Aside type="note" title="Warum ein Subpath und nicht mehr Root-Exporte">
+`src/util/` ist das einzige Verzeichnis unter `src/`, das überhaupt keinen
+Import nach außen hat — genau das macht es zu der Schicht, von der jedes
+Subsystem abhängen darf, ohne dass eines vom anderen abhängt, und deshalb kann
+das Ganze als ein Einstiegspunkt veröffentlicht werden, ohne ein Subsystem
+mitzuziehen. Dass der Haupteinstiegspunkt eine kuratierte Auswahl bleibt, ist
+Absicht: er ist die Oberfläche, die man liest, um zu erfahren, was das
+Framework anbietet, und ein Rate-Limiter oder ein CIDR-Matcher ist kein Teil
+dieser Antwort.
+</Aside>
 
 ## Wie weiter
 
