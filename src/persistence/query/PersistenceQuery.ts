@@ -1,4 +1,5 @@
 import type { PersistentEvent } from '../JournalTypes.js';
+import { assertValidFilterTags } from '../storage/TagValidator.js';
 
 /**
  * Read-side query layer for the journal.  Designed for projections —
@@ -288,9 +289,39 @@ export type TagFilterSpec = {
  * Normalise a {@link TagFilter} into the canonical {@link TagFilterSpec}
  * form.  A bare string `t` becomes `{ all: [t] }`; an object is
  * shallow-copied so callers can't mutate it after the fact.
+ *
+ * **And validated** (#738).  This is the one function every backend's tag
+ * query routes through — `InMemoryQuery` normalises in both `eventsByTag` and
+ * `currentEventsByTag`, and `MongoQuery`, `SqliteQuery`, `CassandraQuery` and
+ * `RelationalQuery` each override only `currentEventsByTag` and normalise
+ * there — so it is the read side's equivalent of the journal boundary that
+ * `assertValidTags` guards on the write side.  Putting the check here rather
+ * than in `MongoQuery` is what makes it hold for a backend added later.
+ *
+ * What it enforces is deliberately narrower than the write-side rules;
+ * {@link assertValidFilterTags} carries the reasoning for each rule that does
+ * and does not transfer.  A bare string goes through the same check, since it
+ * is shorthand for `all[0]` and would otherwise be a way around the length
+ * bound.
  */
 export function normalizeTagFilter(filter: TagFilter): TagFilterSpec {
-  if (typeof filter === 'string') return { all: [filter] };
+  if (typeof filter === 'string') {
+    assertValidFilterTags('all', [filter]);
+    return { all: [filter] };
+  }
+  if (filter === null || typeof filter !== 'object') {
+    // Erased-type hole of its own: a filter that is neither a string nor an
+    // object reads `.all` / `.any` / `.not` as `undefined`, which is the spec
+    // that matches *every* event — so a malformed filter would widen a query
+    // rather than fail it.
+    throw new Error(
+      `invalid tag filter: expected a tag string or a { all, any, not } object, got ${
+        filter === null ? 'null' : typeof filter}`,
+    );
+  }
+  assertValidFilterTags('all', filter.all);
+  assertValidFilterTags('any', filter.any);
+  assertValidFilterTags('not', filter.not);
   return {
     all: filter.all,
     any: filter.any,

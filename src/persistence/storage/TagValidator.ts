@@ -38,9 +38,13 @@
  * already makes: one rule at the choke point, set by the strictest backend,
  * beats three copies of a filter that can drift apart again.
  *
- * Only *writes* are validated.  Streams that already carry an empty or
- * repeated tag stay readable — the same promise `assertValidPersistenceId`
- * makes for ids that predate its rules.
+ * Only *writes* are held to the list above.  Streams that already carry an
+ * empty or repeated tag stay readable — the same promise
+ * `assertValidPersistenceId` makes for ids that predate its rules.  The read
+ * side has a guard of its own since #738, {@link assertValidFilterTags}, and
+ * it is deliberately a much smaller one: it transfers only the two rules whose
+ * reason is the query engine rather than the store.  Both live in this file so
+ * the divergence is one thing to read rather than two policies to find.
  */
 import { MAX_TAG_LENGTH, MAX_TAGS_PER_EVENT } from '../Constants.js';
 import type { JournalEntry } from '../JournalTypes.js';
@@ -118,5 +122,102 @@ export function assertValidTags(tags: ReadonlyArray<string> | undefined): void {
       );
     }
     seen.add(tag);
+  }
+}
+
+/** Name a rejected filter member's runtime type for the error message. */
+function describeValue(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  const runtimeType = typeof value;
+  return runtimeType === 'object' || runtimeType === 'undefined'
+    ? runtimeType
+    : `a ${runtimeType}`;
+}
+
+/**
+ * Validate one operator list of a read-side tag filter — the `all`, `any` or
+ * `not` of a `TagFilterSpec` — before a backend builds a query out of it
+ * (#738).  `operator` names the list, so the message points at the member the
+ * caller has to fix.
+ *
+ * `TagFilter`'s `ReadonlyArray<string>` is erased at runtime, and an
+ * application that derives a filter from request data hands over whatever its
+ * body parser produced — Express, Fastify and Hono all turn `?tag[$ne]=x` into
+ * an object.  Every other backend binds the value (SQLite through a prepared
+ * statement, Cassandra as `WHERE tag = ?`), so a non-string is refused at the
+ * driver.  MongoDB has no binding step: `MongoQuery` puts the value into the
+ * filter document, where an object is read as an *operator expression*.
+ * `{ all: [{ $ne: null }] }` becomes `{ tags: { $ne: null } }`, which the
+ * multikey `{ tags: 1, timestamp: 1 }` index can neither serve nor sort from,
+ * so one request buys a full collection traversal, a blocking in-memory sort
+ * and every surviving document materialised into the application heap — before
+ * `eventMatchesTagFilter` discards all of them, because
+ * `Array.prototype.includes` never matches an object against a string tag.
+ *
+ * **This is deliberately not the mirror image of {@link assertValidTags}.**  A
+ * write creates storage; a filter is only ever compared against storage that
+ * already exists.  So a write rule transfers here when its reason is the value
+ * reaching the *query engine*, and does not when its reason is the value being
+ * *stored*:
+ *
+ *   - **Type** — transfers; it is the rule above.  A non-string member could
+ *     never have matched a stored tag anyway, so refusing it takes away no
+ *     answer a caller could have received.
+ *   - **Length** (`MAX_TAG_LENGTH`) — transfers.  It bounds what one request
+ *     can push into a filter document and into an index-key comparison, and
+ *     since every write has been held to the same cap since #136 a longer
+ *     filter member can only ever match nothing.
+ *   - **Comma** — does not transfer.  Its reason is SQLite's comma-separated
+ *     `tags` column, which the read path splits rather than writes, so a comma
+ *     in a filter corrupts nothing.  Refusing it would also refuse a
+ *     legitimate diagnostic read of a document store whose array field really
+ *     does hold `'a,b'`, put there by something that is not this library.
+ *   - **Control characters** — does not transfer, for the same reason: the
+ *     value is compared, never persisted or re-emitted, and it stays a bound
+ *     scalar on every backend.
+ *   - **Empty and duplicate** (#740) — do not transfer, and this is the one
+ *     that matters.  The promise above is that only writes are validated, so a
+ *     stream already carrying an empty tag stays readable — and `{ all: [''] }`
+ *     is exactly the query #740 names for finding the `''` bucket a pre-#740
+ *     MongoDB journal indexed.  A read-side empty rule would withdraw the
+ *     diagnostic that the write-side rule is what makes necessary.  A repeat
+ *     in a filter is merely redundant: `{ all: ['a', 'a'] }` asks the same
+ *     question twice and gets the same answer, which is a normal outcome of
+ *     concatenating two tag lists rather than a defect to fail on.
+ *   - **`MAX_TAGS_PER_EVENT`** — does not transfer.  It counts one event's tag
+ *     list, and a filter's list is a different population: `{ any: [...] }`
+ *     over five hundred tenant tags is an ordinary union query even though no
+ *     event may carry more than 64 tags.  A read-side count cap would need its
+ *     own number and its own justification.
+ *
+ * Exported for the same reason `assertValidTags` is: an application that
+ * builds filters from request data can check one ahead of the query.
+ */
+export function assertValidFilterTags(operator: string, tags: unknown): void {
+  if (tags === undefined) return;
+  if (!Array.isArray(tags)) {
+    // Without this the member checks have nothing to iterate, and the erased
+    // type fails quietly instead: `{ all: 'orders' }` walks the string, so
+    // `eventMatchesTagFilter` asks for the tags 'o', 'r', 'd', … and answers
+    // a question nobody posed.
+    throw new Error(
+      `invalid tag filter: ${operator} is ${describeValue(tags)}, not an array of tag strings`,
+    );
+  }
+  for (let index = 0; index < tags.length; index++) {
+    const tag: unknown = tags[index];
+    if (typeof tag !== 'string') {
+      throw new Error(
+        `invalid tag filter: ${operator}[${index}] is ${describeValue(tag)}, not a string `
+        + '(a non-string filter member matches no stored tag, and reaches MongoDB as an operator expression)',
+      );
+    }
+    if (tag.length > MAX_TAG_LENGTH) {
+      throw new Error(
+        `invalid tag filter: ${operator}[${index}] is ${tag.length} characters, exceeding the `
+        + `${MAX_TAG_LENGTH}-character limit every stored tag is held to`,
+      );
+    }
   }
 }
