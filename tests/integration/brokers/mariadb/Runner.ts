@@ -50,9 +50,10 @@ async function main(): Promise<void> {
         .withPoolConfig(poolConfig);
       return new MariaDbJournal(journalOptions);
     },
-    // Where the JOIN meets a real MariaDB — including the collation the fake
-    // does not model, since a stock server compares the indexed `tag` column
-    // case-insensitively (#707) and only a live run sees that (#391).
+    // Where the JOIN meets a real MariaDB — including the collation, which no
+    // fake pool can model.  The dialect pins `utf8mb4_bin` on `tag` (#707);
+    // that the server actually honoured it, rather than rejecting or ignoring
+    // the clause, is something only a live run can show (#391).
     makeQuery: (journal) => new MariaDbQuery(journal as MariaDbJournal),
     async makeSnapshotStore(keepN) {
       const snapshotStoreOptions = MariaDbSnapshotStoreOptions.create()

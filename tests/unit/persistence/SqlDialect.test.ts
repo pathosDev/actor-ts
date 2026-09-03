@@ -3,7 +3,7 @@ import { mariaDbDialect } from '../../../src/persistence/relational/MariaDbDiale
 import { msSqlDialect } from '../../../src/persistence/relational/MsSqlDialect.js';
 import { postgresDialect } from '../../../src/persistence/relational/PostgresDialect.js';
 import { sqliteDialect } from '../../../src/persistence/relational/SqliteDialect.js';
-import { expandPlaceholders } from '../../../src/persistence/relational/SqlDialect.js';
+import { expandPlaceholders, type SqlDialect } from '../../../src/persistence/relational/SqlDialect.js';
 
 /**
  * Golden statements for the SQL dialects (#389).
@@ -20,6 +20,32 @@ import { expandPlaceholders } from '../../../src/persistence/relational/SqlDiale
 const norm = (sql: string): string => sql.replace(/\s+/g, ' ').trim();
 
 const tables = { events: 'events', tags: 'events_tags', meta: 'events_meta' };
+
+/** Every DDL statement a dialect can emit, across all four table families. */
+const everyDdl = (dialect: SqlDialect): string[] => [
+  ...dialect.journalDdl(tables),
+  ...dialect.snapshotDdl('snapshots'),
+  ...dialect.durableStateDdl('durable_state'),
+  ...(dialect.storageIdentityDdl?.('storage_identity') ?? []),
+];
+
+/**
+ * Character columns of one DDL statement, as `column -> collation | null`.
+ *
+ * Parsed rather than compared whole because the collation invariant (#707)
+ * is a *set* property: exactly the identity columns are pinned.  A golden
+ * string proves the text changed; only this shape tells a fix that pinned
+ * `persistence_id` everywhere from one that pinned it in the events table
+ * alone, or from one that pinned the payload as well.
+ */
+const characterColumns = (sql: string): Map<string, string | null> => {
+  const columns = new Map<string, string | null>();
+  const pattern = /\[?([a-z_]+)\]?\s+(?:N?VARCHAR\((?:MAX|\d+)\)|LONGTEXT|TEXT)(?:\s+COLLATE\s+(\w+))?/gi;
+  for (const match of norm(sql).matchAll(pattern)) {
+    columns.set(match[1] ?? '', match[2] ?? null);
+  }
+  return columns;
+};
 
 describe('postgresDialect — placeholders and error codes', () => {
   test('placeholders are one-based $n', () => {
@@ -206,26 +232,40 @@ describe('mariaDbDialect — golden DDL', () => {
     // `CREATE INDEX IF NOT EXISTS` is not portable across MariaDB/MySQL
     // versions, so indexes are declared inside CREATE TABLE.
     expect(mariaDbDialect.journalDdl(tables).map(norm)).toEqual([
-      'CREATE TABLE IF NOT EXISTS events ( persistence_id VARCHAR(255) NOT NULL, sequence_nr BIGINT NOT NULL, '
+      'CREATE TABLE IF NOT EXISTS events ( persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, '
+      + 'sequence_nr BIGINT NOT NULL, '
       + 'payload LONGTEXT NOT NULL, tags TEXT, timestamp BIGINT NOT NULL, '
       + 'PRIMARY KEY (persistence_id, sequence_nr), INDEX idx_events_pid (persistence_id) )',
-      'CREATE TABLE IF NOT EXISTS events_tags ( persistence_id VARCHAR(255) NOT NULL, sequence_nr BIGINT NOT NULL, '
-      + 'tag VARCHAR(255) NOT NULL, timestamp BIGINT NOT NULL, '
+      'CREATE TABLE IF NOT EXISTS events_tags ( persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, '
+      + 'sequence_nr BIGINT NOT NULL, '
+      + 'tag VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, timestamp BIGINT NOT NULL, '
       + 'PRIMARY KEY (tag, timestamp, persistence_id, sequence_nr), '
       + 'INDEX idx_events_tags_pid_seq (persistence_id, sequence_nr) )',
-      'CREATE TABLE IF NOT EXISTS events_meta ( persistence_id VARCHAR(255) NOT NULL, deleted_to BIGINT NOT NULL, '
+      'CREATE TABLE IF NOT EXISTS events_meta ( persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, '
+      + 'deleted_to BIGINT NOT NULL, '
       + 'PRIMARY KEY (persistence_id) )',
     ]);
   });
 
   test('snapshot and durable-state DDL', () => {
     expect(mariaDbDialect.snapshotDdl('snapshots').map(norm)).toEqual([
-      'CREATE TABLE IF NOT EXISTS snapshots ( persistence_id VARCHAR(255) NOT NULL, sequence_nr BIGINT NOT NULL, '
+      'CREATE TABLE IF NOT EXISTS snapshots ( persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, '
+      + 'sequence_nr BIGINT NOT NULL, '
       + 'payload LONGTEXT NOT NULL, timestamp BIGINT NOT NULL, PRIMARY KEY (persistence_id, sequence_nr) )',
     ]);
     expect(mariaDbDialect.durableStateDdl('durable_state').map(norm)).toEqual([
-      'CREATE TABLE IF NOT EXISTS durable_state ( persistence_id VARCHAR(255) NOT NULL, revision BIGINT NOT NULL, '
+      'CREATE TABLE IF NOT EXISTS durable_state ( persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL, '
+      + 'revision BIGINT NOT NULL, '
       + 'payload LONGTEXT NOT NULL, timestamp BIGINT NOT NULL, PRIMARY KEY (persistence_id) )',
+    ]);
+  });
+
+  test('the storage-identity table stays on the server default', () => {
+    // `identity` holds a minted UUID read back by `singleton = ?`, never
+    // compared as a string — collating it would be cargo cult (#707).
+    expect(mariaDbDialect.storageIdentityDdl!('storage_identity').map(norm)).toEqual([
+      'CREATE TABLE IF NOT EXISTS storage_identity ( singleton INT NOT NULL, identity VARCHAR(64) NOT NULL, '
+      + 'PRIMARY KEY (singleton) )',
     ]);
   });
 });
@@ -328,7 +368,7 @@ describe('msSqlDialect — golden DDL', () => {
     // NVARCHAR(255) counts 510 index bytes, so tag + timestamp + pid + seq is
     // 1036 — past the clustered limit, inside the nonclustered one.
     const tagsDdl = norm(msSqlDialect.journalDdl(tables)[2]!);
-    expect(tagsDdl).toContain('[persistence_id] NVARCHAR(255) NOT NULL');
+    expect(tagsDdl).toContain('[persistence_id] NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL');
     expect(tagsDdl).toContain(
       'CONSTRAINT [PK_events_tags] PRIMARY KEY NONCLUSTERED '
       + '([tag], [timestamp], [persistence_id], [sequence_nr])',
@@ -351,6 +391,60 @@ describe('msSqlDialect — golden DDL', () => {
     }
     expect(norm(msSqlDialect.snapshotDdl('snapshots')[0]!)).toContain('[timestamp] BIGINT NOT NULL');
     expect(norm(msSqlDialect.durableStateDdl('durable_state')[0]!)).toContain('[payload] NVARCHAR(MAX) NOT NULL');
+  });
+});
+
+describe('identity columns carry a deterministic collation (#707)', () => {
+  /**
+   * `persistence_id` is the *name of an event stream* and half of the events
+   * primary key; `tag` keys the projection index.  A stock MariaDB and a
+   * stock SQL Server both compare them case-insensitively, so `Alice` and
+   * `alice` are one stream there and two on Postgres, SQLite, Mongo and
+   * DynamoDB — a cross-entity merge that `assertValidPersistenceId` cannot
+   * see, because both ids pass any character allow-list.
+   *
+   * Asserted as two sets, because that is what discriminates a correct fix:
+   * collating only the events table leaves `persistence_id` in `bare`, and
+   * collating `payload` or the minted `identity` moves them out of it.
+   */
+  const expectPinnedOnIdentityColumnsOnly = (dialect: SqlDialect, collation: string): void => {
+    const collated = new Set<string>();
+    const bare = new Set<string>();
+    for (const statement of everyDdl(dialect)) {
+      for (const [column, actual] of characterColumns(statement)) {
+        if (actual === null) bare.add(column);
+        else {
+          expect(actual).toBe(collation);
+          collated.add(column);
+        }
+      }
+    }
+    expect([...collated].sort()).toEqual(['persistence_id', 'tag']);
+    // Payloads and the minted storage identity are values, never compared
+    // as strings — pinning them would be cargo cult, and the index-key
+    // budget on both servers has no room to spare.
+    expect([...bare].sort()).toEqual(['identity', 'payload', 'tags']);
+  };
+
+  test('mariaDbDialect pins utf8mb4_bin', () => {
+    // Not `utf8mb4_0900_bin`: that is MySQL 8 only, and MariaDB has never
+    // had it.  Naming a collation with no CHARACTER SET also fixes the
+    // charset to utf8mb4, rather than the database default.
+    expectPinnedOnIdentityColumnsOnly(mariaDbDialect, 'utf8mb4_bin');
+  });
+
+  test('msSqlDialect pins Latin1_General_100_BIN2', () => {
+    // BIN2 compares by Unicode code point; on NVARCHAR the `Latin1_General`
+    // half only names a code page for non-Unicode types and is inert.
+    expectPinnedOnIdentityColumnsOnly(msSqlDialect, 'Latin1_General_100_BIN2');
+  });
+
+  test('postgresDialect and sqliteDialect need no COLLATE — TEXT is already byte-exact', () => {
+    for (const dialect of [postgresDialect, sqliteDialect]) {
+      for (const statement of everyDdl(dialect)) {
+        expect(norm(statement)).not.toMatch(/COLLATE/i);
+      }
+    }
   });
 });
 

@@ -45,14 +45,17 @@ import {
  *     {@link InMemoryQuery} scan.  A pure exclusion has no selective tag to
  *     seed an index walk with, so there is nothing to push down.
  *
- * **The JS refinement is authoritative, and on MariaDB that is load-bearing.**
- * `MariaDbDialect` declares `tag` as a bare `VARCHAR(255)`, so it inherits the
- * server's default collation, which is case-insensitive on a stock install
- * (#707).  `t.tag = 'Order'` therefore also matches rows tagged `order`.  Those
- * extra rows are wasted work, not wrong answers: every row is re-checked
- * against `events.tags` with `eventMatchesTagFilter`, which compares strings
- * exactly.  Fixing the collation is #707's job; this class is correct either
- * way because it never trusts the pre-filter.
+ * **The JS refinement is authoritative, and that is deliberate.**  The SQL is
+ * a pre-filter; every row it returns is re-checked against `events.tags` with
+ * `eventMatchesTagFilter`, which compares strings exactly.  So the class is
+ * correct under any server collation, and never has to know which one it got.
+ *
+ * That independence was load-bearing before #707: `MariaDbDialect` declared
+ * `tag` as a bare `VARCHAR(255)` on the server's case-insensitive default, so
+ * `t.tag = 'Order'` also matched rows tagged `order` and the refinement threw
+ * them away.  The dialect now pins `utf8mb4_bin`, so a table it created
+ * matches exactly — but a table created before the pin still does not, and
+ * this class is what keeps that a cost rather than a wrong answer.
  */
 export class RelationalQuery extends InMemoryQuery {
   /** Built on first use — table names are only known once the journal opens. */

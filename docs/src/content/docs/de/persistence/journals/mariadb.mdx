@@ -107,7 +107,7 @@ anders als `CREATE INDEX IF NOT EXISTS`):
 
 ```sql
 CREATE TABLE events (
-  persistence_id VARCHAR(255) NOT NULL,
+  persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL,
   sequence_nr    BIGINT NOT NULL,
   payload        LONGTEXT NOT NULL,
   tags           TEXT,
@@ -117,6 +117,84 @@ CREATE TABLE events (
 );
 -- events_tags, snapshots, durable_state: wie bei Postgres, mit den Typen oben
 ```
+
+### Warum `persistence_id` und `tag` kollationiert sind
+
+Jede `persistence_id`- und `tag`-Spalte trägt ein explizites `COLLATE
+utf8mb4_bin`.  Ohne das erbt die Spalte den Server-Standard —
+`utf8mb4_general_ci` auf einer Standard-MariaDB, `utf8mb4_0900_ai_ci` auf
+MySQL 8 — und beide **falten Groß-/Kleinschreibung und Akzente**.
+
+Eine `persistence_id` ist nicht bloß ein Wert: sie ist der *Name eines
+Event-Streams* und die Hälfte des `events`-Primary-Keys.  Unter einer
+faltenden Kollation sind `Alice` und `alice` deshalb **ein** Stream hier
+und **zwei** auf Postgres, SQLite, MongoDB und DynamoDB.  Ein als `Alice`
+gestarteter Actor liest `alice`s Events, faltet sie in seinen eigenen
+State und schreibt in `alice`s Stream — ein Cross-Entity-Read, dessen
+einziges Symptom eine Serie von `JournalConcurrencyError`s ist, die wie
+ein Speicherfehler aussieht.  Dieselbe Spalte ist der Schlüssel für
+Durable-State-Load, Revisions-CAS und Delete; dort überschreibt und löscht
+eine Kollision den State einer anderen Entität.
+
+Eine Id-Validierung kann das nicht beheben: `Alice` und `alice` sind beide
+völlig legale Ids.  Was sich unterscheidet, ist der *Vergleich*, und der
+ist eine Eigenschaft der Spalte.
+
+`utf8mb4_bin` vergleicht Codepoint für Codepoint, so wie es jedes andere
+Backend ohnehin tut.  Es ist auch die portable Schreibweise —
+`utf8mb4_0900_bin` gibt es nur auf MySQL 8, und MariaDB hatte es nie.  Eine
+Kollation ohne `CHARACTER SET` zu nennen legt zugleich den Zeichensatz auf
+`utf8mb4` fest, statt ihn auf dem Datenbank-Standard zu belassen.
+
+Eine Abweichung bleibt bewusst bestehen: `utf8mb4_bin` ist **PAD SPACE**,
+also ist `'alice '` hier gleich `'alice'`, wo Postgres die beiden trennt.
+Die NO-PAD-Binärkollationen sind herstellerspezifisch geteilt
+(`utf8mb4_nopad_bin` auf MariaDB, `utf8mb4_0900_bin` auf MySQL), es gibt
+also nichts Portables zum Festlegen — vermeide abschließende Leerzeichen in
+Ids, die du selbst erzeugst.
+
+### Bestehendes Schema migrieren
+
+Das DDL ist `CREATE TABLE IF NOT EXISTS`, und `autoCreateTables` ist
+standardmäßig `true` — eine **bestehende Datenbank übernimmt das also
+nicht**: das Framework fasst eine vorgefundene Tabelle nie wieder an.  Neue
+Deployments bekommen die Kollation stillschweigend, alte behalten den
+Server-Standard, und gewarnt wird in keiner der beiden Richtungen.  Führe
+das einmal pro Datenbank aus, während kein Knoten schreibt:
+
+```sql
+ALTER TABLE events        MODIFY persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL;
+ALTER TABLE events_tags   MODIFY persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL,
+                          MODIFY tag            VARCHAR(255) COLLATE utf8mb4_bin NOT NULL;
+ALTER TABLE events_meta   MODIFY persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL;
+ALTER TABLE snapshots     MODIFY persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL;
+ALTER TABLE durable_state MODIFY persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL;
+```
+
+`MODIFY` ersetzt die **gesamte** Spaltendefinition, `NOT NULL` muss also
+wiederholt werden — lässt du es weg, wird die Spalte stillschweigend
+nullable.  Die Kollation einer indizierten Spalte zu ändern ist keine
+In-Place-Änderung, InnoDB baut jede Tabelle also neu auf: plane einen Lock
+für die Dauer und Plattenplatz für eine zweite Kopie ein.
+
+Prüfe **vor** der Migration auf Schaden, solange `GROUP BY` noch die
+faltende Kollation benutzt:
+
+```sql
+SELECT persistence_id,
+       COUNT(DISTINCT persistence_id COLLATE utf8mb4_bin) AS spellings
+  FROM events
+ GROUP BY persistence_id
+HAVING spellings > 1;
+```
+
+Jede Zeile bedeutet, dass sich zwei Ids bereits einen Stream teilen.  Das
+`ALTER` trennt sie wieder, und jeder Hälfte fehlen dann die Events der
+anderen — diese Actors scheitern beim Recovery also laut mit
+`JournalIntegrityError` (eine Lücke in der Sequenz), statt stillschweigend
+eine verschmolzene Historie auszuliefern.  Das ist das bessere Scheitern,
+aber es bleibt ein Scheitern: entscheide *vor* der Migration, was diese
+Streams sein sollen, nicht danach.
 
 ## Tag-Queries
 
@@ -146,6 +224,7 @@ Das Verhalten ist identisch; das SQL unterscheidet sich:
 | Durable-Create-Konflikt | `ON CONFLICT DO NOTHING` → rowCount | reines `INSERT`, `ER_DUP_ENTRY` (1062) fangen |
 | Concurrency-Backstop | SQLSTATE `23505` | `ER_DUP_ENTRY` / 1062 |
 | Contention-Backstop | SQLSTATE `40001` / `40P01` | `ER_CHECKREAD` (1020), 1213, 1205² |
+| Id-/Tag-Vergleich | `TEXT` — ohnehin byte-exakt | `VARCHAR(255) COLLATE utf8mb4_bin`³ |
 
 ¹ MySQL/MariaDB lehnen `LIMIT` in einer nackten `IN (SELECT …)` gegen die
 zu löschende Tabelle ab, daher wrappt der Prune die Subquery in eine
@@ -162,6 +241,11 @@ dass der Head sich tatsächlich bewegt hat; sonst bleibt der Fehler stehen,
 denn ein Lock-Wait-Timeout gegen eine unbeteiligte lange Transaktion ist
 ein echter Fehler, und ein Retry würde sich nur drehen.  Für Durable-State-
 CAS gilt dasselbe.
+
+³ Postgres vergleicht `TEXT` byte-exakt und braucht daher nichts; MariaDB
+würde sonst einen groß-/kleinschreibungsfaltenden Server-Standard erben und
+zwei Entitäten in einen Stream verschmelzen.  Siehe
+[Warum `persistence_id` und `tag` kollationiert sind](#warum-persistence_id-und-tag-kollationiert-sind).
 
 `BIGINT` kann der Connector als JS-`bigint` liefern; das Backend coerct
 Sequence/Revision/Timestamp an der Mapping-Grenze zu `number`.
@@ -181,21 +265,24 @@ import { Aside } from '@astrojs/starlight/components';
 </Aside>
 
 <Aside type="caution" title="utf8mb4 + Key-Länge">
-  Der `events_tags`-Primary-Key umfasst zwei `VARCHAR(255)`-Spalten.  Bei
-  `utf8mb4` im Hinterkopf behalten, wenn du das Schema anpasst — sehr lange
-  eigene Identifier können an InnoDBs Index-Größen-Limit stoßen.
+  `utf8mb4_bin` festzulegen legt auch den Zeichensatz fest, beide
+  `VARCHAR(255)`-Spalten des `events_tags`-Primary-Keys zählen also 1020
+  Index-Bytes — 2056 für den vierspaltigen Key.  Das liegt bequem unter
+  InnoDBs 3072-Byte-Limit beim Row-Format `DYNAMIC` (Standard seit MariaDB
+  10.2 und MySQL 5.7) und über dem 767-Byte-Limit des alten `COMPACT`.  Die
+  Spalten in einem eigenen Schema zu verbreitern frisst diesen Spielraum
+  schnell auf.
 </Aside>
 
-<Aside type="caution" title="Tags vergleichen im Index case-insensitiv">
-  `tag` ist ohne explizites `COLLATE` deklariert und erbt damit den
-  Server-Standard — auf einer Standardinstallation case-insensitiv.  Der
-  Index liefert deshalb auch Zeilen für Tags, die sich nur in der
-  Groß-/Kleinschreibung unterscheiden.  Die Ergebnisse bleiben korrekt:
-  `MariaDbQuery` prüft jede Zeile erneut gegen die Tag-Liste des Events
-  selbst, und die vergleicht exakt.  Der Preis ist ein weniger selektiver
-  Vorfilter als bei derselben Query auf Postgres.  Deklariere die Spalte
-  als `COLLATE utf8mb4_bin`, wenn du das Schema vorab anlegst und den
-  Index die ganze Arbeit machen lassen willst.
+<Aside type="caution" title="Eine bestehende Datenbank behält die alte Kollation">
+  `CREATE TABLE IF NOT EXISTS` fasst eine bereits vorhandene Tabelle nie
+  wieder an — eine vor dem `COLLATE utf8mb4_bin` angelegte Datenbank behält
+  also den case-insensitiven Server-Standard, und beim Start sagt das
+  nichts.  Zwei Ids, die sich nur in der Groß-/Kleinschreibung
+  unterscheiden, teilen sich dann auf diesem Backend einen Event-Stream und
+  bleiben auf jedem anderen getrennt.  Führe die
+  [`ALTER TABLE`-Migration](#bestehendes-schema-migrieren) aus; prüfe vorher
+  auf bereits verschmolzene Streams.
 </Aside>
 
 ## Wie geht's weiter

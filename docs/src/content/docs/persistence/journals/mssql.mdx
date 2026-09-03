@@ -152,7 +152,7 @@ wrapped in an `IF OBJECT_ID(…) IS NULL` check:
 
 ```sql
 CREATE TABLE events (
-  persistence_id NVARCHAR(255) NOT NULL,
+  persistence_id NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL,
   sequence_nr    BIGINT NOT NULL,
   payload        NVARCHAR(MAX) NOT NULL,   -- JSON
   tags           NVARCHAR(MAX) NULL,       -- CSV (also mirrored into events_tags)
@@ -160,27 +160,27 @@ CREATE TABLE events (
   CONSTRAINT PK_events PRIMARY KEY (persistence_id, sequence_nr)
 );
 CREATE TABLE events_tags (                 -- indexed tag lookups for projections
-  persistence_id NVARCHAR(255) NOT NULL,
+  persistence_id NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL,
   sequence_nr    BIGINT NOT NULL,
-  tag            NVARCHAR(255) NOT NULL,
+  tag            NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL,
   timestamp      BIGINT NOT NULL,
   CONSTRAINT PK_events_tags PRIMARY KEY NONCLUSTERED
     (tag, timestamp, persistence_id, sequence_nr)
 );
 CREATE TABLE events_meta (                 -- compaction high-water mark
-  persistence_id NVARCHAR(255) NOT NULL,
+  persistence_id NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL,
   deleted_to     BIGINT NOT NULL,
   CONSTRAINT PK_events_meta PRIMARY KEY (persistence_id)
 );
 CREATE TABLE snapshots (
-  persistence_id NVARCHAR(255) NOT NULL,
+  persistence_id NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL,
   sequence_nr    BIGINT NOT NULL,
   payload        NVARCHAR(MAX) NOT NULL,
   timestamp      BIGINT NOT NULL,
   CONSTRAINT PK_snapshots PRIMARY KEY (persistence_id, sequence_nr)
 );
 CREATE TABLE durable_state (
-  persistence_id NVARCHAR(255) NOT NULL,
+  persistence_id NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL,
   revision       BIGINT NOT NULL,
   payload        NVARCHAR(MAX) NOT NULL,
   timestamp      BIGINT NOT NULL,
@@ -192,10 +192,110 @@ The tags table's primary key is **nonclustered** on purpose.  `NVARCHAR(n)`
 counts 2n bytes toward an index key, so `(tag, timestamp, persistence_id,
 sequence_nr)` needs 1036 bytes — past SQL Server's 900-byte clustered limit,
 but inside the 1700-byte nonclustered one.  That is why **SQL Server 2016 or
-later** is required.
+later** is required.  The collation is metadata, not width, so it costs
+nothing against that budget.
 
 Pre-provision these (granting only `INSERT/SELECT/UPDATE/DELETE`) and set
 `autoCreateTables: false` if the database role cannot run DDL.
+
+### Why `persistence_id` and `tag` are collated
+
+Every `persistence_id` and `tag` column carries an explicit `COLLATE
+Latin1_General_100_BIN2`.  Without it the column inherits the database
+default — `SQL_Latin1_General_CP1_CI_AS` on a stock instance, which is
+**case-insensitive**.
+
+A `persistence_id` is not merely a value: it is the *name of an event
+stream* and half of the `events` primary key.  Under a folding collation
+`Alice` and `alice` are therefore **one** stream here and **two** on
+Postgres, SQLite, MongoDB and DynamoDB.  An actor started as `Alice`
+recovers `alice`'s events, folds them into its own state and appends into
+`alice`'s stream — a cross-entity read whose only symptom is a run of
+`JournalConcurrencyError`s that reads like a storage fault.  The same
+column keys durable-state load, revision CAS and delete, so there a
+collision overwrites and deletes another entity's state.
+
+Validating the id cannot fix this: `Alice` and `alice` are both perfectly
+legal ids.  What differs is the *comparison*, which is a property of the
+column.
+
+`BIN2` compares by Unicode code point, the way every other backend already
+does.  The `Latin1_General` half of the name only selects a code page for
+non-Unicode types; on `NVARCHAR` it is inert, so this is a full-Unicode
+ordinal comparison and not a Western-European restriction.  Version `100`
+has shipped since SQL Server 2008, well below the 2016 floor the tags
+table's nonclustered key already imposes.
+
+### Migrating an existing schema
+
+The DDL is guarded with `IF OBJECT_ID(…) IS NULL` and `autoCreateTables`
+defaults to `true`, so **an existing database does not pick this up**: the
+framework never revisits a table it finds.  New deployments get the
+collation silently, old ones keep the instance default, and nothing at
+startup says so.
+
+SQL Server refuses to re-collate a column that an index or constraint
+depends on (error 5074), so each table is drop, alter, recreate.  Run it
+once per database, with no node writing:
+
+```sql
+ALTER TABLE events DROP CONSTRAINT PK_events;
+DROP INDEX idx_events_pid ON events;
+ALTER TABLE events ALTER COLUMN persistence_id
+  NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
+ALTER TABLE events ADD CONSTRAINT PK_events
+  PRIMARY KEY (persistence_id, sequence_nr);
+CREATE INDEX idx_events_pid ON events (persistence_id);
+
+ALTER TABLE events_tags DROP CONSTRAINT PK_events_tags;
+DROP INDEX idx_events_tags_pid_seq ON events_tags;
+ALTER TABLE events_tags ALTER COLUMN persistence_id
+  NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
+ALTER TABLE events_tags ALTER COLUMN tag
+  NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
+ALTER TABLE events_tags ADD CONSTRAINT PK_events_tags
+  PRIMARY KEY NONCLUSTERED (tag, timestamp, persistence_id, sequence_nr);
+CREATE INDEX idx_events_tags_pid_seq ON events_tags (persistence_id, sequence_nr);
+
+ALTER TABLE events_meta DROP CONSTRAINT PK_events_meta;
+ALTER TABLE events_meta ALTER COLUMN persistence_id
+  NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
+ALTER TABLE events_meta ADD CONSTRAINT PK_events_meta PRIMARY KEY (persistence_id);
+
+ALTER TABLE snapshots DROP CONSTRAINT PK_snapshots;
+ALTER TABLE snapshots ALTER COLUMN persistence_id
+  NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
+ALTER TABLE snapshots ADD CONSTRAINT PK_snapshots
+  PRIMARY KEY (persistence_id, sequence_nr);
+
+ALTER TABLE durable_state DROP CONSTRAINT PK_durable_state;
+ALTER TABLE durable_state ALTER COLUMN persistence_id
+  NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
+ALTER TABLE durable_state ADD CONSTRAINT PK_durable_state PRIMARY KEY (persistence_id);
+```
+
+`ALTER COLUMN` replaces the **whole** definition, so `NOT NULL` has to be
+repeated — omit it and the column silently becomes nullable.  Substitute
+your own table names if you overrode `eventsTable`, `tagsTable`,
+`snapshotsTable` or `table`.
+
+Check for damage **before** migrating, while the folding collation is still
+what `GROUP BY` uses:
+
+```sql
+SELECT MIN(persistence_id) AS sample,
+       COUNT(DISTINCT persistence_id COLLATE Latin1_General_100_BIN2) AS spellings
+  FROM events
+ GROUP BY persistence_id
+HAVING COUNT(DISTINCT persistence_id COLLATE Latin1_General_100_BIN2) > 1;
+```
+
+Any row means two ids have already been sharing a stream.  The migration
+splits them apart again, and each half is then missing the other's events —
+so those actors fail recovery loudly with `JournalIntegrityError` (a hole
+in the sequence) instead of quietly serving a merged history.  That is the
+better failure, but it is still a failure: decide what those streams ought
+to be *before* you migrate, not after.
 
 ## Concurrency model
 
@@ -227,6 +327,16 @@ import { Aside } from '@astrojs/starlight/components';
   `NVARCHAR(255)` is what keeps those index keys inside the limit above.  A
   longer persistenceId or tag is rejected by the server rather than silently
   truncated.
+</Aside>
+
+<Aside type="caution" title="An existing database keeps the old collation">
+  The guarded `CREATE TABLE` never revisits a table that already exists, so
+  a database created before the `COLLATE Latin1_General_100_BIN2` pin keeps
+  the instance's case-insensitive default — and nothing at startup says so.
+  Two ids differing only in case then share one event stream (and one
+  durable-state row) on this backend, and stay distinct on every other one.
+  Run the [migration](#migrating-an-existing-schema); check for
+  already-merged streams first.
 </Aside>
 
 <Aside type="caution" title="TLS is on by default in the driver">

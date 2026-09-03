@@ -105,7 +105,7 @@ EXISTS`):
 
 ```sql
 CREATE TABLE events (
-  persistence_id VARCHAR(255) NOT NULL,
+  persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL,
   sequence_nr    BIGINT NOT NULL,
   payload        LONGTEXT NOT NULL,
   tags           TEXT,
@@ -115,6 +115,80 @@ CREATE TABLE events (
 );
 -- events_tags, snapshots, durable_state: as Postgres, with the types above
 ```
+
+### Why `persistence_id` and `tag` are collated
+
+Every `persistence_id` and `tag` column carries an explicit `COLLATE
+utf8mb4_bin`.  Without it the column inherits the server default —
+`utf8mb4_general_ci` on a stock MariaDB, `utf8mb4_0900_ai_ci` on MySQL 8 —
+and both of those **fold case and accents**.
+
+A `persistence_id` is not merely a value: it is the *name of an event
+stream* and half of the `events` primary key.  Under a folding collation
+`Alice` and `alice` are therefore **one** stream here and **two** on
+Postgres, SQLite, MongoDB and DynamoDB.  An actor started as `Alice`
+recovers `alice`'s events, folds them into its own state and appends into
+`alice`'s stream — a cross-entity read whose only symptom is a run of
+`JournalConcurrencyError`s that reads like a storage fault.  The same
+column keys durable-state load, revision CAS and delete, so there a
+collision overwrites and deletes another entity's state.
+
+Validating the id cannot fix this: `Alice` and `alice` are both perfectly
+legal ids.  What differs is the *comparison*, which is a property of the
+column.
+
+`utf8mb4_bin` compares code point by code point, the way every other
+backend already does.  It is also the portable spelling —
+`utf8mb4_0900_bin` is MySQL 8 only and MariaDB has never had it.  Naming a
+collation with no `CHARACTER SET` fixes the charset to `utf8mb4` as well,
+rather than leaving it on whatever the database defaults to.
+
+One divergence survives on purpose: `utf8mb4_bin` is **PAD SPACE**, so
+`'alice '` still equals `'alice'` here where Postgres keeps them apart.
+The NO PAD binary collations are vendor-split (`utf8mb4_nopad_bin` on
+MariaDB, `utf8mb4_0900_bin` on MySQL), so there is nothing portable to
+pin — avoid trailing whitespace in ids you generate.
+
+### Migrating an existing schema
+
+The DDL is `CREATE TABLE IF NOT EXISTS` and `autoCreateTables` defaults to
+`true`, so **an existing database does not pick this up**: the framework
+never revisits a table it finds.  New deployments get the collation
+silently, old ones keep the server default, and nothing warns either way.
+Run this once per database, with no node writing:
+
+```sql
+ALTER TABLE events        MODIFY persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL;
+ALTER TABLE events_tags   MODIFY persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL,
+                          MODIFY tag            VARCHAR(255) COLLATE utf8mb4_bin NOT NULL;
+ALTER TABLE events_meta   MODIFY persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL;
+ALTER TABLE snapshots     MODIFY persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL;
+ALTER TABLE durable_state MODIFY persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL;
+```
+
+`MODIFY` replaces the **whole** column definition, so `NOT NULL` has to be
+repeated — omit it and the column silently becomes nullable.  Changing the
+collation of an indexed column is not an in-place alteration, so InnoDB
+rebuilds each table: budget a lock for the duration and disk for a second
+copy.
+
+Check for damage **before** migrating, while the folding collation is still
+what `GROUP BY` uses:
+
+```sql
+SELECT persistence_id,
+       COUNT(DISTINCT persistence_id COLLATE utf8mb4_bin) AS spellings
+  FROM events
+ GROUP BY persistence_id
+HAVING spellings > 1;
+```
+
+Any row means two ids have already been sharing a stream.  The `ALTER`
+splits them apart again, and each half is then missing the other's events —
+so those actors fail recovery loudly with `JournalIntegrityError` (a hole
+in the sequence) instead of quietly serving a merged history.  That is the
+better failure, but it is still a failure: decide what those streams ought
+to be *before* you migrate, not after.
 
 ## Tag queries
 
@@ -144,6 +218,7 @@ The behaviour is identical; the SQL differs:
 | Durable create conflict | `ON CONFLICT DO NOTHING` → rowCount | plain `INSERT`, catch `ER_DUP_ENTRY` (1062) |
 | Concurrency backstop | SQLSTATE `23505` | `ER_DUP_ENTRY` / 1062 |
 | Contention backstop | SQLSTATE `40001` / `40P01` | `ER_CHECKREAD` (1020), 1213, 1205² |
+| Id / tag comparison | `TEXT` — byte-exact already | `VARCHAR(255) COLLATE utf8mb4_bin`³ |
 
 ¹ MySQL/MariaDB reject `LIMIT` inside a bare `IN (SELECT …)` against the
 table being deleted, so the prune wraps the subquery in a derived table.
@@ -157,6 +232,11 @@ reported as `JournalConcurrencyError` when a re-read shows the head actually
 moved; otherwise the error stands, because a lock-wait timeout against an
 unrelated long transaction is a real failure and retrying it would spin.
 The same applies to durable-state CAS.
+
+³ Postgres compares `TEXT` byte-exactly, so it needs nothing; MariaDB
+would otherwise inherit a case-folding server default and merge two
+entities into one stream.  See
+[Why `persistence_id` and `tag` are collated](#why-persistence_id-and-tag-are-collated).
 
 `BIGINT` may surface from the connector as a JS `bigint`; the backend
 coerces sequence/revision/timestamp to `number` at the mapping boundary.
@@ -176,20 +256,22 @@ import { Aside } from '@astrojs/starlight/components';
 </Aside>
 
 <Aside type="caution" title="utf8mb4 + key length">
-  The `events_tags` primary key spans two `VARCHAR(255)` columns.  On
-  `utf8mb4`, keep the default lengths in mind if you customise the schema —
-  very long custom identifiers can bump into InnoDB's index-size limit.
+  Pinning `utf8mb4_bin` also pins the charset, so both `VARCHAR(255)`
+  columns of the `events_tags` primary key count 1020 index bytes — 2056
+  for the four-column key.  That is comfortable under InnoDB's 3072-byte
+  limit on the `DYNAMIC` row format (the default since MariaDB 10.2 and
+  MySQL 5.7), and over the 767-byte limit of the legacy `COMPACT` format.
+  Widening the columns in a custom schema eats that headroom fast.
 </Aside>
 
-<Aside type="caution" title="Tags compare case-insensitively in the index">
-  `tag` is declared without an explicit `COLLATE`, so it inherits the
-  server's default — case-insensitive on a stock install.  The index
-  therefore also returns rows for tags differing only in case.  Results
-  stay correct: `MariaDbQuery` re-checks every row against the event's own
-  tag list, which compares exactly.  The cost is a less selective
-  pre-filter than the same query gets on Postgres.  Declare the column
-  `COLLATE utf8mb4_bin` if you pre-provision the schema and want the
-  index to do the whole job.
+<Aside type="caution" title="An existing database keeps the old collation">
+  `CREATE TABLE IF NOT EXISTS` never revisits a table that already exists,
+  so a database created before the `COLLATE utf8mb4_bin` pin keeps the
+  server's case-insensitive default — and nothing at startup says so.  Two
+  ids differing only in case then share one event stream on this backend
+  and stay distinct on every other one.  Run the
+  [`ALTER TABLE` migration](#migrating-an-existing-schema); check for
+  already-merged streams first.
 </Aside>
 
 ## Where to next
