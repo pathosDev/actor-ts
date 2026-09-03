@@ -1696,17 +1696,25 @@ export class Cluster {
         this.updateMember(member.withStatus('unreachable'));
         this.emit(new MemberUnreachable(this.members.get(member.address.toString())!));
       } else if (decision === 'down' && member.status !== 'down' && member.status !== 'removed') {
+        if (this.downing) { this.holdForResolver(member); continue; }
         this.log.debug(`FD: ${member.address} → down (was ${member.status}); deleting from membership`);
         const downed = member.withStatus('down');
         this.updateMember(downed);
         this.emit(new MemberDown(downed));
-        // Note: FD-driven downing is the *advisory* fallback when no
-        // `DowningProvider` is configured.  We delete here (rather
-        // than tombstone) so a partition followed by a heal can
-        // recover the peer — `partition+heal` semantics rely on
-        // this.  Definitive downing paths (`onLeave`,
-        // `evaluateDowning` force-down) tombstone instead, which
-        // prevents stale gossip from resurrecting the address.
+        // Reached only with no `DowningProvider` configured — the guard
+        // above hands that case to the resolver instead (#929).  We delete
+        // rather than tombstone so a process that restarts on the same
+        // `host:port` rejoins cleanly instead of meeting its own tombstone;
+        // the definitive downing paths (`onLeave`, `evaluateDowning`'s
+        // force-down) tombstone, which is what stops stale gossip
+        // resurrecting an address nobody is listening on.
+        //
+        // Deleting does *not* buy a partition+heal recovery, and the note
+        // that used to stand here claimed it did.  `gossipTick` and
+        // `heartbeatTick` both target `reachableMembers()`, which excludes
+        // `unreachable` — and after this delete the peer is not in the map
+        // at all — so a symmetric partition leaves neither side with a way
+        // to hear the other again.  Closing that is #930.
         this.deleteMember(member.address.toString());
         this.failureDetector.forget(member.address);
         // Transient `removed` Member only used for the event emit —
@@ -1718,6 +1726,50 @@ export class Cluster {
     // Optional split-brain resolver — runs after the failure-detector
     // pass so it sees the latest unreachable set.
     if (this.downing) this.evaluateDowning();
+  }
+
+  /**
+   * The detector said `down` and a {@link DowningProvider} is configured:
+   * park the peer at `unreachable` and evict nothing.  Eviction is the
+   * resolver's call (#929).
+   *
+   * **Why the detector must not evict here.**  `evaluateDowning` runs at the
+   * end of the same tick, and it builds `view.unreachable` from members whose
+   * status *is* `unreachable`.  Evicting first therefore handed the resolver a
+   * view this loop had already emptied: every bundled strategy filters its
+   * candidates on that set, so a deleted member reads as a healed cluster and
+   * the strategy decides nothing.  The window the detector left was
+   * `down-after` minus `unreachable-after` — 3 s on the reference defaults —
+   * and two strategies need more than that: `LeaseMajority`'s acquire is
+   * asynchronous with a 5 s default budget, and a stability window (#839) is
+   * measured in tens of seconds.
+   *
+   * **Why the re-mark is not redundant** with the `unreachable` arm above:
+   * that arm only fires for a member that was `up`.  A peer that fell silent
+   * while `joining` or `weakly-up` was never marked — it was deleted here
+   * instead — and all five bundled strategies filter their candidates to
+   * `up | leaving | unreachable`, so leaving it unmarked would park it outside
+   * every resolver's reach on every node but the leader.
+   *
+   * **Only `MemberUnreachable` is announced, never `MemberDown`.**  Announcing
+   * the detector's verdict as a membership fact is exactly the authority this
+   * change is taking away: `ClusterSingletonManager` reconciles on
+   * `MemberDown` and deliberately not on `MemberUnreachable`, so emitting it
+   * would let one node's failure detector trigger a takeover the resolver has
+   * not sanctioned.  `updateMember` emits the transition itself, so this does
+   * not emit again.
+   *
+   * The trade is integrity over availability, and it is not free: a strategy
+   * that never reaches a verdict parks the member at `unreachable`
+   * indefinitely — counting against `maxMembers`, never triggering a singleton
+   * takeover or a shard reallocation, and with no path back to `up` until #930
+   * lands.  That is the documented end state, not an oversight.
+   */
+  private holdForResolver(member: Member): void {
+    if (member.status === 'unreachable') return;
+    this.log.debug(
+      `FD: ${member.address} → down (was ${member.status}); holding at unreachable for the downing provider`);
+    this.updateMember(member.withStatus('unreachable'));
   }
 
   /**
