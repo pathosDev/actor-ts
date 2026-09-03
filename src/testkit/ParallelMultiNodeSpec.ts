@@ -449,7 +449,16 @@ export class ParallelMultiNodeSpec {
         worker.removeEventListener('message', onMessage);
         reject(new Error(`Worker ${addr} did not become ready within 10s`));
       }, 10_000);
+      /**
+       * First hello wins — the same latch as `WorkerCluster.handshake`, and
+       * for the same reason: `postMessage` structured-clones `init` on this
+       * thread, so an unlatched hello lets one worker charge the harness a
+       * clone per frame for the whole timeout window (#775).
+       */
+      let helloSeen = false;
       const onWorkerHello = (_hello: WorkerHelloMessage): void => {
+        if (helloSeen) return;
+        helloSeen = true;
         worker.postMessage(init);
       };
       const onWorkerReady = (_ready: WorkerReadyMessage): void => {

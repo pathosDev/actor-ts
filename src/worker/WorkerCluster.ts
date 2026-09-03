@@ -292,7 +292,22 @@ export class WorkerCluster {
         worker.removeEventListener('message', onMessage);
         worker.removeEventListener('error', onError);
       };
+      /**
+       * First hello wins; every later one is dropped.
+       *
+       * `postMessage` structured-clones its argument on the *posting* thread,
+       * and `init.data` is whatever the application handed to `withInitData` —
+       * a config blob, a seed list.  Without the latch a worker stuck in
+       * `for (;;) postMessage({ kind: 'worker-hello' })` buys an arbitrarily
+       * expensive main-thread clone per one-word frame, for the whole
+       * `readyTimeoutMs` window.  Re-sending init cannot help a worker that
+       * missed the first one either: the frame is identical and the channel is
+       * ordered, so a repeat is pure cost (#775).
+       */
+      let helloSeen = false;
       const onWorkerHello = (): void => {
+        if (helloSeen) return;
+        helloSeen = true;
         worker.postMessage(init);
       };
       const onWorkerReady = (): void => {

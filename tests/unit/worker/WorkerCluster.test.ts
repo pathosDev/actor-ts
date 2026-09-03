@@ -143,6 +143,54 @@ describe('WorkerCluster — spawn', () => {
     expect(ports).toEqual([7000, 7001, 7002, 7003]);
     await cluster.terminate();
   });
+
+  test('a repeated worker-hello posts the init frame only once, per worker', async () => {
+    // Driven by hand rather than through `autoHandshake`, and that is the whole
+    // point: the auto-handshake replies `worker-ready` to the first init, which
+    // tears the handshake listener down before a second hello could arrive.  A
+    // test built on it would pass against the unlatched code too (#775).
+    //
+    // Two workers, not one, for the mirror-image reason: a latch hoisted to the
+    // cluster instead of the handshake also survives "one worker, three hellos,
+    // one init", and would starve every sibling of its init frame.
+    const backend = new FakeWorkerBackend({ /* no hook — we drive the frames */ });
+    const workerOptions = WorkerClusterOptions.create()
+      .withBootstrap(new URL('file:///fake.js'))
+      .withWorkers(2)
+      .withInitData({ payload: 'a blob worth cloning' })
+      .withBackend(backend);
+    const spawning = WorkerCluster.spawn(workerOptions);
+
+    await awaitCondition(() => backend.spawned.length === 2, {
+      label: 'the cluster spawned both workers and installed their handshake listeners',
+    });
+    const [noisy, quiet] = backend.spawned as [FakeWorker, FakeWorker];
+    const initFramesOf = (worker: FakeWorker): unknown[] =>
+      worker.posted.filter((m) => (m as { kind?: string })?.kind === 'worker-init');
+
+    noisy.deliverMessage({ kind: 'worker-hello' });
+    expect(initFramesOf(noisy).length).toBe(1);
+
+    // Further hellos from the same worker, handshake still open: the latch must
+    // swallow them.  Unlatched, each is another structured clone of `initData`
+    // on the main thread — one per frame for the whole ready window.
+    noisy.deliverMessage({ kind: 'worker-hello' });
+    noisy.deliverMessage({ kind: 'worker-hello' });
+    expect(initFramesOf(noisy).length).toBe(1);
+
+    // The sibling's first hello is still its first: the latch is per handshake.
+    quiet.deliverMessage({ kind: 'worker-hello' });
+    expect(initFramesOf(quiet).length).toBe(1);
+
+    // Finish both handshakes so `spawn()` resolves and the mesh tears down clean.
+    for (const worker of [noisy, quiet]) {
+      const init = initFramesOf(worker)[0] as { self: unknown };
+      worker.deliverMessage({ kind: 'worker-ready', self: init.self });
+    }
+    const cluster = await spawning;
+    expect(cluster.size).toBe(2);
+    await cluster.terminate();
+  });
 });
 
 describe('WorkerCluster — worker-count resolution', () => {
