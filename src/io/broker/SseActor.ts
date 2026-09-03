@@ -2,6 +2,7 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
+import { SseEventBuffer } from './SseEventBuffer.js';
 import { SseOptionsValidator } from './SseOptions.js';
 import type { SseOptions, SseOptionsType } from './SseOptions.js';
 
@@ -119,7 +120,7 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
   private async consume(stream: ReadableStream<Uint8Array>): Promise<void> {
     const reader = stream.getReader();
     const decoder = new TextDecoder('utf-8');
-    let buffer = '';
+    const buffer = new SseEventBuffer();
     try {
       while (this.streamRunning) {
         const { done, value } = await reader.read();
@@ -128,11 +129,14 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
         // no event at all — which is exactly how a well-behaved server holds
         // an idle feed open (#753).
         this.noteInboundActivity();
-        buffer += decoder.decode(value, { stream: true });
+        const text = decoder.decode(value, { stream: true });
         // Cap the pending buffer: a hostile / MITM'd endpoint that streams
         // bytes without an event delimiter (`\n\n`) would otherwise grow it
-        // without bound (security audit BRK-2).
-        if (buffer.length > SSE_MAX_BUFFER_CHARS) {
+        // without bound (security audit BRK-2).  Measured on what the chunk
+        // *would* make pending, before any of it is split off, so the bound is
+        // the one the cap has always enforced.  What it does not bound is the
+        // work spent reaching it — that is `SseEventBuffer`'s job (#749).
+        if (buffer.pendingLength() + text.length > SSE_MAX_BUFFER_CHARS) {
           this.streamRunning = false;
           try { this.aborter?.abort(); } catch { /* ignore */ }
           this.handleConnectionLost(
@@ -140,13 +144,9 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
           );
           return;
         }
-        let index = buffer.indexOf('\n\n');
-        while (index >= 0) {
-          const block = buffer.slice(0, index);
-          buffer = buffer.slice(index + 2);
-          const ev = parseEventBlock(block);
-          if (ev && this.options.target) this.options.target.tell(ev);
-          index = buffer.indexOf('\n\n');
+        for (const block of buffer.push(text)) {
+          const event = parseEventBlock(block);
+          if (event && this.options.target) this.options.target.tell(event);
         }
       }
     } catch (e) {
