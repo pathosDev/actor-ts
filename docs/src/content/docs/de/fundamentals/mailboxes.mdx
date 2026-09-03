@@ -37,15 +37,19 @@ Speicherdecke gewinnen", und er ging nicht auf:
   die liefen durch dieselbe Queue.  Aus jedem dieser Fälle wurde ein
   gemeldeter Defekt.
 
-  Zwei Nachrichten, die das Framework in deinem Namen sendet, sind
-  inzwischen für jede Policy unerreichbar: das `Terminated` der Death
-  Watch und das Kommando, das den Actor einer
+  Drei Nachrichten sind inzwischen für jede Policy unerreichbar: das
+  `Terminated` der Death Watch, das Kommando, das den Actor einer
   [WebSocket](/de/http/websocket/#die-mailbox-des-hubs-begrenzen)-Verbindung
-  spawnt.  Beide nehmen eine Spur, die keine Schranke abwerfen kann
-  (siehe [Death Watch](/de/fundamentals/death-watch/) und *Eine eigene
-  Mailbox* weiter unten).  Der Test, den sie bestehen: das Framework hat
-  sie gebaut, genau einmal gesendet und nichts behalten, womit es sie
-  erneut senden könnte.  Der Rest ist Anwendungsverkehr, und nur du
+  spawnt, und das `close` eben dieser Verbindung.  Alle drei nehmen eine
+  Spur, die keine Schranke abwerfen kann (siehe
+  [Death Watch](/de/fundamentals/death-watch/) und *Eine eigene Mailbox*
+  weiter unten).  Der Test, den sie bestehen: jede wird genau einmal
+  gesendet, und nichts hält mehr, was zum erneuten Senden nötig wäre —
+  und wer eine davon verliert, verliert keine *Nachricht*, sondern einen
+  Zustand außerhalb der Mailbox, den nichts mehr korrigiert: einen
+  Watcher, der einen toten Actor für lebendig hält, einen aufgewerteten
+  Socket, an dem niemand hängt, einen Peer, den du trennen wolltest und
+  nicht getrennt hast.  Der Rest ist Anwendungsverkehr, und nur du
   weißt, welcher davon verzichtbar ist.
 
 Der Verlust ist jetzt also etwas, das du pro Actor anforderst, und das

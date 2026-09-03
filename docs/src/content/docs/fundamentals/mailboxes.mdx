@@ -36,14 +36,18 @@ not hold up:
   those went through the same queue.  Each of those turned into a filed
   defect.
 
-  Two messages the framework sends on your behalf are now out of every
-  policy's reach: the death-watch `Terminated`, and the command that
-  spawns a [WebSocket](/http/websocket/#bounding-the-hubs-mailbox)
-  connection's actor.  Both take a lane no bound can shed (see
-  [Death watch](/fundamentals/death-watch/) and *A mailbox of your own*
-  below).  The test they pass is that the framework built them, sent
-  them once, and kept nothing it could re-send.  The rest is still
-  application traffic, and only you know which of it is safe to lose.
+  Three messages are now out of every policy's reach: the death-watch
+  `Terminated`, the command that spawns a
+  [WebSocket](/http/websocket/#bounding-the-hubs-mailbox) connection's
+  actor, and that connection's own `close`.  All three take a lane no
+  bound can shed (see [Death watch](/fundamentals/death-watch/) and
+  *A mailbox of your own* below).  The test they pass is that each is
+  sent once with nothing left to re-send it from, and that losing one
+  costs you not a *message* but a piece of state outside the mailbox
+  that nothing else will correct — a watcher that thinks a dead actor
+  is alive, an upgraded socket nobody attached to, a peer you decided
+  to disconnect and did not.  The rest is still application traffic,
+  and only you know which of it is safe to lose.
 
 So the loss is now something you ask for, per actor, and the growth is
 something you are told about: an actor whose queue reaches 10 000
