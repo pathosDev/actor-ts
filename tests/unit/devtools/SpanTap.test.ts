@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
-import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
 import { RecordingTracer } from '../../../src/tracing/RecordingTracer.js';
 import { TracingExtensionId } from '../../../src/tracing/TracingExtension.js';
 import { tracerOf } from '../../../src/tracing/TracingExtension.js';
@@ -16,8 +16,10 @@ afterEach(async () => {
   for (const system of systems.splice(0)) await system.terminate();
 });
 
-function newSystem(name: string): ActorSystem {
-  const options = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+function newSystem(name: string, logger: Logger = new NoopLogger()): ActorSystem {
+  const options = ActorSystemOptions.create()
+    .withLogger(logger)
+    .withLogLevel(LogLevel.Off);
   const system = ActorSystem.create(name, options);
   systems.push(system);
   return system;
@@ -291,6 +293,10 @@ describe('SpanTap — recording every message', () => {
   });
 
   test('detaching stops recording and leaves the tracer as it was', () => {
+    // No tracer beforehand, so this is the `disable()` branch, where the
+    // switch goes off as a side effect of the tracer coming out.  The
+    // branch where the switch is the whole question is covered in
+    // "restoring the tracing switches" below (#714).
     const system = newSystem('span-record-detach');
     const tap = new SpanTap(system, 100, 20);
     tap.install(() => {});
@@ -380,6 +386,8 @@ describe('SpanTap — sender and payload', () => {
   });
 
   test('captures payloads from attach, and stops at detach', () => {
+    // Again the no-tracer branch: `disable()` clears the flag on its way
+    // out, so this passes without anything restoring it (#714).
     const system = newSystem('span-payload-off');
     const tap = new SpanTap(system, 100, 20);
     const tracing = system.extension(TracingExtensionId);
@@ -398,3 +406,182 @@ describe('SpanTap — sender and payload', () => {
     expect(tracing.isCapturingMessagePayloads()).toBe(false);
   });
 });
+
+/**
+ * #714 — detaching restored the tracer and nothing else.
+ *
+ * The two tests above that look like they cover this — "detaching stops
+ * recording and leaves the tracer as it was" and "captures payloads from
+ * attach, and stops at detach" — both build a system with no tracer, so
+ * `uninstall()` reaches `TracingExtension.disable()`, which clears both
+ * switches on its way out.  They pass with the defect present.
+ *
+ * The branch that matters is the other one: an application already exporting
+ * spans to an APM.  There `uninstall()` calls `enable(previousTracer)`, which
+ * touches neither switch, so every message after the detach opened a root span
+ * carrying its whole serialised body — and the restored exporter kept shipping
+ * them, silently, until the process restarted.  Everything below installs a
+ * tracer *first*.
+ */
+describe('SpanTap — restoring the tracing switches', () => {
+  test('both switches go back to off when a tracer was already installed', () => {
+    const system = newSystem('span-restore-switches');
+    const tracing = system.extension(TracingExtensionId);
+    const exporter = new RecordingTracer();
+    tracing.enable(exporter);
+    expect(tracing.isRecordingRootSpans()).toBe(false);
+    expect(tracing.isCapturingMessagePayloads()).toBe(false);
+
+    const tap = new SpanTap(system, 100, 20);
+    tap.install(() => {});
+    expect(tracing.isRecordingRootSpans()).toBe(true);
+    expect(tracing.isCapturingMessagePayloads()).toBe(true);
+
+    tap.uninstall();
+    // The application's tracer is back — which is exactly why the switches
+    // must not be: it goes on exporting, and it would export the bodies.
+    expect(tracerOf(system)).toBe(exporter);
+    expect(tracing.isRecordingRootSpans()).toBe(false);
+    expect(tracing.isCapturingMessagePayloads()).toBe(false);
+  });
+
+  test('switches the application set for itself are restored, not cleared', () => {
+    // "Restore" and "turn off" are only the same thing when DevTools was
+    // what turned them on.  An operator who asked for payload capture
+    // still has it after a debugging session.
+    const system = newSystem('span-restore-operator-switches');
+    const tracing = system.extension(TracingExtensionId);
+    tracing.enable(new RecordingTracer());
+    tracing.recordRootSpans(true);
+    tracing.captureMessagePayloads(true);
+
+    const tap = new SpanTap(system, 100, 20);
+    tap.install(() => {});
+    tap.uninstall();
+
+    expect(tracing.isRecordingRootSpans()).toBe(true);
+    expect(tracing.isCapturingMessagePayloads()).toBe(true);
+  });
+
+  test('a capture the application set with no tracer at all survives too', () => {
+    // The no-tracer branch, which `disable()` clears wholesale: the flag
+    // was the application's before DevTools arrived, so it is still the
+    // application's afterwards.
+    const system = newSystem('span-restore-payloads-no-tracer');
+    const tracing = system.extension(TracingExtensionId);
+    tracing.captureMessagePayloads(true);
+
+    const tap = new SpanTap(system, 100, 20);
+    tap.install(() => {});
+    tap.uninstall();
+
+    expect(tracing.isEnabled()).toBe(false);
+    expect(tracing.isCapturingMessagePayloads()).toBe(true);
+  });
+
+  test('the pre-existing exporter stops receiving message bodies at detach', async () => {
+    // The flags are the mechanism; this is the consequence, asserted on the
+    // tracer the application configured — the one whose spans leave the
+    // process.
+    const system = newSystem('span-restore-export');
+    const exporter = new RecordingTracer();
+    system.extension(TracingExtensionId).enable(exporter);
+    const withPayload = () =>
+      exporter.recorded().filter((span) => span.attributes[PAYLOAD_ATTRIBUTE] !== undefined);
+
+    const tap = new SpanTap(system, 100, 20);
+    tap.install(() => {});
+    const ref = system.spawn(OrderActor, 'orders');
+    ref.tell({ kind: 'place', id: 7 });
+    await settle(80);
+    expect(withPayload().length).toBeGreaterThan(0);
+
+    tap.uninstall();
+    const exported = exporter.recorded().length;
+    ref.tell({ kind: 'place', id: 8 });
+    await settle(80);
+
+    // Nothing new reaches the exporter at all: without root spans a plain
+    // `tell` opens no span, and so no body can ride out on one.
+    expect(exporter.recorded()).toHaveLength(exported);
+  });
+
+  test('attaching to a system that is already exporting says so, once', () => {
+    const logger = new RecordingLogger();
+    const system = newSystem('span-warn-exporting', logger);
+    system.extension(TracingExtensionId).enable(new RecordingTracer());
+
+    const tap = new SpanTap(system, 100, 20);
+    tap.install(() => {});
+    try {
+      const warnings = logger.warningsAbout(PAYLOAD_ATTRIBUTE);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain('keeps exporting');
+    } finally {
+      tap.uninstall();
+    }
+  });
+
+  test('says nothing when the payloads go nowhere but the panel', () => {
+    // No tracer beforehand means DevTools is the only consumer, and the
+    // spans die with the detach.  A warning here would be the one that
+    // teaches operators to skip the one that matters.
+    const logger = new RecordingLogger();
+    const system = newSystem('span-warn-local-only', logger);
+
+    const tap = new SpanTap(system, 100, 20);
+    tap.install(() => {});
+    try {
+      expect(logger.warningsAbout(PAYLOAD_ATTRIBUTE)).toHaveLength(0);
+    } finally {
+      tap.uninstall();
+    }
+  });
+
+  test('says nothing when the application asked for payload capture itself', () => {
+    const logger = new RecordingLogger();
+    const system = newSystem('span-warn-already-capturing', logger);
+    const tracing = system.extension(TracingExtensionId);
+    tracing.enable(new RecordingTracer());
+    tracing.captureMessagePayloads(true);
+
+    const tap = new SpanTap(system, 100, 20);
+    tap.install(() => {});
+    try {
+      expect(logger.warningsAbout(PAYLOAD_ATTRIBUTE)).toHaveLength(0);
+    } finally {
+      tap.uninstall();
+    }
+  });
+});
+
+/** The attribute the whole finding is about, spelled once. */
+const PAYLOAD_ATTRIBUTE = 'actor.message.payload';
+
+/**
+ * Keeps what the system logged, so the attach warning can be asserted on.
+ *
+ * Only the sink matters, so the loggers `withSource` / `withFields` hand back
+ * push into the root's list instead of starting one nobody reads.
+ */
+class RecordingLogger implements Logger {
+  readonly level = LogLevel.Debug;
+  readonly warnings: string[] = [];
+
+  constructor(private readonly root: RecordingLogger | null = null) {}
+
+  private get sink(): RecordingLogger { return this.root ?? this; }
+
+  /** The warnings mentioning `needle`, so unrelated noise cannot pass. */
+  warningsAbout(needle: string): string[] {
+    return this.sink.warnings.filter((line) => line.includes(needle));
+  }
+
+  debug(): void {}
+  info(): void {}
+  warn(message: string): void { this.sink.warnings.push(message); }
+  error(): void {}
+
+  withSource(): Logger { return new RecordingLogger(this.sink); }
+  withFields(): Logger { return new RecordingLogger(this.sink); }
+}

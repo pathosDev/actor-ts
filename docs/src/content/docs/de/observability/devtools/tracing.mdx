@@ -70,9 +70,12 @@ denn die interessanten Nachrichten sind die, die schon vorbei sind. Panel
   darf.
 - Das Datenvolumen entspricht deinem Traffic. Das hier ist ein
   Debug-Werkzeug: Es öffnet für jede Nachricht einen Root-Span und
-  serialisiert jeden Payload, und zwar solange DevTools attached ist. Das
-  ist der Handel, den `DevTools.attach` eingeht — ein System, das sich das
-  nicht leisten kann, sollte keinen Debugger angehängt haben.
+  serialisiert jeden Payload, und zwar solange DevTools attached ist.
+  Beim Detach stehen beide Schalter wieder so, wie sie vor dem Attach
+  standen — aus auf einem System, das sie nicht aufgezeichnet hat, und
+  unangetastet auf einem, wo du sie selbst gesetzt hattest. Das ist der
+  Handel, den `DevTools.attach` eingeht — ein System, das sich das nicht
+  leisten kann, sollte keinen Debugger angehängt haben.
 - DevTools' eigene Actors sind ausgenommen — weder als Root-Span noch
   als Kind-Span, denn seine Probes empfangen Event-Stream-Publishes
   *während* einer Anwendungsnachricht und tauchten sonst mitten in deren
@@ -88,6 +91,17 @@ Verkehr ist DevTools im Gespräch mit deinem Browser, nicht deine Actors.
 Aus Code heißen dieselben Schalter
 `system.extension(TracingExtensionId).recordRootSpans(…)` und
 `captureMessagePayloads(…)`.
+
+<Aside type="caution" title="Ein Tracer, den du schon hattest, exportiert weiter — samt Payloads">
+Ein Attach ersetzt einen vorhandenen Tracer nicht, es klinkt sich per Tee
+ein. Solange DevTools attached ist, tragen die Spans, die dein Exporter
+verschickt, also `actor.message.payload` — die ganze Nachricht,
+serialisiert — hinaus zu dem Backend, das dahintersteht, unter dessen
+Aufbewahrungs- und Zugriffsregeln statt denen deiner Anwendung. DevTools
+schreibt beim Attach eine Warnzeile, wenn es das einschaltet. Beim Detach
+werden die beiden Schalter zusammen mit dem Tracer wiederhergestellt, der
+Export ist danach also wieder genau der von vorher.
+</Aside>
 
 ## Einen Trace selbst starten
 
