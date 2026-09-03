@@ -160,7 +160,7 @@
     "lint:types-exports": "attw --pack --profile esm-only",
     "lint:knip": "knip-bun --no-progress",
     "lint:package": "bun run build && bun run lint:publint && bun run lint:types-exports && bun run lint:knip",
-    "lint:audit": "bun audit --audit-level=high --ignore=GHSA-83w8-p2f5-377r --ignore=GHSA-mh99-v99m-4gvg --ignore=GHSA-rgw5-rvv9-x895 --ignore=GHSA-3jxr-9vmj-r5cp --ignore=GHSA-4c8g-83qw-93j6 --ignore=GHSA-7p8r-x3mc-p8w7 --ignore=GHSA-v2hh-gcrm-f6hx --ignore=GHSA-q3j6-qgpj-74h6 --ignore=GHSA-v39h-62p7-jpjc --ignore=GHSA-c96f-x56v-gq3h --ignore=GHSA-96hv-2xvq-fx4p",
+    "lint:audit": "bun audit --audit-level=high",
     "bench": "bun run benchmarks/run-all.ts",
     "bench:smoke": "ACTOR_TS_BENCH_SMOKE=1 bun run benchmarks/run-all.ts",
     "bench:compare": "bun run benchmarks/comparison/run-comparison.ts",
@@ -311,6 +311,9 @@
       "optional": true
     },
     "pg": {
+      "optional": true
+    },
+    "typescript": {
       "optional": true
     },
     "ws": {

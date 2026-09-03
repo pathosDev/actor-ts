@@ -274,6 +274,26 @@ For simple cases, a single tag string works:
 query.eventsByTag<E>('account', offset);   // equivalent to { all: ['account'] }
 ```
 
+### What a filter may contain
+
+Every member of `all`, `any` and `not` must be a string, no longer than a tag
+is allowed to be on write.  The check runs at the query boundary, so it holds
+for every backend.  It is not decoration: `ReadonlyArray<string>` exists only
+at compile time, and a body parser turns `?tag[$ne]=x` into an *object* — which
+MongoDB, the one backend that does not bind the value, reads as an operator
+expression, and answers with a full collection scan instead of an index walk.
+A filter built straight out of request data is therefore refused rather than
+handed to the store.
+
+**The read rules are deliberately narrower than the write rules.**  An empty
+tag, a repeated tag, a comma and a control character are all rejected by
+`assertValidTags` when an event is persisted — and all four stay perfectly
+*queryable*, because a journal written before a rule existed still has to be
+inspectable, and `{ all: [''] }` is exactly how you find the events that carry
+an empty tag.  To check a filter before you run it, `actor-ts/persistence`
+exports `assertValidFilterTags`, the same way it exports `assertValidTags` for
+the write side.
+
 ## Polling
 
 ```ts

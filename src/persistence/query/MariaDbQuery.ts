@@ -9,12 +9,14 @@ import { RelationalQuery } from './RelationalQuery.js';
  * The behaviour lives in `RelationalQuery`; this class supplies the name, so a
  * failure reports `MariaDbQuery` rather than the shared base.
  *
- * **One MariaDB-specific caveat, and it is a performance one.**  The dialect
- * declares the indexed `tag` column as a bare `VARCHAR(255)`, which picks up
- * the server's default collation — case-insensitive on a stock install (#707).
- * The index therefore hands back rows for tags that differ only in case, and
- * `RelationalQuery`'s JS refinement discards them.  The answers are right; the
- * pre-filter is just less selective than on Postgres until #707 lands.
+ * **One MariaDB-specific caveat, and only on a legacy schema.**  The dialect
+ * now declares the indexed `tag` column `COLLATE utf8mb4_bin` (#707), so the
+ * index is as selective here as on Postgres.  A table created before that —
+ * `CREATE TABLE IF NOT EXISTS` never revisits one — still carries the
+ * server's case-insensitive default, and its index hands back rows for tags
+ * differing only in case; `RelationalQuery`'s JS refinement discards them, so
+ * the answers stay right and only the pre-filter is wasteful.  The journal
+ * page carries the `ALTER TABLE` that closes it.
  *
  * ```ts
  * const journal = new MariaDbJournal(mariaDbOptions);

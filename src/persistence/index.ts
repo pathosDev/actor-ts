@@ -39,7 +39,10 @@ export {
 // so a `tagsFor` an application cannot check ahead of time is a `persist` that
 // throws in production instead.  The caps behind it stay internal — the rules
 // are what a caller checks against, not the numbers.
-export { assertValidTags } from './storage/TagValidator.js';
+// And its read-side counterpart (#738), which is deliberately not the same set
+// of rules — an application that builds a `TagFilter` out of request data can
+// check one before the query, and the export is what lets it.
+export { assertValidFilterTags, assertValidTags } from './storage/TagValidator.js';
 export { MAX_PERSISTENCE_ID_LENGTH } from './Constants.js';
 export { StoreSerializerOptionsBuilder } from './storage/StoreSerializerOptions.js';
 export type { StoreSerializerOptionsBase } from './storage/StoreSerializerOptions.js';

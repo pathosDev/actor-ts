@@ -130,6 +130,38 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **BREAKING — `JetStreamActor` keys acknowledgments on the delivery rather
+  than the message (#710).**
+
+  The pending-acknowledgment map was keyed on `streamSequence`, which
+  identifies a message and not a delivery. JetStream reuses that sequence
+  verbatim on every redelivery, and pull-mode fetch batches overlap by
+  design — the `fetch` command is dispatched without awaiting it, because
+  the acks it waits for arrive as mailbox messages and holding the turn open
+  would deadlock — so two in-flight deliveries of one message collided on a
+  single entry. The later delivery evicted the earlier one, whose
+  ack-timeout then deleted the live entry, and the application's
+  acknowledgment for that live delivery was dropped at `debug`, below the
+  default level: the message was silently redelivered and reprocessed.
+
+  Deliveries are now addressed by an opaque, delivery-scoped `ackToken`
+  carried on `JetStreamMessage`; the ack-timeout's delete is
+  identity-checked, so a superseded entry can never evict the live one; and
+  the unknown-key miss logs at `warn`. `disconnectImplementation` now
+  settles its pending entries instead of naking the handles and clearing the
+  map — clearing alone left every ack-timeout armed to fire into state a
+  reconnect had already rebuilt, which is how the same eviction reached the
+  default push mode. That last path is one the issue report explicitly said
+  did not exist.
+
+  **Migration.** The four settle commands take `ackToken` instead of
+  `streamSeq`: `{ kind: 'acknowledgment', streamSeq: message.streamSeq }`
+  becomes `{ kind: 'acknowledgment', ackToken: message.ackToken }`, and the
+  same for `negativeAcknowledgment`, `terminate` and `inProgress`.
+  `streamSeq` stays on the message, where it belongs — for log lines and
+  application-side deduplication.
+
+
 - **`ConfigKeys`, `CircuitBreakerOptionsValidator`, `isPlainObject` and
   `readDeadLetterQueueOptionsFromConfig` reached no entry point** (#1403).
   `package.json` ships only `dist/` and its `exports` map has no wildcard, so
@@ -238,6 +270,129 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`fundamentals/throttling`, EN + DE).
 
 ### Security
+
+- **The dependency audit gate was red on `develop`, and is now green with no
+  suppressions at all** (#779, #781).
+
+  `bun run lint:audit` had been exiting 1 on the integration branch: six
+  `fast-uri` advisories reached the runtime closure through `fastify >
+  fast-json-stringify > ajv` and were published after the gate's suppression
+  baseline was written, so none of them was on it. Refreshing `bun.lock`
+  clears those and everything behind them. All nineteen high advisories the
+  closure carried were fixed by a release inside the range `package.json`
+  already declares, so only the lockfile moved — `fast-uri` 3.1.0 to 3.1.6
+  and 4.1.0 to 4.1.3, `find-my-way` 9.6.0 to 9.7.0, `ws` 8.20.0 to 8.21.0,
+  `@fastify/static` 10.1.0 to 10.1.2, `brace-expansion` 5.0.5 to 5.0.9,
+  `fastify` 5.10.0 to 5.12.1, plus `@hono/node-server`, `hono`,
+  `body-parser` and `qs` for the moderate and low bands. No range was
+  widened, no suppression was added and no `overrides` entry was introduced,
+  so a consumer installing actor-ts resolves the fixed releases out of the
+  published manifest exactly as this repository does.
+
+  With the closure clean the entire eleven-ID `--ignore` baseline goes, and
+  the "Accepted advisories" table in `SECURITY.md` goes with it — the two
+  are asserted to be a bijection, so they had to move together. Measured
+  rather than assumed: `bun audit --audit-level=high` with no `--ignore`
+  flag reports no vulnerabilities where the same command reported nineteen
+  before.
+
+  `typescript` also stops being the manifest's only mandatory peer (#781).
+  It carried no `peerDependenciesMeta` entry, so npm 7 and later installed a
+  compiler — a large package with executable bin entries — into every
+  consumer that did not already have one, plain-JavaScript consumers and
+  production images running `npm i actor-ts --omit=dev` included, for a
+  package nothing under `src/` imports and no shipped declaration
+  references. The guard over peer declarations could not have reported it,
+  because it reads its subject list out of `peerDependenciesMeta` and a
+  mandatory peer never appears there; it now asserts that every declared
+  peer is marked optional, in a form that fails on `optional: false` as well
+  as on a missing entry.
+
+- **BREAKING — MariaDB and SQL Server pin a binary collation on every
+  `persistence_id` and `tag` column (#707).**
+
+  Both dialects previously inherited the server default, which folds case on
+  a stock install of either, so two ids differing only in case shared one
+  event stream and one durable-state row on those two backends while staying
+  distinct on Postgres, SQLite, MongoDB and DynamoDB. An actor started as
+  `Alice` would recover `alice`'s events, fold them into its own state and
+  append into `alice`'s stream; durable state keyed on the same column could
+  be read, overwritten or deleted across entities. The only symptom was a
+  run of `JournalConcurrencyError`s that reads like a storage fault.
+  Validating the id cannot close this, because both spellings pass any
+  character allow-list — what differs is the comparison, and that is a
+  property of the column.
+
+  The DDL now emits `COLLATE utf8mb4_bin` and `COLLATE
+  Latin1_General_100_BIN2` respectively. Note that `utf8mb4_bin` is PAD
+  SPACE, so trailing-space equality survives on MariaDB and MySQL; there is
+  no portable NO PAD binary collation to pin.
+
+  **Migration.** New databases pick the collation up automatically. An
+  existing one does not — the guarded `CREATE TABLE` never revisits a table
+  it finds, and nothing at startup reports the mismatch. Run the `ALTER
+  TABLE … MODIFY` (MariaDB, MySQL) or the drop-constraint / `ALTER COLUMN` /
+  recreate sequence (SQL Server, which refuses to re-collate a column an
+  index depends on) given on the MariaDB and SQL Server journal pages, with
+  no node writing. Check for already-merged streams first: the ALTER splits
+  them apart again, and those actors then fail recovery with
+  `JournalIntegrityError` on the resulting sequence gap. The pages carry a
+  query that detects them.
+
+- **BREAKING — Read-side tag filters are validated where every backend meets
+  them (#738).**
+
+  A caller-supplied filter value reached MongoDB's query document unbound. A
+  filter built straight out of request data — `?tag[$ne]=x`, which Express,
+  Fastify and Hono all parse into an object, since `ReadonlyArray<string>`
+  exists only at compile time — became a MongoDB operator expression. The
+  multikey `{ tags: 1, timestamp: 1 }` index could then neither serve nor
+  sort the query, so one request forced a full collection traversal, a
+  blocking in-memory sort, and every surviving document into the application
+  heap before the JavaScript refinement discarded all of them. Every other
+  backend binds the value and its driver refuses it, so MongoDB was the one
+  exposed.
+
+  `normalizeTagFilter` now requires every member of `all`, `any` and `not`
+  to be a string within the same length bound stored tags are held to. Two
+  adjacent erased-type holes close in the same place: an operator that is
+  not an array used to walk the string character by character, and a filter
+  that was neither string nor object read as the specification that matches
+  every event. `assertValidFilterTags` is exported from
+  `actor-ts/persistence` so an application can check a filter ahead of the
+  query, as `assertValidTags` already allows on the write side.
+
+  The read rules are deliberately narrower than the write rules. An empty
+  tag, a repeated tag, a comma and a control character are all refused on
+  write and all stay queryable, because a journal written before a rule
+  existed must remain inspectable — and `{ all: [''] }` is how the empty-tag
+  bucket is found in the first place.
+
+  **Migration.** A tag-filter member longer than `MAX_TAG_LENGTH` (255) now
+  throws instead of resolving to no events. It could never have matched,
+  since writes have been capped at the same length since #136, so shorten
+  the filter or drop the query. Nothing else newly rejected is expressible
+  in type-correct TypeScript.
+
+- **Detaching DevTools restores the two tracing switches it turns on at
+  attach** (#714).
+
+  On a system already exporting spans to an APM, `SpanTap.uninstall()` took
+  the branch that puts the previous tracer back — which touches neither
+  `recordRootSpans` nor `captureMessagePayloads`. After one
+  attach-and-detach cycle every actor message kept opening a root span
+  carrying `actor.message.payload`, the whole message serialised, and the
+  restored exporter kept shipping it to that backend until the process
+  restarted, with no log line and no metric to reveal it.
+
+  Both switches are now snapshotted at attach and put back on every branch —
+  restored rather than cleared, so a capture an application set for itself
+  survives a debugging session — and attaching to a system that already has
+  a tracer logs one warning line saying that message bodies reach that
+  backend until DevTools detaches. The two existing assertions looked like
+  they covered this and did not: both ran on a fresh system, where the other
+  branch clears the switches as a side effect.
+
 
 - **The filesystem object-storage lock reclaim judged a planted entry by its
   target, and could not stop asking** (#1360).  Taking `<key>.lock` was always

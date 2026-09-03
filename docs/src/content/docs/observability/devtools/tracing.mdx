@@ -68,10 +68,12 @@ past. Open the panel and the recent history is there.
   ring, so a browser that connects late still gets it.
   `withSpanBufferCapacity` is the ceiling a client may ask for.
 - Expect volume to match your traffic. This is a debugging tool: it
-  opens a root span for every message and serialises each payload, and
-  it does so for as long as DevTools is attached. That is the trade
-  `DevTools.attach` makes; a system that cannot afford it should not
-  have a debugger attached to it.
+  opens a root span for every message and serialises each payload, for
+  as long as DevTools is attached. Detaching puts both switches back to
+  what they were before the attach — off on a system that was not
+  recording them, and left alone on one where you had set them
+  yourself. That is the trade `DevTools.attach` makes; a system that
+  cannot afford it should not have a debugger attached to it.
 - DevTools' own actors are excluded — never a root span and never a
   child one either, since its probes receive event-stream publishes
   *during* an application message and would otherwise reappear in the
@@ -87,6 +89,16 @@ talking to your browser, not your actors.
 From code, the same switches are
 `system.extension(TracingExtensionId).recordRootSpans(…)` and
 `captureMessagePayloads(…)`.
+
+<Aside type="caution" title="A tracer you already had keeps exporting — payloads included">
+Attaching does not replace an existing tracer, it tees into it. So
+while DevTools is attached, the spans your exporter ships carry
+`actor.message.payload` — the whole message, serialised — out to
+whatever backend that is, under its retention and access rules rather
+than your application's. DevTools logs one warning line at attach when
+it switches that on. Detaching restores the two switches together with
+the tracer, so the export goes back to exactly what it was.
+</Aside>
 
 ## Starting a trace yourself
 

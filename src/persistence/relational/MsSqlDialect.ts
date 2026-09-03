@@ -27,8 +27,32 @@ import type { JournalTableNames, SqlDialect } from './SqlDialect.js';
  * reference columns in unambiguous positions and stay unquoted.
  */
 
-/** Column type for a persistence id / tag — 510 index-key bytes at NVARCHAR(255). */
-const KEY_TEXT = 'NVARCHAR(255)';
+/**
+ * Column type for a persistence id / tag — 510 index-key bytes at
+ * NVARCHAR(255), unchanged by the collation, which is metadata rather than
+ * width.
+ *
+ * The `COLLATE` is the load-bearing half (#707).  Left off, the column
+ * inherits the database default — `SQL_Latin1_General_CP1_CI_AS` on a stock
+ * instance, which is case-*insensitive*.  A persistence id is not just a
+ * value: it is the *name of a stream* and half of the events primary key, so
+ * a folding collation makes `Alice` and `alice` one entity here and two on
+ * Postgres, SQLite, Mongo and DynamoDB.  An actor started as `Alice` then
+ * recovers `alice`'s events and appends into `alice`'s stream — and
+ * `RelationalDurableStateStore` keys its `load`, its revision CAS and its
+ * `DELETE` on the same column, so there the collision overwrites another
+ * entity's state.  `assertValidPersistenceId` cannot catch it: both ids pass
+ * any character allow-list, because what differs is the *comparison*, not
+ * the id.
+ *
+ * `Latin1_General_100_BIN2` compares by Unicode code point, which is what
+ * every other backend already does.  The `Latin1_General` half only picks a
+ * code page for non-Unicode types; on `NVARCHAR` it is inert, so this is a
+ * full-Unicode ordinal comparison and not a Western-European restriction.
+ * Version 100 has shipped since SQL Server 2008, well below the 2016 floor
+ * the tags table's nonclustered key already imposes.
+ */
+const KEY_TEXT = 'NVARCHAR(255) COLLATE Latin1_General_100_BIN2';
 /** Payloads are unbounded JSON. */
 const PAYLOAD_TEXT = 'NVARCHAR(MAX)';
 
@@ -96,6 +120,10 @@ export const msSqlDialect: SqlDialect = {
   ],
 
   storageIdentityDdl: (table) => [
+    // `identity` is deliberately left on the database default: it holds a
+    // minted UUID that is only ever read back by `[singleton] = @p1`, never
+    // compared as a string, so a folding collation cannot merge two of
+    // them (#707).
     createTable(table,
       `           [singleton] INT NOT NULL,
            [identity]  NVARCHAR(64) NOT NULL,

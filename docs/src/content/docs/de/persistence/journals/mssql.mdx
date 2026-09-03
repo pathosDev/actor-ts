@@ -157,7 +157,7 @@ NOT EXISTS`, daher ist jedes in eine `IF OBJECT_ID(…) IS NULL`-Prüfung gefass
 
 ```sql
 CREATE TABLE events (
-  persistence_id NVARCHAR(255) NOT NULL,
+  persistence_id NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL,
   sequence_nr    BIGINT NOT NULL,
   payload        NVARCHAR(MAX) NOT NULL,   -- JSON
   tags           NVARCHAR(MAX) NULL,       -- CSV (zusätzlich in events_tags gespiegelt)
@@ -165,27 +165,27 @@ CREATE TABLE events (
   CONSTRAINT PK_events PRIMARY KEY (persistence_id, sequence_nr)
 );
 CREATE TABLE events_tags (                 -- indizierte Tag-Lookups für Projections
-  persistence_id NVARCHAR(255) NOT NULL,
+  persistence_id NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL,
   sequence_nr    BIGINT NOT NULL,
-  tag            NVARCHAR(255) NOT NULL,
+  tag            NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL,
   timestamp      BIGINT NOT NULL,
   CONSTRAINT PK_events_tags PRIMARY KEY NONCLUSTERED
     (tag, timestamp, persistence_id, sequence_nr)
 );
 CREATE TABLE events_meta (                 -- High-Water-Mark der Kompaktierung
-  persistence_id NVARCHAR(255) NOT NULL,
+  persistence_id NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL,
   deleted_to     BIGINT NOT NULL,
   CONSTRAINT PK_events_meta PRIMARY KEY (persistence_id)
 );
 CREATE TABLE snapshots (
-  persistence_id NVARCHAR(255) NOT NULL,
+  persistence_id NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL,
   sequence_nr    BIGINT NOT NULL,
   payload        NVARCHAR(MAX) NOT NULL,
   timestamp      BIGINT NOT NULL,
   CONSTRAINT PK_snapshots PRIMARY KEY (persistence_id, sequence_nr)
 );
 CREATE TABLE durable_state (
-  persistence_id NVARCHAR(255) NOT NULL,
+  persistence_id NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL,
   revision       BIGINT NOT NULL,
   payload        NVARCHAR(MAX) NOT NULL,
   timestamp      BIGINT NOT NULL,
@@ -197,11 +197,112 @@ Der Primary Key der Tags-Tabelle ist bewusst **nonclustered**.  `NVARCHAR(n)`
 zählt 2n Bytes zum Index-Key, `(tag, timestamp, persistence_id, sequence_nr)`
 braucht damit 1036 Bytes — über dem 900-Byte-Limit für clustered Indizes, aber
 innerhalb des 1700-Byte-Limits für nonclustered.  Genau deshalb ist **SQL Server
-2016 oder neuer** Voraussetzung.
+2016 oder neuer** Voraussetzung.  Die Kollation ist Metadatum, keine Breite, und
+kostet in diesem Budget also nichts.
 
 Leg die Tabellen vorab an (mit nur `INSERT/SELECT/UPDATE/DELETE`-Rechten) und
 setze `autoCreateTables: false`, wenn die Datenbankrolle kein DDL ausführen
 darf.
+
+### Warum `persistence_id` und `tag` kollationiert sind
+
+Jede `persistence_id`- und `tag`-Spalte trägt ein explizites `COLLATE
+Latin1_General_100_BIN2`.  Ohne das erbt die Spalte den Datenbank-Standard —
+`SQL_Latin1_General_CP1_CI_AS` auf einer Standardinstanz, und der ist
+**case-insensitiv**.
+
+Eine `persistence_id` ist nicht bloß ein Wert: sie ist der *Name eines
+Event-Streams* und die Hälfte des `events`-Primary-Keys.  Unter einer faltenden
+Kollation sind `Alice` und `alice` deshalb **ein** Stream hier und **zwei** auf
+Postgres, SQLite, MongoDB und DynamoDB.  Ein als `Alice` gestarteter Actor liest
+`alice`s Events, faltet sie in seinen eigenen State und schreibt in `alice`s
+Stream — ein Cross-Entity-Read, dessen einziges Symptom eine Serie von
+`JournalConcurrencyError`s ist, die wie ein Speicherfehler aussieht.  Dieselbe
+Spalte ist der Schlüssel für Durable-State-Load, Revisions-CAS und Delete; dort
+überschreibt und löscht eine Kollision den State einer anderen Entität.
+
+Eine Id-Validierung kann das nicht beheben: `Alice` und `alice` sind beide
+völlig legale Ids.  Was sich unterscheidet, ist der *Vergleich*, und der ist
+eine Eigenschaft der Spalte.
+
+`BIN2` vergleicht nach Unicode-Codepoint, so wie es jedes andere Backend ohnehin
+tut.  Der `Latin1_General`-Teil des Namens wählt nur eine Codepage für
+Nicht-Unicode-Typen; auf `NVARCHAR` ist er wirkungslos, das hier ist also ein
+vollständig unicodefähiger Ordinalvergleich und keine westeuropäische
+Einschränkung.  Version `100` gibt es seit SQL Server 2008 und damit weit
+unterhalb der 2016er-Grenze, die der nonclustered Key der Tags-Tabelle ohnehin
+setzt.
+
+### Bestehendes Schema migrieren
+
+Das DDL ist mit `IF OBJECT_ID(…) IS NULL` abgesichert, und `autoCreateTables`
+ist standardmäßig `true` — eine **bestehende Datenbank übernimmt das also
+nicht**: das Framework fasst eine vorgefundene Tabelle nie wieder an.  Neue
+Deployments bekommen die Kollation stillschweigend, alte behalten den
+Instanz-Standard, und beim Start sagt das nichts.
+
+SQL Server weigert sich, eine Spalte umzukollationieren, von der ein Index oder
+Constraint abhängt (Fehler 5074) — pro Tabelle heißt das also: droppen, ändern,
+neu anlegen.  Führe das einmal pro Datenbank aus, während kein Knoten schreibt:
+
+```sql
+ALTER TABLE events DROP CONSTRAINT PK_events;
+DROP INDEX idx_events_pid ON events;
+ALTER TABLE events ALTER COLUMN persistence_id
+  NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
+ALTER TABLE events ADD CONSTRAINT PK_events
+  PRIMARY KEY (persistence_id, sequence_nr);
+CREATE INDEX idx_events_pid ON events (persistence_id);
+
+ALTER TABLE events_tags DROP CONSTRAINT PK_events_tags;
+DROP INDEX idx_events_tags_pid_seq ON events_tags;
+ALTER TABLE events_tags ALTER COLUMN persistence_id
+  NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
+ALTER TABLE events_tags ALTER COLUMN tag
+  NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
+ALTER TABLE events_tags ADD CONSTRAINT PK_events_tags
+  PRIMARY KEY NONCLUSTERED (tag, timestamp, persistence_id, sequence_nr);
+CREATE INDEX idx_events_tags_pid_seq ON events_tags (persistence_id, sequence_nr);
+
+ALTER TABLE events_meta DROP CONSTRAINT PK_events_meta;
+ALTER TABLE events_meta ALTER COLUMN persistence_id
+  NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
+ALTER TABLE events_meta ADD CONSTRAINT PK_events_meta PRIMARY KEY (persistence_id);
+
+ALTER TABLE snapshots DROP CONSTRAINT PK_snapshots;
+ALTER TABLE snapshots ALTER COLUMN persistence_id
+  NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
+ALTER TABLE snapshots ADD CONSTRAINT PK_snapshots
+  PRIMARY KEY (persistence_id, sequence_nr);
+
+ALTER TABLE durable_state DROP CONSTRAINT PK_durable_state;
+ALTER TABLE durable_state ALTER COLUMN persistence_id
+  NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
+ALTER TABLE durable_state ADD CONSTRAINT PK_durable_state PRIMARY KEY (persistence_id);
+```
+
+`ALTER COLUMN` ersetzt die **gesamte** Definition, `NOT NULL` muss also
+wiederholt werden — lässt du es weg, wird die Spalte stillschweigend nullable.
+Setze deine eigenen Tabellennamen ein, wenn du `eventsTable`, `tagsTable`,
+`snapshotsTable` oder `table` überschrieben hast.
+
+Prüfe **vor** der Migration auf Schaden, solange `GROUP BY` noch die faltende
+Kollation benutzt:
+
+```sql
+SELECT MIN(persistence_id) AS sample,
+       COUNT(DISTINCT persistence_id COLLATE Latin1_General_100_BIN2) AS spellings
+  FROM events
+ GROUP BY persistence_id
+HAVING COUNT(DISTINCT persistence_id COLLATE Latin1_General_100_BIN2) > 1;
+```
+
+Jede Zeile bedeutet, dass sich zwei Ids bereits einen Stream teilen.  Die
+Migration trennt sie wieder, und jeder Hälfte fehlen dann die Events der anderen
+— diese Actors scheitern beim Recovery also laut mit `JournalIntegrityError`
+(eine Lücke in der Sequenz), statt stillschweigend eine verschmolzene Historie
+auszuliefern.  Das ist das bessere Scheitern, aber es bleibt ein Scheitern:
+entscheide *vor* der Migration, was diese Streams sein sollen, nicht danach.
 
 ## Concurrency-Modell
 
@@ -235,6 +336,17 @@ import { Aside } from '@astrojs/starlight/components';
   `NVARCHAR(255)` ist genau das, was die Index-Keys innerhalb des obigen Limits
   hält.  Eine längere persistenceId oder ein längerer Tag wird vom Server
   abgelehnt, nicht still abgeschnitten.
+</Aside>
+
+<Aside type="caution" title="Eine bestehende Datenbank behält die alte Kollation">
+  Das abgesicherte `CREATE TABLE` fasst eine bereits vorhandene Tabelle nie
+  wieder an — eine vor dem `COLLATE Latin1_General_100_BIN2` angelegte
+  Datenbank behält also den case-insensitiven Instanz-Standard, und beim Start
+  sagt das nichts.  Zwei Ids, die sich nur in der Groß-/Kleinschreibung
+  unterscheiden, teilen sich dann auf diesem Backend einen Event-Stream (und
+  eine Durable-State-Zeile) und bleiben auf jedem anderen getrennt.  Führe die
+  [Migration](#bestehendes-schema-migrieren) aus; prüfe vorher auf bereits
+  verschmolzene Streams.
 </Aside>
 
 <Aside type="caution" title="TLS ist im Treiber standardmäßig an">
