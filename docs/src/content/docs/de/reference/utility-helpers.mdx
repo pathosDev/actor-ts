@@ -507,11 +507,36 @@ zusammengesetzte Server-Liste ist keine parsebare URL, nimmt also den Scan-Pfad
 und kommt als `nats://***@a:4222,nats://***@b:4222` zurück, statt auf einen
 einzigen Host eingedampft zu werden.
 
+Eine dritte Darstellung gibt es für den Fall, dass die Zeichenkette gar nicht
+dir gehört. `redactErrorCredentials(error)` wendet die erste auf einen `Error`
+an, den irgendein Treiber geworfen hat — mehrere schreiben das
+Verbindungsziel samt Userinfo in die Meldung, die sie auslösen — und liefert
+eine **Kopie**, denn dieser Fehler gehört dem Treiber und kann dort noch
+gehalten oder bereits an eigene Listener gegeben worden sein.
+
+```ts
+import { redactErrorCredentials } from 'actor-ts';
+
+const safe = redactErrorCredentials(driverError);
+// Meldung, Stack, eigene String-Properties und die `cause`-Kette, alle maskiert
+```
+
+Die Kopie ist so gebaut, dass sie die Fragen beantwortet, die ein Subscriber
+tatsächlich stellt: Sie trägt den Prototyp des Originals, `instanceof` gilt also
+weiterhin, und dessen eigene enumerable Properties, `code` / `errno` / `syscall`
+überleben also. Bewusst nicht übernommen wird alles, was nur über einen Getter
+erreichbar ist — ein Getter kann das Geheimnis neu berechnen, und eine
+Redaktion, die ein Property-Zugriff rückgängig macht, ist keine. Das stellt
+`BrokerDisconnected.cause` und `BrokerReconnectFailed.cause` auf dieselbe Stufe
+wie das `endpoint` daneben; ohne das hätte ein Betreiber, der „Broker-Events
+tragen mein Passwort nicht mehr“ liest, bei einem Feld recht gehabt und beim
+Event unrecht.
+
 <Aside type="tip" title="Eine Stelle für das, was durchgerutscht ist">
-  Beiden Funktionen hilft nichts gegen ein Geheimnis, das in den Feldern eines
+  Keiner dieser Funktionen hilft gegen ein Geheimnis, das in den Feldern eines
   Log-Records gelandet ist statt in seiner Meldung. Dafür nimmt der
   `MultiSinkLogger` ein `transform` — ein Hook, einmal angewandt vor dem
-  Fan-out —, und diese beiden Funktionen sind das, was du darin aufrufst. Siehe
+  Fan-out —, und diese Funktionen sind das, was du darin aufrufst. Siehe
   [Logging](/de/fundamentals/logging/).
 </Aside>
 

@@ -2,12 +2,16 @@ import type { Actor } from '../Actor.js';
 import {
   type ActorContext,
   type Receive,
-  type ThrottleOnExcess,
-  type ThrottleOptions,
   type TimerScheduler,
   StashOutsideHandlerError,
   StashOverflowError,
 } from '../ActorContext.js';
+import {
+  ThrottleOptionsValidator,
+  type ThrottleOnExcess,
+  type ThrottleOptions,
+  type ThrottleOptionsType,
+} from '../ThrottleOptions.js';
 import { ActorPath, assertUserAssignableName } from '../ActorPath.js';
 import { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
@@ -815,12 +819,25 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   /* ------------------------- Rate limiting (#83) ------------------------ */
 
   throttle(options: ThrottleOptions): void {
+    // A builder and a plain object are interchangeable here (a builder is
+    // structurally its own set fields), so read the argument directly.
+    const settings = options as ThrottleOptionsType;
+    new ThrottleOptionsValidator().validate(settings);
+    // `qps: Infinity` is documented as "remove the limiter" — there is no
+    // bucket to build for an unlimited rate, so route it through the same
+    // clear path as cancelThrottle().  (TokenBucket still rejects non-finite
+    // qps by design; unlimited is the absence of a bucket, not an infinite
+    // one.)
+    if (settings.qps === Infinity) {
+      this.cancelThrottle();
+      return;
+    }
     this._throttleBucket = new TokenBucket({
-      qps: options.qps,
-      burst: options.burst,
-      now: options.now,
+      qps: settings.qps,
+      burst: settings.burst,
+      now: settings.now,
     });
-    this._throttleOnExcess = options.onExcess ?? 'pause';
+    this._throttleOnExcess = settings.onExcess ?? 'pause';
     // Switching configs invalidates any pending pause-resume timer
     // (the new bucket may already have tokens) — let the next run()
     // make a fresh decision.

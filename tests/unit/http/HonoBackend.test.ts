@@ -359,3 +359,52 @@ describe('HttpExtension + HonoBackend — client round-trip', () => {
     expect(response.json<{ hello: string }>()).toEqual({ hello: 'world' });
   });
 });
+
+/* ------------- security: an out-of-range status (#1362) ------------------ */
+
+/**
+ * `new Response(null, { status })` throws a `RangeError` outside `101` and
+ * `[200, 599]`, and every status reaching `writeResponse` comes from code the
+ * backend does not control — a route handler, the `notFound` fallback, a
+ * WebSocket `authorize` guard (the shape the issue was filed from), or a
+ * `HttpError` whose `status` is not validated at construction.
+ *
+ * The status alone cannot carry these assertions, and that is the trap: on the
+ * route path Hono catches the `RangeError` in `onError` and answers **500**
+ * either way, so a test that only read `response.status` would have passed
+ * against the unfixed tree.  What separates them is *which* 500: the pre-fix
+ * one is `onError`'s generic body, the fixed one is the response the handler
+ * actually built, with only its impossible status replaced.
+ */
+describe('HonoBackend — an out-of-range status is answered, not thrown (#1362)', () => {
+  const outOfRange: ReadonlyArray<number> = [0, 99, 100, 600, 999, -1, Number.NaN, 200.5];
+
+  test.each(outOfRange as number[])('status %p degrades to 500 and keeps the body', async (status) => {
+    const { url } = await startServer(get(() => complete(status, 'handler body')));
+    const response = await fetch(`${url}/`);
+    expect(response.status).toBe(500);
+    // The discriminator.  `onError`'s fallback body is
+    // `{"error":"Internal Server Error"}`; reaching the handler's own body
+    // proves the response was built rather than salvaged from a throw.
+    expect(await response.text()).toBe('handler body');
+  });
+
+  test('a HttpError with an impossible status still answers, not resets', async () => {
+    // Worse than the route path: this construction lives *inside* `onError`,
+    // which is the last handler in the chain, so a throw there has nothing
+    // left to catch it.
+    const { url } = await startServer(get(() => { throw new HttpError(0, 'guard miscomputed'); }));
+    const response = await fetch(`${url}/`);
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({ error: 'guard miscomputed' });
+  });
+
+  test('every status the constructor accepts is still passed through unchanged', async () => {
+    // The guard must degrade only what it has to.  An implementation that
+    // answered 500 for everything passes every assertion above.
+    for (const status of [200, 204, 301, 404, 418, 500, 599]) {
+      const { url } = await startServer(get(() => complete(status, null)));
+      expect((await fetch(`${url}/`)).status).toBe(status);
+    }
+  });
+});

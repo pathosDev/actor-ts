@@ -67,6 +67,11 @@ schnell fehlschlägt.  Siehe
 Gossip austauschen und Nachrichten über das Netzwerk routen.  Siehe
 [Cluster Overview](/de/cluster/overview/).
 
+**Cluster-Event-Stream.**  Das clusterweite Gegenstück zum
+Event-Stream — dieselben Klassen- und `kind`-Channels, aber Subscriber
+auf jeder Node.  Erreichbar als `cluster.eventStream`.  Siehe
+[Cluster-Event-Stream](/de/cluster/event-stream/).
+
 **ClusterSharding.**  Verteilt Per-Key-Actors über Cluster-Nodes
 mit automatischem Rebalancing.  Siehe
 [Sharding Overview](/de/cluster/sharding/overview/).
@@ -144,9 +149,10 @@ Siehe [PersistentActor](/de/persistence/persistent-actor/).
 Wiederabspielen eines Event-Logs abgeleitet wird.  Siehe
 [Persistence Overview](/de/persistence/overview/).
 
-**Event Stream.**  Systemweiter Pub/Sub-Bus, scoped auf ein
-ActorSystem.  Siehe
-[Event Stream](/de/fundamentals/event-stream/).
+**Event Stream.**  Pub/Sub-Bus, gescoped auf ein ActorSystem — und das
+ist eine Node, ein Publish verlässt den Prozess also nie.  Siehe
+[Event Stream](/de/fundamentals/event-stream/), und *Cluster-Event-Stream*
+oben für den, der Node-Grenzen überschreitet.
 
 **Extension.**  Plugin-Mechanismus — lazy initialisierte,
 system-scoped Services (Cluster, Persistenz, Metriken, …).  Siehe

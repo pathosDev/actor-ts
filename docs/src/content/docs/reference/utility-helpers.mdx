@@ -488,10 +488,33 @@ parseable URL, so it takes the scan path and comes back as
 `nats://***@a:4222,nats://***@b:4222` rather than being flattened to one
 host.
 
+A third rendering exists for the case where the string is not yours to begin
+with. `redactErrorCredentials(error)` applies the first one to an `Error` some
+driver threw — several put the connection target, userinfo included, into the
+message they raise — and returns a **copy**, because that error belongs to the
+driver and may still be held or already handed to listeners of its own.
+
+```ts
+import { redactErrorCredentials } from 'actor-ts';
+
+const safe = redactErrorCredentials(driverError);
+// message, stack, own string properties and the `cause` chain, all masked
+```
+
+The copy is made to answer the questions a subscriber actually asks: it carries
+the original's prototype, so `instanceof` still holds, and its own enumerable
+properties, so `code` / `errno` / `syscall` survive. What it deliberately does
+not carry is anything reachable only through a getter — a getter can recompute
+the secret, and a redaction that a property read can undo is not one. This is
+what puts `BrokerDisconnected.cause` and `BrokerReconnectFailed.cause` on the
+same footing as the `endpoint` beside them; without it an operator reading
+"broker events no longer carry my password" would have been right about one
+field and wrong about the event.
+
 <Aside type="tip" title="One place to catch what slipped through">
-  Neither function can help with a credential that reached a log record's
+  None of these can help with a credential that reached a log record's
   fields rather than its message. For that, `MultiSinkLogger` takes a
-  `transform` — one hook, applied once before fan-out — and these two functions
+  `transform` — one hook, applied once before fan-out — and these functions
   are what you call inside it. See [logging](/fundamentals/logging/).
 </Aside>
 

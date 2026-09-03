@@ -10,6 +10,7 @@ import {
   BrokerBufferOverflow,
   BrokerNotConnected,
   BrokerReconnectAttempt,
+  BrokerReconnectFailed,
 } from '../../../../../src/io/broker/BrokerEvents.js';
 import {
   BrokerOptionsError,
@@ -57,6 +58,8 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
   dispatched: string[] = [];
   failNextConnects = 0;
   failNextDispatches = 0;
+  /** When set, a simulated connect failure names the endpoint verbatim (#1388). */
+  connectFailureEmbedsEndpoint = false;
 
   /* Desired-subscription test surface (#504).  The `Subscription`
    * payload is just a label, so an assertion can tell a re-applied
@@ -111,7 +114,13 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
     this.connectAttempts++;
     if (this.failNextConnects > 0) {
       this.failNextConnects--;
-      throw new Error(`simulated connect failure (${this.connectAttempts})`);
+      // `connectFailureEmbedsEndpoint` models the shape #1388 is about:
+      // amqplib and mqtt.js both name the target they were dialling in the
+      // error they throw, so the raw options string — credential included —
+      // ends up in a message the base class never built.
+      throw new Error(this.connectFailureEmbedsEndpoint
+        ? `connect ECONNREFUSED ${this.options.endpoint ?? ''}`
+        : `simulated connect failure (${this.connectAttempts})`);
     }
     await this.applyDesiredSubscriptions();
     if (this.connectGate) {
@@ -161,6 +170,7 @@ class FakeBroker extends BrokerActor<FakeOptions, FakeCommand, string, string> {
   publicUnsubscribe(topic: string, ref: ActorRef<unknown>): void { this.unsubscribeRef(topic, ref); }
   publicFanOut(topic: string, message: unknown): void { this.fanOutToTopic(topic, message); }
   publicSimulateLoss(): void { this.handleConnectionLost(new Error('simulated loss')); }
+  publicSimulateLossWith(cause: Error): void { this.handleConnectionLost(cause); }
   publicConnectionState(): string { return this.connectionState; }
   publicBufferSize(): number { return this.outboundBufferSize; }
   publicSubscriberCount(topic: string): number { return this.subscriberCountForTopic(topic); }
@@ -1504,6 +1514,84 @@ describe('BrokerActor — a lifecycle event carries no credential (#741)', () =>
     // labels with nothing to hide would trade the field's diagnostic value
     // for no disclosure benefit at all.
     expect(seen[0]).toBe('tcp://10.0.0.4:9000');
+    await sys.terminate();
+  });
+});
+
+/* ---------- security: the driver's error on the event (#1388) ------------ */
+
+/**
+ * #741 took the credential out of the `endpoint` field of these events.  The
+ * `cause` beside it is the driver's own `Error`, and several drivers put the
+ * connection target — userinfo included — into the message they throw, so it
+ * reaches the same system-wide `EventStream`, the same audience and the same
+ * log aggregator by a different route.
+ *
+ * `endpoint` is asserted alongside `cause` on purpose: it is what makes the
+ * event look already-handled, and the pair is the whole point of the issue.
+ */
+describe('BrokerActor — the published cause carries no credential (#1388)', () => {
+  const dsn = 'amqp://guest:hunter2@rabbit:5672/vhost';
+
+  test('BrokerDisconnected.cause is redacted, and the driver keeps its own error', async () => {
+    const sys = makeSystem('cred-1');
+    const seen: BrokerDisconnected[] = [];
+    sys.eventStream.subscribe(
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+        override onReceive(event: unknown): void { seen.push(event as BrokerDisconnected); }
+      })()),
+      BrokerDisconnected,
+    );
+    const { brokerReady } = spawnFake(sys, { endpoint: dsn, reconnect: false });
+    const broker = await brokerReady;
+    await awaitFirstConnect(broker);
+
+    const driverError = Object.assign(
+      new Error(`connect ECONNREFUSED ${dsn}`),
+      { code: 'ECONNREFUSED' },
+    );
+    broker.publicSimulateLossWith(driverError);
+
+    await awaitCondition(() => seen.length >= 1, { timeoutMs: 4_000, label: 'BrokerDisconnected' });
+    expect(seen[0]!.cause?.message).toBe('connect ECONNREFUSED amqp://***@rabbit:5672/vhost');
+    expect(seen[0]!.cause?.stack ?? '').not.toContain('hunter2');
+    expect(seen[0]!.endpoint).not.toContain('hunter2');
+    // The identity a subscriber branches on survives the copy…
+    expect((seen[0]!.cause as unknown as { code: string }).code).toBe('ECONNREFUSED');
+    // …and the driver's own object is not scrubbed under it.
+    expect(driverError.message).toBe(`connect ECONNREFUSED ${dsn}`);
+    await sys.terminate();
+  });
+
+  test('BrokerReconnectFailed.cause is redacted too', async () => {
+    const sys = makeSystem('cred-2');
+    const seen: BrokerReconnectFailed[] = [];
+    sys.eventStream.subscribe(
+      sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+        override onReceive(event: unknown): void { seen.push(event as BrokerReconnectFailed); }
+      })()),
+      BrokerReconnectFailed,
+    );
+    // The cause on *this* event is not the one handed to `handleConnectionLost`
+    // — it is whatever the last failed reconnect threw, which is why the
+    // failure has to embed the endpoint rather than the initial loss.  Written
+    // the other way round the assertion held against the unfixed tree, because
+    // the credential-bearing error was never the one published.
+    const { brokerReady } = spawnFake(sys, {
+      endpoint: dsn,
+      reconnect: { initialDelayMs: 10, maxDelayMs: 10, maxAttempts: 1 },
+    }, (broker) => {
+      broker.failNextConnects = 5;
+      broker.connectFailureEmbedsEndpoint = true;
+    });
+    const broker = await brokerReady;
+
+    broker.publicSimulateLossWith(new Error('connection reset'));
+
+    await awaitCondition(() => seen.length >= 1, { timeoutMs: 4_000, label: 'BrokerReconnectFailed' });
+    expect(seen[0]!.cause.message).toContain('amqp://***@rabbit:5672');
+    expect(seen[0]!.cause.message).not.toContain('hunter2');
+    expect(seen[0]!.endpoint).not.toContain('hunter2');
     await sys.terminate();
   });
 });

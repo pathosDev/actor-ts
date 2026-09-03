@@ -102,6 +102,8 @@ export const SystemActorNames = {
   receptionist: 'receptionist',
   pubSubMediator: 'mediator',
   distributedData: 'data',
+  clusterEventStream: 'event-stream',
+  clusterEventStreamBridge: 'event-stream-bridge',
 } as const;
 
 /** Shard region for `typeName`, under {@link SystemGroups.clusterSharding}. */

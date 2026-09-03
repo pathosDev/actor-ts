@@ -256,10 +256,10 @@ vor dem Drain mit dem gesamten Rückstau.
 
 Auf drei Dinge wird bewusst **nicht** gewartet:
 
-- eine durch `context.throttle(...)` geparkte Mailbox und eine, die
-  suspendiert ist, während ein Supervisor entscheidet — keine von
-  beiden leert sich in einem Tempo, auf das ein Shutdown warten kann,
-  also gelten beide als ruhig;
+- eine durch [`context.throttle(...)`](/de/fundamentals/throttling/)
+  geparkte Mailbox und eine, die suspendiert ist, während ein Supervisor
+  entscheidet — keine von beiden leert sich in einem Tempo, auf das ein
+  Shutdown warten kann, also gelten beide als ruhig;
 - alles unter `/system` — Heartbeats, Failure Detectors und
   Broker-Reconnect-Schleifen sind konstruktionsbedingt nie ruhig;
 - Arbeit, die noch in keiner Mailbox liegt — ein noch nicht gefeuerter

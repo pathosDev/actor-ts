@@ -287,7 +287,7 @@ export class HonoBackend implements HttpServerBackend {
       }
       if (err instanceof HttpError) {
         return new Response(JSON.stringify({ error: err.message, ...err.extra }), {
-          status: err.status,
+          status: responseStatusOrServerError(err.status),
           headers: { ...this.defaultResponseHeaders, 'content-type': 'application/json; charset=utf-8', ...(err.headers ?? {}) },
         });
       }
@@ -591,6 +591,7 @@ export class HonoBackend implements HttpServerBackend {
   }
 
   private writeResponse(response: HttpResponse): Response {
+    const status = responseStatusOrServerError(response.status);
     const headers = new Headers();
     // Server-wide defaults go in first; `Headers.set` is case-insensitive, so
     // whatever the response carries itself replaces them.
@@ -599,25 +600,25 @@ export class HonoBackend implements HttpServerBackend {
     if (response.contentType) headers.set('content-type', response.contentType);
 
     const body = response.body;
-    if (body === undefined || body === null) return new Response(null, { status: response.status, headers });
+    if (body === undefined || body === null) return new Response(null, { status, headers });
 
     if (typeof body === 'string') {
       if (!headers.has('content-type')) headers.set('content-type', 'text/plain; charset=utf-8');
-      return new Response(body, { status: response.status, headers });
+      return new Response(body, { status, headers });
     }
     if (body instanceof Uint8Array) {
       if (!headers.has('content-type')) headers.set('content-type', 'application/octet-stream');
       // Cast through BodyInit — the standard `Uint8Array<ArrayBufferLike>`
       // IS a valid Fetch body, but TypeScript 5.7+'s DOM types are not
       // (yet) parameterised that way, so the direct assignment errors.
-      return new Response(body as unknown as BodyInit, { status: response.status, headers });
+      return new Response(body as unknown as BodyInit, { status, headers });
     }
     if (typeof ReadableStream !== 'undefined' && body instanceof ReadableStream) {
       if (!headers.has('content-type')) headers.set('content-type', 'application/octet-stream');
-      return new Response(body as unknown as BodyInit, { status: response.status, headers });
+      return new Response(body as unknown as BodyInit, { status, headers });
     }
     if (!headers.has('content-type')) headers.set('content-type', 'application/json; charset=utf-8');
-    return new Response(JSON.stringify(body), { status: response.status, headers });
+    return new Response(JSON.stringify(body), { status, headers });
   }
 
   private async createHonoApp(): Promise<HonoAppLike> {
@@ -634,6 +635,35 @@ export class HonoBackend implements HttpServerBackend {
       );
     }
   }
+}
+
+/**
+ * `status` if the `Response` constructor will take it, `500` otherwise.
+ *
+ * `Response` throws a `RangeError` for anything outside `101` and
+ * `[200, 599]`, and every status reaching {@link HonoBackend.writeResponse}
+ * comes from code this backend does not control — a route handler, the
+ * `notFound` fallback, a WebSocket `authorize` guard, or a `HttpError` a user
+ * threw (whose `status` is not validated at construction either).  Passing it
+ * through unchecked turns a wrong number into a throw *inside the request
+ * path*: a guard that meant to refuse an upgrade with `403` and computed the
+ * code wrong takes the response down instead of sending one, and on the
+ * `onError` path there is no handler left to catch it.
+ *
+ * A final response status is an integer in `[200, 599]`, so anything else is
+ * a bug in the caller and `500` is the honest rendering of one — the request
+ * gets answered, which is the property that was missing.  `101` is deliberately
+ * not admitted even though `Response` allows it: the upgrade handshake is this
+ * backend's own business and never travels through `HttpResponse`, so a `101`
+ * arriving here is a caller error like any other.
+ *
+ * Fastify and Express reject their own, *different* ranges (Node's writer
+ * takes `[100, 999]`, Fastify `[100, 600)`), so this is not lifted to a shared
+ * helper: there is no single range all three transports accept, and pretending
+ * otherwise would move the surprise rather than remove it.  #1362.
+ */
+function responseStatusOrServerError(status: number): number {
+  return Number.isInteger(status) && status >= 200 && status <= 599 ? status : 500;
 }
 
 /** The path remainder a `/prefix/*` route matched (still URL-encoded — the caller decodes). */

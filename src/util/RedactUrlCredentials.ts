@@ -21,6 +21,11 @@
  *     where a bearer token ends up when the userinfo does not carry one.
  *     Disclosure first.
  *
+ * And one for the case where the string is not ours to begin with:
+ * {@link redactErrorCredentials} applies the first rendering to an `Error`
+ * some driver threw, whose message routinely embeds the connection target the
+ * caller was dialling (#1388).
+ *
  * **Why a hand-written scan rather than a `URL` round-trip** for the first
  * one: blanking `username`/`password` on a parsed `URL` and reading `href`
  * back also lowercases the host, appends a trailing slash and re-encodes the
@@ -203,4 +208,83 @@ export function redactedUrlLabel(value: string): string {
 function stripQueryAndFragment(value: string): string {
   const cut = value.search(QUERY_OR_FRAGMENT);
   return cut === -1 ? value : value.slice(0, cut);
+}
+
+/**
+ * A copy of `error` with {@link redactUrlCredentials} applied to everything a
+ * subscriber can read off it — the message, the stack (V8 renders it as
+ * `Name: message` followed by the frames, so the message is in there twice),
+ * every own string-valued property, the `cause` chain, and the errors nested
+ * inside an array property such as `AggregateError.errors`.  Enumerability is
+ * preserved per property, so the copy serialises the way the original does.
+ *
+ * **Why a copy and not an in-place scrub.**  The `Error` belongs to the driver
+ * that threw it, which may still hold the reference and may have handed it to
+ * other listeners of its own; rewriting `message` under them is a side effect
+ * this project has no right to cause.
+ *
+ * **Why not a plain wrap either.**  Replacing the error with a fresh one loses
+ * the type, and the type is what a monitor branches on — `e.name`,
+ * `e instanceof AmqpConnectionError`, `e.code === 'ECONNREFUSED'`.  So the copy
+ * is made to answer those questions the same way the original does: it carries
+ * the original's prototype, so `instanceof` still holds, and its own
+ * enumerable properties, so `code` / `errno` / `syscall` survive.  What it
+ * deliberately does not carry is anything reachable only through a getter —
+ * a getter can recompute the secret, and a redaction that can be undone by
+ * reading a property is not one.
+ *
+ * Redaction is a strict no-op on a message with no `scheme://…@` authority in
+ * it, which is the overwhelming majority, so this costs a walk and returns an
+ * equal-looking error rather than a lossy one.
+ *
+ * `seen` breaks a cyclic `cause` chain; callers do not pass it.
+ */
+export function redactErrorCredentials<E extends Error>(error: E, seen: Set<unknown> = new Set()): E {
+  if (seen.has(error)) return error;
+  seen.add(error);
+
+  const copy = new Error(redactUrlCredentials(error.message)) as E;
+  Object.setPrototypeOf(copy, Object.getPrototypeOf(error) as object);
+  // Own property *names*, not `Object.keys`: the three fields most worth
+  // redacting are all non-enumerable, so `keys` sees none of them.  `cause` is
+  // non-enumerable when set through the `Error` constructor option and is the
+  // field most likely to hold the driver's lower-level error; `errors` on an
+  // `AggregateError` is the same; `stack` is where V8 repeats the message.
+  // (`name` needs nothing here when it lives on the prototype, which came
+  // across above, and is picked up by this loop when a driver sets it as an
+  // own property.)
+  for (const key of Object.getOwnPropertyNames(error)) {
+    if (key === 'message') continue;                       // already redacted, above
+    const descriptor = Object.getOwnPropertyDescriptor(error, key);
+    // Accessor descriptors are skipped rather than invoked: a getter can
+    // recompute the secret, so carrying one across would hand back a copy the
+    // next property read undoes.
+    if (!descriptor || !('value' in descriptor)) continue;
+    Object.defineProperty(copy, key, {
+      ...descriptor,
+      value: redactedValue(descriptor.value, seen),
+    });
+  }
+  return copy;
+}
+
+/**
+ * One property of an error, redacted according to what it is.
+ *
+ * The array arm is not generality for its own sake: `AggregateError.errors` is
+ * exactly this shape, and it is what Node raises when a host name resolves to
+ * several addresses and every connection fails — so for a broker dialling a
+ * DNS name it is the *common* case, not an exotic one, and each element
+ * carries the same target string the outer message would have.
+ *
+ * Anything else is passed through untouched.  A redactor that reached into
+ * arbitrary objects would have to decide what to do about getters and
+ * prototypes on values it knows nothing about, and the only field shapes this
+ * has to cover are the ones a driver actually sets.
+ */
+function redactedValue(value: unknown, seen: Set<unknown>): unknown {
+  if (typeof value === 'string') return redactUrlCredentials(value);
+  if (value instanceof Error) return redactErrorCredentials(value, seen);
+  if (Array.isArray(value)) return value.map((element) => redactedValue(element, seen));
+  return value;
 }

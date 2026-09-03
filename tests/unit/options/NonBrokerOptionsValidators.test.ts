@@ -45,6 +45,11 @@ import {
   ConsumerControllerOptionsValidator,
   type ConsumerControllerOptionsType,
 } from '../../../src/delivery/ConsumerControllerOptions.js';
+import {
+  ThrottleOptionsValidator,
+  type ThrottleOptionsType,
+  type ThrottleOnExcess,
+} from '../../../src/ThrottleOptions.js';
 import { MAX_DELIVERY_IDENTIFIER_LENGTH } from '../../../src/delivery/Constants.js';
 import { AutoDiscoveryOptionsValidator, type AutoDiscoveryOptionsType } from '../../../src/discovery/AutoDiscoveryOptions.js';
 import {
@@ -559,6 +564,35 @@ describe('ConsumerControllerOptionsValidator', () => {
     // Every helper is a no-op on `undefined`; `handler` is required rather
     // than bounded, and asserting it at construction is #1234.
     expect(() => check({})).not.toThrow();
+  });
+});
+
+describe('ThrottleOptionsValidator', () => {
+  const check = (s: Partial<ThrottleOptionsType>): void =>
+    new ThrottleOptionsValidator().validate(s);
+
+  test('rejects a qps that is zero, negative, NaN, or -Infinity', () => {
+    expect(() => check({ qps: 0 })).toThrow(OptionsError);
+    expect(() => check({ qps: -1 })).toThrow(/qps/);
+    expect(() => check({ qps: Number.NaN })).toThrow(/qps/);
+    expect(() => check({ qps: -Infinity })).toThrow(/qps/);
+  });
+
+  test('accepts qps: Infinity — the documented "clear the throttle" sentinel', () => {
+    // `Infinity` means "remove the limiter", so the generic positiveNumber
+    // helper cannot stand in for qps: it rejects every non-finite value.
+    expect(() => check({ qps: Infinity })).not.toThrow();
+  });
+
+  test('rejects a non-positive burst and an unknown onExcess mode', () => {
+    expect(() => check({ qps: 10, burst: 0 })).toThrow(/burst/);
+    expect(() => check({ qps: 10, burst: -2 })).toThrow(OptionsError);
+    expect(() => check({ qps: 10, onExcess: 'explode' as ThrottleOnExcess })).toThrow(/onExcess/);
+  });
+
+  test('accepts valid configs, including a sub-1 qps', () => {
+    expect(() => check({ qps: 10, burst: 2, onExcess: 'drop' })).not.toThrow();
+    expect(() => check({ qps: 1 / 60, burst: 1 })).not.toThrow();
   });
 });
 

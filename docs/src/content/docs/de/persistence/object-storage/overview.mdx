@@ -174,15 +174,21 @@ lokale Prozesse schreiben dürfen.  Wenn nicht vertrauenswürdige
 Nutzer Einträge im Storage-Root anlegen können, ist das bereits
 das größere Problem.
 
-Und sie deckt die Lock-Datei pro Key nicht ab.  Das Nehmen des
-Locks ist ein exklusives Create, das einen Link ablehnt statt ihm
-zu folgen — aber die Stale-Lock-Wiederherstellung, die nach
-Ablauf des Acquisition-Timeouts läuft, macht ein `stat` auf diesen
-Namen, und `stat` folgt sehr wohl einem Link.  Ein an `<key>.lock`
-platzierter Link lässt damit eine Datei außerhalb des Roots
-entscheiden, ob das Lock als verwaist gilt, und ein *toter* Link
-dort hält `put` und `delete` auf genau diesem Key im Retry, statt
-sie zurückkehren zu lassen.
+Die Lock-Datei pro Key ist anders abgedeckt, denn dort geht es
+nicht um Containment.  Das Nehmen des Locks ist ein exklusives
+Create, das einen Link ablehnt statt ihm zu folgen.  Die
+Stale-Lock-Wiederherstellung, die nach Ablauf des
+Acquisition-Timeouts läuft, stellt dann zwei Fragen zu diesem
+Namen, und sie stellt sie mit `lstat`: wie alt der Eintrag ist und
+ob er überhaupt eine reguläre Datei ist.  Beides zählt.  `stat`
+würde das Alter des *Ziels* melden, ein auf eine uralte Datei
+gerichteter Link könnte das Lock also für verwaist erklären; und
+was keine reguläre Datei ist, hat dieses Backend nie geschrieben,
+die Wiederherstellung lehnt es also ab, statt es zu entfernen.
+Außerdem läuft die Wiederherstellung höchstens einmal pro
+Acquisition — sie wird erst erreicht, wenn das Timeout schon
+verbraucht ist, ein Eintrag mit stets gleicher Antwort würde sonst
+endlos wiederholt.
 
 ### S3
 

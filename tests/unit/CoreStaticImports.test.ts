@@ -55,18 +55,59 @@ function staticClosure(entry: string): { files: Set<string>; bareModules: Set<st
   return { files, bareModules };
 }
 
+/**
+ * Both closures are walked here, at module scope, rather than inside the
+ * tests that assert on them (#1392).
+ *
+ * The walk is bounded work that always completes — 148 files, 1.28 MiB of
+ * source and ~29 ms for the `ActorSystem` entry.  Inside a `test()` body it
+ * nonetheless races bun's per-test timeout, which is 5 000 ms and which
+ * nothing in `bunfig.toml` raises; that number is pinned, and re-measured
+ * against a spawned child run, by
+ * `tests/unit/ci/AwaitConditionBudgets.test.ts`.  Standalone the whole file
+ * takes 276 ms, so the margin looks ample.  It is not, under a full
+ * `bun test --coverage` run — observed 2026-08-29, Windows / bun 1.4.0:
+ *
+ *   (fail) core static import closure (#1005) > ActorSystem never
+ *          statically reaches fastify [6723.89ms]
+ *     ^ this test timed out after 5000ms.
+ *
+ * 29 ms of work taking 6.7 s is ~230x, and it reports the machine rather
+ * than the invariant: the walk was not slow, the suite around it was busy.
+ * What is left on the per-test clock now is the assertions alone — 0.41 ms
+ * and 0.04 ms, from 29.15 ms and 1.24 ms — so the same contention lands at
+ * ~95 ms, under 2 % of the cap.
+ *
+ * Module scope is off that clock entirely (measured: 6 s of synchronous
+ * work at module scope passes, the same 6 s in a test body is killed at
+ * 5 000 ms), which is why the fix is to move the work rather than to
+ * declare a larger third argument.  A literal cap would be one more encoded
+ * assumption about machine speed — the shared defect #1376 exists to remove
+ * — and there is no honest number to pick against a 230x spread.  A third
+ * argument is the right remedy for a *failure budget*, one that is meant to
+ * expire and print a label; this walk has none.
+ *
+ * It is also what the sibling repo-file guards already do:
+ * `tests/unit/ci/AwaitConditionBudgets.test.ts`,
+ * `tests/unit/ci/WorkflowHygiene.test.ts` and
+ * `tests/unit/config/NoDeadConfigKeys.test.ts` all scan the tree at module
+ * scope and keep their `test()` bodies to assertions.  Keep it that way —
+ * what these two tests assert is the #1005 invariant, and it must never
+ * lose a race to the runner's clock and report itself as a timeout.
+ */
+const coreClosure = staticClosure('src/ActorSystem.ts');
+const fastifyBackendClosure = staticClosure('src/http/backend/FastifyBackend.ts');
+
 describe('core static import closure (#1005)', () => {
   test('ActorSystem never statically reaches fastify', () => {
-    const { files, bareModules } = staticClosure('src/ActorSystem.ts');
-    const fastifyFiles = [...files].filter((f) => f.endsWith('FastifyBackend.ts'));
+    const fastifyFiles = [...coreClosure.files].filter((f) => f.endsWith('FastifyBackend.ts'));
     expect(fastifyFiles).toEqual([]);
-    expect(bareModules.has('fastify')).toBe(false);
+    expect(coreClosure.bareModules.has('fastify')).toBe(false);
   });
 
   test('the canary is a real one — FastifyBackend itself does import fastify', () => {
     // Without this, the assertion above could pass because the walker went
     // blind, and it would keep passing if the static edge came back.
-    const { bareModules } = staticClosure('src/http/backend/FastifyBackend.ts');
-    expect(bareModules.has('fastify')).toBe(true);
+    expect(fastifyBackendClosure.bareModules.has('fastify')).toBe(true);
   });
 });

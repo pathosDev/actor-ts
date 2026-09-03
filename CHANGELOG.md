@@ -9,7 +9,121 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Added
+
+- **The flake catalog names the third shape of the fixed-cap failure — real
+  work in a *test body*** (#1393).  `docs/…/testing/diagnosing-flakes.mdx`
+  covered bun's 5 000 ms cap twice, one level apart: a budget that cannot reach
+  it (remedy, a third argument) and real work in a hook (remedy, layered
+  budgets).  #1392 was neither, and a reader who pattern-matches to the nearest
+  entry picks a remedy that does not fit — a third argument sizes a *failure
+  budget*, a wait meant to expire and print a label, and bounded work has none;
+  layered budgets need a spawn boundary the inner operation can carry a timeout
+  across, and there is none.  The remedy that is right — module scope carries no
+  per-test timeout at all — was written nowhere, although three guards already
+  depend on it.  Both mirrors gain a catalog row and a section, with the
+  measured figures and the module-scope fixture that settles the mechanism in
+  one run.  It also records a negative result: the hook section's sizing advice
+  (run several copies of the file at once) does **not** transfer, because the
+  pre-fix file under 12 concurrent CPU hogs still completed in 31.45 ms and
+  passed — external load competes with *spawned* work, while in-process work is
+  slowed by the host process's own heap, garbage collection and coverage
+  counters.
+
+- **A refused sharding registration is observable without scraping the log**
+  (#1300).  When a coordinator refuses a region over a `numShards` mismatch
+  (#633), the whole operator-visible signal was one `log.error` — no metric,
+  no event, no queryable state, and a grep for metric series under
+  `src/cluster/sharding/` returned none at all.  That matters more than a
+  missing diagnostic usually does: a refused region keeps running and keeps
+  accepting traffic for the type, everything it accepts buffers into the
+  still-uncapped region buffer (#461, #849), and the end state of an
+  unnoticed refusal is a node out of memory.  The only thing between a
+  misconfigured rolling deploy and that outcome was whether somebody grepped
+  for one error string.
+
+  Now: a counter `cluster_sharding_registrations_refused_total { type,
+  reason }`, following the label shape of its exact analogue one layer up,
+  `cluster_gossip_records_refused_total`; a `ShardRegionRegistrationRefused`
+  cluster event carrying both shard counts, for code that reacts rather than
+  polls; and `cluster.sharding.registrationRefusal(typeName)`, which returns
+  that event or `null` and is cleared once a later registration is accepted,
+  so a deploy that fixes the mismatch stops reporting one.  Documented under
+  `cluster/sharding/introspection` (EN + DE) as the signal to alert on.
+
+- **A `ShardRegion`'s registration with the coordinator is observable**
+  (#1317).  Nothing announced it, so eleven sites across three sharding
+  suites waited on a fixed `sleep(200)` under an identical comment saying the
+  condition to poll did not exist.  `cluster.sharding.isRegistered(typeName)`
+  is that condition — synchronous, fed by a new node-local
+  `ShardRegionRegistered` cluster event the way `shardMap` is fed by
+  `ShardMapChanged` — and the eleven sleeps now wait on it.  It answers what
+  membership convergence cannot: a converged cluster can still hold a region
+  that has not registered, because a region registers with the coordinator on
+  the leader over a retry timer of its own.
+
+  The event fires on the transition, not on every acknowledgment — a leader
+  change re-registers every region — and a refusal clears the flag, so the
+  acknowledgment after one is a transition again.
+
+  **The claim in those eleven comments was wrong, and is corrected rather
+  than transplanted.**  They said an early `ask` "races the coordinator
+  instead of being buffered"; the region in fact buffers any message whose
+  shard home is unknown and re-asks for everything buffered once it
+  registers, so the message is delivered late rather than dropped.  What the
+  sleep was really protecting is the `ask` wrapped around it, whose own
+  deadline runs while the message waits in that buffer.  Documented that way
+  under `cluster/sharding/introspection` (EN + DE).
+
+- **`cluster.eventStream` — the event stream, cluster-wide** (#1397).
+  `system.eventStream` is scoped to one `ActorSystem`, which is one node: a
+  publish walks an in-process list and never touches the network.  Nothing
+  said so at the call site, and the built-in event table listing `MemberUp` /
+  `MemberRemoved` suggested otherwise — those appear on every node because
+  each node publishes its own copy, derived from the gossip it merged, so the
+  state propagates and the event does not.  `cluster.eventStream` is the
+  missing half, and the owner now carries the scope: `system` is a node,
+  `cluster` is the cluster.  It takes the same class, `EventKey` and `kind`
+  channels, including predicates, and it is built on the DistributedPubSub
+  mediator — one channel per topic — so it inherits that machinery's bounded
+  gossip, one-hop delivery and caps, and adds **no new wire kind**.
+
+  A `kind`-discriminated event crosses nodes with no setup.  A **class**
+  channel needs `register(name, class, decode?)`, because only the value's
+  tag travels and an instance would otherwise arrive as a plain object
+  matching no `instanceof`; `decode` falls back to a static `fromJSON`, and
+  one of the two must exist — a generic prototype rebuild would mean writing
+  peer-supplied keys onto a fresh prototype.  `bridge(channel)` mirrors a
+  channel of the node-local bus onto the cluster one, opt-in per channel and
+  without disturbing what already subscribes locally; bridge only events that
+  originate on a single node, since one that every node derives for itself
+  becomes N copies cluster-wide.
+
+  `system.eventStream` is unchanged and no existing publish site moves — the
+  framework's own events all have a reason to stay node-local, from the
+  lifecycle events being the hottest path in the system to broker events
+  carrying a `cause` whose redaction had to be solved on the event itself
+  (#1388).  A multi-node test now pins that node-local scope as an assertion
+  rather than prose.
+
 ### Fixed
+
+- **Two of the three fixed-delay waits `SleepRatchet` flagged in
+  `ActorThrottle.test.ts` were guarding against nothing** (#1399).  The file
+  arrived with #636 carrying three unannotated waits, and `develop` was red on
+  the ratchet.  Two of them sat between a `configure-throttle` tell and the
+  ticks that follow, under a premise repeated four times in the file — "the
+  limiter has to be installed before the ticks are sent".  That premise is
+  false: the throttle gates a message when it is **dequeued**, not when it is
+  enqueued (`ActorCell.handleThrottleExcess`, called from the dispatch path),
+  and both tells go from the test to the same actor, so the FIFO mailbox
+  already guarantees the limiter is installed before any tick is dequeued.
+  The tests prove it themselves — without the limiter every tick would process
+  and the following `toBeLessThan` would fail — so both waits are removed
+  rather than annotated, and the file was run 20× in a row to confirm it.  The
+  third is the absence assertion ("the throttle has NOT let all four through
+  yet") and keeps its wait, with the comment its sibling twelve lines up
+  already had.
 
 - **The supply-chain page said the SBOM starts "from the next release
   onward", and then v0.17.0 shipped it — so the sentence began pointing past
@@ -26,6 +140,109 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   moves in the same commit.  Its no-concrete-tag rule for `gh release
   download` is untouched: a tag pinned in prose would now rot at v0.18.0
   exactly as v0.16.0 did.
+- **`CoreStaticImports` walked a 148-file import closure inside the test body,
+  so bun's 5 000 ms per-test default killed the #1005 gate under a loaded
+  coverage run** (#1392).  Neither test declared a third argument and
+  `bunfig.toml` raises nothing, so the cap was bun's default; what ran against
+  it was `staticClosure('src/ActorSystem.ts')` — 148 files, 1.28 MiB of source,
+  29 ms of real work on an idle machine.  Observed at 6 723.89 ms in a full
+  `ACTOR_TS_SKIP_FLAKY_MNS=1 bun run test:coverage:gate` run on Windows /
+  bun 1.4.0 — roughly 230x — having passed a gated run earlier the same day and
+  passing standalone in 276 ms: the failure reported the machine, not the
+  invariant.  Both closures are now walked at module scope, which carries no
+  per-test timeout at all (measured), and which is the shape the sibling
+  repo-file guards `AwaitConditionBudgets`, `WorkflowHygiene` and
+  `NoDeadConfigKeys` already use.  The two assertions are untouched — `ActorSystem`
+  is still proven never to statically reach `FastifyBackend.ts` or a bare
+  `fastify`, and the canary still proves the walker is not blind — while the
+  test bodies drop from 29.15 ms and 1.24 ms to 0.41 ms and 0.04 ms, which puts
+  the same contention at ~95 ms against the 5 000 ms cap.  A larger third
+  argument was the other option and is the wrong one here: that remedy is for a
+  *failure budget*, one meant to expire and print a label, and a literal cap
+  would be one more encoded assumption about machine speed — the shared defect
+  #1376 is open to remove.
+- **`TreeShaking` built four bundles inside three test bodies, against the same
+  unset cap — 3.7x the exposure of the test that had already timed out**
+  (#1394).  Caught before it was ever observed failing, rather than after.  None
+  of the three tests declared a third argument, so four `Bun.build` calls raced
+  bun's 5 000 ms default; measured idle with the junit reporter the bodies were
+  0.6 ms, 66.5 ms, 30.1 ms and 109.7 ms, and that heaviest one is 3.7x the
+  29.1 ms `CoreStaticImports` was doing when a full coverage run stretched it
+  ~230x and bun killed it.  The bundles are now built at module scope — top-level
+  await, already used at
+  `tests/integration/in-process/persistence/journals/NodeSqliteDriver.test.ts:22`
+  — which also removed a duplicate: the narrow bundle was built twice from
+  byte-identical source, so three builds now do what four did.  The five
+  assertions are unchanged, and the bodies drop to 0.58 / 0.05 / 0.05 / 0.04 ms.
+- **`throttle({ qps: Infinity })` threw `TokenBucket: qps must be > 0, got
+  Infinity` instead of clearing the limiter — flatly contradicting its own
+  JSDoc, which documents `{ qps: Infinity }` as a way to remove a throttle**
+  (#636).  `ActorContext.throttle` promised the sentinel but `ActorCell`
+  passed it straight into a `TokenBucket`, whose constructor rejects any
+  non-finite `qps`, so the throw escaped into user code rather than flowing
+  through supervision.  `qps: Infinity` now removes the throttle (exactly
+  like `cancelThrottle()` — an unlimited rate installs no bucket), and a new
+  `ThrottleOptionsValidator` rejects an invalid `qps` / `burst` / `onExcess`
+  up front with an `OptionsError` naming the field, rather than a bare
+  `Error` from deep in the runtime.  Throttle options gain the standard
+  `XOptions` family (a fluent `ThrottleOptions` builder alongside the plain
+  object), and the per-actor throttle now has a dedicated docs page
+  (`fundamentals/throttling`, EN + DE).
+
+### Security
+
+- **The filesystem object-storage lock reclaim judged a planted entry by its
+  target, and could not stop asking** (#1360).  Taking `<key>.lock` was always
+  safe — POSIX specifies that an `O_CREAT|O_EXCL` create fails with `EEXIST` on
+  a symbolic link whatever it points at, so `{ flag: 'wx' }` never followed one.
+  The stale-lock recovery behind it did.  It asked `stat` how old the entry was,
+  and `stat` answers about the link's *target*, so a link aimed at an ancient
+  file let whoever planted it declare the lock abandoned.  The recovery now uses
+  `lstat` — the entry's own age — and refuses anything that is not a regular
+  file rather than removing it, because a regular file is the only thing this
+  backend ever writes there.  It also runs **at most once** per acquisition: the
+  branch is reached only after the timeout is already spent and both of its
+  retry paths skip the backoff, so an entry that kept giving the same answer was
+  an unbounded loop with no exit — a dangling link was exactly such an entry, and
+  it wedged `put` and `delete` on that key.  Measured rather than assumed: with
+  the fix reverted the new test does not fail, it hangs, because the loop's only
+  `await` never yields to the macrotask queue the test runner's timeout lives on.
+  One claim in the report does not survive contact with the code and is recorded
+  here rather than quietly fixed: `unlink` does not follow a final-component
+  link, so the old recovery removed the link and never touched its target.  Both
+  documentation mirrors, which named this as a known gap, now describe what the
+  reclaim checks.
+- **`HonoBackend` built a `Response` from an unvalidated status, so an
+  impossible one threw inside the request path instead of answering it**
+  (#1362).  `Response` rejects anything outside `101` and `[200, 599]` with a
+  `RangeError`, and every status reaching `writeResponse` comes from code the
+  backend does not control — a route handler, the `notFound` fallback, a
+  WebSocket `authorize` guard, or a `HttpError` whose `status` is not validated
+  at construction either.  A guard that meant to refuse an upgrade with `403`
+  and computed the number wrong took the response down rather than sending one,
+  and on the `onError` path there was no handler left to catch the throw.  A
+  status outside that range is now answered as `500` with the response the
+  caller actually built, so the request is served and only the impossible number
+  is replaced.  Not lifted to a shared helper on purpose: Node's writer accepts
+  `[100, 999]` and Fastify `[100, 600)`, so there is no single range all three
+  backends agree on, and a shared clamp would move the surprise rather than
+  remove it.
+- **Broker lifecycle events carried the driver's raw `Error`, which can embed
+  the credential #741 removed from the field beside it** (#1388).
+  `BrokerDisconnected.cause` and `BrokerReconnectFailed.cause` are published on
+  the system-wide `EventStream`, to the same audience and on the same schedule
+  as the `endpoint` that #741 made safe — and several drivers put the connection
+  target, userinfo included, into the message they throw, so the secret reached
+  the same place by a different route.  Both are now passed through a new
+  `redactErrorCredentials`, exported from the package root: it returns a **copy**
+  (the error belongs to the driver, which may still hold it and may have handed
+  it to listeners of its own) with the message, the stack, every own
+  string-valued property and the `cause` chain masked.  The copy carries the
+  original's prototype and own enumerable properties, so `instanceof`, `name`
+  and `code` — what a monitor actually branches on — still answer the same;
+  anything reachable only through a getter is deliberately dropped, since a
+  getter can recompute the secret.  `BrokerNotConnected` needed nothing: it
+  carries no cause.
 
 ## [0.17.0] — 2026-08-29
 

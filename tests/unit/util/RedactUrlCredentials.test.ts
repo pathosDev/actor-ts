@@ -8,7 +8,7 @@
  * diagnostic with a worse one.
  */
 import { describe, expect, test } from 'bun:test';
-import { redactUrlCredentials, redactedUrlLabel } from '../../../src/util/RedactUrlCredentials.js';
+import { redactErrorCredentials, redactUrlCredentials, redactedUrlLabel } from '../../../src/util/RedactUrlCredentials.js';
 
 describe('redactUrlCredentials', () => {
   // Mutable tuples on purpose: with `readonly` elements Bun's `test.each`
@@ -251,5 +251,86 @@ describe('redactedUrlLabel', () => {
     // Not a valid URL (a space in the authority), so `new URL` throws and the
     // regex path has to carry the redaction on its own.
     expect(redactedUrlLabel('amqp://user:pass@ra bbit:5672?x=1')).toBe('amqp://***@ra bbit:5672');
+  });
+});
+
+describe('redactErrorCredentials (#1388)', () => {
+  test('masks the userinfo in the message, the stack and a string property', () => {
+    const original = new Error('connect ECONNREFUSED amqp://guest:hunter2@rabbit:5672/vhost');
+    Object.assign(original, { code: 'ECONNREFUSED', endpoint: 'amqp://guest:hunter2@rabbit:5672' });
+
+    const redacted = redactErrorCredentials(original);
+
+    expect(redacted.message).toBe('connect ECONNREFUSED amqp://***@rabbit:5672/vhost');
+    expect(redacted.stack).not.toContain('hunter2');
+    expect((redacted as unknown as { endpoint: string }).endpoint).toBe('amqp://***@rabbit:5672');
+    expect((redacted as unknown as { code: string }).code).toBe('ECONNREFUSED');
+  });
+
+  test('leaves the caller\'s error untouched', () => {
+    // The `Error` belongs to the driver that threw it, which may still hold the
+    // reference and may have handed it to listeners of its own — so the
+    // redaction has to be a copy, not a scrub.
+    const original = new Error('amqp://guest:hunter2@rabbit:5672');
+    redactErrorCredentials(original);
+    expect(original.message).toBe('amqp://guest:hunter2@rabbit:5672');
+  });
+
+  test('keeps the identity a monitor branches on', () => {
+    // The reason this is a prototype-preserving copy rather than a plain wrap:
+    // the type is what a subscriber switches on, and losing it would trade one
+    // defect for another.
+    class DriverError extends Error {
+      constructor(message: string) { super(message); this.name = 'DriverError'; }
+    }
+    const redacted = redactErrorCredentials(new DriverError('redis://:s3cr3t@cache:6379 is down'));
+    expect(redacted).toBeInstanceOf(DriverError);
+    expect(redacted).toBeInstanceOf(Error);
+    expect(redacted.name).toBe('DriverError');
+    expect(redacted.message).toBe('redis://***@cache:6379 is down');
+  });
+
+  test('follows the cause chain, which the constructor makes non-enumerable', () => {
+    const redacted = redactErrorCredentials(
+      new Error('reconnect failed', { cause: new Error('mongodb://user:pass@cluster/db refused') }),
+    );
+    expect((redacted.cause as Error).message).toBe('mongodb://***@cluster/db refused');
+  });
+
+  test('terminates on a cyclic cause chain', () => {
+    const a = new Error('amqp://u:p@a');
+    const b = new Error('amqp://u:p@b', { cause: a });
+    Object.defineProperty(a, 'cause', { value: b, writable: true, configurable: true });
+    const redacted = redactErrorCredentials(b);
+    expect(redacted.message).toBe('amqp://***@b');
+    expect((redacted.cause as Error).message).toBe('amqp://***@a');
+  });
+
+  test('reaches the errors inside an AggregateError', () => {
+    // Not an exotic shape for this caller: Node raises an `AggregateError`
+    // when a host name resolves to several addresses and every connection
+    // fails, so a broker dialling a DNS name hits it on the ordinary path —
+    // and each nested error names the same target the outer one would have.
+    const aggregate = new AggregateError(
+      [new Error('connect ECONNREFUSED amqp://u:hunter2@10.0.0.1:5672'),
+       new Error('connect ECONNREFUSED amqp://u:hunter2@10.0.0.2:5672')],
+      'all connection attempts failed',
+    );
+    const redacted = redactErrorCredentials(aggregate);
+    const nested = (redacted as unknown as { errors: Error[] }).errors;
+    expect(nested.map((e) => e.message)).toEqual([
+      'connect ECONNREFUSED amqp://***@10.0.0.1:5672',
+      'connect ECONNREFUSED amqp://***@10.0.0.2:5672',
+    ]);
+    expect(redacted).toBeInstanceOf(AggregateError);
+  });
+
+  test('is a no-op on a message with no credential in it', () => {
+    // The overwhelmingly common case, and the one where a redactor that
+    // mangles its input replaces a real diagnostic with a worse one.
+    const original = new Error('socket hang up');
+    const redacted = redactErrorCredentials(original);
+    expect(redacted.message).toBe('socket hang up');
+    expect(redacted.stack).toBe(original.stack);
   });
 });

@@ -130,6 +130,7 @@ Causes this suite has actually had, with how each was settled.
 | Fixed sleep before an assertion | Converting, ratcheted | `await sleep(N)` then `expect(...)` on state a background step produces |
 | A budget the per-test timeout cannot reach | Gated | `this test timed out after 5000ms` where an `awaitCondition` label was expected |
 | Real work in a hook, against a cap nobody set | Settled | `(unnamed)` and "a beforeEach/afterEach hook timed out", naming no test |
+| Real work in a test body, against a cap nobody set | Settled | `this test timed out after 5000ms` naming a test that does bounded work and passes standalone |
 | Bun's timer quantum | Settled | An elapsed-time assertion fails by ~15 ms, on an idle machine |
 | A dispatcher hop between wait and assert | Settled | Never reproduces in isolation; fails only in a big parallel run |
 | Port collisions | Settled | `EADDRINUSE`, only when suites overlap |
@@ -267,6 +268,66 @@ actually breaks it (running several copies of the file at once is the cheapest
 way to get there), then leave a multiple of the worst figure, and write the
 figures next to the constant so the next person can tell a budget that was
 measured from one that was doubled until the red went away.
+
+### Real work in a test body, against a cap nobody set
+
+The same cap, one level *in*.  `tests/unit/CoreStaticImports.test.ts` guards the
+#1005 invariant — `import { ActorSystem }` must never statically reach Fastify —
+by walking the static import graph of the sources.  That walk ran inside the
+test body: 148 files, 1.28 MiB of source, **29 ms** on an idle machine.  A full
+`bun test --coverage` run stretched it to **6 723.89 ms** (#1392):
+
+```
+(fail) core static import closure (#1005) > ActorSystem never statically
+       reaches fastify [6723.89ms]
+  ^ this test timed out after 5000ms.
+```
+
+Roughly 230x, against a file that takes 276 ms standalone.  Nothing about the
+invariant was in question — the machine was busy.
+
+**Neither remedy above applies, and reaching for one is the trap.**  A third
+argument sizes a *failure budget*: a wait that is meant to expire and print a
+label.  A closure walk has no budget — it is bounded work that always
+completes, so there is nothing to report, and no honest number to pick against
+a 230x spread.  Layered budgets need a *spawn boundary* for the inner operation
+to carry its own timeout, and there is none here.
+
+The remedy is to take the work off the clock entirely.  **Module scope carries
+no per-test timeout at all:**
+
+```ts
+// Walked once, here, and not inside the tests that assert on it.
+const coreClosure = staticClosure('src/ActorSystem.ts');
+
+describe('core static import closure', () => {
+  test('ActorSystem never statically reaches fastify', () => {
+    const reached = [...coreClosure.files].filter((f) => f.endsWith('FastifyBackend.ts'));
+    expect(reached).toEqual([]);      // the body is an assertion, nothing more
+  });
+});
+```
+
+That is measured rather than assumed: a fixture with 6 s of synchronous work at
+module scope **passes**, while the identical 6 s inside a test body is killed at
+5 000 ms.  It is also what this repository's other repo-file guards already do —
+`AwaitConditionBudgets`, `WorkflowHygiene` and `NoDeadConfigKeys` all scan the
+tree at module scope and keep their `test()` bodies to assertions.  The two
+`CoreStaticImports` bodies went from 29.15 ms and 1.24 ms to **0.41 ms and
+0.04 ms**, which puts the same contention at ~95 ms against the cap.
+
+The trade is that a throw at module scope fails the whole file rather than one
+test.  For a guard that reads the tree and asserts on what it found, that is the
+right side of the trade, and the three siblings above already take it.
+
+**One warning about reproducing this family.**  The previous section's advice —
+run several copies of the file at once — **does not transfer here**.  Measured:
+the pre-fix file under 12 concurrent CPU hogs still completed in 31.45 ms and
+passed.  External load competes with *spawned* work; work done inside the bun
+process is slowed by that process's own heap, garbage collection and coverage
+counters, which only a real whole-suite run recreates.  Establish the mechanism
+by measurement instead — the module-scope fixture above settles it in a single
+run, without ever reproducing the flake.
 
 ### Bun's timer quantum
 
