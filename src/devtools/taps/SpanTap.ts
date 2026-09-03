@@ -6,6 +6,12 @@
  * adapter, say) it wraps it in a {@link TeeTracer}.  Nobody has to
  * choose between exporting traces and looking at them locally.
  *
+ * Attaching also flips two system-wide switches on — root spans and
+ * message payloads — so detaching has to put back the whole tracing
+ * configuration and not merely the tracer.  On a system that was
+ * already exporting, the switches are what decides whether message
+ * bodies leave the process.
+ *
  * Spans are buffered and flushed on a tick rather than sent one by one.
  * A single actor message can produce several spans, and a busy system
  * would otherwise turn a debugging aid into a firehose.
@@ -56,6 +62,19 @@ export class SpanTap implements DevToolsTap {
   private dropped = 0;
   /** Tracer that was installed before us, restored on uninstall. */
   private previousTracer: Tracer | null = null;
+  /**
+   * The two tracing switches as we found them, restored on uninstall.
+   *
+   * `TracingExtension.disable()` clears both as a side effect, which is
+   * why the branch where DevTools was the first thing to enable tracing
+   * always looked symmetric.  The branch that matters — a tracer that
+   * was already exporting — goes through `enable()`, which touches
+   * neither, so `actor.message.payload` stayed on every span for the
+   * rest of the process and kept being shipped to whatever backend that
+   * tracer feeds (#714).
+   */
+  private previousRootSpans = false;
+  private previousMessagePayloads = false;
   private installed = false;
 
   constructor(
@@ -68,6 +87,8 @@ export class SpanTap implements DevToolsTap {
     this.emit = emit;
     const tracing = this.system.extension(TracingExtensionId);
     this.previousTracer = tracing.isEnabled() ? tracing.get() : null;
+    this.previousRootSpans = tracing.isRecordingRootSpans();
+    this.previousMessagePayloads = tracing.isCapturingMessagePayloads();
 
     if (this.previousTracer === null) {
       // Nothing installed: record for the panel and keep no buffer of
@@ -85,6 +106,7 @@ export class SpanTap implements DevToolsTap {
     // developer to press a button first means they are gone.
     tracing.recordRootSpans(true);
     tracing.captureMessagePayloads(true);
+    this.warnIfPayloadsAreExported();
   }
 
   /** Register the buffer-size control on `server`. */
@@ -106,6 +128,19 @@ export class SpanTap implements DevToolsTap {
     if (this.previousTracer === null) tracing.disable();
     else tracing.enable(this.previousTracer);
     this.previousTracer = null;
+    // The two switches as well, on both branches — restoring the tracer
+    // alone left message bodies attached to every span a pre-existing
+    // exporter kept shipping (#714).  After the swap, deliberately:
+    // `disable()` clears both, so restoring first would also lose a
+    // capture the application had set for itself, and `recordRootSpans`
+    // wants the tracer already back.  It cannot throw here — `false`
+    // never does, and `true` is only reachable when a tracer was
+    // installed at `install()` time, which is the branch that has just
+    // put one back.
+    tracing.recordRootSpans(this.previousRootSpans);
+    tracing.captureMessagePayloads(this.previousMessagePayloads);
+    this.previousRootSpans = false;
+    this.previousMessagePayloads = false;
 
     this.pending = [];
     this.dropped = 0;
@@ -123,6 +158,32 @@ export class SpanTap implements DevToolsTap {
     // point of recording from attach.  Only the flush ticker idles.
     if (count > 0) this.startTicking();
     else this.stopTicking();
+  }
+
+  /**
+   * Say out loud that message bodies are now leaving the process.
+   *
+   * Attaching to a system that was already tracing is the case where
+   * switching payload capture on is more than a local debugging choice:
+   * the {@link TeeTracer} hands every span to the tracer that was
+   * already there, so from here `actor.message.payload` — the whole
+   * message, serialised — reaches whatever backend that tracer exports
+   * to, with that backend's retention and access rules rather than the
+   * application's.  Nothing else in the process says so, and an
+   * incident is reconstructed from logs (#714).
+   *
+   * Only when *we* are the ones switching it on, and only when a
+   * foreign tracer will carry it: an operator who called
+   * `captureMessagePayloads(true)` themselves already knows, and a
+   * warning on every attach is a warning nobody reads.
+   */
+  private warnIfPayloadsAreExported(): void {
+    if (this.previousTracer === null || this.previousMessagePayloads) return;
+    this.system.log.warn(
+      'DevTools is attaching `actor.message.payload` — the serialised message body — to '
+      + 'every actor span, and the tracer installed before DevTools keeps exporting those '
+      + 'spans. Message contents reach that backend until DevTools detaches.',
+    );
   }
 
   /**
