@@ -288,6 +288,26 @@ Für einfache Fälle funktioniert ein einzelner Tag-String:
 query.eventsByTag<E>('account', offset);   // äquivalent zu { all: ['account'] }
 ```
 
+### Was ein Filter enthalten darf
+
+Jedes Element von `all`, `any` und `not` muss ein String sein, und nicht länger
+als ein Tag beim Schreiben sein darf.  Die Prüfung läuft an der Query-Grenze,
+gilt also für jedes Backend.  Sie ist keine Zierde: `ReadonlyArray<string>`
+existiert nur zur Compile-Zeit, und ein Body-Parser macht aus `?tag[$ne]=x` ein
+*Objekt* — das MongoDB, das einzige Backend, das den Wert nicht bindet, als
+Operator-Ausdruck liest und mit einem vollständigen Collection-Scan statt einem
+Index-Walk beantwortet.  Ein Filter, der direkt aus Request-Daten gebaut wird,
+wird deshalb abgelehnt, statt an den Store weitergereicht zu werden.
+
+**Die Lese-Regeln sind bewusst enger als die Schreib-Regeln.**  Ein leerer Tag,
+ein wiederholter Tag, ein Komma und ein Steuerzeichen werden von
+`assertValidTags` beim Persistieren eines Events alle abgelehnt — und bleiben
+alle vier problemlos *abfragbar*, denn ein Journal, das vor einer Regel
+geschrieben wurde, muss weiterhin inspizierbar sein, und `{ all: [''] }` ist
+genau der Weg, die Events mit leerem Tag zu finden.  Um einen Filter vor der
+Ausführung zu prüfen, exportiert `actor-ts/persistence` `assertValidFilterTags`
+— so wie es `assertValidTags` für die Schreibseite exportiert.
+
 ## Polling
 
 ```ts
