@@ -116,12 +116,17 @@ Lockfile veröffentlicht, die sich nicht geändert hat; ein rein
 Push-getriebenes Gate würde es erst beim nächsten unabhängigen
 Commit bemerken.
 
-Advisories, die beim Einführen des Gates schon vorhanden waren,
-sind per ID unterdrückt und in
+Es ist nichts unterdrückt. Das Gate startete mit einer Baseline —
+elf ignorierten Advisory-IDs, damit es grün landen konnte, statt
+rot zu landen und ignoriert zu werden — und diese Baseline ist
+weg: Jede einzelne wurde von einem Release behoben, das innerhalb
+des ohnehin in der `package.json` deklarierten Ranges liegt, ein
+Refresh der `bun.lock` hat sie also beseitigt, ohne irgendetwas
+aufzuweiten. Jede wieder hinzugefügte Unterdrückung muss in
 [`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md)
-aufgelistet, zusammen mit dem Issue, das sie entfernt. Ein Test
-schlägt fehl, wenn Unterdrückungsliste und Tabelle auseinander
-laufen — die Menge kann also nicht stillschweigend wachsen.
+dokumentiert werden, und ein Test schlägt fehl, wenn
+Unterdrückungsliste und diese Seite auseinander laufen — die Menge
+kann also nicht stillschweigend wachsen.
 
 ### Gepinnte Actions
 

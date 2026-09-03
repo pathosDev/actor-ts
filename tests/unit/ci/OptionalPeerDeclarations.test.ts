@@ -36,6 +36,14 @@ import { describe, expect, test } from 'bun:test';
  * declaration to hold the package in the tree. A coverage check alone would not
  * have caught that: moving `ws` to the brokers manifest satisfies "declared
  * somewhere" while leaving the root `bun test` pass just as broken.
+ *
+ * One property has to hold before any of that covers the manifest rather than
+ * a subset of it: every declared peer has to BE an optional peer. The list
+ * below is read out of `peerDependenciesMeta`, so a peer that never appears
+ * there is not exempted from the split — it is never considered at all.
+ * `typescript` sat in exactly that blind spot from the initial scaffold, as the
+ * one mandatory peer in the manifest, through #676's whole-manifest sweep and
+ * every audit after it, until #781.
  */
 
 const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..');
@@ -58,6 +66,9 @@ const optionalPeers: readonly string[] = Object.entries(rootManifest.peerDepende
   .filter(([, meta]) => meta.optional === true)
   .map(([name]) => name)
   .sort();
+
+/** Every peer the manifest declares, whether or not it is marked optional. */
+const declaredPeers: readonly string[] = Object.keys(rootManifest.peerDependencies ?? {}).sort();
 
 const rootDevDependencies: readonly string[] = Object.keys(rootManifest.devDependencies ?? {});
 const brokerDependencies: readonly string[] = Object.keys(brokerManifest.dependencies ?? {});
@@ -256,6 +267,64 @@ describe('optional peer declarations', () => {
       + 'the coverage test below pass by having nothing to compare.',
     ).toBeGreaterThan(10);
     expect(rootScopedTestSources().length).toBeGreaterThan(100);
+  });
+
+  /**
+   * Every declared peer is an OPTIONAL peer — the precondition that makes the
+   * assertions below cover the manifest instead of a subset of it.
+   *
+   * `optionalPeers` comes out of `peerDependenciesMeta`, so a peer missing from
+   * that map is invisible here: not exempted from the two-context split, never
+   * considered against it. `typescript` was that peer, and it is why this test
+   * exists rather than only the one-line manifest fix. It was the sole
+   * non-optional entry from the initial scaffold, survived #676's
+   * whole-manifest sweep and every audit after it, and no gate could have
+   * reported it — the guard written to police peer declarations was structurally
+   * unable to see the one peer that was mandatory (#781).
+   *
+   * What the gap costs is npm's doing rather than this manifest's. npm 7+
+   * installs a missing non-optional peer automatically, so a plain-JavaScript
+   * consumer — or a production image running `npm i actor-ts --omit=dev` —
+   * silently receives the package. For `typescript` that is a compiler, with
+   * executable bin entries, installed for a dependency the library never loads:
+   * nothing under `src/` names it in an import specifier of any spelling, and
+   * `tsconfig.json` sets `"types": []`, so the emitted declarations do not
+   * reference it either. It also quietly contradicted what
+   * `intro/installation` promises about keeping the core install small. Marking
+   * it optional costs the declaration nothing — the version range documents the
+   * supported compiler floor for the shipped `.d.ts` files exactly as well, and
+   * tooling still warns on a genuine mismatch.
+   *
+   * The assertion is about the flag, not about the key, and that distinction is
+   * the whole of it: `optional: false` is a `peerDependenciesMeta` entry that
+   * satisfies any completeness check while npm goes on auto-installing the
+   * package. Measured, not assumed — that variant was written and this test
+   * still failed on it.
+   */
+  test('every declared peer is marked optional', () => {
+    // Guards the guard: the filter below reads `declaredPeers`, and a renamed
+    // or emptied `peerDependencies` would report no violations for exactly the
+    // same reason a fully optional manifest does.
+    expect(
+      declaredPeers.length,
+      'No peer dependencies found in the root package.json — `peerDependencies` '
+      + 'was renamed or emptied, so the assertion below filters an empty list '
+      + 'and cannot report anything.',
+    ).toBeGreaterThan(20);
+    const mandatory = declaredPeers.filter((peer) => !optionalPeers.includes(peer));
+    expect(
+      mandatory,
+      'These peers are declared in `peerDependencies` with no '
+      + '`peerDependenciesMeta` entry marking them `optional: true`, so npm 7+ '
+      + 'installs them into every consumer that does not already have them — '
+      + 'plain-JavaScript consumers and production images included, for a '
+      + 'package the library may never load. They are also invisible to every '
+      + 'other assertion in this file, which reads its subject list out of '
+      + '`peerDependenciesMeta`: a mandatory peer is not exempted from the '
+      + 'two-context split, it is never checked against it. Add '
+      + '`"<name>": { "optional": true }` — the version range keeps documenting '
+      + 'the supported floor either way (#781).',
+    ).toEqual([]);
   });
 
   /**
