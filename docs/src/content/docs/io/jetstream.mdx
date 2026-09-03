@@ -50,13 +50,13 @@ class OrderProcessor extends Actor<JetStreamMessage> {
   async onReceive(message: JetStreamMessage): Promise<void> {
     try {
       await db.insertOrder(JSON.parse(new TextDecoder().decode(message.payload)));
-      this.jetStream.tell({ kind: 'acknowledgment', streamSeq: message.streamSeq });
+      this.jetStream.tell({ kind: 'acknowledgment', ackToken: message.ackToken });
     } catch {
       // redeliver after 5 s
       this.jetStream.tell({
-        kind:      'negativeAcknowledgment',
-        streamSeq: message.streamSeq,
-        delayMs:   5_000,
+        kind:     'negativeAcknowledgment',
+        ackToken: message.ackToken,
+        delayMs:  5_000,
       });
     }
   }
@@ -129,26 +129,36 @@ Set `consumer` to bind a durable subscription.
 | `kind` | Fields | Purpose |
 | --- | --- | --- |
 | `publish` | `publish: JetStreamPublish` | Publish a message (see [idempotent publish](#idempotent-publish)). |
-| `acknowledgment` | `streamSeq` | Ack a delivered message — the server marks it consumed. |
-| `negativeAcknowledgment` | `streamSeq`, `delayMs?` | Redeliver (optionally after `delayMs`). |
-| `terminate` | `streamSeq`, `reason?` | Terminal failure — server drops the message permanently. |
-| `inProgress` | `streamSeq` | Heartbeat — extend the ack-wait window for a long handler. |
+| `acknowledgment` | `ackToken` | Ack a delivered message — the server marks it consumed. |
+| `negativeAcknowledgment` | `ackToken`, `delayMs?` | Redeliver (optionally after `delayMs`). |
+| `terminate` | `ackToken`, `reason?` | Terminal failure — server drops the message permanently. |
+| `inProgress` | `ackToken` | Heartbeat — extend the ack-wait window for a long handler. |
 | `fetch` | `batch`, `expiresMs?` | **Pull mode only** — request up to `batch` messages. |
 
 Every inbound `JetStreamMessage` carries `subject`, `payload`
 (`Uint8Array`), `replyTo`, `streamSeq`, `consumerSeq`, `deliveries`
-(delivery count — `1` on first try), `timestamp`, and `headers`.
+(delivery count — `1` on first try), `ackToken`, `timestamp`, and
+`headers`.
 
 ## The ack handshake
 
 With the default `ackPolicy: 'explicit'`, every delivered message must
 be resolved with exactly one of `acknowledgment`, `negativeAcknowledgment`,
-or `terminate`, keyed by `streamSeq`:
+or `terminate`, keyed by `ackToken`:
 
 - **`acknowledgment`** — processing succeeded; the server advances the consumer.
 - **`negativeAcknowledgment`** — retry; the server redelivers (after `delayMs` if given).
 - **`terminate`** — give up permanently; the server will not redeliver.
 - **`inProgress`** — not terminal; resets the ack-wait timer so a slow handler isn't redelivered mid-flight.
+
+`ackToken` is an opaque number the actor mints per **delivery** and hands
+you on the message.  It is deliberately not `streamSeq`: a stream sequence
+identifies the *message*, and JetStream reuses it verbatim on every
+redelivery (only `consumerSeq` and `deliveries` move).  Two deliveries of
+one message can be in flight at once — routinely so in pull mode, where
+fetch batches overlap — and only `ackToken` tells them apart.  Never send
+it back to the broker or persist it: it means nothing outside the actor
+instance that issued it, and it does not survive a reconnect.
 
 Set `ackPolicy: 'none'` for pure fire-and-hose delivery where no ack is
 expected.
@@ -163,6 +173,13 @@ expected.
   `batch` messages (returning early after `expiresMs`, default `5_000`);
   every message still goes through the same ack handshake.  Fits
   slow/bursty consumers better than push fan-out.
+
+**Fetches overlap, by design.** A `fetch` command returns the mailbox turn
+immediately, so a second `fetch` is served while the first batch's acks are
+still outstanding — it has to be, because those acks arrive as mailbox
+messages and a `fetch` that held its turn open would deadlock on them.
+Pipelining fetches is therefore supported, and it is why a delivery is
+addressed by `ackToken` rather than by `streamSeq`.
 
 ## Idempotent publish
 
@@ -192,11 +209,15 @@ The `nats` package includes both core NATS and the JetStream client.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="ackWaitMs must exceed handler time">
+<Aside type="caution" title="A handler slower than ackWaitMs gets the message twice">
   If a handler routinely takes longer than `ackWaitMs`, the server
-  redelivers the message mid-processing.  Either raise `ackWaitMs`, or
-  send `{ kind: 'inProgress', streamSeq }` to extend the window for a
-  long-running handler.
+  redelivers **while the first delivery is still being processed** — so the
+  work runs twice and two deliveries of one message are in flight at once.
+  That is a correctness matter, not a tuning preference: your handler must
+  be idempotent, and it must settle each delivery by that delivery's own
+  `ackToken`.  To stop the overlap happening, send
+  `{ kind: 'inProgress', ackToken }` to extend the window for a handler
+  that is still working, or raise `ackWaitMs`.
 </Aside>
 
 <Aside type="caution" title="`fetch` is pull-mode only">

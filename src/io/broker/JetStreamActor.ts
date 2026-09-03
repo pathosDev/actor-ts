@@ -57,9 +57,9 @@ import type { JetStreamOptions, JetStreamOptionsType } from './JetStreamOptions.
  *     async onReceive(message: JetStreamMessage) {
  *       try {
  *         await db.insertOrder(JSON.parse(new TextDecoder().decode(message.payload)));
- *         this.js.tell({ kind: 'acknowledgment', streamSeq: message.streamSeq });
+ *         this.js.tell({ kind: 'acknowledgment', ackToken: message.ackToken });
  *       } catch (e) {
- *         this.js.tell({ kind: 'negativeAcknowledgment', streamSeq: message.streamSeq, delayMs: 5_000 });
+ *         this.js.tell({ kind: 'negativeAcknowledgment', ackToken: message.ackToken, delayMs: 5_000 });
  *       }
  *     }
  *   }
@@ -77,6 +77,22 @@ export type JetStreamMessage = {
   readonly consumerSeq: number;
   /** Number of times this message has been delivered (1 = first try). */
   readonly deliveries: number;
+  /**
+   * Acknowledgment token — forward it as
+   * `{ kind: 'acknowledgment', ackToken }` (or `negativeAcknowledgment` /
+   * `terminate` / `inProgress`) to settle **this** delivery.
+   *
+   * Opaque and actor-local, the same shape `AmqpDelivery.ackToken` uses: it
+   * names one *delivery*, where `streamSeq` names a *message*.  JetStream
+   * reuses `streamSeq` verbatim on every redelivery and bumps only
+   * `consumerSeq` / `deliveries`, so two in-flight deliveries of one message
+   * — which pull mode reaches routinely, since fetch batches overlap — are
+   * indistinguishable by `streamSeq` and the second would evict the first
+   * from the pending-ack map (#710).  Never send it back to the broker; it
+   * means nothing outside this actor instance and does not survive a
+   * reconnect.
+   */
+  readonly ackToken: number;
   /** Server-assigned timestamp in ms since epoch. */
   readonly timestamp: number;
   /** Optional per-message headers (e.g. `Nats-Msg-Id`). */
@@ -148,17 +164,23 @@ export type JetStreamConsumerConfig = {
 /** Publish a message via the actor's JetStream client. */
 type PublishCommand = { readonly kind: 'publish'; readonly publish: JetStreamPublish };
 
+/*
+ * The four settle commands are keyed by `ackToken` — the delivery-scoped
+ * token carried on the `JetStreamMessage` they answer — and never by
+ * `streamSeq`.  See {@link JetStreamMessage.ackToken} for why (#710).
+ */
+
 /** Acknowledge a delivered message — server marks consumed. */
-type AcknowledgmentCommand = { readonly kind: 'acknowledgment'; readonly streamSeq: number };
+type AcknowledgmentCommand = { readonly kind: 'acknowledgment'; readonly ackToken: number };
 
 /** Negative-ack — server redelivers (after optional `delayMs`). */
-type NegativeAcknowledgmentCommand = { readonly kind: 'negativeAcknowledgment'; readonly streamSeq: number; readonly delayMs?: number };
+type NegativeAcknowledgmentCommand = { readonly kind: 'negativeAcknowledgment'; readonly ackToken: number; readonly delayMs?: number };
 
 /** Terminal failure — server drops the message permanently. */
-type TerminateCommand = { readonly kind: 'terminate'; readonly streamSeq: number; readonly reason?: string };
+type TerminateCommand = { readonly kind: 'terminate'; readonly ackToken: number; readonly reason?: string };
 
 /** Heartbeat — extend the ack-wait window for a long-running handler. */
-type InProgressCommand = { readonly kind: 'inProgress'; readonly streamSeq: number };
+type InProgressCommand = { readonly kind: 'inProgress'; readonly ackToken: number };
 
 /**
  * Pull-mode (#62) — fetch up to `batch` messages, returning early
@@ -185,8 +207,26 @@ export class JetStreamActor extends BrokerActor<
   private subscription: JetStreamSubscriptionLike | null = null;
   /** Pull-consumer handle (#62).  Non-null when consumer.mode === 'pull'. */
   private pullConsumer: PullConsumerLike | null = null;
-  /** Map of streamSeq → in-flight ack handle for the manual-ack pump. */
+  /**
+   * Map of `ackToken` → in-flight ack handle for the manual-ack pump.
+   *
+   * Keyed on the **delivery**, not on the message: `streamSeq` is reused
+   * verbatim on every redelivery, and this map is shared by every delivery
+   * path, so keying it on `streamSeq` made two in-flight deliveries of one
+   * message collide — the later `set` evicted the earlier entry, whose
+   * ack-timeout then deleted the *live* one and dropped its acknowledgment
+   * (#710).  Push mode reaches that only across a reconnect; pull mode
+   * reaches it in steady state, because fetch batches overlap by design (see
+   * {@link onFetch}).
+   */
   private readonly pending = new Map<number, PendingAcknowledgment>();
+  /**
+   * Source of {@link JetStreamMessage.ackToken}.  Monotonic per actor
+   * instance and never reset — a token minted before a reconnect must not
+   * collide with one minted after it, or a settle command that raced the
+   * disconnect would land on an unrelated delivery.
+   */
+  private nextAcknowledgmentToken = 1;
 
   constructor(options: JetStreamOptions = {}) { super(options); }
 
@@ -283,12 +323,29 @@ export class JetStreamActor extends BrokerActor<
   }
 
   protected async disconnectImplementation(): Promise<void> {
-    // Reject every still-pending ack so the consumer pump unwinds.
+    // *Settle* every still-pending ack, rather than naking the handle and
+    // clearing the map.  Clearing alone dropped the entry but left its
+    // ack-timeout armed and its promise pending: the timer then fired long
+    // after the reconnect had installed fresh entries, and its delete —
+    // unconditional, and keyed on `streamSeq` before #710 — evicted the live
+    // entry for the very message the server had just redelivered.  Every
+    // reconnect that completed inside `ackTimeoutMs` reached that, push mode
+    // included.  `fail` clears the timer and rejects the awaiting
+    // `deliverAndAwaitAcknowledgment`, whose catch does the same best-effort
+    // `handle.nak()` this used to do inline — so the wire behaviour is
+    // unchanged and the orphan is gone (#710).
     if (this.pending.size > 0) {
-      for (const pendingAck of this.pending.values()) {
-        try { pendingAck.handle.nak(); } catch { /* best-effort */ }
-      }
+      // Snapshot and clear first: `fail` rejects synchronously and the
+      // rejection handler runs off this loop, so iterating the live map
+      // while it settles would be iterating a map that is being mutated.
+      const inFlight = [...this.pending.values()];
       this.pending.clear();
+      for (const pendingAck of inFlight) {
+        pendingAck.fail(new Error(
+          `JetStreamActor: connection lost before ack/nak/term for `
+          + `streamSeq=${pendingAck.streamSeq} (ackToken=${pendingAck.ackToken})`,
+        ));
+      }
     }
     if (this.subscription) {
       try { await this.subscription.destroy(); } catch { /* */ }
@@ -349,9 +406,18 @@ export class JetStreamActor extends BrokerActor<
    * Pull-mode fetch (#62) — request up to `batch` messages, fan them
    * to `target`, and wait per-message for ack/nak/term using the same
    * `deliverAndAwaitAcknowledgment` helper as the push pump.  Returns once every
-   * message in the batch has been acked or its ack-timeout has
-   * fired; subsequent `fetch` cmds are processed serially by the
-   * mailbox.
+   * message in the batch has been acked or its ack-timeout has fired.
+   *
+   * **Fetches overlap, and must.**  The `fetch` arm of {@link onCommand}
+   * dispatches this with `void`, so the mailbox turn ends immediately and a
+   * second `fetch` runs while the first batch's acks are still outstanding.
+   * That is not an oversight to be tightened up later: the acks this call
+   * waits for arrive *as mailbox messages*, so a `fetch` arm that returned
+   * the promise would hold the turn open on a handshake only a later turn
+   * can complete — a deadlock, not a serialisation.  Overlapping batches are
+   * therefore a supported steady state, and they are what makes two
+   * deliveries of one `streamSeq` concurrent; the pending map is keyed per
+   * delivery so that stays harmless (#710).
    */
   private async onFetch(command: FetchCommand): Promise<void> {
     const { batch, expiresMs } = command;
@@ -398,14 +464,20 @@ export class JetStreamActor extends BrokerActor<
       ?? 30_000;
     const handle: JetStreamMessageHandleLike = messageHandle;
     const info = handle.info;
+    // Minted per delivery, before the tell: the token the application sends
+    // back is the only thing that distinguishes this delivery from the next
+    // redelivery of the same message.
+    const ackToken = this.nextAcknowledgmentToken++;
+    const streamSeq = info.streamSequence;
     if (target) {
       target.tell({
         subject: handle.subject,
         payload: handle.data,
         replyTo: handle.reply ?? '',
-        streamSeq: info.streamSequence,
+        streamSeq,
         consumerSeq: info.deliverySequence,
         deliveries: info.deliveryCount,
+        ackToken,
         timestamp: info.timestampNanos !== undefined
           ? Math.floor(info.timestampNanos / 1_000_000)
           : Date.now(),
@@ -415,19 +487,31 @@ export class JetStreamActor extends BrokerActor<
 
     if (this.options.consumer?.ackPolicy === 'none') return;
 
-    const seq = info.streamSequence;
     try {
       await new Promise<void>((resolve, reject) => {
+        let entry: PendingAcknowledgment | undefined;
         const timer = setTimeout(() => {
-          this.pending.delete(seq);
-          reject(new Error(`JetStreamActor: no ack/nak/term for streamSeq=${seq} within ${ackTimeoutMs}ms`));
+          // Identity-checked, not a bare `delete(ackToken)`.  A per-delivery
+          // key already makes a collision impossible, so today this can only
+          // ever be true — but the delete is the one unconditional mutation
+          // on a path that runs long after its own entry may have been
+          // settled and replaced, and an unconditional one is exactly how
+          // #710 turned a superseded entry into an evictor of the live one.
+          // Cheap, and it keeps this correct under any future re-keying.
+          if (this.pending.get(ackToken) === entry) this.pending.delete(ackToken);
+          reject(new Error(
+            `JetStreamActor: no ack/nak/term for streamSeq=${streamSeq} `
+            + `(ackToken=${ackToken}) within ${ackTimeoutMs}ms`,
+          ));
         }, ackTimeoutMs);
-        this.pending.set(seq, {
-          streamSeq: seq,
+        entry = {
+          ackToken,
+          streamSeq,
           handle,
           done: () => { clearTimeout(timer); resolve(); },
           fail: (err) => { clearTimeout(timer); reject(err); },
-        });
+        };
+        this.pending.set(ackToken, entry);
       });
     } catch (err) {
       this.log.warn(`JetStreamActor: pump ${(err as Error).message} — letting consumer redeliver`);
@@ -436,25 +520,34 @@ export class JetStreamActor extends BrokerActor<
   }
 
   private onAcknowledgment(command: AcknowledgmentCommand): void {
-    const { streamSeq } = command;
-    const pendingAck = this.pending.get(streamSeq);
+    const { ackToken } = command;
+    const pendingAck = this.pending.get(ackToken);
     if (!pendingAck) {
-      this.log.debug(`JetStreamActor: ack for unknown streamSeq=${streamSeq} — ignored`);
+      // `warn`, not `debug`: a miss here means an acknowledgment for a
+      // delivery that is genuinely no longer in flight, so the message will
+      // be redelivered and reprocessed — an at-least-once contract the
+      // operator wants to see.  At `debug` (below the `LogLevel.Info`
+      // default) the drop was invisible in every default deployment, which
+      // is what let #710 run silently.
+      this.log.warn(
+        `JetStreamActor: acknowledgment for unknown ackToken=${ackToken} — ignored; `
+        + `the delivery it names already timed out, was settled, or predates a reconnect`,
+      );
       return;
     }
     try { pendingAck.handle.ack(); }
     catch (err) {
       pendingAck.fail(err instanceof Error ? err : new Error(String(err)));
-      this.pending.delete(streamSeq);
+      this.pending.delete(ackToken);
       return;
     }
     pendingAck.done();
-    this.pending.delete(streamSeq);
+    this.pending.delete(ackToken);
   }
 
   private onNegativeAcknowledgment(command: NegativeAcknowledgmentCommand): void {
-    const { streamSeq, delayMs } = command;
-    const pendingAck = this.pending.get(streamSeq);
+    const { ackToken, delayMs } = command;
+    const pendingAck = this.pending.get(ackToken);
     if (!pendingAck) return;
     try {
       if (typeof delayMs === 'number' && delayMs > 0) {
@@ -464,25 +557,25 @@ export class JetStreamActor extends BrokerActor<
       }
     } catch { /* best-effort — nakWithDelay may be missing on older clients */ }
     pendingAck.done();
-    this.pending.delete(streamSeq);
+    this.pending.delete(ackToken);
   }
 
   private onTerminate(command: TerminateCommand): void {
-    const { streamSeq, reason } = command;
-    const pendingAck = this.pending.get(streamSeq);
+    const { ackToken, reason } = command;
+    const pendingAck = this.pending.get(ackToken);
     if (!pendingAck) return;
     this.log.warn(
-      `JetStreamActor: term for streamSeq=${streamSeq}${reason ? ` (${reason})` : ''} — `
-      + `message dropped permanently`,
+      `JetStreamActor: term for streamSeq=${pendingAck.streamSeq}`
+      + `${reason ? ` (${reason})` : ''} — message dropped permanently`,
     );
     try { pendingAck.handle.term(); } catch { /* */ }
     pendingAck.done();
-    this.pending.delete(streamSeq);
+    this.pending.delete(ackToken);
   }
 
   private onInProgress(command: InProgressCommand): void {
-    const { streamSeq } = command;
-    const pendingAck = this.pending.get(streamSeq);
+    const { ackToken } = command;
+    const pendingAck = this.pending.get(ackToken);
     if (!pendingAck) return;
     try { pendingAck.handle.working(); } catch { /* */ }
   }
@@ -491,6 +584,9 @@ export class JetStreamActor extends BrokerActor<
 /* ----------------------------- internals -------------------------------- */
 
 type PendingAcknowledgment = {
+  /** The map key this entry is stored under — one delivery, not one message. */
+  readonly ackToken: number;
+  /** The delivery's stream sequence.  For log lines only; never a key (#710). */
   readonly streamSeq: number;
   readonly handle: JetStreamMessageHandleLike;
   readonly done: () => void;
