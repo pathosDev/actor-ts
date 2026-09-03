@@ -11,6 +11,28 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`actor-ts/util` — the whole util toolbox, not the two-thirds the root
+  barrel named one at a time** (#1404).  `src/util/` holds 21 modules and had
+  no barrel at all; what a consumer could reach was whatever `src/index.ts`
+  happened to list, grown one name per issue (#1034, #1035, #1037, #1141,
+  #1199).  Eight modules' worth of names were reachable from nothing:
+  `TokenBucket`, the CIDR and address-pin matchers, the HTML escapers,
+  `mergeOptions` / `stripUndefined`, `stripTrailing` / `stripSurrounding`,
+  `wrapError` and the cross-subsystem constants.  `mergeOptions` was the
+  sharpest of them — AGENTS.md documents the options precedence *explicit >
+  HOCON > defaults* **by that function's name**, and the function itself was
+  not in the package.
+
+  The root barrel keeps every name it exports today, so nothing moved and
+  nothing breaks; the subpath is a superset, and the root stays the curated set
+  a reader scans to learn what the framework offers.  Publishing the directory
+  whole is safe for the reason `src/util/Constants.ts` documents at length: it
+  is the one directory under `src/` with no outward import, so one entry point
+  over it drags no subsystem in behind it.  One name is deliberately withheld —
+  `_resetEntropyPool`, whose own doc comment says it exists for a test that
+  substitutes `crypto.getRandomValues`.  Documented on
+  `reference/utility-helpers` (EN + DE).
+
 - **The flake catalog names the third shape of the fixed-cap failure — real
   work in a *test body*** (#1393).  `docs/…/testing/diagnosing-flakes.mdx`
   covered bun's 5 000 ms cap twice, one level apart: a budget that cannot reach

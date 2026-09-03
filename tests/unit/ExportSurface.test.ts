@@ -77,6 +77,24 @@ const rootNamespace = await barrelNamespace();
 const foldedNamespaces = new Map<string, Record<string, unknown>>();
 for (const name of foldedBarrels) foldedNamespaces.set(name, await barrelNamespace(name));
 
+/**
+ * `src/util/` is the one published subsystem that is a flat directory of
+ * unrelated helpers rather than a feature with a shape, so "is the barrel
+ * complete?" is a question worth asking mechanically.  Importing each module
+ * and unioning the namespace keys asks it without parsing anything, and covers
+ * a module added later without an edit here (#1404).
+ */
+const utilDirectory = join(sourceRoot, 'util');
+const utilModuleExports = new Set<string>();
+for (const file of readdirSync(utilDirectory)) {
+  if (!file.endsWith('.ts') || file === 'index.ts') continue;
+  const namespace = (await import(pathToFileURL(join(utilDirectory, file)).href)) as Record<
+    string,
+    unknown
+  >;
+  for (const key of Object.keys(namespace)) utilModuleExports.add(key);
+}
+
 describe('the exports map and the barrels under src/ agree (#1403)', () => {
   test('every published subpath points at a barrel that exists', () => {
     const dangling = [...publishedSubpaths].filter(
@@ -91,6 +109,14 @@ describe('the exports map and the barrels under src/ agree (#1403)', () => {
     // the choice between "publish it" and "fold it into the root" gets made
     // rather than defaulted.
     expect(foldedBarrels).toEqual(['config', 'deadletters', 'mailbox', 'pattern', 'typed']);
+  });
+
+  test('util is published rather than folded (#1404)', () => {
+    // The directory the root barrel used to reach one hand-picked name at a
+    // time.  Asserted by name because the pin above would also be satisfied by
+    // `util` having no barrel at all.
+    expect(publishedSubpaths.has('util')).toBe(true);
+    expect(barrels).toContain('util');
   });
 });
 
@@ -115,6 +141,44 @@ describe('a folded barrel emits nothing the root barrel drops (#1403)', () => {
       expect(divergent).toEqual([]);
     });
   }
+});
+
+describe('the util barrel covers the whole directory (#1404)', () => {
+  /**
+   * The one name the barrel withholds on purpose.  Its own doc comment says
+   * there is no production reason to drop entropy and that it exists for a
+   * test substituting `crypto.getRandomValues`; the underscore is the
+   * convention, and publishing it would make a test hook part of the API.
+   */
+  const testOnlyExports = new Set(['_resetEntropyPool']);
+
+  test('every value any util module exports is on the subpath', async () => {
+    const barrel = await barrelNamespace('util');
+    const missing = [...utilModuleExports]
+      .filter((key) => !testOnlyExports.has(key))
+      .filter((key) => !(key in barrel))
+      .sort();
+    expect(missing).toEqual([]);
+  });
+
+  test('the barrel adds nothing the directory does not have', async () => {
+    // The other direction: a re-export of a name that has moved elsewhere in
+    // `src/` would compile and would put a subsystem behind the one directory
+    // that must keep no outward import at all.
+    const barrel = await barrelNamespace('util');
+    const foreign = Object.keys(barrel)
+      .filter((key) => !utilModuleExports.has(key))
+      .sort();
+    expect(foreign).toEqual([]);
+  });
+
+  test('the test-only hook stays off the subpath', async () => {
+    const barrel = await barrelNamespace('util');
+    for (const name of testOnlyExports) {
+      expect(utilModuleExports.has(name)).toBe(true); // still exists, still not published
+      expect(name in barrel).toBe(false);
+    }
+  });
 });
 
 describe('the four names the folded barrels dropped (#1403)', () => {

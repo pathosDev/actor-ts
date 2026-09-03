@@ -107,6 +107,11 @@
       "import": "./dist/tracing/index.js",
       "default": "./dist/tracing/index.js"
     },
+    "./util": {
+      "types": "./dist/util/index.d.ts",
+      "import": "./dist/util/index.js",
+      "default": "./dist/util/index.js"
+    },
     "./worker": {
       "types": "./dist/worker/index.d.ts",
       "import": "./dist/worker/index.js",

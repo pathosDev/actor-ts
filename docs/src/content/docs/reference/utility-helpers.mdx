@@ -1,6 +1,6 @@
 ---
 title: Utilities
-description: Everything the root entry point exports from its own toolbox — Option, Try and Either for results without null; Lazy for compute-once values; RingBuffer for a queue that stays fast when it gets deep; BidirectionalMap and BidirectionalMultiMap for relations with a maintained inverse; randomString, safeStringify and lazyImportModule for naming, logging and optional peer dependencies.
+description: The framework's own toolbox — Option, Try and Either for results without null; Lazy for compute-once values; RingBuffer for a queue that stays fast when it gets deep; BidirectionalMap and BidirectionalMultiMap for relations with a maintained inverse; randomString, safeStringify and lazyImportModule for naming, logging and optional peer dependencies. On the root entry point, and in full on the actor-ts/util subpath: mergeOptions, TokenBucket, the HTML escapers, the CIDR and address-pin matchers, wrapError and the cross-subsystem defaults.
 ---
 
 The framework solves a handful of problems for itself that turn up again in the
@@ -11,9 +11,13 @@ naming something unguessably, printing a value on a path where throwing would
 replace the error you were reporting, and depending on a package you do not
 want to make mandatory.
 
-These are the answers it already uses, exported from the root entry point. None
-of them are required to use `actor-ts` — reach for one when you have the problem
-it solves.
+These are the answers it already uses. The ones you meet while using the
+framework itself are exported from the root entry point, and everything below
+imports from `'actor-ts'` for that reason; the whole directory — including the
+pieces the root does not carry — is on the `actor-ts/util` subpath
+(*[The whole toolbox](#the-whole-toolbox--actor-tsutil)*, below). None of them
+are required to use `actor-ts` — reach for one when you have the problem it
+solves.
 
 ```ts
 import {
@@ -600,6 +604,43 @@ Validation runs once, at consume time, on the merged settings — so the builder
 a plain object and HOCON are all covered, and cross-field rules see the final
 values. See [configuration](/reference/configuration/) for how the layers
 resolve.
+
+## The whole toolbox — `actor-ts/util`
+
+Everything above is on the root entry point because you meet it while using the
+framework. The rest of `src/util/` solves problems that are one step further
+out, and it is reachable on its own subpath:
+
+```ts
+import { TokenBucket, mergeOptions, wrapError } from 'actor-ts/util';
+```
+
+The subpath is a superset: every name the root carries is on it too, so a file
+that needs `some` and `mergeOptions` can take both from `actor-ts/util` rather
+than importing twice.
+
+| Export | What it does |
+| --- | --- |
+| `mergeOptions(defaults, fromConfig, explicit)` | The one implementation of the options precedence *explicit > HOCON > defaults*. `undefined` on a higher layer means "not set" and falls through instead of blanking out the layer below — which is what you want, and not what a plain spread does. |
+| `stripUndefined(partial)` | Drops the keys whose value is `undefined`, which is how `mergeOptions` gets that property. |
+| `TokenBucket` | Rate limiting with a `qps` refill rate and a `burst` capacity, refilled lazily from elapsed time — no background timer. The clock is injectable, so a test advances time instead of waiting for it. |
+| `wrapError(error, ErrorClass, message)` | Re-throw a caught exception as a typed framework error with a contextual message, carrying the original as `cause`. An error already of the target class is returned unchanged rather than wrapped twice. |
+| `escapeHtml`, `html`, `rawHtml`, `SafeHtml` | Escaping for HTML **element content and quoted attribute values**. The `html` tagged template escapes every interpolation by default; `rawHtml` is the escape hatch for a string you have already made safe. Not a sanitizer for untrusted *markup*. |
+| `stripTrailing(value, char)`, `stripSurrounding(value, char)` | Strip a repeated character off the ends in linear time. The regex spelling of this backtracks quadratically, which matters when the value is a request path or a hostname a remote peer chose. |
+| `parseCidr`, `cidrMatches`, `isCidrEntry` | CIDR parsing and matching, IPv4 and IPv6, with IPv4-mapped IPv6 handled so a plain IPv4 range still matches a dual-stack peer. |
+| `parseAddressPin`, `addressMatchesPins`, `addressPinRejection` | The address-pin rules built on those: an entry is a CIDR (matched against IPs) or a host suffix (matched against hostnames **on a label boundary**, so `evilsvc.cluster.local` does not slip past `svc.cluster.local`). `addressPinRejection` returns the reason an entry is unusable, for your own validator to report. |
+| `DEFAULT_ASK_TIMEOUT_MS`, `DEFAULT_GOSSIP_INTERVAL_MS`, `DEFAULT_EXPLAIN_CAPACITY` | The cross-subsystem defaults, so a timeout of your own that has to stay below the ask timeout can read it rather than copy the number. |
+| `PATH_TRAVERSAL_SEGMENTS`, `MAXIMUM_DRAW_ATTEMPTS` | The traversal denylist actor paths and persistence ids are both checked against, and the bound a uniqueness redraw gives up at. |
+
+<Aside type="note" title="Why a subpath and not more root exports">
+`src/util/` is the one directory under `src/` with no outward import at all —
+that is what makes it the tier every subsystem may depend on without any of
+them depending on each other, and it is why the whole of it can be published as
+one entry point without dragging a subsystem in behind it. Keeping the root a
+curated set is deliberate: it is the surface a reader scans to learn what the
+framework offers, and a rate limiter or a CIDR matcher is not part of that
+answer.
+</Aside>
 
 ## Where to next
 
