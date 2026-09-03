@@ -108,6 +108,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`ConfigKeys`, `CircuitBreakerOptionsValidator`, `isPlainObject` and
+  `readDeadLetterQueueOptionsFromConfig` reached no entry point** (#1403).
+  `package.json` ships only `dist/` and its `exports` map has no wildcard, so
+  for the five barrels the core-only root cut (#414) folds into `src/index.ts`
+  — `config`, `deadletters`, `mailbox`, `pattern`, `typed` — the root barrel is
+  the only door, and a name it drops has left the package.  Three of the five
+  dropped one.
+
+  `ConfigKeys` is the one that mattered: AGENTS.md calls it the typed single
+  source of truth for HOCON paths, 47 files under `src/` read it and
+  `reference/reference-conf` names it to the reader, and no consumer could
+  name it.  `CircuitBreakerOptionsValidator` was the only `*OptionsValidator`
+  of a folded subsystem the root dropped — the options contract asks a
+  non-broker consumer to call `new XOptionsValidator().validate(settings)`, and
+  for a circuit breaker that line could not be written against the package.
+
+  All four are additive re-exports.  The durable half is
+  `tests/unit/ExportSurface.test.ts`, which derives the question from the tree
+  instead of a hand-kept list: it diffs each folded barrel's module namespace
+  against the root's, pins which barrels are folded so folding a sixth is a
+  decision rather than a default, checks every published subpath points at a
+  barrel that exists, and asserts the `util` barrel covers its own directory.
+  Same class as #1002 and #1307, which were each found by reading; #819's
+  `.d.ts` rollup supersedes the structural half when it lands, and covers the
+  type-only exports a module namespace cannot see.
+
 - **Two of the three fixed-delay waits `SleepRatchet` flagged in
   `ActorThrottle.test.ts` were guarding against nothing** (#1399).  The file
   arrived with #636 carrying three unannotated waits, and `develop` was red on
