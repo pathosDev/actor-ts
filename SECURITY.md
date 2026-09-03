@@ -129,28 +129,32 @@ is deliberately *not* used here.
 
 ## Accepted advisories
 
-The audit gate fails on any **new** high or critical advisory. The
-advisories below were already present when the gate was introduced and
-are suppressed by ID in the `lint:audit` script so that the gate could
-land green rather than land red and be ignored. They are not dismissed —
-[#779](https://github.com/pathosDev/actor-ts/issues/779) is the
-dependency refresh that removes both the advisories and these entries.
+The audit gate fails on any high or critical advisory, and **there are
+no accepted ones**: the `lint:audit` script carries no `--ignore` flag.
 
-| Advisory | Package | Severity | Reached through |
-| --- | --- | --- | --- |
-| [GHSA-83w8-p2f5-377r](https://github.com/advisories/GHSA-83w8-p2f5-377r) | `@fastify/static` | high | direct dependency |
-| [GHSA-mh99-v99m-4gvg](https://github.com/advisories/GHSA-mh99-v99m-4gvg) | `brace-expansion` | high | `@fastify/static › glob › minimatch` |
-| [GHSA-rgw5-rvv9-x895](https://github.com/advisories/GHSA-rgw5-rvv9-x895) | `brace-expansion` | high | `@fastify/static › glob › minimatch` |
-| [GHSA-3jxr-9vmj-r5cp](https://github.com/advisories/GHSA-3jxr-9vmj-r5cp) | `brace-expansion` | high | `@fastify/static › glob › minimatch` |
-| [GHSA-4c8g-83qw-93j6](https://github.com/advisories/GHSA-4c8g-83qw-93j6) | `fast-uri` | high | `fastify › fast-json-stringify › ajv` |
-| [GHSA-7p8r-x3mc-p8w7](https://github.com/advisories/GHSA-7p8r-x3mc-p8w7) | `fast-uri` | high | `fastify › fast-json-stringify › ajv` |
-| [GHSA-v2hh-gcrm-f6hx](https://github.com/advisories/GHSA-v2hh-gcrm-f6hx) | `fast-uri` | high | `fastify › fast-json-stringify › ajv` |
-| [GHSA-q3j6-qgpj-74h6](https://github.com/advisories/GHSA-q3j6-qgpj-74h6) | `fast-uri` | high | `fastify › fast-json-stringify › ajv` |
-| [GHSA-v39h-62p7-jpjc](https://github.com/advisories/GHSA-v39h-62p7-jpjc) | `fast-uri` | high | `fastify › fast-json-stringify › ajv` |
-| [GHSA-c96f-x56v-gq3h](https://github.com/advisories/GHSA-c96f-x56v-gq3h) | `find-my-way` | high | `fastify` |
-| [GHSA-96hv-2xvq-fx4p](https://github.com/advisories/GHSA-96hv-2xvq-fx4p) | `ws` | high | `@fastify/websocket`, `@hono/node-ws` |
+It used to. The gate landed with a baseline of eleven suppressed
+advisory IDs — every high advisory the lockfile carried at the time —
+so that it could land green rather than land red and be ignored, with
+[#779](https://github.com/pathosDev/actor-ts/issues/779) tracking the
+refresh that would remove them. Six more were published upstream
+afterwards, all against `fast-uri` and all against a lockfile nobody
+had touched; those were never suppressed, and the gate did what a gate
+is for and went red.
 
-`tests/unit/ci/SecurityPolicy.test.ts` asserts that this table and the
-`lint:audit` ignore list stay identical, so an advisory cannot be
-silenced without appearing here, and an entry cannot linger here after
-the suppression is dropped.
+The refresh has now landed and clears both halves. All nineteen high
+advisories in the closure turned out to be reachable by an **in-range**
+bump:
+`@fastify/static`, `brace-expansion`, `fast-uri` (both major lines),
+`find-my-way` and `ws` all had a fixed release inside the range
+`package.json` already declared. So only `bun.lock` moved. No
+dependency range was widened, no `overrides` entry was added, and a
+consumer installing `actor-ts` resolves the fixed versions from the
+published manifest exactly as this repository does.
+
+If a suppression is ever needed again it belongs back here as a table —
+advisory, package, severity, and the path it is reached through — and
+adding one is a deliberate act, not a way to get a change through.
+`tests/unit/ci/SecurityPolicy.test.ts` asserts that this section and the
+`lint:audit` ignore list name the same set of advisories, so one cannot
+be silenced without appearing here, and a row cannot linger here after
+its suppression is dropped.

@@ -112,11 +112,15 @@ because an advisory is published upstream against a lockfile that
 did not change; a push-triggered gate would not notice one until
 the next unrelated commit.
 
-Advisories that were already present when the gate was introduced
-are suppressed by ID and listed in
+Nothing is suppressed. The gate landed with a baseline — eleven
+advisory IDs ignored so it could land green rather than land red
+and be ignored — and that baseline is gone: every one of them was
+fixed by a release inside the range `package.json` already
+declared, so refreshing `bun.lock` cleared them without widening
+anything. Any suppression added back has to be written up in
 [`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md),
-with the issue that removes them. A test fails if the suppression
-list and that table drift apart, so the set cannot grow quietly.
+and a test fails if the ignore list and that page drift apart, so
+the set cannot grow quietly.
 
 ### Pinned actions
 
