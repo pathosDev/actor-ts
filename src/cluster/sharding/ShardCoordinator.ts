@@ -109,6 +109,19 @@ type RegionInfo = {
 };
 
 /**
+ * How one `Register`'s accepted ids divide against the allocation map, decided
+ * before the handler writes anything — see {@link ShardCoordinator.adjudicateClaim}.
+ */
+type ClaimVerdict = {
+  /** Ids this registration takes ownership of. */
+  readonly adopted: ReadonlySet<number>;
+  /** Ids another registered region owns; the claimant is released from these. */
+  readonly conflicting: ReadonlySet<number>;
+  /** What `RegionInfo.shards` becomes: `adopted` plus what this key already holds. */
+  readonly owned: Set<number>;
+};
+
+/**
  * One in-flight `GetClusterShardingStats`.  The coordinator owns the shard map
  * but not the entity counts — only the region hosting a shard knows those — so
  * a cluster-wide answer is a fan-out that has to be collected back together.
@@ -658,13 +671,23 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     const hostedShards = this.acceptedHostedShards(message);
     const node = NodeAddress.fromJSON(message.node);
     const key = regionKey(node, message.region);
+    // Judged against the map as it stands *before* any write below — the whole
+    // point is that the claim does not get to decide what it is compared with.
+    const verdict = this.adjudicateClaim(key, hostedShards);
     this.regions.set(key, {
       node,
       path: message.region,
       proxy: message.proxy,
-      shards: new Set(hostedShards),
+      shards: verdict.owned,
     });
-    for (const shardId of hostedShards) {
+    for (const shardId of verdict.adopted) {
+      const previous = this.shardHome.get(shardId);
+      // Defensive, and one line: under the classification above an adopted id's
+      // previous home is either absent, this same key, or a key that has left
+      // `regions`, so the optional call is a no-op today.  It is what keeps
+      // "ownership moving away clears the old owner's set" true by construction
+      // rather than by case analysis, for whichever write path drifts next.
+      if (previous !== undefined && previous !== key) this.regions.get(previous)?.shards.delete(shardId);
       this.shardHome.set(shardId, key);
     }
     const ack: RegisterAcknowledgment = {
@@ -672,13 +695,132 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       coordinator: this.self.path.toString(),
     };
     this.replyTo(message.region, message.node, ack);
+    // Strictly after the acknowledgment: the ack is what cancels the claimant's
+    // 500 ms register retry (`ShardRegion.onRegisterAcknowledgment`), and a
+    // directive that overtakes it lands on a region still re-registering.
+    this.releaseConflictingShards(key, message, verdict.conflicting);
 
-    for (const shardId of hostedShards) this.flushPending(shardId);
+    // Adopted only.  Run over the whole claim these would answer a pending
+    // `GetShardHome` for a shard this registration did not get, and re-ship the
+    // entire remembered-entity registry of a shard to the region that just lost
+    // the argument about owning it.
+    for (const shardId of verdict.adopted) this.flushPending(shardId);
 
     if (this.options.rememberEntities) {
-      for (const shardId of hostedShards) this.shipRememberedEntities(shardId);
+      for (const shardId of verdict.adopted) this.shipRememberedEntities(shardId);
     }
     this.afterShardMapChange();
+  }
+
+  /**
+   * Split an accepted claim into what this registration may take and what it
+   * may not (#948).
+   *
+   * `hostedShards` is a region's statement about *itself*, and #712 made the
+   * sender honest — the frame is attributed to the peer and its ids are in
+   * range — without making the claim true.  A region whose `localShards` has
+   * gone stale keeps claiming what it used to own: nothing clears that set when
+   * a node is downed by a false positive (`ShardRegion.invalidateHomesOnNode`
+   * deliberately leaves it alone), and `ensureRegistered()` re-sends the claim
+   * on every `MemberUp`, `MemberRemoved` and `LeaderChanged` plus a 500 ms
+   * retry.  Written straight into `shardHome`, that takes the shard back from
+   * whoever took over and runs the same entity ids on both nodes — two writers
+   * on one `persistenceId` for a `PersistentActor`.
+   *
+   * So an id is **adopted** only when the map does not already hand it to
+   * somebody else: no home at all, a home naming a key that has since left
+   * `regions` (a leader term that cleared the map, or a terminated region whose
+   * entry dangled), or a home that is this claimant's already.  An id homed to a
+   * *different* key that is still registered is **conflicting**: ownership does
+   * not move, and the claimant is released from it instead.
+   *
+   * `owned` is what `RegionInfo.shards` becomes, and it is a **merge**, not the
+   * claim.  `tryAllocate` writes `shardHome[N] = K` and `K.shards.add(N)` and
+   * only then pushes `ShardHome` at K, so a `Register` from K that was already
+   * in flight carries a `localShards` without N and used to drop N from
+   * `RegionInfo.shards` while `shardHome` still named K — after which
+   * `onRegionTerminated(K)` iterates `info.shards` and never reallocates N, and
+   * `snapshotCoordinatorState` persists the hole.  Adding back every id
+   * `shardHome` already assigns to this key closes that in the same pass.
+   *
+   * The guard shape is `loadCoordinatorState`'s (`regions.has` / `!shardHome.has`
+   * before writing); the limit is the same one it has.  A fresh leader term
+   * clears `regions` and `shardHome` wholesale, so in the first moments of a
+   * term every claim is unowned and the rule degenerates to first-claim-wins by
+   * mailbox order.  That is better than the last-claim-wins it replaces — the
+   * later claim is the likelier stale one — but it does not *resolve* a
+   * double-homing that predates the election; it stops new ones.
+   */
+  private adjudicateClaim(key: string, claimed: ReadonlySet<number>): ClaimVerdict {
+    const adopted = new Set<number>();
+    const conflicting = new Set<number>();
+    for (const shardId of claimed) {
+      const home = this.shardHome.get(shardId);
+      if (home === undefined || home === key || !this.regions.has(home)) {
+        adopted.add(shardId);
+        continue;
+      }
+      conflicting.add(shardId);
+    }
+    const owned = new Set<number>(adopted);
+    for (const [shardId, home] of this.shardHome) {
+      if (home === key) owned.add(shardId);
+    }
+    return { adopted, conflicting, owned };
+  }
+
+  /**
+   * Tell a claimant to give up the shards it does not own.
+   *
+   * A `HandOff` rather than an authoritative `ShardHome`, because the region's
+   * `onShardHome` remote branch only forgets the id — it leaves the `Shard`
+   * actor and its entities running, and `sweepEmptyShards` filters on the entry
+   * it just deleted, so the orphan is unreclaimable (#953).  `onHandOff` is the
+   * one region-side path that actually stops them: it marks the shard
+   * `handing-off`, acknowledges, forgets its entities and stops the `Shard`, so
+   * a persistent entity runs `postStop` and flushes before the true owner's copy
+   * takes traffic.  Nothing new is needed for it — the frame is in the protocol
+   * and `replyTo` already authenticates the local leg.
+   *
+   * Deliberately **not** recorded in `rebalanceInProgress`.  That map's timeout
+   * callback deletes `shardHome[shardId]` and reallocates, which here would
+   * destroy the *true owner's* ownership on a timer over a hand-off it never
+   * agreed to.  Left out, the claimant's `HandOffComplete` meets
+   * `if (!inProgress) return` and is the harmless no-op it should be.
+   *
+   * A shard already mid-rebalance is skipped for the mirror-image reason:
+   * `onHandOffComplete` checks no ownership and is handed no peer (#1231), so
+   * the claimant's completion would end the true owner's genuine rebalance
+   * early. Its stale copy stays up for now — the status quo for that id, minus
+   * the map corruption — and the next registration releases it once the
+   * rebalance has finished.
+   */
+  private releaseConflictingShards(
+    key: string, message: RegisterRegion, conflicting: ReadonlySet<number>,
+  ): void {
+    if (conflicting.size === 0) return;
+    const owners = new Set<string>();
+    let released = 0;
+    for (const shardId of conflicting) {
+      // The owner's *address*, never its region key: a key carries the
+      // caller-chosen path it was built from, and this line is reachable by
+      // anyone who can register.  Every conflicting id has a registered owner by
+      // construction, so nothing is lost by having no fallback.
+      const owner = this.regions.get(this.shardHome.get(shardId) ?? '');
+      if (owner) owners.add(owner.node.toString());
+      if (this.rebalanceInProgress.has(shardId)) continue;
+      this.sendToRegion(key, { kind: 'sharding.HandOff', shardId });
+      released += 1;
+    }
+    // One line per registration, never one per id — the same rule
+    // `acceptedHostedShards` states, and for the same reason: the claim is
+    // caller-sized, and a stale region re-registers on every membership event.
+    this.log.warn(
+      `[sharding] region ${message.region} on ${message.node.host}:${message.node.port} claimed `
+      + `${conflicting.size} shard(s) of type "${this.options.typeName}" that ${Array.from(owners).sort().join(', ')} `
+      + `already own${owners.size === 1 ? 's' : ''}; ownership stays put and ${released} hand-off(s) were sent `
+      + `to give the stale copies up`,
+    );
   }
 
   /**

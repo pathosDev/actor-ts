@@ -353,7 +353,9 @@ describe('ShardCoordinator sender authority (#712)', () => {
       node: evil.self.toJSON(),
       // A proxy so the claim exercises the `hostedShards` write path without
       // also becoming an allocation candidate — placement is a separate
-      // question, and #948 owns the live-owner conflict this still leaves open.
+      // question.  The live-owner conflict this claim also stages is #948's,
+      // and it landed: the victim's own shard is adjudicated away below, and
+      // `ShardRegisterConflict.test.ts` is where that half is asserted.
       proxy: true,
       hostedShards: [
         ...outOfRange,
@@ -375,8 +377,12 @@ describe('ShardCoordinator sender authority (#712)', () => {
       .find((info) => info.path === '/self-declared');
     // The identity gate lets this one in — it speaks for itself.
     expect(claimant).toBeDefined();
-    expect(Array.from(claimant!.shards).sort((a, b) => a - b))
-      .toEqual([0, 1, 2, 3]);
+    // Every in-range id survives the bound and the dedupe; the one the victim's
+    // own region already owns is then adjudicated away by #948, which is what
+    // separates "the array was cleaned up" from "the claim was believed".
+    const expected = Array.from({ length: NUM_SHARDS }, (_unused, shardId) => shardId)
+      .filter((shardId) => shardId !== victim.shardId);
+    expect(Array.from(claimant!.shards).sort((a, b) => a - b)).toEqual(expected);
 
     // Nothing outside `0..numShards-1` reached the allocation map, and it cannot
     // have grown past one entry per shard.
