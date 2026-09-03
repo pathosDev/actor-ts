@@ -847,7 +847,9 @@ for (const [relPath, title, description] of PAGES) {
   // etc.) it gets renamed `.md` -> `.mdx`.  We shouldn't recreate
   // a plain-Markdown stub alongside it on the next scaffold run.
   const mdxVariant = full.replace(/\.md$/, '.mdx');
-  if (fs.existsSync(full) || fs.existsSync(mdxVariant)) {
+  // Skip when a hand-authored .mdx variant exists.  This is a different path
+  // than the write target, so it is a plain logic skip, not a race.
+  if (fs.existsSync(mdxVariant)) {
     skipped++;
     continue;
   }
@@ -859,8 +861,18 @@ description: ${JSON.stringify(description)}
 ---
 
 ${stubBody(title, description)}`;
-  fs.writeFileSync(full, content, 'utf-8');
-  created++;
+  // 'wx' fails atomically with EEXIST if `full` already exists, so there is no
+  // check-then-write TOCTOU window (CodeQL js/file-system-race).
+  try {
+    fs.writeFileSync(full, content, { encoding: 'utf-8', flag: 'wx' });
+    created++;
+  } catch (err) {
+    if (err.code === 'EEXIST') {
+      skipped++;
+      continue;
+    }
+    throw err;
+  }
 }
 
 console.log(`scaffold: ${created} stubs created, ${skipped} existing pages skipped (${PAGES.length} total in IA)`);

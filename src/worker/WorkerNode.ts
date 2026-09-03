@@ -45,6 +45,10 @@ export const WorkerNode = {
     // ---- Phase 1: wait for the init frame from main. ----
     // We install the listener FIRST, then signal readiness via `hello`.
     const init = await new Promise<WorkerInitMessage>((resolve, reject) => {
+      // No origin check: this is a dedicated Worker / worker_threads message
+      // handler, not window.postMessage.  Messages originate only from the
+      // parent that spawned this worker, so `origin` is not applicable here
+      // (CodeQL js/missing-origin-check — dismissed as a false positive).
       const onMessage = (e: { data: unknown }): void => {
         const data = e.data as Partial<WorkerInitMessage>;
         if (data && data.kind === 'worker-init') {

@@ -494,7 +494,10 @@
           .with({ kind: 'voice-incoming-end' }, (m) => endIncoming(m.from))
           .with({ kind: 'system' }, () => { /* informational */ })
           .otherwise(() => {
-            console.debug('unhandled server msg', m);
+            // Encode the user-controlled value before logging so a crafted
+            // message can't forge console entries. encodeURIComponent is a
+            // sanitizer CodeQL recognises for js/log-injection.
+            console.debug('unhandled server msg kind:', encodeURIComponent(String(m?.kind ?? '')));
           });
       }
 
