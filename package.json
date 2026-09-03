@@ -313,6 +313,9 @@
     "pg": {
       "optional": true
     },
+    "typescript": {
+      "optional": true
+    },
     "ws": {
       "optional": true
     }

@@ -90,6 +90,7 @@
         "nats",
         "nodemailer",
         "pg",
+        "typescript",
         "ws",
       ],
     },
