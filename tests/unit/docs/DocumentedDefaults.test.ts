@@ -18,6 +18,7 @@ import {
   DEFAULT_DEAD_LETTER_RETENTION_MS,
   DEFAULT_DEAD_LETTER_STORE,
 } from '../../../src/deadletters/DeadLetterQueueOptions.js';
+import { DEFAULT_LOG_DEAD_LETTERS, DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN, DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS } from '../../../src/diagnostics/DiagnosticsOptions.js';
 import { DEFAULT_WEBSOCKET_POLICY } from '../../../src/http/websocket/WebsocketPolicy.js';
 import { DEFAULT_WORKER_RESTART_POLICY } from '../../../src/worker/WorkerClusterOptions.js';
 import {
@@ -168,14 +169,22 @@ import {
  */
 
 /** How to read a key — picks the `Config` accessor that matches its literal. */
-type DefaultKind = 'duration' | 'bytes' | 'int' | 'string';
+type DefaultKind = 'duration' | 'bytes' | 'int' | 'string' | 'bool';
 
 type DocumentedDefault = {
   /** Full dotted HOCON path as it appears in `REFERENCE_CONF`. */
   readonly key: string;
   readonly kind: DefaultKind;
-  /** The `DEFAULT_*` constant, imported so a rename is a compile error. */
-  readonly constant: number | string;
+  /**
+   * The `DEFAULT_*` constant, imported so a rename is a compile error.
+   *
+   * `boolean` joined the union with the `bool` kind (#1000).  Before it, a
+   * published `off` had nowhere to go but `FEATURE_SWITCHES`, whose stated
+   * reason for existing is that its members have *no* constant to disagree
+   * with — so a switch that grew one would have been filed under an
+   * explanation that no longer applied to it.
+   */
+  readonly constant: number | string | boolean;
 };
 
 /**
@@ -248,6 +257,11 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.dead-letters.max-entries', kind: 'int', constant: DEFAULT_DEAD_LETTER_MAX_ENTRIES },
   { key: 'actor-ts.dead-letters.retention', kind: 'duration', constant: DEFAULT_DEAD_LETTER_RETENTION_MS },
   { key: 'actor-ts.dead-letters.max-replays', kind: 'int', constant: DEFAULT_DEAD_LETTER_MAX_REPLAYS },
+
+  /* --- diagnostics --- */
+  { key: 'actor-ts.diagnostics.log-dead-letters', kind: 'int', constant: DEFAULT_LOG_DEAD_LETTERS },
+  { key: 'actor-ts.diagnostics.log-dead-letters-during-shutdown', kind: 'bool', constant: DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN },
+  { key: 'actor-ts.diagnostics.log-dead-letters-suspend-duration', kind: 'duration', constant: DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS },
 
   /* --- worker cluster --- */
   { key: 'actor-ts.worker-cluster.restart-policy', kind: 'string', constant: DEFAULT_WORKER_RESTART_POLICY },
@@ -467,7 +481,8 @@ const readers = {
   bytes: (key: string) => reference.getBytes(key),
   int: (key: string) => reference.getInt(key),
   string: (key: string) => reference.getString(key),
-} as const satisfies Record<DefaultKind, (key: string) => number | string>;
+  bool: (key: string) => reference.getBoolean(key),
+} as const satisfies Record<DefaultKind, (key: string) => number | string | boolean>;
 
 describe('documented defaults match the constants they are published from', () => {
   test('the table actually covers the reference configuration', () => {

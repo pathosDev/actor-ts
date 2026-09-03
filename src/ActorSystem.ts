@@ -45,6 +45,14 @@ import {
   type DeadLetterQueueOptionsType,
 } from './deadletters/DeadLetterQueueOptions.js';
 import {
+  DEFAULT_LOG_DEAD_LETTERS,
+  DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN,
+  DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS,
+  DiagnosticsOptionsValidator,
+  readDiagnosticsOptionsFromConfig,
+  type DiagnosticsOptionsType,
+} from './diagnostics/DiagnosticsOptions.js';
+import {
   GUARDIAN_SHUTDOWN_ORDER,
   Guardian,
   SYSTEM_GUARDIAN_NAME,
@@ -238,7 +246,31 @@ export class ActorSystem {
     // is even more often the caller's than the dispatcher is.
     this.schedulerErrorSink = (error) => this._reportSchedulerError(error);
     this.scheduler.onError ??= this.schedulerErrorSink;
-    const deadLetterRef = new DeadLetterRef(this.name, this.eventStream);
+    // Diagnostics are resolved before the ref that reads them, and the
+    // built-in layer is a real one here rather than the empty layer the
+    // queue merge below uses: there is no `Diagnostics` object downstream
+    // to apply defaults of its own, so this merge is where the three
+    // published defaults actually take effect.
+    const diagnostics = mergeOptions<Required<DiagnosticsOptionsType>>(
+      {
+        logDeadLetters: DEFAULT_LOG_DEAD_LETTERS,
+        logDeadLettersDuringShutdown: DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN,
+        logDeadLettersSuspendDurationMs: DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS,
+      },
+      readDiagnosticsOptionsFromConfig(this.config),
+      { ...(options.diagnostics as Partial<DiagnosticsOptionsType> | undefined) },
+    );
+    new DiagnosticsOptionsValidator().validate(diagnostics);
+    const deadLetterRef = new DeadLetterRef(this.name, this.eventStream, {
+      log: this.log,
+      logDeadLetters: diagnostics.logDeadLetters,
+      logDeadLettersDuringShutdown: diagnostics.logDeadLettersDuringShutdown,
+      logDeadLettersSuspendDurationMs: diagnostics.logDeadLettersSuspendDurationMs,
+      // A predicate, not `this`: the ref is built before the guardians and
+      // must not hold the half-constructed system for the sake of one
+      // boolean.  An arrow keeps the binding without a `bind` call.
+      isTerminating: () => this._terminating,
+    });
     this.deadLetters = deadLetterRef;
     this.extensions = new Extensions(this);
     // Built here, before the guardians exist, because the first dead letter

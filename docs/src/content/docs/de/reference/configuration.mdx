@@ -123,6 +123,19 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 | --- | --- | --- |
 | `actor.throughput` | `16` | User-Nachrichten, die **ein** Actor pro Dispatcher-Turn vor dem Yield abarbeitet.  Pro Actor überschreibbar mit `ActorOptions.withThroughput()`. |
 
+### `actor-ts.diagnostics`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `diagnostics.log-dead-letters` | `10` | Dead Letters, die vollständig geloggt werden, bevor das Logging aussetzt.  `0` schaltet das Dead-Letter-Logging ganz ab.  Erfasst und auf dem Event-Stream publiziert wird jedes Letter ohnehin — das hier steuert nur die Log-Zeile. |
+| `diagnostics.log-dead-letters-during-shutdown` | `off` | Den Schwall loggen, den `terminate()` beim Leeren der Mailboxen in die Dead Letters erzeugt.  Aus, weil ein geordnetes Herunterfahren jede eingereihte und gestashte Nachricht so entsorgt; ein einzelnes `ref.stop()` loggt weiterhin, denn das System terminiert nicht. |
+| `diagnostics.log-dead-letters-suspend-duration` | `5m` | Wie lange das Logging aussetzt, sobald die Anzahl oben erreicht ist.  `0` setzt nie aus — so schreibt man „jedes Dead Letter loggen“. |
+
+Der Eintrag nennt den Empfängerpfad, den Sender sofern bekannt und die Klasse
+der Nachricht — nie die Payload, aus demselben Datenschutzgrund, aus dem
+`dead-letters.store` auf `off` steht.  Jeder Key hier ist auch im Code
+setzbar, feldweise, über `ActorSystemOptions.withDiagnostics(…)`.  Siehe
+[Dead Letters](/de/operations/dead-letters/) für das ganze Bild.
 ### `actor-ts.dispatcher`
 
 | Key | Default | Zweck |

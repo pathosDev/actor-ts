@@ -11,14 +11,31 @@ says so.
 
 ## What happens by default
 
-Every dead letter is wrapped in a `DeadLetter` and **published on the
-[event stream](/fundamentals/event-stream/)**. That is the whole of the
-default behaviour.
+Every dead letter is wrapped in a `DeadLetter`, **logged**, and **published
+on the [event stream](/fundamentals/event-stream/)**. That is the whole of
+the default behaviour.
 
-In particular the framework does **not** log dead letters. `DeadLetterRef`
-holds no logger; if nothing subscribes to the stream, the letter is gone.
-That is fine for a development run and a poor answer to "what did we drop
-during last night's incident?", which is what the queue below is for.
+The record is one `info` line naming the recipient path, the sender when
+there is one, and the message's **class** — never the payload, for the same
+data-protection reason `store` below defaults to `off`. It is throttled: the
+first ten dead letters are logged in full, then a single `warn` line says
+logging is suspending, and the next five minutes are silent. When it
+resumes, one more `warn` line says how many letters went unreported. Both
+numbers are settings — see
+[`actor-ts.diagnostics`](/reference/configuration/) — and `0` means "never
+log" for the count and "never suspend" for the window.
+
+The burst `terminate()` produces while draining mailboxes is **not** logged
+unless you ask for it with `log-dead-letters-during-shutdown = on`: an
+orderly shutdown drains every queued and stashed message to dead letters,
+and reporting that makes a clean stop read as an incident. An individual
+`ref.stop()` still logs, because the system is not terminating.
+
+What the log line is not is a *record*. It carries no payload and nothing
+keeps it in the process; if nothing subscribes to the stream either, the
+letter itself is gone. That is fine for a development run and a poor answer
+to "what did we drop during last night's incident?", which is what the
+queue below is for.
 
 ```ts
 import { DeadLetter } from 'actor-ts';
@@ -106,11 +123,11 @@ compose; neither replaces the other.
 :::
 
 Every key in this block decides **what is retained**, which is why they live
-under `actor-ts.dead-letters` and not beside the eventual logging and
-rate-limiting knobs: those decide how loudly a letter is *announced*, are
-read on the publish path rather than by the queue, and sit downstream of
-capture by design — so a suppression setting can never quietly make this
-record incomplete.
+under `actor-ts.dead-letters` and not beside the logging knobs in
+[`actor-ts.diagnostics`](/reference/configuration/): those decide how loudly
+a letter is *announced*, are read on the publish path rather than by the
+queue, and sit downstream of capture by design — so a suppression setting
+can never quietly make this record incomplete.
 
 ## Inspecting
 

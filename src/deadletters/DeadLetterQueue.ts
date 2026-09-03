@@ -5,6 +5,7 @@ import { parseSelectionPath } from '../ActorSelection.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
 import type { Journal } from '../persistence/Journal.js';
 import type { DeadLetter } from '../SystemMessages.js';
+import { classNameOf } from '../util/ClassName.js';
 import { randomUuid } from '../util/RandomString.js';
 import type {
   DeadLetterEntry,
@@ -588,11 +589,4 @@ export class DeadLetterQueue {
     const { PersistenceExtensionId } = await import('../persistence/PersistenceExtension.js');
     return this.system.extension(PersistenceExtensionId).journal;
   }
-}
-
-/** Best available name for a payload the codec refused. */
-function classNameOf(message: unknown): string {
-  if (message === null) return 'null';
-  if (typeof message !== 'object') return typeof message;
-  return (message as object).constructor?.name ?? 'Object';
 }

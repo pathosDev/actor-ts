@@ -11,15 +11,35 @@ das Framework hat es bemerkt, und so sagt es das.
 
 ## Was standardmäßig passiert
 
-Jedes Dead Letter wird in ein `DeadLetter` verpackt und **auf dem
-[Event-Stream](/de/fundamentals/event-stream/) veröffentlicht**. Das ist
-das gesamte Standardverhalten.
+Jedes Dead Letter wird in ein `DeadLetter` verpackt, **geloggt** und **auf
+dem [Event-Stream](/de/fundamentals/event-stream/) veröffentlicht**. Das
+ist das gesamte Standardverhalten.
 
-Insbesondere **loggt** das Framework Dead Letters **nicht**.
-`DeadLetterRef` hält keinen Logger; wenn niemand den Stream abonniert, ist
-das Letter weg. Für einen Entwicklungslauf ist das in Ordnung und eine
-schlechte Antwort auf „was haben wir während des Vorfalls letzte Nacht
-verworfen?“ — genau dafür gibt es die Queue weiter unten.
+Der Eintrag ist eine `info`-Zeile mit dem Empfängerpfad, dem Sender sofern
+bekannt und der **Klasse** der Nachricht — nie der Payload, aus demselben
+Datenschutzgrund, aus dem `store` weiter unten auf `off` steht. Er ist
+gedrosselt: Die ersten zehn Dead Letters werden vollständig geloggt, dann
+meldet eine einzelne `warn`-Zeile, dass das Logging aussetzt, und die
+nächsten fünf Minuten bleiben still. Beim Wiederaufnehmen sagt eine
+weitere `warn`-Zeile, wie viele Letters unberichtet blieben. Beide Zahlen
+sind Einstellungen — siehe
+[`actor-ts.diagnostics`](/de/reference/configuration/) — und `0` heißt „nie
+loggen“ für die Anzahl und „nie aussetzen“ für das Fenster.
+
+Der Schwall, den `terminate()` beim Leeren der Mailboxen erzeugt, wird
+**nicht** geloggt, solange du es nicht mit
+`log-dead-letters-during-shutdown = on` verlangst: Ein geordnetes
+Herunterfahren entsorgt jede eingereihte und gestashte Nachricht auf
+diesem Weg, und das zu melden lässt einen sauberen Stopp wie einen Vorfall
+aussehen. Ein einzelnes `ref.stop()` loggt weiterhin, denn das System
+terminiert nicht.
+
+Was die Log-Zeile *nicht* ist, ist eine *Aufzeichnung*. Sie trägt keine
+Payload, und im Prozess bewahrt sie nichts auf; wenn auch niemand den
+Stream abonniert, ist das Letter selbst weg. Für einen Entwicklungslauf
+ist das in Ordnung und eine schlechte Antwort auf „was haben wir während
+des Vorfalls letzte Nacht verworfen?“ — genau dafür gibt es die Queue
+weiter unten.
 
 ```ts
 import { DeadLetter } from 'actor-ts';
@@ -109,11 +129,12 @@ es jemand aufbewahrt. Beide ergänzen sich; keine ersetzt die andere.
 :::
 
 Jeder Key in diesem Block entscheidet, **was aufbewahrt wird** — deshalb
-liegen sie unter `actor-ts.dead-letters` und nicht neben den künftigen
-Stellschrauben für Logging und Rate-Limiting: Die entscheiden, wie laut ein
-Letter *angekündigt* wird, werden auf dem Publish-Pfad gelesen und nicht von
-der Queue, und sitzen bewusst hinter dem Erfassen — eine
-Unterdrückungseinstellung kann diese Aufzeichnung also nie still
+liegen sie unter `actor-ts.dead-letters` und nicht neben den
+Logging-Stellschrauben in
+[`actor-ts.diagnostics`](/de/reference/configuration/): Die entscheiden,
+wie laut ein Letter *angekündigt* wird, werden auf dem Publish-Pfad
+gelesen und nicht von der Queue, und sitzen bewusst hinter dem Erfassen —
+eine Unterdrückungseinstellung kann diese Aufzeichnung also nie still
 unvollständig machen.
 
 ## Inspizieren

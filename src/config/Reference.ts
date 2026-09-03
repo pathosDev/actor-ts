@@ -288,6 +288,28 @@ actor-ts {
     persistence-id = ""
   }
 
+  # What the framework says about ITSELF, as against what it does.  Dead
+  # letters appear both here and in dead-letters above, and the split is by
+  # reader: that block decides whether anything KEEPS a letter, this one
+  # decides how loudly one is ANNOUNCED.  A knob here never gates capture.
+  diagnostics {
+    # Dead letters logged in full before logging suspends.  0 turns
+    # dead-letter logging off entirely.  Every letter is published on the
+    # event stream either way -- this gates the log line and nothing else.
+    log-dead-letters = 10
+
+    # Log the burst terminate() produces while it drains mailboxes to dead
+    # letters.  Off because an orderly shutdown drains every queued and
+    # stashed message that way, so reporting it makes a clean stop read as
+    # an incident.  An individual ref.stop() still logs -- the system is
+    # not terminating.
+    log-dead-letters-during-shutdown = off
+
+    # How long logging stays suspended once the count above is reached.
+    # 0 = never suspend, i.e. log every dead letter.
+    log-dead-letters-suspend-duration = 5m
+  }
+
   cluster {
     gossip-interval = 1s
     seed-retry-interval = 3s
