@@ -43,6 +43,15 @@ class MockHandle implements JetStreamMessageHandleLike {
   termed = false;
   working_called = false;
   nakDelay?: number;
+  /**
+   * How many times `nak()` was called — not just whether it was.
+   *
+   * The boolean cannot see a *second* nak on a handle whose delivery was
+   * already settled, and that second call is the visible end of an
+   * ack-timeout that outlived its own entry: the orphan-timer leak #710's
+   * reconnect path left behind fires the shared catch a second time.
+   */
+  nakCount = 0;
 
   constructor(
     public readonly subject: string,
@@ -53,7 +62,7 @@ class MockHandle implements JetStreamMessageHandleLike {
   ) {}
 
   ack(): void { this.acked = true; }
-  nak(delayMs?: number): void { this.naked = true; this.nakDelay = delayMs; }
+  nak(delayMs?: number): void { this.naked = true; this.nakCount++; this.nakDelay = delayMs; }
   term(): void { this.termed = true; }
   working(): void { this.working_called = true; }
 }
@@ -213,15 +222,18 @@ class CapturingTarget extends Actor<JetStreamMessage> {
   override onReceive(m: JetStreamMessage): void { this.received.push(m); }
 }
 
-async function bootActor(
-  sys: ActorSystem, options: JetStreamOptionsBuilder,
-): Promise<{ actor: ActorRef<JetStreamCommand>; mock: MockJetStreamActor; target: CapturingTarget }> {
+/** What {@link bootActorOfKind} needs of a mock subclass to wait for it. */
+type BootableJetStreamActor = JetStreamActor & { publicConnectionState(): string };
+
+async function bootActorOfKind<A extends BootableJetStreamActor>(
+  sys: ActorSystem, options: JetStreamOptionsBuilder, create: (built: JetStreamOptionsBuilder) => A,
+): Promise<{ actor: ActorRef<JetStreamCommand>; mock: A; target: CapturingTarget }> {
   const target = new CapturingTarget();
   const targetRef = sys.spawn(() => target, 'target');
-  const ref = { current: null as MockJetStreamActor | null };
+  const ref = { current: null as A | null };
   const actor = sys.spawn(
     () => {
-      const mockActor = new MockJetStreamActor(options.withTarget(targetRef));
+      const mockActor = create(options.withTarget(targetRef));
       ref.current = mockActor;
       return mockActor;
     },
@@ -236,6 +248,12 @@ async function bootActor(
     { timeoutMs: 4_000, label: 'the JetStream actor connected and provisioned its consumer' },
   );
   return { actor: actor as ActorRef<JetStreamCommand>, mock: ref.current!, target };
+}
+
+function bootActor(
+  sys: ActorSystem, options: JetStreamOptionsBuilder,
+): Promise<{ actor: ActorRef<JetStreamCommand>; mock: MockJetStreamActor; target: CapturingTarget }> {
+  return bootActorOfKind(sys, options, (built) => new MockJetStreamActor(built));
 }
 
 /**
@@ -260,6 +278,28 @@ function makeHandle(seq: number, subject = 'orders.new', payload = 'hi'): MockHa
     subject,
     new TextEncoder().encode(payload),
     { streamSequence: seq, deliverySequence: seq, deliveryCount: 1, timestampNanos: seq * 1_000_000 },
+    undefined,
+    undefined,
+  );
+}
+
+/**
+ * A **redelivery** of the message `makeHandle(seq)`: the same
+ * `streamSequence`, a bumped `deliverySequence` and `deliveryCount`.  That is
+ * exactly what JetStream itself does, and it is the whole premise of #710 —
+ * the two handles are two deliveries of one message, indistinguishable by
+ * `streamSeq`.
+ */
+function makeRedelivery(seq: number, deliveryNumber: number, subject = 'orders.new', payload = 'hi'): MockHandle {
+  return new MockHandle(
+    subject,
+    new TextEncoder().encode(payload),
+    {
+      streamSequence: seq,
+      deliverySequence: seq + deliveryNumber,
+      deliveryCount: deliveryNumber,
+      timestampNanos: seq * 1_000_000,
+    },
     undefined,
     undefined,
   );
@@ -352,7 +392,7 @@ describe('JetStreamActor — ack/nak/term', () => {
       expect(target.received).toHaveLength(1);
       expect(target.received[0]!.streamSeq).toBe(42);
 
-      actor.tell({ kind: 'acknowledgment', streamSeq: 42 });
+      actor.tell({ kind: 'acknowledgment', ackToken: target.received[0]!.ackToken });
       await awaitCondition(() => handle.acked, {
         timeoutMs: 4_000, label: 'the acknowledgment reached the handle',
       });
@@ -376,7 +416,11 @@ describe('JetStreamActor — ack/nak/term', () => {
       const handle = makeHandle(7);
       mock.mockConnection.js.subscription.push(handle);
       await awaitForwarded(target, 1);
-      actor.tell({ kind: 'negativeAcknowledgment', streamSeq: 7, delayMs: 1500 });
+      actor.tell({
+        kind: 'negativeAcknowledgment',
+        ackToken: target.received[0]!.ackToken,
+        delayMs: 1500,
+      });
       // `acked` staying false is an absence, but it shares the one code path
       // with `naked` — so waiting for the nak is what makes it meaningful.
       await awaitCondition(() => handle.naked, {
@@ -404,7 +448,11 @@ describe('JetStreamActor — ack/nak/term', () => {
       const handle = makeHandle(99);
       mock.mockConnection.js.subscription.push(handle);
       await awaitForwarded(target, 1);
-      actor.tell({ kind: 'terminate', streamSeq: 99, reason: 'unparseable' });
+      actor.tell({
+        kind: 'terminate',
+        ackToken: target.received[0]!.ackToken,
+        reason: 'unparseable',
+      });
       await awaitCondition(() => handle.termed, {
         timeoutMs: 4_000, label: 'the terminate reached the handle',
       });
@@ -428,7 +476,7 @@ describe('JetStreamActor — ack/nak/term', () => {
       const handle = makeHandle(5);
       mock.mockConnection.js.subscription.push(handle);
       await awaitForwarded(target, 1);
-      actor.tell({ kind: 'inProgress', streamSeq: 5 });
+      actor.tell({ kind: 'inProgress', ackToken: target.received[0]!.ackToken });
       await awaitCondition(() => handle.working_called, {
         timeoutMs: 4_000, label: 'the in-progress signal reached the handle',
       });
@@ -439,7 +487,7 @@ describe('JetStreamActor — ack/nak/term', () => {
       expect(handle.naked).toBe(false);
       // Clean up: the pump is parked on this handle's ack, so let it resolve
       // before the system tears the actor down under it.
-      actor.tell({ kind: 'acknowledgment', streamSeq: 5 });
+      actor.tell({ kind: 'acknowledgment', ackToken: target.received[0]!.ackToken });
       await awaitCondition(() => handle.acked, {
         timeoutMs: 4_000, label: 'the cleanup acknowledgment released the pump',
       });
@@ -507,7 +555,7 @@ describe('JetStreamActor — ack/nak/term', () => {
     }
   });
 
-  test('ack for unknown streamSeq is a silent no-op', async () => {
+  test('ack for an unknown ackToken is a no-op (and now logs a warning)', async () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off);
@@ -519,7 +567,7 @@ describe('JetStreamActor — ack/nak/term', () => {
         .withConsumer({ durable: 'd' });
       const { actor } = await bootActor(sys, jetstreamOptions);
       // No handle pushed, so no pending entry.  Sending ack should not throw.
-      actor.tell({ kind: 'acknowledgment', streamSeq: 999 });
+      actor.tell({ kind: 'acknowledgment', ackToken: 999 });
       // The claim is an absence whose observable side is a crash that did not
       // happen — there is nothing to poll for, only a turn to give away.
       await sleep(SETTLE_MS);
@@ -642,9 +690,9 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       // Acknowledgment them all so the pending-map drains.  The batch handles
       // are constructed inline, so there is nothing to poll here — this is a
       // drain before teardown, not a wait before an assertion.
-      actor.tell({ kind: 'acknowledgment', streamSeq: 1 });
-      actor.tell({ kind: 'acknowledgment', streamSeq: 2 });
-      actor.tell({ kind: 'acknowledgment', streamSeq: 3 });
+      for (const message of target.received) {
+        actor.tell({ kind: 'acknowledgment', ackToken: message.ackToken });
+      }
       await sleep(30);  // drain before teardown, per the comment above
     } finally {
       await sys.terminate();
@@ -698,8 +746,9 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
 
       actor.tell({ kind: 'fetch', batch: 2, expiresMs: 100 });
       await awaitForwarded(target, 2);
-      actor.tell({ kind: 'acknowledgment', streamSeq: 10 });
-      actor.tell({ kind: 'acknowledgment', streamSeq: 11 });
+      for (const message of target.received) {
+        actor.tell({ kind: 'acknowledgment', ackToken: message.ackToken });
+      }
       // The two acks have to be processed before the second fetch, or the
       // pending map is still full and the fetch under test never runs.  The
       // batch handles are inline, so the ack landing is not observable from
@@ -714,9 +763,9 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       expect(pc.fetchCalls).toHaveLength(2);
 
       // Drain the pending map before teardown; see the first ack pair above.
-      actor.tell({ kind: 'acknowledgment', streamSeq: 12 });
-      actor.tell({ kind: 'acknowledgment', streamSeq: 13 });
-      actor.tell({ kind: 'acknowledgment', streamSeq: 14 });
+      for (const message of target.received.slice(2)) {
+        actor.tell({ kind: 'acknowledgment', ackToken: message.ackToken });
+      }
       await sleep(SETTLE_MS);  // drain before teardown, per the comment above
     } finally {
       await sys.terminate();
@@ -766,6 +815,150 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       await sleep(SETTLE_MS);
       // Still no pull consumer.
       expect(mock.mockConnection.js.pullConsumers.size).toBe(0);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* ============ Delivery-scoped acknowledgment tokens (#710) ============== */
+
+/**
+ * A mock actor that mints a **fresh** connection on every connect, so a
+ * reconnect is a real second connection with its own subscription rather
+ * than the first one handed out twice.
+ *
+ * The single-connection {@link MockJetStreamActor} cannot model this: its
+ * `closed()` promise resolves the first time `disconnectImplementation`
+ * drains it and stays resolved, so the reconnect would report a lost
+ * connection the instant it opened one.
+ */
+class ReconnectingMockJetStreamActor extends JetStreamActor {
+  readonly connections: MockNatsConnection[] = [];
+
+  protected override async createNatsConnection(): Promise<NatsConnectionLike> {
+    const connection = new MockNatsConnection();
+    this.connections.push(connection);
+    return connection;
+  }
+
+  /** Test seam — report a lost connection the way a driver callback does. */
+  dropConnection(): void {
+    this.handleConnectionLost(new Error('nats connection closed'));
+  }
+
+  publicConnectionState(): string { return this.connectionState; }
+}
+
+describe('JetStreamActor — delivery-scoped acknowledgment tokens (#710)', () => {
+  test('two overlapping pull deliveries of one streamSeq are settled independently', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('js-pull-overlap', sysOptions);
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
+        .withConsumer({ durable: 'puller', mode: 'pull', ackWaitMs: 4_000 });
+      const { actor, mock, target } = await bootActor(sys, jetstreamOptions);
+      const pullConsumer = mock.mockConnection.js.pullConsumers.get('ORDERS::puller')!;
+      const firstDelivery = makeHandle(4242);
+      const redelivery = makeRedelivery(4242, 2);
+      pullConsumer.enqueueBatch([firstDelivery]);
+      pullConsumer.enqueueBatch([redelivery]);
+
+      // Batch 1.  Its handler is slow and settles nothing yet.
+      actor.tell({ kind: 'fetch', batch: 1, expiresMs: 100 });
+      await awaitForwarded(target, 1);
+      // Batch 2 *while batch 1 is still outstanding* — the ordinary pull
+      // pattern, not a contrived one: `onCommand` dispatches `fetch` with
+      // `void`, so the mailbox turn ends before the first batch's acks
+      // arrive.  Meanwhile the server's ack_wait lapsed and it redelivered
+      // 4242, so this batch carries a second delivery of the same message.
+      actor.tell({ kind: 'fetch', batch: 1, expiresMs: 100 });
+      await awaitForwarded(target, 2);
+
+      // The premise: same message, two live deliveries, distinguishable only
+      // by the token.  Keyed on `streamSeq` these two were one map entry.
+      expect(target.received.map((m) => m.streamSeq)).toEqual([4242, 4242]);
+      expect(target.received[0]!.ackToken).not.toBe(target.received[1]!.ackToken);
+
+      // Settle the *stale* delivery, then the live one.  Under a per-message
+      // key both commands named the same entry: the nak consumed the live
+      // delivery's entry and the acknowledgment that followed found nothing.
+      actor.tell({ kind: 'negativeAcknowledgment', ackToken: target.received[0]!.ackToken });
+      await awaitCondition(() => firstDelivery.naked, {
+        timeoutMs: 4_000, label: 'the negative acknowledgment reached the stale delivery',
+      });
+      actor.tell({ kind: 'acknowledgment', ackToken: target.received[1]!.ackToken });
+      await awaitCondition(() => redelivery.acked, {
+        timeoutMs: 4_000, label: 'the acknowledgment reached the live redelivery',
+      });
+
+      // Each command reached its own delivery and no other.
+      expect(firstDelivery.acked).toBe(false);
+      expect(redelivery.naked).toBe(false);
+      expect(redelivery.nakCount).toBe(0);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a delivery in flight at disconnect is settled, so no timer survives the reconnect', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('js-reconnect-orphan', sysOptions);
+    /** Short on purpose: the test has to outlive one whole ack window. */
+    const ackTimeoutMs = 120;
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
+        .withConsumer({ durable: 'pusher', ackWaitMs: ackTimeoutMs })
+        .withAcknowledgmentTimeout(ackTimeoutMs)
+        .withReconnect({ initialDelayMs: 5, maxDelayMs: 5, factor: 1, randomFactor: 0 });
+      const { actor, mock, target } = await bootActorOfKind(
+        sys, jetstreamOptions, (built) => new ReconnectingMockJetStreamActor(built),
+      );
+      const beforeDrop = makeHandle(77);
+      mock.connections[0]!.js.subscription.push(beforeDrop);
+      await awaitForwarded(target, 1);
+
+      // The connection drops with 77 still unacknowledged.  Its ack-timeout
+      // is armed and, before #710, `disconnectImplementation` cleared the map
+      // without settling the entry — leaving that timer to fire into a tree
+      // that had already reconnected.
+      mock.dropConnection();
+      await awaitCondition(
+        () => mock.connections.length >= 2 && mock.publicConnectionState() === 'connected',
+        { timeoutMs: 4_000, label: 'the actor reconnected on a fresh connection' },
+      );
+
+      // The server redelivers 77 on the new connection, and the application
+      // settles it promptly — so from here on the only thing that can touch a
+      // handle is an ack-timeout that should no longer exist.
+      const afterReconnect = makeRedelivery(77, 2);
+      mock.connections[1]!.js.subscription.push(afterReconnect);
+      await awaitForwarded(target, 2);
+      actor.tell({ kind: 'acknowledgment', ackToken: target.received[1]!.ackToken });
+      await awaitCondition(() => afterReconnect.acked, {
+        timeoutMs: 4_000, label: 'the redelivery after the reconnect was acknowledged',
+      });
+
+      // The elapsed time *is* what is under test: an orphaned ack-timeout
+      // fires `ackTimeoutMs` after its delivery and there is nothing to poll
+      // for its absence.  Four windows is the margin over a loaded runner.
+      await sleep(ackTimeoutMs * 4);
+
+      // Exactly one nak — the disconnect's.  A second one is the orphaned
+      // timer firing after the reconnect, which is also what evicted the live
+      // entry back when both shared the `streamSeq` key.
+      expect(beforeDrop.nakCount).toBe(1);
+      expect(beforeDrop.acked).toBe(false);
+      // The redelivery was never disturbed by it.
+      expect(afterReconnect.nakCount).toBe(0);
     } finally {
       await sys.terminate();
     }
