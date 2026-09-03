@@ -32,6 +32,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   link, so the old recovery removed the link and never touched its target.  Both
   documentation mirrors, which named this as a known gap, now describe what the
   reclaim checks.
+- **`HonoBackend` built a `Response` from an unvalidated status, so an
+  impossible one threw inside the request path instead of answering it**
+  (#1362).  `Response` rejects anything outside `101` and `[200, 599]` with a
+  `RangeError`, and every status reaching `writeResponse` comes from code the
+  backend does not control — a route handler, the `notFound` fallback, a
+  WebSocket `authorize` guard, or a `HttpError` whose `status` is not validated
+  at construction either.  A guard that meant to refuse an upgrade with `403`
+  and computed the number wrong took the response down rather than sending one,
+  and on the `onError` path there was no handler left to catch the throw.  A
+  status outside that range is now answered as `500` with the response the
+  caller actually built, so the request is served and only the impossible number
+  is replaced.  Not lifted to a shared helper on purpose: Node's writer accepts
+  `[100, 999]` and Fastify `[100, 600)`, so there is no single range all three
+  backends agree on, and a shared clamp would move the surprise rather than
+  remove it.
 
 ### Fixed
 
