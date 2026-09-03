@@ -47,6 +47,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `[100, 999]` and Fastify `[100, 600)`, so there is no single range all three
   backends agree on, and a shared clamp would move the surprise rather than
   remove it.
+- **Broker lifecycle events carried the driver's raw `Error`, which can embed
+  the credential #741 removed from the field beside it** (#1388).
+  `BrokerDisconnected.cause` and `BrokerReconnectFailed.cause` are published on
+  the system-wide `EventStream`, to the same audience and on the same schedule
+  as the `endpoint` that #741 made safe — and several drivers put the connection
+  target, userinfo included, into the message they throw, so the secret reached
+  the same place by a different route.  Both are now passed through a new
+  `redactErrorCredentials`, exported from the package root: it returns a **copy**
+  (the error belongs to the driver, which may still hold it and may have handed
+  it to listeners of its own) with the message, the stack, every own
+  string-valued property and the `cause` chain masked.  The copy carries the
+  original's prototype and own enumerable properties, so `instanceof`, `name`
+  and `code` — what a monitor actually branches on — still answer the same;
+  anything reachable only through a getter is deliberately dropped, since a
+  getter can recompute the secret.  `BrokerNotConnected` needed nothing: it
+  carries no cause.
 
 ### Fixed
 

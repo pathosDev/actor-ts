@@ -23,7 +23,7 @@ import {
   type BrokerCommonOptionsType,
 } from './BrokerOptions.js';
 import { mergeOptions } from '../../util/OptionsMerge.js';
-import { redactedUrlLabel } from '../../util/RedactUrlCredentials.js';
+import { redactErrorCredentials, redactedUrlLabel } from '../../util/RedactUrlCredentials.js';
 
 /**
  * Connection-lifecycle state machine.  Transitions are linear:
@@ -1046,8 +1046,16 @@ export abstract class BrokerActor<
     if (this._stopped) return;
     if (this._state !== 'connected' && this._state !== 'connecting') return;
     this._state = 'disconnected';
+    // The `cause` is the driver's own `Error`, and several drivers put the
+    // connection target — userinfo included — in the message they throw, so it
+    // is a second route to the credential #741 took out of `endpoint` beside
+    // it.  Same audience, same schedule, same event (#1388).
     this.system.eventStream.publish(
-      new BrokerDisconnected(this.self.path.toString(), this.redactedEndpointLabel(), cause),
+      new BrokerDisconnected(
+        this.self.path.toString(),
+        this.redactedEndpointLabel(),
+        cause && redactErrorCredentials(cause),
+      ),
     );
     this._handleReconnect(cause ?? new Error('connection lost'));
   }
@@ -1063,8 +1071,10 @@ export abstract class BrokerActor<
 
     this._reconnectAttempt++;
     if (this._reconnectAttempt > maxAttempts) {
+      // Same driver `Error`, same reason as in `handleConnectionLost` (#1388).
       this.system.eventStream.publish(new BrokerReconnectFailed(
-        this.self.path.toString(), this.redactedEndpointLabel(), this._reconnectAttempt - 1, cause,
+        this.self.path.toString(), this.redactedEndpointLabel(), this._reconnectAttempt - 1,
+        redactErrorCredentials(cause),
       ));
       return;
     }
