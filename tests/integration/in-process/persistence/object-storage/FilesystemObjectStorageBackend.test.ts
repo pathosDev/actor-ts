@@ -936,3 +936,178 @@ function plantFinalComponentLink(real: FsModule, linkPath: string, targetPath: s
     indexOf: (op: string, path: string): number => log.findIndex((c) => c.op === op && c.path === path),
   };
 }
+
+/* -------------- security: the stale-lock reclaim (#1360) ----------------- */
+
+/**
+ * `acquireLock` takes `<key>.lock` with `{ flag: 'wx' }`, and that half is safe
+ * by construction — POSIX specifies `O_CREAT|O_EXCL` fails with `EEXIST` on a
+ * symbolic link whatever it points at.  The **reclaim** is the half that has to
+ * make a decision about a name someone else may have planted, and it made two
+ * wrong ones: it asked `stat` how old the entry was (which answers about the
+ * link's *target*, so whoever planted the link picks the answer), and it then
+ * removed whatever was there.
+ *
+ * Driven through the `fsLazy` seam for the same reason as the `#748` block
+ * above: the behavioural version needs a **file** symlink, which a stock
+ * Windows box refuses without elevation, so it would skip on the machine this
+ * backend is developed on.
+ *
+ * One claim in the issue does **not** survive contact with the code, and the
+ * fixture is shaped so this is visible rather than assumed: `unlink` does not
+ * follow a final-component link, so the pre-fix reclaim removed the *link* and
+ * never touched its target — the same POSIX rule `delete` already relies on.
+ * The reachable damage was the staleness oracle and the spin below.
+ */
+describe('FilesystemObjectStorageBackend — the lock reclaim and a planted entry (#1360)', () => {
+  /** A backend whose lock times out fast enough to reach the reclaim in a test. */
+  const impatient = (): FilesystemObjectStorageBackend => new FilesystemObjectStorageBackend(
+    FilesystemObjectStorageOptions.create()
+      .withDir(tmpRoot)
+      .withLockTimeoutMs(30)
+      .withStaleLockMs(1_000),
+  );
+
+  afterEach(() => { fsLazy.reset(); });
+
+  test('a symbolic link at `<key>.lock` is refused, not reclaimed', async () => {
+    // The link is fresh (planted just now) but points at something ancient —
+    // exactly the shape that makes `stat` and `lstat` disagree.
+    const observed = plantLockEntry(await fsLazy.get(), join(tmpRoot, 'obj.lock'), {
+      kind: 'symlink',
+      targetMtime: new Date(Date.now() - 60 * 60_000),
+    });
+
+    await expect(impatient().put('obj', bytes('v1'))).rejects.toThrow(/refusing to reclaim/);
+
+    // The discriminator, and the reason the message alone is not enough: the
+    // pre-fix reclaim read the *target's* hour-old mtime through `stat`, called
+    // it stale, and unlinked the name.  A guard that refuses after removing it
+    // has not fixed anything.
+    expect(observed.unlinked()).not.toContain(join(tmpRoot, 'obj.lock'));
+    expect(observed.statted()).toEqual([]);
+  });
+
+  test('a genuinely stale regular lock file is still reclaimed', async () => {
+    // The other direction, and the one that fails an implementation which
+    // simply refuses every reclaim: a real lock file left by a crashed holder
+    // is this branch's entire reason to exist.
+    const observed = plantLockEntry(await fsLazy.get(), join(tmpRoot, 'obj.lock'), {
+      kind: 'stale-file',
+      mtime: new Date(Date.now() - 60 * 60_000),
+    });
+
+    await impatient().put('obj', bytes('v1'));
+
+    expect(observed.unlinked()).toContain(join(tmpRoot, 'obj.lock'));
+    const stored = await backend.get('obj');
+    expect(stored.isSome()).toBe(true);
+  });
+
+  test('an entry that answers EEXIST and ENOENT forever terminates instead of spinning', async () => {
+    // Both `continue`s in the reclaim skip the backoff, and the branch is only
+    // reachable once the timeout is already exhausted — so an entry that keeps
+    // giving the same pair of answers was an unbounded loop with no exit.  A
+    // dangling link was one such entry before the reclaim used `lstat`: `wx`
+    // refuses a symbolic link whatever it points at, and `stat` followed it to
+    // nothing, so the two disagreed forever.
+    //
+    // The attempt cap in the fixture is what makes this a *test* rather than a
+    // hang, and it is not defensive padding — measured against the unfixed
+    // tree, the run wedged and bun's per-test timeout never fired.  It cannot:
+    // the loop's only await is on a promise the fixture rejects synchronously,
+    // so it never yields to the macrotask queue the runner's timer lives on.
+    // With the cap, a regression fails in milliseconds and names itself.
+    const observed = plantLockEntry(await fsLazy.get(), join(tmpRoot, 'obj.lock'), { kind: 'phantom' });
+
+    await expect(impatient().put('obj', bytes('v1'))).rejects.toThrow(/timed out acquiring lock/);
+    expect(observed.spun()).toBe(false);
+  });
+});
+
+/** What {@link plantLockEntry} models at the lock path. */
+type PlantedLockEntry =
+  | { kind: 'symlink'; targetMtime: Date }
+  | { kind: 'stale-file'; mtime: Date }
+  | { kind: 'phantom' };
+
+/**
+ * Occupy `lockPath` with `entry` for the four calls the reclaim makes about it.
+ *
+ * The model only has to be right about the facts that make the name
+ * interesting, and each is POSIX-specified rather than inferred here: an
+ * `O_CREAT|O_EXCL` create fails with `EEXIST`, `stat` reports the link's target
+ * while `lstat` reports the link, and `unlink` removes the link itself.  Once
+ * the entry is unlinked the name is free and every call delegates to the real
+ * module, so a reclaim that legitimately succeeds goes on to write for real.
+ */
+function plantLockEntry(
+  real: FsModule,
+  lockPath: string,
+  entry: PlantedLockEntry,
+): { unlinked(): string[]; statted(): string[]; spun(): boolean } {
+  let present = true;
+  let attempts = 0;
+  let spun = false;
+  const unlinked: string[] = [];
+  const statted: string[] = [];
+  const notFound = (): NodeJS.ErrnoException =>
+    Object.assign(new Error(`ENOENT: no such file or directory, '${lockPath}'`), { code: 'ENOENT' });
+  fsLazy.setOverride(Promise.resolve({
+    path: real.path,
+    fs: {
+      ...real.fs,
+      writeFile: (
+        p: string,
+        body: Uint8Array | string,
+        writeOptions?: { flag?: string; encoding?: string },
+      ): Promise<void> => {
+        if (p === lockPath && present && writeOptions?.flag === 'wx') {
+          // Generous next to what a bounded reclaim needs (the acquire, plus
+          // one retry per reclaim round), and far below what an unbounded one
+          // reaches.  Past it the fixture stops playing along and reports the
+          // spin as a value the test can assert on, instead of letting the
+          // runner wedge.
+          if (++attempts > 8) {
+            spun = true;
+            return Promise.reject(Object.assign(
+              new Error(`fixture: acquireLock retried ${attempts} times without terminating`),
+              { code: 'EIO' },
+            ));
+          }
+          return Promise.reject(Object.assign(new Error(`EEXIST: file already exists, '${p}'`), { code: 'EEXIST' }));
+        }
+        return real.fs.writeFile(p, body, writeOptions);
+      },
+      stat: (p: string): Promise<{ size: number; mtime: Date }> => {
+        // Recorded, never answered for the lock path: the fixed reclaim must
+        // not ask this question at all, and `statted()` is what pins that.
+        if (p === lockPath && present) {
+          statted.push(p);
+          return entry.kind === 'symlink'
+            ? Promise.resolve({ size: 0, mtime: entry.targetMtime })
+            : Promise.reject(notFound());
+        }
+        return real.fs.stat(p);
+      },
+      lstat: (p: string): Promise<{ mtime: Date; isFile(): boolean; isSymbolicLink(): boolean }> => {
+        if (p === lockPath && present) {
+          if (entry.kind === 'phantom') return Promise.reject(notFound());
+          const isLink = entry.kind === 'symlink';
+          return Promise.resolve({
+            mtime: isLink ? new Date() : entry.mtime,
+            isFile: () => !isLink,
+            isSymbolicLink: () => isLink,
+          });
+        }
+        return real.fs.lstat(p);
+      },
+      unlink: (p: string): Promise<void> => {
+        unlinked.push(p);
+        if (p === lockPath && present) { present = false; return Promise.resolve(); }
+        return real.fs.unlink(p);
+      },
+    },
+  }));
+  return { unlinked: () => unlinked, statted: () => statted, spun: () => spun };
+}

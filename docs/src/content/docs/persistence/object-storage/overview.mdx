@@ -169,14 +169,19 @@ other local processes may write to.  If untrusted users can create
 entries inside the storage root, that is already the larger
 problem.
 
-And it does not cover the per-key lock file.  Taking the lock is
-an exclusive create, which refuses a link rather than following
-it — but the stale-lock recovery that runs once the acquisition
-timeout is exhausted `stat`s that name, and `stat` does follow
-one.  So a link planted at `<key>.lock` lets a file outside the
-root decide whether the lock is treated as abandoned, and a
-*dangling* link there keeps `put` and `delete` on that one key
-retrying instead of returning.
+The per-key lock file is covered differently, because the
+question there is not containment.  Taking the lock is an
+exclusive create, which refuses a link rather than following it.
+The stale-lock recovery that runs once the acquisition timeout is
+exhausted then asks two things about that name, and asks them with
+`lstat`: how old the entry is, and whether it is a regular file at
+all.  Both matter.  `stat` would report the *target's* age, so a
+link aimed at an ancient file could declare the lock abandoned;
+and anything that is not a regular file was never written by this
+backend, so the recovery refuses it instead of removing it.  The
+recovery also runs at most once per acquisition — it is reached
+only after the timeout is already spent, so an entry that keeps
+giving the same answer would otherwise retry without end.
 
 ### S3
 

@@ -9,6 +9,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ## [Unreleased]
 
+### Security
+
+- **The filesystem object-storage lock reclaim judged a planted entry by its
+  target, and could not stop asking** (#1360).  Taking `<key>.lock` was always
+  safe — POSIX specifies that an `O_CREAT|O_EXCL` create fails with `EEXIST` on
+  a symbolic link whatever it points at, so `{ flag: 'wx' }` never followed one.
+  The stale-lock recovery behind it did.  It asked `stat` how old the entry was,
+  and `stat` answers about the link's *target*, so a link aimed at an ancient
+  file let whoever planted it declare the lock abandoned.  The recovery now uses
+  `lstat` — the entry's own age — and refuses anything that is not a regular
+  file rather than removing it, because a regular file is the only thing this
+  backend ever writes there.  It also runs **at most once** per acquisition: the
+  branch is reached only after the timeout is already spent and both of its
+  retry paths skip the backoff, so an entry that kept giving the same answer was
+  an unbounded loop with no exit — a dangling link was exactly such an entry, and
+  it wedged `put` and `delete` on that key.  Measured rather than assumed: with
+  the fix reverted the new test does not fail, it hangs, because the loop's only
+  `await` never yields to the macrotask queue the test runner's timeout lives on.
+  One claim in the report does not survive contact with the code and is recorded
+  here rather than quietly fixed: `unlink` does not follow a final-component
+  link, so the old recovery removed the link and never touched its target.  Both
+  documentation mirrors, which named this as a known gap, now describe what the
+  reclaim checks.
+
 ### Fixed
 
 - **The supply-chain page said the SBOM starts "from the next release
