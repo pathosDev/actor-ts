@@ -102,8 +102,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `system.eventStream` is unchanged and no existing publish site moves — the
   framework's own events all have a reason to stay node-local, from the
   lifecycle events being the hottest path in the system to broker events
-  still carrying a credential-bearing `cause` (#1388).  A multi-node test now
-  pins that node-local scope as an assertion rather than prose.
+  carrying a `cause` whose redaction had to be solved on the event itself
+  (#1388).  A multi-node test now pins that node-local scope as an assertion
+  rather than prose.
 
 ### Fixed
 
@@ -187,6 +188,61 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `XOptions` family (a fluent `ThrottleOptions` builder alongside the plain
   object), and the per-actor throttle now has a dedicated docs page
   (`fundamentals/throttling`, EN + DE).
+
+### Security
+
+- **The filesystem object-storage lock reclaim judged a planted entry by its
+  target, and could not stop asking** (#1360).  Taking `<key>.lock` was always
+  safe — POSIX specifies that an `O_CREAT|O_EXCL` create fails with `EEXIST` on
+  a symbolic link whatever it points at, so `{ flag: 'wx' }` never followed one.
+  The stale-lock recovery behind it did.  It asked `stat` how old the entry was,
+  and `stat` answers about the link's *target*, so a link aimed at an ancient
+  file let whoever planted it declare the lock abandoned.  The recovery now uses
+  `lstat` — the entry's own age — and refuses anything that is not a regular
+  file rather than removing it, because a regular file is the only thing this
+  backend ever writes there.  It also runs **at most once** per acquisition: the
+  branch is reached only after the timeout is already spent and both of its
+  retry paths skip the backoff, so an entry that kept giving the same answer was
+  an unbounded loop with no exit — a dangling link was exactly such an entry, and
+  it wedged `put` and `delete` on that key.  Measured rather than assumed: with
+  the fix reverted the new test does not fail, it hangs, because the loop's only
+  `await` never yields to the macrotask queue the test runner's timeout lives on.
+  One claim in the report does not survive contact with the code and is recorded
+  here rather than quietly fixed: `unlink` does not follow a final-component
+  link, so the old recovery removed the link and never touched its target.  Both
+  documentation mirrors, which named this as a known gap, now describe what the
+  reclaim checks.
+- **`HonoBackend` built a `Response` from an unvalidated status, so an
+  impossible one threw inside the request path instead of answering it**
+  (#1362).  `Response` rejects anything outside `101` and `[200, 599]` with a
+  `RangeError`, and every status reaching `writeResponse` comes from code the
+  backend does not control — a route handler, the `notFound` fallback, a
+  WebSocket `authorize` guard, or a `HttpError` whose `status` is not validated
+  at construction either.  A guard that meant to refuse an upgrade with `403`
+  and computed the number wrong took the response down rather than sending one,
+  and on the `onError` path there was no handler left to catch the throw.  A
+  status outside that range is now answered as `500` with the response the
+  caller actually built, so the request is served and only the impossible number
+  is replaced.  Not lifted to a shared helper on purpose: Node's writer accepts
+  `[100, 999]` and Fastify `[100, 600)`, so there is no single range all three
+  backends agree on, and a shared clamp would move the surprise rather than
+  remove it.
+- **Broker lifecycle events carried the driver's raw `Error`, which can embed
+  the credential #741 removed from the field beside it** (#1388).
+  `BrokerDisconnected.cause` and `BrokerReconnectFailed.cause` are published on
+  the system-wide `EventStream`, to the same audience and on the same schedule
+  as the `endpoint` that #741 made safe — and several drivers put the connection
+  target, userinfo included, into the message they throw, so the secret reached
+  the same place by a different route.  Both are now passed through a new
+  `redactErrorCredentials`, exported from the package root: it returns a **copy**
+  (the error belongs to the driver, which may still hold it and may have handed
+  it to listeners of its own) with the message, the stack, every own
+  string-valued property and the `cause` chain masked.  The copy carries the
+  original's prototype and own enumerable properties, so `instanceof`, `name`
+  and `code` — what a monitor actually branches on — still answer the same;
+  anything reachable only through a getter is deliberately dropped, since a
+  getter can recompute the secret.  `BrokerNotConnected` needed nothing: it
+  carries no cause.
 
 ## [0.17.0] — 2026-08-29
 

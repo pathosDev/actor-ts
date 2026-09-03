@@ -647,6 +647,13 @@ export type FsModule = {
     readFile(p: string): Promise<Buffer>;
     readFile(p: string, encoding: 'utf8'): Promise<string>;
     stat(p: string): Promise<{ size: number; mtime: Date }>;
+    /**
+     * `stat` without dereferencing a final-component link.  The lock
+     * reclaim in {@link acquireLock} is the only caller, and it needs the
+     * two things `stat` cannot give it: the age of the *entry* rather than
+     * of whatever it points at, and whether the entry is a regular file.
+     */
+    lstat(p: string): Promise<{ mtime: Date; isFile(): boolean; isSymbolicLink(): boolean }>;
     readdir(p: string, opts: { withFileTypes: true }): Promise<DirectoryEntry[]>;
     unlink(p: string): Promise<void>;
     rename(oldPath: string, newPath: string): Promise<void>;
@@ -782,6 +789,15 @@ const LEGACY_TMP_FILE_RE = /\.tmp\.\d+\.\d+\.\d+$/;
  * Returns an async release function that unlinks the lock file.  Callers
  * must invoke it in a `finally` block; the OS won't auto-release on
  * process exit (stale-lock detection covers that pathology).
+ *
+ * **The reclaim is the part that needs care, not the acquire** (#1360).
+ * Creating the lock is safe by construction: POSIX specifies that an
+ * `O_CREAT|O_EXCL` open fails with `EEXIST` when the final component is a
+ * symbolic link, whatever it points at, so `{ flag: 'wx' }` never follows one.
+ * The reclaim then has to decide, about a name someone else may have planted,
+ * both *how old it is* and *whether it is ours to remove* — and `stat` answers
+ * the first question about the link's target instead of about the link.  See
+ * the branch itself for what each check buys.
  */
 async function acquireLock(
   fs: FsModule['fs'],
@@ -791,6 +807,16 @@ async function acquireLock(
 ): Promise<() => Promise<void>> {
   const start = Date.now();
   let backoffMs = 5;
+  // One reclaim round, which the JSDoc above has always promised ("one final
+  // retry") but the code did not enforce.  It is load-bearing rather than
+  // tidiness: the reclaim branch is only reachable once the timeout is already
+  // exhausted, and both of its `continue`s skip the backoff — so any entry that
+  // keeps producing the same answer spins a core with no way out.  A dangling
+  // link at `<key>.lock` was exactly such an entry before this function used
+  // `lstat`: `wx` refused it with `EEXIST` while `stat` followed it to nothing
+  // and threw `ENOENT`, and the two disagreed forever.  `lstat` closes that
+  // particular disagreement; the bound closes the shape.
+  let reclaimAttempted = false;
   // Bounded loop — termination is via either successful acquisition,
   // throw on non-EEXIST error, or throw on total-timeout-exhausted.
   for (;;) {
@@ -822,16 +848,50 @@ async function acquireLock(
         // Total timeout exhausted — last-ditch stale-lock check.  If the
         // lock file is older than `staleLockMs`, the holder almost
         // certainly crashed; remove it and retry one more time.  If the
-        // lock disappears between EEXIST and stat (winner finished mid-
+        // lock disappears between EEXIST and lstat (winner finished mid-
         // check), `continue` lets us retake it normally.
-        let stale = false;
+        if (reclaimAttempted) {
+          throw new ObjectStorageBackendError(
+            `timed out acquiring lock ${lockPath} after ${totalTimeoutMs}ms`,
+          );
+        }
+        reclaimAttempted = true;
+        let entry: { mtime: Date; isFile(): boolean; isSymbolicLink(): boolean };
         try {
-          const stat = await fs.stat(lockPath);
-          stale = Date.now() - stat.mtime.getTime() > staleLockMs;
+          // `lstat`, never `stat`.  A link planted at `<key>.lock` is aimed at
+          // an old file precisely so the age test below says "stale": `stat`
+          // reports the *target's* mtime, which lets whoever planted the link
+          // choose the answer.  `lstat` reports the link's own, which is by
+          // definition as young as the moment it was planted.
+          entry = await fs.lstat(lockPath);
         } catch {
           continue; // lock vanished — try to acquire it on the next loop
         }
-        if (stale) {
+        if (!entry.isFile()) {
+          // Refuse rather than remove.  This function only ever creates a
+          // regular file here, so anything else is a name someone else owns,
+          // and unlinking it would make the reclaim a delete primitive aimed
+          // at a path this backend never chose.
+          //
+          // What that is *not*: `unlink` does not follow a final-component
+          // link — it removes the link and leaves the target alone, the same
+          // POSIX rule `delete` relies on above — so the pre-fix code never
+          // deleted the target.  The reachable damage was narrower and still
+          // real: the staleness question was answered by the target, and a
+          // planted link turned the reclaim into a spin (see `reclaimAttempted`).
+          throw new ObjectStorageBackendError(
+            `refusing to reclaim lock ${lockPath}: not a regular file `
+            + `(${entry.isSymbolicLink() ? 'symbolic link' : 'directory or special file'})`,
+          );
+        }
+        if (Date.now() - entry.mtime.getTime() > staleLockMs) {
+          // A window stays open between `lstat` and `unlink`, and closing it
+          // needs `unlinkat`/`O_NOFOLLOW`, which `node:fs/promises` does not
+          // expose portably — the same bound `realPathWithinRoot` records for
+          // its own hop.  It is narrower here than it looks: `unlink` cannot
+          // follow a link, so the worst a winner of that race gets is our own
+          // lock file removed, which is the outcome of an ordinary
+          // two-reclaimer race anyway.
           try { await fs.unlink(lockPath); } catch { /* race with another reclaimer is fine */ }
           continue;
         }
