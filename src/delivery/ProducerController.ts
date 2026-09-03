@@ -149,8 +149,9 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
    * The check is here rather than on `this.sender`, which is `None` for every
    * acknowledgment the producer will ever see — the consumer tells with one
    * argument and so does the cluster's envelope dispatch — and rather than
-   * against `options.consumer`, which the documented relay topology makes a
-   * forwarder rather than the acker.
+   * against `options.consumer`, which nothing requires to be the actor that
+   * acknowledges: a consumer ref is free to forward a delivery on, and the
+   * ack then arrives from whichever actor handled it.
    *
    * It also rejects an ack from the *previous* incarnation of this
    * `producerId`, which is a real message and not an attack: a delivery still
