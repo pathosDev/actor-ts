@@ -1,5 +1,6 @@
 import { getSqliteDriver, type SqliteDb, type SqliteStatement } from '../../runtime/sqlite/index.js';
 import { JournalError, type Snapshot } from '../JournalTypes.js';
+import type { PersistenceOptionSupport } from '../PersistenceCapabilities.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
@@ -31,6 +32,19 @@ export class SqliteSnapshotStore implements SnapshotStore {
   private readonly keepN: number;
   /** A local file (or `:memory:`) no other node can reach (#1356). */
   readonly storageLocality: StorageLocality = 'node-local';
+
+  /**
+   * JSON text in a SQLite column — `options` is bound and never read (#960).
+   * Declared here rather than inherited: this store is a standalone
+   * `implements SnapshotStore` and shares no base with the relational
+   * family, unlike its durable-state twin.
+   */
+  readonly persistenceOptionSupport: PersistenceOptionSupport = {
+    encryption: false,
+    compression: false,
+    integrity: false,
+  };
+
   private cachedStorageIdentity: string | null = null;
   private closed = false;
 

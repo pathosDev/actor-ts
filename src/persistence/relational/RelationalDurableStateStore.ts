@@ -4,6 +4,7 @@ import {
   type DurableStateStore,
 } from '../DurableStateStore.js';
 import { JournalError } from '../JournalTypes.js';
+import type { PersistenceOptionSupport } from '../PersistenceCapabilities.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
@@ -43,6 +44,18 @@ export interface RelationalDurableStateStoreConfig extends RelationalStoreConfig
  * the caller actually raced against.
  */
 export class RelationalDurableStateStore extends RelationalStore implements DurableStateStore {
+  /**
+   * The payload is `encodePayload`'s JSON text in a SQL column, written and
+   * read without ever looking at `options` (#960).  Unlike the snapshot side
+   * this one really does cover the whole family — `SqliteDurableStateStore`
+   * extends it and inherits the declaration.
+   */
+  readonly persistenceOptionSupport: PersistenceOptionSupport = {
+    encryption: false,
+    compression: false,
+    integrity: false,
+  };
+
   private readonly table: string;
   private readonly statements: {
     readonly insert: string;

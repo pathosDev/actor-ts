@@ -223,17 +223,30 @@ import { Aside } from '@astrojs/starlight/components';
   Ten of the eleven snapshot stores and nine of the ten
   durable-state stores accept `PersistenceOptions` and never look
   at it ([#960](https://github.com/mknorr/actor-ts/issues/960)).
-  On SQLite, Postgres, Cassandra, Mongo, DynamoDB and the
-  in-memory reference store, an `integrity()` override **buys no
-  tamper detection and raises no error** — the directive is
-  dropped on the floor.  The same is true of `encryption()` and
-  `compression()`.
+  On SQLite, Postgres, MariaDB, MSSQL, libSQL, D1, Cassandra,
+  Mongo, DynamoDB and the in-memory reference store, an
+  `integrity()` or `encryption()` override now **refuses the actor
+  at start** rather than buying nothing quietly: every shipped
+  store declares a `persistenceOptionSupport` triple, and one that
+  cannot honour a security control raises
+  `UnsupportedPersistenceOptionError` naming the store and the
+  field.
 
-  Do not read this page as a promise that the framework enforces
-  the control everywhere.  Verify it against the store you
-  actually run: today that means the object-storage snapshot and
-  durable-state stores, which honour all three hooks on both the
-  write and the read path.
+  `compression()` is the exception, on purpose.  It is a
+  performance hint, not a control, so an unhonourable request
+  warns once and the body is written uncompressed — failing an
+  actor over it would make a system-wide compression default
+  unusable the moment one store in the deployment cannot
+  compress.
+
+  So the control is enforced where it can be, and reported where
+  it cannot.  The stores that honour all three hooks on both the
+  write and the read path are the object-storage snapshot and
+  durable-state stores — everything else refuses or warns.  Two
+  cases stay quiet: `{ mode: 'none' }`, which is how you say
+  "deliberately unprotected", and a third-party store that
+  declares no triple at all, which counts as unknown rather than
+  as unsupported.
 </Aside>
 
 <Aside type="caution" title="Different keyRings across cluster nodes">

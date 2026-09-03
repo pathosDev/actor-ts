@@ -16,6 +16,7 @@ import type {
 } from '../object-storage/PluginConfig.js';
 import { resolveCompression, resolveEncryption, resolveIntegrity } from '../object-storage/PluginConfig.js';
 import type { ObjectStorageBackend } from '../object-storage/ObjectStorageBackend.js';
+import type { PersistenceOptionSupport } from '../PersistenceCapabilities.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import type { StorageLocality } from '../StorageLocality.js';
@@ -65,6 +66,22 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
 
   /** Locality is the backend's property — a store wrapper adds none of its own (#1356). */
   get storageLocality(): StorageLocality | undefined { return this.backend.storageLocality; }
+
+  /**
+   * The one snapshot store that acts on all three fields, on both paths:
+   * `save` resolves them at :107-113 and `loadFrom` at :219-223, per-call
+   * options winning over the plugin resolver.  This is what the declaration
+   * is measured against — `PerActorCompressionEncryption.test.ts` proves the
+   * behaviour and the capability inventory pins the claim (#960).  A
+   * declaration is a property of the *store*, not of the backend it writes
+   * through: the codec runs here, so a backend that stores bytes verbatim
+   * changes nothing about it.
+   */
+  readonly persistenceOptionSupport: PersistenceOptionSupport = {
+    encryption: true,
+    compression: true,
+    integrity: true,
+  };
 
   /** Identity is the backend's too — bucket/directory = database (#1358). */
   async storageIdentity(): Promise<string> {

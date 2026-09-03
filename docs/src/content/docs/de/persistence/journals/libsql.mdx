@@ -270,8 +270,11 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Compression- / Encryption-Optionen werden ignoriert">
   Per-Call-`PersistenceOptions` (Compression, Encryption) gelten nur für
   die Object-Storage-Stores.  Die SQL-Backends speichern JSON als `TEXT` —
-  die Optionen werden hier still ignoriert, genau wie bei SQLite, Postgres
-  und Cassandra.
+  die Optionen werden hier ignoriert, genau wie bei SQLite, Postgres und
+  Cassandra, aber nicht mehr stillschweigend: Ein `encryption()`- oder
+  `integrity()`-Override gegen einen Store, der es nicht honorieren kann,
+  **verweigert den Actor beim Start**, und `compression()` warnt einmal
+  ([#960](https://github.com/mknorr/actor-ts/issues/960)).
 </Aside>
 
 <Aside type="note" title="Die Installation zieht Plattform-Binaries">

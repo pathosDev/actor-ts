@@ -1,4 +1,5 @@
 import type { Snapshot } from './JournalTypes.js';
+import type { PersistenceOptionSupport } from './PersistenceCapabilities.js';
 import type { PersistenceOptions } from './PersistenceOptions.js';
 import type { StorageLocality } from './StorageLocality.js';
 import type { Option } from '../util/Option.js';
@@ -12,8 +13,10 @@ export interface SnapshotStore {
   /**
    * Persist a snapshot at `seq` — typically the seq of the latest event
    * applied.  Optional `options` carry per-call preferences from the
-   * caller (e.g. compression/encryption set on the actor).  Stores that
-   * cannot honour them silently ignore the field.
+   * caller (e.g. compression/encryption set on the actor).  A store that
+   * cannot honour a field ignores it here and says so through
+   * {@link SnapshotStore.persistenceOptionSupport}, which is what lets the
+   * actor be refused at start rather than written unprotected (#960).
    *
    * ### Retention is best-effort; the write is not
    *
@@ -46,7 +49,10 @@ export interface SnapshotStore {
    * Load the newest snapshot for `persistenceId`, or None if none exist.
    * `options.encryption` is required when client-side encryption was
    * used at write time — the store has no other way to obtain the
-   * master key.  Stores that don't encrypt ignore the field.
+   * master key.  Stores that don't encrypt ignore the field and declare
+   * that through {@link SnapshotStore.persistenceOptionSupport}; reading
+   * with `encryption` set against such a store would otherwise hand the
+   * caller plaintext it believes was ciphertext (#960).
    */
   loadLatest<S = unknown>(persistenceId: string, options?: PersistenceOptions): Promise<Option<Snapshot<S>>>;
 
@@ -62,6 +68,13 @@ export interface SnapshotStore {
    * cluster's storage advisory silent (#1356).
    */
   readonly storageLocality?: StorageLocality;
+
+  /**
+   * Which fields of `PersistenceOptions` this store acts on — see
+   * {@link PersistenceOptionSupport}.  Optional; absence means unknown, and
+   * an unknown store is never refused (#960).
+   */
+  readonly persistenceOptionSupport?: PersistenceOptionSupport;
 
   /**
    * Identity of the database behind this store, minted on first contact and
