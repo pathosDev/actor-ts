@@ -438,6 +438,8 @@ unifying them. Set them per lease in code.
 | `remote.tcp.advertised-port` | *(unset)* | The port peers **dial**.  Unset means the same as `remote.tcp.port` — set it only where the deployment publishes the process on a different one.  Absent from `reference.conf` for the same reason as `advertised-host`. |
 | `remote.max-frame-bytes` | `16M` | Per-frame wire cap.  A frame whose length-prefix exceeds it is rejected before any payload is buffered. |
 | `remote.tls.enabled` | `false` | **Not honoured** — `true` buys a startup warning, not encryption.  See below. |
+| `remote.untrusted-mode` | `false` | Admit an inbound envelope only when `trusted-selection-paths` lists its target.  Off, any `/user` actor is addressable by name — which is what makes an `ActorRef` work across nodes.  `/system` is refused either way.  See below. |
+| `remote.trusted-selection-paths` | `[]` | Paths a peer may address by name while `untrusted-mode` is on.  Empty means: nothing beyond the framework endpoints this node registered. |
 
 `host`/`port` are the **bind** pair and `advertised-host`/`advertised-port`
 the **identity** pair: the first says where the listener opens, the second
@@ -477,6 +479,60 @@ whole configuration.
 itself.  If you construct a `TcpTransport` yourself and pass it via
 `withTransport(…)`, set its cap there — the framework will not re-cap a
 transport it did not create.
+
+#### Who a peer may address by name
+
+An inbound `envelope` frame carries the target path the **sender** chose, and
+the node resolves it against its own actor tree.  That is the one thing on the
+cluster wire a remote party picks freely, and the two keys above are the scope
+around it.
+
+`/system` is not part of that scope.  The framework's own actors — shard
+coordinators and regions, singleton managers, the pub-sub mediator, the
+DistributedData replica, both DevTools lanes — are reachable only through the
+per-path handler each of them registers, in both modes.  That door attaches the
+connection's identity to the frame; resolving a path by name never did, which is
+why a body arriving that way had no sender at all.  This is a **change in
+behaviour**: before it, anyone who completed a `hello` could address them
+([issue #964](https://github.com/pathosDev/actor-ts/issues/964)).
+
+`untrusted-mode` narrows the other half.  Off — the default — a peer may name
+any `/user` actor, which is what a `RemoteActorRef` rebuilt from a wire ref
+does and what makes an `ActorRef` usable across nodes at all.  On, only the
+paths you list:
+
+```hocon
+actor-ts.remote {
+  untrusted-mode          = true
+  trusted-selection-paths = ["/user/orders/*", "/user/reporting/intake"]
+}
+```
+
+An entry is one **exact** path unless it ends in `/*`, in which case it is that
+path and everything below it.  The suffix is segment-anchored, so
+`/user/orders/*` admits `/user/orders/7` and refuses `/user/orders-archive`;
+nothing else here is a pattern, and a `*` anywhere but as the whole final
+segment is rejected at startup rather than matched literally.  Paths are written
+guardian-rooted, the way the tree renders them; the leading `/` is optional.
+
+Turn the mode on where the cluster network crosses a boundary you do not
+control — the same networks `remote.max-frame-bytes` is worth lowering on.  What
+it costs is that any actor a peer addresses by name has to be listed, including
+the ones reached through a ref that travelled over the wire, so start by
+watching `cluster_envelope_refusals_total{reason="not-allow-listed"}` on a node
+with the mode on and an allow-list you expect to be complete.
+
+Refusals are counted rather than logged one by one: an envelope is its own
+frame, so a line per refusal would let a peer write this node's log at message
+rate.  The first refusal of each reason is logged at `WARN` and further ones are
+folded into at most one line every 30 seconds, naming the **connection's** peer
+and never the requested path.
+
+The same rule applies to `ClusterClientReceptionist`, and it is the more exposed
+of the two seams: a [`ClusterClient`](/cluster/cluster-client/) never joined the
+membership ring.  A refused path is answered with the identical `path not found`
+the client gets for a path that does not exist, so the endpoint cannot be used
+to map the actor tree.
 
 :::caution[`remote.tls.enabled` does not encrypt anything]
 The key is read, but not honoured.  Setting it to `true` does **not** enable

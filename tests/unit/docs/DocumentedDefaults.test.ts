@@ -47,6 +47,7 @@ import {
 } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_PORT } from '../../../src/cluster/ClusterBootstrapOptions.js';
 import { DEFAULT_MAX_FRAME_BYTES } from '../../../src/cluster/Protocol.js';
+import { DEFAULT_UNTRUSTED_MODE } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_MAX_DOCUMENT_BYTES, DEFAULT_MAX_NESTING_DEPTH, DEFAULT_MAX_STRING_LENGTH } from '../../../src/serialization/ReadConstraintsOptions.js';
 import {
   DEFAULT_MAX_REMOTE_NODES_PER_TOPIC,
@@ -291,6 +292,11 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   /* --- remote --- */
   { key: 'actor-ts.remote.tcp.port', kind: 'int', constant: DEFAULT_PORT },
   { key: 'actor-ts.remote.max-frame-bytes', kind: 'bytes', constant: DEFAULT_MAX_FRAME_BYTES },
+  // In the table rather than in FEATURE_SWITCHES beside `tls.enabled`, because
+  // it does have a constant to disagree with: `Cluster` reads
+  // `options.untrustedMode ?? DEFAULT_UNTRUSTED_MODE`, so the published `false`
+  // and the shipped one are the same boolean, checkably (#877).
+  { key: 'actor-ts.remote.untrusted-mode', kind: 'bool', constant: DEFAULT_UNTRUSTED_MODE },
 
   /* --- pub-sub / receptionist --- */
   { key: 'actor-ts.cluster.pub-sub.max-subscribers-per-topic', kind: 'int', constant: DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC },
@@ -706,6 +712,13 @@ const FEATURE_SWITCHES: readonly string[] = [
   'actor-ts.cluster.tombstone.min-retention', // 0s = derive from down-after
   'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',
   'actor-ts.remote.tls.enabled',
+  // `[]` = admit nothing beyond the registered framework endpoints — the same
+  // sentinel shape as `devtools.allowed-origins` and `http.cors.exposed-headers`
+  // above, and the same reason there is no constant: the read site is
+  // `options.trustedSelectionPaths ?? []`, so an empty list and an unset field
+  // produce the identical policy.  It is also only consulted while
+  // `remote.untrusted-mode` is on, which is the switch this one qualifies (#877).
+  'actor-ts.remote.trusted-selection-paths',
   'actor-ts.http.shutdown-grace-period', // 0ms = close listeners at once
   'actor-ts.sharding.remember-entities',
   'actor-ts.sharding.max-entities', // 0 = unbounded

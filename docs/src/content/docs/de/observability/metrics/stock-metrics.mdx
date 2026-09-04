@@ -316,6 +316,7 @@ genau das macht eine Rate über null zu einer Aussage statt zu Rauschen.
 | `cluster_gossip_rounds_total` | counter | — | Von diesem Knoten initiierte Gossip-Push-Runden. |
 | `cluster_gossip_records_refused_total` | counter | `reason` | Von einer Merge-Pfad-Wache abgelehnte gegossipte Member-Records. |
 | `cluster_envelope_from_mismatch_total` | counter | `frame` | Envelopes, deren Payload einen anderen Absender nennt als die Verbindung, auf der sie ankamen. |
+| `cluster_envelope_refusals_total` | counter | `reason`, `frame` | Eingehende Envelopes, die abgelehnt wurden, weil ihr Zielpfad außerhalb dessen liegt, was dieser Knoten namentlich annimmt. |
 
 Zum Monitoring der Cluster-Gesundheit:
 
@@ -355,6 +356,24 @@ Zum Monitoring der Cluster-Gesundheit:
   Label; dort geprägt würde sie eine Zeitreihe pro Adresse erzeugen,
   die ein Sender sich ausdenkt. Stell das Log des Knotens auf `debug`,
   um zu sehen, welche Verbindung sie trägt.
+- `cluster_envelope_refusals_total` zählt einen Zielpfad, den dieser
+  Knoten namentlich nicht auflöst. `reason="system-path"` sollte auf
+  einem gesunden Cluster bei null liegen: Es heißt, ein Peer oder ein
+  externer `ClusterClient` hat einen `/system`-Framework-Aktor direkt
+  adressiert statt über den Handler, den dieser Aktor registriert hat.
+  Ein Rolling Upgrade über das Release hinweg, das diesen Weg
+  geschlossen hat, ist die eine harmlose Ursache; alles andere lohnt
+  einen Blick. `reason="not-allow-listed"` bewegt sich nur mit
+  angeschaltetem `actor-ts.remote.untrusted-mode`, und an dem Tag, an
+  dem du ihn anschaltest, ist es die Metrik zum Beobachten — jeder
+  fehlende Eintrag in `trusted-selection-paths` taucht hier als
+  abgelehnter Verkehr auf. Beide Labels sind geschlossene, aus dem Code
+  gezogene Mengen: `reason` hat diese zwei Werte, `frame` ist
+  `envelope` oder `cluster-client-envelope` — die Familie sind also
+  vier Serien, egal was ankommt. Der angefragte Pfad ist bewusst *kein*
+  Label, aus demselben Grund wie die behauptete Adresse oben — und er
+  steht auch nicht in der Log-Zeile, denn er ist eine ungeprüfte
+  Zeichenkette aus der Payload.
 
 ## DistributedData-Metriken
 
