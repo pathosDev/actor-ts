@@ -76,6 +76,7 @@ import {
   DEFAULT_MAX_PENDING_QUORUM_REQUESTS,
   DEFAULT_MAX_QUORUM_TIMEOUT_MS,
 } from '../../../src/crdt/DistributedDataOptions.js';
+import { DEFAULT_LOG_DATA_SIZE_EXCEEDING_BYTES } from '../../../src/crdt/DistributedDataOptions.js';
 import { DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM, DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE } from '../../../src/persistence/Constants.js';
 import { DEFAULT_SNAPSHOT_KEEP_N } from '../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 import { DEFAULT_MAX_DECOMPRESSED_BYTES } from '../../../src/persistence/object-storage/BodyCodec.js';
@@ -317,6 +318,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.distributed-data.max-pending-quorum-requests', kind: 'int', constant: DEFAULT_MAX_PENDING_QUORUM_REQUESTS },
   { key: 'actor-ts.distributed-data.max-quorum-timeout', kind: 'duration', constant: DEFAULT_MAX_QUORUM_TIMEOUT_MS },
   { key: 'actor-ts.distributed-data.max-gossip-bytes', kind: 'bytes', constant: DEFAULT_MAX_GOSSIP_BYTES },
+  { key: 'actor-ts.distributed-data.log-data-size-exceeding', kind: 'bytes', constant: DEFAULT_LOG_DATA_SIZE_EXCEEDING_BYTES },
 
   /* --- mailbox --- */
   // The sibling leaf, `mailbox.default.capacity`, is a FEATURE_SWITCHES entry:
@@ -648,6 +650,15 @@ const FEATURE_SWITCHES: readonly string[] = [
   // either — `CorsRouteOptions.exposedHeaders` is optional and the default is
   // the field being absent (#878).
   'actor-ts.http.cors.exposed-headers',
+  // The third empty-list sentinel, and the one where the reading is
+  // load-bearing: `[]` means "persist EVERY key", which is what every release
+  // before the option did, so an empty list and an unset key produce the same
+  // durable record.  Reading it the other way — "persist nothing" — would make
+  // adopting a newer version silent total data loss, which is why the
+  // behaviour is asserted in `DurableDistributedData.test.ts` rather than only
+  // written down.  No constant either: the default is the field being absent,
+  // and `durableSnapshot` short-circuits on `length === 0` (#856).
+  'actor-ts.distributed-data.durable-keys',
   'actor-ts.cluster.weakly-up-after', // 0s = no auto weakly-up promotion
   'actor-ts.cluster.tombstone.min-retention', // 0s = derive from down-after
   'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',

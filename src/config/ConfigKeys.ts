@@ -641,12 +641,21 @@ export const ConfigKeys = {
    * carry.  It reads as a size (`1M`), and it is clamped down to
    * `remote.max-frame-bytes` at consume time — a budget above the wire cap is
    * the configuration that reintroduces #691, so it is not expressible (#691).
+   *
+   * `log-data-size-exceeding` reports on the same measurement one order of
+   * magnitude earlier and changes nothing: a key past it still gossips, it is
+   * merely named, because a value at a large fraction of the budget slows
+   * every other key's sweep and nothing else says so.  `durable-keys` is the
+   * only leaf here that is not a bound — it narrows what a configured
+   * `durableStore` writes, and an empty list means every key (#856).
    */
   distributedData: {
     gossipInterval: 'actor-ts.distributed-data.gossip-interval',
     maxPendingQuorumRequests: 'actor-ts.distributed-data.max-pending-quorum-requests',
     maxQuorumTimeout: 'actor-ts.distributed-data.max-quorum-timeout',
     maxGossipBytes: 'actor-ts.distributed-data.max-gossip-bytes',
+    logDataSizeExceeding: 'actor-ts.distributed-data.log-data-size-exceeding',
+    durableKeys: 'actor-ts.distributed-data.durable-keys',
   },
 
   /**
