@@ -11,6 +11,108 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **The object-storage persistence plugin can now be configured from HOCON.
+  A new `actor-ts.persistence.snapshot-store.object-storage` block carries
+  `backend`, `prefix`, `keep-n`, `max-decompressed-bytes`,
+  `compression.algorithm`, `encryption.mode`/`encryption.kms-key-id`,
+  `s3.{bucket,region,endpoint,force-path-style}` and
+  `filesystem.{dir,lock-timeout,stale-lock}`, and
+  `registerObjectStoragePlugins(ext)` now takes its options argument
+  optionally — bucket, region, prefix and retention no longer need a code
+  change and a redeploy** (#873).  One block configures both stores that
+  call returns, because the two share a single backend. Precedence is the
+  usual explicit options > HOCON > built-in defaults, per field, validated
+  once on the merged settings. This is the first HOCON reader anywhere in
+  `src/persistence/`; the new read-only `PersistenceExtension.config`
+  accessor is the seam it reads through, and the other `register*Plugins`
+  helpers can reuse it. Key material is structurally absent from the block
+  rather than filtered out of it: there is no leaf for S3 credentials, for a
+  client-side master key or for an integrity key, so a config file cannot
+  express one, and `encryption.mode = client-aes256-gcm` is refused with an
+  `OptionsError` naming `withEncryption()` rather than silently writing
+  plaintext. `allow-untagged-bodies` and `require-context-binding` are
+  deliberately not published either — both are inert without a key-bearing
+  config, so from HOCON they could never do anything. #873
+
+- **A projection now takes its process-wide defaults from a new top-level
+  `actor-ts.projection` HOCON block, so failure handling and poll cadence
+  are retunable per environment without touching code: `recovery-strategy`,
+  `max-retries`, `retry-backoff`, `max-retry-backoff` and `poll-interval`**
+  (#875).  The mechanism behind all five shipped with #650; what was missing
+  was the configuration surface — the merge inside
+  `ProjectionActor.byPersistenceId` / `byTag` was two layers where the
+  project requires three. Precedence is applied per field: an explicit
+  `ProjectionOptions` value wins, then the block, then the built-in default
+  — so a projection that passes `liveOptions` without a `pollIntervalMs`
+  still gets the configured cadence rather than silently falling back.
+  `readProjectionOptionsFromConfig` and the type `ProjectionConfigDefaults`
+  are exported from `actor-ts/persistence`, and the poll cadence's built-in
+  value is now the named `DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS` in
+  `src/persistence/Constants.ts` instead of four separate literals. The
+  block is deliberately top-level and not under `actor-ts.persistence`,
+  which holds plugin ids and nothing else. Ten further keys the issue
+  proposed are deliberately not shipped because nothing reads them: the two
+  `restart-backoff` bounds are a second spelling of the two backoff fields,
+  `restart-backoff.random-factor` has no jitter term, the
+  `at-least-once.save-offset-after-*` pair needs the batching #199 will add,
+  the `grouped.group-after-*` pair needs a batch-handler API that does not
+  exist, `offset-store.table` names nothing in the offset store, and
+  `read-journal.max-buffer-size` has no field;
+  `read-journal.refresh-interval` survives as the un-nested `poll-interval`.
+  #875.
+
+- **`actor-ts.devtools` — the DevTools attachment is configurable from
+  HOCON** (#881).  Twenty-three leaves: `host`, `port`, `allow-remote`,
+  `serve-ui`, `allowed-origins`, the ten `panels.*` switches,
+  `mailbox-sample-interval`, `mailbox-sample-limit`, `stats-interval`,
+  `span-buffer-capacity`, `span-flush-interval`, `event-buffer-capacity`,
+  `event-flush-interval` and `replay-auto-capture`. They fill in what
+  `DevTools.attach(system, …)` leaves unset; explicit options still win, per
+  field, and a `panels` object passed in code overrides the configured
+  switches one switch at a time rather than replacing them wholesale —
+  otherwise naming one panel in code would switch every panel an operator
+  disabled back on. The block does not *start* DevTools: `attach` is always
+  a code call, and there is deliberately no `enabled` key, because reading
+  one would drag the DevTools subsystem and its embedded UI bundle into
+  every system. A configured host meets the same rule a code-set one does —
+  `devtools.host = "0.0.0.0"` in an `application.conf` is refused with an
+  `OptionsError` unless `allow-remote` is set, since `auth` and
+  `ipAllowlist` are middleware with no HOCON form. `allow-ungated-mount` and
+  `allow-message-sending` stay code-only on purpose: one states a fact about
+  the code that binds `mount()`'s routes rather than about a deployment, the
+  other is the only DevTools capability that writes into a running system
+  from a browser. Along the way `eventBufferCapacity` and
+  `eventFlushIntervalMs` gained `DEVTOOLS_DEFAULTS` entries, and three
+  read-site fallbacks in `DevToolsServer` that disagreed with the published
+  defaults were collapsed onto that object — the worst being
+  `spanBufferCapacity ?? 2000` against a documented and defaulted 10000,
+  live since 2026-07-28. New reader `readDevToolsOptionsFromConfig` and
+  merge helper `mergeDevToolsOptions` are exported from `actor-ts/devtools`.
+
+- **Two `actor-ts.sharding` keys that decide *where* shards run rather than
+  how they behave** (#847).  Both are layered under the caller's options, so
+  an explicit builder call still wins per field:
+
+  - `role` (default `""`) — only members carrying this role host shards of a
+    type started without its own `withRole`.  `""` means
+    unrestricted; the reader skips the empty string, so the shipped
+    placeholder cannot shadow an explicit `withRole` on the layer above. The
+    key names *which* role hosts a type; it does not give a node that role,
+    which stays `ClusterOptions.withRoles(...)` in code.
+  - `acquire-retry-interval` (default `5s`) — how long the shard coordinator
+    waits before re-acquiring a lease it failed to take. Observable only
+    where a `Lease` was passed in code; there is deliberately no `use-lease`
+    switch, because nothing turns a boolean into a `Lease` and a switch that
+    silently produced none would advertise split-brain protection that is
+    not there.
+
+  A configured role that no up member carries is no longer silent: the
+  coordinator warns once per episode, naming the role and how many
+  registered regions it excluded, instead of returning quietly from
+  `tryAllocate` while every message for the type buffers. `sharding.proxy`
+  deliberately has no key — it is per-node topology, and a deployment-wide
+  `proxy = on` would leave nothing hosting anything.
+
 - **The advertised cluster port can differ from the bound one**
   (#845).  `port` was one value in two roles: `TcpTransport` bound it and
   `selfAddress` gossiped it.  #944 split the host axis — `host` binds,
@@ -646,6 +748,46 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`fundamentals/throttling`, EN + DE).
 
 ### Security
+
+- **Bounded what the decoders will descend, and published the ceilings as a
+  new `actor-ts.serialization.read-constraints` block** (#880).  The JSON
+  side previously had no cap of any kind: `decodeJsonTree` recursed once per
+  level with no counter, and `JSON.parse` supplies nothing to inherit —
+  measured on Bun, Node and Deno, all three accept 100 000 levels of `[`
+  without complaint — so the recursion that overflowed was the framework's
+  own walker. The cluster wire reaches that walker directly on every
+  accepted frame, bounded only by `remote.max-frame-bytes = 16M`, and a 16
+  MiB frame of `[[[[…` is inside every byte cap the transport has; any peer
+  that completes the handshake could send one, and the eventual `RangeError`
+  from a blown stack is not the typed failure the transport's error handling
+  is written against. Three keys ship, each with a mechanism behind it:
+  `max-nesting-depth = 256`, threaded through every recursion site in
+  `decodeJsonTree` and read from an instance field in `CborDecoder`;
+  `max-document-bytes = 0` (off), checked in both serializers' `fromBinary`
+  before the bytes are parsed; and `max-string-length = 20M`, checked
+  against a CBOR item's length prefix before the bytes are allocated —
+  CBOR-only, because by the time the JSON walker sees a string `JSON.parse`
+  has already materialised it. The read depth may be lowered freely and
+  never raised past the encoder's hard `MAX_NESTING_DEPTH`, so the #1036
+  invariant that a node can decode everything it encodes survives the new
+  key rather than being quietly undone by it. `SerializationExtension` now
+  reads `system.config` in the factory that used to ignore its `system`; the
+  cluster wire, which does not go through the extension, reads the same keys
+  in `Cluster` and threads them to a `FrameDecoder` per connection. Two
+  edges stay deliberately unconstrained and say so in the docs: the
+  persistence `PayloadCodec`, whose bytes this framework wrote itself, and
+  the HTTP body edge, which has no system handle to read config through
+  (#967).
+
+  Dropped from the issue's six proposed keys, because nothing would read
+  them: `max-number-length` (CBOR numbers are fixed-width and the one
+  variable-length case is already capped by `MAX_BIGNUM_BYTES`; JSON's
+  literal is consumed by `JSON.parse` before any project code runs),
+  `max-token-count` (needs a streaming tokenizer neither codec has, and
+  every CBOR token costs at least one byte, so a byte cap dominates it), and
+  `max-name-length` (CBOR map keys take the same `readBytes` path as any
+  text string). MessagePack coverage is not applicable — there is no
+  MessagePack codec in `src/serialization/`.
 
 - **`MessageChannelTransport` guards a posted frame before anything reads
   it** (#945, #701).
