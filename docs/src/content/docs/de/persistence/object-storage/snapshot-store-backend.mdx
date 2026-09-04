@@ -210,18 +210,50 @@ eine Entity, die beide Wege nutzt.
   der nächste Save schreibt unter dem neuen Key.  Lösche die alten
   Objekte, wenn du so weit bist.
 
-  **Durable State schon** — er *ist* die Quelle der Wahrheit.
-  Kopiere jedes `<prefix><persistenceId>/state.json` nach
-  `<prefix>state/<persistenceId>/state.json`.  Ein Body, der weder
-  mit clientseitiger Verschlüsselung noch mit einem
-  Integritäts-HMAC geschrieben wurde, trägt keine Key-Bindung; eine
-  serverseitige Kopie genügt.  Ein an seinen Key gebundener Body
-  (#612) ist gegen den alten Key versiegelt und dekodiert am neuen
-  nicht: fahre vor dem Upgrade die **alte** Version mit
-  `prefix: '<prefix>state/'` allein am Durable-State-Store und
-  schreibe jeden Record per `upsert` neu — das erzeugt genau die
-  Keys, die diese Version liest, und bindet sie korrekt.  Danach
-  upgraden und `prefix` wieder auf `<prefix>` setzen.
+  **Durable State schon** — er *ist* die Quelle der Wahrheit —
+  und `migrateObjectStorageDurableStateLayout` ist die Prozedur.
+  Führe sie einmal bei gestoppter Anwendung aus, gegen dasselbe
+  Backend und denselben `prefix`, mit dem der Store konfiguriert
+  ist: ein laufender Writer an den alten Keys schreibt Records,
+  die der Lauf bereits verschoben hat, und der Lauf kann das nicht
+  bemerken.
+
+  ```ts
+  import { migrateObjectStorageDurableStateLayout } from 'actor-ts/persistence';
+
+  const result = await migrateObjectStorageDurableStateLayout(backend, {
+    prefix: 'acme/',                 // der von beiden Stores geteilte Prefix
+    encryption,                      // nur für ein versiegeltes Korpus — die Config des Stores
+    integrity,                       // ebenso
+  });
+  console.log(`migrated ${result.migrated} of ${result.scanned}`);
+  ```
+
+  Sie verschiebt jeweils den **Body**, statt den Record durch
+  einen Store neu abzuspielen, und genau das hält `revision` und
+  `timestamp` bei den Bytes, die schon da waren.  Ein erneutes
+  `upsert` kann das nicht: bei der eigenen Revision des Records
+  findet das Compare-and-Swap am leeren Ziel keinen Eintrag und
+  wirft `DurableStateConcurrencyError`, und `upsert(id, 0, state)`
+  — die einzige Form, die durchgeht — schreibt Revision 1 über
+  einen Record, der bei 7 stand.
+
+  Ein Body, der weder mit clientseitiger Verschlüsselung noch mit
+  einem Integritäts-HMAC geschrieben wurde, trägt keine
+  Key-Bindung und wird byte-genau kopiert; dieses Korpus braucht
+  hier also gar keine Keys.  Ein an seinen Key gebundener Body
+  (#612) ist gegen den alten Key versiegelt, wird dort dekodiert
+  und gegen den neuen neu versiegelt — dafür will der Lauf die
+  `encryption` und `integrity` des Stores, und dabei wird der Body
+  zugleich unter dem aktiven Master-Key des Keyrings neu
+  verschlüsselt.
+
+  Ein Ziel, an dem bereits ein Objekt liegt, wird nie
+  überschrieben, und die Quellen bleiben liegen — der Lauf ist
+  also nach einem Abbruch wiederholbar, und das alte Korpus steht
+  weiterhin für ein Rollback bereit.  Führe ihn mit
+  `deleteSource: true` erneut aus, um die Quellen abzuräumen,
+  sobald das Upgrade verifiziert ist.
 </Aside>
 
 ## Performance

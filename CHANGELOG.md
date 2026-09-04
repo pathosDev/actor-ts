@@ -1620,14 +1620,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
   **Migration.** Snapshots need none — they are a recovery accelerator, not
   a source of truth, so a load finding nothing replays the journal and the
-  next save writes at the new key. Durable state does: copy each
+  next save writes at the new key. Durable state does, and
+  `migrateObjectStorageDurableStateLayout(backend, { prefix })` is it: one
+  pass with the application stopped, moving each
   `<prefix><persistenceId>/state.json` to
-  `<prefix>state/<persistenceId>/state.json`. A body with neither
-  client-side encryption nor an integrity HMAC carries no key binding, so a
-  server-side copy suffices; a context-bound body (#612) is sealed against
-  its old key and will not decode at the new one, so run the OLD version
-  with the durable-state store pointed at `<prefix>state/` and re-upsert
-  each record first.
+  `<prefix>state/<persistenceId>/state.json`. It moves the *body* rather
+  than replaying the record through a store, which is what keeps `revision`
+  and `timestamp` the bytes that were already there — re-`upsert`ing cannot,
+  because at a record's own revision the compare-and-swap finds no entry at
+  the empty destination and raises `DurableStateConcurrencyError`, and
+  `upsert(id, 0, state)` is the only form that lands and writes revision 1
+  over a record that was at 7. A body with neither client-side encryption
+  nor an integrity HMAC carries no key binding and is copied verbatim; a
+  context-bound body (#612) is sealed against its old key, so it is decoded
+  there and re-sealed against the new one — pass the store's own
+  `encryption` / `integrity` for that, which also re-encrypts it under the
+  keyring's active master key. A destination that already holds an object is
+  never overwritten and sources stay in place, so the pass is repeatable;
+  re-run it with `deleteSource: true` to retire them once the upgrade is
+  verified.
 
 - **`ConsumerController` serialises its handler, and bounds the out-of-order
   set** (#643, #728).
