@@ -357,7 +357,12 @@ Malformed traffic is dropped, not fatal: the broker validates a frame's
 `to` and `from` addresses before routing it, so one bad
 `postMessage` from a worker no longer throws inside the host's message
 listener.  The frame's `payload` is validated by the receiving
-transport, not by the broker.
+transport, not by the broker — it goes through the same wire checks a
+TCP peer's frames do, one that fails them never reaches a handler, and
+a handler that throws is contained instead of escaping the port's
+callback.  The senders that transport reports through `peers()` are
+bounded too, so a channel wired without a broker in front of it cannot
+grow that list without limit.
 
 ## Sender identity
 

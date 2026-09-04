@@ -368,7 +368,13 @@ Fehlerhafter Traffic wird verworfen, nicht fatal: Der Broker validiert
 die Adressen `to` und `from` eines Frames, bevor er ihn weiterleitet —
 ein einzelnes fehlerhaftes `postMessage` aus einem Worker wirft also
 nicht mehr im Message-Listener des Hosts.  Das `payload` des Frames
-validiert der empfangende Transport, nicht der Broker.
+validiert der empfangende Transport, nicht der Broker — es durchläuft
+dieselben Wire-Prüfungen wie die Frames eines TCP-Peers, ein Frame, der
+daran scheitert, erreicht keinen Handler, und ein Handler, der wirft,
+wird aufgefangen, statt aus dem Callback des Ports zu entkommen.  Auch
+die Absender, die dieser Transport über `peers()` meldet, sind
+begrenzt: Ein Channel ohne Broker davor kann diese Liste also nicht
+unbegrenzt wachsen lassen.
 
 ## Absender-Identität
 
