@@ -11,6 +11,279 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **BREAKING — The cluster transport's four association-lifecycle bounds are
+  settable from `actor-ts.remote` (#846).**
+
+  They have been enforced since #588 and #697 — a handshake deadline in both
+  directions, a bounded frame buffer in front of it, an inbound connection
+  cap, and a stall deadline on a half-received frame — and until now were
+  four hard-coded numbers with no key at all.
+
+  ```hocon actor-ts.remote { handshake-timeout  = 5s outbound-queue-size  =
+  1000 max-inbound-connections = 1024 incomplete-frame-idle  = 30s } ```
+
+  Every default is exactly where it was — wiring a bound must not move it,
+  and `ClusterConfigDefaults.test.ts` pins the published four to the
+  constants the transport still falls back to. Each is also a
+  `ClusterOptions` field (`withHandshakeTimeoutMs`, `withOutboundQueueSize`,
+  `withMaxInboundConnections`, `withIncompleteFrameIdleMs`) under the usual
+  precedence: explicit options over HOCON over the built-in default, per
+  field.
+
+  `max-inbound-connections` is the one worth setting first. It is the useful
+  half of the bound on inbound decode memory, which is this count times what
+  one connection may buffer — the other half, `incomplete-frame-idle`, is
+  deliberately generous. Set it from the real peer count with headroom for
+  the `ClusterClient`s that dial in; refusing a legitimate peer is a
+  partition, and the newest connection is refused rather than the oldest
+  evicted so an attacker cannot push established peers off the node.
+
+  None of the four has an "off" spelling. `0` is refused for each, because
+  it is a distinct way of breaking the node rather than a way of removing a
+  cap: no handshake window, no room to buffer a `tell` racing the handshake,
+  no inbound connection admitted, no connection allowed to end off a frame
+  boundary. `incomplete-frame-idle` must also stay above `handshake-timeout`
+  and is refused otherwise — a socket that sends nothing at all never
+  reaches the stall deadline, so the handshake timer is the only thing that
+  reclaims it, and inverting the two swaps their roles for a peer that sends
+  three bytes and stops.
+
+  Two naming decisions are settled here because a HOCON key cannot be
+  renamed without a breaking config change. `handshake-timeout` is one key
+  for **both** directions: the dialling side's clock starts before the TCP
+  connect and the TLS handshake and the accepting side's after the accept,
+  so one number means the peer that is still trying has always given up
+  first, where a split dial/accept pair would let an accept deadline set
+  below the dial deadline make a healthy peer permanently unjoinable.
+  `outbound-queue-size` is named for the category — frames held for a peer
+  that cannot take them — and not for the pre-handshake buffer it bounds
+  today, because the post-handshake backpressure queue (#931) is the same
+  quantity with the same drop-oldest policy and the same one-shot warning
+  and will land under this key rather than a second one.
+
+  Six of the ten keys #846 proposed do not ship, because nothing behind them
+  exists: the three `system-message.*` keys (there is no system-message
+  frame on the wire and remote death watch is a no-op — #918),
+  `quarantine.duration` (no quarantine state anywhere in `src/cluster/`),
+  `stop-idle-outbound-after` (no idle tracking, and reaping an idle
+  association would break the transport readiness check), and the
+  `large-message-destinations` / `max-large-frame-bytes` pair, which needs a
+  second connection per peer, a lane discriminator on the `hello` frame
+  (#823) and the measurement #1385 is for. `connection-timeout` is dropped
+  for the opposite reason: the dial is already bounded end to end, because
+  the handshake timer is armed before `backend.connect()` is called.
+
+  *Migration:* `TcpTransport`'s constructor is now `(self, log, options?)`
+  over a `TcpTransportOptions` bag instead of seven positional parameters.
+  `new TcpTransport(self, log, tls, maxFrameBytes, bindHost, bindPort,
+  readConstraints)` becomes `new TcpTransport(self, log, { tls,
+  maxFrameBytes, bindHost, bindPort, readConstraints })`, or
+  `TcpTransportOptions.create().withTls(...)...` for the builder form. A
+  two-argument call is unchanged, which covers most construction sites.
+  Every in-repo caller — one in `src/`, three in `tests/`, fourteen
+  documentation snippets across eight pages in both languages — is updated
+  in the same change. The transport's `maxFrameBytes` stays a public
+  readonly field and `Transport` is unchanged, so a custom transport
+  implementation needs nothing.
+
+- **BREAKING — A circuit breaker can now be resolved by id from
+  configuration, and its reopen window can grow and jitter (#864).**
+
+  `system.extension(CircuitBreakerExtensionId).breaker('payment-api')`
+  returns a system-owned breaker whose settings come from the new
+  `actor-ts.circuit-breaker` block — `<id>.*` over `default.*` over the
+  built-in floor, with explicit options above all three — so the numbers
+  change in `application.conf` without a deploy and the instance outlives
+  the actor that uses it. `new CircuitBreaker({ … })` is unchanged and
+  remains the door for a breaker configured in code.
+
+  Three new options shape what happens after it opens:
+
+  - `backoffFactor` grows the reopen window once per consecutive open,
+  - `maxResetTimeoutMs` is the ceiling it grows to,
+  - `randomFactor` spreads it, so a fleet stops probing a recovering
+    dependency in lockstep.
+
+  All three ship neutral (`1.0`, `60s`, `0.0`), so an unconfigured breaker
+  keeps the flat window every earlier release had; the exponent resets as
+  soon as a probe succeeds and the breaker closes. `breaker.nextProbeAt` and
+  `breaker.consecutiveOpens` expose the schedule to a metric.
+
+  A fourth option, `ignoredErrorNames`, is `isFailure` expressed as data — a
+  list of `Error.name` values that never count — so it can come from a
+  config file. It is checked before the predicate and short-circuits: the
+  list belongs to whoever runs the deployment while the predicate is
+  compiled in, and a predicate that could overrule the list would make the
+  key inert for exactly the deployments that set it.
+
+  Six leaves ship under `actor-ts.circuit-breaker.default`, kebab-case per
+  #1405. `call-timeout` is deliberately a comment rather than a leaf:
+  omitting `callTimeoutMs` is what disables the per-call timeout and the
+  validator refuses `0`, so "no deadline" is a state only a missing key can
+  express, and a published default would hand every config-resolved breaker
+  a deadline a hand-built one does not have. It is still read when a
+  deployment writes it. #864
+
+  *Migration:* A breaker whose `resetTimeoutMs` is longer than 60 s must now
+  pass `maxResetTimeoutMs` at least that large — the ceiling defaults to
+  `60_000` and an unset one is checked, so the pair is refused with an
+  `OptionsError` naming `maxResetTimeoutMs` instead of the window being
+  silently clamped. Nothing in the repository, the examples or the docs
+  configures a window above 60 s.
+
+- **BREAKING — `BackoffSupervisor` now takes its defaults from
+  `actor-ts.backoff-supervisor.*`, and gained the options triad every other
+  configurable thing in the framework has (#865).**
+
+  Seven leaves ship: `min-backoff`, `max-backoff`, `random-factor`,
+  `max-stash-size`, `reset-counter`, `forward` and `trigger-on`, under the
+  usual precedence — explicit options over HOCON over the built-in defaults,
+  per field. A deployment can retune every supervisor's respawn pacing
+  without touching a call site, and a supervisor written as
+  `BackoffSupervisor.factory({ child: Flaky })` takes the whole block.
+
+  - **`minBackoff` and `maxBackoff` are optional now**, defaulting to 200 ms
+    and 10 s. They were required with no built-in default, so there was no
+    shipped number to preserve; 200 ms / 10 s is what the rest of the tree
+    already converged on for the same mechanism — `WorkerClusterOptions`
+    paces a crashed worker slot with exactly this curve, the pattern's own
+    documentation narrates it ("200 ms, 400, 800, …") and its runnable
+    example passes it. The reasoning sits beside the constant.
+  - **Resolution moved from the constructor to `preStart`**, which is the
+    first point where `system.config` is reachable: the cell calls the
+    blueprint factory and only afterwards attaches the context. All nine
+    derived fields now live behind one resolved box with an accessor that
+    throws before it is filled, the shape `BrokerActor` already uses.
+    `preStart` resolves before it spawns, because the spawn reads
+    `childName`, `clock` and `drainGraceMs`.
+  - **Where an illegal value surfaces moved with it.** `minBackoff: 0` was a
+    synchronous constructor throw and is now a failed supervisor start
+    reaching whoever supervises it. A value from `application.conf` cannot
+    be checked at a call site that never saw it, so the one rule covering
+    all three sources runs on the merged settings — as `OptionsError` from
+    the new `BackoffSupervisorOptionsValidator`, which also tightened three
+    previously unchecked fields: `randomFactor` must be in `[0, 1]`,
+    `maxStashSize` must be an integer ≥ 1, and `childName` must be
+    non-empty.
+  - **`src/pattern/BackoffSupervisorOptions.ts`** carries the family:
+    `BackoffSupervisorOptionsType<T>`, `BackoffSupervisorOptionsBuilder<T>`,
+    `BackoffSupervisorOptions` (union type plus builder value alias),
+    `BackoffSupervisorOptionsValidator`, the eight `DEFAULT_BACKOFF_*`
+    constants and the two config readers. The reader takes its `Config` as a
+    required argument rather than defaulting to `Config.load()`: a
+    supervisor runs inside an `ActorSystem` and reaches config through
+    `this.system.config`, so a second load would ignore
+    `ActorSystem.create({ config })` and re-read `application.conf` off disk
+    on every supervisor construction *and* every supervisor restart.
+
+  Seven fields deliberately ship no leaf: `drain-grace` has a default
+  derived from `min-backoff` (a published `50ms` would outlast the backoff
+  window of a supervisor with a shorter one), `child-name` / `child` /
+  `child-options` are per-call-site identity, `forward-during-grace` only
+  means anything alongside a `drain-grace` this block cannot carry, and
+  `policy` / `clock` are functions no config file can express. The reference
+  block says so where an operator will look.
+
+  Top-level and a sibling of `actor-ts.circuit-breaker` rather than under an
+  `actor-ts.pattern.*` umbrella, matching `actor-ts.worker-cluster`: an
+  umbrella would put the directory layout of `src/` into the key an operator
+  types.
+
+  *Migration:* Rename the exported type `BackoffOptions<T>` to
+  `BackoffSupervisorOptionsType<T>` and import it from `actor-ts` as before.
+  Object literals passed to `BackoffSupervisor.factory({ child: … })` need
+  no change at all — `minBackoff` and `maxBackoff` merely became optional.
+  `ResetCounter`, `ForwardStrategy` and the newly exported
+  `TerminationTrigger` keep their names and move to
+  `src/pattern/BackoffSupervisorOptions.ts`, which the barrels re-export.
+
+- **`ShardedDaemonProcess.init` now reads a new top-level
+  `actor-ts.sharded-daemon-process` block, with `liveness-interval` (default
+  `30s`, `0` disables the heartbeat) and `role` (default `""`)**
+  (#854).  The module previously cast its argument straight to the settings
+  type, so a daemon set was tunable from code and from nowhere else —
+  `system.config` was never consulted and the liveness period fell back to
+  an inline literal. Both keys are read once per `init` and layered under
+  whatever the call passes explicitly, so `withRole` /
+  `withLivenessIntervalMs` still win; the merge runs before validation, so a
+  configured negative interval is rejected by name rather than silently
+  arming a timer.
+
+  Two details worth knowing:
+
+  - The liveness leaf is spelled `liveness-interval`, not the
+    `keep-alive-interval` the issue proposed. The field is
+    `livenessIntervalMs` and the builder `withLivenessIntervalMs`, and the
+    project's lockstep rule is builder `withX` ⇔ field `x` ⇔ leaf `x`; the
+    sharding block already drops an `Ms` suffix without renaming a concept
+    (`passivation-idle`).
+  - `role` ships as `""` and the reader drops the empty string rather than
+    passing it on. A daemon set with no role of its own therefore inherits
+    `actor-ts.sharding.role` like every other sharded type, and naming a
+    role here narrows the daemons alone. Returning `''` instead would have
+    reached sharding as an explicit role on every daemon set, shadowing the
+    global key for the daemon region and nothing else.
+
+  `name`, `numDaemons` and the per-index actor keep no leaf — they describe
+  one daemon set rather than a deployment, and `numDaemons` in particular
+  becomes the type's `numShards`, which every node must agree on. #854
+
+- **The five relational persistence backends now read their own HOCON
+  blocks, and their durable-state stores became selectable plug-ins (#872,
+  slice 2 of 3)** (#872).
+
+  Slice 1 built the seam and proved it on SQLite; the eight remaining
+  backends still took every table name, retention bound and connection
+  string constructor-only. Postgres, MariaDB, SQL Server, libSQL and
+  Cloudflare D1 now each read three blocks — `journal.<backend>`,
+  `snapshot-store.<backend>` and `durable-state.<backend>` — so
+  `registerPostgresPlugins(ext)`, and each of its four siblings, is a
+  complete wiring when `application.conf` fills the blocks in. Precedence is
+  the project-wide one: explicit options over HOCON over the built-in
+  defaults, per field, with an unset field falling through rather than
+  shadowing.
+
+  - **Sixty-two leaves across fifteen blocks.** The five backends share
+    `RelationalJournal` / `RelationalSnapshotStore` /
+    `RelationalDurableStateStore`, so the table half of every block is the
+    same leaves — `events-table`, `snapshots-table`, `keep-n`, `table`,
+    `auto-create-tables` — and only the connection half differs (`url` for
+    Postgres/MariaDB/SQL Server, `url` + `auth-token` for libSQL,
+    `account-id` + `database-id` + `api-token` + `base-url` for D1). The
+    connection is repeated under each of the three plugin roots rather than
+    hoisted to a per-backend one, because a plugin id *is* its config
+    section and the three axes are selected independently; a deployment that
+    shares one connection deduplicates it with a HOCON substitution.
+  - **`durable-state.plugin` now selects a relational store.** Each register
+    helper used to build its durable-state store eagerly and hand it back,
+    because there was no registry to put it in — which is what left the nine
+    `*_DURABLE_STATE_PLUGIN_ID` constants with nothing to select.
+    Construction moves into a lazy that both the registered factory and the
+    returned handle resolve, so the id selects the store and the handle
+    still yields the one instance. Two consequences worth knowing: the store
+    is built on first use rather than at registration, and its options
+    validator therefore runs against the merged settings — the block
+    included — instead of against whatever was known when the helper was
+    called. The return types are unchanged; `registerMariaDbPlugins`'
+    options parameter became optional to match its four siblings.
+  - **What has no leaf, and why.** A pre-built `pool` or `client` and a
+    `serializer` are live objects, so a config file cannot express one.
+    `poolConfig` is free-form driver config with no enumerable key set and
+    no default, so it stays code-only — for SQL Server that means a
+    config-driven store is reached through `url`. And `tags-table` ships as
+    a *comment* rather than a key, because its default is derived from
+    `events-table`: absence is what keeps the two in step. It is read all
+    the same, so an `application.conf` can still pin it.
+  - libSQL's `auth-token` and D1's `api-token` do get leaves, unlike object
+    storage's key material. A token is a string an operator supplies, the
+    leaves ship empty, empty reads as unset, and the documented route is a
+    substitution — the same treatment `cache.redis.password` and
+    `logger.sinks.splunk.token` already get.
+
+  The remaining three backends (MongoDB, DynamoDB, Cassandra) keep their
+  constructor-only wiring for now and follow the same pattern in the last
+  slice.
+
 - **BREAKING — Persistence plug-ins can now read their own HOCON block, and
   durable state gained the plug-in axis it never had (#872, slice 1 of 3)
   (#872).**

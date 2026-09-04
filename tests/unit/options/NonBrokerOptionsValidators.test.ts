@@ -144,6 +144,33 @@ describe('ClusterOptionsValidator', () => {
   test('accepts weaklyUpAfterMs 0 (disabled) and a valid config', () => {
     expect(() => check({ host: '127.0.0.1', port: 2552, weaklyUpAfterMs: 0 })).not.toThrow();
   });
+
+  test('the four association-lifecycle bounds have no "off" spelling (#846)', () => {
+    // Unlike `weaklyUpAfterMs` above, `0` is not "disabled" for any of these —
+    // it is a distinct way of breaking the node for each: no handshake window,
+    // no room to buffer a send racing the handshake, no inbound connection
+    // admitted, no connection allowed to end off a frame boundary.
+    expect(() => check({ handshakeTimeoutMs: 0 })).toThrow(/handshakeTimeoutMs/);
+    expect(() => check({ outboundQueueSize: 0 })).toThrow(/outboundQueueSize/);
+    expect(() => check({ maxInboundConnections: 0 })).toThrow(/maxInboundConnections/);
+    expect(() => check({ incompleteFrameIdleMs: 0 })).toThrow(/incompleteFrameIdleMs/);
+    expect(() => check({ outboundQueueSize: 1.5 })).toThrow(OptionsError);
+  });
+
+  test('the stall deadline must outlast the handshake deadline (#846)', () => {
+    // A socket that sends nothing at all never reaches the stall deadline, so
+    // the handshake timer is the only thing that reclaims it.  Inverting the
+    // two swaps their roles for a peer that sends three bytes and stops.
+    expect(() => check({ handshakeTimeoutMs: 5_000, incompleteFrameIdleMs: 5_000 }))
+      .toThrow(/incompleteFrameIdleMs/);
+    expect(() => check({ handshakeTimeoutMs: 5_000, incompleteFrameIdleMs: 1_000 }))
+      .toThrow(/must be greater than handshakeTimeoutMs/);
+    expect(() => check({ handshakeTimeoutMs: 5_000, incompleteFrameIdleMs: 30_000 }))
+      .not.toThrow();
+    // Either alone passes: the unset half falls through to a default that the
+    // set half clears, and a helper is a no-op on an unset field.
+    expect(() => check({ incompleteFrameIdleMs: 1_000 })).not.toThrow();
+  });
 });
 
 describe('ClusterBootstrapOptionsValidator', () => {

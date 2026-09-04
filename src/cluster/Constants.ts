@@ -82,6 +82,16 @@ export const HELLO_TIMEOUT_MS = 5_000;
  * accept, so a peer that is still trying has always given up first, and the
  * accepting side can never be the deadline that punishes a slow-but-legitimate
  * one.
+ *
+ * Built-in default for `actor-ts.remote.handshake-timeout`, and for the
+ * `handshakeTimeoutMs` field on both `ClusterOptionsType` and
+ * `TcpTransportOptionsType` (#846) — a default shared by two options types,
+ * which is what keeps it in this module rather than in either of them.
+ *
+ * **One key for both directions.**  The paragraph above is the reason: the
+ * ordering it relies on is free while the two sides read one number, and a
+ * dial/accept pair would hand an operator the ability to set the acceptor
+ * stricter than the dialler and make a healthy peer permanently unjoinable.
  */
 export const HANDSHAKE_TIMEOUT_MS = 5_000;
 
@@ -91,6 +101,13 @@ export const HANDSHAKE_TIMEOUT_MS = 5_000;
  * an unbounded one turns a silently-stuck peer into a memory leak.  Oldest
  * frames are dropped first — the newest membership/heartbeat state is the
  * state worth keeping.
+ *
+ * Built-in default for `actor-ts.remote.outbound-queue-size` (#846), on both
+ * `ClusterOptionsType` and `TcpTransportOptionsType`.  The key is named for
+ * the *category* — frames held for a peer that cannot take them — rather than
+ * for this one buffer, because #931's post-handshake backpressure queue is the
+ * same quantity with the same drop-oldest policy and the same one-shot WARN,
+ * and a HOCON key cannot be renamed without a breaking config change.
  */
 export const MAX_PENDING_FRAMES = 1_000;
 
@@ -130,6 +147,12 @@ export const RETAINED_FRAME_BUFFER_BYTES = 64 * 1_024;
  * Generous on purpose.  Together with {@link MAX_INBOUND_CONNECTIONS} it is
  * what bounds inbound decode memory at all, and the bound is the product of
  * the two — so the useful tightening is the connection count, not this.
+ *
+ * Built-in default for `actor-ts.remote.incomplete-frame-idle` (#846), on both
+ * `ClusterOptionsType` and `TcpTransportOptionsType`.  Both validators refuse
+ * a configured value at or below `handshake-timeout`: the paragraph above is
+ * why — the two deadlines cover disjoint failures, and the handshake one is
+ * the shorter of the pair by construction.
  */
 export const INCOMPLETE_FRAME_IDLE_MS = 30_000;
 
@@ -153,6 +176,12 @@ export const INCOMPLETE_FRAME_IDLE_MS = 30_000;
  * Refusing the newest rather than evicting the oldest is the same choice the
  * member-map caps make: eviction would let an attacker push established peers
  * off the node, which is a better exploit than the one being closed.
+ *
+ * Built-in default for `actor-ts.remote.max-inbound-connections` (#846), on
+ * both `ClusterOptionsType` and `TcpTransportOptionsType`.  This is the half
+ * of the inbound-memory bound worth moving, and the paragraph above is the
+ * shape of the trade an operator is making when they do: set it from the real
+ * peer count, with headroom for the `ClusterClient`s that dial in.
  */
 export const MAX_INBOUND_CONNECTIONS = 1_024;
 

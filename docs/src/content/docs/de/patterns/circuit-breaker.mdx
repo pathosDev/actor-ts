@@ -105,6 +105,35 @@ nicht-positives `maxFailures`, ein negatives `resetTimeoutMs` oder ein
 nicht-positives `callTimeoutMs` wirft `OptionsError` (lasse
 `callTimeoutMs` ganz weg, um den Per-Call-Timeout zu deaktivieren).
 
+#### Fehler über ihren Namen ignorieren
+
+`isFailure` ist ein Prädikat und lebt damit im Code.
+`ignoredErrorNames` ist dieselbe Idee als Daten ausgedrückt — eine
+Liste von `Error.name`-Werten, die nie zählen — und genau das erlaubt
+es dem Betrieb, sie in `application.conf` zu ändern, ohne zu deployen:
+
+```ts
+new CircuitBreaker({
+  maxFailures: 5,
+  resetTimeoutMs: 30_000,
+  ignoredErrorNames: ['ValidationError', 'NotFoundError'],
+});
+```
+
+Die Liste wird **vor** `isFailure` geprüft, und ein gelisteter Name ist
+nie ein Fehler, was das Prädikat auch sagt.  Diese Reihenfolge ist
+Absicht: die Liste ist die Hälfte des Klassifikators, die dem Betrieb
+gehört, das Prädikat die des Entwicklers — könnte ein einkompiliertes
+Prädikat die Liste überstimmen, liefe der Config-Key genau in den
+Deployments ins Leere, die ihn gesetzt haben.  Für einen *nicht*
+gelisteten Namen entscheidet weiterhin `isFailure`.
+
+`'CircuitBreakerTimeoutError'` ist listbar und bedeutet genau, was da
+steht: ein Call, der seinen eigenen `callTimeoutMs` gerissen hat, zählt
+nicht gegen den Breaker.  Stimmig — „langsam ist nicht tot“ — und
+überraschend genug, dass es beim Deployment, das sich dafür
+entscheidet, notiert gehört.
+
 ### Open → Half-open
 
 Sobald Open, rejected jeder Call sofort mit
@@ -126,6 +155,107 @@ Während Half-open ist nur die *eine* Probe im Flug.  Parallele
 Calls während Half-open gehen *auch* durch (der Breaker
 serialisiert nicht), aber die Zustands-Übergänge des Breakers
 werden vom ersten Vollenden getrieben.
+
+### Der Reopen-Fahrplan
+
+Standardmäßig ist das Fenster flach: jedes Öffnen wartet
+`resetTimeoutMs`.  Zwei optionale Stellschrauben ändern das, und beide
+sind neutral ausgeliefert, damit das Default-Verhalten das jedes
+früheren Releases bleibt.
+
+```ts
+const breaker = new CircuitBreaker({
+  maxFailures:       5,
+  resetTimeoutMs:    15_000,  // the first window
+  backoffFactor:     2,       // each further open doubles it
+  maxResetTimeoutMs: 60_000,  // …up to here
+  randomFactor:      0.2,     // then spread by ±20%
+});
+```
+
+Die Verzögerung für das *n*-te aufeinanderfolgende Öffnen ist
+`resetTimeoutMs × backoffFactor^(n − 1)`, begrenzt auf
+`maxResetTimeoutMs`, anschließend mit `1 ± randomFactor`
+multipliziert.  Oben also 15 s, 30 s, 60 s, 60 s …, jeweils ±20 %.
+Der Zähler fällt zurück, sobald eine Probe gelingt und der Breaker
+schließt — eine Dependency, die sich erholt, beginnt wieder beim
+ersten Fenster statt in einem langen zu bleiben, das sie sich im
+Ausfall verdient hat.
+
+Der Jitter folgt demselben Vertrag wie bei `retry` und
+`exponentialBackoff` und bringt hier dasselbe: N Repliken, die auf
+ein und dasselbe Upstream-Ereignis hin geöffnet haben, proben nicht
+mehr im Gleichschritt, und die sich erholende Dependency trifft eine
+gestreute Folge von Proben statt einer synchronisierten Welle.
+
+`maxResetTimeoutMs` begrenzt das *gesamte* Fenster, nicht nur das
+Wachstum — ein `resetTimeoutMs` oberhalb der Grenze wird deshalb bei
+der Konstruktion abgelehnt statt still gekürzt: stilles Kürzen
+ersetzte ein Fenster, das der Betrieb gewählt hat, durch eines, das
+niemand aufgeschrieben hat.  Der Default sind 60 s, und genau die muss
+ein längeres `resetTimeoutMs` anheben.
+
+`breaker.nextProbeAt` liest den geplanten Zeitstempel,
+`breaker.consecutiveOpens` den Exponenten dahinter — so sieht eine
+Metrik den Fahrplan, ohne ihn abwarten zu müssen.
+
+## Breaker aus der Konfiguration
+
+`new CircuitBreaker({ … })` ist die Tür für einen Breaker, dessen
+Settings im Code stehen.  Die **`CircuitBreakerExtension`** ist die
+andere: sie löst einen Breaker über seine Id auf, die Zahlen kommen
+also aus HOCON, und die Instanz gehört dem System statt dem, was sie
+erzeugt hat.
+
+```ts
+import { CircuitBreakerExtensionId } from 'actor-ts';
+
+const breakers = system.extension(CircuitBreakerExtensionId);
+const payments = breakers.breaker('payment-api');
+const shipping = breakers.breaker('shipping-api');
+```
+
+```hocon
+actor-ts.circuit-breaker {
+  default {
+    max-failures  = 5
+    reset-timeout = 15s
+  }
+  payment-api {
+    max-failures        = 3
+    reset-timeout       = 30s
+    backoff-factor      = 2.0
+    random-factor       = 0.2
+    ignored-error-names = ["ValidationError"]
+  }
+}
+```
+
+`payment-api` nimmt seine eigenen vier Blätter und erbt den Rest von
+`default`; `shipping-api` hat gar keinen Block und ist vollständig der
+`default`-Block.  Jede Id ist eine eigene Instanz mit eigenen Settings
+— das ist der Rat „ein Breaker pro logischer Abhängigkeit“ weiter
+unten, konfigurierbar gemacht statt bloß empfohlen.  Dieselbe Id
+liefert immer dieselbe Instanz.
+
+Was eine Config-Datei nicht ausdrücken kann, wird als zweites Argument
+übergeben und sticht beide Blöcke:
+
+```ts
+const payments = breakers.breaker('payment-api', {
+  isFailure: (err) => err.name !== 'ValidationError',
+});
+```
+
+Gelesen wird es einmal, beim Erzeugen der Instanz — ein späteres
+`breaker('payment-api')` liefert den bereits existierenden Breaker
+zurück, statt ihn neu zu konfigurieren.  Ein schlechter Wert in einem
+der beiden Blöcke wirft bei genau diesem ersten Aufruf `OptionsError`,
+ein vertippter Override scheitert also laut, statt einen Breaker still
+auf den Framework-Defaults laufen zu lassen.
+
+Die vollständige Key-Liste steht in der
+[Konfigurations-Referenz](/de/reference/configuration/#actor-tscircuit-breaker).
 
 ## Observability
 
@@ -160,7 +290,8 @@ Breaker nicht richtig konfiguriert ist.
 
 ## Die Zahlen wählen
 
-Drei Parameter; so denkst du über sie:
+Drei Parameter entscheiden, wann der Breaker auslöst; so denkst du
+über sie:
 
 - **`maxFailures`** — hoch genug, dass ein einzelner transienter
   Aussetzer den Breaker nicht öffnet, niedrig genug, dass ein
@@ -176,6 +307,25 @@ Drei Parameter; so denkst du über sie:
   das auf 2-3 s.  Es niedriger als die normale Latenz des
   Upstreams zu setzen, bedeutet, dass du alles zu einem Timeout
   erklärst.
+
+Drei weitere formen den Reopen-Fahrplan, und alle drei sind
+standardmäßig aus:
+
+- **`backoffFactor`** — bei `1` lassen für eine Dependency, deren
+  Ausfälle kurz sind und sich von selbst klären; zu `2` greifen,
+  wenn ein wiederholt fehlschlagender Upstream einer ist, den du
+  seltener fragen solltest.  Das Wachstum akkumuliert nur, solange
+  der Breaker nie schließt, kostet im Normalfall also nichts.
+- **`maxResetTimeoutMs`** — wie lange du bereit bist, eine
+  Erholung *nicht* zu bemerken.  Muss mindestens `resetTimeoutMs`
+  sein; der Default von 60 s ist die Obergrenze, auf die sich der
+  Rest des Projekts für einen Backoff geeinigt hat, hinter dem
+  jemand wartet.
+- **`randomFactor`** — `0.2`, wenn mehr als ein Prozess diesen
+  Breaker gegen dieselbe Dependency fährt, `0`, wenn es genau
+  einer ist.  Jitter geht darum, eine Flotte zu entkoppeln, und
+  eine einzelne Instanz hat nichts, wovon sie sich entkoppeln
+  müsste.
 
 ## Verglichen mit Retry
 
@@ -224,8 +374,11 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Den Breaker auf den Actor zu legen, bedeutet, dass er nur so
   lange überlebt wie der Actor.  Wenn der Zustand des Breakers
-  Restarts überleben soll, hebe ihn in eine Extension oder einen
-  Parent-Actor und injiziere ihn in den Konstruktor.
+  Restarts überleben soll, löse ihn über die
+  [`CircuitBreakerExtension`](#breaker-aus-der-konfiguration) auf —
+  `system.extension(CircuitBreakerExtensionId).breaker('payment-api')`
+  liefert für die Lebensdauer des Systems immer dieselbe Instanz —
+  oder hebe ihn in einen Parent-Actor und injiziere ihn.
 </Aside>
 
 <Aside type="caution" title="`half-open` queued nicht">

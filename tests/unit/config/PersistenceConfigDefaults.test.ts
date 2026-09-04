@@ -10,11 +10,37 @@ import {
   DEFAULT_SNAPSHOT_KEEP_N,
   DEFAULT_SQLITE_BUSY_TIMEOUT_MS,
 } from '../../../src/persistence/Constants.js';
+import { DEFAULT_D1_BASE_URL } from '../../../src/persistence/journals/D1Client.js';
 import {
   readSqliteDurableStateStoreOptionsFromConfig,
   readSqliteJournalOptionsFromConfig,
   readSqliteSnapshotStoreOptionsFromConfig,
 } from '../../../src/persistence/journals/SqlitePluginOptions.js';
+import {
+  readPostgresDurableStateStoreOptionsFromConfig,
+  readPostgresJournalOptionsFromConfig,
+  readPostgresSnapshotStoreOptionsFromConfig,
+} from '../../../src/persistence/journals/PostgresPluginOptions.js';
+import {
+  readMariaDbDurableStateStoreOptionsFromConfig,
+  readMariaDbJournalOptionsFromConfig,
+  readMariaDbSnapshotStoreOptionsFromConfig,
+} from '../../../src/persistence/journals/MariaDbPluginOptions.js';
+import {
+  readMsSqlDurableStateStoreOptionsFromConfig,
+  readMsSqlJournalOptionsFromConfig,
+  readMsSqlSnapshotStoreOptionsFromConfig,
+} from '../../../src/persistence/journals/MsSqlPluginOptions.js';
+import {
+  readLibSqlDurableStateStoreOptionsFromConfig,
+  readLibSqlJournalOptionsFromConfig,
+  readLibSqlSnapshotStoreOptionsFromConfig,
+} from '../../../src/persistence/journals/LibSqlPluginOptions.js';
+import {
+  readD1DurableStateStoreOptionsFromConfig,
+  readD1JournalOptionsFromConfig,
+  readD1SnapshotStoreOptionsFromConfig,
+} from '../../../src/persistence/journals/D1PluginOptions.js';
 
 /**
  * #872 — before this, nothing under `src/persistence/` read a config block.
@@ -244,5 +270,309 @@ describe('the three blocks are read independently', () => {
     expect(readSqliteJournalOptionsFromConfig(config)).toEqual({ path: './events.db', busyTimeoutMs: 7_000 });
     expect(readSqliteSnapshotStoreOptionsFromConfig(config)).toEqual({});
     expect(readSqliteDurableStateStoreOptionsFromConfig(config)).toEqual({});
+  });
+});
+
+/**
+ * The relational family — Postgres, MariaDB, SQL Server, libSQL and Cloudflare
+ * D1 (#872, slice 2).
+ *
+ * Fifteen readers over fifteen blocks, and the reason they are asserted one by
+ * one rather than by a shared helper is the mistake a shared helper cannot
+ * catch: the leaf *names* are identical across all fifteen — `events-table`,
+ * `snapshots-table`, `keep-n`, `table`, `auto-create-tables` — so a reader that
+ * composed its paths from the wrong backend's root, or from the wrong axis,
+ * would read entirely plausible values.  `NoDeadConfigKeys` cannot see that at
+ * all: its `coveringAccessor` falls back to a root above the leaf, and every
+ * one of these roots is *also* hard-coded as a plugin id in the matching
+ * `XxxPlugin.ts`, so the guard is satisfied by a string that is not a config
+ * read.  The table below is what actually pins a leaf to a value.
+ */
+type RelationalReader = (config: Config, blockRoot?: string) => Record<string, unknown>;
+
+type RelationalReaderCase = {
+  /** Reader name, for the test title. */
+  readonly name: string;
+  readonly read: RelationalReader;
+  /** The canonical block root the reader defaults to. */
+  readonly root: string;
+  /** Exactly what the shipped reference.conf resolves to — no more, no less. */
+  readonly fromReference: Record<string, unknown>;
+};
+
+// Mutable rather than `readonly`: bun's `test.each` takes a mutable array, and
+// widening it here beats casting at each of the three call sites.
+const relationalReaders: RelationalReaderCase[] = [
+  {
+    name: 'readPostgresJournalOptionsFromConfig',
+    read: readPostgresJournalOptionsFromConfig,
+    root: ConfigKeys.persistence.journal.postgres.root,
+    fromReference: { eventsTable: DEFAULT_EVENTS_TABLE, autoCreateTables: DEFAULT_AUTO_CREATE_TABLES },
+  },
+  {
+    name: 'readPostgresSnapshotStoreOptionsFromConfig',
+    read: readPostgresSnapshotStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.snapshotStore.postgres.root,
+    fromReference: {
+      snapshotsTable: DEFAULT_SNAPSHOTS_TABLE,
+      keepN: DEFAULT_SNAPSHOT_KEEP_N,
+      autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
+    },
+  },
+  {
+    name: 'readPostgresDurableStateStoreOptionsFromConfig',
+    read: readPostgresDurableStateStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.durableState.postgres.root,
+    fromReference: { table: DEFAULT_DURABLE_STATE_TABLE, autoCreateTables: DEFAULT_AUTO_CREATE_TABLES },
+  },
+  {
+    name: 'readMariaDbJournalOptionsFromConfig',
+    read: readMariaDbJournalOptionsFromConfig,
+    root: ConfigKeys.persistence.journal.mariadb.root,
+    fromReference: { eventsTable: DEFAULT_EVENTS_TABLE, autoCreateTables: DEFAULT_AUTO_CREATE_TABLES },
+  },
+  {
+    name: 'readMariaDbSnapshotStoreOptionsFromConfig',
+    read: readMariaDbSnapshotStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.snapshotStore.mariadb.root,
+    fromReference: {
+      snapshotsTable: DEFAULT_SNAPSHOTS_TABLE,
+      keepN: DEFAULT_SNAPSHOT_KEEP_N,
+      autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
+    },
+  },
+  {
+    name: 'readMariaDbDurableStateStoreOptionsFromConfig',
+    read: readMariaDbDurableStateStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.durableState.mariadb.root,
+    fromReference: { table: DEFAULT_DURABLE_STATE_TABLE, autoCreateTables: DEFAULT_AUTO_CREATE_TABLES },
+  },
+  {
+    name: 'readMsSqlJournalOptionsFromConfig',
+    read: readMsSqlJournalOptionsFromConfig,
+    root: ConfigKeys.persistence.journal.mssql.root,
+    fromReference: { eventsTable: DEFAULT_EVENTS_TABLE, autoCreateTables: DEFAULT_AUTO_CREATE_TABLES },
+  },
+  {
+    name: 'readMsSqlSnapshotStoreOptionsFromConfig',
+    read: readMsSqlSnapshotStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.snapshotStore.mssql.root,
+    fromReference: {
+      snapshotsTable: DEFAULT_SNAPSHOTS_TABLE,
+      keepN: DEFAULT_SNAPSHOT_KEEP_N,
+      autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
+    },
+  },
+  {
+    name: 'readMsSqlDurableStateStoreOptionsFromConfig',
+    read: readMsSqlDurableStateStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.durableState.mssql.root,
+    fromReference: { table: DEFAULT_DURABLE_STATE_TABLE, autoCreateTables: DEFAULT_AUTO_CREATE_TABLES },
+  },
+  {
+    name: 'readLibSqlJournalOptionsFromConfig',
+    read: readLibSqlJournalOptionsFromConfig,
+    root: ConfigKeys.persistence.journal.libsql.root,
+    fromReference: { eventsTable: DEFAULT_EVENTS_TABLE, autoCreateTables: DEFAULT_AUTO_CREATE_TABLES },
+  },
+  {
+    name: 'readLibSqlSnapshotStoreOptionsFromConfig',
+    read: readLibSqlSnapshotStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.snapshotStore.libsql.root,
+    fromReference: {
+      snapshotsTable: DEFAULT_SNAPSHOTS_TABLE,
+      keepN: DEFAULT_SNAPSHOT_KEEP_N,
+      autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
+    },
+  },
+  {
+    name: 'readLibSqlDurableStateStoreOptionsFromConfig',
+    read: readLibSqlDurableStateStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.durableState.libsql.root,
+    fromReference: { table: DEFAULT_DURABLE_STATE_TABLE, autoCreateTables: DEFAULT_AUTO_CREATE_TABLES },
+  },
+  {
+    name: 'readD1JournalOptionsFromConfig',
+    read: readD1JournalOptionsFromConfig,
+    root: ConfigKeys.persistence.journal.cloudflareD1.root,
+    fromReference: {
+      baseUrl: DEFAULT_D1_BASE_URL,
+      eventsTable: DEFAULT_EVENTS_TABLE,
+      autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
+    },
+  },
+  {
+    name: 'readD1SnapshotStoreOptionsFromConfig',
+    read: readD1SnapshotStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.snapshotStore.cloudflareD1.root,
+    fromReference: {
+      baseUrl: DEFAULT_D1_BASE_URL,
+      snapshotsTable: DEFAULT_SNAPSHOTS_TABLE,
+      keepN: DEFAULT_SNAPSHOT_KEEP_N,
+      autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
+    },
+  },
+  {
+    name: 'readD1DurableStateStoreOptionsFromConfig',
+    read: readD1DurableStateStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.durableState.cloudflareD1.root,
+    fromReference: {
+      baseUrl: DEFAULT_D1_BASE_URL,
+      table: DEFAULT_DURABLE_STATE_TABLE,
+      autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
+    },
+  },
+];
+
+describe('the relational family reads its own block', () => {
+  test('every relational reader is covered exactly once', () => {
+    // Guards the table: a reader added to src/ and forgotten here would leave
+    // its block asserted by nothing at all, which is the state the whole family
+    // was in before this commit.
+    expect(relationalReaders).toHaveLength(15);
+    expect(new Set(relationalReaders.map((entry) => entry.root)).size).toBe(15);
+  });
+
+  test.each(relationalReaders)(
+    '$name resolves the shipped reference.conf to exactly the documented defaults',
+    ({ read, fromReference }) => {
+      const options = read(reference);
+
+      expect(options).toEqual(fromReference);
+      // `toEqual` ignores a property whose value is `undefined`, so it cannot
+      // tell an omitted leaf from one punched through as a hole — and a hole
+      // would shadow the explicit options this result is spread under.
+      expect(ownKeysOf(options)).toEqual(Object.keys(fromReference));
+    },
+  );
+
+  test.each(relationalReaders)('$name yields nothing at all for an absent block', ({ read }) => {
+    const options = read(unrelated);
+
+    expect(options).toEqual({});
+    expect(ownKeysOf(options)).toEqual([]);
+  });
+
+  test.each(relationalReaders)('$name reads only its own root', ({ read, root }) => {
+    // Every one of the fifteen blocks spells its table leaves the same way, so
+    // a reader pointed at a sibling root reads a real value and looks correct.
+    const others = relationalReaders.filter((entry) => entry.root !== root);
+    const config = Config.parseString(
+      others.map((entry) => `${entry.root}.auto-create-tables = off`).join('\n'),
+    );
+
+    expect(read(config)).toEqual({});
+  });
+});
+
+describe('the relational connection halves', () => {
+  test('an empty url is dropped rather than passed through as ""', () => {
+    // `new pg.Pool({ connectionString: '' })` does not fail — it falls back to
+    // the PG* environment variables — so a published placeholder forwarded
+    // verbatim would connect somewhere nobody asked for.
+    const options = readPostgresJournalOptionsFromConfig(
+      Config.parseString(`${ConfigKeys.persistence.journal.postgres.root}.url = ""`),
+    );
+
+    expect(options.url).toBeUndefined();
+    expect(ownKeysOf(options)).toEqual([]);
+  });
+
+  test('libSQL reads url and auth-token, and drops both when empty', () => {
+    const set = readLibSqlJournalOptionsFromConfig(Config.parseString(`
+      ${ConfigKeys.persistence.journal.libsql.root} {
+        url = "libsql://db.turso.io"
+        auth-token = "secret"
+      }
+    `));
+    const unset = readLibSqlJournalOptionsFromConfig(Config.parseString(`
+      ${ConfigKeys.persistence.journal.libsql.root} {
+        url = ""
+        auth-token = ""
+      }
+    `));
+
+    expect(set).toEqual({ url: 'libsql://db.turso.io', authToken: 'secret' });
+    expect(ownKeysOf(unset)).toEqual([]);
+  });
+
+  test('D1 reads its three coordinates, and keeps the published base-url', () => {
+    const options = readD1JournalOptionsFromConfig(Config.parseString(`
+      ${ConfigKeys.persistence.journal.cloudflareD1.root} {
+        account-id  = "acct"
+        database-id = "db-uuid"
+        api-token   = "token"
+      }
+    `));
+
+    expect(options).toEqual({ accountId: 'acct', databaseId: 'db-uuid', apiToken: 'token' });
+  });
+
+  test('a live object written into a block is not read, whatever it is called', () => {
+    // The mitigation is the absent path, not a filter that could be forgotten:
+    // a pool, a client and a serializer have no leaf at all.  `pool-config` has
+    // none either — it is free-form driver config with no enumerable leaf set.
+    const options = readPostgresJournalOptionsFromConfig(Config.parseString(`
+      ${ConfigKeys.persistence.journal.postgres.root} {
+        pool = "handle"
+        pool-config = { max = 10 }
+        serializer = "cbor"
+      }
+    `));
+
+    expect(options).toEqual({});
+    expect(JSON.stringify(options)).not.toContain('cbor');
+  });
+});
+
+describe('the relational table halves', () => {
+  test('tags-table is comment-only but read — absence is what derives it', () => {
+    // The default is `${events-table}_tags`, computed in RelationalJournal, so
+    // absence is the only way to keep the two in step.  That is exactly the
+    // case reference.conf ships as a comment rather than a leaf — invisible to
+    // the leaf-driven guards, and still reachable from an application.conf.
+    const derived = readPostgresJournalOptionsFromConfig(
+      Config.parseString(`${ConfigKeys.persistence.journal.postgres.root}.events-table = "journal"`),
+    );
+    const pinned = readPostgresJournalOptionsFromConfig(Config.parseString(`
+      ${ConfigKeys.persistence.journal.postgres.root} {
+        events-table = "journal"
+        tags-table   = "journal_labels"
+      }
+    `));
+
+    expect(ownKeysOf(derived)).toEqual(['eventsTable']);
+    expect(pinned).toEqual({ eventsTable: 'journal', tagsTable: 'journal_labels' });
+  });
+
+  test('keep-n = 0 is read as 0 — that is how pruning is switched off', () => {
+    const options = readMariaDbSnapshotStoreOptionsFromConfig(
+      Config.parseString(`${ConfigKeys.persistence.snapshotStore.mariadb.root}.keep-n = 0`),
+    );
+
+    expect(options).toEqual({ keepN: 0 });
+  });
+
+  test('auto-create-tables = off is read as false, not dropped', () => {
+    // A deployment whose schema is owned by a migration tool switches this off;
+    // read as "unset" it would fall back to `true` and issue the DDL anyway.
+    const options = readMsSqlDurableStateStoreOptionsFromConfig(
+      Config.parseString(`${ConfigKeys.persistence.durableState.mssql.root}.auto-create-tables = off`),
+    );
+
+    expect(options).toEqual({ autoCreateTables: false });
+  });
+
+  test('a custom block root is read instead of the canonical one', () => {
+    // The plugin id IS the config section, so a plug-in registered under
+    // another id must read that id's block — and only that one.
+    const config = Config.parseString(`
+      actor-ts.persistence.journal.postgres.events-table = "canonical"
+      actor-ts.persistence.journal.ledger.events-table   = "custom"
+    `);
+
+    expect(readPostgresJournalOptionsFromConfig(config, 'actor-ts.persistence.journal.ledger'))
+      .toEqual({ eventsTable: 'custom' });
+    expect(readPostgresJournalOptionsFromConfig(config)).toEqual({ eventsTable: 'canonical' });
   });
 });

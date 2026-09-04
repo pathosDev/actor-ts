@@ -458,6 +458,10 @@ ohne sie stillschweigend zu vereinheitlichen.  Setz sie pro Lease im Code.
 | `remote.tls.enabled` | `false` | **Nicht umgesetzt** — `true` bringt eine Startup-Warnung, keine Verschlüsselung.  Siehe unten. |
 | `remote.untrusted-mode` | `false` | Ein eingehendes Envelope nur annehmen, wenn `trusted-selection-paths` sein Ziel nennt.  Aus ist jeder `/user`-Aktor namentlich adressierbar — genau das lässt eine `ActorRef` über Knoten hinweg funktionieren.  `/system` wird in beiden Fällen abgelehnt.  Siehe unten. |
 | `remote.trusted-selection-paths` | `[]` | Pfade, die ein Peer namentlich adressieren darf, solange `untrusted-mode` an ist.  Leer heißt: nichts über die Framework-Endpunkte hinaus, die dieser Knoten registriert hat. |
+| `remote.handshake-timeout` | `5s` | Wie lange eine Verbindung ohne ihre Hälfte des Handshakes bestehen darf, bevor sie abgeräumt wird.  **Ein Wert für beide Richtungen** — siehe unten. |
+| `remote.outbound-queue-size` | `1000` | Wie viele Frames für einen Peer gehalten werden, der sie gerade nicht annehmen kann; die ältesten fallen zuerst weg. |
+| `remote.max-inbound-connections` | `1024` | Wie viele eingehende Verbindungen dieser Knoten annimmt, bevor er Sockets rundheraus ablehnt — abgelehnt wird die neueste, nicht die älteste verdrängt. |
+| `remote.incomplete-frame-idle` | `30s` | Wie lange eine Verbindung ein halb empfangenes Frame halten darf, ohne dass ein weiteres Byte eintrifft.  Eine Stall-Schranke, bei jedem Chunk neu gestellt. |
 
 `host`/`port` sind das **Bind**-Paar, `advertised-host`/`advertised-port` das
 **Identitäts**-Paar: das erste sagt, wo der Listener aufmacht, das zweite,
@@ -556,6 +560,74 @@ exponierte der beiden Nahtstellen: ein
 beigetreten.  Ein abgelehnter Pfad wird mit demselben `path not found`
 beantwortet, das der Client für einen nicht existierenden Pfad bekommt — der
 Endpunkt taugt also nicht dazu, den Aktor-Baum zu kartieren.
+
+#### Der Assoziations-Lebenszyklus
+
+Die letzten vier Keys begrenzen, was eine Gegenstelle, die eine TCP-Verbindung
+zum Cluster-Port aufbauen kann, diesen Knoten halten lassen darf. Alle vier
+werden durchgesetzt, seit der Transport gehärtet wurde; neu ist nur, dass sie
+einstellbar sind
+([Issue #846](https://github.com/pathosDev/actor-ts/issues/846)):
+
+```hocon
+actor-ts.remote {
+  handshake-timeout       = 5s
+  outbound-queue-size     = 1000
+  max-inbound-connections = 1024
+  incomplete-frame-idle   = 30s
+}
+```
+
+`handshake-timeout` deckt eine Verbindung ab, die ihre Hälfte des Handshakes nie
+spricht — einen Dial, der nie sein `hello-ack` bekommt, und einen
+angenommenen Socket, der nie ein `hello` schickt. Es ist bewusst **ein Key für
+beide Richtungen**. Die Uhr der wählenden Seite startet vor dem TCP-Connect und
+dem TLS-Handshake, die der annehmenden Seite erst nach dem Accept — mit einer
+Zahl hat der Peer, der es noch versucht, also immer zuerst aufgegeben, und die
+annehmende Seite kann nie die Frist sein, die einen langsamen, aber legitimen
+Dial bestraft. Ein getrenntes Dial-/Accept-Paar würde erlauben, die
+Accept-Frist unter die Dial-Frist zu setzen und damit einen gesunden Peer
+dauerhaft unerreichbar zu machen — ohne dass in irgendeinem Log stünde, warum.
+
+`incomplete-frame-idle` deckt die andere Hälfte ab: eine Verbindung, die
+gesprochen hat und dann mitten im Frame verstummt ist. Es ist eine
+**Stall**-Schranke, kein Budget für das Frame — sie wird bei jedem Chunk neu
+gestellt, ein Peer, der ein großes Frame über eine verstopfte Leitung schiebt,
+wird also nie für seine Langsamkeit bestraft, nur fürs Aufhören. Halte sie über
+`handshake-timeout`; beide Validatoren lehnen einen Wert darunter oder darauf
+ab, denn ein Socket, der überhaupt nichts sendet, erreicht diese Frist nie —
+dafür ist der Handshake-Timer da.
+
+`max-inbound-connections` verhindert, dass sich beide Kosten durch Sockets im
+Loop vervielfachen lassen, und ist die Hälfte der Schranke für eingehenden
+Decode-Speicher, die sich zu senken lohnt: diese Schranke ist dieser Zähler mal
+dem, was eine Verbindung puffern darf. Setz ihn nach der echten Peer-Zahl, wo du
+sie kennst — eine eingehende Verbindung je Peer im Vollmesh, plus die
+[`ClusterClient`](/de/cluster/cluster-client/)s, die sich einwählen — und lass
+Luft, denn einen legitimen Peer abzulehnen ist eine Partition. Abgelehnt wird
+die neueste Verbindung statt die älteste verdrängt; Verdrängung ließe einen
+Angreifer etablierte Peers vom Knoten schieben.
+
+`outbound-queue-size` ist der einzige Key hier, der begrenzt, was dieser Knoten
+hält, statt was ein Peer gegen ihn hält: Frames, die für einen Peer geschrieben
+wurden, der sie gerade nicht annehmen kann; die ältesten fallen zuerst weg, denn
+der neueste Membership- und Heartbeat-Stand ist der, den zu behalten sich lohnt.
+Heute ist das der Puffer vor dem Handshake, damit ein `tell`, das mit dem
+Handshake um die Wette läuft, gehalten statt verloren wird. Der Key ist nach der
+Kategorie benannt, nicht nach diesem einen Puffer: die Backpressure-Queue nach
+dem Handshake ([Issue #931](https://github.com/pathosDev/actor-ts/issues/931))
+ist dieselbe Größe mit derselben Policy und derselben Warnung und landet unter
+diesem Key statt unter einem zweiten.
+
+Keiner der vier hat eine „Aus"-Schreibweise. `0` wird für jeden abgelehnt, weil
+es keine Art ist, eine Schranke zu entfernen, sondern jeweils eine eigene Art,
+den Knoten kaputtzumachen: kein Handshake-Fenster, kein Platz zum Puffern, keine
+eingehende Verbindung angenommen, keine Verbindung, die auf einer
+Frame-Grenze enden darf.
+
+Diese Werte erreichen den Transport, den der Cluster sich selbst baut. Ein
+`TcpTransport`, den du selbst baust und per `withTransport(…)` übergibst, trägt
+seine eigenen — setz sie in dessen `TcpTransportOptions`.
 
 :::caution[`remote.tls.enabled` verschlüsselt nichts]
 Der Key wird gelesen, aber nicht umgesetzt.  Ihn auf `true` zu setzen
@@ -923,12 +995,198 @@ ist die spezifischere Anweisung.  Für `driver`, `database` und `serializer` gib
 es kein Blatt — das sind lebende Objekte, die eine Config-Datei nicht ausdrücken
 kann.
 
+**Auch die fünf relationalen Backends lesen ihre eigenen Blöcke** (#872).
+Postgres, MariaDB, SQL Server, libSQL und Cloudflare D1 teilen sich ein Journal,
+einen Snapshot-Store und einen Durable-State-Store, deshalb ist die
+Tabellen-Hälfte jedes Blocks dieselben drei oder vier Blätter und nur die
+Verbindungs-Hälfte unterscheidet sich.  `registerPostgresPlugins(ext)` — und
+jedes seiner vier Geschwister — braucht damit gar keine Optionen mehr, sobald
+die Blöcke unten gefüllt sind:
+
+```ts
+const ext = system.extension(PersistenceExtensionId);
+registerPostgresPlugins(ext);        // url, tables, retention ... from HOCON
+```
+
+Die Verbindung wiederholt sich unter jedem der drei Plugin-Roots, statt auf einen
+Backend-Root gehoben zu werden, denn eine Plugin-Id *ist* ihr Config-Abschnitt,
+und die drei Achsen werden unabhängig ausgewählt — sie dürfen
+berechtigterweise verschiedene Datenbanken benennen.  Wer eine Verbindung teilt,
+schreibt sie einmal und substituiert:
+`url = ${actor-ts.persistence.journal.postgres.url}`.
+
+Drei Dinge haben bewusst **kein Blatt**.  Ein vorab gebauter `pool` oder `client`
+und ein `serializer` sind lebende Objekte, eine Config-Datei kann sie nicht
+ausdrücken.  `poolConfig` ist freie Treiber-Konfiguration ohne aufzählbare
+Schlüsselmenge und ohne Default und bleibt deshalb code-only — was für
+SQL Server heißt: ein rein per Config verdrahteter Store wird über `url`
+erreicht, in der Form `Server=...;Database=...` oder `mssql://`.  Und
+`tags-table` ist in der Referenzkonfiguration ein **Kommentar** statt eines
+Schlüssels, weil sein Default aus `events-table` abgeleitet wird
+(`<events-table>_tags`): genau die Abwesenheit hält beide im Gleichlauf.
+Gelesen wird er trotzdem, eine `application.conf` kann ihn also weiterhin
+festnageln.
+
+Die beiden Credentials, die *doch* ein Blatt haben — libSQLs `auth-token` und
+D1s `api-token` —, sind Strings, die der Betrieb von irgendwoher liefert; der
+dokumentierte Weg ist eine Substitution (`api-token = ${?CLOUDFLARE_API_TOKEN}`).
+Beide werden leer ausgeliefert, und leer heißt *nicht gesetzt*, damit der
+Platzhalter nie zu einem Bearer-Token wird.
+
+#### PostgreSQL
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `persistence.journal.postgres.url` | `""` | Connection-String.  Leer heißt *nicht gesetzt* — der Store fällt auf die Verbindung zurück, die dem Register-Helper übergeben wurde. |
+| `persistence.journal.postgres.events-table` | `"events"` | Event-Tabelle.  Die Tag-Join-Tabelle wird als `<events-table>_tags` abgeleitet. |
+| `persistence.journal.postgres.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` beim ersten Zugriff.  Aus, wenn ein Schema-Tool das DDL besitzt. |
+| `persistence.snapshot-store.postgres.url` | `""` | Wie oben. |
+| `persistence.snapshot-store.postgres.snapshots-table` | `"snapshots"` | Snapshot-Tabelle. |
+| `persistence.snapshot-store.postgres.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
+| `persistence.snapshot-store.postgres.auto-create-tables` | `on` | Wie oben. |
+| `persistence.durable-state.postgres.url` | `""` | Wie oben. |
+| `persistence.durable-state.postgres.table` | `"durable_state"` | Durable-State-Tabelle. |
+| `persistence.durable-state.postgres.auto-create-tables` | `on` | Wie oben. |
+
+#### MariaDB / MySQL
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `persistence.journal.mariadb.url` | `""` | Connection-String.  Leer heißt *nicht gesetzt* — der Store fällt auf die Verbindung zurück, die dem Register-Helper übergeben wurde. |
+| `persistence.journal.mariadb.events-table` | `"events"` | Event-Tabelle.  Die Tag-Join-Tabelle wird als `<events-table>_tags` abgeleitet. |
+| `persistence.journal.mariadb.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` beim ersten Zugriff.  Aus, wenn ein Schema-Tool das DDL besitzt. |
+| `persistence.snapshot-store.mariadb.url` | `""` | Wie oben. |
+| `persistence.snapshot-store.mariadb.snapshots-table` | `"snapshots"` | Snapshot-Tabelle. |
+| `persistence.snapshot-store.mariadb.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
+| `persistence.snapshot-store.mariadb.auto-create-tables` | `on` | Wie oben. |
+| `persistence.durable-state.mariadb.url` | `""` | Wie oben. |
+| `persistence.durable-state.mariadb.table` | `"durable_state"` | Durable-State-Tabelle. |
+| `persistence.durable-state.mariadb.auto-create-tables` | `on` | Wie oben. |
+
+#### SQL Server
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `persistence.journal.mssql.url` | `""` | Connection-String.  Leer heißt *nicht gesetzt* — der Store fällt auf die Verbindung zurück, die dem Register-Helper übergeben wurde. |
+| `persistence.journal.mssql.events-table` | `"events"` | Event-Tabelle.  Die Tag-Join-Tabelle wird als `<events-table>_tags` abgeleitet. |
+| `persistence.journal.mssql.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` beim ersten Zugriff.  Aus, wenn ein Schema-Tool das DDL besitzt. |
+| `persistence.snapshot-store.mssql.url` | `""` | Wie oben. |
+| `persistence.snapshot-store.mssql.snapshots-table` | `"snapshots"` | Snapshot-Tabelle. |
+| `persistence.snapshot-store.mssql.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
+| `persistence.snapshot-store.mssql.auto-create-tables` | `on` | Wie oben. |
+| `persistence.durable-state.mssql.url` | `""` | Wie oben. |
+| `persistence.durable-state.mssql.table` | `"durable_state"` | Durable-State-Tabelle. |
+| `persistence.durable-state.mssql.auto-create-tables` | `on` | Wie oben. |
+
+#### libSQL / Turso
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `persistence.journal.libsql.url` | `""` | Connection-String.  Leer heißt *nicht gesetzt* — der Store fällt auf die Verbindung zurück, die dem Register-Helper übergeben wurde. |
+| `persistence.journal.libsql.auth-token` | `""` | Turso-Auth-Token.  Leer heißt *nicht gesetzt*; besser `${?TURSO_AUTH_TOKEN}`. |
+| `persistence.journal.libsql.events-table` | `"events"` | Event-Tabelle.  Die Tag-Join-Tabelle wird als `<events-table>_tags` abgeleitet. |
+| `persistence.journal.libsql.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` beim ersten Zugriff.  Aus, wenn ein Schema-Tool das DDL besitzt. |
+| `persistence.snapshot-store.libsql.url` | `""` | Wie oben. |
+| `persistence.snapshot-store.libsql.auth-token` | `""` | Wie oben. |
+| `persistence.snapshot-store.libsql.snapshots-table` | `"snapshots"` | Snapshot-Tabelle. |
+| `persistence.snapshot-store.libsql.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
+| `persistence.snapshot-store.libsql.auto-create-tables` | `on` | Wie oben. |
+| `persistence.durable-state.libsql.url` | `""` | Wie oben. |
+| `persistence.durable-state.libsql.auth-token` | `""` | Wie oben. |
+| `persistence.durable-state.libsql.table` | `"durable_state"` | Durable-State-Tabelle. |
+| `persistence.durable-state.libsql.auto-create-tables` | `on` | Wie oben. |
+
+#### Cloudflare D1
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `persistence.journal.cloudflare-d1.account-id` | `""` | Cloudflare-Account-Id.  Leer heißt *nicht gesetzt*. |
+| `persistence.journal.cloudflare-d1.database-id` | `""` | D1-Datenbank-Id — die UUID, nicht der Datenbankname. |
+| `persistence.journal.cloudflare-d1.api-token` | `""` | API-Token mit `D1:Edit`.  Leer heißt *nicht gesetzt*; besser `${?CLOUDFLARE_API_TOKEN}`. |
+| `persistence.journal.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | D1-REST-Endpunkt.  Nur für einen Proxy oder ein Test-Double überschreiben. |
+| `persistence.journal.cloudflare-d1.events-table` | `"events"` | Event-Tabelle.  Die Tag-Join-Tabelle wird als `<events-table>_tags` abgeleitet. |
+| `persistence.journal.cloudflare-d1.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` beim ersten Zugriff.  Aus, wenn ein Schema-Tool das DDL besitzt. |
+| `persistence.snapshot-store.cloudflare-d1.account-id` | `""` | Wie oben. |
+| `persistence.snapshot-store.cloudflare-d1.database-id` | `""` | Wie oben. |
+| `persistence.snapshot-store.cloudflare-d1.api-token` | `""` | Wie oben. |
+| `persistence.snapshot-store.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | Wie oben. |
+| `persistence.snapshot-store.cloudflare-d1.snapshots-table` | `"snapshots"` | Snapshot-Tabelle. |
+| `persistence.snapshot-store.cloudflare-d1.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
+| `persistence.snapshot-store.cloudflare-d1.auto-create-tables` | `on` | Wie oben. |
+| `persistence.durable-state.cloudflare-d1.account-id` | `""` | Wie oben. |
+| `persistence.durable-state.cloudflare-d1.database-id` | `""` | Wie oben. |
+| `persistence.durable-state.cloudflare-d1.api-token` | `""` | Wie oben. |
+| `persistence.durable-state.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | Wie oben. |
+| `persistence.durable-state.cloudflare-d1.table` | `"durable_state"` | Durable-State-Tabelle. |
+| `persistence.durable-state.cloudflare-d1.auto-create-tables` | `on` | Wie oben. |
+
 Die Plugin-Keys zeigen auf *einen anderen* Config-Abschnitt, der
 die Settings dieses Plugins enthält.  `actor-ts.persistence.journal.sqlite`
 oben ist das ausgearbeitete Beispiel: es ist zugleich die Id, unter der das
 Journal registriert ist, und der Block, den dieses Journal liest.  Siehe jede
 Journal-Seite in [Persistence](/de/persistence/overview/) für die
 per-Plugin-Keys.
+
+### `actor-ts.circuit-breaker`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `circuit-breaker.default.max-failures` | `10` | Aufeinanderfolgende Fehler, bis ein Breaker öffnet ([Circuit Breaker](/de/patterns/circuit-breaker/)). |
+| `circuit-breaker.default.reset-timeout` | `15s` | Wie lange er offen bleibt, bevor er eine Probe durchlässt. |
+| `circuit-breaker.default.max-reset-timeout` | `60s` | Obergrenze des gewachsenen Fensters.  Muss mindestens `reset-timeout` sein — ein Breaker, dessen gemergte Settings das verletzen, startet nicht. |
+| `circuit-breaker.default.backoff-factor` | `1.0` | Multiplikator je aufeinanderfolgendem Öffnen.  `1.0` = das flache Fenster jedes früheren Releases. |
+| `circuit-breaker.default.random-factor` | `0.0` | Jitter-Anteil in `[0, 1]`, über dieses Fenster gestreut.  `0.0` = kein Jitter. |
+| `circuit-breaker.default.ignored-error-names` | `[]` | `Error.name`-Werte, die nie als Fehler zählen. |
+| `circuit-breaker.default.call-timeout` | *(nicht gesetzt)* | Bewusst ein Kommentar in `reference.conf` — siehe unten.  Ungesetzt gibt es keine Deadline pro Aufruf. |
+| `circuit-breaker.<id>.*` | *(der Block oben)* | Dieselben Blätter für den einen Breaker, den `breaker('<id>')` auflöst — sticht den Default-Block Blatt für Blatt. |
+
+Gelesen werden sie von der **`CircuitBreakerExtension`**, der Tür, die einen
+Breaker über seine Id auflöst:
+
+```ts
+import { CircuitBreakerExtensionId } from 'actor-ts';
+
+const payments = system.extension(CircuitBreakerExtensionId).breaker('payment-api');
+await payments.call(() => fetch('https://payments.example/charge'));
+```
+
+`new CircuitBreaker({ … })` liest davon nichts und ist unverändert — das ist
+die Tür für einen Breaker, dessen Settings im Code stehen.  Explizite Options
+aus `breaker(id, options)` stechen weiterhin beide Blöcke, und genau das trägt
+die zwei Dinge, die HOCON nicht ausdrücken kann: das `isFailure`-Prädikat und
+die `random`-Naht.
+
+**`default` ist reserviert**, und die beiden Lesarten fallen zusammen: es ist
+der Block, von dem jeder Breaker erbt, *und* die Id, die `breaker()` ohne
+Argument auflöst — ein Breaker namens `default` liest also genau den Block, der
+ihn konfiguriert.  Deshalb liegen die Defaults in einem benannten Unterblock
+und nicht direkt unter `actor-ts.circuit-breaker.*`: dort teilten sich Ids und
+Blätter einen Namensraum, und `breaker('random-factor')` suchte seine Settings
+in einer Zahl.
+
+**`call-timeout` ist ein Kommentar statt eines Blattes**, weil das Weglassen
+von `callTimeoutMs` den Timeout pro Aufruf *abschaltet* und der Validator `0`
+ablehnt — „keine Deadline“ ist also ein Zustand, den nur ein fehlender Key
+ausdrücken kann.  Geschrieben wirkt er ganz normal; der Block veröffentlicht
+bloß keinen Default, der jedem aus Config aufgelösten Breaker eine Deadline
+gäbe, die ein im Code gebauter nicht hat.
+
+**`backoff-factor` und `random-factor` sind mit Absicht neutral.**  `1.0` und
+`0.0` reproduzieren exakt das flache, ungejitterte Reopen-Fenster, der Block
+ist also additiv, und beides einzuschalten ist eine bewusste Entscheidung des
+Deployments.  Sind sie gesetzt, ist das Fenster
+`reset-timeout × backoff-factor^(aufeinanderfolgende Öffnungen − 1)`, begrenzt
+auf `max-reset-timeout` und dann um `± random-factor` gestreut; es fällt auf
+`reset-timeout` zurück, sobald eine Probe gelingt und der Breaker schließt.
+
+**`ignored-error-names` wird vor `isFailure` geprüft**, nicht danach.  Die
+Liste ist die Hälfte des Klassifikators, die dem Betrieb gehört und aus einer
+Config-Datei kommt, während das Prädikat einkompiliert ist — könnte das
+Prädikat die Liste überstimmen, liefe der Key genau in den Deployments ins
+Leere, die ihn gesetzt haben.
+
+Diese `<id>`-Pfade tragen die Id, nach der dein Code `breaker(id)` fragt, und
+lassen sich deshalb in `reference.conf` nicht aufzählen.
 
 ### `actor-ts.projection`
 
@@ -950,6 +1208,36 @@ gesetzter Wert überschreibt es.
 Top-Level statt unter `actor-ts.persistence`, weil dieser Block
 ausschließlich Plugin-Ids enthält — ein Tuning-Blatt darin läse sich
 als Name eines Plugins.
+
+### `actor-ts.backoff-supervisor`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `backoff-supervisor.min-backoff` | `200ms` | Untergrenze der Respawn-Verzögerung — und das Fenster, an dem `after-min-stable` die Stabilität eines Kindes misst ([Backoff-Supervisor](/de/patterns/backoff-supervisor/)). |
+| `backoff-supervisor.max-backoff` | `10s` | Obergrenze, auf die die Verdopplung geklemmt wird.  Muss mindestens `min-backoff` sein — ein Supervisor, dessen gemergte Settings das verletzen, startet nicht. |
+| `backoff-supervisor.random-factor` | `0.2` | Jitter-Anteil in `[0, 1]`, damit eine Herde Supervisor nicht im Gleichschritt respawnt.  **Wirkungslos für einen Supervisor mit eigener `policy`** — diese berechnet die gesamte Verzögerung. |
+| `backoff-supervisor.max-stash-size` | `1000` | Nachrichten, die ein Supervisor puffert, solange sein Kind tot ist; bei vollem Puffer wird die älteste zum [Dead Letter](/de/operations/dead-letters/). |
+| `backoff-supervisor.reset-counter` | `"after-min-stable"` | Wann der Zähler aufeinanderfolgender Restarts zurückgesetzt wird — `never`, `after-min-stable` oder eine Dauer, die das Stabilitätsfenster explizit benennt. |
+| `backoff-supervisor.forward` | `"stash"` | Was mit Nachrichten passiert, die während eines Backoff-Fensters ankommen — `stash` puffert sie für das nächste Kind, `drop` verwirft sie. |
+| `backoff-supervisor.trigger-on` | `"any"` | Welche Terminierungen einen Respawn auslösen — `any`, `failure` (nur Abstürze) oder `stop` (nur saubere Stopps). |
+
+Das sind die **prozessweiten** Defaults für jeden `BackoffSupervisor` im
+Prozess.  Die Optionen eines einzelnen Supervisors stechen sie, und sie
+stechen die eingebauten Defaults — die üblichen drei Ebenen, pro Feld.  Ein
+Supervisor als `BackoffSupervisor.factory({ child: Flaky })` übernimmt den
+ganzen Block; einer, der `minBackoff` im Code nennt, den Rest davon.
+
+Der Merge passiert im `preStart` des Supervisors — dem ersten Punkt, an dem
+`system.config` erreichbar ist.  Ein Wert, den eine Konfigurationsdatei
+außerhalb des zulässigen Bereichs setzt, lässt deshalb den Start des
+Supervisors scheitern und nicht den Aufruf, der ihn gebaut hat.  Die Regel
+ist dieselbe, die den im Code geschriebenen Wert ablehnt.
+
+`drain-grace` und `child-name` fehlen bewusst.  Der erste hat einen aus
+`min-backoff` abgeleiteten Default — ein publiziertes Literal würde ihn für
+Supervisor mit kürzerem Fenster einfrieren; der zweite ist Identität der
+Aufrufstelle, wo ein prozessweiter Wert schlicht falsch wäre.  Beide bleiben
+im Code setzbar.
 
 ### `actor-ts.cache`
 
@@ -1287,6 +1575,61 @@ weil ein erzwungener Exit genau die Leaks verdeckt, die du eigentlich
 finden willst.  `exit-code` ist der Status, den er übergibt — `0`, weil eine
 bis zum Ende gelaufene Pipeline der Erfolgsfall ist; setze ihn dort, wo ein
 Supervisor einen geplanten Drain von einem Absturz unterscheiden soll.
+
+### `actor-ts.sharded-daemon-process`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `sharded-daemon-process.liveness-interval` | `30s` | Takt des Sicherheitsnetz-Pings, der jeden Daemon-Index neu weckt — unabhängig davon, ob ein Cluster-Event gefeuert hat.  `0` schaltet ihn ab; das ereignisgetriebene Neuwecken bei `LeaderChanged` / `MemberRemoved` läuft ohnehin weiter.  Siehe [den Liveness-Heartbeat](/de/cluster/sharding/sharded-daemon-process/#liveness-heartbeat). |
+| `sharded-daemon-process.role` | `""` | Nur Mitglieder mit dieser Rolle hosten Daemons.  `""` heißt hier **nicht** „unbeschränkt“ — siehe [eine nicht gesetzte Daemon-Rolle erbt die Sharding-Rolle](#eine-nicht-gesetzte-daemon-rolle-erbt-die-sharding-rolle) weiter unten.  Wie `sharding.role` benennt der Key eine Rolle, er vergibt sie nicht. |
+
+Ein Daemon-Set ist ein Modul **auf** Sharding und keine Sharding-Stellschraube
+— deshalb der eigene Block: `actor-ts.sharding.*` konfiguriert jeden
+gesharderten Typ auf dem Knoten, diese beiden nur die Daemons.  Sie werden
+einmal pro `ShardedDaemonProcess.init(...)` gelesen und unter das gelegt, was
+der Aufruf explizit übergibt — die übliche Reihenfolge pro Feld:
+
+```ts
+// actor-ts.sharded-daemon-process.liveness-interval = 10s
+
+const daemonOptions = ShardedDaemonProcessOptions.create<Tick>()
+  .withName('reconciler')
+  .withNumDaemons(8)
+  .withActorFor((index) => () => new Reconciler(index));
+
+ShardedDaemonProcess.init(system, cluster, daemonOptions);
+// livenessIntervalMs 10_000 (config file) — nothing explicit overrides it
+```
+
+`name`, `numDaemons` und der Aktor pro Index haben kein Leaf.  Sie beschreiben
+ein einzelnes Daemon-Set und kein Deployment, und eine Factory hat ohnehin
+keine HOCON-Form.
+
+#### Eine nicht gesetzte Daemon-Rolle erbt die Sharding-Rolle
+
+`sharded-daemon-process.role` auf `""` heißt *keine daemon-spezifische
+Meinung*, nicht *unbeschränkt*.  Das Daemon-Set startet als ganz normaler
+gesharderter Typ, übernimmt also ohne Eintrag hier
+[`actor-ts.sharding.role`](#actor-tssharding) genau wie jeder andere Typ:
+
+```hocon
+actor-ts.sharding.role = "backend"          # every sharded type
+# sharded-daemon-process.role left at ""    # daemons follow along
+```
+
+Eine Rolle hier zu benennen schränkt *nur* die Daemons ein und überlässt die
+übrigen gesharderten Typen dem globalen Key:
+
+```hocon
+actor-ts.sharding.role                = "backend"   # entities on the backend nodes
+actor-ts.sharded-daemon-process.role  = "batch"     # daemons on the batch nodes
+```
+
+Derselbe Vorbehalt wie bei `sharding.role` gilt, und er trifft hier härter,
+weil einem Daemon niemand eine erste Nachricht schickt: Eine Rolle, die kein
+Up-Mitglied trägt, allokiert nichts — die Daemons starten also schlicht nie.
+Der Coordinator loggt eine Zeile mit der Rolle, sobald sich eine Region
+registriert hat und die Rolle sie herausgefiltert hat.
 
 ### `actor-ts.devtools`
 

@@ -47,6 +47,7 @@ import {
 } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_PORT } from '../../../src/cluster/ClusterBootstrapOptions.js';
 import { DEFAULT_MAX_FRAME_BYTES } from '../../../src/cluster/Protocol.js';
+import { HANDSHAKE_TIMEOUT_MS, INCOMPLETE_FRAME_IDLE_MS, MAX_INBOUND_CONNECTIONS, MAX_PENDING_FRAMES } from '../../../src/cluster/Constants.js';
 import { DEFAULT_UNTRUSTED_MODE } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_MAX_DOCUMENT_BYTES, DEFAULT_MAX_NESTING_DEPTH, DEFAULT_MAX_STRING_LENGTH } from '../../../src/serialization/ReadConstraintsOptions.js';
 import {
@@ -74,6 +75,7 @@ import { DEFAULT_REBALANCE_ABSOLUTE_LIMIT, DEFAULT_REBALANCE_RELATIVE_LIMIT } fr
 import { DEFAULT_REGION_STALE_AFTER_MS } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
 import { DEFAULT_REGION_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/sharding/ShardingOptions.js';
 import { DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS } from '../../../src/cluster/sharding/StartShardingOptions.js';
+import { DEFAULT_DAEMON_LIVENESS_INTERVAL_MS } from '../../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
 import {
   DEFAULT_MAX_GOSSIP_BYTES,
   DEFAULT_MAX_PENDING_QUORUM_REQUESTS,
@@ -84,6 +86,7 @@ import { DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM, DEFAULT_OBJECT_STORAGE_EN
 import { DEFAULT_MAX_DECOMPRESSED_BYTES } from '../../../src/persistence/object-storage/BodyCodec.js';
 import { DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_STALE_LOCK_MS } from '../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import { DEFAULT_AUTO_CREATE_TABLES, DEFAULT_DURABLE_STATE_TABLE, DEFAULT_EVENTS_TABLE, DEFAULT_SNAPSHOTS_TABLE, DEFAULT_SNAPSHOT_KEEP_N, DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../../../src/persistence/Constants.js';
+import { DEFAULT_D1_BASE_URL } from '../../../src/persistence/journals/D1Client.js';
 import {
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES,
@@ -99,6 +102,7 @@ import {
 import { DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES, DEFAULT_TIME_TO_IDLE_MS, DEFAULT_TIME_TO_LIVE_MS } from '../../../src/cache/InMemoryCacheOptions.js';
 import { DEFAULT_MEMCACHED_SERVERS } from '../../../src/cache/MemcachedCacheOptions.js';
 import { DEFAULT_REDIS_DB } from '../../../src/cache/RedisCacheOptions.js';
+import { DEFAULT_BACKOFF_FORWARD, DEFAULT_BACKOFF_MAX_MS, DEFAULT_BACKOFF_MAX_STASH_SIZE, DEFAULT_BACKOFF_MIN_MS, DEFAULT_BACKOFF_RANDOM_FACTOR, DEFAULT_BACKOFF_RESET_COUNTER, DEFAULT_BACKOFF_TRIGGER_ON } from '../../../src/pattern/BackoffSupervisorOptions.js';
 import { DEFAULT_PROJECTION_MAX_RETRIES, DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS, DEFAULT_PROJECTION_RECOVERY_STRATEGY, DEFAULT_PROJECTION_RETRY_BACKOFF_MS } from '../../../src/persistence/projection/ProjectionOptions.js';
 import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../../../src/persistence/Constants.js';
 import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from '../../../src/logging/MultiSinkLoggerOptions.js';
@@ -110,6 +114,7 @@ import {
   DEFAULT_DELIVERY_QUEUE_CAPACITY,
 } from '../../../src/logging/DeliveryOptions.js';
 import { DEFAULT_MAX_PRODUCERS, DEFAULT_PRODUCER_IDLE_TTL_MS, DEFAULT_RESEND_TIMEOUT_MS, DEFAULT_WINDOW_SIZE } from '../../../src/delivery/index.js';
+import { DEFAULT_CIRCUIT_BREAKER_BACKOFF_FACTOR, DEFAULT_CIRCUIT_BREAKER_MAX_FAILURES, DEFAULT_CIRCUIT_BREAKER_MAX_RESET_TIMEOUT_MS, DEFAULT_CIRCUIT_BREAKER_RANDOM_FACTOR, DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS } from '../../../src/pattern/CircuitBreakerOptions.js';
 import {
   DEFAULT_CONSOLE_SINK_FORMAT,
   DEFAULT_CONSOLE_SINK_STREAM,
@@ -297,6 +302,16 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // `options.untrustedMode ?? DEFAULT_UNTRUSTED_MODE`, so the published `false`
   // and the shipped one are the same boolean, checkably (#877).
   { key: 'actor-ts.remote.untrusted-mode', kind: 'bool', constant: DEFAULT_UNTRUSTED_MODE },
+  // The four association-lifecycle bounds (#846).  Their constants keep their
+  // pre-config names and stay in `cluster/Constants.ts` rather than moving into
+  // a `TcpTransportOptions.ts` default block: each one now defaults a field on
+  // *two* options types — `ClusterOptionsType`, so `actor-ts.remote.*` can
+  // reach it, and `TcpTransportOptionsType`, so a hand-built transport can —
+  // which is the case that module exists for.
+  { key: 'actor-ts.remote.handshake-timeout', kind: 'duration', constant: HANDSHAKE_TIMEOUT_MS },
+  { key: 'actor-ts.remote.outbound-queue-size', kind: 'int', constant: MAX_PENDING_FRAMES },
+  { key: 'actor-ts.remote.max-inbound-connections', kind: 'int', constant: MAX_INBOUND_CONNECTIONS },
+  { key: 'actor-ts.remote.incomplete-frame-idle', kind: 'duration', constant: INCOMPLETE_FRAME_IDLE_MS },
 
   /* --- pub-sub / receptionist --- */
   { key: 'actor-ts.cluster.pub-sub.max-subscribers-per-topic', kind: 'int', constant: DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC },
@@ -365,6 +380,20 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.reliable-delivery.consumer.max-producers', kind: 'int', constant: DEFAULT_MAX_PRODUCERS },
   { key: 'actor-ts.reliable-delivery.consumer.producer-idle-time-to-live', kind: 'duration', constant: DEFAULT_PRODUCER_IDLE_TTL_MS },
 
+  /* --- circuit breaker --- */
+  // `call-timeout` is comment-only in reference.conf and so is not part of the
+  // partition: omitting `callTimeoutMs` is what disables the per-call timeout,
+  // and the validator refuses `0`, so "no deadline" is a state only a missing
+  // key can express.  `ignored-error-names` is a list and has no constant —
+  // see FEATURE_SWITCHES (#864).
+  { key: 'actor-ts.circuit-breaker.default.max-failures', kind: 'int', constant: DEFAULT_CIRCUIT_BREAKER_MAX_FAILURES },
+  { key: 'actor-ts.circuit-breaker.default.reset-timeout', kind: 'duration', constant: DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS },
+  { key: 'actor-ts.circuit-breaker.default.max-reset-timeout', kind: 'duration', constant: DEFAULT_CIRCUIT_BREAKER_MAX_RESET_TIMEOUT_MS },
+  // `number`, not `int`: both publish a fraction-shaped literal (`1.0`, `0.0`)
+  // and `getInt` throws on anything that is not a whole number.
+  { key: 'actor-ts.circuit-breaker.default.backoff-factor', kind: 'number', constant: DEFAULT_CIRCUIT_BREAKER_BACKOFF_FACTOR },
+  { key: 'actor-ts.circuit-breaker.default.random-factor', kind: 'number', constant: DEFAULT_CIRCUIT_BREAKER_RANDOM_FACTOR },
+
   /* --- coordination --- */
   // The three sibling keys — `lease.ttl`, `lease.renewal-interval` and
   // `lease.kubernetes.namespace` — are comment-only in reference.conf, so they
@@ -375,6 +404,21 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.coordination.lease.kubernetes.token-reload-interval', kind: 'duration', constant: DEFAULT_TOKEN_RELOAD_INTERVAL_MS },
   { key: 'actor-ts.coordination.lease.kubernetes.operation-timeout', kind: 'duration', constant: DEFAULT_K8S_OPERATION_TIMEOUT_MS },
   { key: 'actor-ts.coordination.lease.kubernetes.lease-name-max-length', kind: 'int', constant: DEFAULT_LEASE_NAME_MAX_LENGTH },
+
+  /* --- backoff supervisor --- */
+  { key: 'actor-ts.backoff-supervisor.min-backoff', kind: 'duration', constant: DEFAULT_BACKOFF_MIN_MS },
+  { key: 'actor-ts.backoff-supervisor.max-backoff', kind: 'duration', constant: DEFAULT_BACKOFF_MAX_MS },
+  // `number`, not `int`: a jitter fraction is legitimately fractional and
+  // `getInt` throws outright on `0.2` — the trap #883 hit on the
+  // `worker-cluster.restart-random-factor` leaf that pairs with this one.
+  { key: 'actor-ts.backoff-supervisor.random-factor', kind: 'number', constant: DEFAULT_BACKOFF_RANDOM_FACTOR },
+  { key: 'actor-ts.backoff-supervisor.max-stash-size', kind: 'int', constant: DEFAULT_BACKOFF_MAX_STASH_SIZE },
+  // `string`, though the field is a union with an object variant: what is
+  // published here is the literal, and a duration in its place is the caller's
+  // own value rather than a default this can be checked against.
+  { key: 'actor-ts.backoff-supervisor.reset-counter', kind: 'string', constant: DEFAULT_BACKOFF_RESET_COUNTER },
+  { key: 'actor-ts.backoff-supervisor.forward', kind: 'string', constant: DEFAULT_BACKOFF_FORWARD },
+  { key: 'actor-ts.backoff-supervisor.trigger-on', kind: 'string', constant: DEFAULT_BACKOFF_TRIGGER_ON },
 
   /* --- management --- */
   // The four endpoint switches are in the table rather than in
@@ -392,6 +436,12 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.management.liveness-path', kind: 'string', constant: DEFAULT_LIVENESS_PATH },
   { key: 'actor-ts.management.readiness-path', kind: 'string', constant: DEFAULT_READINESS_PATH },
   { key: 'actor-ts.management.health-checks.check-timeout', kind: 'duration', constant: DEFAULT_HEALTH_CHECK_TIMEOUT_MS },
+
+  /* --- sharded daemon process --- */
+  // The `role` sibling is a PLACEHOLDERS entry, reading exactly like
+  // `sharding.role` above it: `""` is the published shape of the key, and the
+  // reader drops it rather than passing it on (#854).
+  { key: 'actor-ts.sharded-daemon-process.liveness-interval', kind: 'duration', constant: DEFAULT_DAEMON_LIVENESS_INTERVAL_MS },
 
   /* --- worker cluster --- */
   { key: 'actor-ts.worker-cluster.system-name', kind: 'string', constant: DEFAULT_WORKER_SYSTEM_NAME },
@@ -459,6 +509,53 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.persistence.durable-state.sqlite.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
   { key: 'actor-ts.persistence.durable-state.sqlite.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
   { key: 'actor-ts.persistence.durable-state.sqlite.busy-timeout', kind: 'duration', constant: DEFAULT_SQLITE_BUSY_TIMEOUT_MS },
+  // The relational family (#872, slice 2).  Fifteen blocks, five constants: the
+  // five backends share `RelationalJournal` / `RelationalSnapshotStore` /
+  // `RelationalDurableStateStore`, so the table names and the auto-create switch
+  // are decided in one place each and published fifteen times.  Pinning every
+  // copy is the point — a published default that drifts from the read site is
+  // the same lie whether it drifts once or five times.
+  { key: 'actor-ts.persistence.journal.postgres.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.postgres.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.snapshot-store.postgres.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.postgres.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.postgres.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.postgres.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.durable-state.postgres.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.journal.mariadb.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.mariadb.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.snapshot-store.mariadb.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.mariadb.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.mariadb.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.mariadb.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.durable-state.mariadb.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.journal.mssql.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.mssql.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.snapshot-store.mssql.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.mssql.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.mssql.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.mssql.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.durable-state.mssql.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.journal.libsql.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.libsql.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.snapshot-store.libsql.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.libsql.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.libsql.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.libsql.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.durable-state.libsql.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.journal.cloudflare-d1.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.cloudflare-d1.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.cloudflare-d1.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.durable-state.cloudflare-d1.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  // D1's API endpoint is a real default rather than a placeholder — every
+  // deployment uses it, and `buildD1Client` falls back to the same constant, so
+  // the three published copies are checkable against the one in force.
+  { key: 'actor-ts.persistence.journal.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
+  { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
+  { key: 'actor-ts.persistence.durable-state.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
 
   /* --- object storage --- */
   { key: 'actor-ts.persistence.snapshot-store.object-storage.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
@@ -578,6 +675,13 @@ const LOG_LEVEL_NAMES: readonly string[] = [
  */
 const PLACEHOLDERS: readonly string[] = [
   'actor-ts.dead-letters.persistence-id',
+  // Same reading as `sharding.role` below, one layer down: `""` is the shape
+  // of the key and `readShardedDaemonProcessOptionsFromConfig` drops it rather
+  // than passing it on.  Here the empty string means "no daemon-specific
+  // opinion" rather than "unrestricted" — dropped, the daemon region inherits
+  // `sharding.role` like every other sharded type, which is precisely what
+  // returning `''` would have broken (#854).
+  'actor-ts.sharded-daemon-process.role',
   // "" = unrestricted.  Not a default anyone runs with; the shipped empty
   // string is what lets the reader tell "no opinion" from a role named "",
   // and the role a deployment actually wants is per-deployment (#847).
@@ -642,6 +746,44 @@ const PLACEHOLDERS: readonly string[] = [
   'actor-ts.persistence.journal.sqlite.path',
   'actor-ts.persistence.snapshot-store.sqlite.path',
   'actor-ts.persistence.durable-state.sqlite.path',
+  // The relational family's connection halves (#872, slice 2).  Every one is a
+  // coordinate of the operator's own database — a URL, an account, a database
+  // id, a token — required at the point of use and impossible to default.  `""`
+  // reads as unset, so the published placeholder never reaches a driver: an
+  // empty `url` handed to `new pg.Pool({ connectionString: '' })` would connect
+  // to whatever `PG*` environment variables happen to be set, which is a
+  // sharper failure than not connecting at all.
+  //
+  // The two credentials here — libSQL's token and D1's — have leaves because
+  // they are *strings the operator supplies*, and the documented route is a
+  // substitution (`auth-token = ${?TURSO_AUTH_TOKEN}`), the same treatment
+  // `cache.redis.password` and `logger.sinks.splunk.token` already get.  That
+  // is the opposite case from object storage's key material above, which has no
+  // path at all because a 32-byte key must never be expressible in a file.
+  'actor-ts.persistence.journal.postgres.url',
+  'actor-ts.persistence.snapshot-store.postgres.url',
+  'actor-ts.persistence.durable-state.postgres.url',
+  'actor-ts.persistence.journal.mariadb.url',
+  'actor-ts.persistence.snapshot-store.mariadb.url',
+  'actor-ts.persistence.durable-state.mariadb.url',
+  'actor-ts.persistence.journal.mssql.url',
+  'actor-ts.persistence.snapshot-store.mssql.url',
+  'actor-ts.persistence.durable-state.mssql.url',
+  'actor-ts.persistence.journal.libsql.url',
+  'actor-ts.persistence.journal.libsql.auth-token',
+  'actor-ts.persistence.snapshot-store.libsql.url',
+  'actor-ts.persistence.snapshot-store.libsql.auth-token',
+  'actor-ts.persistence.durable-state.libsql.url',
+  'actor-ts.persistence.durable-state.libsql.auth-token',
+  'actor-ts.persistence.journal.cloudflare-d1.account-id',
+  'actor-ts.persistence.journal.cloudflare-d1.database-id',
+  'actor-ts.persistence.journal.cloudflare-d1.api-token',
+  'actor-ts.persistence.snapshot-store.cloudflare-d1.account-id',
+  'actor-ts.persistence.snapshot-store.cloudflare-d1.database-id',
+  'actor-ts.persistence.snapshot-store.cloudflare-d1.api-token',
+  'actor-ts.persistence.durable-state.cloudflare-d1.account-id',
+  'actor-ts.persistence.durable-state.cloudflare-d1.database-id',
+  'actor-ts.persistence.durable-state.cloudflare-d1.api-token',
 ];
 
 /**
@@ -708,6 +850,12 @@ const FEATURE_SWITCHES: readonly string[] = [
   // written down.  No constant either: the default is the field being absent,
   // and `durableSnapshot` short-circuits on `length === 0` (#856).
   'actor-ts.distributed-data.durable-keys',
+  // The fourth empty-list sentinel, and it reads exactly like the three above:
+  // `[]` and an unset key produce the identical classifier, because the read
+  // site is `this.options.ignoredErrorNames?.includes(error.name)`.  No
+  // constant either — which error name a deployment wants excused is the
+  // deployment's business, and the framework has no candidate to name (#864).
+  'actor-ts.circuit-breaker.default.ignored-error-names',
   'actor-ts.cluster.weakly-up-after', // 0s = no auto weakly-up promotion
   'actor-ts.cluster.tombstone.min-retention', // 0s = derive from down-after
   'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',

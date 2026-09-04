@@ -440,6 +440,10 @@ unifying them. Set them per lease in code.
 | `remote.tls.enabled` | `false` | **Not honoured** — `true` buys a startup warning, not encryption.  See below. |
 | `remote.untrusted-mode` | `false` | Admit an inbound envelope only when `trusted-selection-paths` lists its target.  Off, any `/user` actor is addressable by name — which is what makes an `ActorRef` work across nodes.  `/system` is refused either way.  See below. |
 | `remote.trusted-selection-paths` | `[]` | Paths a peer may address by name while `untrusted-mode` is on.  Empty means: nothing beyond the framework endpoints this node registered. |
+| `remote.handshake-timeout` | `5s` | How long a connection may sit without its half of the handshake before it is torn down.  **One value for both directions** — see below. |
+| `remote.outbound-queue-size` | `1000` | How many frames are held for a peer that cannot take them right now, oldest dropped first. |
+| `remote.max-inbound-connections` | `1024` | How many inbound connections this node accepts before it refuses sockets outright, newest refused rather than oldest evicted. |
+| `remote.incomplete-frame-idle` | `30s` | How long a connection may hold a half-received frame with no further byte arriving.  A stall bound, re-armed on every chunk. |
 
 `host`/`port` are the **bind** pair and `advertised-host`/`advertised-port`
 the **identity** pair: the first says where the listener opens, the second
@@ -533,6 +537,69 @@ of the two seams: a [`ClusterClient`](/cluster/cluster-client/) never joined the
 membership ring.  A refused path is answered with the identical `path not found`
 the client gets for a path that does not exist, so the endpoint cannot be used
 to map the actor tree.
+
+#### The association lifecycle
+
+The last four keys bound what a party that can open a TCP connection to the
+cluster port is able to make this node hold. All four have been enforced since
+the transport was hardened; what changed is that they are settable
+([issue #846](https://github.com/pathosDev/actor-ts/issues/846)):
+
+```hocon
+actor-ts.remote {
+  handshake-timeout       = 5s
+  outbound-queue-size     = 1000
+  max-inbound-connections = 1024
+  incomplete-frame-idle   = 30s
+}
+```
+
+`handshake-timeout` covers a connection that never speaks its half of the
+handshake — a dial that never gets its `hello-ack`, and an accepted socket that
+never sends a `hello`. It is **one key for both directions on purpose**. The
+dialling side's clock starts before the TCP connect and the TLS handshake, the
+accepting side's after the accept, so with one number the peer that is still
+trying has always given up first and the acceptor can never be the deadline
+that punishes a slow-but-legitimate dial. A split dial/accept pair would let an
+accept deadline set below the dial deadline make a healthy peer permanently
+unjoinable, with nothing in either node's log saying why.
+
+`incomplete-frame-idle` covers the other half: a connection that spoke and then
+went silent mid-frame. It is a **stall** bound rather than a budget for the
+frame — it is re-armed on every chunk, so a peer pushing a large frame over a
+congested link is never punished for being slow, only for stopping. Keep it
+above `handshake-timeout`; both validators refuse a value at or below it,
+because a socket that sends nothing at all never reaches this deadline and the
+handshake timer is what covers that one.
+
+`max-inbound-connections` is what stops either cost from being multiplied by
+opening sockets in a loop, and it is the half of the inbound-memory bound worth
+tightening: that bound is this count times what one connection may buffer. Set
+it from the real peer count where you know it — one inbound connection per peer
+in a full mesh, plus whatever [`ClusterClient`](/cluster/cluster-client/)s dial
+in — and leave headroom, because refusing a legitimate peer is a partition. The
+newest connection is refused rather than the oldest evicted; eviction would let
+an attacker push established peers off the node.
+
+`outbound-queue-size` is the one key here that bounds what this node holds
+rather than what a peer holds against it: frames written for a peer that cannot
+take them right now, with the oldest dropped first, because the newest
+membership and heartbeat state is the state worth keeping. Today that is the
+buffer in front of the handshake, so a `tell` racing the handshake is held
+rather than lost. The key is named for the category and not for that one
+buffer: the post-handshake backpressure queue
+([issue #931](https://github.com/pathosDev/actor-ts/issues/931)) is the same
+quantity with the same policy and the same warning, and will land under this
+key rather than a second one.
+
+None of the four has an "off" spelling. `0` is refused for each, because it is
+a distinct way of breaking the node rather than a way of removing a cap: no
+handshake window, no room to buffer, no inbound connection admitted, no
+connection allowed to end off a frame boundary.
+
+These reach the transport the cluster builds for itself. A `TcpTransport` you
+construct and pass via `withTransport(…)` carries its own — set them in its
+`TcpTransportOptions`.
 
 :::caution[`remote.tls.enabled` does not encrypt anything]
 The key is read, but not honoured.  Setting it to `true` does **not** enable
@@ -877,11 +944,190 @@ keeps it; a pre-opened `database` is an override, because sharing one handle is
 the more specific instruction.  There is no leaf for a `driver`, a `database` or
 a `serializer` — those are live objects, and a config file cannot express one.
 
+**The five relational backends read their own blocks too** (#872).  Postgres,
+MariaDB, SQL Server, libSQL and Cloudflare D1 share one journal, one snapshot
+store and one durable-state store between them, so the table half of every block
+is the same three or four leaves and only the connection half differs.
+`registerPostgresPlugins(ext)` — and each of its four siblings — therefore
+needs no options at all when the blocks below are filled in:
+
+```ts
+const ext = system.extension(PersistenceExtensionId);
+registerPostgresPlugins(ext);        // url, tables, retention ... from HOCON
+```
+
+The connection is repeated under each of the three plugin roots rather than
+hoisted to a per-backend one, because a plugin id *is* its config section and the
+three axes are selected independently — they may legitimately name different
+databases.  A deployment that shares one connection writes it once and
+substitutes: `url = ${actor-ts.persistence.journal.postgres.url}`.
+
+Three things deliberately have **no leaf**.  A pre-built `pool` or `client` and a
+`serializer` are live objects, so a config file cannot express one.  `poolConfig`
+is free-form driver config with no enumerable key set and no default, so it stays
+code-only — which for SQL Server means a purely config-driven store is reached
+through `url`, in either the `Server=...;Database=...` or the `mssql://` form.
+And `tags-table` is a **comment** in the reference configuration rather than a
+key, because its default is derived from `events-table` (`<events-table>_tags`):
+absence is what keeps the two in step.  It is read all the same, so an
+`application.conf` can still pin it.
+
+The two credentials that *do* have a leaf — libSQL's `auth-token` and D1's
+`api-token` — are strings the operator supplies from somewhere, and the
+documented route is a substitution (`api-token = ${?CLOUDFLARE_API_TOKEN}`).
+Both ship empty, and empty reads as *not set*, so the placeholder never becomes a
+bearer token.
+
+#### PostgreSQL
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `persistence.journal.postgres.url` | `""` | Connection string.  Empty is *not set* — the store falls through to the connection the register helper was given. |
+| `persistence.journal.postgres.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
+| `persistence.journal.postgres.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.snapshot-store.postgres.url` | `""` | As above. |
+| `persistence.snapshot-store.postgres.snapshots-table` | `"snapshots"` | Snapshot table. |
+| `persistence.snapshot-store.postgres.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
+| `persistence.snapshot-store.postgres.auto-create-tables` | `on` | As above. |
+| `persistence.durable-state.postgres.url` | `""` | As above. |
+| `persistence.durable-state.postgres.table` | `"durable_state"` | Durable-state table. |
+| `persistence.durable-state.postgres.auto-create-tables` | `on` | As above. |
+
+#### MariaDB / MySQL
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `persistence.journal.mariadb.url` | `""` | Connection string.  Empty is *not set* — the store falls through to the connection the register helper was given. |
+| `persistence.journal.mariadb.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
+| `persistence.journal.mariadb.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.snapshot-store.mariadb.url` | `""` | As above. |
+| `persistence.snapshot-store.mariadb.snapshots-table` | `"snapshots"` | Snapshot table. |
+| `persistence.snapshot-store.mariadb.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
+| `persistence.snapshot-store.mariadb.auto-create-tables` | `on` | As above. |
+| `persistence.durable-state.mariadb.url` | `""` | As above. |
+| `persistence.durable-state.mariadb.table` | `"durable_state"` | Durable-state table. |
+| `persistence.durable-state.mariadb.auto-create-tables` | `on` | As above. |
+
+#### SQL Server
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `persistence.journal.mssql.url` | `""` | Connection string.  Empty is *not set* — the store falls through to the connection the register helper was given. |
+| `persistence.journal.mssql.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
+| `persistence.journal.mssql.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.snapshot-store.mssql.url` | `""` | As above. |
+| `persistence.snapshot-store.mssql.snapshots-table` | `"snapshots"` | Snapshot table. |
+| `persistence.snapshot-store.mssql.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
+| `persistence.snapshot-store.mssql.auto-create-tables` | `on` | As above. |
+| `persistence.durable-state.mssql.url` | `""` | As above. |
+| `persistence.durable-state.mssql.table` | `"durable_state"` | Durable-state table. |
+| `persistence.durable-state.mssql.auto-create-tables` | `on` | As above. |
+
+#### libSQL / Turso
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `persistence.journal.libsql.url` | `""` | Connection string.  Empty is *not set* — the store falls through to the connection the register helper was given. |
+| `persistence.journal.libsql.auth-token` | `""` | Turso auth token.  Empty is *not set*; prefer `${?TURSO_AUTH_TOKEN}`. |
+| `persistence.journal.libsql.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
+| `persistence.journal.libsql.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.snapshot-store.libsql.url` | `""` | As above. |
+| `persistence.snapshot-store.libsql.auth-token` | `""` | As above. |
+| `persistence.snapshot-store.libsql.snapshots-table` | `"snapshots"` | Snapshot table. |
+| `persistence.snapshot-store.libsql.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
+| `persistence.snapshot-store.libsql.auto-create-tables` | `on` | As above. |
+| `persistence.durable-state.libsql.url` | `""` | As above. |
+| `persistence.durable-state.libsql.auth-token` | `""` | As above. |
+| `persistence.durable-state.libsql.table` | `"durable_state"` | Durable-state table. |
+| `persistence.durable-state.libsql.auto-create-tables` | `on` | As above. |
+
+#### Cloudflare D1
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `persistence.journal.cloudflare-d1.account-id` | `""` | Cloudflare account id.  Empty is *not set*. |
+| `persistence.journal.cloudflare-d1.database-id` | `""` | D1 database id — the UUID, not the database name. |
+| `persistence.journal.cloudflare-d1.api-token` | `""` | API token with `D1:Edit`.  Empty is *not set*; prefer `${?CLOUDFLARE_API_TOKEN}`. |
+| `persistence.journal.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | D1 REST endpoint.  Override only for a proxy or a test double. |
+| `persistence.journal.cloudflare-d1.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
+| `persistence.journal.cloudflare-d1.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.snapshot-store.cloudflare-d1.account-id` | `""` | As above. |
+| `persistence.snapshot-store.cloudflare-d1.database-id` | `""` | As above. |
+| `persistence.snapshot-store.cloudflare-d1.api-token` | `""` | As above. |
+| `persistence.snapshot-store.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | As above. |
+| `persistence.snapshot-store.cloudflare-d1.snapshots-table` | `"snapshots"` | Snapshot table. |
+| `persistence.snapshot-store.cloudflare-d1.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
+| `persistence.snapshot-store.cloudflare-d1.auto-create-tables` | `on` | As above. |
+| `persistence.durable-state.cloudflare-d1.account-id` | `""` | As above. |
+| `persistence.durable-state.cloudflare-d1.database-id` | `""` | As above. |
+| `persistence.durable-state.cloudflare-d1.api-token` | `""` | As above. |
+| `persistence.durable-state.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | As above. |
+| `persistence.durable-state.cloudflare-d1.table` | `"durable_state"` | Durable-state table. |
+| `persistence.durable-state.cloudflare-d1.auto-create-tables` | `on` | As above. |
+
 The plugin keys point to *another* config section that holds
 that plugin's settings.  `actor-ts.persistence.journal.sqlite` above is the
 worked example: it is both the id the journal is registered under and the block
 that journal reads.  See each journal page in
 [Persistence](/persistence/overview/) for the per-plugin keys.
+
+### `actor-ts.circuit-breaker`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `circuit-breaker.default.max-failures` | `10` | Consecutive failures before a breaker opens ([circuit breaker](/patterns/circuit-breaker/)). |
+| `circuit-breaker.default.reset-timeout` | `15s` | How long it stays open before letting a probe through. |
+| `circuit-breaker.default.max-reset-timeout` | `60s` | Ceiling the grown window is clamped to.  Must be at least `reset-timeout` — a breaker whose merged settings say otherwise refuses to start. |
+| `circuit-breaker.default.backoff-factor` | `1.0` | Multiplier per consecutive open.  `1.0` = the flat window every earlier release had. |
+| `circuit-breaker.default.random-factor` | `0.0` | Jitter fraction in `[0, 1]` spread over that window.  `0.0` = no jitter. |
+| `circuit-breaker.default.ignored-error-names` | `[]` | `Error.name` values that never count as a failure. |
+| `circuit-breaker.default.call-timeout` | *(unset)* | Deliberately a comment in `reference.conf` — see below.  Unset, there is no per-call deadline. |
+| `circuit-breaker.<id>.*` | *(the block above)* | The same leaves, for the single breaker `breaker('<id>')` resolves — overrides the default block leaf by leaf. |
+
+These are read by the **`CircuitBreakerExtension`**, the door that resolves a
+breaker by id:
+
+```ts
+import { CircuitBreakerExtensionId } from 'actor-ts';
+
+const payments = system.extension(CircuitBreakerExtensionId).breaker('payment-api');
+await payments.call(() => fetch('https://payments.example/charge'));
+```
+
+`new CircuitBreaker({ … })` reads none of this and is unchanged — it is the
+door for a breaker whose settings live in code.  Explicit options passed as
+`breaker(id, options)` still outrank both blocks, which is what carries the two
+things HOCON cannot express: the `isFailure` predicate and the `random` seam.
+
+**`default` is reserved**, and the two readings of it coincide: it is the block
+every breaker inherits from *and* the id `breaker()` resolves with no argument,
+so a breaker named `default` reads exactly the block that configures it.  That
+is the reason the defaults sit in a named sub-block rather than at
+`actor-ts.circuit-breaker.*` directly — there, ids and leaves would share one
+namespace, and `breaker('random-factor')` would go looking for its settings
+inside a number.
+
+**`call-timeout` is a comment rather than a leaf** because omitting
+`callTimeoutMs` is what *disables* the per-call timeout, and `0` is refused by
+the validator — so "no deadline" is a state only a missing key can express.
+Writing it works normally; the block simply does not publish a default that
+would hand every config-resolved breaker a deadline a hand-built one lacks.
+
+**`backoff-factor` and `random-factor` ship neutral on purpose.**  `1.0` and
+`0.0` reproduce the flat, unjittered reopen window exactly, so the block is
+additive and turning either on is a change a deployment makes deliberately.
+With both set, the window is
+`reset-timeout × backoff-factor^(consecutive opens − 1)`, clamped to
+`max-reset-timeout` and then spread by `± random-factor`; it returns to
+`reset-timeout` as soon as a probe succeeds and the breaker closes.
+
+**`ignored-error-names` is checked before `isFailure`**, not after.  The list
+is the operator's half of the classifier and arrives from a config file, while
+the predicate is compiled in — if the predicate could overrule the list, the
+leaf would go inert for exactly the deployments that set it.
+
+These `<id>` paths take the id your code asks `breaker(id)` for, so they cannot
+be enumerated in `reference.conf`.
 
 ### `actor-ts.projection`
 
@@ -902,6 +1148,35 @@ here; only a value actually set in code overrides it.
 Top-level rather than under `actor-ts.persistence`, because that block
 holds plugin ids and nothing else, so a tuning leaf inside it would
 read as the name of a plugin.
+
+### `actor-ts.backoff-supervisor`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `backoff-supervisor.min-backoff` | `200ms` | Floor of the respawn delay, and the window `after-min-stable` measures a child's stability against ([backoff supervisor](/patterns/backoff-supervisor/)). |
+| `backoff-supervisor.max-backoff` | `10s` | Ceiling the doubling delay clamps to.  Must be at least `min-backoff` — a supervisor whose merged settings say otherwise refuses to start. |
+| `backoff-supervisor.random-factor` | `0.2` | Jitter fraction in `[0, 1]`, so a herd of supervisors does not respawn in lockstep.  **Inert for a supervisor that supplies its own `policy`** — that policy computes the whole delay. |
+| `backoff-supervisor.max-stash-size` | `1000` | Messages held per supervisor while its child is dead; the oldest becomes a [dead letter](/operations/dead-letters/) when the buffer is full. |
+| `backoff-supervisor.reset-counter` | `"after-min-stable"` | When the consecutive-restart counter resets — `never`, `after-min-stable`, or a duration naming the stable window explicitly. |
+| `backoff-supervisor.forward` | `"stash"` | What happens to messages arriving during a backoff window — `stash` buffers them for the next child, `drop` discards them. |
+| `backoff-supervisor.trigger-on` | `"any"` | Which terminations respawn the child — `any`, `failure` (crashes only) or `stop` (clean stops only). |
+
+These are the **fleet-wide** defaults for every `BackoffSupervisor` in the
+process.  The options passed to one supervisor outrank them, and they
+outrank the built-in defaults — the usual three layers, per field.  A
+supervisor built as `BackoffSupervisor.factory({ child: Flaky })` takes the
+whole block; one that names `minBackoff` in code takes the rest of it.
+
+The merge happens in the supervisor's `preStart`, which is the first point
+where `system.config` is reachable — so a value a config file puts out of
+range fails the supervisor's start rather than the call that built it.  The
+rule is the same one that rejects the value written in code.
+
+`drain-grace` and `child-name` are deliberately absent.  The first has a
+default derived from `min-backoff`, so a published literal would freeze it
+for supervisors with a shorter window; the second is per-call-site identity,
+where one fleet-wide value would be actively wrong.  Both are still settable
+in code.
 
 ### `actor-ts.cache`
 
@@ -1217,6 +1492,60 @@ hang.  Off by default, because forcing an exit hides exactly the leaks you
 would rather find.  `exit-code` is the status it hands over — `0`, because a
 pipeline that ran to the end is the success case; set it where a supervisor
 should tell a planned drain apart from a crash.
+
+### `actor-ts.sharded-daemon-process`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `sharded-daemon-process.liveness-interval` | `30s` | Period of the safety-net ping that re-wakes every daemon index whether or not a cluster event fired.  `0` disables it; the event-driven re-wake on `LeaderChanged` / `MemberRemoved` runs either way.  See [the liveness heartbeat](/cluster/sharding/sharded-daemon-process/#liveness-heartbeat). |
+| `sharded-daemon-process.role` | `""` | Only members carrying this role host daemons.  `""` is **not** "unrestricted" here — see [an unset daemon role inherits the sharding one](#an-unset-daemon-role-inherits-the-sharding-one) below.  Like `sharding.role` it names a role and does not grant one. |
+
+A daemon set is a module built **on** sharding rather than a sharding
+tunable, which is why these live in their own block: `actor-ts.sharding.*`
+configures every sharded type on the node, these two only the daemons.  They
+are read once per `ShardedDaemonProcess.init(...)` and layered under whatever
+that call passes explicitly, the usual order per field:
+
+```ts
+// actor-ts.sharded-daemon-process.liveness-interval = 10s
+
+const daemonOptions = ShardedDaemonProcessOptions.create<Tick>()
+  .withName('reconciler')
+  .withNumDaemons(8)
+  .withActorFor((index) => () => new Reconciler(index));
+
+ShardedDaemonProcess.init(system, cluster, daemonOptions);
+// livenessIntervalMs 10_000 (config file) — nothing explicit overrides it
+```
+
+`name`, `numDaemons` and the per-index actor have no leaf.  They describe one
+daemon set rather than a deployment, and a factory has no HOCON form at all.
+
+#### An unset daemon role inherits the sharding one
+
+`sharded-daemon-process.role` left at `""` means *no daemon-specific
+opinion*, not *unrestricted*.  The daemon set is started as an ordinary
+sharded type, so with nothing set here it picks up
+[`actor-ts.sharding.role`](#actor-tssharding) exactly like every other type:
+
+```hocon
+actor-ts.sharding.role = "backend"          # every sharded type
+# sharded-daemon-process.role left at ""    # daemons follow along
+```
+
+Naming a role here narrows *only* the daemons, and leaves the rest of the
+sharded types to the global key:
+
+```hocon
+actor-ts.sharding.role                = "backend"   # entities on the backend nodes
+actor-ts.sharded-daemon-process.role  = "batch"     # daemons on the batch nodes
+```
+
+The same caveat as `sharding.role` applies, and it bites harder here because
+nothing sends a daemon a first message: a role that no up member carries
+allocates nothing, so the daemons simply never start.  The coordinator logs
+one line naming the role when a region did register and the role filtered it
+out.
 
 ### `actor-ts.devtools`
 

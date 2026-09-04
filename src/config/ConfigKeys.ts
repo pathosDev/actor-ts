@@ -368,6 +368,67 @@ export const ConfigKeys = {
         wal: 'actor-ts.persistence.journal.sqlite.wal',
         busyTimeout: 'actor-ts.persistence.journal.sqlite.busy-timeout',
       },
+      /**
+       * The five relational journals (#872, slice 2).  They all sit on
+       * `RelationalJournal`, so the table half of every block is the same three
+       * leaves and only the connection half differs — which is why the leaf
+       * names are identical across them and the reader bodies are not.
+       *
+       * `tags-table` is **comment-only** in `reference.conf` under every one of
+       * them: its default is derived from `events-table`
+       * (`${events}_tags`, `RelationalJournal.ts`), so absence is what selects
+       * it and a published value would pin the two apart the moment somebody
+       * renamed the event table.  A comment-only key is invisible to the
+       * leaf-driven guards, which is the point — it still needs this entry and
+       * a reader.
+       *
+       * `pool-config` / `client` / `pool` have no entry at all: the first has
+       * no enumerable leaf set and the rest are live objects, so a config file
+       * cannot reach one.
+       */
+      postgres: {
+        root: 'actor-ts.persistence.journal.postgres',
+        url: 'actor-ts.persistence.journal.postgres.url',
+        eventsTable: 'actor-ts.persistence.journal.postgres.events-table',
+        tagsTable: 'actor-ts.persistence.journal.postgres.tags-table',
+        autoCreateTables: 'actor-ts.persistence.journal.postgres.auto-create-tables',
+      },
+      /** The MariaDB journal's block — see {@link postgres}. */
+      mariadb: {
+        root: 'actor-ts.persistence.journal.mariadb',
+        url: 'actor-ts.persistence.journal.mariadb.url',
+        eventsTable: 'actor-ts.persistence.journal.mariadb.events-table',
+        tagsTable: 'actor-ts.persistence.journal.mariadb.tags-table',
+        autoCreateTables: 'actor-ts.persistence.journal.mariadb.auto-create-tables',
+      },
+      /** The SQL Server journal's block — see {@link postgres}. */
+      mssql: {
+        root: 'actor-ts.persistence.journal.mssql',
+        url: 'actor-ts.persistence.journal.mssql.url',
+        eventsTable: 'actor-ts.persistence.journal.mssql.events-table',
+        tagsTable: 'actor-ts.persistence.journal.mssql.tags-table',
+        autoCreateTables: 'actor-ts.persistence.journal.mssql.auto-create-tables',
+      },
+      /** The libSQL journal's block — `auth-token` is the Turso credential. */
+      libsql: {
+        root: 'actor-ts.persistence.journal.libsql',
+        url: 'actor-ts.persistence.journal.libsql.url',
+        authToken: 'actor-ts.persistence.journal.libsql.auth-token',
+        eventsTable: 'actor-ts.persistence.journal.libsql.events-table',
+        tagsTable: 'actor-ts.persistence.journal.libsql.tags-table',
+        autoCreateTables: 'actor-ts.persistence.journal.libsql.auto-create-tables',
+      },
+      /** The Cloudflare D1 journal's block — three coordinates, not a URL. */
+      cloudflareD1: {
+        root: 'actor-ts.persistence.journal.cloudflare-d1',
+        accountId: 'actor-ts.persistence.journal.cloudflare-d1.account-id',
+        databaseId: 'actor-ts.persistence.journal.cloudflare-d1.database-id',
+        apiToken: 'actor-ts.persistence.journal.cloudflare-d1.api-token',
+        baseUrl: 'actor-ts.persistence.journal.cloudflare-d1.base-url',
+        eventsTable: 'actor-ts.persistence.journal.cloudflare-d1.events-table',
+        tagsTable: 'actor-ts.persistence.journal.cloudflare-d1.tags-table',
+        autoCreateTables: 'actor-ts.persistence.journal.cloudflare-d1.auto-create-tables',
+      },
     },
     snapshotStore: {
       plugin: 'actor-ts.persistence.snapshot-store.plugin',
@@ -380,6 +441,57 @@ export const ConfigKeys = {
         snapshotsTable: 'actor-ts.persistence.snapshot-store.sqlite.snapshots-table',
         keepN: 'actor-ts.persistence.snapshot-store.sqlite.keep-n',
         busyTimeout: 'actor-ts.persistence.snapshot-store.sqlite.busy-timeout',
+      },
+      /**
+       * The five relational snapshot stores (#872, slice 2) — see
+       * {@link journal}'s `postgres`.  The connection is repeated under each
+       * plugin root rather than hoisted to a per-backend one, because a plugin
+       * id *is* its config section: the three axes are selected independently
+       * and may legitimately name different databases.  A deployment that does
+       * share one connection deduplicates it with a HOCON substitution.
+       */
+      postgres: {
+        root: 'actor-ts.persistence.snapshot-store.postgres',
+        url: 'actor-ts.persistence.snapshot-store.postgres.url',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.postgres.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.postgres.keep-n',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.postgres.auto-create-tables',
+      },
+      /** The MariaDB snapshot store's block — see {@link postgres}. */
+      mariadb: {
+        root: 'actor-ts.persistence.snapshot-store.mariadb',
+        url: 'actor-ts.persistence.snapshot-store.mariadb.url',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.mariadb.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.mariadb.keep-n',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.mariadb.auto-create-tables',
+      },
+      /** The SQL Server snapshot store's block — see {@link postgres}. */
+      mssql: {
+        root: 'actor-ts.persistence.snapshot-store.mssql',
+        url: 'actor-ts.persistence.snapshot-store.mssql.url',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.mssql.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.mssql.keep-n',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.mssql.auto-create-tables',
+      },
+      /** The libSQL snapshot store's block — see {@link postgres}. */
+      libsql: {
+        root: 'actor-ts.persistence.snapshot-store.libsql',
+        url: 'actor-ts.persistence.snapshot-store.libsql.url',
+        authToken: 'actor-ts.persistence.snapshot-store.libsql.auth-token',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.libsql.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.libsql.keep-n',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.libsql.auto-create-tables',
+      },
+      /** The Cloudflare D1 snapshot store's block — see {@link postgres}. */
+      cloudflareD1: {
+        root: 'actor-ts.persistence.snapshot-store.cloudflare-d1',
+        accountId: 'actor-ts.persistence.snapshot-store.cloudflare-d1.account-id',
+        databaseId: 'actor-ts.persistence.snapshot-store.cloudflare-d1.database-id',
+        apiToken: 'actor-ts.persistence.snapshot-store.cloudflare-d1.api-token',
+        baseUrl: 'actor-ts.persistence.snapshot-store.cloudflare-d1.base-url',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.cloudflare-d1.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.cloudflare-d1.keep-n',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.cloudflare-d1.auto-create-tables',
       },
       /**
        * The object-storage plugin's block — the framework's rule that a plugin
@@ -443,6 +555,51 @@ export const ConfigKeys = {
         autoCreateTables: 'actor-ts.persistence.durable-state.sqlite.auto-create-tables',
         busyTimeout: 'actor-ts.persistence.durable-state.sqlite.busy-timeout',
       },
+      /**
+       * The five relational durable-state stores (#872, slice 2) — see
+       * {@link journal}'s `postgres`.  These are the blocks that made the
+       * axis worth having beyond SQLite: each backend's durable-state store is
+       * now a registered factory rather than an instance the register helper
+       * built eagerly and handed back, so the id here selects it.
+       */
+      postgres: {
+        root: 'actor-ts.persistence.durable-state.postgres',
+        url: 'actor-ts.persistence.durable-state.postgres.url',
+        table: 'actor-ts.persistence.durable-state.postgres.table',
+        autoCreateTables: 'actor-ts.persistence.durable-state.postgres.auto-create-tables',
+      },
+      /** The MariaDB durable-state store's block — see {@link postgres}. */
+      mariadb: {
+        root: 'actor-ts.persistence.durable-state.mariadb',
+        url: 'actor-ts.persistence.durable-state.mariadb.url',
+        table: 'actor-ts.persistence.durable-state.mariadb.table',
+        autoCreateTables: 'actor-ts.persistence.durable-state.mariadb.auto-create-tables',
+      },
+      /** The SQL Server durable-state store's block — see {@link postgres}. */
+      mssql: {
+        root: 'actor-ts.persistence.durable-state.mssql',
+        url: 'actor-ts.persistence.durable-state.mssql.url',
+        table: 'actor-ts.persistence.durable-state.mssql.table',
+        autoCreateTables: 'actor-ts.persistence.durable-state.mssql.auto-create-tables',
+      },
+      /** The libSQL durable-state store's block — see {@link postgres}. */
+      libsql: {
+        root: 'actor-ts.persistence.durable-state.libsql',
+        url: 'actor-ts.persistence.durable-state.libsql.url',
+        authToken: 'actor-ts.persistence.durable-state.libsql.auth-token',
+        table: 'actor-ts.persistence.durable-state.libsql.table',
+        autoCreateTables: 'actor-ts.persistence.durable-state.libsql.auto-create-tables',
+      },
+      /** The Cloudflare D1 durable-state store's block — see {@link postgres}. */
+      cloudflareD1: {
+        root: 'actor-ts.persistence.durable-state.cloudflare-d1',
+        accountId: 'actor-ts.persistence.durable-state.cloudflare-d1.account-id',
+        databaseId: 'actor-ts.persistence.durable-state.cloudflare-d1.database-id',
+        apiToken: 'actor-ts.persistence.durable-state.cloudflare-d1.api-token',
+        baseUrl: 'actor-ts.persistence.durable-state.cloudflare-d1.base-url',
+        table: 'actor-ts.persistence.durable-state.cloudflare-d1.table',
+        autoCreateTables: 'actor-ts.persistence.durable-state.cloudflare-d1.auto-create-tables',
+      },
     },
   },
 
@@ -477,6 +634,37 @@ export const ConfigKeys = {
   },
 
   /**
+   * Named circuit breakers — `actor-ts.circuit-breaker.*`.  Read by
+   * `CircuitBreakerExtension.breaker(id)`, which layers
+   * `<root>.<id>.*` over `<root>.default.*` over the built-in floor, and the
+   * caller's explicit options over all three.
+   *
+   * `default` is reserved: it is the defaults block AND the id `breaker()`
+   * resolves with no argument, which is the same thing twice rather than a
+   * collision.  `<root>.<id>.*` cannot be declared here at all — the id is the
+   * application's — which is what `ConfigKeys.cache.root` is for too.
+   *
+   * Every leaf under `default` is spelled out rather than covered by that
+   * root: a root alone satisfies the `NoDeadConfigKeys` reachability check for
+   * everything beneath it, and here it would be worse than usual, because the
+   * root's last segment is `default` — a substring of nearly every TypeScript
+   * file — so the guard would have passed on nothing at all (#864).
+   */
+  circuitBreaker: {
+    root: 'actor-ts.circuit-breaker',
+    default: {
+      maxFailures: 'actor-ts.circuit-breaker.default.max-failures',
+      resetTimeout: 'actor-ts.circuit-breaker.default.reset-timeout',
+      /** Comment-only in reference.conf — omitting it is what disables the per-call timeout. */
+      callTimeout: 'actor-ts.circuit-breaker.default.call-timeout',
+      maxResetTimeout: 'actor-ts.circuit-breaker.default.max-reset-timeout',
+      backoffFactor: 'actor-ts.circuit-breaker.default.backoff-factor',
+      randomFactor: 'actor-ts.circuit-breaker.default.random-factor',
+      ignoredErrorNames: 'actor-ts.circuit-breaker.default.ignored-error-names',
+    },
+  },
+
+  /**
    * Process-wide projection defaults — `actor-ts.projection.*`.  Read by
    * `ProjectionActor.byPersistenceId` / `byTag`, which layer them under the
    * explicit `ProjectionOptions` of a single projection.
@@ -497,6 +685,34 @@ export const ConfigKeys = {
     retryBackoff: 'actor-ts.projection.retry-backoff',
     maxRetryBackoff: 'actor-ts.projection.max-retry-backoff',
     pollInterval: 'actor-ts.projection.poll-interval',
+  },
+
+  /**
+   * `BackoffSupervisor` defaults — `actor-ts.backoff-supervisor.*`.  Read once
+   * per supervisor, in its `preStart`, and layered under the explicit
+   * `BackoffSupervisorOptions` of that supervisor.
+   *
+   * Top-level and a sibling of `actor-ts.circuit-breaker` rather than nested
+   * under an `actor-ts.pattern.*` umbrella: `actor-ts.worker-cluster` is the
+   * shape a block named after the options type it feeds already takes, and an
+   * umbrella nobody asked for would put the directory layout of `src/` into
+   * the key an operator types.
+   *
+   * Every leaf is spelled out rather than covered by a block root: a root
+   * alone satisfies the `NoDeadConfigKeys` reachability check for everything
+   * beneath it, so an inert leaf would ship green (#875).
+   */
+  backoffSupervisor: {
+    // The two window bounds drop the `Ms` a HOCON duration literal makes
+    // unnecessary, as `worker-cluster.restart-min-backoff` already does.
+    minBackoff: 'actor-ts.backoff-supervisor.min-backoff',
+    maxBackoff: 'actor-ts.backoff-supervisor.max-backoff',
+    randomFactor: 'actor-ts.backoff-supervisor.random-factor',
+    maxStashSize: 'actor-ts.backoff-supervisor.max-stash-size',
+    /** `never` | `after-min-stable` | a duration for the `after-time` variant. */
+    resetCounter: 'actor-ts.backoff-supervisor.reset-counter',
+    forward: 'actor-ts.backoff-supervisor.forward',
+    triggerOn: 'actor-ts.backoff-supervisor.trigger-on',
   },
 
   /**
@@ -839,6 +1055,22 @@ export const ConfigKeys = {
    * do **not** decide whether `/system` is reachable: that is refused
    * unconditionally in `EnvelopeTrust`, because a switch defaulted off would
    * leave #964 open on every deployment that did not opt in.
+   *
+   * The last four are the transport's **association-lifecycle** bounds, which
+   * have been enforced since #588 and #697 and only became configurable in
+   * #846.  They are what an unauthenticated party can make this node hold:
+   * `handshake-timeout` reclaims a connection that never speaks its half of
+   * the handshake, `incomplete-frame-idle` reclaims one that went silent
+   * mid-frame, `max-inbound-connections` stops either cost from being
+   * multiplied by opening sockets in a loop, and `outbound-queue-size` bounds
+   * what this node holds for a peer that is not taking it.
+   *
+   * `handshake-timeout` is deliberately **one** key rather than a dial/accept
+   * pair.  The dialling side's clock starts before the TCP connect and the TLS
+   * handshake and the accepting side's starts after the accept, so equal
+   * numbers mean the peer that is still trying has always given up first; a
+   * split pair lets an operator set the acceptor stricter and make a healthy
+   * peer permanently unreachable.
    */
   remote: {
     tcp: {
@@ -853,6 +1085,10 @@ export const ConfigKeys = {
     maxFrameBytes: 'actor-ts.remote.max-frame-bytes',
     untrustedMode: 'actor-ts.remote.untrusted-mode',
     trustedSelectionPaths: 'actor-ts.remote.trusted-selection-paths',
+    handshakeTimeout: 'actor-ts.remote.handshake-timeout',
+    outboundQueueSize: 'actor-ts.remote.outbound-queue-size',
+    maxInboundConnections: 'actor-ts.remote.max-inbound-connections',
+    incompleteFrameIdle: 'actor-ts.remote.incomplete-frame-idle',
   },
 
   /**
@@ -942,6 +1178,30 @@ export const ConfigKeys = {
       heartbeatInterval: 'actor-ts.sharding.stale-region-detection.heartbeat-interval',
       staleAfter: 'actor-ts.sharding.stale-region-detection.stale-after',
     },
+  },
+
+  /**
+   * `ShardedDaemonProcess.init` defaults — `actor-ts.sharded-daemon-process.*`
+   * (#854).  Read once per `init` and merged under the caller's options, which
+   * is the seam the module had none of: it used to cast its argument straight
+   * to the settings type, so a daemon set was configurable from code and from
+   * nowhere else.
+   *
+   * A top-level group rather than a nesting under {@link ConfigKeys.sharding}
+   * because a daemon set is a module built *on* sharding: `sharding.*` tunes
+   * every sharded type, these two tune only the daemons.
+   *
+   * Both are full dotted paths rather than a `shardedDaemonProcess` block root,
+   * for the reason `sharding.entityRecovery*` above spells out: `NoDeadConfigKeys`
+   * resolves a leaf through *any* config root above it, so a root-only entry
+   * would let both pass with nothing reading them.
+   *
+   * `name`, `numDaemons` and `actorFor` have no leaf: they describe one daemon
+   * set, not a deployment, and a factory has no HOCON form at all.
+   */
+  shardedDaemonProcess: {
+    livenessInterval: 'actor-ts.sharded-daemon-process.liveness-interval',
+    role: 'actor-ts.sharded-daemon-process.role',
   },
 
   /**

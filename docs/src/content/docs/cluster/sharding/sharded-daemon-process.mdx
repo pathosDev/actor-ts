@@ -140,6 +140,12 @@ covers the edge case where an event was missed.
 Set to `0` to disable.  Useful in tests where you control the
 cluster events deterministically.
 
+Or set it in `application.conf` and leave the call site alone:
+
+```hocon
+actor-ts.sharded-daemon-process.liveness-interval = 10s
+```
+
 ## Configuration
 
 ```ts
@@ -152,13 +158,49 @@ type ShardedDaemonProcessOptionsType<T> = {
 };
 ```
 
-| Field | What |
-| --- | --- |
-| `name` | A unique daemon-set name.  Two `init` calls with the same name conflict. |
-| `numDaemons` | How many daemons to run.  Fixed at init; can't change without restart, and **must be identical on every node** — it becomes the sharded type's `numShards`, and the coordinator refuses a node that disagrees (see [numShards is a cluster-wide agreement](/cluster/sharding/overview/#numshards-is-a-cluster-wide-agreement)).  A rolling deploy that changes it leaves the not-yet-updated nodes registered and the updated ones refused, until the last one is over. |
-| `actorFor(i)` | Returns the actor class or factory for daemon `i`.  Use `i` to differentiate per-index logic. |
-| `role` | Only nodes carrying this role host daemons (passed through to sharding). |
-| `livenessIntervalMs` | Safety-net ping cadence; default 30s. |
+| Field | HOCON | What |
+| --- | --- | --- |
+| `name` | — | A unique daemon-set name.  Two `init` calls with the same name conflict. |
+| `numDaemons` | — | How many daemons to run.  Fixed at init; can't change without restart, and **must be identical on every node** — it becomes the sharded type's `numShards`, and the coordinator refuses a node that disagrees (see [numShards is a cluster-wide agreement](/cluster/sharding/overview/#numshards-is-a-cluster-wide-agreement)).  A rolling deploy that changes it leaves the not-yet-updated nodes registered and the updated ones refused, until the last one is over. |
+| `actorFor(i)` | — | Returns the actor class or factory for daemon `i`.  Use `i` to differentiate per-index logic. |
+| `role` | `actor-ts.sharded-daemon-process.role` | Only nodes carrying this role host daemons (passed through to sharding). |
+| `livenessIntervalMs` | `actor-ts.sharded-daemon-process.liveness-interval` | Safety-net ping cadence; default 30s. |
+
+The two keys are read once per `init` and layered **under** whatever the call
+passes, so an explicit `withRole` / `withLivenessIntervalMs` still wins.  The
+other three have no leaf: they describe one daemon set rather than a
+deployment, and a factory has no HOCON form at all.
+
+`name` and `numDaemons` staying code-only is not an oversight.  `numDaemons`
+becomes the sharded type's `numShards`, which every node must agree on — a
+value each node reads from its own file is the one shape of that agreement
+nothing can check until a node is already being refused.
+
+### An unset role inherits the sharding one
+
+The daemon set starts as an ordinary sharded type, so leaving `role` unset —
+in code and in `actor-ts.sharded-daemon-process.role`, whose shipped `""`
+counts as unset — lets the daemons follow
+[`actor-ts.sharding.role`](/reference/configuration/#actor-tssharding) like
+every other type:
+
+```hocon
+actor-ts.sharding.role = "backend"          # every sharded type, daemons included
+```
+
+Naming one here narrows the daemons alone:
+
+```hocon
+actor-ts.sharding.role                = "backend"   # entities on the backend nodes
+actor-ts.sharded-daemon-process.role  = "batch"     # daemons on the batch nodes
+```
+
+Like `sharding.role`, this **names** a role and does not grant one — a node's
+own roles stay in code, as `ClusterOptions.withRoles([...])`.  A role no
+up-member carries allocates nothing, and for daemons that is silent: nobody
+sends a daemon a first message, so there is no reply to wait for and no
+buffer to fill.  The coordinator logs one line naming the role once a region
+has registered and been filtered out.
 
 ## When to reach for it
 

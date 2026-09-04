@@ -599,6 +599,49 @@ actor-ts {
     #
     #   trusted-selection-paths = ["/user/orders/*", "/user/reporting/intake"]
     trusted-selection-paths = []
+
+    # The association lifecycle: what an unauthenticated party that can open a
+    # TCP connection to this port is able to make this node hold.  All four
+    # have been enforced since the transport was hardened; only now are they
+    # settable.  Keep them positive -- none of them has an "off" reading, and
+    # 0 is a distinct way of breaking the node for each.
+    #
+    # handshake-timeout bounds a connection that never speaks its half of the
+    # handshake, in BOTH directions, and it is one key on purpose.  The
+    # dialling side's clock starts before the TCP connect and the TLS
+    # handshake, the accepting side's after the accept -- so with one number
+    # the peer that is still trying has always given up first, and the
+    # acceptor can never be the deadline that punishes a slow-but-legitimate
+    # dial.  A split dial/accept pair would let an accept deadline set below
+    # the dial deadline make a healthy peer permanently unjoinable.
+    handshake-timeout = 5s
+
+    # How many frames are held for a peer that cannot take them right now,
+    # oldest dropped first -- the newest membership and heartbeat state is the
+    # state worth keeping.  Today that is the buffer in front of the
+    # handshake, so a send racing the handshake is held rather than lost; the
+    # key is named for the category rather than that one buffer, because the
+    # post-handshake backpressure queue is the same quantity with the same
+    # policy and the same warning and will land under this key rather than a
+    # second one.
+    outbound-queue-size = 1000
+
+    # How many inbound connections this node accepts before it refuses sockets
+    # outright, newest refused rather than oldest evicted -- eviction would let
+    # an attacker push established peers off the node.  Together with
+    # incomplete-frame-idle below it is what bounds inbound decode memory at
+    # all, and this is the half worth tightening: set it from the real peer
+    # count where that is known, with headroom for the ClusterClients that dial
+    # in.  Refusing a legitimate peer is a partition.
+    max-inbound-connections = 1024
+
+    # How long a connection may hold a half-received frame with no further byte
+    # arriving.  A STALL bound, not a budget for the frame: it is re-armed on
+    # every chunk, so a peer shipping a large frame over a slow link is never
+    # punished for being slow -- only for going silent.  Keep it above
+    # handshake-timeout; a socket that sends nothing at all never reaches this
+    # deadline, and the handshake timer is what covers that one.
+    incomplete-frame-idle = 30s
   }
 
   # Lease coordination -- what a Lease backend reads when it is built with
@@ -816,6 +859,51 @@ actor-ts {
     }
   }
 
+  # Defaults for every breaker resolved through the CircuitBreakerExtension --
+  # system.extension(CircuitBreakerExtensionId).breaker('payment-api').  Leaf
+  # names are the kebab-case of the CircuitBreakerOptions fields with any unit
+  # suffix dropped, and are validated on read (a bad value throws OptionsError).
+  # A breaker built in code reads none of this; that door is unchanged.
+  circuit-breaker {
+    # The floor every named breaker inherits.  "default" is reserved: it is the
+    # defaults block and it is also the id breaker() resolves with no argument,
+    # which is the same thing said twice rather than a collision.
+    default {
+      max-failures      = 10     # consecutive failures before the breaker opens
+      reset-timeout     = 15s    # how long it stays open before letting a probe through
+
+      # Growth of that window while the breaker keeps re-opening.  The delay is
+      # reset-timeout * backoff-factor^(consecutive opens - 1), clamped to
+      # max-reset-timeout, then spread by +/- random-factor.  The shipped
+      # 1.0 / 0.0 pair reproduces the flat, unjittered window exactly, so
+      # turning either on is a change a deployment makes on purpose.
+      max-reset-timeout = 60s    # ceiling the grown window is clamped to
+      backoff-factor    = 1.0    # 1.0 = no growth
+      random-factor     = 0.0    # 0.0 = no jitter; 0.2 is the spread used elsewhere
+
+      # Error.name values that never count as a failure.  Checked BEFORE the
+      # code-side isFailure predicate, so a name listed here is not a failure
+      # whatever the code says -- an operator cannot reach into a compiled
+      # predicate, and a key that goes inert for the deployments that needed it
+      # is not a key.  "CircuitBreakerTimeoutError" is listable and means "a
+      # call that blew its own call-timeout does not count against the breaker".
+      ignored-error-names = []
+    }
+
+    # call-timeout is deliberately not a leaf: omitting it is what disables the
+    # per-call timeout and the validator refuses 0, so "no deadline" is a state
+    # only a missing key can express.  Written, it is read like any other:
+    #
+    #   actor-ts.circuit-breaker.default.call-timeout = 2s
+    #
+    # Per-breaker overrides live under the breaker's own id and win over the
+    # default block leaf by leaf:
+    #
+    #   actor-ts.circuit-breaker.payment-api { max-failures = 3, reset-timeout = 30s }
+    #
+    # The id is the application's, so those paths cannot be listed here.
+  }
+
   # Projections poll the read side and feed a read model.  These are the
   # process-wide defaults; ProjectionOptions on a single projection wins.
   projection {
@@ -828,6 +916,33 @@ actor-ts {
     retry-backoff     = 1s                 # first retry delay; doubles per attempt
     max-retry-backoff = 60s                # ceiling on the doubling delay
     poll-interval     = 1s                 # how often a projection polls for new events
+  }
+
+  # Fleet-wide defaults for BackoffSupervisor.  The options passed to a single
+  # supervisor win per field; these fill in whatever it leaves unset, so a
+  # deployment can retune every supervisor's respawn pacing without touching
+  # the call sites.  The window below is the same curve worker-cluster paces a
+  # crashed slot with.
+  backoff-supervisor {
+    min-backoff    = 200ms              # floor of the delay; must be > 0
+    max-backoff    = 10s                # ceiling; must be >= min-backoff
+    # Jitter fraction in [0, 1], so a herd of supervisors does not respawn in
+    # lockstep.  Inert for a supervisor that supplies its own policy — that
+    # policy computes the whole delay, jitter included.
+    random-factor  = 0.2
+    max-stash-size = 1000               # messages held per supervisor while its child is dead
+    # never | after-min-stable | a duration.  after-min-stable resets the
+    # restart counter once the child has outlived one min-backoff; a duration
+    # names that window explicitly.
+    reset-counter  = "after-min-stable"
+    forward        = "stash"            # stash | drop — what happens to messages meanwhile
+    trigger-on     = "any"              # any | failure | stop — which terminations respawn
+
+    # drain-grace is deliberately absent.  Its default is min(50ms, min-backoff)
+    # — derived from another leaf in this block — so a published literal would
+    # freeze 50ms for a supervisor whose min-backoff is smaller, and lengthen
+    # the grace past the backoff window it is meant to sit inside.  Set
+    # drainGraceMs in code where the min-backoff it depends on is also in view.
   }
 
   cache {
@@ -965,6 +1080,69 @@ actor-ts {
         wal = off                     # journal_mode = WAL: concurrent readers during a write
         busy-timeout = 1s             # lock wait before SQLITE_BUSY; 0 fails fast
       }
+
+      # PostgreSQL journal.  registerPostgresPlugins(ext) makes this id real;
+      # the block below is what that call reads when it is given no options.
+      # Explicit PostgresJournalOptions always win over anything here.
+      #
+      # The five relational journals below share one implementation, so they
+      # share one field table -- events-table, tags-table, auto-create-tables --
+      # and differ only in how they are reached.
+      postgres {
+        # Connection string.  "" means "not set", so an unset url falls through
+        #   to whatever the register helper was given instead of overriding it
+        #   with an empty one.  Keep the credentials out of the file:
+        #   url = ${?DATABASE_URL}.
+        # A pre-built pool and a poolConfig object have NO leaf: the first is a
+        #   live object and the second has no enumerable key set, so both stay
+        #   code-only (RegisterPostgresPluginsOptions.withPool / withPoolConfig).
+        url = ""
+        events-table = "events"
+        # tags-table -- deliberately unset: the default is DERIVED from the
+        #   name above (<events-table>_tags), so absence is what keeps the two
+        #   in step.  Set it only to point the tag index at an existing table.
+        auto-create-tables = on       # CREATE TABLE IF NOT EXISTS on first use
+      }
+
+      # MariaDB / MySQL journal -- see the postgres block above.
+      mariadb {
+        url = ""                      # mariadb://user:pass@host:3306/db
+        events-table = "events"
+        # tags-table -- derived as <events-table>_tags; see postgres above.
+        auto-create-tables = on
+      }
+
+      # SQL Server journal -- see the postgres block above.
+      mssql {
+        # Either the "Server=host,1433;Database=app;…" or the mssql:// form.
+        url = ""
+        events-table = "events"
+        # tags-table -- derived as <events-table>_tags; see postgres above.
+        auto-create-tables = on
+      }
+
+      # libSQL / Turso journal -- see the postgres block above.
+      libsql {
+        url = ""                      # libsql://… , or http(s):// / ws(s):// for a self-hosted sqld
+        auth-token = ""               # Turso token; prefer ${?TURSO_AUTH_TOKEN}
+        events-table = "events"
+        # tags-table -- derived as <events-table>_tags; see postgres above.
+        auto-create-tables = on
+      }
+
+      # Cloudflare D1 journal -- see the postgres block above.  D1 is reached by
+      # three coordinates rather than a URL, and it is the one backend that
+      # speaks over plain HTTP, so base-url is a real default rather than a
+      # placeholder.
+      cloudflare-d1 {
+        account-id  = ""
+        database-id = ""              # the UUID, not the database name
+        api-token   = ""              # D1:Edit token; prefer ${?CLOUDFLARE_API_TOKEN}
+        base-url    = "https://api.cloudflare.com/client/v4"
+        events-table = "events"
+        # tags-table -- derived as <events-table>_tags; see postgres above.
+        auto-create-tables = on
+      }
     }
     snapshot-store {
       plugin = "actor-ts.persistence.snapshot-store.in-memory"
@@ -975,6 +1153,51 @@ actor-ts {
         snapshots-table = "snapshots"
         keep-n = 3                    # snapshots kept per persistenceId; 0 disables pruning
         busy-timeout = 1s
+      }
+
+      # The five relational snapshot stores -- see the journal blocks above for
+      # what each connection half means.  The connection is repeated under every
+      # plugin root rather than hoisted: a plugin id IS its config section, and
+      # the three axes are selected independently, so they may legitimately name
+      # different databases.  A deployment that shares one connection writes it
+      # once and substitutes -- url = ${actor-ts.persistence.journal.postgres.url}.
+      postgres {
+        url = ""
+        snapshots-table = "snapshots"
+        keep-n = 3                    # snapshots kept per persistenceId; 0 disables pruning
+        auto-create-tables = on
+      }
+
+      mariadb {
+        url = ""
+        snapshots-table = "snapshots"
+        keep-n = 3
+        auto-create-tables = on
+      }
+
+      mssql {
+        url = ""
+        snapshots-table = "snapshots"
+        keep-n = 3
+        auto-create-tables = on
+      }
+
+      libsql {
+        url = ""
+        auth-token = ""               # prefer ${?TURSO_AUTH_TOKEN}
+        snapshots-table = "snapshots"
+        keep-n = 3
+        auto-create-tables = on
+      }
+
+      cloudflare-d1 {
+        account-id  = ""
+        database-id = ""
+        api-token   = ""              # prefer ${?CLOUDFLARE_API_TOKEN}
+        base-url    = "https://api.cloudflare.com/client/v4"
+        snapshots-table = "snapshots"
+        keep-n = 3
+        auto-create-tables = on
       }
 
       # Object-storage snapshot store -- S3-compatible or local filesystem.
@@ -1036,6 +1259,44 @@ actor-ts {
         table = "durable_state"
         auto-create-tables = on       # CREATE TABLE IF NOT EXISTS on first use
         busy-timeout = 1s
+      }
+
+      # The five relational durable-state stores -- see the journal blocks above.
+      # Each backend's store is a registered factory now rather than an instance
+      # its register helper built eagerly and returned, so the plugin key above
+      # actually selects one.
+      postgres {
+        url = ""
+        table = "durable_state"
+        auto-create-tables = on
+      }
+
+      mariadb {
+        url = ""
+        table = "durable_state"
+        auto-create-tables = on
+      }
+
+      mssql {
+        url = ""
+        table = "durable_state"
+        auto-create-tables = on
+      }
+
+      libsql {
+        url = ""
+        auth-token = ""               # prefer ${?TURSO_AUTH_TOKEN}
+        table = "durable_state"
+        auto-create-tables = on
+      }
+
+      cloudflare-d1 {
+        account-id  = ""
+        database-id = ""
+        api-token   = ""              # prefer ${?CLOUDFLARE_API_TOKEN}
+        base-url    = "https://api.cloudflare.com/client/v4"
+        table = "durable_state"
+        auto-create-tables = on
       }
     }
   }
@@ -1119,6 +1380,27 @@ actor-ts {
       heartbeat-interval = 5s   # region -> coordinator beat
       stale-after = 20s         # silence after which a region is declared gone
     }
+  }
+
+  # A daemon set is a module built ON sharding, not a sharding tunable, so it
+  # gets a block of its own -- the same reading distributed-data above states
+  # for not living under cluster.*.  Only these two keys are deployment facts;
+  # the set's name, its daemon count and its per-index actor describe one
+  # daemon set rather than a deployment and have no leaf at all.
+  sharded-daemon-process {
+    # Safety net for the event-driven wake-up path: every liveness-interval,
+    #   every daemon index is re-woken whether or not a topology event fired,
+    #   so a wake-up lost to a brief partition-and-heal still re-materialises
+    #   its daemon.  LeaderChanged / MemberRemoved still re-wake on their own;
+    #   this only covers the one they missed.  0 disables the ping.
+    liveness-interval = 30s
+    # Which role hosts the daemons.  "" is NOT "unrestricted" here -- it is "no
+    #   daemon-specific opinion", and the daemon region then falls through to
+    #   sharding.role like every other sharded type.  Name a role here to place
+    #   ONLY the daemons on it and leave the rest to sharding.role.  Like that
+    #   key this one names a role and never grants one, so a role no up member
+    #   carries places no daemon at all.
+    role = ""
   }
 
   devtools {

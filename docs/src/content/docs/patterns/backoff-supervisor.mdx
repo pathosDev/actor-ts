@@ -112,28 +112,62 @@ watchers hear about it, so the check is a boolean read.
 
 ## Configuration
 
-The `BackoffOptions<T>` shape:
+The `BackoffSupervisorOptionsType<T>` shape — `child` is the only
+required field:
 
 ```ts
 import { ActorOptions } from 'actor-ts';
 
-type BackoffOptions<T> = {
+type BackoffSupervisorOptionsType<T> = {
   child:        ActorClassOrFactory<T>;
   childOptions?: ActorOptions<T>;
-  childName?:        string;
-  minBackoff:        number;
-  maxBackoff:        number;
-  randomFactor?:     number;   // default 0.2
+  childName?:        string;  // default 'child'
+  minBackoff?:       number;  // default 200      <- min-backoff
+  maxBackoff?:       number;  // default 10_000   <- max-backoff
+  randomFactor?:     number;  // default 0.2      <- random-factor
   policy?:           BackoffPolicy;
-  resetCounter?:     ResetCounter;  // default 'after-min-stable'
-  forward?:          ForwardStrategy;  // default 'stash'
-  triggerOn?:        TerminationTrigger;  // default 'any'
-  maxStashSize?:     number;  // default 1000
+  resetCounter?:     ResetCounter;  // 'after-min-stable' <- reset-counter
+  forward?:          ForwardStrategy;  // 'stash'         <- forward
+  triggerOn?:        TerminationTrigger;  // 'any'        <- trigger-on
+  maxStashSize?:     number;  // default 1000     <- max-stash-size
   drainGraceMs?:     number;  // default min(50, minBackoff)
   forwardDuringGrace?: boolean;  // default true
   clock?:            () => number;
 };
 ```
+
+The arrows name the [`actor-ts.backoff-supervisor`](/reference/configuration/#actor-tsbackoff-supervisor)
+leaf that sets the field process-wide.  The three layers are the usual
+ones and they apply **per field**: an option written here wins, a
+configured leaf fills in what it left unset, and the built-in default
+covers the rest.  So a supervisor written as
+`BackoffSupervisor.factory({ child: Flaky })` takes its whole pacing from
+the config file, and one that names `minBackoff` still takes
+`max-backoff` from there.
+
+Or the builder, which records only the fields you set — so it never
+competes with config either:
+
+```ts
+const supervisorOptions = BackoffSupervisorOptions.create<Command>()
+  .withChild(FlakyConnector)
+  .withMinBackoff(200)
+  .withMaxBackoff(5_000);
+
+system.spawn(BackoffSupervisor.factory(supervisorOptions), 'connector-supervisor');
+```
+
+The merge runs in the supervisor's `preStart` — the first moment
+`system.config` is reachable — so an out-of-range value fails the
+supervisor's *start*, not the call that built it.  It is the same rule
+either way: `min-backoff = 0s` in a config file is refused exactly as
+`minBackoff: 0` in code is.
+
+`drainGraceMs` and `childName` have no config leaf on purpose.  The
+first's default is derived from `minBackoff`, so publishing `50ms` would
+freeze it for a supervisor with a shorter window; the second is
+per-call-site identity, where one process-wide value would be actively
+wrong.
 
 The most interesting fields:
 
@@ -226,10 +260,11 @@ BackoffSupervisor.factory({
 
 Override the default exponential backoff with any
 [`BackoffPolicy`](/patterns/backoff-policy/) — linear,
-fibonacci, custom.  `minBackoff` / `maxBackoff` are still
-required (they're advisory caps; the framework uses them for the
-`resetCounter` heuristic), but the `policy` controls the actual
-delay computation.
+fibonacci, custom.  `minBackoff` / `maxBackoff` still apply (they are
+advisory caps; the framework uses them for the `resetCounter` heuristic
+and for the drain grace), but the `policy` controls the actual delay
+computation — and with it the jitter, so `randomFactor` is inert for
+such a supervisor whether it was set in code or configured.
 
 ## When to reach for BackoffSupervisor
 

@@ -73,6 +73,46 @@ As with Postgres, the journal + snapshot store are selected by the config
 plugin IDs, and the **durable-state store is returned** for you to pass
 into your `DurableStateActor` settings.
 
+## Configure it from HOCON
+
+The plugin id **is** the config section, so the block named after the id is the
+block that plugin reads (#872).  Everything except the live objects can come
+from `application.conf`, which means `registerMariaDbPlugins(ext)` needs no options at all:
+
+```ts
+import { PersistenceExtensionId, registerMariaDbPlugins } from 'actor-ts/persistence';
+
+const persistence = system.extension(PersistenceExtensionId);
+registerMariaDbPlugins(persistence);
+```
+
+```hocon
+actor-ts.persistence {
+  journal        { plugin = "actor-ts.persistence.journal.mariadb" }
+  snapshot-store { plugin = "actor-ts.persistence.snapshot-store.mariadb" }
+  durable-state  { plugin = "actor-ts.persistence.durable-state.mariadb" }
+
+  journal.mariadb        { url = ${?DATABASE_URL}, events-table = "events" }
+  snapshot-store.mariadb { url = ${?DATABASE_URL}, keep-n = 5 }
+  durable-state.mariadb  { url = ${?DATABASE_URL}, table = "durable_state" }
+}
+```
+
+Options passed to `registerMariaDbPlugins` still win, field by field, and a field you leave
+unset falls through to the block rather than blanking it — so a shared
+`pool` in code and the table names in HOCON is a normal mix.  A pre-built
+`pool` and a `serializer` have **no leaf at all**: they are live objects, and
+a config file cannot express one.  Neither does `poolConfig` — free-form driver
+config with no enumerable key set.  `tags-table` is read but ships as a *comment*
+rather than a key, because its default is derived from `events-table`, and
+absence is what keeps the two in step.
+
+**`durable-state.plugin` now selects this backend's durable-state store.**  It
+used to be built eagerly and handed back from `registerMariaDbPlugins`, so it could only be
+wired by threading that instance through application code.  The returned handle
+still works and still yields the same instance — it is simply built on first use
+rather than at registration.
+
 ## Configuration
 
 ```ts
