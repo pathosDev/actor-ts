@@ -26,6 +26,7 @@ import {
   addressMatchesPins,
   addressPinRejection,
   cidrMatches,
+  classNameOf,
   escapeHtml,
   html,
   isCidrEntry,
@@ -303,6 +304,20 @@ describe('the rest of the util toolbox is reachable on actor-ts/util (#1404)', (
       // the assertion that can tell the difference.
       const untouched = '/orders';
       expect(stripTrailing(untouched, '/')).toBe(untouched);
+    });
+  });
+
+  describe('ClassName', () => {
+    test('names the class of an object and the type of everything else', () => {
+      // The helper a diagnostic reaches for when it may name a payload but
+      // never quote one (#1000).  `null` and the primitives answer with what
+      // they are, because a boxed name would read as an object that was never
+      // there.
+      class OrderPlaced {}
+      expect(classNameOf(new OrderPlaced())).toBe('OrderPlaced');
+      expect(classNameOf(null)).toBe('null');
+      expect(classNameOf(42)).toBe('number');
+      expect(classNameOf(Object.create(null) as object)).toBe('Object');
     });
   });
 

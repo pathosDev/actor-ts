@@ -79,9 +79,13 @@ export const ConfigKeys = {
    *
    * - #1179 wants a per-recipient token bucket over the *publish* path, and
    *   sketches it under `actor-ts.diagnostics.*`.
-   * - #867 wants dead-letter *logging* toggles, and sketches them at the
+   * - #867 wanted dead-letter *logging* toggles, and sketched them at the
    *   root — `log-dead-letters`, `log-dead-letters-during-shutdown`,
-   *   `log-dead-letters-suspend-duration` — beside `actor-ts.debug.*`.
+   *   `log-dead-letters-suspend-duration` — beside `actor-ts.debug.*`.  That
+   *   sketch is superseded: #1000 shipped those three under `diagnostics`
+   *   below, because `Reference.ts` has fourteen root blocks and no
+   *   root-level leaf at all, and because the switch that turns a
+   *   default-on log line off cannot ship after the log line does.
    *
    * Neither asks for the retention keys to move, and there is no single
    * alternative block they could move into.  The line that matters is the
@@ -105,6 +109,32 @@ export const ConfigKeys = {
     retention: 'actor-ts.dead-letters.retention',
     maxReplays: 'actor-ts.dead-letters.max-replays',
     persistenceId: 'actor-ts.dead-letters.persistence-id',
+  },
+
+  /**
+   * What the runtime says about itself — `actor-ts.diagnostics.*`.
+   *
+   * Read once, in the `ActorSystem` constructor, and handed to
+   * `DeadLetterRef` — the announce side of a dead letter, as against the
+   * capture side that `deadLetters` above configures.  That split is the
+   * settled namespace argument recorded there: retention is read by
+   * `DeadLetterQueue`, loudness by `DeadLetterRef`, and merging them would
+   * make a suppression knob look like it gates capture.
+   *
+   * Full dotted leaves rather than a block root on purpose.  A root would
+   * satisfy `NoDeadConfigKeys` for every leaf beneath it — its
+   * `coveringAccessor` falls back to the nearest root — so a leaf nothing
+   * reads would ship with the flagship config guard green.  Named
+   * individually, each one has to be referenced by the reader before the
+   * guard passes.
+   *
+   * #867 extends this group with `log-config-on-start` and the two
+   * `debug.*` switches; #1179's per-recipient suppression lands here too.
+   */
+  diagnostics: {
+    logDeadLetters: 'actor-ts.diagnostics.log-dead-letters',
+    logDeadLettersDuringShutdown: 'actor-ts.diagnostics.log-dead-letters-during-shutdown',
+    logDeadLettersSuspendDuration: 'actor-ts.diagnostics.log-dead-letters-suspend-duration',
   },
 
   /** Dispatcher root — `actor-ts.dispatcher.*`. */

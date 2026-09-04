@@ -122,9 +122,12 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="The first place to look is logs">
   Every supervisor decision, every cluster event, every dead-letter
-  is logged.  With `LogContext` MDC (correlation IDs propagating
-  across `tell`), a multi-actor request trail stitches together in
-  one log query.  Configure structured logging from day one — see
+  is logged — the last of those throttled after ten records, so read
+  the suspension line as "there were more" rather than as the end of
+  the story (see [Dead letters](/operations/dead-letters/)).  With
+  `LogContext` MDC (correlation IDs propagating across `tell`), a
+  multi-actor request trail stitches together in one log query.
+  Configure structured logging from day one — see
   [Logging](/fundamentals/logging/).
 </Aside>
 

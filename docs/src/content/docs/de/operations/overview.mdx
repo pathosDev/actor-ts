@@ -123,11 +123,13 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Der erste Anlaufpunkt sind Logs">
   Jede Supervisor-Entscheidung, jedes Cluster-Event, jeder Dead-Letter
-  wird geloggt. Mit `LogContext` MDC (Correlation IDs, die über
-  `tell` propagieren) fügt sich der Verlauf eines Multi-Actor-Requests
-  in einer einzigen Log-Abfrage zusammen. Konfiguriere strukturiertes
-  Logging vom ersten Tag an — siehe
-  [Logging](/de/fundamentals/logging/).
+  wird geloggt — Letzteres nach zehn Einträgen gedrosselt, lies die
+  Aussetz-Zeile also als „es gab mehr“ und nicht als Ende der
+  Geschichte (siehe [Dead Letters](/de/operations/dead-letters/)). Mit
+  `LogContext` MDC (Correlation IDs, die über `tell` propagieren) fügt
+  sich der Verlauf eines Multi-Actor-Requests in einer einzigen
+  Log-Abfrage zusammen. Konfiguriere strukturiertes Logging vom ersten
+  Tag an — siehe [Logging](/de/fundamentals/logging/).
 </Aside>
 
 <Aside type="caution" title="Der zweite Anlaufpunkt sind Metriken">

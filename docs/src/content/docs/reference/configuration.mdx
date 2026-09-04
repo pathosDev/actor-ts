@@ -121,6 +121,19 @@ Place this at the project root.  The framework auto-loads it on
 | --- | --- | --- |
 | `actor.throughput` | `16` | User messages **one** actor handles per dispatcher turn before yielding.  Override per actor with `ActorOptions.withThroughput()`. |
 
+### `actor-ts.diagnostics`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `diagnostics.log-dead-letters` | `10` | Dead letters logged in full before logging suspends.  `0` turns dead-letter logging off entirely.  Every letter is captured and published on the event stream either way — this gates the log line and nothing else. |
+| `diagnostics.log-dead-letters-during-shutdown` | `off` | Log the burst `terminate()` produces while it drains mailboxes to dead letters.  Off because an orderly shutdown drains every queued and stashed message that way; an individual `ref.stop()` still logs, because the system is not terminating. |
+| `diagnostics.log-dead-letters-suspend-duration` | `5m` | How long logging stays suspended once the count above is reached.  `0` never suspends, which is how “log every dead letter” is spelled. |
+
+The record names the recipient path, the sender when there is one, and the
+message's class — never the payload, for the same data-protection reason
+`dead-letters.store` defaults to `off`.  Every key here is also settable in
+code, field by field, through `ActorSystemOptions.withDiagnostics(…)`.  See
+[Dead letters](/operations/dead-letters/) for the whole picture.
 ### `actor-ts.dispatcher`
 
 | Key | Default | Purpose |
