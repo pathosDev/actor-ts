@@ -1291,8 +1291,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   database. It and the three Postgres `withPoolConfig` builders now show the
   CA form the journal's documentation page already used, and link the
   TLS-everywhere page. Because no test can fail on JSDoc text, a new
-  repo-invariant guard keeps the pattern out of `src/` and holds all four
-  surfaces to it (#755).
+  repo-invariant guard holds all four surfaces to that illustration and
+  refuses any `rejectUnauthorized` binding under `src/` — the key bare or
+  quoted, the pair split across lines, `:` or `=` — whose value is not
+  `true`, a `boolean` type annotation, or a forward of the caller's own
+  value. It does not see a key assembled at runtime, the other knobs that
+  disable verification, or what a caller passes in `poolConfig`, and its own
+  comment lists those limits with fixtures behind them (#755).
 
 - **An external `subscribe` can no longer rewrite an `MqttActor` subclass's
   declared QoS** (#783).
