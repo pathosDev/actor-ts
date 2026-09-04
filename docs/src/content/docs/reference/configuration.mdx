@@ -944,6 +944,127 @@ keeps it; a pre-opened `database` is an override, because sharing one handle is
 the more specific instruction.  There is no leaf for a `driver`, a `database` or
 a `serializer` — those are live objects, and a config file cannot express one.
 
+**The five relational backends read their own blocks too** (#872).  Postgres,
+MariaDB, SQL Server, libSQL and Cloudflare D1 share one journal, one snapshot
+store and one durable-state store between them, so the table half of every block
+is the same three or four leaves and only the connection half differs.
+`registerPostgresPlugins(ext)` — and each of its four siblings — therefore
+needs no options at all when the blocks below are filled in:
+
+```ts
+const ext = system.extension(PersistenceExtensionId);
+registerPostgresPlugins(ext);        // url, tables, retention ... from HOCON
+```
+
+The connection is repeated under each of the three plugin roots rather than
+hoisted to a per-backend one, because a plugin id *is* its config section and the
+three axes are selected independently — they may legitimately name different
+databases.  A deployment that shares one connection writes it once and
+substitutes: `url = ${actor-ts.persistence.journal.postgres.url}`.
+
+Three things deliberately have **no leaf**.  A pre-built `pool` or `client` and a
+`serializer` are live objects, so a config file cannot express one.  `poolConfig`
+is free-form driver config with no enumerable key set and no default, so it stays
+code-only — which for SQL Server means a purely config-driven store is reached
+through `url`, in either the `Server=...;Database=...` or the `mssql://` form.
+And `tags-table` is a **comment** in the reference configuration rather than a
+key, because its default is derived from `events-table` (`<events-table>_tags`):
+absence is what keeps the two in step.  It is read all the same, so an
+`application.conf` can still pin it.
+
+The two credentials that *do* have a leaf — libSQL's `auth-token` and D1's
+`api-token` — are strings the operator supplies from somewhere, and the
+documented route is a substitution (`api-token = ${?CLOUDFLARE_API_TOKEN}`).
+Both ship empty, and empty reads as *not set*, so the placeholder never becomes a
+bearer token.
+
+#### PostgreSQL
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `persistence.journal.postgres.url` | `""` | Connection string.  Empty is *not set* — the store falls through to the connection the register helper was given. |
+| `persistence.journal.postgres.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
+| `persistence.journal.postgres.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.snapshot-store.postgres.url` | `""` | As above. |
+| `persistence.snapshot-store.postgres.snapshots-table` | `"snapshots"` | Snapshot table. |
+| `persistence.snapshot-store.postgres.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
+| `persistence.snapshot-store.postgres.auto-create-tables` | `on` | As above. |
+| `persistence.durable-state.postgres.url` | `""` | As above. |
+| `persistence.durable-state.postgres.table` | `"durable_state"` | Durable-state table. |
+| `persistence.durable-state.postgres.auto-create-tables` | `on` | As above. |
+
+#### MariaDB / MySQL
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `persistence.journal.mariadb.url` | `""` | Connection string.  Empty is *not set* — the store falls through to the connection the register helper was given. |
+| `persistence.journal.mariadb.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
+| `persistence.journal.mariadb.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.snapshot-store.mariadb.url` | `""` | As above. |
+| `persistence.snapshot-store.mariadb.snapshots-table` | `"snapshots"` | Snapshot table. |
+| `persistence.snapshot-store.mariadb.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
+| `persistence.snapshot-store.mariadb.auto-create-tables` | `on` | As above. |
+| `persistence.durable-state.mariadb.url` | `""` | As above. |
+| `persistence.durable-state.mariadb.table` | `"durable_state"` | Durable-state table. |
+| `persistence.durable-state.mariadb.auto-create-tables` | `on` | As above. |
+
+#### SQL Server
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `persistence.journal.mssql.url` | `""` | Connection string.  Empty is *not set* — the store falls through to the connection the register helper was given. |
+| `persistence.journal.mssql.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
+| `persistence.journal.mssql.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.snapshot-store.mssql.url` | `""` | As above. |
+| `persistence.snapshot-store.mssql.snapshots-table` | `"snapshots"` | Snapshot table. |
+| `persistence.snapshot-store.mssql.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
+| `persistence.snapshot-store.mssql.auto-create-tables` | `on` | As above. |
+| `persistence.durable-state.mssql.url` | `""` | As above. |
+| `persistence.durable-state.mssql.table` | `"durable_state"` | Durable-state table. |
+| `persistence.durable-state.mssql.auto-create-tables` | `on` | As above. |
+
+#### libSQL / Turso
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `persistence.journal.libsql.url` | `""` | Connection string.  Empty is *not set* — the store falls through to the connection the register helper was given. |
+| `persistence.journal.libsql.auth-token` | `""` | Turso auth token.  Empty is *not set*; prefer `${?TURSO_AUTH_TOKEN}`. |
+| `persistence.journal.libsql.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
+| `persistence.journal.libsql.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.snapshot-store.libsql.url` | `""` | As above. |
+| `persistence.snapshot-store.libsql.auth-token` | `""` | As above. |
+| `persistence.snapshot-store.libsql.snapshots-table` | `"snapshots"` | Snapshot table. |
+| `persistence.snapshot-store.libsql.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
+| `persistence.snapshot-store.libsql.auto-create-tables` | `on` | As above. |
+| `persistence.durable-state.libsql.url` | `""` | As above. |
+| `persistence.durable-state.libsql.auth-token` | `""` | As above. |
+| `persistence.durable-state.libsql.table` | `"durable_state"` | Durable-state table. |
+| `persistence.durable-state.libsql.auto-create-tables` | `on` | As above. |
+
+#### Cloudflare D1
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `persistence.journal.cloudflare-d1.account-id` | `""` | Cloudflare account id.  Empty is *not set*. |
+| `persistence.journal.cloudflare-d1.database-id` | `""` | D1 database id — the UUID, not the database name. |
+| `persistence.journal.cloudflare-d1.api-token` | `""` | API token with `D1:Edit`.  Empty is *not set*; prefer `${?CLOUDFLARE_API_TOKEN}`. |
+| `persistence.journal.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | D1 REST endpoint.  Override only for a proxy or a test double. |
+| `persistence.journal.cloudflare-d1.events-table` | `"events"` | Event table.  The tags join table is derived as `<events-table>_tags`. |
+| `persistence.journal.cloudflare-d1.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.snapshot-store.cloudflare-d1.account-id` | `""` | As above. |
+| `persistence.snapshot-store.cloudflare-d1.database-id` | `""` | As above. |
+| `persistence.snapshot-store.cloudflare-d1.api-token` | `""` | As above. |
+| `persistence.snapshot-store.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | As above. |
+| `persistence.snapshot-store.cloudflare-d1.snapshots-table` | `"snapshots"` | Snapshot table. |
+| `persistence.snapshot-store.cloudflare-d1.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
+| `persistence.snapshot-store.cloudflare-d1.auto-create-tables` | `on` | As above. |
+| `persistence.durable-state.cloudflare-d1.account-id` | `""` | As above. |
+| `persistence.durable-state.cloudflare-d1.database-id` | `""` | As above. |
+| `persistence.durable-state.cloudflare-d1.api-token` | `""` | As above. |
+| `persistence.durable-state.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | As above. |
+| `persistence.durable-state.cloudflare-d1.table` | `"durable_state"` | Durable-state table. |
+| `persistence.durable-state.cloudflare-d1.auto-create-tables` | `on` | As above. |
+
 The plugin keys point to *another* config section that holds
 that plugin's settings.  `actor-ts.persistence.journal.sqlite` above is the
 worked example: it is both the id the journal is registered under and the block

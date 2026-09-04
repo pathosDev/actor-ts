@@ -86,6 +86,7 @@ import { DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM, DEFAULT_OBJECT_STORAGE_EN
 import { DEFAULT_MAX_DECOMPRESSED_BYTES } from '../../../src/persistence/object-storage/BodyCodec.js';
 import { DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_STALE_LOCK_MS } from '../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import { DEFAULT_AUTO_CREATE_TABLES, DEFAULT_DURABLE_STATE_TABLE, DEFAULT_EVENTS_TABLE, DEFAULT_SNAPSHOTS_TABLE, DEFAULT_SNAPSHOT_KEEP_N, DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../../../src/persistence/Constants.js';
+import { DEFAULT_D1_BASE_URL } from '../../../src/persistence/journals/D1Client.js';
 import {
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES,
@@ -508,6 +509,53 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.persistence.durable-state.sqlite.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
   { key: 'actor-ts.persistence.durable-state.sqlite.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
   { key: 'actor-ts.persistence.durable-state.sqlite.busy-timeout', kind: 'duration', constant: DEFAULT_SQLITE_BUSY_TIMEOUT_MS },
+  // The relational family (#872, slice 2).  Fifteen blocks, five constants: the
+  // five backends share `RelationalJournal` / `RelationalSnapshotStore` /
+  // `RelationalDurableStateStore`, so the table names and the auto-create switch
+  // are decided in one place each and published fifteen times.  Pinning every
+  // copy is the point — a published default that drifts from the read site is
+  // the same lie whether it drifts once or five times.
+  { key: 'actor-ts.persistence.journal.postgres.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.postgres.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.snapshot-store.postgres.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.postgres.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.postgres.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.postgres.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.durable-state.postgres.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.journal.mariadb.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.mariadb.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.snapshot-store.mariadb.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.mariadb.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.mariadb.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.mariadb.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.durable-state.mariadb.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.journal.mssql.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.mssql.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.snapshot-store.mssql.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.mssql.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.mssql.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.mssql.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.durable-state.mssql.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.journal.libsql.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.libsql.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.snapshot-store.libsql.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.libsql.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.libsql.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.libsql.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.durable-state.libsql.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.journal.cloudflare-d1.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.cloudflare-d1.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.cloudflare-d1.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.durable-state.cloudflare-d1.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  // D1's API endpoint is a real default rather than a placeholder — every
+  // deployment uses it, and `buildD1Client` falls back to the same constant, so
+  // the three published copies are checkable against the one in force.
+  { key: 'actor-ts.persistence.journal.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
+  { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
+  { key: 'actor-ts.persistence.durable-state.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
 
   /* --- object storage --- */
   { key: 'actor-ts.persistence.snapshot-store.object-storage.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
@@ -698,6 +746,44 @@ const PLACEHOLDERS: readonly string[] = [
   'actor-ts.persistence.journal.sqlite.path',
   'actor-ts.persistence.snapshot-store.sqlite.path',
   'actor-ts.persistence.durable-state.sqlite.path',
+  // The relational family's connection halves (#872, slice 2).  Every one is a
+  // coordinate of the operator's own database — a URL, an account, a database
+  // id, a token — required at the point of use and impossible to default.  `""`
+  // reads as unset, so the published placeholder never reaches a driver: an
+  // empty `url` handed to `new pg.Pool({ connectionString: '' })` would connect
+  // to whatever `PG*` environment variables happen to be set, which is a
+  // sharper failure than not connecting at all.
+  //
+  // The two credentials here — libSQL's token and D1's — have leaves because
+  // they are *strings the operator supplies*, and the documented route is a
+  // substitution (`auth-token = ${?TURSO_AUTH_TOKEN}`), the same treatment
+  // `cache.redis.password` and `logger.sinks.splunk.token` already get.  That
+  // is the opposite case from object storage's key material above, which has no
+  // path at all because a 32-byte key must never be expressible in a file.
+  'actor-ts.persistence.journal.postgres.url',
+  'actor-ts.persistence.snapshot-store.postgres.url',
+  'actor-ts.persistence.durable-state.postgres.url',
+  'actor-ts.persistence.journal.mariadb.url',
+  'actor-ts.persistence.snapshot-store.mariadb.url',
+  'actor-ts.persistence.durable-state.mariadb.url',
+  'actor-ts.persistence.journal.mssql.url',
+  'actor-ts.persistence.snapshot-store.mssql.url',
+  'actor-ts.persistence.durable-state.mssql.url',
+  'actor-ts.persistence.journal.libsql.url',
+  'actor-ts.persistence.journal.libsql.auth-token',
+  'actor-ts.persistence.snapshot-store.libsql.url',
+  'actor-ts.persistence.snapshot-store.libsql.auth-token',
+  'actor-ts.persistence.durable-state.libsql.url',
+  'actor-ts.persistence.durable-state.libsql.auth-token',
+  'actor-ts.persistence.journal.cloudflare-d1.account-id',
+  'actor-ts.persistence.journal.cloudflare-d1.database-id',
+  'actor-ts.persistence.journal.cloudflare-d1.api-token',
+  'actor-ts.persistence.snapshot-store.cloudflare-d1.account-id',
+  'actor-ts.persistence.snapshot-store.cloudflare-d1.database-id',
+  'actor-ts.persistence.snapshot-store.cloudflare-d1.api-token',
+  'actor-ts.persistence.durable-state.cloudflare-d1.account-id',
+  'actor-ts.persistence.durable-state.cloudflare-d1.database-id',
+  'actor-ts.persistence.durable-state.cloudflare-d1.api-token',
 ];
 
 /**

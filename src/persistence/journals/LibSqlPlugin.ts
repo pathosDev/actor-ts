@@ -1,4 +1,6 @@
 import type { ActorSystem } from '../../ActorSystem.js';
+import { Lazy } from '../../util/Lazy.js';
+import { mergeOptions } from '../../util/OptionsMerge.js';
 import type { PersistenceExtension } from '../PersistenceExtension.js';
 import { mergeLeafOptions } from '../relational/RelationalPlugin.js';
 import { LibSqlDurableStateStore } from '../durable-state-stores/LibSqlDurableStateStore.js';
@@ -7,6 +9,11 @@ import { LibSqlSnapshotStore } from '../snapshot-stores/LibSqlSnapshotStore.js';
 import type { LibSqlSnapshotStoreOptionsType } from '../snapshot-stores/LibSqlSnapshotStoreOptions.js';
 import { LibSqlJournal } from './LibSqlJournal.js';
 import type { LibSqlJournalOptionsType } from './LibSqlJournalOptions.js';
+import {
+  readLibSqlDurableStateStoreOptionsFromConfig,
+  readLibSqlJournalOptionsFromConfig,
+  readLibSqlSnapshotStoreOptionsFromConfig,
+} from './LibSqlPluginOptions.js';
 import type { RegisterLibSqlPluginsOptions, RegisterLibSqlPluginsOptionsType } from './LibSqlPluginOptions.js';
 
 /** Canonical plug-in IDs for the libSQL journal, snapshot, and durable-state stores. */
@@ -16,23 +23,29 @@ export const LIBSQL_DURABLE_STATE_PLUGIN_ID = 'actor-ts.persistence.durable-stat
 
 export type LibSqlPluginHandles = {
   /**
-   * The DurableState store instance.  `PersistenceExtension` carries no
-   * DurableState registry (same as the Postgres, MariaDB and object-storage
-   * plugins), so callers who want DurableState read it from the return value
-   * and pass it into their `DurableStateActor` options.
+   * The DurableState store instance, for a caller that wires
+   * `DurableStateOptions.store` by hand rather than selecting the store with
+   * `actor-ts.persistence.durable-state.plugin`.  A getter, built on first
+   * read — see `PostgresPluginHandles` for why (#872).
    */
   readonly durableStateStore: LibSqlDurableStateStore;
 };
 
 /**
- * One-shot registration of the libSQL journal + snapshot store against the
- * running `PersistenceExtension`, returning a ready-to-use DurableState store
- * handle.  Mirrors `registerPostgresPlugins` / `registerMariaDbPlugins`.
+ * One-shot registration of the libSQL journal, snapshot store and durable-state
+ * store against the running `PersistenceExtension`.  Mirrors
+ * `registerPostgresPlugins` / `registerMariaDbPlugins`.
  *
- * After this call, activate the journal + snapshot store via:
- *   `actor-ts.persistence.journal.plugin = "actor-ts.persistence.journal.libsql"`
+ * After this call, activate the stores via:
+ *   `actor-ts.persistence.journal.plugin        = "actor-ts.persistence.journal.libsql"`
  *   `actor-ts.persistence.snapshot-store.plugin = "actor-ts.persistence.snapshot-store.libsql"`
+ *   `actor-ts.persistence.durable-state.plugin  = "actor-ts.persistence.durable-state.libsql"`
  * either via HOCON or a `{ config: { … } }` override.
+ *
+ * `url`, `auth-token`, the table names and `auto-create-tables` all have leaves
+ * under those three blocks (#872), so `registerLibSqlPlugins(ext)` with no
+ * options is a complete wiring when `application.conf` fills them in — put the
+ * token in the environment and substitute it (`auth-token = ${?TURSO_AUTH_TOKEN}`).
  *
  * Pass `client` to share one libSQL client across all three stores — a libSQL
  * client is itself a connection pool, so sharing it is the normal case.  With a
@@ -57,12 +70,27 @@ export function registerLibSqlPlugins(
 
   ext.registerJournal(
     LIBSQL_JOURNAL_PLUGIN_ID,
-    (_system: ActorSystem) => new LibSqlJournal(journal),
+    (system: ActorSystem) => new LibSqlJournal(mergeOptions<LibSqlJournalOptionsType>(
+      {},
+      readLibSqlJournalOptionsFromConfig(system.config, LIBSQL_JOURNAL_PLUGIN_ID),
+      journal,
+    )),
   );
   ext.registerSnapshotStore(
     LIBSQL_SNAPSHOT_PLUGIN_ID,
-    (_system: ActorSystem) => new LibSqlSnapshotStore(snapshotStore),
+    (system: ActorSystem) => new LibSqlSnapshotStore(mergeOptions<LibSqlSnapshotStoreOptionsType>(
+      {},
+      readLibSqlSnapshotStoreOptionsFromConfig(system.config, LIBSQL_SNAPSHOT_PLUGIN_ID),
+      snapshotStore,
+    )),
   );
-  const durableStateStore = new LibSqlDurableStateStore(durableState);
-  return { durableStateStore };
+  const durableStateStoreLazy = Lazy.of(() => new LibSqlDurableStateStore(
+    mergeOptions<LibSqlDurableStateStoreOptionsType>(
+      {},
+      readLibSqlDurableStateStoreOptionsFromConfig(ext.config, LIBSQL_DURABLE_STATE_PLUGIN_ID),
+      durableState,
+    ),
+  ));
+  ext.registerDurableStateStore(LIBSQL_DURABLE_STATE_PLUGIN_ID, () => durableStateStoreLazy.get());
+  return { get durableStateStore(): LibSqlDurableStateStore { return durableStateStoreLazy.get(); } };
 }

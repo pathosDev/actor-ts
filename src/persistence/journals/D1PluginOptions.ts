@@ -1,9 +1,24 @@
+import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Serializer } from '../../serialization/Serializer.js';
+import {
+  readStoreBoolean,
+  readStoreIdentifier,
+  readStoreInt,
+  readStoreString,
+  storeLeaf,
+} from '../StoreConfig.js';
 import type { D1ClientLike } from './D1Client.js';
-import type { D1JournalOptions } from './D1JournalOptions.js';
-import type { D1SnapshotStoreOptions } from '../snapshot-stores/D1SnapshotStoreOptions.js';
-import type { D1DurableStateStoreOptions } from '../durable-state-stores/D1DurableStateStoreOptions.js';
+import type { D1JournalOptions, D1JournalOptionsType } from './D1JournalOptions.js';
+import type {
+  D1SnapshotStoreOptions,
+  D1SnapshotStoreOptionsType,
+} from '../snapshot-stores/D1SnapshotStoreOptions.js';
+import type {
+  D1DurableStateStoreOptions,
+  D1DurableStateStoreOptionsType,
+} from '../durable-state-stores/D1DurableStateStoreOptions.js';
 
 export type RegisterD1PluginsOptionsType = {
   /**
@@ -103,3 +118,98 @@ export type RegisterD1PluginsOptions =
   | Partial<RegisterD1PluginsOptionsType>;
 /** Value alias so `RegisterD1PluginsOptions.create()` resolves to the builder. */
 export const RegisterD1PluginsOptions = RegisterD1PluginsOptionsBuilder;
+
+/**
+ * Read the Cloudflare D1 journal's block —
+ * `actor-ts.persistence.journal.cloudflare-d1` by default, or whichever id the
+ * plug-in was registered under (#872).  Same shape and same reasoning as
+ * `readPostgresJournalOptionsFromConfig`.
+ *
+ * D1 is reached by three coordinates rather than a URL, and `api-token` is a
+ * credential with a leaf for the reason libSQL's `auth-token` has one: it is a
+ * *string* the operator supplies, the leaf ships empty, and the documented
+ * route is `api-token = ${?CLOUDFLARE_API_TOKEN}`.  `""` reads as unset, so the
+ * placeholder never becomes a bearer token.
+ *
+ * `timeout` and `max-response-bytes` have no leaf yet — they are transport
+ * tuning rather than reachability, and the block is already the widest of the
+ * five.
+ */
+export function readD1JournalOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.journal.cloudflareD1.root,
+): Partial<D1JournalOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.journal.cloudflareD1;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: { -readonly [K in keyof D1JournalOptionsType]?: D1JournalOptionsType[K] } = {};
+  const accountId = readStoreString(config, at(keys.accountId));
+  if (accountId !== undefined) out.accountId = accountId;
+  const databaseId = readStoreString(config, at(keys.databaseId));
+  if (databaseId !== undefined) out.databaseId = databaseId;
+  const apiToken = readStoreString(config, at(keys.apiToken));
+  if (apiToken !== undefined) out.apiToken = apiToken;
+  const baseUrl = readStoreString(config, at(keys.baseUrl));
+  if (baseUrl !== undefined) out.baseUrl = baseUrl;
+  const eventsTable = readStoreIdentifier(config, at(keys.eventsTable));
+  if (eventsTable !== undefined) out.eventsTable = eventsTable;
+  const tagsTable = readStoreIdentifier(config, at(keys.tagsTable));
+  if (tagsTable !== undefined) out.tagsTable = tagsTable;
+  const autoCreateTables = readStoreBoolean(config, at(keys.autoCreateTables));
+  if (autoCreateTables !== undefined) out.autoCreateTables = autoCreateTables;
+  return out;
+}
+
+/** Read the D1 snapshot store's block — see {@link readD1JournalOptionsFromConfig}. */
+export function readD1SnapshotStoreOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.snapshotStore.cloudflareD1.root,
+): Partial<D1SnapshotStoreOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.snapshotStore.cloudflareD1;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: {
+    -readonly [K in keyof D1SnapshotStoreOptionsType]?: D1SnapshotStoreOptionsType[K]
+  } = {};
+  const accountId = readStoreString(config, at(keys.accountId));
+  if (accountId !== undefined) out.accountId = accountId;
+  const databaseId = readStoreString(config, at(keys.databaseId));
+  if (databaseId !== undefined) out.databaseId = databaseId;
+  const apiToken = readStoreString(config, at(keys.apiToken));
+  if (apiToken !== undefined) out.apiToken = apiToken;
+  const baseUrl = readStoreString(config, at(keys.baseUrl));
+  if (baseUrl !== undefined) out.baseUrl = baseUrl;
+  const snapshotsTable = readStoreIdentifier(config, at(keys.snapshotsTable));
+  if (snapshotsTable !== undefined) out.snapshotsTable = snapshotsTable;
+  const keepN = readStoreInt(config, at(keys.keepN));
+  if (keepN !== undefined) out.keepN = keepN;
+  const autoCreateTables = readStoreBoolean(config, at(keys.autoCreateTables));
+  if (autoCreateTables !== undefined) out.autoCreateTables = autoCreateTables;
+  return out;
+}
+
+/** Read the D1 durable-state store's block — see {@link readD1JournalOptionsFromConfig}. */
+export function readD1DurableStateStoreOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.durableState.cloudflareD1.root,
+): Partial<D1DurableStateStoreOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.durableState.cloudflareD1;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: {
+    -readonly [K in keyof D1DurableStateStoreOptionsType]?: D1DurableStateStoreOptionsType[K]
+  } = {};
+  const accountId = readStoreString(config, at(keys.accountId));
+  if (accountId !== undefined) out.accountId = accountId;
+  const databaseId = readStoreString(config, at(keys.databaseId));
+  if (databaseId !== undefined) out.databaseId = databaseId;
+  const apiToken = readStoreString(config, at(keys.apiToken));
+  if (apiToken !== undefined) out.apiToken = apiToken;
+  const baseUrl = readStoreString(config, at(keys.baseUrl));
+  if (baseUrl !== undefined) out.baseUrl = baseUrl;
+  const table = readStoreIdentifier(config, at(keys.table));
+  if (table !== undefined) out.table = table;
+  const autoCreateTables = readStoreBoolean(config, at(keys.autoCreateTables));
+  if (autoCreateTables !== undefined) out.autoCreateTables = autoCreateTables;
+  return out;
+}

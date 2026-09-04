@@ -80,8 +80,64 @@ const { durableStateStore } = registerD1Plugins(ext, registerOptions);
 
 The API token is sent as a bearer token, so treat it like any other secret —
 read it from the environment rather than committing it. Setting only some of
-the three credentials is rejected at wiring time, since that is almost always a
-forgotten environment variable.
+the three credentials is rejected when the store is built, since that is almost
+always a forgotten environment variable.  That is the first time a store is
+resolved rather than the moment `registerD1Plugins` returns — all three stores
+are built on demand, so the merged settings a validator sees include the HOCON
+block below.
+
+## Configure it from HOCON
+
+The plugin id **is** the config section, so the block named after the id is the
+block that plugin reads (#872).  Everything except the live objects can come
+from `application.conf`, which means `registerD1Plugins(ext)` needs no options at all:
+
+```ts
+import { PersistenceExtensionId, registerD1Plugins } from 'actor-ts/persistence';
+
+const persistence = system.extension(PersistenceExtensionId);
+registerD1Plugins(persistence);
+```
+
+```hocon
+actor-ts.persistence {
+  journal        { plugin = "actor-ts.persistence.journal.cloudflare-d1" }
+  snapshot-store { plugin = "actor-ts.persistence.snapshot-store.cloudflare-d1" }
+  durable-state  { plugin = "actor-ts.persistence.durable-state.cloudflare-d1" }
+
+  journal.cloudflare-d1 {
+    account-id  = ${?CLOUDFLARE_ACCOUNT_ID}
+    database-id = ${?D1_DATABASE_ID}
+    api-token   = ${?CLOUDFLARE_API_TOKEN}
+  }
+  snapshot-store.cloudflare-d1 {
+    account-id  = ${?CLOUDFLARE_ACCOUNT_ID}
+    database-id = ${?D1_DATABASE_ID}
+    api-token   = ${?CLOUDFLARE_API_TOKEN}
+    keep-n      = 5
+  }
+  durable-state.cloudflare-d1 {
+    account-id  = ${?CLOUDFLARE_ACCOUNT_ID}
+    database-id = ${?D1_DATABASE_ID}
+    api-token   = ${?CLOUDFLARE_API_TOKEN}
+  }
+}
+```
+
+Options passed to `registerD1Plugins` still win, field by field, and a field you leave
+unset falls through to the block rather than blanking it — so a shared
+`transport` in code and the table names in HOCON is a normal mix.  A pre-built
+`transport` and a `serializer` have **no leaf at all**: they are live objects, and
+a config file cannot express one.  Neither does `poolConfig` — free-form driver
+config with no enumerable key set.  `tags-table` is read but ships as a *comment*
+rather than a key, because its default is derived from `events-table`, and
+absence is what keeps the two in step.
+
+**`durable-state.plugin` now selects this backend's durable-state store.**  It
+used to be built eagerly and handed back from `registerD1Plugins`, so it could only be
+wired by threading that instance through application code.  The returned handle
+still works and still yields the same instance — it is simply built on first use
+rather than at registration.
 
 ## When to use it
 

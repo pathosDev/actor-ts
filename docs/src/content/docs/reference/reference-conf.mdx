@@ -1079,6 +1079,69 @@ actor-ts {
         wal = off                     # journal_mode = WAL: concurrent readers during a write
         busy-timeout = 1s             # lock wait before SQLITE_BUSY; 0 fails fast
       }
+
+      # PostgreSQL journal.  registerPostgresPlugins(ext) makes this id real;
+      # the block below is what that call reads when it is given no options.
+      # Explicit PostgresJournalOptions always win over anything here.
+      #
+      # The five relational journals below share one implementation, so they
+      # share one field table -- events-table, tags-table, auto-create-tables --
+      # and differ only in how they are reached.
+      postgres {
+        # Connection string.  "" means "not set", so an unset url falls through
+        #   to whatever the register helper was given instead of overriding it
+        #   with an empty one.  Keep the credentials out of the file:
+        #   url = ${?DATABASE_URL}.
+        # A pre-built pool and a poolConfig object have NO leaf: the first is a
+        #   live object and the second has no enumerable key set, so both stay
+        #   code-only (RegisterPostgresPluginsOptions.withPool / withPoolConfig).
+        url = ""
+        events-table = "events"
+        # tags-table -- deliberately unset: the default is DERIVED from the
+        #   name above (<events-table>_tags), so absence is what keeps the two
+        #   in step.  Set it only to point the tag index at an existing table.
+        auto-create-tables = on       # CREATE TABLE IF NOT EXISTS on first use
+      }
+
+      # MariaDB / MySQL journal -- see the postgres block above.
+      mariadb {
+        url = ""                      # mariadb://user:pass@host:3306/db
+        events-table = "events"
+        # tags-table -- derived as <events-table>_tags; see postgres above.
+        auto-create-tables = on
+      }
+
+      # SQL Server journal -- see the postgres block above.
+      mssql {
+        # Either the "Server=host,1433;Database=app;…" or the mssql:// form.
+        url = ""
+        events-table = "events"
+        # tags-table -- derived as <events-table>_tags; see postgres above.
+        auto-create-tables = on
+      }
+
+      # libSQL / Turso journal -- see the postgres block above.
+      libsql {
+        url = ""                      # libsql://… , or http(s):// / ws(s):// for a self-hosted sqld
+        auth-token = ""               # Turso token; prefer ${?TURSO_AUTH_TOKEN}
+        events-table = "events"
+        # tags-table -- derived as <events-table>_tags; see postgres above.
+        auto-create-tables = on
+      }
+
+      # Cloudflare D1 journal -- see the postgres block above.  D1 is reached by
+      # three coordinates rather than a URL, and it is the one backend that
+      # speaks over plain HTTP, so base-url is a real default rather than a
+      # placeholder.
+      cloudflare-d1 {
+        account-id  = ""
+        database-id = ""              # the UUID, not the database name
+        api-token   = ""              # D1:Edit token; prefer ${?CLOUDFLARE_API_TOKEN}
+        base-url    = "https://api.cloudflare.com/client/v4"
+        events-table = "events"
+        # tags-table -- derived as <events-table>_tags; see postgres above.
+        auto-create-tables = on
+      }
     }
     snapshot-store {
       plugin = "actor-ts.persistence.snapshot-store.in-memory"
@@ -1089,6 +1152,51 @@ actor-ts {
         snapshots-table = "snapshots"
         keep-n = 3                    # snapshots kept per persistenceId; 0 disables pruning
         busy-timeout = 1s
+      }
+
+      # The five relational snapshot stores -- see the journal blocks above for
+      # what each connection half means.  The connection is repeated under every
+      # plugin root rather than hoisted: a plugin id IS its config section, and
+      # the three axes are selected independently, so they may legitimately name
+      # different databases.  A deployment that shares one connection writes it
+      # once and substitutes -- url = ${actor-ts.persistence.journal.postgres.url}.
+      postgres {
+        url = ""
+        snapshots-table = "snapshots"
+        keep-n = 3                    # snapshots kept per persistenceId; 0 disables pruning
+        auto-create-tables = on
+      }
+
+      mariadb {
+        url = ""
+        snapshots-table = "snapshots"
+        keep-n = 3
+        auto-create-tables = on
+      }
+
+      mssql {
+        url = ""
+        snapshots-table = "snapshots"
+        keep-n = 3
+        auto-create-tables = on
+      }
+
+      libsql {
+        url = ""
+        auth-token = ""               # prefer ${?TURSO_AUTH_TOKEN}
+        snapshots-table = "snapshots"
+        keep-n = 3
+        auto-create-tables = on
+      }
+
+      cloudflare-d1 {
+        account-id  = ""
+        database-id = ""
+        api-token   = ""              # prefer ${?CLOUDFLARE_API_TOKEN}
+        base-url    = "https://api.cloudflare.com/client/v4"
+        snapshots-table = "snapshots"
+        keep-n = 3
+        auto-create-tables = on
       }
 
       # Object-storage snapshot store -- S3-compatible or local filesystem.
@@ -1150,6 +1258,44 @@ actor-ts {
         table = "durable_state"
         auto-create-tables = on       # CREATE TABLE IF NOT EXISTS on first use
         busy-timeout = 1s
+      }
+
+      # The five relational durable-state stores -- see the journal blocks above.
+      # Each backend's store is a registered factory now rather than an instance
+      # its register helper built eagerly and returned, so the plugin key above
+      # actually selects one.
+      postgres {
+        url = ""
+        table = "durable_state"
+        auto-create-tables = on
+      }
+
+      mariadb {
+        url = ""
+        table = "durable_state"
+        auto-create-tables = on
+      }
+
+      mssql {
+        url = ""
+        table = "durable_state"
+        auto-create-tables = on
+      }
+
+      libsql {
+        url = ""
+        auth-token = ""               # prefer ${?TURSO_AUTH_TOKEN}
+        table = "durable_state"
+        auto-create-tables = on
+      }
+
+      cloudflare-d1 {
+        account-id  = ""
+        database-id = ""
+        api-token   = ""              # prefer ${?CLOUDFLARE_API_TOKEN}
+        base-url    = "https://api.cloudflare.com/client/v4"
+        table = "durable_state"
+        auto-create-tables = on
       }
     }
   }

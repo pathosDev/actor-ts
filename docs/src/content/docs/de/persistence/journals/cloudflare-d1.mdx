@@ -84,8 +84,67 @@ const { durableStateStore } = registerD1Plugins(ext, registerOptions);
 
 Das API-Token geht als Bearer-Token raus — behandle es wie jedes andere Secret
 und lies es aus der Umgebung, statt es zu committen. Nur einen Teil der drei
-Credentials zu setzen wird beim Verdrahten abgelehnt, denn das ist fast immer
-eine vergessene Umgebungsvariable.
+Credentials zu setzen wird abgelehnt, sobald der Store gebaut wird, denn das ist
+fast immer eine vergessene Umgebungsvariable.  Das ist die erste Auflösung eines
+Stores und nicht der Moment, in dem `registerD1Plugins` zurückkehrt — alle drei
+Stores werden bei Bedarf gebaut, damit die zusammengeführten Settings, die ein
+Validator sieht, den HOCON-Block unten einschließen.
+
+## Aus HOCON konfigurieren
+
+Die Plugin-Id **ist** der Config-Abschnitt: Der Block, der nach der Id benannt
+ist, ist der Block, den dieses Plugin liest (#872).  Alles außer den lebenden
+Objekten kann aus der `application.conf` kommen, `registerD1Plugins(ext)` braucht damit
+gar keine Optionen mehr:
+
+```ts
+import { PersistenceExtensionId, registerD1Plugins } from 'actor-ts/persistence';
+
+const persistence = system.extension(PersistenceExtensionId);
+registerD1Plugins(persistence);
+```
+
+```hocon
+actor-ts.persistence {
+  journal        { plugin = "actor-ts.persistence.journal.cloudflare-d1" }
+  snapshot-store { plugin = "actor-ts.persistence.snapshot-store.cloudflare-d1" }
+  durable-state  { plugin = "actor-ts.persistence.durable-state.cloudflare-d1" }
+
+  journal.cloudflare-d1 {
+    account-id  = ${?CLOUDFLARE_ACCOUNT_ID}
+    database-id = ${?D1_DATABASE_ID}
+    api-token   = ${?CLOUDFLARE_API_TOKEN}
+  }
+  snapshot-store.cloudflare-d1 {
+    account-id  = ${?CLOUDFLARE_ACCOUNT_ID}
+    database-id = ${?D1_DATABASE_ID}
+    api-token   = ${?CLOUDFLARE_API_TOKEN}
+    keep-n      = 5
+  }
+  durable-state.cloudflare-d1 {
+    account-id  = ${?CLOUDFLARE_ACCOUNT_ID}
+    database-id = ${?D1_DATABASE_ID}
+    api-token   = ${?CLOUDFLARE_API_TOKEN}
+  }
+}
+```
+
+An `registerD1Plugins` übergebene Optionen gewinnen weiterhin, Feld für Feld, und ein
+nicht gesetztes Feld fällt auf den Block durch, statt ihn zu leeren — ein
+geteilter `Transport` im Code und die Tabellennamen in HOCON sind also eine
+normale Mischung.  Ein vorab gebauter `Transport` und ein `serializer` haben
+**gar kein Blatt**: Das sind lebende Objekte, die eine Config-Datei nicht
+ausdrücken kann.  `poolConfig` ebenso wenig — freie Treiber-Konfiguration ohne
+aufzählbare Schlüsselmenge.  `tags-table` wird gelesen, wird aber als
+*Kommentar* statt als Schlüssel ausgeliefert, weil sein Default aus
+`events-table` abgeleitet wird und genau die Abwesenheit beide im Gleichlauf
+hält.
+
+**`durable-state.plugin` wählt jetzt den Durable-State-Store dieses Backends
+aus.**  Früher wurde er eifrig gebaut und von `registerD1Plugins` zurückgegeben, ließ
+sich also nur verdrahten, indem man diese Instanz durch den Anwendungscode
+reichte.  Das zurückgegebene Handle funktioniert weiterhin und liefert dieselbe
+Instanz — sie wird nur bei der ersten Nutzung gebaut statt bei der Registrierung.
 
 ## Wann du es einsetzt
 
