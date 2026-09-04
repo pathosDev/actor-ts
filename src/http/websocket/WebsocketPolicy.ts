@@ -6,6 +6,7 @@
  */
 import type { ActorSystem } from '../../ActorSystem.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
+import { rejectRetiredLeaves, type RetiredLeaves } from '../../config/RetiredKeys.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import {
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
@@ -126,38 +127,63 @@ export class WebsocketPolicyOptionsValidator extends OptionsValidator<WebsocketP
   }
 }
 
-/** Merge built-in defaults, HOCON server defaults, and per-route options. */
+/**
+ * The camelCase spellings this block shipped before #1405, mapped to the leaf
+ * that replaced each one.  Six of the nine are caps a semi-trusted deployment
+ * lowers on purpose, so an ignored old spelling would quietly restore the
+ * framework default — see {@link rejectRetiredLeaves}.
+ */
+const RETIRED_WEBSOCKET_LEAVES: RetiredLeaves = {
+  maxFrameBytes: 'max-frame-bytes',
+  onOversizeFrame: 'on-oversize-frame',
+  onInvalidMessage: 'on-invalid-message',
+  maxBufferedBytes: 'max-buffered-bytes',
+  onBackpressure: 'on-backpressure',
+  maxConnections: 'max-connections',
+  maxPreAttachFrames: 'max-pre-attach-frames',
+  maxPreAttachBytes: 'max-pre-attach-bytes',
+  acceptTimeoutMs: 'accept-timeout',
+};
+
+/**
+ * Merge built-in defaults, HOCON server defaults, and per-route options.
+ *
+ * Leaf names are the kebab-case of the `WebsocketRouteOptions` fields with any
+ * unit suffix dropped: the field carries its unit for the code side, and the
+ * HOCON side does not have to repeat it because the value already does.
+ */
 export function resolveWebsocketPolicy(system: ActorSystem, options: WebsocketPolicyOptions): ResolvedWebsocketPolicy {
   let base = DEFAULT_WEBSOCKET_POLICY;
-  const key = ConfigKeys.http.websocket;
-  if (system.config.hasPath(key)) {
-    const config = system.config.getConfig(key);
+  const keys = ConfigKeys.http.websocket;
+  const config = system.config;
+  if (config.hasPath(keys.root)) {
+    rejectRetiredLeaves(config, keys.root, RETIRED_WEBSOCKET_LEAVES);
     // Read HOCON leaves as-is (a bad enum flows through as a plain string and
     // is caught below by the validator as an OptionsError, not a bare Error).
     base = {
-      maxFrameBytes: config.hasPath('maxFrameBytes') ? config.getBytes('maxFrameBytes') : base.maxFrameBytes,
-      onOversizeFrame: config.hasPath('onOversizeFrame')
-        ? (config.getString('onOversizeFrame') as OversizeFramePolicy)
+      maxFrameBytes: config.hasPath(keys.maxFrameBytes) ? config.getBytes(keys.maxFrameBytes) : base.maxFrameBytes,
+      onOversizeFrame: config.hasPath(keys.onOversizeFrame)
+        ? (config.getString(keys.onOversizeFrame) as OversizeFramePolicy)
         : base.onOversizeFrame,
-      onInvalidMessage: config.hasPath('onInvalidMessage')
-        ? (config.getString('onInvalidMessage') as InvalidMessagePolicy)
+      onInvalidMessage: config.hasPath(keys.onInvalidMessage)
+        ? (config.getString(keys.onInvalidMessage) as InvalidMessagePolicy)
         : base.onInvalidMessage,
-      maxBufferedBytes: config.hasPath('maxBufferedBytes') ? config.getBytes('maxBufferedBytes') : base.maxBufferedBytes,
-      onBackpressure: config.hasPath('onBackpressure')
-        ? (config.getString('onBackpressure') as BackpressurePolicy)
+      maxBufferedBytes: config.hasPath(keys.maxBufferedBytes)
+        ? config.getBytes(keys.maxBufferedBytes)
+        : base.maxBufferedBytes,
+      onBackpressure: config.hasPath(keys.onBackpressure)
+        ? (config.getString(keys.onBackpressure) as BackpressurePolicy)
         : base.onBackpressure,
-      maxConnections: config.hasPath('maxConnections') ? config.getInt('maxConnections') : base.maxConnections,
-      maxPreAttachFrames: config.hasPath('maxPreAttachFrames')
-        ? config.getInt('maxPreAttachFrames')
+      maxConnections: config.hasPath(keys.maxConnections) ? config.getInt(keys.maxConnections) : base.maxConnections,
+      maxPreAttachFrames: config.hasPath(keys.maxPreAttachFrames)
+        ? config.getInt(keys.maxPreAttachFrames)
         : base.maxPreAttachFrames,
-      maxPreAttachBytes: config.hasPath('maxPreAttachBytes')
-        ? config.getBytes('maxPreAttachBytes')
+      maxPreAttachBytes: config.hasPath(keys.maxPreAttachBytes)
+        ? config.getBytes(keys.maxPreAttachBytes)
         : base.maxPreAttachBytes,
-      // `getDuration`, so `"10s"` reads as well as a bare millisecond count —
-      // the field carries its unit for the code side, the HOCON side does not
-      // have to repeat it.
-      acceptTimeoutMs: config.hasPath('acceptTimeoutMs')
-        ? config.getDuration('acceptTimeoutMs')
+      // `getDuration`, so `"10s"` reads as well as a bare millisecond count.
+      acceptTimeoutMs: config.hasPath(keys.acceptTimeout)
+        ? config.getDuration(keys.acceptTimeout)
         : base.acceptTimeoutMs,
     };
   }

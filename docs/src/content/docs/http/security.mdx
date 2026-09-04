@@ -186,7 +186,7 @@ the [Route DSL](/http/route-dsl/).
   own socket, so the frame is refused *while it arrives* rather than after the
   process has buffered it — otherwise a peer could force 16 MiB (Bun) or
   100 MiB (`ws`) of buffering per frame that the framework would then discard.
-  Lowering the cap — per route or via `actor-ts.http.websocket.maxFrameBytes` —
+  Lowering the cap — per route or via `actor-ts.http.websocket.max-frame-bytes` —
   narrows that buffering window with it. **Three places have no transport cap**
   and buffer the frame before rejecting it: Hono on **Deno**, whose
   `upgradeWebSocket` exposes no payload limit at all; **Bun** with the

@@ -73,14 +73,17 @@ describe('WebsocketPolicyOptionsValidator', () => {
 });
 
 describe('resolveWebsocketPolicy — validates the merged policy', () => {
-  test('a bad HOCON maxConnections throws OptionsError (not a bare Error)', async () => {
-    const sys = systemWith({ 'actor-ts': { http: { websocket: { maxConnections: 0 } } } });
+  test('a bad HOCON max-connections throws OptionsError (not a bare Error)', async () => {
+    const sys = systemWith({ 'actor-ts': { http: { websocket: { 'max-connections': 0 } } } });
     expect(() => resolveWebsocketPolicy(sys, {})).toThrow(OptionsError);
     await sys.terminate();
   });
 
   test('a bad HOCON enum throws OptionsError', async () => {
-    const sys = systemWith({ 'actor-ts': { http: { websocket: { onOversizeFrame: 'explode' } } } });
+    // The message names the *field*, not the leaf — the validator runs on the
+    // merged options object, which is TypeScript, so it says `onOversizeFrame`
+    // however the leaf that fed it was spelled.
+    const sys = systemWith({ 'actor-ts': { http: { websocket: { 'on-oversize-frame': 'explode' } } } });
     expect(() => resolveWebsocketPolicy(sys, {})).toThrow(/onOversizeFrame/);
     await sys.terminate();
   });
@@ -96,7 +99,11 @@ describe('resolveWebsocketPolicy — validates the merged policy', () => {
     const sys = systemWith({
       'actor-ts': {
         http: {
-          websocket: { maxPreAttachFrames: 12, maxPreAttachBytes: '2M', acceptTimeoutMs: '30s' },
+          websocket: {
+            'max-pre-attach-frames': 12,
+            'max-pre-attach-bytes': '2M',
+            'accept-timeout': '30s',
+          },
         },
       },
     });
@@ -110,8 +117,8 @@ describe('resolveWebsocketPolicy — validates the merged policy', () => {
     await sys.terminate();
   });
 
-  test('a bad HOCON acceptTimeoutMs throws OptionsError at resolution', async () => {
-    const sys = systemWith({ 'actor-ts': { http: { websocket: { acceptTimeoutMs: 0 } } } });
+  test('a bad HOCON accept-timeout throws OptionsError at resolution', async () => {
+    const sys = systemWith({ 'actor-ts': { http: { websocket: { 'accept-timeout': 0 } } } });
     expect(() => resolveWebsocketPolicy(sys, {})).toThrow(/acceptTimeoutMs/);
     await sys.terminate();
   });

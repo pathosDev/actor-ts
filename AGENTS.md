@@ -664,7 +664,15 @@ Further rules:
     resolve to the builder).
 
   Naming lockstep with **no divergence**: builder method `withX` ⇔ field `x` ⇔
-  HOCON leaf `x` (e.g. `withQos` ⇔ `qos`, never `defaultQos`). Multi-arg sugar
+  HOCON leaf **`kebab(x)`, with any unit suffix dropped** (e.g. `withQos` ⇔
+  `qos` ⇔ `qos`, never `defaultQos`; `withGossipIntervalMs` ⇔ `gossipIntervalMs`
+  ⇔ `gossip-interval`; `withCleanupMs` ⇔ `cleanupMs` ⇔ `cleanup-interval`).
+  The suffix goes because HOCON carries the unit in the *value* and the reader
+  is `getDuration`, which takes `30s` and a bare millisecond count alike —
+  repeating `Ms` in the key names one unit next to a value in another. The
+  field keeps it, because TypeScript has nowhere else to say what `30_000`
+  means. #1405 converted the last leaves that spelled it the other way, and the
+  retired spellings are refused at startup rather than ignored. Multi-arg sugar
   is fine when the field still matches the stem (`withCredentials(u, p)` → field
   `credentials`; `withCircuitBreaker(f, r)` → field `circuitBreaker`).
 - **An optional fourth export, `XOptionsValidator`**, when the options have

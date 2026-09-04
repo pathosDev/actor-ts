@@ -82,7 +82,9 @@ async function bindEchoServerConfiguredOnly(accepted: number[], maxFrameBytes: n
   const systemOptions = ActorSystemOptions.create()
     .withLogger(new NoopLogger())
     .withLogLevel(LogLevel.Off)
-    .withConfig({ 'actor-ts': { http: { websocket: { maxFrameBytes } } } });
+    // A kebab leaf cannot be object shorthand, so the field name stays on the
+    // value side and the key is written out.
+    .withConfig({ 'actor-ts': { http: { websocket: { 'max-frame-bytes': maxFrameBytes } } } });
   const system = ActorSystem.create('ws-transport-frame-cap-hocon', systemOptions);
   systems.push(system);
   const server = system.spawn(() => new EchoServer(accepted), 'echo-server');
