@@ -13,6 +13,7 @@
  */
 import type { CompiledEndpoint, Route } from '../Route.js';
 import type { HttpMethod, HttpRequest, HttpResponse } from '../Types.js';
+import { MAXIMUM_ECHOED_CORS_HEADERS_LENGTH } from '../Constants.js';
 import { applyHeaders, appendVary, readHeader } from './Headers.js';
 import { CorsOptionsValidator, type CorsOptions, type CorsOptionsType, type CorsOrigin } from './CorsOptions.js';
 
@@ -62,9 +63,49 @@ function allowOriginValue(settings: CorsRouteOptions, origin: string): string {
   return settings.origins === '*' && !settings.credentials ? '*' : origin;
 }
 
-/** Never echo raw client bytes into a response header: keep only token chars, cap length. */
+/**
+ * RFC 7230 `tchar` — the alphabet of a header *name*, which is the only thing
+ * `Access-Control-Request-Headers` carries.  Deliberately the same production
+ * as `COOKIE_NAME_RE` in `../Cookies.ts`; both validate an HTTP token.
+ */
+const REQUEST_HEADER_TOKEN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
+
+/**
+ * Echo the client's requested header names back, keeping only the elements
+ * that are legal tokens and bounding the result at
+ * {@link MAXIMUM_ECHOED_CORS_HEADERS_LENGTH}.  Never echoes raw client bytes.
+ *
+ * The value is a comma-separated list of header *names*, so it is validated as
+ * one — element by element, an element that is not a token dropped whole —
+ * rather than scrubbed character by character.  Its predecessor did the latter
+ * and got it backwards (#792): `value.replace(/[^A-Za-z0-9,\s-]/g, '')` is a
+ * *negated* class, so every character `\s` matches is a character the class
+ * KEEPS.  CR, LF, HTAB and U+00A0 — precisely the class the guard existed to
+ * remove — were the ones it preserved, while it stripped only the harmless
+ * punctuation around them.
+ *
+ * No response was ever split by that, and the reason is worth writing down
+ * because it was never this function: measured on Bun 1.4.0, Node 26.7.0 and
+ * Deno 2.6.8, all three request parsers refuse a bare CR or LF inside a header
+ * value (400, or a line break that terminates the field), and every sink the
+ * framework writes a response header through — `setHeader` on the
+ * Fastify/Express path, `Headers.set` on Hono's — throws `ERR_INVALID_CHAR` /
+ * `TypeError` on one.  What did reach the wire was HTAB and U+00A0, which all
+ * six of those accept.  Filtering to tokens no longer depends on any of it.
+ */
 function sanitiseRequestHeaders(value: string): string {
-  return value.replace(/[^A-Za-z0-9,\s-]/g, '').slice(0, 1024);
+  const names: string[] = [];
+  let length = 0;
+  for (const element of value.split(',')) {
+    const name = element.trim();
+    if (!REQUEST_HEADER_TOKEN.test(name)) continue;
+    // `, ` between names, so every name after the first costs two more.
+    const cost = length === 0 ? name.length : name.length + 2;
+    if (length + cost > MAXIMUM_ECHOED_CORS_HEADERS_LENGTH) break;
+    names.push(name);
+    length += cost;
+  }
+  return names.join(', ');
 }
 
 /** Decorate an actual (non-preflight) response with the CORS headers. */
@@ -105,8 +146,11 @@ function preflightResponse(settings: CorsRouteOptions, methods: ReadonlyArray<st
   if (settings.allowedHeaders && settings.allowedHeaders.length > 0) {
     headers['access-control-allow-headers'] = settings.allowedHeaders.join(', ');
   } else {
-    const requested = request.headers['access-control-request-headers'];
-    if (requested) headers['access-control-allow-headers'] = sanitiseRequestHeaders(requested);
+    // Nothing legal left to echo → omit the field rather than send an empty
+    // one.  Both deny every non-simple header, but only the absent form says
+    // so; `Access-Control-Allow-Headers: ` reads as a bug in the server.
+    const echoed = sanitiseRequestHeaders(request.headers['access-control-request-headers'] ?? '');
+    if (echoed.length > 0) headers['access-control-allow-headers'] = echoed;
   }
   if (settings.credentials) headers['access-control-allow-credentials'] = 'true';
   if (settings.maxAge !== undefined) headers['access-control-max-age'] = String(settings.maxAge);

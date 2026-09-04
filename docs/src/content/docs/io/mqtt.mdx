@@ -192,6 +192,15 @@ ref.tell({ kind: 'unsubscribe', topic: 'y/#', target: someHandler });
   `target`**, it removes all *foreign* targets but leaves the actor's own
   subscription intact — an external controller can't silence the
   subclass's constructor-declared subscription.
+- The `qos` on a `subscribe` applies only to a pattern **the command
+  itself creates**.  Naming a pattern that already exists joins it at the
+  QoS already registered; the command's `qos` is ignored there.  This is
+  the additive mirror of the rule above: a controller that can't silence
+  the subclass's subscription can't quietly downgrade it either — a QoS-2
+  subscription re-issued at QoS 0 would leave the application believing
+  delivery is exactly-once while the broker is free to drop.  To change
+  the QoS of your own pattern, call `subscribe(topic, { qos })` from the
+  subclass.
 - Fan-out targets are deathwatched: when a target actor stops, it is
   pruned automatically (and a broker UNSUBSCRIBE fires once a pattern has
   no consumers left).

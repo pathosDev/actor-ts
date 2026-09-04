@@ -299,6 +299,42 @@ confirmation — and leave it off for the telemetry firehose the bound exists
 for. See [mailbox sizing](/operations/tuning/mailbox-sizing/).
 
 The letter carries the message, its sender and the actor it never reached —
-the same three fields every other loss path records. The envelope's MDC
-context and its tracing span do not survive it; `DeadLetter` has no slot for
-either.
+the same three fields every other loss path records — and, in `attribution`,
+the envelope's MDC context and its tracing span:
+
+```ts
+class Auditor extends Actor<DeadLetter> {
+  override preStart(): void {
+    this.system.eventStream.subscribe(this.self, DeadLetter);
+  }
+  override onReceive(letter: DeadLetter): void {
+    const { context, trace } = letter.attribution;
+    this.system.log
+      .withFields({ ...context, traceId: trace?.traceId ?? 'none' })
+      .warn(`undelivered -> ${letter.recipient.path}`);
+  }
+}
+```
+
+That pair is what a counter can never give you: not that a message was lost,
+but which *request* lost it. Both are absent when the send carried neither —
+a `tell` outside any `LogContext.run`, or a system with tracing disabled —
+and `attribution` itself is always present, so reading through it needs no
+guard.
+
+Only a loss path that still knows where the message came from can fill it.
+An overflow drop copies both fields straight off the discarded envelope; a
+`BackoffSupervisor` stash eviction carries the MDC its entry captured when
+the message was buffered, and no span — nothing exposes an arriving
+envelope's span to actor code, so the supervisor has none to copy. A letter
+built from a bare message — a projection event, a singleton hand-off —
+carries an empty attribution, and that is the truth rather than an omission.
+
+**The attribution stays on the event.** A captured `DeadLetterEntry` — what
+[`list()`](#inspecting) returns — does not carry it, deliberately. An
+entry is retained for `retentionMs` and, under `store: 'persistent'`, written
+to a journal that outlives the process — while an MDC routinely carries
+tenant, user and request identifiers. That is the same decision that keeps
+the store `off` by default and the payload out of the log line, taken one
+layer down. Subscribe to `DeadLetter` if you want the attribution durably,
+under a retention you chose.

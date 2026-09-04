@@ -8,7 +8,12 @@ import type { FailureDetectorOptionsType } from '../cluster/FailureDetectorOptio
 import type { Member } from '../cluster/Member.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
 import { LogLevel } from '../Logger.js';
-import { getWorkerBackend, type WorkerErrorEvent, type WorkerLike } from '../runtime/worker/index.js';
+import {
+  getWorkerBackend,
+  type WorkerErrorEvent,
+  type WorkerLike,
+  type WorkerMessageEvent,
+} from '../runtime/worker/index.js';
 import type {
   WorkerHelloMessage,
   WorkerInitMessage,
@@ -86,6 +91,30 @@ type ControlResponse =
   | QueryMembersResponse | QueryLeaderResponse
   | LeaveResponse | RunCommandResponse;
 
+/** The four requests `controlRpc` can post; each reply is this plus `-response`. */
+type ControlRequestKind =
+  | 'mns-test.query-members' | 'mns-test.query-leader'
+  | 'mns-test.leave' | 'mns-test.run-command';
+
+/**
+ * One control RPC the harness is waiting on.
+ *
+ * `role` and `expectedKind` are the correlation, not decoration.  `reqId` is an
+ * instance-global counter and every role's listener resolves out of one map, so
+ * the number names a request but not a conversation — matching on it alone lets
+ * a frame from the wrong worker, or of the wrong kind, settle someone else's
+ * promise (#777).
+ */
+type PendingControlRequest = {
+  /** Role the request was posted to; a reply from any other role is a mismatch. */
+  readonly role: string;
+  /** `kind` the matching reply must carry. */
+  readonly expectedKind: ControlResponse['kind'];
+  readonly resolve: (response: ControlResponse) => void;
+  readonly reject: (error: Error) => void;
+  readonly timer: ReturnType<typeof setTimeout>;
+};
+
 export class ParallelMultiNodeSpec {
   private readonly options: Required<Omit<
     ParallelMultiNodeSpecOptionsType,
@@ -99,11 +128,7 @@ export class ParallelMultiNodeSpec {
   private started = false;
   private nextReqId = 1;
   /** Pending RPC promises keyed by reqId. */
-  private readonly pending = new Map<number, {
-    resolve: (v: ControlResponse) => void;
-    reject: (e: Error) => void;
-    timer: ReturnType<typeof setTimeout>;
-  }>();
+  private readonly pending = new Map<number, PendingControlRequest>();
 
   constructor(optionsInput: ParallelMultiNodeSpecOptions) {
     const options = optionsInput as ParallelMultiNodeSpecOptionsType;
@@ -391,19 +416,66 @@ export class ParallelMultiNodeSpec {
 
     // Listen for control-channel responses on the worker's main
     // postMessage stream.  Cluster transport frames are tagged
-    // `actor-ts.transport`; control frames are `mns-test.*`.
-    worker.addEventListener('message', (e) => {
-      const data = (e.data ?? undefined) as { kind?: string } | undefined;
-      if (!data?.kind || !data.kind.startsWith('mns-test.')) return;
-      const reqId = (data as { reqId?: number }).reqId;
-      const pending = reqId !== undefined ? this.pending.get(reqId) : undefined;
-      if (!pending) return;
-      this.pending.delete(reqId!);
-      clearTimeout(pending.timer);
-      pending.resolve(data as ControlResponse);
-    });
+    // `actor-ts.transport`; control frames are `mns-test.*`.  The role is
+    // bound into the listener here because it is the only place that still
+    // knows which worker a frame came out of — the frame itself does not say.
+    worker.addEventListener('message', (e) => this.onControlFrame(role, e));
 
     return { role, address, worker, port, removed: false };
+  }
+
+  /**
+   * A control frame arrived from `role`'s worker.
+   *
+   * Settling on `reqId` alone was the defect (#777): the counter is
+   * instance-global and every role's listener resolves out of the same map, so
+   * a frame carrying a number the harness handed to *another* role settled
+   * that role's RPC.  The wrong value is the smaller half of the damage — a
+   * `run-command-response` settling a `getMembers` yields `members ===
+   * undefined`, the `.filter(…)` in `awaitMembers`'s condition throws,
+   * `awaitCondition` swallows the throw as a retry, and the spec fails 30 s
+   * later naming a convergence that was never the problem.
+   *
+   * Only a worker that *originates* an `mns-test.*` frame can produce the
+   * collision — a custom `bootstrapModule`, or a scenario module posting raw
+   * frames.  The shipped bootstrap stamps `reqId` from the request it is
+   * answering, so no scenario command handler can echo a stale one.
+   */
+  private onControlFrame(role: string, event: WorkerMessageEvent): void {
+    const frame = (event.data ?? undefined) as { kind?: string; reqId?: number } | undefined;
+    if (!frame?.kind || !frame.kind.startsWith('mns-test.')) return;
+    const reqId = frame.reqId;
+    if (reqId === undefined) return;
+    const pending = this.pending.get(reqId);
+    if (!pending) return;
+    if (pending.role !== role || pending.expectedKind !== frame.kind) {
+      this.onMisdirectedControlFrame(role, frame.kind, reqId, pending);
+      return;
+    }
+    this.pending.delete(reqId);
+    clearTimeout(pending.timer);
+    pending.resolve(frame as ControlResponse);
+  }
+
+  /**
+   * A frame matched a pending `reqId` but not the RPC that owns it.
+   *
+   * Dropped rather than settled, and the entry is left pending so the genuine
+   * reply can still land — or `controlRpc`'s own 5 s timer fires and names the
+   * request that went unanswered, which is a far shorter walk to the cause than
+   * the `await*` timeout the mis-correlation produced.  Reported for the same
+   * reason `onWorkerError` is: the harness owns no `ActorSystem` to log
+   * through, and a silent drop leaves the reader with a timeout and no clue
+   * that a stray frame ever existed.
+   */
+  private onMisdirectedControlFrame(
+    role: string, kind: string, reqId: number, pending: PendingControlRequest,
+  ): void {
+    console.warn(
+      `ParallelMultiNodeSpec: dropped control frame '${kind}' from role '${role}' `
+      + `(reqId ${reqId}) — that reqId belongs to a '${pending.expectedKind}' `
+      + `awaited from role '${pending.role}'`,
+    );
   }
 
   /**
@@ -490,7 +562,7 @@ export class ParallelMultiNodeSpec {
    */
   private controlRpc<R extends ControlResponse>(
     node: NodeRecord,
-    request: { kind: string; command?: string; args?: unknown },
+    request: { kind: ControlRequestKind; command?: string; args?: unknown },
   ): Promise<R> {
     if (!node.worker) {
       return Promise.reject(new Error(`controlRpc: role '${node.role}' has been crashed/left`));
@@ -502,6 +574,8 @@ export class ParallelMultiNodeSpec {
         reject(new Error(`controlRpc(${request.kind}): timed out after 5s`));
       }, 5_000);
       this.pending.set(reqId, {
+        role: node.role,
+        expectedKind: `${request.kind}-response`,
         resolve: (v) => resolve(v as R),
         reject,
         timer,

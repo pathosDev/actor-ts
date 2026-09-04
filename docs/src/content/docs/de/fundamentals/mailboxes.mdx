@@ -618,6 +618,15 @@ deines Actors wie jeder andere.  Dimensioniere die Capacity für den
 Backlog *plus* das, was du zu stashen erwartest — oder nimm die Drops
 als Preis des Bounds in Kauf.
 
+**Eine Ausnahme, und es ist dieselbe wie überall sonst.**  Ein Envelope
+mit `undroppable` — ein `Terminated` aus der Death Watch, ein
+WebSocket-Accept- oder -Close-Command — wird auch auf dem Rückweg an der
+Schranke vorbei aufgenommen.  Die Markierung reist auf dem Envelope
+mit, statt von der Queue erinnert zu werden, genau damit sie einen
+`stash()`/`unstashAll()`-Rundlauf übersteht: Eine Schranke bekommt eine
+Gelegenheit, eine Benachrichtigung abzuwerfen, und nicht eine zweite,
+nur weil der Actor sie zwischendurch geparkt hat.
+
 Siehe [Become und Stash](/de/fundamentals/become-and-stash/) für die
 volle Behavior-Switching-Geschichte.
 

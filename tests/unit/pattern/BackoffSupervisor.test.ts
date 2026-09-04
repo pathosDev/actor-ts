@@ -26,7 +26,7 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LocalActorRef } from '../../../src/internal/LocalActorRef.js';
 import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
-import type { LogContextData } from '../../../src/LogContext.js';
+import { LogContext, type LogContextData } from '../../../src/LogContext.js';
 import { DeadLetter, Terminated } from '../../../src/SystemMessages.js';
 import type { ActorClassOrFactory } from '../../../src/Actor.js';
 import {
@@ -798,6 +798,89 @@ describe('BackoffSupervisor — stash overflow (#773)', () => {
       const overflowWarnings = log.about('stash full');
       expect(overflowWarnings).toHaveLength(2);
       expect(overflowWarnings[1]!.args[0]).toEqual({ stashLimit: 2, droppedTotal: 2 });
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 8_000);
+
+  test('the letter carries the MDC the evicted message arrived with', async () => {
+    // The half of #773 the dead letter alone does not close.  `StashedMessage`
+    // held a message and a sender, so the letter named *what* was lost and
+    // nothing about which request it belonged to — the same gap the mailbox
+    // path had, one layer up.
+    //
+    // The capture has to happen at stash time, and this test is built to fail
+    // if it does not: each message arrives under its own MDC, and the eviction
+    // runs while the supervisor is handling a *later* one.  A `LogContext.get()`
+    // read inside `evictOldestStashed` would therefore stamp every letter with
+    // the context of whichever message triggered the overflow.
+    crashesObserved = 0; flakyStarts = 0;
+    const letters: DeadLetter[] = [];
+    const subscribed = { value: false };
+    class Listener extends Actor<DeadLetter> {
+      override preStart(): void {
+        this.system.eventStream.subscribe(this.self, DeadLetter);
+        subscribed.value = true;
+      }
+      override onReceive(letter: DeadLetter): void { letters.push(letter); }
+    }
+
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('backoff-stash-attribution', sysOptions);
+    const policy = new RecordingPolicy([30_000]);
+    const supervisor = sys.spawn(
+      BackoffSupervisor.factory(withDefaults({
+        child: Flaky,
+        policy,
+        forward: 'stash',
+        maxStashSize: 2,
+        resetCounter: 'never',
+      })),
+      'sup-stash-attribution',
+    );
+    try {
+      sys.spawn(Listener, 'listener');
+      await awaitCondition(() => subscribed.value && flakyStarts === 1, {
+        timeoutMs: 4_000,
+        label: 'the listener subscribed and the first child started',
+      });
+
+      supervisor.tell({ kind: 'crash' });
+      await awaitCondition(() => policy.calls.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the supervisor entered its backoff window',
+      });
+
+      // 1 and 2 fill the stash; 3 evicts 1 and 4 evicts 2.
+      for (const value of [1, 2, 3, 4]) {
+        LogContext.run(
+          { requestId: `request-${value}` },
+          () => supervisor.tell({ kind: 'echo', value }),
+        );
+      }
+      await awaitCondition(() => letters.length >= 2, {
+        timeoutMs: 4_000,
+        label: 'the two evicted messages were dead-lettered',
+      });
+
+      expect(letters.map((l) => l.message)).toEqual([
+        { kind: 'echo', value: 1 },
+        { kind: 'echo', value: 2 },
+      ]);
+      // Each letter names the request that sent the message it lost — not the
+      // one whose arrival made room.
+      expect(letters.map((l) => l.attribution.context)).toEqual([
+        { requestId: 'request-1' },
+        { requestId: 'request-2' },
+      ]);
+      // No span: nothing exposes the arriving envelope's `trace` to actor
+      // code, so the supervisor has none to copy.  Asserting it keeps the
+      // limitation visible rather than letting a later change fill the field
+      // with a span belonging to a different operation.
+      expect(letters.every((l) => l.attribution.trace === undefined)).toBe(true);
     } finally {
       supervisor.stop();
       await sys.terminate();

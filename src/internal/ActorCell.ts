@@ -1793,15 +1793,23 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * running without a metrics registry must still get the record — which is
    * why this sits above the early return rather than below it.
    *
-   * The letter carries the message, the sender and this actor, exactly as
-   * every other site here builds theirs.  The envelope's MDC `context` and
-   * tracing `trace` do not survive it: `DeadLetter` has no slot for them and
-   * none of the other loss paths preserve them either, so widening the event
-   * is its own change rather than a rider on this one.
+   * The letter carries the message, the sender and this actor, and — since the
+   * event was widened — the envelope's MDC `context` and tracing `trace` as
+   * {@link DeadLetter.attribution} (#773).  This is the site that made the
+   * widening worth doing: it is the only loss path that still holds a whole
+   * envelope at the moment it gives up on it, so it is the only one that can
+   * say which *request* lost the message rather than only that one was lost.
+   * Every other site here builds its letter from a bare message and a sender,
+   * and an empty attribution there is the truth rather than an omission.
    */
   private _onMailboxDrop(reason: MailboxDropReason, envelope: Envelope<TMessage>): void {
     if (this._deadLetterMailboxDrops) {
-      this.system.deadLetters.tell(new DeadLetter(envelope.message, envelope.sender, this.self));
+      this.system.deadLetters.tell(new DeadLetter(
+        envelope.message,
+        envelope.sender,
+        this.self,
+        { context: envelope.context, trace: envelope.trace },
+      ));
     }
     // The one metric site here that is hot exactly when the system is in
     // trouble: a mailbox sheds load under saturation, so this runs per dropped
