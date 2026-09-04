@@ -923,6 +923,131 @@ ist die spezifischere Anweisung.  Für `driver`, `database` und `serializer` gib
 es kein Blatt — das sind lebende Objekte, die eine Config-Datei nicht ausdrücken
 kann.
 
+**Auch die fünf relationalen Backends lesen ihre eigenen Blöcke** (#872).
+Postgres, MariaDB, SQL Server, libSQL und Cloudflare D1 teilen sich ein Journal,
+einen Snapshot-Store und einen Durable-State-Store, deshalb ist die
+Tabellen-Hälfte jedes Blocks dieselben drei oder vier Blätter und nur die
+Verbindungs-Hälfte unterscheidet sich.  `registerPostgresPlugins(ext)` — und
+jedes seiner vier Geschwister — braucht damit gar keine Optionen mehr, sobald
+die Blöcke unten gefüllt sind:
+
+```ts
+const ext = system.extension(PersistenceExtensionId);
+registerPostgresPlugins(ext);        // url, tables, retention ... from HOCON
+```
+
+Die Verbindung wiederholt sich unter jedem der drei Plugin-Roots, statt auf einen
+Backend-Root gehoben zu werden, denn eine Plugin-Id *ist* ihr Config-Abschnitt,
+und die drei Achsen werden unabhängig ausgewählt — sie dürfen
+berechtigterweise verschiedene Datenbanken benennen.  Wer eine Verbindung teilt,
+schreibt sie einmal und substituiert:
+`url = ${actor-ts.persistence.journal.postgres.url}`.
+
+Drei Dinge haben bewusst **kein Blatt**.  Ein vorab gebauter `pool` oder `client`
+und ein `serializer` sind lebende Objekte, eine Config-Datei kann sie nicht
+ausdrücken.  `poolConfig` ist freie Treiber-Konfiguration ohne aufzählbare
+Schlüsselmenge und ohne Default und bleibt deshalb code-only — was für
+SQL Server heißt: ein rein per Config verdrahteter Store wird über `url`
+erreicht, in der Form `Server=...;Database=...` oder `mssql://`.  Und
+`tags-table` ist in der Referenzkonfiguration ein **Kommentar** statt eines
+Schlüssels, weil sein Default aus `events-table` abgeleitet wird
+(`<events-table>_tags`): genau die Abwesenheit hält beide im Gleichlauf.
+Gelesen wird er trotzdem, eine `application.conf` kann ihn also weiterhin
+festnageln.
+
+Die beiden Credentials, die *doch* ein Blatt haben — libSQLs `auth-token` und
+D1s `api-token` —, sind Strings, die der Betrieb von irgendwoher liefert; der
+dokumentierte Weg ist eine Substitution (`api-token = ${?CLOUDFLARE_API_TOKEN}`).
+Beide werden leer ausgeliefert, und leer heißt *nicht gesetzt*, damit der
+Platzhalter nie zu einem Bearer-Token wird.
+
+#### PostgreSQL
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `persistence.journal.postgres.url` | `""` | Connection-String.  Leer heißt *nicht gesetzt* — der Store fällt auf die Verbindung zurück, die dem Register-Helper übergeben wurde. |
+| `persistence.journal.postgres.events-table` | `"events"` | Event-Tabelle.  Die Tag-Join-Tabelle wird als `<events-table>_tags` abgeleitet. |
+| `persistence.journal.postgres.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` beim ersten Zugriff.  Aus, wenn ein Schema-Tool das DDL besitzt. |
+| `persistence.snapshot-store.postgres.url` | `""` | Wie oben. |
+| `persistence.snapshot-store.postgres.snapshots-table` | `"snapshots"` | Snapshot-Tabelle. |
+| `persistence.snapshot-store.postgres.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
+| `persistence.snapshot-store.postgres.auto-create-tables` | `on` | Wie oben. |
+| `persistence.durable-state.postgres.url` | `""` | Wie oben. |
+| `persistence.durable-state.postgres.table` | `"durable_state"` | Durable-State-Tabelle. |
+| `persistence.durable-state.postgres.auto-create-tables` | `on` | Wie oben. |
+
+#### MariaDB / MySQL
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `persistence.journal.mariadb.url` | `""` | Connection-String.  Leer heißt *nicht gesetzt* — der Store fällt auf die Verbindung zurück, die dem Register-Helper übergeben wurde. |
+| `persistence.journal.mariadb.events-table` | `"events"` | Event-Tabelle.  Die Tag-Join-Tabelle wird als `<events-table>_tags` abgeleitet. |
+| `persistence.journal.mariadb.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` beim ersten Zugriff.  Aus, wenn ein Schema-Tool das DDL besitzt. |
+| `persistence.snapshot-store.mariadb.url` | `""` | Wie oben. |
+| `persistence.snapshot-store.mariadb.snapshots-table` | `"snapshots"` | Snapshot-Tabelle. |
+| `persistence.snapshot-store.mariadb.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
+| `persistence.snapshot-store.mariadb.auto-create-tables` | `on` | Wie oben. |
+| `persistence.durable-state.mariadb.url` | `""` | Wie oben. |
+| `persistence.durable-state.mariadb.table` | `"durable_state"` | Durable-State-Tabelle. |
+| `persistence.durable-state.mariadb.auto-create-tables` | `on` | Wie oben. |
+
+#### SQL Server
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `persistence.journal.mssql.url` | `""` | Connection-String.  Leer heißt *nicht gesetzt* — der Store fällt auf die Verbindung zurück, die dem Register-Helper übergeben wurde. |
+| `persistence.journal.mssql.events-table` | `"events"` | Event-Tabelle.  Die Tag-Join-Tabelle wird als `<events-table>_tags` abgeleitet. |
+| `persistence.journal.mssql.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` beim ersten Zugriff.  Aus, wenn ein Schema-Tool das DDL besitzt. |
+| `persistence.snapshot-store.mssql.url` | `""` | Wie oben. |
+| `persistence.snapshot-store.mssql.snapshots-table` | `"snapshots"` | Snapshot-Tabelle. |
+| `persistence.snapshot-store.mssql.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
+| `persistence.snapshot-store.mssql.auto-create-tables` | `on` | Wie oben. |
+| `persistence.durable-state.mssql.url` | `""` | Wie oben. |
+| `persistence.durable-state.mssql.table` | `"durable_state"` | Durable-State-Tabelle. |
+| `persistence.durable-state.mssql.auto-create-tables` | `on` | Wie oben. |
+
+#### libSQL / Turso
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `persistence.journal.libsql.url` | `""` | Connection-String.  Leer heißt *nicht gesetzt* — der Store fällt auf die Verbindung zurück, die dem Register-Helper übergeben wurde. |
+| `persistence.journal.libsql.auth-token` | `""` | Turso-Auth-Token.  Leer heißt *nicht gesetzt*; besser `${?TURSO_AUTH_TOKEN}`. |
+| `persistence.journal.libsql.events-table` | `"events"` | Event-Tabelle.  Die Tag-Join-Tabelle wird als `<events-table>_tags` abgeleitet. |
+| `persistence.journal.libsql.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` beim ersten Zugriff.  Aus, wenn ein Schema-Tool das DDL besitzt. |
+| `persistence.snapshot-store.libsql.url` | `""` | Wie oben. |
+| `persistence.snapshot-store.libsql.auth-token` | `""` | Wie oben. |
+| `persistence.snapshot-store.libsql.snapshots-table` | `"snapshots"` | Snapshot-Tabelle. |
+| `persistence.snapshot-store.libsql.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
+| `persistence.snapshot-store.libsql.auto-create-tables` | `on` | Wie oben. |
+| `persistence.durable-state.libsql.url` | `""` | Wie oben. |
+| `persistence.durable-state.libsql.auth-token` | `""` | Wie oben. |
+| `persistence.durable-state.libsql.table` | `"durable_state"` | Durable-State-Tabelle. |
+| `persistence.durable-state.libsql.auto-create-tables` | `on` | Wie oben. |
+
+#### Cloudflare D1
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `persistence.journal.cloudflare-d1.account-id` | `""` | Cloudflare-Account-Id.  Leer heißt *nicht gesetzt*. |
+| `persistence.journal.cloudflare-d1.database-id` | `""` | D1-Datenbank-Id — die UUID, nicht der Datenbankname. |
+| `persistence.journal.cloudflare-d1.api-token` | `""` | API-Token mit `D1:Edit`.  Leer heißt *nicht gesetzt*; besser `${?CLOUDFLARE_API_TOKEN}`. |
+| `persistence.journal.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | D1-REST-Endpunkt.  Nur für einen Proxy oder ein Test-Double überschreiben. |
+| `persistence.journal.cloudflare-d1.events-table` | `"events"` | Event-Tabelle.  Die Tag-Join-Tabelle wird als `<events-table>_tags` abgeleitet. |
+| `persistence.journal.cloudflare-d1.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` beim ersten Zugriff.  Aus, wenn ein Schema-Tool das DDL besitzt. |
+| `persistence.snapshot-store.cloudflare-d1.account-id` | `""` | Wie oben. |
+| `persistence.snapshot-store.cloudflare-d1.database-id` | `""` | Wie oben. |
+| `persistence.snapshot-store.cloudflare-d1.api-token` | `""` | Wie oben. |
+| `persistence.snapshot-store.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | Wie oben. |
+| `persistence.snapshot-store.cloudflare-d1.snapshots-table` | `"snapshots"` | Snapshot-Tabelle. |
+| `persistence.snapshot-store.cloudflare-d1.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
+| `persistence.snapshot-store.cloudflare-d1.auto-create-tables` | `on` | Wie oben. |
+| `persistence.durable-state.cloudflare-d1.account-id` | `""` | Wie oben. |
+| `persistence.durable-state.cloudflare-d1.database-id` | `""` | Wie oben. |
+| `persistence.durable-state.cloudflare-d1.api-token` | `""` | Wie oben. |
+| `persistence.durable-state.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | Wie oben. |
+| `persistence.durable-state.cloudflare-d1.table` | `"durable_state"` | Durable-State-Tabelle. |
+| `persistence.durable-state.cloudflare-d1.auto-create-tables` | `on` | Wie oben. |
+
 Die Plugin-Keys zeigen auf *einen anderen* Config-Abschnitt, der
 die Settings dieses Plugins enthält.  `actor-ts.persistence.journal.sqlite`
 oben ist das ausgearbeitete Beispiel: es ist zugleich die Id, unter der das

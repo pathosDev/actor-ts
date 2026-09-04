@@ -82,12 +82,11 @@ const registerOptions = RegisterMsSqlPluginsOptions.create()
 const { durableStateStore } = registerMsSqlPlugins(ext, registerOptions);
 ```
 
-`registerMsSqlPlugins` registriert Journal + Snapshot-Store über die Extension
-(ausgewählt durch die Plugin-IDs in der Config oben) und **gibt** den
-Durable-State-Store zurück.  `PersistenceExtension` hat keine
-Durable-State-Registry — übergib `durableStateStore` direkt an die Settings
-deines `DurableStateActor` (dasselbe Muster wie beim Postgres- und beim
-Object-Storage-Plugin).
+`registerMsSqlPlugins` registriert alle drei Stores an der Extension, die sie
+über die Plugin-IDs oben auswählt, und **gibt** den Durable-State-Store
+**zurück**, falls du ihn lieber von Hand verdrahtest.  Seit #872 ist das eine
+Bequemlichkeit und nicht mehr der einzige Weg: `durable-state.plugin` wählt ihn
+wie jedes andere Plugin aus, und das Handle wird bei der ersten Nutzung gebaut.
 
 Ein geteilter Pool gehört dem **Caller**: kein Store beendet ihn, du schließt
 ihn also selbst beim Shutdown.  Ohne ihn baut jede Komponente ihren eigenen aus
@@ -102,6 +101,49 @@ const poolConfig = {
 const msSqlJournalOptions = MsSqlJournalOptions.create()
   .withPoolConfig(poolConfig);
 ```
+
+## Aus HOCON konfigurieren
+
+Die Plugin-Id **ist** der Config-Abschnitt: Der Block, der nach der Id benannt
+ist, ist der Block, den dieses Plugin liest (#872).  Alles außer den lebenden
+Objekten kann aus der `application.conf` kommen, `registerMsSqlPlugins(ext)` braucht damit
+gar keine Optionen mehr:
+
+```ts
+import { PersistenceExtensionId, registerMsSqlPlugins } from 'actor-ts/persistence';
+
+const persistence = system.extension(PersistenceExtensionId);
+registerMsSqlPlugins(persistence);
+```
+
+```hocon
+actor-ts.persistence {
+  journal        { plugin = "actor-ts.persistence.journal.mssql" }
+  snapshot-store { plugin = "actor-ts.persistence.snapshot-store.mssql" }
+  durable-state  { plugin = "actor-ts.persistence.durable-state.mssql" }
+
+  journal.mssql        { url = ${?MSSQL_URL}, events-table = "events" }
+  snapshot-store.mssql { url = ${?MSSQL_URL}, keep-n = 5 }
+  durable-state.mssql  { url = ${?MSSQL_URL}, table = "durable_state" }
+}
+```
+
+An `registerMsSqlPlugins` übergebene Optionen gewinnen weiterhin, Feld für Feld, und ein
+nicht gesetztes Feld fällt auf den Block durch, statt ihn zu leeren — ein
+geteilter `Pool` im Code und die Tabellennamen in HOCON sind also eine
+normale Mischung.  Ein vorab gebauter `Pool` und ein `serializer` haben
+**gar kein Blatt**: Das sind lebende Objekte, die eine Config-Datei nicht
+ausdrücken kann.  `poolConfig` ebenso wenig — freie Treiber-Konfiguration ohne
+aufzählbare Schlüsselmenge.  `tags-table` wird gelesen, wird aber als
+*Kommentar* statt als Schlüssel ausgeliefert, weil sein Default aus
+`events-table` abgeleitet wird und genau die Abwesenheit beide im Gleichlauf
+hält.
+
+**`durable-state.plugin` wählt jetzt den Durable-State-Store dieses Backends
+aus.**  Früher wurde er eifrig gebaut und von `registerMsSqlPlugins` zurückgegeben, ließ
+sich also nur verdrahten, indem man diese Instanz durch den Anwendungscode
+reichte.  Das zurückgegebene Handle funktioniert weiterhin und liefert dieselbe
+Instanz — sie wird nur bei der ersten Nutzung gebaut statt bei der Registrierung.
 
 ## Wann du es einsetzt
 

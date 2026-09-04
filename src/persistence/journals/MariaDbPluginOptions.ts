@@ -1,9 +1,24 @@
+import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Serializer } from '../../serialization/Serializer.js';
+import {
+  readStoreBoolean,
+  readStoreIdentifier,
+  readStoreInt,
+  readStoreString,
+  storeLeaf,
+} from '../StoreConfig.js';
 import type { MariaDbPoolLike } from './MariaDbClient.js';
-import type { MariaDbJournalOptions } from './MariaDbJournalOptions.js';
-import type { MariaDbSnapshotStoreOptions } from '../snapshot-stores/MariaDbSnapshotStoreOptions.js';
-import type { MariaDbDurableStateStoreOptions } from '../durable-state-stores/MariaDbDurableStateStoreOptions.js';
+import type { MariaDbJournalOptions, MariaDbJournalOptionsType } from './MariaDbJournalOptions.js';
+import type {
+  MariaDbSnapshotStoreOptions,
+  MariaDbSnapshotStoreOptionsType,
+} from '../snapshot-stores/MariaDbSnapshotStoreOptions.js';
+import type {
+  MariaDbDurableStateStoreOptions,
+  MariaDbDurableStateStoreOptionsType,
+} from '../durable-state-stores/MariaDbDurableStateStoreOptions.js';
 
 export type RegisterMariaDbPluginsOptionsType = {
   /**
@@ -76,3 +91,69 @@ export type RegisterMariaDbPluginsOptions =
   | Partial<RegisterMariaDbPluginsOptionsType>;
 /** Value alias so `RegisterMariaDbPluginsOptions.create()` / `new RegisterMariaDbPluginsOptions()` resolve to the builder. */
 export const RegisterMariaDbPluginsOptions = RegisterMariaDbPluginsOptionsBuilder;
+
+/**
+ * Read the MariaDB journal's block — `actor-ts.persistence.journal.mariadb` by
+ * default, or whichever id the plug-in was registered under (#872).  Same shape
+ * and same reasoning as `readPostgresJournalOptionsFromConfig`.
+ */
+export function readMariaDbJournalOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.journal.mariadb.root,
+): Partial<MariaDbJournalOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.journal.mariadb;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: { -readonly [K in keyof MariaDbJournalOptionsType]?: MariaDbJournalOptionsType[K] } = {};
+  const url = readStoreString(config, at(keys.url));
+  if (url !== undefined) out.url = url;
+  const eventsTable = readStoreIdentifier(config, at(keys.eventsTable));
+  if (eventsTable !== undefined) out.eventsTable = eventsTable;
+  const tagsTable = readStoreIdentifier(config, at(keys.tagsTable));
+  if (tagsTable !== undefined) out.tagsTable = tagsTable;
+  const autoCreateTables = readStoreBoolean(config, at(keys.autoCreateTables));
+  if (autoCreateTables !== undefined) out.autoCreateTables = autoCreateTables;
+  return out;
+}
+
+/** Read the MariaDB snapshot store's block — see {@link readMariaDbJournalOptionsFromConfig}. */
+export function readMariaDbSnapshotStoreOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.snapshotStore.mariadb.root,
+): Partial<MariaDbSnapshotStoreOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.snapshotStore.mariadb;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: {
+    -readonly [K in keyof MariaDbSnapshotStoreOptionsType]?: MariaDbSnapshotStoreOptionsType[K]
+  } = {};
+  const url = readStoreString(config, at(keys.url));
+  if (url !== undefined) out.url = url;
+  const snapshotsTable = readStoreIdentifier(config, at(keys.snapshotsTable));
+  if (snapshotsTable !== undefined) out.snapshotsTable = snapshotsTable;
+  const keepN = readStoreInt(config, at(keys.keepN));
+  if (keepN !== undefined) out.keepN = keepN;
+  const autoCreateTables = readStoreBoolean(config, at(keys.autoCreateTables));
+  if (autoCreateTables !== undefined) out.autoCreateTables = autoCreateTables;
+  return out;
+}
+
+/** Read the MariaDB durable-state store's block — see {@link readMariaDbJournalOptionsFromConfig}. */
+export function readMariaDbDurableStateStoreOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.durableState.mariadb.root,
+): Partial<MariaDbDurableStateStoreOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.durableState.mariadb;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: {
+    -readonly [K in keyof MariaDbDurableStateStoreOptionsType]?: MariaDbDurableStateStoreOptionsType[K]
+  } = {};
+  const url = readStoreString(config, at(keys.url));
+  if (url !== undefined) out.url = url;
+  const table = readStoreIdentifier(config, at(keys.table));
+  if (table !== undefined) out.table = table;
+  const autoCreateTables = readStoreBoolean(config, at(keys.autoCreateTables));
+  if (autoCreateTables !== undefined) out.autoCreateTables = autoCreateTables;
+  return out;
+}

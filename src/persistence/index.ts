@@ -204,7 +204,13 @@ export {
   POSTGRES_SNAPSHOT_PLUGIN_ID,
   POSTGRES_DURABLE_STATE_PLUGIN_ID,
 } from './journals/PostgresPlugin.js';
-export { RegisterPostgresPluginsOptions, RegisterPostgresPluginsOptionsBuilder } from './journals/PostgresPluginOptions.js';
+export {
+  readPostgresDurableStateStoreOptionsFromConfig,
+  readPostgresJournalOptionsFromConfig,
+  readPostgresSnapshotStoreOptionsFromConfig,
+  RegisterPostgresPluginsOptions,
+  RegisterPostgresPluginsOptionsBuilder,
+} from './journals/PostgresPluginOptions.js';
 export type { RegisterPostgresPluginsOptionsType } from './journals/PostgresPluginOptions.js';
 export type { PostgresPluginHandles } from './journals/PostgresPlugin.js';
 export type {
@@ -249,7 +255,13 @@ export {
   D1_SNAPSHOT_PLUGIN_ID,
   D1_DURABLE_STATE_PLUGIN_ID,
 } from './journals/D1Plugin.js';
-export { RegisterD1PluginsOptions, RegisterD1PluginsOptionsBuilder } from './journals/D1PluginOptions.js';
+export {
+  readD1DurableStateStoreOptionsFromConfig,
+  readD1JournalOptionsFromConfig,
+  readD1SnapshotStoreOptionsFromConfig,
+  RegisterD1PluginsOptions,
+  RegisterD1PluginsOptionsBuilder,
+} from './journals/D1PluginOptions.js';
 export type { RegisterD1PluginsOptionsType } from './journals/D1PluginOptions.js';
 export type { D1PluginHandles } from './journals/D1Plugin.js';
 export { D1RequestError, DEFAULT_D1_BASE_URL, adaptD1Client, buildD1Client } from './journals/D1Client.js';
@@ -399,7 +411,13 @@ export {
   MSSQL_SNAPSHOT_PLUGIN_ID,
   MSSQL_DURABLE_STATE_PLUGIN_ID,
 } from './journals/MsSqlPlugin.js';
-export { RegisterMsSqlPluginsOptions, RegisterMsSqlPluginsOptionsBuilder } from './journals/MsSqlPluginOptions.js';
+export {
+  readMsSqlDurableStateStoreOptionsFromConfig,
+  readMsSqlJournalOptionsFromConfig,
+  readMsSqlSnapshotStoreOptionsFromConfig,
+  RegisterMsSqlPluginsOptions,
+  RegisterMsSqlPluginsOptionsBuilder,
+} from './journals/MsSqlPluginOptions.js';
 export type { RegisterMsSqlPluginsOptionsType } from './journals/MsSqlPluginOptions.js';
 export type { MsSqlPluginHandles } from './journals/MsSqlPlugin.js';
 export type {
@@ -441,7 +459,13 @@ export {
   LIBSQL_SNAPSHOT_PLUGIN_ID,
   LIBSQL_DURABLE_STATE_PLUGIN_ID,
 } from './journals/LibSqlPlugin.js';
-export { RegisterLibSqlPluginsOptions, RegisterLibSqlPluginsOptionsBuilder } from './journals/LibSqlPluginOptions.js';
+export {
+  readLibSqlDurableStateStoreOptionsFromConfig,
+  readLibSqlJournalOptionsFromConfig,
+  readLibSqlSnapshotStoreOptionsFromConfig,
+  RegisterLibSqlPluginsOptions,
+  RegisterLibSqlPluginsOptionsBuilder,
+} from './journals/LibSqlPluginOptions.js';
 export type { RegisterLibSqlPluginsOptionsType } from './journals/LibSqlPluginOptions.js';
 export type { LibSqlPluginHandles } from './journals/LibSqlPlugin.js';
 export type {
@@ -469,7 +493,13 @@ export {
   MARIADB_SNAPSHOT_PLUGIN_ID,
   MARIADB_DURABLE_STATE_PLUGIN_ID,
 } from './journals/MariaDbPlugin.js';
-export { RegisterMariaDbPluginsOptions, RegisterMariaDbPluginsOptionsBuilder } from './journals/MariaDbPluginOptions.js';
+export {
+  readMariaDbDurableStateStoreOptionsFromConfig,
+  readMariaDbJournalOptionsFromConfig,
+  readMariaDbSnapshotStoreOptionsFromConfig,
+  RegisterMariaDbPluginsOptions,
+  RegisterMariaDbPluginsOptionsBuilder,
+} from './journals/MariaDbPluginOptions.js';
 export type { RegisterMariaDbPluginsOptionsType } from './journals/MariaDbPluginOptions.js';
 export type { MariaDbPluginHandles } from './journals/MariaDbPlugin.js';
 export type {

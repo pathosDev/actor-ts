@@ -368,6 +368,67 @@ export const ConfigKeys = {
         wal: 'actor-ts.persistence.journal.sqlite.wal',
         busyTimeout: 'actor-ts.persistence.journal.sqlite.busy-timeout',
       },
+      /**
+       * The five relational journals (#872, slice 2).  They all sit on
+       * `RelationalJournal`, so the table half of every block is the same three
+       * leaves and only the connection half differs — which is why the leaf
+       * names are identical across them and the reader bodies are not.
+       *
+       * `tags-table` is **comment-only** in `reference.conf` under every one of
+       * them: its default is derived from `events-table`
+       * (`${events}_tags`, `RelationalJournal.ts`), so absence is what selects
+       * it and a published value would pin the two apart the moment somebody
+       * renamed the event table.  A comment-only key is invisible to the
+       * leaf-driven guards, which is the point — it still needs this entry and
+       * a reader.
+       *
+       * `pool-config` / `client` / `pool` have no entry at all: the first has
+       * no enumerable leaf set and the rest are live objects, so a config file
+       * cannot reach one.
+       */
+      postgres: {
+        root: 'actor-ts.persistence.journal.postgres',
+        url: 'actor-ts.persistence.journal.postgres.url',
+        eventsTable: 'actor-ts.persistence.journal.postgres.events-table',
+        tagsTable: 'actor-ts.persistence.journal.postgres.tags-table',
+        autoCreateTables: 'actor-ts.persistence.journal.postgres.auto-create-tables',
+      },
+      /** The MariaDB journal's block — see {@link postgres}. */
+      mariadb: {
+        root: 'actor-ts.persistence.journal.mariadb',
+        url: 'actor-ts.persistence.journal.mariadb.url',
+        eventsTable: 'actor-ts.persistence.journal.mariadb.events-table',
+        tagsTable: 'actor-ts.persistence.journal.mariadb.tags-table',
+        autoCreateTables: 'actor-ts.persistence.journal.mariadb.auto-create-tables',
+      },
+      /** The SQL Server journal's block — see {@link postgres}. */
+      mssql: {
+        root: 'actor-ts.persistence.journal.mssql',
+        url: 'actor-ts.persistence.journal.mssql.url',
+        eventsTable: 'actor-ts.persistence.journal.mssql.events-table',
+        tagsTable: 'actor-ts.persistence.journal.mssql.tags-table',
+        autoCreateTables: 'actor-ts.persistence.journal.mssql.auto-create-tables',
+      },
+      /** The libSQL journal's block — `auth-token` is the Turso credential. */
+      libsql: {
+        root: 'actor-ts.persistence.journal.libsql',
+        url: 'actor-ts.persistence.journal.libsql.url',
+        authToken: 'actor-ts.persistence.journal.libsql.auth-token',
+        eventsTable: 'actor-ts.persistence.journal.libsql.events-table',
+        tagsTable: 'actor-ts.persistence.journal.libsql.tags-table',
+        autoCreateTables: 'actor-ts.persistence.journal.libsql.auto-create-tables',
+      },
+      /** The Cloudflare D1 journal's block — three coordinates, not a URL. */
+      cloudflareD1: {
+        root: 'actor-ts.persistence.journal.cloudflare-d1',
+        accountId: 'actor-ts.persistence.journal.cloudflare-d1.account-id',
+        databaseId: 'actor-ts.persistence.journal.cloudflare-d1.database-id',
+        apiToken: 'actor-ts.persistence.journal.cloudflare-d1.api-token',
+        baseUrl: 'actor-ts.persistence.journal.cloudflare-d1.base-url',
+        eventsTable: 'actor-ts.persistence.journal.cloudflare-d1.events-table',
+        tagsTable: 'actor-ts.persistence.journal.cloudflare-d1.tags-table',
+        autoCreateTables: 'actor-ts.persistence.journal.cloudflare-d1.auto-create-tables',
+      },
     },
     snapshotStore: {
       plugin: 'actor-ts.persistence.snapshot-store.plugin',
@@ -380,6 +441,57 @@ export const ConfigKeys = {
         snapshotsTable: 'actor-ts.persistence.snapshot-store.sqlite.snapshots-table',
         keepN: 'actor-ts.persistence.snapshot-store.sqlite.keep-n',
         busyTimeout: 'actor-ts.persistence.snapshot-store.sqlite.busy-timeout',
+      },
+      /**
+       * The five relational snapshot stores (#872, slice 2) — see
+       * {@link journal}'s `postgres`.  The connection is repeated under each
+       * plugin root rather than hoisted to a per-backend one, because a plugin
+       * id *is* its config section: the three axes are selected independently
+       * and may legitimately name different databases.  A deployment that does
+       * share one connection deduplicates it with a HOCON substitution.
+       */
+      postgres: {
+        root: 'actor-ts.persistence.snapshot-store.postgres',
+        url: 'actor-ts.persistence.snapshot-store.postgres.url',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.postgres.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.postgres.keep-n',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.postgres.auto-create-tables',
+      },
+      /** The MariaDB snapshot store's block — see {@link postgres}. */
+      mariadb: {
+        root: 'actor-ts.persistence.snapshot-store.mariadb',
+        url: 'actor-ts.persistence.snapshot-store.mariadb.url',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.mariadb.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.mariadb.keep-n',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.mariadb.auto-create-tables',
+      },
+      /** The SQL Server snapshot store's block — see {@link postgres}. */
+      mssql: {
+        root: 'actor-ts.persistence.snapshot-store.mssql',
+        url: 'actor-ts.persistence.snapshot-store.mssql.url',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.mssql.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.mssql.keep-n',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.mssql.auto-create-tables',
+      },
+      /** The libSQL snapshot store's block — see {@link postgres}. */
+      libsql: {
+        root: 'actor-ts.persistence.snapshot-store.libsql',
+        url: 'actor-ts.persistence.snapshot-store.libsql.url',
+        authToken: 'actor-ts.persistence.snapshot-store.libsql.auth-token',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.libsql.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.libsql.keep-n',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.libsql.auto-create-tables',
+      },
+      /** The Cloudflare D1 snapshot store's block — see {@link postgres}. */
+      cloudflareD1: {
+        root: 'actor-ts.persistence.snapshot-store.cloudflare-d1',
+        accountId: 'actor-ts.persistence.snapshot-store.cloudflare-d1.account-id',
+        databaseId: 'actor-ts.persistence.snapshot-store.cloudflare-d1.database-id',
+        apiToken: 'actor-ts.persistence.snapshot-store.cloudflare-d1.api-token',
+        baseUrl: 'actor-ts.persistence.snapshot-store.cloudflare-d1.base-url',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.cloudflare-d1.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.cloudflare-d1.keep-n',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.cloudflare-d1.auto-create-tables',
       },
       /**
        * The object-storage plugin's block — the framework's rule that a plugin
@@ -442,6 +554,51 @@ export const ConfigKeys = {
         table: 'actor-ts.persistence.durable-state.sqlite.table',
         autoCreateTables: 'actor-ts.persistence.durable-state.sqlite.auto-create-tables',
         busyTimeout: 'actor-ts.persistence.durable-state.sqlite.busy-timeout',
+      },
+      /**
+       * The five relational durable-state stores (#872, slice 2) — see
+       * {@link journal}'s `postgres`.  These are the blocks that made the
+       * axis worth having beyond SQLite: each backend's durable-state store is
+       * now a registered factory rather than an instance the register helper
+       * built eagerly and handed back, so the id here selects it.
+       */
+      postgres: {
+        root: 'actor-ts.persistence.durable-state.postgres',
+        url: 'actor-ts.persistence.durable-state.postgres.url',
+        table: 'actor-ts.persistence.durable-state.postgres.table',
+        autoCreateTables: 'actor-ts.persistence.durable-state.postgres.auto-create-tables',
+      },
+      /** The MariaDB durable-state store's block — see {@link postgres}. */
+      mariadb: {
+        root: 'actor-ts.persistence.durable-state.mariadb',
+        url: 'actor-ts.persistence.durable-state.mariadb.url',
+        table: 'actor-ts.persistence.durable-state.mariadb.table',
+        autoCreateTables: 'actor-ts.persistence.durable-state.mariadb.auto-create-tables',
+      },
+      /** The SQL Server durable-state store's block — see {@link postgres}. */
+      mssql: {
+        root: 'actor-ts.persistence.durable-state.mssql',
+        url: 'actor-ts.persistence.durable-state.mssql.url',
+        table: 'actor-ts.persistence.durable-state.mssql.table',
+        autoCreateTables: 'actor-ts.persistence.durable-state.mssql.auto-create-tables',
+      },
+      /** The libSQL durable-state store's block — see {@link postgres}. */
+      libsql: {
+        root: 'actor-ts.persistence.durable-state.libsql',
+        url: 'actor-ts.persistence.durable-state.libsql.url',
+        authToken: 'actor-ts.persistence.durable-state.libsql.auth-token',
+        table: 'actor-ts.persistence.durable-state.libsql.table',
+        autoCreateTables: 'actor-ts.persistence.durable-state.libsql.auto-create-tables',
+      },
+      /** The Cloudflare D1 durable-state store's block — see {@link postgres}. */
+      cloudflareD1: {
+        root: 'actor-ts.persistence.durable-state.cloudflare-d1',
+        accountId: 'actor-ts.persistence.durable-state.cloudflare-d1.account-id',
+        databaseId: 'actor-ts.persistence.durable-state.cloudflare-d1.database-id',
+        apiToken: 'actor-ts.persistence.durable-state.cloudflare-d1.api-token',
+        baseUrl: 'actor-ts.persistence.durable-state.cloudflare-d1.base-url',
+        table: 'actor-ts.persistence.durable-state.cloudflare-d1.table',
+        autoCreateTables: 'actor-ts.persistence.durable-state.cloudflare-d1.auto-create-tables',
       },
     },
   },
