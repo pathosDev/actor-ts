@@ -137,7 +137,9 @@ Pass the same factory on every `update` for a key, and the
 replica files every value it decodes for that key under your
 identity — entries a peer wrote under the default one included.
 Those are re-keyed and merged into the entry they belong with,
-rather than kept alongside it as duplicates.
+rather than kept alongside it as duplicates: every element your
+callback can name, at any rate.  What happens to one it cannot
+is the last note below.
 
 Two limits are worth knowing (#766):
 
@@ -154,8 +156,27 @@ Two limits are worth knowing (#766):
 Note also that your identity function now runs over values a
 peer sent, not only over ones your process built.  A callback
 that assumes its argument's shape will see data it did not
-produce; one that throws turns that frame into a dropped value
-rather than an accepted one.
+produce, and what a refusal costs depends on when the element
+got in:
+
+- **A frame that arrives once the identity is known is
+  dropped.**  The callback throwing on any element in it makes
+  the whole value undecodable, and every wire call site treats
+  that as "drop this one" — the sender re-offers it on its next
+  gossip tick, so nothing that was ever accepted is lost.
+- **An element already in the view keeps the key it came in
+  under.**  A value gossiped, or read back from a
+  `durableStore`, before the first `update` was decoded on the
+  default identity, so it can already hold an element your
+  callback refuses.  Re-keying it on that first `update` then
+  re-keys every element the callback *can* name and leaves the
+  refused one exactly where it is.  The element is not dropped,
+  the key does not lose its identity, and later `update`s
+  deduplicate by your rule as normal; the replica logs a warning
+  naming the key.  The one visible effect is that the set is
+  mixed-keyed until that element goes away — which, since
+  `remove` would have to name it with the same callback that
+  refuses it, means for as long as the key lives.
 
 ## Picking between them
 

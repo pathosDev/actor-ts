@@ -145,6 +145,31 @@ function decodeCrdtAtDepth(
 }
 
 /**
+ * `identity`, answering with the built-in `JSON.stringify` key for an element
+ * it refuses rather than throwing.
+ *
+ * Exactly one caller — {@link DistributedDataActor.repairKeying}, and
+ * deliberately not any wire decode.  Its doc carries the reasoning; the short
+ * version is that the value being repaired is one this replica already holds,
+ * so a refused element has to keep a key rather than cost the key its identity,
+ * whereas a frame that arrives *after* the identity is known is refused by
+ * `decodeOrDrop` and loses nothing.
+ *
+ * `JSON.stringify` is spelled out here rather than imported because every CRDT
+ * module declares its own module-local `defaultIdentity` on purpose — see
+ * `Crdt.customIdentity`, which identity-compares against it.
+ */
+function withDefaultKeyForRefusedElements(identity: CrdtIdentityFunction): CrdtIdentityFunction {
+  return (value) => {
+    try {
+      return identity(value);
+    } catch {
+      return JSON.stringify(value);
+    }
+  };
+}
+
+/**
  * Empty-CRDT factory.  Callers pass this to `update(key, factory, mutator)`
  * so the extension can materialize a brand-new CRDT for a key that
  * doesn't exist yet — without DistributedData itself needing to know
@@ -1242,27 +1267,95 @@ class DistributedDataActor extends Actor<ActorMessage> {
    * When nothing moved — the ordinary case — the encoded forms match and
    * `applyMerged` skips both.
    *
-   * A factory or an identity function that throws leaves the view untouched
-   * and the key unlearned.  Escalating here would turn a bad callback into an
-   * actor restart, and the caller finds out anyway: the very next line of
-   * `onUpdate` calls the same factory when the key is absent, exactly as it
-   * did before this method existed.
+   * **Deriving the identity and repairing the value are separate failures and
+   * are handled separately.**  A `factory` or a `customIdentity` that throws
+   * means the identity genuinely is not known, so nothing is learned and the
+   * caller finds out anyway — the very next line of `onUpdate` calls the same
+   * factory when the key is absent.  A *repair* that throws means the opposite:
+   * the identity came back fine and is now known, and only the value already in
+   * the view resisted being re-filed under it.  Unlearning there put the whole
+   * of #766 back, silently: the repair throws on a peer-supplied element the
+   * callback refuses — the untrusted input this subsystem exists to survive —
+   * and once the entry is deleted the next `update` re-derives, throws in the
+   * same place and deletes again, so the configured rule is off for the life of
+   * the key and deduplication is back on `JSON.stringify`.  Escalating instead
+   * is not the alternative either; a throw out of here is an actor failure, and
+   * twelve of those terminate DistributedData (#699, #721).
    */
   private learnIdentity(key: string, factory: CrdtFactory<Crdt<any>>): void {
     if (this.identities.has(key)) return;
+    let identity: CrdtIdentityFunction | null;
     try {
-      const identity = factory().customIdentity?.() ?? null;
-      this.identities.set(key, identity);
-      if (identity === null) return;
-      const current = this.view.state.get(key);
-      if (current === undefined) return;
-      this.applyMerged(key, current, decodeCrdt(current.toJSON() as CrdtJson, identity));
+      identity = factory().customIdentity?.() ?? null;
     } catch (e) {
-      this.identities.delete(key);
       this.log.warn(
         `DistributedData: could not derive the element identity for "${key}" from its factory`, e,
       );
+      return;
     }
+    this.identities.set(key, identity);
+    if (identity === null) return;
+    this.repairKeying(key, identity);
+  }
+
+  /**
+   * Re-file `key`'s current value under `identity` — the one encode/decode
+   * round that puts a gossip-first or durable-reloaded value right.
+   *
+   * The second attempt is what keeps an element the callback refuses from
+   * costing the whole key its identity.  Which is not the only option, so:
+   *
+   *   - *Unlearning* is what this method replaced, and it is the defect above.
+   *   - *Retrying on the next `update`* buys nothing and costs a decode every
+   *     time.  The condition is not transient the way a garbled frame is — the
+   *     refused element sits in the local view, and nothing removes it, since
+   *     `remove` would have to name it with the same callback that refuses it.
+   *   - *Dropping the element* would make a decode lose data a peer committed,
+   *     which is not a decoder's decision to take.
+   *
+   * So the element stays, under the key it arrived with, and every element the
+   * callback *can* name is re-keyed around it.  Those are the same string here:
+   * a value materialised before its identity was known was decoded with no
+   * identity, so its elements are already filed under `JSON.stringify`, which
+   * is exactly what the fallback answers.  The refused element therefore does
+   * not move, its tombstones stay with it, and the value stays self-consistent
+   * — mixed-keyed, but every key is some element's real key.
+   *
+   * A later merge survives that mixed state because a merge unions by key
+   * string and never re-runs an identity.  What the registry keeps is the
+   * caller's own function, **not** the lenient wrapper: a frame that arrives
+   * later carrying an element the callback refuses is still dropped by
+   * {@link decodeOrDrop}.  That asymmetry is deliberate — an element already in
+   * the view was accepted before the rule that governs it was known, so
+   * refusing it now would be data loss, while refusing a fresh frame loses
+   * nothing that was ever accepted.
+   */
+  private repairKeying(key: string, identity: CrdtIdentityFunction): void {
+    const current = this.view.state.get(key);
+    if (current === undefined) return;
+    const json = current.toJSON() as CrdtJson;
+    let repaired: Crdt<any>;
+    try {
+      repaired = decodeCrdt(json, identity);
+    } catch (e) {
+      this.log.warn(
+        `DistributedData: "${key}" holds an element the configured identity refuses — it keeps `
+        + `the key it arrived with, every other element is re-keyed around it, and the identity `
+        + `stays in force for this key`,
+        e,
+      );
+      try {
+        repaired = decodeCrdt(json, withDefaultKeyForRefusedElements(identity));
+      } catch (second) {
+        this.log.warn(
+          `DistributedData: "${key}" could not be re-keyed at all — its value is left exactly as `
+          + `it was, and the identity still governs every later decode for this key`,
+          second,
+        );
+        return;
+      }
+    }
+    this.applyMerged(key, current, repaired);
   }
 
   private applyMerged(key: string, prev: Crdt<any> | null, next: Crdt<any>): void {
