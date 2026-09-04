@@ -1,6 +1,7 @@
 import type { ActorSystem } from '../ActorSystem.js';
 import { extensionId, type ExtensionId } from '../Extension.js';
 import { HealthCheckRegistry, type HealthCheckResult } from './HealthCheck.js';
+import { readHealthCheckRegistryOptionsFromConfig } from './HealthCheckRegistryOptions.js';
 
 /**
  * The `name` the framework's liveness check reports under.
@@ -21,8 +22,9 @@ export const ACTOR_SYSTEM_LIVENESS_CHECK_NAME = 'actor-system';
  *
  * It is not a check on whether the event loop is turning.  Answering the
  * probe at all already proves that much, and proving more would need a
- * timer of its own — one more handle to leak, and one more thing that can
- * hang while a per-check timeout does not exist yet (#467).
+ * timer of its own — one more handle to leak.  The registry now bounds a
+ * hanging check itself (#467), so that is no longer the second objection it
+ * once was; the first one still stands on its own.
  */
 function actorSystemLiveness(system: ActorSystem): HealthCheckResult {
   return system.isTerminated
@@ -54,12 +56,21 @@ function actorSystemLiveness(system: ActorSystem): HealthCheckResult {
  * than from `ActorSystem`'s constructor: a system that never asks for the
  * registry pays nothing, and the check is present the instant the registry
  * exists — there is no window in which the registry is real but empty.
+ *
+ * The factory is also where `actor-ts.management.health-checks.check-timeout`
+ * reaches the registry, for the same reason: the extension receives the
+ * `ActorSystem`, so `system.config` is in scope here and nowhere on the
+ * construction path a caller uses.  A registry built by hand — the
+ * `GrpcServerOptionsType.health` field takes one — gets the built-in default
+ * and not this system's HOCON, the same asymmetry that field's own JSDoc
+ * documents: the two health consumers share a registry only if you pass the
+ * shared one.
  */
 export const HealthCheckExtensionId: ExtensionId<HealthCheckRegistry> =
   extensionId<HealthCheckRegistry>(
     'actor-ts/health-checks',
     (system) => {
-      const registry = new HealthCheckRegistry();
+      const registry = new HealthCheckRegistry(readHealthCheckRegistryOptionsFromConfig(system.config));
       registry.addLiveness(() => actorSystemLiveness(system));
       return registry;
     },

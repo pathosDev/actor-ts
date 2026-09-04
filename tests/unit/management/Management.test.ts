@@ -9,6 +9,8 @@ import {
   CLUSTER_TRANSPORT_CHECK_NAME,
 } from '../../../src/cluster/ClusterHealthChecks.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
+import { Config } from '../../../src/config/Config.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
 import { BearerTokenAuth } from '../../../src/http/middleware/BearerToken.js';
 import { IpAllowlist } from '../../../src/http/middleware/IpAllowlist.js';
@@ -16,6 +18,7 @@ import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import {
   ACTOR_SYSTEM_LIVENESS_CHECK_NAME,
   HealthCheckRegistry,
+  HealthCheckRegistryOptions,
   healthChecksOf,
   isHealthy,
   managementRoutes,
@@ -81,6 +84,74 @@ describe('HealthCheckRegistry', () => {
     const results = await reg.checkLiveness();
     expect(results[0]!.status).toBe(false);
     expect(results[0]!.detail).toContain('bad');
+  });
+
+  /**
+   * The per-check deadline (#467, folded into #882).
+   *
+   * A probe aggregates every check into one response, so before this a single
+   * check that never settled was a probe that never answered — which an
+   * orchestrator reads as a failed probe carrying no information about which
+   * dependency caused it.  The deadline turns that into one failing entry.
+   */
+  test('a check that never settles is answered for, and its siblings still report', async () => {
+    const reg = new HealthCheckRegistry({ checkTimeoutMs: 30 });
+    reg.addReadiness(() => new Promise<never>(() => { /* never settles */ }));
+    reg.addReadiness(() => ({ name: 'cache', status: true }));
+
+    const results = await reg.checkReadiness();
+    expect(results).toHaveLength(2);
+    // A timed-out check has no name: the name lives inside the result the
+    // check never returned, so the registry answers with the same 'unknown'
+    // the throw path uses and puts the deadline in the detail.
+    expect(results[0]).toEqual({
+      name: 'unknown',
+      status: false,
+      detail: 'health check did not answer within 30ms',
+    });
+    expect(results[1]).toEqual({ name: 'cache', status: true });
+    expect(isHealthy(results)).toBe(false);
+  });
+
+  test('the deadline covers liveness too, not only readiness', async () => {
+    // Built from the fluent builder rather than a plain object, because the
+    // two are meant to be interchangeable and only one of them is exercised
+    // everywhere else in this file.
+    const registryOptions = HealthCheckRegistryOptions.create().withCheckTimeoutMs(30);
+    const reg = new HealthCheckRegistry(registryOptions);
+    reg.addLiveness(() => new Promise<never>(() => { /* never settles */ }));
+    const results = await reg.checkLiveness();
+    expect(results[0]!.status).toBe(false);
+    expect(results[0]!.detail).toContain('30ms');
+  });
+
+  test('a check that answers inside the deadline is untouched by it', async () => {
+    const reg = new HealthCheckRegistry({ checkTimeoutMs: 5_000 });
+    reg.addReadiness(async () => ({ name: 'db', status: true, detail: 'fast' }));
+    expect(await reg.checkReadiness()).toEqual([{ name: 'db', status: true, detail: 'fast' }]);
+  });
+
+  test('the registry validates its own options', () => {
+    expect(() => new HealthCheckRegistry({ checkTimeoutMs: 0 })).toThrow(OptionsError);
+    expect(() => new HealthCheckRegistry()).not.toThrow();
+  });
+
+  test('the per-system registry takes its deadline from the config block', () => {
+    // The wiring the block exists for: `healthChecksOf` reaches the registry
+    // through the extension factory, which is the one construction site with
+    // an ActorSystem — and therefore a `system.config` — in scope.
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig(Config.parseString('actor-ts.management.health-checks.check-timeout = 40ms'));
+    const system = ActorSystem.create('health-timeout', systemOptions);
+    const registry = healthChecksOf(system);
+    registry.addReadiness(() => new Promise<never>(() => { /* never settles */ }));
+
+    return registry.checkReadiness().then(async (results) => {
+      expect(results[0]!.detail).toBe('health check did not answer within 40ms');
+      await system.terminate();
+    });
   });
 });
 

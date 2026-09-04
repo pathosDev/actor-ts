@@ -401,6 +401,36 @@ export const ConfigKeys = {
   },
 
   /**
+   * The management HTTP surface — `actor-ts.management.*`.  Two readers, one
+   * block: `readManagementRoutesOptionsFromConfig` supplies what
+   * `managementRoutes` layers under its explicit options, and
+   * `readHealthCheckRegistryOptionsFromConfig` supplies the per-check deadline
+   * the shared `HealthCheckRegistry` is built with.  They are separate because
+   * the registry exists from the first `healthChecksOf(system)` call, usually
+   * long before anything builds a route tree.
+   *
+   * Every leaf is spelled out rather than covered by a block root: a root
+   * alone satisfies the `NoDeadConfigKeys` reachability check for everything
+   * beneath it, so an inert leaf would ship green (#882).
+   *
+   * `auth` and `ipAllowlist` have no path here and cannot get one — they are
+   * `Middleware` functions, which HOCON has no way to express.  That is what
+   * makes the block unable to weaken the security wiring: it decides which
+   * endpoints exist and where the probes answer, never who may reach them.
+   */
+  management: {
+    enableLeaveEndpoint: 'actor-ts.management.enable-leave-endpoint',
+    enableDownEndpoint: 'actor-ts.management.enable-down-endpoint',
+    enableMetricsEndpoint: 'actor-ts.management.enable-metrics-endpoint',
+    authProtectHealth: 'actor-ts.management.auth-protect-health',
+    livenessPath: 'actor-ts.management.liveness-path',
+    readinessPath: 'actor-ts.management.readiness-path',
+    healthChecks: {
+      checkTimeout: 'actor-ts.management.health-checks.check-timeout',
+    },
+  },
+
+  /**
    * Process-wide projection defaults — `actor-ts.projection.*`.  Read by
    * `ProjectionActor.byPersistenceId` / `byTag`, which layer them under the
    * explicit `ProjectionOptions` of a single projection.

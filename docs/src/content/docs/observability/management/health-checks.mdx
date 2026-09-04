@@ -259,9 +259,36 @@ endpoints use.
 
 ## Timeouts
 
-There is **no built-in per-check timeout** — a hung check blocks
-the whole `/health` (or `/ready`) response.  For a check that can
-stall, race it against your own deadline:
+**Every check runs against a deadline** — one second by default.
+Past it the registry answers *for* that check and its siblings
+still report normally, so a hung dependency costs one failing
+entry rather than the whole response:
+
+```json
+{
+  "status": "DOWN",
+  "checks": [
+    { "name": "unknown", "status": false, "detail": "health check did not answer within 1000ms" },
+    { "name": "cache",   "status": true }
+  ]
+}
+```
+
+The name is `unknown` because the name lives *inside* the
+`HealthCheckResult` the check never returned — the same fallback
+a check that throws already produced.  The deadline goes in the
+`detail`, which is the only field left to carry it.
+
+Set it per node:
+
+```hocon
+actor-ts.management.health-checks.check-timeout = 500ms
+```
+
+The deadline belongs to the registry, not to one check, so it
+applies to liveness and readiness alike and is one number an
+operator can turn.  A check that needs a *different* budget still
+races its own:
 
 ```ts
 health.addReadiness(async () => {
@@ -273,8 +300,15 @@ health.addReadiness(async () => {
 });
 ```
 
-Without a guard, a stuck check eventually trips K8s's own probe
-timeout (10 s default) and triggers a restart.  Keep checks fast.
+That version reports a name, which the registry's own answer
+cannot, so it is worth writing for a check you expect to stall.
+
+Keep checks fast regardless.  The deadline keeps the *response*
+moving; it does not stop the work behind a check, and it is
+deliberately below K8s's own probe timeout (`timeoutSeconds`,
+1 s by default) so that the framework — not the orchestrator —
+is the one that gets to say which check hung.  Raise it in a
+deployment whose probe timeout is genuinely higher.
 
 import { Aside } from '@astrojs/starlight/components';
 
