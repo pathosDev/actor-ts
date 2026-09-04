@@ -450,6 +450,27 @@ die Settings dieses Plugins enthält.  Z. B. enthält
 des SQLite-Journals.  Siehe jede Journal-Seite in
 [Persistence](/de/persistence/overview/) für die per-Plugin-Keys.
 
+### `actor-ts.projection`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `projection.recovery-strategy` | `"retry-and-fail"` | Was eine Projektion tut, wenn ihr Handler wirft — `fail`, `skip`, `retry-and-fail` oder `retry-and-skip` ([wenn der Handler wirft](/de/persistence/projections/#wenn-der-handler-wirft)). |
+| `projection.max-retries` | `3` | Retry-Budget der beiden `retry-*`-Strategien — Versuche *nach* dem ersten. |
+| `projection.retry-backoff` | `1s` | Verzögerung vor dem ersten Retry; verdoppelt sich mit jedem weiteren Versuch. |
+| `projection.max-retry-backoff` | `60s` | Obergrenze dieser Verdopplung.  Muss mindestens `retry-backoff` sein — eine Projektion, deren gemergte Settings das verletzen, startet nicht. |
+| `projection.poll-interval` | `1s` | Wie oft eine Projektion das Journal nach neuen Events fragt. |
+
+Das sind die **prozessweiten** Defaults für jede Projektion.
+`ProjectionOptions` einer einzelnen Projektion sticht sie, und sie
+stechen die eingebauten Defaults — die üblichen drei Ebenen.  Eine
+Projektion, die ein leeres `liveOptions` übergibt, bekommt
+`poll-interval` weiterhin von hier; nur ein im Code tatsächlich
+gesetzter Wert überschreibt es.
+
+Top-Level statt unter `actor-ts.persistence`, weil dieser Block
+ausschließlich Plugin-Ids enthält — ein Tuning-Blatt darin läse sich
+als Name eines Plugins.
+
 ### `actor-ts.cache`
 
 | Key | Default | Zweck |

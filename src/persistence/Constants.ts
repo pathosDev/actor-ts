@@ -62,6 +62,26 @@ export const DYNAMODB_MAX_TRANSACTION_ITEMS = 100;
 export const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 1_000;
 
 /**
+ * How often a read-side poller asks the journal for new rows, in
+ * milliseconds — the built-in value behind `LiveQueryOptions.pollIntervalMs`
+ * and behind a projection's own tick.
+ *
+ * Lives here rather than beside one options type because `LiveQueryOptions`
+ * is declared in `query/PersistenceQuery.ts`, which is a capability interface
+ * and not an `XOptions.ts`, and because four read sites across two files
+ * (`InMemoryQuery`'s three live streams and `ProjectionActor.scheduleNextTick`)
+ * each carried their own copy of the literal — which is how the published
+ * default and the one in force drift apart without a diff (#875).
+ *
+ * One second is deliberately unambitious.  A projection is I/O-bound
+ * background work feeding a read model, so the cost of polling is paid once
+ * per interval per projection against the journal, while the benefit is
+ * latency nobody is waiting on synchronously.  Applications that do need
+ * sub-interval visibility want the push-based query, not a smaller number.
+ */
+export const DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS = 1_000;
+
+/**
  * Table (SQL) holding the one-row database identity (#1358).  Deliberately a
  * fixed name shared by the SQLite stores and the whole relational family, and
  * deliberately NOT stem-prefixed like the event tables: the identity belongs

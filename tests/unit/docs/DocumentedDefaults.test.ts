@@ -76,6 +76,8 @@ import {
   DEFAULT_HTTP_CLIENT_TIMEOUT_MS,
 } from '../../../src/http/HttpClientOptions.js';
 import { DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES } from '../../../src/cache/InMemoryCacheOptions.js';
+import { DEFAULT_PROJECTION_MAX_RETRIES, DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS, DEFAULT_PROJECTION_RECOVERY_STRATEGY, DEFAULT_PROJECTION_RETRY_BACKOFF_MS } from '../../../src/persistence/projection/ProjectionOptions.js';
+import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../../../src/persistence/Constants.js';
 import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from '../../../src/logging/MultiSinkLoggerOptions.js';
 import {
   DEFAULT_DELIVERY_FLUSH_INTERVAL_MS,
@@ -310,6 +312,13 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // rejects outright.  `DEFAULT_CLEANUP_MS` is unchanged — only the accessor
   // that has to read the literal moved.
   { key: 'actor-ts.cache.in-memory.cleanup-interval', kind: 'duration', constant: DEFAULT_CLEANUP_MS },
+
+  /* --- projection --- */
+  { key: 'actor-ts.projection.recovery-strategy', kind: 'string', constant: DEFAULT_PROJECTION_RECOVERY_STRATEGY },
+  { key: 'actor-ts.projection.max-retries', kind: 'int', constant: DEFAULT_PROJECTION_MAX_RETRIES },
+  { key: 'actor-ts.projection.retry-backoff', kind: 'duration', constant: DEFAULT_PROJECTION_RETRY_BACKOFF_MS },
+  { key: 'actor-ts.projection.max-retry-backoff', kind: 'duration', constant: DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS },
+  { key: 'actor-ts.projection.poll-interval', kind: 'duration', constant: DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS },
 
   /* --- logging: pipeline --- */
   { key: 'actor-ts.logger.close-timeout', kind: 'duration', constant: DEFAULT_SINK_CLOSE_TIMEOUT_MS },

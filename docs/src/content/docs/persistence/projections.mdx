@@ -180,6 +180,38 @@ Retries are **not immediate**.  The next attempt is deferred by
 means a bad event reaches the handler four times before the
 projection gives up on it.
 
+### The same knobs in HOCON
+
+Failure handling is usually an *operational* decision — the same code
+wants `retry-and-fail` in production and `skip` in a dev loop — so
+the four fields, and the poll cadence, also have process-wide
+defaults under `actor-ts.projection`:
+
+```hocon
+actor-ts.projection {
+  recovery-strategy = "retry-and-skip"
+  max-retries       = 5
+  retry-backoff     = 2s
+  max-retry-backoff = 60s
+  poll-interval     = 1s
+}
+```
+
+Precedence is the project's usual three layers, applied **per
+field**: explicit `ProjectionOptions` > HOCON > built-in default.  A
+field this projection does not set falls through to the block above,
+and one the block does not carry falls through to the built-in value
+— so the configuration reaches every projection that has not made up
+its own mind about that field, and none that has.  Passing an empty
+`liveOptions` is *not* making up your mind: `poll-interval` still
+applies.
+
+Set `max-retry-backoff` whenever you set `retry-backoff`.  The two
+are checked against each other on the *merged* settings, so raising
+only the first past the 60 s ceiling makes every projection in the
+process throw `OptionsError` when it starts — from a config file
+alone, with no code change.
+
 ### What a failure produces
 
 - **`onFailure`** — called on every attempt with the offending
@@ -274,6 +306,9 @@ per `pollIntervalMs`.  Tuning:
 - Lower (250-500 ms) → faster end-to-end propagation, more
   database load.
 - Higher (5-10 s) → slow visibility but cheap.
+
+`actor-ts.projection.poll-interval` sets the same cadence for every
+projection in the process; `withLiveOptions` overrides it for one.
 
 For very-low-latency read-model updates, see
 [Push-based query](/persistence/push-based-query/) which

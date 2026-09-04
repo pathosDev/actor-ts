@@ -515,6 +515,20 @@ actor-ts {
     }
   }
 
+  # Projections poll the read side and feed a read model.  These are the
+  # process-wide defaults; ProjectionOptions on a single projection wins.
+  projection {
+    # What a projection does when its handler throws.  Deliberately not
+    # "fail": the common failure is transient (the read model is restarting),
+    # and stopping on the first blip makes every read-model deploy a dead
+    # projection that nobody notices until the view is visibly stale.
+    recovery-strategy = "retry-and-fail"   # fail | skip | retry-and-fail | retry-and-skip
+    max-retries       = 3                  # attempts AFTER the first, for the retry-* strategies
+    retry-backoff     = 1s                 # first retry delay; doubles per attempt
+    max-retry-backoff = 60s                # ceiling on the doubling delay
+    poll-interval     = 1s                 # how often a projection polls for new events
+  }
+
   cache {
     # Defaults for the built-in in-memory cache (the "default" cache, and any
     # cache whose plugin resolves to actor-ts.cache.in-memory).  Leaf names are
