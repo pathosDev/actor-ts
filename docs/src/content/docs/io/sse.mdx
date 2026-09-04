@@ -39,6 +39,20 @@ sys.spawnAnonymous(() => new SseActor(
 The actor uses the global `fetch` (Bun, Node ≥ 18, and Deno all
 provide one), so there is no extra dependency to install.
 
+**Redirects are refused, never followed**, and the response has to
+announce itself as `text/event-stream`.  A `3xx` carrying a `Location`
+fails the connect: following it would replay every custom header —
+vendor API keys included, since the Fetch standard strips only
+`authorization`, `cookie` and `proxy-authorization` — to whatever host
+the feed named, and would let the endpoint rather than your
+configuration decide which address the request actually reaches.  So
+point `url` at the final endpoint.  A body announcing any other content
+type, or none at all, is refused before a byte of it is parsed.  Both
+refusals travel the ordinary reconnect path — backoff, circuit breaker,
+`BrokerDisconnected` — so a feed that starts redirecting surfaces as a
+broker that cannot connect, rather than as a silent change of where
+your credentials go.
+
 ## Settings
 
 ```ts

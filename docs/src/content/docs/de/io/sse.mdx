@@ -40,6 +40,21 @@ Der Actor nutzt das globale `fetch` (Bun, Node ≥ 18 und Deno bringen
 alle eines mit), es gibt also keine zusätzliche Abhängigkeit zu
 installieren.
 
+**Redirects werden abgelehnt, nie verfolgt**, und die Antwort muss sich
+als `text/event-stream` ausweisen.  Ein `3xx` mit `Location` lässt den
+Connect fehlschlagen: Ihm zu folgen würde jeden eigenen Header —
+Vendor-API-Keys eingeschlossen, denn der Fetch-Standard entfernt nur
+`authorization`, `cookie` und `proxy-authorization` — an den Host
+weiterspielen, den der Feed benannt hat, und den Endpoint statt Ihrer
+Konfiguration entscheiden lassen, welche Adresse der Request
+tatsächlich erreicht.  Richten Sie `url` deshalb auf den endgültigen
+Endpoint.  Ein Body, der einen anderen Content-Type angibt — oder gar
+keinen —, wird abgelehnt, bevor ein Byte davon geparst wird.  Beide
+Ablehnungen laufen über den gewöhnlichen Reconnect-Pfad — Backoff,
+Circuit Breaker, `BrokerDisconnected` —, sodass ein Feed, der plötzlich
+weiterleitet, als Broker sichtbar wird, der sich nicht verbinden kann,
+statt als lautlose Änderung daran, wohin Ihre Credentials gehen.
+
 ## Settings
 
 ```ts
