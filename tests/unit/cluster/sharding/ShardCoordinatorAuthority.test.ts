@@ -83,7 +83,13 @@ type Victim = {
  * merely had nobody left to tell.
  */
 type CoordinatorState = {
-  readonly regions: Map<string, { readonly node: NodeAddress; readonly path: string; readonly shards: Set<number> }>;
+  readonly regions: Map<string, {
+    readonly node: NodeAddress;
+    readonly path: string;
+    readonly shards: Set<number>;
+    readonly lastSeenAtMs: number;
+    readonly lastHeartbeatAtMs: number | null;
+  }>;
   readonly shardHome: Map<number, string>;
 };
 
@@ -306,6 +312,37 @@ describe('ShardCoordinator sender authority (#712)', () => {
     expect(registeredNodes(victim)).toEqual([victim.cluster.selfAddress.toString()]);
     expect(coordinatorState(victim).shardHome.get(victim.shardId)).toBeDefined();
     expect(entityIsUp(victim)).toBe(true);
+  });
+
+  test('a forged RegionHeartbeat does not keep a dead region looking alive (#853)', async () => {
+    // A liveness frame that names a node is a claim about that node, so it has
+    // to be in `claimedNode` — `maySpeakFor` returns true for a `null` claim,
+    // and an unlisted kind is therefore accepted from any peer that can
+    // complete a `hello`.  What that would buy an attacker is the inverse of
+    // the usual eviction attack: keep a region the coordinator should have
+    // swept looking alive indefinitely, so its shards are never re-homed and
+    // every entity under them stays unreachable.
+    const victim = await startVictim('coordinator-heartbeat', 47_374);
+    const evil = await attacker('evil-heartbeat', 47_375);
+
+    const key = coordinatorState(victim).shardHome.get(victim.shardId)!;
+    const before = coordinatorState(victim).regions.get(key)!;
+    // The registration stamped `lastSeenAtMs`; nothing has beaten, so this
+    // victim's own region is not a sweep candidate to begin with.
+    expect(before.lastHeartbeatAtMs).toBeNull();
+
+    forge(evil, victim, victim.coordinatorPath, {
+      kind: 'sharding.RegionHeartbeat',
+      region: victim.regionPath,
+      node: victim.cluster.selfAddress.toJSON(),
+    });
+    // The assertion is an absence: the forged frame gets a turn and must still
+    // have moved neither stamp.
+    await sleep(200);
+
+    const after = coordinatorState(victim).regions.get(key)!;
+    expect(after.lastHeartbeatAtMs).toBeNull();
+    expect(after.lastSeenAtMs).toBe(before.lastSeenAtMs);
   });
 
   test('a forged GetClusterShardingStats does not make the coordinator dial the named address', async () => {

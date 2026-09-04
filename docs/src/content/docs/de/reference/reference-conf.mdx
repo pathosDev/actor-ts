@@ -960,6 +960,32 @@ actor-ts {
       constant-rate.frequency = 100ms
       constant-rate.number-of-entities = 5
     }
+    # A backstop for a region that is gone or wedged on a node that is STILL UP
+    #   and gossiping -- the one case nothing else covers.  A node that stops
+    #   gossiping is force-downed by the failure detector in
+    #   cluster.failure-detector.down-after (5s) and its shards are re-homed
+    #   from there, which is 4x faster than this; and a region stopped cleanly
+    #   sends its own notification.  That notification is single-shot and its
+    #   send error is swallowed on the way down, and THAT is the hole here.
+    # Off by default because eviction is destructive: every entity under every
+    #   shard the region held is stopped and re-created elsewhere.
+    # enabled drives BOTH halves -- off, no region beats and no coordinator
+    #   sweeps, so the mechanism costs nothing at all until it is asked for.
+    #   Turn it on everywhere: a region that does not beat is never swept, so a
+    #   half-rolled deployment degrades to "not yet armed" rather than to a
+    #   loop of evictions.
+    # The beat is PER SHARDED TYPE, not per node -- N types cost N frames per
+    #   heartbeat-interval per node, on top of the cluster's own heartbeats.
+    # stale-after must exceed heartbeat-interval, and by more than one beat:
+    #   at four intervals a single dropped frame is not a verdict.  There is no
+    #   check-interval -- the sweep rides the rebalance-interval tick above,
+    #   which is already the dial for "how often does the coordinator look at
+    #   the shard map".
+    stale-region-detection {
+      enabled = off
+      heartbeat-interval = 5s   # region -> coordinator beat
+      stale-after = 20s         # silence after which a region is declared gone
+    }
   }
 
   devtools {

@@ -10,6 +10,7 @@ import {
   DEFAULT_ENTITY_RECOVERY_STRATEGY,
   DEFAULT_NUM_SHARDS,
   DEFAULT_PASSIVATION_IDLE_MS,
+  DEFAULT_REGION_HEARTBEAT_INTERVAL_MS,
   DEFAULT_REGISTER_RETRY_INTERVAL_MS,
   DEFAULT_SHARD_REGION_BUFFER_SIZE,
 } from './ShardingOptions.js';
@@ -41,6 +42,7 @@ import {
   isShardingMessage,
   type RegisterRegion,
   type RegisterRefused,
+  type RegionHeartbeat,
   type RegionTerminated,
   type ShardEnvelope,
   type ShardReply,
@@ -88,6 +90,10 @@ export type ShardRegionConfig<TMessage> = {
   readonly entityRecoveryConstantRateFrequencyMs: number;
   /** Entities one paced recovery batch starts, region-wide (#851). */
   readonly entityRecoveryConstantRateNumberOfEntities: number;
+  /** Beat to the coordinator so it can notice this region going silent (#853). */
+  readonly staleRegionDetection: boolean;
+  /** Gap between two beats, in ms; inert while `staleRegionDetection` is off (#853). */
+  readonly regionHeartbeatIntervalMs: number;
   readonly cluster: Cluster;
   readonly localResolver: (path: string) => ActorRef | null;
 };
@@ -231,6 +237,14 @@ export class ShardRegion<TMessage = unknown>
   private passivationTimer: Cancellable | null = null;
   private registerTimer: Cancellable | null = null;
   /**
+   * Drives the liveness beat to the coordinator, or `null` when
+   * `staleRegionDetection` is off — which it is unless a deployment asks for it
+   * (#853).  Distinct from {@link registerTimer}, which retries *until*
+   * acknowledged and is then cancelled; this one runs for the region's whole
+   * life and claims nothing.
+   */
+  private heartbeatTimer: Cancellable | null = null;
+  /**
    * Remembered entities still owed a start under `constant-rate` (#851).
    *
    * **One queue for the whole region, not one per shard.**  A shard only ever
@@ -345,6 +359,12 @@ export class ShardRegion<TMessage = unknown>
       entityRecoveryConstantRateNumberOfEntities:
         s.entityRecoveryConstantRateNumberOfEntities
         ?? DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_NUMBER_OF_ENTITIES,
+      // Off unless asked for: the beat is only useful to a coordinator that is
+      // sweeping, the same switch decides both, and a default that beat would
+      // add a frame per interval per sharded type to every deployment for a
+      // mechanism none of them turned on (#853).
+      staleRegionDetection: s.staleRegionDetection ?? false,
+      regionHeartbeatIntervalMs: s.regionHeartbeatIntervalMs ?? DEFAULT_REGION_HEARTBEAT_INTERVAL_MS,
       cluster,
       localResolver,
     };
@@ -389,6 +409,54 @@ export class ShardRegion<TMessage = unknown>
       this.asksTtlMs, this.asksTtlMs,
       () => this.sweepPendingAsks(),
     );
+
+    // A proxy beats too.  It registers, so it is in the coordinator's `regions`
+    // map and would be swept like any other silent entry — and being evicted
+    // costs it the `ShardMapUpdate` broadcasts it routes by (#853).
+    if (this.config.staleRegionDetection) {
+      const beatMs = this.config.regionHeartbeatIntervalMs;
+      this.heartbeatTimer = this.system.scheduler.scheduleAtFixedRateFunction(
+        beatMs, beatMs,
+        () => this.sendRegionHeartbeat(),
+      );
+    }
+  }
+
+  /**
+   * Tell the coordinator this region is still there (#853).
+   *
+   * Silent until there is a coordinator to tell, and while the registration
+   * stands refused: a refused region is deliberately not in the coordinator's
+   * map (#633), so a beat could only be ignored, and re-sending one every
+   * interval is the hammering the refusal latch exists to stop.
+   *
+   * Sent through {@link tellCoordinatorRef} rather than `tellCoordinator`,
+   * which re-enters {@link ensureRegistered} when there is no ref — re-running
+   * the whole register loop off a liveness timer is exactly the coupling the
+   * dedicated frame exists to avoid.  There is nothing to recover here anyway:
+   * `ensureRegistered` already runs off every cluster event and its own retry.
+   */
+  private sendRegionHeartbeat(): void {
+    const coordinator = this.coordinatorRef;
+    if (!coordinator || this.registerRefused) return;
+    const heartbeat: RegionHeartbeat = {
+      kind: 'sharding.RegionHeartbeat',
+      // Byte-identical to what `register()` sent, or the coordinator's
+      // `regionKey` misses and the beat silently refreshes nothing.
+      region: this.self.path.toString(),
+      node: this.config.cluster.selfAddress.toJSON(),
+    };
+    try {
+      this.tellCoordinatorRef(coordinator, heartbeat);
+    } catch (error) {
+      // A transport that is momentarily down must not take the timer with it:
+      // the next beat is the retry, and `stale-after` is several intervals wide
+      // precisely so a lost one is not a verdict.
+      this.log.debug(
+        `[sharding] could not beat to the coordinator for '${this.config.typeName}'`,
+        error,
+      );
+    }
   }
 
   /**
@@ -416,6 +484,7 @@ export class ShardRegion<TMessage = unknown>
     this.envelopeUnsubscribe?.();
     this.passivationTimer?.cancel();
     this.registerTimer?.cancel();
+    this.heartbeatTimer?.cancel();
     this.asksSweepTimer?.cancel();
     this.entityRecoveryTimer?.cancel();
     this.tellCoordinatorTerminated();

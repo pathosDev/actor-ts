@@ -57,6 +57,29 @@ export const DEFAULT_REBALANCE_RELATIVE_LIMIT = 0.1;
  */
 export const DEFAULT_ACQUIRE_RETRY_INTERVAL_MS = 5_000;
 
+/**
+ * Built-in default for {@link ShardCoordinatorOptionsType.regionStaleAfterMs} —
+ * how long a registered region may stay silent before the coordinator declares
+ * it gone and re-homes its shards (#853).  Mirrors
+ * `actor-ts.sharding.stale-region-detection.stale-after = 20s`.
+ *
+ * Four missed beats at the shipped
+ * {@link DEFAULT_REGION_HEARTBEAT_INTERVAL_MS} of 5 s.  A single missed beat
+ * would make one dropped datagram evict a healthy region, and the eviction is
+ * destructive — every entity under every shard it holds is re-created
+ * elsewhere — so the threshold is deliberately several intervals rather than
+ * one.  It is not a *node*-liveness figure and should not be compared with
+ * `actor-ts.cluster.failure-detector.down-after`: a dead node is already
+ * removed in ~5 s by the failure detector, and this covers only the case that
+ * detector cannot see — a region gone on a node that is still up.
+ *
+ * The sweep rides the existing rebalance tick (2 s), so the effective latency
+ * is this plus at most one tick.  There is deliberately no `check-interval`
+ * key: a second timer would give an operator two dials that both mean "how
+ * often does the coordinator look at the shard map".
+ */
+export const DEFAULT_REGION_STALE_AFTER_MS = 20_000;
+
 /** Plain options-object shape consumed by a {@link ShardCoordinator}. */
 export type ShardCoordinatorOptionsType = {
   readonly typeName: string;
@@ -95,6 +118,26 @@ export type ShardCoordinatorOptionsType = {
    */
   readonly rebalanceRelativeLimit?: number;
   readonly rememberEntities?: boolean;
+  /**
+   * Evict a registered region that has gone silent, and re-home its shards
+   * (#853).  Default: `false`.
+   *
+   * The same deployment-wide switch the regions read
+   * ({@link ShardingOptionsType.staleRegionDetection}): with it off nothing
+   * beats and nothing sweeps, so the mechanism costs nothing at all until it is
+   * asked for.  Only a region that has actually beaten at least once is ever a
+   * sweep candidate — see `ShardCoordinator.sweepStaleRegions` for why that
+   * matters during a rolling deploy.
+   */
+  readonly staleRegionDetection?: boolean;
+  /**
+   * Silence after which a region is declared gone, in ms (#853).  Default:
+   * `20000`.  Inert while {@link staleRegionDetection} is off.
+   *
+   * Must exceed {@link ShardingOptionsType.regionHeartbeatIntervalMs}, or the
+   * coordinator evicts a healthy region between two of its beats.
+   */
+  readonly regionStaleAfterMs?: number;
   /** Resolver for local actor paths — used when coordinator lives on the same node as a region. */
   readonly localResolver: (path: string) => ActorRef | null;
   /**
@@ -208,6 +251,16 @@ export class ShardCoordinatorOptionsBuilder extends OptionsBuilder<ShardCoordina
   /** Track entity lifecycle so entities can be re-created on the new owner. */
   withRememberEntities(rememberEntities = true): this {
     return this.set('rememberEntities', rememberEntities);
+  }
+
+  /** Evict a registered region that stops beating, and re-home its shards.  Default: off (#853). */
+  withStaleRegionDetection(staleRegionDetection = true): this {
+    return this.set('staleRegionDetection', staleRegionDetection);
+  }
+
+  /** Silence after which a region is declared gone, in ms.  Default: 20000. */
+  withRegionStaleAfterMs(regionStaleAfterMs: number): this {
+    return this.set('regionStaleAfterMs', regionStaleAfterMs);
   }
 
   /** Resolver for local actor paths — used when coordinator and region share a node. */

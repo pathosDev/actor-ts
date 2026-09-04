@@ -855,6 +855,9 @@ pro Consumer](/de/cache/in-memory/#ein-cache-pro-consumer) braucht.
 | `sharding.entity-recovery.strategy` | `all` | Wie erinnerte Entities zurückkommen, nachdem eine Region einen Shard bekommen hat.  `all` startet alle auf einmal — das heutige Verhalten, und der Grund, warum der Default nicht verschoben wurde.  `constant-rate` verteilt sie, siehe [Einen Remember-Entities-Restore drosseln](#einen-remember-entities-restore-drosseln) weiter unten. |
 | `sharding.entity-recovery.constant-rate.frequency` | `100ms` | Abstand zwischen zwei gedrosselten Recovery-Batches.  Unter `strategy = all` wirkungslos. |
 | `sharding.entity-recovery.constant-rate.number-of-entities` | `5` | Wie viele Entities ein gedrosselter Batch startet.  **Ein regionsweites Budget, keines pro Shard** — die Queue wird von jedem Shard des Nodes gespeist, das sind also Entity-Starts pro Fenster *auf diesem Node*.  Unter `strategy = all` wirkungslos. |
+| `sharding.stale-region-detection.enabled` | `off` | Lässt jede Region an den Koordinator schlagen und den Koordinator eine verstummte Region entfernen.  Per Default aus — eine Entfernung ist destruktiv.  Siehe [Eine verstummte Region erkennen](#eine-verstummte-region-erkennen) weiter unten. |
+| `sharding.stale-region-detection.heartbeat-interval` | `5s` | Abstand zwischen zwei Schlägen Region → Koordinator.  **Pro Sharded Type, nicht pro Node.**  Bei `enabled = off` wirkungslos. |
+| `sharding.stale-region-detection.stale-after` | `20s` | Stille, nach der eine Region für verschwunden erklärt und ihre Shards neu vergeben werden.  Muss größer als `heartbeat-interval` sein, und um mehr als einen Schlag.  Bei `enabled = off` wirkungslos. |
 
 Diese Keys gelten für **jeden** auf dem Node gestarteten Sharded Type.  Sie
 werden einmal pro `sharding.start(...)` gelesen und unter das gelegt, was
@@ -997,6 +1000,59 @@ Drei Punkte dazu, die man ausdrücklich sagen sollte:
 
 Setze `rebalance-relative-limit = 0` (das absolute Limit steht bereits auf
 `0`), um das ungedeckelte Verhalten wiederherzustellen.
+
+#### Eine verstummte Region erkennen
+
+Lies erst den Geltungsbereich, bevor du danach greifst: das hier ist ein
+**Auffangnetz für genau einen engen Fall**, und der Fall, den die meisten
+meinen, ist schon ohne ihn abgedeckt.
+
+Ein Node, der aufhört zu gossipen, wird vom [Failure
+Detector](/de/cluster/failure-detector/) nach
+`actor-ts.cluster.failure-detector.down-after` zwangsweise heruntergestuft — per
+Default 5 s, und nicht abschaltbar — und der Koordinator vergibt seine Shards
+aus dem daraus folgenden `MemberRemoved` neu.  Eine sauber gestoppte Region
+sagt dem Koordinator auf ihrem Weg nach unten Bescheid.  Was beides nicht
+abdeckt, ist eine Region, die **auf einem noch laufenden, noch gossipenden Node
+verschwunden oder verklemmt** ist und deren Meldung nie ankam: sie geht genau
+einmal raus, wird nicht quittiert, und ein Transportfehler auf dem Weg nach
+unten wird nur geloggt und geschluckt.  Dann bleiben die Shards einem Actor
+zugewiesen, den es nicht mehr gibt, und nichts heilt das — die Kandidatenmenge
+wird ohne jede Lebendigkeitsprüfung aus der Registry abgeleitet.
+
+```hocon
+actor-ts.sharding.stale-region-detection {
+  enabled = on
+  heartbeat-interval = 5s
+  stale-after = 20s
+}
+```
+
+Vier Dinge sind vor dem Einschalten wissenswert:
+
+- **Der Schalter steuert beide Hälften.**  Aus schlägt keine Region und fegt
+  kein Koordinator, der Mechanismus kostet also überhaupt nichts.  An schickt
+  jede Region jedes Sharded Type einen kleinen Frame pro `heartbeat-interval`.
+- **Der Schlag geht pro Sharded Type, nicht pro Node.**  Zehn Typen auf einem
+  Node sind zehn Frames pro Intervall, zusätzlich zu den Heartbeats des
+  Clusters selbst.
+- **Eine Region, die nie schlägt, wird nie entfernt.**  Genau das macht das
+  Einschalten mitten in einem Rollout sicher: solange der Leader den Schalter
+  an hat und einzelne Regionen noch nicht, sind diese Regionen schlicht noch
+  nicht scharf — statt im Sekundentakt entfernt zu werden und sich in einer
+  Schleife neu zu registrieren.
+- **`stale-after` muss größer als `heartbeat-interval` sein**, und die
+  ausgelieferten vier Intervalle sind Absicht: bei einem einzigen entfernt ein
+  verlorener Frame eine gesunde Region und stoppt jede Entität unter jedem
+  Shard, den sie hielt.  Ein Paar, das sich kreuzt, wird bei
+  `sharding.start(...)` abgelehnt, und zwar gegen die *aufgelösten* Werte — das
+  Überschreiben des einen kann den Default des anderen also nicht stillschweigend
+  unterlaufen.
+
+Ein `check-interval` gibt es bewusst nicht.  Der Sweep läuft auf dem
+`rebalance-interval`-Tick mit, der ohnehin schon der Regler dafür ist, wie oft
+der Koordinator auf die Shard-Map schaut — die Erkennungslatenz ist also
+`stale-after` plus höchstens ein Tick.
 
 Ein Setting für genau einen Typ gehört deshalb in den Builder; die
 Config-Datei ist für die node-weite Grundeinstellung, die du ohne Rebuild

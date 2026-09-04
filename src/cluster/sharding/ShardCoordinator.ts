@@ -9,6 +9,7 @@ import {
   DEFAULT_REBALANCE_ABSOLUTE_LIMIT,
   DEFAULT_REBALANCE_INTERVAL_MS,
   DEFAULT_REBALANCE_RELATIVE_LIMIT,
+  DEFAULT_REGION_STALE_AFTER_MS,
 } from './ShardCoordinatorOptions.js';
 import type { ShardCoordinatorOptions, ShardCoordinatorOptionsType } from './ShardCoordinatorOptions.js';
 import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
@@ -30,6 +31,7 @@ import type {
   GetRememberedEntities,
   GetShardHome,
   HandOffComplete,
+  RegionHeartbeat,
   RegionTerminated,
   RegisterAcknowledgment,
   RegisterRefused,
@@ -66,11 +68,11 @@ function isCoordinatorEvent(message: CoordinatorInbox): message is CoordinatorEv
  * The node a coordinator-inbound frame claims to speak for, or `null` when the
  * kind carries no address at all.
  *
- * Six of the ten kinds a coordinator accepts name a node in their payload, and
- * every one of them is a statement only that node can truthfully make: which
- * shards it hosts, that its region is gone, that a hand-off finished, where to
- * send a shard home or a statistics reply.  This is the lookup the authority
- * gate compares against the authenticated peer (#712).
+ * Seven of the eleven kinds a coordinator accepts name a node in their payload,
+ * and every one of them is a statement only that node can truthfully make:
+ * which shards it hosts, that its region is gone or still there, that a
+ * hand-off finished, where to send a shard home or a statistics reply.  This is
+ * the lookup the authority gate compares against the authenticated peer (#712).
  *
  * The four that return `null` — `EntityStarted`, `EntityStopped`,
  * `GetRememberedEntities`, `BeginHandOffAcknowledgment` — have no address to
@@ -80,6 +82,7 @@ function claimedNode(message: ShardingMessage): NodeAddressData | null {
   return match(message)
     .with({ kind: 'sharding.Register' }, (m) => m.node)
     .with({ kind: 'sharding.RegionTerminated' }, (m) => m.node)
+    .with({ kind: 'sharding.RegionHeartbeat' }, (m) => m.node)
     .with({ kind: 'sharding.HandOffComplete' }, (m) => m.node)
     .with({ kind: 'sharding.GetShardHome' }, (m) => m.requesterNode)
     .with({ kind: 'sharding.GetClusterShardingStats' }, (m) => m.requesterNode)
@@ -109,6 +112,29 @@ type RegionInfo = {
   readonly path: string;
   readonly proxy: boolean;
   readonly shards: Set<number>;
+  /**
+   * When this region was last heard from at all — its registration, its beat,
+   * or any other frame that names it (#853).  Not `readonly`: it is the one
+   * field of a `RegionInfo` that moves without the entry being replaced.
+   *
+   * Refreshed by ordinary traffic as well as by the beat, so a busy region is
+   * never swept for having had nothing to say.
+   */
+  lastSeenAtMs: number;
+  /**
+   * When this region last sent a {@link RegionHeartbeat}, or `null` if it never
+   * has — which is what makes a region eligible for the sweep at all.
+   *
+   * A region only beats when its own node has `staleRegionDetection` on, so
+   * `null` means "this region did not opt in", and evicting it would be acting
+   * on a signal it never agreed to send.  That is exactly a rolling deploy: for
+   * the window in which the leader runs the new build and some regions do not,
+   * a `lastSeenAtMs`-only rule would evict every one of them on a timer, they
+   * would re-register, and the loop would run until the deploy finished.  It
+   * also covers a region seeded out of a persisted snapshot that has not
+   * registered this term.
+   */
+  lastHeartbeatAtMs: number | null;
 };
 
 /**
@@ -448,6 +474,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       .with({ kind: 'sharding.HandOffComplete' }, (m) => this.onHandOffComplete(m))
       .with({ kind: 'sharding.BeginHandOffAcknowledgment' }, () => this.onBeginHandOffAcknowledgment())
       .with({ kind: 'sharding.RegionTerminated' }, (m) => this.onRegionTerminated(m))
+      .with({ kind: 'sharding.RegionHeartbeat' }, (m) => this.onRegionHeartbeat(m))
       .with({ kind: 'sharding.EntityStarted' }, (m) => this.onEntityStarted(m))
       .with({ kind: 'sharding.EntityStopped' }, (m) => this.onEntityStopped(m))
       .with({ kind: 'sharding.GetRememberedEntities' }, (m) => this.onGetRememberedEntities(m))
@@ -661,6 +688,59 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     /* informational only */
   }
 
+  /**
+   * A region says it is still there (#853).
+   *
+   * The frame carries no claim beyond its own identity, so the handler has
+   * nothing to adjudicate — see {@link RegionHeartbeat} for why a periodic
+   * re-`Register` was not an option.  An unknown key is silently ignored: a
+   * region that beats before its registration lands, or after a leader change
+   * cleared the map, has nothing here to refresh, and its next `Register` is
+   * what puts it back.
+   */
+  private onRegionHeartbeat(message: RegionHeartbeat): void {
+    const info = this.regionFor(message.region, message.node);
+    if (!info) return;
+    const now = Date.now();
+    info.lastSeenAtMs = now;
+    info.lastHeartbeatAtMs = now;
+  }
+
+  /**
+   * The registry entry a frame's `(region, node)` pair names, if there is one.
+   *
+   * The address is safe to rebuild here even though `NodeAddress.fromJSON`
+   * throws on a shape the wire is free to send: `maySpeakFor` has already
+   * compared this very field against the authenticated peer, so anything that
+   * reaches a handler matched a real member's address.
+   */
+  private regionFor(path: string, nodeData: NodeAddressData): RegionInfo | undefined {
+    return this.regions.get(regionKey(NodeAddress.fromJSON(nodeData), path));
+  }
+
+  /**
+   * Note that a region spoke, whatever it said (#853).
+   *
+   * Called from every coordinator-inbound kind that names a region *and* the
+   * node hosting it, which is what `regionKey` needs to resolve one:
+   * `GetShardHome`, `HandOffComplete` and `ShardRegionStats`.  A region under
+   * load therefore never needs the beat at all, and the beat only has to cover
+   * an idle one.
+   *
+   * `EntityStarted` / `EntityStopped` name no region and are deliberately not
+   * here.  The peer alone could be matched against `RegionInfo.node`, but a
+   * node may host a proxy and a real region for the same type, and refreshing
+   * both on one frame would credit liveness to a region that said nothing.
+   *
+   * It deliberately does **not** touch `lastHeartbeatAtMs`: ordinary traffic
+   * says the region is alive, not that it has opted into being swept when it
+   * stops.  Only the beat says that.
+   */
+  private markRegionSeen(path: string, nodeData: NodeAddressData): void {
+    const info = this.regionFor(path, nodeData);
+    if (info) info.lastSeenAtMs = Date.now();
+  }
+
   private onUnhandled(): void {
     /* other ShardingMessage variants are region-side */
   }
@@ -721,6 +801,13 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       path: message.region,
       proxy: message.proxy,
       shards: verdict.owned,
+      // A registration is the loudest possible "I am here", so a re-registering
+      // region gets a full `stale-after` to produce its first beat (#853).  The
+      // beat record is carried across a re-registration rather than reset: a
+      // region that has proved it beats does not stop being a sweep candidate
+      // because a leader change made it register again.
+      lastSeenAtMs: Date.now(),
+      lastHeartbeatAtMs: this.regions.get(key)?.lastHeartbeatAtMs ?? null,
     });
     for (const shardId of verdict.adopted) {
       const previous = this.shardHome.get(shardId);
@@ -948,6 +1035,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   private onGetShardHome(message: GetShardHome): void {
+    this.markRegionSeen(message.requester, message.requesterNode);
     if (!this.isKnownShardId(message.shardId)) return;
     // A refused region's shard ids are drawn from a different modulus, so
     // answering one places the *same* entity id in a second shard — the exact
@@ -1006,6 +1094,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   private onHandOffComplete(message: HandOffComplete): void {
+    this.markRegionSeen(message.region, message.node);
     const shardId = message.shardId;
     const inProgress = this.rebalanceInProgress.get(shardId);
     if (!inProgress) return;
@@ -1130,6 +1219,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   private onShardRegionStats(message: ShardRegionStats): void {
+    this.markRegionSeen(message.region, message.node);
     const query = this.statsQueries.get(message.queryId);
     if (!query) return;
     const key = regionKey(NodeAddress.fromJSON(message.node), message.region);
@@ -1314,7 +1404,19 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       const node = NodeAddress.fromJSON(region.node);
       if (this.regions.has(region.key)) continue; // already known via Register
       this.regions.set(region.key, {
-        node, path: region.path, proxy: region.proxy, shards: new Set(region.shards),
+        node,
+        path: region.path,
+        proxy: region.proxy,
+        shards: new Set(region.shards),
+        // Stamped fresh at seed time, not carried from the snapshot: the entry
+        // is being adopted now, and a `takenAt` from the previous leader would
+        // hand a region a debt it never ran up (#853).  `lastHeartbeatAtMs`
+        // stays `null` — nothing has beaten to *this* coordinator — so a seeded
+        // region is exempt from the sweep until it registers and beats, which
+        // is the "startup grace" the issue asked for, derived rather than
+        // configured.
+        lastSeenAtMs: Date.now(),
+        lastHeartbeatAtMs: null,
       });
     }
     for (const [shardId, regionKey] of data.shardHome) {
@@ -1444,6 +1546,10 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    * more ticks.
    */
   private rebalanceTick(): void {
+    // Before the strategy is consulted, so a shard whose owner has just been
+    // declared gone is re-homed on this tick rather than being proposed for a
+    // voluntary move away from a region that no longer exists.
+    this.sweepStaleRegions();
     const shardsToMove = this.options.allocationStrategy.rebalance(
       this.currentShardCounts(),
       this.candidates(),
@@ -1452,6 +1558,60 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
     const budget = this.rebalanceCeiling() - this.rebalanceInProgress.size;
     if (budget <= 0) return;
     for (const shardId of this.shardsWithinBudget(shardsToMove, budget)) this.beginHandOff(shardId);
+  }
+
+  /**
+   * Evict every registered region that has gone silent (#853).
+   *
+   * The gap this closes is narrow and worth naming precisely, because the
+   * obvious one is already covered: a node that stops gossiping is force-downed
+   * by the failure detector at `down-after` (5 s by default, and it cannot be
+   * switched off), which emits `MemberRemoved`, which this coordinator already
+   * turns into an eviction.  What nothing covered is a region that is gone or
+   * wedged on a node that is **still up and heartbeating** — #648's
+   * `RegionTerminated` is single-shot, unacknowledged, and its send error is
+   * swallowed on the way down, and `candidates()` is derived from the registry
+   * with no liveness check, so a lost one left the shards allocated to an actor
+   * that does not exist, permanently.
+   *
+   * Three properties, each of which is the difference between a backstop and a
+   * new failure mode:
+   *
+   * - **It rides the existing rebalance tick**, inside the `isActive()` guard
+   *   that tick already carries.  A passive coordinator must not evict regions
+   *   it does not own, and a second timer would have needed its own copy of
+   *   that guard as well as its own key.
+   * - **Only a region that has beaten is a candidate** — see
+   *   {@link RegionInfo.lastHeartbeatAtMs}.
+   * - **Eviction goes through {@link onRegionTerminated}**, the same
+   *   synthesised-frame path `onMemberRemoved` uses.  It bypasses `maySpeakFor`
+   *   deliberately: the message is built here from this coordinator's own
+   *   state, not from anything a peer said, and reusing it is what keeps
+   *   eviction, reallocation and `afterShardMapChange` in one place instead of
+   *   two that can drift.  A region that already sent its own
+   *   `RegionTerminated` is gone from `regions`, so the sweep cannot
+   *   double-evict it.
+   */
+  private sweepStaleRegions(): void {
+    if (!this.options.staleRegionDetection) return;
+    const staleAfterMs = this.options.regionStaleAfterMs ?? DEFAULT_REGION_STALE_AFTER_MS;
+    const now = Date.now();
+    // Snapshotted: `onRegionTerminated` deletes from the map being walked.
+    for (const info of Array.from(this.regions.values())) {
+      if (info.lastHeartbeatAtMs === null) continue;
+      const silentForMs = now - info.lastSeenAtMs;
+      if (silentForMs < staleAfterMs) continue;
+      this.log.warn(
+        `[sharding] region ${info.path} on ${info.node} has not been heard from for `
+        + `${silentForMs} ms (stale-after ${staleAfterMs} ms) while its node is still in the cluster; `
+        + `re-homing the ${info.shards.size} shard(s) of type "${this.options.typeName}" it held`,
+      );
+      this.onRegionTerminated({
+        kind: 'sharding.RegionTerminated',
+        region: info.path,
+        node: info.node.toJSON(),
+      });
+    }
   }
 
   /**

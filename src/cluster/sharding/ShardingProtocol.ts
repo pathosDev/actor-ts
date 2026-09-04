@@ -97,6 +97,36 @@ export type RegionTerminated = {
   readonly node: NodeAddressData;
 };
 
+/**
+ * Region → coordinator: this region is still there (#853).
+ *
+ * The one signal the coordinator never had.  A region goes permanently silent
+ * the moment it is acknowledged — `ShardRegion.register()` arms a retry that
+ * `onRegisterAcknowledgment` cancels, and nothing beats afterwards — so a
+ * region that is gone without having managed to send its
+ * {@link RegionTerminated} is indistinguishable from a healthy idle one.  That
+ * frame is single-shot and its send error is swallowed on the way down, which
+ * is exactly the gap this is the backstop for.
+ *
+ * **It carries no `hostedShards`, and that is the whole design.**  The obvious
+ * beat is a periodic re-`Register`, and since #948 a repeated claim is
+ * *adjudicated* rather than ignored: a region whose `localShards` has drifted
+ * would earn a `HandOff` per colliding shard on every beat — periodic entity
+ * teardown on the wrong side — and each re-registration also re-runs the
+ * `numShards` refusal, re-ships remembered entities and re-arms the register
+ * retry.  A claim-free frame says only "I am here", which is all the sweep
+ * needs.
+ *
+ * `node` is what {@link ShardCoordinator}'s authority gate compares against
+ * the authenticated peer; a kind that names a node and is missing from that
+ * map is accepted from anybody (#712).
+ */
+export type RegionHeartbeat = {
+  readonly kind: 'sharding.RegionHeartbeat';
+  readonly region: string;
+  readonly node: NodeAddressData;
+};
+
 export type EntityStarted = {
   readonly kind: 'sharding.EntityStarted';
   readonly shardId: number;
@@ -347,6 +377,7 @@ export type ShardingMessage =
   | HandOff
   | HandOffComplete
   | RegionTerminated
+  | RegionHeartbeat
   | EntityStarted
   | EntityStopped
   | RememberedEntities

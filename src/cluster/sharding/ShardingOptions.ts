@@ -113,6 +113,25 @@ export const DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_FREQUENCY_MS = 100;
 export const DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_NUMBER_OF_ENTITIES = 5;
 
 /**
+ * Built-in default for {@link ShardingOptionsType.regionHeartbeatIntervalMs} —
+ * how often a region tells the coordinator it is still there (#853).  Mirrors
+ * `actor-ts.sharding.stale-region-detection.heartbeat-interval = 5s`.
+ *
+ * Inert unless {@link ShardingOptionsType.staleRegionDetection} is on, which it
+ * is not by default, so nothing beats on an upgrade that changes no config.
+ *
+ * The number is chosen against the *count* of beats rather than against any
+ * measurement.  The beat is **per sharded type**, not per node — each type has
+ * its own region and its own coordinator — so N types on a node cost N frames
+ * per interval on top of the cluster's own full-mesh heartbeats, which #1174
+ * already flags as O(n²) with no documented ceiling.  At 5 s the backstop adds
+ * a frame every five seconds per type, and the detection latency that buys is
+ * bounded by {@link ShardCoordinatorOptionsType.regionStaleAfterMs}, not by
+ * this.
+ */
+export const DEFAULT_REGION_HEARTBEAT_INTERVAL_MS = 5_000;
+
+/**
  * Plain options-object shape for a sharded region.  Consumed by
  * {@link ShardRegion.settingsToConfig} and extended by
  * {@link StartShardingOptionsType} — the coordinator-side superset that
@@ -252,6 +271,35 @@ export type ShardingOptionsType<TMessage> = {
    * region-wide to avoid.
    */
   readonly entityRecoveryConstantRateNumberOfEntities?: number;
+  /**
+   * Opt into stale-region detection: the region beats to the coordinator, and
+   * the coordinator evicts a region that stops (#853).  Default: `false`.
+   *
+   * One switch drives both halves on purpose.  It is a deployment-wide fact
+   * rather than a per-node one — the coordinator moves with the leader, so a
+   * node that beats today is the node that sweeps tomorrow — and gating the
+   * *beat* on it as well is what keeps the frame cost at exactly zero for
+   * everyone who has not asked for the mechanism.
+   *
+   * Off by default because eviction is destructive and this is a backstop for
+   * a rare frame loss: the node-level case is already covered, and far faster,
+   * by the failure detector.  What it adds is the region-level one — a region
+   * that is gone or wedged on a node that is still up and gossiping, whose
+   * `RegionTerminated` never arrived.
+   */
+  readonly staleRegionDetection?: boolean;
+  /**
+   * How often this region tells the coordinator it is still there, in ms
+   * (#853).  Default: `5000`.  Inert while {@link staleRegionDetection} is off.
+   *
+   * Must be shorter than
+   * {@link StartShardingOptionsType.regionStaleAfterMs} — the coordinator
+   * evicts on silence, so a beat slower than the threshold evicts a healthy
+   * region every cycle.  `StartShardingOptionsValidator` checks the pair
+   * against their *resolved* values, so setting one cannot silently cross the
+   * other's default.
+   */
+  readonly regionHeartbeatIntervalMs?: number;
 };
 
 /**
@@ -362,6 +410,16 @@ export class ShardingOptionsBuilder<
   withEntityRecoveryConstantRateNumberOfEntities(entityRecoveryConstantRateNumberOfEntities: number): this {
     return this.set('entityRecoveryConstantRateNumberOfEntities', entityRecoveryConstantRateNumberOfEntities);
   }
+
+  /** Beat to the coordinator and let it evict a region that stops.  Default: off (#853). */
+  withStaleRegionDetection(staleRegionDetection = true): this {
+    return this.set('staleRegionDetection', staleRegionDetection);
+  }
+
+  /** How often this region beats to the coordinator, in ms.  Default: 5000. */
+  withRegionHeartbeatIntervalMs(regionHeartbeatIntervalMs: number): this {
+    return this.set('regionHeartbeatIntervalMs', regionHeartbeatIntervalMs);
+  }
 }
 
 /**
@@ -461,6 +519,21 @@ export class ShardingOptionsValidator<
         'entityRecoveryConstantRateNumberOfEntities',
         'must be an integer >= 1',
         options.entityRecoveryConstantRateNumberOfEntities,
+      );
+    }
+    // Strictly positive: `0` here is not "no beat" but a timer that fires as
+    // fast as the scheduler will run it, and turning the mechanism off is what
+    // `staleRegionDetection` is for (#853).
+    if (
+      options.regionHeartbeatIntervalMs !== undefined
+      && (typeof options.regionHeartbeatIntervalMs !== 'number'
+        || !Number.isFinite(options.regionHeartbeatIntervalMs)
+        || options.regionHeartbeatIntervalMs <= 0)
+    ) {
+      this.fail(
+        'regionHeartbeatIntervalMs',
+        'must be a positive finite number',
+        options.regionHeartbeatIntervalMs,
       );
     }
   }

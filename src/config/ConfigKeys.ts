@@ -820,6 +820,23 @@ export const ConfigKeys = {
     entityRecoveryConstantRateFrequency: 'actor-ts.sharding.entity-recovery.constant-rate.frequency',
     entityRecoveryConstantRateNumberOfEntities:
       'actor-ts.sharding.entity-recovery.constant-rate.number-of-entities',
+    /**
+     * Stale-region detection — `actor-ts.sharding.stale-region-detection.*`
+     * (#853).  Grouped in HOCON because the three are only meaningful together;
+     * the matching options fields stay flat (`staleRegionDetection`,
+     * `regionHeartbeatIntervalMs`, `regionStaleAfterMs`), the same translation
+     * `cluster.tombstone.*` already makes.
+     *
+     * Full dotted leaves, not a bare `staleRegionDetection` root, and for the
+     * reason `entity-recovery` above spells out: `NoDeadConfigKeys` resolves a
+     * leaf through *any* config root above it, so a root-only entry would let
+     * all three pass with nothing reading them.
+     */
+    staleRegionDetection: {
+      enabled: 'actor-ts.sharding.stale-region-detection.enabled',
+      heartbeatInterval: 'actor-ts.sharding.stale-region-detection.heartbeat-interval',
+      staleAfter: 'actor-ts.sharding.stale-region-detection.stale-after',
+    },
   },
 
   /**
