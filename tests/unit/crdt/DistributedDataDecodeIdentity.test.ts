@@ -433,3 +433,72 @@ describe('DistributedData — a durable reload keeps the caller identity', () =>
     expect(dataSecond.get<ORSet<Item>>('cart')!.size).toBe(1);
   }, 10_000);
 });
+
+/* ============ an element the identity refuses must not unlearn it ======= */
+
+/**
+ * The realistic shape of an application identity: it asserts the shape it was
+ * written for.  #766's own note says the callback now runs over peer-supplied
+ * values, so this is the callback meeting the input this subsystem exists to
+ * survive — an element of a shape the application never produced.
+ */
+const bySkuStrict = (item: Item): string => {
+  if (typeof (item as { sku?: unknown } | null)?.sku !== 'string') {
+    throw new TypeError(`cart element carries no sku: ${JSON.stringify(item)}`);
+  }
+  return item.sku;
+};
+const strictCartFactory = (): ORSet<Item> => ORSet.empty<Item>({ identity: bySkuStrict });
+
+/** A peer-supplied element `bySkuStrict` cannot name. */
+const SHAPELESS = { price: 7 } as unknown as Item;
+
+describe('DistributedData — an element the identity refuses keeps the identity', () => {
+  test('a peer element that makes the callback throw does not unlearn the key', async () => {
+    const victim = await startNode('ddata-identity-e', 48_331);
+    const data = victim.system.extension(DistributedDataId).start(victim);
+    // The same startup settle as the block above — nothing observable to poll
+    // before the first frame lands.
+    await sleep(80);
+
+    // The frame arrives before any local update, so it decodes on the default
+    // identity and the shapeless element enters the view unexamined.  That is
+    // the only way in: once the identity is known, `decodeOrDrop` refuses a
+    // frame the callback throws on.
+    const peer = await peerTransport('ddata-identity-peer-e', 48_332);
+    peer.send(victim.selfAddress, {
+      kind: 'ddata-gossip',
+      from: new NodeAddress('ddata-identity-peer-e', 'h', 48_332).toJSON(),
+      entries: { cart: ORSet.empty<Item>().add('peer', SHAPELESS).toJSON() },
+    } as unknown as WireMessage);
+    await awaitCondition(() => data.get<ORSet<Item>>('cart') !== undefined, {
+      label: "the peer's shapeless element landed before any local update",
+    });
+
+    // Two updates, and the second is the point.  The first is what teaches the
+    // identity, and it is the one that trips over the shapeless element while
+    // re-keying the value already in the view.  The second proves the trip did
+    // not cost the key its identity: both books share a SKU, so under the
+    // configured rule they are one entry and under `JSON.stringify` they are
+    // two.
+    data.update<ORSet<Item>>('cart', strictCartFactory,
+      (cart) => cart.add(data.selfReplicaId(), BOOK_10));
+    await awaitCondition(
+      () => (data.get<ORSet<Item>>('cart')?.value() ?? []).some((item) => item?.price === 10),
+      { label: 'the first local add was applied' },
+    );
+    data.update<ORSet<Item>>('cart', strictCartFactory,
+      (cart) => cart.add(data.selfReplicaId(), BOOK_12));
+    await awaitCondition(
+      () => (data.get<ORSet<Item>>('cart')?.value() ?? []).some((item) => item?.price === 12),
+      { label: 'the second local add was applied' },
+    );
+
+    const cart = data.get<ORSet<Item>>('cart')!;
+    expect(cart.value().filter((item) => item?.sku === 'book-1')).toHaveLength(1);
+    // Nothing was dropped to get there: the element that could not be re-keyed
+    // is still in the set, under the key it arrived with.
+    expect(cart.value().some((item) => item?.price === 7)).toBe(true);
+    expect(cart.size).toBe(2);
+  });
+});
