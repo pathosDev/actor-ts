@@ -839,6 +839,51 @@ actor-ts {
     }
   }
 
+  # Defaults for every breaker resolved through the CircuitBreakerExtension --
+  # system.extension(CircuitBreakerExtensionId).breaker('payment-api').  Leaf
+  # names are the kebab-case of the CircuitBreakerOptions fields with any unit
+  # suffix dropped, and are validated on read (a bad value throws OptionsError).
+  # A breaker built in code reads none of this; that door is unchanged.
+  circuit-breaker {
+    # The floor every named breaker inherits.  "default" is reserved: it is the
+    # defaults block and it is also the id breaker() resolves with no argument,
+    # which is the same thing said twice rather than a collision.
+    default {
+      max-failures      = 10     # consecutive failures before the breaker opens
+      reset-timeout     = 15s    # how long it stays open before letting a probe through
+
+      # Growth of that window while the breaker keeps re-opening.  The delay is
+      # reset-timeout * backoff-factor^(consecutive opens - 1), clamped to
+      # max-reset-timeout, then spread by +/- random-factor.  The shipped
+      # 1.0 / 0.0 pair reproduces the flat, unjittered window exactly, so
+      # turning either on is a change a deployment makes on purpose.
+      max-reset-timeout = 60s    # ceiling the grown window is clamped to
+      backoff-factor    = 1.0    # 1.0 = no growth
+      random-factor     = 0.0    # 0.0 = no jitter; 0.2 is the spread used elsewhere
+
+      # Error.name values that never count as a failure.  Checked BEFORE the
+      # code-side isFailure predicate, so a name listed here is not a failure
+      # whatever the code says -- an operator cannot reach into a compiled
+      # predicate, and a key that goes inert for the deployments that needed it
+      # is not a key.  "CircuitBreakerTimeoutError" is listable and means "a
+      # call that blew its own call-timeout does not count against the breaker".
+      ignored-error-names = []
+    }
+
+    # call-timeout is deliberately not a leaf: omitting it is what disables the
+    # per-call timeout and the validator refuses 0, so "no deadline" is a state
+    # only a missing key can express.  Written, it is read like any other:
+    #
+    #   actor-ts.circuit-breaker.default.call-timeout = 2s
+    #
+    # Per-breaker overrides live under the breaker's own id and win over the
+    # default block leaf by leaf:
+    #
+    #   actor-ts.circuit-breaker.payment-api { max-failures = 3, reset-timeout = 30s }
+    #
+    # The id is the application's, so those paths cannot be listed here.
+  }
+
   # Projections poll the read side and feed a read model.  These are the
   # process-wide defaults; ProjectionOptions on a single projection wins.
   projection {

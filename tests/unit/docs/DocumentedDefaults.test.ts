@@ -112,6 +112,7 @@ import {
   DEFAULT_DELIVERY_QUEUE_CAPACITY,
 } from '../../../src/logging/DeliveryOptions.js';
 import { DEFAULT_MAX_PRODUCERS, DEFAULT_PRODUCER_IDLE_TTL_MS, DEFAULT_RESEND_TIMEOUT_MS, DEFAULT_WINDOW_SIZE } from '../../../src/delivery/index.js';
+import { DEFAULT_CIRCUIT_BREAKER_BACKOFF_FACTOR, DEFAULT_CIRCUIT_BREAKER_MAX_FAILURES, DEFAULT_CIRCUIT_BREAKER_MAX_RESET_TIMEOUT_MS, DEFAULT_CIRCUIT_BREAKER_RANDOM_FACTOR, DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS } from '../../../src/pattern/CircuitBreakerOptions.js';
 import {
   DEFAULT_CONSOLE_SINK_FORMAT,
   DEFAULT_CONSOLE_SINK_STREAM,
@@ -376,6 +377,20 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.reliable-delivery.producer.window-size', kind: 'int', constant: DEFAULT_WINDOW_SIZE },
   { key: 'actor-ts.reliable-delivery.consumer.max-producers', kind: 'int', constant: DEFAULT_MAX_PRODUCERS },
   { key: 'actor-ts.reliable-delivery.consumer.producer-idle-time-to-live', kind: 'duration', constant: DEFAULT_PRODUCER_IDLE_TTL_MS },
+
+  /* --- circuit breaker --- */
+  // `call-timeout` is comment-only in reference.conf and so is not part of the
+  // partition: omitting `callTimeoutMs` is what disables the per-call timeout,
+  // and the validator refuses `0`, so "no deadline" is a state only a missing
+  // key can express.  `ignored-error-names` is a list and has no constant —
+  // see FEATURE_SWITCHES (#864).
+  { key: 'actor-ts.circuit-breaker.default.max-failures', kind: 'int', constant: DEFAULT_CIRCUIT_BREAKER_MAX_FAILURES },
+  { key: 'actor-ts.circuit-breaker.default.reset-timeout', kind: 'duration', constant: DEFAULT_CIRCUIT_BREAKER_RESET_TIMEOUT_MS },
+  { key: 'actor-ts.circuit-breaker.default.max-reset-timeout', kind: 'duration', constant: DEFAULT_CIRCUIT_BREAKER_MAX_RESET_TIMEOUT_MS },
+  // `number`, not `int`: both publish a fraction-shaped literal (`1.0`, `0.0`)
+  // and `getInt` throws on anything that is not a whole number.
+  { key: 'actor-ts.circuit-breaker.default.backoff-factor', kind: 'number', constant: DEFAULT_CIRCUIT_BREAKER_BACKOFF_FACTOR },
+  { key: 'actor-ts.circuit-breaker.default.random-factor', kind: 'number', constant: DEFAULT_CIRCUIT_BREAKER_RANDOM_FACTOR },
 
   /* --- coordination --- */
   // The three sibling keys — `lease.ttl`, `lease.renewal-interval` and
@@ -733,6 +748,12 @@ const FEATURE_SWITCHES: readonly string[] = [
   // written down.  No constant either: the default is the field being absent,
   // and `durableSnapshot` short-circuits on `length === 0` (#856).
   'actor-ts.distributed-data.durable-keys',
+  // The fourth empty-list sentinel, and it reads exactly like the three above:
+  // `[]` and an unset key produce the identical classifier, because the read
+  // site is `this.options.ignoredErrorNames?.includes(error.name)`.  No
+  // constant either — which error name a deployment wants excused is the
+  // deployment's business, and the framework has no candidate to name (#864).
+  'actor-ts.circuit-breaker.default.ignored-error-names',
   'actor-ts.cluster.weakly-up-after', // 0s = no auto weakly-up promotion
   'actor-ts.cluster.tombstone.min-retention', // 0s = derive from down-after
   'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',

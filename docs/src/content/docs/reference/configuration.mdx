@@ -950,6 +950,64 @@ worked example: it is both the id the journal is registered under and the block
 that journal reads.  See each journal page in
 [Persistence](/persistence/overview/) for the per-plugin keys.
 
+### `actor-ts.circuit-breaker`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `circuit-breaker.default.max-failures` | `10` | Consecutive failures before a breaker opens ([circuit breaker](/patterns/circuit-breaker/)). |
+| `circuit-breaker.default.reset-timeout` | `15s` | How long it stays open before letting a probe through. |
+| `circuit-breaker.default.max-reset-timeout` | `60s` | Ceiling the grown window is clamped to.  Must be at least `reset-timeout` — a breaker whose merged settings say otherwise refuses to start. |
+| `circuit-breaker.default.backoff-factor` | `1.0` | Multiplier per consecutive open.  `1.0` = the flat window every earlier release had. |
+| `circuit-breaker.default.random-factor` | `0.0` | Jitter fraction in `[0, 1]` spread over that window.  `0.0` = no jitter. |
+| `circuit-breaker.default.ignored-error-names` | `[]` | `Error.name` values that never count as a failure. |
+| `circuit-breaker.default.call-timeout` | *(unset)* | Deliberately a comment in `reference.conf` — see below.  Unset, there is no per-call deadline. |
+| `circuit-breaker.<id>.*` | *(the block above)* | The same leaves, for the single breaker `breaker('<id>')` resolves — overrides the default block leaf by leaf. |
+
+These are read by the **`CircuitBreakerExtension`**, the door that resolves a
+breaker by id:
+
+```ts
+import { CircuitBreakerExtensionId } from 'actor-ts';
+
+const payments = system.extension(CircuitBreakerExtensionId).breaker('payment-api');
+await payments.call(() => fetch('https://payments.example/charge'));
+```
+
+`new CircuitBreaker({ … })` reads none of this and is unchanged — it is the
+door for a breaker whose settings live in code.  Explicit options passed as
+`breaker(id, options)` still outrank both blocks, which is what carries the two
+things HOCON cannot express: the `isFailure` predicate and the `random` seam.
+
+**`default` is reserved**, and the two readings of it coincide: it is the block
+every breaker inherits from *and* the id `breaker()` resolves with no argument,
+so a breaker named `default` reads exactly the block that configures it.  That
+is the reason the defaults sit in a named sub-block rather than at
+`actor-ts.circuit-breaker.*` directly — there, ids and leaves would share one
+namespace, and `breaker('random-factor')` would go looking for its settings
+inside a number.
+
+**`call-timeout` is a comment rather than a leaf** because omitting
+`callTimeoutMs` is what *disables* the per-call timeout, and `0` is refused by
+the validator — so "no deadline" is a state only a missing key can express.
+Writing it works normally; the block simply does not publish a default that
+would hand every config-resolved breaker a deadline a hand-built one lacks.
+
+**`backoff-factor` and `random-factor` ship neutral on purpose.**  `1.0` and
+`0.0` reproduce the flat, unjittered reopen window exactly, so the block is
+additive and turning either on is a change a deployment makes deliberately.
+With both set, the window is
+`reset-timeout × backoff-factor^(consecutive opens − 1)`, clamped to
+`max-reset-timeout` and then spread by `± random-factor`; it returns to
+`reset-timeout` as soon as a probe succeeds and the breaker closes.
+
+**`ignored-error-names` is checked before `isFailure`**, not after.  The list
+is the operator's half of the classifier and arrives from a config file, while
+the predicate is compiled in — if the predicate could overrule the list, the
+leaf would go inert for exactly the deployments that set it.
+
+These `<id>` paths take the id your code asks `breaker(id)` for, so they cannot
+be enumerated in `reference.conf`.
+
 ### `actor-ts.projection`
 
 | Key | Default | Purpose |
