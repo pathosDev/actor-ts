@@ -155,6 +155,65 @@ hour), this is real overhead.  Consider:
 For low-churn workloads (10K stable entities), the cost is
 negligible.
 
+## Pacing a restore
+
+Coming back is the expensive half, and by default it happens all at once.
+When a region is handed a shard it is shipped that shard's whole registry
+and spawns every entity in it in one pass — for every shard it is given.
+A node restart, or a rebalance after one node leaves, therefore opens one
+journal replay per remembered entity in the same tick.  With a few hundred
+entities that is fine.  With tens of thousands it is a thundering herd
+against the store, at the exact moment the cluster is least healthy.
+
+`entityRecoveryStrategy: 'constant-rate'` spreads those starts:
+
+```ts
+const shardingOptions = StartShardingOptions.create<DeviceCommand>()
+  .withTypeName('device')
+  .withEntityActor(DeviceEntity)
+  .withExtractEntityId((command) => command.deviceId)
+  .withRememberEntities()
+  .withEntityRecoveryStrategy('constant-rate')
+  .withEntityRecoveryConstantRateFrequencyMs(100)
+  .withEntityRecoveryConstantRateNumberOfEntities(5);
+
+cluster.sharding.start(shardingOptions);
+```
+
+or, for the whole deployment at once:
+
+```hocon
+actor-ts.sharding.entity-recovery {
+  strategy = constant-rate
+  constant-rate.frequency = 100ms
+  constant-rate.number-of-entities = 5
+}
+```
+
+Three properties are worth knowing before you reach for it.
+
+**The budget is region-wide.**  Five entities per 100 ms is five *on this
+node*, whatever number of shards the node happens to hold.  This is not
+how the equivalent Akka setting reads — there the rate is per shard, so a
+node holding 21 of 64 shards recovers 21 × the configured number per
+window.  Region-wide is the same choice `maxEntities` makes for the same
+reason: a bound the shard count multiplies is not a bound an operator
+picked.
+
+**It paces starts, not replays.**  Each spawned entity replays
+asynchronously, so a replay that outlasts the window still overlaps the
+next batch.  This key smooths the *arrival* rate; it does not cap how many
+recoveries are in flight, which is a persistence-side concern.
+
+**Nothing is shed.**  The backlog drains until every remembered entity is
+back, and a message routed to an entity still waiting in the queue creates
+it immediately — only the recovery burst waits, never live traffic.
+
+The default is `'all'`, the behaviour described at the top of this section.
+Pacing changes *when* an entity comes back, and how fast your journal can
+take the replays is a fact about your journal, so it is a decision to make
+rather than one to inherit.
+
 ## When to use it
 
 | Scenario | Use rememberEntities? |

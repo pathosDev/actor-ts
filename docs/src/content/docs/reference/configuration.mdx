@@ -98,6 +98,11 @@ actor-ts {
     buffer-size                = 100000   # region-wide; 0 = never buffer
     register-retry-interval    = 500ms
     shard-region-query-timeout = 5s
+    entity-recovery {                     # how remembered entities come back
+      strategy = all                      # all | constant-rate
+      constant-rate.frequency = 100ms
+      constant-rate.number-of-entities = 5   # region-wide, not per shard
+    }
   }
 }
 ```
@@ -566,6 +571,9 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.buffer-size` | `100000` | How many messages one region may hold **across all its shards** while their homes are unknown or handing off.  Past the cap the *newest* message is dropped to dead letters with its sender, so what is already queued keeps the order the caller sent it in.  **Mind the polarity against `max-entities` above**: here `0` means *never buffer — dead-letter immediately*, not "no cap". |
 | `sharding.register-retry-interval` | `500ms` | How often a region re-sends an unacknowledged registration to the coordinator.  Everything routed for the type buffers until the coordinator answers, so this is also how long a lost `Register` stalls it. |
 | `sharding.shard-region-query-timeout` | `5s` | Default wait for `sharding.shards()` and `sharding.shardRefFor()`.  An explicit `timeoutMs` argument still wins over it.  Unrelated to how long the region keeps a correlation for a cross-node `ask`, which is minutes on purpose. |
+| `sharding.entity-recovery.strategy` | `all` | How remembered entities come back after a region is handed a shard.  `all` starts every one at once — today's behaviour, and the reason the default did not move.  `constant-rate` paces them, see [pacing a remembered-entity restore](#pacing-a-remembered-entity-restore) below. |
+| `sharding.entity-recovery.constant-rate.frequency` | `100ms` | Gap between two paced recovery batches.  Ignored under `strategy = all`. |
+| `sharding.entity-recovery.constant-rate.number-of-entities` | `5` | Entities one paced batch starts.  **A region-wide budget, not a per-shard one** — the queue is fed by every shard the node owns, so this is entity starts per window *on this node*.  Ignored under `strategy = all`. |
 
 These apply to **every** sharded type started on the node.  They are read
 once per `sharding.start(...)` and layered under whatever that call passes
@@ -624,6 +632,40 @@ over it per process.
 `proxy` deliberately has no leaf.  It is per-node topology, not a
 deployment-wide fact: a second `start` disagreeing about it throws, and a
 `proxy = on` everyone shared would leave nothing hosting anything.
+
+#### Pacing a remembered-entity restore
+
+Under [`remember-entities`](/cluster/sharding/remember-entities/) a region that
+is handed a shard is shipped that shard's whole registry and, by default,
+spawns every entity in it at once — for every shard it is given.  A node
+restart or a rebalance therefore opens one journal replay per remembered
+entity, all in the same tick.  `constant-rate` spreads those starts:
+
+```hocon
+actor-ts.sharding.entity-recovery {
+  strategy = constant-rate
+  constant-rate.frequency = 100ms
+  constant-rate.number-of-entities = 5
+}
+```
+
+Two things about that budget are worth stating plainly, because both are easy
+to read the other way:
+
+- **It is region-wide.**  Five entities per 100 ms is five *on this node*, no
+  matter how many shards the node holds.  Read per shard the same numbers
+  would mean 5 × the shard count, which on a 64-shard cluster is not a bound
+  at all — the same conflation `max-entities` is kept region-wide to avoid.
+- **It paces starts, not replays.**  A replay is asynchronous, so one that
+  outlasts the window still overlaps the next batch.  What this key smooths is
+  the arrival rate; how many recoveries may be *in flight* is a persistence
+  concern and is not settable here.
+
+Nothing is shed: the backlog drains until every remembered entity is back, and
+a message routed to an entity still in the queue creates it immediately — only
+the recovery burst waits.  The default stays `all` because pacing changes when
+an entity comes back, and how fast a journal can take the replays is a fact
+about that journal rather than about sharding.
 
 A per-type setting therefore belongs in the builder; the config file is for
 the node-wide baseline you want to move between staging and production

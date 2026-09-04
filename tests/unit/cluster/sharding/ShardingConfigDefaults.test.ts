@@ -23,6 +23,11 @@ describe('readShardingOptionsFromConfig', () => {
         hand-off-timeout           = 30s
         acquire-retry-interval     = 1500ms
         shard-region-query-timeout = 9s
+        entity-recovery {
+          strategy = constant-rate
+          constant-rate.frequency = 250ms
+          constant-rate.number-of-entities = 12
+        }
       }
     `);
 
@@ -38,6 +43,9 @@ describe('readShardingOptionsFromConfig', () => {
       handOffTimeoutMs: 30_000,
       acquireRetryIntervalMs: 1_500,
       shardRegionQueryTimeoutMs: 9_000,
+      entityRecoveryStrategy: 'constant-rate',
+      entityRecoveryConstantRateFrequencyMs: 250,
+      entityRecoveryConstantRateNumberOfEntities: 12,
     });
   });
 
@@ -81,6 +89,13 @@ describe('readShardingOptionsFromConfig', () => {
       handOffTimeoutMs: 10_000,
       acquireRetryIntervalMs: 5_000,
       shardRegionQueryTimeoutMs: 5_000,
+      // `all` is today's behaviour, so wiring `entity-recovery` changes nothing
+      // for anyone who does not ask for pacing — and the two `constant-rate`
+      // bounds ship anyway, because an operator who cannot see them cannot know
+      // what switching the strategy would cost them.
+      entityRecoveryStrategy: 'all',
+      entityRecoveryConstantRateFrequencyMs: 100,
+      entityRecoveryConstantRateNumberOfEntities: 5,
     });
   });
 
@@ -116,6 +131,14 @@ describe('readShardingOptionsFromConfig', () => {
       handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
       acquireRetryInterval: 'actor-ts.sharding.acquire-retry-interval',
       shardRegionQueryTimeout: 'actor-ts.sharding.shard-region-query-timeout',
+      // Declared as three full dotted paths rather than one `entity-recovery`
+      // block root, and the difference is not cosmetic: `NoDeadConfigKeys`
+      // resolves a leaf through *any* config root above it, so a root-only
+      // entry would let all three pass with nothing reading them (#851).
+      entityRecoveryStrategy: 'actor-ts.sharding.entity-recovery.strategy',
+      entityRecoveryConstantRateFrequency: 'actor-ts.sharding.entity-recovery.constant-rate.frequency',
+      entityRecoveryConstantRateNumberOfEntities:
+        'actor-ts.sharding.entity-recovery.constant-rate.number-of-entities',
     });
   });
 });
@@ -164,6 +187,29 @@ describe('ShardRegion.settingsToConfig — the two passivation windows', () => {
 
     expect(config.passivationIdleMs).toBe(30_000);
     expect(config.shardPassivationIdleMs).toBe(600_000);
+  });
+
+  test('entity recovery defaults to the unpaced burst, with the two bounds resolved', () => {
+    // `all` is the pre-#851 behaviour, so a region built any way at all keeps
+    // it unless someone asks otherwise; the two `constant-rate` bounds resolve
+    // regardless, because the strategy can also arrive from the layer above.
+    const config = resolve({});
+
+    expect(config.entityRecoveryStrategy).toBe('all');
+    expect(config.entityRecoveryConstantRateFrequencyMs).toBe(100);
+    expect(config.entityRecoveryConstantRateNumberOfEntities).toBe(5);
+  });
+
+  test('an explicit recovery setting reaches the region config', () => {
+    const config = resolve({
+      entityRecoveryStrategy: 'constant-rate',
+      entityRecoveryConstantRateFrequencyMs: 250,
+      entityRecoveryConstantRateNumberOfEntities: 20,
+    });
+
+    expect(config.entityRecoveryStrategy).toBe('constant-rate');
+    expect(config.entityRecoveryConstantRateFrequencyMs).toBe(250);
+    expect(config.entityRecoveryConstantRateNumberOfEntities).toBe(20);
   });
 
   test('shardPassivationIdleMs = 0 keeps empty shards while entities still passivate', () => {

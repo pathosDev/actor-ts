@@ -524,9 +524,9 @@ export const ConfigKeys = {
    * Cluster-sharding defaults — `actor-ts.sharding.*`.  Read once per
    * started type by `ClusterSharding.start`, which layers them under the
    * explicit options; most reach the region, `rebalanceInterval` and
-   * `handOffTimeout` the per-type coordinator, and `shardRegionQueryTimeout`
-   * neither — it is the default `ClusterSharding.shards()` /
-   * `shardRefFor()` wait, held on this node.
+   * `acquireRetryInterval` and `handOffTimeout` the per-type coordinator, and
+   * `shardRegionQueryTimeout` neither — it is the default
+   * `ClusterSharding.shards()` / `shardRefFor()` wait, held on this node.
    *
    * `shardPassivationIdle` has no leaf in `reference.conf` on purpose — it
    * must stay absent for "unset means: follow `passivationIdle`" to be
@@ -552,6 +552,18 @@ export const ConfigKeys = {
    * `use-lease` switch, because nothing in the tree turns a boolean into a
    * `Lease` and a switch that silently produced none would advertise
    * split-brain protection that is not there (#847, #855, #859).
+   *
+   * The three `entityRecovery*` leaves pace how remembered entities come back
+   * after a region is handed a shard (#851).  They are declared here as full
+   * dotted paths rather than as an `entity-recovery` block root on purpose:
+   * `NoDeadConfigKeys`'s covering-accessor lookup falls back to *any* config
+   * root above a leaf, so a root-only entry would let all three pass whether
+   * or not a reader ever touched them.
+   *
+   * `entityRecoveryConstantRateNumberOfEntities` is a **region-wide** budget,
+   * like `bufferSize` and `maxEntities` above and for the same reason: the
+   * recovery queue is fed by every shard the region owns, so read per shard
+   * the key would silently mean `numberOfShards ×` what it says.
    */
   sharding: {
     numberOfShards: 'actor-ts.sharding.number-of-shards',
@@ -566,6 +578,10 @@ export const ConfigKeys = {
     handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
     acquireRetryInterval: 'actor-ts.sharding.acquire-retry-interval',
     shardRegionQueryTimeout: 'actor-ts.sharding.shard-region-query-timeout',
+    entityRecoveryStrategy: 'actor-ts.sharding.entity-recovery.strategy',
+    entityRecoveryConstantRateFrequency: 'actor-ts.sharding.entity-recovery.constant-rate.frequency',
+    entityRecoveryConstantRateNumberOfEntities:
+      'actor-ts.sharding.entity-recovery.constant-rate.number-of-entities',
   },
 
   /**

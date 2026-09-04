@@ -100,6 +100,11 @@ actor-ts {
     buffer-size                = 100000   # regionsweit; 0 = niemals puffern
     register-retry-interval    = 500ms
     shard-region-query-timeout = 5s
+    entity-recovery {                     # wie erinnerte Entities zurückkommen
+      strategy = all                      # all | constant-rate
+      constant-rate.frequency = 100ms
+      constant-rate.number-of-entities = 5   # regionsweit, nicht pro Shard
+    }
   }
 }
 ```
@@ -590,6 +595,9 @@ pro Consumer](/de/cache/in-memory/#ein-cache-pro-consumer) braucht.
 | `sharding.buffer-size` | `100000` | Wie viele Nachrichten eine Region **über alle ihre Shards zusammen** halten darf, solange deren Heimat unbekannt ist oder gerade übergeben wird.  Jenseits des Caps wird die *neueste* Nachricht mit ihrem Sender an die Dead Letters gegeben — was schon in der Queue steht, behält so die Reihenfolge des Senders.  **Achte auf die umgekehrte Polarität zu `max-entities` oben**: hier bedeutet `0` *niemals puffern — sofort Dead Letter*, nicht „kein Cap". |
 | `sharding.register-retry-interval` | `500ms` | Wie oft eine Region eine unbestätigte Registrierung erneut an den Koordinator schickt.  Alles, was für den Typ geroutet wird, puffert bis zur Antwort des Koordinators — das ist also zugleich die Dauer, die ein verlorenes `Register` den Typ blockiert. |
 | `sharding.shard-region-query-timeout` | `5s` | Default-Wartezeit für `sharding.shards()` und `sharding.shardRefFor()`.  Ein explizites `timeoutMs`-Argument sticht sie weiterhin.  Unabhängig davon, wie lange die Region eine Korrelation für ein knotenübergreifendes `ask` hält — das sind bewusst Minuten. |
+| `sharding.entity-recovery.strategy` | `all` | Wie erinnerte Entities zurückkommen, nachdem eine Region einen Shard bekommen hat.  `all` startet alle auf einmal — das heutige Verhalten, und der Grund, warum der Default nicht verschoben wurde.  `constant-rate` verteilt sie, siehe [Einen Remember-Entities-Restore drosseln](#einen-remember-entities-restore-drosseln) weiter unten. |
+| `sharding.entity-recovery.constant-rate.frequency` | `100ms` | Abstand zwischen zwei gedrosselten Recovery-Batches.  Unter `strategy = all` wirkungslos. |
+| `sharding.entity-recovery.constant-rate.number-of-entities` | `5` | Wie viele Entities ein gedrosselter Batch startet.  **Ein regionsweites Budget, keines pro Shard** — die Queue wird von jedem Shard des Nodes gespeist, das sind also Entity-Starts pro Fenster *auf diesem Node*.  Unter `strategy = all` wirkungslos. |
 
 Diese Keys gelten für **jeden** auf dem Node gestarteten Sharded Type.  Sie
 werden einmal pro `sharding.start(...)` gelesen und unter das gelegt, was
@@ -651,6 +659,44 @@ weiterhin.
 `proxy` hat bewusst keinen Key.  Es ist Topologie pro Node und keine
 deployment-weite Tatsache: ein zweites `start` mit abweichendem Wert wirft, und
 ein von allen geteiltes `proxy = on` ließe niemanden mehr etwas hosten.
+
+#### Einen Remember-Entities-Restore drosseln
+
+Unter [`remember-entities`](/de/cluster/sharding/remember-entities/) bekommt
+eine Region, der ein Shard zugeteilt wird, dessen komplettes Register
+zugeschickt und startet daraus per Default jede Entität auf einmal — und das
+für jeden Shard, den sie bekommt.  Ein Node-Neustart oder ein Rebalance öffnet
+damit einen Journal-Replay pro erinnerter Entität, alle im selben Tick.
+`constant-rate` verteilt diese Starts:
+
+```hocon
+actor-ts.sharding.entity-recovery {
+  strategy = constant-rate
+  constant-rate.frequency = 100ms
+  constant-rate.number-of-entities = 5
+}
+```
+
+Zwei Dinge an diesem Budget muss man deutlich sagen, weil beide sich leicht
+andersherum lesen lassen:
+
+- **Es gilt regionsweit.**  Fünf Entities pro 100 ms sind fünf *auf diesem
+  Node*, egal wie viele Shards der Node hält.  Pro Shard gelesen hießen
+  dieselben Zahlen 5 × die Shard-Anzahl, was auf einem 64-Shard-Cluster
+  überhaupt keine Schranke mehr ist — dieselbe Verwechslung, derentwegen
+  `max-entities` regionsweit gehalten wird.
+- **Es drosselt Starts, keine Replays.**  Ein Replay läuft asynchron; einer,
+  der länger dauert als das Fenster, überlappt also weiterhin den nächsten
+  Batch.  Was dieser Key glättet, ist die Ankunftsrate; wie viele Recoveries
+  gleichzeitig *laufen* dürfen, ist eine Sache der Persistenz und hier nicht
+  einstellbar.
+
+Nichts geht verloren: der Rückstand wird abgearbeitet, bis jede erinnerte
+Entität wieder da ist, und eine Nachricht an eine Entität, die noch in der
+Queue steht, erzeugt sie sofort — nur der Recovery-Schwall wartet.  Der Default
+bleibt `all`, weil Drosseln verändert, *wann* eine Entität zurückkommt, und wie
+schnell ein Journal die Replays verträgt eine Eigenschaft dieses Journals ist
+und keine des Shardings.
 
 Ein Setting für genau einen Typ gehört deshalb in den Builder; die
 Config-Datei ist für die node-weite Grundeinstellung, die du ohne Rebuild

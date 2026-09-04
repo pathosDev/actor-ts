@@ -663,6 +663,20 @@ actor-ts {
     buffer-size = 100000
     register-retry-interval = 500ms      # re-send an unacknowledged region Register
     shard-region-query-timeout = 5s      # default wait for shards() / shardRefFor()
+    # How remembered entities come back after a region is handed a shard.
+    #   all           -- every one at once, the moment the registry arrives.
+    #   constant-rate -- number-of-entities per frequency, ACROSS ALL SHARDS
+    #                    this region owns, until the backlog is drained.
+    # The budget is region-wide, like buffer-size and max-entities above: read
+    #   per shard it would silently mean number-of-shards times itself.
+    # It paces entity STARTS.  A replay is asynchronous, so one outlasting the
+    #   window still overlaps the next batch -- the number of replays in flight
+    #   is bounded in the persistence layer, not here.
+    entity-recovery {
+      strategy = all
+      constant-rate.frequency = 100ms
+      constant-rate.number-of-entities = 5
+    }
   }
 
   devtools {

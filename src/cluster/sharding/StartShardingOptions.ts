@@ -5,7 +5,7 @@ import type { AllocationStrategy } from './AllocationStrategy.js';
 import type { CoordinatorStateStore } from './CoordinatorState.js';
 import type { RememberEntitiesStore } from './RememberEntitiesStore.js';
 import { ShardingOptionsBuilder, ShardingOptionsValidator } from './ShardingOptions.js';
-import type { ShardingOptionsType } from './ShardingOptions.js';
+import type { EntityRecoveryStrategy, ShardingOptionsType } from './ShardingOptions.js';
 
 /**
  * Built-in default for {@link StartShardingOptionsType.shardRegionQueryTimeoutMs}
@@ -194,6 +194,9 @@ export type ShardingConfigDefaults = Pick<
   | 'handOffTimeoutMs'
   | 'acquireRetryIntervalMs'
   | 'shardRegionQueryTimeoutMs'
+  | 'entityRecoveryStrategy'
+  | 'entityRecoveryConstantRateFrequencyMs'
+  | 'entityRecoveryConstantRateNumberOfEntities'
 >;
 
 /**
@@ -238,6 +241,22 @@ export function readShardingOptionsFromConfig(config: Config): ShardingConfigDef
   }
   if (config.hasPath(keys.shardRegionQueryTimeout)) {
     out.shardRegionQueryTimeoutMs = config.getDuration(keys.shardRegionQueryTimeout);
+  }
+  if (config.hasPath(keys.entityRecoveryStrategy)) {
+    // Narrowed rather than cast: HOCON is untyped, so a misspelt strategy would
+    // otherwise reach `settingsToConfig` as a value the switch there does not
+    // know and be silently treated as `all` — the burst the operator was trying
+    // to remove.  Leaving an unrecognised literal in place is what lets
+    // `ShardingOptionsValidator` name the field and the bad value instead.
+    out.entityRecoveryStrategy = config.getString(keys.entityRecoveryStrategy) as EntityRecoveryStrategy;
+  }
+  if (config.hasPath(keys.entityRecoveryConstantRateFrequency)) {
+    out.entityRecoveryConstantRateFrequencyMs =
+      config.getDuration(keys.entityRecoveryConstantRateFrequency);
+  }
+  if (config.hasPath(keys.entityRecoveryConstantRateNumberOfEntities)) {
+    out.entityRecoveryConstantRateNumberOfEntities =
+      config.getInt(keys.entityRecoveryConstantRateNumberOfEntities);
   }
   return out;
 }

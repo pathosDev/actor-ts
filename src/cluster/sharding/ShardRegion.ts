@@ -5,12 +5,15 @@ import { Actor } from '../../Actor.js';
 import { ActorRef } from '../../ActorRef.js';
 import { ActorPath } from '../../ActorPath.js';
 import {
+  DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_FREQUENCY_MS,
+  DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_NUMBER_OF_ENTITIES,
+  DEFAULT_ENTITY_RECOVERY_STRATEGY,
   DEFAULT_NUM_SHARDS,
   DEFAULT_PASSIVATION_IDLE_MS,
   DEFAULT_REGISTER_RETRY_INTERVAL_MS,
   DEFAULT_SHARD_REGION_BUFFER_SIZE,
 } from './ShardingOptions.js';
-import type { ShardingOptionsType } from './ShardingOptions.js';
+import type { EntityRecoveryStrategy, ShardingOptionsType } from './ShardingOptions.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { DeadLetter, Terminated } from '../../SystemMessages.js';
@@ -79,9 +82,44 @@ export type ShardRegionConfig<TMessage> = {
   readonly bufferSize: number;
   /** How often an unacknowledged `Register` is re-sent, in ms (#849). */
   readonly registerRetryIntervalMs: number;
+  /** How remembered entities are brought back after a shard lands here (#851). */
+  readonly entityRecoveryStrategy: EntityRecoveryStrategy;
+  /** Gap between two paced recovery batches, in ms (#851). */
+  readonly entityRecoveryConstantRateFrequencyMs: number;
+  /** Entities one paced recovery batch starts, region-wide (#851). */
+  readonly entityRecoveryConstantRateNumberOfEntities: number;
   readonly cluster: Cluster;
   readonly localResolver: (path: string) => ActorRef | null;
 };
+
+/**
+ * One entity still owed a start by the paced recovery queue (#851).  The shard
+ * travels with the id because the queue spans every shard the region owns —
+ * that is what makes the batch size a node-wide budget rather than a per-shard
+ * one — and the shard has to be re-checked at drain time anyway, since a
+ * rebalance can take it away while its entities are still queued.
+ */
+type PendingEntityRecovery = {
+  readonly shardId: number;
+  readonly entityId: string;
+};
+
+/**
+ * "Drain one recovery batch" — the region telling itself, on a timer (#851).
+ *
+ * A class rather than a `sharding.`-kinded object, and deliberately so on both
+ * counts.  A remote frame arrives as decoded plain data, so nothing off the
+ * wire can ever be `instanceof` this and no peer can pace another node's
+ * recovery — the same argument that took `BackoffSupervisor`'s control ticks
+ * off a value every caller could reconstruct.  And the timer's callback only
+ * ever *sends* it, so the drain itself runs on the region's own turn rather
+ * than inside the scheduler, where it would read and mutate the queue
+ * concurrently with the mailbox (#952).
+ */
+class EntityRecoveryTick {}
+
+/** The only instance ever sent — it carries nothing, so one is enough. */
+const ENTITY_RECOVERY_TICK = new EntityRecoveryTick();
 
 /** What the region knows about a local entity — enough to decide passivation. */
 type EntityActivity = {
@@ -128,7 +166,9 @@ function isEntityEnvelope(message: unknown): message is EntityEnvelope {
  * afterwards, and everything in that gap would be dropped.
  */
 export class ShardRegion<TMessage = unknown>
-  extends Actor<TMessage | ShardingMessage | AuthenticatedShardingMessage | Terminated | Passivate> {
+  extends Actor<
+    TMessage | ShardingMessage | AuthenticatedShardingMessage | Terminated | Passivate | EntityRecoveryTick
+  > {
   private readonly shardHomes = new Map<number, string>(); // shardId → region path
   private readonly shardHomeNodes = new Map<number, NodeAddress>();
   private readonly localShards = new Set<number>();
@@ -190,6 +230,33 @@ export class ShardRegion<TMessage = unknown>
   private envelopeUnsubscribe: (() => void) | null = null;
   private passivationTimer: Cancellable | null = null;
   private registerTimer: Cancellable | null = null;
+  /**
+   * Remembered entities still owed a start under `constant-rate` (#851).
+   *
+   * **One queue for the whole region, not one per shard.**  A shard only ever
+   * sees its own slice, so a per-shard queue would make the configured batch
+   * mean `numShards ×` itself on the node — the conflation `maxEntities` and
+   * `bufferSize` are both kept region-wide to avoid, and the one the `Shard`
+   * class's own JSDoc warns about.  The region is the only place that sees
+   * every shard, so it is the only place the budget can be node-wide.
+   *
+   * Drained from {@link entityRecoveryHead} rather than with `shift`: a node
+   * handed thousands of remembered entities is exactly the case this exists
+   * for, and shifting each one off the front would make the drain quadratic in
+   * the size of the burst it is supposed to smooth.
+   */
+  private readonly entityRecoveryQueue: PendingEntityRecovery[] = [];
+  private entityRecoveryHead = 0;
+  /**
+   * Entity ids currently in {@link entityRecoveryQueue}, so a registry shipped
+   * twice does not queue the same entity twice.  Re-shipping is ordinary: a
+   * shard that dies outside a handoff asks for its registry again (#894), and
+   * a leader change re-registers the region.  A duplicate would be harmless at
+   * the shard, which skips an entity it already has, but it would still spend
+   * a slot in a batch whose whole purpose is to be small.
+   */
+  private readonly entityRecoveryQueued = new Set<string>();
+  private entityRecoveryTimer: Cancellable | null = null;
   /**
    * Set when the coordinator refused this region's `numShards` (#633).  A
    * refused region must stop hammering the register loop — the count is fixed
@@ -268,6 +335,16 @@ export class ShardRegion<TMessage = unknown>
       // absent from every region built any other way.
       bufferSize: s.bufferSize ?? DEFAULT_SHARD_REGION_BUFFER_SIZE,
       registerRetryIntervalMs: s.registerRetryIntervalMs ?? DEFAULT_REGISTER_RETRY_INTERVAL_MS,
+      // `all` keeps the burst every release before #851 had.  Pacing changes
+      // when an entity comes back, so defaulting it on would slow recovery for
+      // every deployment that never asked — and how fast a journal can take the
+      // replays is a fact about that journal, not about sharding.
+      entityRecoveryStrategy: s.entityRecoveryStrategy ?? DEFAULT_ENTITY_RECOVERY_STRATEGY,
+      entityRecoveryConstantRateFrequencyMs:
+        s.entityRecoveryConstantRateFrequencyMs ?? DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_FREQUENCY_MS,
+      entityRecoveryConstantRateNumberOfEntities:
+        s.entityRecoveryConstantRateNumberOfEntities
+        ?? DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_NUMBER_OF_ENTITIES,
       cluster,
       localResolver,
     };
@@ -340,6 +417,7 @@ export class ShardRegion<TMessage = unknown>
     this.passivationTimer?.cancel();
     this.registerTimer?.cancel();
     this.asksSweepTimer?.cancel();
+    this.entityRecoveryTimer?.cancel();
     this.tellCoordinatorTerminated();
   }
 
@@ -383,8 +461,13 @@ export class ShardRegion<TMessage = unknown>
   }
 
   override onReceive(
-    message: TMessage | ShardingMessage | AuthenticatedShardingMessage | Terminated | Passivate,
+    message:
+      | TMessage | ShardingMessage | AuthenticatedShardingMessage | Terminated | Passivate | EntityRecoveryTick,
   ): void {
+    if (message instanceof EntityRecoveryTick) {
+      this.onEntityRecoveryTick();
+      return;
+    }
     if (message instanceof AuthenticatedShardingMessage) {
       this.handleShardingMessage(message.message, message.peer);
       return;
@@ -1390,11 +1473,112 @@ export class ShardRegion<TMessage = unknown>
     // Pre-create entities we've been told about but haven't materialised yet.
     if (!this.localShards.has(message.shardId)) return;
     if (this.config.proxy) return;
+    if (this.config.entityRecoveryStrategy === 'constant-rate') {
+      this.queueEntityRecovery(message);
+      return;
+    }
     const startEntities: ShardMessage = {
       kind: 'sharding.StartEntities',
       entityIds: message.entityIds,
     };
     this.ensureShard(message.shardId).tell(startEntities);
+  }
+
+  /* -------------------------- Paced entity recovery --------------------- */
+
+  /**
+   * Hold a shard's remembered entities for the paced drain instead of starting
+   * them (#851).
+   *
+   * An entity that already exists is never queued: the region learns of every
+   * spawn through `EntityStarted` and stamps `entityActivity` for it, and one
+   * that traffic materialised on demand needs no recovery.  That is also the
+   * half of the contract that keeps pacing off the routing path — `route`
+   * still creates an entity the moment a message for it arrives, and only the
+   * recovery burst waits.
+   */
+  private queueEntityRecovery(message: RememberedEntities): void {
+    // Materialise the shard now rather than at drain time: ownership is what
+    // creates it (`onShardHome` does the same), and an empty shard that is
+    // owned must be addressable before anything is started in it.
+    this.ensureShard(message.shardId);
+    let queued = 0;
+    for (const entityId of message.entityIds) {
+      if (this.entityActivity.has(entityId)) continue;
+      if (this.entityRecoveryQueued.has(entityId)) continue;
+      this.entityRecoveryQueued.add(entityId);
+      this.entityRecoveryQueue.push({ shardId: message.shardId, entityId });
+      queued++;
+    }
+    if (queued === 0) return;
+    this.log.debug(
+      `[sharding] queued ${queued} remembered entities of shard ${message.shardId} `
+      + `in '${this.config.typeName}' for paced recovery `
+      + `(${this.config.entityRecoveryConstantRateNumberOfEntities} every `
+      + `${this.config.entityRecoveryConstantRateFrequencyMs}ms, region-wide)`,
+    );
+    // Run the first batch on this turn rather than one window from now.  The
+    // key configures a *rate*, and idling for a window before the first entity
+    // comes back is latency nobody asked for — most visibly where the whole
+    // registry fits in one batch and pacing should then cost nothing at all.
+    // A registry that arrives while the timer is already armed just joins the
+    // queue, so a region handed twenty shards still starts one batch, not
+    // twenty.
+    if (this.entityRecoveryTimer === null) this.onEntityRecoveryTick();
+  }
+
+  /**
+   * Arm the next batch, unless one is already armed.
+   *
+   * The timer is a one-shot re-armed by each drain rather than a fixed rate,
+   * so a region with nothing to recover — which is every region, almost all of
+   * the time — holds no timer at all.
+   */
+  private armEntityRecovery(): void {
+    if (this.entityRecoveryTimer) return;
+    this.entityRecoveryTimer = this.system.scheduler.scheduleOnceFunction(
+      this.config.entityRecoveryConstantRateFrequencyMs,
+      // Only ever *sends*: the drain reads and mutates the queue, so it has to
+      // run on the region's turn and not in the scheduler's callback (#952).
+      () => { this.self.tell(ENTITY_RECOVERY_TICK); },
+    );
+  }
+
+  /**
+   * Start one batch, then re-arm while anything is left.
+   *
+   * Two kinds of entry are dropped without spending a slot in the batch, and
+   * both are ordinary rather than exceptional: one whose shard has since moved
+   * away (a rebalance during a long recovery), and one that already exists
+   * because traffic reached it first.  Charging either to the budget would make
+   * the configured rate mean "at most N", which is not what it says.
+   */
+  private onEntityRecoveryTick(): void {
+    this.entityRecoveryTimer = null;
+    let started = 0;
+    while (
+      started < this.config.entityRecoveryConstantRateNumberOfEntities
+      && this.entityRecoveryHead < this.entityRecoveryQueue.length
+    ) {
+      const pending = this.entityRecoveryQueue[this.entityRecoveryHead++]!;
+      this.entityRecoveryQueued.delete(pending.entityId);
+      if (!this.localShards.has(pending.shardId)) continue;
+      if (this.entityActivity.has(pending.entityId)) continue;
+      const startEntity: ShardMessage = {
+        kind: 'sharding.StartEntity',
+        entityId: pending.entityId,
+      };
+      this.ensureShard(pending.shardId).tell(startEntity);
+      started++;
+    }
+    if (this.entityRecoveryHead >= this.entityRecoveryQueue.length) {
+      // Drained: release the backing array rather than letting it grow to the
+      // high-water mark of every burst the region ever saw.
+      this.entityRecoveryQueue.length = 0;
+      this.entityRecoveryHead = 0;
+      return;
+    }
+    this.armEntityRecovery();
   }
 
   /* ----------------------------- Passivation --------------------------- */
