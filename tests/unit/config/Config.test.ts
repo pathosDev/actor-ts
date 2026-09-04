@@ -204,3 +204,39 @@ describe('Config reads own properties only (#589)', () => {
     expect(({} as Record<string, unknown>).nestedPwned).toBeUndefined();
   });
 });
+
+// #589 hardened the config *key* path; this is the *value* path it left open.
+// The two keys below are the reason it matters rather than being caught
+// downstream: neither has an options validator between the parse and the
+// runtime effect, so the NaN used to arrive intact at a timer.
+describe('Config reads durations and sizes own-property-only (#785)', () => {
+  test('a poisoned unit on shutdown-drain-timeout throws instead of yielding NaN', () => {
+    const config = Config.parseString('actor-ts { system { shutdown-drain-timeout = 1constructor } }');
+    expect(() => config.getDuration('actor-ts.system.shutdown-drain-timeout')).toThrow(
+      /Unknown duration unit "constructor"/,
+    );
+  });
+
+  test('a poisoned unit on default-phase-timeout throws instead of yielding NaN', () => {
+    const config = Config.parseString(
+      'actor-ts { coordinated-shutdown { default-phase-timeout = 1constructor } }',
+    );
+    expect(() => config.getDuration('actor-ts.coordinated-shutdown.default-phase-timeout')).toThrow(
+      /Unknown duration unit "constructor"/,
+    );
+  });
+
+  test('a poisoned unit on a byte bound throws instead of disabling the cap', () => {
+    // `limit > NaN` is false, so a NaN cap compares false against everything.
+    const config = Config.parseString('actor-ts { cluster { remote { max-frame-bytes = 1constructor } } }');
+    expect(() => config.getBytes('actor-ts.cluster.remote.max-frame-bytes')).toThrow(
+      /Unknown size unit "constructor"/,
+    );
+  });
+
+  test('a legitimate duration and size are unaffected', () => {
+    const config = Config.parseString('d = 2s\nsz = 4 KiB');
+    expect(config.getDuration('d')).toBe(2_000);
+    expect(config.getBytes('sz')).toBe(4096);
+  });
+});
