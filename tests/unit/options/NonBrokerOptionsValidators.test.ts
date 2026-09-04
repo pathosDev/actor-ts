@@ -43,6 +43,9 @@ import {
 } from '../../../src/delivery/ProducerControllerOptions.js';
 import {
   ConsumerControllerOptionsValidator,
+  DEFAULT_MAX_OUT_OF_ORDER,
+  DEFAULT_MAX_PRODUCERS,
+  DEFAULT_PRODUCER_IDLE_TTL_MS,
   type ConsumerControllerOptionsType,
 } from '../../../src/delivery/ConsumerControllerOptions.js';
 import {
@@ -601,18 +604,44 @@ describe('ConsumerControllerOptionsValidator', () => {
     expect(() => check({ producerIdleTtlMs: Number.NaN })).toThrow(/producerIdleTtlMs/);
   });
 
-  test('accepts Infinity on both bounds — it is the documented opt-out', () => {
-    // `Infinity` is the value that says "no cap" / "no sweep", so the generic
-    // positiveInt / positiveNumber helpers cannot be used: they reject it.
+  test('rejects a maxOutOfOrder that is not a positive integer', () => {
+    expect(() => check({ maxOutOfOrder: 0 })).toThrow(OptionsError);
+    expect(() => check({ maxOutOfOrder: -1 })).toThrow(/maxOutOfOrder/);
+    expect(() => check({ maxOutOfOrder: 2.5 })).toThrow(/maxOutOfOrder/);
+    expect(() => check({ maxOutOfOrder: Number.NaN })).toThrow(/maxOutOfOrder/);
+  });
+
+  test('accepts Infinity on all three bounds — it is the documented opt-out', () => {
+    // `Infinity` is the value that says "no cap" / "no sweep" / "retain every
+    // out-of-order sequence", so the generic positiveInt / positiveNumber
+    // helpers cannot be used: they reject it.
     expect(() => check({ maxProducers: Infinity })).not.toThrow();
     expect(() => check({ producerIdleTtlMs: Infinity })).not.toThrow();
+    expect(() => check({ maxOutOfOrder: Infinity })).not.toThrow();
   });
 
   test('accepts the built-in defaults and an unset options object', () => {
-    expect(() => check({ maxProducers: 1_024, producerIdleTtlMs: 300_000 })).not.toThrow();
+    expect(() => check({
+      maxProducers: DEFAULT_MAX_PRODUCERS,
+      producerIdleTtlMs: DEFAULT_PRODUCER_IDLE_TTL_MS,
+      maxOutOfOrder: DEFAULT_MAX_OUT_OF_ORDER,
+    })).not.toThrow();
     // Every helper is a no-op on `undefined`; `handler` is required rather
     // than bounded, and asserting it at construction is #1234.
     expect(() => check({})).not.toThrow();
+  });
+
+  test('the shipped defaults are the ones the validator would accept', () => {
+    // Reading the constants rather than repeating their values is what keeps
+    // this case honest: a default changed to something its own validator
+    // rejects would otherwise pass here forever.
+    expect(Number.isInteger(DEFAULT_MAX_PRODUCERS) && DEFAULT_MAX_PRODUCERS >= 1).toBe(true);
+    expect(Number.isInteger(DEFAULT_MAX_OUT_OF_ORDER) && DEFAULT_MAX_OUT_OF_ORDER >= 1).toBe(true);
+    // The out-of-order cap has one more constraint than the map cap: reaching
+    // it stalls a producer, so it has to sit above what a framework producer
+    // can push past an open gap — `windowSize - 1`, with the default window
+    // of 16.
+    expect(DEFAULT_MAX_OUT_OF_ORDER).toBeGreaterThan(16);
   });
 });
 
