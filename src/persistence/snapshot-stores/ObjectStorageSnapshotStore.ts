@@ -97,6 +97,24 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     integrity: true,
   };
 
+  /**
+   * Resolved from this store's own `encryption` config, per `persistenceId`
+   * because a resolver may encrypt one entity and not the next (#782).  The
+   * same call `save` and `loadFrom` make, with the same fallback, so the
+   * answer cannot drift from what the codec actually does.
+   *
+   * Per-call options are deliberately not consulted: they are not this
+   * store's configuration, they win over it where they appear, and the caller
+   * that needs to weigh them — `CachedSnapshotStore` — already holds them.
+   */
+  encryptsAtRest(persistenceId: string): boolean {
+    return resolveEncryption(
+      this.encryption,
+      persistenceId,
+      { mode: DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE },
+    ).mode !== 'none';
+  }
+
   /** Identity is the backend's too — bucket/directory = database (#1358). */
   async storageIdentity(): Promise<string> {
     if (this.backend.storageIdentity === undefined) {

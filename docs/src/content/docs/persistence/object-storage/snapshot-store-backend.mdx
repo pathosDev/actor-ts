@@ -253,10 +253,13 @@ If the snapshots are **encrypted**, read
 [Security — the cache holds plaintext](/persistence/snapshot-stores/cached-snapshot-store/#security--the-cache-holds-plaintext)
 before wiring this up.  What the cache holds is the decoded state,
 so the composition puts a plaintext copy of every recently active
-entity in the cache while the bucket stays encrypted.  The
-decorator refuses to cache an encrypted load until
-`withAllowPlaintextCache(true)` says the cache is as protected as
-the bucket.
+entity in the cache while the bucket stays encrypted.  This store
+declares its own `encryption` config through
+`encryptsAtRest(persistenceId)`, so the decorator refuses to cache
+those loads — whether the encryption is configured here with
+`withEncryption(...)` or per call by an actor's `encryption()` hook
+— until `withAllowPlaintextCache(true)` says the cache is as
+protected as the bucket.
 
 ## Per-actor overrides
 
