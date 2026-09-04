@@ -17,6 +17,26 @@ export type CachedSnapshotStoreOptionsType = {
   readonly ttlMs?: number;
   /** Key prefix (default: `'snap:'`) prevents collisions in shared caches. */
   readonly keyPrefix?: string;
+  /**
+   * Acknowledge that the cache may hold the **plaintext** of state the
+   * wrapped store encrypts at rest (#782).  Default `false`.
+   *
+   * The decorator caches what `SnapshotStore.loadLatest` returns, which is
+   * the decoded domain state — decompressed and, for the object-storage
+   * stores, decrypted.  Encrypting a bucket and then caching its contents in
+   * a Redis that a different trust boundary can read gives the state away
+   * without anyone touching the bucket or the master key, and a cache
+   * snapshot on disk keeps giving it away afterwards.
+   *
+   * So a `loadLatest` that carries `encryption` with a mode other than
+   * `'none'` is served straight from the wrapped store, uncached, with one
+   * warning — unless this flag says the operator has looked at the cache and
+   * decided it is as protected as the bucket.  Setting it restores the
+   * cold-start win and is a perfectly reasonable answer for an in-process
+   * `InMemoryCache`, or for a Redis inside the same trust boundary; it is
+   * the *silent* second copy the flag exists to prevent.
+   */
+  readonly allowPlaintextCache?: boolean;
 };
 
 /**
@@ -47,6 +67,15 @@ export class CachedSnapshotStoreOptionsBuilder extends OptionsBuilder<CachedSnap
   /** Key prefix (default: `'snap:'`) — prevents collisions in shared caches. */
   withKeyPrefix(keyPrefix: string): this {
     return this.set('keyPrefix', keyPrefix);
+  }
+
+  /**
+   * Acknowledge that the cache may hold the plaintext of state the wrapped
+   * store encrypts at rest, and cache it anyway (#782).  Default `false`,
+   * which serves encrypted-state loads straight from the wrapped store.
+   */
+  withAllowPlaintextCache(allowPlaintextCache: boolean): this {
+    return this.set('allowPlaintextCache', allowPlaintextCache);
   }
 }
 

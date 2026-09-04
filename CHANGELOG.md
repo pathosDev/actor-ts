@@ -465,6 +465,98 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **BREAKING — `websocket()` routes require a same-origin upgrade by
+  default, and the client keepalive stops pretending (#756, #751).**
+
+  `requireSameOrigin` flips from `false` to `true`, so a cross-origin
+  browser upgrade is rejected with 403 before the handshake unless the route
+  names the origin or opts out. A non-browser client is unaffected: a Node,
+  Bun or Deno `WebSocket`, and every server-to-server dialer, sends no
+  `Origin` header at all, and a missing `Origin` stays allowed — Cross-Site
+  WebSocket Hijacking needs a browser. One subtler consequence is that a
+  route which previously set only `allowedOrigins` now also admits its own
+  host, since the two rules combine.
+
+  The option is documented for the first time in both languages, which is
+  the part that made this worth doing as one change rather than two: it
+  shipped a month ago under #566 and flipping the default of an option
+  nobody had written up is not a defensible move. The canonical example
+  binds loopback instead of the wildcard address, and so does the
+  `websocket()` JSDoc snippet — which propagated the pattern to every
+  developer who read the API before the example (#756).
+
+  Separately, the client's `pingIntervalMs` keepalive no longer arms a timer
+  that provably sends nothing. It called `ws.ping?.()`, a method the WHATWG
+  `WebSocket` on Node and Deno does not have, so the documented
+  application-level keepalive was a silent no-op on two of the three
+  supported runtimes while a blackholed connection kept reporting
+  `connected`. A new overridable `keepAliveFrame()` hook supplies the
+  payload the framework cannot invent, the native `ping()` stays the
+  fallback where a runtime has one, and an interval that can send nothing
+  now logs one warning at connect time and starts no timer (#751).
+
+  **Migration.** A route whose page is served from a different origin than
+  the socket must say so with `withAllowedOrigins([...])`, or restore the
+  old behaviour with `withRequireSameOrigin(false)`; a route that wants its
+  allowlist alone needs the latter too. For the keepalive, override
+  `keepAliveFrame()` to return the heartbeat your protocol uses, and set
+  `idleTimeoutMs` so a connection dropped anyway is still detected.
+
+- **BREAKING — `retry` defaults to a finite ceiling, and its clamp no longer
+  has a hole (#771, #782).**
+
+  `maxDelayMs` defaulted to `Infinity`. The hot-loop hazard the issue
+  reports was already closed by the 32-bit clamp, but the infinite default
+  left a second defect nobody had found: with a jitter factor of 1 the
+  jitter produced `NaN`, clamping `NaN` yields `NaN`, and the
+  delay-greater-than-zero check then skipped the sleep entirely — so retry
+  busy-looped. The default is now 60 000 ms and the clamp is applied before
+  the jitter as well as after, where a finite base can never produce `NaN`.
+  The deferral of the finite default rested solely on it being breaking,
+  which pre-1.0 permits (#771).
+
+  `CachedSnapshotStore` also stops caching plaintext behind an operator's
+  back. The decorator writes the fully decoded state into a caller-owned
+  cache, so a shared Redis or Memcached held a second, unencrypted copy of
+  state the wrapped store encrypts at rest — on three documentation surfaces
+  that actively recommend exactly that composition. The class now documents
+  the exposure, and a per-call encryption option arriving with the
+  plaintext-cache flag unset is refused rather than forwarded blind. The
+  issue's own headline fix is not implementable at this boundary and the
+  commit says so: the decorator programs against a store interface whose
+  load returns an already-decoded snapshot, so the encoded bytes never cross
+  it (#782).
+
+  **Migration.** A caller relying on an uncapped multi-day retry wait must
+  now set `maxDelayMs` explicitly. A `CachedSnapshotStore` wrapping an
+  encrypting store needs `withAllowPlaintextCache(true)` to keep its
+  previous behaviour, which is the acknowledgement the guard exists to
+  demand.
+
+- **A custom `identity` survives a CRDT decode** (#766).
+
+  Threading the function into `fromJSON` — which is what the issue title
+  asks for — would not have fixed this, and the maintainer's own scope note
+  on the issue is why: `ORSet.fromJSON` filed each element under the key
+  that came off the *wire*, so a custom identity governed only future
+  operations while the already-gossiped element stayed a separate entry
+  forever. `ORSet`, `ORMap`, `GCounterMap` and `LWWMap` now re-file each
+  decoded entry under the identity, and `decodeCrdt` forwards one to every
+  kind that has an element identity.
+
+  The identity is derived from the `factory` that `update` already carries
+  rather than from new handle API — `DistributedDataHandle` is re-exported
+  by no entry point (#1307), so a `register()` method would have landed on a
+  type consumers cannot name. `Crdt` gains an optional `customIdentity()`
+  accessor, the extension learns one per live key, and a key materialised
+  before the application first named its identity — a gossip that arrived
+  first, or a durable reload — is re-keyed on that first `update`.
+  `DurableDistributedDataStore.load` takes an optional per-key identity
+  lookup, which neither the issue nor its fix plan named and whose omission
+  would have re-broken every key on the next restart. Decoding with no
+  identity supplied is unchanged, byte for byte.
+
+
 - **The supervisor's control ticks are private symbols, and the system queue
   documents its own bound** (#770, #794).
 
@@ -748,6 +840,37 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`fundamentals/throttling`, EN + DE).
 
 ### Security
+
+- **BREAKING — The chat example refuses to start without a session secret
+  (#791).**
+
+  It fell back to a secret checked into this repository when
+  `CHAT_TOKEN_SECRET` was unset, so anyone reading the source could mint a
+  session token for any user of a running demo. The whole mitigation was one
+  warning line, which is exactly the shape a developer copying the example
+  carries into their own service. The session store now throws at
+  construction unless the secret is present or the demo fallback is
+  explicitly opted into, and the example README no longer documents the
+  warn-and-continue behaviour it used to have.
+
+- **The zstd fallback path is reachable from a test at last** (#780).
+
+  The resolver prefers native zstd, then the runtime global, then the
+  optional `fzstd` peer — and a candidate is accepted only by being called
+  against a canary frame, so on Bun and Node the native path always wins and
+  the peer arm executed on no runtime any gate exercised. That arm is the
+  only zstd read path on a runtime without native zstd — Deno, where
+  `node:zlib` exports both symbols and calling either throws — so a
+  reordering or an early return could have removed the fallback entirely, or
+  given up the allocation-time output bound #580 relies on, with the whole
+  suite, the smoke matrix and the coverage badge all green. It now has an
+  internal seam and its position in the resolution order is gated. No
+  behaviour, API or configuration change.
+
+  The rest of #780 — eighteen optional peers said to have no coverage — was
+  already closed by the two-context dependency design and its guards; the
+  arithmetic in the issue no longer reproduces.
+
 
 - **Bounded what the decoders will descend, and published the ceilings as a
   new `actor-ts.serialization.read-constraints` block** (#880).  The JSON

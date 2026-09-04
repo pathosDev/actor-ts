@@ -125,6 +125,48 @@ s.add('node-b', { sku: 'book-1', price: 12 });
 Die Identity-Funktion bestimmt die **Deduplikation**; die
 Tag-Mechanik arbeitet pro Add unabhängig davon.
 
+#### Identität innerhalb von DistributedData
+
+Eine Identity-Funktion ist ein Closure und reist deshalb nie über
+die Leitung.  Eine Replika, die einen Key aus dem Gossip eines
+Peers, aus einer Quorum-Antwort oder aus ihrem Durable-Record
+materialisiert, muss also *gesagt bekommen*, welche sie nehmen
+soll — und der einzige Ort, an dem dieses Wissen liegt, ist die
+`factory`, die du `update` ohnehin schon übergibst:
+
+```ts
+const emptyCart = () => ORSet.empty<CartItem>({ identity: (i) => i.sku });
+dd.update('cart-42', emptyCart, (c) => c.add(dd.selfReplicaId(), item));
+```
+
+Übergib dieselbe Factory bei jedem `update` für einen Key, und
+die Replika legt jeden Wert, den sie für diesen Key dekodiert,
+unter deiner Identität ab — einschließlich Einträgen, die ein
+Peer unter der Standard-Identität geschrieben hat.  Die werden
+umgeschlüsselt und in den Eintrag gemergt, zu dem sie gehören,
+statt als Duplikate daneben stehen zu bleiben.
+
+Zwei Grenzen sind es wert, bekannt zu sein (#766):
+
+- **Das erste `update` für einen Key ist das, was sie beibringt.**
+  Ein Key, der per Gossip ankam oder nach einem Neustart aus
+  einem `durableStore` zurückkam, bleibt bis dahin auf der
+  Standard-Identität — ein blankes `dd.get('cart-42')` direkt
+  nach dem Start kann dir also ein Set liefern, das per
+  `JSON.stringify` dedupliziert.  Setz das `update` vorher ab,
+  wenn das eine Rolle spielt.
+- **Verschachtelung endet nach einer Ebene.**  Eine `ORMap` stellt
+  ihre eigene Key-Identität wieder her, die CRDTs *in* ihr aber
+  nicht: weder der Frame noch ein leeres Template sagt, welche
+  ihre sein soll.
+
+Beachte außerdem: deine Identity-Funktion läuft jetzt auch über
+Werte, die ein Peer geschickt hat, nicht nur über solche, die
+dein Prozess gebaut hat.  Ein Callback, der die Form seines
+Arguments voraussetzt, sieht Daten, die er nicht erzeugt hat; ein
+Callback, der wirft, macht aus dem Frame einen verworfenen Wert
+statt eines akzeptierten.
+
 ## Auswahl zwischen beiden
 
 | Frage | Typ |

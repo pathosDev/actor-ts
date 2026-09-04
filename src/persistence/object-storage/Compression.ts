@@ -224,6 +224,70 @@ const zstdCompressLazy: Lazy<Promise<ZstdCompressFunction>> = Lazy.of<Promise<Zs
 });
 
 /**
+ * The two NATIVE zstd decoders the read path probes before falling through to
+ * `fzstd`, each `undefined` on a runtime that does not carry it.  Reading both
+ * through one value is what gives the fallback arm a seam — see
+ * {@link setNativeZstdDecompressCandidatesOverride}.
+ */
+type NativeZstdDecompressCandidates = {
+  /**
+   * `zlib.zstdDecompressSync`.  The only candidate that takes an
+   * allocation-time bound, which is why it is probed first (#580).
+   */
+  readonly nodeZlib?: (input: Uint8Array, options?: { maxOutputLength?: number }) => Uint8Array;
+  /** `Bun.zstdDecompressSync`.  Takes no options, so it can carry no bound. */
+  readonly bunGlobal?: (input: Uint8Array) => Uint8Array;
+};
+
+let nativeZstdDecompressCandidatesOverride: NativeZstdDecompressCandidates | null = null;
+
+/**
+ * @internal Test-only seam: force what the zstd read resolver sees as this
+ * runtime's native decoders, or `null` to restore real detection.  Pass `{}`
+ * to model a runtime with no native zstd at all.
+ *
+ * That is the only way to reach the `fzstd` arm below from a test, and the arm
+ * needs reaching: it is the ONLY zstd read path on a runtime without native
+ * zstd, which AGENTS.md lists as supported, yet on both Bun and Node
+ * `node:zlib` decodes the canary and enforces the bound, so resolution returns
+ * two tiers above it.  A `return` added higher up, or a reordering, would
+ * therefore break zstd object-storage reads on such a runtime with `bun test`,
+ * the smoke matrix and the coverage badge all green (#780).
+ *
+ * The seam SUPPRESSES candidates and never supplies a decoder of its own — the
+ * `fzstd` arm still imports the real package — so a test drives the production
+ * path rather than a rehearsal of it.
+ *
+ * Deliberately not re-exported from any barrel, exactly like
+ * `setRuntimeOverride`: it is an internal seam, and suppressing `node:zlib` in
+ * production would give up the allocation-time bound that preferring it exists
+ * to buy.  {@link resetCompressionCache} clears it, and the memoised
+ * resolution has to be dropped along with it for either to take effect.
+ */
+export function setNativeZstdDecompressCandidatesOverride(
+  candidates: NativeZstdDecompressCandidates | null,
+): void {
+  nativeZstdDecompressCandidatesOverride = candidates;
+}
+
+/** Read both native candidates out of the runtime — or out of the test override. */
+async function loadNativeZstdDecompressCandidates(): Promise<NativeZstdDecompressCandidates> {
+  if (nativeZstdDecompressCandidatesOverride !== null) return nativeZstdDecompressCandidatesOverride;
+  let nodeZlib: NativeZstdDecompressCandidates['nodeZlib'];
+  try {
+    const zlibName = 'node:zlib';
+    const zlib = (await import(zlibName)) as {
+      zstdDecompressSync?: (input: Uint8Array, options?: { maxOutputLength?: number }) => Uint8Array;
+    };
+    nodeZlib = zlib.zstdDecompressSync;
+  } catch { /* node:zlib unavailable — leave it unset and let Bun's global answer */ }
+  const bun = (globalThis as { Bun?: {
+    zstdDecompressSync?: (input: Uint8Array) => Uint8Array;
+  } }).Bun;
+  return { nodeZlib, bunGlobal: bun?.zstdDecompressSync };
+}
+
+/**
  * zstd DECOMPRESS resolution — `node:zlib` first, then Bun's global, then
  * the pure-JS `fzstd` peer-dep so a runtime without native zstd can still
  * READ zstd bodies written elsewhere.  Note fzstd caps the back-reference
@@ -249,26 +313,18 @@ const zstdCompressLazy: Lazy<Promise<ZstdCompressFunction>> = Lazy.of<Promise<Zs
  * decoder for nothing.
  */
 const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFunction>> = Lazy.of<Promise<ZstdDecompressFunction>>(async () => {
+  const candidates = await loadNativeZstdDecompressCandidates();
   let uncappedFallback: ZstdDecompressFunction | undefined;
 
-  try {
-    const zlibName = 'node:zlib';
-    const zlib = (await import(zlibName)) as {
-      zstdDecompressSync?: (input: Uint8Array, options?: { maxOutputLength?: number }) => Uint8Array;
-    };
-    const decompressFunction = zlib.zstdDecompressSync;
-    if (decompressFunction && decodesZstdCanary((i) => decompressFunction(i))) {
-      const capped = async (i: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array> =>
-        decompressFunction(i, capApplies(maxOutputBytes) ? { maxOutputLength: maxOutputBytes } : undefined);
-      if (enforcesZstdOutputCap(decompressFunction)) return capped;
-      uncappedFallback = capped;
-    }
-  } catch { /* node:zlib unavailable — fall through to Bun's global */ }
+  const nodeZlibDecompress = candidates.nodeZlib;
+  if (nodeZlibDecompress && decodesZstdCanary((i) => nodeZlibDecompress(i))) {
+    const capped = async (i: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array> =>
+      nodeZlibDecompress(i, capApplies(maxOutputBytes) ? { maxOutputLength: maxOutputBytes } : undefined);
+    if (enforcesZstdOutputCap(nodeZlibDecompress)) return capped;
+    uncappedFallback = capped;
+  }
 
-  const bun = (globalThis as { Bun?: {
-    zstdDecompressSync?: (input: Uint8Array) => Uint8Array;
-  } }).Bun;
-  const bunDecompress = bun?.zstdDecompressSync;
+  const bunDecompress = candidates.bunGlobal;
   if (bunDecompress && decodesZstdCanary(bunDecompress)) {
     // No options parameter to pass a bound through, so `maxOutputBytes` is
     // dropped here and only the post-decode assertion remains.
@@ -292,9 +348,12 @@ const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFunction>> = Lazy.of<Promis
     // `tests/unit/ci/OptionalPeerModuleShapes.test.ts` decodes both the
     // canary frame above and a frame this file's own compress path wrote,
     // which is the interoperability the fallback actually promises.
-    // Reaching this BRANCH from a test is a separate problem and still open:
-    // on Bun and Node `node:zlib` wins the canary, so the resolver returns
-    // before it gets here and forcing it would need a seam.
+    //
+    // Reaching this BRANCH was the separate problem, and the seam it needed is
+    // `setNativeZstdDecompressCandidatesOverride`: on Bun and Node `node:zlib`
+    // wins the canary, so nothing but suppressing the native candidates gets
+    // the resolver down here.  `ZstdDecompressResolution.test.ts` does that and
+    // reads a natively-written frame back through the real package (#780).
     return async (i: Uint8Array): Promise<Uint8Array> => fzstd.decompress(i);
   } catch (e) {
     throw new Error(
@@ -412,11 +471,19 @@ export async function probeCompressionAvailability(algorithm: CompressionAlgo): 
     .exhaustive();
 }
 
-/** Test hook — clear cached lazy implementations. */
+/**
+ * Test hook — clear cached lazy implementations.
+ *
+ * Also drops any {@link setNativeZstdDecompressCandidatesOverride}, mirroring
+ * `Lazy.reset()`, which clears its own override for the same reason: bun runs
+ * every test file in one process, so a suppressed `node:zlib` left behind here
+ * would silently move an unrelated suite onto the pure-JS read path.
+ */
 export function resetCompressionCache(): void {
   gzipLazy.reset();
   zstdCompressLazy.reset();
   zstdDecompressLazy.reset();
+  nativeZstdDecompressCandidatesOverride = null;
 }
 
 /* ------------------------------- levels --------------------------------- */

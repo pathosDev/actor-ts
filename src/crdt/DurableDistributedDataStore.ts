@@ -1,5 +1,5 @@
 import type { DurableStateStore } from '../persistence/DurableStateStore.js';
-import type { Crdt, ReplicaId } from './Crdt.js';
+import type { Crdt, CrdtIdentityFunction, ReplicaId } from './Crdt.js';
 import { decodeCrdt, type CrdtJson } from './DistributedData.js';
 
 /**
@@ -37,8 +37,25 @@ export class DurableDistributedDataStore {
    * Load the persisted state, decode each entry into a `Crdt<any>`,
    * and return the materialised `Map<key, Crdt>`.  Returns an empty
    * Map if nothing is stored yet.
+   *
+   * `identityFor` supplies the element identity to decode a key under — the
+   * record carries the elements but not the closure that says how to
+   * deduplicate them, so without it every set- and map-shaped value comes
+   * back on `JSON.stringify` (#766).  A direct caller who knows its own
+   * keys should pass one.
+   *
+   * **What it does not fix, and what does.**  `DistributedDataActor` passes
+   * its per-key registry here, and at `preStart` that registry is empty for
+   * every key — it is learned from `update`, and no update has run yet.  So
+   * for the extension this parameter is a door, not the repair: a reloaded
+   * key is put right by the re-key on its first `update`, which is where the
+   * factory finally names an identity.  The parameter still matters, because
+   * the alternative is a decode that *cannot* be told even when the caller
+   * knows.
    */
-  async load(): Promise<Map<string, Crdt<any>>> {
+  async load(
+    identityFor: (key: string) => CrdtIdentityFunction | undefined = () => undefined,
+  ): Promise<Map<string, Crdt<any>>> {
     const option = await this.store.load<DurableDDataPayload>(this.persistenceId);
     if (option.isNone()) return new Map();
     const out = new Map<string, Crdt<any>>();
@@ -51,7 +68,7 @@ export class DurableDistributedDataStore {
     // failure is swallowed as a warning upstream, so a single undecodable
     // entry silently wipes the whole durable replica (#725).
     for (const [key, json] of Object.entries(option.value.state.entries)) {
-      out.set(key, decodeCrdt(json));
+      out.set(key, decodeCrdt(json, identityFor(key)));
     }
     this.revision = option.value.revision;
     return out;

@@ -31,7 +31,7 @@ type RetryOptions = {
   attempts:        number;     // total including initial call (>= 1)
   delayMs?:        number;     // base delay between attempts
   factor?:         number;     // multiplier for exponential backoff (default 1)
-  maxDelayMs?:     number;     // ceiling for any individual delay
+  maxDelayMs?:     number;     // ceiling for any individual delay (default 60_000)
   randomFactor?:   number;     // jitter fraction in [0, 1] (default 0 — none)
   random?:         () => number;                   // override Math.random in tests
   shouldRetry?:    (err: Error, attempt: number) => boolean;
@@ -52,7 +52,7 @@ Four knobs cooperate to control the delay between attempts:
 | --- | --- |
 | `delayMs` | Base delay between attempts.  Default `0` (no wait). |
 | `factor` | Multiplier per attempt.  Delay on attempt N is `delayMs × factor^(N-1)`.  Default `1` (constant). |
-| `maxDelayMs` | Upper bound on any single delay.  Default unbounded — but never past the 32-bit timer limit, which `retry` clamps to unconditionally (see the overflow note at the end of this page). |
+| `maxDelayMs` | Upper bound on any single delay.  Default `60_000` (one minute).  Pass `Number.POSITIVE_INFINITY` for an unbounded schedule — then only the 32-bit timer limit is left, which `retry` clamps to unconditionally (see the overflow note at the end of this page). |
 | `randomFactor` | Jitter fraction in `[0, 1]`.  The delay is spread to `delay × (1 ± randomFactor)`.  Default `0` (no jitter). |
 
 ```ts
@@ -64,7 +64,25 @@ retry(factory, { attempts: 6, delayMs: 200, factor: 2, maxDelayMs: 5_000 });
 
 // Fibonacci-ish: ad-hoc via factor=1.6:
 retry(factory, { attempts: 5, delayMs: 100, factor: 1.6 });
+
+// Explicitly unbounded — every delay is delayMs × factor^(N-1), up to
+// the 32-bit timer limit:
+retry(factory, { attempts: 20, delayMs: 200, factor: 2, maxDelayMs: Number.POSITIVE_INFINITY });
 ```
+
+### The default ceiling
+
+`maxDelayMs` defaults to **60 000 ms**, so an exponential backoff
+flattens at one minute per attempt unless you say otherwise.  It
+used to default to infinity, on the reasoning that a caller who
+wants a ceiling asks for one — but what an omitted cap plus
+`factor > 1` actually converges on is ~24.9 days per attempt (the
+timer clamp, below), and nobody configures that on purpose.  A
+default is what happens when the question was never asked, so it
+should be the answer that is sane when nobody thought about it.
+
+Raise it, lower it, or opt back out with
+`Number.POSITIVE_INFINITY` — the option itself has not changed.
 
 ## Jitter — `randomFactor`
 
@@ -267,7 +285,10 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`delayMs * factor^N` can overflow">
   ```ts
-  retry(factory, { attempts: 50, delayMs: 100, factor: 2 });
+  retry(factory, {
+    attempts: 50, delayMs: 100, factor: 2,
+    maxDelayMs: Number.POSITIVE_INFINITY,
+  });
   // Attempt 26: delay = 100 × 2^25 ≈ 38.8 days
   ```
   `setTimeout` coerces its argument to a 32-bit signed integer, so
@@ -276,11 +297,19 @@ import { Aside } from '@astrojs/starlight/components';
   invert into a hot loop against the failing dependency at exactly
   the attempt the operator believes is most conservative.
 
-  `retry` clamps every delay to that limit before awaiting it, so
-  an overflowing configuration degrades to "waits ~24.9 days" —
-  visible and fixable — rather than to "waits not at all".  Set
-  `maxDelayMs` anyway for `factor > 1`: the clamp is a floor under
-  the failure mode, not a backoff policy.
+  `retry` clamps every delay to that limit — before **and** after
+  the jitter — so an overflowing configuration degrades to "waits
+  ~24.9 days", visible and fixable, rather than to "waits not at
+  all".  The clamp before the jitter is what keeps an infinite
+  `maxDelayMs` out of the multiplication: `randomFactor: 1` has a
+  lower edge of exactly zero, and `Infinity × 0` is `NaN`, which
+  every later comparison carries silently until the wait is skipped
+  altogether.
+
+  The default `maxDelayMs` of 60 000 keeps ordinary configurations
+  far away from all of this.  Set your own ceiling anyway for
+  `factor > 1`: the clamp is a floor under the failure mode, not a
+  backoff policy.
 </Aside>
 
 ## Where to next

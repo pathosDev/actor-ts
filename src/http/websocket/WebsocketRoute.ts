@@ -5,10 +5,16 @@
  * exactly like `get()` / `post()`.
  *
  *     const server = system.spawn(PingServer, 'ping');
- *     await http.newServerAt('0.0.0.0', 8080).bind(websocket('/ws', server));
+ *     await http.newServerAt('127.0.0.1', 8080).bind(websocket('/ws', server));
  *
  * Middleware wrapping the route runs once, against the HTTP upgrade
  * request, so `BearerTokenAuth` / `IpAllowlist` gate the handshake.
+ *
+ * The bind address here is loopback deliberately, and it is the snippet a
+ * developer reads before any example: a wildcard bind in the first thing
+ * anyone copies is how an unauthenticated relay ends up reachable from every
+ * interface on a laptop or an unpolicied container (#756).  Widen it once the
+ * service is meant to be reached from elsewhere, not before.
  */
 import { path, type Route, type WebsocketConnectHandler, type WebsocketPolicyResolver } from '../Route.js';
 import { Status, type HttpRequest, type HttpResponse } from '../Types.js';
@@ -73,7 +79,16 @@ export function websocket<TOut, TIn, TSelf = never>(
   // upgrade `authorize`, which every backend runs before the handshake.
   // It has to be here rather than in middleware: an upgrade is a GET, and
   // the CSRF middleware treats GET as a safe method and waves it through.
-  const originGuard = makeOriginGuard(options.allowedOrigins, options.requireSameOrigin ?? false);
+  //
+  // `requireSameOrigin` defaults to **true** (#756).  It shipped defaulting to
+  // `false`, which made every user route CSWSH-exposed until its author
+  // remembered an option they had to know existed — while DevTools, the one
+  // route in the tree that thought about it, installed the same guard
+  // unconditionally.  A security control that is only on for the people who
+  // already knew to ask for it is not a control, and pre-1.0 permits the hard
+  // cut; `withRequireSameOrigin(false)` is the explicit opt-out for a route
+  // that genuinely serves a different origin.
+  const originGuard = makeOriginGuard(options.allowedOrigins, options.requireSameOrigin ?? true);
 
   const node: Route = originGuard
     ? { kind: 'websocket', connect, resolvePolicy, authorize: originGuard }

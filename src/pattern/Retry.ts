@@ -6,10 +6,11 @@ export type RetryOptions = {
   /** Exponential-backoff multiplier applied to `delayMs` (default 1 — no backoff). */
   readonly factor?: number;
   /**
-   * Upper bound for any individual retry delay.  Unbounded by default; the
-   * hard clamp at the 32-bit timer limit (`2_147_483_647` ms, ~24.9 days)
-   * still applies, so an omitted cap degrades to a very long wait rather
-   * than to no wait at all.
+   * Upper bound for any individual retry delay.  Defaults to
+   * `DEFAULT_MAX_RETRY_DELAY_MS` (60 000 ms) — pass
+   * `Number.POSITIVE_INFINITY` for the unbounded schedule this option used
+   * to have by default, in which case the hard clamp at the 32-bit timer
+   * limit (`2_147_483_647` ms, ~24.9 days) is the only ceiling left.
    */
   readonly maxDelayMs?: number;
   /**
@@ -65,6 +66,28 @@ const setTimeoutSleep = (ms: number): Promise<void> =>
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 /**
+ * Built-in default for {@link RetryOptions.maxDelayMs} (#771).
+ *
+ * The option used to default to `Number.POSITIVE_INFINITY`, on the reasoning
+ * that a caller who wants a ceiling asks for one.  What that actually bought
+ * was a schedule whose upper bound was `MAX_TIMER_DELAY_MS` — a retry loop
+ * that, having exhausted the operator's patience, went on waiting for
+ * ~24.9 days per attempt.  Nobody configures that on purpose; it is what an
+ * omitted cap plus `factor > 1` arrives at on its own, which makes it the
+ * wrong thing for the *default* to mean.
+ *
+ * One minute is the ceiling the surrounding project already converged on for
+ * a backoff a human is waiting behind (`exponentialBackoff` requires a finite
+ * `maxMs`; the broker reconnect loop and the WebSocket client both cap at
+ * 30 s), doubled because `retry` wraps a single call rather than a
+ * reconnect loop and one lost minute is cheaper here than one lost hour.
+ *
+ * A caller who genuinely wants the old, uncapped schedule still has it —
+ * `maxDelayMs: Number.POSITIVE_INFINITY` — and gets the timer clamp with it.
+ */
+const DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
+
+/**
  * `base × (1 ± randomFactor)`, floored at 0.
  *
  * Deliberately local rather than a call into
@@ -85,13 +108,17 @@ function applyJitter(base: number, randomFactor: number, random: () => number): 
  * Invoke `factory` up to `options.attempts` times with configurable
  * exponential backoff.  Returns the first successful result.  Propagates
  * the final error if every attempt fails or `shouldRetry` vetoes a retry.
+ *
+ * Every delay is bounded twice: by `maxDelayMs`, which now defaults to
+ * {@link DEFAULT_MAX_RETRY_DELAY_MS} rather than to infinity, and
+ * unconditionally by {@link MAX_TIMER_DELAY_MS} (#771).
  */
 export async function retry<T>(factory: () => Promise<T>, options: RetryOptions): Promise<T> {
   const max = options.attempts;
   if (max < 1) throw new Error(`retry: attempts must be >= 1 (got ${max})`);
   const base = options.delayMs ?? 0;
   const factor = options.factor ?? 1;
-  const maxDelay = options.maxDelayMs ?? Number.POSITIVE_INFINITY;
+  const maxDelay = options.maxDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
   const randomFactor = options.randomFactor ?? 0;
   if (randomFactor < 0 || randomFactor > 1) {
     throw new Error(`retry: randomFactor must be in [0, 1] (got ${randomFactor})`);
@@ -111,11 +138,23 @@ export async function retry<T>(factory: () => Promise<T>, options: RetryOptions)
       if (attempt >= max || !shouldRetry(asErr, attempt)) {
         throw asErr;
       }
-      const capped = Math.min(base * Math.pow(factor, attempt - 1), maxDelay);
-      // The timer clamp goes *after* the jitter, not before it: a delay
-      // already sitting on the ceiling and then multiplied by
-      // `1 + randomFactor` would land back over the 32-bit limit and reopen
-      // the overflow this line exists to close.
+      // The timer clamp goes on *both* sides of the jitter, and each side
+      // closes a different hole (#771).
+      //
+      // After, because a delay already sitting on the ceiling and then
+      // multiplied by `1 + randomFactor` would land back over the 32-bit
+      // limit and reopen the overflow.
+      //
+      // Before, because `applyJitter` multiplies, and `Infinity * 0` is
+      // `NaN` — which `Math.max`, `Math.min` and finally `delay > 0` all
+      // propagate silently, so the sleep is skipped *entirely* and `retry`
+      // busy-loops against the failing dependency.  It takes an explicit
+      // `maxDelayMs: Number.POSITIVE_INFINITY` — the finite default is what
+      // keeps the product finite otherwise — together with
+      // `randomFactor: 1`, whose lower jitter edge is a multiplier of
+      // exactly zero.  Narrow, and strictly worse than the overflow the
+      // clamp was added for.  A finite base cannot produce it.
+      const capped = Math.min(base * Math.pow(factor, attempt - 1), maxDelay, MAX_TIMER_DELAY_MS);
       const delay = Math.min(applyJitter(capped, randomFactor, random), MAX_TIMER_DELAY_MS);
       if (delay > 0) {
         await sleep(delay);

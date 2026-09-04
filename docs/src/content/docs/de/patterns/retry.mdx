@@ -31,7 +31,7 @@ type RetryOptions = {
   attempts:        number;     // gesamt inklusive initialer Call (>= 1)
   delayMs?:        number;     // Base-Delay zwischen Versuchen
   factor?:         number;     // Multiplikator für Exponential-Backoff (Default 1)
-  maxDelayMs?:     number;     // Obergrenze für jedes einzelne Delay
+  maxDelayMs?:     number;     // Obergrenze für jedes einzelne Delay (Default 60_000)
   randomFactor?:   number;     // Jitter-Anteil in [0, 1] (Default 0 — keiner)
   random?:         () => number;                   // Math.random in Tests überschreiben
   shouldRetry?:    (err: Error, attempt: number) => boolean;
@@ -52,7 +52,7 @@ Vier Knöpfe kooperieren zur Steuerung des Delays zwischen Versuchen:
 | --- | --- |
 | `delayMs` | Base-Delay zwischen Versuchen.  Default `0` (kein Warten). |
 | `factor` | Multiplikator pro Versuch.  Delay bei Versuch N ist `delayMs × factor^(N-1)`.  Default `1` (konstant). |
-| `maxDelayMs` | Obergrenze für jedes einzelne Delay.  Default unbegrenzt — aber nie über das 32-Bit-Timer-Limit hinaus, auf das `retry` bedingungslos klemmt (siehe den Overflow-Hinweis am Ende dieser Seite). |
+| `maxDelayMs` | Obergrenze für jedes einzelne Delay.  Default `60_000` (eine Minute).  Für einen unbegrenzten Zeitplan `Number.POSITIVE_INFINITY` übergeben — dann bleibt nur noch das 32-Bit-Timer-Limit, auf das `retry` bedingungslos klemmt (siehe den Overflow-Hinweis am Ende dieser Seite). |
 | `randomFactor` | Jitter-Anteil in `[0, 1]`.  Das Delay wird auf `Delay × (1 ± randomFactor)` gestreut.  Default `0` (kein Jitter). |
 
 ```ts
@@ -64,7 +64,27 @@ retry(factory, { attempts: 6, delayMs: 200, factor: 2, maxDelayMs: 5_000 });
 
 // Fibonacci-artig: ad-hoc via factor=1.6:
 retry(factory, { attempts: 5, delayMs: 100, factor: 1.6 });
+
+// Explizit unbegrenzt — jedes Delay ist delayMs × factor^(N-1), bis
+// hinauf zum 32-Bit-Timer-Limit:
+retry(factory, { attempts: 20, delayMs: 200, factor: 2, maxDelayMs: Number.POSITIVE_INFINITY });
 ```
+
+### Die Default-Obergrenze
+
+`maxDelayMs` hat den Default **60 000 ms** — ein Exponential-Backoff
+flacht also bei einer Minute pro Versuch ab, sofern nichts anderes
+gesagt wird.  Früher war der Default unendlich, mit der Begründung,
+dass ein Caller, der eine Obergrenze will, sie eben angibt — worauf
+eine ausgelassene Obergrenze plus `factor > 1` tatsächlich zuläuft,
+sind aber ~24,9 Tage pro Versuch (das Timer-Limit, siehe unten), und
+das konfiguriert niemand mit Absicht.  Ein Default ist das, was
+passiert, wenn die Frage nie gestellt wurde — er sollte also die
+Antwort sein, die sinnvoll ist, wenn niemand darüber nachgedacht hat.
+
+Höher setzen, niedriger setzen oder mit
+`Number.POSITIVE_INFINITY` wieder aussteigen — die Option selbst hat
+sich nicht geändert.
 
 ## Jitter — `randomFactor`
 
@@ -277,7 +297,10 @@ import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`delayMs * factor^N` kann überlaufen">
   ```ts
-  retry(factory, { attempts: 50, delayMs: 100, factor: 2 });
+  retry(factory, {
+    attempts: 50, delayMs: 100, factor: 2,
+    maxDelayMs: Number.POSITIVE_INFINITY,
+  });
   // Versuch 26: Delay = 100 × 2^25 ≈ 38.8 Tage
   ```
   `setTimeout` konvertiert sein Argument zu einem 32-Bit-Integer mit
@@ -287,11 +310,19 @@ import { Aside } from '@astrojs/starlight/components';
   konservativsten hält, in eine Hot Loop gegen die ohnehin
   ausgefallene Dependency umschlagen.
 
-  `retry` klemmt jedes Delay vor dem Warten auf dieses Limit — eine
-  überlaufende Konfiguration degradiert damit zu "wartet ~24,9 Tage"
-  (sichtbar und behebbar) statt zu "wartet gar nicht".  Setze
-  `maxDelayMs` trotzdem für `factor > 1`: das Klemmen ist ein Boden
-  unter dem Fehlerbild, keine Backoff-Policy.
+  `retry` klemmt jedes Delay auf dieses Limit — **vor** und nach dem
+  Jitter.  Eine überlaufende Konfiguration degradiert damit zu
+  "wartet ~24,9 Tage" (sichtbar und behebbar) statt zu "wartet gar
+  nicht".  Das Klemmen vor dem Jitter hält ein unendliches
+  `maxDelayMs` aus der Multiplikation heraus: `randomFactor: 1` hat
+  als untere Kante exakt null, `Infinity × 0` ist `NaN`, und jeder
+  spätere Vergleich trägt das stillschweigend weiter, bis das Warten
+  ganz ausfällt.
+
+  Der Default von 60 000 für `maxDelayMs` hält gewöhnliche
+  Konfigurationen weit von alldem entfernt.  Setze für `factor > 1`
+  trotzdem deine eigene Obergrenze: das Klemmen ist ein Boden unter
+  dem Fehlerbild, keine Backoff-Policy.
 </Aside>
 
 ## Wie es weitergeht

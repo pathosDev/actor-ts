@@ -35,6 +35,34 @@ import type { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsType } from 
  * min) — short enough that stale reads after a missed invalidation
  * never matter, long enough to absorb cold-start storms.
  *
+ * **Security — the cache holds plaintext (#782).**  What gets cached is
+ * whatever `SnapshotStore.loadLatest` returns, and that is the *decoded*
+ * domain state: decompressed, and for the object-storage stores decrypted.
+ * Compose this decorator with client-side snapshot encryption and the
+ * deployment ends up with two copies of the state — one encrypted in the
+ * bucket, one in plaintext in a cache the caller owns, shares with other
+ * subsystems (see `close()` below) and very often runs unauthenticated on a
+ * "private" network.  Reading the second copy needs neither the bucket nor
+ * the master key, and a Redis RDB dump keeps it readable afterwards.
+ * Nothing at rest in the bucket is weakened; the second copy is the whole
+ * exposure, which is why this is a composition hazard rather than a defect
+ * in either component.
+ *
+ * The decorator therefore refuses to cache a snapshot whose `loadLatest`
+ * carried `encryption` with a mode other than `'none'`: that call is
+ * delegated straight through, and the decorator warns once.
+ * `withAllowPlaintextCache(true)` is the operator's acknowledgement that the
+ * cache is as protected as the bucket, and restores the caching.
+ *
+ * What this check can and cannot see is worth stating, because the gap is
+ * not obvious.  It sees the **per-call** `PersistenceOptions` an actor's
+ * `encryption()` hook produces, which is what reaches every read and write.
+ * It does not see a store configured with encryption at *construction* and
+ * never told about it per call — `SnapshotStore` has no member that would
+ * report that, and `persistenceOptionSupport` answers a different question
+ * ("could this store encrypt?", not "is it going to?").  Adding one is a
+ * change to the store contract rather than to this decorator.
+ *
  *   const cassandra = new CassandraSnapshotStore(...);
  *   const cached    = new CachedSnapshotStore(
  *     cassandra,
@@ -50,10 +78,33 @@ type CachedSnapshot<S> = {
   readonly timestamp: number;
 };
 
+/**
+ * The advisory logged the first time an encrypted-state load reaches an
+ * unacknowledged cache (#782).
+ *
+ * `console.warn` for the reason `ObjectStoragePlugin.assertMasterKeyRings`
+ * gives: a snapshot store is constructed by the operator and holds no
+ * `ActorSystem`, so there is no system logger to reach, and threading one
+ * through the decorator for one advisory line is the worse trade.  The
+ * stable needle is `caches decoded snapshot state` — filter on that, not on
+ * the sentence around it.
+ */
+function plaintextCacheWarning(storeName: string): string {
+  return `persistence: CachedSnapshotStore caches decoded snapshot state, and this loadLatest on `
+    + `'${storeName}' asked for encryption — so the cached copy would be the plaintext of data the `
+    + 'wrapped store keeps encrypted at rest, in a cache the caller owns and typically shares with '
+    + 'other subsystems (#782). The snapshot is being served straight from the wrapped store '
+    + 'instead, uncached, and this warning is logged once per store. Call '
+    + 'withAllowPlaintextCache(true) to acknowledge the exposure and take the cold-start win, once '
+    + 'the cache is as protected as the bucket is.';
+}
+
 export class CachedSnapshotStore implements SnapshotStore {
   private readonly cache: Cache;
   private readonly ttlMs: number;
   private readonly keyPrefix: string;
+  private readonly allowPlaintextCache: boolean;
+  private reportedPlaintextCache = false;
 
   constructor(
     private readonly underlying: SnapshotStore,
@@ -64,6 +115,7 @@ export class CachedSnapshotStore implements SnapshotStore {
     this.cache = resolvedOptions.cache;
     this.ttlMs = resolvedOptions.ttlMs ?? DEFAULT_SNAPSHOT_CACHE_TTL_MS;
     this.keyPrefix = resolvedOptions.keyPrefix ?? 'snap:';
+    this.allowPlaintextCache = resolvedOptions.allowPlaintextCache ?? false;
   }
 
   /** The cache is in-process; locality is whatever the wrapped store declares (#1356). */
@@ -80,7 +132,9 @@ export class CachedSnapshotStore implements SnapshotStore {
    *
    * Note this reports the *inner store's* at-rest behaviour and says nothing
    * about the cache, which holds decoded snapshots in whatever cache is
-   * wired — see #782.
+   * wired — see the security section on the class (#782).  A `true` here is
+   * not the acknowledgement `allowPlaintextCache` is; if anything it is the
+   * signal that the acknowledgement is worth asking for.
    */
   get persistenceOptionSupport(): PersistenceOptionSupport | undefined {
     return this.underlying.persistenceOptionSupport;
@@ -102,6 +156,7 @@ export class CachedSnapshotStore implements SnapshotStore {
   }
 
   async loadLatest<S>(persistenceId: string, options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
+    if (this.refusesPlaintextCache(options)) return this.underlying.loadLatest<S>(persistenceId, options);
     const key = this.keyFor(persistenceId);
     const hit = await this.cache.get<CachedSnapshot<S>>(key);
     if (hit.isSome()) return some(hit.value as Snapshot<S>);
@@ -129,5 +184,26 @@ export class CachedSnapshotStore implements SnapshotStore {
 
   private keyFor(persistenceId: string): string {
     return `${this.keyPrefix}${persistenceId}`;
+  }
+
+  /**
+   * Whether this call's state must not enter the cache — see the security
+   * section on the class (#782).  Warns on the first refusal only, because
+   * the condition is a deployment-shaped one: it holds for every load of
+   * every entity, and a line per cold start is a line nobody reads.
+   *
+   * `{ mode: 'none' }` is not a refusal.  It is the explicit way to say
+   * "deliberately unprotected", exactly as `unhonouredPersistenceOptions`
+   * treats it, and turning an opt-*out* into a cache bypass would be the one
+   * shape of this check nobody would expect.
+   */
+  private refusesPlaintextCache(options: PersistenceOptions | undefined): boolean {
+    if (this.allowPlaintextCache) return false;
+    if (options?.encryption === undefined || options.encryption.mode === 'none') return false;
+    if (!this.reportedPlaintextCache) {
+      this.reportedPlaintextCache = true;
+      console.warn(plaintextCacheWarning(this.underlying.constructor.name));
+    }
+    return true;
   }
 }

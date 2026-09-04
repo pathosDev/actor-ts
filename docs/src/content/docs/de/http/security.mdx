@@ -241,9 +241,19 @@ deine Verzeichnisstruktur offen. Siehe [Statische Dateien](/de/http/static-files
 
 ## WebSocket
 
-Wickle eine `websocket()`-Route in `cors(...)`, um Cross-Origin-Upgrades
-abzuweisen, und lege Auth-Middleware darum — `withMiddleware` läuft zur
-Upgrade-Zeit und gated damit den Handshake.
+Eine `websocket()`-Route weist Cross-Origin-Upgrades **standardmäßig** ab —
+`requireSameOrigin` vergleicht den `Origin` des Browsers mit dem `Host` des
+Requests und antwortet vor dem Handshake mit 403. Weitere Origins benennst du
+mit `withAllowedOrigins([...])`, oder du wickelst die Route für denselben
+Effekt von der Middleware-Seite her in `cors(...)`. Ein Client, der gar keinen
+`Origin` sendet — ein `WebSocket` aus Node, Bun oder Deno oder jeder
+Server-zu-Server-Dialer —, ist nicht betroffen, denn
+Cross-Site-WebSocket-Hijacking braucht einen Browser, und ein Browser sendet
+den Header immer.
+
+Lege außerdem Auth-Middleware um die Route — `withMiddleware` läuft zur
+Upgrade-Zeit und gated damit den Handshake. Und binde den Server auf Loopback,
+solange er nicht von woanders erreichbar sein soll.
 
 Im Härtungs-Stack oben braucht eine `websocket()`-Route keine
 Sonderbehandlung: `securityHeaders()`, `requestId()` und der Rest dürfen
@@ -260,6 +270,7 @@ einem angenommenen — die 101 schreibt das Backend selbst.  Siehe
 | Security-Header auf jeder Response | serverweit `withSecurityHeaders(...)` — `securityHeaders()` deckt einen Teilbaum ab, Ablehnungen eingeschlossen |
 | HTTPS vom Browser erzwungen | `strictTransportSecurity()` / `withHsts` |
 | Cross-Origin kontrolliert | `cors(...)` |
+| WebSocket-Upgrade-Origin kontrolliert | nichts — Same-Origin ist Default; `withAllowedOrigins(...)` erweitert, `withRequireSameOrigin(false)` schaltet ab |
 | CSRF (Browser-Formulare) | `csrfProtection(...)` |
 | Keine internen Fehler-Leaks | `withErrorHandler` + generische Bodies |
 | Keine Open Redirects | `redirect(...)` — same-origin per Default |

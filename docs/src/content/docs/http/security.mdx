@@ -225,9 +225,18 @@ structure. See [Static files](/http/static-files/).
 
 ## WebSocket
 
-Wrap a `websocket()` route in `cors(...)` to reject cross-origin upgrades,
-and put auth middleware around it — `withMiddleware` runs at upgrade time,
-so it gates the handshake.
+A `websocket()` route rejects a cross-origin upgrade **by default** —
+`requireSameOrigin` compares the browser's `Origin` against the request's own
+`Host` and answers 403 before the handshake. Name other origins with
+`withAllowedOrigins([...])`, or wrap the route in `cors(...)` for the same
+effect from the middleware side. A client that sends no `Origin` at all — a
+Node, Bun or Deno `WebSocket`, or any server-to-server dialer — is unaffected,
+because Cross-Site WebSocket Hijacking needs a browser and a browser always
+sends the header.
+
+Put auth middleware around the route too — `withMiddleware` runs at upgrade
+time, so it gates the handshake. And bind the server to loopback unless it is
+meant to be reached from elsewhere.
 
 A `websocket()` route needs no special treatment in the hardening stack
 above: `securityHeaders()`, `requestId()` and the rest may sit over it like
@@ -243,6 +252,7 @@ writes the 101 itself. See [WebSocket](/http/websocket/).
 | Security headers on every response | `withSecurityHeaders(...)` server-wide — `securityHeaders()` covers a subtree, rejections included |
 | HTTPS enforced by the browser | `strictTransportSecurity()` / `withHsts` |
 | Cross-origin controlled | `cors(...)` |
+| WebSocket upgrade origin controlled | nothing — same-origin by default; `withAllowedOrigins(...)` to widen, `withRequireSameOrigin(false)` to opt out |
 | CSRF (browser forms) | `csrfProtection(...)` |
 | No internal error leaks | `withErrorHandler` + generic bodies |
 | No open redirects | `redirect(...)` — same-origin by default |

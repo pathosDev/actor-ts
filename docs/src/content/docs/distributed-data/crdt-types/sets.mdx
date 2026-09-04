@@ -120,6 +120,43 @@ s.add('node-b', { sku: 'book-1', price: 12 });
 The identity function determines **deduplication**; the tag
 mechanics work per-add regardless.
 
+#### Identity inside DistributedData
+
+An identity function is a closure, so it never travels on the
+wire.  A replica that materialises a key from a peer's gossip,
+from a quorum reply or from its durable record therefore has to
+be *told* which one to use — and the only place that knowledge
+lives is the `factory` you already hand to `update`:
+
+```ts
+const emptyCart = () => ORSet.empty<CartItem>({ identity: (i) => i.sku });
+dd.update('cart-42', emptyCart, (c) => c.add(dd.selfReplicaId(), item));
+```
+
+Pass the same factory on every `update` for a key, and the
+replica files every value it decodes for that key under your
+identity — entries a peer wrote under the default one included.
+Those are re-keyed and merged into the entry they belong with,
+rather than kept alongside it as duplicates.
+
+Two limits are worth knowing (#766):
+
+- **The first `update` for a key is what teaches it.**  A key
+  that arrived by gossip, or came back from a `durableStore`
+  after a restart, stays on the default identity until then — so
+  a bare `dd.get('cart-42')` immediately after startup can hand
+  you a set that deduplicates by `JSON.stringify`.  Issue the
+  `update` first if that matters.
+- **Nesting stops at one level.**  An `ORMap` recovers its own
+  key identity, but the CRDTs stored *inside* it do not: neither
+  the frame nor an empty template says what theirs should be.
+
+Note also that your identity function now runs over values a
+peer sent, not only over ones your process built.  A callback
+that assumes its argument's shape will see data it did not
+produce; one that throws turns that frame into a dropped value
+rather than an accepted one.
+
 ## Picking between them
 
 | Question | Type |
