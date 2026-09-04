@@ -235,6 +235,13 @@ This matters because:
   queue-jumping — it keeps its place in line and merely cannot be
   discarded from it.
 
+**A mailbox capacity bounds the user queue only.**  The system queue is
+never capped — not by `BoundedMailbox`, not by a mailbox of your own —
+because supervision and lifecycle signals must never be dropped.  Its
+depth is bounded by what produces them instead: one signal per child
+event, per watched death, per supervision decision, each already paid
+for by an actor that had to exist first.
+
 You don't normally see this distinction — system messages are
 emitted by the framework, not by your code.  But understanding it
 explains why "supervision reacts instantly."

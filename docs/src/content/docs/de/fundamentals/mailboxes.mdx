@@ -248,6 +248,14 @@ Das ist wichtig, weil:
   verwerfbar heißt nicht vordrängeln — es behält seinen Platz in der
   Reihe und kann nur nicht mehr daraus entfernt werden.
 
+**Eine Mailbox-Kapazität begrenzt nur die User-Queue.**  Die
+System-Queue wird nie gedeckelt — weder von `BoundedMailbox` noch von
+einer eigenen Mailbox —, weil Supervision- und Lifecycle-Signale niemals
+verworfen werden dürfen.  Ihre Tiefe begrenzt stattdessen das, was sie
+erzeugt: ein Signal pro Child-Event, pro beobachtetem Tod, pro
+Supervisor-Entscheidung — jedes bereits bezahlt von einem Actor, der
+vorher existieren musste.
+
 Du siehst diese Unterscheidung normalerweise nicht —
 System-Nachrichten werden vom Framework emittiert, nicht von deinem
 Code.  Aber sie zu verstehen, erklärt, warum "Supervision sofort

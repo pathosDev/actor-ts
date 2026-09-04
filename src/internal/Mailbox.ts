@@ -314,6 +314,65 @@ export class Mailbox<T = unknown> {
     this.userQueue.unshiftAll(envs);
   }
 
+  /**
+   * Queue a framework system command — create, terminate, recreate, failure,
+   * childTerminated, suspend, resume, watchNotify, receiveTimeout — on the
+   * lane that overtakes all user traffic.
+   *
+   * **This lane is deliberately uncapped, and no bound reaches it — including
+   * a subclass's own.**  It writes straight to the private system ring rather
+   * than delegating, which is the deliberate opposite of {@link enqueueSignal}
+   * two methods up: a signal rides the *user* lane and therefore has to go
+   * through whatever store a subclass keeps, while a system command has no
+   * business in that store at all.  So overriding {@link enqueue} to shed load
+   * bounds the user queue and leaves this one alone, and neither
+   * `BoundedMailbox` nor `PriorityMailbox` overrides this method.  A capacity
+   * an operator tunes against measured heap is a user-queue capacity; say so
+   * when you document one.
+   *
+   * The reason is the one {@link Envelope.undroppable} gives one layer up, at
+   * full strength: supervision and lifecycle must never be dropped.  A
+   * discarded `failure` leaves an actor suspended with nobody coming to decide
+   * about it, a discarded `childTerminated` leaks a child registration
+   * forever, and a discarded `terminate` strands the cell — none of which the
+   * framework has a second copy to re-send, and all of which fail *silently*
+   * in the direction of a wedged actor rather than a lost message.  Nor does
+   * the drain loop in `ActorCell.run` carry a per-turn budget, for the
+   * matching reason: a budget would interleave a supervision decision with
+   * user traffic that decision exists to gate, and reordering supervision is a
+   * worse trade than the user-message starvation an unbounded drain admits.
+   *
+   * **What bounds it instead is the producer, and that is the property to
+   * re-check before adding a system-message source.**  Every caller today is
+   * one envelope per event that already costs the node an actor: one `create`
+   * / `terminate` per lifecycle, one `childTerminated` per child stop, one
+   * `failure` and one `suspend` / `resume` per supervision decision, one
+   * `watchNotify` per watched death, one `receiveTimeout` per armed timer.
+   *
+   * That test is about *volume*, not about who can reach the method, which is
+   * why the sharding path does not change the answer even though it looks like
+   * it should.  A remote peer addressing entities in a shard really does drive
+   * this queue: `dispatchEnvelope` only ever reaches a `tell` on the user lane,
+   * but the `Shard` actor handling that user message spawns and watches an
+   * entity, and every entity it spawns eventually lands a `childTerminated`
+   * here at passivation or handoff.  "A cluster peer cannot invoke it" is
+   * therefore true of the call site and beside the point for a queue depth.
+   *
+   * It needs no bound anyway because there is **no amplification**: each
+   * envelope is paid for by one entity cell — its own mailbox, watch
+   * registration and registry entry — that had to exist first and was admitted
+   * through the region's routing bound on the way in.  A peer that can queue N
+   * of these has already made the node hold N actor cells, so the lane is a
+   * strictly smaller copy of a cost accepted upstream; and the envelope is
+   * enqueued *as* the cell goes away, replacing something larger than itself,
+   * so the peak falls rather than rises at the moment the traffic appears.
+   *
+   * A source that broke that ratio — one cheap remote action queueing many
+   * envelopes, or envelopes tied to no resource the node already gates — is
+   * what would need an answer, and the answer would be per-kind coalescing
+   * (collapse duplicate `suspend` / `resume` for the same child) rather than a
+   * cap.  Dropping is the one thing this lane may not do.
+   */
   enqueueSystem(env: Envelope<unknown>): void {
     this.systemQueue.push(env);
   }

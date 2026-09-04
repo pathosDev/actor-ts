@@ -6,6 +6,7 @@ import { ActorOptions } from '../../../src/ActorOptions.js';
 import {
   BoundedMailbox,
   BoundedMailboxOptions,
+  Mailbox,
   MailboxFullError,
   PriorityMailbox,
   PriorityMailboxOptions,
@@ -962,5 +963,86 @@ describe('ActorOptions.withMailbox — end-to-end via actor', () => {
     expect(received.length).toBeGreaterThan(0);
     expect(received.length).toBeLessThanOrEqual(8);
     await kit.system.terminate();
+  });
+});
+
+describe('a bound never reaches the system queue (#794)', () => {
+  /*
+   * The system lane carries supervision and lifecycle — messages the framework
+   * has no second copy of — so `Mailbox.enqueueSystem` writes straight to the
+   * system ring instead of delegating to `enqueue` the way `enqueueSignal`
+   * does.  That is a deliberate property and not an oversight, which is what
+   * these three are for: capping the lane, in a stock variant or in the base,
+   * turns them red rather than passing unnoticed as an improvement.
+   */
+
+  /** A system command shaped as the cell builds them — only `message` is read. */
+  const systemEnvelope = (sequence: number): Envelope<unknown> =>
+    ({ message: { kind: 'failure', sequence }, sender: null });
+
+  const sequencesOf = (envelopes: Array<Envelope<unknown>>): number[] =>
+    envelopes.map(e => (e.message as { sequence: number }).sequence);
+
+  test('BoundedMailbox bounds the user queue and leaves the system queue alone', () => {
+    const drops: MailboxDropReason[] = [];
+    const mailbox = new BoundedMailbox<string>({
+      capacity: 2,
+      overflow: 'drop-head',
+      onDrop: (reason) => drops.push(reason),
+    });
+
+    for (let sequence = 0; sequence < 10; sequence++) mailbox.enqueueSystem(systemEnvelope(sequence));
+    for (const message of ['a', 'b', 'c', 'd']) mailbox.enqueue({ message, sender: null });
+
+    // The bound is real on the lane it governs — two of the four user
+    // messages were evicted, and both were reported.
+    expect(mailbox.size).toBe(2);
+    expect(drops).toEqual(['drop-head', 'drop-head']);
+
+    // And absent on the lane it does not govern: all ten system commands
+    // survive a capacity of two, in order, and none was counted as a drop.
+    expect(mailbox.hasSystemMessages()).toBe(true);
+    expect(sequencesOf(mailbox.drainSystem())).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(drops.length).toBe(2);
+    expect(mailbox.droppedCount).toBe(2);
+  });
+
+  test('PriorityMailbox neither sheds nor reorders the system queue', () => {
+    // The priority variant is the one that could plausibly get this wrong in
+    // the *other* direction: its user lane is deliberately not FIFO, and a
+    // system command outranks every priority there is by living on a separate
+    // queue rather than by scoring highest on this one.
+    const mailbox = new PriorityMailbox<string>({
+      priorityFor: (message) => (message === 'urgent' ? 0 : 5),
+      capacity: 2,
+      overflow: 'drop-new',
+    });
+
+    for (let sequence = 0; sequence < 6; sequence++) mailbox.enqueueSystem(systemEnvelope(sequence));
+    for (const message of ['low', 'urgent', 'low', 'low']) mailbox.enqueue({ message, sender: null });
+
+    expect(mailbox.size).toBe(2);
+    expect(sequencesOf(mailbox.drainSystem())).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+
+  test('a mailbox of your own that sheds in enqueue does not shed system commands', () => {
+    // The clause worth binding is "including a subclass's own bound".  A
+    // custom mailbox sheds load by overriding `enqueue` — that is the whole
+    // documented seam — and the override must not reach the system lane,
+    // because a subclass that never heard of supervision would otherwise
+    // start dropping it without ever saying so.
+    class SingleUserMessageMailbox<T> extends Mailbox<T> {
+      override enqueue(envelope: Envelope<T>): void {
+        if (this.size >= 1) return;
+        super.enqueue(envelope);
+      }
+    }
+
+    const mailbox = new SingleUserMessageMailbox<string>();
+    for (let sequence = 0; sequence < 5; sequence++) mailbox.enqueueSystem(systemEnvelope(sequence));
+    for (const message of ['a', 'b', 'c']) mailbox.enqueue({ message, sender: null });
+
+    expect(mailbox.size).toBe(1);
+    expect(sequencesOf(mailbox.drainSystem())).toEqual([0, 1, 2, 3, 4]);
   });
 });
