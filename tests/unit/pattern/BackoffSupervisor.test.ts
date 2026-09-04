@@ -28,11 +28,14 @@ import { LocalActorRef } from '../../../src/internal/LocalActorRef.js';
 import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
 import { LogContext, type LogContextData } from '../../../src/LogContext.js';
 import { DeadLetter, Terminated } from '../../../src/SystemMessages.js';
+import { stoppingStrategy } from '../../../src/Supervision.js';
 import type { ActorClassOrFactory } from '../../../src/Actor.js';
+import { BackoffSupervisor } from '../../../src/pattern/BackoffSupervisor.js';
 import {
-  BackoffSupervisor,
-  type BackoffOptions,
-} from '../../../src/pattern/BackoffSupervisor.js';
+  BackoffSupervisorOptionsValidator,
+  type BackoffSupervisorOptionsType,
+} from '../../../src/pattern/BackoffSupervisorOptions.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import type { BackoffPolicy } from '../../../src/pattern/BackoffPolicy.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
@@ -93,7 +96,9 @@ function newSystem(name: string): ActorSystem {
   return ActorSystem.create(name, sysOptions);
 }
 
-function withDefaults<T>(over: Partial<BackoffOptions<T>>): BackoffOptions<T> {
+function withDefaults<T>(
+  over: Partial<BackoffSupervisorOptionsType<T>>,
+): BackoffSupervisorOptionsType<T> {
   return {
     child: (() => new Flaky()) as unknown as ActorClassOrFactory<T>,
     minBackoff: 50,
@@ -326,24 +331,55 @@ describe('BackoffSupervisor — lifecycle', () => {
     await sys.terminate();
   }, 5_000);
 
-  test('rejects illegal options at construction', () => {
-    expect(() => new BackoffSupervisor({
-      child: Flaky,
-      minBackoff: 0,
-      maxBackoff: 100,
-    })).toThrow(/minBackoff/);
-    expect(() => new BackoffSupervisor({
-      child: Flaky,
-      minBackoff: 100,
-      maxBackoff: 50,
-    })).toThrow(/maxBackoff/);
-    expect(() => new BackoffSupervisor({
-      child: Flaky,
+  /**
+   * These three were `expect(() => new BackoffSupervisor(…)).toThrow(…)` until
+   * #865.  The rules did not change; where they run did.  A supervisor's
+   * settings are now merged from `actor-ts.backoff-supervisor.*` as well as
+   * from the constructor, and a constructor cannot see a config file — the
+   * cell builds the actor and only then attaches the context that carries
+   * `system.config` — so the one check that covers all three sources has to be
+   * the one that runs on the merged settings, in `preStart`.
+   *
+   * Split accordingly: the rule itself is asserted directly against the
+   * validator here, and the test below proves the supervisor actually runs it.
+   * Asserting only the validator would leave "nothing calls it" green.
+   */
+  test('the three range rules reject what they always rejected', () => {
+    const validator = new BackoffSupervisorOptionsValidator();
+    expect(() => validator.validate({ minBackoff: 0, maxBackoff: 100 })).toThrow(/minBackoff/);
+    expect(() => validator.validate({ minBackoff: 100, maxBackoff: 50 })).toThrow(/maxBackoff/);
+    expect(() => validator.validate({
       minBackoff: 100,
       maxBackoff: 1000,
       resetCounter: { kind: 'after-time', ms: -1 },
     })).toThrow(/resetCounter/);
+    // `OptionsError`, not a bare `Error`: the type is what names the field a
+    // caller has to go and fix, and it is the same type every other options
+    // family in the framework throws.
+    expect(() => validator.validate({ minBackoff: -1 })).toThrow(OptionsError);
+    // And the merged-settings shape a real supervisor produces still passes.
+    expect(() => validator.validate({ minBackoff: 50, maxBackoff: 5_000, randomFactor: 0 })).not.toThrow();
   });
+
+  test('an illegal option fails the supervisor at start, and no child is spawned', async () => {
+    flakyStarts = 0;
+    const sys = newSystem('backoff-illegal-options');
+    // `stoppingStrategy` so the failure is observable as a terminated
+    // supervisor rather than as the default strategy's restart loop.
+    const supervisor = sys.spawn(
+      BackoffSupervisor.factory(withDefaults({ child: Flaky, minBackoff: 0 })),
+      'illegal-options',
+      { supervisorStrategy: stoppingStrategy },
+    );
+    await awaitCondition(
+      () => (supervisor as unknown as LocalActorRef).getCell().isTerminated(),
+      { timeoutMs: 4_000, label: 'the supervisor failed to start' },
+    );
+    // preStart resolves before it spawns, so a refused setting costs the child
+    // its existence rather than leaving it running under a broken policy.
+    expect(flakyStarts).toBe(0);
+    await sys.terminate();
+  }, 5_000);
 });
 
 /* ============================================================== */

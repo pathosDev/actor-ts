@@ -903,6 +903,35 @@ Top-level rather than under `actor-ts.persistence`, because that block
 holds plugin ids and nothing else, so a tuning leaf inside it would
 read as the name of a plugin.
 
+### `actor-ts.backoff-supervisor`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `backoff-supervisor.min-backoff` | `200ms` | Floor of the respawn delay, and the window `after-min-stable` measures a child's stability against ([backoff supervisor](/patterns/backoff-supervisor/)). |
+| `backoff-supervisor.max-backoff` | `10s` | Ceiling the doubling delay clamps to.  Must be at least `min-backoff` — a supervisor whose merged settings say otherwise refuses to start. |
+| `backoff-supervisor.random-factor` | `0.2` | Jitter fraction in `[0, 1]`, so a herd of supervisors does not respawn in lockstep.  **Inert for a supervisor that supplies its own `policy`** — that policy computes the whole delay. |
+| `backoff-supervisor.max-stash-size` | `1000` | Messages held per supervisor while its child is dead; the oldest becomes a [dead letter](/operations/dead-letters/) when the buffer is full. |
+| `backoff-supervisor.reset-counter` | `"after-min-stable"` | When the consecutive-restart counter resets — `never`, `after-min-stable`, or a duration naming the stable window explicitly. |
+| `backoff-supervisor.forward` | `"stash"` | What happens to messages arriving during a backoff window — `stash` buffers them for the next child, `drop` discards them. |
+| `backoff-supervisor.trigger-on` | `"any"` | Which terminations respawn the child — `any`, `failure` (crashes only) or `stop` (clean stops only). |
+
+These are the **fleet-wide** defaults for every `BackoffSupervisor` in the
+process.  The options passed to one supervisor outrank them, and they
+outrank the built-in defaults — the usual three layers, per field.  A
+supervisor built as `BackoffSupervisor.factory({ child: Flaky })` takes the
+whole block; one that names `minBackoff` in code takes the rest of it.
+
+The merge happens in the supervisor's `preStart`, which is the first point
+where `system.config` is reachable — so a value a config file puts out of
+range fails the supervisor's start rather than the call that built it.  The
+rule is the same one that rejects the value written in code.
+
+`drain-grace` and `child-name` are deliberately absent.  The first has a
+default derived from `min-backoff`, so a published literal would freeze it
+for supervisors with a shorter window; the second is per-call-site identity,
+where one fleet-wide value would be actively wrong.  Both are still settable
+in code.
+
 ### `actor-ts.cache`
 
 | Key | Default | Purpose |

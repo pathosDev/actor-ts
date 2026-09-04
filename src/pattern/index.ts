@@ -21,8 +21,10 @@ export type {
   LinearBackoffOptions,
 } from './BackoffPolicy.js';
 export { BackoffSupervisor } from './BackoffSupervisor.js';
+export { BackoffSupervisorOptions, BackoffSupervisorOptionsBuilder, BackoffSupervisorOptionsValidator } from './BackoffSupervisorOptions.js';
 export type {
-  BackoffOptions,
+  BackoffSupervisorOptionsType,
   ResetCounter,
   ForwardStrategy,
-} from './BackoffSupervisor.js';
+  TerminationTrigger,
+} from './BackoffSupervisorOptions.js';

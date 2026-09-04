@@ -175,6 +175,9 @@ export {
   exponentialBackoff,
   linearBackoff,
   BackoffSupervisor,
+  BackoffSupervisorOptions,
+  BackoffSupervisorOptionsBuilder,
+  BackoffSupervisorOptionsValidator,
 } from './pattern/index.js';
 export type {
   PipeToOptions,
@@ -185,9 +188,10 @@ export type {
   BackoffPolicy,
   ExponentialBackoffOptions,
   LinearBackoffOptions,
-  BackoffOptions,
+  BackoffSupervisorOptionsType,
   ResetCounter,
   ForwardStrategy,
+  TerminationTrigger,
 } from './pattern/index.js';
 export {
   Router,

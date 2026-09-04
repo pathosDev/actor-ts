@@ -99,6 +99,7 @@ import {
 import { DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES, DEFAULT_TIME_TO_IDLE_MS, DEFAULT_TIME_TO_LIVE_MS } from '../../../src/cache/InMemoryCacheOptions.js';
 import { DEFAULT_MEMCACHED_SERVERS } from '../../../src/cache/MemcachedCacheOptions.js';
 import { DEFAULT_REDIS_DB } from '../../../src/cache/RedisCacheOptions.js';
+import { DEFAULT_BACKOFF_FORWARD, DEFAULT_BACKOFF_MAX_MS, DEFAULT_BACKOFF_MAX_STASH_SIZE, DEFAULT_BACKOFF_MIN_MS, DEFAULT_BACKOFF_RANDOM_FACTOR, DEFAULT_BACKOFF_RESET_COUNTER, DEFAULT_BACKOFF_TRIGGER_ON } from '../../../src/pattern/BackoffSupervisorOptions.js';
 import { DEFAULT_PROJECTION_MAX_RETRIES, DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS, DEFAULT_PROJECTION_RECOVERY_STRATEGY, DEFAULT_PROJECTION_RETRY_BACKOFF_MS } from '../../../src/persistence/projection/ProjectionOptions.js';
 import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../../../src/persistence/Constants.js';
 import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from '../../../src/logging/MultiSinkLoggerOptions.js';
@@ -375,6 +376,21 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.coordination.lease.kubernetes.token-reload-interval', kind: 'duration', constant: DEFAULT_TOKEN_RELOAD_INTERVAL_MS },
   { key: 'actor-ts.coordination.lease.kubernetes.operation-timeout', kind: 'duration', constant: DEFAULT_K8S_OPERATION_TIMEOUT_MS },
   { key: 'actor-ts.coordination.lease.kubernetes.lease-name-max-length', kind: 'int', constant: DEFAULT_LEASE_NAME_MAX_LENGTH },
+
+  /* --- backoff supervisor --- */
+  { key: 'actor-ts.backoff-supervisor.min-backoff', kind: 'duration', constant: DEFAULT_BACKOFF_MIN_MS },
+  { key: 'actor-ts.backoff-supervisor.max-backoff', kind: 'duration', constant: DEFAULT_BACKOFF_MAX_MS },
+  // `number`, not `int`: a jitter fraction is legitimately fractional and
+  // `getInt` throws outright on `0.2` — the trap #883 hit on the
+  // `worker-cluster.restart-random-factor` leaf that pairs with this one.
+  { key: 'actor-ts.backoff-supervisor.random-factor', kind: 'number', constant: DEFAULT_BACKOFF_RANDOM_FACTOR },
+  { key: 'actor-ts.backoff-supervisor.max-stash-size', kind: 'int', constant: DEFAULT_BACKOFF_MAX_STASH_SIZE },
+  // `string`, though the field is a union with an object variant: what is
+  // published here is the literal, and a duration in its place is the caller's
+  // own value rather than a default this can be checked against.
+  { key: 'actor-ts.backoff-supervisor.reset-counter', kind: 'string', constant: DEFAULT_BACKOFF_RESET_COUNTER },
+  { key: 'actor-ts.backoff-supervisor.forward', kind: 'string', constant: DEFAULT_BACKOFF_FORWARD },
+  { key: 'actor-ts.backoff-supervisor.trigger-on', kind: 'string', constant: DEFAULT_BACKOFF_TRIGGER_ON },
 
   /* --- management --- */
   // The four endpoint switches are in the table rather than in

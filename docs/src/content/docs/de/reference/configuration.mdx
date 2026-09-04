@@ -951,6 +951,36 @@ Top-Level statt unter `actor-ts.persistence`, weil dieser Block
 ausschließlich Plugin-Ids enthält — ein Tuning-Blatt darin läse sich
 als Name eines Plugins.
 
+### `actor-ts.backoff-supervisor`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `backoff-supervisor.min-backoff` | `200ms` | Untergrenze der Respawn-Verzögerung — und das Fenster, an dem `after-min-stable` die Stabilität eines Kindes misst ([Backoff-Supervisor](/de/patterns/backoff-supervisor/)). |
+| `backoff-supervisor.max-backoff` | `10s` | Obergrenze, auf die die Verdopplung geklemmt wird.  Muss mindestens `min-backoff` sein — ein Supervisor, dessen gemergte Settings das verletzen, startet nicht. |
+| `backoff-supervisor.random-factor` | `0.2` | Jitter-Anteil in `[0, 1]`, damit eine Herde Supervisor nicht im Gleichschritt respawnt.  **Wirkungslos für einen Supervisor mit eigener `policy`** — diese berechnet die gesamte Verzögerung. |
+| `backoff-supervisor.max-stash-size` | `1000` | Nachrichten, die ein Supervisor puffert, solange sein Kind tot ist; bei vollem Puffer wird die älteste zum [Dead Letter](/de/operations/dead-letters/). |
+| `backoff-supervisor.reset-counter` | `"after-min-stable"` | Wann der Zähler aufeinanderfolgender Restarts zurückgesetzt wird — `never`, `after-min-stable` oder eine Dauer, die das Stabilitätsfenster explizit benennt. |
+| `backoff-supervisor.forward` | `"stash"` | Was mit Nachrichten passiert, die während eines Backoff-Fensters ankommen — `stash` puffert sie für das nächste Kind, `drop` verwirft sie. |
+| `backoff-supervisor.trigger-on` | `"any"` | Welche Terminierungen einen Respawn auslösen — `any`, `failure` (nur Abstürze) oder `stop` (nur saubere Stopps). |
+
+Das sind die **prozessweiten** Defaults für jeden `BackoffSupervisor` im
+Prozess.  Die Optionen eines einzelnen Supervisors stechen sie, und sie
+stechen die eingebauten Defaults — die üblichen drei Ebenen, pro Feld.  Ein
+Supervisor als `BackoffSupervisor.factory({ child: Flaky })` übernimmt den
+ganzen Block; einer, der `minBackoff` im Code nennt, den Rest davon.
+
+Der Merge passiert im `preStart` des Supervisors — dem ersten Punkt, an dem
+`system.config` erreichbar ist.  Ein Wert, den eine Konfigurationsdatei
+außerhalb des zulässigen Bereichs setzt, lässt deshalb den Start des
+Supervisors scheitern und nicht den Aufruf, der ihn gebaut hat.  Die Regel
+ist dieselbe, die den im Code geschriebenen Wert ablehnt.
+
+`drain-grace` und `child-name` fehlen bewusst.  Der erste hat einen aus
+`min-backoff` abgeleiteten Default — ein publiziertes Literal würde ihn für
+Supervisor mit kürzerem Fenster einfrieren; der zweite ist Identität der
+Aufrufstelle, wo ein prozessweiter Wert schlicht falsch wäre.  Beide bleiben
+im Code setzbar.
+
 ### `actor-ts.cache`
 
 | Key | Default | Zweck |
