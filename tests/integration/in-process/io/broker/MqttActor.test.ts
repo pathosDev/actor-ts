@@ -328,6 +328,103 @@ describe('MqttActor inbound routing', () => {
   });
 });
 
+/* -------------------- external-command provenance (#783) ------------ */
+
+/**
+ * The registry distinguishes a change the actor made from one an external
+ * command asked for, in both directions.  The removal half has been guarded
+ * since the actor was written — its JSDoc states the invariant outright — but
+ * nothing sent this actor an `unsubscribe` command until now, so the guard
+ * was asserted by nothing; the additive half was missing entirely (#783).
+ */
+describe('MqttActor external-command provenance', () => {
+  test('an external subscribe cannot rewrite the QoS the subclass declared', async () => {
+    const sys = makeSystem();
+    try {
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withQos(1);
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'own/#', qos: 2 }],
+      });
+      const ref = await boot(sys, actor);
+      expect(actor.module.last().subscribes).toEqual([{ topic: 'own/#', qos: 2 }]);
+      // Same pattern, lower QoS, from outside the actor.  The command may join
+      // the pattern; it must not downgrade exactly-once to at-most-once.
+      ref.tell({ kind: 'subscribe', topic: 'own/#', qos: 0 });
+      // Poll on the *arrival* of the second SUBSCRIBE rather than on its QoS:
+      // the re-SUBSCRIBE fires either way, so the wait cannot pass the
+      // assertion below by outrunning the bug it is meant to catch.
+      await awaitCondition(() => actor.module.last().subscribes.length >= 2, {
+        timeoutMs: 4_000, label: 'the external subscribe reached the broker',
+      });
+      await sleep(SETTLE_MS);  // the subscribe list is asserted exactly; see SETTLE_MS
+      expect(actor.module.last().subscribes).toEqual([
+        { topic: 'own/#', qos: 2 },
+        { topic: 'own/#', qos: 2 },
+      ]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an external subscribe still sets the QoS of a pattern it creates', async () => {
+    const sys = makeSystem();
+    try {
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withQos(0);
+      const actor = new TestMqttActor({ options: mqttOptions });
+      const ref = await boot(sys, actor);
+      ref.tell({ kind: 'subscribe', topic: 'fresh/#', qos: 2 });
+      await awaitCondition(
+        () => actor.module.last().subscribes.some((s) => s.topic === 'fresh/#'),
+        { timeoutMs: 4_000, label: 'the external subscribe reached the broker' },
+      );
+      // The guard is on rewriting an entry, not on creating one — a pattern the
+      // subclass never declared carries no QoS worth protecting, so the
+      // command's own value stands rather than falling back to the default 0.
+      expect(actor.module.last().subscribes).toEqual([{ topic: 'fresh/#', qos: 2 }]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an external unsubscribe with no target clears foreign targets and keeps the own subscription', async () => {
+    const sys = makeSystem();
+    try {
+      const inbox = new InboxActor<unknown>();
+      const inboxRef = sys.spawn(() => inbox, 'inbox-external-unsubscribe') as ActorRef<MqttMessage<unknown>>;
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [
+          { topic: 'shared/#' },                    // the subclass's own delivery
+          { topic: 'shared/#', target: inboxRef },  // a foreign fan-out target
+        ],
+      });
+      const ref = await boot(sys, actor);
+      ref.tell({ kind: 'unsubscribe', topic: 'shared/#' });
+      // Command and inbound signal share one mailbox, so FIFO puts the
+      // unsubscribe strictly before this message: the routing decision below is
+      // taken against the post-command registry, with no wait in between.
+      actor.module.last().fireMessage('shared/x', enc.encode('after'));
+      await awaitCondition(() => actor.inbound.length >= 1, {
+        timeoutMs: 4_000,
+        label: "the subclass's own subscription still delivers after an external unsubscribe",
+      });
+      await sleep(SETTLE_MS);  // the fan-out copy is an absence; see SETTLE_MS
+      expect(actor.inbound.map((m) => m.topic)).toEqual(['shared/x']);
+      expect(inbox.received).toHaveLength(0);
+      // The pattern still has a consumer, so it was never dropped at the broker.
+      expect(actor.module.last().unsubscribes).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
 /* ----------------------- reconnect / disconnected ------------------- */
 
 describe('MqttActor reconnect + subscription persistence', () => {

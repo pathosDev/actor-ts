@@ -142,7 +142,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
       this.pendingSubs.push({ topic, qos: options.qos, target: options.target });
       return;
     }
-    this.registerSubscription(topic, options);
+    this.registerSubscription(topic, options, false);
   }
 
   /**
@@ -236,7 +236,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   }
 
   private onSubscribe(command: MqttSubscribeCommand<T>): void {
-    this.registerSubscription(command.topic, { qos: command.qos, target: command.target });
+    this.registerSubscription(command.topic, { qos: command.qos, target: command.target }, true);
   }
 
   private onUnsubscribe(command: MqttUnsubscribeCommand<T>): void {
@@ -266,16 +266,30 @@ export abstract class MqttActor<T = unknown, TSelf = never>
 
   /* ----------------------- subscription registry ----------------- */
 
+  /**
+   * @param fromExternal true for an external `subscribe` command — it may
+   *   attach a target and may create a pattern, but never rewrites the QoS
+   *   of a pattern that already exists.  This is the additive mirror of the
+   *   guard on {@link removeSubscription}: a controller that cannot silence
+   *   the subclass's constructor-declared subscription must not be able to
+   *   downgrade it either, and a QoS-2 entry re-SUBSCRIBEd at 0 is the same
+   *   loss taken slowly — the application still believes delivery is
+   *   exactly-once while the broker is free to drop.  false for the
+   *   protected {@link subscribe} and for the `preStart` flush of the
+   *   constructor's own subscriptions, which own the QoS and may change it.
+   *   #783.
+   */
   private registerSubscription(
     topic: string,
     options: { qos?: MqttQos; target?: ActorRef<MqttMessage<T>> },
+    fromExternal: boolean,
   ): void {
     let entry = this.registry.get(topic);
     if (!entry) {
       entry = { qos: options.qos, deliverToSelf: false, targets: new Set() };
       this.registry.set(topic, entry);
-    } else if (options.qos !== undefined) {
-      entry.qos = options.qos;  // last-writer-wins when a QoS is given
+    } else if (options.qos !== undefined && !fromExternal) {
+      entry.qos = options.qos;  // last-writer-wins among the actor's own calls
     }
     if (options.target) {
       entry.targets.add(options.target);
@@ -387,7 +401,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     // super.preStart().  Flush constructor subscriptions into the
     // registry (idempotent) so connectImplementation applies them on connect.
     for (const pendingSub of this.pendingSubs) {
-      this.registerSubscription(pendingSub.topic, { qos: pendingSub.qos, target: pendingSub.target });
+      this.registerSubscription(pendingSub.topic, { qos: pendingSub.qos, target: pendingSub.target }, false);
     }
     this._started = true;
     await super.preStart();
