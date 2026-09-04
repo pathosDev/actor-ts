@@ -13,9 +13,20 @@
  * spawns one or more OS threads.  Worker spawn + cluster handshake
  * is ~200-400 ms per role.  Tests use generous timeouts to absorb
  * that startup cost without flaking under load.
+ *
+ * Two blocks are the exception and spawn nothing: `construction`, and the
+ * control-RPC correlation block, which drives in-memory fake workers through
+ * the `backend` option.  Both stay outside the quarantine below, so they are
+ * the only part of this file CI ever executes.
  */
 import { describe, expect, test } from 'bun:test';
 import { ParallelMultiNodeSpec } from '../../../src/testkit/ParallelMultiNodeSpec.js';
+import type { MemberSnapshot } from '../../../src/testkit/internal/ParallelMultiNodeBootstrap.js';
+import {
+  autoHandshake,
+  type FakeWorker,
+  FakeWorkerBackend,
+} from '../worker/__fixtures__/InMemoryWorkerThread.js';
 
 // Quarantined on GitHub's hosted runners (ACTOR_TS_SKIP_FLAKY_MNS=1) —
 // Bun there can't respawn functional worker threads after the first test
@@ -23,8 +34,8 @@ import { ParallelMultiNodeSpec } from '../../../src/testkit/ParallelMultiNodeSpe
 // hosted runners, never locally or in Docker).  Runs locally + in Docker.
 // #538 tracks the quarantine: `.github/workflows/nightly-flakes.yml` runs
 // this suite nightly with the flag OFF, and 14 consecutive green nights are
-// what removes this line.  The `construction` describe spawns no workers,
-// so it stays un-gated.
+// what removes this line.  The `construction` and control-RPC correlation
+// describes spawn no workers, so they stay un-gated.
 const describeMns = process.env.ACTOR_TS_SKIP_FLAKY_MNS === '1' ? describe.skip : describe;
 
 const TIGHT_FD = {
@@ -40,6 +51,233 @@ describe('ParallelMultiNodeSpec — construction', () => {
 
   test('rejects duplicate roles', () => {
     expect(() => new ParallelMultiNodeSpec({ roles: ['a', 'b', 'a'] })).toThrow(/unique/);
+  });
+});
+
+/* ------------------- control-RPC correlation (#777) -------------------- */
+
+/**
+ * These spawn no OS threads, so they stay OUT of the `describeMns` quarantine
+ * above and actually run in CI — which is the point: the correlation bug they
+ * pin surfaces as a 30 s `await*` timeout, exactly the shape #538 taught
+ * everyone to dismiss as hosted-runner flakiness.
+ *
+ * The seam is `ParallelMultiNodeSpecOptions.backend` (#520): the fake backend
+ * hands back in-memory workers whose handshake `autoHandshake` completes on a
+ * microtask, and `deliverMessage` fires the harness's own `message` listeners
+ * synchronously.  So a stray frame and the genuine reply can be injected in a
+ * known order with no wait between them, which is what makes the assertion
+ * deterministic rather than a race the test usually wins.
+ */
+function specWithFakeWorkers(roles: ReadonlyArray<string>): {
+  readonly spec: ParallelMultiNodeSpec;
+  readonly workerFor: (role: string) => FakeWorker;
+} {
+  const backend = new FakeWorkerBackend({ onSpawn: (worker) => { autoHandshake(worker); } });
+  const spec = new ParallelMultiNodeSpec({ roles: [...roles], backend });
+  const workerFor = (role: string): FakeWorker => {
+    // `spawnRole` names each worker after its role; matching on the name rather
+    // than on spawn order keeps this honest if seed ordering ever changes.
+    const worker = backend.spawned.find((candidate) => candidate.name === `parallel-mns-${role}`);
+    if (!worker) throw new Error(`no worker was spawned for role '${role}'`);
+    return worker;
+  };
+  return { spec, workerFor };
+}
+
+/** The `reqId` the harness stamped on the last control frame it posted to `worker`. */
+function lastControlRequestId(worker: FakeWorker): number {
+  const controlFrames = worker.posted.filter(
+    (frame): frame is { kind: string; reqId: number } => {
+      const kind = (frame as { kind?: unknown } | null | undefined)?.kind;
+      return typeof kind === 'string' && kind.startsWith('mns-test.');
+    },
+  );
+  const last = controlFrames.at(-1);
+  if (last === undefined) throw new Error('the harness posted no control frame to this worker');
+  return last.reqId;
+}
+
+/**
+ * Run `body` with `console.warn` captured.  The mismatch report has no other
+ * seam — the harness owns no `ActorSystem`, so the console is where it writes —
+ * and capturing also keeps the expected warning out of the run's output.
+ */
+function captureWarnings(body: () => void): ReadonlyArray<string> {
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]): void => { warnings.push(args.map((a) => String(a)).join(' ')); };
+  try {
+    body();
+    return warnings;
+  } finally {
+    console.warn = originalWarn;
+  }
+}
+
+/**
+ * Whether `promise` has settled *already*, without waiting on it.
+ *
+ * Ten microtask turns is an upper bound on the two the `getMembers` chain
+ * needs — nothing on this path waits on a timer once a frame has been
+ * delivered, so draining is deterministic rather than a bet.  Asserting
+ * settledness directly is what keeps a regression legible: awaiting the value
+ * instead would hang on `controlRpc`'s 5 s timer and be reported by bun as
+ * `this test timed out after 5000ms`, the one message that names nothing.
+ */
+async function hasSettled(promise: Promise<unknown>): Promise<boolean> {
+  let done = false;
+  void promise.then(() => { done = true; }, () => { done = true; });
+  for (let turn = 0; turn < 10; turn++) await Promise.resolve();
+  return done;
+}
+
+const MEMBERS_OF_A: MemberSnapshot[] = [
+  { address: '127.0.0.1:30500', status: 'up', roles: ['a'] },
+  { address: '127.0.0.1:30501', status: 'up', roles: ['b'] },
+];
+
+/** Deliberately a different view, so a reply from the wrong role is visible. */
+const MEMBERS_OF_B: MemberSnapshot[] = [
+  { address: '127.0.0.1:30501', status: 'up', roles: ['b'] },
+];
+
+describe('ParallelMultiNodeSpec — control-RPC correlation', () => {
+  test('a frame from another role does not settle the pending RPC', async () => {
+    const { spec, workerFor } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      const membersPromise = spec.getMembers('a');
+      const requestId = lastControlRequestId(workerFor('a'));
+
+      // Role 'b' originates a frame carrying role 'a''s request id — what a
+      // custom bootstrap or a scenario posting raw frames can produce.
+      const warnings = captureWarnings(() => {
+        workerFor('b').deliverMessage({
+          kind: 'mns-test.run-command-response', reqId: requestId, result: 'stray',
+        });
+      });
+      expect(await hasSettled(membersPromise)).toBe(false);
+
+      // The genuine reply, from the role that was actually asked, still lands:
+      // the stray must be dropped WITHOUT consuming the pending entry.
+      workerFor('a').deliverMessage({
+        kind: 'mns-test.query-members-response', reqId: requestId, members: MEMBERS_OF_A,
+      });
+
+      expect(await hasSettled(membersPromise)).toBe(true);
+      expect(await membersPromise).toEqual(MEMBERS_OF_A);
+      expect(warnings.join('\n')).toContain("from role 'b'");
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('a frame of the RIGHT kind from another role does not settle it either', async () => {
+    const { spec, workerFor } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      const membersPromise = spec.getMembers('a');
+      const requestId = lastControlRequestId(workerFor('a'));
+
+      // Right kind, wrong worker — the case a kind-only guard waves through,
+      // and the one that does the quiet damage: role 'b''s member view is a
+      // perfectly well-formed answer to a question role 'a' was asked.
+      const warnings = captureWarnings(() => {
+        workerFor('b').deliverMessage({
+          kind: 'mns-test.query-members-response', reqId: requestId, members: MEMBERS_OF_B,
+        });
+      });
+      expect(await hasSettled(membersPromise)).toBe(false);
+
+      workerFor('a').deliverMessage({
+        kind: 'mns-test.query-members-response', reqId: requestId, members: MEMBERS_OF_A,
+      });
+
+      expect(await hasSettled(membersPromise)).toBe(true);
+      expect(await membersPromise).toEqual(MEMBERS_OF_A);
+      expect(warnings.join('\n')).toContain("from role 'b'");
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('a frame of the wrong kind from the right role does not settle it', async () => {
+    const { spec, workerFor } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      const membersPromise = spec.getMembers('a');
+      const requestId = lastControlRequestId(workerFor('a'));
+
+      // Same worker, right request id, wrong conversation — a double-reply from
+      // one role is as mis-correlated as a reply from another.
+      const warnings = captureWarnings(() => {
+        workerFor('a').deliverMessage({
+          kind: 'mns-test.run-command-response', reqId: requestId, result: 'stray',
+        });
+      });
+      expect(await hasSettled(membersPromise)).toBe(false);
+
+      workerFor('a').deliverMessage({
+        kind: 'mns-test.query-members-response', reqId: requestId, members: MEMBERS_OF_A,
+      });
+
+      expect(await hasSettled(membersPromise)).toBe(true);
+      expect(await membersPromise).toEqual(MEMBERS_OF_A);
+      expect(warnings.join('\n')).toContain('mns-test.run-command-response');
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('the matching reply from the role that was asked still settles it', async () => {
+    const { spec, workerFor } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      const leaderPromise = spec.getLeader('b');
+      const requestId = lastControlRequestId(workerFor('b'));
+
+      const warnings = captureWarnings(() => {
+        workerFor('b').deliverMessage({
+          kind: 'mns-test.query-leader-response', reqId: requestId, leader: '127.0.0.1:30500',
+        });
+      });
+
+      // The other half of the guard: a correlation check that rejected the
+      // right reply too would pass every test above and break the harness.
+      expect(await hasSettled(leaderPromise)).toBe(true);
+      expect(await leaderPromise).toBe('127.0.0.1:30500');
+      expect(warnings).toEqual([]);
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('two roles in flight at once each get their own reply', async () => {
+    const { spec, workerFor } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      const membersPromise = spec.getMembers('a');
+      const leaderPromise = spec.getLeader('b');
+      const membersRequestId = lastControlRequestId(workerFor('a'));
+      const leaderRequestId = lastControlRequestId(workerFor('b'));
+      expect(membersRequestId).not.toBe(leaderRequestId);
+
+      // Answered out of order, so nothing here depends on the counter's values.
+      workerFor('b').deliverMessage({
+        kind: 'mns-test.query-leader-response', reqId: leaderRequestId, leader: null,
+      });
+      workerFor('a').deliverMessage({
+        kind: 'mns-test.query-members-response', reqId: membersRequestId, members: MEMBERS_OF_A,
+      });
+
+      expect(await hasSettled(leaderPromise)).toBe(true);
+      expect(await hasSettled(membersPromise)).toBe(true);
+      expect(await leaderPromise).toBeNull();
+      expect(await membersPromise).toEqual(MEMBERS_OF_A);
+    } finally {
+      await spec.stop();
+    }
   });
 });
 
