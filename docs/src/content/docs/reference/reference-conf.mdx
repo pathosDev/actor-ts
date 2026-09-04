@@ -505,6 +505,28 @@ actor-ts {
     max-pending-quorum-requests = 1000
     max-quorum-timeout = 30s
     max-gossip-bytes = 1M
+
+    # Name a key whose own encoding passes this, and keep gossiping it -- this
+    # warns, it never skips.  Roughly a tenth of the budget above (100 KiB
+    # against 1 MiB), because that is where one value starts governing
+    # everyone else's convergence: ten such keys fill a whole tick, so every
+    # other key waits an extra sweep per offender.  Its own quiet period,
+    # deliberately not shared with the oversize warning above -- "split this
+    # value" and "raise the budget" are different actions and neither may
+    # silence the other.  0 = never warn.
+    log-data-size-exceeding = 100K
+
+    # Which keys a configured durableStore actually persists.  EMPTY MEANS
+    # EVERY KEY -- what every release so far has done -- and never "persist
+    # nothing"; persisting nothing is what configuring no store does.  An
+    # entry is an exact key name or a prefix with one trailing "*"
+    # (session-*); that is the whole syntax, because a richer pattern means
+    # building a matcher out of this file and a regex from config is a ReDoS
+    # surface.  Note that a replica's record is rewritten whole on every save,
+    # so REMOVING an entry drops the keys it named from the persisted record
+    # on the next mutation.  Inert, with a startup warning, when no store is
+    # configured.
+    durable-keys = []
   }
 
   remote {

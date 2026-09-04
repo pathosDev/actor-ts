@@ -171,6 +171,20 @@ function warningsOf(node: Node): string[] {
     .map((record) => record.message);
 }
 
+/**
+ * The replicator's "this key is large but travelling" lines, in order (#856).
+ *
+ * A different substring from {@link warningsOf} on purpose: the two lines are
+ * emitted from different reporters behind different rate limiters, and a
+ * filter loose enough to catch both would make every assertion below satisfied
+ * by the oversize warning that was already there.
+ */
+function sizeWarningsOf(node: Node): string[] {
+  return node.log.records
+    .filter((record) => record.level === 'warn' && record.message.includes('reporting threshold'))
+    .map((record) => record.message);
+}
+
 type Node = {
   readonly cluster: Cluster;
   readonly transport: FrameCapturingTransport;
@@ -382,5 +396,118 @@ describe('#691 — a gossip frame never outgrows the transport frame cap', () =>
     for (const frame of frames) {
       expect(keysIn(frame).length).toBe(keys.length);
     }
+  });
+});
+
+/**
+ * #856 — `log-data-size-exceeding` names a key that is large but still fits.
+ *
+ * The gap it closes sits *under* everything the suite above tests.  A key past
+ * the whole frame budget is skipped, warned about and counted; a key at a
+ * large fraction of it travels perfectly and is invisible, while consuming
+ * that fraction of every tick it appears in and slowing the sweep for
+ * everything else in the store.  Nothing anywhere said so.
+ *
+ * Every assertion below therefore pairs the warning with **convergence**: a
+ * threshold implemented as a second skip would satisfy "it warned" and be a
+ * far worse bug than the silence it replaced, so "the key still reached the
+ * peer" is asserted in the same test rather than in a sibling.
+ */
+describe('#856 — a large-but-sendable key is reported without being skipped', () => {
+  test('a key over the threshold is named, and still converges on the peer', async () => {
+    const reportingOptions = DistributedDataOptions.create()
+      .withGossipInterval(GOSSIP_INTERVAL_MS)
+      .withLogDataSizeExceeding(500);
+    const { a, handleA, handleB } = await twoReplicas('size-warn', 49_561, reportingOptions);
+    // ~1 230 measured bytes: comfortably over the 500-byte threshold and
+    // comfortably under the 4 096-byte frame cap, which is the whole band this
+    // option exists for.
+    seedKeys(handleA, 1, 1_200);
+
+    await awaitCondition(() => sizeWarningsOf(a).length > 0, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'the replicator reported the large key',
+    });
+
+    const warning = sizeWarningsOf(a)[0]!;
+    expect(warning).toContain('"key-0"');
+    expect(warning).toMatch(/at \d+ bytes/);
+    // Actionable, not merely alarming — the same standard the oversize line is
+    // held to two describes up.
+    expect(warning).toContain('log-data-size-exceeding');
+
+    // The half that separates a report from a second cap.
+    await awaitCondition(() => handleB.get<GSet<string>>('key-0') !== undefined, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'the reported key reached the peer replica anyway',
+    });
+    expect(handleB.get<GSet<string>>('key-0')?.value())
+      .toEqual(handleA.get<GSet<string>>('key-0')?.value());
+    // And it was never counted as a skip: the two conditions share a packer
+    // loop, so a fix that reported by reusing the skip path would pass every
+    // assertion above.
+    expect(warningsOf(a)).toEqual([]);
+  });
+
+  test('0 never reports, however large the key', async () => {
+    const silentOptions = DistributedDataOptions.create()
+      .withGossipInterval(GOSSIP_INTERVAL_MS)
+      .withLogDataSizeExceeding(0);
+    const { a, handleA, handleB } = await twoReplicas('size-off', 49_571, silentOptions);
+    seedKeys(handleA, 1, 1_200);
+
+    // Waited on the convergence rather than on a timer: it is the observable
+    // proof that the packer measured this key, so the absence asserted
+    // afterwards is an absence of *reporting* and not of activity.
+    await awaitCondition(() => handleB.get<GSet<string>>('key-0') !== undefined, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'the key reached the peer replica',
+    });
+
+    expect(sizeWarningsOf(a)).toEqual([]);
+  });
+
+  test('a key under the threshold is not reported', async () => {
+    // The other direction: a threshold that fired on everything would pass the
+    // first test here and be worthless in production.
+    const reportingOptions = DistributedDataOptions.create()
+      .withGossipInterval(GOSSIP_INTERVAL_MS)
+      .withLogDataSizeExceeding(2_000);
+    const { a, handleA, handleB } = await twoReplicas('size-under', 49_581, reportingOptions);
+    const keys = seedKeys(handleA, 3, 200);
+
+    await awaitCondition(() => keys.every((key) => handleB.get<GSet<string>>(key) !== undefined), {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'every small key reached the peer replica',
+    });
+
+    expect(sizeWarningsOf(a)).toEqual([]);
+  });
+
+  test('an oversized key is reported by BOTH lines, on independent quiet periods', async () => {
+    // The placement decision, made observable.  The size check runs before the
+    // budget check, so a key past the frame budget trips both — and it must,
+    // because raising `max-gossip-bytes` is precisely the fix for the oversize
+    // line and precisely the change that makes the size line more relevant.
+    // Sharing one timestamp between the two reporters would let the first
+    // suppress the second for a minute at a time, which is why they do not.
+    const reportingOptions = DistributedDataOptions.create()
+      .withGossipInterval(GOSSIP_INTERVAL_MS)
+      .withLogDataSizeExceeding(500);
+    const { a, handleA } = await twoReplicas('size-both', 49_591, reportingOptions);
+    handleA.update<GSet<string>>('too-big', () => GSet.empty<string>(), (set) => set.add('y'.repeat(FRAME_CAP_BYTES * 2)));
+
+    await awaitCondition(() => warningsOf(a).length > 0 && sizeWarningsOf(a).length > 0, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'the replicator emitted both the skip line and the size line',
+    });
+
+    expect(warningsOf(a)[0]).toContain('"too-big"');
+    expect(sizeWarningsOf(a)[0]).toContain('"too-big"');
   });
 });

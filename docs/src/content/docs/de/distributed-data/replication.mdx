@@ -115,6 +115,39 @@ Wenn dein Store groß wird, verteilt ein höheres `gossip-interval`
 die Kosten über die Zeit; ein kleineres `max-gossip-bytes` verteilt
 die Kosten eines Ticks über mehr Ticks.
 
+### Die Frühwarnung: `log-data-size-exceeding`
+
+Das Budget meldet sich erst, wenn ein Key ein **ganzes** Frame
+überschritten hat — und dann konvergiert dieser Key längst nicht
+mehr.  Ein Key bei einem großen *Bruchteil* des Budgets ist im
+Vergleich unsichtbar und trotzdem teuer: Er gossipt einwandfrei,
+verbraucht aber genau diesen Bruchteil jedes Ticks, in dem er
+auftaucht — alles andere im Store wird also entsprechend langsamer
+verteilt, und nichts sagt, warum.
+
+`log-data-size-exceeding` (Default `100K`, ungefähr ein Zehntel des
+Budgets) ist diese Frühwarnung.  Ein Key darüber wird **benannt,
+nicht übersprungen** — der Packer behandelt ihn exakt so wie zuvor:
+
+```ts
+const distributedDataOptions = DistributedDataOptions.create()
+  .withMaxGossipBytes(1024 * 1024)
+  .withLogDataSizeExceeding(100 * 1024);
+```
+
+Die Warnung ist auf eine Zeile pro Minute ratenbegrenzt und trägt
+eine laufende Gesamtzahl mit sich; sie hat **ihre eigene**
+Ruhephase, statt sich die der Skip-Warnung zu teilen.  Das ist
+genau dann wichtig, wenn beide feuern: Ein höheres
+`max-gossip-bytes` behebt „dieser Key lässt sich überhaupt nicht
+gossipen" — und macht „dieser Key kostet ein Zehntel jedes Ticks"
+*relevanter*, nicht weniger relevant.  `0` schaltet die Meldung ab.
+
+Da der Packer ab seinem Cursor nur so viele Keys besucht, bis das
+Budget voll ist, wird ein Key in einem großen Store einmal pro
+**Sweep** gemessen statt einmal pro Tick — die richtige Taktung für
+etwas, das ohnehin auf eine Minute ratenbegrenzt ist.
+
 ## Auswahl des Peers pro Runde
 
 ```ts

@@ -324,6 +324,8 @@ zählen gegen keine der Grenzen.
 | `distributed-data.max-pending-quorum-requests` | `1000` | Obergrenze für offene Quorum-Requests — `updateAsync` und `getAsync` teilen sich ein Budget.  Ein Request darüber wird direkt abgelehnt.  `0` deaktiviert das Cap. |
 | `distributed-data.max-quorum-timeout` | `30s` | Obergrenze für das `timeoutMs` eines Aufrufs; ein größerer Wert wird darauf heruntergeschnitten.  `0` deaktiviert die Obergrenze. |
 | `distributed-data.max-gossip-bytes` | `1M` | Byte-Budget für die Payload eines Gossip-Frames.  Ein größerer Store wird pro Tick in Scheiben geschickt und setzt dort fort, wo der letzte Tick aufgehört hat.  `0` entfernt das Budget. |
+| `distributed-data.log-data-size-exceeding` | `100K` | Warnt (ratenbegrenzt) über einen Key, dessen eigene Kodierung diese Byte-Zahl überschreitet.  Reine Meldung — der Key wird gegossipt wie zuvor.  `0` warnt nie. |
+| `distributed-data.durable-keys` | `[]` | Welche Keys ein konfigurierter `durableStore` persistiert.  **Leer heißt jeder Key.**  Ein Eintrag ist ein exakter Key-Name oder ein Präfix mit einem abschließenden `*`. |
 
 `max-gossip-bytes` wird immer **auf `remote.max-frame-bytes` heruntergeschnitten**:
 Wer das Wire-Cap senkt, senkt damit auch das Gossip-Budget, und keine
@@ -352,6 +354,35 @@ alle drei an, ohne dass irgendetwas ihn bremst.  Wer über
 `max-pending-quorum-requests` hinaus ablehnt, macht aus dem, was später als
 Timeout-Sturm ankäme, sofortige Fehler, die den Knopf beim Namen nennen.
 Siehe [Quorum-Reads und -Writes](/de/distributed-data/quorum-reads-writes/).
+
+`log-data-size-exceeding` meldet dieselbe Messung, die auch
+`max-gossip-bytes` vornimmt — nur eine Größenordnung früher — und ändert
+nichts daran, was verschickt wird.  Ein Key jenseits des gesamten Budgets ist
+ohnehin laut; ein Key bei einem großen *Bruchteil* davon gossipt einwandfrei
+und verbraucht dabei genau diesen Bruchteil jedes Ticks, in dem er auftaucht —
+der Rest des Stores wird also entsprechend langsamer verteilt, ohne dass
+irgendetwas sagt, warum.  `100K` ist ungefähr ein Zehntel des ausgelieferten
+Budgets — zehn solcher Keys füllen ein ganzes Frame — und bewusst nicht Akkas
+`10KiB`, was noch einmal ein Zehntel davon wäre und beim ersten
+legitimen `ORSet` eines Deployments anschlagen würde.  Die Zeile hat ihre
+eigene Ruhephase, statt sich die der Oversize-Warnung zu teilen: Ein höheres
+`max-gossip-bytes` behebt jene und macht diese *relevanter*, keine der beiden
+darf die andere unterdrücken.
+
+`durable-keys` schränkt ein, was ein konfigurierter `durableStore` schreibt;
+ohne Store ist der Key wirkungslos, und eine nicht-leere Liste ohne Store wird
+beim Start als Warnung gemeldet.  **Eine leere Liste heißt jeder Key** — das
+Verhalten jedes Releases vor dieser Option — und niemals „nichts
+persistieren"; nichts zu persistieren erreicht man, indem man keinen Store
+konfiguriert.  Ein Eintrag ist ein exakter Key-Name oder ein Präfix mit einem
+abschließenden `*` (`session-*`), und das ist die gesamte Syntax: Ein
+reichhaltigeres Muster hieße, aus einer Config-Datei einen Matcher zu bauen,
+und `new RegExp(…)` über einen vom Betreiber gelieferten Text ist eine
+ReDoS-Angriffsfläche auf genau dem Pfad, der entscheidet, was einen Neustart
+überlebt.  Der Datensatz einer Replika wird bei jedem Save vollständig neu
+geschrieben — **einen Eintrag zu entfernen löscht die Keys**, die er benannte,
+bei der nächsten Mutation aus dem persistierten Datensatz.  Siehe
+[Durable Storage](/de/distributed-data/durable-storage/).
 
 `max-quorum-timeout` begrenzt die andere Achse.  Ein offener Request hält
 seinen Slot über die gesamte Deadline, ein einzelner Aufrufer mit einem

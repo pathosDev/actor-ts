@@ -315,6 +315,8 @@ released by death watch and do not count against either cap.
 | `distributed-data.max-pending-quorum-requests` | `1000` | Cap on unsettled quorum requests — `updateAsync` and `getAsync` share one budget.  A request past it is rejected outright.  `0` disables the cap. |
 | `distributed-data.max-quorum-timeout` | `30s` | Ceiling on a caller's per-call `timeoutMs`; a larger value is clamped down to this one.  `0` disables the ceiling. |
 | `distributed-data.max-gossip-bytes` | `1M` | Byte budget for one gossip frame's payload.  A larger store is pushed a slice per tick, resuming where the last one stopped.  `0` removes the budget. |
+| `distributed-data.log-data-size-exceeding` | `100K` | Warn (rate-limited) about a key whose own encoding passes this many bytes.  Reports only — the key is gossiped exactly as it would have been.  `0` never warns. |
+| `distributed-data.durable-keys` | `[]` | Which keys a configured `durableStore` persists.  **Empty means every key.**  An entry is an exact key name or a prefix with one trailing `*`. |
 
 `max-gossip-bytes` is always **clamped down to `remote.max-frame-bytes`**, so
 lowering the wire cap lowers the gossip budget with it and no setting can put
@@ -339,6 +341,31 @@ uncapped replicator under load accumulates all three with nothing to stop it.
 Refusing past `max-pending-quorum-requests` turns what would arrive later as a
 timeout storm into immediate rejections that name the knob.  See
 [Quorum reads and writes](/distributed-data/quorum-reads-writes/).
+
+`log-data-size-exceeding` reports on the same measurement `max-gossip-bytes`
+takes, one order of magnitude earlier, and changes nothing about what travels.
+A key past the whole budget is already loud; a key at a large *fraction* of it
+gossips perfectly while consuming that fraction of every tick it appears in, so
+the rest of the store sweeps proportionally slower with nothing to say why.
+`100K` is roughly a tenth of the shipped budget — ten such keys fill a whole
+frame — and deliberately not Akka's `10KiB`, which is a tenth of that again and
+would fire on the first legitimate `ORSet` a deployment stores.  The line has
+its own quiet period rather than sharing the oversize warning's: raising
+`max-gossip-bytes` is the fix for that one and makes this one *more* relevant,
+so neither may silence the other.
+
+`durable-keys` narrows what a configured `durableStore` writes; without a store
+it is inert, and a non-empty list with no store is warned about at startup.
+**An empty list means every key** — the behaviour of every release before the
+option existed — never "persist nothing"; persisting nothing is what
+configuring no store does.  An entry is an exact key name or a prefix with one
+trailing `*` (`session-*`), and that is the entire syntax: a richer pattern
+would mean compiling a matcher out of a config file, and `new RegExp(…)` over
+operator-supplied text is a ReDoS surface on the path that decides what
+survives a restart.  A replica's record is rewritten whole on every save, so
+**removing an entry drops the keys it named** from the persisted record on the
+next mutation.  See
+[Durable storage](/distributed-data/durable-storage/).
 
 `max-quorum-timeout` bounds the other axis.  A pending request holds one of
 those slots for its whole deadline, so a single caller passing an hour-long
