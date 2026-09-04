@@ -124,6 +124,68 @@ Setze `consumer`, um eine dauerhafte Subscription zu binden.
 | `maxAcknowledgmentPending` | Max. unbestätigte Nachrichten in Flight.  Default `1024`. |
 | `create` | Consumer beim Verbinden anlegen/aktualisieren.  Default `true`. |
 
+### Beide Gruppen aus HOCON
+
+Welchen Stream ein Actor besitzt und welches Durable er bindet, ist
+Deployment-Gestalt und keine Anwendungslogik — beide Gruppen sind deshalb
+unter `actor-ts.io.broker.jetstream` lesbar, ebenso die Ack-Wait-Obergrenze:
+
+```hocon
+actor-ts.io.broker.jetstream {
+  acknowledgment-timeout = 45s
+
+  stream {
+    name         = "BILLING"
+    subjects     = ["billing.>"]
+    retention    = "workqueue"
+    storage      = "file"
+    max-messages = 1000000
+    max-bytes    = 8M
+    max-age      = 3600000000000   # NANOseconds, passed through verbatim
+    create       = true
+  }
+
+  consumer {
+    durable                   = "billing-proc"
+    mode                      = "push"
+    deliver-policy            = "all"
+    ack-policy                = "explicit"
+    ack-wait                  = 30s
+    filter-subject            = "billing.charges"
+    max-acknowledgment-pending = 1024
+    create                    = true
+  }
+}
+```
+
+`deliver-policy` nimmt auch seine beiden parametrisierten Formen, als Objekt.
+Das `kind` behält seine TypeScript-Schreibweise, weil es ein *Wert* ist, der
+unverändert in der Union landet; nur die Blattnamen drumherum sind
+kebab-case:
+
+```hocon
+consumer {
+  durable        = "billing-proc"
+  deliver-policy { kind = "byStartSeq", start-seq = 4242 }
+  # or:          { kind = "byStartTime", start-time = 1767225600000 }  # epoch ms
+}
+```
+
+Ein unbekanntes `kind` wird beim Start abgelehnt, statt still auf `all`
+zurückzufallen — das würde bei einem Tippfehler einen ganzen Stream erneut
+zustellen.
+
+Beide Gruppen werden **als Ganzes** gelesen: `withStream({ … })` /
+`withConsumer({ … })` im Code ersetzen den konfigurierten Block, statt sich
+hineinzumischen — die gewohnte Präzedenz (Konstruktor > HOCON > Defaults),
+angewendet auf das Feld, das das jeweilige Objekt *ist*.  `name` + `subjects`
+sowie `durable` sind Pflicht; ein Block ohne eines wird beim Start abgelehnt
+und benennt das Blatt.
+
+`target` hat keinen Config-Key — eine `ActorRef` benennt einen lebenden Actor
+in diesem Prozess, und den kann eine Config-Datei nicht bezeichnen.  `tls`
+ebenso wenig: es trägt das Zertifikatsmaterial selbst.
+
 ## Befehle
 
 `JetStreamActor` akzeptiert einen `JetStreamCommand` (diskriminiert über `kind`):

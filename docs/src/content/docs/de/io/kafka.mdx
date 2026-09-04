@@ -65,6 +65,35 @@ interface KafkaOptionsType extends BrokerCommonOptionsType {
 Der Parent `BrokerCommonOptionsType` gibt dir Reconnect, Buffer,
 Breaker — siehe [BrokerActor-Basis](/de/io/broker-actor-base/).
 
+### Der Producer-Block aus HOCON
+
+Idempotenz und automatische Topic-Erzeugung sind eher Cluster-Policy als
+Anwendungscode, deshalb sind beide unter `actor-ts.io.broker.kafka` lesbar:
+
+```hocon
+actor-ts.io.broker.kafka {
+  producer {
+    idempotent                 = true
+    allow-auto-topic-creation  = false
+  }
+}
+```
+
+Nennst du nur eines von beiden, behält das andere seinen eingebauten Default —
+der Reader baut den Block neu auf, statt einen partiellen zurückzugeben, ein
+HOCON-`producer { idempotent = true }` kann `allowAutoTopicCreation` also
+nicht ausleeren.
+
+`withProducer({ … })` im Code ersetzt den konfigurierten Block weiterhin
+vollständig: gewohnte Präzedenz (Konstruktor > HOCON > Defaults), angewendet
+auf das Feld, das dieses Objekt *ist*.
+
+`target` hat keinen Config-Key — es ist eine `ActorRef`, die einen lebenden
+Actor in diesem Prozess benennt, und dafür hat eine Config-Datei keine
+Schreibweise.  Ebenso wenig die Zertifikatsform von `ssl`: das HOCON-Blatt ist
+nur boolesch, denn eine Config-Datei ist der falsche Ort für einen Private
+Key.
+
 ## Producen
 
 ```ts

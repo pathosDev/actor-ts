@@ -36,11 +36,26 @@ export interface JetStreamOptionsType extends BrokerCommonOptionsType {
    * the wrong place for a private key.
    */
   readonly tls?: TlsTransportOptionsType;
-  /** Stream lifecycle config — set when this actor owns the stream. */
+  /**
+   * Stream lifecycle config — set when this actor owns the stream.
+   *
+   * Readable from HOCON as `stream { … }`, whose leaves are the kebab-case of
+   * these fields (`max-messages`, `max-bytes`, `max-age`).  The block is read
+   * whole, not merged leaf-wise onto a code-side `withStream(…)`: an explicit
+   * value replaces it entirely, which is the ordinary options precedence
+   * applied at the field this object *is*.
+   */
   readonly stream?: JetStreamStreamConfig;
-  /** Consumer config — required to start a subscription. */
+  /**
+   * Consumer config — required to start a subscription.  Readable from HOCON
+   * as `consumer { … }` on the same terms as {@link stream}, including the
+   * two `deliver-policy` object arms.
+   */
   readonly consumer?: JetStreamConsumerConfig;
-  /** Actor receiving every consumed message. */
+  /**
+   * Actor receiving every consumed message.  No HOCON leaf: an `ActorRef`
+   * names a live actor in this process, which a config file cannot denote.
+   */
   readonly target?: ActorRef<JetStreamMessage>;
   /**
    * Max time the manual-ack pump waits for a `ack`/`nak`/`term`
@@ -107,6 +122,88 @@ export class JetStreamOptionsBuilder extends BrokerOptionsBuilder<JetStreamOptio
   }
 }
 
+/**
+ * A `stream` / `consumer` leaf that is present but outside its domain — the
+ * shape `FramingViolation` in `TcpFraming.ts` has, kept module-local because
+ * nothing outside this file reports one.
+ */
+type JetStreamGroupViolation = {
+  readonly field: string;
+  readonly reason: string;
+  readonly value: unknown;
+};
+
+/**
+ * The first `stream` / `consumer` leaf that is present but outside its domain.
+ *
+ * A free function for the reason `findFramingViolation` is one: both
+ * groups' leaves sit a level below the top-level fields the check helpers are
+ * typed against, so the helpers cannot address them. Spelling the rules out
+ * once here covers the builder, a plain object and HOCON alike.
+ *
+ * The two required leaves are the point of it. {@link JetStreamStreamConfig}
+ * types `name` and `subjects` as required and {@link JetStreamConsumerConfig}
+ * types `durable` the same way, so from code the compiler is the guard — but
+ * HOCON has no compiler, and the readers turn an absent required leaf into the
+ * empty value precisely so this reports it by name. Without that, an unnamed
+ * stream reaches `jsm.streams.add` and fails as a server-side error about a
+ * request nobody wrote.
+ */
+function findJetStreamGroupProblem(
+  s: Partial<JetStreamOptionsType>,
+): JetStreamGroupViolation | undefined {
+  const stream = s.stream;
+  if (stream !== undefined) {
+    if (typeof stream.name !== 'string' || stream.name.length === 0) {
+      return { field: 'stream.name', reason: 'must not be empty', value: stream.name };
+    }
+    if (!Array.isArray(stream.subjects) || stream.subjects.length === 0) {
+      return { field: 'stream.subjects', reason: 'must not be empty', value: stream.subjects };
+    }
+    if (stream.retention !== undefined
+        && !['limits', 'interest', 'workqueue'].includes(stream.retention)) {
+      return {
+        field: 'stream.retention',
+        reason: "must be 'limits', 'interest' or 'workqueue'",
+        value: stream.retention,
+      };
+    }
+    if (stream.storage !== undefined && !['memory', 'file'].includes(stream.storage)) {
+      return { field: 'stream.storage', reason: "must be 'memory' or 'file'", value: stream.storage };
+    }
+  }
+
+  const consumer = s.consumer;
+  if (consumer !== undefined) {
+    if (typeof consumer.durable !== 'string' || consumer.durable.length === 0) {
+      return { field: 'consumer.durable', reason: 'must not be empty', value: consumer.durable };
+    }
+    if (consumer.mode !== undefined && !['push', 'pull'].includes(consumer.mode)) {
+      return { field: 'consumer.mode', reason: "must be 'push' or 'pull'", value: consumer.mode };
+    }
+    if (consumer.ackPolicy !== undefined
+        && !['explicit', 'none', 'all'].includes(consumer.ackPolicy)) {
+      return {
+        field: 'consumer.ackPolicy',
+        reason: "must be 'explicit', 'none' or 'all'",
+        value: consumer.ackPolicy,
+      };
+    }
+    // Only the string arms are checked: the object arms carry a `kind` the
+    // HOCON reader already refuses to build from an unknown spelling, and
+    // from code they are the union's own members.
+    const deliverPolicy = consumer.deliverPolicy;
+    if (typeof deliverPolicy === 'string' && !['all', 'last', 'new'].includes(deliverPolicy)) {
+      return {
+        field: 'consumer.deliverPolicy',
+        reason: "must be 'all', 'last' or 'new' (or the { kind } object form)",
+        value: deliverPolicy,
+      };
+    }
+  }
+  return undefined;
+}
+
 /** Validates resolved {@link JetStreamOptionsType} settings. */
 export class JetStreamOptionsValidator extends BrokerOptionsValidator<JetStreamOptionsType> {
   constructor() {
@@ -116,6 +213,15 @@ export class JetStreamOptionsValidator extends BrokerOptionsValidator<JetStreamO
     this.commonRules(s);
     this.nonEmptyStringOrArray('servers', s.servers);
     this.positiveNumber('acknowledgmentTimeout');
+    this.nestedPositive('stream.maxMessages', s.stream?.maxMessages);
+    this.nestedPositive('stream.maxBytes', s.stream?.maxBytes);
+    this.nestedPositive('stream.maxAge', s.stream?.maxAge);
+    this.nestedPositive('consumer.ackWaitMs', s.consumer?.ackWaitMs);
+    this.nestedPositive('consumer.maxAcknowledgmentPending', s.consumer?.maxAcknowledgmentPending);
+    const groupProblem = findJetStreamGroupProblem(s);
+    if (groupProblem !== undefined) {
+      this.fail(groupProblem.field, groupProblem.reason, groupProblem.value);
+    }
     const tlsProblem = findBrokerTlsProblem(s.tls);
     if (tlsProblem !== null) this.fail('tls', tlsProblem);
   }

@@ -229,6 +229,13 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     if (config.hasPath('protocols')) out.protocols = config.getStringList('protocols');
     if (config.hasPath('pingIntervalMs')) out.pingIntervalMs = config.getDuration('pingIntervalMs');
     if (config.hasPath('maxFrameBytes')) out.maxFrameBytes = config.getBytes('maxFrameBytes');
+    // The *server* side spells its own policy `actor-ts.http.websocket
+    // .on-invalid-message` and offers `close | drop | hook`; this is the
+    // client's, and its third arm is `disconnect`.  The value lists are not
+    // interchangeable — WebsocketClientOptionsValidator is what says so.
+    if (config.hasPath('on-invalid-message')) {
+      out.onInvalidMessage = config.getString('on-invalid-message') as WebsocketClientOptionsType['onInvalidMessage'];
+    }
     if (config.hasPath('idleTimeoutMs')) out.idleTimeoutMs = config.getDuration('idleTimeoutMs');
     if (config.hasPath('connectTimeoutMs')) out.connectTimeoutMs = config.getDuration('connectTimeoutMs');
     return out;

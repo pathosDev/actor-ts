@@ -107,6 +107,35 @@ Common patterns:
 - **`withProtocolVersion(5)`** — enables MQTT 5 features (user
   properties, reason codes on `MqttMessage`).  Requires a v5-capable broker.
 
+### The will, from HOCON
+
+The last will is what a fleet usually wants set per deployment rather than
+per build, so it has its own block under `actor-ts.io.broker.mqtt`:
+
+```hocon
+actor-ts.io.broker.mqtt {
+  will {
+    topic   = "devices/42/status"
+    payload = "offline"
+    qos     = 1
+    retain  = true
+  }
+}
+```
+
+Two things to know about it.
+
+`payload` is a **string** here.  The field is `string | Uint8Array`, and a
+config file has no spelling for bytes, so a binary will stays code-only.
+Leaving `payload` out gives the empty one, which is legal MQTT and is how a
+retained will is cleared — but `topic` is required, and a `will` block without
+one is refused at start rather than sent to the broker to be rejected there.
+
+The block is read **whole**.  `withWill({ … })` in code replaces the configured
+one entirely instead of merging leaf by leaf with it — which is the ordinary
+precedence (constructor > HOCON > defaults) applied at the field this object
+*is*.
+
 ## Typed payloads
 
 Inbound `MqttMessage<T>` carries a lazily-decoding `MqttPayload<T>`:

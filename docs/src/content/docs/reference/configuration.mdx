@@ -1662,8 +1662,15 @@ pages for the keys:
 | `io.broker.websocket` | [WebSocket client](/io/websocket/) |
 | `io.broker.sse` | [SSE](/io/sse/) |
 | `io.broker.tcp` | [TCP](/io/tcp/) |
+| `io.broker.tcp-server` | [TCP](/io/tcp/) |
 | `io.broker.udp` | [UDP](/io/udp/) |
 | `io.broker.email-bridge` | [Email bridge](/io/email-bridge/) |
+
+Not every field of those types has a key.  An `ActorRef` (`target`,
+`bindings`, `subscriptions`) names a live actor in this process, a codec or a
+handler is a function, and TLS material is a private key — none of the three
+has a config-file spelling, and each says so in its own JSDoc rather than
+being silently absent.
 
 ## HOCON-specific syntax
 

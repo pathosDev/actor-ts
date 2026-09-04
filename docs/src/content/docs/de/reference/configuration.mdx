@@ -1750,8 +1750,15 @@ per-Protokoll-Seiten für die Keys:
 | `io.broker.websocket` | [WebSocket Client](/de/io/websocket/) |
 | `io.broker.sse` | [SSE](/de/io/sse/) |
 | `io.broker.tcp` | [TCP](/de/io/tcp/) |
+| `io.broker.tcp-server` | [TCP](/de/io/tcp/) |
 | `io.broker.udp` | [UDP](/de/io/udp/) |
 | `io.broker.email-bridge` | [E-Mail-Bridge](/de/io/email-bridge/) |
+
+Nicht jedes Feld dieser Typen hat einen Key.  Eine `ActorRef` (`target`,
+`bindings`, `subscriptions`) benennt einen lebenden Actor in diesem Prozess,
+ein Codec oder ein Handler ist eine Funktion, und TLS-Material ist ein Private
+Key — keines der drei hat eine Schreibweise in einer Config-Datei, und jedes
+sagt das in seinem eigenen JSDoc, statt einfach zu fehlen.
 
 ## HOCON-spezifische Syntax
 
