@@ -12,6 +12,8 @@ import {
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
 import { DEFAULT_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/Constants.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
+import { DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION } from '../../../src/cluster/ClusterOptions.js';
+import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
 import {
   DEFAULT_DEAD_LETTER_MAX_ENTRIES,
   DEFAULT_DEAD_LETTER_MAX_REPLAYS,
@@ -232,9 +234,19 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.pub-sub.gossip-interval', kind: 'duration', constant: DEFAULT_GOSSIP_INTERVAL_MS },
   { key: 'actor-ts.cluster.receptionist.gossip-interval', kind: 'duration', constant: DEFAULT_GOSSIP_INTERVAL_MS },
   { key: 'actor-ts.distributed-data.gossip-interval', kind: 'duration', constant: DEFAULT_GOSSIP_INTERVAL_MS },
+  { key: 'actor-ts.cluster.failure-detector.implementation', kind: 'string', constant: DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION },
   { key: 'actor-ts.cluster.failure-detector.heartbeat-interval', kind: 'duration', constant: DEFAULT_HEARTBEAT_INTERVAL_MS },
   { key: 'actor-ts.cluster.failure-detector.unreachable-after', kind: 'duration', constant: defaultFailureDetectorOptions.unreachableAfterMs },
   { key: 'actor-ts.cluster.failure-detector.down-after', kind: 'duration', constant: defaultFailureDetectorOptions.downAfterMs },
+  // `number`, not `int`: φ is a continuous suspicion score and the reader is
+  // `getNumber`, so labelling these `int` would pass today (8 and 12 happen to
+  // be whole) while asserting the wrong accessor for the fractional thresholds
+  // the block exists to allow (#840).
+  { key: 'actor-ts.cluster.failure-detector.phi.unreachable-threshold', kind: 'number', constant: defaultPhiAccrualOptions.unreachableThreshold },
+  { key: 'actor-ts.cluster.failure-detector.phi.down-threshold', kind: 'number', constant: defaultPhiAccrualOptions.downThreshold },
+  { key: 'actor-ts.cluster.failure-detector.phi.max-sample-size', kind: 'int', constant: defaultPhiAccrualOptions.maxSampleSize },
+  { key: 'actor-ts.cluster.failure-detector.phi.min-std-deviation', kind: 'duration', constant: defaultPhiAccrualOptions.minStdDeviationMs },
+  { key: 'actor-ts.cluster.failure-detector.phi.acceptable-heartbeat-pause', kind: 'duration', constant: defaultPhiAccrualOptions.acceptableHeartbeatPauseMs },
   { key: 'actor-ts.cluster.seed-retry-interval', kind: 'duration', constant: DEFAULT_SEED_RETRY_INTERVAL_MS },
   { key: 'actor-ts.cluster.max-members', kind: 'int', constant: DEFAULT_MAX_MEMBERS },
   { key: 'actor-ts.cluster.max-tombstones', kind: 'int', constant: DEFAULT_MAX_TOMBSTONES },

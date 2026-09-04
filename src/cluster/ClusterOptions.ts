@@ -3,9 +3,21 @@ import { ConfigKeys } from '../config/ConfigKeys.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import { mergeOptions, stripUndefined } from '../util/OptionsMerge.js';
+import type { FailureDetectorImplementation } from './FailureDetector.js';
 import type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
+import type { PhiAccrualOptionsType } from './PhiAccrualOptions.js';
 import type { Transport } from './Transport.js';
 import type { DowningProvider } from './downing/DowningProvider.js';
+
+/**
+ * Built-in default for {@link ClusterOptionsType.failureDetectorImplementation}
+ * — the elapsed-time detector every cluster ran before #840 made the choice
+ * expressible at all.
+ *
+ * The default is "no change": φ-accrual is opt-in, so wiring the selector
+ * moves nothing for a deployment that does not ask for it.
+ */
+export const DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION: FailureDetectorImplementation = 'simple';
 
 /**
  * Built-in default for {@link ClusterOptionsType.seedRetryIntervalMs} — how
@@ -178,8 +190,27 @@ export type ClusterOptionsType = {
   readonly seeds?: string[];
   /** Role tags exposed to other members — used to constrain sharding placement. */
   readonly roles?: string[];
-  /** Failure detector thresholds. */
+  /**
+   * Which detection algorithm this node runs — `'simple'` (default) or
+   * `'phi'` (#840).
+   *
+   * A sibling field rather than a `kind` on {@link failureDetector}, because
+   * the two detectors do not share a settings shape and the thresholds below
+   * are the *simple* one's.  It is additive: an existing
+   * `withFailureDetector(…)` call keeps meaning exactly what it meant.
+   */
+  readonly failureDetectorImplementation?: FailureDetectorImplementation;
+  /** Failure detector thresholds — the `'simple'` implementation's. */
   readonly failureDetector?: Partial<FailureDetectorOptionsType>;
+  /**
+   * φ-accrual tuning, read only when
+   * {@link failureDetectorImplementation} is `'phi'`.
+   *
+   * `heartbeatIntervalMs` is absent from what config can set here and is
+   * overwritten by {@link failureDetector}'s: the cadence is the cluster's,
+   * not the algorithm's (#1142).
+   */
+  readonly phiAccrual?: Partial<PhiAccrualOptionsType>;
   /** Override the transport (e.g. InMemoryTransport for tests). */
   readonly transport?: Transport;
   /** How often gossip is pushed to a random reachable peer. */
@@ -381,9 +412,19 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
     return this.set('roles', roles);
   }
 
+  /** Which detection algorithm to run — `'simple'` (default) or `'phi'`. */
+  withFailureDetectorImplementation(implementation: FailureDetectorImplementation): this {
+    return this.set('failureDetectorImplementation', implementation);
+  }
+
   /** Failure-detector thresholds (merged over the built-in defaults). */
   withFailureDetector(failureDetector: Partial<FailureDetectorOptionsType>): this {
     return this.set('failureDetector', failureDetector);
+  }
+
+  /** φ-accrual tuning, used only when the implementation is `'phi'`. */
+  withPhiAccrual(phiAccrual: Partial<PhiAccrualOptionsType>): this {
+    return this.set('phiAccrual', phiAccrual);
   }
 
   /** Override the transport (e.g. `InMemoryTransport` for tests). */
@@ -492,6 +533,12 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     // Same helper for the same reason: the advertised port is an identity
     // discriminator, not necessarily a TCP port number (#845).
     this.positiveInt('advertisedPort');
+    // Checked here rather than left to `createFailureDetector`, because the
+    // value routinely arrives from HOCON: an operator who writes
+    // `implementation = phi-accrual` gets the key and the two legal spellings
+    // named at startup, instead of a cluster that quietly runs the detector
+    // they did not ask for (#840).
+    this.oneOf('failureDetectorImplementation', ['simple', 'phi']);
     this.positiveNumber('gossipIntervalMs');
     this.positiveNumber('seedRetryIntervalMs');
     this.positiveNumber('tombstoneTtlMs');
@@ -665,7 +712,7 @@ export function resolveAdvertisedPort(
 export type ClusterConfigDefaults = Partial<Pick<
   ClusterOptionsType,
   'host' | 'advertisedHost' | 'port' | 'advertisedPort' | 'gossipIntervalMs' | 'seedRetryIntervalMs'
-  | 'failureDetector' | 'maxFrameBytes'
+  | 'failureDetectorImplementation' | 'failureDetector' | 'phiAccrual' | 'maxFrameBytes'
   | 'weaklyUpAfterMs' | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
   | 'maxMembers' | 'maxTombstones'
 >>;
@@ -679,7 +726,8 @@ export type ClusterConfigDefaults = Partial<Pick<
  * `failureDetector` is assembled from its three leaves and omitted
  * entirely when none of them is set — an empty object here would still
  * count as "set" and shadow nothing, but it would make the merge in
- * `Cluster.join` harder to reason about than it needs to be.
+ * `Cluster.join` harder to reason about than it needs to be.  `phiAccrual`
+ * is assembled from the `failure-detector.phi` sub-block the same way.
  *
  * The HOCON tree and this shape are deliberately not isomorphic: the
  * housekeeping durations sit under a `tombstone { … }` group because that is
@@ -722,8 +770,19 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   if (config.hasPath(tombstone.minRetention)) {
     out.tombstoneMinRetentionMs = config.getDuration(tombstone.minRetention);
   }
+  const failureDetectorKeys = keys.failureDetector;
+  if (config.hasPath(failureDetectorKeys.implementation)) {
+    // Cast rather than validated here: `ClusterOptionsValidator` checks the
+    // merged settings once, at consume time, and it is the one place that sees
+    // an explicit option and a HOCON value in the same shape.  Narrowing here
+    // as well would report the same typo from two places with two messages.
+    out.failureDetectorImplementation =
+      config.getString(failureDetectorKeys.implementation) as FailureDetectorImplementation;
+  }
   const failureDetector = readFailureDetectorFromConfig(config);
   if (Object.keys(failureDetector).length > 0) out.failureDetector = failureDetector;
+  const phiAccrual = readPhiAccrualFromConfig(config);
+  if (Object.keys(phiAccrual).length > 0) out.phiAccrual = phiAccrual;
   return out;
 }
 
@@ -768,6 +827,10 @@ export function isRemoteTlsRequested(config: Config): boolean {
  * drop the other two straight back to the built-in defaults, silently
  * discarding the config file's values for settings the caller never
  * mentioned.  Per-field precedence has to reach inside it.
+ *
+ * `phiAccrual` needs the same pass for the same reason, one block over — an
+ * explicit `{ downThreshold: 16 }` must not blank the file's other four
+ * φ settings (#840).
  */
 export function withClusterConfigDefaults(
   config: Config,
@@ -779,7 +842,14 @@ export function withClusterConfigDefaults(
     ...fromConfig.failureDetector,
     ...stripUndefined(options.failureDetector ?? {}),
   };
-  return Object.keys(failureDetector).length > 0 ? { ...merged, failureDetector } : merged;
+  const phiAccrual = {
+    ...fromConfig.phiAccrual,
+    ...stripUndefined(options.phiAccrual ?? {}),
+  };
+  const withNested: ClusterOptionsType = Object.keys(failureDetector).length > 0
+    ? { ...merged, failureDetector }
+    : merged;
+  return Object.keys(phiAccrual).length > 0 ? { ...withNested, phiAccrual } : withNested;
 }
 
 function readFailureDetectorFromConfig(config: Config): Partial<FailureDetectorOptionsType> {
@@ -792,6 +862,42 @@ function readFailureDetectorFromConfig(config: Config): Partial<FailureDetectorO
     out.unreachableAfterMs = config.getDuration(keys.unreachableAfter);
   }
   if (config.hasPath(keys.downAfter)) out.downAfterMs = config.getDuration(keys.downAfter);
+  return stripUndefined(out);
+}
+
+/**
+ * The `failure-detector.phi` sub-block — a sibling of
+ * {@link readFailureDetectorFromConfig}, not an extension of it, because the
+ * two detectors are configured by two different shapes and a single reader
+ * would have to return both (#840).
+ *
+ * There is no `heartbeat-interval` leaf here on purpose: the cadence is read
+ * once from `failure-detector.heartbeat-interval` and imposed on whichever
+ * detector is installed (#1142), so the returned shape never carries
+ * `heartbeatIntervalMs`.
+ *
+ * The two thresholds are read with `getNumber`, not `getInt`: φ is a
+ * continuous suspicion value and `unreachable-threshold = 8.5` is an ordinary
+ * tuning move, which `getInt` would reject outright.
+ */
+function readPhiAccrualFromConfig(config: Config): Partial<PhiAccrualOptionsType> {
+  const keys = ConfigKeys.cluster.failureDetector.phi;
+  const out: { -readonly [K in keyof PhiAccrualOptionsType]?: PhiAccrualOptionsType[K] } = {};
+  if (config.hasPath(keys.unreachableThreshold)) {
+    out.unreachableThreshold = config.getNumber(keys.unreachableThreshold);
+  }
+  if (config.hasPath(keys.downThreshold)) {
+    out.downThreshold = config.getNumber(keys.downThreshold);
+  }
+  if (config.hasPath(keys.maxSampleSize)) {
+    out.maxSampleSize = config.getInt(keys.maxSampleSize);
+  }
+  if (config.hasPath(keys.minStdDeviation)) {
+    out.minStdDeviationMs = config.getDuration(keys.minStdDeviation);
+  }
+  if (config.hasPath(keys.acceptableHeartbeatPause)) {
+    out.acceptableHeartbeatPauseMs = config.getDuration(keys.acceptableHeartbeatPause);
+  }
   return stripUndefined(out);
 }
 

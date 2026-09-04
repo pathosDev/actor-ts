@@ -28,8 +28,11 @@
  *
  * Mirrored by `actor-ts.cluster.failure-detector.heartbeat-interval` in
  * `reference.conf`, which is pinned to the simple detector's defaults by
- * `ClusterConfigDefaults.test.ts`.  The φ-accrual detector has no config
- * block at all, so its copy was pinned to nothing.
+ * `ClusterConfigDefaults.test.ts`.  Since #840 the φ-accrual detector is
+ * selectable from that same block — and deliberately has no
+ * `heartbeat-interval` of its own there: `createFailureDetector` imposes this
+ * one on whichever implementation is installed, so the two copies cannot drift
+ * back apart through config.
  */
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 500;
 
