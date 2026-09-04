@@ -1482,7 +1482,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   reordering or an early return could have removed the fallback entirely, or
   given up the allocation-time output bound #580 relies on, with the whole
   suite, the smoke matrix and the coverage badge all green. It now has an
-  internal seam and its position in the resolution order is gated. No
+  internal seam, and both its position in the resolution order and its
+  identity are gated: the tests tell the pure-JS peer from a native decoder
+  by two properties only the peer has — it accepts a frame whose content
+  checksum is wrong, and it reports a truncated frame in its own error
+  vocabulary — so a rung whose body was swapped for a native decode cannot
+  pass them. Candidates are ranked by that documented order alone,
+  `node:zlib` first because it is the only one that can take the bound. No
   behaviour, API or configuration change.
 
   The rest of #780 — eighteen optional peers said to have no coverage — was
