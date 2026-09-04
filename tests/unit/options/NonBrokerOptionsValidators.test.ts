@@ -536,6 +536,47 @@ describe('WorkerClusterOptionsValidator', () => {
     }
   });
 
+  test('rejects a file: bootstrap that carries a host, as a string and as a URL', () => {
+    // The scheme check alone was not the allow-list it read as (#776): a
+    // `file:` URL may carry an authority, and on Windows that authority IS a
+    // remote server.  Measured on this machine (Windows 11, Node 26.7.0):
+    // `fileURLToPath('file://attacker.example.com/share/worker.js')` yields the
+    // UNC path `\\attacker.example.com\share\worker.js`, and none of the three
+    // runtimes refuses the specifier — Node's Worker fails with
+    // MODULE_NOT_FOUND on that UNC path, Deno with `Module not found
+    // "file://attacker.example.com/share/worker.js"`, Bun with an
+    // `Error in worker`.  All three ACCEPTED the URL and only the SMB fetch
+    // failed, so on a host where the share resolves the worker's entry module
+    // comes off a remote server.  Both input forms, because `parseBootstrapUrl`
+    // passes a `URL` through untouched and only the string form is parsed here.
+    for (const host of ['attacker.example.com', '127.0.0.1', '[::1]', '.']) {
+      const specifier = `file://${host}/share/worker.js`;
+      expect(() => check({ bootstrap: specifier }))
+        .toThrow(/bootstrap must be a host-less file: URL/);
+      expect(() => check({ bootstrap: new URL(specifier) }))
+        .toThrow(/bootstrap must be a host-less file: URL/);
+    }
+  });
+
+  test('keeps accepting the host-less forms, localhost included', () => {
+    // `file:///path` has an empty host and is the only form the docs and
+    // examples ever produce — `new URL('./worker.js', import.meta.url)` yields
+    // it.  `file://localhost/path` is the other host WHATWG allows, and the
+    // spec has the parser erase it: measured identically on Bun 1.4.0, Node
+    // 26.7.0 and Deno 2.6.8, `new URL('file://localhost/srv/app/worker.js')`
+    // normalises to `file:///srv/app/worker.js` with `host === ''` (and so does
+    // `LOCALHOST` — the host is lower-cased first).  So it is admitted by the
+    // host rule rather than exempted from it, and it resolves locally.
+    for (const bootstrap of [
+      'file:///srv/app/worker.js',
+      'file://localhost/srv/app/worker.js',
+      'file://LOCALHOST/srv/app/worker.js',
+    ]) {
+      expect(() => check({ bootstrap })).not.toThrow();
+      expect(() => check({ bootstrap: new URL(bootstrap) })).not.toThrow();
+    }
+  });
+
   test('rejects a bare relative specifier with a message that names the fix', () => {
     // `new URL('./worker.js')` throws with no base, so this never reached the
     // Worker constructor — it just failed later, and less legibly.
