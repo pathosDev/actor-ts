@@ -55,8 +55,40 @@ export const DEFAULT_RESTART_WINDOW_MS = 60_000;
  * scheme that names an artifact the operator put on disk, and it is what every
  * doc and example already uses — `new URL('./worker.js', import.meta.url)`
  * produces exactly this.  Narrowing to it is a pre-1.0 hard cut (#776).
+ *
+ * The scheme is only half the allow-list, though — see
+ * {@link BOOTSTRAP_ALLOWED_HOST}.
  */
 const BOOTSTRAP_ALLOWED_PROTOCOL = 'file:';
+
+/**
+ * The only authority a `file:` {@link WorkerClusterOptionsType.bootstrap} may
+ * carry: none.
+ *
+ * Checking the scheme alone left the hole the scheme check was introduced to
+ * close.  A `file:` URL may carry a host, and a host turns it into a path on
+ * *that machine*: measured on Windows 11 with Node 26.7.0,
+ * `fileURLToPath('file://attacker.example.com/share/worker.js')` yields the UNC
+ * path `\\attacker.example.com\share\worker.js`, and no runtime refuses the
+ * specifier — Node's `Worker` fails with `MODULE_NOT_FOUND` on that UNC path,
+ * Deno with `Module not found "file://attacker.example.com/share/worker.js"`,
+ * Bun with an `Error in worker`.  All three *accepted* the URL; only the SMB
+ * fetch failed.  On a host where the share resolves, the worker's entry module
+ * is code off a remote server — the same class of hole as a `http:` specifier,
+ * wearing the allowed scheme (#776).
+ *
+ * `localhost` is the one host WHATWG admits for `file:`, and it needs no
+ * exemption: the parser erases it.  Measured identically on Bun 1.4.0, Node
+ * 26.7.0 and Deno 2.6.8, `new URL('file://localhost/srv/app/worker.js')` — and
+ * `LOCALHOST`, which is lower-cased first — normalises to
+ * `file:///srv/app/worker.js` with an empty `host`, so it reaches this check
+ * already indistinguishable from the plain form and stays accepted.  Admitting
+ * it by construction is better than special-casing the string: a
+ * `'localhost'` exemption would also have to decide about `127.0.0.1` and
+ * `[::1]`, which the parser does *not* erase and which on Windows still name a
+ * UNC share rather than a plain path.  Those are refused.
+ */
+const BOOTSTRAP_ALLOWED_HOST = '';
 
 /**
  * What a retired slot reports through
@@ -117,10 +149,13 @@ export class WorkerClusterOptionsBuilder extends OptionsBuilder<WorkerClusterOpt
 
   /**
    * Module URL of the worker entrypoint each worker runs.  Required, and must
-   * carry the `file:` scheme — `new URL('./worker.js', import.meta.url)` is the
-   * intended form.  A string is accepted but must be an absolute `file:` URL;
-   * see {@link BOOTSTRAP_ALLOWED_PROTOCOL} for why the other schemes a `Worker`
-   * constructor would take are refused.
+   * be an absolute `file:` URL **with no host** — `new URL('./worker.js',
+   * import.meta.url)` is the intended form and produces exactly that.  A string
+   * is accepted under the same two constraints.  See
+   * {@link BOOTSTRAP_ALLOWED_PROTOCOL} for why the other schemes a `Worker`
+   * constructor would take are refused, and {@link BOOTSTRAP_ALLOWED_HOST} for
+   * why a host is: it makes the specifier a UNC path, so the entry module comes
+   * off a remote server.
    */
   withBootstrap(bootstrap: URL | string): this {
     return this.set('bootstrap', bootstrap);
@@ -250,6 +285,19 @@ export class WorkerClusterOptionsValidator extends OptionsValidator<WorkerCluste
         'bootstrap',
         `must use the ${BOOTSTRAP_ALLOWED_PROTOCOL} scheme — a data:, blob: or remote `
         + 'specifier hands the worker constructor code from outside the deployment',
+        bootstrapUrl.href,
+      );
+    }
+    // The scheme is not the whole allow-list: a host on a file: URL is a UNC
+    // share, so the entry module comes off that server.  See
+    // BOOTSTRAP_ALLOWED_HOST for what each runtime measurably does with one.
+    if (bootstrapUrl.host !== BOOTSTRAP_ALLOWED_HOST) {
+      this.fail(
+        'bootstrap',
+        'must be a host-less file: URL — a host makes it a UNC path '
+        + `(\\\\${bootstrapUrl.host}\\…), so the worker's entry module is fetched off that `
+        + 'server; file:///path is the intended form, and file://localhost/path '
+        + 'normalises to it',
         bootstrapUrl.href,
       );
     }
