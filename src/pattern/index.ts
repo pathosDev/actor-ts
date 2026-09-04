@@ -5,7 +5,9 @@ export {
 } from './CircuitBreaker.js';
 export type { CircuitState } from './CircuitBreaker.js';
 export { CircuitBreakerOptions, CircuitBreakerOptionsBuilder, CircuitBreakerOptionsValidator } from './CircuitBreakerOptions.js';
-export type { CircuitBreakerOptionsType } from './CircuitBreakerOptions.js';
+export { circuitBreakerKeysUnder, readCircuitBreakerOptionsFromConfig } from './CircuitBreakerOptions.js';
+export type { CircuitBreakerKeys, CircuitBreakerOptionsType } from './CircuitBreakerOptions.js';
+export { CircuitBreakerExtension, CircuitBreakerExtensionId, DEFAULT_CIRCUIT_BREAKER_ID } from './CircuitBreakerExtension.js';
 export { gracefulStop } from './GracefulStop.js';
 export { pipeTo } from './PipeTo.js';
 export type { PipeToOptions } from './PipeTo.js';

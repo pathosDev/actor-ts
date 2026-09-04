@@ -930,6 +930,67 @@ Journal registriert ist, und der Block, den dieses Journal liest.  Siehe jede
 Journal-Seite in [Persistence](/de/persistence/overview/) für die
 per-Plugin-Keys.
 
+### `actor-ts.circuit-breaker`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `circuit-breaker.default.max-failures` | `10` | Aufeinanderfolgende Fehler, bis ein Breaker öffnet ([Circuit Breaker](/de/patterns/circuit-breaker/)). |
+| `circuit-breaker.default.reset-timeout` | `15s` | Wie lange er offen bleibt, bevor er eine Probe durchlässt. |
+| `circuit-breaker.default.max-reset-timeout` | `60s` | Obergrenze des gewachsenen Fensters.  Muss mindestens `reset-timeout` sein — ein Breaker, dessen gemergte Settings das verletzen, startet nicht. |
+| `circuit-breaker.default.backoff-factor` | `1.0` | Multiplikator je aufeinanderfolgendem Öffnen.  `1.0` = das flache Fenster jedes früheren Releases. |
+| `circuit-breaker.default.random-factor` | `0.0` | Jitter-Anteil in `[0, 1]`, über dieses Fenster gestreut.  `0.0` = kein Jitter. |
+| `circuit-breaker.default.ignored-error-names` | `[]` | `Error.name`-Werte, die nie als Fehler zählen. |
+| `circuit-breaker.default.call-timeout` | *(nicht gesetzt)* | Bewusst ein Kommentar in `reference.conf` — siehe unten.  Ungesetzt gibt es keine Deadline pro Aufruf. |
+| `circuit-breaker.<id>.*` | *(der Block oben)* | Dieselben Blätter für den einen Breaker, den `breaker('<id>')` auflöst — sticht den Default-Block Blatt für Blatt. |
+
+Gelesen werden sie von der **`CircuitBreakerExtension`**, der Tür, die einen
+Breaker über seine Id auflöst:
+
+```ts
+import { CircuitBreakerExtensionId } from 'actor-ts';
+
+const payments = system.extension(CircuitBreakerExtensionId).breaker('payment-api');
+await payments.call(() => fetch('https://payments.example/charge'));
+```
+
+`new CircuitBreaker({ … })` liest davon nichts und ist unverändert — das ist
+die Tür für einen Breaker, dessen Settings im Code stehen.  Explizite Options
+aus `breaker(id, options)` stechen weiterhin beide Blöcke, und genau das trägt
+die zwei Dinge, die HOCON nicht ausdrücken kann: das `isFailure`-Prädikat und
+die `random`-Naht.
+
+**`default` ist reserviert**, und die beiden Lesarten fallen zusammen: es ist
+der Block, von dem jeder Breaker erbt, *und* die Id, die `breaker()` ohne
+Argument auflöst — ein Breaker namens `default` liest also genau den Block, der
+ihn konfiguriert.  Deshalb liegen die Defaults in einem benannten Unterblock
+und nicht direkt unter `actor-ts.circuit-breaker.*`: dort teilten sich Ids und
+Blätter einen Namensraum, und `breaker('random-factor')` suchte seine Settings
+in einer Zahl.
+
+**`call-timeout` ist ein Kommentar statt eines Blattes**, weil das Weglassen
+von `callTimeoutMs` den Timeout pro Aufruf *abschaltet* und der Validator `0`
+ablehnt — „keine Deadline“ ist also ein Zustand, den nur ein fehlender Key
+ausdrücken kann.  Geschrieben wirkt er ganz normal; der Block veröffentlicht
+bloß keinen Default, der jedem aus Config aufgelösten Breaker eine Deadline
+gäbe, die ein im Code gebauter nicht hat.
+
+**`backoff-factor` und `random-factor` sind mit Absicht neutral.**  `1.0` und
+`0.0` reproduzieren exakt das flache, ungejitterte Reopen-Fenster, der Block
+ist also additiv, und beides einzuschalten ist eine bewusste Entscheidung des
+Deployments.  Sind sie gesetzt, ist das Fenster
+`reset-timeout × backoff-factor^(aufeinanderfolgende Öffnungen − 1)`, begrenzt
+auf `max-reset-timeout` und dann um `± random-factor` gestreut; es fällt auf
+`reset-timeout` zurück, sobald eine Probe gelingt und der Breaker schließt.
+
+**`ignored-error-names` wird vor `isFailure` geprüft**, nicht danach.  Die
+Liste ist die Hälfte des Klassifikators, die dem Betrieb gehört und aus einer
+Config-Datei kommt, während das Prädikat einkompiliert ist — könnte das
+Prädikat die Liste überstimmen, liefe der Key genau in den Deployments ins
+Leere, die ihn gesetzt haben.
+
+Diese `<id>`-Pfade tragen die Id, nach der dein Code `breaker(id)` fragt, und
+lassen sich deshalb in `reference.conf` nicht aufzählen.
+
 ### `actor-ts.projection`
 
 | Key | Default | Zweck |

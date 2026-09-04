@@ -477,6 +477,37 @@ export const ConfigKeys = {
   },
 
   /**
+   * Named circuit breakers — `actor-ts.circuit-breaker.*`.  Read by
+   * `CircuitBreakerExtension.breaker(id)`, which layers
+   * `<root>.<id>.*` over `<root>.default.*` over the built-in floor, and the
+   * caller's explicit options over all three.
+   *
+   * `default` is reserved: it is the defaults block AND the id `breaker()`
+   * resolves with no argument, which is the same thing twice rather than a
+   * collision.  `<root>.<id>.*` cannot be declared here at all — the id is the
+   * application's — which is what `ConfigKeys.cache.root` is for too.
+   *
+   * Every leaf under `default` is spelled out rather than covered by that
+   * root: a root alone satisfies the `NoDeadConfigKeys` reachability check for
+   * everything beneath it, and here it would be worse than usual, because the
+   * root's last segment is `default` — a substring of nearly every TypeScript
+   * file — so the guard would have passed on nothing at all (#864).
+   */
+  circuitBreaker: {
+    root: 'actor-ts.circuit-breaker',
+    default: {
+      maxFailures: 'actor-ts.circuit-breaker.default.max-failures',
+      resetTimeout: 'actor-ts.circuit-breaker.default.reset-timeout',
+      /** Comment-only in reference.conf — omitting it is what disables the per-call timeout. */
+      callTimeout: 'actor-ts.circuit-breaker.default.call-timeout',
+      maxResetTimeout: 'actor-ts.circuit-breaker.default.max-reset-timeout',
+      backoffFactor: 'actor-ts.circuit-breaker.default.backoff-factor',
+      randomFactor: 'actor-ts.circuit-breaker.default.random-factor',
+      ignoredErrorNames: 'actor-ts.circuit-breaker.default.ignored-error-names',
+    },
+  },
+
+  /**
    * Process-wide projection defaults — `actor-ts.projection.*`.  Read by
    * `ProjectionActor.byPersistenceId` / `byTag`, which layer them under the
    * explicit `ProjectionOptions` of a single projection.
