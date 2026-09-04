@@ -647,6 +647,19 @@ actor-ts {
     in-memory {
       max-entries      = 10000   # LRU cap on entries (Infinity/unbounded only settable in code)
       cleanup-interval = 60s     # background expired-entry sweep (0 disables the sweep)
+
+      # Expiry for entries whose writer named no ttlMs of its own.  Both cover
+      # set / mset ONLY: for incr and setIfAbsent the cache is the source of
+      # truth, so "no ttlMs" there is the caller saying this counter or this
+      # lock outlives any policy, and bounding one from a config file would
+      # expire a claim nobody released.
+      time-to-live     = 0       # how long such an entry lives (0 = forever)
+      # A read pushes that entry's expiry out to now + time-to-idle, never
+      # past its time-to-live — so an idle window at or above time-to-live
+      # never binds.  Only entries in the eviction-first half are extended:
+      # refreshing a rate-limit counter on every read would keep its window
+      # from ever closing.
+      time-to-idle     = 0       # 0 = a read extends nothing
     }
     # Per-instance overrides live under the cache's own name and win over the
     # block above, so one consumer can be sized for its own key space:
@@ -669,6 +682,41 @@ actor-ts {
     #   }
     #
     # A per-name table replaces the global one rather than merging with it.
+
+    # Connection settings for every cache whose plugin resolves to
+    # actor-ts.cache.redis.  ioredis is a lazy optional peer, so a block that
+    # nobody resolves costs nothing — the driver is imported on the first
+    # cache operation, not at startup.  Empty means UNSET throughout: the "" is
+    # the shape of the key, and the reader drops it rather than handing it on.
+    redis {
+      url        = ""   # redis://host:6379 or rediss://… — prefer \${?REDIS_URL}
+      db         = 0    # logical database; ignored when url is set, put it in the URL path
+      key-prefix = ""   # prepended to every key, e.g. "billing:"
+      password   = ""   # prefer a substitution: password = \${?REDIS_PASSWORD}
+      # host and port are deliberately comments rather than leaves.  url is
+      # mutually exclusive with them and OptionsError says so, which only stays
+      # useful while "unset" is expressible: a shipped host = "localhost" would
+      # be set for everyone, and every url would then be refused.  Left unset,
+      # ioredis applies its own 127.0.0.1:6379.
+      #
+      #   host = "localhost"
+      #   port = 6379
+    }
+
+    # The same for actor-ts.cache.memcached (memjs, also a lazy optional peer).
+    memcached {
+      servers    = "localhost:11211"   # comma-separated host:port list
+      username   = ""                  # SASL — prefer \${?MEMCACHED_USERNAME}
+      password   = ""                  # SASL — prefer \${?MEMCACHED_PASSWORD}
+      key-prefix = ""                  # applied server-side to every operation
+    }
+
+    # Both blocks take a per-instance layer under the cache's own name, the
+    # way in-memory does — so two consumers can hold different Redis
+    # databases without sharing one connection's settings:
+    #
+    #   actor-ts.cache.rate-limit.plugin = "actor-ts.cache.redis"
+    #   actor-ts.cache.rate-limit.redis.db = 3
   }
 
   persistence {

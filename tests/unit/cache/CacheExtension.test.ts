@@ -7,8 +7,13 @@ import {
   CacheExtensionId,
   IN_MEMORY_CACHE_PLUGIN_ID,
   InMemoryCache,
+  MEMCACHED_CACHE_PLUGIN_ID,
+  MemcachedCache,
   REDIS_CACHE_PLUGIN_ID,
+  RedisCache,
 } from '../../../src/cache/index.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { sleep } from '../../util/AwaitCondition.js';
 
 describe('CacheExtension', () => {
   test('default cache is in-memory and works without configuration', async () => {
@@ -370,6 +375,155 @@ describe('CacheExtension', () => {
       await sys.terminate();
     });
   });
+  /**
+   * #876 — a cache resolving to the redis or memcached plugin connects from
+   * config alone.
+   *
+   * The gap was never "no HOCON block" on its own.  Nothing in `src/` called
+   * `registerCache`, so `plugin = "actor-ts.cache.redis"` resolved to an id no
+   * factory answered and `cache()` fell back to an `InMemoryCache` — a
+   * perfectly-written Redis block quietly feeding a process-local map.  The
+   * block and the registration are both load-bearing, so both are asserted
+   * here.
+   *
+   * These tests are the wiring guard.  `NoDeadConfigKeys` cannot be one: its
+   * `coveringAccessor` resolves every `actor-ts.cache.*.*` leaf onto
+   * `ConfigKeys.cache.root`, a name `CacheExtension.ts` has carried since
+   * before the block existed, so an entirely unread redis block passes it
+   * green.
+   *
+   * Nothing here talks to a server.  Both backends wrap client construction in
+   * a `Lazy`, so `ioredis` / `memjs` are imported on the first cache
+   * *operation*; these tests only ever construct.
+   */
+  describe('redis and memcached resolve from config alone', () => {
+    /** A system whose config is `hocon` layered over `reference.conf`. */
+    function systemWith(name: string, hocon: string): ActorSystem {
+      const sysOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off)
+        .withConfig(Config.parseString(hocon));
+      return ActorSystem.create(name, sysOptions);
+    }
+
+    test('a redis plugin id builds a RedisCache, on the shipped block alone', async () => {
+      // Also the proof that the reader drops the block's `""` placeholders:
+      // `RedisCacheOptionsValidator` runs `new URL('')`, so passing `url = ""`
+      // through would make this throw rather than return a cache.
+      const sys = systemWith('cache-redis-plugin', 'actor-ts.cache.sessions.plugin = "actor-ts.cache.redis"');
+      expect(sys.extension(CacheExtensionId).cache('sessions')).toBeInstanceOf(RedisCache);
+      await sys.terminate();
+    });
+
+    test('a memcached plugin id builds a MemcachedCache, on the shipped block alone', async () => {
+      const sys = systemWith('cache-memcached-plugin', 'actor-ts.cache.sessions.plugin = "actor-ts.cache.memcached"');
+      expect(sys.extension(CacheExtensionId).cache('sessions')).toBeInstanceOf(MemcachedCache);
+      await sys.terminate();
+    });
+
+    test('a url-only block is not refused by the mutual-exclusion rule', async () => {
+      // The reason `host` and `port` are comments in `reference.conf` and not
+      // leaves: published, they would be set for every deployment, and
+      // `RedisCacheOptionsValidator` would refuse every `url` ever written.
+      const sys = systemWith('cache-redis-url', `
+        actor-ts.cache.sessions.plugin = "actor-ts.cache.redis"
+        actor-ts.cache.redis.url = "redis://cache.internal:6379"
+      `);
+      expect(sys.extension(CacheExtensionId).cache('sessions')).toBeInstanceOf(RedisCache);
+      await sys.terminate();
+    });
+
+    test('a url written together with a host still is', async () => {
+      // The other half of the same rule, and what stops the test above from
+      // passing because the reader silently threw the host away.
+      const sys = systemWith('cache-redis-url-and-host', `
+        actor-ts.cache.sessions.plugin = "actor-ts.cache.redis"
+        actor-ts.cache.redis { url = "redis://cache.internal:6379", host = "elsewhere" }
+      `);
+      const ext = sys.extension(CacheExtensionId);
+      expect(() => ext.cache('sessions')).toThrow(/mutually exclusive/);
+      await sys.terminate();
+    });
+
+    test('the global block reaches the instance', async () => {
+      // A bad value is the observable: a `db` the validator refuses can only
+      // fail here if the block was actually read.
+      const sys = systemWith('cache-redis-global', `
+        actor-ts.cache.sessions.plugin = "actor-ts.cache.redis"
+        actor-ts.cache.redis.db = -1
+      `);
+      const ext = sys.extension(CacheExtensionId);
+      expect(() => ext.cache('sessions')).toThrow(OptionsError);
+      expect(() => ext.cache('sessions')).toThrow(/db/);
+      await sys.terminate();
+    });
+
+    test('a per-name block overrides the global one, and only for that name', async () => {
+      // Both directions in one config: `rate-limit` overrides the refused
+      // global `db` and builds; `idempotency` inherits it and does not.  One
+      // without the other would pass on a reader that ignored either layer.
+      const sys = systemWith('cache-redis-per-name', `
+        actor-ts.cache.redis.db = -1
+        actor-ts.cache.rate-limit { plugin = "actor-ts.cache.redis", redis.db = 3 }
+        actor-ts.cache.idempotency.plugin = "actor-ts.cache.redis"
+      `);
+      const ext = sys.extension(CacheExtensionId);
+      expect(ext.cache('rate-limit')).toBeInstanceOf(RedisCache);
+      expect(() => ext.cache('idempotency')).toThrow(/db/);
+      await sys.terminate();
+    });
+
+    test('the in-memory default is untouched by either registration', async () => {
+      const sys = systemWith('cache-default-still-in-memory', '');
+      expect(sys.extension(CacheExtensionId).cache()).toBeInstanceOf(InMemoryCache);
+      await sys.terminate();
+    });
+  });
+
+  /**
+   * The two expiry policies (#876) reach an in-memory instance through the
+   * same two layers its bounds do.  What they *do* is `InMemoryCache`'s
+   * business and is tested there; this is only that the leaves are read, with
+   * the kebab spelling, on both the global and the per-name path.
+   */
+  describe('in-memory expiry policies from HOCON', () => {
+    test('time-to-live is read as a duration, globally and per name', async () => {
+      const sysOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off)
+        .withConfig(Config.parseString(`
+          actor-ts.cache.in-memory { cleanup-interval = 0, time-to-live = 30ms }
+          actor-ts.cache.sessions.in-memory.time-to-live = 60s
+        `));
+      const sys = ActorSystem.create('cache-time-to-live', sysOptions);
+      const ext = sys.extension(CacheExtensionId);
+
+      const global = ext.cache('anything') as InMemoryCache;
+      await global.set('k', 'v');
+      await sleep(70);   // the elapsed window IS the assertion: 70 ms outlasts the configured 30 ms
+      expect((await global.get('k')).isNone()).toBe(true);
+
+      // The per-name block wins: a minute, so the same write is still there.
+      const sessions = ext.cache('sessions') as InMemoryCache;
+      await sessions.set('k', 'v');
+      await sleep(70);   // an absence: the same window must NOT expire an entry sized for a minute
+      expect((await sessions.get('k')).toNullable()).toBe('v');
+
+      await sys.terminate();
+    });
+
+    test('a negative time-to-idle is refused at the first lookup', async () => {
+      const sysOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off)
+        .withConfig(Config.parseString('actor-ts.cache.in-memory.time-to-idle = -1'));
+      const sys = ActorSystem.create('cache-time-to-idle-invalid', sysOptions);
+      expect(() => sys.extension(CacheExtensionId).cache()).toThrow(/timeToIdleMs/);
+      await sys.terminate();
+    });
+  });
+
+
 
   test('setCache replaces the instance for a name (test hook)', async () => {
     const sysOptions = ActorSystemOptions.create()
@@ -386,5 +540,6 @@ describe('CacheExtension', () => {
   test('plugin id constants are exported', () => {
     expect(IN_MEMORY_CACHE_PLUGIN_ID).toBe('actor-ts.cache.in-memory');
     expect(REDIS_CACHE_PLUGIN_ID).toBe('actor-ts.cache.redis');
+    expect(MEMCACHED_CACHE_PLUGIN_ID).toBe('actor-ts.cache.memcached');
   });
 });

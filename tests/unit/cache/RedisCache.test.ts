@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { RedisCache, type RedisClientLike } from '../../../src/cache/RedisCache.js';
-import { RedisCacheOptions } from '../../../src/cache/RedisCacheOptions.js';
+import {
+  DEFAULT_REDIS_DB,
+  RedisCacheOptions,
+  readRedisCacheOptionsFromConfig,
+  redisCacheKeysUnder,
+} from '../../../src/cache/RedisCacheOptions.js';
+import { Config } from '../../../src/config/Config.js';
+import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { CacheError } from '../../../src/cache/Cache.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { runCacheContractTests } from './_Contract.js';
@@ -581,5 +588,94 @@ describe('RedisCache — additional edges', () => {
     const cache = new RedisCache(redisOptions);
     expect(await cache.incr('rate', 60_000)).toBe(1);
     expect(pexpireCalls).toBe(1);
+  });
+});
+
+/**
+ * `actor-ts.cache.redis` → `RedisCacheOptionsType`, leaf by leaf (#876).
+ *
+ * Written against `Config.parseString` rather than `Config.fromObject({'a.b':
+ * 1})`: the object form keeps the dotted string as a literal top-level key, so
+ * `hasPath` would go on resolving a *nested* value and the test would assert
+ * nothing.
+ *
+ * These are also the only guard on the block.  `NoDeadConfigKeys` cannot be
+ * one: its `coveringAccessor` resolves every `actor-ts.cache.*.*` leaf onto
+ * `ConfigKeys.cache.root`, a name `CacheExtension.ts` has always carried, so a
+ * wholly unread redis block passes it green.
+ */
+describe('RedisCache — reading the config block', () => {
+  test('maps every leaf, and returns only the ones that are set', () => {
+    const config = Config.parseString(`
+      actor-ts.cache.redis {
+        host = "redis.internal"
+        port = 6380
+        db = 3
+        key-prefix = "billing:"
+        password = "s3cret"
+      }
+    `);
+    expect(readRedisCacheOptionsFromConfig(config)).toEqual({
+      host: 'redis.internal',
+      port: 6380,
+      db: 3,
+      keyPrefix: 'billing:',
+      password: 's3cret',
+    });
+  });
+
+  test('treats an empty string as unset, on every string leaf', () => {
+    // This is what keeps the shipped block usable at all: the validator runs
+    // `new URL('')`, which throws, so a published `url = ""` handed on verbatim
+    // would refuse every config-built RedisCache before it ever connected.
+    const config = Config.parseString('actor-ts.cache.redis { url = "", key-prefix = "", password = "" }');
+    const settings = readRedisCacheOptionsFromConfig(config);
+    expect(settings).toEqual({});
+    expect(() => new RedisCache(settings)).not.toThrow();
+  });
+
+  test('the shipped block alone selects the logical database and nothing else', () => {
+    // What an operator who wrote no application.conf gets.  `db` is the block's
+    // one real default; `host` and `port` are comments precisely so that
+    // "unset" survives to ioredis, and the rest are `""` placeholders.
+    expect(readRedisCacheOptionsFromConfig(Config.parseString(REFERENCE_CONF)))
+      .toEqual({ db: DEFAULT_REDIS_DB });
+  });
+
+  test('host and port are read when an operator writes them', () => {
+    // They carry no reference.conf leaf, so no leaf-driven guard would notice
+    // if the reader stopped looking at them.
+    const config = Config.parseString('actor-ts.cache.redis { host = "h", port = 6390 }');
+    expect(readRedisCacheOptionsFromConfig(config)).toEqual({ host: 'h', port: 6390 });
+  });
+
+  test('url together with host is passed on, and refused where that rule lives', () => {
+    // The reader deliberately does NOT drop one of them.  Silently discarding a
+    // host an operator wrote is how a config file stops meaning what it says,
+    // and the mutual-exclusion rule is reachable exactly because both arrive.
+    const config = Config.parseString('actor-ts.cache.redis { url = "redis://a:6379", host = "b" }');
+    const settings = readRedisCacheOptionsFromConfig(config);
+    expect(settings).toEqual({ url: 'redis://a:6379', host: 'b' });
+    expect(() => new RedisCache(settings)).toThrow(OptionsError);
+    expect(() => new RedisCache(settings)).toThrow(/mutually exclusive/);
+  });
+
+  test('redisCacheKeysUnder composes the kebab spellings under any root', () => {
+    expect(redisCacheKeysUnder('actor-ts.cache.rate-limit.redis')).toEqual({
+      root: 'actor-ts.cache.rate-limit.redis',
+      url: 'actor-ts.cache.rate-limit.redis.url',
+      host: 'actor-ts.cache.rate-limit.redis.host',
+      port: 'actor-ts.cache.rate-limit.redis.port',
+      db: 'actor-ts.cache.rate-limit.redis.db',
+      keyPrefix: 'actor-ts.cache.rate-limit.redis.key-prefix',
+      password: 'actor-ts.cache.rate-limit.redis.password',
+    });
+  });
+
+  test('a per-name block is read through those keys, and not as the global one', () => {
+    const config = Config.parseString('actor-ts.cache.rate-limit.redis.db = 7');
+    expect(readRedisCacheOptionsFromConfig(config, redisCacheKeysUnder('actor-ts.cache.rate-limit.redis')))
+      .toEqual({ db: 7 });
+    expect(readRedisCacheOptionsFromConfig(config)).toEqual({});
   });
 });

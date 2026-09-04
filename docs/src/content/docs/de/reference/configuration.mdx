@@ -646,13 +646,40 @@ als Name eines Plugins.
 | `cache.in-memory.max-entries` | `10000` | Max. Einträge vor LRU-Eviction ([In-Memory-Cache](/de/cache/in-memory/)). |
 | `cache.in-memory.cleanup-interval` | `60s` | Intervall des Hintergrund-Sweeps für abgelaufene Einträge; `0` schaltet ihn ab. |
 | `cache.in-memory.prefix-quotas` | *(nicht gesetzt)* | Kontingente pro Präfix, die eine Instanz unter ihren Consumern aufteilen; ihre Summe darf `max-entries` nicht überschreiten. |
+| `cache.in-memory.time-to-live` | `0` | Lebensdauer, die ein `set` / `mset` ohne eigenes `ttlMs` bekommt.  `0` = kein Ablauf, also das bisherige Verhalten. |
+| `cache.in-memory.time-to-idle` | `0` | Ein Lesezugriff schiebt den Ablauf eines solchen Eintrags wieder nach hinten, nie über seine `time-to-live` hinaus.  `0` = ein Lesezugriff verlängert nichts. |
 | `cache.<name>.in-memory.*` | *(der Block oben)* | Dieselben Blätter, für die einzelne Instanz, die `cache('<name>')` auflöst — überschreibt den globalen Block Blatt für Blatt und lehnt eine ausgemusterte Schreibweise genauso ab. |
 | `cache.<name>.plugin` | `"...in-memory"` | Welches Backend `cache('<name>')` auflöst. |
+| `cache.redis.url` | `""` | `redis://host:port` (oder `rediss://`).  Schließt `host` / `port` gegenseitig aus.  `""` = nicht gesetzt. |
+| `cache.redis.host` / `.port` | *(nicht gesetzt)* | Bewusst Kommentare in der `reference.conf` — siehe unten.  Ungesetzt nimmt `ioredis` sein eigenes `127.0.0.1:6379`. |
+| `cache.redis.db` | `0` | Logische Datenbank.  Wird ignoriert, wenn `url` gesetzt ist; dann gehört sie in den URL-Pfad. |
+| `cache.redis.key-prefix` | `""` | Wird jedem Key vorangestellt — trennt Systeme oder Umgebungen, die sich einen Server teilen. |
+| `cache.redis.password` | `""` | `AUTH`-Passwort.  Besser als Substitution: `password = ${?REDIS_PASSWORD}`. |
+| `cache.memcached.servers` | `"localhost:11211"` | Komma-getrennte `host:port`-Liste — ein **String**, keine Liste, weil `memjs` genau das nimmt. |
+| `cache.memcached.username` / `.password` | `""` | SASL-Credentials.  Besser `${?MEMCACHED_PASSWORD}`. |
+| `cache.memcached.key-prefix` | `""` | Wird serverseitig auf jede Operation angewendet. |
+| `cache.<name>.redis.*` / `cache.<name>.memcached.*` | *(die Blöcke oben)* | Dieselben Blätter für eine Instanz, damit `cache('rate-limit')` und `cache('idempotency')` verschiedene Datenbanken auf einem Server halten können. |
 
 Redis- und Memcached-Caches lesen ihre Verbindungs-Settings aus
-`actor-ts.cache.redis` / `actor-ts.cache.memcached`.
+`actor-ts.cache.redis` / `actor-ts.cache.memcached`, und das Framework
+registriert beide Factories selbst — mehr als
+`actor-ts.cache.sessions.plugin = "actor-ts.cache.redis"` braucht ein
+Cache also nicht, um auf Redis hochzukommen, ganz ohne
+`registerCache`-Aufruf in deinem Code.  Beide Treiber sind lazy geladene
+optionale Peers, ein Block, den niemand auflöst, kostet also nichts:
+`ioredis` und `memjs` werden bei der ersten Cache-*Operation* importiert,
+nicht beim Start.
 
-Die beiden `<name>`-Pfade nehmen den Namen, den dein Code an
+**Ein leerer String bedeutet in diesen beiden Blöcken „nicht gesetzt".**
+Die `""`-Werte oben sind die Form des Keys, veröffentlicht damit du Name
+und Verschachtelung siehst; der Reader verwirft sie, statt sie
+weiterzureichen.  Deshalb sind `host` und `port` auch Kommentare und
+keine Blätter: `url` schließt sie gegenseitig aus, und ein ausgeliefertes
+`host = "localhost"` wäre für jedes Deployment gesetzt und machte jede
+`url` zu einem `OptionsError`.  Schreibst du beides absichtlich, bekommst
+du diesen Fehler weiterhin — genau darum geht es.
+
+Diese `<name>`-Pfade nehmen den Namen, den dein Code an
 `cache(name)` übergibt, und lassen sich deshalb nicht in
 `reference.conf` aufzählen.  Einen Consumer allein für seinen eigenen
 Key-Raum zu dimensionieren ist genau das, was die Empfehlung [ein Cache

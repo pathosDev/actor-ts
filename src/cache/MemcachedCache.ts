@@ -3,7 +3,7 @@ import { Lazy } from '../util/Lazy.js';
 import { none, some, type Option } from '../util/Option.js';
 import { wrapError } from '../util/WrapError.js';
 import { CacheError, type Cache } from './Cache.js';
-import { MemcachedCacheOptionsValidator } from './MemcachedCacheOptions.js';
+import { DEFAULT_MEMCACHED_SERVERS, MemcachedCacheOptionsValidator } from './MemcachedCacheOptions.js';
 import type { MemcachedCacheOptions, MemcachedCacheOptionsType } from './MemcachedCacheOptions.js';
 
 /**
@@ -68,7 +68,7 @@ export class MemcachedCache implements Cache {
       const memjs = await memjsLazy.get();
       const Client = (memjs as { Client?: MemjsClientStatic }).Client
         ?? (memjs as unknown as MemjsClientStatic);
-      return Client.create(settings.servers ?? 'localhost:11211', {
+      return Client.create(settings.servers ?? DEFAULT_MEMCACHED_SERVERS, {
         username: settings.username,
         password: settings.password,
       }) as unknown as MemcachedClientLike;

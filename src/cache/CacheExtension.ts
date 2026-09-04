@@ -5,6 +5,12 @@ import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { InMemoryCache } from './InMemoryCache.js';
 import type { InMemoryCacheOptionsType } from './InMemoryCacheOptions.js';
+import { MemcachedCache } from './MemcachedCache.js';
+import { memcachedCacheKeysUnder, readMemcachedCacheOptionsFromConfig } from './MemcachedCacheOptions.js';
+import type { MemcachedCacheOptionsType } from './MemcachedCacheOptions.js';
+import { RedisCache } from './RedisCache.js';
+import { readRedisCacheOptionsFromConfig, redisCacheKeysUnder } from './RedisCacheOptions.js';
+import type { RedisCacheOptionsType } from './RedisCacheOptions.js';
 import type { Cache } from './Cache.js';
 
 /**
@@ -17,6 +23,8 @@ type InMemoryCacheKeys = {
   readonly root: string;
   readonly maxEntries: string;
   readonly cleanupInterval: string;
+  readonly timeToLive: string;
+  readonly timeToIdle: string;
   readonly prefixQuotas: string;
 };
 
@@ -26,6 +34,8 @@ function inMemoryCacheKeysUnder(root: string): InMemoryCacheKeys {
     root,
     maxEntries: `${root}.max-entries`,
     cleanupInterval: `${root}.cleanup-interval`,
+    timeToLive: `${root}.time-to-live`,
+    timeToIdle: `${root}.time-to-idle`,
     prefixQuotas: `${root}.prefix-quotas`,
   };
 }
@@ -68,8 +78,23 @@ export class CacheExtension implements Extension {
   private readonly factories = new Map<string, CacheFactory>();
   private readonly instances = new Map<string, Cache>();
 
+  /**
+   * The three built-in backends, all registered up front.
+   *
+   * Eagerly, and that costs nothing: `RedisCache` and `MemcachedCache` both
+   * wrap client construction in a `Lazy`, so `ioredis` / `memjs` are imported
+   * on the first cache *operation* and a process that never resolves a cache
+   * onto one of them never loads it.  What registration buys is the half
+   * `reference.conf` cannot: without it,
+   * `actor-ts.cache.<name>.plugin = "actor-ts.cache.redis"` resolves to a
+   * plugin id no factory answers and {@link cache} hands back an
+   * `InMemoryCache` instead — a perfectly-configured Redis block feeding a
+   * process-local map.
+   */
   constructor(private readonly system: ActorSystem) {
     this.factories.set(ConfigKeys.cache.inMemory, (_system, name) => new InMemoryCache(this.inMemoryCacheOptions(name)));
+    this.factories.set(ConfigKeys.cache.redis, (_system, name) => new RedisCache(this.redisCacheOptions(name)));
+    this.factories.set(ConfigKeys.cache.memcached, (_system, name) => new MemcachedCache(this.memcachedCacheOptions(name)));
   }
 
   /**
@@ -126,10 +151,14 @@ export class CacheExtension implements Extension {
     const leaves: {
       maxEntries?: number;
       cleanupMs?: number;
+      timeToLiveMs?: number;
+      timeToIdleMs?: number;
       prefixQuotas?: Record<string, number>;
     } = {};
     if (config.hasPath(keys.maxEntries)) leaves.maxEntries = config.getInt(keys.maxEntries);
     if (config.hasPath(keys.cleanupInterval)) leaves.cleanupMs = config.getDuration(keys.cleanupInterval);
+    if (config.hasPath(keys.timeToLive)) leaves.timeToLiveMs = config.getDuration(keys.timeToLive);
+    if (config.hasPath(keys.timeToIdle)) leaves.timeToIdleMs = config.getDuration(keys.timeToIdle);
     if (config.hasPath(keys.prefixQuotas)) {
       const quotas: Record<string, number> = {};
       for (const [prefix, quota] of Object.entries(config.getObject(keys.prefixQuotas))) {
@@ -140,6 +169,40 @@ export class CacheExtension implements Extension {
       leaves.prefixQuotas = quotas;
     }
     return leaves;
+  }
+
+  /**
+   * Redis cache options for the instance resolved as `name`, layered exactly
+   * as {@link inMemoryCacheOptions} is: the per-name block
+   * `actor-ts.cache.<name>.redis` over the global `actor-ts.cache.redis`, and
+   * an unset leaf in either falling through to `RedisCache`'s own defaults.
+   *
+   * The per-name layer is what makes one Redis server usable by more than one
+   * consumer.  `cache('rate-limit')` and `cache('idempotency')` are separate
+   * instances with separate settings by construction, and without this they
+   * would have to share one `db` and one `key-prefix` — which is the whole of
+   * the one-cache-per-consumer advice, applied to a backend where the key
+   * space really is shared across processes.  It carries no `reference.conf`
+   * leaf for the same reason `<name>.plugin` carries none: the name is the
+   * application's, so the path cannot be enumerated.
+   */
+  private redisCacheOptions(name: string): RedisCacheOptionsType {
+    const config = this.system.config;
+    return mergeOptions<RedisCacheOptionsType>(
+      {},
+      readRedisCacheOptionsFromConfig(config, ConfigKeys.cache.redisOptions),
+      readRedisCacheOptionsFromConfig(config, redisCacheKeysUnder(`${ConfigKeys.cache.root}.${name}.redis`)),
+    );
+  }
+
+  /** Memcached cache options for `name` — see {@link redisCacheOptions}. */
+  private memcachedCacheOptions(name: string): MemcachedCacheOptionsType {
+    const config = this.system.config;
+    return mergeOptions<MemcachedCacheOptionsType>(
+      {},
+      readMemcachedCacheOptionsFromConfig(config, ConfigKeys.cache.memcachedOptions),
+      readMemcachedCacheOptionsFromConfig(config, memcachedCacheKeysUnder(`${ConfigKeys.cache.root}.${name}.memcached`)),
+    );
   }
 
   /**

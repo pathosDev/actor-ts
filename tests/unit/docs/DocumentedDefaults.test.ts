@@ -86,7 +86,9 @@ import {
   DEFAULT_HTTP_CLIENT_REDIRECT_MODE,
   DEFAULT_HTTP_CLIENT_TIMEOUT_MS,
 } from '../../../src/http/HttpClientOptions.js';
-import { DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES } from '../../../src/cache/InMemoryCacheOptions.js';
+import { DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES, DEFAULT_TIME_TO_IDLE_MS, DEFAULT_TIME_TO_LIVE_MS } from '../../../src/cache/InMemoryCacheOptions.js';
+import { DEFAULT_MEMCACHED_SERVERS } from '../../../src/cache/MemcachedCacheOptions.js';
+import { DEFAULT_REDIS_DB } from '../../../src/cache/RedisCacheOptions.js';
 import { DEFAULT_PROJECTION_MAX_RETRIES, DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS, DEFAULT_PROJECTION_RECOVERY_STRATEGY, DEFAULT_PROJECTION_RETRY_BACKOFF_MS } from '../../../src/persistence/projection/ProjectionOptions.js';
 import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../../../src/persistence/Constants.js';
 import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from '../../../src/logging/MultiSinkLoggerOptions.js';
@@ -358,6 +360,18 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // rejects outright.  `DEFAULT_CLEANUP_MS` is unchanged — only the accessor
   // that has to read the literal moved.
   { key: 'actor-ts.cache.in-memory.cleanup-interval', kind: 'duration', constant: DEFAULT_CLEANUP_MS },
+  // The two expiry policies (#876).  `0` here is a real shipped default with a
+  // constant behind it — `InMemoryCache` reads `settings.timeToLiveMs ??
+  // DEFAULT_TIME_TO_LIVE_MS` — so it belongs in the table rather than in
+  // FEATURE_SWITCHES, whose entries are the ones with nothing to disagree with.
+  { key: 'actor-ts.cache.in-memory.time-to-live', kind: 'duration', constant: DEFAULT_TIME_TO_LIVE_MS },
+  { key: 'actor-ts.cache.in-memory.time-to-idle', kind: 'duration', constant: DEFAULT_TIME_TO_IDLE_MS },
+  // The two backend blocks' only non-placeholder leaves (#876).  Both are read
+  // at construction — `settings.db ?? DEFAULT_REDIS_DB`, `settings.servers ??
+  // DEFAULT_MEMCACHED_SERVERS` — so the published value and the shipped one
+  // are the same number and the same string, checkably.
+  { key: 'actor-ts.cache.redis.db', kind: 'int', constant: DEFAULT_REDIS_DB },
+  { key: 'actor-ts.cache.memcached.servers', kind: 'string', constant: DEFAULT_MEMCACHED_SERVERS },
 
   /* --- object storage --- */
   { key: 'actor-ts.persistence.snapshot-store.object-storage.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
@@ -500,6 +514,18 @@ const PLACEHOLDERS: readonly string[] = [
   'actor-ts.logger.sinks.splunk.host-name',
   'actor-ts.logger.sinks.syslog.app-name',
   'actor-ts.logger.sinks.syslog.host-name',
+  // The two cache backend blocks (#876).  Every one of these is the operator's
+  // own coordinate — a server URL, a namespace prefix, a credential — and the
+  // reader treats `""` as unset for exactly that reason, so the empty string
+  // never reaches ioredis or memjs.  It has to: `RedisCacheOptionsValidator`
+  // runs `new URL('')`, which throws, so a published `url = ""` passed through
+  // verbatim would refuse every config-built Redis cache.
+  'actor-ts.cache.redis.url',
+  'actor-ts.cache.redis.key-prefix',
+  'actor-ts.cache.redis.password',
+  'actor-ts.cache.memcached.username',
+  'actor-ts.cache.memcached.password',
+  'actor-ts.cache.memcached.key-prefix',
   // Object storage (#873).  `backend = ""` is the shape of the selector, not a
   // default — empty leaves the backend to code.  The rest are the operator's
   // own coordinates, required at the point of use: a bucket, a region, an

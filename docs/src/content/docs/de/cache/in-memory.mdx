@@ -34,11 +34,14 @@ TTL wird weiterhin **pro Aufruf** übergeben (siehe
 | --- | --- | --- | --- |
 | `maxEntries` | `withMaxEntries(n)` | `10000` | LRU-Schranke für gespeicherte Einträge.  `Infinity` = unbegrenzt. |
 | `cleanupMs`  | `withCleanupMs(ms)` | `60000` | Intervall des Hintergrund-Sweeps für abgelaufene Einträge (ms).  `0` / `Infinity` schaltet den Sweep ab. |
+| `timeToLiveMs` | `withTimeToLiveMs(ms)` | `0` | Lebensdauer für ein `set` / `mset` ohne eigenes `ttlMs`.  `0` = kein Ablauf — siehe [konfigurierte Ablauf-Policies](#konfigurierte-ablauf-policies). |
+| `timeToIdleMs` | `withTimeToIdleMs(ms)` | `0` | Ein Lesezugriff schiebt den Ablauf eines solchen Eintrags wieder nach hinten, nie über sein `timeToLiveMs` hinaus.  `0` = ein Lesezugriff verlängert nichts. |
 | `prefixQuotas` | `withPrefixQuotas(table)` | *(keine)* | Reservierungen je Key-Präfix, `{ 'rsp:': 8000, 'idem:': 2000 }`.  Ohne Angabe bleibt die Map ungeteilt — siehe [eine Instanz nach Key-Präfix aufteilen](#eine-instanz-nach-key-präfix-aufteilen). |
 
 Werte werden einmalig beim Konstruieren auf den gemergten Settings
 validiert: `maxEntries` muss eine positive Ganzzahl (oder `Infinity`)
-sein, `cleanupMs` eine nicht-negative Zahl (oder `Infinity`) und jede
+sein, `cleanupMs` eine nicht-negative Zahl (oder `Infinity`),
+`timeToLiveMs` und `timeToIdleMs` endliche nicht-negative Zahlen und jede
 Quote in `prefixQuotas` eine positive Ganzzahl unter einem nicht-leeren
 Präfix, wobei die Quoten in Summe höchstens `maxEntries` ergeben dürfen.
 Ein ungültiger Wert wirft
@@ -108,6 +111,50 @@ dich allein auf faule Expiry zu verlassen.
 `incr` setzt die TTL nur, wenn es den Zähler **erzeugt** (der Wert
 wird 1); spätere Inkremente erneuern sie nicht — die richtige
 Semantik für einen Fixed-Window-Rate-Limiter.
+
+## Konfigurierte Ablauf-Policies
+
+Zwei Settings liefern einen Ablauf, wo der Aufrufer keinen genannt hat.
+Beide sind per Default aus (`0`), es ändert sich also nichts, bis du eines
+einschaltest:
+
+```hocon
+actor-ts.cache.in-memory {
+  time-to-live = 15m   # a set/mset with no ttlMs lives this long
+  time-to-idle = 5m    # …and each read pushes that out again, up to 15m
+}
+```
+
+`time-to-live` stempelt beim Schreiben eine Lebensdauer auf.
+`time-to-idle` schiebt sie bei jedem Lesezugriff nach vorn, nie über die
+`time-to-live`-Deadline hinaus, mit der der Eintrag geschrieben wurde —
+ein heißer Key läuft also trotzdem am Ende seiner Lebensdauer ab, und ein
+Idle-Fenster ab `time-to-live` aufwärts greift überhaupt nie.  Ist nur
+`time-to-idle` gesetzt, gibt es keine Obergrenze, und ein Eintrag lebt so
+lange, wie irgendetwas ihn liest.
+
+**Ein `ttlMs`, das du übergibst, gewinnt immer**, in beide Richtungen:
+eine kurze explizite TTL wird nicht auf die der Policy gedehnt, und eine
+lange nicht auf sie gekürzt.
+
+**Beide gelten nur für `set` und `mset`.**  Für `incr` und `setIfAbsent`
+bleibt es bei „kein `ttlMs` heißt kein Ablauf", was die Konfiguration auch
+sagt, und das Verschieben endet an jedem Eintrag, den eine Garantie in die
+eviction-geschützte Hälfte bewegt hat (siehe [was Eviction
+schützt](#was-eviction-schützt-und-was-nicht)).  Beide Hälften dieser Regel
+sind dasselbe Argument: Für einen Zähler oder einen Claim ist dieser Cache
+die Quelle der Wahrheit und nicht eine Kopie davon — eine Lebensdauer, um
+die er nicht gebeten hat, gibt ein Lock frei, das niemand freigegeben hat,
+und ein Idle-Fenster, um das er nicht gebeten hat, sorgt dafür, dass ein
+Rate-Limit-Fenster nie schließt und ein Idempotenz-Claim nie ausläuft.
+Eine Konfigurationsdatei darf die Kopien begrenzen; die Originale nicht.
+
+Eine Nebenwirkung ist erwähnenswert: Mit `time-to-live` an erbt ein `set`,
+das einen *lebenden* Claim ersetzt, jetzt dessen Schutz — denn Vererbung
+verlangte schon immer einen endlichen Ablauf, und ein solches Schreiben
+hatte bisher keinen.  Das ist genau der Fall, für den es die Vererbungsregel
+gibt — ein Idempotenz-Record, der seinen eigenen Marker ersetzt — und er
+bleibt begrenzt, weil der Eintrag weiterhin abläuft.
 
 ## Standardmäßig begrenzt (LRU)
 
