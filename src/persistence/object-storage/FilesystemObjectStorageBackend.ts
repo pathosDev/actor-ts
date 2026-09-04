@@ -38,10 +38,13 @@ import type { StorageLocality } from '../StorageLocality.js';
  * Implementation notes:
  *
  *  - **Disk is canonical.**  Etags are content-derived
- *    ({@link computeEtag} — deterministic FNV-1a + length).  No in-memory
- *    map; the file content alone determines the etag, so a fresh process
- *    sees the exact same etags every other process does.  Same key, same
- *    bytes → same etag, regardless of who wrote them or when.
+ *    ({@link computeEtag} — deterministic truncated SHA-256 + length).  No
+ *    in-memory map; the file content alone determines the etag, so a fresh
+ *    process sees the exact same etags every other process does.  Same key,
+ *    same bytes → same etag, regardless of who wrote them or when.  The
+ *    digest is the CAS token and is sized as one — see {@link computeEtag}
+ *    for why a cheap non-cryptographic hash is the wrong primitive here
+ *    (#786).
  *  - **Per-key advisory lock.**  The lock file lives next to the target
  *    file as `<key>.lock`.  Acquisition uses
  *    `fs.writeFile(lockPath, ..., { flag: 'wx' })`, which is
@@ -318,9 +321,9 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
       // follow a link at the final component, exactly as it does in `get`.
       // Without it a link planted at `<key>` and pointing out of the root was
       // read and hashed, and the mismatch message handed the caller the
-      // target's exact byte length and its FNV-1a — an oracle for a file this
-      // backend is documented as unable to reach.  `ifNoneMatch: '*'` leaked
-      // the coarser half of the same fact.
+      // target's exact byte length and its content digest — an oracle for a
+      // file this backend is documented as unable to reach.  `ifNoneMatch:
+      // '*'` leaked the coarser half of the same fact.
       //
       // **Inside the lock, unlike the parent check, and that is load-bearing
       // on Windows.**  Canonicalising a path opens a handle to it, and
@@ -350,18 +353,23 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
 
       // Read current state from disk — disk is canonical, no in-memory
       // shadow that could disagree with another process's writes.
-      let currentEtag: string | undefined;
+      let existing: Uint8Array | undefined;
       try {
-        const existing = new Uint8Array(await fs.readFile(fullPath));
-        currentEtag = computeEtag(existing);
+        existing = new Uint8Array(await fs.readFile(fullPath));
       } catch (e) {
         if ((e as { code?: string })?.code !== 'ENOENT') {
           throw new ObjectStorageBackendError(
             `filesystem put-read-current failed for ${key}`, e,
           );
         }
-        // ENOENT → object doesn't exist yet; currentEtag stays undefined.
+        // ENOENT → object doesn't exist yet; `existing` stays undefined, and
+        // so does the `currentEtag` derived from it below.
       }
+      // Digest outside the `try`, deliberately.  Only `readFile` is the read
+      // this branch is reporting on; a `computeEtag` failure is a WebCrypto
+      // fault and would otherwise be relabelled "put-read-current failed",
+      // pointing at the disk for a problem that is not there.
+      const currentEtag = existing === undefined ? undefined : await computeEtag(existing);
 
       // Validate CAS preconditions.
       if (options.ifNoneMatch === '*' && currentEtag !== undefined) {
@@ -424,7 +432,7 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
         }
       }
 
-      return { etag: computeEtag(body) };
+      return { etag: await computeEtag(body) };
     } finally {
       await release();
     }
@@ -472,7 +480,7 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
     }
     return some({
       body,
-      etag: computeEtag(body),
+      etag: await computeEtag(body),
       lastModified: stat.mtime,
       contentEncoding,
       contentType,
@@ -905,18 +913,79 @@ async function acquireLock(
   }
 }
 
-/** Cheap content-derived ETag — FNV-1a hex + length suffix. */
-function computeEtag(body: Uint8Array): string {
-  // Sync, deterministic approximation good enough for FS:
-  // 32-bit FNV-1a over the bytes, hex-prefixed.  Real S3 uses MD5/sha256;
-  // for our CAS purposes the only invariant required is "same bytes →
-  // same etag, different bytes → different etag with very high probability".
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < body.length; i++) {
-    hash ^= body[i]!;
-    hash = (hash * 0x01000193) >>> 0;
+/**
+ * Width of the SHA-256 digest an etag carries, in bytes — 16, rendered as
+ * 32 hex characters.
+ *
+ * Same truncation the integrity tag next door uses, for the same reason
+ * `Integrity.ts` gives for its `HMAC_TAG_LENGTH`: 128 bits sits well above
+ * any practical forgery threshold while keeping the token a fixed, readable
+ * length.  It stays in this file rather than moving to
+ * `src/persistence/Constants.ts` because it is not a tuned bound — it is a
+ * size fixed by the primitive chosen here and baked into the etag's own
+ * string format, the same category as `Encryption.ts`'s `IV_LENGTH`.
+ */
+const ETAG_DIGEST_BYTES = 16;
+
+/**
+ * Content-derived ETag — `"fs-<32 hex chars>-<byte length>"`, where the hex
+ * is SHA-256 over the body truncated to {@link ETAG_DIGEST_BYTES}.
+ *
+ * **This is the compare-and-swap token, not a cache validator**, which is the
+ * whole of #786.  `put` re-derives it from disk and compares it against
+ * `options.ifMatch` to decide whether the caller's read is still current, and
+ * `ObjectStorageDurableStateStore` builds that `ifMatch` from the etag it
+ * cached — so equality here *is* the durable-state concurrency check.
+ *
+ * It used to be a 32-bit FNV-1a xor'd with the length, and the comment here
+ * scoped its invariant to "different bytes → different etag with very high
+ * probability".  That is an accidental-collision claim, and it was true: a
+ * chance collision needs ~65k distinct same-length bodies at one key, which no
+ * durable-state record produces.  The claim a CAS token actually has to make
+ * is the adversarial one, and FNV-1a makes none — it is trivially invertible
+ * by construction, so a stale writer who drives the plaintext can *compute* a
+ * body matching an etag they still hold rather than search for one, and win a
+ * CAS check they should lose.
+ *
+ * **Be precise about how live that is.**  Nobody constructed the collision,
+ * the preconditions stack (this backend rather than S3, an attacker who both
+ * drives the plaintext and holds write access, and a body whose *length* also
+ * matches since the length is a literal component of the string), and the
+ * per-key `O_EXCL` lock in {@link acquireLock} already removes the ordinary
+ * race — it just cannot make the comparison itself sound, because a colliding
+ * body passes it whether or not it was taken under the lock.  The S3 backend
+ * was never affected: it forwards `IfMatch` to the service and returns S3's
+ * own ETag.  So the defensible statement is the hygiene one — a
+ * security-relevant equality check should not rest on a four-byte
+ * non-cryptographic hash — not that there is an exploit in the field.
+ *
+ * **No cheap fallback, deliberately.**  `Integrity.ts` and `Encryption.ts`
+ * next door resolve `SubtleCrypto` the same way and throw when it is absent;
+ * this follows them rather than `IdempotencyKey.ts`, which degrades to FNV-1a
+ * for exotic runtimes.  A silent downgrade path would reinstate exactly the
+ * defect above on whichever runtime took it, and no runtime this backend can
+ * even load on needs one: it already hard-depends on `node:fs/promises`, and
+ * every runtime the framework supports that has that also exposes WebCrypto
+ * as a global (Bun, Node ≥ 24, Deno).
+ */
+async function computeEtag(body: Uint8Array): Promise<string> {
+  const subtle = (globalThis.crypto as Crypto | undefined)?.subtle;
+  if (!subtle) {
+    throw new ObjectStorageBackendError(
+      'SubtleCrypto is not available in this runtime.  The filesystem '
+      + 'object-storage backend derives its compare-and-swap ETag from '
+      + 'SHA-256 and so requires WebCrypto — Node, Bun, or Deno.',
+    );
   }
-  // Mix in length so empty vs single-zero-byte differ trivially.
-  hash ^= body.length;
-  return `"fs-${(hash >>> 0).toString(16).padStart(8, '0')}-${body.length}"`;
+  // Cast through BufferSource — TS 5.7+'s DOM types tighten the
+  // `BufferSource` constraint in a way that doesn't match
+  // `Uint8Array<ArrayBufferLike>` cleanly.  Same cast, same reason, as
+  // `computeRequestFingerprint` in `src/http/cache/IdempotencyKey.ts`.
+  const digest = await subtle.digest('SHA-256', body as unknown as BufferSource);
+  const truncated = new Uint8Array(digest).subarray(0, ETAG_DIGEST_BYTES);
+  const hex = Array.from(truncated, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  // The length stays in the string.  It buys nothing against an adversary now
+  // that the digest carries the weight, but it is part of the format callers
+  // and fixtures already match on, and it keeps a mismatch message legible.
+  return `"fs-${hex}-${body.length}"`;
 }
