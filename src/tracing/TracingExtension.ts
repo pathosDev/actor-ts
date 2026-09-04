@@ -20,7 +20,12 @@ export class TracingExtension implements Extension {
   /** Currently-installed tracer (noop until `enable(...)` is called). */
   get(): Tracer { return this.tracer; }
 
-  /** Plug in a tracer.  Idempotent if you re-pass the same instance. */
+  /**
+   * Plug in a tracer.  Idempotent if you re-pass the same instance.
+   *
+   * `enable(NOOP_TRACER)` *is* {@link disable} — see {@link install} for why
+   * that has to be true rather than nearly true.
+   */
   enable(tracer: Tracer): Tracer {
     this.install(tracer);
     return tracer;
@@ -76,9 +81,6 @@ export class TracingExtension implements Extension {
   /** Reset back to the noop — primarily for tests. */
   disable(): void {
     this.install(NOOP_TRACER);
-    // Both are pure cost without a tracer, so they go with it.
-    this._system._traceRootSpans = false;
-    this._system._traceMessagePayloads = false;
   }
 
   /**
@@ -92,10 +94,29 @@ export class TracingExtension implements Extension {
    * same thing to `tracerOf(...)` and to the per-message read — and this
    * extension is swapped at runtime with live cells draining, so the two
    * agreeing at every instant is the actual requirement.
+   *
+   * The two switches are the third thing that has to agree, and they clear
+   * here rather than in {@link disable} for the same reason.  Both are pure
+   * cost with nothing to record them, and {@link recordRootSpans} refuses to
+   * *set* root spans without a tracer — so the state it refuses must not be
+   * reachable by taking the tracer away either.  Clearing them only in
+   * `disable()` left exactly that hole: `isEnabled` is an identity check
+   * against the singleton, so `enable(NOOP_TRACER)` and `disable()` already
+   * named the same state, `NOOP_TRACER` is a public export, and swapping it in
+   * is an ordinary way to write "tracing off in this environment" — after
+   * which `isRecordingRootSpans()` still said `true` on a system where
+   * `recordRootSpans(true)` throws.  Anything that snapshots that pair and
+   * restores it later then cannot honour what it saved; `SpanTap.uninstall`
+   * threw on it (#714).
    */
   private install(tracer: Tracer): void {
     this.tracer = tracer;
-    this._system._tracer = tracer === NOOP_TRACER ? null : tracer;
+    const isNoop = tracer === NOOP_TRACER;
+    this._system._tracer = isNoop ? null : tracer;
+    if (isNoop) {
+      this._system._traceRootSpans = false;
+      this._system._traceMessagePayloads = false;
+    }
   }
 }
 
