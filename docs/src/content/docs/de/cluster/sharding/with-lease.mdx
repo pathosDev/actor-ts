@@ -76,7 +76,28 @@ type StartShardingOptionsType<TMessage> = {
 | Feld | Zweck |
 | --- | --- |
 | `lease` | Die `Lease`-Instanz — typisch `KubernetesLease`. |
-| `acquireRetryIntervalMs` | Retry-Takt nach fehlgeschlagenem Acquire. |
+| `acquireRetryIntervalMs` | Retry-Takt nach fehlgeschlagenem Acquire.  Auch node-weit setzbar als `actor-ts.sharding.acquire-retry-interval`. |
+
+### Der Retry ist konfigurierbar, das Lease nicht
+
+```hocon
+actor-ts.sharding.acquire-retry-interval = 2s
+```
+
+Das Intervall lohnt sich zu tunen, weil es die Erholungslatenz einer heilenden
+Partition *ist*: Solange kein Acquire gelingt, gibt der Koordinator kein
+`AllocateShard` heraus, und alles, was für den Typ geroutet wird, wartet
+derweil in den Puffern der Regionen.
+
+Das `Lease` selbst bleibt im Code, und einen `use-lease`-Schalter aus der
+Config-Datei gibt es bewusst nicht. Ein Lease ist kein Boolean: Um eines zu
+bauen, braucht es einen Namen, einen Owner pro Node und eine TTL — bei
+`KubernetesLease` zusätzlich einen Namespace — und `owner` ist Node-Identität,
+also genau die Art Wert, die nicht in eine von allen Nodes geteilte Datei
+gehört. Ein Schalter, der stillschweigend kein Lease erzeugt, wäre schlimmer
+als gar keiner, denn er würde Split-Brain-Schutz behaupten, den es nicht gibt.
+Der Key oben wirkt deshalb nur dort, wo im Code `withLease(...)` aufgerufen
+wurde.
 
 Dieselbe `Lease`-Abstraktion wie bei
 [Singleton mit Lease](/de/cluster/singleton/with-lease/) —

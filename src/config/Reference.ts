@@ -542,8 +542,17 @@ actor-ts {
 
   sharding {
     number-of-shards = 64
+    # Which role hosts shards; "" = unrestricted.  This names the role, it does
+    #   NOT give a node one -- a node's own roles stay code-only
+    #   (ClusterOptions.withRoles), so a role no up member carries places
+    #   nothing at all and every message for the type sits in the region buffer.
+    role = ""
     rebalance-interval = 2s
     hand-off-timeout = 10s
+    # Retry cadence after a failed coordinator lease acquire.  Only observable
+    #   where a Lease was passed in code: HOCON cannot name one, and there is
+    #   deliberately no use-lease switch to pretend otherwise.
+    acquire-retry-interval = 5s
     remember-entities = false
     passivation-idle = 5m    # idle window before an entity passivates; 0 disables the sweep
     # shard-passivation-idle -- how long a shard may stand empty before it

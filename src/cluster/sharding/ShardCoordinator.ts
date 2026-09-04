@@ -4,6 +4,7 @@ import type { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { SHARD_MAP_PUBLISH_DELAY_MS } from '../Constants.js';
 import {
+  DEFAULT_ACQUIRE_RETRY_INTERVAL_MS,
   DEFAULT_HAND_OFF_TIMEOUT_MS,
   DEFAULT_REBALANCE_INTERVAL_MS,
 } from './ShardCoordinatorOptions.js';
@@ -226,6 +227,12 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    */
   private shardMapVersion = 0;
   private shardMapPublishTimer: Cancellable | null = null;
+
+  /**
+   * Latch for {@link warnRoleMatchesNoRegion} — one line per episode of "the
+   * configured role matches no registered region", not one per shard id.
+   */
+  private roleMismatchWarned = false;
 
   public readonly options: ShardCoordinatorOptionsType;
 
@@ -581,7 +588,7 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
   }
 
   private scheduleAcquireRetry(): void {
-    const interval = this.options.acquireRetryIntervalMs ?? 5_000;
+    const interval = this.options.acquireRetryIntervalMs ?? DEFAULT_ACQUIRE_RETRY_INTERVAL_MS;
     this.acquireRetryTimer?.cancel();
     this.acquireRetryTimer = this.system.scheduler.scheduleOnceFunction(interval, () => {
       this.self.tell({ kind: 'acquire-retry' } satisfies CoordinatorEvent);
@@ -597,6 +604,39 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
       const member = this.options.cluster.getMembers().find(x => x.address.equals(a));
       return member?.hasRole(role) ?? false;
     });
+  }
+
+  /**
+   * Say out loud that a configured role matches none of the regions that did
+   * register — the one shape of "no candidates" that is a misconfiguration
+   * rather than a phase of startup (#847).
+   *
+   * `tryAllocate` returns silently on an empty candidate set, which is correct
+   * and unremarkable while nobody has registered yet.  The same silence over a
+   * role that no member carries is a deployment stuck forever with every
+   * message for the type accumulating in the regions' routing buffers (#849),
+   * and nothing anywhere naming the cause.  Per-type in code that risk is one
+   * `withRole` typo; read from a shared config file it is every sharded type on
+   * every node, which is what makes it worth a line.
+   *
+   * Registered-but-filtered-out is the discriminating condition: with no
+   * non-proxy region at all the cause is "nobody has registered", so warning
+   * there would fire on every healthy cold start. One line per episode, cleared
+   * as soon as an allocation succeeds, so a role that becomes wrong again is
+   * still reported — the latch shape #849's buffer overflow uses.
+   */
+  private warnRoleMatchesNoRegion(): void {
+    const role = this.options.role;
+    if (!role || this.roleMismatchWarned) return;
+    const registered = Array.from(this.regions.values()).filter(r => !r.proxy).length;
+    if (registered === 0) return;
+    this.roleMismatchWarned = true;
+    this.log.warn(
+      `[sharding] no member hosting type "${this.options.typeName}" carries role "${role}", so none of `
+      + `the ${registered} registered region(s) can be allocated a shard; every message for the type will `
+      + 'buffer until one does. Set actor-ts.sharding.role (or withRole) to a role the hosting nodes '
+      + 'actually declare via ClusterOptions.withRoles',
+    );
   }
 
   private currentShardCounts(): Map<string, Set<number>> {
@@ -936,7 +976,11 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
   private tryAllocate(shardId: number): void {
     const cs = this.candidates();
-    if (cs.length === 0) return;
+    if (cs.length === 0) {
+      this.warnRoleMatchesNoRegion();
+      return;
+    }
+    this.roleMismatchWarned = false;
     const owner = this.options.allocationStrategy.allocate(
       shardId, cs, this.currentShardCounts(),
     );

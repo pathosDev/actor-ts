@@ -171,10 +171,19 @@ export class StartShardingOptionsValidator<TMessage>
  * The polymorphic fields (`entityActor`, the extractors, `allocationStrategy`,
  * `lease`, the stores) are absent by nature: HOCON has no way to express a
  * class or a closure, so those stay code-only.
+ *
+ * `role` is the one member here that is placement rather than tuning, and it is
+ * in on purpose: *which* role hosts a type is uniform across a deployment,
+ * while *which* roles a node carries is per-node identity and stays code-only
+ * (`ClusterOptions.roles` has no leaf, see `ConfigKeys.sharding`).  `proxy` is
+ * the counter-example and stays out: it is per-node topology, a second `start`
+ * disagreeing about it throws, and a deployment-wide `proxy = on` would leave
+ * nothing hosting anything (#847).
  */
 export type ShardingConfigDefaults = Pick<
   StartShardingOptionsType<unknown>,
   | 'numShards'
+  | 'role'
   | 'rememberEntities'
   | 'passivationIdleMs'
   | 'shardPassivationIdleMs'
@@ -183,6 +192,7 @@ export type ShardingConfigDefaults = Pick<
   | 'registerRetryIntervalMs'
   | 'rebalanceIntervalMs'
   | 'handOffTimeoutMs'
+  | 'acquireRetryIntervalMs'
   | 'shardRegionQueryTimeoutMs'
 >;
 
@@ -200,6 +210,15 @@ export function readShardingOptionsFromConfig(config: Config): ShardingConfigDef
   // Mutable while being filled; consumers see the readonly shape.
   const out: { -readonly [K in keyof ShardingConfigDefaults]: ShardingConfigDefaults[K] } = {};
   if (config.hasPath(keys.numberOfShards)) out.numShards = config.getInt(keys.numberOfShards);
+  if (config.hasPath(keys.role)) {
+    // `""` is how a HOCON file says "no opinion" for a string whose absence is
+    // the real default — the same shape `dead-letters.persistence-id` uses.
+    // `reference.conf` merges under everything, so the shipped placeholder makes
+    // `hasPath` true forever; read unguarded it would put `role: ''` into every
+    // merged options object on every node that configured nothing.
+    const role = config.getString(keys.role);
+    if (role.length > 0) out.role = role;
+  }
   if (config.hasPath(keys.rememberEntities)) out.rememberEntities = config.getBoolean(keys.rememberEntities);
   if (config.hasPath(keys.passivationIdle)) out.passivationIdleMs = config.getDuration(keys.passivationIdle);
   // Absent from reference.conf on purpose, so this stays genuinely optional:
@@ -214,6 +233,9 @@ export function readShardingOptionsFromConfig(config: Config): ShardingConfigDef
   }
   if (config.hasPath(keys.rebalanceInterval)) out.rebalanceIntervalMs = config.getDuration(keys.rebalanceInterval);
   if (config.hasPath(keys.handOffTimeout)) out.handOffTimeoutMs = config.getDuration(keys.handOffTimeout);
+  if (config.hasPath(keys.acquireRetryInterval)) {
+    out.acquireRetryIntervalMs = config.getDuration(keys.acquireRetryInterval);
+  }
   if (config.hasPath(keys.shardRegionQueryTimeout)) {
     out.shardRegionQueryTimeoutMs = config.getDuration(keys.shardRegionQueryTimeout);
   }

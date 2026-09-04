@@ -89,8 +89,10 @@ actor-ts {
 
   sharding {
     number-of-shards           = 64
+    role                       = ""       # "" = unrestricted; names a role, never grants one
     rebalance-interval         = 2s
     hand-off-timeout           = 10s
+    acquire-retry-interval     = 5s       # retry a failed coordinator lease acquire
     remember-entities          = false
     passivation-idle           = 5m       # 0 deaktiviert die Auto-Passivierung
     # shard-passivation-idle              # ungesetzt: folgt passivation-idle
@@ -474,8 +476,10 @@ pro Consumer](/de/cache/in-memory/#ein-cache-pro-consumer) braucht.
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `sharding.number-of-shards` | `64` | In wie viele Shards der Entity-Raum geteilt wird. Jeder Node, der einen Typ startet oder proxyt, muss denselben Wert haben — der Koordinator verweigert eine Region, die abweicht, siehe [numShards ist eine clusterweite Vereinbarung](/de/cluster/sharding/overview/#numshards-ist-eine-clusterweite-vereinbarung). |
+| `sharding.role` | `""` | Nur Mitglieder mit dieser Rolle hosten Shards.  `""` = keine Einschränkung.  **Der Key benennt eine Rolle, er vergibt keine** — siehe [Eine Rolle wird benannt, nicht vergeben](#eine-rolle-wird-benannt-nicht-vergeben) weiter unten. |
 | `sharding.rebalance-interval` | `2s` | Abstand zwischen koordinator-getriebenen Rebalance-Passes. |
 | `sharding.hand-off-timeout` | `10s` | Wie lange auf HandOffComplete gewartet wird, bevor zwangsumverteilt wird. |
+| `sharding.acquire-retry-interval` | `5s` | Wie lange der Koordinator wartet, bevor er ein [Lease](/de/cluster/sharding/with-lease/) erneut zu erwerben versucht, das er nicht bekommen hat.  Wirkt nur dort, wo im Code ein `Lease` übergeben wurde: HOCON kann keines benennen, und einen `use-lease`-Schalter gibt es bewusst nicht. |
 | `sharding.remember-entities` | `false` | Persistiere die Menge aktiver Entity-IDs. |
 | `sharding.passivation-idle` | `5m` | Auto-Passiviere eine Entität nach diesem Idle-Fenster.  `0` = deaktiviert.  Eine Entität, die Zustand im Speicher hält und ihn nicht in `preStart` wiederaufbaut, verliert ihn dabei — siehe [Passivierung](/de/cluster/sharding/overview/#passivierung). |
 | `sharding.shard-passivation-idle` | *(ungesetzt)* | Auto-Passiviere einen Shard, nachdem er so lange leer stand.  Ungesetzt folgt er `passivation-idle`; `0` hält leere Shards resident.  Bewusst nicht in der `reference.conf`, denn genau von einem ausgelieferten Wert müsste sich „ungesetzt" unterscheiden lassen. |
@@ -500,6 +504,50 @@ const shardingOptions = StartShardingOptions.create<CartCommand>()
 cluster.sharding.start(shardingOptions);
 // numShards 256 (explizit), passivationIdleMs 120_000 (Config-Datei)
 ```
+
+#### Eine Rolle wird benannt, nicht vergeben
+
+`sharding.role` sagt, **welche** Rolle einen Typ hostet.  Der Key gibt dem
+Node diese Rolle **nicht**.  Die eigenen Rollen eines Nodes sind Identität
+statt Tuning, deshalb hat `ClusterOptions.roles` überhaupt keinen Config-Key
+und bleibt im Code:
+
+```ts
+// On every node that should host the shards:
+const clusterOptions = ClusterOptions.create()
+  .withHost('10.0.0.7')
+  .withPort(2551)
+  .withRoles(['backend']);
+```
+
+```hocon
+# In the config file every node shares:
+actor-ts.sharding.role = "backend"
+```
+
+Setzt du nur die erste Hälfte, ändert sich nichts; setzt du nur die zweite,
+wird **nie ein Shard zugeteilt** — der Koordinator findet kein passendes
+Mitglied, jede Nachricht für den Typ sammelt sich im Routing-Puffer der Region,
+und das einzige Anzeichen ist eine Warnung, die die Rolle und die Zahl der
+ausgeschlossenen Regionen nennt.  Eine `role`, die kein Mitglied trägt, ist
+dasselbe stille Versagen wie ein Tippfehler in `withRole` — nur dass sie aus
+einer geteilten Config-Datei auf einen Schlag für jeden Sharded Type auf jedem
+Node gilt.
+
+Genau diese Asymmetrie ist auch der Grund für den Key: *welche* Rolle einen Typ
+hostet, ist über ein Deployment hinweg einheitlich — *welche* Rollen ein Node
+trägt, nicht.
+
+Eine konfigurierte Rolle erreicht auch [Sharded Daemon
+Processes](/de/cluster/sharding/sharded-daemon-process/), weil sie über
+dasselbe `sharding.start(...)` gestartet werden.  Das ist so gewollt — wer
+seine Entities auf `backend`-Nodes legt, meint in der Regel auch seine Daemons
+— und `ShardedDaemonProcessOptions.withRole(...)` sticht sie pro Prozess
+weiterhin.
+
+`proxy` hat bewusst keinen Key.  Es ist Topologie pro Node und keine
+deployment-weite Tatsache: ein zweites `start` mit abweichendem Wert wirft, und
+ein von allen geteiltes `proxy = on` ließe niemanden mehr etwas hosten.
 
 Ein Setting für genau einen Typ gehört deshalb in den Builder; die
 Config-Datei ist für die node-weite Grundeinstellung, die du ohne Rebuild
