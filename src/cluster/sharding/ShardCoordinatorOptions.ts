@@ -20,6 +20,19 @@ export const DEFAULT_REBALANCE_INTERVAL_MS = 2_000;
  */
 export const DEFAULT_HAND_OFF_TIMEOUT_MS = 10_000;
 
+/**
+ * Built-in default for {@link ShardCoordinatorOptionsType.acquireRetryIntervalMs}
+ * — how long the coordinator waits before re-`acquire()`ing a lease it failed to
+ * take.  Mirrors `actor-ts.sharding.acquire-retry-interval = 5s` (#847).
+ *
+ * Only reachable where a {@link Lease} was passed in code, since HOCON has no
+ * way to name one.  It is still configurable because the retry cadence is the
+ * whole recovery latency of a partition that heals: until an acquire succeeds
+ * the coordinator issues no `AllocateShard`, and everything routed for the type
+ * buffers in the regions meanwhile.
+ */
+export const DEFAULT_ACQUIRE_RETRY_INTERVAL_MS = 5_000;
+
 /** Plain options-object shape consumed by a {@link ShardCoordinator}. */
 export type ShardCoordinatorOptionsType = {
   readonly typeName: string;

@@ -39,6 +39,7 @@ import {
 } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_PORT } from '../../../src/cluster/ClusterBootstrapOptions.js';
 import { DEFAULT_MAX_FRAME_BYTES } from '../../../src/cluster/Protocol.js';
+import { DEFAULT_MAX_DOCUMENT_BYTES, DEFAULT_MAX_NESTING_DEPTH, DEFAULT_MAX_STRING_LENGTH } from '../../../src/serialization/ReadConstraintsOptions.js';
 import {
   DEFAULT_MAX_REMOTE_NODES_PER_TOPIC,
   DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC,
@@ -54,6 +55,7 @@ import {
   DEFAULT_REGISTER_RETRY_INTERVAL_MS,
   DEFAULT_SHARD_REGION_BUFFER_SIZE,
 } from '../../../src/cluster/sharding/ShardingOptions.js';
+import { DEFAULT_ACQUIRE_RETRY_INTERVAL_MS } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
 import {
   DEFAULT_HAND_OFF_TIMEOUT_MS,
   DEFAULT_REBALANCE_INTERVAL_MS,
@@ -64,6 +66,10 @@ import {
   DEFAULT_MAX_PENDING_QUORUM_REQUESTS,
   DEFAULT_MAX_QUORUM_TIMEOUT_MS,
 } from '../../../src/crdt/DistributedDataOptions.js';
+import { DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM, DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE } from '../../../src/persistence/Constants.js';
+import { DEFAULT_SNAPSHOT_KEEP_N } from '../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
+import { DEFAULT_MAX_DECOMPRESSED_BYTES } from '../../../src/persistence/object-storage/BodyCodec.js';
+import { DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_STALE_LOCK_MS } from '../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import {
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES,
@@ -76,7 +82,10 @@ import {
   DEFAULT_HTTP_CLIENT_TIMEOUT_MS,
 } from '../../../src/http/HttpClientOptions.js';
 import { DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES } from '../../../src/cache/InMemoryCacheOptions.js';
+import { DEFAULT_PROJECTION_MAX_RETRIES, DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS, DEFAULT_PROJECTION_RECOVERY_STRATEGY, DEFAULT_PROJECTION_RETRY_BACKOFF_MS } from '../../../src/persistence/projection/ProjectionOptions.js';
+import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../../../src/persistence/Constants.js';
 import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from '../../../src/logging/MultiSinkLoggerOptions.js';
+import { DEVTOOLS_DEFAULTS } from '../../../src/devtools/DevToolsOptions.js';
 import {
   DEFAULT_DELIVERY_FLUSH_INTERVAL_MS,
   DEFAULT_DELIVERY_MAX_BATCH_SIZE,
@@ -232,6 +241,14 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.tombstone.time-to-live', kind: 'duration', constant: DEFAULT_TOMBSTONE_TTL_MS },
   { key: 'actor-ts.cluster.tombstone.prune-interval', kind: 'duration', constant: DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS },
 
+  /* --- serialization --- */
+  { key: 'actor-ts.serialization.read-constraints.max-nesting-depth', kind: 'int', constant: DEFAULT_MAX_NESTING_DEPTH },
+  // `bytes` on a published `0`: `getBytes` reads a bare number straight
+  // through, so the sentinel is asserted by the same accessor the reader uses
+  // rather than being filed away as a feature switch with no constant (#880).
+  { key: 'actor-ts.serialization.read-constraints.max-document-bytes', kind: 'bytes', constant: DEFAULT_MAX_DOCUMENT_BYTES },
+  { key: 'actor-ts.serialization.read-constraints.max-string-length', kind: 'bytes', constant: DEFAULT_MAX_STRING_LENGTH },
+
   /* --- cluster bootstrap --- */
   { key: 'actor-ts.cluster.bootstrap.poll-interval', kind: 'duration', constant: DEFAULT_POLL_INTERVAL_MS },
   { key: 'actor-ts.cluster.bootstrap.stable-margin', kind: 'duration', constant: DEFAULT_STABLE_MARGIN_MS },
@@ -260,6 +277,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.sharding.hand-off-timeout', kind: 'duration', constant: DEFAULT_HAND_OFF_TIMEOUT_MS },
   { key: 'actor-ts.sharding.buffer-size', kind: 'int', constant: DEFAULT_SHARD_REGION_BUFFER_SIZE },
   { key: 'actor-ts.sharding.register-retry-interval', kind: 'duration', constant: DEFAULT_REGISTER_RETRY_INTERVAL_MS },
+  { key: 'actor-ts.sharding.acquire-retry-interval', kind: 'duration', constant: DEFAULT_ACQUIRE_RETRY_INTERVAL_MS },
   { key: 'actor-ts.sharding.shard-region-query-timeout', kind: 'duration', constant: DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS },
 
   /* --- distributed data --- */
@@ -311,11 +329,40 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // that has to read the literal moved.
   { key: 'actor-ts.cache.in-memory.cleanup-interval', kind: 'duration', constant: DEFAULT_CLEANUP_MS },
 
+  /* --- object storage --- */
+  { key: 'actor-ts.persistence.snapshot-store.object-storage.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.object-storage.max-decompressed-bytes', kind: 'bytes', constant: DEFAULT_MAX_DECOMPRESSED_BYTES },
+  { key: 'actor-ts.persistence.snapshot-store.object-storage.compression.algorithm', kind: 'string', constant: DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM },
+  { key: 'actor-ts.persistence.snapshot-store.object-storage.encryption.mode', kind: 'string', constant: DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE },
+  { key: 'actor-ts.persistence.snapshot-store.object-storage.filesystem.lock-timeout', kind: 'duration', constant: DEFAULT_LOCK_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.snapshot-store.object-storage.filesystem.stale-lock', kind: 'duration', constant: DEFAULT_STALE_LOCK_MS },
+
+  /* --- projection --- */
+  { key: 'actor-ts.projection.recovery-strategy', kind: 'string', constant: DEFAULT_PROJECTION_RECOVERY_STRATEGY },
+  { key: 'actor-ts.projection.max-retries', kind: 'int', constant: DEFAULT_PROJECTION_MAX_RETRIES },
+  { key: 'actor-ts.projection.retry-backoff', kind: 'duration', constant: DEFAULT_PROJECTION_RETRY_BACKOFF_MS },
+  { key: 'actor-ts.projection.max-retry-backoff', kind: 'duration', constant: DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS },
+  { key: 'actor-ts.projection.poll-interval', kind: 'duration', constant: DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS },
+
   /* --- logging: pipeline --- */
   { key: 'actor-ts.logger.close-timeout', kind: 'duration', constant: DEFAULT_SINK_CLOSE_TIMEOUT_MS },
   ...deliveryDefaults,
   { key: 'actor-ts.logger.sinks.file.delivery.queue-capacity', kind: 'int', constant: DEFAULT_DELIVERY_QUEUE_CAPACITY },
   { key: 'actor-ts.logger.sinks.file.delivery.overflow', kind: 'string', constant: DEFAULT_DELIVERY_OVERFLOW },
+
+  /* --- devtools --- */
+  { key: 'actor-ts.devtools.host', kind: 'string', constant: DEVTOOLS_DEFAULTS.host },
+  { key: 'actor-ts.devtools.port', kind: 'int', constant: DEVTOOLS_DEFAULTS.port },
+  { key: 'actor-ts.devtools.allow-remote', kind: 'bool', constant: DEVTOOLS_DEFAULTS.allowRemote },
+  { key: 'actor-ts.devtools.serve-ui', kind: 'bool', constant: DEVTOOLS_DEFAULTS.serveUi },
+  { key: 'actor-ts.devtools.mailbox-sample-interval', kind: 'duration', constant: DEVTOOLS_DEFAULTS.mailboxSampleIntervalMs },
+  { key: 'actor-ts.devtools.mailbox-sample-limit', kind: 'int', constant: DEVTOOLS_DEFAULTS.mailboxSampleLimit },
+  { key: 'actor-ts.devtools.stats-interval', kind: 'duration', constant: DEVTOOLS_DEFAULTS.statsIntervalMs },
+  { key: 'actor-ts.devtools.span-buffer-capacity', kind: 'int', constant: DEVTOOLS_DEFAULTS.spanBufferCapacity },
+  { key: 'actor-ts.devtools.span-flush-interval', kind: 'duration', constant: DEVTOOLS_DEFAULTS.spanFlushIntervalMs },
+  { key: 'actor-ts.devtools.event-buffer-capacity', kind: 'int', constant: DEVTOOLS_DEFAULTS.eventBufferCapacity },
+  { key: 'actor-ts.devtools.event-flush-interval', kind: 'duration', constant: DEVTOOLS_DEFAULTS.eventFlushIntervalMs },
+  { key: 'actor-ts.devtools.replay-auto-capture', kind: 'bool', constant: DEVTOOLS_DEFAULTS.replayAutoCapture },
 
   /* --- logging: console + file sinks --- */
   { key: 'actor-ts.logger.sinks.console.format', kind: 'string', constant: DEFAULT_CONSOLE_SINK_FORMAT },
@@ -400,6 +447,10 @@ const LOG_LEVEL_NAMES: readonly string[] = [
  */
 const PLACEHOLDERS: readonly string[] = [
   'actor-ts.dead-letters.persistence-id',
+  // "" = unrestricted.  Not a default anyone runs with; the shipped empty
+  // string is what lets the reader tell "no opinion" from a role named "",
+  // and the role a deployment actually wants is per-deployment (#847).
+  'actor-ts.sharding.role',
   'actor-ts.logger.sinks.gelf.url',
   'actor-ts.logger.sinks.gelf.host-name',
   'actor-ts.logger.sinks.otlp.service-name',
@@ -419,6 +470,18 @@ const PLACEHOLDERS: readonly string[] = [
   'actor-ts.logger.sinks.splunk.host-name',
   'actor-ts.logger.sinks.syslog.app-name',
   'actor-ts.logger.sinks.syslog.host-name',
+  // Object storage (#873).  `backend = ""` is the shape of the selector, not a
+  // default — empty leaves the backend to code.  The rest are the operator's
+  // own coordinates, required at the point of use: a bucket, a region, an
+  // endpoint for a non-AWS store, a directory, and the KMS key ARN that
+  // `encryption.mode = sse-kms` demands.  Deliberately NOT a credential
+  // anywhere — those have no path in the block at all.
+  'actor-ts.persistence.snapshot-store.object-storage.backend',
+  'actor-ts.persistence.snapshot-store.object-storage.encryption.kms-key-id',
+  'actor-ts.persistence.snapshot-store.object-storage.s3.bucket',
+  'actor-ts.persistence.snapshot-store.object-storage.s3.region',
+  'actor-ts.persistence.snapshot-store.object-storage.s3.endpoint',
+  'actor-ts.persistence.snapshot-store.object-storage.filesystem.dir',
 ];
 
 /**
@@ -444,6 +507,25 @@ const FEATURE_SWITCHES: readonly string[] = [
   'actor-ts.logger.sinks.seq.enabled',
   'actor-ts.logger.sinks.splunk.enabled',
   'actor-ts.logger.sinks.syslog.enabled',
+  // The ten DevTools panel switches (#881).  Every clause of the reason above
+  // holds literally: the published `true` says the panel exists, not how big
+  // it is; none of them has a `DEFAULT_*` constant, because `DEVTOOLS_DEFAULTS`
+  // carries no `panels`; and the off state *is* the field being absent at the
+  // read site — `DevToolsServer` disables a panel only on an explicit `false`.
+  'actor-ts.devtools.panels.actors',
+  'actor-ts.devtools.panels.cluster',
+  'actor-ts.devtools.panels.tracing',
+  'actor-ts.devtools.panels.explain',
+  'actor-ts.devtools.panels.time-travel',
+  'actor-ts.devtools.panels.profiler',
+  'actor-ts.devtools.panels.dead-letters',
+  'actor-ts.devtools.panels.event-stream',
+  'actor-ts.devtools.panels.config',
+  'actor-ts.devtools.panels.send',
+  // `[]` is the sentinel for "no extra origins": same-origin is the floor and
+  // this list only widens it, so an empty list and an unset key produce the
+  // same guard.  No constant either — the read site branches on `undefined`.
+  'actor-ts.devtools.allowed-origins',
   'actor-ts.cluster.weakly-up-after', // 0s = no auto weakly-up promotion
   'actor-ts.cluster.tombstone.min-retention', // 0s = derive from down-after
   'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',
@@ -454,6 +536,10 @@ const FEATURE_SWITCHES: readonly string[] = [
   'actor-ts.coordinated-shutdown.terminate-actor-system',
   'actor-ts.coordinated-shutdown.exit-process',
   'actor-ts.coordinated-shutdown.auto-register-tasks',
+  // off = virtual-host style, which is what AWS S3 itself wants; the switch
+  // exists for MinIO and most non-AWS stores.  The off state is the field
+  // being absent on `S3ObjectStorageOptions`, so there is no constant (#873).
+  'actor-ts.persistence.snapshot-store.object-storage.s3.force-path-style',
 ];
 
 /**
@@ -473,6 +559,10 @@ const LITERAL_AT_THE_READ_SITE: readonly string[] = [
   'actor-ts.persistence.journal.plugin', // the in-memory journal id — PersistenceExtension.ts
   'actor-ts.persistence.snapshot-store.plugin', // the in-memory store id — PersistenceExtension.ts
   'actor-ts.worker-cluster.workers', // 'auto' — WorkerCluster.ts
+  // '' — ObjectStorageSnapshotStore.ts / ObjectStorageDurableStateStore.ts
+  // (`prefix ?? ''`).  Not a placeholder: the empty string IS the shipped
+  // default, it is simply written at the read site rather than named (#873).
+  'actor-ts.persistence.snapshot-store.object-storage.prefix',
 ];
 
 /** The four unasserted groups, flattened — the rest of the partition. */

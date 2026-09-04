@@ -473,6 +473,43 @@ actor-ts {
     max-frame-bytes = 16M   # per-frame wire cap; lower it on semi-trusted networks
   }
 
+  # Ceilings applied to bytes this process DECODES.  They bound what a peer or
+  # a client can make a decoder do; they never change what this node writes, so
+  # lowering one makes this node stricter than its own encoder rather than
+  # altering the wire format.  A codec added later inherits the contract.
+  #
+  # Deliberately NOT applied to the persistence PayloadCodec: those bytes were
+  # written by this framework into its own journal, so a row that stops
+  # decoding is a recovery failure rather than an attack.  The HTTP body edge
+  # is out too -- Marshalling builds its serializers with no system handle to
+  # read this through, which is issue #967.
+  serialization {
+    read-constraints {
+      # Container levels a decoder will descend.  Both codecs recurse once per
+      # array / map / tag level, so without this a few hundred KB of nesting
+      # exhausts the JS stack; JSON.parse offers nothing to inherit, being
+      # iterative in every supported runtime.  Real payloads are shallow.
+      # 256 is also the ENCODER's hard ceiling, so this may be lowered but
+      # never raised -- a node that read deeper than it writes would accept a
+      # payload it cannot produce.
+      max-nesting-depth = 256
+
+      # Ceiling on one document handed to JsonSerializer / CborSerializer,
+      # checked before it is parsed.  0 = no ceiling of our own, and it is the
+      # default because something already bounds every path the framework owns:
+      # remote.max-frame-bytes on the cluster wire, the body cap over HTTP.
+      max-document-bytes = 0
+
+      # Ceiling on one CBOR byte string, text string or map key, checked
+      # against the length prefix BEFORE the bytes are allocated.  0 removes
+      # it.  CBOR-only: by the time the JSON walker sees a string, JSON.parse
+      # has already materialised it.  The default sits above
+      # remote.max-frame-bytes, so on the cluster wire the frame cap is the
+      # effective ceiling and this one never binds.
+      max-string-length = 20M
+    }
+  }
+
   http {
     backend = "fastify"   # fastify | express | hono
     # In-flight drain window for unbind() before connections are forced.
@@ -513,6 +550,20 @@ actor-ts {
       # disable (code only — HOCON has no Infinity literal).
       accept-timeout = 10s
     }
+  }
+
+  # Projections poll the read side and feed a read model.  These are the
+  # process-wide defaults; ProjectionOptions on a single projection wins.
+  projection {
+    # What a projection does when its handler throws.  Deliberately not
+    # "fail": the common failure is transient (the read model is restarting),
+    # and stopping on the first blip makes every read-model deploy a dead
+    # projection that nobody notices until the view is visibly stale.
+    recovery-strategy = "retry-and-fail"   # fail | skip | retry-and-fail | retry-and-skip
+    max-retries       = 3                  # attempts AFTER the first, for the retry-* strategies
+    retry-backoff     = 1s                 # first retry delay; doubles per attempt
+    max-retry-backoff = 60s                # ceiling on the doubling delay
+    poll-interval     = 1s                 # how often a projection polls for new events
   }
 
   cache {
@@ -556,13 +607,68 @@ actor-ts {
     }
     snapshot-store {
       plugin = "actor-ts.persistence.snapshot-store.in-memory"
+
+      # Object-storage snapshot store -- S3-compatible or local filesystem.
+      # This block also configures the durable-state store that the same
+      # registerObjectStoragePlugins() call returns: the two share ONE
+      # backend, so the settings are declared once here rather than twice.
+      # Explicit ObjectStoragePluginOptions always win over anything below.
+      object-storage {
+        backend = ""                  # "" | filesystem | s3 -- "" leaves the backend to code
+        prefix  = ""                  # prepended to every object key, e.g. "env-prod/"
+        keep-n  = 3                   # snapshots kept per persistenceId; 0 disables pruning
+        # Decompression-bomb guard on read.  Infinity opts out and is code-only
+        # (withMaxDecompressedBytes) -- HOCON has no Infinity literal, and 0 is
+        # not a free sentinel either because the validator rejects it.
+        max-decompressed-bytes = 512M
+
+        compression {
+          algorithm = "gzip"          # none | gzip | zstd
+          # level -- deliberately unset: the default is algorithm-specific
+          #   (gzip 6, zstd 3) and is chosen by the encoder from absence.
+          #   Set an integer to pin it; it is never recorded on the wire.
+        }
+
+        encryption {
+          mode = "none"               # none | sse-s3 | sse-kms
+          kms-key-id = ""             # required when mode = sse-kms; a key ARN, not key material
+          # mode = client-aes256-gcm is REFUSED here: it needs a 32-byte master
+          #   key, which must never live in a config file.  Configure it in code
+          #   with ObjectStoragePluginOptions.withEncryption(...).
+        }
+
+        s3 {
+          bucket = ""
+          region = ""                 # "auto" for Cloudflare R2
+          endpoint = ""               # MinIO / R2 / B2 / Spaces / Wasabi; empty = AWS S3
+          force-path-style = off      # required for MinIO and most non-AWS stores
+          # Credentials never appear here.  Omitting them uses the SDK default
+          #   chain: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, EC2 instance
+          #   profile, or IAM Roles for Service Accounts.
+        }
+
+        filesystem {
+          dir = ""                    # root directory; created recursively
+          lock-timeout = 5s           # wait for a per-key write lock before failing
+          stale-lock   = 30s          # lock files older than this are force-removed
+        }
+      }
     }
   }
 
   sharding {
     number-of-shards = 64
+    # Which role hosts shards; "" = unrestricted.  This names the role, it does
+    #   NOT give a node one -- a node's own roles stay code-only
+    #   (ClusterOptions.withRoles), so a role no up member carries places
+    #   nothing at all and every message for the type sits in the region buffer.
+    role = ""
     rebalance-interval = 2s
     hand-off-timeout = 10s
+    # Retry cadence after a failed coordinator lease acquire.  Only observable
+    #   where a Lease was passed in code: HOCON cannot name one, and there is
+    #   deliberately no use-lease switch to pretend otherwise.
+    acquire-retry-interval = 5s
     remember-entities = false
     passivation-idle = 5m    # idle window before an entity passivates; 0 disables the sweep
     # shard-passivation-idle -- how long a shard may stand empty before it
@@ -576,6 +682,54 @@ actor-ts {
     buffer-size = 100000
     register-retry-interval = 500ms      # re-send an unacknowledged region Register
     shard-region-query-timeout = 5s      # default wait for shards() / shardRefFor()
+  }
+
+  devtools {
+    # DevTools never starts from configuration -- nothing in ActorSystem
+    # constructs the extension, and DevTools.attach(system) is always a code
+    # call.  This block fills in the fields that call leaves unset.
+    host = "127.0.0.1"
+    port = 9333            # 0 lets the OS pick; the binding reports which
+    # A routable host needs a gate.  auth and ipAllowlist are middleware and
+    # have no HOCON form, so this acknowledgement is the only config-side
+    # answer to the host rule -- and it sits beside the host that needs it.
+    #
+    # Two acknowledgements are deliberately NOT settable here.
+    # allow-ungated-mount states a fact about the code that binds mount()'s
+    # routes, not about a deployment; allow-message-sending is the one
+    # DevTools capability that WRITES into the running system from a
+    # browser.  Both stay code-only, next to the call they qualify.
+    allow-remote = false
+    serve-ui = true
+    # Extra origins allowed to open the tap socket.  Same-origin is always
+    # accepted; this only widens, for a UI served from somewhere else.
+    allowed-origins = []
+
+    # A panel switched off here is off for good -- its data never leaves the
+    # process, whatever a client asks for.  time-travel, dead-letters and
+    # event-stream are the three that surface message payloads.  An explicit
+    # panels object in code overrides these switch by switch, not wholesale.
+    panels {
+      actors = true
+      cluster = true
+      tracing = true
+      explain = true
+      time-travel = true
+      profiler = true
+      dead-letters = true
+      event-stream = true
+      config = true
+      send = true
+    }
+
+    mailbox-sample-interval = 1s     # actor tree + mailbox/cell resampling
+    mailbox-sample-limit = 50        # mailboxes one sample carries
+    stats-interval = 1s              # dashboard figures
+    span-buffer-capacity = 10000     # retained spans, in messages
+    span-flush-interval = 250ms
+    event-buffer-capacity = 500      # events buffered between flushes
+    event-flush-interval = 250ms
+    replay-auto-capture = true       # borrow onEvent from a running actor
   }
 
   worker-cluster {

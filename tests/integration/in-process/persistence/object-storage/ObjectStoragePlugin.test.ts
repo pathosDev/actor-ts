@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
+import type { ConfigObject } from '../../../../../src/config/HoconParser.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import { PersistenceExtensionId } from '../../../../../src/persistence/PersistenceExtension.js';
 import {
@@ -127,6 +128,108 @@ describe('registerObjectStoragePlugins — filesystem backend', () => {
       .withBackend({ kind: 'custom', backend: fs });
     const { backend } = await registerObjectStoragePlugins(ext, pluginOptions);
     expect(backend).toBe(fs);
+    await sys.terminate();
+  });
+});
+
+/*
+ * #873 — every field of the plugin used to be constructor-only, so a bucket,
+ * a prefix or a retention count could not be changed without a code change.
+ * These cover the whole path: HOCON → reader → merge → validator → a built
+ * backend that actually stores something, plus the precedence rule and the
+ * one mode the block deliberately refuses.
+ */
+describe('registerObjectStoragePlugins — from configuration (#873)', () => {
+  /** The plugin block, nested — never the dotted-key form, which HOCON keeps literal. */
+  function systemOptions(objectStorage: ConfigObject): ActorSystemOptions {
+    return ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({
+        'actor-ts': {
+          persistence: {
+            'snapshot-store': {
+              plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,
+              'object-storage': objectStorage,
+            },
+          },
+        },
+      });
+  }
+
+  test('a snapshot store built purely from HOCON round-trips, prefix and keep-n honoured', async () => {
+    const sys = ActorSystem.create('obj-store-from-config', systemOptions({
+      backend: 'filesystem',
+      prefix: 'cfg/',
+      'keep-n': 1,
+      filesystem: { dir },
+    }));
+    const ext = sys.extension(PersistenceExtensionId);
+    // No options at all — the acceptance criterion of #873.
+    const { backend } = await registerObjectStoragePlugins(ext);
+
+    expect(ext.snapshotStore).toBeInstanceOf(ObjectStorageSnapshotStore);
+    expect(backend).toBeInstanceOf(FilesystemObjectStorageBackend);
+
+    await ext.snapshotStore.save('p', 1, { x: 1 });
+    await ext.snapshotStore.save('p', 2, { x: 2 });
+    expect((await ext.snapshotStore.loadLatest<{ x: number }>('p')).toNullable()?.state).toEqual({ x: 2 });
+
+    // The configured prefix reached the store, and the configured retention
+    // pruned the older snapshot rather than the built-in keepN = 3.  Listed
+    // under the configured prefix rather than under a full key: the segments
+    // the store puts between the prefix and the entity are its own layout.
+    const stored = await backend.list({ prefix: 'cfg/' });
+    expect(stored.length).toBe(1);
+    expect(stored[0]!.key.startsWith('cfg/')).toBe(true);
+    expect(stored[0]!.key).toContain('/p/');
+
+    await ext.snapshotStore.close?.();
+    await sys.terminate();
+  });
+
+  test('explicit options beat HOCON, field by field', async () => {
+    const sys = ActorSystem.create('obj-store-config-precedence', systemOptions({
+      backend: 'filesystem',
+      prefix: 'from-config/',
+      'keep-n': 1,
+      filesystem: { dir },
+    }));
+    const ext = sys.extension(PersistenceExtensionId);
+    // Only `prefix` is set in code; `backend`, `keep-n` and the rest still
+    // come from HOCON, which is what "per field" has to mean.
+    const pluginOptions = ObjectStoragePluginOptions.create().withPrefix('from-code/');
+    const { backend } = await registerObjectStoragePlugins(ext, pluginOptions);
+
+    await ext.snapshotStore.save('p', 1, { x: 1 });
+
+    expect((await backend.list({ prefix: 'from-code/' })).length).toBe(1);
+    expect((await backend.list({ prefix: 'from-config/' })).length).toBe(0);
+    expect(backend).toBeInstanceOf(FilesystemObjectStorageBackend);
+
+    await ext.snapshotStore.close?.();
+    await sys.terminate();
+  });
+
+  test('a config naming s3 without a bucket fails at registration, naming the field', async () => {
+    const sys = ActorSystem.create('obj-store-config-invalid', systemOptions({ backend: 's3' }));
+    const ext = sys.extension(PersistenceExtensionId);
+
+    // Not "backend is required": the operator did supply one, and the message
+    // has to point at the leaf that is actually missing.
+    await expect(registerObjectStoragePlugins(ext)).rejects.toThrow(/backend\.bucket/);
+    await sys.terminate();
+  });
+
+  test('client-side encryption cannot be switched on from a config file', async () => {
+    const sys = ActorSystem.create('obj-store-config-client-encryption', systemOptions({
+      backend: 'filesystem',
+      filesystem: { dir },
+      encryption: { mode: 'client-aes256-gcm' },
+    }));
+    const ext = sys.extension(PersistenceExtensionId);
+
+    await expect(registerObjectStoragePlugins(ext)).rejects.toThrow(/withEncryption/);
     await sys.terminate();
   });
 });

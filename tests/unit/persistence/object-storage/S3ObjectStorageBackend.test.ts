@@ -29,13 +29,58 @@ class FakeS3Client {
   constructor(public readonly config: unknown) {
     fakeClientsConstructed.push(this);
   }
-  send: (command: { input: unknown }) => Promise<unknown> = async () => ({});
+  send: (command: { input: unknown }) => Promise<unknown> =
+    async (command) => respondFromFakeBucket(command.input as Record<string, unknown>);
   destroy(): void { this.destroyed = true; }
   destroyed = false;
 }
 class FakeCommand { constructor(public readonly input: unknown) {} }
 
 const fakeClientsConstructed: FakeS3Client[] = [];
+
+/**
+ * Opt-in in-memory bucket for the config-driven round trip at the bottom of
+ * this file.  `null` everywhere else, where `send` answers `{}` exactly as it
+ * did before — every other test either injects its own `send` or asserts on
+ * what the backend *sent*, not on what came back.
+ */
+let fakeBucket: Map<string, { body: Uint8Array; contentType?: string }> | null = null;
+
+/**
+ * Dispatch on the input shape, which is all a `FakeCommand` records: a PUT is
+ * the only input carrying `Body`, a LIST the only one carrying `Prefix`.  A
+ * DELETE is indistinguishable from a GET here and falls into the GET branch —
+ * harmless, because `delete` ignores the response and the round trip below
+ * saves one snapshot under the default `keepN`, so it never prunes.
+ */
+async function respondFromFakeBucket(input: Record<string, unknown>): Promise<unknown> {
+  if (fakeBucket === null) return {};
+  if (input.Body !== undefined) {
+    fakeBucket.set(input.Key as string, {
+      body: input.Body as Uint8Array,
+      contentType: input.ContentType as string | undefined,
+    });
+    return { ETag: '"stored"' };
+  }
+  if (input.Prefix !== undefined) {
+    const prefix = input.Prefix as string;
+    const Contents = [...fakeBucket.entries()]
+      .filter(([key]) => key.startsWith(prefix))
+      .map(([Key, value]) => ({ Key, Size: value.body.length, LastModified: new Date(0) }));
+    return { Contents, IsTruncated: false };
+  }
+  const stored = fakeBucket.get(input.Key as string);
+  if (stored === undefined) {
+    const missing = new Error('NoSuchKey');
+    missing.name = 'NoSuchKey';
+    throw missing;
+  }
+  return {
+    Body: { transformToByteArray: async () => stored.body },
+    ETag: '"stored"',
+    ContentType: stored.contentType,
+  };
+}
 
 mock.module('@aws-sdk/client-s3', () => ({
   S3Client: FakeS3Client,
@@ -57,6 +102,15 @@ import {
   ObjectStorageConcurrencyError,
 } from '../../../../src/persistence/object-storage/ObjectStorageBackend.js';
 import { S3_MAX_KEY_LENGTH_BYTES } from '../../../../src/persistence/Constants.js';
+import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
+import type { ConfigObject } from '../../../../src/config/HoconParser.js';
+import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
+import { PersistenceExtensionId } from '../../../../src/persistence/PersistenceExtension.js';
+import {
+  OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,
+  registerObjectStoragePlugins,
+} from '../../../../src/persistence/object-storage/ObjectStoragePlugin.js';
 
 /** Terse builder helpers so these many constructions stay readable. */
 const s3Opts = (): S3ObjectStorageOptionsBuilder =>
@@ -589,5 +643,105 @@ describe('S3ObjectStorageBackend — key validation (#747)', () => {
     await backend.put('a/../b', new Uint8Array([0]));
     await backend.put('/leading-slash', new Uint8Array([0]));
     expect(sent()).toBe(2);
+  });
+});
+
+/*
+ * #873 — the acceptance criterion, made into a test: an S3 snapshot store
+ * configured entirely from HOCON round-trips a snapshot, and key material
+ * never appears in the config.
+ *
+ * It lives here rather than under `tests/integration/` because
+ * `@aws-sdk/client-s3` is an optional peer that is NOT in root
+ * `devDependencies` — it lives in `tests/integration/brokers/package.json` —
+ * so a real S3 round trip cannot run under `bun test` at all.  The fake above
+ * is the only place the whole path can be observed end to end.
+ */
+describe('S3ObjectStorageBackend — built from HOCON by the object-storage plugin (#873)', () => {
+  beforeEach(() => { fakeBucket = new Map(); });
+  afterEach(() => { fakeBucket = null; });
+
+  /** The plugin block, nested — the dotted-key form stays a literal in HOCON. */
+  function systemOptionsFor(objectStorage: ConfigObject): ActorSystemOptions {
+    return ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({
+        'actor-ts': {
+          persistence: {
+            'snapshot-store': {
+              plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,
+              'object-storage': objectStorage,
+            },
+          },
+        },
+      });
+  }
+
+  test('the config block reaches the S3Client, round-trips a snapshot, and carries no credentials', async () => {
+    const sys = ActorSystem.create('s3-snapshot-store-from-config', systemOptionsFor({
+      backend: 's3',
+      prefix: 'snapshots/',
+      s3: {
+        bucket: 'my-app',
+        region: 'auto',
+        endpoint: 'https://acct.r2.cloudflarestorage.com',
+        'force-path-style': true,
+      },
+    }));
+    const ext = sys.extension(PersistenceExtensionId);
+    // No options argument at all — everything below came out of the block.
+    const { close } = await registerObjectStoragePlugins(ext);
+
+    await ext.snapshotStore.save('account-42', 7, { balance: 255 });
+    const latest = await ext.snapshotStore.loadLatest<{ balance: number }>('account-42');
+
+    expect(latest.toNullable()?.state).toEqual({ balance: 255 });
+    expect(latest.toNullable()?.sequenceNr).toBe(7);
+    // Asserted as "configured prefix … entity tail" rather than as one literal
+    // key.  What this test owns is that the prefix out of the config block
+    // reached the store; whatever the store puts between the two is the
+    // snapshot store's own key layout, pinned by its own suite.
+    const storedKeys = [...fakeBucket!.keys()];
+    expect(storedKeys.length).toBe(1);
+    expect(storedKeys[0]!.startsWith('snapshots/')).toBe(true);
+    expect(storedKeys[0]!.endsWith('account-42/00000000000000000007.json')).toBe(true);
+
+    expect(fakeClientsConstructed.length).toBe(1);
+    const clientConfig = fakeClientsConstructed[0]!.config as Record<string, unknown>;
+    expect(clientConfig.region).toBe('auto');
+    expect(clientConfig.endpoint).toBe('https://acct.r2.cloudflarestorage.com');
+    expect(clientConfig.forcePathStyle).toBe(true);
+    // The security half of the criterion.  `credentials` has no leaf in the
+    // block, so the SDK falls through to its default chain (env vars, an EC2
+    // instance profile, IRSA) — there is nothing for a config file to leak.
+    expect(clientConfig.credentials).toBeUndefined();
+
+    await close();
+    await sys.terminate();
+  });
+
+  test('the published empty endpoint does not become an endpoint', async () => {
+    // reference.conf publishes `endpoint = ""` as the shape of the key.  Passed
+    // through it would fail `S3ObjectStorageOptionsValidator`'s URL rule on a
+    // leaf the operator never filled in — plain AWS S3 has to stay the default.
+    const sys = ActorSystem.create('s3-snapshot-store-plain-aws', systemOptionsFor({
+      backend: 's3',
+      s3: { bucket: 'my-app', region: 'eu-central-1' },
+    }));
+    const ext = sys.extension(PersistenceExtensionId);
+    const { close } = await registerObjectStoragePlugins(ext);
+
+    await ext.snapshotStore.save('account-1', 1, { balance: 1 });
+
+    const clientConfig = fakeClientsConstructed[0]!.config as Record<string, unknown>;
+    expect(clientConfig.region).toBe('eu-central-1');
+    expect(clientConfig.endpoint).toBeUndefined();
+    // reference.conf's `force-path-style = off` is a real read, so it arrives
+    // as an explicit false rather than as an absent field.
+    expect(clientConfig.forcePathStyle).toBe(false);
+
+    await close();
+    await sys.terminate();
   });
 });

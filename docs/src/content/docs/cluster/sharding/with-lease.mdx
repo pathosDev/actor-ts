@@ -76,7 +76,27 @@ type StartShardingOptionsType<TMessage> = {
 | Field | Purpose |
 | --- | --- |
 | `lease` | The `Lease` instance — typically `KubernetesLease`. |
-| `acquireRetryIntervalMs` | Retry cadence on failed acquire. |
+| `acquireRetryIntervalMs` | Retry cadence on failed acquire.  Also settable node-wide as `actor-ts.sharding.acquire-retry-interval`. |
+
+### The retry is configurable, the lease is not
+
+```hocon
+actor-ts.sharding.acquire-retry-interval = 2s
+```
+
+The interval is worth tuning because it *is* the recovery latency of a
+partition that heals: until an acquire succeeds the coordinator issues no
+`AllocateShard`, and everything routed for the type waits in the regions'
+buffers meanwhile.
+
+The `Lease` itself stays code-only, and there is deliberately no `use-lease`
+switch to turn on from a config file.  A lease is not a boolean: constructing
+one needs a name, a per-node owner and a TTL — plus a namespace for
+`KubernetesLease` — and `owner` is node identity, the kind of value that does
+not belong in a file every node shares.  A switch that silently produced no
+lease would be worse than no switch, because it would advertise split-brain
+protection that is not there.  So the key above has an observable effect only
+where `withLease(...)` was called in code.
 
 Same `Lease` abstraction as
 [singleton with lease](/cluster/singleton/with-lease/) —

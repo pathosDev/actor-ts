@@ -87,8 +87,10 @@ actor-ts {
 
   sharding {
     number-of-shards           = 64
+    role                       = ""       # "" = unrestricted; names a role, never grants one
     rebalance-interval         = 2s
     hand-off-timeout           = 10s
+    acquire-retry-interval     = 5s       # retry a failed coordinator lease acquire
     remember-entities          = false
     passivation-idle           = 5m       # 0 disables auto-passivation
     # shard-passivation-idle              # unset: follows passivation-idle
@@ -420,18 +422,115 @@ The same leaf rule and the same startup rejection apply here: kebab-case, unit
 suffix dropped, and a retired camelCase spelling is a `ConfigError` rather than
 a cap that silently reverted to the default.
 
+### `actor-ts.serialization`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `serialization.read-constraints.max-nesting-depth` | `256` | Container levels a decoder will descend before refusing the payload.  Never raised past the encoder's own ceiling. |
+| `serialization.read-constraints.max-document-bytes` | `0` | Ceiling on one document handed to `JsonSerializer` / `CborSerializer`, checked before it is parsed.  `0` = no ceiling of our own. |
+| `serialization.read-constraints.max-string-length` | `20M` | Ceiling on one CBOR byte string, text string or map key, checked against the length prefix before the bytes are allocated.  `0` removes it. |
+
+These bound what this node **reads**, never what it writes.  A peer that
+completes the handshake, or any client whose body reaches a serializer, chooses
+the bytes; these decide how much work this process will do on them before
+giving up.  Lowering one therefore makes this node stricter than its own
+encoder — it does not change the wire format.
+
+`max-nesting-depth` is the one that matters, because until it existed there was
+nothing at all on the JSON side: `JSON.parse` is iterative in every runtime
+actor-ts supports and accepts a million levels without complaint, so the
+recursion that overflows is the framework's own tagged-tree walker, reached
+straight off the cluster wire.  It may be lowered freely and **cannot be
+raised** past `256`: that number is also the encoder's hard cap, and a node that
+read deeper than it writes would accept a payload it is unable to produce.
+Raising it is an `OptionsError` at startup.
+
+`max-document-bytes` ships as `0` because every path the framework owns is
+already bounded — `remote.max-frame-bytes` on the cluster wire, the server's
+body cap over HTTP.  Set it where a serializer is reached some other way (a
+broker payload, a queue message) and nothing upstream has an opinion.
+
+`max-string-length` binds on **CBOR only**, and its default sits deliberately
+above `remote.max-frame-bytes`, so on the cluster wire the frame cap is the
+effective ceiling and this one never fires.  The asymmetry is the point: a CBOR
+item announces its length, so refusing it costs nothing and prevents the
+allocation, while by the time the JSON walker sees a string `JSON.parse` has
+already materialised it.
+
+Two edges are deliberately outside this block.  The persistence `PayloadCodec`
+decodes bytes the framework itself wrote, so a tightened ceiling there would
+turn recoverable history into unreadable history.  And the HTTP body edge
+builds its serializers with no `ActorSystem` handle to read config through —
+that seam is issue #967.
+
 ### `actor-ts.persistence`
 
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `persistence.journal.plugin` | `"...in-memory"` | Fully-qualified key to the journal's config. |
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Fully-qualified key to the snapshot store's config. |
+| `persistence.snapshot-store.object-storage.backend` | `""` | Which backend the object-storage plugin builds — `filesystem`, `s3`, or empty to leave it to code. |
+| `persistence.snapshot-store.object-storage.prefix` | `""` | Prepended to every object key — e.g. `env-prod/`. |
+| `persistence.snapshot-store.object-storage.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
+| `persistence.snapshot-store.object-storage.max-decompressed-bytes` | `512M` | Decompression-bomb guard on read.  `Infinity` opts out and is code-only. |
+| `persistence.snapshot-store.object-storage.compression.algorithm` | `"gzip"` | At-rest compression — `none` / `gzip` / `zstd`. |
+| `persistence.snapshot-store.object-storage.encryption.mode` | `"none"` | Server-side encryption — `none` / `sse-s3` / `sse-kms`.  `client-aes256-gcm` is refused here. |
+| `persistence.snapshot-store.object-storage.encryption.kms-key-id` | `""` | KMS key ARN, required when the mode is `sse-kms`.  A key *name*, never key material. |
+| `persistence.snapshot-store.object-storage.s3.bucket` | `""` | Bucket name.  Required when `backend = s3`. |
+| `persistence.snapshot-store.object-storage.s3.region` | `""` | AWS region; `auto` for Cloudflare R2.  Required when `backend = s3`. |
+| `persistence.snapshot-store.object-storage.s3.endpoint` | `""` | MinIO / R2 / B2 / Spaces / Wasabi endpoint; empty means AWS S3. |
+| `persistence.snapshot-store.object-storage.s3.force-path-style` | `off` | Path-style URLs instead of virtual-host style — required for MinIO. |
+| `persistence.snapshot-store.object-storage.filesystem.dir` | `""` | Root directory, created recursively.  Required when `backend = filesystem`. |
+| `persistence.snapshot-store.object-storage.filesystem.lock-timeout` | `5s` | Wait for a per-key write lock before failing. |
+| `persistence.snapshot-store.object-storage.filesystem.stale-lock` | `30s` | Lock files older than this are force-removed. |
+
+The `object-storage` block configures **both** stores
+`registerObjectStoragePlugins(ext)` returns: the snapshot store and the
+durable-state store share one backend, so it is declared once rather than
+twice.  With the block filled in, the call needs no options at all —
+`await registerObjectStoragePlugins(ext)`.  Explicit
+`ObjectStoragePluginOptions` still win, field by field, and a field left unset
+in code falls through to the block instead of shadowing it.  Values are
+validated once, on the merged settings, so `backend = s3` without a bucket
+throws an `OptionsError` naming `backend.bucket` at registration rather than
+failing at the first snapshot.
+
+**No key material has a path in that block, and that is structural rather than
+a convention.**  There is no leaf for S3 credentials, for a client-side master
+key or for an integrity key, so a config file cannot express one.  Omitting S3
+credentials falls through to the SDK's default chain — `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY`, an EC2 instance profile, or IAM Roles for Service
+Accounts.  `encryption.mode = client-aes256-gcm` is **refused** with an
+`OptionsError` rather than quietly ignored, because a deployment that asked for
+client-side encryption and silently got plaintext is the worse outcome;
+configure that mode in code with `ObjectStoragePluginOptions.withEncryption(…)`.
+`kms-key-id` is fine — an ARN is a name, and the key itself never leaves KMS.
 
 The plugin keys point to *another* config section that holds
 that plugin's settings.  E.g. `actor-ts.persistence.journal.sqlite`
 contains the SQLite journal's `path`, `pragmas`, etc.  See each
 journal page in [Persistence](/persistence/overview/) for
 the per-plugin keys.
+
+### `actor-ts.projection`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `projection.recovery-strategy` | `"retry-and-fail"` | What a projection does when its handler throws — `fail`, `skip`, `retry-and-fail` or `retry-and-skip` ([when the handler throws](/persistence/projections/#when-the-handler-throws)). |
+| `projection.max-retries` | `3` | Retry budget for the two `retry-*` strategies — attempts *after* the first. |
+| `projection.retry-backoff` | `1s` | Delay before the first retry; doubles on each further attempt. |
+| `projection.max-retry-backoff` | `60s` | Ceiling on that doubling delay.  Must be at least `retry-backoff` — a projection whose merged settings say otherwise refuses to start. |
+| `projection.poll-interval` | `1s` | How often a projection asks the journal for new events. |
+
+These are the **process-wide** defaults for every projection.
+`ProjectionOptions` on a single projection outranks them, and they
+outrank the built-in defaults — the usual three layers.  A projection
+that passes an empty `liveOptions` still gets `poll-interval` from
+here; only a value actually set in code overrides it.
+
+Top-level rather than under `actor-ts.persistence`, because that block
+holds plugin ids and nothing else, so a tuning leaf inside it would
+read as the name of a plugin.
 
 ### `actor-ts.cache`
 
@@ -456,8 +555,10 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `sharding.number-of-shards` | `64` | How many shards the entity space is divided into.  Every node that starts or proxies a type must agree on it — the coordinator refuses a region that does not, see [numShards is a cluster-wide agreement](/cluster/sharding/overview/#numshards-is-a-cluster-wide-agreement). |
+| `sharding.role` | `""` | Only members carrying this role host shards.  `""` = unrestricted.  **It names a role, it does not grant one** — see [a role names, it does not grant](#a-role-names-it-does-not-grant) below. |
 | `sharding.rebalance-interval` | `2s` | Gap between coordinator-driven rebalance passes. |
 | `sharding.hand-off-timeout` | `10s` | How long to wait for HandOffComplete before force-reallocating. |
+| `sharding.acquire-retry-interval` | `5s` | How long the coordinator waits before re-acquiring a [lease](/cluster/sharding/with-lease/) it failed to take.  Observable only where a `Lease` was passed in code: HOCON has no way to name one, and there is deliberately no `use-lease` switch. |
 | `sharding.remember-entities` | `false` | Persist the set of active entity IDs. |
 | `sharding.passivation-idle` | `5m` | Auto-passivate an entity after this idle window.  `0` = disabled.  An entity that keeps state in memory and does not rebuild it in `preStart` loses that state — see [passivation](/cluster/sharding/overview/#passivation). |
 | `sharding.shard-passivation-idle` | *(unset)* | Auto-passivate a shard after it has stood empty this long.  Unset it follows `passivation-idle`; `0` keeps empty shards resident.  Deliberately absent from `reference.conf`, because a shipped value is what "unset" would have to be distinguishable from. |
@@ -483,6 +584,47 @@ cluster.sharding.start(shardingOptions);
 // numShards 256 (explicit), passivationIdleMs 120_000 (config file)
 ```
 
+#### A role names, it does not grant
+
+`sharding.role` says **which** role hosts a type.  It does **not** give the
+node that role.  A node's own roles are per-node identity rather than tuning,
+so `ClusterOptions.roles` has no config leaf at all and stays in code:
+
+```ts
+// On every node that should host the shards:
+const clusterOptions = ClusterOptions.create()
+  .withHost('10.0.0.7')
+  .withPort(2551)
+  .withRoles(['backend']);
+```
+
+```hocon
+# In the config file every node shares:
+actor-ts.sharding.role = "backend"
+```
+
+Set only the first half and nothing changes; set only the second and **no
+shard is ever allocated** — the coordinator finds no candidate member, every
+message for the type accumulates in the region's routing buffer, and the only
+sign of it is one warning naming the role and the number of regions it
+excluded.  A `role` that no member carries is the same silent failure a typo
+in `withRole` produces, except that from a shared config file it applies to
+every sharded type on every node at once.
+
+That asymmetry is also why the key exists: *which* role hosts a type is
+uniform across a deployment, and *which* roles a node carries is not.
+
+A configured role reaches [sharded daemon
+processes](/cluster/sharding/sharded-daemon-process/) too, because they are
+started through the same `sharding.start(...)`.  That is intended — a
+deployment that places its entities on `backend` nodes usually means its
+daemons as well — and `ShardedDaemonProcessOptions.withRole(...)` still wins
+over it per process.
+
+`proxy` deliberately has no leaf.  It is per-node topology, not a
+deployment-wide fact: a second `start` disagreeing about it throws, and a
+`proxy = on` everyone shared would leave nothing hosting anything.
+
 A per-type setting therefore belongs in the builder; the config file is for
 the node-wide baseline you want to move between staging and production
 without a rebuild.  The polymorphic options — the entity actor, the extractors,
@@ -507,6 +649,62 @@ a pooled connection a driver never released) keeps the process alive after
 the pipeline is done, and from the outside that is indistinguishable from a
 hang.  Off by default, because forcing an exit hides exactly the leaks you
 would rather find.
+
+### `actor-ts.devtools`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `devtools.host` | `"127.0.0.1"` | Interface `attach` binds.  Anything routable is refused unless something gates it — see below. |
+| `devtools.port` | `9333` | Port to bind; `0` lets the operating system pick one, and the returned binding reports which. |
+| `devtools.allow-remote` | `false` | Acknowledge an ungated bind on a routable interface. |
+| `devtools.serve-ui` | `true` | `false` leaves the tap without the bundled UI. |
+| `devtools.allowed-origins` | `[]` | Extra origins allowed to open the tap's WebSocket.  Same-origin is always accepted; this only widens it. |
+| `devtools.panels.actors` | `true` | Actor tree, mailbox depths and cell states. |
+| `devtools.panels.cluster` | `true` | Cluster topology, shard maps, membership timeline. |
+| `devtools.panels.tracing` | `true` | Span flame graph and waterfall. |
+| `devtools.panels.explain` | `true` | Per-actor explain plan. |
+| `devtools.panels.time-travel` | `true` | Journal browsing and state reconstruction — the panel that shows raw persisted events. |
+| `devtools.panels.profiler` | `true` | Actor profiler. |
+| `devtools.panels.dead-letters` | `true` | Undelivered messages, payloads included. |
+| `devtools.panels.event-stream` | `true` | Live tail of the event bus and the cluster PubSub topics, payloads included. |
+| `devtools.panels.config` | `true` | Resolved configuration with the source of each key (values whose key names a secret are redacted). |
+| `devtools.panels.send` | `true` | The send-message *view*.  The capability behind it is a separate, code-only switch. |
+| `devtools.mailbox-sample-interval` | `1s` | How often the actor tree, mailbox depths and cell states are resampled. |
+| `devtools.mailbox-sample-limit` | `50` | How many mailboxes one sample carries. |
+| `devtools.stats-interval` | `1s` | How often the dashboard figures are sampled. |
+| `devtools.span-buffer-capacity` | `10000` | Ceiling on retained spans, in messages. |
+| `devtools.span-flush-interval` | `250ms` | How often buffered spans are flushed to the panel. |
+| `devtools.event-buffer-capacity` | `500` | Events the bus tail buffers between flushes; past it the oldest are dropped and the panel is told how many. |
+| `devtools.event-flush-interval` | `250ms` | How often buffered events are flushed to the panel. |
+| `devtools.replay-auto-capture` | `true` | Borrow a fold from a running `PersistentActor` to reconstruct state. |
+
+**This block does not start DevTools.**  Nothing in `ActorSystem` constructs
+the extension — `DevTools.attach(system)` is always a code call — so these
+keys change *how* an attachment behaves, never *whether* one happens.  There
+is deliberately no `enabled` key: reading one would mean importing the
+DevTools subsystem, embedded UI bundle and all, into every system that never
+opens it.
+
+**A configured host faces the same rule a code-set one does.**  Options are
+validated once, on the merged settings, so `devtools.host = "0.0.0.0"` throws
+an `OptionsError` naming `host` exactly as `.withHost('0.0.0.0')` in code
+does.  `auth` and `ipAllowlist` are middleware and have no HOCON form, which
+is what makes `allow-remote` the only answer a file can give to that rule.
+
+Seven fields have no key.  `auth`, `ipAllowlist`, `backend`, `cluster` and
+`replayFolds` are functions and live objects HOCON cannot express, and
+`uiDevelopmentRoot` is a panel-development escape hatch whose own
+documentation says never to set it in an application.  The last two are a
+decision rather than an impossibility: `allow-ungated-mount` states a fact
+about the code that binds `mount()`'s routes rather than about a deployment,
+and `allow-message-sending` is the one DevTools capability that *writes* into
+the running system from a browser.  Both stay beside the call they qualify.
+
+A `panels` object passed in code overrides the configured switches **one
+switch at a time**, not wholesale: `.withPanels({ timeTravel: false })` on top
+of a file that says `panels { send = false }` leaves `send` off.  That is the
+usual precedence applied one level deeper — otherwise naming one panel in code
+would switch every panel an operator disabled back on.
 
 ### `actor-ts.worker-cluster` *(multi-runtime workers)*
 

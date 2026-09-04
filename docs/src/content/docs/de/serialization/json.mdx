@@ -106,6 +106,36 @@ Grobe Zahlen pro Serialize-/Deserialize-Paar:
 `JSON.parse` / `JSON.stringify` sind nativer Code in V8/JSC —
 schnell genug, dass JSON-Serialisierung selten zum Bottleneck wird.
 
+## Was der Decoder ablehnt
+
+Beim Dekodieren gehören die Bytes jemand anderem, deshalb wendet der
+JSON-Decoder die Obergrenzen aus
+[`actor-ts.serialization.read-constraints`](/de/reference/configuration/#actor-tsserialization)
+an:
+
+| Obergrenze | Default | Was sie ablehnt |
+| --- | --- | --- |
+| `max-nesting-depth` | `256` | Einen tiefer verschachtelten Baum — Arrays, Objekte und getaggte Container zählen je eine Ebene. |
+| `max-document-bytes` | `0` (aus) | Ein größeres Dokument, geprüft bevor `JSON.parse` läuft. |
+
+`max-nesting-depth` ist keine Dekoration.  `JSON.parse` bietet hier nichts, worauf
+man sich stützen könnte: auf Bun, Node und Deno gleichermaßen gemessen,
+akzeptiert er klaglos hunderttausend `[`-Ebenen.  Was überläuft,
+ist der eigene Tagged-Tree-Walker von actor-ts, der pro Ebene einmal rekursiert
+— und auf dem Cluster-Wire wird dieser Walker direkt erreicht, mit Bytes, die
+jeder Peer senden kann, der den Handshake abgeschlossen hat.  Ein Payload
+jenseits der Grenze ist ein `SerializationError`, der die Tiefe benennt und
+geworfen wird, bevor der Walk weiter absteigt.
+
+Die Grenze darf gesenkt, aber nicht über `256` angehoben werden — das ist die
+harte Obergrenze des Encoders: ein Knoten, der tiefer liest als er schreibt,
+würde ein Payload akzeptieren, das er selbst nicht erzeugen kann.  Beide sind
+Obergrenzen pro Dekodierung — über das, was `toBinary` ausgibt, sagen sie nichts.
+
+Journal- und Snapshot-Zeilen sind bewusst ausgenommen.  Diese Bytes hat actor-ts
+selbst geschrieben; eine verschärfte Grenze würde dort wiederherstellbare
+Historie in unlesbare verwandeln.
+
 ## Wann auf etwas anderes wechseln
 
 ```

@@ -14,6 +14,7 @@ import {
 } from '../runtime/tcp/index.js';
 import { NodeAddress } from './NodeAddress.js';
 import { certificateVouchesFor } from './PeerIdentity.js';
+import type { ReadConstraintsOptions } from '../serialization/ReadConstraintsOptions.js';
 import {
   encodeFrame,
   FrameDecoder,
@@ -177,6 +178,17 @@ export class TcpTransport implements Transport {
      * a number that means nothing outside this container.
      */
     private readonly bindPort: number = self.port,
+    /**
+     * Decode ceilings handed to every {@link FrameDecoder} this transport
+     * builds — one per connection, inbound and outbound alike (#880).
+     *
+     * Last, and defaulted, because it is the argument a caller is least likely
+     * to have an opinion about: `Cluster` reads it from `system.config`, and
+     * every other construction site (tests, `MultiNodeSpec`, an application
+     * injecting its own transport) keeps the built-in ceilings by saying
+     * nothing.
+     */
+    private readonly readConstraints: ReadConstraintsOptions = {},
   ) {}
 
   setHandler(handler: WireHandler): void { this.handler = handler; }
@@ -331,7 +343,7 @@ export class TcpTransport implements Transport {
     const connection: Connection = {
       socket: sock,
       peer: null,
-      decoder: new FrameDecoder(this.maxFrameBytes),
+      decoder: new FrameDecoder(this.maxFrameBytes, this.readConstraints),
       pending: [],
       outbound: false,
       targetKey: null,
@@ -354,7 +366,7 @@ export class TcpTransport implements Transport {
     const connection: Connection = {
       socket: null,
       peer: null,
-      decoder: new FrameDecoder(this.maxFrameBytes),
+      decoder: new FrameDecoder(this.maxFrameBytes, this.readConstraints),
       pending: [],
       outbound: true,
       targetKey,

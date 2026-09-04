@@ -225,6 +225,56 @@ const s3ObjectStorage3Options = S3ObjectStorageOptions.create()
 new S3ObjectStorageBackend(s3ObjectStorage3Options);
 ```
 
+## From configuration
+
+Everything above is the builder-first form, and it stays the primary style.
+The same wiring is also reachable from HOCON, which is what a fleet needs when
+the bucket, the region and the prefix differ per environment:
+
+```hocon
+actor-ts.persistence.snapshot-store {
+  plugin = "actor-ts.persistence.snapshot-store.object-storage"
+
+  object-storage {
+    backend = "s3"
+    prefix  = "env-prod/"
+    keep-n  = 5
+
+    compression { algorithm = "zstd" }
+    encryption  { mode = "sse-kms", kms-key-id = "arn:aws:kms:eu-central-1:…" }
+
+    s3 {
+      bucket = "my-app-state"
+      region = "eu-central-1"
+    }
+  }
+}
+```
+
+```ts
+import { PersistenceExtensionId, registerObjectStoragePlugins } from 'actor-ts/persistence';
+
+const ext = system.extension(PersistenceExtensionId);
+const { durableStateStore, close } = await registerObjectStoragePlugins(ext);
+```
+
+No options argument at all: the plugin reads its block through the extension.
+One block configures **both** stores the call returns, because the snapshot
+store and the durable-state store share a single backend.  Passing options as
+well still works and wins field by field — an option you do not set falls
+through to HOCON rather than shadowing it.  See
+[Configuration reference](/reference/configuration/#actor-tspersistence) for
+every leaf.
+
+**Credentials and keys have no path in that block.**  There is no leaf for S3
+credentials, for a client-side master key or for an integrity key, so a config
+file cannot carry one: omitting S3 credentials uses the SDK's default chain
+(`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, an EC2 instance profile, IAM
+Roles for Service Accounts), and `encryption.mode = client-aes256-gcm` is
+refused with an `OptionsError` pointing at
+`ObjectStoragePluginOptions.withEncryption(…)` instead of silently writing
+plaintext.  `kms-key-id` is an ARN — a name — and is fine.
+
 ## Optional features
 
 | Feature | Page |

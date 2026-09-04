@@ -1,3 +1,5 @@
+import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { PersistentEvent } from '../JournalTypes.js';
@@ -414,4 +416,64 @@ export class ProjectionOptionsValidator<E> extends OptionsValidator<ProjectionOp
       );
     }
   }
+}
+
+/* ---------------------------- HOCON defaults --------------------------- */
+
+/**
+ * The slice of a projection's settings HOCON can supply —
+ * `actor-ts.projection.*`, the process-wide defaults under whatever a single
+ * projection sets explicitly.
+ *
+ * `name`, `query`, `offsetStore`, `handle` and `onFailure` are absent because
+ * they identify one projection or are objects HOCON cannot express; what
+ * remains is failure policy and cadence, which is exactly what an operator
+ * retunes per environment without touching code.
+ *
+ * `pollIntervalMs` is spelled out rather than picked, because on
+ * {@link ProjectionOptionsType} it lives one level down inside
+ * {@link ProjectionOptionsType.liveOptions} — flat here, because a projection
+ * has exactly one poll cadence and the HOCON leaf that sets it is flat too.
+ */
+export type ProjectionConfigDefaults = Partial<ProjectionRecoveryOptionsType> & {
+  /** Gap between polls, in milliseconds — merged into `liveOptions.pollIntervalMs`. */
+  readonly pollIntervalMs?: number;
+};
+
+/**
+ * Read `actor-ts.projection.*` into the shape the two `ProjectionActor`
+ * static factories merge under the caller's own options.
+ *
+ * Only keys actually present are returned, so an absent one falls through to
+ * the built-in default instead of landing as an explicit `undefined` that
+ * would shadow it.
+ *
+ * Deliberately **not** validated here.  `ProjectionOptionsValidator` already
+ * checks these fields on the merged settings inside the factory, which is the
+ * project's validate-once-at-consume-time rule and the only place a
+ * cross-field bound (`maxRetryBackoffMs >= retryBackoffMs`) can be judged at
+ * all — half of such a pair routinely comes from HOCON and half from code.
+ * Rejecting a bad `recovery-strategy` here as well would produce two error
+ * messages for one mistake, differing only in which layer it came from.
+ */
+export function readProjectionOptionsFromConfig(config: Config): ProjectionConfigDefaults {
+  const keys = ConfigKeys.projection;
+  // Mutable while being filled; consumers see the readonly shape.
+  const out: {
+    -readonly [K in keyof ProjectionConfigDefaults]: ProjectionConfigDefaults[K]
+  } = {};
+  if (config.hasPath(keys.recoveryStrategy)) {
+    out.recoveryStrategy = config.getString(keys.recoveryStrategy) as ProjectionRecoveryStrategy;
+  }
+  if (config.hasPath(keys.maxRetries)) out.maxRetries = config.getInt(keys.maxRetries);
+  if (config.hasPath(keys.retryBackoff)) {
+    out.retryBackoffMs = config.getDuration(keys.retryBackoff);
+  }
+  if (config.hasPath(keys.maxRetryBackoff)) {
+    out.maxRetryBackoffMs = config.getDuration(keys.maxRetryBackoff);
+  }
+  if (config.hasPath(keys.pollInterval)) {
+    out.pollIntervalMs = config.getDuration(keys.pollInterval);
+  }
+  return out;
 }

@@ -278,7 +278,7 @@ type ShardingOptionsType<TMessage> = {
 | `extractEntityId(message)` | Zieh die Entity-ID aus einer Nachricht. Das ist der Key, der zu einem Shard gehasht wird. |
 | `extractEntityMessage(message)` | *(Optional)* Wenn der Nachrichten-Envelope Routing-Info plus eine Payload enthält, entfernt das den Envelope, bevor die Entity ihn sieht. Default ist die Nachricht unverändert. |
 | `numShards` | In wie viele Shards der Entity-Raum aufgeteilt wird. 64 reichen für die meisten Cluster; setze auf 1000 für sehr große Cluster (>50 Nodes). **Muss auf jedem Node identisch sein, der diesen Typ startet oder proxyt** — siehe unten. |
-| `role` | Nur Mitglieder mit dieser Rolle hosten Shards dieses Typs. Nützlich, um compute-schwere Entities auf dedizierten Nodes zu platzieren. |
+| `role` | Nur Mitglieder mit dieser Rolle hosten Shards dieses Typs. Nützlich, um compute-schwere Entities auf dedizierten Nodes zu platzieren. Auch node-weit setzbar als `actor-ts.sharding.role` — siehe [Platzierung aus der Config-Datei](#platzierung-aus-der-config-datei). |
 | `proxy` | Dieser Node *leitet* Nachrichten an die Region weiter, hostet aber nie lokale Entities. Wird für Client-Nodes in einem asymmetrischen Cluster verwendet. |
 | `rememberEntities` | Persistiere die Menge der *aktiven* Entity-IDs. Nach einem Koordinator-Failover (oder vollem Cluster-Neustart) werden diese IDs eager gespawnt, sodass Nachrichten nicht die gesamte Flotte neu erstellen müssen. |
 | `passivationIdleMs` | Stoppt eine Entity nach so viel Leerlaufzeit. Befreit Speicher; die nächste Nachricht für dieselbe ID erstellt die Entity neu. Default sind **5 Minuten**; `0` schaltet es ab. |
@@ -288,6 +288,41 @@ type ShardingOptionsType<TMessage> = {
 Die Defaults sind sinnvoll für kleine Cluster. Für Produktion
 willst du meistens `rememberEntities: true` und ein
 `passivationIdleMs` passend zu deinem Verkehrsmuster.
+
+### Platzierung aus der Config-Datei
+
+`role` ist die einzige Platzierungsoption mit einem HOCON-Key, denn *welche*
+Rolle einen Typ hostet, ist über ein Deployment hinweg einheitlich:
+
+```hocon
+actor-ts.sharding.role = "backend"
+```
+
+Der Key gilt für jeden auf dem Node gestarteten Sharded Type ohne eigenes
+`withRole`, und ein explizites `withRole` sticht ihn weiterhin — die übliche
+Reihenfolge **explizite Optionen > HOCON > Built-in-Defaults**, pro Feld.
+
+Was er nicht tut: einem Node die Rolle geben. Die *eigenen* Rollen eines Nodes
+sind Identität statt Tuning, haben deshalb keinen Config-Key und bleiben auf
+jedem hostenden Node im Code:
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost('10.0.0.7')
+  .withPort(2551)
+  .withRoles(['backend']);
+```
+
+Konfigurierst du nur den Key und kein Mitglied passt dazu, findet der
+Koordinator keinen Kandidaten, es wird nie etwas zugeteilt, und jede Nachricht
+für den Typ staut sich im Routing-Puffer der Region. Still ist das nicht — der
+Koordinator warnt einmal mit der Rolle und der Zahl der ausgeschlossenen
+registrierten Regionen — aber es ist eine Warnung und kein Startfehler, also
+lies sie.
+
+`proxy` hat bewusst keinen Key: Es ist Topologie pro Node, ein zweites `start`
+mit abweichendem Wert wirft, und ein von allen Nodes geteiltes `proxy = on`
+ließe niemanden mehr etwas hosten.
 
 ### `numShards` ist eine clusterweite Vereinbarung
 

@@ -62,6 +62,26 @@ export const DYNAMODB_MAX_TRANSACTION_ITEMS = 100;
 export const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 1_000;
 
 /**
+ * How often a read-side poller asks the journal for new rows, in
+ * milliseconds — the built-in value behind `LiveQueryOptions.pollIntervalMs`
+ * and behind a projection's own tick.
+ *
+ * Lives here rather than beside one options type because `LiveQueryOptions`
+ * is declared in `query/PersistenceQuery.ts`, which is a capability interface
+ * and not an `XOptions.ts`, and because four read sites across two files
+ * (`InMemoryQuery`'s three live streams and `ProjectionActor.scheduleNextTick`)
+ * each carried their own copy of the literal — which is how the published
+ * default and the one in force drift apart without a diff (#875).
+ *
+ * One second is deliberately unambitious.  A projection is I/O-bound
+ * background work feeding a read model, so the cost of polling is paid once
+ * per interval per projection against the journal, while the benefit is
+ * latency nobody is waiting on synchronously.  Applications that do need
+ * sub-interval visibility want the push-based query, not a smaller number.
+ */
+export const DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS = 1_000;
+
+/**
  * Table (SQL) holding the one-row database identity (#1358).  Deliberately a
  * fixed name shared by the SQLite stores and the whole relational family, and
  * deliberately NOT stem-prefixed like the event tables: the identity belongs
@@ -269,6 +289,38 @@ export const MAX_VECTOR_CLOCK_ENTRIES = 4_096;
  * `maxObservedEvents()` rather than a bigger number.
  */
 export const DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS = 100_000;
+
+/**
+ * Compression an object-storage body is written with when neither the actor
+ * nor the plugin asked for one.
+ *
+ * `as const` is load-bearing: without it the type widens to `string` and the
+ * constant stops being assignable to `CompressionConfig['algorithm']`, which
+ * is the whole reason the two stores can share one declaration.
+ *
+ * Lives here rather than beside one options type because it backs the
+ * `compression` field of *both* `ObjectStorageSnapshotStoreOptions` and
+ * `ObjectStorageDurableStateStoreOptions` — co-locating it would put one
+ * default in two files.  Named at all because `reference.conf` publishes it
+ * (`…object-storage.compression.algorithm`, #873) and a published default
+ * with no constant behind it is a value written down twice with nothing
+ * comparing the copies.
+ */
+export const DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM = 'gzip' as const;
+
+/**
+ * Encryption an object-storage body is written with when neither the actor
+ * nor the plugin asked for one — none, i.e. the bytes go out as the codec
+ * produced them.
+ *
+ * Same placement argument as the compression default above: both stores read
+ * it, and `reference.conf` publishes it as
+ * `…object-storage.encryption.mode`.  The *integrity* fallback beside it in
+ * those stores stays an inline literal on purpose — integrity has no config
+ * surface at all, because it cannot be switched on without a 32-byte key and
+ * key material must never be expressible in a config file (#873).
+ */
+export const DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE = 'none' as const;
 
 /**
  * Ceiling on one S3 object key, in UTF-8 bytes — 1024.

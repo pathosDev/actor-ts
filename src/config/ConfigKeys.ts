@@ -270,11 +270,73 @@ export const ConfigKeys = {
       plugin: 'actor-ts.persistence.snapshot-store.plugin',
       inMemory: 'actor-ts.persistence.snapshot-store.in-memory',
       cassandra: 'actor-ts.persistence.snapshot-store.cassandra',
-      objectStorage: 'actor-ts.persistence.snapshot-store.object-storage',
+      /**
+       * The object-storage plugin's block — the framework's rule that a plugin
+       * id *is* its config section, so `root` is also
+       * `OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID` (#873).  It configures both stores
+       * `registerObjectStoragePlugins` returns, because the two share one
+       * backend; `durableState.objectStorage` below stays a bare plugin id and
+       * gets no leaves of its own.
+       *
+       * Full dotted leaves beside the `root`, for the reason `http.websocket`
+       * spells out: `NoDeadConfigKeys`' `coveringAccessor` falls back to the
+       * nearest root, so a root alone passes the guard for every leaf beneath
+       * it whether or not the reader reads it — and here the root literal is
+       * *also* hard-coded as the plugin id in `ObjectStoragePlugin.ts`, so a
+       * root-only entry would have been satisfied by a string that is not a
+       * config read at all.
+       *
+       * No leaf carries key material, and that is structural rather than a
+       * convention: `s3.credentials`, the client-side master key and the
+       * integrity key have no path here at all, so a config file cannot
+       * express them.
+       */
+      objectStorage: {
+        root: 'actor-ts.persistence.snapshot-store.object-storage',
+        backend: 'actor-ts.persistence.snapshot-store.object-storage.backend',
+        prefix: 'actor-ts.persistence.snapshot-store.object-storage.prefix',
+        keepN: 'actor-ts.persistence.snapshot-store.object-storage.keep-n',
+        maxDecompressedBytes: 'actor-ts.persistence.snapshot-store.object-storage.max-decompressed-bytes',
+        compressionAlgorithm: 'actor-ts.persistence.snapshot-store.object-storage.compression.algorithm',
+        /** Comment-only in `reference.conf` — absence selects the encoder's per-algorithm default. */
+        compressionLevel: 'actor-ts.persistence.snapshot-store.object-storage.compression.level',
+        encryptionMode: 'actor-ts.persistence.snapshot-store.object-storage.encryption.mode',
+        encryptionKmsKeyId: 'actor-ts.persistence.snapshot-store.object-storage.encryption.kms-key-id',
+        s3Bucket: 'actor-ts.persistence.snapshot-store.object-storage.s3.bucket',
+        s3Region: 'actor-ts.persistence.snapshot-store.object-storage.s3.region',
+        s3Endpoint: 'actor-ts.persistence.snapshot-store.object-storage.s3.endpoint',
+        s3ForcePathStyle: 'actor-ts.persistence.snapshot-store.object-storage.s3.force-path-style',
+        filesystemDir: 'actor-ts.persistence.snapshot-store.object-storage.filesystem.dir',
+        filesystemLockTimeout: 'actor-ts.persistence.snapshot-store.object-storage.filesystem.lock-timeout',
+        filesystemStaleLock: 'actor-ts.persistence.snapshot-store.object-storage.filesystem.stale-lock',
+      },
     },
     durableState: {
       objectStorage: 'actor-ts.persistence.durable-state.object-storage',
     },
+  },
+
+  /**
+   * Process-wide projection defaults — `actor-ts.projection.*`.  Read by
+   * `ProjectionActor.byPersistenceId` / `byTag`, which layer them under the
+   * explicit `ProjectionOptions` of a single projection.
+   *
+   * Top-level rather than under `actor-ts.persistence.*` because that block is
+   * exclusively plugin-id namespaces (`journal.plugin` names another config
+   * root), so a tuning leaf dropped in there reads as a plugin id.
+   * `actor-ts.sharding` is the same shape — a top-level block owned by a
+   * subdirectory subsystem.
+   *
+   * Every leaf is spelled out rather than covered by a block root: a root
+   * alone satisfies the `NoDeadConfigKeys` reachability check for everything
+   * beneath it, so an inert leaf would ship green (#875).
+   */
+  projection: {
+    recoveryStrategy: 'actor-ts.projection.recovery-strategy',
+    maxRetries: 'actor-ts.projection.max-retries',
+    retryBackoff: 'actor-ts.projection.retry-backoff',
+    maxRetryBackoff: 'actor-ts.projection.max-retry-backoff',
+    pollInterval: 'actor-ts.projection.poll-interval',
   },
 
   /**
@@ -400,6 +462,28 @@ export const ConfigKeys = {
   },
 
   /**
+   * Decoder ceilings — `actor-ts.serialization.read-constraints.*` (#880).
+   *
+   * Every leaf is declared individually rather than as a block root, and that
+   * is load-bearing: `NoDeadConfigKeys`'s `coveringAccessor` accepts a root
+   * above a leaf, so a single `readConstraints` entry would cover all three and
+   * a leaf nothing reads would pass the guard that exists to catch exactly
+   * that.  Per-leaf entries make the guard check each reader.
+   *
+   * They bound READS only.  The encoder keeps a hard `MAX_NESTING_DEPTH`, so
+   * lowering `max-nesting-depth` makes this node stricter than its own writer
+   * and raising it past the encoder's cap is refused — a node that accepted
+   * what it cannot produce is the asymmetry #1036 closed.
+   */
+  serialization: {
+    readConstraints: {
+      maxNestingDepth: 'actor-ts.serialization.read-constraints.max-nesting-depth',
+      maxDocumentBytes: 'actor-ts.serialization.read-constraints.max-document-bytes',
+      maxStringLength: 'actor-ts.serialization.read-constraints.max-string-length',
+    },
+  },
+
+  /**
    * Cluster addresses and wire limits — `actor-ts.remote.*`.
    *
    * `tcp.host` and `tcp.advertised-host` are two different things and only one
@@ -452,9 +536,26 @@ export const ConfigKeys = {
    * (#849).  The buffer is keyed by shard id, so reading it as per-shard
    * multiplies the bound by `numberOfShards`; and `0` here means *never
    * buffer*, the opposite polarity to `maxEntities = 0`, which means *no cap*.
+   *
+   * `role` names **which** role hosts a type; it does not *give* a node that
+   * role, because `ClusterOptions.roles` is per-node identity and deliberately
+   * has no leaf of its own.  Which role hosts a type is uniform across a
+   * deployment — which roles a node carries is not — and that asymmetry is
+   * both the argument for the key and the reason it ships as `""`: the empty
+   * string is the only way a shipped leaf can still mean *unrestricted*, since
+   * `reference.conf` merges under everything and would otherwise make
+   * `hasPath` true forever (#847).
+   *
+   * `acquireRetryInterval` paces the coordinator's re-`acquire()` after a
+   * failed one.  It only has an observable effect where a `Lease` was passed
+   * in code: HOCON has no way to name one, and there is deliberately no
+   * `use-lease` switch, because nothing in the tree turns a boolean into a
+   * `Lease` and a switch that silently produced none would advertise
+   * split-brain protection that is not there (#847, #855, #859).
    */
   sharding: {
     numberOfShards: 'actor-ts.sharding.number-of-shards',
+    role: 'actor-ts.sharding.role',
     rememberEntities: 'actor-ts.sharding.remember-entities',
     passivationIdle: 'actor-ts.sharding.passivation-idle',
     shardPassivationIdle: 'actor-ts.sharding.shard-passivation-idle',
@@ -463,7 +564,61 @@ export const ConfigKeys = {
     registerRetryInterval: 'actor-ts.sharding.register-retry-interval',
     rebalanceInterval: 'actor-ts.sharding.rebalance-interval',
     handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
+    acquireRetryInterval: 'actor-ts.sharding.acquire-retry-interval',
     shardRegionQueryTimeout: 'actor-ts.sharding.shard-region-query-timeout',
+  },
+
+  /**
+   * DevTools attachment defaults — `actor-ts.devtools.*`.
+   *
+   * The block does not *start* DevTools: nothing in `ActorSystem` constructs
+   * the extension, and `DevTools.attach(system)` is always a code call.  It
+   * fills in what that call leaves unset, and is read once per attach or
+   * mount by `readDevToolsOptionsFromConfig`.
+   *
+   * Every leaf is declared individually, `panels` included, rather than as a
+   * block root read whole.  `NoDeadConfigKeys` resolves a leaf under a root
+   * to that root's accessor, so a root-only entry would let a leaf nothing
+   * reads pass the guard — and these leaves are read one literal at a time
+   * precisely so the guard can see each of them.
+   *
+   * `auth`, `ipAllowlist`, `backend`, `cluster` and `replayFolds` have no
+   * leaf because HOCON cannot express a function or a live object.
+   * `allowUngatedMount` and `allowMessageSending` have none by decision: one
+   * states a fact about the code that binds `mount()`'s routes rather than
+   * about a deployment, the other grants a browser write access into the
+   * running system (#881).
+   */
+  devtools: {
+    host: 'actor-ts.devtools.host',
+    port: 'actor-ts.devtools.port',
+    allowRemote: 'actor-ts.devtools.allow-remote',
+    serveUi: 'actor-ts.devtools.serve-ui',
+    allowedOrigins: 'actor-ts.devtools.allowed-origins',
+    /** Per-panel switches; a panel is disabled only by an explicit `false`. */
+    panels: {
+      actors: 'actor-ts.devtools.panels.actors',
+      cluster: 'actor-ts.devtools.panels.cluster',
+      tracing: 'actor-ts.devtools.panels.tracing',
+      explain: 'actor-ts.devtools.panels.explain',
+      timeTravel: 'actor-ts.devtools.panels.time-travel',
+      profiler: 'actor-ts.devtools.panels.profiler',
+      deadLetters: 'actor-ts.devtools.panels.dead-letters',
+      eventStream: 'actor-ts.devtools.panels.event-stream',
+      config: 'actor-ts.devtools.panels.config',
+      send: 'actor-ts.devtools.panels.send',
+    },
+    // The four interval leaves drop the `Ms` their fields carry and take a
+    // HOCON duration literal, as `cluster.receptionist.gossip-interval`
+    // (field `gossipIntervalMs`) already does.
+    mailboxSampleInterval: 'actor-ts.devtools.mailbox-sample-interval',
+    mailboxSampleLimit: 'actor-ts.devtools.mailbox-sample-limit',
+    statsInterval: 'actor-ts.devtools.stats-interval',
+    spanBufferCapacity: 'actor-ts.devtools.span-buffer-capacity',
+    spanFlushInterval: 'actor-ts.devtools.span-flush-interval',
+    eventBufferCapacity: 'actor-ts.devtools.event-buffer-capacity',
+    eventFlushInterval: 'actor-ts.devtools.event-flush-interval',
+    replayAutoCapture: 'actor-ts.devtools.replay-auto-capture',
   },
 
   /**

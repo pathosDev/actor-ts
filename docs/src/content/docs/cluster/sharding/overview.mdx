@@ -273,7 +273,7 @@ type ShardingOptionsType<TMessage> = {
 | `extractEntityId(message)` | Pull the entity ID from a message.  This is the key that gets hashed to a shard. |
 | `extractEntityMessage(message)` | *(Optional)* If the message envelope contains routing info plus a payload, this strips the envelope before the entity sees it.  Defaults to the message as-is. |
 | `numShards` | How many shards the entity space is divided into.  64 is fine for most clusters; bump to 1000 for very large clusters (>50 nodes).  **Must be the same on every node that starts or proxies this type** — see below. |
-| `role` | Only members with this role host shards of this type.  Useful for placing compute-heavy entities on dedicated nodes. |
+| `role` | Only members with this role host shards of this type.  Useful for placing compute-heavy entities on dedicated nodes.  Also settable node-wide as `actor-ts.sharding.role` — see [placement from the config file](#placement-from-the-config-file). |
 | `proxy` | This node *forwards* messages to the region but never hosts entities locally.  Used for client nodes in an asymmetric cluster. |
 | `rememberEntities` | Persist the set of *active* entity IDs.  After a coordinator failover (or full cluster restart), those IDs are spawned eagerly so messages don't have to recreate the entire fleet. |
 | `passivationIdleMs` | Stop an entity after this much idle time.  Frees memory; next message for the same ID re-creates the entity.  Defaults to **5 minutes**; `0` disables it. |
@@ -283,6 +283,40 @@ type ShardingOptionsType<TMessage> = {
 The defaults are sensible for small clusters.  For production, you
 usually want `rememberEntities: true` and a `passivationIdleMs`
 matched to your traffic pattern.
+
+### Placement from the config file
+
+`role` is the one placement option with a HOCON key, because *which* role
+hosts a type is uniform across a deployment:
+
+```hocon
+actor-ts.sharding.role = "backend"
+```
+
+It applies to every sharded type started on the node without its own
+`withRole`, and an explicit `withRole` still wins — the usual
+**explicit options > HOCON > built-in defaults** order, per field.
+
+What it does not do is give a node the role.  A node's *own* roles are
+identity rather than tuning, so they have no config key and stay in code on
+each hosting node:
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost('10.0.0.7')
+  .withPort(2551)
+  .withRoles(['backend']);
+```
+
+Configure only the key and no member matches: the coordinator finds no
+candidate, nothing is ever allocated, and every message for the type piles up
+in the region's routing buffer.  It is not silent — the coordinator warns once
+with the role and the number of registered regions it excluded — but it is a
+warning, not a failure to start, so read it.
+
+`proxy` has no key on purpose: it is per-node topology, a second `start`
+disagreeing about it throws, and a `proxy = on` shared by every node would
+leave nothing hosting anything.
 
 ### `numShards` is a cluster-wide agreement
 

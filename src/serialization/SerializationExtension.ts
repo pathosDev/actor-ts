@@ -1,6 +1,10 @@
 import { type Extension, type ExtensionId, extensionId } from '../Extension.js';
 import { CborSerializer } from './CborSerializer.js';
 import { JsonSerializer } from './JsonSerializer.js';
+import {
+  readReadConstraintsOptionsFromConfig,
+  type ReadConstraintsOptions,
+} from './ReadConstraintsOptions.js';
 import { SerializationError, type SerializedValue, type Serializer } from './Serializer.js';
 
 type ClassConstructor = abstract new (...args: any[]) => unknown;
@@ -32,10 +36,17 @@ export class SerializationExtension implements Extension {
   private readonly byClass = new Map<ClassConstructor, Serializer>();
   private _default: Serializer;
 
-  constructor() {
-    this._default = new JsonSerializer();
+  /**
+   * `readConstraints` are the decode ceilings the two built-in serializers
+   * inherit.  They are a constructor argument rather than something the
+   * serializers read for themselves because a `Serializer` is a plain value
+   * with no `ActorSystem` handle — the extension is the one place that has
+   * both the config and the construction (#880).
+   */
+  constructor(readConstraints: ReadConstraintsOptions = {}) {
+    this._default = new JsonSerializer(readConstraints);
     this.register(this._default);
-    this.register(new CborSerializer());
+    this.register(new CborSerializer(readConstraints));
   }
 
   /** The serializer used for values with no explicit class binding.  Defaults to JSON. */
@@ -127,5 +138,5 @@ export class SerializationExtension implements Extension {
 /** ExtensionId for the stock serialisation registry — install via `system.extension(...)`. */
 export const SerializationExtensionId: ExtensionId<SerializationExtension> = extensionId(
   'SerializationExtension',
-  (_system) => new SerializationExtension(),
+  (system) => new SerializationExtension(readReadConstraintsOptionsFromConfig(system.config)),
 );

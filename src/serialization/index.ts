@@ -3,7 +3,22 @@ export { SerializationError } from './Serializer.js';
 export { RESERVED_SERIALIZER_IDS_BELOW } from './Constants.js';
 export { JsonSerializer } from './JsonSerializer.js';
 export { encodeJsonTree, decodeJsonTree } from './JsonTree.js';
-export type { JsonTreeEncodeOptions, UndefinedValueHandling } from './JsonTree.js';
+export type {
+  JsonTreeDecodeOptions,
+  JsonTreeEncodeOptions,
+  UndefinedValueHandling,
+} from './JsonTree.js';
+export {
+  DEFAULT_MAX_DOCUMENT_BYTES,
+  DEFAULT_MAX_NESTING_DEPTH,
+  DEFAULT_MAX_STRING_LENGTH,
+  defaultReadConstraintsOptions,
+  ReadConstraintsOptions,
+  ReadConstraintsOptionsBuilder,
+  ReadConstraintsOptionsValidator,
+  readReadConstraintsOptionsFromConfig,
+} from './ReadConstraintsOptions.js';
+export type { ReadConstraintsOptionsType } from './ReadConstraintsOptions.js';
 export { CborSerializer } from './CborSerializer.js';
 export { CborDecoder, CborEncoder, CborDecodeError, CborEncodeError } from './CborCodec.js';
 export { SerializationExtension, SerializationExtensionId } from './SerializationExtension.js';

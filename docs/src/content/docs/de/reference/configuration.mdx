@@ -89,8 +89,10 @@ actor-ts {
 
   sharding {
     number-of-shards           = 64
+    role                       = ""       # "" = unrestricted; names a role, never grants one
     rebalance-interval         = 2s
     hand-off-timeout           = 10s
+    acquire-retry-interval     = 5s       # retry a failed coordinator lease acquire
     remember-entities          = false
     passivation-idle           = 5m       # 0 deaktiviert die Auto-Passivierung
     # shard-passivation-idle              # ungesetzt: folgt passivation-idle
@@ -437,18 +439,121 @@ Hier gelten dieselbe Blattregel und dieselbe Ablehnung beim Start: kebab-case,
 Einheiten-Suffix weggelassen, und eine ausgemusterte camelCase-Schreibweise ist
 ein `ConfigError` statt einer Obergrenze, die still auf den Default zurückfiel.
 
+### `actor-ts.serialization`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `serialization.read-constraints.max-nesting-depth` | `256` | Container-Ebenen, in die ein Decoder absteigt, bevor er das Payload ablehnt.  Nie über die eigene Obergrenze des Encoders hinaus. |
+| `serialization.read-constraints.max-document-bytes` | `0` | Obergrenze für ein Dokument, das an `JsonSerializer` / `CborSerializer` übergeben wird, geprüft vor dem Parsen.  `0` = keine eigene Obergrenze. |
+| `serialization.read-constraints.max-string-length` | `20M` | Obergrenze für einen CBOR-Byte-String, Text-String oder Map-Key, geprüft am Längen-Präfix, bevor die Bytes alloziert werden.  `0` hebt sie auf. |
+
+Diese Grenzen binden, was dieser Knoten **liest**, nie was er schreibt.  Ein
+Peer, der den Handshake abschließt, oder jeder Client, dessen Body einen
+Serializer erreicht, wählt die Bytes; diese Werte entscheiden, wie viel Arbeit
+der Prozess darauf verwendet, bevor er aufgibt.  Eine Grenze zu senken macht
+diesen Knoten also strenger als seinen eigenen Encoder — am Wire-Format ändert
+sich nichts.
+
+`max-nesting-depth` ist die entscheidende, denn bis dahin gab es auf der
+JSON-Seite überhaupt nichts: `JSON.parse` arbeitet in jeder von actor-ts
+unterstützten Runtime iterativ und akzeptiert klaglos eine Million Ebenen — die
+Rekursion, die überläuft, ist der eigene Tagged-Tree-Walker des Frameworks,
+direkt vom Cluster-Wire aus erreichbar.  Der Wert darf beliebig gesenkt werden
+und **kann nicht** über `256` angehoben werden: das ist zugleich die harte
+Obergrenze des Encoders, und ein Knoten, der tiefer liest als er schreibt,
+würde ein Payload akzeptieren, das er selbst nicht erzeugen kann.  Ein höherer
+Wert ist ein `OptionsError` beim Start.
+
+`max-document-bytes` wird als `0` ausgeliefert, weil jeder Pfad, den das
+Framework selbst besitzt, bereits begrenzt ist — `remote.max-frame-bytes` auf
+dem Cluster-Wire, das Body-Limit des Servers über HTTP.  Setze den Wert dort,
+wo ein Serializer auf anderem Weg erreicht wird (ein Broker-Payload, eine
+Queue-Nachricht) und stromaufwärts niemand eine Meinung dazu hat.
+
+`max-string-length` bindet **nur bei CBOR**, und der Default liegt bewusst über
+`remote.max-frame-bytes`: auf dem Cluster-Wire ist damit das Frame-Limit die
+wirksame Obergrenze und diese hier greift nie.  Die Asymmetrie ist gewollt —
+ein CBOR-Item kündigt seine Länge an, die Ablehnung kostet also nichts und
+verhindert die Allokation, während `JSON.parse` den String längst
+materialisiert hat, wenn der JSON-Walker ihn sieht.
+
+Zwei Kanten liegen bewusst außerhalb dieses Blocks.  Der Persistence-`PayloadCodec`
+dekodiert Bytes, die das Framework selbst geschrieben hat; eine verschärfte
+Grenze würde dort wiederherstellbare Historie in unlesbare verwandeln.  Und die
+HTTP-Body-Kante baut ihre Serializer ohne `ActorSystem`-Handle, über das sich
+die Konfiguration lesen ließe — diese Naht ist Issue #967.
+
 ### `actor-ts.persistence`
 
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `persistence.journal.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Journals. |
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Snapshot Stores. |
+| `persistence.snapshot-store.object-storage.backend` | `""` | Welches Backend das Object-Storage-Plugin baut — `filesystem`, `s3`, oder leer, um es dem Code zu überlassen. |
+| `persistence.snapshot-store.object-storage.prefix` | `""` | Wird jedem Object-Key vorangestellt — z. B. `env-prod/`. |
+| `persistence.snapshot-store.object-storage.keep-n` | `3` | Aufbewahrte Snapshots pro `persistenceId`; `0` schaltet das Pruning ab. |
+| `persistence.snapshot-store.object-storage.max-decompressed-bytes` | `512M` | Schutz gegen Dekompressionsbomben beim Lesen.  `Infinity` schaltet ihn ab und geht nur im Code. |
+| `persistence.snapshot-store.object-storage.compression.algorithm` | `"gzip"` | Kompression at rest — `none` / `gzip` / `zstd`. |
+| `persistence.snapshot-store.object-storage.encryption.mode` | `"none"` | Serverseitige Verschlüsselung — `none` / `sse-s3` / `sse-kms`.  `client-aes256-gcm` wird hier abgelehnt. |
+| `persistence.snapshot-store.object-storage.encryption.kms-key-id` | `""` | KMS-Key-ARN, nötig bei Modus `sse-kms`.  Ein *Name* des Schlüssels, niemals Schlüsselmaterial. |
+| `persistence.snapshot-store.object-storage.s3.bucket` | `""` | Bucket-Name.  Pflicht bei `backend = s3`. |
+| `persistence.snapshot-store.object-storage.s3.region` | `""` | AWS-Region; `auto` für Cloudflare R2.  Pflicht bei `backend = s3`. |
+| `persistence.snapshot-store.object-storage.s3.endpoint` | `""` | Endpoint für MinIO / R2 / B2 / Spaces / Wasabi; leer bedeutet AWS S3. |
+| `persistence.snapshot-store.object-storage.s3.force-path-style` | `off` | Path-Style-URLs statt Virtual-Host-Style — nötig für MinIO. |
+| `persistence.snapshot-store.object-storage.filesystem.dir` | `""` | Wurzelverzeichnis, wird rekursiv angelegt.  Pflicht bei `backend = filesystem`. |
+| `persistence.snapshot-store.object-storage.filesystem.lock-timeout` | `5s` | Wartezeit auf ein Write-Lock pro Key, bevor abgebrochen wird. |
+| `persistence.snapshot-store.object-storage.filesystem.stale-lock` | `30s` | Lock-Dateien, die älter sind, werden zwangsweise entfernt. |
+
+Der `object-storage`-Block konfiguriert **beide** Stores, die
+`registerObjectStoragePlugins(ext)` zurückgibt: Snapshot Store und
+Durable-State-Store teilen sich ein Backend, also wird es einmal statt zweimal
+deklariert.  Ist der Block gefüllt, braucht der Aufruf gar keine Options mehr —
+`await registerObjectStoragePlugins(ext)`.  Explizite
+`ObjectStoragePluginOptions` gewinnen weiterhin, Feld für Feld, und ein im Code
+nicht gesetztes Feld fällt auf den Block durch, statt ihn zu überdecken.  Werte
+werden einmal auf den gemergten Settings validiert, also wirft `backend = s3`
+ohne Bucket schon bei der Registrierung einen `OptionsError`, der
+`backend.bucket` benennt, statt erst beim ersten Snapshot zu scheitern.
+
+**Für Schlüsselmaterial gibt es in diesem Block keinen Pfad, und das ist
+strukturell und nicht bloß Konvention.**  Es existiert kein Blatt für
+S3-Credentials, für einen clientseitigen Master Key oder für einen
+Integritätsschlüssel — eine Config-Datei kann sie also gar nicht ausdrücken.
+Lässt man die S3-Credentials weg, greift die Default-Chain des SDK:
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, ein EC2-Instance-Profile oder
+IAM Roles for Service Accounts.  `encryption.mode = client-aes256-gcm` wird mit
+einem `OptionsError` **abgelehnt** statt still ignoriert, denn ein Deployment,
+das clientseitige Verschlüsselung angefordert hat und stillschweigend Klartext
+bekommt, ist das schlechtere Ergebnis; konfiguriere diesen Modus im Code mit
+`ObjectStoragePluginOptions.withEncryption(…)`.  `kms-key-id` ist unbedenklich —
+eine ARN ist ein Name, und der Schlüssel selbst verlässt KMS nie.
 
 Die Plugin-Keys zeigen auf *einen anderen* Config-Abschnitt, der
 die Settings dieses Plugins enthält.  Z. B. enthält
 `actor-ts.persistence.journal.sqlite` die `path`, `pragmas` etc.
 des SQLite-Journals.  Siehe jede Journal-Seite in
 [Persistence](/de/persistence/overview/) für die per-Plugin-Keys.
+
+### `actor-ts.projection`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `projection.recovery-strategy` | `"retry-and-fail"` | Was eine Projektion tut, wenn ihr Handler wirft — `fail`, `skip`, `retry-and-fail` oder `retry-and-skip` ([wenn der Handler wirft](/de/persistence/projections/#wenn-der-handler-wirft)). |
+| `projection.max-retries` | `3` | Retry-Budget der beiden `retry-*`-Strategien — Versuche *nach* dem ersten. |
+| `projection.retry-backoff` | `1s` | Verzögerung vor dem ersten Retry; verdoppelt sich mit jedem weiteren Versuch. |
+| `projection.max-retry-backoff` | `60s` | Obergrenze dieser Verdopplung.  Muss mindestens `retry-backoff` sein — eine Projektion, deren gemergte Settings das verletzen, startet nicht. |
+| `projection.poll-interval` | `1s` | Wie oft eine Projektion das Journal nach neuen Events fragt. |
+
+Das sind die **prozessweiten** Defaults für jede Projektion.
+`ProjectionOptions` einer einzelnen Projektion sticht sie, und sie
+stechen die eingebauten Defaults — die üblichen drei Ebenen.  Eine
+Projektion, die ein leeres `liveOptions` übergibt, bekommt
+`poll-interval` weiterhin von hier; nur ein im Code tatsächlich
+gesetzter Wert überschreibt es.
+
+Top-Level statt unter `actor-ts.persistence`, weil dieser Block
+ausschließlich Plugin-Ids enthält — ein Tuning-Blatt darin läse sich
+als Name eines Plugins.
 
 ### `actor-ts.cache`
 
@@ -474,8 +579,10 @@ pro Consumer](/de/cache/in-memory/#ein-cache-pro-consumer) braucht.
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `sharding.number-of-shards` | `64` | In wie viele Shards der Entity-Raum geteilt wird. Jeder Node, der einen Typ startet oder proxyt, muss denselben Wert haben — der Koordinator verweigert eine Region, die abweicht, siehe [numShards ist eine clusterweite Vereinbarung](/de/cluster/sharding/overview/#numshards-ist-eine-clusterweite-vereinbarung). |
+| `sharding.role` | `""` | Nur Mitglieder mit dieser Rolle hosten Shards.  `""` = keine Einschränkung.  **Der Key benennt eine Rolle, er vergibt keine** — siehe [Eine Rolle wird benannt, nicht vergeben](#eine-rolle-wird-benannt-nicht-vergeben) weiter unten. |
 | `sharding.rebalance-interval` | `2s` | Abstand zwischen koordinator-getriebenen Rebalance-Passes. |
 | `sharding.hand-off-timeout` | `10s` | Wie lange auf HandOffComplete gewartet wird, bevor zwangsumverteilt wird. |
+| `sharding.acquire-retry-interval` | `5s` | Wie lange der Koordinator wartet, bevor er ein [Lease](/de/cluster/sharding/with-lease/) erneut zu erwerben versucht, das er nicht bekommen hat.  Wirkt nur dort, wo im Code ein `Lease` übergeben wurde: HOCON kann keines benennen, und einen `use-lease`-Schalter gibt es bewusst nicht. |
 | `sharding.remember-entities` | `false` | Persistiere die Menge aktiver Entity-IDs. |
 | `sharding.passivation-idle` | `5m` | Auto-Passiviere eine Entität nach diesem Idle-Fenster.  `0` = deaktiviert.  Eine Entität, die Zustand im Speicher hält und ihn nicht in `preStart` wiederaufbaut, verliert ihn dabei — siehe [Passivierung](/de/cluster/sharding/overview/#passivierung). |
 | `sharding.shard-passivation-idle` | *(ungesetzt)* | Auto-Passiviere einen Shard, nachdem er so lange leer stand.  Ungesetzt folgt er `passivation-idle`; `0` hält leere Shards resident.  Bewusst nicht in der `reference.conf`, denn genau von einem ausgelieferten Wert müsste sich „ungesetzt" unterscheiden lassen. |
@@ -500,6 +607,50 @@ const shardingOptions = StartShardingOptions.create<CartCommand>()
 cluster.sharding.start(shardingOptions);
 // numShards 256 (explizit), passivationIdleMs 120_000 (Config-Datei)
 ```
+
+#### Eine Rolle wird benannt, nicht vergeben
+
+`sharding.role` sagt, **welche** Rolle einen Typ hostet.  Der Key gibt dem
+Node diese Rolle **nicht**.  Die eigenen Rollen eines Nodes sind Identität
+statt Tuning, deshalb hat `ClusterOptions.roles` überhaupt keinen Config-Key
+und bleibt im Code:
+
+```ts
+// On every node that should host the shards:
+const clusterOptions = ClusterOptions.create()
+  .withHost('10.0.0.7')
+  .withPort(2551)
+  .withRoles(['backend']);
+```
+
+```hocon
+# In the config file every node shares:
+actor-ts.sharding.role = "backend"
+```
+
+Setzt du nur die erste Hälfte, ändert sich nichts; setzt du nur die zweite,
+wird **nie ein Shard zugeteilt** — der Koordinator findet kein passendes
+Mitglied, jede Nachricht für den Typ sammelt sich im Routing-Puffer der Region,
+und das einzige Anzeichen ist eine Warnung, die die Rolle und die Zahl der
+ausgeschlossenen Regionen nennt.  Eine `role`, die kein Mitglied trägt, ist
+dasselbe stille Versagen wie ein Tippfehler in `withRole` — nur dass sie aus
+einer geteilten Config-Datei auf einen Schlag für jeden Sharded Type auf jedem
+Node gilt.
+
+Genau diese Asymmetrie ist auch der Grund für den Key: *welche* Rolle einen Typ
+hostet, ist über ein Deployment hinweg einheitlich — *welche* Rollen ein Node
+trägt, nicht.
+
+Eine konfigurierte Rolle erreicht auch [Sharded Daemon
+Processes](/de/cluster/sharding/sharded-daemon-process/), weil sie über
+dasselbe `sharding.start(...)` gestartet werden.  Das ist so gewollt — wer
+seine Entities auf `backend`-Nodes legt, meint in der Regel auch seine Daemons
+— und `ShardedDaemonProcessOptions.withRole(...)` sticht sie pro Prozess
+weiterhin.
+
+`proxy` hat bewusst keinen Key.  Es ist Topologie pro Node und keine
+deployment-weite Tatsache: ein zweites `start` mit abweichendem Wert wirft, und
+ein von allen geteiltes `proxy = on` ließe niemanden mehr etwas hosten.
 
 Ein Setting für genau einen Typ gehört deshalb in den Builder; die
 Config-Datei ist für die node-weite Grundeinstellung, die du ohne Rebuild
@@ -526,6 +677,64 @@ freigegeben hat) hält den Prozess am Leben, nachdem die Pipeline fertig
 ist — von außen nicht von einem Hänger zu unterscheiden.  Per Default aus,
 weil ein erzwungener Exit genau die Leaks verdeckt, die du eigentlich
 finden willst.
+
+### `actor-ts.devtools`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `devtools.host` | `"127.0.0.1"` | Interface, an das `attach` bindet.  Alles Routbare wird abgelehnt, solange nichts davor sitzt — siehe unten. |
+| `devtools.port` | `9333` | Port, an den gebunden wird; `0` lässt das Betriebssystem einen freien wählen, das zurückgegebene Binding meldet welchen. |
+| `devtools.allow-remote` | `false` | Bestätigt einen ungeschützten Bind auf einem routbaren Interface. |
+| `devtools.serve-ui` | `true` | `false` lässt den Tap ohne die mitgelieferte UI. |
+| `devtools.allowed-origins` | `[]` | Zusätzliche Origins, die den WebSocket des Taps öffnen dürfen.  Same-Origin ist immer erlaubt; das hier erweitert nur. |
+| `devtools.panels.actors` | `true` | Aktor-Baum, Mailbox-Tiefen und Cell-Zustände. |
+| `devtools.panels.cluster` | `true` | Cluster-Topologie, Shard-Maps, Membership-Timeline. |
+| `devtools.panels.tracing` | `true` | Span-Flamegraph und -Wasserfall. |
+| `devtools.panels.explain` | `true` | Explain-Plan pro Aktor. |
+| `devtools.panels.time-travel` | `true` | Journal-Browsing und State-Rekonstruktion — das Panel, das rohe persistierte Events zeigt. |
+| `devtools.panels.profiler` | `true` | Aktor-Profiler. |
+| `devtools.panels.dead-letters` | `true` | Unzustellbare Nachrichten, inklusive Payload. |
+| `devtools.panels.event-stream` | `true` | Live-Tail von Event-Bus und Cluster-PubSub-Topics, inklusive Payload. |
+| `devtools.panels.config` | `true` | Aufgelöste Konfiguration mit der Quelle jedes Keys (Werte, deren Key ein Geheimnis benennt, werden redigiert). |
+| `devtools.panels.send` | `true` | Die *Ansicht* zum Nachrichtenversand.  Die Fähigkeit dahinter ist ein eigener, nur im Code setzbarer Schalter. |
+| `devtools.mailbox-sample-interval` | `1s` | Wie oft Aktor-Baum, Mailbox-Tiefen und Cell-Zustände neu abgetastet werden. |
+| `devtools.mailbox-sample-limit` | `50` | Wie viele Mailboxen ein Sample trägt. |
+| `devtools.stats-interval` | `1s` | Wie oft die Dashboard-Kennzahlen abgetastet werden. |
+| `devtools.span-buffer-capacity` | `10000` | Obergrenze der gehaltenen Spans, in Nachrichten. |
+| `devtools.span-flush-interval` | `250ms` | Wie oft gepufferte Spans ans Panel geflusht werden. |
+| `devtools.event-buffer-capacity` | `500` | Events, die der Bus-Tail zwischen zwei Flushes puffert; darüber fallen die ältesten weg und das Panel erfährt, wie viele. |
+| `devtools.event-flush-interval` | `250ms` | Wie oft gepufferte Events ans Panel geflusht werden. |
+| `devtools.replay-auto-capture` | `true` | Leiht sich den Fold eines laufenden `PersistentActor`, um State zu rekonstruieren. |
+
+**Dieser Block startet DevTools nicht.**  Nichts im `ActorSystem` erzeugt die
+Extension — `DevTools.attach(system)` ist immer ein Aufruf im Code — die Keys
+ändern also, *wie* eine Attachment sich verhält, nie *ob* es eine gibt.  Einen
+`enabled`-Key gibt es bewusst nicht: ihn zu lesen hieße, das DevTools-Subsystem
+samt eingebettetem UI-Bundle in jedes System zu importieren, das DevTools nie
+öffnet.
+
+**Ein konfigurierter Host trifft dieselbe Regel wie ein im Code gesetzter.**
+Optionen werden einmal validiert, auf den gemergten Settings — `devtools.host
+= "0.0.0.0"` wirft also einen `OptionsError` mit Feld `host`, genauso wie
+`.withHost('0.0.0.0')` im Code.  `auth` und `ipAllowlist` sind Middleware und
+haben keine HOCON-Form; genau deshalb ist `allow-remote` die einzige Antwort,
+die eine Datei auf diese Regel geben kann.
+
+Sieben Felder haben keinen Key.  `auth`, `ipAllowlist`, `backend`, `cluster`
+und `replayFolds` sind Funktionen und lebende Objekte, die HOCON nicht
+ausdrücken kann, und `uiDevelopmentRoot` ist eine Notluke für die
+Panel-Entwicklung, deren eigene Doku sagt, sie in einer Anwendung nie zu
+setzen.  Die letzten beiden sind eine Entscheidung, keine Unmöglichkeit:
+`allow-ungated-mount` sagt etwas über den Code aus, der die Routen von
+`mount()` bindet, nicht über ein Deployment, und `allow-message-sending` ist
+die eine DevTools-Fähigkeit, die aus dem Browser *in* das laufende System
+schreibt.  Beide bleiben neben dem Aufruf, den sie qualifizieren.
+
+Ein im Code übergebenes `panels`-Objekt überschreibt die konfigurierten
+Schalter **einzeln**, nicht als Ganzes: `.withPanels({ timeTravel: false })`
+über einer Datei mit `panels { send = false }` lässt `send` aus.  Das ist die
+übliche Präzedenz, eine Ebene tiefer angewandt — sonst würde ein einzelnes im
+Code genanntes Panel jedes vom Betrieb abgeschaltete Panel wieder einschalten.
 
 ### `actor-ts.worker-cluster` *(Multi-Runtime-Worker)*
 

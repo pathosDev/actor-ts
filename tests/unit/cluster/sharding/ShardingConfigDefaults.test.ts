@@ -13,6 +13,7 @@ describe('readShardingOptionsFromConfig', () => {
     const config = Config.parseString(`
       actor-ts.sharding {
         number-of-shards           = 128
+        role                       = "backend"
         remember-entities          = true
         passivation-idle           = 2 minutes
         max-entities               = 50000
@@ -20,12 +21,14 @@ describe('readShardingOptionsFromConfig', () => {
         register-retry-interval    = 750ms
         rebalance-interval         = 5s
         hand-off-timeout           = 30s
+        acquire-retry-interval     = 1500ms
         shard-region-query-timeout = 9s
       }
     `);
 
     expect(readShardingOptionsFromConfig(config)).toEqual({
       numShards: 128,
+      role: 'backend',
       rememberEntities: true,
       passivationIdleMs: 120_000,
       maxEntities: 50_000,
@@ -33,6 +36,7 @@ describe('readShardingOptionsFromConfig', () => {
       registerRetryIntervalMs: 750,
       rebalanceIntervalMs: 5_000,
       handOffTimeoutMs: 30_000,
+      acquireRetryIntervalMs: 1_500,
       shardRegionQueryTimeoutMs: 9_000,
     });
   });
@@ -59,6 +63,11 @@ describe('readShardingOptionsFromConfig', () => {
     // assertion is what holds it that way: shipping a value would make
     // `hasPath` true forever and the "follow passivationIdleMs" default
     // unreachable.
+    //
+    // `role` is absent for the neighbouring reason and by a *different*
+    // mechanism: the leaf does ship, as `""`, so `hasPath` IS true forever —
+    // and the reader's empty-string skip is the only thing keeping `role: ''`
+    // out of every merged options object on a node that configured nothing.
     const config = Config.loadReference();
 
     expect(readShardingOptionsFromConfig(config)).toEqual({
@@ -70,6 +79,7 @@ describe('readShardingOptionsFromConfig', () => {
       registerRetryIntervalMs: 500,
       rebalanceIntervalMs: 2_000,
       handOffTimeoutMs: 10_000,
+      acquireRetryIntervalMs: 5_000,
       shardRegionQueryTimeoutMs: 5_000,
     });
   });
@@ -80,9 +90,22 @@ describe('readShardingOptionsFromConfig', () => {
     expect(readShardingOptionsFromConfig(config)).toEqual({ shardPassivationIdleMs: 90_000 });
   });
 
+  test('an explicitly empty role is "unrestricted", not a role named ""', () => {
+    // The shape an operator hits by uncommenting the shipped line and leaving
+    // it alone.  `role: ''` would reach `ShardCoordinator.candidates()`, which
+    // reads it as unrestricted anyway — but it would also *shadow* an explicit
+    // `withRole` on the layer above, since `mergeOptions` only falls through on
+    // `undefined`.  Omitting the key is what keeps the two readings the same.
+    const config = Config.parseString('actor-ts.sharding.role = ""');
+
+    expect(readShardingOptionsFromConfig(config)).toEqual({});
+    expect(Object.keys(readShardingOptionsFromConfig(config))).toEqual([]);
+  });
+
   test('every key it reads is reachable from ConfigKeys', () => {
     expect(ConfigKeys.sharding).toEqual({
       numberOfShards: 'actor-ts.sharding.number-of-shards',
+      role: 'actor-ts.sharding.role',
       rememberEntities: 'actor-ts.sharding.remember-entities',
       passivationIdle: 'actor-ts.sharding.passivation-idle',
       shardPassivationIdle: 'actor-ts.sharding.shard-passivation-idle',
@@ -91,6 +114,7 @@ describe('readShardingOptionsFromConfig', () => {
       registerRetryInterval: 'actor-ts.sharding.register-retry-interval',
       rebalanceInterval: 'actor-ts.sharding.rebalance-interval',
       handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
+      acquireRetryInterval: 'actor-ts.sharding.acquire-retry-interval',
       shardRegionQueryTimeout: 'actor-ts.sharding.shard-region-query-timeout',
     });
   });
@@ -178,6 +202,14 @@ describe('sharding options precedence', () => {
     );
 
     expect(merged.numShards).toBe(128);
+  });
+
+  test('an explicit role beats a configured one, and a type without one inherits it', () => {
+    const withRole = Config.parseString('actor-ts.sharding.role = "backend"');
+    const fromConfig = readShardingOptionsFromConfig(withRole);
+
+    expect(mergeOptions<{ role?: string }>({}, fromConfig, { role: 'gpu' }).role).toBe('gpu');
+    expect(mergeOptions<{ role?: string }>({}, fromConfig, {}).role).toBe('backend');
   });
 
   test('an explicit `0` is a real value and does shadow HOCON', () => {

@@ -11,12 +11,20 @@
  */
 
 /**
- * Ceiling on container nesting, enforced by BOTH halves of the codec.  The
- * decoder recurses once per array, map and tag level, so without a bound a
- * couple of hundred KB of `0x81` bytes exhausts the JS stack (#618); the
- * encoder measures the same levels so it cannot write something its own
- * decoder would refuse (#1036).  Real payloads are shallow; anything near
- * this is malformed or hostile.
+ * Ceiling on container nesting for the ENCODER, and the ceiling the read side
+ * may be tuned down from but never past.  The decoder recurses once per array,
+ * map and tag level, so without a bound a couple of hundred KB of `0x81` bytes
+ * exhausts the JS stack (#618); the encoder measures the same levels so it
+ * cannot write something its own decoder would refuse (#1036).  Real payloads
+ * are shallow; anything near this is malformed or hostile.
+ *
+ * It stays a hard constant on the write half deliberately.  What a node
+ * *accepts* is a security posture and belongs in config — that half is
+ * `actor-ts.serialization.read-constraints.max-nesting-depth`, whose built-in
+ * default is this value (#880).  What a node *emits* is a wire contract its
+ * peers decode, so making it settable would let one misconfigured member write
+ * frames the rest of the cluster refuses; `ReadConstraintsOptionsValidator`
+ * enforces the resulting one-way relation, `read <= write`.
  */
 export const MAX_NESTING_DEPTH = 256;
 

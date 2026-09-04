@@ -5,8 +5,10 @@ import type { Cancellable } from '../../Scheduler.js';
 import { DeadLetter } from '../../SystemMessages.js';
 import { SystemGroups } from '../../internal/SystemPaths.js';
 import { metricsOf } from '../../metrics/MetricsExtension.js';
+import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../Constants.js';
 import type { PersistentEvent } from '../JournalTypes.js';
 import {
+  type LiveQueryOptions,
   type Offset,
   type PersistenceQuery,
   type TaggedEvent,
@@ -17,10 +19,12 @@ import { InMemoryOffsetStore, type OffsetStore } from './OffsetStore.js';
 import {
   ProjectionOptionsValidator,
   defaultProjectionRecoveryOptions,
+  readProjectionOptionsFromConfig,
 } from './ProjectionOptions.js';
 import type {
   ByPersistenceIdProjectionOptions,
   ByTagProjectionOptions,
+  ProjectionConfigDefaults,
   ProjectionFailure,
   ProjectionFailureAction,
   ProjectionOptionsType,
@@ -34,11 +38,20 @@ import type {
 type InternalTickMessage = { readonly _: 'projection-tick' };
 const TICK: InternalTickMessage = { _: 'projection-tick' };
 
+/**
+ * The tick cadence after the merge.  Required rather than optional, so the
+ * actor reads it without a fallback: every construction site goes through a
+ * static factory, and each one resolves the field across all three layers.
+ */
+type ResolvedLiveOptions = { readonly liveOptions: Required<LiveQueryOptions> };
+
 /** Projection settings after the recovery defaults have been merged in. */
-type ResolvedProjectionOptions<E> = ProjectionOptionsType<E> & ProjectionRecoveryOptionsType;
+type ResolvedProjectionOptions<E> =
+  ProjectionOptionsType<E> & ProjectionRecoveryOptionsType & ResolvedLiveOptions;
 type ResolvedByPersistenceIdOptions<E> =
-  ByPersistenceIdProjectionOptionsType<E> & ProjectionRecoveryOptionsType;
-type ResolvedByTagOptions<E> = ByTagProjectionOptionsType<E> & ProjectionRecoveryOptionsType;
+  ByPersistenceIdProjectionOptionsType<E> & ProjectionRecoveryOptionsType & ResolvedLiveOptions;
+type ResolvedByTagOptions<E> =
+  ByTagProjectionOptionsType<E> & ProjectionRecoveryOptionsType & ResolvedLiveOptions;
 
 /** Which side of a projection tick failed — the `reason` label of the failure counter. */
 type ProjectionFailureReason = 'handler' | 'poll';
@@ -107,7 +120,7 @@ abstract class BaseProjectionActor<E> extends Actor<InternalTickMessage> {
   protected scheduleNextTick(): void {
     const delay = this.tickFailures > 0
       ? this.retryDelayMs()
-      : (this.options.liveOptions?.pollIntervalMs ?? 1_000);
+      : this.options.liveOptions.pollIntervalMs;
     this.pollTimer?.cancel();
     this.pollTimer = this.system.scheduler.scheduleOnceFunction(delay, () => {
       this.self.tell(TICK);
@@ -446,6 +459,11 @@ import type { ActorSystem } from '../../ActorSystem.js';
  *   - `retry-and-skip` — retry, then step past the event.
  *   - `fail` / `skip` — do that immediately, without retrying.
  *
+ * Those four, and the poll cadence, also have process-wide defaults under
+ * `actor-ts.projection.*`.  Precedence is the project's usual three layers:
+ * what this projection sets explicitly wins, then HOCON, then the built-in
+ * default.
+ *
  * A skipped event is published on the system dead-letter stream, so
  * nothing is dropped without a trace.  Every failure also reaches
  * `onFailure` with the offending event, moves
@@ -466,9 +484,11 @@ export class ProjectionActor {
     options: ByPersistenceIdProjectionOptions<E>,
   ): ActorRef<unknown> {
     const given = options as ByPersistenceIdProjectionOptionsType<E>;
+    const fromConfig = readProjectionOptionsFromConfig(system.config);
     const resolvedOptions: ResolvedByPersistenceIdOptions<E> = {
       ...given,
-      ...recoveryDefaultsFor(given),
+      ...recoveryDefaultsFor(given, fromConfig),
+      liveOptions: liveOptionsFor(given, fromConfig),
     };
     validateProjectionOptions(resolvedOptions);
     return system._spawnSystemActor(
@@ -484,9 +504,11 @@ export class ProjectionActor {
     options: ByTagProjectionOptions<E>,
   ): ActorRef<unknown> {
     const given = options as ByTagProjectionOptionsType<E>;
+    const fromConfig = readProjectionOptionsFromConfig(system.config);
     const resolvedOptions: ResolvedByTagOptions<E> = {
       ...given,
-      ...recoveryDefaultsFor(given),
+      ...recoveryDefaultsFor(given, fromConfig),
+      liveOptions: liveOptionsFor(given, fromConfig),
     };
     validateProjectionOptions(resolvedOptions);
     return system._spawnSystemActor(
@@ -497,14 +519,54 @@ export class ProjectionActor {
   }
 }
 
-/** Built-in recovery defaults, with anything the caller set taking precedence. */
-function recoveryDefaultsFor<E>(options: ProjectionOptionsType<E>): ProjectionRecoveryOptionsType {
+/**
+ * The project's three layers for the recovery fields: what the caller set
+ * wins, then `actor-ts.projection.*`, then the built-in default.
+ *
+ * A plain `??` chain rather than `mergeOptions` because that is already the
+ * semantics wanted here — an explicit `undefined` falls through to the next
+ * layer instead of shadowing it — and because each field is read once.
+ */
+function recoveryDefaultsFor<E>(
+  options: ProjectionOptionsType<E>,
+  fromConfig: ProjectionConfigDefaults,
+): ProjectionRecoveryOptionsType {
+  const builtIn = defaultProjectionRecoveryOptions;
   return {
-    recoveryStrategy: options.recoveryStrategy ?? defaultProjectionRecoveryOptions.recoveryStrategy,
-    maxRetries: options.maxRetries ?? defaultProjectionRecoveryOptions.maxRetries,
-    retryBackoffMs: options.retryBackoffMs ?? defaultProjectionRecoveryOptions.retryBackoffMs,
+    recoveryStrategy:
+      options.recoveryStrategy ?? fromConfig.recoveryStrategy ?? builtIn.recoveryStrategy,
+    maxRetries: options.maxRetries ?? fromConfig.maxRetries ?? builtIn.maxRetries,
+    retryBackoffMs: options.retryBackoffMs ?? fromConfig.retryBackoffMs ?? builtIn.retryBackoffMs,
     maxRetryBackoffMs:
-      options.maxRetryBackoffMs ?? defaultProjectionRecoveryOptions.maxRetryBackoffMs,
+      options.maxRetryBackoffMs ?? fromConfig.maxRetryBackoffMs ?? builtIn.maxRetryBackoffMs,
+  };
+}
+
+/**
+ * The same three layers for the poll cadence, merged **per field** rather than
+ * on the `liveOptions` object as a whole.
+ *
+ * There are two ways to get that wrong and they fail on different call shapes,
+ * which is why neither one alone was enough.  Taking `options.liveOptions`
+ * whole when it is present lets `withLiveOptions({})` — an object that says
+ * nothing — put the cadence back to the built-in default.  Spreading it over
+ * the configured one instead handles `{}` fine, and then lets an own
+ * `pollIntervalMs: undefined` survive the spread and overwrite the configured
+ * value.  The field-by-field chain reads both as "not set", which is what
+ * `undefined` on a higher layer means everywhere else in this project.
+ *
+ * Despite the name, `liveOptions` on a projection is *only* the tick cadence:
+ * `runOnce` calls `currentEventsByPersistenceId` / `currentEventsByTag`
+ * without an options argument, so nothing here ever reaches a live query.
+ */
+function liveOptionsFor<E>(
+  options: ProjectionOptionsType<E>,
+  fromConfig: ProjectionConfigDefaults,
+): Required<LiveQueryOptions> {
+  return {
+    pollIntervalMs: options.liveOptions?.pollIntervalMs
+      ?? fromConfig.pollIntervalMs
+      ?? DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS,
   };
 }
 
