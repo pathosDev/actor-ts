@@ -649,9 +649,27 @@ mit `undroppable` — ein `Terminated` aus der Death Watch, ein
 WebSocket-Accept- oder -Close-Command — wird auch auf dem Rückweg an der
 Schranke vorbei aufgenommen.  Die Markierung reist auf dem Envelope
 mit, statt von der Queue erinnert zu werden, genau damit sie einen
-`stash()`/`unstashAll()`-Rundlauf übersteht: Eine Schranke bekommt eine
-Gelegenheit, eine Benachrichtigung abzuwerfen, und nicht eine zweite,
-nur weil der Actor sie zwischendurch geparkt hat.
+`context.stash()`/`unstashAll()`-Rundlauf übersteht: Eine Schranke
+bekommt eine Gelegenheit, eine Benachrichtigung abzuwerfen, und nicht
+eine zweite, nur weil der Actor sie zwischendurch geparkt hat.
+
+<Aside type="caution" title="Der typisierte Stash trägt die Markierung noch nicht">
+  Diese Ausnahme gilt für `context.stash()` — den untypisierten Stash,
+  der das Envelope parkt, das der Actor gerade bearbeitet, und dasselbe
+  Objekt wieder abspielt.  `Behaviors.withStash` aus der typisierten DSL
+  kann das nicht: `stash.stash(message)` nimmt einen beliebigen Wert
+  entgegen, der Buffer hält also blanke Nachrichten, und das Replay baut
+  daraus neue Envelopes.  Alles, was das Envelope getragen hat, ist dann
+  weg — `undroppable` eingeschlossen.
+
+  Ein **typisierter** Actor mit einem `withStash`-Behavior und einer
+  begrenzten Mailbox kann ein gestashtes `Terminated` also weiterhin an
+  die eigene Schranke verlieren.  Bis das behoben ist: gib so einem
+  Actor eine unbegrenzte Mailbox, oder unstashe, bevor die Queue
+  volllaufen kann.  Am untypisierten Pfad ändert das nichts, und solange
+  die Mailbox unbegrenzt ist — der Default — ist keiner der beiden Pfade
+  betroffen.
+</Aside>
 
 Siehe [Become und Stash](/de/fundamentals/become-and-stash/) für die
 volle Behavior-Switching-Geschichte.

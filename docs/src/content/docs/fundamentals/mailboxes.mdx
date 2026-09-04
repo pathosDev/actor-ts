@@ -601,9 +601,25 @@ drops as the price of the bound.
 envelope marked `undroppable` — a death-watch `Terminated`, a WebSocket
 accept or close command — is admitted past the bound on the way back in
 too.  The marker travels on the envelope rather than being remembered
-by the queue, precisely so it survives a `stash()` / `unstashAll()`
-round trip: a bound gets one chance to shed a notification, not a
-second one because the actor parked it first.
+by the queue, precisely so it survives a `context.stash()` /
+`unstashAll()` round trip: a bound gets one chance to shed a
+notification, not a second one because the actor parked it first.
+
+<Aside type="caution" title="The typed stash does not carry the marker yet">
+  That exception covers `context.stash()` — the untyped stash, which
+  parks the envelope the actor is handling and replays the same object.
+  The typed DSL's `Behaviors.withStash` cannot: `stash.stash(message)`
+  takes any value, so its buffer holds bare messages and the replay
+  rebuilds envelopes from them.  Everything the envelope carried is
+  gone by then, `undroppable` included.
+
+  So a **typed** actor with both a `withStash` behavior and a bounded
+  mailbox can still lose a stashed `Terminated` to its own bound.  Until
+  that is closed, give such an actor an unbounded mailbox, or unstash
+  before the queue can fill.  Nothing about the untyped path changes,
+  and neither path is affected while the mailbox is unbounded — which is
+  the default.
+</Aside>
 
 See [Become and stash](/fundamentals/become-and-stash/) for
 the full behavior-switching story.

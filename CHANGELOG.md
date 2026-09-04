@@ -1672,10 +1672,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   that round-tripped through `stash()` and `unstashAll()` was discarded
   under `drop-new`, threw `MailboxFullError` inside the replaying actor
   under `reject` (the constructor default once a capacity is named), and
-  cost a bystander its place under `drop-lowest-priority`. Replayed
-  notifications now take the same exempt lane they take arriving fresh, and
-  the reader list in the `undroppable` JSDoc names this mailbox rather than
-  omitting it (#729).
+  cost a bystander its place under `drop-lowest-priority`. A notification
+  replayed from the untyped stash now takes the same exempt lane it takes
+  arriving fresh, and the reader list in the `undroppable` JSDoc names this
+  mailbox rather than omitting it. The typed DSL's `Behaviors.withStash` is
+  not covered and says so on the page: its buffer holds bare messages, so the
+  replay rebuilds envelopes without the marker (#729, #1319).
 
   A `DeadLetter` can now carry the MDC context and the tracing span context
   the lost envelope was travelling with, in a new optional `attribution`

@@ -115,10 +115,24 @@ export type Envelope<T = unknown> = {
    * this field at all.
    *
    * It travels with the envelope rather than being remembered by the mailbox
-   * because the envelope outlives any one queue position: it survives a
-   * `stash` / `unstashAll` round trip and a `prependUser` replay, and both of
-   * those hand it back to a bound that would otherwise get a second chance to
-   * shed it.
+   * because the envelope outlives any one queue position: `ActorContext.stash()`
+   * parks the envelope the cell is holding, so `unstashAll()` hands the queue
+   * back the very object the exempt door built, and the `prependUser` replay it
+   * takes then meets a bound that would otherwise get a second chance to shed
+   * it.
+   *
+   * **The typed stash is the exception, and it is an open gap (#1319).**
+   * `Behaviors.withStash` cannot park an envelope — `StashBuffer.stash(message)`
+   * takes an arbitrary value where the cell can only park what it is currently
+   * handling — so the buffer keeps bare messages, and its replay half,
+   * `ActorCell.prependUserMessages`, rebuilds them as message-plus-null-sender.
+   * Nothing envelope-level survives that trip: no `context`, no `trace`, no
+   * {@link enqueuedAtMs}, and no marker.  So a typed actor that stashes its own
+   * `Terminated` hands a droppable envelope back to its own bound, and the
+   * guarantee the paragraph above states does not reach it.  The fix belongs on
+   * the typed side rather than here — a buffer that parks envelopes, or a replay
+   * door told which of them were exempt — because every reader of this field
+   * already does the right thing with an envelope that still carries it.
    */
   readonly undroppable?: boolean;
 };
