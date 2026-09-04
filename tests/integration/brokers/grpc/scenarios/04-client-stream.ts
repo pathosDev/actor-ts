@@ -5,8 +5,9 @@
  *
  * The second half is the security half: a handle with the right stream
  * id but a forged token must not reach the stream.  That is the whole
- * reason the handle carries a capability instead of a bare number
- * (#788 covers migrating bidi onto the same seam).
+ * reason the handle carries a capability instead of a bare number;
+ * `03-bidi.ts` runs the same check on the bidi class, which shares the
+ * seam.
  */
 import type { GrpcClientCommand, GrpcStreamHandle } from '../../../../../src/io/broker/GrpcClientActor.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
