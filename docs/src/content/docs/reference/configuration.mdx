@@ -508,6 +508,62 @@ the pipeline is done, and from the outside that is indistinguishable from a
 hang.  Off by default, because forcing an exit hides exactly the leaks you
 would rather find.
 
+### `actor-ts.devtools`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `devtools.host` | `"127.0.0.1"` | Interface `attach` binds.  Anything routable is refused unless something gates it — see below. |
+| `devtools.port` | `9333` | Port to bind; `0` lets the operating system pick one, and the returned binding reports which. |
+| `devtools.allow-remote` | `false` | Acknowledge an ungated bind on a routable interface. |
+| `devtools.serve-ui` | `true` | `false` leaves the tap without the bundled UI. |
+| `devtools.allowed-origins` | `[]` | Extra origins allowed to open the tap's WebSocket.  Same-origin is always accepted; this only widens it. |
+| `devtools.panels.actors` | `true` | Actor tree, mailbox depths and cell states. |
+| `devtools.panels.cluster` | `true` | Cluster topology, shard maps, membership timeline. |
+| `devtools.panels.tracing` | `true` | Span flame graph and waterfall. |
+| `devtools.panels.explain` | `true` | Per-actor explain plan. |
+| `devtools.panels.time-travel` | `true` | Journal browsing and state reconstruction — the panel that shows raw persisted events. |
+| `devtools.panels.profiler` | `true` | Actor profiler. |
+| `devtools.panels.dead-letters` | `true` | Undelivered messages, payloads included. |
+| `devtools.panels.event-stream` | `true` | Live tail of the event bus and the cluster PubSub topics, payloads included. |
+| `devtools.panels.config` | `true` | Resolved configuration with the source of each key (values whose key names a secret are redacted). |
+| `devtools.panels.send` | `true` | The send-message *view*.  The capability behind it is a separate, code-only switch. |
+| `devtools.mailbox-sample-interval` | `1s` | How often the actor tree, mailbox depths and cell states are resampled. |
+| `devtools.mailbox-sample-limit` | `50` | How many mailboxes one sample carries. |
+| `devtools.stats-interval` | `1s` | How often the dashboard figures are sampled. |
+| `devtools.span-buffer-capacity` | `10000` | Ceiling on retained spans, in messages. |
+| `devtools.span-flush-interval` | `250ms` | How often buffered spans are flushed to the panel. |
+| `devtools.event-buffer-capacity` | `500` | Events the bus tail buffers between flushes; past it the oldest are dropped and the panel is told how many. |
+| `devtools.event-flush-interval` | `250ms` | How often buffered events are flushed to the panel. |
+| `devtools.replay-auto-capture` | `true` | Borrow a fold from a running `PersistentActor` to reconstruct state. |
+
+**This block does not start DevTools.**  Nothing in `ActorSystem` constructs
+the extension — `DevTools.attach(system)` is always a code call — so these
+keys change *how* an attachment behaves, never *whether* one happens.  There
+is deliberately no `enabled` key: reading one would mean importing the
+DevTools subsystem, embedded UI bundle and all, into every system that never
+opens it.
+
+**A configured host faces the same rule a code-set one does.**  Options are
+validated once, on the merged settings, so `devtools.host = "0.0.0.0"` throws
+an `OptionsError` naming `host` exactly as `.withHost('0.0.0.0')` in code
+does.  `auth` and `ipAllowlist` are middleware and have no HOCON form, which
+is what makes `allow-remote` the only answer a file can give to that rule.
+
+Seven fields have no key.  `auth`, `ipAllowlist`, `backend`, `cluster` and
+`replayFolds` are functions and live objects HOCON cannot express, and
+`uiDevelopmentRoot` is a panel-development escape hatch whose own
+documentation says never to set it in an application.  The last two are a
+decision rather than an impossibility: `allow-ungated-mount` states a fact
+about the code that binds `mount()`'s routes rather than about a deployment,
+and `allow-message-sending` is the one DevTools capability that *writes* into
+the running system from a browser.  Both stay beside the call they qualify.
+
+A `panels` object passed in code overrides the configured switches **one
+switch at a time**, not wholesale: `.withPanels({ timeTravel: false })` on top
+of a file that says `panels { send = false }` leaves `send` off.  That is the
+usual precedence applied one level deeper — otherwise naming one panel in code
+would switch every panel an operator disabled back on.
+
 ### `actor-ts.worker-cluster` *(multi-runtime workers)*
 
 | Key | Default | Purpose |

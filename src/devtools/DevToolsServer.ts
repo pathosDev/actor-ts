@@ -24,7 +24,6 @@ import {
   type ServerBinding,
 } from '../http/index.js';
 import {
-  BUS_EVENT_BUFFER_DEFAULT,
   DEVTOOLS_PROTOCOL_VERSION,
   type DevToolsPanelDescriptor,
   type DevToolsPanelId,
@@ -39,7 +38,12 @@ import {
   type DevToolsHubCommand,
   type DevToolsHubContext,
 } from './internal/DevToolsHubActor.js';
-import { isLoopbackHost, type DevToolsOptionsType, type DevToolsPanelOptionsType } from './DevToolsOptions.js';
+import {
+  DEVTOOLS_DEFAULTS,
+  isLoopbackHost,
+  type DevToolsOptionsType,
+  type DevToolsPanelOptionsType,
+} from './DevToolsOptions.js';
 import { MAXIMUM_HUB_CONNECTIONS } from './Constants.js';
 import { uiAssetRoutes } from './UiAssetRoutes.js';
 import { ActorTreeTap } from './taps/ActorTreeTap.js';
@@ -226,7 +230,7 @@ export class DevToolsServer implements DevToolsHubContext {
     const stats = new StatsTap(
       this.system,
       cluster,
-      settings.statsIntervalMs ?? 1_000,
+      settings.statsIntervalMs ?? DEVTOOLS_DEFAULTS.statsIntervalMs,
       this.sampler,
       this.federation,
       this.membership,
@@ -235,7 +239,7 @@ export class DevToolsServer implements DevToolsHubContext {
     stats.installMethods(this);
 
     if (this.isPanelEnabled('actors')) {
-      const sampleIntervalMs = settings.mailboxSampleIntervalMs ?? 1_000;
+      const sampleIntervalMs = settings.mailboxSampleIntervalMs ?? DEVTOOLS_DEFAULTS.mailboxSampleIntervalMs;
       this.registerTap(new ActorTreeTap(
         this.system,
         sampleIntervalMs,
@@ -245,7 +249,7 @@ export class DevToolsServer implements DevToolsHubContext {
       this.registerTap(new MailboxSamplerTap(
         this.system,
         sampleIntervalMs,
-        settings.mailboxSampleLimit ?? 50,
+        settings.mailboxSampleLimit ?? DEVTOOLS_DEFAULTS.mailboxSampleLimit,
       ));
       this.registerPanel({ id: 'actors', status: 'active' });
     }
@@ -260,8 +264,8 @@ export class DevToolsServer implements DevToolsHubContext {
     if (this.isPanelEnabled('tracing')) {
       const spans = new SpanTap(
         this.system,
-        settings.spanBufferCapacity ?? 2_000,
-        settings.spanFlushIntervalMs ?? 250,
+        settings.spanBufferCapacity ?? DEVTOOLS_DEFAULTS.spanBufferCapacity,
+        settings.spanFlushIntervalMs ?? DEVTOOLS_DEFAULTS.spanFlushIntervalMs,
       );
       this.registerTap(spans);
       spans.installMethods(this);
@@ -292,8 +296,8 @@ export class DevToolsServer implements DevToolsHubContext {
     if (this.isPanelEnabled('event-stream')) {
       const events = new EventStreamTap(
         this.system,
-        settings.eventBufferCapacity ?? BUS_EVENT_BUFFER_DEFAULT,
-        settings.eventFlushIntervalMs ?? 250,
+        settings.eventBufferCapacity ?? DEVTOOLS_DEFAULTS.eventBufferCapacity,
+        settings.eventFlushIntervalMs ?? DEVTOOLS_DEFAULTS.eventFlushIntervalMs,
       );
       this.registerTap(events);
       events.installMethods(this);
@@ -405,8 +409,8 @@ export class DevToolsServer implements DevToolsHubContext {
   /** Start the hub and bind a dedicated HTTP server on the configured port. */
   async bind(): Promise<DevToolsBinding> {
     this.start();
-    const host = this.settings.host ?? '127.0.0.1';
-    const port = this.settings.port ?? 9333;
+    const host = this.settings.host ?? DEVTOOLS_DEFAULTS.host;
+    const port = this.settings.port ?? DEVTOOLS_DEFAULTS.port;
     const builder = this.settings.backend === undefined
       ? this.system.http(port, { host })
       : this.system.http(port, { host, backend: this.settings.backend });

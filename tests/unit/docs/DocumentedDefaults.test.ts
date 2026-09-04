@@ -77,6 +77,7 @@ import {
 } from '../../../src/http/HttpClientOptions.js';
 import { DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES } from '../../../src/cache/InMemoryCacheOptions.js';
 import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from '../../../src/logging/MultiSinkLoggerOptions.js';
+import { DEVTOOLS_DEFAULTS } from '../../../src/devtools/DevToolsOptions.js';
 import {
   DEFAULT_DELIVERY_FLUSH_INTERVAL_MS,
   DEFAULT_DELIVERY_MAX_BATCH_SIZE,
@@ -317,6 +318,20 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.logger.sinks.file.delivery.queue-capacity', kind: 'int', constant: DEFAULT_DELIVERY_QUEUE_CAPACITY },
   { key: 'actor-ts.logger.sinks.file.delivery.overflow', kind: 'string', constant: DEFAULT_DELIVERY_OVERFLOW },
 
+  /* --- devtools --- */
+  { key: 'actor-ts.devtools.host', kind: 'string', constant: DEVTOOLS_DEFAULTS.host },
+  { key: 'actor-ts.devtools.port', kind: 'int', constant: DEVTOOLS_DEFAULTS.port },
+  { key: 'actor-ts.devtools.allow-remote', kind: 'bool', constant: DEVTOOLS_DEFAULTS.allowRemote },
+  { key: 'actor-ts.devtools.serve-ui', kind: 'bool', constant: DEVTOOLS_DEFAULTS.serveUi },
+  { key: 'actor-ts.devtools.mailbox-sample-interval', kind: 'duration', constant: DEVTOOLS_DEFAULTS.mailboxSampleIntervalMs },
+  { key: 'actor-ts.devtools.mailbox-sample-limit', kind: 'int', constant: DEVTOOLS_DEFAULTS.mailboxSampleLimit },
+  { key: 'actor-ts.devtools.stats-interval', kind: 'duration', constant: DEVTOOLS_DEFAULTS.statsIntervalMs },
+  { key: 'actor-ts.devtools.span-buffer-capacity', kind: 'int', constant: DEVTOOLS_DEFAULTS.spanBufferCapacity },
+  { key: 'actor-ts.devtools.span-flush-interval', kind: 'duration', constant: DEVTOOLS_DEFAULTS.spanFlushIntervalMs },
+  { key: 'actor-ts.devtools.event-buffer-capacity', kind: 'int', constant: DEVTOOLS_DEFAULTS.eventBufferCapacity },
+  { key: 'actor-ts.devtools.event-flush-interval', kind: 'duration', constant: DEVTOOLS_DEFAULTS.eventFlushIntervalMs },
+  { key: 'actor-ts.devtools.replay-auto-capture', kind: 'bool', constant: DEVTOOLS_DEFAULTS.replayAutoCapture },
+
   /* --- logging: console + file sinks --- */
   { key: 'actor-ts.logger.sinks.console.format', kind: 'string', constant: DEFAULT_CONSOLE_SINK_FORMAT },
   { key: 'actor-ts.logger.sinks.console.stream', kind: 'string', constant: DEFAULT_CONSOLE_SINK_STREAM },
@@ -444,6 +459,25 @@ const FEATURE_SWITCHES: readonly string[] = [
   'actor-ts.logger.sinks.seq.enabled',
   'actor-ts.logger.sinks.splunk.enabled',
   'actor-ts.logger.sinks.syslog.enabled',
+  // The ten DevTools panel switches (#881).  Every clause of the reason above
+  // holds literally: the published `true` says the panel exists, not how big
+  // it is; none of them has a `DEFAULT_*` constant, because `DEVTOOLS_DEFAULTS`
+  // carries no `panels`; and the off state *is* the field being absent at the
+  // read site — `DevToolsServer` disables a panel only on an explicit `false`.
+  'actor-ts.devtools.panels.actors',
+  'actor-ts.devtools.panels.cluster',
+  'actor-ts.devtools.panels.tracing',
+  'actor-ts.devtools.panels.explain',
+  'actor-ts.devtools.panels.time-travel',
+  'actor-ts.devtools.panels.profiler',
+  'actor-ts.devtools.panels.dead-letters',
+  'actor-ts.devtools.panels.event-stream',
+  'actor-ts.devtools.panels.config',
+  'actor-ts.devtools.panels.send',
+  // `[]` is the sentinel for "no extra origins": same-origin is the floor and
+  // this list only widens it, so an empty list and an unset key produce the
+  // same guard.  No constant either — the read site branches on `undefined`.
+  'actor-ts.devtools.allowed-origins',
   'actor-ts.cluster.weakly-up-after', // 0s = no auto weakly-up promotion
   'actor-ts.cluster.tombstone.min-retention', // 0s = derive from down-after
   'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',

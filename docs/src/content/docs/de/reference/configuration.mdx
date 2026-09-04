@@ -527,6 +527,64 @@ ist — von außen nicht von einem Hänger zu unterscheiden.  Per Default aus,
 weil ein erzwungener Exit genau die Leaks verdeckt, die du eigentlich
 finden willst.
 
+### `actor-ts.devtools`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `devtools.host` | `"127.0.0.1"` | Interface, an das `attach` bindet.  Alles Routbare wird abgelehnt, solange nichts davor sitzt — siehe unten. |
+| `devtools.port` | `9333` | Port, an den gebunden wird; `0` lässt das Betriebssystem einen freien wählen, das zurückgegebene Binding meldet welchen. |
+| `devtools.allow-remote` | `false` | Bestätigt einen ungeschützten Bind auf einem routbaren Interface. |
+| `devtools.serve-ui` | `true` | `false` lässt den Tap ohne die mitgelieferte UI. |
+| `devtools.allowed-origins` | `[]` | Zusätzliche Origins, die den WebSocket des Taps öffnen dürfen.  Same-Origin ist immer erlaubt; das hier erweitert nur. |
+| `devtools.panels.actors` | `true` | Aktor-Baum, Mailbox-Tiefen und Cell-Zustände. |
+| `devtools.panels.cluster` | `true` | Cluster-Topologie, Shard-Maps, Membership-Timeline. |
+| `devtools.panels.tracing` | `true` | Span-Flamegraph und -Wasserfall. |
+| `devtools.panels.explain` | `true` | Explain-Plan pro Aktor. |
+| `devtools.panels.time-travel` | `true` | Journal-Browsing und State-Rekonstruktion — das Panel, das rohe persistierte Events zeigt. |
+| `devtools.panels.profiler` | `true` | Aktor-Profiler. |
+| `devtools.panels.dead-letters` | `true` | Unzustellbare Nachrichten, inklusive Payload. |
+| `devtools.panels.event-stream` | `true` | Live-Tail von Event-Bus und Cluster-PubSub-Topics, inklusive Payload. |
+| `devtools.panels.config` | `true` | Aufgelöste Konfiguration mit der Quelle jedes Keys (Werte, deren Key ein Geheimnis benennt, werden redigiert). |
+| `devtools.panels.send` | `true` | Die *Ansicht* zum Nachrichtenversand.  Die Fähigkeit dahinter ist ein eigener, nur im Code setzbarer Schalter. |
+| `devtools.mailbox-sample-interval` | `1s` | Wie oft Aktor-Baum, Mailbox-Tiefen und Cell-Zustände neu abgetastet werden. |
+| `devtools.mailbox-sample-limit` | `50` | Wie viele Mailboxen ein Sample trägt. |
+| `devtools.stats-interval` | `1s` | Wie oft die Dashboard-Kennzahlen abgetastet werden. |
+| `devtools.span-buffer-capacity` | `10000` | Obergrenze der gehaltenen Spans, in Nachrichten. |
+| `devtools.span-flush-interval` | `250ms` | Wie oft gepufferte Spans ans Panel geflusht werden. |
+| `devtools.event-buffer-capacity` | `500` | Events, die der Bus-Tail zwischen zwei Flushes puffert; darüber fallen die ältesten weg und das Panel erfährt, wie viele. |
+| `devtools.event-flush-interval` | `250ms` | Wie oft gepufferte Events ans Panel geflusht werden. |
+| `devtools.replay-auto-capture` | `true` | Leiht sich den Fold eines laufenden `PersistentActor`, um State zu rekonstruieren. |
+
+**Dieser Block startet DevTools nicht.**  Nichts im `ActorSystem` erzeugt die
+Extension — `DevTools.attach(system)` ist immer ein Aufruf im Code — die Keys
+ändern also, *wie* eine Attachment sich verhält, nie *ob* es eine gibt.  Einen
+`enabled`-Key gibt es bewusst nicht: ihn zu lesen hieße, das DevTools-Subsystem
+samt eingebettetem UI-Bundle in jedes System zu importieren, das DevTools nie
+öffnet.
+
+**Ein konfigurierter Host trifft dieselbe Regel wie ein im Code gesetzter.**
+Optionen werden einmal validiert, auf den gemergten Settings — `devtools.host
+= "0.0.0.0"` wirft also einen `OptionsError` mit Feld `host`, genauso wie
+`.withHost('0.0.0.0')` im Code.  `auth` und `ipAllowlist` sind Middleware und
+haben keine HOCON-Form; genau deshalb ist `allow-remote` die einzige Antwort,
+die eine Datei auf diese Regel geben kann.
+
+Sieben Felder haben keinen Key.  `auth`, `ipAllowlist`, `backend`, `cluster`
+und `replayFolds` sind Funktionen und lebende Objekte, die HOCON nicht
+ausdrücken kann, und `uiDevelopmentRoot` ist eine Notluke für die
+Panel-Entwicklung, deren eigene Doku sagt, sie in einer Anwendung nie zu
+setzen.  Die letzten beiden sind eine Entscheidung, keine Unmöglichkeit:
+`allow-ungated-mount` sagt etwas über den Code aus, der die Routen von
+`mount()` bindet, nicht über ein Deployment, und `allow-message-sending` ist
+die eine DevTools-Fähigkeit, die aus dem Browser *in* das laufende System
+schreibt.  Beide bleiben neben dem Aufruf, den sie qualifizieren.
+
+Ein im Code übergebenes `panels`-Objekt überschreibt die konfigurierten
+Schalter **einzeln**, nicht als Ganzes: `.withPanels({ timeTravel: false })`
+über einer Datei mit `panels { send = false }` lässt `send` aus.  Das ist die
+übliche Präzedenz, eine Ebene tiefer angewandt — sonst würde ein einzelnes im
+Code genanntes Panel jedes vom Betrieb abgeschaltete Panel wieder einschalten.
+
 ### `actor-ts.worker-cluster` *(Multi-Runtime-Worker)*
 
 | Key | Default | Zweck |

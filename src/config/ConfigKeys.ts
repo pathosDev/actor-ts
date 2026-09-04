@@ -467,6 +467,59 @@ export const ConfigKeys = {
   },
 
   /**
+   * DevTools attachment defaults — `actor-ts.devtools.*`.
+   *
+   * The block does not *start* DevTools: nothing in `ActorSystem` constructs
+   * the extension, and `DevTools.attach(system)` is always a code call.  It
+   * fills in what that call leaves unset, and is read once per attach or
+   * mount by `readDevToolsOptionsFromConfig`.
+   *
+   * Every leaf is declared individually, `panels` included, rather than as a
+   * block root read whole.  `NoDeadConfigKeys` resolves a leaf under a root
+   * to that root's accessor, so a root-only entry would let a leaf nothing
+   * reads pass the guard — and these leaves are read one literal at a time
+   * precisely so the guard can see each of them.
+   *
+   * `auth`, `ipAllowlist`, `backend`, `cluster` and `replayFolds` have no
+   * leaf because HOCON cannot express a function or a live object.
+   * `allowUngatedMount` and `allowMessageSending` have none by decision: one
+   * states a fact about the code that binds `mount()`'s routes rather than
+   * about a deployment, the other grants a browser write access into the
+   * running system (#881).
+   */
+  devtools: {
+    host: 'actor-ts.devtools.host',
+    port: 'actor-ts.devtools.port',
+    allowRemote: 'actor-ts.devtools.allow-remote',
+    serveUi: 'actor-ts.devtools.serve-ui',
+    allowedOrigins: 'actor-ts.devtools.allowed-origins',
+    /** Per-panel switches; a panel is disabled only by an explicit `false`. */
+    panels: {
+      actors: 'actor-ts.devtools.panels.actors',
+      cluster: 'actor-ts.devtools.panels.cluster',
+      tracing: 'actor-ts.devtools.panels.tracing',
+      explain: 'actor-ts.devtools.panels.explain',
+      timeTravel: 'actor-ts.devtools.panels.time-travel',
+      profiler: 'actor-ts.devtools.panels.profiler',
+      deadLetters: 'actor-ts.devtools.panels.dead-letters',
+      eventStream: 'actor-ts.devtools.panels.event-stream',
+      config: 'actor-ts.devtools.panels.config',
+      send: 'actor-ts.devtools.panels.send',
+    },
+    // The four interval leaves drop the `Ms` their fields carry and take a
+    // HOCON duration literal, as `cluster.receptionist.gossip-interval`
+    // (field `gossipIntervalMs`) already does.
+    mailboxSampleInterval: 'actor-ts.devtools.mailbox-sample-interval',
+    mailboxSampleLimit: 'actor-ts.devtools.mailbox-sample-limit',
+    statsInterval: 'actor-ts.devtools.stats-interval',
+    spanBufferCapacity: 'actor-ts.devtools.span-buffer-capacity',
+    spanFlushInterval: 'actor-ts.devtools.span-flush-interval',
+    eventBufferCapacity: 'actor-ts.devtools.event-buffer-capacity',
+    eventFlushInterval: 'actor-ts.devtools.event-flush-interval',
+    replayAutoCapture: 'actor-ts.devtools.replay-auto-capture',
+  },
+
+  /**
    * `WorkerCluster.spawn` defaults — `actor-ts.worker-cluster.*`.
    *
    * The block is named after the options type it feeds rather than after

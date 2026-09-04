@@ -2,11 +2,13 @@ import { describe, expect, test } from 'bun:test';
 import { BearerTokenAuth } from '../../../src/http/middleware/BearerToken.js';
 import { IpAllowlist } from '../../../src/http/middleware/IpAllowlist.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { BUS_EVENT_BUFFER_DEFAULT } from '../../../src/devtools/protocol/EventStreamFrames.js';
 import {
   DEVTOOLS_DEFAULTS,
   DevToolsOptions,
   DevToolsOptionsValidator,
   isLoopbackHost,
+  mergeDevToolsOptions,
   type DevToolsOptionsType,
 } from '../../../src/devtools/DevToolsOptions.js';
 
@@ -59,8 +61,51 @@ describe('DevToolsOptions defaults', () => {
       statsIntervalMs: 1_000,
       spanBufferCapacity: 10_000,
       spanFlushIntervalMs: 250,
+      eventBufferCapacity: 500,
+      eventFlushIntervalMs: 250,
       replayAutoCapture: true,
     });
+  });
+
+  test('every published leaf has a default here to be pinned against', () => {
+    // #881 publishes these as `actor-ts.devtools.*`, and DocumentedDefaults
+    // compares each literal to the constant beside it.  The two event fields
+    // were literals at their read site in DevToolsServer until then, which is
+    // a second written-down default the moment reference.conf carries one.
+    expect(DEVTOOLS_DEFAULTS.eventBufferCapacity).toBe(BUS_EVENT_BUFFER_DEFAULT);
+    expect(DEVTOOLS_DEFAULTS.eventFlushIntervalMs).toBe(DEVTOOLS_DEFAULTS.spanFlushIntervalMs);
+  });
+});
+
+describe('mergeDevToolsOptions', () => {
+  test('explicit options beat the config file, which beats the defaults', () => {
+    const settings = mergeDevToolsOptions({ host: '0.0.0.0', port: 4444 }, { port: 5555 });
+    expect(settings.port).toBe(5555);
+    expect(settings.host).toBe('0.0.0.0');
+    expect(settings.serveUi).toBe(true); // untouched by either layer
+  });
+
+  test('an option the caller never set does not shadow the config file', () => {
+    // The `mergeOptions` rule: `undefined` means "not set", not "cleared".
+    const settings = mergeDevToolsOptions({ port: 4444 }, { port: undefined });
+    expect(settings.port).toBe(4444);
+  });
+
+  test('an explicit panels object overrides switch by switch, not wholesale', () => {
+    // The security-relevant departure from the shallow merge.  A whole-object
+    // replacement would switch `send` — and time travel, dead letters and the
+    // event stream — back on because the caller mentioned one unrelated panel.
+    const settings = mergeDevToolsOptions(
+      { panels: { send: false, timeTravel: true, actors: true } },
+      { panels: { timeTravel: false } },
+    );
+    expect(settings.panels).toEqual({ send: false, timeTravel: false, actors: true });
+  });
+
+  test('either side alone is used as it stands', () => {
+    expect(mergeDevToolsOptions({ panels: { send: false } }, {}).panels).toEqual({ send: false });
+    expect(mergeDevToolsOptions({}, { panels: { send: false } }).panels).toEqual({ send: false });
+    expect(mergeDevToolsOptions({}, {}).panels).toBeUndefined();
   });
 });
 

@@ -224,6 +224,42 @@ const devtoolsOptions = DevToolsOptions.create()
 | `panels` | alle an | Schalter pro Panel — siehe unten. |
 | `uiDevelopmentRoot` | — | UI von der Platte servieren; nur für Panel-Entwicklung. |
 
+### Aus der Konfiguration
+
+Die meisten davon haben ein HOCON-Leaf unter `actor-ts.devtools`, die
+Grundeinstellung kann also ohne Rebuild zwischen Staging und Produktion
+wandern: `host`, `port`, `allowRemote`, `serveUi`, `allowedOrigins`,
+jeder `panels`-Schalter, die vier Intervalle
+(`mailbox-sample-interval`, `stats-interval`, `span-flush-interval`,
+`event-flush-interval` — das `Ms`-Suffix fällt auf der HOCON-Seite weg),
+die drei Kapazitäten und `replayAutoCapture`.  Die
+[Konfigurationsreferenz](/de/reference/configuration/#actor-tsdevtools)
+listet sie mit ihren Defaults.
+
+```hocon
+actor-ts.devtools {
+  port = 0
+  serve-ui = false
+  panels { time-travel = false, dead-letters = false, event-stream = false }
+}
+```
+
+Drei Dinge solltest du vorher wissen:
+
+- **Es kann DevTools nicht starten.** `DevTools.attach(system)` ist
+  immer ein Aufruf im Code, und einen `enabled`-Key gibt es nicht — der
+  Block füllt nur, was dieser Aufruf offen lässt.
+- **Optionen im Code gewinnen weiterhin**, Feld für Feld.  Ein
+  `panels`-Objekt wird schalterweise gemergt statt das konfigurierte zu
+  ersetzen: `.withPanels({ timeTravel: false })` schaltet also kein
+  Panel wieder an, das die Konfigurationsdatei abgeschaltet hat.
+- **Zwei Bestätigungen bleiben Code-only**, ebenso wie `auth`,
+  `ipAllowlist`, `backend`, `cluster`, `replayFolds` und
+  `uiDevelopmentRoot`.  `allowUngatedMount` sagt etwas über den Code
+  aus, der die Routen von `mount()` bindet, nicht über ein Deployment;
+  `allowMessageSending` ist die eine Fähigkeit, die aus dem Browser in
+  das laufende System schreibt.
+
 ### Panels abschalten
 
 Jedes Panel lässt sich einzeln abschalten, und ein abgeschaltetes Panel
@@ -252,6 +288,12 @@ DevTools ist ein Debugger, und die Defaults behandeln es auch so.
   übergibst zusätzlich `auth`, `ipAllowlist` oder `allowRemote: true`.
   Die Fehlermeldung nennt alle drei, damit ein Tippfehler im Host-String
   nicht stillschweigend deinen Actor-Zustand veröffentlicht.
+- **Ein konfigurierter Host ist kein Weg daran vorbei.** Validiert wird
+  einmal, auf den gemergten Settings — `actor-ts.devtools.host =
+  "0.0.0.0"` in einer `application.conf` wird also genauso abgelehnt wie
+  derselbe Host im Code.  `auth` und `ipAllowlist` sind Middleware ohne
+  HOCON-Form; deshalb ist `allow-remote` die einzige Antwort, die eine
+  Datei auf diese Regel geben kann.
 - **Ein Mount muss es genauso sein.** `mount` gibt seine Routen an einen
   Server, den DevTools nie zu sehen bekommt, und kann den Host deshalb
   nicht prüfen wie `attach` — `host` wird auf diesem Weg nicht einmal
