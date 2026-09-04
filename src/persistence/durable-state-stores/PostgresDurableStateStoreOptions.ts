@@ -27,7 +27,16 @@ export class PostgresDurableStateStoreOptionsBuilder extends StoreSerializerOpti
     return this.set('url', url);
   }
 
-  /** Extra node-postgres `Pool` config, merged over `{ connectionString: url }`. */
+  /**
+   * Extra node-postgres `Pool` config, merged over `{ connectionString: url }`
+   * — e.g.
+   * `{ max: 10, ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') } }`.
+   *
+   * Supply the signing CA rather than switching certificate verification off:
+   * encryption without verification authenticates nobody, and this link
+   * carries the durable state.  See
+   * https://actor-ts.dev/operations/security/tls-everywhere/.
+   */
   withPoolConfig(poolConfig: Record<string, unknown>): this {
     return this.set('poolConfig', poolConfig);
   }
