@@ -452,9 +452,26 @@ export const ConfigKeys = {
    * (#849).  The buffer is keyed by shard id, so reading it as per-shard
    * multiplies the bound by `numberOfShards`; and `0` here means *never
    * buffer*, the opposite polarity to `maxEntities = 0`, which means *no cap*.
+   *
+   * `role` names **which** role hosts a type; it does not *give* a node that
+   * role, because `ClusterOptions.roles` is per-node identity and deliberately
+   * has no leaf of its own.  Which role hosts a type is uniform across a
+   * deployment — which roles a node carries is not — and that asymmetry is
+   * both the argument for the key and the reason it ships as `""`: the empty
+   * string is the only way a shipped leaf can still mean *unrestricted*, since
+   * `reference.conf` merges under everything and would otherwise make
+   * `hasPath` true forever (#847).
+   *
+   * `acquireRetryInterval` paces the coordinator's re-`acquire()` after a
+   * failed one.  It only has an observable effect where a `Lease` was passed
+   * in code: HOCON has no way to name one, and there is deliberately no
+   * `use-lease` switch, because nothing in the tree turns a boolean into a
+   * `Lease` and a switch that silently produced none would advertise
+   * split-brain protection that is not there (#847, #855, #859).
    */
   sharding: {
     numberOfShards: 'actor-ts.sharding.number-of-shards',
+    role: 'actor-ts.sharding.role',
     rememberEntities: 'actor-ts.sharding.remember-entities',
     passivationIdle: 'actor-ts.sharding.passivation-idle',
     shardPassivationIdle: 'actor-ts.sharding.shard-passivation-idle',
@@ -463,6 +480,7 @@ export const ConfigKeys = {
     registerRetryInterval: 'actor-ts.sharding.register-retry-interval',
     rebalanceInterval: 'actor-ts.sharding.rebalance-interval',
     handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
+    acquireRetryInterval: 'actor-ts.sharding.acquire-retry-interval',
     shardRegionQueryTimeout: 'actor-ts.sharding.shard-region-query-timeout',
   },
 

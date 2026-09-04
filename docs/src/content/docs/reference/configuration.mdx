@@ -87,8 +87,10 @@ actor-ts {
 
   sharding {
     number-of-shards           = 64
+    role                       = ""       # "" = unrestricted; names a role, never grants one
     rebalance-interval         = 2s
     hand-off-timeout           = 10s
+    acquire-retry-interval     = 5s       # retry a failed coordinator lease acquire
     remember-entities          = false
     passivation-idle           = 5m       # 0 disables auto-passivation
     # shard-passivation-idle              # unset: follows passivation-idle
@@ -456,8 +458,10 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `sharding.number-of-shards` | `64` | How many shards the entity space is divided into.  Every node that starts or proxies a type must agree on it — the coordinator refuses a region that does not, see [numShards is a cluster-wide agreement](/cluster/sharding/overview/#numshards-is-a-cluster-wide-agreement). |
+| `sharding.role` | `""` | Only members carrying this role host shards.  `""` = unrestricted.  **It names a role, it does not grant one** — see [a role names, it does not grant](#a-role-names-it-does-not-grant) below. |
 | `sharding.rebalance-interval` | `2s` | Gap between coordinator-driven rebalance passes. |
 | `sharding.hand-off-timeout` | `10s` | How long to wait for HandOffComplete before force-reallocating. |
+| `sharding.acquire-retry-interval` | `5s` | How long the coordinator waits before re-acquiring a [lease](/cluster/sharding/with-lease/) it failed to take.  Observable only where a `Lease` was passed in code: HOCON has no way to name one, and there is deliberately no `use-lease` switch. |
 | `sharding.remember-entities` | `false` | Persist the set of active entity IDs. |
 | `sharding.passivation-idle` | `5m` | Auto-passivate an entity after this idle window.  `0` = disabled.  An entity that keeps state in memory and does not rebuild it in `preStart` loses that state — see [passivation](/cluster/sharding/overview/#passivation). |
 | `sharding.shard-passivation-idle` | *(unset)* | Auto-passivate a shard after it has stood empty this long.  Unset it follows `passivation-idle`; `0` keeps empty shards resident.  Deliberately absent from `reference.conf`, because a shipped value is what "unset" would have to be distinguishable from. |
@@ -482,6 +486,47 @@ const shardingOptions = StartShardingOptions.create<CartCommand>()
 cluster.sharding.start(shardingOptions);
 // numShards 256 (explicit), passivationIdleMs 120_000 (config file)
 ```
+
+#### A role names, it does not grant
+
+`sharding.role` says **which** role hosts a type.  It does **not** give the
+node that role.  A node's own roles are per-node identity rather than tuning,
+so `ClusterOptions.roles` has no config leaf at all and stays in code:
+
+```ts
+// On every node that should host the shards:
+const clusterOptions = ClusterOptions.create()
+  .withHost('10.0.0.7')
+  .withPort(2551)
+  .withRoles(['backend']);
+```
+
+```hocon
+# In the config file every node shares:
+actor-ts.sharding.role = "backend"
+```
+
+Set only the first half and nothing changes; set only the second and **no
+shard is ever allocated** — the coordinator finds no candidate member, every
+message for the type accumulates in the region's routing buffer, and the only
+sign of it is one warning naming the role and the number of regions it
+excluded.  A `role` that no member carries is the same silent failure a typo
+in `withRole` produces, except that from a shared config file it applies to
+every sharded type on every node at once.
+
+That asymmetry is also why the key exists: *which* role hosts a type is
+uniform across a deployment, and *which* roles a node carries is not.
+
+A configured role reaches [sharded daemon
+processes](/cluster/sharding/sharded-daemon-process/) too, because they are
+started through the same `sharding.start(...)`.  That is intended — a
+deployment that places its entities on `backend` nodes usually means its
+daemons as well — and `ShardedDaemonProcessOptions.withRole(...)` still wins
+over it per process.
+
+`proxy` deliberately has no leaf.  It is per-node topology, not a
+deployment-wide fact: a second `start` disagreeing about it throws, and a
+`proxy = on` everyone shared would leave nothing hosting anything.
 
 A per-type setting therefore belongs in the builder; the config file is for
 the node-wide baseline you want to move between staging and production

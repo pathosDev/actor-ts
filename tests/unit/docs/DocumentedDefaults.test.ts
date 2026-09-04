@@ -54,6 +54,7 @@ import {
   DEFAULT_REGISTER_RETRY_INTERVAL_MS,
   DEFAULT_SHARD_REGION_BUFFER_SIZE,
 } from '../../../src/cluster/sharding/ShardingOptions.js';
+import { DEFAULT_ACQUIRE_RETRY_INTERVAL_MS } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
 import {
   DEFAULT_HAND_OFF_TIMEOUT_MS,
   DEFAULT_REBALANCE_INTERVAL_MS,
@@ -260,6 +261,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.sharding.hand-off-timeout', kind: 'duration', constant: DEFAULT_HAND_OFF_TIMEOUT_MS },
   { key: 'actor-ts.sharding.buffer-size', kind: 'int', constant: DEFAULT_SHARD_REGION_BUFFER_SIZE },
   { key: 'actor-ts.sharding.register-retry-interval', kind: 'duration', constant: DEFAULT_REGISTER_RETRY_INTERVAL_MS },
+  { key: 'actor-ts.sharding.acquire-retry-interval', kind: 'duration', constant: DEFAULT_ACQUIRE_RETRY_INTERVAL_MS },
   { key: 'actor-ts.sharding.shard-region-query-timeout', kind: 'duration', constant: DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS },
 
   /* --- distributed data --- */
@@ -400,6 +402,10 @@ const LOG_LEVEL_NAMES: readonly string[] = [
  */
 const PLACEHOLDERS: readonly string[] = [
   'actor-ts.dead-letters.persistence-id',
+  // "" = unrestricted.  Not a default anyone runs with; the shipped empty
+  // string is what lets the reader tell "no opinion" from a role named "",
+  // and the role a deployment actually wants is per-deployment (#847).
+  'actor-ts.sharding.role',
   'actor-ts.logger.sinks.gelf.url',
   'actor-ts.logger.sinks.gelf.host-name',
   'actor-ts.logger.sinks.otlp.service-name',
