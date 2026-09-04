@@ -151,6 +151,41 @@ events_total{source="batch", env="prod"} 89
 
 In Prometheus / Grafana lesbar als Filter oder Group-by-Achsen.
 
+### Namen und Label-Keys sind Konstanten
+
+In einen Label-**Wert** gehören Daten. In einen Metrik-**Namen** und
+einen Label-**Key** nicht:
+
+```ts
+// ✗ INJECTION — TU DAS NICHT
+metrics.counter(`http_requests_${tenantFromHeader}_total`).inc();
+metrics.counter('http_requests_total', { [headerFromRequest]: 'yes' }).inc();
+```
+
+Das Exposition-Format ist zeilenorientiert, und nur die Wert-Hälfte von
+`key="value"` wird gequotet und escaped. Ein Name und ein Key landen roh
+darin, weil das Format nichts anbietet, womit man sie escapen könnte. Eine
+Tenant-ID von `x_total 1\nnode_up{job="prod"} 0\n#` erzeugt also keine
+seltsam benannte Serie — sie **beendet die aktuelle und schreibt eine
+weitere**. Wer das scrapet, kann das gefälschte `node_up` nicht von einem
+echten unterscheiden, und ein Alert auf `node_up == 0` feuert nie wieder.
+
+Die Registry weist deshalb beides schon bei der Registrierung zurück,
+damit der Fehler als Stacktrace an der verursachenden Stelle auftaucht
+statt Stunden später als korrupter Scrape:
+
+- ein Metrik-Name muss `[a-zA-Z_:][a-zA-Z0-9_:]*` erfüllen
+- ein Label-Key muss `[a-zA-Z_][a-zA-Z0-9_]*` erfüllen — kein Doppelpunkt
+
+Alles andere wirft. Die Aufschlüsselung pro Tenant oder pro Route gehört
+in einen Label-**Wert**, an der Quelle beschränkt (siehe *`bucketize`*
+weiter unten):
+
+```ts
+// ✓ — konstanter Name, konstanter Key, der variable Teil im Wert
+metrics.counter('http_requests_total', { tenant: tenantLabel }).inc();
+```
+
 ### Kardinalitätsdisziplin
 
 ```ts

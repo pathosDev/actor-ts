@@ -28,6 +28,23 @@
  * source — {@link bucketize} is the helper for the common "known values
  * plus everything else" shape.
  *
+ * Names and label keys, by contrast, are **not** a place for data of any
+ * kind: they must be developer-chosen constants (#784).  The exposition is
+ * a line-oriented text format, and only a label *value* is quoted and
+ * escaped there — a name and a label key are interpolated raw, because the
+ * format gives them no escaping to interpolate them with.  A metric name
+ * derived from a tenant, a route or a header therefore lets whoever
+ * controls that string end the current series and write another one, and
+ * the forged series is indistinguishable from a real one to whatever
+ * scrapes it — an alert on `node_up == 0` is silenced by a fabricated `1`
+ * as effectively as by a fixed outage.  `DefaultMetricsRegistry` refuses
+ * both at registration: a name outside
+ * {@link PROMETHEUS_METRIC_NAME_PATTERN} and a label key outside
+ * {@link PROMETHEUS_LABEL_NAME_PATTERN} throw, the way `ActorPath` refuses
+ * an actor name that would corrupt the path it becomes part of.
+ * If a per-tenant or per-route breakdown is what you want, it belongs in a
+ * label *value* — bounded with {@link bucketize} — never in the name.
+ *
  * Series are also **removable** (#745).  A label tuple whose subject has
  * gone — an entity that passivated, an actor that stopped — would
  * otherwise outlive it for the life of the process, since the cap bounds
@@ -39,6 +56,10 @@
  * the Prometheus 0.0.4 text format implementation.
  */
 
+import {
+  PROMETHEUS_LABEL_NAME_PATTERN,
+  PROMETHEUS_METRIC_NAME_PATTERN,
+} from './Constants.js';
 import {
   DEFAULT_MAX_SERIES_PER_FAMILY,
   MetricsRegistryOptionsValidator,
@@ -419,6 +440,12 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
       }
       return existing;
     }
+    // After the memo hit, never before it.  This runs once per family, on
+    // the call that mints it; hoisting it above the `families.get` would
+    // put a regex on every `counter(...).inc()` in the process for a
+    // question whose answer cannot change — a name already in the map was
+    // validated on the way in.
+    assertValidMetricName(name);
     let family: Family;
     if (kind === 'counter') {
       family = { kind: 'counter', help: help ?? '', children: new Map() };
@@ -442,6 +469,12 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
     const key = labelKey(labels);
     const existing = family.children.get(key);
     if (existing) return existing.metric as unknown as M;
+    // After the memo hit, for the same reason as in `familyOf`: a tuple the
+    // family already holds had its keys checked when it was minted, and the
+    // hit is the path every write to an established series takes.  Before
+    // the cap check, though — the overflow tuple reuses these key names, so
+    // they have to be sound before they can be copied onto it.
+    assertValidLabelKeys(name, labels);
     if (this.maxSeriesPerFamily > 0 && family.children.size >= this.maxSeriesPerFamily) {
       return this.overflowChildOf<M>(name, family, labels, factory);
     }
@@ -483,6 +516,60 @@ function labelKey(labels: Labels): string {
   const keys = Object.keys(labels).sort();
   if (keys.length === 0) return '';
   return keys.map((k) => `${k}=${String(labels[k])}`).join('\x1f');
+}
+
+/* --------------------------- Name validation ------------------------- */
+
+/**
+ * Reject a metric name the exposition cannot carry safely (#784).
+ *
+ * A hard throw rather than a sanitising rewrite, matching `ActorPath`'s
+ * treatment of an actor name: silently renaming a family would produce a
+ * series under a name the call site never asked for, so a dashboard and an
+ * alert rule would both quietly miss it, and the developer would find out
+ * from a blank panel rather than from a stack trace at the call that is
+ * actually wrong.  The check is unconditional and has no configuration key
+ * — a deployment that could switch it off would be a deployment where the
+ * exporter's raw interpolation is unguarded again.
+ *
+ * The offending name is put through `JSON.stringify` so the *message* is
+ * not itself an injection point: a name carrying a newline would otherwise
+ * forge a line in whatever log the error is written to, which is the same
+ * defect one layer up.
+ */
+function assertValidMetricName(name: string): void {
+  if (!PROMETHEUS_METRIC_NAME_PATTERN.test(name)) {
+    throw new Error(
+      `Invalid metric name ${JSON.stringify(name)}: must match ` +
+      `${String(PROMETHEUS_METRIC_NAME_PATTERN)}. Metric names are part of the ` +
+      `Prometheus exposition grammar and cannot be escaped, so they must be ` +
+      `developer-chosen constants — put request-derived data in a label value ` +
+      `(bounded with bucketize), never in the name.`,
+    );
+  }
+}
+
+/**
+ * Reject a label key the exposition cannot carry safely (#784).
+ *
+ * Same rule and same reasoning as {@link assertValidMetricName}, one field
+ * over: `renderLabels` quotes and escapes the value and cannot do either
+ * for the key.  The family name travels into the message because a bad key
+ * is otherwise hard to place — the tuple is usually built several frames
+ * away from the call that registers it.
+ */
+function assertValidLabelKeys(name: string, labels: Labels): void {
+  for (const key of Object.keys(labels)) {
+    if (!PROMETHEUS_LABEL_NAME_PATTERN.test(key)) {
+      throw new Error(
+        `Invalid label key ${JSON.stringify(key)} on metric ${JSON.stringify(name)}: ` +
+        `must match ${String(PROMETHEUS_LABEL_NAME_PATTERN)}. Label keys are part of ` +
+        `the Prometheus exposition grammar and cannot be escaped, so they must be ` +
+        `developer-chosen constants — put request-derived data in the label value ` +
+        `(bounded with bucketize), never in the key.`,
+      );
+    }
+  }
 }
 
 /* --------------------------- Cardinality cap ------------------------- */

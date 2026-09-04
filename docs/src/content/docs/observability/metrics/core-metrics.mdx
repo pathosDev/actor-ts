@@ -147,6 +147,40 @@ events_total{source="batch", env="prod"} 89
 
 Read in Prometheus / Grafana as filters or group-by axes.
 
+### Names and label keys are constants
+
+A label **value** is where data belongs.  A metric **name** and a label
+**key** are not:
+
+```ts
+// ✗ INJECTION — DON'T
+metrics.counter(`http_requests_${tenantFromHeader}_total`).inc();
+metrics.counter('http_requests_total', { [headerFromRequest]: 'yes' }).inc();
+```
+
+The exposition is a line-oriented text format, and only the value half of
+`key="value"` is quoted and escaped.  A name and a key go into it raw,
+because the format offers nothing to escape them with.  So a tenant id of
+`x_total 1\nnode_up{job="prod"} 0\n#` does not produce an oddly-named
+series — it **ends the current one and writes another**.  Whatever scrapes
+that cannot tell the forged `node_up` from a real one, and an alert on
+`node_up == 0` never fires again.
+
+The registry therefore refuses both at registration, so the mistake shows
+up as a stack trace at the call that made it rather than as a corrupt
+scrape hours later:
+
+- a metric name must match `[a-zA-Z_:][a-zA-Z0-9_:]*`
+- a label key must match `[a-zA-Z_][a-zA-Z0-9_]*` — no colon
+
+Anything else throws.  The per-tenant or per-route breakdown belongs in a
+label **value**, bounded at the source (see *`bucketize`* below):
+
+```ts
+// ✓ — constant name, constant key, the varying part in the value
+metrics.counter('http_requests_total', { tenant: tenantLabel }).inc();
+```
+
 ### Cardinality discipline
 
 ```ts
