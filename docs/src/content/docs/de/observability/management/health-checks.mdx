@@ -272,10 +272,37 @@ auch die Endpunkte benutzen.
 
 ## Timeouts
 
-Es gibt **kein eingebautes Timeout pro Check** — ein hängender
-Check blockiert die gesamte `/health`- (oder `/ready`-)Antwort.
-Für einen Check, der stehen bleiben kann, setze ihn gegen eine
-eigene Deadline:
+**Jeder Check läuft gegen eine Deadline** — standardmäßig eine
+Sekunde.  Danach antwortet die Registry *für* diesen Check, und
+seine Geschwister melden weiterhin normal; eine hängende
+Abhängigkeit kostet also einen fehlschlagenden Eintrag statt der
+ganzen Antwort:
+
+```json
+{
+  "status": "DOWN",
+  "checks": [
+    { "name": "unknown", "status": false, "detail": "health check did not answer within 1000ms" },
+    { "name": "cache",   "status": true }
+  ]
+}
+```
+
+Der Name ist `unknown`, weil der Name *im* `HealthCheckResult`
+steckt, das der Check nie zurückgegeben hat — derselbe Fallback,
+den ein werfender Check schon immer erzeugt hat.  Die Deadline
+steht im `detail`, dem einzigen Feld, das sie noch tragen kann.
+
+Pro Knoten einstellbar:
+
+```hocon
+actor-ts.management.health-checks.check-timeout = 500ms
+```
+
+Die Deadline gehört der Registry, nicht einem einzelnen Check:
+sie gilt für Liveness wie Readiness und ist eine Zahl, an der ein
+Operator drehen kann.  Ein Check, der ein *anderes* Budget
+braucht, setzt weiterhin sein eigenes Rennen an:
 
 ```ts
 health.addReadiness(async () => {
@@ -287,9 +314,16 @@ health.addReadiness(async () => {
 });
 ```
 
-Ohne Absicherung reißt ein festhängender Check irgendwann das
-eigene Probe-Timeout von K8s (Standard 10 s) und löst einen
-Neustart aus.  Halte Checks schnell.
+Diese Variante meldet einen Namen, was die Antwort der Registry
+nicht kann — für einen Check, von dem du weißt, dass er stehen
+bleiben kann, lohnt sie sich.
+
+Halte Checks trotzdem schnell.  Die Deadline hält die *Antwort*
+in Bewegung; sie stoppt nicht die Arbeit hinter einem Check, und
+sie liegt bewusst unter dem eigenen Probe-Timeout von K8s
+(`timeoutSeconds`, Standard 1 s), damit das Framework — und nicht
+der Orchestrator — sagen darf, welcher Check hängt.  Erhöhe sie
+in einem Deployment, dessen Probe-Timeout tatsächlich höher liegt.
 
 import { Aside } from '@astrojs/starlight/components';
 

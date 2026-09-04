@@ -48,6 +48,8 @@ type ManagementRoutesOptionsType = {
   auth?:          Middleware;         // guards /cluster/* (+ /metrics)
   ipAllowlist?:   Middleware;         // guards EVERY endpoint, incl. /health + /ready
   authProtectHealth?: boolean;        // also require `auth` on /health + /ready (default false)
+  livenessPath?:  string;             // segment /health answers on   (default "health")
+  readinessPath?: string;             // segment /ready  answers on   (default "ready")
 };
 ```
 
@@ -61,6 +63,34 @@ const routes = managementRoutes(system, cluster, {
 });
 await system.http(8558).bind(routes);
 ```
+
+Everything above except the two middleware fields also has a
+config form, so the same wiring can come from `application.conf`
+and differ per environment without a rebuild:
+
+```hocon
+actor-ts.management {
+  enable-metrics-endpoint = true
+  enable-leave-endpoint   = false
+  enable-down-endpoint    = false
+  liveness-path  = "health"
+  readiness-path = "ready"
+  health-checks.check-timeout = 1s
+}
+```
+
+The usual three layers apply — an option set in code wins, the
+file fills what the code left unset, the built-in defaults are the
+floor — so `managementRoutes(system, cluster)` with no third
+argument at all is the whole wiring when the file carries it.
+
+**`auth` and `ipAllowlist` are the exception and have no key.**
+They are `Middleware` functions, which HOCON cannot express, so
+the block decides *which* endpoints exist and *where* the probes
+answer — never *who* may reach them.  That is what makes
+config-switchable admin endpoints safe: a file cannot loosen the
+access control in front of them.  Full key table:
+[Configuration](/reference/configuration/#actor-tsmanagement).
 
 ## The endpoints
 

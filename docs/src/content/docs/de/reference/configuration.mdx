@@ -567,6 +567,48 @@ Grenze würde dort wiederherstellbare Historie in unlesbare verwandeln.  Und die
 HTTP-Body-Kante baut ihre Serializer ohne `ActorSystem`-Handle, über das sich
 die Konfiguration lesen ließe — diese Naht ist Issue #967.
 
+### `actor-ts.management`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `management.enable-leave-endpoint` | `false` | `POST /cluster/leave` ausliefern ([HTTP-Endpunkte](/de/observability/management/http-endpoints/)). |
+| `management.enable-down-endpoint` | `false` | `POST /cluster/down` ausliefern — operator-initiiertes Force-Down eines Peers. |
+| `management.enable-metrics-endpoint` | `false` | `GET /metrics` im Prometheus-Textformat ausliefern. |
+| `management.auth-protect-health` | `false` | Die `auth`-Middleware zusätzlich über `/health` und `/ready` legen, nicht nur über `/cluster/*`. |
+| `management.liveness-path` | `"health"` | Einzelnes Pfadsegment, unter dem die Liveness-Probe antwortet. |
+| `management.readiness-path` | `"ready"` | Einzelnes Pfadsegment, unter dem die Readiness-Probe antwortet. |
+| `management.health-checks.check-timeout` | `1s` | Deadline für **einen** Health-Check; danach meldet dieser Check `status: false`, seine Geschwister melden weiterhin normal. |
+
+Das sind die Einstellungen, die `managementRoutes(system, cluster, options)`
+unter seine expliziten Optionen legt — die üblichen drei Ebenen: ein im Code
+gesetzter Wert gewinnt, eine Datei füllt, was der Code offen gelassen hat, und
+die eingebauten Defaults sind der Boden.  Port und Host stehen nicht hier: die
+gehören zu `system.http(port, { host })`, nicht zum Route-Baum.
+
+**`auth` und `ipAllowlist` haben keinen Key und können auch keinen bekommen.**
+Beides sind `Middleware`-Funktionen, die HOCON nicht ausdrücken kann.  Der
+Block entscheidet also, *welche* Endpunkte es gibt und *wo* die Probes
+antworten — nie, *wer* sie erreichen darf.  Eine Config-Datei kann die
+Zugriffskontrolle des Management-Servers damit nicht aufweichen, und genau
+deshalb ist es unbedenklich, die beiden mutierenden Endpunkte überhaupt per
+Config schaltbar zu machen.
+
+Die beiden Probe-Pfade sind **einzelne Segmente**; ein Wert mit `/` wird beim
+Bauen der Routen mit einem `OptionsError` abgelehnt.  Diese Regel ist nicht
+kosmetisch: `path(segment, …)` entfernt nur umschließende Slashes.
+`readiness-path = "k8s/ready"` würde also als ein Segment mit einem Slash darin
+gespeichert, auf keine URL passen und den Endpunkt lautlos verschwinden lassen.
+Ein Fehler beim Start ist die sichtbare Variante desselben Ausgangs.
+
+`check-timeout` begrenzt einen einzelnen Check, nicht die gesamte Probe.  Eine
+Probe aggregiert alle registrierten Checks zu einer Antwort — ohne die Deadline
+*ist* der langsamste Check die Antwortzeit, und ein Check, der nie fertig wird,
+ist eine Probe, die nie antwortet.  Kubernetes liest das als Fehlschlag, ohne
+jeden Hinweis darauf, welche Abhängigkeit hängt.  Nach Ablauf antwortet die
+Registry für diesen Check mit `{ name: 'unknown', status: false, detail: … }`;
+`unknown` deshalb, weil der Name in genau dem Ergebnis steckt, das der Check nie
+zurückgegeben hat.
+
 ### `actor-ts.persistence`
 
 | Key | Default | Zweck |

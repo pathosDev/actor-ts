@@ -545,6 +545,46 @@ turn recoverable history into unreadable history.  And the HTTP body edge
 builds its serializers with no `ActorSystem` handle to read config through —
 that seam is issue #967.
 
+### `actor-ts.management`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `management.enable-leave-endpoint` | `false` | Serve `POST /cluster/leave` ([HTTP endpoints](/observability/management/http-endpoints/)). |
+| `management.enable-down-endpoint` | `false` | Serve `POST /cluster/down` — operator-initiated force-down of a peer. |
+| `management.enable-metrics-endpoint` | `false` | Serve `GET /metrics` in Prometheus text format. |
+| `management.auth-protect-health` | `false` | Extend the `auth` middleware over `/health` and `/ready` as well as `/cluster/*`. |
+| `management.liveness-path` | `"health"` | Single path segment the liveness probe answers on. |
+| `management.readiness-path` | `"ready"` | Single path segment the readiness probe answers on. |
+| `management.health-checks.check-timeout` | `1s` | Deadline for **one** health check; past it that check reports `status: false` and its siblings still report normally. |
+
+These are the settings `managementRoutes(system, cluster, options)` layers
+under its explicit options — the usual three layers, so a value set in code
+wins, a file fills what the code left unset, and the built-in defaults are the
+floor.  The port and host are not here: they belong to
+`system.http(port, { host })`, not to the route tree.
+
+**`auth` and `ipAllowlist` have no key, and cannot get one.**  Both are
+`Middleware` functions, which HOCON has no way to express, so this block
+decides *which* endpoints exist and *where* the probes answer — never *who*
+may reach them.  A config file therefore cannot loosen the management server's
+access control, which is why the two mutating endpoints are safe to expose as
+config at all.
+
+The two probe paths are **single segments**, and a value containing `/` is
+refused with an `OptionsError` when the routes are built.  That rule is not
+cosmetic: `path(segment, …)` strips surrounding slashes only, so
+`readiness-path = "k8s/ready"` would be stored as one segment holding a slash,
+match no URL, and take the endpoint out of existence with nothing logged.  A
+startup error is the visible version of the same outcome.
+
+`check-timeout` bounds a single check rather than the whole probe.  A probe
+aggregates every registered check into one response, so without it the slowest
+check *is* the response time and a check that never settles is a probe that
+never answers — which Kubernetes reads as a failure carrying no clue as to
+which dependency hung.  Past the deadline the registry answers for that check
+with `{ name: 'unknown', status: false, detail: … }`; the name is `unknown`
+because the name lives inside the result the check never returned.
+
 ### `actor-ts.persistence`
 
 | Key | Default | Purpose |

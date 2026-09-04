@@ -59,6 +59,25 @@ rather than computed separately, so it is `false` until the local
 node reaches `Up` and `true` when there is no cluster at all.  503
 if any check fails.
 
+### Moving the two probe paths
+
+`/health` and `/ready` are defaults, not fixed routes.  Each is a
+single path segment, settable in code or from a config file:
+
+```hocon
+actor-ts.management {
+  liveness-path  = "alive"
+  readiness-path = "serving"
+}
+```
+
+A value containing `/` is refused with an `OptionsError` when the
+routes are built, because `path()` strips only *surrounding*
+slashes — `"k8s/ready"` would become one segment holding a slash,
+match no URL, and take the endpoint out of existence silently.
+Whatever the segments are, keep the K8s probe paths in step with
+them; nothing cross-checks a manifest.
+
 ## Cluster info
 
 Available when a `cluster` is passed to `managementRoutes`.

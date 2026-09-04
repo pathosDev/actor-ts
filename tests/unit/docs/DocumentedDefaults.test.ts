@@ -34,6 +34,8 @@ import {
 } from '../../../src/cluster/bootstrap/StableObservationOptions.js';
 import { DEFAULT_MINIMUM_MEMBERS } from '../../../src/cluster/ClusterReadiness.js';
 import { DEFAULT_K8S_OPERATION_TIMEOUT_MS, DEFAULT_LEASE_NAME_MAX_LENGTH, DEFAULT_SERVICE_ACCOUNT_CA_PATH, DEFAULT_SERVICE_ACCOUNT_NAMESPACE_PATH, DEFAULT_SERVICE_ACCOUNT_TOKEN_PATH, DEFAULT_TOKEN_RELOAD_INTERVAL_MS } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
+import { DEFAULT_AUTH_PROTECT_HEALTH, DEFAULT_ENABLE_DOWN_ENDPOINT, DEFAULT_ENABLE_LEAVE_ENDPOINT, DEFAULT_ENABLE_METRICS_ENDPOINT, DEFAULT_LIVENESS_PATH, DEFAULT_READINESS_PATH } from '../../../src/management/ManagementRoutesOptions.js';
+import { DEFAULT_HEALTH_CHECK_TIMEOUT_MS } from '../../../src/management/HealthCheckRegistryOptions.js';
 import {
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
@@ -327,6 +329,23 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.coordination.lease.kubernetes.token-reload-interval', kind: 'duration', constant: DEFAULT_TOKEN_RELOAD_INTERVAL_MS },
   { key: 'actor-ts.coordination.lease.kubernetes.operation-timeout', kind: 'duration', constant: DEFAULT_K8S_OPERATION_TIMEOUT_MS },
   { key: 'actor-ts.coordination.lease.kubernetes.lease-name-max-length', kind: 'int', constant: DEFAULT_LEASE_NAME_MAX_LENGTH },
+
+  /* --- management --- */
+  // The four endpoint switches are in the table rather than in
+  // FEATURE_SWITCHES, and the difference is real: that group's stated reason
+  // is that its members have *no* `DEFAULT_*` constant to disagree with,
+  // because their off state is the field being absent at the read site.  These
+  // four are present at the read site — `defaultManagementRoutesOptions` is
+  // the floor `mergeOptions` starts from — so each does have a constant, and
+  // `enable-metrics-endpoint` published as `false` while the code shipped
+  // `true` is exactly the drift worth catching (#882).
+  { key: 'actor-ts.management.enable-leave-endpoint', kind: 'bool', constant: DEFAULT_ENABLE_LEAVE_ENDPOINT },
+  { key: 'actor-ts.management.enable-down-endpoint', kind: 'bool', constant: DEFAULT_ENABLE_DOWN_ENDPOINT },
+  { key: 'actor-ts.management.enable-metrics-endpoint', kind: 'bool', constant: DEFAULT_ENABLE_METRICS_ENDPOINT },
+  { key: 'actor-ts.management.auth-protect-health', kind: 'bool', constant: DEFAULT_AUTH_PROTECT_HEALTH },
+  { key: 'actor-ts.management.liveness-path', kind: 'string', constant: DEFAULT_LIVENESS_PATH },
+  { key: 'actor-ts.management.readiness-path', kind: 'string', constant: DEFAULT_READINESS_PATH },
+  { key: 'actor-ts.management.health-checks.check-timeout', kind: 'duration', constant: DEFAULT_HEALTH_CHECK_TIMEOUT_MS },
 
   /* --- worker cluster --- */
   { key: 'actor-ts.worker-cluster.system-name', kind: 'string', constant: DEFAULT_WORKER_SYSTEM_NAME },

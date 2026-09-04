@@ -60,6 +60,27 @@ diesem Array zurückgelesen statt separat berechnet: es ist also
 `false`, bis der lokale Node `Up` erreicht, und `true`, wenn es gar
 keinen Cluster gibt.  503, wenn ein Check fehlschlägt.
 
+### Die beiden Probe-Pfade verschieben
+
+`/health` und `/ready` sind Defaults, keine festen Routen.  Beide
+sind ein einzelnes Pfadsegment und im Code wie aus einer
+Config-Datei setzbar:
+
+```hocon
+actor-ts.management {
+  liveness-path  = "alive"
+  readiness-path = "serving"
+}
+```
+
+Ein Wert mit `/` wird beim Bauen der Routen mit einem
+`OptionsError` abgelehnt, denn `path()` entfernt nur
+*umschließende* Slashes — aus `"k8s/ready"` würde ein Segment mit
+einem Slash darin, das auf keine URL passt und den Endpunkt
+lautlos verschwinden lässt.  Wie die Segmente auch heißen: halte
+die Probe-Pfade in K8s im Gleichschritt damit, ein Manifest wird
+von nichts gegengeprüft.
+
 ## Cluster-Info
 
 Verfügbar, wenn ein `cluster` an `managementRoutes` übergeben

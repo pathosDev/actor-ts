@@ -719,6 +719,36 @@ actor-ts {
     #   actor-ts.cache.rate-limit.redis.db = 3
   }
 
+  # The operational HTTP surface managementRoutes(system, cluster, ...) builds,
+  # and the deadline the shared HealthCheckRegistry gives one check.  Leaf
+  # names match ManagementRoutesOptionsType field for field; explicit options
+  # still win over everything here.  auth and ipAllowlist are absent by nature
+  # -- they are Middleware functions, so this block can move a probe or open an
+  # endpoint but never decide who may reach one.
+  management {
+    # The mutating and metrics endpoints stay off unless asked for.
+    enable-leave-endpoint   = false
+    enable-down-endpoint    = false
+    enable-metrics-endpoint = false
+    # Extend the auth middleware over /health and /ready too.  Off, because a Kubernetes
+    # probe cannot present a credential and would restart the pod on the 401.
+    auth-protect-health     = false
+
+    # The two probe endpoints, as SINGLE path segments -- a value containing a
+    # slash is refused, because it would be stored as one segment, match no URL
+    # and make the endpoint silently disappear.  These are the paths that ship
+    # today, so changing a default here moves a documented endpoint.
+    liveness-path  = "health"
+    readiness-path = "ready"
+
+    health-checks {
+      # Deadline for ONE check.  Past it that check reports status = false with
+      # a detail naming the deadline and its siblings still report normally, so
+      # a hung dependency costs one failing entry rather than the whole probe.
+      check-timeout = 1s
+    }
+  }
+
   persistence {
     journal {
       plugin = "actor-ts.persistence.journal.in-memory"

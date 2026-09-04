@@ -1,4 +1,11 @@
-import type { ManagementRoutesOptions, ManagementRoutesOptionsType } from './ManagementRoutesOptions.js';
+import {
+  defaultManagementRoutesOptions,
+  ManagementRoutesOptionsValidator,
+  readManagementRoutesOptionsFromConfig,
+  type ManagementRoutesOptions,
+  type ResolvedManagementRoutesOptions,
+} from './ManagementRoutesOptions.js';
+import { mergeOptions } from '../util/OptionsMerge.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import type { Cluster } from '../cluster/Cluster.js';
 import {
@@ -58,13 +65,28 @@ import { healthChecksOf } from './HealthCheckExtension.js';
  * backend it has no business knowing about and made the endpoint's answer
  * depend on the operator having wired one up.  It asks `ClusterSharding`
  * now (#557, #682).
+ *
+ * **The endpoint toggles and the two probe paths also come from HOCON**
+ * (`actor-ts.management.*`, #882), layered in the usual order: an explicit
+ * option wins, a file fills what the caller left unset, and the built-in
+ * defaults are the floor.  `auth` and `ipAllowlist` stay code-only — they are
+ * `Middleware` functions with no HOCON form — so a config file can move a
+ * probe or open an endpoint, never weaken who may reach one.
  */
 export function managementRoutes(
   system: ActorSystem,
   cluster: Cluster | null,
   optionsInput: ManagementRoutesOptions = {},
 ): Route {
-  const options = optionsInput as ManagementRoutesOptionsType;
+  // Validated once, on the merged settings, so a path from a file faces the
+  // same rules as one written in code — and cross-layer results (a file's
+  // path under a caller's toggles) are what the rules actually see.
+  const options = mergeOptions<ResolvedManagementRoutesOptions>(
+    defaultManagementRoutesOptions,
+    readManagementRoutesOptionsFromConfig(system.config),
+    optionsInput as Partial<ResolvedManagementRoutesOptions>,
+  );
+  new ManagementRoutesOptionsValidator().validate(options);
   const health = healthChecksOf(system);
 
   const clusterMembers = get(async () => {
@@ -255,9 +277,12 @@ export function managementRoutes(
     clusterSubtree = withMiddleware(options.auth, clusterSubtree);
   }
 
+  // The two probe segments are resolved settings rather than literals: an
+  // operator fronting several services on one ingress renames them from
+  // `application.conf` instead of rebuilding the image.
   let healthSubtree: Route = concat(
-    path('health', liveness),
-    path('ready', readiness),
+    path(options.livenessPath, liveness),
+    path(options.readinessPath, readiness),
   );
   if (options.auth && options.authProtectHealth === true) {
     healthSubtree = withMiddleware(options.auth, healthSubtree);
