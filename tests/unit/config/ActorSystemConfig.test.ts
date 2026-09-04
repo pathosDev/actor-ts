@@ -81,6 +81,37 @@ describe('ActorSystem — config integration', () => {
     await zero.terminate();
   });
 
+  test('the global mailbox bound defaults to off, reads config, and treats 0 as off', async () => {
+    // Nested and not `{'actor-ts.mailbox.default.capacity': 4}`: a dotted
+    // string stays a literal top-level key, so the assertion would read the
+    // reference value back and prove nothing.
+    const plainOptions = ActorSystemOptions.create().withLogger(new NoopLogger());
+    const plain = ActorSystem.create('cfg', plainOptions);
+    // The shipped `capacity = 0` has to leave the field ABSENT, not land as a
+    // zero: `undefined` is what falls through to the unbounded mailbox, and a
+    // 0 would reach BoundedMailbox's validator instead.
+    expect(plain._defaultMailbox.capacity).toBeUndefined();
+    expect(plain._defaultMailbox.overflow).toBe('drop-head');
+    await plain.terminate();
+
+    const boundOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfig({ 'actor-ts': { mailbox: { default: { capacity: 4, overflow: 'reject' } } } });
+    const bound = ActorSystem.create('cfg', boundOptions);
+    expect(bound._defaultMailbox.capacity).toBe(4);
+    expect(bound._defaultMailbox.overflow).toBe('reject');
+    await bound.terminate();
+
+    // A negative capacity is the same statement as 0 made by a typo, and is
+    // answered the same way rather than by an OptionsError at the first spawn.
+    const negativeOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfig({ 'actor-ts': { mailbox: { default: { capacity: -1 } } } });
+    const negative = ActorSystem.create('cfg', negativeOptions);
+    expect(negative._defaultMailbox.capacity).toBeUndefined();
+    await negative.terminate();
+  });
+
   test('picks log level from config', async () => {
     // Use NoopLogger-like shim so nothing is printed; just verify derived LogLevel.
     const captured: number[] = [];

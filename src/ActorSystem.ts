@@ -31,7 +31,8 @@ import { buildLoggerFromConfig, readLoggerLevelFromConfig } from './logging/Logg
 import { MultiSinkLogger } from './logging/MultiSinkLogger.js';
 import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from './logging/MultiSinkLoggerOptions.js';
 import type { ActorClassOrFactory } from './Actor.js';
-import type { ActorOptions } from './ActorOptions.js';
+import type { ActorOptions, DefaultMailboxConfiguration } from './ActorOptions.js';
+import { readDefaultMailboxFromConfig } from './ActorOptions.js';
 import { Scheduler, type SchedulerErrorSink } from './Scheduler.js';
 import type { ActorSystemOptions, ActorSystemOptionsType } from './ActorSystemOptions.js';
 import { ActorCell } from './internal/ActorCell.js';
@@ -107,6 +108,16 @@ export class ActorSystem {
    * in this file.
    */
   readonly _actorThroughput: number;
+  /**
+   * @internal What `actor-ts.mailbox.default.*` says, for every cell that
+   * does not name its own mailbox (#862).
+   *
+   * Resolved here for the same reason `_actorThroughput` above is: a cell
+   * reads no config, and this is the framework's most-created object.  Empty
+   * unless an operator asked for a bound, so the shipped answer stays the
+   * unbounded mailbox #1148 restored.
+   */
+  readonly _defaultMailbox: DefaultMailboxConfiguration;
   readonly deadLetters: ActorRef;
   /**
    * Bounded record of the messages this system could not deliver.
@@ -220,6 +231,10 @@ export class ActorSystem {
     this.loggerCloseTimeoutMs = loggerCloseTimeoutFromConfig(this.config);
     this.shutdownDrainTimeoutMs = shutdownDrainTimeoutFromConfig(this.config);
     this._actorThroughput = actorThroughputFromConfig(this.config);
+    // Before the guardian cells are built below: the first cell constructed
+    // reads this, so a later assignment would leave the root and the two
+    // guardians looking at `undefined`.
+    this._defaultMailbox = readDefaultMailboxFromConfig(this.config);
     this.log = resolveLogger(options, this.config, this.loggerCloseTimeoutMs);
     // Sinks are built before any system exists, so anything system-shaped —
     // the scheduler a batching sink ticks on, the name a remote sink sends

@@ -259,6 +259,31 @@ actor-ts {
     throughput = 16
   }
 
+  mailbox {
+    # A bound every actor under /user gets without touching its spawn site.
+    #
+    # Off by default, and "off" is the shipped behaviour rather than a tuned
+    # number: since #1148 a mailbox is unbounded unless somebody asks for a
+    # ceiling.  So setting a capacity here does not retune an existing bound,
+    # it introduces message loss for every application actor at once.  Read
+    # docs -> Operate -> Tuning -> Mailbox sizing before turning it on.
+    #
+    # The bound reaches strict descendants of /user only.  The framework's
+    # own actors live under /system — shard regions, the pub-sub mediator,
+    # the reliable-delivery producer, the DevTools hub — and shedding their
+    # traffic would break invariants the application never sees.  A spawn
+    # site that names its own mailbox still wins, in both directions:
+    # withMailboxCapacity() overrides the capacity, withMailbox() replaces
+    # the queue outright.
+    default {
+      capacity = 0            # 0 = unbounded (no global bound)
+      # System-wide policy for ANY bounded mailbox: the global bound above,
+      # and every actor that sets withMailboxCapacity() without naming a
+      # policy of its own.  drop-head | drop-new | reject.
+      overflow = "drop-head"
+    }
+  }
+
   dispatcher {
     # hybrid | immediate | microtask | throughput
     #

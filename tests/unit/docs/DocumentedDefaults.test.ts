@@ -10,6 +10,7 @@ import {
   DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
 } from '../../../src/Constants.js';
 import { DEFAULT_SHUTDOWN_EXIT_CODE } from '../../../src/Constants.js';
+import { DEFAULT_MAILBOX_OVERFLOW } from '../../../src/ActorOptions.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
 import { DEFAULT_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/Constants.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
@@ -306,6 +307,14 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.distributed-data.max-quorum-timeout', kind: 'duration', constant: DEFAULT_MAX_QUORUM_TIMEOUT_MS },
   { key: 'actor-ts.distributed-data.max-gossip-bytes', kind: 'bytes', constant: DEFAULT_MAX_GOSSIP_BYTES },
 
+  /* --- mailbox --- */
+  // The sibling leaf, `mailbox.default.capacity`, is a FEATURE_SWITCHES entry:
+  // its published `0` says the global bound is off, and the off state IS the
+  // field being absent from what the reader returns (#862).  This one is a
+  // real default — the policy any bounded mailbox takes when its spawn site
+  // names none — so it pins to the constant the cell falls back to.
+  { key: 'actor-ts.mailbox.default.overflow', kind: 'string', constant: DEFAULT_MAILBOX_OVERFLOW },
+
   /* --- dead letters --- */
   { key: 'actor-ts.dead-letters.store', kind: 'string', constant: DEFAULT_DEAD_LETTER_STORE },
   { key: 'actor-ts.dead-letters.max-entries', kind: 'int', constant: DEFAULT_DEAD_LETTER_MAX_ENTRIES },
@@ -582,6 +591,12 @@ const FEATURE_SWITCHES: readonly string[] = [
   // this list only widens it, so an empty list and an unset key produce the
   // same guard.  No constant either — the read site branches on `undefined`.
   'actor-ts.devtools.allowed-origins',
+  // 0 = no global mailbox bound, which is the shipped behaviour since #1148.
+  // `readDefaultMailboxFromConfig` turns it into an ABSENT capacity rather
+  // than a number, so there is no constant for it to disagree with — and a
+  // constant would be the wrong shape anyway, since the value it would hold
+  // is "nothing" (#862).
+  'actor-ts.mailbox.default.capacity',
   'actor-ts.cluster.weakly-up-after', // 0s = no auto weakly-up promotion
   'actor-ts.cluster.tombstone.min-retention', // 0s = derive from down-after
   'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',

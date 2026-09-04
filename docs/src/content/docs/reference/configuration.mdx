@@ -152,6 +152,27 @@ message's class — never the payload, for the same data-protection reason
 `dead-letters.store` defaults to `off`.  Every key here is also settable in
 code, field by field, through `ActorSystemOptions.withDiagnostics(…)`.  See
 [Dead letters](/operations/dead-letters/) for the whole picture.
+
+### `actor-ts.mailbox`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `mailbox.default.capacity` | `0` | Bound every actor under `/user` at this many queued user messages, without touching a spawn site.  `0` means no global bound, which is the shipped behaviour — so this is not a retune, it is the switch that introduces message loss for every application actor at once. |
+| `mailbox.default.overflow` | `"drop-head"` | System-wide policy for **any** bounded mailbox: the global bound above, and every actor that sets `withMailboxCapacity()` without naming a policy of its own.  `drop-head` / `drop-new` / `reject`. |
+
+The bound reaches strict descendants of `/user` only.  The framework's own
+actors live under `/system` — shard regions, the pub-sub mediator, the
+reliable-delivery producer, the DevTools hub — and shedding their traffic
+would break invariants the application never asked about and cannot see.  A
+spawn site wins over both keys: `ActorOptions.withMailboxCapacity()` overrides
+the capacity, `withMailbox()` replaces the queue outright.
+
+Read [Mailbox sizing](/operations/tuning/mailbox-sizing/) before turning it
+on.  It is the one key in this file that can lose a message in an actor whose
+code says nothing about a mailbox, and the page names the two cases —
+`WebsocketServerActor` and its connections — where a blanket bound is still
+reachable because user code spawns them.
+
 ### `actor-ts.dispatcher`
 
 | Key | Default | Purpose |
