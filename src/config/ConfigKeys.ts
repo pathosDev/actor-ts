@@ -173,8 +173,45 @@ export const ConfigKeys = {
       root: 'actor-ts.cache.in-memory',
       maxEntries: 'actor-ts.cache.in-memory.max-entries',
       cleanupInterval: 'actor-ts.cache.in-memory.cleanup-interval',
+      timeToLive: 'actor-ts.cache.in-memory.time-to-live',
+      timeToIdle: 'actor-ts.cache.in-memory.time-to-idle',
       /** Comment-only in `reference.conf` — unset means one undivided map. */
       prefixQuotas: 'actor-ts.cache.in-memory.prefix-quotas',
+    },
+    /**
+     * The global Redis block's *settings*, standing to `redis` above exactly as
+     * `inMemoryOptions` stands to `inMemory`: one is the plugin **id** the
+     * factory map is keyed by (and `REDIS_CACHE_PLUGIN_ID` re-exports), the
+     * other is a config path.  Same string, two entries, for the same reason.
+     *
+     * Leaf by leaf rather than a root alone, because `NoDeadConfigKeys`'
+     * `coveringAccessor` resolves anything under `actor-ts.cache` to the
+     * `root` entry — so a root-only shape would pass the guard for a block
+     * nothing reads.  The identical leaves under `actor-ts.cache.<name>.redis`
+     * cannot be listed (the name is the application's);
+     * {@link redisCacheKeysUnder} composes those from the same suffixes.
+     *
+     * `host` and `port` are **comment-only** in `reference.conf`: `url` is
+     * mutually exclusive with them, and a published `host` would be set for
+     * every deployment and refuse every `url`.  They are read all the same,
+     * which is what this entry records.
+     */
+    redisOptions: {
+      root: 'actor-ts.cache.redis',
+      url: 'actor-ts.cache.redis.url',
+      host: 'actor-ts.cache.redis.host',
+      port: 'actor-ts.cache.redis.port',
+      db: 'actor-ts.cache.redis.db',
+      keyPrefix: 'actor-ts.cache.redis.key-prefix',
+      password: 'actor-ts.cache.redis.password',
+    },
+    /** The global Memcached block's settings — see {@link redisOptions}. */
+    memcachedOptions: {
+      root: 'actor-ts.cache.memcached',
+      servers: 'actor-ts.cache.memcached.servers',
+      username: 'actor-ts.cache.memcached.username',
+      password: 'actor-ts.cache.memcached.password',
+      keyPrefix: 'actor-ts.cache.memcached.key-prefix',
     },
   },
 
@@ -371,10 +408,33 @@ export const ConfigKeys = {
       pruneInterval: 'actor-ts.cluster.tombstone.prune-interval',
       minRetention: 'actor-ts.cluster.tombstone.min-retention',
     },
+    /**
+     * Failure detection — `actor-ts.cluster.failure-detector.*` (#840).
+     *
+     * `implementation` picks the algorithm; `heartbeat-interval` is shared by
+     * both and belongs to the cluster's heartbeat loop rather than to either
+     * detector (#1142), which is why the `phi` sub-block does not repeat it.
+     * `unreachable-after` / `down-after` are the *simple* detector's
+     * thresholds and mean nothing to the φ-accrual one, whose suspicion values
+     * live under `phi`.
+     *
+     * Full dotted leaves under `phi`, not a bare block root: `NoDeadConfigKeys`'
+     * `coveringAccessor` falls back to the nearest root, so a root alone would
+     * pass the guard for all five leaves whether or not the reader had ever
+     * been written.
+     */
     failureDetector: {
+      implementation: 'actor-ts.cluster.failure-detector.implementation',
       heartbeatInterval: 'actor-ts.cluster.failure-detector.heartbeat-interval',
       unreachableAfter: 'actor-ts.cluster.failure-detector.unreachable-after',
       downAfter: 'actor-ts.cluster.failure-detector.down-after',
+      phi: {
+        unreachableThreshold: 'actor-ts.cluster.failure-detector.phi.unreachable-threshold',
+        downThreshold: 'actor-ts.cluster.failure-detector.phi.down-threshold',
+        maxSampleSize: 'actor-ts.cluster.failure-detector.phi.max-sample-size',
+        minStdDeviation: 'actor-ts.cluster.failure-detector.phi.min-std-deviation',
+        acceptableHeartbeatPause: 'actor-ts.cluster.failure-detector.phi.acceptable-heartbeat-pause',
+      },
     },
 
     /**
@@ -484,6 +544,48 @@ export const ConfigKeys = {
   },
 
   /**
+   * Lease coordination — `actor-ts.coordination.*` (#859).
+   *
+   * Every leaf is spelled out rather than covered by a block root, and that is
+   * load-bearing: `NoDeadConfigKeys`' covering-accessor falls back to *"a root
+   * above it"*, so a root-only entry would let any leaf under it pass whether
+   * or not a reader ever addresses it. The readers here are
+   * `readLeaseOptionsFromConfig` (`src/coordination/LeaseOptions.ts`) and
+   * `readKubernetesLeaseOptionsFromConfig`
+   * (`src/coordination/leases/KubernetesLeaseOptions.ts`).
+   *
+   * `lease.ttl`, `lease.renewal-interval` and `lease.kubernetes.namespace`
+   * deliberately ship **no leaf** in `reference.conf`, so `hasPath` stays false
+   * until an operator sets one. Each is a field the code either requires or
+   * derives: a shipped `ttl` would satisfy `validateRequired` for every lease
+   * in the process and make the #596 guard unreachable; a shipped
+   * `renewal-interval` would displace the computed `max(500ms, ttl/3)`, and `0`
+   * cannot stand in for "derive it" because the validator rejects it; a shipped
+   * `namespace` could only be `""`, which the validator rejects too, and would
+   * take away "read it from the Pod's ServiceAccount mount". They are still
+   * read here, which is what makes setting one in an `application.conf` work.
+   *
+   * `acquire-retries` / `acquire-retry-delay` have no keys at all: the two
+   * backends ship different built-in defaults (3 / 100 ms for Kubernetes, 1 /
+   * 50 ms in memory) and a single leaf would silently unify them.
+   */
+  coordination: {
+    lease: {
+      ttl: 'actor-ts.coordination.lease.ttl',
+      renewalInterval: 'actor-ts.coordination.lease.renewal-interval',
+      kubernetes: {
+        namespace: 'actor-ts.coordination.lease.kubernetes.namespace',
+        namespacePath: 'actor-ts.coordination.lease.kubernetes.namespace-path',
+        tokenPath: 'actor-ts.coordination.lease.kubernetes.token-path',
+        caPath: 'actor-ts.coordination.lease.kubernetes.ca-path',
+        tokenReloadInterval: 'actor-ts.coordination.lease.kubernetes.token-reload-interval',
+        operationTimeout: 'actor-ts.coordination.lease.kubernetes.operation-timeout',
+        leaseNameMaxLength: 'actor-ts.coordination.lease.kubernetes.lease-name-max-length',
+      },
+    },
+  },
+
+  /**
    * Cluster addresses and wire limits — `actor-ts.remote.*`.
    *
    * `tcp.host` and `tcp.advertised-host` are two different things and only one
@@ -524,9 +626,9 @@ export const ConfigKeys = {
    * Cluster-sharding defaults — `actor-ts.sharding.*`.  Read once per
    * started type by `ClusterSharding.start`, which layers them under the
    * explicit options; most reach the region, `rebalanceInterval` and
-   * `handOffTimeout` the per-type coordinator, and `shardRegionQueryTimeout`
-   * neither — it is the default `ClusterSharding.shards()` /
-   * `shardRefFor()` wait, held on this node.
+   * `acquireRetryInterval` and `handOffTimeout` the per-type coordinator, and
+   * `shardRegionQueryTimeout` neither — it is the default
+   * `ClusterSharding.shards()` / `shardRefFor()` wait, held on this node.
    *
    * `shardPassivationIdle` has no leaf in `reference.conf` on purpose — it
    * must stay absent for "unset means: follow `passivationIdle`" to be
@@ -552,6 +654,18 @@ export const ConfigKeys = {
    * `use-lease` switch, because nothing in the tree turns a boolean into a
    * `Lease` and a switch that silently produced none would advertise
    * split-brain protection that is not there (#847, #855, #859).
+   *
+   * The three `entityRecovery*` leaves pace how remembered entities come back
+   * after a region is handed a shard (#851).  They are declared here as full
+   * dotted paths rather than as an `entity-recovery` block root on purpose:
+   * `NoDeadConfigKeys`'s covering-accessor lookup falls back to *any* config
+   * root above a leaf, so a root-only entry would let all three pass whether
+   * or not a reader ever touched them.
+   *
+   * `entityRecoveryConstantRateNumberOfEntities` is a **region-wide** budget,
+   * like `bufferSize` and `maxEntities` above and for the same reason: the
+   * recovery queue is fed by every shard the region owns, so read per shard
+   * the key would silently mean `numberOfShards ×` what it says.
    */
   sharding: {
     numberOfShards: 'actor-ts.sharding.number-of-shards',
@@ -566,6 +680,10 @@ export const ConfigKeys = {
     handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
     acquireRetryInterval: 'actor-ts.sharding.acquire-retry-interval',
     shardRegionQueryTimeout: 'actor-ts.sharding.shard-region-query-timeout',
+    entityRecoveryStrategy: 'actor-ts.sharding.entity-recovery.strategy',
+    entityRecoveryConstantRateFrequency: 'actor-ts.sharding.entity-recovery.constant-rate.frequency',
+    entityRecoveryConstantRateNumberOfEntities:
+      'actor-ts.sharding.entity-recovery.constant-rate.number-of-entities',
   },
 
   /**
@@ -648,12 +766,27 @@ export const ConfigKeys = {
     restartWindow: 'actor-ts.worker-cluster.restart-window',
   },
 
-  /** CoordinatedShutdown pipeline defaults — `actor-ts.coordinated-shutdown.*`. */
+  /**
+   * CoordinatedShutdown pipeline defaults — `actor-ts.coordinated-shutdown.*`.
+   *
+   * All of them are read inline in the `CoordinatedShutdown` constructor;
+   * there is deliberately no `CoordinatedShutdownOptions` triad, for the
+   * reason `DEFAULT_PHASE_TIMEOUT_MS` gives in `src/Constants.ts`.
+   *
+   * `phases` is a block root rather than a leaf, and it ships **comment-only**
+   * in `reference.conf`: its children are named after the operator's phases,
+   * so there is no fixed set of leaves to publish, and an example one
+   * (`phases.service-unbind.timeout = 5s`) would freeze that example's budget
+   * into every deployment's effective config (#866).
+   */
   coordinatedShutdown: {
     defaultPhaseTimeout: 'actor-ts.coordinated-shutdown.default-phase-timeout',
     terminateActorSystem: 'actor-ts.coordinated-shutdown.terminate-actor-system',
     exitProcess: 'actor-ts.coordinated-shutdown.exit-process',
+    exitCode: 'actor-ts.coordinated-shutdown.exit-code',
     autoRegisterTasks: 'actor-ts.coordinated-shutdown.auto-register-tasks',
+    runByProcessSignals: 'actor-ts.coordinated-shutdown.run-by-process-signals',
+    phases: 'actor-ts.coordinated-shutdown.phases',
   },
 
   /**

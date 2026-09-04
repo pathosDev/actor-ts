@@ -25,7 +25,13 @@ export interface Cache {
   /** Get a value; returns None on miss, expiry, or transient backend failure. */
   get<V = unknown>(key: string): Promise<Option<V>>;
 
-  /** Set a value with optional TTL (milliseconds).  Omitting `ttlMs` means no expiry. */
+  /**
+   * Set a value with optional TTL (milliseconds).  Omitting `ttlMs` means no
+   * expiry **unless the backend was configured with a default lifetime** —
+   * `InMemoryCache`'s `timeToLiveMs` / `actor-ts.cache.in-memory.time-to-live`,
+   * off by default and covering `set` / `mset` alone.  A `ttlMs` you pass is
+   * never overridden by it, in either direction.
+   */
   set<V = unknown>(key: string, value: V, ttlMs?: number): Promise<void>;
 
   /**

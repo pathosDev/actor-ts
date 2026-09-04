@@ -160,6 +160,68 @@ Stunde) ist das echter Overhead. Erwäge:
 Für Low-Churn-Workloads (10K stabile Entities) sind die Kosten
 vernachlässigbar.
 
+## Einen Restore drosseln
+
+Das Zurückkommen ist die teure Hälfte, und per Default passiert es auf
+einen Schlag.  Bekommt eine Region einen Shard zugeteilt, wird ihr dessen
+komplettes Register zugeschickt, und sie spawnt jede Entität daraus in
+einem Durchgang — für jeden Shard, den sie bekommt.  Ein Node-Neustart
+oder ein Rebalance nach einem Node-Ausfall öffnet damit einen
+Journal-Replay pro erinnerter Entität im selben Tick.  Bei ein paar
+hundert Entities ist das unproblematisch.  Bei Zehntausenden ist es ein
+Ansturm auf den Store, genau in dem Moment, in dem der Cluster am
+wenigsten gesund ist.
+
+`entityRecoveryStrategy: 'constant-rate'` verteilt diese Starts:
+
+```ts
+const shardingOptions = StartShardingOptions.create<DeviceCommand>()
+  .withTypeName('device')
+  .withEntityActor(DeviceEntity)
+  .withExtractEntityId((command) => command.deviceId)
+  .withRememberEntities()
+  .withEntityRecoveryStrategy('constant-rate')
+  .withEntityRecoveryConstantRateFrequencyMs(100)
+  .withEntityRecoveryConstantRateNumberOfEntities(5);
+
+cluster.sharding.start(shardingOptions);
+```
+
+oder für das ganze Deployment auf einmal:
+
+```hocon
+actor-ts.sharding.entity-recovery {
+  strategy = constant-rate
+  constant-rate.frequency = 100ms
+  constant-rate.number-of-entities = 5
+}
+```
+
+Drei Eigenschaften solltest du kennen, bevor du danach greifst.
+
+**Das Budget gilt regionsweit.**  Fünf Entities pro 100 ms sind fünf *auf
+diesem Node*, egal wie viele Shards der Node gerade hält.  Das
+entsprechende Akka-Setting liest sich anders — dort gilt die Rate pro
+Shard, ein Node mit 21 von 64 Shards erholt also 21 × die konfigurierte
+Zahl pro Fenster.  Regionsweit ist dieselbe Entscheidung, die
+`maxEntities` aus demselben Grund trifft: eine Schranke, die die
+Shard-Anzahl multipliziert, ist keine, die jemand gewählt hat.
+
+**Es drosselt Starts, keine Replays.**  Jede gespawnte Entität repliziert
+asynchron; ein Replay, der länger dauert als das Fenster, überlappt also
+weiterhin den nächsten Batch.  Dieser Key glättet die *Ankunftsrate*; wie
+viele Recoveries gleichzeitig laufen dürfen, ist eine Sache der Persistenz.
+
+**Nichts geht verloren.**  Der Rückstand wird abgearbeitet, bis jede
+erinnerte Entität wieder da ist, und eine Nachricht an eine Entität, die
+noch in der Queue wartet, erzeugt sie sofort — nur der Recovery-Schwall
+wartet, nie der Live-Traffic.
+
+Der Default ist `'all'`, das oben beschriebene Verhalten.  Drosseln
+verändert, *wann* eine Entität zurückkommt, und wie schnell dein Journal
+die Replays verträgt, ist eine Eigenschaft deines Journals — also eine
+Entscheidung, die du triffst, statt sie zu erben.
+
 ## Wann verwenden
 
 | Szenario | rememberEntities nutzen? |

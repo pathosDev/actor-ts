@@ -2,7 +2,7 @@ import { Lazy } from '../util/Lazy.js';
 import { none, some, type Option } from '../util/Option.js';
 import { wrapError } from '../util/WrapError.js';
 import { CacheError, type Cache } from './Cache.js';
-import { RedisCacheOptionsValidator } from './RedisCacheOptions.js';
+import { DEFAULT_REDIS_DB, RedisCacheOptionsValidator } from './RedisCacheOptions.js';
 import type { RedisCacheOptions, RedisCacheOptionsType } from './RedisCacheOptions.js';
 
 /**
@@ -63,11 +63,16 @@ export class RedisCache implements Cache {
       // ioredis.default is the constructor when imported from ESM consumers.
       const Constructor = (ioredis as { default?: RedisConstructor }).default ?? (ioredis as unknown as RedisConstructor);
       if (settings.url) return new Constructor(settings.url) as RedisClientLike;
+      // `host` and `port` stay undefined when unset so ioredis applies its own
+      // 127.0.0.1:6379 — there is no framework opinion to publish there, which
+      // is why `reference.conf` carries them as comments.  `db` is different:
+      // the block publishes it, so the shipped value is named here rather than
+      // left to the driver.
       return new Constructor({
         host: settings.host,
         port: settings.port,
         password: settings.password,
-        db: settings.db,
+        db: settings.db ?? DEFAULT_REDIS_DB,
       }) as RedisClientLike;
     });
   }

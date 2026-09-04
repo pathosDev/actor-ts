@@ -323,6 +323,35 @@ describe('ShardingOptionsValidator', () => {
     // It routes but never hosts, so both are unreachable there.
     expect(() => check({ typeName: 'entity', proxy: true })).not.toThrow();
   });
+
+  test('rejects an entity-recovery strategy outside the union (#851)', () => {
+    // HOCON is untyped, so a misspelt strategy reaches the validator as a plain
+    // string.  Silently treating it as `all` would give an operator the burst
+    // they configured this key to remove.
+    expect(() => check({ ...required, entityRecoveryStrategy: 'constant_rate' as never }))
+      .toThrow(/entityRecoveryStrategy/);
+  });
+
+  test('rejects a zero or negative constant-rate bound (#851)', () => {
+    // Under `constant-rate` either one turns "recover slowly" into "never
+    // recover", which is worse than the burst the setting exists to avoid.
+    expect(() => check({ ...required, entityRecoveryConstantRateFrequencyMs: 0 }))
+      .toThrow(/entityRecoveryConstantRateFrequencyMs/);
+    expect(() => check({ ...required, entityRecoveryConstantRateNumberOfEntities: 0 }))
+      .toThrow(/entityRecoveryConstantRateNumberOfEntities/);
+    expect(() => check({ ...required, entityRecoveryConstantRateNumberOfEntities: 2.5 }))
+      .toThrow(/entityRecoveryConstantRateNumberOfEntities/);
+  });
+
+  test('accepts both strategies and a sane paced configuration', () => {
+    expect(() => check({ ...required, entityRecoveryStrategy: 'all' })).not.toThrow();
+    expect(() => check({
+      ...required,
+      entityRecoveryStrategy: 'constant-rate',
+      entityRecoveryConstantRateFrequencyMs: 100,
+      entityRecoveryConstantRateNumberOfEntities: 5,
+    })).not.toThrow();
+  });
 });
 
 describe('ShardedDaemonProcessOptionsValidator', () => {

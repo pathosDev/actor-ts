@@ -180,23 +180,84 @@ Mitglied gilt global als unreachable, wenn *genug* Peers es so
 melden — der Schwellwert ist in manchen Downing-Strategien
 konfigurierbar (siehe KeepMajority, KeepReferee).
 
-## Eigener Failure Detector
+## Den φ-Accrual-Detector wählen
 
-Der eingebaute Detector des Clusters ist bewusst einfach — einfache
+Der oben beschriebene Detector ist bewusst einfach — einfache
 Zeitschwellen, kein Tracking statistischer Varianz. Für LAN-Skala
-reicht das aus. Die `failureDetector`-Cluster-Option stellt nur seine
-Schwellwerte ein — sie nimmt `Partial<FailureDetectorOptionsType>`
-(die drei `*Ms`-Stellschrauben oben), keine Detector-Instanz; es gibt
-also keinen "eigenen Detector einhängen"-Hook an `Cluster.join`.
+reicht das aus, deshalb ist er der Default.
 
-Falls dein Netzwerk Phi-Accrual braucht (varianzbewusst, adaptive
-Schwellwerte), bringt das Framework bereits einen mit:
-`PhiAccrualFailureDetector` (mit `PhiAccrualOptions`) ist eine
-öffentliche, exportierte Klasse, die die Verteilung der jüngsten
-Zwischenankunftszeiten verfolgt und einen kontinuierlichen
-Verdachtswert erzeugt. Er ist noch nicht als auswählbarer Detector
-in den Cluster eingebunden — der Cluster fährt immer den einfachen
-`FailureDetector` — daher nutzt du ihn vorerst eigenständig.
+Das Framework bringt einen zweiten mit. `PhiAccrualFailureDetector`
+verfolgt die Verteilung der jüngsten Zwischenankunftszeiten und
+erzeugt einen kontinuierlichen Verdachtswert φ, den der Cluster über
+Schwellwerte in `unreachable` / `down` übersetzt. Wo der einfache
+Detector fragt *"war es länger als 2s still?"*, fragt φ-Accrual *"wie
+überraschend ist diese Stille, gemessen daran, wie sich dieser Peer
+tatsächlich verhält?"* — ein gesprächiger LAN-Peer kann also früher
+auffallen und ein zappeliger Mobilfunk-Peer bekommt mehr Spielraum,
+ohne dass eine der beiden Zahlen vorab geraten werden muss.
+
+Wähle ihn pro Node, im Code:
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withFailureDetectorImplementation('phi')
+  .withPhiAccrual({ unreachableThreshold: 10, downThreshold: 16 });
+Cluster.join(
+  system,
+  clusterOptions,
+);
+```
+
+oder in der `application.conf`:
+
+```hocon
+actor-ts.cluster.failure-detector {
+  implementation = phi
+
+  # Shared by both implementations: the cadence of the cluster's own
+  # heartbeat loop, which is why `phi` below has no copy of it.
+  heartbeat-interval = 500ms
+
+  phi {
+    unreachable-threshold      = 8       # φ above which the peer is unreachable
+    down-threshold             = 12      # φ above which it is down; must exceed the above
+    max-sample-size            = 200     # inter-arrival times kept per peer
+    min-std-deviation          = 100ms   # floor, so a very steady peer is not flagged on noise
+    acceptable-heartbeat-pause = 0s      # grace added to the last heartbeat before φ rises
+  }
+}
+```
+
+Explizite Optionen gewinnen **pro Feld** über die Datei: setzt du eine
+Schwelle im Code, bleiben die anderen vier aus der `application.conf`
+erhalten.
+
+Drei Dinge, die du vor dem Umschalten wissen solltest:
+
+- **`heartbeat-interval` gilt für beide und bleibt, wo es ist.** Es ist
+  die Kadenz der Heartbeat-Schleife des Clusters und keine Eigenschaft
+  eines der Algorithmen; deshalb gibt es bewusst kein
+  `failure-detector.phi.heartbeat-interval`: ein Wechsel der
+  Implementierung kann nicht ändern, wie oft dieser Node mit seinen
+  Peers spricht.
+- **`unreachable-after` / `down-after` gehören dem einfachen Detector**
+  und werden unter `phi` ignoriert; das Paar `phi.*-threshold` ersetzt
+  sie. Das sind φ-Werte, keine Zeitdauern — ein kontinuierlicher Score,
+  bei dem 8 grob "eine Verzögerung von 1 zu 10⁸" bedeutet, und
+  Nachkommastellen sind ein ganz normaler Tuning-Schritt.
+- **`acceptable-heartbeat-pause` startet bei `0s`**, gibt φ also
+  überhaupt keine Pausentoleranz. Wenn dein Deployment bekannte
+  Stop-the-World-Pausen hat — ein GC-lastiger Nachbar, eine
+  suspendierte VM — ist das die Stellschraube, die zuerst hochgeht.
+
+Einen Hook für eine eigene Detector-Klasse gibt es weiterhin nicht: die
+Wahl besteht zwischen den beiden mitgelieferten Implementierungen, beim
+Namen genannt. `Cluster` spricht mit der jeweils installierten über
+einen kleinen Vertrag, `FailureDetectorLike` (`register` / `heartbeat` /
+`decide` / `forget` / `lastSeen` / `interval`), der exportiert ist,
+falls du nachlesen willst, was ein Detector dem Cluster schuldet.
 
 ## Failure-Detector-Entscheidungen diagnostizieren
 

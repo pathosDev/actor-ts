@@ -27,6 +27,7 @@ import {
   ADVERTISED_HOST_ENV_VARS,
   ClusterOptionsValidator,
   DEFAULT_ADVERTISED_HOST,
+  DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_MAX_VERSION_SKEW_MS,
@@ -57,11 +58,12 @@ import {
   type ClusterEvent,
 } from './ClusterEvents.js';
 import {
+  createFailureDetector,
   defaultFailureDetectorOptions,
-  FailureDetector,
   type FailureDecision,
+  type FailureDetectorLike,
 } from './FailureDetector.js';
-import { FailureDetectorOptions, type FailureDetectorOptionsType } from './FailureDetectorOptions.js';
+import type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 import { Member } from './Member.js';
 import { NodeAddress } from './NodeAddress.js';
 // `ClusterSharding`, `ClusterSingleton` and `ClusterEventStream` only import
@@ -160,7 +162,12 @@ export class Cluster {
   private readonly log: Logger;
 
   private readonly members = new Map<string, Member>();
-  private readonly failureDetector: FailureDetector;
+  /**
+   * The contract, not one of the two classes that satisfy it: typing this
+   * field `FailureDetector` is what kept `PhiAccrualFailureDetector`
+   * unreachable from `Cluster.join` however it was configured (#840).
+   */
+  private readonly failureDetector: FailureDetectorLike;
   private readonly gossipIntervalMs: number;
   private readonly seedRetryIntervalMs: number;
   private readonly seedAddrs: NodeAddress[] = [];
@@ -372,11 +379,14 @@ export class Cluster {
       ...defaultFailureDetectorOptions,
       ...(options.failureDetector ?? {}),
     };
-    this.failureDetector = new FailureDetector(
-      FailureDetectorOptions.create()
-        .withHeartbeatIntervalMs(fdOptions.heartbeatIntervalMs)
-        .withUnreachableAfterMs(fdOptions.unreachableAfterMs)
-        .withDownAfterMs(fdOptions.downAfterMs),
+    // `fdOptions` is passed whole even for the φ-accrual detector, which reads
+    // only its `heartbeatIntervalMs`: the cadence is the cluster's, and the
+    // heartbeat and detection ticks `_start` arms are both scheduled from
+    // `failureDetector.interval` whichever implementation answers it (#1142).
+    this.failureDetector = createFailureDetector(
+      options.failureDetectorImplementation ?? DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
+      fdOptions,
+      options.phiAccrual,
     );
     this.gossipIntervalMs = options.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
     this.seedRetryIntervalMs = options.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;

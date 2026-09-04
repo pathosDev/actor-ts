@@ -94,11 +94,16 @@ export type { PortLike, BrokeredMessage } from './transports/MessageChannelTrans
 
 export {
   FailureDetector,
+  createFailureDetector,
   defaultFailureDetectorOptions,
 } from './FailureDetector.js';
 export { FailureDetectorOptions, FailureDetectorOptionsBuilder, FailureDetectorOptionsValidator } from './FailureDetectorOptions.js';
 export type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
-export type { FailureDecision } from './FailureDetector.js';
+export type {
+  FailureDecision,
+  FailureDetectorImplementation,
+  FailureDetectorLike,
+} from './FailureDetector.js';
 export {
   PhiAccrualFailureDetector,
   defaultPhiAccrualOptions,
@@ -216,6 +221,11 @@ export type {
 } from './sharding/ShardingProtocol.js';
 export { ShardingOptions, ShardingOptionsBuilder, ShardingOptionsValidator } from './sharding/ShardingOptions.js';
 export type { ShardingOptionsType } from './sharding/ShardingOptions.js';
+// The paced-recovery strategy is named in an option, so the union has to be
+// nameable from outside — same reason `ProjectionRecoveryStrategy` is exported
+// from `src/persistence` (#851).
+export { ENTITY_RECOVERY_STRATEGIES } from './sharding/ShardingOptions.js';
+export type { EntityRecoveryStrategy } from './sharding/ShardingOptions.js';
 export { ShardCoordinator } from './sharding/ShardCoordinator.js';
 export { ShardCoordinatorOptions, ShardCoordinatorOptionsBuilder } from './sharding/ShardCoordinatorOptions.js';
 export type { ShardCoordinatorOptionsType } from './sharding/ShardCoordinatorOptions.js';

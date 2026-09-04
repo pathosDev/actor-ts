@@ -9,9 +9,12 @@ import {
   DEFAULT_PHASE_TIMEOUT_MS,
   DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
 } from '../../../src/Constants.js';
+import { DEFAULT_SHUTDOWN_EXIT_CODE } from '../../../src/Constants.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
 import { DEFAULT_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/Constants.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
+import { DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION } from '../../../src/cluster/ClusterOptions.js';
+import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
 import {
   DEFAULT_DEAD_LETTER_MAX_ENTRIES,
   DEFAULT_DEAD_LETTER_MAX_REPLAYS,
@@ -30,6 +33,7 @@ import {
   DEFAULT_STABLE_MARGIN_MS,
 } from '../../../src/cluster/bootstrap/StableObservationOptions.js';
 import { DEFAULT_MINIMUM_MEMBERS } from '../../../src/cluster/ClusterReadiness.js';
+import { DEFAULT_K8S_OPERATION_TIMEOUT_MS, DEFAULT_LEASE_NAME_MAX_LENGTH, DEFAULT_SERVICE_ACCOUNT_CA_PATH, DEFAULT_SERVICE_ACCOUNT_NAMESPACE_PATH, DEFAULT_SERVICE_ACCOUNT_TOKEN_PATH, DEFAULT_TOKEN_RELOAD_INTERVAL_MS } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
 import {
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
@@ -55,6 +59,7 @@ import {
   DEFAULT_REGISTER_RETRY_INTERVAL_MS,
   DEFAULT_SHARD_REGION_BUFFER_SIZE,
 } from '../../../src/cluster/sharding/ShardingOptions.js';
+import { DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_FREQUENCY_MS, DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_NUMBER_OF_ENTITIES, DEFAULT_ENTITY_RECOVERY_STRATEGY } from '../../../src/cluster/sharding/ShardingOptions.js';
 import { DEFAULT_ACQUIRE_RETRY_INTERVAL_MS } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
 import {
   DEFAULT_HAND_OFF_TIMEOUT_MS,
@@ -81,7 +86,9 @@ import {
   DEFAULT_HTTP_CLIENT_REDIRECT_MODE,
   DEFAULT_HTTP_CLIENT_TIMEOUT_MS,
 } from '../../../src/http/HttpClientOptions.js';
-import { DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES } from '../../../src/cache/InMemoryCacheOptions.js';
+import { DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES, DEFAULT_TIME_TO_IDLE_MS, DEFAULT_TIME_TO_LIVE_MS } from '../../../src/cache/InMemoryCacheOptions.js';
+import { DEFAULT_MEMCACHED_SERVERS } from '../../../src/cache/MemcachedCacheOptions.js';
+import { DEFAULT_REDIS_DB } from '../../../src/cache/RedisCacheOptions.js';
 import { DEFAULT_PROJECTION_MAX_RETRIES, DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS, DEFAULT_PROJECTION_RECOVERY_STRATEGY, DEFAULT_PROJECTION_RETRY_BACKOFF_MS } from '../../../src/persistence/projection/ProjectionOptions.js';
 import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../../../src/persistence/Constants.js';
 import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from '../../../src/logging/MultiSinkLoggerOptions.js';
@@ -225,6 +232,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.actor.throughput', kind: 'int', constant: DEFAULT_ACTOR_THROUGHPUT },
   { key: 'actor-ts.dispatcher.throughput', kind: 'int', constant: DEFAULT_DISPATCHER_THROUGHPUT },
   { key: 'actor-ts.coordinated-shutdown.default-phase-timeout', kind: 'duration', constant: DEFAULT_PHASE_TIMEOUT_MS },
+  { key: 'actor-ts.coordinated-shutdown.exit-code', kind: 'int', constant: DEFAULT_SHUTDOWN_EXIT_CODE },
   { key: 'actor-ts.system.shutdown-drain-timeout', kind: 'duration', constant: DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS },
 
   /* --- cluster --- */
@@ -232,9 +240,19 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.pub-sub.gossip-interval', kind: 'duration', constant: DEFAULT_GOSSIP_INTERVAL_MS },
   { key: 'actor-ts.cluster.receptionist.gossip-interval', kind: 'duration', constant: DEFAULT_GOSSIP_INTERVAL_MS },
   { key: 'actor-ts.distributed-data.gossip-interval', kind: 'duration', constant: DEFAULT_GOSSIP_INTERVAL_MS },
+  { key: 'actor-ts.cluster.failure-detector.implementation', kind: 'string', constant: DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION },
   { key: 'actor-ts.cluster.failure-detector.heartbeat-interval', kind: 'duration', constant: DEFAULT_HEARTBEAT_INTERVAL_MS },
   { key: 'actor-ts.cluster.failure-detector.unreachable-after', kind: 'duration', constant: defaultFailureDetectorOptions.unreachableAfterMs },
   { key: 'actor-ts.cluster.failure-detector.down-after', kind: 'duration', constant: defaultFailureDetectorOptions.downAfterMs },
+  // `number`, not `int`: φ is a continuous suspicion score and the reader is
+  // `getNumber`, so labelling these `int` would pass today (8 and 12 happen to
+  // be whole) while asserting the wrong accessor for the fractional thresholds
+  // the block exists to allow (#840).
+  { key: 'actor-ts.cluster.failure-detector.phi.unreachable-threshold', kind: 'number', constant: defaultPhiAccrualOptions.unreachableThreshold },
+  { key: 'actor-ts.cluster.failure-detector.phi.down-threshold', kind: 'number', constant: defaultPhiAccrualOptions.downThreshold },
+  { key: 'actor-ts.cluster.failure-detector.phi.max-sample-size', kind: 'int', constant: defaultPhiAccrualOptions.maxSampleSize },
+  { key: 'actor-ts.cluster.failure-detector.phi.min-std-deviation', kind: 'duration', constant: defaultPhiAccrualOptions.minStdDeviationMs },
+  { key: 'actor-ts.cluster.failure-detector.phi.acceptable-heartbeat-pause', kind: 'duration', constant: defaultPhiAccrualOptions.acceptableHeartbeatPauseMs },
   { key: 'actor-ts.cluster.seed-retry-interval', kind: 'duration', constant: DEFAULT_SEED_RETRY_INTERVAL_MS },
   { key: 'actor-ts.cluster.max-members', kind: 'int', constant: DEFAULT_MAX_MEMBERS },
   { key: 'actor-ts.cluster.max-tombstones', kind: 'int', constant: DEFAULT_MAX_TOMBSTONES },
@@ -279,6 +297,9 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.sharding.register-retry-interval', kind: 'duration', constant: DEFAULT_REGISTER_RETRY_INTERVAL_MS },
   { key: 'actor-ts.sharding.acquire-retry-interval', kind: 'duration', constant: DEFAULT_ACQUIRE_RETRY_INTERVAL_MS },
   { key: 'actor-ts.sharding.shard-region-query-timeout', kind: 'duration', constant: DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS },
+  { key: 'actor-ts.sharding.entity-recovery.strategy', kind: 'string', constant: DEFAULT_ENTITY_RECOVERY_STRATEGY },
+  { key: 'actor-ts.sharding.entity-recovery.constant-rate.frequency', kind: 'duration', constant: DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_FREQUENCY_MS },
+  { key: 'actor-ts.sharding.entity-recovery.constant-rate.number-of-entities', kind: 'int', constant: DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_NUMBER_OF_ENTITIES },
 
   /* --- distributed data --- */
   { key: 'actor-ts.distributed-data.max-pending-quorum-requests', kind: 'int', constant: DEFAULT_MAX_PENDING_QUORUM_REQUESTS },
@@ -295,6 +316,17 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.diagnostics.log-dead-letters', kind: 'int', constant: DEFAULT_LOG_DEAD_LETTERS },
   { key: 'actor-ts.diagnostics.log-dead-letters-during-shutdown', kind: 'bool', constant: DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN },
   { key: 'actor-ts.diagnostics.log-dead-letters-suspend-duration', kind: 'duration', constant: DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS },
+
+  /* --- coordination --- */
+  // The three sibling keys — `lease.ttl`, `lease.renewal-interval` and
+  // `lease.kubernetes.namespace` — are comment-only in reference.conf, so they
+  // carry no leaf and there is nothing here to assert about them (#859).
+  { key: 'actor-ts.coordination.lease.kubernetes.namespace-path', kind: 'string', constant: DEFAULT_SERVICE_ACCOUNT_NAMESPACE_PATH },
+  { key: 'actor-ts.coordination.lease.kubernetes.token-path', kind: 'string', constant: DEFAULT_SERVICE_ACCOUNT_TOKEN_PATH },
+  { key: 'actor-ts.coordination.lease.kubernetes.ca-path', kind: 'string', constant: DEFAULT_SERVICE_ACCOUNT_CA_PATH },
+  { key: 'actor-ts.coordination.lease.kubernetes.token-reload-interval', kind: 'duration', constant: DEFAULT_TOKEN_RELOAD_INTERVAL_MS },
+  { key: 'actor-ts.coordination.lease.kubernetes.operation-timeout', kind: 'duration', constant: DEFAULT_K8S_OPERATION_TIMEOUT_MS },
+  { key: 'actor-ts.coordination.lease.kubernetes.lease-name-max-length', kind: 'int', constant: DEFAULT_LEASE_NAME_MAX_LENGTH },
 
   /* --- worker cluster --- */
   { key: 'actor-ts.worker-cluster.system-name', kind: 'string', constant: DEFAULT_WORKER_SYSTEM_NAME },
@@ -328,6 +360,18 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // rejects outright.  `DEFAULT_CLEANUP_MS` is unchanged — only the accessor
   // that has to read the literal moved.
   { key: 'actor-ts.cache.in-memory.cleanup-interval', kind: 'duration', constant: DEFAULT_CLEANUP_MS },
+  // The two expiry policies (#876).  `0` here is a real shipped default with a
+  // constant behind it — `InMemoryCache` reads `settings.timeToLiveMs ??
+  // DEFAULT_TIME_TO_LIVE_MS` — so it belongs in the table rather than in
+  // FEATURE_SWITCHES, whose entries are the ones with nothing to disagree with.
+  { key: 'actor-ts.cache.in-memory.time-to-live', kind: 'duration', constant: DEFAULT_TIME_TO_LIVE_MS },
+  { key: 'actor-ts.cache.in-memory.time-to-idle', kind: 'duration', constant: DEFAULT_TIME_TO_IDLE_MS },
+  // The two backend blocks' only non-placeholder leaves (#876).  Both are read
+  // at construction — `settings.db ?? DEFAULT_REDIS_DB`, `settings.servers ??
+  // DEFAULT_MEMCACHED_SERVERS` — so the published value and the shipped one
+  // are the same number and the same string, checkably.
+  { key: 'actor-ts.cache.redis.db', kind: 'int', constant: DEFAULT_REDIS_DB },
+  { key: 'actor-ts.cache.memcached.servers', kind: 'string', constant: DEFAULT_MEMCACHED_SERVERS },
 
   /* --- object storage --- */
   { key: 'actor-ts.persistence.snapshot-store.object-storage.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
@@ -470,6 +514,18 @@ const PLACEHOLDERS: readonly string[] = [
   'actor-ts.logger.sinks.splunk.host-name',
   'actor-ts.logger.sinks.syslog.app-name',
   'actor-ts.logger.sinks.syslog.host-name',
+  // The two cache backend blocks (#876).  Every one of these is the operator's
+  // own coordinate — a server URL, a namespace prefix, a credential — and the
+  // reader treats `""` as unset for exactly that reason, so the empty string
+  // never reaches ioredis or memjs.  It has to: `RedisCacheOptionsValidator`
+  // runs `new URL('')`, which throws, so a published `url = ""` passed through
+  // verbatim would refuse every config-built Redis cache.
+  'actor-ts.cache.redis.url',
+  'actor-ts.cache.redis.key-prefix',
+  'actor-ts.cache.redis.password',
+  'actor-ts.cache.memcached.username',
+  'actor-ts.cache.memcached.password',
+  'actor-ts.cache.memcached.key-prefix',
   // Object storage (#873).  `backend = ""` is the shape of the selector, not a
   // default — empty leaves the backend to code.  The rest are the operator's
   // own coordinates, required at the point of use: a bucket, a region, an
@@ -536,6 +592,11 @@ const FEATURE_SWITCHES: readonly string[] = [
   'actor-ts.coordinated-shutdown.terminate-actor-system',
   'actor-ts.coordinated-shutdown.exit-process',
   'actor-ts.coordinated-shutdown.auto-register-tasks',
+  // The published `true` says the two defaulting call sites arm SIGTERM for
+  // you, not how long anything takes; the off state is the branch not taken
+  // in `runUntilTerminated` and `installSignalHandlers`, so there is nothing
+  // for a `DEFAULT_*` constant to hold (#866).
+  'actor-ts.coordinated-shutdown.run-by-process-signals',
   // off = virtual-host style, which is what AWS S3 itself wants; the switch
   // exists for MinIO and most non-AWS stores.  The off state is the field
   // being absent on `S3ObjectStorageOptions`, so there is no constant (#873).

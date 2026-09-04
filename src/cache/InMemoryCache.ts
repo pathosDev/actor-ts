@@ -3,6 +3,8 @@ import type { Cache } from './Cache.js';
 import {
   DEFAULT_CLEANUP_MS,
   DEFAULT_MAX_ENTRIES,
+  DEFAULT_TIME_TO_IDLE_MS,
+  DEFAULT_TIME_TO_LIVE_MS,
   InMemoryCacheOptionsValidator,
   type InMemoryCacheOptions,
   type InMemoryCacheOptionsType,
@@ -12,6 +14,25 @@ type Entry = {
   value: unknown;
   /** Absolute timestamp in ms.  `Infinity` means "no TTL". */
   expiresAt: number;
+  /**
+   * Ceiling a `timeToIdleMs` extension may not push {@link expiresAt} past —
+   * and, by being present at all, the marker that this entry may be extended.
+   *
+   * Only a `set` / `mset` whose caller named no `ttlMs` carries one, which is
+   * what keeps an explicit TTL explicit: a caller who asked for 30 s gets
+   * 30 s, whatever the configured idle window says.  `Infinity` when
+   * `timeToLiveMs` is off and only the idle window is on, so the entry slides
+   * forward with no lifetime bound; absent on every entry when
+   * `timeToIdleMs` is off, so an unconfigured cache stores exactly the two
+   * fields it always did.
+   */
+  expiryCeiling?: number;
+};
+
+/** An entry's expiry, and the ceiling any idle extension of it is clamped to. */
+type EntryExpiry = {
+  readonly expiresAt: number;
+  readonly expiryCeiling?: number;
 };
 
 /**
@@ -146,6 +167,31 @@ function newBucket(quota: number): Bucket {
  * bucket and both halves, so a claim whose holder crashed stops occupying a
  * slot at its TTL rather than at the end of its consumer's retry window.
  *
+ * **Two configured expiry policies, and both stop at the same line.**
+ * `timeToLiveMs` stamps a lifetime on an entry whose writer named no `ttlMs`,
+ * and `timeToIdleMs` pushes that lifetime out again on every read, never past
+ * the `timeToLiveMs` deadline.  Both are off (`0`) by default, and both cover
+ * **`set` and `mset` only** — the two calls {@link Cache}'s failure model
+ * calls opportunistic, where losing an entry is a cache miss the caller
+ * already handles.
+ *
+ * `incr` and `setIfAbsent` keep "no `ttlMs` means no expiry" whatever the
+ * configuration says, and the idle extension stops at any entry a guarantee
+ * has moved into the protected half.  Both halves of that rule are the same
+ * argument: for a counter or a claim this cache is the source of truth, so a
+ * lifetime it did not ask for releases a lock nobody released, and an idle
+ * window it did not ask for keeps a rate-limit window from ever closing and an
+ * idempotency claim from ever releasing.  A configuration file may bound the
+ * copies; it may not bound the originals.
+ *
+ * A configured lifetime does widen the protected half in two places, both
+ * following existing rules rather than new ones: a `set` replacing a *live*
+ * claim now inherits its protection (`inheritsGuarantee` needs a finite
+ * expiry, and previously such a write had none), and an `incr` over a
+ * `set`-seeded counter now adopts it (#1295 keys that on the entry's expiry
+ * being finite).  Both are bounded and self-releasing, because every entry
+ * they touch expires.
+ *
  * Configure via an {@link InMemoryCacheOptions} builder or plain object; through
  * the {@link CacheExtension} the same fields resolve from the HOCON block
  * `actor-ts.cache.in-memory` (every in-memory instance) with
@@ -173,12 +219,18 @@ export class InMemoryCache implements Cache {
    */
   private readonly reservedPrefixes: ReadonlyArray<string>;
   private readonly maxEntries: number;
+  /** Configured lifetime for a `ttlMs`-less `set`/`mset`; `0` = no expiry. */
+  private readonly timeToLiveMs: number;
+  /** Configured idle window a read extends such an entry to; `0` = no extension. */
+  private readonly timeToIdleMs: number;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: InMemoryCacheOptions = {}) {
     const settings: Partial<InMemoryCacheOptionsType> = { ...(options as Partial<InMemoryCacheOptionsType>) };
     new InMemoryCacheOptionsValidator().validate(settings);
     this.maxEntries = settings.maxEntries ?? DEFAULT_MAX_ENTRIES;
+    this.timeToLiveMs = settings.timeToLiveMs ?? DEFAULT_TIME_TO_LIVE_MS;
+    this.timeToIdleMs = settings.timeToIdleMs ?? DEFAULT_TIME_TO_IDLE_MS;
 
     this.buckets.set('', this.unreserved);
     const prefixQuotas = settings.prefixQuotas ?? {};
@@ -209,12 +261,12 @@ export class InMemoryCache implements Cache {
   async set<V>(key: string, value: V, ttlMs?: number): Promise<void> {
     this.assertTtl('set', ttlMs);
     const now = Date.now();
-    const expiresAt = ttlMs === undefined ? Infinity : now + ttlMs;
+    const expiry = this.expiryFor(now, ttlMs);
     // Read the incumbent before evicting: `evictIfNeeded` leaves an existing
     // key alone, but the order is what makes that independent of it.
-    const carriesGuarantee = this.inheritsGuarantee(key, now, expiresAt);
+    const carriesGuarantee = this.inheritsGuarantee(key, now, expiry.expiresAt);
     this.evictIfNeeded(key);
-    this.write(key, { value, expiresAt }, carriesGuarantee);
+    this.write(key, { value, ...expiry }, carriesGuarantee);
   }
 
   async incr(key: string, ttlMs?: number): Promise<number> {
@@ -277,11 +329,11 @@ export class InMemoryCache implements Cache {
   async mset<V>(entries: ReadonlyMap<string, V>, ttlMs?: number): Promise<void> {
     this.assertTtl('mset', ttlMs);
     const now = Date.now();
-    const expiresAt = ttlMs === undefined ? Infinity : now + ttlMs;
+    const expiry = this.expiryFor(now, ttlMs);
     for (const [key, value] of entries) {
-      const carriesGuarantee = this.inheritsGuarantee(key, now, expiresAt);
+      const carriesGuarantee = this.inheritsGuarantee(key, now, expiry.expiresAt);
       this.evictIfNeeded(key);
-      this.write(key, { value, expiresAt }, carriesGuarantee);
+      this.write(key, { value, ...expiry }, carriesGuarantee);
     }
   }
 
@@ -317,6 +369,44 @@ export class InMemoryCache implements Cache {
     if (ttlMs !== undefined && (!Number.isFinite(ttlMs) || ttlMs <= 0)) {
       throw new Error(`InMemoryCache.${op}: ttlMs must be a positive finite number, got ${ttlMs}`);
     }
+  }
+
+  /**
+   * The expiry a `set` / `mset` write gets — the caller's `ttlMs` when it
+   * named one, and the configured policy otherwise.
+   *
+   * A caller-named TTL carries no ceiling, so no read ever extends it: the
+   * argument is a statement about *this* entry and outranks a number in a
+   * config file.  Only the policy branch produces one, which is what makes
+   * "extendable" and "written under the policy" the same set.
+   *
+   * `assertTtl` deliberately does not run over the configured values — it
+   * guards a caller argument, where a non-positive or non-finite number is a
+   * mistake, while here `0` is the documented off switch and is checked once
+   * by {@link InMemoryCacheOptionsValidator} instead.
+   */
+  private expiryFor(now: number, ttlMs: number | undefined): EntryExpiry {
+    if (ttlMs !== undefined) return { expiresAt: now + ttlMs };
+    const lifetime = this.timeToLiveMs > 0 ? now + this.timeToLiveMs : Infinity;
+    if (this.timeToIdleMs === 0) return { expiresAt: lifetime };
+    // Both on: the entry starts at whichever comes first and slides forward
+    // on each read, up to the lifetime and no further.
+    return { expiresAt: Math.min(lifetime, now + this.timeToIdleMs), expiryCeiling: lifetime };
+  }
+
+  /**
+   * Push a policy-written entry's expiry out to `now + timeToIdleMs`, clamped
+   * to the lifetime it was written with.
+   *
+   * Never shortens one: `Math.max` against the current expiry keeps an idle
+   * window smaller than the remaining lifetime from *cutting* a read entry's
+   * life, which would turn a read into a partial delete.  The ceiling is what
+   * keeps `timeToLiveMs` an actual lifetime — without it a hot key would live
+   * forever and the leaf would be named for something it no longer does.
+   */
+  private extendIdleWindow(entry: Entry): void {
+    if (this.timeToIdleMs === 0 || entry.expiryCeiling === undefined) return;
+    entry.expiresAt = Math.min(entry.expiryCeiling, Math.max(entry.expiresAt, Date.now() + this.timeToIdleMs));
   }
 
   /**
@@ -419,12 +509,27 @@ export class InMemoryCache implements Cache {
     bucket.guaranteed.set(key, entry);
   }
 
-  /** Move a still-valid entry to the tail so it counts as most-recently-used. */
+  /**
+   * Move a still-valid entry to the tail so it counts as most-recently-used,
+   * and — for an opportunistic entry the configured policy wrote — extend its
+   * idle window.
+   *
+   * The extension lives here rather than at the three call sites because
+   * "a use" is exactly what this method already means: `get`, `mget` and
+   * `incr` are the calls that move a key, and they are the calls a sliding
+   * window should slide on.  It is skipped for the guaranteed half on the
+   * rule the class header states, and reading the half here rather than
+   * asking again is what makes that skip free — `incr` adopts a counter
+   * *before* bumping it, so a counter has already left the extendable half by
+   * the time this runs.
+   */
   private bump(key: string, entry: Entry): void {
     // Re-insertion moves the key to the end of its half's iteration order, so
     // the first key of a half stays its least-recently-used (the victim).
     const bucket = this.bucketFor(key);
-    const half = bucket.guaranteed.has(key) ? bucket.guaranteed : bucket.opportunistic;
+    const carriesGuarantee = bucket.guaranteed.has(key);
+    const half = carriesGuarantee ? bucket.guaranteed : bucket.opportunistic;
+    if (!carriesGuarantee) this.extendIdleWindow(entry);
     half.delete(key);
     half.set(key, entry);
   }

@@ -5,6 +5,10 @@ import { OptionsValidator } from '../util/OptionsValidator.js';
 export const DEFAULT_MAX_ENTRIES = 10_000;
 /** Built-in default background-sweep interval in ms (see {@link InMemoryCacheOptionsType}). */
 export const DEFAULT_CLEANUP_MS = 60_000;
+/** Built-in default lifetime for a `set`/`mset` that names no `ttlMs` — `0` = no expiry. */
+export const DEFAULT_TIME_TO_LIVE_MS = 0;
+/** Built-in default idle window — `0` = a read extends nothing. */
+export const DEFAULT_TIME_TO_IDLE_MS = 0;
 
 /** Plain options-object shape accepted by an {@link InMemoryCache}. */
 export type InMemoryCacheOptionsType = {
@@ -16,6 +20,37 @@ export type InMemoryCacheOptionsType = {
    * on access).
    */
   readonly cleanupMs?: number;
+  /**
+   * Lifetime (ms) stamped on an entry whose writer named no `ttlMs` of its
+   * own.  `0` (the default) means such an entry never expires, which is what
+   * {@link Cache.set} has always promised.
+   *
+   * **`set` and `mset` only.**  `incr` and `setIfAbsent` keep "no `ttlMs`
+   * means no expiry" whatever this says, because for those two the cache is
+   * the source of truth rather than a copy of one: a rate-limit window that
+   * reset itself, or a lock that released itself, on a number an operator
+   * put in a config file is a correctness bug delivered by configuration.
+   * The class header calls an unbounded claim "the wedge `setIfAbsent` warns
+   * about" and refuses to protect it; bounding it from here would be the same
+   * decision taken silently.
+   */
+  readonly timeToLiveMs?: number;
+  /**
+   * Idle window (ms): a read pushes the entry's expiry out to
+   * `now + timeToIdleMs`, never past the `timeToLiveMs` deadline it was
+   * written with.  `0` (the default) means a read extends nothing.
+   *
+   * Applies to the same population as {@link timeToLiveMs} — entries a
+   * `set`/`mset` wrote without a `ttlMs` — and only while they sit in the
+   * eviction-first half of the map.  An entry a guarantee has moved into the
+   * protected half stops being extended, which is deliberate: extending on
+   * every read means a rate-limit window driven by `incr` never closes and an
+   * idempotency claim polled by a retrying client never releases.
+   *
+   * An idle window at or above `timeToLiveMs` never binds — the lifetime is
+   * the ceiling, so the extension is clamped to it on the first read.
+   */
+  readonly timeToIdleMs?: number;
   /**
    * Per-key-prefix reservations — `{ 'rsp:': 8000, 'idem:': 2000 }` — that
    * split one map between the consumers writing into it (#607).  Unset (the
@@ -73,6 +108,16 @@ export class InMemoryCacheOptionsBuilder extends OptionsBuilder<InMemoryCacheOpt
     return this.set('cleanupMs', cleanupMs);
   }
 
+  /** Lifetime (ms) for a `set`/`mset` that names no `ttlMs`.  `0` = no expiry. */
+  withTimeToLiveMs(timeToLiveMs: number): this {
+    return this.set('timeToLiveMs', timeToLiveMs);
+  }
+
+  /** Idle window (ms) a read extends such an entry to.  `0` = a read extends nothing. */
+  withTimeToIdleMs(timeToIdleMs: number): this {
+    return this.set('timeToIdleMs', timeToIdleMs);
+  }
+
   /**
    * Split the map between key prefixes — `{ 'rsp:': 8000, 'idem:': 2000 }`.
    * Each quota is a cap *and* a reservation; the sum may not exceed
@@ -108,7 +153,27 @@ export class InMemoryCacheOptionsValidator extends OptionsValidator<InMemoryCach
     ) {
       this.fail('cleanupMs', 'must be a non-negative number (0 or Infinity disables the sweep)', cleanupMs);
     }
+    this.checkExpiryPolicy('timeToLiveMs', s.timeToLiveMs);
+    this.checkExpiryPolicy('timeToIdleMs', s.timeToIdleMs);
     if (prefixQuotas !== undefined) this.checkPrefixQuotas(prefixQuotas, maxEntries);
+  }
+
+  /**
+   * An expiry policy is a finite, non-negative number of milliseconds, with
+   * `0` as the off sentinel.
+   *
+   * `Infinity` is refused rather than accepted as a second spelling of "off":
+   * it would flow into `now + timeToLiveMs` and produce an `expiresAt` of
+   * `Infinity`, which is the *same* state a `0` reaches by never stamping one
+   * — two configurations for one behaviour, and the one that goes through the
+   * arithmetic is the one that breaks the moment the arithmetic changes.
+   * `assertTtl` refuses a non-finite caller argument on the same grounds.
+   */
+  private checkExpiryPolicy(field: 'timeToLiveMs' | 'timeToIdleMs', value: number | undefined): void {
+    if (value === undefined) return;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      this.fail(field, 'must be a finite non-negative number of milliseconds (0 disables it)', value);
+    }
   }
 
   /**

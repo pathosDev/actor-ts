@@ -33,11 +33,14 @@ at construction time.
 | --- | --- | --- | --- |
 | `maxEntries` | `withMaxEntries(n)` | `10000` | LRU cap on stored entries.  `Infinity` = unbounded. |
 | `cleanupMs`  | `withCleanupMs(ms)` | `60000` | Background expired-entry sweep interval (ms).  `0` / `Infinity` disables the sweep. |
+| `timeToLiveMs` | `withTimeToLiveMs(ms)` | `0` | Lifetime for a `set` / `mset` that names no `ttlMs`.  `0` = no expiry — see [configured expiry policies](#configured-expiry-policies). |
+| `timeToIdleMs` | `withTimeToIdleMs(ms)` | `0` | A read pushes such an entry's expiry out again, never past its `timeToLiveMs`.  `0` = a read extends nothing. |
 | `prefixQuotas` | `withPrefixQuotas(table)` | *(none)* | Per-key-prefix reservations, `{ 'rsp:': 8000, 'idem:': 2000 }`.  Unset, the map is undivided — see [dividing one instance by key prefix](#dividing-one-instance-by-key-prefix). |
 
 Values are validated once, at construction, on the merged settings:
 `maxEntries` must be a positive integer (or `Infinity`), `cleanupMs`
-a non-negative number (or `Infinity`), and every quota in
+a non-negative number (or `Infinity`), `timeToLiveMs` and `timeToIdleMs`
+finite non-negative numbers, and every quota in
 `prefixQuotas` a positive integer under a non-empty prefix, with the
 quotas summing to at most `maxEntries`.  A bad value throws
 [`OptionsError`](/reference/configuration/#validation) — the
@@ -103,6 +106,47 @@ rely on lazy expiry alone.
 `incr` sets the TTL only when it **creates** the counter (the value
 becomes 1); later increments don't refresh it — the right
 semantics for a fixed-window rate limiter.
+
+## Configured expiry policies
+
+Two settings supply an expiry where the caller named none.  Both are off
+(`0`) by default, so nothing changes until you turn one on:
+
+```hocon
+actor-ts.cache.in-memory {
+  time-to-live = 15m   # a set/mset with no ttlMs lives this long
+  time-to-idle = 5m    # …and each read pushes that out again, up to 15m
+}
+```
+
+`time-to-live` stamps a lifetime on the write.  `time-to-idle` slides it
+forward on every read, and never past the `time-to-live` deadline the
+entry was written with — so a hot key still expires at its lifetime, and
+an idle window at or above `time-to-live` never binds at all.  With only
+`time-to-idle` set there is no ceiling, and an entry lives for as long as
+something keeps reading it.
+
+**A `ttlMs` you pass always wins**, in both directions: a short explicit
+TTL is not stretched to the policy's, and a long one is not cut down to
+it.
+
+**Both cover `set` and `mset` only.**  `incr` and `setIfAbsent` keep "no
+`ttlMs` means no expiry" whatever the configuration says, and the idle
+slide stops at any entry a guarantee has moved into the eviction-protected
+half (see [what eviction protects](#what-eviction-protects-and-what-it-does-not)).
+Both halves of that rule are the same argument: for a counter or a claim
+this cache is the source of truth rather than a copy of one, so a
+lifetime it did not ask for releases a lock nobody released, and an idle
+window it did not ask for keeps a rate-limit window from ever closing and
+an idempotency claim from ever releasing.  A configuration file may bound
+the copies; it may not bound the originals.
+
+One knock-on worth knowing: with `time-to-live` on, a `set` that replaces
+a *live* claim now inherits that claim's protection, because inheritance
+has always required a finite expiry and such a write previously had none.
+That is the case the inheritance rule exists for — an idempotency record
+replacing its own marker — and it stays bounded, because the entry still
+expires.
 
 ## Bounded by default (LRU)
 

@@ -194,7 +194,10 @@ export async function bootstrapCluster(
     }
   }
 
-  installSignalHandlers(resolvedOptions.shutdownOnSignals ?? true, coordinatedShutdown);
+  // Unset stays unset: collapsing it to `true` here would decide the question
+  // before the config key gets to answer it, and HOCON could then never turn
+  // the handlers off for a bootstrapped node.
+  installSignalHandlers(resolvedOptions.shutdownOnSignals, coordinatedShutdown);
 
   return {
     system,
@@ -419,11 +422,22 @@ function buildSeedProvider(
  * The raw `process.once` this replaces registered nothing at all on Deno —
  * its `process` shim carries no signal events — and could not be detached,
  * so a bootstrapped system was un-embeddable: nothing gave the handlers back.
+ *
+ * Four states, and `undefined` is the one that carries the point: an unset
+ * option means the caller had no opinion, so
+ * `actor-ts.coordinated-shutdown.run-by-process-signals` decides.  `true`
+ * and a signal list are explicit and install regardless of the key — which is
+ * the precedence order everything else in the framework uses, and the reason
+ * this is not a gate inside `installProcessHooks`.
  */
 function installSignalHandlers(
-  mode: boolean | ReadonlyArray<ProcessSignal>,
+  mode: boolean | ReadonlyArray<ProcessSignal> | undefined,
   coordinatedShutdown: CoordinatedShutdown,
 ): void {
   if (mode === false) return;
+  if (mode === undefined) {
+    if (coordinatedShutdown.runByProcessSignals) coordinatedShutdown.installProcessHooks();
+    return;
+  }
   coordinatedShutdown.installProcessHooks(Array.isArray(mode) ? mode : undefined);
 }

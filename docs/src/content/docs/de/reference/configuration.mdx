@@ -49,9 +49,17 @@ actor-ts {
       min-retention  = 0s         # 0 = derive from down-after
     }
     failure-detector {
-      heartbeat-interval = 500ms
+      implementation     = simple   # simple | phi
+      heartbeat-interval = 500ms    # shared by both implementations
       unreachable-after  = 2s
       down-after         = 5s
+      phi {
+        unreachable-threshold      = 8
+        down-threshold             = 12
+        max-sample-size            = 200
+        min-std-deviation          = 100ms
+        acceptable-heartbeat-pause = 0s
+      }
     }
     pub-sub {
       gossip-interval            = 1s
@@ -100,6 +108,11 @@ actor-ts {
     buffer-size                = 100000   # regionsweit; 0 = niemals puffern
     register-retry-interval    = 500ms
     shard-region-query-timeout = 5s
+    entity-recovery {                     # wie erinnerte Entities zurückkommen
+      strategy = all                      # all | constant-rate
+      constant-rate.frequency = 100ms
+      constant-rate.number-of-entities = 5   # regionsweit, nicht pro Shard
+    }
   }
 }
 ```
@@ -176,14 +189,28 @@ man daraus erneut zustellt.
 | `cluster.tombstone.time-to-live` | `24h` | Wie lange ein `removed`-Tombstone gehalten wird, bevor er gepruned wird. |
 | `cluster.tombstone.prune-interval` | `5m` | Wie oft der Prune-Durchlauf läuft. |
 | `cluster.tombstone.min-retention` | `0s` | Mindestalter, bevor ein Tombstone gepruned werden darf.  `0` leitet es aus `failure-detector.down-after` ab (6×). |
-| `cluster.failure-detector.heartbeat-interval` | `500ms` | Wie oft Heartbeats gesendet werden. |
-| `cluster.failure-detector.unreachable-after` | `2s` | Verdachtsschwelle für `unreachable`-Status. |
-| `cluster.failure-detector.down-after` | `5s` | Verdachtsschwelle für erzwungenes Down.  Wird ab dem letzten Heartbeat gemessen, muss also größer als `unreachable-after` sein. |
+| `cluster.failure-detector.implementation` | `simple` | Welchen Erkennungsalgorithmus dieser Node fährt — `simple` (Zeitschwellen) oder `phi` (varianzbewusstes φ-Accrual). |
+| `cluster.failure-detector.heartbeat-interval` | `500ms` | Wie oft Heartbeats gesendet werden.  Gilt für beide Implementierungen — siehe unten. |
+| `cluster.failure-detector.unreachable-after` | `2s` | Verdachtsschwelle für `unreachable`-Status.  Nur `simple`. |
+| `cluster.failure-detector.down-after` | `5s` | Verdachtsschwelle für erzwungenes Down.  Wird ab dem letzten Heartbeat gemessen, muss also größer als `unreachable-after` sein.  Nur `simple`. |
+| `cluster.failure-detector.phi.unreachable-threshold` | `8` | φ-Wert, ab dem der Peer als `unreachable` gilt.  Ein kontinuierlicher Score, Nachkommastellen sind also erlaubt. |
+| `cluster.failure-detector.phi.down-threshold` | `12` | φ-Wert, ab dem der Peer als `down` gilt.  Muss größer als `phi.unreachable-threshold` sein. |
+| `cluster.failure-detector.phi.max-sample-size` | `200` | Wie viele jüngste Zwischenankunftszeiten pro Peer behalten werden. |
+| `cluster.failure-detector.phi.min-std-deviation` | `100ms` | Untergrenze für die gemessene Standardabweichung, damit ein sehr gleichmäßiger Peer nicht wegen Rauschen auffällt. |
+| `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `0s` | Kulanz auf den letzten Heartbeat, bevor φ zu steigen beginnt. |
 
 Diese Keys liegen unter dem, was `Cluster.join(system, options)` übergibt —
 ein explizites `withGossipIntervalMs(…)` gewinnt also weiterhin.  Der
 Failure Detector wird *pro Schwelle* gemergt: setzt du im Code nur
-`down-after`, bleiben die beiden anderen aus der Datei erhalten.
+`down-after`, bleiben die beiden anderen aus der Datei erhalten.  Der
+`phi`-Block wird genauso feldweise gegen `withPhiAccrual(…)` gemergt.
+
+`heartbeat-interval` steht bewusst außerhalb von `phi` und hat dort keine
+Kopie.  Die Kadenz gehört zur Heartbeat-Schleife des Clusters und nicht zu
+einem der beiden Algorithmen; ein Wechsel von `implementation` darf also
+nicht ändern, wie oft dieser Node mit seinen Peers spricht.  Alles Übrige
+unter `failure-detector` gehört genau einer Implementierung und wird von der
+anderen ignoriert.
 
 HOCON-Baum und `ClusterOptions`-Felder sind bewusst nicht deckungsgleich:
 die drei Tombstone-Stellschrauben stehen unter `tombstone`, weil man sie so
@@ -277,6 +304,63 @@ Siehe [Quorum-Reads und -Writes](/de/distributed-data/quorum-reads-writes/).
 seinen Slot über die gesamte Deadline, ein einzelner Aufrufer mit einem
 stundenlangen `timeoutMs` parkt also das Budget für Stunden und sperrt
 spätere Aufrufer aus, die dem Cap selbst nie nahe kamen.
+
+### `actor-ts.coordination`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `coordination.lease.ttl` | *(ungesetzt)* | Lease-TTL für das gesamte Deployment.  Liefert **kein Leaf** aus — ein Wert hier würde `ttlMs` für jeden Lease im Prozess setzen und die Prüfung „`ttlMs` ist Pflicht" unerreichbar machen. |
+| `coordination.lease.renewal-interval` | *(ungesetzt)* | Wie oft ein gehaltener Lease erneuert wird.  Liefert **kein Leaf** aus — ungesetzt wählt das berechnete `max(500ms, ttl/3)`, und `0` kann nicht „leite es ab" heißen, weil der Validator es ablehnt. |
+| `coordination.lease.kubernetes.namespace` | *(ungesetzt)* | Namespace, in dem das `Lease`-Objekt liegt.  Liefert **kein Leaf** aus — ungesetzt heißt „lies `namespace-path` aus dem ServiceAccount-Mount des Pods", und `""` wird abgelehnt. |
+| `coordination.lease.kubernetes.namespace-path` | `"/var/run/secrets/kubernetes.io/serviceaccount/namespace"` | Datei, aus der der Namespace des Pods gelesen wird. |
+| `coordination.lease.kubernetes.token-path` | `"/var/run/secrets/kubernetes.io/serviceaccount/token"` | Datei, aus der das Bearer-Token gelesen wird.  Ein **Pfad**, niemals das Token. |
+| `coordination.lease.kubernetes.ca-path` | `"/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"` | Datei, aus der das CA-Zertifikat für das TLS-Pinning des API-Servers gelesen wird. |
+| `coordination.lease.kubernetes.token-reload-interval` | `1m` | Wie lange ein aus diesem Mount gelesenes Credential wiederverwendet wird, bevor die mtime der Token-Datei erneut geprüft wird.  Ohne Wirkung auf ein explizites `authToken`. |
+| `coordination.lease.kubernetes.operation-timeout` | `10s` | Obergrenze für einen einzelnen Request an den API-Server. |
+| `coordination.lease.kubernetes.lease-name-max-length` | `253` | Lease-Objektnamen, die länger sind, werden auf einen stabilen Kopf plus einen Hash des vollständigen Namens gekürzt.  `253` ist die DNS-1123-Subdomain-Grenze, die der API-Server durchsetzt. |
+
+Das Framework baut keinen `Lease` für dich — jeder `withLease(…)`-Slot nimmt
+eine Instanz entgegen —, dieser Block liegt also **unter** den Optionen, die du
+an `new InMemoryLease(…)` / `new KubernetesLease(…)` übergibst, in der üblichen
+Reihenfolge: explizite Optionen gewinnen, dann dieser Block, dann die
+eingebauten Defaults.  Ein Lease entsteht, bevor es ein `ActorSystem` gibt,
+deshalb laden die beiden Konstruktoren die Config-Kette selbst und
+berücksichtigen dabei `ACTOR_TS_CONFIG` und `./application.conf`.
+
+Drei Keys liefern **überhaupt kein Leaf** aus und stehen oben nur, damit die
+Namen auffindbar sind.  Jeder davon ist ein Feld, das der Code verlangt oder
+ableitet, und ein ausgelieferter Wert würde `hasPath` für immer wahr machen —
+genau so wird das, wofür er einspringt, unerreichbar.  Setz einen davon in
+deiner eigenen `application.conf` und er wird ganz normal gelesen:
+
+```hocon
+actor-ts.coordination.lease {
+  ttl = 30s
+  kubernetes.namespace = "actors"
+}
+```
+
+:::caution[Die Credential-Keys sind Pfade, keine Werte]
+Es gibt bewusst **keinen Key für `authToken`, `caCert` oder `apiServerUrl`**.
+Zwei davon sind ein Bearer-Token und ein privater Vertrauensanker, und eine
+Config-Datei ist für beides der falsche Ort: `ACTOR_TS_CONFIG` und eine
+abgelegte `application.conf` speisen denselben Loader, und die zusammengeführte
+Konfiguration ist im Config-Panel der DevTools lesbar.  Die drei Pfad-Keys sind
+der vorgesehene Weg, diese Hälfte der Konfiguration aus dem Code zu holen —
+Indirektion auf eine Datei, nie das Geheimnis selbst.
+
+Sie beschreiben außerdem ausschließlich die **In-Cluster**-Quelle.  Einen davon
+woandershin zu zeigen und gleichzeitig ein explizites `apiServerUrl` zu setzen,
+wirft beim Konstruieren `OptionsError` — denn genau diese Paarung hat einmal das
+ServiceAccount-Token des Clusters an den Host geschickt, den ein Operator
+zufällig genannt hat
+([Issue #599](https://github.com/pathosDev/actor-ts/issues/599)).
+:::
+
+`acquire-retries` und `acquire-retry-delay` sind hier nicht setzbar.  Die beiden
+Backends liefern unterschiedliche eingebaute Defaults — 3 Versuche / 100 ms für
+Kubernetes, 1 / 50 ms in-memory —, und ein Leaf könnte beide nicht ausdrücken,
+ohne sie stillschweigend zu vereinheitlichen.  Setz sie pro Lease im Code.
 
 ### `actor-ts.remote`
 
@@ -562,13 +646,40 @@ als Name eines Plugins.
 | `cache.in-memory.max-entries` | `10000` | Max. Einträge vor LRU-Eviction ([In-Memory-Cache](/de/cache/in-memory/)). |
 | `cache.in-memory.cleanup-interval` | `60s` | Intervall des Hintergrund-Sweeps für abgelaufene Einträge; `0` schaltet ihn ab. |
 | `cache.in-memory.prefix-quotas` | *(nicht gesetzt)* | Kontingente pro Präfix, die eine Instanz unter ihren Consumern aufteilen; ihre Summe darf `max-entries` nicht überschreiten. |
+| `cache.in-memory.time-to-live` | `0` | Lebensdauer, die ein `set` / `mset` ohne eigenes `ttlMs` bekommt.  `0` = kein Ablauf, also das bisherige Verhalten. |
+| `cache.in-memory.time-to-idle` | `0` | Ein Lesezugriff schiebt den Ablauf eines solchen Eintrags wieder nach hinten, nie über seine `time-to-live` hinaus.  `0` = ein Lesezugriff verlängert nichts. |
 | `cache.<name>.in-memory.*` | *(der Block oben)* | Dieselben Blätter, für die einzelne Instanz, die `cache('<name>')` auflöst — überschreibt den globalen Block Blatt für Blatt und lehnt eine ausgemusterte Schreibweise genauso ab. |
 | `cache.<name>.plugin` | `"...in-memory"` | Welches Backend `cache('<name>')` auflöst. |
+| `cache.redis.url` | `""` | `redis://host:port` (oder `rediss://`).  Schließt `host` / `port` gegenseitig aus.  `""` = nicht gesetzt. |
+| `cache.redis.host` / `.port` | *(nicht gesetzt)* | Bewusst Kommentare in der `reference.conf` — siehe unten.  Ungesetzt nimmt `ioredis` sein eigenes `127.0.0.1:6379`. |
+| `cache.redis.db` | `0` | Logische Datenbank.  Wird ignoriert, wenn `url` gesetzt ist; dann gehört sie in den URL-Pfad. |
+| `cache.redis.key-prefix` | `""` | Wird jedem Key vorangestellt — trennt Systeme oder Umgebungen, die sich einen Server teilen. |
+| `cache.redis.password` | `""` | `AUTH`-Passwort.  Besser als Substitution: `password = ${?REDIS_PASSWORD}`. |
+| `cache.memcached.servers` | `"localhost:11211"` | Komma-getrennte `host:port`-Liste — ein **String**, keine Liste, weil `memjs` genau das nimmt. |
+| `cache.memcached.username` / `.password` | `""` | SASL-Credentials.  Besser `${?MEMCACHED_PASSWORD}`. |
+| `cache.memcached.key-prefix` | `""` | Wird serverseitig auf jede Operation angewendet. |
+| `cache.<name>.redis.*` / `cache.<name>.memcached.*` | *(die Blöcke oben)* | Dieselben Blätter für eine Instanz, damit `cache('rate-limit')` und `cache('idempotency')` verschiedene Datenbanken auf einem Server halten können. |
 
 Redis- und Memcached-Caches lesen ihre Verbindungs-Settings aus
-`actor-ts.cache.redis` / `actor-ts.cache.memcached`.
+`actor-ts.cache.redis` / `actor-ts.cache.memcached`, und das Framework
+registriert beide Factories selbst — mehr als
+`actor-ts.cache.sessions.plugin = "actor-ts.cache.redis"` braucht ein
+Cache also nicht, um auf Redis hochzukommen, ganz ohne
+`registerCache`-Aufruf in deinem Code.  Beide Treiber sind lazy geladene
+optionale Peers, ein Block, den niemand auflöst, kostet also nichts:
+`ioredis` und `memjs` werden bei der ersten Cache-*Operation* importiert,
+nicht beim Start.
 
-Die beiden `<name>`-Pfade nehmen den Namen, den dein Code an
+**Ein leerer String bedeutet in diesen beiden Blöcken „nicht gesetzt".**
+Die `""`-Werte oben sind die Form des Keys, veröffentlicht damit du Name
+und Verschachtelung siehst; der Reader verwirft sie, statt sie
+weiterzureichen.  Deshalb sind `host` und `port` auch Kommentare und
+keine Blätter: `url` schließt sie gegenseitig aus, und ein ausgeliefertes
+`host = "localhost"` wäre für jedes Deployment gesetzt und machte jede
+`url` zu einem `OptionsError`.  Schreibst du beides absichtlich, bekommst
+du diesen Fehler weiterhin — genau darum geht es.
+
+Diese `<name>`-Pfade nehmen den Namen, den dein Code an
 `cache(name)` übergibt, und lassen sich deshalb nicht in
 `reference.conf` aufzählen.  Einen Consumer allein für seinen eigenen
 Key-Raum zu dimensionieren ist genau das, was die Empfehlung [ein Cache
@@ -590,6 +701,9 @@ pro Consumer](/de/cache/in-memory/#ein-cache-pro-consumer) braucht.
 | `sharding.buffer-size` | `100000` | Wie viele Nachrichten eine Region **über alle ihre Shards zusammen** halten darf, solange deren Heimat unbekannt ist oder gerade übergeben wird.  Jenseits des Caps wird die *neueste* Nachricht mit ihrem Sender an die Dead Letters gegeben — was schon in der Queue steht, behält so die Reihenfolge des Senders.  **Achte auf die umgekehrte Polarität zu `max-entities` oben**: hier bedeutet `0` *niemals puffern — sofort Dead Letter*, nicht „kein Cap". |
 | `sharding.register-retry-interval` | `500ms` | Wie oft eine Region eine unbestätigte Registrierung erneut an den Koordinator schickt.  Alles, was für den Typ geroutet wird, puffert bis zur Antwort des Koordinators — das ist also zugleich die Dauer, die ein verlorenes `Register` den Typ blockiert. |
 | `sharding.shard-region-query-timeout` | `5s` | Default-Wartezeit für `sharding.shards()` und `sharding.shardRefFor()`.  Ein explizites `timeoutMs`-Argument sticht sie weiterhin.  Unabhängig davon, wie lange die Region eine Korrelation für ein knotenübergreifendes `ask` hält — das sind bewusst Minuten. |
+| `sharding.entity-recovery.strategy` | `all` | Wie erinnerte Entities zurückkommen, nachdem eine Region einen Shard bekommen hat.  `all` startet alle auf einmal — das heutige Verhalten, und der Grund, warum der Default nicht verschoben wurde.  `constant-rate` verteilt sie, siehe [Einen Remember-Entities-Restore drosseln](#einen-remember-entities-restore-drosseln) weiter unten. |
+| `sharding.entity-recovery.constant-rate.frequency` | `100ms` | Abstand zwischen zwei gedrosselten Recovery-Batches.  Unter `strategy = all` wirkungslos. |
+| `sharding.entity-recovery.constant-rate.number-of-entities` | `5` | Wie viele Entities ein gedrosselter Batch startet.  **Ein regionsweites Budget, keines pro Shard** — die Queue wird von jedem Shard des Nodes gespeist, das sind also Entity-Starts pro Fenster *auf diesem Node*.  Unter `strategy = all` wirkungslos. |
 
 Diese Keys gelten für **jeden** auf dem Node gestarteten Sharded Type.  Sie
 werden einmal pro `sharding.start(...)` gelesen und unter das gelegt, was
@@ -652,6 +766,44 @@ weiterhin.
 deployment-weite Tatsache: ein zweites `start` mit abweichendem Wert wirft, und
 ein von allen geteiltes `proxy = on` ließe niemanden mehr etwas hosten.
 
+#### Einen Remember-Entities-Restore drosseln
+
+Unter [`remember-entities`](/de/cluster/sharding/remember-entities/) bekommt
+eine Region, der ein Shard zugeteilt wird, dessen komplettes Register
+zugeschickt und startet daraus per Default jede Entität auf einmal — und das
+für jeden Shard, den sie bekommt.  Ein Node-Neustart oder ein Rebalance öffnet
+damit einen Journal-Replay pro erinnerter Entität, alle im selben Tick.
+`constant-rate` verteilt diese Starts:
+
+```hocon
+actor-ts.sharding.entity-recovery {
+  strategy = constant-rate
+  constant-rate.frequency = 100ms
+  constant-rate.number-of-entities = 5
+}
+```
+
+Zwei Dinge an diesem Budget muss man deutlich sagen, weil beide sich leicht
+andersherum lesen lassen:
+
+- **Es gilt regionsweit.**  Fünf Entities pro 100 ms sind fünf *auf diesem
+  Node*, egal wie viele Shards der Node hält.  Pro Shard gelesen hießen
+  dieselben Zahlen 5 × die Shard-Anzahl, was auf einem 64-Shard-Cluster
+  überhaupt keine Schranke mehr ist — dieselbe Verwechslung, derentwegen
+  `max-entities` regionsweit gehalten wird.
+- **Es drosselt Starts, keine Replays.**  Ein Replay läuft asynchron; einer,
+  der länger dauert als das Fenster, überlappt also weiterhin den nächsten
+  Batch.  Was dieser Key glättet, ist die Ankunftsrate; wie viele Recoveries
+  gleichzeitig *laufen* dürfen, ist eine Sache der Persistenz und hier nicht
+  einstellbar.
+
+Nichts geht verloren: der Rückstand wird abgearbeitet, bis jede erinnerte
+Entität wieder da ist, und eine Nachricht an eine Entität, die noch in der
+Queue steht, erzeugt sie sofort — nur der Recovery-Schwall wartet.  Der Default
+bleibt `all`, weil Drosseln verändert, *wann* eine Entität zurückkommt, und wie
+schnell ein Journal die Replays verträgt eine Eigenschaft dieses Journals ist
+und keine des Shardings.
+
 Ein Setting für genau einen Typ gehört deshalb in den Builder; die
 Config-Datei ist für die node-weite Grundeinstellung, die du ohne Rebuild
 zwischen Staging und Produktion verschieben willst.  Die polymorphen Optionen
@@ -664,19 +816,64 @@ Stores — haben keine HOCON-Form und bleiben im Code.
 | --- | --- | --- |
 | `coordinated-shutdown.default-phase-timeout` | `5s` | Default-Timeout pro Phase.  Eine Phase, die es überschreitet, wird abgebrochen, damit die nächste noch läuft. |
 | `coordinated-shutdown.terminate-actor-system` | `true` | Ob der eingebaute Terminator-Task in der finalen Phase `system.terminate()` aufruft. |
-| `coordinated-shutdown.exit-process` | `false` | Ob nach Abschluss der Pipeline `process.exit(0)` aufgerufen wird. |
+| `coordinated-shutdown.exit-process` | `false` | Ob nach Abschluss der Pipeline `process.exit(exit-code)` aufgerufen wird. |
+| `coordinated-shutdown.exit-code` | `0` | Status, den der Exit trägt.  `0`–`255`; alles andere ist ein `ConfigError` beim Start. |
+| `coordinated-shutdown.auto-register-tasks` | `true` | Ob Framework-Komponenten ihr eigenes Teardown registrieren — das HTTP-Unbind, das Schließen der Broker, das Cluster-Leave, das DevTools-Detach. |
+| `coordinated-shutdown.run-by-process-signals` | `true` | Ob `runUntilTerminated()` und der Cluster-Bootstrap SIGTERM/SIGINT scharfschalten, wenn der Aufrufer keine Signale genannt hat. |
+| `coordinated-shutdown.phases.<name>.timeout` | — | Budget für genau diese Phase; überschreibt `default-phase-timeout` nur für sie. |
+| `coordinated-shutdown.phases.<name>.recover` | — | `false` lässt einen fehlgeschlagenen Task in dieser Phase die Pipeline anhalten, statt ihn zu loggen und weiterzugehen. |
+| `coordinated-shutdown.phases.<name>.depends-on` | — | Phasen, die vorher laufen müssen.  Bei einer kanonischen Phase wird die Kante ergänzt; bei einem neuen Namen ist die Angabe Pflicht. |
 
 `terminate-actor-system = false` entfernt nur den eingebauten Terminator —
 in `ActorSystemTerminate` registrierte eigene Tasks laufen weiterhin.
 Nutze es, wenn ein Host-Prozess die Lebensdauer des Systems besitzt und ein
 Signal-Handler es nicht killen darf.
 
+Der `phases`-Block ist das Config-Frontend zum Phasen-DAG und liefert selbst
+keine Werte aus — seine Kinder sind nach *deinen* Phasen benannt, es gibt also
+nichts, wofür sich ein Default veröffentlichen ließe:
+
+```hocon
+actor-ts.coordinated-shutdown.phases {
+  service-requests-done { timeout = 30s }        # retime one canonical phase
+  flush-metrics {                                # …and add one of your own
+    timeout    = 3s
+    recover    = false
+    depends-on = ["before-actor-system-terminate"]
+  }
+  actor-system-terminate { depends-on = ["flush-metrics"] }
+}
+```
+
+Ein Kind, das eine der zwölf kanonischen Phasen benennt, **verschmilzt** mit
+ihr: weggelassene Felder behalten das, womit die Phase initialisiert wurde.
+Jeder andere Name **deklariert** eine Phase, und dort ist `depends-on` Pflicht
+— eine Phase ohne Kanten landet im ersten fertigen Batch und liefe vor
+`before-service-unbind`, was nie gemeint war, wenn jemand eine Phase hinzufügt.
+`depends-on` an einer kanonischen Phase wird der bestehenden Kante *hinzugefügt*
+statt sie zu ersetzen; so kann eine Config-Datei `cluster-leave` nicht vor
+`service-unbind` umhängen — die topologische Sortierung fängt Zyklen ab, nicht
+eine Pipeline, die still in der falschen Reihenfolge läuft.  Die Reihenfolge in
+der Datei spielt keine Rolle: zwei Phasen dürfen einander benennen und werden
+abhängigkeitsweise registriert.  Ein nicht auflösbarer Name, ein Zyklus oder
+ein unbekanntes Setting unter einer Phase ist ein `ConfigError` beim Start,
+nicht beim Shutdown.
+
+`run-by-process-signals` schaltet den *Default* um, nicht die Fähigkeit.  Wer
+Signale explizit nennt — `runUntilTerminated(['SIGTERM'])` oder
+`shutdownOnSignals` in den Bootstrap-Optionen —, installiert sie trotzdem, denn
+explizite Optionen schlagen die Konfiguration.  Ausschalten ist für einen
+Host-Prozess, der SIGTERM selbst besitzt: `runUntilTerminated()` wartet
+weiterhin und hält die Event-Loop offen, es schaltet nur nichts scharf.
+
 `exit-process` ist für den umgekehrten Fall: ein hängengebliebenes Handle
 (ein offener Socket, eine gepoolte Verbindung, die ein Treiber nie
 freigegeben hat) hält den Prozess am Leben, nachdem die Pipeline fertig
 ist — von außen nicht von einem Hänger zu unterscheiden.  Per Default aus,
 weil ein erzwungener Exit genau die Leaks verdeckt, die du eigentlich
-finden willst.
+finden willst.  `exit-code` ist der Status, den er übergibt — `0`, weil eine
+bis zum Ende gelaufene Pipeline der Erfolgsfall ist; setze ihn dort, wo ein
+Supervisor einen geplanten Drain von einem Absturz unterscheiden soll.
 
 ### `actor-ts.devtools`
 

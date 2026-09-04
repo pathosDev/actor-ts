@@ -11,6 +11,203 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **BREAKING — `actor-ts.coordination` is a new HOCON block, and the two
+  `Lease` backends read it (#859).**
+
+  Six leaves ship — `coordination.lease.kubernetes.namespace-path`,
+  `.token-path`, `.ca-path`, `.token-reload-interval` (`1m`),
+  `.operation-timeout` (`10s`) and `.lease-name-max-length` (`253`) —
+  alongside three keys published as comments only, `coordination.lease.ttl`,
+  `.renewal-interval` and `.kubernetes.namespace`, because each is a field
+  the code requires or derives and a shipped value would make `hasPath` true
+  forever. Nothing in the framework constructs a `Lease`, so both
+  constructors load the config chain themselves and layer it under the
+  caller's options in the usual order: explicit options, then this block,
+  then the built-in defaults. The block also brings three mechanisms it
+  needs — the ServiceAccount mount paths become parameters instead of a
+  module constant, one API-server request is bounded by a configured
+  `operationTimeoutMs` rather than a literal, and a Lease object name longer
+  than `leaseNameMaxLength` is truncated to a stable head plus an FNV-1a
+  hash of the whole original instead of being sent and coming back as an
+  opaque error from the first GET. Security: there is deliberately no key
+  for `authToken`, `caCert` or `apiServerUrl` — the credential keys are
+  paths, never values — and #599's all-or-nothing rule now covers them, so a
+  mount path pointed anywhere other than its default while an explicit
+  `apiServerUrl` is supplied is rejected at construction. `acquire-retries`
+  and `acquire-retry-delay` get no key at all, because the two backends ship
+  different built-in defaults and one leaf could not express both. #859
+
+  *Migration:* `KubernetesLeaseOptionsType.namespace` is now optional and no
+  longer a constructor-required field. A lease built without one reads the
+  namespace from the Pod's ServiceAccount mount, and fails at the first API
+  call — not in the constructor — when neither source supplies it. Code that
+  read `options.namespace` off the type now sees `string | undefined`; code
+  that relied on `new KubernetesLease({...})` throwing `namespace is
+  required` must assert on the runtime error `KubernetesLease: no namespace
+  available` instead. Nothing else moves: `name`, `owner` and `ttlMs` are
+  still rejected at construction.
+
+- **BREAKING — Redis and Memcached caches are now configurable from HOCON
+  and are registered by the framework, so `actor-ts.cache.<name>.plugin =
+  "actor-ts.cache.redis"` is all a cache needs to come up on Redis — no
+  `registerCache` call and no `new RedisCache(...)` (#876).**
+
+  `actor-ts.cache` gains a `redis` block (`url`, `db`, `key-prefix`,
+  `password`, plus `host` / `port` as comments) and a `memcached` block
+  (`servers`, `username`, `password`, `key-prefix`), each read by a
+  `readRedisCacheOptionsFromConfig` / `readMemcachedCacheOptionsFromConfig`
+  in the matching `XOptions.ts` and layered per instance under
+  `actor-ts.cache.<name>.redis` / `.memcached`. Both drivers stay lazy
+  optional peers, imported on the first cache operation rather than at
+  startup. An empty string means unset throughout, which is what keeps the
+  shipped block usable: the validator runs `new URL('')`, so a published
+  `url = ""` handed through verbatim would refuse every config-built cache.
+  `host` and `port` ship as comments on purpose — `url` is mutually
+  exclusive with them, and a published `host = "localhost"` would be set for
+  every deployment and would refuse every `url` ever written.
+
+  The in-memory cache gains two expiry policies,
+  `actor-ts.cache.in-memory.time-to-live` and `.time-to-idle` (builders
+  `withTimeToLiveMs` / `withTimeToIdleMs`), both `0` (off) by default.
+  `time-to-live` stamps a lifetime on an entry whose writer named no
+  `ttlMs`; `time-to-idle` slides that lifetime forward on each read, clamped
+  to it, so a hot key still expires. Both cover `set` and `mset` only, and
+  the slide additionally stops at any entry a guarantee has moved into the
+  eviction-protected half: for `incr` and `setIfAbsent` this cache is the
+  source of truth rather than a copy of one, so a lifetime they did not ask
+  for would release a lock nobody released, and an idle window they did not
+  ask for would keep a rate-limit window from ever closing. A `ttlMs` the
+  caller passes is never overridden in either direction. Three keys from the
+  original proposal are deliberately not shipped — `initial-capacity` (a JS
+  `Map` cannot be preallocated), and `password-path` on both blocks (no
+  file-backed-secret mechanism exists; the supported path is a `${?ENV}`
+  substitution). #876
+
+  *Migration:* A deployment that already sets `actor-ts.cache.<name>.plugin
+  = "actor-ts.cache.redis"` (or `"actor-ts.cache.memcached"`) without
+  calling `registerCache` used to receive an `InMemoryCache` silently; it
+  now receives the real backend. Verify the settings in
+  `actor-ts.cache.redis` / `actor-ts.cache.memcached` before upgrading, or
+  point the plugin id back at `actor-ts.cache.in-memory`. Nothing else
+  changes: the two expiry policies are off by default, and no existing key
+  is renamed.
+
+- **The cluster's failure detector is now selectable, and the φ-accrual one
+  is finally reachable from `Cluster.join`**
+  (#840).  `PhiAccrualFailureDetector` shipped as a public, exported,
+  documented class that nothing could install: `Cluster` declared its
+  detector field as the concrete `FailureDetector` and constructed one
+  unconditionally, with no branch and no injection point. The field now
+  holds a `FailureDetectorLike` contract that both shipped detectors already
+  satisfied, and `createFailureDetector` builds whichever one
+  `actor-ts.cluster.failure-detector.implementation` — or
+  `ClusterOptions.withFailureDetectorImplementation(…)` — names. `simple`
+  stays the default, so nothing moves for a deployment that does not opt in.
+
+  Six new keys under the existing `actor-ts.cluster.failure-detector` block:
+
+  - `implementation` — `simple` (default) or `phi`
+  - `phi.unreachable-threshold` — `8`
+  - `phi.down-threshold` — `12`
+  - `phi.max-sample-size` — `200`
+  - `phi.min-std-deviation` — `100ms`
+  - `phi.acceptable-heartbeat-pause` — `0s`
+
+  Every value is today's shipped default: exposing a knob and retuning it
+  are separate decisions. The two thresholds are read with `getNumber`, not
+  `getInt`, because φ is a continuous suspicion score and a fractional
+  threshold is an ordinary tuning move. Explicit options merge into the
+  `phi` block per field, so setting one threshold in code keeps the other
+  four from `application.conf`, and the same holds for `withPhiAccrual(…)`
+  against the file.
+
+  `heartbeat-interval` deliberately stays outside `phi` and has no copy
+  inside it. The cadence belongs to the cluster's own heartbeat loop rather
+  than to either algorithm, so switching implementations cannot change how
+  often a node talks to its peers — the property #1142 collapsed onto one
+  constant, now enforced by `createFailureDetector` imposing the resolved
+  interval on whichever detector it builds. Three keys the issue proposed
+  are therefore absent by design: `phi.heartbeat-interval`,
+  `phi.expected-response-after` (no mechanism exists anywhere in the tree;
+  its Akka role is already played by `heartbeatIntervalMs`), and a singular
+  `phi.threshold` (the detector has two, strictly ordered, so it ships as
+  two). #840, #1201
+
+- **The coordinated-shutdown phase graph can now be built from HOCON.
+  `actor-ts.coordinated-shutdown.phases` takes one child per phase name,
+  each carrying `timeout`, `recover` and `depends-on`** (#866).  A child
+  naming one of the twelve canonical phases merges into it — a field the
+  config omits keeps what the phase was seeded with — and any other name
+  declares a new phase, where `depends-on` is required because a phase with
+  no edges would sort into the first ready batch and run before
+  `before-service-unbind`. `depends-on` on a canonical phase is *added* to
+  the edge it already has rather than replacing it, so a config file cannot
+  re-parent `cluster-leave` ahead of `service-unbind`; the topological sort
+  catches cycles, not a pipeline quietly running in the wrong order.
+  Declaration order in the file is irrelevant — two phases may name each
+  other and are registered dependency-first — and an unresolvable name, a
+  cycle, an unknown setting under a phase, or a declared phase with no
+  `depends-on` is a `ConfigError` while the extension is built, not one
+  thrown from inside a shutdown.
+
+  The block ships comment-only in `reference.conf`, the
+  `remote.tcp.advertised-host` pattern: its children are named after the
+  operator's own phases, so there is no fixed leaf set to publish, and an
+  example leaf would have to be pinned as a documented default and would
+  freeze that example's budget into every deployment's effective config.
+
+  Two real leaves came with it:
+
+  - `actor-ts.coordinated-shutdown.exit-code` (default `0`) is the status
+    `exit-process` hands to `process.exit`, replacing the hard-coded `0`. A
+    value outside 0–255 is refused at startup, because only eight bits of a
+    wait status carry the code and a configured `256` would reach the
+    supervisor as a clean `0`.
+  - `actor-ts.coordinated-shutdown.run-by-process-signals` (default `true`)
+    decides whether `runUntilTerminated()` and the cluster bootstrap arm
+    SIGTERM/SIGINT for a caller who named none. It is read at those two
+    defaulting call sites rather than inside `installProcessHooks`, so
+    naming signals explicitly still wins over the config file;
+    `bootstrapCluster` correspondingly stops collapsing an unset
+    `shutdownOnSignals` to `true` before the key is consulted.
+
+  `CoordinatedShutdown.phaseDefinition(name)` is new, and reads back what
+  the merge produced — the graph is no longer something only code builds, so
+  the operator who wrote the config block needs a way to see the result.
+  #866
+
+  The `coordinated-shutdown` table on the configuration page also gains the
+  `auto-register-tasks` row it never had, in both languages. #1302
+
+- **Remembered-entity recovery can now be paced, so a node restart or a
+  rebalance no longer spawns every remembered entity of every shard it is
+  handed in one synchronous burst** (#851).  Three new `actor-ts.sharding`
+  keys govern it:
+
+  - `entity-recovery.strategy` (`all` | `constant-rate`, default `all` —
+    today's behaviour, unchanged)
+  - `entity-recovery.constant-rate.frequency` (default `100ms`)
+  - `entity-recovery.constant-rate.number-of-entities` (default `5`)
+
+  Equivalently in code: `withEntityRecoveryStrategy`,
+  `withEntityRecoveryConstantRateFrequencyMs` and
+  `withEntityRecoveryConstantRateNumberOfEntities` on
+  `StartShardingOptions`, plus the exported `EntityRecoveryStrategy` union
+  and `ENTITY_RECOVERY_STRATEGIES` list.
+
+  The budget is region-wide, not per shard: the queue is fed by every shard
+  the node owns and drained from one front, so `number-of-entities = 5`
+  means five entity starts per window on that node whatever its shard count.
+  This is deliberately unlike the equivalent Akka setting, which is per
+  shard and there multiplies by however many shards a node happens to hold —
+  the same reading `maxEntities` and `bufferSize` are kept region-wide to
+  avoid. Note that it paces entity *starts*: a replay is asynchronous, so
+  one that outlasts the window still overlaps the next batch, and bounding
+  recoveries in flight remains a persistence-side concern (#1383). Nothing
+  is shed — the backlog drains until every remembered entity is back, and a
+  message routed to an entity still in the queue creates it immediately.
+  Refs #851.
+
 - **The object-storage persistence plugin can now be configured from HOCON.
   A new `actor-ts.persistence.snapshot-store.object-storage` block carries
   `backend`, `prefix`, `keep-n`, `max-decompressed-bytes`,

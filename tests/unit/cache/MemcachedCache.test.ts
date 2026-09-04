@@ -1,6 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { MemcachedCache, type MemcachedClientLike } from '../../../src/cache/MemcachedCache.js';
-import { MemcachedCacheOptions } from '../../../src/cache/MemcachedCacheOptions.js';
+import {
+  DEFAULT_MEMCACHED_SERVERS,
+  MemcachedCacheOptions,
+  memcachedCacheKeysUnder,
+  readMemcachedCacheOptionsFromConfig,
+} from '../../../src/cache/MemcachedCacheOptions.js';
+import { Config } from '../../../src/config/Config.js';
+import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { runCacheContractTests } from './_Contract.js';
 
 /**
@@ -417,5 +424,75 @@ describe('MemcachedCache — protocol-injection hardening', () => {
       .withClient(new FakeMemcached());
     const cache = new MemcachedCache(memcachedOptions);
     await expect(cache.set('', 'x')).rejects.toThrow(/non-empty string/);
+  });
+});
+
+/**
+ * `actor-ts.cache.memcached` → `MemcachedCacheOptionsType`, leaf by leaf
+ * (#876).  See the twin block in `RedisCache.test.ts` for why these tests are
+ * the guard rather than `NoDeadConfigKeys`, and why they use
+ * `Config.parseString`.
+ */
+describe('MemcachedCache — reading the config block', () => {
+  test('maps every leaf, and returns only the ones that are set', () => {
+    const config = Config.parseString(`
+      actor-ts.cache.memcached {
+        servers = "a:11211,b:11211"
+        username = "app"
+        password = "s3cret"
+        key-prefix = "billing:"
+      }
+    `);
+    expect(readMemcachedCacheOptionsFromConfig(config)).toEqual({
+      servers: 'a:11211,b:11211',
+      username: 'app',
+      password: 's3cret',
+      keyPrefix: 'billing:',
+    });
+  });
+
+  test('treats an empty string as unset, on every leaf', () => {
+    // `servers` matters most: the validator refuses an empty one outright, so
+    // passing a published `""` through would refuse construction rather than
+    // fall through to the built-in list.
+    const config = Config.parseString(`
+      actor-ts.cache.memcached { servers = "", username = "", password = "", key-prefix = "" }
+    `);
+    const settings = readMemcachedCacheOptionsFromConfig(config);
+    expect(settings).toEqual({});
+    expect(() => new MemcachedCache(settings)).not.toThrow();
+  });
+
+  test('the shipped block alone names the server list and nothing else', () => {
+    expect(readMemcachedCacheOptionsFromConfig(Config.parseString(REFERENCE_CONF)))
+      .toEqual({ servers: DEFAULT_MEMCACHED_SERVERS });
+  });
+
+  test('a list is not the shape — the leaf is one comma-separated string', () => {
+    // memjs's `Client.create` takes a string and the field is `servers?: string`,
+    // so this is the spelling the block has to publish.
+    expect(DEFAULT_MEMCACHED_SERVERS).toBe('localhost:11211');
+    expect(readMemcachedCacheOptionsFromConfig(
+      Config.parseString('actor-ts.cache.memcached.servers = "a:11211,b:11211"'),
+    ).servers).toBe('a:11211,b:11211');
+  });
+
+  test('memcachedCacheKeysUnder composes the kebab spellings under any root', () => {
+    expect(memcachedCacheKeysUnder('actor-ts.cache.sessions.memcached')).toEqual({
+      root: 'actor-ts.cache.sessions.memcached',
+      servers: 'actor-ts.cache.sessions.memcached.servers',
+      username: 'actor-ts.cache.sessions.memcached.username',
+      password: 'actor-ts.cache.sessions.memcached.password',
+      keyPrefix: 'actor-ts.cache.sessions.memcached.key-prefix',
+    });
+  });
+
+  test('a per-name block is read through those keys, and not as the global one', () => {
+    const config = Config.parseString('actor-ts.cache.sessions.memcached.key-prefix = "sess:"');
+    expect(readMemcachedCacheOptionsFromConfig(
+      config,
+      memcachedCacheKeysUnder('actor-ts.cache.sessions.memcached'),
+    )).toEqual({ keyPrefix: 'sess:' });
+    expect(readMemcachedCacheOptionsFromConfig(config)).toEqual({});
   });
 });

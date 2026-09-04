@@ -105,6 +105,34 @@ export const DEFAULT_HYBRID_DISPATCHER_YIELD_UNITS = 64;
 export const DEFAULT_PHASE_TIMEOUT_MS = 5_000;
 
 /**
+ * Status the process exits with once the `CoordinatedShutdown` pipeline
+ * finishes and `actor-ts.coordinated-shutdown.exit-process` is on.
+ *
+ * `0` because the pipeline running to the end *is* the success case: the
+ * phases were walked, the tasks were given their budget, and a task that
+ * overran was logged.  A non-zero value is for a deployment that wants the
+ * supervisor to tell an orderly stop apart from a planned one — a Kubernetes
+ * `preStop` drain that must not be mistaken for a crash loop, say — which is
+ * why the value is configurable at all rather than being the literal it was.
+ *
+ * Not an options default, for the same reason as
+ * {@link DEFAULT_PHASE_TIMEOUT_MS}: `CoordinatedShutdown` has no `XOptions`
+ * type, and the four scalar leaves are read inline in its constructor.
+ */
+export const DEFAULT_SHUTDOWN_EXIT_CODE = 0;
+
+/**
+ * Largest status `actor-ts.coordinated-shutdown.exit-code` may carry.
+ *
+ * A wait status keeps eight bits for the exit code, so `process.exit(256)`
+ * is reported as `0` and `process.exit(-1)` as `255` — a configured failure
+ * that the supervisor reads as a clean stop.  The read rejects anything
+ * outside the range rather than passing on a number the operating system
+ * will quietly rewrite.
+ */
+export const MAX_PROCESS_EXIT_CODE = 255;
+
+/**
  * How long `ActorSystem.terminate()` lets the `/user` subtree finish the work
  * it already has before the stop cascade begins (#663).
  *

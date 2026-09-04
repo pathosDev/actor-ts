@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  CoordinatedShutdownId,
   LogLevel,
   NoopLogger,
   OptionsError,
@@ -7,10 +8,12 @@ import {
 import {
   Cluster,
   ClusterBootstrapOptions,
+  ClusterBootstrapOptionsBuilder,
   ClusterReadyTimeoutError,
   InMemoryTransport,
   NodeAddress,
   bootstrapCluster,
+  type BootstrappedCluster,
   type Transport,
   type WireHandler,
 } from '../src/cluster/index.js';
@@ -581,6 +584,58 @@ describe('bootstrapCluster (free function)', () => {
       expect(cluster.upMembers().length).toBe(1);
     } finally {
       await shutdown();
+    }
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* shutdownOnSignals — unset now defers to config, and only unset does (#866)  */
+/* -------------------------------------------------------------------------- */
+
+describe('bootstrapCluster and actor-ts.coordinated-shutdown.run-by-process-signals', () => {
+  const bootstrapWith = async (
+    name: string,
+    port: number,
+    // The builder, not the accepted-input union: the union has no methods.
+    build: (options: ClusterBootstrapOptionsBuilder) => void,
+  ): Promise<BootstrappedCluster> => {
+    const clusterBootstrapOptions = ClusterBootstrapOptions.create(name)
+      .withHost('127.0.0.1')
+      .withPort(port)
+      .withTransport(new InMemoryTransport(new NodeAddress(name, '127.0.0.1', port)))
+      .withReceptionist(false)
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { 'coordinated-shutdown': { 'run-by-process-signals': false } } });
+    build(clusterBootstrapOptions);
+    return bootstrapCluster(clusterBootstrapOptions);
+  };
+
+  test('an unset shutdownOnSignals takes the config key, and arms nothing when it is off', async () => {
+    // `?? true` used to collapse "unset" to "yes" before the config was
+    // consulted, so this key could never reach a bootstrapped node.
+    const before = process.listenerCount('SIGTERM');
+    const { shutdown, system } = await bootstrapWith('signals-config-off', 50111, () => {});
+    try {
+      expect(process.listenerCount('SIGTERM')).toBe(before);
+      expect(system.extension(CoordinatedShutdownId).runByProcessSignals).toBe(false);
+    } finally {
+      await shutdown();
+      system.extension(CoordinatedShutdownId).removeProcessHooks();
+    }
+  });
+
+  test('an explicit signal list still installs over an off key', async () => {
+    const before = process.listenerCount('SIGTERM');
+    const { shutdown, system } = await bootstrapWith('signals-explicit', 50112, (options) => {
+      options.withShutdownOnSignals(['SIGTERM']);
+    });
+    try {
+      expect(process.listenerCount('SIGTERM')).toBe(before + 1);
+    } finally {
+      await shutdown();
+      system.extension(CoordinatedShutdownId).removeProcessHooks();
+      expect(process.listenerCount('SIGTERM')).toBe(before);
     }
   });
 });

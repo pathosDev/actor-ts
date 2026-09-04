@@ -330,9 +330,32 @@ actor-ts {
     }
 
     failure-detector {
+      # Which detection algorithm this node runs.  simple = plain elapsed-time
+      # thresholds; phi = the variance-aware phi-accrual detector, which adapts
+      # to the network it actually sees.  Opt-in: simple is what every cluster
+      # ran before the choice existed.
+      implementation = simple
+
+      # Shared by BOTH implementations -- it is the cadence of the cluster's
+      # heartbeat loop, not a property of the algorithm, so swapping the one
+      # above must not change how often this node talks to its peers.  The phi
+      # block below deliberately has no copy of it.
       heartbeat-interval = 500ms
+
+      # The simple detector's thresholds.  Ignored when implementation = phi.
       unreachable-after = 2s
       down-after = 5s     # measured from the last heartbeat, so > unreachable-after
+
+      # The phi-accrual detector's tuning.  Ignored when implementation =
+      # simple.  The two thresholds are phi values -- a continuous suspicion
+      # score, not a duration -- and fractional ones are ordinary.
+      phi {
+        unreachable-threshold = 8
+        down-threshold = 12          # must exceed unreachable-threshold
+        max-sample-size = 200        # inter-arrival times kept per peer
+        min-std-deviation = 100ms    # floor, so a very steady peer is not flagged on noise
+        acceptable-heartbeat-pause = 0s   # grace added to the last heartbeat before phi rises
+      }
     }
 
     # Stable-observation bootstrap: poll discovery until the contact-point set
@@ -454,6 +477,72 @@ actor-ts {
     max-frame-bytes = 16M   # per-frame wire cap; lower it on semi-trusted networks
   }
 
+  # Lease coordination -- what a Lease backend reads when it is built with
+  # settings a deployment owns rather than the application source.  Nothing in
+  # the framework constructs a Lease for you: every withLease(...) slot takes an
+  # instance, so these values layer UNDER the options passed to
+  # new InMemoryLease(...) / new KubernetesLease(...) instead of standing in for
+  # them.  Precedence is the usual one -- explicit options win, this block is
+  # next, the built-in defaults are last.
+  coordination {
+    lease {
+      # ttl -- deliberately unset.  A lease is constructed with an explicit
+      # ttlMs and the constructor rejects a missing one (#596); a shipped value
+      # here would supply it for every lease in the process and make that guard
+      # unreachable.  Set it to give a whole deployment one TTL:
+      #
+      #   ttl = 30s
+      #
+      # renewal-interval -- deliberately unset as well.  Unset selects
+      # max(500ms, ttl/3), which is the computed default both backends want,
+      # and the validator rejects 0, so a "0 means derive it" sentinel is not
+      # expressible:
+      #
+      #   renewal-interval = 10s
+      #
+      # acquire-retries and acquire-retry-delay are deliberately NOT settable
+      # here: the two backends ship different built-in defaults (3 attempts /
+      # 100ms for Kubernetes, 1 / 50ms in memory) and one leaf cannot express
+      # both without silently unifying them.
+
+      kubernetes {
+        # namespace -- deliberately unset.  Unset means "read namespace-path
+        # from the Pod's own ServiceAccount mount", and an empty string is
+        # rejected by the validator, so there is no value that could stand for
+        # "not set":
+        #
+        #   namespace = "actors"
+
+        # Where the kubelet projects this Pod's ServiceAccount credential.
+        # These name the IN-CLUSTER source only: pointing one of them elsewhere
+        # while also naming an explicit apiServerUrl is refused, because that
+        # pairing is what sent the cluster's own bearer token to an
+        # operator-named host (#599).
+        namespace-path = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+        token-path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        ca-path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+        # How long a credential read from that mount may be reused before the
+        # token file's mtime is checked again (#760).  No effect on an
+        # explicitly supplied authToken, which is static by construction --
+        # there is nowhere to re-read it from.
+        token-reload-interval = 1m
+
+        # Hard ceiling on one API-server request.  The renewal loop reasons
+        # from this number: at the 15s TTL the docs recommend the renewal
+        # interval is 5s, so a single request may legitimately span two ticks
+        # and the in-flight guard drops the one that overlaps.
+        operation-timeout = 10s
+
+        # Lease object names longer than this are truncated to a stable head
+        # plus a hash of the whole original name, so every node derives the
+        # same object name from the same input.  253 is the DNS-1123 subdomain
+        # bound the API server enforces on a coordination.k8s.io/v1 Lease.
+        lease-name-max-length = 253
+      }
+    }
+  }
+
   # Ceilings applied to bytes this process DECODES.  They bound what a peer or
   # a client can make a decoder do; they never change what this node writes, so
   # lowering one makes this node stricter than its own encoder rather than
@@ -558,6 +647,19 @@ actor-ts {
     in-memory {
       max-entries      = 10000   # LRU cap on entries (Infinity/unbounded only settable in code)
       cleanup-interval = 60s     # background expired-entry sweep (0 disables the sweep)
+
+      # Expiry for entries whose writer named no ttlMs of its own.  Both cover
+      # set / mset ONLY: for incr and setIfAbsent the cache is the source of
+      # truth, so "no ttlMs" there is the caller saying this counter or this
+      # lock outlives any policy, and bounding one from a config file would
+      # expire a claim nobody released.
+      time-to-live     = 0       # how long such an entry lives (0 = forever)
+      # A read pushes that entry's expiry out to now + time-to-idle, never
+      # past its time-to-live — so an idle window at or above time-to-live
+      # never binds.  Only entries in the eviction-first half are extended:
+      # refreshing a rate-limit counter on every read would keep its window
+      # from ever closing.
+      time-to-idle     = 0       # 0 = a read extends nothing
     }
     # Per-instance overrides live under the cache's own name and win over the
     # block above, so one consumer can be sized for its own key space:
@@ -580,6 +682,41 @@ actor-ts {
     #   }
     #
     # A per-name table replaces the global one rather than merging with it.
+
+    # Connection settings for every cache whose plugin resolves to
+    # actor-ts.cache.redis.  ioredis is a lazy optional peer, so a block that
+    # nobody resolves costs nothing — the driver is imported on the first
+    # cache operation, not at startup.  Empty means UNSET throughout: the "" is
+    # the shape of the key, and the reader drops it rather than handing it on.
+    redis {
+      url        = ""   # redis://host:6379 or rediss://… — prefer \${?REDIS_URL}
+      db         = 0    # logical database; ignored when url is set, put it in the URL path
+      key-prefix = ""   # prepended to every key, e.g. "billing:"
+      password   = ""   # prefer a substitution: password = \${?REDIS_PASSWORD}
+      # host and port are deliberately comments rather than leaves.  url is
+      # mutually exclusive with them and OptionsError says so, which only stays
+      # useful while "unset" is expressible: a shipped host = "localhost" would
+      # be set for everyone, and every url would then be refused.  Left unset,
+      # ioredis applies its own 127.0.0.1:6379.
+      #
+      #   host = "localhost"
+      #   port = 6379
+    }
+
+    # The same for actor-ts.cache.memcached (memjs, also a lazy optional peer).
+    memcached {
+      servers    = "localhost:11211"   # comma-separated host:port list
+      username   = ""                  # SASL — prefer \${?MEMCACHED_USERNAME}
+      password   = ""                  # SASL — prefer \${?MEMCACHED_PASSWORD}
+      key-prefix = ""                  # applied server-side to every operation
+    }
+
+    # Both blocks take a per-instance layer under the cache's own name, the
+    # way in-memory does — so two consumers can hold different Redis
+    # databases without sharing one connection's settings:
+    #
+    #   actor-ts.cache.rate-limit.plugin = "actor-ts.cache.redis"
+    #   actor-ts.cache.rate-limit.redis.db = 3
   }
 
   persistence {
@@ -663,6 +800,20 @@ actor-ts {
     buffer-size = 100000
     register-retry-interval = 500ms      # re-send an unacknowledged region Register
     shard-region-query-timeout = 5s      # default wait for shards() / shardRefFor()
+    # How remembered entities come back after a region is handed a shard.
+    #   all           -- every one at once, the moment the registry arrives.
+    #   constant-rate -- number-of-entities per frequency, ACROSS ALL SHARDS
+    #                    this region owns, until the backlog is drained.
+    # The budget is region-wide, like buffer-size and max-entities above: read
+    #   per shard it would silently mean number-of-shards times itself.
+    # It paces entity STARTS.  A replay is asynchronous, so one outlasting the
+    #   window still overlaps the next batch -- the number of replays in flight
+    #   is bounded in the persistence layer, not here.
+    entity-recovery {
+      strategy = all
+      constant-rate.frequency = 100ms
+      constant-rate.number-of-entities = 5
+    }
   }
 
   devtools {
@@ -737,7 +888,11 @@ actor-ts {
   coordinated-shutdown {
     default-phase-timeout = 5s
     terminate-actor-system = true
-    exit-process = false   # call process.exit(0) once the pipeline completes
+    exit-process = false   # call process.exit(exit-code) once the pipeline completes
+    # Status that exit carries.  Only consulted when exit-process is on; a
+    # value outside 0-255 is a ConfigError at startup rather than a code the
+    # operating system silently truncates.
+    exit-code = 0
 
     # Framework components register their own teardown in the pipeline: the
     # HTTP server unbinds in service-unbind, broker actors close their
@@ -746,6 +901,37 @@ actor-ts {
     # the phases and register everything yourself -- for an embedder that owns
     # the lifecycle of the resources it handed the system.
     auto-register-tasks = true
+
+    # Whether runUntilTerminated() and the cluster bootstrap arm SIGTERM and
+    # SIGINT on your behalf.  false leaves the pipeline in place and the
+    # signals to the host process that owns them.  What this switches is the
+    # *default*: a caller that names its signals -- runUntilTerminated(['SIGTERM']),
+    # shutdown-on-signals in the bootstrap options -- still installs them,
+    # because explicit options outrank config.
+    run-by-process-signals = true
+
+    # phases ships no values on purpose: its children are named after YOUR
+    # phases, so there is no fixed set of leaves to publish, and an example
+    # one would freeze that example's budget into every deployment's
+    # effective config.  Each child takes timeout, recover and depends-on,
+    # all optional:
+    #
+    #   phases {
+    #     service-requests-done { timeout = 30s }
+    #     actor-system-terminate { timeout = 60s }
+    #     flush-metrics {
+    #       timeout    = 3s
+    #       recover    = false
+    #       depends-on = ["before-actor-system-terminate"]
+    #     }
+    #   }
+    #
+    # A child naming one of the twelve canonical phases merges into it; any
+    # other name declares a new phase, and there depends-on is required --
+    # a phase with no edges sorts into the first batch and would run before
+    # before-service-unbind.  depends-on on a canonical phase is ADDED to
+    # the edge it already has, never a replacement, so a config file cannot
+    # re-parent cluster-leave ahead of service-unbind.
   }
 }
 `.trim();

@@ -41,28 +41,67 @@ type KubernetesLeaseOptionsType = {
   acquireRetryDelayMs?:    number;
 
   // K8s-specific:
-  namespace:               string;
+  namespace?:              string;     // unset: read from the mount
+  namespacePath?:          string;
+  tokenPath?:              string;
+  caPath?:                 string;
   apiServerUrl?:           string;     // all three together, or none of them
   authToken?:              string;     // all three together, or none of them
   caCert?:                 string;     // all three together, or none of them
   tokenReloadIntervalMs?:  number;
+  operationTimeoutMs?:     number;
+  leaseNameMaxLength?:     number;
 };
 ```
 
 | K8s field | Default | What |
 | --- | --- | --- |
-| `namespace` | required | K8s namespace where the Lease resource lives. |
+| `namespace` | from the mount | K8s namespace where the Lease resource lives. Unset, it is the one the Pod's own ServiceAccount mount reports. |
+| `namespacePath` | `/var/run/…/serviceaccount/namespace` | File the namespace is read from. |
+| `tokenPath` | `/var/run/…/serviceaccount/token` | File the bearer token is read from — a **path**, never the token. |
+| `caPath` | `/var/run/…/serviceaccount/ca.crt` | File the CA cert pinning the API server's TLS is read from. |
 | `apiServerUrl` | in-cluster | The K8s API server URL — `https://kubernetes.default.svc` when unset. Requires `authToken` + `caCert`. |
-| `authToken` | in-cluster | Bearer token for the API server — `/var/run/secrets/kubernetes.io/serviceaccount/token` when unset. Requires `apiServerUrl` + `caCert`. |
-| `caCert` | in-cluster | PEM-encoded CA cert for the API server's TLS — `/var/run/secrets/kubernetes.io/serviceaccount/ca.crt` when unset. Requires `apiServerUrl` + `authToken`. |
+| `authToken` | in-cluster | Bearer token for the API server — read from `tokenPath` when unset. Requires `apiServerUrl` + `caCert`. |
+| `caCert` | in-cluster | PEM-encoded CA cert for the API server's TLS — read from `caPath` when unset. Requires `apiServerUrl` + `authToken`. |
 | `tokenReloadIntervalMs` | `60000` | How long a credential read from the ServiceAccount mount is reused before the token file is checked again. No effect on an explicit `authToken`. |
+| `operationTimeoutMs` | `10000` | Ceiling on one API-server request. |
+| `leaseNameMaxLength` | `253` | Longest object name sent unchanged; a longer `name` is truncated deterministically. See below. |
 
-For pods running in-cluster, you only need `namespace` and `name`
-(+ the standard `LeaseOptionsType` fields).  The framework reads the
-API URL, token and CA cert from the standard locations.
+For pods running in-cluster you only need `name` — the framework reads the API
+URL, token, CA cert **and namespace** from the standard locations.  Set
+`namespace` explicitly to address a Lease object in a different namespace than
+the one the Pod runs in.
 
 For tests / dev pointing at a local K8s API (kind, minikube),
 override `apiServerUrl` + `authToken` + `caCert`.
+
+### The same settings from HOCON
+
+Every field above except the three credential *values* and the two test seams
+can come from configuration instead, under
+[`actor-ts.coordination`](/reference/configuration/#actor-tscoordination):
+
+```hocon
+actor-ts.coordination.lease {
+  ttl = 30s
+  kubernetes {
+    namespace         = "actors"
+    operation-timeout = 10s
+  }
+}
+```
+
+Explicit options still win, then this block, then the built-in defaults.
+Nothing in the framework constructs a `Lease` for you, so the constructor loads
+the config chain itself — `ACTOR_TS_CONFIG` and `./application.conf` are
+honoured exactly as `ActorSystem.create` honours them.
+
+There is deliberately **no key for `authToken` or `caCert`**: a bearer token
+does not belong in a file that gets committed, logged, or rendered in the
+DevTools config panel.  `token-path` / `ca-path` / `namespace-path` are the
+supported way to move that half out of code — indirection to a file, never the
+secret itself — and they name the in-cluster source only, so redirecting one
+while also supplying an explicit `apiServerUrl` is rejected.
 
 ### The three connection fields are one credential
 
@@ -133,11 +172,33 @@ the same dead bearer token — so the singleton stayed down until the
 pod was restarted, and so did every replica old enough to have hit
 the same expiry.
 
+### Long names are truncated, not rejected
+
+The API server validates a Lease object's name as a DNS-1123 subdomain, so a
+lease named after something the application owns — an entity id, a tenant key, a
+composed singleton path — can be longer than it will accept.  A name past
+`leaseNameMaxLength` keeps as much of its head as fits and gains a hash of the
+**whole original**:
+
+```ts
+// 'singleton-<300 chars>' becomes 'singleton-xxx…-1f4k9zq'
+```
+
+The hash is a plain FNV-1a of the full name, so it is a function of the name and
+nothing else: two pods must derive the same object name from the same lease, or
+each would acquire its own record and both believe they held it.  It also means
+two names that differ only past the cut land on different objects, which a plain
+slice would not.
+
+Before this the over-long name was simply sent, and came back as an opaque
+`K8sLeaseError` from the first GET — at the moment the singleton was trying to
+start.
+
 ### Required fields are enforced at construction
 
-`name`, `owner`, `ttlMs` and `namespace` have no default.  The
-constructor throws `OptionsError` when one of them is missing,
-before a single request reaches the API server:
+`name`, `owner` and `ttlMs` have no default.  The constructor throws
+`OptionsError` when one of them is missing, before a single request reaches the
+API server:
 
 ```ts
 const incompleteOptions = KubernetesLeaseOptions.create()
@@ -154,6 +215,21 @@ every pod: every `acquire()` returns `true`, and the single-holder
 guarantee is gone without one error being logged.  A missing
 `ttlMs` produces the same outcome by a different route, since the
 expiry it computes is `NaN` and `NaN` is never later than now.
+
+`namespace` is checked one step later, at the first API call, because unset now
+means "read it from the Pod's ServiceAccount mount" and that read is
+asynchronous.  The guard did not go away — it moved:
+
+```ts
+// Error: KubernetesLease: no namespace available.  Either set `namespace`
+// (in code or as actor-ts.coordination.lease.kubernetes.namespace), or run
+// inside a Pod whose ServiceAccount mount carries one.
+```
+
+The distinction from the three above is the one that matters.  Those three,
+left unset, disable mutual exclusion *silently*, so the constructor is the only
+place they can be caught.  A missing namespace stops every request with the
+error above.
 
 ## RBAC
 

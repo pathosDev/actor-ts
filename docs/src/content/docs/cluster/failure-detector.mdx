@@ -172,22 +172,82 @@ member is considered globally unreachable when *enough* peers
 report it that way — the threshold is configurable in some
 downing strategies (see KeepMajority, KeepReferee).
 
-## Custom failure detector
+## Choosing the φ-accrual detector
 
-The cluster's built-in detector is intentionally simple — plain
+The detector described above is intentionally simple — plain
 elapsed-time thresholds, no statistical variance tracking.  For LAN
-scale this is sufficient.  The `failureDetector` cluster option tunes
-its thresholds only — it takes `Partial<FailureDetectorOptionsType>`
-(the three `*Ms` knobs above), not a detector instance, so there's no
-"swap in your own detector" hook on `Cluster.join`.
+scale this is sufficient, so it is the default.
 
-If your network needs Phi-accrual (variance-aware, adaptive
-thresholds), the framework already ships one: `PhiAccrualFailureDetector`
-(with `PhiAccrualOptions`) is a public, exported class that tracks the
-distribution of recent inter-arrival times and produces a continuous
-suspicion value.  It's not yet wired into the cluster as a selectable
-detector — the cluster always runs the simple `FailureDetector` — so
-for now you use it standalone.
+The framework ships a second one.  `PhiAccrualFailureDetector` tracks
+the distribution of recent inter-arrival times and produces a
+continuous suspicion value, φ, which the cluster converts to
+`unreachable` / `down` by threshold.  Where the simple detector asks
+*"has it been quiet for longer than 2s?"*, φ-accrual asks *"how
+surprising is this silence, given how this peer has actually been
+behaving?"* — so a chatty LAN peer can be flagged sooner and a jittery
+mobile one gets more slack, without either number being guessed in
+advance.
+
+Pick it per node, in code:
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withFailureDetectorImplementation('phi')
+  .withPhiAccrual({ unreachableThreshold: 10, downThreshold: 16 });
+Cluster.join(
+  system,
+  clusterOptions,
+);
+```
+
+or in `application.conf`:
+
+```hocon
+actor-ts.cluster.failure-detector {
+  implementation = phi
+
+  # Shared by both implementations: the cadence of the cluster's own
+  # heartbeat loop, which is why `phi` below has no copy of it.
+  heartbeat-interval = 500ms
+
+  phi {
+    unreachable-threshold      = 8       # φ above which the peer is unreachable
+    down-threshold             = 12      # φ above which it is down; must exceed the above
+    max-sample-size            = 200     # inter-arrival times kept per peer
+    min-std-deviation          = 100ms   # floor, so a very steady peer is not flagged on noise
+    acceptable-heartbeat-pause = 0s      # grace added to the last heartbeat before φ rises
+  }
+}
+```
+
+Explicit options win over the file **per field**, so setting one
+threshold in code keeps the other four from `application.conf`.
+
+Three things worth knowing before you switch:
+
+- **`heartbeat-interval` is shared and stays where it is.**  It is the
+  cadence of the cluster's heartbeat loop rather than a property of
+  either algorithm, so there is deliberately no
+  `failure-detector.phi.heartbeat-interval`: swapping the
+  implementation cannot change how often this node talks to its peers.
+- **`unreachable-after` / `down-after` are the simple detector's** and
+  are ignored under `phi`; the `phi.*-threshold` pair replaces them.
+  They are φ values, not durations — a continuous score where 8 means
+  roughly "a 1-in-10⁸ delay", and fractions are an ordinary tuning
+  move.
+- **`acceptable-heartbeat-pause` ships at `0s`**, which gives φ no
+  pause tolerance at all.  If your deployment has known stop-the-world
+  pauses — a GC-heavy neighbour, a suspended VM — that is the knob to
+  raise first.
+
+There is still no hook for a detector class of your own: the choice is
+between the two shipped implementations, named.  `Cluster` talks to
+whichever is installed through one small contract, `FailureDetectorLike`
+(`register` / `heartbeat` / `decide` / `forget` / `lastSeen` /
+`interval`), which is exported if you want to read what a detector owes
+the cluster.
 
 ## Diagnosing failure-detector decisions
 

@@ -1,5 +1,5 @@
 import type { Lease } from '../Lease.js';
-import { LeaseOptionsValidator } from '../LeaseOptions.js';
+import { LeaseOptionsValidator, withLeaseConfigDefaults } from '../LeaseOptions.js';
 import type { LeaseOptions, LeaseOptionsType } from '../LeaseOptions.js';
 
 type LeaseRecord = {
@@ -71,7 +71,12 @@ export class InMemoryLease implements Lease {
   private readonly options: LeaseOptionsType;
 
   constructor(options: LeaseOptions = {}) {
-    this.options = options as LeaseOptionsType;
+    // HOCON layers UNDER the caller's options and ABOVE the built-in defaults,
+    // and it is applied before validation so a bad `ttl` in a config file is
+    // rejected exactly like a bad one in code (#859).  Neither key it can
+    // supply ships a leaf in `reference.conf`, so an unconfigured process
+    // still reaches `validateRequired` with `ttlMs` missing (#596).
+    this.options = withLeaseConfigDefaults(options as LeaseOptionsType);
     // Required-ness first, domain validity second — a missing field must be
     // reported as missing, not as a domain violation of `undefined`.
     const validator = new LeaseOptionsValidator();
