@@ -270,9 +270,18 @@ Das ist wichtig, weil:
 System-Queue wird nie gedeckelt — weder von `BoundedMailbox` noch von
 einer eigenen Mailbox —, weil Supervision- und Lifecycle-Signale niemals
 verworfen werden dürfen.  Ihre Tiefe begrenzt stattdessen das, was sie
-erzeugt: ein Signal pro Child-Event, pro beobachtetem Tod, pro
-Supervisor-Entscheidung — jedes bereits bezahlt von einem Actor, der
-vorher existieren musste.
+erzeugt: ein `create` pro Actor und ein `terminate` pro Stopp, ein
+`childTerminated` pro Kind, das fertig gestoppt hat, ein `failure` pro
+Supervisor-Entscheidung plus das `suspend` / `resume` / `recreate`, das
+diese Entscheidung über den betroffenen Teilbaum verteilt, und ein
+`receiveTimeout` pro abgelaufenem Timer.  Für jedes davon musste vorher
+ein Actor existieren, der es bezahlt hat.
+
+Eine Death-Watch-Benachrichtigung steht **nicht** auf dieser Liste.  Das
+`Terminated` eines beobachteten Actors landet in der *User*-Queue seines
+Watchers — an der Schranke vorbei, wie oben, aber weiterhin hinter allem,
+was diesem Watcher schon gesagt wurde.  Tausend beobachtete Actors
+erhöhen die System-Queue also um gar nichts.
 
 Du siehst diese Unterscheidung normalerweise nicht —
 System-Nachrichten werden vom Framework emittiert, nicht von deinem

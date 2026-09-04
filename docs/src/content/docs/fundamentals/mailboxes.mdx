@@ -255,9 +255,17 @@ This matters because:
 **A mailbox capacity bounds the user queue only.**  The system queue is
 never capped — not by `BoundedMailbox`, not by a mailbox of your own —
 because supervision and lifecycle signals must never be dropped.  Its
-depth is bounded by what produces them instead: one signal per child
-event, per watched death, per supervision decision, each already paid
-for by an actor that had to exist first.
+depth is bounded by what produces them instead: one `create` per actor
+and one `terminate` per stop, one `childTerminated` per child that
+finishes stopping, one `failure` per supervision decision plus the
+`suspend` / `resume` / `recreate` that decision fans out over the
+failing subtree, and one `receiveTimeout` per armed timer that expires.
+Every one of those was paid for by an actor that had to exist first.
+
+A death notification is **not** on that list.  A watched actor's
+`Terminated` goes onto its watcher's *user* queue — past the bound, as
+above, but still behind everything already told to that watcher — so
+watching a thousand actors adds nothing to the system queue at all.
 
 You don't normally see this distinction — system messages are
 emitted by the framework, not by your code.  But understanding it
