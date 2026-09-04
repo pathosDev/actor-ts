@@ -807,7 +807,60 @@ describe('ReliableDelivery — acknowledgment authentication (#730)', () => {
 
     await kit.system.terminate();
   });
+
+  test('a delivery carries no authenticated sender, so `replyTo` is the only reply address there is', async () => {
+    // The premise behind the written refusal of #730's fourth clause — "on the
+    // consumer side, refuse to acknowledge to a `replyTo` other than the
+    // envelope's authenticated sender" — see `ConsumerController`'s
+    // `sendAcknowledgment`.  If a producer ever started telling with a sender,
+    // the clause would become implementable and that refusal would be stale
+    // prose with nothing pointing at it; this case is what points at it.
+    // Verified by mutation: `consumer.tell(delivery, this.self)` in
+    // `ProducerController.send` turns exactly this case red.
+    const kit = quietKit('rd-delivery-has-no-sender');
+    const observed: ObservedDelivery[] = [];
+    const consumerRef = kit.system.spawn<Delivery<string>>(
+      () => new SenderRecordingConsumer(observed),
+      'sender-recording-consumer',
+    );
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(consumerRef as never)
+      // This consumer never acknowledges, so the retransmit is kept well past
+      // the end of the case rather than piling observations up.
+      .withResendTimeout(30_000);
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+
+    producer.tell('only-message');
+    await awaitCondition(() => observed.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the delivery reached the consumer',
+    });
+
+    // Nothing the framework stamped — the producer tells with one argument.
+    expect(observed[0]?.sender).toBeNull();
+    // The one reply address on the envelope is the field the sender wrote.
+    expect(observed[0]?.replyTo).toBe(producer.ref.toString());
+
+    producer.stop();
+    await kit.system.terminate();
+  });
 });
+
+/** What {@link SenderRecordingConsumer} keeps of one delivery. */
+type ObservedDelivery = { readonly sender: ActorRef | null; readonly replyTo: string };
+
+/**
+ * Stands in for a `ConsumerController` just far enough to record what the cell
+ * put in `sender`, which the real one cannot expose — `Actor.sender` is
+ * protected, and every path that reads it there feeds a dead letter.
+ */
+class SenderRecordingConsumer extends Actor<Delivery<string>> {
+  constructor(private readonly observed: ObservedDelivery[]) { super(); }
+
+  override onReceive(delivery: Delivery<string>): void {
+    this.observed.push({ sender: this.sender.toNullable(), replyTo: delivery.replyTo.toString() });
+  }
+}
 
 describe('ReliableDelivery — malformed delivery (#727)', () => {
   /**
