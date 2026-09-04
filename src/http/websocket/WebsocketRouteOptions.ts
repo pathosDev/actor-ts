@@ -62,7 +62,26 @@ export interface WebsocketRouteOptionsType<TOut, TIn> extends WebsocketPolicyOpt
    * compare against.  A reverse proxy that rewrites `Host` but not `Origin`
    * will therefore fail the check; list the real origins instead.
    *
-   * Default: `false` (unset → no origin check, as before).
+   * **Default: `true`** — every `websocket()` route rejects a cross-origin
+   * browser upgrade unless it says otherwise (#756).  It shipped defaulting
+   * to `false`, which left the control on for whoever already knew to ask for
+   * it and off for everyone else; a route whose auth is ambient (a session
+   * cookie, `IpAllowlist`) was then CSWSH-exposed by omission.  Pre-1.0
+   * permits the hard cut, and DevTools had already concluded the same thing
+   * for its own socket by installing the guard unconditionally.
+   *
+   * **A non-browser client is unaffected**, and that is the point of the
+   * missing-`Origin` rule above rather than an accident of it: a Node, Bun or
+   * Deno `WebSocket`, and any server-to-server dialer, sends no `Origin`
+   * header at all, so it takes the "missing → allowed" branch exactly as
+   * before.  What the flipped default changes is browser traffic from a page
+   * this server did not serve.
+   *
+   * **Opt out explicitly with `withRequireSameOrigin(false)`** when the page
+   * driving the socket really is served from elsewhere — a frontend on its own
+   * dev server or CDN.  Prefer naming that origin in {@link allowedOrigins};
+   * `false` with no allowlist restores the pre-#756 behaviour of no origin
+   * check at all.
    */
   readonly requireSameOrigin?: boolean;
 }
@@ -92,7 +111,12 @@ export class WebsocketRouteOptionsBuilder<TOut = unknown, TIn = unknown>
   /**
    * Accept an upgrade whose `Origin` names this same server, so a page the
    * server itself serves works without knowing the host in advance.
-   * Combines with `withAllowedOrigins`; a missing `Origin` stays allowed.
+   * Combines with `withAllowedOrigins`; a missing `Origin` (a non-browser
+   * client, which sends none) stays allowed.
+   *
+   * **On by default since #756** — call this with `false` only to opt a route
+   * out, when the page driving the socket is served from a different origin
+   * and naming it in `withAllowedOrigins` is not workable.
    */
   withRequireSameOrigin(enabled: boolean): this {
     return this.set('requireSameOrigin', enabled);
