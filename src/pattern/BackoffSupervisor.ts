@@ -341,8 +341,14 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
       this.handleTerminated(message);
       return;
     }
-    // Internal respawn tick — we only ever schedule it via timers, so
-    // any other appearance is a bug somewhere upstream.
+    // Internal respawn tick.  The timer below is the only thing that can put
+    // one on this queue — not by convention but because `RESPAWN_TICK` is a
+    // module-private symbol nothing outside this file can name or rebuild, and
+    // a symbol survives no wire codec, so an arriving message that is `===` to
+    // it came from our own `startSingleTimer` (#770).  Before that it was
+    // `Symbol.for`, and the comment here claimed a guarantee the code did not
+    // enforce: anyone with the registry string could forge a tick and collapse
+    // the backoff window this class exists to impose.
     if (message === RESPAWN_TICK) {
       this.respawn();
       return;
@@ -350,7 +356,9 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
     // Internal drain tick — fired drainGraceMs after a respawn.  If
     // the child is still alive, mark it confirmed and drain the
     // stash.  If it died in the meantime, currentChild is null and
-    // we leave the stash for the next incarnation.
+    // we leave the stash for the next incarnation.  Module-private for the
+    // same reason as the respawn tick above: a forged one flushed the stash
+    // into a child that had not yet cleared `preStart` (#770).
     if (message === DRAIN_TICK) {
       if (this.currentChild) {
         this.childConfirmedAlive = true;
@@ -614,11 +622,37 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
   }
 }
 
+/*
+ * The two control ticks, and why they are `Symbol()` and not `Symbol.for()`
+ * (#770).
+ *
+ * `onReceive` is the supervisor's public, arbitrary-message entry point — it
+ * forwards anything it does not recognise to the child — and it recognises
+ * these two by bare value equality.  `Symbol.for` resolves through the
+ * cross-realm global registry, so the sentinel was reconstructible by anyone
+ * holding the string, and the string was a compile-time constant in a
+ * published package.  Telling a forged `RESPAWN_TICK` during a backoff window
+ * collapsed that window to zero; a forged `DRAIN_TICK` flushed the stash into
+ * a child that had not yet cleared `preStart`.
+ *
+ * A plain `Symbol()` is unguessable and costs nothing, because global identity
+ * was never needed: this module is the only place that constructs either one
+ * and the only place that compares them.  The timer *keys* stay strings — they
+ * name entries in the actor's own `TimerScheduler`, which is reachable only
+ * from inside the actor, so there is no channel for a collision to arrive on.
+ *
+ * Honest scope, so nobody reads more into this than it carries: no trust
+ * boundary was crossed.  A symbol survives neither JSON nor CBOR, so no
+ * cluster peer could ever produce one, and the only caller who could is
+ * in-process code already holding the supervisor's ref — which could equally
+ * reassign this module's state directly.  This is a published constant string
+ * colliding with a public message channel, not a privilege boundary.
+ */
 /** Sentinel for the respawn timer message. */
-const RESPAWN_TICK = Symbol.for('actor-ts.pattern.BackoffSupervisor.respawn');
+const RESPAWN_TICK = Symbol('actor-ts.pattern.BackoffSupervisor.respawn');
 const RESPAWN_TIMER_KEY = 'actor-ts.pattern.BackoffSupervisor.respawn';
 /** Sentinel for the stash-drain timer message. */
-const DRAIN_TICK = Symbol.for('actor-ts.pattern.BackoffSupervisor.drain');
+const DRAIN_TICK = Symbol('actor-ts.pattern.BackoffSupervisor.drain');
 const DRAIN_TIMER_KEY = 'actor-ts.pattern.BackoffSupervisor.drain';
 
 /**
