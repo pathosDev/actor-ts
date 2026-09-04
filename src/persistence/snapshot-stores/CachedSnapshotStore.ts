@@ -48,20 +48,35 @@ import type { CachedSnapshotStoreOptions, CachedSnapshotStoreOptionsType } from 
  * exposure, which is why this is a composition hazard rather than a defect
  * in either component.
  *
- * The decorator therefore refuses to cache a snapshot whose `loadLatest`
- * carried `encryption` with a mode other than `'none'`: that call is
- * delegated straight through, and the decorator warns once.
- * `withAllowPlaintextCache(true)` is the operator's acknowledgement that the
- * cache is as protected as the bucket, and restores the caching.
+ * The decorator therefore refuses to cache a snapshot that the wrapped store
+ * keeps encrypted at rest: that call is delegated straight through, and the
+ * decorator warns once.  `withAllowPlaintextCache(true)` is the operator's
+ * acknowledgement that the cache is as protected as the bucket, and restores
+ * the caching.
  *
- * What this check can and cannot see is worth stating, because the gap is
- * not obvious.  It sees the **per-call** `PersistenceOptions` an actor's
- * `encryption()` hook produces, which is what reaches every read and write.
- * It does not see a store configured with encryption at *construction* and
- * never told about it per call — `SnapshotStore` has no member that would
- * report that, and `persistenceOptionSupport` answers a different question
- * ("could this store encrypt?", not "is it going to?").  Adding one is a
- * change to the store contract rather than to this decorator.
+ * What this check can and cannot see is worth stating, because the gap is not
+ * obvious.  It sees **both** routes a deployment can take to confidentiality:
+ *
+ *   - the **per-call** `PersistenceOptions` an actor's `encryption()` hook
+ *     produces, which reaches every read and write; and
+ *   - the wrapped store's **own configuration**, via
+ *     {@link SnapshotStore.encryptsAtRest} — the store-level
+ *     `withEncryption(...)` that the documentation presents as the norm, and
+ *     that never appears in any call's options.  That member was added for
+ *     this decorator (#782): the first version of this guard covered only the
+ *     per-call route, which left the documented path unguarded while the
+ *     object-storage page claimed otherwise in both languages — on the very
+ *     page whose own example configures encryption that way.
+ *
+ * Precedence between the two mirrors the stores': a per-call directive wins
+ * outright, so an explicit per-call `{ mode: 'none' }` is an opt-out even over
+ * a store configured to encrypt — the store would honour that same override.
+ *
+ * What it still cannot see: a store that encrypts and **declares nothing**
+ * (absence means unknown, and unknown never refuses — the rule the whole
+ * capability family follows), and encryption applied *below* the store, such
+ * as a bucket's server-side default or an encrypting backend, which no member
+ * of this contract reports.
  *
  *   const cassandra = new CassandraSnapshotStore(...);
  *   const cached    = new CachedSnapshotStore(
@@ -79,6 +94,25 @@ type CachedSnapshot<S> = {
 };
 
 /**
+ * Which of the two routes made this load's state confidential.  Named because
+ * the two are acknowledged the same way and diagnosed differently: one is the
+ * actor's `encryption()` hook, the other is the store's own
+ * `withEncryption(...)`, and an operator reading the advisory has to know
+ * which knob produced it before they can weigh it.
+ */
+type PlaintextCacheRoute = 'per-call-directive' | 'store-configuration';
+
+/**
+ * How each route reads in the advisory.  A lookup table that *is* the
+ * message's implementation, so it stays beside it rather than moving to
+ * `src/persistence/Constants.ts`.
+ */
+const PLAINTEXT_CACHE_ROUTE_PHRASES: Readonly<Record<PlaintextCacheRoute, string>> = {
+  'per-call-directive': 'this loadLatest asked for encryption',
+  'store-configuration': "the store's own configuration keeps this persistenceId encrypted",
+};
+
+/**
  * The advisory logged the first time an encrypted-state load reaches an
  * unacknowledged cache (#782).
  *
@@ -87,12 +121,12 @@ type CachedSnapshot<S> = {
  * `ActorSystem`, so there is no system logger to reach, and threading one
  * through the decorator for one advisory line is the worse trade.  The
  * stable needle is `caches decoded snapshot state` — filter on that, not on
- * the sentence around it.
+ * the sentence around it, which now varies with the route.
  */
-function plaintextCacheWarning(storeName: string): string {
-  return `persistence: CachedSnapshotStore caches decoded snapshot state, and this loadLatest on `
-    + `'${storeName}' asked for encryption — so the cached copy would be the plaintext of data the `
-    + 'wrapped store keeps encrypted at rest, in a cache the caller owns and typically shares with '
+function plaintextCacheWarning(storeName: string, route: PlaintextCacheRoute): string {
+  return `persistence: CachedSnapshotStore caches decoded snapshot state, and on '${storeName}' `
+    + `${PLAINTEXT_CACHE_ROUTE_PHRASES[route]} — so the cached copy would be the plaintext of data `
+    + 'that store keeps encrypted at rest, in a cache the caller owns and typically shares with '
     + 'other subsystems (#782). The snapshot is being served straight from the wrapped store '
     + 'instead, uncached, and this warning is logged once per store. Call '
     + 'withAllowPlaintextCache(true) to acknowledge the exposure and take the cold-start win, once '
@@ -140,6 +174,16 @@ export class CachedSnapshotStore implements SnapshotStore {
     return this.underlying.persistenceOptionSupport;
   }
 
+  /**
+   * Delegating for the same reason, and `undefined` when the wrapped store
+   * declares nothing: a decorator that turned "unknown" into `false` would
+   * launder a claim nobody made, and this is the member the refusal below
+   * reads (#782).
+   */
+  encryptsAtRest(persistenceId: string): boolean | undefined {
+    return this.underlying.encryptsAtRest?.(persistenceId);
+  }
+
   /** Identity is the wrapped store's, for the same reason (#1358). */
   async storageIdentity(): Promise<string> {
     if (this.underlying.storageIdentity === undefined) {
@@ -156,7 +200,9 @@ export class CachedSnapshotStore implements SnapshotStore {
   }
 
   async loadLatest<S>(persistenceId: string, options?: PersistenceOptions): Promise<Option<Snapshot<S>>> {
-    if (this.refusesPlaintextCache(options)) return this.underlying.loadLatest<S>(persistenceId, options);
+    if (this.refusesPlaintextCache(persistenceId, options)) {
+      return this.underlying.loadLatest<S>(persistenceId, options);
+    }
     const key = this.keyFor(persistenceId);
     const hit = await this.cache.get<CachedSnapshot<S>>(key);
     if (hit.isSome()) return some(hit.value as Snapshot<S>);
@@ -191,19 +237,38 @@ export class CachedSnapshotStore implements SnapshotStore {
    * section on the class (#782).  Warns on the first refusal only, because
    * the condition is a deployment-shaped one: it holds for every load of
    * every entity, and a line per cold start is a line nobody reads.
-   *
-   * `{ mode: 'none' }` is not a refusal.  It is the explicit way to say
-   * "deliberately unprotected", exactly as `unhonouredPersistenceOptions`
-   * treats it, and turning an opt-*out* into a cache bypass would be the one
-   * shape of this check nobody would expect.
    */
-  private refusesPlaintextCache(options: PersistenceOptions | undefined): boolean {
+  private refusesPlaintextCache(persistenceId: string, options: PersistenceOptions | undefined): boolean {
     if (this.allowPlaintextCache) return false;
-    if (options?.encryption === undefined || options.encryption.mode === 'none') return false;
+    const route = this.confidentialityRoute(persistenceId, options);
+    if (route === undefined) return false;
     if (!this.reportedPlaintextCache) {
       this.reportedPlaintextCache = true;
-      console.warn(plaintextCacheWarning(this.underlying.constructor.name));
+      console.warn(plaintextCacheWarning(this.underlying.constructor.name, route));
     }
     return true;
+  }
+
+  /**
+   * Which route, if any, keeps this load's state encrypted at rest — the
+   * per-call directive, or the wrapped store's own configuration.
+   *
+   * Precedence mirrors the stores': a per-call `encryption` wins over the
+   * store's config wherever it appears, so it decides here too, and an
+   * explicit per-call `{ mode: 'none' }` is an opt-*out* rather than a
+   * refusal — the same reading `unhonouredPersistenceOptions` gives it, and
+   * turning "deliberately unprotected" into a cache bypass would be the one
+   * shape of this check nobody would expect.  Only a call that says nothing
+   * falls through to {@link SnapshotStore.encryptsAtRest}, where a store that
+   * declares nothing stays unknown and refuses nothing.
+   */
+  private confidentialityRoute(
+    persistenceId: string,
+    options: PersistenceOptions | undefined,
+  ): PlaintextCacheRoute | undefined {
+    if (options?.encryption !== undefined) {
+      return options.encryption.mode === 'none' ? undefined : 'per-call-directive';
+    }
+    return this.underlying.encryptsAtRest?.(persistenceId) === true ? 'store-configuration' : undefined;
   }
 }
