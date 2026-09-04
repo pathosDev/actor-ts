@@ -64,7 +64,7 @@ interface WebsocketClientOptionsType<TOut, TIn> extends BrokerCommonOptionsType 
   codec?:           WebsocketCodec<TOut, TIn>;             // default jsonCodec()
   maxFrameBytes?:   number;                         // default 1 MiB; oversize inbound closes with 1009
   onInvalidMessage?: 'drop' | 'hook' | 'disconnect'; // default 'drop'
-  pingIntervalMs?:  number;                         // application-level ping; default off
+  pingIntervalMs?:  number;                         // keepalive interval; default off, payload from keepAliveFrame()
   idleTimeoutMs?:   number;                         // read-idle deadline; default 0 (off)
   connectTimeoutMs?: number;                        // connect deadline; default 0 (off)
 }
@@ -254,25 +254,55 @@ drehen lässt.
 
 ## Ping / Keep-Alive
 
+`pingIntervalMs` startet einen Keep-Alive-Timer, damit ein
+zwischengeschalteter Proxy oder Load-Balancer die Verbindung nicht
+wegen Untätigkeit schließt.  **Was dieser Timer sendet, lieferst du
+selbst** — überschreibe dazu `keepAliveFrame()`:
+
 ```ts
 class KeepAlive extends WebsocketClientActor<ClientMessage, ServerMessage> {
   constructor() {
     const webSocketClientOptions = WebsocketClientOptions.create<ClientMessage, ServerMessage>()
       .withUrl('wss://...')
-      .withPingIntervalMs(30_000);
+      .withPingIntervalMs(30_000)
+      .withIdleTimeoutMs(90_000);
     super(webSocketClientOptions);
+  }
+
+  protected override keepAliveFrame(): WebsocketFrame {
+    return { kind: 'text', data: JSON.stringify({ kind: 'heartbeat' }) };
   }
 
   onMessage(message: ServerMessage): void {}
 }
 ```
 
-Ein Ping auf Anwendungsebene alle `pingIntervalMs` verhindert,
-dass zwischengeschaltete Proxies / Load-Balancer Idle-Verbindungen
-schließen — die meisten produktiven Setups wollen das.  Der
-WebSocket-Ping auf Protokollebene (Control-Frame) ist separat und
-wird von der Runtime übernommen; der Ping auf Anwendungsebene ist
-für **Proxies, die Payloads inspizieren, keine Frames**.
+Der Frame geht über `sendRaw()` hinaus, umgeht also den Codec —
+kodiere ihn selbst.  Das Framework liefert bewusst keinen
+Default-Frame: erfundene Bytes wären eine unangekündigte Nachricht in
+*deinem* Protokoll, und ein Peer, der bei einer unbekannten Nachricht
+schließt, würde von seinem eigenen Keep-Alive gekappt.
+
+**Ohne die Überschreibung hat der Timer womöglich nichts zu senden.**
+Er fällt dann auf das native `WebSocket.ping()` der Runtime zurück, und
+das ist ein Control-Frame auf *Protokollebene*, den es **nur auf Bun**
+gibt — das WHATWG-`WebSocket` von Node und Deno hat überhaupt keine
+`ping()`-Methode.  Auf diesen beiden Runtimes kann ein nicht
+überschriebener Hook nichts senden; der Client **startet deshalb keinen
+Timer** und schreibt stattdessen zur Connect-Zeit eine einzige Warnung
+(#751).  Ein Timer, der nachweislich nichts sendet, ist schlechter als
+gar keiner: er ist genau das, was dich glauben lässt, die Verbindung
+werde warm gehalten.
+
+Nur ein Frame auf Anwendungsebene erreicht einen Proxy, der
+**Payloads statt Frames** inspiziert, und nur ein Frame auf
+Anwendungsebene zählt gegen die Lese-Deadline des Peers — ein Pong auf
+Protokollebene wird auf keiner unterstützten Runtime an den
+`message`-Listener zugestellt.
+
+Kombiniere es mit `idleTimeoutMs` (nächster Abschnitt).  Ein Keep-Alive
+verhindert, dass ein Proxy eine untätige Verbindung *schließt*; nur die
+Lese-Deadline bemerkt eine, die trotzdem gekappt wurde.
 
 ## Eine still gekappte Verbindung erkennen
 

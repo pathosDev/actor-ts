@@ -2,7 +2,7 @@
  * Server-side WebSocket demo using the routing DSL (#1).
  *
  *   bun run examples/io/websocket-server.ts
- *   # then open the dev-tools console and:
+ *   # then open http://localhost:3000/ and, in that page's dev-tools console:
  *   #   const ws = new WebSocket('ws://localhost:3000/ws');
  *   #   ws.onmessage = (e) => console.log(e.data);
  *   #   ws.send(JSON.stringify({ kind: 'setName', name: 'alice' }));
@@ -82,7 +82,18 @@ async function main(): Promise<void> {
     get(() => completeText(Status.OK, 'actor-ts websocket demo — connect to ws://localhost:3000/ws')),
   );
 
-  const binding = await system.extension(HttpExtensionId).newServerAt('0.0.0.0', 3000).bind(routes);
+  // Loopback, like every other HTTP example in this tree.  This one used to
+  // bind the wildcard address, which put an unauthenticated broadcast relay on
+  // every interface of whatever machine ran the demo — and it is the file the
+  // WebSocket docs point at, so the outlier was also the template (#756).
+  // Widen it deliberately, once the service is meant to be reached from
+  // elsewhere and has auth of its own.
+  //
+  // The origin control the security page asks for is on this route already:
+  // `websocket()` requires a same-origin `Origin` by default, so the browser
+  // console snippet above works (the page is this server's) and a page on
+  // another origin is refused the upgrade with 403.  See /http/security/.
+  const binding = await system.extension(HttpExtensionId).newServerAt('127.0.0.1', 3000).bind(routes);
   console.log(`websocket demo: http://${binding.host}:${binding.port}/  (ws path: /ws)`);
   console.log('press Ctrl+C to exit');
 

@@ -95,6 +95,7 @@ type WebsocketRouteOptions<TOut, TIn> = {
   maxBufferedBytes?: number;                          // default 4 MiB
   onBackpressure?:   'drop' | 'close';                // default 'drop'
   allowedOrigins?:   string[];                        // CSWSH-Schutz — siehe unten
+  requireSameOrigin?: boolean;                        // CSWSH-Schutz; Default true — siehe unten
   maxConnections?:   number;                          // Limit gleichzeitiger Verbindungen; Default unbegrenzt
   maxPreAttachFrames?: number;                        // Frame-Limit im Aufbaufenster; Default 256
   maxPreAttachBytes?:  number;                        // Byte-Limit im Aufbaufenster; Default 4 MiB
@@ -230,7 +231,7 @@ Störung: ein aufgewerteter Socket ohne Actor dahinter, der vorher für die
 Lebensdauer des Prozesses offen blieb, Frames sammelte, die niemand je
 abholt, und einen Platz belegte, den niemand je zurückgibt.
 
-### Origin-Allowlist (CSWSH-Schutz)
+### Origin-Prüfungen (CSWSH-Schutz)
 
 Browser hängen die Cookies des Nutzers automatisch an einen WebSocket-Upgrade
 an — eine WS-Route mit **ambienter** Authentifizierung (Session-Cookie oder
@@ -238,8 +239,28 @@ an — eine WS-Route mit **ambienter** Authentifizierung (Session-Cookie oder
 fremde Seite öffnet `new WebSocket('wss://dein-host/ws')` und nutzt die
 Credentials des Opfers.
 
-Mit `allowedOrigins` wird der Handshake über den `Origin`-Header des Browsers
-abgesichert:
+Zwei Regeln sichern den Handshake über den `Origin`-Header des Browsers ab, und
+sie ergänzen sich — ein Upgrade kommt durch, sobald **eine** von beiden es
+zulässt.
+
+#### `requireSameOrigin` — standardmäßig an
+
+`requireSameOrigin` lässt einen `Origin` zu, der diesen Server selbst benennt,
+indem es ihn mit dem `Host` des Requests vergleicht.  Es braucht keinerlei
+Konfiguration — genau deshalb ist es der Default: eine Route bekommt die
+Prüfung, ohne dass ihr Autor die Option kennen muss.
+
+```ts
+websocket('/ws', chat);              // same-origin required
+```
+
+Verglichen wird nur der Host, denn `Host` trägt kein Schema.  Ein Reverse-Proxy,
+der `Host`, aber nicht `Origin` umschreibt, fällt deshalb durch die Prüfung —
+trag dort die echten Origins in `allowedOrigins` ein.
+
+#### `allowedOrigins` — andere Origins benennen
+
+Dafür, dass die Seite, die den Socket öffnet, woanders ausgeliefert wird:
 
 ```ts
 const wsOptions = WebsocketRouteOptions.create()
@@ -247,15 +268,35 @@ const wsOptions = WebsocketRouteOptions.create()
 websocket('/ws', chat, wsOptions);
 ```
 
-Ein Upgrade, dessen `Origin` vorhanden, aber nicht gelistet ist, wird auf allen
-drei Backends **vor** dem Handshake mit **403** abgelehnt.  Ein **fehlender**
-`Origin` (Nicht-Browser-Client — natives WebSocket, Server-zu-Server) wird
-zugelassen, da CSWSH ein reiner Browser-Angriff ist.  Der Vergleich ist
-case-insensitiv.
+Ein Upgrade, dessen `Origin` vorhanden ist, aber zu keiner der beiden Regeln
+passt, wird auf allen drei Backends **vor** dem Handshake mit **403** abgelehnt.
+Der Vergleich ist case-insensitiv.
 
-`BearerTokenAuth` ist bereits geschützt (Browser können beim WS-Handshake
-keinen `Authorization`-Header setzen); `allowedOrigins` ist v. a. bei Cookie-
-oder IP-basierter Auth relevant.
+#### Fehlender `Origin` — Nicht-Browser-Clients bleiben unberührt
+
+Ein **fehlender** `Origin` wird von beiden Regeln zugelassen.  Ein `WebSocket`
+aus Node, Bun oder Deno und jeder Server-zu-Server-Dialer sendet überhaupt
+keinen `Origin`-Header, sodass nichts davon sie betrifft: CSWSH nutzt die
+ambienten Credentials eines Opfer-Browsers, und ein Browser sendet den Header
+immer.  Das macht den Default gefahrlos einschaltbar — abgewiesen wird
+neuerdings Browser-Verkehr von einer Seite, die du nicht ausgeliefert hast.
+
+#### Abschalten
+
+```ts
+const wsOptions = WebsocketRouteOptions.create()
+  .withRequireSameOrigin(false);
+websocket('/ws', chat, wsOptions);   // no origin check at all
+```
+
+`withRequireSameOrigin(false)` zusammen mit `withAllowedOrigins([...])` behält
+die Allowlist und entfernt nur den Same-Origin-Arm.  Ohne Allowlist bleibt die
+Route ganz ohne Origin-Prüfung — das Verhalten vor #756, und einen Kommentar
+wert, der festhält, welche Credential-Form das unbedenklich macht.
+
+`BearerTokenAuth` ist so eine Form: bereits geschützt, weil Browser beim
+WS-Handshake keinen `Authorization`-Header setzen können.  Die Origin-Regeln
+sind v. a. bei Cookie- oder IP-basierter Auth relevant.
 
 ### Middleware läuft zur Upgrade-Zeit
 

@@ -63,7 +63,7 @@ interface WebsocketClientOptionsType<TOut, TIn> extends BrokerCommonOptionsType 
   codec?:           WebsocketCodec<TOut, TIn>;             // default jsonCodec()
   maxFrameBytes?:   number;                         // default 1 MiB; oversize inbound closes with 1009
   onInvalidMessage?: 'drop' | 'hook' | 'disconnect'; // default 'drop'
-  pingIntervalMs?:  number;                         // application-level ping; default off
+  pingIntervalMs?:  number;                         // keepalive interval; default off, payload from keepAliveFrame()
   idleTimeoutMs?:   number;                         // read-idle deadline; default 0 (off)
   connectTimeoutMs?: number;                        // connect deadline; default 0 (off)
 }
@@ -246,25 +246,52 @@ forever.
 
 ## Ping / keep-alive
 
+`pingIntervalMs` runs a keepalive timer so an intermediate proxy or
+load balancer does not close the connection for being idle.  **What
+that timer sends is yours to supply** — override `keepAliveFrame()`:
+
 ```ts
 class KeepAlive extends WebsocketClientActor<ClientMessage, ServerMessage> {
   constructor() {
     const webSocketClientOptions = WebsocketClientOptions.create<ClientMessage, ServerMessage>()
       .withUrl('wss://...')
-      .withPingIntervalMs(30_000);
+      .withPingIntervalMs(30_000)
+      .withIdleTimeoutMs(90_000);
     super(webSocketClientOptions);
+  }
+
+  protected override keepAliveFrame(): WebsocketFrame {
+    return { kind: 'text', data: JSON.stringify({ kind: 'heartbeat' }) };
   }
 
   onMessage(message: ServerMessage): void {}
 }
 ```
 
-An application-level ping every `pingIntervalMs` keeps
-intermediate proxies / load balancers from closing idle
-connections — most production setups want it.  The protocol-level
-WebSocket ping (control frame) is separate and handled by the
-runtime; the application-level ping is for **proxies that inspect
-payload, not frames**.
+The frame goes out through `sendRaw()`, so it bypasses the codec —
+encode it yourself.  The framework ships no default frame on purpose:
+bytes it invented would be an unannounced message in *your* protocol,
+and a peer that closes on an unknown message would be severed by its
+own keepalive.
+
+**Without the override the timer may have nothing to send.**  It falls
+back to the runtime's native `WebSocket.ping()`, and that is a
+*protocol-level* control frame which exists on **Bun only** — the
+WHATWG `WebSocket` that Node and Deno ship has no `ping()` method at
+all.  On those two runtimes an un-overridden hook can send nothing, so
+the client **starts no timer** and logs one warning at connect time
+instead (#751).  A timer that provably sends nothing is worse than no
+timer: it is the thing that convinces you the connection is being kept
+warm.
+
+Only an application-level frame reaches a proxy that inspects
+**payload rather than frames**, and only an application-level frame
+counts against the peer's own read deadline — a protocol-level pong is
+not delivered to the `message` listener on any supported runtime.
+
+Pair it with `idleTimeoutMs` (next section).  A keepalive stops a proxy
+*closing* an idle connection; only the read deadline notices one that
+was dropped anyway.
 
 ## Detecting a connection that was silently dropped
 
