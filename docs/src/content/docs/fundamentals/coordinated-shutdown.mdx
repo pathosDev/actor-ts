@@ -126,9 +126,17 @@ coordinatedShutdown.addTask('flush-metrics', 'push-prometheus', async () => {
 ```
 
 The `dependsOn` field is what makes the order DAG-shaped rather
-than linear — your phase runs after `before-actor-system-terminate`
-but **before** `actor-system-terminate` (because the latter has the
-former in its own implicit chain).
+than linear — your phase runs after `before-actor-system-terminate`.
+
+It does **not** by itself put the phase before
+`actor-system-terminate`.  Both become ready in the same round of the
+topological sort — `actor-system-terminate` has the same single
+dependency — and the sort's alphabetical tie-breaker then decides, so
+`flush-metrics` above actually runs *after* the system has terminated.
+Adding the reverse edge is what places it, and that is `depends-on`
+from config (below), which is added to a canonical phase's existing
+edges.  From code, name a phase whose successor is not the one you
+need to precede.
 
 Because `addPhase` requires every `dependsOn` entry to name an
 already-registered phase, a cycle can't be formed in the first
