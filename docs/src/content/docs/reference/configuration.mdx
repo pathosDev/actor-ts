@@ -86,13 +86,16 @@ actor-ts {
   }
 
   sharding {
-    number-of-shards    = 64
-    rebalance-interval  = 2s
-    hand-off-timeout    = 10s
-    remember-entities   = false
-    passivation-idle    = 5m    # 0 disables auto-passivation
-    # shard-passivation-idle    # unset: follows passivation-idle
-    max-entities        = 0     # 0 = no per-node cap
+    number-of-shards           = 64
+    rebalance-interval         = 2s
+    hand-off-timeout           = 10s
+    remember-entities          = false
+    passivation-idle           = 5m       # 0 disables auto-passivation
+    # shard-passivation-idle              # unset: follows passivation-idle
+    max-entities               = 0        # 0 = no per-node cap
+    buffer-size                = 100000   # region-wide; 0 = never buffer
+    register-retry-interval    = 500ms
+    shard-region-query-timeout = 5s
   }
 }
 ```
@@ -444,6 +447,9 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.passivation-idle` | `5m` | Auto-passivate an entity after this idle window.  `0` = disabled.  An entity that keeps state in memory and does not rebuild it in `preStart` loses that state — see [passivation](/cluster/sharding/overview/#passivation). |
 | `sharding.shard-passivation-idle` | *(unset)* | Auto-passivate a shard after it has stood empty this long.  Unset it follows `passivation-idle`; `0` keeps empty shards resident.  Deliberately absent from `reference.conf`, because a shipped value is what "unset" would have to be distinguishable from. |
 | `sharding.max-entities` | `0` | Per-node entity cap; the least-recently-used entity is passivated on overflow.  `0` = no cap. |
+| `sharding.buffer-size` | `100000` | How many messages one region may hold **across all its shards** while their homes are unknown or handing off.  Past the cap the *newest* message is dropped to dead letters with its sender, so what is already queued keeps the order the caller sent it in.  **Mind the polarity against `max-entities` above**: here `0` means *never buffer — dead-letter immediately*, not "no cap". |
+| `sharding.register-retry-interval` | `500ms` | How often a region re-sends an unacknowledged registration to the coordinator.  Everything routed for the type buffers until the coordinator answers, so this is also how long a lost `Register` stalls it. |
+| `sharding.shard-region-query-timeout` | `5s` | Default wait for `sharding.shards()` and `sharding.shardRefFor()`.  An explicit `timeoutMs` argument still wins over it.  Unrelated to how long the region keeps a correlation for a cross-node `ask`, which is minutes on purpose. |
 
 These apply to **every** sharded type started on the node.  They are read
 once per `sharding.start(...)` and layered under whatever that call passes

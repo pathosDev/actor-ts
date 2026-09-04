@@ -43,7 +43,11 @@ import {
   type ShardKeyedClass,
   type ShardReference,
 } from './ShardKey.js';
-import { StartShardingOptionsValidator, readShardingOptionsFromConfig } from './StartShardingOptions.js';
+import {
+  DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS,
+  StartShardingOptionsValidator,
+  readShardingOptionsFromConfig,
+} from './StartShardingOptions.js';
 import type { StartShardingOptions, StartShardingOptionsType } from './StartShardingOptions.js';
 import { isShardingMessage } from './ShardingProtocol.js';
 import type { GetShardLocation, GetShards } from './ShardingProtocol.js';
@@ -75,6 +79,17 @@ export class ClusterSharding {
   private readonly numShardsByType = new Map<string, number>();
   /** Whether the region started for a type is a proxy — see {@link start}. */
   private readonly proxyByType = new Map<string, boolean>();
+  /**
+   * Type name → the default wait its {@link shards} / {@link shardRefFor}
+   * queries use when the caller names no timeout (#849).
+   *
+   * Held here rather than on the region, because it configures how *this node
+   * queries* rather than anything the region does — the region never sees it.
+   * Filled from the same merged options every other per-type default arrives
+   * through, so `actor-ts.sharding.shard-region-query-timeout` reaches it and
+   * an explicit `withShardRegionQueryTimeoutMs` beats the file.
+   */
+  private readonly queryTimeoutByType = new Map<string, number>();
   /**
    * Type name → the last shard map this node was told about.  Read by
    * {@link shardMap}, fed by the `ShardMapChanged` subscription below.
@@ -228,6 +243,10 @@ export class ClusterSharding {
 
     this.numShardsByType.set(options.typeName, config.numShards);
     this.proxyByType.set(options.typeName, config.proxy);
+    this.queryTimeoutByType.set(
+      options.typeName,
+      options.shardRegionQueryTimeoutMs ?? DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS,
+    );
     const ref = this.system._spawnSystemActor<TMessage>(
       // ShardRegion internally handles extra envelope types; cast to Actor<TMessage>
       // so the returned ref presents the user-facing signature.
@@ -443,20 +462,25 @@ export class ClusterSharding {
    * coordinator has had no reason to allocate them.  Use
    * {@link shardRefFor} to place one on purpose.
    *
+   * `timeoutMs` defaults to `actor-ts.sharding.shard-region-query-timeout`
+   * (5 s out of the box), or to whatever `withShardRegionQueryTimeoutMs`
+   * this type was started with — an explicit argument still wins over both.
+   *
    * @throws if no region for `typeName` has been started on this node, or if
    *   the coordinator does not answer within `timeoutMs` (`AskTimeoutError`) —
    *   which is what a leader election in flight looks like from here.
    */
   async shards<TMessage = unknown>(
     typeName: string,
-    timeoutMs = 5_000,
+    timeoutMs?: number,
   ): Promise<ReadonlyArray<ShardInfo<TMessage>>> {
     const region = this.regionOrThrow(typeName);
+    const waitMs = timeoutMs ?? this.queryTimeoutOf(typeName);
     // Leave the coordinator's fan-out a shorter fuse than our own ask, so a
     // slow region degrades into a partial answer instead of no answer at all.
-    const fanOutTimeoutMs = Math.max(250, Math.floor(timeoutMs * 0.6));
+    const fanOutTimeoutMs = Math.max(250, Math.floor(waitMs * 0.6));
     const query: GetShards = { kind: 'sharding.GetShards', timeoutMs: fanOutTimeoutMs };
-    return await region.ask<ReadonlyArray<ShardInfo<TMessage>>>(query as never, timeoutMs);
+    return await region.ask<ReadonlyArray<ShardInfo<TMessage>>>(query as never, waitMs);
   }
 
   /**
@@ -550,17 +574,35 @@ export class ClusterSharding {
    * a remote shard, send `GetShardStats` with your own actor's `self` as
    * `replyTo`, or use {@link shards} for the cluster-wide picture.
    *
+   * `timeoutMs` defaults to `actor-ts.sharding.shard-region-query-timeout`,
+   * exactly as {@link shards} does.
+   *
    * @throws if no region for `typeName` has been started on this node, or if
    *   the shard cannot be placed within `timeoutMs` (`AskTimeoutError`).
    */
   async shardRefFor<TMessage = unknown>(
     typeName: string,
     shardId: number,
-    timeoutMs = 5_000,
+    timeoutMs?: number,
   ): Promise<ActorRef<ShardMessage<TMessage>>> {
     const region = this.regionOrThrow(typeName);
     const query: GetShardLocation = { kind: 'sharding.GetShardLocation', shardId };
-    return await region.ask<ActorRef<ShardMessage<TMessage>>>(query as never, timeoutMs);
+    return await region.ask<ActorRef<ShardMessage<TMessage>>>(
+      query as never,
+      timeoutMs ?? this.queryTimeoutOf(typeName),
+    );
+  }
+
+  /**
+   * The configured query wait for a type, or the built-in one.
+   *
+   * The fallback covers a type started before this node learned about it —
+   * there is none today, since {@link regionOrThrow} runs first and every
+   * `start` fills the map, but a lookup that can miss should not return
+   * `undefined` into an `ask`.
+   */
+  private queryTimeoutOf(typeName: string): number {
+    return this.queryTimeoutByType.get(typeName) ?? DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS;
   }
 
   private regionOrThrow(typeName: string): ActorRef<unknown> {

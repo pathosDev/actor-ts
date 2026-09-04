@@ -24,6 +24,32 @@ export const DEFAULT_NUM_SHARDS = 64;
 export const DEFAULT_PASSIVATION_IDLE_MS = 300_000;
 
 /**
+ * Built-in default for {@link ShardingOptionsType.bufferSize} — how many
+ * messages one region may hold, across every shard, while their homes are
+ * unknown or in transition (#849, #461).  Mirrors
+ * `actor-ts.sharding.buffer-size` in `reference.conf`.
+ *
+ * Large enough that an ordinary rebalance never reaches it — buffering is the
+ * mechanism that makes a handoff loss-free, and a cap that trips during one
+ * would turn a routine event into message loss.  Bounded at all because the
+ * states that fill the buffer (no leader, an unacquirable lease, a refused
+ * registration) do not necessarily end: unbounded, the region's answer to a
+ * coordinator that never replies is to consume the heap.
+ */
+export const DEFAULT_SHARD_REGION_BUFFER_SIZE = 100_000;
+
+/**
+ * Built-in default for {@link ShardingOptionsType.registerRetryIntervalMs} —
+ * how often a region re-sends an unacknowledged `Register` to the coordinator
+ * (#849).  Mirrors `actor-ts.sharding.register-retry-interval`.
+ *
+ * Short on purpose: the retry exists because `Register` is fire-and-forget at
+ * a path that need not exist yet, and every message for the type buffers until
+ * the coordinator answers.  Raising it lengthens exactly that window.
+ */
+export const DEFAULT_REGISTER_RETRY_INTERVAL_MS = 500;
+
+/**
  * Plain options-object shape for a sharded region.  Consumed by
  * {@link ShardRegion.settingsToConfig} and extended by
  * {@link StartShardingOptionsType} — the coordinator-side superset that
@@ -101,6 +127,36 @@ export type ShardingOptionsType<TMessage> = {
    * upper bound rather than a strict instantaneous one.
    */
   readonly maxEntities?: number;
+  /**
+   * Cap the region's routing buffer — the messages it holds while a shard's
+   * home is unknown or in transition (#849, #461).
+   *
+   * Default: `100000`.  **A region-wide total, not a per-shard one**: the
+   * buffer is keyed by shard id, and a per-queue cap would multiply by
+   * `numShards` into a bound no operator picked.
+   *
+   * `0` means **never buffer** — every message that cannot be routed right
+   * now goes straight to dead letters.  Note the polarity against
+   * {@link maxEntities} in the same block, where `0` means *no* cap: here `0`
+   * is the tightest setting there is, not the loosest.
+   *
+   * On overflow the *newest* message is dropped, not the oldest, and it is
+   * dead-lettered with its sender.  Evicting from the front would hand the
+   * shard a torn prefix of what a caller sent, which is the one property the
+   * buffer exists to preserve.
+   */
+  readonly bufferSize?: number;
+  /**
+   * How often an unacknowledged region registration is re-sent to the
+   * coordinator, in ms (#849).
+   *
+   * Default: `500`.  The retry is what makes a lost `Register` recoverable —
+   * the frame is fire-and-forget at a path that need not exist yet — and
+   * everything routed for the type buffers until the coordinator answers, so
+   * this interval is also the granularity of that stall.  Raise it only if the
+   * frames themselves are a cost you have measured.
+   */
+  readonly registerRetryIntervalMs?: number;
 };
 
 /**
@@ -183,6 +239,19 @@ export class ShardingOptionsBuilder<
   withMaxEntities(maxEntities: number): this {
     return this.set('maxEntities', maxEntities);
   }
+
+  /**
+   * Cap the region-wide routing buffer; the newest message is dead-lettered on
+   * overflow.  Default: 100000.  `0` = never buffer.
+   */
+  withBufferSize(bufferSize: number): this {
+    return this.set('bufferSize', bufferSize);
+  }
+
+  /** Re-send an unacknowledged region registration this often, in ms.  Default: 500. */
+  withRegisterRetryIntervalMs(registerRetryIntervalMs: number): this {
+    return this.set('registerRetryIntervalMs', registerRetryIntervalMs);
+  }
 }
 
 /**
@@ -233,6 +302,19 @@ export class ShardingOptionsValidator<
     }
     if (options.maxEntities !== undefined && (!Number.isInteger(options.maxEntities) || options.maxEntities < 0)) {
       this.fail('maxEntities', 'must be an integer >= 0', options.maxEntities);
+    }
+    // `0` is legal and means "never buffer" — the tightest setting, not the
+    // absence of one — so the floor is 0 rather than 1.
+    if (options.bufferSize !== undefined && (!Number.isInteger(options.bufferSize) || options.bufferSize < 0)) {
+      this.fail('bufferSize', 'must be an integer >= 0', options.bufferSize);
+    }
+    if (
+      options.registerRetryIntervalMs !== undefined &&
+      (typeof options.registerRetryIntervalMs !== 'number'
+        || !Number.isFinite(options.registerRetryIntervalMs)
+        || options.registerRetryIntervalMs <= 0)
+    ) {
+      this.fail('registerRetryIntervalMs', 'must be a positive finite number', options.registerRetryIntervalMs);
     }
   }
 }

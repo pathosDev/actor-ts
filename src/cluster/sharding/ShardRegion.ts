@@ -4,11 +4,16 @@ import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import { ActorRef } from '../../ActorRef.js';
 import { ActorPath } from '../../ActorPath.js';
-import { DEFAULT_NUM_SHARDS, DEFAULT_PASSIVATION_IDLE_MS } from './ShardingOptions.js';
+import {
+  DEFAULT_NUM_SHARDS,
+  DEFAULT_PASSIVATION_IDLE_MS,
+  DEFAULT_REGISTER_RETRY_INTERVAL_MS,
+  DEFAULT_SHARD_REGION_BUFFER_SIZE,
+} from './ShardingOptions.js';
 import type { ShardingOptionsType } from './ShardingOptions.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
-import { Terminated } from '../../SystemMessages.js';
+import { DeadLetter, Terminated } from '../../SystemMessages.js';
 import { SystemGroups, shardCoordinatorName, systemActorPath } from '../../internal/SystemPaths.js';
 import type { Cluster } from '../Cluster.js';
 import type { EnvelopeMessage } from '../Protocol.js';
@@ -70,6 +75,10 @@ export type ShardRegionConfig<TMessage> = {
   readonly passivationIdleMs: number;
   readonly shardPassivationIdleMs: number;
   readonly maxEntities: number;
+  /** Region-wide cap on the routing buffer; `0` = never buffer (#849). */
+  readonly bufferSize: number;
+  /** How often an unacknowledged `Register` is re-sent, in ms (#849). */
+  readonly registerRetryIntervalMs: number;
   readonly cluster: Cluster;
   readonly localResolver: (path: string) => ActorRef | null;
 };
@@ -150,6 +159,24 @@ export class ShardRegion<TMessage = unknown>
     number,
     Array<{ message: RoutableMessage<TMessage>; sender: ActorRef | null }>
   >();
+  /**
+   * How many messages {@link buffer} holds in total, across every shard —
+   * the quantity `bufferSize` bounds (#849).
+   *
+   * Kept as a counter rather than summed on demand, and bounded as a *total*
+   * rather than per queue, for the same reason: the map is keyed by shard id,
+   * so a per-queue cap would admit `numShards × bufferSize` messages — 64×
+   * the configured bound at the shipped default — and summing the queues on
+   * every buffered message would put an O(numShards) walk on the routing path.
+   */
+  private bufferedCount = 0;
+  /**
+   * Whether the full-buffer warning has already gone out for the current
+   * overflow episode.  Latched so a hot route cannot flood the log, and
+   * cleared by {@link flushBuffer} once nothing is held any more, so a second
+   * stall is reported rather than passing silently.
+   */
+  private warnedBufferFull = false;
 
   private coordinatorRef: ActorRef<ShardingMessage> | null = null;
   /**
@@ -235,6 +262,12 @@ export class ShardRegion<TMessage = unknown>
       // explicit window the entity one applies a level up.
       shardPassivationIdleMs: s.shardPassivationIdleMs ?? passivationIdleMs,
       maxEntities: s.maxEntities ?? 0,
+      // Defaulted here as well as in `reference.conf`, so a directly-constructed
+      // region is bounded exactly like a HOCON-fed one — the buffer is a safety
+      // property, and one that only `ClusterSharding.start` supplied would be
+      // absent from every region built any other way.
+      bufferSize: s.bufferSize ?? DEFAULT_SHARD_REGION_BUFFER_SIZE,
+      registerRetryIntervalMs: s.registerRetryIntervalMs ?? DEFAULT_REGISTER_RETRY_INTERVAL_MS,
       cluster,
       localResolver,
     };
@@ -626,7 +659,10 @@ export class ShardRegion<TMessage = unknown>
 
   private scheduleRegisterRetry(): void {
     this.registerTimer?.cancel();
-    this.registerTimer = this.system.scheduler.scheduleOnceFunction(500, () => this.ensureRegistered());
+    this.registerTimer = this.system.scheduler.scheduleOnceFunction(
+      this.config.registerRetryIntervalMs,
+      () => this.ensureRegistered(),
+    );
   }
 
   /**
@@ -1485,17 +1521,70 @@ export class ShardRegion<TMessage = unknown>
 
   /* -------------------------------- Buffer ----------------------------- */
 
+  /**
+   * Hold a message until its shard has a home — but only up to `bufferSize`
+   * across the whole region (#849, #461).
+   *
+   * "No home yet" is normally momentary, which is why buffering is the right
+   * answer at all: it is what makes a rebalance and a handoff loss-free.  What
+   * is not bounded is how long it can last.  Two of the three `route` branches
+   * that land here mean "the coordinator has not answered", and a coordinator
+   * that never answers is a reachable state — no leader, an unacquirable
+   * lease, or a registration the coordinator refused while the region keeps
+   * running and keeps accepting traffic.  Remote peers can drive it too, since
+   * an inbound envelope reaches `routeMessage` through `onRemoteEnvelope`.
+   * Unbounded, that is a memory leak that ends the process; bounded, it is
+   * message loss that says so in the log and on the dead-letter stream.
+   *
+   * Drops the *newest* rather than evicting the oldest, for the reason
+   * {@link ClusterSingletonProxy} already writes down: the buffer exists to
+   * preserve the order a caller sent in, and dropping from the front hands the
+   * shard a torn prefix of it.
+   *
+   * `bufferSize = 0` is a real setting — never buffer, dead-letter at once —
+   * and the `>=` is what expresses it.
+   */
   private bufferShard(shardId: number, message: RoutableMessage<TMessage>, sender: ActorRef | null): void {
+    if (this.bufferedCount >= this.config.bufferSize) {
+      this.warnBufferFull();
+      this.system.deadLetters.tell(new DeadLetter(message, sender, this.self));
+      return;
+    }
     let queue = this.buffer.get(shardId);
     if (!queue) { queue = []; this.buffer.set(shardId, queue); }
     queue.push({ message, sender });
+    this.bufferedCount++;
+  }
+
+  /** One line per overflow episode, naming both ways to raise the cap. */
+  private warnBufferFull(): void {
+    if (this.warnedBufferFull) return;
+    this.warnedBufferFull = true;
+    const situation = this.config.bufferSize === 0
+      ? 'buffering is off (`buffer-size = 0`)'
+      : `the routing buffer is full (${this.config.bufferSize} messages across every shard)`;
+    this.log.warn(
+      `[sharding] region '${this.config.typeName}': ${situation} — dropping to dead letters `
+      + 'until a shard home arrives.  Raise the cap with '
+      + '`StartShardingOptions.withBufferSize(n)` or `actor-ts.sharding.buffer-size` if this is '
+      + 'a long rebalance, or check why the coordinator is not placing shards.',
+    );
   }
 
   private flushBuffer(shardId: number): void {
     const queue = this.buffer.get(shardId);
     if (!queue || queue.length === 0) return;
     this.buffer.delete(shardId);
+    // Discounted *before* the replay, not after: `routeMessage` can put the
+    // same message straight back — a shard whose home is still unknown, or one
+    // handing off again — and a decrement afterwards would subtract entries
+    // that are already in the map a second time.
+    this.bufferedCount -= queue.length;
     for (const { message, sender } of queue) this.routeMessage(message, sender);
+    // Unlatched only once the region genuinely holds nothing, and only after
+    // the replay, so a flush that immediately re-fills does not report the
+    // same episode twice.
+    if (this.bufferedCount === 0) this.warnedBufferFull = false;
   }
 
   /* -------------------------------- Misc ------------------------------ */

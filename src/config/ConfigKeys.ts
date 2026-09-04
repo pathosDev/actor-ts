@@ -390,12 +390,19 @@ export const ConfigKeys = {
   /**
    * Cluster-sharding defaults — `actor-ts.sharding.*`.  Read once per
    * started type by `ClusterSharding.start`, which layers them under the
-   * explicit options; the first five reach the region, the last two the
-   * per-type coordinator.
+   * explicit options; most reach the region, `rebalanceInterval` and
+   * `handOffTimeout` the per-type coordinator, and `shardRegionQueryTimeout`
+   * neither — it is the default `ClusterSharding.shards()` /
+   * `shardRefFor()` wait, held on this node.
    *
    * `shardPassivationIdle` has no leaf in `reference.conf` on purpose — it
    * must stay absent for "unset means: follow `passivationIdle`" to be
    * expressible, since a shipped value would make `hasPath` true forever.
+   *
+   * `bufferSize` caps the region's routing buffer as a **region-wide total**
+   * (#849).  The buffer is keyed by shard id, so reading it as per-shard
+   * multiplies the bound by `numberOfShards`; and `0` here means *never
+   * buffer*, the opposite polarity to `maxEntities = 0`, which means *no cap*.
    */
   sharding: {
     numberOfShards: 'actor-ts.sharding.number-of-shards',
@@ -403,8 +410,11 @@ export const ConfigKeys = {
     passivationIdle: 'actor-ts.sharding.passivation-idle',
     shardPassivationIdle: 'actor-ts.sharding.shard-passivation-idle',
     maxEntities: 'actor-ts.sharding.max-entities',
+    bufferSize: 'actor-ts.sharding.buffer-size',
+    registerRetryInterval: 'actor-ts.sharding.register-retry-interval',
     rebalanceInterval: 'actor-ts.sharding.rebalance-interval',
     handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
+    shardRegionQueryTimeout: 'actor-ts.sharding.shard-region-query-timeout',
   },
 
   /**

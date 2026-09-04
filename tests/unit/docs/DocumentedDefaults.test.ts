@@ -50,11 +50,14 @@ import {
 import {
   DEFAULT_NUM_SHARDS,
   DEFAULT_PASSIVATION_IDLE_MS,
+  DEFAULT_REGISTER_RETRY_INTERVAL_MS,
+  DEFAULT_SHARD_REGION_BUFFER_SIZE,
 } from '../../../src/cluster/sharding/ShardingOptions.js';
 import {
   DEFAULT_HAND_OFF_TIMEOUT_MS,
   DEFAULT_REBALANCE_INTERVAL_MS,
 } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
+import { DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS } from '../../../src/cluster/sharding/StartShardingOptions.js';
 import {
   DEFAULT_MAX_GOSSIP_BYTES,
   DEFAULT_MAX_PENDING_QUORUM_REQUESTS,
@@ -246,6 +249,9 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.sharding.passivation-idle', kind: 'duration', constant: DEFAULT_PASSIVATION_IDLE_MS },
   { key: 'actor-ts.sharding.rebalance-interval', kind: 'duration', constant: DEFAULT_REBALANCE_INTERVAL_MS },
   { key: 'actor-ts.sharding.hand-off-timeout', kind: 'duration', constant: DEFAULT_HAND_OFF_TIMEOUT_MS },
+  { key: 'actor-ts.sharding.buffer-size', kind: 'int', constant: DEFAULT_SHARD_REGION_BUFFER_SIZE },
+  { key: 'actor-ts.sharding.register-retry-interval', kind: 'duration', constant: DEFAULT_REGISTER_RETRY_INTERVAL_MS },
+  { key: 'actor-ts.sharding.shard-region-query-timeout', kind: 'duration', constant: DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS },
 
   /* --- distributed data --- */
   { key: 'actor-ts.distributed-data.max-pending-quorum-requests', kind: 'int', constant: DEFAULT_MAX_PENDING_QUORUM_REQUESTS },
