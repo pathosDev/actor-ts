@@ -49,7 +49,25 @@ export interface WebsocketClientOptionsType<TOut = unknown, TIn = unknown> exten
   readonly maxFrameBytes?: number;
   /** What to do with an inbound frame the codec can't decode.  Default 'drop'. */
   readonly onInvalidMessage?: 'drop' | 'hook' | 'disconnect';
-  /** Send a ping every `pingIntervalMs` to keep the connection alive.  Default: disabled. */
+  /**
+   * Send a keepalive every `pingIntervalMs`, so a proxy or load balancer does
+   * not close the connection for being idle.  Default: disabled.
+   *
+   * **What goes on the wire is the actor's to decide, and by default nothing
+   * does.**  `WebsocketClientActor.keepAliveFrame()` returns `null` until a
+   * subclass overrides it, and the framework invents no payload of its own —
+   * bytes it made up would be an unannounced message in your protocol.  With
+   * the hook un-overridden the timer falls back to the runtime's native
+   * `WebSocket.ping()`, which is a protocol-level control frame and exists on
+   * Bun only: the WHATWG `WebSocket` that Node and Deno ship has no such
+   * method.  So on those two runtimes an un-overridden hook can send nothing
+   * at all, and the client says so once at connect time instead of running a
+   * timer that puts zero bytes on the wire (#751).
+   *
+   * A keepalive stops a proxy *closing* an idle connection.  It does not
+   * detect one that was dropped anyway — that is {@link idleTimeoutMs}, and
+   * the two are worth setting together.
+   */
   readonly pingIntervalMs?: number;
   /**
    * Declare the connection lost after this many milliseconds without a single
@@ -115,7 +133,13 @@ export class WebsocketClientOptionsBuilder<TOut = unknown, TIn = unknown>
     return this.set('onInvalidMessage', policy);
   }
 
-  /** Send a ping every `ms` to keep the connection alive.  Default: disabled. */
+  /**
+   * Send a keepalive every `ms` so an idle connection is not closed by a
+   * proxy.  Default: disabled.  Override
+   * `WebsocketClientActor.keepAliveFrame()` to say what is sent — without it
+   * the timer can only fall back to the runtime's native `ping()`, which
+   * exists on Bun and on neither Node nor Deno (#751).
+   */
   withPingIntervalMs(ms: number): this {
     return this.set('pingIntervalMs', ms);
   }

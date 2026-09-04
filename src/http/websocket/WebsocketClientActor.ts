@@ -70,7 +70,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   extends BrokerActor<WebsocketClientOptionsType<TOut, TIn>, WebsocketClientMessage<TOut, TIn, TSelf>, WebsocketFrame> {
 
   private socket: WebsocketLike | null = null;
-  private pingTimer: ReturnType<typeof setInterval> | null = null;
+  private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
   private _codec: WebsocketCodec<TOut, TIn> | null = null;
   /**
    * Rejects the handshake currently in flight, or `null` when none is — see
@@ -83,6 +83,14 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
    * actor: a shape that appears after a reconnect is worth one more line.
    */
   private unrecognisedFrameWarned = false;
+  /**
+   * Whether the "this keepalive cannot send anything" warning has been
+   * emitted — see {@link armKeepAlive}.  Per actor, not per connection:
+   * neither input to that verdict (the runtime's `WebSocket` and this class's
+   * own hook) can change across a reconnect, so a second line would be the
+   * same sentence again once per reconnect, forever.
+   */
+  private keepAliveWarned = false;
 
   constructor(options: WebsocketClientOptions<TOut, TIn> = {}) {
     super(options);
@@ -99,6 +107,32 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   protected onDisconnected(_cause?: Error): void | Promise<void> {}
   /** An inbound frame failed to decode.  Only called when onInvalidMessage is 'hook'. */
   protected onInvalidMessage(_error: WebsocketDecodeError): void | Promise<void> {}
+  /**
+   * The frame the keepalive timer puts on the wire every `pingIntervalMs`, or
+   * `null` to send nothing on this tick.  Default: `null`.
+   *
+   * Override it when the connection has to stay warm through a middlebox that
+   * inspects **payload rather than frames** — which is the whole of what an
+   * application-level keepalive does that a protocol-level ping cannot.  The
+   * framework supplies no default frame on purpose: any bytes it invented
+   * would be an unannounced message in *your* protocol, and a peer that closes
+   * on an unknown message would be severed by its own keepalive.
+   *
+   * The frame goes out through {@link sendRaw}, so it bypasses the codec —
+   * encode it yourself if the protocol has a heartbeat message of its own:
+   *
+   *     protected override keepAliveFrame(): WebsocketFrame {
+   *       return { kind: 'text', data: JSON.stringify({ kind: 'heartbeat' }) };
+   *     }
+   *
+   * Overriding this method is also what tells the connect-time check that a
+   * keepalive is possible at all (see {@link armKeepAlive}).  A tick on which
+   * it returns `null` falls back to the runtime's native `ping()` where there
+   * is one — so a subclass that overrides it and then always returns `null`
+   * gets a timer that may send nothing, by its own choice and without the
+   * warning an un-overridden hook earns.
+   */
+  protected keepAliveFrame(): WebsocketFrame | null { return null; }
   /**
    * App-level message told to this actor's ref (reachable only when TSelf ≠ never).
    *
@@ -205,8 +239,8 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
 
   /**
    * Route an elapsed read-idle deadline through the same door a `close` event
-   * uses, so `onDisconnected` fires and the ping timer stops whether the drop
-   * was observed or merely deduced.  The explicit `close()` is the difference
+   * uses, so `onDisconnected` fires and the keepalive timer stops whether
+   * the drop was observed or merely deduced.  The explicit `close()` is the difference
    * between the two: after a `close` event the socket is already gone, while
    * an idle timeout fires on one that is still nominally open — and on the
    * connection this feature exists for, still holding a TCP socket to a peer
@@ -270,6 +304,88 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     try { ws.binaryType = 'arraybuffer'; } catch { /* socket does not offer it */ }
   }
 
+  /**
+   * Start the keepalive timer for a freshly opened socket — or, when the
+   * configured interval has nothing it could send, say so once and start
+   * nothing.
+   *
+   * `pingIntervalMs` used to arm `setInterval(() => ws.ping?.())`
+   * unconditionally, and `ping()` is not part of the WHATWG `WebSocket`
+   * interface.  Measured on this repository's supported runtimes it exists on
+   * Bun and on neither Node nor Deno, so on two of the three the optional call
+   * plus the empty `catch` made the timer a guaranteed no-op: a documented
+   * mitigation putting zero bytes on the wire and saying nothing about it,
+   * while a blackholed connection stayed `connected` and every send went
+   * nowhere (#751).  **A timer that provably cannot send is worse than no
+   * timer**, because it is the thing that persuades an operator the connection
+   * is being kept warm — hence the refusal to arm one, and the warning in its
+   * place.
+   *
+   * Whether {@link keepAliveFrame} is overridden is read off the prototype
+   * rather than probed by calling it.  A probe cannot tell "this class has no
+   * keepalive" from "the application has nothing to say right now", and those
+   * want opposite answers here; the identity comparison asks the question that
+   * is actually being asked, with no side effect and no speculative frame.
+   */
+  private armKeepAlive(ws: WebsocketLike): void {
+    const intervalMs = this.options.pingIntervalMs;
+    if (!intervalMs || intervalMs <= 0) return;
+    const hasApplicationFrame = this.keepAliveFrame !== WebsocketClientActor.prototype.keepAliveFrame;
+    const hasNativePing = typeof ws.ping === 'function';
+    if (!hasApplicationFrame && !hasNativePing) {
+      this.warnKeepAliveUnsendable(intervalMs);
+      return;
+    }
+    this.keepAliveTimer = setInterval(() => this.sendKeepAlive(ws), intervalMs);
+  }
+
+  /**
+   * One keepalive tick: the application's frame when there is one, otherwise
+   * the runtime's native control frame.
+   *
+   * The order is the point.  An application frame is the only kind a proxy
+   * that inspects payload can see, and the only kind a peer's own
+   * application-level read deadline counts; `ping()` emits a protocol control
+   * frame, which is a different thing and is not delivered to the peer's
+   * `message` listener on any supported runtime.  It stays as the fallback
+   * rather than being dropped, so a tick on which the hook has nothing to say
+   * does not silently become no traffic at all on the one runtime that can
+   * still send something.
+   */
+  private sendKeepAlive(ws: WebsocketLike): void {
+    const frame = this.keepAliveFrame();
+    if (frame !== null) {
+      this.sendRaw(frame);
+      return;
+    }
+    // A socket that refuses a ping is not a reason to drop a connection that
+    // is otherwise working — but unlike before, this catch can no longer be
+    // hiding a method that was never there: `armKeepAlive` checked.
+    try { ws.ping?.(); } catch { /* ignore */ }
+  }
+
+  /**
+   * Report a configured `pingIntervalMs` that cannot put anything on the wire.
+   *
+   * Written as an instruction rather than a diagnosis: the operator who set
+   * the interval wanted a keepalive, and both ways to actually get one belong
+   * in the line that tells them they have not.  {@link idleTimeoutMs} is named
+   * alongside because it answers the failure the keepalive was reached for —
+   * a keepalive stops a proxy *closing* an idle connection, and only the read
+   * deadline notices one that was dropped anyway.
+   */
+  private warnKeepAliveUnsendable(intervalMs: number): void {
+    if (this.keepAliveWarned) return;
+    this.keepAliveWarned = true;
+    this.log.warn(
+      `WebsocketClientActor: pingIntervalMs is set (${intervalMs} ms) on `
+      + `${this.redactedEndpointLabel()}, but nothing can be sent — this runtime's WebSocket has `
+      + 'no ping() and keepAliveFrame() is not overridden, so no keepalive timer was started. '
+      + 'Override keepAliveFrame() to supply an application-level frame, and set idleTimeoutMs so '
+      + 'a connection dropped anyway is still detected.',
+    );
+  }
+
   protected async connectImplementation(): Promise<void> {
     const ctor = await websocketClientConstructor.get();
     const ws = ctor.create(this.options.url!, {
@@ -294,10 +410,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
         ws.addEventListener('message', (ev: { data: unknown }) => this.handleInbound(ev.data));
         ws.addEventListener('close', () => this.onSocketDown(new Error('websocket closed')));
         ws.addEventListener('error', () => this.onSocketDown(new Error('websocket error')));
-        const ping = this.options.pingIntervalMs;
-        if (ping && ping > 0) {
-          this.pingTimer = setInterval(() => { try { ws.ping?.(); } catch { /* ignore */ } }, ping);
-        }
+        this.armKeepAlive(ws);
         this.self.tell(websocketClientConnected());
         resolve();
       });
@@ -312,7 +425,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   }
 
   protected async disconnectImplementation(): Promise<void> {
-    if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
+    if (this.keepAliveTimer) { clearInterval(this.keepAliveTimer); this.keepAliveTimer = null; }
     const sock = this.socket;
     this.socket = null;
     if (sock) { try { sock.close(); } catch { /* ignore */ } }
@@ -328,7 +441,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   private onSocketDown(cause: Error): void {
     if (!this.socket) return; // already handled this connection's drop
     this.socket = null;
-    if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
+    if (this.keepAliveTimer) { clearInterval(this.keepAliveTimer); this.keepAliveTimer = null; }
     this.self.tell(websocketClientDisconnected(cause));
     // Trigger BrokerActor's reconnect cycle.
     this.handleConnectionLost(cause);
@@ -353,9 +466,10 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
    *
    * Routed through {@link onSocketDown} rather than `handleConnectionLost`
    * directly because the close is *ours*: the peer need not answer it, so
-   * nothing else would clear `pingTimer`, null `this.socket`, or emit
+   * nothing else would clear `keepAliveTimer`, null `this.socket`, or emit
    * `websocketClientDisconnected`.  Calling `handleConnectionLost` bare would
-   * start a reconnect while the old handle and its ping timer were still live.
+   * start a reconnect while the old handle and its keepalive timer were
+   * still live.
    */
   private rejectOversizeFrame(cap: number): void {
     // A label, not the configured URL: whatever the URL carries would
