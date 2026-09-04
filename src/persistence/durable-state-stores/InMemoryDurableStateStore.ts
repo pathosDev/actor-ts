@@ -4,6 +4,7 @@ import {
   type DurableStateStore,
 } from '../DurableStateStore.js';
 import { JournalError } from '../JournalTypes.js';
+import type { PersistenceOptionSupport } from '../PersistenceCapabilities.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import type { StorageLocality } from '../StorageLocality.js';
@@ -19,6 +20,19 @@ export class InMemoryDurableStateStore implements DurableStateStore {
   private readonly records = new Map<string, DurableStateRecord<unknown>>();
   /** See `InMemoryJournal.storageLocality` — writable for shared in-process fixtures (#1356). */
   storageLocality: StorageLocality = 'node-local';
+
+  /**
+   * A process-heap map — there is nothing at rest to protect, and nothing
+   * here reads `options` (#960).  Declaring `false` rather than pretending
+   * is what stops an actor whose production store encrypts from passing its
+   * tests against a store that quietly does not.
+   */
+  readonly persistenceOptionSupport: PersistenceOptionSupport = {
+    encryption: false,
+    compression: false,
+    integrity: false,
+  };
+
   /** See `InMemoryJournal.mintedStorageIdentity` — one instance, one identity (#1358). */
   private readonly mintedStorageIdentity: string = crypto.randomUUID();
 

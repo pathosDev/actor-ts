@@ -188,3 +188,44 @@ describe('CachedSnapshotStore — config guards', () => {
     expect((await cache.get('env-prod:snap:p')).isSome()).toBe(true);
   });
 });
+
+/**
+ * A stub that claims all three fields, standing in for the object-storage
+ * store without dragging a filesystem backend into this suite.
+ */
+class HonouringStore extends InMemorySnapshotStore {
+  override readonly persistenceOptionSupport = { encryption: true, compression: true, integrity: true } as const;
+}
+
+describe('CachedSnapshotStore — capability delegation', () => {
+  /**
+   * The decorator forwards `options` to the wrapped store verbatim and adds
+   * no codec of its own, so its `persistenceOptionSupport` genuinely IS the
+   * inner store's (#960).  A literal would be a lie in both directions: a
+   * hard-coded `false` refuses an actor whose object-storage store can
+   * encrypt, a hard-coded `true` waves one through over Postgres.
+   *
+   * Note this reports the *inner store's* at-rest behaviour and says nothing
+   * about what the cache itself holds — see #782.
+   */
+  const cachedOptions = (): CachedSnapshotStoreOptions =>
+    CachedSnapshotStoreOptions.create().withCache(new InMemoryCache());
+
+  test('reports what the wrapped store reports', () => {
+    const plaintext = new CachedSnapshotStore(new InMemorySnapshotStore(), cachedOptions());
+    expect(plaintext.persistenceOptionSupport)
+      .toEqual({ encryption: false, compression: false, integrity: false });
+
+    const honouring = new CachedSnapshotStore(new HonouringStore(), cachedOptions());
+    expect(honouring.persistenceOptionSupport)
+      .toEqual({ encryption: true, compression: true, integrity: true });
+  });
+
+  test('an undeclared inner store stays undeclared rather than becoming a confident answer', () => {
+    // `CountingStore` declares nothing, which is the third-party shape: the
+    // actor-side check treats it as unknown and never refuses.  A decorator
+    // that defaulted here would launder that into a claim nobody made.
+    const spy = new CountingStore(new InMemorySnapshotStore());
+    expect(new CachedSnapshotStore(spy, cachedOptions()).persistenceOptionSupport).toBeUndefined();
+  });
+});

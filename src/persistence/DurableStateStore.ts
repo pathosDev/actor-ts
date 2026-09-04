@@ -1,4 +1,5 @@
 import type { Option } from '../util/Option.js';
+import type { PersistenceOptionSupport } from './PersistenceCapabilities.js';
 import type { PersistenceOptions } from './PersistenceOptions.js';
 import type { StorageLocality } from './StorageLocality.js';
 
@@ -35,8 +36,10 @@ export interface DurableStateStore {
    * current stored revision (0 when no record exists yet).  Throws
    * `DurableStateConcurrencyError` on conflict.  Optional `options`
    * carry per-call preferences from the caller (e.g. compression /
-   * encryption set on the actor); stores that cannot honour them
-   * silently ignore the field.
+   * encryption set on the actor).  A store that cannot honour a field
+   * ignores it here and says so through
+   * {@link DurableStateStore.persistenceOptionSupport}, which is what lets
+   * the actor be refused at start rather than written unprotected (#960).
    */
   upsert<S>(
     persistenceId: string,
@@ -48,7 +51,12 @@ export interface DurableStateStore {
   /**
    * Load the latest record for `persistenceId`, or None if none exists.
    * `options.encryption` is required when client-side encryption was
-   * used at write time.
+   * used at write time.  Stores that don't encrypt ignore the field and
+   * declare that through
+   * {@link DurableStateStore.persistenceOptionSupport} — this is the read
+   * that `DurableStateActor.preStart` performs before it ever writes, so
+   * without the declaration it hands the actor plaintext it believes was
+   * ciphertext (#960).
    */
   load<S>(persistenceId: string, options?: PersistenceOptions): Promise<Option<DurableStateRecord<S>>>;
 
@@ -61,6 +69,13 @@ export interface DurableStateStore {
    * cluster's storage advisory silent (#1356).
    */
   readonly storageLocality?: StorageLocality;
+
+  /**
+   * Which fields of `PersistenceOptions` this store acts on — see
+   * {@link PersistenceOptionSupport}.  Optional; absence means unknown, and
+   * an unknown store is never refused (#960).
+   */
+  readonly persistenceOptionSupport?: PersistenceOptionSupport;
 
   /**
    * Identity of the database behind this store, minted on first contact and

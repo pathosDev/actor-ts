@@ -12,6 +12,11 @@ export type { Journal } from './Journal.js';
 export type { SnapshotStore } from './SnapshotStore.js';
 export type { StorageLocality, StorageUseKind } from './StorageLocality.js';
 export { StorageLocalityError } from './StorageLocality.js';
+export type { PersistenceOptionField, PersistenceOptionSupport } from './PersistenceCapabilities.js';
+// Exported as a class for the same reason `StorageLocalityError` is: a caller
+// that catches an unhonourable encryption/integrity request discriminates on
+// the class, and `error.name === '…'` breaks on any rewording (#960).
+export { UnsupportedPersistenceOptionError } from './PersistenceCapabilities.js';
 export type { JournalEntry, PersistentEvent, Snapshot } from './JournalTypes.js';
 export { JournalConcurrencyError, JournalError } from './JournalTypes.js';
 // The two integrity failures a recovery can raise.  Exported because

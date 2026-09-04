@@ -4,6 +4,16 @@ import { ConfigKeys } from '../config/ConfigKeys.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { Journal } from './Journal.js';
 import { InMemoryJournal } from './journals/InMemoryJournal.js';
+import type { Logger } from '../Logger.js';
+import {
+  PERSISTENCE_SECURITY_CONTROL_FIELDS,
+  UnsupportedPersistenceOptionError,
+  unhonouredCompressionMessage,
+  unhonouredPersistenceOptions,
+  unsupportedPersistenceOptionMessage,
+  type PersistenceOptionSupport,
+} from './PersistenceCapabilities.js';
+import type { PersistenceOptions } from './PersistenceOptions.js';
 import type { SnapshotStore } from './SnapshotStore.js';
 import { InMemorySnapshotStore } from './snapshot-stores/InMemorySnapshotStore.js';
 import type { StorageUseKind } from './StorageLocality.js';
@@ -23,18 +33,27 @@ export class PersistenceExtension implements Extension {
   private _journal: Journal | null = null;
   private _snapshotStore: SnapshotStore | null = null;
   private readonly storageAdvisory: StorageLocalityAdvisory;
+  private readonly log: Logger;
+  /**
+   * One compression warning per system, per store kind and store class — the
+   * "say it once, loudly" shape the storage-locality advisory uses, because a
+   * per-actor warning over a sharded entity type is a log flood, not a
+   * diagnostic (#960).
+   */
+  private readonly reportedUnhonouredCompression = new Set<string>();
 
   constructor(private readonly system: ActorSystem) {
     // Ship the in-memory reference plug-in out of the box.
     this.registerJournal('actor-ts.persistence.journal.in-memory', () => new InMemoryJournal());
     this.registerSnapshotStore('actor-ts.persistence.snapshot-store.in-memory', () => new InMemorySnapshotStore());
     const clusterExtension = system.extension(ClusterExtensionId);
+    this.log = system.log.withSource('persistence');
     this.storageAdvisory = new StorageLocalityAdvisory(
       {
         current: () => clusterExtension.get().toNullable(),
         onRegister: (listener) => clusterExtension._onRegister(listener),
       },
-      system.log.withSource('persistence'),
+      this.log,
     );
   }
 
@@ -53,6 +72,52 @@ export class PersistenceExtension implements Extension {
     level: 'warn' | 'error' = 'warn',
   ): void {
     this.storageAdvisory.noteStoreUse(kind, store, level);
+  }
+
+  /**
+   * Refuse an actor that asked for a persistence control the store it is
+   * wired to does not implement (#960).  Called from the same seams as
+   * {@link noteStoreUse} and immediately after it — `PersistentActor` /
+   * `DurableStateActor` `preStart` — for two reasons:
+   *
+   *   - **It is the earliest point at which the pairing is real.**  The
+   *     actor's hooks and the resolved store are both known, and nothing has
+   *     touched storage yet.
+   *   - **`DurableStateActor.preStart` reads before it ever writes.**  A
+   *     check that only guarded `save`/`upsert` would still let that load
+   *     hand the actor a plaintext record it believes was ciphertext, which
+   *     is the same failure one layer earlier.
+   *
+   * The split between refusing and warning is
+   * {@link PERSISTENCE_SECURITY_CONTROL_FIELDS}: `encryption` and
+   * `integrity` throw, `compression` warns once and lets the actor run.  A
+   * store that declares nothing is unknown and does neither.
+   *
+   * Security first, deliberately: when both halves are unhonoured the throw
+   * wins and no compression warning is logged, because an actor that is
+   * about to be refused has no compression problem worth reading about.
+   *
+   * @throws UnsupportedPersistenceOptionError
+   */
+  assertPersistenceOptionsSupported(
+    kind: StorageUseKind,
+    store: { readonly persistenceOptionSupport?: PersistenceOptionSupport },
+    options: PersistenceOptions | undefined,
+  ): void {
+    const unhonoured = unhonouredPersistenceOptions(options, store.persistenceOptionSupport);
+    if (unhonoured.length === 0) return;
+    const storeName = store.constructor.name;
+    for (const field of unhonoured) {
+      if (!PERSISTENCE_SECURITY_CONTROL_FIELDS.has(field)) continue;
+      throw new UnsupportedPersistenceOptionError(
+        storeName, field, unsupportedPersistenceOptionMessage(kind, storeName, field),
+      );
+    }
+    if (!unhonoured.includes('compression')) return;
+    const reportKey = `${kind}:${storeName}`;
+    if (this.reportedUnhonouredCompression.has(reportKey)) return;
+    this.reportedUnhonouredCompression.add(reportKey);
+    this.log.warn(unhonouredCompressionMessage(kind, storeName));
   }
 
   registerJournal(pluginId: string, factory: (system: ActorSystem) => Journal): void {

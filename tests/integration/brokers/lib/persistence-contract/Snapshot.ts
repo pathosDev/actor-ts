@@ -2,12 +2,27 @@
  * `SnapshotStore` contract scenarios — shared by the in-process suite and
  * the live Docker suites (#390).
  */
+import type { PersistenceOptions } from '../../../../../src/persistence/PersistenceOptions.js';
 import { assert, assertEqual } from './Assert.js';
 import { closeQuietly, type ContractScenario, type SnapshotHarness } from './Types.js';
 
 function keepNSkip(harness: SnapshotHarness): string | null {
   return harness.capabilities?.keepN === 'none' ? 'store keeps every snapshot (no keepN)' : null;
 }
+
+/** Fixture master key for the capability-conformance scenario — 32 bytes (#960). */
+const CAPABILITY_MASTER_KEY = new Uint8Array(32).fill(0x2f);
+
+/** HKDF context string; required on every client-side encryption config (#108). */
+const CAPABILITY_HKDF_INFO = 'actor-ts/contract/snapshot/v1';
+
+const capabilityProbeOptions: PersistenceOptions = {
+  encryption: {
+    mode: 'client-aes256-gcm',
+    masterKey: CAPABILITY_MASTER_KEY,
+    info: CAPABILITY_HKDF_INFO,
+  },
+};
 
 export function snapshotContractScenarios(): ContractScenario<SnapshotHarness>[] {
   return [
@@ -212,6 +227,64 @@ export function snapshotContractScenarios(): ContractScenario<SnapshotHarness>[]
           const latest = (await store.loadLatest<{ seq: number }>(persistenceId)).toNullable();
           assertEqual(latest?.sequenceNr, 2, 'the snapshot really is durable');
           assertEqual(latest?.state.seq, 2, 'and carries the state that was written');
+        } finally {
+          await closeQuietly(store);
+        }
+      },
+    },
+    {
+      /**
+       * The `persistenceOptionSupport` declaration is what the framework
+       * refuses an actor on (#960), so it has to be measured against
+       * behaviour rather than trusted — a declaration nothing checks is the
+       * same silent-rot channel the JSDoc it replaces was.
+       *
+       * The probe is one write with a real client-side encryption directive,
+       * read back **without** any options, which separates the two claims
+       * cleanly:
+       *
+       *   - `encryption: false` says the directive is inert.  A plain read
+       *     must therefore return the state verbatim — a store that secretly
+       *     encrypted would hand back ciphertext or throw here.
+       *   - `encryption: true` says the directive took effect.  The plain
+       *     read must then FAIL, and only a read carrying the same key may
+       *     succeed — which is what makes `true` unfakeable by a store that
+       *     accepted the option and wrote plaintext anyway.
+       *
+       * Sniffed inside `run` and not in `skip`, which executes before
+       * `make()` and so has no store to ask.  An undeclared store is
+       * "unknown" and asserts nothing, exactly as the actor-side check
+       * treats it.
+       */
+      name: 'the persistenceOptionSupport declaration matches what encryption does',
+      async run(harness) {
+        const store = await harness.make();
+        const persistenceId = harness.pid('option-support');
+        type Probe = { readonly secret: string };
+        try {
+          const support = store.persistenceOptionSupport;
+          if (support === undefined) return;
+          await store.save<Probe>(persistenceId, 1, { secret: 'probe' }, capabilityProbeOptions);
+          let plain: Probe | null | 'unreadable';
+          try {
+            plain = (await store.loadLatest<Probe>(persistenceId)).toNullable()?.state ?? null;
+          } catch {
+            plain = 'unreadable';
+          }
+          if (support.encryption) {
+            assert(
+              plain === 'unreadable' || plain?.secret !== 'probe',
+              'a store declaring encryption support must not yield the plaintext to a keyless read',
+            );
+            const keyed = (await store.loadLatest<Probe>(persistenceId, capabilityProbeOptions)).toNullable();
+            assertEqual(keyed?.state.secret, 'probe', 'the keyed read recovers the state');
+          } else {
+            assertEqual(
+              plain, { secret: 'probe' },
+              'a store declaring no encryption support must have stored the state unchanged — '
+              + 'if this read failed, the store acts on options it declares it ignores',
+            );
+          }
         } finally {
           await closeQuietly(store);
         }

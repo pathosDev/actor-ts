@@ -1,5 +1,6 @@
 import type { Cache } from '../../cache/Cache.js';
 import { JournalError, type Snapshot } from '../JournalTypes.js';
+import type { PersistenceOptionSupport } from '../PersistenceCapabilities.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import type { StorageLocality } from '../StorageLocality.js';
@@ -67,6 +68,23 @@ export class CachedSnapshotStore implements SnapshotStore {
 
   /** The cache is in-process; locality is whatever the wrapped store declares (#1356). */
   get storageLocality(): StorageLocality | undefined { return this.underlying.storageLocality; }
+
+  /**
+   * Delegating, never a literal (#960).  This decorator forwards `options`
+   * to the wrapped store verbatim and adds no codec of its own, so its
+   * support genuinely *is* the inner store's — a hard-coded `false` would
+   * refuse an actor whose object-storage store can encrypt, and a hard-coded
+   * `true` would wave one through over Postgres.  Undefined delegates too:
+   * a wrapper that turned "unknown" into a confident answer would be the one
+   * way this member could start lying.
+   *
+   * Note this reports the *inner store's* at-rest behaviour and says nothing
+   * about the cache, which holds decoded snapshots in whatever cache is
+   * wired — see #782.
+   */
+  get persistenceOptionSupport(): PersistenceOptionSupport | undefined {
+    return this.underlying.persistenceOptionSupport;
+  }
 
   /** Identity is the wrapped store's, for the same reason (#1358). */
   async storageIdentity(): Promise<string> {

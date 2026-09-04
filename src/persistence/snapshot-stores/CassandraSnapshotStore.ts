@@ -1,4 +1,5 @@
 import { JournalError, type Snapshot } from '../JournalTypes.js';
+import type { PersistenceOptionSupport } from '../PersistenceCapabilities.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
@@ -29,6 +30,14 @@ type SnapshotRow = {
 export class CassandraSnapshotStore implements SnapshotStore {
   /** A Cassandra/Scylla cluster any node can reach (#1356). */
   readonly storageLocality: StorageLocality = 'shared';
+
+  /** JSON text in a CQL column — `options` is bound and never read (#960). */
+  readonly persistenceOptionSupport: PersistenceOptionSupport = {
+    encryption: false,
+    compression: false,
+    integrity: false,
+  };
+
   private cachedStorageIdentity: string | null = null;
 
   /** Identity of the keyspace's database — journal and snapshot store over one keyspace share it (#1358). */

@@ -130,17 +130,31 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
 
   /**
    * Per-actor compression — overrides the plugin default for THIS actor's
-   * snapshots.  Stores that don't compress (in-memory, SQLite, Cassandra)
-   * ignore the value.  Returning `undefined` (the default) defers to the
-   * plugin's resolver / configured default.
+   * snapshots.  Returning `undefined` (the default) defers to the plugin's
+   * resolver / configured default.
+   *
+   * **Only the object-storage snapshot store compresses.**  Ten of the
+   * eleven snapshot stores accept `PersistenceOptions` and never read it, so
+   * setting an algorithm here buys nothing on SQLite, Postgres, MariaDB,
+   * MSSQL, libSQL, D1, Cassandra, Mongo, DynamoDB or the in-memory reference
+   * store.  Unlike the two hooks below this does not refuse the actor — it
+   * is a performance hint, and a hard failure would make a system-wide
+   * compression default unusable — so it logs one warning naming the store
+   * and the snapshot is written uncompressed (#960).
    */
   compression(): CompressionConfig | undefined { return undefined; }
 
   /**
    * Per-actor encryption — overrides the plugin default for THIS actor's
-   * snapshots.  Honoured by stores that encrypt at rest (object-storage);
-   * other stores ignore it.  Used on both the write path (encrypt) and
-   * the read path (derive subkey from master to decrypt).
+   * snapshots.  Used on both the write path (encrypt) and the read path
+   * (derive subkey from master to decrypt).
+   *
+   * **Only the object-storage snapshot store encrypts.**  Setting this on an
+   * actor backed by any other shipped store now **refuses the actor at
+   * start** with an `UnsupportedPersistenceOptionError` naming the store,
+   * rather than writing the snapshot in the clear and reporting nothing
+   * (#960).  `{ mode: 'none' }` is accepted everywhere — it is the way to
+   * say "deliberately unencrypted".
    */
   encryption(): EncryptionConfig | undefined { return undefined; }
 
@@ -149,14 +163,13 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
    * actor's snapshots.  Returning `undefined` (the default) defers to the
    * plugin's resolver / configured default.
    *
-   * **Only the object-storage snapshot store honours this today.**  Ten of
-   * the eleven snapshot stores accept `PersistenceOptions` and never read
-   * it (#960), so on SQLite, Postgres, Cassandra, Mongo, DynamoDB and the
-   * in-memory reference store, configuring `hmac-sha256` here buys no
-   * tamper detection and raises no error — the value is simply dropped.
-   * Treat it as a control you must verify against the store you actually
-   * run, not as one the framework enforces everywhere.  #960 decides
-   * whether an unhonoured directive starts throwing instead.
+   * **Only the object-storage snapshot store signs and verifies.**  Same
+   * refusal as `encryption()` above: configuring `hmac-sha256` against a
+   * store that does not implement it throws
+   * `UnsupportedPersistenceOptionError` at start instead of silently buying
+   * no tamper detection (#960).  A store is asked through its
+   * `persistenceOptionSupport` declaration, so a third-party store that
+   * declares nothing is treated as unknown and is never refused.
    */
   integrity(): IntegrityConfig | undefined { return undefined; }
 
@@ -250,6 +263,13 @@ export abstract class PersistentActor<Command, Event, State> extends Actor<Comma
     // cluster whose default stores stay unused must never warn about them.
     ext.noteStoreUse('journal', this._journal);
     ext.noteStoreUse('snapshot-store', this._snapshotStore);
+    // The capability check (#960), at the same seam and before anything
+    // touches storage: an actor that set `encryption()` or `integrity()` on a
+    // store that implements neither is refused here rather than having its
+    // snapshots written in the clear. It sits ahead of the lease and recovery
+    // on purpose — a refusal is a wiring error, and taking a fence or reading
+    // a history first would be work done for an actor that must not run.
+    ext.assertPersistenceOptionsSupported('snapshot-store', this._snapshotStore, this.persistenceOptions());
     // Fencing, before recovery on purpose (#1166): an instance that does not
     // own this entity must not read its history either, or it spends the
     // window until its first write serving answers from state another writer

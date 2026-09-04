@@ -4,6 +4,7 @@ import {
   type DurableStateStore,
 } from '../DurableStateStore.js';
 import { JournalError } from '../JournalTypes.js';
+import type { PersistenceOptionSupport } from '../PersistenceCapabilities.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import { none, some, type Option } from '../../util/Option.js';
 import {
@@ -51,6 +52,13 @@ type StateDocument = {
  * caller actually raced against.
  */
 export class MongoDurableStateStore extends MongoStore implements DurableStateStore {
+  /** The payload is a plain document field — `options` is bound and never read (#960). */
+  readonly persistenceOptionSupport: PersistenceOptionSupport = {
+    encryption: false,
+    compression: false,
+    integrity: false,
+  };
+
   private readonly collectionName: string;
 
   private readonly serializer?: Serializer;
