@@ -1,4 +1,4 @@
-import type { Crdt, ReplicaId } from './Crdt.js';
+import type { Crdt, CrdtIdentityFunction, ReplicaId } from './Crdt.js';
 import { assertPlainObject, safeEntries } from './CrdtWireValidation.js';
 import { ORSet, type ORSetJson } from './ORSet.js';
 
@@ -125,6 +125,11 @@ export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
     return this.keyset.has(this.identity(key));
   }
 
+  /** @see {@link Crdt.customIdentity} */
+  customIdentity(): CrdtIdentityFunction | undefined {
+    return this.identity === defaultIdentity ? undefined : this.identity;
+  }
+
   /** Snapshot of currently-live keys. */
   keys(): ReadonlyArray<K> {
     const out: K[] = [];
@@ -198,6 +203,23 @@ export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
    * from its JSON shape — typically `(json) => SomeCrdt.fromJSON(json)`.
    * The `DistributedData` extension provides a `decodeCrdt` that
    * dispatches across every registered CRDT kind.
+   *
+   * **Re-keying.**  As in `ORSet.fromJSON`, a custom `identity` files every
+   * entry under the key *this* replica would have chosen rather than the one
+   * the sender wrote, and ids that collapse merge their inner CRDTs (#766).
+   * An ORMap has a second index to keep in step: `keyset` is an
+   * `ORSet<string>` whose *elements are the entry ids*, so re-keying `entries`
+   * without it would leave `get`/`has`/`keys` consulting a membership set
+   * filed under ids that no longer exist.  {@link remapKeysetIds} rewrites
+   * the ids inside the keyset frame and hands the result to `ORSet.fromJSON`
+   * with an explicit identity, so the keyset's own re-key does the rest —
+   * including unioning the tag sets of two ids that collapse and carrying
+   * their tombstones across.
+   *
+   * **Not covered:** the identity of a *nested* value.  `decodeValue` sees
+   * only the inner frame, and an empty template has no inner instance to read
+   * an identity from, so an `ORMap` of `ORSet`s recovers the outer key
+   * identity and leaves each inner set on the default.
    */
   static fromJSON<K, V extends Crdt<V>>(
     json: ORMapJson,
@@ -207,18 +229,29 @@ export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
     if (json.kind !== 'ORMap') {
       throw new Error(`ORMap.fromJSON: unexpected kind ${json.kind}`);
     }
-    const identity = options.identity ?? (defaultIdentity as (k: K) => string);
-    const keyset = ORSet.fromJSON<string>(json.keyset);
+    const custom = options.identity;
+    const identity = custom ?? (defaultIdentity as (k: K) => string);
     assertPlainObject(json.values, 'ORMap.values');
     const entries = new Map<string, Entry<K, V>>();
+    /** Wire entry id → the id this replica files it under.  Empty unless re-keyed. */
+    const localIds = new Map<string, string>();
     // `safeEntries` rather than `Object.entries`: this decoder is a peer-facing
     // boundary like the keyset's, and was missing both of its guards — the
     // entry ceiling and the `__proto__` rejection (#698, #767).
-    for (const [id, valueJson] of safeEntries(json.values, 'ORMap.values')) {
-      const raw = json.keyValues?.[id];
-      const key = raw !== undefined ? (JSON.parse(raw) as K) : (JSON.parse(id) as K);
-      entries.set(id, { key, value: decodeValue(valueJson) });
+    for (const [wireId, valueJson] of safeEntries(json.values, 'ORMap.values')) {
+      const raw = json.keyValues?.[wireId];
+      const key = raw !== undefined ? (JSON.parse(raw) as K) : (JSON.parse(wireId) as K);
+      const value = decodeValue(valueJson);
+      const id = custom === undefined ? wireId : custom(key);
+      if (id !== wireId) localIds.set(wireId, id);
+      const existing = entries.get(id);
+      entries.set(id, existing === undefined
+        ? { key, value }
+        : { key: existing.key, value: existing.value.merge(value) });
     }
+    const keyset = localIds.size === 0
+      ? ORSet.fromJSON<string>(json.keyset)
+      : ORSet.fromJSON<string>(remapKeysetIds(json.keyset, localIds), { identity: keysetIdentity });
     return new ORMap<K, V>(keyset, entries, identity);
   }
 
@@ -238,6 +271,59 @@ export class ORMap<K, V extends Crdt<V>> implements Crdt<ORMap<K, V>> {
       }
     }
     return true;
+  }
+}
+
+/**
+ * The keyset's own identity, spelled out rather than left implicit.
+ *
+ * `keyset` is an `ORSet<string>` on the default identity, which for a string
+ * `s` is exactly `JSON.stringify(s)` — so passing this changes nothing about
+ * *which* key an element lands under.  What it changes is that `ORSet`'s
+ * re-key path runs at all: that path is what reads each element back out of
+ * `elementValues`, and {@link remapKeysetIds} has just rewritten those to the
+ * local ids.
+ */
+const keysetIdentity = (id: string): string => JSON.stringify(id);
+
+/**
+ * Rewrite a keyset frame so its elements are *this* replica's entry ids.
+ *
+ * Only `elementValues` is touched, and that is the whole trick: the element
+ * keys and the tombstone keys are left exactly as they arrived, so `ORSet`'s
+ * decode sees a set whose elements have moved and re-files them itself —
+ * unioning the tags of two ids that collapse onto one, and carrying each
+ * tombstone bucket along with the element it belongs to.  Doing it here
+ * instead would mean a second implementation of both.
+ *
+ * `elementValues` is written for every element key rather than patched,
+ * because a frame from a pre-`elementValues` peer has none and `ORSet` would
+ * then fall back to parsing the element key — which is the wire id, not the
+ * local one.  A key that does not decode to a string is left alone; `ORSet`
+ * validates the frame properly a moment later and reports it in its own
+ * words.
+ */
+function remapKeysetIds(keyset: ORSetJson, localIds: ReadonlyMap<string, string>): ORSetJson {
+  const elements: unknown = keyset?.elements;
+  if (typeof elements !== 'object' || elements === null || Array.isArray(elements)) return keyset;
+  const elementValues = Object.fromEntries(
+    Object.keys(elements).map((elementKey) => {
+      const encoded = keyset.elementValues?.[elementKey] ?? elementKey;
+      const wireId = parseIdString(encoded);
+      const localId = wireId === undefined ? undefined : localIds.get(wireId);
+      return [elementKey, localId === undefined ? encoded : JSON.stringify(localId)] as const;
+    }),
+  );
+  return { ...keyset, elementValues };
+}
+
+/** `JSON.parse` narrowed to strings — `undefined` for anything else, a failed parse included. */
+function parseIdString(encoded: string): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(encoded);
+    return typeof parsed === 'string' ? parsed : undefined;
+  } catch {
+    return undefined;
   }
 }
 

@@ -1,5 +1,5 @@
 import { TAG_ENTROPY_CHARACTERS } from './Constants.js';
-import type { Crdt, ReplicaId } from './Crdt.js';
+import type { Crdt, CrdtIdentityFunction, ReplicaId } from './Crdt.js';
 import { randomId } from '../util/RandomString.js';
 import {
   assertPlainObject,
@@ -132,6 +132,11 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     return (this.elements.get(this.identity(element))?.tags.size ?? 0) > 0;
   }
 
+  /** @see {@link Crdt.customIdentity} */
+  customIdentity(): CrdtIdentityFunction | undefined {
+    return this.identity === defaultIdentity ? undefined : this.identity;
+  }
+
   value(): ReadonlyArray<E> {
     const out: E[] = [];
     for (const entry of this.elements.values()) {
@@ -198,9 +203,40 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     };
   }
 
+  /**
+   * Rebuild a set from its wire shape, **filed under the caller's identity
+   * rather than the sender's**.
+   *
+   * The re-key is the substance of #766, and it is why forwarding an
+   * `identity` option was not on its own enough to fix that issue.  Element
+   * keys are identity-function output, so a frame from a peer on the default
+   * identity carries `JSON.stringify` keys; filing them verbatim — which is
+   * what this decoder used to do — left the custom identity governing only
+   * *future* operations, and the element that arrived on the wire stayed a
+   * separate entry from the one the application later added under the same
+   * SKU.  `GSet.fromJSON` never had the bug because its wire shape is an
+   * array and it has always had to compute `identity(element)` itself.
+   *
+   * Two consequences worth naming:
+   *
+   *   - Entries that collapse onto one key are **merged**, not overwritten —
+   *     tag sets union, and the first element instance seen wins, matching
+   *     what `add` does for a key already present.
+   *   - The caller's `identity` now runs over **peer-supplied** values.  A
+   *     callback that throws on an unexpected shape turns a hostile frame
+   *     into a decode failure, which every wire call site already treats as
+   *     "drop this value"; it is not a new escalation path, but an identity
+   *     function that assumes its argument's shape will see data it did not
+   *     produce.
+   *
+   * With no `identity` option the decode is byte-for-byte what it always was:
+   * the re-key is skipped rather than run and found to be a no-op, so the
+   * default path gains no `JSON.stringify` per element and no new throw site.
+   */
   static fromJSON<E>(json: ORSetJson, options: ORSetOptions<E> = {}): ORSet<E> {
     if (json.kind !== 'ORSet') throw new Error(`ORSet.fromJSON: unexpected kind ${json.kind}`);
-    const identity = options.identity ?? (defaultIdentity as (e: E) => string);
+    const custom = options.identity;
+    const identity = custom ?? (defaultIdentity as (e: E) => string);
     // Tombstones are honoured on merge, so an unvalidated set lets a peer
     // pre-tombstone tags a victim replica has not issued yet — its future
     // adds then vanish on the next merge, silently and permanently (#722).
@@ -210,18 +246,29 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
       assertStringArray(tags, `ORSet.tombstones['${key}']`);
     }
     const elements = new Map<string, ElementEntry<E>>();
-    for (const [key, tags] of safeEntries(json.elements, 'ORSet.elements')) {
-      assertStringArray(tags, `ORSet.elements['${key}']`);
+    /** Wire element key → the key this replica files it under.  Empty unless re-keyed. */
+    const localKeys = new Map<string, string>();
+    for (const [wireKey, tags] of safeEntries(json.elements, 'ORSet.elements')) {
+      assertStringArray(tags, `ORSet.elements['${wireKey}']`);
       // Backwards-compat: old wire shape didn't carry
       // `elementValues` — fall back to JSON.parse(key) which is
       // exactly the default-identity round-trip.
-      const raw = json.elementValues?.[key];
+      const raw = json.elementValues?.[wireKey];
       const element: E = raw !== undefined
         ? (JSON.parse(raw) as E)
-        : (JSON.parse(key) as E);
-      elements.set(key, { element, tags: new Set(tags) });
+        : (JSON.parse(wireKey) as E);
+      const key = custom === undefined ? wireKey : custom(element);
+      if (key !== wireKey) localKeys.set(wireKey, key);
+      const existing = elements.get(key);
+      if (existing === undefined) {
+        elements.set(key, { element, tags: new Set(tags) });
+        continue;
+      }
+      const mergedTags = new Set(existing.tags);
+      for (const tag of tags) mergedTags.add(tag);
+      elements.set(key, { element: existing.element, tags: mergedTags });
     }
-    return new ORSet<E>(elements, objectToMapOfSets(json.tombstones), identity);
+    return new ORSet<E>(elements, objectToMapOfSets(json.tombstones, localKeys), identity);
   }
 
   equals(other: ORSet<E>): boolean {
@@ -274,11 +321,35 @@ function mapOfSetsToObject(
   );
 }
 
+/**
+ * Decode the tombstone map, moving each bucket to the key its element now
+ * lives under (`localKeys`, from the element re-key above).
+ *
+ * A bucket whose element is *not* in `localKeys` stays where it arrived, and
+ * that covers two different cases.  The ordinary one is the default path,
+ * where nothing was re-keyed at all and every bucket keeps its wire key.  The
+ * one worth knowing about is an **orphan** bucket — an element removed and
+ * never re-added, so the frame carries its tags but no instance to
+ * re-identify from.  Its tags still veto anything that arrives under the same
+ * key, which is every peer that shares the sender's identity; what they no
+ * longer veto is the same element arriving from a peer whose identity differs
+ * from the sender's, because the two now file it under different keys.  That
+ * residual is confined to a cluster whose replicas disagree about the
+ * identity for a key — the misconfiguration this decode exists to stop
+ * happening by accident — and closing it properly means keying tombstones by
+ * tag rather than by element, which is a wire change.
+ */
 function objectToMapOfSets(
   obj: Record<string, string[]>,
+  localKeys: ReadonlyMap<string, string>,
 ): Map<string, ReadonlySet<string>> {
-  const out = new Map<string, ReadonlySet<string>>();
-  for (const [key, tagArray] of Object.entries(obj)) out.set(key, new Set(tagArray));
+  const out = new Map<string, Set<string>>();
+  for (const [wireKey, tagArray] of Object.entries(obj)) {
+    const key = localKeys.get(wireKey) ?? wireKey;
+    const bucket = out.get(key);
+    if (bucket === undefined) out.set(key, new Set(tagArray));
+    else for (const tag of tagArray) bucket.add(tag);
+  }
   return out;
 }
 

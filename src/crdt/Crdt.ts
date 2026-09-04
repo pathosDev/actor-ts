@@ -39,7 +39,44 @@ export interface Crdt<Self extends Crdt<Self>> {
    * factory each impl exposes.
    */
   toJSON(): unknown;
+
+  /**
+   * The identity function this instance deduplicates by, or `undefined`
+   * when it is still on the built-in `JSON.stringify` default.
+   *
+   * **Why the contract needs this at all.**  `identity` is not on the wire
+   * and cannot be — it is a closure.  A decoder therefore has to be *told*
+   * which one to file elements under, and the only place that knowledge
+   * exists is the `factory` the application already hands
+   * `DistributedData.update`.  This accessor is what turns that factory into
+   * something `decodeCrdt` can use, which is why deriving the identity needs
+   * no new method on `DistributedDataHandle` (#766).
+   *
+   * **Why optional, and why `undefined` for the default.**  Four of the nine
+   * bundled CRDTs — the two counters and the two registers — have no notion
+   * of element identity, so a required member would be four stub methods and
+   * a breaking change for every CRDT outside this repository.  Reporting
+   * `undefined` rather than the default function is what lets a caller ask
+   * *"was one configured?"* without a shared sentinel: each implementation
+   * declares its own module-local `defaultIdentity`, so comparing across
+   * files would never match.
+   */
+  customIdentity?(): CrdtIdentityFunction | undefined;
 }
+
+/**
+ * Maps an element (or a map key) to the string a set- or map-shaped CRDT
+ * files it under — the `identity` option every such type accepts.
+ *
+ * The parameter is `any` rather than `unknown` on purpose.  Parameters are
+ * contravariant, so an `ORSet<CartItem>`'s `(item: CartItem) => string` is
+ * *not* assignable to `(value: unknown) => string`; a decoder reading the
+ * function back off an erased `Crdt<any>` has no element type left to name.
+ * This alias sits at that erasure boundary — the same one `decodeCrdt`'s
+ * `Crdt<any>` return type already lives on — and every value that reaches it
+ * came off the wire as `unknown` anyway.
+ */
+export type CrdtIdentityFunction = (value: any) => string;
 
 /**
  * Identifier of the replica producing an update.  In a cluster, this is

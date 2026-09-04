@@ -1,4 +1,4 @@
-export type { Crdt, ReplicaId } from './Crdt.js';
+export type { Crdt, CrdtIdentityFunction, ReplicaId } from './Crdt.js';
 export { GCounter } from './GCounter.js';
 export type { GCounterJson } from './GCounter.js';
 export { PNCounter } from './PNCounter.js';

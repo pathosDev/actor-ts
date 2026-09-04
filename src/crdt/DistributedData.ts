@@ -21,7 +21,7 @@ import type { Cluster } from '../cluster/Cluster.js';
 import { MemberRemoved, MemberUp } from '../cluster/ClusterEvents.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
 import type { WireMessage } from '../cluster/Protocol.js';
-import type { Crdt } from './Crdt.js';
+import type { Crdt, CrdtIdentityFunction } from './Crdt.js';
 import { DurableDistributedDataStore } from './DurableDistributedDataStore.js';
 import { GOSSIP_SKIP_WARN_INTERVAL_MS, MAX_CRDT_NESTING_DEPTH } from './Constants.js';
 import { encodeJsonTree } from '../serialization/JsonTree.js';
@@ -91,12 +91,28 @@ export type CrdtJson =
  * The switch itself lives in {@link decodeCrdtAtDepth}, which carries the
  * nesting depth `ORMap` recursion has to bound; this is the entry point that
  * starts it at zero.
+ *
+ * ## The `identity` parameter
+ *
+ * A CRDT's identity function is a closure and cannot travel on the wire, so a
+ * decoder has to be told which one to file elements under.  Passing none
+ * leaves every set- and map-shaped value on the built-in `JSON.stringify`
+ * dedup, which is what made the documented `identity` option inert for
+ * anything DistributedData materialised from a frame or from its durable
+ * record (#766).  The four kinds that have no element identity — the two
+ * counters and the two registers — ignore it.
+ *
+ * Only the *outer* value is covered: an `ORMap`'s inner CRDTs decode through
+ * this same dispatcher with no identity, because nothing in the frame or in
+ * the caller's empty template says what theirs should be.
  */
-export function decodeCrdt(json: CrdtJson): Crdt<any> {
-  return decodeCrdtAtDepth(json, 0);
+export function decodeCrdt(json: CrdtJson, identity?: CrdtIdentityFunction): Crdt<any> {
+  return decodeCrdtAtDepth(json, 0, identity);
 }
 
-function decodeCrdtAtDepth(json: CrdtJson, depth: number): Crdt<any> {
+function decodeCrdtAtDepth(
+  json: CrdtJson, depth: number, identity: CrdtIdentityFunction | undefined,
+): Crdt<any> {
   if (depth > MAX_CRDT_NESTING_DEPTH) {
     throw new CrdtDecodeError(`CRDT nesting deeper than ${MAX_CRDT_NESTING_DEPTH} levels`);
   }
@@ -106,17 +122,19 @@ function decodeCrdtAtDepth(json: CrdtJson, depth: number): Crdt<any> {
   switch (json.kind) {
     case 'GCounter':    return GCounter.fromJSON(json);
     case 'PNCounter':   return PNCounter.fromJSON(json);
-    case 'GSet':        return GSet.fromJSON<unknown>(json);
-    case 'ORSet':       return ORSet.fromJSON<unknown>(json);
+    case 'GSet':        return GSet.fromJSON<unknown>(json, { identity });
+    case 'ORSet':       return ORSet.fromJSON<unknown>(json, { identity });
     case 'LWWRegister': return LWWRegister.fromJSON<unknown>(json);
-    case 'GCounterMap': return GCounterMap.fromJSON<unknown>(json);
-    case 'LWWMap':      return LWWMap.fromJSON<unknown, unknown>(json);
+    case 'GCounterMap': return GCounterMap.fromJSON<unknown>(json, { identity });
+    case 'LWWMap':      return LWWMap.fromJSON<unknown, unknown>(json, { identity });
     case 'MVRegister':  return MVRegister.fromJSON<unknown>(json);
     case 'ORMap':       return ORMap.fromJSON<unknown, Crdt<any>>(
       json,
       // Inner CRDTs decode through the same dispatcher — a value can
-      // be any of the registered CRDT kinds.
-      (inner) => decodeCrdtAtDepth(inner as CrdtJson, depth + 1) as Crdt<any>,
+      // be any of the registered CRDT kinds.  Identity stops at this level;
+      // see the entry point's doc.
+      (inner) => decodeCrdtAtDepth(inner as CrdtJson, depth + 1, undefined) as Crdt<any>,
+      { identity },
     );
     default: {
       const _exhaustive: never = json;
@@ -681,6 +699,24 @@ class DistributedDataActor extends Actor<ActorMessage> {
    * without a metrics backend being wired up at all.
    */
   private droppedFrames = 0;
+  /**
+   * Per-key element identity, learned from the `factory` that `update`
+   * already carries — `null` once a key is known to be on the default.
+   *
+   * This is what makes the documented `identity` option work for a value
+   * DistributedData materialised rather than the application constructing it
+   * (#766).  Deriving it beats a `register(key, factory)` on the handle for a
+   * reason that is not about taste: `DistributedDataHandle` is re-exported by
+   * no entry point (#1307), so a method added there would land on a type
+   * consumers cannot name — while `update`'s factory is already in every
+   * caller's hands and already says exactly this.
+   *
+   * Growth is one small entry per *live* key, the same shape the view has:
+   * {@link onDelete} drops the entry with the value, and the next `update`
+   * for a resurrected key relearns it and re-keys whatever gossip brought
+   * back in the meantime.
+   */
+  private readonly identities = new Map<string, CrdtIdentityFunction | null>();
   /** `0` removes the budget.  Still clamped to the transport's frame cap. */
   private readonly maxGossipBytes: number;
   /**
@@ -761,7 +797,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
       // will see the recovered values via the handle's replay
       // mechanism (subscribe() fires once with the current value).
       try {
-        const loaded = await this.durable.load();
+        const loaded = await this.durable.load((key) => this.identityFor(key));
         for (const [key, crdt] of loaded) {
           this.applyMerged(key, null, crdt);
         }
@@ -914,6 +950,9 @@ class DistributedDataActor extends Actor<ActorMessage> {
   }
 
   private onUpdate(message: UpdateMessage): void {
+    // Before the read, not after: learning the identity can replace the
+    // stored value with a re-keyed copy of itself.
+    this.learnIdentity(message.key, message.factory);
     const current = this.view.state.get(message.key) ?? message.factory();
     const next = message.mutator(current);
     this.applyMerged(message.key, current, next);
@@ -1106,6 +1145,11 @@ class DistributedDataActor extends Actor<ActorMessage> {
   }
 
   private onDelete(message: DeleteMessage): void {
+    // The learned identity goes with the value, so the registry never
+    // outgrows the view.  Nothing is lost by it: a peer that re-introduces
+    // the key gossips it under whatever identity it holds, and the next
+    // `update` relearns and re-keys — the same repair a durable reload gets.
+    this.identities.delete(message.key);
     if (this.view.state.delete(message.key)) {
       // Notify subscribers with a best-effort signal — we synthesise
       // a fresh CRDT via the most-recently-seen factory.  Since we
@@ -1147,7 +1191,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
    */
   private decodeOrDrop(json: CrdtJson, key: string, peer: NodeAddress): Crdt<any> | null {
     try {
-      return decodeCrdt(json);
+      return decodeCrdt(json, this.identityFor(key));
     } catch (e) {
       this.droppedFrames++;
       this.countDroppedFrame();
@@ -1157,6 +1201,67 @@ class DistributedDataActor extends Actor<ActorMessage> {
         e,
       );
       return null;
+    }
+  }
+
+  /**
+   * The identity to decode `key` under, or `undefined` while none is known.
+   *
+   * `undefined` is the honest answer for a key the application has never
+   * updated: nothing in a frame, and nothing in the durable record, says what
+   * a value's identity should be.  {@link learnIdentity} is what repairs such
+   * a value once the application does say.
+   */
+  private identityFor(key: string): CrdtIdentityFunction | undefined {
+    return this.identities.get(key) ?? undefined;
+  }
+
+  /**
+   * Take `key`'s identity from the caller's factory, and repair a value that
+   * was materialised before it was known.
+   *
+   * Once per key, because the answer cannot change: `update` for a key we
+   * already know returns on the first line, so the common path costs a map
+   * lookup and the caller's factory is not invoked a second time.
+   *
+   * The repair is the half that fixes a **durable reload** and a
+   * **gossip-first** key, and it is not optional in the way it looks.  Both
+   * put a value in the view before any factory has been seen — `preStart`
+   * decodes the durable record before the mailbox is drained, and a peer
+   * gossips a key whenever it likes — so threading the identity into the
+   * decoders alone would leave exactly the two cases the issue reports.  One
+   * encode/decode round through the wire form is the whole repair, because
+   * `fromJSON` now files every entry under the identity it is given; entries
+   * that were separate under `JSON.stringify` and share a key under the
+   * caller's identity merge, rather than surviving as duplicates forever.
+   *
+   * The repaired value goes back through {@link applyMerged} rather than
+   * straight into the view, because a repair is a real change when it lands:
+   * two entries the sender kept apart can collapse into one, and that has to
+   * reach the subscribers and the durable record like any other merge would.
+   * When nothing moved — the ordinary case — the encoded forms match and
+   * `applyMerged` skips both.
+   *
+   * A factory or an identity function that throws leaves the view untouched
+   * and the key unlearned.  Escalating here would turn a bad callback into an
+   * actor restart, and the caller finds out anyway: the very next line of
+   * `onUpdate` calls the same factory when the key is absent, exactly as it
+   * did before this method existed.
+   */
+  private learnIdentity(key: string, factory: CrdtFactory<Crdt<any>>): void {
+    if (this.identities.has(key)) return;
+    try {
+      const identity = factory().customIdentity?.() ?? null;
+      this.identities.set(key, identity);
+      if (identity === null) return;
+      const current = this.view.state.get(key);
+      if (current === undefined) return;
+      this.applyMerged(key, current, decodeCrdt(current.toJSON() as CrdtJson, identity));
+    } catch (e) {
+      this.identities.delete(key);
+      this.log.warn(
+        `DistributedData: could not derive the element identity for "${key}" from its factory`, e,
+      );
     }
   }
 
