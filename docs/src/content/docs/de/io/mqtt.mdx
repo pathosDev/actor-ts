@@ -201,6 +201,15 @@ ref.tell({ kind: 'unsubscribe', topic: 'y/#', target: someHandler });
   `target`** entfernt es alle *fremden* Targets, lässt aber die eigene
   Subscription des Aktors bestehen — ein externer Controller kann die
   im Konstruktor deklarierte Subscription der Subklasse nicht stummschalten.
+- Das `qos` eines `subscribe` gilt nur für ein Pattern, **das das Kommando
+  selbst anlegt**.  Nennt es ein bereits vorhandenes Pattern, hängt es sich
+  mit dem dort registrierten QoS an; sein eigenes `qos` wird dabei
+  ignoriert.  Das ist das additive Gegenstück zur Regel darüber: Wer die
+  Subscription der Subklasse nicht stummschalten kann, soll sie auch nicht
+  unbemerkt herunterstufen können — eine mit QoS 0 neu ausgestellte
+  QoS-2-Subscription ließe die Anwendung an Exactly-once-Zustellung glauben,
+  während der Broker verwerfen darf.  Um das QoS des eigenen Patterns zu
+  ändern, ruf in der Subklasse `subscribe(topic, { qos })` auf.
 - Fan-out-Targets werden per Deathwatch beobachtet: stoppt ein Target-
   Aktor, wird er automatisch entfernt (und ein Broker-UNSUBSCRIBE feuert,
   sobald ein Pattern keine Konsumenten mehr hat).
