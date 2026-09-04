@@ -419,6 +419,19 @@ begrenzter Hub unter Last kann dir also einen Client liefern, der nie in
 `this.clients` erscheint, oder einen, der sie nie verlässt.  Beides ist
 dein Protokoll, und nur du weißt, ob ein Verlust akzeptabel ist.
 
+Der Hub ist nicht die einzige Queue im Spiel.  Jede Verbindung hat eine
+eigene Mailbox — die des internen Connection-Actors —, und
+`connection.tell`, `sendRaw` und `close` laufen alle in diese.
+**Begrenzen kannst du sie nicht:** der Hub spawnt den Connection-Actor
+ohne Optionen, und nichts in der öffentlichen API erreicht ihn.  Sollte
+künftig ein globaler Default jede Mailbox auf einmal begrenzen, kommt
+`close()` trotzdem an: es nimmt dieselbe ausgenommene Spur wie das
+Accept-Kommando.  `closeAll()` kann also nicht zu einer Reihe von
+Sockets werden, die still offen bleiben, und `reject` kann nicht mitten
+aus dieser Schleife werfen und jeden Client nach dem ersten verbunden
+lassen.  Ausgehende *Frames* auf dieser Queue würden weiterhin verworfen
+— genau wie eingehende Frames auf der des Hubs.
+
 <Aside type="tip" title="Bevorzuge die Caps pro Route">
   Greife bei einem Hub zu `maxConnections` und `maxFrameBytes`, bevor du
   `withMailboxCapacity()` verwendest.  Sie begrenzen die *Eingabe* — wie
@@ -446,6 +459,15 @@ interface WebsocketConnection<TOut> extends ActorRef<TOut> {
   close(code?: number, reason?: string): void;
 }
 ```
+
+`close()` ist eine Anforderung, keine Handlung: es reiht ein Kommando
+ein, das der Actor der Verbindung in einer späteren Runde ausführt —
+was davor schon in der Queue steht, etwa ein gerade ge-`reply`-tes
+Auf-Wiedersehen, geht also weiterhin zuerst raus.  `isOpen` beantwortet
+diese Lücke: es liest `false`, sobald `close()` zurückkehrt, noch bevor
+der Socket tatsächlich zu ist.  `broadcast` und deine eigenen
+`if (client.isOpen)`-Prüfungen wählen damit keinen Peer mehr aus, den du
+bereits trennen wolltest.
 
 `upgrade` trägt den Handshake-Kontext:
 

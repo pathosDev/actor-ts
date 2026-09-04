@@ -389,6 +389,18 @@ actors report — so a bounded hub under load can hand you a client that
 never appears in `this.clients`, or one that never leaves it.  Both are
 your protocol, and only you know whether losing one is acceptable.
 
+The hub is not the only queue in play.  Each connection has a mailbox of
+its own — the internal connection actor's — and `connection.tell`,
+`sendRaw` and `close` all go into that one.  **You cannot bound it:** the
+hub spawns the connection actor without options, and nothing in the
+public API reaches it.  Should a future global default ever bound every
+mailbox at once, `close()` still arrives: it takes the same exempt lane
+the accept command does, so `closeAll()` cannot become a set of sockets
+that quietly stay open, and `reject` cannot throw out of the middle of
+that loop and leave every client after the first one connected.
+Outbound *frames* on that queue would still be shed, exactly as inbound
+frames on the hub's are.
+
 <Aside type="tip" title="Prefer the per-route caps">
   For a hub, reach for `maxConnections` and `maxFrameBytes` before
   `withMailboxCapacity()`.  They bound the *input* — how many peers may
@@ -415,6 +427,14 @@ interface WebsocketConnection<TOut> extends ActorRef<TOut> {
   close(code?: number, reason?: string): void;
 }
 ```
+
+`close()` is a request, not an act: it queues a command the connection's
+own actor runs on a later turn, so anything already queued ahead of it —
+a goodbye you just `reply`-ed — is still written first.  `isOpen`
+answers for that gap: it reads `false` as soon as `close()` returns,
+before the socket has actually shut, so `broadcast` and your own
+`if (client.isOpen)` checks stop selecting a peer you have already
+decided to disconnect.
 
 `upgrade` carries the handshake context:
 

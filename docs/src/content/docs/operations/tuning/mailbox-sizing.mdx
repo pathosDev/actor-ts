@@ -30,12 +30,15 @@ wrong for a `Terminated` signal, a delivery confirmation or a
 WebSocket `close`.  All three went through the same queue, and each
 became a filed defect.
 
-One of the three has since been taken off the table for good: a
+Two of the three have since been taken off the table for good.  A
 [death-watch](/fundamentals/death-watch/) `Terminated` now arrives
 through a lane no overflow policy can shed, and no throttle can
-drop.  So a bound you set costs the actor its backlog, never the
-deaths it is watching for.  The other two are application messages,
-and there the sentence above still holds in full.
+drop — so a bound you set costs the actor its backlog, never the
+deaths it is watching for.  A [WebSocket](/http/websocket/) `close`
+takes the same lane, so a bounded connection cannot turn
+`closeAll()` into a socket that quietly stays open.  The delivery
+confirmation is still an application message, and there the
+sentence above holds in full.
 
 The ceiling that trade bought was not real either: only the *user*
 queue was bounded.  System messages were never capped, so the
@@ -246,10 +249,11 @@ every other loss path in the framework records.  The MDC context and the
 tracing span travelling on the envelope are not among them.
 
 <Aside type="caution" title="An undroppable message never becomes a letter">
-  A death-watch `Terminated`, and the command that spawns a WebSocket
-  connection's actor, are exempt from every overflow policy — so they are
-  never dropped, and therefore never dead-lettered either.  Their absence
-  from the dead-letter queue means they arrived, not that they vanished.
+  A death-watch `Terminated`, the command that spawns a WebSocket
+  connection's actor, and that connection's own `close` are exempt from
+  every overflow policy — so they are never dropped, and therefore never
+  dead-lettered either.  Their absence from the dead-letter queue means
+  they arrived, not that they vanished.
 </Aside>
 
 ## The three overflow policies, compared
@@ -368,12 +372,14 @@ protocol design.
   board it reaches actors nobody assessed — a delivery producer, a
   WebSocket hub — and the evicted envelope is a control message.  That
   is the shape the unbounded default exists to prevent, and setting a
-  global capacity re-creates it.  Two cases the framework now covers
-  itself: a death-watch subscriber's `Terminated`, and the command that
-  spawns a WebSocket connection's actor — both survive any bound, so a
-  bounded hub can no longer strand a socket whose handshake already
-  finished.  Everything else in your protocol, the rest of that hub's
-  traffic included, is still yours to assess.
+  global capacity re-creates it.  Three cases the framework now covers
+  itself: a death-watch subscriber's `Terminated`, the command that
+  spawns a WebSocket connection's actor, and that connection's own
+  `close` — all three survive any bound, so a bounded hub can no longer
+  strand a socket whose handshake already finished, and a bounded
+  connection cannot turn `closeAll()` into a peer that stays connected.
+  Everything else in your protocol, the rest of that hub's traffic
+  included, is still yours to assess.
 </Aside>
 
 <Aside type="caution" title="Tiny capacities">

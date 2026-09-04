@@ -29,12 +29,15 @@ für ein `Terminated`-Signal, eine Delivery-Bestätigung oder ein
 WebSocket-`close` falsch. Alle drei liefen durch dieselbe Queue, und
 aus jedem wurde ein gemeldeter Defekt.
 
-Einer der drei ist inzwischen endgültig vom Tisch: ein `Terminated` der
+Zwei der drei sind inzwischen endgültig vom Tisch. Ein `Terminated` der
 [Death Watch](/de/fundamentals/death-watch/) kommt über eine Spur an,
-die keine Overflow-Policy abwerfen und kein Throttle verwerfen kann.
-Eine Schranke, die du setzt, kostet den Actor also seinen Backlog, nie
-die Tode, auf die er wartet. Die anderen zwei sind
-Anwendungsnachrichten, und dort gilt der Satz oben unverändert.
+die keine Overflow-Policy abwerfen und kein Throttle verwerfen kann —
+eine Schranke, die du setzt, kostet den Actor also seinen Backlog, nie
+die Tode, auf die er wartet. Ein [WebSocket](/de/http/websocket/)-`close`
+nimmt dieselbe Spur, eine begrenzte Verbindung kann `closeAll()` also
+nicht in einen Socket verwandeln, der still offen bleibt. Die
+Delivery-Bestätigung ist weiterhin eine Anwendungsnachricht, und dort
+gilt der Satz oben unverändert.
 
 Die Obergrenze, die dieser Handel erkaufte, gab es ohnehin nicht: nur
 die *User*-Queue war begrenzt. System-Nachrichten waren nie gedeckelt,
@@ -252,11 +255,12 @@ andere Verlustpfad im Framework festhält. Der MDC-Kontext und der
 Tracing-Span, die auf dem Envelope mitreisen, gehören nicht dazu.
 
 <Aside type="caution" title="Eine unverwerfbare Nachricht wird nie zum Letter">
-  Ein `Terminated` aus der Death Watch und das Command, das den Actor
-  einer WebSocket-Verbindung spawnt, sind von jeder Overflow-Policy
-  ausgenommen — sie werden also nie verworfen und deshalb auch nie
-  dead-lettered. Dass sie in der Dead-Letter-Queue fehlen, heißt, dass sie
-  angekommen sind, nicht dass sie verschwunden wären.
+  Ein `Terminated` aus der Death Watch, das Command, das den Actor einer
+  WebSocket-Verbindung spawnt, und das `close` eben dieser Verbindung
+  sind von jeder Overflow-Policy ausgenommen — sie werden also nie
+  verworfen und deshalb auch nie dead-lettered. Dass sie in der
+  Dead-Letter-Queue fehlen, heißt, dass sie angekommen sind, nicht dass
+  sie verschwunden wären.
 </Aside>
 
 ## Die drei Overflow-Policies im Vergleich
@@ -379,11 +383,13 @@ Protokoll-Design.
   einen Delivery-Producer, einen WebSocket-Hub — und der verworfene
   Envelope ist eine Kontrollnachricht. Genau das soll der unbounded
   Default verhindern, und eine globale Kapazität stellt es wieder her.
-  Zwei Fälle deckt das Framework inzwischen selbst ab: das `Terminated`
-  eines Death-Watch-Subscribers und das Kommando, das den Actor einer
-  WebSocket-Verbindung spawnt — beide überstehen jede Schranke, ein
-  begrenzter Hub kann also keinen Socket mehr stranden lassen, dessen
-  Handshake schon fertig war.  Alles andere in deinem Protokoll,
+  Drei Fälle deckt das Framework inzwischen selbst ab: das `Terminated`
+  eines Death-Watch-Subscribers, das Kommando, das den Actor einer
+  WebSocket-Verbindung spawnt, und das `close` eben dieser Verbindung —
+  alle drei überstehen jede Schranke.  Ein begrenzter Hub kann also
+  keinen Socket mehr stranden lassen, dessen Handshake schon fertig war,
+  und eine begrenzte Verbindung kann `closeAll()` nicht in einen Peer
+  verwandeln, der verbunden bleibt.  Alles andere in deinem Protokoll,
   einschließlich des restlichen Verkehrs dieses Hubs, bleibt deine
   Beurteilung.
 </Aside>

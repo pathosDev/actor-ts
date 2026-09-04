@@ -62,14 +62,16 @@ export type Envelope<T = unknown> = {
    */
   readonly replayed?: boolean;
   /**
-   * This envelope carries a lifecycle notification the framework generated
-   * and cannot send again, so no load-shedding policy may discard it (#729).
+   * This envelope carries something the framework cannot send again, so no
+   * load-shedding policy may discard it (#729).
    *
-   * Two envelopes take it today, and the test for admitting a third is the
-   * property they share, not their subject: the framework built it, the
-   * framework sent it once, and nothing on the framework's side still holds
-   * what it would take to send it again.  Neither is application traffic, so
-   * neither is a message the caller who set the bound was choosing to lose.
+   * Three envelopes take it today, and the test for admitting a fourth is the
+   * property they share, not their subject: it is sent once, nothing on the
+   * framework's side still holds what it would take to send it again, and what
+   * is lost when it is dropped is not a *message* but a piece of state outside
+   * the mailbox that no one else will correct.  So the caller who set the
+   * bound was not choosing to lose it — it is not the traffic they were
+   * shedding, and the loss does not surface where they would look for it.
    *
    * The `Terminated` a death-watch delivers.  The watch was installed through
    * `context.watch`, the framework promised to answer it, and the answer
@@ -85,6 +87,15 @@ export type Envelope<T = unknown> = {
    * second copy.  A bounded hub that evicted it kept a socket nobody would
    * ever attach listeners to — buffering inbound frames with nothing to drain
    * them and holding its `maxConnections` slot — for the same one increment.
+   *
+   * The `close` a `WebsocketConnection` sends its own actor (#985).  This one
+   * is application-*initiated*, unlike the two above, and admitting it widens
+   * the rule on purpose rather than by stretching it: what a dropped close
+   * loses is a decision about a socket, not a message.  There is no retry and
+   * no sender to back off, nothing else in the process holds that socket, and
+   * a `closeAll(1008, 'rate limited')` that returns normally while the peers
+   * stay connected is a control that failed open — a security outcome, from a
+   * bound the operator set to cap *frames*.
    *
    * Set by {@link ActorCell.postSignalEnvelope}, which is the only door that
    * sets it, and read in three places: {@link Mailbox.removeOldest} and
