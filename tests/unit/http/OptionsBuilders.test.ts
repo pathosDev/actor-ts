@@ -12,6 +12,7 @@ import {
   CsrfOptions,
   HstsOptions,
   HttpClientOptions,
+  HttpServerOptions,
   RequestIdOptions,
   SameOriginOptions,
   SecurityHeadersOptions,
@@ -137,6 +138,29 @@ describe('option builders — every withX sets its field', () => {
     expect(fields.defaultTimeoutMs).toBe(7_500);
     expect(fields.redirect).toBe('manual');
     expect(fields.maxRedirects).toBe(2);
+  });
+
+  test('HttpServerOptions', () => {
+    const builder = HttpServerOptions.create()
+      .withIdleTimeoutMs(5_000)
+      .withHeaderTimeoutMs(20_000)
+      .withRequestTimeoutMs(90_000)
+      .withMaxConnections(1_000);
+    const fields = bag(builder);
+    expect(fields.idleTimeoutMs).toBe(5_000);
+    expect(fields.headerTimeoutMs).toBe(20_000);
+    expect(fields.requestTimeoutMs).toBe(90_000);
+    expect(fields.maxConnections).toBe(1_000);
+  });
+
+  test('HttpServerOptions records only what was set — unset must stay unset', () => {
+    // Not decoration: `idleTimeoutMs` and `maxConnections` ship no built-in
+    // default, so a builder that materialised them as `undefined` own
+    // properties would still be stripped by mergeOptions — but one that
+    // materialised them as a *number* would overwrite the backend's own
+    // choice with a value nobody asked for.
+    expect(Object.keys(bag(HttpServerOptions.create().withHeaderTimeoutMs(1_000))))
+      .toEqual(['headerTimeoutMs']);
   });
 
   test('StaticFilesOptions', () => {

@@ -1,4 +1,5 @@
 import { DEFAULT_WEBSOCKET_MAX_FRAME_BYTES } from '../Constants.js';
+import type { HttpServerOptionsType } from '../HttpServerOptions.js';
 import type { HttpMethod, HttpRequest, HttpResponse } from '../Types.js';
 import type { PreAttachBufferLimits, WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
 
@@ -177,6 +178,111 @@ export function transportFrameCapOf(registrations: ReadonlyArray<WebsocketRouteR
 }
 
 /**
+ * The slice of a `node:http` / `node:net` server the resolved server policy
+ * writes to.  Every property is optional because the object is reached through
+ * a runtime that may not be Node at all — see {@link applyServerOptions}.
+ */
+export type NodeHttpServerLike = {
+  keepAliveTimeout?: number;
+  headersTimeout?: number;
+  requestTimeout?: number;
+  maxConnections?: number;
+};
+
+/** Which fields {@link applyServerOptions} actually wrote.  @internal */
+export type AppliedServerOptions = {
+  readonly idleTimeoutMs: boolean;
+  readonly headerTimeoutMs: boolean;
+  readonly requestTimeoutMs: boolean;
+  readonly maxConnections: boolean;
+};
+
+const APPLIED_NOTHING: AppliedServerOptions = Object.freeze({
+  idleTimeoutMs: false,
+  headerTimeoutMs: false,
+  requestTimeoutMs: false,
+  maxConnections: false,
+});
+
+/**
+ * Install a resolved `actor-ts.http.server` policy on the server a backend
+ * just started listening on, and report what actually took.
+ *
+ * **Why post-listen and not at construction.**  All four are plain mutable
+ * properties that the runtime re-reads per connection, so writing them after
+ * `listen()` reaches every future connection — which is what lets one policy,
+ * resolved once at `bind()`, cover a backend the framework built *and* a
+ * backend the application constructed and passed to `useBackend(...)`.  The
+ * knobs that are *factory* options instead — `maxHeaderSize`, Fastify's
+ * `bodyLimit`, `connectionsCheckingInterval` — cannot be reached this way and
+ * deliberately ship no key (#667 owns the seam they need).
+ *
+ * **An unset field is left alone, never defaulted here.**  `idleTimeoutMs` and
+ * `maxConnections` ship no value precisely so the backend's own choice
+ * survives, and writing `undefined` onto `keepAliveTimeout` would replace
+ * Fastify's deliberate 72 s with `NaN` semantics rather than with nothing.
+ *
+ * **Where it does and does not reach** — the honest half, in the shape
+ * {@link transportFrameCapOf} uses for the `ws` shim:
+ *
+ *   - **Fastify** — `this.app.server`.  All four.
+ *   - **Express** — the `Server` returned by `app.listen`.  All four.
+ *   - **Hono on Node** — `@hono/node-server` hands its `node:http` server back
+ *     as `HonoServerHandle.raw`.  All four.
+ *   - **Hono on Bun**, **Hono on Deno** — `Bun.serve` and `Deno.serve` expose
+ *     no server object and no equivalent knob, so `raw` is absent and **none
+ *     of the four is installed**.  Bun has a whole-connection `idleTimeout`
+ *     on `Bun.serve` (in *seconds*), which is close enough to be tempting and
+ *     different enough to be wrong; wiring it needs the clamp and the unit
+ *     conversion that a `number` cannot carry, and it is not done here.
+ *
+ * Passing an absent server is therefore ordinary, not an error: it is how the
+ * two unsupported pairs report themselves, and the return value says so.
+ *
+ * **`Infinity` is not written.**  It is the code-side spelling of the
+ * unlimited default for `maxConnections`, and `net.Server` wants the property
+ * absent for that, not set to a non-finite number.
+ *
+ * The two sweep-driven guards carry a caveat worth knowing before trusting a
+ * number: `headersTimeout` and `requestTimeout` are enforced by a periodic
+ * sweep whose interval (`connectionsCheckingInterval`) is a *factory* option
+ * defaulting to 30 s, so a connection is closed no earlier than the configured
+ * value and no later than one sweep after it.  Measured on node v26.7.0: a
+ * 3 s `headersTimeout` closed at 30.0 s with the default sweep and at 3.0 s
+ * with a 1 s one.  `keepAliveTimeout` and `maxConnections` are not swept and
+ * are exact.
+ */
+export function applyServerOptions(
+  server: NodeHttpServerLike | null | undefined,
+  options: Partial<HttpServerOptionsType> | undefined,
+): AppliedServerOptions {
+  if (!server || !options) return APPLIED_NOTHING;
+  const applied = {
+    idleTimeoutMs: false,
+    headerTimeoutMs: false,
+    requestTimeoutMs: false,
+    maxConnections: false,
+  };
+  if (options.idleTimeoutMs !== undefined) {
+    server.keepAliveTimeout = options.idleTimeoutMs;
+    applied.idleTimeoutMs = true;
+  }
+  if (options.headerTimeoutMs !== undefined) {
+    server.headersTimeout = options.headerTimeoutMs;
+    applied.headerTimeoutMs = true;
+  }
+  if (options.requestTimeoutMs !== undefined) {
+    server.requestTimeout = options.requestTimeoutMs;
+    applied.requestTimeoutMs = true;
+  }
+  if (options.maxConnections !== undefined && options.maxConnections !== Infinity) {
+    server.maxConnections = options.maxConnections;
+    applied.maxConnections = true;
+  }
+  return applied;
+}
+
+/**
  * Pluggable HTTP server abstraction.  Backends translate our generic
  * route registrations to their native framework (Fastify, Bun.serve,
  * Express, …).  The DSL only ever talks to this interface.
@@ -203,8 +309,25 @@ export interface HttpServerBackend {
    */
   registerRoute(route: RouteRegistration): void;
 
-  /** Start listening.  Returns a ServerBinding with the actual bound port. */
-  listen(host: string, port: number): Promise<ServerBinding>;
+  /**
+   * Start listening.  Returns a ServerBinding with the actual bound port.
+   *
+   * `serverOptions` is the resolved `actor-ts.http.server` policy —
+   * `withServerOptions(...)` > HOCON > built-in default, decided once at
+   * `bind()` for the same reason `WebsocketRouteRegistration.maxFrameBytes`
+   * is: the numbers belong to the listening socket, so resolving them per
+   * connection would be work repeated to reach the same answer, and a
+   * malformed value would surface at the first request instead of at `bind()`.
+   *
+   * **Optional, and it stays optional.**  A backend written outside this
+   * repository still satisfies the interface without it, and a `listen(host,
+   * port)` called directly — every backend suite here does — behaves exactly
+   * as it did before the parameter existed.  A backend that ignores it is not
+   * broken, only untuned; {@link applyServerOptions} is the shared
+   * implementation and documents which backend/runtime pairs can honour it at
+   * all.
+   */
+  listen(host: string, port: number, serverOptions?: Partial<HttpServerOptionsType>): Promise<ServerBinding>;
 
   /**
    * Optional: register a method-agnostic not-found handler, invoked for

@@ -285,6 +285,31 @@ export const ConfigKeys = {
     /** How long `unbind()` lets in-flight requests drain before forcing. */
     shutdownGracePeriod: 'actor-ts.http.shutdown-grace-period',
     /**
+     * Connection-level bounds for one bound server — the listening socket
+     * itself, not a route on it (#870).
+     *
+     * Full dotted leaves beside the `root`, never a bare root, for the reason
+     * `websocket` below spells out; and here two of the four have **no leaf in
+     * `reference.conf` at all**, so a root-only declaration would have left
+     * them checked by nothing whatsoever.
+     *
+     * `idle-timeout` and `max-connections` are the comment-only pair.  Both
+     * need "unset" to stay expressible: unset keep-alive is whatever the
+     * backend picked — and the backends disagree on purpose, 72 s on Fastify
+     * against 5 s on `node:http` — while unset `max-connections` is unlimited.
+     * A published literal would be a number nobody chose in the first case and
+     * a cap nobody asked for in the second.
+     */
+    server: {
+      root: 'actor-ts.http.server',
+      /** Comment-only in `reference.conf` — unset keeps the backend's own. */
+      idleTimeout: 'actor-ts.http.server.idle-timeout',
+      headerTimeout: 'actor-ts.http.server.header-timeout',
+      requestTimeout: 'actor-ts.http.server.request-timeout',
+      /** Comment-only in `reference.conf` — unset means unlimited. */
+      maxConnections: 'actor-ts.http.server.max-connections',
+    },
+    /**
      * Per-route CORS defaults for the `cors(options, routes)` directive (#878).
      *
      * Full dotted leaves beside the `root`, for the reason `websocket` below

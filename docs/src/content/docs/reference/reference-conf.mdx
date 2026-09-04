@@ -795,6 +795,45 @@ actor-ts {
     # want in-flight requests to finish on shutdown.
     shutdown-grace-period = 0ms
 
+    # Connection-level bounds for the server itself -- the listening socket a
+    # bind() opens, not a route on it.  withServerOptions(...) wins per field,
+    # then this block, then the built-in default, and the merged result is
+    # validated (OptionsError on a bad value).  They are installed on the
+    # server at listen(), so they reach a backend you constructed yourself
+    # just as they reach the one the framework builds.
+    #
+    # NOT every backend can honour them.  Fastify, Express and Hono-on-Node
+    # all expose the node:http server these are written to; Bun.serve and
+    # Deno.serve expose neither that server nor an equivalent knob, so under
+    # the Hono backend on Bun or Deno all four are unavailable rather than
+    # quietly ignored.  header-timeout and request-timeout are enforced by a
+    # periodic sweep the runtime fixes at 30s, so a connection is closed no
+    # earlier than the value set here and no later than one sweep after it.
+    #
+    # Two leaves ship no value, because "unset" is a state neither of them has
+    # a number for:
+    #
+    #   idle-timeout -- how long an idle keep-alive connection is held before
+    #     it is destroyed.  Unset keeps the backend's own, and the backends
+    #     disagree on purpose: 72s on Fastify, so the server outlives a load
+    #     balancer's idle window and the balancer never posts a request onto a
+    #     socket that is closing, against node:http's 5s everywhere else.
+    #     Set a duration to make them agree, or 0 to disable it:
+    #
+    #       idle-timeout = 5s
+    #
+    #   max-connections -- concurrent connections accepted before new ones are
+    #     closed, unlimited by default.  The same shape
+    #     http.websocket.max-connections has, but server-wide: it counts every
+    #     connection on this binding, WebSocket upgrades and an attached
+    #     DevTools server included.
+    #
+    #       max-connections = 10000
+    server {
+      header-timeout  = 60s   # time to receive the complete headers -- the slow-loris guard
+      request-timeout = 300s  # time to receive the ENTIRE request; bounds uploads, never responses
+    }
+
     # Per-route CORS defaults for cors(options, routes).  Leaf names are the
     # kebab-case of the CorsOptionsType fields; the route's own options win per
     # field, and the merged result is validated (OptionsError on a bad value).

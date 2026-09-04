@@ -1,13 +1,15 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { HttpError, type HttpRequest, type HttpResponse } from '../Types.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
-import { DEFAULT_RESPONSE_SECURITY_HEADERS, PAYLOAD_TOO_LARGE_RESPONSE, transportFrameCapOf } from './HttpServerBackend.js';
+import { applyServerOptions, DEFAULT_RESPONSE_SECURITY_HEADERS, PAYLOAD_TOO_LARGE_RESPONSE, transportFrameCapOf } from './HttpServerBackend.js';
 import type {
   HttpServerBackend,
+  NodeHttpServerLike,
   RouteRegistration,
   ServerBinding,
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
+import type { HttpServerOptionsType } from '../HttpServerOptions.js';
 import { Lazy } from '../../util/Lazy.js';
 import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
 
@@ -165,7 +167,7 @@ export class FastifyBackend implements HttpServerBackend {
     this.userErrorHandler = handler;
   }
 
-  async listen(host: string, port: number): Promise<ServerBinding> {
+  async listen(host: string, port: number, serverOptions?: Partial<HttpServerOptionsType>): Promise<ServerBinding> {
     if (this.wsRegistered.length > 0) {
       const plugin = await fastifyWebsocketLazy.get();
       // Await the register so the plugin's onRoute hook is installed
@@ -184,6 +186,12 @@ export class FastifyBackend implements HttpServerBackend {
       for (const reg of this.wsRegistered) this.attachWebsocketRoute(reg);
     }
     const address = await this.app.listen({ host, port });
+    // Fastify overrides two of the four on its own — `keepAliveTimeout` to
+    // 72 s and `requestTimeout` to 0 (no bound) — so this is the write that
+    // makes a configured policy the one that governs rather than Fastify's
+    // opinion.  It runs after `listen` because these are re-read per
+    // connection; the factory-only knobs are not reachable from here at all.
+    applyServerOptions(this.app.server as NodeHttpServerLike | undefined, serverOptions);
     // Fastify returns "http://<host>:<port>".
     const match = /:(\d+)$/.exec(address);
     const actualPort = match ? parseInt(match[1]!, 10) : port;
