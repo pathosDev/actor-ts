@@ -466,6 +466,30 @@ export const COLD_START_STALL_AFTER_SEED_ROUNDS = 3;
 export const MAX_REPORTED_UNCLAIMED_WIRE_KINDS = 8;
 
 /**
+ * How many distinct configuration divergences a node reports before it stops
+ * naming new ones (#844).
+ *
+ * `Cluster.checkConfigurationAgreement` latches on the **pair** — the fact and
+ * the peer — rather than on the fact alone, because "the wire cap disagrees"
+ * with no address in it is not something an operator can act on when the
+ * second and third peers are the misconfigured ones.  That makes the latch set
+ * grow with the member map, whose own cap an operator may set to `0`, so it
+ * needs a bound of its own: both halves of the key come from gossip, and this
+ * codebase caps every set keyed on peer-supplied strings.
+ *
+ * Thirty-two is several times the product an honest deployment produces — a
+ * divergence is normally one setting across the nodes on the wrong side of a
+ * rolling deploy — and reaching it means the node has already reported
+ * thirty-two of them.
+ *
+ * The *enforcement* is deliberately not capped with it: barring a diverging
+ * peer from placement is derived from the member record on every call, so it
+ * stays correct for every peer whether or not its divergence was one of the
+ * ones reported.
+ */
+export const MAX_REPORTED_CONFIGURATION_MISMATCHES = 32;
+
+/**
  * How many characters of a peer-supplied frame `kind` reach a log line, and
  * therefore how much of one this node remembers (#1178).
  *

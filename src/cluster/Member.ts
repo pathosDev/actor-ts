@@ -1,6 +1,19 @@
 import { NodeAddress } from './NodeAddress.js';
-import { isMemberStatus, MAX_STORAGE_IDENTITY_LENGTH, MEMBER_STATUSES } from './Protocol.js';
-import type { MemberData, MemberStatus, StorageIdentitiesData } from './Protocol.js';
+import {
+  CONFIGURATION_FACT_NAME_PATTERN,
+  isMemberStatus,
+  MAX_CONFIGURATION_FACT_NAME_LENGTH,
+  MAX_CONFIGURATION_FACT_VALUE_LENGTH,
+  MAX_CONFIGURATION_FACTS,
+  MAX_STORAGE_IDENTITY_LENGTH,
+  MEMBER_STATUSES,
+} from './Protocol.js';
+import type {
+  ConfigurationFactsData,
+  MemberData,
+  MemberStatus,
+  StorageIdentitiesData,
+} from './Protocol.js';
 
 /**
  * Immutable description of a cluster member at a point in time.  Member
@@ -25,6 +38,8 @@ export class Member {
     public readonly removedAt?: number,
     /** Store identities this member claims for itself — see {@link StorageIdentitiesData} (#1358). */
     public readonly storageIdentities?: StorageIdentitiesData,
+    /** Effective settings this member claims for itself — see {@link ConfigurationFactsData} (#844). */
+    public readonly configurationFacts?: ConfigurationFactsData,
   ) {
     this.roles = new Set(roles);
   }
@@ -47,13 +62,17 @@ export class Member {
     };
     // `removedAt` only ever set on tombstones — omit otherwise to
     // keep gossip bytes proportional to status, not member count.
-    // `storageIdentities` follows the same omit-when-absent rule.
+    // `storageIdentities` and `configurationFacts` follow the same
+    // omit-when-absent rule.
     const withTombstoneAge = this.removedAt !== undefined
       ? { ...data, removedAt: this.removedAt }
       : data;
-    return this.storageIdentities !== undefined
+    const withIdentities = this.storageIdentities !== undefined
       ? { ...withTombstoneAge, storageIdentities: this.storageIdentities }
       : withTombstoneAge;
+    return this.configurationFacts !== undefined
+      ? { ...withIdentities, configurationFacts: this.configurationFacts }
+      : withIdentities;
   }
 
   /**
@@ -81,11 +100,15 @@ export class Member {
       data.roles ?? [],
       data.removedAt,
       sanitizeStorageIdentities(data.storageIdentities),
+      sanitizeConfigurationFacts(data.configurationFacts),
     );
   }
 
   withStatus(status: MemberStatus): Member {
-    return new Member(this.address, status, this.version + 1, this.roles, this.removedAt, this.storageIdentities);
+    return new Member(
+      this.address, status, this.version + 1, this.roles, this.removedAt,
+      this.storageIdentities, this.configurationFacts,
+    );
   }
 
   /**
@@ -99,6 +122,22 @@ export class Member {
   withStorageIdentities(storageIdentities: StorageIdentitiesData): Member {
     return new Member(
       this.address, this.status, this.version, this.roles, this.removedAt, storageIdentities,
+      this.configurationFacts,
+    );
+  }
+
+  /**
+   * The same member carrying configuration claims — same `version`, for the
+   * reason {@link withStorageIdentities} spells out (#844).  Both fields ride
+   * the one overlay lane, so this is the second reader of that rationale and
+   * not a second policy: a version bump for either would race the leader's
+   * `joining → up` promotion to the same `version + 1`, which `mergeMember`
+   * has no tie-break for.
+   */
+  withConfigurationFacts(configurationFacts: ConfigurationFactsData): Member {
+    return new Member(
+      this.address, this.status, this.version, this.roles, this.removedAt,
+      this.storageIdentities, configurationFacts,
     );
   }
 
@@ -111,7 +150,10 @@ export class Member {
    * tombstones cluster-wide (#75).
    */
   withRemoved(removedAt: number): Member {
-    return new Member(this.address, 'removed', this.version + 1, this.roles, removedAt, this.storageIdentities);
+    return new Member(
+      this.address, 'removed', this.version + 1, this.roles, removedAt,
+      this.storageIdentities, this.configurationFacts,
+    );
   }
 
   toString(): string {
@@ -139,4 +181,56 @@ function sanitizeStorageIdentities(data: unknown): StorageIdentitiesData | undef
     }
   }
   return Object.keys(sanitized).length > 0 ? sanitized : undefined;
+}
+
+/**
+ * The same posture one field over, with one difference that matters: the
+ * *keys* are member-supplied too (#844).
+ *
+ * `sanitizeStorageIdentities` iterates three field names this file wrote down,
+ * so nothing a peer sends can decide what gets assigned.  Here the peer names
+ * the properties, which puts `__proto__` and every member of
+ * `Object.prototype` in reach of the write and of the read.
+ *
+ * **The operative guard is the name pattern.**
+ * {@link CONFIGURATION_FACT_NAME_PATTERN} has no underscore in its character
+ * set, so `__proto__` is dropped before anything is written — which is what
+ * the test binds, and what would have to be removed for this to break.
+ *
+ * `Object.defineProperty` rather than `sanitized[name] = value` is
+ * belt-and-braces, and worth stating precisely rather than overclaiming: with
+ * values constrained to strings the assignment is *already* safe, because the
+ * `__proto__` setter ignores a non-object value.  The write form is what keeps
+ * that true if the value type is ever widened — a facts record holding numbers
+ * or nested objects would make plain assignment a live prototype-pollution
+ * bug, and the widening is exactly the kind of change nobody would think to
+ * re-derive this from.
+ *
+ * Reads go through `Object.hasOwn`, and that one is not belt-and-braces:
+ * `claims['constructor']` on a plain object answers with a function rather
+ * than `undefined`, and `constructor` is perfectly spellable under the
+ * pattern — so an unguarded read reports a permanent false divergence against
+ * every peer that does not publish that name.
+ *
+ * A bad entry is dropped rather than failing the record, and the count cap
+ * keeps the *first* {@link MAX_CONFIGURATION_FACTS} rather than refusing the
+ * whole claim: the field is advisory and the member is not, so one malformed
+ * or oversized claim must not suppress a peer's membership.
+ */
+function sanitizeConfigurationFacts(data: unknown): ConfigurationFactsData | undefined {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) return undefined;
+  const sanitized: Record<string, string> = {};
+  let kept = 0;
+  for (const [name, value] of Object.entries(data as Record<string, unknown>)) {
+    if (kept >= MAX_CONFIGURATION_FACTS) break;
+    if (name.length > MAX_CONFIGURATION_FACT_NAME_LENGTH) continue;
+    if (!CONFIGURATION_FACT_NAME_PATTERN.test(name)) continue;
+    if (typeof value !== 'string') continue;
+    if (value.length === 0 || value.length > MAX_CONFIGURATION_FACT_VALUE_LENGTH) continue;
+    Object.defineProperty(sanitized, name, {
+      value, enumerable: true, writable: true, configurable: true,
+    });
+    kept++;
+  }
+  return kept > 0 ? sanitized : undefined;
 }

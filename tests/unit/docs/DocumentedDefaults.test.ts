@@ -14,6 +14,7 @@ import { DEFAULT_MAILBOX_OVERFLOW } from '../../../src/ActorOptions.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
 import { DEFAULT_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/Constants.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
+import { DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS, DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY } from '../../../src/cluster/downing/DowningFromConfig.js';
 import { DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION } from '../../../src/cluster/ClusterOptions.js';
 import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
@@ -212,8 +213,19 @@ import {
  * `bytes` return a bare number unchanged, so labelling
  * `restart-random-factor = 0.2` a duration passes while asserting nothing
  * about it being a fraction (#883).
+ *
+ * `list` is the one kind whose values are compared by contents rather than by
+ * identity, and it exists because the alternative was worse (#844).  The four
+ * list-valued leaves that predate it are all `[]` sentinels filed under
+ * FEATURE_SWITCHES with the same stated reason — an empty list and an unset
+ * key produce the identical behaviour, so there is no constant to disagree
+ * with.  `configuration-compatibility-check.checked-paths` publishes a
+ * **non-empty** default that a constant does hold, so filing it beside them
+ * would have recorded a reason that is not true of it, and leaving it
+ * unasserted would have put a published default on the docs site with nothing
+ * checking it.
  */
-type DefaultKind = 'duration' | 'bytes' | 'int' | 'number' | 'string' | 'bool';
+type DefaultKind = 'duration' | 'bytes' | 'int' | 'number' | 'string' | 'bool' | 'list';
 
 type DocumentedDefault = {
   /** Full dotted HOCON path as it appears in `REFERENCE_CONF`. */
@@ -228,7 +240,7 @@ type DocumentedDefault = {
    * with — so a switch that grew one would have been filed under an
    * explanation that no longer applied to it.
    */
-  readonly constant: number | string | boolean;
+  readonly constant: number | string | boolean | readonly string[];
 };
 
 /**
@@ -275,6 +287,16 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.max-tombstones', kind: 'int', constant: DEFAULT_MAX_TOMBSTONES },
   { key: 'actor-ts.cluster.tombstone.time-to-live', kind: 'duration', constant: DEFAULT_TOMBSTONE_TTL_MS },
   { key: 'actor-ts.cluster.tombstone.prune-interval', kind: 'duration', constant: DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS },
+  // The configuration-agreement pair (#844).  `enforce` is in the table rather
+  // than in FEATURE_SWITCHES for the reason `remote.untrusted-mode` is: it has
+  // a constant to disagree with, since `Cluster` reads
+  // `options.configurationCompatibilityEnforce ?? DEFAULT_…_ENFORCE`.
+  { key: 'actor-ts.cluster.configuration-compatibility-check.enforce', kind: 'bool', constant: DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE },
+  // The first `list` entry, and the whole reason that kind exists — see
+  // `DefaultKind`.  The seeded path is a real published default with a
+  // constant behind it, not the `[]` sentinel its four list-valued
+  // predecessors are.
+  { key: 'actor-ts.cluster.configuration-compatibility-check.checked-paths', kind: 'list', constant: DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS },
 
   /* --- serialization --- */
   { key: 'actor-ts.serialization.read-constraints.max-nesting-depth', kind: 'int', constant: DEFAULT_MAX_NESTING_DEPTH },
@@ -959,7 +981,11 @@ const readers = {
   number: (key: string) => reference.getNumber(key),
   string: (key: string) => reference.getString(key),
   bool: (key: string) => reference.getBoolean(key),
-} as const satisfies Record<DefaultKind, (key: string) => number | string | boolean>;
+  list: (key: string) => reference.getStringList(key),
+} as const satisfies Record<
+  DefaultKind,
+  (key: string) => number | string | boolean | readonly string[]
+>;
 
 describe('documented defaults match the constants they are published from', () => {
   test('the table actually covers the reference configuration', () => {
@@ -1007,13 +1033,26 @@ describe('documented defaults match the constants they are published from', () =
   // `T[]`, so a `readonly` table is rejected outright (TS2769).
   test.each([...DOCUMENTED_DEFAULTS])('$key is published as $constant', ({ key, kind, constant }) => {
     expect(reference.hasPath(key), `${key} is not in REFERENCE_CONF at all`).toBe(true);
-    expect(
-      readers[kind](key),
-      `reference.conf publishes a different default for ${key} than the constant it is `
+    const published = readers[kind](key);
+    const message = `reference.conf publishes a different default for ${key} than the constant it is `
       + 'documented from. Both language reference-conf.mdx pages are byte-pinned to '
       + 'REFERENCE_CONF, so this value is already on the docs site — change whichever '
-      + 'of the two is wrong, not just the one that made this test red.',
-    ).toBe(constant);
+      + 'of the two is wrong, not just the one that made this test red.';
+    // `toEqual` for the one kind whose value is a list and `toBe` for every
+    // scalar, rather than widening the whole table to `toEqual`: on a scalar
+    // the two agree, but the narrower matcher is the one that says the
+    // assertion is about a single value, and a table of a hundred entries
+    // should not loosen because one of them is an array (#844).
+    //
+    // The two casts read the table's own discriminant rather than guessing,
+    // and the copy is only there because bun's matcher parameter is a mutable
+    // `string[]` — `toEqual` compares contents, so copying changes nothing it
+    // asserts.
+    if (kind === 'list') {
+      expect(published, message).toEqual([...(constant as readonly string[])]);
+      return;
+    }
+    expect(published, message).toBe(constant as number | string | boolean);
   });
 
   test.each([...DELIBERATE_DIVERGENCES])('%s is still a deliberate divergence', (key) => {

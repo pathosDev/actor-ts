@@ -80,6 +80,7 @@ export {
   MemberDown,
   MemberLeft,
   MemberRemoved,
+  MemberConfigurationMismatch,
   ShardMapChanged,
 } from './ClusterEvents.js';
 export type { ClusterEvent } from './ClusterEvents.js';

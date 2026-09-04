@@ -6,6 +6,10 @@ import { mergeOptions, stripUndefined } from '../util/OptionsMerge.js';
 import type { FailureDetectorImplementation } from './FailureDetector.js';
 import type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 import type { PhiAccrualOptionsType } from './PhiAccrualOptions.js';
+import {
+  CONFIGURATION_FACT_NAME_PATTERN,
+  MAX_CONFIGURATION_FACT_NAME_LENGTH,
+} from './Protocol.js';
 import type { Transport } from './Transport.js';
 import { readDowningFromConfig } from './downing/DowningFromConfig.js';
 import type { DowningProvider } from './downing/DowningProvider.js';
@@ -120,6 +124,59 @@ export const DEFAULT_ADVERTISED_HOST = '127.0.0.1';
  * reached past the handler its owner registered.
  */
 export const DEFAULT_UNTRUSTED_MODE = false;
+
+/**
+ * Built-in default for
+ * {@link ClusterOptionsType.configurationCompatibilityEnforce} — off, i.e.
+ * report a divergence and change nothing else (#844).
+ *
+ * Off rather than on, and this is the load-bearing choice in the whole
+ * feature.  An enforcing default turns any rolling deploy that changes a
+ * checked value into a self-inflicted outage: for the length of the roll the
+ * two halves of the cluster disagree by design, and a misconfigured *majority*
+ * would bar a correctly-configured minority rather than the other way round.
+ * The analogous #1358 check chose warn-only for the same reason.  A deployment
+ * that would rather refuse the work than run it split turns this on
+ * deliberately, having read what "enforce" does — see
+ * {@link ClusterOptionsType.configurationCompatibilityEnforce}.
+ */
+export const DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE = false;
+
+/**
+ * Built-in default for
+ * {@link ClusterOptionsType.configurationCompatibilityCheckedPaths} — the
+ * cluster wire cap alone (#844).
+ *
+ * Named through `ConfigKeys` rather than as a string literal so the seeded
+ * path cannot drift from the key it names.
+ *
+ * Why this one and not `actor-ts.sharding.number-of-shards`, which is the
+ * divergence the issue was filed about: that one is already refused on the
+ * effective value, by the coordinator, with an error naming the key and a
+ * `ShardRegionRegistrationRefused` event (#633).  Checking it here as well
+ * would be a second and strictly weaker mechanism for a hazard that has one.
+ *
+ * `max-frame-bytes` has none.  `Transport`'s own doc records why: there is no
+ * protocol negotiation yet (#823), so a peer configured lower than this node
+ * refuses a frame this node considered safe — and a frame over the peer's cap
+ * kills the whole association, with the sender never learning what happened.
+ * That is a real divergence with no detection at all today, which is the bar
+ * for being in this list.
+ *
+ * Two more facts are published and comparable but deliberately **not** seeded,
+ * because in each the divergence is either legitimate or self-healing:
+ * `actor-ts.cluster.failure-detector.heartbeat-interval` (a peer that beats
+ * more slowly than this node's `down-after` tolerates is downed for being
+ * configured differently rather than for being dead — but staging a new
+ * cadence one node at a time is an ordinary operation), and
+ * `actor-ts.cluster.tombstone.time-to-live` (one side prunes a tombstone the
+ * other still enforces, so a removed address is re-admitted on one side only —
+ * bounded, and it heals at the longer of the two TTLs).  A deployment that
+ * cares adds them.
+ */
+export const DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS: readonly string[] = [
+  ConfigKeys.remote.maxFrameBytes,
+];
 
 /**
  * Whether — and when — this node may declare itself the first member of a
@@ -402,6 +459,59 @@ export type ClusterOptionsType = {
    */
   readonly trustedSelectionPaths?: readonly string[];
   /**
+   * What to do when a peer's effective value for a checked setting disagrees
+   * with this node's.  Default: `false` — report it and nothing else (#844).
+   *
+   * `true` additionally bars the diverging peer from
+   * {@link Cluster.placementCandidates}, so this node stops putting work on a
+   * node it cannot safely place work on.  That is the whole of it, and the
+   * ceiling is deliberate: downing or quarantining over a configuration
+   * disagreement is a split-brain lever, since a misconfigured majority would
+   * evict a correctly-configured minority and turn a warning into an outage.
+   *
+   * It is a **local send decision**, never an election input.  Each node knows
+   * only the facts its peers have gossiped and compares them against its own,
+   * so candidacy is asymmetric by construction — and any *elected* role
+   * computed from an asymmetric set has two winners.  Concretely: with A and B
+   * agreeing and C diverging, C excludes both of them while they exclude only
+   * C, so filtering singleton or shard-home selection this way would elect one
+   * host on A and B and a second on C.  Routee selection has no such property,
+   * which is why it is the one consumer wired to it.
+   *
+   * The field name folds the block prefix in, the way
+   * {@link failureDetectorImplementation} does — `enforce` alone says nothing
+   * on a flat options type, and `configurationCompatibilityCheckEnforce` would
+   * carry a `Check` that the sibling field cannot repeat without reading
+   * `CheckCheckedPaths`.
+   */
+  readonly configurationCompatibilityEnforce?: boolean;
+  /**
+   * Names of the settings whose effective values this node publishes to its
+   * peers and compares theirs against.  Default:
+   * `['actor-ts.remote.max-frame-bytes']` (#844).
+   *
+   * An allow-list of what **leaves this node**, not merely of what is
+   * compared: a name absent here is never stamped onto gossip, so there is no
+   * separate "sensitive paths" list to redact — a path not on this list is
+   * already not shipped.
+   *
+   * A name is by convention the HOCON path whose effective value it carries,
+   * because that is where an operator goes to change it.  What travels is the
+   * *effective* value — resolved after `explicit options > HOCON > built-in
+   * defaults` — so two nodes that differ only because one used a builder still
+   * compare unequal.  Comparing the config values themselves would miss that
+   * case entirely, and builder-first is this project's documented style.
+   *
+   * Only names something actually publishes can ever be compared; the
+   * framework publishes three (see
+   * {@link DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS}), and an
+   * application adds its own through {@link Cluster.publishConfigurationFact}.
+   * A listed name nothing publishes is inert rather than an error, for the
+   * reason a mixed-version cluster has to stay silent: absence on either side
+   * cannot be told apart from a peer that predates the fact.
+   */
+  readonly configurationCompatibilityCheckedPaths?: readonly string[];
+  /**
    * How long a connection may sit without its half of the handshake before it
    * is torn down, in milliseconds.  Default: 5 s
    * (`HANDSHAKE_TIMEOUT_MS` in `cluster/Constants.ts`) (#846).
@@ -618,6 +728,25 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   }
 
   /**
+   * Bar a peer whose checked configuration disagrees from this node's
+   * placement candidates, instead of only reporting it.  Default: off —
+   * see the field for why, and for what it deliberately does not do (#844).
+   */
+  withConfigurationCompatibilityEnforce(configurationCompatibilityEnforce: boolean): this {
+    return this.set('configurationCompatibilityEnforce', configurationCompatibilityEnforce);
+  }
+
+  /**
+   * Settings whose effective values this node publishes and compares.
+   * Default: the cluster wire cap alone (#844).
+   */
+  withConfigurationCompatibilityCheckedPaths(
+    configurationCompatibilityCheckedPaths: readonly string[],
+  ): this {
+    return this.set('configurationCompatibilityCheckedPaths', configurationCompatibilityCheckedPaths);
+  }
+
+  /**
    * Handshake deadline, both directions, in ms.  Default: 5000.  One value on
    * purpose — see the field (#846).
    */
@@ -746,6 +875,42 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
       );
     }
     this.checkTrustedSelectionPaths(s.trustedSelectionPaths);
+    this.checkConfigurationCheckedPaths(s.configurationCompatibilityCheckedPaths);
+  }
+
+  /**
+   * Reject a checked-path entry that could not name a publishable fact (#844).
+   *
+   * The name is not merely a key: it is stamped onto every gossip frame this
+   * node sends and printed verbatim in the mismatch diagnostic on every peer.
+   * So the same character set the receive side enforces
+   * ({@link CONFIGURATION_FACT_NAME_PATTERN}) is enforced here, at the one
+   * moment somebody is watching — a name this node would publish and every
+   * peer would then silently drop is a check that reports nothing and says so
+   * nowhere.
+   *
+   * Written by hand rather than through the field helpers for the reason
+   * {@link checkTrustedSelectionPaths} is: those are keyed on a single scalar,
+   * and this is a rule about each element of a list.
+   */
+  private checkConfigurationCheckedPaths(paths: readonly string[] | undefined): void {
+    if (paths === undefined) return;
+    if (!Array.isArray(paths)) {
+      this.fail('configurationCompatibilityCheckedPaths', 'must be a list of setting names', paths);
+    }
+    for (const entry of paths) {
+      if (typeof entry !== 'string' || entry.length > MAX_CONFIGURATION_FACT_NAME_LENGTH
+        || !CONFIGURATION_FACT_NAME_PATTERN.test(entry)) {
+        this.fail(
+          'configurationCompatibilityCheckedPaths',
+          'entries name a setting the way reference.conf spells it — lower-case, dots and '
+          + `hyphens, at most ${MAX_CONFIGURATION_FACT_NAME_LENGTH} characters `
+          + "(e.g. 'actor-ts.remote.max-frame-bytes'); anything else is dropped by every peer "
+          + 'that receives it',
+          entry,
+        );
+      }
+    }
   }
 
   /**
@@ -930,6 +1095,7 @@ export type ClusterConfigDefaults = Partial<Pick<
   | 'weaklyUpAfterMs' | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
   | 'maxMembers' | 'maxTombstones' | 'downing'
   | 'untrustedMode' | 'trustedSelectionPaths'
+  | 'configurationCompatibilityEnforce' | 'configurationCompatibilityCheckedPaths'
   | 'handshakeTimeoutMs' | 'outboundQueueSize' | 'maxInboundConnections'
   | 'incompleteFrameIdleMs'
 >>;
@@ -1021,6 +1187,19 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   }
   if (config.hasPath(tombstone.minRetention)) {
     out.tombstoneMinRetentionMs = config.getDuration(tombstone.minRetention);
+  }
+  // Both leaves ship a value, so both always land once the reference layer is
+  // loaded — which is what the round-trip pin asserts.  The presence checks
+  // stay for the reason the two wire-trust ones do: `getBoolean` and
+  // `getStringList` reject a missing path rather than returning a default, so
+  // a config built without the reference layer would throw out of the reader
+  // (#877).
+  const compatibility = keys.configurationCompatibilityCheck;
+  if (config.hasPath(compatibility.enforce)) {
+    out.configurationCompatibilityEnforce = config.getBoolean(compatibility.enforce);
+  }
+  if (config.hasPath(compatibility.checkedPaths)) {
+    out.configurationCompatibilityCheckedPaths = config.getStringList(compatibility.checkedPaths);
   }
   const failureDetectorKeys = keys.failureDetector;
   if (config.hasPath(failureDetectorKeys.implementation)) {

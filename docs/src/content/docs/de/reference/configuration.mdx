@@ -228,6 +228,8 @@ man daraus erneut zustellt.
 | `cluster.split-brain-resolver.static-quorum.quorum-size` | *(ungesetzt)* | Wie viele erreichbare Mitglieder nötig sind, um weiterzulaufen.  Von `static-quorum` verlangt; in `reference.conf` nur als Kommentar — siehe unten. |
 | `cluster.split-brain-resolver.keep-referee.referee-address` | *(ungesetzt)* | Adresse des Referee-Nodes; die Seite mit ihm gewinnt.  Von `keep-referee` verlangt; nur als Kommentar. |
 | `cluster.split-brain-resolver.keep-referee.down-all-if-below-quorum` | *(ungesetzt)* | Alle downen, wenn die Referee-Seite kleiner als dieser Wert ist.  Optional; nur als Kommentar. |
+| `cluster.configuration-compatibility-check.enforce` | `off` | Was eine Abweichung bewirkt, über das Melden hinaus.  `on` schließt den abweichenden Peer zusätzlich aus den Platzierungskandidaten dieses Nodes aus — siehe unten. |
+| `cluster.configuration-compatibility-check.checked-paths` | `["actor-ts.remote.max-frame-bytes"]` | Einstellungen, deren **effektive** Werte dieser Node an seine Peers veröffentlicht und mit deren Werten vergleicht. |
 
 Diese Keys liegen unter dem, was `Cluster.join(system, options)` übergibt —
 ein explizites `withGossipIntervalMs(…)` gewinnt also weiterhin.  Der
@@ -280,6 +282,28 @@ kein Key kann eines benennen — `actor-ts.coordination` stellt Leases ein,
 wählt aber kein Backend.  Baue es im Code:
 `withDowning(new LeaseMajority(…))`.  Wer den Namen trotzdem in diesen Key
 schreibt, bekommt eine Ablehnung statt stillen Ignorierens.
+
+`configuration-compatibility-check` vergleicht **effektive** Werte, keine
+Config-Werte.  Jeder Node veröffentlicht, was er für jede Einstellung aus
+`checked-paths` tatsächlich aufgelöst hat, und vergleicht das mit dem, was
+seine Peers veröffentlichen — so werden auch zwei Nodes erwischt, die sich
+nur unterscheiden, weil einer `.withMaxFrameBytes(…)` gerufen hat.  Ein
+Vergleich des Config-Baums könnte das nicht: eine explizite Option liegt
+darüber.  `checked-paths` ist eine Erlaubnisliste dessen, was den Node
+*verlässt* — eine Einstellung, die nicht darin steht, wird nie gegossipt;
+und nur Namen, die auch jemand veröffentlicht, lassen sich vergleichen.  Das
+Framework veröffentlicht drei davon (siehe
+[Joining und Seeds](/de/cluster/joining-and-seeds/)).  Abwesenheit auf einer
+der beiden Seiten ist Schweigen, damit ein Cluster mit gemischten Versionen
+nichts meldet statt alles.
+
+`enforce = on` schließt den abweichenden Peer aus den Platzierungskandidaten
+dieses Nodes aus — und sonst nichts.  Es downed oder quarantäniert niemanden:
+eine falsch konfigurierte *Mehrheit* würde dann die korrekt konfigurierte
+Minderheit verdrängen, und aus einer Warnung würde ein Ausfall.  Die
+Kandidatenmenge ist außerdem eine Sicht pro Node, deshalb liest nichts, das
+eine Rolle *wählt* (der Host eines Singletons, das Zuhause eines Shards),
+daraus — sonst wählten zwei Nodes zwei Gewinner.
 
 `seeds`, `roles` und der Transport haben keine HOCON-Form — die ersten
 beiden sind Deployment-Identität, die an die Join-Stelle gehört, und der

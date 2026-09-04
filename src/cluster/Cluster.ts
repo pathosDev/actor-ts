@@ -10,6 +10,7 @@ import type { Cancellable } from '../Scheduler.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
 import {
   COLD_START_STALL_AFTER_SEED_ROUNDS,
+  MAX_REPORTED_CONFIGURATION_MISMATCHES,
   MAX_REPORTED_UNCLAIMED_WIRE_KINDS,
   MAX_WALL_CLOCK_SKEW_MS,
 } from './Constants.js';
@@ -28,6 +29,8 @@ import {
   ADVERTISED_HOST_ENV_VARS,
   ClusterOptionsValidator,
   DEFAULT_ADVERTISED_HOST,
+  DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS,
+  DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE,
   DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
@@ -46,6 +49,7 @@ import type { ClusterOptions, ClusterOptionsType, SelfElectionPolicy } from './C
 import {
   CurrentClusterState,
   LeaderChanged,
+  MemberConfigurationMismatch,
   MemberDown,
   MemberJoined,
   MemberLeft,
@@ -75,7 +79,15 @@ import { NodeAddress } from './NodeAddress.js';
 import { ClusterSharding } from './sharding/ClusterSharding.js';
 import { ClusterSingleton } from './singleton/ClusterSingleton.js';
 import { ClusterEventStream } from './eventstream/ClusterEventStream.js';
+import {
+  CONFIGURATION_FACT_NAME_PATTERN,
+  DEFAULT_MAX_FRAME_BYTES,
+  MAX_CONFIGURATION_FACT_NAME_LENGTH,
+  MAX_CONFIGURATION_FACT_VALUE_LENGTH,
+  MAX_CONFIGURATION_FACTS,
+} from './Protocol.js';
 import type {
+  ConfigurationFactsData,
   EnvelopeMessage,
   GossipMessage,
   HeartbeatMessage,
@@ -191,6 +203,10 @@ export class Cluster {
   private readonly maxVersionSkewMs: number;
   private readonly maxMembers: number;
   private readonly maxTombstones: number;
+  /** See {@link publishConfigurationFact} — the allow-list of what leaves this node (#844). */
+  private readonly configurationCheckedPaths: ReadonlySet<string>;
+  /** See {@link placementCandidates} — what a divergence does beyond being reported (#844). */
+  private readonly configurationCompatibilityEnforce: boolean;
 
   /**
    * How many entries in {@link members} are `removed` tombstones.
@@ -432,6 +448,30 @@ export class Cluster {
       this.log,
       options.untrustedMode ?? DEFAULT_UNTRUSTED_MODE,
       options.trustedSelectionPaths ?? [],
+    );
+    this.configurationCompatibilityEnforce =
+      options.configurationCompatibilityEnforce ?? DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE;
+    this.configurationCheckedPaths = new Set(
+      options.configurationCompatibilityCheckedPaths
+      ?? DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS,
+    );
+    // Published here, from the resolved options, rather than read back out of
+    // `system.config` anywhere later: the whole point is the EFFECTIVE value,
+    // which is only assembled once — here — after the builder has been layered
+    // over HOCON over the built-in defaults (#844).  The three the framework
+    // can answer for itself; anything else arrives through
+    // `publishConfigurationFact`.
+    this.publishConfigurationFact(
+      ConfigKeys.remote.maxFrameBytes,
+      String(options.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES),
+    );
+    this.publishConfigurationFact(
+      ConfigKeys.cluster.failureDetector.heartbeatInterval,
+      String(fdOptions.heartbeatIntervalMs),
+    );
+    this.publishConfigurationFact(
+      ConfigKeys.cluster.tombstone.timeToLive,
+      String(this.tombstoneTtlMs),
     );
   }
 
@@ -730,8 +770,12 @@ export class Cluster {
   private memberDataForGossip(member: Member): MemberData {
     if (!member.address.equals(this.selfAddress)) return member.toData();
     const identities = this.selfStorageIdentitiesSnapshot();
-    if (identities === undefined) return member.toData();
-    return { ...member.toData(), storageIdentities: identities };
+    const facts = this.selfConfigurationFactsSnapshot();
+    const data = member.toData();
+    const withIdentities = identities === undefined
+      ? data
+      : { ...data, storageIdentities: identities };
+    return facts === undefined ? withIdentities : { ...withIdentities, configurationFacts: facts };
   }
 
   /**
@@ -786,6 +830,223 @@ export class Cluster {
         + 'intended design.',
       );
     }
+  }
+
+  /**
+   * THIS node's published configuration facts — the effective values
+   * {@link publishConfigurationFact} gossips on the self member and
+   * {@link checkConfigurationAgreement} compares peers against (#844).
+   *
+   * A `Map` rather than the plain object {@link selfStorageIdentities} is,
+   * because the keys here are not three names this file wrote down: a caller
+   * names them, and a plain object would put `__proto__` and every accessor on
+   * `Object.prototype` in reach of a write and of a read that finds a method
+   * where it expected a claim.  The wire record is materialised from it in
+   * {@link selfConfigurationFactsSnapshot}, where the same care applies once
+   * rather than at every call site.
+   */
+  private readonly selfConfigurationFacts = new Map<string, string>();
+  /**
+   * One report per (fact, peer) per node lifetime, bounded by
+   * {@link MAX_REPORTED_CONFIGURATION_MISMATCHES} because both halves of the
+   * key come off the wire.
+   */
+  private readonly configurationMismatchReported = new Set<string>();
+
+  /**
+   * Publish one of this node's effective settings for its peers to compare
+   * against (#844).
+   *
+   * Deliberately NOT a version-bumped member update, for the reason
+   * {@link publishStorageIdentity} tells at length: a self bump for an overlay
+   * claim races the leader's `joining → up` promotion to the same
+   * `version + 1`, and `mergeMember` has no equal-version tie-break, so the
+   * two sides wedge permanently.  The facts ride the same stamped overlay —
+   * {@link memberDataForGossip} puts them on every self record this node
+   * sends, receivers fill them in version-neutrally
+   * ({@link adoptConfigurationFacts}), and no membership event fires because
+   * nothing about the topology changed.
+   *
+   * `name` is by convention the HOCON path whose effective value this is; the
+   * value is stringified by the caller, because what is compared is equality
+   * and what is printed is a diagnostic, and both want one representation.
+   *
+   * Silently dropped when the name is not in `checked-paths`: that list is an
+   * allow-list of what **leaves this node**, so a fact nobody asked for is
+   * never gossiped rather than gossiped and ignored.  Dropped too when the
+   * name or the value would not survive the receive side's caps — publishing
+   * something every peer discards is a check that reports nothing.
+   */
+  publishConfigurationFact(name: string, value: string): void {
+    if (!this.configurationCheckedPaths.has(name)) return;
+    if (name.length > MAX_CONFIGURATION_FACT_NAME_LENGTH) return;
+    if (!CONFIGURATION_FACT_NAME_PATTERN.test(name)) return;
+    if (value.length === 0 || value.length > MAX_CONFIGURATION_FACT_VALUE_LENGTH) return;
+    if (this.selfConfigurationFacts.size >= MAX_CONFIGURATION_FACTS
+      && !this.selfConfigurationFacts.has(name)) {
+      return;
+    }
+    this.selfConfigurationFacts.set(name, value);
+  }
+
+  /**
+   * Fill configuration claims into a record we otherwise ignore (equal or
+   * older version) — the {@link adoptStorageIdentities} shape, and the same
+   * rationale: fill-only so a claim published after a member's last status
+   * change still spreads, version-neutral so adopting it cannot advance the
+   * merge clock.
+   *
+   * It re-reads the member from the map rather than trusting `existing`,
+   * because the identity overlay one lane over may already have replaced it in
+   * this same merge — writing a stale `existing` back would drop whatever that
+   * one just filled in.
+   */
+  private adoptConfigurationFacts(existing: Member, incoming: Member): void {
+    if (incoming.configurationFacts === undefined) return;
+    if (incoming.address.equals(this.selfAddress)) return;
+    const current = this.members.get(incoming.address.toString()) ?? existing;
+    if (current.configurationFacts !== undefined) return;
+    this.setMember(current.withConfigurationFacts(incoming.configurationFacts));
+    this.checkConfigurationAgreement(incoming);
+  }
+
+  /**
+   * The wire form of this node's facts, or `undefined` when it publishes none
+   * — which is what an empty `checked-paths` produces, and what keeps the
+   * field off the gossip frame entirely rather than shipping an empty object.
+   */
+  private selfConfigurationFactsSnapshot(): ConfigurationFactsData | undefined {
+    if (this.selfConfigurationFacts.size === 0) return undefined;
+    const snapshot: Record<string, string> = {};
+    for (const [name, value] of this.selfConfigurationFacts) {
+      // `defineProperty`, not assignment, for the reason `Member`'s sanitizer
+      // gives: the names are caller-supplied, and `[[Set]]` walks the
+      // prototype chain.
+      Object.defineProperty(snapshot, name, {
+        value, enumerable: true, writable: true, configurable: true,
+      });
+    }
+    return snapshot;
+  }
+
+  /**
+   * Two members with different effective values for a setting the deployment
+   * asked to be checked are running a cluster that only looks homogeneous
+   * (#844).  The seeded case is the wire cap: a frame over a peer's lower
+   * limit kills the association, and the sender is never told why.
+   *
+   * Only facts **both** sides state are compared, so absence stays silent —
+   * a peer that predates the field, one whose `checked-paths` is empty, and
+   * one that simply publishes something else all say nothing rather than
+   * something wrong.
+   *
+   * Reported once per fact per peer, at `warn` and at `error` when enforcing.
+   * The pair rather than the fact alone, because the second diverging peer is
+   * the interesting one and a report naming no address cannot be acted on;
+   * bounded all the same, since both halves come off the wire.
+   *
+   * Reads go through `Object.hasOwn`: `claims` is a plain object and a fact
+   * legitimately named `tostring` under
+   * {@link CONFIGURATION_FACT_NAME_PATTERN} would otherwise be answered by
+   * `Object.prototype` rather than by the peer.
+   */
+  private checkConfigurationAgreement(member: Member): void {
+    if (member.address.equals(this.selfAddress)) return;
+    const claims = member.configurationFacts;
+    if (claims === undefined) return;
+    for (const [name, ours] of this.selfConfigurationFacts) {
+      if (!Object.hasOwn(claims, name)) continue;
+      const theirs = claims[name];
+      if (theirs === undefined || theirs === ours) continue;
+      const latch = `${name}@${member.address}`;
+      if (this.configurationMismatchReported.has(latch)) continue;
+      if (this.configurationMismatchReported.size >= MAX_REPORTED_CONFIGURATION_MISMATCHES) continue;
+      this.configurationMismatchReported.add(latch);
+      this.reportConfigurationMismatch(member, name, ours, theirs);
+    }
+  }
+
+  /**
+   * One divergence, said once, in the two places an operator looks: the log
+   * and the event stream.  Both carry **both** values — "the wire cap
+   * disagrees" without them sends the reader back to the two config files the
+   * message was supposed to save them opening.
+   *
+   * `error` when enforcing and `warn` otherwise, because the two are different
+   * events: enforcing means this node has already stopped placing work on that
+   * peer, which is a capacity change somebody has to know about, while warning
+   * means nothing has changed yet.
+   */
+  private reportConfigurationMismatch(
+    member: Member,
+    fact: string,
+    ours: string,
+    theirs: string,
+  ): void {
+    const keys = ConfigKeys.cluster.configurationCompatibilityCheck;
+    const enforcing = this.configurationCompatibilityEnforce;
+    const consequence = enforcing
+      ? 'Enforcement is on, so this node has stopped placing work on that peer until the '
+        + 'values agree.'
+      : `Nothing has changed as a result: set ${keys.enforce} = on to bar a diverging peer `
+        + "from this node's placement candidates.";
+    const message = `configuration: ${fact} differs between this node (${ours}) and `
+      + `${member.address} (${theirs}) — ${keys.checkedPaths} asks for the two to agree (#844). `
+      + 'What is compared is the EFFECTIVE value, so check the code that builds the options as '
+      + `well as the config file. ${consequence}`;
+    if (enforcing) this.log.error(message); else this.log.warn(message);
+    this.emit(new MemberConfigurationMismatch(member, fact, ours, theirs, enforcing));
+  }
+
+  /**
+   * Whether any fact both this node and `member` publish disagrees — the
+   * predicate {@link placementCandidates} filters on while enforcing (#844).
+   *
+   * Derived from the member record on every call rather than remembered in a
+   * set, so it cannot go stale, cannot leak with the member map, and stays
+   * correct for peers whose divergence was past
+   * {@link MAX_REPORTED_CONFIGURATION_MISMATCHES} to report.
+   */
+  private divergesInConfiguration(member: Member): boolean {
+    const claims = member.configurationFacts;
+    if (claims === undefined) return false;
+    for (const [name, ours] of this.selfConfigurationFacts) {
+      if (!Object.hasOwn(claims, name)) continue;
+      const theirs = claims[name];
+      if (theirs !== undefined && theirs !== ours) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The up-members this node is willing to put work on — {@link upMembers}
+   * minus, while
+   * `actor-ts.cluster.configuration-compatibility-check.enforce` is on, any
+   * peer whose checked configuration disagrees with this node's (#844).
+   *
+   * A **local send decision**, and only ever that.  This node knows only what
+   * its peers have gossiped, so the set is asymmetric by construction: with A
+   * and B agreeing and C diverging, C excludes A and B while they exclude only
+   * C.  Feeding that into anything *elected* — a singleton's host, a shard's
+   * home — produces two winners, which is the split-brain the check exists to
+   * warn about, arrived at by a different road.  So `ClusterRouter` filters
+   * its routees on this and `ClusterSingletonManager` and `ShardCoordinator`
+   * deliberately do not; they keep reading {@link upMembers}.
+   *
+   * Self is always a candidate: a node cannot usefully refuse to place work on
+   * itself, and the peer that disagrees is the one making the same judgement
+   * in the other direction.
+   */
+  placementCandidates(): Member[] {
+    if (!this.configurationCompatibilityEnforce) return this.upMembers();
+    return this.upMembers().filter(
+      (member) => member.address.equals(this.selfAddress) || !this.divergesInConfiguration(member),
+    );
+  }
+
+  /** {@link placementCandidates}, narrowed to members carrying `role`. */
+  placementCandidatesWithRole(role: string): Member[] {
+    return this.placementCandidates().filter((member) => member.hasRole(role));
   }
 
   /** Members in the `up` state, ordered by address — the "active set". */
@@ -2277,6 +2538,7 @@ export class Cluster {
       if (!this.admitsMember(incoming, existing)) return;
       this.setMember(incoming);
       this.checkStorageIdentityAgreement(incoming);
+      this.checkConfigurationAgreement(incoming);
       this.failureDetector.register(incoming.address);
       this.emit(new MemberJoined(incoming));
       // If we first learn about the member already in a terminal or
@@ -2312,6 +2574,7 @@ export class Cluster {
       );
       this.setMember(incoming);
       this.checkStorageIdentityAgreement(incoming);
+      this.checkConfigurationAgreement(incoming);
       this.failureDetector.register(incoming.address);
       this.emit(new MemberJoined(incoming));
       if (incoming.status !== 'joining') {
@@ -2321,10 +2584,11 @@ export class Cluster {
     }
 
     if (incoming.version <= existing.version) {
-      // Ignored for membership — but the identity overlay still lands, or a
-      // claim published after a member's last status change would never
-      // spread (#1358).
+      // Ignored for membership — but the two overlays still land, or a claim
+      // published after a member's last status change would never spread
+      // (#1358, #844).
       this.adoptStorageIdentities(existing, incoming);
+      this.adoptConfigurationFacts(existing, incoming);
       return;
     }
     // The mirror of the revival check: a live member gossiped as `removed`
@@ -2339,6 +2603,7 @@ export class Cluster {
     }
     this.setMember(incoming);
     this.checkStorageIdentityAgreement(incoming);
+    this.checkConfigurationAgreement(incoming);
     this.emitStatusTransition(existing, incoming);
   }
 
@@ -2369,13 +2634,21 @@ export class Cluster {
     // merge a self record without them — wholesale, per the rule above — and
     // wipe what only this node can know.
     const ownIdentities = this.selfStorageIdentitiesSnapshot() ?? member.storageIdentities;
+    // The configuration facts are the same kind of thing one field over
+    // (#844): what this node resolved for itself, which no peer is in a
+    // position to restate.  A promotion merged wholesale from a view that
+    // predates our publication would otherwise wipe them and leave this node
+    // publishing nothing until it next resolved them — which it never does,
+    // since they are resolved once in the constructor.
+    const ownFacts = this.selfConfigurationFactsSnapshot() ?? member.configurationFacts;
     if (member.address.incarnation === this.selfAddress.incarnation
-      && ownIdentities === member.storageIdentities) {
+      && ownIdentities === member.storageIdentities
+      && ownFacts === member.configurationFacts) {
       return member;
     }
     return new Member(
       this.selfAddress, member.status, member.version, member.roles, member.removedAt,
-      ownIdentities,
+      ownIdentities, ownFacts,
     );
   }
 
