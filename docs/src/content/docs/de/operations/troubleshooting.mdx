@@ -410,6 +410,51 @@ drei Multi-Node-Suites, die CI gar nicht ausführt.
 5. Wenn möglich, in einem Multi-Node-Spec-Test reproduzieren.
 ```
 
+## Das Framework zum Reden bringen
+
+Das Framework ist standardmäßig still und bleibt es, bis du fragst.  Vier
+Schalter unter `actor-ts.diagnostics` schalten ein, was es über sich selbst
+sagen kann:
+
+```hocon
+actor-ts {
+  logger.level = debug        # the second switch — see below
+  diagnostics {
+    log-config-on-start = on  # one info record: every key, and which layer set it
+    debug {
+      unhandled    = on       # a message an actor was handed and declined
+      lifecycle    = on       # actor start, stop, restart
+      event-stream = on       # subscribe / unsubscribe, never publish
+    }
+  }
+}
+```
+
+`log-config-on-start` ist der erste Griff, wenn eine Einstellung nicht das
+tut, was du geschrieben hast.  Es schreibt den **zusammengeführten** Baum —
+jeden Key, sortiert, jeweils mit der Schicht, die gewonnen hat (`reference`,
+`application` oder `override`), und ob sie eine tiefere verdrängt hat.  So
+sehen „meine `application.conf` wird ignoriert“ und „meine `application.conf`
+sagt etwas anderes“ nicht länger gleich aus.  Die Kopfzeile nennt die Datei,
+nach der gesucht wurde — was den ersten Fall schon allein klärt.
+
+Zwei Dinge, bevor du diesen Eintrag in ein Ticket kopierst.  Es ist ein
+`info`-Eintrag, braucht also keinen zweiten Schalter — aber er **druckt deine
+Konfiguration**, und Werte werden nur zurückgehalten, wenn der *Key-Name* auf
+`pass`, `secret`, `token`, `key`, `credential` oder `auth` passt.  Ein
+Geheimnis in einem Key namens `dsn` oder `connection-string` steht vollständig
+da, und keine Heuristik behebt das: Wenn der Baum zusammengeführt ist, ist ein
+`${?DATABASE_PASSWORD}` eine gewöhnliche Zeichenkette.
+[Konfiguration](/de/reference/configuration/) nennt die Grenzen vollständig.
+
+Die drei `debug.*`-Schalter brauchen **zwei** Schalter, und das ist der
+übliche Grund, warum einer davon scheinbar nicht wirkt: Der Key entscheidet,
+ob ein Eintrag entsteht, `logger.level = debug` entscheidet, ob er geschrieben
+wird.  Jeder steht auf aus, weil jeder ein Eintrag pro Ereignis auf einem Pfad
+ist, den deine Anwendung treibt — pro abgelehnter Nachricht, pro
+Actor-Übergang, pro Subscription.  Schalte also den ein, der zum Symptom
+passt, nicht alle drei.
+
 ## Wohin als nächstes
 
 - **[Operations-Überblick](/de/operations/overview/)** —

@@ -2,6 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import { Config } from '../../../src/config/Config.js';
 import { ConfigKeys } from '../../../src/config/ConfigKeys.js';
 import {
+  DEFAULT_DEBUG_EVENT_STREAM,
+  DEFAULT_DEBUG_LIFECYCLE,
+  DEFAULT_DEBUG_UNHANDLED,
+  DEFAULT_LOG_CONFIG_ON_START,
   DEFAULT_LOG_DEAD_LETTERS,
   DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN,
   DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS,
@@ -31,6 +35,12 @@ describe('readDiagnosticsOptionsFromConfig', () => {
         log-dead-letters                  = 3
         log-dead-letters-during-shutdown  = true
         log-dead-letters-suspend-duration = 90s
+        log-config-on-start               = true
+        debug {
+          unhandled    = true
+          lifecycle    = true
+          event-stream = true
+        }
       }
     `);
 
@@ -38,6 +48,10 @@ describe('readDiagnosticsOptionsFromConfig', () => {
       logDeadLetters: 3,
       logDeadLettersDuringShutdown: true,
       logDeadLettersSuspendDurationMs: 90_000,
+      logConfigOnStart: true,
+      debugUnhandled: true,
+      debugLifecycle: true,
+      debugEventStream: true,
     });
   });
 
@@ -66,6 +80,10 @@ describe('readDiagnosticsOptionsFromConfig', () => {
       logDeadLetters: DEFAULT_LOG_DEAD_LETTERS,
       logDeadLettersDuringShutdown: DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN,
       logDeadLettersSuspendDurationMs: DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS,
+      logConfigOnStart: DEFAULT_LOG_CONFIG_ON_START,
+      debugUnhandled: DEFAULT_DEBUG_UNHANDLED,
+      debugLifecycle: DEFAULT_DEBUG_LIFECYCLE,
+      debugEventStream: DEFAULT_DEBUG_EVENT_STREAM,
     });
   });
 
@@ -78,6 +96,10 @@ describe('readDiagnosticsOptionsFromConfig', () => {
       logDeadLetters: 'actor-ts.diagnostics.log-dead-letters',
       logDeadLettersDuringShutdown: 'actor-ts.diagnostics.log-dead-letters-during-shutdown',
       logDeadLettersSuspendDuration: 'actor-ts.diagnostics.log-dead-letters-suspend-duration',
+      logConfigOnStart: 'actor-ts.diagnostics.log-config-on-start',
+      debugUnhandled: 'actor-ts.diagnostics.debug.unhandled',
+      debugLifecycle: 'actor-ts.diagnostics.debug.lifecycle',
+      debugEventStream: 'actor-ts.diagnostics.debug.event-stream',
     });
   });
 });
@@ -103,6 +125,27 @@ describe('DiagnosticsOptions — the builder and its validator', () => {
     const diagnosticsOptions = DiagnosticsOptions.create().withLogDeadLetters(1);
 
     expect(Object.keys({ ...diagnosticsOptions })).toEqual(['logDeadLetters']);
+  });
+
+  test('the four switches default to on when called bare, and take a false', () => {
+    // `withX()` with no argument reads as "turn this on", which is the only
+    // thing anyone ever means by naming a switch — but the parameter stays,
+    // so a builder assembled from a variable can also say `false` and have
+    // that beat a HOCON `on` rather than silently agreeing with it.
+    const allOn = DiagnosticsOptions.create()
+      .withLogConfigOnStart()
+      .withDebugUnhandled()
+      .withDebugLifecycle()
+      .withDebugEventStream();
+
+    expect({ ...allOn }).toEqual({
+      logConfigOnStart: true,
+      debugUnhandled: true,
+      debugLifecycle: true,
+      debugEventStream: true,
+    });
+    expect({ ...DiagnosticsOptions.create().withDebugLifecycle(false) })
+      .toEqual({ debugLifecycle: false });
   });
 
   test('0 passes on both numeric fields — a documented posture, not a mistake', () => {

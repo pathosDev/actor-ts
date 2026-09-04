@@ -146,12 +146,36 @@ Place this at the project root.  The framework auto-loads it on
 | `diagnostics.log-dead-letters` | `10` | Dead letters logged in full before logging suspends.  `0` turns dead-letter logging off entirely.  Every letter is captured and published on the event stream either way — this gates the log line and nothing else. |
 | `diagnostics.log-dead-letters-during-shutdown` | `off` | Log the burst `terminate()` produces while it drains mailboxes to dead letters.  Off because an orderly shutdown drains every queued and stashed message that way; an individual `ref.stop()` still logs, because the system is not terminating. |
 | `diagnostics.log-dead-letters-suspend-duration` | `5m` | How long logging stays suspended once the count above is reached.  `0` never suspends, which is how “log every dead letter” is spelled. |
+| `diagnostics.log-config-on-start` | `off` | Write the merged configuration to the log once at startup — one `info` record, every key with the layer that set it, sorted by path.  The answer to “why is this setting not what I wrote”.  Read the redaction note below before turning it on. |
+| `diagnostics.debug.unhandled` | `off` | One `debug` record per message an actor was handed and declined: recipient path, message class, sender.  The count (`actor_unhandled_total`) and the dead letter happen either way. |
+| `diagnostics.debug.lifecycle` | `off` | One `debug` record per actor start, stop and restart.  `ActorStarted` / `ActorStopped` / `ActorRestarted` on the event stream carry the same facts to a subscriber that can be selective, which a log level cannot. |
+| `diagnostics.debug.event-stream` | `off` | One `debug` record per event-stream subscribe and unsubscribe — never per publish, which runs on every actor start, every stop and every dead letter.  A whole-actor unsubscribe that removed nothing is not recorded; every actor stop makes one. |
 
 The record names the recipient path, the sender when there is one, and the
 message's class — never the payload, for the same data-protection reason
 `dead-letters.store` defaults to `off`.  Every key here is also settable in
 code, field by field, through `ActorSystemOptions.withDiagnostics(…)`.  See
 [Dead letters](/operations/dead-letters/) for the whole picture.
+
+**The `debug.*` keys need two switches, not one.**  The key decides whether a
+record is produced; `logger.level = debug` decides whether it is written.
+Setting only one of them looks exactly like a switch that does not work.
+`log-config-on-start` is deliberately not in that family — it is an `info`
+record, because an operator who asked for a config dump asked for output.
+
+**What the config dump redacts, and what it does not.**  A value is withheld
+when its **key name** matches `pass`, `secret`, `token`, `key`, `credential`
+or `auth` — so `cache.redis.password` and an `api-key` print as `<redacted>`.
+That is a heuristic over key names, and it is the weaker half of the
+guarantee: it cannot catch a secret whose key does not say so — a `dsn`, a
+`connection-string`, a `uri` with a password in it — because by the time the
+merged tree exists a `${?DATABASE_PASSWORD}` has resolved into an ordinary
+string with nothing left to say where it came from.  Nor is the list widened
+further: `seed` would redact `cluster.seed-nodes`, and a dump whose ordinary
+keys read `<redacted>` is a dump nobody reads.  So treat the output as
+sensitive, keep the key `off` outside an investigation, and check what your
+own keys are called before pasting a dump into a ticket.  The same rule, the
+same list and the same limits apply to the DevTools config panel.
 
 ### `actor-ts.mailbox`
 

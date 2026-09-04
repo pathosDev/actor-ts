@@ -53,12 +53,18 @@ export { classNameOf } from './ClassName.js';
 // value a `ScatterGatherRouter` timeout has to stay below, and
 // `PATH_TRAVERSAL_SEGMENTS` is the denylist an application's own validator
 // should share rather than re-derive.
+// The two redaction constants are public for the same reason and one more:
+// they are what the config dump and the DevTools config panel withhold by,
+// so an application that renders its own config can withhold the same keys
+// rather than invent a second, differently-wrong list.
 export {
   DEFAULT_GOSSIP_INTERVAL_MS,
   DEFAULT_ASK_TIMEOUT_MS,
   DEFAULT_EXPLAIN_CAPACITY,
   PATH_TRAVERSAL_SEGMENTS,
   MAXIMUM_DRAW_ATTEMPTS,
+  CONFIG_SECRET_PATTERN,
+  CONFIG_REDACTED,
 } from './Constants.js';
 
 export { Left, Right, left, right, eitherOf, eitherSequence } from './Either.js';

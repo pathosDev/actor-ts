@@ -24,6 +24,7 @@ import {
   DEFAULT_DEAD_LETTER_STORE,
 } from '../../../src/deadletters/DeadLetterQueueOptions.js';
 import { DEFAULT_LOG_DEAD_LETTERS, DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN, DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS } from '../../../src/diagnostics/DiagnosticsOptions.js';
+import { DEFAULT_DEBUG_EVENT_STREAM, DEFAULT_DEBUG_LIFECYCLE, DEFAULT_DEBUG_UNHANDLED, DEFAULT_LOG_CONFIG_ON_START } from '../../../src/diagnostics/DiagnosticsOptions.js';
 import { DEFAULT_WEBSOCKET_POLICY } from '../../../src/http/websocket/WebsocketPolicy.js';
 import { DEFAULT_WORKER_RESTART_POLICY } from '../../../src/worker/WorkerClusterOptions.js';
 import { DEFAULT_MAX_RESTARTS, DEFAULT_RESTART_MAX_BACKOFF_MS, DEFAULT_RESTART_MIN_BACKOFF_MS, DEFAULT_RESTART_RANDOM_FACTOR, DEFAULT_RESTART_WINDOW_MS, DEFAULT_WORKER_BASE_PORT, DEFAULT_WORKER_HOSTNAME, DEFAULT_WORKER_READY_TIMEOUT_MS, DEFAULT_WORKER_SYSTEM_NAME } from '../../../src/worker/WorkerClusterOptions.js';
@@ -368,6 +369,16 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.diagnostics.log-dead-letters', kind: 'int', constant: DEFAULT_LOG_DEAD_LETTERS },
   { key: 'actor-ts.diagnostics.log-dead-letters-during-shutdown', kind: 'bool', constant: DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN },
   { key: 'actor-ts.diagnostics.log-dead-letters-suspend-duration', kind: 'duration', constant: DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS },
+  // The four #867 switches are in the table rather than in `FEATURE_SWITCHES`,
+  // and the distinction that list draws is the reason: its members have no
+  // `DEFAULT_*` constant to disagree with, because their off state IS the
+  // field being absent at the read site.  These four are resolved into
+  // `ActorSystem._diagnostics` with every field decided, so each has a
+  // constant, and a constant that exists belongs where it can be compared.
+  { key: 'actor-ts.diagnostics.log-config-on-start', kind: 'bool', constant: DEFAULT_LOG_CONFIG_ON_START },
+  { key: 'actor-ts.diagnostics.debug.unhandled', kind: 'bool', constant: DEFAULT_DEBUG_UNHANDLED },
+  { key: 'actor-ts.diagnostics.debug.lifecycle', kind: 'bool', constant: DEFAULT_DEBUG_LIFECYCLE },
+  { key: 'actor-ts.diagnostics.debug.event-stream', kind: 'bool', constant: DEFAULT_DEBUG_EVENT_STREAM },
 
   /* --- reliable delivery --- */
   // `max-producers` and `producer-idle-time-to-live` publish `0` as their
