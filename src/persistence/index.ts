@@ -595,8 +595,10 @@ export {
   DEFAULT_PROJECTION_RETRY_BACKOFF_MS,
   DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS,
   defaultProjectionRecoveryOptions,
+  readProjectionOptionsFromConfig,
 } from './projection/ProjectionOptions.js';
 export type {
+  ProjectionConfigDefaults,
   ProjectionOptionsType,
   ProjectionRecoveryStrategy,
   ProjectionRecoveryOptionsType,

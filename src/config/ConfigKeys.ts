@@ -317,6 +317,29 @@ export const ConfigKeys = {
   },
 
   /**
+   * Process-wide projection defaults — `actor-ts.projection.*`.  Read by
+   * `ProjectionActor.byPersistenceId` / `byTag`, which layer them under the
+   * explicit `ProjectionOptions` of a single projection.
+   *
+   * Top-level rather than under `actor-ts.persistence.*` because that block is
+   * exclusively plugin-id namespaces (`journal.plugin` names another config
+   * root), so a tuning leaf dropped in there reads as a plugin id.
+   * `actor-ts.sharding` is the same shape — a top-level block owned by a
+   * subdirectory subsystem.
+   *
+   * Every leaf is spelled out rather than covered by a block root: a root
+   * alone satisfies the `NoDeadConfigKeys` reachability check for everything
+   * beneath it, so an inert leaf would ship green (#875).
+   */
+  projection: {
+    recoveryStrategy: 'actor-ts.projection.recovery-strategy',
+    maxRetries: 'actor-ts.projection.max-retries',
+    retryBackoff: 'actor-ts.projection.retry-backoff',
+    maxRetryBackoff: 'actor-ts.projection.max-retry-backoff',
+    pollInterval: 'actor-ts.projection.poll-interval',
+  },
+
+  /**
    * Cluster membership defaults — `actor-ts.cluster.*`.  Read once by
    * `Cluster.join`, which layers them under the explicit `ClusterOptions`.
    *

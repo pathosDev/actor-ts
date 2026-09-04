@@ -187,6 +187,38 @@ Retries erfolgen **nicht sofort**.  Der nächste Versuch wird um
 schlechtes Event den Handler viermal erreicht, bevor die Projektion
 es aufgibt.
 
+### Dieselben Stellschrauben in HOCON
+
+Fehlerbehandlung ist meist eine *betriebliche* Entscheidung — derselbe
+Code will in Produktion `retry-and-fail` und in der Entwicklungsschleife
+`skip` — deshalb haben die vier Felder und die Poll-Kadenz auch
+prozessweite Defaults unter `actor-ts.projection`:
+
+```hocon
+actor-ts.projection {
+  recovery-strategy = "retry-and-skip"
+  max-retries       = 5
+  retry-backoff     = 2s
+  max-retry-backoff = 60s
+  poll-interval     = 1s
+}
+```
+
+Die Präzedenz sind die üblichen drei Ebenen des Projekts, **pro Feld**
+angewandt: explizite `ProjectionOptions` > HOCON > eingebauter Default.
+Ein Feld, das diese Projektion nicht setzt, fällt auf den Block oben
+durch, und eines, das der Block nicht führt, auf den eingebauten Wert —
+die Konfiguration erreicht also jede Projektion, die sich zu diesem Feld
+nicht selbst festgelegt hat, und keine, die es getan hat.  Ein leeres
+`liveOptions` zu übergeben ist *keine* Festlegung: `poll-interval` gilt
+weiterhin.
+
+Setze `max-retry-backoff`, wann immer du `retry-backoff` setzt.  Beide
+werden gegeneinander auf den *gemergten* Settings geprüft — hebst du nur
+das erste über die 60-Sekunden-Grenze, wirft jede Projektion im Prozess
+beim Start `OptionsError`, allein wegen einer Konfigurationsdatei und
+ohne jede Codeänderung.
+
 ### Was ein Fehlschlag erzeugt
 
 - **`onFailure`** — wird bei jedem Versuch aufgerufen, mit dem
@@ -288,6 +320,10 @@ Journal-Query pro `pollIntervalMs`.  Tuning:
 - Niedriger (250-500 ms) → schnellere End-to-End-Propagation, mehr
   Datenbank-Last.
 - Höher (5-10 s) → langsame Sichtbarkeit, aber billig.
+
+`actor-ts.projection.poll-interval` setzt dieselbe Kadenz für jede
+Projektion im Prozess; `withLiveOptions` überschreibt sie für eine
+einzelne.
 
 Für sehr niedriglatente Read-Model-Updates siehe
 [Push-basierte Query](/de/persistence/push-based-query/), die

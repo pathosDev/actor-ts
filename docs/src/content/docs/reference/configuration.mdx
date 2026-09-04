@@ -471,6 +471,26 @@ contains the SQLite journal's `path`, `pragmas`, etc.  See each
 journal page in [Persistence](/persistence/overview/) for
 the per-plugin keys.
 
+### `actor-ts.projection`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `projection.recovery-strategy` | `"retry-and-fail"` | What a projection does when its handler throws — `fail`, `skip`, `retry-and-fail` or `retry-and-skip` ([when the handler throws](/persistence/projections/#when-the-handler-throws)). |
+| `projection.max-retries` | `3` | Retry budget for the two `retry-*` strategies — attempts *after* the first. |
+| `projection.retry-backoff` | `1s` | Delay before the first retry; doubles on each further attempt. |
+| `projection.max-retry-backoff` | `60s` | Ceiling on that doubling delay.  Must be at least `retry-backoff` — a projection whose merged settings say otherwise refuses to start. |
+| `projection.poll-interval` | `1s` | How often a projection asks the journal for new events. |
+
+These are the **process-wide** defaults for every projection.
+`ProjectionOptions` on a single projection outranks them, and they
+outrank the built-in defaults — the usual three layers.  A projection
+that passes an empty `liveOptions` still gets `poll-interval` from
+here; only a value actually set in code overrides it.
+
+Top-level rather than under `actor-ts.persistence`, because that block
+holds plugin ids and nothing else, so a tuning leaf inside it would
+read as the name of a plugin.
+
 ### `actor-ts.cache`
 
 | Key | Default | Purpose |
