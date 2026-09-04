@@ -34,12 +34,16 @@ import {
   DurableDistributedDataStore,
   GCounter,
   GCounterMap,
+  GSet,
   LWWMap,
   ORMap,
   ORSet,
   decodeCrdt,
 } from '../../../src/crdt/index.js';
-import type { CrdtIdentityFunction, CrdtJson } from '../../../src/crdt/index.js';
+import type {
+  CrdtIdentityFunction, CrdtJson, ORMapJson, ORSetJson,
+} from '../../../src/crdt/index.js';
+import { CrdtDecodeError } from '../../../src/crdt/CrdtWireValidation.js';
 import { InMemoryDurableStateStore } from '../../../src/persistence/durable-state-stores/InMemoryDurableStateStore.js';
 import type { WireMessage } from '../../../src/cluster/Protocol.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
@@ -53,6 +57,47 @@ const COFFEE: Item = { sku: 'coffee-1', price: 4 };
 /** The documented cart-by-SKU pattern, and the one thing that was inert. */
 const bySku = (item: Item): string => item.sku;
 const cartFactory = (): ORSet<Item> => ORSet.empty<Item>({ identity: bySku });
+
+/* ============ the accessor an identity is derived from ================== */
+
+/**
+ * `customIdentity()` is the only bridge from an application's factory to a
+ * decoder — the function itself is a closure and cannot travel on the wire,
+ * so `DistributedDataActor.learnIdentity` builds a fresh instance from the
+ * factory and asks *it*.  An implementation that answered `undefined` would
+ * put #766 straight back for that type, silently: the extension would file
+ * every entry under `JSON.stringify` again and nothing downstream would
+ * notice, because a value with no identity is exactly what a value that never
+ * had one looks like.
+ *
+ * Only `ORSet`'s implementation was covered, and only indirectly, because
+ * every extension-level test in this file drives an `ORSet`.  The consequence
+ * of the accessor is a few blocks down, under `decodeCrdt`; these four
+ * assertions pin the accessor itself, so a type that stops reporting its
+ * identity fails here rather than in whichever integration test happens to
+ * use it.
+ */
+describe('customIdentity — what learnIdentity reads off a factory', () => {
+  test('GSet reports the configured function, and undefined on the default', () => {
+    expect(GSet.empty<Item>({ identity: bySku }).customIdentity()).toBe(bySku);
+    expect(GSet.empty<Item>().customIdentity()).toBeUndefined();
+  });
+
+  test('GCounterMap reports the configured function, and undefined on the default', () => {
+    expect(GCounterMap.empty<Item>({ identity: bySku }).customIdentity()).toBe(bySku);
+    expect(GCounterMap.empty<Item>().customIdentity()).toBeUndefined();
+  });
+
+  test('LWWMap reports the configured function, and undefined on the default', () => {
+    expect(LWWMap.empty<Item, string>({ identity: bySku }).customIdentity()).toBe(bySku);
+    expect(LWWMap.empty<Item, string>().customIdentity()).toBeUndefined();
+  });
+
+  test('ORMap reports the configured function, and undefined on the default', () => {
+    expect(ORMap.empty<Item, GCounter>({ identity: bySku }).customIdentity()).toBe(bySku);
+    expect(ORMap.empty<Item, GCounter>().customIdentity()).toBeUndefined();
+  });
+});
 
 /* ==================== the four decoders re-key on the way in ============ */
 
@@ -81,6 +126,41 @@ describe('ORSet.fromJSON — files elements under the caller identity', () => {
     // other, which is the OR-Set invariant the collapse must not break.
     expect(decoded.toJSON().elements['book-1']).toHaveLength(2);
     expect(decoded.remove(BOOK_10).has(BOOK_10)).toBe(false);
+  });
+
+  test('the entry already filed keeps its element instance', () => {
+    // One SKU, two prices: the collapse has to pick an instance, and it keeps
+    // the incumbent — the same preference `merge` states outright when it
+    // writes `ours?.element ?? theirs?.element`.  Only the tags carry CRDT
+    // meaning; the instance is what `value()` hands back, so the choice is
+    // still observable and still a choice.
+    const remote = ORSet.empty<Item>().add('peer', BOOK_10).add('peer', BOOK_12);
+    const decoded = ORSet.fromJSON<Item>(remote.toJSON(), { identity: bySku });
+
+    expect(decoded.size).toBe(1);
+    expect(decoded.value()).toEqual([BOOK_10]);
+  });
+
+  test('two tombstone buckets that re-key together are unioned, not overwritten', () => {
+    // One SKU under two prices, each removed and then re-added: on the wire
+    // that is two element keys and two tombstone buckets, and under `bySku`
+    // both collapse onto `book-1`.  Keeping one bucket and dropping the other
+    // loses the veto on the dropped tag, and the next merge with a peer still
+    // holding the pre-remove state brings that tag — and with it a removed
+    // element — back from the dead.
+    const before = ORSet.empty<Item>().add('peer', BOOK_10).add('peer', BOOK_12);
+    const after = before
+      .remove(BOOK_10).remove(BOOK_12)
+      .add('peer', BOOK_10).add('peer', BOOK_12);
+    expect(Object.keys(after.toJSON().tombstones)).toHaveLength(2);
+
+    const decoded = ORSet.fromJSON<Item>(after.toJSON(), { identity: bySku });
+    expect(decoded.toJSON().tombstones['book-1']).toHaveLength(2);
+
+    // The slow peer re-offers both of the removed tags.  Both are vetoed, so
+    // only the two re-add tags survive; a lost bucket shows up here as three.
+    const stale = ORSet.fromJSON<Item>(before.toJSON(), { identity: bySku });
+    expect(decoded.merge(stale).toJSON().elements['book-1']).toHaveLength(2);
   });
 
   test('a tombstone follows the element it belongs to across the re-key', () => {
@@ -163,6 +243,22 @@ describe('LWWMap.fromJSON — files entries under the caller identity', () => {
     expect(decoded.get(other)).toBe('light');
   });
 
+  test('the register join, not the wire order, decides a collapse', () => {
+    // The case above cannot tell a join from a plain overwrite: its newer
+    // write is second on the wire, so last-wins and the join agree on
+    // 'light'.  Reversing the frame — newer first, older second — separates
+    // them, and it is the ordinary shape, because nothing orders a peer's
+    // entries by timestamp.
+    const remote = LWWMap.empty<UserId, string>()
+      .put('peer', { id: '1', tenant: 'acme' }, 'light', 200)
+      .put('peer', { tenant: 'acme', id: '1' }, 'dark', 100);
+    expect(Object.keys(remote.toJSON().registers)).toHaveLength(2);
+
+    const decoded = LWWMap.fromJSON<UserId, string>(remote.toJSON(), { identity: byTenantAndId });
+    expect(decoded.size).toBe(1);
+    expect(decoded.get({ tenant: 'acme', id: '1' })).toBe('light');
+  });
+
   test('the default path is byte-identical to what it always was', () => {
     const json = LWWMap.empty<string, number>().put('a', 'theme', 1, 1_000).toJSON();
     expect(LWWMap.fromJSON<string, number>(json).toJSON()).toEqual(json);
@@ -203,6 +299,90 @@ describe('ORMap.fromJSON — re-keys entries and keyset together', () => {
     expect(decoded.size).toBe(0);
   });
 
+  test('inner CRDTs merge when two entry ids collapse onto one key', () => {
+    // Two replicas, because a grow-only counter merges componentwise by
+    // maximum: two increments from one replica would collapse to `Math.max`
+    // and an overwrite would be indistinguishable from the join.
+    const remote = ORMap.empty<Tenant, GCounter>()
+      .put('peer-a', { id: 't-1', label: 'first' }, GCounter.empty().increment('peer-a', 2))
+      .put('peer-b', { id: 't-1', label: 'second' }, GCounter.empty().increment('peer-b', 3));
+    expect(Object.keys(remote.toJSON().values)).toHaveLength(2);
+
+    const decoded = ORMap.fromJSON<Tenant, GCounter>(remote.toJSON(), decodeCounter, { identity: byId });
+    expect(decoded.size).toBe(1);
+    expect(decoded.get({ id: 't-1', label: 'either' })?.value()).toBe(5);
+  });
+
+  test('a keyset frame from a pre-elementValues peer still re-keys', () => {
+    // `elementValues` is optional for backwards compat, which is why the remap
+    // writes it for *every* element key rather than patching the ones the
+    // sender supplied.  A v0 frame carries none, and `ORSet` would then fall
+    // back to parsing the element key — the wire id, not the local one — so
+    // the keyset would index ids `entries` no longer holds and `has` would
+    // answer "gone" for a key plainly there.
+    const frame = ORMap.empty<Tenant, GCounter>()
+      .put('peer', { id: 't-1', label: 'first' }, GCounter.empty().increment('peer', 4))
+      .toJSON();
+    const legacyKeyset: ORSetJson = {
+      kind: 'ORSet',
+      elements: frame.keyset.elements,
+      tombstones: frame.keyset.tombstones,
+    };
+
+    const decoded = ORMap.fromJSON<Tenant, GCounter>(
+      { ...frame, keyset: legacyKeyset }, decodeCounter, { identity: byId },
+    );
+    const renamed: Tenant = { id: 't-1', label: 'renamed' };
+    expect(decoded.has(renamed)).toBe(true);
+    expect(decoded.get(renamed)?.value()).toBe(4);
+  });
+
+  test('a malformed keyset is reported by the decoder that owns it', () => {
+    // The remap runs before `ORSet.fromJSON` gets a look at the frame, so it
+    // has to survive a hostile `elements` on its own: unguarded,
+    // `Object.keys(null)` throws a bare `TypeError` from inside a helper the
+    // caller has never heard of.  Guarded, the frame passes through untouched
+    // and `ORSet` names the field it rejected.  (An array or a string is
+    // caught downstream either way — `null` is the half that carries the
+    // guard, and the only one a JSON payload can actually express.)
+    const frame = ORMap.empty<Tenant, GCounter>()
+      .put('peer', { id: 't-1', label: 'first' }, GCounter.empty().increment('peer', 1))
+      .toJSON();
+    const hostile: ORMapJson = {
+      ...frame,
+      keyset: { ...frame.keyset, elements: null as unknown as Record<string, string[]> },
+    };
+
+    expect(() => ORMap.fromJSON<Tenant, GCounter>(hostile, decodeCounter, { identity: byId }))
+      .toThrow(CrdtDecodeError);
+  });
+
+  test('a keyset element value that is not JSON does not throw out of the remap', () => {
+    // The remap parses each element key back to the wire id it stands for.  A
+    // value that will not parse is left exactly as it arrived, so the frame
+    // reaches `ORSet` and is refused there, in words that name the field —
+    // rather than as a `SyntaxError` raised while rewriting it.
+    const frame = ORMap.empty<Tenant, GCounter>()
+      .put('peer', { id: 't-1', label: 'first' }, GCounter.empty().increment('peer', 1))
+      .toJSON();
+    const hostile: ORMapJson = {
+      ...frame,
+      keyset: {
+        kind: 'ORSet',
+        elements: { 'bad-key': 'not-an-array' as unknown as string[] },
+        elementValues: { 'bad-key': 'not json at all' },
+        tombstones: {},
+      },
+    };
+
+    let thrown: unknown;
+    try {
+      ORMap.fromJSON<Tenant, GCounter>(hostile, decodeCounter, { identity: byId });
+    } catch (e) { thrown = e; }
+    expect(thrown).toBeInstanceOf(CrdtDecodeError);
+    expect((thrown as Error).message).toContain("ORSet.elements['bad-key']");
+  });
+
   test('the default path is byte-identical to what it always was', () => {
     const json = ORMap.empty<string, GCounter>()
       .put('a', 'k', GCounter.empty().increment('a', 1)).toJSON();
@@ -221,6 +401,56 @@ describe('decodeCrdt — the identity reaches every kind that has one', () => {
 
     const told = decodeCrdt(json, bySku as CrdtIdentityFunction) as ORSet<Item>;
     expect(told.add('local', BOOK_12).size).toBe(1);
+  });
+
+  test('a GSet decoded through the dispatcher dedupes by the given identity', () => {
+    const json = GSet.empty<Item>().add(BOOK_10).toJSON() as CrdtJson;
+
+    expect((decodeCrdt(json) as GSet<Item>).add(BOOK_12).size).toBe(2);
+    expect((decodeCrdt(json, bySku as CrdtIdentityFunction) as GSet<Item>).add(BOOK_12).size).toBe(1);
+  });
+
+  test('a GCounterMap decoded through the dispatcher files entries by the given identity', () => {
+    const json = GCounterMap.empty<Item>()
+      .increment('peer-a', BOOK_10, 2)
+      .increment('peer-b', BOOK_12, 3)
+      .toJSON() as CrdtJson;
+
+    expect((decodeCrdt(json) as GCounterMap<Item>).size).toBe(2);
+    const told = decodeCrdt(json, bySku as CrdtIdentityFunction) as GCounterMap<Item>;
+    expect(told.size).toBe(1);
+    expect(told.value(BOOK_12)).toBe(5);
+  });
+
+  test('an LWWMap decoded through the dispatcher files entries by the given identity', () => {
+    const json = LWWMap.empty<Item, string>()
+      .put('peer', BOOK_10, 'in-cart', 100)
+      .put('peer', BOOK_12, 'wishlist', 200)
+      .toJSON() as CrdtJson;
+
+    expect((decodeCrdt(json) as LWWMap<Item, string>).size).toBe(2);
+    const told = decodeCrdt(json, bySku as CrdtIdentityFunction) as LWWMap<Item, string>;
+    expect(told.size).toBe(1);
+    expect(told.get(BOOK_10)).toBe('wishlist');
+  });
+
+  test('an ORMap decoded through the dispatcher files entries by the given identity', () => {
+    // A **two-field** key, deliberately.  With a single-field key the wire id
+    // is already `JSON.stringify({ id })` — the very string the identity
+    // answers — so nothing has to move and the assertion holds whether or not
+    // the dispatcher forwards anything.
+    type Tenant = { readonly id: string; readonly label: string };
+    const json = ORMap.empty<Tenant, GCounter>()
+      .put('peer', { id: 't-1', label: 'first' }, GCounter.empty().increment('peer', 3))
+      .toJSON() as CrdtJson;
+    const renamed: Tenant = { id: 't-1', label: 'renamed' };
+
+    expect((decodeCrdt(json) as ORMap<Tenant, GCounter>).has(renamed)).toBe(false);
+    const told = decodeCrdt(
+      json, ((tenant: Tenant) => tenant.id) as CrdtIdentityFunction,
+    ) as ORMap<Tenant, GCounter>;
+    expect(told.has(renamed)).toBe(true);
+    expect(told.get(renamed)?.value()).toBe(3);
   });
 
   test('a kind with no element identity ignores it', () => {
@@ -344,6 +574,50 @@ describe('DistributedData — a peer frame reaches the caller identity', () => {
 
     expect(data.get<ORSet<Item>>('cart')!.size).toBe(1);
     expect(data.get<ORSet<Item>>('cart')!.has(COFFEE)).toBe(false);
+  });
+
+  test('a map-shaped value is repaired by the same route as a set', async () => {
+    // Every other extension test here drives an `ORSet`, so `ORSet` was the
+    // only `customIdentity` implementation the whole chain — factory,
+    // registry, dispatcher, decoder — ever ran end to end.  An `LWWMap` takes
+    // exactly the same route: the gossip lands under `JSON.stringify`, the
+    // first `update` names the identity, and the sender's two spellings of
+    // one key collapse with their registers joined.
+    type UserId = { readonly tenant: string; readonly id: string };
+    const byTenantAndId = (user: UserId): string => `${user.tenant}:${user.id}`;
+    const themesFactory = (): LWWMap<UserId, string> =>
+      LWWMap.empty<UserId, string>({ identity: byTenantAndId });
+
+    const victim = await startNode('ddata-identity-f', 48_341);
+    const data = victim.system.extension(DistributedDataId).start(victim);
+    // The same startup settle — see the first test in this block.
+    await sleep(80);
+
+    const peer = await peerTransport('ddata-identity-peer-f', 48_342);
+    peer.send(victim.selfAddress, {
+      kind: 'ddata-gossip',
+      from: new NodeAddress('ddata-identity-peer-f', 'h', 48_342).toJSON(),
+      entries: {
+        themes: LWWMap.empty<UserId, string>()
+          .put('peer', { tenant: 'acme', id: '1' }, 'dark', 100)
+          .put('peer', { id: '1', tenant: 'acme' }, 'light', 200)
+          .toJSON(),
+      },
+    } as unknown as WireMessage);
+    await awaitCondition(() => data.get<LWWMap<UserId, string>>('themes')?.size === 2, {
+      label: "the peer's two spellings of one key landed under JSON.stringify",
+    });
+
+    data.update<LWWMap<UserId, string>>('themes', themesFactory,
+      (themes) => themes.put(data.selfReplicaId(), { tenant: 'acme', id: '2' }, 'dark', 300));
+    await awaitCondition(
+      () => data.get<LWWMap<UserId, string>>('themes')!.has({ tenant: 'acme', id: '2' }),
+      { label: 'the local write landed on the repaired map' },
+    );
+
+    const themes = data.get<LWWMap<UserId, string>>('themes')!;
+    expect(themes.size).toBe(2);
+    expect(themes.get({ tenant: 'acme', id: '1' })).toBe('light');
   });
 
   test('a quorum write-request is decoded under the same identity as gossip', async () => {
