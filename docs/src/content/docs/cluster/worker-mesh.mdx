@@ -106,7 +106,7 @@ void main();
 
 | Option | What |
 | --- | --- |
-| `withBootstrap(url)` | Worker entrypoint module.  **Required.** |
+| `withBootstrap(url)` | Worker entrypoint module.  **Required**, and must carry the `file:` scheme — `new URL('./worker-node.js', import.meta.url)` produces exactly that, while a `data:`, `blob:` or remote specifier is rejected because it would hand the worker constructor code from outside the deployment. |
 | `withWorkers(n \| 'auto')` | Pool size; `'auto'` uses hardware concurrency.  Default `'auto'`. |
 | `withSystemName(name)` | `ActorSystem` name each worker hosts.  Default `'worker-cluster'`. |
 | `withHostname(host)` | Hostname component of each worker's address.  Default `'worker'`. |

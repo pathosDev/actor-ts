@@ -43,8 +43,27 @@ export const WorkerNode = {
     const post = selfScope.postMessage ?? globalScope.postMessage;
 
     // ---- Phase 1: wait for the init frame from main. ----
-    // We install the listener FIRST, then signal readiness via `hello`.
+    // We install the listener FIRST, arm the timeout second, and only then
+    // signal readiness via `hello` — so nothing the parent sends back can
+    // arrive before both are in place.
     const init = await new Promise<WorkerInitMessage>((resolve, reject) => {
+      /**
+       * Hoisted so the success branch can cancel it.
+       *
+       * This used to lean on `unref()` alone, which is a Node/Bun extension:
+       * Deno's `setTimeout` returns a plain number, so the optional call
+       * `(timer as { unref?: () => void }).unref?.()` silently did nothing
+       * there and the timer stayed referenced for its full 30 s.  A worker
+       * that resolves `join()` and then wants to exit promptly — a short-lived
+       * compute worker, or one whose bootstrap aborts after join — could not.
+       * `clearTimeout` is the same call on all three runtimes, so cancelling
+       * instead of unreferencing removes the dialect split rather than
+       * papering over it (#778).
+       *
+       * Armed *before* the hello goes out, so it is always defined by the time
+       * a reply could arrive.
+       */
+      let timer: ReturnType<typeof setTimeout> | undefined;
       // No origin check: this is a dedicated Worker / worker_threads message
       // handler, not window.postMessage.  Messages originate only from the
       // parent that spawned this worker, so `origin` is not applicable here
@@ -53,6 +72,7 @@ export const WorkerNode = {
         const data = e.data as Partial<WorkerInitMessage>;
         if (data && data.kind === 'worker-init') {
           selfScope.onmessage = null;
+          if (timer !== undefined) clearTimeout(timer);
           resolve(data as WorkerInitMessage);
         }
       };
@@ -60,13 +80,18 @@ export const WorkerNode = {
       // property) even when addEventListener('message', …) is a no-op.  We
       // set `onmessage` directly so the init frame is seen reliably.
       selfScope.onmessage = onMessage;
-      const hello: WorkerHelloMessage = { kind: 'worker-hello' };
-      post?.call(selfScope, hello);
-      const timer = setTimeout(
-        () => reject(new Error('WorkerNode.join() timed out waiting for init')),
+      timer = setTimeout(
+        () => {
+          // Defensive: a timer that has already fired needs no cancelling, but
+          // this keeps the two exits from the promise symmetrical, so a later
+          // edit cannot leave one of them holding a handle.
+          if (timer !== undefined) clearTimeout(timer);
+          reject(new Error('WorkerNode.join() timed out waiting for init'));
+        },
         30_000,
       );
-      (timer as { unref?: () => void }).unref?.();
+      const hello: WorkerHelloMessage = { kind: 'worker-hello' };
+      post?.call(selfScope, hello);
     });
 
     const self = NodeAddress.fromJSON(init.self);
