@@ -363,6 +363,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The supervisor's control ticks are private symbols, and the system queue
+  documents its own bound** (#770, #794).
+
+  `BackoffSupervisor`'s respawn and stash-drain ticks were globally
+  reproducible `Symbol.for` values matched by bare equality on the
+  supervisor's public message channel, so in-process code holding the
+  registry string — a compile-time constant in the published package — could
+  forge a tick to collapse a backoff window to zero or flush the stash into
+  a child that had not yet cleared `preStart`. They are module-private
+  symbols now. No trust boundary was crossed, and the entry says so: symbols
+  survive neither JSON nor CBOR, so no cluster peer could reach it, and the
+  only caller who could already held the ref. The issue's second criterion,
+  a sender-is-self check, is refused rather than faked — a timer tick
+  arrives with a null sender, so that check would reject the legitimate one
+  (#770).
+
+  Separately, `Mailbox.enqueueSystem` now documents what was true and
+  written down nowhere: the system queue is deliberately uncapped, because
+  supervision and lifecycle messages must never be dropped, and no bound
+  reaches it — a subclass's own included. The mailboxes page says so in both
+  languages, so a reader sizing a capacity learns the ceiling covers user
+  messages only. Capping the drain loop was considered and refused: a
+  per-turn budget risks reordering supervision, which is the worse trade
+  (#794).
+
+
 - **The `ShardRegion` routing buffer is bounded** (#849).  `bufferShard`
   held every message for a shard whose home was unknown or handing off in an
   unbounded per-shard array, so a coordinator that never answers — no
@@ -620,6 +646,131 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`fundamentals/throttling`, EN + DE).
 
 ### Security
+
+- **`MessageChannelTransport` guards a posted frame before anything reads
+  it** (#945, #701).
+
+  The transport cast the posted data to its frame type and dereferenced it,
+  so one malformed `postMessage` from a worker threw out of the
+  `MessagePort` callback — where no runtime this framework targets has a
+  caller to unwind into — and terminated the receiving thread, taking the
+  host process and every sibling worker with it. Separately, a gossip frame
+  carrying a member status outside the legal set reached
+  `Cluster.mergeMember` intact on the multi-core path alone, because the
+  other two transports refuse it.
+
+  The envelope's `from` and `to` now go through the same check both worker
+  brokers spend, the payload through the same `validateWireFrame` the TCP
+  and in-memory transports run, and the wire handler is called inside a
+  try/catch. The set behind `peers()` is bounded at 1024 distinct senders,
+  refusing new ones once full rather than evicting established peers —
+  eviction would let a flood of strangers take a healthy node out of its
+  load balancer, since the worker-mesh readiness check is that set's only
+  reader. One shared malformed-frame corpus now runs against all three
+  transport implementations.
+
+  This also closes #701, whose last criterion was exactly this guard. It had
+  been delegated here in a code comment and a commit body and recorded on
+  neither issue, which is why the tracker showed two open items for one
+  piece of work.
+
+- **BREAKING — gRPC bidirectional streams use a capability handle, and both
+  gRPC actors accept channel options (#788, #790).**
+
+  `bidiStart` published its stream id in-band as a `stream-data` chunk
+  shaped `{ __streamId }` — and `__streamId` is a legal protobuf field name,
+  so a server message carrying one was indistinguishable from the
+  framework's own handshake. Worse, `bidiSend` and `bidiClose` resolved any
+  id against a client-wide map whose recorded owner was never consulted, and
+  ids came from a sequential counter: any actor able to reach the client
+  could write into, or close, a stream it never opened. Bidi now uses the
+  same handle the client-streaming class already had, with a dedicated
+  `stream-started` frame and a 64-bit random token, so the map lookup *is*
+  the ownership check. `streamId` still rides on the data, end and error
+  frames as the correlation id (#788).
+
+  Both actors also gained a `channelOptions` field and a
+  `withChannelOptions` builder method, passed verbatim to the server
+  constructor and to the service client's third slot. Message-size caps,
+  keepalive enforcement, connection idle and age reaping, and
+  concurrent-stream limits were unreachable without forking, because
+  `deadlineMs` bounds an RPC while a connection outlives every RPC on it. It
+  is a code-only surface with no HOCON leaf: the keys belong to grpc-js and
+  nothing here validates them. The missing server-options validator stays
+  with #675, its own issue, rather than being claimed by two (#790).
+
+  **Migration.** `bidiSend` and `bidiClose` take `handle: GrpcStreamHandle`
+  instead of `streamId: number`, and `bidiStart` no longer publishes the `{
+  __streamId }` chunk. Read the handle off the `stream-started` frame,
+  exactly as `clientStreamStart` already asks.
+
+- **BREAKING — The two object-storage stores write under disjoint key
+  namespaces, and the snapshot store stops trusting prefix membership
+  (#716).**
+
+  The plugin registration hands both stores the same prefix, so an entity
+  persisted both ways had its durable-state record returned as its newest
+  snapshot — which failed recovery with a `SnapshotIntegrityError` rather
+  than merely returning the wrong state. That variant needs no invalid
+  persistence id at all, and it is the one that was live: the nested-id
+  exploit the report leads with died when the id validator started rejecting
+  slashes at the actor boundary.
+
+  The snapshot store now compares the persistence id inside a body against
+  the one it was asked for and reports no snapshot on a mismatch, and it
+  filters every list-driven path — load-latest, load-before, delete and
+  prune — to keys shaped like its own, so an object another writer left
+  under the prefix is neither returned as state, deleted, nor counted
+  towards `keepN`. Returning nothing rather than throwing is deliberate and
+  only works together with the filter: either half alone trades one failure
+  for another, while the pair turns an unrecoverable integrity error into
+  correct recovery.
+
+  **Migration.** Snapshots need none — they are a recovery accelerator, not
+  a source of truth, so a load finding nothing replays the journal and the
+  next save writes at the new key. Durable state does: copy each
+  `<prefix><persistenceId>/state.json` to
+  `<prefix>state/<persistenceId>/state.json`. A body with neither
+  client-side encryption nor an integrity HMAC carries no key binding, so a
+  server-side copy suffices; a context-bound body (#612) is sealed against
+  its old key and will not decode at the new one, so run the OLD version
+  with the durable-state store pointed at `<prefix>state/` and re-upsert
+  each record first.
+
+- **`ConsumerController` serialises its handler, and bounds the out-of-order
+  set** (#643, #728).
+
+  The controller fire-and-forgot its delivery handler, so the cell started
+  the next delivery while the user handler was still running — a burst that
+  fits the producer's window became that many overlapping invocations,
+  contradicting the options documentation, which has always promised the
+  acknowledgment follows the handler. `onReceive` now returns the promise.
+  The same change closes a read-check-act race in which a retransmit
+  arriving while its own sequence was still being handled re-entered the
+  handler instead of being absorbed as a duplicate, because the dedup window
+  is only written after the handler returns (#643).
+
+  The per-producer out-of-order set is bounded by a new `maxOutOfOrder`
+  option (default 1024, `Infinity` to opt out) with its builder method and
+  validator rule. A sender that withholds one sequence and keeps sending the
+  ones after it grew that set without limit, which neither the producer cap
+  nor the idle sweep covered. At the cap the consumer refuses the delivery
+  outright — it neither runs the handler nor acknowledges — so the
+  producer's window stalls and its retransmit recovers, rather than a drop
+  costing a duplicate invocation for a message already handled. The sequence
+  that closes the gap is always admitted, so this is a stall and never a
+  deadlock (#728).
+
+  Order mattered here: the cap is only an exact post-condition once the
+  handler is serialised. While the handler ran detached, every in-flight
+  delivery could pass the size check before any of them inserted, so the set
+  overshot by the concurrency.
+
+  **Migration.** None for a stock `ProducerController`, whose window of 16
+  puts at most 15 sequences past an open gap. A producer configured with a
+  window above 1024 that expects gaps under packet loss wants a matching
+  `maxOutOfOrder`, or `Infinity` for the previous behaviour.
+
 
 - **A priority mailbox keeps an undroppable envelope through a stash replay,
   and a dead letter carries what the envelope lost** (#729, #773).
