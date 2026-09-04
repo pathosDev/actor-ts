@@ -21,7 +21,9 @@ import {
   type JetStreamSubscriptionLike,
   type NatsConnectionLike,
 } from '../../../../../src/io/broker/JetStreamActor.js';
-import { JetStreamOptions, JetStreamOptionsBuilder } from '../../../../../src/io/broker/JetStreamOptions.js';
+import { JetStreamOptions, JetStreamOptionsBuilder, JetStreamOptionsValidator, type JetStreamOptionsType } from '../../../../../src/io/broker/JetStreamOptions.js';
+import { OptionsError } from '../../../../../src/util/OptionsValidator.js';
+import type { ConfigObject } from '../../../../../src/config/HoconParser.js';
 
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
@@ -168,7 +170,10 @@ class MockJetStream implements JetStreamClientLike {
 class MockJsm implements JetStreamManagerLike {
   readonly streamsAdd: Array<{ name: string; subjects: string[] }> = [];
   readonly streamsUpdate: Array<{ name: string }> = [];
-  readonly consumersAdd: Array<{ stream: string; durable: string; deliver_policy?: string; ack_wait?: number }> = [];
+  readonly consumersAdd: Array<{
+    stream: string; durable: string; deliver_policy?: string; ack_wait?: number;
+    opt_start_seq?: number; opt_start_time?: string;
+  }> = [];
   readonly streams = {
     add: async (config: { name: string; subjects: string[]; retention?: string; storage?: string; max_msgs?: number; max_bytes?: number; max_age?: number }) => {
       this.streamsAdd.push({ name: config.name, subjects: [...config.subjects] });
@@ -188,6 +193,8 @@ class MockJsm implements JetStreamManagerLike {
         durable: config.durable_name,
         deliver_policy: config.deliver_policy,
         ack_wait: config.ack_wait,
+        opt_start_seq: config.opt_start_seq,
+        opt_start_time: config.opt_start_time,
       });
     },
     update: async (_stream: string, _durable: string) => { /* no-op */ },
@@ -213,6 +220,13 @@ class MockJetStreamActor extends JetStreamActor {
   }
 
   publicConnectionState(): string { return this.connectionState; }
+
+  /**
+   * The options as `preStart` resolved them.  `acknowledgmentTimeout` has no
+   * observable effect on the driver — it bounds an internal ack wait — so
+   * this is the only place a HOCON read of it can be seen.
+   */
+  publicResolvedOptions(): JetStreamOptionsType { return this.options; }
 }
 
 /* --------------------------- Helpers ---------------------------- */
@@ -635,6 +649,165 @@ describe('JetStreamActor — options parsing', () => {
     } finally {
       await sys.terminate();
     }
+  });
+});
+
+/* ================== HOCON stream / consumer blocks (#871) ================ */
+
+/**
+ * The three fields that had no reader before #871.  Every config here is a
+ * **nested** object literal — a dotted top-level key like
+ * `{'actor-ts.io.broker.jetstream.stream': …}` stays a literal key in the
+ * parsed tree, so `hasPath` would answer from reference.conf and the
+ * assertions would pass while proving nothing.
+ */
+describe('JetStreamActor — HOCON stream / consumer / acknowledgment-timeout (#871)', () => {
+  function systemWith(name: string, jetstream: ConfigObject): ActorSystem {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { io: { broker: { jetstream } } } });
+    return ActorSystem.create(name, sysOptions);
+  }
+
+  test('the stream and consumer blocks feed the options and reach the manager', async () => {
+    const sys = systemWith('js-hocon-blocks', {
+      servers: ['nats://fake:4222'],
+      'acknowledgment-timeout': '45s',
+      stream: {
+        name: 'BILLING',
+        subjects: ['billing.>'],
+        retention: 'workqueue',
+        storage: 'memory',
+        'max-messages': 1000,
+        'max-bytes': '8M',
+        'max-age': 3_600_000_000_000,
+        create: true,
+      },
+      consumer: {
+        durable: 'billing-proc',
+        mode: 'push',
+        'deliver-policy': 'last',
+        'ack-policy': 'explicit',
+        'ack-wait': '10s',
+        'filter-subject': 'billing.charges',
+        'max-acknowledgment-pending': 64,
+        create: true,
+      },
+    });
+    try {
+      const { mock } = await bootActor(sys, JetStreamOptions.create());
+      const resolved = mock.publicResolvedOptions();
+      expect(resolved.stream).toEqual({
+        name: 'BILLING',
+        subjects: ['billing.>'],
+        retention: 'workqueue',
+        storage: 'memory',
+        maxMessages: 1000,
+        maxBytes: 8 * 1024 * 1024,
+        maxAge: 3_600_000_000_000,
+        create: true,
+      });
+      expect(resolved.consumer).toEqual({
+        durable: 'billing-proc',
+        mode: 'push',
+        deliverPolicy: 'last',
+        ackPolicy: 'explicit',
+        ackWaitMs: 10_000,
+        filterSubject: 'billing.charges',
+        maxAcknowledgmentPending: 64,
+        create: true,
+      });
+      // `45s` is a duration string, so getDuration is the reader that has to
+      // be behind it — a getNumber would have thrown on this value.
+      expect(resolved.acknowledgmentTimeout).toBe(45_000);
+      // …and it is not only an options object: the manager was asked for it.
+      expect(mock.mockConnection.jsm.streamsAdd[0]).toEqual({ name: 'BILLING', subjects: ['billing.>'] });
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.deliver_policy).toBe('last');
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.ack_wait).toBe(10_000 * 1_000_000);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('the deliver-policy object arm survives the round trip', async () => {
+    const sys = systemWith('js-hocon-deliver-policy', {
+      servers: ['nats://fake:4222'],
+      stream: { name: 'BILLING', subjects: ['billing.>'] },
+      consumer: {
+        durable: 'billing-proc',
+        // The `kind` keeps its TypeScript spelling as a *value*, so it lands
+        // in the union unchanged; only the leaf names are kebab-case.
+        'deliver-policy': { kind: 'byStartSeq', 'start-seq': 4242 },
+      },
+    });
+    try {
+      const { mock } = await bootActor(sys, JetStreamOptions.create());
+      expect(mock.publicResolvedOptions().consumer?.deliverPolicy)
+        .toEqual({ kind: 'byStartSeq', startSeq: 4242 });
+      const added = mock.mockConnection.jsm.consumersAdd[0];
+      expect(added?.deliver_policy).toBe('by_start_sequence');
+      expect(added?.opt_start_seq).toBe(4242);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a builder stream block still wins over the HOCON one', async () => {
+    const sys = systemWith('js-hocon-precedence', {
+      servers: ['nats://fake:4222'],
+      stream: { name: 'FROM-HOCON', subjects: ['hocon.>'] },
+      consumer: { durable: 'from-hocon' },
+    });
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withStream({ name: 'FROM-BUILDER', subjects: ['builder.>'] });
+      const { mock } = await bootActor(sys, jetstreamOptions);
+      expect(mock.publicResolvedOptions().stream?.name).toBe('FROM-BUILDER');
+      // The consumer the builder left unset still falls through to HOCON.
+      expect(mock.publicResolvedOptions().consumer?.durable).toBe('from-hocon');
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+describe('JetStreamOptionsValidator — the stream / consumer group rules (#871)', () => {
+  const validate = (s: Partial<JetStreamOptionsType>): void =>
+    new JetStreamOptionsValidator().validate(s);
+
+  test('rejects a stream with no name — the shape an incomplete HOCON block reads as', () => {
+    expect(() => validate({ stream: { name: '', subjects: ['a.>'] } })).toThrow(/stream\.name/);
+  });
+
+  test('rejects a stream with no subjects', () => {
+    expect(() => validate({ stream: { name: 'S', subjects: [] } })).toThrow(/stream\.subjects/);
+  });
+
+  test('rejects an unknown retention and an unknown storage', () => {
+    expect(() => validate({ stream: { name: 'S', subjects: ['a'], retention: 'forever' as 'limits' } }))
+      .toThrow(/stream\.retention/);
+    expect(() => validate({ stream: { name: 'S', subjects: ['a'], storage: 'tape' as 'file' } }))
+      .toThrow(/stream\.storage/);
+  });
+
+  test('rejects a consumer with no durable name', () => {
+    expect(() => validate({ consumer: { durable: '' } })).toThrow(/consumer\.durable/);
+  });
+
+  test('rejects an unknown deliverPolicy string, and accepts the object arm', () => {
+    expect(() => validate({ consumer: { durable: 'd', deliverPolicy: 'yesterday' as 'all' } }))
+      .toThrow(/consumer\.deliverPolicy/);
+    expect(() => validate({ consumer: { durable: 'd', deliverPolicy: { kind: 'byStartSeq', startSeq: 1 } } }))
+      .not.toThrow();
+  });
+
+  test('rejects a non-positive ackWaitMs', () => {
+    expect(() => validate({ consumer: { durable: 'd', ackWaitMs: 0 } })).toThrow(OptionsError);
+  });
+
+  test('an unset group passes', () => {
+    expect(() => validate({ servers: ['nats://h:4222'] })).not.toThrow();
   });
 });
 

@@ -17,7 +17,12 @@ export interface AmqpOptionsType extends BrokerCommonOptionsType {
   readonly url?: string;
   /** Number of unacked messages a consumer holds at once.  Default: 1. */
   readonly prefetch?: number;
-  /** Queues + bindings + targets to set up after connect. */
+  /**
+   * Queues + bindings + targets to set up after connect.
+   *
+   * No HOCON leaf: every binding carries an `ActorRef`, which names a live
+   * actor in this process and has no config-file spelling.
+   */
   readonly bindings?: ReadonlyArray<AmqpQueueBinding>;
   /** Whether to auto-ack consumed deliveries.  Default: true. */
   readonly autoAcknowledge?: boolean;

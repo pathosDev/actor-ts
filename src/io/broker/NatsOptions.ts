@@ -20,7 +20,13 @@ export interface NatsOptionsType extends BrokerCommonOptionsType {
   readonly token?: string;
   readonly user?: string;
   readonly password?: string;
-  /** Subscriptions wired up at connect time.  Subjects support `*` and `>` wildcards (NATS-side). */
+  /**
+   * Subscriptions wired up at connect time.  Subjects support `*` and `>`
+   * wildcards (NATS-side).
+   *
+   * No HOCON leaf: every entry carries an `ActorRef`, which names a live
+   * actor in this process and has no config-file spelling.
+   */
   readonly subscriptions?: ReadonlyArray<{ readonly subject: string; readonly target: ActorRef<NatsMessage> }>;
   /** Optional client name reported to the server. */
   readonly name?: string;

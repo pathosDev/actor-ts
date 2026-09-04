@@ -492,6 +492,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
       };
     }
     if (config.hasPath('qos')) out.qos = config.getInt('qos') as MqttQos;
+    if (config.hasPath('will')) out.will = readWillFromConfig(config.getConfig('will'));
     if (config.hasPath('cleanSession')) out.cleanSession = config.getBoolean('cleanSession');
     if (config.hasPath('keepAlive')) out.keepAlive = config.getInt('keepAlive');
     // Value validation (protocolVersion ∈ {4,5}, etc.) is enforced uniformly
@@ -603,6 +604,40 @@ export abstract class MqttActor<T = unknown, TSelf = never>
       });
     });
   }
+}
+
+/* ---------------------------- HOCON readers ---------------------------- */
+
+/**
+ * Read a `will { … }` block off the actor's HOCON subtree.
+ *
+ * A free function rather than four lines inside `readOptionsFromConfig`
+ * because the block is the one place the reader has to *reconstruct* a value
+ * instead of copying leaves across: `mergeOptions` is a shallow spread, so
+ * whatever comes back here replaces the whole `will` object underneath it.
+ * That is why `payload` falls back to `''` rather than staying `undefined` —
+ * `MqttOptionsType['will']` types both `topic` and `payload` as required, and
+ * a half-built object would satisfy the compiler only through the cast this
+ * function exists to avoid.
+ *
+ * **`payload` is string-only from HOCON.**  The field is `Uint8Array | string`
+ * and a config file can supply only the string arm; a binary will stays
+ * code-only rather than acquiring a base64 spelling this project has no
+ * precedent for.  An *absent* payload reads as the empty one, which is a
+ * legal MQTT will (a zero-length payload is how a retained will is cleared) —
+ * so unlike `topic` it needs no validator rule.
+ */
+function readWillFromConfig(willConfig: Config): NonNullable<MqttOptionsType['will']> {
+  return {
+    // Empty rather than absent, and MqttOptionsValidator rejects it: the
+    // MQTT spec forbids a zero-length topic name, so `will { qos = 1 }` with
+    // no topic is a configuration mistake that should surface at startup
+    // rather than as a will the broker refuses on CONNECT.
+    topic: willConfig.hasPath('topic') ? willConfig.getString('topic') : '',
+    payload: willConfig.hasPath('payload') ? willConfig.getString('payload') : '',
+    qos: willConfig.hasPath('qos') ? willConfig.getInt('qos') as MqttQos : undefined,
+    retain: willConfig.hasPath('retain') ? willConfig.getBoolean('retain') : undefined,
+  };
 }
 
 /* --------------------------- MQTT 5.0 helpers -------------------------- */

@@ -37,7 +37,12 @@ export interface WebsocketClientOptionsType<TOut = unknown, TIn = unknown> exten
   /** WebSocket URL (`ws://…` or `wss://…`).  Required (ctor or HOCON). */
   readonly url?: string;
   readonly protocols?: string | ReadonlyArray<string>;
-  /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */
+  /**
+   * Wire codec.  Default: `jsonCodec<TOut, TIn>()`.
+   *
+   * No HOCON leaf: a codec is a pair of functions, and a function cannot come
+   * from a config file.
+   */
   readonly codec?: WebsocketCodec<TOut, TIn>;
   /**
    * Inbound frame size cap.  An oversize frame closes the connection with 1009
@@ -47,7 +52,14 @@ export interface WebsocketClientOptionsType<TOut = unknown, TIn = unknown> exten
    * but so that a peer cannot repeat it on the same connection.  Default 1 MiB.
    */
   readonly maxFrameBytes?: number;
-  /** What to do with an inbound frame the codec can't decode.  Default 'drop'. */
+  /**
+   * What to do with an inbound frame the codec can't decode.  Default 'drop'.
+   *
+   * Readable from HOCON as `on-invalid-message`.  The server-side key of the
+   * same name (`actor-ts.http.websocket.on-invalid-message`) takes a
+   * *different* value list — `close` instead of `disconnect` — so the two
+   * cannot be copied across.
+   */
   readonly onInvalidMessage?: 'drop' | 'hook' | 'disconnect';
   /**
    * Send a keepalive every `pingIntervalMs`, so a proxy or load balancer does

@@ -18,7 +18,11 @@ export interface UdpSocketOptionsType extends BrokerCommonOptionsType {
   readonly bindPort?: number;
   /** IPv4 (`'udp4'`) or IPv6 (`'udp6'`).  Default: `'udp4'`. */
   readonly type?: 'udp4' | 'udp6';
-  /** Subscriber for inbound datagrams.  Required. */
+  /**
+   * Subscriber for inbound datagrams.  Required.  No HOCON leaf: an
+   * `ActorRef` names a live actor in this process, which a config file cannot
+   * denote.
+   */
   readonly target?: ActorRef<UdpDatagram>;
 }
 

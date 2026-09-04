@@ -182,6 +182,26 @@ export class KafkaActor
         password: saslConfig.getString('password'),
       };
     }
+    if (config.hasPath('producer')) {
+      const producerConfig = config.getConfig('producer');
+      // Layered against the built-in defaults leaf by leaf rather than
+      // returned as a partial.  `mergeOptions` is a shallow spread, so
+      // whatever this returns replaces `builtInDefaultOptions().producer`
+      // whole: a HOCON `producer { idempotent = true }` would otherwise blank
+      // `allowAutoTopicCreation` back to undefined, which is not the per-field
+      // precedence the rest of the options surface promises.  Reading the
+      // defaults back out of the one method that declares them keeps the two
+      // from drifting.
+      const defaults = this.builtInDefaultOptions().producer;
+      out.producer = {
+        idempotent: producerConfig.hasPath('idempotent')
+          ? producerConfig.getBoolean('idempotent')
+          : defaults?.idempotent,
+        allowAutoTopicCreation: producerConfig.hasPath('allow-auto-topic-creation')
+          ? producerConfig.getBoolean('allow-auto-topic-creation')
+          : defaults?.allowAutoTopicCreation,
+      };
+    }
     if (config.hasPath('consumer')) {
       const cc = config.getConfig('consumer');
       out.consumer = {

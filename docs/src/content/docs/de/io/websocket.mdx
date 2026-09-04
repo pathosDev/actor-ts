@@ -352,14 +352,29 @@ actor-ts.io.broker.websocket {
   idleTimeoutMs   = 90000
   connectTimeoutMs = 10000
   maxFrameBytes   = 1048576
+  on-invalid-message = "drop"   # drop | hook | disconnect
   reconnect       { initialDelayMs = 500, maxDelayMs = 30000, factor = 2.0, randomFactor = 0.2 }   // maxAttempts omitted = unlimited (the default)
-  circuitBreaker  { /* ... */ }
-  outboundBuffer  { /* ... */ }
+  circuitBreaker  { failureThreshold = 5, resetMs = 30000 }
+  outboundBuffer  = 1000        // messages held while disconnected; 0 = fail-fast
 }
 ```
 
 Die Präzedenz folgt der Broker-Konvention: Konstruktor-Argument >
 HOCON > eingebaute Defaults.
+
+Zwei Hinweise zu diesem Block.
+
+`on-invalid-message` ist kebab-case, seine Nachbarn sind es nicht.  Alle
+Blätter unter `actor-ts.io.broker.*` sind noch camelCase, bis der Sweep sie
+umstellt; neue Blätter werden so geschrieben, wie der Rest der
+Konfigurationsfläche sie ohnehin buchstabiert, damit sie später keine
+brechende Umbenennung brauchen.  Die **Server**-Seite hat einen Key desselben
+Namens, `actor-ts.http.websocket.on-invalid-message`, und dessen Werteliste
+ist *nicht* dieselbe — dort heißt der dritte Wert `close`, hier `disconnect`.
+Die beiden lassen sich also nicht voneinander abschreiben.
+
+`codec` hat gar keinen Config-Key: es ist ein Paar von Funktionen, und eine
+Funktion kann nicht aus einer Config-Datei kommen.
 
 ## Wann einsetzen
 

@@ -113,6 +113,36 @@ Häufige Muster:
   Properties, Reason-Codes auf `MqttMessage`).  Braucht einen v5-fähigen
   Broker.
 
+### Das Will aus HOCON
+
+Das Last Will will eine Flotte üblicherweise pro Deployment setzen statt pro
+Build, deshalb hat es einen eigenen Block unter `actor-ts.io.broker.mqtt`:
+
+```hocon
+actor-ts.io.broker.mqtt {
+  will {
+    topic   = "devices/42/status"
+    payload = "offline"
+    qos     = 1
+    retain  = true
+  }
+}
+```
+
+Zwei Dinge dazu.
+
+`payload` ist hier ein **String**.  Das Feld ist `string | Uint8Array`, und
+eine Config-Datei hat keine Schreibweise für Bytes — ein binäres Will bleibt
+also code-only.  Ohne `payload` ist es das leere, was gültiges MQTT ist und
+genau so ein Retained Will gelöscht wird — `topic` dagegen ist Pflicht, und
+ein `will`-Block ohne eines wird beim Start abgelehnt, statt zum Broker zu
+gehen und dort zu scheitern.
+
+Der Block wird **als Ganzes** gelesen.  `withWill({ … })` im Code ersetzt das
+konfigurierte Will vollständig, statt Blatt für Blatt damit zu mischen — das
+ist die gewohnte Präzedenz (Konstruktor > HOCON > Defaults), angewendet auf
+das Feld, das dieses Objekt *ist*.
+
 ## Typisierte Payloads
 
 Eingehende `MqttMessage<T>` tragen ein lazy dekodierendes
