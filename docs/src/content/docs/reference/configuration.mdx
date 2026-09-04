@@ -756,18 +756,61 @@ in code.
 | --- | --- | --- |
 | `coordinated-shutdown.default-phase-timeout` | `5s` | Default per-phase timeout.  A phase that overruns it is abandoned so the next one still runs. |
 | `coordinated-shutdown.terminate-actor-system` | `true` | Whether the built-in terminator task calls `system.terminate()` in the final phase. |
-| `coordinated-shutdown.exit-process` | `false` | Whether to call `process.exit(0)` once the pipeline completes. |
+| `coordinated-shutdown.exit-process` | `false` | Whether to call `process.exit(exit-code)` once the pipeline completes. |
+| `coordinated-shutdown.exit-code` | `0` | Status that exit carries.  `0`–`255`; anything else is a `ConfigError` at startup. |
+| `coordinated-shutdown.auto-register-tasks` | `true` | Whether framework components register their own teardown — the HTTP unbind, broker closes, the cluster leave, the DevTools detach. |
+| `coordinated-shutdown.run-by-process-signals` | `true` | Whether `runUntilTerminated()` and the cluster bootstrap arm SIGTERM/SIGINT when the caller named no signals. |
+| `coordinated-shutdown.phases.<name>.timeout` | — | Per-phase budget, overriding `default-phase-timeout` for that phase alone. |
+| `coordinated-shutdown.phases.<name>.recover` | — | `false` makes a failing task in that phase halt the pipeline instead of being logged and stepped over. |
+| `coordinated-shutdown.phases.<name>.depends-on` | — | Phases that must run first.  Added to a canonical phase's existing edge; required when the name declares a new phase. |
 
 Setting `terminate-actor-system = false` removes only the built-in
 terminator — user tasks registered in `ActorSystemTerminate` still run.  Use
 it when a host process owns the system's lifetime and a signal handler must
 not kill it.
 
+The `phases` block is the config front-end to the phase DAG, and it ships no
+values of its own — its children are named after *your* phases, so there is
+nothing to publish a default for:
+
+```hocon
+actor-ts.coordinated-shutdown.phases {
+  service-requests-done { timeout = 30s }        # retime one canonical phase
+  flush-metrics {                                # …and add one of your own
+    timeout    = 3s
+    recover    = false
+    depends-on = ["before-actor-system-terminate"]
+  }
+  actor-system-terminate { depends-on = ["flush-metrics"] }
+}
+```
+
+A child naming one of the twelve canonical phases **merges** into it: fields
+it leaves out keep what the phase was seeded with.  Any other name **declares**
+a phase, and there `depends-on` is required — a phase with no edges sorts into
+the first ready batch and would run before `before-service-unbind`, which is
+never what adding a phase meant.  `depends-on` on a canonical phase is *added*
+to the edge it already has rather than replacing it, so a config file cannot
+re-parent `cluster-leave` ahead of `service-unbind`; the topological sort
+catches cycles, not a pipeline quietly running in the wrong order.  Declaration
+order in the file does not matter — two phases may name each other and are
+registered dependency-first.  An unresolvable name, a cycle, or an unknown
+setting under a phase is a `ConfigError` at startup, not at shutdown.
+
+`run-by-process-signals` switches the *default*, not the capability.  Naming
+signals explicitly — `runUntilTerminated(['SIGTERM'])`, or `shutdownOnSignals`
+in the bootstrap options — still installs them, because explicit options
+outrank config.  Turning it off is for a host process that owns SIGTERM
+itself: `runUntilTerminated()` still waits and still holds the event loop open,
+it simply arms nothing.
+
 `exit-process` is for the opposite case: a lingering handle (an open socket,
 a pooled connection a driver never released) keeps the process alive after
 the pipeline is done, and from the outside that is indistinguishable from a
 hang.  Off by default, because forcing an exit hides exactly the leaks you
-would rather find.
+would rather find.  `exit-code` is the status it hands over — `0`, because a
+pipeline that ran to the end is the success case; set it where a supervisor
+should tell a planned drain apart from a crash.
 
 ### `actor-ts.devtools`
 

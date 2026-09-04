@@ -729,12 +729,27 @@ export const ConfigKeys = {
     restartWindow: 'actor-ts.worker-cluster.restart-window',
   },
 
-  /** CoordinatedShutdown pipeline defaults — `actor-ts.coordinated-shutdown.*`. */
+  /**
+   * CoordinatedShutdown pipeline defaults — `actor-ts.coordinated-shutdown.*`.
+   *
+   * All of them are read inline in the `CoordinatedShutdown` constructor;
+   * there is deliberately no `CoordinatedShutdownOptions` triad, for the
+   * reason `DEFAULT_PHASE_TIMEOUT_MS` gives in `src/Constants.ts`.
+   *
+   * `phases` is a block root rather than a leaf, and it ships **comment-only**
+   * in `reference.conf`: its children are named after the operator's phases,
+   * so there is no fixed set of leaves to publish, and an example one
+   * (`phases.service-unbind.timeout = 5s`) would freeze that example's budget
+   * into every deployment's effective config (#866).
+   */
   coordinatedShutdown: {
     defaultPhaseTimeout: 'actor-ts.coordinated-shutdown.default-phase-timeout',
     terminateActorSystem: 'actor-ts.coordinated-shutdown.terminate-actor-system',
     exitProcess: 'actor-ts.coordinated-shutdown.exit-process',
+    exitCode: 'actor-ts.coordinated-shutdown.exit-code',
     autoRegisterTasks: 'actor-ts.coordinated-shutdown.auto-register-tasks',
+    runByProcessSignals: 'actor-ts.coordinated-shutdown.run-by-process-signals',
+    phases: 'actor-ts.coordinated-shutdown.phases',
   },
 
   /**

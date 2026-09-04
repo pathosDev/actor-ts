@@ -9,6 +9,7 @@ import {
   DEFAULT_PHASE_TIMEOUT_MS,
   DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
 } from '../../../src/Constants.js';
+import { DEFAULT_SHUTDOWN_EXIT_CODE } from '../../../src/Constants.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
 import { DEFAULT_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/Constants.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
@@ -229,6 +230,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.actor.throughput', kind: 'int', constant: DEFAULT_ACTOR_THROUGHPUT },
   { key: 'actor-ts.dispatcher.throughput', kind: 'int', constant: DEFAULT_DISPATCHER_THROUGHPUT },
   { key: 'actor-ts.coordinated-shutdown.default-phase-timeout', kind: 'duration', constant: DEFAULT_PHASE_TIMEOUT_MS },
+  { key: 'actor-ts.coordinated-shutdown.exit-code', kind: 'int', constant: DEFAULT_SHUTDOWN_EXIT_CODE },
   { key: 'actor-ts.system.shutdown-drain-timeout', kind: 'duration', constant: DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS },
 
   /* --- cluster --- */
@@ -564,6 +566,11 @@ const FEATURE_SWITCHES: readonly string[] = [
   'actor-ts.coordinated-shutdown.terminate-actor-system',
   'actor-ts.coordinated-shutdown.exit-process',
   'actor-ts.coordinated-shutdown.auto-register-tasks',
+  // The published `true` says the two defaulting call sites arm SIGTERM for
+  // you, not how long anything takes; the off state is the branch not taken
+  // in `runUntilTerminated` and `installSignalHandlers`, so there is nothing
+  // for a `DEFAULT_*` constant to hold (#866).
+  'actor-ts.coordinated-shutdown.run-by-process-signals',
   // off = virtual-host style, which is what AWS S3 itself wants; the switch
   // exists for MinIO and most non-AWS stores.  The off state is the field
   // being absent on `S3ObjectStorageOptions`, so there is no constant (#873).

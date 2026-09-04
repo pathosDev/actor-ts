@@ -749,12 +749,24 @@ export class ActorSystem {
    *   platform difference.  Note that skipping them *all* does not turn this
    *   into a no-op: the promise still waits, and the process still stays
    *   alive, until something shuts the system down from inside.
+   *
+   *   Naming any signal here is an explicit request and always installs.
+   *   Leaving it unset takes the default from
+   *   `actor-ts.coordinated-shutdown.run-by-process-signals`, which a host
+   *   process that owns SIGTERM itself can turn off — the wait and the
+   *   keep-alive are unaffected, only the handlers go.
    */
   async runUntilTerminated(
     signals?: ReadonlyArray<ProcessSignal>,
   ): Promise<void> {
     const coordinatedShutdown = this.extension(CoordinatedShutdownId);
-    coordinatedShutdown.installProcessHooks(signals);
+    // `signals !== undefined` is an explicit request and outranks the config
+    // key, which only decides the default.  Gating inside
+    // `installProcessHooks` would invert that: the key ships as a leaf, so
+    // reference.conf always answers it and HOCON would beat the caller.
+    if (signals !== undefined || coordinatedShutdown.runByProcessSignals) {
+      coordinatedShutdown.installProcessHooks(signals);
+    }
     const releaseEventLoop = holdEventLoopOpen();
     try {
       await this.whenTerminated();

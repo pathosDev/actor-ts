@@ -126,15 +126,69 @@ coordinatedShutdown.addTask('flush-metrics', 'push-prometheus', async () => {
 ```
 
 The `dependsOn` field is what makes the order DAG-shaped rather
-than linear — your phase runs after `before-actor-system-terminate`
-but **before** `actor-system-terminate` (because the latter has the
-former in its own implicit chain).
+than linear — your phase runs after `before-actor-system-terminate`.
+
+It does **not** by itself put the phase before
+`actor-system-terminate`.  Both become ready in the same round of the
+topological sort — `actor-system-terminate` has the same single
+dependency — and the sort's alphabetical tie-breaker then decides, so
+`flush-metrics` above actually runs *after* the system has terminated.
+Adding the reverse edge is what places it, and that is `depends-on`
+from config (below), which is added to a canonical phase's existing
+edges.  From code, name a phase whose successor is not the one you
+need to precede.
 
 Because `addPhase` requires every `dependsOn` entry to name an
 already-registered phase, a cycle can't be formed in the first
 place.  The order itself is computed by a topological sort when
 `run()` executes — that sort would throw `Error: cycle in phase
 dependencies` if a cycle ever did arise.
+
+### From config
+
+The same graph is expressible in HOCON, under
+`actor-ts.coordinated-shutdown.phases` — one child per phase name,
+each taking `timeout`, `recover` and `depends-on`:
+
+```hocon
+actor-ts.coordinated-shutdown.phases {
+  flush-metrics {
+    timeout    = 3s
+    recover    = true
+    depends-on = ["before-actor-system-terminate"]
+  }
+  actor-system-terminate { depends-on = ["flush-metrics"] }
+}
+```
+
+A name that is one of the twelve canonical phases **merges** into
+that phase; anything else **declares** a new one, and there
+`depends-on` is required — a phase with no edges sorts into the
+first ready batch and would run before `before-service-unbind`.
+
+Note what the second child buys.  `depends-on` on a canonical
+phase is *added* to the edge that phase already has, never a
+replacement, so naming `flush-metrics` there is what actually puts
+your phase **before** `actor-system-terminate` rather than merely
+after `before-actor-system-terminate` — the two would otherwise
+become ready in the same round and the sort's alphabetical
+tie-breaker would decide.  The additive rule is also what stops a
+config file re-parenting `cluster-leave` ahead of `service-unbind`:
+the sort catches cycles, not a pipeline quietly running in the
+wrong order.
+
+Declaration order in the file is irrelevant — two phases may name
+each other and are registered dependency-first.  An unresolvable
+name, a cycle, an unknown setting under a phase, or a declared
+phase with no `depends-on` is a `ConfigError` when the extension is
+built, not when the shutdown runs.
+
+Ask what the merge produced with `phaseDefinition`:
+
+```ts
+coordinatedShutdown.phaseDefinition('flush-metrics');
+// { name: 'flush-metrics', timeoutMs: 3000, dependsOn: [...], recover: true }
+```
 
 ## Task semantics
 
@@ -204,6 +258,19 @@ coordinatedShutdown.addPhase({
 });
 ```
 
+Both are also config, per phase and without a rebuild — the same
+`phases` block as above, and it retimes only the phase it names:
+
+```hocon
+actor-ts.coordinated-shutdown {
+  default-phase-timeout = 5s               # every phase that says nothing
+  phases {
+    service-requests-done { timeout = 30s }   # …except this one
+    service-stop          { recover = false } # a failure here halts the run
+  }
+}
+```
+
 ### The drain budget sits inside the last phase
 
 `actor-system-terminate` is a task that awaits `system.terminate()`,
@@ -213,13 +280,18 @@ are nested, and the inner one has to be the smaller:
 
 | Budget | Key | Default |
 | --- | --- | --- |
-| The whole `actor-system-terminate` phase | `actor-ts.coordinated-shutdown.default-phase-timeout` | 5 s |
+| The whole `actor-system-terminate` phase | `actor-ts.coordinated-shutdown.phases.actor-system-terminate.timeout`, falling back to `…default-phase-timeout` | 5 s |
 | The drain inside it | `actor-ts.system.shutdown-drain-timeout` | 2 s |
 
 Raise the drain budget above the phase timeout and the phase is
 abandoned while the drain is still running — before a single actor has
 been told to stop. Raise both together, or raise the phase timeout
 first.
+
+Reach for the per-phase key when only the terminate step needs more
+room.  Raising `default-phase-timeout` instead hands the same longer
+budget to eleven other phases, and each of those is a phase a stuck
+task can now hold the shutdown in for that much longer.
 
 ## SIGTERM / SIGINT hooks
 
@@ -267,6 +339,21 @@ Calling either twice is harmless.  `removeProcessHooks()` never
 touches a listener it did not install, so a second `ActorSystem` in
 the same process — or the application's own SIGTERM handling — is
 left alone.
+
+The *default* is config, so a host that owns the signals can take the
+handlers off every node it runs without touching the code:
+
+```hocon
+actor-ts.coordinated-shutdown.run-by-process-signals = false
+```
+
+That switches what `runUntilTerminated()` and the cluster bootstrap do
+when the caller named no signals.  Naming them —
+`runUntilTerminated(['SIGTERM'])`, `shutdownOnSignals` in the bootstrap
+options, or `installProcessHooks()` itself — still installs, because
+explicit options outrank config.  With it off, `runUntilTerminated()`
+keeps both of its other promises: it waits, and it holds the event loop
+open.
 
 ## K8s PreStop integration
 
