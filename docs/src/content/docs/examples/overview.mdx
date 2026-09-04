@@ -30,8 +30,10 @@ cd actor-ts
 # Install dependencies once, at the repo root:
 bun install
 
-# Run the chat sample — open three terminals, same command in each:
-bun examples/chat/backend/main.ts
+# Run the chat sample — open three terminals, same command in each.
+# The backend refuses to start without a session-token secret; this
+# accepts the demo one for a local run.
+CHAT_ALLOW_DEMO_SECRET=1 bun examples/chat/backend/main.ts
 ```
 
 Each example has its own README with setup steps.

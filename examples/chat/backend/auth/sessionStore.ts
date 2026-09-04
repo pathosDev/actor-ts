@@ -29,11 +29,23 @@
  * payload is authoritative — bumping `TOKEN_TTL_MS` doesn't extend
  * already-issued tokens (their `exp` is baked in at mint time).
  *
- * **Server secret**: read from `CHAT_TOKEN_SECRET` env var.  In its
- * absence we derive a stable demo-only secret from a hardcoded
- * string (logged with a warning at start-up).  Production must set
- * this to a strong random value, shared across every cluster node so
- * resume works during failover.
+ * **Server secret**: read from `CHAT_TOKEN_SECRET`.  When it is unset
+ * the constructor **throws** (#791).  This used to fall back to a
+ * hardcoded string and log a warning, which is the wrong shape for a
+ * missing credential: the node came up looking healthy while signing
+ * tokens with a constant published in this very file, so anyone who
+ * had read the repository could mint a token for any username — the
+ * tokens are self-validating, so the secret is the only thing between
+ * a stranger and an arbitrary identity.  A warning is not a guard; it
+ * scrolls past in an aggregated log and the deployment serves traffic
+ * either way.
+ *
+ * A local demo opts back into the fallback **explicitly**, with
+ * `CHAT_ALLOW_DEMO_SECRET=1`, and still gets the warning.  Zero-config
+ * start-up is therefore one variable away, and it is impossible to
+ * reach by accident.  Production sets `CHAT_TOKEN_SECRET` to a strong
+ * random value, shared across every cluster node so resume works
+ * during failover.
  */
 import * as crypto from 'node:crypto';
 import { LWWMap } from '../../../../src/crdt/index.js';
@@ -41,8 +53,16 @@ import type { DistributedDataHandle } from '../../../../src/crdt/DistributedData
 
 const REVOCATION_KEY = 'chat.session-revocations';
 const TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
-/** Fallback secret used when `CHAT_TOKEN_SECRET` is unset.  Demo
- *  only — the server logs a loud warning when it falls back. */
+/** Environment variable holding the real signing secret. */
+const TOKEN_SECRET_VARIABLE = 'CHAT_TOKEN_SECRET';
+/** Environment variable that opts a run in to {@link DEMO_FALLBACK_SECRET}. */
+const DEMO_SECRET_OPT_IN_VARIABLE = 'CHAT_ALLOW_DEMO_SECRET';
+/** Fallback secret, used only when the run opted in via
+ *  {@link DEMO_SECRET_OPT_IN_VARIABLE}.  Demo only, and published
+ *  right here — a token signed with it can be forged by anyone
+ *  reading this file.  The server logs a loud warning when it is in
+ *  use, but the opt-in is what actually keeps it out of a deployment
+ *  that merely forgot to set the real secret. */
 const DEMO_FALLBACK_SECRET = 'chat-sample-demo-secret-do-not-use-in-production';
 
 type TokenPayload = {
@@ -56,17 +76,38 @@ type TokenPayload = {
 
 export class SessionStore {
   private readonly secret: Buffer;
-  /** True iff we fell back to the demo secret — logged at startup. */
+  /** True iff this run opted in to the demo secret — logged at startup. */
   readonly usingDemoSecret: boolean;
 
+  /**
+   * @throws when no secret is configured and the run has not opted in
+   *   to {@link DEMO_FALLBACK_SECRET}.  Failing here rather than at
+   *   the first forged token is the whole point: a signing key that is
+   *   missing is a configuration error, not a value to guess at.
+   */
   constructor(
     private readonly dd: DistributedDataHandle,
     /** Override for tests; production uses `CHAT_TOKEN_SECRET` env. */
     secret?: string,
   ) {
-    const fromEnv = secret ?? process.env['CHAT_TOKEN_SECRET'];
-    this.usingDemoSecret = !fromEnv;
-    this.secret = Buffer.from(fromEnv ?? DEMO_FALLBACK_SECRET, 'utf-8');
+    // An empty string counts as unset, deliberately — `CHAT_TOKEN_SECRET=`
+    // in an env file would otherwise key the HMAC on zero bytes, which is
+    // worse than the published constant, not better.
+    const configured = secret !== undefined && secret !== ''
+      ? secret
+      : process.env[TOKEN_SECRET_VARIABLE];
+    this.usingDemoSecret = !configured;
+    if (!configured && !demoSecretAllowed()) {
+      throw new Error(
+        `${TOKEN_SECRET_VARIABLE} is not set. Session tokens are HMAC-signed, `
+        + 'so without it this sample would sign them with a constant published '
+        + 'in its own source, and anyone could mint a token for any user. Set '
+        + `${TOKEN_SECRET_VARIABLE} to a strong random value, shared by every `
+        + `cluster node — or set ${DEMO_SECRET_OPT_IN_VARIABLE}=1 to accept the `
+        + 'demo secret for a local run.',
+      );
+    }
+    this.secret = Buffer.from(configured ?? DEMO_FALLBACK_SECRET, 'utf-8');
   }
 
   /** Mint a JWT-style token binding `username`, `issuedAt`, `exp`. */
@@ -140,6 +181,19 @@ export class SessionStore {
 }
 
 /* ------------------------------- helpers ------------------------------- */
+
+/**
+ * True when the run explicitly accepted {@link DEMO_FALLBACK_SECRET}.
+ *
+ * Only `1` and `true` count.  A truthiness check on the raw string
+ * would read `CHAT_ALLOW_DEMO_SECRET=0` — which whoever typed it meant
+ * as "off" — as an opt-in, and an opt-in that turns itself on is not
+ * one.
+ */
+function demoSecretAllowed(): boolean {
+  const value = process.env[DEMO_SECRET_OPT_IN_VARIABLE]?.trim().toLowerCase();
+  return value === '1' || value === 'true';
+}
 
 function b64url(b: Buffer): string {
   return b.toString('base64url');

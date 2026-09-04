@@ -31,8 +31,10 @@ cd actor-ts
 # Abhängigkeiten einmalig im Repo-Root installieren:
 bun install
 
-# Chat-Sample starten - drei Terminals, in jedem derselbe Befehl:
-bun examples/chat/backend/main.ts
+# Chat-Sample starten - drei Terminals, in jedem derselbe Befehl.
+# Das Backend startet ohne Secret für Session-Tokens nicht; dies
+# akzeptiert für einen lokalen Lauf das Demo-Secret.
+CHAT_ALLOW_DEMO_SECRET=1 bun examples/chat/backend/main.ts
 ```
 
 Jedes Beispiel hat seine eigene README mit Setup-Schritten.
