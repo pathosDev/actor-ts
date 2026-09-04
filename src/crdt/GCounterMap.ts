@@ -1,4 +1,4 @@
-import type { Crdt, ReplicaId } from './Crdt.js';
+import type { Crdt, CrdtIdentityFunction, ReplicaId } from './Crdt.js';
 import { GCounter, type GCounterJson } from './GCounter.js';
 import {
   assertPlainObject,
@@ -85,6 +85,11 @@ export class GCounterMap<K> implements Crdt<GCounterMap<K>> {
 
   has(key: K): boolean { return this.entries.has(this.identity(key)); }
 
+  /** @see {@link Crdt.customIdentity} */
+  customIdentity(): CrdtIdentityFunction | undefined {
+    return this.identity === defaultIdentity ? undefined : this.identity;
+  }
+
   get size(): number { return this.entries.size; }
 
   merge(other: GCounterMap<K>): GCounterMap<K> {
@@ -116,23 +121,36 @@ export class GCounterMap<K> implements Crdt<GCounterMap<K>> {
     };
   }
 
+  /**
+   * Rebuild a map from its wire shape, filing each entry under the caller's
+   * identity rather than the sender's.  See `ORSet.fromJSON` for why the
+   * re-key is what #766 needed and forwarding the option alone was not; here
+   * two ids that collapse onto one key merge their counters, which is the
+   * same join `merge` would have produced had both arrived separately.
+   */
   static fromJSON<K>(
     json: GCounterMapJson, options: GCounterMapOptions<K> = {},
   ): GCounterMap<K> {
     if (json.kind !== 'GCounterMap') {
       throw new Error(`GCounterMap.fromJSON: unexpected kind ${json.kind}`);
     }
-    const identity = options.identity ?? (defaultIdentity as (k: K) => string);
+    const custom = options.identity;
+    const identity = custom ?? (defaultIdentity as (k: K) => string);
     assertPlainObject(json.counters, 'GCounterMap.counters');
     const entries = new Map<string, { key: K; counter: GCounter }>();
-    for (const [id, counterJson] of safeEntries(json.counters, 'GCounterMap.counters')) {
-      const raw = json.keyValues?.[id];
-      const key = raw !== undefined ? (JSON.parse(raw) as K) : (JSON.parse(id) as K);
+    for (const [wireId, counterJson] of safeEntries(json.counters, 'GCounterMap.counters')) {
+      const raw = json.keyValues?.[wireId];
+      const key = raw !== undefined ? (JSON.parse(raw) as K) : (JSON.parse(wireId) as K);
       // Shape-check before handing it on: `GCounter.fromJSON` reads `.kind`
       // off it, which throws a bare TypeError on `null` rather than the
       // decode error the caller can act on.
-      assertPlainObject(counterJson, `GCounterMap.counters['${id}']`);
-      entries.set(id, { key, counter: GCounter.fromJSON(counterJson as unknown as GCounterJson) });
+      assertPlainObject(counterJson, `GCounterMap.counters['${wireId}']`);
+      const counter = GCounter.fromJSON(counterJson as unknown as GCounterJson);
+      const id = custom === undefined ? wireId : custom(key);
+      const existing = entries.get(id);
+      entries.set(id, existing === undefined
+        ? { key, counter }
+        : { key: existing.key, counter: existing.counter.merge(counter) });
     }
     return new GCounterMap<K>(entries, identity);
   }

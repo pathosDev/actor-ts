@@ -1,4 +1,4 @@
-import type { Crdt, ReplicaId } from './Crdt.js';
+import type { Crdt, CrdtIdentityFunction, ReplicaId } from './Crdt.js';
 import { assertPlainObject, safeEntries } from './CrdtWireValidation.js';
 import { LWWRegister, type LWWRegisterJson } from './LWWRegister.js';
 
@@ -105,6 +105,11 @@ export class LWWMap<K, V> implements Crdt<LWWMap<K, V>> {
 
   has(key: K): boolean { return this.get(key) !== undefined; }
 
+  /** @see {@link Crdt.customIdentity} */
+  customIdentity(): CrdtIdentityFunction | undefined {
+    return this.identity === defaultIdentity ? undefined : this.identity;
+  }
+
   /** Snapshot of currently-live keys (tombstones excluded). */
   keys(): ReadonlyArray<K> {
     const out: K[] = [];
@@ -160,25 +165,38 @@ export class LWWMap<K, V> implements Crdt<LWWMap<K, V>> {
     };
   }
 
+  /**
+   * Rebuild a map from its wire shape, filing each entry under the caller's
+   * identity rather than the sender's.  See `ORSet.fromJSON` for why the
+   * re-key is what #766 needed; two ids that collapse onto one key merge
+   * their registers, so the later write wins exactly as it would have if the
+   * two had arrived as separate frames.
+   */
   static fromJSON<K, V>(
     json: LWWMapJson<V>, options: LWWMapOptions<K> = {},
   ): LWWMap<K, V> {
     if (json.kind !== 'LWWMap') {
       throw new Error(`LWWMap.fromJSON: unexpected kind ${json.kind}`);
     }
-    const identity = options.identity ?? (defaultIdentity as (k: K) => string);
+    const custom = options.identity;
+    const identity = custom ?? (defaultIdentity as (k: K) => string);
     assertPlainObject(json.registers, 'LWWMap.registers');
     const entries = new Map<string, Entry<K, V>>();
     // `safeEntries` rather than `Object.entries`: this decoder is a peer-facing
     // boundary like `ORSet`'s, and was missing both of its guards — the entry
     // ceiling and the `__proto__` rejection (#698, #767).
-    for (const [id, regJson] of safeEntries(json.registers, 'LWWMap.registers')) {
-      const raw = json.keyValues?.[id];
-      const key = raw !== undefined ? (JSON.parse(raw) as K) : (JSON.parse(id) as K);
+    for (const [wireId, registerJson] of safeEntries(json.registers, 'LWWMap.registers')) {
+      const raw = json.keyValues?.[wireId];
+      const key = raw !== undefined ? (JSON.parse(raw) as K) : (JSON.parse(wireId) as K);
       // `LWWRegister.fromJSON` reads `.kind` off its argument, which throws a
       // bare TypeError on `null` rather than the decode error callers act on.
-      assertPlainObject(regJson, `LWWMap.registers['${id}']`);
-      entries.set(id, { key, register: LWWRegister.fromJSON<V>(regJson as unknown as LWWRegisterJson<V>) });
+      assertPlainObject(registerJson, `LWWMap.registers['${wireId}']`);
+      const register = LWWRegister.fromJSON<V>(registerJson as unknown as LWWRegisterJson<V>);
+      const id = custom === undefined ? wireId : custom(key);
+      const existing = entries.get(id);
+      entries.set(id, existing === undefined
+        ? { key, register }
+        : { key: existing.key, register: existing.register.merge(register) });
     }
     return new LWWMap<K, V>(entries, identity);
   }
