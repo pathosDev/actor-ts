@@ -322,6 +322,11 @@ Operationen.  Kompensiere mit:
 
 - **Snapshot-Policies**, die die Recovery begrenzen.
 - **CachedSnapshotStore**-Decorator für Read-Through-Caching.
+  Sind die Snapshots verschlüsselt, hält dieser Cache ihren
+  *Klartext* — siehe
+  [Sicherheit — der Cache hält Klartext](/de/persistence/snapshot-stores/cached-snapshot-store/#sicherheit--der-cache-hält-klartext);
+  deshalb verweigert der Decorator das Cachen eines
+  verschlüsselten Loads, bis du es bestätigst.
 - **Batching**, wo immer das Framework es erlaubt.
 
 import { Aside } from '@astrojs/starlight/components';

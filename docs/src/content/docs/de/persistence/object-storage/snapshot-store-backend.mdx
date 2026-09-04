@@ -258,6 +258,15 @@ const cached = new CachedSnapshotStore(
 
 Reduziert redundante S3-GETs auf Sub-Mikrosekunden-Cache-Hits.
 
+Sind die Snapshots **verschlüsselt**, lies
+[Sicherheit — der Cache hält Klartext](/de/persistence/snapshot-stores/cached-snapshot-store/#sicherheit--der-cache-hält-klartext),
+bevor du das verdrahtest.  Der Cache hält den dekodierten State —
+die Komposition legt also eine Klartext-Kopie jeder kürzlich aktiven
+Entity in den Cache, während der Bucket verschlüsselt bleibt.  Der
+Decorator verweigert das Cachen eines verschlüsselten Loads, bis
+`withAllowPlaintextCache(true)` sagt, dass der Cache so geschützt
+ist wie der Bucket.
+
 ## Per-Actor-Overrides
 
 ```ts

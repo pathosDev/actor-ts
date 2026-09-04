@@ -229,3 +229,91 @@ describe('CachedSnapshotStore — capability delegation', () => {
     expect(new CachedSnapshotStore(spy, cachedOptions()).persistenceOptionSupport).toBeUndefined();
   });
 });
+
+/**
+ * The cache holds the *decoded* snapshot, so composing this decorator with
+ * client-side snapshot encryption puts a second, plaintext copy of the state
+ * in a datastore the caller owns and usually shares (#782).  The per-call
+ * `encryption` directive is the half of that the decorator can actually see —
+ * it arrives on every read and write — and it used to be forwarded blind.
+ */
+describe('CachedSnapshotStore — plaintext cache guard', () => {
+  const encryptedOptions: PersistenceOptions = { encryption: { mode: 'sse-s3' } };
+  const explicitlyUnprotectedOptions: PersistenceOptions = { encryption: { mode: 'none' } };
+
+  /**
+   * Swap `console.warn` for the duration of one call and hand back what it
+   * saw.  The advisory has no `ActorSystem` to log through, for the reason
+   * `ObjectStoragePlugin` states, so the console *is* the observable.
+   */
+  const captureWarnings = async (body: () => Promise<void>): Promise<string[]> => {
+    const captured: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]): void => { captured.push(String(args[0])); };
+    try { await body(); } finally { console.warn = original; }
+    return captured;
+  };
+
+  test('an encrypted loadLatest is served from the wrapped store, never cached, and warns once', async () => {
+    const counting = new CountingStore(new HonouringStore());
+    const cache = new InMemoryCache();
+    const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create().withCache(cache);
+    const store = new CachedSnapshotStore(counting, cachedSnapshotStoreOptions);
+    await store.save('pid-secret', 1, { balance: 42 }, encryptedOptions);
+
+    const warnings = await captureWarnings(async () => {
+      await store.loadLatest('pid-secret', encryptedOptions);
+      await store.loadLatest('pid-secret', encryptedOptions);
+    });
+
+    // Two loads, two trips to the wrapped store — nothing was cached for the
+    // second one to hit, which is the point.
+    expect(counting.loadLatestCalls).toBe(2);
+    expect((await cache.get('snap:pid-secret')).isNone()).toBe(true);
+    // Once per store, not once per cold start.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('caches decoded snapshot state');
+    expect(warnings[0]).toContain('withAllowPlaintextCache');
+  });
+
+  test('withAllowPlaintextCache(true) is the acknowledgement — caching resumes, silently', async () => {
+    const counting = new CountingStore(new HonouringStore());
+    const cache = new InMemoryCache();
+    const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create()
+      .withCache(cache)
+      .withAllowPlaintextCache(true);
+    const store = new CachedSnapshotStore(counting, cachedSnapshotStoreOptions);
+    await store.save('pid-secret', 1, { balance: 42 }, encryptedOptions);
+
+    const warnings = await captureWarnings(async () => {
+      await store.loadLatest('pid-secret', encryptedOptions);
+      await store.loadLatest('pid-secret', encryptedOptions);
+    });
+
+    expect(counting.loadLatestCalls).toBe(1);  // second call served from cache
+    expect((await cache.get('snap:pid-secret')).isSome()).toBe(true);
+    expect(warnings).toEqual([]);
+  });
+
+  test('an explicit mode: none is an opt-out, not a refusal', async () => {
+    // `{ mode: 'none' }` is how an actor says "deliberately unprotected" —
+    // the same reading `unhonouredPersistenceOptions` gives it.  Turning that
+    // into a cache bypass would punish the one caller who said what they meant.
+    const counting = new CountingStore(new HonouringStore());
+    const cache = new InMemoryCache();
+    const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create().withCache(cache);
+    const store = new CachedSnapshotStore(counting, cachedSnapshotStoreOptions);
+    await store.save('pid-open', 1, { balance: 7 }, explicitlyUnprotectedOptions);
+
+    const warnings = await captureWarnings(async () => {
+      await store.loadLatest('pid-open', explicitlyUnprotectedOptions);
+      await store.loadLatest('pid-open', explicitlyUnprotectedOptions);
+      // And an absent directive, the overwhelmingly common case, is untouched.
+      await store.loadLatest('pid-open');
+    });
+
+    expect(counting.loadLatestCalls).toBe(1);
+    expect((await cache.get('snap:pid-open')).isSome()).toBe(true);
+    expect(warnings).toEqual([]);
+  });
+});
