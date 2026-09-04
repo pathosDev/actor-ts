@@ -1,4 +1,8 @@
-import { SEQ_PADDING } from '../Constants.js';
+import {
+  DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM,
+  DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE,
+  SEQ_PADDING,
+} from '../Constants.js';
 import { JournalError, type Snapshot } from '../JournalTypes.js';
 import { DEFAULT_MAX_DECOMPRESSED_BYTES, encodeBody, decodeBody } from '../object-storage/BodyCodec.js';
 import {
@@ -23,7 +27,7 @@ import type { StorageLocality } from '../StorageLocality.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { none, some, type Option } from '../../util/Option.js';
-import { ObjectStorageSnapshotStoreOptionsValidator } from './ObjectStorageSnapshotStoreOptions.js';
+import { DEFAULT_SNAPSHOT_KEEP_N, ObjectStorageSnapshotStoreOptionsValidator } from './ObjectStorageSnapshotStoreOptions.js';
 import type { ObjectStorageSnapshotStoreOptions, ObjectStorageSnapshotStoreOptionsType } from './ObjectStorageSnapshotStoreOptions.js';
 
 
@@ -98,7 +102,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     this.backend = resolvedOptions.backend;
     this.ownsBackend = resolvedOptions.ownsBackend ?? true;
     this.prefix = resolvedOptions.prefix ?? '';
-    this.keepN = resolvedOptions.keepN ?? 3;
+    this.keepN = resolvedOptions.keepN ?? DEFAULT_SNAPSHOT_KEEP_N;
     this.compression = resolvedOptions.compression;
     this.encryption = resolvedOptions.encryption;
     this.integrity = resolvedOptions.integrity;
@@ -122,9 +126,9 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     // through to the plugin config; an actor that sets compression but
     // not encryption only overrides compression.
     const compression = options?.compression
-      ?? resolveCompression(this.compression, persistenceId, { algorithm: 'gzip' });
+      ?? resolveCompression(this.compression, persistenceId, { algorithm: DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM });
     const encryption = options?.encryption
-      ?? resolveEncryption(this.encryption, persistenceId, { mode: 'none' });
+      ?? resolveEncryption(this.encryption, persistenceId, { mode: DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE });
     const integrity = options?.integrity
       ?? resolveIntegrity(this.integrity, persistenceId, { mode: 'none' });
 
@@ -234,7 +238,7 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     // Per-call encryption (from the actor) wins over plugin defaults — same
     // precedence order as the write path.
     const encryption = options?.encryption
-      ?? resolveEncryption(this.encryption, persistenceId, { mode: 'none' });
+      ?? resolveEncryption(this.encryption, persistenceId, { mode: DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE });
     const integrity = options?.integrity
       ?? resolveIntegrity(this.integrity, persistenceId, { mode: 'none' });
     const subKeyFor = resolveDecryptSubkey(encryption, persistenceId);

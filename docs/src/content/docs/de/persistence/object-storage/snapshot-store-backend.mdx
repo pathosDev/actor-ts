@@ -80,6 +80,50 @@ type ObjectStorageSnapshotStoreOptionsType = {
 | `requireContextBinding` | Snapshots ablehnen, die nicht an den Key gebunden sind, von dem sie gelesen wurden — schließt das Einspielen auf eine andere persistenceId oder Sequenznummer.  Erst einschalten, wenn der Bucket neu geschrieben ist.  Siehe [Einen Body an seinen Key binden](/de/persistence/object-storage/encryption/#einen-body-an-seinen-key-binden).  Default false. |
 | `maxDecompressedBytes` | Schutz vor Dekompressions-Bomben — Obergrenze für die Größe eines dekodierten Snapshots.  Default 512 MiB. |
 
+## Aus der Konfiguration
+
+Den Store wie oben von Hand zu bauen ist einer von zwei Wegen.  Der andere ist
+`registerObjectStoragePlugins`: Es baut diesen Store *und* den
+Durable-State-Store über ein gemeinsames Backend und kann jedes Feld aus HOCON
+nehmen:
+
+```hocon
+actor-ts.persistence.snapshot-store {
+  plugin = "actor-ts.persistence.snapshot-store.object-storage"
+
+  object-storage {
+    backend = "s3"
+    prefix  = "snapshots/"
+    keep-n  = 5
+
+    s3 {
+      bucket = "my-app-state"
+      region = "eu-central-1"
+    }
+  }
+}
+```
+
+```ts
+import { PersistenceExtensionId, registerObjectStoragePlugins } from 'actor-ts/persistence';
+
+const ext = system.extension(PersistenceExtensionId);
+await registerObjectStoragePlugins(ext);
+// ext.snapshotStore ist jetzt der konfigurierte ObjectStorageSnapshotStore.
+```
+
+`prefix`, `keepN`, `compression`, `encryption` und `maxDecompressedBytes` bilden
+eins zu eins auf die Blätter dieses Blocks ab; explizite
+`ObjectStoragePluginOptions` gewinnen weiterhin Feld für Feld.  Zwei Felder aus
+der Tabelle oben fehlen in HOCON **mit Absicht**: `allowUntaggedBodies` und
+`requireContextBinding` tun ohne eine `integrity`- oder clientseitige
+`encryption`-Konfiguration nichts, und beide können nicht aus einer Config-Datei
+kommen, weil sie einen 32-Byte-Schlüssel brauchen.  Ein Schalter, der aus HOCON
+nie etwas bewirken könnte, ist schlechter als gar keiner — deshalb wird er dort
+nicht veröffentlicht; setze ihn im Code, zusammen mit dem Schlüssel, der ihn
+sinnvoll macht.  Siehe
+[Konfigurationsreferenz](/de/reference/configuration/#actor-tspersistence).
+
 ## Key-Layout
 
 ```

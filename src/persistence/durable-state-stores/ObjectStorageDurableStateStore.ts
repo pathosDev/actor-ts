@@ -1,3 +1,7 @@
+import {
+  DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM,
+  DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE,
+} from '../Constants.js';
 import { JournalError } from '../JournalTypes.js';
 import { DEFAULT_MAX_DECOMPRESSED_BYTES, encodeBody, decodeBody } from '../object-storage/BodyCodec.js';
 import {
@@ -134,7 +138,7 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     if (fetched.isNone()) return none;
     // Per-call encryption (from the actor) wins over the plugin default.
     const encryption = options?.encryption
-      ?? resolveEncryption(this.encryption, persistenceId, { mode: 'none' });
+      ?? resolveEncryption(this.encryption, persistenceId, { mode: DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE });
     const integrity = options?.integrity
       ?? resolveIntegrity(this.integrity, persistenceId, { mode: 'none' });
     const subKeyFor = resolveDecryptSubkey(encryption, persistenceId);
@@ -202,9 +206,9 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
     // Per-call options take precedence over plugin defaults / resolver —
     // matches the SnapshotStore precedence order.
     const compression = options?.compression
-      ?? resolveCompression(this.compression, persistenceId, { algorithm: 'gzip' });
+      ?? resolveCompression(this.compression, persistenceId, { algorithm: DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM });
     const encryption = options?.encryption
-      ?? resolveEncryption(this.encryption, persistenceId, { mode: 'none' });
+      ?? resolveEncryption(this.encryption, persistenceId, { mode: DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE });
     const integrity = options?.integrity
       ?? resolveIntegrity(this.integrity, persistenceId, { mode: 'none' });
 

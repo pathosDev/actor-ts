@@ -537,6 +537,52 @@ actor-ts {
     }
     snapshot-store {
       plugin = "actor-ts.persistence.snapshot-store.in-memory"
+
+      # Object-storage snapshot store -- S3-compatible or local filesystem.
+      # This block also configures the durable-state store that the same
+      # registerObjectStoragePlugins() call returns: the two share ONE
+      # backend, so the settings are declared once here rather than twice.
+      # Explicit ObjectStoragePluginOptions always win over anything below.
+      object-storage {
+        backend = ""                  # "" | filesystem | s3 -- "" leaves the backend to code
+        prefix  = ""                  # prepended to every object key, e.g. "env-prod/"
+        keep-n  = 3                   # snapshots kept per persistenceId; 0 disables pruning
+        # Decompression-bomb guard on read.  Infinity opts out and is code-only
+        # (withMaxDecompressedBytes) -- HOCON has no Infinity literal, and 0 is
+        # not a free sentinel either because the validator rejects it.
+        max-decompressed-bytes = 512M
+
+        compression {
+          algorithm = "gzip"          # none | gzip | zstd
+          # level -- deliberately unset: the default is algorithm-specific
+          #   (gzip 6, zstd 3) and is chosen by the encoder from absence.
+          #   Set an integer to pin it; it is never recorded on the wire.
+        }
+
+        encryption {
+          mode = "none"               # none | sse-s3 | sse-kms
+          kms-key-id = ""             # required when mode = sse-kms; a key ARN, not key material
+          # mode = client-aes256-gcm is REFUSED here: it needs a 32-byte master
+          #   key, which must never live in a config file.  Configure it in code
+          #   with ObjectStoragePluginOptions.withEncryption(...).
+        }
+
+        s3 {
+          bucket = ""
+          region = ""                 # "auto" for Cloudflare R2
+          endpoint = ""               # MinIO / R2 / B2 / Spaces / Wasabi; empty = AWS S3
+          force-path-style = off      # required for MinIO and most non-AWS stores
+          # Credentials never appear here.  Omitting them uses the SDK default
+          #   chain: AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY, EC2 instance
+          #   profile, or IAM Roles for Service Accounts.
+        }
+
+        filesystem {
+          dir = ""                    # root directory; created recursively
+          lock-timeout = 5s           # wait for a per-key write lock before failing
+          stale-lock   = 30s          # lock files older than this are force-removed
+        }
+      }
     }
   }
 

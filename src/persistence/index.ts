@@ -645,7 +645,12 @@ export {
   OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,
   OBJECT_STORAGE_DURABLE_STATE_PLUGIN_ID,
 } from './object-storage/ObjectStoragePlugin.js';
-export { ObjectStoragePluginOptions, ObjectStoragePluginOptionsBuilder } from './object-storage/ObjectStoragePluginOptions.js';
+export {
+  ObjectStoragePluginOptions,
+  ObjectStoragePluginOptionsBuilder,
+  ObjectStoragePluginOptionsValidator,
+  readObjectStoragePluginOptionsFromConfig,
+} from './object-storage/ObjectStoragePluginOptions.js';
 export type { ObjectStoragePluginOptionsType } from './object-storage/ObjectStoragePluginOptions.js';
 export type {
   ObjectStoragePluginHandles,

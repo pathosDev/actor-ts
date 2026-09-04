@@ -1,5 +1,6 @@
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { PersistenceExtension } from '../PersistenceExtension.js';
+import { mergeOptions } from '../../util/OptionsMerge.js';
 import { ObjectStorageDurableStateStore } from '../durable-state-stores/ObjectStorageDurableStateStore.js';
 import { ObjectStorageSnapshotStore } from '../snapshot-stores/ObjectStorageSnapshotStore.js';
 import { probeCompressionAvailability } from './Compression.js';
@@ -15,6 +16,10 @@ import {
   type S3Credentials,
 } from './S3ObjectStorageBackend.js';
 import type { ObjectStorageBackend } from './ObjectStorageBackend.js';
+import {
+  ObjectStoragePluginOptionsValidator,
+  readObjectStoragePluginOptionsFromConfig,
+} from './ObjectStoragePluginOptions.js';
 import type { ObjectStoragePluginOptions, ObjectStoragePluginOptionsType } from './ObjectStoragePluginOptions.js';
 import {
   knownConfigsOf,
@@ -37,7 +42,20 @@ export const OBJECT_STORAGE_DURABLE_STATE_PLUGIN_ID = 'actor-ts.persistence.dura
  * accepted for advanced cases (mock backend in tests, custom subclass).
  */
 export type ObjectStorageBackendSpec =
-  | { readonly kind: 'filesystem'; readonly dir: string }
+  | {
+      readonly kind: 'filesystem';
+      readonly dir: string;
+      /**
+       * Forwarded to {@link FilesystemObjectStorageBackend}.  They live on the
+       * spec rather than only on the backend's own options because the spec is
+       * the *only* way the one-call wiring reaches the backend — before #873
+       * the two fields were unreachable through `registerObjectStoragePlugins`
+       * at all, so `filesystem.lock-timeout` would have been a documented key
+       * with nothing behind it.
+       */
+      readonly lockTimeoutMs?: number;
+      readonly staleLockMs?: number;
+    }
   | {
       readonly kind: 's3';
       readonly bucket: string;
@@ -95,13 +113,38 @@ export interface ObjectStoragePluginHandles {
  *       .withEncryption(encryptionByPrefix({ default: { mode: 'sse-s3' } })));
  *   // ... and to make the snapshot plugin active:
  *   //   actor-ts.persistence.snapshot-store.plugin = "actor-ts.persistence.snapshot-store.object-storage"
+ *
+ * **From configuration (#873).**  `options` is optional, because everything
+ * except a serializer, a pre-built backend and client-side key material can
+ * come from `actor-ts.persistence.snapshot-store.object-storage`:
+ *
+ *   await registerObjectStoragePlugins(ext);   // bucket, region, prefix, … from HOCON
+ *
+ * Precedence is the project-wide one — explicit options > HOCON > built-in
+ * defaults, per field, with an unset field falling through rather than
+ * shadowing.  Validation runs **once, on the merged settings**, so a
+ * cross-field rule (`bucket` required for S3, `kmsKeyId` for `sse-kms`) sees
+ * the values that will actually be used no matter which layer supplied them.
  */
 export async function registerObjectStoragePlugins(
   ext: PersistenceExtension,
-  options: ObjectStoragePluginOptions,
+  options?: ObjectStoragePluginOptions,
 ): Promise<ObjectStoragePluginHandles> {
-  const resolvedOptions = (options as ObjectStoragePluginOptionsType);
-  if (resolvedOptions.backend === undefined) throw new Error('registerObjectStoragePlugins: backend is required (call withBackend()).');
+  const resolvedOptions = mergeOptions<ObjectStoragePluginOptionsType>(
+    {},
+    readObjectStoragePluginOptionsFromConfig(ext.config),
+    (options ?? {}) as Partial<ObjectStoragePluginOptionsType>,
+  );
+  // Validation precedes the required-field throw so a config that names S3
+  // and forgets the bucket is answered by the field it got wrong, rather than
+  // by a `backend is required` message about a backend it did supply.
+  new ObjectStoragePluginOptionsValidator().validate(resolvedOptions);
+  if (resolvedOptions.backend === undefined) {
+    throw new Error(
+      'registerObjectStoragePlugins: backend is required — call withBackend(), or set '
+      + 'actor-ts.persistence.snapshot-store.object-storage.backend to "filesystem" or "s3".',
+    );
+  }
   assertEncryptionInfo(resolvedOptions);
   assertMasterKeyRings(resolvedOptions);
   await validateObjectStoragePeerDeps(resolvedOptions);
@@ -276,7 +319,11 @@ function collectIntegrityConfigs(
 function buildBackend(spec: ObjectStorageBackendSpec): ObjectStorageBackend {
   switch (spec.kind) {
     case 'filesystem':
-      return new FilesystemObjectStorageBackend({ dir: spec.dir });
+      return new FilesystemObjectStorageBackend({
+        dir: spec.dir,
+        ...(spec.lockTimeoutMs !== undefined ? { lockTimeoutMs: spec.lockTimeoutMs } : {}),
+        ...(spec.staleLockMs !== undefined ? { staleLockMs: spec.staleLockMs } : {}),
+      });
     case 's3':
       return new S3ObjectStorageBackend({
         bucket: spec.bucket,

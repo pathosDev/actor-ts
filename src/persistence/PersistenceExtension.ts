@@ -1,5 +1,6 @@
 import type { ActorSystem } from '../ActorSystem.js';
 import { ClusterExtensionId } from '../cluster/ClusterExtension.js';
+import type { Config } from '../config/Config.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { Journal } from './Journal.js';
@@ -119,6 +120,25 @@ export class PersistenceExtension implements Extension {
     this.reportedUnhonouredCompression.add(reportKey);
     this.log.warn(unhonouredCompressionMessage(kind, storeName));
   }
+
+  /**
+   * The system's resolved configuration — reference.conf, `application.conf`
+   * and the explicit overrides, already layered.
+   *
+   * Exists so a `register*Plugins` helper can read its own HOCON block
+   * (#873).  Those helpers take a `PersistenceExtension` and no
+   * `ActorSystem`, and `system` here is private, so before this accessor the
+   * object-storage plugin had no way to reach config at all — which is why
+   * every one of its fields was constructor-only.
+   *
+   * An accessor rather than a second positional parameter on each helper,
+   * deliberately: adding one would have broken every documented call site
+   * (four docs pages and a runnable example) for a value the extension
+   * already holds, and every other `register*Plugins` helper needs the same
+   * seam as its block lands.  Read-only — the extension does not own the
+   * config and must not appear to.
+   */
+  get config(): Config { return this.system.config; }
 
   registerJournal(pluginId: string, factory: (system: ActorSystem) => Journal): void {
     this.journalFactories.set(pluginId, factory);

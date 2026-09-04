@@ -218,6 +218,38 @@ export const MAX_VECTOR_CLOCK_ENTRIES = 4_096;
 export const DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS = 100_000;
 
 /**
+ * Compression an object-storage body is written with when neither the actor
+ * nor the plugin asked for one.
+ *
+ * `as const` is load-bearing: without it the type widens to `string` and the
+ * constant stops being assignable to `CompressionConfig['algorithm']`, which
+ * is the whole reason the two stores can share one declaration.
+ *
+ * Lives here rather than beside one options type because it backs the
+ * `compression` field of *both* `ObjectStorageSnapshotStoreOptions` and
+ * `ObjectStorageDurableStateStoreOptions` — co-locating it would put one
+ * default in two files.  Named at all because `reference.conf` publishes it
+ * (`…object-storage.compression.algorithm`, #873) and a published default
+ * with no constant behind it is a value written down twice with nothing
+ * comparing the copies.
+ */
+export const DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM = 'gzip' as const;
+
+/**
+ * Encryption an object-storage body is written with when neither the actor
+ * nor the plugin asked for one — none, i.e. the bytes go out as the codec
+ * produced them.
+ *
+ * Same placement argument as the compression default above: both stores read
+ * it, and `reference.conf` publishes it as
+ * `…object-storage.encryption.mode`.  The *integrity* fallback beside it in
+ * those stores stays an inline literal on purpose — integrity has no config
+ * surface at all, because it cannot be switched on without a 32-byte key and
+ * key material must never be expressible in a config file (#873).
+ */
+export const DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE = 'none' as const;
+
+/**
  * Ceiling on one S3 object key, in UTF-8 bytes — 1024.
  *
  * A hard AWS API limit, not a tuning choice, and it is stated in *encoded

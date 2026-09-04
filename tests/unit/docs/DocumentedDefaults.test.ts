@@ -64,6 +64,10 @@ import {
   DEFAULT_MAX_PENDING_QUORUM_REQUESTS,
   DEFAULT_MAX_QUORUM_TIMEOUT_MS,
 } from '../../../src/crdt/DistributedDataOptions.js';
+import { DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM, DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE } from '../../../src/persistence/Constants.js';
+import { DEFAULT_SNAPSHOT_KEEP_N } from '../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
+import { DEFAULT_MAX_DECOMPRESSED_BYTES } from '../../../src/persistence/object-storage/BodyCodec.js';
+import { DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_STALE_LOCK_MS } from '../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import {
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES,
@@ -311,6 +315,14 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // that has to read the literal moved.
   { key: 'actor-ts.cache.in-memory.cleanup-interval', kind: 'duration', constant: DEFAULT_CLEANUP_MS },
 
+  /* --- object storage --- */
+  { key: 'actor-ts.persistence.snapshot-store.object-storage.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.object-storage.max-decompressed-bytes', kind: 'bytes', constant: DEFAULT_MAX_DECOMPRESSED_BYTES },
+  { key: 'actor-ts.persistence.snapshot-store.object-storage.compression.algorithm', kind: 'string', constant: DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM },
+  { key: 'actor-ts.persistence.snapshot-store.object-storage.encryption.mode', kind: 'string', constant: DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE },
+  { key: 'actor-ts.persistence.snapshot-store.object-storage.filesystem.lock-timeout', kind: 'duration', constant: DEFAULT_LOCK_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.snapshot-store.object-storage.filesystem.stale-lock', kind: 'duration', constant: DEFAULT_STALE_LOCK_MS },
+
   /* --- logging: pipeline --- */
   { key: 'actor-ts.logger.close-timeout', kind: 'duration', constant: DEFAULT_SINK_CLOSE_TIMEOUT_MS },
   ...deliveryDefaults,
@@ -419,6 +431,18 @@ const PLACEHOLDERS: readonly string[] = [
   'actor-ts.logger.sinks.splunk.host-name',
   'actor-ts.logger.sinks.syslog.app-name',
   'actor-ts.logger.sinks.syslog.host-name',
+  // Object storage (#873).  `backend = ""` is the shape of the selector, not a
+  // default — empty leaves the backend to code.  The rest are the operator's
+  // own coordinates, required at the point of use: a bucket, a region, an
+  // endpoint for a non-AWS store, a directory, and the KMS key ARN that
+  // `encryption.mode = sse-kms` demands.  Deliberately NOT a credential
+  // anywhere — those have no path in the block at all.
+  'actor-ts.persistence.snapshot-store.object-storage.backend',
+  'actor-ts.persistence.snapshot-store.object-storage.encryption.kms-key-id',
+  'actor-ts.persistence.snapshot-store.object-storage.s3.bucket',
+  'actor-ts.persistence.snapshot-store.object-storage.s3.region',
+  'actor-ts.persistence.snapshot-store.object-storage.s3.endpoint',
+  'actor-ts.persistence.snapshot-store.object-storage.filesystem.dir',
 ];
 
 /**
@@ -454,6 +478,10 @@ const FEATURE_SWITCHES: readonly string[] = [
   'actor-ts.coordinated-shutdown.terminate-actor-system',
   'actor-ts.coordinated-shutdown.exit-process',
   'actor-ts.coordinated-shutdown.auto-register-tasks',
+  // off = virtual-host style, which is what AWS S3 itself wants; the switch
+  // exists for MinIO and most non-AWS stores.  The off state is the field
+  // being absent on `S3ObjectStorageOptions`, so there is no constant (#873).
+  'actor-ts.persistence.snapshot-store.object-storage.s3.force-path-style',
 ];
 
 /**
@@ -473,6 +501,10 @@ const LITERAL_AT_THE_READ_SITE: readonly string[] = [
   'actor-ts.persistence.journal.plugin', // the in-memory journal id — PersistenceExtension.ts
   'actor-ts.persistence.snapshot-store.plugin', // the in-memory store id — PersistenceExtension.ts
   'actor-ts.worker-cluster.workers', // 'auto' — WorkerCluster.ts
+  // '' — ObjectStorageSnapshotStore.ts / ObjectStorageDurableStateStore.ts
+  // (`prefix ?? ''`).  Not a placeholder: the empty string IS the shipped
+  // default, it is simply written at the read site rather than named (#873).
+  'actor-ts.persistence.snapshot-store.object-storage.prefix',
 ];
 
 /** The four unasserted groups, flattened — the rest of the partition. */
