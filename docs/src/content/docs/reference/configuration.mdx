@@ -346,10 +346,10 @@ field unset — reads its bounds from `actor-ts.http.client`:
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `http.client.maxResponseBytes` | `8M` | Largest response body buffered before the request is aborted. |
-| `http.client.defaultTimeoutMs` | `30s` | Deadline for a call that names no `timeoutMs` of its own. |
+| `http.client.max-response-bytes` | `8M` | Largest response body buffered before the request is aborted. |
+| `http.client.default-timeout` | `30s` | Deadline for a call that names no `timeoutMs` of its own. |
 | `http.client.redirect` | `"follow"` | What to do with a 3xx carrying a `Location` — `follow` / `error` / `manual`. |
-| `http.client.maxRedirects` | `5` | Hops a followed chain may take before the call is refused.  `0` refuses the first. |
+| `http.client.max-redirects` | `5` | Hops a followed chain may take before the call is refused.  `0` refuses the first. |
 
 These are a floor, not a policy: an integration passes its own bounds to
 `newClient(...)`, and a single call overrides them with `maxResponseBytes` /
@@ -358,9 +358,16 @@ to move the fleet-wide numbers without a code change — an endpoint that turns
 out to need 60 s, or a deployment on a link where 8 MiB is the wrong ceiling,
 used to force every caller off the shared client.
 
+Every leaf is the kebab-case of its `HttpClientOptions` field with any unit
+suffix dropped — the value carries the unit, so `default-timeout = 30s`.  The
+camelCase spellings this block used before are **rejected at startup** with a
+`ConfigError` naming both, rather than ignored: `max-response-bytes` is a
+ceiling a deployment lowers deliberately, and quietly restoring the built-in
+default would be the one failure mode a rename must not have.
+
 Values are validated on read, on the merged settings, so a bad one throws
 `OptionsError` naming the field rather than failing later inside a request.
-`maxResponseBytes` and `defaultTimeoutMs` must both be positive here — unlike
+`max-response-bytes` and `default-timeout` must both be positive here — unlike
 a *request's* `timeoutMs`, where `0` is the documented way to opt one call out
 of any deadline.  A `0` in this block would disarm every call that named no
 deadline of its own, which is the state the defaults exist to prevent.
@@ -370,12 +377,19 @@ defaults from `actor-ts.http.websocket`:
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `http.websocket.maxFrameBytes` | `1M` | Largest inbound frame accepted (bytes). |
-| `http.websocket.onOversizeFrame` | `"close"` | What to do when a frame exceeds the limit — `close` / `drop`. |
-| `http.websocket.onInvalidMessage` | `"close"` | What to do when a message fails to decode — `close` / `drop` / `hook`. |
-| `http.websocket.maxBufferedBytes` | `4M` | Outbound backpressure threshold (bytes). |
-| `http.websocket.onBackpressure` | `"drop"` | What to do when the buffer is exceeded — `drop` / `close`. |
-| `http.websocket.maxConnections` | *(unlimited)* | Max concurrent connections per route; a new upgrade beyond it is closed with 1013. |
+| `http.websocket.max-frame-bytes` | `1M` | Largest inbound frame accepted (bytes). |
+| `http.websocket.on-oversize-frame` | `"close"` | What to do when a frame exceeds the limit — `close` / `drop`. |
+| `http.websocket.on-invalid-message` | `"close"` | What to do when a message fails to decode — `close` / `drop` / `hook`. |
+| `http.websocket.max-buffered-bytes` | `4M` | Outbound backpressure threshold (bytes). |
+| `http.websocket.on-backpressure` | `"drop"` | What to do when the buffer is exceeded — `drop` / `close`. |
+| `http.websocket.max-connections` | *(unlimited)* | Max concurrent connections per route; a new upgrade beyond it is closed with 1013. |
+| `http.websocket.max-pre-attach-frames` | `256` | Inbound frames held while the connection actor starts. |
+| `http.websocket.max-pre-attach-bytes` | `4M` | Bytes held while the connection actor starts; past either cap the socket is closed with 1013. |
+| `http.websocket.accept-timeout` | `10s` | How long an admitted upgrade waits for its connection actor before the socket is closed and its `max-connections` slot released. |
+
+The same leaf rule and the same startup rejection apply here: kebab-case, unit
+suffix dropped, and a retired camelCase spelling is a `ConfigError` rather than
+a cap that silently reverted to the default.
 
 ### `actor-ts.persistence`
 
@@ -394,9 +408,10 @@ the per-plugin keys.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `cache.in-memory.maxEntries` | `10000` | Max entries before LRU eviction ([in-memory cache](/cache/in-memory/)). |
-| `cache.in-memory.cleanupMs` | `60000` | Interval (ms) of the background sweep for expired entries. |
-| `cache.<name>.in-memory.*` | *(the block above)* | Same two leaves, for the single instance `cache('<name>')` resolves — overrides the global block leaf by leaf. |
+| `cache.in-memory.max-entries` | `10000` | Max entries before LRU eviction ([in-memory cache](/cache/in-memory/)). |
+| `cache.in-memory.cleanup-interval` | `60s` | Interval of the background sweep for expired entries; `0` disables it. |
+| `cache.in-memory.prefix-quotas` | *(unset)* | Per-prefix caps that split one instance between its consumers; must sum to at most `max-entries`. |
+| `cache.<name>.in-memory.*` | *(the block above)* | The same leaves, for the single instance `cache('<name>')` resolves — overrides the global block leaf by leaf, and rejects a retired spelling the same way. |
 | `cache.<name>.plugin` | `"...in-memory"` | Which backend `cache('<name>')` resolves to. |
 
 Redis and Memcached caches read their connection settings from

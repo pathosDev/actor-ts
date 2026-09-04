@@ -135,7 +135,7 @@ describe('HttpExtension.bind — the route policy reaches the backend (#373)', (
     // server-wide used to keep the built-in 1 MiB buffering window anyway,
     // because no backend read configuration and none held an ActorSystem.
     const caps = await capsHandedToBackend(
-      { 'actor-ts': { http: { websocket: { maxFrameBytes: 64 * 1024 } } } },
+      { 'actor-ts': { http: { websocket: { 'max-frame-bytes': 64 * 1024 } } } },
       (server) => websocket('/ws', server),
     );
     expect(caps).toEqual([64 * 1024]);
@@ -143,7 +143,7 @@ describe('HttpExtension.bind — the route policy reaches the backend (#373)', (
 
   test('a route option still outranks HOCON on the way down', async () => {
     const caps = await capsHandedToBackend(
-      { 'actor-ts': { http: { websocket: { maxFrameBytes: 64 * 1024 } } } },
+      { 'actor-ts': { http: { websocket: { 'max-frame-bytes': 64 * 1024 } } } },
       (server) => {
         const routeOptions = WebsocketRouteOptions.create().withMaxFrameBytes(256 * 1024);
         return websocket('/ws', server, routeOptions);
@@ -179,7 +179,7 @@ describe('HttpExtension.bind — the pre-attach buffer bound reaches the backend
 
   test('route options outrank HOCON, and HOCON outranks the default', async () => {
     const config = {
-      'actor-ts': { http: { websocket: { maxPreAttachFrames: 8, maxPreAttachBytes: '64K' } } },
+      'actor-ts': { http: { websocket: { 'max-pre-attach-frames': 8, 'max-pre-attach-bytes': '64K' } } },
     };
     const fromHocon = await registrationsHandedToBackend(config, (server) => websocket('/ws', server));
     expect(fromHocon[0]!.preAttachBuffer).toEqual({ maxFrames: 8, maxBytes: 64 * 1024 });

@@ -267,22 +267,25 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.worker-cluster.restart-policy', kind: 'string', constant: DEFAULT_WORKER_RESTART_POLICY },
 
   /* --- http --- */
-  { key: 'actor-ts.http.websocket.maxFrameBytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES },
-  { key: 'actor-ts.http.websocket.maxBufferedBytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_POLICY.maxBufferedBytes },
-  { key: 'actor-ts.http.websocket.onOversizeFrame', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onOversizeFrame },
-  { key: 'actor-ts.http.websocket.onInvalidMessage', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onInvalidMessage },
-  { key: 'actor-ts.http.websocket.onBackpressure', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onBackpressure },
-  { key: 'actor-ts.http.websocket.maxPreAttachFrames', kind: 'int', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES },
-  { key: 'actor-ts.http.websocket.maxPreAttachBytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES },
-  { key: 'actor-ts.http.websocket.acceptTimeoutMs', kind: 'duration', constant: DEFAULT_WEBSOCKET_POLICY.acceptTimeoutMs },
-  { key: 'actor-ts.http.client.defaultTimeoutMs', kind: 'duration', constant: DEFAULT_HTTP_CLIENT_TIMEOUT_MS },
-  { key: 'actor-ts.http.client.maxRedirects', kind: 'int', constant: DEFAULT_HTTP_CLIENT_MAX_REDIRECTS },
-  { key: 'actor-ts.http.client.maxResponseBytes', kind: 'bytes', constant: DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES },
+  { key: 'actor-ts.http.websocket.max-frame-bytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES },
+  { key: 'actor-ts.http.websocket.max-buffered-bytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_POLICY.maxBufferedBytes },
+  { key: 'actor-ts.http.websocket.on-oversize-frame', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onOversizeFrame },
+  { key: 'actor-ts.http.websocket.on-invalid-message', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onInvalidMessage },
+  { key: 'actor-ts.http.websocket.on-backpressure', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onBackpressure },
+  { key: 'actor-ts.http.websocket.max-pre-attach-frames', kind: 'int', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES },
+  { key: 'actor-ts.http.websocket.max-pre-attach-bytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES },
+  { key: 'actor-ts.http.websocket.accept-timeout', kind: 'duration', constant: DEFAULT_WEBSOCKET_POLICY.acceptTimeoutMs },
+  { key: 'actor-ts.http.client.default-timeout', kind: 'duration', constant: DEFAULT_HTTP_CLIENT_TIMEOUT_MS },
+  { key: 'actor-ts.http.client.max-redirects', kind: 'int', constant: DEFAULT_HTTP_CLIENT_MAX_REDIRECTS },
+  { key: 'actor-ts.http.client.max-response-bytes', kind: 'bytes', constant: DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES },
   { key: 'actor-ts.http.client.redirect', kind: 'string', constant: DEFAULT_HTTP_CLIENT_REDIRECT_MODE },
 
   /* --- cache --- */
-  { key: 'actor-ts.cache.in-memory.maxEntries', kind: 'int', constant: DEFAULT_MAX_ENTRIES },
-  { key: 'actor-ts.cache.in-memory.cleanupMs', kind: 'int', constant: DEFAULT_CLEANUP_MS },
+  { key: 'actor-ts.cache.in-memory.max-entries', kind: 'int', constant: DEFAULT_MAX_ENTRIES },
+  // `duration`, not `int`: #1405 republished this as `60s`, which `getInt`
+  // rejects outright.  `DEFAULT_CLEANUP_MS` is unchanged — only the accessor
+  // that has to read the literal moved.
+  { key: 'actor-ts.cache.in-memory.cleanup-interval', kind: 'duration', constant: DEFAULT_CLEANUP_MS },
 
   /* --- logging: pipeline --- */
   { key: 'actor-ts.logger.close-timeout', kind: 'duration', constant: DEFAULT_SINK_CLOSE_TIMEOUT_MS },

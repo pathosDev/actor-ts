@@ -359,10 +359,10 @@ Feld offen lässt — liest seine Schranken aus `actor-ts.http.client`:
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `http.client.maxResponseBytes` | `8M` | Größter Response-Body, der gepuffert wird, bevor der Request abgebrochen wird. |
-| `http.client.defaultTimeoutMs` | `30s` | Deadline für einen Aufruf, der kein eigenes `timeoutMs` nennt. |
+| `http.client.max-response-bytes` | `8M` | Größter Response-Body, der gepuffert wird, bevor der Request abgebrochen wird. |
+| `http.client.default-timeout` | `30s` | Deadline für einen Aufruf, der kein eigenes `timeoutMs` nennt. |
 | `http.client.redirect` | `"follow"` | Was mit einem 3xx samt `Location` passiert — `follow` / `error` / `manual`. |
-| `http.client.maxRedirects` | `5` | Hops, die eine verfolgte Kette gehen darf, bevor der Aufruf abgelehnt wird.  `0` lehnt den ersten ab. |
+| `http.client.max-redirects` | `5` | Hops, die eine verfolgte Kette gehen darf, bevor der Aufruf abgelehnt wird.  `0` lehnt den ersten ab. |
 
 Das ist ein Boden und keine Policy: Eine Integration übergibt ihre eigenen
 Schranken an `newClient(...)`, und ein einzelner Aufruf überschreibt sie mit
@@ -372,9 +372,17 @@ bewegen — ein Endpunkt, der doch 60 s braucht, oder ein Deployment auf einer
 Strecke, auf der 8 MiB die falsche Obergrenze sind, zwang bisher jeden Aufrufer
 weg vom gemeinsamen Client.
 
+Jedes Blatt ist das Feld aus `HttpClientOptions` in kebab-case, ohne
+Einheiten-Suffix — die Einheit steht im Wert, also `default-timeout = 30s`.
+Die camelCase-Schreibweisen, die dieser Block früher hatte, werden beim Start
+**abgelehnt**, mit einem `ConfigError`, der beide Namen nennt, statt ignoriert
+zu werden: `max-response-bytes` ist eine Obergrenze, die ein Deployment
+bewusst senkt, und sie still auf den eingebauten Default zurückzusetzen wäre
+genau der eine Fehlermodus, den eine Umbenennung nicht haben darf.
+
 Die Werte werden beim Lesen auf den gemergten Settings validiert; ein falscher
 Wert wirft also `OptionsError` mit dem Feldnamen, statt später mitten im
-Request zu scheitern.  `maxResponseBytes` und `defaultTimeoutMs` müssen hier
+Request zu scheitern.  `max-response-bytes` und `default-timeout` müssen hier
 beide positiv sein — anders als das `timeoutMs` eines *Requests*, wo `0` der
 dokumentierte Weg ist, einen einzelnen Aufruf von jeder Deadline auszunehmen.
 Eine `0` in diesem Block würde jeden Aufruf ohne eigene Deadline entschärfen —
@@ -385,12 +393,19 @@ ihre Defaults aus `actor-ts.http.websocket`:
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `http.websocket.maxFrameBytes` | `1M` | Größter akzeptierter eingehender Frame (Bytes). |
-| `http.websocket.onOversizeFrame` | `"close"` | Was passiert, wenn ein Frame das Limit überschreitet — `close` / `drop`. |
-| `http.websocket.onInvalidMessage` | `"close"` | Was passiert, wenn eine Nachricht nicht dekodiert werden kann — `close` / `drop` / `hook`. |
-| `http.websocket.maxBufferedBytes` | `4M` | Outbound-Backpressure-Schwelle (Bytes). |
-| `http.websocket.onBackpressure` | `"drop"` | Was passiert, wenn der Buffer überschritten wird — `drop` / `close`. |
-| `http.websocket.maxConnections` | *(unbegrenzt)* | Max. gleichzeitige Verbindungen pro Route; ein Upgrade darüber hinaus wird mit 1013 geschlossen. |
+| `http.websocket.max-frame-bytes` | `1M` | Größter akzeptierter eingehender Frame (Bytes). |
+| `http.websocket.on-oversize-frame` | `"close"` | Was passiert, wenn ein Frame das Limit überschreitet — `close` / `drop`. |
+| `http.websocket.on-invalid-message` | `"close"` | Was passiert, wenn eine Nachricht nicht dekodiert werden kann — `close` / `drop` / `hook`. |
+| `http.websocket.max-buffered-bytes` | `4M` | Outbound-Backpressure-Schwelle (Bytes). |
+| `http.websocket.on-backpressure` | `"drop"` | Was passiert, wenn der Buffer überschritten wird — `drop` / `close`. |
+| `http.websocket.max-connections` | *(unbegrenzt)* | Max. gleichzeitige Verbindungen pro Route; ein Upgrade darüber hinaus wird mit 1013 geschlossen. |
+| `http.websocket.max-pre-attach-frames` | `256` | Eingehende Frames, die gehalten werden, während der Connection-Actor startet. |
+| `http.websocket.max-pre-attach-bytes` | `4M` | Bytes, die gehalten werden, während der Connection-Actor startet; jenseits einer der beiden Grenzen wird der Socket mit 1013 geschlossen. |
+| `http.websocket.accept-timeout` | `10s` | Wie lange ein zugelassenes Upgrade auf seinen Connection-Actor wartet, bevor der Socket geschlossen und sein `max-connections`-Platz freigegeben wird. |
+
+Hier gelten dieselbe Blattregel und dieselbe Ablehnung beim Start: kebab-case,
+Einheiten-Suffix weggelassen, und eine ausgemusterte camelCase-Schreibweise ist
+ein `ConfigError` statt einer Obergrenze, die still auf den Default zurückfiel.
 
 ### `actor-ts.persistence`
 
@@ -409,9 +424,10 @@ des SQLite-Journals.  Siehe jede Journal-Seite in
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `cache.in-memory.maxEntries` | `10000` | Max. Einträge vor LRU-Eviction ([In-Memory-Cache](/de/cache/in-memory/)). |
-| `cache.in-memory.cleanupMs` | `60000` | Intervall (ms) des Hintergrund-Sweeps für abgelaufene Einträge. |
-| `cache.<name>.in-memory.*` | *(der Block oben)* | Dieselben zwei Blätter, für die einzelne Instanz, die `cache('<name>')` auflöst — überschreibt den globalen Block Blatt für Blatt. |
+| `cache.in-memory.max-entries` | `10000` | Max. Einträge vor LRU-Eviction ([In-Memory-Cache](/de/cache/in-memory/)). |
+| `cache.in-memory.cleanup-interval` | `60s` | Intervall des Hintergrund-Sweeps für abgelaufene Einträge; `0` schaltet ihn ab. |
+| `cache.in-memory.prefix-quotas` | *(nicht gesetzt)* | Kontingente pro Präfix, die eine Instanz unter ihren Consumern aufteilen; ihre Summe darf `max-entries` nicht überschreiten. |
+| `cache.<name>.in-memory.*` | *(der Block oben)* | Dieselben Blätter, für die einzelne Instanz, die `cache('<name>')` auflöst — überschreibt den globalen Block Blatt für Blatt und lehnt eine ausgemusterte Schreibweise genauso ab. |
 | `cache.<name>.plugin` | `"...in-memory"` | Welches Backend `cache('<name>')` auflöst. |
 
 Redis- und Memcached-Caches lesen ihre Verbindungs-Settings aus

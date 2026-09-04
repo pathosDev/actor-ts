@@ -155,6 +155,27 @@ export const ConfigKeys = {
     inMemory: 'actor-ts.cache.in-memory',
     redis: 'actor-ts.cache.redis',
     memcached: 'actor-ts.cache.memcached',
+    /**
+     * The global in-memory block's *settings*, as against `inMemory` above,
+     * which is its plugin **id** — the factory-map key, re-exported as
+     * `IN_MEMORY_CACHE_PLUGIN_ID` and pinned by its literal value in the cache
+     * suite.  The two carry the same string and stay two entries because one
+     * is an identifier and the other is a config path: growing `inMemory` into
+     * an object to hold these would break every use of the id.
+     *
+     * Declared leaf by leaf for the reason `diagnostics` gives — a root alone
+     * satisfies `NoDeadConfigKeys` for everything beneath it.  The identical
+     * leaves under `actor-ts.cache.<name>.in-memory` cannot be listed (the
+     * name is the application's); `CacheExtension` composes those from the
+     * same three suffixes.
+     */
+    inMemoryOptions: {
+      root: 'actor-ts.cache.in-memory',
+      maxEntries: 'actor-ts.cache.in-memory.max-entries',
+      cleanupInterval: 'actor-ts.cache.in-memory.cleanup-interval',
+      /** Comment-only in `reference.conf` — unset means one undivided map. */
+      prefixQuotas: 'actor-ts.cache.in-memory.prefix-quotas',
+    },
   },
 
   /** IO broker config roots — `actor-ts.io.broker.*`. */
@@ -204,10 +225,38 @@ export const ConfigKeys = {
     backend: 'actor-ts.http.backend',
     /** How long `unbind()` lets in-flight requests drain before forcing. */
     shutdownGracePeriod: 'actor-ts.http.shutdown-grace-period',
-    /** Server-side WebSocket defaults for `websocket()` routes. */
-    websocket: 'actor-ts.http.websocket',
+    /**
+     * Server-side WebSocket defaults for `websocket()` routes.
+     *
+     * Full dotted leaves under a `root`, not a bare block root, for the reason
+     * `diagnostics` above spells out: `NoDeadConfigKeys`' `coveringAccessor`
+     * falls back to the nearest root, so a root alone would pass the guard for
+     * every leaf beneath it whether or not the reader had been updated.  That
+     * is not hypothetical here — #1405 renamed all nine of these leaves, and
+     * with only the root declared the rename could have shipped in
+     * `reference.conf` with every leaf inert and the suite green.
+     */
+    websocket: {
+      root: 'actor-ts.http.websocket',
+      maxFrameBytes: 'actor-ts.http.websocket.max-frame-bytes',
+      onOversizeFrame: 'actor-ts.http.websocket.on-oversize-frame',
+      onInvalidMessage: 'actor-ts.http.websocket.on-invalid-message',
+      maxBufferedBytes: 'actor-ts.http.websocket.max-buffered-bytes',
+      onBackpressure: 'actor-ts.http.websocket.on-backpressure',
+      /** Comment-only in `reference.conf` — unset means unlimited. */
+      maxConnections: 'actor-ts.http.websocket.max-connections',
+      maxPreAttachFrames: 'actor-ts.http.websocket.max-pre-attach-frames',
+      maxPreAttachBytes: 'actor-ts.http.websocket.max-pre-attach-bytes',
+      acceptTimeout: 'actor-ts.http.websocket.accept-timeout',
+    },
     /** Outbound `HttpClient` defaults — the shared client and `newClient(...)`. */
-    client: 'actor-ts.http.client',
+    client: {
+      root: 'actor-ts.http.client',
+      maxResponseBytes: 'actor-ts.http.client.max-response-bytes',
+      defaultTimeout: 'actor-ts.http.client.default-timeout',
+      redirect: 'actor-ts.http.client.redirect',
+      maxRedirects: 'actor-ts.http.client.max-redirects',
+    },
   },
 
   /** Persistence plugin selection + config — `actor-ts.persistence.*`. */

@@ -132,7 +132,7 @@ async function bind(request: BindRequest): Promise<number> {
     .withLogLevel(LogLevel.Off);
   if (request.configuredMaxFrameBytes !== undefined) {
     systemOptions.withConfig({
-      'actor-ts': { http: { websocket: { maxFrameBytes: request.configuredMaxFrameBytes } } },
+      'actor-ts': { http: { websocket: { 'max-frame-bytes': request.configuredMaxFrameBytes } } },
     });
   }
   const system = ActorSystem.create(request.name, systemOptions);

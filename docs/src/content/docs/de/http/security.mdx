@@ -196,7 +196,7 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   gepuffert hat — sonst könnte ein Peer pro Frame 16 MiB (Bun) oder 100 MiB
   (`ws`) Pufferung erzwingen, die das Framework anschließend verwirft. Das
   Limit zu senken — pro Route oder über
-  `actor-ts.http.websocket.maxFrameBytes` — verkleinert dieses Puffer-Fenster
+  `actor-ts.http.websocket.max-frame-bytes` — verkleinert dieses Puffer-Fenster
   mit. **Drei Stellen haben kein Transport-Limit** und puffern den Frame,
   bevor sie ihn abweisen: Hono auf **Deno**, dessen `upgradeWebSocket`
   überhaupt kein Payload-Limit anbietet; **Bun** mit dem Express- oder

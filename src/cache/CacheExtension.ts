@@ -1,10 +1,47 @@
 import type { ActorSystem } from '../ActorSystem.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
+import { rejectRetiredLeaves, type RetiredLeaves } from '../config/RetiredKeys.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { InMemoryCache } from './InMemoryCache.js';
 import type { InMemoryCacheOptionsType } from './InMemoryCacheOptions.js';
 import type { Cache } from './Cache.js';
+
+/**
+ * The full config paths of one in-memory cache block's leaves.  The global
+ * block's copy is `ConfigKeys.cache.inMemoryOptions`; a per-name block's is
+ * built by {@link inMemoryCacheKeysUnder}, since its root contains a name only
+ * the application knows.
+ */
+type InMemoryCacheKeys = {
+  readonly root: string;
+  readonly maxEntries: string;
+  readonly cleanupInterval: string;
+  readonly prefixQuotas: string;
+};
+
+/** The leaf paths of the in-memory block at `root` — see {@link InMemoryCacheKeys}. */
+function inMemoryCacheKeysUnder(root: string): InMemoryCacheKeys {
+  return {
+    root,
+    maxEntries: `${root}.max-entries`,
+    cleanupInterval: `${root}.cleanup-interval`,
+    prefixQuotas: `${root}.prefix-quotas`,
+  };
+}
+
+/**
+ * The camelCase spellings this block shipped before #1405, mapped to the leaf
+ * that replaced each one.  Checked against every in-memory root — the global
+ * one and each `actor-ts.cache.<name>.in-memory` — so a per-name override
+ * written the old way is refused too, rather than silently sizing that
+ * instance at the global default.  See {@link rejectRetiredLeaves}.
+ */
+const RETIRED_IN_MEMORY_CACHE_LEAVES: RetiredLeaves = {
+  maxEntries: 'max-entries',
+  cleanupMs: 'cleanup-interval',
+  prefixQuotas: 'prefix-quotas',
+};
 
 /**
  * System-wide registry for named caches.  Apps that need more than one
@@ -45,11 +82,15 @@ export class CacheExtension implements Extension {
    * duplicating them would give the same number two homes).
    *
    * The per-name path is nested rather than a flat
-   * `actor-ts.cache.<name>.maxEntries` so the plugin *selector*
+   * `actor-ts.cache.<name>.max-entries` so the plugin *selector*
    * (`<name>.plugin`) and the selected plugin's *settings* stay in separate
    * blocks — the shape a Redis or Memcached instance needs too.  It carries no
    * `reference.conf` leaf for the same reason `<name>.plugin` carries none:
-   * the name is the application's, so the path cannot be enumerated.
+   * the name is the application's, so the path cannot be enumerated.  Which is
+   * why the global block reads its paths straight out of `ConfigKeys` while
+   * the per-name one composes the same three suffixes: only the first can be
+   * declared, and declaring it is what puts the leaves in front of
+   * `NoDeadConfigKeys` instead of the block root alone.
    *
    * Present values are validated in the constructor (`OptionsError` on a bad
    * one), so a typo'd override fails at the first `cache(name)` rather than
@@ -58,35 +99,40 @@ export class CacheExtension implements Extension {
   private inMemoryCacheOptions(name: string): InMemoryCacheOptionsType {
     return mergeOptions<InMemoryCacheOptionsType>(
       {},
-      this.inMemoryCacheLeaves(ConfigKeys.cache.inMemory),
-      this.inMemoryCacheLeaves(`${ConfigKeys.cache.root}.${name}.in-memory`),
+      this.inMemoryCacheLeaves(ConfigKeys.cache.inMemoryOptions),
+      this.inMemoryCacheLeaves(inMemoryCacheKeysUnder(`${ConfigKeys.cache.root}.${name}.in-memory`)),
     );
   }
 
   /**
-   * The `InMemoryCacheOptionsType` leaves under `root`, omitting absent ones.
+   * The `InMemoryCacheOptionsType` leaves under one block, omitting absent
+   * ones.  Leaf names are the kebab-case of the fields with any unit suffix
+   * dropped, so `cleanupMs` is read from `cleanup-interval`; `getDuration`
+   * takes `60s` and a bare millisecond count alike, so an operator who
+   * prefers raw numbers loses nothing.
    *
-   * `prefixQuotas` is read as a whole object and layered whole — a per-name
+   * `prefix-quotas` is read as a whole object and layered whole — a per-name
    * table **replaces** the global one rather than merging into it, which is
    * the same shallow rule {@link mergeOptions} applies to every other field.
    * Merging would be worse than inconsistent here: the quotas have to sum to
-   * at most `maxEntries`, and a table half-inherited from a global block is a
+   * at most `max-entries`, and a table half-inherited from a global block is a
    * sum nobody wrote down.  Its keys are read from the object rather than
    * addressed as config paths, because a prefix may contain a `.` and a path
    * would split it.
    */
-  private inMemoryCacheLeaves(root: string): Partial<InMemoryCacheOptionsType> {
+  private inMemoryCacheLeaves(keys: InMemoryCacheKeys): Partial<InMemoryCacheOptionsType> {
     const config = this.system.config;
+    rejectRetiredLeaves(config, keys.root, RETIRED_IN_MEMORY_CACHE_LEAVES);
     const leaves: {
       maxEntries?: number;
       cleanupMs?: number;
       prefixQuotas?: Record<string, number>;
     } = {};
-    if (config.hasPath(`${root}.maxEntries`)) leaves.maxEntries = config.getInt(`${root}.maxEntries`);
-    if (config.hasPath(`${root}.cleanupMs`)) leaves.cleanupMs = config.getDuration(`${root}.cleanupMs`);
-    if (config.hasPath(`${root}.prefixQuotas`)) {
+    if (config.hasPath(keys.maxEntries)) leaves.maxEntries = config.getInt(keys.maxEntries);
+    if (config.hasPath(keys.cleanupInterval)) leaves.cleanupMs = config.getDuration(keys.cleanupInterval);
+    if (config.hasPath(keys.prefixQuotas)) {
       const quotas: Record<string, number> = {};
-      for (const [prefix, quota] of Object.entries(config.getObject(`${root}.prefixQuotas`))) {
+      for (const [prefix, quota] of Object.entries(config.getObject(keys.prefixQuotas))) {
         // A quoted HOCON number arrives as a string; anything else is passed
         // through unconverted so the validator names the value it rejected.
         quotas[prefix] = typeof quota === 'string' ? Number(quota) : (quota as number);
