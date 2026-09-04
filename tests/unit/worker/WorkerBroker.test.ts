@@ -10,6 +10,7 @@ import { describe, expect, test } from 'bun:test';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import type { BrokeredMessage } from '../../../src/cluster/transports/MessageChannelTransport.js';
 import { WorkerBroker } from '../../../src/worker/WorkerBroker.js';
+import { hostileEnvelopes } from '../../util/HostileFrames.js';
 import { FakePort } from './__fixtures__/InMemoryWorkerThread.js';
 
 const addr = (port: number): NodeAddress => new NodeAddress('sys', 'host', port);
@@ -160,34 +161,17 @@ describe('WorkerBroker — routing', () => {
 
 describe('WorkerBroker — malformed frames', () => {
   /**
-   * Every case below used to throw out of `onMessage`, i.e. out of the host's
-   * worker `message` listener, where nothing catches it: Node re-raises it as an
-   * `uncaughtException` and Bun exits 1.  One frame from one worker took the
-   * whole process down.
+   * Every case in {@link hostileEnvelopes} used to throw out of `onMessage`,
+   * i.e. out of the host's worker `message` listener, where nothing catches it:
+   * Node re-raises it as an `uncaughtException` and Bun exits 1.  One frame
+   * from one worker took the whole process down.
    *
-   * Two of them throw a `TypeError` from the `env.to` dereference itself; the
-   * rest throw a plain `Error` from the hardened `fromJSON` (#571), so a test
-   * written against `TypeError` alone would miss half of them.
+   * The table lives in `tests/util/HostileFrames.ts` because three suites need
+   * exactly it — this one, the testkit broker fork's, and the transport
+   * contract test #945 added — and the two that had it inline said so in a
+   * comment while the third had no malformed case at all.
    */
-  const hostileFrames: ReadonlyArray<readonly [string, unknown]> = [
-    ['undefined', undefined],
-    ['null', null],
-    ['a bare string', 'not-an-envelope'],
-    ['no `to` at all', { from: addr(1).toJSON(), payload: { kind: 'ping' } }],
-    ['`to` null', { from: addr(1).toJSON(), to: null, payload: { kind: 'ping' } }],
-    // The regression #571 introduced: before `fromJSON` validated, this
-    // constructed an address and was routed or dropped as unknown — never fatal.
-    ['`to.port` a string', {
-      from: addr(1).toJSON(),
-      to: { systemName: 'sys', host: 'host', port: '2' },
-      payload: { kind: 'ping' },
-    }],
-    // `from` is what the receiving MessageChannelTransport dereferences the
-    // instant the frame is re-posted, so it is checked here too.
-    ['`from` missing', { to: addr(2).toJSON(), payload: { kind: 'ping' } }],
-  ];
-
-  for (const [label, frame] of hostileFrames) {
+  for (const [label, frame] of hostileEnvelopes) {
     test(`drops a frame with ${label} instead of throwing`, () => {
       const broker = new WorkerBroker();
       const aPort = new FakePort();
