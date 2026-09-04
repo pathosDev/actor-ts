@@ -4,7 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
 import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
-import { ObjectStorageConcurrencyError } from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
+import {
+  ObjectStorageBackendError,
+  ObjectStorageConcurrencyError,
+} from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
 
 /**
  * The **strength** of the etag, as distinct from its behaviour (#786).
@@ -118,6 +121,36 @@ function legacyFnv1aEtag(body: Uint8Array): string {
   return `"fs-${(hash >>> 0).toString(16).padStart(8, '0')}-${body.length}"`;
 }
 
+/**
+ * Run `body` with `globalThis.crypto.subtle` absent, restoring it afterwards.
+ *
+ * The stand-in forwards the two members that are not `subtle` rather than
+ * spreading the real object: `getRandomValues` and `randomUUID` live on
+ * `Crypto.prototype`, so `{ ...globalThis.crypto }` copies neither — and
+ * `put` draws its temp-file suffix from `randomId` before it reaches the
+ * digest, so a bare spread would fail the write for a missing CSPRNG and
+ * never reach the guard the test is about.
+ */
+async function withoutSubtleCrypto<Result>(body: () => Promise<Result>): Promise<Result> {
+  const realCrypto = globalThis.crypto;
+  const withoutSubtle = {
+    getRandomValues: <View extends ArrayBufferView | null>(array: View): View =>
+      realCrypto.getRandomValues(array),
+    randomUUID: () => realCrypto.randomUUID(),
+    subtle: undefined,
+  } as unknown as Crypto;
+  Object.defineProperty(globalThis, 'crypto', {
+    value: withoutSubtle, configurable: true, writable: true,
+  });
+  try {
+    return await body();
+  } finally {
+    Object.defineProperty(globalThis, 'crypto', {
+      value: realCrypto, configurable: true, writable: true,
+    });
+  }
+}
+
 describe('FilesystemObjectStorageBackend — CAS token strength (#786)', () => {
   test('the etag carries a 128-bit digest, not a 32-bit one', async () => {
     const { etag } = await backend.put('strength/width', bytes('hello'));
@@ -172,6 +205,57 @@ describe('FilesystemObjectStorageBackend — CAS token strength (#786)', () => {
     const fetched = await backend.get('strength/cas');
     expect(fetched.isSome()).toBe(true);
     if (fetched.isSome()) expect(new TextDecoder().decode(fetched.value.body)).toBe('v2');
+  });
+
+  test('a stronger token is worth nothing if it can be silently downgraded', async () => {
+    // The decision the JSDoc on `computeEtag` spends a paragraph on — no cheap
+    // fallback — and the one this file's whole premise rests on.  A degrade
+    // path taken on some runtime would reinstate the four-byte token there
+    // while every assertion above still passed on this one, so it is precisely
+    // the kind of change no other case in this suite can see.
+    //
+    // The guard is exercised the way `PeerDepValidation.test.ts` exercises the
+    // encryption and integrity probes: `crypto.subtle` is wiped for the
+    // duration of the call.  What the etag needs and those probes do not is a
+    // surviving CSPRNG — `put` draws its temp-file suffix from `randomId`
+    // before it ever reaches the digest — which is why the stand-in forwards
+    // `getRandomValues` instead of being a bare spread.
+    const error = await withoutSubtleCrypto(() =>
+      backend.put('strength/no-fallback', bytes('hello')).then(() => null, (e: unknown) => e));
+    expect(error).toBeInstanceOf(ObjectStorageBackendError);
+    expect((error as Error).message).toMatch(/SubtleCrypto is not available/);
+    // Refused, not degraded: nothing weaker came back in its place.
+    expect((error as Error).message).not.toMatch(ETAG_PATTERN);
+  });
+
+  test('the read path refuses on the same terms', async () => {
+    // `get` derives the etag a caller will later hand back as `ifMatch`, so a
+    // fallback here would seed the CAS comparison with the weak token even
+    // where `put` still used the strong one.
+    await backend.put('strength/no-fallback-read', bytes('hello'));
+    const error = await withoutSubtleCrypto(() =>
+      backend.get('strength/no-fallback-read').then(() => null, (e: unknown) => e));
+    expect(error).toBeInstanceOf(ObjectStorageBackendError);
+    expect((error as Error).message).toMatch(/SubtleCrypto is not available/);
+  });
+
+  test('a WebCrypto fault on overwrite blames WebCrypto, not the disk read', async () => {
+    // `put` re-reads the current object inside a `try` that relabels anything
+    // non-ENOENT as `filesystem put-read-current failed for <key>`.  The digest
+    // over those bytes sits *outside* that `try` on purpose: only `readFile` is
+    // the read the branch is reporting on, and a `computeEtag` failure is a
+    // WebCrypto fault that the relabelling would send an operator to check the
+    // disk for.
+    //
+    // Overwriting an existing key is the one path where the two are adjacent —
+    // a first write finds no bytes to digest, so it never reaches the call at
+    // all — and it is what makes this test discriminating rather than a second
+    // copy of the one above.
+    await backend.put('strength/relabel', bytes('v1'));
+    const error = await withoutSubtleCrypto(() =>
+      backend.put('strength/relabel', bytes('v2')).then(() => null, (e: unknown) => e));
+    expect((error as Error).message).toMatch(/SubtleCrypto is not available/);
+    expect((error as Error).message).not.toMatch(/put-read-current/);
   });
 
   test('the old FNV-1a token is rejected as a CAS precondition', async () => {
