@@ -38,6 +38,7 @@ import {
 } from '../../../src/cluster/singleton/ClusterSingletonManagerOptions.js';
 import { WorkerClusterOptionsValidator, type WorkerClusterOptionsType } from '../../../src/worker/WorkerClusterOptions.js';
 import {
+  DEFAULT_WINDOW_SIZE,
   ProducerControllerOptionsValidator,
   type ProducerControllerOptionsType,
 } from '../../../src/delivery/ProducerControllerOptions.js';
@@ -758,11 +759,15 @@ describe('ConsumerControllerOptionsValidator', () => {
     // rejects would otherwise pass here forever.
     expect(Number.isInteger(DEFAULT_MAX_PRODUCERS) && DEFAULT_MAX_PRODUCERS >= 1).toBe(true);
     expect(Number.isInteger(DEFAULT_MAX_OUT_OF_ORDER) && DEFAULT_MAX_OUT_OF_ORDER >= 1).toBe(true);
-    // The out-of-order cap has one more constraint than the map cap: reaching
-    // it stalls a producer, so it has to sit above what a framework producer
-    // can push past an open gap — `windowSize - 1`, with the default window
-    // of 16.
-    expect(DEFAULT_MAX_OUT_OF_ORDER).toBeGreaterThan(16);
+    // The out-of-order cap has one more constraint than the map cap, and it is
+    // a floor rather than the bound this comment used to claim.  Reaching the
+    // cap stalls a producer, and a producer whose window exceeds it stalls on
+    // its very first gap with nothing queued at all — that many sends are
+    // already in flight when the gap opens.  What it is NOT is unreachable
+    // otherwise: the consumer acknowledges every out-of-order delivery it
+    // admits, so a stock producer streams past an open gap by its send count
+    // and not by `windowSize - 1` (measured in `tests/unit/delivery`).
+    expect(DEFAULT_MAX_OUT_OF_ORDER).toBeGreaterThan(DEFAULT_WINDOW_SIZE);
   });
 });
 

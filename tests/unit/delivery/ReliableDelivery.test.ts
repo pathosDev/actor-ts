@@ -10,6 +10,7 @@ import { ActorRestarted, DeadLetter } from '../../../src/SystemMessages.js';
 import {
   ConsumerController,
   DEFAULT_PRODUCER_IDLE_TTL_MS,
+  DEFAULT_WINDOW_SIZE,
   ReliableDelivery,
   ProducerControllerOptions,
   ProducerControllerOptionsBuilder,
@@ -1468,6 +1469,67 @@ describe('ReliableDelivery — out-of-order window bound (#728, #643)', () => {
     });
     expect(slot.controller?.outOfOrderFor('gappy-a')).toBe(cap);
 
+    await kit.system.terminate();
+  });
+
+  test('a stock producer runs past an open gap by its send count, not by `windowSize - 1`', async () => {
+    // `DEFAULT_MAX_OUT_OF_ORDER` used to argue its size from a bound that does
+    // not exist: a producer holds at most `windowSize` sends in flight and
+    // dispatches only once an acknowledgment frees a slot, therefore it can
+    // push at most `windowSize - 1` past an open gap.  The premise ignores
+    // that the consumer ACKNOWLEDGES every out-of-order delivery it admits —
+    // that is the last line of `handleDelivery` — so each one frees the slot
+    // that was supposed to hold the producer back, and the stream keeps going
+    // past a gap that is still open.
+    //
+    // Written first against the documented bound, where it failed with
+    // `Expected: <= 15, Received: 63`.  What it pins now is the real
+    // relationship: the set grows with what the caller hands the producer, and
+    // `maxOutOfOrder` is the only thing that stops it.
+    const kit = quietKit('rd-stock-producer-past-gap');
+    const handled: string[] = [];
+    const slot: ControllerSlot = { controller: null };
+    const producerId = 'stock-window-probe';
+    // Comfortably inside the default cap of 1 024, so this measures the
+    // producer's reach and not the consumer's refusal.
+    const total = 64;
+
+    const consumerRef = spawnBoundedConsumer(kit, slot, {
+      // The documented construction: a handler and nothing else, so all three
+      // bounds are the built-in defaults.  The throw is how the gap opens and
+      // stays open — seq 1 is never acknowledged, so `contiguous` never
+      // advances and every later sequence is retained above it.  A dropped
+      // delivery on a lossy link is the same state arrived at differently.
+      handler: (body) => {
+        if (body === 'm-1') throw new Error('the gap this case needs');
+        handled.push(body);
+      },
+    }, 'past-gap-consumer');
+
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(consumerRef as never)
+      .withProducerId(producerId);
+    // Stock in the sense that matters: `windowSize` and `resendTimeout` are
+    // left to HOCON's reference.conf, which is what any caller gets.
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+
+    for (let i = 1; i <= total; i++) producer.tell(`m-${i}`);
+
+    await awaitCondition(() => handled.length === total - 1, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'every sequence but the withheld one reached the handler',
+    });
+    // Nothing further may arrive — seq 1 is still throwing on every
+    // retransmit — so settling past that point is what makes the count exact.
+    await sleep(200);
+
+    // 63 with a window of 16.  The old claim capped this at 15.
+    expect(slot.controller?.outOfOrderFor(producerId)).toBe(total - 1);
+    expect(slot.controller?.outOfOrderFor(producerId))
+      .toBeGreaterThan(DEFAULT_WINDOW_SIZE - 1);
+
+    producer.stop();
     await kit.system.terminate();
   });
 });

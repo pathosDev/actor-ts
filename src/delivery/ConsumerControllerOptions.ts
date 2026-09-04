@@ -10,15 +10,40 @@ export const DEFAULT_PRODUCER_IDLE_TTL_MS = 300_000;
 /**
  * Built-in default for {@link ConsumerControllerOptionsType.maxOutOfOrder}.
  *
- * Chosen far above anything a framework producer can reach, because reaching
- * it stalls that producer.  A `ProducerController` holds at most `windowSize`
- * sends in flight (default 16) and dispatches from its queue only once an
- * acknowledgment frees a slot, so the most it can push past an open gap is
- * `windowSize - 1` — 15 with the defaults, and 1 024 leaves room for a
- * producer explicitly configured with a window that large.  It is also
- * {@link DEFAULT_MAX_PRODUCERS}, so the two halves of the dedup budget read
- * as one number: at most 1 024 producers × 1 024 retained sequences, against
- * a set that had no bound at all (#728).
+ * **A producer's window does not hold it back here, and the first version of
+ * this note said it did.**  The claim was that a `ProducerController` holds at
+ * most `windowSize` sends in flight (default 16) and dispatches from its queue
+ * only once an acknowledgment frees a slot, so the most it can push past an
+ * open gap is `windowSize - 1` — which would put 1 024 out of a stock
+ * producer's reach entirely.  The premise ignores the last line of
+ * `ConsumerController.handleDelivery`: an out-of-order delivery that is
+ * *admitted* is also acknowledged, which frees the very slot that was supposed
+ * to hold the producer back, so the stream keeps flowing past a gap that is
+ * still open.  Measured on a stock producer — `tests/unit/delivery`, "a stock
+ * producer runs past an open gap by its send count" — 64 sends past one
+ * withheld sequence retained 63, not 15.  The set grows with what the caller
+ * hands the producer, and this cap is the only thing that stops it.
+ *
+ * **1 024 stays, on the reason that survives.**  A gap closes within one
+ * `resendTimeout` (default 500 ms) of whatever opened it clearing, because the
+ * missing sequence is itself in the producer's window and is retransmitted on
+ * that timer.  So a *transient* gap fills 1 024 slots only at roughly two
+ * thousand sends a second and above, and a gap whose cause does not clear
+ * fills them at any rate — in both cases the stall at the cap is the
+ * backpressure this option exists to apply, not an accident, and it lifts the
+ * moment the missing sequence lands.  Lowering the number would only move that
+ * stall earlier for no gain in the bound it already gives; raising it buys a
+ * longer run past a gap at a proportional cost in retained memory.
+ *
+ * The *floor* is a different quantity, and is what a caller with an unusual
+ * window has to respect: a producer whose `windowSize` exceeds this cap stalls
+ * on its very first gap with nothing queued at all, because that many sends
+ * are already in flight when the gap opens.  1 024 leaves room for any window
+ * a caller would plausibly configure.
+ *
+ * It is also {@link DEFAULT_MAX_PRODUCERS}, so the two halves of the dedup
+ * budget read as one number: at most 1 024 producers × 1 024 retained
+ * sequences, against a set that had no bound at all (#728).
  */
 export const DEFAULT_MAX_OUT_OF_ORDER = 1_024;
 
@@ -93,9 +118,15 @@ export type ConsumerControllerOptionsType<T> = {
    * reason.
    *
    * Raising it costs retained memory per producer; lowering it stalls a
-   * producer sooner under packet loss.  Keep it above the largest
-   * `windowSize` any producer talking to this consumer is configured with —
-   * see {@link DEFAULT_MAX_OUT_OF_ORDER} for why the default is where it is.
+   * producer sooner under packet loss.  Keeping it above the largest
+   * `windowSize` any producer talking to this consumer is configured with is a
+   * **floor, not a bound**: that many sends are already in flight when a gap
+   * opens, so a smaller cap stalls that producer on its first gap with nothing
+   * queued behind it.  It does not make a larger cap unreachable — a producer
+   * with any window at all runs past this one given enough traffic through an
+   * open gap, because every out-of-order delivery admitted here is
+   * acknowledged and frees the slot that would otherwise hold it back.  See
+   * {@link DEFAULT_MAX_OUT_OF_ORDER} for how the default is sized against that.
    */
   readonly maxOutOfOrder?: number;
 };
