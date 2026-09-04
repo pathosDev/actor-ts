@@ -197,14 +197,12 @@ describe('retry', () => {
     expect((caught as Error).message).toContain('>= 1');
   });
 
-  test('an omitted maxDelayMs clamps to the 32-bit timer limit', async () => {
-    // The `Number.POSITIVE_INFINITY` branch (#771), which no other test in
-    // this block reaches: with no cap and `factor > 1` the computed delay
-    // crosses 2_147_483_647 ms, where `setTimeout` coerces its argument to a
-    // 32-bit signed integer and fires after 1 ms instead — inverting the
-    // backoff into a hot loop against the dependency that is already down.
-    // The `sleep` seam records the number `retry` asked for, which is exactly
-    // the value that would otherwise reach the timer.
+  test('an omitted maxDelayMs caps every delay at the built-in ceiling', async () => {
+    // `maxDelayMs` defaults to 60 000 rather than to infinity (#771).  The
+    // same configuration that used to climb until the timer clamp caught it
+    // now flattens at one minute, and the assertion is the whole schedule
+    // rather than "some finite number" — 60 000 is a *default*, so nothing
+    // else in the tree states it.
     const requestedDelays: number[] = [];
     try {
       await retry(async () => { throw new Error('fail'); }, {
@@ -214,9 +212,73 @@ describe('retry', () => {
         sleep: (ms) => { requestedDelays.push(ms); return Promise.resolve(); },
       });
     } catch { /* expected */ }
+    // 1e3, then 1e7 and 1e11 both cut down to the 60 s ceiling.
+    expect(requestedDelays).toEqual([1_000, 60_000, 60_000]);
+  });
+
+  test('maxDelayMs: Infinity restores the uncapped schedule, still clamped to the 32-bit timer limit', async () => {
+    // The escape hatch back to the pre-#771 default, and the reason the hard
+    // clamp survives the finite default rather than being replaced by it:
+    // with no cap and `factor > 1` the computed delay crosses 2_147_483_647
+    // ms, where `setTimeout` coerces its argument to a 32-bit signed integer
+    // and fires after 1 ms instead — inverting the backoff into a hot loop
+    // against the dependency that is already down.  The `sleep` seam records
+    // the number `retry` asked for, which is exactly the value that would
+    // otherwise reach the timer.
+    const requestedDelays: number[] = [];
+    try {
+      await retry(async () => { throw new Error('fail'); }, {
+        attempts: 4,
+        delayMs: 1_000,
+        factor: 10_000,
+        maxDelayMs: Number.POSITIVE_INFINITY,
+        sleep: (ms) => { requestedDelays.push(ms); return Promise.resolve(); },
+      });
+    } catch { /* expected */ }
     // 1e3, 1e7, then 1e11 — the third would overflow, and lands on the clamp.
     expect(requestedDelays).toEqual([1_000, 10_000_000, 2_147_483_647]);
     for (const ms of requestedDelays) expect(ms).toBeLessThanOrEqual(2_147_483_647);
+  });
+
+  test('randomFactor: 1 over an infinite maxDelayMs jitters the timer ceiling, never Infinity', async () => {
+    // The second half of #771, and the one the clamp's original placement
+    // left open: it ran *after* the jitter only, so with
+    // `maxDelayMs: Number.POSITIVE_INFINITY` the jitter multiplied an
+    // infinite base.  `randomFactor: 1` is the only width whose lower edge is
+    // a multiplier of exactly zero, and `Infinity × 0` is `NaN`, which
+    // `Math.max`, `Math.min` and finally `delay > 0` all carry silently — so
+    // the sleep is skipped altogether and `retry` busy-loops.  Clamping
+    // *before* the jitter too makes the base finite, and a finite base cannot
+    // produce `NaN`.
+    //
+    // The `NaN` itself is deliberately not the assertion: at a multiplier of
+    // zero a finite base yields a legitimate delay of 0, so the skipped sleep
+    // looks identical either way.  What separates the two trees is every
+    // *other* draw — a jittered fraction of the ceiling, versus the ceiling
+    // flat, because `Infinity × anything positive` is `Infinity` again.
+    //
+    // `delayMs × factor^n` has to overflow the double, not the timer, for the
+    // base to reach `Infinity` at all, hence the outsized numbers.
+    const randomDraws = [0, 0.25, 1];
+    let draw = 0;
+    const requestedDelays: number[] = [];
+    try {
+      await retry(async () => { throw new Error('fail'); }, {
+        attempts: 4,
+        delayMs: 1e308,
+        factor: 1e10,
+        maxDelayMs: Number.POSITIVE_INFINITY,
+        randomFactor: 1,
+        random: () => randomDraws[draw++] ?? 0,
+        sleep: (ms) => { requestedDelays.push(ms); return Promise.resolve(); },
+      });
+    } catch { /* expected */ }
+    // Draw 0 → multiplier 0 → a delay of 0, which is not slept on.  Draw 0.25
+    // → multiplier 0.5 → half the ceiling; draw 1 → multiplier 2 → the
+    // ceiling.  Against an infinite base both of the latter would be the
+    // ceiling flat.
+    expect(requestedDelays).toEqual([2_147_483_647 / 2, 2_147_483_647]);
+    for (const ms of requestedDelays) expect(Number.isNaN(ms)).toBe(false);
   });
 
   test('randomFactor jitters the delay from the injected random source', async () => {

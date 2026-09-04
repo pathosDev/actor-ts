@@ -313,6 +313,11 @@ operations.  Compensate with:
 
 - **Snapshot policies** that bound recovery.
 - **CachedSnapshotStore** decorator for read-through caching.
+  If the snapshots are encrypted, that cache holds their
+  *plaintext* — see
+  [Security — the cache holds plaintext](/persistence/snapshot-stores/cached-snapshot-store/#security--the-cache-holds-plaintext),
+  which is also why the decorator refuses to cache an encrypted
+  load until you acknowledge it.
 - **Batching** wherever the framework allows.
 
 import { Aside } from '@astrojs/starlight/components';

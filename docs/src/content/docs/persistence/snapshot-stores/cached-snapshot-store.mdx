@@ -46,6 +46,10 @@ Three patterns:
 
 1. **Slow underlying store** — object storage with multi-hop
    network latency, encrypted state with expensive decryption.
+   For the encrypted case read
+   [Security — the cache holds plaintext](#security--the-cache-holds-plaintext)
+   first: it is the strongest reason to reach for the cache and the
+   one that needs a decision.
 2. **Frequent actor churn** — sharded entities passivating /
    re-spawning constantly, each load re-reading the same
    snapshot.
@@ -61,9 +65,10 @@ underlying store has measurable read latency.**
 
 ```ts
 type CachedSnapshotStoreOptionsType = {
-  cache:      Cache;   // backing cache (required)
-  ttlMs?:     number;  // cache TTL in ms, default 5 minutes
-  keyPrefix?: string;  // key prefix, default 'snap:'
+  cache:                 Cache;    // backing cache (required)
+  ttlMs?:                number;   // cache TTL in ms, default 5 minutes
+  keyPrefix?:            string;   // key prefix, default 'snap:'
+  allowPlaintextCache?:  boolean;  // cache encrypted state anyway, default false
 };
 ```
 
@@ -72,9 +77,69 @@ type CachedSnapshotStoreOptionsType = {
 | `cache` | Backing cache (**required**) — typically Redis in production.  Any `Cache`: in-memory, Redis, or Memcached. |
 | `ttlMs` | Cache TTL in milliseconds.  Default: 5 minutes. |
 | `keyPrefix` | Key prefix (default `'snap:'`) — prevents collisions in shared caches. |
+| `allowPlaintextCache` | Acknowledge that the cache may hold the plaintext of state the wrapped store encrypts at rest, and cache it anyway.  Default `false` — see below. |
 
 The underlying store is the constructor's **first argument** —
 `new CachedSnapshotStore(underlying, options)` — not an option.
+
+## Security — the cache holds plaintext
+
+What gets cached is whatever `loadLatest` returns, and that is the
+**decoded** domain state: decompressed, and for the object-storage
+stores decrypted.  Compose this decorator with
+[client-side snapshot encryption](/persistence/object-storage/encryption/)
+and the deployment holds two copies of the state — one encrypted in
+the bucket, one in plaintext in a cache you own, share with other
+subsystems, and often run unauthenticated on a "private" network.
+Reading the second copy needs neither the bucket nor the master key,
+and a Redis RDB dump keeps it readable afterwards.
+
+Nothing at rest in the bucket is weakened by this; the second copy
+is the whole exposure.  That makes it a composition hazard rather
+than a flaw in either piece — and the composition is one this page
+recommends, which is why it is spelled out here.
+
+So a `loadLatest` that carries `encryption` with a mode other than
+`'none'` is **served straight from the wrapped store, uncached**,
+and the decorator warns once:
+
+```text
+persistence: CachedSnapshotStore caches decoded snapshot state, and this
+loadLatest on 'ObjectStorageSnapshotStore' asked for encryption — …
+```
+
+`withAllowPlaintextCache(true)` is your acknowledgement that the
+cache is as protected as the bucket, and restores the caching:
+
+```ts
+const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create()
+  .withCache(cache)
+  .withTtlMs(60_000)
+  .withAllowPlaintextCache(true);
+```
+
+Reasonable answers to the question it asks:
+
+- **In-process `InMemoryCache`** — the plaintext never leaves the
+  node that already decrypted it.  Set the flag.
+- **Redis or Memcached inside the same trust boundary**, with
+  authentication, encryption in transit and no persistence to
+  disk — set the flag, and record the reasoning where your other
+  key-management decisions live.
+- **A shared cache that also backs HTTP middleware**, or one whose
+  operators are not the operators of the bucket — do not set the
+  flag.  Give the encrypted store its own cache, or accept the
+  cold-start cost.
+
+The check sees the **per-call** `PersistenceOptions` your actor's
+`encryption()` hook produces, which is what reaches every read.  It
+cannot see a store configured with encryption at construction and
+never told about it per call: `SnapshotStore` has no member that
+reports that, and `persistenceOptionSupport` answers a different
+question ("could this store encrypt?", not "is it going to?").  If
+your encryption lives entirely in the store's own configuration,
+this decorator has nothing to warn about and the decision is yours
+alone.
 
 ## Cache semantics
 
