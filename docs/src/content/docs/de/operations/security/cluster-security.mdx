@@ -637,6 +637,54 @@ zum Zertifikat des Peers passen, und genau das gibt diesen Regeln
 ein echtes Subjekt.
 :::
 
+### Wer namentlich adressiert werden darf
+
+Die Regeln oben begrenzen, was ein Frame *behaupten* darf. Eine
+weitere begrenzt, was es *erreichen* darf: Ein `envelope` trägt
+den Zielpfad, den der Absender gewählt hat, und der Knoten löst
+ihn gegen seinen eigenen Aktor-Baum auf. Diese Auflösung lief
+früher von der Wurzel los, `/system/…` war also genauso
+erreichbar wie `/user/…` — jeder Peer, der ein `hello`
+abgeschlossen hatte, konnte direkt an einen Shard-Coordinator,
+einen Singleton-Manager oder den PubSub-Mediator zustellen, am
+Pro-Pfad-Handler vorbei, den jeder von ihnen registriert, und
+damit an der Absender-Zuordnung vorbei, auf der die Regeln oben
+aufbauen.
+
+Der `/system`-Teilbaum wird auf diesem Weg jetzt abgelehnt, in
+jeder Konfiguration und an beiden Nahtstellen — der
+Cluster-Verbindung und dem `ClusterClientReceptionist`.
+Framework-Aktoren bleiben über ihre registrierten Handler
+erreichbar, also über die Tür, die weiß, auf welcher Verbindung
+ein Frame ankam. Nichts, was ein Betreiber konfigurieren kann,
+öffnet den alten Weg wieder.
+
+Die `/user`-Hälfte ist die Entscheidung des Deployments, denn
+dass ein Peer einen Anwendungsaktor benennt, ist genau die Art,
+wie eine `ActorRef` über Knoten hinweg funktioniert. Engt sie
+dort ein, wo das Cluster-Netz eine Grenze überschreitet, die ihr
+nicht kontrolliert:
+
+```hocon
+actor-ts.remote {
+  untrusted-mode          = true
+  trusted-selection-paths = ["/user/orders/*", "/user/reporting/intake"]
+}
+```
+
+Ein Eintrag ist ein exakter Pfad, außer er endet auf `/*` — dann
+ist er dieser Pfad und sein Teilbaum, segmentverankert:
+`/user/orders/*` lässt `/user/orders-archive` also nicht zu.
+Ablehnungen werden auf
+`cluster_envelope_refusals_total{reason, frame}` gezählt und zu
+höchstens einem `WARN` pro Grund alle 30 Sekunden gefaltet, das
+den Peer der Verbindung nennt und nie den angefragten Pfad; eine
+Zeile pro Ablehnung würde dem Peer stattdessen
+Log-Verstärkung schenken. Beobachtet `reason="not-allow-listed"`
+an dem Tag, an dem ihr den Modus anschaltet — dort taucht eine
+unvollständige Allow-List auf. Siehe
+[Konfiguration](/de/reference/configuration/#actor-tsremote).
+
 ### Eine Sharding-Direktive braucht den Koordinator dahinter
 
 Dieselbe Überlegung reicht eine Schicht höher, in die

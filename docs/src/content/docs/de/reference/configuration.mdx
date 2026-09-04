@@ -425,6 +425,8 @@ ohne sie stillschweigend zu vereinheitlichen.  Setz sie pro Lease im Code.
 | `remote.tcp.advertised-port` | *(ungesetzt)* | Der Port, den Peers **wählen**.  Ungesetzt bedeutet dasselbe wie `remote.tcp.port` — setz ihn nur dort, wo das Deployment den Prozess auf einem anderen veröffentlicht.  Aus demselben Grund wie `advertised-host` nicht in der `reference.conf`. |
 | `remote.max-frame-bytes` | `16M` | Wire-Cap pro Frame.  Ein Frame, dessen Längen-Präfix darüber liegt, wird verworfen, bevor irgendeine Payload gepuffert wird. |
 | `remote.tls.enabled` | `false` | **Nicht umgesetzt** — `true` bringt eine Startup-Warnung, keine Verschlüsselung.  Siehe unten. |
+| `remote.untrusted-mode` | `false` | Ein eingehendes Envelope nur annehmen, wenn `trusted-selection-paths` sein Ziel nennt.  Aus ist jeder `/user`-Aktor namentlich adressierbar — genau das lässt eine `ActorRef` über Knoten hinweg funktionieren.  `/system` wird in beiden Fällen abgelehnt.  Siehe unten. |
+| `remote.trusted-selection-paths` | `[]` | Pfade, die ein Peer namentlich adressieren darf, solange `untrusted-mode` an ist.  Leer heißt: nichts über die Framework-Endpunkte hinaus, die dieser Knoten registriert hat. |
 
 `host`/`port` sind das **Bind**-Paar, `advertised-host`/`advertised-port` das
 **Identitäts**-Paar: das erste sagt, wo der Listener aufmacht, das zweite,
@@ -465,6 +467,64 @@ die ganze Konfiguration.
 selbst baut.  Wenn du einen `TcpTransport` selbst konstruierst und per
 `withTransport(…)` übergibst, setz das Cap dort — das Framework re-capped
 keinen Transport, den es nicht erzeugt hat.
+
+#### Wen ein Peer namentlich adressieren darf
+
+Ein eingehendes `envelope`-Frame trägt den Zielpfad, den der **Absender**
+gewählt hat, und der Knoten löst ihn gegen seinen eigenen Aktor-Baum auf.  Das
+ist das eine, was eine Gegenstelle auf der Cluster-Verbindung frei wählt, und
+die beiden Keys oben sind der Rahmen darum.
+
+`/system` gehört nicht zu diesem Rahmen.  Die Aktoren des Frameworks — Shard-
+Coordinators und -Regions, Singleton-Manager, der PubSub-Mediator, das
+DistributedData-Replikat, beide DevTools-Lanes — sind ausschließlich über den
+Pro-Pfad-Handler erreichbar, den jeder von ihnen registriert, in beiden Modi.
+Diese Tür heftet die Identität der Verbindung an das Frame; die namentliche
+Pfadauflösung hat das nie getan, weshalb ein so zugestellter Body überhaupt
+keinen Absender hatte.  Das ist eine **Verhaltensänderung**: davor konnte jeder,
+der ein `hello` abgeschlossen hatte, sie adressieren
+([Issue #964](https://github.com/pathosDev/actor-ts/issues/964)).
+
+`untrusted-mode` engt die andere Hälfte ein.  Aus — der Default — darf ein Peer
+jeden `/user`-Aktor benennen, was genau das ist, was eine aus einer Wire-Ref
+rekonstruierte `RemoteActorRef` tut und was eine `ActorRef` über Knoten hinweg
+überhaupt brauchbar macht.  An gelten nur die Pfade, die du auflistest:
+
+```hocon
+actor-ts.remote {
+  untrusted-mode          = true
+  trusted-selection-paths = ["/user/orders/*", "/user/reporting/intake"]
+}
+```
+
+Ein Eintrag ist ein **exakter** Pfad, außer er endet auf `/*` — dann ist er
+dieser Pfad und alles darunter.  Das Suffix ist segmentverankert:
+`/user/orders/*` lässt `/user/orders/7` zu und lehnt `/user/orders-archive` ab.
+Sonst ist hier nichts ein Muster, und ein `*` irgendwo anders als als ganzes
+letztes Segment wird beim Start abgelehnt statt literal gematcht.  Pfade werden
+guardian-verwurzelt geschrieben, so wie der Baum sie rendert; der führende `/`
+ist optional.
+
+Schalte den Modus dort an, wo das Cluster-Netz eine Grenze überschreitet, die du
+nicht kontrollierst — dieselben Netze, in denen sich auch
+`remote.max-frame-bytes` zu senken lohnt.  Der Preis ist, dass jeder namentlich
+adressierte Aktor aufgelistet sein muss, auch die, die über eine gewanderte Ref
+erreicht werden; fang deshalb damit an, auf einem Knoten mit angeschaltetem
+Modus und einer für vollständig gehaltenen Allow-List
+`cluster_envelope_refusals_total{reason="not-allow-listed"}` zu beobachten.
+
+Ablehnungen werden gezählt statt einzeln geloggt: ein Envelope ist sein eigenes
+Frame, eine Zeile pro Ablehnung ließe einen Peer also das Log dieses Knotens im
+Nachrichtentakt schreiben.  Die erste Ablehnung je Grund wird als `WARN`
+geloggt, weitere werden zu höchstens einer Zeile pro 30 Sekunden gefaltet, die
+den Peer der **Verbindung** nennt und nie den angefragten Pfad.
+
+Dieselbe Regel gilt für `ClusterClientReceptionist`, und das ist die stärker
+exponierte der beiden Nahtstellen: ein
+[`ClusterClient`](/de/cluster/cluster-client/) ist dem Membership-Ring nie
+beigetreten.  Ein abgelehnter Pfad wird mit demselben `path not found`
+beantwortet, das der Client für einen nicht existierenden Pfad bekommt — der
+Endpunkt taugt also nicht dazu, den Aktor-Baum zu kartieren.
 
 :::caution[`remote.tls.enabled` verschlüsselt nichts]
 Der Key wird gelesen, aber nicht umgesetzt.  Ihn auf `true` zu setzen

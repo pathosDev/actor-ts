@@ -17,6 +17,7 @@ import { countUnhandled } from '../internal/Unhandled.js';
 import { none, some, type Option } from '../util/Option.js';
 import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { ClusterExtensionId } from './ClusterExtension.js';
+import { EnvelopeTrust } from './EnvelopeTrust.js';
 import { registerClusterHealthChecks } from './ClusterHealthChecks.js';
 import { awaitClusterReady, isClusterReadyNow } from './ClusterReadiness.js';
 import type { ClusterReadinessOptions } from './ClusterReadiness.js';
@@ -34,6 +35,7 @@ import {
   DEFAULT_SEED_RETRY_INTERVAL_MS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
+  DEFAULT_UNTRUSTED_MODE,
   advertisedHostWasDerived,
   isRemoteTlsRequested,
   resolveAdvertisedHost,
@@ -160,6 +162,18 @@ export class Cluster {
   readonly system: ActorSystem;
   readonly transport: Transport;
   private readonly log: Logger;
+
+  /**
+   * @internal Which peer-supplied paths this node resolves by name (#877).
+   *
+   * Public-but-underscored so `ClusterClientReceptionist` can apply the same
+   * policy to *its* entry point — the more exposed of the two, since a
+   * `ClusterClient` never joined the membership ring — without the two seams
+   * growing separate switches an operator would have to keep in step.  One
+   * instance per node also means one folded-log budget, so reaching both doors
+   * does not buy an attacker twice the log volume.
+   */
+  readonly _envelopeTrust: EnvelopeTrust;
 
   private readonly members = new Map<string, Member>();
   /**
@@ -406,6 +420,12 @@ export class Cluster {
     this.maxVersionSkewMs = options.maxVersionSkewMs ?? DEFAULT_MAX_VERSION_SKEW_MS;
     this.maxMembers = options.maxMembers ?? DEFAULT_MAX_MEMBERS;
     this.maxTombstones = options.maxTombstones ?? DEFAULT_MAX_TOMBSTONES;
+    this._envelopeTrust = new EnvelopeTrust(
+      system,
+      this.log,
+      options.untrustedMode ?? DEFAULT_UNTRUSTED_MODE,
+      options.trustedSelectionPaths ?? [],
+    );
   }
 
   /**
@@ -1687,8 +1707,22 @@ export class Cluster {
     //    arbitrary user-spawned actor (no extension routing).  This also
     //    happens to be functionally identical to sharding's own
     //    dispatchEnvelope for region paths (both end in `ref.tell(body)`).
+    //
+    //    This step is the one place a remote party names its own target, so it
+    //    is the one place a trust boundary can sit (#877, #964).  `_resolvePath`
+    //    walks from the *root* cell and has no guardian scope, which is what
+    //    made `/system/…` as reachable as `/user/…`; the policy is consulted
+    //    before the walk, so a refusal never depends on whether the actor
+    //    happens to exist and cannot double as an existence oracle.  A refused
+    //    path returns rather than falling through to the catch-all below —
+    //    otherwise step 3 is the bypass.
     const segs = parsePathSegments(decoded.to);
     if (segs.length > 0) {
+      const refusal = this._envelopeTrust.refusalFor(segs);
+      if (refusal !== null) {
+        this._envelopeTrust.report(from, 'envelope', refusal);
+        return;
+      }
       const refOpt = this.system._resolvePath(segs);
       if (refOpt.isSome()) {
         refOpt.value.tell(decoded.body as never);

@@ -452,3 +452,26 @@ export const MAX_REPORTED_UNCLAIMED_WIRE_KINDS = 8;
  * this build has never heard of.
  */
 export const MAX_LOGGED_WIRE_KIND_LENGTH = 64;
+
+/**
+ * How often each `EnvelopeTrust` refusal reason may reach the log, whatever
+ * the refusal rate (#877).
+ *
+ * A folded WARN rather than a line per refusal, for the reason
+ * `ClusterClientReceptionist.countSenderMismatch` states one seam over: an
+ * envelope *is* a frame, so there is nothing to fold within one, and an
+ * unthrottled line would let a peer write this node's log at message rate —
+ * log amplification handed to the party whose probe was just turned away
+ * (#131). The counter carries the rate; this only bounds the prose.
+ *
+ * Thirty seconds because the line's job is to be *noticed*, not to be
+ * complete. The first refusal of each reason is reported at once, so an
+ * operator who has just turned `untrusted-mode` on sees a missing allow-list
+ * entry immediately; what this spaces out is the second thousand.
+ *
+ * Read by both wire seams through the one `EnvelopeTrust` a node builds, which
+ * is why it is a constant here rather than a field on an options type: there
+ * is no deployment in which the useful value differs, and a knob for it would
+ * be a knob for how loud an attacker may make this node's log.
+ */
+export const ENVELOPE_REFUSAL_REPORT_INTERVAL_MS = 30_000;

@@ -550,6 +550,33 @@ actor-ts {
       enabled = false
     }
     max-frame-bytes = 16M   # per-frame wire cap; lower it on semi-trusted networks
+
+    # Who a peer may address BY NAME.  An inbound envelope carries a target
+    # path the sender chose, and this node resolves it against its own actor
+    # tree -- the one thing on the wire a remote party picks freely.
+    #
+    # Off, that reaches any /user actor by name, which is what makes an
+    # ActorRef usable across nodes.  On, only the paths listed below.  Turn it
+    # on where the cluster network crosses a boundary you do not control, the
+    # same networks max-frame-bytes above is worth lowering on.
+    #
+    # /system is NOT what this switches.  Framework actors -- shard
+    # coordinators and regions, singleton managers, the pub-sub mediator, the
+    # DevTools lanes -- are reachable only through the handlers their owners
+    # register, in both modes.  That door attaches the connection's identity to
+    # the frame; resolving the path by name never did.
+    untrusted-mode = false
+
+    # Paths a peer may address by name while untrusted-mode is on.  Empty
+    # means: nothing beyond the registered framework endpoints above.
+    #
+    # An entry is one exact path, unless it ends in /* -- then it is that path
+    # and everything below it.  The suffix is segment-anchored, so
+    # "/user/orders/*" admits /user/orders/7 and refuses /user/orders-archive.
+    # Nothing else here is a pattern:
+    #
+    #   trusted-selection-paths = ["/user/orders/*", "/user/reporting/intake"]
+    trusted-selection-paths = []
   }
 
   # Lease coordination -- what a Lease backend reads when it is built with

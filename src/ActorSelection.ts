@@ -7,8 +7,14 @@ import { DeadLetter } from './SystemMessages.js';
 /**
  * A lookup handle for a logical actor path.  Unlike `ActorRef`, which is a
  * direct handle to a known actor, an `ActorSelection` is a description of
- * where to look — resolving it walks the current actor tree (locally) or
- * issues a remote lookup.
+ * where to look — resolving it walks this system's actor tree.
+ *
+ * **Local only.**  This line used to promise "or issues a remote lookup", and
+ * it never did: both `resolveOne` and `tell` call `system._resolvePath`
+ * directly, and nothing in `src/` puts a selection on the wire (#877).  The
+ * remote equivalent is the `to` path on a cluster envelope, which
+ * `Cluster.dispatchEnvelope` resolves — and which `actor-ts.remote.untrusted-mode`
+ * plus `trusted-selection-paths` are the allow-list for.
  *
  * For v1 we support exact paths only (no `*` wildcards).  Messages tell()'d
  * to a selection are delivered synchronously to the first matching actor if

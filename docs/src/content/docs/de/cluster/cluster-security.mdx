@@ -23,8 +23,23 @@ Cluster-Transports. Für den operativen Kontext siehe
 | Kompromittiertes Zertifikat (für gestohlene Identität ausgestellt) | Cert-Rotation + Revocation |
 | Replay eines mitgeschnittenen Gossip-Frames | TLS, dazu die Sequence pro Sender, die jeder Cluster durchsetzt |
 | Ein Mitglied spricht im Payload für einen anderen Node | Framework-Handler halten die im Payload behauptete Identität gegen den Peer der Verbindung — siehe [was eine Replica ihren Peers glaubt](/de/persistence/replicated-event-sourcing/overview/#was-eine-replica-ihren-peers-glaubt) |
+| Ein Peer adressiert einen Framework-Aktor (`/system/…`) namentlich | Wird bedingungslos abgelehnt: Framework-Aktoren sind nur über den Pro-Pfad-Handler erreichbar, den jeder registriert — an der Cluster-Verbindung wie am `ClusterClientReceptionist` |
+| Ein Peer adressiert beliebige Anwendungsaktoren namentlich | `actor-ts.remote.untrusted-mode = true` plus `trusted-selection-paths` — siehe [Konfiguration](/de/reference/configuration/#actor-tsremote) |
 
-mTLS ist das, was die letzte Zeile überhaupt trägt, und nicht etwas,
+Für die `/system`-Zeile ist nichts zu konfigurieren, und sie lässt sich
+nicht abschalten. Ein `envelope` trägt den Pfad, den der *Absender*
+gewählt hat, und ihn gegen den Aktor-Baum aufzulösen ist die eine
+Stelle, an der eine Gegenstelle das Ziel wählt — einen Coordinator,
+einen Singleton-Manager oder den PubSub-Mediator so zu erreichen ging
+an dem Handler vorbei, der gewusst hätte, über welche Verbindung das
+Frame kam. Die Zeile darunter ist dieselbe Frage für `/user`, und dort
+gehört die Antwort dem Deployment: einen Anwendungsaktor zu benennen
+ist genau die Art, wie eine `ActorRef` über Knoten hinweg funktioniert,
+also bleibt das offen, bis ihr es einengt. Ablehnungen landen auf
+`cluster_envelope_refusals_total{reason, frame}`.
+
+mTLS ist das, was die Zeile zum Sprechen für einen anderen Node
+überhaupt trägt, und nicht etwas,
 das sie doppelt: eine Behauptung gegen den Peer der Verbindung zu
 halten, ist erst dann etwas wert, wenn dieser Peer authentifiziert ist.
 

@@ -123,22 +123,40 @@ describe('ClusterClient — outside-in connectivity', () => {
     expect(echoActor.rings).toBe(1);
   }, 10_000);
 
-  test('ask reaches a framework actor by its absolute /system path', async () => {
+  test('ask cannot reach a framework actor by its absolute /system path (#964)', async () => {
+    // BREAKING, and this test asserted the defect until #877 closed it.  A
+    // `ClusterClient` never joined the membership ring, and a contact point is
+    // by design reachable from outside whatever boundary protects the cluster's
+    // own links — so "an outside party addresses the framework's control plane
+    // by name" is the whole of CWE-306 here, not a convenience worth keeping.
+    //
+    // Framework actors stay reachable through the per-path handlers their
+    // owners register (sharding, singleton, pub-sub, DistributedData, both
+    // DevTools lanes).  What is gone is *generic* resolution, which delivered
+    // the raw body with no sender attached — the same thing #584 and #712 moved
+    // sharding off, one seam over.
+    //
+    // `system` is still parsed as a guardian, and deliberately so: without it
+    // this path resolves as a *user* actor literally called `system`, which
+    // answers a probe with a silent misdirection into the application's own
+    // namespace instead of a refusal.
     node = await startNode('cc-test', pickPort());
-    // Bare paths are relative to `/user`, so `system` has to be recognised as
-    // a guardian — otherwise this resolves as a *user* actor literally named
-    // `system` and the framework side of the tree is unaddressable.
     node.system._spawnSystemActor(EchoActor, SystemGroups.cluster, 'echo-probe');
     const clientOptions = ClusterClientOptions.create()
       .withContactPoints([node.contactPoint]);
     client = new ClusterClient(clientOptions);
 
-    const reply = await client.ask<{ x: number }>(
-      'system/cluster/echo-probe',
-      { kind: 'echo', payload: { x: 7 } },
-    );
-
-    expect(reply).toEqual({ x: 7 });
+    let rejected = false;
+    try {
+      await client.ask('system/cluster/echo-probe', { kind: 'echo', payload: { x: 7 } });
+    } catch (e) {
+      rejected = true;
+      // The same sentence a genuine miss gets, byte for byte — see the test
+      // below.  A distinct "refused" wording would turn this endpoint into an
+      // existence oracle for the actor tree, which is the better exploit.
+      expect((e as Error).message).toBe('path not found: system/cluster/echo-probe');
+    }
+    expect(rejected).toBe(true);
   }, 10_000);
 
   test('ask to unknown path rejects with a clear error', async () => {

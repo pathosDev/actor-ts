@@ -736,6 +736,12 @@ export const ConfigKeys = {
    * Encrypting the wire is its own issue (#941); until it lands, a key that
    * says `true` and a socket that is not encrypted is exactly the gap the
    * warning exists to close.
+   *
+   * `untrusted-mode` and `trusted-selection-paths` narrow the one thing a
+   * remote party chooses — the `to` path on an inbound envelope (#877).  They
+   * do **not** decide whether `/system` is reachable: that is refused
+   * unconditionally in `EnvelopeTrust`, because a switch defaulted off would
+   * leave #964 open on every deployment that did not opt in.
    */
   remote: {
     tcp: {
@@ -748,6 +754,8 @@ export const ConfigKeys = {
       enabled: 'actor-ts.remote.tls.enabled',
     },
     maxFrameBytes: 'actor-ts.remote.max-frame-bytes',
+    untrustedMode: 'actor-ts.remote.untrusted-mode',
+    trustedSelectionPaths: 'actor-ts.remote.trusted-selection-paths',
   },
 
   /**

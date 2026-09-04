@@ -106,6 +106,22 @@ export const DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS = 5 * 60 * 1_000;
 export const DEFAULT_ADVERTISED_HOST = '127.0.0.1';
 
 /**
+ * Built-in default for {@link ClusterOptionsType.untrustedMode} — off (#877).
+ *
+ * Off is "no change" for the `/user` half: a peer keeps being able to address a
+ * user actor by name, which is what `RemoteActorRef` and every ref that crosses
+ * the wire rely on, and narrowing that to an allow-list is an operator's
+ * decision about their own topology.
+ *
+ * It is deliberately **not** the switch that decides whether `/system` is
+ * reachable.  That one is unconditional (`EnvelopeTrust.refusalFor`), because a
+ * default-off switch would have left #964's reachability open on every
+ * deployment that did not opt in, and no deployment wants a framework actor
+ * reached past the handler its owner registered.
+ */
+export const DEFAULT_UNTRUSTED_MODE = false;
+
+/**
  * Whether — and when — this node may declare itself the first member of a
  * new cluster, moving straight from `joining` to `up` with nobody's
  * agreement.
@@ -348,6 +364,43 @@ export type ClusterOptionsType = {
    * Default: 10 000.
    */
   readonly maxTombstones?: number;
+  /**
+   * Refuse an inbound envelope whose target path this node did not register a
+   * handler for, unless {@link trustedSelectionPaths} names it.  Default:
+   * `false` (#877).
+   *
+   * The mechanism it narrows is the one thing a remote party genuinely
+   * *chooses*: an `envelope` frame carries a `to` string, and both wire seams
+   * resolve it against the local actor tree.  With the mode off that reaches
+   * any `/user` actor by name, which is what makes an `ActorRef` usable across
+   * nodes; with it on, only the paths listed below.
+   *
+   * **It does not decide whether `/system` is reachable** — that is refused
+   * either way (#964).  Framework actors are addressable only through the
+   * per-path handlers their owners register, which is the door that attaches a
+   * sender to the frame; the generic fallback never did.
+   *
+   * The registered handlers themselves stay open under the mode.  Gating them
+   * would take sharding, singletons, pub-sub, DistributedData and both DevTools
+   * lanes down with it, which is not a mode anyone could run — and each of
+   * those endpoints validates its own bodies, which is where a per-protocol
+   * defect belongs.
+   */
+  readonly untrustedMode?: boolean;
+  /**
+   * Paths a peer may address by name while {@link untrustedMode} is on.
+   * Default: empty — nothing beyond the registered framework endpoints.
+   *
+   * Written guardian-rooted, the way the actor tree renders them:
+   * `/user/orders/7`.  An entry is an **exact** path unless it ends in `/*`, in
+   * which case it is that path and every actor beneath it — and the suffix is
+   * segment-anchored, so `/user/admin/*` never admits `/user/administrator`.
+   * The leading `/` is optional; nothing else is a pattern.
+   *
+   * Ignored while the mode is off, where it would only be able to *narrow*
+   * something already open.
+   */
+  readonly trustedSelectionPaths?: readonly string[];
 };
 
 /**
@@ -496,6 +549,23 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   withMaxTombstones(maxTombstones: number): this {
     return this.set('maxTombstones', maxTombstones);
   }
+
+  /**
+   * Admit an inbound envelope by name only when {@link withTrustedSelectionPaths}
+   * lists its target.  Default: off.  `/system` is refused either way (#877).
+   */
+  withUntrustedMode(untrustedMode: boolean): this {
+    return this.set('untrustedMode', untrustedMode);
+  }
+
+  /**
+   * Paths a peer may address by name while untrusted mode is on —
+   * `/user/orders/7`, or `/user/orders/*` for that actor and everything below
+   * it.  Default: none.
+   */
+  withTrustedSelectionPaths(trustedSelectionPaths: readonly string[]): this {
+    return this.set('trustedSelectionPaths', trustedSelectionPaths);
+  }
 }
 
 /** Validates resolved {@link ClusterOptionsType} settings. */
@@ -574,6 +644,41 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
         "must be 'immediate', 'never', or a positive number of ms",
         selfElection,
       );
+    }
+    this.checkTrustedSelectionPaths(s.trustedSelectionPaths);
+  }
+
+  /**
+   * Reject an allow-list entry that could not mean what it looks like (#877).
+   *
+   * Checked rather than tolerated because every failure here is silent in the
+   * direction that matters: an entry with a `*` in the middle looks like a
+   * glob, is matched literally, and therefore admits nothing — a node that
+   * refuses all its own traffic while the config file reads as if it does not.
+   * The empty entry is the same shape one step further: it normalises to `/`,
+   * which is not a path any envelope resolves to.
+   *
+   * Written by hand rather than through the field helpers: those are keyed on a
+   * single scalar value, and this is a rule about each element of a list.
+   */
+  private checkTrustedSelectionPaths(paths: readonly string[] | undefined): void {
+    if (paths === undefined) return;
+    if (!Array.isArray(paths)) {
+      this.fail('trustedSelectionPaths', 'must be a list of actor paths', paths);
+    }
+    for (const entry of paths) {
+      if (typeof entry !== 'string' || entry.trim() === '') {
+        this.fail('trustedSelectionPaths', 'entries must be non-empty actor paths', entry);
+      }
+      const withoutSubtreeSuffix = entry.endsWith('/*') ? entry.slice(0, -2) : entry;
+      if (withoutSubtreeSuffix.includes('*')) {
+        this.fail(
+          'trustedSelectionPaths',
+          "'*' is only a pattern as the whole final segment — write '/user/orders/*' for a "
+          + "subtree, '/user/orders' for one actor; nothing else here is a wildcard",
+          entry,
+        );
+      }
     }
   }
 }
@@ -724,6 +829,7 @@ export type ClusterConfigDefaults = Partial<Pick<
   | 'failureDetectorImplementation' | 'failureDetector' | 'phiAccrual' | 'maxFrameBytes'
   | 'weaklyUpAfterMs' | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
   | 'maxMembers' | 'maxTombstones' | 'downing'
+  | 'untrustedMode' | 'trustedSelectionPaths'
 >>;
 
 /**
@@ -770,6 +876,18 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
     out.advertisedPort = config.getInt(remote.tcp.advertisedPort);
   }
   if (config.hasPath(remote.maxFrameBytes)) out.maxFrameBytes = config.getBytes(remote.maxFrameBytes);
+  // Both leaves ship a value, so `hasPath` is true once the reference layer is
+  // loaded and these always land — which is what the round-trip test pins.  The
+  // presence check stays anyway: it is what keeps a config built without the
+  // reference layer (`Config.empty()`, a bare `parseString`) from throwing out
+  // of `getBoolean` / `getStringList`, both of which reject a missing path
+  // rather than returning a default (#877).
+  if (config.hasPath(remote.untrustedMode)) {
+    out.untrustedMode = config.getBoolean(remote.untrustedMode);
+  }
+  if (config.hasPath(remote.trustedSelectionPaths)) {
+    out.trustedSelectionPaths = config.getStringList(remote.trustedSelectionPaths);
+  }
   if (config.hasPath(keys.gossipInterval)) out.gossipIntervalMs = config.getDuration(keys.gossipInterval);
   if (config.hasPath(keys.seedRetryInterval)) {
     out.seedRetryIntervalMs = config.getDuration(keys.seedRetryInterval);

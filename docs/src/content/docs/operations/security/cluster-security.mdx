@@ -593,6 +593,48 @@ trusted — under mTLS the claimed address must match the peer's
 certificate, which is what gives these rules a real subject.
 :::
 
+### Who may be addressed by name
+
+The rules above bound what a frame may *claim*. One more bounds
+what it may *reach*: an `envelope` carries the target path the
+sender chose, and the node resolves it against its own actor
+tree. That resolution used to walk from the root, so
+`/system/…` was exactly as reachable as `/user/…` and any peer
+that completed a `hello` could deliver straight to a shard
+coordinator, a singleton manager or the pub-sub mediator —
+bypassing the per-path handler each of them registers, and with
+it the sender attribution the rules above are built on.
+
+The `/system` subtree is now refused on that path, in every
+configuration and at both seams — the cluster wire and the
+`ClusterClientReceptionist`. Framework actors stay reachable
+through their registered handlers, which is the door that knows
+which connection a frame came in on. Nothing an operator can
+configure opens the old route back up.
+
+The `/user` half is a deployment's own decision, because a peer
+naming an application actor is how an `ActorRef` works across
+nodes. Narrow it where the cluster network crosses a boundary
+you do not control:
+
+```hocon
+actor-ts.remote {
+  untrusted-mode          = true
+  trusted-selection-paths = ["/user/orders/*", "/user/reporting/intake"]
+}
+```
+
+An entry is an exact path unless it ends in `/*`, which makes it
+that path and its subtree — segment-anchored, so
+`/user/orders/*` does not admit `/user/orders-archive`. Refusals
+are counted on `cluster_envelope_refusals_total{reason, frame}`
+and folded into at most one `WARN` per reason every 30 seconds,
+naming the connection's peer and never the requested path; a
+line per refusal would hand the peer log amplification instead.
+Watch `reason="not-allow-listed"` on the day you turn the mode
+on — it is where an incomplete allow-list shows up. See
+[configuration](/reference/configuration/#actor-tsremote).
+
 ### A sharding directive needs the coordinator behind it
 
 The same reasoning reaches one layer up, into the extensions
