@@ -8,6 +8,7 @@ import { SseOptions } from '../../../../../src/io/broker/SseOptions.js';
 import {
   BrokerDisconnected,
   BrokerReconnectAttempt,
+  BrokerReconnectFailed,
 } from '../../../../../src/io/broker/BrokerEvents.js';
 import { awaitCondition } from '../../../../util/AwaitCondition.js';
 
@@ -174,6 +175,166 @@ describe('SseActor — read-idle timeout (#753)', () => {
       server.stop(true);
     }
   }, 10_000);
+});
+
+/* --------------- what the actor refuses to connect to (#787) ------------- */
+
+/**
+ * Records the cause of every `BrokerReconnectFailed` the system publishes.
+ *
+ * A *connect* that fails never reaches `handleConnectionLost`, so it publishes
+ * no `BrokerDisconnected` — the cause travels on the event that ends the
+ * reconnect cycle instead.  Which is also the second half of what these tests
+ * assert: a refused endpoint degrades through the ordinary backoff, exactly
+ * like an unreachable one, rather than failing silently.
+ */
+function reconnectFailureCauses(sys: ActorSystem): string[] {
+  const causes: string[] = [];
+  sys.eventStream.subscribe(
+    sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+      override onReceive(m: unknown): void {
+        causes.push((m as BrokerReconnectFailed).cause.message);
+      }
+    })()),
+    BrokerReconnectFailed,
+  );
+  return causes;
+}
+
+/** One connect attempt, one retry, then give up — with no jitter to wait out. */
+const failFast = { initialDelayMs: 20, maxDelayMs: 20, maxAttempts: 1, randomFactor: 0 } as const;
+
+describe('SseActor — refuses a redirect (#787)', () => {
+  test('a 302 fails the connect, and the redirect target is never contacted', async () => {
+    // The feed answers the SSE GET with a redirect to a host it chose.  With
+    // `fetch`'s default `redirect: 'follow'` the runtime would have re-issued
+    // the request there, replaying every custom header — the Fetch standard
+    // strips only `Authorization`, `Cookie` and `Proxy-Authorization`, so the
+    // `x-api-key` below would have gone with it — and then parsed whatever
+    // came back as events.  Both halves are asserted: the connect fails, and
+    // the collector never sees a request at all.
+    const replayedTo: Array<Record<string, string>> = [];
+    const collector = Bun.serve({
+      port: 0,
+      fetch(request: Request): Response {
+        replayedTo.push(Object.fromEntries(request.headers.entries()));
+        return new Response('data: injected\n\n', {
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      },
+    });
+    const feed = Bun.serve({
+      port: 0,
+      fetch(): Response {
+        return new Response(null, {
+          status: 302,
+          headers: { location: `http://localhost:${collector.port}/` },
+        });
+      },
+    });
+    const sys = quietSystem('sse-redirect');
+    try {
+      const received = new CollectActor();
+      const target = sys.spawnAnonymous(() => received);
+      const causes = reconnectFailureCauses(sys);
+      const sseOptions = SseOptions.create()
+        .withUrl(`http://localhost:${feed.port}/`)
+        .withTarget(target)
+        .withHeaders({ 'x-api-key': 'vendor-secret' })
+        .withReconnect(failFast);
+      sys.spawnAnonymous(() => new SseActor(sseOptions));
+
+      // Wait for *either* outcome rather than only the one that should
+      // happen: an implementation that follows the redirect settles the other
+      // branch immediately, so this fails in milliseconds with the replayed
+      // headers in the diff instead of timing out with nothing to read.
+      await awaitCondition(() => causes.length > 0 || replayedTo.length > 0, {
+        timeoutMs: 4_000, label: 'the connect either refused the redirect or followed it',
+      });
+      // The credential travels to the configured host and no further.
+      expect(replayedTo).toEqual([]);
+      expect(causes[0]).toContain('refused a redirect');
+      expect(causes[0]).toContain('HTTP 302');
+      // And nothing the redirect target would have served reached the target.
+      expect(received.received).toEqual([]);
+    } finally {
+      await sys.terminate();
+      feed.stop(true);
+      collector.stop(true);
+    }
+  });
+});
+
+/**
+ * The two shapes a body that is not a feed arrives in, and what the refusal
+ * has to say about each.
+ *
+ * The absent case is not padding: it is the one an implementation is most
+ * likely to "relax" later, and relaxing it hands the check back to the only
+ * party it constrains — an endpoint that wants its document parsed as events
+ * just omits the header.
+ */
+const foreignContentTypes = [
+  {
+    label: 'a type that is not text/event-stream',
+    systemName: 'sse-content-type-wrong',
+    respond: (): Response => new Response('data: injected\n\n', {
+      headers: { 'content-type': 'text/html; charset=utf-8' },
+    }),
+    expected: 'text/html',
+  },
+  {
+    label: 'no content type at all',
+    systemName: 'sse-content-type-absent',
+    // A `ReadableStream` body is what makes the header genuinely absent: Bun
+    // defaults a string body to `text/plain;charset=utf-8`, which would test
+    // the case above again under a different name.  It is also the realistic
+    // shape — an endpoint impersonating a feed streams.
+    respond: (): Response => new Response(new ReadableStream<Uint8Array>({
+      start(controller): void {
+        controller.enqueue(new TextEncoder().encode('data: injected\n\n'));
+        controller.close();
+      },
+    })),
+    expected: '<absent>',
+  },
+] as const;
+
+describe('SseActor — refuses a foreign content type (#787)', () => {
+  for (const { label, systemName, respond, expected } of foreignContentTypes) {
+    test(`${label} fails the connect`, async () => {
+      // The body is *valid* SSE wire format, so nothing downstream would have
+      // rejected it — `consume` splits on `\n\n` and forwards whatever parses.
+      // Only the announced type separates a feed from any other document an
+      // endpoint chooses to answer with, which is why the check is here and
+      // not in the parser.
+      const server = Bun.serve({ port: 0, fetch: (): Response => respond() });
+      const sys = quietSystem(systemName);
+      try {
+        const received = new CollectActor();
+        const target = sys.spawnAnonymous(() => received);
+        const causes = reconnectFailureCauses(sys);
+        const sseOptions = SseOptions.create()
+          .withUrl(`http://localhost:${server.port}/`)
+          .withTarget(target)
+          .withReconnect(failFast);
+        sys.spawnAnonymous(() => new SseActor(sseOptions));
+
+        // Either outcome, for the same reason as above: without the assertion
+        // the body parses cleanly and the injected event arrives, so this
+        // reads as "the event got through" rather than as a stalled wait.
+        await awaitCondition(() => causes.length > 0 || received.received.length > 0, {
+          timeoutMs: 4_000, label: 'the connect either refused the body or parsed it',
+        });
+        expect(received.received).toEqual([]);
+        expect(causes[0]).toContain('non-event-stream body');
+        expect(causes[0]).toContain(expected);
+      } finally {
+        await sys.terminate();
+        server.stop(true);
+      }
+    });
+  }
 });
 
 describe('SseActor — connect deadline (#753)', () => {

@@ -1,6 +1,7 @@
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
+import { redactUrlCredentials } from '../../util/RedactUrlCredentials.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import { SseEventBuffer } from './SseEventBuffer.js';
 import { SseOptionsValidator } from './SseOptions.js';
@@ -94,10 +95,25 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
     const response = await fetchFunction(this.options.url!, {
       method: 'GET',
       headers: { Accept: 'text/event-stream', ...(this.options.headers ?? {}) },
+      redirect: 'manual',
       signal: this.aborter.signal,
     });
-    if (!response.ok) throw new Error(`SSE connect failed: HTTP ${response.status}`);
-    if (!response.body) throw new Error('SSE connect: no response body');
+    try {
+      // Before `ok`, deliberately: `redirect: 'manual'` surfaces the 3xx
+      // itself, and "HTTP 302" alone would tell an operator nothing about the
+      // policy that produced it.
+      this.refuseRedirect(response);
+      if (!response.ok) throw new Error(`SSE connect failed: HTTP ${response.status}`);
+      this.requireEventStreamContentType(response);
+      if (!response.body) throw new Error('SSE connect: no response body');
+    } catch (rejection) {
+      // A refused response still has an open body nothing will ever read, and
+      // the failure path does not run `disconnectImplementation` — so the
+      // socket to the endpoint that just failed the check would stay up until
+      // the garbage collector got to it.  Aborting the signal releases it.
+      try { this.aborter?.abort(); } catch { /* ignore */ }
+      throw rejection;
+    }
 
     this.streamRunning = true;
     void this.consume(response.body);
@@ -116,6 +132,73 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
   protected override onCommand(_command: SseCommand): void { /* no commands */ }
 
   /* ----------------------------- internals ----------------------------- */
+
+  /**
+   * Refuse a redirect rather than follow it (#787).
+   *
+   * `fetch` defaults to `redirect: 'follow'`, and the Fetch standard strips
+   * only `Authorization`, `Cookie` and `Proxy-Authorization` when a redirect
+   * crosses origins.  Every other operator-supplied header survives — which
+   * for the feeds this actor exists to consume means the `x-api-key` shape
+   * most LLM and market-data vendors require, replayed verbatim to whatever
+   * host the feed names.  Following also makes a long-lived outbound client a
+   * blind-SSRF primitive: the endpoint, not the configuration, picks the
+   * address the authenticated `GET` actually reaches — link-local addresses
+   * included — and whatever comes back is parsed and fanned into `target`.
+   *
+   * Refusing outright is the whole policy, and that is a choice.  Re-issuing
+   * the request to a same-origin target would need a strip-list of credential
+   * header names that rots as vendors invent new ones, and it would buy an
+   * operator nothing they cannot get by configuring the final URL: an endpoint
+   * that has moved now fails the connect and degrades through the base class'
+   * backoff and circuit breaker like any other unreachable one, which is
+   * visible rather than silent.  It also needs no option, so there is no way
+   * to configure the hole back open.
+   *
+   * The `Location` is the redirector's string, so it goes through the same
+   * redaction `HttpClient` applies to one — a `Location` carrying userinfo
+   * would otherwise put a credential into a log line and a
+   * `BrokerDisconnected` event.
+   */
+  private refuseRedirect(response: FetchResponse): void {
+    // The 3xx class, and only with a `Location`: that pair is exactly what the
+    // runtime would have followed.  A 304 or a bodyless 300 carries none and
+    // is left to the ordinary `response.ok` check.
+    if (response.status < 300 || response.status >= 400) return;
+    const location = response.headers.get('location');
+    if (location === null) return;
+    throw new Error(
+      `SSE connect refused a redirect: HTTP ${response.status} to `
+      + `${redactUrlCredentials(location)}.  Redirects are never followed, because every `
+      + 'custom request header — vendor API keys included — would be replayed to the '
+      + 'redirect target.  Point `url` at the final endpoint.',
+    );
+  }
+
+  /**
+   * Refuse a body that does not announce itself as `text/event-stream` (#787).
+   *
+   * Nothing downstream of here can tell a feed from anything else: `consume`
+   * splits whatever arrives on `\n\n` and forwards every block that parses to
+   * a `data:` field, so an endpoint that answers the request with some other
+   * document has a channel into the application's event handling for free.
+   * The `Accept` header asks for the right type; this is the half that checks
+   * the answer.
+   *
+   * A missing header is refused too.  It is the SSE specification's required
+   * type, the ask is explicit, and treating "absent" as "probably fine" would
+   * leave the check trivially bypassable by the only party it constrains.
+   */
+  private requireEventStreamContentType(response: FetchResponse): void {
+    const contentType = response.headers.get('content-type') ?? '';
+    // Trimmed and lowercased because the parameters (`; charset=utf-8`) and
+    // the case of a media type are both the server's to choose.
+    if (contentType.trim().toLowerCase().startsWith('text/event-stream')) return;
+    throw new Error(
+      `SSE connect refused a non-event-stream body: content-type ${contentType || '<absent>'}, `
+      + 'expected text/event-stream.',
+    );
+  }
 
   private async consume(stream: ReadableStream<Uint8Array>): Promise<void> {
     const reader = stream.getReader();
@@ -182,12 +265,46 @@ function parseEventBlock(block: string): SseEvent | null {
   return { event, data: dataLines.join('\n'), id };
 }
 
+/**
+ * The subset of `Headers` this actor reads off a response.  An `interface`
+ * because it prescribes a function head; the two shapes beside it are plain
+ * data and stay `type`s.
+ */
+interface FetchResponseHeaders {
+  get(name: string): string | null;
+}
+
+/**
+ * The subset of a `fetch` `Response` this actor reads.
+ *
+ * `headers` is here because neither the redirect refusal nor the content-type
+ * assertion was *expressible* before it: the declaration exposed `ok`,
+ * `status` and `body` only, so the `Location` of a 3xx and the type of the
+ * body were both invisible to this file (#787).
+ */
+type FetchResponse = {
+  readonly ok: boolean;
+  readonly status: number;
+  readonly headers: FetchResponseHeaders;
+  readonly body: ReadableStream<Uint8Array> | null;
+};
+
+/**
+ * The subset of `RequestInit` this actor sends.
+ *
+ * `redirect` is **required**, which is the point: omitting it is what let the
+ * runtime default of `'follow'` apply, and a required field turns forgetting
+ * it back into a compile error rather than a silent policy (#787).
+ */
+type FetchRequestOptions = {
+  readonly method: string;
+  readonly headers: Record<string, string>;
+  readonly redirect: 'follow' | 'error' | 'manual';
+  readonly signal?: AbortSignal;
+};
+
 interface FetchModule {
-  (url: string, options: { method: string; headers: Record<string, string>; signal?: AbortSignal }): Promise<{
-    ok: boolean;
-    status: number;
-    body: ReadableStream<Uint8Array> | null;
-  }>;
+  (url: string, options: FetchRequestOptions): Promise<FetchResponse>;
 }
 
 const fetchLazy: Lazy<Promise<FetchModule>> = Lazy.of(async () => {
