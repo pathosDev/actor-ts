@@ -694,6 +694,8 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.role` | `""` | Only members carrying this role host shards.  `""` = unrestricted.  **It names a role, it does not grant one** — see [a role names, it does not grant](#a-role-names-it-does-not-grant) below. |
 | `sharding.rebalance-interval` | `2s` | Gap between coordinator-driven rebalance passes. |
 | `sharding.hand-off-timeout` | `10s` | How long to wait for HandOffComplete before force-reallocating. |
+| `sharding.rebalance-absolute-limit` | `0` | Flat ceiling on shards a rebalance may have **in flight**.  `0` = no absolute ceiling.  See [bounding rebalance churn](#bounding-rebalance-churn) below. |
+| `sharding.rebalance-relative-limit` | `0.1` | The same ceiling as a fraction of `number-of-shards`, so it scales with the entity space — `0.1` of the shipped `64` is 6.  `0` = no relative ceiling; `0` for **both** leaves the rebalance uncapped.  Where both are set the lower wins, and a ceiling never floors below one shard. |
 | `sharding.acquire-retry-interval` | `5s` | How long the coordinator waits before re-acquiring a [lease](/cluster/sharding/with-lease/) it failed to take.  Observable only where a `Lease` was passed in code: HOCON has no way to name one, and there is deliberately no `use-lease` switch. |
 | `sharding.remember-entities` | `false` | Persist the set of active entity IDs. |
 | `sharding.passivation-idle` | `5m` | Auto-passivate an entity after this idle window.  `0` = disabled.  An entity that keeps state in memory and does not rebuild it in `preStart` loses that state — see [passivation](/cluster/sharding/overview/#passivation). |
@@ -797,6 +799,46 @@ a message routed to an entity still in the queue creates it immediately — only
 the recovery burst waits.  The default stays `all` because pacing changes when
 an entity comes back, and how fast a journal can take the replays is a fact
 about that journal rather than about sharding.
+
+#### Bounding rebalance churn
+
+The default [allocation
+strategy](/cluster/sharding/allocation-strategy/) places a shard by
+`shardId % candidates.length`, so a node joining changes the answer for most
+shards at once.  At the shipped `number-of-shards = 64` that is 32 shards on a
+1 → 2 node join, **42 on a 2 → 3 join** and 46 on a 3 → 4 — each one a shard
+stopped, every entity under it stopped, then re-allocated, re-created and, if
+it persists, replayed.  Nothing announces it either: the coordinator does not
+react to a `MemberUp`, so the whole burst arrives on the next periodic tick.
+
+The two limits bound how many of those may be **in flight at once**:
+
+```hocon
+actor-ts.sharding {
+  rebalance-absolute-limit = 0     # 0 = no absolute ceiling
+  rebalance-relative-limit = 0.1   # fraction of number-of-shards
+}
+```
+
+Three things about that bound are worth stating plainly:
+
+- **It counts shards in flight, not shards per tick.**  A tick fires every
+  `rebalance-interval` while a hand-off may stand for a whole
+  `hand-off-timeout`, so a per-tick six would admit roughly thirty at once.
+  What the coordinator budgets each tick is the ceiling *minus what is already
+  moving*.
+- **Only voluntary moves are capped.**  A region that dies leaves its shards
+  with no owner at all; those are re-homed immediately, ceiling or not.
+  Throttling that path would leave shards unreachable rather than merely slow
+  to settle.
+- **Nothing is dropped, and no node is drained first.**  What the budget leaves
+  behind is proposed again on the next tick until the map is balanced, and the
+  shards that go first are picked round-robin across their current owners — a
+  ceiling that empties one node before touching the next is worse than no
+  ceiling.
+
+Set `rebalance-relative-limit = 0` (with the absolute limit already `0`) to
+restore the unbounded behaviour.
 
 A per-type setting therefore belongs in the builder; the config file is for
 the node-wide baseline you want to move between staging and production

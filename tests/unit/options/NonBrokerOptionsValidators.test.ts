@@ -388,8 +388,27 @@ describe('StartShardingOptionsValidator', () => {
     expect(() => check({ rebalanceIntervalMs: 10_000 })).toThrow(/typeName is required/);
   });
 
+  test('rejects a negative or fractional absolute rebalance limit', () => {
+    // A count of shards, so `0.5` is as meaningless as `-1`; `0` is the
+    // documented way to switch the ceiling off and must stay accepted (#850).
+    expect(() => check({ ...required, rebalanceAbsoluteLimit: -1 })).toThrow(/rebalanceAbsoluteLimit/);
+    expect(() => check({ ...required, rebalanceAbsoluteLimit: 0.5 })).toThrow(OptionsError);
+    expect(() => check({ ...required, rebalanceAbsoluteLimit: 0 })).not.toThrow();
+  });
+
+  test('rejects a relative rebalance limit outside 0..1', () => {
+    // It is a fraction of `numShards`, so anything above 1 asks for more shards
+    // than exist and reads as "6 shards" from someone who meant the absolute
+    // limit.  Both ends of the range stay legal: `0` disables it, `1` is
+    // "uncapped, spelt as a fraction" (#850).
+    expect(() => check({ ...required, rebalanceRelativeLimit: -0.1 })).toThrow(/rebalanceRelativeLimit/);
+    expect(() => check({ ...required, rebalanceRelativeLimit: 6 })).toThrow(OptionsError);
+    expect(() => check({ ...required, rebalanceRelativeLimit: 0 })).not.toThrow();
+    expect(() => check({ ...required, rebalanceRelativeLimit: 1 })).not.toThrow();
+  });
+
   test('accepts a valid coordinator config', () => {
-    expect(() => check({ ...required, numShards: 64, rebalanceIntervalMs: 10_000, handOffTimeoutMs: 5_000, acquireRetryIntervalMs: 5_000 }))
+    expect(() => check({ ...required, numShards: 64, rebalanceIntervalMs: 10_000, handOffTimeoutMs: 5_000, acquireRetryIntervalMs: 5_000, rebalanceAbsoluteLimit: 8, rebalanceRelativeLimit: 0.25 }))
       .not.toThrow();
   });
 });

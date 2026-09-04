@@ -717,6 +717,12 @@ export const ConfigKeys = {
    * like `bufferSize` and `maxEntities` above and for the same reason: the
    * recovery queue is fed by every shard the region owns, so read per shard
    * the key would silently mean `numberOfShards ×` what it says.
+   *
+   * The two `rebalance*Limit` leaves bound shards **in flight**, not shards per
+   * tick, and they reach the coordinator rather than a strategy on purpose
+   * (#850): capping inside `LeastShardAllocationStrategy` — which already caps
+   * itself — would have left the default `HashAllocationStrategy`, and every
+   * user-supplied one, uncapped.
    */
   sharding: {
     numberOfShards: 'actor-ts.sharding.number-of-shards',
@@ -729,6 +735,8 @@ export const ConfigKeys = {
     registerRetryInterval: 'actor-ts.sharding.register-retry-interval',
     rebalanceInterval: 'actor-ts.sharding.rebalance-interval',
     handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
+    rebalanceAbsoluteLimit: 'actor-ts.sharding.rebalance-absolute-limit',
+    rebalanceRelativeLimit: 'actor-ts.sharding.rebalance-relative-limit',
     acquireRetryInterval: 'actor-ts.sharding.acquire-retry-interval',
     shardRegionQueryTimeout: 'actor-ts.sharding.shard-region-query-timeout',
     entityRecoveryStrategy: 'actor-ts.sharding.entity-recovery.strategy',

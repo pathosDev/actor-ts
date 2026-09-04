@@ -21,6 +21,8 @@ describe('readShardingOptionsFromConfig', () => {
         register-retry-interval    = 750ms
         rebalance-interval         = 5s
         hand-off-timeout           = 30s
+        rebalance-absolute-limit   = 4
+        rebalance-relative-limit   = 0.25
         acquire-retry-interval     = 1500ms
         shard-region-query-timeout = 9s
         entity-recovery {
@@ -41,6 +43,8 @@ describe('readShardingOptionsFromConfig', () => {
       registerRetryIntervalMs: 750,
       rebalanceIntervalMs: 5_000,
       handOffTimeoutMs: 30_000,
+      rebalanceAbsoluteLimit: 4,
+      rebalanceRelativeLimit: 0.25,
       acquireRetryIntervalMs: 1_500,
       shardRegionQueryTimeoutMs: 9_000,
       entityRecoveryStrategy: 'constant-rate',
@@ -87,6 +91,11 @@ describe('readShardingOptionsFromConfig', () => {
       registerRetryIntervalMs: 500,
       rebalanceIntervalMs: 2_000,
       handOffTimeoutMs: 10_000,
+      // A ceiling ships ON: the default strategy re-homes 42 of these 64 shards
+      // in one tick when a third node joins, and `0`/`0` — still expressible —
+      // is what that unbounded behaviour now costs an operator to ask for.
+      rebalanceAbsoluteLimit: 0,
+      rebalanceRelativeLimit: 0.1,
       acquireRetryIntervalMs: 5_000,
       shardRegionQueryTimeoutMs: 5_000,
       // `all` is today's behaviour, so wiring `entity-recovery` changes nothing
@@ -129,6 +138,8 @@ describe('readShardingOptionsFromConfig', () => {
       registerRetryInterval: 'actor-ts.sharding.register-retry-interval',
       rebalanceInterval: 'actor-ts.sharding.rebalance-interval',
       handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
+      rebalanceAbsoluteLimit: 'actor-ts.sharding.rebalance-absolute-limit',
+      rebalanceRelativeLimit: 'actor-ts.sharding.rebalance-relative-limit',
       acquireRetryInterval: 'actor-ts.sharding.acquire-retry-interval',
       shardRegionQueryTimeout: 'actor-ts.sharding.shard-region-query-timeout',
       // Declared as three full dotted paths rather than one `entity-recovery`

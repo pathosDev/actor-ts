@@ -29,10 +29,13 @@ nothing races past a half-moved entity.
 
 Three paths:
 
-1. **Membership-driven** — `MemberUp` (a new node), `MemberRemoved`
-   (a leaving node), or any cluster transition that changes the
-   candidate set.  The coordinator re-runs the allocation strategy
-   for every owned shard.
+1. **Membership-driven** — `MemberRemoved` (a leaving node) and a
+   leader change.  Those are the only two cluster events the
+   coordinator subscribes to; everything else, `MemberUp` included,
+   reaches a handler that does nothing.  **A node joining therefore
+   moves no shard at the moment it joins** — it only changes what the
+   strategy will answer on the next periodic tick, which is why the
+   churn of a join arrives as one burst rather than a trickle.
 2. **Strategy-driven** — every `rebalanceIntervalMs` (default 2s),
    the coordinator asks the
    [allocation strategy](/cluster/sharding/allocation-strategy/)
@@ -179,8 +182,9 @@ not fully trusted — see
 ```ts
 const shardingOptions = StartShardingOptions.create()
   // ...
-  .withRebalanceIntervalMs(2_000)   // strategy-driven rebalance every 2s
-  .withHandOffTimeoutMs(10_000);    // give up + force-reallocate after 10s
+  .withRebalanceIntervalMs(2_000)      // strategy-driven rebalance every 2s
+  .withHandOffTimeoutMs(10_000)        // give up + force-reallocate after 10s
+  .withRebalanceRelativeLimit(0.1);    // at most 10% of the shards in flight
 sharding.start(shardingOptions);
 ```
 
@@ -188,6 +192,41 @@ sharding.start(shardingOptions);
 | --- | --- | --- |
 | `rebalanceIntervalMs` | 2000 | How often the strategy is consulted for rebalance recommendations. |
 | `handOffTimeoutMs` | 10_000 | If the source region doesn't send `HandOffComplete` within this window, the coordinator gives up waiting and force-reallocates. |
+| `rebalanceAbsoluteLimit` | 0 | Flat ceiling on shards **in flight**.  `0` = no absolute ceiling. |
+| `rebalanceRelativeLimit` | 0.1 | The same ceiling as a fraction of `numShards`.  `0` = no relative ceiling; `0` for both is uncapped.  Where both are set the lower wins, never below one shard. |
+
+### The ceiling on churn
+
+Whatever the strategy recommends, the coordinator hands off at most
+the configured ceiling **at once**.  The default
+[`HashAllocationStrategy`](/cluster/sharding/allocation-strategy/)
+places a shard by `shardId % candidates.length`, so a node joining
+changes the answer for most shards simultaneously: at the shipped
+`numShards = 64` a 2 → 3 node join re-homes **42 shards**, each one a
+stop, a re-allocation, a re-creation and — for a persistent or
+remembered entity — a journal replay.  All of it in the same tick,
+because a `MemberUp` moves nothing until that tick fires.
+
+Three properties of the bound are worth knowing:
+
+- **It counts shards in flight, not shards per tick.**  A tick fires
+  every `rebalanceIntervalMs` while a hand-off may stand for a whole
+  `handOffTimeoutMs`, so at the defaults a per-tick six would admit
+  roughly thirty concurrently.  Each tick's budget is the ceiling
+  *minus what is already moving*.
+- **Only voluntary moves are capped.**  A region that dies leaves its
+  shards with no owner at all; those are re-homed immediately, ceiling
+  or not.
+- **Nothing is dropped, and no node is drained first.**  The remainder
+  is proposed again on the next tick until the map is balanced, and
+  the shards that go first are picked round-robin across their current
+  owners — a ceiling that empties one node before touching the next
+  would be worse than none.
+
+The strategy's own limits and this one stack rather than compete:
+`LeastShardAllocationStrategy`'s `maxSimultaneousRebalance` bounds what
+it **proposes**, this ceiling bounds what the coordinator **accepts**
+from any strategy, including one you wrote.
 
 ## What buffered messages mean
 

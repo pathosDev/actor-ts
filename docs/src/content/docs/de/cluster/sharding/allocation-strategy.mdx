@@ -17,7 +17,7 @@ Balance:
 
 | Strategie | Allokation | Rebalance |
 | --- | --- | --- |
-| **`HashAllocationStrategy`** *(Default)* | `shardId mod sorted-candidates` | Nur wenn sich die Kandidatenmenge ändert. |
+| **`HashAllocationStrategy`** *(Default)* | `shardId mod sorted-candidates` | Nur wenn sich die Kandidatenmenge ändert — dann aber die *meisten* Shards auf einmal. |
 | **`LeastShardAllocationStrategy`** | Kandidat mit den wenigsten Shards. | Drainiert den geschäftigsten Node in die übrigen. |
 
 ## HashAllocationStrategy
@@ -48,6 +48,14 @@ return sorted[shardId % sorted.length];
   dieselben Shards immer auf denselben Nodes.
 - **Minimales Rebalance** — nur Shards, deren Hash-Ziel sich
   ändert, müssen wandern (wenn Nodes joinen oder gehen).
+  „Minimal" bezieht sich darauf, *ob überhaupt* verschoben wird,
+  nicht darauf, wie viel: der Modulus ändert sich für die meisten
+  Shards, sobald sich die Kandidatenzahl ändert. Bei `numShards = 64`
+  verschiebt ein Beitritt 1 → 2 also 32 Shards, 2 → 3 **42** und
+  3 → 4 dann 46. Die Strategie schlägt alle in einem Durchgang vor;
+  dass das nicht als ein Schwall ankommt, verhindert die Obergrenze
+  des Koordinators — siehe
+  [Die Obergrenze für Churn](/de/cluster/sharding/rebalance/#die-obergrenze-für-churn).
 - **Kein State** — die Strategie verfolgt nichts; sie ist eine
   reine Funktion.
 
@@ -120,6 +128,16 @@ new LeastShardAllocationStrategy(
   ein Rebalance auslösen; `5` wartet auf echten Unterschied.
 - **`maxSimultaneousRebalance`** — größerer Wert = schnellere
   Konvergenz, mehr Handoff-Verkehr. 3 ist eine vernünftige Mitte.
+
+Dieses Limit und die konfigurierte
+[Rebalance-Obergrenze](/de/cluster/sharding/rebalance/#die-obergrenze-für-churn)
+sind zwei verschiedene Ebenen, und beide greifen:
+`maxSimultaneousRebalance` begrenzt, was **diese Strategie** pro
+Durchgang **vorschlägt**, die Obergrenze begrenzt, was der
+**Koordinator** von einer beliebigen Strategie **annimmt**. Eine
+Strategie, die sich selbst deckelt, ersetzt die Obergrenze also
+nicht — die Default-Strategie deckelt gar nichts, und eine selbst
+geschriebene ebenso wenig.
 
 Für 100-Shard-Cluster mit häufigem Mitgliedschafts-Churn beide
 erhöhen (Threshold ~3, Max ~10). Für 16-Shard-Cluster, bei denen
