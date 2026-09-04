@@ -150,13 +150,25 @@ export const ConfigKeys = {
    * individually, each one has to be referenced by the reader before the
    * guard passes.
    *
-   * #867 extends this group with `log-config-on-start` and the two
-   * `debug.*` switches; #1179's per-recipient suppression lands here too.
+   * #867 extended it with `log-config-on-start` and the three `debug.*`
+   * switches; #1179's per-recipient suppression lands here too.
+   *
+   * **The `log-*` / `debug.*` split is by level, and that is the whole
+   * reason for the nesting.**  Everything named `log-…` is emitted at `info`
+   * or `warn` and appears in a default deployment once it is switched on.
+   * Everything under `debug` is emitted at `debug` and therefore needs
+   * `actor-ts.logger.level = debug` as well — two switches, not one.  Naming
+   * the sub-block after the level is what makes that second requirement
+   * visible in an `application.conf` instead of only in the docs.
    */
   diagnostics: {
     logDeadLetters: 'actor-ts.diagnostics.log-dead-letters',
     logDeadLettersDuringShutdown: 'actor-ts.diagnostics.log-dead-letters-during-shutdown',
     logDeadLettersSuspendDuration: 'actor-ts.diagnostics.log-dead-letters-suspend-duration',
+    logConfigOnStart: 'actor-ts.diagnostics.log-config-on-start',
+    debugUnhandled: 'actor-ts.diagnostics.debug.unhandled',
+    debugLifecycle: 'actor-ts.diagnostics.debug.lifecycle',
+    debugEventStream: 'actor-ts.diagnostics.debug.event-stream',
   },
 
   /** Dispatcher root — `actor-ts.dispatcher.*`. */

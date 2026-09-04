@@ -54,8 +54,15 @@ export type ResolvedConfigResult = {
   readonly attributed: boolean;
 };
 
-/** Keys whose values are redacted before they leave the process. */
-export const CONFIG_SECRET_PATTERN = /pass|secret|token|key|credential|auth/i;
-
-/** What a redacted value is replaced with. */
-export const CONFIG_REDACTED = '<redacted>';
+/**
+ * Keys whose values are redacted before they leave the process, and what
+ * they are replaced with.
+ *
+ * Re-exported rather than declared: both now also guard the boot config
+ * dump (#867), which is core and imports nothing from `src/devtools/`, so
+ * the declarations live in `src/util/Constants.ts` — the one tier two
+ * subsystems may share.  The names stay here because `<redacted>` is wire
+ * vocabulary the panel compares against, and a protocol constant that
+ * moved would be a protocol change.
+ */
+export { CONFIG_REDACTED, CONFIG_SECRET_PATTERN } from '../../util/Constants.js';

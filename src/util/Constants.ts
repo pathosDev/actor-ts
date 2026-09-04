@@ -111,3 +111,38 @@ export const PATH_TRAVERSAL_SEGMENTS: ReadonlySet<string> = new Set(['.', '..'])
  * a coupling a comment cannot keep.
  */
 export const MAXIMUM_DRAW_ATTEMPTS = 1_000;
+
+/**
+ * Config **paths** whose value is withheld wherever the merged tree is
+ * rendered — DevTools' `config.resolved` pull (#553) and the boot dump
+ * `actor-ts.diagnostics.log-config-on-start` turns on (#867).
+ *
+ * It moved here from `devtools/protocol/ConfigFrames.ts` the moment the
+ * second renderer appeared: `src/` outside `src/devtools/` imports nothing
+ * from it, deliberately — the DevTools protocol is an attached debugger's
+ * vocabulary and the core does not carry it — so the choice was this file
+ * or a second copy of the pattern, and two redaction lists is how one of
+ * them stops being extended.
+ *
+ * **Matched against the path, never the value.**  A password that happens
+ * to look ordinary is still a password, and the key is what names it.
+ *
+ * **It is a heuristic, and it is the weaker half of the guarantee.**  It
+ * catches `password`, `api-key`, `secret`, `auth-token`, `credentials` and
+ * anything else spelling one of the six fragments.  It does not catch a
+ * secret whose key does not say so — `dsn`, `connection-string`, a `uri`
+ * with userinfo in it — and it cannot: the merged tree is a tree of
+ * strings, and by the time it exists a `${?DATABASE_PASSWORD}` has
+ * resolved into a value with nothing left to say where it came from.  The
+ * defence that does not depend on a guess is not printing the tree, which
+ * is why both renderers are opt-in and the boot dump ships `off`.
+ *
+ * Deliberately not widened past these six.  `seed` would redact
+ * `cluster.seed-nodes`, `id` would redact half the file, and a dump whose
+ * ordinary keys read `<redacted>` teaches an operator to stop reading it —
+ * which costs more than the fragment would have bought.
+ */
+export const CONFIG_SECRET_PATTERN = /pass|secret|token|key|credential|auth/i;
+
+/** What a value redacted by {@link CONFIG_SECRET_PATTERN} is replaced with. */
+export const CONFIG_REDACTED = '<redacted>';

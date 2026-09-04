@@ -10,19 +10,30 @@
  * so there is nothing to push.  It is read once per panel open.
  */
 import type { ActorSystem } from '../../ActorSystem.js';
-import type { ConfigLayers } from '../../config/Config.js';
-import type { ConfigObject, ConfigValue } from '../../config/HoconParser.js';
+import {
+  attributedConfigLeaves,
+  resolveConfigLeaves,
+  type ResolvedConfigLeaf,
+} from '../../diagnostics/ConfigDump.js';
 import { toWireValue } from '../internal/WireSerializer.js';
 import {
   CONFIG_REDACTED,
-  CONFIG_SECRET_PATTERN,
-  type ConfigSource,
   type ResolvedConfigEntry,
   type ResolvedConfigResult,
 } from '../protocol/index.js';
 import type { DevToolsServer } from '../DevToolsServer.js';
 
-/** Wires `config.resolved` onto the server. */
+/**
+ * Wires `config.resolved` onto the server.
+ *
+ * The walk, the layer attribution and the secret-path test are not here:
+ * they are `src/diagnostics/ConfigDump.ts`, shared with the boot dump #867
+ * added.  Two renderers of one merged tree that each walked it their own way
+ * would be two chances to disagree about which layer won — and, worse, two
+ * redaction rules, so a key withheld from the panel could still reach a log
+ * file.  What stays here is the half that is genuinely the wire's: the size
+ * caps `toWireValue` applies, and the `truncated` flag that reports them.
+ */
 export class ConfigMethods {
   constructor(private readonly system: ActorSystem) {}
 
@@ -33,83 +44,21 @@ export class ConfigMethods {
 
   private async onResolved(): Promise<ResolvedConfigResult> {
     const config = this.system.config;
-    const layers = config._sources();
-    const entries: ResolvedConfigEntry[] = [];
-
-    for (const [path, value] of leaves(config.toJSON())) {
-      const source = layers === null ? 'reference' : sourceOf(layers, path);
-      entries.push(entryFor(path, value, source, layers === null
-        ? false
-        : displaced(layers, path, source)));
-    }
-
-    // Sorted, because a config file's own order is not the merged tree's and
-    // the reader is looking for a key by name, not by where it happened to
-    // land.
-    entries.sort((left, right) => left.path.localeCompare(right.path));
-
     return {
-      entries,
-      applicationPath: layers?.applicationPath ?? null,
-      attributed: layers !== null,
+      entries: resolveConfigLeaves(config).map(entryFor),
+      applicationPath: config._sources()?.applicationPath ?? null,
+      attributed: attributedConfigLeaves(config),
     };
   }
 }
 
-/** Which layer's value survived the merge for `path`. */
-function sourceOf(layers: ConfigLayers, path: string): ConfigSource {
-  // Highest first: the merge resolves the same way, so this cannot
-  // disagree with the tree it is describing.
-  if (layers.overrides.hasPath(path)) return 'override';
-  if (layers.application.hasPath(path)) return 'application';
-  return 'reference';
-}
-
-/** True when a layer below the winning one also set `path`. */
-function displaced(layers: ConfigLayers, path: string, source: ConfigSource): boolean {
-  if (source === 'override') {
-    return layers.application.hasPath(path) || layers.reference.hasPath(path);
-  }
-  if (source === 'application') return layers.reference.hasPath(path);
-  return false;
-}
-
-function entryFor(
-  path: string,
-  value: ConfigValue,
-  source: ConfigSource,
-  overridden: boolean,
-): ResolvedConfigEntry {
-  if (CONFIG_SECRET_PATTERN.test(path)) {
+function entryFor(leaf: ResolvedConfigLeaf): ResolvedConfigEntry {
+  const { path, layer: source, displaced: overridden } = leaf;
+  if (leaf.secret) {
     // Redacted by PATH rather than by value: a password that happens to
     // look ordinary is still a password, and the key is what names it.
     return { path, value: CONFIG_REDACTED, source, overridden, truncated: false };
   }
-  const wire = toWireValue(value);
+  const wire = toWireValue(leaf.value);
   return { path, value: wire.value, source, overridden, truncated: wire.truncated };
-}
-
-/**
- * Every leaf in the tree, as dotted paths.
- *
- * An array is a leaf: `seed-nodes` is one setting whose value is a list,
- * and splitting it into `seed-nodes.0` and `seed-nodes.1` would turn one
- * answer into several that no one configured.
- */
-function* leaves(tree: ConfigObject, prefix = ''): Generator<[string, ConfigValue]> {
-  for (const [key, value] of Object.entries(tree)) {
-    const path = prefix === '' ? key : `${prefix}.${key}`;
-    if (isBranch(value)) {
-      yield* leaves(value, path);
-      continue;
-    }
-    yield [path, value];
-  }
-}
-
-function isBranch(value: ConfigValue): value is ConfigObject {
-  return typeof value === 'object'
-    && value !== null
-    && !Array.isArray(value)
-    && !('__substitution' in value);
 }

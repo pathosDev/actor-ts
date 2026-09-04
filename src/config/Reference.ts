@@ -333,6 +333,36 @@ actor-ts {
     # How long logging stays suspended once the count above is reached.
     # 0 = never suspend, i.e. log every dead letter.
     log-dead-letters-suspend-duration = 5m
+
+    # Write the merged configuration to the log once at startup, one record,
+    # every key with the layer it came from -- the answer to "why is this
+    # setting not what I wrote".  Off because a few hundred lines nobody
+    # asked for is a behaviour change, and because the dump prints the tree:
+    # keys whose NAME matches pass|secret|token|key|credential|auth are
+    # withheld, which catches password and api-key and does not catch dsn or
+    # a uri with a password in it.  Read the level note under debug below --
+    # this one is info, so it needs no second switch.
+    log-config-on-start = off
+
+    # Traces the framework emits at DEBUG.  Two switches, not one: the key
+    # here says WHETHER a record is produced, and logger.level = debug says
+    # whether it is written.  Each is off because it is a record per event on
+    # a path the application drives -- per declined message, per actor
+    # transition, per subscription -- so the cost belongs to whoever asks.
+    debug {
+      # Every message an actor was handed and declined.  The count and the
+      # dead letter are unconditional; this names the message.
+      unhandled = off
+
+      # Actor start, stop and restart.  ActorStarted / ActorStopped /
+      # ActorRestarted carry the same facts to an event-stream subscriber
+      # that can be selective, which a log level cannot.
+      lifecycle = off
+
+      # Event-stream subscribe and unsubscribe.  Never publish: that runs on
+      # every actor start, every stop and every dead letter.
+      event-stream = off
+    }
   }
 
   cluster {

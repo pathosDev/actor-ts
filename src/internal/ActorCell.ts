@@ -1493,6 +1493,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
           new ActorStarted(this.self, actor.constructor.name, this._parent?.path.toString() ?? null),
         );
       }
+      // Gated at the call site, before `this.log` is touched: the getter
+      // builds a DisplayNameLogger and renders the path on first use, and an
+      // actor that never logs is meant never to pay for either (#867).
+      if (this.system._diagnostics.debugLifecycle) {
+        this.log.debug(`started — ${actor.constructor.name}`);
+      }
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       // Whatever the factory or `preStart` did, drops held for a name that
@@ -1600,6 +1606,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     if (this.system.eventStream.hasSubscribers) {
       this.system.eventStream.publish(new ActorStopped(this.self));
     }
+    if (this.system._diagnostics.debugLifecycle) this.log.debug('stopped');
 
     // Notify watchers.  One shared `Terminated`, one guarded send each — see
     // `_notifyWatcher` for why the loop must not be able to throw.  Built only
@@ -1692,6 +1699,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         { help: 'Cumulative count of supervisor-driven actor restarts.' },
       ).inc();
       this.system.eventStream.publish(new ActorRestarted(this.self, cause));
+      if (this.system._diagnostics.debugLifecycle) {
+        this.log.debug(`restarted after ${cause.name}: ${cause.message}`);
+      }
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e));
       this.failToParent(new ActorInitializationError(`Actor ${this.path} failed to restart`, err));
