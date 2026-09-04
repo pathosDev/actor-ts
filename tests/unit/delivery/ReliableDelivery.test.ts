@@ -965,46 +965,48 @@ describe('ReliableDelivery — malformed delivery (#727)', () => {
 /** Mutable slot the spawn factory writes the live controller into. */
 type ControllerSlot = { controller: ConsumerController<string> | null };
 
+/**
+ * Spawn a ConsumerController and keep hold of the instance.
+ *
+ * `ReliableDelivery.consumer` hands back only a ref, and the budget cases
+ * assert on `trackedProducers` / `outOfOrderFor` — the counters the growth
+ * they bound had no equivalent of before — so they need the object and not
+ * just its address.
+ */
+const spawnBoundedConsumer = (
+  kit: TestKit,
+  slot: ControllerSlot,
+  options: ConsumerControllerOptionsType<string>,
+  name: string,
+): ActorRef<Delivery<string>> => kit.system.spawn<Delivery<string>>(() => {
+  slot.controller = new ConsumerController<string>(options);
+  return slot.controller;
+}, name);
+
+/**
+ * Hand-rolled envelope, because the budget cases turn on a `producerId` and a
+ * `seq` the *sender* chose.  A `ProducerController` mints one id per
+ * construction and never leaves a gap open, which is precisely the traffic
+ * these bounds do not exist for.
+ */
+const deliver = (
+  consumer: ActorRef<Delivery<string>>,
+  replyTo: unknown,
+  producerId: string,
+  seq: number,
+  body: string,
+): void => {
+  consumer.tell({
+    kind: 'reliable-delivery.delivery',
+    producerId,
+    incarnation: 'incarnation-1',
+    seq,
+    body,
+    replyTo,
+  } as never);
+};
+
 describe('ReliableDelivery — dedup map resource budget (#728)', () => {
-  /**
-   * Spawn a ConsumerController and keep hold of the instance.
-   *
-   * `ReliableDelivery.consumer` hands back only a ref, and these cases assert
-   * on `trackedProducers` — the counter the map's growth had no equivalent of
-   * before this — so they need the object and not just its address.
-   */
-  const spawnBoundedConsumer = (
-    kit: TestKit,
-    slot: ControllerSlot,
-    options: ConsumerControllerOptionsType<string>,
-    name: string,
-  ): ActorRef<Delivery<string>> => kit.system.spawn<Delivery<string>>(() => {
-    slot.controller = new ConsumerController<string>(options);
-    return slot.controller;
-  }, name);
-
-  /**
-   * Hand-rolled envelope, because the point of every case here is a
-   * `producerId` the *sender* chose.  A `ProducerController` mints one per
-   * construction and would need one actor per key.
-   */
-  const deliver = (
-    consumer: ActorRef<Delivery<string>>,
-    replyTo: unknown,
-    producerId: string,
-    seq: number,
-    body: string,
-  ): void => {
-    consumer.tell({
-      kind: 'reliable-delivery.delivery',
-      producerId,
-      incarnation: 'incarnation-1',
-      seq,
-      body,
-      replyTo,
-    } as never);
-  };
-
   test('maxProducers evicts the least-recently-used producer, and the map never grows past it', async () => {
     const kit = quietKit('rd-max-producers');
     const received: string[] = [];
@@ -1314,6 +1316,155 @@ describe('ReliableDelivery — dedup map resource budget (#728)', () => {
       timeoutMs: 4_000,
       label: 'postStop cleared the dedup map',
     });
+
+    await kit.system.terminate();
+  });
+});
+
+describe('ReliableDelivery — out-of-order window bound (#728, #643)', () => {
+  test('a gap that never closes leaves the out-of-order set at maxOutOfOrder, refusing rather than dropping', async () => {
+    // Variant B of the issue, and the half #643 claims in its own acceptance
+    // criteria.  `contiguous` only advances when the missing predecessor
+    // arrives, so a sender that withholds seq 1 and keeps sending the ones
+    // after it put every one of them into the per-producer set, permanently
+    // and without limit.  The other two bounds do not cover it: `maxProducers`
+    // caps how many such sets exist, not the size of one, and the idle sweep
+    // never reaches a producer that is actively flooding, because every
+    // admitted delivery re-stamps its timestamp.
+    const kit = quietKit('rd-out-of-order-cap');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    const cap = 4;
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      // Both other bounds off, so nothing but this one can reclaim or refuse.
+      maxProducers: Infinity,
+      producerIdleTtlMs: Infinity,
+      maxOutOfOrder: cap,
+    }, 'out-of-order-consumer');
+
+    // seq 1 is withheld and everything above it arrives in ONE burst, with no
+    // wait inside it.  That is deliberate and is what makes the cap an exact
+    // post-condition rather than an approximate one: the check runs before the
+    // handler and the insert after it, so if the cell did not serialise
+    // deliveries every message in this burst would pass the check while the
+    // set was still empty and the set would end up holding all 44 of them.
+    // Phasing the burst around an `awaitCondition` would drain the pipeline
+    // between the two halves and hide exactly that.
+    const overflow = 40;
+    for (let seq = 2; seq <= cap + 1 + overflow; seq++) {
+      deliver(consumer, probe, 'gappy', seq, `seq-${seq}`);
+    }
+    // `>=` rather than `===`: an implementation that admits too many would
+    // race straight past the exact count, and this poll is only here to get
+    // past the empty state — the assertions after the settle are the test.
+    await awaitCondition(() => received.length >= cap, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'the sequences that fit in the out-of-order window were handled',
+    });
+    // The rest is an absence — not one of the other 40 may be admitted — so
+    // settling past the point where they would have been IS the assertion.
+    await sleep(120);
+    // Refused means BOTH: no handler call and no acknowledgment.  Withholding
+    // the ack stalls the producer's own window instead of growing this
+    // consumer's heap; dropping the oldest retained sequence would bound the
+    // same heap and would re-run the handler for a message already handled and
+    // already acknowledged.
+    expect(received).toHaveLength(cap);
+    expect(slot.controller?.outOfOrderFor('gappy')).toBe(cap);
+    // One acknowledgment per admitted delivery, and none for the refused ones.
+    expect(probe.messageCount).toBe(cap);
+
+    // A stall, not a deadlock.  The sequence that closes the gap is admitted
+    // at the cap — it drains the set rather than growing it — and the window
+    // then slides over the whole retained run in one pass.
+    deliver(consumer, probe, 'gappy', 1, 'the-missing-one');
+    await awaitCondition(() => slot.controller?.outOfOrderFor('gappy') === 0, {
+      timeoutMs: 4_000,
+      label: 'the missing sequence drained the whole out-of-order set',
+    });
+    expect(received).toHaveLength(cap + 1);
+
+    // And the far sequences are admissible again, so nothing was lost by the
+    // refusal: the producer's retransmit of any of them now lands.
+    deliver(consumer, probe, 'gappy', cap + 2, 'after-the-gap-closed');
+    await awaitCondition(() => received.length === cap + 2, {
+      timeoutMs: 4_000,
+      label: 'a refused sequence is handled once the gap has closed',
+    });
+    expect(received[received.length - 1]).toBe('after-the-gap-closed');
+
+    await kit.system.terminate();
+  });
+
+  test('maxOutOfOrder: Infinity is the documented opt-out', async () => {
+    // The counterpart, and the reason the cap is an option rather than a
+    // constant: with the opt-out every sequence above the gap is retained,
+    // which is the pre-#728 behaviour and is still what someone who asks for
+    // it gets.
+    const kit = quietKit('rd-out-of-order-unbounded');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: Infinity,
+      producerIdleTtlMs: Infinity,
+      maxOutOfOrder: Infinity,
+    }, 'unbounded-window-consumer');
+
+    const above = 30;
+    for (let seq = 2; seq <= above + 1; seq++) deliver(consumer, probe, 'gappy', seq, `seq-${seq}`);
+    await awaitCondition(() => received.length === above, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'every sequence above the gap was handled',
+    });
+    expect(slot.controller?.outOfOrderFor('gappy')).toBe(above);
+    expect(probe.messageCount).toBe(above);
+
+    await kit.system.terminate();
+  });
+
+  test('the cap is per producer, not shared across them', async () => {
+    // The set lives on the dedup entry, so one producer stalled on a gap must
+    // not spend another producer's budget.  A single shared counter would
+    // satisfy the first case here and fail this one.
+    const kit = quietKit('rd-out-of-order-per-producer');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    const cap = 2;
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: Infinity,
+      producerIdleTtlMs: Infinity,
+      maxOutOfOrder: cap,
+    }, 'per-producer-window-consumer');
+
+    // Two producers, each withholding its own seq 1 and each filling its own
+    // window to the cap.
+    for (const producerId of ['gappy-a', 'gappy-b']) {
+      for (let seq = 2; seq <= cap + 1; seq++) {
+        deliver(consumer, probe, producerId, seq, `${producerId}-${seq}`);
+      }
+    }
+    await awaitCondition(() => received.length === 2 * cap, {
+      timeoutMs: 4_000,
+      label: 'both producers filled their own out-of-order window',
+    });
+    expect(slot.controller?.outOfOrderFor('gappy-a')).toBe(cap);
+    expect(slot.controller?.outOfOrderFor('gappy-b')).toBe(cap);
+
+    // b closing its gap releases only b's set; a is still stalled on its own.
+    deliver(consumer, probe, 'gappy-b', 1, 'gappy-b-1');
+    await awaitCondition(() => slot.controller?.outOfOrderFor('gappy-b') === 0, {
+      timeoutMs: 4_000,
+      label: 'the second producer drained its own window',
+    });
+    expect(slot.controller?.outOfOrderFor('gappy-a')).toBe(cap);
 
     await kit.system.terminate();
   });

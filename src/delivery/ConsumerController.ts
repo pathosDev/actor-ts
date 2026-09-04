@@ -5,11 +5,12 @@ import { DeadLetter } from '../SystemMessages.js';
 import type { Acknowledgment, Delivery } from './Messages.js';
 import {
   ConsumerControllerOptionsValidator,
+  DEFAULT_MAX_OUT_OF_ORDER,
   DEFAULT_MAX_PRODUCERS,
   DEFAULT_PRODUCER_IDLE_TTL_MS,
 } from './ConsumerControllerOptions.js';
 import type { ConsumerControllerOptions, ConsumerControllerOptionsType } from './ConsumerControllerOptions.js';
-import { EVICTION_REPORT_INTERVAL_MS, MAX_DELIVERY_IDENTIFIER_LENGTH } from './Constants.js';
+import { DEDUPLICATION_REPORT_INTERVAL_MS, MAX_DELIVERY_IDENTIFIER_LENGTH } from './Constants.js';
 
 type DeduplicationState = {
   /**
@@ -45,14 +46,19 @@ type DeduplicationState = {
  * handler, and Acks back to the producer.  Handles out-of-order redelivery
  * correctly by tracking each delivered seq, not just the highest one.
  *
- * The dedup state is on a **resource budget** rather than kept forever: at
- * most `maxProducers` entries, least-recently-used evicted, and entries idle
- * for `producerIdleTtlMs` swept out.  Retaining it forever made the map's
- * size a function of how many distinct `producerId`s had ever arrived —
- * sender-chosen from the wire, and freshly random per anonymous producer even
- * with no sender in the picture (#728).  The budget is what turns that into a
- * bounded cost; what it costs in exchange is at-least-once duplicates around
- * an eviction, which the protocol already permits.
+ * The dedup state is on a **resource budget** rather than kept forever, in
+ * both of its dimensions.  The map holds at most `maxProducers` entries,
+ * least-recently-used evicted, with entries idle for `producerIdleTtlMs`
+ * swept out; and each entry retains at most `maxOutOfOrder` sequences above
+ * an open gap.  Retaining the map forever made its size a function of how
+ * many distinct `producerId`s had ever arrived — sender-chosen from the wire,
+ * and freshly random per anonymous producer even with no sender in the
+ * picture — while the per-entry set grew for as long as a sender withheld one
+ * sequence and kept sending the ones after it (#728).  The budget is what
+ * turns both into a bounded cost.  What it costs in exchange is at-least-once
+ * duplicates around an eviction, which the protocol already permits, and a
+ * stalled producer at the out-of-order cap, which its own retransmit
+ * recovers from.
  */
 export class ConsumerController<T> extends Actor<Delivery<T>> {
   /**
@@ -70,10 +76,19 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
 
   private readonly maxProducers: number;
   private readonly producerIdleTtlMs: number;
+  private readonly maxOutOfOrder: number;
   private idleSweepTimer: Cancellable | null = null;
   /** Evictions not yet named in a warning — see {@link reportEvictions}. */
   private evictedSinceReport = 0;
   private lastEvictionReportAtMs = 0;
+  /**
+   * Out-of-order refusals not yet named in a warning — see
+   * {@link reportOutOfOrderRefusals}.  Counted separately from the evictions
+   * above, and paced off its own timestamp, so a flood of one kind cannot
+   * suppress the first sighting of the other.
+   */
+  private refusedSinceReport = 0;
+  private lastRefusalReportAtMs = 0;
 
   public readonly options: ConsumerControllerOptionsType<T>;
 
@@ -84,6 +99,7 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     this.options = resolvedOptions;
     this.maxProducers = resolvedOptions.maxProducers ?? DEFAULT_MAX_PRODUCERS;
     this.producerIdleTtlMs = resolvedOptions.producerIdleTtlMs ?? DEFAULT_PRODUCER_IDLE_TTL_MS;
+    this.maxOutOfOrder = resolvedOptions.maxOutOfOrder ?? DEFAULT_MAX_OUT_OF_ORDER;
   }
 
   /**
@@ -97,6 +113,21 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
    */
   get trackedProducers(): number {
     return this.deduplication.size;
+  }
+
+  /**
+   * Out-of-order seqs currently retained for `producerId`'s live incarnation,
+   * or 0 when nothing is tracked for it.
+   *
+   * The companion to {@link trackedProducers}, for the same reason: what
+   * `maxOutOfOrder` bounds also had no symptom short of the OOM.  It sits at
+   * 0 for a producer whose stream is arriving in order, and rises only while
+   * a gap is open; parked at `maxOutOfOrder` it means that producer is
+   * stalled — this consumer is refusing to acknowledge past the cap while it
+   * waits for a sequence that has not arrived.
+   */
+  outOfOrderFor(producerId: string): number {
+    return this.deduplication.get(producerId)?.above.size ?? 0;
   }
 
   /**
@@ -150,8 +181,14 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     const state = this.deduplicationStateFor(message.producerId, message.incarnation);
     if (message.seq <= state.contiguous || state.above.has(message.seq)) {
       // Duplicate — re-ack so the producer can release its slot, but don't
-      // re-run the user handler.
+      // re-run the user handler.  Ahead of the out-of-order cap below on
+      // purpose: a duplicate costs the set nothing, and refusing to re-ack one
+      // at the cap would strand a producer whose acknowledgment was lost.
       this.sendAcknowledgment(message);
+      return;
+    }
+    if (!this.hasOutOfOrderRoom(state, message.seq)) {
+      this.reportOutOfOrderRefusals(state);
       return;
     }
     try {
@@ -282,7 +319,7 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
    * never hears about it has no way to tell a `maxProducers` that is too low
    * from one that is doing its job against a flood.  But the flood is
    * precisely when this fires on every message, so the line is paced by
-   * {@link EVICTION_REPORT_INTERVAL_MS} and carries the count it stands for.
+   * {@link DEDUPLICATION_REPORT_INTERVAL_MS} and carries the count it stands for.
    *
    * The victim's id is deliberately not in the message: it is peer-supplied
    * text, and length is the only thing admission checks about it.
@@ -290,7 +327,7 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
   private reportEvictions(evicted: number): void {
     this.evictedSinceReport += evicted;
     const now = Date.now();
-    if (now - this.lastEvictionReportAtMs < EVICTION_REPORT_INTERVAL_MS) return;
+    if (now - this.lastEvictionReportAtMs < DEDUPLICATION_REPORT_INTERVAL_MS) return;
     this.lastEvictionReportAtMs = now;
     this.log.warn(
       `consumer evicted ${this.evictedSinceReport} least-recently-used producer dedup `
@@ -325,6 +362,61 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
         + `${this.producerIdleTtlMs} ms`,
       );
     }
+  }
+
+  /**
+   * Whether `seq` can be admitted without pushing this producer's
+   * out-of-order set past `maxOutOfOrder`.
+   *
+   * A seq that closes the gap is admissible however full the set is: it
+   * slides `contiguous` and drains from the set rather than adding to it, and
+   * it is the *only* thing that ever releases the set — refusing it would
+   * turn a recoverable stall into a deadlock.  `Infinity` needs no branch of
+   * its own, since every finite size is below it.
+   *
+   * The check is here, before the handler, and {@link markDelivered} inserts
+   * after it — which is only a reliable pairing because `onReceive` hands the
+   * cell the delivery's promise (#643).  Detached, every in-flight delivery
+   * passed this check before any of them had inserted, so the set overshot
+   * the cap by the concurrency.
+   */
+  private hasOutOfOrderRoom(state: DeduplicationState, seq: number): boolean {
+    if (seq === state.contiguous + 1) return true;
+    return state.above.size < this.maxOutOfOrder;
+  }
+
+  /**
+   * Surface a delivery refused at the out-of-order cap, paced the same way
+   * {@link reportEvictions} is and for the same reason.
+   *
+   * Refusing means no handler call *and* no acknowledgment, which is the
+   * maintainer's choice over the alternative of evicting the oldest retained
+   * sequence.  Both bound the heap; they differ in what they spend.  A drop
+   * re-runs the handler for a message this consumer had already handled and
+   * acknowledged — an at-least-once duplicate the sender cannot anticipate —
+   * whereas withholding the acknowledgment leaves the send in the producer's
+   * own window, where it is already being retransmitted.  The stall
+   * propagates back to the sender, which is where the missing sequence is,
+   * and the protocol's "no silent drop of a message" property survives.
+   *
+   * The awaited seq is in the message because it is the number an operator
+   * needs and it is a bounded integer by {@link isAdmissible}.  The
+   * `producerId` is not, for the same reason {@link reportEvictions} omits
+   * it: it is peer-supplied text.
+   */
+  private reportOutOfOrderRefusals(state: DeduplicationState): void {
+    this.refusedSinceReport++;
+    const now = Date.now();
+    if (now - this.lastRefusalReportAtMs < DEDUPLICATION_REPORT_INTERVAL_MS) return;
+    this.lastRefusalReportAtMs = now;
+    this.log.warn(
+      `consumer refused ${this.refusedSinceReport} out-of-order deliver`
+      + `${this.refusedSinceReport === 1 ? 'y' : 'ies'} with a full out-of-order window `
+      + `(maxOutOfOrder=${this.maxOutOfOrder}); it is waiting for seq ${state.contiguous + 1} and `
+      + 'will not acknowledge past the cap until that arrives, so the producer stalls rather '
+      + 'than this consumer retaining sequences without bound',
+    );
+    this.refusedSinceReport = 0;
   }
 
   private markDelivered(state: DeduplicationState, seq: number): void {
