@@ -94,11 +94,16 @@ export type { PortLike, BrokeredMessage } from './transports/MessageChannelTrans
 
 export {
   FailureDetector,
+  createFailureDetector,
   defaultFailureDetectorOptions,
 } from './FailureDetector.js';
 export { FailureDetectorOptions, FailureDetectorOptionsBuilder, FailureDetectorOptionsValidator } from './FailureDetectorOptions.js';
 export type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
-export type { FailureDecision } from './FailureDetector.js';
+export type {
+  FailureDecision,
+  FailureDetectorImplementation,
+  FailureDetectorLike,
+} from './FailureDetector.js';
 export {
   PhiAccrualFailureDetector,
   defaultPhiAccrualOptions,

@@ -371,10 +371,33 @@ export const ConfigKeys = {
       pruneInterval: 'actor-ts.cluster.tombstone.prune-interval',
       minRetention: 'actor-ts.cluster.tombstone.min-retention',
     },
+    /**
+     * Failure detection — `actor-ts.cluster.failure-detector.*` (#840).
+     *
+     * `implementation` picks the algorithm; `heartbeat-interval` is shared by
+     * both and belongs to the cluster's heartbeat loop rather than to either
+     * detector (#1142), which is why the `phi` sub-block does not repeat it.
+     * `unreachable-after` / `down-after` are the *simple* detector's
+     * thresholds and mean nothing to the φ-accrual one, whose suspicion values
+     * live under `phi`.
+     *
+     * Full dotted leaves under `phi`, not a bare block root: `NoDeadConfigKeys`'
+     * `coveringAccessor` falls back to the nearest root, so a root alone would
+     * pass the guard for all five leaves whether or not the reader had ever
+     * been written.
+     */
     failureDetector: {
+      implementation: 'actor-ts.cluster.failure-detector.implementation',
       heartbeatInterval: 'actor-ts.cluster.failure-detector.heartbeat-interval',
       unreachableAfter: 'actor-ts.cluster.failure-detector.unreachable-after',
       downAfter: 'actor-ts.cluster.failure-detector.down-after',
+      phi: {
+        unreachableThreshold: 'actor-ts.cluster.failure-detector.phi.unreachable-threshold',
+        downThreshold: 'actor-ts.cluster.failure-detector.phi.down-threshold',
+        maxSampleSize: 'actor-ts.cluster.failure-detector.phi.max-sample-size',
+        minStdDeviation: 'actor-ts.cluster.failure-detector.phi.min-std-deviation',
+        acceptableHeartbeatPause: 'actor-ts.cluster.failure-detector.phi.acceptable-heartbeat-pause',
+      },
     },
 
     /**

@@ -349,9 +349,32 @@ actor-ts {
     }
 
     failure-detector {
+      # Which detection algorithm this node runs.  simple = plain elapsed-time
+      # thresholds; phi = the variance-aware phi-accrual detector, which adapts
+      # to the network it actually sees.  Opt-in: simple is what every cluster
+      # ran before the choice existed.
+      implementation = simple
+
+      # Shared by BOTH implementations -- it is the cadence of the cluster's
+      # heartbeat loop, not a property of the algorithm, so swapping the one
+      # above must not change how often this node talks to its peers.  The phi
+      # block below deliberately has no copy of it.
       heartbeat-interval = 500ms
+
+      # The simple detector's thresholds.  Ignored when implementation = phi.
       unreachable-after = 2s
       down-after = 5s     # measured from the last heartbeat, so > unreachable-after
+
+      # The phi-accrual detector's tuning.  Ignored when implementation =
+      # simple.  The two thresholds are phi values -- a continuous suspicion
+      # score, not a duration -- and fractional ones are ordinary.
+      phi {
+        unreachable-threshold = 8
+        down-threshold = 12          # must exceed unreachable-threshold
+        max-sample-size = 200        # inter-arrival times kept per peer
+        min-std-deviation = 100ms    # floor, so a very steady peer is not flagged on noise
+        acceptable-heartbeat-pause = 0s   # grace added to the last heartbeat before phi rises
+      }
     }
 
     # Stable-observation bootstrap: poll discovery until the contact-point set

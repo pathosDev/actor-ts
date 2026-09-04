@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { Config, ConfigError } from '../../../src/config/Config.js';
 import {
+  DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
@@ -12,6 +13,7 @@ import {
 } from '../../../src/cluster/ClusterOptions.js';
 import type { ClusterOptionsType } from '../../../src/cluster/ClusterOptions.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
+import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
 import { DEFAULT_MAX_FRAME_BYTES } from '../../../src/cluster/Protocol.js';
 
@@ -105,6 +107,53 @@ describe('readClusterOptionsFromConfig', () => {
     expect(readClusterOptionsFromConfig(config)).toEqual({ gossipIntervalMs: 250 });
   });
 
+  test('reads the detector selector and the whole φ sub-block (#840)', () => {
+    const config = Config.parseString(`
+      actor-ts.cluster.failure-detector {
+        implementation = phi
+        phi {
+          unreachable-threshold      = 8.5
+          down-threshold             = 16
+          max-sample-size            = 42
+          min-std-deviation          = 250ms
+          acceptable-heartbeat-pause = 3s
+        }
+      }
+    `);
+
+    expect(readClusterOptionsFromConfig(config)).toEqual({
+      failureDetectorImplementation: 'phi',
+      phiAccrual: {
+        // Fractional on purpose: φ is a continuous score, and `getInt` would
+        // throw on this value — which is what pins the reader to `getNumber`.
+        unreachableThreshold: 8.5,
+        downThreshold: 16,
+        maxSampleSize: 42,
+        minStdDeviationMs: 250,
+        acceptableHeartbeatPauseMs: 3_000,
+      },
+    });
+  });
+
+  test('omits phiAccrual entirely when no φ setting is configured', () => {
+    // Same rule as `failureDetector` one block over: an absent leaf has to
+    // fall through to the built-in default, not land as an explicit value.
+    const config = Config.parseString('actor-ts.cluster.failure-detector.unreachable-after = 400ms');
+
+    expect(readClusterOptionsFromConfig(config))
+      .toEqual({ failureDetector: { unreachableAfterMs: 400 } });
+  });
+
+  test('a φ leaf on its own is read without the selector', () => {
+    // The two are independent keys: tuning the block without switching to it
+    // is legitimate (stage the values, flip `implementation` later), and a
+    // reader that only looked at `phi` when `implementation = phi` would
+    // silently drop them.
+    const config = Config.parseString('actor-ts.cluster.failure-detector.phi.down-threshold = 20');
+
+    expect(readClusterOptionsFromConfig(config)).toEqual({ phiAccrual: { downThreshold: 20 } });
+  });
+
   test('an empty config yields no settings at all', () => {
     expect(readClusterOptionsFromConfig(Config.empty())).toEqual({});
   });
@@ -126,8 +175,34 @@ describe('readClusterOptionsFromConfig', () => {
       // 0 is the file's way of saying "derive from down-after"; the
       // derivation lives in the Cluster constructor, not here.
       tombstoneMinRetentionMs: 0,
+      failureDetectorImplementation: DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
       failureDetector: defaultFailureDetectorOptions,
+      // Field by field rather than against `defaultPhiAccrualOptions` whole:
+      // that object also carries `heartbeatIntervalMs`, and the φ block has no
+      // leaf for it on purpose — the cadence comes from
+      // `failure-detector.heartbeat-interval` for either implementation
+      // (#1142).  Pinning the whole object would demand a leaf that must not
+      // exist.
+      phiAccrual: {
+        unreachableThreshold: defaultPhiAccrualOptions.unreachableThreshold,
+        downThreshold: defaultPhiAccrualOptions.downThreshold,
+        maxSampleSize: defaultPhiAccrualOptions.maxSampleSize,
+        minStdDeviationMs: defaultPhiAccrualOptions.minStdDeviationMs,
+        acceptableHeartbeatPauseMs: defaultPhiAccrualOptions.acceptableHeartbeatPauseMs,
+      },
     });
+  });
+
+  test('the reference φ block carries no heartbeat interval of its own (#1142)', () => {
+    // The trap this guards: a `failure-detector.phi.heartbeat-interval` would
+    // let switching the implementation silently change how often the node
+    // talks to its peers, which is the drift aff9d371 collapsed onto one
+    // constant.  Asserted on the leaf rather than on the reader, because a
+    // leaf nothing reads is exactly what the guard has to catch.
+    expect(Config.loadReference().hasPath('actor-ts.cluster.failure-detector.phi.heartbeat-interval'))
+      .toBe(false);
+    expect(readClusterOptionsFromConfig(Config.loadReference()).phiAccrual)
+      .not.toHaveProperty('heartbeatIntervalMs');
   });
 
   test('the housekeeping block reads through with its own values (#841)', () => {
@@ -194,6 +269,46 @@ describe('withClusterConfigDefaults', () => {
       unreachableAfterMs: 400,
       downAfterMs: 1_500,
     });
+  });
+
+  test('a partial phiAccrual overrides one field and keeps the other four (#840)', () => {
+    // The trap the second nested pass exists for: `mergeOptions` is shallow,
+    // so without it an explicit `{ downThreshold }` replaces the whole object
+    // and the file's other four φ settings silently revert to the built-in
+    // defaults — settings the caller never mentioned.
+    const configured = Config.parseString(`
+      actor-ts.cluster.failure-detector.phi {
+        unreachable-threshold      = 9
+        down-threshold             = 14
+        max-sample-size            = 64
+        min-std-deviation          = 300ms
+        acceptable-heartbeat-pause = 2s
+      }
+    `);
+
+    const merged = withClusterConfigDefaults(
+      configured,
+      { phiAccrual: { downThreshold: 20 } } as ClusterOptionsType,
+    );
+
+    expect(merged.phiAccrual).toEqual({
+      unreachableThreshold: 9,
+      downThreshold: 20,
+      maxSampleSize: 64,
+      minStdDeviationMs: 300,
+      acceptableHeartbeatPauseMs: 2_000,
+    });
+  });
+
+  test('an explicit implementation wins over the file, and an unset one falls through', () => {
+    const configured = Config.parseString('actor-ts.cluster.failure-detector.implementation = phi');
+
+    expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType)
+      .failureDetectorImplementation).toBe('phi');
+    expect(withClusterConfigDefaults(
+      configured,
+      { failureDetectorImplementation: 'simple' } as ClusterOptionsType,
+    ).failureDetectorImplementation).toBe('simple');
   });
 
   test('an explicit undefined threshold does not shadow the file', () => {

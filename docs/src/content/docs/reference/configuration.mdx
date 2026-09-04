@@ -47,9 +47,17 @@ actor-ts {
       min-retention  = 0s         # 0 = derive from down-after
     }
     failure-detector {
-      heartbeat-interval = 500ms
+      implementation     = simple   # simple | phi
+      heartbeat-interval = 500ms    # shared by both implementations
       unreachable-after  = 2s
       down-after         = 5s
+      phi {
+        unreachable-threshold      = 8
+        down-threshold             = 12
+        max-sample-size            = 200
+        min-std-deviation          = 100ms
+        acceptable-heartbeat-pause = 0s
+      }
     }
     pub-sub {
       gossip-interval            = 1s
@@ -174,14 +182,27 @@ replay from it.
 | `cluster.tombstone.time-to-live` | `24h` | How long a `removed` tombstone is kept before it is pruned. |
 | `cluster.tombstone.prune-interval` | `5m` | How often the prune pass runs. |
 | `cluster.tombstone.min-retention` | `0s` | Floor on tombstone age before pruning is allowed.  `0` derives it from `failure-detector.down-after` (6×). |
-| `cluster.failure-detector.heartbeat-interval` | `500ms` | How often heartbeats are sent. |
-| `cluster.failure-detector.unreachable-after` | `2s` | Suspicion threshold for `unreachable` status. |
-| `cluster.failure-detector.down-after` | `5s` | Suspicion threshold for forced down.  Measured from the last heartbeat, so it must exceed `unreachable-after`. |
+| `cluster.failure-detector.implementation` | `simple` | Which detection algorithm this node runs — `simple` (elapsed-time thresholds) or `phi` (variance-aware φ-accrual). |
+| `cluster.failure-detector.heartbeat-interval` | `500ms` | How often heartbeats are sent.  Shared by both implementations — see below. |
+| `cluster.failure-detector.unreachable-after` | `2s` | Suspicion threshold for `unreachable` status.  `simple` only. |
+| `cluster.failure-detector.down-after` | `5s` | Suspicion threshold for forced down.  Measured from the last heartbeat, so it must exceed `unreachable-after`.  `simple` only. |
+| `cluster.failure-detector.phi.unreachable-threshold` | `8` | φ value above which the peer is flagged `unreachable`.  A continuous score, so fractions are fine. |
+| `cluster.failure-detector.phi.down-threshold` | `12` | φ value above which the peer is flagged `down`.  Must exceed `phi.unreachable-threshold`. |
+| `cluster.failure-detector.phi.max-sample-size` | `200` | How many recent inter-arrival times are kept per peer. |
+| `cluster.failure-detector.phi.min-std-deviation` | `100ms` | Floor on the sampled standard deviation, so a very steady peer is not flagged on noise. |
+| `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `0s` | Grace added to the last heartbeat before φ starts rising. |
 
 These are layered under whatever `Cluster.join(system, options)` passes, so
 an explicit `withGossipIntervalMs(…)` still wins.  The failure detector
 merges *per threshold*: setting only `down-after` in code keeps the other
-two from the file.
+two from the file.  The `phi` block merges the same way, per field, against
+`withPhiAccrual(…)`.
+
+`heartbeat-interval` is deliberately outside `phi` and has no copy inside
+it.  The cadence belongs to the cluster's heartbeat loop rather than to
+either algorithm, so switching `implementation` cannot change how often this
+node talks to its peers.  Everything else under `failure-detector` belongs
+to exactly one implementation and is ignored by the other.
 
 The HOCON tree and the `ClusterOptions` fields are deliberately not
 isomorphic: the three tombstone knobs are grouped under `tombstone` because
