@@ -85,6 +85,29 @@ bun install
 The chat sample depends on `@fastify/static` and `@fastify/websocket`,
 both already in the project's `devDependencies`.
 
+### Session-token secret
+
+Every command below that starts a backend needs one of these
+exported first — the node **refuses to start** without one:
+
+```bash
+export CHAT_ALLOW_DEMO_SECRET=1                     # local demo
+export CHAT_TOKEN_SECRET="$(openssl rand -hex 32)"  # anything else
+```
+
+Session tokens are HMAC-signed and self-validating, so the signing
+secret is the only thing between a stranger and an arbitrary
+identity.  The sample used to fill an absent `CHAT_TOKEN_SECRET`
+with the demo constant in `backend/auth/sessionStore.ts` and log a
+warning — but that constant is published in this repository, so
+anyone who had read it could mint a token for any user, and the
+only trace was one log line scrolling past at start-up (#791).  A
+missing signing key is a configuration error, so the sample now
+treats it as one.  `CHAT_ALLOW_DEMO_SECRET=1` accepts the demo
+constant knowingly, which is fine on a laptop and nowhere else;
+`CHAT_TOKEN_SECRET` is the real answer, and every node in a cluster
+needs the same value or resume breaks across a fail-over.
+
 ### Three-node cluster
 
 Open **three terminals**, run the same command in each — no
@@ -127,6 +150,10 @@ bun examples/chat/backend/main.ts --port 2551
 bun examples/chat/backend/main.ts --port 2552 --seeds host-a:2551
 bun examples/chat/backend/main.ts --port 2553 --seeds host-a:2551,host-b:2552
 ```
+
+Across machines, export the *same* `CHAT_TOKEN_SECRET` on each
+host — a node that signs with a different key cannot resume a
+session another node issued.
 
 ### Open the chat
 
@@ -220,7 +247,8 @@ details.
 ## Verifying it works
 
 Two scripts ship for verification — pick the one that matches what
-you want to check.
+you want to check.  Both start backends, so both want a
+[session-token secret](#session-token-secret) exported first.
 
 ### `smoke-test.ts` — single-node messaging round-trip
 
@@ -273,7 +301,9 @@ breaks the chat protocol round-trip is a red check, not something
 you find the next time you open the sample.
 
 `tests/examples/examples.manifest.json` says which examples that
-covers and, for each one it does not, why not.
+covers and, for each one it does not, why not.  The chat entry
+carries `"environment": { "CHAT_ALLOW_DEMO_SECRET": "1" }` — the
+gate has to opt in like anyone else, which is the point.
 
 ### Manual cross-node demo
 
@@ -399,7 +429,10 @@ Implemented since v1:
   - Session tokens are HMAC-SHA256-signed JWT-style strings
     (`<base64url(payload)>.<base64url(sig)>`) — payload binds
     `{ username, issuedAt, exp }`, signed with a server secret read
-    from `CHAT_TOKEN_SECRET` env (warned-and-fallback if unset).
+    from `CHAT_TOKEN_SECRET`.  Unset, the store **throws at
+    construction** and the node does not come up; a local demo opts
+    in to the published fallback secret with
+    `CHAT_ALLOW_DEMO_SECRET=1` and gets a startup warning (#791).
     `lookupToken` self-validates without a DD lookup; the DD-LWWMap
     keyed `chat.session-revocations` only stores tokens that have
     been explicitly revoked.  TTL: 24 hours.
@@ -422,9 +455,13 @@ existing middleware, not deeper code changes:
 - **Login rate-limit**: `@fastify/rate-limit` keyed on remote IP, e.g.
   10 login attempts per minute.  Same plugin slot.
 - **Token secret**: set `CHAT_TOKEN_SECRET` to a strong random value
-  shared across every cluster node.  Without it, the server logs a
-  loud warning and falls back to a demo-only secret hardcoded in
-  `sessionStore.ts`.
+  shared across every cluster node.  This one is not optional — the
+  server refuses to start without it unless
+  `CHAT_ALLOW_DEMO_SECRET=1` says the demo secret hardcoded in
+  `sessionStore.ts` is acceptable, which outside a laptop it never
+  is.  A missing signing key is a configuration error, and the
+  sample treats it as one rather than guessing a value and warning
+  about it (#791).
 - **User store**: replace `TEST_USERS` in `shared/users.ts` with a
   query against a real DB; `validateCredentials` already calls
   `verifyPassword` against an opaque `<salt>:<hash>` string, so

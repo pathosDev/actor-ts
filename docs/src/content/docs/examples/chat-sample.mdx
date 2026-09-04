@@ -77,6 +77,9 @@ git clone https://github.com/pathosDev/actor-ts.git
 cd actor-ts
 bun install
 
+# Accept the demo session-token secret for a local run (see below):
+export CHAT_ALLOW_DEMO_SECRET=1
+
 # Start a 3-node cluster — three terminals, same command, no flags:
 bun examples/chat/backend/main.ts
 bun examples/chat/backend/main.ts
@@ -85,6 +88,17 @@ bun examples/chat/backend/main.ts
 # Open the chat UI (one URL, whichever node holds the singleton):
 open http://localhost:8080/
 ```
+
+The one variable is deliberate. Session tokens are HMAC-signed and
+self-validating, so the signing secret is the only thing between a
+stranger and an arbitrary identity — and a sample that filled an
+absent secret with a constant published in its own source would come
+up looking healthy while anyone who had read the repository could
+mint a token for any user. So the store throws instead, and
+`CHAT_ALLOW_DEMO_SECRET=1` is how a local demo says it accepts that
+constant knowingly. Anything past a laptop exports
+`CHAT_TOKEN_SECRET` instead — the same strong random value on every
+node, or resume breaks across a fail-over.
 
 Each node runs the same binary. They discover each other by
 scanning the cluster-port range from `2551`, so the three
@@ -108,8 +122,9 @@ indicators, read receipts and the auth hardening.
 # Against the cluster you already have up:
 bun examples/chat/smoke-test.ts
 
-# Or let it bring its own node up, on ports of its own:
-bun examples/chat/smoke-test.ts --spawn-backend
+# Or let it bring its own node up, on ports of its own —
+# that node needs a token secret like any other:
+CHAT_ALLOW_DEMO_SECRET=1 bun examples/chat/smoke-test.ts --spawn-backend
 ```
 
 `--spawn-backend` starts a single node on `:8090` (cluster `:2590`)

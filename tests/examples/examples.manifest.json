@@ -21,6 +21,10 @@
     "                                persistence/replicated-counter.ts).",
     "  timeoutMs  per-case budget, defaults.timeoutMs otherwise.",
     "  arguments  extra argv for the example.",
+    "  environment  extra env vars for the example, merged over the harness's",
+    "             own environment. For an example that deliberately refuses to",
+    "             start without a variable — see chat/smoke-test.ts — not for",
+    "             papering over one that crashes.",
     "  note       anything a reader would otherwise have to re-derive.",
     "  skip       why this one cannot run in CI. Mutually exclusive with the",
     "             fields above."
@@ -41,6 +45,8 @@
     {
       "file": "examples/chat/smoke-test.ts",
       "arguments": ["--spawn-backend"],
+      "environment": { "CHAT_ALLOW_DEMO_SECRET": "1" },
+      "note": "The backend this spawns refuses to start without CHAT_TOKEN_SECRET (#791), so the run has to say out loud that it accepts the demo secret. A real secret would work identically here; the opt-in is what the sample's own README tells a reader to use locally, so it is what CI exercises.",
       "expect": "chat smoke test passed",
       "timeoutMs": 180000
     },

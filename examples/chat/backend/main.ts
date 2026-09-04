@@ -173,10 +173,14 @@ async function main(): Promise<void> {
   const ddHandle = system.extension(DistributedDataId).start(cluster, ddOptions);
   const pubSubOptions = DistributedPubSubOptions.create().withGossipIntervalMs(500);
   const mediator = system.extension(DistributedPubSubId).start(cluster, pubSubOptions);
+  // Throws unless CHAT_TOKEN_SECRET is set or CHAT_ALLOW_DEMO_SECRET
+  // opts this run in to the published demo secret (#791).  The warning
+  // below is what the opt-in path gets — it is no longer the only thing
+  // standing between a forgotten variable and a forgeable token.
   const sessions = new SessionStore(ddHandle);
   if (sessions.usingDemoSecret) {
     system.log.warn(
-      'session tokens signed with the demo fallback secret — set CHAT_TOKEN_SECRET to a strong random string for production',
+      'CHAT_ALLOW_DEMO_SECRET is set — session tokens are signed with the demo secret published in sessionStore.ts, so anyone can mint a token for any user. Set CHAT_TOKEN_SECRET to a strong random string instead.',
     );
   }
 
