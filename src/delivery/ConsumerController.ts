@@ -120,9 +120,26 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     this.deduplication.clear();
   }
 
-  override onReceive(message: Delivery<T>): void {
+  /**
+   * Hands the delivery's promise back to the cell, which is what makes the
+   * handler run one at a time.
+   *
+   * `void this.handleDelivery(message)` returned `undefined`, and
+   * `ActorCell.run` awaits only what a receive actually returns — so the cell
+   * dequeued the next delivery while the user handler was still running, and
+   * a queued burst became that many overlapping invocations (#643).  Two
+   * things this class documents rest on the serialisation and were untrue
+   * without it.  `ConsumerControllerOptionsType.handler` promises the
+   * acknowledgment happens *after* the handler returns.  And the duplicate
+   * check in {@link handleDelivery} reads a window that
+   * {@link markDelivered} only writes once the handler has returned, so a
+   * retransmit arriving in between was read-check-act against state its own
+   * predecessor had not written yet, and re-entered the handler for a
+   * sequence still in flight.
+   */
+  override onReceive(message: Delivery<T>): void | Promise<void> {
     if (message.kind !== 'reliable-delivery.delivery') return;
-    void this.handleDelivery(message);
+    return this.handleDelivery(message);
   }
 
   private async handleDelivery(message: Delivery<T>): Promise<void> {
@@ -154,12 +171,17 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
    * Every field checked here is declared non-optional on {@link Delivery},
    * which is exactly why nothing guarded them: a peer that simply omits
    * `replyTo` satisfies the type at compile time and dereferences to
-   * `undefined` at run time.  Because the handling below is detached from
-   * `onReceive`, that `TypeError` used to settle as a rejected promise no
-   * `try` was watching and took the whole process with it — an actor fault
-   * would at least have been supervised (#727).  `producerId` becoming a
-   * `Map` key and `seq` becoming arithmetic before anything has looked at
-   * either is the same shape of exposure (#728).
+   * `undefined` at run time.  `producerId` becoming a `Map` key and `seq`
+   * becoming arithmetic before anything has looked at either is the same
+   * shape of exposure (#728).
+   *
+   * What that `TypeError` *costs* is no longer what this check was first
+   * written against.  While the handling below was detached from
+   * `onReceive`, it settled as a rejected promise no `try` was watching and
+   * took the whole process with it (#727); now that the promise is returned
+   * to the cell (#643) the same throw is an ordinary supervised fault.  So
+   * the crash argument is spent, and the reason the check has to stay is the
+   * one in the next paragraph, which was always the stronger half.
    *
    * A refusal is a dead letter rather than a fault: a malformed envelope is
    * bad *input*, and faulting the consumer on it would restart the actor and
@@ -316,18 +338,24 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
   }
 
   /**
-   * The `tell` is guarded because this method runs on a detached promise: a
-   * throw out of it — a remote `replyTo` whose transport send fails, a ref
-   * whose cell is already gone — would otherwise escape as an unhandled
-   * rejection rather than as anything the framework can supervise (#727).
+   * The `tell` is guarded because an acknowledgment is best-effort by design
+   * and a `replyTo` that cannot be reached is not this consumer's failure: a
+   * remote ref whose transport send fails, or one whose cell is already gone,
+   * throws here for reasons that have nothing to do with the message the
+   * handler just processed successfully.
    *
-   * Swallowing it is the right answer specifically for an *acknowledgment*.
-   * The ack is best-effort by design: losing one costs a retransmit, which is
-   * the mechanism the protocol already has for exactly this.  Faulting
-   * instead would restart the consumer, and since `deduplication` is a field
-   * initialiser the restart would discard the dedup window — so a failing ack
-   * would cost duplicate handler invocations for every producer on the node,
-   * and then loop, because the retransmit arrives and fails to ack again.
+   * The swallow used to be justified by detachment — this ran on a promise
+   * nobody held, so a throw escaped as an unhandled rejection instead of as
+   * anything the framework could supervise (#727).  That reason is gone:
+   * `onReceive` returns the promise and the cell awaits it (#643), so a throw
+   * here would now fault the actor properly.  The swallow survives on the
+   * reason that actually holds, which is what supervision would *do*.  Losing
+   * an ack costs a retransmit, which is the mechanism the protocol already
+   * has for exactly this.  Faulting instead restarts the consumer, and since
+   * `deduplication` is a field initialiser the restart discards every
+   * producer's dedup window — so one unreachable reply address would cost
+   * duplicate handler invocations across the whole node, and then loop,
+   * because the retransmit arrives and fails to ack again.
    */
   private sendAcknowledgment(message: Delivery<T>): void {
     const ack: Acknowledgment = {

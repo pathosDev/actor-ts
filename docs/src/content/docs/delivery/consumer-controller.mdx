@@ -121,6 +121,13 @@ incarnation, seq)` triple.  After the handler resolves, the controller sends an
 Ack back to the producer (via `Delivery.replyTo`) and the producer
 releases its in-flight slot.
 
+Deliveries are handled **one at a time**.  The controller hands the actor cell
+the handler's promise, so the next envelope is not dequeued until the current
+one has been acked — a slow handler back-pressures through the mailbox instead
+of fanning out into overlapping invocations, and a retransmit that arrives
+while its own sequence is still being handled is absorbed as the duplicate it
+is rather than running the handler a second time.
+
 The incarnation is what keeps a *restarted* producer out of the dedup window:
 it re-uses its sequence numbers but not its incarnation, so its messages are
 new rather than duplicates.  See *Restart and the producer incarnation* on the

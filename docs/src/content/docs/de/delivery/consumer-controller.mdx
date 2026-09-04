@@ -129,6 +129,14 @@ schickt der Controller ein ACK zurück an den Producer (via
 `Delivery.replyTo`), und der Producer gibt seinen In-Flight-Slot
 frei.
 
+Deliveries werden **eines nach dem anderen** behandelt.  Der Controller reicht
+das Promise des Handlers an die Actor-Zelle durch, das nächste Envelope wird
+also erst dequeued, wenn das aktuelle geACKt ist — ein langsamer Handler
+erzeugt damit Backpressure über die Mailbox, statt in überlappende Aufrufe zu
+zerfallen, und ein Retransmit, der eintrifft, während seine eigene Seq noch
+behandelt wird, wird als das Duplikat absorbiert, das er ist, statt den Handler
+ein zweites Mal laufen zu lassen.
+
 Die Inkarnation ist es, die einen *neu gestarteten* Producer aus dem
 Dedup-Fenster heraushält: er verwendet seine Sequenznummern wieder, seine
 Inkarnation aber nicht — seine Nachrichten sind also neu und keine Duplikate.
