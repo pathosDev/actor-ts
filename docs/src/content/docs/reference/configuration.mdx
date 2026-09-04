@@ -196,6 +196,13 @@ replay from it.
 | `cluster.failure-detector.phi.max-sample-size` | `200` | How many recent inter-arrival times are kept per peer. |
 | `cluster.failure-detector.phi.min-std-deviation` | `100ms` | Floor on the sampled standard deviation, so a very steady peer is not flagged on noise. |
 | `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `0s` | Grace added to the last heartbeat before φ starts rising. |
+| `cluster.split-brain-resolver.active-strategy` | `off` | Which downing strategy arbitrates a partition — `off`, `keep-majority`, `keep-oldest`, `keep-referee` or `static-quorum`. |
+| `cluster.split-brain-resolver.keep-majority.role` | `""` | Only members carrying this role count toward the majority.  `""` counts every member. |
+| `cluster.split-brain-resolver.keep-oldest.role` | `""` | Only members with this role are eligible "oldest".  `""` considers every member. |
+| `cluster.split-brain-resolver.static-quorum.role` | `""` | Only members carrying this role count toward quorum.  `""` counts every member. |
+| `cluster.split-brain-resolver.static-quorum.quorum-size` | *(unset)* | Reachable members required to keep running.  Required by `static-quorum`; comment-only in `reference.conf` — see below. |
+| `cluster.split-brain-resolver.keep-referee.referee-address` | *(unset)* | The referee node's address; the side containing it wins.  Required by `keep-referee`; comment-only. |
+| `cluster.split-brain-resolver.keep-referee.down-all-if-below-quorum` | *(unset)* | Down everyone if the referee's own side is smaller than this.  Optional; comment-only. |
 
 These are layered under whatever `Cluster.join(system, options)` passes, so
 an explicit `withGossipIntervalMs(…)` still wins.  The failure detector
@@ -224,9 +231,31 @@ bounds one gossip frame; these bound what a sequence of well-formed frames
 can accumulate, which is a different quantity — see
 [Cluster security](/operations/security/cluster-security/).
 
-`seeds`, `roles`, the transport and the downing provider have no HOCON
-form — the first two are per-deployment identity that belongs at the join
-site, the last two are objects a config file cannot express.
+`split-brain-resolver.active-strategy` names a strategy rather than
+describing one, which is why the object it builds needs no HOCON shape of
+its own.  The provider it constructs lands in the same slot
+`withDowning(…)` fills, and the same precedence applies: an explicit
+`withDowning(…)` wins, an absent one falls through to the file.  See
+[Downing strategies](/cluster/downing-strategies/) for what each strategy
+decides.
+
+Three of its keys ship **comment-only** in `reference.conf`, so they are
+absent until you write them.  Each is required or bounded and has no legal
+default: `quorum-size = 0` and `referee-address = ""` are both refused by
+the strategies' own validators, so a shipped leaf could only be a value
+that stops the node from starting.  Naming `static-quorum` without
+`quorum-size`, or `keep-referee` without `referee-address`, is refused at
+startup with the missing key in the message.
+
+`lease-majority` is **not** selectable here.  It arbitrates through a live
+`Lease` whose `owner` is this node's own address, and no key can name one —
+`actor-ts.coordination` tunes leases but does not choose a backend.  Build
+it in code: `withDowning(new LeaseMajority(…))`.  Writing the name into
+this key is refused rather than ignored, and the message says so.
+
+`seeds`, `roles` and the transport have no HOCON form — the first two are
+per-deployment identity that belongs at the join site, and the transport is
+an object a config file cannot express.
 
 ### `actor-ts.cluster.pub-sub`
 

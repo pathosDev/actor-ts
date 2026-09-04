@@ -13,6 +13,7 @@ import { DEFAULT_SHUTDOWN_EXIT_CODE } from '../../../src/Constants.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
 import { DEFAULT_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/Constants.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
+import { DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY } from '../../../src/cluster/downing/DowningFromConfig.js';
 import { DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION } from '../../../src/cluster/ClusterOptions.js';
 import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
 import {
@@ -240,6 +241,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.pub-sub.gossip-interval', kind: 'duration', constant: DEFAULT_GOSSIP_INTERVAL_MS },
   { key: 'actor-ts.cluster.receptionist.gossip-interval', kind: 'duration', constant: DEFAULT_GOSSIP_INTERVAL_MS },
   { key: 'actor-ts.distributed-data.gossip-interval', kind: 'duration', constant: DEFAULT_GOSSIP_INTERVAL_MS },
+  { key: 'actor-ts.cluster.split-brain-resolver.active-strategy', kind: 'string', constant: DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY },
   { key: 'actor-ts.cluster.failure-detector.implementation', kind: 'string', constant: DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION },
   { key: 'actor-ts.cluster.failure-detector.heartbeat-interval', kind: 'duration', constant: DEFAULT_HEARTBEAT_INTERVAL_MS },
   { key: 'actor-ts.cluster.failure-detector.unreachable-after', kind: 'duration', constant: defaultFailureDetectorOptions.unreachableAfterMs },
@@ -495,6 +497,14 @@ const PLACEHOLDERS: readonly string[] = [
   // string is what lets the reader tell "no opinion" from a role named "",
   // and the role a deployment actually wants is per-deployment (#847).
   'actor-ts.sharding.role',
+  // The three split-brain-resolver role narrowings (#838).  Same reading as
+  // `sharding.role` above and the same reason there is no constant: `""` is
+  // the published shape of the key, every strategy tests `!options.role`, and
+  // `readDowningFromConfig` drops the empty string rather than passing it on —
+  // so the role a deployment wants is per-deployment and nothing else.
+  'actor-ts.cluster.split-brain-resolver.keep-majority.role',
+  'actor-ts.cluster.split-brain-resolver.keep-oldest.role',
+  'actor-ts.cluster.split-brain-resolver.static-quorum.role',
   'actor-ts.logger.sinks.gelf.url',
   'actor-ts.logger.sinks.gelf.host-name',
   'actor-ts.logger.sinks.otlp.service-name',
