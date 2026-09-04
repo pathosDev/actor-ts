@@ -27,7 +27,11 @@ export interface RedisStreamsOptionsType extends BrokerCommonOptionsType {
   };
   /** Block timeout per XREADGROUP call in ms.  Default: 5_000. */
   readonly blockMs?: number;
-  /** Subscriber for inbound entries.  Required to consume. */
+  /**
+   * Subscriber for inbound entries.  Required to consume.  No HOCON leaf: an
+   * `ActorRef` names a live actor in this process, which a config file cannot
+   * denote.
+   */
   readonly target?: ActorRef<RedisStreamEntry>;
   /**
    * TLS material forwarded to ioredis as its `tls` option — a private CA to

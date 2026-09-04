@@ -11,6 +11,264 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **BREAKING — `actor-ts.http.server` gives the listening socket a HOCON
+  block of its own, beside the per-route `cors`, `client` and `websocket`
+  siblings: `idle-timeout`, `header-timeout`, `request-timeout` and
+  `max-connections`, merged `newServerAt(...).withServerOptions(...)` >
+  HOCON > built-in default per field (#870).**
+
+  `header-timeout = 60s` and `request-timeout = 300s` ship values;
+  `idle-timeout` and `max-connections` are read but comment-only, because
+  "unset" is a state neither has a number for — unset keep-alive is whatever
+  the backend chose, and unset `max-connections` is unlimited.
+
+  The policy is resolved once at `bind()` and installed on the server at
+  `listen()`, through a new optional third parameter on
+  `HttpServerBackend.listen`, so it reaches a backend an application
+  constructed and passed to `useBackend(...)` exactly as it reaches the one
+  the framework builds. The parameter stays optional: a backend written
+  outside the repository still satisfies the interface.
+
+  What can honour it was measured rather than assumed, on bun 1.4.0 and node
+  v26.7.0. All four properties are honoured identically on Bun's `node:http`
+  shim and on Node — `headersTimeout` really does answer `408` and destroy
+  the socket — so this is not the `ws` `maxPayload` situation. Fastify,
+  Express and Hono-on-Node all expose the server the values are written to;
+  `Bun.serve` and `Deno.serve` expose neither it nor an equivalent knob, so
+  on the Hono backend under Bun or Deno none of the four is installed at
+  all, and the docs and the parity suite both say so rather than
+  approximating. `header-timeout` and `request-timeout` are enforced by a
+  sweep whose interval the runtime fixes at 30 s, so a connection is closed
+  no earlier than the value set and no later than one sweep after it.
+
+  The two published values are the numbers `http.createServer` already uses,
+  which is the same decision #357 made for `bodyLimit`: the bound is the
+  framework's rather than whichever backend happens to be mounted. Fastify
+  was the one that disagreed.
+
+  *Migration:* A server on the Fastify backend now applies a 300 s
+  `requestTimeout` where Fastify sets that property to 0 — no bound at all.
+  At the shipped 1 MiB body cap 300 s is a client sending under 3.5 KB/s, so
+  nothing legitimate is affected; a deployment that genuinely accepts slower
+  uploads raises `actor-ts.http.server.request-timeout`, and `= 0` restores
+  Fastify's previous unbounded behaviour exactly. Express and Hono are
+  unchanged — both already carried `node:http`'s 300 s.
+
+- **MongoDB, DynamoDB and Cassandra now read their own HOCON blocks, which
+  was the last of #872: every persistence plug-in has a config section its
+  factory actually reads** (#872).  Forty-four leaves across nine blocks —
+  `journal.mongodb` / `snapshot-store.mongodb` / `durable-state.mongodb`,
+  the same three for `dynamodb`, `journal.cassandra` and
+  `snapshot-store.cassandra`, plus `snapshot-store.in-memory.keep-n`, the
+  one leaf outside the per-backend fan-out. `registerMongoPlugins(ext)`,
+  `registerDynamoDbPlugins(ext)` and `registerCassandraPlugins(ext)` are
+  therefore complete wirings when `application.conf` fills the blocks in;
+  precedence is the project-wide one, explicit options over HOCON over the
+  built-in defaults, per field, with an unset field falling through rather
+  than shadowing.
+
+  The three backends share no implementation with each other or with the SQL
+  family, so unlike the relational slice the blocks are not one field table
+  repeated. Mongo names its containers collections and creates indexes
+  (`events-collection`, `snapshots-collection`, `collection`,
+  `auto-create-indexes`); DynamoDB is reached by a `region` plus an optional
+  `endpoint` and prefixes its table names, because a DynamoDB table name is
+  account- and region-global; Cassandra is reached by a `contact-points`
+  seed list and names four tables, because a wide-column store has no join
+  to derive one with. Each block speaks its backend's vocabulary — a leaf
+  named after another backend's is a leaf an operator has to translate.
+
+  `durable-state.plugin` now selects a store for every backend that ships
+  one. `registerMongoPlugins`, `registerDynamoDbPlugins` and
+  `registerObjectStoragePlugins` each built their durable-state store
+  eagerly and handed it back, which is what left
+  `MONGO_DURABLE_STATE_PLUGIN_ID` and its siblings exported and
+  unselectable. Construction moved into a lazy that both the registered
+  factory and the returned handle resolve, so the id selects the store and
+  the handle still yields the one instance — built on first use rather than
+  at registration, which also means its options validator runs against the
+  merged settings rather than against whatever was known at the call.
+  Cassandra registers none, and that is honest rather than an omission: the
+  tree ships no Cassandra durable-state store, so that backend has two axes
+  where the rest have three.
+
+  What has no leaf, and why. `clientOptions`, `clientConfig` and Cassandra's
+  `replication` are free-form driver config with no enumerable key set, so
+  they stay code-only; a pre-built client, an operations façade and a
+  serializer are live objects; Cassandra's `credentials` and DynamoDB's are
+  key material, and omitting the latter falls through to the AWS SDK's own
+  default chain. `consistency` and `serial-consistency` ship as comments
+  rather than keys, because neither has a framework default at all — both
+  read sites branch on the field being absent and hand the choice to the
+  driver, so a published number would pin a level nothing chose. They are
+  read all the same, so an `application.conf` can still set them. DynamoDB
+  table provisioning — billing mode, capacity, the create-on-first-use
+  switch — stays code-only for now: the block is about reaching the right
+  table rather than creating it.
+
+  `snapshot-store.in-memory.keep-n` publishes `0`, and the inverted polarity
+  is the point: every persistent store keeps three snapshots per id and this
+  one keeps all of them, because it is the store an unconfigured application
+  gets and a bound here would silently start discarding snapshots. The leaf
+  is what lets a long-running fixture bound it without reaching for code.
+
+  The persistence contract suite gained a `SqliteJournal (from HOCON)` arm —
+  a journal selected and configured purely from an application.conf-shaped
+  block, with no options in code, running the whole journal contract.
+
+- **Five broker options that could only be set from code are now readable
+  from HOCON (#871): the MQTT last will (`will { topic, payload, qos, retain
+  }`), the Kafka producer block (`producer { idempotent,
+  allow-auto-topic-creation }`), the JetStream `stream` and `consumer`
+  groups together with `acknowledgment-timeout`, and the WebSocket client's
+  `on-invalid-message` policy** (#871).
+
+  Each of the four blocks is a nested object, and `mergeOptions` is a
+  shallow spread, so every reader *reconstructs* its block instead of
+  returning a partial one — a HOCON `producer { idempotent = true }` cannot
+  blank `allowAutoTopicCreation` back to the framework default. The three
+  groups with required leaves (`will.topic`, `stream.name` +
+  `stream.subjects`, `consumer.durable`) fill an absent one with the empty
+  value precisely so the options validator reports it by name at startup,
+  rather than an unnamed stream reaching `jsm.streams.add` and failing as a
+  server-side error about a request nobody wrote. What a code-side
+  `withStream(…)` does to a configured block is unchanged and is #975's
+  question: it replaces it whole, which is the ordinary precedence applied
+  at the field the object *is*.
+
+  `consumer.deliver-policy` carries its full union — the three string arms
+  plus both `kind`-tagged object forms, whose `kind` keeps its TypeScript
+  spelling as a HOCON *value* so it lands in the union unchanged. An
+  unrecognised `kind` is a `ConfigError` at startup rather than a silent
+  fallback to `all`, which on a typo would replay a whole stream.
+  `mqtt.will.payload` is string-only from config; a binary will stays
+  code-only, since nothing in this project has a spelling for bytes in
+  HOCON.
+
+  The new leaves are kebab-case while their neighbours under
+  `actor-ts.io.broker.*` are still camelCase. That mixture is deliberate and
+  is written down where a reader meets it, on the WebSocket page: a shipped
+  key cannot be renamed without a breaking config change, #1405 already
+  retired the camelCase spelling elsewhere, and `KNOWN_CAMEL_CASE_PAGES`
+  records io.broker's as a deviation with an end date — so writing thirteen
+  new leaves in the retired spelling would hand each of them a future
+  `RetiredKeys` entry.
+
+  Every remaining broker option that has no config spelling now says so in
+  its own JSDoc: the `ActorRef` targets on Kafka, JetStream, RedisStreams,
+  Sse, TcpServer, TcpSocket and UdpSocket, Amqp's `bindings` and Nats'
+  `subscriptions`, the MQTT and WebSocket codecs, and gRPC's `credentials`,
+  `handlers` and both `channelOptions`.
+  `tests/unit/io/broker/BrokerConfigCompleteness.test.ts` is what keeps the
+  two halves in step — an inventory of 120 rows across seventeen broker
+  options types, each field classified `hocon` with the leaf its reader
+  looks for or `code-only` with a reason, failing when a field is added
+  without a classification, when a row outlives the field it names, when a
+  `hocon` row claims a leaf no reader looks up, or when a `code-only`
+  field's reason is missing from the JSDoc someone actually reads while
+  writing an `application.conf`. `configuration.mdx` also gains the
+  `io.broker.tcp-server` row it was missing, though `ConfigKeys` has
+  declared that root and `TcpServerActor` has read it all along.
+
+- **Four new keys under `actor-ts.diagnostics` say what the runtime was
+  configured with, and trace three of the paths it takes** (#867).  Every
+  one defaults `off`; a system nobody configured writes exactly what it
+  wrote before.
+
+  ```hocon actor-ts.diagnostics { log-config-on-start = off debug {
+  unhandled  = off lifecycle  = off event-stream = off } } ```
+
+  `log-config-on-start` is the answer to "why is this setting not what I
+  wrote". It writes one `info` record holding the whole merged tree — every
+  key, sorted, each with the layer that won (`reference`, `application` or
+  `override`) and whether it displaced a lower one — and a header naming the
+  `application.conf` that was looked for, which settles "my file is ignored"
+  against "my file says something else" without reading a single key.
+  `configDumpLines(system.config)` renders the same text on demand.
+
+  The three `debug.*` switches need two switches, not one: the key decides
+  whether a record is produced, `actor-ts.logger.level = debug` decides
+  whether it is written. That is why they are nested under a block named
+  after the level rather than sitting beside the `log-*` family, which is
+  `info`/`warn` and needs no second switch. `unhandled` names the recipient,
+  the message's class and the sender for a message an actor was handed and
+  declined — the count and the dead letter happen either way, but neither
+  names the sender. `lifecycle` records actor start, stop and restart.
+  `event-stream` records subscribe and unsubscribe, never publish, and skips
+  the whole-actor unsubscribe that removed nothing, which every actor stop
+  makes. Each read site is a plain boolean on settings resolved once at
+  construction, guarded at the call site, so an off switch costs no string
+  and no path render.
+
+  All four are settable in code too, through
+  `ActorSystemOptions.withDiagnostics(…)`: `withLogConfigOnStart()`,
+  `withDebugUnhandled()`, `withDebugLifecycle()`, `withDebugEventStream()`,
+  under the usual precedence of explicit options over HOCON over the
+  built-in default, per field.
+
+  The dump withholds a value when the key's **name** matches `pass`,
+  `secret`, `token`, `key`, `credential` or `auth`, the same list and the
+  same rule the DevTools config panel has used since #553 — the walk, the
+  layer attribution and the redaction now live in one place
+  (`src/diagnostics/ConfigDump.ts`) rather than two, so a key withheld from
+  the panel cannot reach a log file instead. Redaction by key name is a
+  heuristic and it is the weaker half of the guarantee: by the time the tree
+  is merged, a `${?DATABASE_PASSWORD}` is an ordinary string, so a secret in
+  a key called `dsn` or `connection-string` is printed in full. Both
+  `configuration.mdx` pages and `troubleshooting.mdx` say so in as many
+  words, a test pins the gap open so that sentence cannot rot, and the key
+  ships `off` because the defence that does not depend on a guess is not
+  printing the tree. Values are JSON-encoded, so a newline inside one cannot
+  forge a line of the dump it is part of.
+
+  `CONFIG_SECRET_PATTERN` and `CONFIG_REDACTED` moved to
+  `src/util/Constants.ts` and are now also on the `actor-ts/util` subpath;
+  `actor-ts/devtools`'s protocol re-exports both, so nothing that imported
+  them has to change.
+
+- **Cluster nodes now compare the settings that have to match cluster-wide
+  and report a disagreement instead of running on silently**
+  (#844).  `actor-ts.cluster.configuration-compatibility-check.checked-paths`
+  names them; each node publishes its *effective* value for every listed
+  setting as a stamped overlay on the ordinary gossip lane and compares what
+  its peers publish back. Effective, not configured: precedence is explicit
+  options > HOCON > built-in defaults, so two nodes whose config files agree
+  and whose builders do not are still caught — the case that matters, since
+  the builder is the documented way to set most of these. A divergence logs
+  one line naming the setting and both values, once per setting per peer,
+  and publishes a `MemberConfigurationMismatch` carrying the same; absence
+  on either side stays silent, so a mixed-version cluster reports nothing
+  rather than everything.
+
+  - The framework publishes three settings.
+    `actor-ts.remote.max-frame-bytes` is seeded into `checked-paths`,
+    because a frame over a peer's lower cap kills the whole association with
+    no negotiation to catch it and nothing else detects it (#823).
+    `actor-ts.cluster.failure-detector.heartbeat-interval` and
+    `actor-ts.cluster.tombstone.time-to-live` are published but not seeded —
+    both divergences are legitimate mid-roll and both heal.
+    `actor-ts.sharding.number-of-shards` is deliberately absent: the
+    coordinator already refuses a region whose count disagrees, on the
+    effective value (#633).
+  - `actor-ts.cluster.configuration-compatibility-check.enforce` (default
+    `off`) bars a diverging peer from `Cluster.placementCandidates()`, which
+    `ClusterRouter` selects routees from. It never downs or quarantines
+    anyone, and nothing that *elects* a role reads that set: the candidate
+    view is per-node and therefore asymmetric, so a singleton host or shard
+    home computed from it would have two winners.
+  - `Cluster.publishConfigurationFact(name, value)` publishes an
+    application's own resolved value; it travels only if `checked-paths`
+    names it, which is why there is no separate list of paths to redact.
+  - The claims are untrusted input, and unlike the storage-identity overlay
+    the keys are the peer's to invent: `Member.fromData` caps the name, the
+    value and the count, requires the name to match `^[a-z0-9][a-z0-9.-]*$`
+    (which is what keeps `__proto__` out), writes with
+    `Object.defineProperty` and reads with `Object.hasOwn`, and drops a bad
+    entry rather than the member record. The report latch is capped too,
+    since both halves of its key come off the wire.
+
+  Closes #844.
+
 - **BREAKING — The cluster transport's four association-lifecycle bounds are
   settable from `actor-ts.remote` (#846).**
 

@@ -245,6 +245,80 @@ beantworten, ist genau das, was `awaitReady({ minimumMembers: 3 })`
 ersetzt — die Subscription ist zum Reagieren auf Änderungen da, nicht
 als Startup-Gate.
 
+## Einstellungen, die übereinstimmen müssen
+
+Ein Node, der mit einem abweichenden Wert für etwas beitritt, das der
+Cluster als einheitlich voraussetzt, scheitert nicht.  Er tritt bei, er
+läuft, und die Uneinigkeit zeigt sich später als Verhalten, das niemand
+erklären kann.  `actor-ts.cluster.configuration-compatibility-check` sorgt
+dafür, dass sie stattdessen in dem Moment ausgesprochen wird, in dem sich
+die beiden Nodes begegnen.
+
+Jeder Node veröffentlicht den **effektiven** Wert jeder Einstellung aus
+`checked-paths` auf der gewöhnlichen Gossip-Bahn und vergleicht ihn mit dem,
+was seine Peers zurückveröffentlichen.  *Effektiv*, nicht konfiguriert: die
+Präzedenz ist **explizite Optionen > HOCON > eingebaute Defaults**, deshalb
+sind zwei Nodes mit identischen Config-Dateien und unterschiedlichen Buildern
+trotzdem ungleich — und genau das ist der Fall, auf den es ankommt, denn der
+Builder ist der dokumentierte Weg, die meisten dieser Werte zu setzen.
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost('n1')
+  .withPort(2552)
+  .withConfigurationCompatibilityCheckedPaths([
+    'actor-ts.remote.max-frame-bytes',
+    'actor-ts.cluster.failure-detector.heartbeat-interval',
+  ]);
+```
+
+Verglichen werden kann nur, was auch jemand veröffentlicht; das Framework
+veröffentlicht drei Einstellungen:
+
+| Einstellung | Warum eine Abweichung zählt | Standardmäßig in `checked-paths` |
+| --- | --- | --- |
+| `actor-ts.remote.max-frame-bytes` | Ein Frame über der niedrigeren Grenze des Peers reißt die ganze Assoziation ab, und der Sender erfährt nie, warum.  Es gibt keine Protokollverhandlung, die das abfängt. | ja |
+| `actor-ts.cluster.failure-detector.heartbeat-interval` | Ein Peer, der langsamer schlägt, als das `down-after` dieses Nodes toleriert, wird gedowned, weil er anders konfiguriert ist — nicht, weil er tot ist. | nein |
+| `actor-ts.cluster.tombstone.time-to-live` | Eine Seite räumt einen Tombstone weg, den die andere noch durchsetzt, also wird eine entfernte Adresse nur auf einer Seite wieder zugelassen. | nein |
+
+Die letzten beiden sind standardmäßig aus, weil das schrittweise Ausrollen
+eines neuen Werts ein gewöhnlicher Vorgang ist und beide Abweichungen von
+selbst heilen.  Für die erste gibt es nirgendwo sonst eine Erkennung — das
+ist die Messlatte dafür, voreingestellt zu sein.
+
+Veröffentliche eine eigene von überall dort, wo der aufgelöste Wert vorliegt:
+
+```ts
+cluster.publishConfigurationFact('acme.orders.partition-count', String(partitions));
+```
+
+Sie reist nur, wenn `checked-paths` den Namen führt — diese Liste ist eine
+Erlaubnisliste dessen, was den Node *verlässt*, und genau deshalb gibt es
+keine zweite Liste von Pfaden zum Schwärzen.
+
+Sind sich zwei Nodes uneinig, loggt jeder eine Zeile, die die Einstellung und
+**beide** Werte nennt, und veröffentlicht ein `MemberConfigurationMismatch`
+mit demselben Inhalt.  Einmal pro Einstellung pro Peer, nicht einmal pro
+Gossip-Runde.  Abwesenheit auf einer der beiden Seiten ist Schweigen: ein
+Peer mit älterer Version, oder einer, dessen `checked-paths` diese
+Einstellung nicht führt, meldet nichts — statt während eines Rolling
+Upgrades alles zu melden.
+
+`enforce = on` fügt genau eine Sache hinzu: der abweichende Peer ist kein
+Platzierungskandidat dieses Nodes mehr, ein Cluster-Router routet also nicht
+mehr zu ihm.  Es downed oder quarantäniert niemanden, und nichts, das eine
+Rolle *wählt*, liest diese Menge: eine falsch konfigurierte Mehrheit würde
+sonst die korrekt konfigurierte Minderheit verdrängen, und eine asymmetrische
+Kandidatensicht würde zwei Singleton-Hosts wählen statt einem.  Standardmäßig
+aus, denn ein durchsetzender Default macht aus jedem Rolling Deploy, der
+einen geprüften Wert ändert, einen selbstverschuldeten Ausfall.
+
+`actor-ts.sharding.number-of-shards` ist bewusst **keine** der
+veröffentlichten Einstellungen.  Eine Region, deren Shard-Anzahl von der des
+Koordinators abweicht, wird bereits rundheraus abgelehnt — mit einem Error,
+der den Key nennt, und einem `ShardRegionRegistrationRefused`-Event, siehe
+[Sharding-Introspektion](/de/cluster/sharding/introspection/).
+
 ## Was schiefgehen kann
 
 import { Aside } from '@astrojs/starlight/components';

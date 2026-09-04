@@ -43,8 +43,16 @@ type Subscription = ResolvedChannel & {
  * Optional minimal-logger hook for the bus.  ActorSystem assigns its
  * own logger here after construction; if unset (e.g. ad-hoc test
  * use), predicate failures are silently swallowed.
+ *
+ * `debug` joined `warn` with the subscription trace (#867), and joined it
+ * **optionally**.  `ActorSystem` always assigns a full `Logger`, so a running
+ * system always has it; requiring it would only reach the hand-built
+ * fixtures, forcing a no-op `debug` into every `{ warn }` object written for
+ * a test about predicates.  "Minimal" is what this interface is for, and a
+ * hook that does not do debug simply does not trace.
  */
 export interface EventStreamLogger {
+  debug?(message: string, ...args: unknown[]): void;
   warn(message: string, ...args: unknown[]): void;
 }
 
@@ -94,6 +102,24 @@ export class EventStream {
   log?: EventStreamLogger;
 
   /**
+   * Trace subscribe and unsubscribe at `debug` —
+   * `actor-ts.diagnostics.debug.event-stream` (#867).  Assigned by
+   * `ActorSystem` from the resolved settings; a bus a test builds by hand
+   * keeps the shipped answer, which is silence.
+   *
+   * A field on the bus rather than a `Config` read, exactly like {@link log}
+   * beside it: the stream is constructed before the settings are resolved and
+   * has no way to reach them, and the two switches this file needs are worth
+   * two assignments rather than a reference back to the system.
+   *
+   * **Subscription lifecycle only, never `publish`.**  That path runs on
+   * every actor start, every stop and every dead letter, and a config key
+   * that can put a log call there is not a diagnostic — it is an outage
+   * switch.
+   */
+  traceSubscriptions = false;
+
+  /**
    * Subscribe an actor ref to a channel.  Returns true if a new subscription
    * was added; false if a duplicate was rejected.
    *
@@ -140,13 +166,34 @@ export class EventStream {
           && s.channelId === resolved.channelId
           && !s.predicate,
       );
-      if (already) return false;
+      if (already) {
+        // The rejected duplicate is traced too, and it is the more useful of
+        // the two records: "I subscribed and receive nothing" has dedup as
+        // one of its two causes, and the other — a channel that is not the
+        // one the publisher uses — is what the label makes visible.
+        if (this.traceSubscriptions) {
+          this.log?.debug?.(
+            `EventStream: subscribe rejected as a duplicate —`
+            + ` ${subscriber.path.toString()} on ${resolved.label}`,
+          );
+        }
+        return false;
+      }
     }
     this.subs.push({
       ...resolved,
       subscriber,
       predicate: predicate as ((event: unknown) => boolean) | undefined,
     });
+    // Guarded at the call site, not only inside a helper: the message is a
+    // concatenation and a path render, and a switch that is off must not cost
+    // either.  `subscribe` runs on a path a busy system takes often.
+    if (this.traceSubscriptions) {
+      this.log?.debug?.(
+        `EventStream: subscribed ${subscriber.path.toString()} to ${resolved.label}`
+        + (predicate ? ' with a predicate' : ''),
+      );
+    }
     return true;
   }
 
@@ -179,11 +226,40 @@ export class EventStream {
     // Nothing subscribed: `filter` would allocate a second empty array to say
     // so, and a `false` return needs no array at all.  Every actor stop calls
     // this to drop the subscriptions it may never have made.
-    if (before === 0) return false;
+    if (before === 0) {
+      this.traceUnsubscribe(subscriber, scoped, 0);
+      return false;
+    }
     this.subs = scoped !== null
       ? this.subs.filter((s) => !(s.subscriber.equals(subscriber) && s.channelId === scoped.channelId))
       : this.subs.filter((s) => !s.subscriber.equals(subscriber));
+    this.traceUnsubscribe(subscriber, scoped, before - this.subs.length);
     return this.subs.length !== before;
+  }
+
+  /**
+   * Trace one `unsubscribe`, when it is worth tracing.
+   *
+   * A whole-actor call that removed nothing is not: `ActorCell` makes one on
+   * every stop, for every actor, whether or not it ever subscribed, so
+   * tracing those would bury the subscription records under a copy of the
+   * lifecycle trace — which is a separate switch precisely so it can be
+   * turned on separately.  A *scoped* call that removed nothing is the
+   * opposite: it is somebody's cleanup naming a channel it never held, the
+   * failure #645 and #763 were both filed for.
+   */
+  private traceUnsubscribe(
+    subscriber: ActorRef,
+    scoped: ResolvedChannel | null,
+    removed: number,
+  ): void {
+    if (!this.traceSubscriptions) return;
+    if (removed === 0 && scoped === null) return;
+    const target = scoped === null ? 'every channel it held' : scoped.label;
+    this.log?.debug?.(
+      `EventStream: unsubscribed ${subscriber.path.toString()} from ${target}`
+      + ` — ${removed} subscription(s) removed`,
+    );
   }
 
   /**

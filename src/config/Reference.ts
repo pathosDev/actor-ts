@@ -333,6 +333,36 @@ actor-ts {
     # How long logging stays suspended once the count above is reached.
     # 0 = never suspend, i.e. log every dead letter.
     log-dead-letters-suspend-duration = 5m
+
+    # Write the merged configuration to the log once at startup, one record,
+    # every key with the layer it came from -- the answer to "why is this
+    # setting not what I wrote".  Off because a few hundred lines nobody
+    # asked for is a behaviour change, and because the dump prints the tree:
+    # keys whose NAME matches pass|secret|token|key|credential|auth are
+    # withheld, which catches password and api-key and does not catch dsn or
+    # a uri with a password in it.  Read the level note under debug below --
+    # this one is info, so it needs no second switch.
+    log-config-on-start = off
+
+    # Traces the framework emits at DEBUG.  Two switches, not one: the key
+    # here says WHETHER a record is produced, and logger.level = debug says
+    # whether it is written.  Each is off because it is a record per event on
+    # a path the application drives -- per declined message, per actor
+    # transition, per subscription -- so the cost belongs to whoever asks.
+    debug {
+      # Every message an actor was handed and declined.  The count and the
+      # dead letter are unconditional; this names the message.
+      unhandled = off
+
+      # Actor start, stop and restart.  ActorStarted / ActorStopped /
+      # ActorRestarted carry the same facts to an event-stream subscriber
+      # that can be selective, which a log level cannot.
+      lifecycle = off
+
+      # Event-stream subscribe and unsubscribe.  Never publish: that runs on
+      # every actor start, every stop and every dead letter.
+      event-stream = off
+    }
   }
 
   cluster {
@@ -347,6 +377,39 @@ actor-ts {
     # liveness, so nothing but the TTL below ever reclaims it.
     max-members = 1000
     max-tombstones = 10000
+
+    # Settings that have to agree across the cluster.  Each node publishes the
+    # EFFECTIVE value of every listed setting on the gossip overlay and compares
+    # what its peers publish back -- effective, not configured, because the
+    # documented way to set most of these is a builder, which sits above the
+    # config layer.  Absence on either side is silence, so a mixed-version or
+    # partially-configured cluster says nothing rather than something wrong.
+    configuration-compatibility-check {
+      # off = report the divergence and change nothing else (the default).
+      # on  = additionally bar the diverging peer from this node's placement
+      # candidates.  It never downs or quarantines anyone: a misconfigured
+      # MAJORITY would then evict the correctly-configured minority, which
+      # turns a warning into an outage, and it is never an election input --
+      # candidacy is a per-node view, and an elected role computed from an
+      # asymmetric set has two winners.
+      enforce = off
+
+      # What is published and compared, named by the HOCON path whose effective
+      # value each carries.  This is an allow-list of what LEAVES the node, so a
+      # path absent here is never gossiped in the first place.
+      #
+      # Seeded with the wire cap because it is the divergence nothing detects:
+      # there is no protocol negotiation yet (#823), so a frame over a peer's
+      # lower cap kills the whole association and the sender never learns why.
+      # sharding.number-of-shards is deliberately NOT here -- the coordinator
+      # already refuses a region whose count disagrees, on the effective value.
+      #
+      # Two more are published and can be added, though each divergence is
+      # either legitimate or self-healing:
+      #   actor-ts.cluster.failure-detector.heartbeat-interval
+      #   actor-ts.cluster.tombstone.time-to-live
+      checked-paths = ["actor-ts.remote.max-frame-bytes"]
+    }
 
     tombstone {
       time-to-live   = 24h
@@ -776,6 +839,45 @@ actor-ts {
     # want in-flight requests to finish on shutdown.
     shutdown-grace-period = 0ms
 
+    # Connection-level bounds for the server itself -- the listening socket a
+    # bind() opens, not a route on it.  withServerOptions(...) wins per field,
+    # then this block, then the built-in default, and the merged result is
+    # validated (OptionsError on a bad value).  They are installed on the
+    # server at listen(), so they reach a backend you constructed yourself
+    # just as they reach the one the framework builds.
+    #
+    # NOT every backend can honour them.  Fastify, Express and Hono-on-Node
+    # all expose the node:http server these are written to; Bun.serve and
+    # Deno.serve expose neither that server nor an equivalent knob, so under
+    # the Hono backend on Bun or Deno all four are unavailable rather than
+    # quietly ignored.  header-timeout and request-timeout are enforced by a
+    # periodic sweep the runtime fixes at 30s, so a connection is closed no
+    # earlier than the value set here and no later than one sweep after it.
+    #
+    # Two leaves ship no value, because "unset" is a state neither of them has
+    # a number for:
+    #
+    #   idle-timeout -- how long an idle keep-alive connection is held before
+    #     it is destroyed.  Unset keeps the backend's own, and the backends
+    #     disagree on purpose: 72s on Fastify, so the server outlives a load
+    #     balancer's idle window and the balancer never posts a request onto a
+    #     socket that is closing, against node:http's 5s everywhere else.
+    #     Set a duration to make them agree, or 0 to disable it:
+    #
+    #       idle-timeout = 5s
+    #
+    #   max-connections -- concurrent connections accepted before new ones are
+    #     closed, unlimited by default.  The same shape
+    #     http.websocket.max-connections has, but server-wide: it counts every
+    #     connection on this binding, WebSocket upgrades and an attached
+    #     DevTools server included.
+    #
+    #       max-connections = 10000
+    server {
+      header-timeout  = 60s   # time to receive the complete headers -- the slow-loris guard
+      request-timeout = 300s  # time to receive the ENTIRE request; bounds uploads, never responses
+    }
+
     # Per-route CORS defaults for cors(options, routes).  Leaf names are the
     # kebab-case of the CorsOptionsType fields; the route's own options win per
     # field, and the merged result is validated (OptionsError on a bad value).
@@ -1123,9 +1225,83 @@ actor-ts {
         # tags-table -- derived as <events-table>_tags; see postgres above.
         auto-create-tables = on
       }
+
+      # MongoDB journal.  registerMongoPlugins(ext) makes this id real; the
+      # block below is what that call reads when a field is left unset.
+      # Explicit MongoJournalOptions always win over anything here.
+      #
+      # Mongo names its containers COLLECTIONS, so the leaves say collection and
+      # the switch creates indexes rather than tables.  A leaf named after
+      # another backend's vocabulary is a leaf an operator has to translate.
+      mongodb {
+        url = ""                      # mongodb://... or mongodb+srv://...; "" = not set
+        database-name = "actor_ts"
+        events-collection = "events"  # its meta collection is <it>_meta
+        auto-create-indexes = on      # the unique index is what refuses a duplicate append
+        # client-options -- no leaf: free-form MongoClient config with no
+        #   enumerable key set (withClientOptions in code).
+      }
+
+      # DynamoDB journal -- see the mongodb block above for the shape.  Reached
+      # by a region rather than a URL, and the table name carries the actor_ts_
+      # prefix on purpose: a DynamoDB table name is account- and region-global,
+      # so a bare "events" would collide with whatever else the account owns.
+      dynamodb {
+        region   = ""                 # e.g. eu-central-1; "" = not set
+        endpoint = ""                 # dynamodb-local / LocalStack; "" = the real service
+        events-table = "actor_ts_events"
+        # client-config -- no leaf, same reason as mongodb's client-options.
+        #   Credentials never appear here either: omitted, the SDK's own
+        #   default chain supplies them.
+        # Table PROVISIONING (billing mode, capacity, the create-on-first-use
+        #   switch) is code-only for now; this block is about reaching the right
+        #   table rather than about creating it.
+      }
+
+      # Cassandra / ScyllaDB journal.  registerCassandraPlugins(ext) makes this
+      # id real.  The widest block in the family: Cassandra is reached by a seed
+      # list rather than a URL, and its schema is four tables rather than one
+      # plus a derived name, because a wide-column store has no join to derive
+      # one with.
+      cassandra {
+        contact-points = []           # [] = not set; e.g. ["10.0.0.1", "10.0.0.2"]
+        keyspace = ""                 # "" = not set; required at the point of use
+        local-data-center = "datacenter1"
+        port = 9042
+        auto-create-keyspace = off    # CREATE KEYSPACE on start (SimpleStrategy, rf=1)
+        # replication -- the map auto-create-keyspace uses.  No leaf: free-form
+        #   with no enumerable key set (withReplication in code).  Nor do
+        #   credentials, which are key material.
+        # consistency -- deliberately unset: with nothing here the DRIVER picks
+        #   the CQL level, and absence is what keeps that true.  Set the numeric
+        #   value from cassandra-driver's types.consistencies (LOCAL_QUORUM = 6)
+        #   to pin it.
+        events-table    = "events"
+        metadata-table  = "metadata"            # highest sequence number per pid
+        all-ids-table   = "all_persistence_ids" # the lookup behind persistenceIds()
+        tag-index-table = "events_by_tag"       # written only when use-tag-index is on
+        partition-size = 500000       # rows per partition before rolling over
+        auto-create-tables = on
+        use-tag-index = off           # dual-write an events_by_tag side table
+        lightweight-transactions = on # Paxos claim per append; off risks a lost write
+        # serial-consistency -- deliberately unset: ignored unless the LWT above
+        #   is on, and unset the driver picks cluster-wide SERIAL.  Set 9
+        #   (localSerial) to keep Paxos inside the local data center.
+      }
     }
     snapshot-store {
       plugin = "actor-ts.persistence.snapshot-store.in-memory"
+
+      # The built-in in-memory snapshot store -- the one this file selects above,
+      # and the only block outside the per-backend fan-out.
+      in-memory {
+        # Snapshots kept per persistenceId.  0 keeps EVERY one, which is where
+        #   this store deliberately parts company with its siblings (they keep
+        #   3): it is what an unconfigured application gets, so a default bound
+        #   would quietly start discarding snapshots for every test in the repo.
+        #   Set it to bound a long-running fixture.
+        keep-n = 0
+      }
 
       # Local SQLite snapshot store -- see the journal's sqlite block above.
       sqlite {
@@ -1175,6 +1351,40 @@ actor-ts {
         database-id = ""
         api-token   = ""              # prefer \${?CLOUDFLARE_API_TOKEN}
         base-url    = "https://api.cloudflare.com/client/v4"
+        snapshots-table = "snapshots"
+        keep-n = 3
+        auto-create-tables = on
+      }
+
+      # MongoDB snapshot store -- see the journal's mongodb block above.
+      mongodb {
+        url = ""
+        database-name = "actor_ts"
+        snapshots-collection = "snapshots"
+        keep-n = 3                    # snapshots kept per persistenceId; 0 disables pruning
+        auto-create-indexes = on
+      }
+
+      # DynamoDB snapshot store -- see the journal's dynamodb block above.
+      dynamodb {
+        region   = ""
+        endpoint = ""
+        snapshots-table = "actor_ts_snapshots"
+        keep-n = 3
+      }
+
+      # Cassandra / ScyllaDB snapshot store -- see the journal's cassandra block
+      # above for what each connection leaf means.  The connection is repeated
+      # here rather than hoisted: a plugin id IS its config section, and the two
+      # axes are selected independently, so they may legitimately name different
+      # keyspaces.  A deployment that shares one writes it once and substitutes.
+      cassandra {
+        contact-points = []
+        keyspace = ""
+        local-data-center = "datacenter1"
+        port = 9042
+        auto-create-keyspace = off
+        # consistency -- deliberately unset; see the journal's cassandra block.
         snapshots-table = "snapshots"
         keep-n = 3
         auto-create-tables = on
@@ -1277,6 +1487,23 @@ actor-ts {
         base-url    = "https://api.cloudflare.com/client/v4"
         table = "durable_state"
         auto-create-tables = on
+      }
+
+      # MongoDB durable-state store -- see the journal's mongodb block above.
+      mongodb {
+        url = ""
+        database-name = "actor_ts"
+        collection = "durable_state"
+      }
+
+      # DynamoDB durable-state store -- see the journal's dynamodb block above.
+      # There is no cassandra sibling here at all: no Cassandra durable-state
+      # store ships, so this axis is two backends wide where the other two are
+      # three.
+      dynamodb {
+        region   = ""
+        endpoint = ""
+        table = "actor_ts_durable_state"
       }
     }
   }

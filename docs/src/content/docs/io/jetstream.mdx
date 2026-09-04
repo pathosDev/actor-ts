@@ -122,6 +122,65 @@ Set `consumer` to bind a durable subscription.
 | `maxAcknowledgmentPending` | Max in-flight unacked messages.  Default `1024`. |
 | `create` | Create/update the consumer at connect time.  Default `true`. |
 
+### Both groups, from HOCON
+
+Which stream an actor owns and which durable it binds is deployment shape, not
+application logic, so both groups are readable under
+`actor-ts.io.broker.jetstream` — as is the ack-wait ceiling:
+
+```hocon
+actor-ts.io.broker.jetstream {
+  acknowledgment-timeout = 45s
+
+  stream {
+    name         = "BILLING"
+    subjects     = ["billing.>"]
+    retention    = "workqueue"
+    storage      = "file"
+    max-messages = 1000000
+    max-bytes    = 8M
+    max-age      = 3600000000000   # NANOseconds, passed through verbatim
+    create       = true
+  }
+
+  consumer {
+    durable                   = "billing-proc"
+    mode                      = "push"
+    deliver-policy            = "all"
+    ack-policy                = "explicit"
+    ack-wait                  = 30s
+    filter-subject            = "billing.charges"
+    max-acknowledgment-pending = 1024
+    create                    = true
+  }
+}
+```
+
+`deliver-policy` also takes its two parameterised forms, as an object.  The
+`kind` keeps its TypeScript spelling because it is a *value* that lands in the
+union unchanged; only the leaf names around it are kebab-case:
+
+```hocon
+consumer {
+  durable        = "billing-proc"
+  deliver-policy { kind = "byStartSeq", start-seq = 4242 }
+  # or:          { kind = "byStartTime", start-time = 1767225600000 }  # epoch ms
+}
+```
+
+An unrecognised `kind` is refused at startup rather than quietly falling back
+to `all`, which would replay a whole stream on a typo.
+
+Both groups are read **whole**: `withStream({ … })` / `withConsumer({ … })` in
+code replace the configured block rather than merging into it, which is the
+ordinary precedence (constructor > HOCON > defaults) applied at the field each
+object *is*.  `name` + `subjects` and `durable` are required, and a block
+missing one is refused at start, naming the leaf.
+
+`target` has no config key — an `ActorRef` names a live actor in this process,
+which a config file cannot denote.  Neither has `tls`, which carries the
+certificate material itself.
+
 ## Commands
 
 `JetStreamActor` accepts a `JetStreamCommand` (discriminated on `kind`):

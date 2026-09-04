@@ -45,13 +45,19 @@ import {
   readDeadLetterQueueOptionsFromConfig,
   type DeadLetterQueueOptionsType,
 } from './deadletters/DeadLetterQueueOptions.js';
+import { configDumpLines } from './diagnostics/ConfigDump.js';
 import {
+  DEFAULT_DEBUG_EVENT_STREAM,
+  DEFAULT_DEBUG_LIFECYCLE,
+  DEFAULT_DEBUG_UNHANDLED,
+  DEFAULT_LOG_CONFIG_ON_START,
   DEFAULT_LOG_DEAD_LETTERS,
   DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN,
   DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS,
   DiagnosticsOptionsValidator,
   readDiagnosticsOptionsFromConfig,
   type DiagnosticsOptionsType,
+  type ResolvedDiagnostics,
 } from './diagnostics/DiagnosticsOptions.js';
 import {
   GUARDIAN_SHUTDOWN_ORDER,
@@ -118,6 +124,17 @@ export class ActorSystem {
    * unbounded mailbox #1148 restored.
    */
   readonly _defaultMailbox: DefaultMailboxConfiguration;
+  /**
+   * @internal The resolved `actor-ts.diagnostics.*` settings, for the sites
+   * that emit a gated record (#867).
+   *
+   * Here for the third time and for the third instance of one reason: a cell
+   * reads no config, and neither does the per-message path in
+   * `recordUnhandled`.  Every field is decided, so a read site is a plain
+   * boolean test — a `?? DEFAULT_…` at the read site would be a second place
+   * the default lives, free to disagree with the merge that produced this.
+   */
+  readonly _diagnostics: ResolvedDiagnostics;
   readonly deadLetters: ActorRef;
   /**
    * Bounded record of the messages this system could not deliver.
@@ -264,18 +281,34 @@ export class ActorSystem {
     // Diagnostics are resolved before the ref that reads them, and the
     // built-in layer is a real one here rather than the empty layer the
     // queue merge below uses: there is no `Diagnostics` object downstream
-    // to apply defaults of its own, so this merge is where the three
-    // published defaults actually take effect.
-    const diagnostics = mergeOptions<Required<DiagnosticsOptionsType>>(
+    // to apply defaults of its own, so this merge is where every published
+    // default in the block actually takes effect.
+    const diagnostics = mergeOptions<ResolvedDiagnostics>(
       {
         logDeadLetters: DEFAULT_LOG_DEAD_LETTERS,
         logDeadLettersDuringShutdown: DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN,
         logDeadLettersSuspendDurationMs: DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS,
+        logConfigOnStart: DEFAULT_LOG_CONFIG_ON_START,
+        debugUnhandled: DEFAULT_DEBUG_UNHANDLED,
+        debugLifecycle: DEFAULT_DEBUG_LIFECYCLE,
+        debugEventStream: DEFAULT_DEBUG_EVENT_STREAM,
       },
       readDiagnosticsOptionsFromConfig(this.config),
       { ...(options.diagnostics as Partial<DiagnosticsOptionsType> | undefined) },
     );
     new DiagnosticsOptionsValidator().validate(diagnostics);
+    // Before the guardian cells are built below, for the same reason
+    // `_defaultMailbox` is: the first cell constructed reads this, so a later
+    // assignment would leave the root and the two guardians looking at
+    // `undefined`.
+    this._diagnostics = diagnostics;
+    this.eventStream.traceSubscriptions = diagnostics.debugEventStream;
+    // After `attachLogger` above, so the dump reaches the configured sinks
+    // rather than only whatever the logger writes to before it is wired; and
+    // before the guardians, so a system that fails to finish starting has
+    // still said what it was configured with — which is when the answer is
+    // wanted most.  Once by construction: there is one constructor.
+    if (diagnostics.logConfigOnStart) this.log.info(configDumpLines(this.config));
     const deadLetterRef = new DeadLetterRef(this.name, this.eventStream, {
       log: this.log,
       logDeadLetters: diagnostics.logDeadLetters,

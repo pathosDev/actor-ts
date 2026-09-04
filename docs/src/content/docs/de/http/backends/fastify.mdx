@@ -45,6 +45,19 @@ Angabe steht es auf **1 MiB** — demselben Cap, den auch das Express- und
 das Hono-Backend anwenden; welche Requests angenommen werden, hängt damit
 nicht mehr vom Backend ab. Ein eigener Wert gewinnt weiterhin.
 
+Die Verbindungsschranken unter
+[`actor-ts.http.server`](/de/reference/configuration/) werden nach `listen()`
+auf `fastify.server` installiert und gelten hier deshalb unabhängig davon, ob
+das Framework dieses Backend gebaut hat oder du. Zwei von Fastifys eigenen
+Defaults weichen von denen aus `node:http` ab und sind es wert, gekannt zu
+werden: `keepAliveTimeout` steht auf **72 s** statt auf 5 s — absichtlich,
+damit der Server das Idle-Fenster eines Load Balancers überlebt — und
+`requestTimeout` auf **0**, also gar keine Schranke. Das Framework
+veröffentlicht jetzt `request-timeout = 300s`; auf diesem Backend ist das eine
+Empfangs-Deadline, wo vorher keine war. Setz sie in deiner Config zurück auf
+`0`, um das alte Verhalten herzustellen; `idle-timeout` liefert keinen Wert,
+Fastifys 72 s bleiben also unangetastet.
+
 Die meisten Settings werden an Fastifys `FastifyServerOptions`
 durchgereicht.  Das Framework konfiguriert die Routen-
 Registrierung; du drehst an Fastifys eigenen Reglern.

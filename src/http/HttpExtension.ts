@@ -11,6 +11,12 @@ import { mergeOptions } from '../util/OptionsMerge.js';
 import type { HttpServerBackend, ServerBinding } from './backend/HttpServerBackend.js';
 import { HttpClient } from './HttpClient.js';
 import type { HttpClientOptions, HttpClientOptionsType, HttpRedirectMode } from './HttpClientOptions.js';
+import {
+  DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS,
+  DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS,
+  HttpServerOptionsValidator,
+} from './HttpServerOptions.js';
+import type { HttpServerOptions, HttpServerOptionsType } from './HttpServerOptions.js';
 import { requestIdOf } from './middleware/RequestId.js';
 import { resolveSecurityHeaders } from './middleware/SecurityHeaders.js';
 import type { SecurityHeadersOptions } from './middleware/SecurityHeadersOptions.js';
@@ -49,6 +55,24 @@ export interface ServerBuilder {
    * that supports `setErrorHandler` (all shipped backends do).
    */
   withErrorHandler(handler: (err: unknown, request: HttpRequest) => Promise<HttpResponse> | HttpResponse): ServerBuilder;
+  /**
+   * Connection-level bounds for **this whole server** — the idle keep-alive
+   * window, the header and request receive deadlines, and a ceiling on
+   * concurrent connections.  They belong to the listening socket rather than
+   * to a route, so they are resolved once here and installed at `listen()`.
+   *
+   * This is the explicit layer over `actor-ts.http.server`: a field named here
+   * wins, a field left unset falls through to HOCON and then to the built-in
+   * default.  Two of the four ship no built-in default at all — leaving
+   * `idleTimeoutMs` and `maxConnections` unset keeps whatever the backend
+   * chose, which is not a number any layer could name.
+   *
+   * Not every backend can honour every field: `applyServerOptions` in
+   * `backend/HttpServerBackend.ts` carries the per-runtime table.  Neither
+   * `Bun.serve` nor `Deno.serve` exposes any of them, so the Hono backend is
+   * tunable only on Node.
+   */
+  withServerOptions(options: HttpServerOptions): ServerBuilder;
   /** Register the full route tree and bind.  Returns the ServerBinding. */
   bind(routes: Route): Promise<ServerBinding>;
 }
@@ -115,10 +139,15 @@ export class HttpExtension implements Extension {
     // `false`: the backends ship with their own default header set, so an
     // untouched builder has to leave it alone rather than overwrite it.
     let securityHeadersOptions: SecurityHeadersOptions | false | undefined;
+    let serverOptions: HttpServerOptions | undefined;
     const system = this.system;
     return {
       useBackend(b: HttpServerBackend): ServerBuilder {
         backend = b;
+        return this;
+      },
+      withServerOptions(options: HttpServerOptions): ServerBuilder {
+        serverOptions = options;
         return this;
       },
       withSecurityHeaders(options: SecurityHeadersOptions | false): ServerBuilder {
@@ -291,7 +320,23 @@ export class HttpExtension implements Extension {
           active.setErrorHandler(errorHandler);
         }
 
-        const raw = await active.listen(host, port);
+        // Resolved here, once, for the same reason the WebSocket policy above
+        // is: this is the only place the explicit layer and a system to read
+        // config from are both in scope, and the backend needs the numbers one
+        // moment later — at listen(), where they are written onto the server
+        // it just created.  Validating here also moves an OptionsError from a
+        // malformed policy to bind() rather than to the first connection that
+        // trips the bound, which is where a configuration error belongs.
+        const resolvedServerOptions = mergeOptions<HttpServerOptionsType>(
+          {
+            headerTimeoutMs: DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS,
+            requestTimeoutMs: DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS,
+          },
+          httpServerOptionsFromConfig(system.config),
+          (serverOptions ?? {}) as Partial<HttpServerOptionsType>,
+        );
+        new HttpServerOptionsValidator().validate(resolvedServerOptions);
+        const raw = await active.listen(host, port, resolvedServerOptions);
         // Wrap `unbind` so it's idempotent — both the auto-registered
         // CoordinatedShutdown task and any manual caller can invoke it
         // safely; subsequent calls return the in-flight/resolved promise
@@ -464,6 +509,44 @@ function httpClientOptionsFromConfig(config: Config): Partial<HttpClientOptionsT
     defaultTimeoutMs: config.hasPath(keys.defaultTimeout) ? config.getDuration(keys.defaultTimeout) : undefined,
     redirect: config.hasPath(keys.redirect) ? (config.getString(keys.redirect) as HttpRedirectMode) : undefined,
     maxRedirects: config.hasPath(keys.maxRedirects) ? config.getInt(keys.maxRedirects) : undefined,
+  };
+}
+
+/**
+ * The `actor-ts.http.server` layer — the connection-level bounds of one bound
+ * server, as an operator sets them without touching code.
+ *
+ * Written to match {@link httpClientOptionsFromConfig} exactly, and the shape
+ * is load-bearing rather than stylistic: an absent leaf comes back
+ * `undefined`, so `mergeOptions` lets the layer beneath through instead of
+ * punching a hole in it.  For `idle-timeout` and `max-connections` that is the
+ * whole mechanism, not a detail — both ship **no leaf** in `reference.conf`,
+ * because "unset" is a state neither has a number for: unset keep-alive means
+ * *whatever the backend chose* (72 s on Fastify, 5 s elsewhere — they
+ * disagree, deliberately), and unset `max-connections` means unlimited.  A
+ * key that is always present could not express either, which is the reason
+ * `remote.tcp.advertised-host` and `cluster.bootstrap.await-ready` are
+ * comments too.
+ *
+ * Leaf names are the kebab-case of the `HttpServerOptions` fields with the
+ * unit suffix dropped, the convention the rest of `actor-ts.http` follows:
+ * HOCON carries the unit in the value and `getDuration` accepts both `60s` and
+ * a bare millisecond count.  Values are read as-is and left to
+ * `HttpServerOptionsValidator`, which `bind()` runs on the merged settings, so
+ * a bad one arrives as an `OptionsError` naming the field.
+ *
+ * `max-connections` is read with `getInt` and not `getBytes`: it counts
+ * sockets, and a `getBytes` reader would silently accept `1K` as 1024
+ * connections.
+ */
+function httpServerOptionsFromConfig(config: Config): Partial<HttpServerOptionsType> {
+  const keys = ConfigKeys.http.server;
+  if (!config.hasPath(keys.root)) return {};
+  return {
+    idleTimeoutMs: config.hasPath(keys.idleTimeout) ? config.getDuration(keys.idleTimeout) : undefined,
+    headerTimeoutMs: config.hasPath(keys.headerTimeout) ? config.getDuration(keys.headerTimeout) : undefined,
+    requestTimeoutMs: config.hasPath(keys.requestTimeout) ? config.getDuration(keys.requestTimeout) : undefined,
+    maxConnections: config.hasPath(keys.maxConnections) ? config.getInt(keys.maxConnections) : undefined,
   };
 }
 

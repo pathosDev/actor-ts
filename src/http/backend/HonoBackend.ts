@@ -10,6 +10,7 @@ import {
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse } from '../Types.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
+  applyServerOptions,
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
   PAYLOAD_TOO_LARGE_RESPONSE,
@@ -17,10 +18,12 @@ import {
 } from './HttpServerBackend.js';
 import type {
   HttpServerBackend,
+  NodeHttpServerLike,
   RouteRegistration,
   ServerBinding,
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
+import type { HttpServerOptionsType } from '../HttpServerOptions.js';
 import { bufferWebsocketEvents } from '../websocket/SocketAdapter.js';
 import type { WebsocketSocketAdapter } from '../websocket/SocketAdapter.js';
 import { HonoBackendOptionsValidator } from './HonoBackendOptions.js';
@@ -256,7 +259,7 @@ export class HonoBackend implements HttpServerBackend {
     this.defaultResponseHeaders = headers;
   }
 
-  async listen(host: string, port: number): Promise<ServerBinding> {
+  async listen(host: string, port: number, serverOptions?: Partial<HttpServerOptionsType>): Promise<ServerBinding> {
     if (!this.app) this.app = await this.createHonoApp();
     const app = this.app;
 
@@ -326,6 +329,14 @@ export class HonoBackend implements HttpServerBackend {
       serveOptions: bridge?.serveOptions,
     });
     this.server = server;
+    // Hono owns no server of its own — the per-runtime runner does — so the
+    // policy reaches whatever that runner is willing to hand back.  Only
+    // `@hono/node-server` hands back a `node:http` server (as `raw`); on Bun
+    // and Deno `raw` is absent and every one of these knobs is silently
+    // unavailable rather than silently ignored, which is what the return value
+    // and the docs both say.  `applyServerOptions` treats an absent server as
+    // ordinary for exactly this case.
+    applyServerOptions(server.raw as NodeHttpServerLike | undefined, serverOptions);
     bridge?.attach?.(server);
 
     return {

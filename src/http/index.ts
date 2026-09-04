@@ -156,6 +156,14 @@ export { HonoBackend } from './backend/HonoBackend.js';
 export { HonoBackendOptions, HonoBackendOptionsBuilder, HonoBackendOptionsValidator } from './backend/HonoBackendOptions.js';
 export type { HonoBackendOptionsType } from './backend/HonoBackendOptions.js';
 export { DEFAULT_HTTP_MAX_BODY_BYTES } from './Constants.js';
+export {
+  DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS,
+  DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS,
+  HttpServerOptions,
+  HttpServerOptionsBuilder,
+  HttpServerOptionsValidator,
+} from './HttpServerOptions.js';
+export type { HttpServerOptionsType } from './HttpServerOptions.js';
 export { DEFAULT_RESPONSE_SECURITY_HEADERS, PAYLOAD_TOO_LARGE_RESPONSE } from './backend/HttpServerBackend.js';
 export type {
   HttpServerBackend,

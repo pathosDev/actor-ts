@@ -20,11 +20,21 @@ export interface GrpcServerOptionsType extends BrokerCommonOptionsType {
   readonly serviceName?: string;
   /** Bind address (`'0.0.0.0:50051'`). */
   readonly bind?: string;
-  /** Method-name → handler mapping.  Methods absent from this map are unimplemented (UNIMPLEMENTED status). */
+  /**
+   * Method-name → handler mapping.  Methods absent from this map are
+   * unimplemented (UNIMPLEMENTED status).
+   *
+   * No HOCON leaf: each value is a function, and a function cannot come from
+   * a config file.
+   */
   readonly handlers?: Readonly<Record<string, GrpcHandler>>;
   /**
    * TLS — when omitted, the server binds insecurely.  For mTLS supply
    * cert + key + (optionally) `rootCerts` for client auth.
+   *
+   * No HOCON leaf, and no boolean toggle: the secure arm carries `Uint8Array`
+   * material, and a config file is the wrong place for a private key — the
+   * ruling `BrokerTls.ts` records and every broker's `tls` field repeats.
    */
   readonly credentials?:
     | { readonly kind: 'insecure' }
@@ -49,7 +59,8 @@ export interface GrpcServerOptionsType extends BrokerCommonOptionsType {
   readonly health?: HealthCheckRegistry;
   /**
    * grpc-js channel options, handed to the `grpc.Server` constructor
-   * verbatim — see {@link GrpcChannelOptions}.
+   * verbatim — see {@link GrpcChannelOptions}, which is also where the
+   * reasoning for there being no HOCON leaf lives.
    *
    * This is the *server's* half, and it is the one that matters on a
    * public bind: without it nothing reaps an idle or abusive connection,

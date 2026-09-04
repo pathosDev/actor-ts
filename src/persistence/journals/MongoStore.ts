@@ -1,4 +1,4 @@
-import { STORAGE_IDENTITY_TABLE } from '../Constants.js';
+import { DEFAULT_MONGO_AUTO_CREATE_INDEXES, STORAGE_IDENTITY_TABLE } from '../Constants.js';
 import { LazyStore, type LazyStoreConfig } from '../LazyStore.js';
 import type { StorageLocality } from '../StorageLocality.js';
 import type { MongoDatabaseLike, MongoResource } from './MongoClient.js';
@@ -66,7 +66,7 @@ export abstract class MongoStore extends LazyStore<MongoResource> {
       ownsResource: config.ownsClient,
       openResource: () => config.openClient(),
     });
-    this.autoCreateIndexes = config.autoCreateIndexes ?? true;
+    this.autoCreateIndexes = config.autoCreateIndexes ?? DEFAULT_MONGO_AUTO_CREATE_INDEXES;
   }
 
   /** Create this store's indexes.  `createIndex` is idempotent, so re-running is free. */

@@ -10,6 +10,7 @@ import { ExpressBackendOptionsValidator } from './ExpressBackendOptions.js';
 import type { ExpressBackendOptions, ExpressBackendOptionsType } from './ExpressBackendOptions.js';
 import { DEFAULT_HTTP_MAX_BODY_BYTES } from '../Constants.js';
 import {
+  applyServerOptions,
   contentLengthExceeds,
   DEFAULT_RESPONSE_SECURITY_HEADERS,
   PAYLOAD_TOO_LARGE_RESPONSE,
@@ -21,6 +22,7 @@ import type {
   ServerBinding,
   WebsocketRouteRegistration,
 } from './HttpServerBackend.js';
+import type { HttpServerOptionsType } from '../HttpServerOptions.js';
 import { websocketPackageAdapter, type WebsocketPackageSocket } from '../websocket/SocketAdapter.js';
 
 /** Minimal shape of the `ws` package's WebSocketServer (noServer mode). */
@@ -234,7 +236,7 @@ export class ExpressBackend implements HttpServerBackend {
     this.defaultResponseHeaders = headers;
   }
 
-  async listen(host: string, port: number): Promise<ServerBinding> {
+  async listen(host: string, port: number, serverOptions?: Partial<HttpServerOptionsType>): Promise<ServerBinding> {
     if (!this.app) this.app = await this.createExpressApp();
     // Register our raw-body middleware first so routes see req.rawBody.
     this.app.use(this.rawBodyMiddleware());
@@ -268,6 +270,11 @@ export class ExpressBackend implements HttpServerBackend {
       server.once('error', reject);
       this.server = server;
     });
+
+    // Express never touched these, so the server it captures has carried
+    // `node:http`'s own numbers since the backend existed — 5 s keep-alive,
+    // 300 s request timeout.  The policy overwrites whichever of them it names.
+    applyServerOptions(this.server, serverOptions);
 
     if (this.wsRegistered.length > 0 && this.server) {
       this.attachUpgradeDispatch(this.server, this.app);

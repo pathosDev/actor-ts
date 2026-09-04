@@ -39,6 +39,15 @@ Settings im Express-Stil. `maxBodyBytes` steht per Default auf **1 MiB**,
 dem gemeinsamen Cap aller Backends — heb ihn nur für einen Endpunkt an, der
 wirklich mehr annimmt, so wie oben.
 
+Die Verbindungsschranken unter
+[`actor-ts.http.server`](/de/reference/configuration/) werden auf dem `Server`
+installiert, den dieses Backend aus `app.listen` bekommt; sie gelten hier also
+unabhängig davon, ob das Framework das Backend gebaut oder du es an
+`useBackend(...)` übergeben hast — auch bei einer mitgebrachten App. Express
+selbst rührt keinen davon an; ohne Konfiguration gilt deshalb das von
+`node:http`: ein Keep-Alive-Fenster von 5 s und eine Empfangs-Deadline von
+300 s.
+
 ## Hinter einem Reverse-Proxy
 
 `req.ip` ist der Socket-Peer, und der landet in

@@ -1,4 +1,5 @@
 import { match } from 'ts-pattern';
+import { ConfigError } from '../../config/Config.js';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
@@ -239,6 +240,11 @@ export class JetStreamActor extends BrokerActor<
     if (config.hasPath('user')) out.user = config.getString('user');
     if (config.hasPath('password')) out.password = config.getString('password');
     if (config.hasPath('name')) out.name = config.getString('name');
+    if (config.hasPath('stream')) out.stream = readStreamFromConfig(config.getConfig('stream'));
+    if (config.hasPath('consumer')) out.consumer = readConsumerFromConfig(config.getConfig('consumer'));
+    if (config.hasPath('acknowledgment-timeout')) {
+      out.acknowledgmentTimeout = config.getDuration('acknowledgment-timeout');
+    }
     return out;
   }
   protected requiredOptions(): ReadonlyArray<keyof JetStreamOptionsType> { return ['servers']; }
@@ -579,6 +585,110 @@ export class JetStreamActor extends BrokerActor<
     if (!pendingAck) return;
     try { pendingAck.handle.working(); } catch { /* */ }
   }
+}
+
+/* ---------------------------- HOCON readers ----------------------------- */
+
+/**
+ * Read a `stream { … }` block off the actor's HOCON subtree.
+ *
+ * Free functions rather than inline blocks in `readOptionsFromConfig`, for
+ * the reason {@link readFramingFromConfig} is one: what comes back is a whole
+ * nested value, not a leaf, and `mergeOptions` is a shallow spread — so this
+ * *reconstructs* the object rather than layering onto whatever sits below.
+ * `name` and `subjects` are required by {@link JetStreamStreamConfig}, so an
+ * absent one becomes the empty value here and {@link JetStreamOptionsValidator}
+ * rejects it at start, naming the leaf.  That is the failure an operator can
+ * act on; passing an unnamed stream to `jsm.streams.add` is not.
+ *
+ * `max-age` is read with `getNumber`, not `getDuration`: the field is
+ * **nanoseconds**, passed through to nats.js verbatim, and a duration string
+ * would be parsed as milliseconds and silently mean a million times less.
+ */
+function readStreamFromConfig(streamConfig: Config): JetStreamStreamConfig {
+  return {
+    name: streamConfig.hasPath('name') ? streamConfig.getString('name') : '',
+    subjects: streamConfig.hasPath('subjects') ? streamConfig.getStringList('subjects') : [],
+    retention: streamConfig.hasPath('retention')
+      ? streamConfig.getString('retention') as JetStreamStreamConfig['retention']
+      : undefined,
+    storage: streamConfig.hasPath('storage')
+      ? streamConfig.getString('storage') as JetStreamStreamConfig['storage']
+      : undefined,
+    maxMessages: streamConfig.hasPath('max-messages') ? streamConfig.getInt('max-messages') : undefined,
+    maxBytes: streamConfig.hasPath('max-bytes') ? streamConfig.getBytes('max-bytes') : undefined,
+    maxAge: streamConfig.hasPath('max-age') ? streamConfig.getNumber('max-age') : undefined,
+    create: streamConfig.hasPath('create') ? streamConfig.getBoolean('create') : undefined,
+  };
+}
+
+/**
+ * Read a `consumer { … }` block off the actor's HOCON subtree.  Same
+ * reconstruct-the-whole-object contract as {@link readStreamFromConfig};
+ * `durable` is the required leaf the validator checks.
+ */
+function readConsumerFromConfig(consumerConfig: Config): JetStreamConsumerConfig {
+  return {
+    durable: consumerConfig.hasPath('durable') ? consumerConfig.getString('durable') : '',
+    mode: consumerConfig.hasPath('mode')
+      ? consumerConfig.getString('mode') as JetStreamConsumerConfig['mode']
+      : undefined,
+    deliverPolicy: readDeliverPolicyFromConfig(consumerConfig),
+    ackPolicy: consumerConfig.hasPath('ack-policy')
+      ? consumerConfig.getString('ack-policy') as JetStreamConsumerConfig['ackPolicy']
+      : undefined,
+    ackWaitMs: consumerConfig.hasPath('ack-wait') ? consumerConfig.getDuration('ack-wait') : undefined,
+    filterSubject: consumerConfig.hasPath('filter-subject')
+      ? consumerConfig.getString('filter-subject')
+      : undefined,
+    maxAcknowledgmentPending: consumerConfig.hasPath('max-acknowledgment-pending')
+      ? consumerConfig.getInt('max-acknowledgment-pending')
+      : undefined,
+    create: consumerConfig.hasPath('create') ? consumerConfig.getBoolean('create') : undefined,
+  };
+}
+
+/**
+ * Read `consumer.deliver-policy`, whose three simple arms are strings and
+ * whose two parameterised arms are `kind`-tagged objects.
+ *
+ * The presence of a nested `kind` is what tells the two apart — the same
+ * discrimination {@link readFramingFromConfig} makes, and the reason the
+ * object arms keep their TypeScript `kind` spelling (`byStartSeq`) verbatim
+ * as a HOCON *value*: a value round-trips into the union unchanged, where a
+ * kebab spelling would need a translation table nothing else in this file has.
+ *
+ * `start-time` is epoch **milliseconds**, so it is read with `getNumber`
+ * rather than `getDuration` — it names an instant, not a span.
+ *
+ * An unrecognised `kind` is a `ConfigError` here rather than something the
+ * validator sorts out later, because it has no representation in the union at
+ * all — and because the alternative that {@link readFramingFromConfig} takes
+ * for its own unknown kind, falling back to the default, would mean replaying
+ * a whole stream from the start on a typo.  The string arms *are* left to the
+ * validator: they are representable, so they reach it.
+ */
+function readDeliverPolicyFromConfig(
+  consumerConfig: Config,
+): JetStreamConsumerConfig['deliverPolicy'] {
+  if (consumerConfig.hasPath('deliver-policy.kind')) {
+    const policyConfig = consumerConfig.getConfig('deliver-policy');
+    const kind = policyConfig.getString('kind');
+    if (kind === 'byStartSeq') {
+      return { kind: 'byStartSeq', startSeq: policyConfig.getNumber('start-seq') };
+    }
+    if (kind === 'byStartTime') {
+      return { kind: 'byStartTime', startTimeMs: policyConfig.getNumber('start-time') };
+    }
+    throw new ConfigError(
+      `consumer.deliver-policy.kind = '${kind}' is not a delivery policy — the `
+      + "object form is { kind = \"byStartSeq\", start-seq = N } or "
+      + '{ kind = "byStartTime", start-time = <epoch ms> }.  For the simple '
+      + 'policies write the string form: deliver-policy = "all" | "last" | "new".',
+    );
+  }
+  if (!consumerConfig.hasPath('deliver-policy')) return undefined;
+  return consumerConfig.getString('deliver-policy') as JetStreamConsumerConfig['deliverPolicy'];
 }
 
 /* ----------------------------- internals -------------------------------- */

@@ -287,11 +287,18 @@ export type {
 } from './deadletters/index.js';
 
 // Diagnostics — `actor-ts.diagnostics.*`, what the runtime says about
-// itself.  Today that is the dead-letter log record and its throttle; the
-// family is reachable so `ActorSystemOptions.withDiagnostics(...)` has
-// something to name, and so the three published defaults can be read back
-// rather than restated.
+// itself: the dead-letter log record and its throttle, the boot config dump,
+// and the three debug traces.  The family is reachable so
+// `ActorSystemOptions.withDiagnostics(...)` has something to name, and so the
+// published defaults can be read back rather than restated;
+// `configDumpLines` renders the same text the boot dump writes, for an
+// application that wants it at a moment of its own choosing.
 export {
+  configDumpLines,
+  DEFAULT_DEBUG_EVENT_STREAM,
+  DEFAULT_DEBUG_LIFECYCLE,
+  DEFAULT_DEBUG_UNHANDLED,
+  DEFAULT_LOG_CONFIG_ON_START,
   DEFAULT_LOG_DEAD_LETTERS,
   DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN,
   DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS,
@@ -300,7 +307,7 @@ export {
   DiagnosticsOptionsValidator,
   readDiagnosticsOptionsFromConfig,
 } from './diagnostics/index.js';
-export type { DiagnosticsOptionsType } from './diagnostics/index.js';
+export type { DiagnosticsOptionsType, ResolvedDiagnostics } from './diagnostics/index.js';
 
 // ProcessSignal — the POSIX signal names `installProcessHooks` and the
 // cluster bootstrap's `shutdownOnSignals` accept.  A verbatim mirror of

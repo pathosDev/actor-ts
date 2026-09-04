@@ -81,6 +81,23 @@ const honoBackendOptions = HonoBackendOptions.create().withMaxBodyBytes(4 * 1024
 new HonoBackend(honoBackendOptions);
 ```
 
+:::caution[`actor-ts.http.server` reaches this backend on Node only]
+The connection-level bounds — `idle-timeout`, `header-timeout`,
+`request-timeout`, `max-connections` — are properties of a `node:http` server,
+and Hono owns no server of its own: it delegates to a runner per runtime.
+Only `@hono/node-server` hands its `node:http` server back, so on **Bun and
+Deno none of the four is installed at all**. Nothing is written and nothing
+pretends to have been; `withServerOptions(...)` and the config block are simply
+inert on those two pairs.
+
+It is the same shape as the WebSocket transport frame cap on this page: a knob
+the runtime does not expose is reported as absent rather than approximated.
+Bun's `Bun.serve` does have a whole-connection `idleTimeout`, in *seconds*
+rather than milliseconds — close enough to be tempting, different enough to be
+wrong, and not wired. Use the Fastify or Express backend where these bounds
+matter, or set them at the reverse proxy in front.
+:::
+
 ## Security headers
 
 Every response this backend writes carries

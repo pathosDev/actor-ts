@@ -167,6 +167,12 @@ owns, such as a handle shared with something else, one of several stores in one
 process, or a spy in a test.  What changed is that it stopped being the *only*
 way to have one.
 
+Every backend that ships a durable-state store registers one: SQLite, the five
+relational backends, MongoDB, DynamoDB and object storage.  Cassandra is the one
+exception, and it is an honest one — the framework has no Cassandra
+durable-state store, so that backend has two plugin axes where the rest have
+three.
+
 An unregistered plugin id is refused rather than silently replaced:
 `ext.durableStateStore` throws `Unknown durable-state plugin '…'` naming the id,
 the same failure mode the other two axes have had since #377.

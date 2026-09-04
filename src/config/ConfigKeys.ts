@@ -150,13 +150,25 @@ export const ConfigKeys = {
    * individually, each one has to be referenced by the reader before the
    * guard passes.
    *
-   * #867 extends this group with `log-config-on-start` and the two
-   * `debug.*` switches; #1179's per-recipient suppression lands here too.
+   * #867 extended it with `log-config-on-start` and the three `debug.*`
+   * switches; #1179's per-recipient suppression lands here too.
+   *
+   * **The `log-*` / `debug.*` split is by level, and that is the whole
+   * reason for the nesting.**  Everything named `log-…` is emitted at `info`
+   * or `warn` and appears in a default deployment once it is switched on.
+   * Everything under `debug` is emitted at `debug` and therefore needs
+   * `actor-ts.logger.level = debug` as well — two switches, not one.  Naming
+   * the sub-block after the level is what makes that second requirement
+   * visible in an `application.conf` instead of only in the docs.
    */
   diagnostics: {
     logDeadLetters: 'actor-ts.diagnostics.log-dead-letters',
     logDeadLettersDuringShutdown: 'actor-ts.diagnostics.log-dead-letters-during-shutdown',
     logDeadLettersSuspendDuration: 'actor-ts.diagnostics.log-dead-letters-suspend-duration',
+    logConfigOnStart: 'actor-ts.diagnostics.log-config-on-start',
+    debugUnhandled: 'actor-ts.diagnostics.debug.unhandled',
+    debugLifecycle: 'actor-ts.diagnostics.debug.lifecycle',
+    debugEventStream: 'actor-ts.diagnostics.debug.event-stream',
   },
 
   /** Dispatcher root — `actor-ts.dispatcher.*`. */
@@ -285,6 +297,31 @@ export const ConfigKeys = {
     /** How long `unbind()` lets in-flight requests drain before forcing. */
     shutdownGracePeriod: 'actor-ts.http.shutdown-grace-period',
     /**
+     * Connection-level bounds for one bound server — the listening socket
+     * itself, not a route on it (#870).
+     *
+     * Full dotted leaves beside the `root`, never a bare root, for the reason
+     * `websocket` below spells out; and here two of the four have **no leaf in
+     * `reference.conf` at all**, so a root-only declaration would have left
+     * them checked by nothing whatsoever.
+     *
+     * `idle-timeout` and `max-connections` are the comment-only pair.  Both
+     * need "unset" to stay expressible: unset keep-alive is whatever the
+     * backend picked — and the backends disagree on purpose, 72 s on Fastify
+     * against 5 s on `node:http` — while unset `max-connections` is unlimited.
+     * A published literal would be a number nobody chose in the first case and
+     * a cap nobody asked for in the second.
+     */
+    server: {
+      root: 'actor-ts.http.server',
+      /** Comment-only in `reference.conf` — unset keeps the backend's own. */
+      idleTimeout: 'actor-ts.http.server.idle-timeout',
+      headerTimeout: 'actor-ts.http.server.header-timeout',
+      requestTimeout: 'actor-ts.http.server.request-timeout',
+      /** Comment-only in `reference.conf` — unset means unlimited. */
+      maxConnections: 'actor-ts.http.server.max-connections',
+    },
+    /**
      * Per-route CORS defaults for the `cors(options, routes)` directive (#878).
      *
      * Full dotted leaves beside the `root`, for the reason `websocket` below
@@ -348,7 +385,47 @@ export const ConfigKeys = {
     journal: {
       plugin: 'actor-ts.persistence.journal.plugin',
       inMemory: 'actor-ts.persistence.journal.in-memory',
-      cassandra: 'actor-ts.persistence.journal.cassandra',
+      /**
+       * The Cassandra / ScyllaDB journal's block (#872, slice 3), and the
+       * widest of them: Cassandra is reached by a seed list rather than a URL,
+       * and its schema is four tables rather than one plus a derived name,
+       * because a wide-column store has no join to derive one with.
+       *
+       * Full dotted leaves beside the `root`, and here that is not a
+       * formality: `NoDeadConfigKeys`' `coveringAccessor` falls back to the
+       * nearest root, and this root literal is *also* hard-coded as the plugin
+       * id in `CassandraPlugin.ts` - so a root-only entry would have been
+       * satisfied by a string that is not a config read at all.  It was: this
+       * block is the hole's own worked example, cited in #872's triage.
+       *
+       * `consistency` and `serial-consistency` are **comment-only** in
+       * `reference.conf`.  Neither has a framework default - both read sites
+       * branch on `=== undefined` - so absence is what leaves the level to the
+       * driver, and a published number would pin a choice the framework never
+       * made.  `replication` and `credentials` have no entry at all: the first
+       * is a free-form map with no enumerable leaf set, and the second is key
+       * material, which never gets a path.
+       */
+      cassandra: {
+        root: 'actor-ts.persistence.journal.cassandra',
+        contactPoints: 'actor-ts.persistence.journal.cassandra.contact-points',
+        keyspace: 'actor-ts.persistence.journal.cassandra.keyspace',
+        localDataCenter: 'actor-ts.persistence.journal.cassandra.local-data-center',
+        port: 'actor-ts.persistence.journal.cassandra.port',
+        autoCreateKeyspace: 'actor-ts.persistence.journal.cassandra.auto-create-keyspace',
+        /** Comment-only in `reference.conf` - absence leaves the CQL level to the driver. */
+        consistency: 'actor-ts.persistence.journal.cassandra.consistency',
+        eventsTable: 'actor-ts.persistence.journal.cassandra.events-table',
+        metadataTable: 'actor-ts.persistence.journal.cassandra.metadata-table',
+        allIdsTable: 'actor-ts.persistence.journal.cassandra.all-ids-table',
+        tagIndexTable: 'actor-ts.persistence.journal.cassandra.tag-index-table',
+        partitionSize: 'actor-ts.persistence.journal.cassandra.partition-size',
+        autoCreateTables: 'actor-ts.persistence.journal.cassandra.auto-create-tables',
+        useTagIndex: 'actor-ts.persistence.journal.cassandra.use-tag-index',
+        lightweightTransactions: 'actor-ts.persistence.journal.cassandra.lightweight-transactions',
+        /** Comment-only in `reference.conf` - ignored unless the LWT above is on. */
+        serialConsistency: 'actor-ts.persistence.journal.cassandra.serial-consistency',
+      },
       /**
        * The SQLite journal's block — `root` is also `SQLITE_JOURNAL_PLUGIN_ID`,
        * per the framework rule that a plugin id *is* the config section holding
@@ -429,11 +506,74 @@ export const ConfigKeys = {
         tagsTable: 'actor-ts.persistence.journal.cloudflare-d1.tags-table',
         autoCreateTables: 'actor-ts.persistence.journal.cloudflare-d1.auto-create-tables',
       },
+      /**
+       * The MongoDB journal's block (#872, slice 3).  Mongo names its
+       * containers *collections*, so the leaf is `events-collection` rather
+       * than `events-table` and the switch is `auto-create-indexes` rather
+       * than `auto-create-tables` - the block says what the backend says,
+       * because a leaf named after another backend's vocabulary is a leaf an
+       * operator has to translate.
+       *
+       * `client-options` has no entry: free-form driver config with no
+       * enumerable leaf set, the same reason `pool-config` has none.
+       */
+      mongodb: {
+        root: 'actor-ts.persistence.journal.mongodb',
+        url: 'actor-ts.persistence.journal.mongodb.url',
+        databaseName: 'actor-ts.persistence.journal.mongodb.database-name',
+        eventsCollection: 'actor-ts.persistence.journal.mongodb.events-collection',
+        autoCreateIndexes: 'actor-ts.persistence.journal.mongodb.auto-create-indexes',
+      },
+      /**
+       * The DynamoDB journal's block (#872, slice 3).  Reached by a region and
+       * an optional endpoint override rather than a URL, and its table names
+       * carry the `actor_ts_` prefix the store defaults to: a DynamoDB table
+       * name is account- and region-global, so the bare `events` the SQL family
+       * uses would collide with whatever else the account owns.
+       *
+       * `client-config` has no entry, for the same reason `pool-config` has
+       * none; nor do credentials, which reach the SDK through its own default
+       * chain.
+       */
+      dynamodb: {
+        root: 'actor-ts.persistence.journal.dynamodb',
+        region: 'actor-ts.persistence.journal.dynamodb.region',
+        endpoint: 'actor-ts.persistence.journal.dynamodb.endpoint',
+        eventsTable: 'actor-ts.persistence.journal.dynamodb.events-table',
+      },
     },
     snapshotStore: {
       plugin: 'actor-ts.persistence.snapshot-store.plugin',
-      inMemory: 'actor-ts.persistence.snapshot-store.in-memory',
-      cassandra: 'actor-ts.persistence.snapshot-store.cassandra',
+      /**
+       * The in-memory snapshot store's block - `root` is the plugin id
+       * `PersistenceExtension` installs when nothing is configured, and
+       * `keep-n` is its one leaf (#872, slice 3).
+       *
+       * The only leaf outside the per-backend fan-out, and the store whose
+       * retention deliberately diverges: every persistent store keeps three
+       * snapshots per id, this one keeps all of them, because a default bound
+       * on the store an unconfigured application gets would quietly change what
+       * that application retains.  The leaf is what lets a long-running fixture
+       * bound it without reaching for code.
+       */
+      inMemory: {
+        root: 'actor-ts.persistence.snapshot-store.in-memory',
+        keepN: 'actor-ts.persistence.snapshot-store.in-memory.keep-n',
+      },
+      /** The Cassandra / ScyllaDB snapshot store's block - see {@link journal}'s `cassandra`. */
+      cassandra: {
+        root: 'actor-ts.persistence.snapshot-store.cassandra',
+        contactPoints: 'actor-ts.persistence.snapshot-store.cassandra.contact-points',
+        keyspace: 'actor-ts.persistence.snapshot-store.cassandra.keyspace',
+        localDataCenter: 'actor-ts.persistence.snapshot-store.cassandra.local-data-center',
+        port: 'actor-ts.persistence.snapshot-store.cassandra.port',
+        autoCreateKeyspace: 'actor-ts.persistence.snapshot-store.cassandra.auto-create-keyspace',
+        /** Comment-only in `reference.conf` - absence leaves the CQL level to the driver. */
+        consistency: 'actor-ts.persistence.snapshot-store.cassandra.consistency',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.cassandra.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.cassandra.keep-n',
+        autoCreateTables: 'actor-ts.persistence.snapshot-store.cassandra.auto-create-tables',
+      },
       /** The SQLite snapshot store's block — see {@link journal}'s `sqlite`. */
       sqlite: {
         root: 'actor-ts.persistence.snapshot-store.sqlite',
@@ -492,6 +632,23 @@ export const ConfigKeys = {
         snapshotsTable: 'actor-ts.persistence.snapshot-store.cloudflare-d1.snapshots-table',
         keepN: 'actor-ts.persistence.snapshot-store.cloudflare-d1.keep-n',
         autoCreateTables: 'actor-ts.persistence.snapshot-store.cloudflare-d1.auto-create-tables',
+      },
+      /** The MongoDB snapshot store's block - see {@link journal}'s `mongodb`. */
+      mongodb: {
+        root: 'actor-ts.persistence.snapshot-store.mongodb',
+        url: 'actor-ts.persistence.snapshot-store.mongodb.url',
+        databaseName: 'actor-ts.persistence.snapshot-store.mongodb.database-name',
+        snapshotsCollection: 'actor-ts.persistence.snapshot-store.mongodb.snapshots-collection',
+        keepN: 'actor-ts.persistence.snapshot-store.mongodb.keep-n',
+        autoCreateIndexes: 'actor-ts.persistence.snapshot-store.mongodb.auto-create-indexes',
+      },
+      /** The DynamoDB snapshot store's block - see {@link journal}'s `dynamodb`. */
+      dynamodb: {
+        root: 'actor-ts.persistence.snapshot-store.dynamodb',
+        region: 'actor-ts.persistence.snapshot-store.dynamodb.region',
+        endpoint: 'actor-ts.persistence.snapshot-store.dynamodb.endpoint',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.dynamodb.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.dynamodb.keep-n',
       },
       /**
        * The object-storage plugin's block — the framework's rule that a plugin
@@ -599,6 +756,26 @@ export const ConfigKeys = {
         baseUrl: 'actor-ts.persistence.durable-state.cloudflare-d1.base-url',
         table: 'actor-ts.persistence.durable-state.cloudflare-d1.table',
         autoCreateTables: 'actor-ts.persistence.durable-state.cloudflare-d1.auto-create-tables',
+      },
+      /** The MongoDB durable-state store's block - see {@link journal}'s `mongodb`. */
+      mongodb: {
+        root: 'actor-ts.persistence.durable-state.mongodb',
+        url: 'actor-ts.persistence.durable-state.mongodb.url',
+        databaseName: 'actor-ts.persistence.durable-state.mongodb.database-name',
+        collection: 'actor-ts.persistence.durable-state.mongodb.collection',
+      },
+      /**
+       * The DynamoDB durable-state store's block - see {@link journal}'s
+       * `dynamodb`.  There is no Cassandra sibling here at all: the tree ships
+       * no Cassandra durable-state store, so the "three stores per backend"
+       * model does not hold uniformly and this axis is two backends wide where
+       * the other two are three.
+       */
+      dynamodb: {
+        root: 'actor-ts.persistence.durable-state.dynamodb',
+        region: 'actor-ts.persistence.durable-state.dynamodb.region',
+        endpoint: 'actor-ts.persistence.durable-state.dynamodb.endpoint',
+        table: 'actor-ts.persistence.durable-state.dynamodb.table',
       },
     },
   },
@@ -736,6 +913,22 @@ export const ConfigKeys = {
      */
     maxMembers: 'actor-ts.cluster.max-members',
     maxTombstones: 'actor-ts.cluster.max-tombstones',
+    /**
+     * Cluster-wide configuration agreement —
+     * `actor-ts.cluster.configuration-compatibility-check.*` (#844).  Read once
+     * by `readClusterOptionsFromConfig`; `Cluster` publishes the listed
+     * settings' *effective* values on the gossip overlay and compares what
+     * peers publish back.
+     *
+     * Full dotted leaves rather than a block root, for the reason
+     * `failure-detector.phi` above states: `NoDeadConfigKeys`'
+     * `coveringAccessor` falls back to the nearest root, so a root alone would
+     * pass the guard whether or not the reader had ever been written.
+     */
+    configurationCompatibilityCheck: {
+      enforce: 'actor-ts.cluster.configuration-compatibility-check.enforce',
+      checkedPaths: 'actor-ts.cluster.configuration-compatibility-check.checked-paths',
+    },
     /**
      * Tombstone housekeeping — `actor-ts.cluster.tombstone.*` (#841).  Grouped
      * in HOCON because an operator tunes the three together; the matching

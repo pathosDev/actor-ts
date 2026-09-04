@@ -57,6 +57,9 @@ import {
   PostgresQuery,
   PostgresSnapshotStore,
   PostgresSnapshotStoreOptions,
+  PersistenceExtensionId,
+  registerSqlitePlugins,
+  SQLITE_JOURNAL_PLUGIN_ID,
   SqliteJournal,
   SqliteQuery,
   SqliteSnapshotStore,
@@ -71,6 +74,10 @@ import {
   type JournalHarness,
   type SnapshotHarness,
 } from '../../brokers/lib/persistence-contract/index.js';
+import { ActorSystem } from '../../../../src/ActorSystem.js';
+import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
+import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
+import type { ConfigObject } from '../../../../src/index.js';
 import { FakeCassandraClient } from './FakeCassandraClient.js';
 import { FakeD1Client } from './FakeD1Client.js';
 import { FakeDynamoDb } from './FakeDynamoDb.js';
@@ -104,6 +111,24 @@ import {
 /** In-process stores start empty, so a stable namespace is enough. */
 const namespacer = (label: string) => (name: string): string => `${label}:${name}`;
 
+/**
+ * An `application.conf` that selects the SQLite journal and says nothing else —
+ * the whole wiring for the arm below, with no options in code at all.
+ *
+ * Deliberately sets no leaf under `journal.sqlite`: the shipped block already
+ * carries `events-table` and `busy-timeout`, and leaving `path` at its `""`
+ * placeholder is what gives each `make()` its own anonymous database.
+ */
+function hoconOnlySqliteOptions(): ActorSystemOptions {
+  const config = {
+    'actor-ts': { persistence: { journal: { plugin: SQLITE_JOURNAL_PLUGIN_ID } } },
+  } as ConfigObject;
+  return ActorSystemOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off)
+    .withConfig(config);
+}
+
 const journalHarnesses: ReadonlyArray<JournalHarness> = [
   {
     label: 'InMemoryJournal',
@@ -118,6 +143,36 @@ const journalHarnesses: ReadonlyArray<JournalHarness> = [
     label: 'SqliteJournal',
     pid: namespacer('sqlite'),
     make: async () => new SqliteJournal(),
+    makeQuery: (journal) => new SqliteQuery(journal as SqliteJournal),
+  },
+  {
+    // The one arm that is *selected and configured purely from HOCON* (#872).
+    // Nothing here names a store, a path or a table: the plug-in is registered
+    // with no options at all, and the journal comes back through
+    // `actor-ts.persistence.journal.plugin` with its settings merged from
+    // `actor-ts.persistence.journal.sqlite`.  SQLite is the only backend that
+    // runs in-process against a real database, so it is the only one that can
+    // show the config path *and* the whole journal contract without Docker.
+    //
+    // Kept as a second arm rather than replacing the one above, for the reason
+    // the two Cassandra arms are two: the arms differ in how the store is
+    // reached, and the direct constructor is the shape a test or an embedded
+    // application uses.  A regression in either seam should name itself.
+    label: 'SqliteJournal (from HOCON)',
+    pid: namespacer('sqlite-hocon'),
+    make: async () => {
+      const system = ActorSystem.create('persistence-contract-hocon', hoconOnlySqliteOptions());
+      const persistence = system.extension(PersistenceExtensionId);
+      registerSqlitePlugins(persistence);
+      const journal = persistence.journal;
+      // The journal owns its own SQLite handle and holds no reference to the
+      // system, so the system can go now — the scenario closes the journal.
+      // `path` is left at the shipped `""`, which the reader drops, so each
+      // `make()` opens its own anonymous in-memory database and the scenarios
+      // stay isolated exactly as the arm above.
+      await system.terminate();
+      return journal;
+    },
     makeQuery: (journal) => new SqliteQuery(journal as SqliteJournal),
   },
   {

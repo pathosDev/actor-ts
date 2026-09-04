@@ -5,6 +5,9 @@ import {
   type DynamoDbOptionsBaseType,
 } from '../journals/DynamoDbOptionsBase.js';
 
+/** The durable-state table — see `DEFAULT_DYNAMODB_EVENTS_TABLE` for why it is prefixed. */
+export const DEFAULT_DYNAMODB_DURABLE_STATE_TABLE = 'actor_ts_durable_state';
+
 export interface DynamoDbDurableStateStoreOptionsType extends DynamoDbOptionsBaseType {
   /** Durable-state table name.  Default: `actor_ts_durable_state`. */
   readonly table?: string;

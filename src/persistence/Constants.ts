@@ -174,6 +174,23 @@ export const DEFAULT_SNAPSHOT_KEEP_N = 3;
 export const DEFAULT_AUTO_CREATE_TABLES = true;
 
 /**
+ * Whether a MongoDB store creates its indexes on first use.
+ *
+ * MongoDB's equivalent of {@link DEFAULT_AUTO_CREATE_TABLES}, and a separate
+ * constant rather than a reuse of it: a collection needs no DDL to exist, so
+ * what this switches is the `createIndex` pass, and the uniqueness those
+ * indexes enforce is what gives the Mongo journal the same
+ * `JournalConcurrencyError` contract the relational primary key gives.  Off
+ * therefore means "I have created them myself", not "skip the DDL".
+ *
+ * Lives here rather than beside one options type because it is the
+ * `autoCreateIndexes` default of *both* `MongoJournalOptions` and
+ * `MongoSnapshotStoreOptions`, resolved once in `MongoStore`'s constructor.
+ * `reference.conf` publishes it twice (#872).
+ */
+export const DEFAULT_MONGO_AUTO_CREATE_INDEXES = true;
+
+/**
  * Sentinel partition key of the DynamoDB identity item (#1358).  Lives inside
  * each store's own table — DynamoDB's unit of divergence is the table, so the
  * identity is per table and a node on a mistyped table name mismatches too.

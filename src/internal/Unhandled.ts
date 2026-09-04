@@ -1,6 +1,7 @@
 import type { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
 import { DeadLetter } from '../SystemMessages.js';
+import { classNameOf } from '../util/ClassName.js';
 
 /**
  * Count one declined message without producing a dead letter.
@@ -64,13 +65,27 @@ export function countUnhandled(system: ActorSystem, className: string): void {
  * publishes: an event-stream subscriber, or the logger behind it, is a third
  * party, and a throw there must not cost the count.
  *
- * **#867 owns the log line at this exact site.**  Its `actor-ts.diagnostics`
- * block gains an `unhandled` toggle, resolved once on the `ActorSystem`
- * beside `_actorThroughput` — a cell reads no `Config` per message, and
- * neither may this — and read here as a plain boolean:
- * `if (system._diagnostics.unhandled) system.log.debug(…)`.  Nothing is
- * shipped for it here on purpose: a field nothing sets is dead code, and a
- * key nothing reads fails `NoDeadConfigKeys.test.ts`.
+ * **The log line #867 reserved is below**, gated on
+ * `actor-ts.diagnostics.debug.unhandled` and resolved once on the
+ * `ActorSystem` beside `_actorThroughput`, exactly as that reservation said:
+ * a cell reads no `Config` per message and neither does this, so the read is
+ * a plain boolean on an already-decided field.  The only departure is the
+ * field's name — `debugUnhandled` and not `unhandled`, because the key ships
+ * nested under `diagnostics.debug` to say which log level it needs, and the
+ * options family keeps its fields in lockstep with the leaves.
+ *
+ * **Why the record is worth having at all, given the other two.**  The
+ * counter carries a class name and a rate; the dead letter carries the
+ * recipient and reaches the dead-letter queue, whose store is `off` by
+ * default.  Neither names the *sender*, and "who is still sending this"
+ * is the question a declined message actually raises.  Off by default for
+ * the reason every per-message record is: a protocol drift drives this at
+ * traffic rate.
+ *
+ * `countUnhandled`'s own caller — a wire frame no handler claimed — gets no
+ * record.  It has no recipient to name, which is the reason it does not
+ * produce a dead letter either, and a line saying "something, somewhere,
+ * declined this" is not a diagnosis.
  */
 export function recordUnhandled(
   system: ActorSystem,
@@ -80,5 +95,24 @@ export function recordUnhandled(
   message: unknown,
 ): void {
   countUnhandled(system, className);
+  if (system._diagnostics.debugUnhandled) {
+    // Deliberately the same shape and the same words as `DeadLetterRef`'s
+    // record — recipient path, message class, sender when there is one — so
+    // an operator reading both does not have to learn two vocabularies for
+    // one message.  The payload is never in it, the same data-protection rule
+    // that keeps it out of that record and makes `dead-letters.store` `off`.
+    //
+    // `classNameOf(message)` and not `className`: the parameter is the
+    // *actor's* constructor name, because it is the metric's `class` label,
+    // and the actor is already named by the path.  What the reader does not
+    // otherwise have is what was sent.
+    //
+    // Built inside the guard: two path renders and a class lookup are the
+    // expensive half of this function, and the switch is off by default.
+    system.log.debug(
+      `unhandled message at ${recipient.path.toString()}: ${classNameOf(message)}`
+      + (sender === null ? '' : ` from ${sender.path.toString()}`),
+    );
+  }
   system.deadLetters.tell(new DeadLetter(message, sender, recipient));
 }

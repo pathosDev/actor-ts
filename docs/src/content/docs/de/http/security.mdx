@@ -188,6 +188,23 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   wird; ein gechunkter Body deklariert keine Länge, also zählen ihn alle drei
   Backends beim Eintreffen mit und brechen den Read am Limit ab — die Bytes
   dahinter werden nie entgegengenommen.
+- **Die Zeit einer Verbindung** — die Schranke, die der Rest dieser Liste nicht
+  abdeckt: ein Peer, der nie fertig sendet, hat keinen Request, der ablaufen
+  könnte, und damit sieht ihn weder eine Größenschranke noch ein
+  `timeout()` auf Routenebene. Ein Server begrenzt die Header-Phase auf **60 s**
+  (`actor-ts.http.server.header-timeout` — der Slowloris-Schutz, beantwortet mit
+  `408`) und das gesamte Empfangen auf **300 s** (`request-timeout`). Beide
+  begrenzen nur das *Empfangen*; ein langsamer Handler, ein Long Poll und ein
+  SSE-Stream bleiben unberührt. `max-connections` begrenzt, wie viele
+  Verbindungen der Prozess gleichzeitig annimmt, und `idle-timeout`, wie lange
+  ein stiller Keep-Alive-Socket gehalten wird; beide liefern keinen Wert, es ist
+  also nichts begrenzt, bis du es sagst. **Es sind Eigenschaften eines
+  `node:http`-Servers**: Fastify, Express und Hono-auf-Node setzen sie um, Hono
+  auf Bun oder Deno kann es nicht — die Tabelle steht in der
+  [Konfigurationsreferenz](/de/reference/configuration/). Die beiden
+  Empfangs-Deadlines werden über einen 30-s-Sweep durchgesetzt, den die Runtime
+  nicht herausgibt; eine Verbindung wird also spätestens einen Sweep nach dem
+  gesetzten Wert geschlossen.
 - **WebSocket-Frames** werden durch `maxFrameBytes` gekappt (1 MiB Default).
   Das Framework weist einen zu großen Frame immer ab, bevor er deinen Actor
   erreicht; auf den meisten Laufzeit/Backend-Paaren geht das aufgelöste Limit

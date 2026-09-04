@@ -146,12 +146,36 @@ Place this at the project root.  The framework auto-loads it on
 | `diagnostics.log-dead-letters` | `10` | Dead letters logged in full before logging suspends.  `0` turns dead-letter logging off entirely.  Every letter is captured and published on the event stream either way — this gates the log line and nothing else. |
 | `diagnostics.log-dead-letters-during-shutdown` | `off` | Log the burst `terminate()` produces while it drains mailboxes to dead letters.  Off because an orderly shutdown drains every queued and stashed message that way; an individual `ref.stop()` still logs, because the system is not terminating. |
 | `diagnostics.log-dead-letters-suspend-duration` | `5m` | How long logging stays suspended once the count above is reached.  `0` never suspends, which is how “log every dead letter” is spelled. |
+| `diagnostics.log-config-on-start` | `off` | Write the merged configuration to the log once at startup — one `info` record, every key with the layer that set it, sorted by path.  The answer to “why is this setting not what I wrote”.  Read the redaction note below before turning it on. |
+| `diagnostics.debug.unhandled` | `off` | One `debug` record per message an actor was handed and declined: recipient path, message class, sender.  The count (`actor_unhandled_total`) and the dead letter happen either way. |
+| `diagnostics.debug.lifecycle` | `off` | One `debug` record per actor start, stop and restart.  `ActorStarted` / `ActorStopped` / `ActorRestarted` on the event stream carry the same facts to a subscriber that can be selective, which a log level cannot. |
+| `diagnostics.debug.event-stream` | `off` | One `debug` record per event-stream subscribe and unsubscribe — never per publish, which runs on every actor start, every stop and every dead letter.  A whole-actor unsubscribe that removed nothing is not recorded; every actor stop makes one. |
 
 The record names the recipient path, the sender when there is one, and the
 message's class — never the payload, for the same data-protection reason
 `dead-letters.store` defaults to `off`.  Every key here is also settable in
 code, field by field, through `ActorSystemOptions.withDiagnostics(…)`.  See
 [Dead letters](/operations/dead-letters/) for the whole picture.
+
+**The `debug.*` keys need two switches, not one.**  The key decides whether a
+record is produced; `logger.level = debug` decides whether it is written.
+Setting only one of them looks exactly like a switch that does not work.
+`log-config-on-start` is deliberately not in that family — it is an `info`
+record, because an operator who asked for a config dump asked for output.
+
+**What the config dump redacts, and what it does not.**  A value is withheld
+when its **key name** matches `pass`, `secret`, `token`, `key`, `credential`
+or `auth` — so `cache.redis.password` and an `api-key` print as `<redacted>`.
+That is a heuristic over key names, and it is the weaker half of the
+guarantee: it cannot catch a secret whose key does not say so — a `dsn`, a
+`connection-string`, a `uri` with a password in it — because by the time the
+merged tree exists a `${?DATABASE_PASSWORD}` has resolved into an ordinary
+string with nothing left to say where it came from.  Nor is the list widened
+further: `seed` would redact `cluster.seed-nodes`, and a dump whose ordinary
+keys read `<redacted>` is a dump nobody reads.  So treat the output as
+sensitive, keep the key `off` outside an investigation, and check what your
+own keys are called before pasting a dump into a ticket.  The same rule, the
+same list and the same limits apply to the DevTools config panel.
 
 ### `actor-ts.mailbox`
 
@@ -224,6 +248,8 @@ replay from it.
 | `cluster.split-brain-resolver.static-quorum.quorum-size` | *(unset)* | Reachable members required to keep running.  Required by `static-quorum`; comment-only in `reference.conf` — see below. |
 | `cluster.split-brain-resolver.keep-referee.referee-address` | *(unset)* | The referee node's address; the side containing it wins.  Required by `keep-referee`; comment-only. |
 | `cluster.split-brain-resolver.keep-referee.down-all-if-below-quorum` | *(unset)* | Down everyone if the referee's own side is smaller than this.  Optional; comment-only. |
+| `cluster.configuration-compatibility-check.enforce` | `off` | What a divergence does beyond being reported.  `on` also bars the diverging peer from this node's placement candidates — see below. |
+| `cluster.configuration-compatibility-check.checked-paths` | `["actor-ts.remote.max-frame-bytes"]` | Settings whose **effective** values this node publishes to its peers and compares theirs against. |
 
 These are layered under whatever `Cluster.join(system, options)` passes, so
 an explicit `withGossipIntervalMs(…)` still wins.  The failure detector
@@ -273,6 +299,24 @@ startup with the missing key in the message.
 `actor-ts.coordination` tunes leases but does not choose a backend.  Build
 it in code: `withDowning(new LeaseMajority(…))`.  Writing the name into
 this key is refused rather than ignored, and the message says so.
+
+`configuration-compatibility-check` compares **effective** values, not config
+values.  Each node publishes what it actually resolved for every setting in
+`checked-paths` and compares what its peers publish back, so two nodes that
+differ only because one called `.withMaxFrameBytes(…)` are still caught —
+which comparing the config tree could not do, since an explicit option sits
+above it.  `checked-paths` is an allow-list of what *leaves* the node, so a
+setting absent from it is never gossiped; only names something publishes can
+be compared, and the framework publishes three of them (see
+[Joining and seeds](/cluster/joining-and-seeds/)).  Absence on either side is
+silence, so a mixed-version cluster reports nothing rather than everything.
+
+`enforce = on` bars the diverging peer from this node's placement candidates
+and does nothing else.  It never downs or quarantines anyone: a misconfigured
+*majority* would then evict the correctly-configured minority, which turns a
+warning into an outage — and the candidate set is a per-node view, so nothing
+that *elects* a role from it (a singleton's host, a shard's home) reads it,
+or two nodes would elect two winners.
 
 `seeds`, `roles` and the transport have no HOCON form — the first two are
 per-deployment identity that belongs at the join site, and the transport is
@@ -633,6 +677,7 @@ read at all, so a malformed value does not stop that node either.
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | One of `fastify` / `express` / `hono`. |
 | `http.shutdown-grace-period` | `0ms` | How long `unbind()` lets in-flight requests drain before connections are forced.  `0` forces immediately. |
+| `http.server` | *(see below)* | Connection-level bounds for the listening socket itself. |
 | `http.cors` | *(see below)* | Per-route defaults for the [`cors()`](/http/middleware/cors/) directive. |
 | `http.client` | *(see below)* | Outbound [`HttpClient`](/http/overview/) defaults. |
 | `http.websocket` | *(see below)* | Server-side WebSocket defaults for [`websocket()`](/http/websocket/) routes. |
@@ -654,6 +699,85 @@ settle — Express holding a live WebSocket, for one — the window becomes a
 deadline that is always reached, so a large value there is time you always
 pay.  A caller that passes its own value — `binding.unbind(1_000)` —
 overrides the config.
+
+The bounds on a **connection** — as against a route on it — come from
+`actor-ts.http.server`:
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `http.server.idle-timeout` | *(backend's own)* | How long an idle keep-alive connection is held before it is destroyed.  Ships **no leaf** — see below.  `0` disables it. |
+| `http.server.header-timeout` | `60s` | How long a connection may take to deliver its complete header block before it is answered `408` and destroyed.  The slow-loris guard. |
+| `http.server.request-timeout` | `300s` | How long a connection may take to deliver a request in full, headers and body.  Bounds *receiving*, never answering. |
+| `http.server.max-connections` | *(unlimited)* | Concurrent connections the listening socket accepts before it starts closing new ones.  Ships **no leaf** — see below. |
+
+The usual order applies per field: `newServerAt(...).withServerOptions(...)`
+wins, then this block, then the built-in default.  They are resolved once at
+`bind()` and installed on the server at `listen()`, so they reach a backend you
+constructed and passed to `useBackend(...)` exactly as they reach the one the
+framework builds for you.
+
+```hocon
+actor-ts.http.server {
+  idle-timeout    = 5s
+  request-timeout = 30s
+  max-connections = 10000
+}
+```
+
+:::caution[Not every backend can honour these]
+They are properties of a `node:http` server, so they hold exactly where one
+exists.
+
+| Key | Fastify | Express | Hono / Node | Hono / Bun | Hono / Deno |
+| --- | --- | --- | --- | --- | --- |
+| `idle-timeout` | yes | yes | yes | **no** | **no** |
+| `header-timeout` | yes | yes | yes | **no** | **no** |
+| `request-timeout` | yes | yes | yes | **no** | **no** |
+| `max-connections` | yes | yes | yes | **no** | **no** |
+
+Hono owns no server of its own — it delegates to a per-runtime runner — and
+only `@hono/node-server` hands its `node:http` server back.  `Bun.serve` and
+`Deno.serve` expose neither that server nor an equivalent knob, so on the Hono
+backend under Bun or Deno **none of these four is installed at all**.  That is
+a gap, not a silent partial: nothing is written and nothing pretends to have
+been.  Bun does have a whole-connection `idleTimeout` on `Bun.serve`, in
+*seconds* rather than milliseconds, which is close enough to be tempting and
+different enough to be wrong; it is not wired here.
+:::
+
+Two leaves ship **no value** and are listed above only so the names are
+discoverable, for the same reason four of the CORS leaves do: a published
+literal would be a number nobody chose.
+
+`idle-timeout` unset keeps whatever the backend picked, and the backends
+disagree **on purpose** — 72 s on Fastify against `node:http`'s 5 s on Express
+and on Hono-over-Node.  Fastify's is high so the server outlives a load
+balancer's idle window and the balancer never posts a request onto a socket
+that is already closing; five seconds is the platform's.  Neither is wrong, so
+the block picks no winner.  Set it to make them agree.
+
+`max-connections` unset is unlimited, which is what every release before this
+key did.  It is **server-wide**, unlike the `http.websocket.max-connections`
+below, which is per route: it counts every connection the process accepts on
+this binding — WebSocket upgrades included, and an attached
+[DevTools](/observability/devtools/overview/) server too, since DevTools binds
+through the same `system.http(...)` path.
+
+`header-timeout` and `request-timeout` are enforced by a periodic sweep whose
+interval the runtime fixes at 30 s and does not expose, so a connection is
+closed **no earlier than** the value set here and **no later than one sweep
+after it**.  Both ship the number `http.createServer` already uses, so
+publishing them changed nothing on Express or Hono — but Fastify sets
+`requestTimeout` to `0`, no bound at all, so on the default backend the
+published `300s` is a deadline where there previously was none.  At the 1 MiB
+body cap that is a client sending under 3.5 KB/s; raise it if you accept
+legitimately slower uploads, or set `0` to opt out.
+
+`request-timeout` bounds *receiving* only — the clock stops once the request has
+arrived — so a slow handler, a long poll and an SSE stream are unaffected.  The
+route-level [`timeout()`](/http/middleware/timeout/) middleware is the other
+half and is deliberately a different surface: it bounds how long a *handler*
+takes to answer, this bounds how long a *peer* takes to ask.
 
 The [`cors()`](/http/middleware/cors/) route directive reads its per-field
 defaults from `actor-ts.http.cors`:
@@ -872,6 +996,7 @@ because the name lives inside the result the check never returned.
 | `persistence.journal.plugin` | `"...in-memory"` | Fully-qualified key to the journal's config. |
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Fully-qualified key to the snapshot store's config. |
 | `persistence.durable-state.plugin` | `"...in-memory"` | Fully-qualified key to the durable-state store's config. |
+| `persistence.snapshot-store.in-memory.keep-n` | `0` | Snapshots the built-in in-memory store keeps per `persistenceId`.  `0` keeps every one — the opposite polarity from the persistent stores' `3`, because this is the store an unconfigured application gets and a bound here would silently discard snapshots. |
 | `persistence.journal.sqlite.path` | `""` | Database file.  Empty is *not set* — the journal falls through to an anonymous in-memory database. |
 | `persistence.journal.sqlite.events-table` | `"events"` | Event table.  The tags (`_tags`) and metadata (`_meta`) tables follow this name. |
 | `persistence.journal.sqlite.wal` | `off` | Open the database with `journal_mode = WAL` — concurrent readers during a write. |
@@ -1064,6 +1189,92 @@ bearer token.
 | `persistence.durable-state.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | As above. |
 | `persistence.durable-state.cloudflare-d1.table` | `"durable_state"` | Durable-state table. |
 | `persistence.durable-state.cloudflare-d1.auto-create-tables` | `on` | As above. |
+
+**The three non-relational backends read their own blocks too** (#872).  They do
+not share an implementation with each other or with the SQL family, so each
+block speaks its own backend's vocabulary — Mongo has *collections* and creates
+*indexes*, DynamoDB has account-global table names and a region rather than a
+URL, and Cassandra is reached by a seed list and lays out four tables.
+`registerMongoPlugins(ext)`, `registerDynamoDbPlugins(ext)` and
+`registerCassandraPlugins(ext)` therefore need no options at all once the blocks
+below are filled in.
+
+Cassandra has **no `durable-state` block**, and that is not an omission: the
+framework ships no Cassandra durable-state store, so that backend has two plugin
+axes where the other two have three.
+
+#### MongoDB
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `persistence.journal.mongodb.url` | `""` | Connection string — `mongodb://…` or `mongodb+srv://…`.  Empty is *not set*. |
+| `persistence.journal.mongodb.database-name` | `"actor_ts"` | Database the collections live in. |
+| `persistence.journal.mongodb.events-collection` | `"events"` | Events collection.  Its meta collection is `<it>_meta`. |
+| `persistence.journal.mongodb.auto-create-indexes` | `on` | Create the indexes on first use.  The unique index is what refuses a duplicate append, so off means *I created them myself*. |
+| `persistence.snapshot-store.mongodb.url` | `""` | As above. |
+| `persistence.snapshot-store.mongodb.database-name` | `"actor_ts"` | As above. |
+| `persistence.snapshot-store.mongodb.snapshots-collection` | `"snapshots"` | Snapshots collection. |
+| `persistence.snapshot-store.mongodb.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
+| `persistence.snapshot-store.mongodb.auto-create-indexes` | `on` | As above. |
+| `persistence.durable-state.mongodb.url` | `""` | As above. |
+| `persistence.durable-state.mongodb.database-name` | `"actor_ts"` | As above. |
+| `persistence.durable-state.mongodb.collection` | `"durable_state"` | Durable-state collection. |
+
+`clientOptions` has no leaf — free-form driver config with no enumerable key
+set — and neither does a pre-built `client` or a `serializer`.
+
+#### DynamoDB
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `persistence.journal.dynamodb.region` | `""` | AWS region, e.g. `eu-central-1`.  Empty is *not set*. |
+| `persistence.journal.dynamodb.endpoint` | `""` | Endpoint override for `dynamodb-local` or LocalStack; empty means the real service. |
+| `persistence.journal.dynamodb.events-table` | `"actor_ts_events"` | Events table.  Prefixed because a DynamoDB table name is account- and region-global. |
+| `persistence.snapshot-store.dynamodb.region` | `""` | As above. |
+| `persistence.snapshot-store.dynamodb.endpoint` | `""` | As above. |
+| `persistence.snapshot-store.dynamodb.snapshots-table` | `"actor_ts_snapshots"` | Snapshots table. |
+| `persistence.snapshot-store.dynamodb.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
+| `persistence.durable-state.dynamodb.region` | `""` | As above. |
+| `persistence.durable-state.dynamodb.endpoint` | `""` | As above. |
+| `persistence.durable-state.dynamodb.table` | `"actor_ts_durable_state"` | Durable-state table. |
+
+Credentials have **no leaf**: omitted, the SDK's own default chain supplies them.
+`clientConfig` has none either, and table *provisioning* — billing mode,
+capacity, the create-on-first-use switch — stays code-only for now, because this
+block is about reaching the right table rather than about creating it.
+
+#### Cassandra / ScyllaDB
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `persistence.journal.cassandra.contact-points` | `[]` | Seed nodes the cluster topology is discovered from.  `[]` is *not set* — the list shape of the `""` idiom. |
+| `persistence.journal.cassandra.keyspace` | `""` | Keyspace to `USE`.  Empty is *not set*; required at the point of use. |
+| `persistence.journal.cassandra.local-data-center` | `"datacenter1"` | Local DC for `DCAwareRoundRobinPolicy`. |
+| `persistence.journal.cassandra.port` | `9042` | CQL native-transport port. |
+| `persistence.journal.cassandra.auto-create-keyspace` | `off` | `CREATE KEYSPACE` on start (SimpleStrategy, rf=1) — a development convenience. |
+| `persistence.journal.cassandra.consistency` | *(unset)* | Deliberately a comment in `reference.conf`.  Unset, the driver picks the CQL level; set the numeric value from `types.consistencies` (`6` = `LOCAL_QUORUM`) to pin it. |
+| `persistence.journal.cassandra.events-table` | `"events"` | Events table. |
+| `persistence.journal.cassandra.metadata-table` | `"metadata"` | Highest sequence number per `persistenceId`. |
+| `persistence.journal.cassandra.all-ids-table` | `"all_persistence_ids"` | The lookup behind `persistenceIds()`. |
+| `persistence.journal.cassandra.tag-index-table` | `"events_by_tag"` | Side table, written only when `use-tag-index` is on. |
+| `persistence.journal.cassandra.partition-size` | `500000` | Rows per partition before rolling over to a new one. |
+| `persistence.journal.cassandra.auto-create-tables` | `on` | Create the four tables on first connect. |
+| `persistence.journal.cassandra.use-tag-index` | `off` | Dual-write an `events_by_tag` side table so tag queries walk one partition. |
+| `persistence.journal.cassandra.lightweight-transactions` | `on` | Claim the sequence range with Paxos before writing.  Off risks a silently lost append, because a Cassandra `INSERT` is an upsert. |
+| `persistence.journal.cassandra.serial-consistency` | *(unset)* | Deliberately a comment.  Ignored unless the LWT above is on; unset the driver picks cluster-wide `SERIAL`.  `9` is `localSerial`. |
+| `persistence.snapshot-store.cassandra.contact-points` | `[]` | As above. |
+| `persistence.snapshot-store.cassandra.keyspace` | `""` | As above. |
+| `persistence.snapshot-store.cassandra.local-data-center` | `"datacenter1"` | As above. |
+| `persistence.snapshot-store.cassandra.port` | `9042` | As above. |
+| `persistence.snapshot-store.cassandra.auto-create-keyspace` | `off` | As above. |
+| `persistence.snapshot-store.cassandra.consistency` | *(unset)* | As above. |
+| `persistence.snapshot-store.cassandra.snapshots-table` | `"snapshots"` | Snapshots table. |
+| `persistence.snapshot-store.cassandra.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
+| `persistence.snapshot-store.cassandra.auto-create-tables` | `on` | As above. |
+
+`credentials` has **no leaf at all** — it is key material, and key material is
+never expressible in a config file.  Neither is `replication`, the map
+`auto-create-keyspace` uses: free-form with no enumerable key set.
 
 The plugin keys point to *another* config section that holds
 that plugin's settings.  `actor-ts.persistence.journal.sqlite` above is the
@@ -1662,8 +1873,15 @@ pages for the keys:
 | `io.broker.websocket` | [WebSocket client](/io/websocket/) |
 | `io.broker.sse` | [SSE](/io/sse/) |
 | `io.broker.tcp` | [TCP](/io/tcp/) |
+| `io.broker.tcp-server` | [TCP](/io/tcp/) |
 | `io.broker.udp` | [UDP](/io/udp/) |
 | `io.broker.email-bridge` | [Email bridge](/io/email-bridge/) |
+
+Not every field of those types has a key.  An `ActorRef` (`target`,
+`bindings`, `subscriptions`) names a live actor in this process, a codec or a
+handler is a function, and TLS material is a private key — none of the three
+has a config-file spelling, and each says so in its own JSDoc rather than
+being silently absent.
 
 ## HOCON-specific syntax
 

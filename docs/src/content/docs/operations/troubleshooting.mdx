@@ -395,6 +395,48 @@ suites CI does not run at all.
 5. Reproduce in a multi-node-spec test if you can.
 ```
 
+## Making the framework talk
+
+The framework is quiet by default and stays that way unless you ask.  Four
+switches under `actor-ts.diagnostics` turn on what it can say about itself:
+
+```hocon
+actor-ts {
+  logger.level = debug        # the second switch — see below
+  diagnostics {
+    log-config-on-start = on  # one info record: every key, and which layer set it
+    debug {
+      unhandled    = on       # a message an actor was handed and declined
+      lifecycle    = on       # actor start, stop, restart
+      event-stream = on       # subscribe / unsubscribe, never publish
+    }
+  }
+}
+```
+
+`log-config-on-start` is the one to reach for first when a setting is not
+doing what you wrote.  It writes the **merged** tree — every key, sorted, each
+with the layer that won (`reference`, `application` or `override`) and whether
+it displaced a lower one — so “my `application.conf` is being ignored” and “my
+`application.conf` says something else” stop looking alike.  The header names
+the file that was looked for, which settles the first of those on its own.
+
+Two things to know before you paste that record into a ticket.  It is an
+`info` record, so it needs no second switch — but it **prints your
+configuration**, and values are withheld only when the *key name* matches
+`pass`, `secret`, `token`, `key`, `credential` or `auth`.  A secret in a key
+called `dsn` or `connection-string` is printed in full, and no heuristic can
+fix that: by the time the tree is merged, a `${?DATABASE_PASSWORD}` is an
+ordinary string.  [Configuration](/reference/configuration/) states the limits
+in full.
+
+The three `debug.*` switches need **two** switches, and this is the usual
+reason one of them appears not to work: the key decides whether a record is
+produced, `logger.level = debug` decides whether it is written.  Each is off
+by default because each is one record per event on a path your application
+drives — per declined message, per actor transition, per subscription — so
+turn on the one that matches the symptom rather than all three.
+
 ## Where to next
 
 - **[Operations overview](/operations/overview/)** —

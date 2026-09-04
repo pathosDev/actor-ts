@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { Config, ConfigError } from '../../../src/config/Config.js';
 import {
+  DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS,
+  DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE,
   DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
@@ -216,6 +218,13 @@ describe('readClusterOptionsFromConfig', () => {
       // has no leaf at all, deliberately (#877, #964).
       untrustedMode: DEFAULT_UNTRUSTED_MODE,
       trustedSelectionPaths: [],
+      // The configuration-agreement pair (#844).  Both leaves ship a value, so
+      // both always land — and the published `checked-paths` is the one place
+      // the seeded path is written as a *list*, which is what makes this the
+      // assertion that catches an entry being added to `reference.conf` and
+      // not to the constant, or the other way round.
+      configurationCompatibilityEnforce: DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE,
+      configurationCompatibilityCheckedPaths: [...DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS],
       // The four association-lifecycle bounds, pinned to the constants the
       // transport still falls back to when nothing configures them (#846).
       // Wiring them must not move a single one: each was a hard-coded bound

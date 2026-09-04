@@ -9,10 +9,11 @@ import type { Route } from '../../../../../src/http/Route.js';
 import { websocket } from '../../../../../src/http/websocket/WebsocketRoute.js';
 import { WebsocketServerActor } from '../../../../../src/http/websocket/WebsocketServerActor.js';
 import { WebsocketClientActor } from '../../../../../src/http/websocket/WebsocketClientActor.js';
-import { WebsocketClientOptions } from '../../../../../src/http/websocket/WebsocketClientOptions.js';
+import { WebsocketClientOptions, type WebsocketClientOptionsType } from '../../../../../src/http/websocket/WebsocketClientOptions.js';
 import { websocketSend, type WebsocketClientMessage } from '../../../../../src/http/websocket/WebsocketMessages.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import type { ConfigObject } from '../../../../../src/config/HoconParser.js';
 
 type CMessage = { kind: 'ping'; n: number };
 type SMessage = { kind: 'pong'; n: number };
@@ -209,4 +210,75 @@ describe('WebsocketClientActor', () => {
     expect(rec.messages.length).toBeGreaterThan(0);
     expect(rec.events.filter((e) => e.startsWith('disconnected'))).toEqual([]);
   }, 10_000);
+});
+
+/* ================== HOCON on-invalid-message (#871) ===================== */
+
+/**
+ * `onInvalidMessage` was the WebSocket client's one option with no HOCON
+ * reader (#871).  Observed on the resolved options rather than by feeding a
+ * malformed frame: the policy itself is covered where it is applied, and what
+ * was missing was the read.
+ *
+ * No server is bound.  The actor resolves its options in `preStart`, before it
+ * dials, so an unroutable URL with reconnect off is the cheapest fixture that
+ * still runs the real resolution path.
+ */
+class OptionsProbeClient extends WebsocketClientActor<CMessage, SMessage> {
+  /** Null until preStart resolved them — `options` throws before that. */
+  resolvedOptions: WebsocketClientOptionsType<CMessage, SMessage> | null = null;
+  constructor() {
+    const clientOptions = WebsocketClientOptions.create<CMessage, SMessage>()
+      .withReconnect(false);
+    super(clientOptions);
+  }
+  override async preStart(): Promise<void> {
+    await super.preStart();
+    this.resolvedOptions = this.options;
+  }
+  onMessage(_m: SMessage): void { /* never reached */ }
+}
+
+describe('WebsocketClientActor — HOCON on-invalid-message (#871)', () => {
+  async function resolveWith(
+    name: string, websocketConfig: ConfigObject,
+  ): Promise<WebsocketClientOptionsType<CMessage, SMessage>> {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      // Nested, never a dotted top-level key: a literal `'actor-ts.io.…'` key
+      // stays literal in the parsed tree, so `hasPath` would answer from
+      // reference.conf and the assertion would prove nothing.
+      .withConfig({ 'actor-ts': { io: { broker: { websocket: websocketConfig } } } });
+    const system = ActorSystem.create(name, sysOptions);
+    try {
+      const client = new OptionsProbeClient();
+      system.spawn(() => client, 'client');
+      await awaitCondition(() => client.resolvedOptions !== null, {
+        timeoutMs: 4_000, label: 'the client resolved its options in preStart',
+      });
+      return client.resolvedOptions!;
+    } finally {
+      await system.terminate();
+    }
+  }
+
+  test('the client block feeds onInvalidMessage', async () => {
+    const resolved = await resolveWith('ws-client-on-invalid-message', {
+      url: 'ws://127.0.0.1:1/ws',
+      'on-invalid-message': 'disconnect',
+    });
+    // `disconnect` is the client's arm; the server-side key of the same name
+    // spells its third value `close`, and the two lists are not swappable.
+    expect(resolved.onInvalidMessage).toBe('disconnect');
+  });
+
+  test('an unset leaf stays unset, so the built-in default applies', async () => {
+    const resolved = await resolveWith('ws-client-on-invalid-message-unset', {
+      url: 'ws://127.0.0.1:1/ws',
+    });
+    // The reader must not punch a default in, or `undefined` would stop
+    // meaning "not set" to the layer above it.
+    expect(resolved.onInvalidMessage).toBeUndefined();
+  });
 });

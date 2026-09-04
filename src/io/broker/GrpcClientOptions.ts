@@ -50,6 +50,15 @@ export interface GrpcClientOptionsType extends BrokerCommonOptionsType {
   readonly serviceName?: string;
   /** Server endpoint (`'host:port'`). */
   readonly endpoint?: string;
+  /**
+   * Channel credentials — insecure, or TLS carrying the certificate
+   * **material** itself.
+   *
+   * No HOCON leaf, and no `use-tls` boolean either: the secure arm is
+   * `Uint8Array` material, and a config file is the wrong place for a private
+   * key.  That is the whole-project ruling recorded in `BrokerTls.ts`, which
+   * every broker's `tls` field repeats.
+   */
   readonly credentials?: GrpcCredentials;
   /**
    * Deadline for a **unary** call, in ms.  Default 30_000.
@@ -64,7 +73,8 @@ export interface GrpcClientOptionsType extends BrokerCommonOptionsType {
   readonly deadlineMs?: number;
   /**
    * grpc-js channel options, handed to the service-client constructor
-   * verbatim — see {@link GrpcChannelOptions}.
+   * verbatim — see {@link GrpcChannelOptions}, which is also where the
+   * reasoning for there being no HOCON leaf lives.
    */
   readonly channelOptions?: GrpcChannelOptions;
 }

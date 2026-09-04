@@ -251,6 +251,50 @@ export class ShardRegionRegistrationRefused {
   }
 }
 
+/**
+ * A peer's effective value for a setting the deployment asked to be checked
+ * disagrees with this node's (#844).
+ *
+ * Carries **both** values, deliberately: a bare "diverged" sends the operator
+ * back to the log line the event is supposed to replace, and the pair is what
+ * says which of the two nodes is the misconfigured one.  `fact` is the name
+ * the value was published under — by convention the HOCON path whose effective
+ * value it is, which is where an operator goes to change it.
+ *
+ * Published node-locally on **both** nodes, since each compares what the other
+ * gossips against what it resolved for itself — so unlike
+ * {@link ShardRegionRegistrationRefused}, whose refusal originates on one node,
+ * a bridged stream carries two of these per disagreeing pair.
+ *
+ * Reported at most once per fact per peer per node lifetime.  By the time it
+ * fires the divergence has already been in effect for as long as both nodes
+ * have been up; what the operator needs is the pointer, not one event per
+ * gossip round.
+ */
+export class MemberConfigurationMismatch {
+  constructor(
+    /** The peer whose claim disagrees. */
+    public readonly member: Member,
+    /** The published name of the setting — by convention its HOCON path. */
+    public readonly fact: string,
+    /** The effective value on THIS node. */
+    public readonly localValue: string,
+    /** The effective value the peer claims. */
+    public readonly remoteValue: string,
+    /**
+     * Whether `actor-ts.cluster.configuration-compatibility-check.enforce` was
+     * on, i.e. whether the peer is also barred from this node's placement
+     * candidates rather than only reported.
+     */
+    public readonly enforced: boolean,
+  ) {}
+  toString(): string {
+    return `MemberConfigurationMismatch(${this.member.address}, ${this.fact},`
+      + ` local=${this.localValue}, remote=${this.remoteValue},`
+      + ` ${this.enforced ? 'enforced' : 'warned'})`;
+  }
+}
+
 export type ClusterEvent =
   | SelfUp
   | SelfRemoved
@@ -267,4 +311,5 @@ export type ClusterEvent =
   | MemberRemoved
   | ShardMapChanged
   | ShardRegionRegistered
-  | ShardRegionRegistrationRefused;
+  | ShardRegionRegistrationRefused
+  | MemberConfigurationMismatch;

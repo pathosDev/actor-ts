@@ -241,6 +241,76 @@ Counting `MemberUp`s by hand to answer "are at least 3 nodes up?" is
 exactly what `awaitReady({ minimumMembers: 3 })` replaces — the
 subscription is for reacting to changes, not for gating startup.
 
+## Settings that have to agree
+
+A node that joins with a different value for something the cluster assumes
+is uniform does not fail.  It joins, it runs, and the disagreement surfaces
+later as behaviour nobody can account for.
+`actor-ts.cluster.configuration-compatibility-check` makes it say so at the
+moment the two nodes meet instead.
+
+Each node publishes the **effective** value of every setting in
+`checked-paths` on the ordinary gossip lane and compares what its peers
+publish back.  *Effective*, not configured: precedence is **explicit options
+> HOCON > built-in defaults**, so two nodes whose config files are identical
+and whose builders are not still compare unequal — which is the case that
+matters, since the builder is the documented way to set most of these.
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost('n1')
+  .withPort(2552)
+  .withConfigurationCompatibilityCheckedPaths([
+    'actor-ts.remote.max-frame-bytes',
+    'actor-ts.cluster.failure-detector.heartbeat-interval',
+  ]);
+```
+
+Only a setting something publishes can be compared, and the framework
+publishes three:
+
+| Setting | Why a divergence matters | In `checked-paths` by default |
+| --- | --- | --- |
+| `actor-ts.remote.max-frame-bytes` | A frame over the peer's lower cap kills the whole association, and the sender is never told why.  There is no protocol negotiation to catch it. | yes |
+| `actor-ts.cluster.failure-detector.heartbeat-interval` | A peer that beats more slowly than this node's `down-after` tolerates is downed for being configured differently, not for being dead. | no |
+| `actor-ts.cluster.tombstone.time-to-live` | One side prunes a tombstone the other still enforces, so a removed address is re-admitted on one side only. | no |
+
+The last two are off by default because staging a new value one node at a
+time is an ordinary operation, and both divergences heal.  The first has no
+detection anywhere else, which is the bar for being seeded.
+
+Publish one of your own from anywhere that has the resolved value:
+
+```ts
+cluster.publishConfigurationFact('acme.orders.partition-count', String(partitions));
+```
+
+It travels only if `checked-paths` lists the name — that list is an
+allow-list of what *leaves* the node, which is why there is no second list
+of paths to redact.
+
+When two nodes disagree, each logs one line naming the setting and **both**
+values, and publishes a `MemberConfigurationMismatch` carrying the same.
+Once per setting per peer, not once per gossip round.  Absence on either
+side is silence: a peer running an older version, or one whose
+`checked-paths` does not list that setting, reports nothing rather than
+reporting everything during a rolling upgrade.
+
+`enforce = on` adds exactly one thing — the diverging peer stops being one
+of this node's placement candidates, so a cluster router will not route to
+it.  It never downs or quarantines anyone, and nothing that *elects* a role
+reads that set: a misconfigured majority would otherwise evict the
+correctly-configured minority, and an asymmetric candidate view would elect
+two singleton hosts rather than one.  Off by default, because an enforcing
+default turns any rolling deploy that changes a checked value into a
+self-inflicted outage.
+
+`actor-ts.sharding.number-of-shards` is deliberately **not** one of the
+published settings.  A region whose shard count disagrees with the
+coordinator's is already refused outright, with an error naming the key and
+a `ShardRegionRegistrationRefused` event — see
+[Sharding introspection](/cluster/sharding/introspection/).
+
 ## What can go wrong
 
 import { Aside } from '@astrojs/starlight/components';

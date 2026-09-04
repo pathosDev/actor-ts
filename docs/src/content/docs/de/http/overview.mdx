@@ -87,6 +87,42 @@ Listen-/Dispatch-Schleife.
 Siehe die [Backend-Seiten](/de/http/backends/fastify/) für die
 Konfigurationsoptionen, die jedes akzeptiert.
 
+## Schranken der Verbindung
+
+Welches Backend auch gemountet ist — der lauschende Socket trägt eigene
+Schranken: die Header- und Empfangs-Deadlines, an die ein Peer gehalten wird,
+wie lange eine stille Keep-Alive-Verbindung gehalten wird und wie viele
+Verbindungen gleichzeitig angenommen werden:
+
+```ts
+import { HttpExtensionId, HttpServerOptions } from 'actor-ts/http';
+
+const serverOptions = HttpServerOptions.create()
+  .withIdleTimeoutMs(5_000)
+  .withRequestTimeoutMs(30_000)
+  .withMaxConnections(10_000);
+
+await system.extension(HttpExtensionId)
+  .newServerAt('0.0.0.0', 8080)
+  .withServerOptions(serverOptions)
+  .bind(routes);
+```
+
+Sie existieren vor allem, um *ohne* Codeänderung bewegt zu werden — dieselben
+vier Felder sind deshalb aus `actor-ts.http.server` lesbar.
+`withServerOptions(...)` gewinnt pro Feld, dann die Config-Datei, dann der
+eingebaute Default.  Nur `header-timeout` (60 s) und `request-timeout` (300 s)
+liefern einen Wert; lässt du `idleTimeoutMs` und `maxConnections` ungesetzt,
+bleibt es bei der Wahl des Backends beziehungsweise bei „unbegrenzt" — genau
+das, was jedes Release davor getan hat.
+
+Es sind Eigenschaften eines `node:http`-Servers, **Hono auf Bun oder Deno kann
+also keinen davon umsetzen**: keine der beiden Runtimes gibt den Server oder
+einen gleichwertigen Knopf heraus.  Die
+[Konfigurationsreferenz](/de/reference/configuration/) enthält die Tabelle pro
+Backend und den Hinweis darauf, wie die beiden Empfangs-Deadlines durchgesetzt
+werden.
+
 ## Der HTTP-Client
 
 ```ts

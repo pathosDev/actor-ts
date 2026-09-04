@@ -19,6 +19,7 @@ import {
 import type { PersistenceOptions } from './PersistenceOptions.js';
 import type { SnapshotStore } from './SnapshotStore.js';
 import { InMemorySnapshotStore } from './snapshot-stores/InMemorySnapshotStore.js';
+import { readInMemorySnapshotStoreOptionsFromConfig } from './snapshot-stores/InMemorySnapshotStoreOptions.js';
 import type { StorageUseKind } from './StorageLocality.js';
 import { StorageLocalityAdvisory, type ObservedStore } from './StorageLocalityAdvisory.js';
 
@@ -59,7 +60,12 @@ export class PersistenceExtension implements Extension {
   constructor(private readonly system: ActorSystem) {
     // Ship the in-memory reference plug-in out of the box.
     this.registerJournal('actor-ts.persistence.journal.in-memory', () => new InMemoryJournal());
-    this.registerSnapshotStore('actor-ts.persistence.snapshot-store.in-memory', () => new InMemorySnapshotStore());
+    this.registerSnapshotStore(
+      'actor-ts.persistence.snapshot-store.in-memory',
+      (resolvingSystem: ActorSystem) => new InMemorySnapshotStore(
+        readInMemorySnapshotStoreOptionsFromConfig(resolvingSystem.config),
+      ),
+    );
     this.registerDurableStateStore('actor-ts.persistence.durable-state.in-memory', () => new InMemoryDurableStateStore());
     const clusterExtension = system.extension(ClusterExtensionId);
     this.log = system.log.withSource('persistence');
@@ -263,7 +269,7 @@ export class PersistenceExtension implements Extension {
     const key = ConfigKeys.persistence.snapshotStore.plugin;
     return this.system.config.hasPath(key)
       ? this.system.config.getString(key)
-      : ConfigKeys.persistence.snapshotStore.inMemory;
+      : ConfigKeys.persistence.snapshotStore.inMemory.root;
   }
 
   private currentDurableStatePluginId(): string {

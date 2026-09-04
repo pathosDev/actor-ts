@@ -14,6 +14,7 @@ import { DEFAULT_MAILBOX_OVERFLOW } from '../../../src/ActorOptions.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
 import { DEFAULT_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/Constants.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
+import { DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS, DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY } from '../../../src/cluster/downing/DowningFromConfig.js';
 import { DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION } from '../../../src/cluster/ClusterOptions.js';
 import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
@@ -24,6 +25,7 @@ import {
   DEFAULT_DEAD_LETTER_STORE,
 } from '../../../src/deadletters/DeadLetterQueueOptions.js';
 import { DEFAULT_LOG_DEAD_LETTERS, DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN, DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS } from '../../../src/diagnostics/DiagnosticsOptions.js';
+import { DEFAULT_DEBUG_EVENT_STREAM, DEFAULT_DEBUG_LIFECYCLE, DEFAULT_DEBUG_UNHANDLED, DEFAULT_LOG_CONFIG_ON_START } from '../../../src/diagnostics/DiagnosticsOptions.js';
 import { DEFAULT_WEBSOCKET_POLICY } from '../../../src/http/websocket/WebsocketPolicy.js';
 import { DEFAULT_WORKER_RESTART_POLICY } from '../../../src/worker/WorkerClusterOptions.js';
 import { DEFAULT_MAX_RESTARTS, DEFAULT_RESTART_MAX_BACKOFF_MS, DEFAULT_RESTART_MIN_BACKOFF_MS, DEFAULT_RESTART_RANDOM_FACTOR, DEFAULT_RESTART_WINDOW_MS, DEFAULT_WORKER_BASE_PORT, DEFAULT_WORKER_HOSTNAME, DEFAULT_WORKER_READY_TIMEOUT_MS, DEFAULT_WORKER_SYSTEM_NAME } from '../../../src/worker/WorkerClusterOptions.js';
@@ -87,6 +89,13 @@ import { DEFAULT_MAX_DECOMPRESSED_BYTES } from '../../../src/persistence/object-
 import { DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_STALE_LOCK_MS } from '../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import { DEFAULT_AUTO_CREATE_TABLES, DEFAULT_DURABLE_STATE_TABLE, DEFAULT_EVENTS_TABLE, DEFAULT_SNAPSHOTS_TABLE, DEFAULT_SNAPSHOT_KEEP_N, DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../../../src/persistence/Constants.js';
 import { DEFAULT_D1_BASE_URL } from '../../../src/persistence/journals/D1Client.js';
+import { DEFAULT_MONGO_AUTO_CREATE_INDEXES } from '../../../src/persistence/Constants.js';
+import { DEFAULT_MONGO_DATABASE } from '../../../src/persistence/journals/MongoClient.js';
+import { DEFAULT_DYNAMODB_EVENTS_TABLE } from '../../../src/persistence/journals/DynamoDbJournalOptions.js';
+import { DEFAULT_DYNAMODB_SNAPSHOTS_TABLE } from '../../../src/persistence/snapshot-stores/DynamoDbSnapshotStoreOptions.js';
+import { DEFAULT_DYNAMODB_DURABLE_STATE_TABLE } from '../../../src/persistence/durable-state-stores/DynamoDbDurableStateStoreOptions.js';
+import { DEFAULT_CASSANDRA_LOCAL_DATA_CENTER, DEFAULT_CASSANDRA_PORT, DEFAULT_CASSANDRA_TAG_INDEX_TABLE } from '../../../src/persistence/journals/CassandraClient.js';
+import { DEFAULT_CASSANDRA_ALL_IDS_TABLE, DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACTIONS, DEFAULT_CASSANDRA_METADATA_TABLE, DEFAULT_CASSANDRA_PARTITION_SIZE } from '../../../src/persistence/journals/CassandraJournalOptions.js';
 import {
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES,
@@ -99,6 +108,7 @@ import {
   DEFAULT_HTTP_CLIENT_REDIRECT_MODE,
   DEFAULT_HTTP_CLIENT_TIMEOUT_MS,
 } from '../../../src/http/HttpClientOptions.js';
+import { DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS, DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS } from '../../../src/http/HttpServerOptions.js';
 import { DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES, DEFAULT_TIME_TO_IDLE_MS, DEFAULT_TIME_TO_LIVE_MS } from '../../../src/cache/InMemoryCacheOptions.js';
 import { DEFAULT_MEMCACHED_SERVERS } from '../../../src/cache/MemcachedCacheOptions.js';
 import { DEFAULT_REDIS_DB } from '../../../src/cache/RedisCacheOptions.js';
@@ -212,8 +222,19 @@ import {
  * `bytes` return a bare number unchanged, so labelling
  * `restart-random-factor = 0.2` a duration passes while asserting nothing
  * about it being a fraction (#883).
+ *
+ * `list` is the one kind whose values are compared by contents rather than by
+ * identity, and it exists because the alternative was worse (#844).  The four
+ * list-valued leaves that predate it are all `[]` sentinels filed under
+ * FEATURE_SWITCHES with the same stated reason — an empty list and an unset
+ * key produce the identical behaviour, so there is no constant to disagree
+ * with.  `configuration-compatibility-check.checked-paths` publishes a
+ * **non-empty** default that a constant does hold, so filing it beside them
+ * would have recorded a reason that is not true of it, and leaving it
+ * unasserted would have put a published default on the docs site with nothing
+ * checking it.
  */
-type DefaultKind = 'duration' | 'bytes' | 'int' | 'number' | 'string' | 'bool';
+type DefaultKind = 'duration' | 'bytes' | 'int' | 'number' | 'string' | 'bool' | 'list';
 
 type DocumentedDefault = {
   /** Full dotted HOCON path as it appears in `REFERENCE_CONF`. */
@@ -228,7 +249,7 @@ type DocumentedDefault = {
    * with — so a switch that grew one would have been filed under an
    * explanation that no longer applied to it.
    */
-  readonly constant: number | string | boolean;
+  readonly constant: number | string | boolean | readonly string[];
 };
 
 /**
@@ -275,6 +296,16 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.max-tombstones', kind: 'int', constant: DEFAULT_MAX_TOMBSTONES },
   { key: 'actor-ts.cluster.tombstone.time-to-live', kind: 'duration', constant: DEFAULT_TOMBSTONE_TTL_MS },
   { key: 'actor-ts.cluster.tombstone.prune-interval', kind: 'duration', constant: DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS },
+  // The configuration-agreement pair (#844).  `enforce` is in the table rather
+  // than in FEATURE_SWITCHES for the reason `remote.untrusted-mode` is: it has
+  // a constant to disagree with, since `Cluster` reads
+  // `options.configurationCompatibilityEnforce ?? DEFAULT_…_ENFORCE`.
+  { key: 'actor-ts.cluster.configuration-compatibility-check.enforce', kind: 'bool', constant: DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE },
+  // The first `list` entry, and the whole reason that kind exists — see
+  // `DefaultKind`.  The seeded path is a real published default with a
+  // constant behind it, not the `[]` sentinel its four list-valued
+  // predecessors are.
+  { key: 'actor-ts.cluster.configuration-compatibility-check.checked-paths', kind: 'list', constant: DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS },
 
   /* --- serialization --- */
   { key: 'actor-ts.serialization.read-constraints.max-nesting-depth', kind: 'int', constant: DEFAULT_MAX_NESTING_DEPTH },
@@ -368,6 +399,16 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.diagnostics.log-dead-letters', kind: 'int', constant: DEFAULT_LOG_DEAD_LETTERS },
   { key: 'actor-ts.diagnostics.log-dead-letters-during-shutdown', kind: 'bool', constant: DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN },
   { key: 'actor-ts.diagnostics.log-dead-letters-suspend-duration', kind: 'duration', constant: DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS },
+  // The four #867 switches are in the table rather than in `FEATURE_SWITCHES`,
+  // and the distinction that list draws is the reason: its members have no
+  // `DEFAULT_*` constant to disagree with, because their off state IS the
+  // field being absent at the read site.  These four are resolved into
+  // `ActorSystem._diagnostics` with every field decided, so each has a
+  // constant, and a constant that exists belongs where it can be compared.
+  { key: 'actor-ts.diagnostics.log-config-on-start', kind: 'bool', constant: DEFAULT_LOG_CONFIG_ON_START },
+  { key: 'actor-ts.diagnostics.debug.unhandled', kind: 'bool', constant: DEFAULT_DEBUG_UNHANDLED },
+  { key: 'actor-ts.diagnostics.debug.lifecycle', kind: 'bool', constant: DEFAULT_DEBUG_LIFECYCLE },
+  { key: 'actor-ts.diagnostics.debug.event-stream', kind: 'bool', constant: DEFAULT_DEBUG_EVENT_STREAM },
 
   /* --- reliable delivery --- */
   // `max-producers` and `producer-idle-time-to-live` publish `0` as their
@@ -476,6 +517,14 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // `allowed-headers`, `max-age` — carry no leaf, so there is nothing here to
   // assert about them.
   { key: 'actor-ts.http.cors.credentials', kind: 'bool', constant: DEFAULT_CORS_CREDENTIALS },
+  // The two server leaves that carry a value.  Both are the number
+  // `http.createServer` already uses, so publishing them changed nothing on
+  // Express or Hono — but `requestTimeout` reads 0 on Fastify, so on the
+  // default backend the published 300s is a bound where there was none (#870).
+  // Their two comment-only siblings — `idle-timeout` and `max-connections` —
+  // carry no leaf, so there is nothing here to assert about them.
+  { key: 'actor-ts.http.server.header-timeout', kind: 'duration', constant: DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS },
+  { key: 'actor-ts.http.server.request-timeout', kind: 'duration', constant: DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS },
 
   /* --- cache --- */
   { key: 'actor-ts.cache.in-memory.max-entries', kind: 'int', constant: DEFAULT_MAX_ENTRIES },
@@ -556,6 +605,48 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.persistence.journal.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
   { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
   { key: 'actor-ts.persistence.durable-state.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
+  // The non-relational family (#872, slice 3).  Mongo reuses the three shared
+  // name constants because its collections hold the same three corpora — the
+  // JSDoc on `DEFAULT_EVENTS_TABLE` already says "table (or collection)" — while
+  // DynamoDB gets three of its own: a DynamoDB table name is account- and
+  // region-global rather than scoped by a database, so its defaults carry an
+  // `actor_ts_` prefix the SQL family has no need of.
+  { key: 'actor-ts.persistence.journal.mongodb.database-name', kind: 'string', constant: DEFAULT_MONGO_DATABASE },
+  { key: 'actor-ts.persistence.journal.mongodb.events-collection', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.mongodb.auto-create-indexes', kind: 'bool', constant: DEFAULT_MONGO_AUTO_CREATE_INDEXES },
+  { key: 'actor-ts.persistence.snapshot-store.mongodb.database-name', kind: 'string', constant: DEFAULT_MONGO_DATABASE },
+  { key: 'actor-ts.persistence.snapshot-store.mongodb.snapshots-collection', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.mongodb.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.mongodb.auto-create-indexes', kind: 'bool', constant: DEFAULT_MONGO_AUTO_CREATE_INDEXES },
+  { key: 'actor-ts.persistence.durable-state.mongodb.database-name', kind: 'string', constant: DEFAULT_MONGO_DATABASE },
+  { key: 'actor-ts.persistence.durable-state.mongodb.collection', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.journal.dynamodb.events-table', kind: 'string', constant: DEFAULT_DYNAMODB_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.dynamodb.snapshots-table', kind: 'string', constant: DEFAULT_DYNAMODB_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.dynamodb.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.durable-state.dynamodb.table', kind: 'string', constant: DEFAULT_DYNAMODB_DURABLE_STATE_TABLE },
+  // Cassandra's two blocks.  The topology pair is published under both because
+  // the journal and the snapshot store are selected independently and may name
+  // different clusters, and both copies are pinned to the one constant
+  // `createCassandraClient` reads — two published numbers with one number
+  // behind them is exactly what this table exists to keep honest.
+  { key: 'actor-ts.persistence.journal.cassandra.local-data-center', kind: 'string', constant: DEFAULT_CASSANDRA_LOCAL_DATA_CENTER },
+  { key: 'actor-ts.persistence.journal.cassandra.port', kind: 'int', constant: DEFAULT_CASSANDRA_PORT },
+  { key: 'actor-ts.persistence.journal.cassandra.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.cassandra.metadata-table', kind: 'string', constant: DEFAULT_CASSANDRA_METADATA_TABLE },
+  { key: 'actor-ts.persistence.journal.cassandra.all-ids-table', kind: 'string', constant: DEFAULT_CASSANDRA_ALL_IDS_TABLE },
+  { key: 'actor-ts.persistence.journal.cassandra.tag-index-table', kind: 'string', constant: DEFAULT_CASSANDRA_TAG_INDEX_TABLE },
+  { key: 'actor-ts.persistence.journal.cassandra.partition-size', kind: 'int', constant: DEFAULT_CASSANDRA_PARTITION_SIZE },
+  { key: 'actor-ts.persistence.journal.cassandra.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  // On, and asserted rather than filed as a feature switch: the off state is
+  // NOT the field being absent — absent means on, because a Cassandra INSERT is
+  // an upsert and without the Paxos claim two concurrent appends silently
+  // overwrite one another.  A published `off` would be a correctness change.
+  { key: 'actor-ts.persistence.journal.cassandra.lightweight-transactions', kind: 'bool', constant: DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACTIONS },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.local-data-center', kind: 'string', constant: DEFAULT_CASSANDRA_LOCAL_DATA_CENTER },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.port', kind: 'int', constant: DEFAULT_CASSANDRA_PORT },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
 
   /* --- object storage --- */
   { key: 'actor-ts.persistence.snapshot-store.object-storage.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
@@ -784,6 +875,31 @@ const PLACEHOLDERS: readonly string[] = [
   'actor-ts.persistence.durable-state.cloudflare-d1.account-id',
   'actor-ts.persistence.durable-state.cloudflare-d1.database-id',
   'actor-ts.persistence.durable-state.cloudflare-d1.api-token',
+  // The non-relational family's connection halves (#872, slice 3).  Same
+  // reading as the relational ones above: each is a coordinate of the
+  // operator's own deployment, required at the point of use and impossible to
+  // default, and `""` reads as unset so the published placeholder never reaches
+  // a driver.  DynamoDB's `endpoint` is the one whose empty value is also its
+  // *meaning* — unset points at the real AWS service, and only a LocalStack or
+  // dynamodb-local deployment overrides it.
+  'actor-ts.persistence.journal.mongodb.url',
+  'actor-ts.persistence.snapshot-store.mongodb.url',
+  'actor-ts.persistence.durable-state.mongodb.url',
+  'actor-ts.persistence.journal.dynamodb.region',
+  'actor-ts.persistence.journal.dynamodb.endpoint',
+  'actor-ts.persistence.snapshot-store.dynamodb.region',
+  'actor-ts.persistence.snapshot-store.dynamodb.endpoint',
+  'actor-ts.persistence.durable-state.dynamodb.region',
+  'actor-ts.persistence.durable-state.dynamodb.endpoint',
+  // Cassandra's two, and `contact-points` is the group's one LIST-shaped
+  // placeholder rather than an empty string.  The reading is identical — `[]`
+  // is the shape of the key, `readStoreStringList` drops it, and an empty seed
+  // list handed to the driver fails far from its cause — but the shape is a
+  // list because a Cassandra client is seeded from several nodes, not one.
+  'actor-ts.persistence.journal.cassandra.contact-points',
+  'actor-ts.persistence.journal.cassandra.keyspace',
+  'actor-ts.persistence.snapshot-store.cassandra.contact-points',
+  'actor-ts.persistence.snapshot-store.cassandra.keyspace',
 ];
 
 /**
@@ -894,6 +1010,23 @@ const FEATURE_SWITCHES: readonly string[] = [
   // when `options.wal` is truthy, so there is no constant to disagree with
   // (#872).
   'actor-ts.persistence.journal.sqlite.wal',
+  // off = the keyspace must already exist, which is what a production cluster
+  // wants; the switch is a development convenience.  The off state IS the field
+  // being absent at the read site — both stores run `if (options
+  // .autoCreateKeyspace)` — so there is no constant to disagree with (#872).
+  'actor-ts.persistence.journal.cassandra.auto-create-keyspace',
+  'actor-ts.persistence.snapshot-store.cassandra.auto-create-keyspace',
+  // off = no `events_by_tag` side table, which is what every release before the
+  // option did and what an existing schema still expects.  Same shape: the read
+  // site is `options.useTagIndex === true`, so absent and `false` are the same
+  // journal (#872).
+  'actor-ts.persistence.journal.cassandra.use-tag-index',
+  // 0 = keep every snapshot, and the polarity is inverted from the persistent
+  // stores' `keep-n = 3` on purpose: this is the store an unconfigured
+  // application gets, so a bound here would silently start discarding
+  // snapshots. `keepN ?? 0` at the read site means the off state IS the field
+  // being absent, so there is no constant for it to disagree with (#872).
+  'actor-ts.persistence.snapshot-store.in-memory.keep-n',
 ];
 
 /**
@@ -959,7 +1092,11 @@ const readers = {
   number: (key: string) => reference.getNumber(key),
   string: (key: string) => reference.getString(key),
   bool: (key: string) => reference.getBoolean(key),
-} as const satisfies Record<DefaultKind, (key: string) => number | string | boolean>;
+  list: (key: string) => reference.getStringList(key),
+} as const satisfies Record<
+  DefaultKind,
+  (key: string) => number | string | boolean | readonly string[]
+>;
 
 describe('documented defaults match the constants they are published from', () => {
   test('the table actually covers the reference configuration', () => {
@@ -1007,13 +1144,26 @@ describe('documented defaults match the constants they are published from', () =
   // `T[]`, so a `readonly` table is rejected outright (TS2769).
   test.each([...DOCUMENTED_DEFAULTS])('$key is published as $constant', ({ key, kind, constant }) => {
     expect(reference.hasPath(key), `${key} is not in REFERENCE_CONF at all`).toBe(true);
-    expect(
-      readers[kind](key),
-      `reference.conf publishes a different default for ${key} than the constant it is `
+    const published = readers[kind](key);
+    const message = `reference.conf publishes a different default for ${key} than the constant it is `
       + 'documented from. Both language reference-conf.mdx pages are byte-pinned to '
       + 'REFERENCE_CONF, so this value is already on the docs site — change whichever '
-      + 'of the two is wrong, not just the one that made this test red.',
-    ).toBe(constant);
+      + 'of the two is wrong, not just the one that made this test red.';
+    // `toEqual` for the one kind whose value is a list and `toBe` for every
+    // scalar, rather than widening the whole table to `toEqual`: on a scalar
+    // the two agree, but the narrower matcher is the one that says the
+    // assertion is about a single value, and a table of a hundred entries
+    // should not loosen because one of them is an array (#844).
+    //
+    // The two casts read the table's own discriminant rather than guessing,
+    // and the copy is only there because bun's matcher parameter is a mutable
+    // `string[]` — `toEqual` compares contents, so copying changes nothing it
+    // asserts.
+    if (kind === 'list') {
+      expect(published, message).toEqual([...(constant as readonly string[])]);
+      return;
+    }
+    expect(published, message).toBe(constant as number | string | boolean);
   });
 
   test.each([...DELIBERATE_DIVERGENCES])('%s is still a deliberate divergence', (key) => {

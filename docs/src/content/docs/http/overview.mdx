@@ -84,6 +84,39 @@ listen/dispatch loop.
 See the [backend pages](/http/backends/fastify/) for the
 configuration options each accepts.
 
+## Bounds on the connection
+
+Whatever backend is mounted, the listening socket carries bounds of its own —
+the header and receive deadlines a peer is held to, how long a quiet keep-alive
+connection is kept, and how many connections are accepted at once:
+
+```ts
+import { HttpExtensionId, HttpServerOptions } from 'actor-ts/http';
+
+const serverOptions = HttpServerOptions.create()
+  .withIdleTimeoutMs(5_000)
+  .withRequestTimeoutMs(30_000)
+  .withMaxConnections(10_000);
+
+await system.extension(HttpExtensionId)
+  .newServerAt('0.0.0.0', 8080)
+  .withServerOptions(serverOptions)
+  .bind(routes);
+```
+
+They exist mostly to be moved *without* a code change, so the same four fields
+are readable from `actor-ts.http.server` — `withServerOptions(...)` wins per
+field, then the config file, then the built-in default.  Only
+`header-timeout` (60 s) and `request-timeout` (300 s) ship a value; leaving
+`idleTimeoutMs` and `maxConnections` unset keeps the backend's own choice and
+"unlimited" respectively, which is what every release before them did.
+
+These are properties of a `node:http` server, so **Hono on Bun or Deno cannot
+honour any of them** — neither runtime exposes the server or an equivalent
+knob.  The [configuration reference](/reference/configuration/) carries the
+per-backend table and the caveat about how the two receive deadlines are
+enforced.
+
 ## The HTTP client
 
 ```ts

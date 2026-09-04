@@ -23,6 +23,9 @@ export interface TcpSocketOptionsType extends BrokerCommonOptionsType {
    * Subscriber that receives every inbound frame.  Required — the actor
    * has no useful behaviour without one.  Receives `Uint8Array` for
    * `bytes` / `length-prefixed`, `string` for `lines`.
+   *
+   * No HOCON leaf: an `ActorRef` names a live actor in this process, which a
+   * config file cannot denote.
    */
   readonly target?: ActorRef<unknown>;
   /**
