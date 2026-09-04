@@ -1756,7 +1756,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   can already publish — so narrowing it would break a documented contract
   for no security gain. This change is the additive mirror of the guard the
   `unsubscribe` path already carried, and that guard is now covered by a
-  test as well, having been asserted by nothing.
+  test as well, having been asserted by nothing. What the wildcard half gets
+  instead is visibility: an external `subscribe` that introduces a filter the
+  actor did not already hold now logs at info — naming the filter, the QoS
+  the SUBSCRIBE actually carries, and whether delivery goes to the actor's
+  own `onMessage` or fans out to another actor — while a join to a filter it
+  already holds, and the subclass's own subscriptions, stay silent.
 
 - **The filesystem object-storage CAS token is a SHA-256 digest rather than
   a 32-bit hash** (#786).

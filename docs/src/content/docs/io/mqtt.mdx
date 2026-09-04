@@ -204,6 +204,31 @@ ref.tell({ kind: 'unsubscribe', topic: 'y/#', target: someHandler });
 - Fan-out targets are deathwatched: when a target actor stops, it is
   pruned automatically (and a broker UNSUBSCRIBE fires once a pattern has
   no consumers left).
+- An external `subscribe` that introduces a filter the actor did **not**
+  already hold is logged at info.  Joining a filter it already holds is
+  silent — that changes nothing at the broker — and so is the subclass's
+  own `subscribe()`, in the constructor or at runtime.
+
+The record names the filter, the QoS the SUBSCRIBE actually carries, and
+whether matching messages go to the actor's own `onMessage` or fan out to
+another actor:
+
+```text
+MqttActor: external subscribe introduced broker filter 'tele/#' at QoS 1, delivering to actor 'actor-ts://sensors/user/mirror'
+```
+
+That is the counterweight to the first rule rather than a restriction on
+it.  Attaching a handler to any filter, `#` included, stays open because it
+is the actor's contract and anyone holding the ref can already publish
+anywhere — which is defensible exactly as long as an operator can see it
+happen.  Nothing from a message is logged: the record describes a
+subscription, not traffic, so one line per new filter never becomes one
+line per payload.  The filter is escaped and length-capped before it goes
+in, because it is text the *sender* chose — a newline in it would otherwise
+forge a second log line that reads like a genuine one.  If your topic
+scheme embeds a credential (some brokers put an API key in the path), note
+that it reaches the log here at info, the same way it already does in this
+actor's subscribe-failure and undecodable-payload warnings.
 
 Since these commands are plain objects, keep any `TSelf` you define off
 the `kind` values `publish` / `subscribe` / `unsubscribe` — otherwise it

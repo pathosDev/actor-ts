@@ -17,6 +17,7 @@ import { MqttOptions, type MqttOptionsType } from '../../../../../src/io/broker/
 import type { MqttDecodeError } from '../../../../../src/io/broker/MqttCodec.js';
 import type { MqttMessage, MqttQos, MqttRef } from '../../../../../src/io/broker/MqttMessages.js';
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
+import { RecordingLogger, type RecordedLog } from '../../../../util/RecordingLogger.js';
 
 const enc = new TextEncoder();
 
@@ -169,6 +170,24 @@ function makeSystem(): ActorSystem {
     .withLogLevel(LogLevel.Off);
   return ActorSystem.create(`mqtt-unit-${++sysCounter}`, sysOptions);
 }
+
+/**
+ * The same system with the log kept instead of thrown away.
+ *
+ * An explicit `logger` is used verbatim by `ActorSystem` — no level filter is
+ * layered over it — so the recorder sees every record the actor emits, and
+ * `RecordingLogger` defaults to `LogLevel.Debug`, which is what lets an *info*
+ * record through `DisplayNameLogger`'s own level check.
+ */
+function makeLoggingSystem(): { sys: ActorSystem; log: RecordingLogger } {
+  const log = new RecordingLogger();
+  const sysOptions = ActorSystemOptions.create().withLogger(log);
+  return { sys: ActorSystem.create(`mqtt-unit-${++sysCounter}`, sysOptions), log };
+}
+
+/** The external-subscribe advisories only; a real system logs other things too. */
+const subscribeAdvisories = (log: RecordingLogger): RecordedLog[] =>
+  log.records.filter((r) => r.level === 'info' && r.message.includes('external subscribe'));
 
 async function boot<T, TSelf>(
   sys: ActorSystem,
@@ -419,6 +438,145 @@ describe('MqttActor external-command provenance', () => {
       expect(inbox.received).toHaveLength(0);
       // The pattern still has a consumer, so it was never dropped at the broker.
       expect(actor.module.last().unsubscribes).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+});
+
+/* ----------------- external-subscribe visibility (#783) ------------- */
+
+/**
+ * The wildcard fan-out stays externally controllable on purpose — the class
+ * JSDoc advertises it, the MQTT page shows it as ordinary usage, and a holder
+ * of the ref can already publish anywhere — so narrowing it would break a
+ * documented contract for no security gain.  What makes that answer
+ * defensible rather than merely convenient is that an operator can *see* it
+ * happen: #783's third suggested fix asks for an info record when an external
+ * `subscribe` introduces a filter the actor did not already hold, so an
+ * unexpected `#` shows up in the log rather than only in a heap dump.
+ *
+ * The two silences are as much of the contract as the record.  A join to a
+ * filter the actor already holds is not news, and the subclass's own
+ * `subscribe()` — constructor or runtime — is the operator's own declaration,
+ * so logging it would put a line in the log for every actor that starts and
+ * bury the one line that means something.
+ */
+describe('MqttActor external-subscribe visibility', () => {
+  test('an external subscribe introducing a new filter is logged with its QoS and target', async () => {
+    const { sys, log } = makeLoggingSystem();
+    try {
+      const inbox = new InboxActor<unknown>();
+      const inboxRef = sys.spawn(() => inbox, 'inbox-visibility') as ActorRef<MqttMessage<unknown>>;
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withQos(1);
+      const actor = new TestMqttActor({ options: mqttOptions });
+      const ref = await boot(sys, actor, 'mqtt-visibility-new');
+      ref.tell({ kind: 'subscribe', topic: 'tele/#', target: inboxRef });
+      await awaitCondition(() => subscribeAdvisories(log).length >= 1, {
+        timeoutMs: 4_000, label: 'the new external filter was logged',
+      });
+      await sleep(SETTLE_MS);  // exactly one record; see SETTLE_MS
+      const advisories = subscribeAdvisories(log);
+      expect(advisories).toHaveLength(1);
+      const message = advisories[0]!.message;
+      expect(message).toContain('tele/#');
+      // The QoS the broker was actually given — the command carried none, so
+      // this is the actor's default resolving.  A record naming a QoS the
+      // SUBSCRIBE did not carry would be worse than no record at all.
+      expect(actor.module.last().subscribes).toContainEqual({ topic: 'tele/#', qos: 1 });
+      expect(message).toContain('QoS 1');
+      // Enough about the target to tell a foreign ref from the actor's own
+      // handler — which of the two it is decides whether this is a fan-out to
+      // somebody else or the actor simply widening its own feed.
+      expect(message).toContain(inboxRef.path.toString());
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an external subscribe joining a filter the actor already holds is not logged', async () => {
+    const { sys, log } = makeLoggingSystem();
+    try {
+      const inbox = new InboxActor<unknown>();
+      const inboxRef = sys.spawn(() => inbox, 'inbox-join') as ActorRef<MqttMessage<unknown>>;
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withQos(2);
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'own/#', qos: 2 }],
+      });
+      const ref = await boot(sys, actor, 'mqtt-visibility-join');
+      // The join first, then a filter that really is new.  Both commands ride
+      // one mailbox in FIFO order, so the second record cannot arrive before
+      // the first one would have: waiting for it makes the join's silence an
+      // observation rather than a sleep that outran nothing.
+      ref.tell({ kind: 'subscribe', topic: 'own/#', target: inboxRef });
+      ref.tell({ kind: 'subscribe', topic: 'other/#', target: inboxRef });
+      await awaitCondition(() => subscribeAdvisories(log).length >= 1, {
+        timeoutMs: 4_000, label: 'the genuinely new external filter was logged',
+      });
+      await sleep(SETTLE_MS);  // the join's record is an absence; see SETTLE_MS
+      const advisories = subscribeAdvisories(log);
+      expect(advisories).toHaveLength(1);
+      expect(advisories[0]!.message).toContain('other/#');
+      expect(advisories[0]!.message).not.toContain('own/#');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test("the subclass's own subscriptions are silent, in the constructor and at runtime", async () => {
+    const { sys, log } = makeLoggingSystem();
+    try {
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'own/#' }],
+      });
+      const ref = await boot(sys, actor, 'mqtt-visibility-internal');
+      actor.doSubscribe('runtime/#');
+      // A third, external filter gives the two absences something to be
+      // measured against: it proves the recorder is wired and the internal
+      // registrations really were silent rather than merely unobserved.
+      ref.tell({ kind: 'subscribe', topic: 'external/#' });
+      await awaitCondition(() => subscribeAdvisories(log).length >= 1, {
+        timeoutMs: 4_000, label: 'the external filter was logged',
+      });
+      await sleep(SETTLE_MS);  // the two internal records are absences; see SETTLE_MS
+      const advisories = subscribeAdvisories(log);
+      expect(advisories).toHaveLength(1);
+      expect(advisories[0]!.message).toContain('external/#');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an externally supplied filter is escaped and length-capped in the record', async () => {
+    const { sys, log } = makeLoggingSystem();
+    try {
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({ options: mqttOptions });
+      const ref = await boot(sys, actor, 'mqtt-visibility-hostile');
+      // The `topic` on a subscribe command is arbitrary text from whoever
+      // holds the ref, and this record is the first success path that puts it
+      // in the log on demand.  A CR or LF forges a second record that reads
+      // exactly like a genuine one; an unbounded filter writes an unbounded
+      // line.  Both are the sender's choice, so neither may be the log's.
+      ref.tell({ kind: 'subscribe', topic: 'forged\ninfo  MqttActor: external subscribe/#' });
+      ref.tell({ kind: 'subscribe', topic: `${'a'.repeat(4_000)}/#` });
+      await awaitCondition(() => subscribeAdvisories(log).length >= 2, {
+        timeoutMs: 4_000, label: 'both hostile filters were logged',
+      });
+      await sleep(SETTLE_MS);  // exactly two records; see SETTLE_MS
+      const advisories = subscribeAdvisories(log);
+      expect(advisories).toHaveLength(2);
+      expect(advisories[0]!.message).not.toContain('\n');
+      expect(advisories[0]!.message).toContain('\\u000a');
+      expect(advisories[1]!.message.length).toBeLessThan(300);
+      expect(advisories[1]!.message).toContain('…');
     } finally {
       await sys.terminate();
     }
