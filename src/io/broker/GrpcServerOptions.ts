@@ -11,6 +11,7 @@
 import { BrokerOptionsBuilder } from './BrokerOptions.js';
 import type { BrokerCommonOptionsType } from './BrokerOptions.js';
 import type { HealthCheckRegistry } from '../../management/HealthCheck.js';
+import type { GrpcChannelOptions } from './GrpcClientOptions.js';
 import type { GrpcHandler } from './GrpcServerActor.js';
 
 export interface GrpcServerOptionsType extends BrokerCommonOptionsType {
@@ -46,6 +47,16 @@ export interface GrpcServerOptionsType extends BrokerCommonOptionsType {
    * a load balancer acts on.
    */
   readonly health?: HealthCheckRegistry;
+  /**
+   * grpc-js channel options, handed to the `grpc.Server` constructor
+   * verbatim — see {@link GrpcChannelOptions}.
+   *
+   * This is the *server's* half, and it is the one that matters on a
+   * public bind: without it nothing reaps an idle or abusive connection,
+   * because the framework's own knobs stop at the RPC (`deadlineMs`) and
+   * a connection outlives every RPC on it.
+   */
+  readonly channelOptions?: GrpcChannelOptions;
 }
 
 export class GrpcServerOptionsBuilder extends BrokerOptionsBuilder<GrpcServerOptionsType> {
@@ -92,6 +103,11 @@ export class GrpcServerOptionsBuilder extends BrokerOptionsBuilder<GrpcServerOpt
    */
   withHealth(health: HealthCheckRegistry): this {
     return this.set('health', health);
+  }
+
+  /** grpc-js channel options for the bound server — see {@link GrpcChannelOptions}. */
+  withChannelOptions(channelOptions: GrpcChannelOptions): this {
+    return this.set('channelOptions', channelOptions);
   }
 }
 

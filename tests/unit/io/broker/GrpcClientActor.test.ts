@@ -38,12 +38,15 @@ import { GrpcClientActor } from '../../../../src/io/broker/GrpcClientActor.js';
 import type {
   GrpcCallOptions,
   GrpcClientCommand,
+  GrpcCredentialsLike,
   GrpcInbound,
   GrpcServiceClient,
+  GrpcServiceConstructor,
   GrpcStreamHandle,
 } from '../../../../src/io/broker/GrpcClientActor.js';
 import {
   GrpcClientOptions,
+  type GrpcChannelOptions,
   type GrpcClientOptionsBuilder,
 } from '../../../../src/io/broker/GrpcClientOptions.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
@@ -139,14 +142,46 @@ class FakeServiceClient {
   };
 }
 
+/** One `new ServiceConstructor(...)` the actor performed. */
+type RecordedConstruction = {
+  readonly endpoint: string;
+  readonly channelOptions: GrpcChannelOptions | undefined;
+};
+
 /** The seam under test: a client with no `@grpc/*` module behind it. */
 class FakeGrpcClientActor extends GrpcClientActor {
   readonly fakeClient = new FakeServiceClient();
   /** Bumped by the hook — the strongest "the transport is up" signal a fake has. */
   clientCreations = 0;
+  /**
+   * What the production `instantiateServiceClient` handed grpc-js's
+   * constructor.  The channel options (#790) live in its third slot and
+   * nowhere else — they are not per-call options, so no other assertion
+   * in this file could see them.
+   */
+  readonly constructions: RecordedConstruction[] = [];
 
   protected override async createServiceClient(): Promise<GrpcServiceClient> {
     this.clientCreations++;
+    // Drive the *production* hook with a recording constructor rather than
+    // reimplementing it.  That one line is what hands grpc-js the
+    // endpoint, the credentials and the channel options, and it is the
+    // only part of `createServiceClient` that needs neither `@grpc/*`
+    // module — which is why it is a hook at all.
+    const recorded = this.constructions;
+    class RecordingServiceConstructor {
+      constructor(
+        endpoint: string,
+        _credentials: GrpcCredentialsLike,
+        channelOptions?: GrpcChannelOptions,
+      ) {
+        recorded.push({ endpoint, channelOptions });
+      }
+    }
+    this.instantiateServiceClient(
+      RecordingServiceConstructor as unknown as GrpcServiceConstructor,
+      {},
+    );
     return this.fakeClient;
   }
 }
@@ -291,6 +326,46 @@ describe('GrpcClientActor — per-call deadline', () => {
       });
       const reply = target.received.find((frame) => frame.kind === 'reply');
       expect(reply?.kind === 'reply' ? reply.response : null).toEqual({ text: 'pong' });
+    } finally {
+      await system.terminate();
+    }
+  });
+});
+
+/* ============================== #790 ================================== */
+
+describe('GrpcClientActor — channel options', () => {
+  test('withChannelOptions reaches grpc-js in the third constructor slot', async () => {
+    const system = newSystem('grpc-channel-options');
+    try {
+      const channelOptions = {
+        'grpc.keepalive_time_ms': 20_000,
+        'grpc.keepalive_permit_without_calls': 1,
+        'grpc.max_receive_message_length': 1_048_576,
+      };
+      const options = baseOptions().withChannelOptions(channelOptions);
+      const { actor } = await boot(system, options);
+
+      expect(actor.constructions.length).toBe(1);
+      // The third slot, not the second: credentials sit between the
+      // endpoint and the channel arguments, and grpc-js reads them
+      // positionally.
+      expect(actor.constructions[0]!.endpoint).toBe('fake-host:50051');
+      expect(actor.constructions[0]!.channelOptions).toEqual(channelOptions);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('the argument stays undefined when nothing is configured', async () => {
+    const system = newSystem('grpc-channel-options-unset');
+    try {
+      const { actor } = await boot(system, baseOptions());
+
+      // Not `{}`: an empty object is a real argument, and which grpc-js
+      // defaults survive one is a per-release question this framework has
+      // no business answering.
+      expect(actor.constructions[0]!.channelOptions).toBeUndefined();
     } finally {
       await system.terminate();
     }

@@ -367,6 +367,71 @@ new GrpcClientActor(
 For mutual TLS (mTLS), add the peer's `cert` + `key` to the
 credentials object.
 
+## Channel options
+
+`withChannelOptions` passes grpc-js **channel arguments** through
+verbatim — to `new grpc.Server(...)` on the server, and to the
+service-client constructor on the client.  It is the hardening
+surface for a bind that faces anything less than fully trusted.
+
+Why it needs its own knob: `withDeadlineMs` bounds an *RPC*, and a
+connection outlives every RPC on it.  Nothing else this framework
+exposes reaches the connection, so without these an idle or abusive
+peer is never reaped.
+
+```ts
+// Server: reap idle and over-age connections, cap concurrency, and
+// keep probing a connection that has gone quiet.
+const grpcServerOptions = GrpcServerOptions.create()
+  .withProtoPath(protoPath)
+  .withPackageName('sensor.v1')
+  .withServiceName('SensorService')
+  .withBind('0.0.0.0:50051')
+  .withHandlers({ /* … */ })
+  .withChannelOptions({
+    'grpc.max_connection_idle_ms': 300_000,
+    'grpc.max_connection_age_ms': 1_800_000,
+    'grpc.max_concurrent_streams': 128,
+    'grpc.keepalive_permit_without_calls': 1,
+  });
+
+// Client: the same pass-through, on the channel this client opens.
+const grpcClientOptions = GrpcClientOptions.create()
+  .withProtoPath(protoPath)
+  .withPackageName('sensor.v1')
+  .withServiceName('SensorService')
+  .withEndpoint('sensor.svc:50051')
+  .withChannelOptions({
+    'grpc.keepalive_time_ms': 20_000,
+    'grpc.max_receive_message_length': 4 * 1024 * 1024,
+  });
+```
+
+The four worth reaching for first on a public bind:
+
+| Option | What it bounds |
+| --- | --- |
+| `grpc.max_connection_idle_ms` | How long a connection nobody is using survives. |
+| `grpc.max_connection_age_ms` | How long *any* connection survives, so a long-lived one cannot outlive its authorization. |
+| `grpc.max_concurrent_streams` | Calls one connection may have in flight. |
+| `grpc.keepalive_permit_without_calls` | Whether idle connections are probed, so a silently dead peer is noticed (`1` = yes). |
+
+Values are `string | number`, which is the whole gRPC channel-argument
+domain — a boolean knob is spelled `0` / `1`.  grpc-js's own defaults
+apply to anything you leave out; the framework passes nothing when you
+never call `withChannelOptions`, rather than an empty object.
+
+The keys are **grpc-js's, not the framework's**, and that has a cost
+worth stating: they change with the peer's releases, nothing in
+`actor-ts` validates them, and a typo is silently ignored rather than
+rejected.  Check them against the channel-argument documentation for
+the grpc-js version you have installed.
+
+There is deliberately **no HOCON leaf** for any of this — the same
+call the broker TLS material got.  A key nobody validates does not
+belong in a config file, where a misspelling would be invisible until
+production.
+
 ## Health checking
 
 The server can host the standard **`grpc.health.v1.Health`**
@@ -449,8 +514,8 @@ actor-ts.io.broker.grpc {
 }
 ```
 
-Handlers and TLS credentials are supplied through the builder, not
-HOCON.
+Handlers, TLS credentials and channel options are supplied through
+the builder, not HOCON.
 
 ## Peer dependency
 

@@ -380,6 +380,75 @@ new GrpcClientActor(
 Für Mutual TLS (mTLS) füge dem Credentials-Objekt `cert` + `key`
 der Gegenseite hinzu.
 
+## Channel-Optionen
+
+`withChannelOptions` reicht **Channel-Argumente** von grpc-js
+unverändert durch — serverseitig an `new grpc.Server(...)`,
+clientseitig an den Service-Client-Konstruktor.  Das ist die
+Härtungsfläche für einen Bind, der irgendetwas weniger als voll
+Vertrauenswürdiges bedient.
+
+Warum es dafür einen eigenen Knopf braucht: `withDeadlineMs` begrenzt
+einen *RPC*, und eine Verbindung überlebt jeden RPC auf ihr.  Nichts
+sonst, was dieses Framework anbietet, reicht bis zur Verbindung — ohne
+diese Optionen wird ein untätiger oder missbräuchlicher Peer also nie
+abgeräumt.
+
+```ts
+// Server: reap idle and over-age connections, cap concurrency, and
+// keep probing a connection that has gone quiet.
+const grpcServerOptions = GrpcServerOptions.create()
+  .withProtoPath(protoPath)
+  .withPackageName('sensor.v1')
+  .withServiceName('SensorService')
+  .withBind('0.0.0.0:50051')
+  .withHandlers({ /* … */ })
+  .withChannelOptions({
+    'grpc.max_connection_idle_ms': 300_000,
+    'grpc.max_connection_age_ms': 1_800_000,
+    'grpc.max_concurrent_streams': 128,
+    'grpc.keepalive_permit_without_calls': 1,
+  });
+
+// Client: the same pass-through, on the channel this client opens.
+const grpcClientOptions = GrpcClientOptions.create()
+  .withProtoPath(protoPath)
+  .withPackageName('sensor.v1')
+  .withServiceName('SensorService')
+  .withEndpoint('sensor.svc:50051')
+  .withChannelOptions({
+    'grpc.keepalive_time_ms': 20_000,
+    'grpc.max_receive_message_length': 4 * 1024 * 1024,
+  });
+```
+
+Die vier, nach denen man bei einem öffentlichen Bind zuerst greift:
+
+| Option | Was sie begrenzt |
+| --- | --- |
+| `grpc.max_connection_idle_ms` | Wie lange eine Verbindung überlebt, die niemand nutzt. |
+| `grpc.max_connection_age_ms` | Wie lange *irgendeine* Verbindung überlebt — damit eine langlebige ihre Autorisierung nicht überdauert. |
+| `grpc.max_concurrent_streams` | Wie viele Calls eine Verbindung gleichzeitig offen haben darf. |
+| `grpc.keepalive_permit_without_calls` | Ob untätige Verbindungen geprobt werden, damit ein stillschweigend toter Peer auffällt (`1` = ja). |
+
+Die Werte sind `string | number` — mehr gibt die Domäne der
+gRPC-Channel-Argumente nicht her; ein boolescher Knopf wird als `0` /
+`1` geschrieben.  Für alles, was du weglässt, gelten die Defaults von
+grpc-js; rufst du `withChannelOptions` nie auf, übergibt das Framework
+gar nichts statt eines leeren Objekts.
+
+Die Schlüssel gehören **grpc-js, nicht dem Framework**, und das hat
+einen Preis, den man aussprechen sollte: sie ändern sich mit den
+Releases der Peer-Bibliothek, nichts in `actor-ts` validiert sie, und
+ein Tippfehler wird stillschweigend ignoriert statt abgelehnt.  Prüfe
+sie gegen die Channel-Argument-Dokumentation der grpc-js-Version, die
+du installiert hast.
+
+Ein **HOCON-Schlüssel** existiert bewusst für nichts davon — dieselbe
+Entscheidung wie beim TLS-Material der Broker.  Ein Schlüssel, den
+niemand validiert, gehört nicht in eine Konfigurationsdatei, wo ein
+Schreibfehler bis zur Produktion unsichtbar bliebe.
+
 ## Health-Checking
 
 Der Server kann den Standard-Dienst **`grpc.health.v1.Health`**
@@ -467,8 +536,8 @@ actor-ts.io.broker.grpc {
 }
 ```
 
-Handler und TLS-Credentials werden über den Builder bereitgestellt,
-nicht über HOCON.
+Handler, TLS-Credentials und Channel-Optionen werden über den Builder
+bereitgestellt, nicht über HOCON.
 
 ## Peer-Dependency
 

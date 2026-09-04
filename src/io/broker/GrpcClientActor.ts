@@ -6,7 +6,7 @@ import { Lazy } from '../../util/Lazy.js';
 import { randomId } from '../../util/RandomString.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import { GrpcClientOptionsValidator } from './GrpcClientOptions.js';
-import type { GrpcClientOptions, GrpcClientOptionsType } from './GrpcClientOptions.js';
+import type { GrpcChannelOptions, GrpcClientOptions, GrpcClientOptionsType } from './GrpcClientOptions.js';
 
 /**
  * Inbound gRPC reply / stream frame delivered to subscribers.  The
@@ -231,8 +231,31 @@ export class GrpcClientActor
       throw new Error(`grpc: service '${this.options.serviceName}' not found in package '${this.options.packageName}'`);
     }
 
-    const creds = this.buildCredentials(grpc);
-    return new ServiceConstructor(this.options.endpoint!, creds);
+    return this.instantiateServiceClient(ServiceConstructor, this.buildCredentials(grpc));
+  }
+
+  /**
+   * Construct the proto-loaded service client.
+   *
+   * Split out of {@link createServiceClient} because everything above it
+   * needs the two `@grpc/*` modules and this step does not: an override
+   * that supplies its own constructor can call straight through, and the
+   * unit suite does, which is what makes `channelOptions` reaching
+   * grpc-js's third constructor slot assertable without installing the
+   * peers (#790).
+   *
+   * That slot is the whole hardening surface: message-size caps,
+   * keepalive, connection age and idle reaping are channel arguments,
+   * not per-call options, so nothing this actor exposes elsewhere can
+   * reach them.  `undefined` when unset is deliberate — grpc-js then
+   * applies its own defaults, which is not the same as an empty object
+   * on every release.
+   */
+  protected instantiateServiceClient(
+    ServiceConstructor: GrpcServiceConstructor,
+    credentials: GrpcCredentialsLike,
+  ): GrpcServiceClient {
+    return new ServiceConstructor(this.options.endpoint!, credentials, this.options.channelOptions);
   }
 
   protected async connectImplementation(): Promise<void> {
@@ -332,8 +355,8 @@ export class GrpcClientActor
    * `deadlineMs` is one knob: a value generous enough for an hour-long
    * bidi stream is useless on a unary call, and a value right for a
    * unary call kills the stream.  Bounding a stream whose peer has gone
-   * quiet is a channel-level concern (HTTP/2 keepalive), tracked
-   * separately as #790.
+   * quiet is a channel-level concern (HTTP/2 keepalive) and belongs in
+   * `channelOptions` — see {@link GrpcChannelOptions}.
    */
   private buildCallOptions(): GrpcCallOptions {
     const deadlineMs = this.options.deadlineMs;
@@ -473,8 +496,12 @@ export class GrpcClientActor
  * shape, they are not a re-declaration of its API.
  */
 
-interface GrpcServiceConstructor {
-  new (endpoint: string, credentials: GrpcCredentialsLike): GrpcServiceClient;
+export interface GrpcServiceConstructor {
+  new (
+    endpoint: string,
+    credentials: GrpcCredentialsLike,
+    channelOptions?: GrpcChannelOptions,
+  ): GrpcServiceClient;
 }
 
 export interface GrpcServiceClient {
@@ -538,7 +565,7 @@ export interface GrpcBidiFunction {
   call(client: GrpcServiceClient): GrpcDuplexCall;
 }
 
-type GrpcCredentialsLike = { /* opaque token, set by grpc.credentials.* */ };
+export type GrpcCredentialsLike = { /* opaque token, set by grpc.credentials.* */ };
 
 interface GrpcModule {
   loadPackageDefinition(def: unknown): unknown;
