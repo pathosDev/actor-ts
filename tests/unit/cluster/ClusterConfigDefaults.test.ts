@@ -12,6 +12,8 @@ import {
   withClusterConfigDefaults,
 } from '../../../src/cluster/ClusterOptions.js';
 import type { ClusterOptionsType } from '../../../src/cluster/ClusterOptions.js';
+import { KeepMajority } from '../../../src/cluster/downing/KeepMajority.js';
+import { KeepOldest } from '../../../src/cluster/downing/KeepOldest.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
 import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
@@ -156,6 +158,32 @@ describe('readClusterOptionsFromConfig', () => {
 
   test('an empty config yields no settings at all', () => {
     expect(readClusterOptionsFromConfig(Config.empty())).toEqual({});
+  });
+
+  test('a named split-brain strategy arrives as a built provider (#838)', () => {
+    const configured = Config.parseString(
+      'actor-ts.cluster.split-brain-resolver.active-strategy = keep-majority',
+    );
+
+    const read = readClusterOptionsFromConfig(configured);
+
+    // The whole object, not just the one key: a reader that also punched in a
+    // default for the three `role` leaves would still satisfy an assertion on
+    // `downing` alone, and this shape is what `Cluster.join` merges.
+    expect(Object.keys(read)).toEqual(['downing']);
+    expect(read.downing).toBeInstanceOf(KeepMajority);
+  });
+
+  test('active-strategy = off leaves no downing key at all (#838)', () => {
+    // Asserted on both spellings for the reason `min-retention` is: an
+    // explicit default must behave like an omitted one, and an explicit
+    // `downing: undefined` would still be a key that the merge then has to
+    // strip rather than never see.
+    expect(readClusterOptionsFromConfig(
+      Config.parseString('actor-ts.cluster.split-brain-resolver.active-strategy = off'),
+    )).not.toHaveProperty('downing');
+    expect(readClusterOptionsFromConfig(Config.loadReference()))
+      .not.toHaveProperty('downing');
   });
 
   test('the reference defaults round-trip to the built-in ones', () => {
@@ -309,6 +337,25 @@ describe('withClusterConfigDefaults', () => {
       configured,
       { failureDetectorImplementation: 'simple' } as ClusterOptionsType,
     ).failureDetectorImplementation).toBe('simple');
+  });
+
+  test('an explicit withDowning wins over the configured strategy (#838)', () => {
+    // The precedence the block needs and does not implement: `mergeOptions`
+    // strips `undefined` from the explicit layer, so a caller who named a
+    // provider keeps it and a caller who named none inherits the file's.
+    const configured = Config.parseString(
+      'actor-ts.cluster.split-brain-resolver.active-strategy = keep-majority',
+    );
+    const inCode = new KeepOldest();
+    const joinOptions = (downing?: KeepOldest): ClusterOptionsType =>
+      ({ host: 'h', port: 1, downing }) as ClusterOptionsType;
+
+    expect(withClusterConfigDefaults(configured, joinOptions(inCode)).downing).toBe(inCode);
+    expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType).downing)
+      .toBeInstanceOf(KeepMajority);
+    // …and an explicit `undefined` is "not set", not "explicitly none".
+    expect(withClusterConfigDefaults(configured, joinOptions()).downing)
+      .toBeInstanceOf(KeepMajority);
   });
 
   test('an explicit undefined threshold does not shadow the file', () => {

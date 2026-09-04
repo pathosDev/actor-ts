@@ -75,6 +75,55 @@ mit der aktuellen Sicht erneut aus; er gibt die Menge der Adressen
 zurück, die zwangsweise herabgestuft werden sollen. Eine leere
 Menge bedeutet "noch keine Entscheidung — abwarten."
 
+### Aus der Config-Datei
+
+Vier der fünf Strategien lassen sich ohne Code-Änderung wählen — genau
+das erlaubt es, ein Image in der Entwicklung ohne Schiedsrichter und in
+Produktion mit `keep-majority` zu fahren:
+
+```hocon
+actor-ts.cluster.split-brain-resolver {
+  active-strategy = keep-majority   # off | keep-majority | keep-oldest | keep-referee | static-quorum
+
+  # Per-strategy options, each read only by the strategy it belongs to.
+  keep-majority.role                    = backend
+  static-quorum.quorum-size             = 3
+  keep-referee.referee-address          = "my-app@10.0.0.1:2552"
+  keep-referee.down-all-if-below-quorum = 2
+}
+```
+
+`active-strategy` baut dasselbe Objekt, das `withDowning(…)` entgegennimmt
+— es gilt also die gewohnte Präzedenz: **ein explizites `withDowning(…)`
+gewinnt**, und ein `Cluster.join`, das keines nennt, fällt auf die Datei
+durch.  `off` ist der ausgelieferte Default und bedeutet gar keine
+Strategie — was das übrig lässt, steht in der Warnung am Ende dieser Seite.
+
+`static-quorum.quorum-size` und die beiden `keep-referee`-Keys fehlen in
+`reference.conf`, statt mit einem Default zu erscheinen: jeder ist
+erforderlich oder begrenzt, und `quorum-size = 0` bzw.
+`referee-address = ""` werden von den Validatoren der Strategien
+abgelehnt — jeder auslieferbare Wert wäre also einer, der den Node
+anhält.  `static-quorum` oder `keep-referee` ohne den zugehörigen Key wird
+beim Start abgelehnt, mit dem fehlenden Key in der Meldung.
+
+:::caution[`static-quorum` aus der Config ist ein clusterweiter Schalter]
+Das Quorum wird bei *jeder* Mitgliedsänderung geprüft, auch beim ersten
+Join, und ein Node darunter downt sich selbst.  `quorum-size = 3` in einer
+Config, die alle Replicas teilen, lässt also jeden Node beim Start wieder
+gehen, bis der dritte oben ist — ein Rolling Restart nimmt das Cluster dann
+herunter statt hindurch.  Setze den Wert auf höchstens die kleinste
+Laufzeitgröße und rolle ihn vor dem Deployment aus, das sich darauf
+verlässt.
+:::
+
+`lease-majority` ist aus der Config bewusst **nicht** wählbar.  Es
+entscheidet über ein lebendes `Lease`, dessen `owner` die eigene Adresse
+dieses Nodes ist, und kein Config-Key kann eines benennen —
+`actor-ts.coordination` stellt Leases ein, wählt aber kein Backend.  Wer
+den Namen in `active-strategy` schreibt, bekommt eine Ablehnung statt
+stillen Ignorierens; baue es wie unten gezeigt im Code.
+
 ## KeepMajority
 
 ```ts

@@ -13,6 +13,11 @@ export type { KeepRefereeOptionsType } from './KeepRefereeOptions.js';
 export { LeaseMajority } from './LeaseMajority.js';
 export { LeaseMajorityOptions, LeaseMajorityOptionsBuilder, LeaseMajorityOptionsValidator } from './LeaseMajorityOptions.js';
 export type { LeaseMajorityOptionsType } from './LeaseMajorityOptions.js';
+export {
+  DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY,
+  readDowningFromConfig,
+} from './DowningFromConfig.js';
+export type { SplitBrainResolverStrategy } from './DowningFromConfig.js';
 export { addrKey } from './DowningProvider.js';
 export type {
   DowningProvider,

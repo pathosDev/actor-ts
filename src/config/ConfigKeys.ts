@@ -438,6 +438,57 @@ export const ConfigKeys = {
     },
 
     /**
+     * Split-brain resolution — `actor-ts.cluster.split-brain-resolver.*`
+     * (#838).  `active-strategy` names which `DowningProvider`
+     * `readDowningFromConfig` (`src/cluster/downing/DowningFromConfig.ts`)
+     * builds; the per-strategy leaves are that strategy's own options.
+     *
+     * Four strategies are selectable and `lease-majority` is not: it
+     * arbitrates through a live `Lease` whose `owner` is this node's own
+     * address, and a config reader holds a `Config` and nothing else.
+     * #859 opened `actor-ts.coordination` for lease *tuning* and changed
+     * nothing here — there is still no key that names which `Lease` backend
+     * to build, so the reader refuses the value and points at
+     * `withDowning(new LeaseMajority(…))`.
+     *
+     * `static-quorum.quorum-size` and the two `keep-referee` leaves ship
+     * **comment-only** in `reference.conf`, so `hasPath` stays false until an
+     * operator sets one.  Each is required or bounded and has no legal
+     * default: `quorum-size = 0` is refused by `StaticQuorumOptionsValidator`
+     * and `referee-address = ""` by `KeepRefereeOptionsValidator`, so a
+     * shipped leaf could only be a value that stops the node from starting.
+     * They are still declared here, which is what makes setting one in an
+     * `application.conf` work — the `remote.tcp.advertised-host` shape.
+     *
+     * Full dotted leaves rather than a `split-brain-resolver` root, for the
+     * reason `failure-detector.phi` above states: `NoDeadConfigKeys`'
+     * `coveringAccessor` falls back to the nearest root, so a root alone
+     * would pass the guard for every leaf under it whether or not the reader
+     * addressed it.
+     */
+    splitBrainResolver: {
+      activeStrategy: 'actor-ts.cluster.split-brain-resolver.active-strategy',
+      keepMajority: {
+        role: 'actor-ts.cluster.split-brain-resolver.keep-majority.role',
+      },
+      keepOldest: {
+        role: 'actor-ts.cluster.split-brain-resolver.keep-oldest.role',
+      },
+      keepReferee: {
+        /** Comment-only in `reference.conf` — `""` is refused by the validator. */
+        refereeAddress: 'actor-ts.cluster.split-brain-resolver.keep-referee.referee-address',
+        /** Comment-only — absence is what "no extra quorum rule" has to look like. */
+        downAllIfBelowQuorum:
+          'actor-ts.cluster.split-brain-resolver.keep-referee.down-all-if-below-quorum',
+      },
+      staticQuorum: {
+        role: 'actor-ts.cluster.split-brain-resolver.static-quorum.role',
+        /** Comment-only in `reference.conf` — `0` is refused by the validator. */
+        quorumSize: 'actor-ts.cluster.split-brain-resolver.static-quorum.quorum-size',
+      },
+    },
+
+    /**
      * Stable-observation bootstrap and readiness —
      * `actor-ts.cluster.bootstrap.*` (#148, #1355).  The observation timings
      * are read once per `bootstrapCluster` call with `stableObservation`

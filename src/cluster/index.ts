@@ -113,6 +113,8 @@ export type { PhiAccrualOptionsType } from './PhiAccrualOptions.js';
 
 // Split-Brain Resolver strategies.
 export {
+  DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY,
+  readDowningFromConfig,
   KeepMajority,
   KeepOldest,
   KeepOldestOptions,
@@ -133,6 +135,7 @@ export type {
   DowningProvider,
   DowningDecision,
   ClusterPartitionView,
+  SplitBrainResolverStrategy,
   KeepMajorityOptionsType,
   KeepOldestOptionsType,
   StaticQuorumOptionsType,

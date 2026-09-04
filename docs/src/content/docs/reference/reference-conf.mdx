@@ -348,6 +348,36 @@ actor-ts {
       min-retention  = 0s   # 0 = derive from failure-detector down-after
     }
 
+    # Which split-brain resolver arbitrates a partition.  off = none, and the
+    # failure detector then evicts an unreachable peer on its own once
+    # down-after elapses -- which every side of a partition does at the same
+    # moment, so the cluster forks instead of losing a side.  Naming a strategy
+    # here builds the provider withDowning(...) takes in code, and an explicit
+    # withDowning(...) still wins over this block.
+    #
+    # lease-majority is deliberately NOT selectable: LeaseMajority arbitrates
+    # through a live Lease whose owner is this node's own address, and no key
+    # can name one.  Build it in code -- withDowning(new LeaseMajority(...)).
+    split-brain-resolver {
+      active-strategy = off   # off | keep-majority | keep-oldest | keep-referee | static-quorum
+
+      # "" = every member counts.  A role narrows the candidate set a strategy
+      # arbitrates over; it never grants one.
+      keep-majority.role = ""
+      keep-oldest.role   = ""
+      static-quorum.role = ""
+
+      # Three keys ship comment-only, because "not configured" has no legal
+      # spelling: quorum-size = 0 is refused by StaticQuorum's own validator
+      # and referee-address = "" by KeepReferee's, so a shipped leaf could
+      # only be a value that stops the node from starting.  Set one and the
+      # matching strategy becomes selectable.
+      #
+      #   static-quorum.quorum-size             = 3
+      #   keep-referee.referee-address          = "sys@10.0.0.1:2551"
+      #   keep-referee.down-all-if-below-quorum = 2
+    }
+
     failure-detector {
       # Which detection algorithm this node runs.  simple = plain elapsed-time
       # thresholds; phi = the variance-aware phi-accrual detector, which adapts
