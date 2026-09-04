@@ -220,6 +220,12 @@ wichtigsten Zusagen: `unstashAll()` legt die gepufferten Nachrichten
 was währenddessen ankam, und was beim Stoppen oder Neustarten noch
 geparkt ist, geht zu **Dead Letters**, statt zu verschwinden.
 
+`capacity` muss eine ganze Zahl von mindestens 1 sein — `0`, ein
+negativer Wert, ein Bruchwert, `NaN` und `Infinity` werfen alle einen
+`OptionsError`, dort wo du das Behavior baust: eine Schranke, die kein
+Vergleich je erfüllen kann (`NaN` und `Infinity` vor allem), ließe den
+Puffer unbegrenzt wachsen, während `isFull` weiterhin `false` meldet.
+
 Zwei Unterschiede zur Context-Form, beide beabsichtigt.  Die Kapazität
 ist die, die du `withStash` übergibst — pro Behavior, statt einer für den
 ganzen Actor.  Und `stash(message)` nimmt die Nachricht explizit, sie muss
