@@ -665,6 +665,54 @@ actor-ts {
     shard-region-query-timeout = 5s      # default wait for shards() / shardRefFor()
   }
 
+  devtools {
+    # DevTools never starts from configuration -- nothing in ActorSystem
+    # constructs the extension, and DevTools.attach(system) is always a code
+    # call.  This block fills in the fields that call leaves unset.
+    host = "127.0.0.1"
+    port = 9333            # 0 lets the OS pick; the binding reports which
+    # A routable host needs a gate.  auth and ipAllowlist are middleware and
+    # have no HOCON form, so this acknowledgement is the only config-side
+    # answer to the host rule -- and it sits beside the host that needs it.
+    #
+    # Two acknowledgements are deliberately NOT settable here.
+    # allow-ungated-mount states a fact about the code that binds mount()'s
+    # routes, not about a deployment; allow-message-sending is the one
+    # DevTools capability that WRITES into the running system from a
+    # browser.  Both stay code-only, next to the call they qualify.
+    allow-remote = false
+    serve-ui = true
+    # Extra origins allowed to open the tap socket.  Same-origin is always
+    # accepted; this only widens, for a UI served from somewhere else.
+    allowed-origins = []
+
+    # A panel switched off here is off for good -- its data never leaves the
+    # process, whatever a client asks for.  time-travel, dead-letters and
+    # event-stream are the three that surface message payloads.  An explicit
+    # panels object in code overrides these switch by switch, not wholesale.
+    panels {
+      actors = true
+      cluster = true
+      tracing = true
+      explain = true
+      time-travel = true
+      profiler = true
+      dead-letters = true
+      event-stream = true
+      config = true
+      send = true
+    }
+
+    mailbox-sample-interval = 1s     # actor tree + mailbox/cell resampling
+    mailbox-sample-limit = 50        # mailboxes one sample carries
+    stats-interval = 1s              # dashboard figures
+    span-buffer-capacity = 10000     # retained spans, in messages
+    span-flush-interval = 250ms
+    event-buffer-capacity = 500      # events buffered between flushes
+    event-flush-interval = 250ms
+    replay-auto-capture = true       # borrow onEvent from a running actor
+  }
+
   worker-cluster {
     workers = "auto"   # "auto" uses navigator.hardwareConcurrency
     system-name = "worker-cluster"   # ActorSystem name each worker hosts

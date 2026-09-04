@@ -1,7 +1,11 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+import { mergeOptions, stripUndefined } from '../util/OptionsMerge.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
+import type { Config } from '../config/Config.js';
 import type { HttpServerBackend, Middleware } from '../http/index.js';
 import type { Cluster } from '../cluster/Cluster.js';
+import { BUS_EVENT_BUFFER_DEFAULT } from './protocol/EventStreamFrames.js';
 import type { ReplayFoldRegistration } from './replay/ReplayRegistry.js';
 
 /**
@@ -421,7 +425,16 @@ export function isLoopbackHost(host: string): boolean {
   return LOOPBACK_HOSTS.includes(host.toLowerCase());
 }
 
-/** Built-in defaults, merged under HOCON-free explicit options. */
+/**
+ * Built-in defaults — the bottom layer of {@link mergeDevToolsOptions}, under
+ * the config file and the caller's options.
+ *
+ * `eventBufferCapacity` and `eventFlushIntervalMs` joined it with the HOCON
+ * block (#881): both were literals at their read site in `DevToolsServer`,
+ * which is fine while nothing publishes them and a lie the moment
+ * `reference.conf` does — a published default needs a constant to be pinned
+ * against, or the two drift with nothing able to notice.
+ */
 export const DEVTOOLS_DEFAULTS = {
   host: '127.0.0.1',
   port: 9333,
@@ -433,5 +446,119 @@ export const DEVTOOLS_DEFAULTS = {
   statsIntervalMs: 1_000,
   spanBufferCapacity: 10_000,
   spanFlushIntervalMs: 250,
+  eventBufferCapacity: BUS_EVENT_BUFFER_DEFAULT,
+  eventFlushIntervalMs: 250,
   replayAutoCapture: true,
 } as const satisfies Partial<DevToolsOptionsType>;
+
+/**
+ * Read `actor-ts.devtools.*` into the shape `attach` and `mount` layer under
+ * the caller's options.  Only keys actually present are returned, so an
+ * absent one falls through to the built-in default instead of landing as an
+ * explicit `undefined` — the rule {@link mergeOptions} encodes.
+ *
+ * The block cannot start DevTools — `DevTools.attach(system)` is always a
+ * code call — so it changes *how* an attachment behaves, never *whether* one
+ * happens.  That is also why the security rule matters here rather than
+ * being an afterthought: a config-sourced `host` reaches
+ * {@link DevToolsOptionsValidator} exactly as a code-set one does, and since
+ * `auth` and `ipAllowlist` are middleware with no HOCON form,
+ * `allow-remote` is the only answer to the host rule a file can give.
+ *
+ * Leaves are read one literal `ConfigKeys.devtools.*` at a time rather than
+ * by looping over a table: `NoDeadConfigKeys` looks for the accessor and the
+ * leaf property in the same source text, and a computed key is invisible to
+ * it.
+ */
+export function readDevToolsOptionsFromConfig(config: Config): Partial<DevToolsOptionsType> {
+  const keys = ConfigKeys.devtools;
+  const out: { -readonly [K in keyof DevToolsOptionsType]?: DevToolsOptionsType[K] } = {};
+  if (config.hasPath(keys.host)) out.host = config.getString(keys.host);
+  if (config.hasPath(keys.port)) out.port = config.getInt(keys.port);
+  if (config.hasPath(keys.allowRemote)) out.allowRemote = config.getBoolean(keys.allowRemote);
+  if (config.hasPath(keys.serveUi)) out.serveUi = config.getBoolean(keys.serveUi);
+  if (config.hasPath(keys.allowedOrigins)) {
+    out.allowedOrigins = config.getStringList(keys.allowedOrigins);
+  }
+  if (config.hasPath(keys.mailboxSampleInterval)) {
+    out.mailboxSampleIntervalMs = config.getDuration(keys.mailboxSampleInterval);
+  }
+  if (config.hasPath(keys.mailboxSampleLimit)) {
+    out.mailboxSampleLimit = config.getInt(keys.mailboxSampleLimit);
+  }
+  if (config.hasPath(keys.statsInterval)) {
+    out.statsIntervalMs = config.getDuration(keys.statsInterval);
+  }
+  if (config.hasPath(keys.spanBufferCapacity)) {
+    out.spanBufferCapacity = config.getInt(keys.spanBufferCapacity);
+  }
+  if (config.hasPath(keys.spanFlushInterval)) {
+    out.spanFlushIntervalMs = config.getDuration(keys.spanFlushInterval);
+  }
+  if (config.hasPath(keys.eventBufferCapacity)) {
+    out.eventBufferCapacity = config.getInt(keys.eventBufferCapacity);
+  }
+  if (config.hasPath(keys.eventFlushInterval)) {
+    out.eventFlushIntervalMs = config.getDuration(keys.eventFlushInterval);
+  }
+  if (config.hasPath(keys.replayAutoCapture)) {
+    out.replayAutoCapture = config.getBoolean(keys.replayAutoCapture);
+  }
+  const panels = readPanelsFromConfig(config);
+  if (panels !== undefined) out.panels = panels;
+  return out;
+}
+
+/**
+ * The `panels` sub-block, on the same "absent stays absent" rule: a file that
+ * names no panel yields `undefined`, not ten `undefined` switches, so it
+ * cannot flatten a set of switches the caller passed in code.
+ */
+function readPanelsFromConfig(config: Config): DevToolsPanelOptionsType | undefined {
+  const keys = ConfigKeys.devtools.panels;
+  const out: { -readonly [K in keyof DevToolsPanelOptionsType]?: boolean } = {};
+  if (config.hasPath(keys.actors)) out.actors = config.getBoolean(keys.actors);
+  if (config.hasPath(keys.cluster)) out.cluster = config.getBoolean(keys.cluster);
+  if (config.hasPath(keys.tracing)) out.tracing = config.getBoolean(keys.tracing);
+  if (config.hasPath(keys.explain)) out.explain = config.getBoolean(keys.explain);
+  if (config.hasPath(keys.timeTravel)) out.timeTravel = config.getBoolean(keys.timeTravel);
+  if (config.hasPath(keys.profiler)) out.profiler = config.getBoolean(keys.profiler);
+  if (config.hasPath(keys.deadLetters)) out.deadLetters = config.getBoolean(keys.deadLetters);
+  if (config.hasPath(keys.eventStream)) out.eventStream = config.getBoolean(keys.eventStream);
+  if (config.hasPath(keys.config)) out.config = config.getBoolean(keys.config);
+  if (config.hasPath(keys.send)) out.send = config.getBoolean(keys.send);
+  return Object.keys(out).length === 0 ? undefined : out;
+}
+
+/**
+ * Layer the three sources in the project's precedence order — explicit
+ * options over HOCON over {@link DEVTOOLS_DEFAULTS} — with the one departure
+ * {@link mergeOptions} cannot make on its own.
+ *
+ * `mergeOptions` is shallow, which is right for every scalar field here and
+ * wrong for `panels`: that is a bag of ten independent switches, so replacing
+ * it wholesale turns "switch one panel off in code" into "switch every panel
+ * the operator disabled in `application.conf` back on" — time travel, dead
+ * letters and the event stream among them, the three that surface message
+ * payloads.  Merging it switch by switch applies the same precedence one
+ * level deeper: a panel set in code wins, a panel only the file mentions
+ * keeps the file's answer.
+ */
+export function mergeDevToolsOptions(
+  fromConfig: Partial<DevToolsOptionsType>,
+  fromExplicit: Partial<DevToolsOptionsType>,
+): DevToolsOptionsType {
+  const merged = mergeOptions<DevToolsOptionsType>(DEVTOOLS_DEFAULTS, fromConfig, fromExplicit);
+  const panels = mergePanels(fromConfig.panels, fromExplicit.panels);
+  return panels === undefined ? merged : { ...merged, panels };
+}
+
+/** Explicit switches over configured ones, switch by switch. */
+function mergePanels(
+  fromConfig: DevToolsPanelOptionsType | undefined,
+  fromExplicit: DevToolsPanelOptionsType | undefined,
+): DevToolsPanelOptionsType | undefined {
+  if (fromConfig === undefined) return fromExplicit;
+  if (fromExplicit === undefined) return fromConfig;
+  return { ...fromConfig, ...stripUndefined(fromExplicit) };
+}

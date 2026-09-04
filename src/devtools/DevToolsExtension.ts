@@ -3,8 +3,9 @@ import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { Route } from '../http/index.js';
 import {
-  DEVTOOLS_DEFAULTS,
   DevToolsOptionsValidator,
+  mergeDevToolsOptions,
+  readDevToolsOptionsFromConfig,
   type DevToolsExposure,
   type DevToolsOptions,
   type DevToolsOptionsType,
@@ -92,12 +93,19 @@ export class DevToolsExtension implements Extension {
    * on — the two entry points can prove different things about who will
    * be able to reach the tree — and validation runs before anything is
    * installed, so a rejected call leaves the extension exactly as it was.
+   *
+   * The `actor-ts.devtools.*` block enters here, between the built-in
+   * defaults and the caller's options (#881).  Validating the *merged*
+   * settings is what makes the security rule cover a config file for free: a
+   * `host` from `application.conf` faces the same loopback check a code-set
+   * one does, and cannot be gated by `auth` or `ipAllowlist`, which have no
+   * HOCON form.
    */
   private createServer(options: DevToolsOptions, exposure: DevToolsExposure): DevToolsServer {
-    const settings: DevToolsOptionsType = {
-      ...DEVTOOLS_DEFAULTS,
-      ...(options as Partial<DevToolsOptionsType>),
-    };
+    const settings: DevToolsOptionsType = mergeDevToolsOptions(
+      readDevToolsOptionsFromConfig(this.system.config),
+      options as Partial<DevToolsOptionsType>,
+    );
     new DevToolsOptionsValidator(exposure).validate(settings);
     const server = new DevToolsServer(this.system, settings);
     this.server = server;
