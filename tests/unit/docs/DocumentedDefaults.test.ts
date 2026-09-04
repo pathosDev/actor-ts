@@ -57,6 +57,7 @@ import {
   DEFAULT_REGISTER_RETRY_INTERVAL_MS,
   DEFAULT_SHARD_REGION_BUFFER_SIZE,
 } from '../../../src/cluster/sharding/ShardingOptions.js';
+import { DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_FREQUENCY_MS, DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_NUMBER_OF_ENTITIES, DEFAULT_ENTITY_RECOVERY_STRATEGY } from '../../../src/cluster/sharding/ShardingOptions.js';
 import { DEFAULT_ACQUIRE_RETRY_INTERVAL_MS } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
 import {
   DEFAULT_HAND_OFF_TIMEOUT_MS,
@@ -291,6 +292,9 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.sharding.register-retry-interval', kind: 'duration', constant: DEFAULT_REGISTER_RETRY_INTERVAL_MS },
   { key: 'actor-ts.sharding.acquire-retry-interval', kind: 'duration', constant: DEFAULT_ACQUIRE_RETRY_INTERVAL_MS },
   { key: 'actor-ts.sharding.shard-region-query-timeout', kind: 'duration', constant: DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS },
+  { key: 'actor-ts.sharding.entity-recovery.strategy', kind: 'string', constant: DEFAULT_ENTITY_RECOVERY_STRATEGY },
+  { key: 'actor-ts.sharding.entity-recovery.constant-rate.frequency', kind: 'duration', constant: DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_FREQUENCY_MS },
+  { key: 'actor-ts.sharding.entity-recovery.constant-rate.number-of-entities', kind: 'int', constant: DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_NUMBER_OF_ENTITIES },
 
   /* --- distributed data --- */
   { key: 'actor-ts.distributed-data.max-pending-quorum-requests', kind: 'int', constant: DEFAULT_MAX_PENDING_QUORUM_REQUESTS },

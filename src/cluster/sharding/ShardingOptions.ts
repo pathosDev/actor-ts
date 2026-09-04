@@ -50,6 +50,69 @@ export const DEFAULT_SHARD_REGION_BUFFER_SIZE = 100_000;
 export const DEFAULT_REGISTER_RETRY_INTERVAL_MS = 500;
 
 /**
+ * How a region brings *remembered* entities back once it is handed a shard
+ * (#851).
+ *
+ *   - `all` — start every remembered entity the moment the registry arrives.
+ *     Back to full service fastest, and what every release before this one
+ *     did unconditionally.  A node handed thousands of remembered entities
+ *     spawns them in one synchronous burst, and each spawn that is a
+ *     persistent entity opens a journal replay.
+ *   - `constant-rate` — start at most
+ *     {@link ShardingOptionsType.entityRecoveryConstantRateNumberOfEntities}
+ *     of them every
+ *     {@link ShardingOptionsType.entityRecoveryConstantRateFrequencyMs} ms,
+ *     counted **across every shard this region owns**, until the backlog is
+ *     drained.
+ *
+ * What `constant-rate` bounds is the **start rate**, not the number of
+ * replays in flight: a replay is asynchronous, so one that outlasts the
+ * window still overlaps the next batch.  Bounding concurrent recoveries is a
+ * separate mechanism in the persistence layer (#1383); this one spreads the
+ * arrivals that feed it.
+ */
+export type EntityRecoveryStrategy = 'all' | 'constant-rate';
+
+/** Every accepted {@link EntityRecoveryStrategy} — the set the validator checks against. */
+export const ENTITY_RECOVERY_STRATEGIES: readonly EntityRecoveryStrategy[] = [
+  'all',
+  'constant-rate',
+];
+
+/**
+ * Built-in default for {@link ShardingOptionsType.entityRecoveryStrategy}
+ * (#851).  Mirrors `actor-ts.sharding.entity-recovery.strategy`.
+ *
+ * `all` on purpose: pacing changes *when* an entity comes back, and a
+ * default that delayed recovery would alter the observable behaviour of every
+ * deployment that never asked for it.  Turning it on is a decision about a
+ * particular journal's capacity, which nothing here can guess.
+ */
+export const DEFAULT_ENTITY_RECOVERY_STRATEGY: EntityRecoveryStrategy = 'all';
+
+/**
+ * Built-in default for
+ * {@link ShardingOptionsType.entityRecoveryConstantRateFrequencyMs} — the gap
+ * between two recovery batches, in ms (#851).  Mirrors
+ * `actor-ts.sharding.entity-recovery.constant-rate.frequency`.
+ *
+ * Inert until `entityRecoveryStrategy` is `constant-rate`, so the value is a
+ * starting point rather than a measurement: nothing in this repository
+ * measures entity-spawn or replay cost, and the right pace is a property of
+ * the journal behind the entities, not of the sharding layer.  Together with
+ * the count below it reads as "50 entity starts a second, node-wide".
+ */
+export const DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_FREQUENCY_MS = 100;
+
+/**
+ * Built-in default for
+ * {@link ShardingOptionsType.entityRecoveryConstantRateNumberOfEntities} —
+ * how many entities one recovery batch starts (#851).  Mirrors
+ * `actor-ts.sharding.entity-recovery.constant-rate.number-of-entities`.
+ */
+export const DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_NUMBER_OF_ENTITIES = 5;
+
+/**
  * Plain options-object shape for a sharded region.  Consumed by
  * {@link ShardRegion.settingsToConfig} and extended by
  * {@link StartShardingOptionsType} — the coordinator-side superset that
@@ -157,6 +220,38 @@ export type ShardingOptionsType<TMessage> = {
    * frames themselves are a cost you have measured.
    */
   readonly registerRetryIntervalMs?: number;
+  /**
+   * How remembered entities are brought back after this region is handed a
+   * shard (#851).  Default: `'all'` — every remembered entity at once.
+   *
+   * The burst is the reason to change it.  A region that is handed a shard
+   * under `rememberEntities` receives the whole registry for it and, under
+   * `'all'`, spawns every entity in one synchronous pass; a node restart or a
+   * rebalance does that for every shard it is given.  When those entities are
+   * event-sourced, each spawn opens a journal replay, and the resulting fan of
+   * concurrent reads lands on the store all at once.
+   *
+   * `'constant-rate'` spreads it — see {@link EntityRecoveryStrategy} for what
+   * that does and does not bound.
+   */
+  readonly entityRecoveryStrategy?: EntityRecoveryStrategy;
+  /**
+   * Gap between two `'constant-rate'` recovery batches, in ms (#851).
+   * Default: `100`.  Ignored under `'all'`.
+   */
+  readonly entityRecoveryConstantRateFrequencyMs?: number;
+  /**
+   * Entities one `'constant-rate'` batch starts (#851).  Default: `5`.
+   * Ignored under `'all'`.
+   *
+   * **A region-wide budget, not a per-shard one.**  The queue is fed by every
+   * shard this region owns, and one batch is taken from its front regardless
+   * of which shards those entities belong to — so the node starts this many
+   * entities per window, full stop.  Read per shard it would silently mean
+   * `numShards ×` itself, which is the same conflation `maxEntities` is kept
+   * region-wide to avoid.
+   */
+  readonly entityRecoveryConstantRateNumberOfEntities?: number;
 };
 
 /**
@@ -252,6 +347,21 @@ export class ShardingOptionsBuilder<
   withRegisterRetryIntervalMs(registerRetryIntervalMs: number): this {
     return this.set('registerRetryIntervalMs', registerRetryIntervalMs);
   }
+
+  /** How remembered entities come back: all at once, or paced.  Default: `'all'`. */
+  withEntityRecoveryStrategy(entityRecoveryStrategy: EntityRecoveryStrategy): this {
+    return this.set('entityRecoveryStrategy', entityRecoveryStrategy);
+  }
+
+  /** Gap between two paced recovery batches, in ms.  Default: 100. */
+  withEntityRecoveryConstantRateFrequencyMs(entityRecoveryConstantRateFrequencyMs: number): this {
+    return this.set('entityRecoveryConstantRateFrequencyMs', entityRecoveryConstantRateFrequencyMs);
+  }
+
+  /** Entities one paced recovery batch starts, region-wide.  Default: 5. */
+  withEntityRecoveryConstantRateNumberOfEntities(entityRecoveryConstantRateNumberOfEntities: number): this {
+    return this.set('entityRecoveryConstantRateNumberOfEntities', entityRecoveryConstantRateNumberOfEntities);
+  }
 }
 
 /**
@@ -315,6 +425,43 @@ export class ShardingOptionsValidator<
         || options.registerRetryIntervalMs <= 0)
     ) {
       this.fail('registerRetryIntervalMs', 'must be a positive finite number', options.registerRetryIntervalMs);
+    }
+    if (
+      options.entityRecoveryStrategy !== undefined
+      && !ENTITY_RECOVERY_STRATEGIES.includes(options.entityRecoveryStrategy)
+    ) {
+      this.fail(
+        'entityRecoveryStrategy',
+        `must be one of ${ENTITY_RECOVERY_STRATEGIES.map((strategy) => `'${strategy}'`).join(', ')}`,
+        options.entityRecoveryStrategy,
+      );
+    }
+    // Both bounds are strictly positive: a zero frequency is a busy loop and a
+    // zero batch is a queue that never drains — under `constant-rate` either
+    // one turns "recover slowly" into "never recover", which is worse than the
+    // burst the setting exists to avoid.
+    if (
+      options.entityRecoveryConstantRateFrequencyMs !== undefined
+      && (typeof options.entityRecoveryConstantRateFrequencyMs !== 'number'
+        || !Number.isFinite(options.entityRecoveryConstantRateFrequencyMs)
+        || options.entityRecoveryConstantRateFrequencyMs <= 0)
+    ) {
+      this.fail(
+        'entityRecoveryConstantRateFrequencyMs',
+        'must be a positive finite number',
+        options.entityRecoveryConstantRateFrequencyMs,
+      );
+    }
+    if (
+      options.entityRecoveryConstantRateNumberOfEntities !== undefined
+      && (!Number.isInteger(options.entityRecoveryConstantRateNumberOfEntities)
+        || options.entityRecoveryConstantRateNumberOfEntities < 1)
+    ) {
+      this.fail(
+        'entityRecoveryConstantRateNumberOfEntities',
+        'must be an integer >= 1',
+        options.entityRecoveryConstantRateNumberOfEntities,
+      );
     }
   }
 }
