@@ -106,7 +106,7 @@ void main();
 
 | Option | What |
 | --- | --- |
-| `withBootstrap(url)` | Worker entrypoint module.  **Required.** |
+| `withBootstrap(url)` | Worker entrypoint module.  **Required**, and must carry the `file:` scheme — `new URL('./worker-node.js', import.meta.url)` produces exactly that, while a `data:`, `blob:` or remote specifier is rejected because it would hand the worker constructor code from outside the deployment. |
 | `withWorkers(n \| 'auto')` | Pool size; `'auto'` uses hardware concurrency.  Default `'auto'`. |
 | `withSystemName(name)` | `ActorSystem` name each worker hosts.  Default `'worker-cluster'`. |
 | `withHostname(host)` | Hostname component of each worker's address.  Default `'worker'`. |
@@ -149,9 +149,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## The same knobs from a config file
 
-Every option in the table above except the last four is also an
-`actor-ts.worker-cluster` key, so a deployment can retune the mesh without a
-rebuild:
+Nine of the options in the table above are also `actor-ts.worker-cluster`
+keys, alongside `workers` and `restart-policy`, so a deployment can retune the
+mesh without a rebuild:
 
 ```hocon
 actor-ts.worker-cluster {
@@ -173,9 +173,11 @@ Precedence is the framework's usual **explicit options > HOCON > built-in
 default**, applied per field: `withWorkers(8)` in code beats `workers = 4` in
 the file, while every field the call leaves unset falls through to it.  The
 four duration keys drop the `Ms` suffix their builder methods carry and take a
-duration literal instead.  `bootstrap`, `initData`, `backend` and
-`onWorkerPermanentlyDown` have no keys — the first two are per-call identity,
-the last two live objects a file cannot express.
+duration literal instead.  `initData` has no key because it is per-call
+identity, and `backend` and `onWorkerPermanentlyDown` because they are live
+objects a file cannot express.  `bootstrap` is held back deliberately: it names
+a module the runtime will *execute*, and `ACTOR_TS_CONFIG` or a dropped-in
+`application.conf` is a wider surface than the call site.
 
 `spawn` is a static with no `ActorSystem` in scope, so it loads the config
 chain itself: the same one `ActorSystem.create` uses, honouring

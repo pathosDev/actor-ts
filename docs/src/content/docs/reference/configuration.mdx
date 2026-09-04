@@ -482,9 +482,11 @@ The four duration keys drop the `Ms` suffix their options-object fields carry
 same way `logger.close-timeout` feeds `closeTimeoutMs`.  `restart-random-factor`
 is a plain fraction, not a duration.
 
-Four fields have no key on purpose: `bootstrap` and `initData` are per-call
-identity, and `backend` and `onWorkerPermanentlyDown` are live objects a config
-file cannot express.
+Four fields have no key on purpose: `initData` is per-call identity, `backend`
+and `onWorkerPermanentlyDown` are live objects a config file cannot express,
+and `bootstrap` names a module the runtime will *execute* — `ACTOR_TS_CONFIG`
+and a dropped-in `application.conf` are a wider surface than the call site, so
+it stays a code-only field.
 
 Validation runs on the merged settings, so every one of these is rejected with
 an `OptionsError` when it comes from a file exactly as it would from code: an

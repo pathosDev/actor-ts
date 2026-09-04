@@ -499,9 +499,12 @@ Die vier Duration-Keys lassen das `Ms`-Suffix ihrer Felder im Options-Objekt weg
 genauso, wie `logger.close-timeout` das Feld `closeTimeoutMs` speist.
 `restart-random-factor` ist ein reiner Bruchteil, keine Duration.
 
-Vier Felder haben bewusst keinen Key: `bootstrap` und `initData` sind
-Identität des einzelnen Aufrufs, und `backend` sowie `onWorkerPermanentlyDown`
-sind lebende Objekte, die eine Config-Datei nicht ausdrücken kann.
+Vier Felder haben bewusst keinen Key: `initData` ist Identität des einzelnen
+Aufrufs, `backend` und `onWorkerPermanentlyDown` sind lebende Objekte, die eine
+Config-Datei nicht ausdrücken kann, und `bootstrap` benennt ein Modul, das die
+Runtime *ausführt* — `ACTOR_TS_CONFIG` und eine abgelegte `application.conf`
+sind eine breitere Angriffsfläche als die Aufrufstelle, deshalb bleibt es ein
+reines Code-Feld.
 
 Die Validierung läuft auf den gemergten Settings, deshalb wird jeder dieser
 Werte aus einer Datei mit einem `OptionsError` genauso abgelehnt wie aus Code:

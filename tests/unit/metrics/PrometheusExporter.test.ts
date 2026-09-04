@@ -6,7 +6,9 @@
  *   - Counter names typically end in `_total` — we don't enforce, but
  *     the test data follows the convention.
  *   - Histogram emits `_bucket{le="X"}`, then `_sum`, then `_count`.
- *   - Label values are escaped (backslash, newline, double-quote).
+ *   - Label values are escaped (backslash, newline, carriage return,
+ *     double-quote) and `# HELP` for all but the quote — the two line
+ *     terminators because the format is read line by line (#784).
  *   - Trailing newline on non-empty output.
  */
 import { describe, expect, test } from 'bun:test';
@@ -39,6 +41,18 @@ describe('exportPrometheus — counters', () => {
     registry.counter('m_total', { msg: 'a"b\nc\\d' }).inc();
     const text = exportPrometheus(registry);
     expect(text).toContain('msg="a\\"b\\nc\\\\d"');
+  });
+
+  test('a carriage return in a label value is escaped, not passed through (#784)', () => {
+    const registry = new DefaultMetricsRegistry();
+    registry.counter('m_total', { msg: 'a\rb' }, { help: 'one\rtwo' }).inc();
+    const text = exportPrometheus(registry);
+    // The exposition is line-oriented, and a bare CR reaches a scraper's line
+    // handling as a control character exactly the way LF does — so neither
+    // may survive into the body, in either position.
+    expect(text).toContain('msg="a\\rb"');
+    expect(text).toContain('# HELP m_total one\\rtwo');
+    expect(text.includes('\r')).toBe(false);
   });
 });
 

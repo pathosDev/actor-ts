@@ -17,6 +17,15 @@ import type { Labels, MetricSample, MetricsRegistry } from './Metrics.js';
 
 /**
  * Render the registry's current state as Prometheus text format.
+ *
+ * Family names and label keys are interpolated **raw**, because the format
+ * offers no escaping for either position — they are the grammar itself.  What
+ * makes that safe is the registry refusing anything outside the grammar at
+ * registration (`PROMETHEUS_METRIC_NAME_PATTERN` /
+ * `PROMETHEUS_LABEL_NAME_PATTERN`, #784), so a name reaching this function has
+ * already been checked.  A `MetricsRegistry` implemented outside this package
+ * owes the same guarantee: `collect()` is trusted here, one layer past the
+ * point where a forged series can still be told from a real one.
  */
 export function exportPrometheus(registry: MetricsRegistry): string {
   const samples = registry.collect();
@@ -109,12 +118,39 @@ function labelKey(labels: Labels): string {
     .map((key) => `${key}=${String(labels[key])}`).join('\x1f');
 }
 
+/**
+ * Escape a label value for the quoted position `key="…"`.
+ *
+ * The backslash pass runs first, so the backslashes the later passes
+ * introduce are not escaped a second time.
+ *
+ * **The carriage return is escaped even though the 0.0.4 escape table names
+ * only `\\`, `\n` and `"`** (#784).  A label value is the one field of the
+ * exposition that legitimately carries data, and a bare `\r` left in it
+ * reaches the scraper's line handling as a control character — which is the
+ * same line-splitting primitive `\n` is, in a format that is defined line by
+ * line.  Emitting the two-character sequence is the conservative half of that
+ * trade: the value can no longer terminate a line, at the price of a
+ * sequence the strictest readers of the escape table do not define.
+ */
 function escapeLabelValue(v: string): string {
-  return v.replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/"/g, '\\"');
+  return v
+    .replace(/\\/g, '\\\\')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/"/g, '\\"');
 }
 
+/**
+ * Escape a `# HELP` string.  Unquoted and terminated by the end of the line,
+ * so it needs the two line-ending characters neutralised and the backslash
+ * that carries them, but not the double quote.
+ */
 function escapeHelp(v: string): string {
-  return v.replace(/\\/g, '\\\\').replace(/\n/g, '\\n');
+  return v
+    .replace(/\\/g, '\\\\')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r');
 }
 
 function formatNumber(n: number): string {

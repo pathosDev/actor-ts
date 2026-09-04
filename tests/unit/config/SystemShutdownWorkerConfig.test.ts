@@ -185,14 +185,14 @@ describe('actor-ts.worker-cluster', () => {
 
   test('explicit options win over the config file', () => {
     const config = Config.parseString('actor-ts.worker-cluster.workers = 4');
-    const options = { bootstrap: 'w.js', workers: 8 } as WorkerClusterOptionsType;
+    const options = { bootstrap: 'file:///w.js', workers: 8 } as WorkerClusterOptionsType;
 
     expect(withWorkerClusterConfigDefaults(options, config).workers).toBe(8);
   });
 
   test('an unset field falls through to the config file', () => {
     const config = Config.parseString('actor-ts.worker-cluster.workers = 4');
-    const options = { bootstrap: 'w.js' } as WorkerClusterOptionsType;
+    const options = { bootstrap: 'file:///w.js' } as WorkerClusterOptionsType;
 
     expect(withWorkerClusterConfigDefaults(options, config).workers).toBe(4);
   });
@@ -209,7 +209,7 @@ describe('actor-ts.worker-cluster', () => {
       }
     `);
     const options = {
-      bootstrap: 'w.js',
+      bootstrap: 'file:///w.js',
       hostname: 'from-code',
       readyTimeoutMs: 250,
       maxRestarts: 3,
@@ -234,7 +234,7 @@ describe('actor-ts.worker-cluster', () => {
     // silently meant "never restart".
     const config = Config.parseString('actor-ts.worker-cluster.restart-policy = "sometimes"');
     const merged = withWorkerClusterConfigDefaults(
-      { bootstrap: 'w.js' } as WorkerClusterOptionsType,
+      { bootstrap: 'file:///w.js' } as WorkerClusterOptionsType,
       config,
     );
 
@@ -248,7 +248,7 @@ describe('actor-ts.worker-cluster', () => {
     for (const [leaf, field] of [['system-name', 'systemName'], ['hostname', 'hostname']]) {
       const config = Config.parseString(`actor-ts.worker-cluster.${leaf} = ""`);
       const merged = withWorkerClusterConfigDefaults(
-        { bootstrap: 'w.js' } as WorkerClusterOptionsType,
+        { bootstrap: 'file:///w.js' } as WorkerClusterOptionsType,
         config,
       );
 
@@ -261,7 +261,7 @@ describe('actor-ts.worker-cluster', () => {
     // grew a `number` member: getInt would have thrown on 0.2 outright.
     const config = Config.parseString('actor-ts.worker-cluster.restart-random-factor = 1.5');
     const merged = withWorkerClusterConfigDefaults(
-      { bootstrap: 'w.js' } as WorkerClusterOptionsType,
+      { bootstrap: 'file:///w.js' } as WorkerClusterOptionsType,
       config,
     );
 

@@ -35,6 +35,30 @@ export const DEFAULT_MAX_RESTARTS = 10;
 export const DEFAULT_RESTART_WINDOW_MS = 60_000;
 
 /**
+ * The only URL scheme {@link WorkerClusterOptionsType.bootstrap} may carry.
+ *
+ * The specifier is handed straight to `new Worker(url)`, so its scheme decides
+ * where the worker's entry code comes from.  Measured once per runtime rather
+ * than assumed (Bun 1.4.0, Node 26.7.0, Deno 2.6.8):
+ *
+ * | scheme     | Bun              | Node                     | Deno                      |
+ * | ---------- | ---------------- | ------------------------ | ------------------------- |
+ * | `file:`    | runs             | runs                     | runs                      |
+ * | `data:`    | runs             | runs                     | runs                      |
+ * | `blob:`    | runs             | `ERR_INVALID_URL_SCHEME` | runs                      |
+ * | `http(s):` | `ModuleNotFound` | `ERR_INVALID_URL_SCHEME` | fetched and run           |
+ *
+ * So the sharp edges are not theoretical: a `data:` entry executes
+ * caller-supplied bytes on all three runtimes, `blob:` on two, and a remote
+ * specifier is code off the network on Deno (which needs `--allow-import`, an
+ * unrelated flag an application may well already carry).  `file:` is the only
+ * scheme that names an artifact the operator put on disk, and it is what every
+ * doc and example already uses — `new URL('./worker.js', import.meta.url)`
+ * produces exactly this.  Narrowing to it is a pre-1.0 hard cut (#776).
+ */
+const BOOTSTRAP_ALLOWED_PROTOCOL = 'file:';
+
+/**
  * What a retired slot reports through
  * {@link WorkerClusterOptionsType.onWorkerPermanentlyDown}.
  *
@@ -91,7 +115,13 @@ export class WorkerClusterOptionsBuilder extends OptionsBuilder<WorkerClusterOpt
     return new WorkerClusterOptionsBuilder();
   }
 
-  /** Module URL (or string) of the worker entrypoint each worker runs. */
+  /**
+   * Module URL of the worker entrypoint each worker runs.  Required, and must
+   * carry the `file:` scheme — `new URL('./worker.js', import.meta.url)` is the
+   * intended form.  A string is accepted but must be an absolute `file:` URL;
+   * see {@link BOOTSTRAP_ALLOWED_PROTOCOL} for why the other schemes a `Worker`
+   * constructor would take are refused.
+   */
   withBootstrap(bootstrap: URL | string): this {
     return this.set('bootstrap', bootstrap);
   }
@@ -195,6 +225,34 @@ export class WorkerClusterOptionsValidator extends OptionsValidator<WorkerCluste
     super('WorkerClusterOptions');
   }
   protected rules(s: Partial<WorkerClusterOptionsType>): void {
+    // Required-ness first, and by hand: every check helper is a no-op on
+    // `undefined` by design, so `WorkerClusterOptions` being a
+    // `Partial<WorkerClusterOptionsType>` let an empty options object through
+    // the validator and into `new URL(undefined)`, which surfaced a raw
+    // ERR_INVALID_URL from inside the runtime rather than a named OptionsError
+    // naming the field (#776).
+    if (s.bootstrap === undefined) {
+      this.fail('bootstrap', 'is required — there is no worker entrypoint to spawn without it');
+    }
+    // `url()` is typed for `string` fields and `bootstrap` is `URL | string`,
+    // so the scheme check is hand-rolled too.
+    const bootstrapUrl = parseBootstrapUrl(s.bootstrap);
+    if (bootstrapUrl === undefined) {
+      this.fail(
+        'bootstrap',
+        'must be an absolute URL — resolve a relative specifier against the entry first, '
+        + "as in new URL('./worker.js', import.meta.url)",
+        s.bootstrap,
+      );
+    }
+    if (bootstrapUrl.protocol !== BOOTSTRAP_ALLOWED_PROTOCOL) {
+      this.fail(
+        'bootstrap',
+        `must use the ${BOOTSTRAP_ALLOWED_PROTOCOL} scheme — a data:, blob: or remote `
+        + 'specifier hands the worker constructor code from outside the deployment',
+        bootstrapUrl.href,
+      );
+    }
     // workers is `number | 'auto'`, so the field-name helpers can't address it.
     if (s.workers !== undefined && s.workers !== 'auto' && (!Number.isInteger(s.workers) || s.workers < 1)) {
       this.fail('workers', "must be a positive integer or 'auto'", s.workers);
@@ -234,10 +292,26 @@ export class WorkerClusterOptionsValidator extends OptionsValidator<WorkerCluste
 }
 
 /**
+ * Parse a `bootstrap` specifier into a `URL`, or `undefined` when it is not
+ * one.  A bare relative string is the `undefined` case and always was: with no
+ * base to resolve against, `new URL('./worker.js')` throws — it just used to
+ * throw from inside {@link WorkerCluster.spawn} instead of from the validator.
+ */
+function parseBootstrapUrl(bootstrap: URL | string | undefined): URL | undefined {
+  if (bootstrap instanceof URL) return bootstrap;
+  if (typeof bootstrap !== 'string') return undefined;
+  try {
+    return new URL(bootstrap);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The slice of worker-cluster settings HOCON can supply — every field but the
- * four a config file has no way to carry: `bootstrap` and `initData` are
- * per-call identity, and `backend` / `onWorkerPermanentlyDown` are live
- * objects rather than values (#883).
+ * four a config file has no way to carry, or must not: `initData` is per-call
+ * identity, `backend` / `onWorkerPermanentlyDown` are live objects rather than
+ * values, and `bootstrap` is held back deliberately (below) (#883).
  *
  * The four duration leaves drop the `Ms` suffix their fields carry and take a
  * HOCON duration literal instead — `actor-ts.logger.close-timeout` reads into
@@ -245,6 +319,15 @@ export class WorkerClusterOptionsValidator extends OptionsValidator<WorkerCluste
  * this is the house spelling rather than an exception to the `withX` ⇔ `x` ⇔
  * leaf lockstep.  A `…-ms` leaf would be the first in `reference.conf`, and
  * would make `10s` unwritable where every other duration accepts it.
+ *
+ * **`bootstrap` stays out of HOCON on purpose** — it is absent from
+ * `ConfigKeys` and from `reference.conf`, and #883 publishing the other nine
+ * did not change that.  It names a module the runtime will *execute*, and a
+ * config file is a wider surface than the call site: `ACTOR_TS_CONFIG` and a
+ * dropped-in `application.conf` both feed {@link Config.load}, so a leaf here
+ * would let something other than the application's own source decide which
+ * code a worker runs.  {@link WorkerClusterOptionsValidator} constrains the
+ * scheme precisely because that decision has teeth (#776).
  */
 export type WorkerClusterConfigDefaults = Pick<
   WorkerClusterOptionsType,

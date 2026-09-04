@@ -109,7 +109,7 @@ void main();
 
 | Option | Was |
 | --- | --- |
-| `withBootstrap(url)` | Worker-Entrypoint-Modul.  **Pflicht.** |
+| `withBootstrap(url)` | Worker-Entrypoint-Modul.  **Pflicht**, und muss das Schema `file:` tragen — `new URL('./worker-node.js', import.meta.url)` erzeugt genau das, während ein `data:`-, `blob:`- oder entfernter Specifier abgelehnt wird, weil er dem Worker-Konstruktor Code von außerhalb des Deployments übergeben würde. |
 | `withWorkers(n \| 'auto')` | Pool-Größe; `'auto'` nutzt die Hardware-Concurrency.  Default `'auto'`. |
 | `withSystemName(name)` | `ActorSystem`-Name, den jeder Worker hostet.  Default `'worker-cluster'`. |
 | `withHostname(host)` | Hostname-Komponente der Adresse jedes Workers.  Default `'worker'`. |
@@ -153,9 +153,9 @@ import { Aside } from '@astrojs/starlight/components';
 
 ## Dieselben Stellschrauben aus einer Config-Datei
 
-Jede Option aus der Tabelle oben außer den letzten vier ist auch ein
-`actor-ts.worker-cluster`-Key, sodass ein Deployment das Mesh ohne Rebuild
-nachjustieren kann:
+Neun der Optionen aus der Tabelle oben sind zusätzlich
+`actor-ts.worker-cluster`-Keys, neben `workers` und `restart-policy`, sodass
+ein Deployment das Mesh ohne Rebuild nachjustieren kann:
 
 ```hocon
 actor-ts.worker-cluster {
@@ -177,10 +177,12 @@ Die Präzedenz ist die im Framework übliche — **explizite Optionen > HOCON >
 eingebauter Default**, und zwar pro Feld: `withWorkers(8)` im Code schlägt
 `workers = 4` in der Datei, während jedes Feld, das der Aufruf nicht setzt, auf
 sie durchfällt.  Die vier Duration-Keys lassen das `Ms`-Suffix ihrer
-Builder-Methoden weg und nehmen stattdessen ein Duration-Literal.  `bootstrap`,
-`initData`, `backend` und `onWorkerPermanentlyDown` haben keine Keys — die
-ersten beiden sind Identität des einzelnen Aufrufs, die letzten beiden lebende
-Objekte, die eine Datei nicht ausdrücken kann.
+Builder-Methoden weg und nehmen stattdessen ein Duration-Literal.  `initData`
+hat keinen Key, weil es Identität des einzelnen Aufrufs ist, und `backend`
+sowie `onWorkerPermanentlyDown`, weil sie lebende Objekte sind, die eine Datei
+nicht ausdrücken kann.  `bootstrap` wird bewusst zurückgehalten: Es benennt ein
+Modul, das die Runtime *ausführt*, und `ACTOR_TS_CONFIG` oder eine abgelegte
+`application.conf` sind eine breitere Angriffsfläche als die Aufrufstelle.
 
 `spawn` ist ein Static ohne `ActorSystem` im Scope und lädt die Config-Kette
 daher selbst: dieselbe, die `ActorSystem.create` verwendet, inklusive
