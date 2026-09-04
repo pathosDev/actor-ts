@@ -147,6 +147,42 @@ import { Aside } from '@astrojs/starlight/components';
   the handshake hangs forever.
 </Aside>
 
+## The same knobs from a config file
+
+Every option in the table above except the last four is also an
+`actor-ts.worker-cluster` key, so a deployment can retune the mesh without a
+rebuild:
+
+```hocon
+actor-ts.worker-cluster {
+  workers               = 4
+  system-name           = "ingest"
+  hostname              = "ingest-worker"
+  base-port             = 100
+  ready-timeout         = 30s
+  restart-policy        = "on-failure"
+  restart-min-backoff   = 500ms
+  restart-max-backoff   = 30s
+  restart-random-factor = 0.3
+  max-restarts          = 20
+  restart-window        = 5m
+}
+```
+
+Precedence is the framework's usual **explicit options > HOCON > built-in
+default**, applied per field: `withWorkers(8)` in code beats `workers = 4` in
+the file, while every field the call leaves unset falls through to it.  The
+four duration keys drop the `Ms` suffix their builder methods carry and take a
+duration literal instead.  `bootstrap`, `initData`, `backend` and
+`onWorkerPermanentlyDown` have no keys — the first two are per-call identity,
+the last two live objects a file cannot express.
+
+`spawn` is a static with no `ActorSystem` in scope, so it loads the config
+chain itself: the same one `ActorSystem.create` uses, honouring
+`ACTOR_TS_CONFIG` and `./application.conf`.  A value from the file is validated
+against the merged settings, so a bad one throws `OptionsError` at `spawn`
+exactly as a bad one in code does.
+
 ## Under the hood: manual wiring
 
 The `WorkerCluster` above does this wiring for you.  Reach for the

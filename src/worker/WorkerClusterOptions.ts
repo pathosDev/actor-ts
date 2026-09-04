@@ -199,6 +199,11 @@ export class WorkerClusterOptionsValidator extends OptionsValidator<WorkerCluste
     if (s.workers !== undefined && s.workers !== 'auto' && (!Number.isInteger(s.workers) || s.workers < 1)) {
       this.fail('workers', "must be a positive integer or 'auto'", s.workers);
     }
+    // Only code could set these until they got config leaves (#883); an empty
+    // string from a config file would otherwise reach `NodeAddress` and give
+    // every worker an address with no host or no system name.
+    this.nonEmptyString('systemName');
+    this.nonEmptyString('hostname');
     this.port('basePort');
     this.positiveNumber('readyTimeoutMs');
     // Worth checking now that a config file can supply it: an unknown policy
@@ -229,15 +234,23 @@ export class WorkerClusterOptionsValidator extends OptionsValidator<WorkerCluste
 }
 
 /**
- * The slice of worker-cluster settings HOCON can supply.  The rest is either
- * per-call identity (`bootstrap`, `initData`), something a config file cannot
- * express (`backend`, `onWorkerPermanentlyDown`), or still code-only —
- * `systemName` / `hostname` / `basePort` / `readyTimeoutMs` and the five
- * restart-budget knobs, whose config leaves are #883's scope.
+ * The slice of worker-cluster settings HOCON can supply — every field but the
+ * four a config file has no way to carry: `bootstrap` and `initData` are
+ * per-call identity, and `backend` / `onWorkerPermanentlyDown` are live
+ * objects rather than values (#883).
+ *
+ * The four duration leaves drop the `Ms` suffix their fields carry and take a
+ * HOCON duration literal instead — `actor-ts.logger.close-timeout` reads into
+ * `closeTimeoutMs` and `…delivery.flush-interval` into `flushIntervalMs`, so
+ * this is the house spelling rather than an exception to the `withX` ⇔ `x` ⇔
+ * leaf lockstep.  A `…-ms` leaf would be the first in `reference.conf`, and
+ * would make `10s` unwritable where every other duration accepts it.
  */
 export type WorkerClusterConfigDefaults = Pick<
   WorkerClusterOptionsType,
-  'workers' | 'restartPolicy'
+  'workers' | 'systemName' | 'hostname' | 'basePort' | 'readyTimeoutMs'
+  | 'restartPolicy' | 'restartMinBackoffMs' | 'restartMaxBackoffMs'
+  | 'restartRandomFactor' | 'maxRestarts' | 'restartWindowMs'
 >;
 
 /**
@@ -259,8 +272,39 @@ export function readWorkerClusterOptionsFromConfig(
     const raw = config.getString(keys.workers);
     out.workers = raw === 'auto' ? 'auto' : config.getInt(keys.workers);
   }
+  if (config.hasPath(keys.systemName)) {
+    out.systemName = config.getString(keys.systemName);
+  }
+  if (config.hasPath(keys.hostname)) {
+    out.hostname = config.getString(keys.hostname);
+  }
+  if (config.hasPath(keys.basePort)) {
+    out.basePort = config.getInt(keys.basePort);
+  }
+  if (config.hasPath(keys.readyTimeout)) {
+    out.readyTimeoutMs = config.getDuration(keys.readyTimeout);
+  }
   if (config.hasPath(keys.restartPolicy)) {
     out.restartPolicy = config.getString(keys.restartPolicy) as RestartPolicy;
+  }
+  if (config.hasPath(keys.restartMinBackoff)) {
+    out.restartMinBackoffMs = config.getDuration(keys.restartMinBackoff);
+  }
+  if (config.hasPath(keys.restartMaxBackoff)) {
+    out.restartMaxBackoffMs = config.getDuration(keys.restartMaxBackoff);
+  }
+  if (config.hasPath(keys.restartRandomFactor)) {
+    // `getNumber`, not `getInt`: the jitter fraction is the one leaf in the
+    // block that is legitimately fractional, and `getInt` throws on `0.2`.
+    out.restartRandomFactor = config.getNumber(keys.restartRandomFactor);
+  }
+  if (config.hasPath(keys.maxRestarts)) {
+    // `-1` is the documented "restart forever" value and a legal integer, so
+    // `getInt` is the right accessor even though the field is not a count.
+    out.maxRestarts = config.getInt(keys.maxRestarts);
+  }
+  if (config.hasPath(keys.restartWindow)) {
+    out.restartWindowMs = config.getDuration(keys.restartWindow);
   }
   return out;
 }

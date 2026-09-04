@@ -559,7 +559,23 @@ actor-ts {
 
   worker-cluster {
     workers = "auto"   # "auto" uses navigator.hardwareConcurrency
+    system-name = "worker-cluster"   # ActorSystem name each worker hosts
+    hostname = "worker"              # host component of each worker's address
+    base-port = 1                    # first worker's port; each slot increments
+    ready-timeout = 10s              # per-worker hello/init/ready handshake
     restart-policy = "on-failure"   # always | on-failure | never
+
+    # Respawn pacing for a crashed slot: the delay starts at
+    # restart-min-backoff and doubles per attempt up to restart-max-backoff,
+    # with +/- restart-random-factor jitter so sibling slots do not
+    # synchronise.
+    restart-min-backoff = 200ms
+    restart-max-backoff = 10s
+    restart-random-factor = 0.2
+    # Restarts granted per slot inside restart-window before it is retired
+    # for good; -1 restarts forever.  A window of 0 never resets the tally.
+    max-restarts = 10
+    restart-window = 60s
   }
 
   coordinated-shutdown {

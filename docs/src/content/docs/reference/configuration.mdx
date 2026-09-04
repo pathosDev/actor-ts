@@ -466,7 +466,32 @@ would rather find.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `worker-cluster.workers` | `"auto"` | Number of workers — `"auto"` uses `navigator.hardwareConcurrency`. |
+| `worker-cluster.system-name` | `"worker-cluster"` | `ActorSystem` name each worker hosts. |
+| `worker-cluster.hostname` | `"worker"` | Host component of each worker's `NodeAddress`. |
+| `worker-cluster.base-port` | `1` | Port of the first worker; each subsequent slot increments. |
+| `worker-cluster.ready-timeout` | `10s` | Per-worker hello/init/ready handshake deadline. |
 | `worker-cluster.restart-policy` | `"on-failure"` | `always` / `on-failure` / `never`. |
+| `worker-cluster.restart-min-backoff` | `200ms` | Delay before the first respawn of a crashed slot. |
+| `worker-cluster.restart-max-backoff` | `10s` | Ceiling for the respawn delay, which doubles per attempt. |
+| `worker-cluster.restart-random-factor` | `0.2` | ± jitter fraction on each respawn delay, in `[0, 1]`. |
+| `worker-cluster.max-restarts` | `10` | Restarts granted per slot inside the window before it is retired; `-1` restarts forever. |
+| `worker-cluster.restart-window` | `60s` | Sliding window the restart budget counts over; `0` never resets the tally. |
+
+The four duration keys drop the `Ms` suffix their options-object fields carry
+(`ready-timeout` sets `readyTimeoutMs`) and take a HOCON duration literal, the
+same way `logger.close-timeout` feeds `closeTimeoutMs`.  `restart-random-factor`
+is a plain fraction, not a duration.
+
+Four fields have no key on purpose: `bootstrap` and `initData` are per-call
+identity, and `backend` and `onWorkerPermanentlyDown` are live objects a config
+file cannot express.
+
+Validation runs on the merged settings, so every one of these is rejected with
+an `OptionsError` when it comes from a file exactly as it would from code: an
+empty `system-name` or `hostname`, a `base-port` outside `[1, 65535]`, a
+`restart-random-factor` outside `[0, 1]`, a negative backoff or window, a
+`max-restarts` below `-1`, and a `restart-max-backoff` under
+`restart-min-backoff`.
 
 These fill in `WorkerCluster.spawn(options)` for fields it leaves unset.
 `spawn` is a static with no `ActorSystem` in scope, so it loads the config
