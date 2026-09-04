@@ -531,6 +531,34 @@ export const ConfigKeys = {
   },
 
   /**
+   * `BackoffSupervisor` defaults — `actor-ts.backoff-supervisor.*`.  Read once
+   * per supervisor, in its `preStart`, and layered under the explicit
+   * `BackoffSupervisorOptions` of that supervisor.
+   *
+   * Top-level and a sibling of `actor-ts.circuit-breaker` rather than nested
+   * under an `actor-ts.pattern.*` umbrella: `actor-ts.worker-cluster` is the
+   * shape a block named after the options type it feeds already takes, and an
+   * umbrella nobody asked for would put the directory layout of `src/` into
+   * the key an operator types.
+   *
+   * Every leaf is spelled out rather than covered by a block root: a root
+   * alone satisfies the `NoDeadConfigKeys` reachability check for everything
+   * beneath it, so an inert leaf would ship green (#875).
+   */
+  backoffSupervisor: {
+    // The two window bounds drop the `Ms` a HOCON duration literal makes
+    // unnecessary, as `worker-cluster.restart-min-backoff` already does.
+    minBackoff: 'actor-ts.backoff-supervisor.min-backoff',
+    maxBackoff: 'actor-ts.backoff-supervisor.max-backoff',
+    randomFactor: 'actor-ts.backoff-supervisor.random-factor',
+    maxStashSize: 'actor-ts.backoff-supervisor.max-stash-size',
+    /** `never` | `after-min-stable` | a duration for the `after-time` variant. */
+    resetCounter: 'actor-ts.backoff-supervisor.reset-counter',
+    forward: 'actor-ts.backoff-supervisor.forward',
+    triggerOn: 'actor-ts.backoff-supervisor.trigger-on',
+  },
+
+  /**
    * Cluster membership defaults — `actor-ts.cluster.*`.  Read once by
    * `Cluster.join`, which layers them under the explicit `ClusterOptions`.
    *

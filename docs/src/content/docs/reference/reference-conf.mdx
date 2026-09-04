@@ -917,6 +917,33 @@ actor-ts {
     poll-interval     = 1s                 # how often a projection polls for new events
   }
 
+  # Fleet-wide defaults for BackoffSupervisor.  The options passed to a single
+  # supervisor win per field; these fill in whatever it leaves unset, so a
+  # deployment can retune every supervisor's respawn pacing without touching
+  # the call sites.  The window below is the same curve worker-cluster paces a
+  # crashed slot with.
+  backoff-supervisor {
+    min-backoff    = 200ms              # floor of the delay; must be > 0
+    max-backoff    = 10s                # ceiling; must be >= min-backoff
+    # Jitter fraction in [0, 1], so a herd of supervisors does not respawn in
+    # lockstep.  Inert for a supervisor that supplies its own policy — that
+    # policy computes the whole delay, jitter included.
+    random-factor  = 0.2
+    max-stash-size = 1000               # messages held per supervisor while its child is dead
+    # never | after-min-stable | a duration.  after-min-stable resets the
+    # restart counter once the child has outlived one min-backoff; a duration
+    # names that window explicitly.
+    reset-counter  = "after-min-stable"
+    forward        = "stash"            # stash | drop — what happens to messages meanwhile
+    trigger-on     = "any"              # any | failure | stop — which terminations respawn
+
+    # drain-grace is deliberately absent.  Its default is min(50ms, min-backoff)
+    # — derived from another leaf in this block — so a published literal would
+    # freeze 50ms for a supervisor whose min-backoff is smaller, and lengthen
+    # the grace past the backoff window it is meant to sit inside.  Set
+    # drainGraceMs in code where the min-backoff it depends on is also in view.
+  }
+
   cache {
     # Defaults for the built-in in-memory cache (the "default" cache, and any
     # cache whose plugin resolves to actor-ts.cache.in-memory).  Leaf names are

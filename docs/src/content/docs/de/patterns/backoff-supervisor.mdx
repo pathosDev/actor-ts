@@ -115,28 +115,64 @@ also ein Boolean-Read.
 
 ## Konfiguration
 
-Die `BackoffOptions<T>`-Form:
+Die `BackoffSupervisorOptionsType<T>`-Form — `child` ist das einzige
+Pflichtfeld:
 
 ```ts
 import { ActorOptions } from 'actor-ts';
 
-type BackoffOptions<T> = {
+type BackoffSupervisorOptionsType<T> = {
   child:        ActorClassOrFactory<T>;
   childOptions?: ActorOptions<T>;
-  childName?:        string;
-  minBackoff:        number;
-  maxBackoff:        number;
-  randomFactor?:     number;   // Default 0.2
+  childName?:        string;  // default 'child'
+  minBackoff?:       number;  // default 200      <- min-backoff
+  maxBackoff?:       number;  // default 10_000   <- max-backoff
+  randomFactor?:     number;  // default 0.2      <- random-factor
   policy?:           BackoffPolicy;
-  resetCounter?:     ResetCounter;  // Default 'after-min-stable'
-  forward?:          ForwardStrategy;  // Default 'stash'
-  triggerOn?:        TerminationTrigger;  // Default 'any'
-  maxStashSize?:     number;  // Default 1000
-  drainGraceMs?:     number;  // Default min(50, minBackoff)
-  forwardDuringGrace?: boolean;  // Default true
+  resetCounter?:     ResetCounter;  // 'after-min-stable' <- reset-counter
+  forward?:          ForwardStrategy;  // 'stash'         <- forward
+  triggerOn?:        TerminationTrigger;  // 'any'        <- trigger-on
+  maxStashSize?:     number;  // default 1000     <- max-stash-size
+  drainGraceMs?:     number;  // default min(50, minBackoff)
+  forwardDuringGrace?: boolean;  // default true
   clock?:            () => number;
 };
 ```
+
+Die Pfeile benennen das
+[`actor-ts.backoff-supervisor`](/de/reference/configuration/#actor-tsbackoff-supervisor)-Blatt,
+das das Feld prozessweit setzt.  Die drei Ebenen sind die üblichen und
+sie gelten **pro Feld**: eine hier geschriebene Option sticht, ein
+konfiguriertes Blatt füllt auf, was sie ungesetzt ließ, und der
+eingebaute Default deckt den Rest.  Ein Supervisor als
+`BackoffSupervisor.factory({ child: Flaky })` bezieht sein gesamtes
+Pacing aus der Konfigurationsdatei, und einer, der `minBackoff` nennt,
+bezieht `max-backoff` weiterhin von dort.
+
+Oder der Builder, der nur die gesetzten Felder festhält — er tritt damit
+ebenfalls nie gegen die Konfiguration an:
+
+```ts
+const supervisorOptions = BackoffSupervisorOptions.create<Command>()
+  .withChild(FlakyConnector)
+  .withMinBackoff(200)
+  .withMaxBackoff(5_000);
+
+system.spawn(BackoffSupervisor.factory(supervisorOptions), 'connector-supervisor');
+```
+
+Der Merge läuft im `preStart` des Supervisors — dem ersten Moment, in dem
+`system.config` erreichbar ist.  Ein Wert außerhalb des zulässigen
+Bereichs lässt deshalb den *Start* des Supervisors scheitern, nicht den
+Aufruf, der ihn gebaut hat.  Die Regel ist in beiden Fällen dieselbe:
+`min-backoff = 0s` in einer Konfigurationsdatei wird genauso abgelehnt
+wie `minBackoff: 0` im Code.
+
+`drainGraceMs` und `childName` haben bewusst kein Konfigurations-Blatt.
+Der Default des ersten ist aus `minBackoff` abgeleitet — ein
+publiziertes `50ms` würde ihn für einen Supervisor mit kürzerem Fenster
+einfrieren; das zweite ist Identität der Aufrufstelle, wo ein
+prozessweiter Wert schlicht falsch wäre.
 
 Die interessantesten Felder:
 
@@ -233,10 +269,12 @@ BackoffSupervisor.factory({
 
 Überschreibe das Default-Exponential-Backoff mit einer beliebigen
 [`BackoffPolicy`](/de/patterns/backoff-policy/) — linear,
-Fibonacci, eigene.  `minBackoff` / `maxBackoff` sind immer noch
-erforderlich (sie sind beratende Caps; das Framework verwendet sie
-für die `resetCounter`-Heuristik), aber die `policy` steuert die
-tatsächliche Delay-Berechnung.
+Fibonacci, eigene.  `minBackoff` / `maxBackoff` gelten weiterhin (sie
+sind beratende Caps; das Framework verwendet sie für die
+`resetCounter`-Heuristik und für den Drain-Grace), aber die `policy`
+steuert die tatsächliche Delay-Berechnung — und damit den Jitter, so
+dass `randomFactor` für einen solchen Supervisor wirkungslos ist,
+gleich ob im Code gesetzt oder konfiguriert.
 
 ## Wann zu BackoffSupervisor greifen
 
