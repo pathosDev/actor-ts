@@ -9,6 +9,8 @@ import type { Cancellable } from '../../../src/Scheduler.js';
 import { ActorRestarted, DeadLetter } from '../../../src/SystemMessages.js';
 import {
   ConsumerController,
+  DEFAULT_MAX_OUT_OF_ORDER,
+  DEFAULT_MAX_PRODUCERS,
   DEFAULT_PRODUCER_IDLE_TTL_MS,
   DEFAULT_WINDOW_SIZE,
   ReliableDelivery,
@@ -1532,6 +1534,163 @@ describe('ReliableDelivery — out-of-order window bound (#728, #643)', () => {
     producer.stop();
     await kit.system.terminate();
   });
+});
+
+/**
+ * The three bounds, applied — as opposed to merely declared (#728).
+ *
+ * Every case above names its bounds explicitly, so all three defaults could be
+ * changed to `Infinity` with the whole suite still green: that is the pre-#728
+ * unbounded consumer restored for exactly the population the issue is about,
+ * since the construction the documentation shows passes a handler and nothing
+ * else.  `NonBrokerOptionsValidators.test.ts` asserts the constants have sane
+ * shapes, which is a different claim — it never reaches the controller.
+ *
+ * **Each case pins the documented number as a literal first, on purpose.**  A
+ * test that reads the constant it is pinning moves with it and cannot fail
+ * when it changes; and here the burst sizes are derived from the value, so a
+ * constant of `Infinity` would not fail the test but hang the loop.  Spelling
+ * it out means a deliberate change to a default shows up as a diff in the test
+ * that pins it.
+ *
+ * **Two of the three are pinned at the constructor and not at
+ * `ReliableDelivery.consumer`.**  That factory merges `reference.conf` over the
+ * built-in defaults, and `max-producers` / `producer-idle-time-to-live` both
+ * have leaves there — so through that seam HOCON answers first and the
+ * constant is never reached.  The constructor is where it is, and it is a
+ * documented path in its own right: `ReliableDelivery`'s own JSDoc says a
+ * controller constructed directly "stays on its built-in defaults".
+ * `maxOutOfOrder` has no leaf, so its case goes through the factory, which is
+ * the stronger seam of the two.
+ */
+describe('ReliableDelivery — the built-in bounds apply when the caller names none (#728)', () => {
+  test('maxProducers defaults to 1 024 and the controller applies it', async () => {
+    const cap = 1_024;
+    expect(DEFAULT_MAX_PRODUCERS).toBe(cap);
+
+    const kit = quietKit('rd-default-max-producers');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    // A handler and nothing else.
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+    }, 'default-producers-consumer');
+
+    // One distinct producer more than the map can hold, so exactly one
+    // eviction is due and its victim is `default-0` — first in, never touched.
+    const distinct = cap + 1;
+    for (let i = 0; i < distinct; i++) deliver(consumer, probe, `default-${i}`, 1, `m-${i}`);
+    await awaitCondition(() => received.length === distinct, {
+      timeoutMs: 15_000,
+      intervalMs: 20,
+      label: 'every distinct producer was handled once',
+    });
+    expect(slot.controller?.trackedProducers).toBe(cap);
+
+    // `default-1` is still remembered: its seq 1 is absorbed as a duplicate,
+    // acknowledged and not re-handled.  Asserted BEFORE the victim below,
+    // because re-admitting the victim evicts whatever is least recently used
+    // at that moment — which would otherwise be this entry.
+    deliver(consumer, probe, 'default-1', 1, 'm-1-again');
+    await awaitCondition(() => probe.messageCount === distinct + 1, {
+      timeoutMs: 15_000,
+      intervalMs: 20,
+      label: 'the surviving producer was re-acknowledged as a duplicate',
+    });
+    expect(received).toHaveLength(distinct);
+
+    // `default-0` is the one that lost its window, which is what an eviction
+    // costs: the same (producerId, incarnation, seq) runs the handler again.
+    deliver(consumer, probe, 'default-0', 1, 'm-0-again');
+    await awaitCondition(() => received.length === distinct + 1, {
+      timeoutMs: 15_000,
+      intervalMs: 20,
+      label: 'the evicted producer was handled a second time',
+    });
+    expect(received[received.length - 1]).toBe('m-0-again');
+    expect(slot.controller?.trackedProducers).toBe(cap);
+
+    await kit.system.terminate();
+    // The per-test timeout is declared because the budgets above are: a case
+    // that pumps a thousand-odd deliveries wants headroom, and a budget bun's
+    // default 5 s cap cannot reach is a label that never reaches the reporter
+    // (`tests/unit/ci/AwaitConditionBudgets.test.ts`).
+  }, 20_000);
+
+  test('producerIdleTtlMs defaults to 300 000 ms and the controller arms the sweep on it', async () => {
+    // The one of the three that was *partly* covered already: #861's "a
+    // directly constructed controller keeps its built-in defaults" also goes
+    // red when the controller stops reading this constant.  What it cannot
+    // catch is the constant itself moving, because it asserts against
+    // `DEFAULT_PRODUCER_IDLE_TTL_MS` and therefore moves with it — so the value
+    // is what this case pins, and the arm is what makes the pin mean something.
+    expect(DEFAULT_PRODUCER_IDLE_TTL_MS).toBe(300_000);
+
+    // The arm is the observable, for the reason `RecordingScheduler` documents:
+    // a sweep that never fires within a test and a sweep that was never armed
+    // look identical from the dedup map.
+    const scheduler = new RecordingScheduler();
+    const kit = quietKit('rd-default-idle-ttl', scheduler);
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+
+    const armedBefore = scheduler.armedFixedRates.length;
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+    }, 'default-ttl-consumer');
+    // Wait on a handled delivery, so an assertion about what `preStart` armed
+    // cannot be satisfied by a `preStart` that simply had not run yet.
+    deliver(consumer, probe, 'default-ttl-producer', 1, 'first');
+    await awaitCondition(() => received.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the consumer started and handled a delivery',
+    });
+
+    expect(scheduler.armedFixedRates.slice(armedBefore)).toEqual([
+      { initialDelayMs: 300_000, intervalMs: 300_000 },
+    ]);
+
+    await kit.system.terminate();
+  });
+
+  test('maxOutOfOrder defaults to 1 024 and the controller applies it', async () => {
+    const cap = 1_024;
+    expect(DEFAULT_MAX_OUT_OF_ORDER).toBe(cap);
+
+    const kit = quietKit('rd-default-max-out-of-order');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    // Through the documented factory, with only a handler: `maxOutOfOrder` is
+    // the one bound `reference.conf` has no leaf for, so the built-in constant
+    // is what this seam actually hands the controller.
+    const consumer = ReliableDelivery.consumer<string>(kit.system, {
+      handler: (m) => { received.push(m); },
+    });
+    const ref = consumer.ref as unknown as ActorRef<Delivery<string>>;
+
+    // seq 1 withheld, one sequence more than the cap sent above it, in a single
+    // burst — phasing it around a wait would drain the pipeline between the
+    // size check and the insert and hide an off-by-the-concurrency cap.
+    for (let seq = 2; seq <= cap + 2; seq++) deliver(ref, probe, 'default-gappy', seq, `seq-${seq}`);
+    await awaitCondition(() => received.length >= cap, {
+      timeoutMs: 15_000,
+      intervalMs: 20,
+      label: 'the sequences that fit the default out-of-order window were handled',
+    });
+    // The last one is an absence — refused means no handler call AND no
+    // acknowledgment — so settling past where it would have landed is the
+    // assertion.
+    await sleep(200);
+
+    expect(received).toHaveLength(cap);
+    expect(probe.messageCount).toBe(cap);
+
+    consumer.stop();
+    await kit.system.terminate();
+    // Declared for the same reason the `maxProducers` case above declares one.
+  }, 20_000);
 });
 
 /**
