@@ -14,6 +14,7 @@ import {
   type MongoCollectionLike,
   type MongoDatabaseLike,
 } from './MongoClient.js';
+import { DEFAULT_EVENTS_TABLE } from '../Constants.js';
 import { MongoStore } from './MongoStore.js';
 import {
   MongoJournalOptionsValidator,
@@ -89,7 +90,7 @@ export class MongoJournal extends MongoStore implements Journal {
       ownsClient: resolvedOptions.client === undefined,
       openClient: () => buildMongoResource(resolvedOptions),
     });
-    this.eventsName = resolvedOptions.eventsCollection ?? 'events';
+    this.eventsName = resolvedOptions.eventsCollection ?? DEFAULT_EVENTS_TABLE;
     this.metaName = `${this.eventsName}_meta`;
     this._serializer = resolvedOptions.serializer;
   }

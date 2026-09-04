@@ -90,6 +90,23 @@ export function readStoreIdentifier(config: Config, path: string): string | unde
   return config.hasPath(path) ? config.getString(path) : undefined;
 }
 
+/**
+ * Read a string-list leaf, treating `[]` as **unset**.
+ *
+ * The list shape of {@link readStoreString}'s idiom, and it needs the same
+ * treatment for the same reason: Cassandra's `contact-points` is the operator's
+ * own seed list, published empty so the key's name and nesting are discoverable
+ * without the placeholder becoming a value.  An empty seed list is not a
+ * cluster to connect to — the driver would reject it — so passing `[]` through
+ * would let a published placeholder outrank the seeds the register helper was
+ * given.
+ */
+export function readStoreStringList(config: Config, path: string): string[] | undefined {
+  if (!config.hasPath(path)) return undefined;
+  const raw = config.getStringList(path);
+  return raw.length === 0 ? undefined : raw;
+}
+
 /** Read an integer leaf — a count or a bound. */
 export function readStoreInt(config: Config, path: string): number | undefined {
   return config.hasPath(path) ? config.getInt(path) : undefined;

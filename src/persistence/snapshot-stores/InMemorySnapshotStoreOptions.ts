@@ -1,4 +1,7 @@
+import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
+import { readStoreInt, storeLeaf } from '../StoreConfig.js';
 
 export type InMemorySnapshotStoreOptionsType = {
   /**
@@ -49,3 +52,29 @@ export type InMemorySnapshotStoreOptions =
   | Partial<InMemorySnapshotStoreOptionsType>;
 /** Value alias so `InMemorySnapshotStoreOptions.create()` resolves to the builder. */
 export const InMemorySnapshotStoreOptions = InMemorySnapshotStoreOptionsBuilder;
+
+/**
+ * Read the in-memory snapshot store's block —
+ * `actor-ts.persistence.snapshot-store.in-memory` by default (#872).
+ *
+ * The one reader that lives beside its store's options rather than beside a
+ * plug-in's, because this store has no plug-in: `PersistenceExtension`
+ * registers it in its own constructor as the built-in default, so the
+ * extension is what reads the block.
+ *
+ * `keep-n` is the block's only leaf, and unset stays unset — an absent leaf
+ * leaves the store keeping every snapshot, which is the divergence
+ * {@link InMemorySnapshotStoreOptionsType.keepN} exists to preserve.
+ */
+export function readInMemorySnapshotStoreOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.snapshotStore.inMemory.root,
+): Partial<InMemorySnapshotStoreOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.snapshotStore.inMemory;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: { -readonly [K in keyof InMemorySnapshotStoreOptionsType]?: InMemorySnapshotStoreOptionsType[K] } = {};
+  const keepN = readStoreInt(config, at(keys.keepN));
+  if (keepN !== undefined) out.keepN = keepN;
+  return out;
+}

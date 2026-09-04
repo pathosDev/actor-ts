@@ -59,7 +59,7 @@ type CassandraSnapshotStoreOptions = {
   keepN?:              number;     // snapshots kept per pid; <= 0 = keep all (default 3)
   autoCreateTables?:   boolean;    // create the table on first connect (default true)
   autoCreateKeyspace?: boolean;    // create the keyspace on startup (default false)
-  consistency?:        number;     // CQL consistency, default LOCAL_QUORUM (6)
+  consistency?:        number;     // CQL consistency; unset = the driver's own
   client?:             CassandraClientLike; // reuse a pre-built driver client
   /* ...plus the shared connection fields: localDataCenter, credentials, port, replication */
 };

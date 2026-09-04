@@ -84,11 +84,55 @@ const registerOptions = RegisterMongoPluginsOptions.create()
 const { durableStateStore } = registerMongoPlugins(ext, registerOptions);
 ```
 
-`registerMongoPlugins` registriert Journal + Snapshot-Store über die Extension
-(ausgewählt durch die Plugin-IDs in der Config oben) und **gibt** den
-Durable-State-Store zurück.  `PersistenceExtension` hat keine
-Durable-State-Registry — übergib `durableStateStore` direkt an die Settings
-deines `DurableStateActor`.
+`registerMongoPlugins` registriert alle drei Stores über die Extension — Journal,
+Snapshot-Store und seit #872 auch den Durable-State-Store, den der Schlüssel
+`durable-state.plugin` jetzt genauso auswählt wie die beiden anderen.  Das
+zurückgegebene `durableStateStore` funktioniert weiterhin und liefert dieselbe
+Instanz; sie wird nur bei der ersten Nutzung gebaut statt bei der Registrierung,
+wer sie also lieber im Code an einen `DurableStateActor` übergibt, macht genau
+das weiter.
+
+## Aus HOCON konfigurieren
+
+Die Plugin-Id **ist** der Config-Abschnitt: Der Block, der nach der Id benannt
+ist, ist der Block, den dieses Plugin liest (#872).  Alles außer den lebenden
+Objekten kann aus der `application.conf` kommen, `registerMongoPlugins(ext)` braucht damit
+gar keine Optionen mehr:
+
+```ts
+import { PersistenceExtensionId, registerMongoPlugins } from 'actor-ts/persistence';
+
+const persistence = system.extension(PersistenceExtensionId);
+registerMongoPlugins(persistence);
+```
+
+```hocon
+actor-ts.persistence {
+  journal        { plugin = "actor-ts.persistence.journal.mongodb" }
+  snapshot-store { plugin = "actor-ts.persistence.snapshot-store.mongodb" }
+  durable-state  { plugin = "actor-ts.persistence.durable-state.mongodb" }
+
+  journal.mongodb        { url = ${?MONGO_URL}, database-name = "app", events-collection = "events" }
+  snapshot-store.mongodb { url = ${?MONGO_URL}, database-name = "app", keep-n = 5 }
+  durable-state.mongodb  { url = ${?MONGO_URL}, database-name = "app", collection = "durable_state" }
+}
+```
+
+Die Blätter heißen **collection**, nicht table, und der Schalter heißt
+`auto-create-indexes` statt `auto-create-tables` — der Block spricht Mongos
+Vokabular, denn ein Blatt, das nach dem Vokabular eines anderen Backends benannt
+ist, muss man beim Lesen übersetzen.  Die Verbindung steht unter allen drei
+Wurzeln statt einmal darüber: Eine Plugin-Id *ist* ihr Config-Abschnitt, und die
+drei Achsen werden unabhängig gewählt, dürfen also legitim verschiedene
+Deployments benennen.  Wer nur eines hat, schreibt sie einmal und substituiert.
+
+An `registerMongoPlugins` übergebene Optionen gewinnen weiterhin, Feld für Feld,
+und ein nicht gesetztes Feld fällt auf den Block durch, statt ihn zu leeren — ein
+geteilter `client` im Code und die Collection-Namen in HOCON sind also eine
+normale Mischung.  Ein vorab gebauter `client` und ein `serializer` haben **gar
+kein Blatt**: Das sind lebende Objekte, die eine Config-Datei nicht ausdrücken
+kann.  `clientOptions` ebenso wenig — freie Treiber-Konfiguration ohne
+aufzählbare Schlüsselmenge.
 
 ### Einen Client teilen
 

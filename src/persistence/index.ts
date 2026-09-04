@@ -57,6 +57,7 @@ export {
   DEFAULT_AUTO_CREATE_TABLES,
   DEFAULT_DURABLE_STATE_TABLE,
   DEFAULT_EVENTS_TABLE,
+  DEFAULT_MONGO_AUTO_CREATE_INDEXES,
   DEFAULT_SNAPSHOT_KEEP_N,
   DEFAULT_SNAPSHOTS_TABLE,
 } from './Constants.js';
@@ -86,6 +87,7 @@ export { InMemorySnapshotStore } from './snapshot-stores/InMemorySnapshotStore.j
 export {
   InMemorySnapshotStoreOptions,
   InMemorySnapshotStoreOptionsBuilder,
+  readInMemorySnapshotStoreOptionsFromConfig,
 } from './snapshot-stores/InMemorySnapshotStoreOptions.js';
 export type { InMemorySnapshotStoreOptionsType } from './snapshot-stores/InMemorySnapshotStoreOptions.js';
 export { SqliteSnapshotStore } from './snapshot-stores/SqliteSnapshotStore.js';
@@ -138,12 +140,23 @@ export type { CachedSnapshotStoreOptionsType } from './snapshot-stores/CachedSna
 
 // Cassandra / ScyllaDB plug-in (same CQL protocol — one plug-in).
 export { CassandraJournal } from './journals/CassandraJournal.js';
-export { CassandraJournalOptions, CassandraJournalOptionsBuilder, CassandraJournalOptionsValidator } from './journals/CassandraJournalOptions.js';
+export {
+  CassandraJournalOptions,
+  CassandraJournalOptionsBuilder,
+  CassandraJournalOptionsValidator,
+  DEFAULT_CASSANDRA_ALL_IDS_TABLE,
+  DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACTIONS,
+  DEFAULT_CASSANDRA_METADATA_TABLE,
+  DEFAULT_CASSANDRA_PARTITION_SIZE,
+} from './journals/CassandraJournalOptions.js';
 export type { CassandraJournalOptionsType } from './journals/CassandraJournalOptions.js';
 export { CassandraSnapshotStore } from './snapshot-stores/CassandraSnapshotStore.js';
 export { CassandraSnapshotStoreOptions, CassandraSnapshotStoreOptionsBuilder } from './snapshot-stores/CassandraSnapshotStoreOptions.js';
 export type { CassandraSnapshotStoreOptionsType } from './snapshot-stores/CassandraSnapshotStoreOptions.js';
 export {
+  DEFAULT_CASSANDRA_LOCAL_DATA_CENTER,
+  DEFAULT_CASSANDRA_PORT,
+  DEFAULT_CASSANDRA_TAG_INDEX_TABLE,
   createCassandraClient,
   keyspaceDdl,
   tagIndexDdl,
@@ -159,7 +172,12 @@ export {
   CASSANDRA_JOURNAL_PLUGIN_ID,
   CASSANDRA_SNAPSHOT_PLUGIN_ID,
 } from './journals/CassandraPlugin.js';
-export { RegisterCassandraPluginsOptions, RegisterCassandraPluginsOptionsBuilder } from './journals/CassandraPluginOptions.js';
+export {
+  readCassandraJournalOptionsFromConfig,
+  readCassandraSnapshotStoreOptionsFromConfig,
+  RegisterCassandraPluginsOptions,
+  RegisterCassandraPluginsOptionsBuilder,
+} from './journals/CassandraPluginOptions.js';
 export type { RegisterCassandraPluginsOptionsType } from './journals/CassandraPluginOptions.js';
 
 // Store lifecycle shared by every backend that talks to an external system —
@@ -272,6 +290,7 @@ export type { D1ClientLike, D1Connection, D1QueryResult } from './journals/D1Cli
 // append atomic — stronger than the relational backends manage.
 export { DynamoDbJournal } from './journals/DynamoDbJournal.js';
 export {
+  DEFAULT_DYNAMODB_EVENTS_TABLE,
   DynamoDbJournalOptions,
   DynamoDbJournalOptionsBuilder,
   DynamoDbJournalOptionsValidator,
@@ -279,6 +298,7 @@ export {
 export type { DynamoDbJournalOptionsType } from './journals/DynamoDbJournalOptions.js';
 export { DynamoDbSnapshotStore } from './snapshot-stores/DynamoDbSnapshotStore.js';
 export {
+  DEFAULT_DYNAMODB_SNAPSHOTS_TABLE,
   DynamoDbSnapshotStoreOptions,
   DynamoDbSnapshotStoreOptionsBuilder,
   DynamoDbSnapshotStoreOptionsValidator,
@@ -286,6 +306,7 @@ export {
 export type { DynamoDbSnapshotStoreOptionsType } from './snapshot-stores/DynamoDbSnapshotStoreOptions.js';
 export { DynamoDbDurableStateStore } from './durable-state-stores/DynamoDbDurableStateStore.js';
 export {
+  DEFAULT_DYNAMODB_DURABLE_STATE_TABLE,
   DynamoDbDurableStateStoreOptions,
   DynamoDbDurableStateStoreOptionsBuilder,
   DynamoDbDurableStateStoreOptionsValidator,
@@ -305,7 +326,13 @@ export {
   DYNAMODB_SNAPSHOT_PLUGIN_ID,
   DYNAMODB_DURABLE_STATE_PLUGIN_ID,
 } from './journals/DynamoDbPlugin.js';
-export { RegisterDynamoDbPluginsOptions, RegisterDynamoDbPluginsOptionsBuilder } from './journals/DynamoDbPluginOptions.js';
+export {
+  readDynamoDbDurableStateStoreOptionsFromConfig,
+  readDynamoDbJournalOptionsFromConfig,
+  readDynamoDbSnapshotStoreOptionsFromConfig,
+  RegisterDynamoDbPluginsOptions,
+  RegisterDynamoDbPluginsOptionsBuilder,
+} from './journals/DynamoDbPluginOptions.js';
 export type { RegisterDynamoDbPluginsOptionsType } from './journals/DynamoDbPluginOptions.js';
 export type { DynamoDbPluginHandles } from './journals/DynamoDbPlugin.js';
 export {
@@ -365,7 +392,13 @@ export {
   MONGO_SNAPSHOT_PLUGIN_ID,
   MONGO_DURABLE_STATE_PLUGIN_ID,
 } from './journals/MongoPlugin.js';
-export { RegisterMongoPluginsOptions, RegisterMongoPluginsOptionsBuilder } from './journals/MongoPluginOptions.js';
+export {
+  readMongoDurableStateStoreOptionsFromConfig,
+  readMongoJournalOptionsFromConfig,
+  readMongoSnapshotStoreOptionsFromConfig,
+  RegisterMongoPluginsOptions,
+  RegisterMongoPluginsOptionsBuilder,
+} from './journals/MongoPluginOptions.js';
 export type { RegisterMongoPluginsOptionsType } from './journals/MongoPluginOptions.js';
 export type { MongoPluginHandles } from './journals/MongoPlugin.js';
 export { DEFAULT_MONGO_DATABASE, isMongoDuplicateKeyError } from './journals/MongoClient.js';

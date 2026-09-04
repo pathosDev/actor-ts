@@ -68,7 +68,10 @@ export class CassandraSnapshotStoreOptionsBuilder extends StoreSerializerOptions
     return this.set('replication', replication);
   }
 
-  /** CQL consistency level for all reads and writes.  Default `LOCAL_QUORUM` (6). */
+  /**
+   * CQL consistency level for all reads and writes.  Unset leaves the level to
+   * the driver rather than defaulting to one here; `LOCAL_QUORUM` is 6.
+   */
   withConsistency(consistency: number): this {
     return this.set('consistency', consistency);
   }

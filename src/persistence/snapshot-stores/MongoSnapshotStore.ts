@@ -8,6 +8,7 @@ import {
   type MongoCollectionLike,
   type MongoDatabaseLike,
 } from '../journals/MongoClient.js';
+import { DEFAULT_SNAPSHOTS_TABLE, DEFAULT_SNAPSHOT_KEEP_N } from '../Constants.js';
 import { MongoStore } from '../journals/MongoStore.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
@@ -59,8 +60,8 @@ export class MongoSnapshotStore extends MongoStore implements SnapshotStore {
       ownsClient: resolvedOptions.client === undefined,
       openClient: () => buildMongoResource(resolvedOptions),
     });
-    this.collectionName = resolvedOptions.snapshotsCollection ?? 'snapshots';
-    this.keepN = resolvedOptions.keepN ?? 3;
+    this.collectionName = resolvedOptions.snapshotsCollection ?? DEFAULT_SNAPSHOTS_TABLE;
+    this.keepN = resolvedOptions.keepN ?? DEFAULT_SNAPSHOT_KEEP_N;
     this.serializer = resolvedOptions.serializer;
   }
 

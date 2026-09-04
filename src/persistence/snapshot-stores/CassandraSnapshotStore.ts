@@ -10,7 +10,12 @@ import {
   type CassandraConnection,
 } from '../journals/CassandraClient.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
-import { STORAGE_IDENTITY_TABLE } from '../Constants.js';
+import {
+  DEFAULT_AUTO_CREATE_TABLES,
+  DEFAULT_SNAPSHOTS_TABLE,
+  DEFAULT_SNAPSHOT_KEEP_N,
+  STORAGE_IDENTITY_TABLE,
+} from '../Constants.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import type { StorageLocality } from '../StorageLocality.js';
 import type { CassandraSnapshotStoreOptions, CassandraSnapshotStoreOptionsType } from './CassandraSnapshotStoreOptions.js';
@@ -45,7 +50,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
     if (this.cachedStorageIdentity !== null) return this.cachedStorageIdentity;
     await this.ensureStarted();
     const table = this.qualifiedStorageIdentityTable();
-    if (this.options.autoCreateTables ?? true) {
+    if (this.options.autoCreateTables ?? DEFAULT_AUTO_CREATE_TABLES) {
       await this.client.execute(
         `CREATE TABLE IF NOT EXISTS ${table} ( singleton int PRIMARY KEY, identity text )`,
       );
@@ -91,7 +96,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
     this.options = (options as CassandraSnapshotStoreOptionsType);
     this.client = this.options.client ?? (undefined as unknown as CassandraClientLike);
     this.ownsClient = !this.options.client;
-    this.keepN = this.options.keepN ?? 3;
+    this.keepN = this.options.keepN ?? DEFAULT_SNAPSHOT_KEEP_N;
   }
 
   async start(): Promise<void> {
@@ -113,7 +118,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
     if (this.options.autoCreateKeyspace) {
       await this.client.execute(keyspaceDdl(this.options as CassandraConnection));
     }
-    if (this.options.autoCreateTables ?? true) {
+    if (this.options.autoCreateTables ?? DEFAULT_AUTO_CREATE_TABLES) {
       await this.ensureTables();
     }
     this.started = true;
@@ -191,7 +196,7 @@ export class CassandraSnapshotStore implements SnapshotStore {
 
   /* ========================== internal ========================== */
 
-  private get table(): string { return this.options.snapshotsTable ?? 'snapshots'; }
+  private get table(): string { return this.options.snapshotsTable ?? DEFAULT_SNAPSHOTS_TABLE; }
   private qualified(): string {
     // keyspace + table are interpolated into CQL (identifiers can't be bound),
     // so validate them against a safe charset (security audit #6 / #136).

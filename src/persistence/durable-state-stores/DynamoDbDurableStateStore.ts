@@ -21,6 +21,7 @@ import { DynamoDbStore, type DynamoDbTableSchema } from '../journals/DynamoDbSto
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import {
+  DEFAULT_DYNAMODB_DURABLE_STATE_TABLE,
   DynamoDbDurableStateStoreOptionsValidator,
   type DynamoDbDurableStateStoreOptions,
   type DynamoDbDurableStateStoreOptionsType,
@@ -72,7 +73,7 @@ export class DynamoDbDurableStateStore extends DynamoDbStore implements DurableS
       ownsClient: resolvedOptions.operations === undefined,
       openClient: () => buildDynamoDbOperations(resolvedOptions),
     });
-    this.tableName = resolvedOptions.table ?? 'actor_ts_durable_state';
+    this.tableName = resolvedOptions.table ?? DEFAULT_DYNAMODB_DURABLE_STATE_TABLE;
     this.serializer = resolvedOptions.serializer;
   }
 

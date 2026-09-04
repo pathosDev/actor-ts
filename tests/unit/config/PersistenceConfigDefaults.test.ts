@@ -41,6 +41,37 @@ import {
   readD1JournalOptionsFromConfig,
   readD1SnapshotStoreOptionsFromConfig,
 } from '../../../src/persistence/journals/D1PluginOptions.js';
+import {
+  readMongoDurableStateStoreOptionsFromConfig,
+  readMongoJournalOptionsFromConfig,
+  readMongoSnapshotStoreOptionsFromConfig,
+} from '../../../src/persistence/journals/MongoPluginOptions.js';
+import {
+  readDynamoDbDurableStateStoreOptionsFromConfig,
+  readDynamoDbJournalOptionsFromConfig,
+  readDynamoDbSnapshotStoreOptionsFromConfig,
+} from '../../../src/persistence/journals/DynamoDbPluginOptions.js';
+import {
+  readCassandraJournalOptionsFromConfig,
+  readCassandraSnapshotStoreOptionsFromConfig,
+} from '../../../src/persistence/journals/CassandraPluginOptions.js';
+import { readInMemorySnapshotStoreOptionsFromConfig } from '../../../src/persistence/snapshot-stores/InMemorySnapshotStoreOptions.js';
+import { DEFAULT_MONGO_AUTO_CREATE_INDEXES } from '../../../src/persistence/Constants.js';
+import { DEFAULT_MONGO_DATABASE } from '../../../src/persistence/journals/MongoClient.js';
+import { DEFAULT_DYNAMODB_EVENTS_TABLE } from '../../../src/persistence/journals/DynamoDbJournalOptions.js';
+import { DEFAULT_DYNAMODB_SNAPSHOTS_TABLE } from '../../../src/persistence/snapshot-stores/DynamoDbSnapshotStoreOptions.js';
+import { DEFAULT_DYNAMODB_DURABLE_STATE_TABLE } from '../../../src/persistence/durable-state-stores/DynamoDbDurableStateStoreOptions.js';
+import {
+  DEFAULT_CASSANDRA_LOCAL_DATA_CENTER,
+  DEFAULT_CASSANDRA_PORT,
+  DEFAULT_CASSANDRA_TAG_INDEX_TABLE,
+} from '../../../src/persistence/journals/CassandraClient.js';
+import {
+  DEFAULT_CASSANDRA_ALL_IDS_TABLE,
+  DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACTIONS,
+  DEFAULT_CASSANDRA_METADATA_TABLE,
+  DEFAULT_CASSANDRA_PARTITION_SIZE,
+} from '../../../src/persistence/journals/CassandraJournalOptions.js';
 
 /**
  * #872 — before this, nothing under `src/persistence/` read a config block.
@@ -574,5 +605,256 @@ describe('the relational table halves', () => {
     expect(readPostgresJournalOptionsFromConfig(config, 'actor-ts.persistence.journal.ledger'))
       .toEqual({ eventsTable: 'custom' });
     expect(readPostgresJournalOptionsFromConfig(config)).toEqual({ eventsTable: 'canonical' });
+  });
+});
+
+/**
+ * The non-relational family (#872, slice 3), asserted the same way and for the
+ * same reason: these eight readers share their leaf *names* with each other and
+ * with the fifteen above — `keep-n`, `region`, `keyspace`, `url` — so a reader
+ * composed from the wrong root or the wrong axis reads a plausible value and
+ * `NoDeadConfigKeys` stays green over it.
+ *
+ * Cassandra is the sharpest case in the repository: `ConfigKeys` has carried
+ * `persistence.journal.cassandra` since long before this change, and
+ * `CassandraPlugin.ts` has carried the same literal as its plugin id, so the
+ * guard's `isReferencedInSource` was satisfied by a string that is not a config
+ * read at all.  The block was inert and green.
+ */
+const nonRelationalReaders: RelationalReaderCase[] = [
+  {
+    name: 'readMongoJournalOptionsFromConfig',
+    read: readMongoJournalOptionsFromConfig,
+    root: ConfigKeys.persistence.journal.mongodb.root,
+    fromReference: {
+      databaseName: DEFAULT_MONGO_DATABASE,
+      eventsCollection: DEFAULT_EVENTS_TABLE,
+      autoCreateIndexes: DEFAULT_MONGO_AUTO_CREATE_INDEXES,
+    },
+  },
+  {
+    name: 'readMongoSnapshotStoreOptionsFromConfig',
+    read: readMongoSnapshotStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.snapshotStore.mongodb.root,
+    fromReference: {
+      databaseName: DEFAULT_MONGO_DATABASE,
+      snapshotsCollection: DEFAULT_SNAPSHOTS_TABLE,
+      keepN: DEFAULT_SNAPSHOT_KEEP_N,
+      autoCreateIndexes: DEFAULT_MONGO_AUTO_CREATE_INDEXES,
+    },
+  },
+  {
+    name: 'readMongoDurableStateStoreOptionsFromConfig',
+    read: readMongoDurableStateStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.durableState.mongodb.root,
+    fromReference: {
+      databaseName: DEFAULT_MONGO_DATABASE,
+      collection: DEFAULT_DURABLE_STATE_TABLE,
+    },
+  },
+  {
+    name: 'readDynamoDbJournalOptionsFromConfig',
+    read: readDynamoDbJournalOptionsFromConfig,
+    root: ConfigKeys.persistence.journal.dynamodb.root,
+    fromReference: { eventsTable: DEFAULT_DYNAMODB_EVENTS_TABLE },
+  },
+  {
+    name: 'readDynamoDbSnapshotStoreOptionsFromConfig',
+    read: readDynamoDbSnapshotStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.snapshotStore.dynamodb.root,
+    fromReference: {
+      snapshotsTable: DEFAULT_DYNAMODB_SNAPSHOTS_TABLE,
+      keepN: DEFAULT_SNAPSHOT_KEEP_N,
+    },
+  },
+  {
+    name: 'readDynamoDbDurableStateStoreOptionsFromConfig',
+    read: readDynamoDbDurableStateStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.durableState.dynamodb.root,
+    fromReference: { table: DEFAULT_DYNAMODB_DURABLE_STATE_TABLE },
+  },
+  {
+    name: 'readCassandraJournalOptionsFromConfig',
+    read: readCassandraJournalOptionsFromConfig,
+    root: ConfigKeys.persistence.journal.cassandra.root,
+    fromReference: {
+      localDataCenter: DEFAULT_CASSANDRA_LOCAL_DATA_CENTER,
+      port: DEFAULT_CASSANDRA_PORT,
+      autoCreateKeyspace: false,
+      eventsTable: DEFAULT_EVENTS_TABLE,
+      metadataTable: DEFAULT_CASSANDRA_METADATA_TABLE,
+      allIdsTable: DEFAULT_CASSANDRA_ALL_IDS_TABLE,
+      tagIndexTable: DEFAULT_CASSANDRA_TAG_INDEX_TABLE,
+      partitionSize: DEFAULT_CASSANDRA_PARTITION_SIZE,
+      autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
+      useTagIndex: false,
+      lightweightTransactions: DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACTIONS,
+    },
+  },
+  {
+    name: 'readCassandraSnapshotStoreOptionsFromConfig',
+    read: readCassandraSnapshotStoreOptionsFromConfig,
+    root: ConfigKeys.persistence.snapshotStore.cassandra.root,
+    fromReference: {
+      localDataCenter: DEFAULT_CASSANDRA_LOCAL_DATA_CENTER,
+      port: DEFAULT_CASSANDRA_PORT,
+      autoCreateKeyspace: false,
+      snapshotsTable: DEFAULT_SNAPSHOTS_TABLE,
+      keepN: DEFAULT_SNAPSHOT_KEEP_N,
+      autoCreateTables: DEFAULT_AUTO_CREATE_TABLES,
+    },
+  },
+];
+
+describe('the non-relational family reads its own block', () => {
+  test('every non-relational reader is covered exactly once', () => {
+    // Eight, not nine: there is no Cassandra durable-state store in the tree,
+    // so that backend has two axes where Mongo and DynamoDB have three.  A
+    // reader added to src/ and forgotten here would leave its block asserted by
+    // nothing at all.
+    expect(nonRelationalReaders).toHaveLength(8);
+    expect(new Set(nonRelationalReaders.map((entry) => entry.root)).size).toBe(8);
+  });
+
+  test.each(nonRelationalReaders)(
+    '$name resolves the shipped reference.conf to exactly the documented defaults',
+    ({ read, fromReference }) => {
+      const options = read(reference);
+
+      expect(options).toEqual(fromReference);
+      // `toEqual` ignores a property whose value is `undefined`, so it cannot
+      // tell an omitted leaf from one punched through as a hole — and a hole
+      // would shadow the explicit options this result is spread under.
+      expect(ownKeysOf(options)).toEqual(Object.keys(fromReference));
+    },
+  );
+
+  test.each(nonRelationalReaders)('$name yields nothing at all for an absent block', ({ read }) => {
+    const options = read(unrelated);
+
+    expect(options).toEqual({});
+    expect(ownKeysOf(options)).toEqual([]);
+  });
+
+  test.each(nonRelationalReaders)('$name reads only its own root', ({ read, root }) => {
+    // Every Mongo block spells `database-name` the same way and every DynamoDB
+    // block spells `region` the same way, so a reader pointed at a sibling root
+    // reads a real value and looks correct.
+    const others = [...relationalReaders, ...nonRelationalReaders]
+      .filter((entry) => entry.root !== root);
+    const config = Config.parseString(
+      others.map((entry) => `${entry.root}.keep-n = 7`).join('\n'),
+    );
+
+    expect(read(config)).toEqual({});
+  });
+});
+
+describe('the non-relational connection halves', () => {
+  test('an empty mongodb url is dropped rather than passed through as ""', () => {
+    // `assertMongoUrl` runs `new URL('')`, which throws — so a published
+    // placeholder forwarded verbatim would refuse every config-built store.
+    const options = readMongoJournalOptionsFromConfig(
+      Config.parseString(`${ConfigKeys.persistence.journal.mongodb.root}.url = ""`),
+    );
+
+    expect(options.url).toBeUndefined();
+    expect(ownKeysOf(options)).toEqual([]);
+  });
+
+  test('DynamoDB reads region and endpoint, and drops both when empty', () => {
+    const set = readDynamoDbJournalOptionsFromConfig(Config.parseString(`
+      ${ConfigKeys.persistence.journal.dynamodb.root} {
+        region   = "eu-central-1"
+        endpoint = "http://localhost:8000"
+      }
+    `));
+    const unset = readDynamoDbJournalOptionsFromConfig(Config.parseString(`
+      ${ConfigKeys.persistence.journal.dynamodb.root} {
+        region   = ""
+        endpoint = ""
+      }
+    `));
+
+    expect(set).toEqual({ region: 'eu-central-1', endpoint: 'http://localhost:8000' });
+    expect(ownKeysOf(unset)).toEqual([]);
+  });
+
+  test('an empty cassandra seed list is dropped, a populated one is read', () => {
+    // `contactPoints` is the one LIST-shaped placeholder in the reference
+    // configuration.  Passed through, `[]` would outrank the seeds the register
+    // helper was given and the driver would refuse to connect at all.
+    const empty = readCassandraJournalOptionsFromConfig(Config.parseString(`
+      ${ConfigKeys.persistence.journal.cassandra.root} {
+        contact-points = []
+        keyspace = ""
+      }
+    `));
+    const seeded = readCassandraJournalOptionsFromConfig(Config.parseString(`
+      ${ConfigKeys.persistence.journal.cassandra.root} {
+        contact-points = ["10.0.0.1", "10.0.0.2"]
+        keyspace = "app"
+      }
+    `));
+
+    expect(ownKeysOf(empty)).toEqual([]);
+    expect(seeded).toEqual({ contactPoints: ['10.0.0.1', '10.0.0.2'], keyspace: 'app' });
+  });
+
+  test('the two cassandra consistency levels are comment-only but read', () => {
+    // Neither has a framework default — both read sites branch on `undefined`
+    // and hand the choice to the driver — so absence is what keeps that true
+    // and `reference.conf` ships them as comments.  Read all the same, so an
+    // application.conf can still pin them.
+    const shipped = readCassandraJournalOptionsFromConfig(reference);
+    const pinned = readCassandraJournalOptionsFromConfig(Config.parseString(`
+      ${ConfigKeys.persistence.journal.cassandra.root} {
+        consistency = 6
+        serial-consistency = 9
+      }
+    `));
+
+    expect(shipped.consistency).toBeUndefined();
+    expect(shipped.serialConsistency).toBeUndefined();
+    expect(pinned).toEqual({ consistency: 6, serialConsistency: 9 });
+  });
+
+  test('a custom cassandra block root is read instead of the canonical one', () => {
+    const config = Config.parseString(`
+      actor-ts.persistence.journal.cassandra.keyspace = "canonical"
+      actor-ts.persistence.journal.ledger.keyspace    = "custom"
+    `);
+
+    expect(readCassandraJournalOptionsFromConfig(config, 'actor-ts.persistence.journal.ledger'))
+      .toEqual({ keyspace: 'custom' });
+    expect(readCassandraJournalOptionsFromConfig(config)).toEqual({ keyspace: 'canonical' });
+  });
+});
+
+describe('readInMemorySnapshotStoreOptionsFromConfig', () => {
+  test('the shipped reference.conf resolves to unbounded retention', () => {
+    // `0` is the whole point: this is the store `PersistenceExtension` installs
+    // when nothing is configured, so it keeps every snapshot where the
+    // persistent stores keep three.  A published `3` here would silently start
+    // discarding snapshots for every unconfigured application in the repo.
+    const options = readInMemorySnapshotStoreOptionsFromConfig(reference);
+
+    expect(options).toEqual({ keepN: 0 });
+    expect(options.keepN).not.toBe(DEFAULT_SNAPSHOT_KEEP_N);
+  });
+
+  test('a bound is read as the number it says', () => {
+    const options = readInMemorySnapshotStoreOptionsFromConfig(
+      Config.parseString(`${ConfigKeys.persistence.snapshotStore.inMemory.root}.keep-n = 5`),
+    );
+
+    expect(options).toEqual({ keepN: 5 });
+  });
+
+  test('an absent block yields nothing at all, not a bag of undefined', () => {
+    const options = readInMemorySnapshotStoreOptionsFromConfig(unrelated);
+
+    expect(options).toEqual({});
+    expect(ownKeysOf(options)).toEqual([]);
   });
 });
