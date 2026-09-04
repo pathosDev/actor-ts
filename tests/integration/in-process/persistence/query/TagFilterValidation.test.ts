@@ -25,8 +25,17 @@ import { MongoJournal } from '../../../../../src/persistence/journals/MongoJourn
 import { MongoJournalOptions } from '../../../../../src/persistence/journals/MongoJournalOptions.js';
 import { SqliteJournal } from '../../../../../src/persistence/journals/SqliteJournal.js';
 import { SqliteJournalOptions } from '../../../../../src/persistence/journals/SqliteJournalOptions.js';
+import { CassandraJournal } from '../../../../../src/persistence/journals/CassandraJournal.js';
+import { CassandraJournalOptions } from '../../../../../src/persistence/journals/CassandraJournalOptions.js';
+import { PostgresJournal } from '../../../../../src/persistence/journals/PostgresJournal.js';
+import { PostgresJournalOptions } from '../../../../../src/persistence/journals/PostgresJournalOptions.js';
+import { MariaDbJournal } from '../../../../../src/persistence/journals/MariaDbJournal.js';
+import { MariaDbJournalOptions } from '../../../../../src/persistence/journals/MariaDbJournalOptions.js';
+import { CassandraQuery } from '../../../../../src/persistence/query/CassandraQuery.js';
 import { InMemoryQuery } from '../../../../../src/persistence/query/InMemoryQuery.js';
+import { MariaDbQuery } from '../../../../../src/persistence/query/MariaDbQuery.js';
 import { MongoQuery } from '../../../../../src/persistence/query/MongoQuery.js';
+import { RelationalQuery } from '../../../../../src/persistence/query/RelationalQuery.js';
 import { SqliteQuery } from '../../../../../src/persistence/query/SqliteQuery.js';
 import {
   normalizeTagFilter,
@@ -35,7 +44,10 @@ import {
 } from '../../../../../src/persistence/query/PersistenceQuery.js';
 import { assertValidFilterTags as publiclyExportedAssertValidFilterTags } from '../../../../../src/persistence/index.js';
 import { assertValidFilterTags } from '../../../../../src/persistence/storage/TagValidator.js';
+import { FakeCassandraClient } from '../FakeCassandraClient.js';
+import { FakeMariaDbPool } from '../FakeMariaDbPool.js';
 import { FakeMongoClient } from '../FakeMongoClient.js';
+import { FakePgPool } from '../FakePgPool.js';
 
 /**
  * A filter as it actually arrives from an HTTP body parser: the declared type
@@ -48,6 +60,11 @@ const asRequestData = (filter: unknown): TagFilter => filter as TagFilter;
 
 /** The payload from the issue: an operator expression wearing a tag's clothes. */
 const operatorExpression = { $ne: null };
+
+/** The message of a rejected call, or `null` when it did not reject at all. */
+async function rejectionMessage(run: Promise<unknown>): Promise<string | null> {
+  return run.then(() => null, (error: unknown) => (error as Error).message);
+}
 
 describe('normalizeTagFilter — rules that transfer from the write side', () => {
   test('rejects a non-string member of all, any and not', () => {
@@ -69,6 +86,27 @@ describe('normalizeTagFilter — rules that transfer from the write side', () =>
     expect(() => normalizeTagFilter(asRequestData({ all: [undefined] }))).toThrow(/is undefined/);
     expect(() => normalizeTagFilter(asRequestData({ all: [42] }))).toThrow(/is a number/);
     expect(() => normalizeTagFilter(asRequestData({ all: [['nested']] }))).toThrow(/is an array/);
+  });
+
+  test('the member-type message says why the filter was refused, not only that it was', () => {
+    // The tail is the only place a caller is told *why* a filter member that
+    // reads perfectly well as a value is not one: it matches no stored tag,
+    // and on MongoDB it is worse than useless because the driver reads an
+    // object as an operator expression.  Without it the message reports a
+    // type mismatch against a signature the caller believes it satisfied —
+    // `TagFilter`'s `string` is erased, so the value came from request data
+    // and looks like a legitimate filter from the call site.
+    //
+    // Asserted separately from the shape assertions above deliberately: those
+    // match on `all[0] is object, not a string` and stay green with the
+    // explanation deleted, which is how it came to be droppable in the first
+    // place.
+    const message = (() => {
+      try { normalizeTagFilter(asRequestData({ all: [operatorExpression] })); return ''; }
+      catch (e) { return (e as Error).message; }
+    })();
+    expect(message).toContain('matches no stored tag');
+    expect(message).toContain('operator expression');
   });
 
   test('rejects a member longer than any tag that could have been stored', () => {
@@ -206,6 +244,89 @@ describe('every backend inherits the guard', () => {
       .rejects.toThrow(/any\[0\] is object, not a string/);
 
     // And the indexed path a real caller uses is untouched.
+    const ledger = await query.currentEventsByTag<string>('ledger', offsetStart);
+    expect(ledger.map((tagged) => tagged.event.event)).toEqual(['a']);
+    await journal.close();
+  });
+
+  test('RelationalQuery refuses it, so every dialect it serves inherits the guard', async () => {
+    // The describe above says "every backend", and until this case it meant
+    // three of them.  `RelationalQuery` is the one class behind five shipped
+    // journals — Postgres, MariaDB, MsSQL, libSQL and D1 all extend
+    // `RelationalJournal`, and none of their query paths overrides
+    // `currentEventsByTag` — so this is where the claim is either true for all
+    // five or true for none.  It is exercised through the base class itself
+    // (its dialect-neutral form, which is what an MsSQL / libSQL / D1 caller
+    // constructs) rather than only through a named subclass.
+    const pool = new FakePgPool();
+    const journal = new PostgresJournal(PostgresJournalOptions.create().withPool(pool));
+    await journal.append('account-1', [{ event: 'a', tags: ['ledger'] }], 0);
+    const query = new RelationalQuery(journal, 'PostgresQuery');
+
+    // Specific, for the Mongo test's reason: the unguarded tree also fails to
+    // return the event, but by binding the object as a statement parameter and
+    // resolving to `[]` — a wrong answer, not a refusal.  The message is what
+    // tells the two apart.
+    const allMessage = await rejectionMessage(
+      query.currentEventsByTag(asRequestData({ all: [operatorExpression] }), offsetStart),
+    );
+    expect(allMessage).toMatch(/all\[0\] is object, not a string/);
+    const anyMessage = await rejectionMessage(
+      query.currentEventsByTag(asRequestData({ any: [{ $gt: '' }] }), offsetStart),
+    );
+    expect(anyMessage).toMatch(/any\[0\] is object, not a string/);
+
+    // The indexed path a real caller uses is untouched.
+    const ledger = await query.currentEventsByTag<string>('ledger', offsetStart);
+    expect(ledger.map((tagged) => tagged.event.event)).toEqual(['a']);
+    await journal.close();
+  });
+
+  test('a named relational subclass does not lose it on the way down', async () => {
+    // `MariaDbQuery` and `PostgresQuery` add only a name; a subclass that
+    // shadowed `currentEventsByTag` would be the way the base's guard stops
+    // reaching a shipped backend, and nothing else in the tree would notice.
+    const pool = new FakeMariaDbPool();
+    const journal = new MariaDbJournal(MariaDbJournalOptions.create().withPool(pool));
+    await journal.append('account-1', [{ event: 'a', tags: ['ledger'] }], 0);
+    const query = new MariaDbQuery(journal);
+
+    const message = await rejectionMessage(
+      query.currentEventsByTag(asRequestData({ all: [operatorExpression] }), offsetStart),
+    );
+    expect(message).toMatch(/all\[0\] is object, not a string/);
+    await journal.close();
+  });
+
+  test('CassandraQuery refuses it on the side-table path, which is its own entrance', async () => {
+    // `useTagIndex: true` is load-bearing here.  With the index off,
+    // `CassandraQuery` delegates straight to the inherited journal scan, which
+    // normalises at `InMemoryQuery`'s own call site — so a test written with
+    // the index off would pass with this class's `normalizeTagFilter` deleted
+    // and would prove nothing about the override that actually ships.
+    const client = new FakeCassandraClient();
+    const journalOptions = CassandraJournalOptions.create()
+      .withContactPoints(['fake'])
+      .withKeyspace('ks')
+      .withAutoCreateKeyspace(true)
+      .withClient(client)
+      .withUseTagIndex(true);
+    const journal = new CassandraJournal(journalOptions);
+    await journal.append('account-1', [{ event: 'a', tags: ['ledger'] }], 0);
+    const query = new CassandraQuery(journal);
+
+    const allMessage = await rejectionMessage(
+      query.currentEventsByTag(asRequestData({ all: [operatorExpression] }), offsetStart),
+    );
+    expect(allMessage).toMatch(/all\[0\] is object, not a string/);
+    // Not the driver's complaint about an unbindable parameter, wrapped: the
+    // filter never reached a partition scan.
+    expect(allMessage).not.toMatch(/CassandraQuery\.currentEventsByTag failed/);
+    const anyMessage = await rejectionMessage(
+      query.currentEventsByTag(asRequestData({ any: [{ $gt: '' }] }), offsetStart),
+    );
+    expect(anyMessage).toMatch(/any\[0\] is object, not a string/);
+
     const ledger = await query.currentEventsByTag<string>('ledger', offsetStart);
     expect(ledger.map((tagged) => tagged.event.event)).toEqual(['a']);
     await journal.close();
