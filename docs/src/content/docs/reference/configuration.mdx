@@ -86,13 +86,16 @@ actor-ts {
   }
 
   sharding {
-    number-of-shards    = 64
-    rebalance-interval  = 2s
-    hand-off-timeout    = 10s
-    remember-entities   = false
-    passivation-idle    = 5m    # 0 disables auto-passivation
-    # shard-passivation-idle    # unset: follows passivation-idle
-    max-entities        = 0     # 0 = no per-node cap
+    number-of-shards           = 64
+    rebalance-interval         = 2s
+    hand-off-timeout           = 10s
+    remember-entities          = false
+    passivation-idle           = 5m       # 0 disables auto-passivation
+    # shard-passivation-idle              # unset: follows passivation-idle
+    max-entities               = 0        # 0 = no per-node cap
+    buffer-size                = 100000   # region-wide; 0 = never buffer
+    register-retry-interval    = 500ms
+    shard-region-query-timeout = 5s
   }
 }
 ```
@@ -268,10 +271,18 @@ never came near the cap themselves.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `remote.tcp.host` | `"0.0.0.0"` | Bind address.  Used when `ClusterOptions` leaves `host` unset. |
-| `remote.tcp.port` | `2552` | Bind port.  Used when `ClusterOptions` leaves `port` unset. |
+| `remote.tcp.host` | `"0.0.0.0"` | The interface to **bind**.  A wildcard belongs here and is the default.  Used when `ClusterOptions` leaves `host` unset. |
+| `remote.tcp.advertised-host` | *(unset)* | The address peers **dial** — this node's identity.  Unset, it follows `remote.tcp.host` when that is routable, then `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, then loopback.  A wildcard is refused.  Deliberately absent from `reference.conf`, because a shipped value is what "unset" would have to be distinguishable from. |
+| `remote.tcp.port` | `2552` | The port to **bind**.  Used when `ClusterOptions` leaves `port` unset. |
+| `remote.tcp.advertised-port` | *(unset)* | The port peers **dial**.  Unset means the same as `remote.tcp.port` — set it only where the deployment publishes the process on a different one.  Absent from `reference.conf` for the same reason as `advertised-host`. |
 | `remote.max-frame-bytes` | `16M` | Per-frame wire cap.  A frame whose length-prefix exceeds it is rejected before any payload is buffered. |
 | `remote.tls.enabled` | `false` | **Not honoured** — `true` buys a startup warning, not encryption.  See below. |
+
+`host`/`port` are the **bind** pair and `advertised-host`/`advertised-port`
+the **identity** pair: the first says where the listener opens, the second
+says what goes into every gossip frame for peers to dial back.  They are the
+same values until a deployment remaps one, which is why naming one routable
+host and one port still does both jobs and nothing configured today moves.
 
 Because the bind address is readable from config, a deployment can move it
 out of code entirely:
@@ -282,6 +293,24 @@ actor-ts.remote.tcp {
   port = ${?ACTOR_TS_PORT}   # env-var substitution
 }
 ```
+
+A published container port is the case that needs all four.  The process
+listens on `2552` inside the container, `docker run -p 3000:2552` puts it on
+`3000` outside, and `3000` is the number that belongs in every other node's
+seed list:
+
+```hocon
+actor-ts.remote.tcp {
+  host            = "0.0.0.0"    # bind every interface — the container
+  port            = 2552         #   does not know its published address
+  advertised-host = ${?HOST_IP}  # what peers dial …
+  advertised-port = 3000         #   … and on which port
+}
+```
+
+Under Kubernetes only the host half moves: pod-to-pod gossip dials the
+container port directly, so `advertised-host = ${?POD_IP}` on its own is the
+whole configuration.
 
 `remote.max-frame-bytes` applies to the transport the cluster builds for
 itself.  If you construct a `TcpTransport` yourself and pass it via
@@ -346,10 +375,10 @@ field unset — reads its bounds from `actor-ts.http.client`:
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `http.client.maxResponseBytes` | `8M` | Largest response body buffered before the request is aborted. |
-| `http.client.defaultTimeoutMs` | `30s` | Deadline for a call that names no `timeoutMs` of its own. |
+| `http.client.max-response-bytes` | `8M` | Largest response body buffered before the request is aborted. |
+| `http.client.default-timeout` | `30s` | Deadline for a call that names no `timeoutMs` of its own. |
 | `http.client.redirect` | `"follow"` | What to do with a 3xx carrying a `Location` — `follow` / `error` / `manual`. |
-| `http.client.maxRedirects` | `5` | Hops a followed chain may take before the call is refused.  `0` refuses the first. |
+| `http.client.max-redirects` | `5` | Hops a followed chain may take before the call is refused.  `0` refuses the first. |
 
 These are a floor, not a policy: an integration passes its own bounds to
 `newClient(...)`, and a single call overrides them with `maxResponseBytes` /
@@ -358,9 +387,16 @@ to move the fleet-wide numbers without a code change — an endpoint that turns
 out to need 60 s, or a deployment on a link where 8 MiB is the wrong ceiling,
 used to force every caller off the shared client.
 
+Every leaf is the kebab-case of its `HttpClientOptions` field with any unit
+suffix dropped — the value carries the unit, so `default-timeout = 30s`.  The
+camelCase spellings this block used before are **rejected at startup** with a
+`ConfigError` naming both, rather than ignored: `max-response-bytes` is a
+ceiling a deployment lowers deliberately, and quietly restoring the built-in
+default would be the one failure mode a rename must not have.
+
 Values are validated on read, on the merged settings, so a bad one throws
 `OptionsError` naming the field rather than failing later inside a request.
-`maxResponseBytes` and `defaultTimeoutMs` must both be positive here — unlike
+`max-response-bytes` and `default-timeout` must both be positive here — unlike
 a *request's* `timeoutMs`, where `0` is the documented way to opt one call out
 of any deadline.  A `0` in this block would disarm every call that named no
 deadline of its own, which is the state the defaults exist to prevent.
@@ -370,12 +406,19 @@ defaults from `actor-ts.http.websocket`:
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `http.websocket.maxFrameBytes` | `1M` | Largest inbound frame accepted (bytes). |
-| `http.websocket.onOversizeFrame` | `"close"` | What to do when a frame exceeds the limit — `close` / `drop`. |
-| `http.websocket.onInvalidMessage` | `"close"` | What to do when a message fails to decode — `close` / `drop` / `hook`. |
-| `http.websocket.maxBufferedBytes` | `4M` | Outbound backpressure threshold (bytes). |
-| `http.websocket.onBackpressure` | `"drop"` | What to do when the buffer is exceeded — `drop` / `close`. |
-| `http.websocket.maxConnections` | *(unlimited)* | Max concurrent connections per route; a new upgrade beyond it is closed with 1013. |
+| `http.websocket.max-frame-bytes` | `1M` | Largest inbound frame accepted (bytes). |
+| `http.websocket.on-oversize-frame` | `"close"` | What to do when a frame exceeds the limit — `close` / `drop`. |
+| `http.websocket.on-invalid-message` | `"close"` | What to do when a message fails to decode — `close` / `drop` / `hook`. |
+| `http.websocket.max-buffered-bytes` | `4M` | Outbound backpressure threshold (bytes). |
+| `http.websocket.on-backpressure` | `"drop"` | What to do when the buffer is exceeded — `drop` / `close`. |
+| `http.websocket.max-connections` | *(unlimited)* | Max concurrent connections per route; a new upgrade beyond it is closed with 1013. |
+| `http.websocket.max-pre-attach-frames` | `256` | Inbound frames held while the connection actor starts. |
+| `http.websocket.max-pre-attach-bytes` | `4M` | Bytes held while the connection actor starts; past either cap the socket is closed with 1013. |
+| `http.websocket.accept-timeout` | `10s` | How long an admitted upgrade waits for its connection actor before the socket is closed and its `max-connections` slot released. |
+
+The same leaf rule and the same startup rejection apply here: kebab-case, unit
+suffix dropped, and a retired camelCase spelling is a `ConfigError` rather than
+a cap that silently reverted to the default.
 
 ### `actor-ts.persistence`
 
@@ -394,9 +437,10 @@ the per-plugin keys.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `cache.in-memory.maxEntries` | `10000` | Max entries before LRU eviction ([in-memory cache](/cache/in-memory/)). |
-| `cache.in-memory.cleanupMs` | `60000` | Interval (ms) of the background sweep for expired entries. |
-| `cache.<name>.in-memory.*` | *(the block above)* | Same two leaves, for the single instance `cache('<name>')` resolves — overrides the global block leaf by leaf. |
+| `cache.in-memory.max-entries` | `10000` | Max entries before LRU eviction ([in-memory cache](/cache/in-memory/)). |
+| `cache.in-memory.cleanup-interval` | `60s` | Interval of the background sweep for expired entries; `0` disables it. |
+| `cache.in-memory.prefix-quotas` | *(unset)* | Per-prefix caps that split one instance between its consumers; must sum to at most `max-entries`. |
+| `cache.<name>.in-memory.*` | *(the block above)* | The same leaves, for the single instance `cache('<name>')` resolves — overrides the global block leaf by leaf, and rejects a retired spelling the same way. |
 | `cache.<name>.plugin` | `"...in-memory"` | Which backend `cache('<name>')` resolves to. |
 
 Redis and Memcached caches read their connection settings from
@@ -418,6 +462,9 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.passivation-idle` | `5m` | Auto-passivate an entity after this idle window.  `0` = disabled.  An entity that keeps state in memory and does not rebuild it in `preStart` loses that state — see [passivation](/cluster/sharding/overview/#passivation). |
 | `sharding.shard-passivation-idle` | *(unset)* | Auto-passivate a shard after it has stood empty this long.  Unset it follows `passivation-idle`; `0` keeps empty shards resident.  Deliberately absent from `reference.conf`, because a shipped value is what "unset" would have to be distinguishable from. |
 | `sharding.max-entities` | `0` | Per-node entity cap; the least-recently-used entity is passivated on overflow.  `0` = no cap. |
+| `sharding.buffer-size` | `100000` | How many messages one region may hold **across all its shards** while their homes are unknown or handing off.  Past the cap the *newest* message is dropped to dead letters with its sender, so what is already queued keeps the order the caller sent it in.  **Mind the polarity against `max-entities` above**: here `0` means *never buffer — dead-letter immediately*, not "no cap". |
+| `sharding.register-retry-interval` | `500ms` | How often a region re-sends an unacknowledged registration to the coordinator.  Everything routed for the type buffers until the coordinator answers, so this is also how long a lost `Register` stalls it. |
+| `sharding.shard-region-query-timeout` | `5s` | Default wait for `sharding.shards()` and `sharding.shardRefFor()`.  An explicit `timeoutMs` argument still wins over it.  Unrelated to how long the region keeps a correlation for a cross-node `ask`, which is minutes on purpose. |
 
 These apply to **every** sharded type started on the node.  They are read
 once per `sharding.start(...)` and layered under whatever that call passes
@@ -466,7 +513,34 @@ would rather find.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `worker-cluster.workers` | `"auto"` | Number of workers — `"auto"` uses `navigator.hardwareConcurrency`. |
+| `worker-cluster.system-name` | `"worker-cluster"` | `ActorSystem` name each worker hosts. |
+| `worker-cluster.hostname` | `"worker"` | Host component of each worker's `NodeAddress`. |
+| `worker-cluster.base-port` | `1` | Port of the first worker; each subsequent slot increments. |
+| `worker-cluster.ready-timeout` | `10s` | Per-worker hello/init/ready handshake deadline. |
 | `worker-cluster.restart-policy` | `"on-failure"` | `always` / `on-failure` / `never`. |
+| `worker-cluster.restart-min-backoff` | `200ms` | Delay before the first respawn of a crashed slot. |
+| `worker-cluster.restart-max-backoff` | `10s` | Ceiling for the respawn delay, which doubles per attempt. |
+| `worker-cluster.restart-random-factor` | `0.2` | ± jitter fraction on each respawn delay, in `[0, 1]`. |
+| `worker-cluster.max-restarts` | `10` | Restarts granted per slot inside the window before it is retired; `-1` restarts forever. |
+| `worker-cluster.restart-window` | `60s` | Sliding window the restart budget counts over; `0` never resets the tally. |
+
+The four duration keys drop the `Ms` suffix their options-object fields carry
+(`ready-timeout` sets `readyTimeoutMs`) and take a HOCON duration literal, the
+same way `logger.close-timeout` feeds `closeTimeoutMs`.  `restart-random-factor`
+is a plain fraction, not a duration.
+
+Four fields have no key on purpose: `initData` is per-call identity, `backend`
+and `onWorkerPermanentlyDown` are live objects a config file cannot express,
+and `bootstrap` names a module the runtime will *execute* — `ACTOR_TS_CONFIG`
+and a dropped-in `application.conf` are a wider surface than the call site, so
+it stays a code-only field.
+
+Validation runs on the merged settings, so every one of these is rejected with
+an `OptionsError` when it comes from a file exactly as it would from code: an
+empty `system-name` or `hostname`, a `base-port` outside `[1, 65535]`, a
+`restart-random-factor` outside `[0, 1]`, a negative backoff or window, a
+`max-restarts` below `-1`, and a `restart-max-backoff` under
+`restart-min-backoff`.
 
 These fill in `WorkerCluster.spawn(options)` for fields it leaves unset.
 `spawn` is a static with no `ActorSystem` in scope, so it loads the config

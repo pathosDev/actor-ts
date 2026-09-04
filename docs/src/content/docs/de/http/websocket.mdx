@@ -138,7 +138,7 @@ Optimierung darüber, die dem Prozess die Pufferung erspart.
 Die Zahl ist in beide Richtungen deine: `maxFrameBytes` zu senken
 verkleinert auch das Puffer-Fenster, und es über den 1-MiB-Default
 anzuheben, lässt Frames dieser Größe tatsächlich durch.  Aufgelöst wird
-wie üblich — Route-Options, dann `actor-ts.http.websocket.maxFrameBytes`,
+wie üblich — Route-Options, dann `actor-ts.http.websocket.max-frame-bytes`,
 dann der eingebaute Default —, und zwar beim Binden des Servers; ein
 ungültiger Wert ist damit ein Fehler in `bind()` und nicht erst beim
 ersten Upgrade.
@@ -559,18 +559,27 @@ Route-Defaults liegen unter `actor-ts.http.websocket`:
 
 ```hocon
 actor-ts.http.websocket {
-  maxFrameBytes    = 1048576
-  onOversizeFrame  = close
-  onInvalidMessage = close
-  maxBufferedBytes = 4194304
-  onBackpressure   = drop
-  maxPreAttachFrames = 256
-  maxPreAttachBytes  = 4M
-  acceptTimeoutMs    = 10s
+  max-frame-bytes    = 1M
+  on-oversize-frame  = "close"
+  on-invalid-message = "close"
+  max-buffered-bytes = 4M
+  on-backpressure    = "drop"
+  max-pre-attach-frames = 256
+  max-pre-attach-bytes  = 4M
+  accept-timeout        = 10s
 }
 ```
 
 Präzedenz: **Route-Optionen > HOCON > eingebaute Defaults**.
+
+Jedes Blatt ist das Feld aus `WebsocketRouteOptions` in kebab-case, ohne
+Einheiten-Suffix — das Feld bleibt `acceptTimeoutMs`, das Blatt heißt
+`accept-timeout`, und die Einheit steht im Wert.  Die camelCase-Schreibweisen,
+die dieser Block früher hatte, werden in `bind()` mit einem `ConfigError`
+abgelehnt, der beide Namen nennt, statt ignoriert zu werden: Die meisten
+dieser Blätter sind Obergrenzen, die ein Deployment in einem halbwegs
+vertrauten Netz bewusst senkt, und eine Grenze, die still auf den Default
+zurückfiel, ist schlimmer als eine, die den Start verweigert.
 
 ## Wann einsetzen
 

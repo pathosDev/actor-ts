@@ -151,6 +151,45 @@ import { Aside } from '@astrojs/starlight/components';
   Nachrichten nie dispatchen und der Handshake für immer hängt.
 </Aside>
 
+## Dieselben Stellschrauben aus einer Config-Datei
+
+Neun der Optionen aus der Tabelle oben sind zusätzlich
+`actor-ts.worker-cluster`-Keys, neben `workers` und `restart-policy`, sodass
+ein Deployment das Mesh ohne Rebuild nachjustieren kann:
+
+```hocon
+actor-ts.worker-cluster {
+  workers               = 4
+  system-name           = "ingest"
+  hostname              = "ingest-worker"
+  base-port             = 100
+  ready-timeout         = 30s
+  restart-policy        = "on-failure"
+  restart-min-backoff   = 500ms
+  restart-max-backoff   = 30s
+  restart-random-factor = 0.3
+  max-restarts          = 20
+  restart-window        = 5m
+}
+```
+
+Die Präzedenz ist die im Framework übliche — **explizite Optionen > HOCON >
+eingebauter Default**, und zwar pro Feld: `withWorkers(8)` im Code schlägt
+`workers = 4` in der Datei, während jedes Feld, das der Aufruf nicht setzt, auf
+sie durchfällt.  Die vier Duration-Keys lassen das `Ms`-Suffix ihrer
+Builder-Methoden weg und nehmen stattdessen ein Duration-Literal.  `initData`
+hat keinen Key, weil es Identität des einzelnen Aufrufs ist, und `backend`
+sowie `onWorkerPermanentlyDown`, weil sie lebende Objekte sind, die eine Datei
+nicht ausdrücken kann.  `bootstrap` wird bewusst zurückgehalten: Es benennt ein
+Modul, das die Runtime *ausführt*, und `ACTOR_TS_CONFIG` oder eine abgelegte
+`application.conf` sind eine breitere Angriffsfläche als die Aufrufstelle.
+
+`spawn` ist ein Static ohne `ActorSystem` im Scope und lädt die Config-Kette
+daher selbst: dieselbe, die `ActorSystem.create` verwendet, inklusive
+`ACTOR_TS_CONFIG` und `./application.conf`.  Ein Wert aus der Datei wird gegen
+die gemergten Settings validiert, ein falscher wirft also bei `spawn` genauso
+`OptionsError` wie ein falscher im Code.
+
 ## Unter der Haube: manuelle Verdrahtung
 
 Das obige `WorkerCluster` übernimmt diese Verdrahtung für dich.  Greife

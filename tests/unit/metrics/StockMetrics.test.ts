@@ -401,6 +401,7 @@ const STOCK_LABELS: Readonly<Record<string, ReadonlyArray<string>>> = {
   actor_mailbox_dropped_total: ['class', 'reason'],
   actor_dispatcher_queue_delay_seconds: ['dispatcher'],
   actor_dead_letters_total: ['outcome'],
+  actor_unhandled_total: ['class'],
   cluster_members_up: [],
   cluster_gossip_rounds_total: [],
   cluster_gossip_records_refused_total: ['reason'],

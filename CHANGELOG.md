@@ -11,6 +11,111 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **The advertised cluster port can differ from the bound one**
+  (#845).  `port` was one value in two roles: `TcpTransport` bound it and
+  `selfAddress` gossiped it.  #944 split the host axis — `host` binds,
+  `advertised-host` identifies — and left the port unsplit, so
+  `withAdvertisedHost` fixed half of a published-container-port deployment
+  and nothing fixed the other half.  A node published by `docker run -p
+  3000:2552` listens on 2552 and has to tell its peers 3000; it could not.
+
+  The port now mirrors the host.  `ClusterOptions.withAdvertisedPort(…)` and
+  `ClusterBootstrapOptions.withAdvertisedPort(…)` name it,
+  `resolveAdvertisedPort` answers `advertisedPort ?? port` for both
+  `Cluster.join` and `bootstrapCluster` (the election orders on the identity
+  and the seed filter compares against it, both before the join), and
+  `TcpTransport` gained a `bindPort` constructor argument that reaches the
+  `listen` call alone — `self.port` stays the identity in the handshake and
+  the peer keys.  Nothing configured today moves: unset, the advertised port
+  is the bound one.
+
+  Two things the host half does NOT get a counterpart for,
+  deliberately.  There is no environment-derivation chain, because no
+  platform publishes a port mapping anywhere a process can read it; and
+  there is no wildcard to refuse, so validation is `positiveInt` and nothing
+  else.
+
+  `actor-ts.remote.tcp.advertised-port` ships as a comment in
+  `reference.conf` rather than a leaf — the shape `advertised-host` and
+  `sharding.shard-passivation-idle` already use.  A shipped leaf makes
+  `hasPath` true forever and "unset means the same as `port`" then becomes
+  inexpressible.  Three keys the issue asked for do not ship at all:
+  `bind-host` was delivered under the mirror-image spelling by #944,
+  `bind-port` is the right mechanism under the wrong name for the direction
+  that landed, and `bind-timeout` has no mechanism behind it —
+  `TcpBackend.listen` takes no timeout and a bind on Bun/Node/Deno succeeds
+  or fails fast.
+
+  The transport's two-address startup line now compares the whole address
+  instead of the hosts, and `reportDerivedAdvertisedHost` names the
+  advertised port: a node that binds 2552 and advertises 3000 differs on
+  exactly the half a host comparison cannot see, and would otherwise have
+  logged one address that reads as though nothing were split.
+
+  The `actor-ts.remote` key table also gains the `advertised-host` row #944
+  forgot — it appeared in neither language, while the other comment-only key
+  in that page does get a row defaulted *(unset)* — plus the new
+  `advertised-port` row, a container recipe, and a `remote.tcp.port`
+  description that no longer calls itself "Bind port" as though the split
+  already existed.  EN and DE.
+
+- **The remaining nine `actor-ts.worker-cluster` keys** (#883).  The block
+  published 2 of the 11 fields `WorkerCluster.spawn`
+  accepts.  `system-name`, `hostname`, `base-port`, `ready-timeout` and the
+  five restart-budget knobs `restart-min-backoff`, `restart-max-backoff`,
+  `restart-random-factor`, `max-restarts` and `restart-window` each had a
+  live consumer, a `DEFAULT_*` constant and a row in the published options
+  table, and were reachable only from code — both language versions of the
+  worker-mesh page printed all nine defaults with nothing pinning them to
+  anything.
+
+  Precedence is unchanged and per field: explicit options beat the file, the
+  file beats the built-in default, and a field set in neither stays
+  unset.  The merge, precedence and validation plumbing already existed, so
+  the change is a widened `Pick` plus nine `hasPath` branches in
+  `readWorkerClusterOptionsFromConfig`; `WorkerCluster` itself is untouched.
+
+  The four duration leaves drop the `Ms` suffix their fields carry and take
+  a duration literal (`ready-timeout = 10s`), the spelling
+  `logger.close-timeout` and `delivery.flush-interval` already
+  use.  `systemName` and `hostname` gain `nonEmptyString` rules: only code
+  could set them before, and a config file can now supply `""`, which would
+  reach `NodeAddress` and give every worker an address with no
+  host.  `bootstrap`, `initData`, `backend` and `onWorkerPermanentlyDown`
+  deliberately have no keys.
+
+  One consequence worth knowing: `Config.load` merges `reference.conf`
+  first, so these leaves are now always present and `reference.conf` *is*
+  the effective default — the `??` fallbacks in `WorkerCluster`'s
+  constructor are no longer reachable through `spawn`.  That is why the
+  block's published values equal the constants, and
+  `tests/unit/docs/DocumentedDefaults.test.ts` now pins all nine (gaining a
+  `number` kind for `restart-random-factor`, the first fractional leaf in
+  `reference.conf`, because `getInt` throws on `0.2` while a `duration`
+  label would pass while asserting nothing).
+
+- **A declined message leaves a trace** (#1178).  `Actor.unhandled(message)`
+  gives a declined message one observable sink. Called from an `.otherwise`
+  arm it wraps the message in a `DeadLetter` naming the actor itself as the
+  recipient — not the dead-letter office, because "something, somewhere,
+  declined this" is not a diagnosis — publishes it on the event stream, and
+  increments a new `actor_unhandled_total{class}` counter. The typed side's
+  `Behaviors.unhandled` now shares that one implementation, so a behavior
+  answering the sentinel is finally counted too; routing to dead letters
+  never supplied a count, because `actor_dead_letters_total` only moves
+  while `actor-ts.dead-letters.store` is on and `off` is the default. Four
+  framework handlers were converted: `Receptionist`,
+  `ClusterSingletonManager` and `DistributedPubSubMediator` keep their
+  warning and add the letter, while `Cluster`'s unclaimed-wire-frame tail —
+  a plain class with no actor and no recipient to name — counts every frame
+  and names each unknown kind once, escaped and length-clipped because the
+  kind arrives off the wire, capped at eight distinct kinds. Nothing is
+  detected on your behalf: an actor that simply returns still produces
+  nothing at all, which stays the right answer for one that means to ignore
+  a class of message. No configuration key ships with this; the diagnostics
+  toggle that will gate a debug log at the same seam belongs to #867, and
+  `recordUnhandled` names it in its JSDoc. #1178.
+
 - **Dead letters are logged by default, throttled** (#1000).  A default
   `ActorSystem` produced no output at all when a message could not be
   delivered: `DeadLetterRef` held no logger, published a `DeadLetter` on the
@@ -181,6 +286,59 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING** — the last camelCase HOCON leaves are now kebab-case (#1405).
+  Thirteen leaves moved, in three blocks:
+
+  - `actor-ts.http.client`: `maxResponseBytes` → `max-response-bytes`,
+    `defaultTimeoutMs` → `default-timeout`, `maxRedirects` →
+    `max-redirects`. `redirect` is unchanged.
+  - `actor-ts.http.websocket`: `maxFrameBytes` → `max-frame-bytes`,
+    `onOversizeFrame` → `on-oversize-frame`, `onInvalidMessage` →
+    `on-invalid-message`, `maxBufferedBytes` → `max-buffered-bytes`,
+    `onBackpressure` → `on-backpressure`, `maxConnections` →
+    `max-connections`, `maxPreAttachFrames` → `max-pre-attach-frames`,
+    `maxPreAttachBytes` → `max-pre-attach-bytes`, `acceptTimeoutMs` →
+    `accept-timeout`.
+  - `actor-ts.cache.in-memory`: `maxEntries` → `max-entries`, `cleanupMs` →
+    `cleanup-interval`, `prefixQuotas` → `prefix-quotas`. **The same renames
+    apply under every `actor-ts.cache.<name>.in-memory`**, which shares one
+    reader with the global block.
+
+  `maxConnections` and `prefixQuotas` never appeared as `reference.conf`
+  leaves — they are documented as comments — but both are read, so an
+  operator who set either from the docs has to rename it too.
+
+  The rule the leaf names now follow is the one the rest of the tree already
+  used: the leaf is the kebab-case of the options field with any unit suffix
+  dropped, because HOCON carries the unit in the value. `AGENTS.md`'s
+  lockstep rule is amended to say so.
+
+  `cleanup-interval` is the one rename that also changes the published
+  value: `reference.conf` now ships `60s` instead of `60000`. A bare
+  millisecond number still parses, so `cleanup-interval = 60000` keeps
+  working and `0` still disables the sweep.
+
+  **TypeScript field names and builder methods are unchanged** —
+  `maxResponseBytes`, `cleanupMs`, `withCleanupMs(...)`, `acceptTimeoutMs`
+  all stay exactly as they were. This is a HOCON-only change; `new
+  InMemoryCache({ cleanupMs })` call sites are unaffected.
+
+  **The retired spellings are refused at startup** with a `ConfigError`
+  naming both, rather than ignored. There is no unknown-key detection
+  anywhere in the config loader, so an unrecognised leaf is inert by
+  construction and the built-in default silently applies — and six of the
+  thirteen are security caps a deployment lowers on purpose
+  (`max-frame-bytes`, `max-buffered-bytes`, `max-pre-attach-bytes`,
+  `max-pre-attach-frames`, `max-connections`, `max-response-bytes`).
+  Reverting one of those to the framework default on upgrade, quietly, is
+  the failure mode a rename must not have.
+
+  *Migration:* Every HOCON leaf under `actor-ts.http.client`,
+  `actor-ts.http.websocket` and `actor-ts.cache.*.in-memory` is now
+  kebab-case. Rename them in your `application.conf`; the old spellings are
+  rejected at startup with a `ConfigError` naming both. TypeScript field
+  names and builder methods are unchanged — no code migration is needed.
+
 - **BREAKING — `Behaviors.withStash` validates its capacity (#795).**
 
   The argument was taken on trust, and because the buffer's overflow guard
@@ -205,6 +363,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The `ShardRegion` routing buffer is bounded** (#849).  `bufferShard`
+  held every message for a shard whose home was unknown or handing off in an
+  unbounded per-shard array, so a coordinator that never answers — no
+  leader, a lease it cannot acquire, or a registration it refused while the
+  region keeps accepting traffic — turned a stall into memory exhaustion,
+  and a remote peer could drive it through `onRemoteEnvelope`. The cap is a
+  region-wide total across every shard rather than a per-queue one, which at
+  the shipped defaults is the difference between 100 000 messages and 6 400
+  000; past it the newest arrival is dropped to dead letters with its
+  sender, so what is already queued keeps the order its caller sent it in,
+  and one warning is logged per overflow episode. Three `actor-ts.sharding`
+  keys ship with it, each at the value the code already hardcoded so that
+  merely wiring the block changes nothing: `buffer-size = 100000`
+  (region-wide, and `0` means *never buffer* — the opposite polarity to
+  `max-entities = 0` in the same block), `register-retry-interval = 500ms`
+  for an unacknowledged region registration, and `shard-region-query-timeout
+  = 5s` for `ClusterSharding.shards()` and `shardRefFor()`. #849, #461.
 - **A control-RPC reply in `ParallelMultiNodeSpec` is bound to the role and
   the kind it answers** (#777).
 

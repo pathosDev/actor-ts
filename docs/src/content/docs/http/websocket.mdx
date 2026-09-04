@@ -135,7 +135,7 @@ optimisation on top of it that spares the process the buffering.
 The number is yours in both directions: lowering `maxFrameBytes` narrows
 the buffering window too, and raising it above the 1 MiB default really
 does let frames that large through.  It is resolved the usual way — route
-options, then `actor-ts.http.websocket.maxFrameBytes`, then the built-in
+options, then `actor-ts.http.websocket.max-frame-bytes`, then the built-in
 default — and the resolution happens when the server binds, so a
 malformed value is an error at `bind()` rather than on the first upgrade.
 
@@ -525,18 +525,26 @@ Route defaults live under `actor-ts.http.websocket`:
 
 ```hocon
 actor-ts.http.websocket {
-  maxFrameBytes    = 1048576
-  onOversizeFrame  = close
-  onInvalidMessage = close
-  maxBufferedBytes = 4194304
-  onBackpressure   = drop
-  maxPreAttachFrames = 256
-  maxPreAttachBytes  = 4M
-  acceptTimeoutMs    = 10s
+  max-frame-bytes    = 1M
+  on-oversize-frame  = "close"
+  on-invalid-message = "close"
+  max-buffered-bytes = 4M
+  on-backpressure    = "drop"
+  max-pre-attach-frames = 256
+  max-pre-attach-bytes  = 4M
+  accept-timeout        = 10s
 }
 ```
 
 Precedence: **route options > HOCON > built-in defaults**.
+
+Each leaf is the kebab-case of its `WebsocketRouteOptions` field with any unit
+suffix dropped — the field stays `acceptTimeoutMs`, the leaf is
+`accept-timeout`, and the value carries the unit.  The camelCase spellings
+this block used before are rejected at `bind()` with a `ConfigError` naming
+both, rather than ignored: most of these leaves are caps a semi-trusted
+deployment lowers on purpose, and a cap that silently reverted to the
+framework default is worse than one that refuses to start.
 
 ## When to use it
 

@@ -276,21 +276,21 @@ const responseCache    = extension.cache('response-cache');
 ```
 
 Each name resolves to its own instance, so a flood through one cannot
-reach the others at all.  Size each one's `maxEntries` for that
+reach the others at all.  Size each one's `max-entries` for that
 consumer's key space alone, under the cache's own name:
 
 ```hocon
 actor-ts.cache {
-  in-memory { maxEntries = 10000 }              # every in-memory instance
+  in-memory { max-entries = 10000 }              # every in-memory instance
 
-  idempotency.in-memory { maxEntries = 200000 } # just cache('idempotency')
-  rate-limit.in-memory  { maxEntries = 50000 }  # just cache('rate-limit')
+  idempotency.in-memory { max-entries = 200000 } # just cache('idempotency')
+  rate-limit.in-memory  { max-entries = 50000 }  # just cache('rate-limit')
 }
 ```
 
 The per-name block wins over the global one leaf by leaf, so an
 override sets only what it names and the rest still falls through — the
-one exception is `prefixQuotas`, which is a table and is layered whole,
+one exception is `prefix-quotas`, which is a table and is layered whole,
 because a half-inherited table is a sum nobody wrote down.  The name is
 yours, so these paths are not listed in
 [reference.conf](/reference/reference-conf/) — the same reason
@@ -303,8 +303,8 @@ to all three middlewares — reserve each consumer's share of it instead:
 
 ```hocon
 actor-ts.cache.shared.in-memory {
-  maxEntries = 10000
-  prefixQuotas { "rsp:" = 7000, "idem:" = 2000, "rl:" = 1000 }
+  max-entries   = 10000
+  prefix-quotas { "rsp:" = 7000, "idem:" = 2000, "rl:" = 1000 }
 }
 ```
 
@@ -343,15 +343,24 @@ The in-memory cache built by the extension reads its defaults from HOCON:
 
 ```hocon
 actor-ts.cache.in-memory {
-  maxEntries = 50000   # LRU cap
-  cleanupMs  = 30000   # background sweep interval, ms (0 disables)
-  # prefixQuotas { "rsp:" = 40000, "idem:" = 10000 }   # optional, off by default
+  max-entries      = 50000   # LRU cap
+  cleanup-interval = 30s     # background sweep (0 disables)
+  # prefix-quotas { "rsp:" = 40000, "idem:" = 10000 }   # optional, off by default
 }
 ```
 
 That block applies to every in-memory instance;
 `actor-ts.cache.<name>.in-memory` overrides it for one of them — see
 [one cache per consumer](#one-cache-per-consumer).
+
+Each leaf is the kebab-case of its `InMemoryCacheOptions` field with any unit
+suffix dropped — the field stays `cleanupMs`, the leaf is `cleanup-interval`,
+and the value carries the unit.  A bare number still means milliseconds, so
+`cleanup-interval = 30000` reads the same as `30s`.  The camelCase spellings
+this block used before are rejected at startup with a `ConfigError` naming
+both, on the global block and on every `actor-ts.cache.<name>.in-memory`
+override alike, so an unconverted `application.conf` cannot silently fall back
+to the defaults.
 
 For a throwaway cache, just construct `new InMemoryCache()`
 directly — no extension needed.

@@ -21,6 +21,7 @@ import {
 import { DEFAULT_LOG_DEAD_LETTERS, DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN, DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS } from '../../../src/diagnostics/DiagnosticsOptions.js';
 import { DEFAULT_WEBSOCKET_POLICY } from '../../../src/http/websocket/WebsocketPolicy.js';
 import { DEFAULT_WORKER_RESTART_POLICY } from '../../../src/worker/WorkerClusterOptions.js';
+import { DEFAULT_MAX_RESTARTS, DEFAULT_RESTART_MAX_BACKOFF_MS, DEFAULT_RESTART_MIN_BACKOFF_MS, DEFAULT_RESTART_RANDOM_FACTOR, DEFAULT_RESTART_WINDOW_MS, DEFAULT_WORKER_BASE_PORT, DEFAULT_WORKER_HOSTNAME, DEFAULT_WORKER_READY_TIMEOUT_MS, DEFAULT_WORKER_SYSTEM_NAME } from '../../../src/worker/WorkerClusterOptions.js';
 import {
   DEFAULT_MAX_WAIT_MS,
   DEFAULT_POLL_INTERVAL_MS,
@@ -50,11 +51,14 @@ import {
 import {
   DEFAULT_NUM_SHARDS,
   DEFAULT_PASSIVATION_IDLE_MS,
+  DEFAULT_REGISTER_RETRY_INTERVAL_MS,
+  DEFAULT_SHARD_REGION_BUFFER_SIZE,
 } from '../../../src/cluster/sharding/ShardingOptions.js';
 import {
   DEFAULT_HAND_OFF_TIMEOUT_MS,
   DEFAULT_REBALANCE_INTERVAL_MS,
 } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
+import { DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS } from '../../../src/cluster/sharding/StartShardingOptions.js';
 import {
   DEFAULT_MAX_GOSSIP_BYTES,
   DEFAULT_MAX_PENDING_QUORUM_REQUESTS,
@@ -168,8 +172,16 @@ import {
  * very drift being guarded.
  */
 
-/** How to read a key — picks the `Config` accessor that matches its literal. */
-type DefaultKind = 'duration' | 'bytes' | 'int' | 'string' | 'bool';
+/**
+ * How to read a key — picks the `Config` accessor that matches its literal.
+ *
+ * `number` is not a synonym for `int`, and mislabelling a fractional leaf is
+ * silent in both directions: `getInt` *throws* on `0.2`, while `duration` and
+ * `bytes` return a bare number unchanged, so labelling
+ * `restart-random-factor = 0.2` a duration passes while asserting nothing
+ * about it being a fraction (#883).
+ */
+type DefaultKind = 'duration' | 'bytes' | 'int' | 'number' | 'string' | 'bool';
 
 type DocumentedDefault = {
   /** Full dotted HOCON path as it appears in `REFERENCE_CONF`. */
@@ -246,6 +258,9 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.sharding.passivation-idle', kind: 'duration', constant: DEFAULT_PASSIVATION_IDLE_MS },
   { key: 'actor-ts.sharding.rebalance-interval', kind: 'duration', constant: DEFAULT_REBALANCE_INTERVAL_MS },
   { key: 'actor-ts.sharding.hand-off-timeout', kind: 'duration', constant: DEFAULT_HAND_OFF_TIMEOUT_MS },
+  { key: 'actor-ts.sharding.buffer-size', kind: 'int', constant: DEFAULT_SHARD_REGION_BUFFER_SIZE },
+  { key: 'actor-ts.sharding.register-retry-interval', kind: 'duration', constant: DEFAULT_REGISTER_RETRY_INTERVAL_MS },
+  { key: 'actor-ts.sharding.shard-region-query-timeout', kind: 'duration', constant: DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS },
 
   /* --- distributed data --- */
   { key: 'actor-ts.distributed-data.max-pending-quorum-requests', kind: 'int', constant: DEFAULT_MAX_PENDING_QUORUM_REQUESTS },
@@ -264,25 +279,37 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.diagnostics.log-dead-letters-suspend-duration', kind: 'duration', constant: DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS },
 
   /* --- worker cluster --- */
+  { key: 'actor-ts.worker-cluster.system-name', kind: 'string', constant: DEFAULT_WORKER_SYSTEM_NAME },
+  { key: 'actor-ts.worker-cluster.hostname', kind: 'string', constant: DEFAULT_WORKER_HOSTNAME },
+  { key: 'actor-ts.worker-cluster.base-port', kind: 'int', constant: DEFAULT_WORKER_BASE_PORT },
+  { key: 'actor-ts.worker-cluster.ready-timeout', kind: 'duration', constant: DEFAULT_WORKER_READY_TIMEOUT_MS },
   { key: 'actor-ts.worker-cluster.restart-policy', kind: 'string', constant: DEFAULT_WORKER_RESTART_POLICY },
+  { key: 'actor-ts.worker-cluster.restart-min-backoff', kind: 'duration', constant: DEFAULT_RESTART_MIN_BACKOFF_MS },
+  { key: 'actor-ts.worker-cluster.restart-max-backoff', kind: 'duration', constant: DEFAULT_RESTART_MAX_BACKOFF_MS },
+  { key: 'actor-ts.worker-cluster.restart-random-factor', kind: 'number', constant: DEFAULT_RESTART_RANDOM_FACTOR },
+  { key: 'actor-ts.worker-cluster.max-restarts', kind: 'int', constant: DEFAULT_MAX_RESTARTS },
+  { key: 'actor-ts.worker-cluster.restart-window', kind: 'duration', constant: DEFAULT_RESTART_WINDOW_MS },
 
   /* --- http --- */
-  { key: 'actor-ts.http.websocket.maxFrameBytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES },
-  { key: 'actor-ts.http.websocket.maxBufferedBytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_POLICY.maxBufferedBytes },
-  { key: 'actor-ts.http.websocket.onOversizeFrame', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onOversizeFrame },
-  { key: 'actor-ts.http.websocket.onInvalidMessage', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onInvalidMessage },
-  { key: 'actor-ts.http.websocket.onBackpressure', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onBackpressure },
-  { key: 'actor-ts.http.websocket.maxPreAttachFrames', kind: 'int', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES },
-  { key: 'actor-ts.http.websocket.maxPreAttachBytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES },
-  { key: 'actor-ts.http.websocket.acceptTimeoutMs', kind: 'duration', constant: DEFAULT_WEBSOCKET_POLICY.acceptTimeoutMs },
-  { key: 'actor-ts.http.client.defaultTimeoutMs', kind: 'duration', constant: DEFAULT_HTTP_CLIENT_TIMEOUT_MS },
-  { key: 'actor-ts.http.client.maxRedirects', kind: 'int', constant: DEFAULT_HTTP_CLIENT_MAX_REDIRECTS },
-  { key: 'actor-ts.http.client.maxResponseBytes', kind: 'bytes', constant: DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES },
+  { key: 'actor-ts.http.websocket.max-frame-bytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_MAX_FRAME_BYTES },
+  { key: 'actor-ts.http.websocket.max-buffered-bytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_POLICY.maxBufferedBytes },
+  { key: 'actor-ts.http.websocket.on-oversize-frame', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onOversizeFrame },
+  { key: 'actor-ts.http.websocket.on-invalid-message', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onInvalidMessage },
+  { key: 'actor-ts.http.websocket.on-backpressure', kind: 'string', constant: DEFAULT_WEBSOCKET_POLICY.onBackpressure },
+  { key: 'actor-ts.http.websocket.max-pre-attach-frames', kind: 'int', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES },
+  { key: 'actor-ts.http.websocket.max-pre-attach-bytes', kind: 'bytes', constant: DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES },
+  { key: 'actor-ts.http.websocket.accept-timeout', kind: 'duration', constant: DEFAULT_WEBSOCKET_POLICY.acceptTimeoutMs },
+  { key: 'actor-ts.http.client.default-timeout', kind: 'duration', constant: DEFAULT_HTTP_CLIENT_TIMEOUT_MS },
+  { key: 'actor-ts.http.client.max-redirects', kind: 'int', constant: DEFAULT_HTTP_CLIENT_MAX_REDIRECTS },
+  { key: 'actor-ts.http.client.max-response-bytes', kind: 'bytes', constant: DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES },
   { key: 'actor-ts.http.client.redirect', kind: 'string', constant: DEFAULT_HTTP_CLIENT_REDIRECT_MODE },
 
   /* --- cache --- */
-  { key: 'actor-ts.cache.in-memory.maxEntries', kind: 'int', constant: DEFAULT_MAX_ENTRIES },
-  { key: 'actor-ts.cache.in-memory.cleanupMs', kind: 'int', constant: DEFAULT_CLEANUP_MS },
+  { key: 'actor-ts.cache.in-memory.max-entries', kind: 'int', constant: DEFAULT_MAX_ENTRIES },
+  // `duration`, not `int`: #1405 republished this as `60s`, which `getInt`
+  // rejects outright.  `DEFAULT_CLEANUP_MS` is unchanged — only the accessor
+  // that has to read the literal moved.
+  { key: 'actor-ts.cache.in-memory.cleanup-interval', kind: 'duration', constant: DEFAULT_CLEANUP_MS },
 
   /* --- logging: pipeline --- */
   { key: 'actor-ts.logger.close-timeout', kind: 'duration', constant: DEFAULT_SINK_CLOSE_TIMEOUT_MS },
@@ -480,6 +507,7 @@ const readers = {
   duration: (key: string) => reference.getDuration(key),
   bytes: (key: string) => reference.getBytes(key),
   int: (key: string) => reference.getInt(key),
+  number: (key: string) => reference.getNumber(key),
   string: (key: string) => reference.getString(key),
   bool: (key: string) => reference.getBoolean(key),
 } as const satisfies Record<DefaultKind, (key: string) => number | string | boolean>;

@@ -13,7 +13,7 @@ import { ConfigSeedProviderOptions } from '../discovery/ConfigSeedProviderOption
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { ClusterLeavingReason, CoordinatedShutdownId, type CoordinatedShutdown } from '../CoordinatedShutdown.js';
 import { Cluster } from './Cluster.js';
-import { ClusterOptions, resolveAdvertisedHost } from './ClusterOptions.js';
+import { ClusterOptions, resolveAdvertisedHost, resolveAdvertisedPort } from './ClusterOptions.js';
 import type { SelfElectionPolicy } from './ClusterOptions.js';
 import { NodeAddress } from './NodeAddress.js';
 import { StableObservation } from './bootstrap/StableObservation.js';
@@ -89,6 +89,10 @@ export async function bootstrapCluster(
   // and both run before `join` is called.
   const advertisedHost = resolveAdvertisedHost({ host, advertisedHost: resolvedOptions.advertisedHost });
   const port = resolvePort(resolvedOptions);
+  // Same split, same three consumers (#845).  Everything below that builds or
+  // compares an address peers dial takes this one; only `withPort` on the way
+  // into the join takes the bound `port`.
+  const advertisedPort = resolveAdvertisedPort({ port, advertisedPort: resolvedOptions.advertisedPort });
 
   const system = ActorSystem.create(resolvedOptions.name, extractSystemOptions(resolvedOptions));
   const log = (message: string, err?: unknown): void => system.log.warn(
@@ -105,8 +109,8 @@ export async function bootstrapCluster(
       ? await observeStableSeeds({
         tuning: resolvedOptions.stableObservation === true ? {} : resolvedOptions.stableObservation,
         fromConfig: readStableObservationOptionsFromConfig(system.config),
-        seedProvider: buildSeedProviderFor(resolvedOptions, port, log),
-        selfAddress: new NodeAddress(resolvedOptions.name, advertisedHost, port),
+        seedProvider: buildSeedProviderFor(resolvedOptions, advertisedPort, log),
+        selfAddress: new NodeAddress(resolvedOptions.name, advertisedHost, advertisedPort),
         log: (message) => system.log.info(message),
       })
       : {
@@ -114,7 +118,7 @@ export async function bootstrapCluster(
           explicit: resolvedOptions.seeds,
           discovery: resolvedOptions.discovery,
           systemName: resolvedOptions.name,
-          port,
+          port: advertisedPort,
           selfHost: advertisedHost,
           log,
         }),
@@ -137,6 +141,14 @@ export async function bootstrapCluster(
   // deployments take.
   if (resolvedOptions.advertisedHost !== undefined) {
     clusterOptions.withAdvertisedHost(resolvedOptions.advertisedHost);
+  }
+  // Likewise the caller's value only.  `Cluster.join` derives the same answer
+  // from the same `port`, and forwarding the derived one here would also
+  // shadow an `actor-ts.remote.tcp.advertised-port` the config layer supplies
+  // — an explicit option outranks HOCON, and this would make one out of thin
+  // air (#845).
+  if (resolvedOptions.advertisedPort !== undefined) {
+    clusterOptions.withAdvertisedPort(resolvedOptions.advertisedPort);
   }
   if (selfElection !== undefined) clusterOptions.withSelfElection(selfElection);
   if (resolvedOptions.roles) clusterOptions.withRoles([...resolvedOptions.roles]);

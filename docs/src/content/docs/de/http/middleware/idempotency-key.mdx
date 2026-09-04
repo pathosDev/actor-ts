@@ -308,11 +308,11 @@ import { Aside } from '@astrojs/starlight/components';
   einer Schranke fällt.
 
   Übergib eine eigene Instanz — oder `ext.cache('idempotency')` — und
-  dimensioniere deren `maxEntries` für die Keys, die du innerhalb eines
+  dimensioniere deren `max-entries` für die Keys, die du innerhalb eines
   `ttlMs` erwartest, unter dem Namen dieses Caches:
 
   ```hocon
-  actor-ts.cache.idempotency.in-memory.maxEntries = 200000
+  actor-ts.cache.idempotency.in-memory.max-entries = 200000
   ```
 
   Wo eine Instanz wirklich geteilt werden muss, reserviere stattdessen
@@ -320,8 +320,8 @@ import { Aside } from '@astrojs/starlight/components';
 
   ```hocon
   actor-ts.cache.shared.in-memory {
-    maxEntries = 10000
-    prefixQuotas { "idem:" = 8000, "rl:" = 2000 }
+    max-entries   = 10000
+    prefix-quotas { "idem:" = 8000, "rl:" = 2000 }
   }
   ```
 

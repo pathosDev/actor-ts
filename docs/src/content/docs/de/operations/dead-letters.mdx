@@ -6,8 +6,17 @@ description: Was ein Dead Letter ist, was actor-ts standardmäßig damit macht u
 Ein **Dead Letter** ist eine Nachricht, die das System nicht zustellen
 konnte: ein `tell` an eine Ref, deren Actor gestoppt ist, eine Selection,
 die ins Leere lief, ein Behavior, das mit `unhandled` geantwortet hat, ein
-Cluster-Singleton ohne Host. Nichts ist aus Versehen verloren gegangen —
-das Framework hat es bemerkt, und so sagt es das.
+Actor, der eine Nachricht mit
+[`this.unhandled(m)`](/de/fundamentals/actor/#eine-nachricht-ablehnen--unhandled)
+abgelehnt hat, ein Cluster-Singleton ohne Host. Nichts ist aus Versehen
+verloren gegangen — das Framework hat es bemerkt, und so sagt es das.
+
+Die beiden `unhandled`-Einträge sind von anderer Art als der Rest: die
+Nachricht *wurde* zugestellt, und ein lebender Actor hat sie abgelehnt.
+Unterscheiden lässt sich das an einem Counter — `actor_unhandled_total{class}`
+steigt nur bei einer abgelehnten Nachricht, und anders als
+`actor_dead_letters_total` braucht er die Queue unten nicht erst
+eingeschaltet.
 
 ## Was standardmäßig passiert
 

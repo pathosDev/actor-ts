@@ -163,6 +163,40 @@ yet handle.
 exhaustiveness check; reach for it deliberately when "ignore the
 rest" is the right semantic.
 
+### Saying so when you decline — `this.unhandled(m)`
+
+`.otherwise()` only says *this arm caught it*.  What the handler does
+decides whether a declined message leaves any trace at all, and the
+framework's answer is one line:
+
+```ts
+private onUnhandled(message: Command): void {
+  this.unhandled(message);
+}
+```
+
+`Actor.unhandled` wraps the message in a `DeadLetter` naming **this**
+actor as the recipient, publishes it on the
+[event stream](/fundamentals/event-stream/), and ticks
+`actor_unhandled_total{class}`.
+
+The counter is not redundant with the letter.  The
+[dead-letter queue](/operations/dead-letters/) defaults to
+`store = off`, so on a system nobody configured nothing counts a dead
+letter — the counter is the only rate signal there is, which is what
+you want when a rolling upgrade starts sending a frame this build
+does not know.
+
+**Nothing detects this for you.**  The runtime cannot tell an
+intentionally ignored message from a dropped one, so a handler that
+simply returns still produces nothing — the right answer for an actor
+that means to ignore a whole class of message.  Declining is a
+statement you make.
+
+The typed API says the same thing from the other side: a behavior that
+returns `Behaviors.unhandled` lands on exactly this path.  Two things
+named `unhandled` — one a method you call, one a sentinel you return.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`.exhaustive()` complains and the error is opaque">

@@ -155,6 +155,27 @@ export const ConfigKeys = {
     inMemory: 'actor-ts.cache.in-memory',
     redis: 'actor-ts.cache.redis',
     memcached: 'actor-ts.cache.memcached',
+    /**
+     * The global in-memory block's *settings*, as against `inMemory` above,
+     * which is its plugin **id** — the factory-map key, re-exported as
+     * `IN_MEMORY_CACHE_PLUGIN_ID` and pinned by its literal value in the cache
+     * suite.  The two carry the same string and stay two entries because one
+     * is an identifier and the other is a config path: growing `inMemory` into
+     * an object to hold these would break every use of the id.
+     *
+     * Declared leaf by leaf for the reason `diagnostics` gives — a root alone
+     * satisfies `NoDeadConfigKeys` for everything beneath it.  The identical
+     * leaves under `actor-ts.cache.<name>.in-memory` cannot be listed (the
+     * name is the application's); `CacheExtension` composes those from the
+     * same three suffixes.
+     */
+    inMemoryOptions: {
+      root: 'actor-ts.cache.in-memory',
+      maxEntries: 'actor-ts.cache.in-memory.max-entries',
+      cleanupInterval: 'actor-ts.cache.in-memory.cleanup-interval',
+      /** Comment-only in `reference.conf` — unset means one undivided map. */
+      prefixQuotas: 'actor-ts.cache.in-memory.prefix-quotas',
+    },
   },
 
   /** IO broker config roots — `actor-ts.io.broker.*`. */
@@ -204,10 +225,38 @@ export const ConfigKeys = {
     backend: 'actor-ts.http.backend',
     /** How long `unbind()` lets in-flight requests drain before forcing. */
     shutdownGracePeriod: 'actor-ts.http.shutdown-grace-period',
-    /** Server-side WebSocket defaults for `websocket()` routes. */
-    websocket: 'actor-ts.http.websocket',
+    /**
+     * Server-side WebSocket defaults for `websocket()` routes.
+     *
+     * Full dotted leaves under a `root`, not a bare block root, for the reason
+     * `diagnostics` above spells out: `NoDeadConfigKeys`' `coveringAccessor`
+     * falls back to the nearest root, so a root alone would pass the guard for
+     * every leaf beneath it whether or not the reader had been updated.  That
+     * is not hypothetical here — #1405 renamed all nine of these leaves, and
+     * with only the root declared the rename could have shipped in
+     * `reference.conf` with every leaf inert and the suite green.
+     */
+    websocket: {
+      root: 'actor-ts.http.websocket',
+      maxFrameBytes: 'actor-ts.http.websocket.max-frame-bytes',
+      onOversizeFrame: 'actor-ts.http.websocket.on-oversize-frame',
+      onInvalidMessage: 'actor-ts.http.websocket.on-invalid-message',
+      maxBufferedBytes: 'actor-ts.http.websocket.max-buffered-bytes',
+      onBackpressure: 'actor-ts.http.websocket.on-backpressure',
+      /** Comment-only in `reference.conf` — unset means unlimited. */
+      maxConnections: 'actor-ts.http.websocket.max-connections',
+      maxPreAttachFrames: 'actor-ts.http.websocket.max-pre-attach-frames',
+      maxPreAttachBytes: 'actor-ts.http.websocket.max-pre-attach-bytes',
+      acceptTimeout: 'actor-ts.http.websocket.accept-timeout',
+    },
     /** Outbound `HttpClient` defaults — the shared client and `newClient(...)`. */
-    client: 'actor-ts.http.client',
+    client: {
+      root: 'actor-ts.http.client',
+      maxResponseBytes: 'actor-ts.http.client.max-response-bytes',
+      defaultTimeout: 'actor-ts.http.client.default-timeout',
+      redirect: 'actor-ts.http.client.redirect',
+      maxRedirects: 'actor-ts.http.client.max-redirects',
+    },
   },
 
   /** Persistence plugin selection + config — `actor-ts.persistence.*`. */
@@ -360,6 +409,13 @@ export const ConfigKeys = {
    * so an unset one keeps meaning "derive it from `tcp.host`" instead of being
    * permanently present and empty.
    *
+   * `tcp.port` and `tcp.advertised-port` are the same split one axis over
+   * (#845): the first is the port bound, the second the port peers dial, and
+   * the second likewise ships no leaf so that "the same as `tcp.port`" stays
+   * expressible.  It is the published-container-port case — a process
+   * listening on 2552 that the outside world reaches on the port
+   * `docker run -p 3000:2552` published — and nothing else needs it.
+   *
    * `remote.tls.enabled` is read but **not honoured**: the transport
    * `Cluster` builds for itself is always plaintext, so the flag decides
    * nothing except whether the node warns about that at startup (#591).
@@ -372,6 +428,7 @@ export const ConfigKeys = {
       host: 'actor-ts.remote.tcp.host',
       advertisedHost: 'actor-ts.remote.tcp.advertised-host',
       port: 'actor-ts.remote.tcp.port',
+      advertisedPort: 'actor-ts.remote.tcp.advertised-port',
     },
     tls: {
       enabled: 'actor-ts.remote.tls.enabled',
@@ -382,12 +439,19 @@ export const ConfigKeys = {
   /**
    * Cluster-sharding defaults — `actor-ts.sharding.*`.  Read once per
    * started type by `ClusterSharding.start`, which layers them under the
-   * explicit options; the first five reach the region, the last two the
-   * per-type coordinator.
+   * explicit options; most reach the region, `rebalanceInterval` and
+   * `handOffTimeout` the per-type coordinator, and `shardRegionQueryTimeout`
+   * neither — it is the default `ClusterSharding.shards()` /
+   * `shardRefFor()` wait, held on this node.
    *
    * `shardPassivationIdle` has no leaf in `reference.conf` on purpose — it
    * must stay absent for "unset means: follow `passivationIdle`" to be
    * expressible, since a shipped value would make `hasPath` true forever.
+   *
+   * `bufferSize` caps the region's routing buffer as a **region-wide total**
+   * (#849).  The buffer is keyed by shard id, so reading it as per-shard
+   * multiplies the bound by `numberOfShards`; and `0` here means *never
+   * buffer*, the opposite polarity to `maxEntities = 0`, which means *no cap*.
    */
   sharding: {
     numberOfShards: 'actor-ts.sharding.number-of-shards',
@@ -395,8 +459,11 @@ export const ConfigKeys = {
     passivationIdle: 'actor-ts.sharding.passivation-idle',
     shardPassivationIdle: 'actor-ts.sharding.shard-passivation-idle',
     maxEntities: 'actor-ts.sharding.max-entities',
+    bufferSize: 'actor-ts.sharding.buffer-size',
+    registerRetryInterval: 'actor-ts.sharding.register-retry-interval',
     rebalanceInterval: 'actor-ts.sharding.rebalance-interval',
     handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
+    shardRegionQueryTimeout: 'actor-ts.sharding.shard-region-query-timeout',
   },
 
   /**
@@ -409,7 +476,21 @@ export const ConfigKeys = {
    */
   workerCluster: {
     workers: 'actor-ts.worker-cluster.workers',
+    systemName: 'actor-ts.worker-cluster.system-name',
+    hostname: 'actor-ts.worker-cluster.hostname',
+    basePort: 'actor-ts.worker-cluster.base-port',
+    // The four duration leaves drop the `Ms` their fields carry and take a
+    // HOCON duration literal, as `logger.close-timeout` (field
+    // `closeTimeoutMs`) and `…delivery.flush-interval` (field
+    // `flushIntervalMs`) already do.  A `…-ms` leaf would be the first in
+    // reference.conf and would make `10s` unwritable.
+    readyTimeout: 'actor-ts.worker-cluster.ready-timeout',
     restartPolicy: 'actor-ts.worker-cluster.restart-policy',
+    restartMinBackoff: 'actor-ts.worker-cluster.restart-min-backoff',
+    restartMaxBackoff: 'actor-ts.worker-cluster.restart-max-backoff',
+    restartRandomFactor: 'actor-ts.worker-cluster.restart-random-factor',
+    maxRestarts: 'actor-ts.worker-cluster.max-restarts',
+    restartWindow: 'actor-ts.worker-cluster.restart-window',
   },
 
   /** CoordinatedShutdown pipeline defaults — `actor-ts.coordinated-shutdown.*`. */

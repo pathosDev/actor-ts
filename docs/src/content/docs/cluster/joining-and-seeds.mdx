@@ -55,7 +55,8 @@ to be special after the join.
 type ClusterOptionsType = {
   host:                       string;       // interface to bind (wildcard ok)
   advertisedHost?:            string;       // address peers dial (never a wildcard)
-  port:                       number;       // this node's TCP port
+  port:                       number;       // port to bind
+  advertisedPort?:            number;       // port peers dial (defaults to port)
   seeds?:                     string[];     // peer addresses for bootstrap
   roles?:                     string[];     // role tags
   failureDetector?:           Partial<...>;

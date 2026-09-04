@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
-import { Config } from '../../../src/config/Config.js';
+import { Config, ConfigError } from '../../../src/config/Config.js';
 import {
   CacheExtensionId,
   IN_MEMORY_CACHE_PLUGIN_ID,
@@ -69,7 +69,7 @@ describe('CacheExtension', () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
       .withLogLevel(LogLevel.Off)
-      .withConfig({ 'actor-ts': { cache: { 'in-memory': { maxEntries: 2, cleanupMs: 0 } } } });
+      .withConfig({ 'actor-ts': { cache: { 'in-memory': { 'max-entries': 2, 'cleanup-interval': 0 } } } });
     const sys = ActorSystem.create('cache-hocon', sysOptions);
     const ext = sys.extension(CacheExtensionId);
     const cache = ext.cache() as InMemoryCache;
@@ -108,8 +108,8 @@ describe('CacheExtension', () => {
         .withConfig({
           'actor-ts': {
             cache: {
-              'in-memory': { maxEntries: 2, cleanupMs: 0 },
-              idempotency: { 'in-memory': { maxEntries: 6 } },
+              'in-memory': { 'max-entries': 2, 'cleanup-interval': 0 },
+              idempotency: { 'in-memory': { 'max-entries': 6 } },
             },
           },
         });
@@ -131,10 +131,11 @@ describe('CacheExtension', () => {
         .withConfig({
           'actor-ts': {
             cache: {
-              // Only `cleanupMs` globally — so the per-name `maxEntries` is the
-              // only bound in play, and it cannot be inherited from a sibling.
-              'in-memory': { cleanupMs: 0 },
-              'rate-limit': { 'in-memory': { maxEntries: 3 } },
+              // Only `cleanup-interval` globally — so the per-name `max-entries`
+              // is the only bound in play, and it cannot be inherited from a
+              // sibling.
+              'in-memory': { 'cleanup-interval': 0 },
+              'rate-limit': { 'in-memory': { 'max-entries': 3 } },
             },
           },
         });
@@ -151,7 +152,7 @@ describe('CacheExtension', () => {
         .withLogger(new NoopLogger())
         .withLogLevel(LogLevel.Off)
         .withConfig({
-          'actor-ts': { cache: { 'in-memory': { maxEntries: 2, cleanupMs: 0 } } },
+          'actor-ts': { cache: { 'in-memory': { 'max-entries': 2, 'cleanup-interval': 0 } } },
         });
       const sys = ActorSystem.create('cache-per-name-fallthrough', sysOptions);
       const ext = sys.extension(CacheExtensionId);
@@ -168,8 +169,8 @@ describe('CacheExtension', () => {
         .withConfig({
           'actor-ts': {
             cache: {
-              'in-memory': { cleanupMs: 0 },
-              sessions: { 'in-memory': { maxEntries: 0 } },
+              'in-memory': { 'cleanup-interval': 0 },
+              sessions: { 'in-memory': { 'max-entries': 0 } },
             },
           },
         });
@@ -178,6 +179,61 @@ describe('CacheExtension', () => {
 
       expect(() => ext.cache('sessions')).toThrow(/maxEntries/);
       await sys.terminate();
+    });
+
+    /**
+     * #1405 kebab-cased these three leaves.  The per-name half is the one with
+     * no guard behind it at all — `actor-ts.cache.<name>.in-memory` is never a
+     * `reference.conf` leaf, so `NoDeadConfigKeys` and `DocumentedDefaults`
+     * both walk past it — and it is also where an ignored old spelling costs
+     * the most: the instance silently falls back to the *global* bound, which
+     * is the exact failure the per-name block exists to prevent.  Both roots go
+     * through one helper, so both refuse.
+     */
+    test.each([
+      ['the global block', { 'in-memory': { maxEntries: 2 } }, 'actor-ts.cache.in-memory'],
+      ['a per-name block', { sessions: { 'in-memory': { maxEntries: 2 } } }, 'actor-ts.cache.sessions.in-memory'],
+    ])('a retired camelCase leaf in %s is refused, naming both spellings', async (_where, cache, root) => {
+      const sysOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off)
+        .withConfig({ 'actor-ts': { cache } });
+      const sys = ActorSystem.create('cache-retired-leaf', sysOptions);
+      const ext = sys.extension(CacheExtensionId);
+
+      expect(() => ext.cache('sessions')).toThrow(ConfigError);
+      expect(() => ext.cache('sessions'))
+        .toThrow(new RegExp(`${root.replace(/\./g, '\\.')}\\.maxEntries[\\s\\S]*${root.replace(/\./g, '\\.')}\\.max-entries`));
+      await sys.terminate();
+    });
+
+    test('cleanup-interval is read as a duration, and cleanupMs is refused', async () => {
+      // The one rename that is also a value change: `reference.conf` publishes
+      // `60s` now.  `30s` building a cache at all is the assertion — the leaf
+      // is read with `getDuration`, and `getInt` would have thrown a
+      // ConfigError on that literal.  A bare millisecond count still works, so
+      // only the key moved, not the value's grammar.
+      const sysOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off)
+        .withConfig(Config.parseString('actor-ts.cache.in-memory { max-entries = 2, cleanup-interval = 30s }'));
+      const sys = ActorSystem.create('cache-cleanup-interval', sysOptions);
+      const cache = sys.extension(CacheExtensionId).cache() as InMemoryCache;
+      await cache.set('a', 1);
+      await cache.set('b', 2);
+      await cache.set('c', 3);
+      expect(cache.sizeForTest()).toBeLessThanOrEqual(2);
+
+      const retiredOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withLogLevel(LogLevel.Off)
+        .withConfig(Config.parseString('actor-ts.cache.in-memory.cleanupMs = 30000'));
+      const retiredSystem = ActorSystem.create('cache-cleanup-ms', retiredOptions);
+      expect(() => retiredSystem.extension(CacheExtensionId).cache())
+        .toThrow(/actor-ts\.cache\.in-memory\.cleanupMs[\s\S]*actor-ts\.cache\.in-memory\.cleanup-interval/);
+
+      await sys.terminate();
+      await retiredSystem.terminate();
     });
 
     /**
@@ -195,8 +251,8 @@ describe('CacheExtension', () => {
           .withConfig({
             'actor-ts': {
               cache: {
-                'in-memory': { maxEntries: 4, cleanupMs: 0 },
-                shared: { 'in-memory': { prefixQuotas: { 'rsp:': 2, 'idem:': 2 } } },
+                'in-memory': { 'max-entries': 4, 'cleanup-interval': 0 },
+                shared: { 'in-memory': { 'prefix-quotas': { 'rsp:': 2, 'idem:': 2 } } },
               },
             },
           });
@@ -227,8 +283,8 @@ describe('CacheExtension', () => {
           .withLogger(new NoopLogger())
           .withLogLevel(LogLevel.Off)
           .withConfig(Config.parseString(`
-            actor-ts.cache.in-memory { maxEntries = 4, cleanupMs = 0 }
-            actor-ts.cache.shared.in-memory.prefixQuotas { "rsp:" = 2, "idem:" = 2 }
+            actor-ts.cache.in-memory { max-entries = 4, cleanup-interval = 0 }
+            actor-ts.cache.shared.in-memory.prefix-quotas { "rsp:" = 2, "idem:" = 2 }
           `));
         const sys = ActorSystem.create('cache-prefix-quotas-hocon', sysOptions);
         const ext = sys.extension(CacheExtensionId);
@@ -252,8 +308,8 @@ describe('CacheExtension', () => {
           .withConfig({
             'actor-ts': {
               cache: {
-                'in-memory': { maxEntries: 4, cleanupMs: 0, prefixQuotas: { 'rsp:': 4 } },
-                shared: { 'in-memory': { prefixQuotas: { 'idem:': 4 } } },
+                'in-memory': { 'max-entries': 4, 'cleanup-interval': 0, 'prefix-quotas': { 'rsp:': 4 } },
+                shared: { 'in-memory': { 'prefix-quotas': { 'idem:': 4 } } },
               },
             },
           });
@@ -276,8 +332,8 @@ describe('CacheExtension', () => {
           .withConfig({
             'actor-ts': {
               cache: {
-                'in-memory': { maxEntries: 4, cleanupMs: 0 },
-                shared: { 'in-memory': { prefixQuotas: { 'rsp:': 3, 'idem:': 3 } } },
+                'in-memory': { 'max-entries': 4, 'cleanup-interval': 0 },
+                shared: { 'in-memory': { 'prefix-quotas': { 'rsp:': 3, 'idem:': 3 } } },
               },
             },
           });
@@ -296,7 +352,7 @@ describe('CacheExtension', () => {
         .withConfig({
           'actor-ts': {
             cache: {
-              'in-memory': { cleanupMs: 0 },
+              'in-memory': { 'cleanup-interval': 0 },
               audit: { plugin: 'name-aware' },
             },
           },

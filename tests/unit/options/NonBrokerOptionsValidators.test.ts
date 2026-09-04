@@ -522,6 +522,18 @@ describe('WorkerClusterOptionsValidator', () => {
     expect(() => check({ readyTimeoutMs: 0 })).toThrow(OptionsError);
   });
 
+  test('rejects an empty systemName or hostname', () => {
+    // Unreachable until these got config leaves (#883): every code caller was
+    // passing a real name.  An empty one reaches NodeAddress and gives every
+    // worker an address with no host, or no system name.
+    expect(() => check({ systemName: '' })).toThrow(OptionsError);
+    expect(() => check({ hostname: '' })).toThrow(OptionsError);
+    expect(() => check({ systemName: 'ingest', hostname: 'ingest-worker' })).not.toThrow();
+    // Unset still passes -- the helpers are a no-op on undefined, and the
+    // built-in defaults fill both in.
+    expect(() => check({})).not.toThrow();
+  });
+
   test('accepts the restart-budget knobs at their edges', () => {
     // A zero floor means "respawn on the next turn"; a zero window means the
     // counts are never reset; -1 restarts restores the unbounded behaviour.

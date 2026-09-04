@@ -96,14 +96,14 @@ describe('actor-ts.http.client', () => {
   }
 
   test('the shared client takes its response ceiling from the config file', async () => {
-    const system = systemWith({ 'actor-ts': { http: { client: { maxResponseBytes: '1K' } } } });
+    const system = systemWith({ 'actor-ts': { http: { client: { 'max-response-bytes': '1K' } } } });
     const url = await serveBytes(system, 4096);
     await expect(system.extension(HttpExtensionId).client.get(url))
       .rejects.toBeInstanceOf(HttpResponseTooLargeError);
   });
 
   test('the shared client takes its deadline from the config file', async () => {
-    const system = systemWith({ 'actor-ts': { http: { client: { defaultTimeoutMs: '50ms' } } } });
+    const system = systemWith({ 'actor-ts': { http: { client: { 'default-timeout': '50ms' } } } });
     const binding = await system.extension(HttpExtensionId)
       .newServerAt('127.0.0.1', 0)
       .bind(get(async () => {
@@ -123,7 +123,7 @@ describe('actor-ts.http.client', () => {
   });
 
   test('an explicit option beats the config file, which beats the built-in default', async () => {
-    const system = systemWith({ 'actor-ts': { http: { client: { maxResponseBytes: '1K' } } } });
+    const system = systemWith({ 'actor-ts': { http: { client: { 'max-response-bytes': '1K' } } } });
     const url = await serveBytes(system, 4096);
     const extension = system.extension(HttpExtensionId);
     // Explicit > HOCON: newClient names its own ceiling and gets the body.
@@ -148,6 +148,33 @@ describe('actor-ts.http.client', () => {
     } finally {
       await system.terminate();
     }
+  });
+
+  /**
+   * #1405 kebab-cased every leaf here.  Ignoring the old spelling would be the
+   * one unacceptable outcome: `maxResponseBytes` is a ceiling a deployment
+   * lowers on purpose, and an unconverted `application.conf` would come back up
+   * on the built-in 8 MiB with nothing said.  So the retired names are refused,
+   * naming both spellings.
+   */
+  test('a retired camelCase leaf is refused at startup, naming both spellings', async () => {
+    const system = systemWith({ 'actor-ts': { http: { client: { maxResponseBytes: '1K' } } } });
+    try {
+      expect(() => system.extension(HttpExtensionId)).toThrow(ConfigError);
+      expect(() => system.extension(HttpExtensionId))
+        .toThrow(/actor-ts\.http\.client\.maxResponseBytes.*actor-ts\.http\.client\.max-response-bytes/s);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('the kebab spelling of that same leaf is read, so the refusal is about the name', async () => {
+    // Guards the guard above: without this, a reader that threw on *any*
+    // configured leaf would pass it.
+    const system = systemWith({ 'actor-ts': { http: { client: { 'max-response-bytes': '1K' } } } });
+    const url = await serveBytes(system, 4096);
+    await expect(system.extension(HttpExtensionId).client.get(url))
+      .rejects.toBeInstanceOf(HttpResponseTooLargeError);
   });
 });
 

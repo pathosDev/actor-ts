@@ -376,3 +376,44 @@ export const SINGLETON_HAND_OVER_RETRY_INTERVAL_MS = 500;
  * a correspondingly slower verdict.
  */
 export const COLD_START_STALL_AFTER_SEED_ROUNDS = 3;
+
+/**
+ * How many distinct unclaimed wire-frame kinds a node names in its log before
+ * it stops reporting new ones (#1178).
+ *
+ * `Cluster.onUnhandledWire` receives every frame kind that is not one of the
+ * core ones — each extension's kinds arrive there and are dispatched from the
+ * handler registry — and a kind nobody registered is either an extension this
+ * node did not start or a peer speaking a protocol it does not know. Both are
+ * worth one line; neither is worth one line per frame, because a rolling
+ * upgrade produces them at message rate.
+ *
+ * A cap and not merely a remembered set, because `kind` arrives **off the
+ * wire**: a peer inventing a fresh kind per frame would otherwise grow that
+ * set without bound, which is the memory-growth shape this codebase caps
+ * everywhere else it accepts a peer-supplied string. Eight is comfortably
+ * above the number of wire kinds the framework's own extensions register
+ * together, so an honest heterogeneous deployment never reaches it — and a
+ * sender that does reach it has already been reported eight times.
+ *
+ * The counter is deliberately *not* capped with it: `actor_unhandled_total`
+ * is the rate signal, and suppressing that is what #1179 is for.
+ */
+export const MAX_REPORTED_UNCLAIMED_WIRE_KINDS = 8;
+
+/**
+ * How many characters of a peer-supplied frame `kind` reach a log line, and
+ * therefore how much of one this node remembers (#1178).
+ *
+ * `isWireFrame` enforces only that `kind` is a string — unknown kinds pass on
+ * purpose, so extensions can define their own — which leaves its length and
+ * its contents entirely to the sender. Sixty-four characters is several times
+ * the longest kind the framework itself registers
+ * (`cluster-client-envelope`), so a real one is never clipped, and it bounds
+ * both the log line and the entry `Cluster` keeps to avoid repeating itself.
+ *
+ * A length, not a format, for the same reason {@link MAX_NODE_INCARNATION_LENGTH} is:
+ * the rule has to admit whatever an extension names its frames, including one
+ * this build has never heard of.
+ */
+export const MAX_LOGGED_WIRE_KIND_LENGTH = 64;

@@ -489,12 +489,18 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
    * lands here — and `.exhaustive()` turned an unrecognised body into an actor
    * failure, taking the singleton's supervision with it (#713).  A message we
    * do not understand is not a reason to fall over.
+   *
+   * It is a reason to leave a trace, though: `this.unhandled` puts the
+   * message on the dead-letter path and counts it (#1178), so a rolling
+   * upgrade that starts speaking a frame this manager predates is visible as
+   * a rate rather than as one warn line scrolling past.
    */
   private onUnhandled(message: unknown): Promise<void> | void {
     this.log.warn(
       `singleton manager: dropping an unrecognised message `
       + `(${(message as { kind?: string })?.kind ?? typeof message})`,
     );
+    this.unhandled(message);
   }
 
   private onReconcile(): Promise<void> {

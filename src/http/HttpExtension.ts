@@ -3,6 +3,7 @@ import type { ActorSystem } from '../ActorSystem.js';
 import type { Config } from '../config/Config.js';
 import { ConfigError } from '../config/Config.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
+import { rejectRetiredLeaves, type RetiredLeaves } from '../config/RetiredKeys.js';
 import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { extensionId, type Extension, type ExtensionId } from '../Extension.js';
 import type { Logger } from '../Logger.js';
@@ -419,6 +420,18 @@ function shutdownGracePeriodFromConfig(config: Config): number | undefined {
 }
 
 /**
+ * The camelCase spellings this block shipped before #1405, mapped to the leaf
+ * that replaced each one.  Present so an upgrade that leaves the old key in an
+ * `application.conf` fails at startup rather than reverting a deliberately
+ * lowered ceiling to the built-in default — see {@link rejectRetiredLeaves}.
+ */
+const RETIRED_HTTP_CLIENT_LEAVES: RetiredLeaves = {
+  maxResponseBytes: 'max-response-bytes',
+  defaultTimeoutMs: 'default-timeout',
+  maxRedirects: 'max-redirects',
+};
+
+/**
  * The `actor-ts.http.client` layer — outbound bounds an operator set without
  * touching code, sitting under any explicit `HttpClientOptions`.
  *
@@ -434,16 +447,21 @@ function shutdownGracePeriodFromConfig(config: Config): number | undefined {
  * naming the field, rather than as a bare throw from somewhere in the request
  * path.  An absent leaf stays `undefined` so `mergeOptions` lets the built-in
  * default through rather than shadowing it with a hole.
+ *
+ * Leaf names are the kebab-case of the `HttpClientOptions` fields with any
+ * unit suffix dropped — `defaultTimeoutMs` is read from `default-timeout`,
+ * because HOCON carries the unit in the value and `getDuration` already
+ * accepts both `30s` and a bare millisecond count.
  */
 function httpClientOptionsFromConfig(config: Config): Partial<HttpClientOptionsType> {
-  const key = ConfigKeys.http.client;
-  if (!config.hasPath(key)) return {};
-  const client = config.getConfig(key);
+  const keys = ConfigKeys.http.client;
+  if (!config.hasPath(keys.root)) return {};
+  rejectRetiredLeaves(config, keys.root, RETIRED_HTTP_CLIENT_LEAVES);
   return {
-    maxResponseBytes: client.hasPath('maxResponseBytes') ? client.getBytes('maxResponseBytes') : undefined,
-    defaultTimeoutMs: client.hasPath('defaultTimeoutMs') ? client.getDuration('defaultTimeoutMs') : undefined,
-    redirect: client.hasPath('redirect') ? (client.getString('redirect') as HttpRedirectMode) : undefined,
-    maxRedirects: client.hasPath('maxRedirects') ? client.getInt('maxRedirects') : undefined,
+    maxResponseBytes: config.hasPath(keys.maxResponseBytes) ? config.getBytes(keys.maxResponseBytes) : undefined,
+    defaultTimeoutMs: config.hasPath(keys.defaultTimeout) ? config.getDuration(keys.defaultTimeout) : undefined,
+    redirect: config.hasPath(keys.redirect) ? (config.getString(keys.redirect) as HttpRedirectMode) : undefined,
+    maxRedirects: config.hasPath(keys.maxRedirects) ? config.getInt(keys.maxRedirects) : undefined,
   };
 }
 

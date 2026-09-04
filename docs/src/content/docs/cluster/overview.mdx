@@ -68,8 +68,8 @@ A few settings are doing most of the work:
 
 | Setting | Purpose |
 | --- | --- |
-| `host` + `port` | The interface this node **binds**.  `0.0.0.0` means "every interface" and is the default. |
-| `advertisedHost` | The address peers **dial** — this node's identity.  Unset, it is derived from `host` when that is routable, then from `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, then loopback. |
+| `host` + `port` | The interface and port this node **binds**.  `0.0.0.0` means "every interface" and is the default. |
+| `advertisedHost` + `advertisedPort` | The address peers **dial** — this node's identity.  Unset, the host is derived from `host` when that is routable, then from `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, then loopback; the port is simply `port`. |
 | `seeds` | Other nodes' addresses.  At startup, this node contacts them to join the existing cluster.  An empty list = "I'm the first one" (auto-promotes to leader). |
 | `roles` | Tags this node carries.  Routers and shard regions can filter on these (`role: 'compute'` skips nodes without the tag). |
 
@@ -85,6 +85,12 @@ A few settings are doing most of the work:
   still covers both jobs, and an unconfigured node advertises
   `127.0.0.1`.  In Kubernetes, set the pair: bind `0.0.0.0`, advertise
   `POD_IP`.
+
+  The port splits the same way and almost never needs to.  `advertisedPort`
+  is `port` unless something *remapped* it — a published container port,
+  where `docker run -p 3000:2552` means peers must dial `3000` while the
+  listener opens `2552`.  Kubernetes does not remap: pod-to-pod gossip
+  dials the container port directly.
 </Aside>
 
 After `Cluster.join` resolves, the node is in the cluster

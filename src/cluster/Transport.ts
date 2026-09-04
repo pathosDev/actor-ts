@@ -165,6 +165,18 @@ export class TcpTransport implements Transport {
      * because a wildcard would identify nothing there.
      */
     private readonly bindHost: string = self.host,
+    /**
+     * Port to bind, when it differs from the one {@link self} advertises — a
+     * container listens on its own port and tells its peers the published one
+     * (#845).
+     *
+     * Defaults to `self.port`, the same way {@link bindHost} defaults to
+     * `self.host`, and used for the same single thing: the `listen` call.
+     * `self.port` stays the identity, in the handshake announcement and in the
+     * peer keys, because a peer that dialled the bound port would be dialling
+     * a number that means nothing outside this container.
+     */
+    private readonly bindPort: number = self.port,
   ) {}
 
   setHandler(handler: WireHandler): void { this.handler = handler; }
@@ -173,7 +185,7 @@ export class TcpTransport implements Transport {
     this.backend = await getTcpBackend();
     this.listener = await this.backend.listen({
       host: this.bindHost,
-      port: this.self.port,
+      port: this.bindPort,
       tls: this.tls ?? undefined,
       handlers: {
         onOpen: (sock) => this.attachInbound(sock),
@@ -185,11 +197,18 @@ export class TcpTransport implements Transport {
     // Both addresses when they differ: one line that answers "what did it
     // bind" and "what will peers dial", which are the two questions a node
     // that binds a wildcard makes separable.
+    //
+    // Compared whole rather than host-against-host: with the port separable
+    // too (#845), a node that binds 2552 and advertises 3000 differs on the
+    // half a host comparison cannot see, and would log a single address that
+    // reads as though nothing were split — the exact silence #944 was filed
+    // to end.
+    const bound = `${this.bindHost}:${this.bindPort}`;
+    const advertised = `${this.self.host}:${this.self.port}`;
     this.log.info(
-      this.bindHost === this.self.host
-        ? `cluster transport listening on ${this.self.host}:${this.self.port}`
-        : `cluster transport listening on ${this.bindHost}:${this.self.port}, `
-          + `advertising ${this.self.host}:${this.self.port}`,
+      bound === advertised
+        ? `cluster transport listening on ${bound}`
+        : `cluster transport listening on ${bound}, advertising ${advertised}`,
     );
   }
 

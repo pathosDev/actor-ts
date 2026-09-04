@@ -12,12 +12,15 @@ describe('readShardingOptionsFromConfig', () => {
   test('reads every key of the sharding block', () => {
     const config = Config.parseString(`
       actor-ts.sharding {
-        number-of-shards   = 128
-        remember-entities  = true
-        passivation-idle   = 2 minutes
-        max-entities       = 50000
-        rebalance-interval = 5s
-        hand-off-timeout   = 30s
+        number-of-shards           = 128
+        remember-entities          = true
+        passivation-idle           = 2 minutes
+        max-entities               = 50000
+        buffer-size                = 4096
+        register-retry-interval    = 750ms
+        rebalance-interval         = 5s
+        hand-off-timeout           = 30s
+        shard-region-query-timeout = 9s
       }
     `);
 
@@ -26,8 +29,11 @@ describe('readShardingOptionsFromConfig', () => {
       rememberEntities: true,
       passivationIdleMs: 120_000,
       maxEntities: 50_000,
+      bufferSize: 4_096,
+      registerRetryIntervalMs: 750,
       rebalanceIntervalMs: 5_000,
       handOffTimeoutMs: 30_000,
+      shardRegionQueryTimeoutMs: 9_000,
     });
   });
 
@@ -60,8 +66,11 @@ describe('readShardingOptionsFromConfig', () => {
       rememberEntities: false,
       passivationIdleMs: 300_000,
       maxEntities: 0,
+      bufferSize: 100_000,
+      registerRetryIntervalMs: 500,
       rebalanceIntervalMs: 2_000,
       handOffTimeoutMs: 10_000,
+      shardRegionQueryTimeoutMs: 5_000,
     });
   });
 
@@ -78,8 +87,11 @@ describe('readShardingOptionsFromConfig', () => {
       passivationIdle: 'actor-ts.sharding.passivation-idle',
       shardPassivationIdle: 'actor-ts.sharding.shard-passivation-idle',
       maxEntities: 'actor-ts.sharding.max-entities',
+      bufferSize: 'actor-ts.sharding.buffer-size',
+      registerRetryInterval: 'actor-ts.sharding.register-retry-interval',
       rebalanceInterval: 'actor-ts.sharding.rebalance-interval',
       handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
+      shardRegionQueryTimeout: 'actor-ts.sharding.shard-region-query-timeout',
     });
   });
 });

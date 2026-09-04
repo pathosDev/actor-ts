@@ -153,7 +153,27 @@ export type ClusterOptionsType = {
    * the deployment the split exists for: bind `0.0.0.0`, advertise the pod IP.
    */
   readonly advertisedHost?: string;
+  /**
+   * The port this node **binds** — and, unless {@link advertisedPort} says
+   * otherwise, the port peers dial.
+   */
   readonly port: number;
+  /**
+   * The port peers **dial**, when it differs from the bound one (#845).
+   *
+   * The port half of the {@link advertisedHost} split, and it exists for the
+   * one deployment that remaps a port: a published container port, where the
+   * process listens on 2552 inside the container and the outside world reaches
+   * it on whatever `docker run -p 3000:2552` published.  Kubernetes does not
+   * need it — pod-to-pod gossip dials the container port directly — which is
+   * why the host half shipped first and this one derives rather than resolves.
+   *
+   * Unset is the normal case and means "the same as {@link port}", which is
+   * what {@link resolveAdvertisedPort} answers.  There is no environment chain
+   * behind it and no wildcard to refuse: a port is either named or derived from
+   * the bound one, and both are dialable by construction.
+   */
+  readonly advertisedPort?: number;
   /** Other nodes this node should try to contact on startup. */
   readonly seeds?: string[];
   /** Role tags exposed to other members — used to constrain sharding placement. */
@@ -335,9 +355,20 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
     return this.set('advertisedHost', advertisedHost);
   }
 
-  /** Bind port. */
+  /**
+   * The port to bind — and, unless {@link withAdvertisedPort} overrides it,
+   * the port peers dial.
+   */
   withPort(port: number): this {
     return this.set('port', port);
+  }
+
+  /**
+   * The port peers dial, when it differs from the bound one — the published
+   * container port of a `docker run -p 3000:2552` (#845).
+   */
+  withAdvertisedPort(advertisedPort: number): this {
+    return this.set('advertisedPort', advertisedPort);
   }
 
   /** Other nodes this node should try to contact on startup. */
@@ -458,6 +489,9 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     // and validation here is transport-agnostic — the TCP range is TcpTransport's
     // concern, not the cluster's.
     this.positiveInt('port');
+    // Same helper for the same reason: the advertised port is an identity
+    // discriminator, not necessarily a TCP port number (#845).
+    this.positiveInt('advertisedPort');
     this.positiveNumber('gossipIntervalMs');
     this.positiveNumber('seedRetryIntervalMs');
     this.positiveNumber('tombstoneTtlMs');
@@ -591,6 +625,26 @@ export function advertisedHostWasDerived(
 }
 
 /**
+ * The port peers dial — `advertisedPort` when one was named, otherwise the
+ * bound {@link ClusterOptionsType.port} (#845).
+ *
+ * One line, and a named exported function all the same, for the reason
+ * {@link resolveAdvertisedHost} is one: `Cluster.join` and `bootstrapCluster`
+ * both need this answer *before* the join — the bootstrap election orders on
+ * the self address and the seed filter compares against it — and two copies of
+ * `?? port` are two places for the policy to drift.
+ *
+ * There is no environment stage and no refusal to make. A port cannot be a
+ * wildcard, so every value that reaches here is dialable; the only question is
+ * whether the deployment remapped it.
+ */
+export function resolveAdvertisedPort(
+  options: { readonly port: number; readonly advertisedPort?: number },
+): number {
+  return options.advertisedPort ?? options.port;
+}
+
+/**
  * The slice of cluster settings HOCON can supply — `actor-ts.cluster.*`
  * plus the bind address, the advertised address and the wire cap under
  * `actor-ts.remote.*`.
@@ -610,7 +664,7 @@ export function advertisedHostWasDerived(
  */
 export type ClusterConfigDefaults = Partial<Pick<
   ClusterOptionsType,
-  'host' | 'advertisedHost' | 'port' | 'gossipIntervalMs' | 'seedRetryIntervalMs'
+  'host' | 'advertisedHost' | 'port' | 'advertisedPort' | 'gossipIntervalMs' | 'seedRetryIntervalMs'
   | 'failureDetector' | 'maxFrameBytes'
   | 'weaklyUpAfterMs' | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
   | 'maxMembers' | 'maxTombstones'
@@ -646,6 +700,12 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
     out.advertisedHost = config.getString(remote.tcp.advertisedHost);
   }
   if (config.hasPath(remote.tcp.port)) out.port = config.getInt(remote.tcp.port);
+  // Absent from `reference.conf` for the same reason `advertised-host` is: an
+  // always-present leaf could not mean "the same as `port`", which is what
+  // every deployment that does not remap the port relies on (#845).
+  if (config.hasPath(remote.tcp.advertisedPort)) {
+    out.advertisedPort = config.getInt(remote.tcp.advertisedPort);
+  }
   if (config.hasPath(remote.maxFrameBytes)) out.maxFrameBytes = config.getBytes(remote.maxFrameBytes);
   if (config.hasPath(keys.gossipInterval)) out.gossipIntervalMs = config.getDuration(keys.gossipInterval);
   if (config.hasPath(keys.seedRetryInterval)) {
