@@ -44,6 +44,49 @@ type MemcachedCacheOptionsType = {
 `memjs` (the underlying client) supports SASL auth via
 `username`/`password`.  Multiple servers are hash-distributed.
 
+## From config alone
+
+The framework registers the Memcached factory itself, so a cache comes up
+on Memcached with no `registerCache` call and no `new MemcachedCache(...)`
+anywhere in your code — just a plugin id and a block:
+
+```hocon
+actor-ts.cache {
+  sessions.plugin = "actor-ts.cache.memcached"   # cache('sessions') is Memcached
+
+  memcached {
+    servers    = "memcache-a:11211,memcache-b:11211"
+    username   = ${?MEMCACHED_USERNAME}
+    password   = ${?MEMCACHED_PASSWORD}
+    key-prefix = "my-app:"
+  }
+}
+```
+
+The leaves are the kebab-case of the `MemcachedCacheOptionsType` fields
+above.  `servers` is **one comma-separated string**, not a list, because
+that is what `memjs`'s `Client.create` takes.
+
+**An empty string means unset.**  `username`, `password` and `key-prefix`
+ship as `""` so you can see the shape of the key; the reader drops them
+rather than handing them on, and an empty `servers` falls through to the
+built-in `localhost:11211` instead of being refused.
+
+Each named cache can have its own connection settings, layered over the
+global block leaf by leaf:
+
+```hocon
+actor-ts.cache {
+  memcached.servers = "memcache-a:11211"
+
+  sessions { plugin = "actor-ts.cache.memcached", memcached.key-prefix = "sess:" }
+}
+```
+
+`memjs` is a lazy optional peer, so the block costs nothing until a cache
+actually resolves onto it: the driver is imported on the first cache
+*operation*, not at startup.
+
 ## Peer dependency
 
 ```bash

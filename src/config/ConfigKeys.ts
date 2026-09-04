@@ -173,8 +173,45 @@ export const ConfigKeys = {
       root: 'actor-ts.cache.in-memory',
       maxEntries: 'actor-ts.cache.in-memory.max-entries',
       cleanupInterval: 'actor-ts.cache.in-memory.cleanup-interval',
+      timeToLive: 'actor-ts.cache.in-memory.time-to-live',
+      timeToIdle: 'actor-ts.cache.in-memory.time-to-idle',
       /** Comment-only in `reference.conf` — unset means one undivided map. */
       prefixQuotas: 'actor-ts.cache.in-memory.prefix-quotas',
+    },
+    /**
+     * The global Redis block's *settings*, standing to `redis` above exactly as
+     * `inMemoryOptions` stands to `inMemory`: one is the plugin **id** the
+     * factory map is keyed by (and `REDIS_CACHE_PLUGIN_ID` re-exports), the
+     * other is a config path.  Same string, two entries, for the same reason.
+     *
+     * Leaf by leaf rather than a root alone, because `NoDeadConfigKeys`'
+     * `coveringAccessor` resolves anything under `actor-ts.cache` to the
+     * `root` entry — so a root-only shape would pass the guard for a block
+     * nothing reads.  The identical leaves under `actor-ts.cache.<name>.redis`
+     * cannot be listed (the name is the application's);
+     * {@link redisCacheKeysUnder} composes those from the same suffixes.
+     *
+     * `host` and `port` are **comment-only** in `reference.conf`: `url` is
+     * mutually exclusive with them, and a published `host` would be set for
+     * every deployment and refuse every `url`.  They are read all the same,
+     * which is what this entry records.
+     */
+    redisOptions: {
+      root: 'actor-ts.cache.redis',
+      url: 'actor-ts.cache.redis.url',
+      host: 'actor-ts.cache.redis.host',
+      port: 'actor-ts.cache.redis.port',
+      db: 'actor-ts.cache.redis.db',
+      keyPrefix: 'actor-ts.cache.redis.key-prefix',
+      password: 'actor-ts.cache.redis.password',
+    },
+    /** The global Memcached block's settings — see {@link redisOptions}. */
+    memcachedOptions: {
+      root: 'actor-ts.cache.memcached',
+      servers: 'actor-ts.cache.memcached.servers',
+      username: 'actor-ts.cache.memcached.username',
+      password: 'actor-ts.cache.memcached.password',
+      keyPrefix: 'actor-ts.cache.memcached.key-prefix',
     },
   },
 

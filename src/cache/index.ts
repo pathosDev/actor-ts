@@ -3,15 +3,35 @@ export type { Cache } from './Cache.js';
 export { acquireLock } from './CacheLock.js';
 export type { CacheLock } from './CacheLock.js';
 export { InMemoryCache } from './InMemoryCache.js';
-export { InMemoryCacheOptions, InMemoryCacheOptionsBuilder, InMemoryCacheOptionsValidator } from './InMemoryCacheOptions.js';
+export {
+  DEFAULT_TIME_TO_IDLE_MS,
+  DEFAULT_TIME_TO_LIVE_MS,
+  InMemoryCacheOptions,
+  InMemoryCacheOptionsBuilder,
+  InMemoryCacheOptionsValidator,
+} from './InMemoryCacheOptions.js';
 export type { InMemoryCacheOptionsType } from './InMemoryCacheOptions.js';
 export { RedisCache } from './RedisCache.js';
-export { RedisCacheOptions, RedisCacheOptionsBuilder, RedisCacheOptionsValidator } from './RedisCacheOptions.js';
-export type { RedisCacheOptionsType } from './RedisCacheOptions.js';
+export {
+  DEFAULT_REDIS_DB,
+  readRedisCacheOptionsFromConfig,
+  redisCacheKeysUnder,
+  RedisCacheOptions,
+  RedisCacheOptionsBuilder,
+  RedisCacheOptionsValidator,
+} from './RedisCacheOptions.js';
+export type { RedisCacheKeys, RedisCacheOptionsType } from './RedisCacheOptions.js';
 export type { RedisClientLike } from './RedisCache.js';
 export { MemcachedCache } from './MemcachedCache.js';
-export { MemcachedCacheOptions, MemcachedCacheOptionsBuilder, MemcachedCacheOptionsValidator } from './MemcachedCacheOptions.js';
-export type { MemcachedCacheOptionsType } from './MemcachedCacheOptions.js';
+export {
+  DEFAULT_MEMCACHED_SERVERS,
+  memcachedCacheKeysUnder,
+  MemcachedCacheOptions,
+  MemcachedCacheOptionsBuilder,
+  MemcachedCacheOptionsValidator,
+  readMemcachedCacheOptionsFromConfig,
+} from './MemcachedCacheOptions.js';
+export type { MemcachedCacheKeys, MemcachedCacheOptionsType } from './MemcachedCacheOptions.js';
 export type { MemcachedClientLike } from './MemcachedCache.js';
 export {
   CacheExtension,

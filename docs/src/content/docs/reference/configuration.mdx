@@ -539,13 +539,38 @@ read as the name of a plugin.
 | `cache.in-memory.max-entries` | `10000` | Max entries before LRU eviction ([in-memory cache](/cache/in-memory/)). |
 | `cache.in-memory.cleanup-interval` | `60s` | Interval of the background sweep for expired entries; `0` disables it. |
 | `cache.in-memory.prefix-quotas` | *(unset)* | Per-prefix caps that split one instance between its consumers; must sum to at most `max-entries`. |
+| `cache.in-memory.time-to-live` | `0` | Lifetime stamped on a `set` / `mset` that names no `ttlMs`.  `0` = no expiry, which is the historical behaviour. |
+| `cache.in-memory.time-to-idle` | `0` | A read pushes such an entry's expiry out again, never past its `time-to-live`.  `0` = a read extends nothing. |
 | `cache.<name>.in-memory.*` | *(the block above)* | The same leaves, for the single instance `cache('<name>')` resolves — overrides the global block leaf by leaf, and rejects a retired spelling the same way. |
 | `cache.<name>.plugin` | `"...in-memory"` | Which backend `cache('<name>')` resolves to. |
+| `cache.redis.url` | `""` | `redis://host:port` (or `rediss://`).  Mutually exclusive with `host` / `port`.  `""` = unset. |
+| `cache.redis.host` / `.port` | *(unset)* | Deliberately comments in `reference.conf` — see below.  Unset, `ioredis` uses its own `127.0.0.1:6379`. |
+| `cache.redis.db` | `0` | Logical database.  Ignored when `url` is set; put it in the URL path instead. |
+| `cache.redis.key-prefix` | `""` | Prepended to every key — isolates systems or environments sharing one server. |
+| `cache.redis.password` | `""` | `AUTH` password.  Prefer a substitution: `password = ${?REDIS_PASSWORD}`. |
+| `cache.memcached.servers` | `"localhost:11211"` | Comma-separated `host:port` list — a **string**, not a list, because that is what `memjs` takes. |
+| `cache.memcached.username` / `.password` | `""` | SASL credentials.  Prefer `${?MEMCACHED_PASSWORD}`. |
+| `cache.memcached.key-prefix` | `""` | Applied server-side to every operation. |
+| `cache.<name>.redis.*` / `cache.<name>.memcached.*` | *(the blocks above)* | The same leaves for one instance, so `cache('rate-limit')` and `cache('idempotency')` can hold different databases on one server. |
 
 Redis and Memcached caches read their connection settings from
-`actor-ts.cache.redis` / `actor-ts.cache.memcached`.
+`actor-ts.cache.redis` / `actor-ts.cache.memcached`, and the framework
+registers both factories itself — so
+`actor-ts.cache.sessions.plugin = "actor-ts.cache.redis"` is all a cache
+needs to come up on Redis, with no `registerCache` call in your code.
+Both drivers are lazy optional peers, so a block nobody resolves costs
+nothing: `ioredis` and `memjs` are imported on the first cache
+*operation*, not at startup.
 
-The two `<name>` paths take the name your code asks `cache(name)` for,
+**An empty string means unset** everywhere in those two blocks.  The `""`
+values above are the shape of the key, published so you can see the name
+and the nesting; the reader drops them rather than handing them on.  That
+is also why `host` and `port` are comments rather than leaves: `url` is
+mutually exclusive with them, and a shipped `host = "localhost"` would be
+set for every deployment and would make every `url` an `OptionsError`.
+Write both on purpose and you still get that error, which is the point.
+
+These `<name>` paths take the name your code asks `cache(name)` for,
 so they cannot be enumerated in `reference.conf`.  Sizing one consumer
 for its own key space is what the [one cache per
 consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
