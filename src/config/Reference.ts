@@ -579,6 +579,49 @@ actor-ts {
     #
     #   trusted-selection-paths = ["/user/orders/*", "/user/reporting/intake"]
     trusted-selection-paths = []
+
+    # The association lifecycle: what an unauthenticated party that can open a
+    # TCP connection to this port is able to make this node hold.  All four
+    # have been enforced since the transport was hardened; only now are they
+    # settable.  Keep them positive -- none of them has an "off" reading, and
+    # 0 is a distinct way of breaking the node for each.
+    #
+    # handshake-timeout bounds a connection that never speaks its half of the
+    # handshake, in BOTH directions, and it is one key on purpose.  The
+    # dialling side's clock starts before the TCP connect and the TLS
+    # handshake, the accepting side's after the accept -- so with one number
+    # the peer that is still trying has always given up first, and the
+    # acceptor can never be the deadline that punishes a slow-but-legitimate
+    # dial.  A split dial/accept pair would let an accept deadline set below
+    # the dial deadline make a healthy peer permanently unjoinable.
+    handshake-timeout = 5s
+
+    # How many frames are held for a peer that cannot take them right now,
+    # oldest dropped first -- the newest membership and heartbeat state is the
+    # state worth keeping.  Today that is the buffer in front of the
+    # handshake, so a send racing the handshake is held rather than lost; the
+    # key is named for the category rather than that one buffer, because the
+    # post-handshake backpressure queue is the same quantity with the same
+    # policy and the same warning and will land under this key rather than a
+    # second one.
+    outbound-queue-size = 1000
+
+    # How many inbound connections this node accepts before it refuses sockets
+    # outright, newest refused rather than oldest evicted -- eviction would let
+    # an attacker push established peers off the node.  Together with
+    # incomplete-frame-idle below it is what bounds inbound decode memory at
+    # all, and this is the half worth tightening: set it from the real peer
+    # count where that is known, with headroom for the ClusterClients that dial
+    # in.  Refusing a legitimate peer is a partition.
+    max-inbound-connections = 1024
+
+    # How long a connection may hold a half-received frame with no further byte
+    # arriving.  A STALL bound, not a budget for the frame: it is re-armed on
+    # every chunk, so a peer shipping a large frame over a slow link is never
+    # punished for being slow -- only for going silent.  Keep it above
+    # handshake-timeout; a socket that sends nothing at all never reaches this
+    # deadline, and the handshake timer is what covers that one.
+    incomplete-frame-idle = 30s
   }
 
   # Lease coordination -- what a Lease backend reads when it is built with

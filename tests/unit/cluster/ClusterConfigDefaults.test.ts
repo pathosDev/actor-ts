@@ -19,6 +19,12 @@ import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetec
 import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
 import { DEFAULT_MAX_FRAME_BYTES } from '../../../src/cluster/Protocol.js';
+import {
+  HANDSHAKE_TIMEOUT_MS,
+  INCOMPLETE_FRAME_IDLE_MS,
+  MAX_INBOUND_CONNECTIONS,
+  MAX_PENDING_FRAMES,
+} from '../../../src/cluster/Constants.js';
 
 describe('readClusterOptionsFromConfig', () => {
   test('reads the cluster block and the bind/wire settings under remote', () => {
@@ -210,6 +216,15 @@ describe('readClusterOptionsFromConfig', () => {
       // has no leaf at all, deliberately (#877, #964).
       untrustedMode: DEFAULT_UNTRUSTED_MODE,
       trustedSelectionPaths: [],
+      // The four association-lifecycle bounds, pinned to the constants the
+      // transport still falls back to when nothing configures them (#846).
+      // Wiring them must not move a single one: each was a hard-coded bound
+      // with a JSDoc explaining the number, and this test is what says the
+      // number survived being published.
+      handshakeTimeoutMs: HANDSHAKE_TIMEOUT_MS,
+      outboundQueueSize: MAX_PENDING_FRAMES,
+      maxInboundConnections: MAX_INBOUND_CONNECTIONS,
+      incompleteFrameIdleMs: INCOMPLETE_FRAME_IDLE_MS,
       failureDetectorImplementation: DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
       failureDetector: defaultFailureDetectorOptions,
       // Field by field rather than against `defaultPhiAccrualOptions` whole:
@@ -269,6 +284,42 @@ describe('readClusterOptionsFromConfig', () => {
       configured,
       { host: 'h', port: 1, trustedSelectionPaths: ['/user/from-code'] } as ClusterOptionsType,
     ).trustedSelectionPaths).toEqual(['/user/from-code']);
+  });
+
+  test('the four association-lifecycle bounds read through (#846)', () => {
+    // `Config.parseString`, never `Config.fromObject` with dotted keys: the
+    // dotted string would stay a literal top-level key, `hasPath` would resolve
+    // the *reference* value behind it, and every number below would be the
+    // shipped default rather than the one written here.
+    const configured = Config.parseString(`
+      actor-ts.remote {
+        handshake-timeout       = 12s
+        outbound-queue-size     = 250
+        max-inbound-connections = 64
+        incomplete-frame-idle   = 45s
+      }
+    `);
+
+    // The whole object rather than four `toHaveProperty`s: a reader that also
+    // punched in a default for a neighbouring leaf would satisfy per-key
+    // assertions and still change what `Cluster.join` merges.
+    expect(readClusterOptionsFromConfig(configured)).toEqual({
+      handshakeTimeoutMs: 12_000,
+      outboundQueueSize: 250,
+      maxInboundConnections: 64,
+      incompleteFrameIdleMs: 45_000,
+    });
+  });
+
+  test('an explicit lifecycle bound wins over the file, an unset one falls through (#846)', () => {
+    const configured = Config.parseString('actor-ts.remote.max-inbound-connections = 64');
+
+    expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType).maxInboundConnections)
+      .toBe(64);
+    expect(withClusterConfigDefaults(
+      configured,
+      { host: 'h', port: 1, maxInboundConnections: 8 } as ClusterOptionsType,
+    ).maxInboundConnections).toBe(8);
   });
 
   test('the housekeeping block reads through with its own values (#841)', () => {

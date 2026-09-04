@@ -34,10 +34,12 @@ const transport = new TcpTransport(
   NodeAddress.parse('my-app@10.0.0.5:2552'),
   system.log,
   {
-    cert: fs.readFileSync('./tls/cluster.crt'),
-    key:  fs.readFileSync('./tls/cluster.key'),
-    ca:   fs.readFileSync('./tls/ca.crt'),
-    rejectUnauthorized: true,   // Peer-Certs verifizieren
+    tls: {
+      cert: fs.readFileSync('./tls/cluster.crt'),
+      key:  fs.readFileSync('./tls/cluster.key'),
+      ca:   fs.readFileSync('./tls/ca.crt'),
+      rejectUnauthorized: true,   // Peer-Certs verifizieren
+    },
   },
 );
 
@@ -1010,7 +1012,7 @@ const tlsOptionsType = {
   rejectUnauthorized: true,
 };
 
-const transport = new TcpTransport(self, log, tlsOptionsType);
+const transport = new TcpTransport(self, log, { tls: tlsOptionsType });
 
 const clusterOptions = ClusterOptions.create()
   .withHost(host)

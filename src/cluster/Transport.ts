@@ -15,6 +15,8 @@ import {
 import { NodeAddress } from './NodeAddress.js';
 import { certificateVouchesFor } from './PeerIdentity.js';
 import type { ReadConstraintsOptions } from '../serialization/ReadConstraintsOptions.js';
+import { TcpTransportOptionsValidator } from './TcpTransportOptions.js';
+import type { TcpTransportOptions, TcpTransportOptionsType } from './TcpTransportOptions.js';
 import {
   encodeFrame,
   FrameDecoder,
@@ -89,11 +91,11 @@ type Connection = {
   /**
    * Deadline for the handshake, armed the moment the connection exists and
    * cleared by the `hello` / `hello-ack` that completes it.  See
-   * {@link HANDSHAKE_TIMEOUT_MS}.
+   * {@link TcpTransport.handshakeTimeoutMs}.
    *
    * **Both directions get one.**  A dial that never receives its `hello-ack`
    * strands a `byPeer` slot (#697); an accepted socket that never sends a
-   * `hello` strands one of the {@link MAX_INBOUND_CONNECTIONS} — the same bug
+   * `hello` strands one of the {@link TcpTransport.maxInboundConnections} — the same bug
    * on the two sides of the same handshake, and only the first of the two was
    * ever bounded (#588).
    */
@@ -101,11 +103,11 @@ type Connection = {
   /**
    * Armed whenever the decoder is left holding part of a frame, re-armed on
    * every chunk and cleared when the buffer drains.  See
-   * {@link INCOMPLETE_FRAME_IDLE_MS}.
+   * {@link TcpTransport.incompleteFrameIdleMs}.
    */
   incompleteFrameTimer: ReturnType<typeof setTimeout> | null;
   /**
-   * Whether this connection still counts against {@link MAX_INBOUND_CONNECTIONS}.
+   * Whether this connection still counts against the transport's inbound cap.
    * A flag rather than `!outbound`, because the slot is given back exactly once
    * and both `onClose` and `dropConnection` can be the one to do it.
    */
@@ -131,65 +133,74 @@ export class TcpTransport implements Transport {
   private bySocket = new WeakMap<TcpSocketLike, Connection>();
   private handler: WireHandler = () => {};
   private stopped = false;
-  /** Live inbound sockets, bounded by {@link MAX_INBOUND_CONNECTIONS} (#588). */
+  /** Live inbound sockets, bounded by {@link maxInboundConnections} (#588). */
   private inboundConnections = 0;
   /** Set while the cap is saturated, so the refusal is one WARN per episode. */
   private inboundCapReported = false;
 
+  /**
+   * Per-frame size cap (security).  Frames whose length-prefix exceeds this
+   * are rejected before any payload bytes are buffered — closes the
+   * 4-GiB-claim DoS vector documented on {@link FrameDecoder}.
+   *
+   * Public because a sender has to be able to read it — see
+   * {@link Transport.maxFrameBytes} for why the send side needs the number at
+   * all.
+   */
+  readonly maxFrameBytes: number;
+  /** TLS material for both listener and dialer; `null` is plaintext. */
+  private readonly tls: TlsTransportOptionsType | null;
+  /**
+   * Interface and port to bind, which need not be what {@link self}
+   * advertises — a container binds `0.0.0.0` on its own port and tells its
+   * peers one dialable address (#944, #845).  Used for exactly one thing, the
+   * `listen` call: `self` stays the identity everywhere else, in the handshake
+   * announcement and in the peer keys, because a wildcard would identify
+   * nothing there and a remapped port would name something unreachable.
+   */
+  private readonly bindHost: string;
+  private readonly bindPort: number;
+  /** Decode ceilings for every {@link FrameDecoder} this transport builds (#880). */
+  private readonly readConstraints: ReadConstraintsOptions;
+  /** The four association-lifecycle bounds, resolved once (#846). */
+  private readonly handshakeTimeoutMs: number;
+  private readonly outboundQueueSize: number;
+  private readonly maxInboundConnections: number;
+  private readonly incompleteFrameIdleMs: number;
+
+  /**
+   * `self` and `log` stay positional; everything else arrives as
+   * {@link TcpTransportOptions} (#846).
+   *
+   * The list this replaces was seven positional parameters deep, and the four
+   * lifecycle bounds would have made it eleven — a call site that wanted only
+   * the inbound cap would have been five `undefined`s and a number, with
+   * nothing on the line saying which bound it set.  `self` and `log` are the
+   * two every construction site has an opinion about and neither has a default
+   * to fall through to, so they keep their places.
+   *
+   * Validation runs here, once, on the merged settings: this is the consume
+   * time for a transport, and it is the only point that sees an explicit
+   * option and a HOCON value in the same shape (`Cluster` merges the block
+   * into `ClusterOptions` before building this).
+   */
   constructor(
     readonly self: NodeAddress,
     private readonly log: Logger,
-    /** Optional TLS configuration — when set, both listener and dialer use TLS. */
-    private readonly tls: TlsTransportOptionsType | null = null,
-    /**
-     * Per-frame size cap (security).  Frames whose length-prefix
-     * exceeds this are rejected before any payload bytes are
-     * buffered — closes the 4-GiB-claim DoS vector documented on
-     * {@link FrameDecoder}.  Default: {@link DEFAULT_MAX_FRAME_BYTES}
-     * (16 MiB).  Raise it only if you genuinely send larger
-     * envelopes; the cap is per-frame, not aggregate.
-     *
-     * Public because a sender has to be able to read it — see
-     * {@link Transport.maxFrameBytes} for why the send side needs the number
-     * at all.
-     */
-    readonly maxFrameBytes: number = DEFAULT_MAX_FRAME_BYTES,
-    /**
-     * Interface to bind, when it differs from the one {@link self} advertises
-     * — a container binds `0.0.0.0` and tells its peers a single dialable
-     * address (#944).
-     *
-     * Defaults to `self.host`, which is what every caller that has no opinion
-     * gets and what this class did before the two were separable.  It is used
-     * for exactly one thing, the `listen` call: `self` stays the identity
-     * everywhere else, in the handshake announcement and in the peer keys,
-     * because a wildcard would identify nothing there.
-     */
-    private readonly bindHost: string = self.host,
-    /**
-     * Port to bind, when it differs from the one {@link self} advertises — a
-     * container listens on its own port and tells its peers the published one
-     * (#845).
-     *
-     * Defaults to `self.port`, the same way {@link bindHost} defaults to
-     * `self.host`, and used for the same single thing: the `listen` call.
-     * `self.port` stays the identity, in the handshake announcement and in the
-     * peer keys, because a peer that dialled the bound port would be dialling
-     * a number that means nothing outside this container.
-     */
-    private readonly bindPort: number = self.port,
-    /**
-     * Decode ceilings handed to every {@link FrameDecoder} this transport
-     * builds — one per connection, inbound and outbound alike (#880).
-     *
-     * Last, and defaulted, because it is the argument a caller is least likely
-     * to have an opinion about: `Cluster` reads it from `system.config`, and
-     * every other construction site (tests, `MultiNodeSpec`, an application
-     * injecting its own transport) keeps the built-in ceilings by saying
-     * nothing.
-     */
-    private readonly readConstraints: ReadConstraintsOptions = {},
-  ) {}
+    options: TcpTransportOptions = {},
+  ) {
+    const settings = options as TcpTransportOptionsType;
+    new TcpTransportOptionsValidator().validate(settings);
+    this.tls = settings.tls ?? null;
+    this.maxFrameBytes = settings.maxFrameBytes ?? DEFAULT_MAX_FRAME_BYTES;
+    this.bindHost = settings.bindHost ?? self.host;
+    this.bindPort = settings.bindPort ?? self.port;
+    this.readConstraints = settings.readConstraints ?? {};
+    this.handshakeTimeoutMs = settings.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS;
+    this.outboundQueueSize = settings.outboundQueueSize ?? MAX_PENDING_FRAMES;
+    this.maxInboundConnections = settings.maxInboundConnections ?? MAX_INBOUND_CONNECTIONS;
+    this.incompleteFrameIdleMs = settings.incompleteFrameIdleMs ?? INCOMPLETE_FRAME_IDLE_MS;
+  }
 
   setHandler(handler: WireHandler): void { this.handler = handler; }
 
@@ -245,12 +256,12 @@ export class TcpTransport implements Transport {
       this.writeFrame(connection, message);
     } else {
       // Wait for hello / hello-ack, but never without a bound.
-      if (connection.pending.length >= MAX_PENDING_FRAMES) {
+      if (connection.pending.length >= this.outboundQueueSize) {
         connection.pending.shift();
         if (!connection.pendingOverflowed) {
           connection.pendingOverflowed = true;
           this.log.warn(
-            `handshake buffer for ${to} hit ${MAX_PENDING_FRAMES} frames; dropping oldest`,
+            `handshake buffer for ${to} hit ${this.outboundQueueSize} frames; dropping oldest`,
           );
         }
       }
@@ -308,7 +319,7 @@ export class TcpTransport implements Transport {
   }
 
   /**
-   * Register an inbound socket, unless {@link MAX_INBOUND_CONNECTIONS} is
+   * Register an inbound socket, unless {@link TcpTransport.maxInboundConnections} is
    * already saturated — then the socket is closed straight away and `null`
    * comes back (#588).
    *
@@ -320,7 +331,7 @@ export class TcpTransport implements Transport {
    * socket that sends *no bytes at all* reaches neither the frame decoder nor
    * `trackIncompleteFrame`, so before that deadline existed the cheapest attack
    * on the cap was also the only one it did not cover: open
-   * {@link MAX_INBOUND_CONNECTIONS} connections, say nothing, and every
+   * {@link TcpTransport.maxInboundConnections} connections, say nothing, and every
    * subsequent peer and `ClusterClient` is refused for the process's lifetime.
    * On Bun that is reachable even under mTLS, because the socket's `open`
    * callback fires *before* the TLS handshake completes — the slot is taken
@@ -329,11 +340,11 @@ export class TcpTransport implements Transport {
   private acceptInbound(sock: TcpSocketLike): Connection | null {
     const existing = this.bySocket.get(sock);
     if (existing) return existing;
-    if (this.inboundConnections >= MAX_INBOUND_CONNECTIONS) {
+    if (this.inboundConnections >= this.maxInboundConnections) {
       if (!this.inboundCapReported) {
         this.inboundCapReported = true;
         this.log.warn(
-          `refusing inbound connections: ${MAX_INBOUND_CONNECTIONS} are already open`,
+          `refusing inbound connections: ${this.maxInboundConnections} are already open`,
         );
       }
       try { sock.end(); } catch { /* ignore */ }
@@ -648,15 +659,23 @@ export class TcpTransport implements Transport {
    * deadline: the handshake is a single small frame, so re-arming would let a
    * socket dripping one byte every few seconds hold its slot for as long as it
    * cares to. Nothing legitimate is punished by the hard bound either — the
-   * peer on the other end runs the same {@link HANDSHAKE_TIMEOUT_MS} from an
+   * peer on the other end runs the same {@link handshakeTimeoutMs} from an
    * *earlier* moment (its clock starts before the TCP connect and the TLS
    * handshake, this one starts after the accept), so a peer that is still
    * trying has always given up first.
+   *
+   * "The same" survives the value becoming configurable (#846) because there
+   * is **one** key for both directions: an operator raising or lowering
+   * `actor-ts.remote.handshake-timeout` moves the dial and the accept together
+   * on the node that reads it, and a homogeneous deployment keeps the ordering
+   * for free.  Splitting it in two would put the invariant in an operator's
+   * hands, where an accept deadline below the dial deadline makes a healthy
+   * peer unreachable with nothing in the log that says why.
    */
   private armHandshakeTimer(connection: Connection): void {
     connection.handshakeTimer = setTimeout(
       () => this.onHandshakeTimeout(connection),
-      HANDSHAKE_TIMEOUT_MS,
+      this.handshakeTimeoutMs,
     );
     // Don't let a pending handshake hold the process open — the cluster's own
     // lifecycle decides when the runtime may exit, not a handshake in flight.
@@ -683,7 +702,7 @@ export class TcpTransport implements Transport {
     if (connection.decoder.pendingBytes() === 0) return;
     connection.incompleteFrameTimer = setTimeout(
       () => this.onIncompleteFrameTimeout(connection),
-      INCOMPLETE_FRAME_IDLE_MS,
+      this.incompleteFrameIdleMs,
     );
     // Same reasoning as the handshake timer: a half-received frame must not be
     // what keeps the runtime from exiting.
@@ -702,7 +721,7 @@ export class TcpTransport implements Transport {
     const pending = connection.decoder.pendingBytes();
     if (pending === 0) return;
     this.log.warn(
-      `no data from ${connection.peer ?? '<unknown peer>'} for ${INCOMPLETE_FRAME_IDLE_MS} ms `
+      `no data from ${connection.peer ?? '<unknown peer>'} for ${this.incompleteFrameIdleMs} ms `
       + `while ${pending} byte(s) of an incomplete frame are buffered; closing the connection`,
     );
     this.dropConnection(connection);
@@ -725,7 +744,7 @@ export class TcpTransport implements Transport {
   /**
    * The handshake never landed.  What that strands differs by direction — a
    * dial owns a `byPeer` entry, an accepted socket owns one of the
-   * {@link MAX_INBOUND_CONNECTIONS} — but `dropConnection` gives back whatever
+   * {@link TcpTransport.maxInboundConnections} — but `dropConnection` gives back whatever
    * this connection was holding, so only the diagnosis and the "is this still
    * the connection that matters?" test are per-direction.
    */
@@ -737,7 +756,7 @@ export class TcpTransport implements Transport {
       if (this.byPeer.get(connection.targetKey ?? '') !== connection) return;
       this.log.warn(
         `handshake with ${connection.targetKey} did not complete within ` +
-        `${HANDSHAKE_TIMEOUT_MS} ms; dropping the connection and ` +
+        `${this.handshakeTimeoutMs} ms; dropping the connection and ` +
         `${connection.pending.length} buffered frame(s)`,
       );
     } else if (!this.stopped) {
@@ -747,7 +766,7 @@ export class TcpTransport implements Transport {
       // right; calling it a timeout in the log is not.
       this.log.warn(
         `inbound socket from ${connection.socket?.remoteAddress ?? '<unknown address>'} sent no ` +
-        `hello within ${HANDSHAKE_TIMEOUT_MS} ms; closing it and releasing its inbound slot`,
+        `hello within ${this.handshakeTimeoutMs} ms; closing it and releasing its inbound slot`,
       );
     }
     this.dropConnection(connection);

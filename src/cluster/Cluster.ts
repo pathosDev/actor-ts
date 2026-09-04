@@ -355,17 +355,24 @@ export class Cluster {
     // (#880), not a per-cluster tunable, and threading it through the cluster
     // options type would put it in `ClusterConfigDefaults` — a shape whose test
     // asserts the exact object — for the sake of one call site.
+    // The four association-lifecycle bounds ride along the same way (#846):
+    // they are `ClusterOptionsType` fields so `actor-ts.remote.*` can reach
+    // them, and they reach the transport here rather than being re-read from
+    // config inside it — the transport is constructible without a `Config` at
+    // all, and a second read site would be a second precedence order.
     this.transport = options.transport
-      ?? new TcpTransport(
-        this.selfAddress,
-        this.log,
-        null,
-        options.maxFrameBytes,
-        options.host,
-        options.port,
-        readReadConstraintsOptionsFromConfig(system.config),
-      );
-    // That `null` is the transport's TLS argument, and it is hard-coded: the
+      ?? new TcpTransport(this.selfAddress, this.log, {
+        tls: null,
+        maxFrameBytes: options.maxFrameBytes,
+        bindHost: options.host,
+        bindPort: options.port,
+        readConstraints: readReadConstraintsOptionsFromConfig(system.config),
+        handshakeTimeoutMs: options.handshakeTimeoutMs,
+        outboundQueueSize: options.outboundQueueSize,
+        maxInboundConnections: options.maxInboundConnections,
+        incompleteFrameIdleMs: options.incompleteFrameIdleMs,
+      });
+    // That `tls: null` is written out rather than omitted, and it is hard-coded: the
     // transport this constructor builds is always plaintext until #941 wires
     // the option up.  An operator who set the HOCON flag asked for the
     // opposite and would otherwise get plaintext with no error, no log line

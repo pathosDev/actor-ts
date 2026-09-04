@@ -14,10 +14,12 @@ material each needs.
 import { TcpTransport, Cluster, ClusterOptions } from 'actor-ts/cluster';
 
 const transport = new TcpTransport(self, log, {
-  cert: fs.readFileSync('./tls/cluster.crt'),
-  key:  fs.readFileSync('./tls/cluster.key'),
-  ca:   fs.readFileSync('./tls/ca.crt'),
-  rejectUnauthorized: true,
+  tls: {
+    cert: fs.readFileSync('./tls/cluster.crt'),
+    key:  fs.readFileSync('./tls/cluster.key'),
+    ca:   fs.readFileSync('./tls/ca.crt'),
+    rejectUnauthorized: true,
+  },
 });
 
 const clusterOptions = ClusterOptions.create()
