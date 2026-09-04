@@ -9,6 +9,7 @@ import {
   MailboxFullError,
   PriorityMailbox,
   PriorityMailboxOptions,
+  type Envelope,
   type MailboxDropReason,
 } from '../../../src/mailbox/index.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
@@ -355,6 +356,109 @@ describe('PriorityMailbox — capacity and overflow', () => {
     expect(mine.length).toBe(2);
     expect(framework).toEqual(mine);
     expect(mbox.droppedCount).toBe(2);
+  });
+});
+
+// #729 — the last hole in the undroppable guarantee.  `enqueueSignal` keeps a
+// lifecycle notification out of every overflow policy on the way IN, and
+// `removeOldest` steps over it on the way out; the replay path was the third
+// door, and this class re-entered its own `enqueue` to reach it — a capacity
+// check that does not read the marker at all.  `BoundedMailbox.prependUser`
+// already consulted it, so the priority bound was the one reader missing.
+//
+// The three policies failed differently, which is why each gets a test.
+// `drop-new` discarded the notification and counted it as ordinary shed
+// traffic; `reject` — the constructor default once a capacity is named — threw
+// `MailboxFullError` inside the replaying actor's own handler; and
+// `drop-lowest-priority` kept it but paid for it by evicting a queued message,
+// because it sheds through `removeOldest`, which does read the marker.  Only
+// the third looked correct from the outside, and it was the one whose cost
+// landed on a bystander.
+describe('PriorityMailbox.prependUser keeps undroppable envelopes (#729)', () => {
+  /** A lifecycle notification the framework cannot send again. */
+  const notification = (label: string): Envelope<string> =>
+    ({ message: label, sender: null, undroppable: true });
+
+  /** Ranks a notification LAST — the adversarial case for this mailbox. */
+  const rankNotificationLast = (message: string): number =>
+    (message.startsWith('death') ? 9 : 0);
+
+  test('drop-new admits the replayed notification instead of discarding it', () => {
+    const reasons: MailboxDropReason[] = [];
+    const mbox = new PriorityMailbox<string>({
+      priorityFor: rankNotificationLast,
+      capacity: 2,
+      overflow: 'drop-new',
+    });
+    for (const label of ['a', 'b']) mbox.enqueue({ message: label, sender: null });
+    mbox.observeDrops((reason) => reasons.push(reason));
+
+    // The likeliest shape of the defect: a full queue, and the replay is the
+    // arrival, so `drop-new` threw the notification away and counted it as an
+    // ordinary shed message.
+    mbox.prependUser([notification('death')]);
+
+    expect(mbox.drainUser().map((e) => e.message)).toEqual(['a', 'b', 'death']);
+    expect(reasons).toEqual([]);
+    expect(mbox.droppedCount).toBe(0);
+  });
+
+  test('reject admits it rather than throwing at the replaying actor', () => {
+    const mbox = new PriorityMailbox<string>({
+      priorityFor: rankNotificationLast,
+      capacity: 2,
+      overflow: 'reject',
+    });
+    for (const label of ['a', 'b']) mbox.enqueue({ message: label, sender: null });
+
+    // `reject` is the constructor default once a capacity is named, so this is
+    // what `unstashAll()` did to an actor that never chose a policy: a throw
+    // inside its own handler, for replaying a message it may not lose.
+    expect(() => mbox.prependUser([notification('death')])).not.toThrow();
+    expect(mbox.drainUser().map((e) => e.message)).toEqual(['a', 'b', 'death']);
+    expect(mbox.droppedCount).toBe(0);
+  });
+
+  test('drop-lowest-priority keeps it even though the ranking puts it last', () => {
+    const reasons: MailboxDropReason[] = [];
+    const mbox = new PriorityMailbox<string>({
+      priorityFor: rankNotificationLast,
+      capacity: 2,
+      overflow: 'drop-lowest-priority',
+    });
+    for (const label of ['a', 'b']) mbox.enqueue({ message: label, sender: null });
+    mbox.observeDrops((reason) => reasons.push(reason));
+
+    mbox.prependUser([notification('death')]);
+
+    // The one policy that never lost the notification, because it sheds through
+    // `removeOldest`, which does read the marker — but it made room for it by
+    // destroying a queued message, since the replay reached it as an ordinary
+    // admission.  Exempt means exempt: nothing is shed, and the queue
+    // overshoots by the one notification instead, the same trade the arriving
+    // lane makes.
+    expect(mbox.size).toBe(3);
+    expect(mbox.drainUser().map((e) => e.message)).toEqual(['a', 'b', 'death']);
+    expect(reasons).toEqual([]);
+  });
+
+  test('the ordinary half of a mixed replay still meets the bound', () => {
+    const reasons: MailboxDropReason[] = [];
+    const mbox = new PriorityMailbox<string>({
+      priorityFor: rankNotificationLast,
+      capacity: 2,
+      overflow: 'drop-new',
+    });
+    for (const label of ['a', 'b']) mbox.enqueue({ message: label, sender: null });
+    mbox.observeDrops((reason) => reasons.push(reason));
+
+    // The exemption is per envelope, not per batch: an ordinary stashed
+    // message riding alongside a notification is still subject to the policy,
+    // or the marker would be a way to smuggle a whole stash past the bound.
+    mbox.prependUser([{ message: 'stashed', sender: null }, notification('death')]);
+
+    expect(mbox.drainUser().map((e) => e.message)).toEqual(['a', 'b', 'death']);
+    expect(reasons).toEqual(['drop-new']);
   });
 });
 

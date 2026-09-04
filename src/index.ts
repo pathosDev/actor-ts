@@ -158,6 +158,7 @@ export {
   ActorKilledError,
   AskTimeoutError,
 } from './SystemMessages.js';
+export type { DeadLetterAttribution } from './SystemMessages.js';
 
 // Patterns — Success / Failure live in util/Try.js (already exported above).
 export {

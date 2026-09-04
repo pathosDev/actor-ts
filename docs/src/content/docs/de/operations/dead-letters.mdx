@@ -328,5 +328,45 @@ aus, für den die Schranke gedacht ist. Siehe
 
 Der Letter trägt die Nachricht, ihren Sender und den Actor, den sie nie
 erreicht hat — dieselben drei Felder, die jeder andere Verlustpfad
-festhält. Der MDC-Kontext des Envelopes und sein Tracing-Span überleben ihn
-nicht; `DeadLetter` hat für beides keinen Platz.
+festhält — und in `attribution` den MDC-Kontext des Envelopes sowie seinen
+Tracing-Span:
+
+```ts
+class Auditor extends Actor<DeadLetter> {
+  override preStart(): void {
+    this.system.eventStream.subscribe(this.self, DeadLetter);
+  }
+  override onReceive(letter: DeadLetter): void {
+    const { context, trace } = letter.attribution;
+    this.system.log
+      .withFields({ ...context, traceId: trace?.traceId ?? 'none' })
+      .warn(`undelivered -> ${letter.recipient.path}`);
+  }
+}
+```
+
+Dieses Paar ist das, was ein Zähler nie liefern kann: nicht, dass eine
+Nachricht verloren ging, sondern *welche Anfrage* sie verloren hat. Beide
+fehlen, wenn der Send keines von beidem trug — ein `tell` außerhalb jedes
+`LogContext.run` oder ein System mit deaktiviertem Tracing — und
+`attribution` selbst ist immer da, ein Zugriff darüber braucht also keine
+Absicherung.
+
+Füllen kann es nur ein Verlustpfad, der noch weiß, woher die Nachricht kam.
+Ein Overflow-Drop kopiert beide Felder direkt vom verworfenen Envelope; eine
+Stash-Verdrängung im `BackoffSupervisor` trägt den MDC, den ihr Eintrag beim
+Puffern erfasst hat, und keinen Span — nichts legt Actor-Code den Span eines
+ankommenden Envelopes offen, der Supervisor hat also keinen zu kopieren. Ein
+Letter, der aus einer bloßen Nachricht gebaut wurde — ein Projection-Event,
+eine Singleton-Übergabe — trägt eine leere Attribution, und das ist die
+Wahrheit und keine Auslassung.
+
+**Die Attribution bleibt am Event.** Ein erfasster `DeadLetterEntry` — das,
+was [`list()`](#inspizieren) zurückgibt — trägt sie bewusst nicht. Ein
+Eintrag wird `retentionMs` lang aufbewahrt und unter `store: 'persistent'`
+in ein Journal geschrieben, das den Prozess überlebt — während ein MDC
+regelmäßig Mandanten-, Benutzer- und Request-Kennungen trägt. Das ist
+dieselbe Entscheidung, die den Store standardmäßig `off` lässt und die
+Payload aus der Log-Zeile heraushält, nur eine Ebene tiefer. Abonniere
+`DeadLetter`, wenn du die Attribution dauerhaft willst — unter einer
+Aufbewahrung, die du gewählt hast.

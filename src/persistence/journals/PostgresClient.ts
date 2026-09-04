@@ -49,7 +49,19 @@ export type PostgresConnection = {
   readonly url?: string;
   /**
    * Extra node-postgres `Pool` config, merged over `{ connectionString:
-   * url }` — e.g. `{ max: 10, ssl: { rejectUnauthorized: false } }`.
+   * url }` — e.g.
+   * `{ max: 10, ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') } }`.
+   *
+   * That `ssl` shape is the one to copy, and the illustration is load-bearing:
+   * this doc comment is what an editor shows the moment someone asks how to
+   * wire TLS here, which makes it guidance at the point of decision.  Supply
+   * the signing CA — a managed instance publishes one — rather than switching
+   * certificate verification off to make a self-signed peer stop complaining.
+   * Encryption without verification authenticates nobody, so anything on the
+   * path to the database can present its own certificate and read or rewrite
+   * the journal, which is the application's system of record.  The object
+   * lands in `new pg.Pool(...)` verbatim; nothing filters it.
+   * See https://actor-ts.dev/operations/security/tls-everywhere/.
    */
   readonly poolConfig?: Record<string, unknown>;
   /**

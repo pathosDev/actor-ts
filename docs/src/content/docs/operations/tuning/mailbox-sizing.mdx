@@ -242,11 +242,17 @@ moment the bound exists to make things cheaper.  The rule of thumb: turn it
 on where you would have to explain the loss afterwards, leave it off for
 the firehose you bounded on purpose.
 
-Two things it does not change.  It reaches only mailboxes you construct
-yourself — `withMailboxCapacity` has no door onto it — and the letter
-carries the message, the sender and the recipient, the same three fields
-every other loss path in the framework records.  The MDC context and the
-tracing span travelling on the envelope are not among them.
+The letter carries the message, the sender and the recipient — the same
+three fields every other loss path in the framework records — and, in
+`attribution`, the MDC context and the tracing span that were travelling on
+the envelope.  A bounded mailbox is the only loss path that still holds a
+whole envelope at the moment it gives up on it, which is what lets it answer
+the question the counter cannot: not that something was shed, but which
+request lost it.  See [dead letters](/operations/dead-letters/) for the
+shape and for why a *captured* entry deliberately does not keep it.
+
+One thing it does not change: it reaches only mailboxes you construct
+yourself — `withMailboxCapacity` has no door onto it.
 
 <Aside type="caution" title="An undroppable message never becomes a letter">
   A death-watch `Terminated`, the command that spawns a WebSocket

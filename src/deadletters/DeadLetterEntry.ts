@@ -40,7 +40,31 @@ export type DegradedPayload = {
 
 export type DeadLetterPayload = CapturedPayload | DegradedPayload;
 
-/** One captured dead letter, as {@link DeadLetterQueue.list} returns it. */
+/**
+ * One captured dead letter, as {@link DeadLetterQueue.list} returns it.
+ *
+ * **It deliberately does not carry {@link DeadLetter.attribution}** — the MDC
+ * snapshot and the span context #773 added to the event — and the reason is
+ * the difference this file opens with.  The event is an observation that
+ * exists for as long as a subscriber's handler runs; an entry is retained for
+ * `retentionMs` and, under `store: 'persistent'`, written to a journal that
+ * outlives the process.  An MDC routinely carries tenant, user and request
+ * identifiers, so persisting it turns a transient diagnostic into a durable,
+ * correlatable store of them — the same decision that makes
+ * `DEFAULT_DEAD_LETTER_STORE` `off` and keeps the payload out of
+ * `DeadLetterRef`'s log line, taken again one layer down.
+ *
+ * The replay argument points the same way.  An entry exists to be handed back,
+ * and a span context is a point in a trace that closed when the original send
+ * ended: redelivering under it would graft a new operation onto a finished
+ * one, where a fresh trace rooted at the replay is what an operator can
+ * actually read.
+ *
+ * An operator who wants the attribution durably has the seam for it already —
+ * subscribe to `DeadLetter` on the event stream and write what you choose
+ * where you choose, under your own retention.  Widening the entry would make
+ * that decision for every deployment.
+ */
 export type DeadLetterEntry = {
   /** Stable identity, assigned at capture and preserved across a restart. */
   readonly id: string;

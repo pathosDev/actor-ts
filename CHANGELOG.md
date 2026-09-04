@@ -363,24 +363,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
-- **The `ShardRegion` routing buffer is bounded** (#849).  `ShardRegion`'s
-  routing buffer is now bounded. `bufferShard` held every message for a
-  shard whose home was unknown or handing off in an unbounded per-shard
-  array, so a coordinator that never answers — no leader, a lease it cannot
-  acquire, or a registration it refused while the region keeps accepting
-  traffic — turned a stall into memory exhaustion, and a remote peer could
-  drive it through `onRemoteEnvelope`. The cap is a region-wide total across
-  every shard rather than a per-queue one, which at the shipped defaults is
-  the difference between 100 000 messages and 6 400 000; past it the newest
-  arrival is dropped to dead letters with its sender, so what is already
-  queued keeps the order its caller sent it in, and one warning is logged
-  per overflow episode. Three `actor-ts.sharding` keys ship with it, each at
-  the value the code already hardcoded so that merely wiring the block
-  changes nothing: `buffer-size = 100000` (region-wide, and `0` means *never
-  buffer* — the opposite polarity to `max-entities = 0` in the same block),
-  `register-retry-interval = 500ms` for an unacknowledged region
-  registration, and `shard-region-query-timeout = 5s` for
-  `ClusterSharding.shards()` and `shardRefFor()`. #849, #461.
+- **The `ShardRegion` routing buffer is bounded** (#849).  `bufferShard`
+  held every message for a shard whose home was unknown or handing off in an
+  unbounded per-shard array, so a coordinator that never answers — no
+  leader, a lease it cannot acquire, or a registration it refused while the
+  region keeps accepting traffic — turned a stall into memory exhaustion,
+  and a remote peer could drive it through `onRemoteEnvelope`. The cap is a
+  region-wide total across every shard rather than a per-queue one, which at
+  the shipped defaults is the difference between 100 000 messages and 6 400
+  000; past it the newest arrival is dropped to dead letters with its
+  sender, so what is already queued keeps the order its caller sent it in,
+  and one warning is logged per overflow episode. Three `actor-ts.sharding`
+  keys ship with it, each at the value the code already hardcoded so that
+  merely wiring the block changes nothing: `buffer-size = 100000`
+  (region-wide, and `0` means *never buffer* — the opposite polarity to
+  `max-entities = 0` in the same block), `register-retry-interval = 500ms`
+  for an unacknowledged region registration, and `shard-region-query-timeout
+  = 5s` for `ClusterSharding.shards()` and `shardRefFor()`. #849, #461.
+- **A control-RPC reply in `ParallelMultiNodeSpec` is bound to the role and
+  the kind it answers** (#777).
+
+  Every spawned role resolved out of one instance-wide pending map keyed on
+  the request id alone, so a worker that originated a control frame carrying
+  another role's id settled the wrong promise. The symptom was the expensive
+  part: a mis-correlated reply makes the membership condition throw,
+  `awaitCondition` swallows that as a retry, and the spec then fails thirty
+  seconds later naming a convergence that was never the problem.
+
+  A frame whose role or kind disagrees is now dropped with a warning naming
+  both sides, and the pending entry is left in place — so the genuine reply
+  can still land, or the RPC timer fires and names the request that went
+  unanswered. Only a custom bootstrap module, or a scenario module posting
+  raw frames, could produce the collision: the shipped bootstrap stamps the
+  request id from the request it is answering.
+
 
 - **BREAKING — a configured downing provider now owns the eviction (#929).**
 
@@ -604,6 +620,107 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`fundamentals/throttling`, EN + DE).
 
 ### Security
+
+- **A priority mailbox keeps an undroppable envelope through a stash replay,
+  and a dead letter carries what the envelope lost** (#729, #773).
+
+  `PriorityMailbox.prependUser` re-entered its own `enqueue`, whose capacity
+  check never read `Envelope.undroppable` — so a death-watch `Terminated`
+  that round-tripped through `stash()` and `unstashAll()` was discarded
+  under `drop-new`, threw `MailboxFullError` inside the replaying actor
+  under `reject` (the constructor default once a capacity is named), and
+  cost a bystander its place under `drop-lowest-priority`. Replayed
+  notifications now take the same exempt lane they take arriving fresh, and
+  the reader list in the `undroppable` JSDoc names this mailbox rather than
+  omitting it (#729).
+
+  A `DeadLetter` can now carry the MDC context and the tracing span context
+  the lost envelope was travelling with, in a new optional `attribution`
+  field. A bounded or priority mailbox drop fills both from the discarded
+  envelope; a `BackoffSupervisor` stash eviction fills the MDC from a
+  snapshot taken when the message was buffered, because that path never
+  captured it in the first place. This was the one clause of the fix that
+  did not land last time, and the deferral existed only in a commit message
+  — nothing was filed, which is why it was invisible until the criteria were
+  audited (#773).
+
+  A captured `DeadLetterEntry` deliberately does not persist the
+  attribution: an entry outlives the process under `store: 'persistent'`,
+  while an MDC routinely carries tenant and user identifiers. `toString()`
+  and the throttled dead-letter log line are unchanged.
+
+- **The CORS preflight filter kept the characters it existed to remove, and
+  the Postgres pool JSDoc illustrated the pattern the TLS page forbids**
+  (#792, #755).
+
+  `sanitiseRequestHeaders` used the negated class `[^A-Za-z0-9,\s-]`, and
+  `\s` inside a *negated* class preserves CR, LF, HTAB and U+00A0 —
+  precisely what the guard existed to strip — while removing only the
+  harmless punctuation around them. This is the default preflight path,
+  taken by every `cors()` route configured without `withAllowedHeaders`.
+  Nothing could split a response through it, and that was never this
+  function's doing: measured on Bun 1.4.0, Node 26.7.0 and Deno 2.6.8, no
+  request parser admits a bare CR or LF inside a header value and both
+  response-header sinks throw on one. HTAB and U+00A0 did get past all six
+  and reach the wire verbatim.
+
+  The value is now read as what it is — a comma-separated list of header
+  names — and an element survives only if it is a whole RFC 7230 token, so
+  an illegal element is dropped rather than scrubbed into a name the client
+  never asked for. The field is omitted entirely when nothing survives, and
+  the 1024-character cap spends its budget on whole names instead of cutting
+  the last one in half.
+
+  Separately, `PostgresConnection.poolConfig` no longer illustrates itself
+  with `ssl: { rejectUnauthorized: false }` — the pattern the project's own
+  TLS page marks with a cross, flowing unfiltered into `new pg.Pool(...)`
+  and producing an encrypted but unauthenticated link to the journal
+  database. It and the three Postgres `withPoolConfig` builders now show the
+  CA form the journal's documentation page already used, and link the
+  TLS-everywhere page. Because no test can fail on JSDoc text, a new
+  repo-invariant guard keeps the pattern out of `src/` and holds all four
+  surfaces to it (#755).
+
+- **An external `subscribe` can no longer rewrite an `MqttActor` subclass's
+  declared QoS** (#783).
+
+  The QoS write was last-writer-wins and was followed by an immediate broker
+  re-SUBSCRIBE, so any holder of the actor's ref could move a subclass's
+  constructor-declared QoS-2 subscription down to QoS 0 — the application
+  still believing delivery was exactly-once while the broker was free to
+  drop. A `subscribe` command's `qos` now applies only to a pattern the
+  command itself creates; a subclass changes its own by calling
+  `subscribe(topic, { qos })`.
+
+  The wildcard half of the report is deliberately not addressed: attaching a
+  handler to any filter, `#` included, is the actor's advertised contract,
+  the documentation shows it as ordinary usage, and anyone holding the ref
+  can already publish — so narrowing it would break a documented contract
+  for no security gain. This change is the additive mirror of the guard the
+  `unsubscribe` path already carried, and that guard is now covered by a
+  test as well, having been asserted by nothing.
+
+- **The filesystem object-storage CAS token is a SHA-256 digest rather than
+  a 32-bit hash** (#786).
+
+  The ETag is the durable-state optimistic-concurrency token — `put`
+  re-derives it from disk to evaluate `ifMatch` — so its equality check
+  rested on four bytes of a non-cryptographic, trivially invertible hash. It
+  is now a SHA-256 digest of the body truncated to 16 bytes. No exploit was
+  demonstrated and the preconditions are narrow: the S3 backend was never
+  affected, the per-key `O_EXCL` advisory lock already removes the ordinary
+  race, a forged body must match the byte length too, and an attacker would
+  need both to drive the plaintext and to hold write access. The point is
+  that a CAS token should not be a 32-bit non-cryptographic hash, not that
+  there was a live exploit.
+
+  The ETag keeps its shape and stays opaque to every caller, so nothing that
+  stores or compares one needs changing. Values minted before this release
+  will not match ones minted after, which matters only for an ETag persisted
+  across the upgrade — the durable-state store recovers on its own, since a
+  mismatch drops the cached entry and the next attempt re-reads the real
+  one.
+
 
 - **BREAKING — The worker-mesh handshake latches on the first hello, and
   `bootstrap` is constrained to a `file:` URL (#775, #776, #778).**

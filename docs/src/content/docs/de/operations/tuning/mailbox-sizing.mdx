@@ -248,11 +248,18 @@ in dem die Schranke die Dinge billiger machen soll. Als Faustregel: Schalte
 ihn dort ein, wo du den Verlust hinterher erklären müsstest, und lass ihn
 für den Feuerwehrschlauch aus, den du bewusst begrenzt hast.
 
-Zwei Dinge ändert er nicht. Er erreicht nur Mailboxen, die du selbst
-konstruierst — `withMailboxCapacity` hat keine Tür dorthin — und der Letter
-trägt Nachricht, Sender und Empfänger, dieselben drei Felder, die jeder
-andere Verlustpfad im Framework festhält. Der MDC-Kontext und der
-Tracing-Span, die auf dem Envelope mitreisen, gehören nicht dazu.
+Der Letter trägt Nachricht, Sender und Empfänger — dieselben drei Felder,
+die jeder andere Verlustpfad im Framework festhält — und in `attribution`
+den MDC-Kontext sowie den Tracing-Span, die auf dem Envelope mitreisten.
+Eine begrenzte Mailbox ist der einzige Verlustpfad, der das ganze Envelope
+in dem Moment noch in der Hand hält, in dem er es aufgibt; genau das lässt
+sie die Frage beantworten, die der Zähler nicht beantworten kann: nicht,
+dass etwas abgeworfen wurde, sondern welche Anfrage es verloren hat. Siehe
+[Dead Letters](/de/operations/dead-letters/) für die Form — und dafür,
+warum ein *erfasster* Eintrag sie bewusst nicht behält.
+
+Eines ändert er nicht: Er erreicht nur Mailboxen, die du selbst
+konstruierst — `withMailboxCapacity` hat keine Tür dorthin.
 
 <Aside type="caution" title="Eine unverwerfbare Nachricht wird nie zum Letter">
   Ein `Terminated` aus der Death Watch, das Command, das den Actor einer
