@@ -258,6 +258,142 @@ describe('ReliableDelivery — flow control', () => {
   });
 });
 
+describe('ReliableDelivery — the handler is serialised (#643)', () => {
+  test('onReceive hands the cell a promise rather than discarding one', async () => {
+    // The structural half of the fix, and the half the two behavioural cases
+    // below cannot see.  Serialising the handler *inside* the controller — a
+    // private promise chain each delivery appends itself to — produces the
+    // same non-overlap and the same absorbed retransmits while still handing
+    // the cell `undefined`, so the mailbox keeps draining at wire speed into
+    // an unbounded internal queue.  The cell doing the serialising is what
+    // makes the mailbox the back-pressure point, and this is what asserts it.
+    const controller = new ConsumerController<string>({
+      // Suspends, so the returned promise is genuinely pending rather than an
+      // already-settled one a synchronous implementation could also produce.
+      handler: async () => { await sleep(5); },
+    });
+    const returned = controller.onReceive({
+      kind: 'reliable-delivery.delivery',
+      producerId: 'orders',
+      incarnation: 'incarnation-1',
+      seq: 1,
+      body: 'body',
+      // A minimal reply target: nothing here is attached to a system, so the
+      // ack must land somewhere that needs no cell behind it.
+      replyTo: { tell: () => {} } as never,
+    });
+
+    expect(returned).toBeInstanceOf(Promise);
+    await returned;
+  });
+
+  test('a sleeping handler is never entered while an earlier invocation is still running', async () => {
+    // `onReceive` discarded the promise from `handleDelivery` and declared
+    // itself `void`, and `ActorCell.run` awaits only what a receive actually
+    // returns — so the cell dequeued the next delivery while the user handler
+    // was still running.  A burst that fits in the producer's window became
+    // that many overlapping invocations, against an options JSDoc that
+    // promises the acknowledgment happens after the handler returns.
+    const kit = quietKit('rd-serialised-handler');
+    let insideHandler = 0;
+    let peakInsideHandler = 0;
+    const completed: string[] = [];
+    const consumer = ReliableDelivery.consumer<string>(kit.system, {
+      handler: async (m) => {
+        insideHandler++;
+        peakInsideHandler = Math.max(peakInsideHandler, insideHandler);
+        // The overlap window itself.  Without a suspension point every
+        // invocation would run to completion inside one synchronous stretch
+        // and no two of them could ever be observed at once, so the case
+        // would pass against the broken code as happily as against the fix.
+        await sleep(15);
+        completed.push(m);
+        insideHandler--;
+      },
+    });
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(consumer.ref as never)
+      // Far longer than this whole case, so retransmission is never what
+      // shapes the arrival pattern here — the window is.
+      .withResendTimeout(30_000)
+      .withWindowSize(8);
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+
+    const messages = 6;
+    for (let i = 0; i < messages; i++) producer.tell(`m-${i}`);
+    await awaitCondition(() => completed.length === messages, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'every message ran through the handler',
+    });
+
+    expect(peakInsideHandler).toBe(1);
+    // Serialisation also makes the completion order the arrival order, which
+    // an overlapping handler only produces by accident of equal sleeps.
+    expect(completed).toEqual(['m-0', 'm-1', 'm-2', 'm-3', 'm-4', 'm-5']);
+
+    producer.stop(); consumer.stop();
+    await kit.system.terminate();
+  });
+
+  test('a producer retransmit does not re-enter the handler for a sequence still in flight', async () => {
+    // The duplicate check reads `contiguous` / `above`, and `markDelivered`
+    // only writes them after the handler returns — so while a handler is
+    // running its own sequence is not yet in the window it is checked
+    // against.  Detached, that was a read-check-act race a retransmit won
+    // every resend timeout; serialised, the retransmit cannot be dequeued
+    // until the write has happened.
+    const kit = quietKit('rd-retransmit-reentry');
+    const entered: string[] = [];
+    const consumer = ReliableDelivery.consumer<string>(kit.system, {
+      handler: async (m) => {
+        entered.push(m);
+        // Held open across several resend timeouts on purpose — that is the
+        // window the retransmits have to arrive in.
+        await sleep(200);
+      },
+    });
+
+    // Counts what the producer actually put on the wire, and forwards it
+    // unchanged (`replyTo` travels in the envelope, not as the sender, so
+    // relaying does not disturb the ack path).  Without this a run in which
+    // no retransmit happened at all would look exactly like a run in which
+    // every retransmit was correctly absorbed.
+    const delivered: number[] = [];
+    class RetransmitCounter extends Actor<Delivery<string>> {
+      override onReceive(delivery: Delivery<string>): void {
+        delivered.push(delivery.seq);
+        consumer.ref.tell(delivery as never);
+      }
+    }
+    const relay = kit.system.spawn(RetransmitCounter, 'retransmit-counter');
+
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(relay)
+      .withResendTimeout(30)
+      .withWindowSize(1);
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+    producer.tell('slow-body');
+
+    await awaitCondition(() => delivered.length >= 3, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'the producer retransmitted the in-flight sequence at least twice',
+    });
+    // All of them carry seq 1, so every one after the first is a retransmit
+    // of a delivery whose handler had not returned.
+    expect(new Set(delivered)).toEqual(new Set([1]));
+
+    // The assertion is an absence — none of those retransmits may reach the
+    // handler — so settling past the handler's own 200 ms IS the assertion.
+    await sleep(260);
+    expect(entered).toEqual(['slow-body']);
+
+    producer.stop(); consumer.stop();
+    await kit.system.terminate();
+  });
+});
+
 describe('ReliableDelivery — shutdown (#451)', () => {
   test('stopping the producer settles in-flight sends, not only queued ones', async () => {
     const kitOptions = TestKitOptions.create()
@@ -829,46 +965,48 @@ describe('ReliableDelivery — malformed delivery (#727)', () => {
 /** Mutable slot the spawn factory writes the live controller into. */
 type ControllerSlot = { controller: ConsumerController<string> | null };
 
+/**
+ * Spawn a ConsumerController and keep hold of the instance.
+ *
+ * `ReliableDelivery.consumer` hands back only a ref, and the budget cases
+ * assert on `trackedProducers` / `outOfOrderFor` — the counters the growth
+ * they bound had no equivalent of before — so they need the object and not
+ * just its address.
+ */
+const spawnBoundedConsumer = (
+  kit: TestKit,
+  slot: ControllerSlot,
+  options: ConsumerControllerOptionsType<string>,
+  name: string,
+): ActorRef<Delivery<string>> => kit.system.spawn<Delivery<string>>(() => {
+  slot.controller = new ConsumerController<string>(options);
+  return slot.controller;
+}, name);
+
+/**
+ * Hand-rolled envelope, because the budget cases turn on a `producerId` and a
+ * `seq` the *sender* chose.  A `ProducerController` mints one id per
+ * construction and never leaves a gap open, which is precisely the traffic
+ * these bounds do not exist for.
+ */
+const deliver = (
+  consumer: ActorRef<Delivery<string>>,
+  replyTo: unknown,
+  producerId: string,
+  seq: number,
+  body: string,
+): void => {
+  consumer.tell({
+    kind: 'reliable-delivery.delivery',
+    producerId,
+    incarnation: 'incarnation-1',
+    seq,
+    body,
+    replyTo,
+  } as never);
+};
+
 describe('ReliableDelivery — dedup map resource budget (#728)', () => {
-  /**
-   * Spawn a ConsumerController and keep hold of the instance.
-   *
-   * `ReliableDelivery.consumer` hands back only a ref, and these cases assert
-   * on `trackedProducers` — the counter the map's growth had no equivalent of
-   * before this — so they need the object and not just its address.
-   */
-  const spawnBoundedConsumer = (
-    kit: TestKit,
-    slot: ControllerSlot,
-    options: ConsumerControllerOptionsType<string>,
-    name: string,
-  ): ActorRef<Delivery<string>> => kit.system.spawn<Delivery<string>>(() => {
-    slot.controller = new ConsumerController<string>(options);
-    return slot.controller;
-  }, name);
-
-  /**
-   * Hand-rolled envelope, because the point of every case here is a
-   * `producerId` the *sender* chose.  A `ProducerController` mints one per
-   * construction and would need one actor per key.
-   */
-  const deliver = (
-    consumer: ActorRef<Delivery<string>>,
-    replyTo: unknown,
-    producerId: string,
-    seq: number,
-    body: string,
-  ): void => {
-    consumer.tell({
-      kind: 'reliable-delivery.delivery',
-      producerId,
-      incarnation: 'incarnation-1',
-      seq,
-      body,
-      replyTo,
-    } as never);
-  };
-
   test('maxProducers evicts the least-recently-used producer, and the map never grows past it', async () => {
     const kit = quietKit('rd-max-producers');
     const received: string[] = [];
@@ -1178,6 +1316,155 @@ describe('ReliableDelivery — dedup map resource budget (#728)', () => {
       timeoutMs: 4_000,
       label: 'postStop cleared the dedup map',
     });
+
+    await kit.system.terminate();
+  });
+});
+
+describe('ReliableDelivery — out-of-order window bound (#728, #643)', () => {
+  test('a gap that never closes leaves the out-of-order set at maxOutOfOrder, refusing rather than dropping', async () => {
+    // Variant B of the issue, and the half #643 claims in its own acceptance
+    // criteria.  `contiguous` only advances when the missing predecessor
+    // arrives, so a sender that withholds seq 1 and keeps sending the ones
+    // after it put every one of them into the per-producer set, permanently
+    // and without limit.  The other two bounds do not cover it: `maxProducers`
+    // caps how many such sets exist, not the size of one, and the idle sweep
+    // never reaches a producer that is actively flooding, because every
+    // admitted delivery re-stamps its timestamp.
+    const kit = quietKit('rd-out-of-order-cap');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    const cap = 4;
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      // Both other bounds off, so nothing but this one can reclaim or refuse.
+      maxProducers: Infinity,
+      producerIdleTtlMs: Infinity,
+      maxOutOfOrder: cap,
+    }, 'out-of-order-consumer');
+
+    // seq 1 is withheld and everything above it arrives in ONE burst, with no
+    // wait inside it.  That is deliberate and is what makes the cap an exact
+    // post-condition rather than an approximate one: the check runs before the
+    // handler and the insert after it, so if the cell did not serialise
+    // deliveries every message in this burst would pass the check while the
+    // set was still empty and the set would end up holding all 44 of them.
+    // Phasing the burst around an `awaitCondition` would drain the pipeline
+    // between the two halves and hide exactly that.
+    const overflow = 40;
+    for (let seq = 2; seq <= cap + 1 + overflow; seq++) {
+      deliver(consumer, probe, 'gappy', seq, `seq-${seq}`);
+    }
+    // `>=` rather than `===`: an implementation that admits too many would
+    // race straight past the exact count, and this poll is only here to get
+    // past the empty state — the assertions after the settle are the test.
+    await awaitCondition(() => received.length >= cap, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'the sequences that fit in the out-of-order window were handled',
+    });
+    // The rest is an absence — not one of the other 40 may be admitted — so
+    // settling past the point where they would have been IS the assertion.
+    await sleep(120);
+    // Refused means BOTH: no handler call and no acknowledgment.  Withholding
+    // the ack stalls the producer's own window instead of growing this
+    // consumer's heap; dropping the oldest retained sequence would bound the
+    // same heap and would re-run the handler for a message already handled and
+    // already acknowledged.
+    expect(received).toHaveLength(cap);
+    expect(slot.controller?.outOfOrderFor('gappy')).toBe(cap);
+    // One acknowledgment per admitted delivery, and none for the refused ones.
+    expect(probe.messageCount).toBe(cap);
+
+    // A stall, not a deadlock.  The sequence that closes the gap is admitted
+    // at the cap — it drains the set rather than growing it — and the window
+    // then slides over the whole retained run in one pass.
+    deliver(consumer, probe, 'gappy', 1, 'the-missing-one');
+    await awaitCondition(() => slot.controller?.outOfOrderFor('gappy') === 0, {
+      timeoutMs: 4_000,
+      label: 'the missing sequence drained the whole out-of-order set',
+    });
+    expect(received).toHaveLength(cap + 1);
+
+    // And the far sequences are admissible again, so nothing was lost by the
+    // refusal: the producer's retransmit of any of them now lands.
+    deliver(consumer, probe, 'gappy', cap + 2, 'after-the-gap-closed');
+    await awaitCondition(() => received.length === cap + 2, {
+      timeoutMs: 4_000,
+      label: 'a refused sequence is handled once the gap has closed',
+    });
+    expect(received[received.length - 1]).toBe('after-the-gap-closed');
+
+    await kit.system.terminate();
+  });
+
+  test('maxOutOfOrder: Infinity is the documented opt-out', async () => {
+    // The counterpart, and the reason the cap is an option rather than a
+    // constant: with the opt-out every sequence above the gap is retained,
+    // which is the pre-#728 behaviour and is still what someone who asks for
+    // it gets.
+    const kit = quietKit('rd-out-of-order-unbounded');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: Infinity,
+      producerIdleTtlMs: Infinity,
+      maxOutOfOrder: Infinity,
+    }, 'unbounded-window-consumer');
+
+    const above = 30;
+    for (let seq = 2; seq <= above + 1; seq++) deliver(consumer, probe, 'gappy', seq, `seq-${seq}`);
+    await awaitCondition(() => received.length === above, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'every sequence above the gap was handled',
+    });
+    expect(slot.controller?.outOfOrderFor('gappy')).toBe(above);
+    expect(probe.messageCount).toBe(above);
+
+    await kit.system.terminate();
+  });
+
+  test('the cap is per producer, not shared across them', async () => {
+    // The set lives on the dedup entry, so one producer stalled on a gap must
+    // not spend another producer's budget.  A single shared counter would
+    // satisfy the first case here and fail this one.
+    const kit = quietKit('rd-out-of-order-per-producer');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    const cap = 2;
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: Infinity,
+      producerIdleTtlMs: Infinity,
+      maxOutOfOrder: cap,
+    }, 'per-producer-window-consumer');
+
+    // Two producers, each withholding its own seq 1 and each filling its own
+    // window to the cap.
+    for (const producerId of ['gappy-a', 'gappy-b']) {
+      for (let seq = 2; seq <= cap + 1; seq++) {
+        deliver(consumer, probe, producerId, seq, `${producerId}-${seq}`);
+      }
+    }
+    await awaitCondition(() => received.length === 2 * cap, {
+      timeoutMs: 4_000,
+      label: 'both producers filled their own out-of-order window',
+    });
+    expect(slot.controller?.outOfOrderFor('gappy-a')).toBe(cap);
+    expect(slot.controller?.outOfOrderFor('gappy-b')).toBe(cap);
+
+    // b closing its gap releases only b's set; a is still stalled on its own.
+    deliver(consumer, probe, 'gappy-b', 1, 'gappy-b-1');
+    await awaitCondition(() => slot.controller?.outOfOrderFor('gappy-b') === 0, {
+      timeoutMs: 4_000,
+      label: 'the second producer drained its own window',
+    });
+    expect(slot.controller?.outOfOrderFor('gappy-a')).toBe(cap);
 
     await kit.system.terminate();
   });

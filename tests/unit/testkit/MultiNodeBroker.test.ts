@@ -14,10 +14,11 @@
  * push.
  *
  * The shim is the same `FakePort` `tests/unit/worker/WorkerBroker.test.ts`
- * uses, and the malformed-frame table below is deliberately the same table.
- * Both brokers clear one shared guard (`isBrokeredMessage`), so what is being
- * pinned here is not a second implementation but the fact that this fork still
- * calls it.
+ * uses, and the malformed-frame corpus is now literally the same array —
+ * `tests/util/HostileFrames.ts`, which #945 extracted once the transport on the
+ * far side of these ports needed it too.  Both brokers clear one shared guard
+ * (`isBrokeredMessage`), so what is being pinned here is not a second
+ * implementation but the fact that this fork still calls it.
  */
 import { describe, expect, test } from 'bun:test';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
@@ -26,6 +27,7 @@ import type {
   PortLike,
 } from '../../../src/cluster/transports/MessageChannelTransport.js';
 import { MultiNodeBroker } from '../../../src/testkit/internal/MultiNodeBroker.js';
+import { hostileEnvelopes } from '../../util/HostileFrames.js';
 import { FakePort } from '../worker/__fixtures__/InMemoryWorkerThread.js';
 
 const nodeAddress = (port: number): NodeAddress => new NodeAddress('sys', 'host', port);
@@ -247,36 +249,16 @@ describe('MultiNodeBroker — sender identity comes from the channel', () => {
 
 describe('MultiNodeBroker — malformed frames', () => {
   /**
-   * The table `tests/unit/worker/WorkerBroker.test.ts` pins for production,
+   * The corpus `tests/unit/worker/WorkerBroker.test.ts` pins for production,
    * against the fork that kept the defect.  Every case used to throw out of
    * `onMessage` — i.e. out of the harness's own `message` listener, where
    * nothing catches it — so one bad frame from one worker failed the whole
    * test process rather than the scenario that sent it.
    *
-   * Two of them throw a `TypeError` from the `frame.to` dereference itself; the
-   * rest throw a plain `Error` from the hardened `fromJSON` (#571), so a test
-   * written against `TypeError` alone would miss half of them.
+   * It is now literally the same array — `tests/util/HostileFrames.ts` — rather
+   * than a copy this file promised to keep in step by hand (#945).
    */
-  const hostileFrames: ReadonlyArray<readonly [string, unknown]> = [
-    ['undefined', undefined],
-    ['null', null],
-    ['a bare string', 'not-an-envelope'],
-    ['no `to` at all', { from: nodeAddress(1).toJSON(), payload: { kind: 'ping' } }],
-    ['`to` null', { from: nodeAddress(1).toJSON(), to: null, payload: { kind: 'ping' } }],
-    // The regression #571 introduced: before `fromJSON` validated, this
-    // constructed an address and was routed or dropped as unknown — never fatal.
-    ['`to.port` a string', {
-      from: nodeAddress(1).toJSON(),
-      to: { systemName: 'sys', host: 'host', port: '2' },
-      payload: { kind: 'ping' },
-    }],
-    // `from` is what `withChannelSource` reads before the frame is re-posted,
-    // and what the receiving `MessageChannelTransport` dereferences after, so
-    // it is checked here too.
-    ['`from` missing', { to: nodeAddress(2).toJSON(), payload: { kind: 'ping' } }],
-  ];
-
-  for (const [label, frame] of hostileFrames) {
+  for (const [label, frame] of hostileEnvelopes) {
     test(`drops a frame with ${label} instead of throwing`, () => {
       const broker = new MultiNodeBroker();
       const aPort = new FakePort();

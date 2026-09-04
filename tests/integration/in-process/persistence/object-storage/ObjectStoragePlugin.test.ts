@@ -19,6 +19,10 @@ import {
   FLAG_INTEGRITY_HMAC,
   encodeBody,
 } from '../../../../../src/persistence/object-storage/BodyCodec.js';
+import {
+  OBJECT_STORAGE_DURABLE_STATE_NAMESPACE,
+  OBJECT_STORAGE_SNAPSHOT_NAMESPACE,
+} from '../../../../../src/persistence/Constants.js';
 
 let dir: string;
 
@@ -60,10 +64,30 @@ describe('registerObjectStoragePlugins — filesystem backend', () => {
     await sys.terminate();
   });
 
-  test('shared backend: snapshot store and durable-state store see each others writes', async () => {
+  /*
+   * #716 — this used to assert only that the durable-state key appeared
+   * under the shared prefix, and it never saved a snapshot for the same
+   * persistenceId.  The shared *prefix* is deliberate; the shared key
+   * namespace was not, and the collision it created was untested: since
+   * `'state.json'` collates after every zero-padded sequence key, the
+   * snapshot store's `loadLatest` returned the durable-state record, whose
+   * body has no `sequenceNr`, and recovery died with an integrity error.
+   *
+   * So the assertion is now the disjointness itself, with both stores
+   * writing the same id under one prefix — which is exactly the shape the
+   * old test avoided.
+   */
+  test('shared backend, disjoint namespaces: one id written both ways does not collide', async () => {
     const sysOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off);
+      .withLogLevel(LogLevel.Off)
+      .withConfig({
+        'actor-ts': {
+          persistence: {
+            'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID },
+          },
+        },
+      });
     const sys = ActorSystem.create('obj-store-shared', sysOptions);
     const ext = sys.extension(PersistenceExtensionId);
     const pluginOptions = ObjectStoragePluginOptions.create()
@@ -72,9 +96,21 @@ describe('registerObjectStoragePlugins — filesystem backend', () => {
     const { durableStateStore, backend } = await registerObjectStoragePlugins(ext, pluginOptions);
 
     await durableStateStore.upsert('account-1', 0, { balance: 100 });
-    // Backend list reveals the durable-state key under the same prefix.
-    const items = await backend.list({ prefix: 'shared/' });
-    expect(items.map(i => i.key)).toContain('shared/account-1/state.json');
+    await ext.snapshotStore.save('account-1', 7, { balance: 42 });
+
+    // Both stores still see each other's writes — one backend, one prefix —
+    // but each corpus has a namespace segment of its own.
+    const items = (await backend.list({ prefix: 'shared/' })).map(i => i.key);
+    expect(items).toContain(`shared/${OBJECT_STORAGE_DURABLE_STATE_NAMESPACE}account-1/state.json`);
+    expect(items).toContain(
+      `shared/${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}account-1/00000000000000000007.json`,
+    );
+
+    // And the snapshot load returns the snapshot, not the durable-state
+    // record that used to sort after it.
+    const latest = await ext.snapshotStore.loadLatest<{ balance: number }>('account-1');
+    expect(latest.toNullable()?.sequenceNr).toBe(7);
+    expect(latest.toNullable()?.state).toEqual({ balance: 42 });
     await sys.terminate();
   });
 
@@ -133,8 +169,12 @@ describe('registerObjectStoragePlugins — integrity forwarding (#613)', () => {
     await ext.snapshotStore.save('p', 1, { x: 1 });
     await durableStateStore.upsert('account-1', 0, { balance: 100 });
 
-    const snapshotBody = await backend.get('p/00000000000000000001.json');
-    const durableStateBody = await backend.get('account-1/state.json');
+    const snapshotBody = await backend.get(
+      `${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}p/00000000000000000001.json`,
+    );
+    const durableStateBody = await backend.get(
+      `${OBJECT_STORAGE_DURABLE_STATE_NAMESPACE}account-1/state.json`,
+    );
     expect(integrityFlagOf(snapshotBody.toNullable()!.body)).toBe(FLAG_INTEGRITY_HMAC);
     expect(integrityFlagOf(durableStateBody.toNullable()!.body)).toBe(FLAG_INTEGRITY_HMAC);
 
@@ -162,7 +202,11 @@ describe('registerObjectStoragePlugins — integrity forwarding (#613)', () => {
       new TextEncoder().encode(JSON.stringify({ revision: 999, state: { balance: 0 }, timestamp: Date.now() })),
       { integrity: { integrityKey: OTHER_KEY } },
     );
-    await backend.put('account-1/state.json', forged, { contentType: 'application/json' });
+    await backend.put(
+      `${OBJECT_STORAGE_DURABLE_STATE_NAMESPACE}account-1/state.json`,
+      forged,
+      { contentType: 'application/json' },
+    );
 
     durableStateStore.forgetEtagForTest('account-1');
     await expect(durableStateStore.load('account-1')).rejects.toThrow(/integrity/);

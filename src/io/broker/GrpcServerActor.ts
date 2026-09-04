@@ -8,6 +8,7 @@ import { Actor } from '../../Actor.js';
 import { isHealthy } from '../../management/HealthCheck.js';
 import type { HealthCheckRegistry, HealthCheckResult } from '../../management/HealthCheck.js';
 import { BrokerOptionsError } from './BrokerOptions.js';
+import type { GrpcChannelOptions } from './GrpcClientOptions.js';
 import type { GrpcServerOptions, GrpcServerOptionsType } from './GrpcServerOptions.js';
 
 type UnaryHandler = { readonly kind: 'unary'; readonly target: ActorRef<GrpcUnaryCall> };
@@ -179,9 +180,25 @@ export class GrpcServerActor extends Actor<unknown> {
     }
   }
 
+  /**
+   * Load `@grpc/grpc-js`.
+   *
+   * Its own hook for the same reason `GrpcClientActor.createServiceClient`
+   * is one: the two `@grpc/*` peer dependencies are heavy and not
+   * installed for the unit suite, so *everything* this actor hands
+   * grpc-js used to be unobservable there — including, once #790 added
+   * it, the channel options a public bind is hardened with.  A subclass
+   * that returns a fake module drives the whole of {@link bindServer}
+   * with no peer installed.
+   */
+  protected loadGrpcModule(): Promise<GrpcServerModule> { return grpcLazy.get(); }
+
+  /** Load `@grpc/proto-loader` — the counterpart to {@link loadGrpcModule}. */
+  protected loadProtoLoader(): Promise<GrpcProtoLoaderModule> { return protoLoaderLazy.get(); }
+
   private async bindServer(): Promise<void> {
-    const grpc = await grpcLazy.get();
-    const protoLoader = await protoLoaderLazy.get();
+    const grpc = await this.loadGrpcModule();
+    const protoLoader = await this.loadProtoLoader();
     const protoPaths = Array.isArray(this.options.protoPath)
       ? [...this.options.protoPath]
       : [this.options.protoPath as string];
@@ -196,7 +213,12 @@ export class GrpcServerActor extends Actor<unknown> {
       throw new Error(`grpc-server: service '${this.options.serviceName}' not found`);
     }
 
-    this.server = new grpc.Server();
+    // `channelOptions` is the only reachable hardening surface on a bound
+    // server: max_connection_idle_ms / max_connection_age_ms /
+    // max_concurrent_streams / keepalive_* are channel arguments, and
+    // nothing else this actor exposes can set them (#790).  Left
+    // `undefined` when unset so grpc-js applies its own defaults.
+    this.server = new grpc.Server(this.options.channelOptions);
     const impl: Record<string, unknown> = {};
     for (const [methodName, handler] of Object.entries(this.options.handlers ?? {})) {
       impl[methodName] = buildGrpcMethodImplementation(methodName, handler);
@@ -240,7 +262,7 @@ export class GrpcServerActor extends Actor<unknown> {
    */
   private addHealthService(
     server: GrpcServerLike,
-    protoLoader: ProtoLoaderModule,
+    protoLoader: GrpcProtoLoaderModule,
     health: HealthCheckRegistry,
   ): void {
     const healthPackageDefinition = protoLoader.fromJSON(
@@ -627,7 +649,16 @@ type GrpcServerDuplexCall = {
   emit(event: 'error', err: { code: number; message: string }): void;
 };
 
-interface GrpcServerLike {
+/*
+ * The three structural shims below are exported for the same reason the
+ * call-class ones above are: they are the whole contract a
+ * {@link GrpcServerActor.loadGrpcModule} / `loadProtoLoader` override has
+ * to satisfy, so a fake module can be written — in this repo's unit suite
+ * or in a user's — without `@grpc/grpc-js` installed.  They describe
+ * grpc-js's shape; they are not a re-declaration of its API.
+ */
+
+export interface GrpcServerLike {
   addService(definition: unknown, impl: Record<string, unknown>): void;
   bindAsync(bind: string, creds: unknown, callback: (err: Error | null, port: number) => void): void;
   start(): void;
@@ -635,8 +666,14 @@ interface GrpcServerLike {
   forceShutdown(): void;
 }
 
-type GrpcModule = {
-  Server: new () => GrpcServerLike;
+export type GrpcServerModule = {
+  /**
+   * `new grpc.Server(channelOptions?)`.  The argument is the slot #790
+   * opened: every connection-level bound grpc-js has — idle and age
+   * reaping, concurrent streams, keepalive enforcement — is a channel
+   * argument, so a nullary declaration made them unreachable.
+   */
+  Server: new (channelOptions?: GrpcChannelOptions) => GrpcServerLike;
   ServerCredentials: {
     createInsecure(): unknown;
     createSsl(
@@ -648,7 +685,7 @@ type GrpcModule = {
   loadPackageDefinition(def: unknown): unknown;
 };
 
-interface ProtoLoaderModule {
+export interface GrpcProtoLoaderModule {
   loadSync(filename: string | string[], options?: object): unknown;
   /** In-memory counterpart of `loadSync` — takes a protobuf.js JSON descriptor. */
   fromJSON(json: object, options?: object): unknown;
@@ -657,15 +694,15 @@ interface ProtoLoaderModule {
 /** Suggested install line — both gRPC peers are needed together. */
 const GRPC_INSTALL_HINT = 'npm install @grpc/grpc-js @grpc/proto-loader';
 
-const grpcLazy: Lazy<Promise<GrpcModule>> = Lazy.of(
-  () => lazyImportModule<GrpcModule>('@grpc/grpc-js', {
+const grpcLazy: Lazy<Promise<GrpcServerModule>> = Lazy.of(
+  () => lazyImportModule<GrpcServerModule>('@grpc/grpc-js', {
     context: 'GrpcServerActor',
     installHint: GRPC_INSTALL_HINT,
   }),
 );
 
-const protoLoaderLazy: Lazy<Promise<ProtoLoaderModule>> = Lazy.of(
-  () => lazyImportModule<ProtoLoaderModule>('@grpc/proto-loader', {
+const protoLoaderLazy: Lazy<Promise<GrpcProtoLoaderModule>> = Lazy.of(
+  () => lazyImportModule<GrpcProtoLoaderModule>('@grpc/proto-loader', {
     context: 'GrpcServerActor',
     installHint: GRPC_INSTALL_HINT,
   }),

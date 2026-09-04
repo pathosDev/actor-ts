@@ -5,7 +5,7 @@
  * `XOptions.ts`: the two token lengths are security parameters of the
  * protocol, the identifier bound is a wire-input admission limit that is
  * deliberately not configurable — a peer-supplied cap is not a cap — and the
- * eviction-report interval only paces a log line.  The *default* `producerId`
+ * dedup-report interval only paces a log line.  The *default* `producerId`
  * is a value `ProducerControllerOptions` documents and a caller can override;
  * how many random characters the framework draws when it has to mint one is
  * not, which is why the size lives here and the drawing lives beside the
@@ -78,16 +78,24 @@ export const GENERATED_PRODUCER_ID_LENGTH = 16;
 export const MAX_DELIVERY_IDENTIFIER_LENGTH = 256;
 
 /**
- * Shortest gap, in milliseconds, between two warnings about evicted dedup
- * entries — evictions in between are counted and reported by the next one.
+ * Shortest gap, in milliseconds, between two warnings about a
+ * {@link ConsumerController} dedup bound being reached — a least-recently-used
+ * eviction from the producer map, or a delivery refused because that
+ * producer's out-of-order window is full.  Occurrences in between are counted
+ * and named by the next line.
  *
- * A warning per eviction would be the wrong trade in exactly the case the
- * warning exists for.  Eviction only starts once the map is at
- * `maxProducers`, and the way it gets there fastest is a flood of
- * sender-chosen `producerId`s — so an unpaced line would turn a bounded heap
- * back into an unbounded log, which is the same exhaustion one layer down
- * (#728).  A minute is short enough that an operator watching a healthy
- * service still sees the first sign of churn promptly, and long enough that
- * a flood costs a handful of lines an hour instead of one per message.
+ * A warning per occurrence would be the wrong trade in exactly the case the
+ * warning exists for.  Neither event happens at all until a bound has been
+ * reached, and the way each is reached fastest is a flood — sender-chosen
+ * `producerId`s for the eviction, a sequence gap the sender never closes for
+ * the refusal — so an unpaced line would turn a bounded heap back into an
+ * unbounded log, which is the same exhaustion one layer down (#728).  A
+ * minute is short enough that an operator watching a healthy service still
+ * sees the first sign of churn promptly, and long enough that a flood costs a
+ * handful of lines an hour instead of one per message.
+ *
+ * One interval, two independent pacers: the controller keeps a timestamp and
+ * a pending count per kind, so a flood of one never suppresses the first
+ * sighting of the other.
  */
-export const EVICTION_REPORT_INTERVAL_MS = 60_000;
+export const DEDUPLICATION_REPORT_INTERVAL_MS = 60_000;

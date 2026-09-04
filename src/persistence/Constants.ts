@@ -130,6 +130,59 @@ export const MAX_TAGS_PER_EVENT = 64;
 export const SEQ_PADDING = 20;
 
 /**
+ * Key-namespace segment the object-storage snapshot store writes under, and
+ * the one the durable-state store writes under (#716).
+ *
+ * The two stores used to share a namespace, because `registerObjectStoragePlugins`
+ * hands them the same `backend` and the same `prefix` and each laid its
+ * `persistenceId` out directly beneath it: `<prefix><pid>/<seq>.json` for a
+ * snapshot, `<prefix><pid>/state.json` for durable state.  The same entity
+ * persisted both ways therefore put both objects in one directory — and
+ * `'state.json'` collates after every zero-padded sequence key, so the
+ * snapshot store's "the last key under the prefix is the newest snapshot"
+ * returned the durable-state record.  That body has no `sequenceNr`, so
+ * `assertTrustworthySnapshot` refused it and recovery died with a
+ * `SnapshotIntegrityError` — an actor that could not start, reachable through
+ * the framework's own one-call wiring with no application mistake at all.
+ *
+ * A namespace segment fixes it at the layout level rather than by filtering
+ * afterwards: the two corpora cannot collide because they never share a
+ * directory.  The segment sits between the operator's `prefix` and the
+ * `persistenceId` — `<prefix>snapshots/<pid>/<seq>.json`,
+ * `<prefix>state/<pid>/state.json` — so the per-entity directory that bounds
+ * every LIST is preserved, and `prefix` keeps meaning what it meant.
+ *
+ * They live here rather than beside either store because three files must
+ * agree on them: both stores write them, and `ReEncryptionSweep`'s default
+ * `pidFromKey` reads past them to recover the HKDF salt.  A second copy of a
+ * key layout is how a layout silently forks.
+ */
+export const OBJECT_STORAGE_SNAPSHOT_NAMESPACE = 'snapshots/';
+export const OBJECT_STORAGE_DURABLE_STATE_NAMESPACE = 'state/';
+
+/**
+ * Every namespace segment a built-in object-storage store writes under.
+ *
+ * Derived from the two above, and read by the re-encryption sweep: a sweep
+ * aimed at the shared `prefix` sees keys one level deeper than one aimed at a
+ * single namespace, and this is the list it strips to recover the same
+ * `persistenceId` either way.
+ */
+export const OBJECT_STORAGE_KEY_NAMESPACES = [
+  OBJECT_STORAGE_SNAPSHOT_NAMESPACE,
+  OBJECT_STORAGE_DURABLE_STATE_NAMESPACE,
+] as const;
+
+/**
+ * Leaf name of a durable-state object — the single key each `persistenceId`
+ * is rewritten in place at.
+ */
+export const OBJECT_STORAGE_DURABLE_STATE_LEAF = 'state.json';
+
+/** Extension every object-storage snapshot key ends in. */
+export const OBJECT_STORAGE_SNAPSHOT_LEAF_SUFFIX = '.json';
+
+/**
  * Random hex characters in a replicated event's id — 96 bits.
  *
  * `ReplicatedEventSourcedActor` used to identify an event cluster-wide by

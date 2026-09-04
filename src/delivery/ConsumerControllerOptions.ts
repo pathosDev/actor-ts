@@ -5,6 +5,20 @@ import { OptionsValidator } from '../util/OptionsValidator.js';
 export const DEFAULT_MAX_PRODUCERS = 1_024;
 /** Built-in default for {@link ConsumerControllerOptionsType.producerIdleTtlMs}. */
 export const DEFAULT_PRODUCER_IDLE_TTL_MS = 300_000;
+/**
+ * Built-in default for {@link ConsumerControllerOptionsType.maxOutOfOrder}.
+ *
+ * Chosen far above anything a framework producer can reach, because reaching
+ * it stalls that producer.  A `ProducerController` holds at most `windowSize`
+ * sends in flight (default 16) and dispatches from its queue only once an
+ * acknowledgment frees a slot, so the most it can push past an open gap is
+ * `windowSize - 1` — 15 with the defaults, and 1 024 leaves room for a
+ * producer explicitly configured with a window that large.  It is also
+ * {@link DEFAULT_MAX_PRODUCERS}, so the two halves of the dedup budget read
+ * as one number: at most 1 024 producers × 1 024 retained sequences, against
+ * a set that had no bound at all (#728).
+ */
+export const DEFAULT_MAX_OUT_OF_ORDER = 1_024;
 
 /** Plain options-object shape accepted by a {@link ConsumerController}. */
 export type ConsumerControllerOptionsType<T> = {
@@ -50,13 +64,45 @@ export type ConsumerControllerOptionsType<T> = {
    * so an idle entry is released somewhere between one and two of them.
    */
   readonly producerIdleTtlMs?: number;
+  /**
+   * Most out-of-order sequence numbers the consumer retains for one producer
+   * while a gap in that producer's sequence stays open.  Default 1 024;
+   * `Infinity` opts out of the cap.  At the cap a delivery that would grow
+   * the set further is neither handled nor acknowledged, so the producer's
+   * own window stalls until the gap closes.
+   *
+   * `contiguous` only advances when the missing predecessor arrives, so every
+   * sequence above an open gap is retained one by one — and from a sender who
+   * simply never sends that predecessor, without any limit at all before this
+   * bound (#728).  {@link maxProducers} does not cover it transitively: that
+   * bounds how many such sets exist, not the size of one, and the idle sweep
+   * never reaches an actively flooding producer because every admitted
+   * delivery re-stamps its timestamp.
+   *
+   * **Refusing is deliberately not dropping.**  Evicting the oldest retained
+   * sequence would bound the same heap, and would cost a duplicate handler
+   * invocation for a message this consumer had already handled *and*
+   * acknowledged — a duplicate the sender has no way to see coming.  A stall
+   * is visible, is what the producer's retransmit already recovers from, and
+   * keeps the protocol's "no silent drop of a message" property true.  It
+   * cannot deadlock either: the sequence that closes the gap is itself in the
+   * producer's in-flight window and is being retransmitted, and a delivery
+   * that would slide `contiguous` is admitted at the cap for exactly that
+   * reason.
+   *
+   * Raising it costs retained memory per producer; lowering it stalls a
+   * producer sooner under packet loss.  Keep it above the largest
+   * `windowSize` any producer talking to this consumer is configured with —
+   * see {@link DEFAULT_MAX_OUT_OF_ORDER} for why the default is where it is.
+   */
+  readonly maxOutOfOrder?: number;
 };
 
 /**
  * Fluent builder for {@link ConsumerControllerOptionsType}.  The `handler`
  * is required — pass it via {@link withHandler} before `build()`; the
- * resource bounds default (1 024 producers, 5-minute idle TTL) when left
- * unset.
+ * resource bounds default (1 024 producers, 5-minute idle TTL, 1 024 retained
+ * out-of-order sequences per producer) when left unset.
  *
  *     ConsumerControllerOptions.create<Command>()
  *       .withHandler(async (body) => { … })
@@ -82,15 +128,20 @@ export class ConsumerControllerOptionsBuilder<T> extends OptionsBuilder<Consumer
   withProducerIdleTtlMs(producerIdleTtlMs: number): this {
     return this.set('producerIdleTtlMs', producerIdleTtlMs);
   }
+
+  /** Cap on out-of-order seqs retained per producer.  `Infinity` opts out.  Default 1 024. */
+  withMaxOutOfOrder(maxOutOfOrder: number): this {
+    return this.set('maxOutOfOrder', maxOutOfOrder);
+  }
 }
 
 /**
  * Validates resolved {@link ConsumerControllerOptionsType} settings.
  *
- * Both bounds legitimately admit `Infinity` (unbounded map / sweep off),
- * which the generic `positiveInt` / `positiveNumber` helpers reject, so the
- * rules are bespoke — the same shape `InMemoryCacheOptionsValidator` uses for
- * the same reason.
+ * All three bounds legitimately admit `Infinity` (unbounded map / sweep off /
+ * unbounded out-of-order window), which the generic `positiveInt` /
+ * `positiveNumber` helpers reject, so the rules are bespoke — the same shape
+ * `InMemoryCacheOptionsValidator` uses for the same reason.
  *
  * `handler` is deliberately *not* asserted here.  It is required rather than
  * bounded, and making a missing one fail at construction instead of as an
@@ -102,7 +153,7 @@ export class ConsumerControllerOptionsValidator<T> extends OptionsValidator<Cons
     super('ConsumerControllerOptions');
   }
   protected rules(s: Partial<ConsumerControllerOptionsType<T>>): void {
-    const { maxProducers, producerIdleTtlMs } = s;
+    const { maxProducers, producerIdleTtlMs, maxOutOfOrder } = s;
     if (
       maxProducers !== undefined && maxProducers !== Infinity &&
       (typeof maxProducers !== 'number' || !Number.isInteger(maxProducers) || maxProducers < 1)
@@ -114,6 +165,12 @@ export class ConsumerControllerOptionsValidator<T> extends OptionsValidator<Cons
       (typeof producerIdleTtlMs !== 'number' || !Number.isFinite(producerIdleTtlMs) || producerIdleTtlMs <= 0)
     ) {
       this.fail('producerIdleTtlMs', 'must be a positive finite number or Infinity', producerIdleTtlMs);
+    }
+    if (
+      maxOutOfOrder !== undefined && maxOutOfOrder !== Infinity &&
+      (typeof maxOutOfOrder !== 'number' || !Number.isInteger(maxOutOfOrder) || maxOutOfOrder < 1)
+    ) {
+      this.fail('maxOutOfOrder', 'must be a positive integer or Infinity', maxOutOfOrder);
     }
   }
 }

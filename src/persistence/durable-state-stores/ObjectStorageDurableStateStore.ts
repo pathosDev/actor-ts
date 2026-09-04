@@ -1,3 +1,7 @@
+import {
+  OBJECT_STORAGE_DURABLE_STATE_LEAF,
+  OBJECT_STORAGE_DURABLE_STATE_NAMESPACE,
+} from '../Constants.js';
 import { JournalError } from '../JournalTypes.js';
 import { DEFAULT_MAX_DECOMPRESSED_BYTES, encodeBody, decodeBody } from '../object-storage/BodyCodec.js';
 import {
@@ -37,8 +41,19 @@ import type { ObjectStorageDurableStateStoreOptions, ObjectStorageDurableStateSt
 /**
  * DurableState backed by any `ObjectStorageBackend`.  Each
  * `persistenceId` lives at the single key
- * `<prefix><persistenceId>/state.json` and is rewritten in place — there is no
- * sequence-padded history, and `revision` lives entirely in the body.
+ * `<prefix>state/<persistenceId>/state.json` and is rewritten in place —
+ * there is no sequence-padded history, and `revision` lives entirely in the
+ * body.
+ *
+ * The `state/` segment is a namespace this store owns, and it is what keeps
+ * the corpus disjoint from `ObjectStorageSnapshotStore`'s (#716).  The two
+ * are handed the same backend and the same `prefix` by
+ * `registerObjectStoragePlugins`, and before the split an entity persisted
+ * both ways put this record inside the snapshot store's own directory, where
+ * `'state.json'` collates after every zero-padded sequence key and was
+ * returned by `loadLatest` as the newest snapshot — a body with no
+ * `sequenceNr`, which recovery then refused.  See
+ * {@link OBJECT_STORAGE_DURABLE_STATE_NAMESPACE}.
  *
  * Strict CAS via ETag.  Every successful `load` and `upsert` caches the
  * server's ETag; the next `upsert(expectedRevision = N)` translates to:
@@ -366,7 +381,8 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
   }
 
   private keyFor(persistenceId: string): string {
-    return `${this.prefix}${persistenceId}/state.json`;
+    return `${this.prefix}${OBJECT_STORAGE_DURABLE_STATE_NAMESPACE}`
+      + `${persistenceId}/${OBJECT_STORAGE_DURABLE_STATE_LEAF}`;
   }
 }
 

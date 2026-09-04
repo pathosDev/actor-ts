@@ -27,7 +27,11 @@ import { ObjectStorageDurableStateStore } from '../../../../../src/persistence/d
 import { ObjectStorageDurableStateStoreOptions } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
 import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
 import { ObjectStorageSnapshotStoreOptions } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
-import { SEQ_PADDING } from '../../../../../src/persistence/Constants.js';
+import {
+  OBJECT_STORAGE_DURABLE_STATE_NAMESPACE,
+  OBJECT_STORAGE_SNAPSHOT_NAMESPACE,
+  SEQ_PADDING,
+} from '../../../../../src/persistence/Constants.js';
 import { JournalError } from '../../../../../src/persistence/JournalTypes.js';
 import {
   ATS1_MAGIC,
@@ -55,12 +59,13 @@ afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {
 
 /**
  * The FS backend stores each key at `dir/<key>` 1:1, so for DurableState
- * with `persistenceId='a'` the body lives at `dir/a/state.json`.  Lock files
+ * with `persistenceId='a'` the body lives at `dir/state/a/state.json` — the
+ * `state/` segment is the namespace that store owns (#716).  Lock files
  * (`<key>.lock`), etag files (`<key>.etag`), and stale tmpfiles
  * (`<key>.tmp.*`) sit alongside.
  */
 function bodyFileFor(persistenceId: string): string {
-  return join(dir, persistenceId, 'state.json');
+  return join(dir, OBJECT_STORAGE_DURABLE_STATE_NAMESPACE, persistenceId, 'state.json');
 }
 
 describe('#116 — DurableState revision-tampering exploit (pre-fix demonstration)', () => {
@@ -326,7 +331,12 @@ describe('#116 — encrypted body is already protected by AES-GCM', () => {
  * SEQ_PADDING>.json`.
  */
 function snapshotFileFor(persistenceId: string, seq: number): string {
-  return join(dir, persistenceId, `${String(seq).padStart(SEQ_PADDING, '0')}.json`);
+  return join(
+    dir,
+    OBJECT_STORAGE_SNAPSHOT_NAMESPACE,
+    persistenceId,
+    `${String(seq).padStart(SEQ_PADDING, '0')}.json`,
+  );
 }
 
 describe('#613 — snapshot bodies carry an integrity tag', () => {

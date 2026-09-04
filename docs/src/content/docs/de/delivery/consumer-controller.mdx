@@ -10,8 +10,10 @@ Zustellung.  Er:
   `ProducerController`n.
 - Dedupliziert Duplikate (gleiches `producerId` + gleiche Producer-Inkarnation
   + gleiche `seq`) und hält diese Buchführung dabei auf einem begrenzten
-  Budget — höchstens `maxProducers` Producer, und Einträge, die
-  `producerIdleTtlMs` lang untätig waren, werden weggeräumt.
+  Budget — höchstens `maxProducers` Producer, Einträge, die
+  `producerIdleTtlMs` lang untätig waren, werden weggeräumt, und höchstens
+  `maxOutOfOrder` Sequenzen werden oberhalb einer offenen Lücke im Strom
+  eines Producers behalten.
 - Weist ein fehlerhaftes Envelope ab — ohne `replyTo`, mit einer `seq`, die
   keine positive Safe-Integer ist, oder mit einem leeren bzw. zu langen
   Identifier — als Dead Letter, ohne den Handler zu rufen und ohne zu ACKen.
@@ -54,6 +56,7 @@ type ConsumerControllerOptionsType<T> = {
   handler: (body: T) => void | Promise<void>;
   maxProducers?: number;         // default 1024,   Infinity = no cap
   producerIdleTtlMs?: number;    // default 300000, Infinity = no sweep
+  maxOutOfOrder?: number;        // default 1024,   Infinity = no cap
 };
 ```
 
@@ -62,11 +65,12 @@ type ConsumerControllerOptionsType<T> = {
 | `handler` | Wird für jeden neuen (nicht duplizierten) Message-Body aufgerufen.  Pflichtfeld. |
 | `maxProducers` | Wie viele Producer die Dedup-Map gleichzeitig hält.  Darüber hinaus wird der Eintrag des am längsten nicht genutzten Producers verdrängt. |
 | `producerIdleTtlMs` | Wie lange der Eintrag eines Producers ohne Delivery von ihm überlebt.  Ein Hintergrund-Sweep räumt die abgelaufenen weg. |
+| `maxOutOfOrder` | Wie viele Sequenzen ein einzelner Producer oberhalb einer offenen Lücke behalten darf.  Darüber hinaus weist der Consumer das Delivery ab — kein Handler-Aufruf und kein ACK —, das Fenster dieses Producers stallt also. |
 
 Du konfigurierst weiterhin weder eine Buffer-Größe noch eine Consumer-ID, und
 die Grenzen dafür, was ein eingehendes *Envelope* enthalten darf, bleiben nicht
 konfigurierbar: sie existieren, um Wire-Input zu begrenzen, und ein Limit, das
-der Sender anheben könnte, ist kein Limit.  Die beiden Optionen oben sind eine
+der Sender anheben könnte, ist kein Limit.  Die drei Optionen oben sind eine
 andere Art von Grenze — ein Budget, das dieser Consumer auf seinen eigenen Heap
 anwendet, und genau so etwas sollte ein Betreiber einstellen können.
 
@@ -74,7 +78,8 @@ anwendet, und genau so etwas sollte ein Betreiber einstellen können.
 const consumerOptions = ConsumerControllerOptions.create<OrderEvent>()
   .withHandler(async (order) => { await processOrder(order); })
   .withMaxProducers(64)
-  .withProducerIdleTtlMs(60_000);
+  .withProducerIdleTtlMs(60_000)
+  .withMaxOutOfOrder(256);
 
 const consumer = system.spawn(
   () => new ConsumerController<OrderEvent>(consumerOptions),
@@ -116,10 +121,35 @@ retransmittiert, kostet einen doppelten Handler-Aufruf.  Der Sweep läuft im
 Takt der TTL selbst, ein untätiger Eintrag verschwindet also nach ein bis zwei
 davon.
 
+Das deckt ab, wie viele Einträge es gibt.  `maxOutOfOrder` deckt ab, wie groß
+einer davon wird.  Ein Dedup-Eintrag hält einen `contiguous`-High-Watermark
+plus eine Menge der Sequenzen, die *darüber* schon ausgeliefert wurden, und
+`contiguous` rückt nur vor, wenn der fehlende Vorgänger eintrifft — ein Sender,
+der eine Sequenz zurückhält und die danach weiter schickt, lässt diese Menge
+also wachsen, solange er weitermacht.  `maxProducers` deckt das nicht
+transitiv ab: es begrenzt, wie viele solcher Mengen es gibt, nicht die Größe
+einer einzelnen, und der Idle-Sweep erreicht einen aktiv sendenden Producer
+nie, weil jedes zugelassene Delivery seinen Zeitstempel auffrischt.
+
+An der Grenze **weist** der Consumer das Delivery **ab** — er ruft Deinen
+Handler nicht auf und ACKt nicht —, statt die älteste behaltene Sequenz zu
+verdrängen.  Beides würde den Heap begrenzen; sie unterscheiden sich darin,
+was sie kosten.  Ein Drop würde Deinen Handler erneut für eine Nachricht
+laufen lassen, die dieser Consumer bereits behandelt *und* geACKt hatte — ein
+Duplikat, mit dem der Sender nicht rechnen kann.  Ein Stall ist sichtbar, und
+er ist genau das, wovon sich Retransmission ohnehin erholt: der Send bleibt im
+eigenen Fenster des Producers und wird weiter wiederholt.  Ein Deadlock kann
+daraus nicht werden, denn die Sequenz, die die Lücke schließt, wird immer
+zugelassen, egal wie voll die Menge ist — sie leert die Menge, statt sie zu
+vergrößern.
+
 `consumer.trackedProducers` liefert die aktuelle Anzahl der Einträge.  Sie
 sollte nahe an der Zahl der Producer liegen, die tatsächlich mit diesem
 Consumer sprechen; steigt sie mit der Nachrichtenzahl, ist genau das das
 Symptom, das dieses Budget verhindern soll.
+`consumer.outOfOrderFor(producerId)` ist die andere Hälfte: 0 bei einem Strom,
+der in Reihenfolge ankommt, steigend nur solange eine Lücke offen ist, und bei
+`maxOutOfOrder` stehend, wenn ein Producer stallt.
 
 ## Handler-Kontrakt
 
@@ -128,6 +158,14 @@ Der Controller ruft `handler(body)` einmal pro *neuem*
 schickt der Controller ein ACK zurück an den Producer (via
 `Delivery.replyTo`), und der Producer gibt seinen In-Flight-Slot
 frei.
+
+Deliveries werden **eines nach dem anderen** behandelt.  Der Controller reicht
+das Promise des Handlers an die Actor-Zelle durch, das nächste Envelope wird
+also erst dequeued, wenn das aktuelle geACKt ist — ein langsamer Handler
+erzeugt damit Backpressure über die Mailbox, statt in überlappende Aufrufe zu
+zerfallen, und ein Retransmit, der eintrifft, während seine eigene Seq noch
+behandelt wird, wird als das Duplikat absorbiert, das er ist, statt den Handler
+ein zweites Mal laufen zu lassen.
 
 Die Inkarnation ist es, die einen *neu gestarteten* Producer aus dem
 Dedup-Fenster heraushält: er verwendet seine Sequenznummern wieder, seine
@@ -195,10 +233,25 @@ führen den Handler aus und updaten danach den State.
 
 Es gibt keine feste Buffer-Größe für Nachrichten und keinen stillen Drop einer
 solchen — der Producer retransmittiert ungeACKte Nachrichten weiter, bis der
-Handler resolved und das ACK ankommt.  Begrenzt ist die Dedup-Buchführung
-dahinter: siehe [Warum der Dedup-State ein Budget
-hat](#warum-der-dedup-state-ein-budget-hat).  Ein verlorener Eintrag verwirft
-nie eine Nachricht, er kostet ein Duplikat.
+Handler resolved und das ACK ankommt.
+
+Begrenzt ist die Buchführung dahinter, und zwar in beiden Dimensionen: wie
+viele Producer die Dedup-Map hält, und wie viele Sequenzen ein einzelner
+Producer oberhalb einer offenen Lücke behalten darf.  Das Zweite ist
+`maxOutOfOrder` (Default 1 024).  Darüber hinaus weist der Consumer das
+Delivery ab — kein Handler-Aufruf und kein ACK —, der Producer behält den Send
+also in seinem eigenen Fenster und retransmittiert weiter; der Stall
+propagiert zurück zum Sender, und dort ist auch die fehlende Sequenz.  Nichts
+wird verworfen und nichts geht verloren: die Sequenz, die die Lücke schließt,
+wird immer zugelassen, egal wie voll die Menge ist, und sobald sie ankommt,
+leert sich der ganze behaltene Lauf in einem Durchgang, und jede abgewiesene
+Sequenz wird bei ihrem nächsten Retransmit angenommen.
+
+Siehe [Warum der Dedup-State ein Budget
+hat](#warum-der-dedup-state-ein-budget-hat) für beide Hälften.  Ein verlorener
+Eintrag verwirft nie eine Nachricht, er kostet ein Duplikat.  Die
+Out-of-order-Grenze zu erreichen verwirft ebenfalls keine, sie kostet einen
+Stall.
 
 ## Failure-Semantik
 

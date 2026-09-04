@@ -3,6 +3,8 @@ title: Snapshot store backend
 description: ObjectStorageSnapshotStore stores snapshots in object storage — the right shape for cluster-wide shared snapshots, encrypted at rest, with compression. Pair with sharded entities that move between nodes.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 `ObjectStorageSnapshotStore` is the snapshot-store
 implementation that uses
 [object storage](/persistence/object-storage/overview/)
@@ -82,28 +84,95 @@ type ObjectStorageSnapshotStoreOptionsType = {
 ## Key layout
 
 ```
-<prefix>/<persistenceId>/seq-<seqNr>
+<prefix>snapshots/<persistenceId>/<seqNr padded to 20 digits>.json
 ```
 
-Examples:
+Examples, with `prefix: 'acme/'`:
 
 ```
-snapshots/account-42/seq-100
-snapshots/account-42/seq-200
-snapshots/account-42/seq-300
+acme/snapshots/account-42/00000000000000000100.json
+acme/snapshots/account-42/00000000000000000200.json
+acme/snapshots/account-42/00000000000000000300.json
 ```
 
-The framework lists keys under `<prefix>/<persistenceId>/` to
-find the latest snapshot.  The listing is ascending by key and
-carries no limit: the zero-padded sequence number makes the
-*last* entry the newest one, so a `limit: 1` would hand back the
-oldest instead.
+Three segments, each doing one job.
+
+- **`<prefix>`** is yours — a deployment, an environment, a
+  tenant.  It is what a body is bound to along with the rest of
+  the key, so staging state cannot be replayed into production.
+- **`snapshots/`** is the namespace this store owns.
+  `ObjectStorageDurableStateStore` owns `state/` and writes
+  `<prefix>state/<persistenceId>/state.json`.  The two stores are
+  handed the *same* prefix by `registerObjectStoragePlugins`, and
+  the namespace is what keeps their corpora from sharing a
+  directory — see [Two stores, one prefix](#two-stores-one-prefix).
+- **`<persistenceId>/`** is the per-entity directory that bounds
+  every LIST.
+
+The framework lists keys under
+`<prefix>snapshots/<persistenceId>/` to find the latest snapshot.
+The listing is ascending by key and carries no limit: the
+zero-padded sequence number makes the *last* entry the newest
+one, so a `limit: 1` would hand back the oldest instead.
+
+What the store takes from that listing is the last entry **shaped
+like one of its own snapshots** — this entity's directory, then
+exactly twenty digits and `.json`.  Prefix membership is not
+evidence of ownership: a bucket can have a second writer, and a
+marker file or a half-finished migration under the same prefix
+used to be read as a snapshot, deleted by `delete`, and counted
+towards `keepN` at the cost of a real snapshot.  A body that
+names a *different* `persistenceId` is not returned either; the
+store reports no snapshot, and recovery replays the journal.
 
 For very-large `persistenceId` spaces, listing per-pid is
 typically fast in S3 (per-prefix throughput).  Avoid putting
 all entity types under the same prefix without per-pid
 subdirectories — that directory segment is the only thing
 bounding what a load has to enumerate.
+
+### Two stores, one prefix
+
+`registerObjectStoragePlugins` wires the snapshot store and the
+durable-state store onto one backend with one prefix, on purpose.
+Their key namespaces are disjoint anyway:
+
+```
+acme/snapshots/account-42/00000000000000000300.json   snapshot
+acme/state/account-42/state.json                      durable state
+```
+
+Without the namespaces both landed in `acme/account-42/`, and
+`state.json` sorts after every zero-padded sequence key — so an
+entity persisted both ways had its durable-state record returned
+as its newest snapshot.  That body carries no `sequenceNr`, so
+recovery rejected it and the actor could not start.  No invalid
+`persistenceId` was needed: one call to wire the plugin up, and
+one entity used both ways.
+
+<Aside type="caution" title="Upgrading an existing bucket">
+  The namespaces are a **breaking** key-layout change.  A bucket
+  written by an earlier version holds
+  `<prefix><persistenceId>/…`, which this version does not read.
+
+  **Snapshots need no migration.**  They are a recovery
+  accelerator, not a source of truth: `loadLatest` finding
+  nothing means the journal is replayed in full, and the next
+  save writes at the new key.  Delete the old objects when you
+  are ready.
+
+  **Durable state does** — it *is* the source of truth.  Copy
+  each `<prefix><persistenceId>/state.json` to
+  `<prefix>state/<persistenceId>/state.json`.  A body written
+  with neither client-side encryption nor an integrity HMAC
+  carries no key binding, so a server-side copy is enough.  A
+  context-bound body (#612) is sealed against its old key and
+  will not decode at the new one: before upgrading, run the
+  **old** version with `prefix: '<prefix>state/'` on the
+  durable-state store alone and re-`upsert` each record, which
+  writes exactly the keys this version reads and binds them
+  correctly.  Then upgrade and set `prefix` back to `<prefix>`.
+</Aside>
 
 ## Performance
 
@@ -115,7 +184,8 @@ GET.  Numbers for S3 same-region:
 
 That LIST is what the per-`persistenceId` directory in the key
 buys.  Both shipped backends scope it to
-`<prefix>/<persistenceId>/` — S3 through `Prefix` / `MaxKeys`,
+`<prefix>snapshots/<persistenceId>/` — S3 through `Prefix` /
+`MaxKeys`,
 the filesystem backend by reading only that directory — so a
 load costs one entity's own snapshots and stays flat as the
 number of entities grows.  `keepN` pruning issues the same LIST
@@ -156,11 +226,11 @@ durable state.  See
 PersistentActor.persist(event) succeeds
   ↓ check snapshotPolicy()
   ↓ if true → take snapshot
-backend.put('snapshots/<pid>/seq-N', serialized state)
+backend.put('<prefix>snapshots/<pid>/<seq>.json', serialized state)
 
 PersistentActor.preStart
-  ↓ list 'snapshots/<pid>/' — that directory only, ascending
-  ↓ last key = latest seq
+  ↓ list '<prefix>snapshots/<pid>/' — that directory only, ascending
+  ↓ last well-formed key = latest seq
   ↓ backend.get(latest) → decode → onEvent from seq+1 onwards
 ```
 
@@ -205,8 +275,6 @@ patterns:
   shared across the cluster.
 - **ObjectStorage everything** — when S3 is your only storage.
   Slower per-op but cheap.
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="LIST cost on large pids">
   ```ts

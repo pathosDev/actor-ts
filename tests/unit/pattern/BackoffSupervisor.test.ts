@@ -887,3 +887,153 @@ describe('BackoffSupervisor — stash overflow (#773)', () => {
     }
   }, 8_000);
 });
+
+/* ============================================================== */
+/* #770 — the control ticks are not reconstructible                */
+/* ============================================================== */
+
+/**
+ * The sentinels were `Symbol.for(...)`, so anything holding the registry
+ * string — a compile-time constant in the published package — got back the
+ * identical symbol and could tell it on the supervisor's public channel.
+ * They are `Symbol(...)` now, unnameable outside their own module.
+ *
+ * Both tests assert the same two things, one per sentinel: the timing
+ * guarantee held, and the forged value was treated as *ordinary user
+ * traffic* rather than being specially rejected.  The second half matters —
+ * the fix is "this value is no longer special", not "this value is now
+ * refused", and a test that only checked for a refusal would pass against a
+ * blocklist on the registry symbol, which would be the wrong fix.
+ *
+ * The timing assertions use a wide band on purpose.  Under the old code a
+ * forged tick acted within a millisecond or two; under the new one the full
+ * configured delay is served.  The thresholds sit far below the configured
+ * value so that neither Bun firing a timer a 15.6 ms quantum early (#477)
+ * nor `awaitCondition`'s poll interval can move the verdict.
+ */
+const forgedInbox: unknown[] = [];
+let forgedStarts = 0;
+
+/** Records what reaches the child, and crashes on demand to open a window. */
+class ForgeTarget extends Actor<unknown> {
+  override preStart(): void { forgedStarts += 1; }
+  override onReceive(message: unknown): void {
+    if (message === 'crash') throw new Error('forge-target boom');
+    forgedInbox.push(message);
+  }
+}
+
+describe('BackoffSupervisor — forged control ticks (#770)', () => {
+  test('a reconstructed global respawn sentinel cannot collapse the backoff window', async () => {
+    forgedStarts = 0; forgedInbox.length = 0;
+    const sys = newSystem('backoff-forged-respawn');
+    // A long window, so "held" and "collapsed" are hundreds of milliseconds
+    // apart rather than a judgement call about scheduler jitter.
+    const policy = new RecordingPolicy([600]);
+    const supervisor = sys.spawn(
+      BackoffSupervisor.factory<unknown>({
+        child: ForgeTarget,
+        minBackoff: 600,
+        maxBackoff: 5_000,
+        randomFactor: 0,
+        policy,
+        forward: 'stash',
+        resetCounter: 'never',
+      }),
+      'sup-forged-respawn',
+    );
+    try {
+      await awaitCondition(() => forgedStarts === 1, {
+        timeoutMs: 4_000,
+        label: 'the first incarnation started',
+      });
+
+      // Crash it, and wait for `delayFor` — the supervisor calls it as it
+      // schedules the respawn, so it is a direct signal that the backoff
+      // window is open rather than a sleep and a hope.
+      supervisor.tell('crash');
+      await awaitCondition(() => policy.calls.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the supervisor entered its backoff window',
+      });
+      const windowOpenedAt = Date.now();
+      expect(forgedStarts).toBe(1);
+
+      // The exploit exactly as filed: rebuild the sentinel through the
+      // cross-realm global registry and tell it on the public channel.
+      const forgedRespawn = Symbol.for('actor-ts.pattern.BackoffSupervisor.respawn');
+      supervisor.tell(forgedRespawn);
+
+      await awaitCondition(() => forgedStarts === 2, {
+        timeoutMs: 8_000,
+        label: 'the legitimate timer respawned the child',
+      });
+
+      // The window was actually served.  A forged tick reaching `respawn()`
+      // spawns on the spot, which lands this in single-digit milliseconds.
+      expect(Date.now() - windowOpenedAt).toBeGreaterThan(300);
+      // And exactly one respawn was scheduled — the forged tick did not
+      // produce an extra incarnation for the real tick to then refuse.
+      expect(policy.calls.length).toBe(1);
+
+      // Ordinary user traffic: stashed during the window like anything else,
+      // then forwarded to the new child when the stash drained.
+      await awaitCondition(() => forgedInbox.includes(forgedRespawn), {
+        timeoutMs: 4_000,
+        label: 'the forged respawn symbol reached the child as a user message',
+      });
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 20_000);
+
+  test('a reconstructed global drain sentinel cannot cut the post-respawn grace short', async () => {
+    forgedStarts = 0; forgedInbox.length = 0;
+    const sys = newSystem('backoff-forged-drain');
+    const supervisor = sys.spawn(
+      BackoffSupervisor.factory<unknown>({
+        child: ForgeTarget,
+        minBackoff: 50,
+        maxBackoff: 5_000,
+        randomFactor: 0,
+        drainGraceMs: 600,
+        // Strict mode — the #67 gate, and the configuration in which a forged
+        // drain has its full effect: new arrivals are stashed until the child
+        // has proven it survives `preStart`.
+        forwardDuringGrace: false,
+        forward: 'stash',
+      }),
+      'sup-forged-drain',
+    );
+    try {
+      // The supervisor spawns in `preStart`, so the grace window is already
+      // open by the time the first incarnation reports in.
+      await awaitCondition(() => forgedStarts === 1, {
+        timeoutMs: 4_000,
+        label: 'the first incarnation started',
+      });
+      const graceOpenedAt = Date.now();
+
+      supervisor.tell('payload');
+      const forgedDrain = Symbol.for('actor-ts.pattern.BackoffSupervisor.drain');
+      supervisor.tell(forgedDrain);
+
+      await awaitCondition(() => forgedInbox.includes('payload'), {
+        timeoutMs: 8_000,
+        label: 'the stashed payload reached the child',
+      });
+      // The grace was served: a forged drain flips `childConfirmedAlive` and
+      // flushes the stash immediately, which lands this near zero.
+      expect(Date.now() - graceOpenedAt).toBeGreaterThan(300);
+      // The forged symbol went the same way as the payload — stashed, then
+      // forwarded — rather than being consumed as a control message.
+      expect(forgedInbox).toContain(forgedDrain);
+      // And it did not restart anything on its way through.
+      expect(forgedStarts).toBe(1);
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 20_000);
+});

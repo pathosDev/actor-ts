@@ -135,9 +135,12 @@ export type {
   StreamEndMessage,
   StreamErrorMessage,
   RpcErrorMessage,
-  // Exported so a `createServiceClient` override — the test seam in front
-  // of the client's call sites — can be typed without `@grpc/grpc-js`.
+  // Exported so a `createServiceClient` / `instantiateServiceClient`
+  // override — the test seam in front of the client's call sites — can be
+  // typed without `@grpc/grpc-js`.
   GrpcServiceClient,
+  GrpcServiceConstructor,
+  GrpcCredentialsLike,
   GrpcCallOptions,
   GrpcUnaryFunction,
   GrpcServerStreamFunction,
@@ -148,7 +151,7 @@ export type {
   GrpcDuplexCall,
 } from './GrpcClientActor.js';
 export { GrpcClientOptions, GrpcClientOptionsBuilder, GrpcClientOptionsValidator } from './GrpcClientOptions.js';
-export type { GrpcClientOptionsType } from './GrpcClientOptions.js';
+export type { GrpcChannelOptions, GrpcClientOptionsType } from './GrpcClientOptions.js';
 export {
   GrpcServerActor,
   GRPC_HEALTH_SERVICE_NAME,
@@ -174,6 +177,12 @@ export type {
   GrpcServerReadableCall,
   GrpcCallMetadata,
   GrpcUnaryCallback,
+  // Exported so a `loadGrpcModule` / `loadProtoLoader` override — the test
+  // seam in front of the server's bind — can be typed without
+  // `@grpc/grpc-js`.
+  GrpcServerLike,
+  GrpcServerModule,
+  GrpcProtoLoaderModule,
 } from './GrpcServerActor.js';
 export { GrpcServerOptions, GrpcServerOptionsBuilder } from './GrpcServerOptions.js';
 export type { GrpcServerOptionsType } from './GrpcServerOptions.js';

@@ -154,6 +154,38 @@ export const INCOMPLETE_FRAME_IDLE_MS = 30_000;
 export const MAX_INBOUND_CONNECTIONS = 1_024;
 
 /**
+ * How many distinct peer addresses one `MessageChannelTransport` remembers
+ * (#945).
+ *
+ * The set behind `peers()` gains an entry for every distinct `from` that has
+ * ever arrived on the port, and nothing ever removed one — a broker model owns
+ * no per-peer connection, so there is no close event to prune on.  One
+ * `postMessage` per address is therefore one permanent entry, and the resident
+ * cost of "has posted at least once" was unbounded.
+ *
+ * Through a broker the ceiling is already the registered worker count, because
+ * the broker rewrites `from` from the port the frame arrived on (#774).  This
+ * cap is for the shape that has no broker: the transport is exported package
+ * surface and two of them can be wired to each other's port directly, which is
+ * how the manual wiring in `worker-mesh.mdx` and this transport's own suite
+ * pair them.
+ *
+ * Refusing the newest rather than evicting the oldest, the same choice
+ * {@link MAX_INBOUND_CONNECTIONS} makes — and the reader here sharpens it:
+ * `transportReachesCluster` reports the node **not ready** unless `peers()`
+ * still names an expected member, so evicting an established peer would take a
+ * healthy node out of its load balancer. The frame itself is delivered either
+ * way; the cap bounds the bookkeeping, never the traffic, because dropping
+ * frames once the set filled would hand an attacker a denial of service in
+ * place of the leak.
+ *
+ * Sized like the inbound-connection cap and for the same reason: far above any
+ * mesh this framework is built for — a worker per core, not a thousand — so
+ * only traffic no honest broker produces ever reaches it.
+ */
+export const MAX_KNOWN_CHANNEL_PEERS = 1_024;
+
+/**
  * How many keys a remote peer may contribute, and how long each value may be.
  * A context rides on *every* envelope and is stamped onto *every* log line the
  * receiving actor emits, so an oversized one is not a single large record —
