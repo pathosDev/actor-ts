@@ -83,6 +83,7 @@ import {
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES,
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES,
 } from '../../../src/http/Constants.js';
+import { DEFAULT_CORS_CREDENTIALS } from '../../../src/http/middleware/CorsOptions.js';
 import {
   DEFAULT_HTTP_CLIENT_MAX_REDIRECTS,
   DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES,
@@ -370,6 +371,14 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.http.client.max-redirects', kind: 'int', constant: DEFAULT_HTTP_CLIENT_MAX_REDIRECTS },
   { key: 'actor-ts.http.client.max-response-bytes', kind: 'bytes', constant: DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES },
   { key: 'actor-ts.http.client.redirect', kind: 'string', constant: DEFAULT_HTTP_CLIENT_REDIRECT_MODE },
+  // The one CORS leaf with a scalar constant behind it (#878).  `off` here and
+  // `credentials: merged.credentials ?? DEFAULT_CORS_CREDENTIALS` in
+  // `resolveCorsPolicy` are the same `false`, checkably — which is what keeps
+  // it out of FEATURE_SWITCHES, whose members are the ones with nothing to
+  // disagree with.  Its four comment-only siblings — `origins`, `methods`,
+  // `allowed-headers`, `max-age` — carry no leaf, so there is nothing here to
+  // assert about them.
+  { key: 'actor-ts.http.cors.credentials', kind: 'bool', constant: DEFAULT_CORS_CREDENTIALS },
 
   /* --- cache --- */
   { key: 'actor-ts.cache.in-memory.max-entries', kind: 'int', constant: DEFAULT_MAX_ENTRIES },
@@ -613,6 +622,13 @@ const FEATURE_SWITCHES: readonly string[] = [
   // constant would be the wrong shape anyway, since the value it would hold
   // is "nothing" (#862).
   'actor-ts.mailbox.default.capacity',
+  // `[]` is the sentinel for "expose nothing", the same shape as
+  // `devtools.allowed-origins` above and for the same reason: an empty list
+  // and an unset key produce the identical response, because the read site is
+  // `exposedHeaders && exposedHeaders.length > 0`.  There is no constant
+  // either — `CorsRouteOptions.exposedHeaders` is optional and the default is
+  // the field being absent (#878).
+  'actor-ts.http.cors.exposed-headers',
   'actor-ts.cluster.weakly-up-after', // 0s = no auto weakly-up promotion
   'actor-ts.cluster.tombstone.min-retention', // 0s = derive from down-after
   'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',

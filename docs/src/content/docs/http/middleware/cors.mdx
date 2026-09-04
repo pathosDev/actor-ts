@@ -31,14 +31,44 @@ responses get `Access-Control-Allow-Origin` + `Vary: Origin`.
 
 | Builder method | Field | Purpose |
 | --- | --- | --- |
-| `withOrigins(...o)` | `origins` | Exact-match allowlist. |
-| `withAnyOrigin()` | `origins` | Allow any origin (`*`). Must be explicit. |
-| `withOriginPredicate(predicate)` | `origins` | Decide per request; a throwing predicate denies. |
-| `withMethods(...m)` | `methods` | `Access-Control-Allow-Methods`. Default: the methods registered at the pattern. |
-| `withAllowedHeaders(...h)` | `allowedHeaders` | Default: echo the (sanitised) request headers. |
-| `withExposedHeaders(...h)` | `exposedHeaders` | `Access-Control-Expose-Headers`. |
-| `withCredentials(flag?)` | `credentials` | `Access-Control-Allow-Credentials: true`. |
-| `withMaxAge(seconds)` | `maxAge` | Preflight cache duration. |
+| `withOrigins(...o)` | `origins` | Exact-match allowlist. Config: `origins`. |
+| `withAnyOrigin()` | `origins` | Allow any origin (`*`). Must be explicit — **code-only**. |
+| `withOriginPredicate(predicate)` | `origins` | Decide per request; a throwing predicate denies. **Code-only**. |
+| `withMethods(...m)` | `methods` | `Access-Control-Allow-Methods`. Default: the methods registered at the pattern. Config: `methods`. |
+| `withAllowedHeaders(...h)` | `allowedHeaders` | Default: echo the (sanitised) request headers. Config: `allowed-headers`. |
+| `withExposedHeaders(...h)` | `exposedHeaders` | `Access-Control-Expose-Headers`. Config: `exposed-headers`. |
+| `withCredentials(flag?)` | `credentials` | `Access-Control-Allow-Credentials: true`. Config: `credentials`. |
+| `withMaxAge(seconds)` | `maxAge` | Preflight cache duration. Config: `max-age`. |
+
+Every field except the wildcard and the predicate is also settable from
+`actor-ts.http.cors`, under the same name in kebab-case — `origins`,
+`methods`, `allowed-headers`, `exposed-headers`, `credentials`, `max-age`.
+The order is the usual one, **per field**: what the route names in code wins,
+then the config block, then the built-in default. So the allowlist can live in
+`application.conf` while `withCredentials()` stays in code, and each takes
+effect.
+
+```hocon
+actor-ts.http.cors {
+  origins = ["https://app.example", "https://admin.example"]
+  max-age = 600          # seconds — not a duration string
+}
+```
+
+The two arms marked **code-only** above are exactly that: there is no key for
+either. `origins = ["*"]` in a config file is refused with a `ConfigError`
+naming the key — one line that widened every `cors()` route in the process to
+any origin is what `withAnyOrigin()`'s "must be explicit" exists to prevent —
+and a predicate is a function, which HOCON cannot express at all.
+
+`methods`, `allowed-headers` and `max-age` ship **no value** in
+`reference.conf`, because each has a default that a published literal would
+destroy: the methods actually registered at the pattern, the echoed request
+headers, and "send no `Access-Control-Max-Age` at all". `origins` ships none
+either, so that a `cors()` with no allowlist anywhere stays a loud error
+instead of becoming a silent deny-all. All four are still read when a
+deployment sets them. See
+[Configuration → `actor-ts.http`](/reference/configuration/) for the table.
 
 `Access-Control-Allow-Origin` echoes the request origin (the literal `*` is
 sent only for `withAnyOrigin()` **without** credentials), and `Vary: Origin`
@@ -54,6 +84,16 @@ import { Aside } from '@astrojs/starlight/components';
   `withMiddleware(...)`. Preflights are anonymous by spec, so wrapping
   `cors()` **inside** an auth middleware would `401` every preflight. Put
   `cors()` on the outside.
+</Aside>
+
+<Aside type="caution" title="A missing origins allowlist fails at bind(), not at cors()">
+  `cors({}, routes)` used to throw the moment it was called. It cannot any
+  more: a config file is now allowed to be the sole source of `origins`, and
+  `cors()` runs while the route tree is being built, before any `ActorSystem`
+  exists — so it cannot tell "nobody set an allowlist" from "nobody set one
+  *in code*". The check moved to where the answer is known, which is
+  `compile()`, inside `bind()`. The error is the same, and it now names the
+  config key as well as the builder methods.
 </Aside>
 
 <Aside type="caution" title="Credentials and wildcard don't mix">

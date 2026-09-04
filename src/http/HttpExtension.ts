@@ -131,7 +131,9 @@ export class HttpExtension implements Extension {
       },
       async bind(routes: Route): Promise<ServerBinding> {
         const active: HttpServerBackend = backend ?? await backendFromConfig(system.config);
-        const compiled = compile(routes);
+        // The one place a route tree and an ActorSystem are both in scope, so
+        // the one place a directive with a HOCON layer can be resolved (#878).
+        const compiled = compile(routes, [], system.config);
         const httpRoutes = compiled.filter((r) => r.kind === 'http');
         const wsRoutes = compiled.filter((r) => r.kind === 'websocket');
         const fallbacks = compiled.filter((r) => r.kind === 'fallback');

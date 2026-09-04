@@ -285,6 +285,31 @@ export const ConfigKeys = {
     /** How long `unbind()` lets in-flight requests drain before forcing. */
     shutdownGracePeriod: 'actor-ts.http.shutdown-grace-period',
     /**
+     * Per-route CORS defaults for the `cors(options, routes)` directive (#878).
+     *
+     * Full dotted leaves beside the `root`, for the reason `websocket` below
+     * spells out — and here it matters more than anywhere else in this group:
+     * four of the six leaves are **comment-only** in `reference.conf`, so they
+     * have no leaf for `NoDeadConfigKeys` to walk at all, and the two that do
+     * ship values would have been covered by the root whether or not
+     * `resolveCorsPolicy` had ever been written.
+     *
+     * `origins` is settable here but the `'*'` wildcard is not: a value
+     * containing it is refused with a `ConfigError` naming this key, because
+     * `withAnyOrigin()` is documented as the explicit opt-in and #128 was about
+     * CORS defaults being too permissive.  The predicate form has no path here
+     * either — a function cannot live in HOCON.
+     */
+    cors: {
+      root: 'actor-ts.http.cors',
+      origins: 'actor-ts.http.cors.origins',
+      methods: 'actor-ts.http.cors.methods',
+      allowedHeaders: 'actor-ts.http.cors.allowed-headers',
+      exposedHeaders: 'actor-ts.http.cors.exposed-headers',
+      credentials: 'actor-ts.http.cors.credentials',
+      maxAge: 'actor-ts.http.cors.max-age',
+    },
+    /**
      * Server-side WebSocket defaults for `websocket()` routes.
      *
      * Full dotted leaves under a `root`, not a bare block root, for the reason
