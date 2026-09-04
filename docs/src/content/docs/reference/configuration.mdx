@@ -295,6 +295,62 @@ those slots for its whole deadline, so a single caller passing an hour-long
 `timeoutMs` parks the budget for an hour and locks out later callers who
 never came near the cap themselves.
 
+### `actor-ts.coordination`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `coordination.lease.ttl` | *(unset)* | Lease TTL for the whole deployment. Ships **no leaf** — a value here would supply `ttlMs` for every lease in the process and make the "`ttlMs` is required" guard unreachable. |
+| `coordination.lease.renewal-interval` | *(unset)* | How often a held lease is renewed. Ships **no leaf** — unset selects the computed `max(500ms, ttl/3)`, and `0` cannot mean "derive it" because the validator rejects it. |
+| `coordination.lease.kubernetes.namespace` | *(unset)* | Namespace holding the `Lease` object. Ships **no leaf** — unset means "read `namespace-path` from the Pod's ServiceAccount mount", and `""` is rejected. |
+| `coordination.lease.kubernetes.namespace-path` | `"/var/run/secrets/kubernetes.io/serviceaccount/namespace"` | File the Pod's namespace is read from. |
+| `coordination.lease.kubernetes.token-path` | `"/var/run/secrets/kubernetes.io/serviceaccount/token"` | File the bearer token is read from. A **path**, never the token. |
+| `coordination.lease.kubernetes.ca-path` | `"/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"` | File the CA cert pinning the API server's TLS is read from. |
+| `coordination.lease.kubernetes.token-reload-interval` | `1m` | How long a credential read from that mount is reused before the token file's mtime is checked again. No effect on an explicit `authToken`. |
+| `coordination.lease.kubernetes.operation-timeout` | `10s` | Ceiling on one API-server request. |
+| `coordination.lease.kubernetes.lease-name-max-length` | `253` | Lease object names longer than this are truncated to a stable head plus a hash of the full name. `253` is the DNS-1123 subdomain bound the API server enforces. |
+
+Nothing in the framework constructs a `Lease` for you — every `withLease(…)`
+slot takes an instance — so this block layers **under** the options you pass to
+`new InMemoryLease(…)` / `new KubernetesLease(…)`, in the usual order: explicit
+options win, then this block, then the built-in defaults. A lease is built
+before any `ActorSystem` exists, so the two constructors load the config chain
+themselves, honouring `ACTOR_TS_CONFIG` and `./application.conf`.
+
+Three keys ship **no leaf at all** and are listed above only so the names are
+discoverable. Each is a field the code requires or derives, and a shipped value
+would make `hasPath` true forever — which is precisely how the thing it stands
+in for becomes unreachable. Set one in your own `application.conf` and it is
+read normally:
+
+```hocon
+actor-ts.coordination.lease {
+  ttl = 30s
+  kubernetes.namespace = "actors"
+}
+```
+
+:::caution[The credential keys are paths, not values]
+There is deliberately **no key for `authToken`, `caCert` or `apiServerUrl`**.
+Two of those are a bearer token and a private trust anchor, and a config file is
+the wrong place for either: `ACTOR_TS_CONFIG` and a dropped-in
+`application.conf` both feed the same loader, and the merged configuration is
+readable from the DevTools config panel. The three path keys are the supported
+way to move that half of the configuration out of code — indirection to a file,
+never the secret itself.
+
+They also describe the **in-cluster** source only. Pointing one of them
+somewhere other than its default while also supplying an explicit
+`apiServerUrl` throws `OptionsError` at construction, because that pairing is
+what once sent the cluster's own ServiceAccount token to whatever host an
+operator happened to name
+([issue #599](https://github.com/pathosDev/actor-ts/issues/599)).
+:::
+
+`acquire-retries` and `acquire-retry-delay` are not settable here. The two
+backends ship different built-in defaults — 3 attempts / 100 ms for Kubernetes,
+1 / 50 ms in memory — and one leaf could not express both without silently
+unifying them. Set them per lease in code.
+
 ### `actor-ts.remote`
 
 | Key | Default | Purpose |

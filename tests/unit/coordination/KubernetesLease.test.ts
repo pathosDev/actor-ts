@@ -293,9 +293,11 @@ const baseOptions = (overrides: Partial<KubernetesLeaseOptionsType> = {}): Kuber
   };
   const options = KubernetesLeaseOptions.create()
     .withName(s.name)
-    .withNamespace(s.namespace)
     .withOwner(s.owner)
     .withTtlMs(s.ttlMs);
+  // `namespace` is optional since #859 — unset means "read it from the Pod's
+  // ServiceAccount mount" — so it is applied conditionally like the rest.
+  if (s.namespace !== undefined) options.withNamespace(s.namespace);
   if (s.renewalIntervalMs !== undefined) options.withRenewalIntervalMs(s.renewalIntervalMs);
   if (s.acquireRetries !== undefined) options.withAcquireRetries(s.acquireRetries);
   if (s.acquireRetryDelayMs !== undefined) options.withAcquireRetryDelayMs(s.acquireRetryDelayMs);
@@ -356,18 +358,46 @@ describe('KubernetesLease — required options (#596)', () => {
     expect(() => new KubernetesLease(withoutTtl)).toThrow(/ttlMs is required/);
   });
 
-  test('rejects a missing name and a missing namespace', () => {
+  test('rejects a missing name', () => {
     const withoutName = KubernetesLeaseOptions.create()
       .withNamespace('default')
       .withOwner('test-pod')
       .withTtlMs(5_000);
     expect(() => new KubernetesLease(withoutName)).toThrow(/name is required/);
+  });
 
+  /**
+   * `namespace` moved out of the constructor's required set in #859, because
+   * unset now means "read it from the Pod's ServiceAccount mount" and that read
+   * is asynchronous.  The guard did not go away — it moved to the first API
+   * call, which is the earliest point at which the mount has been consulted.
+   *
+   * The distinction from the three above is the one that matters: those three,
+   * left unset, disable mutual exclusion *silently*, so a construction-time
+   * check is the only place they can be caught.  A missing namespace stops
+   * every request with a named error instead.
+   */
+  test('accepts a missing namespace at construction and refuses at the first call', async () => {
     const withoutNamespace = KubernetesLeaseOptions.create()
       .withName('test-lease')
       .withOwner('test-pod')
-      .withTtlMs(5_000);
-    expect(() => new KubernetesLease(withoutNamespace)).toThrow(/namespace is required/);
+      .withTtlMs(5_000)
+      .withClient(server)
+      // A mount that reports no namespace at all — the only way neither source
+      // supplies one.
+      .withCredentialLoader({
+        read: async () => ({
+          credentials: {
+            apiServerUrl: 'https://kubernetes.default.svc',
+            authToken: 'mounted-token-1',
+            caCert: '<<mounted-ca-cert>>',
+          },
+          tokenModifiedAt: 1_000,
+        }),
+        tokenModifiedAt: async () => 1_000,
+      });
+    const lease = new KubernetesLease(withoutNamespace);
+    await expect(lease.acquire()).rejects.toThrow(/no namespace available/);
   });
 
   test('rejects an options-less construction', () => {

@@ -1,13 +1,24 @@
 import type { Lease } from '../Lease.js';
-import { DEFAULT_TOKEN_RELOAD_INTERVAL_MS, KubernetesLeaseOptionsValidator } from './KubernetesLeaseOptions.js';
+import {
+  DEFAULT_K8S_OPERATION_TIMEOUT_MS,
+  DEFAULT_LEASE_NAME_MAX_LENGTH,
+  DEFAULT_SERVICE_ACCOUNT_CA_PATH,
+  DEFAULT_SERVICE_ACCOUNT_NAMESPACE_PATH,
+  DEFAULT_SERVICE_ACCOUNT_TOKEN_PATH,
+  DEFAULT_TOKEN_RELOAD_INTERVAL_MS,
+  KubernetesLeaseOptionsValidator,
+  withKubernetesLeaseConfigDefaults,
+} from './KubernetesLeaseOptions.js';
 import type { KubernetesLeaseOptions, KubernetesLeaseOptionsType } from './KubernetesLeaseOptions.js';
+import { truncateLeaseName } from './LeaseName.js';
 import {
   createLease,
+  createMountedCredentialLoader,
   deleteLease,
   getLease,
   K8sLeaseError,
-  mountedCredentialLoader,
   updateLease,
+  type K8sCallOptions,
   type K8sCredentials,
   type K8sLeaseObject,
   type MountedCredentialLoader,
@@ -66,11 +77,13 @@ function isCredentialRejection(error: unknown): boolean {
  * is impossible: at most one Pod can hold the lease at a time, K8s
  * arbitrates via optimistic concurrency control.
  *
- * That guarantee rests on `name`, `owner`, `ttlMs` and `namespace` being
- * present, so the constructor rejects a missing one with `OptionsError`
- * rather than starting up half-configured (#596) — without an `owner`
- * the CREATE/PUT carries no `spec.holderIdentity` and every Pod's
- * `acquire()` succeeds against the same object.
+ * That guarantee rests on `name`, `owner` and `ttlMs` being present, so the
+ * constructor rejects a missing one with `OptionsError` rather than starting
+ * up half-configured (#596) — without an `owner` the CREATE/PUT carries no
+ * `spec.holderIdentity` and every Pod's `acquire()` succeeds against the same
+ * object.  `namespace` is checked one step later, at the first API call, only
+ * because it may legitimately come from the Pod's own ServiceAccount mount
+ * and that file cannot be read from a synchronous constructor (#859).
  *
  * Lifecycle:
  *
@@ -154,10 +167,27 @@ export class KubernetesLease implements Lease {
   private cachedCredentials: ResolvedCredentials | null = null;
   private readonly credentialLoader: MountedCredentialLoader;
 
+  private readonly operationTimeoutMs: number;
+  /**
+   * The object name actually sent to the API server — {@link options}'s `name`,
+   * truncated once here if it is longer than `leaseNameMaxLength` (#859).
+   *
+   * Resolved in the constructor rather than per call so every path uses one
+   * name: an acquire that created `foo-<hash>` and a release that deleted `foo`
+   * would leave the record claimed on the server by a process that thinks it
+   * let go.
+   */
+  private readonly leaseName: string;
+  /** Client override and per-request timeout, resolved once and forwarded to every CRUD call. */
+  private readonly callOptions: K8sCallOptions;
+
   private readonly options: KubernetesLeaseOptionsType;
 
   constructor(options: KubernetesLeaseOptions = {}) {
-    this.options = options as KubernetesLeaseOptionsType;
+    // HOCON layers UNDER the caller's options and ABOVE the built-in defaults,
+    // and is applied before validation so a bad `operation-timeout` in a config
+    // file is rejected exactly like a bad one in code (#859).
+    this.options = withKubernetesLeaseConfigDefaults(options as KubernetesLeaseOptionsType);
     // Required-ness first, domain validity second — a missing field must be
     // reported as missing, not as a domain violation of `undefined`.
     const validator = new KubernetesLeaseOptionsValidator();
@@ -167,7 +197,49 @@ export class KubernetesLease implements Lease {
       ?? Math.max(500, Math.floor(this.options.ttlMs / 3));
     this.tokenReloadIntervalMs = this.options.tokenReloadIntervalMs
       ?? DEFAULT_TOKEN_RELOAD_INTERVAL_MS;
-    this.credentialLoader = this.options.credentialLoader ?? mountedCredentialLoader;
+    this.operationTimeoutMs = this.options.operationTimeoutMs
+      ?? DEFAULT_K8S_OPERATION_TIMEOUT_MS;
+    this.leaseName = truncateLeaseName(
+      this.options.name,
+      this.options.leaseNameMaxLength ?? DEFAULT_LEASE_NAME_MAX_LENGTH,
+    );
+    this.callOptions = { client: this.options.client, timeoutMs: this.operationTimeoutMs };
+    // The mount paths are read here and not inside the loader so an injected
+    // `credentialLoader` still replaces the source whole — the seam is what
+    // makes the in-cluster branch reachable from a test at all (#760).
+    this.credentialLoader = this.options.credentialLoader ?? createMountedCredentialLoader({
+      namespacePath: this.options.namespacePath ?? DEFAULT_SERVICE_ACCOUNT_NAMESPACE_PATH,
+      tokenPath: this.options.tokenPath ?? DEFAULT_SERVICE_ACCOUNT_TOKEN_PATH,
+      caPath: this.options.caPath ?? DEFAULT_SERVICE_ACCOUNT_CA_PATH,
+    });
+  }
+
+  /**
+   * The namespace this lease addresses: the configured one, else the one the
+   * Pod's ServiceAccount mount reported.
+   *
+   * The mount's `defaultNamespace` has been read since the adapter was written
+   * and used by nothing — `K8sApi`'s own JSDoc claimed a fallback that did not
+   * exist. Making it real is what gives `namespace-path` something to do, and
+   * it is the value an in-cluster Pod almost always wants: the namespace it is
+   * running in.
+   *
+   * It cannot be resolved in the constructor, because reading the mount is
+   * asynchronous, so the failure lands at the first API call instead. That is
+   * one step later than #596's other required fields and deliberately so: those
+   * three, left unset, disable mutual exclusion silently, while a missing
+   * namespace stops every request with the error below.
+   */
+  private namespaceOf(credentials: K8sCredentials): string {
+    const namespace = this.options.namespace ?? credentials.defaultNamespace;
+    if (namespace === undefined || namespace.length === 0) {
+      throw new Error(
+        'KubernetesLease: no namespace available.  Either set `namespace` (in code or as '
+        + 'actor-ts.coordination.lease.kubernetes.namespace), or run inside a Pod whose '
+        + 'ServiceAccount mount carries one.',
+      );
+    }
+    return namespace;
   }
 
   /**
@@ -244,7 +316,7 @@ export class KubernetesLease implements Lease {
       throw new Error(
         'KubernetesLease: no credentials available.  Either supply apiServerUrl '
         + '+ authToken + caCert, or run inside a Pod with a mounted ServiceAccount '
-        + `(${'/var/run/secrets/kubernetes.io/serviceaccount'}).`,
+        + `(expected a token at ${this.options.tokenPath ?? DEFAULT_SERVICE_ACCOUNT_TOKEN_PATH}).`,
       );
     }
     return {
@@ -342,12 +414,12 @@ export class KubernetesLease implements Lease {
   private async acquirePass(
     credentials: K8sCredentials,
   ): Promise<'success' | 'held-by-other' | 'race'> {
-    const namespace = this.options.namespace;
-    const name = this.options.name;
+    const namespace = this.namespaceOf(credentials);
+    const name = this.leaseName;
     const ttlSeconds = Math.max(1, Math.ceil(this.options.ttlMs / 1000));
     const now = new Date().toISOString();
 
-    const existing = await getLease(credentials, namespace, name, this.options.client);
+    const existing = await getLease(credentials, namespace, name, this.callOptions);
 
     if (existing === null) {
       // No lease object yet — create.  CREATE returns null on 409 (race lost).
@@ -356,7 +428,7 @@ export class KubernetesLease implements Lease {
         leaseDurationSeconds: ttlSeconds,
         acquireTime: now,
         renewTime: now,
-      }, name, this.options.client);
+      }, name, this.callOptions);
       if (!created) return 'race';
       this.held = true;
       this.currentLease = created;
@@ -382,7 +454,7 @@ export class KubernetesLease implements Lease {
         leaseTransitions: ownerChanging ? transitionsBefore + 1 : transitionsBefore,
       },
     };
-    const result = await updateLease(credentials, updated, this.options.client);
+    const result = await updateLease(credentials, updated, this.callOptions);
     if (!result) return 'race';
     this.held = true;
     this.currentLease = result;
@@ -467,7 +539,7 @@ export class KubernetesLease implements Lease {
     }
     this.currentLease = null;
     await this.withFreshCredentials((credentials) =>
-      deleteLease(credentials, this.options.namespace, this.options.name, this.options.client));
+      deleteLease(credentials, this.namespaceOf(credentials), this.leaseName, this.callOptions));
   }
 
   checkAlive(): boolean { return this.held; }
@@ -534,7 +606,7 @@ export class KubernetesLease implements Lease {
     };
     try {
       const result = await this.withFreshCredentials((credentials) =>
-        updateLease(credentials, updated, this.options.client));
+        updateLease(credentials, updated, this.callOptions));
       if (result === null) {
         await this.reconcileRejectedRenewal();
         return;
@@ -581,7 +653,7 @@ export class KubernetesLease implements Lease {
    */
   private async reconcileRejectedRenewal(): Promise<void> {
     const current = await this.withFreshCredentials((credentials) =>
-      getLease(credentials, this.options.namespace, this.options.name, this.options.client));
+      getLease(credentials, this.namespaceOf(credentials), this.leaseName, this.callOptions));
     if (current === null) {
       this.fireLost('lease lost during renewal (the lease object was deleted)');
       return;

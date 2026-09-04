@@ -305,6 +305,63 @@ seinen Slot über die gesamte Deadline, ein einzelner Aufrufer mit einem
 stundenlangen `timeoutMs` parkt also das Budget für Stunden und sperrt
 spätere Aufrufer aus, die dem Cap selbst nie nahe kamen.
 
+### `actor-ts.coordination`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `coordination.lease.ttl` | *(ungesetzt)* | Lease-TTL für das gesamte Deployment.  Liefert **kein Leaf** aus — ein Wert hier würde `ttlMs` für jeden Lease im Prozess setzen und die Prüfung „`ttlMs` ist Pflicht" unerreichbar machen. |
+| `coordination.lease.renewal-interval` | *(ungesetzt)* | Wie oft ein gehaltener Lease erneuert wird.  Liefert **kein Leaf** aus — ungesetzt wählt das berechnete `max(500ms, ttl/3)`, und `0` kann nicht „leite es ab" heißen, weil der Validator es ablehnt. |
+| `coordination.lease.kubernetes.namespace` | *(ungesetzt)* | Namespace, in dem das `Lease`-Objekt liegt.  Liefert **kein Leaf** aus — ungesetzt heißt „lies `namespace-path` aus dem ServiceAccount-Mount des Pods", und `""` wird abgelehnt. |
+| `coordination.lease.kubernetes.namespace-path` | `"/var/run/secrets/kubernetes.io/serviceaccount/namespace"` | Datei, aus der der Namespace des Pods gelesen wird. |
+| `coordination.lease.kubernetes.token-path` | `"/var/run/secrets/kubernetes.io/serviceaccount/token"` | Datei, aus der das Bearer-Token gelesen wird.  Ein **Pfad**, niemals das Token. |
+| `coordination.lease.kubernetes.ca-path` | `"/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"` | Datei, aus der das CA-Zertifikat für das TLS-Pinning des API-Servers gelesen wird. |
+| `coordination.lease.kubernetes.token-reload-interval` | `1m` | Wie lange ein aus diesem Mount gelesenes Credential wiederverwendet wird, bevor die mtime der Token-Datei erneut geprüft wird.  Ohne Wirkung auf ein explizites `authToken`. |
+| `coordination.lease.kubernetes.operation-timeout` | `10s` | Obergrenze für einen einzelnen Request an den API-Server. |
+| `coordination.lease.kubernetes.lease-name-max-length` | `253` | Lease-Objektnamen, die länger sind, werden auf einen stabilen Kopf plus einen Hash des vollständigen Namens gekürzt.  `253` ist die DNS-1123-Subdomain-Grenze, die der API-Server durchsetzt. |
+
+Das Framework baut keinen `Lease` für dich — jeder `withLease(…)`-Slot nimmt
+eine Instanz entgegen —, dieser Block liegt also **unter** den Optionen, die du
+an `new InMemoryLease(…)` / `new KubernetesLease(…)` übergibst, in der üblichen
+Reihenfolge: explizite Optionen gewinnen, dann dieser Block, dann die
+eingebauten Defaults.  Ein Lease entsteht, bevor es ein `ActorSystem` gibt,
+deshalb laden die beiden Konstruktoren die Config-Kette selbst und
+berücksichtigen dabei `ACTOR_TS_CONFIG` und `./application.conf`.
+
+Drei Keys liefern **überhaupt kein Leaf** aus und stehen oben nur, damit die
+Namen auffindbar sind.  Jeder davon ist ein Feld, das der Code verlangt oder
+ableitet, und ein ausgelieferter Wert würde `hasPath` für immer wahr machen —
+genau so wird das, wofür er einspringt, unerreichbar.  Setz einen davon in
+deiner eigenen `application.conf` und er wird ganz normal gelesen:
+
+```hocon
+actor-ts.coordination.lease {
+  ttl = 30s
+  kubernetes.namespace = "actors"
+}
+```
+
+:::caution[Die Credential-Keys sind Pfade, keine Werte]
+Es gibt bewusst **keinen Key für `authToken`, `caCert` oder `apiServerUrl`**.
+Zwei davon sind ein Bearer-Token und ein privater Vertrauensanker, und eine
+Config-Datei ist für beides der falsche Ort: `ACTOR_TS_CONFIG` und eine
+abgelegte `application.conf` speisen denselben Loader, und die zusammengeführte
+Konfiguration ist im Config-Panel der DevTools lesbar.  Die drei Pfad-Keys sind
+der vorgesehene Weg, diese Hälfte der Konfiguration aus dem Code zu holen —
+Indirektion auf eine Datei, nie das Geheimnis selbst.
+
+Sie beschreiben außerdem ausschließlich die **In-Cluster**-Quelle.  Einen davon
+woandershin zu zeigen und gleichzeitig ein explizites `apiServerUrl` zu setzen,
+wirft beim Konstruieren `OptionsError` — denn genau diese Paarung hat einmal das
+ServiceAccount-Token des Clusters an den Host geschickt, den ein Operator
+zufällig genannt hat
+([Issue #599](https://github.com/pathosDev/actor-ts/issues/599)).
+:::
+
+`acquire-retries` und `acquire-retry-delay` sind hier nicht setzbar.  Die beiden
+Backends liefern unterschiedliche eingebaute Defaults — 3 Versuche / 100 ms für
+Kubernetes, 1 / 50 ms in-memory —, und ein Leaf könnte beide nicht ausdrücken,
+ohne sie stillschweigend zu vereinheitlichen.  Setz sie pro Lease im Code.
+
 ### `actor-ts.remote`
 
 | Key | Default | Zweck |

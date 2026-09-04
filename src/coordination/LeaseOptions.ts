@@ -1,4 +1,7 @@
+import { Config } from '../config/Config.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { mergeOptions } from '../util/OptionsMerge.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 
 /**
@@ -149,6 +152,67 @@ export class LeaseOptionsValidator<T extends LeaseOptionsType = LeaseOptionsType
       this.fail('acquireRetryDelayMs', 'must be a non-negative finite number', options.acquireRetryDelayMs);
     }
   }
+}
+
+/**
+ * The slice of the common lease settings HOCON can supply — `ttl` and
+ * `renewal-interval`, and deliberately nothing else (#859).
+ *
+ * `name` and `owner` are per-lease identity: one is what the record is called,
+ * the other is *which process holds it*, and a value shared by every lease in a
+ * deployment is the opposite of what either means. `acquireRetries` /
+ * `acquireRetryDelayMs` are left out for a different reason — the two backends
+ * ship different built-in defaults for them (3 attempts / 100 ms for
+ * Kubernetes, 1 / 50 ms in memory), so one leaf would silently unify them.
+ *
+ * Both fields drop the `Ms` suffix in HOCON and take a duration literal
+ * instead, the same spelling `actor-ts.logger.close-timeout` uses for
+ * `closeTimeoutMs`.
+ */
+export type LeaseConfigDefaults = Partial<Pick<LeaseOptionsType, 'ttlMs' | 'renewalIntervalMs'>>;
+
+/**
+ * Read `actor-ts.coordination.lease.*`.
+ *
+ * Loads the config itself, for the reason `readWorkerClusterOptionsFromConfig`
+ * does: a `Lease` is constructed directly by application code and there is no
+ * `ActorSystem` in scope to read `system.config` from — nothing in `src/` ever
+ * builds one, every `withLease(...)` slot takes an instance. {@link Config.load}
+ * is the same chain `ActorSystem.create` uses, honouring `ACTOR_TS_CONFIG` and
+ * `./application.conf`.
+ *
+ * It is synchronous but **not** memoised (unlike `Config.loadReference`), so a
+ * deployment that builds leases in a loop should load once and pass the same
+ * `Config` in. The leases seen in practice are one per singleton.
+ *
+ * Neither key ships a leaf in `reference.conf`, so both `hasPath` checks are
+ * false until an operator sets one — which is what keeps `ttlMs is required`
+ * (#596) reachable and keeps an unset `renewal-interval` meaning "derive
+ * `max(500ms, ttl/3)`" rather than "0".
+ */
+export function readLeaseOptionsFromConfig(config: Config = Config.load()): LeaseConfigDefaults {
+  const keys = ConfigKeys.coordination.lease;
+  const out: { -readonly [K in keyof LeaseConfigDefaults]: LeaseConfigDefaults[K] } = {};
+  if (config.hasPath(keys.ttl)) {
+    out.ttlMs = config.getDuration(keys.ttl);
+  }
+  if (config.hasPath(keys.renewalInterval)) {
+    out.renewalIntervalMs = config.getDuration(keys.renewalInterval);
+  }
+  return out;
+}
+
+/**
+ * Layer the config block under the caller's options — **explicit options >
+ * HOCON > built-in defaults**, as everywhere else.  The result is what
+ * {@link LeaseOptionsValidator} sees, so a negative `renewal-interval` in a
+ * config file is rejected exactly like a negative one in code.
+ */
+export function withLeaseConfigDefaults(
+  options: LeaseOptionsType,
+  config?: Config,
+): LeaseOptionsType {
+  return mergeOptions<LeaseOptionsType>({}, readLeaseOptionsFromConfig(config), options);
 }
 
 /**

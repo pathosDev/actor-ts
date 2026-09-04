@@ -32,6 +32,7 @@ import {
   DEFAULT_STABLE_MARGIN_MS,
 } from '../../../src/cluster/bootstrap/StableObservationOptions.js';
 import { DEFAULT_MINIMUM_MEMBERS } from '../../../src/cluster/ClusterReadiness.js';
+import { DEFAULT_K8S_OPERATION_TIMEOUT_MS, DEFAULT_LEASE_NAME_MAX_LENGTH, DEFAULT_SERVICE_ACCOUNT_CA_PATH, DEFAULT_SERVICE_ACCOUNT_NAMESPACE_PATH, DEFAULT_SERVICE_ACCOUNT_TOKEN_PATH, DEFAULT_TOKEN_RELOAD_INTERVAL_MS } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
 import {
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
@@ -311,6 +312,17 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.diagnostics.log-dead-letters', kind: 'int', constant: DEFAULT_LOG_DEAD_LETTERS },
   { key: 'actor-ts.diagnostics.log-dead-letters-during-shutdown', kind: 'bool', constant: DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN },
   { key: 'actor-ts.diagnostics.log-dead-letters-suspend-duration', kind: 'duration', constant: DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS },
+
+  /* --- coordination --- */
+  // The three sibling keys — `lease.ttl`, `lease.renewal-interval` and
+  // `lease.kubernetes.namespace` — are comment-only in reference.conf, so they
+  // carry no leaf and there is nothing here to assert about them (#859).
+  { key: 'actor-ts.coordination.lease.kubernetes.namespace-path', kind: 'string', constant: DEFAULT_SERVICE_ACCOUNT_NAMESPACE_PATH },
+  { key: 'actor-ts.coordination.lease.kubernetes.token-path', kind: 'string', constant: DEFAULT_SERVICE_ACCOUNT_TOKEN_PATH },
+  { key: 'actor-ts.coordination.lease.kubernetes.ca-path', kind: 'string', constant: DEFAULT_SERVICE_ACCOUNT_CA_PATH },
+  { key: 'actor-ts.coordination.lease.kubernetes.token-reload-interval', kind: 'duration', constant: DEFAULT_TOKEN_RELOAD_INTERVAL_MS },
+  { key: 'actor-ts.coordination.lease.kubernetes.operation-timeout', kind: 'duration', constant: DEFAULT_K8S_OPERATION_TIMEOUT_MS },
+  { key: 'actor-ts.coordination.lease.kubernetes.lease-name-max-length', kind: 'int', constant: DEFAULT_LEASE_NAME_MAX_LENGTH },
 
   /* --- worker cluster --- */
   { key: 'actor-ts.worker-cluster.system-name', kind: 'string', constant: DEFAULT_WORKER_SYSTEM_NAME },
