@@ -70,6 +70,8 @@ import {
   DEFAULT_REBALANCE_INTERVAL_MS,
 } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
 import { DEFAULT_REBALANCE_ABSOLUTE_LIMIT, DEFAULT_REBALANCE_RELATIVE_LIMIT } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
+import { DEFAULT_REGION_STALE_AFTER_MS } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
+import { DEFAULT_REGION_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/sharding/ShardingOptions.js';
 import { DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS } from '../../../src/cluster/sharding/StartShardingOptions.js';
 import {
   DEFAULT_MAX_GOSSIP_BYTES,
@@ -312,6 +314,12 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.sharding.entity-recovery.strategy', kind: 'string', constant: DEFAULT_ENTITY_RECOVERY_STRATEGY },
   { key: 'actor-ts.sharding.entity-recovery.constant-rate.frequency', kind: 'duration', constant: DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_FREQUENCY_MS },
   { key: 'actor-ts.sharding.entity-recovery.constant-rate.number-of-entities', kind: 'int', constant: DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_NUMBER_OF_ENTITIES },
+  // The `enabled` sibling is a FEATURE_SWITCHES entry — its published `off` is
+  // the mechanism being absent, not a tuned value.  These two ship regardless,
+  // because an operator who cannot see them cannot judge what turning the
+  // switch on would cost (#853).
+  { key: 'actor-ts.sharding.stale-region-detection.heartbeat-interval', kind: 'duration', constant: DEFAULT_REGION_HEARTBEAT_INTERVAL_MS },
+  { key: 'actor-ts.sharding.stale-region-detection.stale-after', kind: 'duration', constant: DEFAULT_REGION_STALE_AFTER_MS },
 
   /* --- distributed data --- */
   { key: 'actor-ts.distributed-data.max-pending-quorum-requests', kind: 'int', constant: DEFAULT_MAX_PENDING_QUORUM_REQUESTS },
@@ -655,6 +663,12 @@ const FEATURE_SWITCHES: readonly string[] = [
   'actor-ts.http.shutdown-grace-period', // 0ms = close listeners at once
   'actor-ts.sharding.remember-entities',
   'actor-ts.sharding.max-entities', // 0 = unbounded
+  // off = no region beats and no coordinator sweeps, which is the shipped
+  // behaviour and the state every release before #853 was in.  The off state is
+  // a timer that is never armed and a sweep that returns at its first line, so
+  // there is nothing for a `DEFAULT_*` constant to hold — `settingsToConfig`
+  // reads it as `s.staleRegionDetection ?? false`, the same shape `proxy` has.
+  'actor-ts.sharding.stale-region-detection.enabled',
   'actor-ts.coordinated-shutdown.terminate-actor-system',
   'actor-ts.coordinated-shutdown.exit-process',
   'actor-ts.coordinated-shutdown.auto-register-tasks',

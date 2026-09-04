@@ -4,7 +4,12 @@ import type { Lease } from '../../coordination/Lease.js';
 import type { AllocationStrategy } from './AllocationStrategy.js';
 import type { CoordinatorStateStore } from './CoordinatorState.js';
 import type { RememberEntitiesStore } from './RememberEntitiesStore.js';
-import { ShardingOptionsBuilder, ShardingOptionsValidator } from './ShardingOptions.js';
+import { DEFAULT_REGION_STALE_AFTER_MS } from './ShardCoordinatorOptions.js';
+import {
+  DEFAULT_REGION_HEARTBEAT_INTERVAL_MS,
+  ShardingOptionsBuilder,
+  ShardingOptionsValidator,
+} from './ShardingOptions.js';
 import type { EntityRecoveryStrategy, ShardingOptionsType } from './ShardingOptions.js';
 
 /**
@@ -93,6 +98,15 @@ export interface StartShardingOptionsType<TMessage> extends ShardingOptionsType<
    * precedence a caller sees is **argument > option > HOCON > 5 s**.
    */
   readonly shardRegionQueryTimeoutMs?: number;
+  /**
+   * Silence after which the coordinator declares a registered region gone and
+   * re-homes its shards, in ms (#853).  Default: `20000`.
+   *
+   * The coordinator half of `staleRegionDetection`, whose region half is
+   * `regionHeartbeatIntervalMs`.  Inert while the switch is off, and required
+   * to exceed the beat interval — see {@link StartShardingOptionsValidator}.
+   */
+  readonly regionStaleAfterMs?: number;
 }
 
 /**
@@ -164,6 +178,11 @@ export class StartShardingOptionsBuilder<TMessage> extends ShardingOptionsBuilde
   withShardRegionQueryTimeoutMs(shardRegionQueryTimeoutMs: number): this {
     return this.set('shardRegionQueryTimeoutMs', shardRegionQueryTimeoutMs);
   }
+
+  /** Silence after which the coordinator declares a region gone, in ms.  Default: 20000. */
+  withRegionStaleAfterMs(regionStaleAfterMs: number): this {
+    return this.set('regionStaleAfterMs', regionStaleAfterMs);
+  }
 }
 
 /**
@@ -186,6 +205,24 @@ export class StartShardingOptionsValidator<TMessage>
     // `nonNegativeInt` would reject the 0.1 that ships (#850).
     this.nonNegativeInt('rebalanceAbsoluteLimit');
     this.numberInRange('rebalanceRelativeLimit', 0, 1);
+    this.positiveNumber('regionStaleAfterMs');
+    // Checked against the *resolved* pair, the shape `ClusterRouterOptions`
+    // uses for the same class of rule, so overriding one of the two cannot
+    // silently cross the other's default.  A threshold at or below the beat
+    // interval means the coordinator judges a region on a window it may not
+    // have had a chance to speak in: it evicts a perfectly healthy region,
+    // stops every entity under every shard it held, waits for the
+    // re-registration, and does it again — a destructive loop out of a
+    // mechanism whose whole purpose is to be a rare backstop (#853).
+    const heartbeatIntervalMs = s.regionHeartbeatIntervalMs ?? DEFAULT_REGION_HEARTBEAT_INTERVAL_MS;
+    const staleAfterMs = s.regionStaleAfterMs ?? DEFAULT_REGION_STALE_AFTER_MS;
+    if (staleAfterMs <= heartbeatIntervalMs) {
+      this.fail(
+        'regionStaleAfterMs',
+        `must be greater than regionHeartbeatIntervalMs (${heartbeatIntervalMs})`,
+        staleAfterMs,
+      );
+    }
   }
 }
 
@@ -226,6 +263,9 @@ export type ShardingConfigDefaults = Pick<
   | 'entityRecoveryStrategy'
   | 'entityRecoveryConstantRateFrequencyMs'
   | 'entityRecoveryConstantRateNumberOfEntities'
+  | 'staleRegionDetection'
+  | 'regionHeartbeatIntervalMs'
+  | 'regionStaleAfterMs'
 >;
 
 /**
@@ -294,6 +334,19 @@ export function readShardingOptionsFromConfig(config: Config): ShardingConfigDef
   if (config.hasPath(keys.entityRecoveryConstantRateNumberOfEntities)) {
     out.entityRecoveryConstantRateNumberOfEntities =
       config.getInt(keys.entityRecoveryConstantRateNumberOfEntities);
+  }
+  // The three halves of stale-region detection (#853).  `enabled` reaches both
+  // the region (which beats) and the coordinator (which sweeps); the other two
+  // reach one side each, and `ClusterSharding.ensureCoordinator` is what splits
+  // them.
+  if (config.hasPath(keys.staleRegionDetection.enabled)) {
+    out.staleRegionDetection = config.getBoolean(keys.staleRegionDetection.enabled);
+  }
+  if (config.hasPath(keys.staleRegionDetection.heartbeatInterval)) {
+    out.regionHeartbeatIntervalMs = config.getDuration(keys.staleRegionDetection.heartbeatInterval);
+  }
+  if (config.hasPath(keys.staleRegionDetection.staleAfter)) {
+    out.regionStaleAfterMs = config.getDuration(keys.staleRegionDetection.staleAfter);
   }
   return out;
 }

@@ -694,6 +694,11 @@ export class ClusterSharding {
     if (options.coordinatorStateStore !== undefined) coordinatorOptions.withCoordinatorStateStore(options.coordinatorStateStore);
     if (options.lease !== undefined) coordinatorOptions.withLease(options.lease);
     if (options.acquireRetryIntervalMs !== undefined) coordinatorOptions.withAcquireRetryIntervalMs(options.acquireRetryIntervalMs);
+    // The coordinator half of stale-region detection (#853).  The region reads
+    // the switch too — it is what makes it beat — and `regionHeartbeatIntervalMs`
+    // never comes here, the same split `rebalanceIntervalMs` has in reverse.
+    if (options.staleRegionDetection !== undefined) coordinatorOptions.withStaleRegionDetection(options.staleRegionDetection);
+    if (options.regionStaleAfterMs !== undefined) coordinatorOptions.withRegionStaleAfterMs(options.regionStaleAfterMs);
     const ref = this.system._spawnSystemActor(
       () => new ShardCoordinator(coordinatorOptions),
       SystemGroups.clusterSharding,

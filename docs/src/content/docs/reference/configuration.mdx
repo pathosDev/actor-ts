@@ -818,6 +818,9 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.entity-recovery.strategy` | `all` | How remembered entities come back after a region is handed a shard.  `all` starts every one at once — today's behaviour, and the reason the default did not move.  `constant-rate` paces them, see [pacing a remembered-entity restore](#pacing-a-remembered-entity-restore) below. |
 | `sharding.entity-recovery.constant-rate.frequency` | `100ms` | Gap between two paced recovery batches.  Ignored under `strategy = all`. |
 | `sharding.entity-recovery.constant-rate.number-of-entities` | `5` | Entities one paced batch starts.  **A region-wide budget, not a per-shard one** — the queue is fed by every shard the node owns, so this is entity starts per window *on this node*.  Ignored under `strategy = all`. |
+| `sharding.stale-region-detection.enabled` | `off` | Make each region beat to the coordinator and let the coordinator evict one that goes silent.  Off by default — eviction is destructive.  See [detecting a region that went silent](#detecting-a-region-that-went-silent) below. |
+| `sharding.stale-region-detection.heartbeat-interval` | `5s` | Gap between two region → coordinator beats.  **Per sharded type, not per node.**  Inert while `enabled = off`. |
+| `sharding.stale-region-detection.stale-after` | `20s` | Silence after which a region is declared gone and its shards re-homed.  Must be greater than `heartbeat-interval`, and by more than one beat.  Inert while `enabled = off`. |
 
 These apply to **every** sharded type started on the node.  They are read
 once per `sharding.start(...)` and layered under whatever that call passes
@@ -950,6 +953,53 @@ Three things about that bound are worth stating plainly:
 
 Set `rebalance-relative-limit = 0` (with the absolute limit already `0`) to
 restore the unbounded behaviour.
+
+#### Detecting a region that went silent
+
+Read the scope before reaching for this: it is a **backstop for one narrow
+case**, and the case most people mean is already covered without it.
+
+A node that stops gossiping is force-downed by the [failure
+detector](/cluster/failure-detector/) after
+`actor-ts.cluster.failure-detector.down-after` — 5 s by default, and not
+switchable off — and the coordinator re-homes its shards from the resulting
+`MemberRemoved`.  A region stopped cleanly tells the coordinator on its way
+down.  What neither covers is a region that is **gone or wedged on a node that
+is still up and gossiping**, where that notification never arrived: it is
+single-shot, unacknowledged, and a transport failure on the way down is logged
+and swallowed.  Then the shards stay allocated to an actor that does not exist,
+and nothing self-heals — the candidate set is derived from the registry with no
+liveness check.
+
+```hocon
+actor-ts.sharding.stale-region-detection {
+  enabled = on
+  heartbeat-interval = 5s
+  stale-after = 20s
+}
+```
+
+Four things worth knowing before turning it on:
+
+- **The switch drives both halves.**  Off, no region beats and no coordinator
+  sweeps, so the mechanism costs nothing at all.  On, every region of every
+  sharded type sends one small frame per `heartbeat-interval`.
+- **The beat is per sharded type, not per node.**  Ten types on a node is ten
+  frames per interval, on top of the cluster's own heartbeats.
+- **A region that never beats is never swept.**  That is what makes turning the
+  key on safe mid-deployment: for as long as the leader runs with it on and
+  some regions do not, those regions are simply not armed yet, rather than
+  evicted on a timer and re-registering in a loop.
+- **`stale-after` must exceed `heartbeat-interval`**, and the shipped four
+  intervals is deliberate: at one, a single dropped frame evicts a healthy
+  region and stops every entity under every shard it held.  A pair that crosses
+  is rejected at `sharding.start(...)`, against the resolved values, so
+  overriding one cannot silently cross the other's default.
+
+There is deliberately no `check-interval`.  The sweep rides the
+`rebalance-interval` tick, which is already the dial for how often the
+coordinator looks at the shard map, so the detection latency is `stale-after`
+plus at most one tick.
 
 A per-type setting therefore belongs in the builder; the config file is for
 the node-wide baseline you want to move between staging and production
