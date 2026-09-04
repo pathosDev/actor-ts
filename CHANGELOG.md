@@ -1482,7 +1482,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   reordering or an early return could have removed the fallback entirely, or
   given up the allocation-time output bound #580 relies on, with the whole
   suite, the smoke matrix and the coverage badge all green. It now has an
-  internal seam and its position in the resolution order is gated. No
+  internal seam, and both its position in the resolution order and its
+  identity are gated: the tests tell the pure-JS peer from a native decoder
+  by two properties only the peer has — it accepts a frame whose content
+  checksum is wrong, and it reports a truncated frame in its own error
+  vocabulary — so a rung whose body was swapped for a native decode cannot
+  pass them. Candidates are ranked by that documented order alone,
+  `node:zlib` first because it is the only one that can take the bound. No
   behaviour, API or configuration change.
 
   The rest of #780 — eighteen optional peers said to have no coverage — was
@@ -1620,14 +1626,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
   **Migration.** Snapshots need none — they are a recovery accelerator, not
   a source of truth, so a load finding nothing replays the journal and the
-  next save writes at the new key. Durable state does: copy each
+  next save writes at the new key. Durable state does, and
+  `migrateObjectStorageDurableStateLayout(backend, { prefix })` is it: one
+  pass with the application stopped, moving each
   `<prefix><persistenceId>/state.json` to
-  `<prefix>state/<persistenceId>/state.json`. A body with neither
-  client-side encryption nor an integrity HMAC carries no key binding, so a
-  server-side copy suffices; a context-bound body (#612) is sealed against
-  its old key and will not decode at the new one, so run the OLD version
-  with the durable-state store pointed at `<prefix>state/` and re-upsert
-  each record first.
+  `<prefix>state/<persistenceId>/state.json`. It moves the *body* rather
+  than replaying the record through a store, which is what keeps `revision`
+  and `timestamp` the bytes that were already there — re-`upsert`ing cannot,
+  because at a record's own revision the compare-and-swap finds no entry at
+  the empty destination and raises `DurableStateConcurrencyError`, and
+  `upsert(id, 0, state)` is the only form that lands and writes revision 1
+  over a record that was at 7. A body with neither client-side encryption
+  nor an integrity HMAC carries no key binding and is copied verbatim; a
+  context-bound body (#612) is sealed against its old key, so it is decoded
+  there and re-sealed against the new one — pass the store's own
+  `encryption` / `integrity` for that, which also re-encrypts it under the
+  keyring's active master key. A destination that already holds an object is
+  never overwritten and sources stay in place, so the pass is repeatable;
+  re-run it with `deleteSource: true` to retire them once the upgrade is
+  verified.
 
 - **`ConsumerController` serialises its handler, and bounds the out-of-order
   set** (#643, #728).
@@ -1658,10 +1675,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   delivery could pass the size check before any of them inserted, so the set
   overshot by the concurrency.
 
-  **Migration.** None for a stock `ProducerController`, whose window of 16
-  puts at most 15 sequences past an open gap. A producer configured with a
-  window above 1024 that expects gaps under packet loss wants a matching
-  `maxOutOfOrder`, or `Infinity` for the previous behaviour.
+  **Migration.** A stock `ProducerController` can reach the cap, and its
+  window of 16 is not what decides that: the consumer acknowledges every
+  out-of-order delivery it admits, which frees the producer's slot and lets it
+  keep streaming past a gap that is still open — measured at 63 sequences
+  retained past one withheld sequence, from 64 sends. Reaching the cap stalls
+  that producer until the missing sequence lands, which is the intended
+  backpressure and is what its own retransmit clears, so nothing is lost and
+  most senders need no action. Raise `maxOutOfOrder` if you sustain more than
+  roughly 2000 sends a second through a link that drops them, or set
+  `Infinity` for the previous unbounded retention; a producer configured with
+  a window above 1024 wants a matching `maxOutOfOrder` regardless, since that
+  many sends are already in flight when a gap opens.
 
 
 - **A priority mailbox keeps an undroppable envelope through a stash replay,
@@ -1672,10 +1697,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   that round-tripped through `stash()` and `unstashAll()` was discarded
   under `drop-new`, threw `MailboxFullError` inside the replaying actor
   under `reject` (the constructor default once a capacity is named), and
-  cost a bystander its place under `drop-lowest-priority`. Replayed
-  notifications now take the same exempt lane they take arriving fresh, and
-  the reader list in the `undroppable` JSDoc names this mailbox rather than
-  omitting it (#729).
+  cost a bystander its place under `drop-lowest-priority`. A notification
+  replayed from the untyped stash now takes the same exempt lane it takes
+  arriving fresh, and the reader list in the `undroppable` JSDoc names this
+  mailbox rather than omitting it. The typed DSL's `Behaviors.withStash` is
+  not covered and says so on the page: its buffer holds bare messages, so the
+  replay rebuilds envelopes without the marker (#729, #1319).
 
   A `DeadLetter` can now carry the MDC context and the tracing span context
   the lost envelope was travelling with, in a new optional `attribution`
@@ -1746,7 +1773,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   can already publish — so narrowing it would break a documented contract
   for no security gain. This change is the additive mirror of the guard the
   `unsubscribe` path already carried, and that guard is now covered by a
-  test as well, having been asserted by nothing.
+  test as well, having been asserted by nothing. What the wildcard half gets
+  instead is visibility: an external `subscribe` that introduces a filter the
+  actor did not already hold now logs at info — naming the filter, the QoS
+  the SUBSCRIBE actually carries, and whether delivery goes to the actor's
+  own `onMessage` or fans out to another actor — while a join to a filter it
+  already holds, and the subclass's own subscriptions, stay silent.
 
 - **The filesystem object-storage CAS token is a SHA-256 digest rather than
   a 32-bit hash** (#786).

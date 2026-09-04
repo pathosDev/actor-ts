@@ -230,6 +230,9 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
     if (!this.isIdentifier(message.incarnation)) return false;
     if (!Number.isSafeInteger(message.seq) || message.seq <= 0) return false;
     // The declared type says this is always an ActorRef; the wire disagrees.
+    // Shape is all this can ask of it, and deliberately so: binding `replyTo`
+    // to an authenticated identity is refused in writing on
+    // {@link sendAcknowledgment}, because a delivery carries none.
     const replyTo = message.replyTo as ActorRef<Acknowledgment> | undefined;
     return typeof replyTo?.tell === 'function';
   }
@@ -448,6 +451,40 @@ export class ConsumerController<T> extends Actor<Delivery<T>> {
    * producer's dedup window — so one unreachable reply address would cost
    * duplicate handler invocations across the whole node, and then loop,
    * because the retransmit arrives and fails to ack again.
+   *
+   * **The address is `message.replyTo`, and #730's fourth suggested fix — "on
+   * the consumer side, refuse to acknowledge to a `replyTo` other than the
+   * envelope's authenticated sender" — is refused rather than implemented.**
+   * There is no authenticated sender to compare it against on any path this
+   * protocol has.  A `ProducerController` ships a delivery with
+   * `consumer.tell(delivery)`, one argument, so `this.sender` is `None` for
+   * every legitimate delivery — pinned by "a delivery carries no authenticated
+   * sender" in `tests/unit/delivery`, which fails the moment a producer starts
+   * telling with one.  The cluster's generic path resolution attaches no
+   * sender either (`cluster/EnvelopeTrust.ts` says so in its module header),
+   * and it cannot reach a controller under `/system/delivery/` by name in the
+   * first place.  Enforcing the clause literally would refuse every
+   * acknowledgment this protocol will ever send, which is the same ground the
+   * sibling clause was refused on one file over — see
+   * `ProducerController.onAcknowledgment`.
+   *
+   * Nothing else on a `Delivery` is unforgeable either.  `producerId`,
+   * `incarnation`, `seq` and `replyTo` are all written by whoever built the
+   * envelope, so binding the reply target to the first `replyTo` seen for an
+   * incarnation would pin it to a value the same party chose: trust on first
+   * use, not authentication.
+   *
+   * And it would protect nothing reachable.  An `ActorRef` has no wire
+   * representation — `serialization/JsonTree.ts` has no tag for one, and
+   * {@link isAdmissible} refuses an envelope whose `replyTo` did not arrive as
+   * a live ref — so a `replyTo` naming a foreign actor can only be written by
+   * a party already holding that actor's ref in this process, which can `tell`
+   * it directly.  Reflecting an `Acknowledgment` through here is one message
+   * in and one out, carrying four fields that party wrote itself, to an actor
+   * it can already reach; and a real producer on the receiving end discards it,
+   * because the incarnation will not match.  That echo is what actually
+   * authenticates an acknowledgment, and it stays where it can be checked
+   * against something unguessable — on the producer, not here.
    */
   private sendAcknowledgment(message: Delivery<T>): void {
     const ack: Acknowledgment = {

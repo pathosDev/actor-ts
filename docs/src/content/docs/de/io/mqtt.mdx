@@ -213,6 +213,33 @@ ref.tell({ kind: 'unsubscribe', topic: 'y/#', target: someHandler });
 - Fan-out-Targets werden per Deathwatch beobachtet: stoppt ein Target-
   Aktor, wird er automatisch entfernt (und ein Broker-UNSUBSCRIBE feuert,
   sobald ein Pattern keine Konsumenten mehr hat).
+- Ein externes `subscribe`, das ein Filter einführt, das der Aktor **noch
+  nicht** hielt, wird auf Info-Level geloggt.  Hängt es sich an ein bereits
+  vorhandenes Filter an, bleibt es still — das ändert am Broker nichts —
+  und ebenso das eigene `subscribe()` der Subklasse, im Konstruktor wie zur
+  Laufzeit.
+
+Der Eintrag nennt das Filter, das QoS, das das SUBSCRIBE tatsächlich trägt,
+und ob passende Nachrichten an das eigene `onMessage` des Aktors gehen oder
+an einen anderen Aktor fan-outen:
+
+```text
+MqttActor: external subscribe introduced broker filter 'tele/#' at QoS 1, delivering to actor 'actor-ts://sensors/user/mirror'
+```
+
+Das ist das Gegengewicht zur ersten Regel, keine Einschränkung davon.  Einen
+Handler an ein beliebiges Filter zu hängen, `#` eingeschlossen, bleibt offen,
+weil es der Vertrag des Aktors ist und wer das Ref hält ohnehin überallhin
+publishen kann — vertretbar ist das genau so lange, wie ein Betreiber es
+sehen kann.  Aus einer Nachricht wird nichts geloggt: der Eintrag beschreibt
+eine Subscription, keinen Verkehr, damit aus einer Zeile pro neuem Filter nie
+eine Zeile pro Payload wird.  Das Filter wird vorher escaped und in der Länge
+gekappt, denn es ist Text, den der *Sender* gewählt hat — ein Zeilenumbruch
+darin würde sonst eine zweite Logzeile fälschen, die wie eine echte aussieht.
+Wenn dein Topic-Schema ein Credential enthält (manche Broker legen einen
+API-Key in den Pfad), beachte: es landet hier auf Info-Level im Log, genau so
+wie bereits in den Warnungen dieses Aktors zu fehlgeschlagenem Subscribe und
+nicht dekodierbarem Payload.
 
 Da diese Kommandos einfache Objekte sind, halte ein selbst definiertes
 `TSelf` von den `kind`-Werten `publish` / `subscribe` / `unsubscribe`

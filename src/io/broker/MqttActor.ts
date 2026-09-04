@@ -5,6 +5,7 @@ import type { ActorRef } from '../../ActorRef.js';
 import { Terminated } from '../../SystemMessages.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
+import { MQTT_LOGGED_SUBSCRIBE_FIELD_MAX_CHARACTERS } from '../Constants.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import { toBrokerDriverTls } from './BrokerTls.js';
 import { mqttJsonCodec, MqttDecodeError, type MqttCodec } from './MqttCodec.js';
@@ -277,7 +278,8 @@ export abstract class MqttActor<T = unknown, TSelf = never>
    *   exactly-once while the broker is free to drop.  false for the
    *   protected {@link subscribe} and for the `preStart` flush of the
    *   constructor's own subscriptions, which own the QoS and may change it.
-   *   #783.
+   *   It also decides whether the registration is announced — see
+   *   {@link announceIntroducedFilter}.  #783.
    */
   private registerSubscription(
     topic: string,
@@ -285,6 +287,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     fromExternal: boolean,
   ): void {
     let entry = this.registry.get(topic);
+    const introduced = entry === undefined;
     if (!entry) {
       entry = { qos: options.qos, deliverToSelf: false, targets: new Set() };
       this.registry.set(topic, entry);
@@ -297,9 +300,62 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     } else {
       entry.deliverToSelf = true;
     }
+    if (fromExternal && introduced) {
+      this.announceIntroducedFilter(topic, entry.qos, options.target);
+    }
     if (this.connectionState === 'connected' && this.client) {
       this.brokerSubscribe(topic, entry.qos);
     }
+  }
+
+  /**
+   * Announce a broker-level topic filter an external `subscribe` command
+   * introduced — one the actor did not already hold (#783).
+   *
+   * The wildcard fan-out this makes visible stays open by design: it is the
+   * actor's advertised contract, and a holder of the ref can already publish
+   * anywhere.  That answer is defensible precisely because an operator can
+   * see it happen, which is what this record is for — a `#` nobody expected
+   * is otherwise visible only in a heap dump.
+   *
+   * Both silences are as much of the contract as the record.  A *join* to a
+   * filter already in the registry says nothing new — the broker feed and the
+   * set of consumers already existed — and the subclass's own `subscribe()`
+   * is the operator's own declaration, so announcing it would put a line in
+   * the log for every actor that starts and bury the one line that means
+   * something.
+   *
+   * Printed: the filter; the QoS the SUBSCRIBE actually carries, which is not
+   * necessarily the command's (an existing entry keeps its own, an absent one
+   * resolves to the actor's default); and enough of the destination to tell a
+   * foreign ref from this actor's own `onMessage`, since which of the two it
+   * is decides whether the feed is being mirrored to somebody else.  Not
+   * printed: anything from a message.  One line per new filter must never
+   * become one line per payload.
+   *
+   * Printing the filter itself is a decision rather than a default, because a
+   * topic path really can carry a secret — ThingSpeak puts a channel's write
+   * API key in the topic, and device-per-topic schemes routinely embed a
+   * serial.  It is printed anyway on two grounds: a redacted filter would
+   * make the record useless for the single question it exists to answer, and
+   * this class already prints the same string verbatim at warn on both
+   * broker-failure paths, so info adds no new class of disclosure.  What *is*
+   * new is that a sender can now drive a log line on a success path at will,
+   * which is what {@link sanitizeForSubscribeLog} answers.
+   */
+  private announceIntroducedFilter(
+    topic: string,
+    qos: MqttQos | undefined,
+    target?: ActorRef<MqttMessage<T>>,
+  ): void {
+    const destination = target
+      ? `actor '${sanitizeForSubscribeLog(target.path.toString())}'`
+      : "this actor's own onMessage";
+    this.log.info(
+      'MqttActor: external subscribe introduced broker filter '
+      + `'${sanitizeForSubscribeLog(topic)}' at QoS ${this.effectiveQos(qos)}, `
+      + `delivering to ${destination}`,
+    );
   }
 
   /**
@@ -381,8 +437,19 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     }
   }
 
+  /**
+   * The QoS a SUBSCRIBE for a registry entry actually carries.
+   *
+   * Factored out so {@link announceIntroducedFilter} and the broker call
+   * cannot drift apart: a record naming a QoS the SUBSCRIBE did not carry
+   * would be worse than no record, since it reads as an observation.
+   */
+  private effectiveQos(qos: MqttQos | undefined): MqttQos {
+    return qos ?? this.options.qos ?? 0;
+  }
+
   private brokerSubscribe(topic: string, qos?: MqttQos): void {
-    this.client?.subscribe(topic, { qos: qos ?? this.options.qos ?? 0 }, (err) => {
+    this.client?.subscribe(topic, { qos: this.effectiveQos(qos) }, (err) => {
       if (err) this.log.warn(`MqttActor: subscribe '${topic}' failed: ${err.message}`);
     });
   }
@@ -558,6 +625,50 @@ export function buildPublishProperties(
   const keys = Object.keys(p.userProperties);
   if (keys.length === 0) return undefined;
   return { userProperties: p.userProperties };
+}
+
+/* ------------------------ subscribe-advisory rendering ----------------- */
+
+/**
+ * Any C0/C1 control character, plus the Unicode line and paragraph separators
+ * — the set that must never reach a log line verbatim.
+ *
+ * The regex *is* the rule, so it stays beside the only function that applies
+ * it.  CR and LF are the ones that matter: a logger writes one line per
+ * record, so a value carrying either forges further lines that read exactly
+ * like genuine ones.  The rest of the control range is in because none of it
+ * belongs in a diagnostic value, and U+2028/U+2029 because enough log
+ * processors treat those as line breaks too.
+ */
+const LOG_UNSAFE_CHARACTERS = /[\u0000-\u001f\u007f\u0085\u2028\u2029]/g;
+
+/**
+ * Clip and escape a value an external caller controls, before it reaches the
+ * advisory {@link MqttActor} writes for a newly introduced topic filter.
+ *
+ * Both of that record's variable fields qualify.  The topic filter is
+ * verbatim from the `subscribe` command, and a fan-out target's path comes
+ * off the wire whenever the ref is a remote one — neither is this process's
+ * own text, and both are printed on a success path a sender can drive at
+ * will.
+ *
+ * Escaped rather than dropped, for the reason the filter is printed at all:
+ * the value *is* the diagnostic, and a sender that put a newline in a topic
+ * filter has told an operator something worth seeing in escaped form.
+ *
+ * The same shape as `sanitizeWireKindForLog` in the cluster transport, and
+ * deliberately a second small copy rather than an import: `src/io/` does not
+ * depend on `src/cluster/`, and a shared `src/util/` helper is worth
+ * extracting once a third subsystem needs one — two is not yet a pattern.
+ */
+function sanitizeForSubscribeLog(value: string): string {
+  const clipped = value.length > MQTT_LOGGED_SUBSCRIBE_FIELD_MAX_CHARACTERS
+    ? `${value.slice(0, MQTT_LOGGED_SUBSCRIBE_FIELD_MAX_CHARACTERS)}…`
+    : value;
+  return clipped.replace(
+    LOG_UNSAFE_CHARACTERS,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  );
 }
 
 /* --------------------------- MQTT topic match -------------------------- */

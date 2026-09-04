@@ -270,9 +270,18 @@ Das ist wichtig, weil:
 System-Queue wird nie gedeckelt — weder von `BoundedMailbox` noch von
 einer eigenen Mailbox —, weil Supervision- und Lifecycle-Signale niemals
 verworfen werden dürfen.  Ihre Tiefe begrenzt stattdessen das, was sie
-erzeugt: ein Signal pro Child-Event, pro beobachtetem Tod, pro
-Supervisor-Entscheidung — jedes bereits bezahlt von einem Actor, der
-vorher existieren musste.
+erzeugt: ein `create` pro Actor und ein `terminate` pro Stopp, ein
+`childTerminated` pro Kind, das fertig gestoppt hat, ein `failure` pro
+Supervisor-Entscheidung plus das `suspend` / `resume` / `recreate`, das
+diese Entscheidung über den betroffenen Teilbaum verteilt, und ein
+`receiveTimeout` pro abgelaufenem Timer.  Für jedes davon musste vorher
+ein Actor existieren, der es bezahlt hat.
+
+Eine Death-Watch-Benachrichtigung steht **nicht** auf dieser Liste.  Das
+`Terminated` eines beobachteten Actors landet in der *User*-Queue seines
+Watchers — an der Schranke vorbei, wie oben, aber weiterhin hinter allem,
+was diesem Watcher schon gesagt wurde.  Tausend beobachtete Actors
+erhöhen die System-Queue also um gar nichts.
 
 Du siehst diese Unterscheidung normalerweise nicht —
 System-Nachrichten werden vom Framework emittiert, nicht von deinem
@@ -649,9 +658,27 @@ mit `undroppable` — ein `Terminated` aus der Death Watch, ein
 WebSocket-Accept- oder -Close-Command — wird auch auf dem Rückweg an der
 Schranke vorbei aufgenommen.  Die Markierung reist auf dem Envelope
 mit, statt von der Queue erinnert zu werden, genau damit sie einen
-`stash()`/`unstashAll()`-Rundlauf übersteht: Eine Schranke bekommt eine
-Gelegenheit, eine Benachrichtigung abzuwerfen, und nicht eine zweite,
-nur weil der Actor sie zwischendurch geparkt hat.
+`context.stash()`/`unstashAll()`-Rundlauf übersteht: Eine Schranke
+bekommt eine Gelegenheit, eine Benachrichtigung abzuwerfen, und nicht
+eine zweite, nur weil der Actor sie zwischendurch geparkt hat.
+
+<Aside type="caution" title="Der typisierte Stash trägt die Markierung noch nicht">
+  Diese Ausnahme gilt für `context.stash()` — den untypisierten Stash,
+  der das Envelope parkt, das der Actor gerade bearbeitet, und dasselbe
+  Objekt wieder abspielt.  `Behaviors.withStash` aus der typisierten DSL
+  kann das nicht: `stash.stash(message)` nimmt einen beliebigen Wert
+  entgegen, der Buffer hält also blanke Nachrichten, und das Replay baut
+  daraus neue Envelopes.  Alles, was das Envelope getragen hat, ist dann
+  weg — `undroppable` eingeschlossen.
+
+  Ein **typisierter** Actor mit einem `withStash`-Behavior und einer
+  begrenzten Mailbox kann ein gestashtes `Terminated` also weiterhin an
+  die eigene Schranke verlieren.  Bis das behoben ist: gib so einem
+  Actor eine unbegrenzte Mailbox, oder unstashe, bevor die Queue
+  volllaufen kann.  Am untypisierten Pfad ändert das nichts, und solange
+  die Mailbox unbegrenzt ist — der Default — ist keiner der beiden Pfade
+  betroffen.
+</Aside>
 
 Siehe [Become und Stash](/de/fundamentals/become-and-stash/) für die
 volle Behavior-Switching-Geschichte.

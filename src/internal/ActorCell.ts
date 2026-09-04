@@ -1726,12 +1726,13 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * One class of envelope is out of every policy's reach in all four shapes
    * since #729, and what defines the class is the door rather than the
    * message: whatever arrives through {@link postSignalEnvelope} carries
-   * {@link Envelope.undroppable} and takes `Mailbox.enqueueSignal`.  Two
+   * {@link Envelope.undroppable} and takes `Mailbox.enqueueSignal`.  Three
    * senders use that door — the death-watch `Terminated` this cell raises for
-   * its watchers, and the `websocket-accept` command a hub receives once its
-   * socket is upgraded (#717).  So a caller who bounds an actor is no longer
-   * choosing to lose its lifecycle signals, or a connection it has already
-   * accepted, along with its backlog.
+   * its watchers, the `websocket-accept` command a hub receives once its socket
+   * is upgraded (#717), and the `close` a `WebsocketConnection` sends its own
+   * actor (#985).  So a caller who bounds an actor is no longer choosing to
+   * lose its lifecycle signals, a connection it has already accepted, or a
+   * `closeAll` it has already issued, along with its backlog.
    *
    * Drop reporting is wired *after* the choice rather than inside it, so all
    * four shapes get it on one line.  Wiring it at the construction site is

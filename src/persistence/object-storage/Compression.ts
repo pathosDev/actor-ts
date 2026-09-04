@@ -137,24 +137,6 @@ function decodesZstdCanary(decode: (input: Uint8Array) => Uint8Array): boolean {
   }
 }
 
-/**
- * True when `decode` ABORTS on a `maxOutputLength` below the frame's output
- * size — the property that makes an implementation bomb-safe (#580) rather
- * than merely correct.  Accepting the option is not evidence of enforcing
- * it: one that quietly ignored it would decode the canary perfectly and
- * still hand a bomb all the memory it asked for.
- */
-function enforcesZstdOutputCap(
-  decode: (input: Uint8Array, options: { maxOutputLength: number }) => Uint8Array,
-): boolean {
-  try {
-    decode(ZSTD_CANARY_FRAME, { maxOutputLength: 1 });
-    return false;
-  } catch {
-    return true;
-  }
-}
-
 /** True when `encode` produces a real zstd frame rather than throwing — the compress-side canary. */
 function encodesZstdCanary(encode: (input: Uint8Array) => Uint8Array): boolean {
   try {
@@ -305,32 +287,37 @@ async function loadNativeZstdDecompressCandidates(): Promise<NativeZstdDecompres
  * `node:zlib` shim honours the bound exactly as Node's does, so preferring
  * it costs nothing and closes the hole on both native runtimes.
  *
- * A candidate has to prove BOTH properties by being called — that it
- * decodes at all ({@link decodesZstdCanary}) and that it enforces the
- * bound ({@link enforcesZstdOutputCap}).  One that decodes but ignores the
- * bound is not rejected outright, it just loses its priority: falling
- * through to an equally uncapped implementation would trade a working
- * decoder for nothing.
+ * A candidate proves ONE property by being called: that it decodes at all
+ * ({@link decodesZstdCanary}).  The ORDER of the rungs is what carries #580
+ * — `node:zlib` is first because it is the only one that can take the bound
+ * — so the first candidate that decodes serves the read.
+ *
+ * There is deliberately no second probe ranking candidates on whether they
+ * honour `maxOutputLength`, and the reason is worth stating so it is not
+ * re-added: nothing below `node:zlib` can take the option at all, so such a
+ * probe has no capped candidate to promote and could never reorder anything.
+ * One stood here until this was measured — deleting it changed no test, and
+ * its early `return` masked the ordering above, so swapping the two rungs
+ * also changed no test (#780).  A `node:zlib` that accepts `maxOutputLength`
+ * and ignores it is caught where it always was, by the post-decode assertion
+ * in {@link decompressWithinCap}, which costs the memory but never the
+ * correctness.
  */
 const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFunction>> = Lazy.of<Promise<ZstdDecompressFunction>>(async () => {
   const candidates = await loadNativeZstdDecompressCandidates();
-  let uncappedFallback: ZstdDecompressFunction | undefined;
 
   const nodeZlibDecompress = candidates.nodeZlib;
   if (nodeZlibDecompress && decodesZstdCanary((i) => nodeZlibDecompress(i))) {
-    const capped = async (i: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array> =>
+    return async (i: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array> =>
       nodeZlibDecompress(i, capApplies(maxOutputBytes) ? { maxOutputLength: maxOutputBytes } : undefined);
-    if (enforcesZstdOutputCap(nodeZlibDecompress)) return capped;
-    uncappedFallback = capped;
   }
 
   const bunDecompress = candidates.bunGlobal;
   if (bunDecompress && decodesZstdCanary(bunDecompress)) {
     // No options parameter to pass a bound through, so `maxOutputBytes` is
     // dropped here and only the post-decode assertion remains.
-    uncappedFallback ??= async (i: Uint8Array): Promise<Uint8Array> => bunDecompress(i);
+    return async (i: Uint8Array): Promise<Uint8Array> => bunDecompress(i);
   }
-  if (uncappedFallback) return uncappedFallback;
 
   try {
     const fzstdName = 'fzstd';
@@ -354,6 +341,16 @@ const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFunction>> = Lazy.of<Promis
     // wins the canary, so nothing but suppressing the native candidates gets
     // the resolver down here.  `ZstdDecompressResolution.test.ts` does that and
     // reads a natively-written frame back through the real package (#780).
+    //
+    // Reaching it and BEING it are two claims, and the first does not imply the
+    // second: swap this call for a plain `zstdDecompressSync(i)` and every test
+    // that gets the resolver down here still passes, because both decode a
+    // well-formed frame to the same bytes.  Two properties of the package
+    // itself separate them, and the same test file now asserts both — fzstd
+    // walks past the frame's optional content checksum without hashing what it
+    // decoded, so it accepts a frame every native decoder refuses; and it
+    // reports a truncated frame in the `ZstdErrorCode` vocabulary it exports,
+    // which no native decoder can produce.
     return async (i: Uint8Array): Promise<Uint8Array> => fzstd.decompress(i);
   } catch (e) {
     throw new Error(

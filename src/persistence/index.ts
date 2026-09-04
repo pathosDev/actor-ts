@@ -729,3 +729,16 @@ export type {
   ReEncryptResumeState,
   ReEncryptProgressStore,
 } from './object-storage/ReEncryptionSweep.js';
+// The #716 key-layout migration.  Public because it is the only procedure
+// that moves a durable-state corpus onto the new keys with its revisions
+// intact — an `upsert`-based recipe either throws against the empty
+// destination or rewinds every record to revision 1.
+export {
+  migrateObjectStorageDurableStateLayout,
+  DurableStateLayoutMigrationKeyError,
+} from './object-storage/DurableStateLayoutMigration.js';
+export type {
+  DurableStateLayoutMigrationOptions,
+  DurableStateLayoutMigrationProgress,
+  DurableStateLayoutMigrationResult,
+} from './object-storage/DurableStateLayoutMigration.js';

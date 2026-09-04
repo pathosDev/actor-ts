@@ -203,17 +203,47 @@ one entity used both ways.
   save writes at the new key.  Delete the old objects when you
   are ready.
 
-  **Durable state does** — it *is* the source of truth.  Copy
-  each `<prefix><persistenceId>/state.json` to
-  `<prefix>state/<persistenceId>/state.json`.  A body written
-  with neither client-side encryption nor an integrity HMAC
-  carries no key binding, so a server-side copy is enough.  A
-  context-bound body (#612) is sealed against its old key and
-  will not decode at the new one: before upgrading, run the
-  **old** version with `prefix: '<prefix>state/'` on the
-  durable-state store alone and re-`upsert` each record, which
-  writes exactly the keys this version reads and binds them
-  correctly.  Then upgrade and set `prefix` back to `<prefix>`.
+  **Durable state does** — it *is* the source of truth — and
+  `migrateObjectStorageDurableStateLayout` is the procedure.  Run
+  it once with the application stopped, against the same backend
+  and the same `prefix` the store is configured with: a live
+  writer at the old keys writes records the pass has already
+  moved, and the pass has no way to notice.
+
+  ```ts
+  import { migrateObjectStorageDurableStateLayout } from 'actor-ts/persistence';
+
+  const result = await migrateObjectStorageDurableStateLayout(backend, {
+    prefix: 'acme/',                 // the prefix the two stores share
+    encryption,                      // only for a sealed corpus — the store's own config
+    integrity,                       // likewise
+  });
+  console.log(`migrated ${result.migrated} of ${result.scanned}`);
+  ```
+
+  It moves each **body** rather than replaying the record through
+  a store, and that is what keeps `revision` and `timestamp` the
+  bytes that were already there.  Re-`upsert`ing the records
+  cannot: at a record's own revision the compare-and-swap finds
+  no entry at the empty destination and raises
+  `DurableStateConcurrencyError`, and `upsert(id, 0, state)` —
+  the only form that lands — writes revision 1 over a record that
+  was at 7.
+
+  A body written with neither client-side encryption nor an
+  integrity HMAC carries no key binding and is copied verbatim,
+  so that corpus needs no keys here at all.  A context-bound body
+  (#612) is sealed against its old key, so it is decoded there
+  and re-sealed against the new one — which is what the pass
+  wants the store's own `encryption` and `integrity` for, and
+  which also re-encrypts it under the keyring's active master
+  key.
+
+  A destination that already holds an object is never
+  overwritten, and sources stay in place, so the pass is
+  repeatable after an interruption and the old corpus is still
+  there to roll back to.  Re-run it with `deleteSource: true` to
+  retire the sources once the upgrade is verified.
 </Aside>
 
 ## Performance
