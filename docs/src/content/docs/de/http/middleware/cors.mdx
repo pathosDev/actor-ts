@@ -63,6 +63,23 @@ import { Aside } from '@astrojs/starlight/components';
   Nutze eine explizite Origin-Allowlist, wenn du Credentials brauchst.
 </Aside>
 
+<Aside type="note" title="Was im geechoten Access-Control-Allow-Headers steht">
+  Ohne `withAllowedHeaders(...)` antwortet ein Preflight mit dem
+  `Access-Control-Request-Headers` des Requests — und dieser Wert wird
+  **gefiltert, nicht bloß getrimmt**
+  ([#792](https://github.com/mknorr/actor-ts/issues/792)). Er wird als das
+  gelesen, was er ist: eine kommaseparierte Liste von Header-*Namen*. Ein
+  Element überlebt nur, wenn es ein vollständiges RFC-7230-Token ist, und die
+  Überlebenden gehen normalisiert als `a, b` wieder raus.
+
+  Ein Element mit irgendetwas anderem darin fällt also **komplett** weg,
+  statt geschrubbt zu werden — `x-b:evil` verschwindet, statt zum plausibel
+  aussehenden `x-bevil` zu werden, einem Namen, den der Client nie angefragt
+  hat. Fällt alles weg, entfällt das Feld ganz, und das 1024-Zeichen-Limit
+  gibt sein Budget in vollständigen Namen aus, statt den letzten in der Mitte
+  abzuschneiden.
+</Aside>
+
 ## Wie weiter
 
 - **[Security-Header](/de/http/middleware/security-headers/)** — die begleitenden Response-Header.
