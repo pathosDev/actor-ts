@@ -30,11 +30,15 @@ Entity vorbei rast.
 
 Drei Pfade:
 
-1. **Mitgliedschaftsgetrieben** — `MemberUp` (ein neuer Node),
-   `MemberRemoved` (ein gehender Node) oder jeder
-   Cluster-Übergang, der die Kandidatenmenge ändert. Der
-   Koordinator führt die Allokationsstrategie für jeden besessenen
-   Shard erneut aus.
+1. **Mitgliedschaftsgetrieben** — `MemberRemoved` (ein gehender Node)
+   und ein Leader-Wechsel. Das sind die einzigen beiden
+   Cluster-Events, die der Koordinator abonniert; alles andere,
+   `MemberUp` eingeschlossen, landet in einem Handler, der nichts
+   tut. **Ein hinzukommender Node verschiebt also im Moment des
+   Beitritts keinen Shard** — er ändert nur, was die Strategie beim
+   nächsten periodischen Tick antworten wird. Genau deshalb kommt der
+   Churn eines Beitritts als ein einziger Schwall und nicht als
+   Rinnsal.
 2. **Strategiegetrieben** — alle `rebalanceIntervalMs` (Default 2 s)
    fragt der Koordinator die
    [Allokationsstrategie](/de/cluster/sharding/allocation-strategy/)
@@ -198,8 +202,9 @@ nicht vollständig vertrauenswürdig ist — siehe
 ```ts
 const shardingOptions = StartShardingOptions.create()
   // ...
-  .withRebalanceIntervalMs(2_000)   // Strategie-getriebenes Rebalance alle 2s
-  .withHandOffTimeoutMs(10_000);    // nach 10s aufgeben + zwangsweise neu allokieren
+  .withRebalanceIntervalMs(2_000)      // strategy-driven rebalance every 2s
+  .withHandOffTimeoutMs(10_000)        // give up + force-reallocate after 10s
+  .withRebalanceRelativeLimit(0.1);    // at most 10% of the shards in flight
 sharding.start(shardingOptions);
 ```
 
@@ -207,6 +212,44 @@ sharding.start(shardingOptions);
 | --- | --- | --- |
 | `rebalanceIntervalMs` | 2000 | Wie oft die Strategie nach Rebalance-Empfehlungen befragt wird. |
 | `handOffTimeoutMs` | 10_000 | Wenn die Quellregion nicht innerhalb dieses Fensters `HandOffComplete` sendet, gibt der Koordinator das Warten auf und allokiert zwangsweise neu. |
+| `rebalanceAbsoluteLimit` | 0 | Feste Obergrenze für Shards **gleichzeitig in Bewegung**. `0` = keine absolute Obergrenze. |
+| `rebalanceRelativeLimit` | 0.1 | Dieselbe Obergrenze als Anteil von `numShards`. `0` = keine relative Obergrenze; `0` für beide heißt ungedeckelt. Sind beide gesetzt, gewinnt die kleinere — nie unter einem Shard. |
+
+### Die Obergrenze für Churn
+
+Was die Strategie auch empfiehlt: der Koordinator übergibt höchstens
+die konfigurierte Obergrenze **gleichzeitig**. Die Default-Strategie
+[`HashAllocationStrategy`](/de/cluster/sharding/allocation-strategy/)
+platziert einen Shard über `shardId % candidates.length`; ein
+hinzukommender Node ändert die Antwort also für die meisten Shards
+gleichzeitig: bei den ausgelieferten `numShards = 64` verschiebt ein
+Beitritt 2 → 3 Nodes **42 Shards**, jeder davon ein Stopp, eine
+Neuzuweisung, eine Neuerzeugung und — bei persistenten oder erinnerten
+Entities — ein Journal-Replay. Alles im selben Tick, denn ein
+`MemberUp` verschiebt gar nichts, bis dieser Tick feuert.
+
+Drei Eigenschaften dieser Grenze sollte man kennen:
+
+- **Gezählt wird, was gleichzeitig läuft, nicht was pro Tick startet.**
+  Ein Tick feuert alle `rebalanceIntervalMs`, während eine Übergabe ein
+  ganzes `handOffTimeoutMs` stehen darf — bei den Defaults ließen sechs
+  pro Tick also rund dreißig gleichzeitig zu. Das Budget je Tick ist
+  die Obergrenze *minus dem, was schon unterwegs ist*.
+- **Gedeckelt wird nur der freiwillige Pfad.** Eine gestorbene Region
+  hinterlässt Shards ganz ohne Besitzer; die werden sofort neu
+  vergeben, mit oder ohne Obergrenze.
+- **Nichts geht verloren, und kein Node wird zuerst leergeräumt.** Der
+  Rest wird im nächsten Tick erneut vorgeschlagen, bis die Map
+  ausgeglichen ist, und welche Shards zuerst gehen, entscheidet ein
+  Round-Robin über ihre aktuellen Besitzer — eine Obergrenze, die einen
+  Node leert, bevor sie den nächsten anfasst, wäre schlechter als gar
+  keine.
+
+Die Limits der Strategie und dieses hier stapeln sich, sie konkurrieren
+nicht: `maxSimultaneousRebalance` von `LeastShardAllocationStrategy`
+begrenzt, was sie **vorschlägt**, diese Obergrenze begrenzt, was der
+Koordinator von einer beliebigen Strategie **annimmt** — auch von einer
+selbst geschriebenen.
 
 ## Was gepufferte Nachrichten bedeuten
 

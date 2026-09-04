@@ -6,7 +6,9 @@ import { SHARD_MAP_PUBLISH_DELAY_MS } from '../Constants.js';
 import {
   DEFAULT_ACQUIRE_RETRY_INTERVAL_MS,
   DEFAULT_HAND_OFF_TIMEOUT_MS,
+  DEFAULT_REBALANCE_ABSOLUTE_LIMIT,
   DEFAULT_REBALANCE_INTERVAL_MS,
+  DEFAULT_REBALANCE_RELATIVE_LIMIT,
 } from './ShardCoordinatorOptions.js';
 import type { ShardCoordinatorOptions, ShardCoordinatorOptionsType } from './ShardCoordinatorOptions.js';
 import { LeaderChanged, MemberRemoved } from '../ClusterEvents.js';
@@ -1420,13 +1422,101 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
 
   /* ------------------------------- Rebalance ------------------------------- */
 
+  /**
+   * One voluntary rebalance pass, bounded by the configured ceiling (#850).
+   *
+   * The bound lives here rather than in an `AllocationStrategy` because
+   * only one strategy in the tree caps itself, and it is not the default one:
+   * `ClusterSharding.ensureCoordinator` wires {@link HashAllocationStrategy},
+   * which returns *every* shard whose `shardId % candidates.length` no longer
+   * matches its owner — 42 of the shipped 64 when a third node joins.  A cap
+   * inside a strategy would also say nothing about a user-supplied one.
+   *
+   * The budget subtracts what is already in flight, which is what makes this a
+   * bound on *concurrency* rather than on batch size.  Both shipped strategies
+   * skip shards in `rebalanceInProgress`, so a per-tick-only cap would simply
+   * stack: the tick fires every `rebalanceIntervalMs` (2 s) while a hand-off
+   * may stand for a whole `handOffTimeoutMs` (10 s), so a per-tick six would
+   * admit roughly thirty at once.
+   *
+   * Nothing is dropped — whatever the budget leaves behind the strategy
+   * proposes again on the next tick, so the cluster still converges, just over
+   * more ticks.
+   */
   private rebalanceTick(): void {
     const shardsToMove = this.options.allocationStrategy.rebalance(
       this.currentShardCounts(),
       this.candidates(),
       new Set(this.rebalanceInProgress.keys()),
     );
-    for (const shardId of shardsToMove) this.beginHandOff(shardId);
+    const budget = this.rebalanceCeiling() - this.rebalanceInProgress.size;
+    if (budget <= 0) return;
+    for (const shardId of this.shardsWithinBudget(shardsToMove, budget)) this.beginHandOff(shardId);
+  }
+
+  /**
+   * Shards that may be in flight at once, or `Infinity` when both limits are
+   * off — the pre-#850 behaviour, and the only way to express it.
+   *
+   * Where both are set the lower wins, and the result never floors below one:
+   * `0.1 × 8` truncates to zero, and a cluster that can never move a single
+   * shard does not rebalance at all rather than rebalancing slowly.
+   */
+  private rebalanceCeiling(): number {
+    const absolute = this.options.rebalanceAbsoluteLimit ?? DEFAULT_REBALANCE_ABSOLUTE_LIMIT;
+    const relative = this.options.rebalanceRelativeLimit ?? DEFAULT_REBALANCE_RELATIVE_LIMIT;
+    const fromAbsolute = absolute > 0 ? absolute : Number.POSITIVE_INFINITY;
+    const fromRelative = relative > 0
+      ? Math.floor(relative * this.options.numShards)
+      : Number.POSITIVE_INFINITY;
+    const ceiling = Math.min(fromAbsolute, fromRelative);
+    return Number.isFinite(ceiling) ? Math.max(1, ceiling) : Number.POSITIVE_INFINITY;
+  }
+
+  /**
+   * Which `budget` of the proposed shards go first — **round-robin across their
+   * current owners**, owners in address order and each owner's shards in id
+   * order.
+   *
+   * Order matters as soon as a ceiling bites, and the obvious answer is wrong.
+   * `HashAllocationStrategy` builds its set by iterating `currentShardCounts()`,
+   * a map keyed by node address in region-registration order, so taking the
+   * first `budget` entries would drain whichever node happens to sort first and
+   * leave the others untouched for as many ticks as that takes — a ceiling that
+   * empties one node is worse than no ceiling.  Sorting by shard id has the
+   * same failure whenever ownership runs in id blocks.
+   *
+   * Round-robin is also fully determined by the shard map, so the same map
+   * always yields the same hand-offs — an operator can predict it, and a test
+   * can pin it.
+   */
+  private shardsWithinBudget(shardsToMove: ReadonlySet<number>, budget: number): number[] {
+    const byOwner = new Map<string, number[]>();
+    for (const shardId of shardsToMove) {
+      const ownerKey = this.shardHome.get(shardId);
+      // No home means nothing to hand off; `beginHandOff` would bail anyway,
+      // and counting it against the budget would waste a slot.
+      if (ownerKey === undefined) continue;
+      const owned = byOwner.get(ownerKey);
+      if (owned) owned.push(shardId);
+      else byOwner.set(ownerKey, [shardId]);
+    }
+    const queues = Array.from(byOwner.entries())
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([, shardIds]) => shardIds.sort((left, right) => left - right));
+
+    const picked: number[] = [];
+    for (let round = 0; picked.length < budget; round++) {
+      let progressed = false;
+      for (const queue of queues) {
+        if (round >= queue.length) continue;
+        progressed = true;
+        picked.push(queue[round]!);
+        if (picked.length >= budget) break;
+      }
+      if (!progressed) break;
+    }
+    return picked;
   }
 
   private beginHandOff(shardId: number): void {

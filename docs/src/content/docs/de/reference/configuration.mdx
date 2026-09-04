@@ -693,6 +693,8 @@ pro Consumer](/de/cache/in-memory/#ein-cache-pro-consumer) braucht.
 | `sharding.role` | `""` | Nur Mitglieder mit dieser Rolle hosten Shards.  `""` = keine Einschränkung.  **Der Key benennt eine Rolle, er vergibt keine** — siehe [Eine Rolle wird benannt, nicht vergeben](#eine-rolle-wird-benannt-nicht-vergeben) weiter unten. |
 | `sharding.rebalance-interval` | `2s` | Abstand zwischen koordinator-getriebenen Rebalance-Passes. |
 | `sharding.hand-off-timeout` | `10s` | Wie lange auf HandOffComplete gewartet wird, bevor zwangsumverteilt wird. |
+| `sharding.rebalance-absolute-limit` | `0` | Feste Obergrenze dafür, wie viele Shards ein Rebalance **gleichzeitig in Bewegung** haben darf.  `0` = keine absolute Obergrenze.  Siehe [Rebalance-Churn begrenzen](#rebalance-churn-begrenzen) weiter unten. |
+| `sharding.rebalance-relative-limit` | `0.1` | Dieselbe Obergrenze als Anteil von `number-of-shards`, sie skaliert also mit dem Entity-Raum — `0.1` der ausgelieferten `64` sind 6.  `0` = keine relative Obergrenze; `0` für **beide** lässt den Rebalance ungedeckelt.  Sind beide gesetzt, gewinnt die kleinere, und eine Obergrenze fällt nie unter einen Shard. |
 | `sharding.acquire-retry-interval` | `5s` | Wie lange der Koordinator wartet, bevor er ein [Lease](/de/cluster/sharding/with-lease/) erneut zu erwerben versucht, das er nicht bekommen hat.  Wirkt nur dort, wo im Code ein `Lease` übergeben wurde: HOCON kann keines benennen, und einen `use-lease`-Schalter gibt es bewusst nicht. |
 | `sharding.remember-entities` | `false` | Persistiere die Menge aktiver Entity-IDs. |
 | `sharding.passivation-idle` | `5m` | Auto-Passiviere eine Entität nach diesem Idle-Fenster.  `0` = deaktiviert.  Eine Entität, die Zustand im Speicher hält und ihn nicht in `preStart` wiederaufbaut, verliert ihn dabei — siehe [Passivierung](/de/cluster/sharding/overview/#passivierung). |
@@ -803,6 +805,49 @@ Queue steht, erzeugt sie sofort — nur der Recovery-Schwall wartet.  Der Defaul
 bleibt `all`, weil Drosseln verändert, *wann* eine Entität zurückkommt, und wie
 schnell ein Journal die Replays verträgt eine Eigenschaft dieses Journals ist
 und keine des Shardings.
+
+#### Rebalance-Churn begrenzen
+
+Die Default-[Allocation
+Strategy](/de/cluster/sharding/allocation-strategy/) platziert einen Shard über
+`shardId % candidates.length`; ein hinzukommender Node ändert die Antwort also
+für die meisten Shards gleichzeitig.  Bei den ausgelieferten
+`number-of-shards = 64` sind das 32 Shards bei einem Beitritt 1 → 2 Nodes,
+**42 bei 2 → 3** und 46 bei 3 → 4 — jeder davon ein gestoppter Shard, jede
+Entität darunter gestoppt, dann neu zugewiesen, neu erzeugt und, sofern sie
+persistiert, neu abgespielt.  Angekündigt wird es auch nicht: der Koordinator
+reagiert nicht auf ein `MemberUp`, der ganze Schwall kommt also mit dem
+nächsten periodischen Tick.
+
+Die beiden Limits begrenzen, wie viele davon **gleichzeitig in Bewegung** sein
+dürfen:
+
+```hocon
+actor-ts.sharding {
+  rebalance-absolute-limit = 0     # 0 = no absolute ceiling
+  rebalance-relative-limit = 0.1   # fraction of number-of-shards
+}
+```
+
+Drei Punkte dazu, die man ausdrücklich sagen sollte:
+
+- **Gezählt wird, was gleichzeitig läuft, nicht was pro Tick startet.**  Ein
+  Tick feuert alle `rebalance-interval`, während eine Übergabe ein ganzes
+  `hand-off-timeout` stehen darf — sechs pro Tick ließen also rund dreißig
+  gleichzeitig zu.  Der Koordinator budgetiert pro Tick die Obergrenze *minus
+  dem, was schon unterwegs ist*.
+- **Gedeckelt wird nur der freiwillige Pfad.**  Eine gestorbene Region
+  hinterlässt Shards ganz ohne Besitzer; die werden sofort neu vergeben, mit
+  oder ohne Obergrenze.  Diesen Pfad zu drosseln hieße, Shards unerreichbar zu
+  lassen statt sie nur langsamer einschwingen zu lassen.
+- **Nichts geht verloren, und kein Node wird zuerst leergeräumt.**  Was das
+  Budget übrig lässt, schlägt die Strategy im nächsten Tick erneut vor, bis die
+  Map ausgeglichen ist; und welche Shards zuerst gehen, wird im Round-Robin
+  über ihre aktuellen Besitzer entschieden — eine Obergrenze, die einen Node
+  leert, bevor sie den nächsten anfasst, ist schlechter als gar keine.
+
+Setze `rebalance-relative-limit = 0` (das absolute Limit steht bereits auf
+`0`), um das ungedeckelte Verhalten wiederherzustellen.
 
 Ein Setting für genau einen Typ gehört deshalb in den Builder; die
 Config-Datei ist für die node-weite Grundeinstellung, die du ohne Rebuild

@@ -65,6 +65,7 @@ import {
   DEFAULT_HAND_OFF_TIMEOUT_MS,
   DEFAULT_REBALANCE_INTERVAL_MS,
 } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
+import { DEFAULT_REBALANCE_ABSOLUTE_LIMIT, DEFAULT_REBALANCE_RELATIVE_LIMIT } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
 import { DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS } from '../../../src/cluster/sharding/StartShardingOptions.js';
 import {
   DEFAULT_MAX_GOSSIP_BYTES,
@@ -293,6 +294,11 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.sharding.passivation-idle', kind: 'duration', constant: DEFAULT_PASSIVATION_IDLE_MS },
   { key: 'actor-ts.sharding.rebalance-interval', kind: 'duration', constant: DEFAULT_REBALANCE_INTERVAL_MS },
   { key: 'actor-ts.sharding.hand-off-timeout', kind: 'duration', constant: DEFAULT_HAND_OFF_TIMEOUT_MS },
+  { key: 'actor-ts.sharding.rebalance-absolute-limit', kind: 'int', constant: DEFAULT_REBALANCE_ABSOLUTE_LIMIT },
+  // `number`, not `int`: the relative limit is a fraction of `numShards` and
+  // `getInt` throws on the 0.1 that ships, so the wrong kind is loud here
+  // rather than silent (#850).
+  { key: 'actor-ts.sharding.rebalance-relative-limit', kind: 'number', constant: DEFAULT_REBALANCE_RELATIVE_LIMIT },
   { key: 'actor-ts.sharding.buffer-size', kind: 'int', constant: DEFAULT_SHARD_REGION_BUFFER_SIZE },
   { key: 'actor-ts.sharding.register-retry-interval', kind: 'duration', constant: DEFAULT_REGISTER_RETRY_INTERVAL_MS },
   { key: 'actor-ts.sharding.acquire-retry-interval', kind: 'duration', constant: DEFAULT_ACQUIRE_RETRY_INTERVAL_MS },

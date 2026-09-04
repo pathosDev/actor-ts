@@ -803,6 +803,19 @@ actor-ts {
     role = ""
     rebalance-interval = 2s
     hand-off-timeout = 10s
+    # Ceiling on how many shards a rebalance may have IN FLIGHT -- not per tick.
+    #   A tick fires every rebalance-interval while a hand-off may run for a
+    #   whole hand-off-timeout, so a per-tick cap would still stack them up.
+    #   Where both are set the LOWER wins, and a ceiling never floors below 1 --
+    #   otherwise a small cluster would stop rebalancing altogether.
+    # This bounds only the VOLUNTARY path.  Shards whose region died have no
+    #   owner at all and are re-homed immediately, ceiling or not.
+    # 0 switches a ceiling off; 0 for both is uncapped, which is what the
+    #   default HashAllocationStrategy did -- 42 of these 64 shards move in one
+    #   tick when a third node joins, stopping and replaying every entity under
+    #   them at once.
+    rebalance-absolute-limit = 0     # 0 = no absolute ceiling
+    rebalance-relative-limit = 0.1   # fraction of number-of-shards; 0 = no relative ceiling
     # Retry cadence after a failed coordinator lease acquire.  Only observable
     #   where a Lease was passed in code: HOCON cannot name one, and there is
     #   deliberately no use-lease switch to pretend otherwise.

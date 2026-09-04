@@ -21,6 +21,30 @@ export const DEFAULT_REBALANCE_INTERVAL_MS = 2_000;
 export const DEFAULT_HAND_OFF_TIMEOUT_MS = 10_000;
 
 /**
+ * Built-in default for {@link ShardCoordinatorOptionsType.rebalanceAbsoluteLimit}
+ * — a flat ceiling on shards in flight, off by default so the relative one
+ * (which scales with `numShards`) decides alone.  Mirrors
+ * `actor-ts.sharding.rebalance-absolute-limit = 0` (#850).
+ */
+export const DEFAULT_REBALANCE_ABSOLUTE_LIMIT = 0;
+
+/**
+ * Built-in default for {@link ShardCoordinatorOptionsType.rebalanceRelativeLimit}
+ * — the ceiling as a fraction of `numShards`, so it scales with the entity
+ * space rather than pinning one number to every deployment.  Mirrors
+ * `actor-ts.sharding.rebalance-relative-limit = 0.1` (#850).
+ *
+ * `0.1` is borrowed from Akka's key of the same name rather than measured here,
+ * and it is a real behaviour change: at the shipped `number-of-shards = 64` a
+ * 2 → 3 node join moved 42 shards in one 2 s tick and now moves 6 at a time.
+ * The quantity that should actually set it is what a journal absorbs per
+ * rebalance round — that needs a run against a real backend, and until one
+ * exists a borrowed bound beats no bound.  Set the leaf to `0` to restore the
+ * unbounded behaviour exactly.
+ */
+export const DEFAULT_REBALANCE_RELATIVE_LIMIT = 0.1;
+
+/**
  * Built-in default for {@link ShardCoordinatorOptionsType.acquireRetryIntervalMs}
  * — how long the coordinator waits before re-`acquire()`ing a lease it failed to
  * take.  Mirrors `actor-ts.sharding.acquire-retry-interval = 5s` (#847).
@@ -53,6 +77,23 @@ export type ShardCoordinatorOptionsType = {
   readonly role?: string;
   readonly rebalanceIntervalMs?: number;
   readonly handOffTimeoutMs?: number;
+  /**
+   * Flat ceiling on shards a rebalance may have **in flight**.  `0` = no
+   * absolute ceiling.  See {@link rebalanceRelativeLimit} for how the two
+   * compose.
+   */
+  readonly rebalanceAbsoluteLimit?: number;
+  /**
+   * Ceiling on shards in flight as a fraction of `numShards`, floored at one
+   * shard so a small cluster still rebalances.  `0` = no relative ceiling; `0`
+   * for both leaves the rebalance uncapped, which is what it was before #850.
+   *
+   * Where both are set the **lower** wins.  The bound is on shards in flight
+   * rather than per tick because a tick fires every `rebalanceIntervalMs` while
+   * a hand-off may stand for a whole `handOffTimeoutMs` — at the shipped 2 s and
+   * 10 s a per-tick cap of six would permit thirty concurrent hand-offs.
+   */
+  readonly rebalanceRelativeLimit?: number;
   readonly rememberEntities?: boolean;
   /** Resolver for local actor paths — used when coordinator lives on the same node as a region. */
   readonly localResolver: (path: string) => ActorRef | null;
@@ -152,6 +193,16 @@ export class ShardCoordinatorOptionsBuilder extends OptionsBuilder<ShardCoordina
   /** Time to wait for HandOffComplete before force-reallocating.  Default: 10 s. */
   withHandOffTimeoutMs(handOffTimeoutMs: number): this {
     return this.set('handOffTimeoutMs', handOffTimeoutMs);
+  }
+
+  /** Flat ceiling on shards in flight during a rebalance.  `0` disables it.  Default: 0. */
+  withRebalanceAbsoluteLimit(rebalanceAbsoluteLimit: number): this {
+    return this.set('rebalanceAbsoluteLimit', rebalanceAbsoluteLimit);
+  }
+
+  /** Ceiling on shards in flight as a fraction of `numShards`.  `0` disables it.  Default: 0.1. */
+  withRebalanceRelativeLimit(rebalanceRelativeLimit: number): this {
+    return this.set('rebalanceRelativeLimit', rebalanceRelativeLimit);
   }
 
   /** Track entity lifecycle so entities can be re-created on the new owner. */

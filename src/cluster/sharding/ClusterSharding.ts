@@ -686,6 +686,8 @@ export class ClusterSharding {
     if (options.role !== undefined) coordinatorOptions.withRole(options.role);
     if (options.rebalanceIntervalMs !== undefined) coordinatorOptions.withRebalanceIntervalMs(options.rebalanceIntervalMs);
     if (options.handOffTimeoutMs !== undefined) coordinatorOptions.withHandOffTimeoutMs(options.handOffTimeoutMs);
+    if (options.rebalanceAbsoluteLimit !== undefined) coordinatorOptions.withRebalanceAbsoluteLimit(options.rebalanceAbsoluteLimit);
+    if (options.rebalanceRelativeLimit !== undefined) coordinatorOptions.withRebalanceRelativeLimit(options.rebalanceRelativeLimit);
     if (options.rememberEntities !== undefined) coordinatorOptions.withRememberEntities(options.rememberEntities);
     const store = this.resolveRememberEntitiesStore(options);
     if (store !== undefined) coordinatorOptions.withRememberEntitiesStore(store);

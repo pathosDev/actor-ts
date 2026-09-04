@@ -16,7 +16,7 @@ The two built-in strategies trade simplicity for balance:
 
 | Strategy | Allocation | Rebalance |
 | --- | --- | --- |
-| **`HashAllocationStrategy`** *(default)* | `shardId mod sorted-candidates` | Only when the candidate set changes. |
+| **`HashAllocationStrategy`** *(default)* | `shardId mod sorted-candidates` | Only when the candidate set changes — but then *most* shards at once. |
 | **`LeastShardAllocationStrategy`** | Candidate with fewest shards. | Drains the busiest node into the rest. |
 
 ## HashAllocationStrategy
@@ -46,7 +46,13 @@ return sorted[shardId % sorted.length];
 - **Deterministic** — given the same candidate set, same shards
   always land on same nodes.
 - **Minimal rebalance** — only shards whose hash-target changes
-  need to move (when nodes join or leave).
+  need to move (when nodes join or leave).  "Minimal" is relative to
+  *doing it at all*, not to how much moves: the modulus changes for
+  most shards when the candidate count does, so at `numShards = 64` a
+  1 → 2 join re-homes 32 shards, a 2 → 3 join **42**, a 3 → 4 join 46.
+  The strategy proposes all of them in one pass; what keeps that from
+  arriving as one burst is the coordinator's own ceiling — see
+  [the ceiling on churn](/cluster/sharding/rebalance/#the-ceiling-on-churn).
 - **Zero state** — the strategy doesn't track anything; it's a
   pure function.
 
@@ -115,6 +121,14 @@ new LeastShardAllocationStrategy(
   rebalance; `5` waits for a real difference.
 - **`maxSimultaneousRebalance`** — bigger value = faster
   convergence, more handoff traffic.  3 is a reasonable middle.
+
+This cap and the configured
+[rebalance ceiling](/cluster/sharding/rebalance/#the-ceiling-on-churn)
+are two different levels and both apply: `maxSimultaneousRebalance`
+bounds what **this strategy proposes** per pass, the ceiling bounds
+what the **coordinator accepts** from any strategy.  A strategy that
+caps itself is therefore not a substitute for the ceiling — the
+default one caps nothing, and neither does one you write.
 
 For 100-shard clusters with frequent membership churn, raise both
 (threshold ~3, max ~10).  For 16-shard clusters where each shard
