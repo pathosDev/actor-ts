@@ -170,7 +170,9 @@ async function main(): Promise<void> {
   const sys1 = ActorSystem.create('bank-s3', sys1Options);
   const snapshotPluginOptions = ObjectStoragePluginOptions.create()
     .withBackend(spec)
-    .withPrefix('env-prod/snapshots/')
+    // The store appends its own 'snapshots/' namespace under this prefix,
+    // keeping its keys disjoint from the durable-state store's (#716).
+    .withPrefix('env-prod/')
     .withKeepN(2)
     .withCompression(compressionByPrefix({
       default: { algorithm: 'gzip' },
@@ -205,7 +207,7 @@ async function main(): Promise<void> {
   const sys2 = ActorSystem.create('bank-s3-restart', sys2Options);
   const restartSnapshotPluginOptions = ObjectStoragePluginOptions.create()
     .withBackend(spec)
-    .withPrefix('env-prod/snapshots/');
+    .withPrefix('env-prod/');
   await registerObjectStoragePlugins(sys2.extension(PersistenceExtensionId), restartSnapshotPluginOptions);
   const acct2 = sys2.spawn(() => new Account('alice'), 'alice');
   console.log('after restart, balance →', await acct2.ask({ kind: 'balance' }, 500));

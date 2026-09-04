@@ -640,6 +640,14 @@ export type { ObjectStorageSnapshotStoreOptionsType } from './snapshot-stores/Ob
 export { ObjectStorageDurableStateStore } from './durable-state-stores/ObjectStorageDurableStateStore.js';
 export { ObjectStorageDurableStateStoreOptions, ObjectStorageDurableStateStoreOptionsBuilder, ObjectStorageDurableStateStoreOptionsValidator } from './durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
 export type { ObjectStorageDurableStateStoreOptionsType } from './durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
+// The namespace segment each object-storage store owns under a shared
+// `prefix` (#716).  Public because the migration off the old flat layout is
+// an operator script that has to name the destination key, and a script that
+// spells the segment as a literal is a second copy of the layout.
+export {
+  OBJECT_STORAGE_DURABLE_STATE_NAMESPACE,
+  OBJECT_STORAGE_SNAPSHOT_NAMESPACE,
+} from './Constants.js';
 export {
   registerObjectStoragePlugins,
   OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,

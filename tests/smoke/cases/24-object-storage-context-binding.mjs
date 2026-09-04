@@ -67,8 +67,11 @@ export async function run({ actorTs, loadEntry }) {
     // Both records sit at revision 1, so the in-process rollback floor
     // has nothing to say here — the key binding is the only thing that
     // can catch this.
-    const aliceBody = await readFile(join(directory, 'alice', 'state.json'));
-    await writeFile(join(directory, 'bob', 'state.json'), aliceBody);
+    // `state/` is the namespace the durable-state store owns under its
+    // prefix (#716) — the FS backend stores each key at `dir/<key>` 1:1.
+    const bodyFileFor = (persistenceId) => join(directory, 'state', persistenceId, 'state.json');
+    const aliceBody = await readFile(bodyFileFor('alice'));
+    await writeFile(bodyFileFor('bob'), aliceBody);
 
     store.forgetEtagForTest('bob');
     const replay = await failureOf(() => store.load('bob'));

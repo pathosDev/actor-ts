@@ -3,6 +3,8 @@ title: Snapshot-Store-Backend
 description: ObjectStorageSnapshotStore speichert Snapshots in Object Storage — die richtige Form für cluster-weit geteilte Snapshots, verschlüsselt at rest, mit Kompression. Paare ihn mit Sharded Entities, die zwischen Nodes wandern.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 `ObjectStorageSnapshotStore` ist die Snapshot-Store-
 Implementierung, die
 [Object Storage](/de/persistence/object-storage/overview/) als
@@ -83,28 +85,100 @@ type ObjectStorageSnapshotStoreOptionsType = {
 ## Key-Layout
 
 ```
-<prefix>/<persistenceId>/seq-<seqNr>
+<prefix>snapshots/<persistenceId>/<seqNr auf 20 Stellen gepolstert>.json
 ```
 
-Beispiele:
+Beispiele, mit `prefix: 'acme/'`:
 
 ```
-snapshots/account-42/seq-100
-snapshots/account-42/seq-200
-snapshots/account-42/seq-300
+acme/snapshots/account-42/00000000000000000100.json
+acme/snapshots/account-42/00000000000000000200.json
+acme/snapshots/account-42/00000000000000000300.json
 ```
 
-Das Framework listet Keys unter `<prefix>/<persistenceId>/`, um
-den neuesten Snapshot zu finden.  Die Auflistung ist aufsteigend
-nach Key und trägt kein Limit: die nullgepolsterte Sequenznummer
-macht den *letzten* Eintrag zum neuesten, ein `limit: 1` lieferte
-also den ältesten.
+Drei Segmente, jedes mit genau einer Aufgabe.
+
+- **`<prefix>`** gehört dir — ein Deployment, eine Umgebung, ein
+  Mandant.  Er ist Teil dessen, woran ein Body gebunden wird, also
+  lässt sich Staging-State nicht in die Produktion einspielen.
+- **`snapshots/`** ist der Namespace, der diesem Store gehört.
+  `ObjectStorageDurableStateStore` besitzt `state/` und schreibt
+  `<prefix>state/<persistenceId>/state.json`.  Beide Stores
+  bekommen von `registerObjectStoragePlugins` denselben Prefix, und
+  der Namespace ist das, was ihre Korpora davon abhält, sich ein
+  Verzeichnis zu teilen — siehe
+  [Zwei Stores, ein Prefix](#zwei-stores-ein-prefix).
+- **`<persistenceId>/`** ist das Verzeichnis pro Entity, das jedes
+  LIST begrenzt.
+
+Das Framework listet Keys unter
+`<prefix>snapshots/<persistenceId>/`, um den neuesten Snapshot zu
+finden.  Die Auflistung ist aufsteigend nach Key und trägt kein
+Limit: die nullgepolsterte Sequenznummer macht den *letzten*
+Eintrag zum neuesten, ein `limit: 1` lieferte also den ältesten.
+
+Was der Store aus dieser Auflistung nimmt, ist der letzte Eintrag,
+der **wie einer seiner eigenen Snapshots geformt** ist — das
+Verzeichnis dieser Entity, dann exakt zwanzig Ziffern und `.json`.
+Prefix-Zugehörigkeit ist kein Beleg für Eigentum: ein Bucket kann
+einen zweiten Schreiber haben, und eine Marker-Datei oder eine
+halb fertige Migration unter demselben Prefix wurde früher als
+Snapshot gelesen, von `delete` gelöscht und auf `keepN`
+angerechnet — auf Kosten eines echten Snapshots.  Ein Body, der
+eine *andere* `persistenceId` nennt, wird ebenfalls nicht
+zurückgegeben; der Store meldet dann keinen Snapshot, und die
+Recovery spielt das Journal ab.
 
 Für sehr große `persistenceId`-Räume ist das Listen pro pid in S3
 typischerweise schnell (Per-Prefix-Durchsatz).  Vermeide es, alle
 Entity-Typen unter denselben Prefix ohne Per-pid-Unterordner zu
 packen — dieses Verzeichnis-Segment ist das Einzige, was
 begrenzt, was ein Load aufzählen muss.
+
+### Zwei Stores, ein Prefix
+
+`registerObjectStoragePlugins` verdrahtet den Snapshot-Store und
+den Durable-State-Store absichtlich auf ein Backend mit einem
+Prefix.  Ihre Key-Namespaces sind trotzdem disjunkt:
+
+```
+acme/snapshots/account-42/00000000000000000300.json   Snapshot
+acme/state/account-42/state.json                      Durable State
+```
+
+Ohne die Namespaces landeten beide in `acme/account-42/`, und
+`state.json` sortiert hinter jede nullgepolsterte Sequenznummer —
+eine Entity, die auf beide Arten persistiert wurde, bekam also
+ihren Durable-State-Record als ihren neuesten Snapshot zurück.
+Dieser Body trägt keine `sequenceNr`, die Recovery lehnte ihn ab,
+und der Actor konnte nicht starten.  Dafür war keine ungültige
+`persistenceId` nötig: ein Aufruf, der das Plugin verdrahtet, und
+eine Entity, die beide Wege nutzt.
+
+<Aside type="caution" title="Einen bestehenden Bucket migrieren">
+  Die Namespaces sind eine **breaking** Änderung des Key-Layouts.
+  Ein von einer früheren Version geschriebener Bucket enthält
+  `<prefix><persistenceId>/…`, was diese Version nicht liest.
+
+  **Snapshots brauchen keine Migration.**  Sie sind ein
+  Recovery-Beschleuniger, keine Quelle der Wahrheit: findet
+  `loadLatest` nichts, wird das Journal vollständig abgespielt, und
+  der nächste Save schreibt unter dem neuen Key.  Lösche die alten
+  Objekte, wenn du so weit bist.
+
+  **Durable State schon** — er *ist* die Quelle der Wahrheit.
+  Kopiere jedes `<prefix><persistenceId>/state.json` nach
+  `<prefix>state/<persistenceId>/state.json`.  Ein Body, der weder
+  mit clientseitiger Verschlüsselung noch mit einem
+  Integritäts-HMAC geschrieben wurde, trägt keine Key-Bindung; eine
+  serverseitige Kopie genügt.  Ein an seinen Key gebundener Body
+  (#612) ist gegen den alten Key versiegelt und dekodiert am neuen
+  nicht: fahre vor dem Upgrade die **alte** Version mit
+  `prefix: '<prefix>state/'` allein am Durable-State-Store und
+  schreibe jeden Record per `upsert` neu — das erzeugt genau die
+  Keys, die diese Version liest, und bindet sie korrekt.  Danach
+  upgraden und `prefix` wieder auf `<prefix>` setzen.
+</Aside>
 
 ## Performance
 
@@ -116,7 +190,8 @@ durch GET.  Zahlen für S3 Same-Region:
 
 Dieses LIST ist das, was das Verzeichnis pro `persistenceId` im
 Key einbringt.  Beide mitgelieferten Backends schränken es auf
-`<prefix>/<persistenceId>/` ein — S3 über `Prefix` / `MaxKeys`,
+`<prefix>snapshots/<persistenceId>/` ein — S3 über `Prefix` /
+`MaxKeys`,
 das Filesystem-Backend, indem es nur dieses Verzeichnis liest —,
 sodass ein Load die Snapshots genau einer Entity kostet und flach
 bleibt, während die Zahl der Entities wächst.  Das `keepN`-Pruning
@@ -158,11 +233,11 @@ für Durable State.  Siehe
 PersistentActor.persist(event) gelingt
   ↓ snapshotPolicy() prüfen
   ↓ wenn true → Snapshot machen
-backend.put('snapshots/<pid>/seq-N', serialisierter State)
+backend.put('<prefix>snapshots/<pid>/<seq>.json', serialisierter State)
 
 PersistentActor.preStart
-  ↓ 'snapshots/<pid>/' auflisten — nur dieses Verzeichnis, aufsteigend
-  ↓ letzter Key = neueste seq
+  ↓ '<prefix>snapshots/<pid>/' auflisten — nur dieses Verzeichnis, aufsteigend
+  ↓ letzter wohlgeformter Key = neueste seq
   ↓ backend.get(latest) → dekodieren → onEvent ab seq+1
 ```
 
@@ -207,8 +282,6 @@ Muster:
   den Cluster geteilt.
 - **ObjectStorage alles** — wenn S3 dein einziger Storage ist.
   Langsamer pro Op, aber billig.
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="LIST-Kosten bei großen pids">
   ```ts

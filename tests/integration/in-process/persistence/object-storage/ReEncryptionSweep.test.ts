@@ -42,7 +42,11 @@ import {
   FLAG_INTEGRITY_HMAC,
 } from '../../../../../src/persistence/object-storage/BodyCodec.js';
 import { encodePayload } from '../../../../../src/persistence/storage/PayloadCodec.js';
-import { MAX_REPORTED_MALFORMED_KEYS } from '../../../../../src/persistence/Constants.js';
+import {
+  MAX_REPORTED_MALFORMED_KEYS,
+  OBJECT_STORAGE_DURABLE_STATE_NAMESPACE,
+  OBJECT_STORAGE_SNAPSHOT_NAMESPACE,
+} from '../../../../../src/persistence/Constants.js';
 import type { EncryptionConfig, IntegrityConfig } from '../../../../../src/persistence/PersistenceOptions.js';
 import type { ObjectStorageBackend, ObjectFetched, ObjectInfo } from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
 import { some, type Option } from '../../../../../src/util/Option.js';
@@ -198,7 +202,7 @@ describe('reEncryptObjectStorage', () => {
       keyPrefix: '',
       keyring: ring,
       info,
-      onProgress: (e) => events.push(`${e.action}:${e.key.split('/')[0]}`),
+      onProgress: (e) => events.push(`${e.action}:${e.key.split('/')[1]}`),
     });
     expect(events.length).toBe(3);
     expect(events).toContain('rewrote:a');
@@ -224,7 +228,7 @@ describe('reEncryptObjectStorage', () => {
       keyPrefix: '',
       keyring: ring,
       info,
-      skip: (k) => k.startsWith('skip/'),
+      skip: (k) => k.startsWith(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}skip/`),
     });
     expect(result.scanned).toBe(1);
     expect(result.rewrote).toBe(1);
@@ -813,15 +817,55 @@ describe('reEncryptObjectStorage — the default pid extractor refuses ambiguous
       .rejects.toThrow(ReEncryptIncompleteError);
   });
 
-  test('both built-in store layouts are accepted', async () => {
-    // `<prefix><pid>/<seq>.json` (snapshots) and `<prefix><pid>/state.json`
-    // (durable state) — the two layouts the extractor exists for.
+  test('both built-in store layouts are accepted, aimed at their own namespace', async () => {
+    // `<prefix>snapshots/<pid>/<seq>.json` and `<prefix>state/<pid>/state.json`
+    // (#716) — the two layouts the extractor exists for, each swept at the
+    // namespace segment its store owns.  This is the narrower and preferred
+    // form: it visits one corpus rather than both.
+    const snapshots = new MalformedKeyBackend(['snap/snapshots/user-1/00000000000000000007.json']);
+    await sweep(snapshots, `snap/${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}`);
+    expect(snapshots.fetched).toEqual(['snap/snapshots/user-1/00000000000000000007.json']);
+
+    const durableState = new MalformedKeyBackend(['snap/state/user-2/state.json']);
+    await sweep(durableState, `snap/${OBJECT_STORAGE_DURABLE_STATE_NAMESPACE}`);
+    expect(durableState.fetched).toEqual(['snap/state/user-2/state.json']);
+  });
+
+  test('both are accepted at the shared prefix too, and yield the same ids (#716)', async () => {
+    // The two stores are handed one `prefix`, so a sweep aimed at it sees
+    // keys one level deeper than the test above.  The extractor reads past
+    // the namespace segment, because a salt that depended on how the corpus
+    // was addressed would rewrite bodies under a key the owning store never
+    // derives again.
     const backend = new MalformedKeyBackend([
-      'snap/user-1/00000000000000000007.json',
-      'snap/user-2/state.json',
+      'snap/snapshots/user-1/00000000000000000007.json',
+      'snap/state/user-2/state.json',
     ]);
     await sweep(backend, 'snap/');
-    expect(backend.fetched).toEqual(['snap/user-1/00000000000000000007.json', 'snap/user-2/state.json']);
+    expect(backend.fetched).toEqual([
+      'snap/snapshots/user-1/00000000000000000007.json',
+      'snap/state/user-2/state.json',
+    ]);
+  });
+
+  test('a persistenceId that is itself a namespace segment still reads as itself', async () => {
+    // The one-segment rule is tried first and only a key it refuses is
+    // retried past a namespace, so `<prefix>snapshots/snapshots/<seq>.json`
+    // — an entity literally called `snapshots` — resolves to the entity and
+    // not to the empty remainder stripping first would leave.
+    const backend = new MalformedKeyBackend(['snap/snapshots/00000000000000000001.json']);
+    await sweep(backend, 'snap/');
+    expect(backend.fetched).toEqual(['snap/snapshots/00000000000000000001.json']);
+  });
+
+  test('a namespace segment does not excuse a deeper level below it', async () => {
+    // Reading past the namespace widens what resolves; it does not relax the
+    // one-segment rule underneath.  Pre-#747 this yielded 'tenant'.
+    const backend = new MalformedKeyBackend([
+      'snap/snapshots/tenant/user-1/00000000000000000001.json',
+    ]);
+    await expect(sweep(backend, 'snap/')).rejects.toThrow(ReEncryptIncompleteError);
+    expect(backend.fetched).toEqual([]);
   });
 
   test('a custom pidFromKey still decides for a layout the default cannot express', async () => {
@@ -916,9 +960,11 @@ describe('reEncryptObjectStorage — #739 integrity-tagged bodies', () => {
     encryption: EncryptionConfig,
     integrity?: IntegrityConfig,
   ): ObjectStorageDurableStateStore {
+    // No `prefix`: the `state/` the keys below carry is the namespace the
+    // store owns (#716), so setting a prefix of the same name would nest one
+    // inside the other.
     const storeOptions = ObjectStorageDurableStateStoreOptions.create()
       .withBackend(backend)
-      .withPrefix('state/')
       .withEncryption(encryption);
     if (integrity) storeOptions.withIntegrity(integrity);
     return new ObjectStorageDurableStateStore(storeOptions);
@@ -1062,7 +1108,6 @@ describe('reEncryptObjectStorage — #739 integrity-tagged bodies', () => {
     // The strict reader accepts it now, which is what the rebind was for.
     const strictOptions = ObjectStorageDurableStateStoreOptions.create()
       .withBackend(backend)
-      .withPrefix('state/')
       .withIntegrity(hmac)
       .withRequireContextBinding();
     const strict = new ObjectStorageDurableStateStore(strictOptions);
