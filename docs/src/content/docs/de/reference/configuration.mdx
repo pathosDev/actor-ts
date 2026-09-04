@@ -277,10 +277,19 @@ spätere Aufrufer aus, die dem Cap selbst nie nahe kamen.
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `remote.tcp.host` | `"0.0.0.0"` | Bind-Adresse.  Wird verwendet, wenn `ClusterOptions` `host` nicht setzt. |
-| `remote.tcp.port` | `2552` | Bind-Port.  Wird verwendet, wenn `ClusterOptions` `port` nicht setzt. |
+| `remote.tcp.host` | `"0.0.0.0"` | Das Interface, auf dem **gebunden** wird.  Ein Wildcard gehört hierher und ist der Default.  Wird verwendet, wenn `ClusterOptions` `host` nicht setzt. |
+| `remote.tcp.advertised-host` | *(ungesetzt)* | Die Adresse, die Peers **wählen** — die Identität dieses Nodes.  Ungesetzt folgt sie `remote.tcp.host`, sofern der routebar ist, dann `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, dann Loopback.  Ein Wildcard wird abgelehnt.  Bewusst nicht in der `reference.conf`, denn genau von einem ausgelieferten Wert müsste sich „ungesetzt" unterscheiden lassen. |
+| `remote.tcp.port` | `2552` | Der Port, auf dem **gebunden** wird.  Wird verwendet, wenn `ClusterOptions` `port` nicht setzt. |
+| `remote.tcp.advertised-port` | *(ungesetzt)* | Der Port, den Peers **wählen**.  Ungesetzt bedeutet dasselbe wie `remote.tcp.port` — setz ihn nur dort, wo das Deployment den Prozess auf einem anderen veröffentlicht.  Aus demselben Grund wie `advertised-host` nicht in der `reference.conf`. |
 | `remote.max-frame-bytes` | `16M` | Wire-Cap pro Frame.  Ein Frame, dessen Längen-Präfix darüber liegt, wird verworfen, bevor irgendeine Payload gepuffert wird. |
 | `remote.tls.enabled` | `false` | **Nicht umgesetzt** — `true` bringt eine Startup-Warnung, keine Verschlüsselung.  Siehe unten. |
+
+`host`/`port` sind das **Bind**-Paar, `advertised-host`/`advertised-port` das
+**Identitäts**-Paar: das erste sagt, wo der Listener aufmacht, das zweite,
+was in jedes Gossip-Frame wandert, damit Peers zurückwählen können.  Sie sind
+dieselben Werte, bis ein Deployment einen davon umbiegt — deshalb erledigt
+ein routebarer Host plus ein Port weiterhin beide Jobs und nichts, was heute
+konfiguriert ist, bewegt sich.
 
 Weil die Bind-Adresse aus der Config lesbar ist, kann ein Deployment sie
 komplett aus dem Code herausziehen:
@@ -291,6 +300,24 @@ actor-ts.remote.tcp {
   port = ${?ACTOR_TS_PORT}   # Env-Var-Substitution
 }
 ```
+
+Ein veröffentlichter Container-Port ist der Fall, der alle vier braucht.  Der
+Prozess lauscht im Container auf `2552`, `docker run -p 3000:2552` legt ihn
+draußen auf `3000`, und `3000` ist die Zahl, die in die Seed-Liste jedes
+anderen Nodes gehört:
+
+```hocon
+actor-ts.remote.tcp {
+  host            = "0.0.0.0"    # bind every interface — the container
+  port            = 2552         #   does not know its published address
+  advertised-host = ${?HOST_IP}  # what peers dial …
+  advertised-port = 3000         #   … and on which port
+}
+```
+
+Unter Kubernetes bewegt sich nur die Host-Hälfte: Pod-zu-Pod-Gossip wählt den
+Container-Port direkt, also ist `advertised-host = ${?POD_IP}` allein schon
+die ganze Konfiguration.
 
 `remote.max-frame-bytes` gilt für den Transport, den der Cluster sich
 selbst baut.  Wenn du einen `TcpTransport` selbst konstruierst und per

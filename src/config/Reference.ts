@@ -429,6 +429,18 @@ actor-ts {
     # exists to prevent: every node advertises the identical
     # system@0.0.0.0:2552, each reads the others' announcements as claims
     # about itself, and every member map ends up holding one entry.
+    #
+    # port and advertised-port are the same split one axis over, and
+    # advertised-port ships no value for the same reason: unset means "the
+    # same as port".  Only a deployment that REMAPS the port needs it -- a
+    # published container port, where the process listens on 2552 inside and
+    # the outside world reaches it on the port that -p 3000:2552 published:
+    #
+    #   port            = 2552
+    #   advertised-port = 3000
+    #
+    # Kubernetes does not need it: pod-to-pod gossip dials the container port
+    # directly, so only the host half moves there.
     tcp {
       host = "0.0.0.0"
       port = 2552

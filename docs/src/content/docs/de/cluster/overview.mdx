@@ -72,8 +72,8 @@ Einige Einstellungen leisten die meiste Arbeit:
 
 | Einstellung | Zweck |
 | --- | --- |
-| `host` + `port` | Das Interface, an das dieser Node **bindet**. `0.0.0.0` heißt "jedes Interface" und ist der Default. |
-| `advertisedHost` | Die Adresse, die Peers **wählen** — die Identität dieses Nodes. Ungesetzt wird sie aus `host` abgeleitet, sofern der routebar ist, dann aus `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, dann Loopback. |
+| `host` + `port` | Interface und Port, an die dieser Node **bindet**. `0.0.0.0` heißt "jedes Interface" und ist der Default. |
+| `advertisedHost` + `advertisedPort` | Die Adresse, die Peers **wählen** — die Identität dieses Nodes. Ungesetzt wird der Host aus `host` abgeleitet, sofern der routebar ist, dann aus `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, dann Loopback; der Port ist schlicht `port`. |
 | `seeds` | Adressen anderer Nodes. Beim Start kontaktiert dieser Node sie, um dem bestehenden Cluster beizutreten. Eine leere Liste = "ich bin der erste" (wird automatisch zum Leader). |
 | `roles` | Tags, die dieser Node trägt. Router und Shard-Regionen können danach filtern (`role: 'compute'` überspringt Nodes ohne dieses Tag). |
 
@@ -89,6 +89,13 @@ Einige Einstellungen leisten die meiste Arbeit:
   routebarer `host` deckt weiterhin beides ab, und ein
   unkonfigurierter Node verteilt `127.0.0.1`. In Kubernetes setzt man
   das Paar: `0.0.0.0` binden, `POD_IP` verteilen.
+
+  Der Port teilt sich genauso auf und muss es fast nie. `advertisedPort`
+  ist `port`, solange nichts ihn *umbiegt* — ein veröffentlichter
+  Container-Port etwa, bei dem `docker run -p 3000:2552` bedeutet, dass
+  Peers `3000` wählen müssen, während der Listener `2552` aufmacht.
+  Kubernetes biegt nichts um: Pod-zu-Pod-Gossip wählt den Container-Port
+  direkt.
 </Aside>
 
 Nachdem `Cluster.join` aufgelöst ist, befindet sich der Node im
