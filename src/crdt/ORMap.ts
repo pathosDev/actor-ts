@@ -317,7 +317,21 @@ function remapKeysetIds(keyset: ORSetJson, localIds: ReadonlyMap<string, string>
   return { ...keyset, elementValues };
 }
 
-/** `JSON.parse` narrowed to strings — `undefined` for anything else, a failed parse included. */
+/**
+ * `JSON.parse` narrowed to strings — `undefined` for anything else, a failed
+ * parse included.
+ *
+ * The two halves are not alike, and a reader deciding what to test should know
+ * which is which.  The **try/catch is behaviour**: a value that will not parse
+ * has to leave the frame untouched so `ORSet` refuses it in its own words a
+ * moment later, rather than a `SyntaxError` escaping from in here — that is
+ * asserted in `DistributedDataDecodeIdentity.test.ts`.  The **string narrowing
+ * is type soundness only** and no test can see it: the sole use of the result
+ * is a lookup in `localIds`, whose keys are object keys and therefore always
+ * strings, so a parsed number or object misses exactly as `undefined` does.
+ * It stays because the alternative is `parsed as string`, a cast that would
+ * make this function lie about what it returns.
+ */
 function parseIdString(encoded: string): string | undefined {
   try {
     const parsed: unknown = JSON.parse(encoded);
