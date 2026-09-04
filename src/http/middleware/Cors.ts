@@ -13,11 +13,20 @@
  */
 import type { CompiledEndpoint, Route } from '../Route.js';
 import type { HttpMethod, HttpRequest, HttpResponse } from '../Types.js';
+import { ConfigError, type Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { MAXIMUM_ECHOED_CORS_HEADERS_LENGTH } from '../Constants.js';
 import { applyHeaders, appendVary, readHeader } from './Headers.js';
-import { CorsOptionsValidator, type CorsOptions, type CorsOptionsType, type CorsOrigin } from './CorsOptions.js';
+import {
+  CORS_WILDCARD_ORIGIN,
+  CorsOptionsValidator,
+  DEFAULT_CORS_CREDENTIALS,
+  type CorsOptions,
+  type CorsOptionsType,
+  type CorsOrigin,
+} from './CorsOptions.js';
 
-/** Resolved CORS policy stored on the `cors` Route node. */
+/** Resolved CORS policy — what {@link expandCors} decorates responses from. */
 export type CorsRouteOptions = {
   readonly origins: CorsOrigin;
   readonly methods?: ReadonlyArray<HttpMethod>;
@@ -28,30 +37,126 @@ export type CorsRouteOptions = {
 };
 
 /**
- * Apply the CORS policy to `child`'s subtree.  Validates the options up
- * front: `origins` is required, and `credentials` cannot be combined with
- * `'*'` (the Fetch spec forbids `Access-Control-Allow-Origin: *` with
- * credentials).
+ * Apply the CORS policy to `child`'s subtree.
+ *
+ * The options are carried on the node **unresolved** and merged with
+ * `actor-ts.http.cors` by {@link resolveCorsPolicy} when the tree is compiled
+ * (#878).  They cannot be resolved here: a route tree is built before any
+ * `ActorSystem` exists, so this function has no configuration to merge and no
+ * way to tell "the caller set nothing" from "the caller set nothing *and* the
+ * deployment set nothing either".
+ *
+ * What still happens here is the half that needs no configuration — the
+ * options a caller actually wrote are validated against each other, so
+ * `withAnyOrigin().withCredentials()` throws at construction as it always has.
+ * Only the **required-`origins`** check moved to the compile step, because a
+ * config file is now allowed to be the sole source of `origins`.
  */
 export function cors(options: CorsOptions, child: Route): Route {
-  const resolvedOptions = options as Partial<CorsOptionsType>;
-  if (resolvedOptions.origins === undefined) {
-    throw new Error('cors: origins is required — call withOrigins(...), withAnyOrigin(), or withOriginPredicate(...)');
-  }
-  new CorsOptionsValidator().validate(resolvedOptions);
-  const settings: CorsRouteOptions = {
-    origins: resolvedOptions.origins,
-    methods: resolvedOptions.methods,
-    allowedHeaders: resolvedOptions.allowedHeaders,
-    exposedHeaders: resolvedOptions.exposedHeaders,
-    credentials: resolvedOptions.credentials ?? false,
-    maxAge: resolvedOptions.maxAge,
+  const routeOptions = options as Partial<CorsOptionsType>;
+  new CorsOptionsValidator().validate(routeOptions);
+  return { kind: 'cors', options: routeOptions, child };
+}
+
+/**
+ * Merge a `cors()` node's route options with `actor-ts.http.cors` — route
+ * options > HOCON > built-in defaults, per field, `undefined` on the higher
+ * layer falling through rather than shadowing.
+ *
+ * `config` is optional because `compile()` is a public export that predates
+ * the configuration layer: a caller compiling a tree outside an `ActorSystem`
+ * gets exactly the pre-#878 behaviour, which is the built-in defaults and
+ * whatever the route named.
+ *
+ * All six leaves are read here; only two of them ship a value in
+ * `reference.conf`.  The other four are comment-only there because a published
+ * literal would be worse than no key at all: `methods` and `allowedHeaders`
+ * have *computed* defaults (the methods registered at each pattern, and the
+ * echoed request headers) that a fleet-wide literal would override, `maxAge`
+ * unset means no `Access-Control-Max-Age` header is sent at all, and a shipped
+ * `origins` would satisfy the required-origins guard below for every route in
+ * the process — turning a misconfigured `cors({}, routes)` from a loud error
+ * into a silent deny-all.
+ */
+export function resolveCorsPolicy(options: Partial<CorsOptionsType>, config?: Config): CorsRouteOptions {
+  const fromConfig = readCorsOptionsFromConfig(config);
+  const merged: Partial<CorsOptionsType> = {
+    origins: options.origins ?? fromConfig.origins,
+    methods: options.methods ?? fromConfig.methods,
+    allowedHeaders: options.allowedHeaders ?? fromConfig.allowedHeaders,
+    exposedHeaders: options.exposedHeaders ?? fromConfig.exposedHeaders,
+    credentials: options.credentials ?? fromConfig.credentials,
+    maxAge: options.maxAge ?? fromConfig.maxAge,
   };
-  return { kind: 'cors', settings, child };
+  if (merged.origins === undefined) {
+    throw new Error(
+      'cors: origins is required — call withOrigins(...), withAnyOrigin(), or '
+      + `withOriginPredicate(...), or set ${ConfigKeys.http.cors.origins} in your configuration`,
+    );
+  }
+  new CorsOptionsValidator().validate(merged);
+  return {
+    origins: merged.origins,
+    methods: merged.methods,
+    allowedHeaders: merged.allowedHeaders,
+    exposedHeaders: merged.exposedHeaders,
+    credentials: merged.credentials ?? DEFAULT_CORS_CREDENTIALS,
+    maxAge: merged.maxAge,
+  };
+}
+
+/**
+ * The `actor-ts.http.cors` layer, as a partial — an absent leaf stays
+ * `undefined` so the layer below it is reached, rather than being punched
+ * through with a default.
+ *
+ * Values are read raw and left to {@link CorsOptionsValidator} on the merged
+ * result, the same shape `resolveWebsocketPolicy` uses, with one exception:
+ * `origins` is the one field a configuration file must not be able to widen,
+ * so its check is here and throws a `ConfigError` naming the key.
+ */
+function readCorsOptionsFromConfig(config?: Config): Partial<CorsOptionsType> {
+  const keys = ConfigKeys.http.cors;
+  if (config === undefined || !config.hasPath(keys.root)) return {};
+  return {
+    origins: config.hasPath(keys.origins) ? configuredOrigins(config, keys.origins) : undefined,
+    methods: config.hasPath(keys.methods) ? (config.getStringList(keys.methods) as HttpMethod[]) : undefined,
+    allowedHeaders: config.hasPath(keys.allowedHeaders) ? config.getStringList(keys.allowedHeaders) : undefined,
+    exposedHeaders: config.hasPath(keys.exposedHeaders) ? config.getStringList(keys.exposedHeaders) : undefined,
+    credentials: config.hasPath(keys.credentials) ? config.getBoolean(keys.credentials) : undefined,
+    // `getInt`, never `getDuration`.  The field is a count of SECONDS written
+    // straight into `Access-Control-Max-Age`, while `getDuration` answers in
+    // milliseconds — so reading `1h` that way would emit `3600000`, a 1000x
+    // error no gate in this repository would catch.  A bare integer it is.
+    maxAge: config.hasPath(keys.maxAge) ? config.getInt(keys.maxAge) : undefined,
+  };
+}
+
+/**
+ * The configured allowlist, with the wildcard refused.
+ *
+ * `withAnyOrigin()` is documented as the explicit opt-in — "must be explicit,
+ * no accidental wildcard" — and #128 was filed because CORS defaults were too
+ * permissive.  A config file that can write `origins = ["*"]` re-opens exactly
+ * that: one line in an `application.conf`, applying to every `cors()` route in
+ * the process, turning an allowlist into "everyone".  So the wildcard has no
+ * path through HOCON at all, and neither does the predicate arm, which is a
+ * function and could not have one.
+ */
+function configuredOrigins(config: Config, key: string): ReadonlyArray<string> {
+  const origins = config.getStringList(key);
+  if (origins.includes(CORS_WILDCARD_ORIGIN)) {
+    throw new ConfigError(
+      `Config at "${key}" must not contain "${CORS_WILDCARD_ORIGIN}" — allowing every origin is `
+      + 'code-only (withAnyOrigin()), so that a configuration file cannot widen a route\'s CORS '
+      + 'policy to any origin.',
+    );
+  }
+  return origins;
 }
 
 function isAllowed(origins: CorsOrigin, origin: string): boolean {
-  if (origins === '*') return true;
+  if (origins === CORS_WILDCARD_ORIGIN) return true;
   if (typeof origins === 'function') {
     try { return origins(origin); } catch { return false; }
   }
@@ -60,7 +165,7 @@ function isAllowed(origins: CorsOrigin, origin: string): boolean {
 
 /** Echo the request origin, or literal `*` only when wildcard AND not credentialed. */
 function allowOriginValue(settings: CorsRouteOptions, origin: string): string {
-  return settings.origins === '*' && !settings.credentials ? '*' : origin;
+  return settings.origins === CORS_WILDCARD_ORIGIN && !settings.credentials ? CORS_WILDCARD_ORIGIN : origin;
 }
 
 /**

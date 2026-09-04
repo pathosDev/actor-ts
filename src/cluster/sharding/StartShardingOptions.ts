@@ -34,6 +34,18 @@ export interface StartShardingOptionsType<TMessage> extends ShardingOptionsType<
   /** Time to wait for HandOffComplete before force-reallocating. */
   readonly handOffTimeoutMs?: number;
   /**
+   * Flat ceiling on shards a rebalance may have **in flight**.  `0` = no
+   * absolute ceiling.  See `ShardCoordinatorOptionsType.rebalanceRelativeLimit`
+   * for how the two compose (#850).
+   */
+  readonly rebalanceAbsoluteLimit?: number;
+  /**
+   * Ceiling on shards in flight as a fraction of `numShards`, floored at one.
+   * `0` = no relative ceiling; `0` for both leaves the rebalance uncapped
+   * (#850).
+   */
+  readonly rebalanceRelativeLimit?: number;
+  /**
    * Optional split-brain protection for the coordinator.  When set,
    * the elected leader's coordinator must hold the lease before it
    * processes shard messages — under a network partition that
@@ -115,6 +127,16 @@ export class StartShardingOptionsBuilder<TMessage> extends ShardingOptionsBuilde
     return this.set('handOffTimeoutMs', handOffTimeoutMs);
   }
 
+  /** Flat ceiling on shards in flight during a rebalance.  `0` disables it.  Default: 0. */
+  withRebalanceAbsoluteLimit(rebalanceAbsoluteLimit: number): this {
+    return this.set('rebalanceAbsoluteLimit', rebalanceAbsoluteLimit);
+  }
+
+  /** Ceiling on shards in flight as a fraction of `numShards`.  `0` disables it.  Default: 0.1. */
+  withRebalanceRelativeLimit(rebalanceRelativeLimit: number): this {
+    return this.set('rebalanceRelativeLimit', rebalanceRelativeLimit);
+  }
+
   /** Optional split-brain protection for the coordinator (a {@link Lease}). */
   withLease(lease: Lease): this {
     return this.set('lease', lease);
@@ -159,6 +181,11 @@ export class StartShardingOptionsValidator<TMessage>
     this.positiveNumber('handOffTimeoutMs');
     this.positiveNumber('acquireRetryIntervalMs');
     this.positiveNumber('shardRegionQueryTimeoutMs');
+    // `0` is a real value on both — it switches that ceiling off — so neither
+    // is a `positive*` rule.  The relative one is a fraction and not a count:
+    // `nonNegativeInt` would reject the 0.1 that ships (#850).
+    this.nonNegativeInt('rebalanceAbsoluteLimit');
+    this.numberInRange('rebalanceRelativeLimit', 0, 1);
   }
 }
 
@@ -192,6 +219,8 @@ export type ShardingConfigDefaults = Pick<
   | 'registerRetryIntervalMs'
   | 'rebalanceIntervalMs'
   | 'handOffTimeoutMs'
+  | 'rebalanceAbsoluteLimit'
+  | 'rebalanceRelativeLimit'
   | 'acquireRetryIntervalMs'
   | 'shardRegionQueryTimeoutMs'
   | 'entityRecoveryStrategy'
@@ -236,6 +265,14 @@ export function readShardingOptionsFromConfig(config: Config): ShardingConfigDef
   }
   if (config.hasPath(keys.rebalanceInterval)) out.rebalanceIntervalMs = config.getDuration(keys.rebalanceInterval);
   if (config.hasPath(keys.handOffTimeout)) out.handOffTimeoutMs = config.getDuration(keys.handOffTimeout);
+  if (config.hasPath(keys.rebalanceAbsoluteLimit)) {
+    out.rebalanceAbsoluteLimit = config.getInt(keys.rebalanceAbsoluteLimit);
+  }
+  if (config.hasPath(keys.rebalanceRelativeLimit)) {
+    // `getNumber`, not `getInt`: the leaf is a fraction of `numShards` and
+    // `getInt` throws on 0.1 — the shipped default (#850).
+    out.rebalanceRelativeLimit = config.getNumber(keys.rebalanceRelativeLimit);
+  }
   if (config.hasPath(keys.acquireRetryInterval)) {
     out.acquireRetryIntervalMs = config.getDuration(keys.acquireRetryInterval);
   }

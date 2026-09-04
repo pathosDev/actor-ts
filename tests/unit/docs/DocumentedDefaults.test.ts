@@ -10,9 +10,11 @@ import {
   DEFAULT_SHUTDOWN_DRAIN_TIMEOUT_MS,
 } from '../../../src/Constants.js';
 import { DEFAULT_SHUTDOWN_EXIT_CODE } from '../../../src/Constants.js';
+import { DEFAULT_MAILBOX_OVERFLOW } from '../../../src/ActorOptions.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
 import { DEFAULT_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/Constants.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
+import { DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY } from '../../../src/cluster/downing/DowningFromConfig.js';
 import { DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION } from '../../../src/cluster/ClusterOptions.js';
 import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
 import {
@@ -34,6 +36,8 @@ import {
 } from '../../../src/cluster/bootstrap/StableObservationOptions.js';
 import { DEFAULT_MINIMUM_MEMBERS } from '../../../src/cluster/ClusterReadiness.js';
 import { DEFAULT_K8S_OPERATION_TIMEOUT_MS, DEFAULT_LEASE_NAME_MAX_LENGTH, DEFAULT_SERVICE_ACCOUNT_CA_PATH, DEFAULT_SERVICE_ACCOUNT_NAMESPACE_PATH, DEFAULT_SERVICE_ACCOUNT_TOKEN_PATH, DEFAULT_TOKEN_RELOAD_INTERVAL_MS } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
+import { DEFAULT_AUTH_PROTECT_HEALTH, DEFAULT_ENABLE_DOWN_ENDPOINT, DEFAULT_ENABLE_LEAVE_ENDPOINT, DEFAULT_ENABLE_METRICS_ENDPOINT, DEFAULT_LIVENESS_PATH, DEFAULT_READINESS_PATH } from '../../../src/management/ManagementRoutesOptions.js';
+import { DEFAULT_HEALTH_CHECK_TIMEOUT_MS } from '../../../src/management/HealthCheckRegistryOptions.js';
 import {
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
@@ -65,6 +69,7 @@ import {
   DEFAULT_HAND_OFF_TIMEOUT_MS,
   DEFAULT_REBALANCE_INTERVAL_MS,
 } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
+import { DEFAULT_REBALANCE_ABSOLUTE_LIMIT, DEFAULT_REBALANCE_RELATIVE_LIMIT } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
 import { DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS } from '../../../src/cluster/sharding/StartShardingOptions.js';
 import {
   DEFAULT_MAX_GOSSIP_BYTES,
@@ -80,6 +85,7 @@ import {
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES,
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_FRAMES,
 } from '../../../src/http/Constants.js';
+import { DEFAULT_CORS_CREDENTIALS } from '../../../src/http/middleware/CorsOptions.js';
 import {
   DEFAULT_HTTP_CLIENT_MAX_REDIRECTS,
   DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES,
@@ -240,6 +246,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.pub-sub.gossip-interval', kind: 'duration', constant: DEFAULT_GOSSIP_INTERVAL_MS },
   { key: 'actor-ts.cluster.receptionist.gossip-interval', kind: 'duration', constant: DEFAULT_GOSSIP_INTERVAL_MS },
   { key: 'actor-ts.distributed-data.gossip-interval', kind: 'duration', constant: DEFAULT_GOSSIP_INTERVAL_MS },
+  { key: 'actor-ts.cluster.split-brain-resolver.active-strategy', kind: 'string', constant: DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY },
   { key: 'actor-ts.cluster.failure-detector.implementation', kind: 'string', constant: DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION },
   { key: 'actor-ts.cluster.failure-detector.heartbeat-interval', kind: 'duration', constant: DEFAULT_HEARTBEAT_INTERVAL_MS },
   { key: 'actor-ts.cluster.failure-detector.unreachable-after', kind: 'duration', constant: defaultFailureDetectorOptions.unreachableAfterMs },
@@ -293,6 +300,11 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.sharding.passivation-idle', kind: 'duration', constant: DEFAULT_PASSIVATION_IDLE_MS },
   { key: 'actor-ts.sharding.rebalance-interval', kind: 'duration', constant: DEFAULT_REBALANCE_INTERVAL_MS },
   { key: 'actor-ts.sharding.hand-off-timeout', kind: 'duration', constant: DEFAULT_HAND_OFF_TIMEOUT_MS },
+  { key: 'actor-ts.sharding.rebalance-absolute-limit', kind: 'int', constant: DEFAULT_REBALANCE_ABSOLUTE_LIMIT },
+  // `number`, not `int`: the relative limit is a fraction of `numShards` and
+  // `getInt` throws on the 0.1 that ships, so the wrong kind is loud here
+  // rather than silent (#850).
+  { key: 'actor-ts.sharding.rebalance-relative-limit', kind: 'number', constant: DEFAULT_REBALANCE_RELATIVE_LIMIT },
   { key: 'actor-ts.sharding.buffer-size', kind: 'int', constant: DEFAULT_SHARD_REGION_BUFFER_SIZE },
   { key: 'actor-ts.sharding.register-retry-interval', kind: 'duration', constant: DEFAULT_REGISTER_RETRY_INTERVAL_MS },
   { key: 'actor-ts.sharding.acquire-retry-interval', kind: 'duration', constant: DEFAULT_ACQUIRE_RETRY_INTERVAL_MS },
@@ -305,6 +317,14 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.distributed-data.max-pending-quorum-requests', kind: 'int', constant: DEFAULT_MAX_PENDING_QUORUM_REQUESTS },
   { key: 'actor-ts.distributed-data.max-quorum-timeout', kind: 'duration', constant: DEFAULT_MAX_QUORUM_TIMEOUT_MS },
   { key: 'actor-ts.distributed-data.max-gossip-bytes', kind: 'bytes', constant: DEFAULT_MAX_GOSSIP_BYTES },
+
+  /* --- mailbox --- */
+  // The sibling leaf, `mailbox.default.capacity`, is a FEATURE_SWITCHES entry:
+  // its published `0` says the global bound is off, and the off state IS the
+  // field being absent from what the reader returns (#862).  This one is a
+  // real default — the policy any bounded mailbox takes when its spawn site
+  // names none — so it pins to the constant the cell falls back to.
+  { key: 'actor-ts.mailbox.default.overflow', kind: 'string', constant: DEFAULT_MAILBOX_OVERFLOW },
 
   /* --- dead letters --- */
   { key: 'actor-ts.dead-letters.store', kind: 'string', constant: DEFAULT_DEAD_LETTER_STORE },
@@ -327,6 +347,23 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.coordination.lease.kubernetes.token-reload-interval', kind: 'duration', constant: DEFAULT_TOKEN_RELOAD_INTERVAL_MS },
   { key: 'actor-ts.coordination.lease.kubernetes.operation-timeout', kind: 'duration', constant: DEFAULT_K8S_OPERATION_TIMEOUT_MS },
   { key: 'actor-ts.coordination.lease.kubernetes.lease-name-max-length', kind: 'int', constant: DEFAULT_LEASE_NAME_MAX_LENGTH },
+
+  /* --- management --- */
+  // The four endpoint switches are in the table rather than in
+  // FEATURE_SWITCHES, and the difference is real: that group's stated reason
+  // is that its members have *no* `DEFAULT_*` constant to disagree with,
+  // because their off state is the field being absent at the read site.  These
+  // four are present at the read site — `defaultManagementRoutesOptions` is
+  // the floor `mergeOptions` starts from — so each does have a constant, and
+  // `enable-metrics-endpoint` published as `false` while the code shipped
+  // `true` is exactly the drift worth catching (#882).
+  { key: 'actor-ts.management.enable-leave-endpoint', kind: 'bool', constant: DEFAULT_ENABLE_LEAVE_ENDPOINT },
+  { key: 'actor-ts.management.enable-down-endpoint', kind: 'bool', constant: DEFAULT_ENABLE_DOWN_ENDPOINT },
+  { key: 'actor-ts.management.enable-metrics-endpoint', kind: 'bool', constant: DEFAULT_ENABLE_METRICS_ENDPOINT },
+  { key: 'actor-ts.management.auth-protect-health', kind: 'bool', constant: DEFAULT_AUTH_PROTECT_HEALTH },
+  { key: 'actor-ts.management.liveness-path', kind: 'string', constant: DEFAULT_LIVENESS_PATH },
+  { key: 'actor-ts.management.readiness-path', kind: 'string', constant: DEFAULT_READINESS_PATH },
+  { key: 'actor-ts.management.health-checks.check-timeout', kind: 'duration', constant: DEFAULT_HEALTH_CHECK_TIMEOUT_MS },
 
   /* --- worker cluster --- */
   { key: 'actor-ts.worker-cluster.system-name', kind: 'string', constant: DEFAULT_WORKER_SYSTEM_NAME },
@@ -353,6 +390,14 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.http.client.max-redirects', kind: 'int', constant: DEFAULT_HTTP_CLIENT_MAX_REDIRECTS },
   { key: 'actor-ts.http.client.max-response-bytes', kind: 'bytes', constant: DEFAULT_HTTP_CLIENT_MAX_RESPONSE_BYTES },
   { key: 'actor-ts.http.client.redirect', kind: 'string', constant: DEFAULT_HTTP_CLIENT_REDIRECT_MODE },
+  // The one CORS leaf with a scalar constant behind it (#878).  `off` here and
+  // `credentials: merged.credentials ?? DEFAULT_CORS_CREDENTIALS` in
+  // `resolveCorsPolicy` are the same `false`, checkably — which is what keeps
+  // it out of FEATURE_SWITCHES, whose members are the ones with nothing to
+  // disagree with.  Its four comment-only siblings — `origins`, `methods`,
+  // `allowed-headers`, `max-age` — carry no leaf, so there is nothing here to
+  // assert about them.
+  { key: 'actor-ts.http.cors.credentials', kind: 'bool', constant: DEFAULT_CORS_CREDENTIALS },
 
   /* --- cache --- */
   { key: 'actor-ts.cache.in-memory.max-entries', kind: 'int', constant: DEFAULT_MAX_ENTRIES },
@@ -495,6 +540,14 @@ const PLACEHOLDERS: readonly string[] = [
   // string is what lets the reader tell "no opinion" from a role named "",
   // and the role a deployment actually wants is per-deployment (#847).
   'actor-ts.sharding.role',
+  // The three split-brain-resolver role narrowings (#838).  Same reading as
+  // `sharding.role` above and the same reason there is no constant: `""` is
+  // the published shape of the key, every strategy tests `!options.role`, and
+  // `readDowningFromConfig` drops the empty string rather than passing it on —
+  // so the role a deployment wants is per-deployment and nothing else.
+  'actor-ts.cluster.split-brain-resolver.keep-majority.role',
+  'actor-ts.cluster.split-brain-resolver.keep-oldest.role',
+  'actor-ts.cluster.split-brain-resolver.static-quorum.role',
   'actor-ts.logger.sinks.gelf.url',
   'actor-ts.logger.sinks.gelf.host-name',
   'actor-ts.logger.sinks.otlp.service-name',
@@ -582,6 +635,19 @@ const FEATURE_SWITCHES: readonly string[] = [
   // this list only widens it, so an empty list and an unset key produce the
   // same guard.  No constant either — the read site branches on `undefined`.
   'actor-ts.devtools.allowed-origins',
+  // 0 = no global mailbox bound, which is the shipped behaviour since #1148.
+  // `readDefaultMailboxFromConfig` turns it into an ABSENT capacity rather
+  // than a number, so there is no constant for it to disagree with — and a
+  // constant would be the wrong shape anyway, since the value it would hold
+  // is "nothing" (#862).
+  'actor-ts.mailbox.default.capacity',
+  // `[]` is the sentinel for "expose nothing", the same shape as
+  // `devtools.allowed-origins` above and for the same reason: an empty list
+  // and an unset key produce the identical response, because the read site is
+  // `exposedHeaders && exposedHeaders.length > 0`.  There is no constant
+  // either — `CorsRouteOptions.exposedHeaders` is optional and the default is
+  // the field being absent (#878).
+  'actor-ts.http.cors.exposed-headers',
   'actor-ts.cluster.weakly-up-after', // 0s = no auto weakly-up promotion
   'actor-ts.cluster.tombstone.min-retention', // 0s = derive from down-after
   'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',

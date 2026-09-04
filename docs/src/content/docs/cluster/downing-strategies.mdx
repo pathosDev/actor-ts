@@ -72,6 +72,52 @@ Pass the provider as `downing`.  Every cluster event
 with the current view; it returns the set of addresses to forcibly
 down.  Returning an empty set means "no decision yet — wait."
 
+### From the config file
+
+Four of the five strategies can be selected without touching the code,
+which is what lets one image run unarbitrated in development and
+`keep-majority` in production:
+
+```hocon
+actor-ts.cluster.split-brain-resolver {
+  active-strategy = keep-majority   # off | keep-majority | keep-oldest | keep-referee | static-quorum
+
+  # Per-strategy options, each read only by the strategy it belongs to.
+  keep-majority.role                    = backend
+  static-quorum.quorum-size             = 3
+  keep-referee.referee-address          = "my-app@10.0.0.1:2552"
+  keep-referee.down-all-if-below-quorum = 2
+}
+```
+
+`active-strategy` builds the same object `withDowning(…)` takes, so the
+ordinary precedence applies: **an explicit `withDowning(…)` wins**, and a
+`Cluster.join` that names none falls through to the file.  `off` is the
+shipped default and means no strategy at all — see the caution at the
+bottom of this page for what that leaves you with.
+
+`static-quorum.quorum-size` and the two `keep-referee` keys are absent from
+`reference.conf` rather than shipped with a default: each is required or
+bounded, and `quorum-size = 0` / `referee-address = ""` are refused by the
+strategies' own validators, so any value that could ship would be one that
+stops the node.  Naming `static-quorum` or `keep-referee` without its key
+is refused at startup, with the missing key in the message.
+
+:::caution[`static-quorum` from a config file is a cluster-wide switch]
+Quorum is checked at *every* membership change, including the initial join,
+and a node below it downs itself.  So `quorum-size = 3` in a config every
+replica shares makes each node leave as it starts, until the third one is
+up — a rolling restart then takes the cluster down rather than through.
+Set it to a value at or below your minimum runtime size, and roll it out
+before the deployment that relies on it.
+:::
+
+`lease-majority` is deliberately **not** selectable from config.  It
+arbitrates through a live `Lease` whose `owner` is this node's own address,
+and no config key can name one — `actor-ts.coordination` tunes leases but
+does not choose a backend.  Writing the name into `active-strategy` is
+refused rather than silently ignored; build it in code as shown below.
+
 ## KeepMajority
 
 ```ts

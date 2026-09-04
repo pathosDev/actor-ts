@@ -154,6 +154,29 @@ der Nachricht — nie die Payload, aus demselben Datenschutzgrund, aus dem
 `dead-letters.store` auf `off` steht.  Jeder Key hier ist auch im Code
 setzbar, feldweise, über `ActorSystemOptions.withDiagnostics(…)`.  Siehe
 [Dead Letters](/de/operations/dead-letters/) für das ganze Bild.
+
+### `actor-ts.mailbox`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `mailbox.default.capacity` | `0` | Begrenzt jeden Actor unter `/user` auf so viele eingereihte User-Nachrichten, ohne eine Spawn-Stelle anzufassen.  `0` heißt: keine globale Schranke — das ist das ausgelieferte Verhalten.  Das hier ist also kein Nachjustieren, sondern der Schalter, der für alle Anwendungs-Actors auf einmal Nachrichtenverlust einführt. |
+| `mailbox.default.overflow` | `"drop-head"` | Systemweite Policy für **jede** begrenzte Mailbox: die globale Schranke oben und jeden Actor, der `withMailboxCapacity()` setzt, ohne eine eigene Policy zu nennen.  `drop-head` / `drop-new` / `reject`. |
+
+Die Schranke erreicht ausschließlich echte Nachfahren von `/user`.  Die
+eigenen Actors des Frameworks leben unter `/system` — Shard-Regions, der
+Pub-Sub-Mediator, der Reliable-Delivery-Producer, der DevTools-Hub — und ihren
+Verkehr abzuwerfen würde Invarianten brechen, nach denen die Anwendung nie
+gefragt hat und die sie nicht sieht.  Eine Spawn-Stelle sticht beide Keys:
+`ActorOptions.withMailboxCapacity()` überschreibt die Kapazität,
+`withMailbox()` ersetzt die Queue vollständig.
+
+Lies [Mailbox-Dimensionierung](/de/operations/tuning/mailbox-sizing/), bevor
+du das einschaltest.  Es ist der einzige Key in dieser Datei, der eine
+Nachricht in einem Actor verlieren kann, dessen Code nichts über eine Mailbox
+sagt — und die Seite nennt die beiden Fälle, `WebsocketServerActor` und seine
+Connections, in denen eine pauschale Schranke weiterhin erreichbar ist, weil
+User-Code sie spawnt.
+
 ### `actor-ts.dispatcher`
 
 | Key | Default | Zweck |
@@ -198,6 +221,13 @@ man daraus erneut zustellt.
 | `cluster.failure-detector.phi.max-sample-size` | `200` | Wie viele jüngste Zwischenankunftszeiten pro Peer behalten werden. |
 | `cluster.failure-detector.phi.min-std-deviation` | `100ms` | Untergrenze für die gemessene Standardabweichung, damit ein sehr gleichmäßiger Peer nicht wegen Rauschen auffällt. |
 | `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `0s` | Kulanz auf den letzten Heartbeat, bevor φ zu steigen beginnt. |
+| `cluster.split-brain-resolver.active-strategy` | `off` | Welche Downing-Strategie eine Partition entscheidet — `off`, `keep-majority`, `keep-oldest`, `keep-referee` oder `static-quorum`. |
+| `cluster.split-brain-resolver.keep-majority.role` | `""` | Nur Mitglieder mit dieser Rolle zählen zur Mehrheit.  `""` zählt alle. |
+| `cluster.split-brain-resolver.keep-oldest.role` | `""` | Nur Mitglieder mit dieser Rolle kommen als „ältestes“ infrage.  `""` betrachtet alle. |
+| `cluster.split-brain-resolver.static-quorum.role` | `""` | Nur Mitglieder mit dieser Rolle zählen zum Quorum.  `""` zählt alle. |
+| `cluster.split-brain-resolver.static-quorum.quorum-size` | *(ungesetzt)* | Wie viele erreichbare Mitglieder nötig sind, um weiterzulaufen.  Von `static-quorum` verlangt; in `reference.conf` nur als Kommentar — siehe unten. |
+| `cluster.split-brain-resolver.keep-referee.referee-address` | *(ungesetzt)* | Adresse des Referee-Nodes; die Seite mit ihm gewinnt.  Von `keep-referee` verlangt; nur als Kommentar. |
+| `cluster.split-brain-resolver.keep-referee.down-all-if-below-quorum` | *(ungesetzt)* | Alle downen, wenn die Referee-Seite kleiner als dieser Wert ist.  Optional; nur als Kommentar. |
 
 Diese Keys liegen unter dem, was `Cluster.join(system, options)` übergibt —
 ein explizites `withGossipIntervalMs(…)` gewinnt also weiterhin.  Der
@@ -227,10 +257,33 @@ Die beiden `max-*`-Grenzen begrenzen die lokale Mitgliederkarte.
 was eine Folge wohlgeformter Frames ansammeln kann — eine andere Größe,
 siehe [Cluster-Sicherheit](/de/operations/security/cluster-security/).
 
-`seeds`, `roles`, der Transport und der Downing Provider haben keine
-HOCON-Form — die ersten beiden sind Deployment-Identität, die an die
-Join-Stelle gehört, die letzten beiden sind Objekte, die eine
-Config-Datei nicht ausdrücken kann.
+`split-brain-resolver.active-strategy` *benennt* eine Strategie, statt sie
+zu beschreiben — deshalb braucht das gebaute Objekt keine eigene
+HOCON-Form.  Der konstruierte Provider landet in demselben Slot, den
+`withDowning(…)` füllt, und es gilt dieselbe Präzedenz: ein explizites
+`withDowning(…)` gewinnt, ein fehlendes fällt auf die Datei durch.  Was
+jede Strategie entscheidet, steht unter
+[Downing-Strategien](/de/cluster/downing-strategies/).
+
+Drei ihrer Keys stehen in `reference.conf` **nur als Kommentar** und sind
+damit abwesend, bis du sie schreibst.  Jeder ist erforderlich oder
+begrenzt und hat keinen legalen Default: `quorum-size = 0` und
+`referee-address = ""` werden von den Validatoren der Strategien
+abgelehnt, ein ausgelieferter Leaf könnte also nur ein Wert sein, der den
+Node am Starten hindert.  `static-quorum` ohne `quorum-size` oder
+`keep-referee` ohne `referee-address` wird beim Start abgelehnt — mit dem
+fehlenden Key in der Meldung.
+
+`lease-majority` ist hier **nicht** wählbar.  Es entscheidet über ein
+lebendes `Lease`, dessen `owner` die eigene Adresse dieses Nodes ist, und
+kein Key kann eines benennen — `actor-ts.coordination` stellt Leases ein,
+wählt aber kein Backend.  Baue es im Code:
+`withDowning(new LeaseMajority(…))`.  Wer den Namen trotzdem in diesen Key
+schreibt, bekommt eine Ablehnung statt stillen Ignorierens.
+
+`seeds`, `roles` und der Transport haben keine HOCON-Form — die ersten
+beiden sind Deployment-Identität, die an die Join-Stelle gehört, und der
+Transport ist ein Objekt, das eine Config-Datei nicht ausdrücken kann.
 
 ### `actor-ts.cluster.pub-sub`
 
@@ -448,6 +501,7 @@ diesen Node nicht auf.
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | Einer von `fastify` / `express` / `hono`. |
 | `http.shutdown-grace-period` | `0ms` | Wie lange `unbind()` in-flight Requests leerlaufen lässt, bevor Verbindungen erzwungen geschlossen werden.  `0` erzwingt sofort. |
+| `http.cors` | *(siehe unten)* | Pro-Route-Defaults für die [`cors()`](/de/http/middleware/cors/)-Direktive. |
 | `http.client` | *(siehe unten)* | Defaults des ausgehenden [`HttpClient`](/de/http/overview/). |
 | `http.websocket` | *(siehe unten)* | Serverseitige WebSocket-Defaults für [`websocket()`](/de/http/websocket/)-Routen. |
 
@@ -469,6 +523,59 @@ Backends nicht settlen kann — etwa Express mit einem lebenden WebSocket —
 wird das Fenster zu einer Deadline, die immer erreicht wird; ein großer Wert
 ist dort also Zeit, die du immer bezahlst.  Ein Aufrufer, der einen eigenen
 Wert übergibt — `binding.unbind(1_000)` — überschreibt die Config.
+
+Die Route-Direktive [`cors()`](/de/http/middleware/cors/) liest ihre Defaults
+pro Feld aus `actor-ts.http.cors`:
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `http.cors.origins` | *(nicht gesetzt)* | Exakte Origin-Allowlist, z. B. `["https://app.example"]`. Hat **kein Blatt** — siehe unten. Ein `"*"`-Eintrag wird abgelehnt. |
+| `http.cors.methods` | *(nicht gesetzt)* | `Access-Control-Allow-Methods`. Hat **kein Blatt** — ungesetzt folgt es den am jeweiligen Pattern registrierten Methoden. |
+| `http.cors.allowed-headers` | *(nicht gesetzt)* | `Access-Control-Allow-Headers`. Hat **kein Blatt** — ungesetzt werden die sanitisierten Request-Header geechot. |
+| `http.cors.exposed-headers` | `[]` | `Access-Control-Expose-Headers`. `[]` sendet keine. |
+| `http.cors.credentials` | `false` | `Access-Control-Allow-Credentials: true`. Verboten mit `"*"`-Origins. |
+| `http.cors.max-age` | *(nicht gesetzt)* | Preflight-Cache-Dauer in **Sekunden**, als blanke Ganzzahl. Hat **kein Blatt** — ungesetzt wird gar kein `Access-Control-Max-Age` gesendet. |
+
+Es gilt die übliche Reihenfolge pro Feld: Was `cors(options, routes)` im Code
+nennt, gewinnt, dann dieser Block, dann der eingebaute Default. Ein Deployment
+kann die Allowlist also komplett aus dem Code herausziehen und
+`withCredentials()` dort lassen, wo es steht.
+
+Zwei der Options-Arme sind **nur im Code erreichbar und haben hier keinen Key**.
+Der eine ist die `"*"`-Wildcard: `withAnyOrigin()` ist als ausdrücklicher
+Opt-in dokumentiert, und eine Config-Datei, die `origins = ["*"]` schreiben
+könnte, würde mit einer Zeile jede `cors()`-Route im Prozess auf jeden Origin
+öffnen — ein `"*"` in dieser Liste wird deshalb mit einem `ConfigError`
+abgelehnt, der den Key nennt. Der andere ist `withOriginPredicate(...)`: eine
+Funktion hat in HOCON überhaupt keine Schreibweise.
+
+Vier Blätter liefern **keinen Wert** aus und stehen oben nur, damit die Namen
+auffindbar sind — ein publizierter Literalwert wäre schlechter als gar kein
+Key. `methods` und `allowed-headers` haben Defaults, die pro Pattern bzw. pro
+Request berechnet werden und die eine flottenweite Liste überschreiben würde;
+ein ungesetztes `max-age` heißt, dass der Header nicht gesendet wird; und ein
+ausgeliefertes `origins` würde die Pflichtprüfung für jede Route im Prozess
+erfüllen und damit ein `cors()` ohne jede Allowlist von einem lauten Fehler in
+ein stilles Deny-all verwandeln. Setz sie in deiner eigenen `application.conf`,
+und sie werden ganz normal gelesen:
+
+```hocon
+actor-ts.http.cors {
+  origins = ["https://app.example", "https://admin.example"]
+  max-age = 600          # Sekunden — kein Duration-String
+  exposed-headers = ["x-request-id"]
+}
+```
+
+Die Werte werden auf dem gemergten Ergebnis validiert; ein falscher Wert wirft
+also `OptionsError` mit dem Feldnamen, statt als Header beim Browser zu landen,
+der ihn ablehnt.
+
+Weil `cors()` eine Route-*Direktive* ist und keine Middleware, wird dieser
+Block beim **Kompilieren** des Route-Baums aufgelöst — in `bind()`, dem ersten
+Moment, in dem Baum und `ActorSystem` beide im Scope sind. Genau dort scheitert
+jetzt auch ein `cors()`, das weder im Code noch in der Config `origins` nennt,
+statt schon beim `cors(...)`-Aufruf.
 
 Der gemeinsame `HttpClient` des Systems — und jedes `newClient(...)`, das ein
 Feld offen lässt — liest seine Schranken aus `actor-ts.http.client`:
@@ -566,6 +673,48 @@ dekodiert Bytes, die das Framework selbst geschrieben hat; eine verschärfte
 Grenze würde dort wiederherstellbare Historie in unlesbare verwandeln.  Und die
 HTTP-Body-Kante baut ihre Serializer ohne `ActorSystem`-Handle, über das sich
 die Konfiguration lesen ließe — diese Naht ist Issue #967.
+
+### `actor-ts.management`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `management.enable-leave-endpoint` | `false` | `POST /cluster/leave` ausliefern ([HTTP-Endpunkte](/de/observability/management/http-endpoints/)). |
+| `management.enable-down-endpoint` | `false` | `POST /cluster/down` ausliefern — operator-initiiertes Force-Down eines Peers. |
+| `management.enable-metrics-endpoint` | `false` | `GET /metrics` im Prometheus-Textformat ausliefern. |
+| `management.auth-protect-health` | `false` | Die `auth`-Middleware zusätzlich über `/health` und `/ready` legen, nicht nur über `/cluster/*`. |
+| `management.liveness-path` | `"health"` | Einzelnes Pfadsegment, unter dem die Liveness-Probe antwortet. |
+| `management.readiness-path` | `"ready"` | Einzelnes Pfadsegment, unter dem die Readiness-Probe antwortet. |
+| `management.health-checks.check-timeout` | `1s` | Deadline für **einen** Health-Check; danach meldet dieser Check `status: false`, seine Geschwister melden weiterhin normal. |
+
+Das sind die Einstellungen, die `managementRoutes(system, cluster, options)`
+unter seine expliziten Optionen legt — die üblichen drei Ebenen: ein im Code
+gesetzter Wert gewinnt, eine Datei füllt, was der Code offen gelassen hat, und
+die eingebauten Defaults sind der Boden.  Port und Host stehen nicht hier: die
+gehören zu `system.http(port, { host })`, nicht zum Route-Baum.
+
+**`auth` und `ipAllowlist` haben keinen Key und können auch keinen bekommen.**
+Beides sind `Middleware`-Funktionen, die HOCON nicht ausdrücken kann.  Der
+Block entscheidet also, *welche* Endpunkte es gibt und *wo* die Probes
+antworten — nie, *wer* sie erreichen darf.  Eine Config-Datei kann die
+Zugriffskontrolle des Management-Servers damit nicht aufweichen, und genau
+deshalb ist es unbedenklich, die beiden mutierenden Endpunkte überhaupt per
+Config schaltbar zu machen.
+
+Die beiden Probe-Pfade sind **einzelne Segmente**; ein Wert mit `/` wird beim
+Bauen der Routen mit einem `OptionsError` abgelehnt.  Diese Regel ist nicht
+kosmetisch: `path(segment, …)` entfernt nur umschließende Slashes.
+`readiness-path = "k8s/ready"` würde also als ein Segment mit einem Slash darin
+gespeichert, auf keine URL passen und den Endpunkt lautlos verschwinden lassen.
+Ein Fehler beim Start ist die sichtbare Variante desselben Ausgangs.
+
+`check-timeout` begrenzt einen einzelnen Check, nicht die gesamte Probe.  Eine
+Probe aggregiert alle registrierten Checks zu einer Antwort — ohne die Deadline
+*ist* der langsamste Check die Antwortzeit, und ein Check, der nie fertig wird,
+ist eine Probe, die nie antwortet.  Kubernetes liest das als Fehlschlag, ohne
+jeden Hinweis darauf, welche Abhängigkeit hängt.  Nach Ablauf antwortet die
+Registry für diesen Check mit `{ name: 'unknown', status: false, detail: … }`;
+`unknown` deshalb, weil der Name in genau dem Ergebnis steckt, das der Check nie
+zurückgegeben hat.
 
 ### `actor-ts.persistence`
 
@@ -693,6 +842,8 @@ pro Consumer](/de/cache/in-memory/#ein-cache-pro-consumer) braucht.
 | `sharding.role` | `""` | Nur Mitglieder mit dieser Rolle hosten Shards.  `""` = keine Einschränkung.  **Der Key benennt eine Rolle, er vergibt keine** — siehe [Eine Rolle wird benannt, nicht vergeben](#eine-rolle-wird-benannt-nicht-vergeben) weiter unten. |
 | `sharding.rebalance-interval` | `2s` | Abstand zwischen koordinator-getriebenen Rebalance-Passes. |
 | `sharding.hand-off-timeout` | `10s` | Wie lange auf HandOffComplete gewartet wird, bevor zwangsumverteilt wird. |
+| `sharding.rebalance-absolute-limit` | `0` | Feste Obergrenze dafür, wie viele Shards ein Rebalance **gleichzeitig in Bewegung** haben darf.  `0` = keine absolute Obergrenze.  Siehe [Rebalance-Churn begrenzen](#rebalance-churn-begrenzen) weiter unten. |
+| `sharding.rebalance-relative-limit` | `0.1` | Dieselbe Obergrenze als Anteil von `number-of-shards`, sie skaliert also mit dem Entity-Raum — `0.1` der ausgelieferten `64` sind 6.  `0` = keine relative Obergrenze; `0` für **beide** lässt den Rebalance ungedeckelt.  Sind beide gesetzt, gewinnt die kleinere, und eine Obergrenze fällt nie unter einen Shard. |
 | `sharding.acquire-retry-interval` | `5s` | Wie lange der Koordinator wartet, bevor er ein [Lease](/de/cluster/sharding/with-lease/) erneut zu erwerben versucht, das er nicht bekommen hat.  Wirkt nur dort, wo im Code ein `Lease` übergeben wurde: HOCON kann keines benennen, und einen `use-lease`-Schalter gibt es bewusst nicht. |
 | `sharding.remember-entities` | `false` | Persistiere die Menge aktiver Entity-IDs. |
 | `sharding.passivation-idle` | `5m` | Auto-Passiviere eine Entität nach diesem Idle-Fenster.  `0` = deaktiviert.  Eine Entität, die Zustand im Speicher hält und ihn nicht in `preStart` wiederaufbaut, verliert ihn dabei — siehe [Passivierung](/de/cluster/sharding/overview/#passivierung). |
@@ -803,6 +954,49 @@ Queue steht, erzeugt sie sofort — nur der Recovery-Schwall wartet.  Der Defaul
 bleibt `all`, weil Drosseln verändert, *wann* eine Entität zurückkommt, und wie
 schnell ein Journal die Replays verträgt eine Eigenschaft dieses Journals ist
 und keine des Shardings.
+
+#### Rebalance-Churn begrenzen
+
+Die Default-[Allocation
+Strategy](/de/cluster/sharding/allocation-strategy/) platziert einen Shard über
+`shardId % candidates.length`; ein hinzukommender Node ändert die Antwort also
+für die meisten Shards gleichzeitig.  Bei den ausgelieferten
+`number-of-shards = 64` sind das 32 Shards bei einem Beitritt 1 → 2 Nodes,
+**42 bei 2 → 3** und 46 bei 3 → 4 — jeder davon ein gestoppter Shard, jede
+Entität darunter gestoppt, dann neu zugewiesen, neu erzeugt und, sofern sie
+persistiert, neu abgespielt.  Angekündigt wird es auch nicht: der Koordinator
+reagiert nicht auf ein `MemberUp`, der ganze Schwall kommt also mit dem
+nächsten periodischen Tick.
+
+Die beiden Limits begrenzen, wie viele davon **gleichzeitig in Bewegung** sein
+dürfen:
+
+```hocon
+actor-ts.sharding {
+  rebalance-absolute-limit = 0     # 0 = no absolute ceiling
+  rebalance-relative-limit = 0.1   # fraction of number-of-shards
+}
+```
+
+Drei Punkte dazu, die man ausdrücklich sagen sollte:
+
+- **Gezählt wird, was gleichzeitig läuft, nicht was pro Tick startet.**  Ein
+  Tick feuert alle `rebalance-interval`, während eine Übergabe ein ganzes
+  `hand-off-timeout` stehen darf — sechs pro Tick ließen also rund dreißig
+  gleichzeitig zu.  Der Koordinator budgetiert pro Tick die Obergrenze *minus
+  dem, was schon unterwegs ist*.
+- **Gedeckelt wird nur der freiwillige Pfad.**  Eine gestorbene Region
+  hinterlässt Shards ganz ohne Besitzer; die werden sofort neu vergeben, mit
+  oder ohne Obergrenze.  Diesen Pfad zu drosseln hieße, Shards unerreichbar zu
+  lassen statt sie nur langsamer einschwingen zu lassen.
+- **Nichts geht verloren, und kein Node wird zuerst leergeräumt.**  Was das
+  Budget übrig lässt, schlägt die Strategy im nächsten Tick erneut vor, bis die
+  Map ausgeglichen ist; und welche Shards zuerst gehen, wird im Round-Robin
+  über ihre aktuellen Besitzer entschieden — eine Obergrenze, die einen Node
+  leert, bevor sie den nächsten anfasst, ist schlechter als gar keine.
+
+Setze `rebalance-relative-limit = 0` (das absolute Limit steht bereits auf
+`0`), um das ungedeckelte Verhalten wiederherzustellen.
 
 Ein Setting für genau einen Typ gehört deshalb in den Builder; die
 Config-Datei ist für die node-weite Grundeinstellung, die du ohne Rebuild

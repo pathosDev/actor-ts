@@ -126,6 +126,49 @@ already-queued work.  Right when "the queue I have is the work
 I care about" — partial denial of service is preferable to
 processing nothing.
 
+### 4. A whole deployment, from config
+
+The three cases above are decisions taken at a spawn site, by someone who
+knows that actor's traffic.  There is a fourth, and it belongs to the
+operator rather than to the code: a memory-constrained deployment where an
+unbounded queue is the wrong failure mode everywhere, and the spawn sites
+are not yours to edit.
+
+```hocon
+actor-ts.mailbox.default {
+  capacity = 50000       # 0 (the default) = no global bound
+  overflow = "drop-head"
+}
+```
+
+Read that as "bound every actor the application spawns", because that is
+literally what it does.  It is the same `BoundedMailbox` the three cases
+above build, layered **under** the spawn site: an actor with
+`withMailboxCapacity()` keeps its own number, an actor with `withMailbox()`
+keeps its own queue, and everything else picks this up.
+
+What it does **not** bound, and the boundaries matter more here than the
+number does:
+
+- **Nothing under `/system`.**  The framework's own actors — shard regions,
+  the cluster event stream, the pub-sub mediator, the reliable-delivery
+  producer, projections, the DevTools hub — are spawned through one internal
+  door and land under `/system`, which this bound does not cross.  Shedding
+  their traffic would break invariants your application never asked about.
+- **No undroppable envelope.**  A death-watch `Terminated`, the command that
+  hands an upgraded socket to its hub, and a connection's own `close` take a
+  lane no overflow policy can shed.  A bounded actor still learns that what
+  it watched died.
+- **Not the `overflow` half, unless something is bounded.**
+  `mailbox.default.overflow` is the system-wide policy for *any* bounded
+  mailbox; on its own it bounds nothing.
+
+And one thing it does that is worth knowing before you set it:
+`WebsocketServerActor` and the connections it accepts are spawned by **your**
+code, under `/user`, so a global bound reaches them.  The accept and close
+commands survive it (above), but the rest of a hub's traffic does not — see
+the caution at the end of this page.
+
 ## Picking capacity
 
 Three factors:
@@ -373,6 +416,10 @@ protocol design.
   ```ts
   // ✗ blanket .withMailboxCapacity(10_000) everywhere
   ```
+  ```hocon
+  # ✗ the same mistake, in one line, for every actor at once
+  actor-ts.mailbox.default.capacity = 10000
+  ```
   A bound is a decision to discard messages, and it can only be made
   where someone knows which ones are expendable.  Applied across the
   board it reaches actors nobody assessed — a delivery producer, a
@@ -386,6 +433,16 @@ protocol design.
   connection cannot turn `closeAll()` into a peer that stays connected.
   Everything else in your protocol, the rest of that hub's traffic
   included, is still yours to assess.
+
+  `actor-ts.mailbox.default.capacity` exempts `/system` for you, so the
+  delivery producer and the shard regions are covered.  It cannot exempt
+  the WebSocket hub, because **your** code spawns it, under `/user`.  A
+  hub whose backlog is shed still loses the frames between an accept and
+  a close, and a bound is not a substitute for reading the connection's
+  own limits — so if you turn the global capacity on and serve
+  WebSockets, give that hub an explicit `withMailboxCapacity()` you have
+  actually sized, rather than letting it inherit a number chosen for
+  something else.
 </Aside>
 
 <Aside type="caution" title="Tiny capacities">

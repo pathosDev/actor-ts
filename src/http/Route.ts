@@ -1,9 +1,11 @@
 import { match } from 'ts-pattern';
 import type { ActorSystem } from '../ActorSystem.js';
+import type { Config } from '../config/Config.js';
 import { HttpError, type HttpMethod, type HttpRequest, type HttpResponse, Status } from './Types.js';
 import type { WebsocketSocketAdapter } from './websocket/SocketAdapter.js';
 import type { ResolvedWebsocketPolicy } from './websocket/WebsocketPolicy.js';
-import { expandCors, type CorsRouteOptions } from './middleware/Cors.js';
+import { expandCors, resolveCorsPolicy } from './middleware/Cors.js';
+import type { CorsOptionsType } from './middleware/CorsOptions.js';
 import { stripSurrounding } from '../util/StripCharacters.js';
 
 /**
@@ -112,7 +114,7 @@ export type Route =
   | { readonly kind: 'middleware'; readonly middleware: Middleware; readonly child: Route }
   | { readonly kind: 'websocket'; readonly connect: WebsocketConnectHandler; readonly resolvePolicy: WebsocketPolicyResolver; readonly authorize?: (request: HttpRequest) => HttpResponse | null }
   | { readonly kind: 'fallback'; readonly handler: (request: HttpRequest) => Promise<HttpResponse> | HttpResponse }
-  | { readonly kind: 'cors'; readonly settings: CorsRouteOptions; readonly child: Route };
+  | { readonly kind: 'cors'; readonly options: Partial<CorsOptionsType>; readonly child: Route };
 
 /** Compose several sibling routes (OR semantics — first matching wins). */
 export function concat(...routes: Route[]): Route {
@@ -415,8 +417,24 @@ function isWebsocketAccept(response: HttpResponse): boolean {
     && response.status === WEBSOCKET_ACCEPT_SENTINEL.status;
 }
 
-/** Flatten a Route tree into the list of concrete endpoint registrations. */
-export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[] {
+/**
+ * Flatten a Route tree into the list of concrete endpoint registrations.
+ *
+ * `config` is the seam that lets a route *directive* read the system's
+ * configuration (#878).  A route tree is built before any `ActorSystem`
+ * exists, so a directive that wants a HOCON default has nowhere to read one
+ * — the websocket node solved that for itself by deferring behind a
+ * {@link WebsocketPolicyResolver} the backend calls with the system in hand,
+ * but a directive whose whole job finishes at compile time (`cors()`
+ * synthesises routes) has no later moment to defer to.  Compile time is that
+ * moment, and `HttpExtension.bind` is where both the tree and the system are
+ * in scope, so it passes `system.config` down.
+ *
+ * Optional, and stays optional: `compile` is a public export, and a caller
+ * compiling a tree without a system gets the pre-#878 behaviour — built-in
+ * defaults and whatever the route named in code.
+ */
+export function compile(route: Route, prefix: string[] = [], config?: Config): CompiledEndpoint[] {
   return match(route)
     .with({ kind: 'terminal' }, (r): CompiledEndpoint[] => [{
       kind: 'http',
@@ -441,8 +459,8 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
           : async (): Promise<HttpResponse | null> => null,
       }];
     })
-    .with({ kind: 'path' }, (r) => compile(r.child, [...prefix, r.segment]))
-    .with({ kind: 'concat' }, (r) => r.routes.flatMap((child) => compile(child, prefix)))
+    .with({ kind: 'path' }, (r) => compile(r.child, [...prefix, r.segment], config))
+    .with({ kind: 'concat' }, (r) => r.routes.flatMap((child) => compile(child, prefix, config)))
     .with({ kind: 'fallback' }, (r): CompiledEndpoint[] => {
       if (prefix.length > 0) {
         throw new Error(
@@ -458,7 +476,7 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
       // children it wraps the handler (nested middlewares stack
       // outside-in).  For WebSocket children it folds into `authorize`:
       // the middleware runs once, against the upgrade request.
-      return compile(r.child, prefix).map((c): CompiledEndpoint => {
+      return compile(r.child, prefix, config).map((c): CompiledEndpoint => {
         if (c.kind === 'http') {
           return { ...c, handler: wrapHandler(r.middleware, c.handler) };
         }
@@ -494,7 +512,7 @@ export function compile(route: Route, prefix: string[] = []): CompiledEndpoint[]
         return { ...c, authorize };
       });
     })
-    .with({ kind: 'cors' }, (r) => expandCors(compile(r.child, prefix), r.settings))
+    .with({ kind: 'cors' }, (r) => expandCors(compile(r.child, prefix, config), resolveCorsPolicy(r.options, config)))
     .exhaustive();
 }
 

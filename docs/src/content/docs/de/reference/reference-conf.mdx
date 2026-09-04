@@ -259,6 +259,31 @@ actor-ts {
     throughput = 16
   }
 
+  mailbox {
+    # A bound every actor under /user gets without touching its spawn site.
+    #
+    # Off by default, and "off" is the shipped behaviour rather than a tuned
+    # number: since #1148 a mailbox is unbounded unless somebody asks for a
+    # ceiling.  So setting a capacity here does not retune an existing bound,
+    # it introduces message loss for every application actor at once.  Read
+    # docs -> Operate -> Tuning -> Mailbox sizing before turning it on.
+    #
+    # The bound reaches strict descendants of /user only.  The framework's
+    # own actors live under /system — shard regions, the pub-sub mediator,
+    # the reliable-delivery producer, the DevTools hub — and shedding their
+    # traffic would break invariants the application never sees.  A spawn
+    # site that names its own mailbox still wins, in both directions:
+    # withMailboxCapacity() overrides the capacity, withMailbox() replaces
+    # the queue outright.
+    default {
+      capacity = 0            # 0 = unbounded (no global bound)
+      # System-wide policy for ANY bounded mailbox: the global bound above,
+      # and every actor that sets withMailboxCapacity() without naming a
+      # policy of its own.  drop-head | drop-new | reject.
+      overflow = "drop-head"
+    }
+  }
+
   dispatcher {
     # hybrid | immediate | microtask | throughput
     #
@@ -347,6 +372,36 @@ actor-ts {
       time-to-live   = 24h
       prune-interval = 5m
       min-retention  = 0s   # 0 = derive from failure-detector down-after
+    }
+
+    # Which split-brain resolver arbitrates a partition.  off = none, and the
+    # failure detector then evicts an unreachable peer on its own once
+    # down-after elapses -- which every side of a partition does at the same
+    # moment, so the cluster forks instead of losing a side.  Naming a strategy
+    # here builds the provider withDowning(...) takes in code, and an explicit
+    # withDowning(...) still wins over this block.
+    #
+    # lease-majority is deliberately NOT selectable: LeaseMajority arbitrates
+    # through a live Lease whose owner is this node's own address, and no key
+    # can name one.  Build it in code -- withDowning(new LeaseMajority(...)).
+    split-brain-resolver {
+      active-strategy = off   # off | keep-majority | keep-oldest | keep-referee | static-quorum
+
+      # "" = every member counts.  A role narrows the candidate set a strategy
+      # arbitrates over; it never grants one.
+      keep-majority.role = ""
+      keep-oldest.role   = ""
+      static-quorum.role = ""
+
+      # Three keys ship comment-only, because "not configured" has no legal
+      # spelling: quorum-size = 0 is refused by StaticQuorum's own validator
+      # and referee-address = "" by KeepReferee's, so a shipped leaf could
+      # only be a value that stops the node from starting.  Set one and the
+      # matching strategy becomes selectable.
+      #
+      #   static-quorum.quorum-size             = 3
+      #   keep-referee.referee-address          = "sys@10.0.0.1:2551"
+      #   keep-referee.down-all-if-below-quorum = 2
     }
 
     failure-detector {
@@ -607,6 +662,34 @@ actor-ts {
     # want in-flight requests to finish on shutdown.
     shutdown-grace-period = 0ms
 
+    # Per-route CORS defaults for cors(options, routes).  Leaf names are the
+    # kebab-case of the CorsOptionsType fields; the route's own options win per
+    # field, and the merged result is validated (OptionsError on a bad value).
+    # Resolved when the route tree is compiled, which is the first moment this
+    # configuration is in scope.
+    #
+    # Four leaves are read but ship no value, because publishing one would be
+    # worse than publishing nothing:
+    #
+    #   origins -- the exact-match allowlist, e.g. ["https://app.example"].
+    #     Unset is what keeps a cors() with no origins anywhere a loud error
+    #     rather than a silent deny-all.  Allowing every origin stays code-only
+    #     (withAnyOrigin()): a "*" written here is refused with a ConfigError,
+    #     so no config file can widen a route's policy to any origin.  The
+    #     predicate form is code-only too -- a function has no HOCON spelling.
+    #   methods -- Access-Control-Allow-Methods.  Unset, it follows the methods
+    #     actually registered at each pattern, which is narrower than any list
+    #     that could be written here.
+    #   allowed-headers -- unset, the sanitised request headers are echoed.
+    #   max-age -- preflight cache lifetime in SECONDS, as a bare integer
+    #     rather than a duration string: the header carries seconds, and a
+    #     duration would be read as milliseconds.  Unset, no
+    #     Access-Control-Max-Age header is sent at all.
+    cors {
+      exposed-headers = []    # Access-Control-Expose-Headers; [] sends none
+      credentials     = off   # forbidden with "*" origins (the Fetch spec)
+    }
+
     # Outbound HttpClient defaults — the system's shared client and any
     # newClient(...) that leaves a field unset.  Leaf names are the kebab-case
     # of the HttpClientOptions fields with any unit suffix dropped (the value
@@ -739,6 +822,36 @@ actor-ts {
     #   actor-ts.cache.rate-limit.redis.db = 3
   }
 
+  # The operational HTTP surface managementRoutes(system, cluster, ...) builds,
+  # and the deadline the shared HealthCheckRegistry gives one check.  Leaf
+  # names match ManagementRoutesOptionsType field for field; explicit options
+  # still win over everything here.  auth and ipAllowlist are absent by nature
+  # -- they are Middleware functions, so this block can move a probe or open an
+  # endpoint but never decide who may reach one.
+  management {
+    # The mutating and metrics endpoints stay off unless asked for.
+    enable-leave-endpoint   = false
+    enable-down-endpoint    = false
+    enable-metrics-endpoint = false
+    # Extend the auth middleware over /health and /ready too.  Off, because a Kubernetes
+    # probe cannot present a credential and would restart the pod on the 401.
+    auth-protect-health     = false
+
+    # The two probe endpoints, as SINGLE path segments -- a value containing a
+    # slash is refused, because it would be stored as one segment, match no URL
+    # and make the endpoint silently disappear.  These are the paths that ship
+    # today, so changing a default here moves a documented endpoint.
+    liveness-path  = "health"
+    readiness-path = "ready"
+
+    health-checks {
+      # Deadline for ONE check.  Past it that check reports status = false with
+      # a detail naming the deadline and its siblings still report normally, so
+      # a hung dependency costs one failing entry rather than the whole probe.
+      check-timeout = 1s
+    }
+  }
+
   persistence {
     journal {
       plugin = "actor-ts.persistence.journal.in-memory"
@@ -803,6 +916,19 @@ actor-ts {
     role = ""
     rebalance-interval = 2s
     hand-off-timeout = 10s
+    # Ceiling on how many shards a rebalance may have IN FLIGHT -- not per tick.
+    #   A tick fires every rebalance-interval while a hand-off may run for a
+    #   whole hand-off-timeout, so a per-tick cap would still stack them up.
+    #   Where both are set the LOWER wins, and a ceiling never floors below 1 --
+    #   otherwise a small cluster would stop rebalancing altogether.
+    # This bounds only the VOLUNTARY path.  Shards whose region died have no
+    #   owner at all and are re-homed immediately, ceiling or not.
+    # 0 switches a ceiling off; 0 for both is uncapped, which is what the
+    #   default HashAllocationStrategy did -- 42 of these 64 shards move in one
+    #   tick when a third node joins, stopping and replaying every entity under
+    #   them at once.
+    rebalance-absolute-limit = 0     # 0 = no absolute ceiling
+    rebalance-relative-limit = 0.1   # fraction of number-of-shards; 0 = no relative ceiling
     # Retry cadence after a failed coordinator lease acquire.  Only observable
     #   where a Lease was passed in code: HOCON cannot name one, and there is
     #   deliberately no use-lease switch to pretend otherwise.

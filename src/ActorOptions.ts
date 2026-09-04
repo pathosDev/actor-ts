@@ -11,6 +11,8 @@
  * Every field is optional, so the whole argument is: the defaults are an
  * unbounded FIFO mailbox, the system dispatcher, and the parent's supervision.
  */
+import type { Config } from './config/Config.js';
+import { ConfigKeys } from './config/ConfigKeys.js';
 import type { Dispatcher } from './Dispatcher.js';
 import type { EntityContext } from './EntityContext.js';
 import type { Mailbox } from './internal/Mailbox.js';
@@ -71,10 +73,12 @@ export type ActorOptionsType<TMessage = unknown> = {
   readonly throughput?: number;
   /**
    * Bound this actor's mailbox at `mailboxCapacity` queued user messages.
-   * Unset means unbounded, which is the default — so setting this is the
-   * act that introduces message loss, and {@link mailboxOverflow} decides
-   * which message is lost.  Cannot be combined with `mailbox`, which brings
-   * its own bound.
+   * Unset falls through to `actor-ts.mailbox.default.capacity` — which is
+   * `0`, meaning no global bound — and then to unbounded, which is the
+   * shipped answer.  So setting this, here or there, is the act that
+   * introduces message loss, and {@link mailboxOverflow} decides which
+   * message is lost.  Cannot be combined with `mailbox`, which brings its
+   * own bound.
    *
    * What it never loses is anything the framework posts through
    * `ActorCell.postSignalEnvelope`.  That door — not the message that goes
@@ -92,7 +96,14 @@ export type ActorOptionsType<TMessage = unknown> = {
    * What a full mailbox does with an arriving message.  Only meaningful
    * together with {@link mailboxCapacity} — an unbounded mailbox is never
    * full — so setting it alone is rejected rather than silently ignored.
-   * Defaults to {@link DEFAULT_MAILBOX_OVERFLOW}.
+   * Falls through to `actor-ts.mailbox.default.overflow`, then to
+   * {@link DEFAULT_MAILBOX_OVERFLOW}.
+   *
+   * The rejection stands even where a global bound exists (#862): the
+   * validator has no `Config` and must not grow one, so it cannot tell an
+   * intended override of a global bound from the no-op the rule was written
+   * for.  Restate the capacity alongside the policy to reshape a global
+   * bound for one actor, or set the policy globally in the same block.
    */
   readonly mailboxOverflow?: BoundedMailboxOverflow;
   /**
@@ -222,6 +233,16 @@ export class ActorOptionsValidator<TMessage = unknown>
     // An overflow policy without a bound is a no-op, and a silent no-op in
     // an options object is the shape that makes someone believe they
     // configured something.
+    //
+    // Kept as-is now that `actor-ts.mailbox.default.capacity` can supply the
+    // bound this rule says is missing (#862).  The premise did narrow — with
+    // a global capacity set, a lone `withMailboxOverflow` would have a bound
+    // to reshape — but the validator sees only the spawn site's own fields,
+    // and giving it a `Config` would make one actor's options depend on which
+    // system it is later spawned into.  So the rule keeps catching the case
+    // it was written for, and the override is spelled by restating the
+    // capacity.  The alternative — relaxing it — trades a real guard for an
+    // ergonomic saving of one call.
     if (s.mailboxOverflow !== undefined && s.mailboxCapacity === undefined) {
       this.fail(
         'mailboxOverflow',
@@ -252,3 +273,65 @@ export type ActorOptions<TMessage = unknown> =
   | ActorOptionsType<TMessage>;
 /** Value alias so `ActorOptions.create()` / `new ActorOptions()` resolve to the builder. */
 export const ActorOptions = ActorOptionsBuilder;
+
+/**
+ * What `actor-ts.mailbox.default.*` says, resolved once per system (#862).
+ *
+ * Deliberately not an options triad: there is no `ActorSystemOptions` field
+ * behind it, exactly as there is none behind `actor-ts.actor.throughput`.  A
+ * global bound is an operator's decision about a deployment, and a code-level
+ * setter for it would be a second way to say what the spawn site already says
+ * better.
+ *
+ * Both fields are optional and absent when unset, because this is the
+ * *middle* precedence layer — {@link ActorOptionsType} above it, the built-in
+ * answer below it.  A field forced to an explicit `undefined` would shadow
+ * the layer underneath instead of falling through to it.
+ */
+export type DefaultMailboxConfiguration = {
+  /**
+   * Queued user messages an actor under `/user` may hold before its overflow
+   * policy starts shedding, or absent for "no global bound" — which is the
+   * shipped answer, and the one `capacity = 0` spells in HOCON.
+   */
+  readonly capacity?: number;
+  /**
+   * System-wide overflow policy for **any** bounded mailbox, not only the
+   * global bound: an actor that sets `withMailboxCapacity` and no policy of
+   * its own takes this one.  That is the same shape as
+   * `actor-ts.actor.throughput`, and it is what makes "this deployment
+   * rejects instead of dropping" expressible in one line.
+   */
+  readonly overflow?: BoundedMailboxOverflow;
+};
+
+/**
+ * Read `actor-ts.mailbox.default.*` into the layer `ActorCell` puts under a
+ * spawn site's own mailbox settings.
+ *
+ * `capacity <= 0` leaves the field **absent** rather than passing the number
+ * on.  Zero is the published spelling of "no global bound", so it has to mean
+ * the same thing as an unset key; and `BoundedMailbox`'s validator rejects a
+ * non-positive capacity, so forwarding it would turn a documented off-switch
+ * into an `OptionsError` at the first spawn.  A negative value is that same
+ * statement made by a typo and is answered the same way.
+ *
+ * `overflow` is passed through uninspected: the value is validated where
+ * every other mailbox option is, by `BoundedMailboxOptionsValidator` at the
+ * moment a bounded mailbox is actually built, so a typo fails loudly and in
+ * one place rather than being silently swapped for a default here.
+ */
+export function readDefaultMailboxFromConfig(config: Config): DefaultMailboxConfiguration {
+  const keys = ConfigKeys.mailbox.default;
+  const out: {
+    -readonly [K in keyof DefaultMailboxConfiguration]?: DefaultMailboxConfiguration[K]
+  } = {};
+  if (config.hasPath(keys.capacity)) {
+    const capacity = config.getInt(keys.capacity);
+    if (capacity > 0) out.capacity = capacity;
+  }
+  if (config.hasPath(keys.overflow)) {
+    out.overflow = config.getString(keys.overflow) as BoundedMailboxOverflow;
+  }
+  return out;
+}

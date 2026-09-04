@@ -32,14 +32,45 @@ erhält `204` mit den `Access-Control-Allow-*`-Headern, und die eigentlichen
 
 | Builder-Methode | Feld | Zweck |
 | --- | --- | --- |
-| `withOrigins(...o)` | `origins` | Exakte Allowlist. |
-| `withAnyOrigin()` | `origins` | Jeden Origin erlauben (`*`). Muss explizit sein. |
-| `withOriginPredicate(predicate)` | `origins` | Pro Request entscheiden; ein werfendes Prädikat verweigert. |
-| `withMethods(...m)` | `methods` | `Access-Control-Allow-Methods`. Default: die am Pattern registrierten Methoden. |
-| `withAllowedHeaders(...h)` | `allowedHeaders` | Default: die (sanitisierten) Request-Header echoen. |
-| `withExposedHeaders(...h)` | `exposedHeaders` | `Access-Control-Expose-Headers`. |
-| `withCredentials(flag?)` | `credentials` | `Access-Control-Allow-Credentials: true`. |
-| `withMaxAge(seconds)` | `maxAge` | Preflight-Cache-Dauer. |
+| `withOrigins(...o)` | `origins` | Exakte Allowlist. Config: `origins`. |
+| `withAnyOrigin()` | `origins` | Jeden Origin erlauben (`*`). Muss explizit sein — **nur im Code**. |
+| `withOriginPredicate(predicate)` | `origins` | Pro Request entscheiden; ein werfendes Prädikat verweigert. **Nur im Code**. |
+| `withMethods(...m)` | `methods` | `Access-Control-Allow-Methods`. Default: die am Pattern registrierten Methoden. Config: `methods`. |
+| `withAllowedHeaders(...h)` | `allowedHeaders` | Default: die (sanitisierten) Request-Header echoen. Config: `allowed-headers`. |
+| `withExposedHeaders(...h)` | `exposedHeaders` | `Access-Control-Expose-Headers`. Config: `exposed-headers`. |
+| `withCredentials(flag?)` | `credentials` | `Access-Control-Allow-Credentials: true`. Config: `credentials`. |
+| `withMaxAge(seconds)` | `maxAge` | Preflight-Cache-Dauer. Config: `max-age`. |
+
+Jedes Feld außer der Wildcard und dem Prädikat ist auch über
+`actor-ts.http.cors` setzbar, unter demselben Namen in kebab-case — `origins`,
+`methods`, `allowed-headers`, `exposed-headers`, `credentials`, `max-age`. Es
+gilt die übliche Reihenfolge, **pro Feld**: Was die Route im Code nennt,
+gewinnt, dann der Config-Block, dann der eingebaute Default. Die Allowlist kann
+also in der `application.conf` liegen, während `withCredentials()` im Code
+bleibt — beides wirkt.
+
+```hocon
+actor-ts.http.cors {
+  origins = ["https://app.example", "https://admin.example"]
+  max-age = 600          # Sekunden — kein Duration-String
+}
+```
+
+Die beiden oben als **nur im Code** markierten Arme sind genau das: Für keinen
+von beiden gibt es einen Key. Ein `origins = ["*"]` in einer Config-Datei wird
+mit einem `ConfigError` abgelehnt, der den Key nennt — eine Zeile, die jede
+`cors()`-Route im Prozess auf jeden Origin öffnet, ist genau das, was das
+„muss explizit sein“ von `withAnyOrigin()` verhindern soll. Und ein Prädikat
+ist eine Funktion, die HOCON gar nicht ausdrücken kann.
+
+`methods`, `allowed-headers` und `max-age` liefern in `reference.conf`
+**keinen Wert** aus, weil jedes einen Default hat, den ein publizierter
+Literalwert zerstören würde: die am Pattern tatsächlich registrierten Methoden,
+die geechoten Request-Header und „gar kein `Access-Control-Max-Age` senden“.
+`origins` liefert ebenfalls keinen, damit ein `cors()` ohne jede Allowlist ein
+lauter Fehler bleibt und kein stilles Deny-all wird. Gelesen werden alle vier
+trotzdem, sobald ein Deployment sie setzt. Die Tabelle steht unter
+[Konfiguration → `actor-ts.http`](/de/reference/configuration/).
 
 `Access-Control-Allow-Origin` echot den Request-Origin (das literale `*`
 wird nur bei `withAnyOrigin()` **ohne** Credentials gesendet), und
@@ -55,6 +86,16 @@ import { Aside } from '@astrojs/starlight/components';
   umschließenden `withMiddleware(...)`. Preflights sind laut Spec anonym —
   `cors()` **innerhalb** einer Auth-Middleware zu wrappen würde jeden
   Preflight `401`en. Platziere `cors()` außen.
+</Aside>
+
+<Aside type="caution" title="Eine fehlende origins-Allowlist scheitert bei bind(), nicht bei cors()">
+  `cors({}, routes)` hat früher sofort beim Aufruf geworfen. Das geht nicht
+  mehr: Eine Config-Datei darf jetzt die einzige Quelle von `origins` sein, und
+  `cors()` läuft, während der Route-Baum gebaut wird — bevor es überhaupt ein
+  `ActorSystem` gibt. Es kann „niemand hat eine Allowlist gesetzt“ also nicht
+  von „niemand hat eine *im Code* gesetzt“ unterscheiden. Die Prüfung ist
+  dorthin gewandert, wo die Antwort feststeht: nach `compile()`, innerhalb von
+  `bind()`. Der Fehler ist derselbe und nennt jetzt zusätzlich den Config-Key.
 </Aside>
 
 <Aside type="caution" title="Credentials und Wildcard vertragen sich nicht">

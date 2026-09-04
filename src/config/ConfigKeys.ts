@@ -60,6 +60,28 @@ export const ConfigKeys = {
   },
 
   /**
+   * The global mailbox bound — `actor-ts.mailbox.default.*` (#862).
+   *
+   * Read once, in the `ActorSystem` constructor, and layered *under* the
+   * per-spawn `ActorOptions` in `ActorCell`: explicit options win, this block
+   * is the fallback, and the built-in answer is still "unbounded".  It is the
+   * only knob in the file that can introduce message loss in an actor whose
+   * spawn site says nothing about a mailbox, which is why the reference
+   * comment spends more lines on the scope than on the values.
+   *
+   * Full dotted leaves rather than a `mailbox` block root, for the reason
+   * spelled out under `diagnostics` below: `NoDeadConfigKeys.coveringAccessor`
+   * falls back to the nearest root, so a root entry would satisfy the guard
+   * for a leaf nothing reads.
+   */
+  mailbox: {
+    default: {
+      capacity: 'actor-ts.mailbox.default.capacity',
+      overflow: 'actor-ts.mailbox.default.overflow',
+    },
+  },
+
+  /**
    * Dead-letter queue — `actor-ts.dead-letters.*`.  Read once, in the
    * `ActorSystem` constructor, before any actor exists: a queue installed
    * later would have missed whatever died in between.
@@ -263,6 +285,31 @@ export const ConfigKeys = {
     /** How long `unbind()` lets in-flight requests drain before forcing. */
     shutdownGracePeriod: 'actor-ts.http.shutdown-grace-period',
     /**
+     * Per-route CORS defaults for the `cors(options, routes)` directive (#878).
+     *
+     * Full dotted leaves beside the `root`, for the reason `websocket` below
+     * spells out — and here it matters more than anywhere else in this group:
+     * four of the six leaves are **comment-only** in `reference.conf`, so they
+     * have no leaf for `NoDeadConfigKeys` to walk at all, and the two that do
+     * ship values would have been covered by the root whether or not
+     * `resolveCorsPolicy` had ever been written.
+     *
+     * `origins` is settable here but the `'*'` wildcard is not: a value
+     * containing it is refused with a `ConfigError` naming this key, because
+     * `withAnyOrigin()` is documented as the explicit opt-in and #128 was about
+     * CORS defaults being too permissive.  The predicate form has no path here
+     * either — a function cannot live in HOCON.
+     */
+    cors: {
+      root: 'actor-ts.http.cors',
+      origins: 'actor-ts.http.cors.origins',
+      methods: 'actor-ts.http.cors.methods',
+      allowedHeaders: 'actor-ts.http.cors.allowed-headers',
+      exposedHeaders: 'actor-ts.http.cors.exposed-headers',
+      credentials: 'actor-ts.http.cors.credentials',
+      maxAge: 'actor-ts.http.cors.max-age',
+    },
+    /**
      * Server-side WebSocket defaults for `websocket()` routes.
      *
      * Full dotted leaves under a `root`, not a bare block root, for the reason
@@ -354,6 +401,36 @@ export const ConfigKeys = {
   },
 
   /**
+   * The management HTTP surface — `actor-ts.management.*`.  Two readers, one
+   * block: `readManagementRoutesOptionsFromConfig` supplies what
+   * `managementRoutes` layers under its explicit options, and
+   * `readHealthCheckRegistryOptionsFromConfig` supplies the per-check deadline
+   * the shared `HealthCheckRegistry` is built with.  They are separate because
+   * the registry exists from the first `healthChecksOf(system)` call, usually
+   * long before anything builds a route tree.
+   *
+   * Every leaf is spelled out rather than covered by a block root: a root
+   * alone satisfies the `NoDeadConfigKeys` reachability check for everything
+   * beneath it, so an inert leaf would ship green (#882).
+   *
+   * `auth` and `ipAllowlist` have no path here and cannot get one — they are
+   * `Middleware` functions, which HOCON has no way to express.  That is what
+   * makes the block unable to weaken the security wiring: it decides which
+   * endpoints exist and where the probes answer, never who may reach them.
+   */
+  management: {
+    enableLeaveEndpoint: 'actor-ts.management.enable-leave-endpoint',
+    enableDownEndpoint: 'actor-ts.management.enable-down-endpoint',
+    enableMetricsEndpoint: 'actor-ts.management.enable-metrics-endpoint',
+    authProtectHealth: 'actor-ts.management.auth-protect-health',
+    livenessPath: 'actor-ts.management.liveness-path',
+    readinessPath: 'actor-ts.management.readiness-path',
+    healthChecks: {
+      checkTimeout: 'actor-ts.management.health-checks.check-timeout',
+    },
+  },
+
+  /**
    * Process-wide projection defaults — `actor-ts.projection.*`.  Read by
    * `ProjectionActor.byPersistenceId` / `byTag`, which layer them under the
    * explicit `ProjectionOptions` of a single projection.
@@ -434,6 +511,57 @@ export const ConfigKeys = {
         maxSampleSize: 'actor-ts.cluster.failure-detector.phi.max-sample-size',
         minStdDeviation: 'actor-ts.cluster.failure-detector.phi.min-std-deviation',
         acceptableHeartbeatPause: 'actor-ts.cluster.failure-detector.phi.acceptable-heartbeat-pause',
+      },
+    },
+
+    /**
+     * Split-brain resolution — `actor-ts.cluster.split-brain-resolver.*`
+     * (#838).  `active-strategy` names which `DowningProvider`
+     * `readDowningFromConfig` (`src/cluster/downing/DowningFromConfig.ts`)
+     * builds; the per-strategy leaves are that strategy's own options.
+     *
+     * Four strategies are selectable and `lease-majority` is not: it
+     * arbitrates through a live `Lease` whose `owner` is this node's own
+     * address, and a config reader holds a `Config` and nothing else.
+     * #859 opened `actor-ts.coordination` for lease *tuning* and changed
+     * nothing here — there is still no key that names which `Lease` backend
+     * to build, so the reader refuses the value and points at
+     * `withDowning(new LeaseMajority(…))`.
+     *
+     * `static-quorum.quorum-size` and the two `keep-referee` leaves ship
+     * **comment-only** in `reference.conf`, so `hasPath` stays false until an
+     * operator sets one.  Each is required or bounded and has no legal
+     * default: `quorum-size = 0` is refused by `StaticQuorumOptionsValidator`
+     * and `referee-address = ""` by `KeepRefereeOptionsValidator`, so a
+     * shipped leaf could only be a value that stops the node from starting.
+     * They are still declared here, which is what makes setting one in an
+     * `application.conf` work — the `remote.tcp.advertised-host` shape.
+     *
+     * Full dotted leaves rather than a `split-brain-resolver` root, for the
+     * reason `failure-detector.phi` above states: `NoDeadConfigKeys`'
+     * `coveringAccessor` falls back to the nearest root, so a root alone
+     * would pass the guard for every leaf under it whether or not the reader
+     * addressed it.
+     */
+    splitBrainResolver: {
+      activeStrategy: 'actor-ts.cluster.split-brain-resolver.active-strategy',
+      keepMajority: {
+        role: 'actor-ts.cluster.split-brain-resolver.keep-majority.role',
+      },
+      keepOldest: {
+        role: 'actor-ts.cluster.split-brain-resolver.keep-oldest.role',
+      },
+      keepReferee: {
+        /** Comment-only in `reference.conf` — `""` is refused by the validator. */
+        refereeAddress: 'actor-ts.cluster.split-brain-resolver.keep-referee.referee-address',
+        /** Comment-only — absence is what "no extra quorum rule" has to look like. */
+        downAllIfBelowQuorum:
+          'actor-ts.cluster.split-brain-resolver.keep-referee.down-all-if-below-quorum',
+      },
+      staticQuorum: {
+        role: 'actor-ts.cluster.split-brain-resolver.static-quorum.role',
+        /** Comment-only in `reference.conf` — `0` is refused by the validator. */
+        quorumSize: 'actor-ts.cluster.split-brain-resolver.static-quorum.quorum-size',
       },
     },
 
@@ -666,6 +794,12 @@ export const ConfigKeys = {
    * like `bufferSize` and `maxEntities` above and for the same reason: the
    * recovery queue is fed by every shard the region owns, so read per shard
    * the key would silently mean `numberOfShards ×` what it says.
+   *
+   * The two `rebalance*Limit` leaves bound shards **in flight**, not shards per
+   * tick, and they reach the coordinator rather than a strategy on purpose
+   * (#850): capping inside `LeastShardAllocationStrategy` — which already caps
+   * itself — would have left the default `HashAllocationStrategy`, and every
+   * user-supplied one, uncapped.
    */
   sharding: {
     numberOfShards: 'actor-ts.sharding.number-of-shards',
@@ -678,6 +812,8 @@ export const ConfigKeys = {
     registerRetryInterval: 'actor-ts.sharding.register-retry-interval',
     rebalanceInterval: 'actor-ts.sharding.rebalance-interval',
     handOffTimeout: 'actor-ts.sharding.hand-off-timeout',
+    rebalanceAbsoluteLimit: 'actor-ts.sharding.rebalance-absolute-limit',
+    rebalanceRelativeLimit: 'actor-ts.sharding.rebalance-relative-limit',
     acquireRetryInterval: 'actor-ts.sharding.acquire-retry-interval',
     shardRegionQueryTimeout: 'actor-ts.sharding.shard-region-query-timeout',
     entityRecoveryStrategy: 'actor-ts.sharding.entity-recovery.strategy',

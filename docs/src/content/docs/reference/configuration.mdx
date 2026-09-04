@@ -152,6 +152,27 @@ message's class — never the payload, for the same data-protection reason
 `dead-letters.store` defaults to `off`.  Every key here is also settable in
 code, field by field, through `ActorSystemOptions.withDiagnostics(…)`.  See
 [Dead letters](/operations/dead-letters/) for the whole picture.
+
+### `actor-ts.mailbox`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `mailbox.default.capacity` | `0` | Bound every actor under `/user` at this many queued user messages, without touching a spawn site.  `0` means no global bound, which is the shipped behaviour — so this is not a retune, it is the switch that introduces message loss for every application actor at once. |
+| `mailbox.default.overflow` | `"drop-head"` | System-wide policy for **any** bounded mailbox: the global bound above, and every actor that sets `withMailboxCapacity()` without naming a policy of its own.  `drop-head` / `drop-new` / `reject`. |
+
+The bound reaches strict descendants of `/user` only.  The framework's own
+actors live under `/system` — shard regions, the pub-sub mediator, the
+reliable-delivery producer, the DevTools hub — and shedding their traffic
+would break invariants the application never asked about and cannot see.  A
+spawn site wins over both keys: `ActorOptions.withMailboxCapacity()` overrides
+the capacity, `withMailbox()` replaces the queue outright.
+
+Read [Mailbox sizing](/operations/tuning/mailbox-sizing/) before turning it
+on.  It is the one key in this file that can lose a message in an actor whose
+code says nothing about a mailbox, and the page names the two cases —
+`WebsocketServerActor` and its connections — where a blanket bound is still
+reachable because user code spawns them.
+
 ### `actor-ts.dispatcher`
 
 | Key | Default | Purpose |
@@ -196,6 +217,13 @@ replay from it.
 | `cluster.failure-detector.phi.max-sample-size` | `200` | How many recent inter-arrival times are kept per peer. |
 | `cluster.failure-detector.phi.min-std-deviation` | `100ms` | Floor on the sampled standard deviation, so a very steady peer is not flagged on noise. |
 | `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `0s` | Grace added to the last heartbeat before φ starts rising. |
+| `cluster.split-brain-resolver.active-strategy` | `off` | Which downing strategy arbitrates a partition — `off`, `keep-majority`, `keep-oldest`, `keep-referee` or `static-quorum`. |
+| `cluster.split-brain-resolver.keep-majority.role` | `""` | Only members carrying this role count toward the majority.  `""` counts every member. |
+| `cluster.split-brain-resolver.keep-oldest.role` | `""` | Only members with this role are eligible "oldest".  `""` considers every member. |
+| `cluster.split-brain-resolver.static-quorum.role` | `""` | Only members carrying this role count toward quorum.  `""` counts every member. |
+| `cluster.split-brain-resolver.static-quorum.quorum-size` | *(unset)* | Reachable members required to keep running.  Required by `static-quorum`; comment-only in `reference.conf` — see below. |
+| `cluster.split-brain-resolver.keep-referee.referee-address` | *(unset)* | The referee node's address; the side containing it wins.  Required by `keep-referee`; comment-only. |
+| `cluster.split-brain-resolver.keep-referee.down-all-if-below-quorum` | *(unset)* | Down everyone if the referee's own side is smaller than this.  Optional; comment-only. |
 
 These are layered under whatever `Cluster.join(system, options)` passes, so
 an explicit `withGossipIntervalMs(…)` still wins.  The failure detector
@@ -224,9 +252,31 @@ bounds one gossip frame; these bound what a sequence of well-formed frames
 can accumulate, which is a different quantity — see
 [Cluster security](/operations/security/cluster-security/).
 
-`seeds`, `roles`, the transport and the downing provider have no HOCON
-form — the first two are per-deployment identity that belongs at the join
-site, the last two are objects a config file cannot express.
+`split-brain-resolver.active-strategy` names a strategy rather than
+describing one, which is why the object it builds needs no HOCON shape of
+its own.  The provider it constructs lands in the same slot
+`withDowning(…)` fills, and the same precedence applies: an explicit
+`withDowning(…)` wins, an absent one falls through to the file.  See
+[Downing strategies](/cluster/downing-strategies/) for what each strategy
+decides.
+
+Three of its keys ship **comment-only** in `reference.conf`, so they are
+absent until you write them.  Each is required or bounded and has no legal
+default: `quorum-size = 0` and `referee-address = ""` are both refused by
+the strategies' own validators, so a shipped leaf could only be a value
+that stops the node from starting.  Naming `static-quorum` without
+`quorum-size`, or `keep-referee` without `referee-address`, is refused at
+startup with the missing key in the message.
+
+`lease-majority` is **not** selectable here.  It arbitrates through a live
+`Lease` whose `owner` is this node's own address, and no key can name one —
+`actor-ts.coordination` tunes leases but does not choose a backend.  Build
+it in code: `withDowning(new LeaseMajority(…))`.  Writing the name into
+this key is refused rather than ignored, and the message says so.
+
+`seeds`, `roles` and the transport have no HOCON form — the first two are
+per-deployment identity that belongs at the join site, and the transport is
+an object a config file cannot express.
 
 ### `actor-ts.cluster.pub-sub`
 
@@ -433,6 +483,7 @@ read at all, so a malformed value does not stop that node either.
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | One of `fastify` / `express` / `hono`. |
 | `http.shutdown-grace-period` | `0ms` | How long `unbind()` lets in-flight requests drain before connections are forced.  `0` forces immediately. |
+| `http.cors` | *(see below)* | Per-route defaults for the [`cors()`](/http/middleware/cors/) directive. |
 | `http.client` | *(see below)* | Outbound [`HttpClient`](/http/overview/) defaults. |
 | `http.websocket` | *(see below)* | Server-side WebSocket defaults for [`websocket()`](/http/websocket/) routes. |
 
@@ -453,6 +504,55 @@ settle — Express holding a live WebSocket, for one — the window becomes a
 deadline that is always reached, so a large value there is time you always
 pay.  A caller that passes its own value — `binding.unbind(1_000)` —
 overrides the config.
+
+The [`cors()`](/http/middleware/cors/) route directive reads its per-field
+defaults from `actor-ts.http.cors`:
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `http.cors.origins` | *(unset)* | Exact-match origin allowlist, e.g. `["https://app.example"]`. Ships **no leaf** — see below. A `"*"` entry is refused. |
+| `http.cors.methods` | *(unset)* | `Access-Control-Allow-Methods`. Ships **no leaf** — unset follows the methods registered at each pattern. |
+| `http.cors.allowed-headers` | *(unset)* | `Access-Control-Allow-Headers`. Ships **no leaf** — unset echoes the sanitised request headers. |
+| `http.cors.exposed-headers` | `[]` | `Access-Control-Expose-Headers`. `[]` sends none. |
+| `http.cors.credentials` | `false` | `Access-Control-Allow-Credentials: true`. Forbidden with `"*"` origins. |
+| `http.cors.max-age` | *(unset)* | Preflight cache lifetime in **seconds**, a bare integer. Ships **no leaf** — unset sends no `Access-Control-Max-Age` at all. |
+
+The usual order applies per field: what `cors(options, routes)` names in code
+wins, then this block, then the built-in default. So a deployment can move the
+allowlist out of code entirely and keep `withCredentials()` where it is.
+
+Two of the option arms are **code-only and have no key here**. The `"*"`
+wildcard is one: `withAnyOrigin()` is documented as the explicit opt-in, and a
+config file that could write `origins = ["*"]` would widen every `cors()` route
+in the process to any origin with one line — so a `"*"` in this list is refused
+with a `ConfigError` naming the key. The other is `withOriginPredicate(...)`,
+which is a function and has no HOCON spelling at all.
+
+Four leaves ship **no value** and are listed above only so the names are
+discoverable — a published literal would be worse than no key. `methods` and
+`allowed-headers` have defaults computed per pattern and per request, which a
+fleet-wide list would override; `max-age` unset means the header is not sent;
+and a shipped `origins` would satisfy the required-origins check for every
+route in the process, turning a `cors()` that names no allowlist anywhere from
+a loud error into a silent deny-all. Set any of them in your own
+`application.conf` and it is read normally:
+
+```hocon
+actor-ts.http.cors {
+  origins = ["https://app.example", "https://admin.example"]
+  max-age = 600          # seconds — not a duration string
+  exposed-headers = ["x-request-id"]
+}
+```
+
+Values are validated on the merged result, so a bad one throws `OptionsError`
+naming the field rather than reaching a browser as a header it will reject.
+
+Because `cors()` is a route *directive* rather than a middleware, this block is
+resolved when the route tree is **compiled** — inside `bind()`, the first
+moment the tree and the `ActorSystem` are both in scope. That is also where a
+`cors()` with no `origins` in code and none in config now fails, rather than at
+the `cors(...)` call itself.
 
 The system's shared `HttpClient` — and any `newClient(...)` that leaves a
 field unset — reads its bounds from `actor-ts.http.client`:
@@ -544,6 +644,46 @@ decodes bytes the framework itself wrote, so a tightened ceiling there would
 turn recoverable history into unreadable history.  And the HTTP body edge
 builds its serializers with no `ActorSystem` handle to read config through —
 that seam is issue #967.
+
+### `actor-ts.management`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `management.enable-leave-endpoint` | `false` | Serve `POST /cluster/leave` ([HTTP endpoints](/observability/management/http-endpoints/)). |
+| `management.enable-down-endpoint` | `false` | Serve `POST /cluster/down` — operator-initiated force-down of a peer. |
+| `management.enable-metrics-endpoint` | `false` | Serve `GET /metrics` in Prometheus text format. |
+| `management.auth-protect-health` | `false` | Extend the `auth` middleware over `/health` and `/ready` as well as `/cluster/*`. |
+| `management.liveness-path` | `"health"` | Single path segment the liveness probe answers on. |
+| `management.readiness-path` | `"ready"` | Single path segment the readiness probe answers on. |
+| `management.health-checks.check-timeout` | `1s` | Deadline for **one** health check; past it that check reports `status: false` and its siblings still report normally. |
+
+These are the settings `managementRoutes(system, cluster, options)` layers
+under its explicit options — the usual three layers, so a value set in code
+wins, a file fills what the code left unset, and the built-in defaults are the
+floor.  The port and host are not here: they belong to
+`system.http(port, { host })`, not to the route tree.
+
+**`auth` and `ipAllowlist` have no key, and cannot get one.**  Both are
+`Middleware` functions, which HOCON has no way to express, so this block
+decides *which* endpoints exist and *where* the probes answer — never *who*
+may reach them.  A config file therefore cannot loosen the management server's
+access control, which is why the two mutating endpoints are safe to expose as
+config at all.
+
+The two probe paths are **single segments**, and a value containing `/` is
+refused with an `OptionsError` when the routes are built.  That rule is not
+cosmetic: `path(segment, …)` strips surrounding slashes only, so
+`readiness-path = "k8s/ready"` would be stored as one segment holding a slash,
+match no URL, and take the endpoint out of existence with nothing logged.  A
+startup error is the visible version of the same outcome.
+
+`check-timeout` bounds a single check rather than the whole probe.  A probe
+aggregates every registered check into one response, so without it the slowest
+check *is* the response time and a check that never settles is a probe that
+never answers — which Kubernetes reads as a failure carrying no clue as to
+which dependency hung.  Past the deadline the registry answers for that check
+with `{ name: 'unknown', status: false, detail: … }`; the name is `unknown`
+because the name lives inside the result the check never returned.
 
 ### `actor-ts.persistence`
 
@@ -665,6 +805,8 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.role` | `""` | Only members carrying this role host shards.  `""` = unrestricted.  **It names a role, it does not grant one** — see [a role names, it does not grant](#a-role-names-it-does-not-grant) below. |
 | `sharding.rebalance-interval` | `2s` | Gap between coordinator-driven rebalance passes. |
 | `sharding.hand-off-timeout` | `10s` | How long to wait for HandOffComplete before force-reallocating. |
+| `sharding.rebalance-absolute-limit` | `0` | Flat ceiling on shards a rebalance may have **in flight**.  `0` = no absolute ceiling.  See [bounding rebalance churn](#bounding-rebalance-churn) below. |
+| `sharding.rebalance-relative-limit` | `0.1` | The same ceiling as a fraction of `number-of-shards`, so it scales with the entity space — `0.1` of the shipped `64` is 6.  `0` = no relative ceiling; `0` for **both** leaves the rebalance uncapped.  Where both are set the lower wins, and a ceiling never floors below one shard. |
 | `sharding.acquire-retry-interval` | `5s` | How long the coordinator waits before re-acquiring a [lease](/cluster/sharding/with-lease/) it failed to take.  Observable only where a `Lease` was passed in code: HOCON has no way to name one, and there is deliberately no `use-lease` switch. |
 | `sharding.remember-entities` | `false` | Persist the set of active entity IDs. |
 | `sharding.passivation-idle` | `5m` | Auto-passivate an entity after this idle window.  `0` = disabled.  An entity that keeps state in memory and does not rebuild it in `preStart` loses that state — see [passivation](/cluster/sharding/overview/#passivation). |
@@ -768,6 +910,46 @@ a message routed to an entity still in the queue creates it immediately — only
 the recovery burst waits.  The default stays `all` because pacing changes when
 an entity comes back, and how fast a journal can take the replays is a fact
 about that journal rather than about sharding.
+
+#### Bounding rebalance churn
+
+The default [allocation
+strategy](/cluster/sharding/allocation-strategy/) places a shard by
+`shardId % candidates.length`, so a node joining changes the answer for most
+shards at once.  At the shipped `number-of-shards = 64` that is 32 shards on a
+1 → 2 node join, **42 on a 2 → 3 join** and 46 on a 3 → 4 — each one a shard
+stopped, every entity under it stopped, then re-allocated, re-created and, if
+it persists, replayed.  Nothing announces it either: the coordinator does not
+react to a `MemberUp`, so the whole burst arrives on the next periodic tick.
+
+The two limits bound how many of those may be **in flight at once**:
+
+```hocon
+actor-ts.sharding {
+  rebalance-absolute-limit = 0     # 0 = no absolute ceiling
+  rebalance-relative-limit = 0.1   # fraction of number-of-shards
+}
+```
+
+Three things about that bound are worth stating plainly:
+
+- **It counts shards in flight, not shards per tick.**  A tick fires every
+  `rebalance-interval` while a hand-off may stand for a whole
+  `hand-off-timeout`, so a per-tick six would admit roughly thirty at once.
+  What the coordinator budgets each tick is the ceiling *minus what is already
+  moving*.
+- **Only voluntary moves are capped.**  A region that dies leaves its shards
+  with no owner at all; those are re-homed immediately, ceiling or not.
+  Throttling that path would leave shards unreachable rather than merely slow
+  to settle.
+- **Nothing is dropped, and no node is drained first.**  What the budget leaves
+  behind is proposed again on the next tick until the map is balanced, and the
+  shards that go first are picked round-robin across their current owners — a
+  ceiling that empties one node before touching the next is worse than no
+  ceiling.
+
+Set `rebalance-relative-limit = 0` (with the absolute limit already `0`) to
+restore the unbounded behaviour.
 
 A per-type setting therefore belongs in the builder; the config file is for
 the node-wide baseline you want to move between staging and production

@@ -126,6 +126,50 @@ bereits eingereihte Arbeit. Richtig, wenn "die Queue, die ich habe,
 ist die Arbeit, die mich interessiert" gilt — teilweiser Denial of
 Service ist besser, als gar nichts zu verarbeiten.
 
+### 4. Ein ganzes Deployment, aus der Config
+
+Die drei Fälle oben sind Entscheidungen an einer Spawn-Stelle, getroffen von
+jemandem, der den Verkehr dieses Actors kennt. Es gibt einen vierten, und der
+gehört dem Betrieb und nicht dem Code: ein speicherbeschränktes Deployment,
+in dem eine unbegrenzte Queue überall der falsche Fehlermodus ist — und in
+dem die Spawn-Stellen nicht deine sind.
+
+```hocon
+actor-ts.mailbox.default {
+  capacity = 50000       # 0 (der Default) = keine globale Schranke
+  overflow = "drop-head"
+}
+```
+
+Lies das als „begrenze jeden Actor, den die Anwendung spawnt“, denn genau das
+tut es. Es ist dieselbe `BoundedMailbox`, die die drei Fälle oben bauen, nur
+**unter** der Spawn-Stelle eingezogen: ein Actor mit
+`withMailboxCapacity()` behält seine eigene Zahl, ein Actor mit
+`withMailbox()` behält seine eigene Queue, alle anderen übernehmen das hier.
+
+Was es **nicht** begrenzt — und die Grenzen zählen hier mehr als die Zahl:
+
+- **Nichts unter `/system`.** Die eigenen Actors des Frameworks —
+  Shard-Regions, der Cluster-Event-Stream, der Pub-Sub-Mediator, der
+  Reliable-Delivery-Producer, Projections, der DevTools-Hub — werden durch
+  eine einzige interne Tür gespawnt und landen unter `/system`, das diese
+  Schranke nicht überschreitet. Ihren Verkehr abzuwerfen würde Invarianten
+  brechen, nach denen deine Anwendung nie gefragt hat.
+- **Keinen undroppable Envelope.** Ein Death-Watch-`Terminated`, das
+  Kommando, das einen aufgewerteten Socket an seinen Hub übergibt, und das
+  `close` einer Verbindung nehmen eine Spur, die keine Overflow-Policy
+  abwerfen kann. Ein begrenzter Actor erfährt weiterhin, dass das, was er
+  beobachtet hat, gestorben ist.
+- **Die `overflow`-Hälfte nicht, solange nichts begrenzt ist.**
+  `mailbox.default.overflow` ist die systemweite Policy für *jede* begrenzte
+  Mailbox; für sich allein begrenzt sie nichts.
+
+Und eines, das es tut und das man vorher wissen sollte:
+`WebsocketServerActor` und die Verbindungen, die er annimmt, werden von
+**deinem** Code gespawnt, unter `/user` — eine globale Schranke erreicht sie
+also. Accept und Close überstehen sie (siehe oben), der restliche Verkehr
+eines Hubs nicht — siehe die Warnung am Ende dieser Seite.
+
 ## Kapazität wählen
 
 Drei Faktoren:
@@ -384,6 +428,10 @@ Protokoll-Design.
   ```ts
   // ✗ pauschal überall .withMailboxCapacity(10_000)
   ```
+  ```hocon
+  # ✗ derselbe Fehler, in einer Zeile, für alle Actors auf einmal
+  actor-ts.mailbox.default.capacity = 10000
+  ```
   Ein Bound ist die Entscheidung, Nachrichten zu verwerfen, und die
   kann nur dort fallen, wo jemand weiß, welche entbehrlich sind.
   Pauschal angewandt trifft sie Actors, die niemand beurteilt hat —
@@ -399,6 +447,17 @@ Protokoll-Design.
   verwandeln, der verbunden bleibt.  Alles andere in deinem Protokoll,
   einschließlich des restlichen Verkehrs dieses Hubs, bleibt deine
   Beurteilung.
+
+  `actor-ts.mailbox.default.capacity` nimmt `/system` für dich aus, der
+  Delivery-Producer und die Shard-Regions sind also abgedeckt. Den
+  WebSocket-Hub kann es nicht ausnehmen, denn **dein** Code spawnt ihn,
+  unter `/user`. Ein Hub, dessen Backlog abgeworfen wird, verliert
+  weiterhin die Frames zwischen einem Accept und einem Close, und eine
+  Schranke ersetzt nicht das Lesen der Limits der Verbindung selbst —
+  wenn du also die globale Kapazität einschaltest und WebSockets
+  auslieferst, gib diesem Hub ein explizites `withMailboxCapacity()`,
+  das du tatsächlich dimensioniert hast, statt ihn eine Zahl erben zu
+  lassen, die für etwas anderes gewählt wurde.
 </Aside>
 
 <Aside type="caution" title="Winzige Kapazitäten">

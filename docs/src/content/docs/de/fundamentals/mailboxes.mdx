@@ -52,8 +52,17 @@ Speicherdecke gewinnen", und er ging nicht auf:
   nicht getrennt hast.  Der Rest ist Anwendungsverkehr, und nur du
   weißt, welcher davon verzichtbar ist.
 
-Der Verlust ist jetzt also etwas, das du pro Actor anforderst, und das
-Wachstum etwas, von dem du erfährst: ein Actor, dessen Queue 10 000
+Der Verlust ist jetzt also etwas, das du anforderst — pro Actor an der
+Spawn-Stelle, oder einmal für ein ganzes Deployment über
+`actor-ts.mailbox.default.capacity`, das alles unter `/user` begrenzt
+und die eigenen Actors des Frameworks unter `/system` in Ruhe lässt.
+Dieser Key wird als `0` ausgeliefert, also aus, und ihn einzuschalten
+ist dieselbe Entscheidung wie das Begrenzen eines Actors, nur für alle
+auf einmal: siehe
+[Mailbox-Dimensionierung](/de/operations/tuning/mailbox-sizing/) dafür,
+was er erreicht und was nicht.
+
+Das Wachstum wiederum ist etwas, von dem du erfährst: ein Actor, dessen Queue 10 000
 Nachrichten erreicht, loggt eine Warnung — und erneut bei jeder
 Verdopplung.  Mit aktivierten Metriken meldet `actor_mailbox_size` die
 Tiefe pro Actor oberhalb dieser Marke, und `actor_mailbox_depth` die
@@ -102,7 +111,16 @@ Die Kapazität ist das, was den Bound erzeugt; `withMailboxOverflow`
 entscheidet, welche Nachricht verloren geht, und steht per Default auf
 `drop-head`.  Eine Policy ohne Kapazität wird abgelehnt statt still
 ignoriert — eine unbounded Mailbox läuft nie über, hätte also nichts
-zu tun.
+zu tun.  Diese Ablehnung gilt auch dort, wo
+`actor-ts.mailbox.default.capacity` eine Schranke liefert: der Validator
+läuft am Spawn-Aufruf und weiß nichts über das System, in das der Actor
+gespawnt wird — nenne die Kapazität also mit, wenn du eine globale
+Schranke für einen einzelnen Actor umformen willst.
+
+Unter beiden Feldern liegt dieselbe Config-Ebene —
+`actor-ts.mailbox.default.capacity` und `.overflow`.  Die Spawn-Stelle
+gewinnt immer; der Block entscheidet, was ein Actor bekommt, der nichts
+gesagt hat.
 
 Die drei Policies und wie du zwischen ihnen wählst, stehen unten unter
 [`BoundedMailbox`](#boundedmailbox) — inklusive der Frage, warum

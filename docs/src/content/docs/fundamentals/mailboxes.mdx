@@ -49,8 +49,16 @@ not hold up:
   to disconnect and did not.  The rest is still application traffic,
   and only you know which of it is safe to lose.
 
-So the loss is now something you ask for, per actor, and the growth is
-something you are told about: an actor whose queue reaches 10 000
+So the loss is now something you ask for — per actor at the spawn site,
+or once for a whole deployment through
+`actor-ts.mailbox.default.capacity`, which bounds everything under
+`/user` and leaves the framework's own actors under `/system` alone.
+That key ships as `0`, meaning off, and turning it on is the same
+decision as bounding one actor, taken for all of them at once: see
+[Mailbox sizing](/operations/tuning/mailbox-sizing/) for what it does
+and does not reach.
+
+The growth, meanwhile, is something you are told about: an actor whose queue reaches 10 000
 messages logs a warning, and again at each doubling.  With metrics
 enabled, `actor_mailbox_size` reports the depth per actor above that
 mark, and `actor_mailbox_depth` reports the whole distribution below it —
@@ -95,7 +103,16 @@ system.spawn(SensorSink, 'sensors', sensorOptions);
 Setting a capacity is what creates the bound; `withMailboxOverflow`
 decides which message is lost, and defaults to `drop-head`.  Setting a
 policy without a capacity is rejected rather than silently ignored — an
-unbounded mailbox never overflows, so it would have nothing to do.
+unbounded mailbox never overflows, so it would have nothing to do.  That
+rejection stands even where `actor-ts.mailbox.default.capacity` supplies
+a bound: the validator runs at the spawn call and knows nothing about
+the system the actor will be spawned into, so restate the capacity
+alongside the policy when you mean to reshape a global bound for one
+actor.
+
+Both fields have the same config layer under them —
+`actor-ts.mailbox.default.capacity` and `.overflow`.  The spawn site
+always wins; the block decides what an actor that said nothing gets.
 
 The three policies and how to choose between them are covered under
 [`BoundedMailbox`](#boundedmailbox) below — including why `reject` fails

@@ -11,6 +11,158 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **BREAKING — `actor-ts.http.cors` makes the per-route CORS policy settable
+  from a config file (#878).**
+
+  Six leaves, kebab-cased to match the `CorsOptionsType` fields, merged
+  route options > HOCON > built-in default, per field:
+
+  - `origins` — the exact-match allowlist. Ships no value: unset is what
+    keeps a `cors()` with no allowlist anywhere a loud error instead of a
+    silent deny-all. A `"*"` entry is refused with a `ConfigError` naming
+    the key — allowing every origin stays code-only (`withAnyOrigin()`), so
+    one line in an `application.conf` cannot widen every route in the
+    process to any origin (#128). The predicate form has no HOCON spelling
+    either.
+  - `methods` — ships no value; unset follows the methods actually
+    registered at each pattern, which is narrower than any list a config
+    file could name.
+  - `allowed-headers` — ships no value; unset echoes the sanitised request
+    headers.
+  - `exposed-headers` — `[]`, which sends none.
+  - `credentials` — `off`.
+  - `max-age` — the preflight cache lifetime in **seconds**, as a bare
+    integer rather than a duration string, since the header carries seconds
+    while a duration would be read as milliseconds. Ships no value; unset
+    sends no `Access-Control-Max-Age` at all. A duration string is refused.
+
+  All six are read when a deployment sets them; the four without a shipped
+  value are documented as comments in `reference.conf`. Values are validated
+  on the merged result, so a bad one throws `OptionsError` naming the field
+  instead of reaching a browser as a header it rejects.
+
+  What made it possible is a new seam, and that is the part other middleware
+  blocks will reuse: `compile(route, prefix, config?)` takes an optional
+  `Config`, and `HttpExtension.bind` passes `system.config` — the one place
+  a route tree and an `ActorSystem` are both in scope. A route *directive*
+  has no configuration while the tree is being built, and unlike
+  `websocket()` it cannot defer behind a resolver the backend calls later,
+  because its whole job finishes at compile time. The parameter is optional,
+  so a tree compiled outside an `ActorSystem` behaves exactly as before.
+
+  As a consequence, the required-`origins` check moved from `cors()` to that
+  compile step; everything else `cors()` validated eagerly it still
+  validates eagerly, including `withAnyOrigin().withCredentials()`.
+
+  *Migration:* A `cors()` route whose `origins` is set neither in code nor
+  in `actor-ts.http.cors` now fails from `bind()` rather than from the
+  `cors(...)` call itself. The error is the same one and no code changes; it
+  simply surfaces one call later, because a route tree is built before any
+  ActorSystem exists and `cors()` cannot see the configuration that may
+  supply the allowlist.
+
+- **BREAKING — The management HTTP surface is configurable from a file: a
+  new `actor-ts.management` block carries the three endpoint toggles,
+  `auth-protect-health`, the two probe path segments and a per-check health
+  deadline, layered under the explicit `ManagementRoutesOptions` in the
+  usual order — explicit option, then HOCON, then the built-in default
+  (#882, folding in #467) (#882).**
+
+  `managementRoutes` already received the `ActorSystem`, so nothing new is
+  threaded to reach `system.config`.
+
+  `auth` and `ipAllowlist` deliberately have no leaf and cannot get one:
+  both are `Middleware` functions, which HOCON has no way to express. The
+  block therefore decides which endpoints exist and where the probes answer,
+  never who may reach them — which is what makes config-switchable admin
+  endpoints safe.
+
+  The two probe paths are single segments, and a value containing `/` is
+  refused with an `OptionsError` when the routes are built. `path()` strips
+  only surrounding slashes, so `readiness-path = "k8s/ready"` would
+  otherwise be stored as one segment holding a slash, match no URL, and take
+  the endpoint out of existence with nothing logged.
+
+  `HealthCheckRegistry` now races each liveness and readiness check against
+  `health-checks.check-timeout`. Past the deadline that check reports
+  `status: false` with a `detail` naming it and its siblings still report
+  normally, so a hung dependency costs one failing entry rather than a probe
+  that never answers. The name is `unknown`, because the name lives inside
+  the `HealthCheckResult` the check never returned.
+
+  The keys: - `actor-ts.management.enable-leave-endpoint` (`false`) -
+  `actor-ts.management.enable-down-endpoint` (`false`) -
+  `actor-ts.management.enable-metrics-endpoint` (`false`) -
+  `actor-ts.management.auth-protect-health` (`false`) -
+  `actor-ts.management.liveness-path` (`"health"`) -
+  `actor-ts.management.readiness-path` (`"ready"`) -
+  `actor-ts.management.health-checks.check-timeout` (`1s`)
+
+  *Migration:* `HealthCheckRegistry` now bounds every check at
+  `actor-ts.management.health-checks.check-timeout`, one second by default.
+  A liveness or readiness check that legitimately takes longer than that now
+  reports `status: false` with a `detail` naming the deadline, where it
+  previously reported its real result once it finished — raise the key (or
+  pass `checkTimeoutMs` to a hand-built registry) in deployments with a
+  genuinely slow check.
+
+- **`actor-ts.cluster.split-brain-resolver` makes split-brain arbitration a
+  deployment decision: `active-strategy` names one of four bundled downing
+  strategies and the framework constructs it, so the same image can run
+  unarbitrated in development and with `keep-majority` in production instead
+  of needing two builds** (#838).  The provider it builds lands in the slot
+  `withDowning(…)` fills, so the documented precedence applies unchanged —
+  an explicit `withDowning(…)` wins, an absent one falls through to the file
+  — and `off` stays the shipped default, so nothing moves for a deployment
+  that does not opt in. The block also reverses three places that stated a
+  downing provider had no HOCON form: the `ClusterConfigDefaults` JSDoc and
+  the `actor-ts.cluster` prose in both `configuration.mdx` pages.
+
+  - `cluster.split-brain-resolver.active-strategy` — `off` (default) |
+    `keep-majority` | `keep-oldest` | `keep-referee` | `static-quorum`.
+  - `cluster.split-brain-resolver.keep-majority.role`, `.keep-oldest.role`,
+    `.static-quorum.role` — narrow the members a strategy counts; `""`
+    counts every member.
+  - `cluster.split-brain-resolver.static-quorum.quorum-size`,
+    `.keep-referee.referee-address`,
+    `.keep-referee.down-all-if-below-quorum` — comment-only in
+    `reference.conf`, because each is required or bounded and no legal
+    default exists (`quorum-size = 0` and `referee-address = ""` are refused
+    by the strategies' own validators). Naming a strategy without its key is
+    refused at startup with the missing key in the message.
+
+  `lease-majority` is deliberately not selectable and is refused by name
+  rather than silently ignored: it arbitrates through a live `Lease` whose
+  owner is the node's own address, which no config key can supply — build it
+  with `withDowning(new LeaseMajority(…))`. Selecting `static-quorum` from a
+  config file shared by every replica can self-down each node until the
+  quorum is met (#933); both `downing-strategies` pages carry a caution
+  stating that in the config's own terms.
+
+- **`actor-ts.mailbox.default.capacity` and
+  `actor-ts.mailbox.default.overflow` let an operator bound every actor the
+  application spawns without touching a spawn site** (#862).  The block
+  ships as `capacity = 0`, meaning off: since #1148 a mailbox is unbounded
+  unless somebody asks for a ceiling, so this key does not retune an
+  existing bound — it introduces one, for every application actor at once.
+  It reaches strict descendants of `/user` only. The framework's own actors
+  are spawned through a single internal door and land under `/system`, so
+  shard regions, the cluster event stream, the pub-sub mediator, the
+  reliable-delivery producer, projections and the DevTools hub stay
+  unbounded, and the undroppable signal lane keeps a death-watch
+  `Terminated`, the WebSocket accept command and a connection's own `close`
+  out of reach of any policy. A spawn site still wins in both directions —
+  `withMailboxCapacity()` overrides the capacity, `withMailbox()` replaces
+  the queue outright — and `withMailbox()` keeps validating, because the
+  global capacity is layered in the cell rather than merged into the
+  blueprint that `ActorOptionsValidator` sees. The `overflow` leaf is the
+  system-wide policy for any bounded mailbox, not only the global one, so
+  "this deployment rejects instead of dropping" is a single line. One
+  residual risk is documented rather than fixed: `WebsocketServerActor` and
+  the connections it accepts are spawned by user code under `/user`, so a
+  global bound reaches them — both mailbox-sizing pages say so and tell the
+  reader to size that hub explicitly.
+
 - **BREAKING — `actor-ts.coordination` is a new HOCON block, and the two
   `Lease` backends read it (#859).**
 
@@ -584,6 +736,36 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   rather than prose.
 
 ### Changed
+
+- **Cluster sharding now bounds how many shards a rebalance may have in
+  flight at once, and ships that bound switched on** (#850).  The default
+  `HashAllocationStrategy` places a shard by `shardId % candidates.length`,
+  so a node joining changes the answer for most shards simultaneously: at
+  the shipped `number-of-shards = 64` a 2 to 3 node join re-homed 42 shards
+  in a single 2 s tick — each one a shard stop, every entity under it
+  stopped, re-allocated, re-created and, if persistent or remembered,
+  replayed. Two new `actor-ts.sharding` keys configure the ceiling,
+  `rebalance-absolute-limit` (default `0`, meaning no absolute ceiling) and
+  `rebalance-relative-limit` (default `0.1`, a fraction of
+  `number-of-shards`), with matching `withRebalanceAbsoluteLimit` /
+  `withRebalanceRelativeLimit` on `StartShardingOptions` and
+  `ShardCoordinatorOptions`. Where both are set the lower wins, a ceiling
+  never floors below one shard, and `0` for both restores the unbounded
+  behaviour exactly. At the shipped defaults that 42-shard join now
+  converges over roughly seven ticks instead of one, which is the behaviour
+  change worth reading about before an upgrade. Three properties of the
+  bound: it counts shards in flight rather than shards per tick, because a
+  tick fires every `rebalance-interval` while a hand-off may stand for a
+  whole `hand-off-timeout`, so a per-tick six would admit about thirty at
+  once; only the voluntary path is capped, since a region that dies leaves
+  its shards with no owner at all and those are re-homed immediately; and
+  nothing is dropped, with the remainder proposed again on the next tick and
+  the shards that go first picked round-robin across their current owners,
+  so a ceiling never drains one node before touching the next. The ceiling
+  sits at the coordinator rather than inside an allocation strategy, so it
+  applies to the default strategy, to `LeastShardAllocationStrategy` (whose
+  own `maxSimultaneousRebalance` bounds what it proposes, not what the
+  coordinator accepts) and to any strategy you write. #850
 
 - **BREAKING** — the last camelCase HOCON leaves are now kebab-case (#1405).
   Thirteen leaves moved, in three blocks:

@@ -51,6 +51,8 @@ type ManagementRoutesOptionsType = {
   auth?:          Middleware;         // guards /cluster/* (+ /metrics)
   ipAllowlist?:   Middleware;         // guards EVERY endpoint, incl. /health + /ready
   authProtectHealth?: boolean;        // also require `auth` on /health + /ready (default false)
+  livenessPath?:  string;             // segment /health answers on   (default "health")
+  readinessPath?: string;             // segment /ready  answers on   (default "ready")
 };
 ```
 
@@ -64,6 +66,37 @@ const routes = managementRoutes(system, cluster, {
 });
 await system.http(8558).bind(routes);
 ```
+
+Alles davon außer den beiden Middleware-Feldern hat auch eine
+Config-Form.  Dieselbe Verdrahtung kann also aus der
+`application.conf` kommen und sich pro Umgebung unterscheiden,
+ohne dass etwas neu gebaut wird:
+
+```hocon
+actor-ts.management {
+  enable-metrics-endpoint = true
+  enable-leave-endpoint   = false
+  enable-down-endpoint    = false
+  liveness-path  = "health"
+  readiness-path = "ready"
+  health-checks.check-timeout = 1s
+}
+```
+
+Es gelten die üblichen drei Ebenen — eine im Code gesetzte Option
+gewinnt, die Datei füllt, was der Code offen gelassen hat, die
+eingebauten Defaults sind der Boden.  `managementRoutes(system,
+cluster)` ganz ohne drittes Argument ist damit die vollständige
+Verdrahtung, wenn die Datei sie trägt.
+
+**`auth` und `ipAllowlist` sind die Ausnahme und haben keinen
+Key.**  Beides sind `Middleware`-Funktionen, die HOCON nicht
+ausdrücken kann.  Der Block entscheidet also, *welche* Endpunkte
+es gibt und *wo* die Probes antworten — nie, *wer* sie erreichen
+darf.  Genau das macht per Config schaltbare Admin-Endpunkte
+unbedenklich: eine Datei kann die Zugriffskontrolle davor nicht
+aufweichen.  Vollständige Key-Tabelle:
+[Konfiguration](/de/reference/configuration/#actor-tsmanagement).
 
 ## Die Endpunkte
 

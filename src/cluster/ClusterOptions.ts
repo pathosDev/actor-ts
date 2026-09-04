@@ -7,6 +7,7 @@ import type { FailureDetectorImplementation } from './FailureDetector.js';
 import type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 import type { PhiAccrualOptionsType } from './PhiAccrualOptions.js';
 import type { Transport } from './Transport.js';
+import { readDowningFromConfig } from './downing/DowningFromConfig.js';
 import type { DowningProvider } from './downing/DowningProvider.js';
 
 /**
@@ -702,19 +703,27 @@ export function resolveAdvertisedPort(
  * `POD_IP`, so `advertised-host = ${?POD_IP}` is one line that is correct on
  * every node, where a seed list written once is correct on none of them.
  *
- * `seeds`, `roles`, `selfElection`, `transport` and `downing` are absent on
- * purpose: the last two are objects HOCON cannot express, and the first three
- * are per-deployment identity rather than tuning — they belong at the join
- * site where the node knows who it is.  `selfElection` is the sharpest of the
+ * `seeds`, `roles`, `selfElection` and `transport` are absent on purpose: the
+ * transport is an object HOCON cannot express, and the first three are
+ * per-deployment identity rather than tuning — they belong at the join site
+ * where the node knows who it is.  `selfElection` is the sharpest of the
  * three, because a shared value is not merely useless but actively unsafe —
  * see the field's own doc.
+ *
+ * `downing` used to be in that sentence beside `transport`, and is not any
+ * more (#838).  It is an object too, but the difference is that HOCON does not
+ * have to express the object — only to *name* it:
+ * `split-brain-resolver.active-strategy` selects one of four bundled
+ * strategies and `readDowningFromConfig` constructs it, which is a choice a
+ * config file can make and a transport is not.  `lease-majority` is the case
+ * that still cannot be named, and it is refused rather than half-supported.
  */
 export type ClusterConfigDefaults = Partial<Pick<
   ClusterOptionsType,
   'host' | 'advertisedHost' | 'port' | 'advertisedPort' | 'gossipIntervalMs' | 'seedRetryIntervalMs'
   | 'failureDetectorImplementation' | 'failureDetector' | 'phiAccrual' | 'maxFrameBytes'
   | 'weaklyUpAfterMs' | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
-  | 'maxMembers' | 'maxTombstones'
+  | 'maxMembers' | 'maxTombstones' | 'downing'
 >>;
 
 /**
@@ -728,6 +737,12 @@ export type ClusterConfigDefaults = Partial<Pick<
  * count as "set" and shadow nothing, but it would make the merge in
  * `Cluster.join` harder to reason about than it needs to be.  `phiAccrual`
  * is assembled from the `failure-detector.phi` sub-block the same way.
+ *
+ * `downing` is the one field whose config form is a *name* rather than
+ * values: `readDowningFromConfig` turns
+ * `split-brain-resolver.active-strategy` into one of the four bundled
+ * providers, and returns nothing for the shipped `off` so the key stays
+ * absent (#838).
  *
  * The HOCON tree and this shape are deliberately not isomorphic: the
  * housekeeping durations sit under a `tombstone { … }` group because that is
@@ -783,6 +798,11 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   if (Object.keys(failureDetector).length > 0) out.failureDetector = failureDetector;
   const phiAccrual = readPhiAccrualFromConfig(config);
   if (Object.keys(phiAccrual).length > 0) out.phiAccrual = phiAccrual;
+  // Only when a strategy was actually named: `active-strategy = off` is the
+  // shipped default and must leave no `downing` key at all, or every caller
+  // that never mentioned downing would carry an explicit one.
+  const downing = readDowningFromConfig(config);
+  if (downing !== undefined) out.downing = downing;
   return out;
 }
 

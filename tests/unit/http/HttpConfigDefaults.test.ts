@@ -6,7 +6,9 @@ import { ConfigError } from '../../../src/config/Config.js';
 import { FastifyBackend } from '../../../src/http/backend/FastifyBackend.js';
 import { HttpResponseTooLargeError } from '../../../src/http/HttpClient.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
-import { complete, get } from '../../../src/http/Route.js';
+import { complete, get, path, type Route } from '../../../src/http/Route.js';
+import { cors } from '../../../src/http/middleware/Cors.js';
+import { CorsOptions } from '../../../src/http/middleware/CorsOptions.js';
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
@@ -175,6 +177,161 @@ describe('actor-ts.http.client', () => {
     const url = await serveBytes(system, 4096);
     await expect(system.extension(HttpExtensionId).client.get(url))
       .rejects.toBeInstanceOf(HttpResponseTooLargeError);
+  });
+});
+
+/**
+ * `actor-ts.http.cors` (#878) — the block, and the seam under it.
+ *
+ * These drive `newServerAt(...).bind()` rather than calling
+ * `resolveCorsPolicy` directly, deliberately: the reader was never the hard
+ * part.  What had to be built is the path by which a *route directive* reaches
+ * the system's configuration at all — `cors()` runs while the route tree is
+ * being built, before any `ActorSystem` exists — and only a real bind exercises
+ * it end to end.
+ *
+ * The nested-object form of the config matters too: `{'actor-ts.http.cors.
+ * origins': […]}` would keep the dotted string as one literal top-level key,
+ * `hasPath` would resolve the *reference.conf* value underneath it, and the
+ * test would assert nothing.
+ */
+describe('actor-ts.http.cors', () => {
+  const ALLOWED = 'https://app.example';
+
+  /** Bind `routes` and hand back the base URL. */
+  async function serve(system: ActorSystem, routes: Route): Promise<string> {
+    const binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .bind(routes);
+    running = { system, binding };
+    return `http://${binding.host}:${binding.port}`;
+  }
+
+  const corsConfig = (block: ConfigObject): ConfigObject => ({ 'actor-ts': { http: { cors: block } } });
+  const apiRoutes = (options: CorsOptions = {}): Route =>
+    cors(options, path('api', get(() => complete(Status.OK, 'data'))));
+
+  const preflight = async (url: string, headers: Record<string, string> = {}): Promise<Response> =>
+    fetch(`${url}/api`, {
+      method: 'OPTIONS',
+      headers: { origin: ALLOWED, 'access-control-request-method': 'GET', ...headers },
+    });
+
+  test('an allowlist that exists only in the config file is honoured', async () => {
+    const system = systemWith(corsConfig({ origins: [ALLOWED] }));
+    const url = await serve(system, apiRoutes());
+
+    const allowed = await fetch(`${url}/api`, { headers: { origin: ALLOWED } });
+    expect(allowed.headers.get('access-control-allow-origin')).toBe(ALLOWED);
+    const disallowed = await fetch(`${url}/api`, { headers: { origin: 'https://evil.example' } });
+    expect(disallowed.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  test('a code option beats the config file per field, and the rest still falls through', async () => {
+    const system = systemWith(corsConfig({ origins: ['https://ignored.example'], credentials: true }));
+    // `origins` in code, `credentials` only in config: both have to take
+    // effect, which a whole-object override would not manage.
+    const url = await serve(system, apiRoutes(CorsOptions.create().withOrigins(ALLOWED)));
+
+    const response = await fetch(`${url}/api`, { headers: { origin: ALLOWED } });
+    expect(response.headers.get('access-control-allow-origin')).toBe(ALLOWED);
+    expect(response.headers.get('access-control-allow-credentials')).toBe('true');
+    // The origin the config named lost, rather than being merged in alongside.
+    const other = await fetch(`${url}/api`, { headers: { origin: 'https://ignored.example' } });
+    expect(other.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  test('the four comment-only leaves change nothing while they stay unset', async () => {
+    // The regression guard for shipping a block at all: with only the two
+    // published leaves in play, every header is byte-for-byte what it was
+    // before this key existed.
+    const system = systemWith({});
+    const url = await serve(system, apiRoutes(CorsOptions.create().withOrigins(ALLOWED)));
+
+    const response = await preflight(url, { 'access-control-request-headers': 'x-custom' });
+    // methods: the ones registered at the pattern, not a fleet-wide list.
+    expect(response.headers.get('access-control-allow-methods')).toBe('GET');
+    // allowed-headers: the request's, echoed.
+    expect(response.headers.get('access-control-allow-headers')).toBe('x-custom');
+    // max-age: no header at all.
+    expect(response.headers.get('access-control-max-age')).toBeNull();
+    // credentials = off, exposed-headers = [] — both absent from the wire.
+    expect(response.headers.get('access-control-allow-credentials')).toBeNull();
+    const actual = await fetch(`${url}/api`, { headers: { origin: ALLOWED } });
+    expect(actual.headers.get('access-control-expose-headers')).toBeNull();
+  });
+
+  test('the other four leaves are read when a deployment does set them', async () => {
+    const system = systemWith(corsConfig({
+      origins: [ALLOWED],
+      methods: ['GET', 'DELETE'],
+      'allowed-headers': ['x-from-config'],
+      'exposed-headers': ['x-trace-id'],
+      'max-age': 3600,
+    }));
+    const url = await serve(system, apiRoutes());
+
+    const response = await preflight(url, { 'access-control-request-headers': 'x-custom' });
+    expect(response.headers.get('access-control-allow-methods')).toBe('GET, DELETE');
+    expect(response.headers.get('access-control-allow-headers')).toBe('x-from-config');
+    expect(response.headers.get('access-control-max-age')).toBe('3600');
+    const actual = await fetch(`${url}/api`, { headers: { origin: ALLOWED } });
+    expect(actual.headers.get('access-control-expose-headers')).toBe('x-trace-id');
+  });
+
+  test('max-age is an integer count of seconds, and a duration string is refused', async () => {
+    // The assertion above cannot carry this on its own: `3600` reads
+    // identically through `getInt` and `getDuration`, because `getDuration`
+    // returns a bare number unchanged.  Only a *string* separates them — and
+    // it separates them by a factor of 1000, since the field is written raw
+    // into `Access-Control-Max-Age` while `getDuration` answers in
+    // milliseconds.  `1h` therefore has to be refused rather than quietly
+    // becoming `3600000`, which nothing else in the repository would catch.
+    const system = systemWith(corsConfig({ origins: [ALLOWED], 'max-age': '1h' }));
+    const bind = (): Promise<ServerBinding> => system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .bind(apiRoutes());
+
+    await expect(bind()).rejects.toThrow(ConfigError);
+    await expect(bind()).rejects.toThrow('actor-ts.http.cors.max-age');
+    await system.terminate();
+  });
+
+  test('origins in neither code nor config still fails, loudly, from bind()', async () => {
+    const system = systemWith({});
+    await expect(system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(apiRoutes()))
+      .rejects.toThrow(/origins is required/);
+    await system.terminate();
+  });
+
+  test('a wildcard in the config file is refused, naming the key', async () => {
+    // #128 was "CORS defaults may be too permissive".  One line in an
+    // application.conf that widened every cors() route in the process to any
+    // origin would be that issue again, so the wildcard stays code-only.
+    const system = systemWith(corsConfig({ origins: ['*'] }));
+    const bind = (): Promise<ServerBinding> => system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .bind(apiRoutes());
+
+    await expect(bind()).rejects.toThrow(ConfigError);
+    await expect(bind()).rejects.toThrow('actor-ts.http.cors.origins');
+    await system.terminate();
+  });
+
+  test('withAnyOrigin() in code is untouched by that refusal', async () => {
+    // Guards the guard above: a reader that refused the wildcard everywhere
+    // would pass it while breaking the documented opt-in.
+    const system = systemWith({});
+    const url = await serve(system, apiRoutes(CorsOptions.create().withAnyOrigin()));
+    const response = await fetch(`${url}/api`, { headers: { origin: ALLOWED } });
+    expect(response.headers.get('access-control-allow-origin')).toBe('*');
+  });
+
+  test('a value outside its domain is an OptionsError from bind(), not a bad header', async () => {
+    const system = systemWith(corsConfig({ origins: [ALLOWED], methods: ['GETT'] }));
+    await expect(system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(apiRoutes()))
+      .rejects.toThrow(OptionsError);
+    await system.terminate();
   });
 });
 
