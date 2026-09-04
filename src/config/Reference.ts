@@ -454,6 +454,72 @@ actor-ts {
     max-frame-bytes = 16M   # per-frame wire cap; lower it on semi-trusted networks
   }
 
+  # Lease coordination -- what a Lease backend reads when it is built with
+  # settings a deployment owns rather than the application source.  Nothing in
+  # the framework constructs a Lease for you: every withLease(...) slot takes an
+  # instance, so these values layer UNDER the options passed to
+  # new InMemoryLease(...) / new KubernetesLease(...) instead of standing in for
+  # them.  Precedence is the usual one -- explicit options win, this block is
+  # next, the built-in defaults are last.
+  coordination {
+    lease {
+      # ttl -- deliberately unset.  A lease is constructed with an explicit
+      # ttlMs and the constructor rejects a missing one (#596); a shipped value
+      # here would supply it for every lease in the process and make that guard
+      # unreachable.  Set it to give a whole deployment one TTL:
+      #
+      #   ttl = 30s
+      #
+      # renewal-interval -- deliberately unset as well.  Unset selects
+      # max(500ms, ttl/3), which is the computed default both backends want,
+      # and the validator rejects 0, so a "0 means derive it" sentinel is not
+      # expressible:
+      #
+      #   renewal-interval = 10s
+      #
+      # acquire-retries and acquire-retry-delay are deliberately NOT settable
+      # here: the two backends ship different built-in defaults (3 attempts /
+      # 100ms for Kubernetes, 1 / 50ms in memory) and one leaf cannot express
+      # both without silently unifying them.
+
+      kubernetes {
+        # namespace -- deliberately unset.  Unset means "read namespace-path
+        # from the Pod's own ServiceAccount mount", and an empty string is
+        # rejected by the validator, so there is no value that could stand for
+        # "not set":
+        #
+        #   namespace = "actors"
+
+        # Where the kubelet projects this Pod's ServiceAccount credential.
+        # These name the IN-CLUSTER source only: pointing one of them elsewhere
+        # while also naming an explicit apiServerUrl is refused, because that
+        # pairing is what sent the cluster's own bearer token to an
+        # operator-named host (#599).
+        namespace-path = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+        token-path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+        ca-path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+
+        # How long a credential read from that mount may be reused before the
+        # token file's mtime is checked again (#760).  No effect on an
+        # explicitly supplied authToken, which is static by construction --
+        # there is nowhere to re-read it from.
+        token-reload-interval = 1m
+
+        # Hard ceiling on one API-server request.  The renewal loop reasons
+        # from this number: at the 15s TTL the docs recommend the renewal
+        # interval is 5s, so a single request may legitimately span two ticks
+        # and the in-flight guard drops the one that overlaps.
+        operation-timeout = 10s
+
+        # Lease object names longer than this are truncated to a stable head
+        # plus a hash of the whole original name, so every node derives the
+        # same object name from the same input.  253 is the DNS-1123 subdomain
+        # bound the API server enforces on a coordination.k8s.io/v1 Lease.
+        lease-name-max-length = 253
+      }
+    }
+  }
+
   # Ceilings applied to bytes this process DECODES.  They bound what a peer or
   # a client can make a decoder do; they never change what this node writes, so
   # lowering one makes this node stricter than its own encoder rather than

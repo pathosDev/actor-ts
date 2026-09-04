@@ -484,6 +484,48 @@ export const ConfigKeys = {
   },
 
   /**
+   * Lease coordination — `actor-ts.coordination.*` (#859).
+   *
+   * Every leaf is spelled out rather than covered by a block root, and that is
+   * load-bearing: `NoDeadConfigKeys`' covering-accessor falls back to *"a root
+   * above it"*, so a root-only entry would let any leaf under it pass whether
+   * or not a reader ever addresses it. The readers here are
+   * `readLeaseOptionsFromConfig` (`src/coordination/LeaseOptions.ts`) and
+   * `readKubernetesLeaseOptionsFromConfig`
+   * (`src/coordination/leases/KubernetesLeaseOptions.ts`).
+   *
+   * `lease.ttl`, `lease.renewal-interval` and `lease.kubernetes.namespace`
+   * deliberately ship **no leaf** in `reference.conf`, so `hasPath` stays false
+   * until an operator sets one. Each is a field the code either requires or
+   * derives: a shipped `ttl` would satisfy `validateRequired` for every lease
+   * in the process and make the #596 guard unreachable; a shipped
+   * `renewal-interval` would displace the computed `max(500ms, ttl/3)`, and `0`
+   * cannot stand in for "derive it" because the validator rejects it; a shipped
+   * `namespace` could only be `""`, which the validator rejects too, and would
+   * take away "read it from the Pod's ServiceAccount mount". They are still
+   * read here, which is what makes setting one in an `application.conf` work.
+   *
+   * `acquire-retries` / `acquire-retry-delay` have no keys at all: the two
+   * backends ship different built-in defaults (3 / 100 ms for Kubernetes, 1 /
+   * 50 ms in memory) and a single leaf would silently unify them.
+   */
+  coordination: {
+    lease: {
+      ttl: 'actor-ts.coordination.lease.ttl',
+      renewalInterval: 'actor-ts.coordination.lease.renewal-interval',
+      kubernetes: {
+        namespace: 'actor-ts.coordination.lease.kubernetes.namespace',
+        namespacePath: 'actor-ts.coordination.lease.kubernetes.namespace-path',
+        tokenPath: 'actor-ts.coordination.lease.kubernetes.token-path',
+        caPath: 'actor-ts.coordination.lease.kubernetes.ca-path',
+        tokenReloadInterval: 'actor-ts.coordination.lease.kubernetes.token-reload-interval',
+        operationTimeout: 'actor-ts.coordination.lease.kubernetes.operation-timeout',
+        leaseNameMaxLength: 'actor-ts.coordination.lease.kubernetes.lease-name-max-length',
+      },
+    },
+  },
+
+  /**
    * Cluster addresses and wire limits — `actor-ts.remote.*`.
    *
    * `tcp.host` and `tcp.advertised-host` are two different things and only one
