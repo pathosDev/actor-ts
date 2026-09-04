@@ -497,9 +497,18 @@ async function terminateQuietly(worker: WorkerLike): Promise<void> {
  * Keep a pending respawn from holding the process open.
  *
  * Two dialects: Node and Bun put `unref()` on the handle, while Deno returns a
- * plain number and needs `Deno.unrefTimer(id)`.  The src-side idiom elsewhere
- * (`ClusterBootstrap`) only does the first and therefore silently no-ops on
- * Deno — #778 tracks unifying the two.
+ * plain number and needs `Deno.unrefTimer(id)`, so a bare `handle.unref?.()`
+ * silently does nothing there.
+ *
+ * This helper is deliberately *not* the answer to that split in general.  Where
+ * a timer has a success path that can cancel it, `clearTimeout` is the portable
+ * call and the right one — that is what #778 did to `WorkerNode.join()`'s init
+ * timer, and it needs no dialect handling at all.  Unreferencing is only for a
+ * timer that has to stay armed and must not be the reason the process lives,
+ * which is the respawn backoff's shape and nothing else's here.  Whether even
+ * this call is correct is itself open: #1283 argues the respawn timer should
+ * stay referenced, because an otherwise-idle host now exits during the backoff
+ * instead of restarting.  If that lands, this function goes with it.
  */
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
   const handle = timer as unknown as { unref?: () => void };
