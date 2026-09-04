@@ -246,6 +246,19 @@ import { Aside } from '@astrojs/starlight/components';
   or typed array — should upgrade in a single window.
 </Aside>
 
+## What a decoder will accept
+
+Decoding is the asymmetric half: the bytes are chosen by whoever sent them.
+Both built-in decoders therefore apply the ceilings in
+[`actor-ts.serialization.read-constraints`](/reference/configuration/#actor-tsserialization)
+— nesting depth for both, plus a document size and, for CBOR, a per-string
+length.  They bound reads only and never change what a node writes, so lowering
+one makes that node stricter than its own encoder.
+
+Journal and snapshot rows are exempt: those bytes were written by actor-ts
+itself.  The per-decoder detail is on the
+[JSON](/serialization/json/) and [CBOR](/serialization/cbor/) pages.
+
 ## Where to next
 
 - **[JSON serializer](/serialization/json/)** — the

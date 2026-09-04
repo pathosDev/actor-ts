@@ -39,6 +39,7 @@ import {
 } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_PORT } from '../../../src/cluster/ClusterBootstrapOptions.js';
 import { DEFAULT_MAX_FRAME_BYTES } from '../../../src/cluster/Protocol.js';
+import { DEFAULT_MAX_DOCUMENT_BYTES, DEFAULT_MAX_NESTING_DEPTH, DEFAULT_MAX_STRING_LENGTH } from '../../../src/serialization/ReadConstraintsOptions.js';
 import {
   DEFAULT_MAX_REMOTE_NODES_PER_TOPIC,
   DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC,
@@ -231,6 +232,14 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.max-tombstones', kind: 'int', constant: DEFAULT_MAX_TOMBSTONES },
   { key: 'actor-ts.cluster.tombstone.time-to-live', kind: 'duration', constant: DEFAULT_TOMBSTONE_TTL_MS },
   { key: 'actor-ts.cluster.tombstone.prune-interval', kind: 'duration', constant: DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS },
+
+  /* --- serialization --- */
+  { key: 'actor-ts.serialization.read-constraints.max-nesting-depth', kind: 'int', constant: DEFAULT_MAX_NESTING_DEPTH },
+  // `bytes` on a published `0`: `getBytes` reads a bare number straight
+  // through, so the sentinel is asserted by the same accessor the reader uses
+  // rather than being filed away as a feature switch with no constant (#880).
+  { key: 'actor-ts.serialization.read-constraints.max-document-bytes', kind: 'bytes', constant: DEFAULT_MAX_DOCUMENT_BYTES },
+  { key: 'actor-ts.serialization.read-constraints.max-string-length', kind: 'bytes', constant: DEFAULT_MAX_STRING_LENGTH },
 
   /* --- cluster bootstrap --- */
   { key: 'actor-ts.cluster.bootstrap.poll-interval', kind: 'duration', constant: DEFAULT_POLL_INTERVAL_MS },

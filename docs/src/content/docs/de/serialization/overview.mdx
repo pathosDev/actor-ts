@@ -255,6 +255,20 @@ import { Aside } from '@astrojs/starlight/components';
   Array — sollte in einem einzigen Fenster aktualisieren.
 </Aside>
 
+## Was ein Decoder akzeptiert
+
+Dekodieren ist die asymmetrische Hälfte: die Bytes wählt derjenige, der sie
+geschickt hat.  Beide eingebauten Decoder wenden deshalb die Obergrenzen aus
+[`actor-ts.serialization.read-constraints`](/de/reference/configuration/#actor-tsserialization)
+an — Verschachtelungstiefe für beide, dazu eine Dokumentgröße und, bei CBOR,
+eine Länge pro String.  Sie begrenzen nur Lesevorgänge und ändern nie, was ein
+Knoten schreibt; eine Grenze zu senken macht diesen Knoten also strenger als
+seinen eigenen Encoder.
+
+Journal- und Snapshot-Zeilen sind ausgenommen: diese Bytes hat actor-ts selbst
+geschrieben.  Die Details pro Decoder stehen auf den Seiten zu
+[JSON](/de/serialization/json/) und [CBOR](/de/serialization/cbor/).
+
 ## Wohin als Nächstes
 
 - **[JSON-Serializer](/de/serialization/json/)** — der

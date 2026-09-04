@@ -400,6 +400,28 @@ export const ConfigKeys = {
   },
 
   /**
+   * Decoder ceilings — `actor-ts.serialization.read-constraints.*` (#880).
+   *
+   * Every leaf is declared individually rather than as a block root, and that
+   * is load-bearing: `NoDeadConfigKeys`'s `coveringAccessor` accepts a root
+   * above a leaf, so a single `readConstraints` entry would cover all three and
+   * a leaf nothing reads would pass the guard that exists to catch exactly
+   * that.  Per-leaf entries make the guard check each reader.
+   *
+   * They bound READS only.  The encoder keeps a hard `MAX_NESTING_DEPTH`, so
+   * lowering `max-nesting-depth` makes this node stricter than its own writer
+   * and raising it past the encoder's cap is refused — a node that accepted
+   * what it cannot produce is the asymmetry #1036 closed.
+   */
+  serialization: {
+    readConstraints: {
+      maxNestingDepth: 'actor-ts.serialization.read-constraints.max-nesting-depth',
+      maxDocumentBytes: 'actor-ts.serialization.read-constraints.max-document-bytes',
+      maxStringLength: 'actor-ts.serialization.read-constraints.max-string-length',
+    },
+  },
+
+  /**
    * Cluster addresses and wire limits — `actor-ts.remote.*`.
    *
    * `tcp.host` and `tcp.advertised-host` are two different things and only one

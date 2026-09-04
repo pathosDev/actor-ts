@@ -437,6 +437,50 @@ Hier gelten dieselbe Blattregel und dieselbe Ablehnung beim Start: kebab-case,
 Einheiten-Suffix weggelassen, und eine ausgemusterte camelCase-Schreibweise ist
 ein `ConfigError` statt einer Obergrenze, die still auf den Default zurückfiel.
 
+### `actor-ts.serialization`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `serialization.read-constraints.max-nesting-depth` | `256` | Container-Ebenen, in die ein Decoder absteigt, bevor er das Payload ablehnt.  Nie über die eigene Obergrenze des Encoders hinaus. |
+| `serialization.read-constraints.max-document-bytes` | `0` | Obergrenze für ein Dokument, das an `JsonSerializer` / `CborSerializer` übergeben wird, geprüft vor dem Parsen.  `0` = keine eigene Obergrenze. |
+| `serialization.read-constraints.max-string-length` | `20M` | Obergrenze für einen CBOR-Byte-String, Text-String oder Map-Key, geprüft am Längen-Präfix, bevor die Bytes alloziert werden.  `0` hebt sie auf. |
+
+Diese Grenzen binden, was dieser Knoten **liest**, nie was er schreibt.  Ein
+Peer, der den Handshake abschließt, oder jeder Client, dessen Body einen
+Serializer erreicht, wählt die Bytes; diese Werte entscheiden, wie viel Arbeit
+der Prozess darauf verwendet, bevor er aufgibt.  Eine Grenze zu senken macht
+diesen Knoten also strenger als seinen eigenen Encoder — am Wire-Format ändert
+sich nichts.
+
+`max-nesting-depth` ist die entscheidende, denn bis dahin gab es auf der
+JSON-Seite überhaupt nichts: `JSON.parse` arbeitet in jeder von actor-ts
+unterstützten Runtime iterativ und akzeptiert klaglos eine Million Ebenen — die
+Rekursion, die überläuft, ist der eigene Tagged-Tree-Walker des Frameworks,
+direkt vom Cluster-Wire aus erreichbar.  Der Wert darf beliebig gesenkt werden
+und **kann nicht** über `256` angehoben werden: das ist zugleich die harte
+Obergrenze des Encoders, und ein Knoten, der tiefer liest als er schreibt,
+würde ein Payload akzeptieren, das er selbst nicht erzeugen kann.  Ein höherer
+Wert ist ein `OptionsError` beim Start.
+
+`max-document-bytes` wird als `0` ausgeliefert, weil jeder Pfad, den das
+Framework selbst besitzt, bereits begrenzt ist — `remote.max-frame-bytes` auf
+dem Cluster-Wire, das Body-Limit des Servers über HTTP.  Setze den Wert dort,
+wo ein Serializer auf anderem Weg erreicht wird (ein Broker-Payload, eine
+Queue-Nachricht) und stromaufwärts niemand eine Meinung dazu hat.
+
+`max-string-length` bindet **nur bei CBOR**, und der Default liegt bewusst über
+`remote.max-frame-bytes`: auf dem Cluster-Wire ist damit das Frame-Limit die
+wirksame Obergrenze und diese hier greift nie.  Die Asymmetrie ist gewollt —
+ein CBOR-Item kündigt seine Länge an, die Ablehnung kostet also nichts und
+verhindert die Allokation, während `JSON.parse` den String längst
+materialisiert hat, wenn der JSON-Walker ihn sieht.
+
+Zwei Kanten liegen bewusst außerhalb dieses Blocks.  Der Persistence-`PayloadCodec`
+dekodiert Bytes, die das Framework selbst geschrieben hat; eine verschärfte
+Grenze würde dort wiederherstellbare Historie in unlesbare verwandeln.  Und die
+HTTP-Body-Kante baut ihre Serializer ohne `ActorSystem`-Handle, über das sich
+die Konfiguration lesen ließe — diese Naht ist Issue #967.
+
 ### `actor-ts.persistence`
 
 | Key | Default | Zweck |

@@ -29,6 +29,12 @@
  */
 
 import { MAX_BIGNUM_BYTES, MAX_NESTING_DEPTH } from './Constants.js';
+import {
+  defaultReadConstraintsOptions,
+  ReadConstraintsOptionsValidator,
+  type ReadConstraintsOptions,
+  type ReadConstraintsOptionsType,
+} from './ReadConstraintsOptions.js';
 import { BidirectionalMap } from '../util/BidirectionalMap.js';
 import { BidirectionalMultiMap } from '../util/BidirectionalMultiMap.js';
 import {
@@ -524,6 +530,24 @@ export class CborDecoder {
   private pos = 0;
   private bytes!: Uint8Array;
   private view!: DataView;
+  /** Ceilings this decoder applies — resolved and validated once, here. */
+  private readonly constraints: Required<ReadConstraintsOptionsType>;
+
+  /**
+   * The constraints are optional and default to
+   * {@link defaultReadConstraintsOptions}, which is what keeps every
+   * `new CborDecoder()` call site — the parity and property suites among them
+   * — compiling and behaving exactly as before (#880).  Where the decoder is
+   * reached from an `ActorSystem`, `CborSerializer` hands it what
+   * `actor-ts.serialization.read-constraints.*` resolved to.
+   */
+  constructor(readConstraints: ReadConstraintsOptions = {}) {
+    this.constraints = {
+      ...defaultReadConstraintsOptions,
+      ...(readConstraints as Partial<ReadConstraintsOptionsType>),
+    };
+    new ReadConstraintsOptionsValidator().validate(this.constraints);
+  }
 
   decode(bytes: Uint8Array): unknown {
     this.bytes = bytes;
@@ -542,8 +566,10 @@ export class CborDecoder {
    * returns and throws below.
    */
   private readValue(depth: number): unknown {
-    if (depth > MAX_NESTING_DEPTH) {
-      throw new CborDecodeError(`CBOR nesting deeper than ${MAX_NESTING_DEPTH} at offset ${this.pos}`);
+    if (depth > this.constraints.maxNestingDepth) {
+      throw new CborDecodeError(
+        `CBOR nesting deeper than ${this.constraints.maxNestingDepth} at offset ${this.pos}`,
+      );
     }
     if (this.pos >= this.bytes.byteLength) {
       throw new CborDecodeError(`Unexpected end of input at offset ${this.pos}`);
@@ -566,8 +592,8 @@ export class CborDecoder {
         const value = typeof len === 'bigint' ? -(len as bigint) - 1n : -Number(len) - 1;
         return value;
       }
-      case 2: return this.readBytes(Number(len));
-      case 3: return new TextDecoder().decode(this.readBytes(Number(len)));
+      case 2: return this.readBytes(this.requireStringLength(Number(len)));
+      case 3: return new TextDecoder().decode(this.readBytes(this.requireStringLength(Number(len))));
       case 4: {
         const out: unknown[] = [];
         const count = Number(len);
@@ -667,8 +693,10 @@ export class CborDecoder {
    * which is the same way `case 4` stays safe.
    */
   private readEntryPairs(depth: number): Array<[unknown, unknown]> {
-    if (depth > MAX_NESTING_DEPTH) {
-      throw new CborDecodeError(`CBOR nesting deeper than ${MAX_NESTING_DEPTH} at offset ${this.pos}`);
+    if (depth > this.constraints.maxNestingDepth) {
+      throw new CborDecodeError(
+        `CBOR nesting deeper than ${this.constraints.maxNestingDepth} at offset ${this.pos}`,
+      );
     }
     if (this.pos >= this.bytes.byteLength) {
       throw new CborDecodeError(`Unexpected end of input at offset ${this.pos}`);
@@ -705,6 +733,29 @@ export class CborDecoder {
     }
     this.pos += byteLen;
     return out <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(out) : out;
+  }
+
+  /**
+   * Refuse an over-long byte or text string on its LENGTH PREFIX, before
+   * `readBytes` slices it out — which is the whole value of the check.  By the
+   * time the bytes exist the allocation the ceiling was meant to prevent has
+   * already happened, so a post-hoc test would only be an opinion about data
+   * this process is already holding.
+   *
+   * Map keys need no site of their own: an untagged map reads each key through
+   * `readValue`, so a text key lands in the same `case 3` as any other string.
+   *
+   * Returns `count` so the guard composes into the call it protects rather
+   * than becoming a statement a later edit can move away from it.
+   */
+  private requireStringLength(count: number): number {
+    const ceiling = this.constraints.maxStringLength;
+    if (ceiling > 0 && count > ceiling) {
+      throw new CborDecodeError(
+        `CBOR string of ${count} bytes exceeds maxStringLength ${ceiling} at offset ${this.pos}`,
+      );
+    }
+    return count;
   }
 
   private readBytes(count: number): Uint8Array {
