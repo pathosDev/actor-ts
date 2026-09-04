@@ -59,6 +59,43 @@ function withSelf(): { scope: FakeSelfScope; restore: () => void } {
   };
 }
 
+/**
+ * Record every timer armed and every handle cancelled while the callback runs.
+ *
+ * Patching the two globals rather than reaching for a runtime-specific handle
+ * property is what keeps this test runtime-agnostic, which is the whole point
+ * of #778: `unref()` is a Node/Bun extension and Deno's numeric handle simply
+ * has no such method, so a test written against `unref` would assert the
+ * dialect instead of the fix.  `clearTimeout` is the same call everywhere.
+ */
+async function recordingTimers<T>(
+  body: () => Promise<T>,
+): Promise<{ result: T; armed: { handle: unknown; delayMs: number }[]; cleared: unknown[] }> {
+  const timerGlobals = globalThis as unknown as {
+    setTimeout: (handler: () => void, ms?: number, ...rest: unknown[]) => unknown;
+    clearTimeout: (handle?: unknown) => void;
+  };
+  const realSetTimeout = timerGlobals.setTimeout;
+  const realClearTimeout = timerGlobals.clearTimeout;
+  const armed: { handle: unknown; delayMs: number }[] = [];
+  const cleared: unknown[] = [];
+  timerGlobals.setTimeout = (handler, ms, ...rest): unknown => {
+    const handle = realSetTimeout.call(globalThis, handler, ms, ...rest);
+    armed.push({ handle, delayMs: ms ?? 0 });
+    return handle;
+  };
+  timerGlobals.clearTimeout = (handle): void => {
+    cleared.push(handle);
+    realClearTimeout.call(globalThis, handle);
+  };
+  try {
+    return { result: await body(), armed, cleared };
+  } finally {
+    timerGlobals.setTimeout = realSetTimeout;
+    timerGlobals.clearTimeout = realClearTimeout;
+  }
+}
+
 describe('WorkerNode.join', () => {
   test('throws when not running inside a Worker (no self scope)', async () => {
     // Strip `self` so the join() detects "not a Worker".  We have to
@@ -188,6 +225,34 @@ describe('WorkerNode.join', () => {
     } finally {
       restore();
       if (prevGlobalPost !== undefined) globalScope.postMessage = prevGlobalPost;
+    }
+  });
+
+  test('cancels its init timer once the init frame arrives', async () => {
+    const { scope, restore } = withSelf();
+    try {
+      const { armed, cleared } = await recordingTimers(async () => {
+        const joinPromise = WorkerNode.join();
+        await Promise.resolve();
+        scope.deliverFromParent({
+          kind: 'worker-init',
+          self: new NodeAddress('sys', 'host', 1).toJSON(),
+          systemName: 'sys',
+          data: null,
+        });
+        return joinPromise;
+      });
+
+      // The 30 s init timeout, identified by its delay so an unrelated timer
+      // armed by the transport construction cannot stand in for it.
+      const initTimers = armed.filter((t) => t.delayMs === 30_000);
+      expect(initTimers.length).toBe(1);
+      // Cancelled, not merely unreferenced: `unref()` is a Node/Bun extension
+      // and no-ops on Deno's numeric handle, so before #778 a worker that
+      // resolved join() and wanted to exit waited out the full 30 s there.
+      expect(cleared).toContain(initTimers[0]!.handle);
+    } finally {
+      restore();
     }
   });
 

@@ -1,5 +1,6 @@
 /**
- * Tuned values used by the metrics subsystem.
+ * Tuned values and fixed exposition vocabulary used by the metrics
+ * subsystem.
  *
  * Anything a caller can set belongs in an `XOptions.ts` instead — see
  * `MetricsRegistryOptions.ts` for the registry's cardinality cap.
@@ -161,3 +162,44 @@ export const MAILBOX_DEPTH_BUCKETS_MESSAGES: ReadonlyArray<number> = Object.free
 export const DISPATCHER_QUEUE_DELAY_BUCKETS_SECONDS: ReadonlyArray<number> = Object.freeze([
   0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10,
 ]);
+
+/* ----------------------- Exposition-name grammar ---------------------- */
+
+/**
+ * Characters a metric family name may consist of, straight out of the
+ * Prometheus exposition grammar (#784).
+ *
+ * **The pattern is a security boundary, not a style rule.**  The 0.0.4 text
+ * format is line-oriented and unquoted in the name position — `# HELP <name>`,
+ * `# TYPE <name>` and `<name>{…} <value>` — so a name is the one field the
+ * exporter has no way to escape.  A `"`, `{`, `}` or a newline in it does not
+ * render as a malformed name, it *ends the current series and starts another*,
+ * and the forged series is indistinguishable from a real one to whatever
+ * scrapes it.  Rejecting the character class at registration is what keeps the
+ * exporter's raw interpolation safe, and is what every mainstream Prometheus
+ * client library does at the same point.
+ *
+ * The `:` is legal here and deliberately kept even though it is reserved for
+ * recording rules by convention: it is part of the grammar, exposing a name
+ * that contains one is legal, and a validator narrower than the format would
+ * reject an exposition Prometheus itself accepts.
+ *
+ * No `g` flag: a global regex carries `lastIndex` across `test()` calls, so a
+ * shared one would answer differently on alternate calls.
+ */
+export const PROMETHEUS_METRIC_NAME_PATTERN = /^[a-zA-Z_:][a-zA-Z0-9_:]*$/;
+
+/**
+ * Characters a label key may consist of — the same grammar as
+ * {@link PROMETHEUS_METRIC_NAME_PATTERN} **minus the colon**, which
+ * Prometheus does not allow in a label name (#784).
+ *
+ * Same reasoning: `renderLabels` emits `<key>="<value>"`, and only the value
+ * side of that is quoted and escaped.  A key carrying a `"` closes the string
+ * early and everything after it is read as exposition rather than as data.
+ *
+ * Note that this constrains the label **key** only.  Values stay unrestricted
+ * — they are the field that legitimately carries data, and the exporter
+ * escapes them.
+ */
+export const PROMETHEUS_LABEL_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;

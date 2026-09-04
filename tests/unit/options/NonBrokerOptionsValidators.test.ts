@@ -471,8 +471,45 @@ describe('ClusterSingletonManagerOptionsValidator', () => {
 });
 
 describe('WorkerClusterOptionsValidator', () => {
+  // `bootstrap` is required and scheme-constrained (#776), so every case that
+  // is about some *other* field supplies a valid one; the bootstrap cases below
+  // override it.
   const check = (s: Partial<WorkerClusterOptionsType>): void =>
-    new WorkerClusterOptionsValidator().validate(s);
+    new WorkerClusterOptionsValidator().validate({ bootstrap: 'file:///worker.js', ...s });
+
+  test('requires a bootstrap rather than letting new URL(undefined) throw', () => {
+    // The value of the rule is the error, not the rejection: without it an
+    // empty options object reached `new URL(undefined)` inside `spawn()` and
+    // surfaced a raw ERR_INVALID_URL naming no field at all.
+    expect(() => new WorkerClusterOptionsValidator().validate({})).toThrow(OptionsError);
+    expect(() => new WorkerClusterOptionsValidator().validate({}))
+      .toThrow(/bootstrap is required/);
+  });
+
+  test('accepts a file: bootstrap as a URL or as a string', () => {
+    expect(() => check({ bootstrap: new URL('file:///srv/app/worker.js') })).not.toThrow();
+    expect(() => check({ bootstrap: 'file:///srv/app/worker.js' })).not.toThrow();
+  });
+
+  test('rejects every scheme a Worker constructor would otherwise execute', () => {
+    // Measured per runtime, not assumed: `data:` runs on Bun, Node and Deno,
+    // `blob:` on Bun and Deno, and a remote entry is fetched and run on Deno.
+    for (const bootstrap of [
+      'data:text/javascript,console.log(1)',
+      'blob:null/2c9a1f34-0000-4000-8000-000000000000',
+      'http://example.invalid/worker.js',
+      'https://example.invalid/worker.js',
+    ]) {
+      expect(() => check({ bootstrap })).toThrow(/bootstrap must use the file: scheme/);
+    }
+  });
+
+  test('rejects a bare relative specifier with a message that names the fix', () => {
+    // `new URL('./worker.js')` throws with no base, so this never reached the
+    // Worker constructor — it just failed later, and less legibly.
+    expect(() => check({ bootstrap: './worker.js' }))
+      .toThrow(/bootstrap must be an absolute URL.*import\.meta\.url/s);
+  });
 
   test("accepts a positive integer or 'auto' for workers", () => {
     expect(() => check({ workers: 4 })).not.toThrow();

@@ -120,14 +120,14 @@ describe('actor-ts.worker-cluster', () => {
 
   test('explicit options win over the config file', () => {
     const config = Config.parseString('actor-ts.worker-cluster.workers = 4');
-    const options = { bootstrap: 'w.js', workers: 8 } as WorkerClusterOptionsType;
+    const options = { bootstrap: 'file:///w.js', workers: 8 } as WorkerClusterOptionsType;
 
     expect(withWorkerClusterConfigDefaults(options, config).workers).toBe(8);
   });
 
   test('an unset field falls through to the config file', () => {
     const config = Config.parseString('actor-ts.worker-cluster.workers = 4');
-    const options = { bootstrap: 'w.js' } as WorkerClusterOptionsType;
+    const options = { bootstrap: 'file:///w.js' } as WorkerClusterOptionsType;
 
     expect(withWorkerClusterConfigDefaults(options, config).workers).toBe(4);
   });
@@ -137,7 +137,7 @@ describe('actor-ts.worker-cluster', () => {
     // silently meant "never restart".
     const config = Config.parseString('actor-ts.worker-cluster.restart-policy = "sometimes"');
     const merged = withWorkerClusterConfigDefaults(
-      { bootstrap: 'w.js' } as WorkerClusterOptionsType,
+      { bootstrap: 'file:///w.js' } as WorkerClusterOptionsType,
       config,
     );
 

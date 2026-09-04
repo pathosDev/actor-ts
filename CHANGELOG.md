@@ -179,6 +179,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (#1388).  A multi-node test now pins that node-local scope as an assertion
   rather than prose.
 
+### Changed
+
+- **BREAKING — `Behaviors.withStash` validates its capacity (#795).**
+
+  The argument was taken on trust, and because the buffer's overflow guard
+  and its `isFull` are the same comparison, `NaN` or `Infinity` left the
+  stash growing without any limit while `isFull` went on reporting `false` —
+  removing the bound at exactly the place the API documents one, with no
+  throw and no diagnostic. Zero and negative values were the mirror failure,
+  leaving `stash()` throwing `StashOverflowError` on its first call. The
+  capacity must now be an integer of at least 1; the predicate and the error
+  type are the ones `BoundedMailboxOptionsValidator` already applies to the
+  structurally identical `BoundedMailboxOptionsType.capacity`.
+
+  `StashBufferImplementation` re-checks the same rule, so a hand-written
+  `WithStashBehavior` node that never went through the combinator is refused
+  as well.
+
+  **Migration.** Pass an integer of at least 1. A `0` or fractional value
+  now throws `OptionsError` instead of producing a buffer that rejects every
+  `stash()` call, and `NaN` or `Infinity` now throws instead of silently
+  producing an unbounded one.
+
+
 ### Fixed
 
 - **BREAKING — a configured downing provider now owns the eviction (#929).**
@@ -403,6 +427,123 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`fundamentals/throttling`, EN + DE).
 
 ### Security
+
+- **BREAKING — The worker-mesh handshake latches on the first hello, and
+  `bootstrap` is constrained to a `file:` URL (#775, #776, #778).**
+
+  `postMessage` structured-clones on the posting thread, and the init frame
+  carries whatever `withInitData` was given, so an unlatched hello let one
+  worker charge the host an arbitrarily expensive main-thread clone per
+  one-word frame for the whole `readyTimeoutMs` window — with every
+  sibling's traffic queued behind it on the shared broker hub. A first-hello
+  latch per handshake replaces it, in `WorkerCluster` and in the testkit's
+  `ParallelMultiNodeSpec` copy (#775).
+
+  `WorkerClusterOptionsValidator` now constrains `bootstrap`, the one option
+  whose value the runtime executes: it must be present, absolute, and carry
+  the `file:` scheme. The allow-list was measured per runtime rather than
+  assumed — a `data:` entry runs as a worker's main module on Bun, Node and
+  Deno, `blob:` on Bun and Deno, and a remote specifier is fetched and run
+  on Deno — so every other scheme is refused. A missing `bootstrap` now
+  throws a named `OptionsError` at spawn instead of a raw `ERR_INVALID_URL`
+  from inside the runtime, and a bare relative specifier fails with a
+  message naming the fix. `bootstrap` stays deliberately absent from HOCON,
+  and the reason is now written down beside the config-defaults type (#776).
+
+  `WorkerNode.join()` cancels its 30 s init timer on the success path
+  instead of relying on `unref()`, which is a Node and Bun extension that
+  silently did nothing on Deno's numeric timer handle — so a worker that had
+  resolved `join()` and wanted to exit promptly waited out the full timeout
+  there (#778). The cross-subsystem `unref` sweep the file's own marker
+  proposed is deliberately not done: the helper has a single caller, and
+  #1283 argues that call is itself wrong.
+
+  **Migration.** Pass `bootstrap` as a `file:` URL —
+  `WorkerClusterOptions.create().withBootstrap(new URL('./worker.js',
+  import.meta.url))` already produces one. A `data:`, `blob:`, `http:` or
+  `https:` specifier, a bare relative string, and an omitted `bootstrap` now
+  all throw `OptionsError` rather than reaching the `Worker` constructor or
+  the runtime's URL parser.
+
+- **BREAKING — `SseActor` refuses a redirect and a wrong media type, and
+  stopped rescanning its buffer (#749, #787).**
+
+  A `3xx` carrying a `Location` now fails the connect with a descriptive
+  error instead of replaying every custom request header — vendor API keys
+  included, since the Fetch standard strips only `Authorization`, `Cookie`
+  and `Proxy-Authorization` across origins — to whatever host the feed
+  named, and instead of letting a compromised endpoint rather than the
+  configuration decide which address an authenticated `GET` reaches. The
+  response must also announce `content-type: text/event-stream`; any other
+  type, or none, is refused before a byte of the body is parsed. Both
+  refusals travel the ordinary reconnect path — backoff, circuit breaker,
+  `BrokerDisconnected` — so a feed that starts redirecting surfaces as a
+  broker that cannot connect rather than as a silent change of where
+  credentials go. Neither needs a new option, and so neither needs a HOCON
+  leaf (#787).
+
+  Separately, the read loop stopped rescanning its pending buffer. The
+  delimiter search restarted at index 0 on every read *and* the growing
+  string was re-materialised each time, so a feed that dribbles bytes
+  without ever sending the blank line cost roughly 512 MiB of character
+  scanning to deliver 256 KiB — the 1 MiB safety cap set that ceiling rather
+  than lowering it. Characters now accumulate unjoined and each read
+  searches only the arriving chunk plus one character of seam, measured at
+  2048x down to 1.02x. The cap keeps its previous semantics and stays a
+  module constant, so #371 is untouched (#749).
+
+  **Migration.** A feed that answers with a redirect, or that does not
+  announce the SSE media type, now fails to connect instead of being
+  consumed. Point `url` at the final endpoint, and make sure it sends
+  `text/event-stream`.
+
+- **BREAKING — Metric names and label keys are validated where they are
+  minted (#784).**
+
+  The exposition interpolates the name and label-key positions raw, because
+  the Prometheus 0.0.4 text format offers no escaping for them. An
+  application that derived either from request data — a per-tenant counter,
+  a header-named label — could therefore end the current series and write a
+  forged one into the scrape, indistinguishable from a real series to
+  whatever consumed it and enough to silence an alert built on it.
+  `DefaultMetricsRegistry` now rejects a name outside
+  `[a-zA-Z_:][a-zA-Z0-9_:]*` and a label key outside
+  `[a-zA-Z_][a-zA-Z0-9_]*` when a family or a series is first minted, and
+  `exportPrometheus` escapes the carriage return in label values and in `#
+  HELP` alongside the backslash, line feed and quote it already handled.
+
+  Both checks sit after their own memo hit, so an increment on an
+  established series costs no regular expression, and the label-key check
+  sits before the cardinality-cap branch so a family already at its cap
+  cannot mint an overflow series carrying a forged key. The cap on the
+  number of families is a separate open concern (#1068) and is deliberately
+  not addressed here.
+
+  **Migration.** Metric names and label keys must be developer-chosen
+  constants. Move any request-derived part into a label *value*, bounded
+  with `bucketize`.
+
+- **Duration and size units resolve by own property only** (#785).
+
+  `parseDuration` and `parseSize` looked their unit up through the prototype
+  chain, so the unit `constructor` reached `Object` instead of `undefined`,
+  bypassed the unknown-unit error and returned a silent `NaN` — which
+  coerces to 0 in a timer and makes every `>` cap comparison false. Both
+  unit tables are now null-prototyped and both lookups guarded with
+  `Object.hasOwn`, the shape `src/http/MimeTypes.ts` took under #608.
+
+  Both parsers additionally assert `Number.isFinite` on the value they
+  return, rather than only on a numeric argument — which is what a `NaN`
+  needed in order to escape. Two documented keys reach a runtime effect with
+  no options validator behind them:
+  `actor-ts.system.shutdown-drain-timeout`, where a `NaN` silently zeroes
+  the drain budget and defeats the documented `0` opt-out, and
+  `actor-ts.coordinated-shutdown.default-phase-timeout`, which is copied
+  into all twelve canonical phases and handed to `setTimeout`. The same
+  check stops a digit string long enough to overflow a double from coming
+  back as `Infinity`. This is the config *value* path; #589 and #406 closed
+  the key and deep-merge paths.
+
 
 - **BREAKING — a store refuses an encryption request it cannot honour
   (#960).**

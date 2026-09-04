@@ -9,7 +9,9 @@ import {
   Behaviors,
   typedActor,
   type Behavior,
+  type WithStashBehavior,
 } from '../../../src/typed/index.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 import { Directive, OneForOneStrategy } from '../../../src/Supervision.js';
@@ -311,6 +313,102 @@ describe('Behaviors.withStash', () => {
     // One slot free, so `p2` cost the newest queued message rather than being
     // smuggled in past the bound.
     expect(seen).toEqual(['p1', 'p2', 'x1', 'x2']);
+    await sys.terminate();
+  });
+});
+
+/**
+ * `withStash` took its capacity on trust, so a value that no comparison can
+ * ever satisfy silently removed the bound the JSDoc promises (#795).  `NaN`
+ * and `Infinity` are the ones that matter: `buffer.length >= capacity` is
+ * false forever for both, so the buffer grows without limit *and* `isFull`
+ * keeps answering `false` — no throw, no diagnostic, no ceiling.  Zero and
+ * negatives fail the other way, leaving `stash()` throwing on its first call.
+ *
+ * These need no spawn, unlike every other stash test in this file: the guard
+ * runs while the behavior is still a value, which is the point of putting it
+ * in the combinator rather than only in the buffer.
+ */
+describe('Behaviors.withStash — capacity validation', () => {
+  const innerBehavior = (): Behavior<string> =>
+    Behaviors.receiveMessage(() => Behaviors.same);
+
+  const rejected: readonly (readonly [string, number])[] = [
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['zero', 0],
+    ['a negative', -1],
+    ['a fractional', 2.5],
+  ];
+
+  for (const [label, capacity] of rejected) {
+    test(`rejects ${label} capacity with an OptionsError`, () => {
+      expect(() => Behaviors.withStash<string>(capacity, innerBehavior)).toThrow(OptionsError);
+      // The field and the offending value travel on the error, so a caller
+      // catching it can name the argument without parsing the message.
+      try {
+        Behaviors.withStash<string>(capacity, innerBehavior);
+        throw new Error('unreachable — withStash should have thrown');
+      } catch (e) {
+        const error = e as OptionsError;
+        expect(error.name).toBe('OptionsError');
+        expect(error.field).toBe('capacity');
+        expect(Object.is(error.value, capacity)).toBe(true);
+      }
+    });
+  }
+
+  test('accepts an integer capacity >= 1 and carries it onto the node', () => {
+    const behavior = Behaviors.withStash<string>(1, innerBehavior);
+    expect(behavior.kind).toBe('with-stash');
+    expect((behavior as WithStashBehavior<string>).capacity).toBe(1);
+  });
+
+  /**
+   * Defence in depth.  `WithStashBehavior` is exported from the package, so a
+   * caller can write the node as a literal and hand it to `spawnTyped`
+   * without the combinator's guard ever running — which is exactly the route
+   * that would reinstate the unbounded buffer.  `StashBufferImplementation`
+   * re-checks for that reason.
+   *
+   * Asserted on the log rather than on an absence: the rejection happens
+   * inside `preStart`, so `ActorCell.onCreate` turns it into an
+   * `ActorInitializationError` and records one `Actor initialization failed`
+   * line.  Waiting for that line is a positive signal; waiting for "the
+   * handler never ran" would pass on a tree with no guard at all.
+   */
+  test('re-checks a hand-built with-stash node that never went through the combinator', async () => {
+    const lines: string[] = [];
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new JsonLogger(LogLevel.Error, '', {}, { write: (line) => { lines.push(line); } }));
+    const sys = ActorSystem.create('typed-stash-bypass', sysOptions);
+
+    const factoryCalls: string[] = [];
+    const handled: string[] = [];
+    const handWritten: WithStashBehavior<string> = {
+      kind: 'with-stash',
+      capacity: Number.NaN,
+      factory: (): Behavior<string> => {
+        factoryCalls.push('factory');
+        return Behaviors.receiveMessage((message) => {
+          handled.push(message);
+          return Behaviors.same;
+        });
+      },
+    };
+
+    const ref = sys.spawnTypedAnonymous(handWritten);
+    ref.tell('would-have-been-stashed');
+
+    await awaitCondition(
+      () => lines.some((line) => line.includes('capacity must be an integer >= 1')),
+      { timeoutMs: 3_000, label: 'the hand-built with-stash node failed actor initialization' },
+    );
+    // The buffer is built before the inner behavior is, so a rejected capacity
+    // means the user's factory never ran and no message was ever accepted.
+    expect(factoryCalls.length).toBe(0);
+    expect(handled).toEqual([]);
+
     await sys.terminate();
   });
 });

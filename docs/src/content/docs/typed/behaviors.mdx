@@ -215,6 +215,12 @@ arrived while the stash was filling, and whatever is still parked when
 the actor stops or restarts goes to **dead letters** instead of
 vanishing.
 
+`capacity` must be an integer of at least 1 — `0`, a negative, a
+fractional value, `NaN` and `Infinity` all throw `OptionsError` where you
+build the behavior, because a bound no comparison can ever satisfy
+(`NaN` and `Infinity` above all) would leave the buffer growing without
+limit while `isFull` went on reporting `false`.
+
 Two differences from the context form, both deliberate.  The capacity is
 the one you hand `withStash`, per behavior, rather than one default for
 the whole actor.  And `stash(message)` takes the message explicitly, so
