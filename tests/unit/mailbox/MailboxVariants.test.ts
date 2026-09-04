@@ -13,6 +13,7 @@ import {
   type Envelope,
   type MailboxDropReason,
 } from '../../../src/mailbox/index.js';
+import { SystemGroups } from '../../../src/internal/SystemPaths.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
@@ -1044,5 +1045,135 @@ describe('a bound never reaches the system queue (#794)', () => {
 
     expect(mailbox.size).toBe(1);
     expect(sequencesOf(mailbox.drainSystem())).toEqual([0, 1, 2, 3, 4]);
+  });
+});
+
+describe('actor-ts.mailbox.default — the global bound (#862)', () => {
+  /**
+   * A TestKit whose only non-default setting is the mailbox block.  Nested and
+   * not `{'actor-ts.mailbox.default.capacity': n}`: a dotted string stays a
+   * literal top-level key, so the system would go on reading the reference
+   * value and every assertion below would be about the default instead.
+   */
+  const kitWithMailboxDefault = (
+    name: string,
+    mailboxDefault: Record<string, number | string>,
+  ): TestKit => {
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { mailbox: { default: mailboxDefault } } });
+    return TestKit.create(name, kitOptions);
+  };
+
+  /** The queue an actor actually got, through the cell's test seam. */
+  const mailboxOf = (ref: object): unknown =>
+    (ref as { getCell(): { _mailboxForTest(): unknown } }).getCell()._mailboxForTest();
+
+  let release: () => void = () => {};
+  let latch: Promise<void> = Promise.resolve();
+  const arm = (): void => { latch = new Promise<void>((resolve) => { release = resolve; }); };
+
+  /** Wedges on message 0 so the rest genuinely have to queue behind it. */
+  class Latched extends Actor<number> {
+    override async onReceive(n: number): Promise<void> { if (n === 0) await latch; }
+  }
+
+  test('a /user actor that pins no mailbox gets the configured bound', async () => {
+    const kit = kitWithMailboxDefault('mbox-global-bound', { capacity: 4 });
+    arm();
+    const ref = kit.system.spawnAnonymous(Latched);
+
+    // A capacity assertion on an untouched mailbox is what #1020 showed proves
+    // nothing, so this one is made against a queue that has actually shed.
+    for (let i = 0; i < 64; i++) ref.tell(i);
+
+    const mailbox = mailboxOf(ref);
+    expect(mailbox).toBeInstanceOf(BoundedMailbox);
+    const bounded = mailbox as BoundedMailbox<number>;
+    expect(bounded.size).toBeLessThanOrEqual(4);
+    expect(bounded.droppedCount).toBeGreaterThan(0);
+
+    release();
+    await kit.system.terminate();
+  });
+
+  test('the configured overflow policy is the one the bound uses', async () => {
+    // `reject` is the observable policy: it surfaces at the sender instead of
+    // discarding quietly, so this proves the STRING travelled from HOCON into
+    // the mailbox.  A `drop-head` assertion could not tell the configured
+    // policy apart from the built-in one, which is the same value.
+    const kit = kitWithMailboxDefault('mbox-global-overflow', { capacity: 2, overflow: 'reject' });
+    arm();
+    const ref = kit.system.spawnAnonymous(Latched);
+
+    expect(() => { for (let i = 0; i < 32; i++) ref.tell(i); }).toThrow(MailboxFullError);
+
+    release();
+    await kit.system.terminate();
+  });
+
+  test('a per-spawn withMailboxCapacity still wins over the global bound', async () => {
+    const kit = kitWithMailboxDefault('mbox-global-override', { capacity: 4 });
+    arm();
+    const options = ActorOptions.create<number>().withMailboxCapacity(32);
+    const ref = kit.system.spawnAnonymous(Latched, options);
+
+    for (let i = 0; i < 64; i++) ref.tell(i);
+
+    const bounded = mailboxOf(ref) as BoundedMailbox<number>;
+    expect(bounded).toBeInstanceOf(BoundedMailbox);
+    // 32 and not 4: the spawn site is the higher-precedence layer, so an actor
+    // that asked for room keeps it when an operator draws a tighter global line.
+    expect(bounded.size).toBeGreaterThan(4);
+    expect(bounded.size).toBeLessThanOrEqual(32);
+
+    release();
+    await kit.system.terminate();
+  });
+
+  test('withMailbox still wins, and does not start failing validation', async () => {
+    // The regression a merge at `actorBlueprintOf` would have caused: the
+    // merged object reaches `ActorOptionsValidator`, whose #661 rule rejects
+    // `mailbox` together with `mailboxCapacity`, so EVERY withMailbox spawn in
+    // the program would throw the moment an operator set a global capacity.
+    const kit = kitWithMailboxDefault('mbox-global-custom', { capacity: 4 });
+    arm();
+    const supplied = new Mailbox<number>();
+    const options = ActorOptions.create<number>().withMailbox(() => supplied);
+    const ref = kit.system.spawnAnonymous(Latched, options);
+
+    expect(mailboxOf(ref)).toBe(supplied);
+    expect(mailboxOf(ref)).not.toBeInstanceOf(BoundedMailbox);
+
+    release();
+    await kit.system.terminate();
+  });
+
+  test('a framework actor under /system is exempt, and so is the /user guardian', async () => {
+    // The scope is read off the tree rather than off an opt-out list: every
+    // framework actor is spawned through `_spawnSystemActor`, so there is no
+    // list that has to be kept current for this to stay true.
+    const kit = kitWithMailboxDefault('mbox-global-system-exempt', { capacity: 4 });
+    const systemRef = kit.system._spawnSystemActor(Latched, SystemGroups.delivery, 'bound-probe');
+
+    expect(mailboxOf(systemRef)).not.toBeInstanceOf(BoundedMailbox);
+    expect(mailboxOf(systemRef)).toBeInstanceOf(Mailbox);
+
+    // The guardian itself is the framework's too — `_userTree` includes it so
+    // it can be inherited in one step, and the bound asks for STRICT
+    // descendants.  Reached through the private field because there is no
+    // public handle on a guardian cell, which is itself why the bound cannot
+    // be scoped by anything a caller passes in.
+    const guardian = (kit.system as unknown as {
+      userGuardianCell: { _mailboxForTest(): unknown };
+    }).userGuardianCell;
+    expect(guardian._mailboxForTest()).not.toBeInstanceOf(BoundedMailbox);
+
+    // ...while its child, spawned the way an application spawns, is bounded.
+    const userRef = kit.system.spawnAnonymous(Latched);
+    expect(mailboxOf(userRef)).toBeInstanceOf(BoundedMailbox);
+
+    await kit.system.terminate();
   });
 });

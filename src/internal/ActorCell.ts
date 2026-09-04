@@ -31,6 +31,7 @@ import type { Span, Tracer } from '../tracing/Tracer.js';
 import type { ActorClassOrFactory } from '../Actor.js';
 import type { ActorOptions } from '../ActorOptions.js';
 import { actorBlueprintOf, type ActorBlueprint } from './ActorBlueprint.js';
+import { USER_GUARDIAN_NAME } from './Guardian.js';
 import type { Behavior } from '../typed/Behavior.js';
 import { typedActor } from '../typed/Spawn.js';
 import {
@@ -215,6 +216,22 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   readonly _internal: boolean;
 
   /**
+   * This cell is `/user` itself or one of its descendants (#862).
+   *
+   * The discriminator for the global mailbox bound, which reaches the
+   * application's actors and not the framework's.  Inclusive of the guardian
+   * so that it can be inherited in one step; a caller who wants *strict*
+   * descendants — the bound does — asks `this._parent?._userTree === true`,
+   * which excludes the guardian without a second field.
+   *
+   * A boolean and not a path walk: `ActorPath.elements()` allocates, and this
+   * is decided on the constructor of the framework's most-created object.
+   * `_internal` is deliberately not the discriminator — `SystemPaths` marks
+   * only the DevTools group with it, so it answers a different question.
+   */
+  readonly _userTree: boolean;
+
+  /**
    * Sharding identity when a `Shard` spawned this cell as an entity.
    *
    * Read off the blueprint, so it survives a restart for free — the cell
@@ -285,6 +302,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   ) {
     this._parent = parent;
     this._internal = blueprint.internal === true || parent?._internal === true;
+    // The root is the only cell with no parent, and `/user` and `/system` are
+    // its only two children — so "my parent is the root and I am called
+    // `user`" identifies the user guardian exactly, and everything below it
+    // inherits.  The root cell is built from a literal blueprint rather than
+    // through `actorBlueprintOf`, which is why this is derived from the tree
+    // and not from an option.
+    this._userTree = parent !== null
+      && (parent._userTree || (parent._parent === null && name === USER_GUARDIAN_NAME));
     this._entity = blueprint.entity ?? null;
     this._displayNameOverride = blueprint.displayName ?? null;
     this.throughput = Math.max(1, blueprint.throughput ?? system._actorThroughput);
@@ -1680,16 +1705,25 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    *      policy included.
    *   2. `withMailboxCapacity(n)` — a `BoundedMailbox`.  The only place the
    *      framework picks an overflow policy on a caller's behalf.
-   *   3. Nothing — the unbounded base `Mailbox`.  #310 made bounded the
+   *   3. `actor-ts.mailbox.default.capacity` — the same `BoundedMailbox`, from
+   *      the operator rather than from the spawn site (#862), and only for a
+   *      strict descendant of `/user`.  The framework's own actors are under
+   *      `/system` and stay unbounded: a shard region or a reliable-delivery
+   *      producer that sheds messages breaks an invariant the application
+   *      never asked about and cannot see.  That scope is `_userTree`, which
+   *      is derived from the tree rather than from an opt-out list — every
+   *      framework actor goes through `ActorSystem._spawnSystemActor`, so
+   *      there is no list to keep current.
+   *   4. Nothing — the unbounded base `Mailbox`.  #310 made bounded the
    *      default and #1148 reversed it: a ceiling that discards the oldest
    *      queued message is not one an actor framework can impose unasked,
    *      because the envelope it evicts is as likely to be a delivery
    *      confirmation (#732) as it is to be telemetry.  The heap is the
-   *      ceiling now, and drawing a lower one is the caller's decision.
-   *      Growth is not silent: the cell warns at
+   *      ceiling now, and drawing a lower one is the caller's — or the
+   *      operator's — decision.  Growth is not silent: the cell warns at
    *      `MAILBOX_HIGH_WATER_MARK` and again at each doubling.
    *
-   * One class of envelope is out of every policy's reach in all three shapes
+   * One class of envelope is out of every policy's reach in all four shapes
    * since #729, and what defines the class is the door rather than the
    * message: whatever arrives through {@link postSignalEnvelope} carries
    * {@link Envelope.undroppable} and takes `Mailbox.enqueueSignal`.  Two
@@ -1700,7 +1734,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    * accepted, along with its backlog.
    *
    * Drop reporting is wired *after* the choice rather than inside it, so all
-   * three shapes get it on one line.  Wiring it at the construction site is
+   * four shapes get it on one line.  Wiring it at the construction site is
    * what made shape 1 invisible to `actor_mailbox_dropped_total` (#1149): the
    * cell can only pass `onDrop` into a mailbox it builds itself, and shape 1
    * is by definition one it did not.
@@ -1723,13 +1757,30 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     return mailbox;
   }
 
-  /** The queue itself — see {@link _createMailbox} for the three shapes. */
+  /**
+   * The queue itself — see {@link _createMailbox} for the four shapes.
+   *
+   * The system layer is applied with a plain `??` and not with
+   * `mergeOptions`, which is the same thing for a scalar and the shape
+   * `throughput` already resolves with a few lines up in the constructor.  It
+   * deliberately does not happen earlier, in `actorBlueprintOf`: the merged
+   * object goes straight to `ActorOptionsValidator`, whose #661 rule rejects
+   * `mailbox` together with `mailboxCapacity` — so folding a global capacity
+   * into the blueprint would make every `withMailbox(...)` spawn in the
+   * program throw the moment an operator set one.
+   */
   private _buildMailbox(blueprint: ActorBlueprint<TMessage>): Mailbox<TMessage> {
     if (blueprint.mailbox) return blueprint.mailbox();
-    if (blueprint.mailboxCapacity === undefined) return new Mailbox<TMessage>();
+    // `_parent?._userTree`, not `this._userTree`: the flag includes the `/user`
+    // guardian itself, and the guardians are the framework's, not the
+    // application's.
+    const systemDefault = this.system._defaultMailbox;
+    const capacity = blueprint.mailboxCapacity
+      ?? (this._parent?._userTree === true ? systemDefault.capacity : undefined);
+    if (capacity === undefined) return new Mailbox<TMessage>();
     return new BoundedMailbox<TMessage>({
-      capacity: blueprint.mailboxCapacity,
-      overflow: blueprint.mailboxOverflow ?? DEFAULT_MAILBOX_OVERFLOW,
+      capacity,
+      overflow: blueprint.mailboxOverflow ?? systemDefault.overflow ?? DEFAULT_MAILBOX_OVERFLOW,
     });
   }
 

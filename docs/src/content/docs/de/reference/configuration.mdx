@@ -154,6 +154,29 @@ der Nachricht — nie die Payload, aus demselben Datenschutzgrund, aus dem
 `dead-letters.store` auf `off` steht.  Jeder Key hier ist auch im Code
 setzbar, feldweise, über `ActorSystemOptions.withDiagnostics(…)`.  Siehe
 [Dead Letters](/de/operations/dead-letters/) für das ganze Bild.
+
+### `actor-ts.mailbox`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `mailbox.default.capacity` | `0` | Begrenzt jeden Actor unter `/user` auf so viele eingereihte User-Nachrichten, ohne eine Spawn-Stelle anzufassen.  `0` heißt: keine globale Schranke — das ist das ausgelieferte Verhalten.  Das hier ist also kein Nachjustieren, sondern der Schalter, der für alle Anwendungs-Actors auf einmal Nachrichtenverlust einführt. |
+| `mailbox.default.overflow` | `"drop-head"` | Systemweite Policy für **jede** begrenzte Mailbox: die globale Schranke oben und jeden Actor, der `withMailboxCapacity()` setzt, ohne eine eigene Policy zu nennen.  `drop-head` / `drop-new` / `reject`. |
+
+Die Schranke erreicht ausschließlich echte Nachfahren von `/user`.  Die
+eigenen Actors des Frameworks leben unter `/system` — Shard-Regions, der
+Pub-Sub-Mediator, der Reliable-Delivery-Producer, der DevTools-Hub — und ihren
+Verkehr abzuwerfen würde Invarianten brechen, nach denen die Anwendung nie
+gefragt hat und die sie nicht sieht.  Eine Spawn-Stelle sticht beide Keys:
+`ActorOptions.withMailboxCapacity()` überschreibt die Kapazität,
+`withMailbox()` ersetzt die Queue vollständig.
+
+Lies [Mailbox-Dimensionierung](/de/operations/tuning/mailbox-sizing/), bevor
+du das einschaltest.  Es ist der einzige Key in dieser Datei, der eine
+Nachricht in einem Actor verlieren kann, dessen Code nichts über eine Mailbox
+sagt — und die Seite nennt die beiden Fälle, `WebsocketServerActor` und seine
+Connections, in denen eine pauschale Schranke weiterhin erreichbar ist, weil
+User-Code sie spawnt.
+
 ### `actor-ts.dispatcher`
 
 | Key | Default | Zweck |

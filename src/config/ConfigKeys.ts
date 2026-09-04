@@ -60,6 +60,28 @@ export const ConfigKeys = {
   },
 
   /**
+   * The global mailbox bound — `actor-ts.mailbox.default.*` (#862).
+   *
+   * Read once, in the `ActorSystem` constructor, and layered *under* the
+   * per-spawn `ActorOptions` in `ActorCell`: explicit options win, this block
+   * is the fallback, and the built-in answer is still "unbounded".  It is the
+   * only knob in the file that can introduce message loss in an actor whose
+   * spawn site says nothing about a mailbox, which is why the reference
+   * comment spends more lines on the scope than on the values.
+   *
+   * Full dotted leaves rather than a `mailbox` block root, for the reason
+   * spelled out under `diagnostics` below: `NoDeadConfigKeys.coveringAccessor`
+   * falls back to the nearest root, so a root entry would satisfy the guard
+   * for a leaf nothing reads.
+   */
+  mailbox: {
+    default: {
+      capacity: 'actor-ts.mailbox.default.capacity',
+      overflow: 'actor-ts.mailbox.default.overflow',
+    },
+  },
+
+  /**
    * Dead-letter queue — `actor-ts.dead-letters.*`.  Read once, in the
    * `ActorSystem` constructor, before any actor exists: a queue installed
    * later would have missed whatever died in between.
