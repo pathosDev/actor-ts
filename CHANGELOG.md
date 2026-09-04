@@ -11,6 +11,199 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **BREAKING — Persistence plug-ins can now read their own HOCON block, and
+  durable state gained the plug-in axis it never had (#872, slice 1 of 3)
+  (#872).**
+
+  Until now `PersistenceExtension` read two plugin *ids* and nothing else:
+  every table name, retention bound and database path was constructor-only,
+  so a value that differs per environment could only be changed by editing
+  code — while the configuration reference already promised that
+  `actor-ts.persistence.journal.sqlite` held the SQLite journal's settings,
+  and the chat example set exactly that plugin id, which nothing registered.
+
+  - **A reader seam**, `src/persistence/StoreConfig.ts`. A plug-in's block
+    is named by the id it was registered under, so each reader takes a block
+    root and `storeLeaf` rebases a canonical `ConfigKeys` path onto it —
+    which keeps `ConfigKeys` the single place a leaf is spelled instead of a
+    second copy at the call site. Only scalars are readable: a pool, a
+    driver, a serializer and a pre-opened handle have no leaf at all, so a
+    config file cannot reach one. The merge runs inside the registered
+    factory, where the `ActorSystem` is in hand.
+  - **`actor-ts.persistence.durable-state.plugin`**, the third axis.
+    `PersistenceExtension` now carries `registerDurableStateStore`, a lazy
+    `durableStateStore` getter and `setDurableStateStore` beside the two it
+    had, with `InMemoryDurableStateStore` as the built-in default;
+    `DurableStateOptions.store` is optional, so an actor that names no store
+    uses the configured one exactly as a `PersistentActor` resolves its
+    journal. An unregistered id throws naming the id rather than falling
+    back silently. This is what the nine exported
+    `*_DURABLE_STATE_PLUGIN_ID` constants were always for — they had nothing
+    to select until now.
+  - **A SQLite plug-in**, `registerSqlitePlugins(ext)` with
+    `SQLITE_JOURNAL_PLUGIN_ID` / `SQLITE_SNAPSHOT_PLUGIN_ID` /
+    `SQLITE_DURABLE_STATE_PLUGIN_ID`. SQLite was the one shipped backend
+    with no registration story whatsoever. Twelve leaves ship with it —
+    `journal.sqlite.{path,events-table,wal,busy-timeout}`,
+    `snapshot-store.sqlite.{path,snapshots-table,keep-n,busy-timeout}` and
+    `durable-state.sqlite.{path,table,auto-create-tables,busy-timeout}` —
+    under the usual precedence, explicit options over HOCON over the
+    built-in defaults, per field. `path` is published as `""` rather than
+    `":memory:"`: three blocks each shipping a real default would let a
+    deployment point the journal at a file, leave the snapshot store alone,
+    and lose every snapshot on restart with the config file reading as if
+    that had been chosen.
+  - The table names, retention bound and auto-create switch the relational
+    and SQLite stores fall back to are now named constants in
+    `src/persistence/Constants.ts` rather than literals at between two and
+    six read sites, and are exported.
+
+  `examples/chat` registers the plug-ins instead of calling `setJournal()`,
+  so the ids in its `application.conf` are what actually selects the stores
+  — and its snapshot-store id, which said `in-memory` while the code
+  installed a SQLite store, now says what it does.
+
+  The remaining eight backend families (Postgres, MariaDB, MSSQL, libSQL,
+  Cloudflare D1, MongoDB, DynamoDB, Cassandra) keep their existing
+  constructor-only wiring for now and follow the same pattern in later
+  slices.
+
+  *Migration:* `DurableStateOptionsType.store` is now optional. Code that
+  *reads* it — `myActor.options.store` from outside, or `this.options.store`
+  in a `DurableStateActor` subclass — must handle `undefined`: inside a
+  subclass read the new protected `this.store`, which is always resolved;
+  outside, use `options.store ??
+  system.extension(PersistenceExtensionId).durableStateStore`. Every call
+  site that *sets* `store` compiles unchanged.
+
+- **A shard coordinator can now notice a region that stopped existing on a
+  node that is still up** (#853).  Opt in with
+  `actor-ts.sharding.stale-region-detection.enabled = on` (or
+  `withStaleRegionDetection()`): every region sends a claim-free
+  `sharding.RegionHeartbeat` every `heartbeat-interval` (5s), and the
+  coordinator re-homes the shards of a region it has not heard from for
+  `stale-after` (20s), on the rebalance tick it already runs.
+
+  The gap is narrower than it sounds, and worth reading before turning it
+  on. A node that stops gossiping is already force-downed by the failure
+  detector at `down-after` — 5s by default, and the validator will not let
+  it be disabled — and its regions' shards are re-homed from the resulting
+  `MemberRemoved`, four times faster than this. A region stopped cleanly
+  already tells the coordinator on its way down (#648). What neither covers
+  is a region gone or wedged on a node that keeps heartbeating, where that
+  notification never arrived: it is single-shot, unacknowledged, and its
+  send error is swallowed on the shutdown path, and nothing self-heals a
+  lost one because the candidate set is derived from the registry with no
+  liveness check.
+
+  Off by default, because eviction is destructive — every entity under every
+  shard the region held is stopped and re-created elsewhere. The switch
+  gates both halves, so with it off no region beats and no coordinator
+  sweeps and the mechanism costs nothing at all. Two further properties make
+  it safe to switch on mid-rollout: a region that has never beaten is never
+  swept, so a half-deployed cluster degrades to "not yet armed" rather than
+  to a loop of evictions; and `stale-after` must exceed
+  `heartbeat-interval`, checked against the resolved pair, so overriding one
+  cannot silently cross the other's default.
+
+  The beat is per sharded type rather than per node, so N types cost N
+  frames per interval per node on top of the cluster's own heartbeats. Two
+  keys the issue asked for are deliberately absent: `check-interval`,
+  because the sweep rides `rebalance-interval` and a second timer would be
+  two dials for one question, and `startup-grace-period`, because a region
+  seeded from a persisted snapshot is stamped fresh and left unarmed, which
+  is derived rather than configured. #853
+
+- **`actor-ts.distributed-data` gains two keys, `log-data-size-exceeding`
+  and `durable-keys`, both wired to mechanisms that already existed**
+  (#856).
+
+  `log-data-size-exceeding` (default `100K`, `0` to disable) names a key
+  whose own encoded size passes the threshold and keeps gossiping it — a
+  report, never a skip. Until now the only size signal was total
+  non-convergence: a key past the whole 1 MiB `max-gossip-bytes` budget is
+  skipped and warned about, while a key at a large fraction of it travels
+  perfectly and quietly consumes that fraction of every tick it appears in,
+  slowing the sweep for everything else with nothing to say why. The default
+  is derived from the shipped budget rather than copied from Akka: roughly a
+  tenth of it, the point at which ten such keys fill one frame and every
+  other key waits an extra sweep per offender. Akka's `10KiB` would be 1 %
+  of a tick here and would fire on the first legitimate `ORSet` a deployment
+  stores. The warning has its own quiet period rather than sharing the
+  oversize warning's — raising `max-gossip-bytes` is the fix for that one
+  and makes this one more relevant, so neither may silence the other — and
+  the check runs before the budget decision, so an oversized key trips both
+  lines.
+
+  `durable-keys` (default `[]`) narrows what a configured `durableStore`
+  persists, filtering the saved snapshot rather than the live view: an
+  excluded key still gossips, merges and answers `get`, it simply is not on
+  disk. An empty list means every key — the behaviour of every earlier
+  release — and never "persist nothing"; persisting nothing is what
+  configuring no store does. An entry is an exact key name or a prefix with
+  one trailing `*`; anything richer would mean compiling a matcher out of an
+  operator-edited config file, and a regex built from config is a ReDoS
+  surface on the path that decides what survives a restart, so the validator
+  refuses it. Two consequences are documented because neither follows from
+  the name: a replica's record is replaced wholesale on every save, so
+  removing an entry drops the keys it named on the next mutation, and a
+  non-empty list with no `durableStore` is inert and now warns at startup
+  instead of being ignored.
+
+  Seven further keys the issue proposed are deliberately not shipped,
+  because nothing behind them exists to configure: the three `delta-crdt`
+  keys describe a replication mode `src/crdt/Crdt.ts` documents as unbuilt
+  (#444), the three pruning keys schedule a pass that is a literal no-op
+  (#955, with the marker TTL belonging to #690), and
+  `notify-subscribers-interval` tunes a cadence subscribers do not have.
+  `expire-keys-after-inactivity` is left out for the same reason — a locally
+  expired key is resurrected by the next inbound gossip, which makes it
+  #690's.
+
+- **Reliable delivery is configurable from HOCON for the first time, under a
+  new `actor-ts.reliable-delivery` block** (#861).  `src/delivery/` read no
+  configuration at all before this — no block in `reference.conf`, no group
+  in `ConfigKeys`, and nothing under `src/delivery/` so much as mentioning
+  `Config` — so the four tunables that exist were settable only in code.
+
+  Four keys ship:
+
+  - `actor-ts.reliable-delivery.producer.resend-timeout` (`500ms`) — how
+    long the producer waits for an acknowledgment before retransmitting the
+    same seq.
+  - `actor-ts.reliable-delivery.producer.window-size` (`16`) — flow-control
+    window: at most this many un-acked messages in flight.
+  - `actor-ts.reliable-delivery.consumer.max-producers` (`1024`) — most
+    producers the consumer keeps deduplication state for at once; `0` =
+    unbounded.
+  - `actor-ts.reliable-delivery.consumer.producer-idle-time-to-live` (`5m`)
+    — how long a producer's deduplication entry survives with no delivery
+    from it; `0` turns the sweep off.
+
+  They layer in `ReliableDelivery.producer(...)` / `.consumer(...)` in the
+  usual order — explicit options beat HOCON, HOCON beats the built-in
+  defaults — and only there: neither controller can read configuration in
+  its constructor, because `system` is a getter over a context the cell
+  injects afterwards, so a controller constructed directly and handed to
+  `system.spawn` keeps its built-in defaults. Both delivery documentation
+  pages say so, and a test pins it.
+
+  `0` is how both consumer bounds spell the `Infinity` their option fields
+  document, matching `cluster.max-members` and `sharding.max-entities`:
+  `Infinity` cannot be written in HOCON at all, since the number reader
+  takes a numeric literal and the duration parser refuses a non-finite
+  value.
+
+  The issue's remaining key sketch is deliberately absent, because each of
+  those keys would have been dead on arrival: the flow-control window is a
+  producer field here rather than a consumer one, there is no resend backoff
+  to tune (one fixed interval is re-armed unchanged on every miss), there is
+  no flow-control-only mode, `Delivery<T>` carries no chunk index, and no
+  durable producer queue exists — that half is #460. `producer-id` gets no
+  key on purpose: one value shared across every producer in a process
+  corrupts the consumer's deduplication window rather than tuning anything.
+  #861.
+
 - **BREAKING — `actor-ts.http.cors` makes the per-route CORS policy settable
   from a config file (#878).**
 
@@ -1226,6 +1419,45 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`fundamentals/throttling`, EN + DE).
 
 ### Security
+
+- **BREAKING — A cluster peer, or an outside `ClusterClient`, can no longer
+  reach a `/system` framework actor by naming its path (#877).**
+
+  `Cluster.dispatchEnvelope` and `ClusterClientReceptionist` both resolved
+  the peer-supplied `to` string through `ActorSystem._resolvePath`, which
+  walks from the root cell with no guardian scope — so shard coordinators
+  and regions, singleton managers, the pub-sub mediator, the DistributedData
+  replica and both DevTools lanes were addressable by anyone who completed a
+  `hello`, past the per-path handler each of them registers and therefore
+  with no sender attached at all (#964). Those handlers remain the way a
+  framework actor is reached; only generic path resolution is closed, and no
+  configuration reopens it.
+
+  Two new keys narrow the other half. `/user` stays open by default, because
+  a peer naming an application actor is how an `ActorRef` works across
+  nodes; `actor-ts.remote.untrusted-mode = true` then admits an inbound
+  envelope only when `actor-ts.remote.trusted-selection-paths` lists its
+  target. An entry is an exact path unless it ends in `/*`, which makes it
+  that path and its whole subtree — segment-anchored, so `/user/orders/*`
+  admits `/user/orders/7` and refuses `/user/orders-archive`. A `*` anywhere
+  else is rejected at startup rather than matched literally. In code the
+  pair is `ClusterOptions.withUntrustedMode(…)` and
+  `withTrustedSelectionPaths(…)`.
+
+  Refusals are counted on `cluster_envelope_refusals_total{reason, frame}`
+  and folded into at most one WARN per reason every 30 seconds, naming the
+  connection's peer and never the requested path: an envelope is its own
+  frame, so a line per refusal would let a peer write the node's log at
+  message rate. At the receptionist a refused path is answered with the same
+  `path not found` a genuine miss gets, so the endpoint cannot be walked as
+  an existence oracle for the actor tree. #877.
+
+  *Migration:* A `ClusterClient` that addressed a framework actor by an
+  absolute `/system/…` path — `client.ask('system/cluster/…', …)` — now
+  receives `path not found`. Reach the extension through its own API
+  (`ClusterSharding`, `ClusterSingleton`, `DistributedPubSub`, …) instead.
+  Nothing else moves: `/user` paths behave exactly as before until you set
+  `actor-ts.remote.untrusted-mode = true`.
 
 - **BREAKING — The chat example refuses to start without a session secret
   (#791).**

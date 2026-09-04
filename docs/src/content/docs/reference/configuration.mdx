@@ -315,6 +315,8 @@ released by death watch and do not count against either cap.
 | `distributed-data.max-pending-quorum-requests` | `1000` | Cap on unsettled quorum requests — `updateAsync` and `getAsync` share one budget.  A request past it is rejected outright.  `0` disables the cap. |
 | `distributed-data.max-quorum-timeout` | `30s` | Ceiling on a caller's per-call `timeoutMs`; a larger value is clamped down to this one.  `0` disables the ceiling. |
 | `distributed-data.max-gossip-bytes` | `1M` | Byte budget for one gossip frame's payload.  A larger store is pushed a slice per tick, resuming where the last one stopped.  `0` removes the budget. |
+| `distributed-data.log-data-size-exceeding` | `100K` | Warn (rate-limited) about a key whose own encoding passes this many bytes.  Reports only — the key is gossiped exactly as it would have been.  `0` never warns. |
+| `distributed-data.durable-keys` | `[]` | Which keys a configured `durableStore` persists.  **Empty means every key.**  An entry is an exact key name or a prefix with one trailing `*`. |
 
 `max-gossip-bytes` is always **clamped down to `remote.max-frame-bytes`**, so
 lowering the wire cap lowers the gossip budget with it and no setting can put
@@ -339,6 +341,31 @@ uncapped replicator under load accumulates all three with nothing to stop it.
 Refusing past `max-pending-quorum-requests` turns what would arrive later as a
 timeout storm into immediate rejections that name the knob.  See
 [Quorum reads and writes](/distributed-data/quorum-reads-writes/).
+
+`log-data-size-exceeding` reports on the same measurement `max-gossip-bytes`
+takes, one order of magnitude earlier, and changes nothing about what travels.
+A key past the whole budget is already loud; a key at a large *fraction* of it
+gossips perfectly while consuming that fraction of every tick it appears in, so
+the rest of the store sweeps proportionally slower with nothing to say why.
+`100K` is roughly a tenth of the shipped budget — ten such keys fill a whole
+frame — and deliberately not Akka's `10KiB`, which is a tenth of that again and
+would fire on the first legitimate `ORSet` a deployment stores.  The line has
+its own quiet period rather than sharing the oversize warning's: raising
+`max-gossip-bytes` is the fix for that one and makes this one *more* relevant,
+so neither may silence the other.
+
+`durable-keys` narrows what a configured `durableStore` writes; without a store
+it is inert, and a non-empty list with no store is warned about at startup.
+**An empty list means every key** — the behaviour of every release before the
+option existed — never "persist nothing"; persisting nothing is what
+configuring no store does.  An entry is an exact key name or a prefix with one
+trailing `*` (`session-*`), and that is the entire syntax: a richer pattern
+would mean compiling a matcher out of a config file, and `new RegExp(…)` over
+operator-supplied text is a ReDoS surface on the path that decides what
+survives a restart.  A replica's record is rewritten whole on every save, so
+**removing an entry drops the keys it named** from the persisted record on the
+next mutation.  See
+[Durable storage](/distributed-data/durable-storage/).
 
 `max-quorum-timeout` bounds the other axis.  A pending request holds one of
 those slots for its whole deadline, so a single caller passing an hour-long
@@ -411,6 +438,8 @@ unifying them. Set them per lease in code.
 | `remote.tcp.advertised-port` | *(unset)* | The port peers **dial**.  Unset means the same as `remote.tcp.port` — set it only where the deployment publishes the process on a different one.  Absent from `reference.conf` for the same reason as `advertised-host`. |
 | `remote.max-frame-bytes` | `16M` | Per-frame wire cap.  A frame whose length-prefix exceeds it is rejected before any payload is buffered. |
 | `remote.tls.enabled` | `false` | **Not honoured** — `true` buys a startup warning, not encryption.  See below. |
+| `remote.untrusted-mode` | `false` | Admit an inbound envelope only when `trusted-selection-paths` lists its target.  Off, any `/user` actor is addressable by name — which is what makes an `ActorRef` work across nodes.  `/system` is refused either way.  See below. |
+| `remote.trusted-selection-paths` | `[]` | Paths a peer may address by name while `untrusted-mode` is on.  Empty means: nothing beyond the framework endpoints this node registered. |
 
 `host`/`port` are the **bind** pair and `advertised-host`/`advertised-port`
 the **identity** pair: the first says where the listener opens, the second
@@ -450,6 +479,60 @@ whole configuration.
 itself.  If you construct a `TcpTransport` yourself and pass it via
 `withTransport(…)`, set its cap there — the framework will not re-cap a
 transport it did not create.
+
+#### Who a peer may address by name
+
+An inbound `envelope` frame carries the target path the **sender** chose, and
+the node resolves it against its own actor tree.  That is the one thing on the
+cluster wire a remote party picks freely, and the two keys above are the scope
+around it.
+
+`/system` is not part of that scope.  The framework's own actors — shard
+coordinators and regions, singleton managers, the pub-sub mediator, the
+DistributedData replica, both DevTools lanes — are reachable only through the
+per-path handler each of them registers, in both modes.  That door attaches the
+connection's identity to the frame; resolving a path by name never did, which is
+why a body arriving that way had no sender at all.  This is a **change in
+behaviour**: before it, anyone who completed a `hello` could address them
+([issue #964](https://github.com/pathosDev/actor-ts/issues/964)).
+
+`untrusted-mode` narrows the other half.  Off — the default — a peer may name
+any `/user` actor, which is what a `RemoteActorRef` rebuilt from a wire ref
+does and what makes an `ActorRef` usable across nodes at all.  On, only the
+paths you list:
+
+```hocon
+actor-ts.remote {
+  untrusted-mode          = true
+  trusted-selection-paths = ["/user/orders/*", "/user/reporting/intake"]
+}
+```
+
+An entry is one **exact** path unless it ends in `/*`, in which case it is that
+path and everything below it.  The suffix is segment-anchored, so
+`/user/orders/*` admits `/user/orders/7` and refuses `/user/orders-archive`;
+nothing else here is a pattern, and a `*` anywhere but as the whole final
+segment is rejected at startup rather than matched literally.  Paths are written
+guardian-rooted, the way the tree renders them; the leading `/` is optional.
+
+Turn the mode on where the cluster network crosses a boundary you do not
+control — the same networks `remote.max-frame-bytes` is worth lowering on.  What
+it costs is that any actor a peer addresses by name has to be listed, including
+the ones reached through a ref that travelled over the wire, so start by
+watching `cluster_envelope_refusals_total{reason="not-allow-listed"}` on a node
+with the mode on and an allow-list you expect to be complete.
+
+Refusals are counted rather than logged one by one: an envelope is its own
+frame, so a line per refusal would let a peer write this node's log at message
+rate.  The first refusal of each reason is logged at `WARN` and further ones are
+folded into at most one line every 30 seconds, naming the **connection's** peer
+and never the requested path.
+
+The same rule applies to `ClusterClientReceptionist`, and it is the more exposed
+of the two seams: a [`ClusterClient`](/cluster/cluster-client/) never joined the
+membership ring.  A refused path is answered with the identical `path not found`
+the client gets for a path that does not exist, so the endpoint cannot be used
+to map the actor tree.
 
 :::caution[`remote.tls.enabled` does not encrypt anything]
 The key is read, but not honoured.  Setting it to `true` does **not** enable
@@ -604,6 +687,36 @@ The same leaf rule and the same startup rejection apply here: kebab-case, unit
 suffix dropped, and a retired camelCase spelling is a `ConfigError` rather than
 a cap that silently reverted to the default.
 
+### `actor-ts.reliable-delivery`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `reliable-delivery.producer.resend-timeout` | `500ms` | How long the producer waits for an acknowledgment before retransmitting the same seq.  One fixed interval, re-armed unchanged on every miss — there is no backoff. |
+| `reliable-delivery.producer.window-size` | `16` | Flow-control window: at most this many un-acked messages in flight.  Further sends queue in memory until an acknowledgment opens a slot. |
+| `reliable-delivery.consumer.max-producers` | `1024` | Most producers the consumer keeps deduplication state for at once.  At the cap the least-recently-used entry is evicted.  `0` = unbounded. |
+| `reliable-delivery.consumer.producer-idle-time-to-live` | `5m` | How long a producer's deduplication entry survives with no delivery from it; the sweep runs on this same interval.  `0` turns the sweep off. |
+
+Both blocks layer under whatever `ReliableDelivery.producer(...)` /
+`ReliableDelivery.consumer(...)` was passed, so an explicit `withWindowSize(…)`
+still wins.  **They are read there and nowhere else.**  Neither controller can
+read configuration in its constructor — `Actor.system` is a getter over a
+context the cell injects afterwards — so a controller you construct yourself
+and hand to `system.spawn` keeps its built-in defaults and never sees this
+block.
+
+`0` is how both consumer bounds spell the `Infinity` their option fields
+document, because `Infinity` cannot be written in HOCON at all: the number
+reader takes a numeric literal and the duration parser refuses a non-finite
+value.  It is the same spelling `cluster.max-members` and
+`sharding.max-entities` already use.  What it costs is worth stating plainly:
+the deduplication map is keyed by a `producerId` the *sender* chooses, so `0`
+hands a peer the decision about how much this consumer retains — one entry per
+distinct id, never released.
+
+`maxOutOfOrder`, the third consumer bound, deliberately ships no key yet: it
+landed after this block was specified and gets its own follow-up rather than a
+leaf nobody sized.
+
 ### `actor-ts.serialization`
 
 | Key | Default | Purpose |
@@ -691,6 +804,19 @@ because the name lives inside the result the check never returned.
 | --- | --- | --- |
 | `persistence.journal.plugin` | `"...in-memory"` | Fully-qualified key to the journal's config. |
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Fully-qualified key to the snapshot store's config. |
+| `persistence.durable-state.plugin` | `"...in-memory"` | Fully-qualified key to the durable-state store's config. |
+| `persistence.journal.sqlite.path` | `""` | Database file.  Empty is *not set* — the journal falls through to an anonymous in-memory database. |
+| `persistence.journal.sqlite.events-table` | `"events"` | Event table.  The tags (`_tags`) and metadata (`_meta`) tables follow this name. |
+| `persistence.journal.sqlite.wal` | `off` | Open the database with `journal_mode = WAL` — concurrent readers during a write. |
+| `persistence.journal.sqlite.busy-timeout` | `1s` | How long a blocked writer waits for the lock before `SQLITE_BUSY`; `0` fails fast. |
+| `persistence.snapshot-store.sqlite.path` | `""` | As above — empty means not set. |
+| `persistence.snapshot-store.sqlite.snapshots-table` | `"snapshots"` | Snapshot table. |
+| `persistence.snapshot-store.sqlite.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
+| `persistence.snapshot-store.sqlite.busy-timeout` | `1s` | As above. |
+| `persistence.durable-state.sqlite.path` | `""` | As above.  This store has no in-memory fallback — supply a path or a handle. |
+| `persistence.durable-state.sqlite.table` | `"durable_state"` | Durable-state table. |
+| `persistence.durable-state.sqlite.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.durable-state.sqlite.busy-timeout` | `1s` | As above. |
 | `persistence.snapshot-store.object-storage.backend` | `""` | Which backend the object-storage plugin builds — `filesystem`, `s3`, or empty to leave it to code. |
 | `persistence.snapshot-store.object-storage.prefix` | `""` | Prepended to every object key — e.g. `env-prod/`. |
 | `persistence.snapshot-store.object-storage.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
@@ -728,11 +854,34 @@ client-side encryption and silently got plaintext is the worse outcome;
 configure that mode in code with `ObjectStoragePluginOptions.withEncryption(…)`.
 `kms-key-id` is fine — an ARN is a name, and the key itself never leaves KMS.
 
+**`durable-state.plugin` is the third axis**, and it is new.  Durable state used
+to be the one persistence contract with no registry: every `registerXxxPlugins`
+helper built its store eagerly and handed it back, so a `DurableStateActor` had
+to be given that instance in code.  It is now selected exactly like the journal
+and the snapshot store, and `DurableStateOptions.store` is optional — an actor
+that names no store uses whichever this key selects.
+
+**SQLite is registered with `registerSqlitePlugins(ext)`**, and needs no options
+at all when the three blocks above are filled in:
+
+```ts
+const ext = system.extension(PersistenceExtensionId);
+registerSqlitePlugins(ext);          // path, tables, retention … from HOCON
+```
+
+Precedence is the usual three layers — explicit `RegisterSqlitePluginsOptions`
+outrank the block, the block outranks the built-in defaults, per field, and a
+field left unset in code falls through instead of shadowing.  A `path` given in
+code is shared by all three stores as a *default*, so a leaf that names its own
+keeps it; a pre-opened `database` is an override, because sharing one handle is
+the more specific instruction.  There is no leaf for a `driver`, a `database` or
+a `serializer` — those are live objects, and a config file cannot express one.
+
 The plugin keys point to *another* config section that holds
-that plugin's settings.  E.g. `actor-ts.persistence.journal.sqlite`
-contains the SQLite journal's `path`, `pragmas`, etc.  See each
-journal page in [Persistence](/persistence/overview/) for
-the per-plugin keys.
+that plugin's settings.  `actor-ts.persistence.journal.sqlite` above is the
+worked example: it is both the id the journal is registered under and the block
+that journal reads.  See each journal page in
+[Persistence](/persistence/overview/) for the per-plugin keys.
 
 ### `actor-ts.projection`
 
@@ -818,6 +967,9 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.entity-recovery.strategy` | `all` | How remembered entities come back after a region is handed a shard.  `all` starts every one at once — today's behaviour, and the reason the default did not move.  `constant-rate` paces them, see [pacing a remembered-entity restore](#pacing-a-remembered-entity-restore) below. |
 | `sharding.entity-recovery.constant-rate.frequency` | `100ms` | Gap between two paced recovery batches.  Ignored under `strategy = all`. |
 | `sharding.entity-recovery.constant-rate.number-of-entities` | `5` | Entities one paced batch starts.  **A region-wide budget, not a per-shard one** — the queue is fed by every shard the node owns, so this is entity starts per window *on this node*.  Ignored under `strategy = all`. |
+| `sharding.stale-region-detection.enabled` | `off` | Make each region beat to the coordinator and let the coordinator evict one that goes silent.  Off by default — eviction is destructive.  See [detecting a region that went silent](#detecting-a-region-that-went-silent) below. |
+| `sharding.stale-region-detection.heartbeat-interval` | `5s` | Gap between two region → coordinator beats.  **Per sharded type, not per node.**  Inert while `enabled = off`. |
+| `sharding.stale-region-detection.stale-after` | `20s` | Silence after which a region is declared gone and its shards re-homed.  Must be greater than `heartbeat-interval`, and by more than one beat.  Inert while `enabled = off`. |
 
 These apply to **every** sharded type started on the node.  They are read
 once per `sharding.start(...)` and layered under whatever that call passes
@@ -950,6 +1102,53 @@ Three things about that bound are worth stating plainly:
 
 Set `rebalance-relative-limit = 0` (with the absolute limit already `0`) to
 restore the unbounded behaviour.
+
+#### Detecting a region that went silent
+
+Read the scope before reaching for this: it is a **backstop for one narrow
+case**, and the case most people mean is already covered without it.
+
+A node that stops gossiping is force-downed by the [failure
+detector](/cluster/failure-detector/) after
+`actor-ts.cluster.failure-detector.down-after` — 5 s by default, and not
+switchable off — and the coordinator re-homes its shards from the resulting
+`MemberRemoved`.  A region stopped cleanly tells the coordinator on its way
+down.  What neither covers is a region that is **gone or wedged on a node that
+is still up and gossiping**, where that notification never arrived: it is
+single-shot, unacknowledged, and a transport failure on the way down is logged
+and swallowed.  Then the shards stay allocated to an actor that does not exist,
+and nothing self-heals — the candidate set is derived from the registry with no
+liveness check.
+
+```hocon
+actor-ts.sharding.stale-region-detection {
+  enabled = on
+  heartbeat-interval = 5s
+  stale-after = 20s
+}
+```
+
+Four things worth knowing before turning it on:
+
+- **The switch drives both halves.**  Off, no region beats and no coordinator
+  sweeps, so the mechanism costs nothing at all.  On, every region of every
+  sharded type sends one small frame per `heartbeat-interval`.
+- **The beat is per sharded type, not per node.**  Ten types on a node is ten
+  frames per interval, on top of the cluster's own heartbeats.
+- **A region that never beats is never swept.**  That is what makes turning the
+  key on safe mid-deployment: for as long as the leader runs with it on and
+  some regions do not, those regions are simply not armed yet, rather than
+  evicted on a timer and re-registering in a loop.
+- **`stale-after` must exceed `heartbeat-interval`**, and the shipped four
+  intervals is deliberate: at one, a single dropped frame evicts a healthy
+  region and stops every entity under every shard it held.  A pair that crosses
+  is rejected at `sharding.start(...)`, against the resolved values, so
+  overriding one cannot silently cross the other's default.
+
+There is deliberately no `check-interval`.  The sweep rides the
+`rebalance-interval` tick, which is already the dial for how often the
+coordinator looks at the shard map, so the detection latency is `stale-after`
+plus at most one tick.
 
 A per-type setting therefore belongs in the builder; the config file is for
 the node-wide baseline you want to move between staging and production

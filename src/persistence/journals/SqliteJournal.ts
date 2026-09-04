@@ -12,7 +12,7 @@ import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 import { assertValidEntryTags } from '../storage/TagValidator.js';
-import { STORAGE_IDENTITY_TABLE } from '../Constants.js';
+import { DEFAULT_EVENTS_TABLE, DEFAULT_SQLITE_PATH, STORAGE_IDENTITY_TABLE } from '../Constants.js';
 import { applySqliteBusyTimeout } from './SqliteClient.js';
 import { SqliteJournalOptionsValidator } from './SqliteJournalOptions.js';
 import type { SqliteJournalOptions, SqliteJournalOptionsType } from './SqliteJournalOptions.js';
@@ -101,7 +101,7 @@ export class SqliteJournal implements Journal {
     // Table name is interpolated into DDL/DML (can't be bound) — validate it
     // so a config-sourced identifier can't inject SQL (security audit #6).
     // The `_tags` sibling is derived from this validated name, so it's safe too.
-    this.table = assertSafeIdentifier(resolvedOptions.eventsTable ?? 'events', 'events table');
+    this.table = assertSafeIdentifier(resolvedOptions.eventsTable ?? DEFAULT_EVENTS_TABLE, 'events table');
   }
 
   /** The configured payload serializer — read by `SqliteQuery` so tag reads decode like the journal. */
@@ -328,7 +328,7 @@ export class SqliteJournal implements Journal {
 
   private async init(): Promise<void> {
     const driver = this.options.driver ?? await getSqliteDriver();
-    const db = driver.open(this.options.path ?? ':memory:');
+    const db = driver.open(this.options.path ?? DEFAULT_SQLITE_PATH);
     // Before the DDL, not after: `CREATE TABLE` takes the write lock itself,
     // so a second process starting against the same file is the first thing
     // that can hit SQLITE_BUSY.

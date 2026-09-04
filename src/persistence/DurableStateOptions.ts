@@ -5,7 +5,18 @@ import { persistenceIdRejection } from './storage/PersistenceIdValidator.js';
 
 export type DurableStateOptionsType<S> = {
   readonly persistenceId: string;
-  readonly store: DurableStateStore;
+  /**
+   * The backing store.  **Optional since #872** — left unset, the actor uses
+   * the store `PersistenceExtension` resolves from
+   * `actor-ts.persistence.durable-state.plugin`, exactly as `PersistentActor`
+   * has always resolved its journal.
+   *
+   * Naming one here is still the right call for a store the application owns
+   * (a shared handle, a spy in a test, one of several stores in one process);
+   * it simply stopped being the *only* way to have one, which is what kept
+   * durable state out of the plug-in selection story.
+   */
+  readonly store?: DurableStateStore;
   /** Factory invoked when no record exists yet. */
   readonly emptyState: () => S;
 };

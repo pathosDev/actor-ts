@@ -22,8 +22,21 @@ For the operational context, see
 | Compromised cert (issued for a stolen identity) | Cert rotation + revocation |
 | Replay of a captured gossip frame | TLS, plus the per-sender frame sequence every cluster enforces |
 | A member speaking for another node in a payload | Framework handlers hold a payload's claimed identity against the connection's peer — see [what a replica trusts from its peers](/persistence/replicated-event-sourcing/overview/#what-a-replica-trusts-from-its-peers) |
+| A peer addressing a framework actor (`/system/…`) by name | Refused unconditionally: framework actors are reachable only through the per-path handler each registers, at both the cluster wire and the `ClusterClientReceptionist` |
+| A peer addressing arbitrary application actors by name | `actor-ts.remote.untrusted-mode = true` plus `trusted-selection-paths` — see [configuration](/reference/configuration/#actor-tsremote) |
 
-mTLS is what makes the last row work rather than something it
+The `/system` row needs nothing configured and cannot be turned off.
+An `envelope` carries the path the *sender* chose, and resolving it
+against the actor tree is the one place a remote party picks the
+target — reaching a coordinator, a singleton manager or the pub-sub
+mediator that way went round the handler that would have known which
+connection the frame came in on.  The row below it is the same question
+for `/user`, where the answer is a deployment's own: naming an
+application actor is how an `ActorRef` works across nodes, so it stays
+open until you narrow it.  Refusals land on
+`cluster_envelope_refusals_total{reason, frame}`.
+
+mTLS is what makes the "speaking for another node" row work rather than something it
 duplicates: holding a claim against the connection's peer is only
 worth anything once the peer is authenticated.
 

@@ -1,6 +1,7 @@
 import {
   DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM,
   DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE,
+  DEFAULT_SNAPSHOT_KEEP_N,
   OBJECT_STORAGE_SNAPSHOT_LEAF_SUFFIX,
   OBJECT_STORAGE_SNAPSHOT_NAMESPACE,
   SEQ_PADDING,
@@ -29,7 +30,7 @@ import type { StorageLocality } from '../StorageLocality.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { none, some, type Option } from '../../util/Option.js';
-import { DEFAULT_SNAPSHOT_KEEP_N, ObjectStorageSnapshotStoreOptionsValidator } from './ObjectStorageSnapshotStoreOptions.js';
+import { ObjectStorageSnapshotStoreOptionsValidator } from './ObjectStorageSnapshotStoreOptions.js';
 import type { ObjectStorageSnapshotStoreOptions, ObjectStorageSnapshotStoreOptionsType } from './ObjectStorageSnapshotStoreOptions.js';
 
 

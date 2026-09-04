@@ -91,6 +91,40 @@ Ein einfaches Objekt funktioniert überall dort, wo auch der Builder
 funktioniert — `{ handler, maxProducers }` — und ist die Kurzform, die der Rest
 dieser Seite verwendet.
 
+### Aus HOCON
+
+Zwei der drei Grenzen werden zusätzlich aus
+[`actor-ts.reliable-delivery.consumer`](/de/reference/configuration/#actor-tsreliable-delivery)
+gelesen, in der üblichen Reihenfolge des Projekts: **explizite Optionen
+schlagen HOCON, und HOCON schlägt die eingebauten Defaults**.
+
+```hocon
+actor-ts.reliable-delivery.consumer {
+  max-producers              = 64
+  producer-idle-time-to-live = 1m
+}
+```
+
+`0` ist die Schreibweise, mit der beide Schlüssel das `Infinity` der
+Optionsfelder ausdrücken, denn `Infinity` lässt sich in HOCON überhaupt nicht
+schreiben — der Zahlen-Reader nimmt ein numerisches Literal, und der
+Duration-Parser weist einen nicht-endlichen Wert ab.  Es ist dieselbe
+Schreibweise, die `cluster.max-members` und `sharding.max-entities` bereits
+verwenden, und sie kostet genau das, was der folgende Abschnitt beschreibt: die
+Map ist auf eine `producerId` geschlüsselt, die der *Sender* wählt — `0`
+überlässt damit einem Peer die Entscheidung, wie viel dieser Consumer behält.
+
+`handler` hat keinen Schlüssel — er ist eine Funktion und das einzige
+Pflichtfeld, keine Stellschraube.  `maxOutOfOrder` hat bisher ebenfalls keinen;
+diese Grenze kam erst nach der Spezifikation des Blocks dazu und bekommt ein
+eigenes Folge-Issue.
+
+**Das Layering passiert in `ReliableDelivery.consumer(...)`, also sieht nur
+dieser Pfad es.**  Ein `ConsumerController`, den Du selbst konstruierst und an
+`system.spawn` übergibst, behält seine eingebauten Defaults: kein Controller
+kann in seinem Konstruktor Konfiguration lesen, denn `system` ist ein Getter
+über einen Kontext, den die Zelle erst nach der Konstruktion injiziert.
+
 ### Warum der Dedup-State ein Budget hat
 
 Der Schlüssel der Map ist die `producerId` aus dem Envelope, und die wählt
@@ -196,7 +230,7 @@ new ConsumerController<OrderEvent>({
 ```
 
 Werfen (oder ein gerejectetes Promise zurückgeben) **verhindert
-das ACK**.  Der `resendTimeoutMs`-Timer des Producers feuert und
+das ACK**.  Der `resendTimeout`-Timer des Producers feuert und
 schickt dieselbe Seq erneut.  Das ist der einzige
 "NACK"-Mechanismus — es gibt keine explizite NACK-Nachricht.
 
@@ -258,7 +292,7 @@ Stall.
 ```
 Consumer crasht mitten im Handler:
   - Handler resolved nie → kein ACK gesendet
-  - Producer retransmittiert nach `resendTimeoutMs`
+  - Producer retransmittiert nach `resendTimeout`
   - Neuer Consumer (oder restarteter alter) sieht die Seq erneut
   - Der In-Memory-Dedup-State des Controllers ist weg, Handler läuft erneut
 ```

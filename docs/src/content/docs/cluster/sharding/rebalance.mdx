@@ -27,7 +27,7 @@ nothing races past a half-moved entity.
 
 ## What triggers rebalance
 
-Three paths:
+Four paths:
 
 1. **Membership-driven** — `MemberRemoved` (a leaving node) and a
    leader change.  Those are the only two cluster events the
@@ -46,8 +46,16 @@ Three paths:
    down, and its shards are reallocated immediately.  This covers a
    region stopped on a node that stays in the cluster, where no
    membership event fires at all.
+4. **A region going silent** — opt-in, and the backstop for a lost
+   notification from path 3.  With
+   `actor-ts.sharding.stale-region-detection.enabled = on` every region
+   beats to the coordinator, and a region that stops beating for
+   `stale-after` is treated exactly as if it had said goodbye.  Off by
+   default; see [detecting a region that went
+   silent](/reference/configuration/#detecting-a-region-that-went-silent)
+   for what it does and does not cover.
 
-The first two feed into the handoff protocol below.  The third does
+The first two feed into the handoff protocol below.  The last two do
 not: the region is already gone, so there is nothing to hand off —
 the coordinator simply drops it from the registry and re-allocates.
 
@@ -63,6 +71,14 @@ The notification is best-effort and idempotent: it is skipped if the
 region never found a coordinator, a transport failure on the way down
 is logged and swallowed, and the `MemberRemoved` path that follows a
 whole-node shutdown finds the region already gone and does nothing.
+
+Best-effort is why the fourth path exists.  A lost notification puts the
+cluster back in exactly the orphaned state above, and only the beat can
+notice — the node is still up, so no membership event will ever fire.
+The sweep rides the same periodic tick as path 2, inside the same
+"am I the active coordinator?" guard, and evicts through the same code
+path as path 3, so a region that did manage to say goodbye is already
+gone from the registry and cannot be evicted twice.
 
 ## The handoff sequence
 

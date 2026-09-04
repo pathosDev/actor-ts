@@ -88,6 +88,38 @@ const consumer = system.spawn(
 A plain object works everywhere the builder does — `{ handler, maxProducers }`
 — and is the shorthand the rest of this page uses.
 
+### From HOCON
+
+Two of the three bounds also read from
+[`actor-ts.reliable-delivery.consumer`](/reference/configuration/#actor-tsreliable-delivery),
+in the project's usual order: **explicit options beat HOCON, and HOCON beats
+the built-in defaults**.
+
+```hocon
+actor-ts.reliable-delivery.consumer {
+  max-producers              = 64
+  producer-idle-time-to-live = 1m
+}
+```
+
+`0` is how both keys spell the `Infinity` the option fields document, because
+`Infinity` cannot be written in HOCON at all — the number reader takes a
+numeric literal and the duration parser refuses a non-finite value.  It is the
+same spelling `cluster.max-members` and `sharding.max-entities` already use,
+and it costs exactly what the section below describes: the map is keyed by a
+`producerId` the *sender* chooses, so `0` hands a peer the decision about how
+much this consumer retains.
+
+`handler` has no key — it is a function, and the one required field rather than
+a tunable.  `maxOutOfOrder` has none yet either; it landed after the block was
+specified and gets its own follow-up.
+
+**The layering happens in `ReliableDelivery.consumer(...)`, so that is the only
+path that sees it.**  A `ConsumerController` you construct yourself and hand to
+`system.spawn` keeps its built-in defaults: neither controller can read
+configuration in its constructor, because `system` is a getter over a context
+the cell injects after construction.
+
 ### Why the dedup state has a budget
 
 The map is keyed by the `producerId` on the envelope, which the **sender**
@@ -183,7 +215,7 @@ new ConsumerController<OrderEvent>({
 ```
 
 Throwing (or returning a rejected promise) **prevents the Ack**.
-The producer's `resendTimeoutMs` timer fires and re-sends the
+The producer's `resendTimeout` timer fires and re-sends the
 same seq.  This is the only "nack" mechanism — there is no
 explicit nack message.
 
@@ -240,7 +272,7 @@ Reaching the out-of-order cap never drops one either; it costs a stall.
 ```
 Consumer crashes during the handler:
   - Handler never resolved → no Ack was sent
-  - Producer retransmits after `resendTimeoutMs`
+  - Producer retransmits after `resendTimeout`
   - New consumer (or restarted same consumer) sees the seq again
   - Controller's in-memory dedup state is gone, so the handler runs again
 ```

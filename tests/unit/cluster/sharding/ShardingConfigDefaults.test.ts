@@ -30,6 +30,11 @@ describe('readShardingOptionsFromConfig', () => {
           constant-rate.frequency = 250ms
           constant-rate.number-of-entities = 12
         }
+        stale-region-detection {
+          enabled            = on
+          heartbeat-interval = 2s
+          stale-after        = 12s
+        }
       }
     `);
 
@@ -50,6 +55,9 @@ describe('readShardingOptionsFromConfig', () => {
       entityRecoveryStrategy: 'constant-rate',
       entityRecoveryConstantRateFrequencyMs: 250,
       entityRecoveryConstantRateNumberOfEntities: 12,
+      staleRegionDetection: true,
+      regionHeartbeatIntervalMs: 2_000,
+      regionStaleAfterMs: 12_000,
     });
   });
 
@@ -105,6 +113,13 @@ describe('readShardingOptionsFromConfig', () => {
       entityRecoveryStrategy: 'all',
       entityRecoveryConstantRateFrequencyMs: 100,
       entityRecoveryConstantRateNumberOfEntities: 5,
+      // Ships `off`, and the two timings ship anyway — an operator who cannot
+      // see them cannot judge what turning the switch on would cost.  The pair
+      // is also what `StartShardingOptionsValidator`'s cross-field rule
+      // compares against, so the shipped values have to be a legal pair (#853).
+      staleRegionDetection: false,
+      regionHeartbeatIntervalMs: 5_000,
+      regionStaleAfterMs: 20_000,
     });
   });
 
@@ -150,6 +165,14 @@ describe('readShardingOptionsFromConfig', () => {
       entityRecoveryConstantRateFrequency: 'actor-ts.sharding.entity-recovery.constant-rate.frequency',
       entityRecoveryConstantRateNumberOfEntities:
         'actor-ts.sharding.entity-recovery.constant-rate.number-of-entities',
+      // Nested for the same reason and with the same caveat as
+      // `entity-recovery` above: three full dotted paths, never a bare
+      // `stale-region-detection` root (#853).
+      staleRegionDetection: {
+        enabled: 'actor-ts.sharding.stale-region-detection.enabled',
+        heartbeatInterval: 'actor-ts.sharding.stale-region-detection.heartbeat-interval',
+        staleAfter: 'actor-ts.sharding.stale-region-detection.stale-after',
+      },
     });
   });
 });
@@ -221,6 +244,23 @@ describe('ShardRegion.settingsToConfig — the two passivation windows', () => {
     expect(config.entityRecoveryStrategy).toBe('constant-rate');
     expect(config.entityRecoveryConstantRateFrequencyMs).toBe(250);
     expect(config.entityRecoveryConstantRateNumberOfEntities).toBe(20);
+  });
+
+  test('stale-region detection is off, with the beat interval resolved anyway (#853)', () => {
+    // Off is what keeps the mechanism free for everyone who did not ask: the
+    // region only arms its heartbeat timer when the switch is on.  The interval
+    // resolves regardless, because the switch can arrive from the layer above.
+    const config = resolve({});
+
+    expect(config.staleRegionDetection).toBe(false);
+    expect(config.regionHeartbeatIntervalMs).toBe(5_000);
+  });
+
+  test('an explicit stale-region setting reaches the region config', () => {
+    const config = resolve({ staleRegionDetection: true, regionHeartbeatIntervalMs: 1_000 });
+
+    expect(config.staleRegionDetection).toBe(true);
+    expect(config.regionHeartbeatIntervalMs).toBe(1_000);
   });
 
   test('shardPassivationIdleMs = 0 keeps empty shards while entities still passivate', () => {

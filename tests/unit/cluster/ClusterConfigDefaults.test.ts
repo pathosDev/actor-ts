@@ -7,6 +7,7 @@ import {
   DEFAULT_SEED_RETRY_INTERVAL_MS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
+  DEFAULT_UNTRUSTED_MODE,
   isRemoteTlsRequested,
   readClusterOptionsFromConfig,
   withClusterConfigDefaults,
@@ -203,6 +204,12 @@ describe('readClusterOptionsFromConfig', () => {
       // 0 is the file's way of saying "derive from down-after"; the
       // derivation lives in the Cluster constructor, not here.
       tombstoneMinRetentionMs: 0,
+      // Both leaves ship a value, so both always land here — and the shipped
+      // pair is the open one: any /user actor addressable by name, which is
+      // what an ActorRef across nodes needs.  /system is refused either way and
+      // has no leaf at all, deliberately (#877, #964).
+      untrustedMode: DEFAULT_UNTRUSTED_MODE,
+      trustedSelectionPaths: [],
       failureDetectorImplementation: DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
       failureDetector: defaultFailureDetectorOptions,
       // Field by field rather than against `defaultPhiAccrualOptions` whole:
@@ -231,6 +238,37 @@ describe('readClusterOptionsFromConfig', () => {
       .toBe(false);
     expect(readClusterOptionsFromConfig(Config.loadReference()).phiAccrual)
       .not.toHaveProperty('heartbeatIntervalMs');
+  });
+
+  test('the two wire-trust keys read through, list and all (#877)', () => {
+    // `Config.parseString`, never `Config.fromObject` with a dotted key: that
+    // keeps the dotted string as a literal top-level key, so `hasPath` would
+    // resolve the *reference* value instead and the assertion would be about
+    // the shipped default rather than about this file.
+    const configured = Config.parseString(`
+      actor-ts.remote {
+        untrusted-mode          = true
+        trusted-selection-paths = ["/user/orders/*", "/user/reporting/intake"]
+      }
+    `);
+
+    expect(readClusterOptionsFromConfig(configured)).toEqual({
+      untrustedMode: true,
+      trustedSelectionPaths: ['/user/orders/*', '/user/reporting/intake'],
+    });
+  });
+
+  test('an explicit allow-list wins over the file, an unset one falls through (#877)', () => {
+    const configured = Config.parseString(
+      'actor-ts.remote.trusted-selection-paths = ["/user/from-config"]',
+    );
+
+    expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType).trustedSelectionPaths)
+      .toEqual(['/user/from-config']);
+    expect(withClusterConfigDefaults(
+      configured,
+      { host: 'h', port: 1, trustedSelectionPaths: ['/user/from-code'] } as ClusterOptionsType,
+    ).trustedSelectionPaths).toEqual(['/user/from-code']);
   });
 
   test('the housekeeping block reads through with its own values (#841)', () => {

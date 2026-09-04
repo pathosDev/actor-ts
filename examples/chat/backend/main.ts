@@ -38,9 +38,9 @@ import {
 } from '../../../src/cluster/index.js';
 import {
   PersistenceExtensionId,
-  SqliteJournal,
+  RegisterSqlitePluginsOptions,
+  registerSqlitePlugins,
   SqliteJournalOptions,
-  SqliteSnapshotStore,
   SqliteSnapshotStoreOptions,
 } from '../../../src/persistence/index.js';
 import { DistributedDataId, DistributedDataOptions } from '../../../src/crdt/index.js';
@@ -125,20 +125,31 @@ async function main(): Promise<void> {
   // start (the room's snapshot policy fires every 100 events — see the
   // actor for the rationale).  Both stores share a `data-dir` and the
   // same DB-file family.
+  //
+  // Registered as plug-ins rather than set directly, so the plugin ids in
+  // `application.conf` are what actually selects them.  Only the two paths
+  // stay in code, because they are derived from `--data-dir`: a path in the
+  // config file would tie every reader to one working directory.
   fs.mkdirSync(config.dataDir, { recursive: true });
   const journalPath = path.join(config.dataDir, 'chat.db');
   const snapshotPath = path.join(config.dataDir, 'chat-snapshots.db');
   const journalOptions = SqliteJournalOptions.create()
     .withPath(journalPath)
     .withWal(true);
-  const journal = new SqliteJournal(journalOptions);
   const snapshotOptions = SqliteSnapshotStoreOptions.create()
     .withPath(snapshotPath)
     .withKeepN(3);
-  const snapshotStore = new SqliteSnapshotStore(snapshotOptions);
+  const sqliteOptions = RegisterSqlitePluginsOptions.create()
+    .withJournal(journalOptions)
+    .withSnapshotStore(snapshotOptions);
   const persistence = system.extension(PersistenceExtensionId);
-  persistence.setJournal(journal);
-  persistence.setSnapshotStore(snapshotStore);
+  registerSqlitePlugins(persistence, sqliteOptions);
+  // Resolve both stores now rather than on the first persisted message.  Two
+  // reasons: the shutdown task below needs the exact instances to close, and a
+  // plugin id in `application.conf` that nothing registers should fail at
+  // start-up with the id in the message, not halfway through a chat.
+  const journal = persistence.journal;
+  const snapshotStore = persistence.snapshotStore;
   system.log.info(`SQLite journal · ${journalPath}`);
   system.log.info(`SQLite snapshot store · ${snapshotPath} (keepN=3)`);
 
@@ -277,8 +288,8 @@ async function main(): Promise<void> {
     Phases.BeforeActorSystemTerminate,
     'close-persistence',
     async () => {
-      await journal.close();
-      await snapshotStore.close();
+      await journal.close?.();
+      await snapshotStore.close?.();
     },
   );
 

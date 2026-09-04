@@ -349,11 +349,38 @@ export const ConfigKeys = {
       plugin: 'actor-ts.persistence.journal.plugin',
       inMemory: 'actor-ts.persistence.journal.in-memory',
       cassandra: 'actor-ts.persistence.journal.cassandra',
+      /**
+       * The SQLite journal's block — `root` is also `SQLITE_JOURNAL_PLUGIN_ID`,
+       * per the framework rule that a plugin id *is* the config section holding
+       * that plugin's settings (#872).
+       *
+       * Full dotted leaves beside the `root`, and here that is not a formality:
+       * `NoDeadConfigKeys`' `coveringAccessor` falls back to the nearest root,
+       * and the root literal is *also* hard-coded as the plugin id in
+       * `SqlitePlugin.ts` — so a root-only entry would be satisfied by a string
+       * that is not a config read at all, and every leaf beneath it could ship
+       * inert with the guard green.
+       */
+      sqlite: {
+        root: 'actor-ts.persistence.journal.sqlite',
+        path: 'actor-ts.persistence.journal.sqlite.path',
+        eventsTable: 'actor-ts.persistence.journal.sqlite.events-table',
+        wal: 'actor-ts.persistence.journal.sqlite.wal',
+        busyTimeout: 'actor-ts.persistence.journal.sqlite.busy-timeout',
+      },
     },
     snapshotStore: {
       plugin: 'actor-ts.persistence.snapshot-store.plugin',
       inMemory: 'actor-ts.persistence.snapshot-store.in-memory',
       cassandra: 'actor-ts.persistence.snapshot-store.cassandra',
+      /** The SQLite snapshot store's block — see {@link journal}'s `sqlite`. */
+      sqlite: {
+        root: 'actor-ts.persistence.snapshot-store.sqlite',
+        path: 'actor-ts.persistence.snapshot-store.sqlite.path',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.sqlite.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.sqlite.keep-n',
+        busyTimeout: 'actor-ts.persistence.snapshot-store.sqlite.busy-timeout',
+      },
       /**
        * The object-storage plugin's block — the framework's rule that a plugin
        * id *is* its config section, so `root` is also
@@ -395,8 +422,27 @@ export const ConfigKeys = {
         filesystemStaleLock: 'actor-ts.persistence.snapshot-store.object-storage.filesystem.stale-lock',
       },
     },
+    /**
+     * The third plug-in axis (#872).  It shipped as a namespace of ids nothing
+     * could select: `PersistenceExtension` carried only a journal and a
+     * snapshot-store registry, so `durable-state.object-storage` named a
+     * plugin that had to be threaded through application code by hand.
+     * `plugin` is the selector `PersistenceExtension.durableStateStore`
+     * resolves through, and `DurableStateActor` falls back to it when its
+     * options name no store.
+     */
     durableState: {
+      plugin: 'actor-ts.persistence.durable-state.plugin',
+      inMemory: 'actor-ts.persistence.durable-state.in-memory',
       objectStorage: 'actor-ts.persistence.durable-state.object-storage',
+      /** The SQLite durable-state store's block — see {@link journal}'s `sqlite`. */
+      sqlite: {
+        root: 'actor-ts.persistence.durable-state.sqlite',
+        path: 'actor-ts.persistence.durable-state.sqlite.path',
+        table: 'actor-ts.persistence.durable-state.sqlite.table',
+        autoCreateTables: 'actor-ts.persistence.durable-state.sqlite.auto-create-tables',
+        busyTimeout: 'actor-ts.persistence.durable-state.sqlite.busy-timeout',
+      },
     },
   },
 
@@ -641,12 +687,63 @@ export const ConfigKeys = {
    * carry.  It reads as a size (`1M`), and it is clamped down to
    * `remote.max-frame-bytes` at consume time — a budget above the wire cap is
    * the configuration that reintroduces #691, so it is not expressible (#691).
+   *
+   * `log-data-size-exceeding` reports on the same measurement one order of
+   * magnitude earlier and changes nothing: a key past it still gossips, it is
+   * merely named, because a value at a large fraction of the budget slows
+   * every other key's sweep and nothing else says so.  `durable-keys` is the
+   * only leaf here that is not a bound — it narrows what a configured
+   * `durableStore` writes, and an empty list means every key (#856).
    */
   distributedData: {
     gossipInterval: 'actor-ts.distributed-data.gossip-interval',
     maxPendingQuorumRequests: 'actor-ts.distributed-data.max-pending-quorum-requests',
     maxQuorumTimeout: 'actor-ts.distributed-data.max-quorum-timeout',
     maxGossipBytes: 'actor-ts.distributed-data.max-gossip-bytes',
+    logDataSizeExceeding: 'actor-ts.distributed-data.log-data-size-exceeding',
+    durableKeys: 'actor-ts.distributed-data.durable-keys',
+  },
+
+  /**
+   * Reliable delivery — `actor-ts.reliable-delivery.*` (#861).
+   *
+   * Every leaf is spelled out rather than covered by a block root, for the
+   * reason the two groups below it give: `NoDeadConfigKeys`' covering accessor
+   * falls back to *"a root above it"*, so a root-only entry would let any leaf
+   * under it pass whether or not a reader addresses it.  The readers are
+   * `readProducerControllerOptionsFromConfig`
+   * (`src/delivery/ProducerControllerOptions.ts`) and
+   * `readConsumerControllerOptionsFromConfig`
+   * (`src/delivery/ConsumerControllerOptions.ts`), layered in
+   * `ReliableDelivery.producer` / `.consumer`.
+   *
+   * The block is named for the `ReliableDelivery` class and the
+   * `reliable-delivery.*` message kinds on the wire, not for the `src/delivery`
+   * directory: `actor-ts.logger.sinks.*.delivery.*` is already taken by log-sink
+   * batching, with its own `DeliveryOptions` type and `DEFAULT_DELIVERY_*`
+   * constants, so a top-level `actor-ts.delivery` would collide in prose and in
+   * constant naming even though HOCON would keep the two apart.
+   *
+   * `producer-idle-time-to-live` spells out the field's `Ttl`, following
+   * `cluster.tombstone.time-to-live` ⇔ `tombstoneTtlMs` above — the same
+   * divergence from the leaf/field lockstep, and the same reason for it: the
+   * `Ms` suffix is carried by the HOCON duration unit and the abbreviation is
+   * one AGENTS.md asks to spell out.
+   *
+   * `producer.producer-id` deliberately has no key.  It is a real options
+   * field, but one shared value across every producer in a process is the
+   * corruption `Constants.ts` documents — the consumer keys its deduplication
+   * on it, so two producers sharing an id reset each other's window.
+   */
+  reliableDelivery: {
+    producer: {
+      resendTimeout: 'actor-ts.reliable-delivery.producer.resend-timeout',
+      windowSize: 'actor-ts.reliable-delivery.producer.window-size',
+    },
+    consumer: {
+      maxProducers: 'actor-ts.reliable-delivery.consumer.max-producers',
+      producerIdleTimeToLive: 'actor-ts.reliable-delivery.consumer.producer-idle-time-to-live',
+    },
   },
 
   /**
@@ -736,6 +833,12 @@ export const ConfigKeys = {
    * Encrypting the wire is its own issue (#941); until it lands, a key that
    * says `true` and a socket that is not encrypted is exactly the gap the
    * warning exists to close.
+   *
+   * `untrusted-mode` and `trusted-selection-paths` narrow the one thing a
+   * remote party chooses — the `to` path on an inbound envelope (#877).  They
+   * do **not** decide whether `/system` is reachable: that is refused
+   * unconditionally in `EnvelopeTrust`, because a switch defaulted off would
+   * leave #964 open on every deployment that did not opt in.
    */
   remote: {
     tcp: {
@@ -748,6 +851,8 @@ export const ConfigKeys = {
       enabled: 'actor-ts.remote.tls.enabled',
     },
     maxFrameBytes: 'actor-ts.remote.max-frame-bytes',
+    untrustedMode: 'actor-ts.remote.untrusted-mode',
+    trustedSelectionPaths: 'actor-ts.remote.trusted-selection-paths',
   },
 
   /**
@@ -820,6 +925,23 @@ export const ConfigKeys = {
     entityRecoveryConstantRateFrequency: 'actor-ts.sharding.entity-recovery.constant-rate.frequency',
     entityRecoveryConstantRateNumberOfEntities:
       'actor-ts.sharding.entity-recovery.constant-rate.number-of-entities',
+    /**
+     * Stale-region detection — `actor-ts.sharding.stale-region-detection.*`
+     * (#853).  Grouped in HOCON because the three are only meaningful together;
+     * the matching options fields stay flat (`staleRegionDetection`,
+     * `regionHeartbeatIntervalMs`, `regionStaleAfterMs`), the same translation
+     * `cluster.tombstone.*` already makes.
+     *
+     * Full dotted leaves, not a bare `staleRegionDetection` root, and for the
+     * reason `entity-recovery` above spells out: `NoDeadConfigKeys` resolves a
+     * leaf through *any* config root above it, so a root-only entry would let
+     * all three pass with nothing reading them.
+     */
+    staleRegionDetection: {
+      enabled: 'actor-ts.sharding.stale-region-detection.enabled',
+      heartbeatInterval: 'actor-ts.sharding.stale-region-detection.heartbeat-interval',
+      staleAfter: 'actor-ts.sharding.stale-region-detection.stale-after',
+    },
   },
 
   /**

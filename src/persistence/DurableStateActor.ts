@@ -2,6 +2,7 @@ import { Actor } from '../Actor.js';
 import {
   DurableStateConcurrencyError,
   type DurableStateRecord,
+  type DurableStateStore,
 } from './DurableStateStore.js';
 import type {
   CompressionConfig,
@@ -28,6 +29,7 @@ import { PersistenceExtensionId } from './PersistenceExtension.js';
 export abstract class DurableStateActor<Command, S> extends Actor<Command> {
   private _record: DurableStateRecord<S> | null = null;
   private _persisting: Promise<void> | null = null;
+  private _store: DurableStateStore | null = null;
   public readonly options: DurableStateOptionsType<S>;
 
   constructor(options: DurableStateOptions<S>) {
@@ -107,20 +109,43 @@ export abstract class DurableStateActor<Command, S> extends Actor<Command> {
    */
   protected integrity(): IntegrityConfig | undefined { return undefined; }
 
+  /**
+   * The store this actor actually writes to — the one named in its options,
+   * or the plug-in `PersistenceExtension` resolves from
+   * `actor-ts.persistence.durable-state.plugin` (#872).
+   *
+   * Resolved once and cached, for the same reason the extension caches its
+   * own: the config-selected plug-in is a single instance per system, and a
+   * getter that re-asked would let one actor's later reads land on a store its
+   * earlier writes never reached if the selection changed underneath it.
+   *
+   * `protected` rather than private so a subclass that needs the store —
+   * a bulk read, a store-specific query — reaches the resolved one instead
+   * of `options.store`, which may legitimately be unset.
+   */
+  protected get store(): DurableStateStore {
+    if (!this._store) {
+      this._store = this.options.store
+        ?? this.system.extension(PersistenceExtensionId).durableStateStore;
+    }
+    return this._store;
+  }
+
   override async preStart(): Promise<void> {
     // The storage-locality latch (#1356) — same seam as `PersistentActor`:
-    // the store the options carry is in actual use from here on.
+    // the store this actor resolved to is in actual use from here on.
     const persistence = this.system.extension(PersistenceExtensionId);
-    persistence.noteStoreUse('durable-state-store', this.options.store);
+    const store = this.store;
+    persistence.noteStoreUse('durable-state-store', store);
     // The capability check (#960) has to precede the load below, not merely
     // the first `persist`: loading with `encryption()` set against a store
     // that cannot decrypt returns a plaintext record the actor then treats
     // as having been ciphertext all along.
     persistence.assertPersistenceOptionsSupported(
-      'durable-state-store', this.options.store, this.persistenceOptions(),
+      'durable-state-store', store, this.persistenceOptions(),
     );
     const adapter = this.stateAdapter();
-    const loaded = await this.options.store.load<unknown>(
+    const loaded = await store.load<unknown>(
       this.options.persistenceId, this.persistenceOptions(),
     );
     const option = loaded.toNullable();
@@ -150,7 +175,7 @@ export abstract class DurableStateActor<Command, S> extends Actor<Command> {
     // Store sees an envelope (or raw value when no adapter).  We re-stamp
     // the local record with the original `next` so callers see the
     // current-version domain shape.
-    const upsertPromise = this.options.store.upsert<unknown>(
+    const upsertPromise = this.store.upsert<unknown>(
       this.options.persistenceId,
       expected,
       wire,
@@ -177,7 +202,7 @@ export abstract class DurableStateActor<Command, S> extends Actor<Command> {
 
   /** Delete the underlying record and reset to emptyState in memory. */
   protected async deleteRecord(): Promise<void> {
-    await this.options.store.delete(this.options.persistenceId);
+    await this.store.delete(this.options.persistenceId);
     this._record = null;
   }
 

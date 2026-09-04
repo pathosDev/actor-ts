@@ -6,7 +6,7 @@ import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
-import { STORAGE_IDENTITY_TABLE } from '../Constants.js';
+import { DEFAULT_SNAPSHOTS_TABLE, DEFAULT_SNAPSHOT_KEEP_N, DEFAULT_SQLITE_PATH, STORAGE_IDENTITY_TABLE } from '../Constants.js';
 import { applySqliteBusyTimeout } from '../journals/SqliteClient.js';
 import { SqliteSnapshotStoreOptionsValidator } from './SqliteSnapshotStoreOptions.js';
 import type { SqliteSnapshotStoreOptions, SqliteSnapshotStoreOptionsType } from './SqliteSnapshotStoreOptions.js';
@@ -75,8 +75,8 @@ export class SqliteSnapshotStore implements SnapshotStore {
     new SqliteSnapshotStoreOptionsValidator().validate(resolvedOptions);
     this.options = resolvedOptions;
     // Interpolated into DDL/DML — validate against SQL injection (#6).
-    this.table = assertSafeIdentifier(resolvedOptions.snapshotsTable ?? 'snapshots', 'snapshots table');
-    this.keepN = resolvedOptions.keepN ?? 3;
+    this.table = assertSafeIdentifier(resolvedOptions.snapshotsTable ?? DEFAULT_SNAPSHOTS_TABLE, 'snapshots table');
+    this.keepN = resolvedOptions.keepN ?? DEFAULT_SNAPSHOT_KEEP_N;
   }
 
   async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
@@ -153,7 +153,7 @@ export class SqliteSnapshotStore implements SnapshotStore {
 
   private async init(): Promise<void> {
     const driver = this.options.driver ?? await getSqliteDriver();
-    const db = driver.open(this.options.path ?? ':memory:');
+    const db = driver.open(this.options.path ?? DEFAULT_SQLITE_PATH);
     // Before the DDL, not after: `CREATE TABLE` takes the write lock itself,
     // so a second process starting against the same file is the first thing
     // that can hit SQLITE_BUSY.

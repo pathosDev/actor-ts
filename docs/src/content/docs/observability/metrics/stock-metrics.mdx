@@ -292,6 +292,7 @@ a non-zero rate a statement rather than noise.
 | `cluster_gossip_rounds_total` | counter | — | Gossip-push rounds initiated by this node. |
 | `cluster_gossip_records_refused_total` | counter | `reason` | Gossiped member records a merge-path guard refused. |
 | `cluster_envelope_from_mismatch_total` | counter | `frame` | Envelopes whose payload named a sender other than the connection they arrived on. |
+| `cluster_envelope_refusals_total` | counter | `reason`, `frame` | Inbound envelopes refused because their target path is outside what this node accepts by name. |
 
 For monitoring cluster health:
 
@@ -324,6 +325,24 @@ For monitoring cluster health:
   deliberately *not* a label; putting it there would mint one series
   per address a sender cares to invent. Turn the node's log to
   `debug` to see which connection is carrying them.
+- `cluster_envelope_refusals_total` counts a target path this node
+  would not resolve by name.  `reason="system-path"` should sit at
+  zero on a healthy cluster: it means a peer, or an outside
+  `ClusterClient`, addressed a `/system` framework actor directly
+  rather than through the handler that actor registered.  A rolling
+  upgrade past the release that closed that route is the one benign
+  cause; anything else is worth looking at.
+  `reason="not-allow-listed"` only ever moves with
+  `actor-ts.remote.untrusted-mode` on, and on the day you turn it on
+  it is the metric to watch — every entry your
+  `trusted-selection-paths` is missing shows up here as refused
+  traffic.  Both labels are closed sets drawn from code: `reason` has
+  those two values, `frame` is `envelope` or
+  `cluster-client-envelope`, so the family is four series whatever
+  arrives.  The requested path is deliberately *not* a label, for the
+  same reason the claimed address above is not one — and it is not in
+  the log line either, since it is an unvalidated string from the
+  payload.
 
 ## DistributedData metrics
 

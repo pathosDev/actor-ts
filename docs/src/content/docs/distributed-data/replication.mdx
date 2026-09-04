@@ -108,6 +108,37 @@ If your store grows large, raising `gossip-interval` spreads the
 cost over time; lowering `max-gossip-bytes` spreads one tick's cost
 over more ticks.
 
+### The early warning: `log-data-size-exceeding`
+
+The budget only says something once a key has outgrown a **whole**
+frame — by which point that key has already stopped converging.  A
+key at a large *fraction* of the budget is invisible by comparison
+and still expensive: it gossips fine, but it eats that fraction of
+every tick it appears in, so everything else in the store sweeps
+proportionally slower and nothing says why.
+
+`log-data-size-exceeding` (default `100K`, roughly a tenth of the
+budget) is that early warning.  A key past it is **named, not
+skipped** — the packer treats it exactly as it would have:
+
+```ts
+const distributedDataOptions = DistributedDataOptions.create()
+  .withMaxGossipBytes(1024 * 1024)
+  .withLogDataSizeExceeding(100 * 1024);
+```
+
+The warning is rate-limited to one line a minute and carries a
+running total, and it has **its own** quiet period rather than
+sharing the skip warning's.  That matters in the case where both
+fire: raising `max-gossip-bytes` is the fix for "this key cannot be
+gossiped at all", and it makes "this key costs a tenth of every
+tick" *more* relevant, not less.  `0` switches the reporting off.
+
+Because the packer only visits keys from its cursor until the
+budget fills, a key in a large store is measured once per **sweep**
+rather than once per tick — the right cadence for something already
+rate-limited to a minute.
+
 ## Per-peer round selection
 
 ```ts

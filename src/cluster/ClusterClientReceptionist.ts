@@ -129,12 +129,25 @@ export class ClusterClientReceptionist implements Extension {
       const from = peer;
       this.countSenderMismatch(message, peer, log);
 
+      // The same trust boundary `Cluster.dispatchEnvelope` applies, from the
+      // node's single `EnvelopeTrust` rather than a second policy of this
+      // extension's own (#877, #964).  This is the *more* exposed of the two
+      // seams — a `ClusterClient` is by definition outside the cluster and
+      // never joined its membership — and until now it was also the laxer one:
+      // `GUARDIAN_SEGMENTS` below admits `system` deliberately, so a client
+      // could name a framework actor and reach it through generic path
+      // resolution.  It still parses `system` as a guardian, and that is the
+      // point: the alternative reading turns `system/cluster/x` into a *user*
+      // actor literally called `system`, which answers a probe with a silent
+      // misdirection instead of a refusal.
+      const segments = parsePathSegments(env.to);
+      const refusal = segments ? cluster._envelopeTrust.refusalFor(segments) : null;
+      if (refusal !== null) cluster._envelopeTrust.report(from, 'cluster-client-envelope', refusal);
       // Resolve the target locally.  We use the synchronous `_resolvePath`
       // rather than `actorSelection().resolveOne()` because the client
       // expects a deterministic immediate reply if the path is unknown —
       // there's no point waiting for it to maybe spawn.
-      const segments = parsePathSegments(env.to);
-      const refOpt = segments
+      const refOpt = segments && refusal === null
         ? this.system._resolvePath(segments)
         : { isSome: () => false } as { isSome: () => false };
 
@@ -144,6 +157,13 @@ export class ClusterClientReceptionist implements Extension {
         // else: the node's own `selfAddress` used to ride along, which told
         // an outside caller the address this node binds on — not necessarily
         // the one it dialled, when a load balancer or NAT sits between them.
+        //
+        // A *refusal* answers with the identical sentence, deliberately.  Two
+        // outcomes an outside caller could tell apart would make this endpoint
+        // an existence oracle for the actor tree — "not found" versus
+        // "found, but not for you" is the whole of the answer it wanted.  The
+        // counter and the folded WARN above are where the difference is
+        // recorded, on the side that is entitled to it.
         if (env.askId !== undefined) {
           this.sendReply(cluster, from, env.askId, false, `path not found: ${env.to}`);
         } else {
@@ -311,7 +331,16 @@ export const ClusterClientReceptionistId: ExtensionId<ClusterClientReceptionist>
 
 /* ----------------------- path-segment parser ---------------------- */
 
-/** Guardian names a path may start with; anything else is relative to `/user`. */
+/**
+ * Guardian names a path may start with; anything else is relative to `/user`.
+ *
+ * `system` is still here after #877 blocked the subtree, and dropping it would
+ * have made the refusal *worse*, not stricter: without it `system/cluster/x`
+ * parses as `['user', 'system', 'cluster', 'x']` — a user actor literally
+ * called `system` — so a probe would be answered by a silent misdirection into
+ * the application's own namespace rather than by a counted refusal.  Parsing
+ * and admission are two questions, and the second one is `EnvelopeTrust`'s.
+ */
 const GUARDIAN_SEGMENTS = ['user', 'system'] as const;
 
 /**

@@ -506,6 +506,28 @@ actor-ts {
     max-pending-quorum-requests = 1000
     max-quorum-timeout = 30s
     max-gossip-bytes = 1M
+
+    # Name a key whose own encoding passes this, and keep gossiping it -- this
+    # warns, it never skips.  Roughly a tenth of the budget above (100 KiB
+    # against 1 MiB), because that is where one value starts governing
+    # everyone else's convergence: ten such keys fill a whole tick, so every
+    # other key waits an extra sweep per offender.  Its own quiet period,
+    # deliberately not shared with the oversize warning above -- "split this
+    # value" and "raise the budget" are different actions and neither may
+    # silence the other.  0 = never warn.
+    log-data-size-exceeding = 100K
+
+    # Which keys a configured durableStore actually persists.  EMPTY MEANS
+    # EVERY KEY -- what every release so far has done -- and never "persist
+    # nothing"; persisting nothing is what configuring no store does.  An
+    # entry is an exact key name or a prefix with one trailing "*"
+    # (session-*); that is the whole syntax, because a richer pattern means
+    # building a matcher out of this file and a regex from config is a ReDoS
+    # surface.  Note that a replica's record is rewritten whole on every save,
+    # so REMOVING an entry drops the keys it named from the persisted record
+    # on the next mutation.  Inert, with a startup warning, when no store is
+    # configured.
+    durable-keys = []
   }
 
   remote {
@@ -550,6 +572,33 @@ actor-ts {
       enabled = false
     }
     max-frame-bytes = 16M   # per-frame wire cap; lower it on semi-trusted networks
+
+    # Who a peer may address BY NAME.  An inbound envelope carries a target
+    # path the sender chose, and this node resolves it against its own actor
+    # tree -- the one thing on the wire a remote party picks freely.
+    #
+    # Off, that reaches any /user actor by name, which is what makes an
+    # ActorRef usable across nodes.  On, only the paths listed below.  Turn it
+    # on where the cluster network crosses a boundary you do not control, the
+    # same networks max-frame-bytes above is worth lowering on.
+    #
+    # /system is NOT what this switches.  Framework actors -- shard
+    # coordinators and regions, singleton managers, the pub-sub mediator, the
+    # DevTools lanes -- are reachable only through the handlers their owners
+    # register, in both modes.  That door attaches the connection's identity to
+    # the frame; resolving the path by name never did.
+    untrusted-mode = false
+
+    # Paths a peer may address by name while untrusted-mode is on.  Empty
+    # means: nothing beyond the registered framework endpoints above.
+    #
+    # An entry is one exact path, unless it ends in /* -- then it is that path
+    # and everything below it.  The suffix is segment-anchored, so
+    # "/user/orders/*" admits /user/orders/7 and refuses /user/orders-archive.
+    # Nothing else here is a pattern:
+    #
+    #   trusted-selection-paths = ["/user/orders/*", "/user/reporting/intake"]
+    trusted-selection-paths = []
   }
 
   # Lease coordination -- what a Lease backend reads when it is built with
@@ -615,6 +664,48 @@ actor-ts {
         # bound the API server enforces on a coordination.k8s.io/v1 Lease.
         lease-name-max-length = 253
       }
+    }
+  }
+
+  # Reliable delivery -- the push+ack protocol behind ReliableDelivery.producer
+  # and ReliableDelivery.consumer.  These four layer UNDER whatever those two
+  # statics were passed, so an explicit withWindowSize(...) still wins.  They
+  # are read THERE and nowhere else: neither controller can read config from
+  # its constructor, so one constructed directly and handed to system.spawn
+  # keeps its built-in defaults and never sees this block.
+  reliable-delivery {
+    producer {
+      # How long the producer waits for an acknowledgment before retransmitting
+      # the same seq.  One fixed interval, re-armed unchanged on every miss --
+      # there is no backoff here to tune (#646).
+      resend-timeout = 500ms
+
+      # Flow-control window: at most this many un-acked messages in flight.
+      # Further sends queue in memory until an acknowledgment opens a slot, so
+      # raising it trades the producer's heap against throughput over a link
+      # whose round-trip dominates.  Keep it under the consumer's out-of-order
+      # retention (1024, not settable here), which is what stalls a producer
+      # that runs ahead of a gap.
+      window-size = 16
+    }
+    consumer {
+      # Most producers the consumer keeps deduplication state for at once.
+      # The map is keyed by a producerId the SENDER chooses, so 0 -- unbounded
+      # -- hands a peer the decision about how much this consumer retains, one
+      # entry per distinct id and never released; that is the growth #728
+      # bounded, and it has no symptom short of the OOM.  At the cap the
+      # least-recently-used entry is evicted, which costs that producer's
+      # duplicate suppression and nothing else.
+      max-producers = 1024
+
+      # How long a producer's deduplication entry survives with no delivery
+      # from it.  The sweep runs on this same interval, so an idle entry is
+      # released somewhere between one and two of them; 0 turns the sweep off
+      # and leaves max-producers as the only thing reclaiming anything.  Keep
+      # it well above the producers' resend-timeout -- an entry dropped while
+      # its producer is still retransmitting one seq costs a duplicate handler
+      # call, and the default leaves three orders of magnitude of headroom.
+      producer-idle-time-to-live = 5m
     }
   }
 
@@ -855,9 +946,36 @@ actor-ts {
   persistence {
     journal {
       plugin = "actor-ts.persistence.journal.in-memory"
+
+      # Local SQLite journal.  registerSqlitePlugins(ext) makes this id real;
+      # the block below is what that call reads when it is given no options.
+      # Explicit SqliteJournalOptions always win over anything here.
+      sqlite {
+        # Database file.  "" means "not set" and falls through to an anonymous
+        #   in-memory database, private to the handle that opens it -- which is
+        #   also why it is published empty rather than as ":memory:": three
+        #   blocks each shipping a real default would let a deployment point the
+        #   journal at a file, leave the snapshot store alone, and lose every
+        #   snapshot on restart while the config file read as if that had been
+        #   chosen.
+        path = ""
+        # The tags table is derived as <events-table>_tags, and the metadata
+        #   table as <events-table>_meta -- both follow this name.
+        events-table = "events"
+        wal = off                     # journal_mode = WAL: concurrent readers during a write
+        busy-timeout = 1s             # lock wait before SQLITE_BUSY; 0 fails fast
+      }
     }
     snapshot-store {
       plugin = "actor-ts.persistence.snapshot-store.in-memory"
+
+      # Local SQLite snapshot store -- see the journal's sqlite block above.
+      sqlite {
+        path = ""                     # "" = not set; an in-memory database per handle
+        snapshots-table = "snapshots"
+        keep-n = 3                    # snapshots kept per persistenceId; 0 disables pruning
+        busy-timeout = 1s
+      }
 
       # Object-storage snapshot store -- S3-compatible or local filesystem.
       # This block also configures the durable-state store that the same
@@ -903,6 +1021,21 @@ actor-ts {
           lock-timeout = 5s           # wait for a per-key write lock before failing
           stale-lock   = 30s          # lock files older than this are force-removed
         }
+      }
+    }
+
+    # The third plug-in axis.  A DurableStateActor that names no store in its
+    # options uses whichever store this selects, exactly as a PersistentActor
+    # uses the journal above.
+    durable-state {
+      plugin = "actor-ts.persistence.durable-state.in-memory"
+
+      # Local SQLite durable-state store -- see the journal's sqlite block.
+      sqlite {
+        path = ""                     # "" = not set; this store has no in-memory fallback
+        table = "durable_state"
+        auto-create-tables = on       # CREATE TABLE IF NOT EXISTS on first use
+        busy-timeout = 1s
       }
     }
   }
@@ -959,6 +1092,32 @@ actor-ts {
       strategy = all
       constant-rate.frequency = 100ms
       constant-rate.number-of-entities = 5
+    }
+    # A backstop for a region that is gone or wedged on a node that is STILL UP
+    #   and gossiping -- the one case nothing else covers.  A node that stops
+    #   gossiping is force-downed by the failure detector in
+    #   cluster.failure-detector.down-after (5s) and its shards are re-homed
+    #   from there, which is 4x faster than this; and a region stopped cleanly
+    #   sends its own notification.  That notification is single-shot and its
+    #   send error is swallowed on the way down, and THAT is the hole here.
+    # Off by default because eviction is destructive: every entity under every
+    #   shard the region held is stopped and re-created elsewhere.
+    # enabled drives BOTH halves -- off, no region beats and no coordinator
+    #   sweeps, so the mechanism costs nothing at all until it is asked for.
+    #   Turn it on everywhere: a region that does not beat is never swept, so a
+    #   half-rolled deployment degrades to "not yet armed" rather than to a
+    #   loop of evictions.
+    # The beat is PER SHARDED TYPE, not per node -- N types cost N frames per
+    #   heartbeat-interval per node, on top of the cluster's own heartbeats.
+    # stale-after must exceed heartbeat-interval, and by more than one beat:
+    #   at four intervals a single dropped frame is not a verdict.  There is no
+    #   check-interval -- the sweep rides the rebalance-interval tick above,
+    #   which is already the dial for "how often does the coordinator look at
+    #   the shard map".
+    stale-region-detection {
+      enabled = off
+      heartbeat-interval = 5s   # region -> coordinator beat
+      stale-after = 20s         # silence after which a region is declared gone
     }
   }
 

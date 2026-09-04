@@ -1,5 +1,5 @@
 import type { Serializer } from '../../serialization/Serializer.js';
-import { STORAGE_IDENTITY_TABLE } from '../Constants.js';
+import { DEFAULT_AUTO_CREATE_TABLES, STORAGE_IDENTITY_TABLE } from '../Constants.js';
 import { JournalError } from '../JournalTypes.js';
 import { LazyStore, type LazyStoreConfig } from '../LazyStore.js';
 import type { StorageLocality } from '../StorageLocality.js';
@@ -48,7 +48,7 @@ export abstract class RelationalStore extends LazyStore<SqlPool> {
     });
     this.dialect = config.dialect;
     this.serializer = config.serializer;
-    this.autoCreate = config.autoCreateTables ?? true;
+    this.autoCreate = config.autoCreateTables ?? DEFAULT_AUTO_CREATE_TABLES;
   }
 
   private mintedStorageIdentity: string | null = null;

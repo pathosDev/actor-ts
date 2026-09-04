@@ -28,7 +28,7 @@ Entity vorbei rast.
 
 ## Was Rebalance auslöst
 
-Drei Pfade:
+Vier Pfade:
 
 1. **Mitgliedschaftsgetrieben** — `MemberRemoved` (ein gehender Node)
    und ein Leader-Wechsel. Das sind die einzigen beiden
@@ -51,11 +51,19 @@ Drei Pfade:
    sofort neu verteilt. Das deckt eine Region ab, die auf einem Node
    gestoppt wird, der im Cluster bleibt — dort feuert überhaupt kein
    Membership-Event.
+4. **Eine Region, die verstummt** — opt-in, und das Auffangnetz für
+   eine verlorene Meldung aus Pfad 3. Mit
+   `actor-ts.sharding.stale-region-detection.enabled = on` schlägt
+   jede Region an den Koordinator, und eine Region, die
+   `stale-after` lang nicht mehr schlägt, wird genauso behandelt, als
+   hätte sie sich abgemeldet. Per Default aus; siehe [Eine verstummte
+   Region erkennen](/de/reference/configuration/#eine-verstummte-region-erkennen)
+   dazu, was der Pfad abdeckt und was nicht.
 
-Die ersten beiden speisen den Handoff-Mechanismus unten. Der dritte
-nicht: Die Region ist bereits weg, es gibt also nichts zu übergeben —
-der Koordinator streicht sie schlicht aus der Registry und alloziert
-neu.
+Die ersten beiden speisen den Handoff-Mechanismus unten. Die letzten
+beiden nicht: Die Region ist bereits weg, es gibt also nichts zu
+übergeben — der Koordinator streicht sie schlicht aus der Registry und
+alloziert neu.
 
 Ohne diesen dritten Pfad ließ eine gestoppte Region ihre Shards
 **verwaist** zurück: Der Koordinator nannte sie weiterhin als deren
@@ -71,6 +79,16 @@ Region nie einen Koordinator gefunden hat, ein Transportfehler auf dem
 Weg nach unten wird geloggt und geschluckt, und der `MemberRemoved`-
 Pfad, der einem kompletten Node-Shutdown folgt, findet die Region
 bereits weg und tut nichts.
+
+Genau deshalb gibt es den vierten Pfad. Eine verlorene Meldung
+versetzt den Cluster exakt in den verwaisten Zustand oben zurück, und
+nur der Schlag kann das bemerken — der Node läuft ja noch, es wird
+also nie ein Membership-Event feuern. Der Sweep läuft auf demselben
+periodischen Tick wie Pfad 2 mit, innerhalb derselben „bin ich der
+aktive Koordinator?"-Prüfung, und entfernt über denselben Code-Pfad
+wie Pfad 3 — eine Region, die sich noch abmelden konnte, ist also
+bereits aus der Registry verschwunden und kann nicht zweimal entfernt
+werden.
 
 ## Die Handoff-Sequenz
 

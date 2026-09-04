@@ -53,11 +53,10 @@ persistierten Wert — nicht `undefined` — und Gossip merged von dort
 
 ## Was persistiert wird
 
-Es gibt **keine Key-Whitelist**.  Die **gesamte lokale Sicht** der
-Replika (jeder Key, den sie hält) wird serialisiert und als **ein
-durabler Datensatz pro Replika** geschrieben, unter der ID
-`ddata|<replicaId>`.  Jeder Wert wird über das `toJSON()` des CRDT
-serialisiert.
+Standardmäßig wird die **gesamte lokale Sicht** der Replika (jeder
+Key, den sie hält) serialisiert und als **ein durabler Datensatz
+pro Replika** geschrieben, unter der ID `ddata|<replicaId>`.  Jeder
+Wert wird über das `toJSON()` des CRDT serialisiert.
 
 Weil die gesamte Sicht ein Datensatz ist, **schreibt jede Mutation
 den ganzen Datensatz neu** — derselbe Full-State-Rewrite-Trade-off
@@ -65,6 +64,54 @@ wie bei Durable-State-Actors.  Für kleinen, heißen State (Counter,
 Flags, kleine Sets) ist das billig; für eine große Sicht unter hoher
 Mutationsrate kostet es Bandbreite und Write-Amplification (siehe
 die Cautions unten).
+
+### Einschränken: `durableKeys`
+
+`withDurableKeys` (HOCON: `actor-ts.distributed-data.durable-keys`)
+beschränkt den Datensatz auf die Keys, die du benennst — so
+persistiert eine Replika mit einer großen flüchtigen Sicht nur den
+Teil, der einen Cold Start überleben muss:
+
+```ts
+const distributedDataOptions = DistributedDataOptions.create()
+  .withDurableKeys(['cart-42', 'session-*'])
+  .withDurableStore(store);
+```
+
+Ein Eintrag ist entweder ein **exakter Key-Name** oder ein
+**Präfix mit einem abschließenden `*`**.  Das ist bewusst die
+gesamte Syntax: Ein reichhaltigeres Glob hieße, aus einer
+Config-Datei einen Matcher zu bauen, und `new RegExp(ausConfig)`
+über einen vom Betreiber gelieferten Text ist eine Angriffsfläche
+für katastrophales Backtracking — auf genau dem Pfad, der
+entscheidet, was einen Neustart überlebt.  Alles andere wird beim
+Start mit einem `OptionsError` abgelehnt, statt still auf nichts zu
+passen.
+
+Drei Dinge, die du vorher wissen solltest:
+
+- **Eine leere Liste heißt *jeder* Key** — der Default, und das
+  Verhalten jedes Releases vor dieser Option.  Sie heißt niemals
+  „nichts persistieren"; nichts zu persistieren erreicht man,
+  indem man keinen Store konfiguriert.
+- **Der Filter ist eine Durability-Entscheidung, keine
+  Sichtbarkeits-Entscheidung.**  Ein ausgeschlossener Key lebt
+  weiterhin in der Sicht, gossipt, merged und beantwortet `get`.
+  Er liegt schlicht nicht auf der Platte, ein Cold Start bringt ihn
+  also nicht zurück — Gossip von einer überlebenden Replika
+  vielleicht schon.
+- **Die Liste zu verengen löscht, was sie nicht mehr benennt.**
+  Der Datensatz wird bei jedem Save vollständig ersetzt; ein Key,
+  der nicht mehr passt, ist von der Platte verschwunden, sobald
+  irgendetwas anderes geschrieben wird — nicht nur eingefroren.
+  Erweitern ist gefahrlos: Der nächste Save schreibt, was die
+  lebende Sicht hält.
+
+Ohne `durableStore` ist die Liste wirkungslos; eine nicht-leere
+Liste ohne konfigurierten Store wird beim Start als Warnung
+gemeldet statt ignoriert, weil beide Hälften an verschiedenen
+Stellen konfiguriert werden und nur die laufende Replika sehen
+kann, dass sie sich widersprechen.
 
 ## Store-Auswahl
 

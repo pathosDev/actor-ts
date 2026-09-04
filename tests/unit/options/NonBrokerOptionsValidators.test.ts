@@ -343,6 +343,14 @@ describe('ShardingOptionsValidator', () => {
       .toThrow(/entityRecoveryConstantRateNumberOfEntities/);
   });
 
+  test('rejects a zero or negative region heartbeat interval (#853)', () => {
+    // `0` is not "no beat" here — the timer would fire as fast as the scheduler
+    // runs it.  Turning the mechanism off is `staleRegionDetection`.
+    expect(() => check({ ...required, regionHeartbeatIntervalMs: 0 }))
+      .toThrow(/regionHeartbeatIntervalMs/);
+    expect(() => check({ ...required, regionHeartbeatIntervalMs: -1 })).toThrow(OptionsError);
+  });
+
   test('accepts both strategies and a sane paced configuration', () => {
     expect(() => check({ ...required, entityRecoveryStrategy: 'all' })).not.toThrow();
     expect(() => check({
@@ -407,8 +415,32 @@ describe('StartShardingOptionsValidator', () => {
     expect(() => check({ ...required, rebalanceRelativeLimit: 1 })).not.toThrow();
   });
 
+  test('rejects a stale-after at or below the heartbeat interval (#853)', () => {
+    // A threshold inside one beat evicts a healthy region between two of its
+    // own beats, stopping every entity under every shard it held, and does it
+    // again after the re-registration.
+    expect(() => check({ ...required, regionHeartbeatIntervalMs: 5_000, regionStaleAfterMs: 5_000 }))
+      .toThrow(/regionStaleAfterMs/);
+    expect(() => check({ ...required, regionHeartbeatIntervalMs: 5_000, regionStaleAfterMs: 1_000 }))
+      .toThrow(OptionsError);
+    expect(() => check({ ...required, regionStaleAfterMs: 0 })).toThrow(/regionStaleAfterMs/);
+  });
+
+  test('the stale-after rule compares resolved values, not only set ones (#853)', () => {
+    // The half a "only check what was set" rule misses, and the reason this
+    // mirrors `ClusterRouterOptions`: each of these sets exactly one of the
+    // pair, and each crosses the *other's* shipped default (5s beat, 20s
+    // threshold) without either being visible at the call site.
+    expect(() => check({ ...required, regionStaleAfterMs: 3_000 })).toThrow(/regionStaleAfterMs/);
+    expect(() => check({ ...required, regionHeartbeatIntervalMs: 30_000 })).toThrow(/regionStaleAfterMs/);
+    // And the shipped pair itself has to be legal, or every default start throws.
+    expect(() => check({ ...required })).not.toThrow();
+  });
+
   test('accepts a valid coordinator config', () => {
     expect(() => check({ ...required, numShards: 64, rebalanceIntervalMs: 10_000, handOffTimeoutMs: 5_000, acquireRetryIntervalMs: 5_000, rebalanceAbsoluteLimit: 8, rebalanceRelativeLimit: 0.25 }))
+      .not.toThrow();
+    expect(() => check({ ...required, staleRegionDetection: true, regionHeartbeatIntervalMs: 1_000, regionStaleAfterMs: 4_000 }))
       .not.toThrow();
   });
 });

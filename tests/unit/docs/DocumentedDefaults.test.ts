@@ -47,6 +47,7 @@ import {
 } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_PORT } from '../../../src/cluster/ClusterBootstrapOptions.js';
 import { DEFAULT_MAX_FRAME_BYTES } from '../../../src/cluster/Protocol.js';
+import { DEFAULT_UNTRUSTED_MODE } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_MAX_DOCUMENT_BYTES, DEFAULT_MAX_NESTING_DEPTH, DEFAULT_MAX_STRING_LENGTH } from '../../../src/serialization/ReadConstraintsOptions.js';
 import {
   DEFAULT_MAX_REMOTE_NODES_PER_TOPIC,
@@ -70,16 +71,19 @@ import {
   DEFAULT_REBALANCE_INTERVAL_MS,
 } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
 import { DEFAULT_REBALANCE_ABSOLUTE_LIMIT, DEFAULT_REBALANCE_RELATIVE_LIMIT } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
+import { DEFAULT_REGION_STALE_AFTER_MS } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
+import { DEFAULT_REGION_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/sharding/ShardingOptions.js';
 import { DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS } from '../../../src/cluster/sharding/StartShardingOptions.js';
 import {
   DEFAULT_MAX_GOSSIP_BYTES,
   DEFAULT_MAX_PENDING_QUORUM_REQUESTS,
   DEFAULT_MAX_QUORUM_TIMEOUT_MS,
 } from '../../../src/crdt/DistributedDataOptions.js';
+import { DEFAULT_LOG_DATA_SIZE_EXCEEDING_BYTES } from '../../../src/crdt/DistributedDataOptions.js';
 import { DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM, DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE } from '../../../src/persistence/Constants.js';
-import { DEFAULT_SNAPSHOT_KEEP_N } from '../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 import { DEFAULT_MAX_DECOMPRESSED_BYTES } from '../../../src/persistence/object-storage/BodyCodec.js';
 import { DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_STALE_LOCK_MS } from '../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
+import { DEFAULT_AUTO_CREATE_TABLES, DEFAULT_DURABLE_STATE_TABLE, DEFAULT_EVENTS_TABLE, DEFAULT_SNAPSHOTS_TABLE, DEFAULT_SNAPSHOT_KEEP_N, DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../../../src/persistence/Constants.js';
 import {
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES,
@@ -105,6 +109,7 @@ import {
   DEFAULT_DELIVERY_OVERFLOW,
   DEFAULT_DELIVERY_QUEUE_CAPACITY,
 } from '../../../src/logging/DeliveryOptions.js';
+import { DEFAULT_MAX_PRODUCERS, DEFAULT_PRODUCER_IDLE_TTL_MS, DEFAULT_RESEND_TIMEOUT_MS, DEFAULT_WINDOW_SIZE } from '../../../src/delivery/index.js';
 import {
   DEFAULT_CONSOLE_SINK_FORMAT,
   DEFAULT_CONSOLE_SINK_STREAM,
@@ -287,6 +292,11 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   /* --- remote --- */
   { key: 'actor-ts.remote.tcp.port', kind: 'int', constant: DEFAULT_PORT },
   { key: 'actor-ts.remote.max-frame-bytes', kind: 'bytes', constant: DEFAULT_MAX_FRAME_BYTES },
+  // In the table rather than in FEATURE_SWITCHES beside `tls.enabled`, because
+  // it does have a constant to disagree with: `Cluster` reads
+  // `options.untrustedMode ?? DEFAULT_UNTRUSTED_MODE`, so the published `false`
+  // and the shipped one are the same boolean, checkably (#877).
+  { key: 'actor-ts.remote.untrusted-mode', kind: 'bool', constant: DEFAULT_UNTRUSTED_MODE },
 
   /* --- pub-sub / receptionist --- */
   { key: 'actor-ts.cluster.pub-sub.max-subscribers-per-topic', kind: 'int', constant: DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC },
@@ -312,11 +322,18 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.sharding.entity-recovery.strategy', kind: 'string', constant: DEFAULT_ENTITY_RECOVERY_STRATEGY },
   { key: 'actor-ts.sharding.entity-recovery.constant-rate.frequency', kind: 'duration', constant: DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_FREQUENCY_MS },
   { key: 'actor-ts.sharding.entity-recovery.constant-rate.number-of-entities', kind: 'int', constant: DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_NUMBER_OF_ENTITIES },
+  // The `enabled` sibling is a FEATURE_SWITCHES entry — its published `off` is
+  // the mechanism being absent, not a tuned value.  These two ship regardless,
+  // because an operator who cannot see them cannot judge what turning the
+  // switch on would cost (#853).
+  { key: 'actor-ts.sharding.stale-region-detection.heartbeat-interval', kind: 'duration', constant: DEFAULT_REGION_HEARTBEAT_INTERVAL_MS },
+  { key: 'actor-ts.sharding.stale-region-detection.stale-after', kind: 'duration', constant: DEFAULT_REGION_STALE_AFTER_MS },
 
   /* --- distributed data --- */
   { key: 'actor-ts.distributed-data.max-pending-quorum-requests', kind: 'int', constant: DEFAULT_MAX_PENDING_QUORUM_REQUESTS },
   { key: 'actor-ts.distributed-data.max-quorum-timeout', kind: 'duration', constant: DEFAULT_MAX_QUORUM_TIMEOUT_MS },
   { key: 'actor-ts.distributed-data.max-gossip-bytes', kind: 'bytes', constant: DEFAULT_MAX_GOSSIP_BYTES },
+  { key: 'actor-ts.distributed-data.log-data-size-exceeding', kind: 'bytes', constant: DEFAULT_LOG_DATA_SIZE_EXCEEDING_BYTES },
 
   /* --- mailbox --- */
   // The sibling leaf, `mailbox.default.capacity`, is a FEATURE_SWITCHES entry:
@@ -336,6 +353,17 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.diagnostics.log-dead-letters', kind: 'int', constant: DEFAULT_LOG_DEAD_LETTERS },
   { key: 'actor-ts.diagnostics.log-dead-letters-during-shutdown', kind: 'bool', constant: DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN },
   { key: 'actor-ts.diagnostics.log-dead-letters-suspend-duration', kind: 'duration', constant: DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS },
+
+  /* --- reliable delivery --- */
+  // `max-producers` and `producer-idle-time-to-live` publish `0` as their
+  // opt-out while the fields document `Infinity`, so the reader translates —
+  // and the published literal is still the constant, which is what these two
+  // entries pin.  `maxOutOfOrder`, the third consumer bound, ships no leaf at
+  // all and so is not part of the partition (#861).
+  { key: 'actor-ts.reliable-delivery.producer.resend-timeout', kind: 'duration', constant: DEFAULT_RESEND_TIMEOUT_MS },
+  { key: 'actor-ts.reliable-delivery.producer.window-size', kind: 'int', constant: DEFAULT_WINDOW_SIZE },
+  { key: 'actor-ts.reliable-delivery.consumer.max-producers', kind: 'int', constant: DEFAULT_MAX_PRODUCERS },
+  { key: 'actor-ts.reliable-delivery.consumer.producer-idle-time-to-live', kind: 'duration', constant: DEFAULT_PRODUCER_IDLE_TTL_MS },
 
   /* --- coordination --- */
   // The three sibling keys — `lease.ttl`, `lease.renewal-interval` and
@@ -417,6 +445,20 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // are the same number and the same string, checkably.
   { key: 'actor-ts.cache.redis.db', kind: 'int', constant: DEFAULT_REDIS_DB },
   { key: 'actor-ts.cache.memcached.servers', kind: 'string', constant: DEFAULT_MEMCACHED_SERVERS },
+
+  /* --- persistence --- */
+  // The three SQLite blocks (#872).  `busy-timeout` is published under each of
+  // them and pinned to one constant, because it is one pragma applied to every
+  // handle the package opens — three copies of the number would be three ways
+  // for it to drift from the one `applySqliteBusyTimeout` actually uses.
+  { key: 'actor-ts.persistence.journal.sqlite.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.sqlite.busy-timeout', kind: 'duration', constant: DEFAULT_SQLITE_BUSY_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.snapshot-store.sqlite.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.sqlite.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.sqlite.busy-timeout', kind: 'duration', constant: DEFAULT_SQLITE_BUSY_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.durable-state.sqlite.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.durable-state.sqlite.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.sqlite.busy-timeout', kind: 'duration', constant: DEFAULT_SQLITE_BUSY_TIMEOUT_MS },
 
   /* --- object storage --- */
   { key: 'actor-ts.persistence.snapshot-store.object-storage.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
@@ -591,6 +633,15 @@ const PLACEHOLDERS: readonly string[] = [
   'actor-ts.persistence.snapshot-store.object-storage.s3.region',
   'actor-ts.persistence.snapshot-store.object-storage.s3.endpoint',
   'actor-ts.persistence.snapshot-store.object-storage.filesystem.dir',
+  // The three SQLite database paths (#872).  `""` is the shape of the key, not
+  // a value: the reader drops it, so the store falls through to
+  // DEFAULT_SQLITE_PATH.  Published empty rather than as `":memory:"` on
+  // purpose — three blocks each shipping a real default would let a deployment
+  // point the journal at a file, leave the snapshot store alone, and lose every
+  // snapshot on restart with the config file reading as if that were chosen.
+  'actor-ts.persistence.journal.sqlite.path',
+  'actor-ts.persistence.snapshot-store.sqlite.path',
+  'actor-ts.persistence.durable-state.sqlite.path',
 ];
 
 /**
@@ -648,13 +699,35 @@ const FEATURE_SWITCHES: readonly string[] = [
   // either — `CorsRouteOptions.exposedHeaders` is optional and the default is
   // the field being absent (#878).
   'actor-ts.http.cors.exposed-headers',
+  // The third empty-list sentinel, and the one where the reading is
+  // load-bearing: `[]` means "persist EVERY key", which is what every release
+  // before the option did, so an empty list and an unset key produce the same
+  // durable record.  Reading it the other way — "persist nothing" — would make
+  // adopting a newer version silent total data loss, which is why the
+  // behaviour is asserted in `DurableDistributedData.test.ts` rather than only
+  // written down.  No constant either: the default is the field being absent,
+  // and `durableSnapshot` short-circuits on `length === 0` (#856).
+  'actor-ts.distributed-data.durable-keys',
   'actor-ts.cluster.weakly-up-after', // 0s = no auto weakly-up promotion
   'actor-ts.cluster.tombstone.min-retention', // 0s = derive from down-after
   'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',
   'actor-ts.remote.tls.enabled',
+  // `[]` = admit nothing beyond the registered framework endpoints — the same
+  // sentinel shape as `devtools.allowed-origins` and `http.cors.exposed-headers`
+  // above, and the same reason there is no constant: the read site is
+  // `options.trustedSelectionPaths ?? []`, so an empty list and an unset field
+  // produce the identical policy.  It is also only consulted while
+  // `remote.untrusted-mode` is on, which is the switch this one qualifies (#877).
+  'actor-ts.remote.trusted-selection-paths',
   'actor-ts.http.shutdown-grace-period', // 0ms = close listeners at once
   'actor-ts.sharding.remember-entities',
   'actor-ts.sharding.max-entities', // 0 = unbounded
+  // off = no region beats and no coordinator sweeps, which is the shipped
+  // behaviour and the state every release before #853 was in.  The off state is
+  // a timer that is never armed and a sweep that returns at its first line, so
+  // there is nothing for a `DEFAULT_*` constant to hold — `settingsToConfig`
+  // reads it as `s.staleRegionDetection ?? false`, the same shape `proxy` has.
+  'actor-ts.sharding.stale-region-detection.enabled',
   'actor-ts.coordinated-shutdown.terminate-actor-system',
   'actor-ts.coordinated-shutdown.exit-process',
   'actor-ts.coordinated-shutdown.auto-register-tasks',
@@ -667,6 +740,12 @@ const FEATURE_SWITCHES: readonly string[] = [
   // exists for MinIO and most non-AWS stores.  The off state is the field
   // being absent on `S3ObjectStorageOptions`, so there is no constant (#873).
   'actor-ts.persistence.snapshot-store.object-storage.s3.force-path-style',
+  // off = SQLite's default rollback journal.  The published `off` says WAL is
+  // not switched on, not how big anything is, and the off state IS the field
+  // being absent at the read site — `SqliteJournal.init` runs the pragma only
+  // when `options.wal` is truthy, so there is no constant to disagree with
+  // (#872).
+  'actor-ts.persistence.journal.sqlite.wal',
 ];
 
 /**
@@ -690,6 +769,11 @@ const LITERAL_AT_THE_READ_SITE: readonly string[] = [
   // (`prefix ?? ''`).  Not a placeholder: the empty string IS the shipped
   // default, it is simply written at the read site rather than named (#873).
   'actor-ts.persistence.snapshot-store.object-storage.prefix',
+  // the in-memory durable-state store id — PersistenceExtension.ts.  Reads
+  // exactly like the two selectors above it: the fallback is the id literal in
+  // `currentDurableStatePluginId`, one of the three `registerX(...)` calls in
+  // the extension's own constructor (#872).
+  'actor-ts.persistence.durable-state.plugin',
 ];
 
 /** The four unasserted groups, flattened — the rest of the partition. */

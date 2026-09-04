@@ -324,6 +324,8 @@ zählen gegen keine der Grenzen.
 | `distributed-data.max-pending-quorum-requests` | `1000` | Obergrenze für offene Quorum-Requests — `updateAsync` und `getAsync` teilen sich ein Budget.  Ein Request darüber wird direkt abgelehnt.  `0` deaktiviert das Cap. |
 | `distributed-data.max-quorum-timeout` | `30s` | Obergrenze für das `timeoutMs` eines Aufrufs; ein größerer Wert wird darauf heruntergeschnitten.  `0` deaktiviert die Obergrenze. |
 | `distributed-data.max-gossip-bytes` | `1M` | Byte-Budget für die Payload eines Gossip-Frames.  Ein größerer Store wird pro Tick in Scheiben geschickt und setzt dort fort, wo der letzte Tick aufgehört hat.  `0` entfernt das Budget. |
+| `distributed-data.log-data-size-exceeding` | `100K` | Warnt (ratenbegrenzt) über einen Key, dessen eigene Kodierung diese Byte-Zahl überschreitet.  Reine Meldung — der Key wird gegossipt wie zuvor.  `0` warnt nie. |
+| `distributed-data.durable-keys` | `[]` | Welche Keys ein konfigurierter `durableStore` persistiert.  **Leer heißt jeder Key.**  Ein Eintrag ist ein exakter Key-Name oder ein Präfix mit einem abschließenden `*`. |
 
 `max-gossip-bytes` wird immer **auf `remote.max-frame-bytes` heruntergeschnitten**:
 Wer das Wire-Cap senkt, senkt damit auch das Gossip-Budget, und keine
@@ -352,6 +354,35 @@ alle drei an, ohne dass irgendetwas ihn bremst.  Wer über
 `max-pending-quorum-requests` hinaus ablehnt, macht aus dem, was später als
 Timeout-Sturm ankäme, sofortige Fehler, die den Knopf beim Namen nennen.
 Siehe [Quorum-Reads und -Writes](/de/distributed-data/quorum-reads-writes/).
+
+`log-data-size-exceeding` meldet dieselbe Messung, die auch
+`max-gossip-bytes` vornimmt — nur eine Größenordnung früher — und ändert
+nichts daran, was verschickt wird.  Ein Key jenseits des gesamten Budgets ist
+ohnehin laut; ein Key bei einem großen *Bruchteil* davon gossipt einwandfrei
+und verbraucht dabei genau diesen Bruchteil jedes Ticks, in dem er auftaucht —
+der Rest des Stores wird also entsprechend langsamer verteilt, ohne dass
+irgendetwas sagt, warum.  `100K` ist ungefähr ein Zehntel des ausgelieferten
+Budgets — zehn solcher Keys füllen ein ganzes Frame — und bewusst nicht Akkas
+`10KiB`, was noch einmal ein Zehntel davon wäre und beim ersten
+legitimen `ORSet` eines Deployments anschlagen würde.  Die Zeile hat ihre
+eigene Ruhephase, statt sich die der Oversize-Warnung zu teilen: Ein höheres
+`max-gossip-bytes` behebt jene und macht diese *relevanter*, keine der beiden
+darf die andere unterdrücken.
+
+`durable-keys` schränkt ein, was ein konfigurierter `durableStore` schreibt;
+ohne Store ist der Key wirkungslos, und eine nicht-leere Liste ohne Store wird
+beim Start als Warnung gemeldet.  **Eine leere Liste heißt jeder Key** — das
+Verhalten jedes Releases vor dieser Option — und niemals „nichts
+persistieren"; nichts zu persistieren erreicht man, indem man keinen Store
+konfiguriert.  Ein Eintrag ist ein exakter Key-Name oder ein Präfix mit einem
+abschließenden `*` (`session-*`), und das ist die gesamte Syntax: Ein
+reichhaltigeres Muster hieße, aus einer Config-Datei einen Matcher zu bauen,
+und `new RegExp(…)` über einen vom Betreiber gelieferten Text ist eine
+ReDoS-Angriffsfläche auf genau dem Pfad, der entscheidet, was einen Neustart
+überlebt.  Der Datensatz einer Replika wird bei jedem Save vollständig neu
+geschrieben — **einen Eintrag zu entfernen löscht die Keys**, die er benannte,
+bei der nächsten Mutation aus dem persistierten Datensatz.  Siehe
+[Durable Storage](/de/distributed-data/durable-storage/).
 
 `max-quorum-timeout` begrenzt die andere Achse.  Ein offener Request hält
 seinen Slot über die gesamte Deadline, ein einzelner Aufrufer mit einem
@@ -425,6 +456,8 @@ ohne sie stillschweigend zu vereinheitlichen.  Setz sie pro Lease im Code.
 | `remote.tcp.advertised-port` | *(ungesetzt)* | Der Port, den Peers **wählen**.  Ungesetzt bedeutet dasselbe wie `remote.tcp.port` — setz ihn nur dort, wo das Deployment den Prozess auf einem anderen veröffentlicht.  Aus demselben Grund wie `advertised-host` nicht in der `reference.conf`. |
 | `remote.max-frame-bytes` | `16M` | Wire-Cap pro Frame.  Ein Frame, dessen Längen-Präfix darüber liegt, wird verworfen, bevor irgendeine Payload gepuffert wird. |
 | `remote.tls.enabled` | `false` | **Nicht umgesetzt** — `true` bringt eine Startup-Warnung, keine Verschlüsselung.  Siehe unten. |
+| `remote.untrusted-mode` | `false` | Ein eingehendes Envelope nur annehmen, wenn `trusted-selection-paths` sein Ziel nennt.  Aus ist jeder `/user`-Aktor namentlich adressierbar — genau das lässt eine `ActorRef` über Knoten hinweg funktionieren.  `/system` wird in beiden Fällen abgelehnt.  Siehe unten. |
+| `remote.trusted-selection-paths` | `[]` | Pfade, die ein Peer namentlich adressieren darf, solange `untrusted-mode` an ist.  Leer heißt: nichts über die Framework-Endpunkte hinaus, die dieser Knoten registriert hat. |
 
 `host`/`port` sind das **Bind**-Paar, `advertised-host`/`advertised-port` das
 **Identitäts**-Paar: das erste sagt, wo der Listener aufmacht, das zweite,
@@ -465,6 +498,64 @@ die ganze Konfiguration.
 selbst baut.  Wenn du einen `TcpTransport` selbst konstruierst und per
 `withTransport(…)` übergibst, setz das Cap dort — das Framework re-capped
 keinen Transport, den es nicht erzeugt hat.
+
+#### Wen ein Peer namentlich adressieren darf
+
+Ein eingehendes `envelope`-Frame trägt den Zielpfad, den der **Absender**
+gewählt hat, und der Knoten löst ihn gegen seinen eigenen Aktor-Baum auf.  Das
+ist das eine, was eine Gegenstelle auf der Cluster-Verbindung frei wählt, und
+die beiden Keys oben sind der Rahmen darum.
+
+`/system` gehört nicht zu diesem Rahmen.  Die Aktoren des Frameworks — Shard-
+Coordinators und -Regions, Singleton-Manager, der PubSub-Mediator, das
+DistributedData-Replikat, beide DevTools-Lanes — sind ausschließlich über den
+Pro-Pfad-Handler erreichbar, den jeder von ihnen registriert, in beiden Modi.
+Diese Tür heftet die Identität der Verbindung an das Frame; die namentliche
+Pfadauflösung hat das nie getan, weshalb ein so zugestellter Body überhaupt
+keinen Absender hatte.  Das ist eine **Verhaltensänderung**: davor konnte jeder,
+der ein `hello` abgeschlossen hatte, sie adressieren
+([Issue #964](https://github.com/pathosDev/actor-ts/issues/964)).
+
+`untrusted-mode` engt die andere Hälfte ein.  Aus — der Default — darf ein Peer
+jeden `/user`-Aktor benennen, was genau das ist, was eine aus einer Wire-Ref
+rekonstruierte `RemoteActorRef` tut und was eine `ActorRef` über Knoten hinweg
+überhaupt brauchbar macht.  An gelten nur die Pfade, die du auflistest:
+
+```hocon
+actor-ts.remote {
+  untrusted-mode          = true
+  trusted-selection-paths = ["/user/orders/*", "/user/reporting/intake"]
+}
+```
+
+Ein Eintrag ist ein **exakter** Pfad, außer er endet auf `/*` — dann ist er
+dieser Pfad und alles darunter.  Das Suffix ist segmentverankert:
+`/user/orders/*` lässt `/user/orders/7` zu und lehnt `/user/orders-archive` ab.
+Sonst ist hier nichts ein Muster, und ein `*` irgendwo anders als als ganzes
+letztes Segment wird beim Start abgelehnt statt literal gematcht.  Pfade werden
+guardian-verwurzelt geschrieben, so wie der Baum sie rendert; der führende `/`
+ist optional.
+
+Schalte den Modus dort an, wo das Cluster-Netz eine Grenze überschreitet, die du
+nicht kontrollierst — dieselben Netze, in denen sich auch
+`remote.max-frame-bytes` zu senken lohnt.  Der Preis ist, dass jeder namentlich
+adressierte Aktor aufgelistet sein muss, auch die, die über eine gewanderte Ref
+erreicht werden; fang deshalb damit an, auf einem Knoten mit angeschaltetem
+Modus und einer für vollständig gehaltenen Allow-List
+`cluster_envelope_refusals_total{reason="not-allow-listed"}` zu beobachten.
+
+Ablehnungen werden gezählt statt einzeln geloggt: ein Envelope ist sein eigenes
+Frame, eine Zeile pro Ablehnung ließe einen Peer also das Log dieses Knotens im
+Nachrichtentakt schreiben.  Die erste Ablehnung je Grund wird als `WARN`
+geloggt, weitere werden zu höchstens einer Zeile pro 30 Sekunden gefaltet, die
+den Peer der **Verbindung** nennt und nie den angefragten Pfad.
+
+Dieselbe Regel gilt für `ClusterClientReceptionist`, und das ist die stärker
+exponierte der beiden Nahtstellen: ein
+[`ClusterClient`](/de/cluster/cluster-client/) ist dem Membership-Ring nie
+beigetreten.  Ein abgelehnter Pfad wird mit demselben `path not found`
+beantwortet, das der Client für einen nicht existierenden Pfad bekommt — der
+Endpunkt taugt also nicht dazu, den Aktor-Baum zu kartieren.
 
 :::caution[`remote.tls.enabled` verschlüsselt nichts]
 Der Key wird gelesen, aber nicht umgesetzt.  Ihn auf `true` zu setzen
@@ -630,6 +721,38 @@ Hier gelten dieselbe Blattregel und dieselbe Ablehnung beim Start: kebab-case,
 Einheiten-Suffix weggelassen, und eine ausgemusterte camelCase-Schreibweise ist
 ein `ConfigError` statt einer Obergrenze, die still auf den Default zurückfiel.
 
+### `actor-ts.reliable-delivery`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `reliable-delivery.producer.resend-timeout` | `500ms` | Wie lange der Producer auf eine Bestätigung wartet, bevor er dieselbe seq erneut sendet.  Ein festes Intervall, bei jedem Ausbleiben unverändert neu gestellt — es gibt kein Backoff. |
+| `reliable-delivery.producer.window-size` | `16` | Flow-Control-Fenster: höchstens so viele unbestätigte Nachrichten gleichzeitig unterwegs.  Weitere Sends warten im Speicher, bis eine Bestätigung einen Platz freigibt. |
+| `reliable-delivery.consumer.max-producers` | `1024` | Für wie viele Producer der Consumer gleichzeitig Deduplizierungs-Zustand hält.  An der Grenze wird der am längsten unbenutzte Eintrag verdrängt.  `0` = unbegrenzt. |
+| `reliable-delivery.consumer.producer-idle-time-to-live` | `5m` | Wie lange der Deduplizierungs-Eintrag eines Producers ohne Zustellung von ihm überlebt; der Sweep läuft in genau diesem Intervall.  `0` schaltet den Sweep ab. |
+
+Beide Blöcke liegen unter dem, was `ReliableDelivery.producer(...)` /
+`ReliableDelivery.consumer(...)` übergeben bekommt — ein explizites
+`withWindowSize(…)` gewinnt also weiterhin.  **Gelesen werden sie dort und
+sonst nirgends.**  Kein Controller kann in seinem Konstruktor Konfiguration
+lesen — `Actor.system` ist ein Getter über einen Kontext, den die Zelle erst
+danach injiziert —, deshalb behält ein Controller, den du selbst konstruierst
+und an `system.spawn` übergibst, seine eingebauten Defaults und sieht diesen
+Block nie.
+
+`0` ist die Schreibweise, mit der beide Consumer-Grenzen das `Infinity` ihrer
+Optionsfelder ausdrücken, denn `Infinity` lässt sich in HOCON überhaupt nicht
+schreiben: der Zahlen-Reader nimmt ein numerisches Literal, und der
+Duration-Parser weist einen nicht-endlichen Wert ab.  Es ist dieselbe
+Schreibweise, die `cluster.max-members` und `sharding.max-entities` bereits
+verwenden.  Was sie kostet, gehört klar gesagt: die Deduplizierungs-Map ist auf
+eine `producerId` geschlüsselt, die der *Sender* wählt — `0` überlässt damit
+einem Peer die Entscheidung, wie viel dieser Consumer behält: ein Eintrag je
+verschiedener Id, nie freigegeben.
+
+`maxOutOfOrder`, die dritte Consumer-Grenze, bekommt bewusst noch keinen
+Schlüssel: sie kam erst nach der Spezifikation dieses Blocks dazu und erhält
+ein eigenes Folge-Issue statt eines Blatts, das niemand bemessen hat.
+
 ### `actor-ts.serialization`
 
 | Key | Default | Zweck |
@@ -722,6 +845,19 @@ zurückgegeben hat.
 | --- | --- | --- |
 | `persistence.journal.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Journals. |
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Snapshot Stores. |
+| `persistence.durable-state.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Durable-State-Stores. |
+| `persistence.journal.sqlite.path` | `""` | Datenbankdatei.  Leer heißt *nicht gesetzt* — das Journal fällt auf eine anonyme In-Memory-Datenbank durch. |
+| `persistence.journal.sqlite.events-table` | `"events"` | Event-Tabelle.  Die Tags- (`_tags`) und Metadaten-Tabelle (`_meta`) folgen diesem Namen. |
+| `persistence.journal.sqlite.wal` | `off` | Datenbank mit `journal_mode = WAL` öffnen — parallele Leser während eines Schreibvorgangs. |
+| `persistence.journal.sqlite.busy-timeout` | `1s` | Wie lange ein blockierter Schreiber auf das Lock wartet, bevor `SQLITE_BUSY` kommt; `0` bricht sofort ab. |
+| `persistence.snapshot-store.sqlite.path` | `""` | Wie oben — leer heißt nicht gesetzt. |
+| `persistence.snapshot-store.sqlite.snapshots-table` | `"snapshots"` | Snapshot-Tabelle. |
+| `persistence.snapshot-store.sqlite.keep-n` | `3` | Aufbewahrte Snapshots pro `persistenceId`; `0` schaltet das Pruning ab. |
+| `persistence.snapshot-store.sqlite.busy-timeout` | `1s` | Wie oben. |
+| `persistence.durable-state.sqlite.path` | `""` | Wie oben.  Dieser Store hat keinen In-Memory-Fallback — gib einen Pfad oder ein Handle an. |
+| `persistence.durable-state.sqlite.table` | `"durable_state"` | Durable-State-Tabelle. |
+| `persistence.durable-state.sqlite.auto-create-tables` | `on` | `CREATE TABLE IF NOT EXISTS` bei der ersten Nutzung.  Aus, wenn ein Schema-Tool das DDL besitzt. |
+| `persistence.durable-state.sqlite.busy-timeout` | `1s` | Wie oben. |
 | `persistence.snapshot-store.object-storage.backend` | `""` | Welches Backend das Object-Storage-Plugin baut — `filesystem`, `s3`, oder leer, um es dem Code zu überlassen. |
 | `persistence.snapshot-store.object-storage.prefix` | `""` | Wird jedem Object-Key vorangestellt — z. B. `env-prod/`. |
 | `persistence.snapshot-store.object-storage.keep-n` | `3` | Aufbewahrte Snapshots pro `persistenceId`; `0` schaltet das Pruning ab. |
@@ -761,11 +897,38 @@ bekommt, ist das schlechtere Ergebnis; konfiguriere diesen Modus im Code mit
 `ObjectStoragePluginOptions.withEncryption(…)`.  `kms-key-id` ist unbedenklich —
 eine ARN ist ein Name, und der Schlüssel selbst verlässt KMS nie.
 
+**`durable-state.plugin` ist die dritte Achse**, und sie ist neu.  Durable State
+war bislang der einzige Persistence-Vertrag ohne Registry: jeder
+`registerXxxPlugins`-Helper baute seinen Store eifrig und gab ihn zurück, ein
+`DurableStateActor` musste diese Instanz also im Code bekommen.  Jetzt wird er
+genau wie Journal und Snapshot Store ausgewählt, und `DurableStateOptions.store`
+ist optional — ein Actor, der keinen Store benennt, nutzt den, den dieser Key
+auswählt.
+
+**SQLite wird mit `registerSqlitePlugins(ext)` registriert** und braucht gar
+keine Options mehr, wenn die drei Blöcke oben gefüllt sind:
+
+```ts
+const ext = system.extension(PersistenceExtensionId);
+registerSqlitePlugins(ext);          // path, tables, retention … from HOCON
+```
+
+Es gelten die üblichen drei Ebenen — explizite
+`RegisterSqlitePluginsOptions` stechen den Block, der Block sticht die
+eingebauten Defaults, Feld für Feld, und ein im Code nicht gesetztes Feld fällt
+durch, statt zu überdecken.  Ein im Code angegebener `path` gilt für alle drei
+Stores als *Default*, ein Blatt mit eigenem `path` behält also seinen; eine
+vorab geöffnete `database` ist dagegen ein Override, denn ein gemeinsames Handle
+ist die spezifischere Anweisung.  Für `driver`, `database` und `serializer` gibt
+es kein Blatt — das sind lebende Objekte, die eine Config-Datei nicht ausdrücken
+kann.
+
 Die Plugin-Keys zeigen auf *einen anderen* Config-Abschnitt, der
-die Settings dieses Plugins enthält.  Z. B. enthält
-`actor-ts.persistence.journal.sqlite` die `path`, `pragmas` etc.
-des SQLite-Journals.  Siehe jede Journal-Seite in
-[Persistence](/de/persistence/overview/) für die per-Plugin-Keys.
+die Settings dieses Plugins enthält.  `actor-ts.persistence.journal.sqlite`
+oben ist das ausgearbeitete Beispiel: es ist zugleich die Id, unter der das
+Journal registriert ist, und der Block, den dieses Journal liest.  Siehe jede
+Journal-Seite in [Persistence](/de/persistence/overview/) für die
+per-Plugin-Keys.
 
 ### `actor-ts.projection`
 
@@ -855,6 +1018,9 @@ pro Consumer](/de/cache/in-memory/#ein-cache-pro-consumer) braucht.
 | `sharding.entity-recovery.strategy` | `all` | Wie erinnerte Entities zurückkommen, nachdem eine Region einen Shard bekommen hat.  `all` startet alle auf einmal — das heutige Verhalten, und der Grund, warum der Default nicht verschoben wurde.  `constant-rate` verteilt sie, siehe [Einen Remember-Entities-Restore drosseln](#einen-remember-entities-restore-drosseln) weiter unten. |
 | `sharding.entity-recovery.constant-rate.frequency` | `100ms` | Abstand zwischen zwei gedrosselten Recovery-Batches.  Unter `strategy = all` wirkungslos. |
 | `sharding.entity-recovery.constant-rate.number-of-entities` | `5` | Wie viele Entities ein gedrosselter Batch startet.  **Ein regionsweites Budget, keines pro Shard** — die Queue wird von jedem Shard des Nodes gespeist, das sind also Entity-Starts pro Fenster *auf diesem Node*.  Unter `strategy = all` wirkungslos. |
+| `sharding.stale-region-detection.enabled` | `off` | Lässt jede Region an den Koordinator schlagen und den Koordinator eine verstummte Region entfernen.  Per Default aus — eine Entfernung ist destruktiv.  Siehe [Eine verstummte Region erkennen](#eine-verstummte-region-erkennen) weiter unten. |
+| `sharding.stale-region-detection.heartbeat-interval` | `5s` | Abstand zwischen zwei Schlägen Region → Koordinator.  **Pro Sharded Type, nicht pro Node.**  Bei `enabled = off` wirkungslos. |
+| `sharding.stale-region-detection.stale-after` | `20s` | Stille, nach der eine Region für verschwunden erklärt und ihre Shards neu vergeben werden.  Muss größer als `heartbeat-interval` sein, und um mehr als einen Schlag.  Bei `enabled = off` wirkungslos. |
 
 Diese Keys gelten für **jeden** auf dem Node gestarteten Sharded Type.  Sie
 werden einmal pro `sharding.start(...)` gelesen und unter das gelegt, was
@@ -997,6 +1163,59 @@ Drei Punkte dazu, die man ausdrücklich sagen sollte:
 
 Setze `rebalance-relative-limit = 0` (das absolute Limit steht bereits auf
 `0`), um das ungedeckelte Verhalten wiederherzustellen.
+
+#### Eine verstummte Region erkennen
+
+Lies erst den Geltungsbereich, bevor du danach greifst: das hier ist ein
+**Auffangnetz für genau einen engen Fall**, und der Fall, den die meisten
+meinen, ist schon ohne ihn abgedeckt.
+
+Ein Node, der aufhört zu gossipen, wird vom [Failure
+Detector](/de/cluster/failure-detector/) nach
+`actor-ts.cluster.failure-detector.down-after` zwangsweise heruntergestuft — per
+Default 5 s, und nicht abschaltbar — und der Koordinator vergibt seine Shards
+aus dem daraus folgenden `MemberRemoved` neu.  Eine sauber gestoppte Region
+sagt dem Koordinator auf ihrem Weg nach unten Bescheid.  Was beides nicht
+abdeckt, ist eine Region, die **auf einem noch laufenden, noch gossipenden Node
+verschwunden oder verklemmt** ist und deren Meldung nie ankam: sie geht genau
+einmal raus, wird nicht quittiert, und ein Transportfehler auf dem Weg nach
+unten wird nur geloggt und geschluckt.  Dann bleiben die Shards einem Actor
+zugewiesen, den es nicht mehr gibt, und nichts heilt das — die Kandidatenmenge
+wird ohne jede Lebendigkeitsprüfung aus der Registry abgeleitet.
+
+```hocon
+actor-ts.sharding.stale-region-detection {
+  enabled = on
+  heartbeat-interval = 5s
+  stale-after = 20s
+}
+```
+
+Vier Dinge sind vor dem Einschalten wissenswert:
+
+- **Der Schalter steuert beide Hälften.**  Aus schlägt keine Region und fegt
+  kein Koordinator, der Mechanismus kostet also überhaupt nichts.  An schickt
+  jede Region jedes Sharded Type einen kleinen Frame pro `heartbeat-interval`.
+- **Der Schlag geht pro Sharded Type, nicht pro Node.**  Zehn Typen auf einem
+  Node sind zehn Frames pro Intervall, zusätzlich zu den Heartbeats des
+  Clusters selbst.
+- **Eine Region, die nie schlägt, wird nie entfernt.**  Genau das macht das
+  Einschalten mitten in einem Rollout sicher: solange der Leader den Schalter
+  an hat und einzelne Regionen noch nicht, sind diese Regionen schlicht noch
+  nicht scharf — statt im Sekundentakt entfernt zu werden und sich in einer
+  Schleife neu zu registrieren.
+- **`stale-after` muss größer als `heartbeat-interval` sein**, und die
+  ausgelieferten vier Intervalle sind Absicht: bei einem einzigen entfernt ein
+  verlorener Frame eine gesunde Region und stoppt jede Entität unter jedem
+  Shard, den sie hielt.  Ein Paar, das sich kreuzt, wird bei
+  `sharding.start(...)` abgelehnt, und zwar gegen die *aufgelösten* Werte — das
+  Überschreiben des einen kann den Default des anderen also nicht stillschweigend
+  unterlaufen.
+
+Ein `check-interval` gibt es bewusst nicht.  Der Sweep läuft auf dem
+`rebalance-interval`-Tick mit, der ohnehin schon der Regler dafür ist, wie oft
+der Koordinator auf die Shard-Map schaut — die Erkennungslatenz ist also
+`stale-after` plus höchstens ein Tick.
 
 Ein Setting für genau einen Typ gehört deshalb in den Builder; die
 Config-Datei ist für die node-weite Grundeinstellung, die du ohne Rebuild

@@ -10,6 +10,7 @@ import { mergeOptions } from '../util/OptionsMerge.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
 import { randomId } from '../util/RandomString.js';
 import {
+  DEFAULT_LOG_DATA_SIZE_EXCEEDING_BYTES,
   DEFAULT_MAX_GOSSIP_BYTES,
   DEFAULT_MAX_PENDING_QUORUM_REQUESTS,
   DEFAULT_MAX_QUORUM_TIMEOUT_MS,
@@ -691,6 +692,22 @@ type GossipSkipTally = {
 };
 
 /**
+ * What one tick found *above* the reporting threshold but still small enough
+ * to travel — the same shape as {@link GossipSkipTally}, kept separate because
+ * the two say opposite things.
+ *
+ * A skip is a key that did not converge; an entry here converged perfectly and
+ * merely cost a large share of the tick doing so.  Folding them into one tally
+ * would put both under one rate limiter, and the first warning an operator
+ * silences by raising `max-gossip-bytes` would take the second — the one that
+ * explains why everything else is sweeping slowly — with it.
+ */
+type LargeGossipEntryTally = {
+  count: number;
+  largest: { readonly key: string; readonly bytes: number } | null;
+};
+
+/**
  * Shared encoder for the gossip byte accounting.  One instance rather than one
  * per measurement: the packer measures every key on every tick, and a fresh
  * `TextEncoder` per entry would allocate more than the strings it is sizing.
@@ -770,6 +787,18 @@ class DistributedDataActor extends Actor<ActorMessage> {
    */
   private gossipSkips = 0;
   private lastGossipSkipWarnAtMs = 0;
+  /** `0` never warns.  Purely a report — the key is packed either way. */
+  private readonly logDataSizeExceeding: number;
+  /** Running total and quiet period for the large-entry warning, as above. */
+  private largeGossipEntries = 0;
+  private lastLargeEntryWarnAtMs = 0;
+  /**
+   * Key patterns the durable record is narrowed to — empty means every key.
+   *
+   * Held even when {@link durable} is `null`, so `preStart` can say that a
+   * whitelist was configured for a persistence layer that is not running.
+   */
+  private readonly durableKeys: readonly string[];
 
   constructor(public readonly options: {
     cluster: Cluster;
@@ -783,6 +812,9 @@ class DistributedDataActor extends Actor<ActorMessage> {
       options.options.maxPendingQuorumRequests ?? DEFAULT_MAX_PENDING_QUORUM_REQUESTS;
     this.maxQuorumTimeoutMs = options.options.maxQuorumTimeout ?? DEFAULT_MAX_QUORUM_TIMEOUT_MS;
     this.maxGossipBytes = options.options.maxGossipBytes ?? DEFAULT_MAX_GOSSIP_BYTES;
+    this.logDataSizeExceeding =
+      options.options.logDataSizeExceeding ?? DEFAULT_LOG_DATA_SIZE_EXCEEDING_BYTES;
+    this.durableKeys = options.options.durableKeys ?? [];
     this.durable = options.options.durableStore
       ? new DurableDistributedDataStore(
           options.options.durableStore,
@@ -815,6 +847,19 @@ class DistributedDataActor extends Actor<ActorMessage> {
     this.gossipTimer = this.system.scheduler.scheduleAtFixedRateFunction(
       this.gossipIntervalMs, this.gossipIntervalMs, () => this.gossipTick(),
     );
+
+    // A whitelist naming keys nothing will ever write is the one way this
+    // option is silently wrong, and it is wrong in the direction that costs
+    // data: an operator who wrote it believes those keys survive a restart.
+    // `durableStore` has no HOCON spelling, so the two halves are configured
+    // in different places and can only disagree here.
+    if (!this.durable && this.durableKeys.length > 0) {
+      this.log.warn(
+        `DistributedData: actor-ts.distributed-data.durable-keys names `
+        + `${this.durableKeys.length} key pattern(s) but no durableStore is configured, so `
+        + `nothing is persisted at all. Pass one with DistributedDataOptions.withDurableStore(…).`,
+      );
+    }
 
     if (this.durable) {
       // Load + populate the in-memory view BEFORE accepting any
@@ -1391,7 +1436,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
       return;
     }
     this.durableSaveInFlight = true;
-    const snapshot = new Map(this.view.state);
+    const snapshot = this.durableSnapshot();
     void this.durable.save(snapshot)
       .catch((err) => {
         this.log.warn(`DistributedData: durable save failed`, err);
@@ -1403,6 +1448,32 @@ class DistributedDataActor extends Actor<ActorMessage> {
           this.scheduleDurableSave();
         }
       });
+  }
+
+  /**
+   * The view as the durable record should hold it — everything, or only the
+   * keys `durableKeys` names.
+   *
+   * A copy either way, because `save` is asynchronous and the live view keeps
+   * being mutated underneath it; the filter merely decides what goes into the
+   * copy.  An empty pattern list short-circuits to the whole view, which is
+   * both the fast path and the compatible one: every release before this
+   * option persisted everything, and reading `[]` as "persist nothing" would
+   * turn adopting a newer version into silent total durable data loss.
+   *
+   * Filtering *at save time* rather than at load time is what makes narrowing
+   * the list destructive — `DurableDistributedDataStore.save` replaces the
+   * replica's whole record — and that is stated in the option's own JSDoc, in
+   * `reference.conf` and on the durable-storage page, because it cannot be
+   * inferred from the key's name.
+   */
+  private durableSnapshot(): Map<string, Crdt<any>> {
+    if (this.durableKeys.length === 0) return new Map(this.view.state);
+    const out = new Map<string, Crdt<any>>();
+    for (const [key, crdt] of this.view.state) {
+      if (matchesDurableKey(key, this.durableKeys)) out.set(key, crdt);
+    }
+    return out;
   }
 
   /**
@@ -1462,6 +1533,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     const envelopeBytes = this.gossipEnvelopeBytes();
     const packed: Array<readonly [string, CrdtJson]> = [];
     const skips: GossipSkipTally = { oversize: 0, unserialisable: 0, largest: null };
+    const large: LargeGossipEntryTally = { count: 0, largest: null };
     const start = this.gossipCursor % keys.length;
     let used = envelopeBytes;
     let advance = 0;
@@ -1473,6 +1545,17 @@ class DistributedDataActor extends Actor<ActorMessage> {
         this.countGossipSkip('unserialisable');
         advance++;
         continue;
+      }
+      // Reported before either size decision below, and on every key the
+      // packer visits — including one it is about to skip.  The two lines
+      // answer different questions ("this key is shaping your sweep" versus
+      // "this key will never converge"), so an operator who fixes the second
+      // by raising the budget must still be told the first.
+      if (this.logDataSizeExceeding > 0 && measured.bytes > this.logDataSizeExceeding) {
+        large.count++;
+        if (!large.largest || measured.bytes > large.largest.bytes) {
+          large.largest = { key, bytes: measured.bytes };
+        }
       }
       // Order matters: a key too large for a frame of its own has to be
       // stepped over, not waited for.  Treated as "does not fit right now" it
@@ -1498,6 +1581,7 @@ class DistributedDataActor extends Actor<ActorMessage> {
     // same head of it forever.
     this.gossipCursor = (start + advance) % keys.length;
     this.reportGossipSkips(skips, budget);
+    this.reportLargeGossipEntries(large, budget);
     if (packed.length === 0) return null;
     // `Object.fromEntries`, not `out[key] = …`: a store key is an application
     // string, and for the one value `__proto__` an assignment invokes the
@@ -1622,6 +1706,45 @@ class DistributedDataActor extends Actor<ActorMessage> {
     );
   }
 
+  /**
+   * Name the keys that are large enough to shape the sweep, once per
+   * {@link GOSSIP_SKIP_WARN_INTERVAL_MS}.
+   *
+   * **Its own timestamp, not the skip warning's**, and that is the whole
+   * design decision here rather than an implementation detail.  A store that
+   * has one unsendable key almost always has several merely-large ones, so a
+   * shared quiet period would let whichever fired first hide the other for a
+   * minute at a time — and the two ask for opposite responses. The oversize
+   * line says *split this value or raise the budget*; this one says *this
+   * value is fine but it is costing every other key a share of every tick it
+   * appears in*. Raising `max-gossip-bytes` silences the first and makes the
+   * second more true, which is exactly when it must still be audible.
+   *
+   * The budget travels into the line because the threshold alone does not
+   * make the cost legible: what matters is the key's share of one frame, and
+   * an operator who has moved either number needs both to read it.
+   */
+  private reportLargeGossipEntries(large: LargeGossipEntryTally, budget: number): void {
+    if (large.count === 0) return;
+    this.largeGossipEntries += large.count;
+    const now = Date.now();
+    if (now - this.lastLargeEntryWarnAtMs < GOSSIP_SKIP_WARN_INTERVAL_MS) return;
+    this.lastLargeEntryWarnAtMs = now;
+    // Non-null by construction: the only place `count` is incremented also
+    // sets `largest`, unlike the skip tally where an unserialisable key raises
+    // a count with no size to record.
+    const largest = large.largest!;
+    this.log.warn(
+      `DistributedData: ${large.count} gossiped key(s) exceed the `
+      + `${this.logDataSizeExceeding}-byte reporting threshold `
+      + `(${this.largeGossipEntries} since start); largest is "${largest.key}" at `
+      + `${largest.bytes} bytes against a ${budget}-byte frame budget. Such a key still `
+      + `converges, but it takes that share of every tick it travels in, so the rest of the `
+      + `store sweeps more slowly: split the value, or raise `
+      + `actor-ts.distributed-data.log-data-size-exceeding if this size is expected.`,
+    );
+  }
+
   private countGossipSkip(reason: GossipSkipReason): void {
     metricsOf(this.system).counter(
       'distributed_data_gossip_skipped_keys_total', { reason },
@@ -1649,6 +1772,36 @@ class DistributedDataActor extends Actor<ActorMessage> {
  */
 function nextPendingId(): string {
   return `p${randomId(16)}`;
+}
+
+/**
+ * Does `key` match any entry of a `durableKeys` whitelist?
+ *
+ * Two forms and no third: an exact key name, or a prefix ending in one `*`.
+ * Written out as `startsWith` / `===` rather than compiled into a matcher,
+ * because the patterns come from `reference.conf` and therefore from an
+ * `application.conf` an operator edits — and `new RegExp(text)` over that is a
+ * catastrophic-backtracking surface reachable from a config file, on the code
+ * path that decides what survives a restart.  `ActorSelection` reached the
+ * same conclusion for actor paths and ships exact segments only.
+ *
+ * A richer glob is a deliberate non-goal rather than an omission: it would
+ * need its own escaping rules for a key namespace that is application-defined
+ * (`__proto__` is a legal key here), and the two forms below cover the shape
+ * durable whitelists actually take — a handful of names, or one family behind
+ * a prefix.  `DistributedDataOptionsValidator` rejects anything else at
+ * consume time, so a pattern this function would silently fail to honour
+ * never reaches it.
+ */
+function matchesDurableKey(key: string, patterns: readonly string[]): boolean {
+  for (const pattern of patterns) {
+    if (pattern.endsWith('*')) {
+      if (key.startsWith(pattern.slice(0, -1))) return true;
+      continue;
+    }
+    if (key === pattern) return true;
+  }
+  return false;
 }
 
 /**
