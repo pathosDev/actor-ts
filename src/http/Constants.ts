@@ -136,3 +136,26 @@ export const STATIC_FILE_READ_CHUNK_BYTES = 64 * 1024;
  * name longer than that is not a diagnostic anyway.
  */
 export const MAXIMUM_INBOUND_SHAPE_LABEL_LENGTH = 32;
+
+/**
+ * Longest `Access-Control-Allow-Headers` value a synthesised preflight echoes
+ * back when the route configured none of its own — 1024 characters.
+ *
+ * That value is assembled from client-supplied bytes, so it is bounded as well
+ * as filtered: without a cap a preflight carrying a header-sized
+ * `Access-Control-Request-Headers` is answered with an equally large response
+ * header, which is a small request buying a large one.  1024 is far past any
+ * honest preflight — a browser lists the handful of non-simple headers the
+ * `fetch` call actually set — while still being a cap rather than a limit
+ * nobody hits.
+ *
+ * The budget is spent in whole header names: a name that does not fit is
+ * dropped rather than cut, because half of `authorization` is not a name a
+ * browser can do anything with, and truncation is how a length cap turns a
+ * well-formed list into a malformed one.
+ *
+ * It lives here rather than in `CorsOptions.ts` because it is not the default
+ * of any options field — `allowedHeaders` decides *whether* the request's own
+ * names are echoed; this decides how much of them fits once they are.
+ */
+export const MAXIMUM_ECHOED_CORS_HEADERS_LENGTH = 1024;

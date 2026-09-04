@@ -104,6 +104,119 @@ async function start(mk: () => HttpServerBackend, routes: Route): Promise<string
 
 const ALLOWED = 'https://app.example';
 
+/**
+ * The echoed `Access-Control-Allow-Headers` (#792).
+ *
+ * These go through `compile()` and call the synthesised OPTIONS handler
+ * directly, and that is not a shortcut — it is the only way to run them.
+ * Every hostile value below is one `fetch` refuses to send (undici validates a
+ * header value before it reaches a socket) and one no HTTP parser would hand
+ * back intact anyway, so a live-server test cannot deliver the input this
+ * function is supposed to defend against.  Driving the handler is what puts
+ * the bytes where `sanitiseRequestHeaders` actually sees them.
+ *
+ * The point being pinned is that the function is self-sufficient.  Nothing
+ * here can split a response today: all three runtimes' parsers reject a bare
+ * CR/LF in a request header value, and `setHeader` / `Headers.set` reject one
+ * on the way out.  But a guard whose stated job is stripping a character class
+ * has to strip it whether or not something underneath would have caught the
+ * miss, and the two characters that *did* survive every one of those layers —
+ * HTAB and U+00A0 — are in here for the same reason.
+ */
+describe('cors — echoed Access-Control-Allow-Headers (#792)', () => {
+  const echoedAllowHeaders = async (requestedHeaders: string): Promise<string | undefined> => {
+    const compiled = compile(cors(
+      CorsOptions.create().withOrigins(ALLOWED),
+      path('api', get(() => complete(Status.OK, 'data'))),
+    ));
+    const route = compiled.find((c) => c.kind === 'http' && c.method === 'OPTIONS');
+    if (!route || route.kind !== 'http') throw new Error('expected the synthesised OPTIONS route');
+    const response = await route.handler({
+      method: 'OPTIONS',
+      path: '/api',
+      headers: {
+        origin: ALLOWED,
+        'access-control-request-method': 'GET',
+        'access-control-request-headers': requestedHeaders,
+      },
+      query: {},
+      params: {},
+      body: null,
+    });
+    return response.headers?.['access-control-allow-headers'];
+  };
+
+  test('a well-formed list round-trips unchanged', async () => {
+    expect(await echoedAllowHeaders('x-custom, content-type')).toBe('x-custom, content-type');
+    // Whitespace around the separators is normalised, not preserved.
+    expect(await echoedAllowHeaders('  x-custom ,content-type  ')).toBe('x-custom, content-type');
+  });
+
+  test('CR and LF never reach the response header', async () => {
+    // The shape from the report: a smuggled second header behind a CRLF.
+    const echoed = await echoedAllowHeaders('x-a\r\nSet-Cookie: session=attacker');
+    expect(echoed ?? '').not.toMatch(/[\r\n]/);
+    expect((echoed ?? '').toLowerCase()).not.toContain('set-cookie');
+  });
+
+  test('the whitespace characters that DO survive a real request are stripped', async () => {
+    // HTAB and U+00A0 are the two `\s` members that get past llhttp/Deno's
+    // parser AND past setHeader/Headers.set on all three runtimes, so before
+    // this fix they were echoed verbatim onto the wire.  Written as escapes:
+    // an invisible NBSP in a source file is not something review can see.
+    expect(await echoedAllowHeaders('x-a\tb')).toBeUndefined();
+    expect(await echoedAllowHeaders('x-a\u00a0b')).toBeUndefined();
+    // U+2028 cannot arrive from the wire: header values decode as Latin-1, so
+    // its UTF-8 encoding lands as three characters `\s` does not match, and even
+    // the old regex stripped those.  It is here because it IS a `\s` member, so
+    // the negated class kept it, and a caller assembling the value in-process
+    // can still supply one.
+    expect(await echoedAllowHeaders('x-a\u2028b')).toBeUndefined();
+  });
+
+  test('an element with an illegal character is dropped whole, not scrubbed', async () => {
+    // Scrubbing turns `x-b:evil` into the plausible-looking `x-bevil`, which
+    // is a header name the client never asked for.
+    expect(await echoedAllowHeaders('x-good, x-b:evil, x-also-good')).toBe('x-good, x-also-good');
+  });
+
+  test('the field is omitted entirely when nothing legal survives', async () => {
+    expect(await echoedAllowHeaders('(),<>')).toBeUndefined();
+    expect(await echoedAllowHeaders('')).toBeUndefined();
+  });
+
+  test('every echoed element is a whole RFC 7230 token, even at the length cap', async () => {
+    const token = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
+    const names = Array.from({ length: 60 }, (_, i) => `x-header-name-${String(i).padStart(20, '0')}`);
+    const echoed = await echoedAllowHeaders(names.join(', ')) ?? '';
+    expect(echoed.length).toBeLessThanOrEqual(1024);
+    // A `slice()`-style cap cuts the last name in half; dropping whole names
+    // keeps the list something a browser can act on.
+    for (const element of echoed.split(', ')) {
+      expect(element).toMatch(token);
+      expect(names).toContain(element);
+    }
+  });
+
+  test('a configured allowlist still wins over the echo', async () => {
+    const compiled = compile(cors(
+      CorsOptions.create().withOrigins(ALLOWED).withAllowedHeaders('x-a', 'x-b'),
+      path('api', get(() => complete(Status.OK, 'data'))),
+    ));
+    const route = compiled.find((c) => c.kind === 'http' && c.method === 'OPTIONS');
+    if (!route || route.kind !== 'http') throw new Error('expected the synthesised OPTIONS route');
+    const response = await route.handler({
+      method: 'OPTIONS',
+      path: '/api',
+      headers: { origin: ALLOWED, 'access-control-request-method': 'GET', 'access-control-request-headers': 'x-a\r\nevil' },
+      query: {},
+      params: {},
+      body: null,
+    });
+    expect(response.headers?.['access-control-allow-headers']).toBe('x-a, x-b');
+  });
+});
+
 describe.each(backends)('cors — %s backend', (_name, mk) => {
   const withCors = (): Route => cors(
     CorsOptions.create().withOrigins(ALLOWED),
