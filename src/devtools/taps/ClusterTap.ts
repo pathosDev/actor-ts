@@ -22,6 +22,7 @@ import type { Member } from '../../cluster/Member.js';
 import {
   CurrentClusterState,
   LeaderChanged,
+  MemberConfigurationMismatch,
   MemberDown,
   MemberJoined,
   MemberLeft,
@@ -152,8 +153,19 @@ export class ClusterTap implements DevToolsTap {
         ),
         () => this.onShardRegistrationEvent(),
       )
+      .with(P.instanceOf(MemberConfigurationMismatch), () => this.onConfigurationMismatch())
       .otherwise((e) => this.onMemberEvent(e));
   }
+
+  /**
+   * A configuration divergence carries a `member`, so it would otherwise fall
+   * through to {@link onMemberEvent} and be reported as an *unknown* event —
+   * the wrong report, for the reason {@link onShardRegistrationEvent} states:
+   * it is a known event that no panel renders.  The membership is unchanged;
+   * what diverged is what the two nodes are configured for, and there is no
+   * configuration panel to say so in.
+   */
+  private onConfigurationMismatch(): void { /* not a membership change */ }
 
   /**
    * The cluster panel renders membership, and a region's registration — taken
@@ -181,6 +193,7 @@ export class ClusterTap implements DevToolsTap {
       ClusterEvent,
       LeaderChanged | ShardMapChanged | CurrentClusterState | ReachabilityChanged
       | ShardRegionRegistered | ShardRegionRegistrationRefused
+      | MemberConfigurationMismatch
     >,
   ): void {
     const name = MEMBER_EVENT_NAMES.get(event.constructor as MemberEventClass);

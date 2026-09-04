@@ -86,6 +86,67 @@ export type StorageIdentitiesData = {
   readonly durableStateStore?: string;
 };
 
+/**
+ * Longest configuration-fact **name** accepted off the wire (#844).  A name is
+ * by convention the HOCON path whose effective value it carries, and the
+ * longest one `reference.conf` ships is well under half of this; the headroom
+ * admits an application publishing a fact of its own.
+ */
+export const MAX_CONFIGURATION_FACT_NAME_LENGTH = 128;
+
+/**
+ * Longest configuration-fact **value** accepted off the wire (#844).  Values
+ * are stringified scalars — a byte count, a duration in milliseconds, an
+ * algorithm name — so this is generous by an order of magnitude and still caps
+ * what one hostile peer can make every member record carry.
+ */
+export const MAX_CONFIGURATION_FACT_VALUE_LENGTH = 128;
+
+/**
+ * How many configuration facts one member record may claim (#844).  The
+ * framework publishes three and the whole point of `checked-paths` is that a
+ * deployment lists a handful; a peer sending thousands is doing something else.
+ * Without a count cap the per-value caps bound each string and nothing bounds
+ * the record — the same asymmetry `MAX_STORAGE_IDENTITY_LENGTH` does not have,
+ * because that shape has three fixed field names and this one has none.
+ */
+export const MAX_CONFIGURATION_FACTS = 16;
+
+/**
+ * The shape a configuration-fact name must have to be admitted, in either
+ * direction (#844).  Deliberately the character set of a HOCON path under this
+ * project's kebab-case convention (#1405), because that is what a name *is* by
+ * convention — and because the diagnostic prints the name, so an unconstrained
+ * one is peer-controlled text in an operator's log.
+ *
+ * It is also the first of two defences against a claim named `__proto__`:
+ * underscores are outside the set.  The second is that
+ * `Member.fromData` writes with `Object.defineProperty` and reads are
+ * `Object.hasOwn`-guarded, so neither half depends on this pattern alone.
+ */
+export const CONFIGURATION_FACT_NAME_PATTERN = /^[a-z0-9][a-z0-9.-]*$/;
+
+/**
+ * Effective configuration values a member claims for itself, keyed by the
+ * name the publisher gave them (#844).  Optional on the wire in both
+ * directions, exactly like {@link StorageIdentitiesData}: absent on nodes that
+ * predate the field, on nodes whose `checked-paths` is empty, and on any fact
+ * the peer does not publish — and absence means **no cross-check**, which is
+ * what keeps a mixed-version or partially-configured cluster silent rather
+ * than wrong.
+ *
+ * The values are *effective*, not configured: the comparison is between what
+ * each node resolved after `explicit options > HOCON > built-in defaults`, so
+ * two nodes that disagree only because one used a builder still compare
+ * unequal.  Comparing config paths instead would have missed that case by
+ * construction, which is the documented-primary one.
+ *
+ * Every string here is member-supplied: `Member.fromData` caps the name, the
+ * value and the count and drops a bad entry rather than the record, because
+ * the field is advisory and the member is not.
+ */
+export type ConfigurationFactsData = Readonly<Record<string, string>>;
+
 export type MemberData = {
   readonly address: NodeAddressData;
   readonly status: MemberStatus;
@@ -95,6 +156,8 @@ export type MemberData = {
   readonly roles?: string[];
   /** See {@link StorageIdentitiesData} — omitted when the member claims none. */
   readonly storageIdentities?: StorageIdentitiesData;
+  /** See {@link ConfigurationFactsData} — omitted when the member claims none. */
+  readonly configurationFacts?: ConfigurationFactsData;
   /**
    * Wall-clock instant at which the tombstone was created, set only
    * when `status === 'removed'` (#75).  Travels in gossip so every

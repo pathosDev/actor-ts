@@ -367,6 +367,39 @@ actor-ts {
     max-members = 1000
     max-tombstones = 10000
 
+    # Settings that have to agree across the cluster.  Each node publishes the
+    # EFFECTIVE value of every listed setting on the gossip overlay and compares
+    # what its peers publish back -- effective, not configured, because the
+    # documented way to set most of these is a builder, which sits above the
+    # config layer.  Absence on either side is silence, so a mixed-version or
+    # partially-configured cluster says nothing rather than something wrong.
+    configuration-compatibility-check {
+      # off = report the divergence and change nothing else (the default).
+      # on  = additionally bar the diverging peer from this node's placement
+      # candidates.  It never downs or quarantines anyone: a misconfigured
+      # MAJORITY would then evict the correctly-configured minority, which
+      # turns a warning into an outage, and it is never an election input --
+      # candidacy is a per-node view, and an elected role computed from an
+      # asymmetric set has two winners.
+      enforce = off
+
+      # What is published and compared, named by the HOCON path whose effective
+      # value each carries.  This is an allow-list of what LEAVES the node, so a
+      # path absent here is never gossiped in the first place.
+      #
+      # Seeded with the wire cap because it is the divergence nothing detects:
+      # there is no protocol negotiation yet (#823), so a frame over a peer's
+      # lower cap kills the whole association and the sender never learns why.
+      # sharding.number-of-shards is deliberately NOT here -- the coordinator
+      # already refuses a region whose count disagrees, on the effective value.
+      #
+      # Two more are published and can be added, though each divergence is
+      # either legitimate or self-healing:
+      #   actor-ts.cluster.failure-detector.heartbeat-interval
+      #   actor-ts.cluster.tombstone.time-to-live
+      checked-paths = ["actor-ts.remote.max-frame-bytes"]
+    }
+
     tombstone {
       time-to-live   = 24h
       prune-interval = 5m

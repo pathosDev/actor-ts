@@ -224,6 +224,8 @@ replay from it.
 | `cluster.split-brain-resolver.static-quorum.quorum-size` | *(unset)* | Reachable members required to keep running.  Required by `static-quorum`; comment-only in `reference.conf` — see below. |
 | `cluster.split-brain-resolver.keep-referee.referee-address` | *(unset)* | The referee node's address; the side containing it wins.  Required by `keep-referee`; comment-only. |
 | `cluster.split-brain-resolver.keep-referee.down-all-if-below-quorum` | *(unset)* | Down everyone if the referee's own side is smaller than this.  Optional; comment-only. |
+| `cluster.configuration-compatibility-check.enforce` | `off` | What a divergence does beyond being reported.  `on` also bars the diverging peer from this node's placement candidates — see below. |
+| `cluster.configuration-compatibility-check.checked-paths` | `["actor-ts.remote.max-frame-bytes"]` | Settings whose **effective** values this node publishes to its peers and compares theirs against. |
 
 These are layered under whatever `Cluster.join(system, options)` passes, so
 an explicit `withGossipIntervalMs(…)` still wins.  The failure detector
@@ -273,6 +275,24 @@ startup with the missing key in the message.
 `actor-ts.coordination` tunes leases but does not choose a backend.  Build
 it in code: `withDowning(new LeaseMajority(…))`.  Writing the name into
 this key is refused rather than ignored, and the message says so.
+
+`configuration-compatibility-check` compares **effective** values, not config
+values.  Each node publishes what it actually resolved for every setting in
+`checked-paths` and compares what its peers publish back, so two nodes that
+differ only because one called `.withMaxFrameBytes(…)` are still caught —
+which comparing the config tree could not do, since an explicit option sits
+above it.  `checked-paths` is an allow-list of what *leaves* the node, so a
+setting absent from it is never gossiped; only names something publishes can
+be compared, and the framework publishes three of them (see
+[Joining and seeds](/cluster/joining-and-seeds/)).  Absence on either side is
+silence, so a mixed-version cluster reports nothing rather than everything.
+
+`enforce = on` bars the diverging peer from this node's placement candidates
+and does nothing else.  It never downs or quarantines anyone: a misconfigured
+*majority* would then evict the correctly-configured minority, which turns a
+warning into an outage — and the candidate set is a per-node view, so nothing
+that *elects* a role from it (a singleton's host, a shard's home) reads it,
+or two nodes would elect two winners.
 
 `seeds`, `roles` and the transport have no HOCON form — the first two are
 per-deployment identity that belongs at the join site, and the transport is

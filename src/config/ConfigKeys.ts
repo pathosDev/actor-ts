@@ -737,6 +737,22 @@ export const ConfigKeys = {
     maxMembers: 'actor-ts.cluster.max-members',
     maxTombstones: 'actor-ts.cluster.max-tombstones',
     /**
+     * Cluster-wide configuration agreement —
+     * `actor-ts.cluster.configuration-compatibility-check.*` (#844).  Read once
+     * by `readClusterOptionsFromConfig`; `Cluster` publishes the listed
+     * settings' *effective* values on the gossip overlay and compares what
+     * peers publish back.
+     *
+     * Full dotted leaves rather than a block root, for the reason
+     * `failure-detector.phi` above states: `NoDeadConfigKeys`'
+     * `coveringAccessor` falls back to the nearest root, so a root alone would
+     * pass the guard whether or not the reader had ever been written.
+     */
+    configurationCompatibilityCheck: {
+      enforce: 'actor-ts.cluster.configuration-compatibility-check.enforce',
+      checkedPaths: 'actor-ts.cluster.configuration-compatibility-check.checked-paths',
+    },
+    /**
      * Tombstone housekeeping — `actor-ts.cluster.tombstone.*` (#841).  Grouped
      * in HOCON because an operator tunes the three together; the matching
      * `ClusterOptions` fields stay flat (`tombstoneTtlMs`, …), the same
