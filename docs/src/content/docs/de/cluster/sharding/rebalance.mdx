@@ -308,15 +308,28 @@ zu reagieren.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Gepufferte Nachrichten haben Speicherkosten">
+<Aside type="caution" title="Gepufferte Nachrichten haben Speicherkosten — und eine Obergrenze">
   ```ts
   // Shard X handing off; 10 000 Nachrichten stapeln sich vor Abschluss
   ```
-  Der Puffer ist unbegrenzt. In einem beschäftigten Cluster, wo
-  ein langsamer Handoff mit hoher Nachrichtenrate zusammenfällt,
-  kann der Puffer groß werden. Das ist kein Leak — gepufferte
-  Nachrichten drainen bei Abschluss — aber überwache den Speicher
-  unter Last.
+  Der Puffer ist auf `sharding.buffer-size` gedeckelt (per Default
+  100 000), und zwar **über alle Shards der Region zusammen**, nicht
+  pro Shard. Bis dorthin ist das kein Leak — gepufferte Nachrichten
+  drainen bei Abschluss — darüber hinaus verwirft die Region die
+  *neueste* Ankunft mitsamt ihrem Sender an die Dead Letters und
+  loggt eine Warnung pro Überlauf-Episode. Die neueste zu verwerfen
+  ist Absicht: was schon in der Queue steht, behält die Reihenfolge
+  seines Senders.
+
+  Ein gewöhnliches Rebalance kommt dem Cap nie nahe. Was ihm nahe
+  kommt, ist ein Koordinator, der nie antwortet — kein Leader, ein
+  Lease, das er nicht bekommt, oder eine Registrierung, die er
+  verweigert hat, während die Region weiter Traffic annimmt. Genau
+  dafür ist die Grenze da: die Alternative zu begrenztem
+  Nachrichtenverlust ist dort ein Prozess ohne Speicher. Anheben
+  lässt sie sich mit `StartShardingOptions.withBufferSize(n)` oder
+  `actor-ts.sharding.buffer-size`; `0` heißt: überhaupt nicht
+  puffern.
 </Aside>
 
 <Aside type="caution" title="Häufiges Rebalance ist teuer">

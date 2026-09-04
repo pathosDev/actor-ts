@@ -88,13 +88,16 @@ actor-ts {
   }
 
   sharding {
-    number-of-shards    = 64
-    rebalance-interval  = 2s
-    hand-off-timeout    = 10s
-    remember-entities   = false
-    passivation-idle    = 5m    # 0 deaktiviert die Auto-Passivierung
-    # shard-passivation-idle    # ungesetzt: folgt passivation-idle
-    max-entities        = 0     # 0 = kein Cap pro Node
+    number-of-shards           = 64
+    rebalance-interval         = 2s
+    hand-off-timeout           = 10s
+    remember-entities          = false
+    passivation-idle           = 5m       # 0 deaktiviert die Auto-Passivierung
+    # shard-passivation-idle              # ungesetzt: folgt passivation-idle
+    max-entities               = 0        # 0 = kein Cap pro Node
+    buffer-size                = 100000   # regionsweit; 0 = niemals puffern
+    register-retry-interval    = 500ms
+    shard-region-query-timeout = 5s
   }
 }
 ```
@@ -434,6 +437,9 @@ pro Consumer](/de/cache/in-memory/#ein-cache-pro-consumer) braucht.
 | `sharding.passivation-idle` | `5m` | Auto-Passiviere eine Entität nach diesem Idle-Fenster.  `0` = deaktiviert.  Eine Entität, die Zustand im Speicher hält und ihn nicht in `preStart` wiederaufbaut, verliert ihn dabei — siehe [Passivierung](/de/cluster/sharding/overview/#passivierung). |
 | `sharding.shard-passivation-idle` | *(ungesetzt)* | Auto-Passiviere einen Shard, nachdem er so lange leer stand.  Ungesetzt folgt er `passivation-idle`; `0` hält leere Shards resident.  Bewusst nicht in der `reference.conf`, denn genau von einem ausgelieferten Wert müsste sich „ungesetzt" unterscheiden lassen. |
 | `sharding.max-entities` | `0` | Entity-Obergrenze pro Node; bei Überlauf wird die am längsten ungenutzte Entität passiviert.  `0` = kein Cap. |
+| `sharding.buffer-size` | `100000` | Wie viele Nachrichten eine Region **über alle ihre Shards zusammen** halten darf, solange deren Heimat unbekannt ist oder gerade übergeben wird.  Jenseits des Caps wird die *neueste* Nachricht mit ihrem Sender an die Dead Letters gegeben — was schon in der Queue steht, behält so die Reihenfolge des Senders.  **Achte auf die umgekehrte Polarität zu `max-entities` oben**: hier bedeutet `0` *niemals puffern — sofort Dead Letter*, nicht „kein Cap". |
+| `sharding.register-retry-interval` | `500ms` | Wie oft eine Region eine unbestätigte Registrierung erneut an den Koordinator schickt.  Alles, was für den Typ geroutet wird, puffert bis zur Antwort des Koordinators — das ist also zugleich die Dauer, die ein verlorenes `Register` den Typ blockiert. |
+| `sharding.shard-region-query-timeout` | `5s` | Default-Wartezeit für `sharding.shards()` und `sharding.shardRefFor()`.  Ein explizites `timeoutMs`-Argument sticht sie weiterhin.  Unabhängig davon, wie lange die Region eine Korrelation für ein knotenübergreifendes `ask` hält — das sind bewusst Minuten. |
 
 Diese Keys gelten für **jeden** auf dem Node gestarteten Sharded Type.  Sie
 werden einmal pro `sharding.start(...)` gelesen und unter das gelegt, was

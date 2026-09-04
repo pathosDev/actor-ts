@@ -13,6 +13,7 @@ import { shardName } from '../../../../../src/cluster/sharding/ShardRegion.js';
 import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import type { StartShardingOptionsBuilder } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
+import { DeadLetter } from '../../../../../src/SystemMessages.js';
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
@@ -30,6 +31,20 @@ type Command = WorkCommand;
 /** Incarnation counters — passivation is observable as a stop, then a fresh start. */
 let created = 0;
 let stopped = 0;
+
+/** Dead letters seen since the last reset — what `buffer-size` produces on overflow. */
+let letters: DeadLetter[] = [];
+let subscribedToDeadLetters = false;
+
+const FENCE = 'fence — every earlier letter is already queued';
+
+class DeadLetterListener extends Actor<DeadLetter> {
+  override preStart(): void {
+    this.system.eventStream.subscribe(this.self, DeadLetter);
+    subscribedToDeadLetters = true;
+  }
+  override onReceive(letter: DeadLetter): void { letters.push(letter); }
+}
 
 class Entity extends Actor<Command> {
   override preStart(): void { created++; }
@@ -100,6 +115,29 @@ async function startNode(
   return node;
 }
 
+/**
+ * Subscribe the dead-letter listener on a node and hand back the fence.
+ *
+ * The listener is an ordinary actor, so its mailbox is FIFO: anything
+ * published before the fence is delivered before it.  That is what makes
+ * "nothing was dead-lettered" a fact rather than a wait that expired.
+ */
+async function captureDeadLetters(node: Node): Promise<() => Promise<void>> {
+  node.system.spawn(DeadLetterListener, 'dead-letter-listener');
+  await waitFor(() => subscribedToDeadLetters, 4_000, 20, 'the dead-letter listener subscribed');
+  return async () => {
+    node.system.deadLetters.tell(FENCE);
+    await waitFor(
+      () => letters.some((l) => l.message === FENCE),
+      4_000, 20, 'the fence letter came back',
+    );
+  };
+}
+
+/** The work commands that were dead-lettered, fence excluded. */
+const droppedCommands = (): Command[] =>
+  letters.filter((l) => l.message !== FENCE).map((l) => l.message as Command);
+
 afterEach(async () => {
   if (running) {
     await running.cluster.leave();
@@ -108,6 +146,8 @@ afterEach(async () => {
   }
   created = 0;
   stopped = 0;
+  letters = [];
+  subscribedToDeadLetters = false;
 });
 
 describe('ClusterSharding — actor-ts.sharding.* HOCON keys', () => {
@@ -204,5 +244,77 @@ describe('ClusterSharding — actor-ts.sharding.* HOCON keys', () => {
     // for this id, which is why it was picked.
     expect(hashShardId('user-42', 4)).not.toBe(hashShardId('user-42', 64));
     expect(segments).not.toContain(shardName(hashShardId('user-42', 64)));
+  });
+
+  /**
+   * The three keys #849 wired, driven the same way.
+   *
+   * `buffer-size` needs a shard that never gets a home, and a proxy-only
+   * cluster is the honest way to produce one: `ShardCoordinator` filters
+   * proxies out of its allocation candidates, so a region that routes but
+   * hosts nothing asks for a home the coordinator has nobody to give.  That
+   * is the very state the bound exists for, reproduced without a fault.
+   */
+  describe('the resilience keys (#849)', () => {
+    test('buffer-size = 0 dead-letters instead of buffering', async () => {
+      const node = await startNode(
+        'hocon-buffer-zero',
+        45_406,
+        { 'actor-ts': { sharding: { 'buffer-size': 0 } } },
+        (builder) => builder.withProxy(true),
+      );
+      const settle = await captureDeadLetters(node);
+
+      node.region.tell({ id: 'user-1', kind: 'work' });
+      await settle();
+
+      expect(droppedCommands()).toEqual([{ id: 'user-1', kind: 'work' }]);
+    });
+
+    test('an explicit withBufferSize beats the config file', async () => {
+      const node = await startNode(
+        'hocon-buffer-explicit',
+        45_407,
+        { 'actor-ts': { sharding: { 'buffer-size': 0 } } },
+        (builder) => { builder.withProxy(true).withBufferSize(8); },
+      );
+      const settle = await captureDeadLetters(node);
+
+      node.region.tell({ id: 'user-1', kind: 'work' });
+      await settle();
+
+      // The file says "never buffer"; the option says 8, and the option wins —
+      // so the message is still held, waiting for a home that will not come.
+      expect(droppedCommands()).toEqual([]);
+    });
+
+    test('shard-region-query-timeout caps a query the coordinator cannot answer', async () => {
+      const node = await startNode(
+        'hocon-query-timeout',
+        45_408,
+        { 'actor-ts': { sharding: { 'shard-region-query-timeout': '60ms' } } },
+        (builder) => builder.withProxy(true),
+      );
+
+      // Same shape as the passivation cases above: the built-in 5 s would
+      // outlast the window, so returning inside it is the configured value
+      // winning rather than a coincidence of timing.
+      const startedAt = Date.now();
+      await expect(node.cluster.sharding.shardRefFor('entity', 0)).rejects.toThrow();
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+    });
+
+    test('an explicit timeoutMs argument still beats the config file', async () => {
+      const node = await startNode(
+        'hocon-query-explicit',
+        45_409,
+        { 'actor-ts': { sharding: { 'shard-region-query-timeout': '30s' } } },
+        (builder) => builder.withProxy(true),
+      );
+
+      const startedAt = Date.now();
+      await expect(node.cluster.sharding.shardRefFor('entity', 0, 60)).rejects.toThrow();
+      expect(Date.now() - startedAt).toBeLessThan(2_000);
+    });
   });
 });

@@ -555,6 +555,12 @@ actor-ts {
     #   unset, it follows passivation-idle, which is what "the shard goes
     #   when its entities do" needs.  Set it (0ms disables) to decouple them.
     max-entities = 0         # 0 = no per-node cap
+    # Messages one region holds ACROSS ALL SHARDS while their homes are
+    # unknown or handing off; the newest is dead-lettered past the cap.
+    # Mind the polarity against max-entities above: here 0 = never buffer.
+    buffer-size = 100000
+    register-retry-interval = 500ms      # re-send an unacknowledged region Register
+    shard-region-query-timeout = 5s      # default wait for shards() / shardRefFor()
   }
 
   worker-cluster {

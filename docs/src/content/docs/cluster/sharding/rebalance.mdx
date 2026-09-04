@@ -280,14 +280,25 @@ configure `rebalanceThreshold: 1` to react to any imbalance.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Buffered messages have a memory cost">
+<Aside type="caution" title="Buffered messages have a memory cost, and a bound">
   ```ts
   // Shard X handing off; 10 000 messages pile up before completion
   ```
-  Buffer is unbounded.  In a busy cluster where a slow handoff
-  coincides with high message rate, the buffer can grow large.
-  This isn't a leak — buffered messages drain on completion — but
-  watch memory under load.
+  The buffer is capped at `sharding.buffer-size` (100 000 by
+  default) **across every shard of the region**, not per shard.  Up
+  to that point this isn't a leak — buffered messages drain on
+  completion — but past it the region drops the *newest* arrival to
+  dead letters, with its sender, and logs one warning per overflow
+  episode.  Dropping the newest is deliberate: what is already
+  queued keeps the order its caller sent it in.
+
+  An ordinary rebalance never comes near the cap.  What does is a
+  coordinator that never answers — no leader, a lease it cannot
+  acquire, or a registration it refused while the region keeps
+  taking traffic — and that is the state the bound exists for: the
+  alternative to bounded message loss there is an out-of-memory
+  process.  Raise it with `StartShardingOptions.withBufferSize(n)`
+  or `actor-ts.sharding.buffer-size`; `0` means never buffer at all.
 </Aside>
 
 <Aside type="caution" title="Frequent rebalance is expensive">

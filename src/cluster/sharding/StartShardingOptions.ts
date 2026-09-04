@@ -8,6 +8,20 @@ import { ShardingOptionsBuilder, ShardingOptionsValidator } from './ShardingOpti
 import type { ShardingOptionsType } from './ShardingOptions.js';
 
 /**
+ * Built-in default for {@link StartShardingOptionsType.shardRegionQueryTimeoutMs}
+ * — how long {@link ClusterSharding.shards} and
+ * {@link ClusterSharding.shardRefFor} wait when the caller names no timeout
+ * (#849).  Mirrors `actor-ts.sharding.shard-region-query-timeout`.
+ *
+ * Deliberately **not** the region's `asksTtlMs`, which is the GC lifetime of a
+ * correlation for a remote entity `ask` and is measured in minutes.  Binding
+ * this key to that one would silently discard the reply to every cross-node
+ * ask outliving the query timeout, including one at the framework's own
+ * `DEFAULT_ASK_TIMEOUT_MS`.
+ */
+export const DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS = 5_000;
+
+/**
  * Plain options-object shape accepted by {@link ClusterSharding.start} —
  * the region-side {@link ShardingOptionsType} plus the coordinator-side
  * fields (allocation, rebalance, lease, persistence backends).
@@ -57,6 +71,16 @@ export interface StartShardingOptionsType<TMessage> extends ShardingOptionsType<
    * Without it, the v1 rebuild-from-Register behaviour is preserved.
    */
   readonly coordinatorStateStore?: CoordinatorStateStore;
+  /**
+   * Default timeout, in ms, for {@link ClusterSharding.shards} and
+   * {@link ClusterSharding.shardRefFor} on this type (#849).  Default: 5000.
+   *
+   * A start-time option rather than a region field, because it configures how
+   * *this node queries* the region rather than anything the region itself
+   * does.  An explicit `timeoutMs` argument at the call still wins, so the
+   * precedence a caller sees is **argument > option > HOCON > 5 s**.
+   */
+  readonly shardRegionQueryTimeoutMs?: number;
 }
 
 /**
@@ -113,6 +137,11 @@ export class StartShardingOptionsBuilder<TMessage> extends ShardingOptionsBuilde
   withCoordinatorStateStore(coordinatorStateStore: CoordinatorStateStore): this {
     return this.set('coordinatorStateStore', coordinatorStateStore);
   }
+
+  /** Default timeout for `shards()` / `shardRefFor()` on this type, in ms.  Default: 5000. */
+  withShardRegionQueryTimeoutMs(shardRegionQueryTimeoutMs: number): this {
+    return this.set('shardRegionQueryTimeoutMs', shardRegionQueryTimeoutMs);
+  }
 }
 
 /**
@@ -129,6 +158,7 @@ export class StartShardingOptionsValidator<TMessage>
     this.positiveNumber('rebalanceIntervalMs');
     this.positiveNumber('handOffTimeoutMs');
     this.positiveNumber('acquireRetryIntervalMs');
+    this.positiveNumber('shardRegionQueryTimeoutMs');
   }
 }
 
@@ -149,8 +179,11 @@ export type ShardingConfigDefaults = Pick<
   | 'passivationIdleMs'
   | 'shardPassivationIdleMs'
   | 'maxEntities'
+  | 'bufferSize'
+  | 'registerRetryIntervalMs'
   | 'rebalanceIntervalMs'
   | 'handOffTimeoutMs'
+  | 'shardRegionQueryTimeoutMs'
 >;
 
 /**
@@ -175,8 +208,15 @@ export function readShardingOptionsFromConfig(config: Config): ShardingConfigDef
     out.shardPassivationIdleMs = config.getDuration(keys.shardPassivationIdle);
   }
   if (config.hasPath(keys.maxEntities)) out.maxEntities = config.getInt(keys.maxEntities);
+  if (config.hasPath(keys.bufferSize)) out.bufferSize = config.getInt(keys.bufferSize);
+  if (config.hasPath(keys.registerRetryInterval)) {
+    out.registerRetryIntervalMs = config.getDuration(keys.registerRetryInterval);
+  }
   if (config.hasPath(keys.rebalanceInterval)) out.rebalanceIntervalMs = config.getDuration(keys.rebalanceInterval);
   if (config.hasPath(keys.handOffTimeout)) out.handOffTimeoutMs = config.getDuration(keys.handOffTimeout);
+  if (config.hasPath(keys.shardRegionQueryTimeout)) {
+    out.shardRegionQueryTimeoutMs = config.getDuration(keys.shardRegionQueryTimeout);
+  }
   return out;
 }
 
