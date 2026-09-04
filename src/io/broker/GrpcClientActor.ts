@@ -2,6 +2,7 @@ import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { ActorRef } from '../../ActorRef.js';
+import { DeadLetter } from '../../SystemMessages.js';
 import { Lazy } from '../../util/Lazy.js';
 import { randomId } from '../../util/RandomString.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
@@ -119,6 +120,20 @@ type BidiSendCommand = {
   readonly chunk: unknown;
 };
 type BidiCloseCommand = { readonly kind: 'bidiClose'; readonly handle: GrpcStreamHandle };
+
+/**
+ * The four commands that address an already-open caller-driven stream by
+ * handle — client-stream and bidi, send and close.
+ *
+ * Grouped because the handle read is the same on all four, and so is the
+ * guard in front of it: they are the only commands whose first act is to
+ * dereference something the *caller* supplied.
+ */
+type CallerStreamCommand =
+  | ClientStreamSendCommand
+  | ClientStreamCloseCommand
+  | BidiSendCommand
+  | BidiCloseCommand;
 
 /** Outbound command — what the actor accepts to fire RPC calls. */
 export type GrpcClientCommand =
@@ -294,27 +309,82 @@ export class GrpcClientActor
   }
 
   /*
-   * An unknown stream — a stale id, an unknown token — is a no-op on
-   * every one of these paths: the stream is already gone (the server
-   * closed it, or the connection dropped and cleared the map), and the
-   * caller has been told via 'stream-end' / 'stream-error' / 'reply'.
+   * The four send/close paths answer two different failures two
+   * different ways, and the distinction is the point.
+   *
+   * A **well-formed handle naming an unknown stream** — a stale id, a
+   * token the registry no longer holds — is a silent no-op: the stream
+   * is already gone (the server closed it, or the connection dropped and
+   * cleared the map), the caller has been told via 'stream-end' /
+   * 'stream-error' / 'reply', and the race between that notice and a
+   * write already in flight happens in correct use.
+   *
+   * A **command carrying no usable handle at all** is not that.  Nothing
+   * `createGrpcStreamHandle` mints can look like it, so it is a caller
+   * defect, and it becomes a `DeadLetter` — see
+   * {@link resolveStreamToken}.  What neither is, any more, is a thrown
+   * `TypeError`.
    */
 
+  /**
+   * Token naming the stream a caller-driven send/close addresses, or
+   * `null` when the command carries none.
+   *
+   * `handle` is declared non-optional and is read here as if it were not,
+   * because the declaration is the only thing that ever guaranteed it and
+   * a declaration is not a runtime check.  Every message into this actor
+   * arrives through `tell`, which callers reach across an `as never`
+   * cast, so a JavaScript caller, a deserialised message and a stale
+   * handle arriving as `null` all reach this read.
+   *
+   * Before the guard the bare `command.handle.token` threw inside
+   * `dispatchOutgoing`, and `BrokerActor._dispatchOne` reads *any* throw
+   * from there as a dropped connection: it unshifts the offending
+   * envelope back at the head of the outbound buffer and calls
+   * `handleConnectionLost`, after which `_drainBuffer` re-dispatches the
+   * very same envelope on every reconnect.  One malformed `tell` was
+   * therefore an unbounded reconnect loop — measured at 17 service-client
+   * constructions in three seconds — with every legitimate write stuck
+   * behind the poisoned head.  Keying the registry on the token (#788,
+   * #1040) is what made that reachable: the id-keyed lookup it replaced
+   * never dereferenced anything.
+   *
+   * The answer is a dead letter rather than silence because the two
+   * failures above must not be indistinguishable, and rather than a bare
+   * `log.warn` because `deadLetters` is the framework's existing channel
+   * for a message that went nowhere: it is observable programmatically
+   * (event stream, `DeadLetterQueue`), it is throttled, and it keeps the
+   * payload out of the log line — which a hand-rolled warning about a
+   * caller-supplied command would not.
+   */
+  private resolveStreamToken(command: CallerStreamCommand): string | null {
+    const token: unknown = (command.handle as GrpcStreamHandle | undefined)?.token;
+    if (typeof token === 'string') return token;
+    this.system.deadLetters.tell(new DeadLetter(command, null, this.self));
+    return null;
+  }
+
   private onBidiSend(command: BidiSendCommand): void {
-    const stream = this.bidiStreams.get(command.handle.token);
+    const token = this.resolveStreamToken(command);
+    if (token === null) return;
+    const stream = this.bidiStreams.get(token);
     if (stream) stream.call.write(command.chunk);
   }
 
   private onBidiClose(command: BidiCloseCommand): void {
-    const stream = this.bidiStreams.get(command.handle.token);
+    const token = this.resolveStreamToken(command);
+    if (token === null) return;
+    const stream = this.bidiStreams.get(token);
     if (stream) {
       try { stream.call.end(); } catch { /* ignore */ }
-      this.bidiStreams.delete(command.handle.token);
+      this.bidiStreams.delete(token);
     }
   }
 
   private onClientStreamSend(command: ClientStreamSendCommand): void {
-    const stream = this.clientStreams.get(command.handle.token);
+    const token = this.resolveStreamToken(command);
+    if (token === null) return;
+    const stream = this.clientStreams.get(token);
     if (stream) stream.call.write(command.chunk);
   }
 
@@ -327,10 +397,12 @@ export class GrpcClientActor
    * does not look the stream back up.
    */
   private onClientStreamClose(command: ClientStreamCloseCommand): void {
-    const stream = this.clientStreams.get(command.handle.token);
+    const token = this.resolveStreamToken(command);
+    if (token === null) return;
+    const stream = this.clientStreams.get(token);
     if (stream) {
       try { stream.call.end(); } catch { /* ignore */ }
-      this.clientStreams.delete(command.handle.token);
+      this.clientStreams.delete(token);
     }
   }
 

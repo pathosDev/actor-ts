@@ -335,6 +335,27 @@ Server-Stream-Calls tragen ebenfalls eine `streamId` auf ihren
 Collector mehrere gleichzeitige Streams multiplexen kann.  Streams
 bleiben offen, bis eine Seite sie schließt oder der Actor stoppt.
 
+#### Handles, die nicht mehr auflösen
+
+Ein Senden oder Schließen, dessen Handle **wohlgeformt ist, aber
+keinen lebenden Stream benennt**, ist ein stiller No-op.  Das ist ein
+Rennen, mit dem korrekter Code rechnen muss: der Server hat den Stream
+geschlossen, oder die Verbindung ist abgerissen, und die Meldung —
+`stream-end`, `stream-error` oder `reply` — war noch nicht bei dir
+angekommen, als der Write hinausging.
+
+Ein Command **ganz ohne brauchbares Handle** ist etwas anderes und
+wird auch anders beantwortet: es wird zu einem `DeadLetter` auf dem
+Event-Stream, adressiert an den Client-Actor.  Nichts, was das
+Framework selbst erzeugt, sieht so aus — es bedeutet also, dass ein
+Aufrufer den Actor mit einer Form erreicht hat, die der Command-Typ
+verbietet: ein `tell` aus reinem JavaScript, eine deserialisierte
+Nachricht oder ein Handle, das aus einem geleerten Feld zurückgelesen
+wurde.  Abonniere `DeadLetter` (oder betreibe eine
+`DeadLetterQueue`), wenn du das sichtbar machen willst; der Brief
+trägt das auslösende Command.  Keiner der beiden Fälle stört die
+Verbindung, und keiner verliert die dahinter wartenden Nachrichten.
+
 ## TLS
 
 TLS ist über `withCredentials` opt-in.  Wird es weggelassen,
