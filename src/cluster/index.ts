@@ -89,6 +89,12 @@ export { RemoteActorRef } from './RemoteActorRef.js';
 
 export { InMemoryTransport, TcpTransport } from './Transport.js';
 export type { Transport, WireHandler, TlsTransportOptionsType } from './Transport.js';
+export {
+  TcpTransportOptions,
+  TcpTransportOptionsBuilder,
+  TcpTransportOptionsValidator,
+} from './TcpTransportOptions.js';
+export type { TcpTransportOptionsType } from './TcpTransportOptions.js';
 export { MessageChannelTransport } from './transports/MessageChannelTransport.js';
 export type { PortLike, BrokeredMessage } from './transports/MessageChannelTransport.js';
 

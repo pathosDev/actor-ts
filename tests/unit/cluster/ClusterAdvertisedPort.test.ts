@@ -123,7 +123,7 @@ describe('TcpTransport binds bindPort and keeps self.port as the identity', () =
   test('an unbindable self.port still starts when bindPort is a free one', async () => {
     const self = new NodeAddress('port-split', '127.0.0.1', await occupiedPort());
     // 0 is "any free port", so this cannot race another test for a number.
-    const transport = new TcpTransport(self, new NoopLogger(), null, undefined, '127.0.0.1', 0);
+    const transport = new TcpTransport(self, new NoopLogger(), { bindHost: '127.0.0.1', bindPort: 0 });
 
     await transport.start();
     try {
@@ -140,7 +140,7 @@ describe('TcpTransport binds bindPort and keeps self.port as the identity', () =
     // if `bindPort` were ignored, or if an omitted one silently fell through to
     // an ephemeral port instead of the one `self` announces.
     const self = new NodeAddress('port-split', '127.0.0.1', await occupiedPort());
-    const transport = new TcpTransport(self, new NoopLogger(), null, undefined, '127.0.0.1');
+    const transport = new TcpTransport(self, new NoopLogger(), { bindHost: '127.0.0.1' });
 
     await expect(transport.start()).rejects.toThrow();
     await transport.shutdown();

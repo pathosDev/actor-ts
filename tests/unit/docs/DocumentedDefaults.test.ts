@@ -47,6 +47,7 @@ import {
 } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_PORT } from '../../../src/cluster/ClusterBootstrapOptions.js';
 import { DEFAULT_MAX_FRAME_BYTES } from '../../../src/cluster/Protocol.js';
+import { HANDSHAKE_TIMEOUT_MS, INCOMPLETE_FRAME_IDLE_MS, MAX_INBOUND_CONNECTIONS, MAX_PENDING_FRAMES } from '../../../src/cluster/Constants.js';
 import { DEFAULT_UNTRUSTED_MODE } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_MAX_DOCUMENT_BYTES, DEFAULT_MAX_NESTING_DEPTH, DEFAULT_MAX_STRING_LENGTH } from '../../../src/serialization/ReadConstraintsOptions.js';
 import {
@@ -297,6 +298,16 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // `options.untrustedMode ?? DEFAULT_UNTRUSTED_MODE`, so the published `false`
   // and the shipped one are the same boolean, checkably (#877).
   { key: 'actor-ts.remote.untrusted-mode', kind: 'bool', constant: DEFAULT_UNTRUSTED_MODE },
+  // The four association-lifecycle bounds (#846).  Their constants keep their
+  // pre-config names and stay in `cluster/Constants.ts` rather than moving into
+  // a `TcpTransportOptions.ts` default block: each one now defaults a field on
+  // *two* options types — `ClusterOptionsType`, so `actor-ts.remote.*` can
+  // reach it, and `TcpTransportOptionsType`, so a hand-built transport can —
+  // which is the case that module exists for.
+  { key: 'actor-ts.remote.handshake-timeout', kind: 'duration', constant: HANDSHAKE_TIMEOUT_MS },
+  { key: 'actor-ts.remote.outbound-queue-size', kind: 'int', constant: MAX_PENDING_FRAMES },
+  { key: 'actor-ts.remote.max-inbound-connections', kind: 'int', constant: MAX_INBOUND_CONNECTIONS },
+  { key: 'actor-ts.remote.incomplete-frame-idle', kind: 'duration', constant: INCOMPLETE_FRAME_IDLE_MS },
 
   /* --- pub-sub / receptionist --- */
   { key: 'actor-ts.cluster.pub-sub.max-subscribers-per-topic', kind: 'int', constant: DEFAULT_MAX_SUBSCRIBERS_PER_TOPIC },

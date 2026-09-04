@@ -401,6 +401,56 @@ export type ClusterOptionsType = {
    * something already open.
    */
   readonly trustedSelectionPaths?: readonly string[];
+  /**
+   * How long a connection may sit without its half of the handshake before it
+   * is torn down, in milliseconds.  Default: 5 s
+   * (`HANDSHAKE_TIMEOUT_MS` in `cluster/Constants.ts`) (#846).
+   *
+   * **One value for both directions on purpose.**  The dialling side's clock
+   * starts before the TCP connect and the TLS handshake; the accepting side's
+   * starts after the accept.  Equal numbers therefore mean the peer that is
+   * still trying has always given up first, and the acceptor can never punish
+   * a slow-but-legitimate dial.  A split pair would put that invariant in an
+   * operator's hands, and an accept deadline below the dial deadline makes a
+   * healthy peer permanently unreachable with nothing saying why.
+   */
+  readonly handshakeTimeoutMs?: number;
+  /**
+   * How many frames the transport holds for a peer that cannot take them right
+   * now, before the oldest are dropped.  Default: 1000
+   * (`MAX_PENDING_FRAMES` in `cluster/Constants.ts`) (#846).
+   *
+   * Today that is the pre-handshake buffer — a `send` racing the handshake is
+   * held rather than lost — and the name is the category rather than that one
+   * buffer: #931 adds the post-handshake backpressure queue, the same quantity
+   * with the same drop-oldest policy and the same one-shot WARN, and it lands
+   * under this field rather than a second one.
+   */
+  readonly outboundQueueSize?: number;
+  /**
+   * How many inbound connections the transport accepts before refusing sockets
+   * outright.  Default: 1024 (`MAX_INBOUND_CONNECTIONS`) (#846).
+   *
+   * The useful half of the pair that bounds inbound decode memory — that bound
+   * is this count times what one connection may buffer, and the count is the
+   * one worth moving.  Set it from the real peer count where that is known,
+   * with headroom: a fully-meshed cluster needs one inbound connection per
+   * peer plus whatever `ClusterClient`s dial in, and refusing a legitimate
+   * peer is a partition.
+   */
+  readonly maxInboundConnections?: number;
+  /**
+   * How long a connection may hold a half-received frame without another byte
+   * arriving, in milliseconds.  Default: 30 s
+   * (`INCOMPLETE_FRAME_IDLE_MS` in `cluster/Constants.ts`) (#846).
+   *
+   * A **stall** bound, not a budget for the frame: it is re-armed on every
+   * chunk, so a peer pushing a large frame over a congested link keeps its
+   * connection for as long as it keeps making progress.  Keep it above
+   * {@link handshakeTimeoutMs} — a socket that sends nothing at all never
+   * reaches this deadline, and the handshake timer is what covers that one.
+   */
+  readonly incompleteFrameIdleMs?: number;
 };
 
 /**
@@ -566,6 +616,29 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   withTrustedSelectionPaths(trustedSelectionPaths: readonly string[]): this {
     return this.set('trustedSelectionPaths', trustedSelectionPaths);
   }
+
+  /**
+   * Handshake deadline, both directions, in ms.  Default: 5000.  One value on
+   * purpose — see the field (#846).
+   */
+  withHandshakeTimeoutMs(handshakeTimeoutMs: number): this {
+    return this.set('handshakeTimeoutMs', handshakeTimeoutMs);
+  }
+
+  /** Frames held for a peer that cannot take them.  Default: 1000. */
+  withOutboundQueueSize(outboundQueueSize: number): this {
+    return this.set('outboundQueueSize', outboundQueueSize);
+  }
+
+  /** Inbound connections accepted before sockets are refused.  Default: 1024. */
+  withMaxInboundConnections(maxInboundConnections: number): this {
+    return this.set('maxInboundConnections', maxInboundConnections);
+  }
+
+  /** Stall deadline on a half-received frame, in ms.  Default: 30000. */
+  withIncompleteFrameIdleMs(incompleteFrameIdleMs: number): this {
+    return this.set('incompleteFrameIdleMs', incompleteFrameIdleMs);
+  }
 }
 
 /** Validates resolved {@link ClusterOptionsType} settings. */
@@ -629,6 +702,33 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     // sharding entity cap.
     this.nonNegativeInt('maxMembers');
     this.nonNegativeInt('maxTombstones');
+    // The four association-lifecycle bounds (#846).  All four are positive
+    // with no "0 disables" reading, and each `0` would be a distinct way of
+    // breaking the node rather than a way of turning a cap off: a zero
+    // handshake deadline drops every connection before it can speak, a zero
+    // queue drops every frame written before the handshake lands, a zero
+    // inbound cap refuses every peer, and a zero stall deadline tears down any
+    // connection that has not ended on a frame boundary.
+    this.positiveNumber('handshakeTimeoutMs');
+    this.positiveInt('outboundQueueSize');
+    this.positiveInt('maxInboundConnections');
+    this.positiveNumber('incompleteFrameIdleMs');
+    // Cross-field, and checked here as well as in `TcpTransportOptionsValidator`
+    // because this is the layer that sees the HOCON values: a socket that sends
+    // *nothing at all* never reaches the stall deadline — it has no
+    // half-received frame to track — so the handshake timer is the only thing
+    // that reclaims it, and a stall deadline below it swaps the two roles for a
+    // peer that sends three bytes and stops.
+    if (s.handshakeTimeoutMs !== undefined && s.incompleteFrameIdleMs !== undefined
+      && s.incompleteFrameIdleMs <= s.handshakeTimeoutMs) {
+      this.fail(
+        'incompleteFrameIdleMs',
+        `must be greater than handshakeTimeoutMs (${s.handshakeTimeoutMs} ms): the stall deadline `
+        + 'bounds a peer that went silent mid-frame, the handshake deadline bounds one that never '
+        + 'spoke, and the second is the shorter of the two by construction',
+        s.incompleteFrameIdleMs,
+      );
+    }
     // A keyword-or-duration union, so the field helpers (which are keyed on a
     // single value type) cannot express it — checked by hand, the same shape
     // `ClusterBootstrapOptionsValidator` uses for `awaitReady`.  `0` is
@@ -830,6 +930,8 @@ export type ClusterConfigDefaults = Partial<Pick<
   | 'weaklyUpAfterMs' | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
   | 'maxMembers' | 'maxTombstones' | 'downing'
   | 'untrustedMode' | 'trustedSelectionPaths'
+  | 'handshakeTimeoutMs' | 'outboundQueueSize' | 'maxInboundConnections'
+  | 'incompleteFrameIdleMs'
 >>;
 
 /**
@@ -887,6 +989,23 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   }
   if (config.hasPath(remote.trustedSelectionPaths)) {
     out.trustedSelectionPaths = config.getStringList(remote.trustedSelectionPaths);
+  }
+  // The four association-lifecycle bounds (#846).  They land on
+  // `ClusterOptionsType` and travel to the transport through `Cluster`'s
+  // constructor, rather than being read a second time inside `TcpTransport`:
+  // the transport is constructible with no `Config` at all, and a second read
+  // site would be a second precedence order for the same values.
+  if (config.hasPath(remote.handshakeTimeout)) {
+    out.handshakeTimeoutMs = config.getDuration(remote.handshakeTimeout);
+  }
+  if (config.hasPath(remote.outboundQueueSize)) {
+    out.outboundQueueSize = config.getInt(remote.outboundQueueSize);
+  }
+  if (config.hasPath(remote.maxInboundConnections)) {
+    out.maxInboundConnections = config.getInt(remote.maxInboundConnections);
+  }
+  if (config.hasPath(remote.incompleteFrameIdle)) {
+    out.incompleteFrameIdleMs = config.getDuration(remote.incompleteFrameIdle);
   }
   if (config.hasPath(keys.gossipInterval)) out.gossipIntervalMs = config.getDuration(keys.gossipInterval);
   if (config.hasPath(keys.seedRetryInterval)) {

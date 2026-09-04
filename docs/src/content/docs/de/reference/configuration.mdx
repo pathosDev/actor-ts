@@ -458,6 +458,10 @@ ohne sie stillschweigend zu vereinheitlichen.  Setz sie pro Lease im Code.
 | `remote.tls.enabled` | `false` | **Nicht umgesetzt** — `true` bringt eine Startup-Warnung, keine Verschlüsselung.  Siehe unten. |
 | `remote.untrusted-mode` | `false` | Ein eingehendes Envelope nur annehmen, wenn `trusted-selection-paths` sein Ziel nennt.  Aus ist jeder `/user`-Aktor namentlich adressierbar — genau das lässt eine `ActorRef` über Knoten hinweg funktionieren.  `/system` wird in beiden Fällen abgelehnt.  Siehe unten. |
 | `remote.trusted-selection-paths` | `[]` | Pfade, die ein Peer namentlich adressieren darf, solange `untrusted-mode` an ist.  Leer heißt: nichts über die Framework-Endpunkte hinaus, die dieser Knoten registriert hat. |
+| `remote.handshake-timeout` | `5s` | Wie lange eine Verbindung ohne ihre Hälfte des Handshakes bestehen darf, bevor sie abgeräumt wird.  **Ein Wert für beide Richtungen** — siehe unten. |
+| `remote.outbound-queue-size` | `1000` | Wie viele Frames für einen Peer gehalten werden, der sie gerade nicht annehmen kann; die ältesten fallen zuerst weg. |
+| `remote.max-inbound-connections` | `1024` | Wie viele eingehende Verbindungen dieser Knoten annimmt, bevor er Sockets rundheraus ablehnt — abgelehnt wird die neueste, nicht die älteste verdrängt. |
+| `remote.incomplete-frame-idle` | `30s` | Wie lange eine Verbindung ein halb empfangenes Frame halten darf, ohne dass ein weiteres Byte eintrifft.  Eine Stall-Schranke, bei jedem Chunk neu gestellt. |
 
 `host`/`port` sind das **Bind**-Paar, `advertised-host`/`advertised-port` das
 **Identitäts**-Paar: das erste sagt, wo der Listener aufmacht, das zweite,
@@ -556,6 +560,74 @@ exponierte der beiden Nahtstellen: ein
 beigetreten.  Ein abgelehnter Pfad wird mit demselben `path not found`
 beantwortet, das der Client für einen nicht existierenden Pfad bekommt — der
 Endpunkt taugt also nicht dazu, den Aktor-Baum zu kartieren.
+
+#### Der Assoziations-Lebenszyklus
+
+Die letzten vier Keys begrenzen, was eine Gegenstelle, die eine TCP-Verbindung
+zum Cluster-Port aufbauen kann, diesen Knoten halten lassen darf. Alle vier
+werden durchgesetzt, seit der Transport gehärtet wurde; neu ist nur, dass sie
+einstellbar sind
+([Issue #846](https://github.com/pathosDev/actor-ts/issues/846)):
+
+```hocon
+actor-ts.remote {
+  handshake-timeout       = 5s
+  outbound-queue-size     = 1000
+  max-inbound-connections = 1024
+  incomplete-frame-idle   = 30s
+}
+```
+
+`handshake-timeout` deckt eine Verbindung ab, die ihre Hälfte des Handshakes nie
+spricht — einen Dial, der nie sein `hello-ack` bekommt, und einen
+angenommenen Socket, der nie ein `hello` schickt. Es ist bewusst **ein Key für
+beide Richtungen**. Die Uhr der wählenden Seite startet vor dem TCP-Connect und
+dem TLS-Handshake, die der annehmenden Seite erst nach dem Accept — mit einer
+Zahl hat der Peer, der es noch versucht, also immer zuerst aufgegeben, und die
+annehmende Seite kann nie die Frist sein, die einen langsamen, aber legitimen
+Dial bestraft. Ein getrenntes Dial-/Accept-Paar würde erlauben, die
+Accept-Frist unter die Dial-Frist zu setzen und damit einen gesunden Peer
+dauerhaft unerreichbar zu machen — ohne dass in irgendeinem Log stünde, warum.
+
+`incomplete-frame-idle` deckt die andere Hälfte ab: eine Verbindung, die
+gesprochen hat und dann mitten im Frame verstummt ist. Es ist eine
+**Stall**-Schranke, kein Budget für das Frame — sie wird bei jedem Chunk neu
+gestellt, ein Peer, der ein großes Frame über eine verstopfte Leitung schiebt,
+wird also nie für seine Langsamkeit bestraft, nur fürs Aufhören. Halte sie über
+`handshake-timeout`; beide Validatoren lehnen einen Wert darunter oder darauf
+ab, denn ein Socket, der überhaupt nichts sendet, erreicht diese Frist nie —
+dafür ist der Handshake-Timer da.
+
+`max-inbound-connections` verhindert, dass sich beide Kosten durch Sockets im
+Loop vervielfachen lassen, und ist die Hälfte der Schranke für eingehenden
+Decode-Speicher, die sich zu senken lohnt: diese Schranke ist dieser Zähler mal
+dem, was eine Verbindung puffern darf. Setz ihn nach der echten Peer-Zahl, wo du
+sie kennst — eine eingehende Verbindung je Peer im Vollmesh, plus die
+[`ClusterClient`](/de/cluster/cluster-client/)s, die sich einwählen — und lass
+Luft, denn einen legitimen Peer abzulehnen ist eine Partition. Abgelehnt wird
+die neueste Verbindung statt die älteste verdrängt; Verdrängung ließe einen
+Angreifer etablierte Peers vom Knoten schieben.
+
+`outbound-queue-size` ist der einzige Key hier, der begrenzt, was dieser Knoten
+hält, statt was ein Peer gegen ihn hält: Frames, die für einen Peer geschrieben
+wurden, der sie gerade nicht annehmen kann; die ältesten fallen zuerst weg, denn
+der neueste Membership- und Heartbeat-Stand ist der, den zu behalten sich lohnt.
+Heute ist das der Puffer vor dem Handshake, damit ein `tell`, das mit dem
+Handshake um die Wette läuft, gehalten statt verloren wird. Der Key ist nach der
+Kategorie benannt, nicht nach diesem einen Puffer: die Backpressure-Queue nach
+dem Handshake ([Issue #931](https://github.com/pathosDev/actor-ts/issues/931))
+ist dieselbe Größe mit derselben Policy und derselben Warnung und landet unter
+diesem Key statt unter einem zweiten.
+
+Keiner der vier hat eine „Aus"-Schreibweise. `0` wird für jeden abgelehnt, weil
+es keine Art ist, eine Schranke zu entfernen, sondern jeweils eine eigene Art,
+den Knoten kaputtzumachen: kein Handshake-Fenster, kein Platz zum Puffern, keine
+eingehende Verbindung angenommen, keine Verbindung, die auf einer
+Frame-Grenze enden darf.
+
+Diese Werte erreichen den Transport, den der Cluster sich selbst baut. Ein
+`TcpTransport`, den du selbst baust und per `withTransport(…)` übergibst, trägt
+seine eigenen — setz sie in dessen `TcpTransportOptions`.
 
 :::caution[`remote.tls.enabled` verschlüsselt nichts]
 Der Key wird gelesen, aber nicht umgesetzt.  Ihn auf `true` zu setzen

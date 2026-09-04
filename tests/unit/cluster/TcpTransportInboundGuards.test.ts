@@ -19,14 +19,17 @@
  * callbacks, and a real listener would only add a port to collide on.
  */
 import { describe, expect, test } from 'bun:test';
-import { NoopLogger } from '../../../src/Logger.js';
+import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import type { Logger } from '../../../src/Logger.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import {
   HANDSHAKE_TIMEOUT_MS,
   INCOMPLETE_FRAME_IDLE_MS,
   MAX_INBOUND_CONNECTIONS,
 } from '../../../src/cluster/Constants.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
-import { encodeFrame } from '../../../src/cluster/Protocol.js';
+import { DEFAULT_MAX_FRAME_BYTES, encodeFrame } from '../../../src/cluster/Protocol.js';
+import type { WireMessage } from '../../../src/cluster/Protocol.js';
 import { TcpTransport } from '../../../src/cluster/Transport.js';
 
 type MockSocket = {
@@ -51,6 +54,21 @@ type TrackedConnection = {
   handshakeTimer: ReturnType<typeof setTimeout> | null;
 };
 
+/**
+ * Collects what the transport logged, so a guard whose only distinguishable
+ * effect is the number in its WARN can still be asserted on (#846).
+ */
+class CapturingLogger implements Logger {
+  readonly level = LogLevel.Warn;
+  readonly warnings: string[] = [];
+  debug(_message: string, ..._args: unknown[]): void {}
+  info(_message: string, ..._args: unknown[]): void {}
+  warn(message: string, ..._args: unknown[]): void { this.warnings.push(message); }
+  error(_message: string, ..._args: unknown[]): void {}
+  withSource(_source: string): Logger { return this; }
+  withFields(_fields: Record<string, unknown>): Logger { return this; }
+}
+
 /** The private socket callbacks and bookkeeping these tests reach through. */
 interface TransportInternals {
   attachInbound(socket: unknown): void;
@@ -60,6 +78,7 @@ interface TransportInternals {
   onHandshakeTimeout(connection: object): void;
   readonly inboundConnections: number;
   readonly bySocket: WeakMap<object, TrackedConnection>;
+  readonly byPeer: Map<string, { readonly pending: readonly WireMessage[] }>;
 }
 
 function internals(transport: TcpTransport): TransportInternals {
@@ -351,5 +370,158 @@ describe('an inbound socket that never speaks does not keep its slot', () => {
     // the accept — so a peer that is still trying has always given up first.
     expect(HANDSHAKE_TIMEOUT_MS).toBeGreaterThan(0);
     expect(INCOMPLETE_FRAME_IDLE_MS).toBeGreaterThan(HANDSHAKE_TIMEOUT_MS);
+  });
+});
+
+/**
+ * #846 — the same four bounds, now settable.
+ *
+ * The block above proves each guard fires; this one proves each guard fires on
+ * the number the *deployment* named rather than on the module constant.  That
+ * distinction is invisible to every test above — they all run an unconfigured
+ * transport, where the two numbers are equal by construction — so a wiring that
+ * accepted the option and went on reading the constant would pass all twenty of
+ * them.
+ *
+ * Where a bound has no directly observable side effect at a distinct value
+ * (a deadline's *duration* is not readable off a `setTimeout` handle), the
+ * assertion is on the WARN the guard emits: each one interpolates the number it
+ * enforced, so a stale read shows up as the shipped default in the message.
+ */
+describe('the association-lifecycle bounds are configurable (#846)', () => {
+  test('the inbound cap is the configured one, not the shipped one', () => {
+    const transport = new TcpTransport(
+      new NodeAddress('inbound-guards', '127.0.0.1', 19_401),
+      new NoopLogger(),
+      { maxInboundConnections: 3 },
+    );
+    const accepted: MockSocket[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const socket = mockSocket();
+      internals(transport).attachInbound(socket);
+      accepted.push(socket);
+    }
+    expect(internals(transport).inboundConnections).toBe(3);
+    expect(accepted.every((socket) => !socket.ended)).toBe(true);
+
+    const refused = mockSocket();
+    internals(transport).attachInbound(refused);
+    expect(refused.ended).toBe(true);
+    expect(internals(transport).inboundConnections).toBe(3);
+  });
+
+  test('the outbound queue holds the configured number of frames, dropping oldest', async () => {
+    // 19_499 is deliberately not listened on: the dial this `send` starts fails
+    // on a later tick, well after the three synchronous buffer writes below.
+    const transport = new TcpTransport(
+      new NodeAddress('inbound-guards', '127.0.0.1', 19_402),
+      new NoopLogger(),
+      { outboundQueueSize: 2 },
+    );
+    const peer = new NodeAddress('unreachable-peer', '127.0.0.1', 19_499);
+    try {
+      transport.send(peer, { kind: 'hello', self: peer.toJSON() });
+      transport.send(peer, { kind: 'hello-ack', self: peer.toJSON() });
+      transport.send(peer, { kind: 'heartbeat', from: peer.toJSON(), seq: 1, ts: 1 });
+
+      const pending = internals(transport).byPeer.get(peer.toString())?.pending ?? [];
+      // Two, not three, and the *first* is the one that went: the newest
+      // membership and heartbeat state is the state worth keeping.
+      expect(pending.map((message) => message.kind)).toEqual(['hello-ack', 'heartbeat']);
+    } finally {
+      await transport.shutdown();
+    }
+  });
+
+  test('the handshake deadline that fires is the configured one', () => {
+    const log = new CapturingLogger();
+    const transport = new TcpTransport(
+      new NodeAddress('inbound-guards', '127.0.0.1', 19_403),
+      log,
+      { handshakeTimeoutMs: 250, incompleteFrameIdleMs: 900 },
+    );
+    const socket = mockSocket();
+    internals(transport).attachInbound(socket);
+
+    fireHandshakeDeadline(transport, internals(transport).bySocket.get(socket)!);
+
+    expect(socket.ended).toBe(true);
+    // The message names the deadline it enforced, so this fails loudly against
+    // a transport that took the option and kept reading HANDSHAKE_TIMEOUT_MS.
+    expect(log.warnings.join('\n')).toContain('sent no hello within 250 ms');
+    expect(log.warnings.join('\n')).not.toContain(`${HANDSHAKE_TIMEOUT_MS} ms`);
+  });
+
+  test('the stall deadline that fires is the configured one', () => {
+    const log = new CapturingLogger();
+    const transport = new TcpTransport(
+      new NodeAddress('inbound-guards', '127.0.0.1', 19_404),
+      log,
+      { incompleteFrameIdleMs: 1_500 },
+    );
+    const socket = mockSocket();
+    internals(transport).attachInbound(socket);
+    internals(transport).onData(socket, partialHello(3));
+
+    const connection = internals(transport).bySocket.get(socket)!;
+    clearTimeout(connection.incompleteFrameTimer as ReturnType<typeof setTimeout>);
+    internals(transport).onIncompleteFrameTimeout(connection);
+
+    expect(socket.ended).toBe(true);
+    expect(log.warnings.join('\n')).toContain('for 1500 ms');
+    expect(log.warnings.join('\n')).not.toContain(`${INCOMPLETE_FRAME_IDLE_MS} ms`);
+  });
+
+  test('an unconfigured transport still enforces the shipped bounds', () => {
+    // The control case.  Without it the four above would pass just as happily
+    // if the constants had been dropped and every default become the option's
+    // own — which is the shape in which "configurable" silently moves a bound.
+    const transport = newTransport(19_405);
+    const log = new CapturingLogger();
+    const defaulted = new TcpTransport(
+      new NodeAddress('inbound-guards', '127.0.0.1', 19_406),
+      log,
+    );
+    const socket = mockSocket();
+    internals(defaulted).attachInbound(socket);
+    fireHandshakeDeadline(defaulted, internals(defaulted).bySocket.get(socket)!);
+
+    expect(log.warnings.join('\n')).toContain(`sent no hello within ${HANDSHAKE_TIMEOUT_MS} ms`);
+    expect(transport.maxFrameBytes).toBe(DEFAULT_MAX_FRAME_BYTES);
+  });
+
+  test('a stall deadline at or below the handshake deadline is refused at construction', () => {
+    // The one cross-field rule, and it is not decoration: a socket that sends
+    // nothing at all never reaches the stall deadline, so the handshake timer
+    // is the only thing that reclaims it.  Inverting the two swaps their roles
+    // for a peer that sends three bytes and stops.
+    const address = new NodeAddress('inbound-guards', '127.0.0.1', 19_407);
+    expect(() => new TcpTransport(address, new NoopLogger(), {
+      handshakeTimeoutMs: 5_000,
+      incompleteFrameIdleMs: 5_000,
+    })).toThrow(OptionsError);
+    expect(() => new TcpTransport(address, new NoopLogger(), {
+      handshakeTimeoutMs: 5_000,
+      incompleteFrameIdleMs: 1_000,
+    })).toThrow(/must be greater than handshakeTimeoutMs/);
+    // Each alone is fine: the unset half falls through to a default the set
+    // half clears.
+    expect(() => new TcpTransport(address, new NoopLogger(), { handshakeTimeoutMs: 1_000 }))
+      .not.toThrow();
+  });
+
+  test('none of the four has an "off" spelling', () => {
+    // `0` is a distinct way of breaking the node for each: no handshake window,
+    // no room to buffer a send racing the handshake, no inbound connection
+    // admitted, no connection allowed to end off a frame boundary.
+    const address = new NodeAddress('inbound-guards', '127.0.0.1', 19_408);
+    for (const options of [
+      { handshakeTimeoutMs: 0 },
+      { outboundQueueSize: 0 },
+      { maxInboundConnections: 0 },
+      { incompleteFrameIdleMs: 0 },
+    ]) {
+      expect(() => new TcpTransport(address, new NoopLogger(), options)).toThrow(OptionsError);
+    }
   });
 });

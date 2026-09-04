@@ -839,6 +839,22 @@ export const ConfigKeys = {
    * do **not** decide whether `/system` is reachable: that is refused
    * unconditionally in `EnvelopeTrust`, because a switch defaulted off would
    * leave #964 open on every deployment that did not opt in.
+   *
+   * The last four are the transport's **association-lifecycle** bounds, which
+   * have been enforced since #588 and #697 and only became configurable in
+   * #846.  They are what an unauthenticated party can make this node hold:
+   * `handshake-timeout` reclaims a connection that never speaks its half of
+   * the handshake, `incomplete-frame-idle` reclaims one that went silent
+   * mid-frame, `max-inbound-connections` stops either cost from being
+   * multiplied by opening sockets in a loop, and `outbound-queue-size` bounds
+   * what this node holds for a peer that is not taking it.
+   *
+   * `handshake-timeout` is deliberately **one** key rather than a dial/accept
+   * pair.  The dialling side's clock starts before the TCP connect and the TLS
+   * handshake and the accepting side's starts after the accept, so equal
+   * numbers mean the peer that is still trying has always given up first; a
+   * split pair lets an operator set the acceptor stricter and make a healthy
+   * peer permanently unreachable.
    */
   remote: {
     tcp: {
@@ -853,6 +869,10 @@ export const ConfigKeys = {
     maxFrameBytes: 'actor-ts.remote.max-frame-bytes',
     untrustedMode: 'actor-ts.remote.untrusted-mode',
     trustedSelectionPaths: 'actor-ts.remote.trusted-selection-paths',
+    handshakeTimeout: 'actor-ts.remote.handshake-timeout',
+    outboundQueueSize: 'actor-ts.remote.outbound-queue-size',
+    maxInboundConnections: 'actor-ts.remote.max-inbound-connections',
+    incompleteFrameIdle: 'actor-ts.remote.incomplete-frame-idle',
   },
 
   /**

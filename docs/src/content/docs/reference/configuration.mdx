@@ -440,6 +440,10 @@ unifying them. Set them per lease in code.
 | `remote.tls.enabled` | `false` | **Not honoured** — `true` buys a startup warning, not encryption.  See below. |
 | `remote.untrusted-mode` | `false` | Admit an inbound envelope only when `trusted-selection-paths` lists its target.  Off, any `/user` actor is addressable by name — which is what makes an `ActorRef` work across nodes.  `/system` is refused either way.  See below. |
 | `remote.trusted-selection-paths` | `[]` | Paths a peer may address by name while `untrusted-mode` is on.  Empty means: nothing beyond the framework endpoints this node registered. |
+| `remote.handshake-timeout` | `5s` | How long a connection may sit without its half of the handshake before it is torn down.  **One value for both directions** — see below. |
+| `remote.outbound-queue-size` | `1000` | How many frames are held for a peer that cannot take them right now, oldest dropped first. |
+| `remote.max-inbound-connections` | `1024` | How many inbound connections this node accepts before it refuses sockets outright, newest refused rather than oldest evicted. |
+| `remote.incomplete-frame-idle` | `30s` | How long a connection may hold a half-received frame with no further byte arriving.  A stall bound, re-armed on every chunk. |
 
 `host`/`port` are the **bind** pair and `advertised-host`/`advertised-port`
 the **identity** pair: the first says where the listener opens, the second
@@ -533,6 +537,69 @@ of the two seams: a [`ClusterClient`](/cluster/cluster-client/) never joined the
 membership ring.  A refused path is answered with the identical `path not found`
 the client gets for a path that does not exist, so the endpoint cannot be used
 to map the actor tree.
+
+#### The association lifecycle
+
+The last four keys bound what a party that can open a TCP connection to the
+cluster port is able to make this node hold. All four have been enforced since
+the transport was hardened; what changed is that they are settable
+([issue #846](https://github.com/pathosDev/actor-ts/issues/846)):
+
+```hocon
+actor-ts.remote {
+  handshake-timeout       = 5s
+  outbound-queue-size     = 1000
+  max-inbound-connections = 1024
+  incomplete-frame-idle   = 30s
+}
+```
+
+`handshake-timeout` covers a connection that never speaks its half of the
+handshake — a dial that never gets its `hello-ack`, and an accepted socket that
+never sends a `hello`. It is **one key for both directions on purpose**. The
+dialling side's clock starts before the TCP connect and the TLS handshake, the
+accepting side's after the accept, so with one number the peer that is still
+trying has always given up first and the acceptor can never be the deadline
+that punishes a slow-but-legitimate dial. A split dial/accept pair would let an
+accept deadline set below the dial deadline make a healthy peer permanently
+unjoinable, with nothing in either node's log saying why.
+
+`incomplete-frame-idle` covers the other half: a connection that spoke and then
+went silent mid-frame. It is a **stall** bound rather than a budget for the
+frame — it is re-armed on every chunk, so a peer pushing a large frame over a
+congested link is never punished for being slow, only for stopping. Keep it
+above `handshake-timeout`; both validators refuse a value at or below it,
+because a socket that sends nothing at all never reaches this deadline and the
+handshake timer is what covers that one.
+
+`max-inbound-connections` is what stops either cost from being multiplied by
+opening sockets in a loop, and it is the half of the inbound-memory bound worth
+tightening: that bound is this count times what one connection may buffer. Set
+it from the real peer count where you know it — one inbound connection per peer
+in a full mesh, plus whatever [`ClusterClient`](/cluster/cluster-client/)s dial
+in — and leave headroom, because refusing a legitimate peer is a partition. The
+newest connection is refused rather than the oldest evicted; eviction would let
+an attacker push established peers off the node.
+
+`outbound-queue-size` is the one key here that bounds what this node holds
+rather than what a peer holds against it: frames written for a peer that cannot
+take them right now, with the oldest dropped first, because the newest
+membership and heartbeat state is the state worth keeping. Today that is the
+buffer in front of the handshake, so a `tell` racing the handshake is held
+rather than lost. The key is named for the category and not for that one
+buffer: the post-handshake backpressure queue
+([issue #931](https://github.com/pathosDev/actor-ts/issues/931)) is the same
+quantity with the same policy and the same warning, and will land under this
+key rather than a second one.
+
+None of the four has an "off" spelling. `0` is refused for each, because it is
+a distinct way of breaking the node rather than a way of removing a cap: no
+handshake window, no room to buffer, no inbound connection admitted, no
+connection allowed to end off a frame boundary.
+
+These reach the transport the cluster builds for itself. A `TcpTransport` you
+construct and pass via `withTransport(…)` carries its own — set them in its
+`TcpTransportOptions`.
 
 :::caution[`remote.tls.enabled` does not encrypt anything]
 The key is read, but not honoured.  Setting it to `true` does **not** enable

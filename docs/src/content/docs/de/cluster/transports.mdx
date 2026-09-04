@@ -38,7 +38,7 @@ eingehender Wire-Nachrichten samt Absenderadresse.
 ## TcpTransport (Standard)
 
 ```ts
-import { Cluster, ClusterOptions, TcpTransport } from 'actor-ts/cluster';
+import { Cluster, ClusterOptions, TcpTransport, TcpTransportOptions } from 'actor-ts/cluster';
 
 const clusterOptions = ClusterOptions.create()
   .withHost('0.0.0.0')
@@ -87,16 +87,18 @@ Runtime.
 ### Optionales TLS
 
 ```ts
-import { Cluster, ClusterOptions, TcpTransport } from 'actor-ts/cluster';
+import { Cluster, ClusterOptions, TcpTransport, TcpTransportOptions } from 'actor-ts/cluster';
 
 const transport = new TcpTransport(
   NodeAddress.parse('actor-ts://my-app@10.0.0.5:2552'),
   system.log,
   {
-    cert:           '...',     // PEM
-    key:            '...',     // PEM
-    ca:             '...',     // optionales CA-Bundle
-    rejectUnauthorized: true,
+    tls: {
+      cert:           '...',     // PEM
+      key:            '...',     // PEM
+      ca:             '...',     // optionales CA-Bundle
+      rejectUnauthorized: true,
+    },
   },
 );
 
@@ -118,13 +120,51 @@ für das Produktionsrezept.
 ### Frame-Größe
 
 ```ts
-new TcpTransport(self, log, null, 64 * 1024 * 1024);   // 64 MiB max Frame
+const transportOptions = TcpTransportOptions.create().withMaxFrameBytes(64 * 1024 * 1024);
+const transport = new TcpTransport(self, log, transportOptions);
 ```
 
 Überschreibe den Frame-Größen-Cap pro Frame. Standard 16 MiB reicht
 für typischen Cluster-Traffic (Gossip, Heartbeats, kleine
 Envelopes). Größere Werte verbessern *nicht* den allgemeinen
 Durchsatz — sie sind nur für einzelne große Nachrichten relevant.
+
+### Assoziations-Lebenszyklus
+
+Vier Schranken entscheiden, was eine Gegenstelle, die eine TCP-Verbindung zu
+diesem Port aufbauen kann, den Knoten halten lassen darf. Sie gelten für jeden
+`TcpTransport` und sind dieselben vier, die ein Betreiber unter
+[`actor-ts.remote`](/de/reference/configuration/#actor-tsremote) für den
+Transport setzt, den der Cluster sich selbst baut:
+
+```ts
+const transportOptions = TcpTransportOptions.create()
+  .withHandshakeTimeoutMs(5_000)
+  .withOutboundQueueSize(1_000)
+  .withMaxInboundConnections(1_024)
+  .withIncompleteFrameIdleMs(30_000);
+const transport = new TcpTransport(self, log, transportOptions);
+```
+
+| Schranke | Deckt ab | Löst aus mit |
+| --- | --- | --- |
+| `handshakeTimeoutMs` | Eine Verbindung, die ihre Hälfte des Handshakes nie spricht — ein Dial ohne `hello-ack`, ein angenommener Socket ohne `hello`. | Ein `WARN`, das die Frist und die mit ihr verworfenen Frames nennt. |
+| `outboundQueueSize` | Frames, die für einen Peer gehalten werden, der sie gerade nicht annehmen kann. | Die ältesten fallen weg, plus ein `WARN` je Verbindung. |
+| `maxInboundConnections` | Dass sich die Kosten pro Verbindung durch Sockets im Loop vervielfachen. | Der neueste Socket wird abgelehnt, ein `WARN` je Sättigungsepisode. |
+| `incompleteFrameIdleMs` | Eine Verbindung, die gesprochen hat und dann mitten im Frame verstummt ist. | Ein `WARN` mit der Zahl gepufferter Bytes, dann wird die Verbindung verworfen. |
+
+`handshakeTimeoutMs` ist bewusst **ein** Wert für beide Richtungen. Die
+wählende Seite startet ihre Uhr vor dem TCP-Connect und dem TLS-Handshake, die
+annehmende erst nach dem Accept — mit einer Zahl hat der Peer, der es noch
+versucht, also immer zuerst aufgegeben. `incompleteFrameIdleMs` muss darüber
+bleiben — ein Socket, der überhaupt nichts sendet, erreicht die Stall-Frist nie,
+der Handshake-Timer ist also das Einzige, was ihn zurückholt — und die
+Konstruktion wirft, wenn das nicht gilt. Keine der vier hat eine
+„Aus"-Schreibweise: `0` wird für jede abgelehnt.
+
+Ein selbst gebauter Transport trägt seine eigenen Werte. Der Cluster reicht die
+des Config-Blocks nur an einen Transport weiter, den *er* konstruiert hat, nie
+an einen per `withTransport(…)` übergebenen.
 
 ## InMemoryTransport (Tests)
 

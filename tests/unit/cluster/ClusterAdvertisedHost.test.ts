@@ -181,7 +181,7 @@ const UNBINDABLE_HOST = '203.0.113.1';
 describe('TcpTransport binds bindHost and keeps self as the identity', () => {
   test('an unbindable self.host still starts when bindHost is loopback', async () => {
     const self = new NodeAddress('bind-split', UNBINDABLE_HOST, 0);
-    const transport = new TcpTransport(self, new NoopLogger(), null, undefined, '127.0.0.1');
+    const transport = new TcpTransport(self, new NoopLogger(), { bindHost: '127.0.0.1' });
 
     await transport.start();
     try {

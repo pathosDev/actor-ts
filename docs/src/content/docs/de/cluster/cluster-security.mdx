@@ -60,10 +60,12 @@ const transport = new TcpTransport(
   NodeAddress.parse('actor-ts://my-app@10.0.0.5:2552'),
   system.log,
   {
-    cert: fs.readFileSync('./tls/cluster.crt'),
-    key:  fs.readFileSync('./tls/cluster.key'),
-    ca:   fs.readFileSync('./tls/ca.crt'),
-    rejectUnauthorized: true,
+    tls: {
+      cert: fs.readFileSync('./tls/cluster.crt'),
+      key:  fs.readFileSync('./tls/cluster.key'),
+      ca:   fs.readFileSync('./tls/ca.crt'),
+      rejectUnauthorized: true,
+    },
   },
 );
 
