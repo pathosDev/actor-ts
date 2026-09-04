@@ -103,12 +103,23 @@ describe('the exports map and the barrels under src/ agree (#1403)', () => {
     expect(dangling).toEqual([]);
   });
 
-  test('the folded barrels are pinned, so folding a sixth is a decision', () => {
+  test('the folded barrels are pinned, so folding a seventh is a decision', () => {
     // Not a statement of what *should* be folded — a snapshot of what is.  A
     // new subsystem barrel without a subpath lands here first, which is where
     // the choice between "publish it" and "fold it into the root" gets made
-    // rather than defaulted.
-    expect(foldedBarrels).toEqual(['config', 'deadletters', 'mailbox', 'pattern', 'typed']);
+    // rather than defaulted.  `diagnostics` was made here (#1000): it carries
+    // one options family and no runtime object — `ActorSystem` resolves the
+    // settings itself — so a subpath would be a second door onto seven names
+    // a consumer meets while configuring the system, which is what the root
+    // barrel is for.
+    expect(foldedBarrels).toEqual([
+      'config',
+      'deadletters',
+      'diagnostics',
+      'mailbox',
+      'pattern',
+      'typed',
+    ]);
   });
 
   test('util is published rather than folded (#1404)', () => {

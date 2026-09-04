@@ -155,11 +155,14 @@ of racing them into dead letters.
 
 The `/deadLetters` "actor" is special — messages to a `tell` on a
 stopped ref, or to a ref that never existed, route there.  Each one is
-published on the event stream as a `DeadLetter` naming the recipient it
-failed to reach, and that is **all** that happens by default: nothing
-logs them and nothing keeps them, so with no subscriber the message is
-gone.  Subscribe to react programmatically, or turn on the bounded —
-optionally durable — queue that keeps and replays them; see
+logged and published on the event stream as a `DeadLetter` naming the
+recipient it failed to reach.  The log line carries the recipient, the
+sender and the message's class — never the payload — and is throttled
+after the first ten, so a delivery outage does not become a log outage.
+Nothing *keeps* the letter, though: with no subscriber and no queue the
+message itself is gone once the line is written.  Subscribe to react
+programmatically, or turn on the bounded — optionally durable — queue
+that keeps and replays them; see
 [Dead letters](/operations/dead-letters/).
 
 ## Extensions

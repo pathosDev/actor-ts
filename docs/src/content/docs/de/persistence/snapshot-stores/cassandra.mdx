@@ -120,9 +120,12 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Compression- und Encryption-Optionen werden ignoriert">
   Anders als die Object-Storage-Stores hat der Cassandra-Snapshot-Store
   keine Kompression und keine clientseitige Verschlüsselung — der
-  Payload wird als serialisierter Text abgelegt.  Entsprechende
-  `PersistenceOptions` werden stillschweigend ignoriert.  Nutze den
-  [Object-Storage-Snapshot-Store](/de/persistence/object-storage/snapshot-store-backend/),
+  Payload wird als serialisierter Text abgelegt, und der Store deklariert
+  das über sein `persistenceOptionSupport`-Tripel.  Ein `encryption()`-
+  oder `integrity()`-Override **verweigert den Actor deshalb beim Start**,
+  statt kommentarlos fallen gelassen zu werden, und `compression()` warnt
+  einmal ([#960](https://github.com/mknorr/actor-ts/issues/960)).  Nutze
+  den [Object-Storage-Snapshot-Store](/de/persistence/object-storage/snapshot-store-backend/),
   wenn du Kompression oder At-Rest-Verschlüsselung brauchst.
 </Aside>
 

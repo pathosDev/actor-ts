@@ -229,17 +229,30 @@ import { Aside } from '@astrojs/starlight/components';
   Durable-State-Stores nehmen `PersistenceOptions` entgegen und
   sehen es nie an
   ([#960](https://github.com/mknorr/actor-ts/issues/960)).  Auf
-  SQLite, Postgres, Cassandra, Mongo, DynamoDB und dem
-  In-Memory-Referenz-Store bringt ein `integrity()`-Override
-  **keine Manipulationserkennung und wirft keinen Fehler** — die
-  Direktive wird fallen gelassen.  Dasselbe gilt für
-  `encryption()` und `compression()`.
+  SQLite, Postgres, MariaDB, MSSQL, libSQL, D1, Cassandra, Mongo,
+  DynamoDB und dem In-Memory-Referenz-Store **verweigert** ein
+  `integrity()`- oder `encryption()`-Override den Actor jetzt
+  **beim Start**, statt still gar nichts zu bringen: Jeder
+  ausgelieferte Store deklariert ein
+  `persistenceOptionSupport`-Tripel, und einer, der eine
+  Sicherheitskontrolle nicht honorieren kann, wirft
+  `UnsupportedPersistenceOptionError` mit Store- und Feldnamen.
 
-  Lies diese Seite nicht als Zusage, dass das Framework die
-  Kontrolle überall durchsetzt.  Prüfe sie gegen den Store, den du
-  tatsächlich betreibst: Heute sind das der
-  Object-Storage-Snapshot- und der Durable-State-Store, die alle
-  drei Hooks auf Schreib- und Lesepfad honorieren.
+  `compression()` ist die bewusste Ausnahme.  Es ist ein
+  Performance-Hinweis, keine Kontrolle, also warnt eine nicht
+  honorierbare Anfrage einmal und der Body wird unkomprimiert
+  geschrieben — einen Actor deswegen scheitern zu lassen, würde
+  jede systemweite Kompressions-Vorgabe unbrauchbar machen, sobald
+  ein Store im Deployment nicht komprimieren kann.
+
+  Die Kontrolle wird also durchgesetzt, wo das geht, und gemeldet,
+  wo nicht.  Die Stores, die alle drei Hooks auf Schreib- und
+  Lesepfad honorieren, sind der Object-Storage-Snapshot- und der
+  Durable-State-Store — alles andere verweigert oder warnt.  Zwei
+  Fälle bleiben still: `{ mode: 'none' }`, womit du "bewusst
+  ungeschützt" sagst, und ein Fremd-Store, der gar kein Tripel
+  deklariert und damit als unbekannt statt als nicht unterstützt
+  gilt.
 </Aside>
 
 <Aside type="caution" title="Unterschiedliche keyRings über Cluster-Nodes">

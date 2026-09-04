@@ -294,6 +294,40 @@ afterEach(async () => {
 
 See [TestKit](/testing/testkit/).
 
+### Symptom: my message vanished
+
+**A `tell` returned normally, the recipient never handled it, and
+nothing threw.**
+
+`tell` is fire-and-forget: it cannot report a recipient that has
+stopped, a selection that matched nothing, or a behavior that answered
+`unhandled`.  Every one of those becomes a **dead letter**, and since
+#1000 a default system says so in the log:
+
+```text
+[…] INFO dead letter to actor-ts://app/user/worker: OrderPlaced from actor-ts://app/user/api
+```
+
+Search the log for `dead letter to` and read the recipient path — that
+is the actor the message failed to reach, not the dead-letter office.
+Three things to know before concluding there was only one:
+
+- **The record is throttled.**  After ten letters a single `warn` line
+  announces that logging is suspending for five minutes; a second one
+  reports the tally when it resumes.  Raise
+  `actor-ts.diagnostics.log-dead-letters`, or set
+  `actor-ts.diagnostics.log-dead-letters-suspend-duration = 0` to log
+  every one, while you are looking.
+- **The payload is not in the log**, only the message's class — that is
+  deliberate.  To see the message itself, subscribe to `DeadLetter` on
+  the event stream, or turn on the queue with
+  `actor-ts.dead-letters.store = "memory"` and read it back with
+  `system.deadLetterQueue.list()`.
+- **Shutdown is silent by default.**  If the message went missing during
+  `terminate()`, see the next symptom.
+
+See [Dead letters](/operations/dead-letters/).
+
 ### Symptom: shutdown dropped my messages
 
 **Work that was queued when `terminate()` was called never ran, and
@@ -322,12 +356,14 @@ backlog is handled.  Four things it will not wait for:
 
 To confirm which, subscribe to `DeadLetter` on the event stream before
 shutting down — the dead letter names the message and the recipient.
-Subscribing has to happen *before*, because publishing is all that
-happens by default: nothing keeps a dead letter, so there is nothing to
-go back and read afterwards.  Set
-`actor-ts.dead-letters.store = "persistent"` if you would rather have
-the record without knowing in advance that you will want it — see
-[Dead letters](/operations/dead-letters/).
+Subscribing has to happen *before*, because nothing keeps a dead letter
+by default, so there is nothing to go back and read afterwards.  The log
+will not help here either: this particular burst is the one case that is
+**not** logged, because an orderly shutdown produces it every time (set
+`actor-ts.diagnostics.log-dead-letters-during-shutdown = on` if you want
+it anyway).  Set `actor-ts.dead-letters.store = "persistent"` if you
+would rather have the record without knowing in advance that you will
+want it — see [Dead letters](/operations/dead-letters/).
 
 ### Symptom: flaky timing-sensitive tests
 

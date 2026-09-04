@@ -1,4 +1,5 @@
 import { type Snapshot } from '../JournalTypes.js';
+import type { PersistenceOptionSupport } from '../PersistenceCapabilities.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
@@ -37,6 +38,13 @@ type SnapshotDocument = {
  * and Cassandra stores; the object-storage store is the one that honours them.
  */
 export class MongoSnapshotStore extends MongoStore implements SnapshotStore {
+  /** The payload is a plain document field — `options` is bound and never read (#960). */
+  readonly persistenceOptionSupport: PersistenceOptionSupport = {
+    encryption: false,
+    compression: false,
+    integrity: false,
+  };
+
   private readonly collectionName: string;
   private readonly keepN: number;
 

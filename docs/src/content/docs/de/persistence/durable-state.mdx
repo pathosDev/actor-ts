@@ -257,13 +257,22 @@ class Sensitive extends DurableStateActor<Command, State> {
 
 **Nur der Object-Storage-Durable-State-Store liest diese.**  Neun
 der zehn Durable-State-Stores nehmen die Optionen entgegen und
-sehen sie nie an
-([#960](https://github.com/mknorr/actor-ts/issues/960)): Auf
-In-Memory, SQLite, Postgres, Mongo und DynamoDB wird ein Override
-hier stillschweigend fallen gelassen — keine Verschlüsselung,
-keine Manipulationserkennung und kein Fehler, der dich darauf
-hinweist.  Prüfe den Override gegen den Store, den du tatsächlich
-betreibst, bevor du ihn als greifende Kontrolle behandelst.
+sehen sie nie an — aber sie sagen es jetzt, über eine
+`persistenceOptionSupport`-Deklaration, die das Framework beim
+Actor-Start prüft
+([#960](https://github.com/mknorr/actor-ts/issues/960)).
+
+Auf In-Memory, SQLite, Postgres, MariaDB, MSSQL, libSQL, D1, Mongo
+und DynamoDB **verweigern** `encryption()` oder `integrity()`
+**den Actor vor dem Start**, mit einem
+`UnsupportedPersistenceOptionError`, der Store und Feld benennt.
+Die Verweigerung liegt bewusst vor dem Load in `preStart` und
+nicht erst beim ersten Write: Ein Durable-State-Actor liest, bevor
+er schreibt, und ein Lesen gegen einen Store, der nicht
+entschlüsseln kann, würde ihm einen Klartext-Datensatz geben, den
+er für Chiffrat hält.  `compression()` ist ein Performance-Hinweis,
+warnt also einmal, und der Datensatz wird unkomprimiert
+geschrieben; `{ mode: 'none' }` wird überall akzeptiert.
 
 Siehe
 [Object-Storage-Verschlüsselung](/de/persistence/object-storage/encryption/)

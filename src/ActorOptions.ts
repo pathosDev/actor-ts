@@ -80,10 +80,12 @@ export type ActorOptionsType<TMessage = unknown> = {
    * `ActorCell.postSignalEnvelope`.  That door — not the message that goes
    * through it — is the rule: since #729 it stamps {@link Envelope.undroppable}
    * and routes to `Mailbox.enqueueSignal`, a lane no overflow policy can shed.
-   * Two senders use it, a death-watch `Terminated` and the `websocket-accept`
-   * command that hands an upgraded socket to its hub (#717).  So bounding a
-   * watcher costs it backlog and not the deaths it is watching for, and
-   * bounding a hub cannot orphan a socket it has already accepted.
+   * Three senders use it: a death-watch `Terminated`; the `websocket-accept`
+   * command that hands an upgraded socket to its hub (#717); and the `close`
+   * a `WebsocketConnection` sends its own actor (#985).  So bounding a watcher
+   * costs it backlog and not the deaths it is watching for, bounding a hub
+   * cannot orphan a socket it has already accepted, and bounding a connection
+   * cannot turn a `closeAll` into a socket that stays open.
    */
   readonly mailboxCapacity?: number;
   /**

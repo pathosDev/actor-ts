@@ -25,6 +25,7 @@ import {
   type DurableStateRecord,
   type DurableStateStore,
 } from '../DurableStateStore.js';
+import type { PersistenceOptionSupport } from '../PersistenceCapabilities.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { StorageLocality } from '../StorageLocality.js';
 import type { Serializer } from '../../serialization/Serializer.js';
@@ -64,6 +65,18 @@ export class ObjectStorageDurableStateStore implements DurableStateStore {
 
   /** Locality is the backend's property — a store wrapper adds none of its own (#1356). */
   get storageLocality(): StorageLocality | undefined { return this.backend.storageLocality; }
+
+  /**
+   * The one durable-state store that acts on all three fields, on both
+   * paths: `upsert` resolves them at :191-199 and `load` at :123-127.  Same
+   * reasoning as its snapshot twin — the body codec runs here, so the claim
+   * belongs to this class and not to the backend underneath (#960).
+   */
+  readonly persistenceOptionSupport: PersistenceOptionSupport = {
+    encryption: true,
+    compression: true,
+    integrity: true,
+  };
 
   /** Identity is the backend's too — bucket/directory = database (#1358). */
   async storageIdentity(): Promise<string> {

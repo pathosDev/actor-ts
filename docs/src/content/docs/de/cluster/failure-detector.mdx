@@ -113,13 +113,47 @@ Was der Cluster *damit* macht:
 | --- | --- |
 | `healthy` | Normales Routing. Kein Effekt. |
 | `unreachable` | Markiere das Mitglied in der Mitgliedertabelle als `unreachable`. Router überspringen es; Sharding allokiert keine neuen Shards mehr darauf. Singleton-Manager wählt keinen Leader von einer unerreichbaren Seite. |
-| `down` | Löse Downing aus. Wenn eine [Downing-Strategie](/de/cluster/downing-strategies/) konfiguriert ist, entscheidet sie, welche Adressen zwangsweise entfernt werden; der Cluster verkündet diese Nodes als `removed`. |
+| `down`, [Downing-Strategie](/de/cluster/downing-strategies/) konfiguriert | Markiere das Mitglied als `unreachable` und halte an. Die Strategie entscheidet, welche Adressen entfernt werden; der Cluster verkündet diese Nodes als `removed`. Der Detector entfernt selbst nichts. |
+| `down`, keine Strategie konfiguriert | Der Detector entfernt den Peer selbst: erst `down`, dann direkt als `removed` aus der Mitgliedertabelle. |
 
-**Entscheidend:** dass der Detector `down` entscheidet, entfernt den
-Peer nicht automatisch. Entfernung läuft durch die
-Downing-Strategie — der Detector ist das *Signal*, nicht die
-Aktion. Ohne Downing-Strategie bleibt eine `down`-Entscheidung
-nur beratend.
+**Diese beiden Zeilen sind die ganze Geschichte, und welche du
+bekommst, entscheidet allein, ob du eine Strategie konfiguriert
+hast.** Mit einer ist der Detector das *Signal*, nicht die Aktion —
+er parkt den Peer auf `unreachable`, und die Strategie besitzt die
+Entfernung. Ohne eine schlichtet nichts, und dass der Detector den
+Peer bei `down-after` entfernt, ist das einzige Failover, das du
+hast: nur so werden Shards neu verteilt und ein Singleton
+übergeben. Das ist bequem für einen einzelnen abgestürzten Node und
+falsch für eine Partition, wo beide Hälften die jeweils andere
+entfernen und weiterlaufen. Eine Strategie zu konfigurieren, ist
+der Weg, das eine durch das andere zu ersetzen.
+
+### Ein geparktes Mitglied bleibt geparkt
+
+Mit konfigurierter Strategie bleibt ein Mitglied, über das die
+Strategie nie zu einem Urteil kommt, **unbegrenzt** `unreachable`.
+Dahinter steht bewusst kein Auffangnetz des Detectors: ein
+Auffangnetz ist genau die Umgehung, die die Strategie verhindern
+soll, und eines, das nach einem Vielfachen von `down-after`
+auslöst, verschiebt die Umgehung nur nach hinten.
+
+Das hat Konsequenzen, die man einplanen sollte. Das Mitglied
+belegt weiterhin seinen Platz gegen `max-members`. Der
+`ClusterSingletonManager` übergibt nicht, denn er reagiert auf
+`MemberDown` / `MemberLeft` / `MemberRemoved` und bewusst nicht auf
+`MemberUnreachable` — der Detector eines einzelnen Nodes ist keine
+Mitgliedschaftstatsache, auf die sich der Cluster geeinigt hat. Der
+`ShardCoordinator` verteilt nicht neu, denn er hört nur auf
+`MemberRemoved`. Und eine geheilte Partition holt das Mitglied
+derzeit nicht nach `up` zurück: Gossip und Heartbeats gehen nur an
+erreichbare Mitglieder, also spricht keine Seite die andere je
+wieder an.
+
+Das ist Integrität vor Verfügbarkeit, und zwar mit Absicht. Wähle
+eine Strategie, die auf deiner Cluster-Form immer zu einem Urteil
+kommt — eine ungerade Mitgliederzahl für `KeepMajority`, einen
+Schiedsrichter oder ein Lease für eine gerade — statt einer, die
+für immer "pending" antworten kann.
 
 ## Die Sicht des lokalen Nodes
 
@@ -245,9 +279,12 @@ import { Aside } from '@astrojs/starlight/components';
   Die `down`-Entscheidung des Detectors ist statistisch — basiert
   auf vergangener Stille. Ein Peer, der nur langsam, aber sich
   erholend ist, kann als `down` markiert werden und dann wiederkommen.
-  Ohne eine Downing-Strategie, die ihn tatsächlich entfernt, bekommst
-  du **flatternde Mitglieder**, die zwischen `unreachable` und
-  `down` driften. Konfiguriere eine Downing-Strategie.
+  Ohne Downing-Strategie handelt der Detector selbst nach dieser
+  Vermutung und entfernt den Peer — eine GC-Pause, die lang genug
+  ist, um `down-after` zu überschreiten, kostet dich also einen
+  Node. Mit einer Strategie ist die Vermutung nur eine Eingabe: die
+  Strategie wägt sie gegen die übrige Sicht des Clusters ab, bevor
+  irgendetwas entfernt wird. Konfiguriere eine Downing-Strategie.
 </Aside>
 
 <Aside type="caution" title="Enge Schwellwerte in unruhigen Netzwerken">

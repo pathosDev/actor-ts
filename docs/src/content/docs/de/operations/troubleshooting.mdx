@@ -303,6 +303,40 @@ afterEach(async () => {
 
 Siehe [TestKit](/de/testing/testkit/).
 
+### Symptom: meine Nachricht ist verschwunden
+
+**Ein `tell` kehrte normal zurück, der Empfänger hat sie nie
+verarbeitet, und nichts hat geworfen.**
+
+`tell` ist Fire-and-Forget: Es kann weder einen gestoppten Empfänger
+melden noch eine Selection, die ins Leere lief, noch ein Behavior, das
+mit `unhandled` geantwortet hat.  Jeder dieser Fälle wird zu einem
+**Dead Letter**, und seit #1000 sagt ein Standardsystem das im Log:
+
+```text
+[…] INFO dead letter to actor-ts://app/user/worker: OrderPlaced from actor-ts://app/user/api
+```
+
+Suche im Log nach `dead letter to` und lies den Empfängerpfad — das ist
+der Actor, den die Nachricht nicht erreicht hat, nicht das
+Dead-Letter-Büro.  Drei Dinge, bevor du auf „es war nur eine“ schließt:
+
+- **Der Eintrag ist gedrosselt.**  Nach zehn Letters meldet eine
+  einzelne `warn`-Zeile, dass das Logging für fünf Minuten aussetzt;
+  eine zweite nennt die Bilanz beim Wiederaufnehmen.  Erhöhe
+  `actor-ts.diagnostics.log-dead-letters` oder setze
+  `actor-ts.diagnostics.log-dead-letters-suspend-duration = 0`, um
+  während der Suche jedes einzelne zu loggen.
+- **Die Payload steht nicht im Log**, nur die Klasse der Nachricht — das
+  ist Absicht.  Um die Nachricht selbst zu sehen, abonniere `DeadLetter`
+  auf dem Event-Stream oder schalte die Queue mit
+  `actor-ts.dead-letters.store = "memory"` ein und lies sie mit
+  `system.deadLetterQueue.list()` zurück.
+- **Der Shutdown ist standardmäßig still.**  Wenn die Nachricht während
+  `terminate()` verloren ging, siehe das nächste Symptom.
+
+Siehe [Dead Letters](/de/operations/dead-letters/).
+
 ### Symptom: Shutdown hat meine Nachrichten verworfen
 
 **Arbeit, die beim Aufruf von `terminate()` in der Queue stand, lief
@@ -333,9 +367,12 @@ Rückstau wird also verarbeitet.  Auf vier Dinge wartet es nicht:
 Um herauszufinden, welcher Fall vorliegt, abonniere vor dem
 Herunterfahren `DeadLetter` auf dem Event-Stream — der Dead Letter
 nennt Nachricht und Empfänger.  Das Abonnieren muss *vorher*
-passieren, denn Publishen ist standardmäßig alles, was passiert:
-nichts bewahrt ein Dead Letter auf, es gibt also nachträglich nichts
-nachzulesen.  Setze
+passieren, denn standardmäßig bewahrt nichts ein Dead Letter auf, es
+gibt also nachträglich nichts nachzulesen.  Das Log hilft hier auch
+nicht: Genau dieser Schwall ist der eine Fall, der **nicht** geloggt
+wird, weil ein geordnetes Herunterfahren ihn jedes Mal erzeugt (setze
+`actor-ts.diagnostics.log-dead-letters-during-shutdown = on`, wenn du
+ihn trotzdem willst).  Setze
 `actor-ts.dead-letters.store = "persistent"`, wenn du die
 Aufzeichnung lieber hättest, ohne vorher zu wissen, dass du sie
 brauchen wirst — siehe

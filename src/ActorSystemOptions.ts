@@ -14,6 +14,7 @@
 import type { Config } from './config/Config.js';
 import type { ConfigObject } from './config/HoconParser.js';
 import type { DeadLetterQueueOptions } from './deadletters/DeadLetterQueueOptions.js';
+import type { DiagnosticsOptions } from './diagnostics/DiagnosticsOptions.js';
 import type { Dispatcher } from './Dispatcher.js';
 import type { Logger, LogLevel } from './Logger.js';
 import type { LogSink } from './logging/LogSink.js';
@@ -81,6 +82,21 @@ export type ActorSystemOptionsType = {
    * of the config file.
    */
   readonly deadLetters?: DeadLetterQueueOptions;
+  /**
+   * Diagnostics settings — the explicit layer over `actor-ts.diagnostics.*`,
+   * which today is dead-letter logging and its throttle (#1000).
+   *
+   * Here for the same reason `deadLetters` is: the settings are consumed by
+   * the constructor and handed straight to `DeadLetterRef`, so without a
+   * slot here the published `DiagnosticsOptions` family would have no
+   * reachable consumer and HOCON would be the only way to configure a
+   * default-ON log line — against the project's *explicit options > HOCON >
+   * built-in defaults* rule.
+   *
+   * Field-by-field, so setting one knob here does not blank the others out
+   * of the config file.
+   */
+  readonly diagnostics?: DiagnosticsOptions;
 };
 
 export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorSystemOptionsType> extends OptionsBuilder<T> {
@@ -146,6 +162,15 @@ export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorS
    */
   withDeadLetters(deadLetters: NonNullable<ActorSystemOptionsType['deadLetters']>): this {
     return this.set('deadLetters' as keyof T, deadLetters as T[keyof T]);
+  }
+
+  /**
+   * Diagnostics settings, layered over `actor-ts.diagnostics.*` — how loudly
+   * the runtime reports itself.  Fields you leave unset still fall through
+   * to HOCON.
+   */
+  withDiagnostics(diagnostics: NonNullable<ActorSystemOptionsType['diagnostics']>): this {
+    return this.set('diagnostics' as keyof T, diagnostics as T[keyof T]);
   }
 }
 

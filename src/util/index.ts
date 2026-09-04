@@ -44,6 +44,10 @@ export {
 } from './CidrMatch.js';
 export type { ParsedCidr, AddressPin } from './CidrMatch.js';
 
+// The name of a value's class and nothing from the value itself — the shape a
+// diagnostic is allowed to record about an untrusted payload.
+export { classNameOf } from './ClassName.js';
+
 // The cross-subsystem constants tier.  Public because they are the defaults a
 // consumer reads back rather than restates: `DEFAULT_ASK_TIMEOUT_MS` is the
 // value a `ScatterGatherRouter` timeout has to stay below, and

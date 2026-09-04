@@ -11,6 +11,57 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Dead letters are logged by default, throttled** (#1000).  A default
+  `ActorSystem` produced no output at all when a message could not be
+  delivered: `DeadLetterRef` held no logger, published a `DeadLetter` on the
+  event stream and returned.  An application that subscribed to nothing —
+  which is every application until it knows to — lost both the message and
+  the fact that it had.  The queue #433 landed does not fill that gap; it is
+  capture-side, opt-in, and defaults to `off`, so a default system installs
+  no sink at all.
+
+  Each undeliverable message now produces one `info` line naming the
+  recipient path, the sender when there is one, and the message's **class**
+  — never the payload, for the same data-protection reason
+  `dead-letters.store` defaults to `off`.  It is throttled, because a
+  delivery outage produces dead letters at message rate: after
+  `actor-ts.diagnostics.log-dead-letters` records (10) a single `warn` line
+  says logging is suspending, the window is silent for
+  `log-dead-letters-suspend-duration` (5m), and the first record after it
+  resumes is preceded by one more `warn` naming how many letters went
+  unreported.  `0` on either number means "never log" and "never suspend"
+  respectively.
+
+  The gate sits strictly downstream of the capture sink **and** of
+  `eventStream.publish`, so neither the queue's completeness claim nor what
+  any existing subscriber sees changes when logging goes quiet.  A single
+  global counter, not per-recipient: the per-recipient token bucket with a
+  `DeadLetterSummary` event is #1179, and building it here would have left
+  two suppression knobs on one path.
+
+  The burst `terminate()` produces while draining mailboxes is silent by
+  default — an orderly shutdown drains every queued and stashed message to
+  dead letters, and reporting that makes a clean stop read as an
+  incident.  Two honest limits, both stated in the code: an individual
+  `ref.stop()` still logs, because the system is not terminating, and
+  letters produced during `CoordinatedShutdown`'s earlier phases are logged
+  too.
+
+  A new `actor-ts.diagnostics` block carries the three keys, with the
+  options family in `src/diagnostics/DiagnosticsOptions.ts` and an explicit
+  layer through `ActorSystemOptions.withDiagnostics(…)`.  Two deliberate
+  divergences from the original sketch: the keys are not root-level leaves
+  (`reference.conf` has fourteen root blocks and zero root-level leaves, and
+  `ConfigKeys.ts` already pointed #1179 at `diagnostics`), and the count is
+  a plain integer with "0 disables" rather than a `count | on | off` union,
+  which has no clean `Config` getter.  `classNameOf` moved to
+  `src/util/ClassName.ts` and is published on the `actor-ts/util`
+  subpath.  Documented on `operations/dead-letters`, `operations/overview`,
+  `operations/troubleshooting` (a new "my message vanished" entry),
+  `fundamentals/actor-system`, `fundamentals/event-stream` and
+  `reference/configuration`, EN + DE — where the polarity of every "nothing
+  logs them" sentence flips.
+
 - **`actor-ts/util` — the whole util toolbox, not the two-thirds the root
   barrel named one at a time** (#1404).  `src/util/` holds 21 modules and had
   no barrel at all; what a consumer could reach was whatever `src/index.ts`
@@ -129,6 +180,88 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   rather than prose.
 
 ### Fixed
+
+- **BREAKING — a configured downing provider now owns the eviction (#929).**
+
+  A cluster with a `DowningProvider` configured no longer evicts an
+  unreachable peer when `down-after` elapses.  The failure detector marks
+  the peer `unreachable` and stops; the transition to `down` / `removed` is
+  the strategy's alone.
+
+  Previously the detector deleted the member from the membership table on
+  the same tick it then asked the strategy to decide, so `evaluateDowning`
+  was handed a view whose `unreachable` set was already empty and every
+  bundled strategy read a healed cluster.  That made `LeaseMajority`'s
+  asynchronous acquire unwinnable — a 5 s default budget against a 5 s
+  `down-after`, with the deletion tripping `decide`'s `unreachable.length
+  === 0` reset — and it made a stability window above `down-after` minus
+  `unreachable-after`, 3 s on the reference defaults, impossible to express
+  at all.
+
+  A peer that fell silent while `joining`, `weakly-up` or `leaving` is now
+  marked `unreachable` too, so it enters the `up | leaving | unreachable`
+  candidate set every strategy filters on instead of being deleted
+  unmarked.  Only `MemberUnreachable` is announced on this path, never
+  `MemberDown`: with a provider configured, `MemberDown` and `MemberRemoved`
+  now originate in the resolver, which lengthens the window in which
+  `ClusterRouter` still holds a routee for an unreachable node.  The code
+  comment and four published claims in both languages — which already
+  described this behaviour before the code did — are corrected with it.
+
+  *Migration:* if you configure a `DowningProvider`, pick a strategy that
+  always reaches a verdict for your cluster shape.  A strategy that returns
+  an empty set forever now parks the member at `unreachable` indefinitely
+  instead of having the detector evict it at `down-after`.
+
+- **A region's shard claim is adjudicated, not adopted** (#948).  A
+  `sharding.Register` naming a shard that another live region already owns
+  no longer takes ownership of it.
+
+  The coordinator now checks a region's `hostedShards` claim against the
+  allocation map instead of writing it in wholesale: ids nobody holds are
+  adopted exactly as before, an id homed to a different registered region
+  stays where it is, and the claimant is answered with a `HandOff` so its
+  stale copy actually stops rather than running the same entity ids
+  alongside the true owner's — two writers on one `persistenceId` for a
+  `PersistentActor`.  Nothing clears a region's `localShards` when its node
+  is downed by a false positive, and the region re-registers on every
+  membership event and on a 500 ms retry, so the stale claim was what a
+  re-admitted node said as its first word.
+
+  The same handler also no longer replaces a region's recorded shard set
+  with the claim: a `Register` that crossed an in-flight `ShardHome` used to
+  drop the shard from the coordinator's bookkeeping while still naming that
+  region as its home, after which losing the region never reallocated the
+  shard and the coordinator-state snapshot persisted the hole.
+
+- **A WebSocket connection's `close()` can no longer be discarded by a
+  mailbox bound** (#985).  It now travels the same exempt lane a death-watch
+  `Terminated` and the `websocket-accept` command take
+  (`ActorCell.postSignalEnvelope` → `Envelope.undroppable` →
+  `Mailbox.enqueueSignal`).
+
+  `drop-head` cannot evict it as the oldest entry, `drop-new` cannot discard
+  it on arrival, and `reject` cannot throw `MailboxFullError` out of
+  `close()` on the caller's stack — which for
+  `WebsocketServerActor.closeAll()` aborted the loop on its first backlogged
+  client and failed the hub with every later client still connected.  Losing
+  a close is not losing a message: nothing retries, nothing else in the
+  process holds the socket, and a `closeAll(1008, 'rate limited')` that
+  returns normally while the peers stay connected is a control that failed
+  open.
+
+  `WebsocketConnection.isOpen` now also latches on request, so it reads
+  `false` the moment `close()` returns rather than staying `true` until the
+  connection actor drains — `broadcast` and your own `if (client.isOpen)`
+  checks stop selecting a peer you have already disconnected.
+
+  Unreachable under the shipped configuration since #1148 made the unbounded
+  mailbox the default again, and the per-connection actor is spawned with no
+  `ActorOptions` at all; the door is closed ahead of a global default
+  capacity (#862), which is the only thing that could re-arm it.  The
+  remaining half — routing control traffic ahead of queued bulk frames — is
+  deliberately untouched: it is one design decision shared with #717 and
+  #986.
 
 - **BREAKING — `JetStreamActor` keys acknowledgments on the delivery rather
   than the message (#710).**
@@ -270,6 +403,44 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`fundamentals/throttling`, EN + DE).
 
 ### Security
+
+- **BREAKING — a store refuses an encryption request it cannot honour
+  (#960).**
+
+  Snapshot and durable-state stores now declare which fields of
+  `PersistenceOptions` they actually act on, and an unhonourable request is
+  refused instead of dropped.  Only the object-storage pair has ever read
+  the per-actor `compression()` / `encryption()` / `integrity()` hooks; the
+  other eleven shipped stores bound the parameter and ignored it, and both
+  contracts sanctioned that in prose — so setting `encryption()` on a
+  Postgres-backed actor produced plaintext rows and no error at all.
+
+  Every store now carries a `persistenceOptionSupport` triple, and
+  `PersistentActor` and `DurableStateActor` compare it against the actor's
+  hooks at start: encryption and integrity throw
+  `UnsupportedPersistenceOptionError` naming the store and the field, while
+  compression — a performance hint rather than a control — warns once and
+  lets the actor run.  The check fires before the first *read*, not merely
+  the first write, because a durable-state actor loads in `preStart` and
+  reading with encryption set against a store that cannot decrypt returns a
+  plaintext record the actor believes was ciphertext.
+
+  A store that declares nothing stays unknown and is never refused, the same
+  rule `storageLocality` follows, so third-party stores are unaffected; `{
+  mode: 'none' }` is accepted everywhere, since "do not encrypt" is exactly
+  what a store that cannot encrypt does.  `CachedSnapshotStore` delegates
+  its declaration to the store it wraps rather than stating a constant
+  either way.  The type and the error class are exported from
+  `actor-ts/persistence`, and the shared persistence contract suite now
+  holds every store's declaration to its measured behaviour.  This covers
+  the field #613 implemented store-locally in the object-storage pair.
+
+  *Migration:* an actor whose `encryption()` or `integrity()` hook returns
+  anything other than `{ mode: 'none' }` now throws
+  `UnsupportedPersistenceOptionError` at start unless its store declares
+  support.  Drop the override, switch to the object-storage snapshot /
+  durable-state store, or return `{ mode: 'none' }` to state that the data
+  is deliberately unprotected.
 
 - **The dependency audit gate was red on `develop`, and is now green with no
   suppressions at all** (#779, #781).

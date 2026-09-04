@@ -108,22 +108,42 @@ const actorSystemOptions = ActorSystemOptions.create().withPersistence({
 });
 ```
 
-Eingebaute Snapshot Stores:
+Eingebaute Snapshot Stores.  Die dritte Spalte ist die
+`persistenceOptionSupport`-Deklaration des Stores selbst — ob er auf
+die Hooks `compression()` / `encryption()` / `integrity()` reagiert
+oder sie bloß entgegennimmt:
 
-| Store | Wann |
-| --- | --- |
-| `InMemorySnapshotStore` | Tests, Dev. |
-| `SqliteSnapshotStore` | Single-Node-Produktion. |
-| `PostgresSnapshotStore` | PostgreSQL-gestützte Produktion. |
-| `MariaDbSnapshotStore` | MariaDB / MySQL-gestützte Produktion. |
-| `LibSqlSnapshotStore` | libSQL / Turso — entferntes SQLite über HTTP. |
-| `MsSqlSnapshotStore` | Microsoft SQL Server-gestützte Produktion. |
-| `MongoSnapshotStore` | MongoDB-gestützte Produktion. |
-| `DynamoDbSnapshotStore` | DynamoDB-gestützte Produktion. |
-| `D1SnapshotStore` | Cloudflare D1 — SQLite am Edge. |
-| `CassandraSnapshotStore` | Verteilt — Cassandra / ScyllaDB. |
-| `ObjectStorageSnapshotStore` | Filesystem / S3 mit optionaler Verschlüsselung. |
-| `CachedSnapshotStore` | Wickelt einen anderen Store mit einem Read-Through-Cache ein. |
+| Store | Wann | Honoriert die drei Hooks |
+| --- | --- | --- |
+| `InMemorySnapshotStore` | Tests, Dev. | Nein. |
+| `SqliteSnapshotStore` | Single-Node-Produktion. | Nein. |
+| `PostgresSnapshotStore` | PostgreSQL-gestützte Produktion. | Nein. |
+| `MariaDbSnapshotStore` | MariaDB / MySQL-gestützte Produktion. | Nein. |
+| `LibSqlSnapshotStore` | libSQL / Turso — entferntes SQLite über HTTP. | Nein. |
+| `MsSqlSnapshotStore` | Microsoft SQL Server-gestützte Produktion. | Nein. |
+| `MongoSnapshotStore` | MongoDB-gestützte Produktion. | Nein. |
+| `DynamoDbSnapshotStore` | DynamoDB-gestützte Produktion. | Nein. |
+| `D1SnapshotStore` | Cloudflare D1 — SQLite am Edge. | Nein. |
+| `CassandraSnapshotStore` | Verteilt — Cassandra / ScyllaDB. | Nein. |
+| `ObjectStorageSnapshotStore` | Filesystem / S3 mit optionaler Verschlüsselung. | Ja — alle drei, beim Schreiben und beim Lesen. |
+| `CachedSnapshotStore` | Wickelt einen anderen Store mit einem Read-Through-Cache ein. | Was der eingewickelte Store deklariert. |
+
+Ein `Nein` in dieser Spalte ist durchgesetzt, nicht nur dokumentiert.
+`encryption()` oder `integrity()` auf einem Actor zu setzen, der von
+einem dieser Stores getragen wird, **verweigert den Actor beim Start**
+mit einem `UnsupportedPersistenceOptionError`, der Store und Feld
+benennt — das sind Sicherheitskontrollen, und Klartext zu schreiben,
+statt die Lücke zu melden, ist genau der Fehler, den die Verweigerung
+verhindern soll.  `compression()` ist ein Performance-Hinweis, also
+gibt es eine einzelne Warnung mit dem Store-Namen und der Snapshot
+wird unkomprimiert geschrieben.  `{ mode: 'none' }` wird überall
+akzeptiert: So sagst du "bewusst ungeschützt".
+
+Ein Store, der gar nichts deklariert — eine Fremdimplementierung aus
+der Zeit vor der Deklaration — gilt als *unbekannt* und wird nie
+verweigert, aus derselben Überlegung wie bei `storageLocality`: Ein
+Store darf nicht an einer Vorgabe gemessen werden, die er nicht
+gewählt hat.
 
 Das Journal und der Snapshot Store sind unabhängig; du kannst sie
 mischen (z. B. Cassandra-Journal + Object-Storage-Snapshot-Store).

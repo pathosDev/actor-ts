@@ -1,4 +1,5 @@
 import { type Snapshot } from '../JournalTypes.js';
+import type { PersistenceOptionSupport } from '../PersistenceCapabilities.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
@@ -34,6 +35,19 @@ export interface RelationalSnapshotStoreConfig extends RelationalStoreConfig {
  * stores; the object-storage store is the one that honours them.
  */
 export class RelationalSnapshotStore extends RelationalStore implements SnapshotStore {
+  /**
+   * The payload is `encodePayload`'s JSON text in a SQL column, written and
+   * read without ever looking at `options` — so an actor that sets any of
+   * the three hooks is refused at start rather than stored in the clear
+   * (#960).  One declaration covers Postgres, MariaDB, MSSQL, libSQL and D1;
+   * the SQLite *snapshot* store is standalone and declares its own.
+   */
+  readonly persistenceOptionSupport: PersistenceOptionSupport = {
+    encryption: false,
+    compression: false,
+    integrity: false,
+  };
+
   private readonly table: string;
   private readonly keepN: number;
   private readonly statements: {
