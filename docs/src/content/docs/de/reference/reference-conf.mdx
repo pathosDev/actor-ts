@@ -1121,6 +1121,27 @@ actor-ts {
     }
   }
 
+  # A daemon set is a module built ON sharding, not a sharding tunable, so it
+  # gets a block of its own -- the same reading distributed-data above states
+  # for not living under cluster.*.  Only these two keys are deployment facts;
+  # the set's name, its daemon count and its per-index actor describe one
+  # daemon set rather than a deployment and have no leaf at all.
+  sharded-daemon-process {
+    # Safety net for the event-driven wake-up path: every liveness-interval,
+    #   every daemon index is re-woken whether or not a topology event fired,
+    #   so a wake-up lost to a brief partition-and-heal still re-materialises
+    #   its daemon.  LeaderChanged / MemberRemoved still re-wake on their own;
+    #   this only covers the one they missed.  0 disables the ping.
+    liveness-interval = 30s
+    # Which role hosts the daemons.  "" is NOT "unrestricted" here -- it is "no
+    #   daemon-specific opinion", and the daemon region then falls through to
+    #   sharding.role like every other sharded type.  Name a role here to place
+    #   ONLY the daemons on it and leave the rest to sharding.role.  Like that
+    #   key this one names a role and never grants one, so a role no up member
+    #   carries places no daemon at all.
+    role = ""
+  }
+
   devtools {
     # DevTools never starts from configuration -- nothing in ActorSystem
     # constructs the extension, and DevTools.attach(system) is always a code

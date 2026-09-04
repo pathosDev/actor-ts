@@ -9,6 +9,9 @@ import { ShardedDaemonProcess } from '../../../../../src/cluster/sharding/Sharde
 import { ShardedDaemonProcessOptions } from '../../../../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
 import type { ActorFactory } from '../../../../../src/Actor.js';
+import type { ConfigObject } from '../../../../../src/config/HoconParser.js';
+import { Scheduler } from '../../../../../src/Scheduler.js';
+import type { Cancellable } from '../../../../../src/Scheduler.js';
 import { TestKit } from '../../../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../../../src/testkit/TestKitOptions.js';
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
@@ -31,8 +34,27 @@ type NodeSetup = {
   kit: TestKit;
 };
 
-async function startNode(systemName: string, host: string, port: number, seeds: string[] = []): Promise<NodeSetup> {
+/**
+ * What a node needs beyond its address, all optional so the four original call
+ * sites stay unchanged: a HOCON tree, a scheduler to watch, and the roles the
+ * member carries (`role` names a role, it never grants one).
+ */
+type NodeExtras = {
+  readonly config?: ConfigObject;
+  readonly scheduler?: Scheduler;
+  readonly roles?: string[];
+};
+
+async function startNode(
+  systemName: string,
+  host: string,
+  port: number,
+  seeds: string[] = [],
+  extras: NodeExtras = {},
+): Promise<NodeSetup> {
   const kitOptions = TestKitOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
+  if (extras.config) kitOptions.withConfig(extras.config);
+  if (extras.scheduler) kitOptions.withScheduler(extras.scheduler);
   const kit = TestKit.create(systemName, kitOptions);
   const clusterOptions = ClusterOptions.create()
     .withHost(host)
@@ -41,6 +63,7 @@ async function startNode(systemName: string, host: string, port: number, seeds: 
     .withTransport(new InMemoryTransport(new NodeAddress(systemName, host, port)))
     .withFailureDetector({ heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 400 })
     .withGossipIntervalMs(80);
+  if (extras.roles) clusterOptions.withRoles(extras.roles);
   const cluster = await Cluster.join(kit.system, clusterOptions);
   return { system: kit.system, cluster, kit };
 }
@@ -211,6 +234,158 @@ describe('ShardedDaemonProcess — liveness heartbeat', () => {
     const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
 
     for (let i = 0; i < 2; i++) await probe.receiveOne(1_000);
+
+    handle.stop();
+    await nodeA.cluster.leave();
+    await nodeA.system.terminate();
+  });
+});
+
+/**
+ * Records what was scheduled at a fixed rate, so "the HOCON value reached the
+ * running instance" is a fact about the timer that was armed rather than about
+ * the reader in isolation.  The liveness ping is otherwise unobservable from
+ * outside: `rememberEntities` keeps the daemons resident, so a tick that fires
+ * changes nothing a probe can see.
+ */
+class RecordingScheduler extends Scheduler {
+  readonly fixedRates: Array<{ initialDelayMs: number; intervalMs: number }> = [];
+
+  override scheduleAtFixedRateFunction(
+    initialDelayMs: number,
+    intervalMs: number,
+    task: () => void,
+  ): Cancellable {
+    this.fixedRates.push({ initialDelayMs, intervalMs });
+    return super.scheduleAtFixedRateFunction(initialDelayMs, intervalMs, task);
+  }
+}
+
+describe('ShardedDaemonProcess — actor-ts.sharded-daemon-process.* HOCON keys', () => {
+  test('liveness-interval reaches an instance started with no explicit options', async () => {
+    // 137 ms is arbitrary and deliberately unlike every other cadence in the
+    // process, so the pair below can only have come from this block.
+    const scheduler = new RecordingScheduler();
+    const nodeA = await startNode('sdp-hocon-live', 'h', 53301, [], {
+      scheduler,
+      config: { 'actor-ts': { 'sharded-daemon-process': { 'liveness-interval': '137ms' } } },
+    });
+    const probe = nodeA.kit.createTestProbe();
+
+    class W extends Actor<string> {
+      constructor(private readonly index: number) { super(); }
+      override preStart(): void { probe.tell(`start-${this.index}`); }
+      override onReceive(): void {}
+    }
+
+    const daemonOptions = ShardedDaemonProcessOptions.create<string>()
+      .withName('workers')
+      .withNumDaemons(2)
+      .withActorFor((i) => () => new W(i));
+    // `init` is synchronous, so everything it schedules lands in this slice.
+    const before = scheduler.fixedRates.length;
+    const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
+    const scheduledByInit = scheduler.fixedRates.slice(before);
+
+    expect(scheduledByInit).toContainEqual({ initialDelayMs: 137, intervalMs: 137 });
+
+    // And the daemons still come up — the point is a configured cadence, not a
+    // configured way to break the module.
+    for (let i = 0; i < 2; i++) await probe.receiveOne(1_000);
+
+    handle.stop();
+    await nodeA.cluster.leave();
+    await nodeA.system.terminate();
+  });
+
+  test('an explicit liveness interval beats the configured one', async () => {
+    const scheduler = new RecordingScheduler();
+    const nodeA = await startNode('sdp-hocon-live-explicit', 'h', 53302, [], {
+      scheduler,
+      config: { 'actor-ts': { 'sharded-daemon-process': { 'liveness-interval': '137ms' } } },
+    });
+    const probe = nodeA.kit.createTestProbe();
+
+    class W extends Actor<string> {
+      constructor(private readonly index: number) { super(); }
+      override preStart(): void { probe.tell(`start-${this.index}`); }
+      override onReceive(): void {}
+    }
+
+    const daemonOptions = ShardedDaemonProcessOptions.create<string>()
+      .withName('workers')
+      .withNumDaemons(2)
+      .withActorFor((i) => () => new W(i))
+      .withLivenessIntervalMs(211);
+    const before = scheduler.fixedRates.length;
+    const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
+    const scheduledByInit = scheduler.fixedRates.slice(before);
+
+    expect(scheduledByInit).toContainEqual({ initialDelayMs: 211, intervalMs: 211 });
+    expect(scheduledByInit).not.toContainEqual({ initialDelayMs: 137, intervalMs: 137 });
+
+    for (let i = 0; i < 2; i++) await probe.receiveOne(1_000);
+
+    handle.stop();
+    await nodeA.cluster.leave();
+    await nodeA.system.terminate();
+  });
+
+  test('a configured role no member carries places no daemon', async () => {
+    // `role` names a role, it never grants one: `ShardCoordinator.candidates`
+    // keeps only regions whose member carries it, so a role nobody has leaves
+    // every daemon shard unallocated and no `preStart` ever runs.  That is the
+    // shape a typo produces, and it is what makes the positive case below a
+    // fact about the config rather than about the default placement.
+    const nodeA = await startNode('sdp-hocon-role-miss', 'h', 53303, [], {
+      config: { 'actor-ts': { 'sharded-daemon-process': { role: 'compute' } } },
+      roles: ['frontend'],
+    });
+    const probe = nodeA.kit.createTestProbe();
+
+    class W extends Actor<string> {
+      constructor(private readonly index: number) { super(); }
+      override preStart(): void { probe.tell(`start-${this.index}`); }
+      override onReceive(): void {}
+    }
+
+    const daemonOptions = ShardedDaemonProcessOptions.create<string>()
+      .withName('workers')
+      .withNumDaemons(2)
+      .withActorFor((i) => () => new W(i));
+    const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
+
+    // Long enough for the wake-ups, the registration and a coordinator turn —
+    // the positive case below comes up well inside it.
+    await probe.expectNoMessage(800);
+
+    handle.stop();
+    await nodeA.cluster.leave();
+    await nodeA.system.terminate();
+  });
+
+  test('a configured role the member carries places the daemons', async () => {
+    const nodeA = await startNode('sdp-hocon-role-hit', 'h', 53304, [], {
+      config: { 'actor-ts': { 'sharded-daemon-process': { role: 'compute' } } },
+      roles: ['compute'],
+    });
+    const probe = nodeA.kit.createTestProbe();
+
+    class W extends Actor<string> {
+      constructor(private readonly index: number) { super(); }
+      override preStart(): void { probe.tell(`start-${this.index}`); }
+      override onReceive(): void {}
+    }
+
+    const daemonOptions = ShardedDaemonProcessOptions.create<string>()
+      .withName('workers')
+      .withNumDaemons(2)
+      .withActorFor((i) => () => new W(i));
+    const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
+
+    const starts: string[] = [];
+    for (let i = 0; i < 2; i++) starts.push(await probe.receiveOne(1_000) as string);
+    expect(new Set(starts)).toEqual(new Set(['start-0', 'start-1']));
 
     handle.stop();
     await nodeA.cluster.leave();

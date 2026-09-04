@@ -144,6 +144,12 @@ wurde.
 Auf `0` setzen deaktiviert es. Nützlich in Tests, in denen du
 Cluster-Events deterministisch kontrollierst.
 
+Oder setz ihn in der `application.conf` und lass die Aufrufstelle in Ruhe:
+
+```hocon
+actor-ts.sharded-daemon-process.liveness-interval = 10s
+```
+
 ## Konfiguration
 
 ```ts
@@ -156,13 +162,52 @@ type ShardedDaemonProcessOptionsType<T> = {
 };
 ```
 
-| Feld | Was |
-| --- | --- |
-| `name` | Ein eindeutiger Daemon-Set-Name. Zwei `init`-Aufrufe mit demselben Namen kollidieren. |
-| `numDaemons` | Wie viele Daemons laufen sollen. Bei Init festgelegt; kann ohne Neustart nicht geändert werden und **muss auf jedem Node identisch sein** — der Wert wird zum `numShards` des Sharding-Typs, und der Koordinator verweigert einen Node, der abweicht (siehe [numShards ist eine clusterweite Vereinbarung](/de/cluster/sharding/overview/#numshards-ist-eine-clusterweite-vereinbarung)). Ein Rolling Deploy, der ihn ändert, lässt die noch nicht aktualisierten Nodes registriert und die aktualisierten verweigert, bis der letzte durch ist. |
-| `actorFor(i)` | Gibt die Actor-Klasse bzw. Factory für Daemon `i` zurück. Nutze `i`, um Per-Index-Logik zu unterscheiden. |
-| `role` | Nur Nodes mit dieser Rolle hosten Daemons (durchgereicht an Sharding). |
-| `livenessIntervalMs` | Sicherheitsnetz-Ping-Takt; Default 30s. |
+| Feld | HOCON | Was |
+| --- | --- | --- |
+| `name` | — | Ein eindeutiger Daemon-Set-Name. Zwei `init`-Aufrufe mit demselben Namen kollidieren. |
+| `numDaemons` | — | Wie viele Daemons laufen sollen. Bei Init festgelegt; kann ohne Neustart nicht geändert werden und **muss auf jedem Node identisch sein** — der Wert wird zum `numShards` des Sharding-Typs, und der Koordinator verweigert einen Node, der abweicht (siehe [numShards ist eine clusterweite Vereinbarung](/de/cluster/sharding/overview/#numshards-ist-eine-clusterweite-vereinbarung)). Ein Rolling Deploy, der ihn ändert, lässt die noch nicht aktualisierten Nodes registriert und die aktualisierten verweigert, bis der letzte durch ist. |
+| `actorFor(i)` | — | Gibt die Actor-Klasse bzw. Factory für Daemon `i` zurück. Nutze `i`, um Per-Index-Logik zu unterscheiden. |
+| `role` | `actor-ts.sharded-daemon-process.role` | Nur Nodes mit dieser Rolle hosten Daemons (durchgereicht an Sharding). |
+| `livenessIntervalMs` | `actor-ts.sharded-daemon-process.liveness-interval` | Sicherheitsnetz-Ping-Takt; Default 30s. |
+
+Die beiden Keys werden einmal pro `init` gelesen und **unter** das gelegt,
+was der Aufruf übergibt — ein explizites `withRole` / `withLivenessIntervalMs`
+gewinnt also weiterhin. Die anderen drei haben kein Leaf: Sie beschreiben ein
+einzelnes Daemon-Set und kein Deployment, und eine Factory hat ohnehin keine
+HOCON-Form.
+
+Dass `name` und `numDaemons` nur im Code stehen, ist kein Versehen.
+`numDaemons` wird zum `numShards` des Sharding-Typs, auf den sich jeder Node
+einigen muss — und ein Wert, den jeder Node aus seiner eigenen Datei liest,
+ist genau die Form dieser Einigung, die niemand prüfen kann, bevor ein Node
+bereits verweigert wird.
+
+### Eine nicht gesetzte Rolle erbt die Sharding-Rolle
+
+Das Daemon-Set startet als ganz normaler gesharderter Typ. `role` nicht zu
+setzen — weder im Code noch in `actor-ts.sharded-daemon-process.role`, dessen
+ausgeliefertes `""` als „nicht gesetzt“ zählt — lässt die Daemons also
+[`actor-ts.sharding.role`](/de/reference/configuration/#actor-tssharding)
+folgen wie jeden anderen Typ:
+
+```hocon
+actor-ts.sharding.role = "backend"          # every sharded type, daemons included
+```
+
+Eine Rolle hier zu benennen schränkt allein die Daemons ein:
+
+```hocon
+actor-ts.sharding.role                = "backend"   # entities on the backend nodes
+actor-ts.sharded-daemon-process.role  = "batch"     # daemons on the batch nodes
+```
+
+Wie `sharding.role` **benennt** der Key eine Rolle und vergibt sie nicht — die
+Rollen eines Nodes bleiben im Code, als `ClusterOptions.withRoles([...])`.
+Eine Rolle, die kein Up-Mitglied trägt, allokiert nichts, und bei Daemons
+passiert das lautlos: Niemand schickt einem Daemon eine erste Nachricht, es
+gibt also keine Antwort, auf die man wartet, und keinen Puffer, der volläuft.
+Der Koordinator loggt eine Zeile mit der Rolle, sobald sich eine Region
+registriert hat und herausgefiltert wurde.
 
 ## Wann zugreifen
 

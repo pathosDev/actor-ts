@@ -1218,6 +1218,60 @@ would rather find.  `exit-code` is the status it hands over — `0`, because a
 pipeline that ran to the end is the success case; set it where a supervisor
 should tell a planned drain apart from a crash.
 
+### `actor-ts.sharded-daemon-process`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `sharded-daemon-process.liveness-interval` | `30s` | Period of the safety-net ping that re-wakes every daemon index whether or not a cluster event fired.  `0` disables it; the event-driven re-wake on `LeaderChanged` / `MemberRemoved` runs either way.  See [the liveness heartbeat](/cluster/sharding/sharded-daemon-process/#liveness-heartbeat). |
+| `sharded-daemon-process.role` | `""` | Only members carrying this role host daemons.  `""` is **not** "unrestricted" here — see [an unset daemon role inherits the sharding one](#an-unset-daemon-role-inherits-the-sharding-one) below.  Like `sharding.role` it names a role and does not grant one. |
+
+A daemon set is a module built **on** sharding rather than a sharding
+tunable, which is why these live in their own block: `actor-ts.sharding.*`
+configures every sharded type on the node, these two only the daemons.  They
+are read once per `ShardedDaemonProcess.init(...)` and layered under whatever
+that call passes explicitly, the usual order per field:
+
+```ts
+// actor-ts.sharded-daemon-process.liveness-interval = 10s
+
+const daemonOptions = ShardedDaemonProcessOptions.create<Tick>()
+  .withName('reconciler')
+  .withNumDaemons(8)
+  .withActorFor((index) => () => new Reconciler(index));
+
+ShardedDaemonProcess.init(system, cluster, daemonOptions);
+// livenessIntervalMs 10_000 (config file) — nothing explicit overrides it
+```
+
+`name`, `numDaemons` and the per-index actor have no leaf.  They describe one
+daemon set rather than a deployment, and a factory has no HOCON form at all.
+
+#### An unset daemon role inherits the sharding one
+
+`sharded-daemon-process.role` left at `""` means *no daemon-specific
+opinion*, not *unrestricted*.  The daemon set is started as an ordinary
+sharded type, so with nothing set here it picks up
+[`actor-ts.sharding.role`](#actor-tssharding) exactly like every other type:
+
+```hocon
+actor-ts.sharding.role = "backend"          # every sharded type
+# sharded-daemon-process.role left at ""    # daemons follow along
+```
+
+Naming a role here narrows *only* the daemons, and leaves the rest of the
+sharded types to the global key:
+
+```hocon
+actor-ts.sharding.role                = "backend"   # entities on the backend nodes
+actor-ts.sharded-daemon-process.role  = "batch"     # daemons on the batch nodes
+```
+
+The same caveat as `sharding.role` applies, and it bites harder here because
+nothing sends a daemon a first message: a role that no up member carries
+allocates nothing, so the daemons simply never start.  The coordinator logs
+one line naming the role when a region did register and the role filtered it
+out.
+
 ### `actor-ts.devtools`
 
 | Key | Default | Purpose |

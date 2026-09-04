@@ -1288,6 +1288,61 @@ finden willst.  `exit-code` ist der Status, den er übergibt — `0`, weil eine
 bis zum Ende gelaufene Pipeline der Erfolgsfall ist; setze ihn dort, wo ein
 Supervisor einen geplanten Drain von einem Absturz unterscheiden soll.
 
+### `actor-ts.sharded-daemon-process`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `sharded-daemon-process.liveness-interval` | `30s` | Takt des Sicherheitsnetz-Pings, der jeden Daemon-Index neu weckt — unabhängig davon, ob ein Cluster-Event gefeuert hat.  `0` schaltet ihn ab; das ereignisgetriebene Neuwecken bei `LeaderChanged` / `MemberRemoved` läuft ohnehin weiter.  Siehe [den Liveness-Heartbeat](/de/cluster/sharding/sharded-daemon-process/#liveness-heartbeat). |
+| `sharded-daemon-process.role` | `""` | Nur Mitglieder mit dieser Rolle hosten Daemons.  `""` heißt hier **nicht** „unbeschränkt“ — siehe [eine nicht gesetzte Daemon-Rolle erbt die Sharding-Rolle](#eine-nicht-gesetzte-daemon-rolle-erbt-die-sharding-rolle) weiter unten.  Wie `sharding.role` benennt der Key eine Rolle, er vergibt sie nicht. |
+
+Ein Daemon-Set ist ein Modul **auf** Sharding und keine Sharding-Stellschraube
+— deshalb der eigene Block: `actor-ts.sharding.*` konfiguriert jeden
+gesharderten Typ auf dem Knoten, diese beiden nur die Daemons.  Sie werden
+einmal pro `ShardedDaemonProcess.init(...)` gelesen und unter das gelegt, was
+der Aufruf explizit übergibt — die übliche Reihenfolge pro Feld:
+
+```ts
+// actor-ts.sharded-daemon-process.liveness-interval = 10s
+
+const daemonOptions = ShardedDaemonProcessOptions.create<Tick>()
+  .withName('reconciler')
+  .withNumDaemons(8)
+  .withActorFor((index) => () => new Reconciler(index));
+
+ShardedDaemonProcess.init(system, cluster, daemonOptions);
+// livenessIntervalMs 10_000 (config file) — nothing explicit overrides it
+```
+
+`name`, `numDaemons` und der Aktor pro Index haben kein Leaf.  Sie beschreiben
+ein einzelnes Daemon-Set und kein Deployment, und eine Factory hat ohnehin
+keine HOCON-Form.
+
+#### Eine nicht gesetzte Daemon-Rolle erbt die Sharding-Rolle
+
+`sharded-daemon-process.role` auf `""` heißt *keine daemon-spezifische
+Meinung*, nicht *unbeschränkt*.  Das Daemon-Set startet als ganz normaler
+gesharderter Typ, übernimmt also ohne Eintrag hier
+[`actor-ts.sharding.role`](#actor-tssharding) genau wie jeder andere Typ:
+
+```hocon
+actor-ts.sharding.role = "backend"          # every sharded type
+# sharded-daemon-process.role left at ""    # daemons follow along
+```
+
+Eine Rolle hier zu benennen schränkt *nur* die Daemons ein und überlässt die
+übrigen gesharderten Typen dem globalen Key:
+
+```hocon
+actor-ts.sharding.role                = "backend"   # entities on the backend nodes
+actor-ts.sharded-daemon-process.role  = "batch"     # daemons on the batch nodes
+```
+
+Derselbe Vorbehalt wie bei `sharding.role` gilt, und er trifft hier härter,
+weil einem Daemon niemand eine erste Nachricht schickt: Eine Rolle, die kein
+Up-Mitglied trägt, allokiert nichts — die Daemons starten also schlicht nie.
+Der Coordinator loggt eine Zeile mit der Rolle, sobald sich eine Region
+registriert hat und die Rolle sie herausgefiltert hat.
+
 ### `actor-ts.devtools`
 
 | Key | Default | Zweck |
