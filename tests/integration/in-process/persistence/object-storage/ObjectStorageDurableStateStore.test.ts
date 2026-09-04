@@ -7,6 +7,7 @@ import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/o
 import { ObjectStorageDurableStateStore } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStore.js';
 import { ObjectStorageDurableStateStoreOptions } from '../../../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
 import { DurableStateConcurrencyError } from '../../../../../src/persistence/DurableStateStore.js';
+import { OBJECT_STORAGE_DURABLE_STATE_NAMESPACE } from '../../../../../src/persistence/Constants.js';
 
 let dir: string;
 let backend: FilesystemObjectStorageBackend;
@@ -144,7 +145,9 @@ describe('ObjectStorageDurableStateStore — prefix and resolvers', () => {
     await store.upsert('a', 0, { x: 1 });
     expect((await store.load('a')).toNullable()?.state).toEqual({ x: 1 });
     const items = await backend.list({ prefix: 'prod/' });
-    expect(items.map(i => i.key)).toContain('prod/a/state.json');
+    // The prefix leads, then the namespace this store owns (#716).
+    expect(items.map(i => i.key))
+      .toContain(`prod/${OBJECT_STORAGE_DURABLE_STATE_NAMESPACE}a/state.json`);
   });
 
   test('per-pid compression resolver is honoured', async () => {
@@ -160,7 +163,7 @@ describe('ObjectStorageDurableStateStore — prefix and resolvers', () => {
     const store = new ObjectStorageDurableStateStore(storeOptions);
     await store.upsert('big-payload', 0, { x: 'x'.repeat(200) });
     await store.upsert('small',       0, { x: 'tiny' });
-    expect(seen.get('big-payload/state.json')).toBe('zstd');
-    expect(seen.get('small/state.json')).toBe('gzip');
+    expect(seen.get(`${OBJECT_STORAGE_DURABLE_STATE_NAMESPACE}big-payload/state.json`)).toBe('zstd');
+    expect(seen.get(`${OBJECT_STORAGE_DURABLE_STATE_NAMESPACE}small/state.json`)).toBe('gzip');
   });
 });

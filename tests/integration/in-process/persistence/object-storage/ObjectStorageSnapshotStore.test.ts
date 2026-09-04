@@ -7,6 +7,7 @@ import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/o
 import { ObjectStorageSnapshotStore } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStore.js';
 import { ObjectStorageSnapshotStoreOptions } from '../../../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 import { compressionByPrefix } from '../../../../../src/persistence/object-storage/PluginConfig.js';
+import { OBJECT_STORAGE_SNAPSHOT_NAMESPACE } from '../../../../../src/persistence/Constants.js';
 
 /** HKDF context — required on every client-side encryption config (#108). */
 const info = 'acme/test/snapshot/v1';
@@ -130,9 +131,9 @@ describe('ObjectStorageSnapshotStore — compression resolver', () => {
     await store.save('large/x', 1, { data: 'x'.repeat(200) });
     await store.save('small/y', 1, { data: 'y' });
     await store.save('other/z', 1, { data: 'z' });
-    expect(seenAlgos.get('large/x/00000000000000000001.json')).toBe('zstd');
-    expect(seenAlgos.get('small/y/00000000000000000001.json')).toBeUndefined();
-    expect(seenAlgos.get('other/z/00000000000000000001.json')).toBe('gzip');
+    expect(seenAlgos.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}large/x/00000000000000000001.json`)).toBe('zstd');
+    expect(seenAlgos.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}small/y/00000000000000000001.json`)).toBeUndefined();
+    expect(seenAlgos.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}other/z/00000000000000000001.json`)).toBe('gzip');
   });
 
   test('round-trip survives gzip and zstd', async () => {
@@ -155,7 +156,8 @@ describe('ObjectStorageSnapshotStore — prefix', () => {
     const store = new ObjectStorageSnapshotStore(storeOptions);
     await store.save('account-1', 5, { x: 1 });
     const items = await backend.list({ prefix: 'env-prod/' });
-    expect(items.map(i => i.key)).toContain('env-prod/account-1/00000000000000000005.json');
+    expect(items.map(i => i.key))
+      .toContain(`env-prod/${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}account-1/00000000000000000005.json`);
   });
 });
 
@@ -168,7 +170,7 @@ describe('ObjectStorageSnapshotStore — encryption (client-aes256-gcm)', () => 
       .withEncryption({ mode: 'client-aes256-gcm', masterKey, info });
     const store = new ObjectStorageSnapshotStore(storeOptions);
     await store.save('p', 1, { secret: 'attack-at-dawn-zero-zero' });
-    const fetched = await backend.get('p/00000000000000000001.json');
+    const fetched = await backend.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}p/00000000000000000001.json`);
     expect(fetched.isSome()).toBe(true);
     if (fetched.isSome()) {
       const asString = new TextDecoder('utf-8', { fatal: false }).decode(fetched.value.body);
@@ -194,8 +196,8 @@ describe('ObjectStorageSnapshotStore — encryption (client-aes256-gcm)', () => 
     // SAME master key the two snapshots use different subkeys.  We prove
     // that by sniffing the bytes — the bigcorp snapshot must not decrypt
     // as if it were acme's.
-    const acme = await backend.get('tenant-acme/x/00000000000000000001.json');
-    const big = await backend.get('tenant-bigcorp/x/00000000000000000001.json');
+    const acme = await backend.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}tenant-acme/x/00000000000000000001.json`);
+    const big = await backend.get(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}tenant-bigcorp/x/00000000000000000001.json`);
     expect(acme.isSome() && big.isSome()).toBe(true);
 
     // Each pid loads correctly through the store.

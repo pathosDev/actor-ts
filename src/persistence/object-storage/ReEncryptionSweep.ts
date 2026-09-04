@@ -43,8 +43,10 @@
  * The helper operates one level below `ObjectStorageSnapshotStore` /
  * `ObjectStorageDurableStateStore` because per-pid HKDF salting means
  * the pid must be known at decrypt + re-encrypt time.  The default
- * `pidFromKey` extractor matches the layout both built-in stores use
- * (`<prefix><pid>/...`).
+ * `pidFromKey` extractor matches the layouts both built-in stores use —
+ * `<prefix>snapshots/<pid>/<seq>.json` and `<prefix>state/<pid>/state.json`
+ * — and reads either of them whether `keyPrefix` names one store's
+ * namespace or the `prefix` the two share (#716).
  */
 
 import type { IntegrityConfig, MasterKeyRing } from '../PersistenceOptions.js';
@@ -63,7 +65,7 @@ import { deriveSubkey, validateMasterKeyRing } from './Encryption.js';
 import type { ObjectStorageBackend } from './ObjectStorageBackend.js';
 import { resolveIntegrity, type IntegrityResolver } from './PluginConfig.js';
 import { makeKeyValidator, ObjectStorageWriteKeyRules } from '../storage/KeyValidator.js';
-import { MAX_REPORTED_MALFORMED_KEYS } from '../Constants.js';
+import { MAX_REPORTED_MALFORMED_KEYS, OBJECT_STORAGE_KEY_NAMESPACES } from '../Constants.js';
 
 /* ============================ progress (#109) ============================ */
 
@@ -206,8 +208,11 @@ export type ReEncryptOptions = {
    * key in order to derive the same subkey the original encrypter did.
    *
    * Default: `<keyPrefix><pid>/<rest>` — picks the next path segment
-   * after the prefix.  Works for the layouts both built-in object-
-   * storage stores use; override for custom layouts.
+   * after the prefix, and reads past one leading `snapshots/` or `state/`
+   * namespace segment so a sweep aimed at the two stores' shared `prefix`
+   * recovers the same id as one aimed at a single namespace (#716).  Works
+   * for the layouts both built-in object-storage stores use; override for
+   * custom layouts.
    */
   readonly pidFromKey?: (key: string, keyPrefix: string) => string;
   /**
@@ -846,10 +851,23 @@ function isUsableSweepKey(
 
 /**
  * Default pid extractor for the layouts the built-in object-storage stores
- * use: `<keyPrefix><pid>/<leaf>` — `<prefix><pid>/<seq>.json` for
- * `ObjectStorageSnapshotStore`, `<prefix><pid>/state.json` for
+ * use: `<keyPrefix><pid>/<leaf>` — `<prefix>snapshots/<pid>/<seq>.json` for
+ * `ObjectStorageSnapshotStore`, `<prefix>state/<pid>/state.json` for
  * `ObjectStorageDurableStateStore`.  The result is the HKDF salt at decrypt
  * and re-encrypt time, so it MUST match what the original write site used.
+ *
+ * Both layouts are read at either altitude, which is what
+ * {@link OBJECT_STORAGE_KEY_NAMESPACES} is for (#716).  An operator may aim
+ * the sweep at one store's namespace (`keyPrefix: 'acme/snapshots/'`, the
+ * narrower and preferred form) or at the `prefix` the two stores share
+ * (`'acme/'`), and the same object must yield the same salt either way — a
+ * salt that depended on how the corpus was addressed would re-encrypt bodies
+ * under a key the owning store never derives again.  So the one-segment rule
+ * is tried first, and only a key it refuses is retried past one leading
+ * namespace segment.  Widening in that order is what keeps the strictness
+ * below intact: nothing that resolved before resolves differently now, and a
+ * `persistenceId` that is itself literally `snapshots` or `state` still
+ * reads as itself when the sweep is aimed at its own namespace.
  *
  * Returns `''` — which {@link isUsableSweepKey} reads as "not sweepable" —
  * for anything that is not exactly one non-empty segment followed by one
@@ -874,6 +892,17 @@ function isUsableSweepKey(
 function defaultPidFromKey(key: string, keyPrefix: string): string {
   if (!key.startsWith(keyPrefix)) return '';
   const remainder = key.slice(keyPrefix.length);
+  const direct = pidFromRemainder(remainder);
+  if (direct !== '') return direct;
+  for (const namespace of OBJECT_STORAGE_KEY_NAMESPACES) {
+    if (!remainder.startsWith(namespace)) continue;
+    return pidFromRemainder(remainder.slice(namespace.length));
+  }
+  return '';
+}
+
+/** The `<pid>` of a `<pid>/<leaf>` remainder, or `''` when it is not one. */
+function pidFromRemainder(remainder: string): string {
   const slash = remainder.indexOf('/');
   if (slash <= 0) return '';
   // Exactly one separator: a second one means the key carries a level the

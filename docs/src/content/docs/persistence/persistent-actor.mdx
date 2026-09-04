@@ -348,7 +348,7 @@ journal is ever touched:
 | --- | --- |
 | empty | every backend would happily write under `''`, so an ID some code path forgot to fill in silently shares one stream with every other actor that forgot the same thing |
 | longer than **255** characters | the width of the `persistence_id` column in every relational dialect's DDL, and part of its primary key — a longer ID is truncated (two IDs collapsing onto one stream) or rejected deep inside a driver |
-| `/` or `\` | the object-storage stores lay an ID out as a *directory* (`<prefix><persistenceId>/<seq>.json`) and read it back by listing that prefix, so `a/b` nests inside `a` — `a`'s `loadLatest` then returns `a/b`'s snapshot, and its `delete` prunes it |
+| `/` or `\` | the object-storage stores lay an ID out as a *directory* (`<prefix>snapshots/<persistenceId>/<seq>.json`) and read it back by listing that prefix, so `a/b` nests inside `a`.  The stores no longer read across that nesting — a key one level deeper is not shaped like one of their own and is skipped by `loadLatest`, `delete` and pruning alike (#716) — but the ID is still refused here: two streams sharing a directory is a naming collision, not a shape a store should have to defend against on every read |
 | `.` or `..` (the whole ID) | traversal meaning, one level up, with the same consequence |
 | control characters | IDs are interpolated into a log line on every recovery and every persist, so a newline lets a caller forge log records |
 

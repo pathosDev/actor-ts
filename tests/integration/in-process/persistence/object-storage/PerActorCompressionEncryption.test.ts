@@ -26,6 +26,10 @@ import { ObjectStorageDurableStateStoreOptions } from '../../../../../src/persis
 import type { ActorRef } from '../../../../../src/ActorRef.js';
 import type { Actor as ActorBase } from '../../../../../src/Actor.js';
 import { awaitCondition } from '../../../../util/AwaitCondition.js';
+import {
+  OBJECT_STORAGE_DURABLE_STATE_NAMESPACE,
+  OBJECT_STORAGE_SNAPSHOT_NAMESPACE,
+} from '../../../../../src/persistence/Constants.js';
 
 /** HKDF context — required on every client-side encryption config (#108). */
 const info = 'acme/test/snapshot/v1';
@@ -144,13 +148,13 @@ describe('PersistentActor — actor-level encryption hook', () => {
     // count === 2, and `everyNEvents(1)` writes one object per sequence
     // number.  Terminating after only one has landed would recover count 1.
     await awaitCondition(
-      async () => (await backend.list({ prefix: 'a/' })).length >= 2,
+      async () => (await backend.list({ prefix: `${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}a/` })).length >= 2,
       { label: 'both encrypted snapshots stored' },
     );
     await sys.terminate();
 
     // Inspect raw bytes — plaintext "incremented" must NOT appear.
-    const items = await backend.list({ prefix: 'a/' });
+    const items = await backend.list({ prefix: `${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}a/` });
     const fetched = await backend.get(items[items.length - 1]!.key);
     expect(fetched.isSome()).toBe(true);
     const raw = new TextDecoder('utf-8', { fatal: false }).decode(fetched.toNullable()!.body);
@@ -207,7 +211,9 @@ describe('PersistentActor — actor-level integrity hook', () => {
     );
     ref.tell({ kind: 'increment' });
     await awaitCondition(
-      async () => (await backend.list({ prefix: `${persistenceId}/` })).length > 0,
+      async () => (await backend.list({
+        prefix: `${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}${persistenceId}/`,
+      })).length > 0,
       { label: 'snapshot stored' },
     );
     await sys.terminate();
@@ -314,7 +320,7 @@ describe('DurableStateActor — actor-level compression / encryption hooks', () 
     await sys.terminate();
 
     // The plaintext "12345" must not appear in the on-disk body.
-    const fetched = await backend.get('b/state.json');
+    const fetched = await backend.get(`${OBJECT_STORAGE_DURABLE_STATE_NAMESPACE}b/state.json`);
     expect(fetched.isSome()).toBe(true);
     const raw = new TextDecoder('utf-8', { fatal: false }).decode(fetched.toNullable()!.body);
     expect(raw.includes('12345')).toBe(false);

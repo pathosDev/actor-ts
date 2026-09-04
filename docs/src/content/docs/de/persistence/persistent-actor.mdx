@@ -359,7 +359,7 @@ angefasst wird:
 | --- | --- |
 | leer | jedes Backend würde bereitwillig unter `''` schreiben — eine ID, die irgendein Code-Pfad zu füllen vergessen hat, teilt sich dann still einen Stream mit jedem anderen Actor, der dasselbe vergessen hat |
 | länger als **255** Zeichen | die Breite der Spalte `persistence_id` im DDL jedes relationalen Dialekts, und Teil ihres Primärschlüssels — eine längere ID wird abgeschnitten (zwei IDs fallen auf einen Stream zusammen) oder tief im Treiber abgelehnt |
-| `/` oder `\` | die Object-Storage-Stores legen eine ID als *Verzeichnis* ab (`<prefix><persistenceId>/<seq>.json`) und lesen sie über genau dieses Prefix zurück — `a/b` liegt also innerhalb von `a`: `loadLatest` von `a` liefert dann den Snapshot von `a/b`, und `delete` von `a` löscht ihn |
+| `/` oder `\` | die Object-Storage-Stores legen eine ID als *Verzeichnis* ab (`<prefix>snapshots/<persistenceId>/<seq>.json`) und lesen sie über genau dieses Prefix zurück — `a/b` liegt also innerhalb von `a`.  Die Stores lesen über diese Verschachtelung hinweg nichts mehr: ein Key eine Ebene tiefer ist nicht wie einer ihrer eigenen geformt und wird von `loadLatest`, `delete` und dem Pruning gleichermaßen übersprungen (#716) — die ID wird hier trotzdem abgelehnt, denn zwei Streams, die sich ein Verzeichnis teilen, sind eine Namenskollision und keine Form, gegen die sich ein Store bei jedem Read verteidigen sollte |
 | `.` oder `..` (als ganze ID) | Traversal-Bedeutung, eine Ebene höher, mit derselben Konsequenz |
 | Control-Zeichen | IDs werden bei jeder Recovery und jedem Persist in eine Logzeile interpoliert — ein Newline lässt einen Aufrufer Log-Einträge fälschen |
 
