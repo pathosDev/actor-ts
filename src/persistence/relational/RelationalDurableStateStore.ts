@@ -7,6 +7,7 @@ import { JournalError } from '../JournalTypes.js';
 import type { PersistenceOptionSupport } from '../PersistenceCapabilities.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import { none, some, type Option } from '../../util/Option.js';
+import { DEFAULT_DURABLE_STATE_TABLE } from '../Constants.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { expandPlaceholders } from './SqlDialect.js';
@@ -67,7 +68,7 @@ export class RelationalDurableStateStore extends RelationalStore implements Dura
 
   constructor(config: RelationalDurableStateStoreConfig) {
     super(config);
-    const table = assertSafeIdentifier(config.table ?? 'durable_state', 'durable-state table');
+    const table = assertSafeIdentifier(config.table ?? DEFAULT_DURABLE_STATE_TABLE, 'durable-state table');
     this.table = table;
 
     const expand = (sql: string): string => expandPlaceholders(sql, config.dialect);

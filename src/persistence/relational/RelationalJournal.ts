@@ -9,6 +9,7 @@ import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 import { assertValidEntryTags } from '../storage/TagValidator.js';
 import type { Serializer } from '../../serialization/Serializer.js';
+import { DEFAULT_EVENTS_TABLE } from '../Constants.js';
 import { expandPlaceholders, type JournalTableNames, type SqlDialect } from './SqlDialect.js';
 import { RelationalStore, type RelationalStoreConfig } from './RelationalStore.js';
 import type { SqlExecutor, SqlPool } from './SqlPool.js';
@@ -86,7 +87,7 @@ export class RelationalJournal extends RelationalStore implements Journal {
 
   constructor(config: RelationalJournalConfig) {
     super(config);
-    const events = assertSafeIdentifier(config.eventsTable ?? 'events', 'events table');
+    const events = assertSafeIdentifier(config.eventsTable ?? DEFAULT_EVENTS_TABLE, 'events table');
     const tags = assertSafeIdentifier(config.tagsTable ?? `${events}_tags`, 'tags table');
     const meta = assertSafeIdentifier(`${events}_meta`, 'meta table');
     this.tables = { events, tags, meta };

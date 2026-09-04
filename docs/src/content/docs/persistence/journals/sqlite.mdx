@@ -35,6 +35,55 @@ persistence.setSnapshotStore(new SqliteSnapshotStore(sqliteSnapshotStoreOptions)
 A single file per system; the actor system writes through SQLite
 to the OS page cache, which flushes to disk on commit.
 
+## Register it as a plugin
+
+The call above wires the stores *directly*, which is the shortest route and
+fine for an app that will only ever use SQLite.  The other way round is to
+register SQLite as a **plugin** and let configuration select it — which is what
+`actor-ts.persistence.journal.plugin` has always meant, and what
+`registerSqlitePlugins` now makes true for SQLite as well:
+
+```ts
+import { PersistenceExtensionId, registerSqlitePlugins } from 'actor-ts/persistence';
+
+const persistence = system.extension(PersistenceExtensionId);
+registerSqlitePlugins(persistence);
+```
+
+```hocon
+actor-ts.persistence {
+  journal        { plugin = "actor-ts.persistence.journal.sqlite" }
+  snapshot-store { plugin = "actor-ts.persistence.snapshot-store.sqlite" }
+  durable-state  { plugin = "actor-ts.persistence.durable-state.sqlite" }
+
+  journal.sqlite        { path = "/var/lib/my-app/app.db", wal = on }
+  snapshot-store.sqlite { path = "/var/lib/my-app/app.db", keep-n = 5 }
+  durable-state.sqlite  { path = "/var/lib/my-app/app.db" }
+}
+```
+
+That is the whole wiring: the plugin id **is** the config section, so the block
+named after the id is the block that plugin reads.  Nothing about the database
+lives in code any more — the path, the table names, `wal`, `keep-n` and the busy
+timeout all move with the environment, which is the point of a config file.
+
+Options passed to `registerSqlitePlugins` still win, field by field, and a field
+you leave unset falls through to the block rather than blanking it:
+
+```ts
+// path and tables from HOCON; the serializer only expressible in code.
+registerSqlitePlugins(persistence, { serializer: myCborSerializer });
+```
+
+A `path` given here is a shared **default** — a per-store block that names its
+own keeps it — while a pre-opened `database` is an **override**, because sharing
+one handle across the three stores is the more specific instruction.  There is
+no config leaf for `driver`, `database` or `serializer`: those are live objects,
+and a config file has no way to express one.
+
+See [Configuration reference](/reference/configuration/#actor-tspersistence)
+for the full key table.
+
 ## Configuration
 
 ```ts

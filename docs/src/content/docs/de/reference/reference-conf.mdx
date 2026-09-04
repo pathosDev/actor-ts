@@ -919,9 +919,36 @@ actor-ts {
   persistence {
     journal {
       plugin = "actor-ts.persistence.journal.in-memory"
+
+      # Local SQLite journal.  registerSqlitePlugins(ext) makes this id real;
+      # the block below is what that call reads when it is given no options.
+      # Explicit SqliteJournalOptions always win over anything here.
+      sqlite {
+        # Database file.  "" means "not set" and falls through to an anonymous
+        #   in-memory database, private to the handle that opens it -- which is
+        #   also why it is published empty rather than as ":memory:": three
+        #   blocks each shipping a real default would let a deployment point the
+        #   journal at a file, leave the snapshot store alone, and lose every
+        #   snapshot on restart while the config file read as if that had been
+        #   chosen.
+        path = ""
+        # The tags table is derived as <events-table>_tags, and the metadata
+        #   table as <events-table>_meta -- both follow this name.
+        events-table = "events"
+        wal = off                     # journal_mode = WAL: concurrent readers during a write
+        busy-timeout = 1s             # lock wait before SQLITE_BUSY; 0 fails fast
+      }
     }
     snapshot-store {
       plugin = "actor-ts.persistence.snapshot-store.in-memory"
+
+      # Local SQLite snapshot store -- see the journal's sqlite block above.
+      sqlite {
+        path = ""                     # "" = not set; an in-memory database per handle
+        snapshots-table = "snapshots"
+        keep-n = 3                    # snapshots kept per persistenceId; 0 disables pruning
+        busy-timeout = 1s
+      }
 
       # Object-storage snapshot store -- S3-compatible or local filesystem.
       # This block also configures the durable-state store that the same
@@ -967,6 +994,21 @@ actor-ts {
           lock-timeout = 5s           # wait for a per-key write lock before failing
           stale-lock   = 30s          # lock files older than this are force-removed
         }
+      }
+    }
+
+    # The third plug-in axis.  A DurableStateActor that names no store in its
+    # options uses whichever store this selects, exactly as a PersistentActor
+    # uses the journal above.
+    durable-state {
+      plugin = "actor-ts.persistence.durable-state.in-memory"
+
+      # Local SQLite durable-state store -- see the journal's sqlite block.
+      sqlite {
+        path = ""                     # "" = not set; this store has no in-memory fallback
+        table = "durable_state"
+        auto-create-tables = on       # CREATE TABLE IF NOT EXISTS on first use
+        busy-timeout = 1s
       }
     }
   }

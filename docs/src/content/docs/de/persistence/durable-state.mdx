@@ -106,12 +106,12 @@ cart.tell({ kind: 'add', sku: 'book-2' });
 ```ts
 type DurableStateOptionsType<S> = {
   persistenceId: string;
-  store:         DurableStateStore;
+  store?:        DurableStateStore;
   emptyState:    () => S;
 };
 ```
 
-Drei Felder:
+Drei Felder, eines davon optional:
 
 - **`persistenceId`** — der Schlüssel, unter dem der State
   gespeichert ist.  Wie bei `PersistentActor` eine ID pro logischer
@@ -124,7 +124,9 @@ Drei Felder:
   bevor der Actor an einen Store gebunden wird — und meldet einen
   Verstoß als `OptionsError` auf dem Feld `persistenceId`.
 - **`store`** — die `DurableStateStore`-Implementierung (in-memory,
-  SQLite, Object Storage, benutzerdefiniert).
+  SQLite, Object Storage, benutzerdefiniert).  **Optional**: bleibt es
+  ungesetzt, nutzt der Actor den Store, den das System ausgewählt hat — siehe
+  [Den Store aus der Konfiguration wählen](#den-store-aus-der-konfiguration-wählen).
 - **`emptyState()`** — Factory, die aufgerufen wird, wenn noch kein
   Eintrag existiert (erste Ausführung, gelöschter State).  Stellt
   den Initialwert bereit.
@@ -132,6 +134,44 @@ Drei Felder:
 Reiche sie durch die `() => new Cart({...})`-Factory.
 Die Settings können pro Actor-Inkarnation variieren (unterschiedliche
 IDs für unterschiedliche User, derselbe Store).
+
+## Den Store aus der Konfiguration wählen
+
+Durable State war bislang der einzige Persistence-Vertrag ohne Plugin-Registry:
+jeder `registerXxxPlugins(...)`-Helper baute seinen Store eifrig und gab ihn
+zurück, ihn zu erreichen ging also nur, indem man diese Instanz durch den
+eigenen Code fädelte.  Jetzt wird er genauso ausgewählt wie Journal und
+Snapshot Store seit jeher:
+
+```hocon
+actor-ts.persistence.durable-state {
+  plugin = "actor-ts.persistence.durable-state.sqlite"
+  sqlite { path = "/var/lib/my-app/app.db" }
+}
+```
+
+```ts
+const persistence = system.extension(PersistenceExtensionId);
+registerSqlitePlugins(persistence);
+
+// No store in the options — the actor takes the configured one.
+const cartFactory = () => new Cart(
+  DurableStateOptions.create<State>()
+    .withPersistenceId('cart-user-42')
+    .withEmptyState(() => ({ items: [] })),
+);
+```
+
+Der Default ist der In-Memory-Referenz-Store, exakt wie beim Journal — eine App,
+die nichts konfiguriert, verhält sich also wie bisher.  Ein `withStore(...)` in
+den Options gewinnt weiterhin; das ist die richtige Wahl für einen Store, den
+die Anwendung selbst besitzt: ein mit etwas anderem geteiltes Handle, einer von
+mehreren Stores in einem Prozess, oder ein Spy im Test.  Geändert hat sich nur,
+dass es nicht mehr der *einzige* Weg ist.
+
+Eine nicht registrierte Plugin-Id wird abgelehnt statt still ersetzt:
+`ext.durableStateStore` wirft `Unknown durable-state plugin '…'` und benennt die
+Id — dasselbe Fehlerverhalten, das die beiden anderen Achsen seit #377 haben.
 
 ## State-Zugriff + Persistenz
 

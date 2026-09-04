@@ -3,6 +3,7 @@ import type { PersistenceOptionSupport } from '../PersistenceCapabilities.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
 import type { SnapshotStore } from '../SnapshotStore.js';
 import { none, some, type Option } from '../../util/Option.js';
+import { DEFAULT_SNAPSHOTS_TABLE, DEFAULT_SNAPSHOT_KEEP_N } from '../Constants.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
 import { expandPlaceholders } from './SqlDialect.js';
@@ -60,9 +61,9 @@ export class RelationalSnapshotStore extends RelationalStore implements Snapshot
 
   constructor(config: RelationalSnapshotStoreConfig) {
     super(config);
-    const table = assertSafeIdentifier(config.snapshotsTable ?? 'snapshots', 'snapshots table');
+    const table = assertSafeIdentifier(config.snapshotsTable ?? DEFAULT_SNAPSHOTS_TABLE, 'snapshots table');
     this.table = table;
-    this.keepN = config.keepN ?? 3;
+    this.keepN = config.keepN ?? DEFAULT_SNAPSHOT_KEEP_N;
 
     const expand = (sql: string): string => expandPlaceholders(sql, config.dialect);
     this.statements = {

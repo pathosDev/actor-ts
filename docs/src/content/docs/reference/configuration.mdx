@@ -748,6 +748,19 @@ because the name lives inside the result the check never returned.
 | --- | --- | --- |
 | `persistence.journal.plugin` | `"...in-memory"` | Fully-qualified key to the journal's config. |
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Fully-qualified key to the snapshot store's config. |
+| `persistence.durable-state.plugin` | `"...in-memory"` | Fully-qualified key to the durable-state store's config. |
+| `persistence.journal.sqlite.path` | `""` | Database file.  Empty is *not set* — the journal falls through to an anonymous in-memory database. |
+| `persistence.journal.sqlite.events-table` | `"events"` | Event table.  The tags (`_tags`) and metadata (`_meta`) tables follow this name. |
+| `persistence.journal.sqlite.wal` | `off` | Open the database with `journal_mode = WAL` — concurrent readers during a write. |
+| `persistence.journal.sqlite.busy-timeout` | `1s` | How long a blocked writer waits for the lock before `SQLITE_BUSY`; `0` fails fast. |
+| `persistence.snapshot-store.sqlite.path` | `""` | As above — empty means not set. |
+| `persistence.snapshot-store.sqlite.snapshots-table` | `"snapshots"` | Snapshot table. |
+| `persistence.snapshot-store.sqlite.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
+| `persistence.snapshot-store.sqlite.busy-timeout` | `1s` | As above. |
+| `persistence.durable-state.sqlite.path` | `""` | As above.  This store has no in-memory fallback — supply a path or a handle. |
+| `persistence.durable-state.sqlite.table` | `"durable_state"` | Durable-state table. |
+| `persistence.durable-state.sqlite.auto-create-tables` | `on` | Run `CREATE TABLE IF NOT EXISTS` on first use.  Off when a schema tool owns the DDL. |
+| `persistence.durable-state.sqlite.busy-timeout` | `1s` | As above. |
 | `persistence.snapshot-store.object-storage.backend` | `""` | Which backend the object-storage plugin builds — `filesystem`, `s3`, or empty to leave it to code. |
 | `persistence.snapshot-store.object-storage.prefix` | `""` | Prepended to every object key — e.g. `env-prod/`. |
 | `persistence.snapshot-store.object-storage.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
@@ -785,11 +798,34 @@ client-side encryption and silently got plaintext is the worse outcome;
 configure that mode in code with `ObjectStoragePluginOptions.withEncryption(…)`.
 `kms-key-id` is fine — an ARN is a name, and the key itself never leaves KMS.
 
+**`durable-state.plugin` is the third axis**, and it is new.  Durable state used
+to be the one persistence contract with no registry: every `registerXxxPlugins`
+helper built its store eagerly and handed it back, so a `DurableStateActor` had
+to be given that instance in code.  It is now selected exactly like the journal
+and the snapshot store, and `DurableStateOptions.store` is optional — an actor
+that names no store uses whichever this key selects.
+
+**SQLite is registered with `registerSqlitePlugins(ext)`**, and needs no options
+at all when the three blocks above are filled in:
+
+```ts
+const ext = system.extension(PersistenceExtensionId);
+registerSqlitePlugins(ext);          // path, tables, retention … from HOCON
+```
+
+Precedence is the usual three layers — explicit `RegisterSqlitePluginsOptions`
+outrank the block, the block outranks the built-in defaults, per field, and a
+field left unset in code falls through instead of shadowing.  A `path` given in
+code is shared by all three stores as a *default*, so a leaf that names its own
+keeps it; a pre-opened `database` is an override, because sharing one handle is
+the more specific instruction.  There is no leaf for a `driver`, a `database` or
+a `serializer` — those are live objects, and a config file cannot express one.
+
 The plugin keys point to *another* config section that holds
-that plugin's settings.  E.g. `actor-ts.persistence.journal.sqlite`
-contains the SQLite journal's `path`, `pragmas`, etc.  See each
-journal page in [Persistence](/persistence/overview/) for
-the per-plugin keys.
+that plugin's settings.  `actor-ts.persistence.journal.sqlite` above is the
+worked example: it is both the id the journal is registered under and the block
+that journal reads.  See each journal page in
+[Persistence](/persistence/overview/) for the per-plugin keys.
 
 ### `actor-ts.projection`
 

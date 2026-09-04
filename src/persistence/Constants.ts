@@ -62,6 +62,24 @@ export const DYNAMODB_MAX_TRANSACTION_ITEMS = 100;
 export const DEFAULT_SQLITE_BUSY_TIMEOUT_MS = 1_000;
 
 /**
+ * Database a SQLite store opens when nothing named one — an anonymous
+ * in-memory database, private to the handle that opened it.
+ *
+ * Lives here rather than beside one options type because it is the `path`
+ * default of *both* `SqliteJournalOptions` and `SqliteSnapshotStoreOptions`,
+ * each of which wrote its own `':memory:'` at the read site.
+ *
+ * It is deliberately **not** published in `reference.conf`.  The three SQLite
+ * blocks ship `path = ""` instead, because a published `:memory:` under each
+ * of the three roots is a footgun with the shape of a default: an operator who
+ * points the journal at a file and leaves the snapshot store alone would get a
+ * durable event log whose snapshots vanish on restart, and the block would
+ * read as if that had been chosen.  `""` says "not set" and falls through to
+ * this value, which is the same behaviour without the misleading paper trail.
+ */
+export const DEFAULT_SQLITE_PATH = ':memory:';
+
+/**
  * How often a read-side poller asks the journal for new rows, in
  * milliseconds — the built-in value behind `LiveQueryOptions.pollIntervalMs`
  * and behind a projection's own tick.
@@ -90,6 +108,70 @@ export const DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS = 1_000;
  * pool — reads the same row.  That sharing is the semantics, not a collision.
  */
 export const STORAGE_IDENTITY_TABLE = 'storage_identity';
+
+/**
+ * Table (or collection) an event log is written to when nothing named one.
+ *
+ * Read by `RelationalJournal` — and so by the whole Postgres / MariaDB / MSSQL
+ * / libSQL / D1 family — and by the standalone `SqliteJournal`, each of which
+ * carried its own `'events'` literal.  The tags table is derived from it
+ * (`${events}_tags`) rather than defaulted separately, which is why only the
+ * stem is named here.
+ *
+ * Named at all because `reference.conf` publishes it
+ * (`…journal.sqlite.events-table`, #872) and a published default with no
+ * constant behind it is a value written down twice with nothing comparing the
+ * copies.
+ */
+export const DEFAULT_EVENTS_TABLE = 'events';
+
+/**
+ * Table a snapshot corpus is written to when nothing named one.  Same
+ * placement argument as {@link DEFAULT_EVENTS_TABLE}: `RelationalSnapshotStore`
+ * and `SqliteSnapshotStore` each held their own copy.
+ */
+export const DEFAULT_SNAPSHOTS_TABLE = 'snapshots';
+
+/**
+ * Table a durable-state record is written to when nothing named one.
+ *
+ * One read site today (`RelationalDurableStateStore`), but the default is
+ * restated in the `table` JSDoc of every relational durable-state options file
+ * — SQLite, Postgres, MariaDB, MSSQL, libSQL and D1 — so it is a value six
+ * `XOptions.ts` files describe and one file decides.  `reference.conf`
+ * publishes it as `…durable-state.sqlite.table` (#872).
+ */
+export const DEFAULT_DURABLE_STATE_TABLE = 'durable_state';
+
+/**
+ * Snapshots kept per `persistenceId`; older ones are pruned on save.  `0`
+ * disables pruning entirely.
+ *
+ * Moved here from `ObjectStorageSnapshotStoreOptions.ts` (#872), where its
+ * JSDoc argued it was object-storage-specific because "the durable-state store
+ * has no history to retain".  True, and beside the point: the value is shared
+ * by the three *snapshot* stores — object storage, the relational family
+ * through `RelationalSnapshotStore`, and the standalone `SqliteSnapshotStore`
+ * — and the latter two wrote it as an inline `?? 3`.  A default shared by more
+ * than one options type has no single `XOptions.ts` to sit in, which is
+ * exactly what `src/<subsystem>/Constants.ts` is for.
+ */
+export const DEFAULT_SNAPSHOT_KEEP_N = 3;
+
+/**
+ * Whether a relational store issues `CREATE TABLE IF NOT EXISTS` on first use.
+ *
+ * On by default because the alternative is a store that appears to work until
+ * the first write, and every dialect's DDL is `IF NOT EXISTS` — so the cost of
+ * being wrong is one statement per store, once.  A deployment that migrates
+ * with a schema tool turns it off.
+ *
+ * Read by `RelationalStore`, which is the base of every relational journal,
+ * snapshot store and durable-state store, and restated in the
+ * `autoCreateTables` JSDoc of each of their options files.  `reference.conf`
+ * publishes it as `…durable-state.sqlite.auto-create-tables` (#872).
+ */
+export const DEFAULT_AUTO_CREATE_TABLES = true;
 
 /**
  * Sentinel partition key of the DynamoDB identity item (#1358).  Lives inside

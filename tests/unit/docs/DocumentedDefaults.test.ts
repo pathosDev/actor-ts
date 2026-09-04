@@ -80,9 +80,9 @@ import {
 } from '../../../src/crdt/DistributedDataOptions.js';
 import { DEFAULT_LOG_DATA_SIZE_EXCEEDING_BYTES } from '../../../src/crdt/DistributedDataOptions.js';
 import { DEFAULT_OBJECT_STORAGE_COMPRESSION_ALGORITHM, DEFAULT_OBJECT_STORAGE_ENCRYPTION_MODE } from '../../../src/persistence/Constants.js';
-import { DEFAULT_SNAPSHOT_KEEP_N } from '../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 import { DEFAULT_MAX_DECOMPRESSED_BYTES } from '../../../src/persistence/object-storage/BodyCodec.js';
 import { DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_STALE_LOCK_MS } from '../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
+import { DEFAULT_AUTO_CREATE_TABLES, DEFAULT_DURABLE_STATE_TABLE, DEFAULT_EVENTS_TABLE, DEFAULT_SNAPSHOTS_TABLE, DEFAULT_SNAPSHOT_KEEP_N, DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../../../src/persistence/Constants.js';
 import {
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES,
@@ -440,6 +440,20 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cache.redis.db', kind: 'int', constant: DEFAULT_REDIS_DB },
   { key: 'actor-ts.cache.memcached.servers', kind: 'string', constant: DEFAULT_MEMCACHED_SERVERS },
 
+  /* --- persistence --- */
+  // The three SQLite blocks (#872).  `busy-timeout` is published under each of
+  // them and pinned to one constant, because it is one pragma applied to every
+  // handle the package opens — three copies of the number would be three ways
+  // for it to drift from the one `applySqliteBusyTimeout` actually uses.
+  { key: 'actor-ts.persistence.journal.sqlite.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.sqlite.busy-timeout', kind: 'duration', constant: DEFAULT_SQLITE_BUSY_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.snapshot-store.sqlite.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.sqlite.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.sqlite.busy-timeout', kind: 'duration', constant: DEFAULT_SQLITE_BUSY_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.durable-state.sqlite.table', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.durable-state.sqlite.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  { key: 'actor-ts.persistence.durable-state.sqlite.busy-timeout', kind: 'duration', constant: DEFAULT_SQLITE_BUSY_TIMEOUT_MS },
+
   /* --- object storage --- */
   { key: 'actor-ts.persistence.snapshot-store.object-storage.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
   { key: 'actor-ts.persistence.snapshot-store.object-storage.max-decompressed-bytes', kind: 'bytes', constant: DEFAULT_MAX_DECOMPRESSED_BYTES },
@@ -613,6 +627,15 @@ const PLACEHOLDERS: readonly string[] = [
   'actor-ts.persistence.snapshot-store.object-storage.s3.region',
   'actor-ts.persistence.snapshot-store.object-storage.s3.endpoint',
   'actor-ts.persistence.snapshot-store.object-storage.filesystem.dir',
+  // The three SQLite database paths (#872).  `""` is the shape of the key, not
+  // a value: the reader drops it, so the store falls through to
+  // DEFAULT_SQLITE_PATH.  Published empty rather than as `":memory:"` on
+  // purpose — three blocks each shipping a real default would let a deployment
+  // point the journal at a file, leave the snapshot store alone, and lose every
+  // snapshot on restart with the config file reading as if that were chosen.
+  'actor-ts.persistence.journal.sqlite.path',
+  'actor-ts.persistence.snapshot-store.sqlite.path',
+  'actor-ts.persistence.durable-state.sqlite.path',
 ];
 
 /**
@@ -704,6 +727,12 @@ const FEATURE_SWITCHES: readonly string[] = [
   // exists for MinIO and most non-AWS stores.  The off state is the field
   // being absent on `S3ObjectStorageOptions`, so there is no constant (#873).
   'actor-ts.persistence.snapshot-store.object-storage.s3.force-path-style',
+  // off = SQLite's default rollback journal.  The published `off` says WAL is
+  // not switched on, not how big anything is, and the off state IS the field
+  // being absent at the read site — `SqliteJournal.init` runs the pragma only
+  // when `options.wal` is truthy, so there is no constant to disagree with
+  // (#872).
+  'actor-ts.persistence.journal.sqlite.wal',
 ];
 
 /**
@@ -727,6 +756,11 @@ const LITERAL_AT_THE_READ_SITE: readonly string[] = [
   // (`prefix ?? ''`).  Not a placeholder: the empty string IS the shipped
   // default, it is simply written at the read site rather than named (#873).
   'actor-ts.persistence.snapshot-store.object-storage.prefix',
+  // the in-memory durable-state store id — PersistenceExtension.ts.  Reads
+  // exactly like the two selectors above it: the fallback is the id literal in
+  // `currentDurableStatePluginId`, one of the three `registerX(...)` calls in
+  // the extension's own constructor (#872).
+  'actor-ts.persistence.durable-state.plugin',
 ];
 
 /** The four unasserted groups, flattened — the rest of the partition. */
