@@ -85,6 +85,42 @@ The whole thing usually takes **sub-second to a few seconds**,
 depending on how many entities are in the shard and how long their
 `postStop` work takes.
 
+### A handoff that is not a rebalance
+
+The same frame has a fourth use, and it has nothing to do with
+load.  A region registers with the coordinator by naming the shards
+it believes it hosts, and that list can be **stale**: nothing clears
+it when a node is downed by a false positive, and the region
+re-registers on every membership change and on a 500 ms retry until
+it is acknowledged.  So a node re-admitted after such a downing
+says, as its first word, that it still hosts everything it hosted
+before.
+
+The coordinator adjudicates that claim rather than believing it.
+Ids nobody owns are adopted exactly as before; an id another
+**registered** region already owns stays where it is, and the
+claimant is sent a `HandOff` for it.  That answer is the graceful
+release above — the claimant's entities run `postStop`, and a
+persistent one flushes, before the true owner's copy takes traffic
+— rather than a bare correction, which would fix the claimant's
+routing table and leave its shard actor and its entities running.
+
+Two details follow from what the frame means here.  The
+registration is acknowledged **first**, so the claimant has stopped
+re-registering by the time the directive lands.  And the release is
+deliberately *not* recorded as a rebalance: a rebalance carries the
+`handOffTimeoutMs` fallback below, whose expiry force-reallocates
+the shard — which here would take ownership away from the node that
+never gave it up.  The claimant's `HandOffComplete` therefore
+matches no in-flight rebalance and is a no-op, which is also what
+stops it from ending a genuine one for the same shard.
+
+One limit is worth knowing: a leader change clears the allocation
+map, so in the first moments of a new term every claim looks
+unowned and the first to arrive wins.  The check stops new
+double-homing; it does not resolve a split that predates the
+election.
+
 ## Who may order a handoff
 
 A `HandOff` stops every entity in a shard, so the region checks

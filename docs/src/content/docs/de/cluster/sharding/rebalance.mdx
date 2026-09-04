@@ -95,6 +95,46 @@ Das Ganze dauert üblicherweise **sub-Sekunde bis ein paar
 Sekunden**, abhängig davon, wie viele Entities im Shard sind und
 wie lang ihre `postStop`-Arbeit dauert.
 
+### Ein Handoff, der kein Rebalance ist
+
+Derselbe Frame hat eine vierte Verwendung, und die hat mit Last
+nichts zu tun. Eine Region registriert sich beim Koordinator, indem
+sie die Shards nennt, die sie zu hosten glaubt — und diese Liste
+kann **veraltet** sein: Nichts löscht sie, wenn ein Node durch einen
+False Positive heruntergestuft wird, und die Region registriert sich
+bei jeder Mitgliedschaftsänderung sowie über einen 500-ms-Retry neu,
+bis sie eine Antwort bekommt. Ein nach so einem Downing wieder
+aufgenommener Node sagt als Erstes also, dass er noch alles hostet,
+was er vorher hostete.
+
+Der Koordinator beurteilt diesen Anspruch, statt ihm zu glauben.
+Ids, die niemandem gehören, werden übernommen wie bisher; eine Id,
+die bereits einer anderen **registrierten** Region gehört, bleibt,
+wo sie ist, und der Anspruchsteller bekommt dafür einen `HandOff`.
+Diese Antwort ist die geordnete Freigabe von oben — die Entities des
+Anspruchstellers laufen durch `postStop`, eine persistente flusht,
+bevor die Kopie des echten Besitzers Verkehr annimmt — und nicht
+eine bloße Korrektur, die zwar seine Routing-Tabelle richtigstellen,
+seinen Shard-Actor und dessen Entities aber weiterlaufen lassen
+würde.
+
+Zwei Details folgen daraus, was der Frame hier bedeutet. Die
+Registrierung wird **zuerst** bestätigt, damit der Anspruchsteller
+sich nicht mehr neu registriert, wenn die Direktive eintrifft. Und
+die Freigabe wird bewusst *nicht* als Rebalance verbucht: Ein
+Rebalance trägt den `handOffTimeoutMs`-Fallback von unten, dessen
+Ablauf den Shard zwangsweise neu alloziert — was hier dem Node das
+Eigentum entzöge, der es nie abgegeben hat. Das `HandOffComplete`
+des Anspruchstellers passt deshalb zu keinem laufenden Rebalance und
+ist ein No-op, was zugleich verhindert, dass es ein echtes Rebalance
+desselben Shards vorzeitig beendet.
+
+Eine Grenze ist wissenswert: Ein Leader-Wechsel leert die
+Allokationskarte, in den ersten Momenten einer neuen Amtszeit wirkt
+also jeder Anspruch unbesetzt und der zuerst eintreffende gewinnt.
+Die Prüfung verhindert neues Double-Homing; einen Split, der der
+Wahl vorausging, löst sie nicht auf.
+
 ## Wer einen Handoff anordnen darf
 
 Ein `HandOff` stoppt jede Entity eines Shards, deshalb prüft die
