@@ -48,6 +48,32 @@ type ProducerControllerOptionsType<T> = {
 | `windowSize` | Flow-control window — pauses queueing after N unacked messages in flight. |
 | `producerId` | Stable identifier the consumer keys its dedup state on. Randomly generated if omitted; pin it when you want one identity across restarts in logs, metrics and the consumer's map. It does **not** carry a dedup *window* across a restart — see *Restart and the producer incarnation*. |
 
+### From HOCON
+
+`resendTimeout` and `windowSize` also read from
+[`actor-ts.reliable-delivery.producer`](/reference/configuration/#actor-tsreliable-delivery),
+in the project's usual order: **explicit options beat HOCON, and HOCON beats
+the built-in defaults** (500 ms and 16).
+
+```hocon
+actor-ts.reliable-delivery.producer {
+  resend-timeout = 2s
+  window-size    = 64
+}
+```
+
+`consumer` and `producerId` have no key, for two different reasons: an actor
+reference is not something HOCON can express, and one shared `producerId`
+across every producer in a process is a correctness bug rather than a setting —
+the consumer keys its dedup state on it, so two producers sharing an id reset
+each other's window.
+
+**The layering happens in `ReliableDelivery.producer(...)`, so that is the only
+path that sees it.**  A `ProducerController` you construct yourself and hand to
+`system.spawn` keeps its built-in defaults: neither controller can read
+configuration in its constructor, because `system` is a getter over a context
+the cell injects after construction.
+
 **A generated `producerId` is random, not sequential.**  It used to be a module
 counter — `producer-1`, `producer-2`, … — which was wrong twice over.  An
 `Acknowledgment` names a `producerId` and a `seq`, and the seq is a small

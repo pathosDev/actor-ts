@@ -48,6 +48,32 @@ type ProducerControllerOptionsType<T> = {
 | `windowSize` | Flow-Control-Window — pausiert das Queuing nach N unbestätigten In-Flight-Nachrichten. |
 | `producerId` | Stabiler Identifier, an dem der Consumer seinen Dedup-State festmacht. Wird zufällig generiert, wenn weggelassen; setze ihn fest, wenn Du über Restarts hinweg eine Identität in Logs, Metriken und der Map des Consumers willst. Er trägt **kein** Dedup-*Fenster* über einen Restart — siehe *Restart und die Producer-Inkarnation*. |
 
+### Aus HOCON
+
+`resendTimeout` und `windowSize` werden zusätzlich aus
+[`actor-ts.reliable-delivery.producer`](/de/reference/configuration/#actor-tsreliable-delivery)
+gelesen, in der üblichen Reihenfolge des Projekts: **explizite Optionen
+schlagen HOCON, und HOCON schlägt die eingebauten Defaults** (500 ms und 16).
+
+```hocon
+actor-ts.reliable-delivery.producer {
+  resend-timeout = 2s
+  window-size    = 64
+}
+```
+
+`consumer` und `producerId` haben keinen Schlüssel, aus zwei verschiedenen
+Gründen: eine Actor-Referenz lässt sich in HOCON nicht ausdrücken, und eine
+prozessweit geteilte `producerId` ist kein Setting, sondern ein
+Korrektheitsfehler — der Consumer schlüsselt seinen Dedup-State darauf, zwei
+Producer mit derselben Id setzen sich also gegenseitig das Fenster zurück.
+
+**Das Layering passiert in `ReliableDelivery.producer(...)`, also sieht nur
+dieser Pfad es.**  Ein `ProducerController`, den Du selbst konstruierst und an
+`system.spawn` übergibst, behält seine eingebauten Defaults: kein Controller
+kann in seinem Konstruktor Konfiguration lesen, denn `system` ist ein Getter
+über einen Kontext, den die Zelle erst nach der Konstruktion injiziert.
+
 **Eine generierte `producerId` ist zufällig, nicht fortlaufend.**  Früher war
 sie ein Modul-Zähler — `producer-1`, `producer-2`, … — und das war gleich
 doppelt falsch.  Ein `Acknowledgment` nennt eine `producerId` und eine `seq`,

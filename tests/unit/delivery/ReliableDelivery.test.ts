@@ -2,12 +2,14 @@ import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
+import { Config } from '../../../src/config/Config.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { Scheduler } from '../../../src/Scheduler.js';
 import type { Cancellable } from '../../../src/Scheduler.js';
 import { ActorRestarted, DeadLetter } from '../../../src/SystemMessages.js';
 import {
   ConsumerController,
+  DEFAULT_PRODUCER_IDLE_TTL_MS,
   ReliableDelivery,
   ProducerControllerOptions,
   ProducerControllerOptionsBuilder,
@@ -1465,6 +1467,248 @@ describe('ReliableDelivery — out-of-order window bound (#728, #643)', () => {
       label: 'the second producer drained its own window',
     });
     expect(slot.controller?.outOfOrderFor('gappy-a')).toBe(cap);
+
+    await kit.system.terminate();
+  });
+});
+
+/**
+ * Records the one-shot delays armed on it, alongside the repeating schedules
+ * {@link RecordingScheduler} already covers.
+ *
+ * The producer's resend interval has no other observable.  It is a private
+ * field, and waiting for the retransmit itself would make the assertion a
+ * wall-clock race that the built-in 500 ms default *also* wins given a
+ * generous enough timeout — which is to say it would bind to nothing.  The arm
+ * carries the number.
+ */
+class ArmRecordingScheduler extends Scheduler {
+  readonly armedOneShotDelays: number[] = [];
+  readonly armedFixedRateIntervals: number[] = [];
+
+  override scheduleOnceFunction(delayMs: number, task: () => void): Cancellable {
+    this.armedOneShotDelays.push(delayMs);
+    return super.scheduleOnceFunction(delayMs, task);
+  }
+
+  override scheduleAtFixedRateFunction(
+    initialDelayMs: number,
+    intervalMs: number,
+    task: () => void,
+  ): Cancellable {
+    this.armedFixedRateIntervals.push(intervalMs);
+    return super.scheduleAtFixedRateFunction(initialDelayMs, intervalMs, task);
+  }
+}
+
+/** A quiet TestKit whose config layer carries `hocon` over reference.conf. */
+const configuredKit = (name: string, hocon: string, scheduler?: Scheduler): TestKit => {
+  const kitOptions = TestKitOptions.create()
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off)
+    .withConfig(Config.parseString(hocon));
+  if (scheduler !== undefined) kitOptions.withScheduler(scheduler);
+  return TestKit.create(name, kitOptions);
+};
+
+/** Swallows every delivery without acknowledging, so the window stays shut. */
+class NeverAcknowledgingConsumer extends Actor<Delivery<string>> {
+  constructor(private readonly delivered: string[]) { super(); }
+
+  override onReceive(delivery: Delivery<string>): void {
+    this.delivered.push(delivery.body);
+  }
+}
+
+describe('ReliableDelivery — actor-ts.reliable-delivery layering (#861)', () => {
+  test('the producer takes both of its tunables from HOCON', async () => {
+    // Neither value is reachable any other way: `windowSize` and
+    // `resendTimeoutMs` are private fields of the controller, and
+    // `ReliableDelivery.producer` hands back only a ref.  So the window is
+    // read off how many sends actually leave, and the resend interval off the
+    // timer the first one arms.
+    const scheduler = new ArmRecordingScheduler();
+    const kit = configuredKit('rd-config-producer', `
+      actor-ts.reliable-delivery.producer {
+        resend-timeout = 1234ms
+        window-size    = 1
+      }
+    `, scheduler);
+    const delivered: string[] = [];
+    const consumerRef = kit.system.spawn(
+      () => new NeverAcknowledgingConsumer(delivered),
+      'never-acknowledging',
+    );
+    // Only `consumer` is set explicitly — everything else has to come from the
+    // block above, or from the constructor's built-ins if the seam is missing.
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(consumerRef);
+    const armedBefore = scheduler.armedOneShotDelays.length;
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+
+    for (const body of ['a', 'b', 'c']) producer.tell(body);
+    await awaitCondition(() => delivered.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the first send reached the consumer',
+    });
+    // Long enough for the other two to arrive if the window were the built-in
+    // 16 — they would leave in the same turn — and far short of the 1234 ms
+    // that would let a retransmit muddy the count.
+    await sleep(100);
+
+    expect(delivered).toEqual(['a']);
+    expect(scheduler.armedOneShotDelays.slice(armedBefore)).toContain(1_234);
+
+    producer.stop();
+    await kit.system.terminate();
+  });
+
+  test('explicit producer options beat the block', async () => {
+    // The other half of the precedence rule, on the same two observables: a
+    // builder that sets both must win over a config that sets both to
+    // something else.
+    const scheduler = new ArmRecordingScheduler();
+    const kit = configuredKit('rd-explicit-producer', `
+      actor-ts.reliable-delivery.producer {
+        resend-timeout = 1234ms
+        window-size    = 1
+      }
+    `, scheduler);
+    const delivered: string[] = [];
+    const consumerRef = kit.system.spawn(
+      () => new NeverAcknowledgingConsumer(delivered),
+      'never-acknowledging',
+    );
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(consumerRef)
+      .withResendTimeout(4_321)
+      .withWindowSize(3);
+    const armedBefore = scheduler.armedOneShotDelays.length;
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+
+    for (const body of ['a', 'b', 'c']) producer.tell(body);
+    await awaitCondition(() => delivered.length === 3, {
+      timeoutMs: 4_000,
+      label: 'all three sends left under the explicit window',
+    });
+
+    expect(scheduler.armedOneShotDelays.slice(armedBefore)).toContain(4_321);
+    expect(scheduler.armedOneShotDelays.slice(armedBefore)).not.toContain(1_234);
+
+    producer.stop();
+    await kit.system.terminate();
+  });
+
+  test('the consumer idle sweep runs on the interval the block names', async () => {
+    const scheduler = new ArmRecordingScheduler();
+    const kit = configuredKit(
+      'rd-config-consumer-ttl',
+      'actor-ts.reliable-delivery.consumer.producer-idle-time-to-live = 7s',
+      scheduler,
+    );
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+
+    const armedBefore = scheduler.armedFixedRateIntervals.length;
+    const fromConfig = ReliableDelivery.consumer<string>(kit.system, {
+      handler: (body) => { received.push(body); },
+    }, 'ttl-from-config');
+    // Wait on a handled delivery rather than on the arm itself, so the
+    // assertion cannot be satisfied by a `preStart` that has not run yet.
+    deliver(fromConfig.ref as never, probe, 'ttl-producer', 1, 'from-config');
+    await awaitCondition(() => received.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the config-built consumer started and handled a delivery',
+    });
+    expect(scheduler.armedFixedRateIntervals.slice(armedBefore)).toEqual([7_000]);
+
+    // And the explicit layer still wins over it.
+    const armedBeforeExplicit = scheduler.armedFixedRateIntervals.length;
+    const explicit = ReliableDelivery.consumer<string>(kit.system, {
+      handler: (body) => { received.push(body); },
+      producerIdleTtlMs: 3_000,
+    }, 'ttl-explicit');
+    deliver(explicit.ref as never, probe, 'ttl-producer', 1, 'explicit');
+    await awaitCondition(() => received.length === 2, {
+      timeoutMs: 4_000,
+      label: 'the explicitly configured consumer started and handled a delivery',
+    });
+    expect(scheduler.armedFixedRateIntervals.slice(armedBeforeExplicit)).toEqual([3_000]);
+
+    fromConfig.stop();
+    explicit.stop();
+    await kit.system.terminate();
+  });
+
+  test('the consumer deduplication cap comes from the block', async () => {
+    // `trackedProducers` needs the instance and `ReliableDelivery.consumer`
+    // hands back a ref, so the cap is observed through what it costs: an
+    // evicted producer has lost its duplicate suppression, and its retransmit
+    // reaches the handler a second time.  Under the shipped 1024 the third
+    // delivery below is absorbed and `received` stays at two.
+    const kit = configuredKit(
+      'rd-config-max-producers',
+      'actor-ts.reliable-delivery.consumer.max-producers = 1',
+    );
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const consumer = ReliableDelivery.consumer<string>(kit.system, {
+      handler: (body) => { received.push(body); },
+    }, 'capped-consumer');
+    const consumerRef = consumer.ref as never;
+
+    deliver(consumerRef, probe, 'producer-a', 1, 'a-1');
+    await awaitCondition(() => received.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the first producer was handled',
+    });
+    // One slot, so producer-b's arrival evicts producer-a outright.
+    deliver(consumerRef, probe, 'producer-b', 1, 'b-1');
+    await awaitCondition(() => received.length === 2, {
+      timeoutMs: 4_000,
+      label: 'the second producer was handled and took the only slot',
+    });
+    deliver(consumerRef, probe, 'producer-a', 1, 'a-1-again');
+    await awaitCondition(() => received.length === 3, {
+      timeoutMs: 4_000,
+      label: 'the evicted producer retransmit reached the handler again',
+    });
+
+    expect(received).toEqual(['a-1', 'b-1', 'a-1-again']);
+
+    consumer.stop();
+    await kit.system.terminate();
+  });
+
+  test('a directly constructed controller keeps its built-in defaults', async () => {
+    // The documented limit of the seam, asserted rather than only written
+    // down: the config layer lives in `ReliableDelivery`, so a controller
+    // built with `new` and handed to `system.spawn` never passes through it.
+    // Neither controller can read config in its constructor — `Actor.system`
+    // is a getter over a context the cell injects afterwards — so this is the
+    // trade, not an oversight.
+    const scheduler = new ArmRecordingScheduler();
+    const kit = configuredKit(
+      'rd-direct-construction',
+      'actor-ts.reliable-delivery.consumer.producer-idle-time-to-live = 7s',
+      scheduler,
+    );
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+
+    const armedBefore = scheduler.armedFixedRateIntervals.length;
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (body) => { received.push(body); },
+    }, 'directly-constructed');
+    deliver(consumer, probe, 'direct-producer', 1, 'direct');
+    await awaitCondition(() => received.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the directly constructed consumer started and handled a delivery',
+    });
+
+    expect(scheduler.armedFixedRateIntervals.slice(armedBefore))
+      .toEqual([DEFAULT_PRODUCER_IDLE_TTL_MS]);
 
     await kit.system.terminate();
   });

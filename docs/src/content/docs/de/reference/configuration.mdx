@@ -661,6 +661,38 @@ Hier gelten dieselbe Blattregel und dieselbe Ablehnung beim Start: kebab-case,
 Einheiten-Suffix weggelassen, und eine ausgemusterte camelCase-Schreibweise ist
 ein `ConfigError` statt einer Obergrenze, die still auf den Default zurückfiel.
 
+### `actor-ts.reliable-delivery`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `reliable-delivery.producer.resend-timeout` | `500ms` | Wie lange der Producer auf eine Bestätigung wartet, bevor er dieselbe seq erneut sendet.  Ein festes Intervall, bei jedem Ausbleiben unverändert neu gestellt — es gibt kein Backoff. |
+| `reliable-delivery.producer.window-size` | `16` | Flow-Control-Fenster: höchstens so viele unbestätigte Nachrichten gleichzeitig unterwegs.  Weitere Sends warten im Speicher, bis eine Bestätigung einen Platz freigibt. |
+| `reliable-delivery.consumer.max-producers` | `1024` | Für wie viele Producer der Consumer gleichzeitig Deduplizierungs-Zustand hält.  An der Grenze wird der am längsten unbenutzte Eintrag verdrängt.  `0` = unbegrenzt. |
+| `reliable-delivery.consumer.producer-idle-time-to-live` | `5m` | Wie lange der Deduplizierungs-Eintrag eines Producers ohne Zustellung von ihm überlebt; der Sweep läuft in genau diesem Intervall.  `0` schaltet den Sweep ab. |
+
+Beide Blöcke liegen unter dem, was `ReliableDelivery.producer(...)` /
+`ReliableDelivery.consumer(...)` übergeben bekommt — ein explizites
+`withWindowSize(…)` gewinnt also weiterhin.  **Gelesen werden sie dort und
+sonst nirgends.**  Kein Controller kann in seinem Konstruktor Konfiguration
+lesen — `Actor.system` ist ein Getter über einen Kontext, den die Zelle erst
+danach injiziert —, deshalb behält ein Controller, den du selbst konstruierst
+und an `system.spawn` übergibst, seine eingebauten Defaults und sieht diesen
+Block nie.
+
+`0` ist die Schreibweise, mit der beide Consumer-Grenzen das `Infinity` ihrer
+Optionsfelder ausdrücken, denn `Infinity` lässt sich in HOCON überhaupt nicht
+schreiben: der Zahlen-Reader nimmt ein numerisches Literal, und der
+Duration-Parser weist einen nicht-endlichen Wert ab.  Es ist dieselbe
+Schreibweise, die `cluster.max-members` und `sharding.max-entities` bereits
+verwenden.  Was sie kostet, gehört klar gesagt: die Deduplizierungs-Map ist auf
+eine `producerId` geschlüsselt, die der *Sender* wählt — `0` überlässt damit
+einem Peer die Entscheidung, wie viel dieser Consumer behält: ein Eintrag je
+verschiedener Id, nie freigegeben.
+
+`maxOutOfOrder`, die dritte Consumer-Grenze, bekommt bewusst noch keinen
+Schlüssel: sie kam erst nach der Spezifikation dieses Blocks dazu und erhält
+ein eigenes Folge-Issue statt eines Blatts, das niemand bemessen hat.
+
 ### `actor-ts.serialization`
 
 | Key | Default | Zweck |

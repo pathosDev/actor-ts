@@ -1,5 +1,7 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+import { ConfigKeys } from '../config/ConfigKeys.js';
+import type { Config } from '../config/Config.js';
 
 /** Built-in default for {@link ConsumerControllerOptionsType.maxProducers}. */
 export const DEFAULT_MAX_PRODUCERS = 1_024;
@@ -173,6 +175,50 @@ export class ConsumerControllerOptionsValidator<T> extends OptionsValidator<Cons
       this.fail('maxOutOfOrder', 'must be a positive integer or Infinity', maxOutOfOrder);
     }
   }
+}
+
+/**
+ * `0` is how this block spells "no bound", because `Infinity` — the opt-out
+ * both fields document — is not writable in HOCON at all: `getInt` accepts
+ * only a number or a `/^-?\d+(\.\d+)?$/` string, and `parseDuration` throws
+ * outright on a non-finite one.  `0` is also what the rest of the reference
+ * config already uses for it (`cluster.max-members`, `cluster.max-tombstones`,
+ * `sharding.max-entities`), so an operator meets one spelling rather than two.
+ *
+ * Nothing else in either field's range collides: a cap of zero producers and
+ * a zero-millisecond idle lifetime are both states the validator rejects, so
+ * the sentinel costs no reachable configuration.
+ */
+const unboundedWhenZero = (value: number): number => (value === 0 ? Infinity : value);
+
+/**
+ * Read `actor-ts.reliable-delivery.consumer.*` into the shape
+ * {@link ReliableDelivery.consumer} layers under the caller's options.  Only
+ * keys actually present are returned, so an absent one falls through to the
+ * built-in default instead of landing as an explicit `undefined` — the rule
+ * `mergeOptions` encodes.
+ *
+ * `handler` has no leaf: it is a function, which HOCON cannot express, and it
+ * is the one required field rather than a tunable.  `maxOutOfOrder` has none
+ * either — it is a per-producer retention bound whose sibling keys landed
+ * after this block was specified, and it is tracked as its own follow-up
+ * rather than shipped unspecified.
+ *
+ * The return type drops the generic for the same reason the producer's does:
+ * `handler` is what makes the options type generic, and it is not read here.
+ */
+export function readConsumerControllerOptionsFromConfig(
+  config: Config,
+): Partial<Pick<ConsumerControllerOptionsType<never>, 'maxProducers' | 'producerIdleTtlMs'>> {
+  const keys = ConfigKeys.reliableDelivery.consumer;
+  const out: { -readonly [K in 'maxProducers' | 'producerIdleTtlMs']?: number } = {};
+  if (config.hasPath(keys.maxProducers)) {
+    out.maxProducers = unboundedWhenZero(config.getInt(keys.maxProducers));
+  }
+  if (config.hasPath(keys.producerIdleTimeToLive)) {
+    out.producerIdleTtlMs = unboundedWhenZero(config.getDuration(keys.producerIdleTimeToLive));
+  }
+  return out;
 }
 
 /**

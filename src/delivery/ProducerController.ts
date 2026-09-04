@@ -2,7 +2,11 @@ import { match } from 'ts-pattern';
 import { Actor } from '../Actor.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { Cancellable } from '../Scheduler.js';
-import { ProducerControllerOptionsValidator } from './ProducerControllerOptions.js';
+import {
+  DEFAULT_RESEND_TIMEOUT_MS,
+  DEFAULT_WINDOW_SIZE,
+  ProducerControllerOptionsValidator,
+} from './ProducerControllerOptions.js';
 import type { ProducerControllerOptions, ProducerControllerOptionsType } from './ProducerControllerOptions.js';
 import type { Acknowledgment, ConfirmationCallback, Delivery } from './Messages.js';
 import { GENERATED_PRODUCER_ID_LENGTH, PRODUCER_INCARNATION_LENGTH } from './Constants.js';
@@ -73,8 +77,8 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
     new ProducerControllerOptionsValidator<T>().validate(resolvedOptions);
     this.options = resolvedOptions;
     this.id = resolvedOptions.producerId ?? nextProducerId();
-    this.resendTimeoutMs = resolvedOptions.resendTimeout ?? 500;
-    this.windowSize = resolvedOptions.windowSize ?? 16;
+    this.resendTimeoutMs = resolvedOptions.resendTimeout ?? DEFAULT_RESEND_TIMEOUT_MS;
+    this.windowSize = resolvedOptions.windowSize ?? DEFAULT_WINDOW_SIZE;
   }
 
   /**
