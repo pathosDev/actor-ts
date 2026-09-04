@@ -5,9 +5,16 @@ description: What a dead letter is, what actor-ts does with one by default, and 
 
 A **dead letter** is a message the system could not deliver: a `tell` to a
 ref whose actor has stopped, a selection that resolved to nothing, a
-behavior that answered `unhandled`, a cluster singleton with no host.
-Nothing was lost by accident — the framework noticed, and this is how it
-says so.
+behavior that answered `unhandled`, an actor that declined one with
+[`this.unhandled(m)`](/fundamentals/actor/#declining-a-message--unhandled),
+a cluster singleton with no host. Nothing was lost by accident — the
+framework noticed, and this is how it says so.
+
+The two `unhandled` entries are a different animal from the rest: the
+message *was* delivered, and a live actor turned it down. A counter tells
+them apart — `actor_unhandled_total{class}` rises only for a declined
+message, and unlike `actor_dead_letters_total` it does not need the queue
+below to be switched on first.
 
 ## What happens by default
 

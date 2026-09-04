@@ -185,6 +185,11 @@ export class Receptionist extends Actor<ReceptionistInbox> {
    * plain JSON object, matches nothing, and used to fail the actor through
    * `.exhaustive()`.  One remotely-delivered envelope was enough to take out
    * the node's service discovery (#713).  Drop it and say so instead.
+   *
+   * The warn is for whoever is reading logs; `this.unhandled` is for
+   * everything else (#1178) — the message becomes a `DeadLetter` naming this
+   * receptionist, and `actor_unhandled_total{class}` carries the rate a
+   * single log line cannot.
    */
   private onUnhandled(message: ReceptionistInbox): void {
     this.log.warn(
@@ -192,6 +197,7 @@ export class Receptionist extends Actor<ReceptionistInbox> {
       + `(${(message as { kind?: string })?.kind ?? typeof message}) — `
       + `remote senders must address the receptionist through its own protocol`,
     );
+    this.unhandled(message);
   }
 
   private onRegister(message: Register): void {

@@ -1,4 +1,8 @@
-import { MAX_CONTEXT_KEYS, MAX_CONTEXT_VALUE_LENGTH } from './Constants.js';
+import {
+  MAX_CONTEXT_KEYS,
+  MAX_CONTEXT_VALUE_LENGTH,
+  MAX_LOGGED_WIRE_KIND_LENGTH,
+} from './Constants.js';
 import { isMemberStatus, type MemberData, type WireMessage } from './Protocol.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 
@@ -177,6 +181,36 @@ export function sanitizeWireLogContext(
     }
     safe[key] = value;
     kept += 1;
+  }
+  return safe;
+}
+
+/**
+ * Make a wire-supplied frame `kind` safe to put in a log line (#1178).
+ *
+ * {@link isWireFrame} enforces only "a string", because unknown kinds pass
+ * deliberately — see the module note.  So a `kind` reaching a log line is
+ * arbitrary text from a peer, and the two things wrong with printing it are
+ * the two {@link sanitizeWireLogContext} already names one field to the left:
+ * a CR or LF forges as many additional records as the sender likes, and an
+ * unbounded length lets one frame write an unbounded line.
+ *
+ * Escaped rather than dropped, because unlike an MDC value the kind *is* the
+ * diagnostic — "which frame did this node not understand" is the whole of the
+ * report — and a sender that puts a newline in one has told you something
+ * worth seeing in escaped form.
+ */
+export function sanitizeWireKindForLog(kind: string): string {
+  const clipped = kind.length > MAX_LOGGED_WIRE_KIND_LENGTH
+    ? `${kind.slice(0, MAX_LOGGED_WIRE_KIND_LENGTH)}…`
+    : kind;
+  let safe = '';
+  for (const character of clipped) {
+    const code = character.codePointAt(0)!;
+    safe += code <= LAST_C0_CONTROL || code === DELETE || code === NEXT_LINE
+      || code === LINE_SEPARATOR || code === PARAGRAPH_SEPARATOR
+      ? `\\u${code.toString(16).padStart(4, '0')}`
+      : character;
   }
   return safe;
 }

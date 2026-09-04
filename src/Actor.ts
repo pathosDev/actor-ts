@@ -3,6 +3,7 @@ import type { ActorRef } from './ActorRef.js';
 import type { ActorSystem } from './ActorSystem.js';
 import type { Cluster } from './cluster/Cluster.js';
 import type { EntityContext } from './EntityContext.js';
+import { recordUnhandled } from './internal/Unhandled.js';
 import type { Logger } from './Logger.js';
 import { defaultStrategy, SupervisorStrategy } from './Supervision.js';
 import type { Option } from './util/Option.js';
@@ -95,6 +96,48 @@ export abstract class Actor<TMessage = unknown> {
    * A thrown error (sync or async) is caught by the supervisor.
    */
   abstract onReceive(message: TMessage): void | Promise<void>;
+
+  /**
+   * Say that this actor was handed `message` and declined it — the blessed
+   * body of an `.otherwise((m) => this.onUnhandled(m))` arm.
+   *
+   * The message becomes a `DeadLetter` naming **this actor** as recipient, so
+   * it is published on the event stream, reaches the dead-letter queue when
+   * one is turned on, and is logged by the throttled record #1000 added.  It
+   * also ticks `actor_unhandled_total{class}`, which is the part routing to
+   * dead letters does *not* supply: `actor_dead_letters_total` only moves
+   * while `actor-ts.dead-letters.store` is on, and it is `off` by default.
+   *
+   * **Nothing detects this for you, by design.** The runtime cannot tell an
+   * intentionally ignored message from a dropped one, so an `onReceive` that
+   * simply returns still produces nothing at all.  Declining is a statement
+   * the actor makes.
+   *
+   * ```ts
+   * override onReceive(message: Command): void {
+   *   match(message)
+   *     .with({ kind: 'deposit' }, (m) => this.onDeposit(m))
+   *     .otherwise((m) => this.onUnhandled(m));
+   * }
+   *
+   * private onUnhandled(message: Command): void { this.unhandled(message); }
+   * ```
+   *
+   * `unknown` rather than `TMessage`, because the arm that reaches here is
+   * the un-narrowed remainder — and a framework actor at a resolvable path
+   * receives whatever a remote peer addressed to it, which is not `TMessage`
+   * at all.
+   *
+   * Not to be confused with the exported `unhandled` of the typed API
+   * (`Behaviors.unhandled`, re-exported from the package root): that one is a
+   * *sentinel a behavior returns*, and it lands on this same path from the
+   * other side.  Two things named `unhandled`, one method and one factory.
+   */
+  protected unhandled(message: unknown): void {
+    recordUnhandled(
+      this.system, this.self, this.constructor.name, this.sender.toNullable(), message,
+    );
+  }
 
   /** Called after construction and before the first message is processed. */
   preStart(): void | Promise<void> {}
