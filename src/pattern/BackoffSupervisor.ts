@@ -3,6 +3,7 @@ import { Actor, type ActorClassOrFactory, type ActorFactory } from '../Actor.js'
 import type { ActorOptions } from '../ActorOptions.js';
 import type { ActorRef } from '../ActorRef.js';
 import { LocalActorRef } from '../internal/LocalActorRef.js';
+import { LogContext, type LogContextData } from '../LogContext.js';
 import {
   Directive,
   OneForOneStrategy,
@@ -179,9 +180,32 @@ const DEFAULT_CHILD_NAME = 'child';
 /** Default cap so a stuck supervisor doesn't OOM the process. */
 const DEFAULT_STASH_LIMIT = 1000;
 
+/**
+ * One buffered message, plus what the framework can still say about where it
+ * came from once it is evicted (#773).
+ *
+ * **The MDC snapshot is taken here, at stash time, and it has to be.**  The
+ * cell runs each handler inside `LogContext.run(envelope.context, …)`, so
+ * `LogContext.get()` during `onReceive` *is* the arriving envelope's own
+ * context — but {@link BackoffSupervisor.evictOldestStashed} runs while
+ * handling a *later* message, and reading it there would attribute the loss to
+ * whichever message happened to trigger the overflow instead of to the one
+ * being discarded.  A stash entry outlives its turn; the context does not.
+ *
+ * **There is deliberately no `trace`.**  Nothing exposes the arriving
+ * envelope's `trace` to actor code — `ActorContext` has no span accessor, and
+ * the receive span the cell opens is never made active — so the only span
+ * reachable from in here belongs to a different operation than the one that
+ * sent the message.  Recording it under the same field the mailbox path fills
+ * with the *sender's* span would make one field mean two things.  Closing that
+ * needs a seam on `ActorContext`, which is an API change #773 does not ask
+ * for.
+ */
 type StashedMessage = {
   readonly message: unknown;
   readonly sender: ActorRef | null;
+  /** The MDC in force when this message arrived, if it carried one. */
+  readonly context?: LogContextData;
 };
 
 export class BackoffSupervisor<T> extends Actor<unknown> {
@@ -348,7 +372,16 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
     }
     // 'stash' mode.
     if (this.stash.length >= this.stashLimit) this.evictOldestStashed();
-    this.stash.push({ message, sender: this.sender.toNullable() });
+    // The MDC is snapshotted now rather than at eviction, for the reason
+    // `StashedMessage` gives: by then this turn's context is somebody else's.
+    // Omitted when there is none, exactly as `LocalActorRef.tell` omits it —
+    // an empty context on the entry would say the sender had one.
+    const context = LogContext.get();
+    this.stash.push(
+      LogContext.isEmpty(context)
+        ? { message, sender: this.sender.toNullable() }
+        : { message, sender: this.sender.toNullable(), context },
+    );
   }
 
   override postStop(): void {
@@ -386,11 +419,19 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
    * condition that repeats as fast as traffic arrives, and the one that needs
    * no tuned interval to be picked and defended.  It carries the running
    * total, so a line arriving late still says how much was lost.
+   *
+   * **The letter carries the MDC the message arrived with**, captured at stash
+   * time — see {@link StashedMessage}, which also says why it carries no span
+   * context.  Without it an operator reading the dead-letter stream can see
+   * that a supervisor in a backoff window shed a message and not which request
+   * it belonged to, which is the same gap the mailbox path had.
    */
   private evictOldestStashed(): void {
     const evicted = this.stash.shift();
     if (evicted === undefined) return;
-    this.system.deadLetters.tell(new DeadLetter(evicted.message, evicted.sender, this.self));
+    this.system.deadLetters.tell(
+      new DeadLetter(evicted.message, evicted.sender, this.self, { context: evicted.context }),
+    );
     this.stashDropCount += 1;
     if (this.stashDropCount < this.stashDropWarnAt) return;
     this.log.warn('BackoffSupervisor: stash full — oldest message dead-lettered', {

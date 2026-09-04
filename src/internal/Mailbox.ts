@@ -98,11 +98,21 @@ export type Envelope<T = unknown> = {
    * bound the operator set to cap *frames*.
    *
    * Set by {@link ActorCell.postSignalEnvelope}, which is the only door that
-   * sets it, and read in three places: {@link Mailbox.removeOldest} and
+   * sets it, and read in four places: {@link Mailbox.removeOldest} and
    * {@link Mailbox.removeNewest}, so an eviction from either end steps over
-   * it; `BoundedMailbox.prependUser`, so a bound that now applies to the
-   * replay path admits it rather than shedding it (#772); and the cell's
-   * throttle gate, so `onExcess: 'drop'` does not silently consume it either.
+   * it; `BoundedMailbox.prependUser` **and** `PriorityMailbox.prependUser`, so
+   * a bound that now applies to the replay path admits it rather than shedding
+   * it (#772); and the cell's throttle gate, so `onExcess: 'drop'` does not
+   * silently consume it either.
+   *
+   * Both replay overrides are named because listing one of them was the last
+   * hole (#729).  The two bounds reach the same rule by different routes —
+   * `BoundedMailbox` tests the marker per envelope before it consults its
+   * capacity, `PriorityMailbox` hands the envelope to `enqueueSignal` — and a
+   * reader who took "the replay path" to mean "whichever mailbox the list
+   * happened to name" would have re-derived exactly the omission: the priority
+   * bound re-entered its own `enqueue`, whose capacity check does not read
+   * this field at all.
    *
    * It travels with the envelope rather than being remembered by the mailbox
    * because the envelope outlives any one queue position: it survives a
