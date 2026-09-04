@@ -1,3 +1,4 @@
+import { connect, type Socket } from 'node:net';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
@@ -12,7 +13,11 @@ import { CorsOptions } from '../../../src/http/middleware/CorsOptions.js';
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
-import type { ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
+import type { NodeHttpServerLike, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
+import {
+  DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS,
+  HttpServerOptions,
+} from '../../../src/http/HttpServerOptions.js';
 
 /**
  * `actor-ts.http.backend` and `actor-ts.http.shutdown-grace-period` were
@@ -331,6 +336,141 @@ describe('actor-ts.http.cors', () => {
     const system = systemWith(corsConfig({ origins: [ALLOWED], methods: ['GETT'] }));
     await expect(system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(apiRoutes()))
       .rejects.toThrow(OptionsError);
+    await system.terminate();
+  });
+});
+
+/**
+ * `actor-ts.http.server` — the connection-level bounds of the listening socket
+ * itself (#870).  Driven through the real `newServerAt(...).bind()` path, and
+ * observed from a raw socket rather than from `fetch`: three of the four keys
+ * govern what happens to a connection that is *not* completing a request, and
+ * `fetch` cannot express that state at all.
+ */
+describe('actor-ts.http.server', () => {
+  const sockets: Socket[] = [];
+
+  /** A raw client socket on the bound server, destroyed for us afterwards. */
+  function open(binding: ServerBinding): Promise<Socket> {
+    return new Promise((resolve, reject) => {
+      const socket = connect({ host: binding.host, port: binding.port }, () => resolve(socket));
+      socket.once('error', reject);
+      sockets.push(socket);
+    });
+  }
+
+  /** Resolve `true` if the server closes `socket` within `withinMs`. */
+  function closedWithin(socket: Socket, withinMs: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      // The 'data' listener is not decoration: without it the socket stays
+      // paused and never emits 'close', so every case here would read as "the
+      // server left it open" whatever the server actually did.  That mistake
+      // produced a full set of confidently wrong measurements while this was
+      // being written.
+      socket.on('data', () => { /* drain, so 'close' can fire */ });
+      socket.once('close', () => resolve(true));
+      const timer = setTimeout(() => resolve(false), withinMs);
+      (timer as { unref?: () => void }).unref?.();
+    });
+  }
+
+  afterEach(() => {
+    while (sockets.length) sockets.shift()!.destroy();
+  });
+
+  async function bindWith(config: ConfigObject, options?: HttpServerOptions): Promise<ServerBinding> {
+    const system = systemWith(config);
+    const builder = system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0);
+    if (options) builder.withServerOptions(options);
+    const binding = await builder.bind(get(() => complete(Status.OK, 'ok')));
+    running = { system, binding };
+    return binding;
+  }
+
+  test('max-connections closes the connection past the cap', async () => {
+    const binding = await bindWith({ 'actor-ts': { http: { server: { 'max-connections': 1 } } } });
+
+    const first = await open(binding);
+    const second = await open(binding);
+
+    expect(await closedWithin(second, 3_000)).toBe(true);
+    expect(first.destroyed).toBe(false);
+  });
+
+  test('an unset max-connections leaves the server unlimited', async () => {
+    // The negative control for the case above.  Without it that test passes
+    // against a server that closes every second connection for some other
+    // reason, which is not the property being claimed.
+    const binding = await bindWith({});
+
+    await open(binding);
+    const second = await open(binding);
+
+    expect(await closedWithin(second, 1_000)).toBe(false);
+  });
+
+  test('idle-timeout closes a keep-alive connection that goes quiet', async () => {
+    const binding = await bindWith({ 'actor-ts': { http: { server: { 'idle-timeout': '100ms' } } } });
+    const socket = await open(binding);
+    socket.write('GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n');
+
+    // The runtime adds a grace of its own on top of the configured window, so
+    // the assertion is "closes soon", not "closes at 100 ms".
+    expect(await closedWithin(socket, 5_000)).toBe(true);
+  });
+
+  test('an unset idle-timeout leaves the backend\'s own window in place', async () => {
+    // Fastify's is 72 s, deliberately — this is what "ships no leaf" buys, and
+    // it is the assertion that fails if the block ever starts publishing an
+    // idle-timeout value.
+    const binding = await bindWith({});
+    const socket = await open(binding);
+    socket.write('GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n');
+
+    expect(await closedWithin(socket, 2_000)).toBe(false);
+  });
+
+  test('the receive deadlines reach the server Fastify built', async () => {
+    // Asserted as installed rather than as observed, and the reason is in the
+    // runtime: both are enforced by a sweep whose interval is a factory option
+    // fixed at 30 s, so a test that waited for the close would have to wait
+    // half a minute to learn anything.  `requestTimeout` is the case that
+    // matters — Fastify ships it at 0, no bound at all — so this is the
+    // assertion that the published 300 s actually lands on the default backend.
+    const backend = new FastifyBackend({ logger: false });
+    const system = systemWith({ 'actor-ts': { http: { server: { 'header-timeout': '11s' } } } });
+    const binding = await system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .useBackend(backend)
+      .bind(get(() => complete(Status.OK, 'ok')));
+    running = { system, binding };
+
+    const server = backend.fastify.server as unknown as NodeHttpServerLike;
+    expect(server.headersTimeout).toBe(11_000);
+    expect(server.requestTimeout).toBe(DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS);
+  });
+
+  test('an explicit option beats the config file, which beats the built-in default', async () => {
+    const serverOptions = HttpServerOptions.create().withMaxConnections(4);
+    const binding = await bindWith(
+      { 'actor-ts': { http: { server: { 'max-connections': 1 } } } },
+      serverOptions,
+    );
+
+    // Explicit > HOCON: the config's cap of 1 would have closed this one.
+    await open(binding);
+    const second = await open(binding);
+    expect(await closedWithin(second, 1_000)).toBe(false);
+  });
+
+  test('a value outside its domain is an OptionsError from bind(), not a broken bound', async () => {
+    const system = systemWith({ 'actor-ts': { http: { server: { 'max-connections': 0 } } } });
+    const bind = (): Promise<ServerBinding> => system.extension(HttpExtensionId)
+      .newServerAt('127.0.0.1', 0)
+      .bind(get(() => complete(Status.OK, 'ok')));
+
+    await expect(bind()).rejects.toThrow(OptionsError);
+    await expect(bind()).rejects.toThrow('maxConnections');
     await system.terminate();
   });
 });

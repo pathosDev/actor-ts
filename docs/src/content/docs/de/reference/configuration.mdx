@@ -715,6 +715,7 @@ diesen Node nicht auf.
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | Einer von `fastify` / `express` / `hono`. |
 | `http.shutdown-grace-period` | `0ms` | Wie lange `unbind()` in-flight Requests leerlaufen lässt, bevor Verbindungen erzwungen geschlossen werden.  `0` erzwingt sofort. |
+| `http.server` | *(siehe unten)* | Verbindungsschranken für den lauschenden Socket selbst. |
 | `http.cors` | *(siehe unten)* | Pro-Route-Defaults für die [`cors()`](/de/http/middleware/cors/)-Direktive. |
 | `http.client` | *(siehe unten)* | Defaults des ausgehenden [`HttpClient`](/de/http/overview/). |
 | `http.websocket` | *(siehe unten)* | Serverseitige WebSocket-Defaults für [`websocket()`](/de/http/websocket/)-Routen. |
@@ -737,6 +738,92 @@ Backends nicht settlen kann — etwa Express mit einem lebenden WebSocket —
 wird das Fenster zu einer Deadline, die immer erreicht wird; ein großer Wert
 ist dort also Zeit, die du immer bezahlst.  Ein Aufrufer, der einen eigenen
 Wert übergibt — `binding.unbind(1_000)` — überschreibt die Config.
+
+Die Schranken einer **Verbindung** — im Gegensatz zu einer Route darauf —
+kommen aus `actor-ts.http.server`:
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `http.server.idle-timeout` | *(das des Backends)* | Wie lange eine untätige Keep-Alive-Verbindung gehalten wird, bevor sie zerstört wird.  Hat **kein Blatt** — siehe unten.  `0` schaltet ihn ab. |
+| `http.server.header-timeout` | `60s` | Wie lange eine Verbindung brauchen darf, um ihren vollständigen Header-Block zu liefern, bevor sie mit `408` beantwortet und zerstört wird.  Der Slowloris-Schutz. |
+| `http.server.request-timeout` | `300s` | Wie lange eine Verbindung brauchen darf, um einen Request vollständig zu liefern — Header und Body.  Begrenzt das *Empfangen*, nie das Antworten. |
+| `http.server.max-connections` | *(unbegrenzt)* | Gleichzeitige Verbindungen, die der lauschende Socket annimmt, bevor er neue schließt.  Hat **kein Blatt** — siehe unten. |
+
+Die übliche Reihenfolge gilt pro Feld:
+`newServerAt(...).withServerOptions(...)` gewinnt, dann dieser Block, dann der
+eingebaute Default.  Aufgelöst wird einmal bei `bind()`, installiert wird bei
+`listen()` — deshalb erreichen die Werte ein Backend, das du selbst gebaut und
+an `useBackend(...)` übergeben hast, genauso wie das, das das Framework für
+dich baut.
+
+```hocon
+actor-ts.http.server {
+  idle-timeout    = 5s
+  request-timeout = 30s
+  max-connections = 10000
+}
+```
+
+:::caution[Nicht jedes Backend kann diese Werte umsetzen]
+Es sind Eigenschaften eines `node:http`-Servers und gelten damit genau dort,
+wo es einen gibt.
+
+| Key | Fastify | Express | Hono / Node | Hono / Bun | Hono / Deno |
+| --- | --- | --- | --- | --- | --- |
+| `idle-timeout` | ja | ja | ja | **nein** | **nein** |
+| `header-timeout` | ja | ja | ja | **nein** | **nein** |
+| `request-timeout` | ja | ja | ja | **nein** | **nein** |
+| `max-connections` | ja | ja | ja | **nein** | **nein** |
+
+Hono besitzt keinen eigenen Server — es delegiert an einen Runner pro Runtime
+—, und nur `@hono/node-server` gibt seinen `node:http`-Server heraus.
+`Bun.serve` und `Deno.serve` bieten weder diesen Server noch einen
+gleichwertigen Knopf; auf dem Hono-Backend unter Bun oder Deno wird deshalb
+**keiner dieser vier Werte überhaupt installiert**.  Das ist eine Lücke und
+kein stilles Halb-Ergebnis: es wird nichts geschrieben, und nichts tut so, als
+wäre es geschrieben worden.  Bun hat auf `Bun.serve` durchaus ein
+verbindungsweites `idleTimeout` — in *Sekunden* statt Millisekunden, nah genug
+um verlockend und verschieden genug um falsch zu sein; es ist hier nicht
+verdrahtet.
+:::
+
+Zwei Blätter liefern **keinen Wert** und stehen oben nur, damit die Namen
+auffindbar sind — aus demselben Grund wie bei vier der CORS-Blätter: ein
+veröffentlichtes Literal wäre eine Zahl, die niemand gewählt hat.
+
+`idle-timeout` behält ungesetzt das, was das Backend gewählt hat, und die
+Backends sind sich **absichtlich** uneinig: 72 s bei Fastify gegen die 5 s von
+`node:http` bei Express und bei Hono-über-Node.  Fastifys Wert ist hoch, damit
+der Server das Idle-Fenster eines Load Balancers überlebt und der Balancer nie
+einen Request auf einen Socket schickt, der gerade schließt; fünf Sekunden sind
+die der Plattform.  Keiner von beiden ist falsch, also kürt der Block keinen
+Sieger.  Setz ihn, wenn sie sich einig sein sollen.
+
+`max-connections` ist ungesetzt unbegrenzt — das, was jedes Release vor diesem
+Key getan hat.  Der Wert gilt **serverweit**, anders als das
+`http.websocket.max-connections` weiter unten, das pro Route gilt: er zählt
+jede Verbindung, die der Prozess auf diesem Binding annimmt — WebSocket-Upgrades
+eingeschlossen, und ein angehängter
+[DevTools](/de/observability/devtools/overview/)-Server ebenso, denn DevTools
+bindet über denselben `system.http(...)`-Pfad.
+
+`header-timeout` und `request-timeout` werden von einem periodischen Sweep
+durchgesetzt, dessen Intervall die Runtime auf 30 s festlegt und nicht
+herausgibt.  Eine Verbindung wird also **nicht früher** als beim hier gesetzten
+Wert geschlossen und **nicht später als einen Sweep danach**.  Beide liefern die
+Zahl, die `http.createServer` ohnehin verwendet — auf Express und Hono hat das
+Veröffentlichen also nichts geändert.  Fastify setzt `requestTimeout` aber auf
+`0`, also gar keine Schranke; auf dem Default-Backend ist die veröffentlichte
+`300s` damit eine Deadline, wo vorher keine war.  Bei der 1-MiB-Body-Grenze ist
+das ein Client mit unter 3,5 KB/s; erhöhe sie, wenn du berechtigterweise
+langsamere Uploads annimmst, oder setz `0`, um auszusteigen.
+
+`request-timeout` begrenzt nur das *Empfangen* — die Uhr stoppt, sobald der
+Request angekommen ist —, ein langsamer Handler, ein Long Poll und ein
+SSE-Stream bleiben also unberührt.  Die Route-Middleware
+[`timeout()`](/de/http/middleware/timeout/) ist die andere Hälfte und
+absichtlich eine andere Fläche: sie begrenzt, wie lange ein *Handler* zum
+Antworten braucht, dieser Key, wie lange ein *Peer* zum Fragen braucht.
 
 Die Route-Direktive [`cors()`](/de/http/middleware/cors/) liest ihre Defaults
 pro Feld aus `actor-ts.http.cors`:

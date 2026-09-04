@@ -677,6 +677,7 @@ read at all, so a malformed value does not stop that node either.
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | One of `fastify` / `express` / `hono`. |
 | `http.shutdown-grace-period` | `0ms` | How long `unbind()` lets in-flight requests drain before connections are forced.  `0` forces immediately. |
+| `http.server` | *(see below)* | Connection-level bounds for the listening socket itself. |
 | `http.cors` | *(see below)* | Per-route defaults for the [`cors()`](/http/middleware/cors/) directive. |
 | `http.client` | *(see below)* | Outbound [`HttpClient`](/http/overview/) defaults. |
 | `http.websocket` | *(see below)* | Server-side WebSocket defaults for [`websocket()`](/http/websocket/) routes. |
@@ -698,6 +699,85 @@ settle — Express holding a live WebSocket, for one — the window becomes a
 deadline that is always reached, so a large value there is time you always
 pay.  A caller that passes its own value — `binding.unbind(1_000)` —
 overrides the config.
+
+The bounds on a **connection** — as against a route on it — come from
+`actor-ts.http.server`:
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `http.server.idle-timeout` | *(backend's own)* | How long an idle keep-alive connection is held before it is destroyed.  Ships **no leaf** — see below.  `0` disables it. |
+| `http.server.header-timeout` | `60s` | How long a connection may take to deliver its complete header block before it is answered `408` and destroyed.  The slow-loris guard. |
+| `http.server.request-timeout` | `300s` | How long a connection may take to deliver a request in full, headers and body.  Bounds *receiving*, never answering. |
+| `http.server.max-connections` | *(unlimited)* | Concurrent connections the listening socket accepts before it starts closing new ones.  Ships **no leaf** — see below. |
+
+The usual order applies per field: `newServerAt(...).withServerOptions(...)`
+wins, then this block, then the built-in default.  They are resolved once at
+`bind()` and installed on the server at `listen()`, so they reach a backend you
+constructed and passed to `useBackend(...)` exactly as they reach the one the
+framework builds for you.
+
+```hocon
+actor-ts.http.server {
+  idle-timeout    = 5s
+  request-timeout = 30s
+  max-connections = 10000
+}
+```
+
+:::caution[Not every backend can honour these]
+They are properties of a `node:http` server, so they hold exactly where one
+exists.
+
+| Key | Fastify | Express | Hono / Node | Hono / Bun | Hono / Deno |
+| --- | --- | --- | --- | --- | --- |
+| `idle-timeout` | yes | yes | yes | **no** | **no** |
+| `header-timeout` | yes | yes | yes | **no** | **no** |
+| `request-timeout` | yes | yes | yes | **no** | **no** |
+| `max-connections` | yes | yes | yes | **no** | **no** |
+
+Hono owns no server of its own — it delegates to a per-runtime runner — and
+only `@hono/node-server` hands its `node:http` server back.  `Bun.serve` and
+`Deno.serve` expose neither that server nor an equivalent knob, so on the Hono
+backend under Bun or Deno **none of these four is installed at all**.  That is
+a gap, not a silent partial: nothing is written and nothing pretends to have
+been.  Bun does have a whole-connection `idleTimeout` on `Bun.serve`, in
+*seconds* rather than milliseconds, which is close enough to be tempting and
+different enough to be wrong; it is not wired here.
+:::
+
+Two leaves ship **no value** and are listed above only so the names are
+discoverable, for the same reason four of the CORS leaves do: a published
+literal would be a number nobody chose.
+
+`idle-timeout` unset keeps whatever the backend picked, and the backends
+disagree **on purpose** — 72 s on Fastify against `node:http`'s 5 s on Express
+and on Hono-over-Node.  Fastify's is high so the server outlives a load
+balancer's idle window and the balancer never posts a request onto a socket
+that is already closing; five seconds is the platform's.  Neither is wrong, so
+the block picks no winner.  Set it to make them agree.
+
+`max-connections` unset is unlimited, which is what every release before this
+key did.  It is **server-wide**, unlike the `http.websocket.max-connections`
+below, which is per route: it counts every connection the process accepts on
+this binding — WebSocket upgrades included, and an attached
+[DevTools](/observability/devtools/overview/) server too, since DevTools binds
+through the same `system.http(...)` path.
+
+`header-timeout` and `request-timeout` are enforced by a periodic sweep whose
+interval the runtime fixes at 30 s and does not expose, so a connection is
+closed **no earlier than** the value set here and **no later than one sweep
+after it**.  Both ship the number `http.createServer` already uses, so
+publishing them changed nothing on Express or Hono — but Fastify sets
+`requestTimeout` to `0`, no bound at all, so on the default backend the
+published `300s` is a deadline where there previously was none.  At the 1 MiB
+body cap that is a client sending under 3.5 KB/s; raise it if you accept
+legitimately slower uploads, or set `0` to opt out.
+
+`request-timeout` bounds *receiving* only — the clock stops once the request has
+arrived — so a slow handler, a long poll and an SSE stream are unaffected.  The
+route-level [`timeout()`](/http/middleware/timeout/) middleware is the other
+half and is deliberately a different surface: it bounds how long a *handler*
+takes to answer, this bounds how long a *peer* takes to ask.
 
 The [`cors()`](/http/middleware/cors/) route directive reads its per-field
 defaults from `actor-ts.http.cors`:

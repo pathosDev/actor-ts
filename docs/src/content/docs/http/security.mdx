@@ -180,6 +180,20 @@ the [Route DSL](/http/route-dsl/).
   before a byte of it is read; a chunked body declares no length, so all three
   backends count it as it arrives and abandon the read at the cap — the bytes
   past it are never received.
+- **A connection's own time**, which is the bound the rest of this list does
+  not cover: a peer that never finishes sending has no request to time out, so
+  no size cap and no route-level `timeout()` ever sees it. A server bounds the
+  header phase at **60 s** (`actor-ts.http.server.header-timeout` — the
+  slowloris guard, answered `408`) and the whole receive at **300 s**
+  (`request-timeout`). Both bound *receiving* only, so a slow handler, a long
+  poll and an SSE stream are untouched. `max-connections` caps how many
+  connections the process accepts at once, and `idle-timeout` how long a quiet
+  keep-alive socket is held; both ship unset, so nothing is capped until you
+  say so. **They are properties of a `node:http` server**, so Fastify, Express
+  and Hono-on-Node honour them and Hono on Bun or Deno cannot — see the
+  [configuration reference](/reference/configuration/) for the table. Enforcement
+  of the two receive deadlines runs on a 30 s sweep the runtime does not expose,
+  so a connection is closed no later than one sweep past the value you set.
 - **WebSocket frames** are capped by `maxFrameBytes` (1 MiB default). The
   framework always refuses an oversize frame before it reaches your actor; on
   most runtime/backend pairs the resolved cap is *also* handed to the runtime's

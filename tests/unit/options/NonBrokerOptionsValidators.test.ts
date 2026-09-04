@@ -14,6 +14,7 @@ import {
 import { WebsocketClientOptionsValidator, type WebsocketClientOptionsType } from '../../../src/http/websocket/WebsocketClientOptions.js';
 import { ExpressBackendOptionsValidator, type ExpressBackendOptionsType } from '../../../src/http/backend/ExpressBackendOptions.js';
 import { HonoBackendOptionsValidator, type HonoBackendOptionsType } from '../../../src/http/backend/HonoBackendOptions.js';
+import { HttpServerOptionsValidator, type HttpServerOptionsType } from '../../../src/http/HttpServerOptions.js';
 import { LeaseOptionsValidator, type LeaseOptionsType } from '../../../src/coordination/LeaseOptions.js';
 import {
   KubernetesLeaseOptionsValidator,
@@ -238,6 +239,36 @@ describe('HTTP backend option validators', () => {
     const check = (s: Partial<HonoBackendOptionsType>): void =>
       new HonoBackendOptionsValidator().validate(s);
     expect(() => check({ maxBodyBytes: -5 })).toThrow(OptionsError);
+  });
+});
+
+describe('HttpServerOptionsValidator', () => {
+  const check = (s: Partial<HttpServerOptionsType>): void =>
+    new HttpServerOptionsValidator().validate(s);
+
+  test('admits 0 on all three timeouts — it is the runtime\'s own "no bound"', () => {
+    // The asymmetry with HttpClientOptions.defaultTimeoutMs is deliberate and
+    // is the reason this case is pinned: `requestTimeout = 0` is exactly what
+    // Fastify sets today, so refusing it would leave an operator who wants
+    // that behaviour back with nothing to write.
+    expect(() => check({ idleTimeoutMs: 0, headerTimeoutMs: 0, requestTimeoutMs: 0 })).not.toThrow();
+  });
+
+  test('rejects the values that arm a guard which never fires', () => {
+    expect(() => check({ idleTimeoutMs: -1 })).toThrow(/idleTimeoutMs/);
+    expect(() => check({ headerTimeoutMs: NaN })).toThrow(/headerTimeoutMs/);
+    expect(() => check({ requestTimeoutMs: -1 })).toThrow(/requestTimeoutMs/);
+  });
+
+  test('maxConnections is a positive integer or Infinity', () => {
+    expect(() => check({ maxConnections: Infinity })).not.toThrow();
+    expect(() => check({ maxConnections: 1 })).not.toThrow();
+    expect(() => check({ maxConnections: 0 })).toThrow(/maxConnections/);
+    expect(() => check({ maxConnections: 2.5 })).toThrow(OptionsError);
+  });
+
+  test('an empty bag passes — every field is optional and unset is a state', () => {
+    expect(() => check({})).not.toThrow();
   });
 });
 

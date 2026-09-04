@@ -48,6 +48,17 @@ own knobs.
 the same cap the Express and Hono backends apply, so which requests are
 accepted does not change with the backend. Passing your own still wins.
 
+The connection-level bounds under
+[`actor-ts.http.server`](/reference/configuration/) are installed on
+`fastify.server` after `listen()`, so they hold here whether the framework
+built this backend or you did. Two of Fastify's own defaults differ from
+`node:http`'s and are worth knowing: `keepAliveTimeout` is **72 s** rather than
+5 s — deliberately, so the server outlives a load balancer's idle window — and
+`requestTimeout` is **0**, no bound at all. The framework now publishes
+`request-timeout = 300s`, so on this backend that is a receive deadline where
+there previously was none. Set it back to `0` in your config to restore the old
+behaviour; `idle-timeout` ships no value, so Fastify's 72 s is untouched.
+
 ## Behind a reverse proxy
 
 `HttpRequest.remoteAddress` comes from Fastify's `req.ip`, which without
