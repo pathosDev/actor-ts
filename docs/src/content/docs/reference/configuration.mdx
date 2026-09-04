@@ -604,6 +604,36 @@ The same leaf rule and the same startup rejection apply here: kebab-case, unit
 suffix dropped, and a retired camelCase spelling is a `ConfigError` rather than
 a cap that silently reverted to the default.
 
+### `actor-ts.reliable-delivery`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `reliable-delivery.producer.resend-timeout` | `500ms` | How long the producer waits for an acknowledgment before retransmitting the same seq.  One fixed interval, re-armed unchanged on every miss — there is no backoff. |
+| `reliable-delivery.producer.window-size` | `16` | Flow-control window: at most this many un-acked messages in flight.  Further sends queue in memory until an acknowledgment opens a slot. |
+| `reliable-delivery.consumer.max-producers` | `1024` | Most producers the consumer keeps deduplication state for at once.  At the cap the least-recently-used entry is evicted.  `0` = unbounded. |
+| `reliable-delivery.consumer.producer-idle-time-to-live` | `5m` | How long a producer's deduplication entry survives with no delivery from it; the sweep runs on this same interval.  `0` turns the sweep off. |
+
+Both blocks layer under whatever `ReliableDelivery.producer(...)` /
+`ReliableDelivery.consumer(...)` was passed, so an explicit `withWindowSize(…)`
+still wins.  **They are read there and nowhere else.**  Neither controller can
+read configuration in its constructor — `Actor.system` is a getter over a
+context the cell injects afterwards — so a controller you construct yourself
+and hand to `system.spawn` keeps its built-in defaults and never sees this
+block.
+
+`0` is how both consumer bounds spell the `Infinity` their option fields
+document, because `Infinity` cannot be written in HOCON at all: the number
+reader takes a numeric literal and the duration parser refuses a non-finite
+value.  It is the same spelling `cluster.max-members` and
+`sharding.max-entities` already use.  What it costs is worth stating plainly:
+the deduplication map is keyed by a `producerId` the *sender* chooses, so `0`
+hands a peer the decision about how much this consumer retains — one entry per
+distinct id, never released.
+
+`maxOutOfOrder`, the third consumer bound, deliberately ships no key yet: it
+landed after this block was specified and gets its own follow-up rather than a
+leaf nobody sized.
+
 ### `actor-ts.serialization`
 
 | Key | Default | Purpose |

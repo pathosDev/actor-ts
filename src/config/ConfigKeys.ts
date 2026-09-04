@@ -650,6 +650,48 @@ export const ConfigKeys = {
   },
 
   /**
+   * Reliable delivery — `actor-ts.reliable-delivery.*` (#861).
+   *
+   * Every leaf is spelled out rather than covered by a block root, for the
+   * reason the two groups below it give: `NoDeadConfigKeys`' covering accessor
+   * falls back to *"a root above it"*, so a root-only entry would let any leaf
+   * under it pass whether or not a reader addresses it.  The readers are
+   * `readProducerControllerOptionsFromConfig`
+   * (`src/delivery/ProducerControllerOptions.ts`) and
+   * `readConsumerControllerOptionsFromConfig`
+   * (`src/delivery/ConsumerControllerOptions.ts`), layered in
+   * `ReliableDelivery.producer` / `.consumer`.
+   *
+   * The block is named for the `ReliableDelivery` class and the
+   * `reliable-delivery.*` message kinds on the wire, not for the `src/delivery`
+   * directory: `actor-ts.logger.sinks.*.delivery.*` is already taken by log-sink
+   * batching, with its own `DeliveryOptions` type and `DEFAULT_DELIVERY_*`
+   * constants, so a top-level `actor-ts.delivery` would collide in prose and in
+   * constant naming even though HOCON would keep the two apart.
+   *
+   * `producer-idle-time-to-live` spells out the field's `Ttl`, following
+   * `cluster.tombstone.time-to-live` ⇔ `tombstoneTtlMs` above — the same
+   * divergence from the leaf/field lockstep, and the same reason for it: the
+   * `Ms` suffix is carried by the HOCON duration unit and the abbreviation is
+   * one AGENTS.md asks to spell out.
+   *
+   * `producer.producer-id` deliberately has no key.  It is a real options
+   * field, but one shared value across every producer in a process is the
+   * corruption `Constants.ts` documents — the consumer keys its deduplication
+   * on it, so two producers sharing an id reset each other's window.
+   */
+  reliableDelivery: {
+    producer: {
+      resendTimeout: 'actor-ts.reliable-delivery.producer.resend-timeout',
+      windowSize: 'actor-ts.reliable-delivery.producer.window-size',
+    },
+    consumer: {
+      maxProducers: 'actor-ts.reliable-delivery.consumer.max-producers',
+      producerIdleTimeToLive: 'actor-ts.reliable-delivery.consumer.producer-idle-time-to-live',
+    },
+  },
+
+  /**
    * Decoder ceilings — `actor-ts.serialization.read-constraints.*` (#880).
    *
    * Every leaf is declared individually rather than as a block root, and that

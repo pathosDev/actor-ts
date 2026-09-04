@@ -105,6 +105,7 @@ import {
   DEFAULT_DELIVERY_OVERFLOW,
   DEFAULT_DELIVERY_QUEUE_CAPACITY,
 } from '../../../src/logging/DeliveryOptions.js';
+import { DEFAULT_MAX_PRODUCERS, DEFAULT_PRODUCER_IDLE_TTL_MS, DEFAULT_RESEND_TIMEOUT_MS, DEFAULT_WINDOW_SIZE } from '../../../src/delivery/index.js';
 import {
   DEFAULT_CONSOLE_SINK_FORMAT,
   DEFAULT_CONSOLE_SINK_STREAM,
@@ -336,6 +337,17 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.diagnostics.log-dead-letters', kind: 'int', constant: DEFAULT_LOG_DEAD_LETTERS },
   { key: 'actor-ts.diagnostics.log-dead-letters-during-shutdown', kind: 'bool', constant: DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN },
   { key: 'actor-ts.diagnostics.log-dead-letters-suspend-duration', kind: 'duration', constant: DEFAULT_LOG_DEAD_LETTERS_SUSPEND_DURATION_MS },
+
+  /* --- reliable delivery --- */
+  // `max-producers` and `producer-idle-time-to-live` publish `0` as their
+  // opt-out while the fields document `Infinity`, so the reader translates —
+  // and the published literal is still the constant, which is what these two
+  // entries pin.  `maxOutOfOrder`, the third consumer bound, ships no leaf at
+  // all and so is not part of the partition (#861).
+  { key: 'actor-ts.reliable-delivery.producer.resend-timeout', kind: 'duration', constant: DEFAULT_RESEND_TIMEOUT_MS },
+  { key: 'actor-ts.reliable-delivery.producer.window-size', kind: 'int', constant: DEFAULT_WINDOW_SIZE },
+  { key: 'actor-ts.reliable-delivery.consumer.max-producers', kind: 'int', constant: DEFAULT_MAX_PRODUCERS },
+  { key: 'actor-ts.reliable-delivery.consumer.producer-idle-time-to-live', kind: 'duration', constant: DEFAULT_PRODUCER_IDLE_TTL_MS },
 
   /* --- coordination --- */
   // The three sibling keys — `lease.ttl`, `lease.renewal-interval` and

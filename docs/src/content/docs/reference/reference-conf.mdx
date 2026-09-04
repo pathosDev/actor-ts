@@ -617,6 +617,48 @@ actor-ts {
     }
   }
 
+  # Reliable delivery -- the push+ack protocol behind ReliableDelivery.producer
+  # and ReliableDelivery.consumer.  These four layer UNDER whatever those two
+  # statics were passed, so an explicit withWindowSize(...) still wins.  They
+  # are read THERE and nowhere else: neither controller can read config from
+  # its constructor, so one constructed directly and handed to system.spawn
+  # keeps its built-in defaults and never sees this block.
+  reliable-delivery {
+    producer {
+      # How long the producer waits for an acknowledgment before retransmitting
+      # the same seq.  One fixed interval, re-armed unchanged on every miss --
+      # there is no backoff here to tune (#646).
+      resend-timeout = 500ms
+
+      # Flow-control window: at most this many un-acked messages in flight.
+      # Further sends queue in memory until an acknowledgment opens a slot, so
+      # raising it trades the producer's heap against throughput over a link
+      # whose round-trip dominates.  Keep it under the consumer's out-of-order
+      # retention (1024, not settable here), which is what stalls a producer
+      # that runs ahead of a gap.
+      window-size = 16
+    }
+    consumer {
+      # Most producers the consumer keeps deduplication state for at once.
+      # The map is keyed by a producerId the SENDER chooses, so 0 -- unbounded
+      # -- hands a peer the decision about how much this consumer retains, one
+      # entry per distinct id and never released; that is the growth #728
+      # bounded, and it has no symptom short of the OOM.  At the cap the
+      # least-recently-used entry is evicted, which costs that producer's
+      # duplicate suppression and nothing else.
+      max-producers = 1024
+
+      # How long a producer's deduplication entry survives with no delivery
+      # from it.  The sweep runs on this same interval, so an idle entry is
+      # released somewhere between one and two of them; 0 turns the sweep off
+      # and leaves max-producers as the only thing reclaiming anything.  Keep
+      # it well above the producers' resend-timeout -- an entry dropped while
+      # its producer is still retransmitting one seq costs a duplicate handler
+      # call, and the default leaves three orders of magnitude of headroom.
+      producer-idle-time-to-live = 5m
+    }
+  }
+
   # Ceilings applied to bytes this process DECODES.  They bound what a peer or
   # a client can make a decoder do; they never change what this node writes, so
   # lowering one makes this node stricter than its own encoder rather than
