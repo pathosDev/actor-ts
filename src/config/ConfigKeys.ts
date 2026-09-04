@@ -270,7 +270,46 @@ export const ConfigKeys = {
       plugin: 'actor-ts.persistence.snapshot-store.plugin',
       inMemory: 'actor-ts.persistence.snapshot-store.in-memory',
       cassandra: 'actor-ts.persistence.snapshot-store.cassandra',
-      objectStorage: 'actor-ts.persistence.snapshot-store.object-storage',
+      /**
+       * The object-storage plugin's block — the framework's rule that a plugin
+       * id *is* its config section, so `root` is also
+       * `OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID` (#873).  It configures both stores
+       * `registerObjectStoragePlugins` returns, because the two share one
+       * backend; `durableState.objectStorage` below stays a bare plugin id and
+       * gets no leaves of its own.
+       *
+       * Full dotted leaves beside the `root`, for the reason `http.websocket`
+       * spells out: `NoDeadConfigKeys`' `coveringAccessor` falls back to the
+       * nearest root, so a root alone passes the guard for every leaf beneath
+       * it whether or not the reader reads it — and here the root literal is
+       * *also* hard-coded as the plugin id in `ObjectStoragePlugin.ts`, so a
+       * root-only entry would have been satisfied by a string that is not a
+       * config read at all.
+       *
+       * No leaf carries key material, and that is structural rather than a
+       * convention: `s3.credentials`, the client-side master key and the
+       * integrity key have no path here at all, so a config file cannot
+       * express them.
+       */
+      objectStorage: {
+        root: 'actor-ts.persistence.snapshot-store.object-storage',
+        backend: 'actor-ts.persistence.snapshot-store.object-storage.backend',
+        prefix: 'actor-ts.persistence.snapshot-store.object-storage.prefix',
+        keepN: 'actor-ts.persistence.snapshot-store.object-storage.keep-n',
+        maxDecompressedBytes: 'actor-ts.persistence.snapshot-store.object-storage.max-decompressed-bytes',
+        compressionAlgorithm: 'actor-ts.persistence.snapshot-store.object-storage.compression.algorithm',
+        /** Comment-only in `reference.conf` — absence selects the encoder's per-algorithm default. */
+        compressionLevel: 'actor-ts.persistence.snapshot-store.object-storage.compression.level',
+        encryptionMode: 'actor-ts.persistence.snapshot-store.object-storage.encryption.mode',
+        encryptionKmsKeyId: 'actor-ts.persistence.snapshot-store.object-storage.encryption.kms-key-id',
+        s3Bucket: 'actor-ts.persistence.snapshot-store.object-storage.s3.bucket',
+        s3Region: 'actor-ts.persistence.snapshot-store.object-storage.s3.region',
+        s3Endpoint: 'actor-ts.persistence.snapshot-store.object-storage.s3.endpoint',
+        s3ForcePathStyle: 'actor-ts.persistence.snapshot-store.object-storage.s3.force-path-style',
+        filesystemDir: 'actor-ts.persistence.snapshot-store.object-storage.filesystem.dir',
+        filesystemLockTimeout: 'actor-ts.persistence.snapshot-store.object-storage.filesystem.lock-timeout',
+        filesystemStaleLock: 'actor-ts.persistence.snapshot-store.object-storage.filesystem.stale-lock',
+      },
     },
     durableState: {
       objectStorage: 'actor-ts.persistence.durable-state.object-storage',

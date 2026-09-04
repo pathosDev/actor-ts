@@ -81,6 +81,48 @@ type ObjectStorageSnapshotStoreOptionsType = {
 | `requireContextBinding` | Refuse snapshots not bound to the key they were read from — closes replay onto another persistenceId or sequence number.  Turn on once the bucket is rewritten.  See [Binding a body to its key](/persistence/object-storage/encryption/#binding-a-body-to-its-key).  Default false. |
 | `maxDecompressedBytes` | Decompression-bomb guard — cap on a decoded snapshot's size.  Default 512 MiB. |
 
+## From configuration
+
+Constructing the store by hand, as above, is one of two routes.  The other is
+`registerObjectStoragePlugins`, which builds this store *and* the durable-state
+store over one shared backend and can take every field from HOCON:
+
+```hocon
+actor-ts.persistence.snapshot-store {
+  plugin = "actor-ts.persistence.snapshot-store.object-storage"
+
+  object-storage {
+    backend = "s3"
+    prefix  = "snapshots/"
+    keep-n  = 5
+
+    s3 {
+      bucket = "my-app-state"
+      region = "eu-central-1"
+    }
+  }
+}
+```
+
+```ts
+import { PersistenceExtensionId, registerObjectStoragePlugins } from 'actor-ts/persistence';
+
+const ext = system.extension(PersistenceExtensionId);
+await registerObjectStoragePlugins(ext);
+// ext.snapshotStore is now the configured ObjectStorageSnapshotStore.
+```
+
+`prefix`, `keepN`, `compression`, `encryption` and `maxDecompressedBytes` map
+one-to-one onto the leaves of that block; explicit
+`ObjectStoragePluginOptions` still win field by field.  Two fields in the table
+above are deliberately **absent** from HOCON: `allowUntaggedBodies` and
+`requireContextBinding` do nothing without an `integrity` or client-side
+`encryption` config, and neither of those can come from a config file, because
+both need a 32-byte key.  A knob that could never do anything from HOCON is
+worse than no knob, so it is not published there — set them in code alongside
+the key that makes them meaningful.  See
+[Configuration reference](/reference/configuration/#actor-tspersistence).
+
 ## Key layout
 
 ```

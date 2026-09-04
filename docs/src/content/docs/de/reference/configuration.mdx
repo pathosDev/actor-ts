@@ -445,6 +445,44 @@ ein `ConfigError` statt einer Obergrenze, die still auf den Default zurückfiel.
 | --- | --- | --- |
 | `persistence.journal.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Journals. |
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Snapshot Stores. |
+| `persistence.snapshot-store.object-storage.backend` | `""` | Welches Backend das Object-Storage-Plugin baut — `filesystem`, `s3`, oder leer, um es dem Code zu überlassen. |
+| `persistence.snapshot-store.object-storage.prefix` | `""` | Wird jedem Object-Key vorangestellt — z. B. `env-prod/`. |
+| `persistence.snapshot-store.object-storage.keep-n` | `3` | Aufbewahrte Snapshots pro `persistenceId`; `0` schaltet das Pruning ab. |
+| `persistence.snapshot-store.object-storage.max-decompressed-bytes` | `512M` | Schutz gegen Dekompressionsbomben beim Lesen.  `Infinity` schaltet ihn ab und geht nur im Code. |
+| `persistence.snapshot-store.object-storage.compression.algorithm` | `"gzip"` | Kompression at rest — `none` / `gzip` / `zstd`. |
+| `persistence.snapshot-store.object-storage.encryption.mode` | `"none"` | Serverseitige Verschlüsselung — `none` / `sse-s3` / `sse-kms`.  `client-aes256-gcm` wird hier abgelehnt. |
+| `persistence.snapshot-store.object-storage.encryption.kms-key-id` | `""` | KMS-Key-ARN, nötig bei Modus `sse-kms`.  Ein *Name* des Schlüssels, niemals Schlüsselmaterial. |
+| `persistence.snapshot-store.object-storage.s3.bucket` | `""` | Bucket-Name.  Pflicht bei `backend = s3`. |
+| `persistence.snapshot-store.object-storage.s3.region` | `""` | AWS-Region; `auto` für Cloudflare R2.  Pflicht bei `backend = s3`. |
+| `persistence.snapshot-store.object-storage.s3.endpoint` | `""` | Endpoint für MinIO / R2 / B2 / Spaces / Wasabi; leer bedeutet AWS S3. |
+| `persistence.snapshot-store.object-storage.s3.force-path-style` | `off` | Path-Style-URLs statt Virtual-Host-Style — nötig für MinIO. |
+| `persistence.snapshot-store.object-storage.filesystem.dir` | `""` | Wurzelverzeichnis, wird rekursiv angelegt.  Pflicht bei `backend = filesystem`. |
+| `persistence.snapshot-store.object-storage.filesystem.lock-timeout` | `5s` | Wartezeit auf ein Write-Lock pro Key, bevor abgebrochen wird. |
+| `persistence.snapshot-store.object-storage.filesystem.stale-lock` | `30s` | Lock-Dateien, die älter sind, werden zwangsweise entfernt. |
+
+Der `object-storage`-Block konfiguriert **beide** Stores, die
+`registerObjectStoragePlugins(ext)` zurückgibt: Snapshot Store und
+Durable-State-Store teilen sich ein Backend, also wird es einmal statt zweimal
+deklariert.  Ist der Block gefüllt, braucht der Aufruf gar keine Options mehr —
+`await registerObjectStoragePlugins(ext)`.  Explizite
+`ObjectStoragePluginOptions` gewinnen weiterhin, Feld für Feld, und ein im Code
+nicht gesetztes Feld fällt auf den Block durch, statt ihn zu überdecken.  Werte
+werden einmal auf den gemergten Settings validiert, also wirft `backend = s3`
+ohne Bucket schon bei der Registrierung einen `OptionsError`, der
+`backend.bucket` benennt, statt erst beim ersten Snapshot zu scheitern.
+
+**Für Schlüsselmaterial gibt es in diesem Block keinen Pfad, und das ist
+strukturell und nicht bloß Konvention.**  Es existiert kein Blatt für
+S3-Credentials, für einen clientseitigen Master Key oder für einen
+Integritätsschlüssel — eine Config-Datei kann sie also gar nicht ausdrücken.
+Lässt man die S3-Credentials weg, greift die Default-Chain des SDK:
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, ein EC2-Instance-Profile oder
+IAM Roles for Service Accounts.  `encryption.mode = client-aes256-gcm` wird mit
+einem `OptionsError` **abgelehnt** statt still ignoriert, denn ein Deployment,
+das clientseitige Verschlüsselung angefordert hat und stillschweigend Klartext
+bekommt, ist das schlechtere Ergebnis; konfiguriere diesen Modus im Code mit
+`ObjectStoragePluginOptions.withEncryption(…)`.  `kms-key-id` ist unbedenklich —
+eine ARN ist ein Name, und der Schlüssel selbst verlässt KMS nie.
 
 Die Plugin-Keys zeigen auf *einen anderen* Config-Abschnitt, der
 die Settings dieses Plugins enthält.  Z. B. enthält

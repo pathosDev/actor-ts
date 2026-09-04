@@ -10,6 +10,18 @@ import type {
 } from '../object-storage/PluginConfig.js';
 import type { ObjectStorageBackend } from '../object-storage/ObjectStorageBackend.js';
 
+/**
+ * Built-in default for {@link ObjectStorageSnapshotStoreOptionsType.keepN} —
+ * how many snapshots survive per `persistenceId`.
+ *
+ * Object-storage-specific and therefore *not* in `src/persistence/Constants.ts`:
+ * the durable-state store has no history to retain, so this is one options
+ * type's field default rather than a value two of them share.  It is named
+ * because `reference.conf` publishes it (`…object-storage.keep-n`, #873) and
+ * `DocumentedDefaults` compares the published literal against a constant.
+ */
+export const DEFAULT_SNAPSHOT_KEEP_N = 3;
+
 export type ObjectStorageSnapshotStoreOptionsType = StoreSerializerOptionsBase & {
   /** The underlying storage layer (S3 / Filesystem / …). */
   readonly backend: ObjectStorageBackend;

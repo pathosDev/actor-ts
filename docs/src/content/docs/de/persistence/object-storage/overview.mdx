@@ -232,6 +232,57 @@ const s3ObjectStorage3Options = S3ObjectStorageOptions.create()
 new S3ObjectStorageBackend(s3ObjectStorage3Options);
 ```
 
+## Aus der Konfiguration
+
+Alles oben ist die Builder-Form, und sie bleibt der primäre Stil.  Dieselbe
+Verdrahtung ist auch aus HOCON erreichbar — genau das, was eine Flotte braucht,
+wenn Bucket, Region und Prefix sich pro Umgebung unterscheiden:
+
+```hocon
+actor-ts.persistence.snapshot-store {
+  plugin = "actor-ts.persistence.snapshot-store.object-storage"
+
+  object-storage {
+    backend = "s3"
+    prefix  = "env-prod/"
+    keep-n  = 5
+
+    compression { algorithm = "zstd" }
+    encryption  { mode = "sse-kms", kms-key-id = "arn:aws:kms:eu-central-1:…" }
+
+    s3 {
+      bucket = "my-app-state"
+      region = "eu-central-1"
+    }
+  }
+}
+```
+
+```ts
+import { PersistenceExtensionId, registerObjectStoragePlugins } from 'actor-ts/persistence';
+
+const ext = system.extension(PersistenceExtensionId);
+const { durableStateStore, close } = await registerObjectStoragePlugins(ext);
+```
+
+Gar kein Options-Argument: Das Plugin liest seinen Block über die Extension.
+Ein Block konfiguriert **beide** Stores, die der Aufruf zurückgibt, denn
+Snapshot Store und Durable-State-Store teilen sich ein einziges Backend.
+Options trotzdem zu übergeben funktioniert weiterhin und gewinnt Feld für Feld
+— eine Option, die du nicht setzt, fällt auf HOCON durch, statt es zu
+überdecken.  Alle Blätter stehen in der
+[Konfigurationsreferenz](/de/reference/configuration/#actor-tspersistence).
+
+**Für Credentials und Schlüssel gibt es in diesem Block keinen Pfad.**  Es
+existiert kein Blatt für S3-Credentials, für einen clientseitigen Master Key
+oder für einen Integritätsschlüssel — eine Config-Datei kann sie also nicht
+tragen: Lässt man die S3-Credentials weg, greift die Default-Chain des SDK
+(`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, ein EC2-Instance-Profile, IAM
+Roles for Service Accounts), und `encryption.mode = client-aes256-gcm` wird mit
+einem `OptionsError` abgelehnt, der auf
+`ObjectStoragePluginOptions.withEncryption(…)` zeigt, statt still Klartext zu
+schreiben.  `kms-key-id` ist eine ARN — ein Name — und damit unbedenklich.
+
 ## Optionale Features
 
 | Feature | Seite |

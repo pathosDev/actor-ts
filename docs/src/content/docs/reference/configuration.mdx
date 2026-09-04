@@ -428,6 +428,42 @@ a cap that silently reverted to the default.
 | --- | --- | --- |
 | `persistence.journal.plugin` | `"...in-memory"` | Fully-qualified key to the journal's config. |
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Fully-qualified key to the snapshot store's config. |
+| `persistence.snapshot-store.object-storage.backend` | `""` | Which backend the object-storage plugin builds — `filesystem`, `s3`, or empty to leave it to code. |
+| `persistence.snapshot-store.object-storage.prefix` | `""` | Prepended to every object key — e.g. `env-prod/`. |
+| `persistence.snapshot-store.object-storage.keep-n` | `3` | Snapshots kept per `persistenceId`; `0` disables pruning. |
+| `persistence.snapshot-store.object-storage.max-decompressed-bytes` | `512M` | Decompression-bomb guard on read.  `Infinity` opts out and is code-only. |
+| `persistence.snapshot-store.object-storage.compression.algorithm` | `"gzip"` | At-rest compression — `none` / `gzip` / `zstd`. |
+| `persistence.snapshot-store.object-storage.encryption.mode` | `"none"` | Server-side encryption — `none` / `sse-s3` / `sse-kms`.  `client-aes256-gcm` is refused here. |
+| `persistence.snapshot-store.object-storage.encryption.kms-key-id` | `""` | KMS key ARN, required when the mode is `sse-kms`.  A key *name*, never key material. |
+| `persistence.snapshot-store.object-storage.s3.bucket` | `""` | Bucket name.  Required when `backend = s3`. |
+| `persistence.snapshot-store.object-storage.s3.region` | `""` | AWS region; `auto` for Cloudflare R2.  Required when `backend = s3`. |
+| `persistence.snapshot-store.object-storage.s3.endpoint` | `""` | MinIO / R2 / B2 / Spaces / Wasabi endpoint; empty means AWS S3. |
+| `persistence.snapshot-store.object-storage.s3.force-path-style` | `off` | Path-style URLs instead of virtual-host style — required for MinIO. |
+| `persistence.snapshot-store.object-storage.filesystem.dir` | `""` | Root directory, created recursively.  Required when `backend = filesystem`. |
+| `persistence.snapshot-store.object-storage.filesystem.lock-timeout` | `5s` | Wait for a per-key write lock before failing. |
+| `persistence.snapshot-store.object-storage.filesystem.stale-lock` | `30s` | Lock files older than this are force-removed. |
+
+The `object-storage` block configures **both** stores
+`registerObjectStoragePlugins(ext)` returns: the snapshot store and the
+durable-state store share one backend, so it is declared once rather than
+twice.  With the block filled in, the call needs no options at all —
+`await registerObjectStoragePlugins(ext)`.  Explicit
+`ObjectStoragePluginOptions` still win, field by field, and a field left unset
+in code falls through to the block instead of shadowing it.  Values are
+validated once, on the merged settings, so `backend = s3` without a bucket
+throws an `OptionsError` naming `backend.bucket` at registration rather than
+failing at the first snapshot.
+
+**No key material has a path in that block, and that is structural rather than
+a convention.**  There is no leaf for S3 credentials, for a client-side master
+key or for an integrity key, so a config file cannot express one.  Omitting S3
+credentials falls through to the SDK's default chain — `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY`, an EC2 instance profile, or IAM Roles for Service
+Accounts.  `encryption.mode = client-aes256-gcm` is **refused** with an
+`OptionsError` rather than quietly ignored, because a deployment that asked for
+client-side encryption and silently got plaintext is the worse outcome;
+configure that mode in code with `ObjectStoragePluginOptions.withEncryption(…)`.
+`kms-key-id` is fine — an ARN is a name, and the key itself never leaves KMS.
 
 The plugin keys point to *another* config section that holds
 that plugin's settings.  E.g. `actor-ts.persistence.journal.sqlite`
