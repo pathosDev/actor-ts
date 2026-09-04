@@ -1383,11 +1383,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   configuration decide which address an authenticated `GET` reaches. The
   response must also announce `content-type: text/event-stream`; any other
   type, or none, is refused before a byte of the body is parsed. Both
-  refusals travel the ordinary reconnect path — backoff, circuit breaker,
-  `BrokerDisconnected` — so a feed that starts redirecting surfaces as a
-  broker that cannot connect rather than as a silent change of where
-  credentials go. Neither needs a new option, and so neither needs a HOCON
-  leaf (#787).
+  refusals travel the ordinary reconnect path — backoff, the circuit breaker,
+  a `BrokerReconnectAttempt` per retry and a `BrokerReconnectFailed` once the
+  retries run out — so a feed that starts redirecting surfaces as a broker
+  that cannot connect rather than as a silent change of where credentials go;
+  a refused connect publishes no `BrokerDisconnected`, which marks a live
+  connection being lost. Neither needs a new option, and so neither needs a
+  HOCON leaf (#787).
 
   Separately, the read loop stopped rescanning its pending buffer. The
   delimiter search restarted at index 0 on every read *and* the growing
