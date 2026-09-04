@@ -427,6 +427,13 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
    * which from the outside is indistinguishable from a healthy cluster with
    * nothing to do.  This node can only fix its own half of that, and does:
    * whatever it cannot route becomes observable (#155).
+   *
+   * The hand-rolled `deadLetters.tell(new DeadLetter(…))` this used to end
+   * with was the prototype for `Actor.unhandled`, so it now calls that
+   * instead (#1178).  Same letter, same recipient, plus the counter — which
+   * matters here more than anywhere, since version skew produces these at
+   * message rate and the dead-letter store that would otherwise count them is
+   * `off` by default.
    */
   private onUnhandled(message: MediatorInbox | PubSubWireMessage): void {
     const kind = (message as { kind?: unknown } | null)?.kind;
@@ -434,7 +441,7 @@ export class DistributedPubSubMediator extends Actor<MediatorInbox> {
       `[pubsub] no handler for '${String(kind ?? message)}' → dead letters — `
       + 'a peer may be speaking a newer wire protocol than this node',
     );
-    this.system.deadLetters.tell(new DeadLetter(message, this.sender.toNullable(), this.self));
+    this.unhandled(message);
   }
 
   /** Fan out to local subscribers; returns how many actually got the body. */

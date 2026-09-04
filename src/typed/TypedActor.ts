@@ -4,6 +4,7 @@ import type { ActorRef } from '../ActorRef.js';
 import { Directive, RestartBudget } from '../Supervision.js';
 import { DeadLetter, Terminated } from '../SystemMessages.js';
 import { LocalActorRef } from '../internal/LocalActorRef.js';
+import { recordUnhandled } from '../internal/Unhandled.js';
 import {
   StashOverflowError,
   type TimerScheduler,
@@ -538,9 +539,17 @@ export class TypedActor<T> extends Actor<T> {
    * declined the message, which is the one fact worth recording.  The
    * sender comes from the turn being processed, matching what the
    * untyped cell records for its own unhandled paths.
+   *
+   * Since #1178 that wrapping is `recordUnhandled`, shared with
+   * `Actor.unhandled` — one implementation for both halves of the API, and
+   * the reason this path finally ticks `actor_unhandled_total` instead of
+   * relying on a dead-letter counter that only moves once the store is
+   * configured on.
    */
   private forwardToDeadLetters(message: T): void {
-    this.system.deadLetters.tell(new DeadLetter(message, this.sender.toNullable(), this.self));
+    recordUnhandled(
+      this.system, this.self, this.constructor.name, this.sender.toNullable(), message,
+    );
   }
 }
 

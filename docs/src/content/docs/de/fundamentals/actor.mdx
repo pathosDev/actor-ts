@@ -233,6 +233,41 @@ import { Aside } from '@astrojs/starlight/components';
   Entscheidungsbaum.
 </Aside>
 
+## Eine Nachricht ablehnen — `unhandled()`
+
+Die andere Methode, die man kennen sollte — und die einzige, die du
+*aufrufst* statt sie zu überschreiben.  Ein Actor, der nur ein Subset
+eines breiteren Nachrichtentyps behandelt, beendet sein `match` mit
+`.otherwise((m) => this.onUnhandled(m))`; was dieser Handler tut,
+entscheidet, ob der Verlust sichtbar wird:
+
+```ts
+class Cashier extends Actor<Command> {
+  override onReceive(message: Command): void {
+    match(message)
+      .with({ kind: 'deposit' }, (m) => this.onDeposit(m))
+      .otherwise((m) => this.onUnhandled(m));
+  }
+
+  private onDeposit(command: DepositCommand): void { /* … */ }
+  private onUnhandled(message: Command): void { this.unhandled(message); }
+}
+```
+
+`this.unhandled(message)` verpackt sie in einen `DeadLetter`, der
+**diesen** Actor als Empfänger nennt — nicht das Dead-Letter-Büro, denn
+"irgendetwas, irgendwo hat das abgelehnt" ist keine Diagnose —,
+publiziert ihn auf dem [Event-Stream](/de/fundamentals/event-stream/)
+und zählt `actor_unhandled_total{class}` hoch.  Den Counter gibt es,
+weil die [Dead-Letter-Queue](/de/operations/dead-letters/) per Default
+auf `store = off` steht: auf einem unkonfigurierten System zählt einen
+Dead Letter niemand.
+
+Automatisch passiert das nicht.  Ein Handler, der einfach zurückkehrt,
+erzeugt weiterhin weder Brief noch Zählung — und das ist richtig: die
+Runtime kann einen Actor, der eine Nachricht bewusst ignoriert, nicht
+von einem unterscheiden, der sie verloren hat.
+
 ## Sich selbst benennen — `displayName()`
 
 Kein Lifecycle-Hook, aber die andere Methode, die sich zu überschreiben

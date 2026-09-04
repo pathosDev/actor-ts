@@ -228,6 +228,7 @@ than here.
 | Metric | Type | Labels | Meaning |
 | --- | --- | --- | --- |
 | `actor_dead_letters_total` | counter | `outcome` | Undeliverable messages the dead-letter queue captured, by outcome. |
+| `actor_unhandled_total` | counter | `class` | Messages a live actor was handed and declined, by actor class. |
 
 Only present once
 [`actor-ts.dead-letters.store`](/operations/dead-letters/) is something
@@ -264,6 +265,24 @@ answers "how much, and how is it trending".
 sustained non-zero rate means messages are being sent to actors that are
 not there — a stale ref held past a restart, a selection built from a
 path that changed, a singleton with no host.
+
+`actor_unhandled_total` is the neighbouring signal, and the one that is
+present by default.  It counts a message that *was* delivered and then
+declined — an actor calling
+[`this.unhandled(m)`](/fundamentals/actor/#declining-a-message--unhandled),
+a behavior answering `Behaviors.unhandled`, or a cluster wire frame no
+handler claimed — and unlike the counter above it does not need the queue
+switched on, because it is incremented at the sink rather than by the
+queue.  `class` is the declining actor's constructor name, or `Cluster`
+for the wire case, which has no actor to name; it is the only label, for
+exactly the reason the paragraph above gives about `recipient`.
+
+A sustained rate here is a **protocol** problem rather than a routing one:
+something is sending this node messages it will not handle, which after a
+rolling upgrade usually means a peer speaking a newer wire protocol than
+this build knows.  Nothing detects a declined message on your behalf — an
+actor that silently ignores one still counts nothing, which is what makes
+a non-zero rate a statement rather than noise.
 
 ## Cluster metrics
 

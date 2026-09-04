@@ -247,6 +247,7 @@ Event-Loop-Aushungerung, nicht hierher.
 | Metrik | Typ | Labels | Bedeutung |
 | --- | --- | --- | --- |
 | `actor_dead_letters_total` | counter | `outcome` | Von der Dead-Letter-Queue erfasste unzustellbare Nachrichten, nach Ausgang. |
+| `actor_unhandled_total` | counter | `class` | Nachrichten, die ein lebender Actor bekommen und abgelehnt hat, nach Actor-Klasse. |
 
 Nur vorhanden, sobald
 [`actor-ts.dead-letters.store`](/de/operations/dead-letters/) etwas
@@ -286,6 +287,26 @@ Jede anhaltend von null verschiedene Rate bedeutet, dass Nachrichten an
 Actors gehen, die nicht da sind — eine über einen Neustart hinaus
 gehaltene veraltete Ref, eine Selection aus einem geänderten Pfad, ein
 Singleton ohne Host.
+
+`actor_unhandled_total` ist das Nachbarsignal — und dasjenige, das
+standardmäßig da ist. Es zählt eine Nachricht, die *zugestellt* und dann
+abgelehnt wurde: ein Actor, der
+[`this.unhandled(m)`](/de/fundamentals/actor/#eine-nachricht-ablehnen--unhandled)
+aufruft, ein Behavior, das mit `Behaviors.unhandled` antwortet, oder ein
+Cluster-Wire-Frame, für den kein Handler registriert ist. Anders als der
+Counter darüber braucht es die Queue nicht eingeschaltet, denn es wird an
+der Senke hochgezählt und nicht von der Queue. `class` ist der
+Konstruktorname des ablehnenden Actors — beziehungsweise `Cluster` für den
+Wire-Fall, der keinen Actor zu nennen hat — und es ist das einzige Label,
+aus genau dem Grund, den der Absatz oben zu `recipient` nennt.
+
+Eine anhaltende Rate hier ist ein **Protokoll**-Problem und kein
+Routing-Problem: irgendetwas schickt diesem Knoten Nachrichten, die er
+nicht behandeln wird, was nach einem Rolling Upgrade meist einen Peer
+bedeutet, der ein neueres Wire-Protokoll spricht als dieser Build kennt.
+Erkannt wird eine abgelehnte Nachricht dabei von niemandem automatisch —
+ein Actor, der eine Nachricht still ignoriert, zählt weiterhin nichts, und
+genau das macht eine Rate über null zu einer Aussage statt zu Rauschen.
 
 ## Cluster-Metriken
 

@@ -8,7 +8,12 @@ import { metricsOf } from '../metrics/MetricsExtension.js';
 import { tracerOf } from '../tracing/TracingExtension.js';
 import type { Cancellable } from '../Scheduler.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../util/Constants.js';
-import { COLD_START_STALL_AFTER_SEED_ROUNDS, MAX_WALL_CLOCK_SKEW_MS } from './Constants.js';
+import {
+  COLD_START_STALL_AFTER_SEED_ROUNDS,
+  MAX_REPORTED_UNCLAIMED_WIRE_KINDS,
+  MAX_WALL_CLOCK_SKEW_MS,
+} from './Constants.js';
+import { countUnhandled } from '../internal/Unhandled.js';
 import { none, some, type Option } from '../util/Option.js';
 import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { ClusterExtensionId } from './ClusterExtension.js';
@@ -75,7 +80,7 @@ import type {
   WireMessage,
 } from './Protocol.js';
 import { decodeRefs, encodeRefs } from './RefCodec.js';
-import { sanitizeWireLogContext } from './WireValidation.js';
+import { sanitizeWireKindForLog, sanitizeWireLogContext } from './WireValidation.js';
 import { InMemoryTransport, TcpTransport, type Transport } from './Transport.js';
 import type {
   ClusterPartitionView,
@@ -267,6 +272,13 @@ export class Cluster {
   private envelopeHandler: EnvelopeHandler | null = null;
   private readonly _envelopeHandlersByPath = new Map<string, EnvelopeHandler>();
   private readonly wireHandlers = new Map<string, (message: WireMessage, from: NodeAddress) => void>();
+  /**
+   * Wire kinds this node has already named in a log line — see
+   * {@link onUnclaimedWire}.  Bounded by
+   * {@link MAX_REPORTED_UNCLAIMED_WIRE_KINDS}, because the values come off
+   * the wire.
+   */
+  private readonly reportedUnclaimedWireKinds = new Set<string>();
   private started = false;
 
   private readonly downing: DowningProvider | null;
@@ -1211,10 +1223,59 @@ export class Cluster {
    * `sharding.ShardMapUpdate` inside an envelope, not as a wire kind of its own
    * — so the frame was validated, arrived here, matched nothing and was dropped.
    * The type went with the comment (#681).
+   *
+   * What is *not* deliberate is the silence when nothing is registered, which
+   * is the protocol-drift case: a peer speaking a kind this build has never
+   * heard of looks exactly like a healthy cluster with nothing to say. Since
+   * #1178 that tail is reported — see {@link onUnclaimedWire}.
    */
   private onUnhandledWire(message: WireMessage, from: NodeAddress): void {
     const custom = this.wireHandlers.get(message.kind);
-    if (custom) custom(message, from);
+    if (custom) { custom(message, from); return; }
+    this.onUnclaimedWire(message.kind, from);
+  }
+
+  /**
+   * A frame kind no handler claimed: count it, and name it once.
+   *
+   * `Cluster` is a plain class rather than an `Actor`, so `this.unhandled` is
+   * not available here — and there would be no recipient to name if it were,
+   * since `DeadLetter.recipient` is non-nullable and a frame nobody claimed
+   * has no addressee. `countUnhandled` is therefore the half that applies:
+   * `actor_unhandled_total{class:'Cluster'}` rises with the frames, no dead
+   * letter is produced, and widening `DeadLetter` to fit — which would ripple
+   * into `DeadLetterEntry.recipientPath`, the queue's filters and `replay` —
+   * is not on the table.
+   *
+   * **The log line is once per kind, capped**; the counter is every frame.
+   * Two things land here and only the log can tell them apart cheaply: an
+   * extension a peer started and this node did not (a receptionist gossips to
+   * every up member, whether or not that member runs a receptionist), and a
+   * kind that does not exist in this build at all. Naming the kind and the
+   * peer once is what distinguishes them; repeating it per frame is a log
+   * storm, and remembering unboundedly many peer-supplied kinds is a leak —
+   * hence {@link MAX_REPORTED_UNCLAIMED_WIRE_KINDS}.
+   *
+   * The kind is escaped and clipped *before* it is remembered rather than
+   * only before it is printed: `isWireFrame` enforces only that it is a
+   * string, so the raw value is arbitrary sender-controlled text, and what
+   * this node keeps for the length of its life should be the bounded form.
+   */
+  private onUnclaimedWire(kind: string, from: NodeAddress): void {
+    countUnhandled(this.system, 'Cluster');
+    if (this.reportedUnclaimedWireKinds.size >= MAX_REPORTED_UNCLAIMED_WIRE_KINDS) return;
+    const named = sanitizeWireKindForLog(kind);
+    if (this.reportedUnclaimedWireKinds.has(named)) return;
+    this.reportedUnclaimedWireKinds.add(named);
+    const capped = this.reportedUnclaimedWireKinds.size >= MAX_REPORTED_UNCLAIMED_WIRE_KINDS
+      ? ` — that is ${MAX_REPORTED_UNCLAIMED_WIRE_KINDS} distinct unclaimed kinds, `
+        + 'further ones are counted but not named'
+      : '';
+    this.log.warn(
+      `no handler for wire frame '${named}' from ${from.toString()}; dropping it — `
+      + 'either an extension this node did not start, or a peer speaking a '
+      + `protocol this build does not know${capped}`,
+    );
   }
 
   /**

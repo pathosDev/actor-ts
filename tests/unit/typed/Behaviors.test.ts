@@ -12,6 +12,7 @@ import {
 } from '../../../src/typed/index.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
+import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 import { Directive, OneForOneStrategy } from '../../../src/Supervision.js';
 import { DeadLetter, Terminated } from '../../../src/SystemMessages.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
@@ -970,6 +971,38 @@ describe('Behaviors.unhandled', () => {
     ref.tell('no');
     const dl = await probe.receiveOne(500) as { message: unknown };
     expect(dl.message).toBe('no');
+    await kit.system.terminate();
+  });
+
+  test('and are counted, which routing to dead letters alone never did (#1178)', async () => {
+    // `deadLetters.tell(...)` moves `actor_dead_letters_total` only from
+    // inside `DeadLetterQueue._capture`, which returns immediately while the
+    // store is `off` — and `off` is the shipped default.  So until the typed
+    // path shared `recordUnhandled` with `Actor.unhandled`, a behavior
+    // answering `unhandled` was invisible to metrics on every system nobody
+    // had configured, which is most of them.
+    const kitOptions = TestKitOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const kit = TestKit.create('typed-unhandled-count', kitOptions);
+    const registry = kit.system.extension(MetricsExtensionId).enable();
+    const unhandledCount = (): number => registry.collect()
+      .filter((s) => s.name === 'actor_unhandled_total' && s.labels['class'] === 'TypedActor')
+      .reduce((total, s) => total + s.value, 0);
+
+    const behavior = Behaviors.receiveMessage<string>((m) => m === 'yes' ? Behaviors.same : Behaviors.unhandled);
+    const ref = kit.system.spawnTypedAnonymous(behavior);
+    ref.tell('yes');
+    ref.tell('no');
+
+    await awaitCondition(() => unhandledCount() === 1, {
+      timeoutMs: 4_000,
+      label: 'the declined message was counted once',
+    });
+    // The handled one is not counted — the sentinel is the statement, not the
+    // delivery.
+    expect(unhandledCount()).toBe(1);
+    expect(registry.collect().some((s) => s.name === 'actor_dead_letters_total')).toBe(false);
     await kit.system.terminate();
   });
 });
