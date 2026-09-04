@@ -516,7 +516,35 @@ finden willst.
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `worker-cluster.workers` | `"auto"` | Anzahl Worker — `"auto"` verwendet `navigator.hardwareConcurrency`. |
+| `worker-cluster.system-name` | `"worker-cluster"` | `ActorSystem`-Name, den jeder Worker hostet. |
+| `worker-cluster.hostname` | `"worker"` | Hostname-Komponente der `NodeAddress` jedes Workers. |
+| `worker-cluster.base-port` | `1` | Port des ersten Workers; jeder weitere Slot inkrementiert. |
+| `worker-cluster.ready-timeout` | `10s` | Frist für den Hello/Init/Ready-Handshake pro Worker. |
 | `worker-cluster.restart-policy` | `"on-failure"` | `always` / `on-failure` / `never`. |
+| `worker-cluster.restart-min-backoff` | `200ms` | Wartezeit vor dem ersten Respawn eines abgestürzten Slots. |
+| `worker-cluster.restart-max-backoff` | `10s` | Obergrenze für die Respawn-Wartezeit, die pro Versuch verdoppelt wird. |
+| `worker-cluster.restart-random-factor` | `0.2` | ±-Jitter-Anteil auf jede Respawn-Wartezeit, in `[0, 1]`. |
+| `worker-cluster.max-restarts` | `10` | Restarts pro Slot innerhalb des Fensters, bevor er stillgelegt wird; `-1` startet unbegrenzt neu. |
+| `worker-cluster.restart-window` | `60s` | Gleitendes Fenster, über das das Restart-Budget zählt; `0` setzt es nie zurück. |
+
+Die vier Duration-Keys lassen das `Ms`-Suffix ihrer Felder im Options-Objekt weg
+(`ready-timeout` setzt `readyTimeoutMs`) und nehmen ein HOCON-Duration-Literal —
+genauso, wie `logger.close-timeout` das Feld `closeTimeoutMs` speist.
+`restart-random-factor` ist ein reiner Bruchteil, keine Duration.
+
+Vier Felder haben bewusst keinen Key: `initData` ist Identität des einzelnen
+Aufrufs, `backend` und `onWorkerPermanentlyDown` sind lebende Objekte, die eine
+Config-Datei nicht ausdrücken kann, und `bootstrap` benennt ein Modul, das die
+Runtime *ausführt* — `ACTOR_TS_CONFIG` und eine abgelegte `application.conf`
+sind eine breitere Angriffsfläche als die Aufrufstelle, deshalb bleibt es ein
+reines Code-Feld.
+
+Die Validierung läuft auf den gemergten Settings, deshalb wird jeder dieser
+Werte aus einer Datei mit einem `OptionsError` genauso abgelehnt wie aus Code:
+ein leerer `system-name` oder `hostname`, ein `base-port` außerhalb von
+`[1, 65535]`, ein `restart-random-factor` außerhalb von `[0, 1]`, ein negativer
+Backoff oder ein negatives Fenster, ein `max-restarts` unter `-1` und ein
+`restart-max-backoff` unterhalb von `restart-min-backoff`.
 
 Diese Keys füllen `WorkerCluster.spawn(options)` für Felder auf, die der
 Aufruf nicht setzt.  `spawn` ist ein Static ohne `ActorSystem` im Scope und

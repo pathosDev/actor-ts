@@ -427,7 +427,21 @@ export const ConfigKeys = {
    */
   workerCluster: {
     workers: 'actor-ts.worker-cluster.workers',
+    systemName: 'actor-ts.worker-cluster.system-name',
+    hostname: 'actor-ts.worker-cluster.hostname',
+    basePort: 'actor-ts.worker-cluster.base-port',
+    // The four duration leaves drop the `Ms` their fields carry and take a
+    // HOCON duration literal, as `logger.close-timeout` (field
+    // `closeTimeoutMs`) and `…delivery.flush-interval` (field
+    // `flushIntervalMs`) already do.  A `…-ms` leaf would be the first in
+    // reference.conf and would make `10s` unwritable.
+    readyTimeout: 'actor-ts.worker-cluster.ready-timeout',
     restartPolicy: 'actor-ts.worker-cluster.restart-policy',
+    restartMinBackoff: 'actor-ts.worker-cluster.restart-min-backoff',
+    restartMaxBackoff: 'actor-ts.worker-cluster.restart-max-backoff',
+    restartRandomFactor: 'actor-ts.worker-cluster.restart-random-factor',
+    maxRestarts: 'actor-ts.worker-cluster.max-restarts',
+    restartWindow: 'actor-ts.worker-cluster.restart-window',
   },
 
   /** CoordinatedShutdown pipeline defaults — `actor-ts.coordinated-shutdown.*`. */
