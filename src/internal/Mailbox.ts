@@ -115,10 +115,24 @@ export type Envelope<T = unknown> = {
    * this field at all.
    *
    * It travels with the envelope rather than being remembered by the mailbox
-   * because the envelope outlives any one queue position: it survives a
-   * `stash` / `unstashAll` round trip and a `prependUser` replay, and both of
-   * those hand it back to a bound that would otherwise get a second chance to
-   * shed it.
+   * because the envelope outlives any one queue position: `ActorContext.stash()`
+   * parks the envelope the cell is holding, so `unstashAll()` hands the queue
+   * back the very object the exempt door built, and the `prependUser` replay it
+   * takes then meets a bound that would otherwise get a second chance to shed
+   * it.
+   *
+   * **The typed stash is the exception, and it is an open gap (#1319).**
+   * `Behaviors.withStash` cannot park an envelope — `StashBuffer.stash(message)`
+   * takes an arbitrary value where the cell can only park what it is currently
+   * handling — so the buffer keeps bare messages, and its replay half,
+   * `ActorCell.prependUserMessages`, rebuilds them as message-plus-null-sender.
+   * Nothing envelope-level survives that trip: no `context`, no `trace`, no
+   * {@link enqueuedAtMs}, and no marker.  So a typed actor that stashes its own
+   * `Terminated` hands a droppable envelope back to its own bound, and the
+   * guarantee the paragraph above states does not reach it.  The fix belongs on
+   * the typed side rather than here — a buffer that parks envelopes, or a replay
+   * door told which of them were exempt — because every reader of this field
+   * already does the right thing with an envelope that still carries it.
    */
   readonly undroppable?: boolean;
 };
@@ -315,9 +329,8 @@ export class Mailbox<T = unknown> {
   }
 
   /**
-   * Queue a framework system command — create, terminate, recreate, failure,
-   * childTerminated, suspend, resume, watchNotify, receiveTimeout — on the
-   * lane that overtakes all user traffic.
+   * Queue a framework `SystemCommand` on the lane that overtakes all user
+   * traffic.
    *
    * **This lane is deliberately uncapped, and no bound reaches it — including
    * a subclass's own.**  It writes straight to the private system ring rather
@@ -345,9 +358,25 @@ export class Mailbox<T = unknown> {
    * **What bounds it instead is the producer, and that is the property to
    * re-check before adding a system-message source.**  Every caller today is
    * one envelope per event that already costs the node an actor: one `create`
-   * / `terminate` per lifecycle, one `childTerminated` per child stop, one
-   * `failure` and one `suspend` / `resume` per supervision decision, one
-   * `watchNotify` per watched death, one `receiveTimeout` per armed timer.
+   * per cell and one `terminate` per stop, one `childTerminated` per child that
+   * finishes stopping, and per supervision decision one `failure` to the parent
+   * plus whatever it fans out over the failing subtree — `suspend`, then
+   * `resume`, `recreate` or `terminate` once the directive is known.  One
+   * `receiveTimeout` per armed timer that expires completes the list.
+   *
+   * `watchNotify` is the declared variant that is deliberately **not** on it,
+   * and putting it there — as "one per watched death" — was this JSDoc's own
+   * first mistake.  Nothing in `src/` emits one; `ActorCell.onWatchNotify` says
+   * so at the arm that would handle it.  Nor does a watched death reach this
+   * queue by another name: `ActorCell._notifyWatcher` hands a local watcher its
+   * `Terminated` through `postSignalEnvelope`, which is the **user** lane —
+   * exempt from the bound (see {@link Envelope.undroppable}) and still behind
+   * everything already told to that watcher, because that ordering is what
+   * death watch documents.  Watching a thousand actors therefore adds nothing
+   * to the depth here.  The arm stays wired and stays exempt so that giving it
+   * a producer later cannot reintroduce the loss by taking the ordinary door
+   * (#729) — at which point it joins the list above, and the ratio below is
+   * what has to be re-checked for it.
    *
    * That test is about *volume*, not about who can reach the method, which is
    * why the sharding path does not change the answer even though it looks like
