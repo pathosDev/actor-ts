@@ -118,15 +118,20 @@ describe('readDevToolsOptionsFromConfig', () => {
   });
 
   test('an absent block yields nothing at all, not a bag of undefined', () => {
+    // `toStrictEqual`, not `toEqual`: the latter ignores properties whose value
+    // is `undefined`, so it cannot tell "absent" from "present and undefined" —
+    // which is the only thing this test is about.  Measured while checking that
+    // these tests bind: a reader written `out.port = hasPath ? read : undefined`
+    // passed all twelve assertions in this file under `toEqual`.
     expect(readDevToolsOptionsFromConfig(Config.parseString('actor-ts.system.name = x')))
-      .toEqual({});
+      .toStrictEqual({});
   });
 
   test('a block naming no panel leaves `panels` absent, not ten undefined switches', () => {
     // An empty `panels` object would survive the merge and replace a set of
     // switches the caller passed in code.
     const config = Config.parseString('actor-ts.devtools.port = 1234');
-    expect(readDevToolsOptionsFromConfig(config)).toEqual({ port: 1234 });
+    expect(readDevToolsOptionsFromConfig(config)).toStrictEqual({ port: 1234 });
   });
 
   test('the four interval leaves drop the `Ms` their fields keep', () => {
@@ -138,7 +143,7 @@ describe('readDevToolsOptionsFromConfig', () => {
         event-flush-interval = 2s
       }
     `);
-    expect(readDevToolsOptionsFromConfig(config)).toEqual({
+    expect(readDevToolsOptionsFromConfig(config)).toStrictEqual({
       mailboxSampleIntervalMs: 1_500,
       statsIntervalMs: 3_000,
       spanFlushIntervalMs: 1_000,
@@ -189,7 +194,7 @@ describe('readDevToolsOptionsFromConfig', () => {
         allow-message-sending = true
       }
     `);
-    expect(readDevToolsOptionsFromConfig(config)).toEqual({});
+    expect(readDevToolsOptionsFromConfig(config)).toStrictEqual({});
   });
 });
 
