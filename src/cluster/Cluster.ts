@@ -22,6 +22,7 @@ import { awaitClusterReady, isClusterReadyNow } from './ClusterReadiness.js';
 import type { ClusterReadinessOptions } from './ClusterReadiness.js';
 import { healthChecksOf } from '../management/HealthCheckExtension.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
+import { readReadConstraintsOptionsFromConfig } from '../serialization/ReadConstraintsOptions.js';
 import {
   ADVERTISED_HOST_ENV_VARS,
   ClusterOptionsValidator,
@@ -327,6 +328,12 @@ export class Cluster {
     // handshake and keys peers on.  Passing both pairs is what lets a
     // container bind every interface on its own port and still tell its peers
     // a single address to dial back (#944, #845).
+    // The decode ceilings come straight out of `system.config` rather than
+    // through `ClusterOptions`, and that is deliberate: what a JSON walker will
+    // descend is a serialization concern that every codec in the process shares
+    // (#880), not a per-cluster tunable, and threading it through the cluster
+    // options type would put it in `ClusterConfigDefaults` — a shape whose test
+    // asserts the exact object — for the sake of one call site.
     this.transport = options.transport
       ?? new TcpTransport(
         this.selfAddress,
@@ -335,6 +342,7 @@ export class Cluster {
         options.maxFrameBytes,
         options.host,
         options.port,
+        readReadConstraintsOptionsFromConfig(system.config),
       );
     // That `null` is the transport's TLS argument, and it is hard-coded: the
     // transport this constructor builds is always plaintext until #941 wires

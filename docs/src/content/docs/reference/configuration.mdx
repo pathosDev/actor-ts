@@ -422,6 +422,47 @@ The same leaf rule and the same startup rejection apply here: kebab-case, unit
 suffix dropped, and a retired camelCase spelling is a `ConfigError` rather than
 a cap that silently reverted to the default.
 
+### `actor-ts.serialization`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `serialization.read-constraints.max-nesting-depth` | `256` | Container levels a decoder will descend before refusing the payload.  Never raised past the encoder's own ceiling. |
+| `serialization.read-constraints.max-document-bytes` | `0` | Ceiling on one document handed to `JsonSerializer` / `CborSerializer`, checked before it is parsed.  `0` = no ceiling of our own. |
+| `serialization.read-constraints.max-string-length` | `20M` | Ceiling on one CBOR byte string, text string or map key, checked against the length prefix before the bytes are allocated.  `0` removes it. |
+
+These bound what this node **reads**, never what it writes.  A peer that
+completes the handshake, or any client whose body reaches a serializer, chooses
+the bytes; these decide how much work this process will do on them before
+giving up.  Lowering one therefore makes this node stricter than its own
+encoder — it does not change the wire format.
+
+`max-nesting-depth` is the one that matters, because until it existed there was
+nothing at all on the JSON side: `JSON.parse` is iterative in every runtime
+actor-ts supports and accepts a million levels without complaint, so the
+recursion that overflows is the framework's own tagged-tree walker, reached
+straight off the cluster wire.  It may be lowered freely and **cannot be
+raised** past `256`: that number is also the encoder's hard cap, and a node that
+read deeper than it writes would accept a payload it is unable to produce.
+Raising it is an `OptionsError` at startup.
+
+`max-document-bytes` ships as `0` because every path the framework owns is
+already bounded — `remote.max-frame-bytes` on the cluster wire, the server's
+body cap over HTTP.  Set it where a serializer is reached some other way (a
+broker payload, a queue message) and nothing upstream has an opinion.
+
+`max-string-length` binds on **CBOR only**, and its default sits deliberately
+above `remote.max-frame-bytes`, so on the cluster wire the frame cap is the
+effective ceiling and this one never fires.  The asymmetry is the point: a CBOR
+item announces its length, so refusing it costs nothing and prevents the
+allocation, while by the time the JSON walker sees a string `JSON.parse` has
+already materialised it.
+
+Two edges are deliberately outside this block.  The persistence `PayloadCodec`
+decodes bytes the framework itself wrote, so a tightened ceiling there would
+turn recoverable history into unreadable history.  And the HTTP body edge
+builds its serializers with no `ActorSystem` handle to read config through —
+that seam is issue #967.
+
 ### `actor-ts.persistence`
 
 | Key | Default | Purpose |

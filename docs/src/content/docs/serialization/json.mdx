@@ -102,6 +102,34 @@ Rough numbers per serialize/deserialize pair:
 `JSON.parse` / `JSON.stringify` are native code in V8/JSC —
 fast enough that JSON serialization is rarely the bottleneck.
 
+## What the decoder refuses
+
+Decoding is where the bytes are somebody else's, so the JSON decoder applies
+the ceilings in
+[`actor-ts.serialization.read-constraints`](/reference/configuration/#actor-tsserialization):
+
+| Ceiling | Default | What it refuses |
+| --- | --- | --- |
+| `max-nesting-depth` | `256` | A tree nested deeper than this — arrays, objects and tagged containers all count one level each. |
+| `max-document-bytes` | `0` (off) | A document larger than this, checked before `JSON.parse` runs. |
+
+`max-nesting-depth` is not decoration.  `JSON.parse` gives you nothing to lean
+on here: measured on Bun, Node and Deno alike, it accepts a hundred thousand
+levels of `[` without complaint.  What overflows is actor-ts's own
+tagged-tree walker, which recurses once per level — and on the cluster wire
+that walker is reached directly, on bytes any peer that completed the handshake
+can send.  A payload past the ceiling is a `SerializationError` naming the
+depth, thrown before the walk goes any deeper.
+
+The ceiling can be lowered but not raised past `256`, which is the encoder's own
+hard cap: a node that read deeper than it writes would accept a payload it
+cannot produce.  Both are per-decode ceilings — they say nothing about what
+`toBinary` will emit.
+
+Journal and snapshot rows are deliberately exempt.  Those bytes were written by
+actor-ts itself, so a tightened ceiling there would turn recoverable history
+into unreadable history.
+
 ## When to switch to something else
 
 ```

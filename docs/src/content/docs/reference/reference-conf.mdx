@@ -473,6 +473,43 @@ actor-ts {
     max-frame-bytes = 16M   # per-frame wire cap; lower it on semi-trusted networks
   }
 
+  # Ceilings applied to bytes this process DECODES.  They bound what a peer or
+  # a client can make a decoder do; they never change what this node writes, so
+  # lowering one makes this node stricter than its own encoder rather than
+  # altering the wire format.  A codec added later inherits the contract.
+  #
+  # Deliberately NOT applied to the persistence PayloadCodec: those bytes were
+  # written by this framework into its own journal, so a row that stops
+  # decoding is a recovery failure rather than an attack.  The HTTP body edge
+  # is out too -- Marshalling builds its serializers with no system handle to
+  # read this through, which is issue #967.
+  serialization {
+    read-constraints {
+      # Container levels a decoder will descend.  Both codecs recurse once per
+      # array / map / tag level, so without this a few hundred KB of nesting
+      # exhausts the JS stack; JSON.parse offers nothing to inherit, being
+      # iterative in every supported runtime.  Real payloads are shallow.
+      # 256 is also the ENCODER's hard ceiling, so this may be lowered but
+      # never raised -- a node that read deeper than it writes would accept a
+      # payload it cannot produce.
+      max-nesting-depth = 256
+
+      # Ceiling on one document handed to JsonSerializer / CborSerializer,
+      # checked before it is parsed.  0 = no ceiling of our own, and it is the
+      # default because something already bounds every path the framework owns:
+      # remote.max-frame-bytes on the cluster wire, the body cap over HTTP.
+      max-document-bytes = 0
+
+      # Ceiling on one CBOR byte string, text string or map key, checked
+      # against the length prefix BEFORE the bytes are allocated.  0 removes
+      # it.  CBOR-only: by the time the JSON walker sees a string, JSON.parse
+      # has already materialised it.  The default sits above
+      # remote.max-frame-bytes, so on the cluster wire the frame cap is the
+      # effective ceiling and this one never binds.
+      max-string-length = 20M
+    }
+  }
+
   http {
     backend = "fastify"   # fastify | express | hono
     # In-flight drain window for unbind() before connections are forced.

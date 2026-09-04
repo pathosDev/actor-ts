@@ -1,4 +1,10 @@
 import { decodeJsonTree, encodeJsonTree } from '../serialization/JsonTree.js';
+import {
+  defaultReadConstraintsOptions,
+  ReadConstraintsOptionsValidator,
+  type ReadConstraintsOptions,
+  type ReadConstraintsOptionsType,
+} from '../serialization/ReadConstraintsOptions.js';
 import { INITIAL_FRAME_BUFFER_BYTES, RETAINED_FRAME_BUFFER_BYTES } from './Constants.js';
 import { NodeAddress, type NodeAddressData } from './NodeAddress.js';
 
@@ -307,12 +313,29 @@ export class FrameDecoder {
   private readOffset = 0;
   private writeOffset = 0;
   private readonly maxFrameBytes: number;
+  /**
+   * Ceilings for the tagged-JSON walk of an accepted frame.  Separate from
+   * {@link maxFrameBytes} because the two bound different things: a frame cap
+   * bounds the bytes a peer may make this node buffer, and this bounds the
+   * work it may make the *decoder* do with bytes that already fit — a 16 MiB
+   * frame of `[[[[…` is inside every byte cap here and still overflows the
+   * walker's stack without it (#880).
+   */
+  private readonly readConstraints: Required<ReadConstraintsOptionsType>;
 
-  constructor(maxFrameBytes: number = DEFAULT_MAX_FRAME_BYTES) {
+  constructor(
+    maxFrameBytes: number = DEFAULT_MAX_FRAME_BYTES,
+    readConstraints: ReadConstraintsOptions = {},
+  ) {
     if (!Number.isFinite(maxFrameBytes) || maxFrameBytes < 1) {
       throw new Error(`FrameDecoder: maxFrameBytes must be a positive integer, got ${maxFrameBytes}`);
     }
     this.maxFrameBytes = Math.trunc(maxFrameBytes);
+    this.readConstraints = {
+      ...defaultReadConstraintsOptions,
+      ...(readConstraints as Partial<ReadConstraintsOptionsType>),
+    };
+    new ReadConstraintsOptionsValidator().validate(this.readConstraints);
   }
 
   /**
@@ -362,7 +385,9 @@ export class FrameDecoder {
       // the cheapest way to try — and it lands in the same `push` throw the
       // transport already answers by closing the connection.
       try {
-        out.push(decodeJsonTree(parsed) as WireMessage);
+        out.push(decodeJsonTree(parsed, {
+          maxNestingDepth: this.readConstraints.maxNestingDepth,
+        }) as WireMessage);
       } catch (e) {
         throw new Error(`Invalid wire frame payload: ${(e as Error).message}`);
       }
