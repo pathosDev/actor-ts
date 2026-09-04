@@ -160,9 +160,9 @@ class ReplyCollector extends Actor<GrpcInbound> {
     console.log('unary reply:', message.response);
   }
 
-  // A client stream is open — `message.handle` addresses its writes.
+  // A client or bidi stream is open — `message.handle` addresses its writes.
   private onStreamStarted(message: StreamStartedMessage): void {
-    console.log('client stream open:', message.handle.streamId);
+    console.log('stream open:', message.handle.streamId);
   }
 
   private onStreamData(message: StreamDataMessage): void {
@@ -199,7 +199,7 @@ Replies and stream frames arrive at the `target` actor as a
 | `kind` | Fields | Meaning |
 | --- | --- | --- |
 | `reply` | `response` | Unary **or client-stream** completion. |
-| `stream-started` | `handle` | A client stream is open — see below. |
+| `stream-started` | `handle` | A client or bidi stream is open — see below. |
 | `stream-data` | `streamId`, `chunk` | One stream chunk. |
 | `stream-end` | `streamId` | Stream closed cleanly. |
 | `stream-error` | `streamId`, `error` | Stream failed. |
@@ -285,30 +285,38 @@ running.
 
 ### Bi-directional streaming
 
-Bidi opens the same way but keeps both directions open:
+Bidi opens exactly the way a client stream does, and keeps both
+directions open:
 
 ```ts
 client.tell({ kind: 'bidiStart', method: 'Chat', target: collector });
 ```
 
-It still uses the **older in-band handshake**: the actor delivers a
-first `stream-data` frame whose chunk is `{ __streamId }`, and
-`bidiSend` / `bidiClose` address that bare number.
+The handshake is the same one: a `stream-started` frame carrying a
+**`GrpcStreamHandle`**, and that handle addresses every send and the
+close.
 
 ```ts
-// Inside the collector, after receiving the streamId hint:
-const streamId = (message.chunk as { __streamId: number }).__streamId;
+// Inside the collector, on the `stream-started` frame:
+const handle = message.handle;
 
-client.tell({ kind: 'bidiSend', streamId, chunk: { text: 'hello' } });
-client.tell({ kind: 'bidiClose', streamId });
+client.tell({ kind: 'bidiSend', handle, chunk: { text: 'hello' } });
+client.tell({ kind: 'bidiClose', handle });
 ```
 
-That handshake is a known weakness — the hint is indistinguishable
-from real stream data, and the id is guessable — tracked as
-[#788](https://github.com/pathosDev/actor-ts/issues/788).  The
-`stream-started` frame and the capability handle above are what it
-will adopt; write new code against the client-stream shape where you
-have the choice.
+The server's responses arrive as ordinary `stream-data` frames,
+followed by `stream-end` when the call completes — a bidi RPC answers
+with a stream, so there is no single `reply`.  Those frames carry
+`handle.streamId`, the correlation id; the `token` half of the handle
+never appears on an inbound frame, because it is the capability.
+
+Both properties matter, and they are separate. The handshake is its
+own frame so that a *server* message can never be mistaken for it —
+it used to ride in as a `stream-data` chunk shaped `{ __streamId }`,
+and `__streamId` is a perfectly legal protobuf field name. And the
+send/close registry is keyed by the token so that a guessed or stolen
+`streamId` buys nothing: ids are sequential, and knowing one hands you
+the next.
 
 Server-stream calls also carry a `streamId` on their `stream-data`
 / `stream-end` frames, so a single collector can multiplex several
