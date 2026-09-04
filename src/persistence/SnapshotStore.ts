@@ -77,6 +77,40 @@ export interface SnapshotStore {
   readonly persistenceOptionSupport?: PersistenceOptionSupport;
 
   /**
+   * Whether this store's **own configuration** keeps `persistenceId`'s
+   * snapshots encrypted at rest (#782).
+   *
+   * A different question from
+   * {@link SnapshotStore.persistenceOptionSupport}, which answers "could this
+   * store encrypt?".  This one answers "is it going to, for this entity?" —
+   * and only the store can answer it, because the directive may never appear
+   * in the `PersistenceOptions` of any call: `ObjectStorageSnapshotStore`
+   * resolves `withEncryption(...)` from its own options whenever the call
+   * carries none, and per-entity resolvers make the answer vary by
+   * `persistenceId`, which is why this takes one.
+   *
+   * It exists for decorators that hold decoded state somewhere the wrapped
+   * store does not control — `CachedSnapshotStore` is the one in tree, and
+   * the reason a caller-owned cache must be told before it writes plaintext
+   * into a Redis the bucket's operators may not administer.  Declared on this
+   * contract alone for that reason: `Journal` and `DurableStateStore` have no
+   * such decorator, and surface nothing reads is surface that rots.
+   *
+   * Optional, and `undefined` is a valid answer: absence means *unknown*, the
+   * same absence-is-meaningful family as `storageLocality` and
+   * `persistenceOptionSupport`, and unknown never refuses anything.  A
+   * third-party store that encrypts and declares nothing is therefore invisible
+   * here — a cost this family accepts so that not declaring cannot become a
+   * behaviour change on upgrade.
+   *
+   * The in-tree stores that cannot encrypt at all deliberately leave it
+   * undeclared rather than answering `false` everywhere: they already say so,
+   * once, through `persistenceOptionSupport.encryption`, and a second
+   * declaration saying the same thing is a second place to forget.
+   */
+  encryptsAtRest?(persistenceId: string): boolean | undefined;
+
+  /**
    * Identity of the database behind this store, minted on first contact and
    * persisted in the database itself — see {@link Journal.storageIdentity}
    * for the full semantics (#1358).  Optional; absence means unknown.

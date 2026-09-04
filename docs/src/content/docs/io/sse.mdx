@@ -48,10 +48,14 @@ the feed named, and would let the endpoint rather than your
 configuration decide which address the request actually reaches.  So
 point `url` at the final endpoint.  A body announcing any other content
 type, or none at all, is refused before a byte of it is parsed.  Both
-refusals travel the ordinary reconnect path — backoff, circuit breaker,
-`BrokerDisconnected` — so a feed that starts redirecting surfaces as a
-broker that cannot connect, rather than as a silent change of where
-your credentials go.
+refusals travel the ordinary reconnect path — backoff, the circuit
+breaker, a `BrokerReconnectAttempt` per retry and a
+`BrokerReconnectFailed` carrying the refusal once the retries run out —
+so a feed that starts redirecting surfaces as a broker that cannot
+connect, rather than as a silent change of where your credentials go.
+Not `BrokerDisconnected`: that event marks a *live* connection being
+lost, and a connect that was refused never had one.  An alert on a feed
+that starts redirecting has to watch the reconnect events.
 
 ## Settings
 

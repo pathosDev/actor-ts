@@ -99,13 +99,20 @@ is the whole exposure.  That makes it a composition hazard rather
 than a flaw in either piece — and the composition is one this page
 recommends, which is why it is spelled out here.
 
-So a `loadLatest` that carries `encryption` with a mode other than
-`'none'` is **served straight from the wrapped store, uncached**,
-and the decorator warns once:
+So a `loadLatest` whose state the wrapped store keeps encrypted at
+rest is **served straight from the wrapped store, uncached**, and
+the decorator warns once.  Both routes to that count — a per-call
+`encryption` directive with a mode other than `'none'`, and the
+store's own `withEncryption(...)`, which never appears in any call's
+options:
 
 ```text
-persistence: CachedSnapshotStore caches decoded snapshot state, and this
-loadLatest on 'ObjectStorageSnapshotStore' asked for encryption — …
+persistence: CachedSnapshotStore caches decoded snapshot state, and on
+'ObjectStorageSnapshotStore' this loadLatest asked for encryption — …
+
+persistence: CachedSnapshotStore caches decoded snapshot state, and on
+'ObjectStorageSnapshotStore' the store's own configuration keeps this
+persistenceId encrypted — …
 ```
 
 `withAllowPlaintextCache(true)` is your acknowledgement that the
@@ -131,15 +138,33 @@ Reasonable answers to the question it asks:
   flag.  Give the encrypted store its own cache, or accept the
   cold-start cost.
 
-The check sees the **per-call** `PersistenceOptions` your actor's
-`encryption()` hook produces, which is what reaches every read.  It
-cannot see a store configured with encryption at construction and
-never told about it per call: `SnapshotStore` has no member that
-reports that, and `persistenceOptionSupport` answers a different
-question ("could this store encrypt?", not "is it going to?").  If
-your encryption lives entirely in the store's own configuration,
-this decorator has nothing to warn about and the decision is yours
-alone.
+### What the check sees, and what it does not
+
+It sees both routes a deployment can take to confidentiality: the
+**per-call** `PersistenceOptions` your actor's `encryption()` hook
+produces, and the wrapped store's **own configuration**, which it
+reads through the optional `encryptsAtRest(persistenceId)` member of
+`SnapshotStore`.  `ObjectStorageSnapshotStore` implements that from
+the same `encryption` config its codec uses, per `persistenceId`, so
+a resolver that encrypts one prefix and not another is decided per
+entity rather than once for the store.
+
+A per-call directive wins over the store's config, here as
+everywhere else, so an explicit per-call `{ mode: 'none' }` is an
+opt-out even over a store configured to encrypt.
+
+Two things it still cannot see:
+
+- **A store that encrypts and declares nothing.**  The member is
+  optional, absence means *unknown*, and unknown never refuses —
+  the rule the whole capability family follows, so that a
+  third-party store does not change behaviour on upgrade for
+  having declared nothing.  A store of your own that encrypts
+  should implement `encryptsAtRest`.
+- **Encryption applied below the store** — a bucket's server-side
+  default, or a backend that encrypts on the way out.  No member of
+  this contract reports it, and the decorator has nothing to warn
+  about; that decision is yours alone.
 
 ## Cache semantics
 

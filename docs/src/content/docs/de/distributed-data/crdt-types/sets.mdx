@@ -144,7 +144,10 @@ die Replika legt jeden Wert, den sie für diesen Key dekodiert,
 unter deiner Identität ab — einschließlich Einträgen, die ein
 Peer unter der Standard-Identität geschrieben hat.  Die werden
 umgeschlüsselt und in den Eintrag gemergt, zu dem sie gehören,
-statt als Duplikate daneben stehen zu bleiben.
+statt als Duplikate daneben stehen zu bleiben: jedenfalls jedes
+Element, das dein Callback benennen kann.  Was mit einem
+passiert, das er nicht benennen kann, steht in der letzten Notiz
+weiter unten.
 
 Zwei Grenzen sind es wert, bekannt zu sein (#766):
 
@@ -163,9 +166,31 @@ Zwei Grenzen sind es wert, bekannt zu sein (#766):
 Beachte außerdem: deine Identity-Funktion läuft jetzt auch über
 Werte, die ein Peer geschickt hat, nicht nur über solche, die
 dein Prozess gebaut hat.  Ein Callback, der die Form seines
-Arguments voraussetzt, sieht Daten, die er nicht erzeugt hat; ein
-Callback, der wirft, macht aus dem Frame einen verworfenen Wert
-statt eines akzeptierten.
+Arguments voraussetzt, sieht Daten, die er nicht erzeugt hat —
+und was eine Verweigerung kostet, hängt davon ab, wann das
+Element hineingekommen ist:
+
+- **Ein Frame, der ankommt, wenn die Identität bereits bekannt
+  ist, wird verworfen.**  Wirft der Callback bei irgendeinem
+  Element darin, ist der ganze Wert nicht dekodierbar, und jede
+  Wire-Aufrufstelle behandelt das als „diesen einen verwerfen“ —
+  der Sender bietet ihn beim nächsten Gossip-Tick erneut an, es
+  geht also nichts verloren, was je akzeptiert war.
+- **Ein Element, das schon in der View liegt, behält den Key,
+  unter dem es hereinkam.**  Ein Wert, der per Gossip ankam oder
+  aus einem `durableStore` zurückgelesen wurde, bevor das erste
+  `update` lief, wurde auf der Standard-Identität dekodiert und
+  kann deshalb bereits ein Element enthalten, das dein Callback
+  verweigert.  Das Umschlüsseln beim ersten `update`
+  schlüsselt dann jedes Element um, das der Callback benennen
+  *kann*, und lässt das verweigerte genau dort, wo es ist.  Das
+  Element wird nicht verworfen, der Key verliert seine Identität
+  nicht, und spätere `update`s deduplizieren wie gewohnt nach
+  deiner Regel; die Replika loggt eine Warnung, die den Key
+  nennt.  Der einzige sichtbare Effekt ist, dass das Set gemischt
+  geschlüsselt ist, bis dieses Element verschwindet — was,
+  da `remove` es mit demselben Callback benennen müsste, der es
+  verweigert, heißt: solange der Key lebt.
 
 ## Auswahl zwischen beiden
 

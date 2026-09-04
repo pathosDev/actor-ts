@@ -26,6 +26,12 @@
  *     carrying `{ __streamId }`, and the send/close registry is keyed
  *     by token.  Before this, *no* bidi path was exercised by
  *     `bun test` at all.
+ *   - the repair of #788's own regression — keying the registry on the
+ *     token turned `command.handle.token` into a *read* the four
+ *     send/close paths perform before anything else, and nothing had
+ *     ever checked that a handle is there to read.  The last block
+ *     below is that: a malformed command must not be answered as a
+ *     lost connection.
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../src/Actor.js';
@@ -33,6 +39,7 @@ import type { ActorRef } from '../../../../src/ActorRef.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
+import { DeadLetter } from '../../../../src/SystemMessages.js';
 import type { ConfigObject } from '../../../../src/config/HoconParser.js';
 import { GrpcClientActor } from '../../../../src/io/broker/GrpcClientActor.js';
 import type {
@@ -184,6 +191,23 @@ class FakeGrpcClientActor extends GrpcClientActor {
     );
     return this.fakeClient;
   }
+
+  /**
+   * `BrokerActor.connectionState` is protected, and it is the *earliest*
+   * observable consequence of a throw escaping `dispatchOutgoing`:
+   * `_dispatchOne` catches, and `handleConnectionLost` flips the state
+   * before it schedules anything.  Waiting on a reconnect instead would
+   * race the message that provoked it.
+   */
+  publicConnectionState(): string { return this.connectionState; }
+
+  /**
+   * Ditto `outboundBufferSize`.  A throw out of `dispatchOutgoing` also
+   * *unshifts* the offending envelope back at the head of this buffer, so
+   * a non-zero size after the pipeline has settled is the re-dispatch loop
+   * itself, not a symptom of it.
+   */
+  publicOutboundBufferSize(): number { return this.outboundBufferSize; }
 }
 
 class CollectingTarget extends Actor<GrpcInbound> {
@@ -227,6 +251,32 @@ async function boot(system: ActorSystem, options: GrpcClientOptionsBuilder): Pro
     label: 'GrpcClientActor built its service client',
   });
   return { clientRef, actor: held.current!, target, targetRef };
+}
+
+/**
+ * Collect every `DeadLetter` the system publishes, and resolve only once
+ * the collector is genuinely on the stream.
+ *
+ * Subscribing without waiting is a race the assertions below cannot
+ * survive: the publication under test happens a millisecond after the
+ * `tell` that triggers it, and a subscriber that arrives second sees
+ * nothing at all.
+ */
+async function captureDeadLetters(system: ActorSystem): Promise<DeadLetter[]> {
+  const captured: DeadLetter[] = [];
+  const subscribed = { value: false };
+  class DeadLetterCollector extends Actor<DeadLetter> {
+    override preStart(): void {
+      this.system.eventStream.subscribe(this.self, DeadLetter);
+      subscribed.value = true;
+    }
+    override onReceive(letter: DeadLetter): void { captured.push(letter); }
+  }
+  system.spawn(DeadLetterCollector, 'dead-letter-collector');
+  await awaitCondition(() => subscribed.value, {
+    label: 'the dead-letter collector subscribed to the event stream',
+  });
+  return captured;
 }
 
 /**
@@ -604,6 +654,190 @@ describe('GrpcClientActor — bidi handle ownership', () => {
 
       expect(firstCall.writes).toEqual([{ text: 'follows the token' }]);
       expect(secondCall.writes).toEqual([]);
+    } finally {
+      await opened.system.terminate();
+    }
+  });
+});
+
+/* ==================== #788 / #1040 — malformed handle ================== */
+
+/**
+ * A malformed send/close must not be answered as a lost connection.
+ *
+ * This is a regression the token registry introduced.  Keying the maps by
+ * `GrpcStreamHandle.token` made `command.handle.token` the *first* thing
+ * all four send/close paths do, and nothing checked that a handle is there
+ * to read.  The pre-token code looked the stream up by a bare id, so a
+ * command with no handle simply missed the map and was the documented
+ * no-op.
+ *
+ * The read throws a `TypeError` inside `dispatchOutgoing`, and
+ * `BrokerActor._dispatchOne` reads *any* throw from there as a dropped
+ * connection: it unshifts the offending envelope back at the **head** of
+ * the outbound buffer and calls `handleConnectionLost`, after which
+ * `_drainBuffer` re-dispatches the very same envelope on every reconnect.
+ * One malformed `tell` is therefore an unbounded reconnect loop, and the
+ * legitimate writes queued behind the poisoned head never leave the
+ * buffer.
+ *
+ * `as never` in these tests is not a test-only trick: it is how *every*
+ * caller reaches this actor.  `GrpcClientCommand` is a compile-time claim
+ * and `tell` erases it, so a JavaScript caller, a deserialised message and
+ * a stale handle arriving as `null` all reach the same read.
+ *
+ * **Waiting on the reconnect is the trap**, and the first draft of these
+ * tests fell into it: the owner's write is dispatched before the rejected
+ * promise's catch even runs, and the retry is a scheduled 200 ms away, so
+ * "the owner chunk landed and `clientCreations` is still 1" is true of the
+ * *broken* tree too.  Every wait below is therefore a disjunction of the
+ * two outcomes that are prompt in their own world — the dead letter the
+ * fix produces, and the connection state the defect flips — so exactly one
+ * disjunct becomes true within microseconds either way and the assertion
+ * after it names which.
+ */
+describe('GrpcClientActor — a malformed stream command', () => {
+  /** Both worlds' prompt answer to a malformed command; exactly one arrives. */
+  const answered = (actor: FakeGrpcClientActor, deadLetters: DeadLetter[], expected = 1) =>
+    (): boolean => deadLetters.length >= expected || actor.publicConnectionState() !== 'connected';
+
+  test('a bidiSend with no handle is not a lost connection', async () => {
+    const opened = await openBidiStream('grpc-bidi-malformed-send');
+    try {
+      const { system, clientRef, actor, handle, call } = opened;
+      const deadLetters = await captureDeadLetters(system);
+      expect(actor.publicConnectionState()).toBe('connected');
+
+      clientRef.tell({ kind: 'bidiSend', chunk: { text: 'no handle' } } as never);
+      await awaitCondition(answered(actor, deadLetters), {
+        label: 'the malformed command was answered — as a dead letter, or as a lost connection',
+      });
+
+      expect(actor.publicConnectionState()).toBe('connected');
+      // Zero is the re-dispatch claim: the defect pushes the offending
+      // envelope back at the head, where `_drainBuffer` picks it up again
+      // after every reconnect.
+      expect(actor.publicOutboundBufferSize()).toBe(0);
+      expect(actor.clientCreations).toBe(1);
+
+      // Not silence: nothing `createGrpcStreamHandle` mints can look like
+      // this, so a malformed command is a caller defect and gets the
+      // framework's standard channel for a message that went nowhere.
+      expect(deadLetters.length).toBe(1);
+      const letter = deadLetters[0]!.message as { readonly kind?: string; readonly chunk?: unknown };
+      expect(letter.kind).toBe('bidiSend');
+      expect(letter.chunk).toEqual({ text: 'no handle' });
+      expect(deadLetters[0]!.recipient.path.toString()).toContain('grpc-client');
+
+      // And the stream owner's own later write still lands — the pipeline
+      // behind the malformed command was never poisoned.
+      clientRef.tell({ kind: 'bidiSend', handle, chunk: { text: 'owned' } });
+      await awaitCondition(() => call.writes.length > 0, {
+        label: 'the owner chunk was written to the bidi stream',
+      });
+      expect(call.writes).toEqual([{ text: 'owned' }]);
+    } finally {
+      await opened.system.terminate();
+    }
+  });
+
+  test('a bidiClose whose handle is null leaves the stream open', async () => {
+    const opened = await openBidiStream('grpc-bidi-malformed-close');
+    try {
+      const { system, clientRef, actor, handle, call } = opened;
+      const deadLetters = await captureDeadLetters(system);
+
+      // The shape a handle takes when it is read back out of a field that
+      // was cleared, or out of a serialised message that lost it.
+      clientRef.tell({ kind: 'bidiClose', handle: null } as never);
+      await awaitCondition(answered(actor, deadLetters), {
+        label: 'the malformed close was answered — as a dead letter, or as a lost connection',
+      });
+
+      expect(actor.publicConnectionState()).toBe('connected');
+      expect(actor.publicOutboundBufferSize()).toBe(0);
+      expect(call.ended).toBe(false);
+
+      clientRef.tell({ kind: 'bidiSend', handle, chunk: { text: 'still open' } });
+      await awaitCondition(() => call.writes.length > 0, {
+        label: 'the owner chunk was written after the malformed close',
+      });
+      expect(call.writes).toEqual([{ text: 'still open' }]);
+      expect(call.ended).toBe(false);
+    } finally {
+      await opened.system.terminate();
+    }
+  });
+
+  test('the client-stream twins carry the same guard', async () => {
+    const system = newSystem('grpc-client-stream-malformed');
+    try {
+      const { clientRef, actor, target, targetRef } = await boot(system, baseOptions());
+      const deadLetters = await captureDeadLetters(system);
+      clientRef.tell({ kind: 'clientStreamStart', method: 'ReportReadings', target: targetRef });
+      await awaitCondition(() => actor.fakeClient.clientStreamCalls.length > 0, {
+        label: 'the client stream was opened',
+      });
+      const handle = publishedHandle(target);
+      const call = actor.fakeClient.clientStreamCalls[0]!.call;
+
+      // Identical shape, from #1040 rather than #788, and identically
+      // exposed.  Both malformed shapes, on both paths: an absent handle
+      // is the one that *throws* on an unguarded read, and a handle that
+      // is not an object is the one that does not — `'x'.token` is a legal
+      // `undefined`, so unguarded it is an invisible no-op indistinguishable
+      // from a stale token.  That second shape is why silence would have
+      // been the wrong answer even where it is not a reconnect loop.
+      clientRef.tell({ kind: 'clientStreamSend', chunk: { value: 'no handle' } } as never);
+      clientRef.tell({ kind: 'clientStreamClose', handle: null } as never);
+      clientRef.tell({ kind: 'clientStreamSend', handle: 'not-an-object', chunk: {} } as never);
+      await awaitCondition(answered(actor, deadLetters, 3), {
+        label: 'every malformed command was answered — as dead letters, or as a lost connection',
+      });
+
+      expect(actor.publicConnectionState()).toBe('connected');
+      expect(actor.publicOutboundBufferSize()).toBe(0);
+      expect(actor.clientCreations).toBe(1);
+      expect(deadLetters.length).toBe(3);
+      expect(call.ended).toBe(false);
+
+      clientRef.tell({ kind: 'clientStreamSend', handle, chunk: { value: 'owned' } });
+      await awaitCondition(() => call.writes.length > 0, {
+        label: 'the owner chunk was written to the client stream',
+      });
+      expect(call.writes).toEqual([{ value: 'owned' }]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('an unknown token stays a silent no-op — only a malformed command is a letter', async () => {
+    const opened = await openBidiStream('grpc-bidi-unknown-token-quiet');
+    try {
+      const { system, clientRef, actor, handle } = opened;
+      const deadLetters = await captureDeadLetters(system);
+
+      // A well-formed handle whose token names no live stream is the
+      // documented race — the server closed the stream, or the connection
+      // dropped and cleared the map, and the caller has not learned yet.
+      // It happens in correct use, so it must stay quiet.
+      clientRef.tell({
+        kind: 'bidiSend',
+        handle: { streamId: handle.streamId, token: 'deadbeefdeadbeef' },
+        chunk: { text: 'stale' },
+      });
+      // Behind it, a genuinely malformed one.  Mailbox order is what makes
+      // the negative assertion sound: a letter for the stale command would
+      // have been published first, so it would have arrived first.
+      clientRef.tell({ kind: 'bidiSend', chunk: { text: 'malformed' } } as never);
+      await awaitCondition(answered(actor, deadLetters), {
+        label: 'the malformed command was answered — as a dead letter, or as a lost connection',
+      });
+
+      expect(actor.publicConnectionState()).toBe('connected');
+      expect(deadLetters.length).toBe(1);
+      const letter = deadLetters[0]!.message as { readonly chunk?: unknown };
+      expect(letter.chunk).toEqual({ text: 'malformed' });
     } finally {
       await opened.system.terminate();
     }

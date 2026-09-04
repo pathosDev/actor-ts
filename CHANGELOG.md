@@ -753,6 +753,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   would have re-broken every key on the next restart. Decoding with no
   identity supplied is unchanged, byte for byte.
 
+  Deriving the identity and re-keying the value are separate failures: an
+  element the callback refuses stays in the set under the key it arrived
+  with, and the identity stays learned. Deleting it instead would have left
+  the configured rule off for the life of that key, with deduplication
+  silently back on `JSON.stringify` — the defect this entry describes,
+  reachable again through one peer-supplied element of an unexpected shape.
+
 
 - **The supervisor's control ticks are private symbols, and the system queue
   documents its own bound** (#770, #794).
@@ -1151,6 +1158,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the ownership check. `streamId` still rides on the data, end and error
   frames as the correlation id (#788).
 
+  A command carrying no usable handle — absent, `null`, or not an object —
+  is published as a `DeadLetter` addressed to the client actor rather than
+  throwing inside the dispatch. A throw there was read one layer up as a
+  dropped connection, which pushed the offending message back at the head of
+  the outbound buffer and re-dispatched it after every reconnect, so one
+  malformed `tell` became an unbounded reconnect loop that starved every
+  legitimate write behind it. A well-formed handle naming an unknown stream
+  stays a silent no-op, because that race happens in correct use.
+
   Both actors also gained a `channelOptions` field and a
   `withChannelOptions` builder method, passed verbatim to the server
   constructor and to the service client's third slot. Message-size caps,
@@ -1291,8 +1307,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   database. It and the three Postgres `withPoolConfig` builders now show the
   CA form the journal's documentation page already used, and link the
   TLS-everywhere page. Because no test can fail on JSDoc text, a new
-  repo-invariant guard keeps the pattern out of `src/` and holds all four
-  surfaces to it (#755).
+  repo-invariant guard holds all four surfaces to that illustration and
+  refuses any `rejectUnauthorized` binding under `src/` — the key bare or
+  quoted, the pair split across lines, `:` or `=` — whose value is not
+  `true`, a `boolean` type annotation, or a forward of the caller's own
+  value. It does not see a key assembled at runtime, the other knobs that
+  disable verification, or what a caller passes in `poolConfig`, and its own
+  comment lists those limits with fixtures behind them (#755).
 
 - **An external `subscribe` can no longer rewrite an `MqttActor` subclass's
   declared QoS** (#783).
@@ -1357,6 +1378,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   message naming the fix. `bootstrap` stays deliberately absent from HOCON,
   and the reason is now written down beside the config-defaults type (#776).
 
+  The URL must also carry **no host**. A `file:` URL may hold an authority,
+  so `file://attacker.example.com/share/worker.js` passed a check on the
+  scheme alone — and all three runtimes accept that specifier, Windows
+  resolving it to the UNC path `\\attacker.example.com\share\worker.js`, so
+  only the SMB fetch failed. On a host where the share resolves, the
+  worker's main module is code off a remote server. The rule is a single
+  emptiness test on the parsed host rather than a host allow-list, because
+  the URL parser already erases `file://localhost/…` to an empty host on all
+  three runtimes; `127.0.0.1` and `[::1]` are not erased and are refused.
+
   `WorkerNode.join()` cancels its 30 s init timer on the success path
   instead of relying on `unref()`, which is a Node and Bun extension that
   silently did nothing on Deno's numeric timer handle — so a worker that had
@@ -1383,11 +1414,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   configuration decide which address an authenticated `GET` reaches. The
   response must also announce `content-type: text/event-stream`; any other
   type, or none, is refused before a byte of the body is parsed. Both
-  refusals travel the ordinary reconnect path — backoff, circuit breaker,
-  `BrokerDisconnected` — so a feed that starts redirecting surfaces as a
-  broker that cannot connect rather than as a silent change of where
-  credentials go. Neither needs a new option, and so neither needs a HOCON
-  leaf (#787).
+  refusals travel the ordinary reconnect path — backoff, the circuit breaker,
+  a `BrokerReconnectAttempt` per retry and a `BrokerReconnectFailed` once the
+  retries run out — so a feed that starts redirecting surfaces as a broker
+  that cannot connect rather than as a silent change of where credentials go;
+  a refused connect publishes no `BrokerDisconnected`, which marks a live
+  connection being lost. Neither needs a new option, and so neither needs a
+  HOCON leaf (#787).
 
   Separately, the read loop stopped rescanning its pending buffer. The
   delimiter search restarted at index 0 on every read *and* the growing
@@ -1611,6 +1644,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   backend until DevTools detaches. The two existing assertions looked like
   they covered this and did not: both ran on a fresh system, where the other
   branch clears the switches as a side effect.
+
+  Swapping the exported no-op tracer in through `enable()` now clears both
+  switches as `disable()` does, which is what makes "every branch" true: the
+  extension reports itself disabled in that state, so a tap detaching
+  afterwards had been restoring a recording flag onto an extension that said
+  it was off.
 
 
 - **The filesystem object-storage lock reclaim judged a planted entry by its

@@ -109,7 +109,7 @@ void main();
 
 | Option | Was |
 | --- | --- |
-| `withBootstrap(url)` | Worker-Entrypoint-Modul.  **Pflicht**, und muss das Schema `file:` tragen — `new URL('./worker-node.js', import.meta.url)` erzeugt genau das, während ein `data:`-, `blob:`- oder entfernter Specifier abgelehnt wird, weil er dem Worker-Konstruktor Code von außerhalb des Deployments übergeben würde. |
+| `withBootstrap(url)` | Worker-Entrypoint-Modul.  **Pflicht**, und muss eine `file:`-URL **ohne Host** sein — `new URL('./worker-node.js', import.meta.url)` erzeugt genau das.  Ein `data:`-, `blob:`- oder entfernter Specifier wird abgelehnt, weil er dem Worker-Konstruktor Code von außerhalb des Deployments übergeben würde, und ein Host auf der `file:`-URL ebenso: `file://ein-server/share/worker.js` ist ein UNC-Pfad, das Entrypoint-Modul käme also von jenem Server.  `file://localhost/…` bleibt akzeptiert — diesen Host löscht der URL-Parser, auf allen drei Runtimes. |
 | `withWorkers(n \| 'auto')` | Pool-Größe; `'auto'` nutzt die Hardware-Concurrency.  Default `'auto'`. |
 | `withSystemName(name)` | `ActorSystem`-Name, den jeder Worker hostet.  Default `'worker-cluster'`. |
 | `withHostname(host)` | Hostname-Komponente der Adresse jedes Workers.  Default `'worker'`. |

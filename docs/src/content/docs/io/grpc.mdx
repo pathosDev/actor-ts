@@ -323,6 +323,25 @@ Server-stream calls also carry a `streamId` on their `stream-data`
 concurrent streams.  Streams stay open until either side closes
 them or the actor stops.
 
+#### Handles that no longer resolve
+
+A send or close whose handle is **well formed but names no live
+stream** is a silent no-op.  That is a race you should expect in
+correct code: the server closed the stream, or the connection
+dropped, and the notice — `stream-end`, `stream-error` or `reply` —
+had not reached you when the write went out.
+
+A command carrying **no usable handle at all** is a different thing,
+and it is answered differently: it becomes a `DeadLetter` on the
+event stream, addressed to the client actor.  Nothing the framework
+mints looks like that, so it means a caller reached the actor with a
+shape the command type forbids — a plain-JavaScript `tell`, a
+deserialised message, or a handle read back out of a field that was
+cleared.  Subscribe to `DeadLetter` (or run a `DeadLetterQueue`) if
+you want those surfaced; the letter carries the offending command.
+Neither case disturbs the connection, and neither loses the messages
+queued behind it.
+
 ## TLS
 
 TLS is opt-in via `withCredentials`.  When omitted, both actors

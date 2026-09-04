@@ -104,13 +104,20 @@ Kompositions-Gefahr statt zu einem Fehler in einem der beiden
 Teile — und es ist eine Komposition, die genau diese Seite
 empfiehlt, weshalb sie hier ausgeschrieben steht.
 
-Ein `loadLatest`, das `encryption` mit einem anderen Modus als
-`'none'` trägt, wird deshalb **direkt aus dem eingewickelten Store
-bedient, ohne Cache**, und der Decorator warnt einmal:
+Ein `loadLatest`, dessen State der eingewickelte Store at rest
+verschlüsselt hält, wird deshalb **direkt aus dem eingewickelten
+Store bedient, ohne Cache**, und der Decorator warnt einmal.  Beide
+Wege dorthin zählen — eine Per-Call-`encryption`-Direktive mit einem
+anderen Modus als `'none'` und das `withEncryption(...)` des Stores
+selbst, das in den Options keines Calls je auftaucht:
 
 ```text
-persistence: CachedSnapshotStore caches decoded snapshot state, and this
-loadLatest on 'ObjectStorageSnapshotStore' asked for encryption — …
+persistence: CachedSnapshotStore caches decoded snapshot state, and on
+'ObjectStorageSnapshotStore' this loadLatest asked for encryption — …
+
+persistence: CachedSnapshotStore caches decoded snapshot state, and on
+'ObjectStorageSnapshotStore' the store's own configuration keeps this
+persistenceId encrypted — …
 ```
 
 `withAllowPlaintextCache(true)` ist deine Bestätigung, dass der
@@ -137,16 +144,36 @@ Vernünftige Antworten auf die Frage, die das Flag stellt:
   setze das Flag nicht.  Gib dem verschlüsselten Store einen
   eigenen Cache oder nimm die Cold-Start-Kosten in Kauf.
 
-Der Check sieht die **Per-Call-`PersistenceOptions`**, die der
-`encryption()`-Hook deines Actors erzeugt und die jeden Read
-erreichen.  Er sieht *nicht* einen Store, der bei der Konstruktion
-mit Verschlüsselung konfiguriert wurde und davon pro Call nie
-erfährt: `SnapshotStore` hat kein Member, das das melden würde, und
-`persistenceOptionSupport` beantwortet eine andere Frage ("könnte
-dieser Store verschlüsseln?", nicht "wird er es tun?").  Lebt deine
-Verschlüsselung vollständig in der Store-eigenen Konfiguration, hat
-dieser Decorator nichts zu warnen und die Entscheidung liegt allein
-bei dir.
+### Was der Check sieht — und was nicht
+
+Er sieht beide Wege, auf denen ein Deployment zu Vertraulichkeit
+kommt: die **Per-Call-`PersistenceOptions`**, die der
+`encryption()`-Hook deines Actors erzeugt, und die **Store-eigene
+Konfiguration**, die er über das optionale Member
+`encryptsAtRest(persistenceId)` von `SnapshotStore` liest.
+`ObjectStorageSnapshotStore` implementiert das aus derselben
+`encryption`-Konfiguration, die auch sein Codec benutzt, pro
+`persistenceId` — ein Resolver, der ein Präfix verschlüsselt und ein
+anderes nicht, wird also pro Entity entschieden statt einmal für den
+ganzen Store.
+
+Eine Per-Call-Direktive gewinnt gegen die Store-Konfiguration, hier
+wie überall sonst; ein explizites Per-Call-`{ mode: 'none' }` ist
+deshalb ein Opt-out, auch über einem Store, der verschlüsselt.
+
+Zwei Dinge sieht er weiterhin nicht:
+
+- **Einen Store, der verschlüsselt und nichts deklariert.**  Das
+  Member ist optional, Abwesenheit heißt *unbekannt*, und unbekannt
+  verweigert nie — die Regel, der die ganze Capability-Familie
+  folgt, damit ein Fremd-Store nicht beim Upgrade sein Verhalten
+  ändert, nur weil er nichts deklariert hat.  Ein eigener Store, der
+  verschlüsselt, sollte `encryptsAtRest` implementieren.
+- **Verschlüsselung *unterhalb* des Stores** — ein Server-Side-
+  Default des Buckets oder ein Backend, das auf dem Weg nach außen
+  verschlüsselt.  Kein Member dieses Contracts meldet das, der
+  Decorator hat nichts zu warnen, und die Entscheidung liegt allein
+  bei dir.
 
 ## Cache-Semantik
 
