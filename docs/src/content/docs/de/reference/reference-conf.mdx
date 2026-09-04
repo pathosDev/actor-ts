@@ -1143,9 +1143,83 @@ actor-ts {
         # tags-table -- derived as <events-table>_tags; see postgres above.
         auto-create-tables = on
       }
+
+      # MongoDB journal.  registerMongoPlugins(ext) makes this id real; the
+      # block below is what that call reads when a field is left unset.
+      # Explicit MongoJournalOptions always win over anything here.
+      #
+      # Mongo names its containers COLLECTIONS, so the leaves say collection and
+      # the switch creates indexes rather than tables.  A leaf named after
+      # another backend's vocabulary is a leaf an operator has to translate.
+      mongodb {
+        url = ""                      # mongodb://... or mongodb+srv://...; "" = not set
+        database-name = "actor_ts"
+        events-collection = "events"  # its meta collection is <it>_meta
+        auto-create-indexes = on      # the unique index is what refuses a duplicate append
+        # client-options -- no leaf: free-form MongoClient config with no
+        #   enumerable key set (withClientOptions in code).
+      }
+
+      # DynamoDB journal -- see the mongodb block above for the shape.  Reached
+      # by a region rather than a URL, and the table name carries the actor_ts_
+      # prefix on purpose: a DynamoDB table name is account- and region-global,
+      # so a bare "events" would collide with whatever else the account owns.
+      dynamodb {
+        region   = ""                 # e.g. eu-central-1; "" = not set
+        endpoint = ""                 # dynamodb-local / LocalStack; "" = the real service
+        events-table = "actor_ts_events"
+        # client-config -- no leaf, same reason as mongodb's client-options.
+        #   Credentials never appear here either: omitted, the SDK's own
+        #   default chain supplies them.
+        # Table PROVISIONING (billing mode, capacity, the create-on-first-use
+        #   switch) is code-only for now; this block is about reaching the right
+        #   table rather than about creating it.
+      }
+
+      # Cassandra / ScyllaDB journal.  registerCassandraPlugins(ext) makes this
+      # id real.  The widest block in the family: Cassandra is reached by a seed
+      # list rather than a URL, and its schema is four tables rather than one
+      # plus a derived name, because a wide-column store has no join to derive
+      # one with.
+      cassandra {
+        contact-points = []           # [] = not set; e.g. ["10.0.0.1", "10.0.0.2"]
+        keyspace = ""                 # "" = not set; required at the point of use
+        local-data-center = "datacenter1"
+        port = 9042
+        auto-create-keyspace = off    # CREATE KEYSPACE on start (SimpleStrategy, rf=1)
+        # replication -- the map auto-create-keyspace uses.  No leaf: free-form
+        #   with no enumerable key set (withReplication in code).  Nor do
+        #   credentials, which are key material.
+        # consistency -- deliberately unset: with nothing here the DRIVER picks
+        #   the CQL level, and absence is what keeps that true.  Set the numeric
+        #   value from cassandra-driver's types.consistencies (LOCAL_QUORUM = 6)
+        #   to pin it.
+        events-table    = "events"
+        metadata-table  = "metadata"            # highest sequence number per pid
+        all-ids-table   = "all_persistence_ids" # the lookup behind persistenceIds()
+        tag-index-table = "events_by_tag"       # written only when use-tag-index is on
+        partition-size = 500000       # rows per partition before rolling over
+        auto-create-tables = on
+        use-tag-index = off           # dual-write an events_by_tag side table
+        lightweight-transactions = on # Paxos claim per append; off risks a lost write
+        # serial-consistency -- deliberately unset: ignored unless the LWT above
+        #   is on, and unset the driver picks cluster-wide SERIAL.  Set 9
+        #   (localSerial) to keep Paxos inside the local data center.
+      }
     }
     snapshot-store {
       plugin = "actor-ts.persistence.snapshot-store.in-memory"
+
+      # The built-in in-memory snapshot store -- the one this file selects above,
+      # and the only block outside the per-backend fan-out.
+      in-memory {
+        # Snapshots kept per persistenceId.  0 keeps EVERY one, which is where
+        #   this store deliberately parts company with its siblings (they keep
+        #   3): it is what an unconfigured application gets, so a default bound
+        #   would quietly start discarding snapshots for every test in the repo.
+        #   Set it to bound a long-running fixture.
+        keep-n = 0
+      }
 
       # Local SQLite snapshot store -- see the journal's sqlite block above.
       sqlite {
@@ -1195,6 +1269,40 @@ actor-ts {
         database-id = ""
         api-token   = ""              # prefer ${?CLOUDFLARE_API_TOKEN}
         base-url    = "https://api.cloudflare.com/client/v4"
+        snapshots-table = "snapshots"
+        keep-n = 3
+        auto-create-tables = on
+      }
+
+      # MongoDB snapshot store -- see the journal's mongodb block above.
+      mongodb {
+        url = ""
+        database-name = "actor_ts"
+        snapshots-collection = "snapshots"
+        keep-n = 3                    # snapshots kept per persistenceId; 0 disables pruning
+        auto-create-indexes = on
+      }
+
+      # DynamoDB snapshot store -- see the journal's dynamodb block above.
+      dynamodb {
+        region   = ""
+        endpoint = ""
+        snapshots-table = "actor_ts_snapshots"
+        keep-n = 3
+      }
+
+      # Cassandra / ScyllaDB snapshot store -- see the journal's cassandra block
+      # above for what each connection leaf means.  The connection is repeated
+      # here rather than hoisted: a plugin id IS its config section, and the two
+      # axes are selected independently, so they may legitimately name different
+      # keyspaces.  A deployment that shares one writes it once and substitutes.
+      cassandra {
+        contact-points = []
+        keyspace = ""
+        local-data-center = "datacenter1"
+        port = 9042
+        auto-create-keyspace = off
+        # consistency -- deliberately unset; see the journal's cassandra block.
         snapshots-table = "snapshots"
         keep-n = 3
         auto-create-tables = on
@@ -1297,6 +1405,23 @@ actor-ts {
         base-url    = "https://api.cloudflare.com/client/v4"
         table = "durable_state"
         auto-create-tables = on
+      }
+
+      # MongoDB durable-state store -- see the journal's mongodb block above.
+      mongodb {
+        url = ""
+        database-name = "actor_ts"
+        collection = "durable_state"
+      }
+
+      # DynamoDB durable-state store -- see the journal's dynamodb block above.
+      # There is no cassandra sibling here at all: no Cassandra durable-state
+      # store ships, so this axis is two backends wide where the other two are
+      # three.
+      dynamodb {
+        region   = ""
+        endpoint = ""
+        table = "actor_ts_durable_state"
       }
     }
   }

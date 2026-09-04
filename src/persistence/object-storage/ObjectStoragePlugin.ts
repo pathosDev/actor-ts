@@ -1,5 +1,6 @@
 import type { ActorSystem } from '../../ActorSystem.js';
 import type { PersistenceExtension } from '../PersistenceExtension.js';
+import { Lazy } from '../../util/Lazy.js';
 import { mergeOptions } from '../../util/OptionsMerge.js';
 import { ObjectStorageDurableStateStore } from '../durable-state-stores/ObjectStorageDurableStateStore.js';
 import { ObjectStorageSnapshotStore } from '../snapshot-stores/ObjectStorageSnapshotStore.js';
@@ -70,10 +71,17 @@ export interface ObjectStoragePluginHandles {
   /** The shared backend — both stores write through this. */
   readonly backend: ObjectStorageBackend;
   /**
-   * The DurableState store instance.  `PersistenceExtension` doesn't
-   * carry a DurableState registry today, so callers that want
-   * DurableState pass this directly into `DurableStateActor`'s
-   * options.
+   * The DurableState store instance, for a caller that wires
+   * `DurableStateOptions.store` by hand rather than selecting the store with
+   * `actor-ts.persistence.durable-state.plugin`.
+   *
+   * A **getter**, and built on first read rather than at registration (#872).
+   * The store is a registered factory now — `OBJECT_STORAGE_DURABLE_STATE_PLUGIN_ID`
+   * was an exported constant nothing could select until the extension grew a
+   * durable-state registry — and both routes resolve the same lazy, so either
+   * yields the one object and a caller that never touches durable state builds
+   * none.  It still shares the backend with the snapshot store, so
+   * {@link close} is unchanged: the plugin owns the backend either way.
    */
   readonly durableStateStore: ObjectStorageDurableStateStore;
   /**
@@ -85,12 +93,12 @@ export interface ObjectStoragePluginHandles {
 }
 
 /**
- * Register the object-storage SnapshotStore against `PersistenceExtension`
- * and return a ready-to-use DurableStateStore instance.  Mirrors the
- * Cassandra plugin's one-call wiring while accepting that DurableState
- * isn't extension-managed today — callers who want DurableState read
- * `handles.durableStateStore` from the return value and pass it into
- * their `DurableStateActor` options.
+ * Register the object-storage snapshot store *and* durable-state store against
+ * `PersistenceExtension`.  Both plugin ids become selectable — the
+ * durable-state one for the first time (#872) — and the returned
+ * `handles.durableStateStore` still hands back the same instance, for a caller
+ * that would rather pass it into `DurableStateActor`'s options than name it in
+ * config.
  *
  * **Eager peer-dep validation (#18, #59).**  Before returning, this
  * function probes any optional peer-dependency the configured codecs
@@ -168,7 +176,12 @@ export async function registerObjectStoragePlugins(
     });
   });
 
-  const durableStateStore = new ObjectStorageDurableStateStore({
+  // One instance, whichever way it is reached: the registry's factory and the
+  // returned handle both resolve this lazy.  Everything asynchronous — the
+  // peer-dep probes and building the backend — has already happened above, so
+  // the thunk itself is synchronous and `registerObjectStoragePlugins` stays
+  // the single `await` its documented call sites expect.
+  const durableStateStoreLazy = Lazy.of(() => new ObjectStorageDurableStateStore({
     backend,
     ownsBackend: false,
     ...(resolvedOptions.prefix !== undefined ? { prefix: resolvedOptions.prefix } : {}),
@@ -180,7 +193,8 @@ export async function registerObjectStoragePlugins(
     ...(resolvedOptions.rejectRevisionRollback !== undefined ? { rejectRevisionRollback: resolvedOptions.rejectRevisionRollback } : {}),
     ...(resolvedOptions.maxDecompressedBytes !== undefined ? { maxDecompressedBytes: resolvedOptions.maxDecompressedBytes } : {}),
     ...(resolvedOptions.serializer !== undefined ? { serializer: resolvedOptions.serializer } : {}),
-  });
+  }));
+  ext.registerDurableStateStore(OBJECT_STORAGE_DURABLE_STATE_PLUGIN_ID, () => durableStateStoreLazy.get());
 
   // The backend is shared across both stores, so neither owns it.  The plugin
   // owns it and closes it once, here, on shutdown.
@@ -191,7 +205,11 @@ export async function registerObjectStoragePlugins(
     await backend.close?.();
   };
 
-  return { backend, durableStateStore, close };
+  return {
+    backend,
+    get durableStateStore(): ObjectStorageDurableStateStore { return durableStateStoreLazy.get(); },
+    close,
+  };
 }
 
 /**

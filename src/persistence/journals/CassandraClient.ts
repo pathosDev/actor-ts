@@ -51,12 +51,49 @@ export type CassandraConnection = {
     readonly dataCenters?: Readonly<Record<string, number>>;
   };
   /**
-   * CQL consistency level to use for all reads and writes.  Default:
-   * `LOCAL_QUORUM` (value 6 in the driver).  Pass the numeric value from
-   * `cassandra-driver`'s `types.consistencies`.
+   * CQL consistency level to use for all reads and writes.  Pass the numeric
+   * value from `cassandra-driver`'s `types.consistencies` — `LOCAL_QUORUM` (6)
+   * is the level to reach for on a multi-DC keyspace.
+   *
+   * **Unset, the level is the driver's**, not the framework's: both stores
+   * branch on the field being absent and send no `consistency` at all, so
+   * `cassandra-driver`'s own default applies.  That is deliberate and is why
+   * `reference.conf` publishes the key as a *comment* rather than a value
+   * (#872) — a published number would pin a level nothing here chose.
    */
   readonly consistency?: number;
 };
+
+/**
+ * CQL port a Cassandra or Scylla node listens on when nothing named one, and
+ * the data center `DCAwareRoundRobinPolicy` treats as local.
+ *
+ * Both live here rather than beside one options type because they are
+ * defaults of {@link CassandraConnection}, which the journal's *and* the
+ * snapshot store's option families both extend — and because
+ * {@link createCassandraClient} below is the single place either is read.
+ * Same placement and same argument as `DEFAULT_MONGO_DATABASE` in
+ * `MongoClient.ts` and `DEFAULT_D1_BASE_URL` in `D1Client.ts`.
+ *
+ * `9042` is Cassandra's registered CQL native-transport port and `datacenter1`
+ * is the name a single-node `cassandra.yaml` ships with, so both are the value
+ * a local cluster answers on rather than a tuning choice.  `reference.conf`
+ * publishes them under both Cassandra blocks (#872).
+ */
+export const DEFAULT_CASSANDRA_PORT = 9042;
+export const DEFAULT_CASSANDRA_LOCAL_DATA_CENTER = 'datacenter1';
+
+/**
+ * Side table an indexed `eventsByTag` query reads when nothing named one.
+ *
+ * Lives beside {@link tagIndexDdl} rather than in `CassandraJournalOptions.ts`
+ * with the journal's other table names because the DDL helper is a second read
+ * site — it is exported for operators applying the schema by hand, and it is
+ * called without a table name — so a constant in the options file would have to
+ * be imported *back* into this one, against the direction every other
+ * `XxxClient.ts` edge runs.
+ */
+export const DEFAULT_CASSANDRA_TAG_INDEX_TABLE = 'events_by_tag';
 
 /**
  * DDL for the `events_by_tag` side table populated by `CassandraJournal`
@@ -75,7 +112,7 @@ export function tagIndexDdl(args: {
   readonly keyspace: string;
   readonly tagIndexTable?: string;
 }): string {
-  const table = args.tagIndexTable ?? 'events_by_tag';
+  const table = args.tagIndexTable ?? DEFAULT_CASSANDRA_TAG_INDEX_TABLE;
   return `CREATE TABLE IF NOT EXISTS ${assertSafeIdentifier(args.keyspace, 'keyspace')}`
     + `.${assertSafeIdentifier(table, 'tag index table')} (`
     + ` tag text,`

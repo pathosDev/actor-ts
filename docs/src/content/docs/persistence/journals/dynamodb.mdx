@@ -86,6 +86,50 @@ const dynamoDbJournalOptions = DynamoDbJournalOptions.create()
   .withClientConfig({ credentials: { accessKeyId: 'local', secretAccessKey: 'local' } });
 ```
 
+## Configure it from HOCON
+
+The plugin id **is** the config section, so the block named after the id is the
+block that plugin reads (#872).  The whole reachability half — region, endpoint
+and the table names — can come from `application.conf`, which means
+`registerDynamoDbPlugins(ext)` needs no options at all:
+
+```ts
+import { PersistenceExtensionId, registerDynamoDbPlugins } from 'actor-ts/persistence';
+
+const persistence = system.extension(PersistenceExtensionId);
+registerDynamoDbPlugins(persistence);
+```
+
+```hocon
+actor-ts.persistence {
+  journal        { plugin = "actor-ts.persistence.journal.dynamodb" }
+  snapshot-store { plugin = "actor-ts.persistence.snapshot-store.dynamodb" }
+  durable-state  { plugin = "actor-ts.persistence.durable-state.dynamodb" }
+
+  journal.dynamodb        { region = "eu-central-1", events-table = "actor_ts_events" }
+  snapshot-store.dynamodb { region = "eu-central-1", keep-n = 5 }
+  durable-state.dynamodb  { region = "eu-central-1", table = "actor_ts_durable_state" }
+}
+```
+
+`endpoint` is the leaf you set for `dynamodb-local` or LocalStack; left empty it
+means the real service.  **Credentials have no leaf at all** — omitted, the SDK's
+own default chain supplies them (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`,
+an instance profile, or IAM Roles for Service Accounts), which is the same
+treatment the object-storage plugin's S3 backend gets.  Neither does
+`clientConfig`, being free-form driver config with no enumerable key set, nor a
+pre-built `operations` façade or a `serializer`, which are live objects.
+
+Table **provisioning** — `billingMode`, `provisionedThroughput`,
+`tableReadyTimeoutMs` and `autoCreateTables` — stays code-only for now: this
+block is about reaching the right table rather than about creating it.
+
+**`durable-state.plugin` now selects this backend's durable-state store.**  It
+used to be built eagerly and handed back from `registerDynamoDbPlugins`, so it
+could only be wired by threading that instance through application code.  The
+returned handle still works and still yields the same instance — it is simply
+built on first use rather than at registration.
+
 ## When to use it
 
 - **You are on AWS and want no database to operate.** No instance, no

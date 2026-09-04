@@ -918,6 +918,7 @@ zurückgegeben hat.
 | `persistence.journal.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Journals. |
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Snapshot Stores. |
 | `persistence.durable-state.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Durable-State-Stores. |
+| `persistence.snapshot-store.in-memory.keep-n` | `0` | Snapshots, die der eingebaute In-Memory-Store pro `persistenceId` behält.  `0` behält alle — die umgekehrte Polarität zur `3` der persistenten Stores, weil das der Store ist, den eine unkonfigurierte Anwendung bekommt, und eine Schranke hier still Snapshots verwerfen würde. |
 | `persistence.journal.sqlite.path` | `""` | Datenbankdatei.  Leer heißt *nicht gesetzt* — das Journal fällt auf eine anonyme In-Memory-Datenbank durch. |
 | `persistence.journal.sqlite.events-table` | `"events"` | Event-Tabelle.  Die Tags- (`_tags`) und Metadaten-Tabelle (`_meta`) folgen diesem Namen. |
 | `persistence.journal.sqlite.wal` | `off` | Datenbank mit `journal_mode = WAL` öffnen — parallele Leser während eines Schreibvorgangs. |
@@ -1119,6 +1120,94 @@ Platzhalter nie zu einem Bearer-Token wird.
 | `persistence.durable-state.cloudflare-d1.base-url` | `"https://api.cloudflare.com/client/v4"` | Wie oben. |
 | `persistence.durable-state.cloudflare-d1.table` | `"durable_state"` | Durable-State-Tabelle. |
 | `persistence.durable-state.cloudflare-d1.auto-create-tables` | `on` | Wie oben. |
+
+**Auch die drei nicht-relationalen Backends lesen ihre eigenen Blöcke** (#872).
+Sie teilen sich weder untereinander noch mit der SQL-Familie eine
+Implementierung, jeder Block spricht also das Vokabular seines Backends — Mongo
+hat *Collections* und legt *Indizes* an, DynamoDB hat account-globale
+Tabellennamen und eine Region statt einer URL, und Cassandra wird über eine
+Seed-Liste erreicht und legt vier Tabellen an.  `registerMongoPlugins(ext)`,
+`registerDynamoDbPlugins(ext)` und `registerCassandraPlugins(ext)` brauchen
+darum gar keine Optionen mehr, sobald die Blöcke unten gefüllt sind.
+
+Cassandra hat **keinen `durable-state`-Block**, und das ist kein Versehen: Das
+Framework liefert keinen Cassandra-Durable-State-Store aus, dieses Backend hat
+also zwei Plugin-Achsen, wo die anderen beiden drei haben.
+
+#### MongoDB
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `persistence.journal.mongodb.url` | `""` | Connection-String — `mongodb://…` oder `mongodb+srv://…`.  Leer heißt *nicht gesetzt*. |
+| `persistence.journal.mongodb.database-name` | `"actor_ts"` | Datenbank, in der die Collections liegen. |
+| `persistence.journal.mongodb.events-collection` | `"events"` | Event-Collection.  Ihre Meta-Collection heißt `<it>_meta`. |
+| `persistence.journal.mongodb.auto-create-indexes` | `on` | Indizes beim ersten Zugriff anlegen.  Der Unique-Index ist das, was einen doppelten Append ablehnt — aus heißt also *ich habe sie selbst angelegt*. |
+| `persistence.snapshot-store.mongodb.url` | `""` | Wie oben. |
+| `persistence.snapshot-store.mongodb.database-name` | `"actor_ts"` | Wie oben. |
+| `persistence.snapshot-store.mongodb.snapshots-collection` | `"snapshots"` | Snapshot-Collection. |
+| `persistence.snapshot-store.mongodb.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
+| `persistence.snapshot-store.mongodb.auto-create-indexes` | `on` | Wie oben. |
+| `persistence.durable-state.mongodb.url` | `""` | Wie oben. |
+| `persistence.durable-state.mongodb.database-name` | `"actor_ts"` | Wie oben. |
+| `persistence.durable-state.mongodb.collection` | `"durable_state"` | Durable-State-Collection. |
+
+`clientOptions` hat kein Blatt — freie Treiber-Konfiguration ohne aufzählbare
+Schlüsselmenge — und ein vorab gebauter `client` oder ein `serializer` auch nicht.
+
+#### DynamoDB
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `persistence.journal.dynamodb.region` | `""` | AWS-Region, z. B. `eu-central-1`.  Leer heißt *nicht gesetzt*. |
+| `persistence.journal.dynamodb.endpoint` | `""` | Endpoint-Override für `dynamodb-local` oder LocalStack; leer meint den echten Dienst. |
+| `persistence.journal.dynamodb.events-table` | `"actor_ts_events"` | Event-Tabelle.  Mit Präfix, weil ein DynamoDB-Tabellenname account- und regionsweit global ist. |
+| `persistence.snapshot-store.dynamodb.region` | `""` | Wie oben. |
+| `persistence.snapshot-store.dynamodb.endpoint` | `""` | Wie oben. |
+| `persistence.snapshot-store.dynamodb.snapshots-table` | `"actor_ts_snapshots"` | Snapshot-Tabelle. |
+| `persistence.snapshot-store.dynamodb.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
+| `persistence.durable-state.dynamodb.region` | `""` | Wie oben. |
+| `persistence.durable-state.dynamodb.endpoint` | `""` | Wie oben. |
+| `persistence.durable-state.dynamodb.table` | `"actor_ts_durable_state"` | Durable-State-Tabelle. |
+
+Credentials haben **kein Blatt**: Weggelassen liefert sie die Default-Chain des
+SDK.  `clientConfig` ebenso wenig, und das *Provisioning* der Tabellen —
+Billing-Modus, Kapazität, der Anlegen-beim-ersten-Zugriff-Schalter — bleibt
+vorerst code-only, weil es in diesem Block darum geht, die richtige Tabelle zu
+erreichen, nicht darum, sie anzulegen.
+
+#### Cassandra / ScyllaDB
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `persistence.journal.cassandra.contact-points` | `[]` | Seed-Knoten, aus denen die Cluster-Topologie ermittelt wird.  `[]` heißt *nicht gesetzt* — die Listenform des `""`-Idioms. |
+| `persistence.journal.cassandra.keyspace` | `""` | Keyspace für `USE`.  Leer heißt *nicht gesetzt*; an der Nutzungsstelle erforderlich. |
+| `persistence.journal.cassandra.local-data-center` | `"datacenter1"` | Lokales DC für die `DCAwareRoundRobinPolicy`. |
+| `persistence.journal.cassandra.port` | `9042` | CQL-Native-Transport-Port. |
+| `persistence.journal.cassandra.auto-create-keyspace` | `off` | `CREATE KEYSPACE` beim Start (SimpleStrategy, rf=1) — eine Entwicklungshilfe. |
+| `persistence.journal.cassandra.consistency` | *(nicht gesetzt)* | Bewusst ein Kommentar in der `reference.conf`.  Nicht gesetzt wählt der Treiber das CQL-Level; setze den Zahlenwert aus `types.consistencies` (`6` = `LOCAL_QUORUM`), um es festzuschreiben. |
+| `persistence.journal.cassandra.events-table` | `"events"` | Event-Tabelle. |
+| `persistence.journal.cassandra.metadata-table` | `"metadata"` | Höchste Sequenznummer pro `persistenceId`. |
+| `persistence.journal.cassandra.all-ids-table` | `"all_persistence_ids"` | Die Lookup-Tabelle hinter `persistenceIds()`. |
+| `persistence.journal.cassandra.tag-index-table` | `"events_by_tag"` | Side-Table, nur geschrieben wenn `use-tag-index` an ist. |
+| `persistence.journal.cassandra.partition-size` | `500000` | Zeilen pro Partition, bevor auf eine neue umgebrochen wird. |
+| `persistence.journal.cassandra.auto-create-tables` | `on` | Die vier Tabellen beim ersten Connect anlegen. |
+| `persistence.journal.cassandra.use-tag-index` | `off` | Eine `events_by_tag`-Side-Table mitschreiben, damit Tag-Queries eine Partition lesen. |
+| `persistence.journal.cassandra.lightweight-transactions` | `on` | Den Sequenzbereich vor dem Schreiben per Paxos beanspruchen.  Aus riskiert einen still verlorenen Append, weil ein Cassandra-`INSERT` ein Upsert ist. |
+| `persistence.journal.cassandra.serial-consistency` | *(nicht gesetzt)* | Bewusst ein Kommentar.  Ohne die LWT oben ignoriert; nicht gesetzt wählt der Treiber clusterweites `SERIAL`.  `9` ist `localSerial`. |
+| `persistence.snapshot-store.cassandra.contact-points` | `[]` | Wie oben. |
+| `persistence.snapshot-store.cassandra.keyspace` | `""` | Wie oben. |
+| `persistence.snapshot-store.cassandra.local-data-center` | `"datacenter1"` | Wie oben. |
+| `persistence.snapshot-store.cassandra.port` | `9042` | Wie oben. |
+| `persistence.snapshot-store.cassandra.auto-create-keyspace` | `off` | Wie oben. |
+| `persistence.snapshot-store.cassandra.consistency` | *(nicht gesetzt)* | Wie oben. |
+| `persistence.snapshot-store.cassandra.snapshots-table` | `"snapshots"` | Snapshot-Tabelle. |
+| `persistence.snapshot-store.cassandra.keep-n` | `3` | Pro `persistenceId` aufbewahrte Snapshots; `0` schaltet das Pruning ab. |
+| `persistence.snapshot-store.cassandra.auto-create-tables` | `on` | Wie oben. |
+
+`credentials` hat **gar kein Blatt** — das ist Schlüsselmaterial, und
+Schlüsselmaterial ist in einer Config-Datei nie ausdrückbar.  `replication`, die
+Map für `auto-create-keyspace`, ebenso wenig: frei und ohne aufzählbare
+Schlüsselmenge.
 
 Die Plugin-Keys zeigen auf *einen anderen* Config-Abschnitt, der
 die Settings dieses Plugins enthält.  `actor-ts.persistence.journal.sqlite`

@@ -5,6 +5,9 @@ import {
   type DynamoDbOptionsBaseType,
 } from '../journals/DynamoDbOptionsBase.js';
 
+/** The snapshot corpus's table — see `DEFAULT_DYNAMODB_EVENTS_TABLE` for why it is prefixed. */
+export const DEFAULT_DYNAMODB_SNAPSHOTS_TABLE = 'actor_ts_snapshots';
+
 export interface DynamoDbSnapshotStoreOptionsType extends DynamoDbOptionsBaseType {
   /** Snapshots table name.  Default: `actor_ts_snapshots`. */
   readonly snapshotsTable?: string;

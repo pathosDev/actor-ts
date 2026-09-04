@@ -87,6 +87,13 @@ import { DEFAULT_MAX_DECOMPRESSED_BYTES } from '../../../src/persistence/object-
 import { DEFAULT_LOCK_TIMEOUT_MS, DEFAULT_STALE_LOCK_MS } from '../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import { DEFAULT_AUTO_CREATE_TABLES, DEFAULT_DURABLE_STATE_TABLE, DEFAULT_EVENTS_TABLE, DEFAULT_SNAPSHOTS_TABLE, DEFAULT_SNAPSHOT_KEEP_N, DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from '../../../src/persistence/Constants.js';
 import { DEFAULT_D1_BASE_URL } from '../../../src/persistence/journals/D1Client.js';
+import { DEFAULT_MONGO_AUTO_CREATE_INDEXES } from '../../../src/persistence/Constants.js';
+import { DEFAULT_MONGO_DATABASE } from '../../../src/persistence/journals/MongoClient.js';
+import { DEFAULT_DYNAMODB_EVENTS_TABLE } from '../../../src/persistence/journals/DynamoDbJournalOptions.js';
+import { DEFAULT_DYNAMODB_SNAPSHOTS_TABLE } from '../../../src/persistence/snapshot-stores/DynamoDbSnapshotStoreOptions.js';
+import { DEFAULT_DYNAMODB_DURABLE_STATE_TABLE } from '../../../src/persistence/durable-state-stores/DynamoDbDurableStateStoreOptions.js';
+import { DEFAULT_CASSANDRA_LOCAL_DATA_CENTER, DEFAULT_CASSANDRA_PORT, DEFAULT_CASSANDRA_TAG_INDEX_TABLE } from '../../../src/persistence/journals/CassandraClient.js';
+import { DEFAULT_CASSANDRA_ALL_IDS_TABLE, DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACTIONS, DEFAULT_CASSANDRA_METADATA_TABLE, DEFAULT_CASSANDRA_PARTITION_SIZE } from '../../../src/persistence/journals/CassandraJournalOptions.js';
 import {
   DEFAULT_WEBSOCKET_MAX_FRAME_BYTES,
   DEFAULT_WEBSOCKET_MAX_PRE_ATTACH_BYTES,
@@ -556,6 +563,48 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.persistence.journal.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
   { key: 'actor-ts.persistence.snapshot-store.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
   { key: 'actor-ts.persistence.durable-state.cloudflare-d1.base-url', kind: 'string', constant: DEFAULT_D1_BASE_URL },
+  // The non-relational family (#872, slice 3).  Mongo reuses the three shared
+  // name constants because its collections hold the same three corpora — the
+  // JSDoc on `DEFAULT_EVENTS_TABLE` already says "table (or collection)" — while
+  // DynamoDB gets three of its own: a DynamoDB table name is account- and
+  // region-global rather than scoped by a database, so its defaults carry an
+  // `actor_ts_` prefix the SQL family has no need of.
+  { key: 'actor-ts.persistence.journal.mongodb.database-name', kind: 'string', constant: DEFAULT_MONGO_DATABASE },
+  { key: 'actor-ts.persistence.journal.mongodb.events-collection', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.mongodb.auto-create-indexes', kind: 'bool', constant: DEFAULT_MONGO_AUTO_CREATE_INDEXES },
+  { key: 'actor-ts.persistence.snapshot-store.mongodb.database-name', kind: 'string', constant: DEFAULT_MONGO_DATABASE },
+  { key: 'actor-ts.persistence.snapshot-store.mongodb.snapshots-collection', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.mongodb.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.mongodb.auto-create-indexes', kind: 'bool', constant: DEFAULT_MONGO_AUTO_CREATE_INDEXES },
+  { key: 'actor-ts.persistence.durable-state.mongodb.database-name', kind: 'string', constant: DEFAULT_MONGO_DATABASE },
+  { key: 'actor-ts.persistence.durable-state.mongodb.collection', kind: 'string', constant: DEFAULT_DURABLE_STATE_TABLE },
+  { key: 'actor-ts.persistence.journal.dynamodb.events-table', kind: 'string', constant: DEFAULT_DYNAMODB_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.dynamodb.snapshots-table', kind: 'string', constant: DEFAULT_DYNAMODB_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.dynamodb.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.durable-state.dynamodb.table', kind: 'string', constant: DEFAULT_DYNAMODB_DURABLE_STATE_TABLE },
+  // Cassandra's two blocks.  The topology pair is published under both because
+  // the journal and the snapshot store are selected independently and may name
+  // different clusters, and both copies are pinned to the one constant
+  // `createCassandraClient` reads — two published numbers with one number
+  // behind them is exactly what this table exists to keep honest.
+  { key: 'actor-ts.persistence.journal.cassandra.local-data-center', kind: 'string', constant: DEFAULT_CASSANDRA_LOCAL_DATA_CENTER },
+  { key: 'actor-ts.persistence.journal.cassandra.port', kind: 'int', constant: DEFAULT_CASSANDRA_PORT },
+  { key: 'actor-ts.persistence.journal.cassandra.events-table', kind: 'string', constant: DEFAULT_EVENTS_TABLE },
+  { key: 'actor-ts.persistence.journal.cassandra.metadata-table', kind: 'string', constant: DEFAULT_CASSANDRA_METADATA_TABLE },
+  { key: 'actor-ts.persistence.journal.cassandra.all-ids-table', kind: 'string', constant: DEFAULT_CASSANDRA_ALL_IDS_TABLE },
+  { key: 'actor-ts.persistence.journal.cassandra.tag-index-table', kind: 'string', constant: DEFAULT_CASSANDRA_TAG_INDEX_TABLE },
+  { key: 'actor-ts.persistence.journal.cassandra.partition-size', kind: 'int', constant: DEFAULT_CASSANDRA_PARTITION_SIZE },
+  { key: 'actor-ts.persistence.journal.cassandra.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
+  // On, and asserted rather than filed as a feature switch: the off state is
+  // NOT the field being absent — absent means on, because a Cassandra INSERT is
+  // an upsert and without the Paxos claim two concurrent appends silently
+  // overwrite one another.  A published `off` would be a correctness change.
+  { key: 'actor-ts.persistence.journal.cassandra.lightweight-transactions', kind: 'bool', constant: DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACTIONS },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.local-data-center', kind: 'string', constant: DEFAULT_CASSANDRA_LOCAL_DATA_CENTER },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.port', kind: 'int', constant: DEFAULT_CASSANDRA_PORT },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.snapshots-table', kind: 'string', constant: DEFAULT_SNAPSHOTS_TABLE },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
+  { key: 'actor-ts.persistence.snapshot-store.cassandra.auto-create-tables', kind: 'bool', constant: DEFAULT_AUTO_CREATE_TABLES },
 
   /* --- object storage --- */
   { key: 'actor-ts.persistence.snapshot-store.object-storage.keep-n', kind: 'int', constant: DEFAULT_SNAPSHOT_KEEP_N },
@@ -784,6 +833,31 @@ const PLACEHOLDERS: readonly string[] = [
   'actor-ts.persistence.durable-state.cloudflare-d1.account-id',
   'actor-ts.persistence.durable-state.cloudflare-d1.database-id',
   'actor-ts.persistence.durable-state.cloudflare-d1.api-token',
+  // The non-relational family's connection halves (#872, slice 3).  Same
+  // reading as the relational ones above: each is a coordinate of the
+  // operator's own deployment, required at the point of use and impossible to
+  // default, and `""` reads as unset so the published placeholder never reaches
+  // a driver.  DynamoDB's `endpoint` is the one whose empty value is also its
+  // *meaning* — unset points at the real AWS service, and only a LocalStack or
+  // dynamodb-local deployment overrides it.
+  'actor-ts.persistence.journal.mongodb.url',
+  'actor-ts.persistence.snapshot-store.mongodb.url',
+  'actor-ts.persistence.durable-state.mongodb.url',
+  'actor-ts.persistence.journal.dynamodb.region',
+  'actor-ts.persistence.journal.dynamodb.endpoint',
+  'actor-ts.persistence.snapshot-store.dynamodb.region',
+  'actor-ts.persistence.snapshot-store.dynamodb.endpoint',
+  'actor-ts.persistence.durable-state.dynamodb.region',
+  'actor-ts.persistence.durable-state.dynamodb.endpoint',
+  // Cassandra's two, and `contact-points` is the group's one LIST-shaped
+  // placeholder rather than an empty string.  The reading is identical — `[]`
+  // is the shape of the key, `readStoreStringList` drops it, and an empty seed
+  // list handed to the driver fails far from its cause — but the shape is a
+  // list because a Cassandra client is seeded from several nodes, not one.
+  'actor-ts.persistence.journal.cassandra.contact-points',
+  'actor-ts.persistence.journal.cassandra.keyspace',
+  'actor-ts.persistence.snapshot-store.cassandra.contact-points',
+  'actor-ts.persistence.snapshot-store.cassandra.keyspace',
 ];
 
 /**
@@ -894,6 +968,23 @@ const FEATURE_SWITCHES: readonly string[] = [
   // when `options.wal` is truthy, so there is no constant to disagree with
   // (#872).
   'actor-ts.persistence.journal.sqlite.wal',
+  // off = the keyspace must already exist, which is what a production cluster
+  // wants; the switch is a development convenience.  The off state IS the field
+  // being absent at the read site — both stores run `if (options
+  // .autoCreateKeyspace)` — so there is no constant to disagree with (#872).
+  'actor-ts.persistence.journal.cassandra.auto-create-keyspace',
+  'actor-ts.persistence.snapshot-store.cassandra.auto-create-keyspace',
+  // off = no `events_by_tag` side table, which is what every release before the
+  // option did and what an existing schema still expects.  Same shape: the read
+  // site is `options.useTagIndex === true`, so absent and `false` are the same
+  // journal (#872).
+  'actor-ts.persistence.journal.cassandra.use-tag-index',
+  // 0 = keep every snapshot, and the polarity is inverted from the persistent
+  // stores' `keep-n = 3` on purpose: this is the store an unconfigured
+  // application gets, so a bound here would silently start discarding
+  // snapshots. `keepN ?? 0` at the read site means the off state IS the field
+  // being absent, so there is no constant for it to disagree with (#872).
+  'actor-ts.persistence.snapshot-store.in-memory.keep-n',
 ];
 
 /**

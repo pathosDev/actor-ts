@@ -2,6 +2,43 @@ import { StoreSerializerOptionsBuilder, type StoreSerializerOptionsBase } from '
 import { OptionsValidator } from '../../util/OptionsValidator.js';
 import type { CassandraClientLike, CassandraConnection } from './CassandraClient.js';
 
+/**
+ * The journal-specific halves of the Cassandra schema, and the two tuning
+ * values that shape it, when nothing named one.
+ *
+ * Here rather than in `src/persistence/Constants.ts` because each is the
+ * built-in default of a {@link CassandraJournalOptionsType} field and
+ * `CassandraJournal` is the only file that reads it — the co-location rule's
+ * first case.  The two names the journal shares with everything else stay in
+ * `Constants.ts` where they already were (`DEFAULT_EVENTS_TABLE`, and
+ * `DEFAULT_CASSANDRA_TAG_INDEX_TABLE` in `CassandraClient.ts`, which has a
+ * second read site in `tagIndexDdl`).
+ *
+ * Named at all because `reference.conf` publishes all four (#872), and a
+ * published default with no constant behind it is a value written down twice
+ * with nothing comparing the copies.
+ */
+export const DEFAULT_CASSANDRA_METADATA_TABLE = 'metadata';
+export const DEFAULT_CASSANDRA_ALL_IDS_TABLE = 'all_persistence_ids';
+
+/**
+ * Rows per Cassandra partition before the journal rolls over to a new one.
+ * Bounds a partition for a long-lived stream, which is the size Cassandra
+ * itself is sensitive to — big enough that a normal entity never rolls over,
+ * small enough that a hot stream's partitions stay readable.
+ */
+export const DEFAULT_CASSANDRA_PARTITION_SIZE = 500_000;
+
+/**
+ * Whether an append claims its sequence range with a lightweight transaction
+ * (#475).  On, because off is a silent lost write: a Cassandra `INSERT` is an
+ * upsert, so two writers that both read head `N` both pass the `expectedSeq`
+ * check, both write at `N+1`, and both are told they succeeded.  The Paxos
+ * round-trip is what gives Cassandra the `JournalConcurrencyError` contract
+ * every other backend gets from a primary key.
+ */
+export const DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACTIONS = true;
+
 export interface CassandraJournalOptionsType extends CassandraConnection, StoreSerializerOptionsBase {
   /** Table name for events.  Default: `events`. */
   readonly eventsTable?: string;
@@ -143,7 +180,10 @@ export class CassandraJournalOptionsBuilder extends StoreSerializerOptionsBuilde
     return this.set('replication', replication);
   }
 
-  /** CQL consistency level for all reads and writes.  Default `LOCAL_QUORUM` (6). */
+  /**
+   * CQL consistency level for all reads and writes.  Unset leaves the level to
+   * the driver rather than defaulting to one here; `LOCAL_QUORUM` is 6.
+   */
   withConsistency(consistency: number): this {
     return this.set('consistency', consistency);
   }

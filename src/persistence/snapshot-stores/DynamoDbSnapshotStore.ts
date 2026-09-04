@@ -1,4 +1,4 @@
-import { DYNAMODB_MAX_BATCH_ITEMS, DYNAMODB_STORAGE_IDENTITY_KEY } from '../Constants.js';
+import { DEFAULT_SNAPSHOT_KEEP_N, DYNAMODB_MAX_BATCH_ITEMS, DYNAMODB_STORAGE_IDENTITY_KEY } from '../Constants.js';
 import { type Snapshot } from '../JournalTypes.js';
 import type { PersistenceOptionSupport } from '../PersistenceCapabilities.js';
 import type { PersistenceOptions } from '../PersistenceOptions.js';
@@ -17,6 +17,7 @@ import { DynamoDbStore, type DynamoDbTableSchema } from '../journals/DynamoDbSto
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import {
+  DEFAULT_DYNAMODB_SNAPSHOTS_TABLE,
   DynamoDbSnapshotStoreOptionsValidator,
   type DynamoDbSnapshotStoreOptions,
   type DynamoDbSnapshotStoreOptionsType,
@@ -74,8 +75,8 @@ export class DynamoDbSnapshotStore extends DynamoDbStore implements SnapshotStor
       ownsClient: resolvedOptions.operations === undefined,
       openClient: () => buildDynamoDbOperations(resolvedOptions),
     });
-    this.tableName = resolvedOptions.snapshotsTable ?? 'actor_ts_snapshots';
-    this.keepN = resolvedOptions.keepN ?? 3;
+    this.tableName = resolvedOptions.snapshotsTable ?? DEFAULT_DYNAMODB_SNAPSHOTS_TABLE;
+    this.keepN = resolvedOptions.keepN ?? DEFAULT_SNAPSHOT_KEEP_N;
     this.serializer = resolvedOptions.serializer;
   }
 

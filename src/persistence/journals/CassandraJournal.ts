@@ -6,16 +6,23 @@ import {
   type PersistentEvent,
 } from '../JournalTypes.js';
 import {
+  DEFAULT_CASSANDRA_TAG_INDEX_TABLE,
   createCassandraClient,
   keyspaceDdl,
   type CassandraClientLike,
   type CassandraConnection,
 } from './CassandraClient.js';
-import { CassandraJournalOptionsValidator } from './CassandraJournalOptions.js';
+import {
+  CassandraJournalOptionsValidator,
+  DEFAULT_CASSANDRA_ALL_IDS_TABLE,
+  DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACTIONS,
+  DEFAULT_CASSANDRA_METADATA_TABLE,
+  DEFAULT_CASSANDRA_PARTITION_SIZE,
+} from './CassandraJournalOptions.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
 import { assertSafeIdentifier } from '../storage/SqlIdentifier.js';
-import { STORAGE_IDENTITY_TABLE } from '../Constants.js';
+import { DEFAULT_AUTO_CREATE_TABLES, DEFAULT_EVENTS_TABLE, STORAGE_IDENTITY_TABLE } from '../Constants.js';
 import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
 import { assertValidEntryTags } from '../storage/TagValidator.js';
 import type { StorageLocality } from '../StorageLocality.js';
@@ -69,7 +76,7 @@ export class CassandraJournal implements Journal {
     if (this.cachedStorageIdentity !== null) return this.cachedStorageIdentity;
     await this.ensureStarted();
     const table = this.qualified(STORAGE_IDENTITY_TABLE);
-    if (this.options.autoCreateTables ?? true) {
+    if (this.options.autoCreateTables ?? DEFAULT_AUTO_CREATE_TABLES) {
       await this.client.execute(
         `CREATE TABLE IF NOT EXISTS ${table} ( singleton int PRIMARY KEY, identity text )`,
       );
@@ -139,7 +146,7 @@ export class CassandraJournal implements Journal {
     if (this.options.autoCreateKeyspace) {
       await this.client.execute(keyspaceDdl(this.options as CassandraConnection));
     }
-    if (this.options.autoCreateTables ?? true) {
+    if (this.options.autoCreateTables ?? DEFAULT_AUTO_CREATE_TABLES) {
       await this.ensureTables();
     }
     this.started = true;
@@ -193,7 +200,7 @@ export class CassandraJournal implements Journal {
     }
 
     const now = Date.now();
-    const partitionSize = this.options.partitionSize ?? 500_000;
+    const partitionSize = this.options.partitionSize ?? DEFAULT_CASSANDRA_PARTITION_SIZE;
     const written: PersistentEvent<E>[] = [];
     const lastSeq = actualSeq + entries.length;
 
@@ -300,7 +307,7 @@ export class CassandraJournal implements Journal {
 
   async read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
     await this.ensureStarted();
-    const partitionSize = this.options.partitionSize ?? 500_000;
+    const partitionSize = this.options.partitionSize ?? DEFAULT_CASSANDRA_PARTITION_SIZE;
     const highest = await this.readHighestSeq(persistenceId);
     const hi = toSeq !== undefined ? Math.min(toSeq, highest) : highest;
     if (hi < fromSeq) return [];
@@ -356,7 +363,7 @@ export class CassandraJournal implements Journal {
    */
   async delete(persistenceId: string, toSeq: number): Promise<void> {
     await this.ensureStarted();
-    const partitionSize = this.options.partitionSize ?? 500_000;
+    const partitionSize = this.options.partitionSize ?? DEFAULT_CASSANDRA_PARTITION_SIZE;
     const lastPartition = Math.floor(Math.max(toSeq - 1, 0) / partitionSize);
     for (let partition = 0; partition <= lastPartition; partition++) {
       try {
@@ -521,10 +528,10 @@ export class CassandraJournal implements Journal {
 
   /* ========================== internal ========================== */
 
-  private get eventsTable(): string { return this.options.eventsTable ?? 'events'; }
-  private get metadataTable(): string { return this.options.metadataTable ?? 'metadata'; }
-  private get allIdsTable(): string { return this.options.allIdsTable ?? 'all_persistence_ids'; }
-  private get tagIndexTable(): string { return this.options.tagIndexTable ?? 'events_by_tag'; }
+  private get eventsTable(): string { return this.options.eventsTable ?? DEFAULT_EVENTS_TABLE; }
+  private get metadataTable(): string { return this.options.metadataTable ?? DEFAULT_CASSANDRA_METADATA_TABLE; }
+  private get allIdsTable(): string { return this.options.allIdsTable ?? DEFAULT_CASSANDRA_ALL_IDS_TABLE; }
+  private get tagIndexTable(): string { return this.options.tagIndexTable ?? DEFAULT_CASSANDRA_TAG_INDEX_TABLE; }
   /**
    * `keyspace.tagIndexTable`, validated — the form `CassandraQuery` targets.
    *
@@ -537,7 +544,7 @@ export class CassandraJournal implements Journal {
   /** Whether dual-writes to the tag-index side table are enabled. */
   get useTagIndex(): boolean { return this.options.useTagIndex === true; }
   /** Whether appends claim their sequence range with an LWT (#475).  On by default. */
-  private get lightweightTransactions(): boolean { return this.options.lightweightTransactions ?? true; }
+  private get lightweightTransactions(): boolean { return this.options.lightweightTransactions ?? DEFAULT_CASSANDRA_LIGHTWEIGHT_TRANSACTIONS; }
 
   private qualified(table: string): string {
     // keyspace + table are interpolated into CQL (identifiers can't be bound)

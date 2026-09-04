@@ -1,9 +1,18 @@
+import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { OptionsBuilder } from '../../util/OptionsBuilder.js';
 import type { Serializer } from '../../serialization/Serializer.js';
+import { readStoreIdentifier, readStoreInt, readStoreString, storeLeaf } from '../StoreConfig.js';
 import type { DynamoDbOperations } from './DynamoDbClient.js';
-import type { DynamoDbJournalOptions } from './DynamoDbJournalOptions.js';
-import type { DynamoDbSnapshotStoreOptions } from '../snapshot-stores/DynamoDbSnapshotStoreOptions.js';
-import type { DynamoDbDurableStateStoreOptions } from '../durable-state-stores/DynamoDbDurableStateStoreOptions.js';
+import type { DynamoDbJournalOptions, DynamoDbJournalOptionsType } from './DynamoDbJournalOptions.js';
+import type {
+  DynamoDbSnapshotStoreOptions,
+  DynamoDbSnapshotStoreOptionsType,
+} from '../snapshot-stores/DynamoDbSnapshotStoreOptions.js';
+import type {
+  DynamoDbDurableStateStoreOptions,
+  DynamoDbDurableStateStoreOptionsType,
+} from '../durable-state-stores/DynamoDbDurableStateStoreOptions.js';
 
 export type RegisterDynamoDbPluginsOptionsType = {
   /**
@@ -98,3 +107,82 @@ export type RegisterDynamoDbPluginsOptions =
   | Partial<RegisterDynamoDbPluginsOptionsType>;
 /** Value alias so `RegisterDynamoDbPluginsOptions.create()` resolves to the builder. */
 export const RegisterDynamoDbPluginsOptions = RegisterDynamoDbPluginsOptionsBuilder;
+
+/**
+ * Read the DynamoDB journal's block — `actor-ts.persistence.journal.dynamodb`
+ * by default, or whichever id the plug-in was registered under (#872).
+ *
+ * Placed beside the plug-in's own options for the reason
+ * `PostgresPluginOptions.ts` places its readers the same way: the *plug-in* is
+ * what reads configuration, so a store constructed directly stays
+ * constructor-only.
+ *
+ * `operations` and `serializer` are absent by construction — live objects have
+ * no HOCON spelling.  `clientConfig` is absent as free-form driver config with
+ * no enumerable leaf set, which is also where credentials live: omitted, the
+ * SDK's own default chain supplies them, so a config file never has to.
+ *
+ * The provisioning half — `billingMode`, `provisionedThroughput`,
+ * `tableReadyTimeoutMs`, `autoCreateTables` — has no leaf **yet**, not by
+ * construction: it is table-creation policy rather than reachability, and the
+ * block's job here is to make a configured store connect and address the right
+ * table.
+ */
+export function readDynamoDbJournalOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.journal.dynamodb.root,
+): Partial<DynamoDbJournalOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.journal.dynamodb;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: { -readonly [K in keyof DynamoDbJournalOptionsType]?: DynamoDbJournalOptionsType[K] } = {};
+  const region = readStoreString(config, at(keys.region));
+  if (region !== undefined) out.region = region;
+  const endpoint = readStoreString(config, at(keys.endpoint));
+  if (endpoint !== undefined) out.endpoint = endpoint;
+  const eventsTable = readStoreIdentifier(config, at(keys.eventsTable));
+  if (eventsTable !== undefined) out.eventsTable = eventsTable;
+  return out;
+}
+
+/** Read the DynamoDB snapshot store's block — see {@link readDynamoDbJournalOptionsFromConfig}. */
+export function readDynamoDbSnapshotStoreOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.snapshotStore.dynamodb.root,
+): Partial<DynamoDbSnapshotStoreOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.snapshotStore.dynamodb;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: {
+    -readonly [K in keyof DynamoDbSnapshotStoreOptionsType]?: DynamoDbSnapshotStoreOptionsType[K]
+  } = {};
+  const region = readStoreString(config, at(keys.region));
+  if (region !== undefined) out.region = region;
+  const endpoint = readStoreString(config, at(keys.endpoint));
+  if (endpoint !== undefined) out.endpoint = endpoint;
+  const snapshotsTable = readStoreIdentifier(config, at(keys.snapshotsTable));
+  if (snapshotsTable !== undefined) out.snapshotsTable = snapshotsTable;
+  const keepN = readStoreInt(config, at(keys.keepN));
+  if (keepN !== undefined) out.keepN = keepN;
+  return out;
+}
+
+/** Read the DynamoDB durable-state store's block — see {@link readDynamoDbJournalOptionsFromConfig}. */
+export function readDynamoDbDurableStateStoreOptionsFromConfig(
+  config: Config,
+  blockRoot: string = ConfigKeys.persistence.durableState.dynamodb.root,
+): Partial<DynamoDbDurableStateStoreOptionsType> {
+  if (!config.hasPath(blockRoot)) return {};
+  const keys = ConfigKeys.persistence.durableState.dynamodb;
+  const at = (canonicalLeafPath: string): string => storeLeaf(blockRoot, keys.root, canonicalLeafPath);
+  const out: {
+    -readonly [K in keyof DynamoDbDurableStateStoreOptionsType]?: DynamoDbDurableStateStoreOptionsType[K]
+  } = {};
+  const region = readStoreString(config, at(keys.region));
+  if (region !== undefined) out.region = region;
+  const endpoint = readStoreString(config, at(keys.endpoint));
+  if (endpoint !== undefined) out.endpoint = endpoint;
+  const table = readStoreIdentifier(config, at(keys.table));
+  if (table !== undefined) out.table = table;
+  return out;
+}

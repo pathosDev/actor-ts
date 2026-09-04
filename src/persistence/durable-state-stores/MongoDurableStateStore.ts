@@ -13,6 +13,7 @@ import {
   type MongoCollectionLike,
   type MongoDatabaseLike,
 } from '../journals/MongoClient.js';
+import { DEFAULT_DURABLE_STATE_TABLE } from '../Constants.js';
 import { MongoStore } from '../journals/MongoStore.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
@@ -71,7 +72,7 @@ export class MongoDurableStateStore extends MongoStore implements DurableStateSt
       ownsClient: resolvedOptions.client === undefined,
       openClient: () => buildMongoResource(resolvedOptions),
     });
-    this.collectionName = resolvedOptions.collection ?? 'durable_state';
+    this.collectionName = resolvedOptions.collection ?? DEFAULT_DURABLE_STATE_TABLE;
     this.serializer = resolvedOptions.serializer;
   }
 

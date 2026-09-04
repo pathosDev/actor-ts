@@ -86,6 +86,54 @@ const dynamoDbJournalOptions = DynamoDbJournalOptions.create()
   .withClientConfig({ credentials: { accessKeyId: 'local', secretAccessKey: 'local' } });
 ```
 
+## Aus HOCON konfigurieren
+
+Die Plugin-Id **ist** der Config-Abschnitt: Der Block, der nach der Id benannt
+ist, ist der Block, den dieses Plugin liest (#872).  Die gesamte
+Erreichbarkeits-Hälfte — Region, Endpoint und die Tabellennamen — kann aus der
+`application.conf` kommen, `registerDynamoDbPlugins(ext)` braucht damit gar keine
+Optionen mehr:
+
+```ts
+import { PersistenceExtensionId, registerDynamoDbPlugins } from 'actor-ts/persistence';
+
+const persistence = system.extension(PersistenceExtensionId);
+registerDynamoDbPlugins(persistence);
+```
+
+```hocon
+actor-ts.persistence {
+  journal        { plugin = "actor-ts.persistence.journal.dynamodb" }
+  snapshot-store { plugin = "actor-ts.persistence.snapshot-store.dynamodb" }
+  durable-state  { plugin = "actor-ts.persistence.durable-state.dynamodb" }
+
+  journal.dynamodb        { region = "eu-central-1", events-table = "actor_ts_events" }
+  snapshot-store.dynamodb { region = "eu-central-1", keep-n = 5 }
+  durable-state.dynamodb  { region = "eu-central-1", table = "actor_ts_durable_state" }
+}
+```
+
+`endpoint` ist das Blatt für `dynamodb-local` oder LocalStack; leer gelassen
+bedeutet es den echten Dienst.  **Credentials haben gar kein Blatt** — weggelassen
+liefert sie die Default-Chain des SDK (`AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY`, ein Instance-Profile oder IAM Roles for Service
+Accounts), also genau die Behandlung, die auch das S3-Backend des
+Object-Storage-Plugins bekommt.  `clientConfig` ebenso wenig — freie
+Treiber-Konfiguration ohne aufzählbare Schlüsselmenge — und eine vorab gebaute
+`operations`-Fassade oder ein `serializer` sind lebende Objekte.
+
+Das **Provisioning** der Tabellen — `billingMode`, `provisionedThroughput`,
+`tableReadyTimeoutMs` und `autoCreateTables` — bleibt vorerst code-only: In
+diesem Block geht es darum, die richtige Tabelle zu erreichen, nicht darum, sie
+anzulegen.
+
+**`durable-state.plugin` wählt jetzt den Durable-State-Store dieses Backends
+aus.**  Früher wurde er eifrig gebaut und von `registerDynamoDbPlugins`
+zurückgegeben, ließ sich also nur verdrahten, indem man diese Instanz durch den
+Anwendungscode reichte.  Das zurückgegebene Handle funktioniert weiterhin und
+liefert dieselbe Instanz — sie wird nur bei der ersten Nutzung gebaut statt bei
+der Registrierung.
+
 ## Wann du es einsetzt
 
 - **Du bist auf AWS und willst keine Datenbank betreiben.** Keine Instanz, kein

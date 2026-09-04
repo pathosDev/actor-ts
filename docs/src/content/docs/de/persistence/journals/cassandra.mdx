@@ -52,7 +52,7 @@ type CassandraJournalOptions = {
   partitionSize?:    number;        // Zeilen pro Partition, Default 500_000
   autoCreateTables?: boolean;       // Tabellen bei erster Verbindung erstellen, Default true
   useTagIndex?:      boolean;       // events_by_tag-Seitentabelle pflegen, Default false
-  consistency?:      number;        // CQL-Consistency, Default LOCAL_QUORUM (6)
+  consistency?:      number;        // CQL-Consistency; nicht gesetzt = die des Treibers
   lightweightTransactions?: boolean; // LWT-serialisierte Appends, Default true
   serialConsistency?: number;        // Paxos-Consistency für den LWT-Anspruch
   /* ... plus Treiber-Level-Verbindungsoptionen ... */
@@ -70,7 +70,7 @@ type CassandraJournalOptions = {
 | `partitionSize` | Zeilen pro Partition, bevor auf einen neuen Bucket gerollt wird.  Default `500_000`. |
 | `autoCreateTables` | Tabellen bei der ersten Verbindung automatisch erstellen.  Default `true`. |
 | `useTagIndex` | Die `events_by_tag`-Seitentabelle für indizierte Tag-Queries pflegen.  Default `false`. |
-| `consistency` | CQL-Consistency-Level (numerisch, aus `types.consistencies` des Treibers) für alle Reads und Writes.  Default `LOCAL_QUORUM` (6). |
+| `consistency` | CQL-Consistency-Level (numerisch, aus `types.consistencies` des Treibers) für alle Reads und Writes.  Nicht gesetzt überlässt das Level dem Treiber, statt hier eines zu setzen; `LOCAL_QUORUM` ist 6. |
 | `lightweightTransactions` | Nebenläufige Appends per LWT auf der `metadata`-Zeile serialisieren.  Default `true`.  Siehe [Gleichzeitige Appends](#gleichzeitige-appends). |
 | `serialConsistency` | Consistency für die Paxos-Phase der LWT (numerisch, aus `types.consistencies` des Treibers).  Unbelegt gilt das Cluster-weite `SERIAL` des Treibers; auf einem Multi-DC-Keyspace setze `localSerial` (9). |
 
@@ -168,6 +168,67 @@ CREATE KEYSPACE my_app_events
 `NetworkTopologyStrategy` mit einem Replikations-Faktor von 3 ist
 typisch für Produktion.  Die Writes des Frameworks gehen via
 `LOCAL_QUORUM`, was 2 von 3 Replicas für das Ack braucht.
+
+## Aus HOCON konfigurieren
+
+Die Plugin-Id **ist** der Config-Abschnitt: Der Block, der nach der Id benannt
+ist, ist der Block, den dieses Plugin liest (#872).  Alles außer den lebenden
+Objekten und den Credentials kann aus der `application.conf` kommen,
+`registerCassandraPlugins(ext)` braucht damit gar keine Optionen mehr:
+
+```ts
+import { PersistenceExtensionId, registerCassandraPlugins } from 'actor-ts/persistence';
+
+const persistence = system.extension(PersistenceExtensionId);
+registerCassandraPlugins(persistence);
+```
+
+```hocon
+actor-ts.persistence {
+  journal        { plugin = "actor-ts.persistence.journal.cassandra" }
+  snapshot-store { plugin = "actor-ts.persistence.snapshot-store.cassandra" }
+
+  journal.cassandra {
+    contact-points    = ["10.0.0.1", "10.0.0.2"]
+    keyspace          = "app"
+    local-data-center = "eu-central-1"
+    events-table      = "events"
+    use-tag-index     = on
+  }
+  snapshot-store.cassandra {
+    contact-points    = ["10.0.0.1", "10.0.0.2"]
+    keyspace          = "app"
+    local-data-center = "eu-central-1"
+    keep-n            = 5
+  }
+}
+```
+
+Das ist der breiteste Block der Familie, denn Cassandra wird über eine
+**Seed-Liste** statt über eine URL erreicht, und sein Schema besteht aus vier
+Tabellen statt aus einer plus einem abgeleiteten Namen — ein Wide-Column-Store
+hat keinen Join, aus dem sich etwas ableiten ließe, also werden `events-table`,
+`metadata-table`, `all-ids-table` und `tag-index-table` einzeln benannt.
+`contact-points` wird als `[]` ausgeliefert, und eine leere Liste liest sich als
+*nicht gesetzt* — dasselbe Idiom wie `url = ""` an anderer Stelle.
+
+Zwei Blätter sind bewusst **Kommentare** statt Schlüssel.  `consistency` und
+`serial-consistency` haben überhaupt keinen Framework-Default — beide Lesestellen
+verzweigen darauf, dass das Feld fehlt, und überlassen die Wahl dem Treiber — eine
+veröffentlichte Zahl würde also ein Level festschreiben, das niemand gewählt hat.
+Gelesen werden sie trotzdem, eine `application.conf` kann sie also weiterhin
+setzen (`consistency = 6` ist `LOCAL_QUORUM`, `serial-consistency = 9` ist
+`localSerial` und hält Paxos innerhalb eines Rechenzentrums).
+
+`credentials` hat **gar kein Blatt**: Das ist Schlüsselmaterial, und
+Schlüsselmaterial ist in einer Config-Datei nie ausdrückbar.  `replication` — die
+Map, die `auto-create-keyspace` verwendet — ebenso wenig, weil frei und ohne
+aufzählbare Schlüsselmenge, und ein vorab gebauter `client` oder ein
+`serializer` sind lebende Objekte.
+
+Einen `durable-state.cassandra`-Block gibt es nicht, und das ist kein Versehen:
+Das Framework liefert keinen Cassandra-Durable-State-Store aus, dieses Backend
+hat also zwei Plugin-Achsen, wo die anderen drei haben.
 
 ## Konsistenzmodell
 

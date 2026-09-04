@@ -169,6 +169,12 @@ die Anwendung selbst besitzt: ein mit etwas anderem geteiltes Handle, einer von
 mehreren Stores in einem Prozess, oder ein Spy im Test.  Geändert hat sich nur,
 dass es nicht mehr der *einzige* Weg ist.
 
+Jedes Backend, das einen Durable-State-Store mitbringt, registriert ihn auch:
+SQLite, die fünf relationalen Backends, MongoDB, DynamoDB und Object-Storage.
+Cassandra ist die eine Ausnahme, und zwar eine ehrliche — das Framework hat gar
+keinen Cassandra-Durable-State-Store, dieses Backend hat also zwei Plugin-Achsen,
+wo die übrigen drei haben.
+
 Eine nicht registrierte Plugin-Id wird abgelehnt statt still ersetzt:
 `ext.durableStateStore` wirft `Unknown durable-state plugin '…'` und benennt die
 Id — dasselbe Fehlerverhalten, das die beiden anderen Achsen seit #377 haben.

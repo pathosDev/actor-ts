@@ -52,7 +52,7 @@ type CassandraJournalOptions = {
   partitionSize?:    number;        // rows per partition, default 500_000
   autoCreateTables?: boolean;       // create tables on first connect, default true
   useTagIndex?:      boolean;       // maintain events_by_tag side table, default false
-  consistency?:      number;        // CQL consistency, default LOCAL_QUORUM (6)
+  consistency?:      number;        // CQL consistency; unset = the driver's own
   lightweightTransactions?: boolean; // LWT-serialized appends, default true
   serialConsistency?: number;        // Paxos consistency for the LWT claim
   /* ... plus driver-level connection options ... */
@@ -70,7 +70,7 @@ type CassandraJournalOptions = {
 | `partitionSize` | Rows per partition before rolling to a new bucket.  Default `500_000`. |
 | `autoCreateTables` | Auto-create the tables on first connect.  Default `true`. |
 | `useTagIndex` | Maintain the `events_by_tag` side table for indexed tag queries.  Default `false`. |
-| `consistency` | CQL consistency level (numeric, from the driver's `types.consistencies`) for all reads and writes.  Default `LOCAL_QUORUM` (6). |
+| `consistency` | CQL consistency level (numeric, from the driver's `types.consistencies`) for all reads and writes.  Unset leaves the level to the driver rather than defaulting to one here; `LOCAL_QUORUM` is 6. |
 | `lightweightTransactions` | Serialize concurrent appends with an LWT on the `metadata` row.  Default `true`.  See [Concurrent appends](#concurrent-appends). |
 | `serialConsistency` | Consistency for the LWT's Paxos phase (numeric, from the driver's `types.consistencies`).  Unset means the driver's cluster-wide `SERIAL`; on a multi-DC keyspace set `localSerial` (9). |
 
@@ -163,6 +163,65 @@ CREATE KEYSPACE my_app_events
 `NetworkTopologyStrategy` with a replication factor of 3 is
 typical for production.  The framework's writes go via
 `LOCAL_QUORUM`, which needs 2 of 3 replicas for ack.
+
+## Configure it from HOCON
+
+The plugin id **is** the config section, so the block named after the id is the
+block that plugin reads (#872).  Everything except the live objects and the
+credentials can come from `application.conf`, which means
+`registerCassandraPlugins(ext)` needs no options at all:
+
+```ts
+import { PersistenceExtensionId, registerCassandraPlugins } from 'actor-ts/persistence';
+
+const persistence = system.extension(PersistenceExtensionId);
+registerCassandraPlugins(persistence);
+```
+
+```hocon
+actor-ts.persistence {
+  journal        { plugin = "actor-ts.persistence.journal.cassandra" }
+  snapshot-store { plugin = "actor-ts.persistence.snapshot-store.cassandra" }
+
+  journal.cassandra {
+    contact-points    = ["10.0.0.1", "10.0.0.2"]
+    keyspace          = "app"
+    local-data-center = "eu-central-1"
+    events-table      = "events"
+    use-tag-index     = on
+  }
+  snapshot-store.cassandra {
+    contact-points    = ["10.0.0.1", "10.0.0.2"]
+    keyspace          = "app"
+    local-data-center = "eu-central-1"
+    keep-n            = 5
+  }
+}
+```
+
+This is the widest block in the family, because Cassandra is reached by a **seed
+list** rather than a URL and its schema is four tables rather than one plus a
+derived name — a wide-column store has no join to derive one with, so
+`events-table`, `metadata-table`, `all-ids-table` and `tag-index-table` are each
+named.  `contact-points` ships as `[]` and an empty list reads as *not set*, the
+same idiom `url = ""` uses elsewhere.
+
+Two leaves are deliberately **comments** rather than keys.  `consistency` and
+`serial-consistency` have no framework default at all — both read sites branch on
+the field being absent and hand the choice to the driver — so publishing a number
+would pin a level nothing chose.  They are read all the same, so an
+`application.conf` can still set them (`consistency = 6` is `LOCAL_QUORUM`;
+`serial-consistency = 9` is `localSerial`, which keeps Paxos inside one data
+center).
+
+`credentials` has **no leaf at all**: it is key material, and key material is
+never expressible in a config file.  Neither is `replication`, the map
+`auto-create-keyspace` uses — free-form with no enumerable key set — nor a
+pre-built `client` or a `serializer`, which are live objects.
+
+There is no `durable-state.cassandra` block, and that is not an omission: the
+framework ships no Cassandra durable-state store, so this backend has two plugin
+axes where the others have three.
 
 ## Consistency model
 
