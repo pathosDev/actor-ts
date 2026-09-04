@@ -268,10 +268,18 @@ never came near the cap themselves.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `remote.tcp.host` | `"0.0.0.0"` | Bind address.  Used when `ClusterOptions` leaves `host` unset. |
-| `remote.tcp.port` | `2552` | Bind port.  Used when `ClusterOptions` leaves `port` unset. |
+| `remote.tcp.host` | `"0.0.0.0"` | The interface to **bind**.  A wildcard belongs here and is the default.  Used when `ClusterOptions` leaves `host` unset. |
+| `remote.tcp.advertised-host` | *(unset)* | The address peers **dial** — this node's identity.  Unset, it follows `remote.tcp.host` when that is routable, then `CLUSTER_HOST` / `POD_IP` / `HOSTNAME`, then loopback.  A wildcard is refused.  Deliberately absent from `reference.conf`, because a shipped value is what "unset" would have to be distinguishable from. |
+| `remote.tcp.port` | `2552` | The port to **bind**.  Used when `ClusterOptions` leaves `port` unset. |
+| `remote.tcp.advertised-port` | *(unset)* | The port peers **dial**.  Unset means the same as `remote.tcp.port` — set it only where the deployment publishes the process on a different one.  Absent from `reference.conf` for the same reason as `advertised-host`. |
 | `remote.max-frame-bytes` | `16M` | Per-frame wire cap.  A frame whose length-prefix exceeds it is rejected before any payload is buffered. |
 | `remote.tls.enabled` | `false` | **Not honoured** — `true` buys a startup warning, not encryption.  See below. |
+
+`host`/`port` are the **bind** pair and `advertised-host`/`advertised-port`
+the **identity** pair: the first says where the listener opens, the second
+says what goes into every gossip frame for peers to dial back.  They are the
+same values until a deployment remaps one, which is why naming one routable
+host and one port still does both jobs and nothing configured today moves.
 
 Because the bind address is readable from config, a deployment can move it
 out of code entirely:
@@ -282,6 +290,24 @@ actor-ts.remote.tcp {
   port = ${?ACTOR_TS_PORT}   # env-var substitution
 }
 ```
+
+A published container port is the case that needs all four.  The process
+listens on `2552` inside the container, `docker run -p 3000:2552` puts it on
+`3000` outside, and `3000` is the number that belongs in every other node's
+seed list:
+
+```hocon
+actor-ts.remote.tcp {
+  host            = "0.0.0.0"    # bind every interface — the container
+  port            = 2552         #   does not know its published address
+  advertised-host = ${?HOST_IP}  # what peers dial …
+  advertised-port = 3000         #   … and on which port
+}
+```
+
+Under Kubernetes only the host half moves: pod-to-pod gossip dials the
+container port directly, so `advertised-host = ${?POD_IP}` on its own is the
+whole configuration.
 
 `remote.max-frame-bytes` applies to the transport the cluster builds for
 itself.  If you construct a `TcpTransport` yourself and pass it via

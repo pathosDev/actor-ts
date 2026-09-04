@@ -30,6 +30,7 @@ import {
   advertisedHostWasDerived,
   isRemoteTlsRequested,
   resolveAdvertisedHost,
+  resolveAdvertisedPort,
   withClusterConfigDefaults,
 } from './ClusterOptions.js';
 import type { ClusterOptions, ClusterOptionsType, SelfElectionPolicy } from './ClusterOptions.js';
@@ -293,10 +294,14 @@ export class Cluster {
     // dial back, and a wildcard is not an address (#944).  `join` fills
     // `advertisedHost` in before constructing, so the `??` is for the private
     // constructor's other callers rather than a second policy.
+    //
+    // The port is the same story one axis over (#845): what goes in here is
+    // the port peers dial, which is the bound one unless the deployment
+    // published a different one.
     this.selfAddress = new NodeAddress(
       system.name,
       options.advertisedHost ?? resolveAdvertisedHost(options),
-      options.port,
+      options.advertisedPort ?? resolveAdvertisedPort(options),
       NodeAddress.mintIncarnation(),
     );
     this.selfRoles = new Set(options.roles ?? []);
@@ -304,12 +309,21 @@ export class Cluster {
     // The frame cap only reaches a transport this constructor builds; an
     // injected one was constructed with its own, and silently re-capping
     // someone else's transport would be a surprise.
-    // `options.host` is the *bind* target and may be a wildcard; `selfAddress`
-    // is the identity the transport announces in its handshake and keys peers
-    // on.  Passing both is what lets a container bind every interface and
-    // still tell its peers a single address to dial back (#944).
+    // `options.host` and `options.port` are the *bind* target — the host may
+    // be a wildcard and the port may be one nothing outside this container can
+    // reach; `selfAddress` is the identity the transport announces in its
+    // handshake and keys peers on.  Passing both pairs is what lets a
+    // container bind every interface on its own port and still tell its peers
+    // a single address to dial back (#944, #845).
     this.transport = options.transport
-      ?? new TcpTransport(this.selfAddress, this.log, null, options.maxFrameBytes, options.host);
+      ?? new TcpTransport(
+        this.selfAddress,
+        this.log,
+        null,
+        options.maxFrameBytes,
+        options.host,
+        options.port,
+      );
     // That `null` is the transport's TLS argument, and it is hard-coded: the
     // transport this constructor builds is always plaintext until #941 wires
     // the option up.  An operator who set the HOCON flag asked for the
@@ -392,6 +406,7 @@ export class Cluster {
     const resolvedOptions: ClusterOptionsType = {
       ...merged,
       advertisedHost: resolveAdvertisedHost(merged),
+      advertisedPort: resolveAdvertisedPort(merged),
     };
     new ClusterOptionsValidator().validate(resolvedOptions);
     if (advertisedHostWasDerived(merged)) reportDerivedAdvertisedHost(system, resolvedOptions);
@@ -2395,7 +2410,11 @@ export class Cluster {
  * receives one field and cannot tell which it is.
  */
 function reportDerivedAdvertisedHost(system: ActorSystem, options: ClusterOptionsType): void {
-  const advertised = `${options.advertisedHost}:${options.port}`;
+  // The advertised port, not the bound one — they are the same number unless
+  // the deployment published a different one, and naming the wrong one in the
+  // line that exists to say what peers should dial is worse than saying
+  // nothing (#845).
+  const advertised = `${options.advertisedHost}:${resolveAdvertisedPort(options)}`;
   const looked = ADVERTISED_HOST_ENV_VARS.join(', ');
   if (options.advertisedHost === DEFAULT_ADVERTISED_HOST) {
     system.log.warn(

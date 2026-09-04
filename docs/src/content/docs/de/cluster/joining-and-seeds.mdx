@@ -56,7 +56,8 @@ Seeds müssen nach dem Join nicht mehr besonders sein.
 type ClusterOptionsType = {
   host:                       string;       // Interface zum Binden (Wildcard ok)
   advertisedHost?:            string;       // Adresse, die Peers wählen (nie Wildcard)
-  port:                       number;       // TCP-Port dieses Nodes
+  port:                       number;       // Port zum Binden
+  advertisedPort?:            number;       // Port, den Peers wählen (default: port)
   seeds?:                     string[];     // Peer-Adressen fürs Bootstrap
   roles?:                     string[];     // Rollen-Tags
   failureDetector?:           Partial<...>;

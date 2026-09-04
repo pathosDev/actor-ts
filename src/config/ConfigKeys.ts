@@ -360,6 +360,13 @@ export const ConfigKeys = {
    * so an unset one keeps meaning "derive it from `tcp.host`" instead of being
    * permanently present and empty.
    *
+   * `tcp.port` and `tcp.advertised-port` are the same split one axis over
+   * (#845): the first is the port bound, the second the port peers dial, and
+   * the second likewise ships no leaf so that "the same as `tcp.port`" stays
+   * expressible.  It is the published-container-port case — a process
+   * listening on 2552 that the outside world reaches on the port
+   * `docker run -p 3000:2552` published — and nothing else needs it.
+   *
    * `remote.tls.enabled` is read but **not honoured**: the transport
    * `Cluster` builds for itself is always plaintext, so the flag decides
    * nothing except whether the node warns about that at startup (#591).
@@ -372,6 +379,7 @@ export const ConfigKeys = {
       host: 'actor-ts.remote.tcp.host',
       advertisedHost: 'actor-ts.remote.tcp.advertised-host',
       port: 'actor-ts.remote.tcp.port',
+      advertisedPort: 'actor-ts.remote.tcp.advertised-port',
     },
     tls: {
       enabled: 'actor-ts.remote.tls.enabled',

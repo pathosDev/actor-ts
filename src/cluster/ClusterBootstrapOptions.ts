@@ -110,10 +110,25 @@ export type ClusterBootstrapOptionsType = {
   readonly advertisedHost?: string;
 
   /**
-   * Bind port.  Default: `process.env.CLUSTER_PORT` (when present and
+   * The port to bind — and, unless {@link advertisedPort} overrides it, the
+   * port peers dial.  Default: `process.env.CLUSTER_PORT` (when present and
    * a finite integer), otherwise `2552`.
    */
   readonly port?: number;
+
+  /**
+   * The port peers dial, when it differs from the bound one (#845).
+   *
+   * The published-container-port shape: the process listens on 2552 and the
+   * outside world reaches it on whatever `docker run -p 3000:2552` published,
+   * so 3000 is what belongs in the seed lists and the gossip frames.  There is
+   * no environment stage behind it — unlike {@link port}, which reads
+   * `CLUSTER_PORT` — because no platform publishes the mapping anywhere a
+   * process can read it.
+   *
+   * Unset means the same as {@link port}.
+   */
+  readonly advertisedPort?: number;
 
   /** Transport override.  Default: `TcpTransport`. */
   readonly transport?: ClusterOptionsType['transport'];
@@ -283,9 +298,21 @@ export class ClusterBootstrapOptionsBuilder extends OptionsBuilder<ClusterBootst
     return this.set('advertisedHost', advertisedHost);
   }
 
-  /** Bind port.  Defaults to `CLUSTER_PORT` env or `2552`. */
+  /**
+   * The port to bind — and, unless {@link withAdvertisedPort} overrides it,
+   * the port gossiped for peers to dial back.  Defaults to `CLUSTER_PORT` env
+   * or `2552`.
+   */
   withPort(port: number): this {
     return this.set('port', port);
+  }
+
+  /**
+   * The port peers dial, when it differs from the bound one — the published
+   * port of a `docker run -p 3000:2552` (#845).
+   */
+  withAdvertisedPort(advertisedPort: number): this {
+    return this.set('advertisedPort', advertisedPort);
   }
 
   /** Transport override.  Default: `TcpTransport`. */
@@ -362,6 +389,9 @@ export class ClusterBootstrapOptionsValidator extends OptionsValidator<ClusterBo
     // Positive integer (not the TCP 1..65535 range) — the bootstrap port may
     // be a synthetic InMemoryTransport node id, same as ClusterOptions.port.
     this.positiveInt('port');
+    // Same helper for the same reason as `port` — the advertised port is an
+    // identity discriminator, not necessarily a TCP port number (#845).
+    this.positiveInt('advertisedPort');
     this.positiveNumber('gossipIntervalMs');
     // awaitReady is boolean | number(ms) | readiness bag; a numeric budget
     // must be >= 0 (0 = skip), and a bag is held to the readiness rules here

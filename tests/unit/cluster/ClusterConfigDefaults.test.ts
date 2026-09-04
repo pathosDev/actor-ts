@@ -73,6 +73,32 @@ describe('readClusterOptionsFromConfig', () => {
     expect(Config.loadReference().hasPath('actor-ts.remote.tcp.advertised-host')).toBe(false);
   });
 
+  test('reads the advertised port, which the bind port does not stand in for', () => {
+    // The same two facts one axis over (#845): the port bound, and the port
+    // peers dial.  They differ exactly where a deployment published the
+    // process on a different one.
+    const config = Config.parseString(`
+      actor-ts.remote.tcp {
+        port           = 2552
+        advertised-port = 3000
+      }
+    `);
+
+    expect(readClusterOptionsFromConfig(config))
+      .toEqual({ port: 2552, advertisedPort: 3000 });
+  });
+
+  test('advertisedPort is absent when the key is, so "unset" stays expressible', () => {
+    // It ships no leaf in `reference.conf` for the reason `advertised-host`
+    // does not: a key that is always present could not mean "the same as
+    // `port`", which is what every deployment that does not remap it relies
+    // on.
+    const config = Config.parseString('actor-ts.remote.tcp.port = 2552');
+
+    expect(readClusterOptionsFromConfig(config)).toEqual({ port: 2552 });
+    expect(Config.loadReference().hasPath('actor-ts.remote.tcp.advertised-port')).toBe(false);
+  });
+
   test('omits failureDetector entirely when no threshold is configured', () => {
     const config = Config.parseString('actor-ts.cluster.gossip-interval = 250ms');
 
