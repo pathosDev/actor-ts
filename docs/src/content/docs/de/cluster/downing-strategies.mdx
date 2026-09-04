@@ -1,6 +1,6 @@
 ---
 title: Downing-Strategien
-description: Split-Brain auflösen, nachdem der Failure Detector unerreichbare Peers markiert hat — `KeepMajority`, `KeepOldest`, `KeepReferee`, `StaticQuorum`, `LeaseMajority`. Wähle eine für Produktion. Der Standard (keine Strategie) erfordert manuelles Eingreifen.
+description: Split-Brain auflösen, nachdem der Failure Detector unerreichbare Peers markiert hat — `KeepMajority`, `KeepOldest`, `KeepReferee`, `StaticQuorum`, `LeaseMajority`. Wähle eine für Produktion. Beim Standard (keine Strategie) entfernt der Failure Detector eigenmächtig — und bei einer Partition tut das jede Seite gleichzeitig.
 ---
 
 Wenn der Cluster partitioniert wird, laufen beide Hälften weiter —
@@ -318,12 +318,27 @@ DB-Master-Node enthält, gewinnt diese Seite."
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="Keine Strategie = manuelle Operationen">
-  Ohne `downing`-Provider sieht der Cluster unreachable Mitglieder
-  für immer (oder bis sie sich erholen). Operatoren müssen
-  `cluster.down(addr)` manuell aufrufen. Akzeptabel für verwaltete
-  Cluster mit On-Call-Personen; nicht akzeptabel für
-  Auto-Scaled-/unbeaufsichtigte Deployments.
+<Aside type="caution" title="Keine Strategie = der Detector entscheidet allein">
+  Ohne `downing`-Provider entfernt der Failure Detector einen
+  unerreichbaren Peer selbst, sobald `down-after` verstrichen ist —
+  ohne Schlichtung, ohne Operator. Für einen einzelnen abgestürzten
+  Node ist das genau das gewünschte Verhalten, und nur so werden
+  Shards neu verteilt und ein Singleton übergeben. Bei einer
+  Partition ist es Split-Brain per Konstruktion: jede Seite
+  erreicht `down-after` zur selben Zeit und entfernt die anderen,
+  und jede Hälfte läuft als "der Cluster" weiter.
+
+  Der Standard ist also nicht "sicher, aber manuell" — er ist
+  verfügbar und ungeschlichtet. `cluster.down(addr)` bleibt der
+  manuelle Eingriff, aber nichts wartet darauf, dass du ihn
+  benutzt. Konfiguriere eine Strategie für alles, was
+  partitionieren kann.
+
+  Mit einer konfigurierten Strategie hält der Detector bei
+  `unreachable` an, und die Strategie besitzt die Entfernung; ein
+  Mitglied, über das die Strategie nie entscheidet, bleibt dann
+  unbegrenzt `unreachable`. Siehe
+  [Ein geparktes Mitglied bleibt geparkt](/de/cluster/failure-detector/#ein-geparktes-mitglied-bleibt-geparkt).
 </Aside>
 
 <Aside type="caution" title="Stabile gestreckte Cluster brauchen Leases">

@@ -110,12 +110,42 @@ What the cluster *does* with that:
 | --- | --- |
 | `healthy` | Normal routing.  No effect. |
 | `unreachable` | Mark the member `unreachable` in the membership table.  Routers skip them; sharding doesn't allocate new shards to them.  Singleton manager won't elect a leader from an unreachable side. |
-| `down` | Trigger downing.  If a [downing strategy](/cluster/downing-strategies/) is configured, it decides which addresses to forcibly evict; the cluster announces those nodes as `removed`. |
+| `down`, [downing strategy](/cluster/downing-strategies/) configured | Mark the member `unreachable` and stop.  The strategy decides which addresses to evict; the cluster announces those nodes as `removed`.  The detector removes nothing itself. |
+| `down`, no strategy configured | The detector evicts the peer itself: `down`, then straight out of the membership table as `removed`. |
 
-**Crucially:** the detector deciding `down` doesn't automatically
-remove the peer.  Removal goes through the downing strategy — the
-detector is the *signal*, not the action.  Without a downing
-strategy, a `down` decision stays advisory.
+**The two rows are the whole story, and which one you get is
+decided by whether you configured a strategy.**  With one, the
+detector is the *signal*, not the action — it parks the peer at
+`unreachable` and the strategy owns the eviction.  Without one,
+nothing arbitrates, and the detector evicting the peer at
+`down-after` is the only failover you have: it is what lets shards
+reallocate and a singleton hand over after a crash.  That is
+convenient for a single crashed node and wrong for a partition,
+where both halves evict the other and keep running.  Configuring a
+strategy is how you replace one with the other.
+
+### A parked member stays parked
+
+With a strategy configured, a member the strategy never reaches a
+verdict about stays `unreachable` **indefinitely**.  There is no
+detector backstop behind it, deliberately: a backstop is the bypass
+the strategy exists to prevent, and one that fires at some multiple
+of `down-after` only makes the bypass later.
+
+That has consequences worth planning for.  The member keeps its
+slot against `max-members`.  `ClusterSingletonManager` does not
+hand over, because it reconciles on `MemberDown` / `MemberLeft` /
+`MemberRemoved` and deliberately not on `MemberUnreachable` — one
+node's detector is not a membership fact the cluster agrees on.
+`ShardCoordinator` does not reallocate, because it listens for
+`MemberRemoved` only.  And a healed partition does not currently
+bring the member back to `up`: gossip and heartbeats are sent to
+reachable members only, so neither side addresses the other again.
+
+This is integrity over availability, chosen on purpose.  Pick a
+strategy that always reaches a verdict on your cluster shape — an
+odd member count for `KeepMajority`, a referee or a lease for an
+even one — rather than one that can answer "pending" forever.
 
 ## The view from the local node
 
@@ -240,9 +270,11 @@ import { Aside } from '@astrojs/starlight/components';
   The detector's `down` decision is statistical — based on
   elapsed silence.  A peer that's slow but recovering can be
   marked `down` and then come back.  Without a downing strategy
-  that actually evicts them, you get **flapping members** that
-  drift between `unreachable` and `down`.  Configure a downing
-  strategy.
+  the detector acts on that guess by itself and evicts the peer,
+  so a GC pause long enough to cross `down-after` costs you a node.
+  With one, the guess is only an input: the strategy weighs it
+  against the rest of the cluster's view before anything is
+  evicted.  Configure a downing strategy.
 </Aside>
 
 <Aside type="caution" title="Tight thresholds in noisy networks">

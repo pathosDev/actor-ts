@@ -1,6 +1,6 @@
 ---
 title: Downing strategies
-description: Resolving split-brain after the failure detector flags unreachable peers — `KeepMajority`, `KeepOldest`, `KeepReferee`, `StaticQuorum`, `LeaseMajority`. Pick one for production. The default (no strategy) requires manual intervention.
+description: Resolving split-brain after the failure detector flags unreachable peers — `KeepMajority`, `KeepOldest`, `KeepReferee`, `StaticQuorum`, `LeaseMajority`. Pick one for production. The default (no strategy) lets the failure detector evict on its own, which every side of a partition does at once.
 ---
 
 When the cluster partitions, both halves stay running — and both
@@ -299,12 +299,24 @@ DB-master node, that side wins."
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="caution" title="No strategy = manual operations">
-  Without a `downing` provider, the cluster sees unreachable
-  members forever (or until they recover).  Operators have to
-  call `cluster.down(addr)` manually.  Acceptable for managed
-  clusters with on-call humans; not acceptable for auto-scaled
-  / unattended deployments.
+<Aside type="caution" title="No strategy = the detector decides alone">
+  Without a `downing` provider, the failure detector evicts an
+  unreachable peer by itself once `down-after` elapses — no
+  arbitration, no operator.  For a single crashed node that is the
+  behaviour you want, and it is what makes shards reallocate and a
+  singleton hand over.  Under a partition it is split-brain by
+  construction: every side reaches `down-after` at the same time
+  and evicts the others, and each half continues as "the cluster".
+
+  So the default is not "safe but manual" — it is available and
+  unarbitrated.  `cluster.down(addr)` remains the manual override,
+  but nothing waits for you to use it.  Configure a strategy for
+  anything that partitions.
+
+  With one configured, the detector stops at `unreachable` and the
+  strategy owns eviction; a member the strategy never decides about
+  then stays `unreachable` indefinitely.  See
+  [a parked member stays parked](/cluster/failure-detector/#a-parked-member-stays-parked).
 </Aside>
 
 <Aside type="caution" title="Stable stretched clusters need leases">
