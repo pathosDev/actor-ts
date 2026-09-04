@@ -272,7 +272,7 @@ describe('ShardedDaemonProcess — actor-ts.sharded-daemon-process.* HOCON keys'
     });
     const probe = nodeA.kit.createTestProbe();
 
-    class W extends Actor<string> {
+    class Worker extends Actor<string> {
       constructor(private readonly index: number) { super(); }
       override preStart(): void { probe.tell(`start-${this.index}`); }
       override onReceive(): void {}
@@ -281,7 +281,7 @@ describe('ShardedDaemonProcess — actor-ts.sharded-daemon-process.* HOCON keys'
     const daemonOptions = ShardedDaemonProcessOptions.create<string>()
       .withName('workers')
       .withNumDaemons(2)
-      .withActorFor((i) => () => new W(i));
+      .withActorFor((i) => () => new Worker(i));
     // `init` is synchronous, so everything it schedules lands in this slice.
     const before = scheduler.fixedRates.length;
     const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
@@ -306,7 +306,7 @@ describe('ShardedDaemonProcess — actor-ts.sharded-daemon-process.* HOCON keys'
     });
     const probe = nodeA.kit.createTestProbe();
 
-    class W extends Actor<string> {
+    class Worker extends Actor<string> {
       constructor(private readonly index: number) { super(); }
       override preStart(): void { probe.tell(`start-${this.index}`); }
       override onReceive(): void {}
@@ -315,7 +315,7 @@ describe('ShardedDaemonProcess — actor-ts.sharded-daemon-process.* HOCON keys'
     const daemonOptions = ShardedDaemonProcessOptions.create<string>()
       .withName('workers')
       .withNumDaemons(2)
-      .withActorFor((i) => () => new W(i))
+      .withActorFor((i) => () => new Worker(i))
       .withLivenessIntervalMs(211);
     const before = scheduler.fixedRates.length;
     const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
@@ -343,7 +343,7 @@ describe('ShardedDaemonProcess — actor-ts.sharded-daemon-process.* HOCON keys'
     });
     const probe = nodeA.kit.createTestProbe();
 
-    class W extends Actor<string> {
+    class Worker extends Actor<string> {
       constructor(private readonly index: number) { super(); }
       override preStart(): void { probe.tell(`start-${this.index}`); }
       override onReceive(): void {}
@@ -352,7 +352,7 @@ describe('ShardedDaemonProcess — actor-ts.sharded-daemon-process.* HOCON keys'
     const daemonOptions = ShardedDaemonProcessOptions.create<string>()
       .withName('workers')
       .withNumDaemons(2)
-      .withActorFor((i) => () => new W(i));
+      .withActorFor((i) => () => new Worker(i));
     const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
 
     // Long enough for the wake-ups, the registration and a coordinator turn —
@@ -371,7 +371,7 @@ describe('ShardedDaemonProcess — actor-ts.sharded-daemon-process.* HOCON keys'
     });
     const probe = nodeA.kit.createTestProbe();
 
-    class W extends Actor<string> {
+    class Worker extends Actor<string> {
       constructor(private readonly index: number) { super(); }
       override preStart(): void { probe.tell(`start-${this.index}`); }
       override onReceive(): void {}
@@ -380,7 +380,7 @@ describe('ShardedDaemonProcess — actor-ts.sharded-daemon-process.* HOCON keys'
     const daemonOptions = ShardedDaemonProcessOptions.create<string>()
       .withName('workers')
       .withNumDaemons(2)
-      .withActorFor((i) => () => new W(i));
+      .withActorFor((i) => () => new Worker(i));
     const handle = ShardedDaemonProcess.init<string>(nodeA.system, nodeA.cluster, daemonOptions);
 
     const starts: string[] = [];
