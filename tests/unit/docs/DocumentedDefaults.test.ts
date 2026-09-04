@@ -75,6 +75,7 @@ import { DEFAULT_REBALANCE_ABSOLUTE_LIMIT, DEFAULT_REBALANCE_RELATIVE_LIMIT } fr
 import { DEFAULT_REGION_STALE_AFTER_MS } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
 import { DEFAULT_REGION_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/sharding/ShardingOptions.js';
 import { DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS } from '../../../src/cluster/sharding/StartShardingOptions.js';
+import { DEFAULT_DAEMON_LIVENESS_INTERVAL_MS } from '../../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
 import {
   DEFAULT_MAX_GOSSIP_BYTES,
   DEFAULT_MAX_PENDING_QUORUM_REQUESTS,
@@ -404,6 +405,12 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.management.readiness-path', kind: 'string', constant: DEFAULT_READINESS_PATH },
   { key: 'actor-ts.management.health-checks.check-timeout', kind: 'duration', constant: DEFAULT_HEALTH_CHECK_TIMEOUT_MS },
 
+  /* --- sharded daemon process --- */
+  // The `role` sibling is a PLACEHOLDERS entry, reading exactly like
+  // `sharding.role` above it: `""` is the published shape of the key, and the
+  // reader drops it rather than passing it on (#854).
+  { key: 'actor-ts.sharded-daemon-process.liveness-interval', kind: 'duration', constant: DEFAULT_DAEMON_LIVENESS_INTERVAL_MS },
+
   /* --- worker cluster --- */
   { key: 'actor-ts.worker-cluster.system-name', kind: 'string', constant: DEFAULT_WORKER_SYSTEM_NAME },
   { key: 'actor-ts.worker-cluster.hostname', kind: 'string', constant: DEFAULT_WORKER_HOSTNAME },
@@ -589,6 +596,13 @@ const LOG_LEVEL_NAMES: readonly string[] = [
  */
 const PLACEHOLDERS: readonly string[] = [
   'actor-ts.dead-letters.persistence-id',
+  // Same reading as `sharding.role` below, one layer down: `""` is the shape
+  // of the key and `readShardedDaemonProcessOptionsFromConfig` drops it rather
+  // than passing it on.  Here the empty string means "no daemon-specific
+  // opinion" rather than "unrestricted" — dropped, the daemon region inherits
+  // `sharding.role` like every other sharded type, which is precisely what
+  // returning `''` would have broken (#854).
+  'actor-ts.sharded-daemon-process.role',
   // "" = unrestricted.  Not a default anyone runs with; the shipped empty
   // string is what lets the reader tell "no opinion" from a role named "",
   // and the role a deployment actually wants is per-deployment (#847).

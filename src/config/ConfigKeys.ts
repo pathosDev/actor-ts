@@ -965,6 +965,30 @@ export const ConfigKeys = {
   },
 
   /**
+   * `ShardedDaemonProcess.init` defaults — `actor-ts.sharded-daemon-process.*`
+   * (#854).  Read once per `init` and merged under the caller's options, which
+   * is the seam the module had none of: it used to cast its argument straight
+   * to the settings type, so a daemon set was configurable from code and from
+   * nowhere else.
+   *
+   * A top-level group rather than a nesting under {@link ConfigKeys.sharding}
+   * because a daemon set is a module built *on* sharding: `sharding.*` tunes
+   * every sharded type, these two tune only the daemons.
+   *
+   * Both are full dotted paths rather than a `shardedDaemonProcess` block root,
+   * for the reason `sharding.entityRecovery*` above spells out: `NoDeadConfigKeys`
+   * resolves a leaf through *any* config root above it, so a root-only entry
+   * would let both pass with nothing reading them.
+   *
+   * `name`, `numDaemons` and `actorFor` have no leaf: they describe one daemon
+   * set, not a deployment, and a factory has no HOCON form at all.
+   */
+  shardedDaemonProcess: {
+    livenessInterval: 'actor-ts.sharded-daemon-process.liveness-interval',
+    role: 'actor-ts.sharded-daemon-process.role',
+  },
+
+  /**
    * DevTools attachment defaults — `actor-ts.devtools.*`.
    *
    * The block does not *start* DevTools: nothing in `ActorSystem` constructs
