@@ -249,6 +249,17 @@ does *not* promise: it says the consumer accepted responsibility for the seq,
 so for a redelivery it means the handler ran on an *earlier* attempt, not on
 this one.
 
+The check sits on the producer because that is the only side with something
+unguessable to check against.  The consumer Acks to the `replyTo` on the
+envelope and cannot do better: a `Delivery` arrives with no sender attached —
+a producer tells with one argument, and so does the cluster's envelope dispatch
+— so there is no authenticated identity to hold `replyTo` up against, and every
+other field on the envelope was written by whoever sent it.  Little rides on
+that.  An `ActorRef` has no wire representation, so a `replyTo` naming some
+other actor can only come from a party that already holds that ref and could
+send to it directly, and a producer discards an Ack whose incarnation does not
+match.
+
 ## When NOT to use the controllers
 
 import { Aside } from '@astrojs/starlight/components';

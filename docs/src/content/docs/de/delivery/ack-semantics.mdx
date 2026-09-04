@@ -257,6 +257,17 @@ was das Signal weiterhin *nicht* verspricht: es sagt, dass der Consumer die
 Verantwortung für die Seq übernommen hat — bei einer erneuten Zustellung heißt
 das, der Handler lief bei einem *früheren* Versuch, nicht bei diesem.
 
+Die Prüfung sitzt beim Producer, weil nur diese Seite etwas Unerratbares hat,
+gegen das sie prüfen kann.  Der Consumer ACKt an das `replyTo` des Envelopes
+und kann es nicht besser: ein `Delivery` kommt ohne Sender an — ein Producer
+tellt mit einem Argument, und der Envelope-Dispatch des Clusters ebenso —, es
+gibt also keine authentifizierte Identität, gegen die sich `replyTo` halten
+ließe, und jedes andere Feld des Envelopes hat geschrieben, wer ihn gesendet
+hat.  Daran hängt wenig: ein `ActorRef` hat keine Wire-Repräsentation, ein
+`replyTo`, das einen fremden Actor benennt, kann also nur von einer Partei
+kommen, die diese Ref ohnehin hält und direkt an sie senden könnte — und ein
+Producer verwirft ein ACK, dessen Inkarnation nicht passt.
+
 ## Wann du die Controller NICHT einsetzt
 
 import { Aside } from '@astrojs/starlight/components';

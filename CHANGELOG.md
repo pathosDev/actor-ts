@@ -1658,10 +1658,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   delivery could pass the size check before any of them inserted, so the set
   overshot by the concurrency.
 
-  **Migration.** None for a stock `ProducerController`, whose window of 16
-  puts at most 15 sequences past an open gap. A producer configured with a
-  window above 1024 that expects gaps under packet loss wants a matching
-  `maxOutOfOrder`, or `Infinity` for the previous behaviour.
+  **Migration.** A stock `ProducerController` can reach the cap, and its
+  window of 16 is not what decides that: the consumer acknowledges every
+  out-of-order delivery it admits, which frees the producer's slot and lets it
+  keep streaming past a gap that is still open — measured at 63 sequences
+  retained past one withheld sequence, from 64 sends. Reaching the cap stalls
+  that producer until the missing sequence lands, which is the intended
+  backpressure and is what its own retransmit clears, so nothing is lost and
+  most senders need no action. Raise `maxOutOfOrder` if you sustain more than
+  roughly 2000 sends a second through a link that drops them, or set
+  `Infinity` for the previous unbounded retention; a producer configured with
+  a window above 1024 wants a matching `maxOutOfOrder` regardless, since that
+  many sends are already in flight when a gap opens.
 
 
 - **A priority mailbox keeps an undroppable envelope through a stash replay,
