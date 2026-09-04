@@ -1,7 +1,8 @@
 import type { ActorSystem } from './ActorSystem.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
+import { Config, ConfigError, isPlainObject } from './config/Config.js';
 import { extensionId, type Extension, type ExtensionId } from './Extension.js';
-import { DEFAULT_PHASE_TIMEOUT_MS } from './Constants.js';
+import { DEFAULT_PHASE_TIMEOUT_MS, DEFAULT_SHUTDOWN_EXIT_CODE, MAX_PROCESS_EXIT_CODE } from './Constants.js';
 import { getProcessSignals } from './runtime/signals/index.js';
 import type { ProcessSignal } from './util/ProcessSignal.js';
 
@@ -53,6 +54,21 @@ export type PhaseDefinition = {
 type RegisteredTask = {
   readonly name: string;
   readonly task: ShutdownTask;
+};
+
+/**
+ * One child of `actor-ts.coordinated-shutdown.phases`, already type-checked.
+ *
+ * Every field is optional and `undefined` means "the config said nothing" —
+ * the same rule `mergeOptions` uses everywhere else, and the reason a phase
+ * that only sets `timeout` keeps the `recover` and `dependsOn` it was seeded
+ * with instead of having them blanked to a default.
+ */
+type PhaseOverride = {
+  readonly name: string;
+  readonly timeoutMs: number | undefined;
+  readonly recover: boolean | undefined;
+  readonly dependsOn: ReadonlyArray<string> | undefined;
 };
 
 /** Canonical phase names, run in order from top to bottom. */
@@ -110,14 +126,33 @@ export class CoordinatedShutdown implements Extension {
    */
   defaultPhaseTimeoutMs = DEFAULT_PHASE_TIMEOUT_MS;
 
-  /** Call `process.exit(0)` once the pipeline completes.  Off by default. */
+  /** Call `process.exit(exitCode)` once the pipeline completes.  Off by default. */
   private readonly exitProcess: boolean;
+
+  /**
+   * Status that exit carries.  Only read when {@link exitProcess} is on.
+   */
+  private readonly exitCode: number;
 
   /**
    * Whether framework components register their own teardown — see
    * {@link addFrameworkTask}.
    */
   readonly autoRegisterTasks: boolean;
+
+  /**
+   * Whether the framework's two *defaulting* signal call sites —
+   * `ActorSystem.runUntilTerminated()` and the cluster bootstrap — arm
+   * SIGTERM/SIGINT on the caller's behalf.
+   *
+   * Deliberately not consulted by {@link installProcessHooks}, which keeps
+   * meaning "do it".  The key ships as a leaf, so `reference.conf` always
+   * supplies a value and a gate inside the installer would let HOCON beat a
+   * caller who named the signals explicitly — the exact inversion of
+   * *explicit options > HOCON > defaults*.  Reading it where the default is
+   * chosen keeps that order intact.
+   */
+  readonly runByProcessSignals: boolean;
 
   constructor(private readonly system: ActorSystem) {
     const config = system.config;
@@ -128,11 +163,17 @@ export class CoordinatedShutdown implements Extension {
     this.exitProcess = config.hasPath(keys.exitProcess)
       ? config.getBoolean(keys.exitProcess)
       : false;
+    this.exitCode = config.hasPath(keys.exitCode)
+      ? readExitCode(config, keys.exitCode)
+      : DEFAULT_SHUTDOWN_EXIT_CODE;
     const terminateActorSystem = config.hasPath(keys.terminateActorSystem)
       ? config.getBoolean(keys.terminateActorSystem)
       : true;
     this.autoRegisterTasks = config.hasPath(keys.autoRegisterTasks)
       ? config.getBoolean(keys.autoRegisterTasks)
+      : true;
+    this.runByProcessSignals = config.hasPath(keys.runByProcessSignals)
+      ? config.getBoolean(keys.runByProcessSignals)
       : true;
 
     // Seed the 12 canonical phases linearly — each depends on the previous.
@@ -158,6 +199,7 @@ export class CoordinatedShutdown implements Extension {
         recover: true,
       });
     }
+    this.applyPhaseOverrides(config);
     // Built-in terminator in the final phase.  Opting out leaves the phase
     // in place — user tasks registered there still run — and hands the
     // system's lifetime back to the embedder, which is the point: a host
@@ -239,6 +281,20 @@ export class CoordinatedShutdown implements Extension {
     this.phases.set(def.name, def);
   }
 
+  /**
+   * The resolved definition of a phase, or `undefined` if there is none.
+   *
+   * Read-only on purpose — the map is the pipeline's own state, and the copy
+   * handed back is the same frozen-by-convention record `addPhase` took.
+   * It exists because the graph stopped being something only code builds:
+   * once `actor-ts.coordinated-shutdown.phases` can retime a phase or add
+   * one, the operator who wrote that block needs a way to ask what the merge
+   * actually produced, and "run a shutdown and watch" is not one.
+   */
+  phaseDefinition(phase: string): PhaseDefinition | undefined {
+    return this.phases.get(phase);
+  }
+
   /** Override the timeout for a phase.  Uses `defaultPhaseTimeoutMs` by default. */
   setPhaseTimeout(phase: string, timeoutMs: number): void {
     const phaseEntry = this.phases.get(phase);
@@ -309,6 +365,120 @@ export class CoordinatedShutdown implements Extension {
 
   /* ------------------------------- Internal ------------------------------ */
 
+  /**
+   * Fold `actor-ts.coordinated-shutdown.phases` into the freshly seeded DAG.
+   *
+   * A child naming one of the twelve canonical phases **merges** into it —
+   * neither {@link addPhase} (which throws on a duplicate) nor
+   * {@link setPhaseTimeout} (which only replaces the timeout) can express
+   * that, so this is a third path rather than a call into either.  Any other
+   * name declares a new phase, and there `depends-on` is required: a phase
+   * with no edges sorts into the first ready batch and would run *before*
+   * `before-service-unbind`, which is never what an operator adding a phase
+   * meant.
+   *
+   * `depends-on` on a canonical phase is **added** to the seeded edge, never
+   * a replacement.  The topological sort catches cycles and nothing else, so
+   * a replacing form would let a config file re-parent `cluster-leave` ahead
+   * of `service-unbind` and produce a pipeline that runs happily in the wrong
+   * order — a silent failure exactly where the pipeline exists to prevent one.
+   *
+   * Everything it can reject, it rejects here rather than at `run()`: a
+   * shutdown that throws on a bad phase graph fails at the worst possible
+   * moment, whereas failing in the extension's constructor fails at startup.
+   */
+  private applyPhaseOverrides(config: Config): void {
+    const path = ConfigKeys.coordinatedShutdown.phases;
+    if (!config.hasPath(path)) return;
+    const overrides = readPhaseOverrides(config, path);
+    if (overrides.length === 0) return;
+
+    // Resolve every target against existing *and* declared names, so a
+    // canonical phase may depend on a config-declared one and vice versa.
+    const declared = new Set(overrides.map((entry) => entry.name));
+    for (const entry of overrides) {
+      for (const dependency of entry.dependsOn ?? []) {
+        if (!this.phases.has(dependency) && !declared.has(dependency)) {
+          throw new ConfigError(
+            `${path}.${entry.name}.depends-on names "${dependency}", which is `
+            + 'neither a canonical phase nor another phase declared here',
+          );
+        }
+      }
+    }
+
+    const additions = overrides.filter((entry) => !this.phases.has(entry.name));
+    const addedNames = new Set(additions.map((entry) => entry.name));
+    this.registerDeclaredPhases(additions, path);
+    for (const entry of overrides) {
+      if (!addedNames.has(entry.name)) this.mergePhaseOverride(entry);
+    }
+    this.checkPhaseGraph(path);
+  }
+
+  /**
+   * Register the config-declared phases, dependency-first.
+   *
+   * {@link addPhase} demands every `dependsOn` target already exist, and two
+   * phases declared in one config block may name each other — declaration
+   * order in the file says nothing about the order they can be registered in.
+   * A round that registers nothing therefore means a cycle among them, since
+   * unresolvable targets were rejected before this runs.
+   */
+  private registerDeclaredPhases(additions: readonly PhaseOverride[], path: string): void {
+    let pending = additions.map((entry) => {
+      const dependsOn = entry.dependsOn ?? [];
+      if (dependsOn.length === 0) {
+        throw new ConfigError(
+          `${path}.${entry.name} declares a new phase, so it must name depends-on: `
+          + 'a phase with no dependencies sorts into the first batch and would run '
+          + `before "${Phases.BeforeServiceUnbind}"`,
+        );
+      }
+      return { entry, dependsOn };
+    });
+    while (pending.length > 0) {
+      const ready = pending.filter(({ dependsOn }) => dependsOn.every((d) => this.phases.has(d)));
+      if (ready.length === 0) {
+        throw new ConfigError(
+          `${path}: the phases declared here depend on each other in a cycle: `
+          + pending.map(({ entry }) => entry.name).sort().join(', '),
+        );
+      }
+      for (const { entry, dependsOn } of ready) {
+        this.addPhase({
+          name: entry.name,
+          timeoutMs: entry.timeoutMs ?? this.defaultPhaseTimeoutMs,
+          dependsOn: [...dependsOn],
+          recover: entry.recover ?? true,
+        });
+      }
+      const registered = new Set(ready.map(({ entry }) => entry.name));
+      pending = pending.filter(({ entry }) => !registered.has(entry.name));
+    }
+  }
+
+  /** Merge one config child into the phase of the same name that already exists. */
+  private mergePhaseOverride(entry: PhaseOverride): void {
+    const seeded = this.phases.get(entry.name)!;
+    const added = (entry.dependsOn ?? []).filter((d) => !seeded.dependsOn.includes(d));
+    this.phases.set(seeded.name, {
+      name: seeded.name,
+      timeoutMs: entry.timeoutMs ?? seeded.timeoutMs,
+      dependsOn: added.length === 0 ? seeded.dependsOn : [...seeded.dependsOn, ...added],
+      recover: entry.recover ?? seeded.recover,
+    });
+  }
+
+  /** Sort the resulting graph once, so a cycle is a startup error, not a shutdown one. */
+  private checkPhaseGraph(path: string): void {
+    try {
+      this.topologicalOrder();
+    } catch (e) {
+      throw new ConfigError(`${path} produced an unusable phase graph — ${(e as Error).message}`);
+    }
+  }
+
   private async _run(reason: Reason): Promise<void> {
     this._running = true;
     const order = this.topologicalOrder();
@@ -323,7 +493,7 @@ export class CoordinatedShutdown implements Extension {
     // so anything awaiting `run()` observes success even though this call
     // does not return.
     if (this.exitProcess && typeof process !== 'undefined' && typeof process.exit === 'function') {
-      process.exit(0);
+      process.exit(this.exitCode);
     }
   }
 
@@ -392,6 +562,68 @@ export class CoordinatedShutdown implements Extension {
     }
     return out;
   }
+}
+
+/**
+ * The three keys a `phases.<name>` block may carry.
+ *
+ * Checked rather than ignored, because the failure this prevents is silent:
+ * `timout = 30s` under a phase would leave the phase on its seeded budget and
+ * say nothing, which is the same class of defect as a documented key nothing
+ * reads.  The list is the whole schema of a phase child, so it lives beside
+ * the reader that applies it.
+ */
+const PHASE_OVERRIDE_KEYS: ReadonlySet<string> = new Set(['timeout', 'recover', 'depends-on']);
+
+/**
+ * Type-check one `phases` block into {@link PhaseOverride}s.
+ *
+ * Each child is re-wrapped in its own `Config` rather than addressed through
+ * a dotted path, so a phase whose name contains a dot is read as one key
+ * instead of being silently split into a nesting that does not exist.
+ */
+function readPhaseOverrides(config: Config, path: string): PhaseOverride[] {
+  return Object.entries(config.getObject(path)).map(([name, raw]) => {
+    if (!isPlainObject(raw)) {
+      throw new ConfigError(
+        `${path}.${name} must be a block of timeout / recover / depends-on, not a bare value`,
+      );
+    }
+    for (const key of Object.keys(raw)) {
+      if (!PHASE_OVERRIDE_KEYS.has(key)) {
+        throw new ConfigError(
+          `${path}.${name}.${key} is not a phase setting — expected one of `
+          + `${[...PHASE_OVERRIDE_KEYS].join(', ')}`,
+        );
+      }
+    }
+    const phase = Config.fromObject(raw);
+    return {
+      name,
+      timeoutMs: phase.hasPath('timeout') ? phase.getDuration('timeout') : undefined,
+      recover: phase.hasPath('recover') ? phase.getBoolean('recover') : undefined,
+      dependsOn: phase.hasPath('depends-on') ? phase.getStringList('depends-on') : undefined,
+    };
+  });
+}
+
+/**
+ * Read `exit-code`, refusing a status the operating system would rewrite.
+ *
+ * Only eight bits of a wait status carry the code, so `process.exit(256)`
+ * surfaces as `0`: a configured failure that the supervisor reads as a clean
+ * stop.  Rejecting it at startup is the only point at which anyone is looking.
+ */
+function readExitCode(config: Config, path: string): number {
+  const code = config.getInt(path);
+  if (code < 0 || code > MAX_PROCESS_EXIT_CODE) {
+    throw new ConfigError(
+      `${path} must be between 0 and ${MAX_PROCESS_EXIT_CODE}, got ${code} — `
+      + 'a status outside that range is truncated by the operating system, so the '
+      + 'exit an operator sees would not be the one configured',
+    );
+  }
+  return code;
 }
 
 /** ExtensionId — use via `system.extension(CoordinatedShutdownId)`. */

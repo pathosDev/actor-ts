@@ -60,7 +60,11 @@ export type ClusterBootstrapOptionsType = {
    * Whether the bootstrap helper installs `SIGTERM` + `SIGINT`
    * handlers that call the returned `shutdown()` once.  Set
    * to a list of signals to customise, or to `false` to disable.
-   * Default: `['SIGTERM', 'SIGINT']`.
+   *
+   * Left unset, the default comes from
+   * `actor-ts.coordinated-shutdown.run-by-process-signals` (itself `true`),
+   * so a deployment can take the handlers off every bootstrapped node from
+   * its config file.  Any value here is explicit and wins over that key.
    */
   readonly shutdownOnSignals?: boolean | ReadonlyArray<ProcessSignal>;
 

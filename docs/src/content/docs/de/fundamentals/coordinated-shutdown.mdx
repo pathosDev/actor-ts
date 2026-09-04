@@ -143,6 +143,52 @@ topologischen Sort berechnet, wenn `run()` ausgeführt wird —
 dieser Sort würde `Error: cycle in phase dependencies` werfen,
 falls je ein Zyklus entstünde.
 
+### Aus der Konfiguration
+
+Derselbe Graph lässt sich in HOCON ausdrücken, unter
+`actor-ts.coordinated-shutdown.phases` — ein Kind pro Phasenname,
+jedes mit `timeout`, `recover` und `depends-on`:
+
+```hocon
+actor-ts.coordinated-shutdown.phases {
+  flush-metrics {
+    timeout    = 3s
+    recover    = true
+    depends-on = ["before-actor-system-terminate"]
+  }
+  actor-system-terminate { depends-on = ["flush-metrics"] }
+}
+```
+
+Ein Name, der eine der zwölf kanonischen Phasen benennt,
+**verschmilzt** mit ihr; jeder andere **deklariert** eine neue, und
+dort ist `depends-on` Pflicht — eine Phase ohne Kanten landet im
+ersten fertigen Batch und liefe vor `before-service-unbind`.
+
+Beachte, was das zweite Kind bringt.  `depends-on` an einer
+kanonischen Phase wird der bestehenden Kante *hinzugefügt*, nie
+ersetzt; `flush-metrics` dort zu nennen ist also das, was deine
+Phase tatsächlich **vor** `actor-system-terminate` setzt statt
+lediglich hinter `before-actor-system-terminate` — sonst würden
+beide in derselben Runde fertig und der alphabetische Tie-Breaker
+des Sorts entschiede.  Dieselbe additive Regel verhindert, dass
+eine Config-Datei `cluster-leave` vor `service-unbind` umhängt:
+der Sort fängt Zyklen ab, nicht eine Pipeline, die still in der
+falschen Reihenfolge läuft.
+
+Die Reihenfolge in der Datei ist egal — zwei Phasen dürfen einander
+benennen und werden abhängigkeitsweise registriert.  Ein nicht
+auflösbarer Name, ein Zyklus, ein unbekanntes Setting unter einer
+Phase oder eine deklarierte Phase ohne `depends-on` ist ein
+`ConfigError` beim Bau der Extension, nicht beim Shutdown.
+
+Was die Verschmelzung ergeben hat, verrät `phaseDefinition`:
+
+```ts
+coordinatedShutdown.phaseDefinition('flush-metrics');
+// { name: 'flush-metrics', timeoutMs: 3000, dependsOn: [...], recover: true }
+```
+
 ## Task-Semantik
 
 Jeder Task ist eine Funktion von `Reason` zu `void | Promise<void>`:
@@ -213,6 +259,20 @@ coordinatedShutdown.addPhase({
 });
 ```
 
+Beides geht auch aus der Konfiguration, pro Phase und ohne Rebuild —
+derselbe `phases`-Block wie oben, und er retimet nur die Phase, die er
+benennt:
+
+```hocon
+actor-ts.coordinated-shutdown {
+  default-phase-timeout = 5s               # every phase that says nothing
+  phases {
+    service-requests-done { timeout = 30s }   # …except this one
+    service-stop          { recover = false } # a failure here halts the run
+  }
+}
+```
+
 ### Das Drain-Budget steckt in der letzten Phase
 
 `actor-system-terminate` ist ein Task, der `system.terminate()`
@@ -224,13 +284,18 @@ sein:
 
 | Budget | Key | Default |
 | --- | --- | --- |
-| Die gesamte Phase `actor-system-terminate` | `actor-ts.coordinated-shutdown.default-phase-timeout` | 5 s |
+| Die gesamte Phase `actor-system-terminate` | `actor-ts.coordinated-shutdown.phases.actor-system-terminate.timeout`, ersatzweise `…default-phase-timeout` | 5 s |
 | Der Drain darin | `actor-ts.system.shutdown-drain-timeout` | 2 s |
 
 Setzt du das Drain-Budget über das Phasen-Timeout, wird die Phase
 abgebrochen, während der Drain noch läuft — bevor auch nur einem Actor
 gesagt wurde, dass er stoppen soll.  Erhöhe beide zusammen oder zuerst
 das Phasen-Timeout.
+
+Greife zum Per-Phasen-Key, wenn nur der Terminate-Schritt mehr Luft
+braucht.  `default-phase-timeout` anzuheben gibt dasselbe größere Budget
+elf weiteren Phasen — und jede davon ist eine Phase, in der ein
+hängender Task den Shutdown nun entsprechend länger festhalten kann.
 
 ## SIGTERM / SIGINT-Hooks
 
@@ -282,6 +347,22 @@ Beides zweimal aufzurufen ist harmlos.  `removeProcessHooks()` fasst
 nie einen Listener an, den es nicht selbst installiert hat — ein
 zweites `ActorSystem` im selben Prozess, oder das eigene
 SIGTERM-Handling der Anwendung, bleibt unberührt.
+
+Der *Default* kommt aus der Konfiguration: ein Host, dem die Signale
+gehören, kann die Handler bei jedem Node abschalten, ohne den Code
+anzufassen:
+
+```hocon
+actor-ts.coordinated-shutdown.run-by-process-signals = false
+```
+
+Das schaltet um, was `runUntilTerminated()` und der Cluster-Bootstrap
+tun, wenn der Aufrufer keine Signale genannt hat.  Wer sie nennt —
+`runUntilTerminated(['SIGTERM'])`, `shutdownOnSignals` in den
+Bootstrap-Optionen oder `installProcessHooks()` selbst —, installiert
+trotzdem, denn explizite Optionen schlagen die Konfiguration.  Mit dem
+Key auf `false` hält `runUntilTerminated()` seine beiden anderen
+Zusagen weiterhin ein: es wartet, und es hält die Event-Loop offen.
 
 ## K8s-PreStop-Integration
 

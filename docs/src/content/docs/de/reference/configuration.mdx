@@ -664,19 +664,64 @@ Stores — haben keine HOCON-Form und bleiben im Code.
 | --- | --- | --- |
 | `coordinated-shutdown.default-phase-timeout` | `5s` | Default-Timeout pro Phase.  Eine Phase, die es überschreitet, wird abgebrochen, damit die nächste noch läuft. |
 | `coordinated-shutdown.terminate-actor-system` | `true` | Ob der eingebaute Terminator-Task in der finalen Phase `system.terminate()` aufruft. |
-| `coordinated-shutdown.exit-process` | `false` | Ob nach Abschluss der Pipeline `process.exit(0)` aufgerufen wird. |
+| `coordinated-shutdown.exit-process` | `false` | Ob nach Abschluss der Pipeline `process.exit(exit-code)` aufgerufen wird. |
+| `coordinated-shutdown.exit-code` | `0` | Status, den der Exit trägt.  `0`–`255`; alles andere ist ein `ConfigError` beim Start. |
+| `coordinated-shutdown.auto-register-tasks` | `true` | Ob Framework-Komponenten ihr eigenes Teardown registrieren — das HTTP-Unbind, das Schließen der Broker, das Cluster-Leave, das DevTools-Detach. |
+| `coordinated-shutdown.run-by-process-signals` | `true` | Ob `runUntilTerminated()` und der Cluster-Bootstrap SIGTERM/SIGINT scharfschalten, wenn der Aufrufer keine Signale genannt hat. |
+| `coordinated-shutdown.phases.<name>.timeout` | — | Budget für genau diese Phase; überschreibt `default-phase-timeout` nur für sie. |
+| `coordinated-shutdown.phases.<name>.recover` | — | `false` lässt einen fehlgeschlagenen Task in dieser Phase die Pipeline anhalten, statt ihn zu loggen und weiterzugehen. |
+| `coordinated-shutdown.phases.<name>.depends-on` | — | Phasen, die vorher laufen müssen.  Bei einer kanonischen Phase wird die Kante ergänzt; bei einem neuen Namen ist die Angabe Pflicht. |
 
 `terminate-actor-system = false` entfernt nur den eingebauten Terminator —
 in `ActorSystemTerminate` registrierte eigene Tasks laufen weiterhin.
 Nutze es, wenn ein Host-Prozess die Lebensdauer des Systems besitzt und ein
 Signal-Handler es nicht killen darf.
 
+Der `phases`-Block ist das Config-Frontend zum Phasen-DAG und liefert selbst
+keine Werte aus — seine Kinder sind nach *deinen* Phasen benannt, es gibt also
+nichts, wofür sich ein Default veröffentlichen ließe:
+
+```hocon
+actor-ts.coordinated-shutdown.phases {
+  service-requests-done { timeout = 30s }        # retime one canonical phase
+  flush-metrics {                                # …and add one of your own
+    timeout    = 3s
+    recover    = false
+    depends-on = ["before-actor-system-terminate"]
+  }
+  actor-system-terminate { depends-on = ["flush-metrics"] }
+}
+```
+
+Ein Kind, das eine der zwölf kanonischen Phasen benennt, **verschmilzt** mit
+ihr: weggelassene Felder behalten das, womit die Phase initialisiert wurde.
+Jeder andere Name **deklariert** eine Phase, und dort ist `depends-on` Pflicht
+— eine Phase ohne Kanten landet im ersten fertigen Batch und liefe vor
+`before-service-unbind`, was nie gemeint war, wenn jemand eine Phase hinzufügt.
+`depends-on` an einer kanonischen Phase wird der bestehenden Kante *hinzugefügt*
+statt sie zu ersetzen; so kann eine Config-Datei `cluster-leave` nicht vor
+`service-unbind` umhängen — die topologische Sortierung fängt Zyklen ab, nicht
+eine Pipeline, die still in der falschen Reihenfolge läuft.  Die Reihenfolge in
+der Datei spielt keine Rolle: zwei Phasen dürfen einander benennen und werden
+abhängigkeitsweise registriert.  Ein nicht auflösbarer Name, ein Zyklus oder
+ein unbekanntes Setting unter einer Phase ist ein `ConfigError` beim Start,
+nicht beim Shutdown.
+
+`run-by-process-signals` schaltet den *Default* um, nicht die Fähigkeit.  Wer
+Signale explizit nennt — `runUntilTerminated(['SIGTERM'])` oder
+`shutdownOnSignals` in den Bootstrap-Optionen —, installiert sie trotzdem, denn
+explizite Optionen schlagen die Konfiguration.  Ausschalten ist für einen
+Host-Prozess, der SIGTERM selbst besitzt: `runUntilTerminated()` wartet
+weiterhin und hält die Event-Loop offen, es schaltet nur nichts scharf.
+
 `exit-process` ist für den umgekehrten Fall: ein hängengebliebenes Handle
 (ein offener Socket, eine gepoolte Verbindung, die ein Treiber nie
 freigegeben hat) hält den Prozess am Leben, nachdem die Pipeline fertig
 ist — von außen nicht von einem Hänger zu unterscheiden.  Per Default aus,
 weil ein erzwungener Exit genau die Leaks verdeckt, die du eigentlich
-finden willst.
+finden willst.  `exit-code` ist der Status, den er übergibt — `0`, weil eine
+bis zum Ende gelaufene Pipeline der Erfolgsfall ist; setze ihn dort, wo ein
+Supervisor einen geplanten Drain von einem Absturz unterscheiden soll.
 
 ### `actor-ts.devtools`
 

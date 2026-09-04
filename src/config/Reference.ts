@@ -737,7 +737,11 @@ actor-ts {
   coordinated-shutdown {
     default-phase-timeout = 5s
     terminate-actor-system = true
-    exit-process = false   # call process.exit(0) once the pipeline completes
+    exit-process = false   # call process.exit(exit-code) once the pipeline completes
+    # Status that exit carries.  Only consulted when exit-process is on; a
+    # value outside 0-255 is a ConfigError at startup rather than a code the
+    # operating system silently truncates.
+    exit-code = 0
 
     # Framework components register their own teardown in the pipeline: the
     # HTTP server unbinds in service-unbind, broker actors close their
@@ -746,6 +750,37 @@ actor-ts {
     # the phases and register everything yourself -- for an embedder that owns
     # the lifecycle of the resources it handed the system.
     auto-register-tasks = true
+
+    # Whether runUntilTerminated() and the cluster bootstrap arm SIGTERM and
+    # SIGINT on your behalf.  false leaves the pipeline in place and the
+    # signals to the host process that owns them.  What this switches is the
+    # *default*: a caller that names its signals -- runUntilTerminated(['SIGTERM']),
+    # shutdown-on-signals in the bootstrap options -- still installs them,
+    # because explicit options outrank config.
+    run-by-process-signals = true
+
+    # phases ships no values on purpose: its children are named after YOUR
+    # phases, so there is no fixed set of leaves to publish, and an example
+    # one would freeze that example's budget into every deployment's
+    # effective config.  Each child takes timeout, recover and depends-on,
+    # all optional:
+    #
+    #   phases {
+    #     service-requests-done { timeout = 30s }
+    #     actor-system-terminate { timeout = 60s }
+    #     flush-metrics {
+    #       timeout    = 3s
+    #       recover    = false
+    #       depends-on = ["before-actor-system-terminate"]
+    #     }
+    #   }
+    #
+    # A child naming one of the twelve canonical phases merges into it; any
+    # other name declares a new phase, and there depends-on is required --
+    # a phase with no edges sorts into the first batch and would run before
+    # before-service-unbind.  depends-on on a canonical phase is ADDED to
+    # the edge it already has, never a replacement, so a config file cannot
+    # re-parent cluster-leave ahead of service-unbind.
   }
 }
 `.trim();
