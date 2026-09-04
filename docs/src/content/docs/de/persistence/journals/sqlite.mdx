@@ -35,6 +35,58 @@ persistence.setSnapshotStore(new SqliteSnapshotStore(sqliteSnapshotStoreOptions)
 Eine einzelne Datei pro System; das Actor-System schreibt durch
 SQLite in den OS-Page-Cache, der beim Commit auf Disk flusht.
 
+## Als Plugin registrieren
+
+Der Aufruf oben verdrahtet die Stores *direkt* — der kürzeste Weg, und völlig in
+Ordnung für eine App, die ohnehin nie etwas anderes als SQLite nutzt.  Der
+andere Weg ist, SQLite als **Plugin** zu registrieren und die Auswahl der
+Konfiguration zu überlassen — genau das bedeutet
+`actor-ts.persistence.journal.plugin` seit jeher, und `registerSqlitePlugins`
+macht es nun auch für SQLite wahr:
+
+```ts
+import { PersistenceExtensionId, registerSqlitePlugins } from 'actor-ts/persistence';
+
+const persistence = system.extension(PersistenceExtensionId);
+registerSqlitePlugins(persistence);
+```
+
+```hocon
+actor-ts.persistence {
+  journal        { plugin = "actor-ts.persistence.journal.sqlite" }
+  snapshot-store { plugin = "actor-ts.persistence.snapshot-store.sqlite" }
+  durable-state  { plugin = "actor-ts.persistence.durable-state.sqlite" }
+
+  journal.sqlite        { path = "/var/lib/my-app/app.db", wal = on }
+  snapshot-store.sqlite { path = "/var/lib/my-app/app.db", keep-n = 5 }
+  durable-state.sqlite  { path = "/var/lib/my-app/app.db" }
+}
+```
+
+Das ist die ganze Verdrahtung: die Plugin-Id **ist** der Config-Abschnitt, der
+Block mit dem Namen der Id ist also der Block, den dieses Plugin liest.  Nichts
+an der Datenbank steckt mehr im Code — Pfad, Tabellennamen, `wal`, `keep-n` und
+der Busy-Timeout wandern mit der Umgebung, und genau dafür gibt es eine
+Config-Datei.
+
+An `registerSqlitePlugins` übergebene Options gewinnen weiterhin, Feld für Feld,
+und ein nicht gesetztes Feld fällt auf den Block durch, statt ihn zu leeren:
+
+```ts
+// path and tables from HOCON; the serializer only expressible in code.
+registerSqlitePlugins(persistence, { serializer: myCborSerializer });
+```
+
+Ein hier angegebener `path` ist ein gemeinsamer **Default** — ein Store-Block
+mit eigenem Pfad behält seinen —, eine vorab geöffnete `database` dagegen ein
+**Override**, denn ein gemeinsames Handle für alle drei Stores ist die
+spezifischere Anweisung.  Für `driver`, `database` und `serializer` gibt es kein
+Config-Blatt: das sind lebende Objekte, die eine Config-Datei nicht ausdrücken
+kann.
+
+Die vollständige Key-Tabelle steht in der
+[Konfigurationsreferenz](/de/reference/configuration/#actor-tspersistence).
+
 ## Konfiguration
 
 ```ts

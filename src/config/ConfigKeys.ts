@@ -349,11 +349,38 @@ export const ConfigKeys = {
       plugin: 'actor-ts.persistence.journal.plugin',
       inMemory: 'actor-ts.persistence.journal.in-memory',
       cassandra: 'actor-ts.persistence.journal.cassandra',
+      /**
+       * The SQLite journal's block — `root` is also `SQLITE_JOURNAL_PLUGIN_ID`,
+       * per the framework rule that a plugin id *is* the config section holding
+       * that plugin's settings (#872).
+       *
+       * Full dotted leaves beside the `root`, and here that is not a formality:
+       * `NoDeadConfigKeys`' `coveringAccessor` falls back to the nearest root,
+       * and the root literal is *also* hard-coded as the plugin id in
+       * `SqlitePlugin.ts` — so a root-only entry would be satisfied by a string
+       * that is not a config read at all, and every leaf beneath it could ship
+       * inert with the guard green.
+       */
+      sqlite: {
+        root: 'actor-ts.persistence.journal.sqlite',
+        path: 'actor-ts.persistence.journal.sqlite.path',
+        eventsTable: 'actor-ts.persistence.journal.sqlite.events-table',
+        wal: 'actor-ts.persistence.journal.sqlite.wal',
+        busyTimeout: 'actor-ts.persistence.journal.sqlite.busy-timeout',
+      },
     },
     snapshotStore: {
       plugin: 'actor-ts.persistence.snapshot-store.plugin',
       inMemory: 'actor-ts.persistence.snapshot-store.in-memory',
       cassandra: 'actor-ts.persistence.snapshot-store.cassandra',
+      /** The SQLite snapshot store's block — see {@link journal}'s `sqlite`. */
+      sqlite: {
+        root: 'actor-ts.persistence.snapshot-store.sqlite',
+        path: 'actor-ts.persistence.snapshot-store.sqlite.path',
+        snapshotsTable: 'actor-ts.persistence.snapshot-store.sqlite.snapshots-table',
+        keepN: 'actor-ts.persistence.snapshot-store.sqlite.keep-n',
+        busyTimeout: 'actor-ts.persistence.snapshot-store.sqlite.busy-timeout',
+      },
       /**
        * The object-storage plugin's block — the framework's rule that a plugin
        * id *is* its config section, so `root` is also
@@ -395,8 +422,27 @@ export const ConfigKeys = {
         filesystemStaleLock: 'actor-ts.persistence.snapshot-store.object-storage.filesystem.stale-lock',
       },
     },
+    /**
+     * The third plug-in axis (#872).  It shipped as a namespace of ids nothing
+     * could select: `PersistenceExtension` carried only a journal and a
+     * snapshot-store registry, so `durable-state.object-storage` named a
+     * plugin that had to be threaded through application code by hand.
+     * `plugin` is the selector `PersistenceExtension.durableStateStore`
+     * resolves through, and `DurableStateActor` falls back to it when its
+     * options name no store.
+     */
     durableState: {
+      plugin: 'actor-ts.persistence.durable-state.plugin',
+      inMemory: 'actor-ts.persistence.durable-state.in-memory',
       objectStorage: 'actor-ts.persistence.durable-state.object-storage',
+      /** The SQLite durable-state store's block — see {@link journal}'s `sqlite`. */
+      sqlite: {
+        root: 'actor-ts.persistence.durable-state.sqlite',
+        path: 'actor-ts.persistence.durable-state.sqlite.path',
+        table: 'actor-ts.persistence.durable-state.sqlite.table',
+        autoCreateTables: 'actor-ts.persistence.durable-state.sqlite.auto-create-tables',
+        busyTimeout: 'actor-ts.persistence.durable-state.sqlite.busy-timeout',
+      },
     },
   },
 

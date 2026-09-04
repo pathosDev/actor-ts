@@ -105,12 +105,12 @@ cart.tell({ kind: 'add', sku: 'book-2' });
 ```ts
 type DurableStateOptionsType<S> = {
   persistenceId: string;
-  store:         DurableStateStore;
+  store?:        DurableStateStore;
   emptyState:    () => S;
 };
 ```
 
-Three fields:
+Three fields, one of them optional:
 
 - **`persistenceId`** — the key under which the state is stored.
   Like `PersistentActor`, one ID per logical entity (`cart-user-42`,
@@ -123,13 +123,53 @@ Three fields:
   wired to a store — and reports a violation as an `OptionsError`
   on the `persistenceId` field.
 - **`store`** — the `DurableStateStore` implementation
-  (in-memory, SQLite, object-storage, custom).
+  (in-memory, SQLite, object-storage, custom).  **Optional**: left
+  unset, the actor uses the store the system selected — see
+  [Selecting the store from configuration](#selecting-the-store-from-configuration).
 - **`emptyState()`** — factory invoked when no record exists yet
   (first run, deleted state).  Provides the initial value.
 
 Pass them through the `() => new Cart({...})` factory.
 The settings can vary per actor incarnation (different IDs for
 different users, same store).
+
+## Selecting the store from configuration
+
+Durable state used to be the one persistence contract with no plugin
+registry: every `registerXxxPlugins(...)` helper built its store eagerly and
+handed it back, so the only way to reach it was to thread that instance through
+your own code.  It is now selected the same way the journal and the snapshot
+store always were:
+
+```hocon
+actor-ts.persistence.durable-state {
+  plugin = "actor-ts.persistence.durable-state.sqlite"
+  sqlite { path = "/var/lib/my-app/app.db" }
+}
+```
+
+```ts
+const persistence = system.extension(PersistenceExtensionId);
+registerSqlitePlugins(persistence);
+
+// No store in the options — the actor takes the configured one.
+const cartFactory = () => new Cart(
+  DurableStateOptions.create<State>()
+    .withPersistenceId('cart-user-42')
+    .withEmptyState(() => ({ items: [] })),
+);
+```
+
+The default is the in-memory reference store, exactly as it is for the journal,
+so an app that configures nothing behaves as it always did.  A `withStore(...)`
+in the options still wins — that is the right call for a store the application
+owns, such as a handle shared with something else, one of several stores in one
+process, or a spy in a test.  What changed is that it stopped being the *only*
+way to have one.
+
+An unregistered plugin id is refused rather than silently replaced:
+`ext.durableStateStore` throws `Unknown durable-state plugin '…'` naming the id,
+the same failure mode the other two axes have had since #377.
 
 ## State access + persistence
 

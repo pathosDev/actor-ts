@@ -49,6 +49,28 @@ export {
 // check one before the query, and the export is what lets it.
 export { assertValidFilterTags, assertValidTags } from './storage/TagValidator.js';
 export { MAX_PERSISTENCE_ID_LENGTH } from './Constants.js';
+// The table names, retention bound and auto-create switch every relational and
+// SQLite store falls back to (#872).  Exported for the same reason the id
+// validators are: an application that wants to name a table explicitly, or to
+// assert against the shipped default, should not have to restate the literal.
+export {
+  DEFAULT_AUTO_CREATE_TABLES,
+  DEFAULT_DURABLE_STATE_TABLE,
+  DEFAULT_EVENTS_TABLE,
+  DEFAULT_SNAPSHOT_KEEP_N,
+  DEFAULT_SNAPSHOTS_TABLE,
+} from './Constants.js';
+// The plug-in config seam (#872) — a backend plug-in reads the HOCON block
+// named by the id it was registered under, and these are the readers that make
+// a leaf a value rather than a documented string.
+export {
+  readStoreBoolean,
+  readStoreDuration,
+  readStoreIdentifier,
+  readStoreInt,
+  readStoreString,
+  storeLeaf,
+} from './StoreConfig.js';
 export { StoreSerializerOptionsBuilder } from './storage/StoreSerializerOptions.js';
 export type { StoreSerializerOptionsBase } from './storage/StoreSerializerOptions.js';
 
@@ -81,12 +103,29 @@ export {
   SqliteDurableStateStoreOptionsValidator,
 } from './durable-state-stores/SqliteDurableStateStoreOptions.js';
 export type { SqliteDurableStateStoreOptionsType } from './durable-state-stores/SqliteDurableStateStoreOptions.js';
+// The SQLite plug-in (#872).  SQLite had no registration story at all until
+// this landed, while two docs pages and a runnable example already printed the
+// plugin id it now registers.
+export {
+  registerSqlitePlugins,
+  SQLITE_DURABLE_STATE_PLUGIN_ID,
+  SQLITE_JOURNAL_PLUGIN_ID,
+  SQLITE_SNAPSHOT_PLUGIN_ID,
+} from './journals/SqlitePlugin.js';
+export {
+  readSqliteDurableStateStoreOptionsFromConfig,
+  readSqliteJournalOptionsFromConfig,
+  readSqliteSnapshotStoreOptionsFromConfig,
+  RegisterSqlitePluginsOptions,
+  RegisterSqlitePluginsOptionsBuilder,
+} from './journals/SqlitePluginOptions.js';
+export type { RegisterSqlitePluginsOptionsType } from './journals/SqlitePluginOptions.js';
 export {
   adaptSqliteDatabase,
   applySqliteBusyTimeout,
   buildSqliteDatabase,
 } from './journals/SqliteClient.js';
-export { DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from './Constants.js';
+export { DEFAULT_SQLITE_BUSY_TIMEOUT_MS, DEFAULT_SQLITE_PATH } from './Constants.js';
 export type { SqliteConnection } from './journals/SqliteClient.js';
 // The per-runtime driver seam behind buildSqliteDatabase, exposed for the
 // same #124 reason: the documented "bring your own handle" route needs it,

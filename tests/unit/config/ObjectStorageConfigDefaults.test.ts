@@ -6,7 +6,7 @@ import {
   readObjectStoragePluginOptionsFromConfig,
 } from '../../../src/persistence/object-storage/ObjectStoragePluginOptions.js';
 import { DEFAULT_MAX_DECOMPRESSED_BYTES } from '../../../src/persistence/object-storage/BodyCodec.js';
-import { DEFAULT_SNAPSHOT_KEEP_N } from '../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
+import { DEFAULT_SNAPSHOT_KEEP_N } from '../../../src/persistence/Constants.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 
 /**
