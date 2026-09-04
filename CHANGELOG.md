@@ -753,6 +753,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   would have re-broken every key on the next restart. Decoding with no
   identity supplied is unchanged, byte for byte.
 
+  Deriving the identity and re-keying the value are separate failures: an
+  element the callback refuses stays in the set under the key it arrived
+  with, and the identity stays learned. Deleting it instead would have left
+  the configured rule off for the life of that key, with deduplication
+  silently back on `JSON.stringify` — the defect this entry describes,
+  reachable again through one peer-supplied element of an unexpected shape.
+
 
 - **The supervisor's control ticks are private symbols, and the system queue
   documents its own bound** (#770, #794).
@@ -1151,6 +1158,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the ownership check. `streamId` still rides on the data, end and error
   frames as the correlation id (#788).
 
+  A command carrying no usable handle — absent, `null`, or not an object —
+  is published as a `DeadLetter` addressed to the client actor rather than
+  throwing inside the dispatch. A throw there was read one layer up as a
+  dropped connection, which pushed the offending message back at the head of
+  the outbound buffer and re-dispatched it after every reconnect, so one
+  malformed `tell` became an unbounded reconnect loop that starved every
+  legitimate write behind it. A well-formed handle naming an unknown stream
+  stays a silent no-op, because that race happens in correct use.
+
   Both actors also gained a `channelOptions` field and a
   `withChannelOptions` builder method, passed verbatim to the server
   constructor and to the service client's third slot. Message-size caps,
@@ -1361,6 +1377,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   from inside the runtime, and a bare relative specifier fails with a
   message naming the fix. `bootstrap` stays deliberately absent from HOCON,
   and the reason is now written down beside the config-defaults type (#776).
+
+  The URL must also carry **no host**. A `file:` URL may hold an authority,
+  so `file://attacker.example.com/share/worker.js` passed a check on the
+  scheme alone — and all three runtimes accept that specifier, Windows
+  resolving it to the UNC path `\\attacker.example.com\share\worker.js`, so
+  only the SMB fetch failed. On a host where the share resolves, the
+  worker's main module is code off a remote server. The rule is a single
+  emptiness test on the parsed host rather than a host allow-list, because
+  the URL parser already erases `file://localhost/…` to an empty host on all
+  three runtimes; `127.0.0.1` and `[::1]` are not erased and are refused.
 
   `WorkerNode.join()` cancels its 30 s init timer on the success path
   instead of relying on `unref()`, which is a Node and Bun extension that
@@ -1618,6 +1644,12 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   backend until DevTools detaches. The two existing assertions looked like
   they covered this and did not: both ran on a fresh system, where the other
   branch clears the switches as a side effect.
+
+  Swapping the exported no-op tracer in through `enable()` now clears both
+  switches as `disable()` does, which is what makes "every branch" true: the
+  extension reports itself disabled in that state, so a tap detaching
+  afterwards had been restoring a recording flag onto an extension that said
+  it was off.
 
 
 - **The filesystem object-storage lock reclaim judged a planted entry by its
