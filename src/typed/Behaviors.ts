@@ -1,4 +1,5 @@
 import { LogLevel } from '../Logger.js';
+import { OptionsError } from '../util/OptionsValidator.js';
 import type { ActorRef } from '../ActorRef.js';
 import type { SupervisorStrategy } from '../Supervision.js';
 import type { TimerScheduler } from '../ActorContext.js';
@@ -57,6 +58,55 @@ export type LogMessagesOptions<T> = {
 };
 
 /**
+ * Reject a stash capacity that is not an integer `>= 1`.
+ *
+ * The domain is `OptionsValidator.positiveInt`'s, and deliberately so: it is
+ * the rule `BoundedMailboxOptionsValidator` already applies to the
+ * structurally identical `BoundedMailboxOptionsType.capacity`, so the one
+ * bound a user can draw on a stash reports the same way as the one they draw
+ * on a mailbox.  It throws that helper's {@link OptionsError} for the same
+ * reason — the value is well-typed but outside its domain, which is exactly
+ * what that error means — rather than a bare `Error` a caller cannot
+ * discriminate.
+ *
+ * `NaN` and `Infinity` are what motivate the check (#795).  Every comparison
+ * against `NaN` is false and nothing is `>= Infinity`, so either one defeats
+ * the `buffer.length >= capacity` guard **and** the `isFull` built on the same
+ * comparison: the buffer then grows without limit behind an API whose JSDoc
+ * promises a capacity-bounded one, while `isFull` reports `false` the whole
+ * way.  Neither needs a typo to arrive — `Number(process.env.STASH_CAPACITY)`
+ * with the variable unset is `NaN`, and an arithmetic expression over an
+ * absent configuration field is too.
+ *
+ * Zero and negative values are the mirror failure and are refused for the
+ * opposite reason: they leave `stash()` throwing `StashOverflowError` on the
+ * very first call, so the buffer is not unbounded but permanently unusable,
+ * again with nothing naming the configuration that caused it.  A fractional
+ * capacity is refused because a bound between two message counts is a defect
+ * at the call site, not a bound anyone meant to draw.
+ *
+ * Written out rather than run through an `OptionsValidator` subclass for the
+ * reason `ActorRef`'s `assertAskTimeout` is: this is one predicate over one
+ * positional argument, with no `XOptions.ts` family for it to belong to.
+ * `origin` is what the failure is attributed to — the two call sites are
+ * reached by different routes and must not claim each other's.
+ */
+export function assertStashCapacity(capacity: number, origin: string): void {
+  // `Number.isInteger` does not coerce, so it also rejects a non-number that
+  // reached here from untyped JavaScript — and rejects `NaN` and `Infinity`
+  // without either needing a comparison of its own.
+  if (!Number.isInteger(capacity) || capacity < 1) {
+    throw new OptionsError(
+      `${origin}: capacity must be an integer >= 1 (got ${String(capacity)})`
+      + ' — a stash whose bound never compares true is not bounded at all',
+      origin,
+      'capacity',
+      capacity,
+    );
+  }
+}
+
+/**
  * Factory for building Behaviors — the functional facade over the OO
  * Actor API.  Use these combinators to compose an actor's logic as a tree
  * of values rather than as an imperative class.
@@ -109,8 +159,16 @@ export const Behaviors = {
   /**
    * Expose a capacity-bounded stash buffer.  The inner behavior can stash
    * user messages (e.g. during init) and call `stash.unstashAll()` later.
+   *
+   * `capacity` must be an integer `>= 1`; `0`, a negative, a fractional value,
+   * `NaN` and `Infinity` throw {@link OptionsError} — see
+   * {@link assertStashCapacity} for why a bound that never compares true is
+   * worse than no bound at all.  The rejection lands here, on the caller's
+   * stack while the behavior is still a value, rather than later inside the
+   * actor that adopts it.
    */
   withStash<T>(capacity: number, factory: (stash: StashBuffer<T>) => Behavior<T>): Behavior<T> {
+    assertStashCapacity(capacity, 'Behaviors.withStash');
     return { kind: 'with-stash', capacity, factory };
   },
 

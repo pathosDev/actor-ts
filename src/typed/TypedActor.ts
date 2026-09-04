@@ -8,7 +8,7 @@ import {
   StashOverflowError,
   type TimerScheduler,
 } from '../ActorContext.js';
-import { Behaviors } from './Behaviors.js';
+import { assertStashCapacity, Behaviors } from './Behaviors.js';
 import type {
   Behavior,
   BehaviorInterceptor,
@@ -614,10 +614,36 @@ class TypedActorContextImplementation<T> implements TypedActorContext<T> {
  */
 class StashBufferImplementation<T> implements StashBuffer<T> {
   private readonly buffer: T[] = [];
+  /**
+   * Re-checks the capacity `Behaviors.withStash` already checked, because this
+   * is not the only way to get here: `WithStashBehavior` is exported from
+   * `src/index.ts`, so a caller may write `{ kind: 'with-stash', capacity,
+   * factory }` as a literal and hand it straight to `spawnTyped` without the
+   * combinator ever running.  That route reaches this constructor with an
+   * unvalidated number, and the failure it admits is the silent one — an
+   * unbounded buffer behind a bound `isFull` keeps reporting `false` on (#795).
+   *
+   * The trade this makes is worth stating, because the two throws do not
+   * behave alike.  `Behaviors.withStash` rejects while the behavior is still a
+   * value, on the caller's own stack, where the stack frame names the call
+   * site.  This one runs inside `resolve`, which `preStart` drives — so it
+   * fails the actor's *construction* instead, and `ActorCell.onCreate` turns
+   * it into an `ActorInitializationError` raised to the parent.  Measured on
+   * the `spawnTypedAnonymous` path: one `Actor initialization failed` error
+   * carrying this message, the inner `factory` never invoked, and the cell
+   * left `terminated` — no restart loop, because the restart half
+   * (`completeRecreate`) builds a fresh instance and calls `postRestart`
+   * rather than re-running `preStart`, so this throw has no way to repeat.
+   * Loud and terminal, then, but attributed to the actor rather than to
+   * whoever wrote the bad node — which is why the combinator keeps its own
+   * guard as the one users actually meet.
+   */
   constructor(
     private readonly capacity: number,
     private readonly self: ActorRef<T>,
-  ) {}
+  ) {
+    assertStashCapacity(capacity, 'WithStashBehavior');
+  }
 
   stash(message: T): void {
     if (this.buffer.length >= this.capacity) throw new StashOverflowError(this.capacity);
