@@ -14,8 +14,19 @@ import { DEFAULT_WEBSOCKET_POLICY } from '../../../../src/http/websocket/Websock
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 
 describe('cors — validation + compile', () => {
-  test('origins is required', () => {
-    expect(() => cors({}, get(() => complete(Status.OK, '')))).toThrow(/origins is required/);
+  /**
+   * The required-`origins` guard moved from `cors()` to the compile step
+   * (#878): a configuration file may now be the sole source of `origins`, and
+   * `cors()` runs before any `ActorSystem` exists, so it cannot tell "nobody
+   * set it" from "nobody set it *in code*".  Both halves are pinned — that
+   * building the node no longer throws, and that compiling it still does.
+   */
+  test('origins is required — at compile time, not at construction', () => {
+    const route = cors({}, get(() => complete(Status.OK, '')));
+    expect(() => compile(route)).toThrow(/origins is required/);
+    // The message has to name both ways out, or an operator who put the
+    // allowlist in HOCON and mistyped the key is told to edit their code.
+    expect(() => compile(route)).toThrow(/actor-ts\.http\.cors\.origins/);
   });
 
   test('credentials cannot combine with a wildcard origin', () => {

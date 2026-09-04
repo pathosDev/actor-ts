@@ -448,6 +448,7 @@ diesen Node nicht auf.
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | Einer von `fastify` / `express` / `hono`. |
 | `http.shutdown-grace-period` | `0ms` | Wie lange `unbind()` in-flight Requests leerlaufen lässt, bevor Verbindungen erzwungen geschlossen werden.  `0` erzwingt sofort. |
+| `http.cors` | *(siehe unten)* | Pro-Route-Defaults für die [`cors()`](/de/http/middleware/cors/)-Direktive. |
 | `http.client` | *(siehe unten)* | Defaults des ausgehenden [`HttpClient`](/de/http/overview/). |
 | `http.websocket` | *(siehe unten)* | Serverseitige WebSocket-Defaults für [`websocket()`](/de/http/websocket/)-Routen. |
 
@@ -469,6 +470,59 @@ Backends nicht settlen kann — etwa Express mit einem lebenden WebSocket —
 wird das Fenster zu einer Deadline, die immer erreicht wird; ein großer Wert
 ist dort also Zeit, die du immer bezahlst.  Ein Aufrufer, der einen eigenen
 Wert übergibt — `binding.unbind(1_000)` — überschreibt die Config.
+
+Die Route-Direktive [`cors()`](/de/http/middleware/cors/) liest ihre Defaults
+pro Feld aus `actor-ts.http.cors`:
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `http.cors.origins` | *(nicht gesetzt)* | Exakte Origin-Allowlist, z. B. `["https://app.example"]`. Hat **kein Blatt** — siehe unten. Ein `"*"`-Eintrag wird abgelehnt. |
+| `http.cors.methods` | *(nicht gesetzt)* | `Access-Control-Allow-Methods`. Hat **kein Blatt** — ungesetzt folgt es den am jeweiligen Pattern registrierten Methoden. |
+| `http.cors.allowed-headers` | *(nicht gesetzt)* | `Access-Control-Allow-Headers`. Hat **kein Blatt** — ungesetzt werden die sanitisierten Request-Header geechot. |
+| `http.cors.exposed-headers` | `[]` | `Access-Control-Expose-Headers`. `[]` sendet keine. |
+| `http.cors.credentials` | `false` | `Access-Control-Allow-Credentials: true`. Verboten mit `"*"`-Origins. |
+| `http.cors.max-age` | *(nicht gesetzt)* | Preflight-Cache-Dauer in **Sekunden**, als blanke Ganzzahl. Hat **kein Blatt** — ungesetzt wird gar kein `Access-Control-Max-Age` gesendet. |
+
+Es gilt die übliche Reihenfolge pro Feld: Was `cors(options, routes)` im Code
+nennt, gewinnt, dann dieser Block, dann der eingebaute Default. Ein Deployment
+kann die Allowlist also komplett aus dem Code herausziehen und
+`withCredentials()` dort lassen, wo es steht.
+
+Zwei der Options-Arme sind **nur im Code erreichbar und haben hier keinen Key**.
+Der eine ist die `"*"`-Wildcard: `withAnyOrigin()` ist als ausdrücklicher
+Opt-in dokumentiert, und eine Config-Datei, die `origins = ["*"]` schreiben
+könnte, würde mit einer Zeile jede `cors()`-Route im Prozess auf jeden Origin
+öffnen — ein `"*"` in dieser Liste wird deshalb mit einem `ConfigError`
+abgelehnt, der den Key nennt. Der andere ist `withOriginPredicate(...)`: eine
+Funktion hat in HOCON überhaupt keine Schreibweise.
+
+Vier Blätter liefern **keinen Wert** aus und stehen oben nur, damit die Namen
+auffindbar sind — ein publizierter Literalwert wäre schlechter als gar kein
+Key. `methods` und `allowed-headers` haben Defaults, die pro Pattern bzw. pro
+Request berechnet werden und die eine flottenweite Liste überschreiben würde;
+ein ungesetztes `max-age` heißt, dass der Header nicht gesendet wird; und ein
+ausgeliefertes `origins` würde die Pflichtprüfung für jede Route im Prozess
+erfüllen und damit ein `cors()` ohne jede Allowlist von einem lauten Fehler in
+ein stilles Deny-all verwandeln. Setz sie in deiner eigenen `application.conf`,
+und sie werden ganz normal gelesen:
+
+```hocon
+actor-ts.http.cors {
+  origins = ["https://app.example", "https://admin.example"]
+  max-age = 600          # Sekunden — kein Duration-String
+  exposed-headers = ["x-request-id"]
+}
+```
+
+Die Werte werden auf dem gemergten Ergebnis validiert; ein falscher Wert wirft
+also `OptionsError` mit dem Feldnamen, statt als Header beim Browser zu landen,
+der ihn ablehnt.
+
+Weil `cors()` eine Route-*Direktive* ist und keine Middleware, wird dieser
+Block beim **Kompilieren** des Route-Baums aufgelöst — in `bind()`, dem ersten
+Moment, in dem Baum und `ActorSystem` beide im Scope sind. Genau dort scheitert
+jetzt auch ein `cors()`, das weder im Code noch in der Config `origins` nennt,
+statt schon beim `cors(...)`-Aufruf.
 
 Der gemeinsame `HttpClient` des Systems — und jedes `newClient(...)`, das ein
 Feld offen lässt — liest seine Schranken aus `actor-ts.http.client`:

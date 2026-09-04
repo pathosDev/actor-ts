@@ -433,6 +433,7 @@ read at all, so a malformed value does not stop that node either.
 | --- | --- | --- |
 | `http.backend` | `"fastify"` | One of `fastify` / `express` / `hono`. |
 | `http.shutdown-grace-period` | `0ms` | How long `unbind()` lets in-flight requests drain before connections are forced.  `0` forces immediately. |
+| `http.cors` | *(see below)* | Per-route defaults for the [`cors()`](/http/middleware/cors/) directive. |
 | `http.client` | *(see below)* | Outbound [`HttpClient`](/http/overview/) defaults. |
 | `http.websocket` | *(see below)* | Server-side WebSocket defaults for [`websocket()`](/http/websocket/) routes. |
 
@@ -453,6 +454,55 @@ settle — Express holding a live WebSocket, for one — the window becomes a
 deadline that is always reached, so a large value there is time you always
 pay.  A caller that passes its own value — `binding.unbind(1_000)` —
 overrides the config.
+
+The [`cors()`](/http/middleware/cors/) route directive reads its per-field
+defaults from `actor-ts.http.cors`:
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `http.cors.origins` | *(unset)* | Exact-match origin allowlist, e.g. `["https://app.example"]`. Ships **no leaf** — see below. A `"*"` entry is refused. |
+| `http.cors.methods` | *(unset)* | `Access-Control-Allow-Methods`. Ships **no leaf** — unset follows the methods registered at each pattern. |
+| `http.cors.allowed-headers` | *(unset)* | `Access-Control-Allow-Headers`. Ships **no leaf** — unset echoes the sanitised request headers. |
+| `http.cors.exposed-headers` | `[]` | `Access-Control-Expose-Headers`. `[]` sends none. |
+| `http.cors.credentials` | `false` | `Access-Control-Allow-Credentials: true`. Forbidden with `"*"` origins. |
+| `http.cors.max-age` | *(unset)* | Preflight cache lifetime in **seconds**, a bare integer. Ships **no leaf** — unset sends no `Access-Control-Max-Age` at all. |
+
+The usual order applies per field: what `cors(options, routes)` names in code
+wins, then this block, then the built-in default. So a deployment can move the
+allowlist out of code entirely and keep `withCredentials()` where it is.
+
+Two of the option arms are **code-only and have no key here**. The `"*"`
+wildcard is one: `withAnyOrigin()` is documented as the explicit opt-in, and a
+config file that could write `origins = ["*"]` would widen every `cors()` route
+in the process to any origin with one line — so a `"*"` in this list is refused
+with a `ConfigError` naming the key. The other is `withOriginPredicate(...)`,
+which is a function and has no HOCON spelling at all.
+
+Four leaves ship **no value** and are listed above only so the names are
+discoverable — a published literal would be worse than no key. `methods` and
+`allowed-headers` have defaults computed per pattern and per request, which a
+fleet-wide list would override; `max-age` unset means the header is not sent;
+and a shipped `origins` would satisfy the required-origins check for every
+route in the process, turning a `cors()` that names no allowlist anywhere from
+a loud error into a silent deny-all. Set any of them in your own
+`application.conf` and it is read normally:
+
+```hocon
+actor-ts.http.cors {
+  origins = ["https://app.example", "https://admin.example"]
+  max-age = 600          # seconds — not a duration string
+  exposed-headers = ["x-request-id"]
+}
+```
+
+Values are validated on the merged result, so a bad one throws `OptionsError`
+naming the field rather than reaching a browser as a header it will reject.
+
+Because `cors()` is a route *directive* rather than a middleware, this block is
+resolved when the route tree is **compiled** — inside `bind()`, the first
+moment the tree and the `ActorSystem` are both in scope. That is also where a
+`cors()` with no `origins` in code and none in config now fails, rather than at
+the `cors(...)` call itself.
 
 The system's shared `HttpClient` — and any `newClient(...)` that leaves a
 field unset — reads its bounds from `actor-ts.http.client`:

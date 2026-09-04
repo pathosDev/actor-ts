@@ -607,6 +607,34 @@ actor-ts {
     # want in-flight requests to finish on shutdown.
     shutdown-grace-period = 0ms
 
+    # Per-route CORS defaults for cors(options, routes).  Leaf names are the
+    # kebab-case of the CorsOptionsType fields; the route's own options win per
+    # field, and the merged result is validated (OptionsError on a bad value).
+    # Resolved when the route tree is compiled, which is the first moment this
+    # configuration is in scope.
+    #
+    # Four leaves are read but ship no value, because publishing one would be
+    # worse than publishing nothing:
+    #
+    #   origins -- the exact-match allowlist, e.g. ["https://app.example"].
+    #     Unset is what keeps a cors() with no origins anywhere a loud error
+    #     rather than a silent deny-all.  Allowing every origin stays code-only
+    #     (withAnyOrigin()): a "*" written here is refused with a ConfigError,
+    #     so no config file can widen a route's policy to any origin.  The
+    #     predicate form is code-only too -- a function has no HOCON spelling.
+    #   methods -- Access-Control-Allow-Methods.  Unset, it follows the methods
+    #     actually registered at each pattern, which is narrower than any list
+    #     that could be written here.
+    #   allowed-headers -- unset, the sanitised request headers are echoed.
+    #   max-age -- preflight cache lifetime in SECONDS, as a bare integer
+    #     rather than a duration string: the header carries seconds, and a
+    #     duration would be read as milliseconds.  Unset, no
+    #     Access-Control-Max-Age header is sent at all.
+    cors {
+      exposed-headers = []    # Access-Control-Expose-Headers; [] sends none
+      credentials     = off   # forbidden with "*" origins (the Fetch spec)
+    }
+
     # Outbound HttpClient defaults — the system's shared client and any
     # newClient(...) that leaves a field unset.  Leaf names are the kebab-case
     # of the HttpClientOptions fields with any unit suffix dropped (the value
