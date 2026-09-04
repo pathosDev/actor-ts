@@ -218,8 +218,9 @@ baseline can move between staging and production without a rebuild:
 `host`, `port`, `allowRemote`, `serveUi`, `allowedOrigins`, every
 `panels` switch, the four intervals (`mailbox-sample-interval`,
 `stats-interval`, `span-flush-interval`, `event-flush-interval` — the
-`Ms` suffix drops on the HOCON side), the three capacities and
-`replayAutoCapture`.  The
+`Ms` suffix drops on the HOCON side), the three bounds
+(`mailbox-sample-limit`, `span-buffer-capacity`,
+`event-buffer-capacity`) and `replayAutoCapture`.  The
 [configuration reference](/reference/configuration/#actor-tsdevtools)
 lists them with their defaults.
 

@@ -232,7 +232,8 @@ wandern: `host`, `port`, `allowRemote`, `serveUi`, `allowedOrigins`,
 jeder `panels`-Schalter, die vier Intervalle
 (`mailbox-sample-interval`, `stats-interval`, `span-flush-interval`,
 `event-flush-interval` — das `Ms`-Suffix fällt auf der HOCON-Seite weg),
-die drei Kapazitäten und `replayAutoCapture`.  Die
+die drei Obergrenzen (`mailbox-sample-limit`, `span-buffer-capacity`,
+`event-buffer-capacity`) und `replayAutoCapture`.  Die
 [Konfigurationsreferenz](/de/reference/configuration/#actor-tsdevtools)
 listet sie mit ihren Defaults.
 
