@@ -157,8 +157,11 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
    *
    * The `Location` is the redirector's string, so it goes through the same
    * redaction `HttpClient` applies to one — a `Location` carrying userinfo
-   * would otherwise put a credential into a log line and a
-   * `BrokerDisconnected` event.
+   * would otherwise put a credential into the `Error` that fails the connect,
+   * and so onto the `BrokerReconnectFailed` that ends the cycle.  Not
+   * `BrokerDisconnected`, as this said before: a connect that never succeeded
+   * reaches no `handleConnectionLost`, which is that event's only publish
+   * site (#749, #787).
    */
   private refuseRedirect(response: FetchResponse): void {
     // The 3xx class, and only with a `Location`: that pair is exactly what the

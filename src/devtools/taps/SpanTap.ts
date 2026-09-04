@@ -133,10 +133,19 @@ export class SpanTap implements DevToolsTap {
     // exporter kept shipping (#714).  After the swap, deliberately:
     // `disable()` clears both, so restoring first would also lose a
     // capture the application had set for itself, and `recordRootSpans`
-    // wants the tracer already back.  It cannot throw here — `false`
-    // never does, and `true` is only reachable when a tracer was
-    // installed at `install()` time, which is the branch that has just
-    // put one back.
+    // wants the tracer already back.
+    //
+    // `recordRootSpans(true)` throws without a tracer, and cannot here —
+    // but the reason is an invariant of `TracingExtension`, not of this
+    // method: nothing can leave root spans on with no tracer installed,
+    // so a saved `true` means a tracer was there at `install()` time,
+    // which is the branch that has just put one back.  Load-bearing, and
+    // it did not always hold: `enable(NOOP_TRACER)` used to report
+    // disabled while leaving both switches on, so a system that turned
+    // tracing off by swapping the exported no-op in rather than calling
+    // `disable()` handed this restore a `true` it could not satisfy, and
+    // detaching DevTools threw.  Both halves are pinned by
+    // `tests/unit/devtools/SpanTap.test.ts` (#714).
     tracing.recordRootSpans(this.previousRootSpans);
     tracing.captureMessagePayloads(this.previousMessagePayloads);
     this.previousRootSpans = false;

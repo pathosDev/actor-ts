@@ -51,9 +51,15 @@ tatsächlich erreicht.  Richten Sie `url` deshalb auf den endgültigen
 Endpoint.  Ein Body, der einen anderen Content-Type angibt — oder gar
 keinen —, wird abgelehnt, bevor ein Byte davon geparst wird.  Beide
 Ablehnungen laufen über den gewöhnlichen Reconnect-Pfad — Backoff,
-Circuit Breaker, `BrokerDisconnected` —, sodass ein Feed, der plötzlich
-weiterleitet, als Broker sichtbar wird, der sich nicht verbinden kann,
-statt als lautlose Änderung daran, wohin Ihre Credentials gehen.
+Circuit Breaker, ein `BrokerReconnectAttempt` je Versuch und ein
+`BrokerReconnectFailed` mit der Ablehnung, sobald die Versuche
+aufgebraucht sind —, sodass ein Feed, der plötzlich weiterleitet, als
+Broker sichtbar wird, der sich nicht verbinden kann, statt als lautlose
+Änderung daran, wohin Ihre Credentials gehen.  Nicht
+`BrokerDisconnected`: dieses Event steht für eine *bestehende*
+Verbindung, die verloren geht, und ein abgelehnter Connect hatte nie
+eine.  Ein Alert auf einen plötzlich weiterleitenden Feed muss auf die
+Reconnect-Events lauschen.
 
 ## Settings
 

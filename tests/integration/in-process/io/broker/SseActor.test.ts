@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
@@ -378,4 +380,147 @@ describe('SseActor — connect deadline (#753)', () => {
       server.stop(true);
     }
   });
+});
+
+/* ------ the events a refused connect publishes, and what we say it does ---- */
+
+/**
+ * The three surfaces #749 and #787 shipped told operators that both refusals
+ * "travel the ordinary reconnect path — backoff, circuit breaker,
+ * `BrokerDisconnected`".  The first two hold; the third names an event no
+ * refused connect can produce, because `BrokerDisconnected` has exactly one
+ * publish site — `handleConnectionLost` — and a connect that fails goes from
+ * `_tryConnect`'s catch straight into the reconnect handler.  An operator who
+ * alerted on the documented name would have had an alert that never fires.
+ *
+ * So the prose is pinned to the measured set rather than to a phrasing: the
+ * first test below observes what a refused connect actually publishes, and the
+ * ones after it require each surface to name those events and no others.  A
+ * change that really does route a refusal through `handleConnectionLost` fails
+ * the first test, which is the only thing that may move the constants — and
+ * moving them then forces all three surfaces in the same commit.
+ */
+const PUBLISHED_ON_A_REFUSED_CONNECT = ['BrokerReconnectAttempt', 'BrokerReconnectFailed'] as const;
+const ABSENT_ON_A_REFUSED_CONNECT = ['BrokerDisconnected'] as const;
+
+type BrokerLifecycleEventName =
+  | typeof PUBLISHED_ON_A_REFUSED_CONNECT[number]
+  | typeof ABSENT_ON_A_REFUSED_CONNECT[number]
+  | 'other';
+
+function brokerLifecycleEventName(event: unknown): BrokerLifecycleEventName {
+  if (event instanceof BrokerDisconnected) return 'BrokerDisconnected';
+  if (event instanceof BrokerReconnectAttempt) return 'BrokerReconnectAttempt';
+  if (event instanceof BrokerReconnectFailed) return 'BrokerReconnectFailed';
+  return 'other';
+}
+
+/**
+ * Names of the three lifecycle events the system publishes, in arrival order.
+ *
+ * One observer subscribed to all three, deliberately: the claim under test is
+ * about which of them arrive, so watching only the expected ones would prove
+ * nothing about the one that must not.
+ */
+function brokerLifecycleEventNames(sys: ActorSystem): BrokerLifecycleEventName[] {
+  const names: BrokerLifecycleEventName[] = [];
+  const observer = sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+    override onReceive(m: unknown): void { names.push(brokerLifecycleEventName(m)); }
+  })());
+  for (const eventClass of [BrokerDisconnected, BrokerReconnectAttempt, BrokerReconnectFailed]) {
+    sys.eventStream.subscribe(observer, eventClass);
+  }
+  return names;
+}
+
+describe('SseActor — what a refused connect publishes (#749, #787)', () => {
+  test('a redirect-refusing feed produces reconnect events and no BrokerDisconnected', async () => {
+    const feed = Bun.serve({
+      port: 0,
+      fetch(): Response {
+        return new Response(null, { status: 302, headers: { location: 'http://127.0.0.1:1/' } });
+      },
+    });
+    const sys = quietSystem('sse-refusal-event-names');
+    try {
+      const target = sys.spawnAnonymous(() => new CollectActor());
+      const names = brokerLifecycleEventNames(sys);
+      const sseOptions = SseOptions.create()
+        .withUrl(`http://localhost:${feed.port}/`)
+        .withTarget(target)
+        .withReconnect(failFast);
+      sys.spawnAnonymous(() => new SseActor(sseOptions));
+
+      // `failFast` allows one retry, so the cycle ends: the terminal event is
+      // what makes "and nothing else arrived" a statement about a finished
+      // sequence rather than about one that had not got there yet.
+      await awaitCondition(() => names.includes('BrokerReconnectFailed'), {
+        timeoutMs: 4_000, label: 'the refused connect ran its reconnect cycle out',
+      });
+      expect(new Set(names)).toEqual(new Set(PUBLISHED_ON_A_REFUSED_CONNECT));
+      for (const absent of ABSENT_ON_A_REFUSED_CONNECT) expect(names).not.toContain(absent);
+    } finally {
+      await sys.terminate();
+      feed.stop(true);
+    }
+  });
+});
+
+const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..', '..', '..');
+
+/**
+ * Where each surface states the claim, and how to cut the statement out of it.
+ *
+ * `anchor` is the sentence opening — translated, since the pages are mirrored
+ * 1:1 — and the enumeration that follows it sits between the next two em
+ * dashes.  That enumeration is the unit under test because it is the
+ * operator-facing list of event names: it is what a reader copies into an
+ * alert, and it is exactly where the wrong name sat.
+ */
+const claimSurfaces = [
+  {
+    label: 'the English SSE page',
+    file: join('docs', 'src', 'content', 'docs', 'io', 'sse.mdx'),
+    anchor: 'Both refusals travel the ordinary reconnect path',
+  },
+  {
+    label: 'the German SSE page',
+    file: join('docs', 'src', 'content', 'docs', 'de', 'io', 'sse.mdx'),
+    anchor: 'Ablehnungen laufen über den gewöhnlichen Reconnect-Pfad',
+  },
+  {
+    label: 'the CHANGELOG entry',
+    file: 'CHANGELOG.md',
+    anchor: 'Both refusals travel the ordinary reconnect path',
+  },
+] as const;
+
+/** The em-dash enumeration that follows `anchor`. */
+function enumeratedEvents(file: string, anchor: string): string {
+  // Flattened before the search, not after: every surface hard-wraps, so both
+  // the anchor and the enumeration straddle line breaks in at least one of
+  // them, and matching against the raw text would make the guard depend on
+  // where a paragraph happens to wrap.
+  const text = readFileSync(join(REPOSITORY_ROOT, file), 'utf8').replace(/\s+/g, ' ');
+  const anchorAt = text.indexOf(anchor);
+  expect(anchorAt, `${file} no longer contains "${anchor}"`).toBeGreaterThanOrEqual(0);
+  const opening = text.indexOf('—', anchorAt);
+  expect(opening, `${file}: no enumeration after "${anchor}"`).toBeGreaterThanOrEqual(0);
+  const closing = text.indexOf('—', opening + 1);
+  expect(closing, `${file}: unterminated enumeration after "${anchor}"`).toBeGreaterThanOrEqual(0);
+  return text.slice(opening + 1, closing).trim();
+}
+
+describe('SseActor — the shipped prose names the events that exist (#749, #787)', () => {
+  for (const { label, file, anchor } of claimSurfaces) {
+    test(`${label} lists the reconnect events and not BrokerDisconnected`, () => {
+      const listed = enumeratedEvents(file, anchor);
+      for (const published of PUBLISHED_ON_A_REFUSED_CONNECT) {
+        expect(listed).toContain(published);
+      }
+      for (const absent of ABSENT_ON_A_REFUSED_CONNECT) {
+        expect(listed).not.toContain(absent);
+      }
+    });
+  }
 });

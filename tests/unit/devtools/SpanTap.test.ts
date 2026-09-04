@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
+import { NOOP_TRACER } from '../../../src/tracing/NoopTracer.js';
 import { RecordingTracer } from '../../../src/tracing/RecordingTracer.js';
 import { TracingExtensionId } from '../../../src/tracing/TracingExtension.js';
 import { tracerOf } from '../../../src/tracing/TracingExtension.js';
@@ -477,6 +478,58 @@ describe('SpanTap — restoring the tracing switches', () => {
 
     expect(tracing.isEnabled()).toBe(false);
     expect(tracing.isCapturingMessagePayloads()).toBe(true);
+  });
+
+  /*
+   * The state `SpanTap.uninstall` says it cannot be in.
+   *
+   * Its comment argued that restoring root spans to `true` can only happen on
+   * the branch that has just put a tracer back, so `recordRootSpans` — which
+   * throws without one — is unreachable there.  The argument rests on an
+   * invariant the extension did not have: `enable(NOOP_TRACER)` reported
+   * "disabled" through the identity check in `isEnabled()` while leaving both
+   * switches on, and `NOOP_TRACER` is a public export, so swapping it in is an
+   * ordinary way to write "tracing off in this environment".  A tap installed
+   * onto that system saved `previousRootSpans = true` beside
+   * `previousTracer = null`, and its own `disable()` on the way out then made
+   * the restore impossible to honour (#714).
+   */
+  test('swapping in the no-op tracer turns the two switches off with it', () => {
+    const system = newSystem('span-noop-swap-clears-switches');
+    const tracing = system.extension(TracingExtensionId);
+    tracing.enable(new RecordingTracer());
+    tracing.recordRootSpans(true);
+    tracing.captureMessagePayloads(true);
+
+    // The same operation `disable()` performs, spelled the other way round.
+    tracing.enable(NOOP_TRACER);
+
+    expect(tracing.isEnabled()).toBe(false);
+    // Both are pure cost with no tracer to record them, and `recordRootSpans`
+    // refuses to *set* this state — so it must not survive one either.
+    expect(tracing.isRecordingRootSpans()).toBe(false);
+    expect(tracing.isCapturingMessagePayloads()).toBe(false);
+  });
+
+  test('detaching from a system that swapped the no-op in does not throw', () => {
+    const system = newSystem('span-restore-after-noop-swap');
+    const tracing = system.extension(TracingExtensionId);
+    tracing.enable(new RecordingTracer());
+    tracing.recordRootSpans(true);
+    tracing.captureMessagePayloads(true);
+    tracing.enable(NOOP_TRACER);
+
+    const tap = new SpanTap(system, 100, 20);
+    tap.install(() => {});
+    // `install` found no tracer, so `uninstall` takes the `disable()` branch —
+    // and then has to put back whatever it saved.  A saved `true` there is
+    // exactly what `recordRootSpans` throws on.
+    expect(() => tap.uninstall()).not.toThrow();
+    // And what it put back is what the application left behind: tracing off,
+    // both switches off, nothing the tap turned on still running.
+    expect(tracing.isEnabled()).toBe(false);
+    expect(tracing.isRecordingRootSpans()).toBe(false);
+    expect(tracing.isCapturingMessagePayloads()).toBe(false);
   });
 
   test('the pre-existing exporter stops receiving message bodies at detach', async () => {
