@@ -306,6 +306,86 @@ has since been pruned.  There it shows a partial fold — with the
 sequence it reached and the number of events it applied — rather
 than refusing to open.
 
+## When the stores are down
+
+Three settings under `actor-ts.persistence` decide what a
+`PersistentActor` does when the journal or the snapshot store stops
+answering.  All three are system-wide, read once, and apply to every
+persistent actor in the system.
+
+```hocon
+actor-ts.persistence {
+  max-concurrent-recoveries = 50                       # replays in flight; 0 = uncapped
+  recovery-timeout          = 30s                      # ceiling on one recovery; 0 = none
+  snapshot-is-optional      = false
+  journal-breaker           = "persistence-journal"    # a breaker id; "" = no breaker
+  snapshot-breaker          = "persistence-snapshot"
+}
+
+# The breakers' numbers live where every breaker's numbers live:
+actor-ts.circuit-breaker.persistence-journal {
+  max-failures  = 10
+  reset-timeout = 15s
+  call-timeout  = 10s     # ships UNSET — see below
+}
+```
+
+**The journal breaker wraps `persist` and recovery.**  Once
+`max-failures` appends have failed in a row it opens, and every
+`persist` for `reset-timeout` throws `CircuitBreakerOpenError` out of
+your own handler — where supervision sees it like any other failure
+from `onCommand`.  That is the point: a node whose journal has gone
+away fails fast and visibly instead of holding thousands of actors
+half-way through a write.
+
+**`call-timeout` ships unset, and it is the one you will want.**  A
+backend that refuses connections fails fast on its own; a backend that
+*accepts* the connection and then stalls does not, and an unbounded
+`await this.persist(...)` blocks that actor's turn indefinitely.
+Naming a `call-timeout` turns that into a
+`CircuitBreakerTimeoutError` at the stall.  It ships unset because
+omitting it is what expresses "no deadline", and a default here would
+hand every existing deployment a ceiling it never chose.
+
+The timeout **gives up; it does not cancel.**  A write that blew the
+deadline may still land in the journal.  That is safe by construction:
+the throw skips the `onEvent` fold and leaves `lastSequenceNr`
+untouched, so the actor restarts, recovers the true head, and carries
+on — but a non-replayable side effect in your handler still ran, which
+is the same caution that applies to [two writers for one
+entity](#two-writers-for-one-entity).
+
+A `JournalConcurrencyError` never counts as a breaker failure.  It is
+the ownership verdict of a conditional append, not an outage, and ten
+unlucky entities losing a race must not fast-fail every healthy one on
+the node.  `JournalIntegrityError` and `SnapshotIntegrityError` are
+excluded for a different reason: they are durable facts about the
+stored bytes, and waiting does not change them.
+
+**`max-concurrent-recoveries` bounds the replay storm.**  A shard
+hand-off or a rolling restart re-creates every entity a region owns at
+once, and each one replays.  Without a cap, a few thousand entities
+open a few thousand concurrent reads against a pool sized for tens, the
+backend queues them, and every recovery slows down together until
+`recovery-timeout` fires across the whole wave.  The cap makes them
+queue in the framework instead, first-come-first-served.  It composes
+with `actor-ts.sharding.entity-recovery`, which paces entity *starts*
+one layer up — that block decides how fast entities are created, this
+one how many of their replays are in flight once they are.
+
+**`snapshot-is-optional` trades replay time for availability.**  With
+it on, a snapshot store that cannot answer is logged as a warning and
+the actor recovers by folding the whole journal instead.  It
+deliberately does **not** cover an actor that set `integrity()` or
+`encryption()`: such a store rejects a tampered body the same way it
+reports being unreachable, so tolerating the outage would tolerate the
+tampering, and turn an integrity check into a retry.
+
+[`DurableStateActor`](/persistence/durable-state/) is outside all of
+this.  Its store comes from per-actor `DurableStateOptions` rather than
+from the persistence extension, so there is no system-wide instance to
+put a breaker in front of.
+
 ## Persistence ID
 
 Every `PersistentActor` declares a `persistenceId`:

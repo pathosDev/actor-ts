@@ -209,6 +209,69 @@ Causes:
 Diagnostics: compare the actor's state after recovery to
 what's in the journal.  Replay manually in a test to isolate.
 
+### Symptom: the journal is unavailable and the actors just stop responding
+
+**No error, no restart, no dead letters.  Persistent actors
+accept commands and never answer; heap grows; the only log line
+is `mailbox high-water mark` at 10 000 and again at every
+doubling.**
+
+Cause: **an `append` that neither succeeds nor fails.**  A
+backend that refuses connections fails fast on its own.  One that
+*accepts* the connection and then stalls — a failed-over primary
+still holding the socket, a saturated connection pool, a network
+path that blackholes — leaves `await this.persist(...)` pending
+forever.  The actor's turn never ends, so its commands queue in
+the mailbox, which is unbounded by default; nothing throws and
+supervision never runs.
+
+Fix: **give the append a deadline.**  The journal is called
+through a circuit breaker, and the breaker's per-call timeout is
+what bounds a single append.  It ships unset, because omitting it
+is what expresses "no deadline":
+
+```hocon
+actor-ts.circuit-breaker.persistence-journal.call-timeout = 10s
+```
+
+With it set, the stall surfaces as a `CircuitBreakerTimeoutError`
+thrown out of your own `onCommand` — at the stall, naming it —
+and after `max-failures` of them (10 by default) the breaker
+opens and every later `persist` fails immediately with
+`CircuitBreakerOpenError` until `reset-timeout` (15 s) lets a
+probe through.  Pick the timeout from the backend's own P99 write
+latency with headroom, not from how long you are willing to wait.
+
+The timeout gives up rather than cancelling, so a write that blew
+it may still land.  That is safe — the throw skips the state fold
+and leaves `lastSequenceNr` untouched, so the restart re-reads the
+true head — but a non-replayable side effect in the handler has
+already run.
+
+Related knobs, same block:
+
+- `actor-ts.persistence.recovery-timeout` (30s) does the same job
+  for a *recovery* that never finishes: past it the actor fails
+  with a `RecoveryTimeoutError` through `onRecoveryFailure`
+  instead of sitting in `preStart`.
+- `actor-ts.persistence.max-concurrent-recoveries` (50) keeps a
+  restart storm from opening thousands of concurrent reads
+  against a pool sized for tens.
+- `actor-ts.persistence.snapshot-is-optional` lets an actor
+  recover by full journal replay when only the *snapshot* store
+  is down.  It does not apply to an actor that set `integrity()`
+  or `encryption()` — see
+  [PersistentActor](/persistence/persistent-actor/#when-the-stores-are-down).
+
+A `JournalConcurrencyError` never counts towards `max-failures`,
+so a burst of losing conditional appends cannot open the breaker
+for everyone.  If a breaker is opening for something else you
+consider benign, name it rather than raising the budget:
+
+```hocon
+actor-ts.circuit-breaker.persistence-journal.ignored-error-names = ["MyTransientError"]
+```
+
 ## Memory + performance
 
 ### Symptom: memory grows unboundedly

@@ -216,6 +216,70 @@ Diagnostik: Vergleiche den State des Actors nach Recovery mit dem
 Inhalt des Journals. Replaye manuell in einem Test, um die Ursache
 zu isolieren.
 
+### Symptom: das Journal ist weg und die Actors antworten einfach nicht mehr
+
+**Kein Fehler, kein Restart, keine Dead Letters.  Persistente
+Actors nehmen Kommandos an und antworten nie; der Heap wächst; die
+einzige Logzeile ist `mailbox high-water mark` bei 10 000 und
+danach bei jeder Verdopplung.**
+
+Ursache: **ein `append`, das weder gelingt noch scheitert.**  Ein
+Backend, das Verbindungen ablehnt, scheitert von selbst schnell.
+Eines, das die Verbindung *annimmt* und dann hängt — ein
+umgeschwenktes Primary, das den Socket noch hält, ein ausgelasteter
+Connection Pool, ein Netzpfad, der Pakete verschluckt —, lässt
+`await this.persist(...)` für immer offen.  Der Turn des Actors
+endet nie, seine Kommandos stauen sich in der standardmäßig
+unbegrenzten Mailbox, nichts wirft, und die Supervision läuft nie.
+
+Abhilfe: **dem Append eine Frist geben.**  Das Journal wird durch
+einen Circuit Breaker gerufen, und dessen Per-Call-Timeout ist das,
+was einen einzelnen Append begrenzt.  Es wird ungesetzt
+ausgeliefert, weil genau das Weglassen „keine Frist“ ausdrückt:
+
+```hocon
+actor-ts.circuit-breaker.persistence-journal.call-timeout = 10s
+```
+
+Damit taucht der Hänger als `CircuitBreakerTimeoutError` auf, der
+aus dem eigenen `onCommand` fliegt — beim Hänger und ihn benennend
+—, und nach `max-failures` davon (standardmäßig 10) öffnet der
+Breaker: Jedes weitere `persist` scheitert sofort mit
+`CircuitBreakerOpenError`, bis `reset-timeout` (15 s) eine Probe
+durchlässt.  Wähle das Timeout nach der P99-Schreiblatenz des
+Backends plus Reserve, nicht danach, wie lange du warten magst.
+
+Das Timeout gibt auf, statt abzubrechen — ein Schreibvorgang, der
+die Frist gerissen hat, kann also trotzdem landen.  Das ist sicher:
+Der Wurf überspringt die State-Faltung und lässt `lastSequenceNr`
+unberührt, der Restart liest also den echten Kopf.  Ein nicht
+wiederholbarer Seiteneffekt im Handler ist allerdings schon
+gelaufen.
+
+Verwandte Stellschrauben im selben Block:
+
+- `actor-ts.persistence.recovery-timeout` (30s) macht dasselbe für
+  eine *Recovery*, die nie fertig wird: danach scheitert der Actor
+  mit einem `RecoveryTimeoutError` über `onRecoveryFailure`, statt
+  in `preStart` zu verharren.
+- `actor-ts.persistence.max-concurrent-recoveries` (50) verhindert,
+  dass ein Restart-Sturm Tausende gleichzeitiger Reads gegen einen
+  Pool für Dutzende öffnet.
+- `actor-ts.persistence.snapshot-is-optional` lässt einen Actor per
+  vollständigem Journal-Replay hochkommen, wenn nur der *Snapshot*
+  Store weg ist.  Für einen Actor mit `integrity()` oder
+  `encryption()` gilt es nicht — siehe
+  [PersistentActor](/de/persistence/persistent-actor/#wenn-die-stores-ausfallen).
+
+Ein `JournalConcurrencyError` zählt nie auf `max-failures` ein, ein
+Schwall verlorener bedingter Appends kann den Breaker also nicht für
+alle öffnen.  Öffnet ein Breaker wegen etwas anderem, das du für
+harmlos hältst, benenne es, statt das Budget zu erhöhen:
+
+```hocon
+actor-ts.circuit-breaker.persistence-journal.ignored-error-names = ["MyTransientError"]
+```
+
 ## Speicher + Performance
 
 ### Symptom: Speicher wächst unbegrenzt

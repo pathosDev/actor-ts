@@ -122,6 +122,7 @@ import { DEFAULT_REDIS_DB } from '../../../src/cache/RedisCacheOptions.js';
 import { DEFAULT_BACKOFF_FORWARD, DEFAULT_BACKOFF_MAX_MS, DEFAULT_BACKOFF_MAX_STASH_SIZE, DEFAULT_BACKOFF_MIN_MS, DEFAULT_BACKOFF_RANDOM_FACTOR, DEFAULT_BACKOFF_RESET_COUNTER, DEFAULT_BACKOFF_TRIGGER_ON } from '../../../src/pattern/BackoffSupervisorOptions.js';
 import { DEFAULT_PROJECTION_MAX_RETRIES, DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS, DEFAULT_PROJECTION_RECOVERY_STRATEGY, DEFAULT_PROJECTION_RETRY_BACKOFF_MS } from '../../../src/persistence/projection/ProjectionOptions.js';
 import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../../../src/persistence/Constants.js';
+import { DEFAULT_JOURNAL_BREAKER_ID, DEFAULT_MAX_CONCURRENT_RECOVERIES, DEFAULT_RECOVERY_TIMEOUT_MS, DEFAULT_SNAPSHOT_BREAKER_ID, DEFAULT_SNAPSHOT_IS_OPTIONAL } from '../../../src/persistence/PersistenceBehaviorOptions.js';
 import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from '../../../src/logging/MultiSinkLoggerOptions.js';
 import { DEVTOOLS_DEFAULTS } from '../../../src/devtools/DevToolsOptions.js';
 import {
@@ -601,6 +602,15 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cache.memcached.servers', kind: 'string', constant: DEFAULT_MEMCACHED_SERVERS },
 
   /* --- persistence --- */
+  // System-wide behaviour (#874) — the five leaves that are not a plugin id.
+  // They sit directly under `actor-ts.persistence` and are read once by
+  // `PersistenceExtension`, so the published number and the shipped one are
+  // the same constant on both sides.
+  { key: 'actor-ts.persistence.max-concurrent-recoveries', kind: 'int', constant: DEFAULT_MAX_CONCURRENT_RECOVERIES },
+  { key: 'actor-ts.persistence.recovery-timeout', kind: 'duration', constant: DEFAULT_RECOVERY_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.snapshot-is-optional', kind: 'bool', constant: DEFAULT_SNAPSHOT_IS_OPTIONAL },
+  { key: 'actor-ts.persistence.journal-breaker', kind: 'string', constant: DEFAULT_JOURNAL_BREAKER_ID },
+  { key: 'actor-ts.persistence.snapshot-breaker', kind: 'string', constant: DEFAULT_SNAPSHOT_BREAKER_ID },
   // The three SQLite blocks (#872).  `busy-timeout` is published under each of
   // them and pinned to one constant, because it is one pragma applied to every
   // handle the package opens — three copies of the number would be three ways

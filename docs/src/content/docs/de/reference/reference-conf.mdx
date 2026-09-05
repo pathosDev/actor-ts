@@ -1358,6 +1358,51 @@ actor-ts {
   }
 
   persistence {
+    # Behaviour of every PersistentActor in this system, read once by
+    # PersistenceExtension.  The sub-blocks below are plugin-id namespaces and
+    # belong to the backend that owns them; these five are not, which is why
+    # they sit one level above where a plugin id can appear.
+
+    # Journal replays allowed to run at once, system-wide.  0 = uncapped.
+    #   A shard hand-off re-creates every entity it owns at once and each one
+    #   replays, so without a cap a rolling restart opens thousands of reads
+    #   against a pool sized for tens and every replay slows down together.
+    #   sharding.entity-recovery paces the entity STARTS one layer up; this
+    #   bounds how many of their replays are in flight once they are started.
+    max-concurrent-recoveries = 50
+    # Ceiling on ONE actor's whole recovery -- snapshot load, journal read,
+    #   fold, and the highestSeq probe a fully compacted stream needs.  Not a
+    #   per-event bound: Journal.read returns the slice in one call, so there
+    #   is no per-event step to bound.  Past it the replay fails with a
+    #   RecoveryTimeoutError through onRecoveryFailure.  0 = no deadline.
+    recovery-timeout = 30s
+    # Fall back to a full journal replay when the snapshot store cannot
+    #   answer, instead of failing the recovery.  It deliberately does NOT
+    #   cover an actor that set integrity() or encryption(): a store rejecting
+    #   a tampered body and a store that is simply down both surface as a
+    #   rejected load, and swallowing the first would turn an integrity check
+    #   into a retry.
+    snapshot-is-optional = false
+
+    # The circuit-breaker each store is called through, BY ID -- the numbers
+    #   live under actor-ts.circuit-breaker.<id>, layered over
+    #   actor-ts.circuit-breaker.default, so they are configured exactly like
+    #   every other breaker instead of a second time here.  "" = no breaker.
+    #
+    # call-timeout is the one worth knowing about: it is the ceiling on a
+    #   single append, and it is what makes a backend that accepts the
+    #   connection and then stalls fail at the stall rather than wedge the
+    #   actor.  It ships unset, because omitting it is what means "no
+    #   deadline" -- to bound appends, write:
+    #
+    #     actor-ts.circuit-breaker.persistence-journal.call-timeout = 10s
+    #
+    # Two ids rather than one: a snapshot store that is down must not
+    #   fast-fail a journal that is fine.  Point both at one id where the two
+    #   share a database and therefore fail together.
+    journal-breaker  = "persistence-journal"
+    snapshot-breaker = "persistence-snapshot"
+
     journal {
       plugin = "actor-ts.persistence.journal.in-memory"
 
