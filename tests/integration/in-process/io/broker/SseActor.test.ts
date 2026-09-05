@@ -206,6 +206,30 @@ function reconnectFailureCauses(sys: ActorSystem): string[] {
 /** One connect attempt, one retry, then give up — with no jitter to wait out. */
 const failFast = { initialDelayMs: 20, maxDelayMs: 20, maxAttempts: 1, randomFactor: 0 } as const;
 
+/**
+ * The rejection `connectImplementation` produced, as it produced it.
+ *
+ * Every surface an operator sees is redacted a second time on the way out —
+ * `_handleReconnect` copies the cause through `redactErrorCredentials` before
+ * publishing it — so a subscriber cannot tell whether the string was already
+ * safe when it was built.  That distinction is the point: the refusal message
+ * is assembled here from a value the *endpoint* chose, and the layer that
+ * assembles it is the layer that has to hand out something safe, not the layer
+ * that happens to publish it today.
+ */
+class RefusalRecordingSseActor extends SseActor {
+  readonly refusals: string[] = [];
+
+  protected override async connectImplementation(): Promise<void> {
+    try {
+      await super.connectImplementation();
+    } catch (rejection) {
+      this.refusals.push((rejection as Error).message);
+      throw rejection;
+    }
+  }
+}
+
 describe('SseActor — refuses a redirect (#787)', () => {
   test('a 302 fails the connect, and the redirect target is never contacted', async () => {
     // The feed answers the SSE GET with a redirect to a host it chose.  With
@@ -263,6 +287,158 @@ describe('SseActor — refuses a redirect (#787)', () => {
       await sys.terminate();
       feed.stop(true);
       collector.stop(true);
+    }
+  });
+
+  test('a Location carrying userinfo is redacted out of the refusal', async () => {
+    // The `Location` is the redirector's string and it lands verbatim in the
+    // `Error` that fails the connect — which travels to every
+    // `BrokerReconnectFailed` subscriber and into whatever log they feed.  A
+    // redirect to `https://user:secret@…` would put a credential there, chosen
+    // by the endpoint rather than by the operator, so it goes through the same
+    // masking `HttpClient` applies to a `Location`.
+    const feed = Bun.serve({
+      port: 0,
+      fetch(): Response {
+        return new Response(null, {
+          status: 307,
+          headers: { location: 'https://tenant:s3cr3t-token@moved.invalid/feed' },
+        });
+      },
+    });
+    const sys = quietSystem('sse-redirect-userinfo');
+    try {
+      const target = sys.spawnAnonymous(() => new CollectActor());
+      const causes = reconnectFailureCauses(sys);
+      const sseOptions = SseOptions.create()
+        .withUrl(`http://localhost:${feed.port}/`)
+        .withTarget(target)
+        .withReconnect(failFast);
+      const actor = new RefusalRecordingSseActor(sseOptions);
+      sys.spawnAnonymous(() => actor);
+
+      await awaitCondition(() => causes.length > 0, {
+        timeoutMs: 4_000, label: 'the connect refused the redirect',
+      });
+      // The refusal is safe where it is built, not merely where it is
+      // published — asserting only on `causes` would pass on a message that
+      // carried the credential and was scrubbed one layer up.
+      expect(actor.refusals[0]).toContain('***@moved.invalid');
+      expect(actor.refusals[0]).not.toContain('s3cr3t-token');
+      expect(actor.refusals[0]).not.toContain('tenant:');
+      // The host stays, so the message still says where it was being sent.
+      expect(causes[0]).toContain('moved.invalid/feed');
+      expect(causes[0]).toContain('***@moved.invalid');
+      expect(causes[0]).not.toContain('s3cr3t-token');
+    } finally {
+      await sys.terminate();
+      feed.stop(true);
+    }
+  });
+
+  test('a 3xx carrying no Location is reported as its status, not as a refused redirect', async () => {
+    // The pair the refusal keys on is "3xx *and* a `Location`" — that is
+    // exactly what the runtime would have followed.  A bodyless 300 (or a 304)
+    // names no target, so there is no redirect to refuse and nothing whose
+    // headers could be replayed; it belongs to the ordinary `response.ok`
+    // check, which says what actually happened.  Refusing it as a redirect
+    // would send an operator looking for a policy that never applied.
+    const feed = Bun.serve({
+      port: 0,
+      fetch(): Response { return new Response(null, { status: 300 }); },
+    });
+    const sys = quietSystem('sse-redirect-no-location');
+    try {
+      const target = sys.spawnAnonymous(() => new CollectActor());
+      const causes = reconnectFailureCauses(sys);
+      const sseOptions = SseOptions.create()
+        .withUrl(`http://localhost:${feed.port}/`)
+        .withTarget(target)
+        .withReconnect(failFast);
+      sys.spawnAnonymous(() => new SseActor(sseOptions));
+
+      await awaitCondition(() => causes.length > 0, {
+        timeoutMs: 4_000, label: 'the connect failed on the 300',
+      });
+      expect(causes[0]).toBe('SSE connect failed: HTTP 300');
+      expect(causes[0]).not.toContain('refused a redirect');
+    } finally {
+      await sys.terminate();
+      feed.stop(true);
+    }
+  });
+});
+
+describe('SseActor — a refused connect releases the body (#787)', () => {
+  test('the server sees the request aborted before the next attempt is due', async () => {
+    // The four refusals reject *after* `fetch` has resolved, so the response
+    // they refuse still owns a live body that nothing will ever read — and the
+    // failure path runs no `disconnectImplementation`, so nothing on it closes
+    // the socket to the endpoint that just failed the check.
+    //
+    // What makes this its own mechanism rather than a duplicate of the ordinary
+    // teardown is *when*: the next attempt opens with `_closeTransport`, which
+    // does abort the stale controller, so a fast retry hides the leak entirely.
+    // Between the two sits the backoff — the broker's default is
+    // `maxAttempts: Infinity` with a growing delay — and that is the window the
+    // socket is held for against an endpoint that is misbehaving by
+    // definition.  So the reconnect delay here is deliberately far longer than
+    // the assertion's own budget: the release has to be the refusal's doing.
+    //
+    // The body never closes, which is what makes the abandonment observable at
+    // all: a bodyless refusal has no socket left to leak, and the server-side
+    // `request.signal` is the only end of it a test can watch.
+    const aborted: string[] = [];
+    const server = Bun.serve({
+      port: 0,
+      fetch(request: Request): Response {
+        request.signal.addEventListener('abort', () => { aborted.push('abort'); });
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller): void {
+            controller.enqueue(new TextEncoder().encode('data: injected\n\n'));
+            /* …and never closes */
+          },
+        });
+        // Refused on its content type; the body is a valid feed either way, so
+        // what is under test is the release and not the refusal.
+        return new Response(stream, { headers: { 'content-type': 'text/html' } });
+      },
+    });
+    const sys = quietSystem('sse-refusal-release');
+    try {
+      const received = new CollectActor();
+      const target = sys.spawnAnonymous(() => received);
+      const attempts: number[] = [];
+      sys.eventStream.subscribe(
+        sys.spawnAnonymous(() => new (class extends Actor<unknown> {
+          override onReceive(m: unknown): void {
+            attempts.push((m as BrokerReconnectAttempt).attempt);
+          }
+        })()),
+        BrokerReconnectAttempt,
+      );
+      const sseOptions = SseOptions.create()
+        .withUrl(`http://localhost:${server.port}/`)
+        .withTarget(target)
+        .withReconnect({ initialDelayMs: 30_000, maxDelayMs: 30_000, randomFactor: 0 });
+      const actor = new RefusalRecordingSseActor(sseOptions);
+      sys.spawnAnonymous(() => actor);
+
+      // A reconnect is only ever announced after a connect failed, so its
+      // arrival means the refusal has happened and the 30 s wait has started.
+      await awaitCondition(() => attempts.length > 0, {
+        timeoutMs: 4_000, label: 'the connect refused the foreign content type',
+      });
+      expect(actor.refusals[0]).toContain('non-event-stream body');
+      // The claim: released now, not when the retry eventually tears down.
+      await awaitCondition(() => aborted.length > 0, {
+        timeoutMs: 2_000, label: 'the refused response was aborted, not abandoned',
+      });
+      expect(attempts).toEqual([1]);
+      expect(received.received).toEqual([]);
+    } finally {
+      await sys.terminate();
+      server.stop(true);
     }
   });
 });
@@ -337,6 +513,46 @@ describe('SseActor — refuses a foreign content type (#787)', () => {
       }
     });
   }
+
+  /**
+   * The other side of the check, and the direction it fails in when it is
+   * wrong: a media type is case-insensitive (RFC 9110 §8.3) and its parameters
+   * are separated by whitespace the sender chooses, so an assertion written
+   * against the exact bytes `text/event-stream` refuses a *conformant* feed.
+   * That is an availability defect rather than a security one, which is
+   * precisely why nothing else here would catch it — every refusal test above
+   * stays green while the actor refuses everything.
+   */
+  test('a conformant type in another case, with padding, is accepted', async () => {
+    const server = Bun.serve({
+      port: 0,
+      fetch(): Response {
+        return new Response('data: hello\n\n', {
+          headers: { 'content-type': '  Text/Event-Stream; charset=UTF-8' },
+        });
+      },
+    });
+    const sys = quietSystem('sse-content-type-normalised');
+    try {
+      const received = new CollectActor();
+      const target = sys.spawnAnonymous(() => received);
+      const causes = reconnectFailureCauses(sys);
+      const sseOptions = SseOptions.create()
+        .withUrl(`http://localhost:${server.port}/`)
+        .withTarget(target)
+        .withReconnect(failFast);
+      sys.spawnAnonymous(() => new SseActor(sseOptions));
+
+      await awaitCondition(() => causes.length > 0 || received.received.length > 0, {
+        timeoutMs: 4_000, label: 'the connect either accepted the feed or refused it',
+      });
+      expect(causes).toEqual([]);
+      expect(received.received[0]).toEqual({ event: 'message', data: 'hello', id: undefined });
+    } finally {
+      await sys.terminate();
+      server.stop(true);
+    }
+  });
 });
 
 describe('SseActor — connect deadline (#753)', () => {

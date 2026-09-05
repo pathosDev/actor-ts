@@ -640,12 +640,25 @@ class StashBufferImplementation<T> implements StashBuffer<T> {
    * it into an `ActorInitializationError` raised to the parent.  Measured on
    * the `spawnTypedAnonymous` path: one `Actor initialization failed` error
    * carrying this message, the inner `factory` never invoked, and the cell
-   * left `terminated` — no restart loop, because the restart half
-   * (`completeRecreate`) builds a fresh instance and calls `postRestart`
-   * rather than re-running `preStart`, so this throw has no way to repeat.
-   * Loud and terminal, then, but attributed to the actor rather than to
-   * whoever wrote the bad node — which is why the combinator keeps its own
-   * guard as the one users actually meet.
+   * stopped for good.
+   *
+   * **What ends it is the supervisor's restart budget, not the shape of the
+   * restart.**  This paragraph used to claim the throw "has no way to repeat",
+   * on the grounds that `completeRecreate` builds a fresh instance and calls
+   * `postRestart` rather than re-running `preStart`.  It does call
+   * `postRestart` — and `Actor.postRestart`'s default *is* `preStart()`, so a
+   * `Directive.Restart` walks straight back into this constructor and throws
+   * again.  Measured: with the default strategy the blueprint is built twelve
+   * times before `Restart threshold exceeded` stops the child, and with an
+   * explicit `maxRetries: 5`, seven.  Exactly one line is logged across all of
+   * it, because `completeRecreate`'s own catch fails to the parent without
+   * logging — which is why counting that line looks like proof of no loop and
+   * is not.  Terminal and bounded, then, rather than single-shot;
+   * `tests/unit/typed/Behaviors.test.ts` pins the bound and the terminal
+   * state, so the next reading of this does not have to be taken on trust.
+   *
+   * Attributed to the actor rather than to whoever wrote the bad node, which
+   * is why the combinator keeps its own guard as the one users actually meet.
    */
   constructor(
     private readonly capacity: number,

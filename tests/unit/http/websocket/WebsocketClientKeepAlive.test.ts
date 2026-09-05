@@ -118,6 +118,27 @@ class NoKeepAliveClient extends WebsocketClientActor<WebsocketFrame, WebsocketFr
   onMessage(_frame: WebsocketFrame): void {}
 }
 
+/**
+ * The unsendable client again, but one that reconnects — the only shape in
+ * which the warning's per-*actor* latch differs from a per-*connection* one.
+ *
+ * Jitter off and a 5 ms delay so the second connect lands inside the same
+ * `awaitCondition` budget every other test here uses; two attempts, because
+ * the test drops exactly one connection.
+ */
+class ReconnectingKeepAliveClient extends WebsocketClientActor<WebsocketFrame, WebsocketFrame> {
+  constructor() {
+    const clientOptions = WebsocketClientOptions.create<WebsocketFrame, WebsocketFrame>()
+      .withUrl('wss://feed.example.com/ws')
+      .withCodec(rawCodec())
+      .withPingIntervalMs(KEEP_ALIVE_INTERVAL_MS)
+      .withReconnect({ initialDelayMs: 5, maxDelayMs: 5, randomFactor: 0, maxAttempts: 3 });
+    super(clientOptions);
+  }
+
+  onMessage(_frame: WebsocketFrame): void {}
+}
+
 type ClientClass = new () => WebsocketClientActor<WebsocketFrame, WebsocketFrame>;
 
 describe('WebsocketClientActor — keepalive (#751)', () => {
@@ -278,5 +299,70 @@ describe('WebsocketClientActor — keepalive (#751)', () => {
     // for, or a dropped connection keeps a wake-up per period forever.
     await sleep(FIVE_PERIODS_MS);
     expect(socket.sent.length).toBe(afterClose);
+  });
+
+  /**
+   * The warning latches **per actor**, not per connection.
+   *
+   * Every other client in this file is `withReconnect(false)` and connects
+   * exactly once, so `toBe(1)` there is satisfied whether the latch is per
+   * actor, per connection, or absent entirely.  This is the shape that tells
+   * them apart, and the reasoning the latch rests on is what makes per-actor
+   * the right scope: neither input to the verdict — the runtime's `WebSocket`
+   * and this class's own `keepAliveFrame` override — can change across a
+   * reconnect, so a per-connection latch would repeat one unchanging sentence
+   * once per reconnect, forever, on exactly the deployment (a flapping link)
+   * that can least afford the noise.
+   *
+   * Contrast {@link WebsocketClientActor}'s *other* latch,
+   * `unrecognisedFrameWarned`, which `connectImplementation` resets on every
+   * open: a payload shape is a property of what the peer sends, and that can
+   * change across a reconnect.  Two latches, opposite scopes, each matching
+   * what its verdict depends on.
+   */
+  test('the unsendable warning is emitted once per actor, not once per connection', async () => {
+    const sockets: SilentSocket[] = [];
+    const constructor: WebsocketClientConstructor = {
+      create: (): WebsocketLike => {
+        const socket = new SilentSocket();
+        sockets.push(socket);
+        queueMicrotask(() => socket.fire('open'));
+        return socket as unknown as WebsocketLike;
+      },
+    };
+    websocketClientConstructor.setOverride(Promise.resolve(constructor));
+
+    const log = new RecordingLogger();
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(log)
+      .withLogLevel(LogLevel.Debug);
+    const system = ActorSystem.create('ws-keepalive-reconnect', systemOptions);
+    systems.push(system);
+    system.spawn(ReconnectingKeepAliveClient, 'client');
+
+    await awaitCondition(() => keepAliveWarnings(log).length === 1, {
+      timeoutMs: 4_000,
+      label: 'the first connection warned that its keepalive cannot send',
+    });
+
+    // Drop it.  `armKeepAlive` runs again on the next open, and the verdict it
+    // reaches is identical — which is exactly when a per-connection latch
+    // would write the same line a second time.
+    sockets[0]!.fire('close');
+    await awaitCondition(() => sockets.length >= 2 && sockets[1]!.isOpen, {
+      timeoutMs: 4_000,
+      label: 'the client reconnected onto a second socket',
+    });
+
+    // Poll-free: the reconnect has already happened, so a second line would
+    // already be in the log.  Five periods of slack in case the warning is
+    // written on a later turn than the open listener.
+    await sleep(FIVE_PERIODS_MS);
+    expect(keepAliveWarnings(log)).toHaveLength(1);
+    // The second connection is genuinely unsendable too, so the assertion
+    // above is about the latch and not about a keepalive that started
+    // working: no timer was armed on either socket.
+    expect(recordedKeepAliveTimers()).toEqual([]);
+    expect(sockets[1]!.sent).toEqual([]);
   });
 });

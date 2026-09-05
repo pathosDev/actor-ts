@@ -61,7 +61,12 @@ export const WorkerNode = {
        * papering over it (#778).
        *
        * Armed *before* the hello goes out, so it is always defined by the time
-       * a reply could arrive.
+       * a reply could arrive.  That ordering is discipline rather than a guard,
+       * and deliberately carries no test: `postMessage` cannot synchronously
+       * re-enter `onmessage` on any runtime this framework targets, so the
+       * reply lands a turn later at the earliest and the two statements between
+       * them cannot interleave with anything.  A test that forced the
+       * re-entrancy would be asserting against a runtime that does not exist.
        */
       let timer: ReturnType<typeof setTimeout> | undefined;
       // No origin check: this is a dedicated Worker / worker_threads message
@@ -80,14 +85,12 @@ export const WorkerNode = {
       // property) even when addEventListener('message', …) is a no-op.  We
       // set `onmessage` directly so the init frame is seen reliably.
       selfScope.onmessage = onMessage;
+      // Nothing to cancel on this exit: the callback runs *because* the handle
+      // fired, and clearing a fired handle is a documented no-op on all three
+      // runtimes.  The symmetry with the success branch above is only apparent —
+      // that one cancels a timer that is still live, this one had none.
       timer = setTimeout(
-        () => {
-          // Defensive: a timer that has already fired needs no cancelling, but
-          // this keeps the two exits from the promise symmetrical, so a later
-          // edit cannot leave one of them holding a handle.
-          if (timer !== undefined) clearTimeout(timer);
-          reject(new Error('WorkerNode.join() timed out waiting for init'));
-        },
+        () => { reject(new Error('WorkerNode.join() timed out waiting for init')); },
         30_000,
       );
       const hello: WorkerHelloMessage = { kind: 'worker-hello' };

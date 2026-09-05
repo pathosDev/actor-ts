@@ -83,6 +83,42 @@ describe('DeadLetter', () => {
     expect(dl.toString()).toContain('none');
     expect(dl.toString()).toContain(recipient.path.toString());
   });
+
+  test('an unattributed letter reads empty on both fields', () => {
+    const dl = new DeadLetter('msg', null, new DummyRef('to'));
+    // Non-optional at the reader, so `letter.attribution.trace` is always a
+    // legal read — that is what the shared default buys, and it is worth
+    // pinning before the sharing itself is (#773).
+    expect(dl.attribution.context).toBeUndefined();
+    expect(dl.attribution.trace).toBeUndefined();
+  });
+
+  test('one subscriber cannot poison every other unattributed letter (#773)', () => {
+    // The default attribution is a shared singleton — one object handed to
+    // every letter built without one, which is twenty-odd construction sites
+    // — and it is reachable from every event-stream subscriber as
+    // `letter.attribution`.  `Object.freeze` is what stops a subscriber that
+    // decides to annotate a letter in place from writing that annotation onto
+    // every other letter in the process, including ones minted later.
+    //
+    // Dropping the freeze left the whole suite green.  Asserted through the
+    // consequence rather than through `Object.isFrozen`, because the property
+    // is "a write does not travel", not "this call was made".
+    const recipient = new DummyRef('to');
+    const first = new DeadLetter('first', null, recipient);
+    const second = new DeadLetter('second', null, recipient);
+    expect(first.attribution).toBe(second.attribution);
+
+    const annotate = (): void => {
+      (first.attribution as { context?: unknown }).context = { requestId: 'poisoned' };
+    };
+    // ESM is strict mode, so the write throws rather than failing silently —
+    // the subscriber finds out, which is the better of the two outcomes.
+    expect(annotate).toThrow(TypeError);
+    expect(first.attribution.context).toBeUndefined();
+    expect(second.attribution.context).toBeUndefined();
+    expect(new DeadLetter('third', null, recipient).attribution.context).toBeUndefined();
+  });
 });
 
 describe('ActorKilledError', () => {

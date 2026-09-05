@@ -16,7 +16,7 @@ import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
 import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 import { Directive, OneForOneStrategy } from '../../../src/Supervision.js';
-import { DeadLetter, Terminated } from '../../../src/SystemMessages.js';
+import { ActorStopped, DeadLetter, Terminated } from '../../../src/SystemMessages.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 
@@ -330,6 +330,22 @@ describe('Behaviors.withStash', () => {
  * runs while the behavior is still a value, which is the point of putting it
  * in the combinator rather than only in the buffer.
  */
+/**
+ * Records the path of every actor the system reports as stopped.
+ *
+ * A cell that fails its own initialization publishes no `ActorRestarted` — that
+ * event is on the success path — so `ActorStopped` is the only positive signal
+ * that a poisoned actor has finished failing rather than still being retried.
+ */
+class StoppedListener extends Actor<ActorStopped> {
+  constructor(private readonly paths: string[], private readonly ready: { value: boolean }) { super(); }
+  override preStart(): void {
+    this.system.eventStream.subscribe(this.self, ActorStopped);
+    this.ready.value = true;
+  }
+  override onReceive(event: ActorStopped): void { this.paths.push(event.actor.path.toString()); }
+}
+
 describe('Behaviors.withStash — capacity validation', () => {
   const innerBehavior = (): Behavior<string> =>
     Behaviors.receiveMessage(() => Behaviors.same);
@@ -355,6 +371,21 @@ describe('Behaviors.withStash — capacity validation', () => {
         expect(error.name).toBe('OptionsError');
         expect(error.field).toBe('capacity');
         expect(Object.is(error.value, capacity)).toBe(true);
+        // Attribution.  `assertStashCapacity` takes its `origin` from the call
+        // site precisely so the two routes into it cannot claim each other's
+        // — this is the combinator's, and the buffer's constructor answers
+        // `WithStashBehavior` for the same value (see the bypass test below).
+        // Untested, the argument is free to be swapped for the other string
+        // and every assertion above still holds.
+        expect(error.options).toBe('Behaviors.withStash');
+        // The message repeats all three facts, because it is the only one of
+        // the two channels that reaches a log — the structured fields do not
+        // survive `ActorInitializationError`, which carries a string.
+        expect(error.message.startsWith('Behaviors.withStash: ')).toBe(true);
+        expect(error.message).toContain(`(got ${String(capacity)})`);
+        expect(error.message.endsWith(
+          ' — a stash whose bound never compares true is not bounded at all',
+        )).toBe(true);
       }
     });
   }
@@ -401,14 +432,94 @@ describe('Behaviors.withStash — capacity validation', () => {
     const ref = sys.spawnTypedAnonymous(handWritten);
     ref.tell('would-have-been-stashed');
 
+    const initFailures = (): string[] =>
+      lines.filter((line) => line.includes('capacity must be an integer >= 1'));
     await awaitCondition(
-      () => lines.some((line) => line.includes('capacity must be an integer >= 1')),
+      () => initFailures().length >= 1,
       { timeoutMs: 3_000, label: 'the hand-built with-stash node failed actor initialization' },
     );
+    // This route's own attribution, and the offending value with it.  An
+    // `ActorInitializationError` carries a string, so the `OptionsError`'s
+    // structured `options` / `value` fields never reach the operator — this
+    // line is the whole diagnostic, and `WithStashBehavior` is what tells them
+    // to look at a hand-written node rather than at a `withStash(…)` call they
+    // will not find.
+    expect(initFailures()[0]).toContain(
+      'WithStashBehavior: capacity must be an integer >= 1 (got NaN)',
+    );
+    expect(initFailures()[0]).not.toContain('Behaviors.withStash');
     // The buffer is built before the inner behavior is, so a rejected capacity
     // means the user's factory never ran and no message was ever accepted.
     expect(factoryCalls.length).toBe(0);
     expect(handled).toEqual([]);
+
+    await sys.terminate();
+  });
+
+  /**
+   * The other half of "loud and terminal": the rejection has to *end*
+   * somewhere.
+   *
+   * A throw from `preStart` reaches the parent as an `ActorInitializationError`
+   * and the supervisor's decider answers it like any other failure — so under
+   * `Directive.Restart` the cell is recreated, and `Actor.postRestart`'s
+   * default is `preStart()`, which walks straight back into this constructor.
+   * What stops it is the parent's **restart budget**, and nothing else: the
+   * retries are bounded by `maxRetries`, then the child is stopped for good.
+   *
+   * So the assertion is an upper bound plus a terminal state, deliberately not
+   * an exact count — a change that stopped retrying an initialization failure
+   * at all would be an improvement, and must not have to edit this test to
+   * land.  What must never come back is the unbounded case.
+   *
+   * Only one `Actor initialization failed` line is logged across all of it,
+   * because the recreate path's own catch (`ActorCell.completeRecreate`) fails
+   * to the parent without logging.  Asserted here so that the count is
+   * something a reader can trust rather than infer — it is exactly the signal
+   * that made this loop look, on a first measurement, like no loop at all.
+   */
+  test('the rejection is terminal — retries are bounded by the restart budget', async () => {
+    const lines: string[] = [];
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new JsonLogger(LogLevel.Error, '', {}, { write: (line) => { lines.push(line); } }));
+    const sys = ActorSystem.create('typed-stash-bypass-budget', sysOptions);
+
+    const stoppedPaths: string[] = [];
+    const ready = { value: false };
+    sys.spawn(() => new StoppedListener(stoppedPaths, ready), 'stopped-listener');
+    await awaitCondition(() => ready.value, { label: 'the ActorStopped listener subscribed' });
+
+    const innerFactoryCalls: string[] = [];
+    const handWritten: WithStashBehavior<string> = {
+      kind: 'with-stash',
+      capacity: Number.NaN,
+      factory: (): Behavior<string> => {
+        innerFactoryCalls.push('factory');
+        return Behaviors.receiveMessage(() => Behaviors.same);
+      },
+    };
+
+    // Counted at the blueprint, which is the only place a restart is visible
+    // from outside: `ActorRestarted` is published on the success path, so a
+    // restart that fails again publishes nothing at all.
+    let constructions = 0;
+    const build = typedActor<string>(handWritten);
+    const counted = (): Actor<string> => { constructions++; return build(); };
+
+    const maxRetries = 2;
+    const spawnOptions = ActorOptions.create<string>()
+      .withSupervisorStrategy(new OneForOneStrategy(() => Directive.Restart, { maxRetries }));
+    const ref = sys.spawnAnonymous(counted, spawnOptions);
+    ref.tell('would-have-been-stashed');
+
+    await awaitCondition(
+      () => stoppedPaths.includes(ref.path.toString()),
+      { timeoutMs: 3_000, label: 'the actor with the poisoned capacity was stopped for good' },
+    );
+    // One initial construction plus at most the budget's worth of restarts.
+    expect(constructions).toBeLessThanOrEqual(maxRetries + 2);
+    expect(lines.filter((line) => line.includes('Actor initialization failed'))).toHaveLength(1);
+    expect(innerFactoryCalls).toEqual([]);
 
     await sys.terminate();
   });

@@ -162,15 +162,21 @@ export class MessageChannelTransport implements Transport {
    * already full — see that constant for why the newest is refused rather than
    * the oldest evicted.
    *
-   * The membership test comes first so a peer that is already known keeps
-   * being refreshed after the cap fills: the cap must never turn an
-   * established peer into an unknown one, because the readiness check reads
-   * this set.
+   * That the cap can never turn an established peer into an unknown one — which
+   * matters, because the readiness check reads this set — is a property of the
+   * set and not of anything written here: `add` on a key already present is a
+   * no-op, so the only thing the cap can refuse is a key the set does not have.
+   * This used to open with a `has` short-circuit stating the invariant as
+   * though it enforced it; nothing could observe its removal, because there was
+   * nothing there to observe.
+   *
+   * The *caller's* ordering is what earns this set its bound: {@link onFrame}
+   * validates the payload before it gets here, so a sender that never posts a
+   * legal frame never takes a slot — see
+   * `tests/unit/cluster/TransportFrameGuardContract.test.ts`.
    */
   private rememberPeer(from: NodeAddress): void {
-    const key = from.toString();
-    if (this.knownPeers.has(key)) return;
     if (this.knownPeers.size >= MAX_KNOWN_CHANNEL_PEERS) return;
-    this.knownPeers.add(key);
+    this.knownPeers.add(from.toString());
   }
 }

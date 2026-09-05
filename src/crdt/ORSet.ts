@@ -220,8 +220,13 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
    * Two consequences worth naming:
    *
    *   - Entries that collapse onto one key are **merged**, not overwritten —
-   *     tag sets union, and the first element instance seen wins, matching
-   *     what `add` does for a key already present.
+   *     tag sets union, and the entry already filed keeps its element
+   *     instance, the same preference `merge` states outright when it writes
+   *     `ours?.element ?? theirs?.element`.  Note this is *not* what `add`
+   *     does: `add` stores the instance it was handed, so for a key already
+   *     present the newest one wins there.  The two are different operations
+   *     and only the tags carry CRDT meaning — the instance is what `value()`
+   *     hands back, which is why the choice is worth stating either way.
    *   - The caller's `identity` now runs over **peer-supplied** values.  A
    *     callback that throws on an unexpected shape turns a hostile frame
    *     into a decode failure, which every wire call site already treats as

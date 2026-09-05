@@ -922,6 +922,77 @@ describe('BackoffSupervisor — stash overflow (#773)', () => {
       await sys.terminate();
     }
   }, 8_000);
+
+  test('a sender with no MDC leaves the letter with none, not with an empty one', async () => {
+    // The other half of the same capture, and the one nothing exercised: the
+    // stash entry OMITS `context` when `LogContext.isEmpty` says the sender
+    // carried none.  Collapsing that branch to always set the field — writing
+    // `EMPTY` onto the entry — left the whole suite green, because the test
+    // above only ever tells from inside a `LogContext.run`.
+    //
+    // Why the distinction is worth a branch: an absent field says "there was
+    // no MDC to lose", and `{}` says "the sender had one and it was empty".
+    // A dead-letter stream is read to find out which request lost a message,
+    // and the second answer sends whoever is reading it looking for a request
+    // that never existed.  It is the same rule `LocalActorRef.tell` applies to
+    // the envelope, so a letter and an envelope agree about what "no context"
+    // looks like.
+    crashesObserved = 0; flakyStarts = 0;
+    const letters: DeadLetter[] = [];
+    const subscribed = { value: false };
+    class Listener extends Actor<DeadLetter> {
+      override preStart(): void {
+        this.system.eventStream.subscribe(this.self, DeadLetter);
+        subscribed.value = true;
+      }
+      override onReceive(letter: DeadLetter): void { letters.push(letter); }
+    }
+
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('backoff-stash-no-context', sysOptions);
+    const policy = new RecordingPolicy([30_000]);
+    const supervisor = sys.spawn(
+      BackoffSupervisor.factory(withDefaults({
+        child: Flaky,
+        policy,
+        forward: 'stash',
+        maxStashSize: 2,
+        resetCounter: 'never',
+      })),
+      'sup-stash-no-context',
+    );
+    try {
+      sys.spawn(Listener, 'listener');
+      await awaitCondition(() => subscribed.value && flakyStarts === 1, {
+        timeoutMs: 4_000,
+        label: 'the listener subscribed and the first child started',
+      });
+
+      supervisor.tell({ kind: 'crash' });
+      await awaitCondition(() => policy.calls.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the supervisor entered its backoff window',
+      });
+
+      // No `LogContext.run` anywhere: these tells are the ordinary case.
+      for (const value of [1, 2, 3, 4]) supervisor.tell({ kind: 'echo', value });
+      await awaitCondition(() => letters.length >= 2, {
+        timeoutMs: 4_000,
+        label: 'the two evicted messages were dead-lettered',
+      });
+
+      expect(letters.map((l) => l.message)).toEqual([
+        { kind: 'echo', value: 1 },
+        { kind: 'echo', value: 2 },
+      ]);
+      expect(letters.map((l) => l.attribution.context)).toEqual([undefined, undefined]);
+    } finally {
+      supervisor.stop();
+      await sys.terminate();
+    }
+  }, 8_000);
 });
 
 /* ============================================================== */

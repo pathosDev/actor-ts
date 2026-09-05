@@ -359,6 +359,58 @@ describe('MessageChannelTransport — the known-peer set is bounded', () => {
     await transport.shutdown();
   });
 
+  /**
+   * What the cap counts, and therefore who can fill it.
+   *
+   * `onFrame` validates the payload *before* it records the sender, so a peer
+   * that never sends a frame the wire schema accepts never earns a slot.  With
+   * the two steps the other way round the set would count anything that clears
+   * the envelope guard — and since `peers()` is bounded at
+   * {@link MAX_KNOWN_CHANNEL_PEERS} and refuses the newest once full, a stranger
+   * posting cheap garbage under a thousand invented addresses would fill it and
+   * then keep a genuine peer out of the readiness check for the life of the
+   * process.  The cap and the ordering are one mechanism: neither alone is the
+   * bound.
+   */
+  test('a sender whose payload is refused never earns a place in the set', async () => {
+    const self = freshAddress();
+    const port = new FakePort();
+    const transport = new MessageChannelTransport(self, port);
+    const received: WireMessage[] = [];
+    transport.setHandler((_from, message) => received.push(message));
+    await transport.start();
+
+    // A well-formed envelope — it clears `isBrokeredMessage`, so the address is
+    // readable and recording it would succeed — around a payload the wire
+    // schema refuses.  #563's poisoned gossip status, i.e. a frame a peer can
+    // post at will.
+    const stranger = new NodeAddress(SYSTEM, '10.0.0.6', 7_777);
+    port.inject({
+      from: stranger.toJSON(),
+      to: self.toJSON(),
+      payload: {
+        kind: 'gossip',
+        from: stranger.toJSON(),
+        sequence: 1,
+        members: [{ address: freshAddress().toJSON(), status: 'pwned', version: 1 }],
+      },
+    });
+
+    expect(received).toEqual([]);
+    expect(transport.peers()).toEqual([]);
+
+    // The other half: a transport that recorded nobody at all would satisfy the
+    // assertion above and be broken, so the same sender is admitted the moment
+    // it says something legal.
+    port.inject({
+      from: stranger.toJSON(), to: self.toJSON(), payload: wellFormedFrame(stranger),
+    });
+    expect(received.length).toBe(1);
+    expect(transport.peers().map((peer) => peer.toString())).toEqual([stranger.toString()]);
+
+    await transport.shutdown();
+  });
+
   test('a frame from a stranger is still delivered after the cap fills', async () => {
     // The cap bounds the bookkeeping, never the traffic: refusing frames once
     // the set filled would trade a memory leak for a denial of service.

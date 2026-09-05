@@ -46,11 +46,23 @@ import { PersistenceExtensionId } from '../../../../../src/persistence/Persisten
 import { InMemoryJournal } from '../../../../../src/persistence/journals/InMemoryJournal.js';
 import { replayState } from '../../../../../src/persistence/Replay.js';
 import {
+  OBJECT_STORAGE_DURABLE_STATE_NAMESPACE,
   OBJECT_STORAGE_SNAPSHOT_NAMESPACE,
 } from '../../../../../src/persistence/Constants.js';
+import {
+  OBJECT_STORAGE_DURABLE_STATE_NAMESPACE as publiclyExportedDurableStateNamespace,
+  OBJECT_STORAGE_SNAPSHOT_NAMESPACE as publiclyExportedSnapshotNamespace,
+} from '../../../../../src/persistence/index.js';
 import { FilesystemObjectStorageBackend } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageBackend.js';
 import { FilesystemObjectStorageOptions } from '../../../../../src/persistence/object-storage/FilesystemObjectStorageOptions.js';
 import { encodeBody } from '../../../../../src/persistence/object-storage/BodyCodec.js';
+import type {
+  ObjectFetched,
+  ObjectInfo,
+  ObjectStorageBackend,
+  PutOptions,
+} from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
+import type { Option } from '../../../../../src/util/Option.js';
 import {
   OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID,
   registerObjectStoragePlugins,
@@ -103,6 +115,38 @@ async function putSnapshotBody(
     { compression: 'none' },
   );
   await backend.put(key, body, { contentType: 'application/json' });
+}
+
+/**
+ * A backend that answers every LIST with the whole store, ignoring the prefix
+ * it was handed.
+ *
+ * It violates the `ObjectStorageBackend` contract on purpose — that is the
+ * only way to ask the store's first key-shape rule a question, since a
+ * conforming backend never hands it a key from outside the entity's own
+ * directory.  `ObjectStorageBackend` is a public plug-in seam, so the contract
+ * is a promise about code the framework does not own.
+ */
+class OverReturningListBackend implements ObjectStorageBackend {
+  constructor(private readonly inner: ObjectStorageBackend) {}
+
+  put(key: string, body: Uint8Array, options?: PutOptions): Promise<{ etag: string }> {
+    return this.inner.put(key, body, options);
+  }
+
+  get(key: string): Promise<Option<ObjectFetched>> {
+    return this.inner.get(key);
+  }
+
+  delete(key: string): Promise<void> {
+    return this.inner.delete(key);
+  }
+
+  list(_options: { readonly prefix: string; readonly limit?: number }): Promise<ObjectInfo[]> {
+    return this.inner.list({ prefix: '' });
+  }
+
+  async close(): Promise<void> { /* the wrapped backend is the test's to close */ }
 }
 
 /* ============ criterion 3 — the two stores' namespaces are disjoint ======= */
@@ -276,6 +320,174 @@ describe('#716 — only this store\'s own keys are read, deleted or pruned', () 
   });
 });
 
+/* ===== criterion 2, rule by rule — each one is the only one that fires ==== */
+
+/**
+ * The leaf-shape filter is four rules and a prefix check, and every foreign
+ * key the suite above uses (`zzz-marker.txt`, `backup-42.json`,
+ * `user1/zzz/…`) is refused by three or four of them at once.  So each rule
+ * could be deleted on its own with all of those tests green, which is a
+ * coverage hole of exactly the shape #716 was: a filter that looks
+ * comprehensive because the corpus never asks it a question only one clause
+ * can answer.
+ *
+ * Each case below is a key that passes **every rule but one**.  That makes the
+ * one named in the test the only thing standing between the store and the
+ * foreign object, so the case fails when it — and only it — is removed.
+ *
+ * `delete` carries most of the assertions deliberately.  `loadLatest` has a
+ * second line of defence in criterion 1 (the body must name the entity), so a
+ * shape-filter hole shows up there as a `none` rather than as damage;
+ * `delete` has no body check at all, because it never reads one.  A key the
+ * shape filter wrongly admits is a key `delete` erases.
+ */
+describe('#716 — every rule of the leaf-shape filter is load-bearing on its own', () => {
+  /**
+   * A body that passes every check but the key's shape — decodable, and
+   * naming `p` itself, so criterion 1 cannot be what refuses it and the leaf
+   * rule under test is provably the only thing that does.
+   */
+  const putEntityBodyAt = (key: string, sequenceNr: number): Promise<void> =>
+    putSnapshotBody(key, 'p', sequenceNr, { owner: 'NOT-A-SNAPSHOT' });
+
+  test('the exact-length rule: a key nested one level deeper under a 20-digit segment', async () => {
+    // The one shape the other three rules all wave through.  Its leaf is
+    // `00000000000000000042/00000000000000000009.json`: it ends in `.json`,
+    // its first twenty characters are digits, and `Number` of them is 42 — so
+    // without the length rule the store reads it as its own snapshot 42, one
+    // directory below where any of its snapshots can be.
+    const store = snapshotStore();
+    await store.save('p', 1, { owner: 'real' });
+    const nestedKey = `${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}p/`
+      + '00000000000000000042/00000000000000000009.json';
+    await putEntityBodyAt(nestedKey, 9);
+
+    // It sorts after the entity's own seq-1 key, so an accepted nested key is
+    // the one `loadLatest` picks.
+    expect((await store.loadLatest<{ owner: string }>('p')).toNullable()?.state)
+      .toEqual({ owner: 'real' });
+
+    // …and 42 is below the delete watermark, so an accepted one is erased.
+    await store.delete('p', 100);
+    expect((await backend.get(nestedKey)).isSome()).toBe(true);
+  });
+
+  test('the exact-length rule: a leaf carrying more digits than the padding', async () => {
+    // Twenty-one digits.  The digit scan only reads the first twenty and the
+    // suffix check only reads the last five, so both pass; `Number` of the
+    // first twenty is 0, which is a sequence number `delete` erases at any
+    // watermark at all.
+    const store = snapshotStore();
+    const overlongKey = `${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}p/000000000000000000009.json`;
+    await putEntityBodyAt(overlongKey, 9);
+
+    await store.delete('p', 5);
+    expect((await backend.get(overlongKey)).isSome()).toBe(true);
+    expect((await store.loadLatest('p')).isNone()).toBe(true);
+  });
+
+  test('the suffix rule: twenty digits followed by five characters that are not .json', async () => {
+    // Exactly the length this store writes and exactly the digits, so the
+    // length rule and the digit scan both pass — the extension is all that is
+    // left to tell another tool's `…-data` file from a snapshot.
+    const store = snapshotStore();
+    await store.save('p', 1, { owner: 'real' });
+    const nonJsonKey = `${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}p/00000000000000000009-data`;
+    await putEntityBodyAt(nonJsonKey, 9);
+
+    expect((await store.loadLatest<{ owner: string }>('p')).toNullable()?.state)
+      .toEqual({ owner: 'real' });
+    await store.delete('p', 100);
+    expect((await backend.get(nonJsonKey)).isSome()).toBe(true);
+  });
+
+  test('the digit scan: a hexadecimal literal Number() happily reads as a sequence', async () => {
+    // `0x000000000000000009` is twenty characters, so the length rule passes;
+    // it ends in `.json`, so the suffix rule passes; and `Number()` on it is
+    // 9, not `NaN`, because JavaScript parses a hex literal out of a string.
+    // The scan is what makes the parse total — every character a digit — and
+    // it is the only rule that looks at what those twenty characters are.
+    const store = snapshotStore();
+    await store.save('p', 1, { owner: 'real' });
+    const hexKey = `${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}p/0x000000000000000009.json`;
+    expect(hexKey.slice(hexKey.lastIndexOf('/') + 1)).toHaveLength(25);
+    expect(Number('0x000000000000000009')).toBe(9);
+    await putEntityBodyAt(hexKey, 9);
+
+    expect((await store.loadLatest<{ owner: string }>('p')).toNullable()?.state)
+      .toEqual({ owner: 'real' });
+    await store.delete('p', 100);
+    expect((await backend.get(hexKey)).isSome()).toBe(true);
+  });
+
+  test('the safe-integer rule: twenty digits worth more than Number can count in', async () => {
+    // The padding is headroom — twenty digits reach 10^20 while `save` can
+    // never write past `Number.MAX_SAFE_INTEGER`.  A leaf in the gap passes
+    // every other rule and parses to a float, and it sorts last, so it is the
+    // key `loadLatest` chooses.
+    const store = snapshotStore();
+    await store.save('p', 1, { owner: 'real' });
+    const beyondSafeKey = `${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}p/99999999999999999999.json`;
+    expect(Number.isSafeInteger(Number('99999999999999999999'))).toBe(false);
+    await putEntityBodyAt(beyondSafeKey, 9);
+
+    expect((await store.loadLatest<{ owner: string }>('p')).toNullable()?.state)
+      .toEqual({ owner: 'real' });
+  });
+
+  test('the safe-integer rule: and keepN counts the entity\'s own snapshots, not that one', async () => {
+    // The sharper consequence of the same admission.  Prune deletes from the
+    // front of the listing once the count passes `keepN`, so one key beyond
+    // the safe range costs the entity a snapshot it was promised — on the
+    // write path, in a pass whose failures are swallowed.
+    await putSnapshotBody(
+      `${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}p/99999999999999999999.json`,
+      'p', 9, { owner: 'NOT-A-SNAPSHOT' },
+    );
+    const store = snapshotStore(2);
+    await store.save('p', 1, { owner: 'first' });
+    await store.save('p', 2, { owner: 'second' });
+
+    expect((await store.loadLatest<{ owner: string }>('p')).toNullable()?.state)
+      .toEqual({ owner: 'second' });
+    expect((await store.loadBefore<{ owner: string }>('p', 2)).toNullable()?.state)
+      .toEqual({ owner: 'first' });
+  });
+
+  test('the prefix rule: a backend whose LIST over-returns cannot make delete cross entities', async () => {
+    // The one rule the backend contract already promises — LIST answers under
+    // the prefix it was given — and therefore the one a conforming backend can
+    // never exercise.  `ObjectStorageBackend` is a public plug-in seam, so
+    // "conforming" is an assumption about someone else's code; the naive
+    // implementation of a small custom backend returns everything and filters
+    // nowhere, and that is what this stands in for.
+    //
+    // The damage is specific and one-directional.  `loadLatest` survives an
+    // over-returning LIST on its own, because the body check refuses a
+    // snapshot naming another entity — but `delete` never reads a body, so
+    // with the prefix rule gone the slice of `snapshots/q/…` past
+    // `'snapshots/p/'.length` is a well-formed leaf of p's own and q's
+    // snapshots are erased by p's delete.
+    const overReturning = new OverReturningListBackend(backend);
+    const storeOptions = ObjectStorageSnapshotStoreOptions.create()
+      .withBackend(overReturning)
+      .withCompression({ algorithm: 'none' })
+      .withKeepN(0);
+    const store = new ObjectStorageSnapshotStore(storeOptions);
+    await store.save('p', 3, { owner: 'p' });
+    await store.save('q', 5, { owner: 'q' });
+    // Equal-length ids, so q's key really does slice into a well-formed leaf.
+    const qKey = `${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}q/00000000000000000005.json`;
+    expect(qKey.slice(`${OBJECT_STORAGE_SNAPSHOT_NAMESPACE}p/`.length)).toHaveLength(25);
+
+    await store.delete('p', 100);
+
+    expect((await backend.get(qKey)).isSome()).toBe(true);
+    expect((await store.loadLatest<{ owner: string }>('q')).toNullable()?.state)
+      .toEqual({ owner: 'q' });
+  });
+});
+
 /* ========== criterion 1 — the body has to name the entity asked for ======= */
 
 describe('#716 — a snapshot body must name the entity it is handed to', () => {
@@ -335,5 +547,50 @@ describe('#716 — a snapshot body must name the entity it is handed to', () => 
       { balance: 999_999 },
     );
     expect((await store.loadBefore('victim', 9)).isNone()).toBe(true);
+  });
+});
+
+/* ====== the public seam the documented migration is supposed to use ======= */
+
+describe('#716 — both namespace segments are reachable from the package barrel', () => {
+  test('actor-ts/persistence re-exports them, and they name where the stores write', async () => {
+    // The barrel export is justified as the seam an operator's migration
+    // script off the old flat layout needs: it has to name the destination
+    // key, and a script that spells `'snapshots/'` as a literal is a second
+    // copy of the layout.  Every other test in this repository imports the
+    // constants from `Constants.js` directly, so dropping the re-export broke
+    // nothing here and everything for the one caller it exists for — the
+    // import below is what fails when it goes.
+    expect(publiclyExportedSnapshotNamespace).toBe(OBJECT_STORAGE_SNAPSHOT_NAMESPACE);
+    expect(publiclyExportedDurableStateNamespace).toBe(OBJECT_STORAGE_DURABLE_STATE_NAMESPACE);
+
+    // …and the identity above is only worth having if the segments are the
+    // ones the stores actually write under, which is the claim a migration
+    // script bets on.  Written through the framework's own one-call wiring,
+    // the shape whose collision #716 was about.
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({
+        'actor-ts': {
+          persistence: { 'snapshot-store': { plugin: OBJECT_STORAGE_SNAPSHOT_PLUGIN_ID } },
+        },
+      });
+    const sys = ActorSystem.create('namespaces-barrel', sysOptions);
+    const ext = sys.extension(PersistenceExtensionId);
+    const pluginOptions = ObjectStoragePluginOptions.create()
+      .withBackend({ kind: 'custom', backend })
+      .withPrefix('migrate/');
+    const { durableStateStore } = await registerObjectStoragePlugins(ext, pluginOptions);
+
+    await durableStateStore.upsert('account-1', 0, { balance: 100 });
+    await ext.snapshotStore.save('account-1', 5, { balance: 42 });
+
+    const keys = (await backend.list({ prefix: 'migrate/' })).map((key) => key.key);
+    expect(keys).toContain(`migrate/${publiclyExportedSnapshotNamespace}account-1/`
+      + '00000000000000000005.json');
+    expect(keys).toContain(`migrate/${publiclyExportedDurableStateNamespace}account-1/state.json`);
+
+    await sys.terminate();
   });
 });
