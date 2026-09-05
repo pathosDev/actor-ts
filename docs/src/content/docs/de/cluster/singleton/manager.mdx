@@ -72,7 +72,30 @@ reagiert, nicht weil du sie konstruierst:
 | `lease` | Nein | Falls gesetzt, muss der Host diese Lease erwerben, bevor er den Singleton spawnt. |
 | `acquireRetryIntervalMs` | Nein (Default 5s) | Retry-Takt nach einer fehlgeschlagenen Lease-Akquisition. |
 | `handOverTimeoutMs` | Nein (Default 10s) | Wie lange gewartet wird, bis jeder berechtigte Peer bestätigt hat, dass er nicht hostet, bevor trotzdem gehostet wird. Siehe [Wenn niemand antwortet](#wenn-niemand-antwortet). |
+| `maxHandOverStateBytes` | Nein (Default 1 MiB) | Obergrenze für einen Warm-Hand-over-Snapshot. Ein größerer wird nicht gesendet, und der Nachfolger startet kalt. |
 | `restartOnTermination` | Nein (Default `true`) | Den Singleton nach einem unerwarteten Tod der Instanz neu spawnen. Nur für Actors abschalten, die `stopSelf()` als Endzustand nutzen. |
+
+### Aus der Config-Datei
+
+Jedes dieser Felder außer `lease` — dazu die `bufferSize` des Proxys — liest
+auch aus `actor-ts.cluster.singleton.*`, und zwar **unter** dem, was du
+übergeben hast: ein explizites `withHandOverTimeoutMs(…)` gewinnt weiterhin
+pro Feld.
+
+```hocon
+actor-ts.cluster.singleton {
+  role                   = "control-plane"
+  hand-over-timeout      = 10s
+  acquire-retry-interval = 5s
+  buffer-size            = 1000
+}
+```
+
+`lease` hat keinen Key, weil nichts im Framework aus einem Namen eine `Lease`
+macht; übergib eine mit `withLease(…)`. Die vollständige Tabelle steht in der
+[Konfigurationsreferenz](/de/reference/configuration/#actor-tsclustersingleton).
+Eine Stelle liest sich verkehrt herum: eine am **Key** deklarierte Rolle
+schlägt die Config-Datei, denn der Key ist Code.
 
 ### Welche Node hostet
 
@@ -570,12 +593,15 @@ import { Aside } from '@astrojs/starlight/components';
   }
   ```
   Ein Node, der nur `ref` aufruft, hat kein Options-Objekt — er hat den
-  Key, und sonst nichts. Eine Rolle, die *ausschließlich* über
-  `StartSingletonOptions.withRole` gesetzt wird, ist für ihn also
-  unsichtbar, und sein Proxy löst einen anderen Host auf als die
-  Manager. Steht die Rolle auf dem Key, sind sich alle Nodes
-  konstruktionsbedingt einig; `withRole` überschreibt sie weiterhin,
-  wo du eine Antwort pro Deployment brauchst.
+  Key und die Config-Datei, und sonst nichts. Eine Rolle, die
+  *ausschließlich* über `StartSingletonOptions.withRole` gesetzt wird,
+  ist für ihn also unsichtbar, und sein Proxy löst einen anderen Host
+  auf als die Manager. Steht die Rolle auf dem Key, sind sich alle
+  Nodes konstruktionsbedingt einig; `withRole` überschreibt sie
+  weiterhin, wo du eine Antwort pro Deployment brauchst.
+  `actor-ts.cluster.singleton.role` ist der dritte Weg und erreicht
+  auch `ref` — aber nur dort, wo dieselbe Datei auf jeder Node liegt,
+  und genau diese Annahme braucht der Key nicht.
 </Aside>
 
 <Aside type="caution" title="acquireRetryIntervalMs muss positiv sein">

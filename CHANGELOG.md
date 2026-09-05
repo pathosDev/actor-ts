@@ -11,6 +11,184 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Cluster sharding can now choose *which* entity a full node gives up, not
+  just how many it keeps** (#848).  A new `actor-ts.sharding.passivation`
+  block adds five keys — `replacement` (`least-recently-used`,
+  `segmented-least-recently-used` or `least-frequently-used`),
+  `segmented-protected-proportion`, `admission-window-proportion`,
+  `admission-filter` (`off` or `frequency-sketch`) and `stop-timeout` — with
+  matching `withPassivationX` builder methods. The defaults are the plain
+  LRU every earlier release had, and the whole subsystem is inert while
+  `max-entities = 0`, so a deployment that configures neither
+  `passivation-idle` nor `max-entities` behaves exactly as before. #848
+
+  The policy this exists for is `segmented-least-recently-used` with
+  `admission-filter = frequency-sketch`. Recency alone cannot tell "touched
+  once, ever" from "touched constantly until a moment ago", so a pass over a
+  large cold key space — a nightly export, a crawler, a backfill — evicts a
+  hot working set one entity at a time. In the shipped integration test a
+  six-entity hot set against a cap of twelve survives a forty-entity scan
+  intact under the segmented policy and is lost entirely under plain LRU.
+
+  Two related behaviour changes on existing features:
+
+  - A remembered entity that a shard pre-creates during recovery now counts
+    against `max-entities`. It previously wrote the region's entity index
+    directly, so a node handed a registry larger than the cap exceeded it by
+    the size of the registry and stayed over it.
+  - An entity that ignores the stop-message a `Passivate` handed it is now
+    stopped outright after `passivation.stop-timeout` (10 s by default; `0`
+    restores the unbounded wait). Without it the entity never terminated,
+    `EntityStopped` never reached the region, and its slot was charged to
+    the cap for the lifetime of the node.
+
+  The eviction path is also no longer a linear scan of every resident entity
+  on the first message for each new one — every replacement operation is now
+  O(1) amortised.
+
+- **`actor-ts.persistence` gained five wired behaviour keys, so a deployment
+  can bound a journal call, cap a restart storm and trade replay time for
+  availability without a redeploy** (#874).  `max-concurrent-recoveries`
+  (50) limits how many journal replays run at once — a shard hand-off used
+  to open one concurrent read per remembered entity against a pool sized for
+  tens. `recovery-timeout` (30s) fails a replay that never finishes with a
+  `RecoveryTimeoutError` through `onRecoveryFailure`, instead of leaving the
+  actor in `preStart` forever. `snapshot-is-optional` (false) lets an actor
+  recover by full journal replay when the snapshot store is unreachable —
+  deliberately never for an actor that set `integrity()` or `encryption()`,
+  because such a store rejects a tampered body the same way it reports being
+  down, and tolerating one would tolerate the other. `journal-breaker` and
+  `snapshot-breaker` name the circuit breaker each store is called through;
+  `""` disables it, and the breaker's own numbers stay under
+  `actor-ts.circuit-breaker.<id>` where #864 put them, so there is no second
+  copy of `max-failures` to drift.
+
+  The journal breaker closes the hazard #913 reported: `await
+  this._journal.append(...)` had no ceiling of any kind, so a backend that
+  accepted the connection and then stalled left the actor's turn open
+  forever and every later command queued in an unbounded mailbox with
+  nothing thrown. Setting
+  `actor-ts.circuit-breaker.persistence-journal.call-timeout = 10s` now cuts
+  the stalled append at the stall. A `JournalConcurrencyError` never counts
+  against a breaker — it is the ownership verdict of a conditional append,
+  not an outage — and neither does a `JournalIntegrityError` or
+  `SnapshotIntegrityError`, which are durable facts about the stored bytes.
+  `PersistenceExtension.journal` and `.snapshotStore` still hand out the raw
+  store rather than a wrapper. #874
+
+- **`actor-ts.cluster.minimum-members-before-up` (int, default `1`) holds
+  every `joining` / `weakly-up` → `up` transition until at least that many
+  members are present — the leader's promotions and a founder's own
+  self-election alike** (#837).  Per-role thresholds compose with it as an
+  AND and are written
+  `actor-ts.cluster.role.<role>.minimum-members-before-up`; they ship
+  comment-only in `reference.conf`, since role names belong to the
+  deployment. In code: `withMinimumMembersBeforeUp(n)` and
+  `withMinimumMembersBeforeUpPerRole({ backend: 2 })`.
+
+  The default of `1` is the behaviour every release so far had — the first
+  node forms a cluster of one the moment it starts — so nothing changes
+  until a threshold is set. Setting one stops singletons starting and shards
+  being placed on a founder that is alone.
+
+  The gate counts members in `joining`, `weakly-up` and `up`; `leaving`,
+  `unreachable`, `down` and `removed` do not count, so a departing member
+  does not hold the threshold open for its replacement during a rolling
+  restart. It is evaluated per promotion and never in reverse: a cluster
+  that later shrinks below its threshold keeps the members it promoted and
+  holds only new ones.
+
+  It is not `actor-ts.cluster.bootstrap.minimum-members`, which is a wait
+  predicate for `awaitReady` / `isReady` and never changes a member's status
+  — setting the new key largely removes the reason to set that one. It is
+  also not a quorum or a security control: any node may announce itself
+  `up`, so it bounds accidents rather than adversaries, and a threshold
+  above `1` widens the window in which a cluster is smaller than a
+  `static-quorum` downing strategy expects (#933).
+
+  While the threshold is unmet the node says so once, naming the key and the
+  current count, instead of reporting the #1351 cold-start stall diagnosis —
+  which would be a false verdict, since the cluster is short of members
+  rather than misconfigured. #837.
+
+- **The cluster singleton has a HOCON block for the first time —
+  `actor-ts.cluster.singleton`, nested beside `pub-sub` and `receptionist`,
+  with six leaves: `role`, `buffer-size`, `hand-over-timeout`,
+  `acquire-retry-interval`, `max-hand-over-state-bytes` and
+  `restart-on-termination`** (#855).  `cluster.singleton.start(...)` layers
+  them under the caller's `StartSingletonOptions`, so an explicit
+  `withBufferSize(…)` still wins per field, and the merge runs before
+  validation so a configured value is refused by field name rather than
+  silently used.
+
+  `cluster.singleton.ref(...)` reads `role` and `buffer-size` from the same
+  block. That is the half worth knowing about: `ref()` takes no options
+  object, so a proxy-only node previously had no way whatsoever to set its
+  no-host buffer cap — and a role that reached only `start()` left such a
+  node routing at the plain leader while the managers hosted on the role
+  member. A role declared on the actor class's `SingletonKey` still beats
+  the config file, because the key is code.
+
+  Five keys the issue proposed deliberately do not ship, each because
+  nothing backs it: `use-lease` and `lease-name` (nothing in the framework
+  turns config into a `Lease` — pass one with `withLease(…)`),
+  `singleton-identification-interval` (the proxy subscribes to cluster
+  events rather than polling), `min-number-of-hand-over-retries` (the wait
+  is bounded by `hand-over-timeout`; nothing counts attempts), and
+  `hand-over-retry-interval` (a correctness property of the hand-over
+  exchange, not a tuning knob). There is no
+  `actor-ts.cluster.singleton-proxy` block either — its only live key is a
+  field of the same options type as the manager keys. #855
+
+- **Seed discovery is configurable from HOCON.
+  `actor-ts.cluster.bootstrap.discovery.{method, service-name}` picks which
+  provider `Cluster.bootstrap` builds and what it asks about, and a new
+  top-level `actor-ts.discovery` block carries the providers' own settings —
+  `dns.{cache-ttl, use-srv, pinned-addresses}`, `kubernetes.{namespace,
+  pinned-addresses}` and `config.seeds`** (#860).  Until now
+  `Cluster.bootstrap` could be steered by code and by environment variables
+  and by nothing else: it had the config in hand and handed it only to the
+  stable-observation timings, so an `application.conf` could not name the
+  service to discover, could not pick the provider, and could not reach a
+  single provider-level setting. #860.
+
+  The `CLUSTER_SEEDS` / `CLUSTER_SERVICE_NAME` / `CLUSTER_NAMESPACE`
+  variables keep their meaning and sit **below** the new block rather than
+  above it — explicit options > `actor-ts.discovery.*` > `CLUSTER_*` >
+  built-in defaults. That is the project's ordinary precedence with the
+  environment appended at the bottom, not a fourth layer on top of it, and
+  it is the only arrangement under which an env-only deployment behaves
+  exactly as it did before these keys existed. A deployment that wants a
+  variable to outrank its own `application.conf` writes the substitution
+  itself (`service-name = ${?CLUSTER_SERVICE_NAME}`), which the parser
+  resolves while reading the file.
+
+  The two `pinned-addresses` lists ship in the same change as `method` and
+  `service-name`, deliberately. Making the *destination* of discovery
+  settable from a config file — a wider input surface than a code call —
+  while the documented DNS-hijack mitigation stayed reachable only by
+  hand-building a provider would have widened the attack surface and left
+  the guard where it was: every `discovery:` shorthand built its providers
+  with no pin at all. That seam is now threaded, `log` included, so a pin
+  list that discards every answer is reported instead of looking like an
+  empty DNS response. #145, #1107.
+
+  A `method` outside `auto | kubernetes | dns | config` is refused with a
+  `ConfigError` naming the key rather than silently falling back to the
+  ladder — a node that quietly discovers differently from its peers is the
+  cold-start split brain the bootstrap exists to close. `auto` is in the
+  published enum because it is the shipped default; a key that could not
+  express current behaviour would be a trap. `selfElection` stays out of
+  config.
+
+  The key sketch on the issue was Akka's `akka.management.cluster.bootstrap`
+  / `akka.discovery` layout: against this tree five of its keys already ship
+  under the project's own spellings, five have no mechanism behind them, and
+  the two `contact-point` probe keys were explicitly declined in `6c735131`
+  — HTTP probing presupposes every node runs `managementRoutes`. Those
+  twelve are not shipped, and the reason each fails is recorded on the
+  issue.
+
 - **BREAKING — `actor-ts.http.server` gives the listening socket a HOCON
   block of its own, beside the per-route `cors`, `client` and `websocket`
   siblings: `idle-timeout`, `header-timeout`, `request-timeout` and

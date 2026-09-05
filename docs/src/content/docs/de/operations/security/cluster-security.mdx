@@ -318,6 +318,31 @@ Endpoints-Kompromittierung einbringt, und es ist die einzige
 Kontrolle auf der Discovery-Ebene, die übrig bleibt, wenn mTLS
 nicht eingerichtet ist.
 
+Bis #860 war das Snippet oben der **einzige** Weg dorthin:
+`Cluster.bootstrap({ discovery: 'dns' })` und die env-getriebene Leiter bauten
+ihre Provider ganz ohne Pin, die dokumentierte Gegenmaßnahme war auf dem Pfad,
+den die meisten Deployments nehmen, also gar nicht erreichbar.  Jetzt ist sie
+ein Config-Key, und sie liegt im selben Block wie die Keys, die entscheiden,
+welcher Provider läuft:
+
+```hocon
+actor-ts.discovery {
+  dns.pinned-addresses        = ["10.0.0.0/8"]
+  kubernetes.pinned-addresses = ["10.0.0.0/8"]
+}
+```
+
+Setz ihn überall dort, wo auch `actor-ts.cluster.bootstrap.discovery.method`
+oder `service-name` gesetzt ist — aus demselben Grund, aus dem beides zusammen
+kam: Eine Config-Datei ist eine breitere Eingabefläche als ein Aufruf im Code,
+das *Ziel* von Discovery konfigurierbar zu machen, ohne den *Pin*
+konfigurierbar zu machen, hätte also die Angriffsfläche erweitert und den
+Schutz stehen gelassen, wo er war.  Eine Liste, die im konfigurierten Modus
+nicht passen kann — nur CIDRs im SRV-Modus, ein Host-Suffix unter Kubernetes —,
+wird beim Start abgelehnt, statt still jede Antwort zu verwerfen: Eine leere
+Seed-Menge liest sich als „wir sind allein“ und endet in einem
+Einzelknoten-Cluster.
+
 ## Was der Wire-Rand abweist
 
 Frames kommen als JSON an und wurden früher auf den

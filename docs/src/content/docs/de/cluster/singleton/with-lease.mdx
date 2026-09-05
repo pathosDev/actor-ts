@@ -118,6 +118,13 @@ Bedeutet: wenn das Lease-Backend kurz hickst und sie kurzfristig
 widerruft, **startet der Singleton neu** während der Erholung —
 gleicher Effekt wie ein kurzer Actor-Neustart.
 
+Den Retry-Takt setzt `withAcquireRetryIntervalMs(…)` oder, für die ganze
+Node, `actor-ts.cluster.singleton.acquire-retry-interval` (Default 5 s).  Ihn
+aus der Config-Datei zu setzen lohnt sich, obwohl die Lease selbst keinen Key
+hat: bis ein Acquire gelingt, hostet nichts den Singleton — dieses Intervall
+ist also der Großteil der Erholungslatenz einer Partition, die wieder
+zusammenwächst.
+
 Wichtig, in welche Richtung die Ehrlichkeit hier schneidet: auf diesem Pfad
 *ist* Promptheit die Sicherheitseigenschaft, und ein Drain ist nicht prompt.
 Ein Singleton mit langer Mailbox und langsamem `postStop` läuft nach dem
@@ -176,10 +183,12 @@ Für Workloads, bei denen das inakzeptabel ist, erwäge:
   Renewals).
 - **Pufferung beim Sender** — der Singleton-Proxy puffert, solange
   der Cluster keinen Host hat, und leert den Puffer, sobald einer
-  da ist.  Der Puffer ist gedeckelt (`withBufferSize`, Default
-  1000); jenseits des Limits gehen Nachrichten mit einer Warnung in
-  die Dead Letters, damit eine Lücke, die sich nie schließt, nicht
-  unbegrenzt wachsen kann.
+  da ist.  Der Puffer ist gedeckelt (`withBufferSize` oder
+  `actor-ts.cluster.singleton.buffer-size` — der einzige Kanal, den
+  eine Node hat, die nur `ref` aufruft; Default 1000); jenseits des
+  Limits gehen Nachrichten mit einer Warnung in die Dead Letters,
+  damit eine Lücke, die sich nie schließt, nicht unbegrenzt wachsen
+  kann.
 - **Andere Architektur** — Singletons sind inhärent
   seriell-bei-Failover.
 

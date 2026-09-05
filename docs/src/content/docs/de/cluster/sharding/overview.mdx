@@ -268,7 +268,8 @@ type ShardingOptionsType<TMessage> = {
   rememberEntities?:       boolean;           // Entities bei Failover neu spawnen (#)
   passivationIdleMs?:      number;            // idle Entities auto-stoppen, Default 5 min
   shardPassivationIdleMs?: number;            // leere Shards auto-stoppen, folgt obigem
-  maxEntities?:            number;            // LRU-Cap pro Node
+  maxEntities?:            number;            // Cap für residente Entities, pro Typ pro Node
+  passivationReplacement?: EntityReplacementPolicy;  // welche Entity das Cap hergibt
 };
 ```
 
@@ -283,7 +284,8 @@ type ShardingOptionsType<TMessage> = {
 | `rememberEntities` | Persistiere die Menge der *aktiven* Entity-IDs. Nach einem Koordinator-Failover (oder vollem Cluster-Neustart) werden diese IDs eager gespawnt, sodass Nachrichten nicht die gesamte Flotte neu erstellen müssen. |
 | `passivationIdleMs` | Stoppt eine Entity nach so viel Leerlaufzeit. Befreit Speicher; die nächste Nachricht für dieselbe ID erstellt die Entity neu. Default sind **5 Minuten**; `0` schaltet es ab. |
 | `shardPassivationIdleMs` | Stoppt einen Shard, nachdem er so lange leer stand. Ungesetzt folgt er `passivationIdleMs`; `0` hält leere Shards resident, während Entities weiterhin passivieren. |
-| `maxEntities` | Per-Node-Cap. Wird er überschritten, wird die LRU-Entity passiviert. |
+| `maxEntities` | Wie viele Entities **dieses Typs** auf **diesem Node** resident sein dürfen. Wird das überschritten, wird eine passiviert, um Platz zu machen. `0` (Default) heißt kein Cap. Nicht node-weit: zwei gestartete Typen bekommen je die volle Zahl. |
+| `passivationReplacement` | Welche residente Entity das Cap hergibt — `'least-recently-used'` (Default), `'segmented-least-recently-used'` oder `'least-frequently-used'`. Bei `maxEntities` `0` wirkungslos; siehe [Wählen, was ein voller Node hergibt](#wählen-was-ein-voller-node-hergibt). |
 
 Die Defaults sind sinnvoll für kleine Cluster. Für Produktion
 willst du meistens `rememberEntities: true` und ein
@@ -408,9 +410,11 @@ lokal ein Shard landet.
 Fünf davon sind auch HOCON-Keys — `number-of-shards`,
 `remember-entities`, `passivation-idle`, `shard-passivation-idle` und
 `max-entities` — ebenso die Koordinator-Keys `rebalance-interval` und
-`hand-off-timeout`. Sie setzen die node-weite Grundeinstellung für
-jeden sharded Typ und liegen *unter* dem, was `start(...)` explizit
-übergibt — ein Per-Typ-Wert im Builder gewinnt also weiterhin. Siehe
+`hand-off-timeout` sowie der ganze `passivation`-Unterblock, der
+entscheidet, welche Entity das Cap hergibt. Sie setzen die node-weite
+Grundeinstellung für jeden sharded Typ und liegen *unter* dem, was
+`start(...)` explizit übergibt — ein Per-Typ-Wert im Builder gewinnt also
+weiterhin. Siehe
 [Konfiguration](/de/reference/configuration/#actor-tssharding).
 
 ```hocon
@@ -418,6 +422,7 @@ actor-ts.sharding {
   number-of-shards = 128
   passivation-idle = 2 minutes
   max-entities     = 50000
+  passivation.replacement = segmented-least-recently-used
 }
 ```
 
@@ -445,12 +450,12 @@ auf, oder setze für diesen Typ `passivationIdleMs: 0`.
 :::
 
 **Automatisch** — wenn `passivationIdleMs` ohne Verkehr abläuft oder
-`maxEntities` überschritten wird (die LRU-Entity wird verdrängt), wird
-die Entity gestoppt. Es wird nichts an die Entity geschickt, und es
-gibt keine Quittung. Die *Entscheidung* trifft die Region, weil nur sie
-den Verkehr über alle Shards dieses Nodes sieht — deshalb ist
-`maxEntities` eine Obergrenze pro Node, nicht pro Shard — und der Shard,
-dem die Entity gehört, führt sie aus.
+`maxEntities` überschritten wird (verdrängt wird die Entity, die die
+Ersetzungsstrategie benennt), wird die Entity gestoppt. Es wird nichts an
+die Entity geschickt, und es gibt keine Quittung. Die *Entscheidung*
+trifft die Region, weil nur sie den Verkehr über alle Shards dieses Nodes
+sieht — deshalb ist `maxEntities` eine Obergrenze pro Typ pro Node, nicht
+pro Shard — und der Shard, dem die Entity gehört, führt sie aus.
 
 **Manuell (graceful)** — eine Entity bittet darum, passiviert zu
 werden, indem sie ein `Passivate` an ihren Parent schickt, also an ihren
@@ -490,6 +495,59 @@ class CartActor extends Actor<CartCommand> {
   }
 }
 ```
+
+Die Stop-Nachricht ist eine *Bitte*: die Entity entscheidet, wann sie darauf
+reagiert. Tut sie es nie, terminiert sie nie — und ihr Platz bleibt für die
+Lebensdauer des Nodes gegen `maxEntities` belegt. Der Shard rüstet deshalb eine
+Rückfallebene: nach `passivationStopTimeoutMs` (Default 10 Sekunden,
+`actor-ts.sharding.passivation.stop-timeout`) stoppt er die Entity hart, genau
+so, wie es eine von der Region getriebene Passivierung tut. Setze `0`, wo das
+geordnete Herunterfahren tatsächlich keine Schranke hat.
+
+### Wählen, was ein voller Node hergibt
+
+`maxEntities` sagt, **wie viele** Entities resident bleiben;
+`passivationReplacement` sagt, **welche geht**, wenn eine neue dazukommt. Jeder
+Regler hier ist wirkungslos, solange `maxEntities` `0` ist — der Default.
+
+Die Default-Strategie `'least-recently-used'` hat einen blinden Fleck:
+Aktualität kann *einmal überhaupt benutzt* nicht von *bis eben ständig benutzt*
+unterscheiden. Ein Durchlauf über einen großen kalten Schlüsselraum — ein
+nächtlicher Export, ein Crawler, ein Backfill — verdrängt dein Arbeitsset also
+Entity für Entity und hinterlässt einen Node voller IDs, nach denen nie wieder
+jemand fragt. Zwei Optionen beheben das, und sie greifen ineinander:
+
+```ts
+const shardingOptions = StartShardingOptions.create<CartCommand>()
+  .withTypeName('cart')
+  .withEntityActor(CartActor)
+  .withExtractEntityId((command) => command.entityId)
+  .withMaxEntities(50_000)
+  // Bewährung für eine einmal gesehene Entity, geschützt für eine erneut
+  // gesehene; verdrängt wird aus der Bewährung, ein Scan kann also nur einen
+  // anderen Scan verdrängen.
+  .withPassivationReplacement('segmented-least-recently-used')
+  .withPassivationSegmentedProtectedProportion(0.8)
+  // Ein kleines Fenster vor der Strategie, damit die bei der Aufnahme
+  // beurteilte Entity nie die ist, auf die eine Nachricht wartet.
+  .withPassivationAdmissionWindowProportion(0.01)
+  // …und was beurteilt: ein kompakter Sketch darüber, wie oft jede ID gesehen
+  // wurde — er erinnert sich auch an IDs, die der Node nicht mehr hält.
+  .withPassivationAdmissionFilter('frequency-sketch');
+```
+
+`'least-frequently-used'` ist die dritte Strategie — die wenigsten Zugriffe
+verlieren, wobei die Zähler periodisch halbiert werden, damit die Rangfolge dem
+jüngeren Verkehr folgt statt einer Lebenszeitsumme. Sie passt zu einem
+Arbeitsset, das stabil, aber nicht aktuell ist, etwa eine Geräteflotte, die in
+langsamem Takt meldet.
+
+Der Filter braucht ein Fenster: eine Region kann die Entity, für die gerade
+eine Nachricht eingetroffen ist, nicht ablehnen — `'frequency-sketch'` mit
+`passivationAdmissionWindowProportion: 0` wird deshalb bei `start(...)`
+abgelehnt, statt still nichts zu tun. Alle fünf Regler sind zugleich
+HOCON-Keys unter
+[`actor-ts.sharding.passivation`](/de/reference/configuration/#actor-tssharding).
 
 ### Shards passivieren ebenfalls
 

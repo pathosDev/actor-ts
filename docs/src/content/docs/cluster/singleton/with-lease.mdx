@@ -116,6 +116,12 @@ Means: if the lease backend hiccups + revokes briefly, the
 singleton **restarts** during the recovery — same effect as a
 brief actor restart.
 
+The retry cadence is `withAcquireRetryIntervalMs(…)`, or
+`actor-ts.cluster.singleton.acquire-retry-interval` (default 5 s) for the
+whole node.  It is worth setting from the config file even though the lease
+itself has no key: until an acquire succeeds nothing hosts the singleton, so
+this interval is most of the recovery latency of a partition that heals.
+
 Worth knowing which way the honesty cuts: on this path promptness *is* the
 safety property, and a drain is not prompt.  A singleton with a long
 mailbox and a slow `postStop` keeps running for that long after its lease
@@ -171,7 +177,9 @@ For workloads where this is unacceptable, consider:
 - **Lower TTL** (15 s gives faster failover, more renewals).
 - **Buffering at the sender** — the singleton proxy buffers while
   the cluster has no host and drains when one appears.  The buffer
-  is capped (`withBufferSize`, default 1000); past the cap messages
+  is capped (`withBufferSize`, or
+  `actor-ts.cluster.singleton.buffer-size` — the only channel a node
+  that just calls `ref` has; default 1000); past the cap messages
   go to dead letters with a warning, so a gap that never closes
   cannot grow without bound.
 - **Different architecture** — singletons are inherently

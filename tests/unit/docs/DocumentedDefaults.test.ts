@@ -14,10 +14,13 @@ import { DEFAULT_MAILBOX_OVERFLOW } from '../../../src/ActorOptions.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
 import { DEFAULT_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/Constants.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
+import { DEFAULT_MINIMUM_MEMBERS_BEFORE_UP } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS, DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY } from '../../../src/cluster/downing/DowningFromConfig.js';
 import { DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION } from '../../../src/cluster/ClusterOptions.js';
 import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
+import { DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS, DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS, DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES, DEFAULT_SINGLETON_RESTART_ON_TERMINATION } from '../../../src/cluster/Constants.js';
+import { DEFAULT_BUFFER_SIZE as DEFAULT_SINGLETON_BUFFER_SIZE } from '../../../src/cluster/singleton/StartSingletonOptions.js';
 import {
   DEFAULT_DEAD_LETTER_MAX_ENTRIES,
   DEFAULT_DEAD_LETTER_MAX_REPLAYS,
@@ -61,6 +64,9 @@ import {
   DEFAULT_MAX_SUBSCRIBERS_PER_KEY,
   DEFAULT_MAX_SUBSCRIPTIONS_TOTAL,
 } from '../../../src/discovery/ReceptionistOptions.js';
+import { DEFAULT_DISCOVERY_METHOD } from '../../../src/cluster/ClusterBootstrapOptions.js';
+import { DEFAULT_DNS_CACHE_TTL_MS, DEFAULT_DNS_USE_SRV } from '../../../src/discovery/DnsSeedProviderOptions.js';
+import { DEFAULT_KUBERNETES_NAMESPACE } from '../../../src/discovery/KubernetesApiSeedProviderOptions.js';
 import {
   DEFAULT_NUM_SHARDS,
   DEFAULT_PASSIVATION_IDLE_MS,
@@ -77,6 +83,7 @@ import { DEFAULT_REBALANCE_ABSOLUTE_LIMIT, DEFAULT_REBALANCE_RELATIVE_LIMIT } fr
 import { DEFAULT_REGION_STALE_AFTER_MS } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
 import { DEFAULT_REGION_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/sharding/ShardingOptions.js';
 import { DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS } from '../../../src/cluster/sharding/StartShardingOptions.js';
+import { DEFAULT_PASSIVATION_ADMISSION_FILTER, DEFAULT_PASSIVATION_ADMISSION_WINDOW_PROPORTION, DEFAULT_PASSIVATION_REPLACEMENT, DEFAULT_PASSIVATION_SEGMENTED_PROTECTED_PROPORTION, DEFAULT_PASSIVATION_STOP_TIMEOUT_MS } from '../../../src/cluster/sharding/ShardingOptions.js';
 import { DEFAULT_DAEMON_LIVENESS_INTERVAL_MS } from '../../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
 import {
   DEFAULT_MAX_GOSSIP_BYTES,
@@ -115,6 +122,7 @@ import { DEFAULT_REDIS_DB } from '../../../src/cache/RedisCacheOptions.js';
 import { DEFAULT_BACKOFF_FORWARD, DEFAULT_BACKOFF_MAX_MS, DEFAULT_BACKOFF_MAX_STASH_SIZE, DEFAULT_BACKOFF_MIN_MS, DEFAULT_BACKOFF_RANDOM_FACTOR, DEFAULT_BACKOFF_RESET_COUNTER, DEFAULT_BACKOFF_TRIGGER_ON } from '../../../src/pattern/BackoffSupervisorOptions.js';
 import { DEFAULT_PROJECTION_MAX_RETRIES, DEFAULT_PROJECTION_MAX_RETRY_BACKOFF_MS, DEFAULT_PROJECTION_RECOVERY_STRATEGY, DEFAULT_PROJECTION_RETRY_BACKOFF_MS } from '../../../src/persistence/projection/ProjectionOptions.js';
 import { DEFAULT_LIVE_QUERY_POLL_INTERVAL_MS } from '../../../src/persistence/Constants.js';
+import { DEFAULT_JOURNAL_BREAKER_ID, DEFAULT_MAX_CONCURRENT_RECOVERIES, DEFAULT_RECOVERY_TIMEOUT_MS, DEFAULT_SNAPSHOT_BREAKER_ID, DEFAULT_SNAPSHOT_IS_OPTIONAL } from '../../../src/persistence/PersistenceBehaviorOptions.js';
 import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from '../../../src/logging/MultiSinkLoggerOptions.js';
 import { DEVTOOLS_DEFAULTS } from '../../../src/devtools/DevToolsOptions.js';
 import {
@@ -294,6 +302,12 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.seed-retry-interval', kind: 'duration', constant: DEFAULT_SEED_RETRY_INTERVAL_MS },
   { key: 'actor-ts.cluster.max-members', kind: 'int', constant: DEFAULT_MAX_MEMBERS },
   { key: 'actor-ts.cluster.max-tombstones', kind: 'int', constant: DEFAULT_MAX_TOMBSTONES },
+  // In the table rather than in FEATURE_SWITCHES, though `1` is the "off"
+  // value: the off state here is not a field being absent at the read site but
+  // a real threshold that a real comparison evaluates, so there is a constant
+  // for it to disagree with.  The per-role siblings ship comment-only — role
+  // names are the deployment's — and so carry no leaf to assert (#837).
+  { key: 'actor-ts.cluster.minimum-members-before-up', kind: 'int', constant: DEFAULT_MINIMUM_MEMBERS_BEFORE_UP },
   { key: 'actor-ts.cluster.tombstone.time-to-live', kind: 'duration', constant: DEFAULT_TOMBSTONE_TTL_MS },
   { key: 'actor-ts.cluster.tombstone.prune-interval', kind: 'duration', constant: DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS },
   // The configuration-agreement pair (#844).  `enforce` is in the table rather
@@ -306,6 +320,17 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // constant behind it, not the `[]` sentinel its four list-valued
   // predecessors are.
   { key: 'actor-ts.cluster.configuration-compatibility-check.checked-paths', kind: 'list', constant: DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS },
+
+  /* --- singleton --- */
+  // The `role` sibling is a PLACEHOLDERS entry, for the reason `sharding.role`
+  // gives there.  `restart-on-termination` is in the table rather than in
+  // FEATURE_SWITCHES because it has a constant to disagree with: giving the
+  // manager's `?? true` a name is part of publishing the key (#855).
+  { key: 'actor-ts.cluster.singleton.buffer-size', kind: 'int', constant: DEFAULT_SINGLETON_BUFFER_SIZE },
+  { key: 'actor-ts.cluster.singleton.hand-over-timeout', kind: 'duration', constant: DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS },
+  { key: 'actor-ts.cluster.singleton.acquire-retry-interval', kind: 'duration', constant: DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS },
+  { key: 'actor-ts.cluster.singleton.max-hand-over-state-bytes', kind: 'bytes', constant: DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES },
+  { key: 'actor-ts.cluster.singleton.restart-on-termination', kind: 'bool', constant: DEFAULT_SINGLETON_RESTART_ON_TERMINATION },
 
   /* --- serialization --- */
   { key: 'actor-ts.serialization.read-constraints.max-nesting-depth', kind: 'int', constant: DEFAULT_MAX_NESTING_DEPTH },
@@ -324,6 +349,28 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // `await-ready` is comment-only in reference.conf (unset selects the
   // grace-aware computed default, #1086) — no leaf, so nothing to assert.
   { key: 'actor-ts.cluster.bootstrap.minimum-members', kind: 'int', constant: DEFAULT_MINIMUM_MEMBERS },
+  // The selector half of the block (#860).  In the table rather than in
+  // LITERAL_AT_THE_READ_SITE because the `?? 'auto'` literals it used to be
+  // were named into a constant in the same change, precisely so the published
+  // enum's default has something to disagree with.  Its `service-name`
+  // sibling is a PLACEHOLDERS entry — "" is the shape of the key, and the
+  // reader drops it rather than passing it on.
+  { key: 'actor-ts.cluster.bootstrap.discovery.method', kind: 'string', constant: DEFAULT_DISCOVERY_METHOD },
+
+  /* --- discovery --- */
+  // Per-provider seed-discovery settings (#860).  `use-srv` is in the table
+  // and not in FEATURE_SWITCHES for the reason `remote.untrusted-mode` is:
+  // that group's stated reason is having no constant to disagree with, and
+  // this one has `DnsSeedProvider` reading `options.useSrv ?? DEFAULT_DNS_USE_SRV`.
+  // `namespace` is likewise a real constant rather than a literal at the read
+  // site — the two `?? 'default'` spellings in `AutoDiscovery` were named in
+  // the same change.  The two `pinned-addresses` lists and `config.seeds` are
+  // comment-only in reference.conf (unset means "no pinning" / "no static
+  // list", which an always-present empty list could not say), so there is no
+  // leaf here to assert.
+  { key: 'actor-ts.discovery.dns.cache-ttl', kind: 'duration', constant: DEFAULT_DNS_CACHE_TTL_MS },
+  { key: 'actor-ts.discovery.dns.use-srv', kind: 'bool', constant: DEFAULT_DNS_USE_SRV },
+  { key: 'actor-ts.discovery.kubernetes.namespace', kind: 'string', constant: DEFAULT_KUBERNETES_NAMESPACE },
 
   /* --- remote --- */
   { key: 'actor-ts.remote.tcp.port', kind: 'int', constant: DEFAULT_PORT },
@@ -374,6 +421,15 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // switch on would cost (#853).
   { key: 'actor-ts.sharding.stale-region-detection.heartbeat-interval', kind: 'duration', constant: DEFAULT_REGION_HEARTBEAT_INTERVAL_MS },
   { key: 'actor-ts.sharding.stale-region-detection.stale-after', kind: 'duration', constant: DEFAULT_REGION_STALE_AFTER_MS },
+  // The five `passivation.*` leaves are all real defaults rather than feature
+  // switches, `admission-window-proportion = 0` included: `settingsToConfig`
+  // resolves every one of them whether or not there is a cap, so the off state
+  // is a resolved `0` and not the field being absent (#848).
+  { key: 'actor-ts.sharding.passivation.replacement', kind: 'string', constant: DEFAULT_PASSIVATION_REPLACEMENT },
+  { key: 'actor-ts.sharding.passivation.segmented-protected-proportion', kind: 'number', constant: DEFAULT_PASSIVATION_SEGMENTED_PROTECTED_PROPORTION },
+  { key: 'actor-ts.sharding.passivation.admission-window-proportion', kind: 'number', constant: DEFAULT_PASSIVATION_ADMISSION_WINDOW_PROPORTION },
+  { key: 'actor-ts.sharding.passivation.admission-filter', kind: 'string', constant: DEFAULT_PASSIVATION_ADMISSION_FILTER },
+  { key: 'actor-ts.sharding.passivation.stop-timeout', kind: 'duration', constant: DEFAULT_PASSIVATION_STOP_TIMEOUT_MS },
 
   /* --- distributed data --- */
   { key: 'actor-ts.distributed-data.max-pending-quorum-requests', kind: 'int', constant: DEFAULT_MAX_PENDING_QUORUM_REQUESTS },
@@ -546,6 +602,15 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cache.memcached.servers', kind: 'string', constant: DEFAULT_MEMCACHED_SERVERS },
 
   /* --- persistence --- */
+  // System-wide behaviour (#874) — the five leaves that are not a plugin id.
+  // They sit directly under `actor-ts.persistence` and are read once by
+  // `PersistenceExtension`, so the published number and the shipped one are
+  // the same constant on both sides.
+  { key: 'actor-ts.persistence.max-concurrent-recoveries', kind: 'int', constant: DEFAULT_MAX_CONCURRENT_RECOVERIES },
+  { key: 'actor-ts.persistence.recovery-timeout', kind: 'duration', constant: DEFAULT_RECOVERY_TIMEOUT_MS },
+  { key: 'actor-ts.persistence.snapshot-is-optional', kind: 'bool', constant: DEFAULT_SNAPSHOT_IS_OPTIONAL },
+  { key: 'actor-ts.persistence.journal-breaker', kind: 'string', constant: DEFAULT_JOURNAL_BREAKER_ID },
+  { key: 'actor-ts.persistence.snapshot-breaker', kind: 'string', constant: DEFAULT_SNAPSHOT_BREAKER_ID },
   // The three SQLite blocks (#872).  `busy-timeout` is published under each of
   // them and pinned to one constant, because it is one pragma applied to every
   // handle the package opens — three copies of the number would be three ways
@@ -777,6 +842,12 @@ const PLACEHOLDERS: readonly string[] = [
   // string is what lets the reader tell "no opinion" from a role named "",
   // and the role a deployment actually wants is per-deployment (#847).
   'actor-ts.sharding.role',
+  // "" = any node may host, and the same reading as `sharding.role` above with
+  // one extra consequence: `role: ''` would not merely shadow an explicit
+  // `withRole`, it would fail `StartSingletonOptionsValidator`'s non-empty
+  // check on every node that copied `reference.conf` unedited — so the
+  // reader's empty-string skip is load-bearing rather than tidy (#855).
+  'actor-ts.cluster.singleton.role',
   // The three split-brain-resolver role narrowings (#838).  Same reading as
   // `sharding.role` above and the same reason there is no constant: `""` is
   // the published shape of the key, every strategy tests `!options.role`, and
@@ -785,6 +856,13 @@ const PLACEHOLDERS: readonly string[] = [
   'actor-ts.cluster.split-brain-resolver.keep-majority.role',
   'actor-ts.cluster.split-brain-resolver.keep-oldest.role',
   'actor-ts.cluster.split-brain-resolver.static-quorum.role',
+  // The same reading one block over (#860): "" is the published shape of the
+  // key, and `readClusterBootstrapDefaultsFromConfig` drops it rather than
+  // passing it on — which is what lets an unset key fall through to
+  // CLUSTER_SERVICE_NAME instead of shadowing it with a service name nobody
+  // wrote.  There is no constant it could be compared against: the service
+  // whose members are this cluster's peers is per-deployment by definition.
+  'actor-ts.cluster.bootstrap.discovery.service-name',
   'actor-ts.logger.sinks.gelf.url',
   'actor-ts.logger.sinks.gelf.host-name',
   'actor-ts.logger.sinks.otlp.service-name',

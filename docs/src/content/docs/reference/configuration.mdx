@@ -229,6 +229,8 @@ replay from it.
 | `cluster.weakly-up-after` | `0s` | Auto-promote a `joining` member to `weakly-up` after this long.  `0` disables it — see [Weakly-up](/cluster/weakly-up/). |
 | `cluster.max-members` | `1000` | Cap on live member entries gossip may introduce.  `0` disables the cap. |
 | `cluster.max-tombstones` | `10000` | Cap on `removed` tombstones gossip may introduce.  `0` disables the cap. |
+| `cluster.minimum-members-before-up` | `1` | Members that must be present before **anything** is promoted to `up`.  `1` is the historical behaviour — see below. |
+| `cluster.role.<role>.minimum-members-before-up` | *(unset)* | Per-role threshold, composed with the one above as an AND.  Comment-only in `reference.conf`, since role names are per-deployment. |
 | `cluster.tombstone.time-to-live` | `24h` | How long a `removed` tombstone is kept before it is pruned. |
 | `cluster.tombstone.prune-interval` | `5m` | How often the prune pass runs. |
 | `cluster.tombstone.min-retention` | `0s` | Floor on tombstone age before pruning is allowed.  `0` derives it from `failure-detector.down-after` (6×). |
@@ -318,9 +320,85 @@ warning into an outage — and the candidate set is a per-node view, so nothing
 that *elects* a role from it (a singleton's host, a shard's home) reads it,
 or two nodes would elect two winners.
 
+`minimum-members-before-up` holds the `joining` / `weakly-up` → `up`
+transition until the local member map holds at least that many members —
+the leader's promotions and a founder's own self-election alike.  It counts
+members in `joining`, `weakly-up` and `up`, so a `leaving` member does *not*
+hold the threshold open for its replacement, and it is never evaluated in
+reverse: there is no `up` → `joining` transition, so a cluster that later
+shrinks keeps the members it promoted and holds only new ones.
+
+Per-role thresholds compose with it as an **AND** — the global count and
+every configured role's count must be met.  They are written
+`cluster.role.<role>.minimum-members-before-up` and ship comment-only, since
+no leaf here could name a role your deployment invented.  What they buy is
+"do not place work on a cluster that has no backend yet": shard regions and
+singletons are hosted by role, so an all-frontend cluster satisfies a global
+count while being useless to place on.
+
+It is **not** `cluster.bootstrap.minimum-members`, which is a *wait*
+predicate for `awaitReady` / `isReady` and never changes a member's status.
+Setting this one largely subsumes that one — a node that is `up` at all
+already implies the threshold was met — so there is rarely a reason to set
+both.  And it is **not a quorum or a security control**: any node may
+announce itself `up`, so it bounds accidents rather than adversaries.
+Arbitration is `split-brain-resolver` above; note that `static-quorum` has no
+"nothing is unreachable" early return yet, so pair a threshold above `1` with
+a downing strategy you have checked at that cluster size.
+
+While the threshold is unmet the node stays `joining`, and it says so once —
+naming the key and the current count — rather than reporting the cold-start
+stall diagnosis, which would be a false verdict here.  See
+[Joining and seeds](/cluster/joining-and-seeds/).
+
 `seeds`, `roles` and the transport have no HOCON form — the first two are
 per-deployment identity that belongs at the join site, and the transport is
-an object a config file cannot express.
+an object a config file cannot express.  A per-role *threshold* is not an
+exception to that: it names a role rather than assigning one, and the
+assignment still happens at the join site.
+
+### `actor-ts.cluster.singleton`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `cluster.singleton.role` | `""` | Restrict hosting to nodes carrying this role tag.  `""` = any node may host; the empty string is dropped, never passed on. |
+| `cluster.singleton.buffer-size` | `1000` | Messages a proxy holds while the cluster has no host, before it drops the newest to dead letters. |
+| `cluster.singleton.hand-over-timeout` | `10s` | How long an incoming host waits for every eligible peer to confirm it is not running the singleton, before hosting anyway. |
+| `cluster.singleton.acquire-retry-interval` | `5s` | How long the manager waits before re-`acquire()`ing a lease it failed to take.  Only reached when a lease was passed in code. |
+| `cluster.singleton.max-hand-over-state-bytes` | `1M` | Cap on a warm-hand-over snapshot.  A snapshot above it is not sent and the successor starts cold. |
+| `cluster.singleton.restart-on-termination` | `on` | Re-spawn the singleton after its instance dies *unexpectedly* — as against the planned teardown of a hand-over. |
+
+The block is read by both doors, and the second one is why it exists.
+`cluster.singleton.start(...)` layers it under the caller's
+`StartSingletonOptions`, so an explicit `withBufferSize(…)` still wins per
+field.  `cluster.singleton.ref(...)` takes **no options object at all**, so
+before this block a proxy-only node had no way whatsoever to set its buffer
+cap — or to learn that the singleton is role-restricted, which is worse: a
+configured role reaching only `start()` leaves such a node routing at the
+plain leader while the managers host on the role member.
+
+Precedence has one turn that reads backwards: a role declared on the actor
+class's `SingletonKey` **beats** the config file, because the key is code and
+code is the higher layer.  Two nodes disagreeing about the role — one from a
+key, one from HOCON — is a genuine misconfiguration, and the proxy says so:
+it keeps the first role it was addressed with and warns about the second.
+
+`role = ""` is the shape of the key, not a value anyone runs with.  It is
+dropped rather than passed on, and here that is load-bearing twice over: `''`
+would shadow an explicit `withRole(…)` on the layer above, and
+`StartSingletonOptionsValidator` refuses an empty role outright, so a node
+that copied the shipped file unedited would fail every `start()`.
+
+Four keys Akka has are deliberately **not** here.  `use-lease` and
+`lease-name` have nothing behind them: no part of the framework turns a name
+into a `Lease`, and a switch reading `on` that produced no lease would
+advertise split-brain protection that is not there — pass one in code with
+`withLease(…)`.  `singleton-identification-interval` configures a poll this
+proxy does not do (it subscribes to cluster events instead), and
+`min-number-of-hand-over-retries` counts attempts nothing counts — the wait
+is bounded by `hand-over-timeout`.  The hand-over re-send cadence is a
+correctness property of the exchange rather than a tuning knob, and stays a
+constant.
 
 ### `actor-ts.cluster.pub-sub`
 
@@ -471,6 +549,95 @@ operator happened to name
 backends ship different built-in defaults — 3 attempts / 100 ms for Kubernetes,
 1 / 50 ms in memory — and one leaf could not express both without silently
 unifying them. Set them per lease in code.
+
+### `actor-ts.cluster.bootstrap`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `cluster.bootstrap.stable-margin` | `5s` | How long the contact-point set must be unchanged before the observation calls it stable. |
+| `cluster.bootstrap.poll-interval` | `1s` | How often discovery is polled during the observation. |
+| `cluster.bootstrap.max-wait` | `60s` | Total budget for the observation before it gives up and fails the bootstrap. |
+| `cluster.bootstrap.required-contact-points` | `1` | How many contact points a stable set must contain.  `1` keeps single-node development working; a value matching the expected replica count is what catches discovery that is stably *wrong* rather than merely slow. |
+| `cluster.bootstrap.self-election-grace` | `10s` | How long the lowest-addressed node waits for a peer to promote it before forming a cluster itself. |
+| `cluster.bootstrap.minimum-members` | `1` | Fewest `up` members — self included — before `awaitReady` / `Cluster.isReady` counts the cluster as ready. |
+| `cluster.bootstrap.await-ready` | *(unset)* | Readiness budget.  Comment-only in `reference.conf`: unset is what selects the computed default (`self-election-grace + 5s` behind stable observation, `5s` otherwise), and a key that is always present could not express it. |
+| `cluster.bootstrap.discovery.method` | `"auto"` | Which seed provider the bootstrap builds — `auto`, `config`, `dns` or `kubernetes`.  `auto` is the ladder; the other three pin one rung so a misconfigured deployment fails loudly instead of falling through. |
+| `cluster.bootstrap.discovery.service-name` | `""` | The DNS name the `dns` provider resolves and the Kubernetes Service whose `Endpoints` the `kubernetes` provider reads.  `""` means "not stated here", and `CLUSTER_SERVICE_NAME` then answers. |
+
+The five observation timings are read only when `stableObservation` is on;
+the readiness pair and the `discovery` sub-block are read by every
+`Cluster.bootstrap` call.  All of them layer under the explicit options, so a
+`withRequiredContactPoints(…)` or a `discovery: 'dns'` in code still wins.
+
+A `method` outside those four names is **refused**, not ignored. Falling back
+to `auto` on a typo would leave one node discovering differently from its
+peers, which is the cold-start split brain the observation exists to close.
+
+`selfElection` has no key here and will not get one: it differs per node by
+construction, so one shared value would either stop every node from starting
+or have all of them form a cluster at once.
+
+### `actor-ts.discovery`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `discovery.dns.cache-ttl` | `60s` | How long the DNS provider reuses one resolved answer.  In-process and per provider; failures are never cached.  `0` disables caching. |
+| `discovery.dns.use-srv` | `false` | Read SRV records instead of A records.  SRV carries a port per target, so each address is paired with the record's port rather than this node's remoting port. |
+| `discovery.dns.pinned-addresses` | *(unset)* | CIDRs (A-record mode) and/or host suffixes (SRV mode) a resolved address must match; anything else is discarded rather than offered as a seed.  Comment-only in `reference.conf`, because an always-present empty list could not say "no pinning" — see below. |
+| `discovery.kubernetes.namespace` | `"default"` | Namespace whose `Endpoints` object the Kubernetes provider reads. |
+| `discovery.kubernetes.pinned-addresses` | *(unset)* | CIDRs the discovered pod IPs must fall inside.  CIDRs only — `Endpoints` resolve to IPs, so a host suffix could never match.  Comment-only, same reason. |
+| `discovery.config.seeds` | *(unset)* | Static `[system@]host:port` list for the `config` provider.  Comment-only: a seed list is per-deployment identity with no publishable default, and an empty list already means "we are alone". |
+
+Top-level rather than under `cluster.*` for the reason `distributed-data` is:
+the module is. A `SeedProvider` is built and then handed to the cluster, and
+the same providers serve a hand-wired `Cluster.join` that never bootstraps.
+*Which* provider runs is not here either — that is
+`cluster.bootstrap.discovery.method` above, a property of the join rather than
+of a provider, so a deployment can pin the DNS answer without also deciding
+the ladder.
+
+#### Where the environment sits
+
+Discovery has always been steerable by `CLUSTER_SEEDS`,
+`CLUSTER_SERVICE_NAME` and `CLUSTER_NAMESPACE`. Those variables kept their
+meaning and moved *below* this block rather than above it:
+
+```
+explicit options  >  actor-ts.discovery.*  >  CLUSTER_*  >  built-in defaults
+```
+
+which is the framework's ordinary precedence with the environment appended at
+the bottom, not a fourth layer bolted on top of it. An env-only deployment
+therefore behaves exactly as it did before these keys existed, and an
+`application.conf` can now override a variable it could not previously reach.
+
+A deployment that wants a variable to outrank its own `application.conf`
+lifts it there itself:
+
+```hocon
+actor-ts.cluster.bootstrap.discovery.service-name = ${?CLUSTER_SERVICE_NAME}
+actor-ts.discovery.kubernetes.namespace = ${?CLUSTER_NAMESPACE}
+```
+
+That is a *read during parsing* (see [Environment
+substitution](#environment-substitution)), not a precedence layer — the value
+lands in whichever config layer the file belongs to, and the usual order
+applies from there.
+
+:::caution[Pin the addresses discovery is allowed to return]
+This block decides which peers a node will accept as seeds, and an
+`application.conf` is a wider input surface than a code call. The two
+`pinned-addresses` lists are the mitigation, and they are the reason both were
+added here rather than left on the code-only path: shipping `method` and
+`service-name` as config while the pin stayed unreachable from every
+`discovery:` shorthand would have widened what a config file can redirect a
+bootstrap toward without widening the guard.
+
+A CIDR pin is the strong form. A host-suffix pin (SRV mode only) constrains
+the namespace a record may point into, but the A lookup of that target is
+still unpinned — it stops the cheap attack, not an attacker who owns the
+resolver. See [Cluster security](/operations/security/cluster-security/).
+:::
 
 ### `actor-ts.remote`
 
@@ -993,6 +1160,11 @@ because the name lives inside the result the check never returned.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
+| `persistence.max-concurrent-recoveries` | `50` | Journal replays allowed to run at once, system-wide.  `0` is uncapped.  `sharding.entity-recovery` paces entity *starts* one layer up; this bounds how many of their *replays* are in flight. |
+| `persistence.recovery-timeout` | `30s` | Ceiling on one actor's whole recovery — snapshot load, journal read, fold, and the `highestSeq` probe a fully compacted stream needs.  Past it the replay fails with a `RecoveryTimeoutError` through `onRecoveryFailure`.  `0` is no deadline. |
+| `persistence.snapshot-is-optional` | `false` | Fall back to a full journal replay when the snapshot store cannot answer.  Never applies to an actor that set `integrity()` or `encryption()` — see below. |
+| `persistence.journal-breaker` | `"persistence-journal"` | Circuit-breaker **id** the journal is called through; `""` disables it.  Its numbers live under `actor-ts.circuit-breaker.persistence-journal`. |
+| `persistence.snapshot-breaker` | `"persistence-snapshot"` | As above, for the snapshot store. |
 | `persistence.journal.plugin` | `"...in-memory"` | Fully-qualified key to the journal's config. |
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Fully-qualified key to the snapshot store's config. |
 | `persistence.durable-state.plugin` | `"...in-memory"` | Fully-qualified key to the durable-state store's config. |
@@ -1023,6 +1195,34 @@ because the name lives inside the result the check never returned.
 | `persistence.snapshot-store.object-storage.filesystem.dir` | `""` | Root directory, created recursively.  Required when `backend = filesystem`. |
 | `persistence.snapshot-store.object-storage.filesystem.lock-timeout` | `5s` | Wait for a per-key write lock before failing. |
 | `persistence.snapshot-store.object-storage.filesystem.stale-lock` | `30s` | Lock files older than this are force-removed. |
+
+**The two breaker leaves are ids, not blocks of numbers.**  A breaker's
+settings live under `actor-ts.circuit-breaker.<id>`, layered over
+`actor-ts.circuit-breaker.default` — that is the one home for them, and
+publishing `max-failures` a second time under `actor-ts.persistence` would be
+two places to change one thing.  What ships by default is the failure count
+(10 in a row, then 15 s of fast-fail) and **no** `call-timeout`, because
+omitting it is what means "no deadline".  To put a ceiling on a single append
+— the fix for a backend that accepts the connection and then stalls — name it:
+
+```hocon
+actor-ts.circuit-breaker.persistence-journal.call-timeout = 10s
+```
+
+A `JournalConcurrencyError` never counts as a breaker failure: it is the
+ownership verdict of a conditional append, not an outage, and ten unlucky
+entities losing a race must not fast-fail every healthy one on the node.  The
+same holds for `JournalIntegrityError` and `SnapshotIntegrityError` — a
+durable fact about the stored bytes that waiting cannot change.
+
+**`snapshot-is-optional` deliberately does not cover a snapshot that failed to
+verify.**  Stores that check integrity reject a tampered body the same way
+they report being unreachable, so an actor whose `persistenceOptions` carry
+`integrity` or `encryption` gets no fallback at all — tolerating the outage
+would tolerate the tampering, and turn an integrity control into a retry.
+`DurableStateActor` is outside all of this: its store comes from per-actor
+`DurableStateOptions` rather than from the extension, so there is no
+system-wide instance to guard.
 
 The `object-storage` block configures **both** stores
 `registerObjectStoragePlugins(ext)` returns: the snapshot store and the
@@ -1446,7 +1646,12 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.remember-entities` | `false` | Persist the set of active entity IDs. |
 | `sharding.passivation-idle` | `5m` | Auto-passivate an entity after this idle window.  `0` = disabled.  An entity that keeps state in memory and does not rebuild it in `preStart` loses that state — see [passivation](/cluster/sharding/overview/#passivation). |
 | `sharding.shard-passivation-idle` | *(unset)* | Auto-passivate a shard after it has stood empty this long.  Unset it follows `passivation-idle`; `0` keeps empty shards resident.  Deliberately absent from `reference.conf`, because a shipped value is what "unset" would have to be distinguishable from. |
-| `sharding.max-entities` | `0` | Per-node entity cap; the least-recently-used entity is passivated on overflow.  `0` = no cap. |
+| `sharding.max-entities` | `0` | Entity cap **per sharded type on this node**; the entity the replacement policy names is passivated on overflow.  `0` = no cap.  Two started types each get the whole cap — see [choosing what a full node gives up](#choosing-what-a-full-node-gives-up) below. |
+| `sharding.passivation.replacement` | `least-recently-used` | Which resident entity the cap gives up.  Also `segmented-least-recently-used` and `least-frequently-used`.  Inert while `max-entities = 0`. |
+| `sharding.passivation.segmented-protected-proportion` | `0.8` | Share of the cap held by the *protected* segment under `segmented-least-recently-used`; the rest is probation.  Ignored under every other policy. |
+| `sharding.passivation.admission-window-proportion` | `0.0` | Share of the cap held as a probationary window in front of the policy.  `0` = no window.  Required by `admission-filter`. |
+| `sharding.passivation.admission-filter` | `off` | `frequency-sketch` makes a candidate leaving the window out-rank the entity it would displace.  Rejected at `sharding.start(...)` unless `admission-window-proportion > 0`. |
+| `sharding.passivation.stop-timeout` | `10s` | How long an entity may take to act on the stop-message a `Passivate` handed it before the shard stops it outright.  `0` waits forever. |
 | `sharding.buffer-size` | `100000` | How many messages one region may hold **across all its shards** while their homes are unknown or handing off.  Past the cap the *newest* message is dropped to dead letters with its sender, so what is already queued keeps the order the caller sent it in.  **Mind the polarity against `max-entities` above**: here `0` means *never buffer — dead-letter immediately*, not "no cap". |
 | `sharding.register-retry-interval` | `500ms` | How often a region re-sends an unacknowledged registration to the coordinator.  Everything routed for the type buffers until the coordinator answers, so this is also how long a lost `Register` stalls it. |
 | `sharding.shard-region-query-timeout` | `5s` | Default wait for `sharding.shards()` and `sharding.shardRefFor()`.  An explicit `timeoutMs` argument still wins over it.  Unrelated to how long the region keeps a correlation for a cross-node `ask`, which is minutes on purpose. |
@@ -1635,6 +1840,67 @@ There is deliberately no `check-interval`.  The sweep rides the
 `rebalance-interval` tick, which is already the dial for how often the
 coordinator looks at the shard map, so the detection latency is `stale-after`
 plus at most one tick.
+
+#### Choosing what a full node gives up
+
+`max-entities` says **how many** entities a node keeps; the `passivation` block
+says **which one leaves** when a new one arrives.  Every key in it is inert
+while `max-entities = 0`, which is the shipped default, so a deployment that
+sets no cap is unaffected by all of it.
+
+Read the cap's scope before tuning any of this: it is **per sharded type on
+this node**, not node-wide and not per shard.  A node running a `cart` type and
+a `session` type with `max-entities = 50000` holds up to a hundred thousand
+entities, fifty thousand of each.  Per shard the bound would divide across a
+set that changes on every rebalance; node-wide it would need a budget shared
+between regions that know nothing about each other.
+
+The default, `least-recently-used`, has one blind spot, and it is the reason
+the block exists.  Recency cannot tell *touched once, ever* from *touched
+constantly until a moment ago*, so a pass over a large cold key space — a
+nightly export, a crawler, a backfill — evicts the working set one entity at a
+time and leaves the cache full of ids nothing will ask for again:
+
+```hocon
+actor-ts.sharding {
+  max-entities = 50000
+  passivation {
+    replacement = segmented-least-recently-used
+    segmented-protected-proportion = 0.8
+    admission-window-proportion = 0.01
+    admission-filter = frequency-sketch
+  }
+}
+```
+
+- **`segmented-least-recently-used`** splits the cap in two.  An entity that has
+  been used once sits on *probation*; using it again moves it to the
+  *protected* segment, and eviction takes from probation first.  A scan entity
+  is never touched twice, so it can only ever displace another scan entity.
+- **`admission-window-proportion`** reserves a small slice of the cap for
+  brand-new arrivals.  It is what makes a filter possible at all: a region
+  cannot refuse the entity a message has just arrived for — it is being created
+  to receive that message — so the candidate judged against the incumbent is
+  whatever falls out of the window's far end instead.
+- **`admission-filter = frequency-sketch`** is that judgement.  A compact
+  count-min sketch of how often each id has been seen decides which of the two
+  stays, and it remembers ids the node no longer holds — which is exactly the
+  history needed to recognise an entity that used to be hot.  It is rejected
+  without a window rather than silently doing nothing.
+
+`least-frequently-used` is the third policy: fewest accesses loses, with every
+count halved periodically so the ranking follows recent traffic rather than a
+lifetime total.  It suits a working set that is stable but not recent — a fleet
+of devices reporting on a slow cycle — where recency says almost nothing.
+
+`stop-timeout` is unrelated to the choice above and applies to every cap.  When
+an entity passivates itself with
+[`Passivate`](/cluster/sharding/overview/#passivation), the stop-message is a
+request: the entity decides when to act on it.  If it never does, the entity
+never terminates and its slot is held against `max-entities` for the lifetime
+of the node.  After `stop-timeout` the shard stops it outright.  `0` restores
+the unbounded wait, which is right where a graceful shutdown genuinely has no
+bound.
 
 A per-type setting therefore belongs in the builder; the config file is for
 the node-wide baseline you want to move between staging and production

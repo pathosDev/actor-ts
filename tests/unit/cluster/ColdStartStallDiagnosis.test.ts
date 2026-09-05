@@ -86,6 +86,7 @@ type NodeHandle = {
  */
 async function startNode(
   systemName: string, port: number, seeds: string[], selfElection?: SelfElectionPolicy,
+  minimumMembersBeforeUp?: number,
 ): Promise<NodeHandle> {
   const address = new NodeAddress(systemName, '10.0.151.1', port);
   const logger = new RecordingLogger();
@@ -106,6 +107,9 @@ async function startNode(
     })
     .withGossipIntervalMs(60_000);
   if (selfElection !== undefined) clusterOptions.withSelfElection(selfElection);
+  if (minimumMembersBeforeUp !== undefined) {
+    clusterOptions.withMinimumMembersBeforeUp(minimumMembersBeforeUp);
+  }
   const cluster = await Cluster.join(system, clusterOptions);
   return { system, cluster, address, logger };
 }
@@ -139,6 +143,20 @@ function introducePeer(node: NodeHandle, peer: NodeAddress, status: MemberStatus
 function stallWarnings(node: NodeHandle): string[] {
   return node.logger.records
     .filter((r) => r.level === 'warn' && r.message.includes('nothing can promote this node'))
+    .map((r) => r.message);
+}
+
+/** The #837 counterpart — the cluster is short of members, not misconfigured. */
+function thresholdWarnings(node: NodeHandle): string[] {
+  return node.logger.records
+    .filter((r) => r.level === 'warn' && r.message.includes('minimum-members-before-up'))
+    .map((r) => r.message);
+}
+
+/** The line a founder logs when the threshold holds its self-election (#837). */
+function heldSelfElectionLines(node: NodeHandle): string[] {
+  return node.logger.records
+    .filter((r) => r.message.includes('holding self-election'))
     .map((r) => r.message);
 }
 
@@ -262,6 +280,96 @@ describe('and stays quiet where the stall is not this node to report', () => {
     await sleep(QUIET_WINDOW_MS);
 
     expect(stallWarnings(node)).toEqual([]);
+    expect(internals(node.cluster).members.get(node.address.toString())?.status).toBe('up');
+  });
+});
+
+/**
+ * #837 — the same silence, a different cause, and the verdict above would be
+ * false about it.
+ *
+ * `minimumMembersBeforeUp` holds every promotion including this node's own
+ * self-election, so the member map looks exactly like a cold-start stall: no
+ * member `up`, no leader, nothing pending. It is not one. The cluster is short
+ * of members and the missing node fixes it, where a real stall is fixed by
+ * changing the configuration — so telling an operator "no node will ever form
+ * the cluster" here would send them to rewrite a config that is correct.
+ */
+describe('a cluster waiting for its membership threshold says so instead', () => {
+  test('the threshold and the current count replace the stall verdict', async () => {
+    const node = await startNode('threshold-wait', 9_711, ['10.0.151.2:9790'], undefined, 3);
+    nodes.push(node);
+    introducePeer(node, new NodeAddress('threshold-wait', '10.0.151.2', 9_790), 'joining');
+
+    await awaitCondition(() => thresholdWarnings(node).length > 0, {
+      timeoutMs: 2_000, intervalMs: 5, label: 'the membership-threshold wait to be reported',
+    });
+
+    const warning = thresholdWarnings(node)[0] ?? '';
+    // The key, so the operator can find the value they set.
+    expect(warning).toContain('actor-ts.cluster.minimum-members-before-up');
+    // The arithmetic, so they can tell "still rolling out" from "set above the
+    // size of the deployment" — the only two states this can be.
+    expect(warning).toContain('2 of 3 member(s) present');
+    // And, load-bearing: NOT the other diagnosis. The two conditions are
+    // indistinguishable in the member map, so the wrong one shipping is a
+    // silent regression rather than a failing assertion anywhere else.
+    expect(stallWarnings(node)).toEqual([]);
+  });
+
+  test('it is a verdict on a wait, not an event: one line however long it lasts', async () => {
+    const node = await startNode('threshold-once', 9_712, ['10.0.151.2:9790'], undefined, 3);
+    nodes.push(node);
+    introducePeer(node, new NodeAddress('threshold-once', '10.0.151.2', 9_790), 'joining');
+
+    await awaitCondition(() => thresholdWarnings(node).length > 0, {
+      timeoutMs: 2_000, intervalMs: 5, label: 'the membership-threshold wait to be reported',
+    });
+    // Absence assertion: several more retry rounds have to pass for "no second
+    // line" to mean anything.
+    await sleep(QUIET_WINDOW_MS);
+
+    expect(thresholdWarnings(node)).toHaveLength(1);
+  });
+
+  test('a founder with no seeds names the threshold that is holding it', async () => {
+    // The gap the seed-retry loop cannot cover: an empty seed list arms no
+    // retry timer at all, so `reportColdStartStall` never runs — and a founder
+    // held by the threshold is the exact node an operator will be looking at
+    // when the cluster does not come up.
+    const node = await startNode('threshold-founder', 9_713, [], undefined, 2);
+    nodes.push(node);
+
+    await awaitCondition(() => heldSelfElectionLines(node).length > 0, {
+      timeoutMs: 2_000, intervalMs: 5, label: 'the held self-election to be reported',
+    });
+
+    const line = heldSelfElectionLines(node)[0] ?? '';
+    expect(line).toContain('actor-ts.cluster.minimum-members-before-up');
+    expect(line).toContain('1 of 2 member(s) present');
+    // Held, not abandoned — and held at `joining`, which is the state the
+    // whole mechanism exists to keep it in.
+    expect(internals(node.cluster).members.get(node.address.toString())?.status).toBe('joining');
+
+    // Once, however many gossip ticks pass: `leaderActionsTick` re-enters
+    // `selfElect` on every one of them, and a line per tick would bury it.
+    await sleep(QUIET_WINDOW_MS);
+    expect(heldSelfElectionLines(node)).toHaveLength(1);
+  });
+
+  test('the default threshold changes nothing about the founder', async () => {
+    // The compatibility half, asserted here because this is where the founder
+    // path is instrumented: an unset threshold must leave the single-node run
+    // exactly as it was, with no held election and no line about one.
+    const node = await startNode('threshold-default', 9_714, []);
+    nodes.push(node);
+
+    // Absence assertion: nothing is ever going to arrive, so the only evidence
+    // available is that the window it would have arrived in went by.
+    await sleep(QUIET_WINDOW_MS);
+
+    expect(heldSelfElectionLines(node)).toEqual([]);
+    expect(thresholdWarnings(node)).toEqual([]);
     expect(internals(node.cluster).members.get(node.address.toString())?.status).toBe('up');
   });
 });

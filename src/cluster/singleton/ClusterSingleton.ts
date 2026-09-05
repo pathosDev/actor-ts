@@ -10,6 +10,7 @@ import type { Cluster } from '../Cluster.js';
 import type { NodeAddress } from '../NodeAddress.js';
 import type { EnvelopeMessage } from '../Protocol.js';
 import { fromNullable, type Option } from '../../util/Option.js';
+import { mergeOptions } from '../../util/OptionsMerge.js';
 import {
   ClusterSingletonManager,
   singletonManagerPath,
@@ -18,7 +19,7 @@ import {
 import { AuthenticatedSingletonMessage, isSingletonMessage } from './SingletonProtocol.js';
 import type { SingletonHandOverAcknowledgment, SingletonMessage } from './SingletonProtocol.js';
 import { ClusterSingletonManagerOptions } from './ClusterSingletonManagerOptions.js';
-import { StartSingletonOptionsValidator } from './StartSingletonOptions.js';
+import { StartSingletonOptionsValidator, readSingletonOptionsFromConfig } from './StartSingletonOptions.js';
 import type { StartSingletonOptions, StartSingletonOptionsType } from './StartSingletonOptions.js';
 import { ClusterSingletonProxy } from './ClusterSingletonProxy.js';
 import {
@@ -135,7 +136,7 @@ export class ClusterSingleton implements Extension {
   ): ActorRef<TCommand>;
   start<TCommand>(options: StartSingletonOptions<TCommand>): ActorRef<TCommand>;
   start<TCommand>(arg1: unknown, arg2?: unknown, arg3?: unknown): ActorRef<TCommand> {
-    const options = this.resolveStartOptions<TCommand>(arg1, arg2, arg3);
+    const options = this.withConfigDefaults(this.resolveStartOptions<TCommand>(arg1, arg2, arg3));
     new StartSingletonOptionsValidator<TCommand>().validate(options);
     this.ensureManager(options);
     // The role goes onto the key so the proxy resolves the same host the
@@ -156,11 +157,25 @@ export class ClusterSingleton implements Extension {
    * node currently hosts the singleton.  If that node later calls `start`, the
    * same ref begins delivering through the local mailbox instead of over the
    * wire — the manager is resolved per delivery, not captured.
+   *
+   * This is the one door with no options object, which is why it reads
+   * `actor-ts.cluster.singleton.*` itself (#855).  Both leaves it takes from
+   * there matter to a proxy-only node and neither was reachable before:
+   * `buffer-size` is the cap on what it holds while nobody hosts, and `role`
+   * is *which node* it considers a host at all — a configured role that
+   * reached only `start()` would leave this node routing at the plain leader
+   * while the managers host on the role member.  A role on the key still wins,
+   * because it is code.
    */
   ref<TCommand>(key: SingletonKey<TCommand> | SingletonKeyedClass<TCommand>): ActorRef<TCommand>;
   ref<TCommand>(typeName: string): ActorRef<TCommand>;
   ref<TCommand>(reference: SingletonReference<TCommand>): ActorRef<TCommand> {
-    return this.proxyFor(singletonKeyOf(reference));
+    const key = singletonKeyOf(reference);
+    const fromConfig = readSingletonOptionsFromConfig(this.system.config);
+    return this.proxyFor(
+      key.role !== undefined ? key : SingletonKey.of<TCommand>(key.typeName, fromConfig.role),
+      fromConfig.bufferSize,
+    );
   }
 
   /**
@@ -258,6 +273,37 @@ export class ClusterSingleton implements Extension {
       typeName: key.typeName,
       actor: actorFactoryOf(actor),
     } as StartSingletonOptionsType<TCommand>;
+  }
+
+  /**
+   * Layer the `actor-ts.cluster.singleton.*` block under the caller's options,
+   * giving a singleton the precedence the rest of the framework documents:
+   * **explicit options > HOCON > built-in defaults** (#855).
+   *
+   * It runs *before* the validator, so validation sees the values this node
+   * will actually run with — a configured `hand-over-timeout = 0` has to be
+   * refused by name, not silently used.
+   *
+   * The defaults layer is empty on purpose, exactly as
+   * `ClusterSharding.withConfigDefaults` leaves it: the built-in fallbacks
+   * already live at their read sites (`ClusterSingletonManager`'s `??` chain,
+   * `ClusterSingletonProxy`'s default parameter), and duplicating them here
+   * would give the project two places to disagree about what `1000` means.
+   *
+   * A role declared on the actor class's `SingletonKey` also wins over the
+   * config file, because {@link shorthandOptions} has already folded it into
+   * the explicit layer.  That is the right way round — the key is code — but
+   * it is the opposite of the "the config file wins" intuition, so it is
+   * stated in the docs as well as here.
+   */
+  private withConfigDefaults<TCommand>(
+    options: StartSingletonOptionsType<TCommand>,
+  ): StartSingletonOptionsType<TCommand> {
+    return mergeOptions<StartSingletonOptionsType<TCommand>>(
+      {},
+      readSingletonOptionsFromConfig(this.system.config),
+      options,
+    );
   }
 
   /** Spawn this node's manager for `options`, unless one is already running. */

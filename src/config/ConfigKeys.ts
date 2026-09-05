@@ -382,6 +382,34 @@ export const ConfigKeys = {
 
   /** Persistence plugin selection + config — `actor-ts.persistence.*`. */
   persistence: {
+    /**
+     * System-wide persistence *behaviour* (#874), read once by
+     * `PersistenceExtension` — as distinct from the plugin-id namespaces
+     * below, which name another config root each.
+     *
+     * These five sit **directly** under `actor-ts.persistence`, one level
+     * above where a plugin id can appear (`persistence.<axis>.<backend>`), so
+     * the "that block is exclusively plugin-id namespaces" reading that sent
+     * `actor-ts.projection` to the top level still holds for everything a
+     * backend owns.
+     *
+     * Full dotted leaves rather than a block root, and here that matters:
+     * `NoDeadConfigKeys`' `coveringAccessor` falls back to the nearest root,
+     * and `persistence.journal` is already one — a root-only entry would let
+     * a leaf nothing reads pass the guard.
+     */
+    maxConcurrentRecoveries: 'actor-ts.persistence.max-concurrent-recoveries',
+    recoveryTimeout: 'actor-ts.persistence.recovery-timeout',
+    snapshotIsOptional: 'actor-ts.persistence.snapshot-is-optional',
+    /**
+     * The `CircuitBreakerExtension` id each store is called through — a name,
+     * not a block of numbers.  The numbers live under
+     * `actor-ts.circuit-breaker.<id>`, which #864 made the single home for
+     * them; publishing `max-failures` a second time here would be two homes
+     * for one mechanism.
+     */
+    journalBreaker: 'actor-ts.persistence.journal-breaker',
+    snapshotBreaker: 'actor-ts.persistence.snapshot-breaker',
     journal: {
       plugin: 'actor-ts.persistence.journal.plugin',
       inMemory: 'actor-ts.persistence.journal.in-memory',
@@ -914,6 +942,35 @@ export const ConfigKeys = {
     maxMembers: 'actor-ts.cluster.max-members',
     maxTombstones: 'actor-ts.cluster.max-tombstones',
     /**
+     * Members that must be present before anything is promoted to `up` (#837)
+     * — the leader's promotions and a founder's own self-election alike.
+     *
+     * Not `bootstrap.minimum-members`, which sits one block down and is a
+     * *wait* predicate for `awaitReady` / `isReady`: that one counts `up`
+     * members and never changes a status, this one decides whether a status
+     * changes at all.  The `-before-up` suffix is what keeps the two apart in
+     * an operator's config file, and is the reason this key is not simply
+     * `minimum-members`.
+     */
+    minimumMembersBeforeUp: 'actor-ts.cluster.minimum-members-before-up',
+    /**
+     * Root of the per-role Up thresholds —
+     * `actor-ts.cluster.role.<role>.minimum-members-before-up` (#837).
+     *
+     * A root rather than leaves, and unavoidably so: the role names belong to
+     * the deployment, so no full path can be written down here.
+     * `ClusterOptions.ts` composes the leaf from this root, exactly as
+     * `redisCacheKeysUnder` composes a per-name cache block's.
+     *
+     * Ships **comment-only** in `reference.conf` for the same reason, which
+     * also keeps it out of the leaf-driven guards: `NoDeadConfigKeys` and
+     * `DocumentedDefaults` both walk `REFERENCE_CONF`'s leaves, and a comment
+     * yields none.  What checks this entry is
+     * `ClusterConfigDefaults.test.ts`, which reads a written-out role block
+     * back through `readClusterOptionsFromConfig`.
+     */
+    role: 'actor-ts.cluster.role',
+    /**
      * Cluster-wide configuration agreement —
      * `actor-ts.cluster.configuration-compatibility-check.*` (#844).  Read once
      * by `readClusterOptionsFromConfig`; `Cluster` publishes the listed
@@ -1044,6 +1101,61 @@ export const ConfigKeys = {
       selfElectionGrace: 'actor-ts.cluster.bootstrap.self-election-grace',
       awaitReady: 'actor-ts.cluster.bootstrap.await-ready',
       minimumMembers: 'actor-ts.cluster.bootstrap.minimum-members',
+      /**
+       * Which seed provider the bootstrap builds, and the service it asks
+       * about — `actor-ts.cluster.bootstrap.discovery.*` (#860).  Read by
+       * every `bootstrapCluster` call, not only the stable-observation one,
+       * and layered under the `discovery:` option in code.
+       *
+       * They live under `bootstrap` rather than under the top-level
+       * `discovery` group because they are properties of *this join*: which
+       * ladder a node climbs and whose members it is looking for.  The
+       * per-provider settings a deployment tunes independently of that
+       * choice are the `discovery` group below.
+       */
+      discovery: {
+        method: 'actor-ts.cluster.bootstrap.discovery.method',
+        serviceName: 'actor-ts.cluster.bootstrap.discovery.service-name',
+      },
+    },
+
+    /**
+     * Cluster-singleton placement and tuning — `actor-ts.cluster.singleton.*`
+     * (#855).  Read once per `ClusterSingleton.start`, which layers the block
+     * under the caller's `StartSingletonOptions`, **and** once per
+     * `ClusterSingleton.ref` — the only channel a proxy-only node has, since
+     * `ref()` takes no options object at all.
+     *
+     * Nested under `cluster` rather than top-level by the test
+     * {@link distributedData} states below, applied the other way round: that
+     * module is top-level because it ships from `src/crdt/` and its options
+     * type carries no `cluster` field.  The singleton fails both halves — it
+     * ships from `src/cluster/singleton/`, and
+     * `ClusterSingletonManagerOptionsType` carries a `cluster` field — so it
+     * nests, beside `pub-sub` and `receptionist`.
+     *
+     * Full dotted leaves rather than a bare `singleton` root, measured the
+     * same way #838 measured it: `NoDeadConfigKeys`' `coveringAccessor` falls
+     * back to the nearest root, so a root-only shape passes for every leaf
+     * beneath it whether or not anything reads one.
+     *
+     * Four of the eight keys the issue proposed are **absent on purpose** and
+     * stay that way until something backs them: `use-lease` and `lease-name`
+     * (nothing in `src/` builds a `Lease` from config — #859 added lease
+     * *tuning* and no backend selector), `min-number-of-hand-over-retries`
+     * (the wait is bounded by `hand-over-timeout`, and nothing counts
+     * attempts) and `singleton-identification-interval` (the proxy never
+     * polls — it subscribes to cluster events once).  `hand-over-retry-interval`
+     * is refused in writing by `SINGLETON_HAND_OVER_RETRY_INTERVAL_MS`'s own
+     * JSDoc.
+     */
+    singleton: {
+      role: 'actor-ts.cluster.singleton.role',
+      bufferSize: 'actor-ts.cluster.singleton.buffer-size',
+      handOverTimeout: 'actor-ts.cluster.singleton.hand-over-timeout',
+      acquireRetryInterval: 'actor-ts.cluster.singleton.acquire-retry-interval',
+      maxHandOverStateBytes: 'actor-ts.cluster.singleton.max-hand-over-state-bytes',
+      restartOnTermination: 'actor-ts.cluster.singleton.restart-on-termination',
     },
 
     /**
@@ -1071,6 +1183,57 @@ export const ConfigKeys = {
       gossipInterval: 'actor-ts.cluster.receptionist.gossip-interval',
       maxSubscribersPerKey: 'actor-ts.cluster.receptionist.max-subscribers-per-key',
       maxSubscriptionsTotal: 'actor-ts.cluster.receptionist.max-subscriptions-total',
+    },
+  },
+
+  /**
+   * Seed-discovery provider settings — `actor-ts.discovery.*` (#860).  Read
+   * once per `bootstrapCluster` by `readAutoDiscoveryOptionsFromConfig`
+   * (`src/discovery/AutoDiscoveryOptions.ts`), which layers them under the
+   * explicit `AutoDiscoveryOptions` and above the `CLUSTER_*` environment
+   * variables the providers already read.
+   *
+   * Top-level rather than under `cluster.*` for the reason `distributedData`
+   * below is: the module is.  `src/discovery/` ships its own subpath export,
+   * a `SeedProvider` is built and then handed to the cluster, and the same
+   * providers serve a hand-wired `Cluster.join` that never bootstraps.
+   *
+   * Leaf by leaf rather than a block root, for the reason `reliableDelivery`
+   * spells out: `NoDeadConfigKeys`' covering accessor falls back to *"a root
+   * above it"*, so a root-only entry would let every leaf under it pass
+   * whether or not a reader addresses it — and three of these five have no
+   * `reference.conf` leaf at all, which would have left them checked by
+   * nothing whatsoever.
+   *
+   * `dns.pinned-addresses`, `kubernetes.pinned-addresses` and `config.seeds`
+   * are the comment-only three.  The pins need "unset" to stay expressible —
+   * an always-present empty list cannot say "no pinning", and no pinning is
+   * the default (#145).  `config.seeds` is per-deployment identity with no
+   * publishable default, and an empty list already means "we are alone".
+   *
+   * The two pin entries are spelled `dnsPinnedAddresses` /
+   * `kubernetesPinnedAddresses` rather than sharing one `pinnedAddresses`
+   * name under their own sub-blocks, because `isReferencedInSource` reduces
+   * an accessor to `ConfigKeys.<group>` plus its **last** segment: two
+   * siblings with the same final name are one textual pair, so a reader of
+   * either would vouch for both.  Distinct finals keep each leaf checked on
+   * its own the day one of them grows a `reference.conf` leaf.
+   */
+  discovery: {
+    dns: {
+      cacheTtl: 'actor-ts.discovery.dns.cache-ttl',
+      useSrv: 'actor-ts.discovery.dns.use-srv',
+      /** Comment-only in `reference.conf` — unset means no pinning. */
+      dnsPinnedAddresses: 'actor-ts.discovery.dns.pinned-addresses',
+    },
+    kubernetes: {
+      namespace: 'actor-ts.discovery.kubernetes.namespace',
+      /** Comment-only in `reference.conf` — unset means no pinning. */
+      kubernetesPinnedAddresses: 'actor-ts.discovery.kubernetes.pinned-addresses',
+    },
+    config: {
+      /** Comment-only in `reference.conf` — per-deployment identity. */
+      seeds: 'actor-ts.discovery.config.seeds',
     },
   },
 
@@ -1342,6 +1505,31 @@ export const ConfigKeys = {
     passivationIdle: 'actor-ts.sharding.passivation-idle',
     shardPassivationIdle: 'actor-ts.sharding.shard-passivation-idle',
     maxEntities: 'actor-ts.sharding.max-entities',
+    /**
+     * Entity-replacement policy — `actor-ts.sharding.passivation.*` (#848).
+     * Grouped in HOCON because the five are only meaningful together and all
+     * five are inert without `max-entities`; the matching options fields stay
+     * flat (`passivationReplacement`, …), the same translation
+     * `cluster.tombstone.*` and `stale-region-detection.*` already make.
+     *
+     * Full dotted leaves, not a bare `passivation` root, for the reason
+     * `entity-recovery` above spells out: `NoDeadConfigKeys` resolves a leaf
+     * through *any* config root above it, so a root-only entry would let all
+     * five pass with nothing reading them.
+     *
+     * `passivation-idle` and `max-entities` above deliberately do NOT move in
+     * here.  Both are pinned as reference leaves at their current paths by the
+     * guards themselves, so relocating them means editing the tests that exist
+     * to catch relocation, and aliasing them means two leaves feeding one field
+     * with a precedence rule between them.
+     */
+    passivationReplacement: 'actor-ts.sharding.passivation.replacement',
+    passivationSegmentedProtectedProportion:
+      'actor-ts.sharding.passivation.segmented-protected-proportion',
+    passivationAdmissionWindowProportion:
+      'actor-ts.sharding.passivation.admission-window-proportion',
+    passivationAdmissionFilter: 'actor-ts.sharding.passivation.admission-filter',
+    passivationStopTimeout: 'actor-ts.sharding.passivation.stop-timeout',
     bufferSize: 'actor-ts.sharding.buffer-size',
     registerRetryInterval: 'actor-ts.sharding.register-retry-interval',
     rebalanceInterval: 'actor-ts.sharding.rebalance-interval',

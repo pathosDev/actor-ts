@@ -39,9 +39,17 @@ export {
   ClusterBootstrapOptions,
   ClusterBootstrapOptionsBuilder,
   ClusterBootstrapOptionsValidator,
+  DEFAULT_DISCOVERY_METHOD,
+  DISCOVERY_METHODS,
   readClusterBootstrapDefaultsFromConfig,
+  readClusterBootstrapDiscoveryFromConfig,
 } from './ClusterBootstrapOptions.js';
-export type { ClusterBootstrapOptionsType, ClusterBootstrapConfigDefaults } from './ClusterBootstrapOptions.js';
+export type {
+  ClusterBootstrapConfigDefaults,
+  ClusterBootstrapDiscoveryDefaults,
+  ClusterBootstrapOptionsType,
+  DiscoveryMethod,
+} from './ClusterBootstrapOptions.js';
 export type { BootstrappedCluster } from './ClusterBootstrap.js';
 
 // Stable-observation bootstrap (#148).
@@ -236,6 +244,12 @@ export type { ShardingOptionsType } from './sharding/ShardingOptions.js';
 // from `src/persistence` (#851).
 export { ENTITY_RECOVERY_STRATEGIES } from './sharding/ShardingOptions.js';
 export type { EntityRecoveryStrategy } from './sharding/ShardingOptions.js';
+// Likewise for the two passivation unions: both appear in `ShardingOptionsType`,
+// so a caller writing the options type out by hand has to be able to name them
+// (#848).  The strategy implementations behind them stay internal — the seam is
+// configured, not plugged.
+export { ENTITY_ADMISSION_FILTERS, ENTITY_REPLACEMENT_POLICIES } from './sharding/ShardingOptions.js';
+export type { EntityAdmissionFilter, EntityReplacementPolicy } from './sharding/ShardingOptions.js';
 export { ShardCoordinator } from './sharding/ShardCoordinator.js';
 export { ShardCoordinatorOptions, ShardCoordinatorOptionsBuilder } from './sharding/ShardCoordinatorOptions.js';
 export type { ShardCoordinatorOptionsType } from './sharding/ShardCoordinatorOptions.js';

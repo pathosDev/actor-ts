@@ -249,8 +249,25 @@ Verhalten des Frameworks:
 - **Idle-Timeout-Passivierung** (`passivationIdleMs`) — hängt ein
   `stopped`-Event an. Nächste Nachricht spawnt sie neu; der
   Store empfängt erneut ein `started`-Event.
-- **`maxEntities`-LRU-Passivierung** — dasselbe.
+- **`maxEntities`-Passivierung** — dasselbe.
 - **`Passivate` von der Entity selbst** — dasselbe.
+
+### Erinnerte Entities zählen gegen `maxEntities`
+
+Eine erinnerte Entity wird *vorab erzeugt*: die Region bekommt die Registry
+eines Shards und startet jede Entity darin, ohne dass irgendetwas dorthin
+geroutet worden wäre. Diese Starts laufen jetzt durch dasselbe Cap und dieselbe
+Ersetzungsstrategie wie ein nachrichtengetriebener Start — ein Node, dem eine
+Registry größer als `maxEntities` gereicht wird, passiviert also auf das Cap
+herunter, statt es um die Größe der Registry zu überschreiten und dort zu
+bleiben.
+
+Das gehört mit [`entity-recovery`](#einen-restore-drosseln) zusammengedacht,
+wenn die beiden nicht zueinander passen: bei kleinem Cap und großer Registry
+spawnt ein ungedrosselter `all`-Restore jede Entity und passiviert die meisten
+sofort wieder. Entweder hebst du das Cap über die Registry, die ein Node halten
+soll, oder du akzeptierst, dass das Cap die tatsächliche Grenze ist und die
+Registry eine Obermenge dessen, was resident bleibt.
 
 Für Workloads, in denen du **eager Re-Spawn auch von kürzlich
 inaktiven Entities** willst, setze `passivationIdleMs: 0`, damit

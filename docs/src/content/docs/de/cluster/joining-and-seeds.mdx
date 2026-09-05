@@ -110,6 +110,61 @@ den übrigen dessen Adresse — oder, besser, nutze den
 [Cluster-Bootstrap](/de/cluster/cluster-bootstrap/), der einen
 festgelegten ersten Node überflüssig macht.
 
+### Den ersten Node zurückhalten
+
+Einen Cluster aus einem Node zu bilden ist in der Entwicklung genau
+richtig und in Produktion oft nicht: der Gründungsknoten ist allein
+`up`, also starten Singletons auf ihm und Shards werden auf ihm
+platziert, bevor es überhaupt Repliken gibt. `minimumMembersBeforeUp`
+hält jeden Übergang nach `up` zurück — die Beförderungen des Leaders
+*und* die Selbstwahl dieses Nodes —, bis so viele Mitglieder vorhanden
+sind:
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost('0.0.0.0')
+  .withPort(2552)
+  .withSeeds([])
+  .withMinimumMembersBeforeUp(3);
+```
+
+Der Gründungsknoten bleibt jetzt `joining`, bis drei Mitglieder in
+seiner Mitgliederkarte stehen, wählt sich dann selbst und befördert die
+beiden anderen im selben Durchlauf. Jeder Node sollte denselben Wert
+tragen — er ist eine Eigenschaft des Clusters, nicht des Nodes.
+
+Gezählt werden Mitglieder in `joining`, `weakly-up` und `up`. Ein
+`leaving`-Mitglied hält die Schwelle für seinen Nachfolger nicht offen,
+ein Rolling Restart schließt das Tor also für genau die Zeit, die der
+Nachfolger zum Erscheinen braucht. Rückwärts wird nie ausgewertet:
+einen Übergang `up` → `joining` gibt es nicht, ein später schrumpfender
+Cluster behält die bereits beförderten Mitglieder und hält nur neue
+zurück.
+
+Schwellen pro Rolle sind damit UND-verknüpft — so sagst du „erst wenn
+es ein Backend gibt, auf dem Arbeit platziert werden kann“:
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost('0.0.0.0')
+  .withPort(2552)
+  .withSeeds([])
+  .withMinimumMembersBeforeUp(3)
+  .withMinimumMembersBeforeUpPerRole({ backend: 2 });
+```
+
+Das ist **kein** Quorum und keine Sicherheitsmaßnahme: jeder Node darf
+sich selbst als `up` ankündigen, die Schwelle begrenzt also Versehen —
+eine abgetrennte Hälfte, die ihren eigenen Ein-Node-Cluster bildet —
+und keine Angreifer. Für Split-Brain zuständig ist
+[Downing](/de/cluster/downing-strategies/); eine Schwelle über `1`
+vergrößert außerdem das Zeitfenster, in dem der Cluster kleiner ist,
+als eine `static-quorum`-Strategie erwartet — prüfe beides zusammen.
+
+Es ist auch nicht `bootstrap.minimum-members`, das wartet, ohne etwas
+zu ändern: siehe [`awaitReady`](/de/cluster/cluster-bootstrap/). Diese
+Einstellung nimmt jener weitgehend den Anlass.
+
 ## Die symmetrische Seed-Liste startet nicht kalt
 
 Es liegt nahe, jedem Node dieselbe Liste mit allen Nodes zu geben.
@@ -353,6 +408,24 @@ import { Aside } from '@astrojs/starlight/components';
   [Cluster-Bootstrap](/de/cluster/cluster-bootstrap/), der genau einen
   Node berechtigt, einen Cluster zu bilden, und gar nicht erst
   entscheidet, solange Discovery ihre Meinung ändert.
+</Aside>
+
+<Aside type="caution" title="Schwelle größer als das Deployment">
+  ```ts
+  // Drei Repliken konfiguriert, vier gefordert:
+  const clusterOptions = ClusterOptions.create()
+    .withHost('n1')
+    .withPort(2552)
+    .withSeeds([])
+    .withMinimumMembersBeforeUp(4);
+  ```
+  Nichts erreicht je `up`, und das Symptom ist ein Cluster, der
+  einfach nie hochkommt — dieselbe Form wie eine unerreichbare
+  Seed-Liste. Der Node unterscheidet beides für dich: nach ein paar
+  Seed-Kontaktrunden loggt er einmalig Schlüssel und aktuelle Zahl
+  (`2 of 4 member(s) present`), statt die Cold-Start-Stall-Diagnose,
+  die hier ein falsches Urteil wäre. Ein Gründungsknoten ohne
+  Seed-Liste loggt dasselbe als `holding self-election`.
 </Aside>
 
 <Aside type="caution" title="Hostname-vs-IP-Mismatch">

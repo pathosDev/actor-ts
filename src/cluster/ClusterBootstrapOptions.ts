@@ -1,5 +1,6 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+import { ConfigError } from '../config/Config.js';
 import type { Config } from '../config/Config.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import { ClusterReadinessOptionsValidator } from './ClusterReadiness.js';
@@ -37,6 +38,35 @@ export const DEFAULT_BIND_HOST = '0.0.0.0';
  * waits for the node to reach `up` before giving up.
  */
 export const DEFAULT_AWAIT_READY_MS = 5_000;
+
+/**
+ * The `discovery:` values `actor-ts.cluster.bootstrap.discovery.method` can
+ * name — the string half of {@link ClusterBootstrapOptionsType.discovery},
+ * since the object halves (a `SeedProvider`, a `{ providers }` chain) are
+ * shapes HOCON cannot express.
+ *
+ * One list, three consumers: the option's own type is
+ * {@link DiscoveryMethod}, the reader validates against this array, and the
+ * published enum in `reference.conf` is documented from it.  A second copy
+ * anywhere would be a place for the three to drift.
+ */
+export const DISCOVERY_METHODS = ['auto', 'kubernetes', 'dns', 'config'] as const;
+
+/** One of {@link DISCOVERY_METHODS}. */
+export type DiscoveryMethod = (typeof DISCOVERY_METHODS)[number];
+
+/**
+ * Built-in default for {@link ClusterBootstrapOptionsType.discovery} — the
+ * env-driven ladder rather than one pinned provider.
+ *
+ * Named out of the two `?? 'auto'` literals in `ClusterBootstrap` so
+ * `actor-ts.cluster.bootstrap.discovery.method` has a constant to be pinned
+ * against (#860).  `'auto'` is also why the published enum lists four values
+ * and not the issue's three: a key that could not express the behaviour the
+ * framework already ships would be a trap, not a knob.  Annotated rather than
+ * inferred so a typo here is a compile error rather than a fifth method.
+ */
+export const DEFAULT_DISCOVERY_METHOD: DiscoveryMethod = 'auto';
 
 /**
  * Options accepted by {@link Cluster.bootstrap}.  Everything is
@@ -146,19 +176,22 @@ export type ClusterBootstrapOptionsType = {
   /**
    * Discovery strategy.  Values:
    *
-   *   - `'auto'` (default) — env-driven {@link autoDiscovery} chain.
-   *   - `'kubernetes' | 'dns' | 'config'` — pin to a single provider,
-   *     still configured from env vars.
+   *   - `'auto'` (default) — the {@link autoDiscovery} ladder.
+   *   - `'kubernetes' | 'dns' | 'config'` — pin to a single provider.
    *   - a `SeedProvider` instance — use as-is.
    *   - `{ providers: [...] }` — assemble a custom aggregate chain.
+   *
+   * Unset, the string half falls through to
+   * `actor-ts.cluster.bootstrap.discovery.method` and then to
+   * {@link DEFAULT_DISCOVERY_METHOD}; the two object halves are code-only,
+   * since HOCON cannot express either.  Whichever provider results reads its
+   * own settings from `actor-ts.discovery.*` and then from the `CLUSTER_*`
+   * variables (#860).
    *
    * Ignored when `seeds` is set.
    */
   readonly discovery?:
-    | 'auto'
-    | 'kubernetes'
-    | 'dns'
-    | 'config'
+    | DiscoveryMethod
     | SeedProvider
     | { readonly providers: ReadonlyArray<SeedProvider> };
 
@@ -423,6 +456,37 @@ export type ClusterBootstrapConfigDefaults = {
 };
 
 /**
+ * The `discovery` sub-block of `actor-ts.cluster.bootstrap` — which provider
+ * the bootstrap builds and what it asks about (#860).
+ *
+ * Its own type and its own reader rather than two more fields on
+ * {@link ClusterBootstrapConfigDefaults}, for the reason the block already
+ * has two readers instead of one: they have different consumers and different
+ * lifetimes.  The timings behind `readStableObservationOptionsFromConfig` are
+ * read only under stable observation, the readiness pair is read after the
+ * join, and this pair is read before it.  Widening the readiness type would
+ * also have made every exact-object assertion about it an assertion about
+ * discovery, which is how a test stops saying what its name says.
+ */
+export type ClusterBootstrapDiscoveryDefaults = {
+  /**
+   * Which seed provider the bootstrap builds when the caller named no
+   * `discovery:` — the string half of that option only.  A `SeedProvider`
+   * instance and a `{ providers }` chain stay code-only: they are objects
+   * HOCON cannot express, and a name-to-instance registry is #160's shape,
+   * not this one's.
+   */
+  readonly method?: DiscoveryMethod;
+  /**
+   * The service the provider asks about — the DNS name resolved and the
+   * Kubernetes Service whose `Endpoints` are read.  Layered above
+   * `CLUSTER_SERVICE_NAME` rather than below it; see
+   * `AutoDiscoveryOptionsType`.
+   */
+  readonly serviceName?: string;
+};
+
+/**
  * Read the readiness pair of the bootstrap block.  Only keys actually
  * present are returned, so an absent one falls through to the computed /
  * built-in default instead of landing as an explicit `undefined`.
@@ -438,6 +502,48 @@ export function readClusterBootstrapDefaultsFromConfig(
   } = {};
   if (config.hasPath(keys.awaitReady)) out.awaitReadyMs = config.getDuration(keys.awaitReady);
   if (config.hasPath(keys.minimumMembers)) out.minimumMembers = config.getInt(keys.minimumMembers);
+  return out;
+}
+
+/**
+ * Read the `discovery` sub-block — the selector `bootstrapCluster` layers
+ * under the caller's `discovery:` option (#860).  Absent keys stay absent,
+ * for the reason the reader above gives.
+ *
+ * `service-name` is additionally dropped when it is the empty string it
+ * ships as: `""` is the published *shape* of the key, not a service anyone
+ * runs with, and passing it on would shadow `CLUSTER_SERVICE_NAME` with a
+ * value nobody wrote — the reading `readDowningFromConfig` gives the three
+ * `role` placeholders.
+ *
+ * `method` is rejected rather than ignored when it names something outside
+ * {@link DISCOVERY_METHODS}: a typo would otherwise select the `auto` ladder
+ * silently, and a node that quietly discovers *differently* from its peers is
+ * the split-brain shape the bootstrap exists to close.  A `ConfigError` here
+ * reaches the caller through `bootstrapCluster`'s own guard, which terminates
+ * the just-created system before rethrowing.
+ */
+export function readClusterBootstrapDiscoveryFromConfig(
+  config: Config,
+): ClusterBootstrapDiscoveryDefaults {
+  const keys = ConfigKeys.cluster.bootstrap;
+  const out: {
+    -readonly [K in keyof ClusterBootstrapDiscoveryDefaults]:
+    ClusterBootstrapDiscoveryDefaults[K]
+  } = {};
+  if (config.hasPath(keys.discovery.method)) {
+    const method = config.getString(keys.discovery.method);
+    if (!(DISCOVERY_METHODS as readonly string[]).includes(method)) {
+      throw new ConfigError(
+        `${keys.discovery.method} must be one of ${DISCOVERY_METHODS.join(' | ')} — got "${method}"`,
+      );
+    }
+    out.method = method as DiscoveryMethod;
+  }
+  if (config.hasPath(keys.discovery.serviceName)) {
+    const serviceName = config.getString(keys.discovery.serviceName).trim();
+    if (serviceName.length > 0) out.serviceName = serviceName;
+  }
   return out;
 }
 
