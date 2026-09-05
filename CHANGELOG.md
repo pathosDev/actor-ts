@@ -2180,6 +2180,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   explicitly opted into, and the example README no longer documents the
   warn-and-continue behaviour it used to have.
 
+  The opt-in branch had one hole left, closed here. With the fallback
+  enabled and `CHAT_TOKEN_SECRET` set but empty, the assignment read
+  `configured ?? DEMO_FALLBACK_SECRET` — and `??` steps over `null` and
+  `undefined`, not the empty string — so the store keyed its HMAC on zero
+  bytes while `usingDemoSecret` and the warning both reported the checked-in
+  demo secret was in use. Every token minted in that state verifies against
+  a key an attacker does not have to read the repository to guess. The guard
+  one line above reads `!configured` and was always right; only the
+  assignment disagreed with it.
+
 - **The zstd fallback path is reachable from a test at last** (#780).
 
   The resolver prefers native zstd, then the runtime global, then the
