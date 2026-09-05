@@ -3,12 +3,15 @@ import { Actor } from '../../../src/Actor.js';
 import type { ActorRef } from '../../../src/ActorRef.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { Config } from '../../../src/config/Config.js';
+import type { LogContextData } from '../../../src/LogContext.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import type { Logger } from '../../../src/Logger.js';
 import { Scheduler } from '../../../src/Scheduler.js';
 import type { Cancellable } from '../../../src/Scheduler.js';
 import { ActorRestarted, DeadLetter } from '../../../src/SystemMessages.js';
 import {
   ConsumerController,
+  ConsumerControllerOptions,
   DEFAULT_MAX_OUT_OF_ORDER,
   DEFAULT_MAX_PRODUCERS,
   DEFAULT_PRODUCER_IDLE_TTL_MS,
@@ -1587,6 +1590,72 @@ describe('ReliableDelivery — out-of-order window bound (#728, #643)', () => {
     producer.stop();
     await kit.system.terminate();
   });
+
+  test('a duplicate is re-acknowledged at a full window — the duplicate check runs first', async () => {
+    // The *order* of the two checks in `handleDelivery` is a property in its
+    // own right, and swapping them keeps every other case in this file green
+    // while changing what the consumer does to a producer whose acknowledgment
+    // was lost: at a full out-of-order window the retransmit would be refused
+    // rather than re-acknowledged, so the producer never gets its slot back
+    // and the stall the cap is supposed to lift no longer lifts.
+    //
+    // A duplicate costs the retained set nothing — `markDelivered` is not
+    // reached on that path — which is why it is admissible however full the
+    // window is, and why the check that recognises it has to come first.
+    const kit = quietKit('rd-duplicate-at-full-window');
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    const cap = 3;
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      // Nothing but the out-of-order cap may refuse anything here.
+      maxProducers: Infinity,
+      producerIdleTtlMs: Infinity,
+      maxOutOfOrder: cap,
+    }, 'duplicate-at-cap-consumer');
+
+    // seq 1 lands, so `contiguous` is 1; seq 2 is then withheld and 3, 4, 5
+    // fill the window exactly.  That leaves BOTH duplicate shapes reachable
+    // at a full window: one below `contiguous` (seq 1) and one in the
+    // retained set (seq 4).
+    deliver(consumer, probe, 'losing-acks', 1, 'seq-1');
+    for (let seq = 3; seq <= cap + 2; seq++) deliver(consumer, probe, 'losing-acks', seq, `seq-${seq}`);
+    await awaitCondition(() => received.length === cap + 1, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'the contiguous head and a full out-of-order window were handled',
+    });
+    expect(slot.controller?.outOfOrderFor('losing-acks')).toBe(cap);
+    const acknowledgmentsBefore = probe.messageCount;
+    expect(acknowledgmentsBefore).toBe(cap + 1);
+
+    // The retransmits a producer sends when its acknowledgments went missing.
+    // Both must be acknowledged again, and neither may re-enter the handler.
+    deliver(consumer, probe, 'losing-acks', 1, 'seq-1-again');
+    deliver(consumer, probe, 'losing-acks', 4, 'seq-4-again');
+    await awaitCondition(() => probe.messageCount === acknowledgmentsBefore + 2, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'both retransmits were re-acknowledged at a full window',
+    });
+    // Absences: the handler must not have run again, and the retained set must
+    // not have grown — so settle past where either would have shown up.
+    await sleep(120);
+    expect(received).toHaveLength(cap + 1);
+    expect(slot.controller?.outOfOrderFor('losing-acks')).toBe(cap);
+
+    // And the producer is not stranded: the sequence that closes the gap is
+    // still admitted at the cap, which is what lifts the stall.
+    deliver(consumer, probe, 'losing-acks', 2, 'the-missing-one');
+    await awaitCondition(() => slot.controller?.outOfOrderFor('losing-acks') === 0, {
+      timeoutMs: 4_000,
+      label: 'the missing sequence drained the retained set',
+    });
+    expect(received).toHaveLength(cap + 2);
+
+    await kit.system.terminate();
+  });
 });
 
 /**
@@ -1983,6 +2052,289 @@ describe('ReliableDelivery — actor-ts.reliable-delivery layering (#861)', () =
 
     expect(scheduler.armedFixedRateIntervals.slice(armedBefore))
       .toEqual([DEFAULT_PRODUCER_IDLE_TTL_MS]);
+
+    await kit.system.terminate();
+  });
+});
+
+/**
+ * Captures the WARN records a consumer emits, so the paced dedup-bound
+ * warnings below have something to be observed on.
+ *
+ * The system logger is taken verbatim when one is passed explicitly
+ * (`resolveLogger` in `ActorSystem.ts`), so `level` here is what actually
+ * gates the calls rather than the `logLevel` option every other case in this
+ * file sets.
+ */
+class CapturingLogger implements Logger {
+  readonly warnings: string[] = [];
+  readonly level = LogLevel.Warn;
+  debug(): void {}
+  info(): void {}
+  warn(message: string): void { this.warnings.push(message); }
+  error(): void {}
+  withSource(_source: string): Logger { return this; }
+  withFields(_fields: LogContextData): Logger { return this; }
+
+  /** The least-recently-used eviction reports. */
+  get evictionWarnings(): string[] {
+    return this.warnings.filter((w) => w.includes('least-recently-used producer dedup'));
+  }
+
+  /** The out-of-order refusal reports. */
+  get refusalWarnings(): string[] {
+    return this.warnings.filter((w) => w.includes('out-of-order deliver'));
+  }
+}
+
+/** A TestKit whose system logger is the caller's, at `LogLevel.Warn`. */
+const observedKit = (name: string, logger: Logger): TestKit => TestKit.create(
+  name,
+  TestKitOptions.create().withLogger(logger).withLogLevel(LogLevel.Warn),
+);
+
+/**
+ * The two dedup-bound warnings, and the pacing that keeps them from becoming
+ * the next exhaustion vector (#728).
+ *
+ * Each line is the *only* symptom its bound has: an eviction silently drops a
+ * producer's duplicate suppression and a refusal silently withholds an
+ * acknowledgment, and before #728 neither had a log line or a counter
+ * anywhere.  Deleting either report call therefore leaves a bound that still
+ * holds and an operator who cannot tell a `maxProducers` set too low from one
+ * doing its job against a flood — which is why the call is worth pinning even
+ * though nothing but a log observes it.
+ *
+ * What is *not* pinned here is {@link DEDUPLICATION_REPORT_INTERVAL_MS}
+ * itself: reaching the second line means holding a test still for a minute.
+ * These cases pin the half that is reachable — the first occurrence is
+ * reported, the flood behind it is not, and the two kinds pace independently.
+ */
+describe('ReliableDelivery — the dedup-bound warnings, paced (#728)', () => {
+  test('a flood of evictions is named once, not once per eviction', async () => {
+    const logger = new CapturingLogger();
+    const kit = observedKit('rd-eviction-report', logger);
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    const cap = 2;
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: cap,
+      producerIdleTtlMs: Infinity,
+      maxOutOfOrder: Infinity,
+    }, 'eviction-report-consumer');
+
+    // Ten distinct producers through a two-slot map: eight evictions, which is
+    // what makes "exactly one warning" a statement about pacing rather than
+    // about there having been only one thing to report.
+    const distinct = 10;
+    for (let i = 0; i < distinct; i++) deliver(consumer, probe, `flood-${i}`, 1, `m-${i}`);
+    await awaitCondition(() => received.length === distinct, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'every distinct producer was handled once',
+    });
+    // The absence — no second line — is half the claim, so settle past it.
+    await sleep(120);
+    expect(slot.controller?.trackedProducers).toBe(cap);
+
+    expect(logger.evictionWarnings).toHaveLength(1);
+    // It carries the count it stands for and names the bound that produced it.
+    expect(logger.evictionWarnings[0])
+      .toContain('consumer evicted 1 least-recently-used producer dedup entry');
+    expect(logger.evictionWarnings[0]).toContain(`maxProducers=${cap}`);
+    // The victim's id is peer-supplied text and is deliberately not in it.
+    expect(logger.evictionWarnings[0]).not.toContain('flood-');
+
+    await kit.system.terminate();
+  });
+
+  test('a flood of out-of-order refusals is named once, and names the sequence it waits for', async () => {
+    const logger = new CapturingLogger();
+    const kit = observedKit('rd-refusal-report', logger);
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    const cap = 2;
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: Infinity,
+      producerIdleTtlMs: Infinity,
+      maxOutOfOrder: cap,
+    }, 'refusal-report-consumer');
+
+    // seq 1 withheld, the window filled, then eight more refused.
+    const refused = 8;
+    for (let seq = 2; seq <= cap + 1 + refused; seq++) {
+      deliver(consumer, probe, 'gappy', seq, `seq-${seq}`);
+    }
+    await awaitCondition(() => received.length === cap, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'the sequences that fit the window were handled',
+    });
+    // "Exactly one warning" is an absence — no second line for the eight
+    // refusals behind the first — and a refusal leaves no state to poll, so
+    // settling past where a second line would have landed IS the assertion.
+    await sleep(120);
+    expect(slot.controller?.outOfOrderFor('gappy')).toBe(cap);
+
+    expect(logger.refusalWarnings).toHaveLength(1);
+    expect(logger.refusalWarnings[0]).toContain('consumer refused 1 out-of-order delivery');
+    expect(logger.refusalWarnings[0]).toContain(`maxOutOfOrder=${cap}`);
+    // The awaited sequence is the number an operator needs, and it is a
+    // bounded integer by `isAdmissible` — unlike the producerId, which is
+    // absent for the same reason it is absent from the eviction line.
+    expect(logger.refusalWarnings[0]).toContain('waiting for seq 1');
+    expect(logger.refusalWarnings[0]).not.toContain('gappy');
+
+    await kit.system.terminate();
+  });
+
+  test('a flood of evictions does not suppress the first refusal warning', async () => {
+    // The claim the separate counter/timestamp pair exists for: one interval,
+    // two independent pacers.  Sharing them would satisfy both cases above and
+    // fail this one — the eviction flood would leave the shared timestamp
+    // fresh and swallow the first sighting of a stalled producer.
+    const logger = new CapturingLogger();
+    const kit = observedKit('rd-independent-pacers', logger);
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    const cap = 2;
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: (m) => { received.push(m); },
+      maxProducers: cap,
+      producerIdleTtlMs: Infinity,
+      maxOutOfOrder: cap,
+    }, 'independent-pacers-consumer');
+
+    // Phase one: churn the producer map with in-order traffic only, so
+    // everything here is an eviction and nothing is a refusal.
+    const distinct = 10;
+    for (let i = 0; i < distinct; i++) deliver(consumer, probe, `churn-${i}`, 1, `m-${i}`);
+    await awaitCondition(() => received.length === distinct, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'the eviction flood was handled',
+    });
+    expect(logger.evictionWarnings).toHaveLength(1);
+    expect(logger.refusalWarnings).toHaveLength(0);
+
+    // Phase two, well inside the same interval: one producer opens a gap and
+    // overruns its window.  The eviction pacer has just fired, so a shared
+    // timestamp would report none of this.
+    const refused = 5;
+    for (let seq = 2; seq <= cap + 1 + refused; seq++) {
+      deliver(consumer, probe, 'stalled', seq, `seq-${seq}`);
+    }
+    await awaitCondition(() => slot.controller?.outOfOrderFor('stalled') === cap, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'the stalled producer filled its out-of-order window',
+    });
+    // Both counts here are upper bounds — exactly one line of each kind — and
+    // a refused delivery leaves nothing behind to poll, so the settle is what
+    // makes "no more than one" mean anything.
+    await sleep(120);
+
+    expect(logger.refusalWarnings).toHaveLength(1);
+    // The reverse direction holds too: the refusals did not reopen the
+    // eviction pacer, even though admitting `stalled` cost another eviction.
+    expect(logger.evictionWarnings).toHaveLength(1);
+
+    await kit.system.terminate();
+  });
+});
+
+/**
+ * The fluent builder — the form the documentation leads with, and which
+ * nothing in `tests/`, `examples/` or `benchmarks/` constructed, so every
+ * setter could have been wired to the wrong field with the suite green.
+ *
+ * Two claims, because either alone is weak.  The structural case pins the
+ * setter-to-field mapping directly (a builder *is* its settings: `set` writes
+ * own enumerable properties).  The behavioural case pins that the union the
+ * controller's constructor accepts really does carry those fields through to
+ * the bounds, which is what a caller following the docs relies on.
+ */
+describe('ReliableDelivery — the ConsumerControllerOptions builder (#728)', () => {
+  test('every setter writes the field it is named for', () => {
+    const handler = (): void => {};
+    const consumerOptions = ConsumerControllerOptions.create<string>()
+      .withHandler(handler)
+      .withMaxProducers(2)
+      .withProducerIdleTtlMs(90_000)
+      .withMaxOutOfOrder(3);
+
+    expect({ ...consumerOptions }).toEqual({
+      handler,
+      maxProducers: 2,
+      producerIdleTtlMs: 90_000,
+      maxOutOfOrder: 3,
+    });
+  });
+
+  test('a builder is accepted by the controller, and each bound it set applies', async () => {
+    const scheduler = new RecordingScheduler();
+    const kit = quietKit('rd-builder-bounds', scheduler);
+    const received: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    const producerCap = 2;
+    const outOfOrderCap = 3;
+    const idleTtlMs = 90_000;
+    // Three deliberately *different* numbers: a setter wired to the wrong
+    // field then lands a value the assertion for that field rejects, where
+    // three equal ones would let the swap through.
+    const consumerOptions = ConsumerControllerOptions.create<string>()
+      .withHandler((m: string) => { received.push(m); })
+      .withMaxProducers(producerCap)
+      .withProducerIdleTtlMs(idleTtlMs)
+      .withMaxOutOfOrder(outOfOrderCap);
+
+    const armedBefore = scheduler.armedFixedRates.length;
+    const consumer = kit.system.spawn<Delivery<string>>(() => {
+      // The builder, unconverted, straight into the `ConsumerControllerOptions`
+      // union the constructor takes.
+      slot.controller = new ConsumerController<string>(consumerOptions);
+      return slot.controller;
+    }, 'builder-consumer');
+
+    // `withMaxOutOfOrder`: seq 1 withheld, more sent above it than the cap.
+    for (let seq = 2; seq <= outOfOrderCap + 4; seq++) {
+      deliver(consumer, probe, 'builder-gappy', seq, `seq-${seq}`);
+    }
+    await awaitCondition(() => received.length === outOfOrderCap, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'the sequences that fit the builder-set window were handled',
+    });
+    // The rest is an absence — refused means no handler call and no ack.
+    await sleep(120);
+    // `withHandler` reached the controller at all: without it every delivery
+    // throws inside `handleDelivery` and nothing is handled or acknowledged.
+    expect(received).toHaveLength(outOfOrderCap);
+    expect(probe.messageCount).toBe(outOfOrderCap);
+    expect(slot.controller?.outOfOrderFor('builder-gappy')).toBe(outOfOrderCap);
+
+    // `withProducerIdleTtlMs`: the arm is the observable, for the reason
+    // {@link RecordingScheduler} documents.
+    expect(scheduler.armedFixedRates.slice(armedBefore)).toEqual([
+      { initialDelayMs: idleTtlMs, intervalMs: idleTtlMs },
+    ]);
+
+    // `withMaxProducers`: two more distinct producers, so the map is pushed
+    // past the cap and the least recently used of the three is evicted.
+    deliver(consumer, probe, 'builder-a', 1, 'a');
+    deliver(consumer, probe, 'builder-b', 1, 'b');
+    await awaitCondition(() => received.length === outOfOrderCap + 2, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'the two extra producers were handled',
+    });
+    expect(slot.controller?.trackedProducers).toBe(producerCap);
 
     await kit.system.terminate();
   });

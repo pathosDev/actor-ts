@@ -10,7 +10,9 @@ import { Actor } from '../../../../../src/Actor.js';
 import { ActorRef } from '../../../../../src/ActorRef.js';
 import { ActorSystem } from '../../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../../src/ActorSystemOptions.js';
+import type { LogContextData } from '../../../../../src/LogContext.js';
 import { LogLevel, NoopLogger } from '../../../../../src/Logger.js';
+import type { Logger } from '../../../../../src/Logger.js';
 import {
   JetStreamActor,
   type JetStreamClientLike,
@@ -236,6 +238,44 @@ class CapturingTarget extends Actor<JetStreamMessage> {
   override onReceive(m: JetStreamMessage): void { this.received.push(m); }
 }
 
+/**
+ * Captures the actor's WARN records.
+ *
+ * Two of the pump's decisions have no observable but the log line they write
+ * — a settle command naming a delivery that is no longer in flight, and a
+ * `term` that drops a message permanently — and every case in this file used
+ * to run with `NoopLogger` at `LogLevel.Off`, so both were invisible.  An
+ * explicit logger is taken verbatim by `ActorSystem` (`resolveLogger`), so
+ * `level` here is what gates the calls.
+ */
+class CapturingLogger implements Logger {
+  readonly warnings: string[] = [];
+  readonly level = LogLevel.Warn;
+  debug(): void {}
+  info(): void {}
+  warn(message: string): void { this.warnings.push(message); }
+  error(): void {}
+  withSource(_source: string): Logger { return this; }
+  withFields(_fields: LogContextData): Logger { return this; }
+
+  /** WARN records naming a settle command that found no pending entry. */
+  get unknownTokenWarnings(): string[] {
+    return this.warnings.filter((w) => w.includes('unknown ackToken'));
+  }
+
+  /** WARN records naming a permanently dropped message. */
+  get terminateWarnings(): string[] {
+    return this.warnings.filter((w) => w.includes('message dropped permanently'));
+  }
+}
+
+/** An `ActorSystem` whose logger is the caller's, at `LogLevel.Warn`. */
+function observedSystem(name: string, logger: Logger): ActorSystem {
+  return ActorSystem.create(name, ActorSystemOptions.create()
+    .withLogger(logger)
+    .withLogLevel(LogLevel.Warn));
+}
+
 /** What {@link bootActorOfKind} needs of a mock subclass to wait for it. */
 type BootableJetStreamActor = JetStreamActor & { publicConnectionState(): string };
 
@@ -448,11 +488,9 @@ describe('JetStreamActor — ack/nak/term', () => {
     }
   });
 
-  test('term marks the handle terminated (drop-forever)', async () => {
-    const sysOptions = ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off);
-    const sys = ActorSystem.create('js-term', sysOptions);
+  test('term marks the handle terminated (drop-forever) and says which message it dropped', async () => {
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-term', logger);
     try {
       const jetstreamOptions = JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
@@ -471,6 +509,15 @@ describe('JetStreamActor — ack/nak/term', () => {
         timeoutMs: 4_000, label: 'the terminate reached the handle',
       });
       expect(handle.termed).toBe(true);
+
+      // `term` is the one settle that loses a message for good, so the line it
+      // writes is the only record of it — and it names the message by its
+      // `streamSeq`, deliberately, not by the `ackToken` the command carried.
+      // The token identifies a *delivery* and is minted per actor instance; the
+      // stream sequence is what an operator can go and look up in the stream.
+      expect(logger.terminateWarnings).toHaveLength(1);
+      expect(logger.terminateWarnings[0]).toContain('term for streamSeq=99');
+      expect(logger.terminateWarnings[0]).toContain('(unparseable)');
     } finally {
       await sys.terminate();
     }
@@ -569,24 +616,37 @@ describe('JetStreamActor — ack/nak/term', () => {
     }
   });
 
-  test('ack for an unknown ackToken is a no-op (and now logs a warning)', async () => {
-    const sysOptions = ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off);
-    const sys = ActorSystem.create('js-unknown', sysOptions);
+  test('ack for an unknown ackToken is a no-op, and is reported at WARN', async () => {
+    // The half of this the test name has always claimed and could not see:
+    // it ran with `NoopLogger` at `LogLevel.Off` and asserted `true`, so
+    // reverting the line to `log.debug` — which is what let #710 run silently
+    // in every default deployment, `debug` being below the `Info` default —
+    // left it green.  The level is the point of the line, so the level is what
+    // this asserts.
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-unknown', logger);
     try {
       const jetstreamOptions = JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
         .withStream({ name: 'S', subjects: ['s.>'] })
         .withConsumer({ durable: 'd' });
       const { actor } = await bootActor(sys, jetstreamOptions);
-      // No handle pushed, so no pending entry.  Sending ack should not throw.
+      // No handle pushed, so no pending entry.  Sending ack must not throw.
       actor.tell({ kind: 'acknowledgment', ackToken: 999 });
-      // The claim is an absence whose observable side is a crash that did not
-      // happen — there is nothing to poll for, only a turn to give away.
+      await awaitCondition(() => logger.unknownTokenWarnings.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the unknown-token drop was reported at WARN',
+      });
+      // The no-throw claim is still an absence, so still needs the settle.
       await sleep(SETTLE_MS);
-      // Test passes if we get here without unhandled rejection.
-      expect(true).toBe(true);
+
+      expect(logger.unknownTokenWarnings).toHaveLength(1);
+      // The token is in the line because it is what an operator correlates
+      // against the delivery that carried it.
+      expect(logger.unknownTokenWarnings[0]).toContain('ackToken=999');
+      // And the consequence is named, not just the event: the message will be
+      // redelivered and reprocessed.
+      expect(logger.unknownTokenWarnings[0]).toContain('already timed out, was settled, or predates a reconnect');
     } finally {
       await sys.terminate();
     }
@@ -1132,6 +1192,79 @@ describe('JetStreamActor — delivery-scoped acknowledgment tokens (#710)', () =
       expect(beforeDrop.acked).toBe(false);
       // The redelivery was never disturbed by it.
       expect(afterReconnect.nakCount).toBe(0);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a token minted before a reconnect is never minted again after it', async () => {
+    // `nextAcknowledgmentToken` is monotonic per actor instance and is never
+    // reset — the JSDoc on the field says so and nothing observed it.  The
+    // reconnect case above reads `target.received[1]!.ackToken` rather than
+    // comparing the two, so resetting the counter in
+    // `disconnectImplementation` left the whole suite green.
+    //
+    // What the reset costs is not abstract.  A settle command that raced the
+    // disconnect carries a token minted before it; if the counter restarts,
+    // that token names a *different*, live delivery on the new connection, and
+    // the stale command settles it.  That is the same class of defect as #710
+    // itself — one delivery's settle landing on another's entry — arrived at
+    // through the reconnect rather than through the key.
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-token-monotonic', logger);
+    /** Long enough that no ack-timeout fires inside this case. */
+    const ackTimeoutMs = 4_000;
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
+        .withConsumer({ durable: 'pusher', ackWaitMs: ackTimeoutMs })
+        .withAcknowledgmentTimeout(ackTimeoutMs)
+        .withReconnect({ initialDelayMs: 5, maxDelayMs: 5, factor: 1, randomFactor: 0 });
+      const { actor, mock, target } = await bootActorOfKind(
+        sys, jetstreamOptions, (built) => new ReconnectingMockJetStreamActor(built),
+      );
+      const beforeDrop = makeHandle(11);
+      mock.connections[0]!.js.subscription.push(beforeDrop);
+      await awaitForwarded(target, 1);
+      const staleToken = target.received[0]!.ackToken;
+
+      mock.dropConnection();
+      await awaitCondition(
+        () => mock.connections.length >= 2 && mock.publicConnectionState() === 'connected',
+        { timeoutMs: 4_000, label: 'the actor reconnected on a fresh connection' },
+      );
+
+      // An unrelated message on the new connection — a different stream
+      // sequence, so nothing but the token could confuse the two.
+      const afterReconnect = makeHandle(12);
+      mock.connections[1]!.js.subscription.push(afterReconnect);
+      await awaitForwarded(target, 2);
+      const liveToken = target.received[1]!.ackToken;
+
+      // The claim, stated directly.
+      expect(liveToken).toBeGreaterThan(staleToken);
+
+      // And the consequence, so the assertion above is not the only thing
+      // standing between a reset counter and a mis-settled delivery: the
+      // settle command that raced the disconnect arrives late and must find
+      // nothing, leaving the live delivery untouched.
+      actor.tell({ kind: 'acknowledgment', ackToken: staleToken });
+      await awaitCondition(() => logger.unknownTokenWarnings.length === 1, {
+        timeoutMs: 4_000,
+        label: 'the raced settle command found no pending entry',
+      });
+      // "Untouched" is an absence; settle past where an ack would have landed.
+      await sleep(SETTLE_MS);
+      expect(afterReconnect.acked).toBe(false);
+      expect(afterReconnect.naked).toBe(false);
+      expect(logger.unknownTokenWarnings[0]).toContain(`ackToken=${staleToken}`);
+
+      // Release the pump so teardown is not racing an outstanding ack wait.
+      actor.tell({ kind: 'acknowledgment', ackToken: liveToken });
+      await awaitCondition(() => afterReconnect.acked, {
+        timeoutMs: 4_000, label: 'the live delivery was acknowledged by its own token',
+      });
     } finally {
       await sys.terminate();
     }
