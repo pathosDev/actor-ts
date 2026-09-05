@@ -19,6 +19,8 @@ import { DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS, DEFAULT_CONFIGURATIO
 import { DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY } from '../../../src/cluster/downing/DowningFromConfig.js';
 import { DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION } from '../../../src/cluster/ClusterOptions.js';
 import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
+import { DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS, DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS, DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES, DEFAULT_SINGLETON_RESTART_ON_TERMINATION } from '../../../src/cluster/Constants.js';
+import { DEFAULT_BUFFER_SIZE as DEFAULT_SINGLETON_BUFFER_SIZE } from '../../../src/cluster/singleton/StartSingletonOptions.js';
 import {
   DEFAULT_DEAD_LETTER_MAX_ENTRIES,
   DEFAULT_DEAD_LETTER_MAX_REPLAYS,
@@ -314,6 +316,17 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // constant behind it, not the `[]` sentinel its four list-valued
   // predecessors are.
   { key: 'actor-ts.cluster.configuration-compatibility-check.checked-paths', kind: 'list', constant: DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS },
+
+  /* --- singleton --- */
+  // The `role` sibling is a PLACEHOLDERS entry, for the reason `sharding.role`
+  // gives there.  `restart-on-termination` is in the table rather than in
+  // FEATURE_SWITCHES because it has a constant to disagree with: giving the
+  // manager's `?? true` a name is part of publishing the key (#855).
+  { key: 'actor-ts.cluster.singleton.buffer-size', kind: 'int', constant: DEFAULT_SINGLETON_BUFFER_SIZE },
+  { key: 'actor-ts.cluster.singleton.hand-over-timeout', kind: 'duration', constant: DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS },
+  { key: 'actor-ts.cluster.singleton.acquire-retry-interval', kind: 'duration', constant: DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS },
+  { key: 'actor-ts.cluster.singleton.max-hand-over-state-bytes', kind: 'bytes', constant: DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES },
+  { key: 'actor-ts.cluster.singleton.restart-on-termination', kind: 'bool', constant: DEFAULT_SINGLETON_RESTART_ON_TERMINATION },
 
   /* --- serialization --- */
   { key: 'actor-ts.serialization.read-constraints.max-nesting-depth', kind: 'int', constant: DEFAULT_MAX_NESTING_DEPTH },
@@ -794,6 +807,12 @@ const PLACEHOLDERS: readonly string[] = [
   // string is what lets the reader tell "no opinion" from a role named "",
   // and the role a deployment actually wants is per-deployment (#847).
   'actor-ts.sharding.role',
+  // "" = any node may host, and the same reading as `sharding.role` above with
+  // one extra consequence: `role: ''` would not merely shadow an explicit
+  // `withRole`, it would fail `StartSingletonOptionsValidator`'s non-empty
+  // check on every node that copied `reference.conf` unedited — so the
+  // reader's empty-string skip is load-bearing rather than tidy (#855).
+  'actor-ts.cluster.singleton.role',
   // The three split-brain-resolver role narrowings (#838).  Same reading as
   // `sharding.role` above and the same reason there is no constant: `""` is
   // the published shape of the key, every strategy tests `!options.role`, and

@@ -543,6 +543,65 @@ actor-ts {
       #   await-ready = 30s
     }
 
+    # This node's defaults for every cluster singleton it starts, and for
+    # every proxy it takes with cluster.singleton.ref().  Explicit
+    # StartSingletonOptions still win per field, and so does a role declared
+    # on the actor class's SingletonKey -- both are code, and code is the
+    # layer above this one.  The block is per NODE, so a deployment running
+    # two singletons that want different values overrides one in code.
+    singleton {
+      # "" = any node may host.  Not a value anyone runs with: it is the
+      # published shape of the key, and the reader DROPS the empty string
+      # rather than passing it on -- role = "" would fail
+      # StartSingletonOptionsValidator's non-empty check on every node that
+      # merely copied this file.  Set here rather than per singleton because
+      # "singletons live on the backend nodes" is uniform across a deployment.
+      role = ""
+
+      # Messages a proxy holds while the cluster has no host for the
+      # singleton, before it drops the newest to dead letters.  The wait is
+      # normally one gossip round, and nothing bounds it: unreachable seeds,
+      # or a partition in which this node sees nobody, last as long as the
+      # outage while the application keeps sending.
+      #
+      # The one key a ref()-only node could not otherwise reach -- it passes
+      # no options object at all, so this file is its only channel (#855).
+      buffer-size = 1000
+
+      # How long an incoming host waits for every eligible peer to confirm it
+      # is not running the singleton, before hosting anyway.  A healthy
+      # hand-over costs one round trip and never reaches this; reaching it
+      # means a peer did not answer, and the manager spawns anyway and says
+      # so at warn -- availability over an invariant it could not prove
+      # (#949).
+      hand-over-timeout = 10s
+
+      # How long the manager waits before re-acquiring a lease it failed to
+      # take.  Only reachable where a lease was passed in code -- HOCON has
+      # no way to name one, which is also why there is no use-lease switch
+      # here -- and worth setting all the same: until an acquire succeeds no
+      # node hosts the singleton and every proxy is buffering.
+      acquire-retry-interval = 5s
+
+      # Largest warm-hand-over snapshot this node puts on the wire, in bytes.
+      # Only consulted when the singleton actor implements WarmHandOverActor:
+      # a snapshot over the cap is not sent and the successor starts cold,
+      # which is what every singleton did before the feature existed.  Raise
+      # it against the TRANSPORT's frame cap (remote.max-frame-bytes), not
+      # against this number -- a snapshot is base64 in a JSON frame, so it
+      # costs about a third more on the wire.
+      max-hand-over-state-bytes = 1M
+
+      # Re-spawn the singleton after its instance dies UNEXPECTEDLY --
+      # stopSelf(), or a supervision budget exhausted -- as against the
+      # planned teardown of a hand-over.  Turn it off only where stopSelf()
+      # is a terminal state; the manager then releases its lease instead of
+      # holding one over a dead child (#1175).  The honest scope of this one
+      # is per singleton rather than per node, so a deployment mixing both
+      # styles sets it with withRestartOnTermination.
+      restart-on-termination = on
+    }
+
     # Cluster-wide publish/subscribe (DistributedPubSub).  The caps bound what
     # one mediator can be made to hold -- by local subscribers and by a peer's
     # gossiped topic claims alike.  A Subscribe over a cap is answered with

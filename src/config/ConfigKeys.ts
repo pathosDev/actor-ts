@@ -1076,6 +1076,45 @@ export const ConfigKeys = {
     },
 
     /**
+     * Cluster-singleton placement and tuning — `actor-ts.cluster.singleton.*`
+     * (#855).  Read once per `ClusterSingleton.start`, which layers the block
+     * under the caller's `StartSingletonOptions`, **and** once per
+     * `ClusterSingleton.ref` — the only channel a proxy-only node has, since
+     * `ref()` takes no options object at all.
+     *
+     * Nested under `cluster` rather than top-level by the test
+     * {@link distributedData} states below, applied the other way round: that
+     * module is top-level because it ships from `src/crdt/` and its options
+     * type carries no `cluster` field.  The singleton fails both halves — it
+     * ships from `src/cluster/singleton/`, and
+     * `ClusterSingletonManagerOptionsType` carries a `cluster` field — so it
+     * nests, beside `pub-sub` and `receptionist`.
+     *
+     * Full dotted leaves rather than a bare `singleton` root, measured the
+     * same way #838 measured it: `NoDeadConfigKeys`' `coveringAccessor` falls
+     * back to the nearest root, so a root-only shape passes for every leaf
+     * beneath it whether or not anything reads one.
+     *
+     * Four of the eight keys the issue proposed are **absent on purpose** and
+     * stay that way until something backs them: `use-lease` and `lease-name`
+     * (nothing in `src/` builds a `Lease` from config — #859 added lease
+     * *tuning* and no backend selector), `min-number-of-hand-over-retries`
+     * (the wait is bounded by `hand-over-timeout`, and nothing counts
+     * attempts) and `singleton-identification-interval` (the proxy never
+     * polls — it subscribes to cluster events once).  `hand-over-retry-interval`
+     * is refused in writing by `SINGLETON_HAND_OVER_RETRY_INTERVAL_MS`'s own
+     * JSDoc.
+     */
+    singleton: {
+      role: 'actor-ts.cluster.singleton.role',
+      bufferSize: 'actor-ts.cluster.singleton.buffer-size',
+      handOverTimeout: 'actor-ts.cluster.singleton.hand-over-timeout',
+      acquireRetryInterval: 'actor-ts.cluster.singleton.acquire-retry-interval',
+      maxHandOverStateBytes: 'actor-ts.cluster.singleton.max-hand-over-state-bytes',
+      restartOnTermination: 'actor-ts.cluster.singleton.restart-on-termination',
+    },
+
+    /**
      * DistributedPubSub mediator tuning — `actor-ts.cluster.pub-sub.*`.
      * Read once per `DistributedPubSub.start`, which layers them under the
      * explicit options.  The three caps bound what one mediator can be made
