@@ -1833,9 +1833,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   before the application first named its identity — a gossip that arrived
   first, or a durable reload — is re-keyed on that first `update`.
   `DurableDistributedDataStore.load` takes an optional per-key identity
-  lookup, which neither the issue nor its fix plan named and whose omission
-  would have re-broken every key on the next restart. Decoding with no
-  identity supplied is unchanged, byte for byte.
+  lookup, which neither the issue nor its fix plan named. It is the right
+  thing to hand the store and it is inert at the only call site there is:
+  `preStart` runs as its own mailbox task, so no update has been handled
+  when it runs and the registry it consults is necessarily empty for every
+  key the reload asks about. What actually puts a reloaded key right is the
+  re-keying on its first `update` — the same path a gossip-first key takes.
+  Decoding with no identity supplied is unchanged, byte for byte.
 
   Deriving the identity and re-keying the value are separate failures: an
   element the callback refuses stays in the set under the key it arrived
