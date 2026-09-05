@@ -388,6 +388,71 @@ describe('MqttActor external-command provenance', () => {
     }
   });
 
+  /**
+   * The other side of the same rule, and the side that is easy to get wrong in
+   * the direction #783 reports.
+   *
+   * `registerSubscription` decides whether a QoS may be rewritten from one
+   * boolean, and there are exactly three call sites that pass it: the external
+   * command (`true`, asserted above), the protected `subscribe`, and the
+   * `preStart` flush of the constructor's declarations.  A `true` at either of
+   * the last two silently pins a pattern to whatever QoS first created it —
+   * `defaultQos`, i.e. at-most-once, when the first declaration named none —
+   * while the subclass's own later, specific declaration is discarded.  That is
+   * the exact loss #783 is about, arriving through the fix's own plumbing, so
+   * both internal call sites carry a test that names the QoS they end up with.
+   */
+  test("the actor's own runtime subscribe re-declares the QoS of a pattern it holds", async () => {
+    const sys = makeSystem();
+    try {
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withQos(0);
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'own/#', qos: 1 }],
+      });
+      await boot(sys, actor);
+      expect(actor.module.last().subscribes).toEqual([{ topic: 'own/#', qos: 1 }]);
+
+      // The protected API, called from inside the actor: it owns the pattern,
+      // so raising at-least-once to exactly-once is its call to make.  No
+      // polling — `registerSubscription` issues the SUBSCRIBE synchronously
+      // while connected.
+      actor.doSubscribe('own/#', { qos: 2 });
+
+      expect(actor.module.last().subscribes).toEqual([
+        { topic: 'own/#', qos: 1 },
+        { topic: 'own/#', qos: 2 },
+      ]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test("the preStart flush lets the constructor's own declarations set the QoS", async () => {
+    const sys = makeSystem();
+    try {
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withQos(0);
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        // Two declarations of one pattern, which is what puts the flush on the
+        // rewriting branch at all: the first creates the entry carrying no QoS
+        // of its own, the second is the specific one that has to survive.
+        ctorSubs: [{ topic: 'own/#' }, { topic: 'own/#', qos: 2 }],
+      });
+      await boot(sys, actor);
+
+      // One registry entry, so one SUBSCRIBE — at the QoS the constructor
+      // asked for and not at the actor's default.
+      expect(actor.module.last().subscribes).toEqual([{ topic: 'own/#', qos: 2 }]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
   test('an external subscribe still sets the QoS of a pattern it creates', async () => {
     const sys = makeSystem();
     try {
