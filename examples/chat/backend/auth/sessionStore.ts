@@ -107,7 +107,14 @@ export class SessionStore {
         + 'demo secret for a local run.',
       );
     }
-    this.secret = Buffer.from(configured ?? DEMO_FALLBACK_SECRET, 'utf-8');
+    // `||`, not `??`: `configured` is the *environment's* value on the branch
+    // above, and that can be the empty string — the one case the comment at
+    // the top of this constructor exists for.  `??` only steps over `null` and
+    // `undefined`, so an opted-in run with `CHAT_TOKEN_SECRET=` in its env file
+    // skipped the throw (the guard reads `!configured`, which is correct) and
+    // then keyed the HMAC on zero bytes anyway, while `usingDemoSecret` and the
+    // warning both said the demo secret was in use.
+    this.secret = Buffer.from(configured || DEMO_FALLBACK_SECRET, 'utf-8');
   }
 
   /** Mint a JWT-style token binding `username`, `issuedAt`, `exp`. */
