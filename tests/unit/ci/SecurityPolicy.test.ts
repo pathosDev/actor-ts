@@ -72,8 +72,37 @@ const claimSources: ReadonlyArray<readonly [string, string]> = [
   ],
 ];
 
+const packageHealthWorkflow = readFileSync(
+  join(REPOSITORY_ROOT, '.github', 'workflows', 'package-health.yml'),
+  'utf8',
+);
+
+const lockfile = readFileSync(join(REPOSITORY_ROOT, 'bun.lock'), 'utf8');
+
+/** The version `bun.lock` resolves a top-level package to, or `undefined`. */
+function resolvedVersion(name: string): string | undefined {
+  return new RegExp(`"${name}": \\["${name}@([^"]+)"`).exec(lockfile)?.[1];
+}
+
+/**
+ * The `#539 — the advisory gate` comment block, on its own. Scoping the
+ * assertions below to it keeps them about that paragraph rather than about the
+ * file, and keeps a failure readable — a `toContain` over the whole workflow
+ * prints the whole workflow.
+ */
+const AUDIT_COMMENT_OPENING = '# #539 — the advisory gate.';
+
+const auditGateComment: string = (() => {
+  const start = packageHealthWorkflow.indexOf(AUDIT_COMMENT_OPENING);
+  if (start < 0) return '';
+  const rest = packageHealthWorkflow.slice(start);
+  const end = rest.indexOf('- name:');
+  return end < 0 ? rest : rest.slice(0, end);
+})();
+
 type RootManifest = {
   scripts?: Record<string, string | undefined>;
+  dependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
   /** npm spelling of a transitive-version pin. */
   overrides?: Record<string, unknown>;
@@ -263,6 +292,154 @@ describe('security policy', () => {
             + 'is satisfied by adding a table row, so nothing else notices that '
             + 'the sentence has become false. Reword it in every language.',
       ).toBe(expectedToClaimEmptiness);
+    }
+  });
+
+  /**
+   * The same shape one level down: the workflow's own comment argues for
+   * `bun audit` over `actions/dependency-review-action` by CONTRASTING two
+   * concrete numbers — the unresolved range GitHub's dependency graph records
+   * out of `package.json` against the version `bun.lock` actually pins — and
+   * both numbers are hand-written into a comment beside files that move
+   * without it.
+   *
+   * A Dependabot bump is all it takes. The comment then names versions that
+   * are not in the lockfile, and the illustration stops being evidence for the
+   * choice it exists to justify: the next person weighing the two tools reads
+   * a worked example whose numbers they cannot reproduce, and the honest
+   * conclusion from that is that the comment is stale rather than that the
+   * argument is wrong. Nothing else opens this file — YAML is invisible to the
+   * type checker, and `WorkflowHygiene` reads workflows for pinned actions and
+   * permissions, not for prose.
+   *
+   * The range is asserted to still BE a range, because that is the half the
+   * contrast rests on. A pinned `fastify` in `package.json` would make the
+   * graph record the shipped version too, and the paragraph would be arguing
+   * from a difference that no longer exists (#779, #781).
+   *
+   * The range is quoted in three places — the comment and both documentation
+   * mirrors — and all three are checked, because the point of writing a number
+   * down in three languages is lost the moment one of them is a different
+   * number.
+   */
+  test('every place that quotes the fastify range and pins quotes what the files carry', () => {
+    // Guards the guard: every assertion below is a `toContain` over one comment
+    // block, and a block that failed to slice out would satisfy none of them
+    // for a reason worth telling apart from a drifted number.
+    expect(
+      auditGateComment.length,
+      `No ${JSON.stringify(AUDIT_COMMENT_OPENING)} comment found in `
+      + '.github/workflows/package-health.yml — the paragraph was renamed or '
+      + 'removed, so the assertions below are reading an empty string.',
+    ).toBeGreaterThan(500);
+
+    const declaredFastifyRange = rootManifest.dependencies?.['fastify'] ?? '';
+    expect(
+      declaredFastifyRange,
+      'package.json no longer declares `fastify` as a caret range. The comment '
+      + 'contrasts the range the dependency graph records with the version the '
+      + 'lockfile pins; a pinned manifest makes those the same string and the '
+      + 'argument has to be rewritten rather than re-numbered.',
+    ).toMatch(/^\^/);
+
+    for (const name of ['fastify', 'find-my-way'] as const) {
+      expect(
+        resolvedVersion(name),
+        `bun.lock no longer resolves a top-level \`${name}\`, so the comment's `
+        + 'illustration cannot be checked against it.',
+      ).toBeDefined();
+    }
+
+    // The range is quoted three times over — once in the comment and once in
+    // each documentation mirror, all three making the same argument from it —
+    // so all three move when the manifest does.
+    const rangeQuotations: ReadonlyArray<readonly [string, string]> = [
+      ['.github/workflows/package-health.yml', auditGateComment],
+      ...claimSources.filter(([file]) => file !== 'SECURITY.md'),
+    ];
+    for (const [file, source] of rangeQuotations) {
+      expect(
+        source,
+        `${file} quotes a \`fastify\` range that package.json no longer `
+        + 'declares. That number is the whole evidence for preferring `bun '
+        + 'audit` over `actions/dependency-review-action` — it is what the '
+        + 'dependency graph records instead of the shipped version — so it '
+        + 'moves with the manifest, in every language.',
+      ).toContain(`\`fastify ${declaredFastifyRange}\``);
+    }
+
+    expect(
+      auditGateComment,
+      'The `bun audit` comment in package-health.yml quotes lockfile versions '
+      + 'that bun.lock no longer pins — a Dependabot bump moves the lockfile '
+      + 'and leaves the comment behind, and a worked example whose numbers do '
+      + 'not reproduce reads as a stale argument. Re-quote the current pins.',
+    ).toContain(
+      `bun.lock pins fastify@${resolvedVersion('fastify')} `
+      + `and find-my-way@${resolvedVersion('find-my-way')}`,
+    );
+  });
+
+  /**
+   * And the documentation half of the same paragraph, in both languages.
+   *
+   * The supply-chain page tells a reader three things they can act on: which
+   * workflow runs the gate, that `bun run lint:audit` is *exactly* what CI
+   * runs, and that it also runs weekly on a clock. Each is a claim about a
+   * file, and each fails differently when it rots — a renamed workflow sends
+   * the reader nowhere, a CI step that stopped going through the `lint:audit`
+   * script makes the local command a different check wearing the same name,
+   * and a dropped `schedule:` silently turns the gate back into a push-only
+   * one while the page still promises the cron that catches an advisory
+   * published against an unchanged lockfile.
+   *
+   * That last one is the reason the cron is asserted as a SHAPE rather than as
+   * a string: "weekly" means a pinned day-of-week and an unpinned day-of-month,
+   * so a cron edited to monthly or to daily fails here while the offset the
+   * comment explains — Mondays 05:00 UTC, away from the Dependabot window —
+   * stays free to move.
+   */
+  test('both supply-chain mirrors describe the advisory gate the workflow actually runs', () => {
+    const WORKFLOW_PATH = '.github/workflows/package-health.yml';
+    const LOCAL_COMMAND = 'bun run lint:audit';
+
+    expect(
+      packageHealthWorkflow,
+      `Both supply-chain pages promise that \`${LOCAL_COMMAND}\` is exactly `
+      + 'what CI runs. The workflow no longer runs it, so the local command is '
+      + 'a different check with the same name.',
+    ).toContain(`run: ${LOCAL_COMMAND}`);
+
+    const cron = /cron:\s*'([^']+)'/.exec(packageHealthWorkflow)?.[1]?.split(/\s+/) ?? [];
+    expect(
+      cron.length,
+      'package-health.yml has no `schedule:` cron. Both pages say the gate '
+      + 'also runs weekly, and that clock is the only thing that catches an '
+      + 'advisory published upstream against a lockfile that did not change — '
+      + 'a push-only gate would not notice until the next unrelated commit.',
+    ).toBe(5);
+    const NOT_WEEKLY = 'The `schedule:` cron in package-health.yml is no longer '
+      + 'weekly — both pages say it is. Weekly is a pinned day-of-week with an '
+      + 'unpinned day-of-month; anything else is a different promise and both '
+      + 'mirrors have to be reworded together.';
+    expect(cron[4], NOT_WEEKLY).not.toBe('*');
+    expect(cron[2], NOT_WEEKLY).toBe('*');
+
+    for (const [file, source] of claimSources) {
+      if (file === 'SECURITY.md') continue;
+      expect(source, `${file} no longer names the workflow that runs the gate.`)
+        .toContain(WORKFLOW_PATH);
+      expect(
+        source,
+        `${file} no longer names \`${LOCAL_COMMAND}\` as the command a reader `
+        + 'can run, which is what makes the gate reproducible off CI.',
+      ).toContain(LOCAL_COMMAND);
+      expect(
+        source,
+        `${file} no longer quotes the audit level the script enforces. A page `
+        + 'that names a lower one than `lint:audit` uses tells a reader the '
+        + 'gate is stricter or laxer than it is.',
+      ).toContain('--audit-level=high');
     }
   });
 
