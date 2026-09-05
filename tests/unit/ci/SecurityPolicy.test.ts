@@ -40,6 +40,38 @@ const securityTemplate = readFileSync(
   'utf8',
 );
 
+const DOCUMENTATION_ROOT = join(REPOSITORY_ROOT, 'docs', 'src', 'content', 'docs');
+
+const SUPPLY_CHAIN_PATH = join('operations', 'security', 'supply-chain.mdx');
+
+/**
+ * Every place that states, in prose, how many advisories are suppressed —
+ * with the sentence each one makes.
+ *
+ * Markdown wraps, and `SECURITY.md` wraps this claim in the middle of its own
+ * bold span, so the sentences are matched against whitespace-collapsed text
+ * rather than against a line.
+ */
+const EMPTINESS_CLAIMS: ReadonlyArray<readonly [string, string]> = [
+  ['SECURITY.md', '**there are no accepted ones**'],
+  [join('docs', SUPPLY_CHAIN_PATH), 'Nothing is suppressed.'],
+  [join('docs', 'de', SUPPLY_CHAIN_PATH), 'Es ist nichts unterdrückt.'],
+];
+
+const collapsed = (text: string): string => text.replace(/\s+/g, ' ');
+
+const claimSources: ReadonlyArray<readonly [string, string]> = [
+  ['SECURITY.md', collapsed(securityPolicy)],
+  [
+    join('docs', SUPPLY_CHAIN_PATH),
+    collapsed(readFileSync(join(DOCUMENTATION_ROOT, SUPPLY_CHAIN_PATH), 'utf8')),
+  ],
+  [
+    join('docs', 'de', SUPPLY_CHAIN_PATH),
+    collapsed(readFileSync(join(DOCUMENTATION_ROOT, 'de', SUPPLY_CHAIN_PATH), 'utf8')),
+  ],
+];
+
 type RootManifest = {
   scripts?: Record<string, string | undefined>;
   peerDependencies?: Record<string, string>;
@@ -188,6 +220,50 @@ describe('security policy', () => {
       + 'was dropped is a policy claiming risk the project no longer carries. '
       + 'Both halves move together — see #779, which removes them.',
     ).toEqual([...suppressedAdvisories]);
+  });
+
+  /**
+   * The bijection above is a *shape* claim — the table and the flags list the
+   * same IDs — and three sentences make a *count* claim on top of it: that the
+   * list is empty.  A suppression added back together with its table row
+   * satisfies the bijection perfectly and leaves all three sentences false,
+   * which was measured (#779, #781).
+   *
+   * That is the worse of the two failures.  A drifted table is a page that
+   * under-reports one advisory; a false "nothing is suppressed" is a page that
+   * tells a reader not to go looking, and it is the sentence someone
+   * evaluating this project for adoption actually reads.
+   *
+   * Stated in both directions on purpose.  The claim must go when the first
+   * suppression lands, and it must come back when the last one is removed —
+   * a page that hedges forever, after the list is empty again, is the same
+   * defect pointing the other way, and hedging is what a page drifts towards
+   * when only one direction is enforced.
+   */
+  test('the pages that say nothing is suppressed only say it while nothing is', () => {
+    // Guards the guard: a renamed file or a rewritten paragraph would leave
+    // the loop below comparing against text that no longer contains the
+    // sentence in any form, which reads as "the claim is correctly absent".
+    for (const [file, source] of claimSources) {
+      expect(source.length, `${file} read back empty`).toBeGreaterThan(1_000);
+    }
+
+    const expectedToClaimEmptiness = suppressedAdvisories.length === 0;
+    for (const [file, sentence] of EMPTINESS_CLAIMS) {
+      const source = claimSources.find(([name]) => name === file)?.[1] ?? '';
+      expect(
+        source.includes(sentence),
+        expectedToClaimEmptiness
+          ? `${file} no longer says ${JSON.stringify(sentence)}, but lint:audit `
+            + 'suppresses nothing. The sentence is what tells a reader there is '
+            + 'no accepted-risk list to go looking for; restore it, or change '
+            + 'this test on purpose.'
+          : `${file} still says ${JSON.stringify(sentence)}, and lint:audit now `
+            + `suppresses ${suppressedAdvisories.join(', ')}. The bijection above `
+            + 'is satisfied by adding a table row, so nothing else notices that '
+            + 'the sentence has become false. Reword it in every language.',
+      ).toBe(expectedToClaimEmptiness);
+    }
   });
 
   /**

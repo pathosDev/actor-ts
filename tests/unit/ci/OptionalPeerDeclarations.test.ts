@@ -328,6 +328,48 @@ describe('optional peer declarations', () => {
   });
 
   /**
+   * And the same claim read the other way.
+   *
+   * The assertion above runs `peerDependencies -> peerDependenciesMeta`, which
+   * is the direction #781 needed and is only half of "the two lists describe
+   * the same packages".  A `peerDependenciesMeta` row naming a package that is
+   * not a peer at all passes every assertion in this file — measured with a
+   * `"knip": { "optional": true }` row, which stayed green throughout.
+   *
+   * That matters because `optionalPeers` is the SUBJECT LIST every other
+   * assertion here reads, including its own `> 20` guard-the-guard.  A row
+   * added by a typo, a rename that moved a package out of `peerDependencies`
+   * and left its meta entry behind, or a deliberate padding all do the same
+   * thing: they inflate the list this file believes it is checking, and each
+   * phantom entry then has to be "declared in one of the two contexts" or
+   * excused in `UNDECLARED_PEERS` — so the pressure is towards excusing names
+   * that describe nothing.
+   *
+   * npm reads `peerDependenciesMeta` rows for packages that are not peers as
+   * inert, so nothing downstream breaks either.  This is the only thing that
+   * would notice.
+   */
+  test('every peerDependenciesMeta row names a package that IS a peer', () => {
+    const metaRows = Object.keys(rootManifest.peerDependenciesMeta ?? {}).sort();
+    // Guards the guard: an emptied or renamed `peerDependenciesMeta` reports
+    // no phantoms for the same reason a correct one does.
+    expect(
+      metaRows.length,
+      'No `peerDependenciesMeta` entries found in the root package.json — the '
+      + 'field was renamed or emptied, so this assertion filters an empty list.',
+    ).toBeGreaterThan(20);
+    const phantom = metaRows.filter((name) => !declaredPeers.includes(name));
+    expect(
+      phantom,
+      'These packages have a `peerDependenciesMeta` entry but are not declared '
+      + 'in `peerDependencies`, so the entry describes nothing npm will ever '
+      + 'read — and it silently pads `optionalPeers`, which is the list every '
+      + 'other assertion in this file checks. Remove the row, or add the peer '
+      + 'declaration it was meant to annotate (#781).',
+    ).toEqual([]);
+  });
+
+  /**
    * The core invariant: no optional peer is declared nowhere.
    *
    * This is what would have caught `imapflow` and `nodemailer` had the email

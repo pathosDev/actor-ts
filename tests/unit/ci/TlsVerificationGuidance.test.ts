@@ -24,8 +24,9 @@ import { describe, expect, test } from 'bun:test';
  *
  * Three properties, in narrowing order:
  *
- *  1. **No `rejectUnauthorized` binding in executable code under `src/` sets
- *     anything but a recognisably safe value.**  Structural and absolute: an
+ *  1. **No `rejectUnauthorized` binding in executable code under any of
+ *     {@link SCAN_ROOTS} sets anything but a recognisably safe value.**
+ *     Structural and absolute: an
  *     occurrence in a comment can only mislead a reader, one in code turns
  *     verification off for real.  A line counts as a comment only when it
  *     *starts* with `*`, `//` or `/*`, which is deliberately conservative —
@@ -76,8 +77,15 @@ import { describe, expect, test } from 'bun:test';
  *     that returns `undefined`, a custom `secureContext` or agent, or the
  *     `NODE_TLS_REJECT_UNAUTHORIZED` environment variable.  None of them is
  *     this key, and none of them is checked here.
- *   - **Anything outside `src/`** — tests, examples, benchmarks and the code
- *     samples in `docs/` are all unscanned.
+ *   - **Anything outside {@link SCAN_ROOTS}** — `tests/` (which has to be able
+ *     to write the unsafe shape as a fixture, and does, at the bottom of this
+ *     file) and the code samples in `docs/`, which are MDX rather than
+ *     TypeScript.  `examples/` and `benchmarks/` were outside it too until
+ *     this was widened: `examples/` in particular is the copy-paste surface
+ *     #755's own verifier went and audited by hand ("examples/ contains
+ *     none"), which is a fact about one afternoon rather than an invariant.
+ *     Both trees scan clean today, so the widening pins what was already
+ *     true rather than changing anything.
  *
  * Those limits are fixtures too, at the bottom of this file, so the paragraph
  * above is executable rather than a claim.
@@ -97,7 +105,29 @@ import { describe, expect, test } from 'bun:test';
  */
 
 const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..');
-const SOURCE_ROOT = join(REPOSITORY_ROOT, 'src');
+
+/**
+ * The trees this invariant covers: everything this repository publishes or
+ * hands a reader as runnable TypeScript.
+ *
+ * `src/` alone was the original scope, and it left the two trees a reader is
+ * most likely to paste FROM outside it — `examples/` is what the docs point
+ * at, and its files are complete programs rather than fragments.  Neither
+ * carries an occurrence today, which is what makes adding them a pin rather
+ * than a change.
+ */
+const SCAN_ROOTS: ReadonlyArray<string> = ['src', 'examples', 'benchmarks'];
+
+/**
+ * Extensions that can hold an executable binding.  Listed rather than assumed:
+ * the walk matched `.ts` exactly, so a `.mts`, `.cts` or `.tsx` file was
+ * outside the invariant for no stated reason — and the example frontends are
+ * `.tsx`.
+ */
+const SOURCE_EXTENSIONS: ReadonlyArray<string> = ['.ts', '.mts', '.cts', '.tsx'];
+
+/** Directory names that hold something other than this repository's own source. */
+const NOT_OUR_SOURCE: ReadonlySet<string> = new Set(['node_modules', 'dist', 'build', '.next']);
 
 /** The knob itself, spelled as node-postgres and node:tls spell it. */
 const VERIFICATION_KNOB = 'rejectUnauthorized';
@@ -150,6 +180,26 @@ const WARNING_MARKERS: ReadonlyArray<string> = [
 /** The safe illustration, identical on all four Postgres surfaces. */
 const SAFE_ILLUSTRATION = "ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') }";
 
+/**
+ * The two things the prose has to *say*, beyond showing the safe shape.
+ *
+ * The illustration and the link were the only pinned parts, and the nine
+ * warning lines around them could be deleted with this file fully green — the
+ * comment then still showed a correct `ssl` object and linked the page, and
+ * said nothing about why the other shape is wrong.  That is the difference
+ * between a snippet and guidance, and this file's own class comment names the
+ * prose-not-value phrasing as the fix's third load-bearing detail.
+ *
+ * Two phrases, not the whole paragraph: the remedy and the consequence.  Each
+ * site adds its own third clause naming what the link carries (the journal,
+ * the snapshots, the durable state), which is deliberately not pinned — that
+ * is the sentence a maintainer should be free to rewrite.
+ */
+const WARNING_PHRASES: ReadonlyArray<readonly [string, string]> = [
+  ['the remedy, as prose rather than as a copyable value', 'supply the signing ca'],
+  ['what is lost without it', 'authenticates nobody'],
+];
+
 /** Where the reasoning lives in full.  Quoted, so a page rename is loud. */
 const TLS_PAGE = 'https://actor-ts.dev/operations/security/tls-everywhere/';
 
@@ -168,10 +218,10 @@ const POSTGRES_POOL_CONFIG_SITES: ReadonlyArray<readonly [string, string]> = [
 
 function sourceFiles(directory: string, out: string[] = []): string[] {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    if (entry.name === 'node_modules') continue;
+    if (NOT_OUR_SOURCE.has(entry.name)) continue;
     const path = join(directory, entry.name);
     if (entry.isDirectory()) sourceFiles(path, out);
-    else if (entry.name.endsWith('.ts')) out.push(path);
+    else if (SOURCE_EXTENSIONS.some((extension) => entry.name.endsWith(extension))) out.push(path);
   }
   return out;
 }
@@ -316,7 +366,11 @@ function scanForDisabledVerification(file: string, text: string): Occurrence[] {
   return found.sort((first, second) => first.line - second.line);
 }
 
-const occurrences: ReadonlyArray<Occurrence> = sourceFiles(SOURCE_ROOT).flatMap(
+const scannedFiles: ReadonlyArray<string> = SCAN_ROOTS.flatMap(
+  (root) => sourceFiles(join(REPOSITORY_ROOT, root)),
+);
+
+const occurrences: ReadonlyArray<Occurrence> = scannedFiles.flatMap(
   (absolutePath) => scanForDisabledVerification(
     relativeToRoot(absolutePath),
     readFileSync(absolutePath, 'utf8'),
@@ -333,7 +387,27 @@ const inCodeOf = (fixture: string): ReadonlyArray<Occurrence> =>
   scanForDisabledVerification('fixture.ts', fixture).filter((occurrence) => !occurrence.inComment);
 
 describe('TLS verification guidance in shipped source (#755)', () => {
-  test(`no ${VERIFICATION_KNOB} binding in executable code under src/ sets an unsafe value`, () => {
+  test('the scanner reads every tree it claims to', () => {
+    // Guards the guard: the invariant below is an emptiness assertion, so a
+    // walk that silently stopped reaching a root — a renamed directory, an
+    // extension list that no longer matches anything there — satisfies it by
+    // reading nothing.  Per root, because that is the failure this widening
+    // introduces: `src/` alone would still look healthy.
+    for (const root of SCAN_ROOTS) {
+      const underRoot = scannedFiles.filter(
+        (path) => relativeToRoot(path).startsWith(`${root}/`),
+      );
+      expect(underRoot.length, `no source files found under ${root}/`).toBeGreaterThan(10);
+    }
+    // And the extension list is not decoration: the example frontends are the
+    // `.tsx` half of the tree, and they were outside the walk entirely.
+    expect(
+      scannedFiles.filter((path) => path.endsWith('.tsx')).length,
+      'no .tsx file was scanned, so widening the extension list changed nothing',
+    ).toBeGreaterThan(0);
+  });
+
+  test(`no ${VERIFICATION_KNOB} binding in executable code sets an unsafe value`, () => {
     const inCode = occurrences.filter((occurrence) => !occurrence.inComment);
     expect(
       inCode.length === 0
@@ -385,6 +459,12 @@ describe('Postgres poolConfig documents the safe TLS shape (#755)', () => {
     expect(documentation).toContain(TLS_PAGE);
     // The knob is named in prose, never spelled out as a copyable value.
     expect(documentation).not.toContain(DISABLED_VERIFICATION);
+    // And the prose says the two things that make it guidance rather than a
+    // snippet: what to do instead, and what is lost by not doing it.
+    const lowercase = documentation.toLowerCase();
+    for (const [what, phrase] of WARNING_PHRASES) {
+      expect(lowercase, `${file} no longer states ${what}`).toContain(phrase);
+    }
   });
 });
 
