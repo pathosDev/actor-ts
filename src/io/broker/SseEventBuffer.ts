@@ -102,7 +102,15 @@ export class SseEventBuffer {
    * arrived — so the total work stays linear in the characters received.  The
    * cut walks a moving start index instead of re-slicing the remainder per
    * block, which would put the quadratic back for a chunk carrying many
-   * events.
+   * events.  Emptying {@link SseEventBuffer.parts} rather than leaving an empty
+   * residual in it is the other half of the same accounting: it is what keeps
+   * the next read's cut a single flat part.  Both are measured, in characters
+   * copied, by `tests/unit/io/broker/SseInboundBuffering.test.ts`.
+   *
+   * The one-element branch of the materialisation is deliberately *not* in that
+   * measurement, and cannot be: `['x'].join('')` returns its element, so what
+   * the branch saves is a call and not a copy, and a character counter that
+   * scored it would be charging for a copy that does not happen.
    */
   private splitCompletedBlocks(): string[] {
     const whole = this.parts.length === 1 ? this.parts[0]! : this.parts.join('');
