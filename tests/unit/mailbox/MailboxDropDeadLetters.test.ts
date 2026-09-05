@@ -287,6 +287,47 @@ describe('the drop seam carries the envelope (#773)', () => {
     mailbox.enqueue({ message: 'later', sender: null });
     expect(seen).toEqual([['drop-head', 'ordinary']]);
   });
+
+  test('the priority bound reports nothing when there is nothing it may shed', () => {
+    // `BoundedMailbox`'s twin of this is the test above, and it is caught by
+    // two tests; the priority one was caught by none.  Replacing
+    // `shedLeastImportant`'s `if (shed !== undefined)` with an unconditional
+    // `this.reportDrop(…, shed ?? envelope)` — the #407 "count removals, not
+    // intentions" defect, extended by #729 to the all-undroppable case — left
+    // the whole suite green.
+    //
+    // The state it guards: `shedLeastImportant` inserts the arrival and then
+    // asks `removeOldest` for the least important entry, which steps over
+    // every `undroppable` one.  When the arrival is undroppable too there is
+    // nothing left to shed, and the unguarded version then reports a drop for
+    // a message that is still sitting in the queue — and, under
+    // `deadLetterDrops`, mints a `DeadLetter` for it, so #773's forensic
+    // record carries an entry for a message nobody lost.
+    const seen: Array<[MailboxDropReason, unknown]> = [];
+    const mailbox = new PriorityMailbox<string>({
+      // Ranks a notification LAST, the adversarial order: the marker rather
+      // than the priority has to be what keeps it.
+      priorityFor: (message) => (message.startsWith('death') ? 9 : 0),
+      capacity: 1,
+      overflow: 'drop-lowest-priority',
+      deadLetterDrops: true,
+    });
+    mailbox.observeDrops((reason, envelope) => seen.push([reason, envelope.message]));
+
+    const notification = (label: string): Envelope<string> =>
+      ({ message: label, sender: null, undroppable: true });
+    mailbox.enqueueSignal(notification('death-first'));
+    // At capacity, and the arrival may not be dropped either.
+    mailbox.enqueue(notification('death-second'));
+
+    expect(seen).toEqual([]);
+    expect(mailbox.droppedCount).toBe(0);
+    // Both are still queued, which is what makes the absence above a
+    // correctness claim rather than a coincidence: the unguarded version
+    // reports `death-second` as lost while handing it to the actor.
+    expect(mailbox.drainUser().map((envelope) => envelope.message))
+      .toEqual(['death-first', 'death-second']);
+  });
 });
 
 /**

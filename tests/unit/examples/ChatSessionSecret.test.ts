@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { SessionStore } from '../../../examples/chat/backend/auth/sessionStore.js';
 import type { DistributedDataHandle } from '../../../src/crdt/DistributedData.js';
@@ -120,5 +122,115 @@ describe('chat sample session secret (#791)', () => {
     const minted = new SessionStore(distributedData, 'secret-one').mintToken('alice');
     expect(new SessionStore(distributedData, 'secret-one').lookupToken(minted)).toBe('alice');
     expect(new SessionStore(distributedData, 'secret-two').lookupToken(minted)).toBeNull();
+  });
+
+  test('an empty secret on the OPT-IN path keys the demo secret, not zero bytes', () => {
+    // Property 3 of the header, on the path where it was never checked.  The
+    // three tests above reach the empty-secret rule through the throw, so they
+    // only ever exercise it with the opt-in OFF.  With the opt-in on there is
+    // no throw, and what the constructor does with `''` becomes visible: the
+    // fallback expression has to treat it as unset the same way the guard
+    // above it does, or the run signs its tokens with a zero-byte HMAC key.
+    //
+    // Read without reaching for the private constant: a store that fell back
+    // correctly signs identically to one that reached the fallback with the
+    // variable absent, so a token minted by one verifies in the other.  Under
+    // a fallback that accepts `''` the two key differently and it does not.
+    process.env[DEMO_SECRET_OPT_IN_VARIABLE] = '1';
+    delete process.env[TOKEN_SECRET_VARIABLE];
+    const absent = new SessionStore(distributedData);
+    process.env[TOKEN_SECRET_VARIABLE] = '';
+    const empty = new SessionStore(distributedData);
+
+    expect(absent.usingDemoSecret).toBe(true);
+    expect(empty.usingDemoSecret).toBe(true);
+    expect(
+      empty.lookupToken(absent.mintToken('alice')),
+      'the empty variable keyed the HMAC on something other than the demo secret',
+    ).toBe('alice');
+    expect(absent.lookupToken(empty.mintToken('bob'))).toBe('bob');
+  });
+
+  test('an empty constructor argument falls through to the environment', () => {
+    // The `secret !== ''` half of the same rule, which the tests above cannot
+    // see: they check that `''` does not COUNT as a secret, and this checks
+    // what happens next — the environment is still consulted, exactly as it
+    // is for an argument that was never passed.  Reverting the expression to
+    // the pre-#791 `secret ?? process.env[…]` keeps every other test green
+    // (the throw at the end covers the empty case on its own) and silently
+    // keys this store on zero bytes instead of on the environment's secret.
+    process.env[TOKEN_SECRET_VARIABLE] = 'the-environments-secret';
+    const fromEmptyArgument = new SessionStore(distributedData, '');
+    expect(fromEmptyArgument.usingDemoSecret).toBe(false);
+    const minted = fromEmptyArgument.mintToken('alice');
+    expect(new SessionStore(distributedData, 'the-environments-secret').lookupToken(minted))
+      .toBe('alice');
+  });
+
+  test('the opt-in tolerates the whitespace an env file leaves around a value', () => {
+    // `.trim()` in `demoSecretAllowed`, which the "off" list cannot reach: its
+    // only whitespace value is `' '`, and that fails the equality check with
+    // or without a trim.  The direction that matters is the other one — a
+    // `.env` line written `CHAT_ALLOW_DEMO_SECRET= 1` is an opt-in whoever
+    // typed it meant, and dropping the trim turns it into a start-up failure
+    // whose message is about a variable they did set.
+    for (const value of [' 1 ', '\t1', 'true\n', ' TRUE ']) {
+      process.env[DEMO_SECRET_OPT_IN_VARIABLE] = value;
+      expect(
+        () => new SessionStore(distributedData),
+        `${JSON.stringify(value)} should read as an opt-in`,
+      ).not.toThrow();
+    }
+  });
+});
+
+/**
+ * The startup warning in `examples/chat/backend/main.ts`.
+ *
+ * Read out of the source, deliberately, and it is the weaker of the two kinds
+ * of assertion in this file — so it is worth saying exactly why there is no
+ * stronger one available.  `main.ts` is a cluster entry point: it joins a
+ * cluster, attaches DevTools and binds an HTTP server on import, so there is
+ * no seam to call.  It *is* executed under `bun run test:examples`, which
+ * spawns this backend with `CHAT_ALLOW_DEMO_SECRET=1` (see the chat case in
+ * `tests/examples/examples.manifest.json`), but that runner asserts one
+ * substring per case and the chat case spends it on the smoke test's own
+ * verdict.  So the warning runs in CI with nothing looking at it, and
+ * replacing its condition with `false` moved no test.
+ *
+ * What is asserted here is the pair the fix delivered: that the emission is
+ * gated on the store's own verdict rather than on a second reading of the
+ * environment, and that the line says the four things that make it actionable.
+ * The wording it replaced — "session tokens signed with the demo fallback
+ * secret — set CHAT_TOKEN_SECRET to a strong random string for production" —
+ * carries one of the four, which is what makes these substrings a check and
+ * not a transcription.
+ */
+describe('chat sample startup warning (#791)', () => {
+  const source = readFileSync(
+    join(import.meta.dir, '..', '..', '..', 'examples', 'chat', 'backend', 'main.ts'),
+    'utf8',
+  );
+
+  test('the warning is gated on the store’s own verdict', () => {
+    // `sessions.usingDemoSecret`, not a second read of the environment: the
+    // store decides which secret it ended up with, and a warning that
+    // re-derived that from `process.env` would drift from it.
+    expect(source).toContain('if (sessions.usingDemoSecret) {');
+    expect(source).toContain('system.log.warn(');
+  });
+
+  test('the warning names how it happened, what it costs, and what to do', () => {
+    const warning = /system\.log\.warn\(\s*'([^']*)'/.exec(source)?.[1] ?? '';
+    expect(warning, 'no single-quoted warning literal found in main.ts').not.toBe('');
+    // The variable that allowed it — an operator who did not set it needs to
+    // know which one to unset, and it is not the one the remedy names.
+    expect(warning).toContain('CHAT_ALLOW_DEMO_SECRET');
+    // Where the key is, so "demo secret" is not mistaken for "a weak secret".
+    expect(warning).toContain('sessionStore.ts');
+    // The consequence, in the terms an operator has to weigh.
+    expect(warning).toContain('mint a token');
+    // And the remedy.
+    expect(warning).toContain('CHAT_TOKEN_SECRET');
   });
 });

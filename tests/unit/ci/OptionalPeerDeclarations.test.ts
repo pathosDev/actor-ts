@@ -328,6 +328,123 @@ describe('optional peer declarations', () => {
   });
 
   /**
+   * And the same claim read the other way.
+   *
+   * The assertion above runs `peerDependencies -> peerDependenciesMeta`, which
+   * is the direction #781 needed and is only half of "the two lists describe
+   * the same packages".  A `peerDependenciesMeta` row naming a package that is
+   * not a peer at all passes every assertion in this file — measured with a
+   * `"knip": { "optional": true }` row, which stayed green throughout.
+   *
+   * That matters because `optionalPeers` is the SUBJECT LIST every other
+   * assertion here reads, including its own `> 20` guard-the-guard.  A row
+   * added by a typo, a rename that moved a package out of `peerDependencies`
+   * and left its meta entry behind, or a deliberate padding all do the same
+   * thing: they inflate the list this file believes it is checking, and each
+   * phantom entry then has to be "declared in one of the two contexts" or
+   * excused in `UNDECLARED_PEERS` — so the pressure is towards excusing names
+   * that describe nothing.
+   *
+   * npm reads `peerDependenciesMeta` rows for packages that are not peers as
+   * inert, so nothing downstream breaks either.  This is the only thing that
+   * would notice.
+   */
+  test('every peerDependenciesMeta row names a package that IS a peer', () => {
+    const metaRows = Object.keys(rootManifest.peerDependenciesMeta ?? {}).sort();
+    // Guards the guard: an emptied or renamed `peerDependenciesMeta` reports
+    // no phantoms for the same reason a correct one does.
+    expect(
+      metaRows.length,
+      'No `peerDependenciesMeta` entries found in the root package.json — the '
+      + 'field was renamed or emptied, so this assertion filters an empty list.',
+    ).toBeGreaterThan(20);
+    const phantom = metaRows.filter((name) => !declaredPeers.includes(name));
+    expect(
+      phantom,
+      'These packages have a `peerDependenciesMeta` entry but are not declared '
+      + 'in `peerDependencies`, so the entry describes nothing npm will ever '
+      + 'read — and it silently pads `optionalPeers`, which is the list every '
+      + 'other assertion in this file checks. Remove the row, or add the peer '
+      + 'declaration it was meant to annotate (#781).',
+    ).toEqual([]);
+  });
+
+  /**
+   * And the third copy of the same list, which is the one no gate reads.
+   *
+   * `bun.lock` records the optional split itself, in a root `optionalPeers`
+   * array bun regenerates from `peerDependenciesMeta` on every install. That
+   * copy can go stale in one direction only, and it is a direction this
+   * repository takes regularly: the manifest is edited by hand — AGENTS.md
+   * says to write an optional peer's second declaration by hand, because
+   * `bun add` no-ops on a package that is already a peer — and a commit that
+   * forgets the `bun install` afterwards leaves the lockfile describing the
+   * previous manifest.
+   *
+   * Nothing notices. `bun install --frozen-lockfile --dry-run` exits 0 with an
+   * entry removed from this array — measured, and it is why the array is on
+   * this list at all (#781): the frozen check compares resolutions, and an
+   * optional peer has none to compare. `bun audit` reads the `packages` map
+   * below it, not this. The type checker never opens the file.
+   *
+   * What a stale copy costs is bun's peer resolution running against the old
+   * split: a peer marked optional in `package.json` but missing here is
+   * treated as required at install time in this repository, which turns the
+   * lazy-`import()` design AGENTS.md describes into an install-time
+   * requirement for the one package the library was written never to need
+   * eagerly. The reverse — a name still here after the manifest dropped it —
+   * is the more likely of the two and reads as an optional peer that no longer
+   * exists.
+   *
+   * Asserted as set equality rather than one-directionally, for the reason the
+   * two tests above document: half a bijection is what let a phantom row sit
+   * in `peerDependenciesMeta` unnoticed.
+   */
+  test('bun.lock records the same optional peers the manifest declares', () => {
+    const lockfile = readFileSync(join(REPOSITORY_ROOT, 'bun.lock'), 'utf8');
+    // The `packages` map further down carries `optionalPeers` arrays of its
+    // own, one per dependency that has optional peers, so the read is scoped
+    // to the workspace region above it rather than to the first match.
+    const packagesAt = lockfile.indexOf('\n  "packages": {');
+    expect(
+      packagesAt,
+      'bun.lock has no top-level `packages` map, so the workspace region below '
+      + 'could not be bounded — the lockfile format changed and this read needs '
+      + 'rewriting rather than relaxing.',
+    ).toBeGreaterThan(0);
+    const workspaceRegion = lockfile.slice(0, packagesAt);
+    // Guards the guard: an `optionalPeers` that moved, was renamed, or gained a
+    // sibling would leave the extraction below reading the wrong array — or an
+    // empty one, which compares equal to an emptied manifest for the wrong
+    // reason.
+    expect(
+      workspaceRegion.split('"optionalPeers"').length - 1,
+      'Expected exactly one `optionalPeers` array in bun.lock\'s workspace '
+      + 'region. Zero means bun stopped recording the split and this assertion '
+      + 'is comparing against nothing; more than one means the repository grew '
+      + 'a second workspace and the read has to say which one it means.',
+    ).toBe(1);
+
+    const arrayStart = workspaceRegion.indexOf('"optionalPeers"');
+    const arrayEnd = workspaceRegion.indexOf(']', arrayStart);
+    const recorded = [
+      ...workspaceRegion.slice(arrayStart + '"optionalPeers"'.length, arrayEnd)
+        .matchAll(/"([^"]+)"/g),
+    ].map((match) => match[1] ?? '').sort();
+
+    expect(
+      recorded,
+      'bun.lock\'s root `optionalPeers` array and package.json\'s optional '
+      + '`peerDependenciesMeta` entries name different packages, which means '
+      + 'the lockfile was not regenerated after the manifest changed. Nothing '
+      + 'else catches this — `bun install --frozen-lockfile` exits 0 on it, '
+      + 'because an optional peer has no resolution for the frozen check to '
+      + 'compare. Run `bun install` and commit the lockfile alongside the '
+      + 'manifest edit (#781).',
+    ).toEqual([...optionalPeers]);
+  });
+
+  /**
    * The core invariant: no optional peer is declared nowhere.
    *
    * This is what would have caught `imapflow` and `nodemailer` had the email

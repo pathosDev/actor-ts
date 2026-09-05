@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, mock, test } from 'bun:test';
 import { ZstdErrorCode, decompress as fzstdDecompress } from 'fzstd';
+import * as nodeZlibModule from 'node:zlib';
 import { constants as zlibConstants, zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import {
   compressorFor,
@@ -131,6 +132,10 @@ afterEach(() => {
   // one process, and a leaked suppression would quietly move unrelated suites
   // onto the pure-JS read path.
   setNativeZstdDecompressCandidatesOverride(null);
+  // The last block replaces `node:zlib` itself, which is process-wide for the
+  // same reason and worse: an unrestored module mock would take zstd away
+  // from every suite that runs after this file.
+  mock.restore();
   resetCompressionCache();
 });
 
@@ -353,5 +358,95 @@ describe('zstd read resolution — rung order (#580)', () => {
     expect(decodeLog.at(-1)).toBe('node:zlib');
     await expect(compressorFor('zstd').decompress(frame, 16))
       .rejects.toThrow(MEASURED_AFTER_DECODING);
+  });
+});
+
+/**
+ * The rung-order block above reaches the Bun rung through the override, which
+ * means it never exercises the LINE that puts a decoder there:
+ * `loadNativeZstdDecompressCandidates` reads `globalThis.Bun.zstdDecompress-
+ * Sync`, and the override returns early before it.  Replace that read with
+ * `return { nodeZlib }` and every test in this file stays green, because on
+ * Bun and on Node `node:zlib` wins the canary and the second rung is never
+ * consulted at all.
+ *
+ * That is not a hypothetical rung.  It is the only zstd read path on a Bun
+ * whose `node:zlib` lacks zstd — a configuration
+ * `docs/…/persistence/object-storage/compression.mdx` names explicitly — and
+ * with the read gone such a runtime falls to the pure-JS `fzstd` peer, which
+ * is a peer dependency nothing installs by default.  The failure is "object
+ * storage cannot read its own compressed bodies", and it arrives on a runtime
+ * upgrade rather than on a code change.
+ *
+ * So this block suppresses `node:zlib` **without** the override, by replacing
+ * the module the resolver imports.  What is left is the real runtime: the
+ * candidates function runs, reads the real `Bun` global, and the real global
+ * serves the read.  `mock.restore()` in `afterEach` puts `node:zlib` back —
+ * an unrestored mock here would take zstd away from every suite that runs
+ * after this file.
+ *
+ * Which rung answered is read off the same two package properties the block
+ * above uses, in the opposite direction: a native decoder refuses a wrong
+ * content checksum and reports a truncated frame in its own vocabulary, and
+ * `fzstd` does neither.  So "Bun's global served it" and "fzstd served it"
+ * are told apart by the answer rather than by a label a fake appended.
+ */
+describe('zstd read resolution — the runtime read behind the Bun rung (#780)', () => {
+  /** `node:zlib` with its zstd decoder taken away — a Bun that predates it. */
+  const suppressNodeZlibZstd = (): void => {
+    mock.module('node:zlib', () => ({
+      ...nodeZlibModule,
+      zstdDecompressSync: () => {
+        throw new TypeError('binding.ZstdDecompress is not a constructor');
+      },
+    }));
+    // Resolution is memoised, and the memo may already hold the real one.
+    resetCompressionCache();
+  };
+
+  test('the Bun global is what this runtime actually offers', () => {
+    // The premise of the two tests below, asserted rather than assumed: they
+    // would pass vacuously on a runtime with no `Bun` global, because there
+    // the fzstd rung is the correct answer and this file already covers it.
+    const bun = (globalThis as { Bun?: { zstdDecompressSync?: unknown } }).Bun;
+    expect(typeof bun?.zstdDecompressSync).toBe('function');
+  });
+
+  test("Bun's own global serves the read when node:zlib has no zstd decoder", async () => {
+    const frame = await nativeZstdFrame();
+    suppressNodeZlibZstd();
+
+    expect(await compressorFor('zstd').decompress(frame)).toEqual(PAYLOAD);
+    // Native, not fzstd: fzstd reports a truncated frame in the
+    // `ZstdErrorCode` vocabulary it exports, and no native decoder can.
+    const truncated = frame.subarray(0, frame.length - 3);
+    const failure = await failureOf(() => compressorFor('zstd').decompress(truncated));
+    expect(failure).toBeInstanceOf(Error);
+    expect(
+      (failure as { code?: unknown }).code,
+      'the read fell through to fzstd, so nothing read the Bun global',
+    ).not.toBe(ZstdErrorCode.UnexpectedEOF);
+    // No options parameter to carry a bound, so this rung is a post-mortem.
+    await expect(compressorFor('zstd').decompress(frame, 16))
+      .rejects.toThrow(MEASURED_AFTER_DECODING);
+  });
+
+  test('and it verifies the content checksum, which the pure-JS fallback does not', async () => {
+    // The second discriminator, and the one that makes the first assertion
+    // above about the DECODER rather than about zstd working: fzstd walks past
+    // the frame's optional checksum without hashing what it decoded, so these
+    // bytes are the difference between the two rungs.
+    const checksummedFrame = zstdCompressSync(PAYLOAD, {
+      params: { [zlibConstants.ZSTD_c_checksumFlag]: 1 },
+    });
+    const corruptedFrame = Uint8Array.from(checksummedFrame);
+    corruptedFrame[corruptedFrame.length - 1] ^= 0xff;
+    expect(
+      fzstdDecompress(corruptedFrame),
+      'fzstd refused these bytes, so they no longer separate the two rungs',
+    ).toEqual(PAYLOAD);
+
+    suppressNodeZlibZstd();
+    await expect(compressorFor('zstd').decompress(corruptedFrame)).rejects.toThrow();
   });
 });

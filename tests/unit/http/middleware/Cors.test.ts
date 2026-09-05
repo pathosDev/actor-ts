@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
@@ -8,6 +10,8 @@ import { HttpExtensionId } from '../../../../src/http/HttpExtension.js';
 import { compile, complete, concat, get, options, path, post, type Route } from '../../../../src/http/Route.js';
 import { cors } from '../../../../src/http/middleware/Cors.js';
 import { CorsOptions } from '../../../../src/http/middleware/CorsOptions.js';
+import { serializeCookie } from '../../../../src/http/Cookies.js';
+import { MAXIMUM_ECHOED_CORS_HEADERS_LENGTH } from '../../../../src/http/Constants.js';
 import type { HttpServerBackend, ServerBinding } from '../../../../src/http/backend/HttpServerBackend.js';
 import { Status, type HttpRequest } from '../../../../src/http/Types.js';
 import { DEFAULT_WEBSOCKET_POLICY } from '../../../../src/http/websocket/WebsocketPolicy.js';
@@ -206,6 +210,100 @@ describe('cors — echoed Access-Control-Allow-Headers (#792)', () => {
     for (const element of echoed.split(', ')) {
       expect(element).toMatch(token);
       expect(names).toContain(element);
+    }
+  });
+
+  /**
+   * The filter is RFC 7230's `tchar` production, and every positive fixture
+   * above happens to be alphanumeric-plus-hyphen.  So a filter narrowed to
+   * `/^[A-Za-z0-9-]+$/` — which silently drops legal names carrying any of
+   * `_ . ! # $ % & ' * + ^ \` | ~` — passes all of them.  That is not a
+   * hypothetical narrowing: `_` alone appears in real header names, and a
+   * dropped element is invisible to the client, which simply finds the header
+   * it asked for missing from the allow list.
+   */
+  test('every legal tchar survives, not just the alphanumeric ones', async () => {
+    // One name per non-alphanumeric tchar, each on its own element so a drop
+    // names the character that caused it.
+    const punctuation = ['!', '#', '$', '%', '&', "'", '*', '+', '.', '^', '_', '`', '|', '~', '-'];
+    const names = punctuation.map((character) => `x${character}a`);
+    expect(await echoedAllowHeaders(names.join(', '))).toBe(names.join(', '));
+  });
+
+  /**
+   * The token production is documented as "deliberately the same production
+   * as `COOKIE_NAME_RE` in `../Cookies.ts`; both validate an HTTP token" —
+   * two copies of one grammar, in two files, with nothing making them agree.
+   *
+   * Asserted through both public surfaces rather than by comparing the two
+   * regex literals, so an equivalent respelling of either is not a failure
+   * and a genuine divergence is.  `serializeCookie` throws on a name its own
+   * production refuses, which is the cookie side's answer to the same
+   * question the CORS echo answers by dropping the element.
+   */
+  test('the token production matches the cookie-name one, character for character', async () => {
+    const accepts = (character: string): boolean => {
+      try {
+        serializeCookie(`x${character}a`, 'v');
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    // Every printable ASCII character, so the two sets are compared whole
+    // rather than at a handful of sampled points.  One request per character:
+    // a single list of 94 names would be subject to the length cap as well,
+    // which is a different mechanism and has its own test below.
+    const printableAscii = Array.from({ length: 0x7e - 0x21 + 1 }, (_, i) => String.fromCharCode(0x21 + i));
+    const survivors = new Set<string>();
+    for (const character of printableAscii) {
+      const name = `x${character}a`;
+      if (await echoedAllowHeaders(name) === name) survivors.add(name);
+    }
+
+    const echoAccepts = printableAscii.filter((character) => survivors.has(`x${character}a`));
+    const cookieAccepts = printableAscii.filter((character) => accepts(character));
+    expect(echoAccepts).toEqual(cookieAccepts);
+    // Guards the comparison from passing vacuously: a filter that dropped
+    // every element, or a `serializeCookie` that accepted every name, agrees
+    // with a matching partner just as well.  `tchar` is 62 alphanumerics plus
+    // 15 punctuation marks, out of the 94 printable ASCII characters.
+    expect(echoAccepts).toHaveLength(77);
+  });
+
+  /**
+   * The cap is pinned from above by the test three cases up
+   * (`toBeLessThanOrEqual(1024)`) and, until this, from nowhere below: an
+   * accidental shrink to any value in 40…1023 truncated legitimate preflight
+   * echoes with the whole suite green.  A browser that asked for a header and
+   * did not get it back simply fails the request, so the failure is a CORS
+   * error at the client with nothing logged here.
+   */
+  test('the cap is wide enough for a realistic preflight, not merely bounded', async () => {
+    expect(MAXIMUM_ECHOED_CORS_HEADERS_LENGTH).toBe(1024);
+    // 20 names of 40 characters plus their separators — 838 characters, well
+    // inside the documented budget and well outside a shrunken one.
+    const names = Array.from({ length: 20 }, (_, i) => `x-tenant-request-header-${String(i).padStart(16, '0')}`);
+    const requested = names.join(', ');
+    expect(requested.length).toBeLessThanOrEqual(MAXIMUM_ECHOED_CORS_HEADERS_LENGTH);
+    expect(await echoedAllowHeaders(requested)).toBe(requested);
+  });
+
+  /**
+   * The number lives in four hand-maintained places — the constant, the
+   * bound above, and the English and German prose — and nothing tied the two
+   * halves together.  Reading the docs here is the cheapest binding that
+   * fails when the constant moves without them, and it is the same shape the
+   * `reference.conf` documented-defaults pin already uses.
+   */
+  test('both documentation mirrors quote the cap the code enforces', () => {
+    const documentationRoot = join(import.meta.dir, '..', '..', '..', '..', 'docs', 'src', 'content', 'docs');
+    const pages: ReadonlyArray<readonly [string, string]> = [
+      [join(documentationRoot, 'http', 'middleware', 'cors.mdx'), '-character cap'],
+      [join(documentationRoot, 'de', 'http', 'middleware', 'cors.mdx'), '-Zeichen-Limit'],
+    ];
+    for (const [page, phrase] of pages) {
+      expect(readFileSync(page, 'utf8')).toContain(`${MAXIMUM_ECHOED_CORS_HEADERS_LENGTH}${phrase}`);
     }
   });
 
