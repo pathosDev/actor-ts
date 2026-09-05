@@ -867,6 +867,16 @@ class DistributedDataActor extends Actor<ActorMessage> {
       // will see the recovered values via the handle's replay
       // mechanism (subscribe() fires once with the current value).
       try {
+        // The resolver is the right thing to hand the store and is inert here,
+        // and both halves are worth stating.  `preStart` runs as its own
+        // mailbox task and the mailbox is sequential, so no `ddata-update` has
+        // been handled yet and `identities` is necessarily empty for every key
+        // this loop asks about — the store's own doc says the same from its
+        // side ("a door, not the repair").  What actually puts a reloaded key
+        // right is `learnIdentity` on its first `update`; passing the registry
+        // costs a closure and keeps the call site correct rather than merely
+        // adequate, which is why it stays.  It is not, however, load-bearing
+        // for the reload: removing it changes nothing observable.
         const loaded = await this.durable.load((key) => this.identityFor(key));
         for (const [key, crdt] of loaded) {
           this.applyMerged(key, null, crdt);
