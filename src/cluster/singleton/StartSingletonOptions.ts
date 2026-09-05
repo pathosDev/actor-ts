@@ -1,3 +1,5 @@
+import type { Config } from '../../config/Config.js';
+import { ConfigKeys } from '../../config/ConfigKeys.js';
 import type { Lease } from '../../coordination/Lease.js';
 import type { ActorClassOrFactory } from '../../Actor.js';
 import type { ActorOptions } from '../../ActorOptions.js';
@@ -191,6 +193,73 @@ export class StartSingletonOptionsValidator<T> extends OptionsValidator<StartSin
     this.positiveInt('maxHandOverStateBytes');
     this.positiveInt('bufferSize');
   }
+}
+
+/**
+ * The slice of {@link StartSingletonOptionsType} that `actor-ts.cluster
+ * .singleton.*` can express — every field whose value is a number, a string
+ * or a flag (#855).
+ *
+ * The three that are missing are missing because HOCON cannot name them:
+ * `actor`, `actorOptions` and `lease` are objects a config file has no way to
+ * construct.  `lease` is the one worth stating out loud, because Akka has a
+ * `use-lease` key and this block deliberately does not: nothing in `src/`
+ * resolves a name to a lease backend, so a switch reading "on" would advertise
+ * split-brain protection that is not there.
+ *
+ * Generic over `unknown` on purpose — none of the fields it picks mentions the
+ * command type, so a `SingletonConfigDefaults<TCommand>` would be a type
+ * parameter nothing uses.
+ */
+export type SingletonConfigDefaults = Pick<
+  StartSingletonOptionsType<unknown>,
+  | 'role'
+  | 'bufferSize'
+  | 'handOverTimeoutMs'
+  | 'acquireRetryIntervalMs'
+  | 'maxHandOverStateBytes'
+  | 'restartOnTermination'
+>;
+
+/**
+ * Read the `actor-ts.cluster.singleton.*` block into the shape
+ * {@link ClusterSingleton.start} and {@link ClusterSingleton.ref} merge under
+ * the caller's options.
+ *
+ * Only keys actually present are returned.  That is the whole point of the
+ * `hasPath` guards: a key read unconditionally comes back `undefined` and,
+ * once spread, shadows the built-in default it was supposed to fall through
+ * to — `mergeOptions` falls through on `undefined`, not on falsy.
+ */
+export function readSingletonOptionsFromConfig(config: Config): SingletonConfigDefaults {
+  const keys = ConfigKeys.cluster.singleton;
+  // Mutable while being filled; consumers see the readonly shape.
+  const out: { -readonly [K in keyof SingletonConfigDefaults]: SingletonConfigDefaults[K] } = {};
+  if (config.hasPath(keys.role)) {
+    // `""` is how a HOCON file says "no opinion" for a string whose absence is
+    // the real default — the same shape `sharding.role` uses.  Here it is not
+    // merely tidy: `reference.conf` merges under everything, so the shipped
+    // placeholder makes `hasPath` true forever, and passing `''` on would both
+    // shadow an explicit `withRole` and fail
+    // `StartSingletonOptionsValidator`'s non-empty check on every node that
+    // configured nothing.
+    const role = config.getString(keys.role);
+    if (role.length > 0) out.role = role;
+  }
+  if (config.hasPath(keys.bufferSize)) out.bufferSize = config.getInt(keys.bufferSize);
+  if (config.hasPath(keys.handOverTimeout)) {
+    out.handOverTimeoutMs = config.getDuration(keys.handOverTimeout);
+  }
+  if (config.hasPath(keys.acquireRetryInterval)) {
+    out.acquireRetryIntervalMs = config.getDuration(keys.acquireRetryInterval);
+  }
+  if (config.hasPath(keys.maxHandOverStateBytes)) {
+    out.maxHandOverStateBytes = config.getBytes(keys.maxHandOverStateBytes);
+  }
+  if (config.hasPath(keys.restartOnTermination)) {
+    out.restartOnTermination = config.getBoolean(keys.restartOnTermination);
+  }
+  return out;
 }
 
 /**

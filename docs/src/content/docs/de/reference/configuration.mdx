@@ -236,6 +236,8 @@ man daraus erneut zustellt.
 | `cluster.weakly-up-after` | `0s` | Befördert ein `joining`-Mitglied nach dieser Zeit automatisch zu `weakly-up`.  `0` schaltet das ab — siehe [Weakly-up](/de/cluster/weakly-up/). |
 | `cluster.max-members` | `1000` | Obergrenze für lebende Mitgliedseinträge, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
 | `cluster.max-tombstones` | `10000` | Obergrenze für `removed`-Tombstones, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
+| `cluster.minimum-members-before-up` | `1` | Mitglieder, die vorhanden sein müssen, bevor **irgendetwas** zu `up` befördert wird.  `1` ist das bisherige Verhalten — siehe unten. |
+| `cluster.role.<role>.minimum-members-before-up` | *(nicht gesetzt)* | Schwelle pro Rolle, mit der obigen als UND verknüpft.  In `reference.conf` nur als Kommentar, da Rollennamen zum Deployment gehören. |
 | `cluster.tombstone.time-to-live` | `24h` | Wie lange ein `removed`-Tombstone gehalten wird, bevor er gepruned wird. |
 | `cluster.tombstone.prune-interval` | `5m` | Wie oft der Prune-Durchlauf läuft. |
 | `cluster.tombstone.min-retention` | `0s` | Mindestalter, bevor ein Tombstone gepruned werden darf.  `0` leitet es aus `failure-detector.down-after` ab (6×). |
@@ -332,9 +334,91 @@ Kandidatenmenge ist außerdem eine Sicht pro Node, deshalb liest nichts, das
 eine Rolle *wählt* (der Host eines Singletons, das Zuhause eines Shards),
 daraus — sonst wählten zwei Nodes zwei Gewinner.
 
+`minimum-members-before-up` hält den Übergang `joining` / `weakly-up` →
+`up` zurück, bis die lokale Mitgliederkarte mindestens so viele Mitglieder
+enthält — sowohl die Beförderungen des Leaders als auch die Selbstwahl eines
+Gründungsknotens.  Gezählt werden Mitglieder in `joining`, `weakly-up` und
+`up`; ein `leaving`-Mitglied hält die Schwelle für seinen Nachfolger also
+*nicht* offen.  Rückwärts wird nie ausgewertet: einen Übergang `up` →
+`joining` gibt es nicht, ein später schrumpfender Cluster behält die bereits
+beförderten Mitglieder und hält nur neue zurück.
+
+Schwellen pro Rolle sind damit **UND**-verknüpft — die globale Zahl und
+jede konfigurierte Rollenzahl müssen erfüllt sein.  Sie werden als
+`cluster.role.<role>.minimum-members-before-up` geschrieben und sind nur als
+Kommentar enthalten, denn kein Leaf hier könnte eine Rolle benennen, die
+Ihr Deployment erfunden hat.  Ihr Nutzen ist „auf einem Cluster ohne
+Backend keine Arbeit platzieren“: Shard-Regionen und Singletons werden nach
+Rolle gehostet, ein Cluster aus lauter Frontends erfüllt also eine globale
+Zahl und ist trotzdem nutzlos.
+
+Es ist **nicht** `cluster.bootstrap.minimum-members`, ein reines
+*Warte*-Prädikat für `awaitReady` / `isReady`, das nie einen Status ändert.
+Diese Einstellung macht jene weitgehend überflüssig — ein Node, der
+überhaupt `up` ist, belegt bereits, dass die Schwelle erreicht war —, beide
+zu setzen lohnt sich also selten.  Und es ist **kein Quorum und keine
+Sicherheitsmaßnahme**: jeder Node darf sich selbst als `up` ankündigen, die
+Schwelle begrenzt also Versehen, nicht Angreifer.  Zuständig ist der
+`split-brain-resolver` oben; beachten Sie, dass `static-quorum` noch keinen
+„nichts ist unreachable“-Frühausstieg hat — prüfen Sie eine Downing-Strategie
+also für die Clustergröße, bevor Sie eine Schwelle über `1` setzen.
+
+Solange die Schwelle nicht erreicht ist, bleibt der Node `joining` und sagt
+das einmalig — mit Schlüsselname und aktueller Zahl — statt die
+Cold-Start-Stall-Diagnose zu melden, die hier ein falsches Urteil wäre.
+Siehe [Joining und Seeds](/de/cluster/joining-and-seeds/).
+
 `seeds`, `roles` und der Transport haben keine HOCON-Form — die ersten
 beiden sind Deployment-Identität, die an die Join-Stelle gehört, und der
-Transport ist ein Objekt, das eine Config-Datei nicht ausdrücken kann.
+Transport ist ein Objekt, das eine Config-Datei nicht ausdrücken kann.  Eine
+Schwelle *pro Rolle* ist davon keine Ausnahme: sie benennt eine Rolle, statt
+eine zuzuweisen, und die Zuweisung passiert weiterhin an der Join-Stelle.
+
+### `actor-ts.cluster.singleton`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `cluster.singleton.role` | `""` | Beschränkt das Hosten auf Nodes mit diesem Rollen-Tag.  `""` = jeder Node darf hosten; der leere String wird verworfen und nie weitergereicht. |
+| `cluster.singleton.buffer-size` | `1000` | Nachrichten, die ein Proxy hält, solange der Cluster keinen Host hat, bevor er die neuesten in die Dead Letters gibt. |
+| `cluster.singleton.hand-over-timeout` | `10s` | Wie lange ein eingehender Host darauf wartet, dass jeder infrage kommende Peer bestätigt, das Singleton nicht zu betreiben, bevor er es trotzdem hostet. |
+| `cluster.singleton.acquire-retry-interval` | `5s` | Wie lange der Manager wartet, bevor er ein fehlgeschlagenes `acquire()` einer Lease wiederholt.  Nur erreichbar, wenn im Code eine Lease übergeben wurde. |
+| `cluster.singleton.max-hand-over-state-bytes` | `1M` | Obergrenze für einen Warm-Hand-over-Snapshot.  Ein größerer wird nicht gesendet, und der Nachfolger startet kalt. |
+| `cluster.singleton.restart-on-termination` | `on` | Startet das Singleton neu, nachdem seine Instanz *unerwartet* gestorben ist — im Gegensatz zum geplanten Abbau einer Übergabe. |
+
+Beide Türen lesen den Block, und die zweite ist der Grund, dass es ihn gibt.
+`cluster.singleton.start(...)` legt ihn unter die Optionen des Aufrufers, ein
+explizites `withBufferSize(…)` gewinnt also weiterhin pro Feld.
+`cluster.singleton.ref(...)` nimmt **überhaupt kein Optionsobjekt**: vor
+diesem Block hatte ein reiner Proxy-Node schlicht keine Möglichkeit, seine
+Puffergrenze zu setzen — oder zu erfahren, dass das Singleton rollenbeschränkt
+ist, was schwerer wiegt: eine konfigurierte Rolle, die nur `start()` erreicht,
+lässt einen solchen Node beim einfachen Leader routen, während die Manager auf
+dem Rollen-Member hosten.
+
+Eine Stelle der Präzedenz liest sich verkehrt herum: eine Rolle, die am
+`SingletonKey` der Actor-Klasse deklariert ist, **schlägt** die Config-Datei,
+denn der Key ist Code, und Code ist die höhere Schicht.  Zwei Nodes, die sich
+über die Rolle uneinig sind — einer aus einem Key, einer aus HOCON — sind eine
+echte Fehlkonfiguration, und der Proxy sagt das auch: er behält die erste
+Rolle, mit der er adressiert wurde, und warnt vor der zweiten.
+
+`role = ""` ist die Gestalt des Keys, kein Wert, mit dem jemand betreibt.  Er
+wird verworfen statt weitergereicht, und das trägt hier gleich doppelt: `''`
+würde ein explizites `withRole(…)` der Schicht darüber verdecken, und
+`StartSingletonOptionsValidator` weist eine leere Rolle rundheraus zurück —
+ein Node, der die ausgelieferte Datei unverändert kopiert, würde also jedes
+`start()` scheitern lassen.
+
+Vier Keys, die Akka hat, fehlen **mit Absicht**.  Hinter `use-lease` und
+`lease-name` steht nichts: kein Teil des Frameworks macht aus einem Namen eine
+`Lease`, und ein Schalter, der `on` liest und keine Lease erzeugt, würde einen
+Split-Brain-Schutz behaupten, den es nicht gibt — im Code mit `withLease(…)`
+übergeben.  `singleton-identification-interval` konfiguriert ein Polling, das
+dieser Proxy nicht betreibt (er abonniert stattdessen Cluster-Events), und
+`min-number-of-hand-over-retries` zählt Versuche, die nichts zählt — die
+Wartezeit begrenzt `hand-over-timeout`.  Die Wiederholrate der Übergabe ist
+eine Korrektheitseigenschaft des Austauschs und kein Tuning-Knopf und bleibt
+eine Konstante.
 
 ### `actor-ts.cluster.pub-sub`
 
@@ -496,6 +580,100 @@ zufällig genannt hat
 Backends liefern unterschiedliche eingebaute Defaults — 3 Versuche / 100 ms für
 Kubernetes, 1 / 50 ms in-memory —, und ein Leaf könnte beide nicht ausdrücken,
 ohne sie stillschweigend zu vereinheitlichen.  Setz sie pro Lease im Code.
+
+### `actor-ts.cluster.bootstrap`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `cluster.bootstrap.stable-margin` | `5s` | Wie lange die Contact-Point-Menge unverändert bleiben muss, bevor die Observation sie stabil nennt. |
+| `cluster.bootstrap.poll-interval` | `1s` | Wie oft Discovery während der Observation abgefragt wird. |
+| `cluster.bootstrap.max-wait` | `60s` | Gesamtbudget der Observation, bevor sie aufgibt und den Bootstrap scheitern lässt. |
+| `cluster.bootstrap.required-contact-points` | `1` | Wie viele Contact Points eine stabile Menge enthalten muss.  `1` hält Einzelknoten-Entwicklung am Laufen; erst ein Wert, der der erwarteten Replica-Zahl entspricht, erkennt Discovery, die stabil *falsch* statt bloß langsam ist. |
+| `cluster.bootstrap.self-election-grace` | `10s` | Wie lange der niedrigst-adressierte Knoten auf eine Promotion durch einen Peer wartet, bevor er selbst einen Cluster bildet. |
+| `cluster.bootstrap.minimum-members` | `1` | Wie wenige `up`-Mitglieder — sich selbst eingeschlossen — genügen, damit `awaitReady` / `Cluster.isReady` den Cluster als bereit zählt. |
+| `cluster.bootstrap.await-ready` | *(nicht gesetzt)* | Readiness-Budget.  In `reference.conf` nur als Kommentar: „nicht gesetzt“ wählt den berechneten Default (`self-election-grace + 5s` hinter der Stable Observation, sonst `5s`), und ein immer vorhandener Key könnte das nicht ausdrücken. |
+| `cluster.bootstrap.discovery.method` | `"auto"` | Welchen Seed-Provider der Bootstrap baut — `auto`, `config`, `dns` oder `kubernetes`.  `auto` ist die Leiter; die anderen drei fixieren eine Sprosse, damit ein fehlkonfiguriertes Deployment laut scheitert statt durchzufallen. |
+| `cluster.bootstrap.discovery.service-name` | `""` | Der DNS-Name, den der `dns`-Provider auflöst, und der Kubernetes-Service, dessen `Endpoints` der `kubernetes`-Provider liest.  `""` heißt „hier nicht angegeben“, dann antwortet `CLUSTER_SERVICE_NAME`. |
+
+Die fünf Observation-Timings werden nur gelesen, wenn `stableObservation` an
+ist; das Readiness-Paar und der `discovery`-Unterblock werden von jedem
+`Cluster.bootstrap`-Aufruf gelesen.  Alle liegen unter den expliziten Optionen,
+ein `withRequiredContactPoints(…)` oder ein `discovery: 'dns'` im Code gewinnt
+also weiterhin.
+
+Ein `method` außerhalb dieser vier Namen wird **abgelehnt**, nicht ignoriert.
+Bei einem Tippfehler auf `auto` zurückzufallen hieße, dass ein Knoten anders
+entdeckt als seine Peers — genau das Cold-Start-Split-Brain, das die
+Observation schließen soll.
+
+`selfElection` hat hier keinen Key und bekommt keinen: Der Wert unterscheidet
+sich konstruktionsbedingt pro Knoten, ein gemeinsamer Wert würde also entweder
+jeden Knoten am Start hindern oder alle gleichzeitig einen Cluster bilden
+lassen.
+
+### `actor-ts.discovery`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `discovery.dns.cache-ttl` | `60s` | Wie lange der DNS-Provider eine aufgelöste Antwort wiederverwendet.  In-Process und pro Provider; Fehlschläge werden nie gecacht.  `0` schaltet den Cache ab. |
+| `discovery.dns.use-srv` | `false` | SRV-Records statt A-Records lesen.  SRV trägt einen Port pro Ziel, jede Adresse wird also mit dem Port des Records gepaart statt mit dem Remoting-Port dieses Knotens. |
+| `discovery.dns.pinned-addresses` | *(nicht gesetzt)* | CIDRs (A-Record-Modus) und/oder Host-Suffixe (SRV-Modus), auf die eine aufgelöste Adresse passen muss; alles andere wird verworfen statt als Seed angeboten.  In `reference.conf` nur als Kommentar, weil eine immer vorhandene leere Liste „kein Pinning“ nicht ausdrücken könnte — siehe unten. |
+| `discovery.kubernetes.namespace` | `"default"` | Namespace, dessen `Endpoints`-Objekt der Kubernetes-Provider liest. |
+| `discovery.kubernetes.pinned-addresses` | *(nicht gesetzt)* | CIDRs, in die die gefundenen Pod-IPs fallen müssen.  Nur CIDRs — `Endpoints` lösen zu IPs auf, ein Host-Suffix könnte nie passen.  Nur als Kommentar, aus demselben Grund. |
+| `discovery.config.seeds` | *(nicht gesetzt)* | Statische `[system@]host:port`-Liste für den `config`-Provider.  Nur als Kommentar: Eine Seed-Liste ist Deployment-Identität ohne veröffentlichbaren Default, und eine leere Liste heißt bereits „wir sind allein“. |
+
+Top-level statt unter `cluster.*`, aus demselben Grund wie
+`distributed-data`: Das Modul ist es.  Ein `SeedProvider` wird gebaut und dann
+an den Cluster übergeben, und dieselben Provider bedienen ein von Hand
+verdrahtetes `Cluster.join`, das nie bootstrappt.  *Welcher* Provider läuft,
+steht ebenfalls nicht hier — das ist `cluster.bootstrap.discovery.method` oben,
+eine Eigenschaft des Joins statt des Providers, damit ein Deployment die
+DNS-Antwort fixieren kann, ohne zugleich die Leiter festzulegen.
+
+#### Wo die Umgebungsvariablen sitzen
+
+Discovery ließ sich immer schon über `CLUSTER_SEEDS`, `CLUSTER_SERVICE_NAME`
+und `CLUSTER_NAMESPACE` steuern.  Diese Variablen behalten ihre Bedeutung und
+sind *unter* diesen Block gerückt, nicht darüber:
+
+```
+explizite Optionen  >  actor-ts.discovery.*  >  CLUSTER_*  >  eingebaute Defaults
+```
+
+Das ist die gewöhnliche Precedence des Frameworks mit den Umgebungsvariablen
+am unteren Ende, keine vierte Schicht obendrauf.  Ein Deployment, das nur
+Umgebungsvariablen benutzt, verhält sich also exakt wie vor diesen Keys, und
+eine `application.conf` kann jetzt eine Variable überschreiben, die sie vorher
+gar nicht erreichte.
+
+Ein Deployment, das eine Variable über die eigene `application.conf` stellen
+will, hebt sie selbst dorthin:
+
+```hocon
+actor-ts.cluster.bootstrap.discovery.service-name = ${?CLUSTER_SERVICE_NAME}
+actor-ts.discovery.kubernetes.namespace = ${?CLUSTER_NAMESPACE}
+```
+
+Das ist ein *Lesevorgang beim Parsen* (siehe
+[Environment-Substitution](#environment-substitution)), keine
+Precedence-Schicht — der Wert landet in derjenigen Config-Schicht, zu der die
+Datei gehört, und ab da gilt die übliche Reihenfolge.
+
+:::caution[Fixiere die Adressen, die Discovery zurückgeben darf]
+Dieser Block entscheidet, welche Peers ein Knoten als Seeds akzeptiert, und
+eine `application.conf` ist eine breitere Eingabefläche als ein Aufruf im Code.
+Die beiden `pinned-addresses`-Listen sind die Gegenmaßnahme, und genau deshalb
+kamen sie hier mit und blieben nicht auf dem Code-only-Pfad: `method` und
+`service-name` als Config auszuliefern, während das Pinning von keiner
+`discovery:`-Kurzform erreichbar blieb, hätte erweitert, worauf eine
+Config-Datei einen Bootstrap umlenken kann, ohne den Schutz mitzuerweitern.
+
+Ein CIDR-Pin ist die starke Form.  Ein Host-Suffix-Pin (nur im SRV-Modus)
+begrenzt den Namensraum, in den ein Record zeigen darf, aber das A-Lookup
+dieses Ziels bleibt ungepinnt — er stoppt den billigen Angriff, nicht einen
+Angreifer, dem der Resolver gehört.  Siehe
+[Cluster-Sicherheit](/de/operations/security/cluster-security/).
+:::
 
 ### `actor-ts.remote`
 
@@ -1053,6 +1231,11 @@ zurückgegeben hat.
 
 | Key | Default | Zweck |
 | --- | --- | --- |
+| `persistence.max-concurrent-recoveries` | `50` | Journal-Replays, die systemweit gleichzeitig laufen dürfen.  `0` ist unbegrenzt.  `sharding.entity-recovery` taktet eine Ebene höher das *Starten* der Entities; dies begrenzt, wie viele ihrer *Replays* gleichzeitig unterwegs sind. |
+| `persistence.recovery-timeout` | `30s` | Obergrenze für die gesamte Recovery eines Actors — Snapshot laden, Journal lesen, falten und die `highestSeq`-Abfrage, die ein vollständig kompaktierter Stream braucht.  Danach scheitert der Replay mit einem `RecoveryTimeoutError` über `onRecoveryFailure`.  `0` heißt keine Frist. |
+| `persistence.snapshot-is-optional` | `false` | Auf einen vollständigen Journal-Replay zurückfallen, wenn der Snapshot Store nicht antworten kann.  Gilt nie für einen Actor, der `integrity()` oder `encryption()` gesetzt hat — siehe unten. |
+| `persistence.journal-breaker` | `"persistence-journal"` | **Id** des Circuit Breakers, durch den das Journal gerufen wird; `""` schaltet ihn ab.  Seine Zahlen stehen unter `actor-ts.circuit-breaker.persistence-journal`. |
+| `persistence.snapshot-breaker` | `"persistence-snapshot"` | Wie oben, für den Snapshot Store. |
 | `persistence.journal.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Journals. |
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Snapshot Stores. |
 | `persistence.durable-state.plugin` | `"...in-memory"` | Voll qualifizierter Key zur Konfig des Durable-State-Stores. |
@@ -1083,6 +1266,37 @@ zurückgegeben hat.
 | `persistence.snapshot-store.object-storage.filesystem.dir` | `""` | Wurzelverzeichnis, wird rekursiv angelegt.  Pflicht bei `backend = filesystem`. |
 | `persistence.snapshot-store.object-storage.filesystem.lock-timeout` | `5s` | Wartezeit auf ein Write-Lock pro Key, bevor abgebrochen wird. |
 | `persistence.snapshot-store.object-storage.filesystem.stale-lock` | `30s` | Lock-Dateien, die älter sind, werden zwangsweise entfernt. |
+
+**Die beiden Breaker-Blätter sind Ids, keine Zahlenblöcke.**  Die Einstellungen
+eines Breakers stehen unter `actor-ts.circuit-breaker.<id>`, überlagert über
+`actor-ts.circuit-breaker.default` — das ist ihr einziger Ort, und
+`max-failures` ein zweites Mal unter `actor-ts.persistence` zu veröffentlichen
+wären zwei Stellen für eine Sache.  Ausgeliefert wird der Fehlerzähler (zehn
+Fehler in Folge, danach 15 s Fast-Fail) und **kein** `call-timeout`, denn das
+Weglassen ist genau das, was „keine Frist“ bedeutet.  Um einen einzelnen Append
+zu deckeln — die Antwort auf ein Backend, das die Verbindung annimmt und dann
+hängt — benennt man ihn:
+
+```hocon
+actor-ts.circuit-breaker.persistence-journal.call-timeout = 10s
+```
+
+Ein `JournalConcurrencyError` zählt nie als Breaker-Fehler: er ist das
+Eigentümer-Urteil eines bedingten Appends, kein Ausfall, und zehn Entities, die
+ein Rennen verlieren, dürfen nicht jede gesunde Entity auf dem Knoten
+fast-failen.  Dasselbe gilt für `JournalIntegrityError` und
+`SnapshotIntegrityError` — dauerhafte Tatsachen über die gespeicherten Bytes,
+die kein Warten ändert.
+
+**`snapshot-is-optional` deckt bewusst keinen Snapshot ab, dessen Prüfung
+fehlgeschlagen ist.**  Stores mit Integritätsprüfung weisen einen manipulierten
+Body genauso zurück, wie sie Unerreichbarkeit melden; ein Actor, dessen
+`persistenceOptions` `integrity` oder `encryption` tragen, bekommt deshalb gar
+keinen Fallback — den Ausfall zu tolerieren hieße, die Manipulation zu
+tolerieren, und machte aus einer Integritätskontrolle einen Retry.
+`DurableStateActor` steht außerhalb davon: sein Store kommt aus den
+Actor-eigenen `DurableStateOptions` und nicht aus der Extension, es gibt also
+keine systemweite Instanz, die man schützen könnte.
 
 Der `object-storage`-Block konfiguriert **beide** Stores, die
 `registerObjectStoragePlugins(ext)` zurückgibt: Snapshot Store und
@@ -1526,7 +1740,12 @@ pro Consumer](/de/cache/in-memory/#ein-cache-pro-consumer) braucht.
 | `sharding.remember-entities` | `false` | Persistiere die Menge aktiver Entity-IDs. |
 | `sharding.passivation-idle` | `5m` | Auto-Passiviere eine Entität nach diesem Idle-Fenster.  `0` = deaktiviert.  Eine Entität, die Zustand im Speicher hält und ihn nicht in `preStart` wiederaufbaut, verliert ihn dabei — siehe [Passivierung](/de/cluster/sharding/overview/#passivierung). |
 | `sharding.shard-passivation-idle` | *(ungesetzt)* | Auto-Passiviere einen Shard, nachdem er so lange leer stand.  Ungesetzt folgt er `passivation-idle`; `0` hält leere Shards resident.  Bewusst nicht in der `reference.conf`, denn genau von einem ausgelieferten Wert müsste sich „ungesetzt" unterscheiden lassen. |
-| `sharding.max-entities` | `0` | Entity-Obergrenze pro Node; bei Überlauf wird die am längsten ungenutzte Entität passiviert.  `0` = kein Cap. |
+| `sharding.max-entities` | `0` | Entity-Obergrenze **pro Sharded Type auf diesem Node**; bei Überlauf wird die Entität passiviert, die die Ersetzungsstrategie benennt.  `0` = kein Cap.  Zwei gestartete Typen bekommen je das volle Cap — siehe [Wählen, was ein voller Node hergibt](#wählen-was-ein-voller-node-hergibt) weiter unten. |
+| `sharding.passivation.replacement` | `least-recently-used` | Welche residente Entität das Cap hergibt.  Außerdem `segmented-least-recently-used` und `least-frequently-used`.  Bei `max-entities = 0` wirkungslos. |
+| `sharding.passivation.segmented-protected-proportion` | `0.8` | Anteil des Caps im *geschützten* Segment unter `segmented-least-recently-used`; der Rest ist Bewährung.  Unter jeder anderen Strategie wirkungslos. |
+| `sharding.passivation.admission-window-proportion` | `0.0` | Anteil des Caps, der als Bewährungsfenster vor der Strategie reserviert wird.  `0` = kein Fenster.  Vom `admission-filter` vorausgesetzt. |
+| `sharding.passivation.admission-filter` | `off` | `frequency-sketch` verlangt von einem Kandidaten, der das Fenster verlässt, dass er die Entität überbietet, die er verdrängen würde.  Ohne `admission-window-proportion > 0` bei `sharding.start(...)` abgelehnt. |
+| `sharding.passivation.stop-timeout` | `10s` | Wie lange eine Entität auf die Stop-Nachricht eines `Passivate` reagieren darf, bevor der Shard sie hart stoppt.  `0` wartet unbegrenzt. |
 | `sharding.buffer-size` | `100000` | Wie viele Nachrichten eine Region **über alle ihre Shards zusammen** halten darf, solange deren Heimat unbekannt ist oder gerade übergeben wird.  Jenseits des Caps wird die *neueste* Nachricht mit ihrem Sender an die Dead Letters gegeben — was schon in der Queue steht, behält so die Reihenfolge des Senders.  **Achte auf die umgekehrte Polarität zu `max-entities` oben**: hier bedeutet `0` *niemals puffern — sofort Dead Letter*, nicht „kein Cap". |
 | `sharding.register-retry-interval` | `500ms` | Wie oft eine Region eine unbestätigte Registrierung erneut an den Koordinator schickt.  Alles, was für den Typ geroutet wird, puffert bis zur Antwort des Koordinators — das ist also zugleich die Dauer, die ein verlorenes `Register` den Typ blockiert. |
 | `sharding.shard-region-query-timeout` | `5s` | Default-Wartezeit für `sharding.shards()` und `sharding.shardRefFor()`.  Ein explizites `timeoutMs`-Argument sticht sie weiterhin.  Unabhängig davon, wie lange die Region eine Korrelation für ein knotenübergreifendes `ask` hält — das sind bewusst Minuten. |
@@ -1731,6 +1950,72 @@ Ein `check-interval` gibt es bewusst nicht.  Der Sweep läuft auf dem
 `rebalance-interval`-Tick mit, der ohnehin schon der Regler dafür ist, wie oft
 der Koordinator auf die Shard-Map schaut — die Erkennungslatenz ist also
 `stale-after` plus höchstens ein Tick.
+
+#### Wählen, was ein voller Node hergibt
+
+`max-entities` sagt, **wie viele** Entities ein Node hält; der
+`passivation`-Block sagt, **welche geht**, wenn eine neue dazukommt.  Jeder Key
+darin ist bei `max-entities = 0` wirkungslos — und das ist der ausgelieferte
+Default, ein Deployment ohne Cap ist von allem hier also unberührt.
+
+Lies die Reichweite des Caps, bevor du daran drehst: es gilt **pro Sharded
+Type auf diesem Node**, nicht node-weit und nicht pro Shard.  Ein Node, der
+einen `cart`- und einen `session`-Typ mit `max-entities = 50000` betreibt, hält
+bis zu hunderttausend Entities, fünfzigtausend je Typ.  Pro Shard würde die
+Grenze über eine Menge geteilt, die sich bei jedem Rebalance ändert; node-weit
+bräuchte sie ein Budget, das sich Regionen teilen, die nichts voneinander
+wissen.
+
+Der Default `least-recently-used` hat einen blinden Fleck, und der ist der
+Grund für den Block.  Aktualität kann *einmal überhaupt benutzt* nicht von
+*bis eben ständig benutzt* unterscheiden — ein Durchlauf über einen großen
+kalten Schlüsselraum (ein nächtlicher Export, ein Crawler, ein Backfill)
+verdrängt das Arbeitsset Entität für Entität und füllt den Cache mit IDs, nach
+denen nie wieder jemand fragt:
+
+```hocon
+actor-ts.sharding {
+  max-entities = 50000
+  passivation {
+    replacement = segmented-least-recently-used
+    segmented-protected-proportion = 0.8
+    admission-window-proportion = 0.01
+    admission-filter = frequency-sketch
+  }
+}
+```
+
+- **`segmented-least-recently-used`** teilt das Cap in zwei Hälften.  Eine
+  einmal benutzte Entität sitzt auf *Bewährung*; wird sie erneut benutzt,
+  wandert sie ins *geschützte* Segment, und verdrängt wird zuerst aus der
+  Bewährung.  Eine Scan-Entität wird nie ein zweites Mal berührt, kann also nur
+  eine andere Scan-Entität verdrängen.
+- **`admission-window-proportion`** reserviert einen kleinen Teil des Caps für
+  brandneue Ankömmlinge.  Erst das macht einen Filter überhaupt möglich: eine
+  Region kann die Entität, für die gerade eine Nachricht eingetroffen ist,
+  nicht ablehnen — sie wird ja erzeugt, um diese Nachricht zu empfangen —, und
+  so ist der Kandidat, der gegen den Amtsinhaber antritt, stattdessen das, was
+  am anderen Ende des Fensters herausfällt.
+- **`admission-filter = frequency-sketch`** ist dieses Urteil.  Ein kompakter
+  Count-Min-Sketch darüber, wie oft jede ID gesehen wurde, entscheidet, wer
+  bleibt — und er erinnert sich an IDs, die der Node längst nicht mehr hält,
+  was genau die Historie ist, um eine früher heiße Entität wiederzuerkennen.
+  Ohne Fenster wird er abgelehnt, statt still nichts zu tun.
+
+`least-frequently-used` ist die dritte Strategie: die wenigsten Zugriffe
+verlieren, wobei alle Zähler periodisch halbiert werden, damit die Rangfolge
+dem jüngeren Verkehr folgt statt einer Lebenszeitsumme.  Sie passt zu einem
+Arbeitsset, das stabil, aber nicht aktuell ist — eine Flotte von Geräten, die
+in langsamem Takt meldet —, wo Aktualität fast nichts aussagt.
+
+`stop-timeout` hat mit dieser Wahl nichts zu tun und gilt für jedes Cap.  Wenn
+sich eine Entität mit
+[`Passivate`](/de/cluster/sharding/overview/#passivierung) selbst passiviert,
+ist die Stop-Nachricht eine Bitte: die Entität entscheidet, wann sie darauf
+reagiert.  Tut sie es nie, terminiert sie nie, und ihr Platz bleibt für die
+Lebensdauer des Nodes gegen `max-entities` belegt.  Nach `stop-timeout` stoppt
+der Shard sie hart.  `0` stellt das unbegrenzte Warten wieder her, was dort
+richtig ist, wo ein geordnetes Herunterfahren tatsächlich keine Schranke hat.
 
 Ein Setting für genau einen Typ gehört deshalb in den Builder; die
 Config-Datei ist für die node-weite Grundeinstellung, die du ohne Rebuild

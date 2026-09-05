@@ -6,6 +6,7 @@ import {
   DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
+  DEFAULT_MINIMUM_MEMBERS_BEFORE_UP,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
@@ -207,6 +208,10 @@ describe('readClusterOptionsFromConfig', () => {
       weaklyUpAfterMs: 0,
       maxMembers: DEFAULT_MAX_MEMBERS,
       maxTombstones: DEFAULT_MAX_TOMBSTONES,
+      // The Up threshold ships a leaf, so it always lands; the per-role
+      // siblings ship comment-only and so must NOT appear next to it — which
+      // is what the exact-object shape of this assertion is what checks (#837).
+      minimumMembersBeforeUp: DEFAULT_MINIMUM_MEMBERS_BEFORE_UP,
       tombstoneTtlMs: DEFAULT_TOMBSTONE_TTL_MS,
       tombstonePruneIntervalMs: DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
       // 0 is the file's way of saying "derive from down-after"; the
@@ -355,6 +360,71 @@ describe('readClusterOptionsFromConfig', () => {
       tombstonePruneIntervalMs: 30_000,
       tombstoneMinRetentionMs: 2_000,
     });
+  });
+
+  test('the Up threshold and its per-role block read through together (#837)', () => {
+    // `Config.parseString`, never `Config.fromObject` with dotted keys: a
+    // dotted string stays a literal top-level key, so `hasPath` would resolve
+    // the *reference* value behind it and this would assert the shipped `1`.
+    const configured = Config.parseString(`
+      actor-ts.cluster {
+        minimum-members-before-up = 3
+        role {
+          backend.minimum-members-before-up  = 2
+          frontend.minimum-members-before-up = 1
+        }
+      }
+    `);
+
+    // The whole object rather than two `toHaveProperty`s: the per-role map is
+    // assembled by enumeration, and a reader that also punched in an entry for
+    // a role the file never named would satisfy per-key assertions while
+    // changing what `Cluster.join` merges.
+    expect(readClusterOptionsFromConfig(configured)).toEqual({
+      minimumMembersBeforeUp: 3,
+      minimumMembersBeforeUpPerRole: { backend: 2, frontend: 1 },
+    });
+  });
+
+  test('a per-role threshold stands alone, without the global one (#837)', () => {
+    // Two independent keys: "at least two backends, however many nodes there
+    // are" is a legitimate configuration, and a reader that only looked at the
+    // block when the global leaf was explicitly set would silently drop it.
+    const configured = Config.parseString(
+      'actor-ts.cluster.role.backend.minimum-members-before-up = 2',
+    );
+
+    expect(readClusterOptionsFromConfig(configured))
+      .toEqual({ minimumMembersBeforeUpPerRole: { backend: 2 } });
+  });
+
+  test('the per-role block ships comment-only, so an unset one stays absent (#837)', () => {
+    // Role names belong to the deployment, so there is no leaf that could be
+    // published — and an empty `{}` from the reader would be a *set* field,
+    // which `mergeOptions` does not strip, so it would shadow an explicit
+    // `withMinimumMembersBeforeUpPerRole(…)` rather than fall through.
+    expect(Config.loadReference().hasPath('actor-ts.cluster.role')).toBe(false);
+    expect(readClusterOptionsFromConfig(Config.loadReference()))
+      .not.toHaveProperty('minimumMembersBeforeUpPerRole');
+    // A role block that names no threshold at all is the same state: the
+    // enumeration finds the role and no leaf under it, and must not turn that
+    // into an entry (or into an empty map, which is the same defect).
+    expect(readClusterOptionsFromConfig(
+      Config.parseString('actor-ts.cluster.role.backend.some-other-key = 7'),
+    )).not.toHaveProperty('minimumMembersBeforeUpPerRole');
+  });
+
+  test('an explicit per-role map wins over the file, an unset one falls through (#837)', () => {
+    const configured = Config.parseString(
+      'actor-ts.cluster.role.backend.minimum-members-before-up = 2',
+    );
+
+    expect(withClusterConfigDefaults(configured, {} as ClusterOptionsType)
+      .minimumMembersBeforeUpPerRole).toEqual({ backend: 2 });
+    expect(withClusterConfigDefaults(
+      configured,
+      { host: 'h', port: 1, minimumMembersBeforeUpPerRole: { backend: 5 } } as ClusterOptionsType,
+    ).minimumMembersBeforeUpPerRole).toEqual({ backend: 5 });
   });
 });
 

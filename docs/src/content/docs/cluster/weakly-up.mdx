@@ -189,6 +189,23 @@ import { Aside } from '@astrojs/starlight/components';
   logic considers "live."
 </Aside>
 
+<Aside type="caution" title="`minimumMembersBeforeUp` is the other half of the same knob">
+  ```ts
+  const clusterOptions = ClusterOptions.create()
+    .withWeaklyUpAfterMs(3_000)
+    .withMinimumMembersBeforeUp(3);
+  ```
+  The two are read together and act on opposite sides of the same
+  transition.  `weaklyUpAfterMs` decides how long a `joining`
+  member waits before it is given a *partial* membership;
+  `minimumMembersBeforeUp` decides whether the leader may hand out
+  a full one at all.  With both set, `weakly-up` is precisely the
+  state a node sits in while the membership threshold is unmet —
+  and a `weakly-up` member still counts toward that threshold, so
+  the promotion does not push the goal further away.  See
+  [Joining and seeds](/cluster/joining-and-seeds/).
+</Aside>
+
 <Aside type="caution" title="Very-short `weaklyUpAfterMs` thrashes">
   ```ts
   weaklyUpAfterMs: 200;

@@ -108,6 +108,59 @@ give the rest that node's address — or, better, use
 [cluster bootstrap](/cluster/cluster-bootstrap/), which removes the
 need for a designated first node entirely.
 
+### Holding the first node back
+
+Forming a cluster of one is exactly what you want in development and
+often not what you want in production: the founder is `up` on its own,
+so singletons start on it and shards are placed on it, before any of
+its replicas exist.  `minimumMembersBeforeUp` holds every `up`
+transition — the leader's promotions *and* this node's own
+self-election — until that many members are present:
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost('0.0.0.0')
+  .withPort(2552)
+  .withSeeds([])
+  .withMinimumMembersBeforeUp(3);
+```
+
+The founder now stays `joining` until three members are in its member
+map, then self-elects and promotes the other two in the same pass.
+Every node should carry the same value — it is a property of the
+cluster, not of the node.
+
+Counted are members in `joining`, `weakly-up` and `up`.  A `leaving`
+member does not hold the threshold open for its replacement, so a
+rolling restart closes the gate for exactly as long as the replacement
+takes to appear.  The threshold is never evaluated in reverse: there is
+no `up` → `joining` transition, so a cluster that later shrinks keeps
+the members it promoted and holds only new ones.
+
+Per-role thresholds compose with it as an AND, which is how you say
+"not until there is a backend to place work on":
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withHost('0.0.0.0')
+  .withPort(2552)
+  .withSeeds([])
+  .withMinimumMembersBeforeUp(3)
+  .withMinimumMembersBeforeUpPerRole({ backend: 2 });
+```
+
+This is **not** a quorum and not a security control: any node may
+announce itself `up`, so it bounds accidents — a partitioned half
+forming its own cluster of one — rather than adversaries.  Split-brain
+arbitration is [downing](/cluster/downing-strategies/), and a threshold
+above `1` widens the window in which a cluster is smaller than a
+`static-quorum` strategy expects, so check the two together.
+
+It is also not `bootstrap.minimum-members`, which waits without
+changing anything: see
+[`awaitReady`](/cluster/cluster-bootstrap/).  Setting this one largely
+removes the reason to set that one.
+
 ## The symmetric seed list does not cold-start
 
 It is tempting to hand every node the same list containing every
@@ -344,6 +397,24 @@ import { Aside } from '@astrojs/starlight/components';
   and with [cluster bootstrap](/cluster/cluster-bootstrap/), which
   makes exactly one node eligible to form a cluster and refuses to
   decide at all while discovery keeps changing its mind.
+</Aside>
+
+<Aside type="caution" title="A threshold above the size of the deployment">
+  ```ts
+  // Three replicas configured, four required:
+  const clusterOptions = ClusterOptions.create()
+    .withHost('n1')
+    .withPort(2552)
+    .withSeeds([])
+    .withMinimumMembersBeforeUp(4);
+  ```
+  Nothing ever reaches `up`, and the symptom is a cluster that
+  simply never comes up — the same shape as an unreachable seed
+  list.  The node distinguishes them for you: after a few
+  seed-contact rounds it logs the key and the current count once
+  (`2 of 4 member(s) present`), instead of the cold-start stall
+  diagnosis, which would be a false verdict here.  A founder with
+  no seed list logs the same thing as `holding self-election`.
 </Aside>
 
 <Aside type="caution" title="Hostname vs IP mismatch">

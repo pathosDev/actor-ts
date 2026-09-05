@@ -139,7 +139,10 @@ It is not part of the identity — two keys are equal iff their names
 match — it rides along so that *every* node reads the same one.  That
 matters for a node that only calls `ref`: it has no options object, so
 a role set only through `withRole` is invisible to it and its proxy
-would resolve a different host than the managers do.
+would resolve a different host than the managers do.  (The config file
+reaches it too — see `actor-ts.cluster.singleton.role` below — but that
+works only where every node is deployed the same file, which is an
+assumption the key does not have to make.)
 
 For `lease`, or to override the role per deployment, pass options
 alongside — or use the full builder form when there is no class to hang
@@ -156,6 +159,22 @@ cluster.singleton.start(JobScheduler, singletonOptions);
 — normally a gossip round, but nothing bounds it in an outage.  Past
 the cap (default 1000) messages go to dead letters with a warning
 rather than growing the buffer forever.
+
+On a node that only calls `ref` there is no `withBufferSize` to reach —
+which is why `actor-ts.cluster.singleton.buffer-size` exists:
+
+```hocon
+actor-ts.cluster.singleton {
+  role        = "control-plane"
+  buffer-size = 5000
+}
+```
+
+Both keys are read by `ref` as well as by `start`, and both layer
+**under** anything passed in code.  The rest of the block —
+`hand-over-timeout`, `acquire-retry-interval`,
+`max-hand-over-state-bytes`, `restart-on-termination` — is in
+[Configuration reference](/reference/configuration/#actor-tsclustersingleton).
 
 The buffer drains on the first cluster event that can have produced a
 host — a leader change, but equally a member coming up, going down, or

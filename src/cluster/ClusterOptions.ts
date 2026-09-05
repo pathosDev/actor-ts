@@ -73,6 +73,19 @@ export const DEFAULT_MAX_MEMBERS = 1_000;
 export const DEFAULT_MAX_TOMBSTONES = 10_000;
 
 /**
+ * Built-in default for {@link ClusterOptionsType.minimumMembersBeforeUp} — how
+ * many members must be present before anything is promoted to `up` (#837).
+ *
+ * `1`, because that is what every release before the option did: the first
+ * node forms a cluster of one the moment it starts.  Any higher value is a
+ * deployment saying "a cluster of fewer than N is not a cluster I want work
+ * placed on", and the cost of the default being wrong runs one way — a node
+ * that goes `up` too early hosts singletons and shards alone, while one held
+ * back merely waits.
+ */
+export const DEFAULT_MINIMUM_MEMBERS_BEFORE_UP = 1;
+
+/**
  * Built-in default for {@link ClusterOptionsType.tombstoneTtlMs} — how long a
  * removed member's tombstone is retained.  24 h gives slow or partitioned
  * peers a generous window to converge after a member is removed; once
@@ -349,6 +362,51 @@ export type ClusterOptionsType = {
    * to disable.  Default: 0 (disabled — opt-in only).
    */
   readonly weaklyUpAfterMs?: number;
+  /**
+   * Members that must be present before **anything** moves to `up` — the
+   * leader's promotions and this node's own self-election alike (#837).
+   * Default: `1`, which is the historical behaviour (the first node forms a
+   * cluster of one immediately).
+   *
+   * Counted over members in `joining`, `weakly-up` and `up`: the question the
+   * threshold asks is "are enough live members here", and `leaving`,
+   * `unreachable`, `down` and `removed` are all answers of "no".  That choice
+   * is visible during a rolling restart — a `leaving` member does *not* hold
+   * the threshold open for its replacement, so the gate closes for exactly as
+   * long as the replacement takes to appear.  (Akka counts every non-removed
+   * member instead, which keeps the gate open across that window.)
+   *
+   * Evaluated per promotion decision, never in reverse: there is no
+   * `up → joining` transition, so a cluster that later shrinks below the
+   * threshold keeps the members it already promoted and holds only new ones.
+   *
+   * **Not a quorum, and not a security control.** Any node may announce
+   * itself `up` — `maySpeakFor` admits a claim a member makes about itself —
+   * so this bounds accidents (a partitioned half forming its own cluster of
+   * one), not adversaries.  Split-brain arbitration is
+   * {@link ClusterOptionsType.downing}.
+   *
+   * Distinct from `actor-ts.cluster.bootstrap.minimum-members`, which is a
+   * *wait* predicate for `awaitReady` / `isReady` and never changes a
+   * member's status.  Setting this one largely subsumes it: with
+   * `minimumMembersBeforeUp: 3`, a node that is `up` at all implies three
+   * members were present.
+   */
+  readonly minimumMembersBeforeUp?: number;
+  /**
+   * Per-role thresholds, composed with {@link minimumMembersBeforeUp} as an
+   * AND: the global count and *every* configured role's count must be met
+   * before anything is promoted (#837).  Default: none.
+   *
+   * The unit a role threshold buys is "do not place work on a cluster that
+   * has no backend yet" — shard regions and singletons are hosted by role,
+   * and a cluster whose members are all frontends satisfies a global count
+   * while being useless to place on.  Counted over the same statuses as the
+   * global threshold, filtered by {@link Member.hasRole}.
+   *
+   * A role that is absent from the map is unconstrained, not zero-bounded.
+   */
+  readonly minimumMembersBeforeUpPerRole?: Readonly<Record<string, number>>;
   /**
    * When this node may declare itself the first member of a new cluster —
    * see {@link SelfElectionPolicy}.  Default: `'immediate'`.
@@ -682,6 +740,24 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   }
 
   /**
+   * Hold every `up` promotion — the leader's and this node's own
+   * self-election — until this many members are present.  Default: 1, the
+   * historical behaviour (#837).
+   */
+  withMinimumMembersBeforeUp(minimumMembersBeforeUp: number): this {
+    return this.set('minimumMembersBeforeUp', minimumMembersBeforeUp);
+  }
+
+  /**
+   * Per-role thresholds, composed with {@link withMinimumMembersBeforeUp} as
+   * an AND — `{ backend: 2 }` holds every promotion until two members carry
+   * the `backend` role.  Default: none.
+   */
+  withMinimumMembersBeforeUpPerRole(perRole: Readonly<Record<string, number>>): this {
+    return this.set('minimumMembersBeforeUpPerRole', perRole);
+  }
+
+  /**
    * When this node may declare itself the first member of a new cluster.
    * `'immediate'` (default), `'never'`, or a millisecond delay — see
    * {@link SelfElectionPolicy}.
@@ -831,6 +907,12 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     // sharding entity cap.
     this.nonNegativeInt('maxMembers');
     this.nonNegativeInt('maxTombstones');
+    // Positive, with no `0 = off` reading: the off state of a member threshold
+    // is `1` — "one member is enough", which is what every release before #837
+    // did — and `0` would be a threshold nothing can fail, spelled as a value
+    // that looks like a disable switch.  One spelling for one meaning.
+    this.positiveInt('minimumMembersBeforeUp');
+    this.validateMinimumMembersBeforeUpPerRole(s.minimumMembersBeforeUpPerRole);
     // The four association-lifecycle bounds (#846).  All four are positive
     // with no "0 disables" reading, and each `0` would be a distinct way of
     // breaking the node rather than a way of turning a cap off: a zero
@@ -876,6 +958,41 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     }
     this.checkTrustedSelectionPaths(s.trustedSelectionPaths);
     this.checkConfigurationCheckedPaths(s.configurationCompatibilityCheckedPaths);
+  }
+
+  /**
+   * Each per-role threshold is the same positive integer the global one is
+   * (#837), but the field is a map rather than a scalar, so the field helpers
+   * — keyed on one value type — cannot express it.
+   *
+   * The role name is checked too. An empty one is the mistake that costs the
+   * most to diagnose: `member.hasRole('')` is false for every member, so an
+   * empty key is a threshold no cluster can ever meet, and the symptom is a
+   * cluster that simply never comes up.
+   */
+  private validateMinimumMembersBeforeUpPerRole(
+    perRole: Readonly<Record<string, number>> | undefined,
+  ): void {
+    if (perRole === undefined) return;
+    if (typeof perRole !== 'object' || perRole === null || Array.isArray(perRole)) {
+      this.fail(
+        'minimumMembersBeforeUpPerRole', 'must be an object mapping role name to member count',
+        perRole,
+      );
+    }
+    for (const [role, minimum] of Object.entries(perRole)) {
+      if (role.length === 0) {
+        this.fail(
+          'minimumMembersBeforeUpPerRole',
+          'must not carry an empty role name: no member ever has one, so the threshold could '
+          + 'never be met and the cluster would never reach "up"',
+          perRole,
+        );
+      }
+      if (typeof minimum !== 'number' || !Number.isInteger(minimum) || minimum < 1) {
+        this.fail(`minimumMembersBeforeUpPerRole.${role}`, 'must be an integer >= 1', minimum);
+      }
+    }
   }
 
   /**
@@ -1094,6 +1211,7 @@ export type ClusterConfigDefaults = Partial<Pick<
   | 'failureDetectorImplementation' | 'failureDetector' | 'phiAccrual' | 'maxFrameBytes'
   | 'weaklyUpAfterMs' | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
   | 'maxMembers' | 'maxTombstones' | 'downing'
+  | 'minimumMembersBeforeUp' | 'minimumMembersBeforeUpPerRole'
   | 'untrustedMode' | 'trustedSelectionPaths'
   | 'configurationCompatibilityEnforce' | 'configurationCompatibilityCheckedPaths'
   | 'handshakeTimeoutMs' | 'outboundQueueSize' | 'maxInboundConnections'
@@ -1180,6 +1298,11 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   if (config.hasPath(keys.weaklyUpAfter)) out.weaklyUpAfterMs = config.getDuration(keys.weaklyUpAfter);
   if (config.hasPath(keys.maxMembers)) out.maxMembers = config.getInt(keys.maxMembers);
   if (config.hasPath(keys.maxTombstones)) out.maxTombstones = config.getInt(keys.maxTombstones);
+  if (config.hasPath(keys.minimumMembersBeforeUp)) {
+    out.minimumMembersBeforeUp = config.getInt(keys.minimumMembersBeforeUp);
+  }
+  const perRole = readMinimumMembersBeforeUpPerRoleFromConfig(config);
+  if (perRole !== undefined) out.minimumMembersBeforeUpPerRole = perRole;
   const tombstone = keys.tombstone;
   if (config.hasPath(tombstone.timeToLive)) out.tombstoneTtlMs = config.getDuration(tombstone.timeToLive);
   if (config.hasPath(tombstone.pruneInterval)) {
@@ -1286,6 +1409,50 @@ export function withClusterConfigDefaults(
     ? { ...merged, failureDetector }
     : merged;
   return Object.keys(phiAccrual).length > 0 ? { ...withNested, phiAccrual } : withNested;
+}
+
+/**
+ * The leaf a per-role threshold is written under —
+ * `actor-ts.cluster.role.<role>.minimum-members-before-up` (#837).
+ *
+ * Composed rather than declared in `ConfigKeys`, for the reason
+ * `redisCacheKeysUnder` composes its block's leaves: the role name belongs to
+ * the deployment, so the full path cannot be written down anywhere in this
+ * repository.  `ConfigKeys.cluster.role` declares the root the composition
+ * starts from, which is what an `application.conf` writer needs and what the
+ * dead-key guard resolves against.
+ */
+function minimumMembersBeforeUpKeyFor(role: string): string {
+  return `${ConfigKeys.cluster.role}.${role}.minimum-members-before-up`;
+}
+
+/**
+ * Read `actor-ts.cluster.role.<role>.minimum-members-before-up` for every role
+ * the block names, or `undefined` when it names none (#837).
+ *
+ * `undefined` rather than `{}` for the reason every other absent leaf is
+ * omitted: an empty object is still a *set* field, and it would shadow an
+ * explicit `withMinimumMembersBeforeUpPerRole(…)` in `mergeOptions` — which
+ * strips `undefined` but not an empty object.
+ *
+ * The block ships **comment-only** in `reference.conf`: role names are
+ * per-deployment, so there is no leaf that could be published, and `hasPath`
+ * on the root therefore stays false until an operator writes one.  A role
+ * sub-block that carries something other than this leaf is skipped rather
+ * than refused — the enumeration is over what an operator wrote, and
+ * `hasPath` is the only thing that decides whether a path is there.
+ */
+function readMinimumMembersBeforeUpPerRoleFromConfig(
+  config: Config,
+): Record<string, number> | undefined {
+  const root = ConfigKeys.cluster.role;
+  if (!config.hasPath(root)) return undefined;
+  const out: Record<string, number> = {};
+  for (const role of Object.keys(config.getObject(root))) {
+    const path = minimumMembersBeforeUpKeyFor(role);
+    if (config.hasPath(path)) out[role] = config.getInt(path);
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 function readFailureDetectorFromConfig(config: Config): Partial<FailureDetectorOptionsType> {

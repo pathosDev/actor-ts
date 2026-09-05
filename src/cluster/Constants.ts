@@ -267,6 +267,43 @@ export const SHARD_MAP_PUBLISH_DELAY_MS = 50;
 export const SINGLETON_RESTART_BACKOFF_MS = 1_000;
 
 /**
+ * Whether a singleton manager re-spawns its instance after an *unexpected*
+ * death — `context.stopSelf()`, or a supervision budget exhausted — as opposed
+ * to the planned teardown of a hand-over (#1175).
+ *
+ * Here rather than in an `XOptions.ts` for the reason
+ * {@link DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS} gives: the field it defaults
+ * is on **two** options types, `StartSingletonOptionsType` and
+ * `ClusterSingletonManagerOptionsType`.
+ *
+ * `true` is the availability-preserving answer, and a named constant rather
+ * than the `?? true` it replaces because `actor-ts.cluster.singleton
+ * .restart-on-termination` publishes it (#855) — a published default with no
+ * constant behind it is a number `DocumentedDefaults` cannot check.
+ */
+export const DEFAULT_SINGLETON_RESTART_ON_TERMINATION = true;
+
+/**
+ * How long a singleton manager waits before re-`acquire()`ing a lease it
+ * failed to take (#855).
+ *
+ * Here rather than in an `XOptions.ts` for the same reason as
+ * {@link DEFAULT_SINGLETON_RESTART_ON_TERMINATION} above: two options types
+ * carry the field.  Deliberately a *separate* constant from
+ * `sharding/ShardCoordinatorOptions.ts`'s `DEFAULT_ACQUIRE_RETRY_INTERVAL_MS`,
+ * which holds the same 5 s for the shard coordinator: that one is the built-in
+ * default of a single options type (Constants rule 1) and lives with it, and
+ * merging the two would couple a singleton's recovery latency to a sharded
+ * type's for no reason beyond the numbers currently matching.
+ *
+ * Only reachable where a {@link Lease} was passed in code, since HOCON has no
+ * way to name one.  Configurable all the same, because the retry cadence *is*
+ * the recovery latency of a partition that heals: until an acquire succeeds no
+ * node hosts the singleton and every proxy is buffering.
+ */
+export const DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS = 5_000;
+
+/**
  * How long an incoming singleton host waits for every eligible peer to confirm
  * it is not running an instance, before hosting anyway (#949).
  *

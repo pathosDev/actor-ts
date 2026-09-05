@@ -304,6 +304,29 @@ This is defence in depth: it lowers what a DNS or Endpoints
 compromise buys, and it is the only discovery-layer control left
 standing when mTLS is not in place.
 
+Until #860 the snippet above was the **only** way to reach it:
+`Cluster.bootstrap({ discovery: 'dns' })` and the env-driven ladder built
+their providers with no pin at all, so the documented mitigation was
+unreachable on the path most deployments take.  It is now a config key, and it
+ships in the same block as the keys that decide which provider runs:
+
+```hocon
+actor-ts.discovery {
+  dns.pinned-addresses        = ["10.0.0.0/8"]
+  kubernetes.pinned-addresses = ["10.0.0.0/8"]
+}
+```
+
+Set it wherever `actor-ts.cluster.bootstrap.discovery.method` or
+`service-name` is set, and for the same reason both were added together: a
+config file is a wider input surface than a code call, so making the
+*destination* of discovery settable without making the *pin* settable would
+have widened the attack surface and left the guard where it was.  A list that
+cannot match in the configured mode — CIDRs only in SRV mode, a host suffix
+under Kubernetes — is refused at startup rather than silently discarding every
+answer, because an empty seed set reads as "we are alone" and ends in a
+one-node cluster.
+
 ## What the wire edge rejects
 
 Frames arrive as JSON and used to be *cast* to the protocol

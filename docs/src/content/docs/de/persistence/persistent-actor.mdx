@@ -316,6 +316,91 @@ Snapshot inzwischen weggeräumt wurde.  Dort zeigt es eine
 unvollständige Faltung — mit der erreichten Sequenz und der Zahl der
 angewendeten Events —, statt sich zu weigern, überhaupt zu öffnen.
 
+## Wenn die Stores ausfallen
+
+Drei Einstellungen unter `actor-ts.persistence` entscheiden, was ein
+`PersistentActor` tut, wenn Journal oder Snapshot Store nicht mehr
+antworten.  Alle drei gelten systemweit, werden einmal gelesen und
+betreffen jeden persistenten Actor im System.
+
+```hocon
+actor-ts.persistence {
+  max-concurrent-recoveries = 50                       # replays in flight; 0 = uncapped
+  recovery-timeout          = 30s                      # ceiling on one recovery; 0 = none
+  snapshot-is-optional      = false
+  journal-breaker           = "persistence-journal"    # a breaker id; "" = no breaker
+  snapshot-breaker          = "persistence-snapshot"
+}
+
+# The breakers' numbers live where every breaker's numbers live:
+actor-ts.circuit-breaker.persistence-journal {
+  max-failures  = 10
+  reset-timeout = 15s
+  call-timeout  = 10s     # ships UNSET — see below
+}
+```
+
+**Der Journal-Breaker umschließt `persist` und die Recovery.**  Sind
+`max-failures` Appends in Folge fehlgeschlagen, öffnet er, und jedes
+`persist` wirft für `reset-timeout` einen `CircuitBreakerOpenError` aus
+dem eigenen Handler heraus — wo die Supervision ihn wie jeden anderen
+Fehler aus `onCommand` sieht.  Genau darum geht es: Ein Knoten, dessen
+Journal weg ist, scheitert schnell und sichtbar, statt Tausende Actors
+mitten in einem Schreibvorgang festzuhalten.
+
+**`call-timeout` wird nicht gesetzt ausgeliefert, und es ist das, was
+man haben will.**  Ein Backend, das Verbindungen ablehnt, scheitert von
+selbst schnell; eines, das die Verbindung *annimmt* und dann hängt,
+nicht — und ein unbegrenztes `await this.persist(...)` blockiert den
+Turn dieses Actors auf unbestimmte Zeit.  Ein gesetztes `call-timeout`
+macht daraus einen `CircuitBreakerTimeoutError` beim Hänger.
+Ausgeliefert wird es ungesetzt, weil genau das Weglassen „keine Frist“
+ausdrückt und ein Default hier jedem bestehenden Deployment eine
+Obergrenze verpassen würde, die es nie gewählt hat.
+
+Das Timeout **gibt auf; es bricht nicht ab.**  Ein Schreibvorgang, der
+die Frist gerissen hat, kann trotzdem noch im Journal landen.  Das ist
+konstruktionsbedingt sicher: Der Wurf überspringt die `onEvent`-Faltung
+und lässt `lastSequenceNr` unberührt, der Actor startet also neu, liest
+den echten Kopf und macht weiter — aber ein nicht wiederholbarer
+Seiteneffekt im Handler ist bereits passiert, dieselbe Vorsicht wie bei
+[zwei Writern für eine Entity](#zwei-writer-für-eine-entity).
+
+Ein `JournalConcurrencyError` zählt nie als Breaker-Fehler.  Er ist das
+Eigentümer-Urteil eines bedingten Appends, kein Ausfall, und zehn
+Entities, die ein Rennen verlieren, dürfen nicht jede gesunde Entity
+auf dem Knoten fast-failen.  `JournalIntegrityError` und
+`SnapshotIntegrityError` sind aus einem anderen Grund ausgenommen: Sie
+sind dauerhafte Tatsachen über die gespeicherten Bytes, und Warten
+ändert daran nichts.
+
+**`max-concurrent-recoveries` begrenzt den Replay-Sturm.**  Ein
+Shard-Hand-off oder ein Rolling Restart erzeugt jede Entity einer
+Region auf einmal neu, und jede davon replayt.  Ohne Schranke öffnen
+ein paar tausend Entities ein paar tausend gleichzeitige Reads gegen
+einen Pool, der für Dutzende ausgelegt ist; das Backend staut sie, und
+jede Recovery wird gemeinsam langsamer, bis `recovery-timeout` über die
+ganze Welle hinweg feuert.  Die Schranke lässt sie stattdessen im
+Framework anstehen, in der Reihenfolge ihres Eintreffens.  Sie
+ergänzt `actor-ts.sharding.entity-recovery`, das eine Ebene höher das
+*Starten* der Entities taktet — jener Block entscheidet, wie schnell
+Entities erzeugt werden, dieser, wie viele ihrer Replays dann
+gleichzeitig unterwegs sind.
+
+**`snapshot-is-optional` tauscht Replay-Zeit gegen Verfügbarkeit.**
+Eingeschaltet wird ein Snapshot Store, der nicht antworten kann, als
+Warnung geloggt, und der Actor stellt sich durch Falten des gesamten
+Journals wieder her.  Es deckt bewusst **nicht** den Fall eines Actors
+ab, der `integrity()` oder `encryption()` gesetzt hat: So ein Store
+weist einen manipulierten Body genauso zurück, wie er Unerreichbarkeit
+meldet — den Ausfall zu tolerieren hieße also, die Manipulation zu
+tolerieren, und machte aus einer Integritätsprüfung einen Retry.
+
+[`DurableStateActor`](/de/persistence/durable-state/) steht außerhalb
+davon.  Sein Store kommt aus den Actor-eigenen `DurableStateOptions`
+und nicht aus der Persistence-Extension, es gibt also keine systemweite
+Instanz, vor die ein Breaker gehören könnte.
+
 ## Persistenz-ID
 
 Jeder `PersistentActor` deklariert eine `persistenceId`:

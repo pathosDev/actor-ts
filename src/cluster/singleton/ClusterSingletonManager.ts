@@ -30,8 +30,10 @@ import {
 } from '../ClusterEvents.js';
 import { asWarmHandOverActor, handOverStateFitsFrame } from './WarmHandOver.js';
 import {
+  DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS,
   DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS,
   DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES,
+  DEFAULT_SINGLETON_RESTART_ON_TERMINATION,
   SINGLETON_HAND_OVER_BUFFER_SIZE,
   SINGLETON_HAND_OVER_RETRY_INTERVAL_MS,
   SINGLETON_HAND_OVER_STATE_RETENTION_MS,
@@ -586,7 +588,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
    */
   private onChildDiedUnexpectedly(): void {
     this.child = null;
-    if (this.options.restartOnTermination ?? true) {
+    if (this.options.restartOnTermination ?? DEFAULT_SINGLETON_RESTART_ON_TERMINATION) {
       this.log.warn(
         `singleton '${this.options.typeName}' terminated unexpectedly — `
         + `re-spawning in ${SINGLETON_RESTART_BACKOFF_MS} ms`,
@@ -1625,7 +1627,7 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
   }
 
   private scheduleAcquireRetry(): void {
-    const interval = this.options.acquireRetryIntervalMs ?? 5_000;
+    const interval = this.options.acquireRetryIntervalMs ?? DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS;
     this.retryTimer?.cancel();
     this.retryTimer = this.system.scheduler.scheduleOnceFunction(interval, () => {
       this.self.tell({ kind: 'acquire-retry' } satisfies ManagerEvent);
