@@ -148,8 +148,15 @@ export class SpanTap implements DevToolsTap {
     // `tests/unit/devtools/SpanTap.test.ts` (#714).
     tracing.recordRootSpans(this.previousRootSpans);
     tracing.captureMessagePayloads(this.previousMessagePayloads);
-    this.previousRootSpans = false;
-    this.previousMessagePayloads = false;
+    // The two switches are deliberately NOT reset to `false` here, and the
+    // asymmetry with `previousTracer` above is the point: every read of
+    // either boolean — the two restores on this line pair and
+    // `warnIfPayloadsAreExported` — happens after `install()` has
+    // re-snapshotted both unconditionally, and `uninstall()` early-returns
+    // when it is not installed, so a stale value can never be read.  Nulling
+    // `previousTracer` earns its line for a different reason: it holds a
+    // `Tracer`, and dropping the reference is what lets a replaced exporter
+    // be collected.
 
     this.pending = [];
     this.dropped = 0;

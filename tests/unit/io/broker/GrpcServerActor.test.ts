@@ -27,14 +27,22 @@ import type { ActorRef } from '../../../../src/ActorRef.js';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
-import type { GrpcChannelOptions } from '../../../../src/io/broker/GrpcClientOptions.js';
 import { GrpcServerActor } from '../../../../src/io/broker/GrpcServerActor.js';
+// Through the BARREL, deliberately, and not from the deep module paths these
+// four used to come from.  They are the entire user-facing seam for overriding
+// `loadGrpcModule` and for typing a `channelOptions` variable, and nothing in
+// the repository imported any of them through `src/io/broker/index.ts` — so all
+// four re-exports could be deleted with `bun run typecheck:dev` at exit 0 and
+// the whole unit suite green, taking the seam with them.  A caller reaches them
+// as `actor-ts/io`, so this file reaches them the same way; the gate that
+// notices is `typecheck:dev`, which is the one that compiles a call site.
 import type {
+  GrpcChannelOptions,
   GrpcProtoLoaderModule,
   GrpcServerLike,
   GrpcServerModule,
   GrpcUnaryCall,
-} from '../../../../src/io/broker/GrpcServerActor.js';
+} from '../../../../src/io/broker/index.js';
 import {
   GrpcServerOptions,
   type GrpcServerOptionsBuilder,

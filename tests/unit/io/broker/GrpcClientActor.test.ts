@@ -83,21 +83,23 @@ type RecordedClientStreamCall = {
 /**
  * Recording stand-in for grpc-js's `ClientDuplexStream`.
  *
- * `pushData` / `pushEnd` are the *server's* half — they let a test drive
- * an inbound chunk, which is the only way to show that a server message
- * cannot be mistaken for the handshake now that the handshake has its
- * own frame.  The `'error'` listener the actor registers is accepted and
- * never fired; nothing here needs a failing stream.
+ * `pushData` / `pushEnd` / `pushError` are the *server's* half — they let
+ * a test drive an inbound chunk, which is the only way to show that a
+ * server message cannot be mistaken for the handshake now that the
+ * handshake has its own frame, and the only way to drive a stream to
+ * completion at all.
  */
 class FakeDuplexCall {
   readonly writes: unknown[] = [];
   ended = false;
   private readonly dataListeners: Array<(chunk: unknown) => void> = [];
   private readonly endListeners: Array<() => void> = [];
+  private readonly errorListeners: Array<(error: Error) => void> = [];
 
   on(event: 'data' | 'end' | 'error', listener: (chunk: never) => void): void {
     if (event === 'data') this.dataListeners.push(listener as (chunk: unknown) => void);
     else if (event === 'end') this.endListeners.push(listener as () => void);
+    else this.errorListeners.push(listener as (error: Error) => void);
   }
 
   write(chunk: unknown): void { this.writes.push(chunk); }
@@ -105,6 +107,7 @@ class FakeDuplexCall {
 
   pushData(chunk: unknown): void { for (const listener of this.dataListeners) listener(chunk); }
   pushEnd(): void { for (const listener of this.endListeners) listener(); }
+  pushError(error: Error): void { for (const listener of this.errorListeners) listener(error); }
 }
 
 /**
@@ -656,6 +659,89 @@ describe('GrpcClientActor — bidi handle ownership', () => {
       expect(secondCall.writes).toEqual([]);
     } finally {
       await opened.system.terminate();
+    }
+  });
+});
+
+/**
+ * A finished stream leaves the registry.
+ *
+ * Both eviction calls — the one in the `'end'` listener and the one in
+ * `'error'` — could be deleted with all 13 tests here green, because no test
+ * drove a bidi stream to completion at all: `FakeDuplexCall.pushEnd` existed
+ * and nothing called it, and there was no `pushError` to call.
+ *
+ * Two things go wrong without them, and the second is the one that matters.
+ * A long-lived client leaks one map entry per finished stream, which is a
+ * slow unbounded growth on the actor that opens the most of them.  And the
+ * token stays *live*: a `bidiSend` after the stream has ended still finds its
+ * entry and writes into a call grpc-js has already finished with, so a handle
+ * whose stream is over goes on being honoured instead of missing the map the
+ * way a forged one does.  The registry is the ownership check, and an entry
+ * that outlives its stream is an ownership check answering for something that
+ * no longer exists.
+ *
+ * Read through the same fence the ownership tests use: a second stream is
+ * opened, and a write to *it* landing proves the earlier write to the ended
+ * handle has already been through the dispatcher.  Asserting an absence needs
+ * that ordering, or it is a race that usually passes.
+ */
+describe('GrpcClientActor — a finished bidi stream leaves the registry (#788)', () => {
+  /** Drives `first` to completion via `finish`, then writes to its handle. */
+  async function writeAfterCompletion(
+    name: string,
+    finish: (call: FakeDuplexCall) => void,
+    endedFrame: 'stream-end' | 'stream-error',
+  ): Promise<{ endedCall: FakeDuplexCall; liveCall: FakeDuplexCall; system: ActorSystem }> {
+    const opened = await openBidiStream(name);
+    const { clientRef, actor, target, targetRef, handle, call } = opened;
+
+    finish(call);
+    await awaitCondition(() => target.received.some((frame) => frame.kind === endedFrame), {
+      label: `the ${endedFrame} frame reached the target actor`,
+    });
+
+    // A second stream, whose write is the fence.
+    clientRef.tell({ kind: 'bidiStart', method: 'Chat', target: targetRef });
+    await awaitCondition(() => actor.fakeClient.bidiCalls.length > 1, {
+      label: 'the second bidi stream was opened',
+    });
+    const live = publishedHandle(target);
+
+    clientRef.tell({ kind: 'bidiSend', handle, chunk: { text: 'after the stream finished' } });
+    clientRef.tell({ kind: 'bidiSend', handle: live, chunk: { text: 'fence' } });
+    const liveCall = actor.fakeClient.bidiCalls[1]!;
+    await awaitCondition(() => liveCall.writes.length > 0, {
+      label: 'the fence chunk was written to the still-open stream',
+    });
+    return { endedCall: call, liveCall, system: opened.system };
+  }
+
+  test('a send on a stream that ended is a miss, not a write', async () => {
+    const { endedCall, liveCall, system } = await writeAfterCompletion(
+      'grpc-bidi-end-evicts',
+      (call) => call.pushEnd(),
+      'stream-end',
+    );
+    try {
+      expect(endedCall.writes).toEqual([]);
+      expect(liveCall.writes).toEqual([{ text: 'fence' }]);
+    } finally {
+      await system.terminate();
+    }
+  });
+
+  test('a send on a stream that errored is a miss too', async () => {
+    const { endedCall, liveCall, system } = await writeAfterCompletion(
+      'grpc-bidi-error-evicts',
+      (call) => call.pushError(new Error('stream reset by peer')),
+      'stream-error',
+    );
+    try {
+      expect(endedCall.writes).toEqual([]);
+      expect(liveCall.writes).toEqual([{ text: 'fence' }]);
+    } finally {
+      await system.terminate();
     }
   });
 });
