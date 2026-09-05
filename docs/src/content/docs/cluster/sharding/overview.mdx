@@ -263,7 +263,8 @@ type ShardingOptionsType<TMessage> = {
   rememberEntities?:       boolean;           // re-spawn entities on failover (#)
   passivationIdleMs?:      number;            // auto-stop idle entities, default 5 min
   shardPassivationIdleMs?: number;            // auto-stop empty shards, follows the above
-  maxEntities?:            number;            // LRU cap per node
+  maxEntities?:            number;            // resident-entity cap, per type per node
+  passivationReplacement?: EntityReplacementPolicy;  // which entity the cap gives up
 };
 ```
 
@@ -278,7 +279,8 @@ type ShardingOptionsType<TMessage> = {
 | `rememberEntities` | Persist the set of *active* entity IDs.  After a coordinator failover (or full cluster restart), those IDs are spawned eagerly so messages don't have to recreate the entire fleet. |
 | `passivationIdleMs` | Stop an entity after this much idle time.  Frees memory; next message for the same ID re-creates the entity.  Defaults to **5 minutes**; `0` disables it. |
 | `shardPassivationIdleMs` | Stop a shard after it has stood empty this long.  Unset it follows `passivationIdleMs`; `0` keeps empty shards resident while entities still passivate. |
-| `maxEntities` | Per-node cap.  When exceeded, the LRU entity is passivated. |
+| `maxEntities` | How many entities of **this type** may be resident on **this node**.  When exceeded, one is passivated to make room.  `0` (the default) means no cap.  Not node-wide: two started types each get the whole number. |
+| `passivationReplacement` | Which resident entity the cap gives up — `'least-recently-used'` (default), `'segmented-least-recently-used'` or `'least-frequently-used'`.  Inert while `maxEntities` is `0`; see [choosing what a full node gives up](#choosing-what-a-full-node-gives-up). |
 
 The defaults are sensible for small clusters.  For production, you
 usually want `rememberEntities: true` and a `passivationIdleMs`
@@ -393,7 +395,8 @@ shard lands locally.
 Five of these are also HOCON keys — `number-of-shards`,
 `remember-entities`, `passivation-idle`, `shard-passivation-idle` and
 `max-entities` — as are the coordinator's `rebalance-interval` and
-`hand-off-timeout`.  They set the node-wide baseline for every sharded
+`hand-off-timeout`, and the whole `passivation` sub-block that decides which
+entity the cap gives up.  They set the node-wide baseline for every sharded
 type and sit *under* whatever `start(...)` passes explicitly, so a
 per-type value in the builder still wins.  See
 [Configuration](/reference/configuration/#actor-tssharding).
@@ -403,6 +406,7 @@ actor-ts.sharding {
   number-of-shards = 128
   passivation-idle = 2 minutes
   max-entities     = 50000
+  passivation.replacement = segmented-least-recently-used
 }
 ```
 
@@ -427,11 +431,11 @@ state from the messages it received starts over.  Either rebuild in
 :::
 
 **Automatic** — when `passivationIdleMs` elapses with no traffic, or
-`maxEntities` is exceeded (the least-recently-used entity is
+`maxEntities` is exceeded (whichever entity the replacement policy names is
 evicted), the entity is stopped.  Nothing is sent to the entity and no
 acknowledgment is involved.  The *decision* is the region's, because
 only it sees traffic across every shard on this node — which is why
-`maxEntities` is a per-node cap, not a per-shard one — and the shard
+`maxEntities` is a cap per type per node, not a per-shard one — and the shard
 that owns the entity carries it out.
 
 **Manual (graceful)** — an entity asks to be passivated by sending a
@@ -471,6 +475,55 @@ class CartActor extends Actor<CartCommand> {
   }
 }
 ```
+
+The stop-message is a *request*: the entity decides when to act on it.  If it
+never does, it never terminates — and its slot stays charged to `maxEntities`
+for the lifetime of the node.  So the shard arms a backstop, and after
+`passivationStopTimeoutMs` (10 seconds by default,
+`actor-ts.sharding.passivation.stop-timeout`) it stops the entity outright, the
+same way a region-driven passivation does.  Set it to `0` where the graceful
+shutdown genuinely has no bound.
+
+### Choosing what a full node gives up
+
+`maxEntities` says **how many** entities stay resident; `passivationReplacement`
+says **which one leaves** when a new one arrives.  Every knob here is inert
+while `maxEntities` is `0`, which is the default.
+
+The default policy, `'least-recently-used'`, has one blind spot: recency cannot
+tell *touched once, ever* from *touched constantly until a moment ago*.  So a
+pass over a large cold key space — a nightly export, a crawler, a backfill —
+evicts your working set one entity at a time and leaves the node holding ids
+nothing will ask for again.  Two options fix that, and they compose:
+
+```ts
+const shardingOptions = StartShardingOptions.create<CartCommand>()
+  .withTypeName('cart')
+  .withEntityActor(CartActor)
+  .withExtractEntityId((command) => command.entityId)
+  .withMaxEntities(50_000)
+  // Probation for an entity seen once, protected for one seen again; eviction
+  // takes from probation, so a scan can only ever displace another scan.
+  .withPassivationReplacement('segmented-least-recently-used')
+  .withPassivationSegmentedProtectedProportion(0.8)
+  // A small window in front of the policy, so the entity judged on admission is
+  // never the one a message is waiting on.
+  .withPassivationAdmissionWindowProportion(0.01)
+  // …and what does the judging: a compact sketch of how often each id has been
+  // seen, which remembers ids the node no longer holds.
+  .withPassivationAdmissionFilter('frequency-sketch');
+```
+
+`'least-frequently-used'` is the third policy — fewest accesses loses, with
+counts halved periodically so the ranking follows recent traffic rather than a
+lifetime total.  It suits a working set that is stable but not recent, such as
+a device fleet reporting on a slow cycle.
+
+The filter needs a window: a region cannot refuse the entity a message has just
+arrived for, so `'frequency-sketch'` with
+`passivationAdmissionWindowProportion: 0` is rejected at `start(...)` rather
+than silently doing nothing.  All five knobs are also HOCON keys under
+[`actor-ts.sharding.passivation`](/reference/configuration/#actor-tssharding).
 
 ### Shards passivate too
 

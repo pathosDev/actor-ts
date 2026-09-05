@@ -3,6 +3,7 @@ import type { ActorOptions, ActorOptionsType } from '../../ActorOptions.js';
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorRef } from '../../ActorRef.js';
+import type { Cancellable } from '../../Scheduler.js';
 import { Terminated } from '../../SystemMessages.js';
 import { BidirectionalMap } from '../../util/BidirectionalMap.js';
 import { Passivate } from './Passivate.js';
@@ -21,6 +22,11 @@ export type ShardConfig = {
   readonly shardId: number;
   readonly entityActor: ActorClassOrFactory<unknown>;
   readonly entityOptions?: ActorOptions<unknown>;
+  /**
+   * How long an entity sent its `Passivate` stop-message may take to stop
+   * before the shard stops it outright, in ms; `0` waits forever (#848).
+   */
+  readonly passivationStopTimeoutMs: number;
 };
 
 /** What a shard accepts from the outside — its region, or a holder of its ref. */
@@ -31,13 +37,35 @@ export type ShardMessage<TMessage = unknown> =
   | StartEntity
   | GetShardStats;
 
+/**
+ * "The graceful stop window for one entity ran out" — the shard telling itself,
+ * on a timer (#848).
+ *
+ * A class rather than a `sharding.`-kinded object, for the two reasons
+ * `EntityRecoveryTick` in `ShardRegion` already spells out: a remote frame
+ * arrives as decoded plain data, so nothing off the wire can be `instanceof`
+ * this and no peer can force another node's entity to stop; and the timer's
+ * callback only ever *sends* it, so the state it mutates is touched on the
+ * shard's own turn rather than inside the scheduler (#952).
+ */
+export class EntityStopTimeout {
+  constructor(readonly entityId: string) {}
+}
+
 /** Everything a shard can find in its mailbox, including system traffic. */
-export type ShardInbox = ShardMessage | Terminated | Passivate;
+export type ShardInbox = ShardMessage | Terminated | Passivate | EntityStopTimeout;
 
 type EntityState = {
   readonly ref: ActorRef<unknown>;
   /** Non-null while the entity is passivating: messages buffered to flush on the next create. */
   passivating: unknown[] | null;
+  /**
+   * Armed while a *cooperative* stop is outstanding — the `Passivate` path,
+   * where the entity was asked rather than told.  `null` on every other path,
+   * including `PassivateEntity`, which stops the entity outright and has
+   * nothing to wait for.
+   */
+  stopTimer: Cancellable | null;
 };
 
 /**
@@ -92,7 +120,20 @@ export class Shard extends Actor<ShardInbox> {
       .with({ kind: 'sharding.GetShardStats' }, (m) => this.onGetShardStats(m))
       .with(P.instanceOf(Terminated), (m) => this.onEntityTerminated(m))
       .with(P.instanceOf(Passivate), (m) => this.onPassivate(m))
+      .with(P.instanceOf(EntityStopTimeout), (m) => this.onEntityStopTimeout(m))
       .otherwise(() => this.onUnhandled());
+  }
+
+  /**
+   * Nothing outlives the shard.  Without this a shard stopped mid-passivation —
+   * a handoff, an empty-shard sweep, a node shutting down — leaves a scheduler
+   * entry holding a ref to an entity that is already gone.
+   */
+  override postStop(): void {
+    for (const state of this.entities.values()) {
+      state.stopTimer?.cancel();
+      state.stopTimer = null;
+    }
   }
 
   /** Number of live entities — the region mirrors this for its stats replies. */
@@ -134,20 +175,58 @@ export class Shard extends Actor<ShardInbox> {
     });
   }
 
-  /** An entity asking to be stopped — `this.context.parent.tell(new Passivate(...))`. */
+  /**
+   * An entity asking to be stopped — `this.context.parent.tell(new Passivate(...))`.
+   *
+   * The stop-message contract is cooperative: the entity is *told what to send
+   * itself*, and it decides when to act on it — finish in-flight work, flush
+   * state, then terminate.  Until #848 that was cooperative with no backstop.
+   * An entity that never acted on the message never terminated, so `Terminated`
+   * never fired, `EntityStopped` never reached the region, and the entity held
+   * its slot against `maxEntities` for the lifetime of the node while the shard
+   * buffered every message addressed to it.  The timer is that backstop.
+   */
   private onPassivate(message: Passivate): void {
     const candidate = message.entity ?? this.sender.toNullable();
     if (!candidate) return;
-    const state = this.entityFor(candidate);
+    const entityId = this.entityPaths.getKey(candidate.path.toString());
+    if (entityId === undefined) return;
+    const state = this.entities.get(entityId);
     if (!state) return;
     state.passivating = [];
     candidate.tell(message.stopMessage as never);
+    this.armStopTimeout(entityId, state);
+  }
+
+  /**
+   * The cooperative window expired.  `stop()` is the unignorable path
+   * {@link onPassivateEntity} already uses, so a forced passivation and a
+   * region-driven one end identically — the entity's `postStop` still runs and
+   * a persistent one still finishes its shutdown.
+   *
+   * Re-read from the map rather than closed over: between arming the timer and
+   * this arriving the entity may have stopped on its own, or the shard may have
+   * re-created it after a `Terminated`, and either way the state object that
+   * was armed is not the one to act on.
+   */
+  private onEntityStopTimeout(message: EntityStopTimeout): void {
+    const state = this.entities.get(message.entityId);
+    if (!state || state.stopTimer === null) return;
+    state.stopTimer = null;
+    this.log.warn(
+      `[sharding] entity '${message.entityId}' in shard ${this.config.shardId} of `
+      + `'${this.config.typeName}' did not stop within ${this.config.passivationStopTimeoutMs}ms `
+      + 'of its passivation stop-message; stopping it',
+    );
+    state.ref.stop();
   }
 
   private onEntityTerminated(message: Terminated): void {
     const entityId = this.entityPaths.getKey(message.actor.path.toString());
     if (entityId === undefined) return;
-    const buffered = this.entities.get(entityId)?.passivating ?? [];
+    const existing = this.entities.get(entityId);
+    existing?.stopTimer?.cancel();
+    const buffered = existing?.passivating ?? [];
     this.entities.delete(entityId);
     this.entityPaths.delete(entityId);
     this.notifyRegion({ kind: 'sharding.EntityStopped', shardId: this.config.shardId, entityId });
@@ -162,10 +241,25 @@ export class Shard extends Actor<ShardInbox> {
 
   /* ------------------------------ Internals ------------------------------ */
 
-  /** The entity a ref belongs to, or null — `Passivate` and `Terminated` only carry a ref. */
-  private entityFor(ref: ActorRef): EntityState | null {
-    const entityId = this.entityPaths.getKey(ref.path.toString());
-    return entityId === undefined ? null : this.entities.get(entityId) ?? null;
+  /**
+   * Arm the cooperative-stop backstop for one entity (#848).
+   *
+   * `0` opts out and waits forever, which is what every release before #848 did
+   * — kept expressible because an entity whose graceful shutdown genuinely has
+   * no bound (draining a long-running job) is a real shape, and a forced stop
+   * would then be the bug rather than the fix.
+   *
+   * The callback only ever sends: the state it has to clear lives on the
+   * shard's turn, and mutating it from the scheduler is the shape #952 was
+   * about.
+   */
+  private armStopTimeout(entityId: string, state: EntityState): void {
+    const timeoutMs = this.config.passivationStopTimeoutMs;
+    if (timeoutMs <= 0 || state.stopTimer !== null) return;
+    state.stopTimer = this.system.scheduler.scheduleOnceFunction(
+      timeoutMs,
+      () => { this.self.tell(new EntityStopTimeout(entityId)); },
+    );
   }
 
   private deliver(entityId: string, message: unknown, sender: ActorRef | null): void {
@@ -190,7 +284,7 @@ export class Shard extends Actor<ShardInbox> {
       entity: { entityId, typeName: this.config.typeName, shardId: this.config.shardId },
     });
     this.context.watch(ref);
-    const state: EntityState = { ref: ref as ActorRef<unknown>, passivating: null };
+    const state: EntityState = { ref: ref as ActorRef<unknown>, passivating: null, stopTimer: null };
     this.entities.set(entityId, state);
     this.entityPaths.set(entityId, ref.path.toString());
     this.notifyRegion({ kind: 'sharding.EntityStarted', shardId: this.config.shardId, entityId });

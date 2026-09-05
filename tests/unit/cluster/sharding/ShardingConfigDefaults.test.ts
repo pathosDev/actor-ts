@@ -35,6 +35,13 @@ describe('readShardingOptionsFromConfig', () => {
           heartbeat-interval = 2s
           stale-after        = 12s
         }
+        passivation {
+          replacement                    = segmented-least-recently-used
+          segmented-protected-proportion = 0.75
+          admission-window-proportion    = 0.05
+          admission-filter               = frequency-sketch
+          stop-timeout                   = 3s
+        }
       }
     `);
 
@@ -58,6 +65,11 @@ describe('readShardingOptionsFromConfig', () => {
       staleRegionDetection: true,
       regionHeartbeatIntervalMs: 2_000,
       regionStaleAfterMs: 12_000,
+      passivationReplacement: 'segmented-least-recently-used',
+      passivationSegmentedProtectedProportion: 0.75,
+      passivationAdmissionWindowProportion: 0.05,
+      passivationAdmissionFilter: 'frequency-sketch',
+      passivationStopTimeoutMs: 3_000,
     });
   });
 
@@ -120,6 +132,18 @@ describe('readShardingOptionsFromConfig', () => {
       staleRegionDetection: false,
       regionHeartbeatIntervalMs: 5_000,
       regionStaleAfterMs: 20_000,
+      // The replacement policy ships as the plain LRU every release before #848
+      // had, and the filter ships off, so wiring the block changes the eviction
+      // order for nobody.  All five ship anyway — an operator who cannot see
+      // them cannot judge what naming a policy would cost — and the pair
+      // `admission-filter = off` / `admission-window-proportion = 0` has to be a
+      // legal one, because `ShardingOptionsValidator` rejects a filter without a
+      // window against the resolved values.
+      passivationReplacement: 'least-recently-used',
+      passivationSegmentedProtectedProportion: 0.8,
+      passivationAdmissionWindowProportion: 0,
+      passivationAdmissionFilter: 'off',
+      passivationStopTimeoutMs: 10_000,
     });
   });
 
@@ -173,6 +197,17 @@ describe('readShardingOptionsFromConfig', () => {
         heartbeatInterval: 'actor-ts.sharding.stale-region-detection.heartbeat-interval',
         staleAfter: 'actor-ts.sharding.stale-region-detection.stale-after',
       },
+      // Five more full dotted paths, and flat here rather than nested under a
+      // `passivation` object for the same reason `entityRecovery*` is flat: a
+      // nested group reads as one thing to `NoDeadConfigKeys`' covering-accessor
+      // lookup only if it is a root, and a root would cover all five (#848).
+      passivationReplacement: 'actor-ts.sharding.passivation.replacement',
+      passivationSegmentedProtectedProportion:
+        'actor-ts.sharding.passivation.segmented-protected-proportion',
+      passivationAdmissionWindowProportion:
+        'actor-ts.sharding.passivation.admission-window-proportion',
+      passivationAdmissionFilter: 'actor-ts.sharding.passivation.admission-filter',
+      passivationStopTimeout: 'actor-ts.sharding.passivation.stop-timeout',
     });
   });
 });

@@ -1342,6 +1342,31 @@ export const ConfigKeys = {
     passivationIdle: 'actor-ts.sharding.passivation-idle',
     shardPassivationIdle: 'actor-ts.sharding.shard-passivation-idle',
     maxEntities: 'actor-ts.sharding.max-entities',
+    /**
+     * Entity-replacement policy — `actor-ts.sharding.passivation.*` (#848).
+     * Grouped in HOCON because the five are only meaningful together and all
+     * five are inert without `max-entities`; the matching options fields stay
+     * flat (`passivationReplacement`, …), the same translation
+     * `cluster.tombstone.*` and `stale-region-detection.*` already make.
+     *
+     * Full dotted leaves, not a bare `passivation` root, for the reason
+     * `entity-recovery` above spells out: `NoDeadConfigKeys` resolves a leaf
+     * through *any* config root above it, so a root-only entry would let all
+     * five pass with nothing reading them.
+     *
+     * `passivation-idle` and `max-entities` above deliberately do NOT move in
+     * here.  Both are pinned as reference leaves at their current paths by the
+     * guards themselves, so relocating them means editing the tests that exist
+     * to catch relocation, and aliasing them means two leaves feeding one field
+     * with a precedence rule between them.
+     */
+    passivationReplacement: 'actor-ts.sharding.passivation.replacement',
+    passivationSegmentedProtectedProportion:
+      'actor-ts.sharding.passivation.segmented-protected-proportion',
+    passivationAdmissionWindowProportion:
+      'actor-ts.sharding.passivation.admission-window-proportion',
+    passivationAdmissionFilter: 'actor-ts.sharding.passivation.admission-filter',
+    passivationStopTimeout: 'actor-ts.sharding.passivation.stop-timeout',
     bufferSize: 'actor-ts.sharding.buffer-size',
     registerRetryInterval: 'actor-ts.sharding.register-retry-interval',
     rebalanceInterval: 'actor-ts.sharding.rebalance-interval',

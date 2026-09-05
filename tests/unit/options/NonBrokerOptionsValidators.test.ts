@@ -419,6 +419,71 @@ describe('ShardingOptionsValidator', () => {
       entityRecoveryConstantRateNumberOfEntities: 5,
     })).not.toThrow();
   });
+
+  test('rejects a replacement policy or admission filter outside its union (#848)', () => {
+    // Same reasoning as the recovery strategy above: HOCON is untyped, and a
+    // misspelt policy that fell back to LRU would give an operator the eviction
+    // order they named this key to change.
+    expect(() => check({ ...required, passivationReplacement: 'segmented-lru' as never }))
+      .toThrow(/passivationReplacement/);
+    // `most-recently-used` deliberately does not ship — the rejection is what
+    // makes that decision observable rather than a comment.
+    expect(() => check({ ...required, passivationReplacement: 'most-recently-used' as never }))
+      .toThrow(/passivationReplacement/);
+    expect(() => check({ ...required, passivationAdmissionFilter: 'sketch' as never }))
+      .toThrow(/passivationAdmissionFilter/);
+  });
+
+  test('rejects the degenerate ends of both proportions (#848)', () => {
+    // A protected share of 0 or 1 is a segmented policy with one empty segment,
+    // which is plain LRU under a longer name — a configuration that reads as
+    // segmented and is not.
+    expect(() => check({ ...required, passivationSegmentedProtectedProportion: 0 }))
+      .toThrow(/passivationSegmentedProtectedProportion/);
+    expect(() => check({ ...required, passivationSegmentedProtectedProportion: 1 }))
+      .toThrow(/passivationSegmentedProtectedProportion/);
+    // The window's `0` IS a real value — no window — so only its upper end is open.
+    expect(() => check({ ...required, passivationAdmissionWindowProportion: -0.1 }))
+      .toThrow(/passivationAdmissionWindowProportion/);
+    expect(() => check({ ...required, passivationAdmissionWindowProportion: 1 }))
+      .toThrow(/passivationAdmissionWindowProportion/);
+  });
+
+  test('rejects a frequency sketch with no admission window (#848)', () => {
+    // The cross-field rule, and it is not pedantry: without a window the only
+    // candidate the filter could refuse is the entity a message has just
+    // arrived for, which the region is not free to refuse.  Degrading to "no
+    // filter" would be a configuration that reads as armed and is not.
+    expect(() => check({ ...required, passivationAdmissionFilter: 'frequency-sketch' }))
+      .toThrow(/passivationAdmissionFilter/);
+    // Checked against the *resolved* pair, so naming the filter and leaving the
+    // window at its `0` default is the same rejection.
+    expect(() => check({
+      ...required,
+      passivationAdmissionFilter: 'frequency-sketch',
+      passivationAdmissionWindowProportion: 0,
+    })).toThrow(/passivationAdmissionWindowProportion/);
+  });
+
+  test('rejects a negative stop timeout but accepts 0 (#848)', () => {
+    // `0` waits forever, which is what every release before #848 did, and an
+    // entity whose graceful shutdown genuinely has no bound is a real shape.
+    expect(() => check({ ...required, passivationStopTimeoutMs: -1 }))
+      .toThrow(/passivationStopTimeoutMs/);
+    expect(() => check({ ...required, passivationStopTimeoutMs: 0 })).not.toThrow();
+  });
+
+  test('accepts a fully-specified composite passivation policy (#848)', () => {
+    expect(() => check({
+      ...required,
+      maxEntities: 50_000,
+      passivationReplacement: 'segmented-least-recently-used',
+      passivationSegmentedProtectedProportion: 0.8,
+      passivationAdmissionWindowProportion: 0.01,
+      passivationAdmissionFilter: 'frequency-sketch',
+      passivationStopTimeoutMs: 5_000,
+    })).not.toThrow();
+  });
 });
 
 describe('ShardedDaemonProcessOptionsValidator', () => {
