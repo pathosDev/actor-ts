@@ -35,6 +35,7 @@ import {
   DEFAULT_MAX_MEMBERS,
   DEFAULT_MAX_TOMBSTONES,
   DEFAULT_MAX_VERSION_SKEW_MS,
+  DEFAULT_MINIMUM_MEMBERS_BEFORE_UP,
   DEFAULT_SEED_RETRY_INTERVAL_MS,
   DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
   DEFAULT_TOMBSTONE_TTL_MS,
@@ -106,6 +107,32 @@ import type {
 } from './downing/DowningProvider.js';
 
 type EnvelopeHandler = (env: EnvelopeMessage, from: NodeAddress) => void;
+
+/**
+ * A self-election `minimumMembersBeforeUp` is holding back, kept whole so it
+ * can be replayed verbatim once the threshold is met (#837).
+ *
+ * The reason and level are carried rather than recomputed because they say
+ * *which* policy asked — "no seeds configured" and "no peer promoted this node
+ * within N ms" are two different decisions, and the log line that eventually
+ * lands should name the one that was actually made.
+ */
+type HeldSelfElection = { readonly reason: string; readonly level: 'debug' | 'info' };
+
+/**
+ * Member statuses that count toward
+ * {@link ClusterOptionsType.minimumMembersBeforeUp} (#837).
+ *
+ * The question the threshold asks is "are enough live members here", so a
+ * tombstone is not a member and neither is one on its way out: `leaving`,
+ * `unreachable`, `down` and `removed` are all excluded.  Akka counts every
+ * non-`removed` member instead; the difference shows during a rolling
+ * restart, where a `leaving` member either does or does not hold the gate
+ * open for its replacement.  It does not here.
+ */
+const UP_THRESHOLD_STATUSES: ReadonlySet<MemberStatus> = new Set<MemberStatus>([
+  'joining', 'weakly-up', 'up',
+]);
 
 /**
  * Which merge-path guard refused a gossiped member record.  Closed, and
@@ -307,6 +334,14 @@ export class Cluster {
   private currentLeader: Option<Member> = none;
   private readonly weaklyUpAfterMs: number;
   private readonly selfElection: SelfElectionPolicy;
+  private readonly minimumMembersBeforeUp: number;
+  private readonly minimumMembersBeforeUpPerRole: Readonly<Record<string, number>>;
+  /**
+   * A self-election {@link minimumMembersBeforeUp} is holding, and whether the
+   * wait has been reported — see {@link selfElect} and {@link leaderActionsTick}.
+   */
+  private heldSelfElection: HeldSelfElection | null = null;
+  private upThresholdWaitReported = false;
 
   private envelopeHandler: EnvelopeHandler | null = null;
   private readonly _envelopeHandlersByPath = new Map<string, EnvelopeHandler>();
@@ -429,6 +464,8 @@ export class Cluster {
     this.seedRetryIntervalMs = options.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;
     this.weaklyUpAfterMs = options.weaklyUpAfterMs ?? 0;
     this.selfElection = options.selfElection ?? 'immediate';
+    this.minimumMembersBeforeUp = options.minimumMembersBeforeUp ?? DEFAULT_MINIMUM_MEMBERS_BEFORE_UP;
+    this.minimumMembersBeforeUpPerRole = options.minimumMembersBeforeUpPerRole ?? {};
     this.downing = options.downing ?? null;
     this.tombstoneTtlMs = options.tombstoneTtlMs ?? DEFAULT_TOMBSTONE_TTL_MS;
     this.tombstonePruneIntervalMs = options.tombstonePruneIntervalMs ?? DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS;
@@ -1426,10 +1463,135 @@ export class Cluster {
     const me = this.members.get(this.selfAddress.toString());
     if (!me) return;
     if (me.status !== 'joining' && me.status !== 'weakly-up') return;
+    // Held, not dropped: the founder is the one node whose promotion nothing
+    // else can retry, because `leader()` has no fallback to a non-`up` member
+    // — no `up` member means no leader means no promotion, and the count
+    // would never rise again.  {@link leaderActionsTick} replays this.
+    if (!this.upThresholdSatisfied()) return this.holdSelfElection(reason, level);
+    this.heldSelfElection = null;
     const message = `self-electing as first cluster member — ${reason}`;
     if (level === 'info') this.log.info(message); else this.log.debug(message);
     this._selfElected = true;
     this.updateMember(me.withStatus('up'));
+  }
+
+  /**
+   * Park a self-election the membership gate is not letting through, and say
+   * so once (#837).
+   *
+   * Info, and exactly one line per incarnation: a founder that never forms its
+   * cluster is the single hardest startup failure to diagnose from the
+   * outside, and a node with an empty seed list runs no seed-retry loop — so
+   * {@link reportColdStartStall}, which is the other half of this diagnosis,
+   * never fires for it.  Repeating it per gossip tick would bury it.
+   *
+   * The *first* request is the one kept.  A later one differs only in wording
+   * (a deferred timer firing after `'immediate'` already asked), and the
+   * decision that actually stands is the one the configuration made first.
+   */
+  private holdSelfElection(reason: string, level: 'debug' | 'info'): void {
+    if (this.heldSelfElection !== null) return;
+    this.heldSelfElection = { reason, level };
+    this.log.info(
+      `holding self-election — ${reason}, but ${ConfigKeys.cluster.minimumMembersBeforeUp} is not `
+      + `met yet (${this.upThresholdShortfall()}). No node moves to "up" until it is.`,
+    );
+  }
+
+  /** Members that count toward the Up threshold — see {@link UP_THRESHOLD_STATUSES}. */
+  private membersCountingTowardUpThreshold(): Member[] {
+    return Array.from(this.members.values())
+      .filter((member) => UP_THRESHOLD_STATUSES.has(member.status));
+  }
+
+  /**
+   * Whether enough members are present for anything to be promoted to `up`
+   * (#837) — the global count and every configured per-role count, as an AND.
+   *
+   * Evaluated per promotion decision and never in reverse: there is no
+   * `up → joining` transition, so a cluster that later drops below the
+   * threshold keeps the members it already promoted and holds only new ones.
+   */
+  private upThresholdSatisfied(): boolean {
+    const present = this.membersCountingTowardUpThreshold();
+    if (present.length < this.minimumMembersBeforeUp) return false;
+    for (const [role, minimum] of Object.entries(this.minimumMembersBeforeUpPerRole)) {
+      if (present.filter((member) => member.hasRole(role)).length < minimum) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Which half of the threshold is short, in the words an operator can act on.
+   *
+   * Both halves are reported when both are short: a deployment that fixed the
+   * global count and left a role threshold unmet would otherwise be told the
+   * same sentence twice with nothing having changed.
+   */
+  private upThresholdShortfall(): string {
+    const present = this.membersCountingTowardUpThreshold();
+    const parts: string[] = [];
+    if (present.length < this.minimumMembersBeforeUp) {
+      parts.push(`${present.length} of ${this.minimumMembersBeforeUp} member(s) present`);
+    }
+    for (const [role, minimum] of Object.entries(this.minimumMembersBeforeUpPerRole)) {
+      const withRole = present.filter((member) => member.hasRole(role)).length;
+      if (withRole < minimum) {
+        parts.push(`${withRole} of ${minimum} member(s) with role "${role}"`);
+      }
+    }
+    return parts.join('; ');
+  }
+
+  /**
+   * Re-run the two `up` transitions the membership gate may be holding (#837).
+   *
+   * A tick and not an `if`, because gating the two promotion sites alone
+   * deadlocks: `leader()` is the first of {@link upMembers} with no fallback
+   * to a non-`up` member, and the only route to a first `up` member is
+   * {@link selfElect}, which fires once during `start()`.  Refuse it there and
+   * no leader ever exists, so nothing promotes anyone, so the count never
+   * rises — permanent, and silent.
+   *
+   * Called from {@link gossipTick} (armed unconditionally, so it covers a map
+   * that grew by any route) and from the tail of {@link onGossip} (so the
+   * frame that takes the cluster over the threshold acts on it immediately
+   * rather than up to a gossip interval later).  Deliberately **not** called
+   * from `updateMember`, which is what both of these end up in.
+   */
+  private leaderActionsTick(): void {
+    if (!this.started) return;
+    this.runHeldSelfElection();
+    this.promoteJoiningMembers();
+  }
+
+  /** Replay a self-election the threshold was holding, once it is met. */
+  private runHeldSelfElection(): void {
+    const held = this.heldSelfElection;
+    if (held === null) return;
+    if (!this.upThresholdSatisfied()) return;
+    this.heldSelfElection = null;
+    this.selfElect(held.reason, held.level);
+  }
+
+  /**
+   * The leader's own decision: move every `joining` / `weakly-up` member to
+   * `up`.
+   *
+   * The threshold binds the *deciding* node only.  The accept side
+   * ({@link maySpeakFor} / `isOwnPromotion`) is deliberately untouched — a
+   * node whose local view lags the leader's would otherwise refuse a
+   * legitimate `up` claim about itself and stay `joining` for good.
+   */
+  private promoteJoiningMembers(): void {
+    if (!this.isLeader()) return;
+    if (!this.upThresholdSatisfied()) return;
+    for (const member of this.members.values()) {
+      if (member.status === 'joining' || member.status === 'weakly-up') {
+        this.log.debug(`leader-promote: ${member.address} ${member.status}→up`);
+        this.updateMember(member.withStatus('up'));
+      }
+    }
   }
 
   /**
@@ -1467,10 +1629,17 @@ export class Cluster {
    * defaults to 0, so nothing reaches it without being configured to.
    */
   private reportColdStartStall(): void {
-    if (this.coldStartStallReported) return;
     if (this.seedRounds < COLD_START_STALL_AFTER_SEED_ROUNDS) return;
-    if (this.selfElectionTimer !== null) return;
     if (this.upMembers().length > 0) return;
+    // Ordered ahead of the verdict below because it contradicts it. A closed
+    // membership gate holds every promotion including this node's own
+    // self-election, so "nothing can promote this node" would be false: the
+    // cluster is short of members, not misconfigured, and the fix is a node
+    // rather than a config change (#837).  Its own flag, so a gate that later
+    // opens onto a genuine stall still gets the verdict below.
+    if (!this.upThresholdSatisfied()) return this.reportUpThresholdWait();
+    if (this.coldStartStallReported) return;
+    if (this.selfElectionTimer !== null) return;
     this.coldStartStallReported = true;
     // Every member but our own record — what this node has actually heard from,
     // which is the half of the diagnosis it cannot state from configuration.
@@ -1479,6 +1648,33 @@ export class Cluster {
       `still "joining" after ${this.seedRounds} seed-contact round(s), and nothing can promote `
       + `this node: no member is "up", so there is no leader, and only a leader moves a node `
       + `from "joining" to "up" — ${this.coldStartStallRemedy(peers)}`,
+    );
+  }
+
+  /**
+   * Say that the cluster is waiting for members rather than stuck (#837).
+   *
+   * Held to the same round threshold as {@link reportColdStartStall} and
+   * reported once, for the same reasons: the condition is ordinary for the
+   * first seconds of a simultaneous start, and repeating it per round would
+   * bury the line that matters.
+   *
+   * A warning rather than an info, because by this point it has been true for
+   * {@link COLD_START_STALL_AFTER_SEED_ROUNDS} seed rounds — which is either a
+   * deployment still rolling out, or a threshold set above the number of nodes
+   * the deployment actually has, and the second is a misconfiguration that
+   * presents as a cluster that never comes up.  Nothing here can tell them
+   * apart, so the line names the count and lets the operator.
+   */
+  private reportUpThresholdWait(): void {
+    if (this.upThresholdWaitReported) return;
+    this.upThresholdWaitReported = true;
+    this.log.warn(
+      `still "joining" after ${this.seedRounds} seed-contact round(s): `
+      + `${ConfigKeys.cluster.minimumMembersBeforeUp} holds every promotion to "up" until enough `
+      + `members are present, and ${this.upThresholdShortfall()}. This clears itself as soon as `
+      + 'the missing member(s) join; if the deployment has no more nodes to give, the threshold '
+      + 'is set above its size.',
     );
   }
 
@@ -1720,15 +1916,11 @@ export class Cluster {
       this.reportRefusals(from, reason, this.refusalCounts[reason] - refusedBefore[reason]);
     }
 
-    // Leader promotes joining (and weakly-up) members to up.
-    if (this.isLeader()) {
-      for (const member of this.members.values()) {
-        if (member.status === 'joining' || member.status === 'weakly-up') {
-          this.log.debug(`leader-promote: ${member.address} ${member.status}→up`);
-          this.updateMember(member.withStatus('up'));
-        }
-      }
-    }
+    // Leader promotes joining (and weakly-up) members to up — and, when this
+    // frame is the one that took the member map over `minimumMembersBeforeUp`,
+    // runs the self-election that threshold was holding.  On the founder there
+    // is no leader yet, so the second half is the only one that can act (#837).
+    this.leaderActionsTick();
   }
 
   /**
@@ -2047,6 +2239,12 @@ export class Cluster {
   }
 
   private gossipTick(): void {
+    // Leader actions run on the gossip cadence, before the push: this is the
+    // only timer armed unconditionally for the whole life of the node, so it
+    // is what re-opens a membership gate whose count rose by a route that does
+    // not end in `onGossip` — and, on a founder with no seeds, the only thing
+    // that ever looks again (#837).
+    this.leaderActionsTick();
     const targets = this.reachableMembers().filter(member => !member.address.equals(this.selfAddress));
     if (targets.length === 0) return;
     // Push to one random reachable peer each tick — epidemic style.
