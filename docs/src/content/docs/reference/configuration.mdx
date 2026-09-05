@@ -550,6 +550,95 @@ backends ship different built-in defaults — 3 attempts / 100 ms for Kubernetes
 1 / 50 ms in memory — and one leaf could not express both without silently
 unifying them. Set them per lease in code.
 
+### `actor-ts.cluster.bootstrap`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `cluster.bootstrap.stable-margin` | `5s` | How long the contact-point set must be unchanged before the observation calls it stable. |
+| `cluster.bootstrap.poll-interval` | `1s` | How often discovery is polled during the observation. |
+| `cluster.bootstrap.max-wait` | `60s` | Total budget for the observation before it gives up and fails the bootstrap. |
+| `cluster.bootstrap.required-contact-points` | `1` | How many contact points a stable set must contain.  `1` keeps single-node development working; a value matching the expected replica count is what catches discovery that is stably *wrong* rather than merely slow. |
+| `cluster.bootstrap.self-election-grace` | `10s` | How long the lowest-addressed node waits for a peer to promote it before forming a cluster itself. |
+| `cluster.bootstrap.minimum-members` | `1` | Fewest `up` members — self included — before `awaitReady` / `Cluster.isReady` counts the cluster as ready. |
+| `cluster.bootstrap.await-ready` | *(unset)* | Readiness budget.  Comment-only in `reference.conf`: unset is what selects the computed default (`self-election-grace + 5s` behind stable observation, `5s` otherwise), and a key that is always present could not express it. |
+| `cluster.bootstrap.discovery.method` | `"auto"` | Which seed provider the bootstrap builds — `auto`, `config`, `dns` or `kubernetes`.  `auto` is the ladder; the other three pin one rung so a misconfigured deployment fails loudly instead of falling through. |
+| `cluster.bootstrap.discovery.service-name` | `""` | The DNS name the `dns` provider resolves and the Kubernetes Service whose `Endpoints` the `kubernetes` provider reads.  `""` means "not stated here", and `CLUSTER_SERVICE_NAME` then answers. |
+
+The five observation timings are read only when `stableObservation` is on;
+the readiness pair and the `discovery` sub-block are read by every
+`Cluster.bootstrap` call.  All of them layer under the explicit options, so a
+`withRequiredContactPoints(…)` or a `discovery: 'dns'` in code still wins.
+
+A `method` outside those four names is **refused**, not ignored. Falling back
+to `auto` on a typo would leave one node discovering differently from its
+peers, which is the cold-start split brain the observation exists to close.
+
+`selfElection` has no key here and will not get one: it differs per node by
+construction, so one shared value would either stop every node from starting
+or have all of them form a cluster at once.
+
+### `actor-ts.discovery`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `discovery.dns.cache-ttl` | `60s` | How long the DNS provider reuses one resolved answer.  In-process and per provider; failures are never cached.  `0` disables caching. |
+| `discovery.dns.use-srv` | `false` | Read SRV records instead of A records.  SRV carries a port per target, so each address is paired with the record's port rather than this node's remoting port. |
+| `discovery.dns.pinned-addresses` | *(unset)* | CIDRs (A-record mode) and/or host suffixes (SRV mode) a resolved address must match; anything else is discarded rather than offered as a seed.  Comment-only in `reference.conf`, because an always-present empty list could not say "no pinning" — see below. |
+| `discovery.kubernetes.namespace` | `"default"` | Namespace whose `Endpoints` object the Kubernetes provider reads. |
+| `discovery.kubernetes.pinned-addresses` | *(unset)* | CIDRs the discovered pod IPs must fall inside.  CIDRs only — `Endpoints` resolve to IPs, so a host suffix could never match.  Comment-only, same reason. |
+| `discovery.config.seeds` | *(unset)* | Static `[system@]host:port` list for the `config` provider.  Comment-only: a seed list is per-deployment identity with no publishable default, and an empty list already means "we are alone". |
+
+Top-level rather than under `cluster.*` for the reason `distributed-data` is:
+the module is. A `SeedProvider` is built and then handed to the cluster, and
+the same providers serve a hand-wired `Cluster.join` that never bootstraps.
+*Which* provider runs is not here either — that is
+`cluster.bootstrap.discovery.method` above, a property of the join rather than
+of a provider, so a deployment can pin the DNS answer without also deciding
+the ladder.
+
+#### Where the environment sits
+
+Discovery has always been steerable by `CLUSTER_SEEDS`,
+`CLUSTER_SERVICE_NAME` and `CLUSTER_NAMESPACE`. Those variables kept their
+meaning and moved *below* this block rather than above it:
+
+```
+explicit options  >  actor-ts.discovery.*  >  CLUSTER_*  >  built-in defaults
+```
+
+which is the framework's ordinary precedence with the environment appended at
+the bottom, not a fourth layer bolted on top of it. An env-only deployment
+therefore behaves exactly as it did before these keys existed, and an
+`application.conf` can now override a variable it could not previously reach.
+
+A deployment that wants a variable to outrank its own `application.conf`
+lifts it there itself:
+
+```hocon
+actor-ts.cluster.bootstrap.discovery.service-name = ${?CLUSTER_SERVICE_NAME}
+actor-ts.discovery.kubernetes.namespace = ${?CLUSTER_NAMESPACE}
+```
+
+That is a *read during parsing* (see [Environment
+substitution](#environment-substitution)), not a precedence layer — the value
+lands in whichever config layer the file belongs to, and the usual order
+applies from there.
+
+:::caution[Pin the addresses discovery is allowed to return]
+This block decides which peers a node will accept as seeds, and an
+`application.conf` is a wider input surface than a code call. The two
+`pinned-addresses` lists are the mitigation, and they are the reason both were
+added here rather than left on the code-only path: shipping `method` and
+`service-name` as config while the pin stayed unreachable from every
+`discovery:` shorthand would have widened what a config file can redirect a
+bootstrap toward without widening the guard.
+
+A CIDR pin is the strong form. A host-suffix pin (SRV mode only) constrains
+the namespace a record may point into, but the A lookup of that target is
+still unpinned — it stops the cheap attack, not an attacker who owns the
+resolver. See [Cluster security](/operations/security/cluster-security/).
+:::
+
 ### `actor-ts.remote`
 
 | Key | Default | Purpose |

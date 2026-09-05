@@ -63,6 +63,36 @@ move on.  See
 [Joining and seeds](/cluster/joining-and-seeds/) for the
 full join protocol.
 
+### Configuring a provider without touching the code
+
+`Cluster.bootstrap` builds one of these for you, and both halves of that
+choice are settable from HOCON:
+`actor-ts.cluster.bootstrap.discovery.{method, service-name}` picks *which*
+provider and *what* it asks about, and
+[`actor-ts.discovery`](/reference/configuration/#actor-tsdiscovery) carries the
+providers' own settings — the DNS cache TTL, SRV mode, a static seed list, and
+the `pinned-addresses` lists that restrict which addresses a lookup may hand
+back.
+
+```hocon
+actor-ts {
+  cluster.bootstrap.discovery {
+    method       = "dns"
+    service-name = "my-app.default.svc.cluster.local"
+  }
+  discovery.dns {
+    cache-ttl        = 30s
+    pinned-addresses = ["10.0.0.0/8"]
+  }
+}
+```
+
+The `CLUSTER_SEEDS` / `CLUSTER_SERVICE_NAME` / `CLUSTER_NAMESPACE` variables
+still work and sit **below** those keys: explicit options, then the config
+block, then the environment, then the built-in defaults.  Building a provider
+by hand — the snippet at the top of this page — bypasses all of it, which is
+the point of that form.
+
 ### One lookup is not an answer
 
 A provider returns whatever it can see *right now*.  During a

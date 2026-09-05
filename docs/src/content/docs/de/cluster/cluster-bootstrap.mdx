@@ -149,8 +149,22 @@ actor-ts.cluster.bootstrap {
   max-wait                = 60s
   required-contact-points = 3
   self-election-grace     = 10s
+
+  discovery {
+    method       = "kubernetes"
+    service-name = "my-app"
+  }
 }
 ```
+
+Der `discovery`-Unterblock wird von **jedem** `bootstrapCluster`-Aufruf
+gelesen, nicht nur vom Stable-Observation-Pfad: Er ist die `discovery:`-Option
+in Config-Form, ein Deployment kann die Wahl des Providers und den Namen des
+Service also aus dem Anwendungscode herausziehen.  Ein `method` außerhalb von
+`auto | config | dns | kubernetes` wird abgelehnt statt ignoriert.  Die
+Einstellungen der Provider selbst — DNS-Cache, SRV-Modus, Adress-Pins, eine
+statische Seed-Liste — stehen unter
+[`actor-ts.discovery`](/de/reference/configuration/#actor-tsdiscovery).
 
 `requiredContactPoints` ist der Wert, den es lohnt anzufassen. Die
 Margin fängt Discovery ab, die *langsam* ist; nur eine Mindestanzahl

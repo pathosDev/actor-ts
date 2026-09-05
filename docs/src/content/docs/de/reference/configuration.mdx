@@ -581,6 +581,100 @@ Backends liefern unterschiedliche eingebaute Defaults — 3 Versuche / 100 ms f�
 Kubernetes, 1 / 50 ms in-memory —, und ein Leaf könnte beide nicht ausdrücken,
 ohne sie stillschweigend zu vereinheitlichen.  Setz sie pro Lease im Code.
 
+### `actor-ts.cluster.bootstrap`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `cluster.bootstrap.stable-margin` | `5s` | Wie lange die Contact-Point-Menge unverändert bleiben muss, bevor die Observation sie stabil nennt. |
+| `cluster.bootstrap.poll-interval` | `1s` | Wie oft Discovery während der Observation abgefragt wird. |
+| `cluster.bootstrap.max-wait` | `60s` | Gesamtbudget der Observation, bevor sie aufgibt und den Bootstrap scheitern lässt. |
+| `cluster.bootstrap.required-contact-points` | `1` | Wie viele Contact Points eine stabile Menge enthalten muss.  `1` hält Einzelknoten-Entwicklung am Laufen; erst ein Wert, der der erwarteten Replica-Zahl entspricht, erkennt Discovery, die stabil *falsch* statt bloß langsam ist. |
+| `cluster.bootstrap.self-election-grace` | `10s` | Wie lange der niedrigst-adressierte Knoten auf eine Promotion durch einen Peer wartet, bevor er selbst einen Cluster bildet. |
+| `cluster.bootstrap.minimum-members` | `1` | Wie wenige `up`-Mitglieder — sich selbst eingeschlossen — genügen, damit `awaitReady` / `Cluster.isReady` den Cluster als bereit zählt. |
+| `cluster.bootstrap.await-ready` | *(nicht gesetzt)* | Readiness-Budget.  In `reference.conf` nur als Kommentar: „nicht gesetzt“ wählt den berechneten Default (`self-election-grace + 5s` hinter der Stable Observation, sonst `5s`), und ein immer vorhandener Key könnte das nicht ausdrücken. |
+| `cluster.bootstrap.discovery.method` | `"auto"` | Welchen Seed-Provider der Bootstrap baut — `auto`, `config`, `dns` oder `kubernetes`.  `auto` ist die Leiter; die anderen drei fixieren eine Sprosse, damit ein fehlkonfiguriertes Deployment laut scheitert statt durchzufallen. |
+| `cluster.bootstrap.discovery.service-name` | `""` | Der DNS-Name, den der `dns`-Provider auflöst, und der Kubernetes-Service, dessen `Endpoints` der `kubernetes`-Provider liest.  `""` heißt „hier nicht angegeben“, dann antwortet `CLUSTER_SERVICE_NAME`. |
+
+Die fünf Observation-Timings werden nur gelesen, wenn `stableObservation` an
+ist; das Readiness-Paar und der `discovery`-Unterblock werden von jedem
+`Cluster.bootstrap`-Aufruf gelesen.  Alle liegen unter den expliziten Optionen,
+ein `withRequiredContactPoints(…)` oder ein `discovery: 'dns'` im Code gewinnt
+also weiterhin.
+
+Ein `method` außerhalb dieser vier Namen wird **abgelehnt**, nicht ignoriert.
+Bei einem Tippfehler auf `auto` zurückzufallen hieße, dass ein Knoten anders
+entdeckt als seine Peers — genau das Cold-Start-Split-Brain, das die
+Observation schließen soll.
+
+`selfElection` hat hier keinen Key und bekommt keinen: Der Wert unterscheidet
+sich konstruktionsbedingt pro Knoten, ein gemeinsamer Wert würde also entweder
+jeden Knoten am Start hindern oder alle gleichzeitig einen Cluster bilden
+lassen.
+
+### `actor-ts.discovery`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `discovery.dns.cache-ttl` | `60s` | Wie lange der DNS-Provider eine aufgelöste Antwort wiederverwendet.  In-Process und pro Provider; Fehlschläge werden nie gecacht.  `0` schaltet den Cache ab. |
+| `discovery.dns.use-srv` | `false` | SRV-Records statt A-Records lesen.  SRV trägt einen Port pro Ziel, jede Adresse wird also mit dem Port des Records gepaart statt mit dem Remoting-Port dieses Knotens. |
+| `discovery.dns.pinned-addresses` | *(nicht gesetzt)* | CIDRs (A-Record-Modus) und/oder Host-Suffixe (SRV-Modus), auf die eine aufgelöste Adresse passen muss; alles andere wird verworfen statt als Seed angeboten.  In `reference.conf` nur als Kommentar, weil eine immer vorhandene leere Liste „kein Pinning“ nicht ausdrücken könnte — siehe unten. |
+| `discovery.kubernetes.namespace` | `"default"` | Namespace, dessen `Endpoints`-Objekt der Kubernetes-Provider liest. |
+| `discovery.kubernetes.pinned-addresses` | *(nicht gesetzt)* | CIDRs, in die die gefundenen Pod-IPs fallen müssen.  Nur CIDRs — `Endpoints` lösen zu IPs auf, ein Host-Suffix könnte nie passen.  Nur als Kommentar, aus demselben Grund. |
+| `discovery.config.seeds` | *(nicht gesetzt)* | Statische `[system@]host:port`-Liste für den `config`-Provider.  Nur als Kommentar: Eine Seed-Liste ist Deployment-Identität ohne veröffentlichbaren Default, und eine leere Liste heißt bereits „wir sind allein“. |
+
+Top-level statt unter `cluster.*`, aus demselben Grund wie
+`distributed-data`: Das Modul ist es.  Ein `SeedProvider` wird gebaut und dann
+an den Cluster übergeben, und dieselben Provider bedienen ein von Hand
+verdrahtetes `Cluster.join`, das nie bootstrappt.  *Welcher* Provider läuft,
+steht ebenfalls nicht hier — das ist `cluster.bootstrap.discovery.method` oben,
+eine Eigenschaft des Joins statt des Providers, damit ein Deployment die
+DNS-Antwort fixieren kann, ohne zugleich die Leiter festzulegen.
+
+#### Wo die Umgebungsvariablen sitzen
+
+Discovery ließ sich immer schon über `CLUSTER_SEEDS`, `CLUSTER_SERVICE_NAME`
+und `CLUSTER_NAMESPACE` steuern.  Diese Variablen behalten ihre Bedeutung und
+sind *unter* diesen Block gerückt, nicht darüber:
+
+```
+explizite Optionen  >  actor-ts.discovery.*  >  CLUSTER_*  >  eingebaute Defaults
+```
+
+Das ist die gewöhnliche Precedence des Frameworks mit den Umgebungsvariablen
+am unteren Ende, keine vierte Schicht obendrauf.  Ein Deployment, das nur
+Umgebungsvariablen benutzt, verhält sich also exakt wie vor diesen Keys, und
+eine `application.conf` kann jetzt eine Variable überschreiben, die sie vorher
+gar nicht erreichte.
+
+Ein Deployment, das eine Variable über die eigene `application.conf` stellen
+will, hebt sie selbst dorthin:
+
+```hocon
+actor-ts.cluster.bootstrap.discovery.service-name = ${?CLUSTER_SERVICE_NAME}
+actor-ts.discovery.kubernetes.namespace = ${?CLUSTER_NAMESPACE}
+```
+
+Das ist ein *Lesevorgang beim Parsen* (siehe
+[Environment-Substitution](#environment-substitution)), keine
+Precedence-Schicht — der Wert landet in derjenigen Config-Schicht, zu der die
+Datei gehört, und ab da gilt die übliche Reihenfolge.
+
+:::caution[Fixiere die Adressen, die Discovery zurückgeben darf]
+Dieser Block entscheidet, welche Peers ein Knoten als Seeds akzeptiert, und
+eine `application.conf` ist eine breitere Eingabefläche als ein Aufruf im Code.
+Die beiden `pinned-addresses`-Listen sind die Gegenmaßnahme, und genau deshalb
+kamen sie hier mit und blieben nicht auf dem Code-only-Pfad: `method` und
+`service-name` als Config auszuliefern, während das Pinning von keiner
+`discovery:`-Kurzform erreichbar blieb, hätte erweitert, worauf eine
+Config-Datei einen Bootstrap umlenken kann, ohne den Schutz mitzuerweitern.
+
+Ein CIDR-Pin ist die starke Form.  Ein Host-Suffix-Pin (nur im SRV-Modus)
+begrenzt den Namensraum, in den ein Record zeigen darf, aber das A-Lookup
+dieses Ziels bleibt ungepinnt — er stoppt den billigen Angriff, nicht einen
+Angreifer, dem der Resolver gehört.  Siehe
+[Cluster-Sicherheit](/de/operations/security/cluster-security/).
+:::
+
 ### `actor-ts.remote`
 
 | Key | Default | Zweck |

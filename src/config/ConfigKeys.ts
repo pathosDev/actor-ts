@@ -1073,6 +1073,22 @@ export const ConfigKeys = {
       selfElectionGrace: 'actor-ts.cluster.bootstrap.self-election-grace',
       awaitReady: 'actor-ts.cluster.bootstrap.await-ready',
       minimumMembers: 'actor-ts.cluster.bootstrap.minimum-members',
+      /**
+       * Which seed provider the bootstrap builds, and the service it asks
+       * about — `actor-ts.cluster.bootstrap.discovery.*` (#860).  Read by
+       * every `bootstrapCluster` call, not only the stable-observation one,
+       * and layered under the `discovery:` option in code.
+       *
+       * They live under `bootstrap` rather than under the top-level
+       * `discovery` group because they are properties of *this join*: which
+       * ladder a node climbs and whose members it is looking for.  The
+       * per-provider settings a deployment tunes independently of that
+       * choice are the `discovery` group below.
+       */
+      discovery: {
+        method: 'actor-ts.cluster.bootstrap.discovery.method',
+        serviceName: 'actor-ts.cluster.bootstrap.discovery.service-name',
+      },
     },
 
     /**
@@ -1139,6 +1155,57 @@ export const ConfigKeys = {
       gossipInterval: 'actor-ts.cluster.receptionist.gossip-interval',
       maxSubscribersPerKey: 'actor-ts.cluster.receptionist.max-subscribers-per-key',
       maxSubscriptionsTotal: 'actor-ts.cluster.receptionist.max-subscriptions-total',
+    },
+  },
+
+  /**
+   * Seed-discovery provider settings — `actor-ts.discovery.*` (#860).  Read
+   * once per `bootstrapCluster` by `readAutoDiscoveryOptionsFromConfig`
+   * (`src/discovery/AutoDiscoveryOptions.ts`), which layers them under the
+   * explicit `AutoDiscoveryOptions` and above the `CLUSTER_*` environment
+   * variables the providers already read.
+   *
+   * Top-level rather than under `cluster.*` for the reason `distributedData`
+   * below is: the module is.  `src/discovery/` ships its own subpath export,
+   * a `SeedProvider` is built and then handed to the cluster, and the same
+   * providers serve a hand-wired `Cluster.join` that never bootstraps.
+   *
+   * Leaf by leaf rather than a block root, for the reason `reliableDelivery`
+   * spells out: `NoDeadConfigKeys`' covering accessor falls back to *"a root
+   * above it"*, so a root-only entry would let every leaf under it pass
+   * whether or not a reader addresses it — and three of these five have no
+   * `reference.conf` leaf at all, which would have left them checked by
+   * nothing whatsoever.
+   *
+   * `dns.pinned-addresses`, `kubernetes.pinned-addresses` and `config.seeds`
+   * are the comment-only three.  The pins need "unset" to stay expressible —
+   * an always-present empty list cannot say "no pinning", and no pinning is
+   * the default (#145).  `config.seeds` is per-deployment identity with no
+   * publishable default, and an empty list already means "we are alone".
+   *
+   * The two pin entries are spelled `dnsPinnedAddresses` /
+   * `kubernetesPinnedAddresses` rather than sharing one `pinnedAddresses`
+   * name under their own sub-blocks, because `isReferencedInSource` reduces
+   * an accessor to `ConfigKeys.<group>` plus its **last** segment: two
+   * siblings with the same final name are one textual pair, so a reader of
+   * either would vouch for both.  Distinct finals keep each leaf checked on
+   * its own the day one of them grows a `reference.conf` leaf.
+   */
+  discovery: {
+    dns: {
+      cacheTtl: 'actor-ts.discovery.dns.cache-ttl',
+      useSrv: 'actor-ts.discovery.dns.use-srv',
+      /** Comment-only in `reference.conf` — unset means no pinning. */
+      dnsPinnedAddresses: 'actor-ts.discovery.dns.pinned-addresses',
+    },
+    kubernetes: {
+      namespace: 'actor-ts.discovery.kubernetes.namespace',
+      /** Comment-only in `reference.conf` — unset means no pinning. */
+      kubernetesPinnedAddresses: 'actor-ts.discovery.kubernetes.pinned-addresses',
+    },
+    config: {
+      /** Comment-only in `reference.conf` — per-deployment identity. */
+      seeds: 'actor-ts.discovery.config.seeds',
     },
   },
 
