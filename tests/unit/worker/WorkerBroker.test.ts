@@ -185,6 +185,45 @@ describe('WorkerBroker — malformed frames', () => {
     });
   }
 
+  /**
+   * The second half of the pair, and the reason both halves need naming.
+   *
+   * `onMessage` has two defences over one another — the envelope guard and the
+   * `try`/`catch` behind it — and every case in the corpus above used to be
+   * absorbed by whichever one was left, so each could be deleted on its own
+   * with this file staying green.  The `from.port` row now covers the guard;
+   * this covers the backstop, with the one thing the guard cannot pre-empt: a
+   * destination port that throws when the frame is handed to it.
+   *
+   * That is not a hypothetical shape.  `PortLike` is a pluggable interface with
+   * in-process implementations — the testkit's broker fork, and the manual mesh
+   * `worker-mesh.mdx` wires end to end — whose `postMessage` runs the far side
+   * synchronously, so a throw over there comes back out through this call.  A
+   * real `MessagePort` contributes its own: `postMessage` raises `DataCloneError`
+   * on a payload it cannot clone.  Either way there is no caller to unwind
+   * into — this is the host thread's `message` listener — so an escaping throw
+   * is an uncaught top-level error, exactly the shape #701 is about, reached by
+   * a route the guard does not stand on.
+   */
+  test('a destination port that throws does not take the broker down with it', () => {
+    const broker = new WorkerBroker();
+    const aPort = new FakePort();
+    const cPort = new FakePort();
+    const exploding = new FakePort();
+    exploding.postMessage = (): void => { throw new Error('DataCloneError'); };
+    broker.register(addr(1), aPort);
+    broker.register(addr(2), exploding);
+    broker.register(addr(3), cPort);
+
+    expect(() => aPort.inject(envelope(addr(1), addr(2)))).not.toThrow();
+
+    // And the broker is still a broker afterwards: one bad port must not cost
+    // every other worker its routing.
+    const good = envelope(addr(1), addr(3));
+    aPort.inject(good);
+    expect(cPort.posted).toEqual([good]);
+  });
+
   test('a hostile frame does not stop the next well-formed one from routing', () => {
     const broker = new WorkerBroker();
     const aPort = new FakePort();

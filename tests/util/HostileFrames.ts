@@ -42,6 +42,15 @@ const address = (port: number): NodeAddress => new NodeAddress('sys', 'host', po
  * Two of them throw a `TypeError` from the `frame.to` dereference itself; the
  * rest throw a plain `Error` from the hardened `fromJSON` (#571), so a test
  * written against `TypeError` alone would miss half of them.
+ *
+ * The last row throws nothing at all, and that is what it is for.  Every case
+ * above it is caught twice over — by the guard and, if the guard were gone, by
+ * the `try`/`catch` behind it — so the corpus could not tell the two defences
+ * apart, and either could be deleted with all three suites staying green.  A
+ * `from` that is malformed but *dereferenceable* is refused by the guard alone:
+ * `to` parses, the destination is found, `withChannelSource` compares the
+ * fields it can read and simply rebuilds the envelope, and the frame is
+ * forwarded with nothing having thrown.
  */
 export const hostileEnvelopes: ReadonlyArray<HostileFrame> = [
   ['undefined', undefined],
@@ -61,6 +70,13 @@ export const hostileEnvelopes: ReadonlyArray<HostileFrame> = [
   // after, so it is checked here too.
   ['`from` missing', { to: address(2).toJSON(), payload: { kind: 'ping' } }],
   ['`from` null', { from: null, to: address(2).toJSON(), payload: { kind: 'ping' } }],
+  // The mirror of the `to.port` row above, and the only entry no downstream
+  // backstop absorbs — see the note on this table.
+  ['`from.port` a string', {
+    from: { systemName: 'sys', host: 'host', port: '1' },
+    to: address(2).toJSON(),
+    payload: { kind: 'ping' },
+  }],
 ];
 
 /**
