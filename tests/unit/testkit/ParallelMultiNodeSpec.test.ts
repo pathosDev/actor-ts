@@ -19,6 +19,8 @@
  * the `backend` option.  Both stay outside the quarantine below, so they are
  * the only part of this file CI ever executes.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { ParallelMultiNodeSpec } from '../../../src/testkit/ParallelMultiNodeSpec.js';
 import type { MemberSnapshot } from '../../../src/testkit/internal/ParallelMultiNodeBootstrap.js';
@@ -115,6 +117,42 @@ function captureWarnings(body: () => void): ReadonlyArray<string> {
   }
 }
 
+/** {@link captureWarnings} for a body that has to be awaited. */
+async function captureWarningsWhile(body: () => Promise<void>): Promise<ReadonlyArray<string>> {
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]): void => { warnings.push(args.map((a) => String(a)).join(' ')); };
+  try {
+    await body();
+    return warnings;
+  } finally {
+    console.warn = originalWarn;
+  }
+}
+
+/**
+ * The whole line `onMisdirectedControlFrame` writes, from the same five facts.
+ *
+ * Built here and compared in full rather than probed with `toContain`, because
+ * the two clauses of that message are not equally covered by a substring: the
+ * first names the frame that arrived, which any assertion about the drop
+ * mentions anyway, while the second — the `reqId` and the request it actually
+ * belongs to — is the half that turns "a stray frame existed" into something a
+ * reader can act on, and is exactly the half three `toContain`s over the first
+ * clause left free to be deleted without a failure.
+ */
+function misdirectedFrameWarning(report: {
+  readonly arrivedKind: string;
+  readonly arrivedFromRole: string;
+  readonly requestId: number;
+  readonly awaitedKind: string;
+  readonly awaitedFromRole: string;
+}): string {
+  return `ParallelMultiNodeSpec: dropped control frame '${report.arrivedKind}' `
+    + `from role '${report.arrivedFromRole}' (reqId ${report.requestId}) — that reqId `
+    + `belongs to a '${report.awaitedKind}' awaited from role '${report.awaitedFromRole}'`;
+}
+
 /**
  * Whether `promise` has settled *already*, without waiting on it.
  *
@@ -167,7 +205,13 @@ describe('ParallelMultiNodeSpec — control-RPC correlation', () => {
 
       expect(await hasSettled(membersPromise)).toBe(true);
       expect(await membersPromise).toEqual(MEMBERS_OF_A);
-      expect(warnings.join('\n')).toContain("from role 'b'");
+      expect(warnings).toEqual([misdirectedFrameWarning({
+        arrivedKind: 'mns-test.run-command-response',
+        arrivedFromRole: 'b',
+        requestId,
+        awaitedKind: 'mns-test.query-members-response',
+        awaitedFromRole: 'a',
+      })]);
     } finally {
       await spec.stop();
     }
@@ -196,7 +240,13 @@ describe('ParallelMultiNodeSpec — control-RPC correlation', () => {
 
       expect(await hasSettled(membersPromise)).toBe(true);
       expect(await membersPromise).toEqual(MEMBERS_OF_A);
-      expect(warnings.join('\n')).toContain("from role 'b'");
+      expect(warnings).toEqual([misdirectedFrameWarning({
+        arrivedKind: 'mns-test.query-members-response',
+        arrivedFromRole: 'b',
+        requestId,
+        awaitedKind: 'mns-test.query-members-response',
+        awaitedFromRole: 'a',
+      })]);
     } finally {
       await spec.stop();
     }
@@ -224,7 +274,13 @@ describe('ParallelMultiNodeSpec — control-RPC correlation', () => {
 
       expect(await hasSettled(membersPromise)).toBe(true);
       expect(await membersPromise).toEqual(MEMBERS_OF_A);
-      expect(warnings.join('\n')).toContain('mns-test.run-command-response');
+      expect(warnings).toEqual([misdirectedFrameWarning({
+        arrivedKind: 'mns-test.run-command-response',
+        arrivedFromRole: 'a',
+        requestId,
+        awaitedKind: 'mns-test.query-members-response',
+        awaitedFromRole: 'a',
+      })]);
     } finally {
       await spec.stop();
     }
@@ -275,6 +331,186 @@ describe('ParallelMultiNodeSpec — control-RPC correlation', () => {
       expect(await hasSettled(membersPromise)).toBe(true);
       expect(await leaderPromise).toBeNull();
       expect(await membersPromise).toEqual(MEMBERS_OF_A);
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  /**
+   * The symptom #777 is named after, rather than the correlation that causes
+   * it.
+   *
+   * Every case above asserts settledness at the `getMembers` / `getLeader`
+   * level, one frame at a time.  What a spec author actually sees is one level
+   * up and much later: `awaitMembers` polls the same RPC until a condition
+   * holds, a mis-correlated reply answers each poll with a view that will never
+   * satisfy it, and thirty seconds later the run fails naming a convergence
+   * that was never the problem — the message #538 taught everyone to read as
+   * hosted-runner flakiness.  Worse, the wrong reply need not even be a member
+   * view: a `run-command-response` settling a `getMembers` yields
+   * `members === undefined`, the `.filter(…)` throws, and `awaitCondition`
+   * swallows the throw as a retry.
+   *
+   * So this drives the whole loop with a stray racing every single poll, and
+   * asserts that it converges anyway — inside a budget far below the timeout,
+   * because "it eventually gave up" is the failure being ruled out.
+   */
+  test('awaitMembers converges even with a stray reply racing every poll', async () => {
+    const { spec, workerFor } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      const workerA = workerFor('a');
+      const workerB = workerFor('b');
+
+      // Role 'b' answers role 'a''s question first, every time, with its own
+      // one-member view — the count `awaitMembers` is waiting to leave behind.
+      // Role 'a''s genuine, converged answer follows in the same turn, so the
+      // only thing that decides the outcome is which of the two is allowed to
+      // settle the pending entry.
+      const postToWorkerA = workerA.postMessage.bind(workerA);
+      workerA.postMessage = (value: unknown): void => {
+        postToWorkerA(value);
+        const frame = (value ?? undefined) as { kind?: string; reqId?: number } | undefined;
+        if (frame?.kind !== 'mns-test.query-members' || frame.reqId === undefined) return;
+        workerB.deliverMessage({
+          kind: 'mns-test.query-members-response', reqId: frame.reqId, members: MEMBERS_OF_B,
+        });
+        workerA.deliverMessage({
+          kind: 'mns-test.query-members-response', reqId: frame.reqId, members: MEMBERS_OF_A,
+        });
+      };
+
+      const warnings = await captureWarningsWhile(async () => {
+        await spec.awaitMembers('a', MEMBERS_OF_A.length, 1_000);
+      });
+
+      // And the stray was reported rather than swallowed on the way past.
+      expect(warnings.length).toBeGreaterThanOrEqual(1);
+      expect(warnings[0]).toContain("from role 'b'");
+    } finally {
+      await spec.stop();
+    }
+  });
+});
+
+/* ------------------ the control-frame vocabulary (#777) ---------------- */
+
+/**
+ * Every `mns-test.*` literal in one file, in source order and de-duplicated.
+ *
+ * The bare prefix `'mns-test.'` — the `startsWith` filter in `onControlFrame` —
+ * does not match: a kind needs at least one character after the dot.
+ */
+function controlFrameKindsIn(file: string): string[] {
+  const source = readFileSync(join(import.meta.dir, '..', '..', '..', file), 'utf8');
+  const kinds = [...source.matchAll(/'(mns-test\.[a-z-]+)'/g)].map((match) => match[1]!);
+  return [...new Set(kinds)].sort();
+}
+
+/**
+ * The eight kinds the harness and the worker bootstrap have to agree on.
+ *
+ * They are declared twice — once in `ParallelMultiNodeSpec.ts` for the side
+ * that sends requests and correlates replies, once in
+ * `internal/ParallelMultiNodeBootstrap.ts` for the side that answers them — and
+ * the two declarations reference nothing in common, so `tsc` sees no relation
+ * between them at all.  That was tolerable while `reqId` alone settled an RPC;
+ * since #777 the correlation also matches on `expectedKind`, i.e. on the
+ * request kind with `-response` appended, so a rename on one side turns every
+ * reply from the other into a misdirected frame and every `await*` into its
+ * uninformative timeout.  Nothing in CI would notice.
+ */
+const CONTROL_FRAME_KINDS = [
+  'mns-test.leave',
+  'mns-test.leave-response',
+  'mns-test.query-leader',
+  'mns-test.query-leader-response',
+  'mns-test.query-members',
+  'mns-test.query-members-response',
+  'mns-test.run-command',
+  'mns-test.run-command-response',
+] as const;
+
+describe('ParallelMultiNodeSpec — the two copies of the control vocabulary', () => {
+  for (const file of [
+    join('src', 'testkit', 'ParallelMultiNodeSpec.ts'),
+    join('src', 'testkit', 'internal', 'ParallelMultiNodeBootstrap.ts'),
+  ]) {
+    test(`${file} names exactly the agreed kinds`, () => {
+      expect(controlFrameKindsIn(file)).toEqual([...CONTROL_FRAME_KINDS]);
+    });
+  }
+
+  test('every request kind has its reply under the name the correlation builds', () => {
+    // `controlRpc` stores `expectedKind` as the request kind plus `-response`,
+    // so the pairing is not a convention the two files happen to share — it is
+    // arithmetic the harness performs on a string.
+    const requests = CONTROL_FRAME_KINDS.filter((kind) => !kind.endsWith('-response'));
+    expect(requests.map((kind) => `${kind}-response`).sort())
+      .toEqual(CONTROL_FRAME_KINDS.filter((kind) => kind.endsWith('-response')));
+  });
+});
+
+/* ------------------- the handshake's first-hello latch (#775) ----------- */
+
+/**
+ * A backend whose workers greet `helloCount` times and answer the first
+ * `worker-init` only on a later microtask.
+ *
+ * Both halves matter.  {@link autoHandshake} replies to `worker-init`
+ * synchronously, which would let the handshake resolve — and remove its
+ * `message` listener — before the second hello was ever delivered, so an
+ * unlatched implementation would look latched.  Deferring the reply keeps the
+ * listener installed for the whole flood, which is the state the real
+ * handshake is in for its entire ten-second window.
+ */
+function floodingHelloBackend(helloCount: number): FakeWorkerBackend {
+  return new FakeWorkerBackend({
+    onSpawn: (worker) => {
+      const post = worker.postMessage.bind(worker);
+      worker.postMessage = (value: unknown): void => {
+        post(value);
+        const frame = (value ?? undefined) as { kind?: string; self?: unknown } | undefined;
+        if (frame?.kind !== 'worker-init') return;
+        queueMicrotask(() => worker.deliverMessage({ kind: 'worker-ready', self: frame.self }));
+      };
+      const add = worker.addEventListener.bind(worker);
+      let greeted = false;
+      worker.addEventListener = (event, handler): void => {
+        add(event, handler);
+        // The handshake's own listener is the first `message` subscription on
+        // this worker; the control channel adds a second one after it resolves.
+        if (event !== 'message' || greeted) return;
+        greeted = true;
+        queueMicrotask(() => {
+          for (let hello = 0; hello < helloCount; hello += 1) {
+            worker.deliverMessage({ kind: 'worker-hello' });
+          }
+        });
+      };
+    },
+  });
+}
+
+describe('ParallelMultiNodeSpec — handshake', () => {
+  test('only the first hello is answered, however many a worker sends', async () => {
+    // `postMessage` structured-clones `init` on the *harness's* thread, and
+    // `init` carries the seed list and the scenario's init data — so an
+    // unlatched hello lets one worker charge the harness one clone per frame
+    // for the whole ten-second handshake window, from inside the loop that is
+    // still spawning the other roles (#775).  This is the testkit's copy of
+    // `WorkerCluster.handshake`'s latch, and it had none of its coverage.
+    const backend = floodingHelloBackend(5);
+    const spec = new ParallelMultiNodeSpec({ roles: ['a'], backend });
+    try {
+      await spec.start();
+
+      const worker = backend.spawned.find((candidate) => candidate.name === 'parallel-mns-a');
+      expect(worker).toBeDefined();
+      const inits = worker!.posted.filter(
+        (frame) => (frame as { kind?: string } | null | undefined)?.kind === 'worker-init',
+      );
+      expect(inits).toHaveLength(1);
     } finally {
       await spec.stop();
     }
