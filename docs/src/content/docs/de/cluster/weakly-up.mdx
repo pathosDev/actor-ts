@@ -199,6 +199,24 @@ import { Aside } from '@astrojs/starlight/components';
   ansieht.
 </Aside>
 
+<Aside type="caution" title="`minimumMembersBeforeUp` ist die andere Hälfte desselben Reglers">
+  ```ts
+  const clusterOptions = ClusterOptions.create()
+    .withWeaklyUpAfterMs(3_000)
+    .withMinimumMembersBeforeUp(3);
+  ```
+  Die beiden werden zusammen gelesen und wirken auf
+  gegenüberliegende Seiten desselben Übergangs. `weaklyUpAfterMs`
+  entscheidet, wie lange ein `joining`-Mitglied wartet, bis es eine
+  *teilweise* Mitgliedschaft bekommt; `minimumMembersBeforeUp`
+  entscheidet, ob der Leader überhaupt eine volle vergeben darf.
+  Mit beiden gesetzt ist `weakly-up` genau der Zustand, in dem ein
+  Node sitzt, solange die Mitgliederschwelle nicht erreicht ist —
+  und ein `weakly-up`-Mitglied zählt weiterhin für diese Schwelle,
+  die Beförderung rückt das Ziel also nicht weiter weg. Siehe
+  [Joining und Seeds](/de/cluster/joining-and-seeds/).
+</Aside>
+
 <Aside type="caution" title="Sehr kurze `weaklyUpAfterMs` flattert">
   ```ts
   weaklyUpAfterMs: 200;

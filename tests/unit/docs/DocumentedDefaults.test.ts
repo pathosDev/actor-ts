@@ -14,6 +14,7 @@ import { DEFAULT_MAILBOX_OVERFLOW } from '../../../src/ActorOptions.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
 import { DEFAULT_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/Constants.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
+import { DEFAULT_MINIMUM_MEMBERS_BEFORE_UP } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS, DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY } from '../../../src/cluster/downing/DowningFromConfig.js';
 import { DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION } from '../../../src/cluster/ClusterOptions.js';
@@ -294,6 +295,12 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.seed-retry-interval', kind: 'duration', constant: DEFAULT_SEED_RETRY_INTERVAL_MS },
   { key: 'actor-ts.cluster.max-members', kind: 'int', constant: DEFAULT_MAX_MEMBERS },
   { key: 'actor-ts.cluster.max-tombstones', kind: 'int', constant: DEFAULT_MAX_TOMBSTONES },
+  // In the table rather than in FEATURE_SWITCHES, though `1` is the "off"
+  // value: the off state here is not a field being absent at the read site but
+  // a real threshold that a real comparison evaluates, so there is a constant
+  // for it to disagree with.  The per-role siblings ship comment-only — role
+  // names are the deployment's — and so carry no leaf to assert (#837).
+  { key: 'actor-ts.cluster.minimum-members-before-up', kind: 'int', constant: DEFAULT_MINIMUM_MEMBERS_BEFORE_UP },
   { key: 'actor-ts.cluster.tombstone.time-to-live', kind: 'duration', constant: DEFAULT_TOMBSTONE_TTL_MS },
   { key: 'actor-ts.cluster.tombstone.prune-interval', kind: 'duration', constant: DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS },
   // The configuration-agreement pair (#844).  `enforce` is in the table rather

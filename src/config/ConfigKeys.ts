@@ -914,6 +914,35 @@ export const ConfigKeys = {
     maxMembers: 'actor-ts.cluster.max-members',
     maxTombstones: 'actor-ts.cluster.max-tombstones',
     /**
+     * Members that must be present before anything is promoted to `up` (#837)
+     * — the leader's promotions and a founder's own self-election alike.
+     *
+     * Not `bootstrap.minimum-members`, which sits one block down and is a
+     * *wait* predicate for `awaitReady` / `isReady`: that one counts `up`
+     * members and never changes a status, this one decides whether a status
+     * changes at all.  The `-before-up` suffix is what keeps the two apart in
+     * an operator's config file, and is the reason this key is not simply
+     * `minimum-members`.
+     */
+    minimumMembersBeforeUp: 'actor-ts.cluster.minimum-members-before-up',
+    /**
+     * Root of the per-role Up thresholds —
+     * `actor-ts.cluster.role.<role>.minimum-members-before-up` (#837).
+     *
+     * A root rather than leaves, and unavoidably so: the role names belong to
+     * the deployment, so no full path can be written down here.
+     * `ClusterOptions.ts` composes the leaf from this root, exactly as
+     * `redisCacheKeysUnder` composes a per-name cache block's.
+     *
+     * Ships **comment-only** in `reference.conf` for the same reason, which
+     * also keeps it out of the leaf-driven guards: `NoDeadConfigKeys` and
+     * `DocumentedDefaults` both walk `REFERENCE_CONF`'s leaves, and a comment
+     * yields none.  What checks this entry is
+     * `ClusterConfigDefaults.test.ts`, which reads a written-out role block
+     * back through `readClusterOptionsFromConfig`.
+     */
+    role: 'actor-ts.cluster.role',
+    /**
      * Cluster-wide configuration agreement —
      * `actor-ts.cluster.configuration-compatibility-check.*` (#844).  Read once
      * by `readClusterOptionsFromConfig`; `Cluster` publishes the listed

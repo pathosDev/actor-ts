@@ -397,6 +397,43 @@ actor-ts {
     max-members = 1000
     max-tombstones = 10000
 
+    # Members that must be present before ANYTHING moves to "up" -- the
+    # leader's promotions and a founder's own self-election alike.  1 is what
+    # every release before this key did: the first node forms a cluster of one
+    # the moment it starts.
+    #
+    # Not bootstrap.minimum-members below, which is a *wait* predicate for
+    # awaitReady/isReady -- it counts "up" members and never changes a status.
+    # This one decides whether a status changes at all, which is why the name
+    # carries -before-up.  Setting this largely subsumes that one: a node that
+    # is "up" at all already implies the threshold was met.
+    #
+    # Counted over members in "joining", "weakly-up" and "up".  A "leaving"
+    # member does not hold the gate open for its replacement, so a rolling
+    # restart closes it for exactly as long as the replacement takes to
+    # appear.  Never re-evaluated downwards: there is no up -> joining
+    # transition, so a cluster that shrinks keeps the members it promoted and
+    # holds only new ones.
+    #
+    # NOT a quorum and NOT a security control -- any node may announce itself
+    # "up", so this bounds accidents, not adversaries.  Arbitration is
+    # split-brain-resolver below.
+    minimum-members-before-up = 1
+
+    # Per-role thresholds compose with the one above as an AND: the global
+    # count and every configured role's count must be met.  Counted over the
+    # same three statuses, filtered by role; a role absent from the block is
+    # unconstrained rather than bounded at zero.  What it buys is "do not
+    # place work on a cluster that has no backend yet" -- shard regions and
+    # singletons are hosted by role, so an all-frontend cluster can satisfy a
+    # global count while being useless to place on.
+    #
+    # Comment-only, because the role names belong to the deployment and no
+    # leaf here could name one:
+    #
+    #   role.backend.minimum-members-before-up  = 2
+    #   role.frontend.minimum-members-before-up = 1
+
     # Settings that have to agree across the cluster.  Each node publishes the
     # EFFECTIVE value of every listed setting on the gossip overlay and compares
     # what its peers publish back -- effective, not configured, because the

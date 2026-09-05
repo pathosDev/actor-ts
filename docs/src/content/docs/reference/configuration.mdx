@@ -229,6 +229,8 @@ replay from it.
 | `cluster.weakly-up-after` | `0s` | Auto-promote a `joining` member to `weakly-up` after this long.  `0` disables it — see [Weakly-up](/cluster/weakly-up/). |
 | `cluster.max-members` | `1000` | Cap on live member entries gossip may introduce.  `0` disables the cap. |
 | `cluster.max-tombstones` | `10000` | Cap on `removed` tombstones gossip may introduce.  `0` disables the cap. |
+| `cluster.minimum-members-before-up` | `1` | Members that must be present before **anything** is promoted to `up`.  `1` is the historical behaviour — see below. |
+| `cluster.role.<role>.minimum-members-before-up` | *(unset)* | Per-role threshold, composed with the one above as an AND.  Comment-only in `reference.conf`, since role names are per-deployment. |
 | `cluster.tombstone.time-to-live` | `24h` | How long a `removed` tombstone is kept before it is pruned. |
 | `cluster.tombstone.prune-interval` | `5m` | How often the prune pass runs. |
 | `cluster.tombstone.min-retention` | `0s` | Floor on tombstone age before pruning is allowed.  `0` derives it from `failure-detector.down-after` (6×). |
@@ -318,9 +320,42 @@ warning into an outage — and the candidate set is a per-node view, so nothing
 that *elects* a role from it (a singleton's host, a shard's home) reads it,
 or two nodes would elect two winners.
 
+`minimum-members-before-up` holds the `joining` / `weakly-up` → `up`
+transition until the local member map holds at least that many members —
+the leader's promotions and a founder's own self-election alike.  It counts
+members in `joining`, `weakly-up` and `up`, so a `leaving` member does *not*
+hold the threshold open for its replacement, and it is never evaluated in
+reverse: there is no `up` → `joining` transition, so a cluster that later
+shrinks keeps the members it promoted and holds only new ones.
+
+Per-role thresholds compose with it as an **AND** — the global count and
+every configured role's count must be met.  They are written
+`cluster.role.<role>.minimum-members-before-up` and ship comment-only, since
+no leaf here could name a role your deployment invented.  What they buy is
+"do not place work on a cluster that has no backend yet": shard regions and
+singletons are hosted by role, so an all-frontend cluster satisfies a global
+count while being useless to place on.
+
+It is **not** `cluster.bootstrap.minimum-members`, which is a *wait*
+predicate for `awaitReady` / `isReady` and never changes a member's status.
+Setting this one largely subsumes that one — a node that is `up` at all
+already implies the threshold was met — so there is rarely a reason to set
+both.  And it is **not a quorum or a security control**: any node may
+announce itself `up`, so it bounds accidents rather than adversaries.
+Arbitration is `split-brain-resolver` above; note that `static-quorum` has no
+"nothing is unreachable" early return yet, so pair a threshold above `1` with
+a downing strategy you have checked at that cluster size.
+
+While the threshold is unmet the node stays `joining`, and it says so once —
+naming the key and the current count — rather than reporting the cold-start
+stall diagnosis, which would be a false verdict here.  See
+[Joining and seeds](/cluster/joining-and-seeds/).
+
 `seeds`, `roles` and the transport have no HOCON form — the first two are
 per-deployment identity that belongs at the join site, and the transport is
-an object a config file cannot express.
+an object a config file cannot express.  A per-role *threshold* is not an
+exception to that: it names a role rather than assigning one, and the
+assignment still happens at the join site.
 
 ### `actor-ts.cluster.pub-sub`
 

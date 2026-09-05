@@ -236,6 +236,8 @@ man daraus erneut zustellt.
 | `cluster.weakly-up-after` | `0s` | Befördert ein `joining`-Mitglied nach dieser Zeit automatisch zu `weakly-up`.  `0` schaltet das ab — siehe [Weakly-up](/de/cluster/weakly-up/). |
 | `cluster.max-members` | `1000` | Obergrenze für lebende Mitgliedseinträge, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
 | `cluster.max-tombstones` | `10000` | Obergrenze für `removed`-Tombstones, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
+| `cluster.minimum-members-before-up` | `1` | Mitglieder, die vorhanden sein müssen, bevor **irgendetwas** zu `up` befördert wird.  `1` ist das bisherige Verhalten — siehe unten. |
+| `cluster.role.<role>.minimum-members-before-up` | *(nicht gesetzt)* | Schwelle pro Rolle, mit der obigen als UND verknüpft.  In `reference.conf` nur als Kommentar, da Rollennamen zum Deployment gehören. |
 | `cluster.tombstone.time-to-live` | `24h` | Wie lange ein `removed`-Tombstone gehalten wird, bevor er gepruned wird. |
 | `cluster.tombstone.prune-interval` | `5m` | Wie oft der Prune-Durchlauf läuft. |
 | `cluster.tombstone.min-retention` | `0s` | Mindestalter, bevor ein Tombstone gepruned werden darf.  `0` leitet es aus `failure-detector.down-after` ab (6×). |
@@ -332,9 +334,45 @@ Kandidatenmenge ist außerdem eine Sicht pro Node, deshalb liest nichts, das
 eine Rolle *wählt* (der Host eines Singletons, das Zuhause eines Shards),
 daraus — sonst wählten zwei Nodes zwei Gewinner.
 
+`minimum-members-before-up` hält den Übergang `joining` / `weakly-up` →
+`up` zurück, bis die lokale Mitgliederkarte mindestens so viele Mitglieder
+enthält — sowohl die Beförderungen des Leaders als auch die Selbstwahl eines
+Gründungsknotens.  Gezählt werden Mitglieder in `joining`, `weakly-up` und
+`up`; ein `leaving`-Mitglied hält die Schwelle für seinen Nachfolger also
+*nicht* offen.  Rückwärts wird nie ausgewertet: einen Übergang `up` →
+`joining` gibt es nicht, ein später schrumpfender Cluster behält die bereits
+beförderten Mitglieder und hält nur neue zurück.
+
+Schwellen pro Rolle sind damit **UND**-verknüpft — die globale Zahl und
+jede konfigurierte Rollenzahl müssen erfüllt sein.  Sie werden als
+`cluster.role.<role>.minimum-members-before-up` geschrieben und sind nur als
+Kommentar enthalten, denn kein Leaf hier könnte eine Rolle benennen, die
+Ihr Deployment erfunden hat.  Ihr Nutzen ist „auf einem Cluster ohne
+Backend keine Arbeit platzieren“: Shard-Regionen und Singletons werden nach
+Rolle gehostet, ein Cluster aus lauter Frontends erfüllt also eine globale
+Zahl und ist trotzdem nutzlos.
+
+Es ist **nicht** `cluster.bootstrap.minimum-members`, ein reines
+*Warte*-Prädikat für `awaitReady` / `isReady`, das nie einen Status ändert.
+Diese Einstellung macht jene weitgehend überflüssig — ein Node, der
+überhaupt `up` ist, belegt bereits, dass die Schwelle erreicht war —, beide
+zu setzen lohnt sich also selten.  Und es ist **kein Quorum und keine
+Sicherheitsmaßnahme**: jeder Node darf sich selbst als `up` ankündigen, die
+Schwelle begrenzt also Versehen, nicht Angreifer.  Zuständig ist der
+`split-brain-resolver` oben; beachten Sie, dass `static-quorum` noch keinen
+„nichts ist unreachable“-Frühausstieg hat — prüfen Sie eine Downing-Strategie
+also für die Clustergröße, bevor Sie eine Schwelle über `1` setzen.
+
+Solange die Schwelle nicht erreicht ist, bleibt der Node `joining` und sagt
+das einmalig — mit Schlüsselname und aktueller Zahl — statt die
+Cold-Start-Stall-Diagnose zu melden, die hier ein falsches Urteil wäre.
+Siehe [Joining und Seeds](/de/cluster/joining-and-seeds/).
+
 `seeds`, `roles` und der Transport haben keine HOCON-Form — die ersten
 beiden sind Deployment-Identität, die an die Join-Stelle gehört, und der
-Transport ist ein Objekt, das eine Config-Datei nicht ausdrücken kann.
+Transport ist ein Objekt, das eine Config-Datei nicht ausdrücken kann.  Eine
+Schwelle *pro Rolle* ist davon keine Ausnahme: sie benennt eine Rolle, statt
+eine zuzuweisen, und die Zuweisung passiert weiterhin an der Join-Stelle.
 
 ### `actor-ts.cluster.pub-sub`
 
