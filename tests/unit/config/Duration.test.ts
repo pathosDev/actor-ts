@@ -82,19 +82,40 @@ describe('parseDuration', () => {
   // Mixed-case spellings are in the list deliberately — the guard sees the
   // lowercased unit, and one written against the raw capture instead rejects
   // every capitalised unit in the file.
+  //
+  // **All 34, not a sample.**  The list used to name 22, and the eleven it
+  // skipped — `nano`, `nanos`, `micro`, `microsecond`, `milli`, `millisecond`,
+  // `secs`, `mins`, `minute`, `hrs`, `hour` — could be deleted from `UNIT_MS`
+  // with `tests/unit/config/` still green, under a test whose name promised
+  // otherwise.  A spelling nobody exercises is a spelling nobody notices
+  // losing, and every one of them is a documented HOCON duration a
+  // `reference.conf` may already be written in.
   test('every declared unit still resolves', () => {
     const declared: ReadonlyArray<readonly [string, number]> = [
-      ['1ns', 1e-6], ['1nanosecond', 1e-6], ['1NANOSECONDS', 1e-6],
-      ['1us', 1e-3], ['1μs', 1e-3], ['1micros', 1e-3], ['1Microseconds', 1e-3],
-      ['1ms', 1], ['1millis', 1], ['1MS', 1],
-      ['1s', 1_000], ['1sec', 1_000], ['1Seconds', 1_000],
-      ['1m', 60_000], ['1min', 60_000], ['1MINUTES', 60_000],
-      ['1h', 3_600_000], ['1hr', 3_600_000], ['1Hours', 3_600_000],
+      ['1ns', 1e-6], ['1nano', 1e-6], ['1nanos', 1e-6],
+      ['1nanosecond', 1e-6], ['1NANOSECONDS', 1e-6],
+      ['1us', 1e-3], ['1μs', 1e-3], ['1micro', 1e-3], ['1micros', 1e-3],
+      ['1microsecond', 1e-3], ['1Microseconds', 1e-3],
+      ['1ms', 1], ['1MS', 1], ['1milli', 1], ['1millis', 1],
+      ['1millisecond', 1], ['1milliseconds', 1],
+      ['1s', 1_000], ['1sec', 1_000], ['1secs', 1_000],
+      ['1second', 1_000], ['1Seconds', 1_000],
+      ['1m', 60_000], ['1min', 60_000], ['1mins', 60_000],
+      ['1minute', 60_000], ['1MINUTES', 60_000],
+      ['1h', 3_600_000], ['1hr', 3_600_000], ['1hrs', 3_600_000],
+      ['1hour', 3_600_000], ['1Hours', 3_600_000],
       ['1d', 86_400_000], ['1day', 86_400_000], ['1DAYS', 86_400_000],
     ];
     for (const [input, expected] of declared) {
       expect(parseDuration(input)).toBeCloseTo(expected, 9);
     }
+    // Counted on the distinct unit — the mixed-case entries above are extra
+    // spellings of a unit already in the list, not extra units — so that a
+    // unit dropped from the list here is as loud as one dropped from the
+    // table.  `UnitTableHardening` covers the other direction, where a unit is
+    // added to the table and to neither list.
+    const distinct = new Set(declared.map(([input]) => input.slice(1).toLowerCase()));
+    expect(distinct.size).toBe(34);
   });
 
   // #785, second half.  The finite check used to guard only a numeric

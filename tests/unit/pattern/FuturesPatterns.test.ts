@@ -311,12 +311,65 @@ describe('retry', () => {
     expect(await scheduleWith(() => 1)).toEqual([100, 200]);
   });
 
-  test('randomFactor must be in [0, 1]', async () => {
-    let caught: unknown = null;
+  /**
+   * The zero-jitter fast path (`Retry.applyJitter`) returns `base` without
+   * consulting `random` at all, and that is the half of it a schedule
+   * assertion cannot see: `1 + (r × 2 − 1) × 0` is `1` for every `r`, so the
+   * delays come out identical either way.  The observable difference is the
+   * *draw*, and it matters because `random` is an injection point — a caller
+   * threading one deterministic source through several primitives has its
+   * sequence shifted by every draw somebody takes without needing it, and
+   * `randomFactor` defaults to `0`, so that is the path every pre-existing
+   * caller of `retry` is on.
+   */
+  test('a zero randomFactor takes no draw from the injected random source', async () => {
+    let draws = 0;
+    const requestedDelays: number[] = [];
+    const counting = (): number => { draws++; return 1; };
     try {
-      await retry(async () => 1, { attempts: 2, delayMs: 1, randomFactor: 1.5 });
-    } catch (e) { caught = e; }
-    expect((caught as Error).message).toContain('randomFactor must be in [0, 1]');
+      await retry(async () => { throw new Error('fail'); }, {
+        attempts: 3,
+        delayMs: 100,
+        factor: 2,
+        random: counting,
+        sleep: (ms) => { requestedDelays.push(ms); return Promise.resolve(); },
+      });
+    } catch { /* expected */ }
+    // Two delays were computed, so the jitter helper ran twice and declined
+    // to draw both times.
+    expect(requestedDelays).toEqual([100, 200]);
+    expect(draws).toBe(0);
+  });
+
+  /**
+   * Both edges of the interval the message names, not just the upper one.
+   *
+   * A **negative** `randomFactor` is the half that had no test, and it is the
+   * dangerous one: the multiplier is `1 + (r × 2 − 1) × randomFactor`, so a
+   * factor below `-1` drives it under zero, the floor in `applyJitter` turns
+   * that into `0`, and `if (delay > 0)` then skips the sleep entirely.  The
+   * result is `retry` hammering a dependency that is already failing — the
+   * same busy-loop the 32-bit timer clamp exists to prevent (#771), arrived at
+   * from the other direction.
+   */
+  test('randomFactor must be in [0, 1] — both edges', async () => {
+    const rejectedBy = async (randomFactor: number): Promise<string> => {
+      try {
+        await retry(async () => 1, { attempts: 2, delayMs: 1, randomFactor });
+        return 'not rejected';
+      } catch (e) { return (e as Error).message; }
+    };
+
+    expect(await rejectedBy(1.5)).toContain('randomFactor must be in [0, 1] (got 1.5)');
+    expect(await rejectedBy(-0.2)).toContain('randomFactor must be in [0, 1] (got -0.2)');
+    // The value that actually zeroes the delay, spelled out: without the
+    // lower-bound check this one retries with no wait at all.
+    expect(await rejectedBy(-5)).toContain('randomFactor must be in [0, 1] (got -5)');
+
+    // The closed interval is closed: both endpoints are accepted, so the
+    // guard cannot be tightened into rejecting the documented extremes.
+    expect(await retry(async () => 'ok', { attempts: 2, delayMs: 1, randomFactor: 0 })).toBe('ok');
+    expect(await retry(async () => 'ok', { attempts: 2, delayMs: 1, randomFactor: 1 })).toBe('ok');
   });
 });
 

@@ -97,6 +97,13 @@ const DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
  * accepting.  The same trade-off `BrokerActor._jitteredBackoff` records for
  * the reconnect path (#652).  The jitter contract is identical to the
  * primitive's.
+ *
+ * The floor is kept for that identity rather than for an effect no test can
+ * reach: `retry`'s one call site guards the result with `delay > 0`, so a
+ * sub-zero product is skipped with or without the `Math.max` — even under an
+ * injected `random` outside `[0, 1)`.  It is not dead code, it is the half of
+ * a copied contract that the copy's caller happens to make redundant, and
+ * dropping it here would leave two spellings of one documented jitter rule.
  */
 function applyJitter(base: number, randomFactor: number, random: () => number): number {
   if (randomFactor === 0) return base;

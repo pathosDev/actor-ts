@@ -286,6 +286,13 @@ describe('CachedSnapshotStore — plaintext cache guard', () => {
     // quotes honest.
     expect(warnings[0]).toContain('this loadLatest asked for encryption');
     expect(warnings[0]).toContain('withAllowPlaintextCache');
+    // And it names the store it is warning *about*, read off the wrapped
+    // instance rather than written into the sentence.  An operator running
+    // several stores behind one cache has nothing else in the line to tell
+    // them which one is exposed, and the decorator cannot know the name any
+    // other way — so a literal here would be wrong for every wrapping but the
+    // one it was written for.
+    expect(warnings[0]).toContain("on 'CountingStore'");
   });
 
   test('withAllowPlaintextCache(true) is the acknowledgement — caching resumes, silently', async () => {
@@ -399,6 +406,11 @@ describe('CachedSnapshotStore — encryption configured on the wrapped store (#7
     expect(warnings[0]).toContain('caches decoded snapshot state');
     expect(warnings[0]).toContain("the store's own configuration keeps this persistenceId encrypted");
     expect(warnings[0]).toContain('withAllowPlaintextCache');
+    // The name both `cached-snapshot-store.mdx` pages quote in their sample of
+    // this line.  It comes from `this.underlying.constructor.name`, so this is
+    // what holds the quoted sample to the emitted one — and what would notice
+    // a build that mangled the class name away.
+    expect(warnings[0]).toContain("on 'ObjectStorageSnapshotStore'");
   });
 
   test('the load still returns the decrypted snapshot — refusing to cache is not refusing to serve', async () => {
