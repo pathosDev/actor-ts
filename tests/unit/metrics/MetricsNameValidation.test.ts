@@ -18,6 +18,10 @@
 import { describe, expect, test } from 'bun:test';
 import { DefaultMetricsRegistry, NoopMetricsRegistry } from '../../../src/metrics/Metrics.js';
 import { exportPrometheus } from '../../../src/metrics/PrometheusExporter.js';
+import {
+  PROMETHEUS_LABEL_NAME_PATTERN,
+  PROMETHEUS_METRIC_NAME_PATTERN,
+} from '../../../src/metrics/index.js';
 
 /** The walkthrough payload from the report, as a metric name. */
 const FORGED_NAME = 'x_total 1\nnode_up{job="prod"} 0\n# dummy';
@@ -55,6 +59,34 @@ const REJECTED_LABEL_KEYS: ReadonlyArray<readonly [string, string]> = [
   ['1st', 'a leading digit'],
   ['', 'the empty string'],
 ];
+
+/**
+ * Count the calls a shipped pattern receives while `body` runs.
+ *
+ * An own `test` property shadows `RegExp.prototype.test` for the duration,
+ * and an own property is exactly what `assertValidMetricName` /
+ * `assertValidLabelKeys` resolve when they write `PATTERN.test(…)` — each
+ * pattern has precisely one call site in `src/`, so the count is unambiguous.
+ * Restored in a `finally`, because bun runs every file in one process and a
+ * leaked counter would follow the pattern into unrelated suites.
+ */
+function patternCallsDuring(pattern: RegExp, body: () => void): number {
+  const shipped = RegExp.prototype.test;
+  let calls = 0;
+  Object.defineProperty(pattern, 'test', {
+    configurable: true,
+    value(this: RegExp, input: string): boolean {
+      calls += 1;
+      return shipped.call(this, input);
+    },
+  });
+  try {
+    body();
+  } finally {
+    delete (pattern as { test?: unknown }).test;
+  }
+  return calls;
+}
 
 describe('DefaultMetricsRegistry — metric name validation (#784)', () => {
   test('rejects the report’s forged-series payload and mints nothing', () => {
@@ -136,6 +168,42 @@ describe('DefaultMetricsRegistry — label key validation (#784)', () => {
     });
   }
 
+  test('EVERY key in the tuple is checked, not just the first one', () => {
+    // Every other case in this block passes a single-entry tuple, so an
+    // implementation that validated `Object.keys(labels)[0]` and stopped would
+    // satisfy all of them.  It is a plausible slip rather than a hypothetical
+    // one — the loop is the only thing between a forged key and the exposition
+    // once any legal key precedes it, and a caller building a tuple from
+    // request data puts the derived key wherever its object literal happens to
+    // put it.
+    const registry = new DefaultMetricsRegistry();
+    expect(() => registry.counter('hits_total', { route: '/a', 'bad" 1\nnode_up': 'x' }))
+      .toThrow(/Invalid label key/);
+    // Third position too, so "checks the first two" is refused as well.
+    expect(() => registry.gauge('queue_depth', { a: '1', b: '2', 'c d': '3' }))
+      .toThrow(/Invalid label key/);
+    expect(registry.collect()).toEqual([]);
+    expect(exportPrometheus(registry)).toBe('');
+  });
+
+  test('the error escapes the key, so the message is not an injection point either', () => {
+    // The metric-name message has this assertion (above); the label-key
+    // message had none, even though its JSDoc claims the "same rule and same
+    // reasoning" — which includes not forging a line in whatever log the
+    // error is written to.  A naive `"${key}"` satisfies every other
+    // assertion in this block, because none of their keys carries a newline.
+    const registry = new DefaultMetricsRegistry();
+    let message = '';
+    try {
+      registry.counter('hits_total', { 'bad\nkey': 'v' });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain('Invalid label key');
+    expect(message).toContain('"bad\\nkey"');
+    expect(message.includes('\n')).toBe(false);
+  });
+
   test('the error names both the key and the family it was minted under', () => {
     const registry = new DefaultMetricsRegistry();
     let message = '';
@@ -187,5 +255,103 @@ describe('exportPrometheus — a validated name cannot be broken out of (#784)',
       .map((line) => /^[a-zA-Z_:][a-zA-Z0-9_:]*/.exec(line)?.[0] ?? `<unparseable: ${line}>`);
     expect([...new Set(seriesNames)]).toEqual(['hits_total']);
     expect(text).not.toContain('node_up{job="prod"} 0');
+  });
+});
+
+/**
+ * Where the two checks sit, rather than whether they run.
+ *
+ * Both are placed **after** the memo hit — `assertValidMetricName` after
+ * `families.get(name)`, `assertValidLabelKeys` after `children.get(key)` — and
+ * `Metrics.ts` calls that placement load-bearing: hoisting either one puts a
+ * regex on the path every `counter(...).inc()` on an established series takes,
+ * for a question whose answer cannot change, because a name or a tuple the map
+ * already holds was validated on the way in.
+ *
+ * Behaviour is identical either way, which is precisely why nothing else here
+ * can see a hoist: every assertion above is about what throws, and a hoisted
+ * check throws on the same inputs.  The observable that separates them is how
+ * often the pattern is consulted, so that is what these read.
+ *
+ * The *other* half of the label-key placement — before the cardinality-cap
+ * branch, so the overflow tuple cannot copy a forged key onto itself — is
+ * pinned by "a family at its cardinality cap still refuses a bad key" above.
+ * These pin the half that faces the other way.
+ */
+describe('DefaultMetricsRegistry — validation runs once per registration (#784)', () => {
+  test('a metric name is checked when its family is minted, not on every write', () => {
+    const registry = new DefaultMetricsRegistry();
+    const calls = patternCallsDuring(PROMETHEUS_METRIC_NAME_PATTERN, () => {
+      registry.counter('hits_total').inc();
+      registry.counter('hits_total').inc();
+      registry.counter('hits_total').inc();
+    });
+    expect(calls).toBe(1);
+  });
+
+  test('a label tuple is checked when its series is minted, not on every write', () => {
+    const registry = new DefaultMetricsRegistry();
+    const calls = patternCallsDuring(PROMETHEUS_LABEL_NAME_PATTERN, () => {
+      registry.counter('hits_total', { route: '/a' }).inc();
+      registry.counter('hits_total', { route: '/a' }).inc();
+      registry.counter('hits_total', { route: '/a' }).inc();
+    });
+    // One key, checked once — a second tuple costs one more, and a hoisted
+    // check costs one per write forever.
+    expect(calls).toBe(1);
+  });
+
+  test('a second family and a second tuple each pay their own check', () => {
+    // Guards the two above from passing for the wrong reason: a check deleted
+    // outright, or a counter that never increments, also reads 0 or 1 there.
+    const registry = new DefaultMetricsRegistry();
+    const nameCalls = patternCallsDuring(PROMETHEUS_METRIC_NAME_PATTERN, () => {
+      registry.counter('hits_total').inc();
+      registry.counter('misses_total').inc();
+    });
+    expect(nameCalls).toBe(2);
+    const keyCalls = patternCallsDuring(PROMETHEUS_LABEL_NAME_PATTERN, () => {
+      registry.counter('hits_total', { route: '/a' }).inc();
+      registry.counter('hits_total', { route: '/b' }).inc();
+    });
+    expect(keyCalls).toBe(2);
+  });
+});
+
+/**
+ * The two grammars are part of the `actor-ts/metrics` public surface.
+ *
+ * They are exported so a caller assembling a name or a tuple from anything but
+ * a literal can ask the same question the registry will ask, before the throw
+ * — which is the only way to turn "this metric is rejected" into a validation
+ * error at the caller's own boundary.  Nothing inside the repository imports
+ * them through the barrel (`Metrics.ts` reaches `./Constants.js` directly), so
+ * without this the two re-exports could be dropped in a barrel tidy-up with
+ * every gate green and the seam gone.
+ */
+describe('the exposition grammars are reachable from the metrics barrel (#784)', () => {
+  test('both patterns are exported, and are the ones the registry enforces', () => {
+    expect(PROMETHEUS_METRIC_NAME_PATTERN.test('instance:hits:rate5m')).toBe(true);
+    expect(PROMETHEUS_METRIC_NAME_PATTERN.test('hits total')).toBe(false);
+    // A colon is the one character the two grammars disagree about.
+    expect(PROMETHEUS_LABEL_NAME_PATTERN.test('route')).toBe(true);
+    expect(PROMETHEUS_LABEL_NAME_PATTERN.test('ns:route')).toBe(false);
+
+    // The same objects the registry consults, not a second copy that could
+    // drift: the counter sees the call made through the barrel binding.
+    const registry = new DefaultMetricsRegistry();
+    expect(patternCallsDuring(PROMETHEUS_METRIC_NAME_PATTERN, () => {
+      registry.counter('hits_total');
+    })).toBe(1);
+  });
+
+  test('neither pattern carries the `g` flag, which would make it answer alternately', () => {
+    // `lastIndex` is per-object state, and these are module-level singletons
+    // consulted once per registration — a `g` flag would reject every second
+    // legal name in the process.
+    expect(PROMETHEUS_METRIC_NAME_PATTERN.global).toBe(false);
+    expect(PROMETHEUS_LABEL_NAME_PATTERN.global).toBe(false);
+    expect(PROMETHEUS_METRIC_NAME_PATTERN.test('hits_total')).toBe(true);
+    expect(PROMETHEUS_METRIC_NAME_PATTERN.test('hits_total')).toBe(true);
   });
 });
