@@ -78,6 +78,7 @@ import { DEFAULT_REBALANCE_ABSOLUTE_LIMIT, DEFAULT_REBALANCE_RELATIVE_LIMIT } fr
 import { DEFAULT_REGION_STALE_AFTER_MS } from '../../../src/cluster/sharding/ShardCoordinatorOptions.js';
 import { DEFAULT_REGION_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/sharding/ShardingOptions.js';
 import { DEFAULT_SHARD_REGION_QUERY_TIMEOUT_MS } from '../../../src/cluster/sharding/StartShardingOptions.js';
+import { DEFAULT_PASSIVATION_ADMISSION_FILTER, DEFAULT_PASSIVATION_ADMISSION_WINDOW_PROPORTION, DEFAULT_PASSIVATION_REPLACEMENT, DEFAULT_PASSIVATION_SEGMENTED_PROTECTED_PROPORTION, DEFAULT_PASSIVATION_STOP_TIMEOUT_MS } from '../../../src/cluster/sharding/ShardingOptions.js';
 import { DEFAULT_DAEMON_LIVENESS_INTERVAL_MS } from '../../../src/cluster/sharding/ShardedDaemonProcessOptions.js';
 import {
   DEFAULT_MAX_GOSSIP_BYTES,
@@ -381,6 +382,15 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // switch on would cost (#853).
   { key: 'actor-ts.sharding.stale-region-detection.heartbeat-interval', kind: 'duration', constant: DEFAULT_REGION_HEARTBEAT_INTERVAL_MS },
   { key: 'actor-ts.sharding.stale-region-detection.stale-after', kind: 'duration', constant: DEFAULT_REGION_STALE_AFTER_MS },
+  // The five `passivation.*` leaves are all real defaults rather than feature
+  // switches, `admission-window-proportion = 0` included: `settingsToConfig`
+  // resolves every one of them whether or not there is a cap, so the off state
+  // is a resolved `0` and not the field being absent (#848).
+  { key: 'actor-ts.sharding.passivation.replacement', kind: 'string', constant: DEFAULT_PASSIVATION_REPLACEMENT },
+  { key: 'actor-ts.sharding.passivation.segmented-protected-proportion', kind: 'number', constant: DEFAULT_PASSIVATION_SEGMENTED_PROTECTED_PROPORTION },
+  { key: 'actor-ts.sharding.passivation.admission-window-proportion', kind: 'number', constant: DEFAULT_PASSIVATION_ADMISSION_WINDOW_PROPORTION },
+  { key: 'actor-ts.sharding.passivation.admission-filter', kind: 'string', constant: DEFAULT_PASSIVATION_ADMISSION_FILTER },
+  { key: 'actor-ts.sharding.passivation.stop-timeout', kind: 'duration', constant: DEFAULT_PASSIVATION_STOP_TIMEOUT_MS },
 
   /* --- distributed data --- */
   { key: 'actor-ts.distributed-data.max-pending-quorum-requests', kind: 'int', constant: DEFAULT_MAX_PENDING_QUORUM_REQUESTS },

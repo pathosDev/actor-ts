@@ -9,12 +9,24 @@ import {
   DEFAULT_ENTITY_RECOVERY_CONSTANT_RATE_NUMBER_OF_ENTITIES,
   DEFAULT_ENTITY_RECOVERY_STRATEGY,
   DEFAULT_NUM_SHARDS,
+  DEFAULT_PASSIVATION_ADMISSION_FILTER,
+  DEFAULT_PASSIVATION_ADMISSION_WINDOW_PROPORTION,
   DEFAULT_PASSIVATION_IDLE_MS,
+  DEFAULT_PASSIVATION_REPLACEMENT,
+  DEFAULT_PASSIVATION_SEGMENTED_PROTECTED_PROPORTION,
+  DEFAULT_PASSIVATION_STOP_TIMEOUT_MS,
   DEFAULT_REGION_HEARTBEAT_INTERVAL_MS,
   DEFAULT_REGISTER_RETRY_INTERVAL_MS,
   DEFAULT_SHARD_REGION_BUFFER_SIZE,
 } from './ShardingOptions.js';
-import type { EntityRecoveryStrategy, ShardingOptionsType } from './ShardingOptions.js';
+import type {
+  EntityAdmissionFilter,
+  EntityRecoveryStrategy,
+  EntityReplacementPolicy,
+  ShardingOptionsType,
+} from './ShardingOptions.js';
+import { createPassivationStrategy } from './PassivationStrategy.js';
+import type { PassivationStrategy } from './PassivationStrategy.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { DeadLetter, Terminated } from '../../SystemMessages.js';
@@ -80,6 +92,16 @@ export type ShardRegionConfig<TMessage> = {
   readonly passivationIdleMs: number;
   readonly shardPassivationIdleMs: number;
   readonly maxEntities: number;
+  /** Which resident entity the cap gives up on overflow (#848). */
+  readonly passivationReplacement: EntityReplacementPolicy;
+  /** Share of the cap held by the protected segment under segmented LRU (#848). */
+  readonly passivationSegmentedProtectedProportion: number;
+  /** Share of the cap held as a probationary admission window; `0` = none (#848). */
+  readonly passivationAdmissionWindowProportion: number;
+  /** Whether a candidate leaving the window must out-rank what it displaces (#848). */
+  readonly passivationAdmissionFilter: EntityAdmissionFilter;
+  /** How long a passivating entity may take to stop before the shard forces it (#848). */
+  readonly passivationStopTimeoutMs: number;
   /** Region-wide cap on the routing buffer; `0` = never buffer (#849). */
   readonly bufferSize: number;
   /** How often an unacknowledged `Register` is re-sent, in ms (#849). */
@@ -198,6 +220,28 @@ export class ShardRegion<TMessage = unknown>
   private readonly shardEmptySince = new Map<number, number>();
   private readonly shardEntities = new Map<number, Set<string>>(); // shardId → entityIds
   private readonly entityActivity = new Map<string, EntityActivity>(); // entityId → activity
+  /**
+   * Replacement order for the `maxEntities` cap, or `null` when there is no cap
+   * (#848).
+   *
+   * Deliberately a second structure beside {@link entityActivity} rather than a
+   * replacement for it.  The two answer different questions: this one is "who
+   * goes when the node is full", which is what the configured policy decides;
+   * the map is "which shard hosts this entity and when did it last hear
+   * anything", which the idle sweep and the stats replies need and no policy
+   * has an opinion about.
+   *
+   * `null` at the shipped `maxEntities = 0`, so an uncapped region — the
+   * overwhelmingly common one — pays a single branch on the routing path rather
+   * than maintaining an index that bounds nothing.
+   *
+   * Built in {@link preStart} rather than in the constructor, and deliberately:
+   * constructing a region must stay free of side effects — nothing has read
+   * `config` there since the class was written, an admission filter allocates a
+   * sketch sized from the cap, and no message can reach a region before
+   * `preStart` anyway.
+   */
+  private passivationStrategy: PassivationStrategy | null = null;
   /** Entities we have already asked a shard to passivate — excluded from the LRU count. */
   private readonly passivating = new Set<string>();
   /** Messages buffered while their shard home is unknown or in transition. */
@@ -343,6 +387,16 @@ export class ShardRegion<TMessage = unknown>
       // explicit window the entity one applies a level up.
       shardPassivationIdleMs: s.shardPassivationIdleMs ?? passivationIdleMs,
       maxEntities: s.maxEntities ?? 0,
+      // All five resolve whether or not there is a cap, because the cap can
+      // arrive from the layer above; the strategy that reads them is only built
+      // when `maxEntities > 0` (#848).
+      passivationReplacement: s.passivationReplacement ?? DEFAULT_PASSIVATION_REPLACEMENT,
+      passivationSegmentedProtectedProportion:
+        s.passivationSegmentedProtectedProportion ?? DEFAULT_PASSIVATION_SEGMENTED_PROTECTED_PROPORTION,
+      passivationAdmissionWindowProportion:
+        s.passivationAdmissionWindowProportion ?? DEFAULT_PASSIVATION_ADMISSION_WINDOW_PROPORTION,
+      passivationAdmissionFilter: s.passivationAdmissionFilter ?? DEFAULT_PASSIVATION_ADMISSION_FILTER,
+      passivationStopTimeoutMs: s.passivationStopTimeoutMs ?? DEFAULT_PASSIVATION_STOP_TIMEOUT_MS,
       // Defaulted here as well as in `reference.conf`, so a directly-constructed
       // region is bounded exactly like a HOCON-fed one — the buffer is a safety
       // property, and one that only `ClusterSharding.start` supplied would be
@@ -371,6 +425,14 @@ export class ShardRegion<TMessage = unknown>
   }
 
   override preStart(): void {
+    this.passivationStrategy = createPassivationStrategy({
+      capacity: this.config.maxEntities,
+      replacement: this.config.passivationReplacement,
+      segmentedProtectedProportion: this.config.passivationSegmentedProtectedProportion,
+      admissionWindowProportion: this.config.passivationAdmissionWindowProportion,
+      admissionFilter: this.config.passivationAdmissionFilter,
+    });
+
     this.unsubscribe = this.config.cluster.subscribe(evt =>
       match(evt)
         .with(P.instanceOf(LeaderChanged), () => this.onLeaderChanged())
@@ -635,56 +697,67 @@ export class ShardRegion<TMessage = unknown>
     if (this.passivating.has(entityId)) return;
     const existing = this.entityActivity.get(entityId);
     if (!existing) {
-      this.evictLruIfAtCapacity();
+      this.admitEntity(shardId, entityId);
       this.entityActivity.set(entityId, { shardId, lastActivity: Date.now() });
       return;
     }
     existing.lastActivity = Date.now();
+    this.passivationStrategy?.touch(entityId);
   }
 
   /**
-   * If `maxEntities` is set and the node is at capacity, passivate the entity
-   * with the oldest `lastActivity` to make room for a new one (#82).  The cap
-   * is deliberately **region-wide, not per shard** — it is a node-level
-   * memory bound, and dividing it across a shard set that changes on every
-   * rebalance would make the effective limit unpredictable.
+   * Take a newly-resident entity into the cap and passivate whatever the
+   * configured policy gives up for it (#82, #848).  A no-op without a cap.
    *
-   * Already-passivating entities don't count toward capacity (they'll be
-   * removed once `EntityStopped` arrives), and the eviction goes through the
-   * same `PassivateEntity` command as `passivationSweep`, so the journal-aware
-   * shutdown path is identical for idle-timeout and capacity-driven evictions.
+   * The cap is deliberately **per sharded type on this node, not node-wide and
+   * not per shard**.  Per shard it would divide across a set that changes on
+   * every rebalance, making the effective limit unpredictable; node-wide it
+   * would need a budget shared between regions that know nothing about each
+   * other.  Two started types therefore each get the whole `maxEntities`, and
+   * the node's bound is their sum — which is the one part of this an operator
+   * has to read rather than guess, so the docs say it in those words.
    *
-   * The cap is a steady-state upper bound: between asking the shard to stop
-   * the LRU entity and `EntityStopped` landing, the node briefly holds
-   * `maxEntities + 1` entities.  Acceptable trade-off vs blocking the
-   * incoming message until passivation actually completes.
+   * Called from **both** admission points.  The routing one is obvious; the
+   * other is `onEntityStarted`, which is how a `rememberEntities` recovery
+   * materialises entities nothing has routed to yet.  Until #848 that path
+   * wrote the entity index directly and never consulted the cap, so a node
+   * handed a large registry walked straight past it.
+   *
+   * The cap stays a steady-state upper bound: between asking the shard to stop
+   * the victim and `EntityStopped` landing, the node briefly holds
+   * `maxEntities + 1` entities.  Blocking the incoming message until the
+   * passivation completed would be the alternative, and a worse one.
    */
-  private evictLruIfAtCapacity(): void {
-    if (this.config.maxEntities <= 0) return;
-    let liveCount = 0;
-    let oldestId: string | null = null;
-    let oldestShard = -1;
-    let oldestActivity = Number.POSITIVE_INFINITY;
-    for (const [entityId, activity] of this.entityActivity) {
-      if (this.passivating.has(entityId)) continue;
-      liveCount++;
-      if (activity.lastActivity < oldestActivity) {
-        oldestActivity = activity.lastActivity;
-        oldestId = entityId;
-        oldestShard = activity.shardId;
-      }
-    }
-    if (liveCount < this.config.maxEntities) return;
-    if (oldestId === null) return;
+  private admitEntity(shardId: number, entityId: string): void {
+    const strategy = this.passivationStrategy;
+    if (strategy === null) return;
+    const victim = strategy.admit(entityId);
+    if (victim === null) return;
+    const victimShard = this.entityActivity.get(victim)?.shardId ?? shardId;
     this.log.debug(
-      `[sharding] LRU passivation: evicting '${oldestId}' (idle for ${Date.now() - oldestActivity}ms, `
-      + `cap ${this.config.maxEntities} reached)`,
+      `[sharding] ${this.config.passivationReplacement} passivation: evicting '${victim}' to make room `
+      + `for '${entityId}' (cap ${this.config.maxEntities} reached)`,
     );
-    this.requestPassivation(oldestId, oldestShard);
+    this.requestPassivation(victim, victimShard);
   }
 
-  /** Ask the shard that owns `entityId` to stop it gracefully. */
+  /**
+   * Ask the shard that owns `entityId` to stop it gracefully.
+   *
+   * Dropping it from the replacement order here rather than on `EntityStopped`
+   * is what keeps "already passivating does not count toward capacity" true —
+   * the rule the linear scan this replaced expressed by skipping
+   * {@link passivating} entities while counting.  Both callers rely on it: an
+   * eviction has already made room for its newcomer, and an idle sweep must not
+   * leave the swept entity as the next victim as well.
+   *
+   * A victim on a shard whose actor is gone cannot be reached, and the entity's
+   * own bookkeeping is left alone in that case: the strategy has released the
+   * slot either way, and the idle sweep still names the entity if it is somehow
+   * still running.
+   */
   private requestPassivation(entityId: string, shardId: number): void {
+    this.passivationStrategy?.remove(entityId);
     const shard = this.shards.get(shardId);
     if (!shard) return;
     this.passivating.add(entityId);
@@ -761,6 +834,7 @@ export class ShardRegion<TMessage = unknown>
       shardId,
       entityActor: this.config.entityActor as ActorClassOrFactory<unknown>,
       entityOptions: this.config.entityOptions as ActorOptions<unknown> | undefined,
+      passivationStopTimeoutMs: this.config.passivationStopTimeoutMs,
     };
     const ref = this.context.spawn<ShardInbox>(
       () => new Shard(shardConfig),
@@ -1409,7 +1483,11 @@ export class ShardRegion<TMessage = unknown>
     // No longer empty, so the shard sweep has nothing to measure.
     this.shardEmptySince.delete(message.shardId);
     if (!this.entityActivity.has(message.entityId)) {
-      // Remembered entities are pre-created without ever being routed to.
+      // Remembered entities are pre-created without ever being routed to, so
+      // this is the *only* place the cap sees them — and until #848 it did not:
+      // the index was written straight past `admitEntity`, and a node handed a
+      // large registry silently exceeded `maxEntities` by the size of it.
+      this.admitEntity(message.shardId, message.entityId);
       this.entityActivity.set(message.entityId, { shardId: message.shardId, lastActivity: Date.now() });
     }
     if (this.config.rememberEntities) this.tellCoordinator(message);
@@ -1423,6 +1501,7 @@ export class ShardRegion<TMessage = unknown>
     }
     this.entityActivity.delete(message.entityId);
     this.passivating.delete(message.entityId);
+    this.passivationStrategy?.remove(message.entityId);
     if (this.config.rememberEntities) this.tellCoordinator(message);
   }
 
@@ -1527,11 +1606,24 @@ export class ShardRegion<TMessage = unknown>
     this.shardEmptySince.delete(shardId);
   }
 
-  /** Drop every entity bookkeeping entry belonging to `shardId`. */
+  /**
+   * Drop every entity bookkeeping entry belonging to `shardId`.
+   *
+   * The replacement order goes with it, and that answers the question #848
+   * raised about a rebalance: an entity's position — its recency, its segment,
+   * its access count — is **reset**, not carried, when its shard moves away.
+   * It has to be. The ordering is a fact about this node's traffic, the entity
+   * is now somebody else's, and a stale entry for an entity that is not here
+   * would occupy a slot of the cap that nothing could ever release.  What
+   * survives is only the frequency sketch, which is keyed by hash rather than
+   * by residency and ages out on its own — so an entity that comes back after a
+   * short absence is still recognised as one that used to be hot.
+   */
   private forgetShardEntities(shardId: number): void {
     for (const entityId of this.shardEntities.get(shardId) ?? []) {
       this.entityActivity.delete(entityId);
       this.passivating.delete(entityId);
+      this.passivationStrategy?.remove(entityId);
     }
     this.shardEntities.delete(shardId);
     this.shardEmptySince.delete(shardId);

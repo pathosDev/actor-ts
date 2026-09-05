@@ -10,7 +10,12 @@ import {
   ShardingOptionsBuilder,
   ShardingOptionsValidator,
 } from './ShardingOptions.js';
-import type { EntityRecoveryStrategy, ShardingOptionsType } from './ShardingOptions.js';
+import type {
+  EntityAdmissionFilter,
+  EntityRecoveryStrategy,
+  EntityReplacementPolicy,
+  ShardingOptionsType,
+} from './ShardingOptions.js';
 
 /**
  * Built-in default for {@link StartShardingOptionsType.shardRegionQueryTimeoutMs}
@@ -252,6 +257,11 @@ export type ShardingConfigDefaults = Pick<
   | 'passivationIdleMs'
   | 'shardPassivationIdleMs'
   | 'maxEntities'
+  | 'passivationReplacement'
+  | 'passivationSegmentedProtectedProportion'
+  | 'passivationAdmissionWindowProportion'
+  | 'passivationAdmissionFilter'
+  | 'passivationStopTimeoutMs'
   | 'bufferSize'
   | 'registerRetryIntervalMs'
   | 'rebalanceIntervalMs'
@@ -299,6 +309,34 @@ export function readShardingOptionsFromConfig(config: Config): ShardingConfigDef
     out.shardPassivationIdleMs = config.getDuration(keys.shardPassivationIdle);
   }
   if (config.hasPath(keys.maxEntities)) out.maxEntities = config.getInt(keys.maxEntities);
+  // The five `passivation.*` leaves (#848).  All of them are inert while
+  // `max-entities = 0` — a region without a cap builds no strategy at all — but
+  // they are read unconditionally, because the cap can arrive from the layer
+  // above and a key read only when another key is set is a key that silently
+  // does nothing.
+  if (config.hasPath(keys.passivationReplacement)) {
+    // Narrowed rather than cast, the shape `entity-recovery.strategy` uses:
+    // HOCON is untyped, so leaving an unrecognised literal in place is what lets
+    // `ShardingOptionsValidator` name the field and the bad value instead of the
+    // policy switch quietly falling back to LRU.
+    out.passivationReplacement = config.getString(keys.passivationReplacement) as EntityReplacementPolicy;
+  }
+  if (config.hasPath(keys.passivationSegmentedProtectedProportion)) {
+    // `getNumber`, not `getInt`: the leaf is a fraction and `getInt` throws on
+    // the 0.8 that ships.
+    out.passivationSegmentedProtectedProportion =
+      config.getNumber(keys.passivationSegmentedProtectedProportion);
+  }
+  if (config.hasPath(keys.passivationAdmissionWindowProportion)) {
+    out.passivationAdmissionWindowProportion =
+      config.getNumber(keys.passivationAdmissionWindowProportion);
+  }
+  if (config.hasPath(keys.passivationAdmissionFilter)) {
+    out.passivationAdmissionFilter = config.getString(keys.passivationAdmissionFilter) as EntityAdmissionFilter;
+  }
+  if (config.hasPath(keys.passivationStopTimeout)) {
+    out.passivationStopTimeoutMs = config.getDuration(keys.passivationStopTimeout);
+  }
   if (config.hasPath(keys.bufferSize)) out.bufferSize = config.getInt(keys.bufferSize);
   if (config.hasPath(keys.registerRetryInterval)) {
     out.registerRetryIntervalMs = config.getDuration(keys.registerRetryInterval);

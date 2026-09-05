@@ -1644,6 +1644,42 @@ actor-ts {
       heartbeat-interval = 5s   # region -> coordinator beat
       stale-after = 20s         # silence after which a region is declared gone
     }
+    # HOW the max-entities cap above chooses, not WHETHER it applies -- every
+    #   key here is inert while max-entities = 0, which is the shipped default.
+    #   passivation-idle and max-entities keep their own paths on purpose: they
+    #   are a window and a bound, this block is a policy, and aliasing either
+    #   into here would mean two leaves feeding one field.
+    # replacement:
+    #   least-recently-used            -- the entity untouched longest.  Default,
+    #                                     and what every release before this did.
+    #   segmented-least-recently-used  -- probation for entities seen once,
+    #                                     protected for entities seen again;
+    #                                     evicts from probation first.  Plain LRU
+    #                                     cannot tell "touched once, ever" from
+    #                                     "touched constantly until a moment ago",
+    #                                     so a scan over cold ids evicts a hot
+    #                                     working set one entity at a time.
+    #   least-frequently-used          -- fewest accesses, counts halved
+    #                                     periodically so the ranking follows
+    #                                     recent traffic rather than a lifetime.
+    # admission-window-proportion reserves a probationary slice of the cap for
+    #   brand-new entities.  It is what makes a filter expressible at all: a
+    #   region cannot refuse the entity a message has just arrived for, so the
+    #   candidate judged against the incumbent is whatever falls out of the
+    #   window's far end.  admission-filter = frequency-sketch therefore REQUIRES
+    #   a window > 0 and is rejected without one, rather than silently doing
+    #   nothing.
+    passivation {
+      replacement = least-recently-used
+      segmented-protected-proportion = 0.8  # rest is probation; segmented-... only
+      admission-window-proportion = 0.0     # 0 = no probationary window
+      admission-filter = off                # off | frequency-sketch
+      # How long an entity may take to act on the stop-message a Passivate sent
+      #   it before the shard stops it outright.  0 waits forever, which is what
+      #   releases before this did -- and an entity that never acts on the
+      #   message held its slot against max-entities for the life of the node.
+      stop-timeout = 10s
+    }
   }
 
   # A daemon set is a module built ON sharding, not a sharding tunable, so it

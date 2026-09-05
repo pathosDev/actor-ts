@@ -24,6 +24,122 @@ export const DEFAULT_NUM_SHARDS = 64;
 export const DEFAULT_PASSIVATION_IDLE_MS = 300_000;
 
 /**
+ * Which resident entity a region at `maxEntities` gives up to make room for a
+ * new one (#848).
+ *
+ *   - `least-recently-used` — the entity untouched for longest.  What every
+ *     release before this one did, and still the default.
+ *   - `segmented-least-recently-used` — a probationary segment for entities
+ *     seen once and a protected one for entities seen again, evicting from
+ *     probation first.  The policy the composite exists for: plain LRU cannot
+ *     tell "touched once, ever" from "touched constantly until a moment ago",
+ *     so a scan over cold ids evicts a hot working set one entity at a time.
+ *   - `least-frequently-used` — the entity accessed fewest times, with every
+ *     count halved periodically so the ranking follows recent traffic rather
+ *     than a lifetime total.
+ *
+ * `most-recently-used` is deliberately absent.  It appears in no acceptance
+ * criterion of #848, has no caller anywhere in the tree, and its one real use —
+ * a workload that will never revisit what it just read — is the case where a
+ * sharded entity should not have been created at all.  Adding a value to this
+ * union later is not a breaking change; removing one is, so the narrow set is
+ * the reversible choice.
+ */
+export type EntityReplacementPolicy =
+  | 'least-recently-used'
+  | 'segmented-least-recently-used'
+  | 'least-frequently-used';
+
+/** Every accepted {@link EntityReplacementPolicy} — the set the validator checks against. */
+export const ENTITY_REPLACEMENT_POLICIES: readonly EntityReplacementPolicy[] = [
+  'least-recently-used',
+  'segmented-least-recently-used',
+  'least-frequently-used',
+];
+
+/**
+ * Whether a newcomer has to earn its place against the entity it would displace
+ * (#848).
+ *
+ *   - `off` — it does not; the replacement policy alone decides.
+ *   - `frequency-sketch` — a count-min sketch of how often each entity id has
+ *     been touched decides, so an id seen once cannot displace one seen many
+ *     times.  The sketch remembers ids the region no longer holds, which is
+ *     precisely the history a cache cannot keep for the entities it evicted.
+ *
+ * Requires {@link ShardingOptionsType.passivationAdmissionWindowProportion} to
+ * be greater than zero — see that field for why the filter has nothing to
+ * decide without a window.
+ */
+export type EntityAdmissionFilter = 'off' | 'frequency-sketch';
+
+/** Every accepted {@link EntityAdmissionFilter} — the set the validator checks against. */
+export const ENTITY_ADMISSION_FILTERS: readonly EntityAdmissionFilter[] = [
+  'off',
+  'frequency-sketch',
+];
+
+/**
+ * Built-in default for {@link ShardingOptionsType.passivationReplacement}
+ * (#848).  Mirrors `actor-ts.sharding.passivation.replacement`.
+ *
+ * Plain LRU on purpose: this is pre-1.0 and a hard cut is allowed, but silently
+ * reordering every capped deployment's evictions is not a cut anyone asked for.
+ * The composite costs nothing until a policy is named, because a region without
+ * a cap builds no strategy at all.
+ */
+export const DEFAULT_PASSIVATION_REPLACEMENT: EntityReplacementPolicy = 'least-recently-used';
+
+/**
+ * Built-in default for
+ * {@link ShardingOptionsType.passivationSegmentedProtectedProportion} (#848).
+ * Mirrors `actor-ts.sharding.passivation.segmented-protected-proportion`.
+ *
+ * Four fifths protected, one fifth probation — the split the segmented-LRU
+ * literature settles on, and the one the shape of the problem argues for: the
+ * probationary segment only has to be large enough that a newcomer gets a
+ * second chance before the next one arrives, while everything that has proven
+ * itself belongs on the other side of the line.
+ *
+ * Inert unless `passivationReplacement` is `segmented-least-recently-used`.
+ */
+export const DEFAULT_PASSIVATION_SEGMENTED_PROTECTED_PROPORTION = 0.8;
+
+/**
+ * Built-in default for
+ * {@link ShardingOptionsType.passivationAdmissionWindowProportion} (#848).
+ * Mirrors `actor-ts.sharding.passivation.admission-window-proportion`.
+ *
+ * `0` — no window, which is the shape every release before this one had.  A
+ * window costs a slot of the cap for every entity in it and only pays for
+ * itself once something is filtering at its far end, so it ships off and is
+ * turned on together with `passivationAdmissionFilter`.
+ */
+export const DEFAULT_PASSIVATION_ADMISSION_WINDOW_PROPORTION = 0;
+
+/**
+ * Built-in default for {@link ShardingOptionsType.passivationAdmissionFilter}
+ * (#848).  Mirrors `actor-ts.sharding.passivation.admission-filter`.
+ */
+export const DEFAULT_PASSIVATION_ADMISSION_FILTER: EntityAdmissionFilter = 'off';
+
+/**
+ * Built-in default for {@link ShardingOptionsType.passivationStopTimeoutMs} —
+ * how long a passivating entity may take to stop before the shard stops it
+ * outright (#848).  Mirrors `actor-ts.sharding.passivation.stop-timeout`.
+ *
+ * Ten seconds is chosen against what the window is *for* rather than against a
+ * measurement: it is the budget an entity has to finish in-flight work and
+ * flush state after receiving its stop message, and an entity that needs longer
+ * than that is doing something a passivation cannot wait on anyway.  The cost
+ * of it being too short is a stop that arrives while the entity is still
+ * draining; the cost of no timeout at all — the state before #848 — is an
+ * entity that ignores its stop message holding a slot against `maxEntities`
+ * forever.
+ */
+export const DEFAULT_PASSIVATION_STOP_TIMEOUT_MS = 10_000;
+
+/**
  * Built-in default for {@link ShardingOptionsType.bufferSize} — how many
  * messages one region may hold, across every shard, while their homes are
  * unknown or in transition (#849, #461).  Mirrors
@@ -210,6 +326,62 @@ export type ShardingOptionsType<TMessage> = {
    */
   readonly maxEntities?: number;
   /**
+   * Which resident entity the cap gives up when a new one arrives (#848).
+   * Default: `'least-recently-used'`.  Inert while `maxEntities` is `0`.
+   *
+   * Nested under `passivation` in HOCON and flat here, the translation
+   * `entity-recovery.*` and `stale-region-detection.*` already make: `mergeOptions`
+   * is a shallow spread, so a nested field would let a caller who sets one knob
+   * blow away everything the config file supplied beside it.
+   */
+  readonly passivationReplacement?: EntityReplacementPolicy;
+  /**
+   * Share of the cap held by the *protected* segment under
+   * `'segmented-least-recently-used'` (#848).  Default: `0.8`; the remainder is
+   * the probationary segment.  Ignored under every other policy.
+   *
+   * A scalar rather than a list of level proportions, and #848 asked the
+   * question explicitly: two levels is what "keep what has proven itself, evict
+   * what has not" needs, an N-level split has no caller here, and a list would
+   * be the first array leaf in `reference.conf` with no matching reader kind in
+   * the documented-defaults guard.  A list can be added beside this later; a
+   * shipped key cannot be renamed.
+   */
+  readonly passivationSegmentedProtectedProportion?: number;
+  /**
+   * Share of the cap held as a probationary *admission window* in front of the
+   * replacement policy (#848).  Default: `0` — no window.
+   *
+   * The window is what makes an admission filter expressible at all.  A region
+   * cannot refuse the entity a message has just arrived for, because it is
+   * being created to receive that message; with a window it does not have to.
+   * The newcomer enters the window, and the candidate judged against the
+   * incumbent is whatever falls out of the window's far end — an entity that
+   * arrived some time ago and can be passivated like any other.
+   */
+  readonly passivationAdmissionWindowProportion?: number;
+  /**
+   * Whether a candidate leaving the admission window has to out-rank the entity
+   * it would displace (#848).  Default: `'off'`.
+   *
+   * `'frequency-sketch'` requires `passivationAdmissionWindowProportion > 0`;
+   * `ShardingOptionsValidator` rejects the pair rather than degrading silently
+   * to no filter, which would be a configuration that reads as armed and is not.
+   */
+  readonly passivationAdmissionFilter?: EntityAdmissionFilter;
+  /**
+   * How long an entity that was sent its `Passivate` stop-message may take to
+   * stop before the shard stops it outright, in ms (#848).  Default: `10000`;
+   * `0` waits forever, which is what every release before #848 did.
+   *
+   * The stop-message path is cooperative by design — the entity chooses when to
+   * finish — and until this existed it was cooperative with no backstop: an
+   * entity that never acted on the message never terminated, `EntityStopped`
+   * never reached the region, and its slot was held against `maxEntities` for
+   * the lifetime of the node.
+   */
+  readonly passivationStopTimeoutMs?: number;
+  /**
    * Cap the region's routing buffer — the messages it holds while a shard's
    * home is unknown or in transition (#849, #461).
    *
@@ -383,6 +555,31 @@ export class ShardingOptionsBuilder<
     return this.set('maxEntities', maxEntities);
   }
 
+  /** Which resident entity the cap gives up on overflow.  Default: `'least-recently-used'`. */
+  withPassivationReplacement(passivationReplacement: EntityReplacementPolicy): this {
+    return this.set('passivationReplacement', passivationReplacement);
+  }
+
+  /** Share of the cap held by the protected segment under segmented LRU.  Default: 0.8. */
+  withPassivationSegmentedProtectedProportion(passivationSegmentedProtectedProportion: number): this {
+    return this.set('passivationSegmentedProtectedProportion', passivationSegmentedProtectedProportion);
+  }
+
+  /** Share of the cap held as a probationary admission window.  Default: 0 (no window). */
+  withPassivationAdmissionWindowProportion(passivationAdmissionWindowProportion: number): this {
+    return this.set('passivationAdmissionWindowProportion', passivationAdmissionWindowProportion);
+  }
+
+  /** Make a candidate leaving the window out-rank what it displaces.  Default: `'off'`. */
+  withPassivationAdmissionFilter(passivationAdmissionFilter: EntityAdmissionFilter): this {
+    return this.set('passivationAdmissionFilter', passivationAdmissionFilter);
+  }
+
+  /** Force-stop an entity that ignored its stop-message after this long, in ms.  Default: 10000. */
+  withPassivationStopTimeoutMs(passivationStopTimeoutMs: number): this {
+    return this.set('passivationStopTimeoutMs', passivationStopTimeoutMs);
+  }
+
   /**
    * Cap the region-wide routing buffer; the newest message is dead-lettered on
    * overflow.  Default: 100000.  `0` = never buffer.
@@ -470,6 +667,87 @@ export class ShardingOptionsValidator<
     }
     if (options.maxEntities !== undefined && (!Number.isInteger(options.maxEntities) || options.maxEntities < 0)) {
       this.fail('maxEntities', 'must be an integer >= 0', options.maxEntities);
+    }
+    if (
+      options.passivationReplacement !== undefined
+      && !ENTITY_REPLACEMENT_POLICIES.includes(options.passivationReplacement)
+    ) {
+      this.fail(
+        'passivationReplacement',
+        `must be one of ${ENTITY_REPLACEMENT_POLICIES.map((policy) => `'${policy}'`).join(', ')}`,
+        options.passivationReplacement,
+      );
+    }
+    if (
+      options.passivationAdmissionFilter !== undefined
+      && !ENTITY_ADMISSION_FILTERS.includes(options.passivationAdmissionFilter)
+    ) {
+      this.fail(
+        'passivationAdmissionFilter',
+        `must be one of ${ENTITY_ADMISSION_FILTERS.map((filter) => `'${filter}'`).join(', ')}`,
+        options.passivationAdmissionFilter,
+      );
+    }
+    // Both bounds are open at the ends the degenerate cases sit at.  A protected
+    // share of `0` or `1` is a segmented policy with one empty segment, which is
+    // plain LRU under a longer name; a window of `1` leaves no main region for a
+    // candidate to be promoted into.  `0` for the window IS a real value — "no
+    // window" — so only that bound is closed below.
+    if (
+      options.passivationSegmentedProtectedProportion !== undefined
+      && (typeof options.passivationSegmentedProtectedProportion !== 'number'
+        || !Number.isFinite(options.passivationSegmentedProtectedProportion)
+        || options.passivationSegmentedProtectedProportion <= 0
+        || options.passivationSegmentedProtectedProportion >= 1)
+    ) {
+      this.fail(
+        'passivationSegmentedProtectedProportion',
+        'must be a number in (0, 1)',
+        options.passivationSegmentedProtectedProportion,
+      );
+    }
+    if (
+      options.passivationAdmissionWindowProportion !== undefined
+      && (typeof options.passivationAdmissionWindowProportion !== 'number'
+        || !Number.isFinite(options.passivationAdmissionWindowProportion)
+        || options.passivationAdmissionWindowProportion < 0
+        || options.passivationAdmissionWindowProportion >= 1)
+    ) {
+      this.fail(
+        'passivationAdmissionWindowProportion',
+        'must be a number in [0, 1)',
+        options.passivationAdmissionWindowProportion,
+      );
+    }
+    // `0` is a real value — wait forever, the pre-#848 behaviour — so this is a
+    // non-negative rule rather than a positive one.
+    if (
+      options.passivationStopTimeoutMs !== undefined
+      && (typeof options.passivationStopTimeoutMs !== 'number'
+        || !Number.isFinite(options.passivationStopTimeoutMs)
+        || options.passivationStopTimeoutMs < 0)
+    ) {
+      this.fail(
+        'passivationStopTimeoutMs',
+        'must be a non-negative finite number',
+        options.passivationStopTimeoutMs,
+      );
+    }
+    // Cross-field, and checked against the resolved pair so setting only the
+    // filter cannot silently cross the window's default.  A filter with no
+    // window has nothing to decide: the only candidate would be the entity a
+    // message has just arrived for, which the region is not free to refuse.
+    // Degrading to "no filter" instead would be a configuration that reads as
+    // armed and is not (#848).
+    const admissionFilter = options.passivationAdmissionFilter ?? DEFAULT_PASSIVATION_ADMISSION_FILTER;
+    const windowProportion =
+      options.passivationAdmissionWindowProportion ?? DEFAULT_PASSIVATION_ADMISSION_WINDOW_PROPORTION;
+    if (admissionFilter !== 'off' && !(windowProportion > 0)) {
+      this.fail(
+        'passivationAdmissionFilter',
+        `'${admissionFilter}' needs passivationAdmissionWindowProportion > 0 to have a candidate to judge`,
+        admissionFilter,
+      );
     }
     // `0` is legal and means "never buffer" — the tightest setting, not the
     // absence of one — so the floor is 0 rather than 1.

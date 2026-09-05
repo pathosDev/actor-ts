@@ -241,8 +241,23 @@ The framework's behavior:
 - **Idle-timeout passivation** (`passivationIdleMs`) — appends a
   `stopped` event.  Next message respawns it; the store
   receives a `started` event again.
-- **`maxEntities` LRU passivation** — same.
+- **`maxEntities` passivation** — same.
 - **`Passivate` from the entity itself** — same.
+
+### Remembered entities count against `maxEntities`
+
+A remembered entity is *pre-created*: the region is handed a shard's registry
+and starts every entity in it, without anything having been routed to them.
+Those starts now go through the same cap and the same replacement policy as a
+message-driven one, so a node handed a registry larger than `maxEntities`
+settles back at the cap by passivating down to it, rather than exceeding it by
+the size of the registry and staying there.
+
+That is worth pairing with [`entity-recovery`](#pacing-a-restore) when the two
+disagree: with a small cap and a large registry, an unpaced `all` restore
+spawns every entity and then passivates most of them again immediately.  Either
+raise the cap above the registry you expect a node to hold, or accept that the
+cap is the real bound and the registry is a superset of what stays resident.
 
 For workloads where you want **eager re-spawn even of recently-idle
 entities**, set `passivationIdleMs: 0` so they stay around.

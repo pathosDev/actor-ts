@@ -1564,7 +1564,12 @@ pro Consumer](/de/cache/in-memory/#ein-cache-pro-consumer) braucht.
 | `sharding.remember-entities` | `false` | Persistiere die Menge aktiver Entity-IDs. |
 | `sharding.passivation-idle` | `5m` | Auto-Passiviere eine Entität nach diesem Idle-Fenster.  `0` = deaktiviert.  Eine Entität, die Zustand im Speicher hält und ihn nicht in `preStart` wiederaufbaut, verliert ihn dabei — siehe [Passivierung](/de/cluster/sharding/overview/#passivierung). |
 | `sharding.shard-passivation-idle` | *(ungesetzt)* | Auto-Passiviere einen Shard, nachdem er so lange leer stand.  Ungesetzt folgt er `passivation-idle`; `0` hält leere Shards resident.  Bewusst nicht in der `reference.conf`, denn genau von einem ausgelieferten Wert müsste sich „ungesetzt" unterscheiden lassen. |
-| `sharding.max-entities` | `0` | Entity-Obergrenze pro Node; bei Überlauf wird die am längsten ungenutzte Entität passiviert.  `0` = kein Cap. |
+| `sharding.max-entities` | `0` | Entity-Obergrenze **pro Sharded Type auf diesem Node**; bei Überlauf wird die Entität passiviert, die die Ersetzungsstrategie benennt.  `0` = kein Cap.  Zwei gestartete Typen bekommen je das volle Cap — siehe [Wählen, was ein voller Node hergibt](#wählen-was-ein-voller-node-hergibt) weiter unten. |
+| `sharding.passivation.replacement` | `least-recently-used` | Welche residente Entität das Cap hergibt.  Außerdem `segmented-least-recently-used` und `least-frequently-used`.  Bei `max-entities = 0` wirkungslos. |
+| `sharding.passivation.segmented-protected-proportion` | `0.8` | Anteil des Caps im *geschützten* Segment unter `segmented-least-recently-used`; der Rest ist Bewährung.  Unter jeder anderen Strategie wirkungslos. |
+| `sharding.passivation.admission-window-proportion` | `0.0` | Anteil des Caps, der als Bewährungsfenster vor der Strategie reserviert wird.  `0` = kein Fenster.  Vom `admission-filter` vorausgesetzt. |
+| `sharding.passivation.admission-filter` | `off` | `frequency-sketch` verlangt von einem Kandidaten, der das Fenster verlässt, dass er die Entität überbietet, die er verdrängen würde.  Ohne `admission-window-proportion > 0` bei `sharding.start(...)` abgelehnt. |
+| `sharding.passivation.stop-timeout` | `10s` | Wie lange eine Entität auf die Stop-Nachricht eines `Passivate` reagieren darf, bevor der Shard sie hart stoppt.  `0` wartet unbegrenzt. |
 | `sharding.buffer-size` | `100000` | Wie viele Nachrichten eine Region **über alle ihre Shards zusammen** halten darf, solange deren Heimat unbekannt ist oder gerade übergeben wird.  Jenseits des Caps wird die *neueste* Nachricht mit ihrem Sender an die Dead Letters gegeben — was schon in der Queue steht, behält so die Reihenfolge des Senders.  **Achte auf die umgekehrte Polarität zu `max-entities` oben**: hier bedeutet `0` *niemals puffern — sofort Dead Letter*, nicht „kein Cap". |
 | `sharding.register-retry-interval` | `500ms` | Wie oft eine Region eine unbestätigte Registrierung erneut an den Koordinator schickt.  Alles, was für den Typ geroutet wird, puffert bis zur Antwort des Koordinators — das ist also zugleich die Dauer, die ein verlorenes `Register` den Typ blockiert. |
 | `sharding.shard-region-query-timeout` | `5s` | Default-Wartezeit für `sharding.shards()` und `sharding.shardRefFor()`.  Ein explizites `timeoutMs`-Argument sticht sie weiterhin.  Unabhängig davon, wie lange die Region eine Korrelation für ein knotenübergreifendes `ask` hält — das sind bewusst Minuten. |
@@ -1769,6 +1774,72 @@ Ein `check-interval` gibt es bewusst nicht.  Der Sweep läuft auf dem
 `rebalance-interval`-Tick mit, der ohnehin schon der Regler dafür ist, wie oft
 der Koordinator auf die Shard-Map schaut — die Erkennungslatenz ist also
 `stale-after` plus höchstens ein Tick.
+
+#### Wählen, was ein voller Node hergibt
+
+`max-entities` sagt, **wie viele** Entities ein Node hält; der
+`passivation`-Block sagt, **welche geht**, wenn eine neue dazukommt.  Jeder Key
+darin ist bei `max-entities = 0` wirkungslos — und das ist der ausgelieferte
+Default, ein Deployment ohne Cap ist von allem hier also unberührt.
+
+Lies die Reichweite des Caps, bevor du daran drehst: es gilt **pro Sharded
+Type auf diesem Node**, nicht node-weit und nicht pro Shard.  Ein Node, der
+einen `cart`- und einen `session`-Typ mit `max-entities = 50000` betreibt, hält
+bis zu hunderttausend Entities, fünfzigtausend je Typ.  Pro Shard würde die
+Grenze über eine Menge geteilt, die sich bei jedem Rebalance ändert; node-weit
+bräuchte sie ein Budget, das sich Regionen teilen, die nichts voneinander
+wissen.
+
+Der Default `least-recently-used` hat einen blinden Fleck, und der ist der
+Grund für den Block.  Aktualität kann *einmal überhaupt benutzt* nicht von
+*bis eben ständig benutzt* unterscheiden — ein Durchlauf über einen großen
+kalten Schlüsselraum (ein nächtlicher Export, ein Crawler, ein Backfill)
+verdrängt das Arbeitsset Entität für Entität und füllt den Cache mit IDs, nach
+denen nie wieder jemand fragt:
+
+```hocon
+actor-ts.sharding {
+  max-entities = 50000
+  passivation {
+    replacement = segmented-least-recently-used
+    segmented-protected-proportion = 0.8
+    admission-window-proportion = 0.01
+    admission-filter = frequency-sketch
+  }
+}
+```
+
+- **`segmented-least-recently-used`** teilt das Cap in zwei Hälften.  Eine
+  einmal benutzte Entität sitzt auf *Bewährung*; wird sie erneut benutzt,
+  wandert sie ins *geschützte* Segment, und verdrängt wird zuerst aus der
+  Bewährung.  Eine Scan-Entität wird nie ein zweites Mal berührt, kann also nur
+  eine andere Scan-Entität verdrängen.
+- **`admission-window-proportion`** reserviert einen kleinen Teil des Caps für
+  brandneue Ankömmlinge.  Erst das macht einen Filter überhaupt möglich: eine
+  Region kann die Entität, für die gerade eine Nachricht eingetroffen ist,
+  nicht ablehnen — sie wird ja erzeugt, um diese Nachricht zu empfangen —, und
+  so ist der Kandidat, der gegen den Amtsinhaber antritt, stattdessen das, was
+  am anderen Ende des Fensters herausfällt.
+- **`admission-filter = frequency-sketch`** ist dieses Urteil.  Ein kompakter
+  Count-Min-Sketch darüber, wie oft jede ID gesehen wurde, entscheidet, wer
+  bleibt — und er erinnert sich an IDs, die der Node längst nicht mehr hält,
+  was genau die Historie ist, um eine früher heiße Entität wiederzuerkennen.
+  Ohne Fenster wird er abgelehnt, statt still nichts zu tun.
+
+`least-frequently-used` ist die dritte Strategie: die wenigsten Zugriffe
+verlieren, wobei alle Zähler periodisch halbiert werden, damit die Rangfolge
+dem jüngeren Verkehr folgt statt einer Lebenszeitsumme.  Sie passt zu einem
+Arbeitsset, das stabil, aber nicht aktuell ist — eine Flotte von Geräten, die
+in langsamem Takt meldet —, wo Aktualität fast nichts aussagt.
+
+`stop-timeout` hat mit dieser Wahl nichts zu tun und gilt für jedes Cap.  Wenn
+sich eine Entität mit
+[`Passivate`](/de/cluster/sharding/overview/#passivierung) selbst passiviert,
+ist die Stop-Nachricht eine Bitte: die Entität entscheidet, wann sie darauf
+reagiert.  Tut sie es nie, terminiert sie nie, und ihr Platz bleibt für die
+Lebensdauer des Nodes gegen `max-entities` belegt.  Nach `stop-timeout` stoppt
+der Shard sie hart.  `0` stellt das unbegrenzte Warten wieder her, was dort
+richtig ist, wo ein geordnetes Herunterfahren tatsächlich keine Schranke hat.
 
 Ein Setting für genau einen Typ gehört deshalb in den Builder; die
 Config-Datei ist für die node-weite Grundeinstellung, die du ohne Rebuild
