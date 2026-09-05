@@ -1,7 +1,11 @@
 import { NodeAddress } from '../cluster/NodeAddress.js';
 import { addressMatchesPins, parseAddressPin } from '../util/CidrMatch.js';
 import type { AddressPin } from '../util/CidrMatch.js';
-import { DnsSeedProviderOptionsValidator } from './DnsSeedProviderOptions.js';
+import {
+  DEFAULT_DNS_CACHE_TTL_MS,
+  DEFAULT_DNS_USE_SRV,
+  DnsSeedProviderOptionsValidator,
+} from './DnsSeedProviderOptions.js';
 import type { DnsSeedProviderOptions, DnsSeedProviderOptionsType } from './DnsSeedProviderOptions.js';
 import type { SeedProvider } from './SeedProvider.js';
 
@@ -35,7 +39,7 @@ export class DnsSeedProvider implements SeedProvider {
   constructor(options: DnsSeedProviderOptions = {}) {
     this.options = options as DnsSeedProviderOptionsType;
     new DnsSeedProviderOptionsValidator().validate(this.options);
-    this.cacheTtlMs = this.options.cacheTtlMs ?? 60_000;
+    this.cacheTtlMs = this.options.cacheTtlMs ?? DEFAULT_DNS_CACHE_TTL_MS;
     this.pins = (this.options.pinnedAddresses ?? [])
       .map((entry) => parseAddressPin(entry, 'DnsSeedProviderOptions'));
   }
@@ -56,7 +60,7 @@ export class DnsSeedProvider implements SeedProvider {
   invalidateCacheForTest(): void { this.cached = null; }
 
   private async doLookup(): Promise<NodeAddress[]> {
-    if (this.options.useSrv) {
+    if (this.options.useSrv ?? DEFAULT_DNS_USE_SRV) {
       const resolveSrv = this.options.resolveSrv ?? defaultResolveSrv;
       const records = await resolveSrv(this.options.hostname);
       return this.applyPins(records.map(r => new NodeAddress(this.options.systemName, r.name, r.port)));

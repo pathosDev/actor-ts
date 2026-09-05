@@ -6,7 +6,8 @@ import {
   type SeedProvider,
 } from '../discovery/index.js';
 import { autoDiscovery, singleProviderDiscovery } from '../discovery/AutoDiscovery.js';
-import { AutoDiscoveryOptions } from '../discovery/AutoDiscoveryOptions.js';
+import { AutoDiscoveryOptions, readAutoDiscoveryOptionsFromConfig } from '../discovery/AutoDiscoveryOptions.js';
+import type { AutoDiscoveryOptionsType } from '../discovery/AutoDiscoveryOptions.js';
 import { AggregateSeedProvider } from '../discovery/AggregateSeedProvider.js';
 import { ConfigSeedProvider } from '../discovery/ConfigSeedProvider.js';
 import { ConfigSeedProviderOptions } from '../discovery/ConfigSeedProviderOptions.js';
@@ -24,8 +25,10 @@ import {
   ClusterBootstrapOptionsValidator,
   DEFAULT_AWAIT_READY_MS,
   DEFAULT_BIND_HOST,
+  DEFAULT_DISCOVERY_METHOD,
   DEFAULT_PORT,
   readClusterBootstrapDefaultsFromConfig,
+  readClusterBootstrapDiscoveryFromConfig,
 } from './ClusterBootstrapOptions.js';
 import type {
   ClusterBootstrapConfigDefaults,
@@ -102,25 +105,37 @@ export async function bootstrapCluster(
   // A refused bootstrap must not leave the system (and its scheduler) running:
   // the stable-observation phase fails *by design* when discovery cannot be
   // agreed on, and a process that reports the failure and then hangs is not
-  // the loud failure the design promised.
+  // the loud failure the design promised.  The config reads are inside the
+  // same guard because they refuse a malformed `discovery.method` (#860),
+  // which is the same kind of refusal and would otherwise leak the system.
   let joinPlan: JoinPlan;
   try {
+    // What the seed provider is built from — the caller's `discovery:` over
+    // the config selector over the shipped `'auto'`, and `actor-ts.discovery.*`
+    // under whatever the caller passed.  Resolved here rather than inside the
+    // two builders so both branches below see the same answer.
+    const discoveryDefaults = readClusterBootstrapDiscoveryFromConfig(system.config);
+    const discoverySettings: DiscoverySettings = {
+      method: resolvedOptions.discovery ?? discoveryDefaults.method ?? DEFAULT_DISCOVERY_METHOD,
+      fromConfig: readAutoDiscoveryOptionsFromConfig(system.config),
+      serviceName: discoveryDefaults.serviceName,
+    };
     joinPlan = resolvedOptions.stableObservation
       ? await observeStableSeeds({
         tuning: resolvedOptions.stableObservation === true ? {} : resolvedOptions.stableObservation,
         fromConfig: readStableObservationOptionsFromConfig(system.config),
-        seedProvider: buildSeedProviderFor(resolvedOptions, advertisedPort, log),
+        seedProvider: buildSeedProviderFor(resolvedOptions, advertisedPort, log, discoverySettings),
         selfAddress: new NodeAddress(resolvedOptions.name, advertisedHost, advertisedPort),
         log: (message) => system.log.info(message),
       })
       : {
         seeds: await resolveSeeds({
           explicit: resolvedOptions.seeds,
-          discovery: resolvedOptions.discovery,
           systemName: resolvedOptions.name,
           port: advertisedPort,
           selfHost: advertisedHost,
           log,
+          discoverySettings,
         }),
       };
   } catch (err) {
@@ -258,18 +273,32 @@ function extractSystemOptions(resolvedOptions: ClusterBootstrapOptionsType): Act
   return out;
 }
 
+/**
+ * Everything the seed provider is built from that did not come from the
+ * caller's options directly — resolved once in {@link bootstrapCluster} and
+ * passed down, so the two builders below cannot disagree about it (#860).
+ */
+type DiscoverySettings = {
+  /** The caller's `discovery:` if there was one, else the config selector, else `'auto'`. */
+  readonly method: NonNullable<ClusterBootstrapOptionsType['discovery']>;
+  /** `actor-ts.discovery.*`, absent keys absent. */
+  readonly fromConfig: Partial<AutoDiscoveryOptionsType>;
+  /** `actor-ts.cluster.bootstrap.discovery.service-name`, absent when unset or `""`. */
+  readonly serviceName?: string;
+};
+
 async function resolveSeeds(args: {
   explicit: ClusterBootstrapOptionsType['seeds'];
-  discovery: ClusterBootstrapOptionsType['discovery'];
   systemName: string;
   port: number;
   selfHost: string;
   log: (message: string, err?: unknown) => void;
+  discoverySettings: DiscoverySettings;
 }): Promise<string[]> {
   if (args.explicit !== undefined) {
     return [...args.explicit];
   }
-  const provider = buildSeedProvider(args.discovery ?? 'auto', {
+  const provider = buildSeedProvider(args.discoverySettings, {
     systemName: args.systemName,
     port: args.port,
     log: args.log,
@@ -379,6 +408,7 @@ function buildSeedProviderFor(
   resolvedOptions: ClusterBootstrapOptionsType,
   port: number,
   log: (message: string, err?: unknown) => void,
+  discoverySettings: DiscoverySettings,
 ): SeedProvider {
   if (resolvedOptions.seeds !== undefined) {
     // `seeds: []` is a deliberate "there is nobody else", which
@@ -390,29 +420,46 @@ function buildSeedProviderFor(
       .withSystemName(resolvedOptions.name);
     return new ConfigSeedProvider(seedOptions);
   }
-  return buildSeedProvider(resolvedOptions.discovery ?? 'auto', {
+  return buildSeedProvider(discoverySettings, {
     systemName: resolvedOptions.name,
     port,
     log,
   });
 }
 
+/**
+ * Assemble the provider the two paths above poll.
+ *
+ * The options are layered explicit-over-config in the order the framework
+ * documents, and `mergeOptions` is what does it, so an absent config key
+ * stays absent rather than shadowing the environment layer inside
+ * `autoDiscovery` with an explicit `undefined`.  `systemName`, `port` and
+ * `log` are the join's own facts and are applied last: they are not settings
+ * a config file could disagree with, and `actor-ts.discovery.*` ships no
+ * leaf for any of them.
+ */
 function buildSeedProvider(
-  spec: NonNullable<ClusterBootstrapOptionsType['discovery']>,
+  discoverySettings: DiscoverySettings,
   base: { systemName: string; port: number; log: (message: string, err?: unknown) => void },
 ): SeedProvider {
-  const discoveryOptions = AutoDiscoveryOptions.create()
-    .withSystemName(base.systemName)
-    .withPort(base.port)
-    .withLog(base.log);
+  const spec = discoverySettings.method;
+  if (typeof spec !== 'string') {
+    // A `SeedProvider` instance or a `{ providers }` chain is the caller's own
+    // object — there is nothing for the config block to layer under it, and
+    // `actor-ts.discovery.*` deliberately cannot name one (#160 owns that).
+    if ('providers' in spec) return new AggregateSeedProvider([...spec.providers], base.log);
+    return spec;
+  }
+  const fromConfig: Partial<AutoDiscoveryOptionsType> = discoverySettings.serviceName !== undefined
+    ? { ...discoverySettings.fromConfig, serviceName: discoverySettings.serviceName }
+    : discoverySettings.fromConfig;
+  const discoveryOptions = mergeOptions<AutoDiscoveryOptionsType>({}, fromConfig, {
+    systemName: base.systemName,
+    port: base.port,
+    log: base.log,
+  });
   if (spec === 'auto') return autoDiscovery(discoveryOptions);
-  if (spec === 'config' || spec === 'dns' || spec === 'kubernetes') {
-    return singleProviderDiscovery(spec, discoveryOptions);
-  }
-  if ('providers' in spec) {
-    return new AggregateSeedProvider([...spec.providers], base.log);
-  }
-  return spec;
+  return singleProviderDiscovery(spec, discoveryOptions);
 }
 
 /**

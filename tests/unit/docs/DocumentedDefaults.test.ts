@@ -61,6 +61,9 @@ import {
   DEFAULT_MAX_SUBSCRIBERS_PER_KEY,
   DEFAULT_MAX_SUBSCRIPTIONS_TOTAL,
 } from '../../../src/discovery/ReceptionistOptions.js';
+import { DEFAULT_DISCOVERY_METHOD } from '../../../src/cluster/ClusterBootstrapOptions.js';
+import { DEFAULT_DNS_CACHE_TTL_MS, DEFAULT_DNS_USE_SRV } from '../../../src/discovery/DnsSeedProviderOptions.js';
+import { DEFAULT_KUBERNETES_NAMESPACE } from '../../../src/discovery/KubernetesApiSeedProviderOptions.js';
 import {
   DEFAULT_NUM_SHARDS,
   DEFAULT_PASSIVATION_IDLE_MS,
@@ -324,6 +327,28 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // `await-ready` is comment-only in reference.conf (unset selects the
   // grace-aware computed default, #1086) — no leaf, so nothing to assert.
   { key: 'actor-ts.cluster.bootstrap.minimum-members', kind: 'int', constant: DEFAULT_MINIMUM_MEMBERS },
+  // The selector half of the block (#860).  In the table rather than in
+  // LITERAL_AT_THE_READ_SITE because the `?? 'auto'` literals it used to be
+  // were named into a constant in the same change, precisely so the published
+  // enum's default has something to disagree with.  Its `service-name`
+  // sibling is a PLACEHOLDERS entry — "" is the shape of the key, and the
+  // reader drops it rather than passing it on.
+  { key: 'actor-ts.cluster.bootstrap.discovery.method', kind: 'string', constant: DEFAULT_DISCOVERY_METHOD },
+
+  /* --- discovery --- */
+  // Per-provider seed-discovery settings (#860).  `use-srv` is in the table
+  // and not in FEATURE_SWITCHES for the reason `remote.untrusted-mode` is:
+  // that group's stated reason is having no constant to disagree with, and
+  // this one has `DnsSeedProvider` reading `options.useSrv ?? DEFAULT_DNS_USE_SRV`.
+  // `namespace` is likewise a real constant rather than a literal at the read
+  // site — the two `?? 'default'` spellings in `AutoDiscovery` were named in
+  // the same change.  The two `pinned-addresses` lists and `config.seeds` are
+  // comment-only in reference.conf (unset means "no pinning" / "no static
+  // list", which an always-present empty list could not say), so there is no
+  // leaf here to assert.
+  { key: 'actor-ts.discovery.dns.cache-ttl', kind: 'duration', constant: DEFAULT_DNS_CACHE_TTL_MS },
+  { key: 'actor-ts.discovery.dns.use-srv', kind: 'bool', constant: DEFAULT_DNS_USE_SRV },
+  { key: 'actor-ts.discovery.kubernetes.namespace', kind: 'string', constant: DEFAULT_KUBERNETES_NAMESPACE },
 
   /* --- remote --- */
   { key: 'actor-ts.remote.tcp.port', kind: 'int', constant: DEFAULT_PORT },
@@ -785,6 +810,13 @@ const PLACEHOLDERS: readonly string[] = [
   'actor-ts.cluster.split-brain-resolver.keep-majority.role',
   'actor-ts.cluster.split-brain-resolver.keep-oldest.role',
   'actor-ts.cluster.split-brain-resolver.static-quorum.role',
+  // The same reading one block over (#860): "" is the published shape of the
+  // key, and `readClusterBootstrapDefaultsFromConfig` drops it rather than
+  // passing it on — which is what lets an unset key fall through to
+  // CLUSTER_SERVICE_NAME instead of shadowing it with a service name nobody
+  // wrote.  There is no constant it could be compared against: the service
+  // whose members are this cluster's peers is per-deployment by definition.
+  'actor-ts.cluster.bootstrap.discovery.service-name',
   'actor-ts.logger.sinks.gelf.url',
   'actor-ts.logger.sinks.gelf.host-name',
   'actor-ts.logger.sinks.otlp.service-name',

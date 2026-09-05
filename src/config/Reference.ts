@@ -491,6 +491,32 @@ actor-ts {
       required-contact-points = 1
       self-election-grace     = 10s
 
+      # WHICH provider the bootstrap polls, and WHAT it polls for.  Both keys
+      # are read by every bootstrapCluster call, not only the stable-observation
+      # one, and both are layered under the discovery: option in code.
+      #
+      # method names the provider: auto | config | dns | kubernetes -- the
+      # vocabulary the option already accepts, auto included because it is
+      # the shipped default and a config that could not express the current
+      # behaviour would be a trap.  auto is the ladder (a static seed list,
+      # then the Kubernetes API inside a pod, then DNS); the other three pin
+      # one rung, so a misconfigured deployment fails loudly instead of
+      # falling through to a provider that answers with nothing.
+      #
+      # service-name is the DNS name the dns rung resolves and the Service
+      # whose Endpoints the kubernetes rung reads -- one key because one
+      # deployment names one service.  "" means "not stated here", and the
+      # CLUSTER_SERVICE_NAME environment variable then answers, which is the
+      # layer BELOW this block rather than above it.  A deployment that wants
+      # the variable at config precedence lifts it itself, which is a read
+      # during parsing and not a fourth precedence layer:
+      #
+      #   service-name = \${?CLUSTER_SERVICE_NAME}
+      discovery {
+        method       = "auto"
+        service-name = ""
+      }
+
       # Fewest up members -- self included -- before bootstrapCluster's
       # awaitReady (and Cluster.awaitReady / isReady) counts the cluster as
       # ready.  1 keeps single-node development working; a deployment states
@@ -685,6 +711,81 @@ actor-ts {
     # handshake-timeout; a socket that sends nothing at all never reaches this
     # deadline, and the handshake timer is what covers that one.
     incomplete-frame-idle = 30s
+  }
+
+  # Seed discovery -- what the providers behind Cluster.bootstrap's
+  # discovery: option read when a deployment owns their settings rather than
+  # the application source.  Top-level rather than under cluster.* for the
+  # reason distributed-data is: the module is.  src/discovery/ has its own
+  # subpath export, a SeedProvider is BUILT and then handed to the cluster, and
+  # the same providers serve a hand-wired Cluster.join that never bootstraps.
+  #
+  # WHICH provider runs is not here -- that is
+  # cluster.bootstrap.discovery.method, because it is a property of the join,
+  # not of a provider.  This block is per-provider settings only, so a
+  # deployment can pin the DNS answer without also deciding the ladder.
+  #
+  # Precedence is the project's usual one, with the environment BELOW this
+  # block rather than above it: explicit options > this block > the CLUSTER_*
+  # variables > the built-in defaults.  The variables kept the bottom slot so
+  # an env-only deployment keeps working byte for byte; a deployment that wants
+  # one of them at config precedence lifts it with a substitution --
+  # namespace = \${?CLUSTER_NAMESPACE} -- which the parser resolves while
+  # reading the file, so it is still three layers and not four.
+  discovery {
+    dns {
+      # How long one resolved answer is reused before the resolver is asked
+      # again.  In-process and per provider instance on purpose: resolution is
+      # a per-process concern, and a shared cache would cost more than the
+      # lookup it saves.  Failures are never cached -- a query that threw is
+      # retried on the next call.  0 disables caching, which is what a
+      # deployment relying on rapid DNS failover wants.
+      cache-ttl = 60s
+
+      # Read SRV records instead of A records.  SRV carries a port per target,
+      # so each address is paired with the port the record names rather than
+      # with this node's own remoting port -- the shape a headless Service with
+      # named ports produces.
+      use-srv = false
+
+      # pinned-addresses ships no value on purpose: an always-present empty
+      # list could not express "no pinning", and no pinning is the default.
+      # It is the DNS-hijack mitigation (#145) -- an answer outside the list is
+      # discarded instead of being offered to the cluster as a seed, which
+      # matters most exactly where mTLS is not configured.
+      #
+      # The entry shape follows use-srv above, and a list with nothing usable
+      # in the configured mode is REFUSED rather than silently discarding every
+      # seed: CIDRs match the IPs A records return, host suffixes match the
+      # target names SRV records carry.
+      #
+      #   pinned-addresses = ["10.0.0.0/8"]
+    }
+
+    kubernetes {
+      # Namespace whose Endpoints object is read.  Same value as the
+      # CLUSTER_NAMESPACE variable, which stays the layer below.
+      namespace = "default"
+
+      # pinned-addresses -- deliberately unset for the same reason as the DNS
+      # one, and CIDRs only: Endpoints resolve to pod IPs, so a host suffix
+      # could never match and is refused.  This is not the same guard as the
+      # TLS pin the default fetcher already does; it is the layer above one --
+      # an Endpoints object may name ANY IP, cluster-external included, and
+      # RBAC that can write Endpoints is a much cheaper find than a CA key.
+      #
+      #   pinned-addresses = ["10.0.0.0/8"]
+    }
+
+    # config.seeds -- deliberately unset, so the whole config block is absent
+    # rather than published empty.  A static seed list is per-deployment
+    # identity with no publishable default: one written here would be correct
+    # on no node, and an empty list is what "we are alone" already means.  The
+    # CLUSTER_SEEDS variable stays the layer below it.
+    #
+    #   config {
+    #     seeds = ["node-a:2552", "node-b:2552"]
+    #   }
   }
 
   # Lease coordination -- what a Lease backend reads when it is built with

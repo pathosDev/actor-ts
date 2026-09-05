@@ -63,6 +63,36 @@ einmal und gehst weiter.  Siehe
 [Joining und Seeds](/de/cluster/joining-and-seeds/) für das
 vollständige Join-Protokoll.
 
+### Einen Provider konfigurieren, ohne den Code anzufassen
+
+`Cluster.bootstrap` baut einen dieser Provider für dich, und beide Hälften
+dieser Wahl sind aus HOCON heraus setzbar:
+`actor-ts.cluster.bootstrap.discovery.{method, service-name}` bestimmt,
+*welcher* Provider läuft und *wonach* er fragt, und
+[`actor-ts.discovery`](/de/reference/configuration/#actor-tsdiscovery) trägt
+die Einstellungen der Provider selbst — DNS-Cache-TTL, SRV-Modus, eine
+statische Seed-Liste und die `pinned-addresses`-Listen, die einschränken,
+welche Adressen ein Lookup überhaupt zurückgeben darf.
+
+```hocon
+actor-ts {
+  cluster.bootstrap.discovery {
+    method       = "dns"
+    service-name = "my-app.default.svc.cluster.local"
+  }
+  discovery.dns {
+    cache-ttl        = 30s
+    pinned-addresses = ["10.0.0.0/8"]
+  }
+}
+```
+
+Die Variablen `CLUSTER_SEEDS` / `CLUSTER_SERVICE_NAME` / `CLUSTER_NAMESPACE`
+funktionieren weiterhin und liegen **unter** diesen Keys: explizite Optionen,
+dann der Config-Block, dann die Umgebung, dann die eingebauten Defaults.  Einen
+Provider von Hand zu bauen — das Snippet oben auf dieser Seite — umgeht all
+das, und genau dafür gibt es diese Form.
+
 ### Ein Lookup ist noch keine Antwort
 
 Ein Provider liefert, was er *gerade jetzt* sieht. Bei einem

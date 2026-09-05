@@ -39,9 +39,17 @@ export {
   ClusterBootstrapOptions,
   ClusterBootstrapOptionsBuilder,
   ClusterBootstrapOptionsValidator,
+  DEFAULT_DISCOVERY_METHOD,
+  DISCOVERY_METHODS,
   readClusterBootstrapDefaultsFromConfig,
+  readClusterBootstrapDiscoveryFromConfig,
 } from './ClusterBootstrapOptions.js';
-export type { ClusterBootstrapOptionsType, ClusterBootstrapConfigDefaults } from './ClusterBootstrapOptions.js';
+export type {
+  ClusterBootstrapConfigDefaults,
+  ClusterBootstrapDiscoveryDefaults,
+  ClusterBootstrapOptionsType,
+  DiscoveryMethod,
+} from './ClusterBootstrapOptions.js';
 export type { BootstrappedCluster } from './ClusterBootstrap.js';
 
 // Stable-observation bootstrap (#148).
