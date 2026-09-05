@@ -382,6 +382,34 @@ export const ConfigKeys = {
 
   /** Persistence plugin selection + config — `actor-ts.persistence.*`. */
   persistence: {
+    /**
+     * System-wide persistence *behaviour* (#874), read once by
+     * `PersistenceExtension` — as distinct from the plugin-id namespaces
+     * below, which name another config root each.
+     *
+     * These five sit **directly** under `actor-ts.persistence`, one level
+     * above where a plugin id can appear (`persistence.<axis>.<backend>`), so
+     * the "that block is exclusively plugin-id namespaces" reading that sent
+     * `actor-ts.projection` to the top level still holds for everything a
+     * backend owns.
+     *
+     * Full dotted leaves rather than a block root, and here that matters:
+     * `NoDeadConfigKeys`' `coveringAccessor` falls back to the nearest root,
+     * and `persistence.journal` is already one — a root-only entry would let
+     * a leaf nothing reads pass the guard.
+     */
+    maxConcurrentRecoveries: 'actor-ts.persistence.max-concurrent-recoveries',
+    recoveryTimeout: 'actor-ts.persistence.recovery-timeout',
+    snapshotIsOptional: 'actor-ts.persistence.snapshot-is-optional',
+    /**
+     * The `CircuitBreakerExtension` id each store is called through — a name,
+     * not a block of numbers.  The numbers live under
+     * `actor-ts.circuit-breaker.<id>`, which #864 made the single home for
+     * them; publishing `max-failures` a second time here would be two homes
+     * for one mechanism.
+     */
+    journalBreaker: 'actor-ts.persistence.journal-breaker',
+    snapshotBreaker: 'actor-ts.persistence.snapshot-breaker',
     journal: {
       plugin: 'actor-ts.persistence.journal.plugin',
       inMemory: 'actor-ts.persistence.journal.in-memory',

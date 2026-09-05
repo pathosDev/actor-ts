@@ -993,6 +993,11 @@ because the name lives inside the result the check never returned.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
+| `persistence.max-concurrent-recoveries` | `50` | Journal replays allowed to run at once, system-wide.  `0` is uncapped.  `sharding.entity-recovery` paces entity *starts* one layer up; this bounds how many of their *replays* are in flight. |
+| `persistence.recovery-timeout` | `30s` | Ceiling on one actor's whole recovery — snapshot load, journal read, fold, and the `highestSeq` probe a fully compacted stream needs.  Past it the replay fails with a `RecoveryTimeoutError` through `onRecoveryFailure`.  `0` is no deadline. |
+| `persistence.snapshot-is-optional` | `false` | Fall back to a full journal replay when the snapshot store cannot answer.  Never applies to an actor that set `integrity()` or `encryption()` — see below. |
+| `persistence.journal-breaker` | `"persistence-journal"` | Circuit-breaker **id** the journal is called through; `""` disables it.  Its numbers live under `actor-ts.circuit-breaker.persistence-journal`. |
+| `persistence.snapshot-breaker` | `"persistence-snapshot"` | As above, for the snapshot store. |
 | `persistence.journal.plugin` | `"...in-memory"` | Fully-qualified key to the journal's config. |
 | `persistence.snapshot-store.plugin` | `"...in-memory"` | Fully-qualified key to the snapshot store's config. |
 | `persistence.durable-state.plugin` | `"...in-memory"` | Fully-qualified key to the durable-state store's config. |
@@ -1023,6 +1028,34 @@ because the name lives inside the result the check never returned.
 | `persistence.snapshot-store.object-storage.filesystem.dir` | `""` | Root directory, created recursively.  Required when `backend = filesystem`. |
 | `persistence.snapshot-store.object-storage.filesystem.lock-timeout` | `5s` | Wait for a per-key write lock before failing. |
 | `persistence.snapshot-store.object-storage.filesystem.stale-lock` | `30s` | Lock files older than this are force-removed. |
+
+**The two breaker leaves are ids, not blocks of numbers.**  A breaker's
+settings live under `actor-ts.circuit-breaker.<id>`, layered over
+`actor-ts.circuit-breaker.default` — that is the one home for them, and
+publishing `max-failures` a second time under `actor-ts.persistence` would be
+two places to change one thing.  What ships by default is the failure count
+(10 in a row, then 15 s of fast-fail) and **no** `call-timeout`, because
+omitting it is what means "no deadline".  To put a ceiling on a single append
+— the fix for a backend that accepts the connection and then stalls — name it:
+
+```hocon
+actor-ts.circuit-breaker.persistence-journal.call-timeout = 10s
+```
+
+A `JournalConcurrencyError` never counts as a breaker failure: it is the
+ownership verdict of a conditional append, not an outage, and ten unlucky
+entities losing a race must not fast-fail every healthy one on the node.  The
+same holds for `JournalIntegrityError` and `SnapshotIntegrityError` — a
+durable fact about the stored bytes that waiting cannot change.
+
+**`snapshot-is-optional` deliberately does not cover a snapshot that failed to
+verify.**  Stores that check integrity reject a tampered body the same way
+they report being unreachable, so an actor whose `persistenceOptions` carry
+`integrity` or `encryption` gets no fallback at all — tolerating the outage
+would tolerate the tampering, and turn an integrity control into a retry.
+`DurableStateActor` is outside all of this: its store comes from per-actor
+`DurableStateOptions` rather than from the extension, so there is no
+system-wide instance to guard.
 
 The `object-storage` block configures **both** stores
 `registerObjectStoragePlugins(ext)` returns: the snapshot store and the

@@ -10,11 +10,14 @@
  * *slightly* different route would be free to disagree with what the
  * actor actually recovers, which is precisely the thing you are using
  * it to check.  Where the two consumers genuinely need to differ, they
- * say so through `ReplayRequest` rather than by forking the algorithm;
- * `allowCompactedPrefix` is the only such knob.
+ * say so through `ReplayRequest` rather than by forking the algorithm.
+ * There are two such knobs, both off by default and both narrow:
+ * `allowCompactedPrefix`, which DevTools turns on, and
+ * `snapshotIsOptional`, which actor recovery takes from config.
  */
 import type { Journal } from './Journal.js';
-import type { PersistentEvent } from './JournalTypes.js';
+import type { PersistentEvent, Snapshot } from './JournalTypes.js';
+import type { Option } from '../util/Option.js';
 import type { SnapshotStore } from './SnapshotStore.js';
 import type { PersistenceOptions } from './PersistenceOptions.js';
 import type { EventAdapter, SnapshotAdapter } from './migration/Adapter.js';
@@ -55,6 +58,42 @@ export interface ReplayRequest<Event, State> {
    * partial fold next to the sequence number it actually reached.
    */
   readonly allowCompactedPrefix?: boolean;
+  /**
+   * Fall back to a full journal replay when the snapshot store cannot answer
+   * at all, instead of failing (`actor-ts.persistence.snapshot-is-optional`,
+   * #874).  Off by default.
+   *
+   * The second knob `ReplayRequest` carries for the same reason the first
+   * one does: the two consumers differ here, and saying so is cheaper than
+   * forking the algorithm.  Actor recovery supplies it from config; DevTools
+   * time travel does not — a panel that answered a question about the past
+   * from a fold that silently skipped the snapshot would be showing a state
+   * the actor never had.
+   *
+   * **Three things it does not do**, each deliberate:
+   *
+   *   - It never applies when `persistenceOptions.integrity` or `.encryption`
+   *     is set.  A store rejecting a tampered body and a store that is simply
+   *     down both surface as a rejected `loadLatest`, so tolerating one would
+   *     tolerate the other and turn #100's integrity control into a retry.
+   *   - It never swallows a `SnapshotIntegrityError`, whichever layer raised
+   *     it — the check below or a store that verifies its own bodies.
+   *   - It does not cover the fold: `assertTrustworthySnapshot` and
+   *     `decodeState` run outside the guarded region, so a snapshot that
+   *     loaded and then failed to be believed still fails the recovery.
+   */
+  readonly snapshotIsOptional?: boolean;
+  /**
+   * Called with the swallowed error when {@link snapshotIsOptional} turns a
+   * failed snapshot load into a full replay.
+   *
+   * A callback rather than a logger because `replayState` takes no
+   * `ActorSystem` and must not start taking one — and because the fallback is
+   * a fact the *caller* has to be able to report at its own level: for
+   * `PersistentActor` it is a `warn` naming the persistence id, and for a
+   * consumer that does not set the flag it never fires at all.
+   */
+  readonly onSnapshotLoadFailure?: (error: Error) => void;
 }
 
 /** Outcome of a replay. */
@@ -123,14 +162,20 @@ export async function replayState<Event, State>(
   let fromSnapshotSequenceNr: number | null = null;
 
   if (snapshotStore !== undefined) {
-    const snapshot = toSequenceNr === undefined
-      ? await snapshotStore.loadLatest<unknown>(persistenceId, persistenceOptions)
+    const load = (): Promise<Option<Snapshot<unknown>>> => (toSequenceNr === undefined
+      ? snapshotStore.loadLatest<unknown>(persistenceId, persistenceOptions)
       // `loadBefore` is exclusive, so a snapshot taken exactly AT the
       // target is skipped and its events are replayed instead — the
       // result is identical and the code needs no special case.
-      : await snapshotStore.loadBefore<unknown>(persistenceId, toSequenceNr + 1, persistenceOptions);
+      : snapshotStore.loadBefore<unknown>(persistenceId, toSequenceNr + 1, persistenceOptions));
+    // `null` is "there is no snapshot to consider", which a tolerated load
+    // failure and an empty store reach by different routes and mean the same
+    // thing about the fold.  Only the load itself is guarded — the integrity
+    // check and the decode below stay outside on purpose; see
+    // `ReplayRequest.snapshotIsOptional`.
+    const snapshot = await loadSnapshotOrNull(load, request, persistenceOptions);
 
-    if (snapshot.isSome()) {
+    if (snapshot !== null && snapshot.isSome()) {
       const claimed = snapshot.value.sequenceNr;
       await assertTrustworthySnapshot(journal, persistenceId, claimed);
       state = decodeState<State>(snapshot.value.state, request.snapshotAdapter);
@@ -152,6 +197,44 @@ export async function replayState<Event, State>(
   }
 
   return { state, sequenceNr, fromSnapshotSequenceNr, eventsApplied: events.length };
+}
+
+/**
+ * Load the covering snapshot, returning `null` instead of throwing when the
+ * store could not answer and {@link ReplayRequest.snapshotIsOptional} allows
+ * the fold to start from scratch.
+ *
+ * The two carve-outs are the whole of the security argument, and both are
+ * *structural* rather than a matter of recognising the right error class:
+ *
+ *   - A `SnapshotIntegrityError` is re-thrown whoever raised it.
+ *   - An actor whose `persistenceOptions` carry `integrity` or `encryption`
+ *     gets no fallback at all.  Those stores reject a body that fails to
+ *     verify with a plain `Error` — there is no typed verdict to match on —
+ *     so the only way not to swallow a tampered snapshot is not to swallow
+ *     anything for an actor that asked for the check.
+ */
+async function loadSnapshotOrNull<Event, State>(
+  load: () => Promise<Option<Snapshot<unknown>>>,
+  request: ReplayRequest<Event, State>,
+  persistenceOptions: PersistenceOptions | undefined,
+): Promise<Option<Snapshot<unknown>> | null> {
+  // `{ mode: 'none' }` is a control that was explicitly turned off, so it
+  // carries no verdict for a rejection to be mistaken for — the same reading
+  // `unhonouredPersistenceOptions` takes of the field.
+  const protectedSnapshot = (persistenceOptions?.integrity !== undefined
+      && persistenceOptions.integrity.mode !== 'none')
+    || (persistenceOptions?.encryption !== undefined
+      && persistenceOptions.encryption.mode !== 'none');
+  const tolerated = request.snapshotIsOptional === true && !protectedSnapshot;
+  if (!tolerated) return load();
+  try {
+    return await load();
+  } catch (e) {
+    if (e instanceof SnapshotIntegrityError) throw e;
+    request.onSnapshotLoadFailure?.(e instanceof Error ? e : new Error(String(e)));
+    return null;
+  }
 }
 
 /**

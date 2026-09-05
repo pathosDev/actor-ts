@@ -88,6 +88,7 @@ import { KeepRefereeOptionsValidator, type KeepRefereeOptionsType } from '../../
 import { LeaseMajorityOptionsValidator, type LeaseMajorityOptionsType } from '../../../src/cluster/downing/LeaseMajorityOptions.js';
 import { ClusterRouterOptionsValidator, type ClusterRouterOptionsType } from '../../../src/cluster/router/ClusterRouterOptions.js';
 import { TestProbeOptionsValidator, type TestProbeOptionsType } from '../../../src/testkit/TestProbeOptions.js';
+import { PersistenceBehaviorOptionsValidator, type PersistenceBehaviorOptionsType } from '../../../src/persistence/PersistenceBehaviorOptions.js';
 
 // Direct validator tests for the non-broker options. Each consumer calls the
 // same validator in its constructor / start method after merging defaults.
@@ -1058,5 +1059,30 @@ describe('TestProbeOptionsValidator', () => {
       new TestProbeOptionsValidator().validate(s);
     expect(() => check({ defaultTimeoutMs: 0 })).toThrow(OptionsError);
     expect(() => check({ defaultTimeoutMs: 3_000 })).not.toThrow();
+  });
+});
+
+describe('PersistenceBehaviorOptionsValidator', () => {
+  const check = (s: Partial<PersistenceBehaviorOptionsType>): void =>
+    new PersistenceBehaviorOptionsValidator().validate(s);
+
+  test('rejects a negative or fractional maxConcurrentRecoveries', () => {
+    expect(() => check({ maxConcurrentRecoveries: -1 })).toThrow(OptionsError);
+    expect(() => check({ maxConcurrentRecoveries: 2.5 })).toThrow(OptionsError);
+  });
+
+  test('rejects a negative or non-finite recoveryTimeoutMs', () => {
+    expect(() => check({ recoveryTimeoutMs: -1 })).toThrow(OptionsError);
+    expect(() => check({ recoveryTimeoutMs: Number.POSITIVE_INFINITY })).toThrow(OptionsError);
+  });
+
+  test('accepts 0 for both — it is the documented "off", not an omission', () => {
+    expect(() => check({ maxConcurrentRecoveries: 0, recoveryTimeoutMs: 0 })).not.toThrow();
+  });
+
+  test('leaves the two breaker ids alone, including the empty one', () => {
+    // `""` means "no breaker"; any other string is an id whose block may or
+    // may not exist, which is `CircuitBreakerExtension`'s question.
+    expect(() => check({ journalBreaker: '', snapshotBreaker: 'shared-database' })).not.toThrow();
   });
 });

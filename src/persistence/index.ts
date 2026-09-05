@@ -2,8 +2,25 @@ export {
   PersistenceExtension,
   PersistenceExtensionId,
 } from './PersistenceExtension.js';
-export { PersistentActor, everyNEvents } from './PersistentActor.js';
+export { PersistentActor, everyNEvents, RecoveryTimeoutError } from './PersistentActor.js';
 export type { SnapshotPolicy } from './PersistentActor.js';
+
+// System-wide persistence behaviour (#874) — the recovery cap and deadline,
+// the snapshot fallback, and the two circuit-breaker ids.  Exported as the
+// usual triad so an application can express the same settings in code; the
+// `DEFAULT_*` constants are what `reference.conf` publishes.
+export {
+  DEFAULT_JOURNAL_BREAKER_ID,
+  DEFAULT_MAX_CONCURRENT_RECOVERIES,
+  DEFAULT_RECOVERY_TIMEOUT_MS,
+  DEFAULT_SNAPSHOT_BREAKER_ID,
+  DEFAULT_SNAPSHOT_IS_OPTIONAL,
+  PersistenceBehaviorOptions,
+  PersistenceBehaviorOptionsBuilder,
+  PersistenceBehaviorOptionsValidator,
+  readPersistenceBehaviorOptionsFromConfig,
+} from './PersistenceBehaviorOptions.js';
+export type { PersistenceBehaviorOptionsType } from './PersistenceBehaviorOptions.js';
 
 export { eventDispatcher } from './EventDispatcher.js';
 export type { EventDispatcherBuilder, EventDispatcherIncomplete } from './EventDispatcher.js';

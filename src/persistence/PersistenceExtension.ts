@@ -7,7 +7,23 @@ import type { DurableStateStore } from './DurableStateStore.js';
 import { InMemoryDurableStateStore } from './durable-state-stores/InMemoryDurableStateStore.js';
 import type { Journal } from './Journal.js';
 import { InMemoryJournal } from './journals/InMemoryJournal.js';
+import { JournalConcurrencyError } from './JournalTypes.js';
 import type { Logger } from '../Logger.js';
+import type { CircuitBreaker } from '../pattern/CircuitBreaker.js';
+import { CircuitBreakerExtensionId } from '../pattern/CircuitBreakerExtension.js';
+import { mergeOptions } from '../util/OptionsMerge.js';
+import {
+  DEFAULT_JOURNAL_BREAKER_ID,
+  DEFAULT_MAX_CONCURRENT_RECOVERIES,
+  DEFAULT_RECOVERY_TIMEOUT_MS,
+  DEFAULT_SNAPSHOT_BREAKER_ID,
+  DEFAULT_SNAPSHOT_IS_OPTIONAL,
+  PersistenceBehaviorOptionsValidator,
+  readPersistenceBehaviorOptionsFromConfig,
+  type PersistenceBehaviorOptionsType,
+} from './PersistenceBehaviorOptions.js';
+import { RecoveryPermits } from './RecoveryPermits.js';
+import { JournalIntegrityError, SnapshotIntegrityError } from './Replay.js';
 import {
   PERSISTENCE_SECURITY_CONTROL_FIELDS,
   UnsupportedPersistenceOptionError,
@@ -39,6 +55,35 @@ import { StorageLocalityAdvisory, type ObservedStore } from './StorageLocalityAd
  * could select.  The nine `*_DURABLE_STATE_PLUGIN_ID` constants the backends
  * already exported were dead exports for precisely that reason.
  */
+/**
+ * Does this error mean the store is unavailable, as opposed to having
+ * answered a question?  The `isFailure` predicate both persistence breakers
+ * are built with (#874).
+ *
+ * Three verdicts are excluded, and each one would otherwise be a way to
+ * fast-fail a healthy system:
+ *
+ *   - `JournalConcurrencyError` — a conditional append lost, so a second live
+ *     instance owns that entity (#1166).  Ten losing appends by ten unlucky
+ *     entities would open the breaker and refuse every *healthy* entity on
+ *     the node, for a condition the journal answered correctly.
+ *   - `JournalIntegrityError` / `SnapshotIntegrityError` — the store returned
+ *     data that failed a trust check (#100, #122).  That is a durable fact
+ *     about the stored bytes; retrying later cannot change it, and a breaker
+ *     is a device for waiting out a transient fault.
+ *
+ * Everything else counts, including a `CircuitBreakerTimeoutError` from the
+ * breaker's own `call-timeout` — a stalled backend is the outage this exists
+ * for.  An operator who disagrees has the other half of the classifier:
+ * `actor-ts.circuit-breaker.<id>.ignored-error-names` is checked first and
+ * wins over this predicate.
+ */
+function isStoreOutage(error: Error): boolean {
+  return !(error instanceof JournalConcurrencyError
+    || error instanceof JournalIntegrityError
+    || error instanceof SnapshotIntegrityError);
+}
+
 export class PersistenceExtension implements Extension {
   private readonly journalFactories = new Map<string, (system: ActorSystem) => Journal>();
   private readonly snapshotFactories = new Map<string, (system: ActorSystem) => SnapshotStore>();
@@ -56,6 +101,12 @@ export class PersistenceExtension implements Extension {
    * diagnostic (#960).
    */
   private readonly reportedUnhonouredCompression = new Set<string>();
+  /** Resolved on first read of {@link behavior}; see there for why not eagerly. */
+  private _behavior: PersistenceBehaviorOptionsType | null = null;
+  private _recoveryPermits: RecoveryPermits | null = null;
+  /** `undefined` = not resolved yet, `null` = deliberately no breaker. */
+  private _journalBreaker: CircuitBreaker | null | undefined;
+  private _snapshotBreaker: CircuitBreaker | null | undefined;
 
   constructor(private readonly system: ActorSystem) {
     // Ship the in-memory reference plug-in out of the box.
@@ -160,6 +211,102 @@ export class PersistenceExtension implements Extension {
    */
   get config(): Config { return this.system.config; }
 
+  /**
+   * The merged `actor-ts.persistence` behaviour settings (#874), resolved and
+   * validated once on first read.
+   *
+   * Lazily rather than in the constructor because the extension is built the
+   * first time *anything* touches persistence — including a system that only
+   * registers a plugin and never spawns a persistent actor — and a validation
+   * throw there would surface as a failure to construct the extension rather
+   * than as a configuration error naming the field.
+   */
+  get behavior(): PersistenceBehaviorOptionsType {
+    if (this._behavior) return this._behavior;
+    const settings = mergeOptions<PersistenceBehaviorOptionsType>(
+      {
+        maxConcurrentRecoveries: DEFAULT_MAX_CONCURRENT_RECOVERIES,
+        recoveryTimeoutMs: DEFAULT_RECOVERY_TIMEOUT_MS,
+        snapshotIsOptional: DEFAULT_SNAPSHOT_IS_OPTIONAL,
+        journalBreaker: DEFAULT_JOURNAL_BREAKER_ID,
+        snapshotBreaker: DEFAULT_SNAPSHOT_BREAKER_ID,
+      },
+      readPersistenceBehaviorOptionsFromConfig(this.system.config),
+      {},
+    );
+    new PersistenceBehaviorOptionsValidator().validate(settings);
+    this._behavior = settings;
+    return settings;
+  }
+
+  /**
+   * The breaker in front of the journal, or `null` when
+   * `actor-ts.persistence.journal-breaker` is `""`.
+   *
+   * Resolved through `CircuitBreakerExtension`, so its numbers come from
+   * `actor-ts.circuit-breaker.<id>` over `…default` over the built-in floor —
+   * one home for a breaker's settings rather than a second copy of
+   * `max-failures` under `actor-ts.persistence` (#864, #874).
+   *
+   * Public so a test can watch the state without reaching into a private
+   * field, and so an operator dashboard can report it.  The store getters
+   * above deliberately still return the raw store: wrapping them would defeat
+   * the `instanceof` assertions every backend suite makes, and would define
+   * `Journal`'s four optional methods whose *absence* is meaningful — a
+   * migration refuses a target with no `raiseCompactionMark`, and a wrapper
+   * that always had one would wave through a copy that renumbers a compacted
+   * stream.
+   */
+  get journalBreaker(): CircuitBreaker | null {
+    if (this._journalBreaker === undefined) {
+      this._journalBreaker = this.resolveBreaker(this.behavior.journalBreaker);
+    }
+    return this._journalBreaker;
+  }
+
+  /** As {@link journalBreaker}, for the snapshot store. */
+  get snapshotBreaker(): CircuitBreaker | null {
+    if (this._snapshotBreaker === undefined) {
+      this._snapshotBreaker = this.resolveBreaker(this.behavior.snapshotBreaker);
+    }
+    return this._snapshotBreaker;
+  }
+
+  /** Run `call` under {@link journalBreaker}, or plainly when there is none. */
+  callThroughJournalBreaker<T>(call: () => Promise<T>): Promise<T> {
+    const breaker = this.journalBreaker;
+    return breaker ? breaker.call(call) : call();
+  }
+
+  /** Run `call` under {@link snapshotBreaker}, or plainly when there is none. */
+  callThroughSnapshotBreaker<T>(call: () => Promise<T>): Promise<T> {
+    const breaker = this.snapshotBreaker;
+    return breaker ? breaker.call(call) : call();
+  }
+
+  /**
+   * Run `work` holding one of `max-concurrent-recoveries` permits.
+   *
+   * `0` permits means uncapped, and then this is `work()` with no queue and
+   * no allocation at all — the pre-#874 behaviour, reachable by configuration
+   * rather than only by reading the source.
+   */
+  withRecoveryPermit<T>(work: () => Promise<T>): Promise<T> {
+    return this.recoveryPermits?.run(work) ?? work();
+  }
+
+  /**
+   * The recovery gate, or `null` when uncapped.  Exposed for the same reason
+   * {@link journalBreaker} is: `peakInFlight` is the only way to assert the
+   * cap held without sampling the very interleaving under test.
+   */
+  get recoveryPermits(): RecoveryPermits | null {
+    if (!this._recoveryPermits && this.behavior.maxConcurrentRecoveries > 0) {
+      this._recoveryPermits = new RecoveryPermits(this.behavior.maxConcurrentRecoveries);
+    }
+    return this._recoveryPermits;
+  }
+
   registerJournal(pluginId: string, factory: (system: ActorSystem) => Journal): void {
     this.journalFactories.set(pluginId, factory);
     // If the active journal changed, force re-lookup.
@@ -256,6 +403,19 @@ export class PersistenceExtension implements Extension {
     if (stores.journal !== undefined) this.setJournal(stores.journal);
     if (stores.snapshotStore !== undefined) this.setSnapshotStore(stores.snapshotStore);
     if (stores.durableStateStore !== undefined) this.setDurableStateStore(stores.durableStateStore);
+  }
+
+  /**
+   * Resolve one breaker id, or `null` for the empty id.
+   *
+   * `isFailure` is the one thing a config file cannot express and is
+   * therefore exactly what `breaker(id, explicitOptions)` is for.  The
+   * numbers stay in HOCON, where an operator can change them.
+   */
+  private resolveBreaker(id: string): CircuitBreaker | null {
+    if (id === '') return null;
+    return this.system.extension(CircuitBreakerExtensionId)
+      .breaker(id, { isFailure: isStoreOutage });
   }
 
   private currentJournalPluginId(): string {
