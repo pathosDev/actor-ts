@@ -322,6 +322,49 @@ or two nodes would elect two winners.
 per-deployment identity that belongs at the join site, and the transport is
 an object a config file cannot express.
 
+### `actor-ts.cluster.singleton`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `cluster.singleton.role` | `""` | Restrict hosting to nodes carrying this role tag.  `""` = any node may host; the empty string is dropped, never passed on. |
+| `cluster.singleton.buffer-size` | `1000` | Messages a proxy holds while the cluster has no host, before it drops the newest to dead letters. |
+| `cluster.singleton.hand-over-timeout` | `10s` | How long an incoming host waits for every eligible peer to confirm it is not running the singleton, before hosting anyway. |
+| `cluster.singleton.acquire-retry-interval` | `5s` | How long the manager waits before re-`acquire()`ing a lease it failed to take.  Only reached when a lease was passed in code. |
+| `cluster.singleton.max-hand-over-state-bytes` | `1M` | Cap on a warm-hand-over snapshot.  A snapshot above it is not sent and the successor starts cold. |
+| `cluster.singleton.restart-on-termination` | `on` | Re-spawn the singleton after its instance dies *unexpectedly* — as against the planned teardown of a hand-over. |
+
+The block is read by both doors, and the second one is why it exists.
+`cluster.singleton.start(...)` layers it under the caller's
+`StartSingletonOptions`, so an explicit `withBufferSize(…)` still wins per
+field.  `cluster.singleton.ref(...)` takes **no options object at all**, so
+before this block a proxy-only node had no way whatsoever to set its buffer
+cap — or to learn that the singleton is role-restricted, which is worse: a
+configured role reaching only `start()` leaves such a node routing at the
+plain leader while the managers host on the role member.
+
+Precedence has one turn that reads backwards: a role declared on the actor
+class's `SingletonKey` **beats** the config file, because the key is code and
+code is the higher layer.  Two nodes disagreeing about the role — one from a
+key, one from HOCON — is a genuine misconfiguration, and the proxy says so:
+it keeps the first role it was addressed with and warns about the second.
+
+`role = ""` is the shape of the key, not a value anyone runs with.  It is
+dropped rather than passed on, and here that is load-bearing twice over: `''`
+would shadow an explicit `withRole(…)` on the layer above, and
+`StartSingletonOptionsValidator` refuses an empty role outright, so a node
+that copied the shipped file unedited would fail every `start()`.
+
+Four keys Akka has are deliberately **not** here.  `use-lease` and
+`lease-name` have nothing behind them: no part of the framework turns a name
+into a `Lease`, and a switch reading `on` that produced no lease would
+advertise split-brain protection that is not there — pass one in code with
+`withLease(…)`.  `singleton-identification-interval` configures a poll this
+proxy does not do (it subscribes to cluster events instead), and
+`min-number-of-hand-over-retries` counts attempts nothing counts — the wait
+is bounded by `hand-over-timeout`.  The hand-over re-send cadence is a
+correctness property of the exchange rather than a tuning knob, and stays a
+constant.
+
 ### `actor-ts.cluster.pub-sub`
 
 | Key | Default | Purpose |

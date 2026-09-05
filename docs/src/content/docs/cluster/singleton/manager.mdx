@@ -71,7 +71,29 @@ are what the manager acts on, not because you construct them:
 | `lease` | No | If set, the host must acquire this lease before spawning the singleton. |
 | `acquireRetryIntervalMs` | No (default 5s) | Retry cadence after a failed lease acquisition. |
 | `handOverTimeoutMs` | No (default 10s) | How long to wait for every eligible peer to confirm it is not hosting, before hosting anyway.  See [When nobody answers](#when-nobody-answers). |
+| `maxHandOverStateBytes` | No (default 1 MiB) | Cap on a warm-hand-over snapshot.  A larger one is not sent and the successor starts cold. |
 | `restartOnTermination` | No (default `true`) | Re-spawn the singleton after an unexpected instance death.  Turn off only for an actor that treats `stopSelf()` as a terminal state. |
+
+### From the config file
+
+Every one of those except `lease` — plus the proxy's `bufferSize` — also
+reads from `actor-ts.cluster.singleton.*`, layered **under** whatever you
+passed, so an explicit `withHandOverTimeoutMs(…)` still wins per field:
+
+```hocon
+actor-ts.cluster.singleton {
+  role                   = "control-plane"
+  hand-over-timeout      = 10s
+  acquire-retry-interval = 5s
+  buffer-size            = 1000
+}
+```
+
+`lease` has no key because nothing in the framework turns a name into a
+`Lease`; pass one with `withLease(…)`.  The full table is in
+[Configuration reference](/reference/configuration/#actor-tsclustersingleton).
+One turn reads backwards: a role declared on the **key** beats the config
+file, because the key is code.
 
 ### Which node hosts
 
@@ -532,12 +554,15 @@ import { Aside } from '@astrojs/starlight/components';
     static readonly singleton = SingletonKey.of<IngressCommand>('ingress', 'edge');
   }
   ```
-  A node that only calls `ref` has no options object — it has the key,
-  and nothing else.  A role declared *only* through
-  `StartSingletonOptions.withRole` is therefore invisible to it, and
-  its proxy resolves a different host than the managers do.  Put the
-  role on the key and every node agrees by construction; `withRole`
-  still overrides it where you need a per-deployment answer.
+  A node that only calls `ref` has no options object — it has the key
+  and the config file, and nothing else.  A role declared *only*
+  through `StartSingletonOptions.withRole` is therefore invisible to
+  it, and its proxy resolves a different host than the managers do.
+  Put the role on the key and every node agrees by construction;
+  `withRole` still overrides it where you need a per-deployment answer.
+  `actor-ts.cluster.singleton.role` is the third way, and it reaches
+  `ref` too — but only where the same file is deployed to every node,
+  which is exactly the assumption the key does not need to make.
 </Aside>
 
 <Aside type="caution" title="acquireRetryIntervalMs must be positive">
