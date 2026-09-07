@@ -106,6 +106,10 @@ export function parseArguments(argv) {
     ),
     reportDirectory: process.env.ACTOR_TS_STRESS_REPORT_DIR ?? DEFAULT_REPORT_DIRECTORY,
     skipQuarantined: false,
+    randomize: process.env.ACTOR_TS_STRESS_RANDOMIZE === '1',
+    seed: process.env.ACTOR_TS_STRESS_SEED === undefined
+      ? undefined
+      : Number(process.env.ACTOR_TS_STRESS_SEED),
     filters: [],
   };
   for (const argument of argv) {
@@ -122,6 +126,10 @@ export function parseArguments(argv) {
       case 'run-timeout': options.runTimeoutMs = Number(value); break;
       case 'report-dir': options.reportDirectory = value ?? DEFAULT_REPORT_DIRECTORY; break;
       case 'skip-quarantined': options.skipQuarantined = true; break;
+      case 'randomize': options.randomize = true; break;
+      // A seed implies the shuffle it seeds: `--seed` alone would be silently
+      // inert, which is the shape of a flag that looks obeyed and is not.
+      case 'seed': options.seed = Number(value); options.randomize = true; break;
       case 'help': printUsage(); process.exit(0); break;
       default:
         console.error(`stress-test: unknown option "${argument}" (try --help)`);
@@ -140,10 +148,12 @@ function printUsage() {
   --run-timeout=MS      one run's watchdog, then it is a HANG (default ${DEFAULT_RUN_TIMEOUT_MS})
   --report-dir=DIR      where reports and logs are written   (default ${DEFAULT_REPORT_DIRECTORY})
   --skip-quarantined    keep ACTOR_TS_SKIP_FLAKY_MNS=1 instead of dropping it
+  --randomize           shuffle test order, to surface order dependence
+  --seed=N              fix the shuffle's seed (implies --randomize)
   --help                this text
 
 Every option also reads an env var: ACTOR_TS_STRESS_RUNS, _CONCURRENCY,
-_MAX_FLAKY, _RUN_TIMEOUT_MS, _REPORT_DIR.
+_MAX_FLAKY, _RUN_TIMEOUT_MS, _REPORT_DIR, _RANDOMIZE, _SEED.
 
 Keep --run-timeout x --runs (divided by --concurrency) safely under the CI
 job's timeout-minutes: the point of the watchdog is that a hang produces a
@@ -299,13 +309,55 @@ export function parseSummary(xml) {
  * could not survive.  `timeoutMs` bounds it; the run is then recorded as a
  * hang and the loop goes on, because whether run 2 hangs as well is data.
  */
-function runOnce({ index, reportPath, logPath, filters, environment, timeoutMs }) {
+/**
+ * The extra flags the harness hands to each child `bun test`.
+ *
+ * Only order control lives here.  The reporter flags are added at the spawn
+ * because they are how the harness reads a run at all, and a caller must not be
+ * able to turn them off.
+ */
+export function bunArgumentsFor(options) {
+  const bunArguments = [];
+  if (options.randomize) bunArguments.push('--randomize');
+  if (options.seed !== undefined && Number.isFinite(options.seed)) {
+    bunArguments.push(`--seed=${options.seed}`);
+  }
+  return bunArguments;
+}
+
+/**
+ * The seed bun shuffled a run with, recovered from that run's log.
+ *
+ * bun prints `--seed=N` in its own summary whenever the order was randomised,
+ * so the number that reproduces a run is already written down — it just lives
+ * in a log that ages out.  Lifting it into `summary.json` is what makes an
+ * order-dependent failure re-runnable a week later from an artifact, which is
+ * the whole difference between "this test is flaky" and "this test fails after
+ * that one".
+ *
+ * `undefined` when the run was not randomised, which is the normal case.
+ */
+export function seedOf(log) {
+  const match = /--seed=([0-9]+)/.exec(log);
+  return match === null ? undefined : Number(match[1]);
+}
+
+/** A run's log, or the empty string when it could not be read. */
+function readLog(logPath) {
+  try {
+    return readFileSync(logPath, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+function runOnce({ index, reportPath, logPath, filters, bunArguments, environment, timeoutMs }) {
   return new Promise((resolveRun) => {
     const logDescriptor = openSync(logPath, 'w');
     const startedAt = Date.now();
     const child = spawn(
       'bun',
-      ['test', ...filters, '--reporter=junit', `--reporter-outfile=${reportPath}`],
+      ['test', ...filters, ...bunArguments, '--reporter=junit', `--reporter-outfile=${reportPath}`],
       { stdio: ['ignore', logDescriptor, logDescriptor], env: environment, shell: false },
     );
     // A failed spawn emits `error` and then `close`, so both handlers fire for
@@ -384,10 +436,11 @@ async function runAll(options, environment, reportDirectory) {
         reportPath,
         logPath,
         filters: options.filters,
+        bunArguments: bunArgumentsFor(options),
         environment,
         timeoutMs: options.runTimeoutMs,
       });
-      const collected = collectRun(result, reportPath);
+      const collected = { ...collectRun(result, reportPath), seed: seedOf(readLog(logPath)) };
       results[index] = collected;
       reportRun(collected, logPath);
     }
@@ -415,8 +468,9 @@ function reportRun(run, logPath) {
     return;
   }
   const verdict = run.failures.length === 0 ? 'green' : `${run.failures.length} failed`;
+  const seed = run.seed === undefined ? '' : `, seed ${run.seed}`;
   console.log(
-    `  run ${run.index}: ${verdict} — ${run.executed} executed, ${run.skipped} skipped, ${seconds}s`,
+    `  run ${run.index}: ${verdict} — ${run.executed} executed, ${run.skipped} skipped, ${seconds}s${seed}`,
   );
   for (const failure of run.failures) console.log(`      ✗ ${identityOf(failure)}`);
 }
@@ -428,10 +482,26 @@ function reportRun(run, logPath) {
 export function aggregate(results, runs) {
   const byIdentity = new Map();
   for (const run of results) {
+    // One identity may fail more than once inside a single run — a hook
+    // timeout reported per test in the block, a `test.each` row, a retry.
+    // `failedRuns` counts *runs*, so the run index goes in once however many
+    // testcases carried it; counting occurrences instead put `failedRuns.length`
+    // above `runs`, which matched neither the flaky filter (`< runs`) nor the
+    // consistent one (`=== runs`), and the offender fell out of both tables,
+    // out of `summary.json` and out of the step summary the nightly is read
+    // from — while the harness printed PASS over a set of runs that were 0/16
+    // green (#1359).  `failureCount` keeps the occurrence count, which is real
+    // information, without letting it decide the classification.
+    const seenInRun = new Set();
     for (const failure of run.failures) {
       const key = identityOf(failure);
-      const entry = byIdentity.get(key) ?? { ...failure, identity: key, failedRuns: [] };
-      entry.failedRuns.push(run.index);
+      const entry = byIdentity.get(key)
+        ?? { ...failure, identity: key, failedRuns: [], failureCount: 0 };
+      entry.failureCount += 1;
+      if (!seenInRun.has(key)) {
+        seenInRun.add(key);
+        entry.failedRuns.push(run.index);
+      }
       byIdentity.set(key, entry);
     }
   }
@@ -457,8 +527,19 @@ export function aggregate(results, runs) {
       .map((run) => run.index),
     totalExecuted,
     totalFailures,
+    // A run that reported failing tests and yet is named by no offender means
+    // the identity map lost it — the #1359 shape, one level up.  It is empty by
+    // construction now, and it is computed anyway for the same reason
+    // `runsRedWithoutFailures` is: the verdict should be able to say "something
+    // escaped" rather than quietly getting smaller.
+    unexplainedRedRuns: reportedRuns
+      .filter((run) => run.failures.length > 0)
+      .filter((run) => !offenders.some((entry) => entry.failedRuns.includes(run.index)))
+      .map((run) => run.index),
     flaky: offenders.filter((entry) => entry.failedRuns.length < runs),
-    consistent: offenders.filter((entry) => entry.failedRuns.length === runs),
+    // `>=` rather than `===`: an off-by-one anywhere upstream should widen the
+    // "broken" bucket, never re-open the hole that let an offender vanish.
+    consistent: offenders.filter((entry) => entry.failedRuns.length >= runs),
   };
 }
 
@@ -466,8 +547,15 @@ function formatTable(entries, runs) {
   return entries
     .map((entry) => {
       const percent = ((entry.failedRuns.length / runs) * 100).toFixed(0);
+      // Occurrences are named only when they exceed the run count, because
+      // that is the case a reader would otherwise mis-read: "failed 3 of 5
+      // runs" and "produced 7 failing testcases" are different facts, and a
+      // hook timeout collapsing a whole block is what makes them differ.
+      const occurrences = entry.failureCount > entry.failedRuns.length
+        ? ` — ${entry.failureCount} failing testcases in total`
+        : '';
       return `  ${String(entry.failedRuns.length).padStart(3)}/${runs} (${percent.padStart(3)}%)  `
-        + `${entry.identity}\n        runs: ${entry.failedRuns.join(', ')}`;
+        + `${entry.identity}${occurrences}\n        runs: ${entry.failedRuns.join(', ')}`;
     })
     .join('\n');
 }
@@ -507,6 +595,13 @@ export function render(aggregated, options) {
       + 'test — a crash, an unreleased handle, or an error outside a test body.',
     );
   }
+  if (aggregated.unexplainedRedRuns.length > 0) {
+    lines.push(
+      `!! run(s) ${aggregated.unexplainedRedRuns.join(', ')} reported failing tests that no offender `
+      + 'below accounts for. That is a defect in this harness rather than in the suite: the identity '
+      + 'map lost a failure, so the tables and summary.json are smaller than the truth.',
+    );
+  }
   if (aggregated.flaky.length > 0) {
     lines.push('');
     lines.push(`FLAKY — failed in some runs but not all (${aggregated.flaky.length}):`);
@@ -526,10 +621,16 @@ export function render(aggregated, options) {
     // runs is a true sentence and a false reassurance.  A hang silences a run
     // exactly as thoroughly as a truncated report does, so it counts here too.
     const silentRuns = new Set([...aggregated.runsWithoutReport, ...aggregated.runsTimedOut]);
+    // ... and qualified again when a run reported failures the tables do not
+    // carry.  "No test failed" printed over a set of runs that were 0/16 green
+    // is the sentence #1359 is named for, and it must not be reachable while
+    // any red run is unaccounted for.
     lines.push(
-      silentRuns.size === aggregated.runs
-        ? 'No run reported anything, so nothing can be said about any test.'
-        : 'No test failed in any run that reported.',
+      aggregated.unexplainedRedRuns.length > 0
+        ? 'No test could be named for the failures above, which is a harness defect — see the line marked !!.'
+        : silentRuns.size === aggregated.runs
+          ? 'No run reported anything, so nothing can be said about any test.'
+          : 'No test failed in any run that reported.',
     );
   }
   return lines.join('\n');
@@ -620,22 +721,46 @@ async function main() {
     `${JSON.stringify(
       {
         generatedAt: new Date().toISOString(),
+        // What produced these numbers.  A night is comparable with another
+        // night only while the toolchain is the same one — the quarantine's
+        // exit criterion says so in prose and could not check it, because the
+        // artifact never recorded which bun ran.
+        bunVersion: process.versions.bun ?? null,
         runs: aggregated.runs,
         greenRuns: aggregated.greenRuns,
         filters: options.filters,
         quarantinedSuitesIncluded: !options.skipQuarantined,
+        randomized: options.randomize,
         totalExecuted: aggregated.totalExecuted,
         totalFailures: aggregated.totalFailures,
         runTimeoutMs: options.runTimeoutMs,
         runsTimedOut: aggregated.runsTimedOut,
         runsWithoutReport: aggregated.runsWithoutReport,
         runsRedWithoutFailures: aggregated.runsRedWithoutFailures,
+        unexplainedRedRuns: aggregated.unexplainedRedRuns,
+        // Per run, so a reader can tell a slow night from a failing one and can
+        // reproduce an order-dependent failure from the artifact alone.  The
+        // aggregate hid both: a run that took four times as long as its
+        // siblings and a run shuffled into a losing order look identical in a
+        // count of green runs.
+        runsDetail: results.map((run) => ({
+          index: run.index,
+          status: run.status,
+          durationMs: run.durationMs,
+          executed: run.executed,
+          skipped: run.skipped,
+          failures: run.failures.length,
+          timedOut: run.timedOut,
+          reportMissing: run.reportMissing,
+          seed: run.seed ?? null,
+        })),
         offenders: [...aggregated.flaky, ...aggregated.consistent].map((entry) => ({
           identity: entry.identity,
           file: entry.file,
           suite: entry.suite,
           name: entry.name,
           failedRuns: entry.failedRuns,
+          failureCount: entry.failureCount,
         })),
       },
       null,
@@ -660,10 +785,34 @@ async function main() {
     console.error('\nstress-test: FAIL — a run did not report its result.');
     process.exit(1);
   }
+  if (aggregated.unexplainedRedRuns.length > 0) {
+    console.error(
+      `\nstress-test: FAIL — run(s) ${aggregated.unexplainedRedRuns.join(', ')} reported failing `
+      + 'tests that no offender accounts for. Fix the harness before believing this run.',
+    );
+    process.exit(1);
+  }
   if (offenderCount > options.maximumFlakyTests) {
     console.error(
       `\nstress-test: FAIL — ${offenderCount} test(s) failed at least once, budget is `
       + `${options.maximumFlakyTests}.`,
+    );
+    process.exit(1);
+  }
+  // The last gate, and the one that cannot be escaped by a future shape the
+  // identity map mishandles.  Every check above is a statement about *tests*;
+  // this one is a statement about *runs*, which is the field the quarantine's
+  // exit criterion is written in ("greenRuns == runs") and the one the verdict
+  // used to compute, print, and then not act on.  A run that was not green and
+  // that no tolerated offender explains is red however the tables read (#1359).
+  const runsExplainedByOffenders = new Set(
+    [...aggregated.flaky, ...aggregated.consistent].flatMap((entry) => entry.failedRuns),
+  );
+  const unaccounted = aggregated.runs - aggregated.greenRuns - runsExplainedByOffenders.size;
+  if (unaccounted > 0) {
+    console.error(
+      `\nstress-test: FAIL — only ${aggregated.greenRuns} of ${aggregated.runs} run(s) were green and `
+      + `${unaccounted} of the rest are explained by nothing this harness can name.`,
     );
     process.exit(1);
   }

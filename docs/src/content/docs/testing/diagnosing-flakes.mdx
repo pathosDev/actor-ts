@@ -26,12 +26,21 @@ identity.  Its output splits the two cases that matter:
 | **flaky** — failed in some runs | The outcome depends on timing, ordering or the machine. | Match it against the catalog below. |
 | **consistently failing** — failed in every run | Broken.  Repetition tells you nothing more. | Fix it, or open an issue.  It is not a flake. |
 
-One gap in that verdict, worth knowing before you trust an empty table: a test
-that fails **more than once inside a single run** currently falls out of *both*
-categories, and the harness then prints "No test failed in any run that
-reported" and exits 0 — even with zero runs green (#1359).  A hook timeout is the
-easy way to hit it, since the whole block collapses to one `(unnamed)` identity.
-Until that is fixed, read `runs: N/N green` rather than the PASS line.
+A test that fails **more than once inside a single run** used to fall out of
+*both* categories, and the harness then printed "No test failed in any run that
+reported" and exited 0 — over sixteen runs of which none was green, two lines
+under a 100 % failure rate (#1359).  `failedRuns` counts runs now, once per run
+however many testcases carried the identity, and the occurrence count is
+reported beside it (`4 failing testcases in total`) rather than folded into the
+classification.  A hook timeout is still the easy way to produce the shape: a
+`describe` whose `beforeAll` and `afterAll` both blow their budget emits two
+`(unnamed)` cases under one classname.
+
+The verdict now also fails on **runs**, not only on tests.  A run that was not
+green and that no tolerated offender explains is red however the tables read —
+which is the field the quarantine's exit criterion is written in
+(`greenRuns == runs`), and the one the old verdict computed, printed, and then
+did not act on.
 
 Other things it names rather than swallows: a run that **never exited** (see
 below), a run that produced **no JUnit report at all** (Bun died before the
