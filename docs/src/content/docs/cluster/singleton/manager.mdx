@@ -76,9 +76,13 @@ are what the manager acts on, not because you construct them:
 
 ### From the config file
 
-Every one of those except `lease` — plus the proxy's `bufferSize` — also
-reads from `actor-ts.cluster.singleton.*`, layered **under** whatever you
-passed, so an explicit `withHandOverTimeoutMs(…)` still wins per field:
+The five tunable rows above — `role`, `acquireRetryIntervalMs`,
+`handOverTimeoutMs`, `maxHandOverStateBytes`, `restartOnTermination` — plus the
+proxy's `bufferSize` also read from `actor-ts.cluster.singleton.*`, layered
+**under** whatever you passed, so an explicit `withHandOverTimeoutMs(…)` still
+wins per field.  The other rows have no key and could not have one: `cluster`,
+`typeName` and `singletonActor` are what the extension is *called with*, and
+`lease` is an object no config file can construct.
 
 ```hocon
 actor-ts.cluster.singleton {
@@ -89,11 +93,12 @@ actor-ts.cluster.singleton {
 }
 ```
 
-`lease` has no key because nothing in the framework turns a name into a
-`Lease`; pass one with `withLease(…)`.  The full table is in
+Nothing in the framework turns a name into a `Lease`, which is why there is no
+key for one; pass it in code with `withLease(…)`.  The full table is in
 [Configuration reference](/reference/configuration/#actor-tsclustersingleton).
-One turn reads backwards: a role declared on the **key** beats the config
-file, because the key is code.
+One turn reads backwards: a role declared on the **key**, or passed to
+`withRole(…)`, beats the config file, because both are code.  That holds on the
+proxy as well, whichever of `ref` and `start` this node called first.
 
 ### Which node hosts
 

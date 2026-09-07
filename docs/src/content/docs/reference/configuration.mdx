@@ -543,10 +543,18 @@ configured role reaching only `start()` leaves such a node routing at the
 plain leader while the managers host on the role member.
 
 Precedence has one turn that reads backwards: a role declared on the actor
-class's `SingletonKey` **beats** the config file, because the key is code and
-code is the higher layer.  Two nodes disagreeing about the role — one from a
-key, one from HOCON — is a genuine misconfiguration, and the proxy says so:
-it keeps the first role it was addressed with and warns about the second.
+class's `SingletonKey` — or passed to `withRole(…)` — **beats** the config
+file, because both are code and code is the higher layer.  That holds on the
+proxy too, and in either call order: a node that calls `ref` before `start`
+builds its proxy from the file, and the explicit role the `start` carries then
+*replaces* it rather than losing to it.  A configured role arriving after an
+explicit one is discarded in silence for the same reason — it is precedence
+resolving, not a problem to report.
+
+What the proxy does warn about is two roles from the **same** layer — two
+`withRole` calls, or a key and an options object that disagree.  One singleton
+cannot be restricted two ways and nothing outranks anything, so it keeps the
+first and names the second in the log.
 
 `role = ""` is the shape of the key, not a value anyone runs with.  It is
 dropped rather than passed on, and here that is load-bearing twice over: `''`

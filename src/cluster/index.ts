@@ -191,6 +191,7 @@ export type {
   SingletonActorClass,
   SingletonKeyedClass,
   SingletonReference,
+  SingletonRoleOrigin,
   ClusterSingletonManagerOptionsType,
   SingletonDeliver,
   WarmHandOverActor,
