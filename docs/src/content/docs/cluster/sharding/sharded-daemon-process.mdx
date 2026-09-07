@@ -196,7 +196,8 @@ actor-ts.sharded-daemon-process.role  = "batch"     # daemons on the batch nodes
 ```
 
 Like `sharding.role`, this **names** a role and does not grant one — a node's
-own roles stay in code, as `ClusterOptions.withRoles([...])`.  A role no
+own roles are a separate setting, `ClusterOptions.withRoles([...])` or
+`actor-ts.cluster.roles`.  A role no
 up-member carries allocates nothing, and for daemons that is silent: nobody
 sends a daemon a first message, so there is no reply to wait for and no
 buffer to fill.  The coordinator logs one line naming the role once a region

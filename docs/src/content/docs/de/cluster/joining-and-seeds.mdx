@@ -76,6 +76,42 @@ Die seed-bezogenen Knöpfe:
 | `seedRetryIntervalMs` | 3000 | Falls kein Seed antwortet, wiederhole die Liste so oft, bis einer antwortet. |
 | `selfElection` | `'immediate'` | Wann dieser Node allein einen Cluster bilden darf: `'immediate'` (nur bei leerer Seed-Liste), `'never'`, oder eine Frist in Millisekunden. Wird vom [Cluster-Bootstrap](/de/cluster/cluster-bootstrap/) gesetzt. |
 
+### Dieselben zwei Einstellungen in HOCON
+
+`seeds` und `roles` haben auch eine Config-Form, ein Deployment kann sie also
+aus dem Code herausziehen:
+
+```hocon
+actor-ts.cluster {
+  seed-nodes = ["billing@10.0.0.5:2552"]
+  roles      = ["backend"]
+}
+```
+
+Die Präzedenz ist die übliche des Frameworks, pro Feld: ein explizites
+`.withSeeds(…)` gewinnt, ein nicht gesetztes fällt auf die Datei durch. Dass
+eine Datei für das ganze Deployment reicht, liegt daran, dass ein Node seine
+**eigene** Adresse vor dem Wählen entfernt — das Rezept unten (ein
+festgelegter erster Node, der Rest zeigt auf ihn) ist damit eine einzige
+Liste, die auf jedem Node richtig ist: der genannte Node liest seine eigene
+Adresse, filtert sie heraus und wählt sich selbst.
+
+Beide Schlüssel werden als Liste gelesen und nur als Liste; das naheliegende
+`seed-nodes = ${?SEED_NODES}` wird beim Start abgelehnt statt an Kommata
+zerlegt. Eine optionale Substitution pro Eintrag ist die Form, die
+funktioniert — nicht gesetzte fallen aus dem Array heraus:
+
+```hocon
+actor-ts.cluster.seed-nodes = [ ${?SEED_1}, ${?SEED_2}, ${?SEED_3} ]
+actor-ts.cluster.roles      = [ ${?NODE_ROLE} ]
+```
+
+Für eine einzelne kommaseparierte Variable nehmen Sie stattdessen
+[`seedsFromEnv(…)`](/de/discovery/seed-providers/config/) im Code. Ein
+fehlerhafter Eintrag — etwa ein Host ohne Port — wird von `Cluster.join`
+abgelehnt, bevor der Transport bindet, und die Meldung nennt die betroffene
+Zeichenkette.
+
 ## Der erste Node
 
 ```ts
@@ -198,6 +234,14 @@ Zwei Auswege:
   bekommt dieselbe Konfiguration, und das Framework wählt genau einen
   aus, der den Gleichstand bricht. Das ist die Wahl, sobald Nodes
   gleichzeitig starten.
+
+Dieselbe Falle gilt, wenn die Liste aus einer gemeinsamen
+`application.conf` kommt. Das Selbst-Ausschließen macht eine gemeinsame Datei
+überhaupt erst sicher, und es hilft nur, wenn die Datei *einen* Node nennt:
+`seed-nodes = ["app@n1:2552"]` überall ausgeliefert ist der erste Ausweg,
+einmal geschrieben — `seed-nodes` mit allen Nodes ist dieser Deadlock, einmal
+geschrieben. Der Cluster-Bootstrap ist die Antwort, sobald die Mitglieder
+vorab nicht bekannt sind.
 
 Die Retry-Schleife über `seedRetryIntervalMs` bleibt wichtig, löst aber
 ein anderes Problem: einen Seed, der *irgendwann* erreichbar ist. Ein

@@ -232,6 +232,8 @@ man daraus erneut zustellt.
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `cluster.gossip-interval` | `1s` | Wie oft Gossip mit einem zufälligen Peer ausgetauscht wird. |
+| `cluster.seed-nodes` | `[]` | Peers, bei denen sich dieser Node beim Start meldet, `"system@host:port"` (oder `"host:port"`).  Leer = „Ich bin der erste Node“ — siehe unten. |
+| `cluster.roles` | `[]` | Rollen-Tags dieses Nodes.  Shard-Regionen, Singletons, die Schwellen pro Rolle und die rollengefilterten Downing-Strategien platzieren alle **nach** Rolle. |
 | `cluster.seed-retry-interval` | `3s` | Wie oft Seed-Verbindungen während des Joins wiederholt werden. |
 | `cluster.weakly-up-after` | `0s` | Befördert ein `joining`-Mitglied nach dieser Zeit automatisch zu `weakly-up`.  `0` schaltet das ab — siehe [Weakly-up](/de/cluster/weakly-up/). |
 | `cluster.max-members` | `1000` | Obergrenze für lebende Mitgliedseinträge, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
@@ -368,11 +370,53 @@ das einmalig — mit Schlüsselname und aktueller Zahl — statt die
 Cold-Start-Stall-Diagnose zu melden, die hier ein falsches Urteil wäre.
 Siehe [Joining und Seeds](/de/cluster/joining-and-seeds/).
 
-`seeds`, `roles` und der Transport haben keine HOCON-Form — die ersten
-beiden sind Deployment-Identität, die an die Join-Stelle gehört, und der
-Transport ist ein Objekt, das eine Config-Datei nicht ausdrücken kann.  Eine
-Schwelle *pro Rolle* ist davon keine Ausnahme: sie benennt eine Rolle, statt
-eine zuzuweisen, und die Zuweisung passiert weiterhin an der Join-Stelle.
+`seed-nodes` ist eine Liste, die auf **jedem** Node eines Deployments richtig
+ist — genau deshalb gibt es den Schlüssel überhaupt.  Ein Node entfernt seine
+eigene Adresse aus der Liste, bevor er wählt; wer also den designierten
+ersten Node einträgt und dieselbe Datei überall ausliefert, lässt genau
+diesen Node mit einer leeren Liste zurück — er wählt sich selbst —, während
+alle anderen ihn kontaktieren.  Was nicht funktioniert, ist die symmetrische
+Form, in der jeder Node gelistet ist: durch das Selbst-Ausschließen bleibt
+niemand mit der leeren Liste übrig, die `selfElection: 'immediate'`
+verlangt, also wird niemand jemals befördert.  Die Config erzeugt diese Falle
+nicht, und der Node
+[diagnostiziert sie](/de/cluster/joining-and-seeds/), aber sie wird damit zu
+einem Einzeiler — [Cluster-Bootstrap](/de/cluster/cluster-bootstrap/) ist der
+Ausweg, wenn die Mitglieder vorab nicht bekannt sind.
+
+Beide Leaves werden als **Liste** gelesen und nur als Liste; ein einzelnes
+`seed-nodes = ${?SEED_NODES}` wird beim Start abgelehnt statt an Kommata
+zerlegt.  Schreiben Sie eine optionale Substitution pro Eintrag — nicht
+gesetzte fallen aus dem Array heraus:
+
+```hocon
+actor-ts.cluster {
+  seed-nodes = [ ${?SEED_1}, ${?SEED_2}, ${?SEED_3} ]
+  roles      = [ ${?NODE_ROLE} ]
+}
+```
+
+Für die einzelne kommaseparierte Variable ist `seedsFromEnv(...)` im Code die
+vorgesehene Form — siehe
+[Seed-Provider](/de/discovery/seed-providers/config/).  Ein fehlerhafter
+Eintrag wird von `Cluster.join` abgelehnt, bevor der Transport bindet, und
+die Meldung nennt die betroffene Zeichenkette.
+
+`cluster.seed-nodes` und `discovery.config.seeds` sind nicht zwei Antworten
+auf dieselbe Frage, und die Reihenfolge steht fest: `Cluster.bootstrap` führt
+zuerst die Discovery aus und reicht deren Ergebnis weiter, ein gefundener Seed
+gewinnt also; dieser Schlüssel greift, wenn die Discovery nichts genannt hat.
+Ein explizites `seeds: []` an `Cluster.bootstrap` gewinnt weiterhin über
+beide — es sagt „es gibt sonst niemanden“, und das ist eine Antwort, kein
+Schweigen.
+
+`selfElection` und der Transport haben keine HOCON-Form.  Der Transport ist
+ein Objekt, das eine Config-Datei nicht ausdrücken kann.  `selfElection` ist
+die eine Einstellung, deren gemeinsamer Wert nicht bloß nutzlos, sondern
+unsicher ist: durchgängig `'never'` startet nie einen Cluster, und
+durchgängig `<delay>` lässt alle Nodes im selben Moment sich selbst wählen —
+genau das Split-Brain, das die Option verhindern soll.  Einen Wert pro Node
+verteilt der Cluster-Bootstrap.
 
 ### `actor-ts.cluster.singleton`
 
@@ -1776,9 +1820,9 @@ cluster.sharding.start(shardingOptions);
 #### Eine Rolle wird benannt, nicht vergeben
 
 `sharding.role` sagt, **welche** Rolle einen Typ hostet.  Der Key gibt dem
-Node diese Rolle **nicht**.  Die eigenen Rollen eines Nodes sind Identität
-statt Tuning, deshalb hat `ClusterOptions.roles` überhaupt keinen Config-Key
-und bleibt im Code:
+Node diese Rolle **nicht**.  Die eigenen Rollen eines Nodes sind eine eigene
+Einstellung — im Code vergeben oder über
+[`actor-ts.cluster.roles`](#actor-tscluster):
 
 ```ts
 // On every node that should host the shards:
