@@ -77,10 +77,14 @@ reagiert, nicht weil du sie konstruierst:
 
 ### Aus der Config-Datei
 
-Jedes dieser Felder außer `lease` — dazu die `bufferSize` des Proxys — liest
-auch aus `actor-ts.cluster.singleton.*`, und zwar **unter** dem, was du
-übergeben hast: ein explizites `withHandOverTimeoutMs(…)` gewinnt weiterhin
-pro Feld.
+Die fünf einstellbaren Zeilen oben — `role`, `acquireRetryIntervalMs`,
+`handOverTimeoutMs`, `maxHandOverStateBytes`, `restartOnTermination` — dazu die
+`bufferSize` des Proxys lesen auch aus `actor-ts.cluster.singleton.*`, und zwar
+**unter** dem, was du übergeben hast: ein explizites `withHandOverTimeoutMs(…)`
+gewinnt weiterhin pro Feld.  Die übrigen Zeilen haben keinen Key und könnten
+keinen haben: `cluster`, `typeName` und `singletonActor` sind das, *womit* die
+Extension aufgerufen wird, und `lease` ist ein Objekt, das keine Config-Datei
+konstruieren kann.
 
 ```hocon
 actor-ts.cluster.singleton {
@@ -91,11 +95,14 @@ actor-ts.cluster.singleton {
 }
 ```
 
-`lease` hat keinen Key, weil nichts im Framework aus einem Namen eine `Lease`
-macht; übergib eine mit `withLease(…)`. Die vollständige Tabelle steht in der
+Nichts im Framework macht aus einem Namen eine `Lease`, deshalb gibt es dafür
+keinen Key; übergib sie im Code mit `withLease(…)`. Die vollständige Tabelle
+steht in der
 [Konfigurationsreferenz](/de/reference/configuration/#actor-tsclustersingleton).
-Eine Stelle liest sich verkehrt herum: eine am **Key** deklarierte Rolle
-schlägt die Config-Datei, denn der Key ist Code.
+Eine Stelle liest sich verkehrt herum: eine am **Key** deklarierte oder an
+`withRole(…)` übergebene Rolle schlägt die Config-Datei, denn beides ist Code.
+Das gilt auch auf dem Proxy, gleich welchen der beiden Aufrufe `ref` und
+`start` dieser Node zuerst gemacht hat.
 
 ### Welche Node hostet
 

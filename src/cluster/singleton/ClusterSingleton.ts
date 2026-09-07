@@ -22,6 +22,7 @@ import { ClusterSingletonManagerOptions } from './ClusterSingletonManagerOptions
 import { StartSingletonOptionsValidator, readSingletonOptionsFromConfig } from './StartSingletonOptions.js';
 import type { StartSingletonOptions, StartSingletonOptionsType } from './StartSingletonOptions.js';
 import { ClusterSingletonProxy } from './ClusterSingletonProxy.js';
+import type { SingletonRoleOrigin } from './ClusterSingletonProxy.js';
 import {
   SingletonKey,
   singletonKeyOf,
@@ -136,15 +137,22 @@ export class ClusterSingleton implements Extension {
   ): ActorRef<TCommand>;
   start<TCommand>(options: StartSingletonOptions<TCommand>): ActorRef<TCommand>;
   start<TCommand>(arg1: unknown, arg2?: unknown, arg3?: unknown): ActorRef<TCommand> {
-    const options = this.withConfigDefaults(this.resolveStartOptions<TCommand>(arg1, arg2, arg3));
+    const explicitOptions = this.resolveStartOptions<TCommand>(arg1, arg2, arg3);
+    const options = this.withConfigDefaults(explicitOptions);
     new StartSingletonOptionsValidator<TCommand>().validate(options);
     this.ensureManager(options);
     // The role goes onto the key so the proxy resolves the same host the
     // managers do.  Options win over a key-declared role, and the shorthand
     // forms have already folded the class's key into `options` — so reading it
     // back off `options` covers every calling shape with one line.
+    //
+    // Its provenance is read off the *pre-merge* options for the same reason:
+    // after the merge a configured role is indistinguishable from a
+    // `withRole(…)`, and the proxy needs to tell them apart to arbitrate
+    // against a role a `ref()` on this node already gave it (#855).
     return this.proxyFor(
       SingletonKey.of<TCommand>(options.typeName, options.role),
+      explicitOptions.role !== undefined ? 'explicit' : 'configured',
       options.bufferSize,
     );
   }
@@ -165,15 +173,19 @@ export class ClusterSingleton implements Extension {
    * is *which node* it considers a host at all — a configured role that
    * reached only `start()` would leave this node routing at the plain leader
    * while the managers host on the role member.  A role on the key still wins,
-   * because it is code.
+   * because it is code — and it wins whether the key reached this node through
+   * `ref` or through a `start()` that follows, which is what the provenance
+   * handed to {@link proxyFor} buys (#855).
    */
   ref<TCommand>(key: SingletonKey<TCommand> | SingletonKeyedClass<TCommand>): ActorRef<TCommand>;
   ref<TCommand>(typeName: string): ActorRef<TCommand>;
   ref<TCommand>(reference: SingletonReference<TCommand>): ActorRef<TCommand> {
     const key = singletonKeyOf(reference);
     const fromConfig = readSingletonOptionsFromConfig(this.system.config);
+    if (key.role !== undefined) return this.proxyFor(key, 'explicit', fromConfig.bufferSize);
     return this.proxyFor(
-      key.role !== undefined ? key : SingletonKey.of<TCommand>(key.typeName, fromConfig.role),
+      SingletonKey.of<TCommand>(key.typeName, fromConfig.role),
+      'configured',
       fromConfig.bufferSize,
     );
   }
@@ -510,9 +522,20 @@ export class ClusterSingleton implements Extension {
   private proxyFor<TCommand>(
     key: SingletonKey<TCommand>,
     /**
-     * Only `start()` has one.  A `ref()`-only proxy takes the default — unlike
-     * the role, a buffer cap is a local resource bound, so nodes disagreeing
-     * about it costs nothing.
+     * Which layer `key.role` came from.  Both doors know: `start()` reads it
+     * off the caller's options *before* the config merge, `ref()` off whether
+     * the key carried a role of its own.  It is what lets the memoised proxy
+     * arbitrate a second role by precedence instead of by arrival order.
+     */
+    roleOrigin: SingletonRoleOrigin,
+    /**
+     * Both doors have one since #855 — `start()` from the merged options,
+     * `ref()` from `actor-ts.cluster.singleton.buffer-size` — and it is
+     * `undefined` only when neither the caller nor the file named one, where
+     * the proxy's own default applies.  Unlike the role it is not arbitrated
+     * when a second caller brings a different one: a buffer cap is a local
+     * resource bound rather than a claim about which node hosts, so the
+     * memoised proxy simply keeps the one it was built with.
      */
     bufferSize?: number,
   ): ActorRef<TCommand> {
@@ -523,10 +546,13 @@ export class ClusterSingleton implements Extension {
     const existing = this.proxies.get(key.typeName);
     if (existing) {
       // The memo is keyed on typeName alone, so a proxy taken earlier from a
-      // bare `ref('name')` — which carries no role — can predate the `start()`
-      // that knows the singleton is role-restricted.  Left alone it would keep
-      // routing at the plain leader while the managers host elsewhere.
-      existing._adoptRole(key.role);
+      // bare `ref('name')` — which carries no role of its own — can predate the
+      // `start()` that knows the singleton is role-restricted.  Left alone it
+      // would keep routing at the plain leader while the managers host
+      // elsewhere; adopting the role blindly would let the file's role outrank
+      // the code's on that ordering alone, which is why the origin travels
+      // with it.
+      existing._adoptRole(key.role, roleOrigin);
       return existing as unknown as ActorRef<TCommand>;
     }
     const proxy = new ClusterSingletonProxy<TCommand>(
@@ -537,6 +563,7 @@ export class ClusterSingleton implements Extension {
       // later — a captured ref would be impossible to obtain or permanently stale.
       () => this.managers.get(key.typeName) ?? null,
       key.role,
+      roleOrigin,
       bufferSize,
     );
     this.proxies.set(key.typeName, proxy as unknown as ClusterSingletonProxy<never>);

@@ -573,11 +573,20 @@ lässt einen solchen Node beim einfachen Leader routen, während die Manager auf
 dem Rollen-Member hosten.
 
 Eine Stelle der Präzedenz liest sich verkehrt herum: eine Rolle, die am
-`SingletonKey` der Actor-Klasse deklariert ist, **schlägt** die Config-Datei,
-denn der Key ist Code, und Code ist die höhere Schicht.  Zwei Nodes, die sich
-über die Rolle uneinig sind — einer aus einem Key, einer aus HOCON — sind eine
-echte Fehlkonfiguration, und der Proxy sagt das auch: er behält die erste
-Rolle, mit der er adressiert wurde, und warnt vor der zweiten.
+`SingletonKey` der Actor-Klasse deklariert ist — oder an `withRole(…)`
+übergeben wird —, **schlägt** die Config-Datei, denn beides ist Code, und Code
+ist die höhere Schicht.  Das gilt auch auf dem Proxy, und zwar in beiden
+Aufrufreihenfolgen: ein Node, der `ref` vor `start` aufruft, baut seinen Proxy
+aus der Datei, und die explizite Rolle, die das `start` mitbringt, *ersetzt*
+sie dann, statt gegen sie zu verlieren.  Eine konfigurierte Rolle, die nach
+einer expliziten eintrifft, wird aus demselben Grund stillschweigend verworfen
+— das ist die Präzedenz bei der Arbeit, kein zu meldendes Problem.
+
+Wovor der Proxy sehr wohl warnt, sind zwei Rollen aus **derselben** Schicht —
+zwei `withRole`-Aufrufe, oder ein Key und ein Optionsobjekt, die sich
+widersprechen.  Ein Singleton lässt sich nicht auf zwei Arten beschränken, und
+nichts schlägt hier etwas anderes: er behält die erste und nennt die zweite im
+Log.
 
 `role = ""` ist die Gestalt des Keys, kein Wert, mit dem jemand betreibt.  Er
 wird verworfen statt weitergereicht, und das trägt hier gleich doppelt: `''`
