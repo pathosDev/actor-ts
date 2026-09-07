@@ -543,11 +543,13 @@ Flotte, die sich einen konfigurierten Wert teilt, ist genau das, was diese
 Ziehung verhindern soll.  Setzen Sie ihn mit `withClientIdentity(host, port)`,
 wenn Sie einen stabilen brauchen.
 
-`seeds`, `roles` und der Transport haben keine HOCON-Form — die ersten
-beiden sind Deployment-Identität, die an die Join-Stelle gehört, und der
-Transport ist ein Objekt, das eine Config-Datei nicht ausdrücken kann.  Eine
-Schwelle *pro Rolle* ist davon keine Ausnahme: sie benennt eine Rolle, statt
-eine zuzuweisen, und die Zuweisung passiert weiterhin an der Join-Stelle.
+Der Transport hat keine HOCON-Form — er ist ein Objekt, das eine Config-Datei
+nicht ausdrücken kann.  `seeds` und `roles` haben eine, `cluster.seed-nodes`
+und `cluster.roles` weiter oben: sie sind Deployment-Identität, und genau
+deshalb bekommt jeder Eintrag seine eigene optionale Substitution statt eines
+geteilten Defaults.  Eine Schwelle *pro Rolle* benennt eine Rolle, statt eine
+zuzuweisen — sie liest also aus der Datei, obwohl die Zuweisung weiterhin an
+der Join-Stelle passiert.
 
 ### `actor-ts.cluster.singleton`
 

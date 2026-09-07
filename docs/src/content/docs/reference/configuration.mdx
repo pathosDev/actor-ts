@@ -516,11 +516,12 @@ pre-claim its slot, and a fleet sharing one configured value is exactly what
 that draw exists to prevent.  Set it with `withClientIdentity(host, port)` if
 you need a stable one.
 
-`seeds`, `roles` and the transport have no HOCON form — the first two are
-per-deployment identity that belongs at the join site, and the transport is
-an object a config file cannot express.  A per-role *threshold* is not an
-exception to that: it names a role rather than assigning one, and the
-assignment still happens at the join site.
+The transport has no HOCON form — it is an object a config file cannot
+express.  `seeds` and `roles` do have one, `cluster.seed-nodes` and
+`cluster.roles` above: they are per-deployment identity, which is why each
+entry takes its own optional substitution rather than a shared default.  A
+per-role *threshold* names a role rather than assigning one, so it reads from
+the file even though the assignment still happens at the join site.
 
 ### `actor-ts.cluster.singleton`
 
