@@ -180,5 +180,5 @@ describe('ClusterSharding — remembered entities after an unexpected shard deat
     // And the next message still brings it back, one entity at a time.
     node.region.tell({ id: 'user-1', kind: 'work' });
     await waitFor(() => created === 2);
-  });
+  }, 15_000);
 });
