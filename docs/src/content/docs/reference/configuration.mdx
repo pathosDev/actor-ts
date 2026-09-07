@@ -275,7 +275,7 @@ replay from it.
 | `cluster.failure-detector.phi.min-std-deviation` | `100ms` | Floor on the sampled standard deviation, so a very steady peer is not flagged on noise. |
 | `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `0s` | Grace added to the last heartbeat before φ starts rising. |
 | `cluster.split-brain-resolver.active-strategy` | `off` | Which downing strategy arbitrates a partition — `off`, `keep-majority`, `keep-oldest`, `keep-referee` or `static-quorum`. |
-| `cluster.split-brain-resolver.stable-after` | `20s` | How long the membership **and** reachability view must hold still before the strategy is consulted at all — see below. |
+| `cluster.split-brain-resolver.stable-after` | `20s` | How long the membership **and** reachability view must hold still before the strategy is consulted — or, if it never does, half of how long one peer must have been continuously unreachable.  See below. |
 | `cluster.split-brain-resolver.down-all-when-unstable` | `off` | Down every member, this node included, when the view never once holds still for `stable-after` across `3 × stable-after` of churn.  Off — see below. |
 | `cluster.split-brain-resolver.keep-majority.role` | `""` | Only members carrying this role count toward the majority.  `""` counts every member. |
 | `cluster.split-brain-resolver.keep-oldest.role` | `""` | Only members with this role are eligible "oldest".  `""` considers every member. |
@@ -364,6 +364,17 @@ knowing at two hundred milliseconds.  There is deliberately **no** upper
 bound tying it to `failure-detector.down-after`: with a strategy configured
 the detector parks an unreachable peer and evicts nothing, so the window has
 no deadline to out-run.
+
+It is a preference rather than a precondition.  The view it watches is every
+member's address *and* status, so any join, leave or transition anywhere
+restarts it — and a deployment whose membership moves more often than
+`stable-after` would otherwise never arbitrate a partition at all, with the
+detector no longer evicting to fall back on.  A peer that has been
+**continuously** unreachable for `2 × stable-after` is therefore put to the
+strategy whatever else is moving.  That multiple sits above one window, so a
+view that does settle is always arbitrated the ordinary way first, and below
+the `3 × stable-after` escalation deadline, so a strategy is asked before
+`down-all-when-unstable` can stop the cluster.
 
 `down-all-when-unstable` is the escalation for the cluster that never
 settles: when the view has not once held still for a whole `stable-after`

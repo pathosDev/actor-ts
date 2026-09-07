@@ -284,7 +284,7 @@ man daraus erneut zustellt.
 | `cluster.failure-detector.phi.min-std-deviation` | `100ms` | Untergrenze für die gemessene Standardabweichung, damit ein sehr gleichmäßiger Peer nicht wegen Rauschen auffällt. |
 | `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `0s` | Kulanz auf den letzten Heartbeat, bevor φ zu steigen beginnt. |
 | `cluster.split-brain-resolver.active-strategy` | `off` | Welche Downing-Strategie eine Partition entscheidet — `off`, `keep-majority`, `keep-oldest`, `keep-referee` oder `static-quorum`. |
-| `cluster.split-brain-resolver.stable-after` | `20s` | Wie lange das Mitglieder- **und** Erreichbarkeitsbild unverändert bleiben muss, bevor die Strategie überhaupt gefragt wird — siehe unten. |
+| `cluster.split-brain-resolver.stable-after` | `20s` | Wie lange das Mitglieder- **und** Erreichbarkeitsbild unverändert bleiben muss, bevor die Strategie gefragt wird — oder, falls es das nie tut, die Hälfte davon, wie lange ein Peer durchgehend unerreichbar gewesen sein muss.  Siehe unten. |
 | `cluster.split-brain-resolver.down-all-when-unstable` | `off` | Alle Mitglieder downen, diesen Node eingeschlossen, wenn das Bild über `3 × stable-after` Unruhe kein einziges Mal für `stable-after` stillsteht.  Aus — siehe unten. |
 | `cluster.split-brain-resolver.keep-majority.role` | `""` | Nur Mitglieder mit dieser Rolle zählen zur Mehrheit.  `""` zählt alle. |
 | `cluster.split-brain-resolver.keep-oldest.role` | `""` | Nur Mitglieder mit dieser Rolle kommen als „ältestes“ infrage.  `""` betrachtet alle. |
@@ -377,6 +377,18 @@ Sekunden unsichtbar, bei zweihundert Millisekunden wissenswert.  Es gibt
 bewusst **keine** Obergrenze gegen `failure-detector.down-after`: mit
 konfigurierter Strategie parkt der Detector einen unerreichbaren Peer und
 entfernt nichts, das Fenster hat also keine Frist zu schlagen.
+
+Es ist eine Präferenz, keine Vorbedingung.  Das beobachtete Bild umfasst
+Adresse *und* Status jedes Mitglieds; jeder Beitritt, jedes Verlassen und
+jeder Wechsel irgendwo startet es also neu — und ein Deployment, dessen
+Mitgliederbild sich häufiger bewegt als `stable-after`, würde eine Partition
+sonst überhaupt nie entscheiden, ohne dass der nicht mehr entfernende Detector
+noch auffinge.  Ein Peer, der **durchgehend** `2 × stable-after` lang
+unerreichbar war, wird deshalb der Strategie vorgelegt, gleich was sich sonst
+bewegt.  Dieses Vielfache liegt oberhalb eines Fensters, damit ein Bild, das
+doch stillsteht, immer zuerst auf dem gewöhnlichen Weg entschieden wird, und
+unterhalb der Eskalationsfrist `3 × stable-after`, damit eine Strategie
+gefragt wird, bevor `down-all-when-unstable` den Cluster stoppen kann.
 
 `down-all-when-unstable` ist die Eskalation für den Cluster, der nie zur
 Ruhe kommt: hat das Bild über `3 × stable-after` durchgehender Änderung kein

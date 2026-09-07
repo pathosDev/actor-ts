@@ -84,6 +84,49 @@ export function unstableEscalationDeadlineMs(stableAfterMs: number): number {
 }
 
 /**
+ * How many whole windows a peer must have been **continuously** unreachable
+ * before the resolver is consulted even though the view is still moving — the
+ * bound on how long churn elsewhere may starve arbitration here.
+ *
+ * The window's premise is that a view read mid-transition is evidence of
+ * nothing.  Its first implementation drew that from the *whole* view, which
+ * makes any join, leave or status change anywhere in the cluster restart it:
+ * a deployment whose membership moves more often than `stable-after` — an
+ * autoscaling group, a rolling deploy, one flapping node — then never
+ * arbitrates a partition at all, and since #929 nothing else does either,
+ * because the detector parks an unreachable peer instead of evicting it
+ * whenever a provider is configured.  A window with no ceiling is not a
+ * conservative version of arbitration; it is the absence of arbitration.
+ *
+ * Two, and the two neighbouring numbers are why.  It is strictly *above* one
+ * window, so a view that does settle is always arbitrated through the ordinary
+ * path first and this bound never becomes the normal case.  It is strictly
+ * *below* {@link DEFAULT_UNSTABLE_ESCALATION_FACTOR}, so a strategy is asked
+ * before `down-all-when-unstable` stops the cluster — the escalation exists
+ * for a view no strategy could decide on, and a peer that has held one status
+ * for two whole windows is not that.
+ *
+ * Measured against a *single* peer's uninterrupted unreachability rather than
+ * against the whole view, because that is the fact the resolver is being asked
+ * about.  Nothing here weakens the pre-#839 disposition: before the window,
+ * the provider was consulted on **every** tick that saw a partition.
+ */
+export const DEFAULT_UNREACHABLE_ARBITRATION_FACTOR = 2;
+
+/**
+ * How long one peer must have been continuously unreachable before the
+ * resolver is consulted despite a view that keeps moving, derived from the
+ * configured window.
+ *
+ * A function beside {@link unstableEscalationDeadlineMs} for the same reason
+ * that one is: the derivation has exactly one home, so the published rule and
+ * the shipped one cannot drift apart.
+ */
+export function unreachableArbitrationDeadlineMs(stableAfterMs: number): number {
+  return stableAfterMs * DEFAULT_UNREACHABLE_ARBITRATION_FACTOR;
+}
+
+/**
  * Split-brain **policy** — how the cluster decides *when* to ask a
  * {@link DowningProvider}, as against which one it asks (#839).
  *
@@ -102,6 +145,12 @@ export type SplitBrainResolverOptionsType = {
    * The clock is the failure-detection tick, so the effective resolution is
    * `failure-detector.heartbeat-interval` (500 ms shipped) — irrelevant at
    * twenty seconds, worth knowing at two.
+   *
+   * It is a preference, not a precondition: a peer that has been continuously
+   * unreachable for {@link unreachableArbitrationDeadlineMs} is arbitrated
+   * even if the rest of the view is still moving.  Without that ceiling a
+   * cluster whose membership changes more often than this value would never
+   * arbitrate a partition at all.
    */
   readonly stableAfterMs?: number;
   /**

@@ -21,11 +21,13 @@ export type { SplitBrainResolverStrategy } from './DowningFromConfig.js';
 export {
   DEFAULT_DOWN_ALL_WHEN_UNSTABLE,
   DEFAULT_STABLE_AFTER_MS,
+  DEFAULT_UNREACHABLE_ARBITRATION_FACTOR,
   DEFAULT_UNSTABLE_ESCALATION_FACTOR,
   SplitBrainResolverOptions,
   SplitBrainResolverOptionsBuilder,
   SplitBrainResolverOptionsValidator,
   readSplitBrainResolverOptionsFromConfig,
+  unreachableArbitrationDeadlineMs,
   unstableEscalationDeadlineMs,
 } from './SplitBrainResolverOptions.js';
 export type { SplitBrainResolverOptionsType } from './SplitBrainResolverOptions.js';
