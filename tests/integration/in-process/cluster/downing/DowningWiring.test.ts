@@ -96,6 +96,9 @@ const FAST_EVICTION: FailureDetectorOptionsType = {
   heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 600,
 };
 
+/** The stability window these cases run with — see `startNode`. */
+const STABLE_AFTER_MS = 50;
+
 async function startNode(
   systemName: string, port: number, options: {
     seeds?: string[];
@@ -112,7 +115,18 @@ async function startNode(
     .withFailureDetector(options.failureDetector ?? SLOW_EVICTION)
     .withGossipIntervalMs(80);
   if (options.seeds !== undefined) clusterOptions = clusterOptions.withSeeds(options.seeds);
-  if (options.downing !== undefined) clusterOptions = clusterOptions.withDowning(options.downing);
+  if (options.downing !== undefined) {
+    clusterOptions = clusterOptions
+      .withDowning(options.downing)
+      // Every case here drives a partition and then asserts on the resolver's
+      // answer within a few seconds.  The production window is 20 s (#839) —
+      // the view has to stop moving before a strategy is asked anything, which
+      // is what stops a partition detected one peer at a time from being
+      // resolved as a run of majorities.  These are two-node partitions with a
+      // single detection, so there is no spread for a window to cover and 50 ms
+      // is enough to be a window at all.
+      .withSplitBrainResolver({ stableAfterMs: STABLE_AFTER_MS });
+  }
   const cluster = await Cluster.join(sys, clusterOptions);
   return { sys, cluster };
 }
@@ -158,20 +172,29 @@ describe('Cluster + DowningProvider — wiring', () => {
   test('downing provider invoked on partition; decision applied (others)', async () => {
     const sysName = 'down-others';
     let invocations = 0;
-    let lastView: ClusterPartitionView | null = null;
+    // The view that carried the *decision*, not merely the last one seen.
+    // `decide` keeps being called after the peer is tombstoned — the
+    // fingerprint changed, so the debounce lets it through — and that later
+    // view has an empty unreachable set.  Asserting on "the last view" made
+    // the test a race between the assertion and the next failure-detector
+    // tick, which the stability window (#839) shifted and would have shifted
+    // again on a slower machine.
+    let decidingView: ClusterPartitionView | null = null;
     const provider: DowningProvider = {
       decide(view) {
         invocations++;
-        lastView = view;
         // Force-down anything we see as unreachable.
-        return new Set(view.allMembers
+        const decision = new Set(view.allMembers
           .filter((m) => view.unreachable.has(addrKey(m)))
           .map(addrKey));
+        if (decision.size > 0) decidingView = view;
+        return decision;
       },
     };
 
     const seed = await startNode(sysName, 64_011, { downing: provider });
     const peer = await startNode(sysName, 64_012, { seeds: [`${sysName}@h:64011`] });
+    const peerAddress = peer.cluster.selfAddress.toString();
     await waitFor(() =>
       seed.cluster.upMembers().length === 2 && peer.cluster.upMembers().length === 2);
 
@@ -184,10 +207,28 @@ describe('Cluster + DowningProvider — wiring', () => {
 
     // Provider should fire and force a down/removed transition long
     // before the FD's downAfterMs (4s) would.
-    await waitFor(() => seed.cluster.upMembers().length === 1, 2_000);
+    //
+    // Waited on the decision rather than on `upMembers().length === 1`, which
+    // is what this used to poll: that count drops the moment the *detector*
+    // marks the peer unreachable, which happens before the resolver is asked
+    // anything.  So the old wait returned early and the assertions below read
+    // whatever state existed at that instant — they passed because the first
+    // `decide` call happened to have landed already, and stopped passing the
+    // moment a stability window (#839) put 50 ms between the mark and the
+    // question.  The peer being *removed* is the effect this test is named
+    // for, and it is the one thing that cannot be true before the provider has
+    // spoken.
+    await waitFor(
+      // `getMembers()` hides tombstones, so a removed peer is an *absent* one
+      // here rather than one with `status === 'removed'` — which is why this
+      // waits for the address to disappear.
+      () => !seed.cluster.getMembers().some((m) => m.address.toString() === peerAddress),
+      2_000,
+    );
     expect(invocations).toBeGreaterThan(0);
-    expect(lastView).not.toBeNull();
-    expect(lastView!.unreachable.size).toBeGreaterThan(0);
+    expect(decidingView).not.toBeNull();
+    expect(decidingView!.unreachable.size).toBeGreaterThan(0);
+    expect(seed.cluster.upMembers().length).toBe(1);
 
     await stop(seed);
     await peer.sys.terminate();

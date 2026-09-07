@@ -103,6 +103,12 @@ async function stopAll(nodes: Node[]): Promise<void> {
   }
 }
 
+/** A newline, named so a HOCON document can be assembled from a list. */
+const LINE_BREAK = String.fromCharCode(10);
+
+/** The stability window these cases configure — see where it is set below. */
+const STABLE_AFTER_MS = 50;
+
 const knows = (node: Node, address: string): boolean =>
   node.cluster.getMembers().some((m) => m.address.toString() === address);
 
@@ -110,7 +116,14 @@ describe('a split-brain resolver selected from config (#838)', () => {
   test('keep-majority downs the minority side, with no code-side downing setup', async () => {
     const systemName = 'sbr-config-majority';
     const config = Config.parseString(
-      'actor-ts.cluster.split-brain-resolver.active-strategy = keep-majority',
+      [
+        'actor-ts.cluster.split-brain-resolver.active-strategy = keep-majority',
+        // The window these cases run with.  Production ships 20 s (#839) so a
+        // strategy is never asked about a partition that is still being
+        // detected; here one node falls silent once, so there is no spread for
+        // a window to cover and the budgets below are seconds, not tens of them.
+        `actor-ts.cluster.split-brain-resolver.stable-after = ${STABLE_AFTER_MS}ms`,
+      ].join(LINE_BREAK),
     );
     const [seed, second, third] = await startThree(systemName, 64_101, config);
     const isolatedAddress = third.cluster.selfAddress.toString();
@@ -181,7 +194,14 @@ describe('a split-brain resolver selected from config (#838)', () => {
     // long since have evicted it.
     const systemName = 'sbr-config-overridden';
     const config = Config.parseString(
-      'actor-ts.cluster.split-brain-resolver.active-strategy = keep-majority',
+      [
+        'actor-ts.cluster.split-brain-resolver.active-strategy = keep-majority',
+        // The window these cases run with.  Production ships 20 s (#839) so a
+        // strategy is never asked about a partition that is still being
+        // detected; here one node falls silent once, so there is no spread for
+        // a window to cover and the budgets below are seconds, not tens of them.
+        `actor-ts.cluster.split-brain-resolver.stable-after = ${STABLE_AFTER_MS}ms`,
+      ].join(LINE_BREAK),
     );
     let consulted = 0;
     const systemOptions = ActorSystemOptions.create()

@@ -105,6 +105,7 @@ import type {
   ClusterPartitionView,
   DowningProvider,
 } from './downing/DowningProvider.js';
+import { DEFAULT_SPLIT_BRAIN_RESOLVER_STABLE_AFTER_MS } from './downing/SplitBrainResolverOptions.js';
 
 type EnvelopeHandler = (env: EnvelopeMessage, from: NodeAddress) => void;
 
@@ -364,6 +365,19 @@ export class Cluster {
    */
   private lastDownedView: string | null = null;
 
+  /**
+   * How long the member view must be unchanged before {@link downing} is asked
+   * anything (#839).  See {@link evaluateDowning} for why the window exists.
+   */
+  private readonly stableAfterMs: number;
+
+  /**
+   * The view fingerprint the stability window is currently timing, and when it
+   * was first seen.  `null` means no partition is being observed.
+   */
+  private observedView: string | null = null;
+  private observedViewSince = 0;
+
   private constructor(system: ActorSystem, options: ClusterOptionsType) {
     this.system = system;
     // The incarnation is minted here rather than in `_start` so that it is
@@ -467,6 +481,8 @@ export class Cluster {
     this.minimumMembersBeforeUp = options.minimumMembersBeforeUp ?? DEFAULT_MINIMUM_MEMBERS_BEFORE_UP;
     this.minimumMembersBeforeUpPerRole = options.minimumMembersBeforeUpPerRole ?? {};
     this.downing = options.downing ?? null;
+    this.stableAfterMs = options.splitBrainResolver?.stableAfterMs
+      ?? DEFAULT_SPLIT_BRAIN_RESOLVER_STABLE_AFTER_MS;
     this.tombstoneTtlMs = options.tombstoneTtlMs ?? DEFAULT_TOMBSTONE_TTL_MS;
     this.tombstonePruneIntervalMs = options.tombstonePruneIntervalMs ?? DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS;
     // `0` is not "no floor" but "derive one", so it falls through exactly like
@@ -2413,6 +2429,37 @@ export class Cluster {
       .map((member) => `${member.address.toString()}:${member.status}`)
       .sort()
       .join('|');
+    // The stability window (#839).  A partition is not an event this loop
+    // observes; it is a sequence of them.  `failureDetectionTick` marks peers
+    // unreachable **one at a time**, as each crosses `unreachableAfterMs`, and
+    // then calls this method at the end of that same tick — so a 2/2 partition
+    // whose two remote peers cross the threshold on different ticks used to be
+    // resolved as two successive *majority* decisions rather than one
+    // equal-split decision:
+    //
+    //   tick 1:  a=up b=up c=unreachable d=up          3 reachable of 4  -> down c
+    //   tick 2:  a=up b=up c=removed  d=unreachable    2 reachable of 3  -> down d
+    //
+    // The tombstone is what closes the trap: the force-down below writes
+    // `withRemoved(...)`, and every bundled strategy filters candidates to
+    // `up | leaving | unreachable`, so the denominator shrinks along with the
+    // numerator and the surviving half is a majority of what is left.  Both
+    // halves run the identical computation over their mirror image, both
+    // survive, and with `LeaseMajority` the lease is never acquired by anybody
+    // — the equal-split path the strategy exists for is not reached at all.
+    // That is a split brain produced by the resolver, on an ordinary partition
+    // whose two detections landed 50 ms apart.
+    //
+    // Requiring the view to be *unchanged* for `stableAfterMs` collapses the
+    // sequence back into the single observation the strategies are written
+    // against.  A flap shorter than the window is the easier case it also
+    // covers, and was the motivation the key was originally filed with.
+    const now = Date.now();
+    if (fingerprint !== this.observedView) {
+      this.observedView = fingerprint;
+      this.observedViewSince = now;
+    }
+    if (unreachable.size > 0 && now - this.observedViewSince < this.stableAfterMs) return;
     // Debounce only when the LAST evaluation produced an applied
     // decision.  Strategies that need multiple ticks to converge
     // (e.g. `LeaseMajority` with an in-flight `acquire()`) will

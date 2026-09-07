@@ -18,6 +18,7 @@ import {
 import type { ClusterOptionsType } from '../../../src/cluster/ClusterOptions.js';
 import { KeepMajority } from '../../../src/cluster/downing/KeepMajority.js';
 import { KeepOldest } from '../../../src/cluster/downing/KeepOldest.js';
+import { DEFAULT_SPLIT_BRAIN_RESOLVER_STABLE_AFTER_MS } from '../../../src/cluster/downing/SplitBrainResolverOptions.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
 import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
@@ -220,6 +221,11 @@ describe('readClusterOptionsFromConfig', () => {
       // go away, this assertion is the one that says so.
       seeds: [],
       roles: [],
+      // The stability window (#839).  It lands as a nested object because it
+      // is read as one — a sibling of `downing` rather than a field on it,
+      // since it decides *when* the resolver is consulted and therefore
+      // applies to the strategy `active-strategy` cannot name.
+      splitBrainResolver: { stableAfterMs: DEFAULT_SPLIT_BRAIN_RESOLVER_STABLE_AFTER_MS },
       tombstoneTtlMs: DEFAULT_TOMBSTONE_TTL_MS,
       tombstonePruneIntervalMs: DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
       // 0 is the file's way of saying "derive from down-after"; the

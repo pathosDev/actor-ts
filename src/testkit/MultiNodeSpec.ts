@@ -72,8 +72,14 @@ type BarrierEntry = {
 };
 
 export class MultiNodeSpec {
-  private readonly options: Required<Omit<MultiNodeSpecOptionsType, 'addresses' | 'failureDetector' | 'downing'>>
-    & Pick<MultiNodeSpecOptionsType, 'addresses' | 'failureDetector' | 'downing'>;
+  private readonly options: Required<Omit<
+    MultiNodeSpecOptionsType,
+    'addresses' | 'failureDetector' | 'downing' | 'splitBrainResolver'
+  >>
+    & Pick<
+      MultiNodeSpecOptionsType,
+      'addresses' | 'failureDetector' | 'downing' | 'splitBrainResolver'
+    >;
   private readonly nodes = new Map<string, NodeRecord>();
   private started = false;
   private readonly barriers = new Map<string, BarrierEntry>();
@@ -95,6 +101,7 @@ export class MultiNodeSpec {
       addresses: options.addresses,
       failureDetector: options.failureDetector,
       downing: options.downing,
+      splitBrainResolver: options.splitBrainResolver,
     };
   }
 
@@ -144,6 +151,9 @@ export class MultiNodeSpec {
       }
       const downing = this.options.downing?.(role);
       if (downing) clusterOptions.withDowning(downing);
+      if (this.options.splitBrainResolver) {
+        clusterOptions.withSplitBrainResolver(this.options.splitBrainResolver);
+      }
       const cluster = await Cluster.join(system, clusterOptions);
       this.nodes.set(role, {
         role,
