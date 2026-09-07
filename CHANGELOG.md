@@ -11,11 +11,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
-- **A split-brain resolver is no longer consulted on whichever membership
-  view the failure detector happened to leave behind at the end of a tick**
-  (#839).  Two new keys under `actor-ts.cluster.split-brain-resolver` gate
-  it: `stable-after` (20s) is how long the membership **and** reachability
-  view must hold still before the configured strategy is asked anything, and
+- **BREAKING — A split-brain resolver is no longer consulted on whichever
+  membership view the failure detector happened to leave behind at the end
+  of a tick (#839).**
+
+  Two new keys under `actor-ts.cluster.split-brain-resolver` gate it:
+  `stable-after` (20s) is how long the membership and reachability view must
+  hold still before the configured strategy is asked anything, and
   `down-all-when-unstable` (off) escalates to downing every member — this
   node included — when the view never once holds still for a whole window
   across three windows of continuous change, and something is still
@@ -24,21 +26,46 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   few hundred milliseconds apart, so a view read mid-transition describes a
   cluster that existed at no instant, and counting a majority against it is
   how a node concludes it is in the minority a second before the rest of its
-  own side is marked unreachable too. The whole change lives in
-  `Cluster.evaluateDowning`; no strategy sees either value, and the
-  failure-detection tick is the clock, so no new timer exists. It is only
-  expressible since #929 stopped the detector evicting an unreachable peer
-  behind the resolver's back, which is why there is deliberately no upper
-  bound tying `stable-after` to `failure-detector.down-after`. Configurable
-  in code as one nested block, `ClusterOptions.withSplitBrainResolver(...)`,
-  merged per field over the file so pinning the window does not silently
-  drop the file's escalation switch. The escalation ships off on purpose: it
-  is the only action in the subsystem that stops the whole cluster and it is
-  reached by a timer rather than by a strategy's verdict, so a rolling
-  restart whose replacements arrive less than `stable-after` apart looks
-  exactly like a cluster that will not settle. `MultiNodeSpec` gained a
-  matching `stableAfterMs`, defaulting to 100 ms the way its gossip and
-  seed-retry intervals already default to test scale.
+  own side is marked unreachable too. The window has a ceiling, and it needs
+  one: its fingerprint covers every member's address and status, so any
+  join, leave or transition anywhere restarts it, and a deployment whose
+  membership moves more often than `stable-after` would otherwise never
+  arbitrate a partition at all — an autoscaling group, a rolling deploy, or
+  one flapping node at the shipped twenty seconds. A peer that has been
+  continuously unreachable for `2 x stable-after` is therefore put to the
+  strategy whatever else is moving; that multiple sits above one window, so
+  a view that does settle is always arbitrated the ordinary way first, and
+  below the three-window escalation deadline, so a strategy is asked before
+  `down-all-when-unstable` can stop the cluster. The whole change lives in
+  `Cluster.evaluateDowning` and `src/cluster/downing/StabilityWindow.ts`; no
+  strategy sees any of these values, and the failure-detection tick is the
+  clock, so no new timer exists. It is only expressible since #929 stopped
+  the detector evicting an unreachable peer behind the resolver's back,
+  which is why there is deliberately no upper bound tying `stable-after` to
+  `failure-detector.down-after`. Configurable in code as one nested block,
+  `ClusterOptions.withSplitBrainResolver(...)`, merged per field over the
+  file so pinning the window does not silently drop the file's escalation
+  switch. The escalation ships off on purpose: it is the only action in the
+  subsystem that stops the whole cluster and it is reached by a timer rather
+  than by a strategy's verdict, so a rolling restart whose replacements
+  arrive less than `stable-after` apart looks exactly like a cluster that
+  will not settle. `MultiNodeSpec` gained a matching `stableAfterMs`,
+  defaulting to 100 ms the way its gossip and seed-retry intervals already
+  default to test scale.
+
+  *Migration:* Every deployment that already had
+  `actor-ts.cluster.split-brain-resolver.active-strategy` set, or
+  `ClusterOptions.withDowning(...)` configured, now waits before its
+  strategy is asked anything — up to `stable-after` (20s) for a settled
+  view, and up to `2 x stable-after` (40s) if the membership keeps moving.
+  Before this change the strategy was consulted on the first tick that saw a
+  partition. Nothing else evicts in the meantime: since #929 a configured
+  provider owns the eviction, so the peer sits at `unreachable` for the
+  whole wait. If your recovery objective is shorter than that, set
+  `actor-ts.cluster.split-brain-resolver.stable-after` (or
+  `withSplitBrainResolver({ stableAfterMs })`) to a value your SLO
+  tolerates; `0` is refused, because "do not arbitrate" is spelled
+  `active-strategy = off`. No API changes and no config keys were removed.
 
 - **`actor-ts.cluster.publish-stats-interval` arms a periodic membership
   sample on the node — every interval it emits one `ClusterStatsPublished`
@@ -252,9 +279,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `segmented-protected-proportion`, `admission-window-proportion`,
   `admission-filter` (`off` or `frequency-sketch`) and `stop-timeout` — with
   matching `withPassivationX` builder methods. The defaults are the plain
-  LRU every earlier release had, and the whole subsystem is inert while
-  `max-entities = 0`, so a deployment that configures neither
-  `passivation-idle` nor `max-entities` behaves exactly as before. #848
+  LRU every earlier release had, the replacement machinery is inert while
+  `max-entities = 0`, and `stop-timeout` ships as `0`, so a deployment that
+  configures none of these behaves exactly as before.
 
   The policy this exists for is `segmented-least-recently-used` with
   `admission-filter = frequency-sketch`. Recency alone cannot tell "touched
@@ -264,21 +291,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   six-entity hot set against a cap of twelve survives a forty-entity scan
   intact under the segmented policy and is lost entirely under plain LRU.
 
-  Two related behaviour changes on existing features:
+  `stop-timeout` bounds the *other* half of passivation, and it is opt-in.
+  The stop-message a `Passivate` hands an entity is a request: the entity
+  decides when to act on it, and an entity mid-drain — a long flush, a slow
+  final write — is entitled to take as long as the drain takes. Left unset,
+  an entity that never acts on the message never terminates, `EntityStopped`
+  never reaches the region, and its slot is charged to `max-entities` for
+  the lifetime of the node; set, the shard stops it outright after the
+  window. It is independent of `max-entities` — a positive value arms it
+  with or without a cap — and it is off by default because only the operator
+  who knows the drain can pick the bound.
+  `ShardConfig.passivationStopTimeoutMs` is optional and absence means the
+  same as `0`, so an application that builds a `ShardConfig` itself is
+  unaffected.
 
-  - A remembered entity that a shard pre-creates during recovery now counts
-    against `max-entities`. It previously wrote the region's entity index
-    directly, so a node handed a registry larger than the cap exceeded it by
-    the size of the registry and stayed over it.
-  - An entity that ignores the stop-message a `Passivate` handed it is now
-    stopped outright after `passivation.stop-timeout` (10 s by default; `0`
-    restores the unbounded wait). Without it the entity never terminated,
-    `EntityStopped` never reached the region, and its slot was charged to
-    the cap for the lifetime of the node.
+  One related behaviour change on an existing feature: a remembered entity
+  that a shard pre-creates during recovery now counts against
+  `max-entities`. It previously wrote the region's entity index directly, so
+  a node handed a registry larger than the cap exceeded it by the size of
+  the registry and stayed over it.
 
   The eviction path is also no longer a linear scan of every resident entity
   on the first message for each new one — every replacement operation is now
-  O(1) amortised.
+  O(1) amortised, and an entity that is evicted, stops on its own, or leaves
+  with its shard releases its slot of the cap on all three paths.
 
 - **`actor-ts.persistence` gained five wired behaviour keys, so a deployment
   can bound a journal call, cap a restart storm and trade replay time for
