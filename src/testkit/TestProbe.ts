@@ -69,6 +69,19 @@ export class TestProbe extends ActorRef<unknown> {
     }
   }
 
+  /**
+   * @internal `actor-ts.actor.ask-timeout` from the system under test (#863).
+   *
+   * Distinct from `defaultTimeoutMs` above, which bounds how long an
+   * `expect*` waits for a message to *arrive*.  This one is the deadline an
+   * `ask` **on** the probe arms — so a suite that shortens the key to keep its
+   * run fast gets the shorter deadline here too, rather than one path honouring
+   * the configuration and the other not.
+   */
+  override _defaultAskTimeoutMs(): number {
+    return this.system._defaultAskTimeoutMs;
+  }
+
   /** Number of messages currently buffered. */
   get messageCount(): number { return this.queue.length; }
 

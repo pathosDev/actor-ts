@@ -9,6 +9,9 @@ import {
   QUIESCENCE_POLL_INTERVAL_MS,
   QUIESCENCE_POLL_MAX_INTERVAL_MS,
 } from './Constants.js';
+import { DEFAULT_ASK_TIMEOUT_MS } from './util/Constants.js';
+import { DEFAULT_SCATTER_GATHER_TIMEOUT_MS, MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS } from './ScatterGatherOptions.js';
+import { OptionsError } from './util/OptionsValidator.js';
 import { Config } from './config/Config.js';
 import { ConfigKeys } from './config/ConfigKeys.js';
 import { CoordinatedShutdownId, Phases } from './CoordinatedShutdown.js';
@@ -114,6 +117,18 @@ export class ActorSystem {
    * in this file.
    */
   readonly _actorThroughput: number;
+  /**
+   * @internal Deadline `ActorRef.ask` arms when the caller names no
+   * `timeoutMs` — `actor-ts.actor.ask-timeout` (#863).
+   *
+   * Resolved here rather than at the ask site for the reason above and one
+   * more: a ref is not a config reader either, and there are fourteen of them.
+   * Reached through `ActorRef._defaultAskTimeoutMs()`, which each ref that
+   * can see a system overrides; the ones that cannot — dead letters, `Nobody`,
+   * an unresolved path, the reply ref itself — keep the built-in constant, and
+   * the reference comment says so rather than implying uniform coverage.
+   */
+  readonly _defaultAskTimeoutMs: number;
   /**
    * @internal What `actor-ts.mailbox.default.*` says, for every cell that
    * does not name its own mailbox (#862).
@@ -248,6 +263,10 @@ export class ActorSystem {
     this.loggerCloseTimeoutMs = loggerCloseTimeoutFromConfig(this.config);
     this.shutdownDrainTimeoutMs = shutdownDrainTimeoutFromConfig(this.config);
     this._actorThroughput = actorThroughputFromConfig(this.config);
+    // Throws on a value no ask could arm, and does so here rather than at the
+    // first ask: the mistake is in the config file, so the failure belongs at
+    // the moment the config file is read (#863).
+    this._defaultAskTimeoutMs = askTimeoutFromConfig(this.config);
     // Before the guardian cells are built below: the first cell constructed
     // reads this, so a later assignment would leave the root and the two
     // guardians looking at `undefined`.
@@ -258,6 +277,8 @@ export class ActorSystem {
     // as its service identity — has to reach them here.  Structural, so a
     // third-party logger that grew an `attach` benefits too.
     attachLogger(this.log, { scheduler: this.scheduler, systemName: this.name });
+    // Needs a logger, so it cannot ride along with the read above.
+    warnIfAskTimeoutUndercutsScatterGather(this.log, this._defaultAskTimeoutMs);
     // Wire the system logger into the bus so a throwing subscriber
     // predicate (#85) gets surfaced rather than silently dropped.
     this.eventStream.log = this.log;
@@ -1134,6 +1155,72 @@ async function withinBudget(
 function actorThroughputFromConfig(config: Config): number {
   if (!config.hasPath(ConfigKeys.actor.throughput)) return DEFAULT_ACTOR_THROUGHPUT;
   return Math.max(1, config.getInt(ConfigKeys.actor.throughput));
+}
+
+/**
+ * Resolve the system-wide default ask deadline (#863).
+ *
+ * **Rejected, not clamped — deliberately unlike its neighbour above.**
+ * `throughput = 0` has a nearest honest reading ("as little batching as
+ * possible" is 1) so clamping loses nothing.  `ask-timeout = 0` has none: an
+ * ask that arms no deadline can never settle, because the reply ref is neither
+ * returned to the caller nor exported, which is why {@link ActorRef.ask}
+ * refuses the same value as a positional argument (#765).  Clamping to 1 ms
+ * would honour the letter of that rule while producing asks that reject before
+ * anything can answer them — a working deadline that is never the one anybody
+ * asked for.
+ *
+ * Throwing here rather than leaving it to `assertAskTimeout` moves the failure
+ * from every ask site in the application to the one line that caused it, and
+ * names the key in the message.
+ */
+function askTimeoutFromConfig(config: Config): number {
+  if (!config.hasPath(ConfigKeys.actor.askTimeout)) return DEFAULT_ASK_TIMEOUT_MS;
+  const timeoutMs = config.getDuration(ConfigKeys.actor.askTimeout);
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new OptionsError(
+      `${ConfigKeys.actor.askTimeout} must be a positive finite duration `
+      + `(got ${String(timeoutMs)}) — an ask that arms no deadline can never settle`,
+      'actor-ts.actor',
+      'ask-timeout',
+      timeoutMs,
+    );
+  }
+  return timeoutMs;
+}
+
+/**
+ * Say so when the configured ask deadline has made the default scatter-gather
+ * router unable to report (#863, #1088).
+ *
+ * {@link DEFAULT_SCATTER_GATHER_TIMEOUT_MS} exists only to sit under the ask
+ * default, so that a bare `pool.ask(message)` sees the router's
+ * `AggregateError` naming the failing routees rather than its own
+ * `AskTimeoutError`.  Lowering `ask-timeout` past it silently restores exactly
+ * the defect #1088 fixed, and nothing downstream can notice: the scatter
+ * default is resolved in `scatterGatherRouterFactory`, at a call site with no
+ * system in scope.
+ *
+ * A WARN and not a rejection, and not a derived scatter default either.  The
+ * combination is legal — a router that names its own `timeoutMs` is unaffected,
+ * and so is an application with no scatter-gather router at all — so refusing
+ * to start would punish a configuration that may be entirely correct.  Deriving
+ * `min(4_500, resolved - 500)` inside the router would fix it without a word,
+ * but it moves validation away from the factory that its JSDoc argues should
+ * own it, and it makes one knob quietly retune another.  One line at startup
+ * naming both knobs is what the operator needs to decide which of the two they
+ * actually meant.
+ */
+function warnIfAskTimeoutUndercutsScatterGather(log: Logger, askTimeoutMs: number): void {
+  if (askTimeoutMs >= MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS) return;
+  log.warn(
+    `${ConfigKeys.actor.askTimeout} = ${askTimeoutMs}ms is below `
+    + `${MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS}ms, the least a scatter-gather router left `
+    + `on its ${DEFAULT_SCATTER_GATHER_TIMEOUT_MS}ms default needs to report before the caller `
+    + 'gives up — so `pool.ask(message)` will raise AskTimeoutError instead of the '
+    + 'AggregateError naming the failing routees (#1088).  Raise the ask timeout, or give the '
+    + 'router its own ScatterGatherOptions.withTimeoutMs().',
+  );
 }
 
 /**

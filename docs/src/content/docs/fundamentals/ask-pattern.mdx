@@ -116,7 +116,9 @@ try {
 ```
 
 The timeout is mandatory in spirit — defaulting to 5 seconds catches
-the case where you forgot to think about it.  Tune per call site:
+the case where you forgot to think about it.  That default is settable
+system-wide with `actor-ts.actor.ask-timeout`; a per-call argument
+always wins over it.  Tune per call site:
 
 - Cheap in-process replies: 100-500 ms.
 - Cross-cluster lookups: 1-5 s depending on network expectations.
@@ -161,12 +163,50 @@ value needs a typo to arrive: a computed budget goes negative the
 moment its deadline passes, and an untyped configuration value
 arrives as whatever it parsed to.
 
-To get the 5-second default, **omit the argument** (or pass
-`undefined`) — the parameter default still applies:
+To get the default deadline, **omit the argument** (or pass
+`undefined`):
 
 ```ts
 const value = await counter.ask<number>({ kind: 'get' });
 ```
+
+### Changing the default for the whole system
+
+`actor-ts.actor.ask-timeout` is what that omitted argument resolves
+to.  It ships as `5s`:
+
+```hocon
+actor-ts {
+  actor {
+    ask-timeout = 2s
+  }
+}
+```
+
+Three things are worth knowing before you set it.
+
+**It reaches most refs, not all of them.**  A ref applies the
+configured value only if it can reach the `ActorSystem` that read it —
+which the ordinary local ref, `TestProbe`, `RemoteActorRef`,
+`ClusterSingletonProxy`, the two shard refs and `EntityRef` all can.
+The dead-letter ref, `Nobody`, an unresolved-path ref and the one-shot
+reply ref cannot, and keep the built-in 5 s — as do two
+framework-internal handles nothing can reply to.  Every ref in that
+group is one you hold where no live actor is behind it, so an ask on it
+is waiting for a reply that is never coming either way.
+
+**A value that arms no deadline is refused, not clamped.**
+`ask-timeout = 0` (or a negative one) throws at `ActorSystem.create`,
+naming the key — the same rule as the positional argument, applied at
+the moment the configuration is read rather than at every ask site.
+
+**Watch the interaction with scatter-gather routing.**  A router from
+`Router.scatterGatherFirstCompleted(…)` defaults to 4.5 s so it can
+name the failing routees before the caller's ask gives up.  An ask
+default under 4.6 s inverts that, and you get `AskTimeoutError` instead
+of the diagnosis; the system logs a `warn` at startup when it happens.
+Give the router its own `ScatterGatherOptions.withTimeoutMs()` if the
+shorter ask deadline is what you want.
 
 ## Replying with an Error
 

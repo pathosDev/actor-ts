@@ -212,6 +212,14 @@ describe('readClusterOptionsFromConfig', () => {
       // siblings ship comment-only and so must NOT appear next to it — which
       // is what the exact-object shape of this assertion is what checks (#837).
       minimumMembersBeforeUp: DEFAULT_MINIMUM_MEMBERS_BEFORE_UP,
+      // Both ship `[]`, so both always land — and `[]` is behaviourally the
+      // same node as an absent key, because `Cluster.join` reads
+      // `resolvedOptions.seeds ?? []` and the constructor `options.roles ?? []`
+      // (#836).  Pinned here rather than trusted, because these two are the
+      // reversal of a position four files used to publish: if the leaves ever
+      // go away, this assertion is the one that says so.
+      seeds: [],
+      roles: [],
       tombstoneTtlMs: DEFAULT_TOMBSTONE_TTL_MS,
       tombstonePruneIntervalMs: DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS,
       // 0 is the file's way of saying "derive from down-after"; the

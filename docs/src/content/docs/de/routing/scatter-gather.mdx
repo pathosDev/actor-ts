@@ -163,6 +163,16 @@ Was auch immer du hier setzt: Halte das `ask`-Timeout des Aufrufers
 darüber — sonst bekommst du dein eigenes Timeout statt des
 `AggregateError`, für den es diesen Router gibt.
 
+Die Seite des Aufrufers ist ebenfalls einstellbar, und sie zu senken ist
+der einfache Weg, den Abstand zu zerstören, ohne diese Seite anzufassen:
+`actor-ts.actor.ask-timeout` verschiebt die `5_000` oben.  Unter `4_600`
+kann kein Router mehr berichten, der noch auf seiner Default-Deadline
+steht.  Das System schreibt beim Start eine `warn`-Zeile, die beide
+Knöpfe benennt, wenn diese Kombination konfiguriert ist — es passt aber
+keinen der beiden an: Ein Router mit eigenem `withTimeoutMs` ist nicht
+betroffen, und eine Anwendung ganz ohne Scatter-Gather-Router ebenso
+wenig.
+
 ```ts
 const hedgeOptions = ScatterGatherOptions.create().withTimeoutMs(250);
 ```

@@ -54,8 +54,23 @@ export const ConfigKeys = {
     },
   },
 
-  /** Per-actor message-loop tuning — `actor-ts.actor.*`. */
+  /**
+   * System-wide actor defaults — `actor-ts.actor.*`.
+   *
+   * The two leaves are not the same kind of knob: `throughput` is per-actor
+   * message-loop tuning, `ask-timeout` the caller-side deadline `ActorRef.ask`
+   * arms when nobody names one (#863).  What puts them in one block is where
+   * they are answered — both are resolved once in the `ActorSystem`
+   * constructor and layered *under* an explicit argument, because neither a
+   * cell nor a ref reads config for itself.
+   *
+   * Full dotted leaves rather than an `actor` block root, for the reason
+   * spelled out under `mailbox` below: `NoDeadConfigKeys.coveringAccessor`
+   * falls back to the nearest root, so a root entry would satisfy the guard
+   * for a leaf nothing reads.
+   */
   actor: {
+    askTimeout: 'actor-ts.actor.ask-timeout',
     throughput: 'actor-ts.actor.throughput',
   },
 
@@ -954,6 +969,33 @@ export const ConfigKeys = {
      */
     minimumMembersBeforeUp: 'actor-ts.cluster.minimum-members-before-up',
     /**
+     * The peers this node announces itself to at start-up (#836).
+     *
+     * In config despite being per-node identity, and the reason is that it is
+     * *not* per-node in the shape the project prescribes: `Cluster` removes
+     * this node's own address before dialling, so a file naming the designated
+     * first node is correct on every node of the deployment — that node is
+     * left with an empty list and self-elects, everyone else dials it.  What
+     * stays out is `selfElection`, whose shared value is not merely useless
+     * but unsafe; the ranking is in `ClusterConfigDefaults`' own doc.
+     *
+     * Read as a **list** and only as a list: a single `${?SEED_NODES}` lands a
+     * string and `getStringList` refuses it.  The per-entry substitution form
+     * is what works, and `reference.conf` spells it out beside the key.
+     */
+    seedNodes: 'actor-ts.cluster.seed-nodes',
+    /**
+     * The role tags this node carries (#836) — what shard regions, singletons,
+     * the per-role thresholds above and the role-filtered downing strategies
+     * place on.
+     *
+     * The half of #836 that reverses nothing: no file ever gave a
+     * roles-specific reason to keep it out of HOCON, and `sharding.role`
+     * already lets a config file *filter* on a role, which is only usable if
+     * the same file can assign one.
+     */
+    roles: 'actor-ts.cluster.roles',
+    /**
      * Root of the per-role Up thresholds —
      * `actor-ts.cluster.role.<role>.minimum-members-before-up` (#837).
      *
@@ -1156,6 +1198,54 @@ export const ConfigKeys = {
       acquireRetryInterval: 'actor-ts.cluster.singleton.acquire-retry-interval',
       maxHandOverStateBytes: 'actor-ts.cluster.singleton.max-hand-over-state-bytes',
       restartOnTermination: 'actor-ts.cluster.singleton.restart-on-termination',
+    },
+
+    /**
+     * The outside-in `ClusterClient` and its cluster-side endpoint —
+     * `actor-ts.cluster.client.*` (#858).
+     *
+     * The client half is read by `readClusterClientOptionsFromConfig`, which
+     * — alone among the framework's config readers, and for the reason
+     * `readWorkerClusterOptionsFromConfig` states — loads the config itself:
+     * `new ClusterClient(options)` holds no `ActorSystem`, so there is no
+     * `system.config` above it.  The `receptionist` sub-block is read by
+     * `readClusterClientReceptionistOptionsFromConfig` from the system the
+     * extension runs in, and never self-loads.
+     *
+     * Nested here rather than folded into `receptionist` below, which is the
+     * *discovery* `Receptionist` (`src/discovery/Receptionist.ts`) — a
+     * different actor with a different protocol.  One shared word is not a
+     * reason to give an operator one block whose halves are read by two
+     * unrelated readers.
+     *
+     * `contact-points` ships **comment-only** in `reference.conf`, the
+     * `remote.tcp.advertised-host` shape: the list is per-deployment identity,
+     * and `[]` is refused by `ClusterClientOptionsValidator` rather than
+     * meaning "unset".  It is read all the same, which is what this entry
+     * records.
+     *
+     * Full dotted leaves rather than a `client` root, for the reason
+     * `failure-detector.phi` above states: `NoDeadConfigKeys`'
+     * `coveringAccessor` falls back to the nearest root, so a root alone would
+     * pass the guard for every leaf under it whether or not a reader ever
+     * addressed one.  What checks the leaves themselves is
+     * `ClusterClientConfigDefaults.test.ts`, which pins each reader's return
+     * value exactly.
+     *
+     * `client-identity`, `tls` and `logger` are absent on purpose and stay
+     * that way: the first is the CSPRNG-drawn wire address a shared config
+     * value would defeat, the second is certificate material, and the third
+     * is a `Logger` instance.  `buffer-size` and `reconnect-timeout` are
+     * absent because the mechanisms are — #689 owns both and adds them here.
+     */
+    client: {
+      contactPoints: 'actor-ts.cluster.client.contact-points',
+      systemName: 'actor-ts.cluster.client.system-name',
+      askTimeout: 'actor-ts.cluster.client.ask-timeout',
+      connectTimeout: 'actor-ts.cluster.client.connect-timeout',
+      receptionist: {
+        askTimeout: 'actor-ts.cluster.client.receptionist.ask-timeout',
+      },
     },
 
     /**
@@ -1465,8 +1555,8 @@ export const ConfigKeys = {
    * buffer*, the opposite polarity to `maxEntities = 0`, which means *no cap*.
    *
    * `role` names **which** role hosts a type; it does not *give* a node that
-   * role, because `ClusterOptions.roles` is per-node identity and deliberately
-   * has no leaf of its own.  Which role hosts a type is uniform across a
+   * role — `actor-ts.cluster.roles` does, and did not exist when this key
+   * shipped (#836).  Which role hosts a type is uniform across a
    * deployment — which roles a node carries is not — and that asymmetry is
    * both the argument for the key and the reason it ships as `""`: the empty
    * string is the only way a shipped leaf can still mean *unrestricted*, since

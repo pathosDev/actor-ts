@@ -55,4 +55,17 @@ export class EntityRef<TMessage = unknown> extends ActorRef<TMessage> {
     };
     this.region.tell(envelope as never, sender);
   }
+
+  /**
+   * @internal Borrowed from the region, which is the only system-shaped thing
+   * this ref holds (#863).
+   *
+   * Delegating rather than capturing an `ActorSystem` in the constructor keeps
+   * the answer correct whichever ref the region turns out to be: a local
+   * region resolves the configured value, and a proxy region for a type this
+   * node does not host resolves it through the cluster it belongs to.
+   */
+  override _defaultAskTimeoutMs(): number {
+    return this.region._defaultAskTimeoutMs();
+  }
 }

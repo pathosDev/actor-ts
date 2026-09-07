@@ -35,6 +35,14 @@ export class LocalActorRef<TMessage = unknown> extends ActorRef<TMessage> {
     this.cell.postUserEnvelope(env);
   }
 
+  /**
+   * @internal `actor-ts.actor.ask-timeout`, reached the same way the tracer
+   * above is — off the cell's system rather than through a lookup (#863).
+   */
+  override _defaultAskTimeoutMs(): number {
+    return this.cell.system._defaultAskTimeoutMs;
+  }
+
   /** @internal */
   getCell(): ActorCell<TMessage> {
     return this.cell;

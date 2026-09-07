@@ -11,6 +11,173 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **A deployment can now name its seed peers and its role tags in HOCON —
+  `actor-ts.cluster.seed-nodes` and `actor-ts.cluster.roles`, both shipping
+  `[]` and both layered under an explicit `withSeeds(…)` / `withRoles(…)`
+  per field, as every other cluster key is** (#836).
+
+  The tree used to publish, in four places, that these two had no HOCON form
+  because they are per-node identity. Half of that argument was false about
+  this framework: a node removes its own address from the seed list before
+  dialling, so the shape the docs prescribe — name the designated first
+  node, ship one file everywhere — is correct on every node. The named node
+  reads its own address, filters it out and self-elects; everybody else
+  dials it. The shape the old argument is right about is the symmetric list
+  naming every node, and that deadlocks whether it came from config or from
+  code — the framework already detects and diagnoses that case. `roles`
+  never had an argument against it at all: it was only ever named alongside
+  `seeds`, and `actor-ts.sharding.role` already lets a config file filter on
+  a role, which is unusable if the same file cannot assign one.
+  `selfElection` stays code-only and is now the only member of that group,
+  because a shared value there is not merely useless but unsafe.
+
+  Both leaves are read with `getStringList` and nothing else, so a single
+  `seed-nodes = ${?SEED_NODES}` is refused at start-up rather than split on
+  commas — six other list leaves behave the same way, and the
+  comma-separated single variable already has a first-class home in
+  `seedsFromEnv(…)`. The per-entry form `seed-nodes = [ ${?SEED_1},
+  ${?SEED_2} ]` works, since an unset optional substitution drops out of the
+  array, and `reference.conf` spells that recipe out beside the key.
+
+  Two things had to change for the seed key to reach anything:
+
+  - `Cluster.bootstrap` forwarded its seed list unconditionally as
+    `.withSeeds([...seeds])`, and the options merge strips `undefined` but
+    never `[]` — so an empty plan arrived as an explicit empty list,
+    outranked HOCON per the documented precedence, and shadowed the file's
+    seeds on every bootstrap call. No gate would have caught it: the
+    dead-key guard asks whether a key is read, and it was. The list is now
+    forwarded when the plan produced seeds, or when the caller named one at
+    all — a written `seeds: []` is an explicit "there is nobody else" and
+    still wins over the file, while a plan that came up empty because nobody
+    asked and discovery found none is a silence the file may fill. Behaviour
+    is unchanged for every existing deployment, since both routes end at
+    `[]`.
+  - `ClusterOptionsValidator` now checks seed syntax, and deliberately not
+    emptiness — an empty list is the documented "I am the first node".
+    `NodeAddress.parse` throws a bare `Error` from inside `_start`, after
+    the transport has bound, so a typo took the node down with a live socket
+    behind it and a message naming neither the field nor the key. The
+    refusal now happens in `Cluster.join`, before the constructor and before
+    any socket, and names the offending string.
+
+  Three of the five keys the issue proposed are deliberately absent.
+  `seed-node-timeout` has no mechanism behind it — seed contact is
+  fire-and-forget with no reply awaited, no per-seed deadline and no round
+  timer — so it would have failed the dead-key guard on its first run.
+  `retry-unsuccessful-join-after` already ships as
+  `actor-ts.cluster.seed-retry-interval`, and two spellings for one
+  mechanism is worse than none.
+  `shutdown-after-unsuccessful-join-seed-nodes` already exists in substance
+  on the bootstrap path, where an `awaitReady` timeout runs the
+  CoordinatedShutdown pipeline; extending give-up semantics to the bare
+  `Cluster.join` path needs its own deadline and has to compose with the
+  cold-start-stall latch, which is a separate design question.
+
+- **A `ClusterClient` can now be configured from a file, which is the first
+  time the one component that sits outside a cluster has had a HOCON layer
+  at all** (#858).  The new `actor-ts.cluster.client` block ships five keys
+  — `contact-points`, `system-name`, `ask-timeout`, `connect-timeout` and
+  `receptionist.ask-timeout` — with matching `withConnectTimeoutMs(...)` on
+  the builder alongside the existing setters.  Set `contact-points` and a
+  client built with no options at all connects:
+
+  ```hocon actor-ts.cluster.client { contact-points  =
+  ["orders@10.0.0.1:2552", "orders@10.0.0.2:2552"] connect-timeout = 2s }
+  ```
+
+  ```ts const client = new ClusterClient({}); ```
+
+  The constructor loads that configuration itself — the same chain
+  `ActorSystem.create` uses, honouring `ACTOR_TS_CONFIG` and
+  `./application.conf` — because a client holds no `ActorSystem` and so has
+  no `system.config` above it, the one place in the framework where that is
+  true.  `WorkerCluster.spawn` already worked this way for the identical
+  reason.  A `Config` passed as the constructor's new optional second
+  argument pins what it reads, so a client can be made independent of
+  whatever `application.conf` sits in the working directory.  The
+  `ClusterClientReceptionist` half is asymmetric on purpose: it runs inside
+  a system, so it reads that system's config and loads nothing.  Precedence
+  is unchanged — explicit options beat the file, the file beats the built-in
+  defaults.
+
+  `connect-timeout` is new behaviour rather than an exposed constant only in
+  the sense that it was previously unreachable: the per-contact-point wait
+  for the `hello-ack` was the hardcoded `HELLO_TIMEOUT_MS`, and is now
+  `DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS` on `ClusterClientOptions` with
+  the same 5 s default.
+
+  Three things deliberately have no key, and one of them is a security
+  decision:
+
+  - `client-identity` stays code-only.  A client's synthetic wire port is
+    drawn from the CSPRNG so that no peer can predict, address or pre-claim
+    its slot; a fleet sharing one configured value would have every client
+    announce the same address, which is exactly what that draw exists to
+    prevent.  `withClientIdentity(host, port)` still sets a stable one per
+    process.
+  - `tls` carries certificate material and `logger` is a `Logger` instance —
+    neither has a HOCON spelling.
+  - `contact-points` ships **commented out** rather than as `[]`.  A contact
+    list is per-deployment identity that no default could state, and an
+    empty list is refused by the validator rather than meaning "unset", so a
+    shipped value could only be one that stops every client that copied the
+    file.
+
+  Six keys the issue proposed are absent because the mechanisms are: there
+  is no contact-refresh loop, no heartbeat, no response tunnel and no
+  `GetContacts` exchange anywhere in `ClusterClient` or its
+  receptionist.  `buffer-size` and `reconnect-timeout` belong to #689, which
+  claims both mechanisms in its own body; the reader is shaped so that issue
+  adds two leaves to this block rather than restructuring it.
+
+- **`ActorRef.ask`'s five-second default deadline is now configurable
+  system-wide through a new `actor-ts.actor.ask-timeout` key** (#863).  It
+  was a compile-time literal, so an operator who wanted a different figure
+  across the board had to pass `timeoutMs` at every call site. A per-call
+  argument still wins, and the shipped default is unchanged, so a deployment
+  that sets nothing behaves exactly as before.
+
+  It lands beside `actor-ts.actor.throughput` rather than as the root
+  `actor-ts.ask-timeout` the issue proposed: every one of the fourteen
+  top-level entries in `reference.conf` is a block, the configuration
+  reference is organised one table per block, and `throughput` is the exact
+  structural precedent — read once in the `ActorSystem` constructor and
+  layered under an explicit argument.
+
+  Three things are worth knowing before setting it.
+
+  - Coverage is deliberate and partial. The refs that can reach their
+    `ActorSystem` honour the key: the ordinary local ref, `TestProbe`,
+    `RemoteActorRef`, `ClusterSingletonProxy`, both shard refs, and
+    `EntityRef` through its region. The dead-letter ref, `Nobody`, an
+    unresolved-path ref, the one-shot reply ref an ask synthesises and two
+    framework-internal handles carry a system *name* and no system, and keep
+    the built-in five seconds. Every ref in that second group is one you
+    hold where no live actor is behind it, so an ask on it is waiting for a
+    reply that is not coming either way. The alternative — a process-global
+    registry keyed by system name — would put a lookup on the ask hot path
+    and share mutable state between two systems in one process.
+  - A value that arms no deadline is rejected rather than clamped, unlike
+    the neighbouring `actor-ts.actor.throughput`. `ask-timeout = 0` (or a
+    negative one) throws an `OptionsError` naming the key at
+    `ActorSystem.create`, because an ask with no deadline can never settle
+    (#765) — there is no nearest-sensible value to fall back to, and failing
+    once at startup beats failing at every ask site.
+  - Setting it below 4.6 s leaves a scatter-gather router on its 4.5 s
+    default unable to name its failing routees before the caller gives up,
+    which is the defect #1088 fixed. The system logs one `warn` at startup
+    naming both knobs rather than adjusting either, since the combination is
+    legitimate for an application whose routers set their own
+    `ScatterGatherOptions.withTimeoutMs()`.
+
+  The ask defaults in `ClusterClient`, `ClusterClientReceptionist` and
+  distributed-data quorum reads and writes are unchanged. `ClusterClient`
+  has no `ActorSystem` and no `Config` by design, and all three belong under
+  blocks owned by #858 (`actor-ts.cluster.client`) and #856
+  (`actor-ts.distributed-data`); the quorum-reads page now says so and
+  points at #856.
+
 - **Cluster sharding can now choose *which* entity a full node gives up, not
   just how many it keeps** (#848).  A new `actor-ts.sharding.passivation`
   block adds five keys — `replacement` (`least-recently-used`,
