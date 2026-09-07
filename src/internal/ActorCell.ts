@@ -38,6 +38,7 @@ import {
   ActorInitializationError,
   defaultStrategy,
   Directive,
+  RestartBudget,
   type SupervisorStrategy,
 } from '../Supervision.js';
 import {
@@ -182,10 +183,24 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   private _watchWithMessages = new Map<string, TMessage>();
 
   /**
-   * Restart timestamps for the supervision window, `null` until the first
-   * failure — which for most actors is never.
+   * Sliding-window restart tally for this cell's children, `null` until the
+   * first failure — which for most actors is never.
+   *
+   * A {@link RestartBudget} rather than a bare timestamp array, because this
+   * cell used to keep the array *and* its own arithmetic over it, and the two
+   * implementations of one documented rule disagreed by one: the budget
+   * refuses at `length >= maxRetries` while this granted `maxRetries + 1`.
+   * `maxRetries: 5` therefore meant five restarts in the worker mesh, which
+   * budgets its slot respawns through that class (#734), and six here.
    */
-  private _failureTimes: number[] | null = null;
+  private _restartBudget: RestartBudget | null = null;
+
+  /**
+   * The strategy {@link _restartBudget} was built for.  A budget is bound to
+   * its allowance at construction, so a cell whose strategy is replaced has to
+   * start a new tally rather than keep spending the old one's.
+   */
+  private _restartBudgetStrategy: SupervisorStrategy | null = null;
 
   private _receiveTimeoutMs = 0;
   private _receiveTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -2396,15 +2411,18 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     }
   }
 
+  /**
+   * Ask this cell's budget for one restart.  Delegated rather than computed
+   * here: `RestartBudget` is the same sliding window over the same two
+   * allowance fields, and keeping a second copy is what let the two drift
+   * apart in the first place.  See {@link _restartBudget}.
+   */
   private registerRestart(strategy: SupervisorStrategy): boolean {
-    if (strategy.maxRetries < 0) return true;
-    const now = Date.now();
-    if (strategy.withinTimeRangeMs > 0) {
-      const threshold = now - strategy.withinTimeRangeMs;
-      this._failureTimes = (this._failureTimes ?? []).filter(t => t >= threshold);
+    if (this._restartBudget === null || this._restartBudgetStrategy !== strategy) {
+      this._restartBudget = new RestartBudget(strategy);
+      this._restartBudgetStrategy = strategy;
     }
-    (this._failureTimes ??= []).push(now);
-    return this._failureTimes.length <= strategy.maxRetries + 1;
+    return this._restartBudget.registerRestart();
   }
 
   private findChildByRef(ref: ActorRef): ActorCell<any> | null {

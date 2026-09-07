@@ -311,15 +311,25 @@ export class Mailbox<T = unknown> {
    * push the whole batch onto the call stack as arguments.
    *
    * **Override this whenever you override {@link enqueue} to shed load**, for
-   * the same reason {@link enqueueSignal} says so and the opposite conclusion:
-   * a signal is exempt from a bound, a replay is not.  Leaving the default in
+   * the same reason {@link enqueueSignal} says so: an *ordinary* replayed
+   * message is subject to the bound like any other.  Leaving the default in
    * place is what made a bounded mailbox unbounded on the stash path — a
    * batch the size of the stash arrived past the capacity check, the overflow
    * policy and the drop accounting, so the ceiling an operator tuned against
    * measured heap was not one (#772).  `BoundedMailbox` and `PriorityMailbox`
    * both override it, by different routes: the former sheds at the tail to
-   * make room at the head, the latter re-enters `enqueue` so priorities are
-   * recomputed.
+   * make room at the head, the latter re-ranks so priorities are recomputed.
+   *
+   * **An {@link Envelope.undroppable} envelope is exempt, on this path too.**
+   * This paragraph used to end "a signal is exempt from a bound, a replay is
+   * not", which was true when it was written and was made false by the fix for
+   * #729 — a lifecycle notification that round-tripped through a stash came
+   * back droppable, and two of the three overflow policies destroyed it.  Both
+   * overrides now route an undroppable envelope to {@link enqueueSignal}, the
+   * same exempt door it would have taken arriving fresh.  An override that
+   * reads this as licence to bound everything it is handed reintroduces
+   * exactly that defect, which is why the sentence is corrected here rather
+   * than only at the two call sites that already got it right.
    *
    * The base is right to be unconditional here — it never discards anything,
    * so there is nothing to consult.

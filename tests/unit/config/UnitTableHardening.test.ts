@@ -199,3 +199,52 @@ describe('the config unit tables stay hardened — #785', () => {
     expect(planted in Object.prototype).toBe(false);
   });
 });
+
+/**
+ * The microsecond unit accepts every spelling of its own letter.
+ *
+ * The table is keyed on U+03BC GREEK SMALL LETTER MU, and the parser's unit
+ * class admitted only that one — so `1 µs` written with U+00B5 MICRO SIGN was
+ * rejected, and rejected as a *malformed duration* rather than as an unknown
+ * unit, because the class runs before the table is ever consulted.  U+00B5 is
+ * the character a German keyboard produces (AltGr+M) and the one most copied
+ * text carries, so the spelling that failed was the likeliest one to be typed.
+ *
+ * Documented as case-insensitive, which the ASCII units already were: `US`
+ * resolves, so `ΜS` has to as well.
+ */
+describe('parseDuration accepts every spelling of the micro prefix', () => {
+  // Escapes rather than literals: the three characters are visually identical
+  // in most fonts, and a test that cannot be read is worse than none.
+  const MICRO_SIGN = '\u00B5';        // µ — AltGr+M, and what NFKC folds away
+  const GREEK_SMALL_MU = '\u03BC';    // μ — the key the table declares
+  const GREEK_CAPITAL_MU = '\u039C';  // Μ — the upper case of the key
+
+  const spellings: ReadonlyArray<readonly [string, string]> = [
+    ['micro sign, lower s', `1 ${MICRO_SIGN}s`],
+    ['micro sign, upper S', `1 ${MICRO_SIGN}S`],
+    ['greek small mu', `1 ${GREEK_SMALL_MU}s`],
+    ['greek small mu, upper S', `1 ${GREEK_SMALL_MU}S`],
+    ['greek capital mu', `1 ${GREEK_CAPITAL_MU}s`],
+    ['greek capital mu, upper S', `1 ${GREEK_CAPITAL_MU}S`],
+  ];
+
+  test.each(spellings)('%s resolves to one microsecond', (_label, input) => {
+    expect(parseDuration(input)).toBe(1e-3);
+  });
+
+  test('the ASCII spelling is unchanged, in both cases', () => {
+    // The control: `us` always worked, and the fix must not have reached it.
+    expect(parseDuration('1 us')).toBe(1e-3);
+    expect(parseDuration('1 US')).toBe(1e-3);
+  });
+
+  test('normalising the unit does not start accepting units that do not exist', () => {
+    // NFKC folds more than the micro sign, so the widened class and the
+    // normalisation both have to stay narrow: a unit is still only valid when
+    // the table declares it.
+    expect(() => parseDuration('1 xs')).toThrow();
+    expect(() => parseDuration(`1 ${GREEK_SMALL_MU}`)).toThrow();
+    expect(() => parseDuration(`1 ${MICRO_SIGN}${MICRO_SIGN}s`)).toThrow();
+  });
+});

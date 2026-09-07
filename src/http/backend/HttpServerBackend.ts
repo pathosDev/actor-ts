@@ -187,6 +187,22 @@ export type NodeHttpServerLike = {
   headersTimeout?: number;
   requestTimeout?: number;
   maxConnections?: number;
+  /**
+   * `net.Server`'s accepted-connection event, used by
+   * {@link enforceMaxConnections} to hold the cap in this repository rather
+   * than delegate it — see there for why.  A function-typed property rather
+   * than a method signature, so this stays a data shape.
+   */
+  on?: (event: 'connection', listener: (socket: ServerSocketLike) => void) => unknown;
+};
+
+/**
+ * The slice of an accepted `net.Socket` the connection cap needs: something to
+ * hang up, and a way to learn it hung up.
+ */
+export type ServerSocketLike = {
+  destroy: () => void;
+  once?: (event: 'close', listener: () => void) => unknown;
 };
 
 /** Which fields {@link applyServerOptions} actually wrote.  @internal */
@@ -278,8 +294,65 @@ export function applyServerOptions(
   if (options.maxConnections !== undefined && options.maxConnections !== Infinity) {
     server.maxConnections = options.maxConnections;
     applied.maxConnections = true;
+    // Deliberately not folded into `applied`, which reports which fields the
+    // policy *wrote*: the guard is a second, independent enforcement of the
+    // field just written, and a server that cannot host it has still had the
+    // property set.
+    enforceMaxConnections(server, options.maxConnections);
   }
   return applied;
+}
+
+/**
+ * Hold `cap` concurrent accepted connections, counting them here rather than
+ * trusting the runtime to honour the `maxConnections` property written above.
+ *
+ * **Why this exists, given the property is written anyway.**  The property is
+ * the cheaper enforcement and runs earlier — `net.Server` refuses the socket
+ * before `'connection'` is emitted, so a runtime that honours it never reaches
+ * this listener and the count never sees a refused connection.  What it is not
+ * is dependable: the design this replaces rested on a measurement that
+ * `keepAliveTimeout`, `headersTimeout`, `requestTimeout` and `maxConnections`
+ * are "honoured, identically" on bun and node (#870), and that measurement was
+ * taken on one operating system.  On GitHub's Linux runners the same bun
+ * release does not close the second connection, so three tests asserting the
+ * documented cap have been red on `develop` while passing locally — twice, in
+ * two independent workflows, which is what distinguishes it from a flake.  The
+ * three sibling knobs pass there, so this is per-property rather than a blanket
+ * `node:http` gap.
+ *
+ * A cap an operator sets and the process does not hold is worse than one that
+ * is absent, because `http/security.mdx` offers it as the connection-flood
+ * answer.  Counting here makes the knob mean the same thing on every runtime
+ * that can emit the event, which is the property the documentation claims and
+ * the one a security control has to have.
+ *
+ * Returns whether the guard was installed: a server object without `on` — the
+ * `Bun.serve` and `Deno.serve` handles Hono exposes — reports itself the same
+ * way the rest of {@link applyServerOptions} does, by answering `false` rather
+ * than by pretending.
+ */
+export function enforceMaxConnections(server: NodeHttpServerLike, cap: number): boolean {
+  if (typeof server.on !== 'function') return false;
+  let active = 0;
+  server.on('connection', (socket) => {
+    // `>=` because this connection is the one being decided: at `cap` already
+    // held, admitting it would make `cap + 1`.
+    if (active >= cap) {
+      socket.destroy();
+      return;
+    }
+    active++;
+    // Without `once` the count only ever rises and the cap becomes a lifetime
+    // budget instead of a concurrency bound, so a server that cannot report a
+    // close must not be counted at all.
+    if (typeof socket.once !== 'function') {
+      active--;
+      return;
+    }
+    socket.once('close', () => { active--; });
+  });
+  return true;
 }
 
 /**
