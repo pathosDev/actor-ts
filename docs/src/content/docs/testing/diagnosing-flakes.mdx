@@ -131,6 +131,30 @@ health.  The second family is found by reading:
 If yes, the wait is a proxy that a half-finished step already satisfies —
 wait on the *asserted* state instead.
 
+### Where the repetition is paid
+
+Three places, each asking a different question.
+
+- **Every commit**, `test.yml` and `multi-runtime.yml` run the whole suite
+  **once, shuffled** — "does anything depend on running after anything else".
+- **Every pull request**, a probe re-runs the branch's **changed test files five
+  times** — "does a test this branch adds depend on the run it was written in".
+  That is the moment a new flake is cheapest to fix, and the only moment it has
+  an obvious owner.
+- **Every night**, `nightly-flakes.yml` loops the whole suite and aggregates by
+  test identity — the load-sensitive family above, over a population no branch
+  touches.
+
+The probe follows the *changed test files* rather than everything a change
+reaches, and the numbers are the reason. `bun test --changed` follows imports
+transitively: measured on this tree, one edit to a persistence module selected
+346 files and 5 505 tests in 209 s, and a base whose diff reached a `tests/util/`
+helper selected 468 files and 8 777 tests in 252 s. Five reruns of either is a
+half-hour job, and what it would add over the nightly loop is the same question
+asked on a smaller population. Repetition pays off where the code is new, so the
+probe follows the new code — and a change under `src/` is covered once by the
+shuffled suite, exactly as before.
+
 ## The catalog
 
 Causes this suite has actually had, with how each was settled.

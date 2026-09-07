@@ -144,6 +144,33 @@ Die zweite Familie findet man durch Lesen:
 Wenn ja, ist das Warten ein Stellvertreter, den ein halb fertiger Schritt
 bereits erfüllt — warte stattdessen auf den *geprüften* Zustand.
 
+### Wo die Wiederholung bezahlt wird
+
+An drei Stellen, jede mit einer anderen Frage.
+
+- **Bei jedem Commit** führen `test.yml` und `multi-runtime.yml` die ganze Suite
+  **einmal, gemischt** aus — „hängt irgendetwas davon ab, nach etwas anderem zu
+  laufen".
+- **Bei jedem Pull Request** wiederholt eine Sonde die **geänderten Testdateien
+  des Branches fünfmal** — „hängt ein Test, den dieser Branch hinzufügt, von dem
+  Lauf ab, in dem er geschrieben wurde". Das ist der Moment, in dem ein neuer
+  Flake am billigsten zu beheben ist, und der einzige, in dem er einen
+  offensichtlichen Verantwortlichen hat.
+- **Jede Nacht** schleift `nightly-flakes.yml` die ganze Suite und aggregiert
+  nach Test-Identität — die lastabhängige Familie von oben, über eine
+  Population, die kein Branch anfasst.
+
+Die Sonde folgt den *geänderten Testdateien* und nicht allem, was eine Änderung
+erreicht — und die Zahlen sind der Grund. `bun test --changed` folgt Importen
+transitiv: gemessen an diesem Baum wählte eine Änderung an einem
+Persistence-Modul 346 Dateien und 5 505 Tests in 209 s aus, und eine Basis,
+deren Diff einen `tests/util/`-Helper berührte, 468 Dateien und 8 777 Tests in
+252 s. Fünf Wiederholungen davon sind ein halbstündiger Job, und was er
+gegenüber der nächtlichen Schleife hinzufügt, ist dieselbe Frage über eine
+kleinere Population. Wiederholung zahlt sich dort aus, wo der Code neu ist —
+also folgt die Sonde dem neuen Code, und eine Änderung unter `src/` deckt
+weiterhin die gemischte Suite einmal ab, genau wie zuvor.
+
 ## Der Katalog
 
 Ursachen, die diese Suite tatsächlich hatte, mit ihrem jeweiligen Stand.

@@ -257,6 +257,46 @@ const bunTests = workflows.flatMap(bunTestRuns);
 /** The suites that gate a commit, and therefore have to shuffle (#1422). */
 const PER_COMMIT_SUITES: readonly string[] = ['test.yml', 'multi-runtime.yml'];
 
+type RunScript = {
+  readonly workflow: string;
+  readonly line: number;
+  /** The script the runner executes: a scalar value, or a whole block scalar. */
+  readonly text: string;
+};
+
+/**
+ * Every `run:` script, whether written as a scalar or as a `|` block.
+ *
+ * A block ends at the first non-blank line indented no deeper than the `run:`
+ * key itself, which is the next step or the next key — enough structure to read
+ * a script's whole body without a YAML parser, like the rest of this file.
+ */
+function runScriptsOf({ name, lines }: WorkflowFile): RunScript[] {
+  const out: RunScript[] = [];
+  lines.forEach((line, index) => {
+    const run = /^\s*(?:- )?run:\s*(.*)$/.exec(line);
+    if (!run) return;
+    const value = (run[1] ?? '').trim();
+    if (!/^[|>][-+]?$/.test(value)) {
+      if (value !== '') out.push({ workflow: name, line: index + 1, text: value });
+      return;
+    }
+    const indent = keyIndentOf(line);
+    const body: string[] = [];
+    for (let next = index + 1; next < lines.length; next++) {
+      const candidate = lines[next] ?? '';
+      if (candidate.trim() !== '' && keyIndentOf(candidate) <= indent) break;
+      body.push(candidate);
+    }
+    out.push({ workflow: name, line: index + 1, text: body.join('\n') });
+  });
+  return out;
+}
+
+
+/** `${{ … }}` — a value GitHub substitutes into the script before bash sees it. */
+const GITHUB_EXPRESSION = /\$\{\{[^}]*\}\}/;
+
 type ArtifactUpload = {
   readonly workflow: string;
   readonly line: number;
@@ -311,6 +351,11 @@ function artifactUploads({ name, lines }: WorkflowFile): ArtifactUpload[] {
 }
 
 const uploads = workflows.flatMap(artifactUploads);
+
+// Below `keyIndentOf`, which `runScriptsOf` reads: a `const` arrow is in its
+// temporal dead zone until its own declaration runs, so an eager scan placed
+// beside the function would throw at import.
+const runScripts = workflows.flatMap(runScriptsOf);
 
 /**
  * A path with a dot-prefixed segment in it. `.` and `..` are navigation, not
@@ -785,6 +830,98 @@ describe('workflow hygiene', () => {
         + '--randomize, and echo the seed so a red run is reproducible.',
       ).toMatch(/--seed(?:=|\s)|--randomize\b/);
     }
+  });
+
+  test('the scanner reads a block scalar to its end, and stops at the next step', () => {
+    const file: WorkflowFile = {
+      name: 'fixture.yml',
+      lines: [
+        'jobs:',
+        '  build:',
+        '    steps:',
+        '      - name: Two lines',
+        '        run: |',
+        '          echo one',
+        '          echo two',
+        '      - name: Next step',
+        '        run: echo three',
+      ],
+    };
+    const scripts = runScriptsOf(file);
+    expect(scripts.map((script) => script.text)).toEqual([
+      '          echo one\n          echo two',
+      'echo three',
+    ]);
+  });
+
+  test('the scanner sees an expression a block scalar hides on a later line', () => {
+    // The shape that motivated this: the offending line is not the `run:` line,
+    // so a scanner reading one line at a time would find nothing.
+    const file: WorkflowFile = {
+      name: 'fixture.yml',
+      lines: [
+        'jobs:',
+        '  build:',
+        '    steps:',
+        '      - run: |',
+        '          echo starting',
+        '          git checkout "${{ github.head_ref }}"',
+      ],
+    };
+    const [script] = runScriptsOf(file);
+    expect(GITHUB_EXPRESSION.test(script?.text ?? '')).toBe(true);
+  });
+
+  test('a value passed through env: is not an expression in the script', () => {
+    const file: WorkflowFile = {
+      name: 'fixture.yml',
+      lines: [
+        'jobs:',
+        '  build:',
+        '    steps:',
+        '      - env:',
+        '          REF: ${{ github.head_ref }}',
+        '        run: |',
+        '          git checkout "$REF"',
+      ],
+    };
+    const [script] = runScriptsOf(file);
+    expect(GITHUB_EXPRESSION.test(script?.text ?? '')).toBe(false);
+  });
+
+  test('the scanner found the run: scripts it reasons about', () => {
+    // The assertion below is a `test.each` over this list, and an empty list
+    // would satisfy it by running nothing.
+    expect(runScripts.length).toBeGreaterThan(20);
+  });
+
+  /**
+   * **A GitHub expression is substituted into the script before bash parses
+   * it**, so `${{ github.event.pull_request.title }}` in a `run:` body is that
+   * title *as shell source*.  On a fork pull request the title is written by
+   * whoever opened it, and the runner has a checkout and a token.
+   *
+   * Through `env:` it is a value instead: the runner sets the variable and the
+   * script reads `"$TITLE"`, which bash never re-parses.  The rule is GitHub's
+   * own hardening guidance, and the tree already followed it in both places
+   * that needed it — `publish.yml` passes the release tag as `TAG`, and the
+   * changed-test probe passes the base SHA as `BASE_SHA` (#1423).  This is what
+   * turns a habit into something the next author cannot skip by accident.
+   *
+   * Deliberately every expression, not a list of the dangerous ones.  Which
+   * context is attacker-controlled changes with GitHub's feature set, and a
+   * blocklist is a promise to keep re-reading their documentation; `env:` costs
+   * two lines and is correct for all of them.
+   */
+  test.each(runScripts)('$workflow:$line takes no GitHub expression into its script', ({ text }) => {
+    expect(
+      GITHUB_EXPRESSION.exec(text)?.[0],
+      'A ${{ … }} is substituted into the script before bash parses it, so an '
+      + 'expression carrying attacker-controlled text (a branch name, a PR '
+      + 'title) is shell source on a fork pull request. Pass it through the '
+      + "step's env: block and read it as \"$VARIABLE\", which bash never "
+      + 're-parses.',
+    ).toBeUndefined();
   });
 
   test.each(jobs)('$workflow#$name keeps write access away from installs', (job) => {
