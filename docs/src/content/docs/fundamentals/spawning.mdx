@@ -145,6 +145,7 @@ class ActorOptionsBuilder<TMessage> {
   withInternal(internal?: boolean): this;
   withDisplayName(displayName: string): this;
   withEntity(entity: EntityContext): this;
+  withApplicationOwned(applicationOwned?: boolean): this;
 }
 ```
 
@@ -340,6 +341,33 @@ const cartOptions = ActorOptions.create()
 
 const cart = system.spawn(CartEntity, 'cart-under-test', cartOptions);
 ```
+
+### `withApplicationOwned`
+
+Says the actor's class came from the **application**, even though the
+framework spawned it — and its children with it.  `ClusterSharding` and
+`ClusterSingleton` set it themselves on every entity and every singleton
+instance, because both land on a `/system` path while being your code.
+
+That distinction is what system-wide application policy asks about;
+`actor-ts.mailbox.default.capacity` is the one such policy today, and it
+exists to let an operator reach actors they cannot edit — which would be
+useless if it stopped at the tree the framework happens to spawn them in.
+
+```ts
+import { ActorOptions } from 'actor-ts';
+
+const cartOptions = ActorOptions.create()
+  .withEntity({ entityId: 'user-42', typeName: 'cart', shardId: 3 })
+  .withApplicationOwned();
+
+const cart = system.spawn(CartEntity, 'cart-under-test', cartOptions);
+```
+
+Public for the same reason `withEntity` is — a test bench spawning an entity
+with no cluster behind it.  On an actor already under `/user` it changes
+nothing, and framework actors never carry it: a bounded mailbox on a shard
+coordinator or a gossip actor is how a cluster deadlocks under load.
 
 ## Common patterns
 

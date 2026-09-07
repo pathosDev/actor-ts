@@ -296,10 +296,17 @@ export class Shard extends Actor<ShardInbox> {
     // The child name is a lossy rendering of the id (see `entityName`), so
     // the identity travels in the spawn options instead — that is the only
     // copy the entity can read back verbatim.  A fresh object per entity, and
-    // `entity` last so a caller's own options can never shadow it.
+    // the two framework-set fields last so a caller's own options can never
+    // shadow them.
+    //
+    // `applicationOwned` because this shard is the framework's actor and the
+    // class it is spawning is not (#862): the entity sits on a `/system` path
+    // only because a region does, and system-wide application policy — the
+    // global mailbox bound — has to reach it.
     const ref = this.context.spawn(this.config.entityActor, entityName(entityId), {
       ...(this.config.entityOptions as Partial<ActorOptionsType<unknown>> | undefined),
       entity: { entityId, typeName: this.config.typeName, shardId: this.config.shardId },
+      applicationOwned: true,
     });
     this.context.watch(ref);
     const state: EntityState = { ref: ref as ActorRef<unknown>, passivating: null, stopTimer: null };

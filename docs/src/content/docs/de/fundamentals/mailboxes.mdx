@@ -54,8 +54,10 @@ Speicherdecke gewinnen", und er ging nicht auf:
 
 Der Verlust ist jetzt also etwas, das du anforderst — pro Actor an der
 Spawn-Stelle, oder einmal für ein ganzes Deployment über
-`actor-ts.mailbox.default.capacity`, das alles unter `/user` begrenzt
-und die eigenen Actors des Frameworks unter `/system` in Ruhe lässt.
+`actor-ts.mailbox.default.capacity`, das jeden Actor begrenzt, den deine
+Anwendung geschrieben hat — Sharded Entities und Cluster Singletons
+eingeschlossen, obwohl das Framework diese spawnt — und die eigenen
+Actors des Frameworks in Ruhe lässt.
 Dieser Key wird als `0` ausgeliefert, also aus, und ihn einzuschalten
 ist dieselbe Entscheidung wie das Begrenzen eines Actors, nur für alle
 auf einmal: siehe
