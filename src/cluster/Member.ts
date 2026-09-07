@@ -133,6 +133,13 @@ export class Member {
    * not a second policy: a version bump for either would race the leader's
    * `joining → up` promotion to the same `version + 1`, which `mergeMember`
    * has no tie-break for.
+   *
+   * Where the two lanes part is *when* the receive side calls them.  An
+   * identity is resolved once at construction, so `adoptStorageIdentities`
+   * only ever fills an empty slot; a configuration fact can be published at
+   * any point in a node's life, so `adoptConfigurationFacts` also **replaces**
+   * what it holds when the member itself restates it.  This is the call behind
+   * both, which is why it takes the whole record rather than merging into one.
    */
   withConfigurationFacts(configurationFacts: ConfigurationFactsData): Member {
     return new Member(

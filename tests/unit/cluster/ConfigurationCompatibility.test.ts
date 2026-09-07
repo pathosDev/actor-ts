@@ -3,13 +3,15 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../src/cluster/Cluster.js';
-import { ClusterOptions } from '../../../src/cluster/ClusterOptions.js';
+import { ClusterOptions, ClusterOptionsValidator } from '../../../src/cluster/ClusterOptions.js';
+import type { ClusterOptionsType } from '../../../src/cluster/ClusterOptions.js';
 import { MemberConfigurationMismatch } from '../../../src/cluster/ClusterEvents.js';
 import type { ClusterEvent } from '../../../src/cluster/ClusterEvents.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import type { GossipMessage, MemberData } from '../../../src/cluster/Protocol.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { LogLevel } from '../../../src/Logger.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 import { RecordingLogger, type RecordedLog } from '../../util/RecordingLogger.js';
 
@@ -124,21 +126,55 @@ interface ClusterInternals {
 }
 
 /**
+ * One gossip frame, spelled out down to which connection it arrives on.
+ *
+ * `sender` and `sequence` are separate from `subject` and `version` because
+ * three of the four decide something different: authority is keyed on the
+ * connection (`Cluster.maySpeakFor`'s rule 2), replay rejection on the
+ * sequence, and the merge branch on the version.  A helper that folded them together
+ * could not express a relayed claim, nor a second frame at an unchanged
+ * member version — which is what an overlay claim always is.
+ */
+type ClaimSpec = {
+  /** The node whose merge path receives the frame. */
+  readonly node: Node;
+  /** The connection the frame arrives on. */
+  readonly sender: NodeAddress;
+  /** The member the record describes; equal to `sender` for a self-announcement. */
+  readonly subject: NodeAddress;
+  readonly version: number;
+  readonly sequence: number;
+  /** Omitted for a record that claims no facts at all — the mixed-version shape. */
+  readonly facts?: Readonly<Record<string, string>>;
+};
+
+function gossipClaim(spec: ClaimSpec): void {
+  const record: MemberData = {
+    address: spec.subject.toJSON(),
+    status: 'up',
+    version: spec.version,
+    roles: [],
+    ...(spec.facts === undefined ? {} : { configurationFacts: spec.facts }),
+  };
+  (spec.node.cluster as unknown as ClusterInternals).handleWire(spec.sender, {
+    kind: 'gossip', from: spec.sender.toJSON(), sequence: spec.sequence, members: [record],
+  });
+}
+
+/**
  * One gossip frame carrying `peer`'s own record — the claim `maySpeakFor`
  * never refuses — with the frame cap it says it is running.
  */
 function gossipSelfClaim(
   node: Node, peer: NodeAddress, version: number, frameCap: string,
 ): void {
-  const members: MemberData[] = [{
-    address: peer.toJSON(),
-    status: 'up',
+  gossipClaim({
+    node,
+    sender: peer,
+    subject: peer,
     version,
-    roles: [],
-    configurationFacts: { [FRAME_CAP]: frameCap },
-  }];
-  (node.cluster as unknown as ClusterInternals).handleWire(peer, {
-    kind: 'gossip', from: peer.toJSON(), sequence: version, members,
+    sequence: version,
+    facts: { [FRAME_CAP]: frameCap },
   });
 }
 
@@ -207,6 +243,155 @@ describe('a divergent effective value is reported once, naming both sides', () =
 
     const reported = mismatchesOf(node).map((event) => event.member.address.toString()).sort();
     expect(reported).toEqual([addressOf(58_816), addressOf(58_817)]);
+  });
+});
+
+describe('a fact published after a peer settled still reaches the comparison', () => {
+  /**
+   * `publishConfigurationFact` is the documented way an application states one
+   * of its own resolved values, and the documentation says it may be called
+   * "from anywhere that has the resolved value" — which is, in the ordinary
+   * case, after the cluster has been running for a while.
+   *
+   * By then every peer's record is settled: an overlay claim deliberately does
+   * not bump the member version, so every further frame from a settled peer
+   * takes `mergeMember`'s `incoming.version <= existing.version` branch.  The
+   * whole feature therefore rests on what that branch does with a claim it has
+   * already seen once, which is what these cases pin.
+   */
+  const PARTITION_COUNT = 'acme.orders.partition-count';
+
+  test("a settled peer's later claim is adopted, compared and enforced on", async () => {
+    const node = await startNode({
+      port: 58_901,
+      maxFrameBytes: SIXTEEN_MEBIBYTES,
+      checkedPaths: [FRAME_CAP, PARTITION_COUNT],
+      enforce: true,
+    });
+    const peer = new NodeAddress(SYSTEM, HOST, 58_902);
+    const version = Date.now();
+
+    // Round one: the peer's record arrives and settles, agreeing on the one
+    // fact it states.
+    gossipClaim({
+      node,
+      sender: peer,
+      subject: peer,
+      version,
+      sequence: version,
+      facts: { [FRAME_CAP]: String(SIXTEEN_MEBIBYTES) },
+    });
+    await awaitCondition(() => node.cluster.upMembers().length === 2, {
+      timeoutMs: 4_000, intervalMs: 20, label: 'the peer and self are both up',
+    });
+    expect(mismatchesOf(node)).toHaveLength(0);
+
+    // The application publishes its own resolved value — after the peer's
+    // record settled, which is the only moment the documented call site has.
+    node.cluster.publishConfigurationFact(PARTITION_COUNT, '64');
+
+    // Round two: a new frame at an UNCHANGED member version, because an
+    // overlay claim never bumps one.  It restates the fact it already sent and
+    // adds the one this node has just started checking, with a different value.
+    gossipClaim({
+      node,
+      sender: peer,
+      subject: peer,
+      version,
+      sequence: version + 1,
+      facts: { [FRAME_CAP]: String(SIXTEEN_MEBIBYTES), [PARTITION_COUNT]: '128' },
+    });
+
+    // One assertion over all three observables on purpose.  They are not three
+    // claims: the record is what `divergesInConfiguration` reads, so a stored
+    // copy one publication out of date makes the report and the candidate set
+    // disagree — an ERROR line saying this node has stopped placing work on a
+    // peer that is still a candidate is worse than no line at all.  Asserted
+    // together, a partial fix cannot pass as a whole one.
+    const stored = node.cluster.upMembers().find((member) => member.address.equals(peer));
+    const [mismatch] = mismatchesOf(node);
+    expect({
+      storedPartitionCount: stored?.configurationFacts?.[PARTITION_COUNT],
+      reported: mismatch === undefined ? undefined : {
+        fact: mismatch.fact,
+        localValue: mismatch.localValue,
+        remoteValue: mismatch.remoteValue,
+        enforced: mismatch.enforced,
+      },
+      candidates: node.cluster.placementCandidates().map((member) => member.address.toString()),
+    }).toEqual({
+      storedPartitionCount: '128',
+      reported: {
+        fact: PARTITION_COUNT, localValue: '64', remoteValue: '128', enforced: true,
+      },
+      candidates: [addressOf(58_901)],
+    });
+  });
+
+  test("a third party's stale copy still cannot overwrite what the peer itself said", async () => {
+    // The guard the fill-only shape was protecting, kept: gossip is epidemic,
+    // so a relay's copy of a peer's record can be arbitrarily old, and letting
+    // one overwrite the subject's own statement would flap the comparison
+    // against whichever copy arrived last.
+    const node = await startNode({
+      port: 58_911, maxFrameBytes: SIXTEEN_MEBIBYTES, enforce: true,
+    });
+    const subject = new NodeAddress(SYSTEM, HOST, 58_912);
+    const relay = new NodeAddress(SYSTEM, HOST, 58_913);
+    const version = Date.now();
+
+    // The relay needs standing before it may speak about a third node, and the
+    // sender's status is snapshotted before a frame merges — so it announces
+    // itself in a frame of its own first.
+    gossipClaim({ node, sender: relay, subject: relay, version, sequence: version });
+    gossipClaim({
+      node,
+      sender: subject,
+      subject,
+      version,
+      sequence: version,
+      facts: { [FRAME_CAP]: String(SIXTEEN_MEBIBYTES) },
+    });
+    await awaitCondition(() => node.cluster.upMembers().length === 3, {
+      timeoutMs: 4_000, intervalMs: 20, label: 'self, the subject and the relay are up',
+    });
+
+    gossipClaim({
+      node,
+      sender: relay,
+      subject,
+      version,
+      sequence: version + 1,
+      facts: { [FRAME_CAP]: String(ONE_MEBIBYTE) },
+    });
+
+    const stored = node.cluster.upMembers().find((member) => member.address.equals(subject));
+    expect(stored?.configurationFacts?.[FRAME_CAP]).toBe(String(SIXTEEN_MEBIBYTES));
+    expect(mismatchesOf(node)).toHaveLength(0);
+    expect(node.cluster.placementCandidates().map((member) => member.address.toString()).sort())
+      .toEqual([addressOf(58_911), addressOf(58_912), addressOf(58_913)]);
+  });
+
+  test('a peer that restates exactly what it already said is not a second event', async () => {
+    // Every gossip round carries the whole member map, so the steady state is
+    // an unchanged claim arriving over and over.  Re-adopting it would rewrite
+    // the member entry once per round per peer for no change at all.
+    const node = await startNode({
+      port: 58_921, maxFrameBytes: SIXTEEN_MEBIBYTES, checkedPaths: [FRAME_CAP],
+    });
+    const peer = new NodeAddress(SYSTEM, HOST, 58_922);
+    const version = Date.now();
+    const facts = { [FRAME_CAP]: String(SIXTEEN_MEBIBYTES) };
+
+    gossipClaim({ node, sender: peer, subject: peer, version, sequence: version, facts });
+    const first = node.cluster.upMembers().find((member) => member.address.equals(peer));
+    for (let round = 1; round <= 5; round++) {
+      gossipClaim({ node, sender: peer, subject: peer, version, sequence: version + round, facts });
+    }
+    const last = node.cluster.upMembers().find((member) => member.address.equals(peer));
+
+    expect(last).toBe(first!);
+    expect(mismatchesOf(node)).toHaveLength(0);
   });
 });
 
@@ -380,5 +565,125 @@ describe('what enforcement changes, and what it deliberately does not', () => {
 
     expect(first.cluster.placementCandidates().map((member) => member.address.toString()).sort())
       .toEqual([addressOf(58_871), addressOf(58_872)]);
+  });
+
+  /**
+   * `divergesInConfiguration` is a second, independent copy of the comparison
+   * loop — `checkConfigurationAgreement` reports, this one decides — and both
+   * halves of what makes that loop safe were bound only on the reporting copy.
+   * A guard that exists twice and is tested once is a guard that can be
+   * removed from one of the two places without anything going red.
+   */
+  test('a fact the peer does not publish is not a reason to bar it', async () => {
+    const node = await startNode({
+      port: 58_931,
+      maxFrameBytes: SIXTEEN_MEBIBYTES,
+      checkedPaths: [FRAME_CAP, 'acme.orders.partition-count'],
+      enforce: true,
+    });
+    node.cluster.publishConfigurationFact('acme.orders.partition-count', '64');
+    const peer = new NodeAddress(SYSTEM, HOST, 58_932);
+
+    // The peer agrees on the one fact it states and says nothing about the
+    // other — the shape a rolling deploy produces for the length of the roll.
+    gossipSelfClaim(node, peer, Date.now(), String(SIXTEEN_MEBIBYTES));
+    await awaitCondition(() => node.cluster.upMembers().length === 2, {
+      timeoutMs: 4_000, intervalMs: 20, label: 'the peer and self are both up',
+    });
+
+    expect(node.cluster.placementCandidates().map((member) => member.address.toString()).sort())
+      .toEqual([addressOf(58_931), addressOf(58_932)]);
+  });
+
+  test('a fact named like an Object.prototype member does not bar every peer', async () => {
+    // The enforcing twin of the reporting case above: read without
+    // `Object.hasOwn`, `claims['constructor']` answers with a function, which
+    // is never `undefined` and never equal to ours — so every peer that does
+    // not publish that name would be barred, permanently, and the cluster
+    // would route to nothing but itself.
+    const node = await startNode({
+      port: 58_941,
+      maxFrameBytes: SIXTEEN_MEBIBYTES,
+      checkedPaths: [FRAME_CAP, 'constructor'],
+      enforce: true,
+    });
+    node.cluster.publishConfigurationFact('constructor', 'ours');
+    const peer = new NodeAddress(SYSTEM, HOST, 58_942);
+
+    gossipSelfClaim(node, peer, Date.now(), String(SIXTEEN_MEBIBYTES));
+    await awaitCondition(() => node.cluster.upMembers().length === 2, {
+      timeoutMs: 4_000, intervalMs: 20, label: 'the peer and self are both up',
+    });
+
+    expect(node.cluster.placementCandidates().map((member) => member.address.toString()).sort())
+      .toEqual([addressOf(58_941), addressOf(58_942)]);
+  });
+});
+
+describe("this node's own facts survive a promotion merged from a peer's view", () => {
+  test('a leader promoting us from a view that predates our publication does not wipe them', async () => {
+    // `withLocalSelfIdentity` substitutes what only this node can know into a
+    // record about itself, because a promotion out of `joining` is merged
+    // WHOLESALE — the incoming version, roles and overlays replace the local
+    // ones.  Without it, the self record every reader of `selfMember()` and
+    // `getMembers()` sees would say this node publishes nothing, because the
+    // promoting leader spoke from a view that had not yet seen the facts.
+    //
+    // The seed is deliberately a node that is not running: this node then
+    // stays `joining` rather than founding a cluster of one, which is the only
+    // state in which `maySpeakFor` admits a promotion from outside.
+    const node = await startNode({
+      port: 58_951, seeds: [addressOf(58_959)], maxFrameBytes: SIXTEEN_MEBIBYTES,
+    });
+    const selfRecord = (): MemberData | undefined => node.cluster.selfMember()?.toData();
+    expect(selfRecord()?.status).toBe('joining');
+
+    const leader = new NodeAddress(SYSTEM, HOST, 58_952);
+    const version = Date.now();
+    gossipClaim({ node, sender: leader, subject: leader, version, sequence: version });
+    // The promotion carries no facts for us at all — the leader is speaking
+    // from a view that predates our publication.
+    gossipClaim({
+      node,
+      sender: leader,
+      subject: node.cluster.selfAddress,
+      version: version + 1,
+      sequence: version + 1,
+    });
+
+    expect(selfRecord()?.status).toBe('up');
+    expect(selfRecord()?.configurationFacts?.[FRAME_CAP]).toBe(String(SIXTEEN_MEBIBYTES));
+  });
+});
+
+describe('checked-paths is validated before a name can be published nowhere', () => {
+  // The list is stamped onto every frame this node sends and printed verbatim
+  // in the diagnostic on every peer, so a name outside the receive side's
+  // character set is not a typo that fails loudly — it is published, dropped
+  // by every peer, and reported nowhere.
+  const validate = (configurationCompatibilityCheckedPaths: readonly string[]): void => {
+    new ClusterOptionsValidator().validate(
+      { configurationCompatibilityCheckedPaths } as Partial<ClusterOptionsType>,
+    );
+  };
+
+  test('a name no peer would admit is refused where somebody is watching', () => {
+    expect(() => validate(['Actor-TS.Remote.Max-Frame-Bytes'])).toThrow(OptionsError);
+    expect(() => validate(['actor_ts.remote.max_frame_bytes'])).toThrow(OptionsError);
+    expect(() => validate(['.actor-ts.remote.max-frame-bytes'])).toThrow(OptionsError);
+    expect(() => validate([''])).toThrow(OptionsError);
+    expect(() => validate(['a'.repeat(129)])).toThrow(OptionsError);
+    // The message names the field, and says what a legal entry looks like —
+    // "invalid" over a config file with fifteen entries is not actionable.
+    expect(() => validate(['__proto__']))
+      .toThrow(/configurationCompatibilityCheckedPaths/);
+    expect(() => validate(['__proto__']))
+      .toThrow(/actor-ts\.remote\.max-frame-bytes/);
+  });
+
+  test('the shapes reference.conf itself ships pass', () => {
+    expect(() => validate([FRAME_CAP, 'acme.orders.partition-count'])).not.toThrow();
+    expect(() => validate([])).not.toThrow();
+    expect(() => validate(['a'.repeat(128)])).not.toThrow();
   });
 });
