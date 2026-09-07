@@ -130,6 +130,37 @@ type HarnessRun = {
 };
 
 /**
+ * How long one spawned harness may take before this test gives up on it.
+ *
+ * The number is generous because the subject is a *watchdog*: the fixture below
+ * that never finishes is supposed to be killed by the harness's own
+ * `--run-timeout`, and this budget only decides how long we wait to find out it
+ * was not.
+ */
+const SPAWN_BUDGET_MS = 150_000;
+
+/**
+ * The per-test cap, sized so {@link SPAWN_BUDGET_MS} can actually report.
+ *
+ * Bun kills a test at 5 000 ms unless the test says otherwise, and three of the
+ * four cases below used to say nothing — so a `spawnSync` budget of 150 s sat
+ * under a cap of 5 s and could never fire.  A stuck harness would have failed
+ * with bun's `this test timed out after 5000ms`, which names neither the
+ * command nor the budget, instead of with the diagnosis this file exists to
+ * produce.  That is the inverted-layering shape
+ * `docs/…/testing/diagnosing-flakes.mdx` calls "a budget the per-test timeout
+ * cannot reach", one level out from the `awaitCondition` case the gate already
+ * covers.
+ *
+ * **It is not a speed problem, and the measurement says so.**  The three cases
+ * cost 0.43 s, 0.28 s and 0.27 s on an idle machine and 0.46 s, 0.30 s and
+ * 0.33 s with eight CPU hogs alongside — they spawn their children, so external
+ * load barely reaches them.  The cap is raised so the inner budget is
+ * reachable, not because the work is close to the old one.
+ */
+const TEST_BUDGET_MS = SPAWN_BUDGET_MS + 30_000;
+
+/**
  * A fresh directory per invocation — the counter file is the fixture's state and
  * the harness only wipes its report directory, so a reused directory would put
  * run 6 where run 1 belongs.
@@ -145,7 +176,7 @@ function runHarness(suite: string, argv: readonly string[]): HarnessRun {
       cwd: directory,
       encoding: 'utf8',
       env: { ...process.env, NO_COLOR: '1' },
-      timeout: 150_000,
+      timeout: SPAWN_BUDGET_MS,
       killSignal: 'SIGKILL',
     });
     let summary: HarnessSummary | undefined;
@@ -222,7 +253,7 @@ describe('the harness sorts a synthetic suite into flaky and broken', () => {
     expect(result.output).toContain('5/5');
     expect(result.status).toBe(1);
     expect(result.output).toContain('2 test(s) failed at least once');
-  });
+  }, TEST_BUDGET_MS);
 
   /**
    * The same flake with nothing else in the suite, so the green runs are real.
@@ -241,7 +272,7 @@ describe('the harness sorts a synthetic suite into flaky and broken', () => {
     expect(result.output).toContain('runs:            2/3 green');
     // The default budget is zero, so one flake is still a failed gate.
     expect(result.status).toBe(1);
-  });
+  }, TEST_BUDGET_MS);
 
   /**
    * `--max-flaky` is the only escape hatch, and it has to be reachable — a gate
@@ -255,7 +286,7 @@ describe('the harness sorts a synthetic suite into flaky and broken', () => {
     // Tolerated, not silenced: it is still named in the table and the summary.
     expect(result.output).toContain('FLAKY — failed in some runs but not all (1)');
     expect(result.summary!.offenders).toHaveLength(1);
-  });
+  }, TEST_BUDGET_MS);
 });
 
 describe('a hang among green runs is a hang, not a green night', () => {
@@ -289,5 +320,5 @@ describe('a hang among green runs is a hang, not a green night', () => {
       + 'streak is this exit status.',
     ).toBe(1);
     expect(result.output).not.toContain('stress-test: PASS');
-  }, 150_000);
+  }, TEST_BUDGET_MS);
 });
