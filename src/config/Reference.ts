@@ -529,6 +529,24 @@ actor-ts {
     split-brain-resolver {
       active-strategy = off   # off | keep-majority | keep-oldest | keep-referee | static-quorum
 
+      # How long the unreachable set must be UNCHANGED before a strategy is
+      # asked anything.  It applies to every strategy, including the one
+      # active-strategy cannot name, because it decides when the cluster asks
+      # rather than what it asks.
+      #
+      # Not a flap filter, or not only.  The failure detector marks peers
+      # unreachable one at a time, so a 2/2 partition whose two remote peers
+      # cross unreachable-after on different ticks used to be resolved as two
+      # successive MAJORITY decisions -- 3-of-4, then 2-of-3 once the first was
+      # tombstoned out of the candidate set -- and both halves survived without
+      # the lease ever being consulted.  The window has to outlast the spread
+      # between the first and last detection of one partition, plus the gossip
+      # that follows; a flap is the easier case it also covers.
+      #
+      # The cost is failover latency: nothing is downed until the view has been
+      # still this long.  0 restores the pre-#839 behaviour, and its defect.
+      stable-after = 20s
+
       # "" = every member counts.  A role narrows the candidate set a strategy
       # arbitrates over; it never grants one.
       keep-majority.role = ""

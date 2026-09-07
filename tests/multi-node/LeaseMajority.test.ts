@@ -53,6 +53,13 @@ describeMns('LeaseMajority — end-to-end split-brain', () => {
       roles: ['a', 'b', 'c', 'd'],
       failureDetector: TIGHT_FD,
       gossipIntervalMs: 80,
+      // A window short enough for a test and long enough for its own
+      // detections.  The production default is 20 s (#839) — the view has to
+      // stop moving before a strategy is asked anything, or a partition
+      // detected one peer at a time is resolved as a run of majorities.  Here
+      // the two detections land within a heartbeat of each other, so 1 s is
+      // several orders of margin and still inside the budgets below.
+      splitBrainResolver: { stableAfterMs: 1_000 },
       // Each role acquires the SAME named lease but with its own
       // `owner` — exactly the production shape for K8s leases.
       // The InMemoryLease store is process-global so all four

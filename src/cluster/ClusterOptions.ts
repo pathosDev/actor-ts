@@ -6,6 +6,7 @@ import { mergeOptions, stripUndefined } from '../util/OptionsMerge.js';
 import { NodeAddress } from './NodeAddress.js';
 import type { FailureDetectorImplementation } from './FailureDetector.js';
 import type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
+import type { SplitBrainResolverOptionsType } from './downing/SplitBrainResolverOptions.js';
 import type { PhiAccrualOptionsType } from './PhiAccrualOptions.js';
 import {
   CONFIGURATION_FACT_NAME_PATTERN,
@@ -316,6 +317,18 @@ export type ClusterOptionsType = {
    * not the algorithm's (#1142).
    */
   readonly phiAccrual?: Partial<PhiAccrualOptionsType>;
+  /**
+   * When the configured {@link downing} provider is consulted — not which one
+   * (#839).
+   *
+   * A sibling of {@link downing} rather than a field on it, for the same
+   * reason {@link failureDetectorImplementation} is a sibling of
+   * {@link failureDetector}: the window is the *cluster's* policy and applies
+   * to every strategy, including `LeaseMajority`, which no config key can
+   * name.  A provider that wanted its own window would be answering a
+   * different question.
+   */
+  readonly splitBrainResolver?: Partial<SplitBrainResolverOptionsType>;
   /** Override the transport (e.g. InMemoryTransport for tests). */
   readonly transport?: Transport;
   /** How often gossip is pushed to a random reachable peer. */
@@ -717,6 +730,13 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   /** φ-accrual tuning, used only when the implementation is `'phi'`. */
   withPhiAccrual(phiAccrual: Partial<PhiAccrualOptionsType>): this {
     return this.set('phiAccrual', phiAccrual);
+  }
+
+  /** How long the unreachable set must be unchanged before downing decides. */
+  withSplitBrainResolver(
+    splitBrainResolver: Partial<SplitBrainResolverOptionsType>,
+  ): this {
+    return this.set('splitBrainResolver', splitBrainResolver);
   }
 
   /** Override the transport (e.g. `InMemoryTransport` for tests). */
@@ -1297,6 +1317,7 @@ export type ClusterConfigDefaults = Partial<Pick<
   'host' | 'advertisedHost' | 'port' | 'advertisedPort' | 'seeds' | 'roles'
   | 'gossipIntervalMs' | 'seedRetryIntervalMs'
   | 'failureDetectorImplementation' | 'failureDetector' | 'phiAccrual' | 'maxFrameBytes'
+  | 'splitBrainResolver'
   | 'weaklyUpAfterMs' | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
   | 'maxMembers' | 'maxTombstones' | 'downing'
   | 'minimumMembersBeforeUp' | 'minimumMembersBeforeUpPerRole'
@@ -1431,6 +1452,8 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   }
   const failureDetector = readFailureDetectorFromConfig(config);
   if (Object.keys(failureDetector).length > 0) out.failureDetector = failureDetector;
+  const splitBrainResolver = readSplitBrainResolverFromConfig(config);
+  if (Object.keys(splitBrainResolver).length > 0) out.splitBrainResolver = splitBrainResolver;
   const phiAccrual = readPhiAccrualFromConfig(config);
   if (Object.keys(phiAccrual).length > 0) out.phiAccrual = phiAccrual;
   // Only when a strategy was actually named: `active-strategy = off` is the
@@ -1561,6 +1584,26 @@ function readFailureDetectorFromConfig(config: Config): Partial<FailureDetectorO
     out.unreachableAfterMs = config.getDuration(keys.unreachableAfter);
   }
   if (config.hasPath(keys.downAfter)) out.downAfterMs = config.getDuration(keys.downAfter);
+  return stripUndefined(out);
+}
+
+/**
+ * The one `split-brain-resolver` leaf that is about *when* rather than *which*.
+ *
+ * It is read here rather than in `readDowningFromConfig` because it applies to
+ * every provider, including the `LeaseMajority` that `active-strategy` cannot
+ * name and that an application therefore hands to `withDowning(...)` in code:
+ * a window read alongside the strategy would silently cover four of the five
+ * ways a provider can arrive.
+ */
+function readSplitBrainResolverFromConfig(
+  config: Config,
+): Partial<SplitBrainResolverOptionsType> {
+  const keys = ConfigKeys.cluster.splitBrainResolver;
+  const out: {
+    -readonly [K in keyof SplitBrainResolverOptionsType]?: SplitBrainResolverOptionsType[K]
+  } = {};
+  if (config.hasPath(keys.stableAfter)) out.stableAfterMs = config.getDuration(keys.stableAfter);
   return stripUndefined(out);
 }
 

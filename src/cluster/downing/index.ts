@@ -17,6 +17,14 @@ export {
   DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY,
   readDowningFromConfig,
 } from './DowningFromConfig.js';
+export {
+  DEFAULT_SPLIT_BRAIN_RESOLVER_STABLE_AFTER_MS,
+  defaultSplitBrainResolverOptions,
+  SplitBrainResolverOptions,
+  SplitBrainResolverOptionsBuilder,
+  SplitBrainResolverOptionsValidator,
+} from './SplitBrainResolverOptions.js';
+export type { SplitBrainResolverOptionsType } from './SplitBrainResolverOptions.js';
 export type { SplitBrainResolverStrategy } from './DowningFromConfig.js';
 export { addrKey } from './DowningProvider.js';
 export type {

@@ -1099,6 +1099,14 @@ export const ConfigKeys = {
      */
     splitBrainResolver: {
       activeStrategy: 'actor-ts.cluster.split-brain-resolver.active-strategy',
+      /**
+       * How long the unreachable set must be unchanged before any strategy is
+       * consulted (#839).  Read by `Cluster.evaluateDowning`, not by
+       * `readDowningFromConfig`: it is a property of *when* the cluster asks,
+       * so it applies to every strategy including `lease-majority`, which the
+       * `active-strategy` leaf cannot name.
+       */
+      stableAfter: 'actor-ts.cluster.split-brain-resolver.stable-after',
       keepMajority: {
         role: 'actor-ts.cluster.split-brain-resolver.keep-majority.role',
       },

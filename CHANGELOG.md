@@ -11,6 +11,65 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **BREAKING — the split-brain resolver now decides on a view that has stopped
+  moving: `actor-ts.cluster.split-brain-resolver.stable-after`, default 20 s**
+  (#839).
+
+  A strategy is asked nothing until the member view has been *unchanged* for
+  the window. Migration: nothing to change unless the added failover latency
+  matters, in which case lower it —
+  `withSplitBrainResolver({ stableAfterMs: 5_000 })` or
+  `actor-ts.cluster.split-brain-resolver.stable-after = 5s`. `0` restores the
+  previous behaviour exactly, along with the defect below.
+
+  **The window is a correctness fix rather than a hardening measure, and the
+  distinction is the whole entry.** The issue was filed for flapping links; what
+  the measurement found is that a partition which does not flap at all was
+  already being resolved wrongly, because the decision was taken before the
+  partition had finished being *detected*.
+
+  `Cluster.failureDetectionTick` marks peers unreachable one at a time, as each
+  crosses `unreachable-after`, and evaluated downing at the end of that same
+  tick. So a 2/2 partition whose two remote peers were detected on different
+  ticks was resolved as two successive *majority* decisions instead of one
+  equal-split decision:
+
+  ```text
+  tick 1:  a=up b=up c=unreachable d=up          3 reachable of 4  ->  down c
+  tick 2:  a=up b=up c=removed  d=unreachable    2 reachable of 3  ->  down d
+  ```
+
+  The tombstone closes the trap: a force-down writes `withRemoved(...)`, and
+  every bundled strategy filters candidates to `up | leaving | unreachable`, so
+  the denominator shrinks with the numerator. Both halves ran the identical
+  computation over their mirror image and both survived — and with
+  `LeaseMajority` the lease was never contended for by anybody, because the
+  equal-split branch that reaches it was never taken. `KeepMajority` has the
+  same defect by the same two lines, and a 3/2 split can be walked down the
+  same way.
+
+  Measured on one machine within one minute: the four-node partition test
+  failed **8 of 15** runs with the window disabled and **0 of 30** with a
+  1 s window.
+
+  This is also the diagnosis for #1343 and #1309 — the `LeaseMajority` suite
+  that has been red on roughly 13 of 21 nights. It was never a timing budget:
+  the arbitration chain those issues asked to be instrumented is not slow, it
+  is not entered.
+
+  Bound from both sides. `tests/unit/cluster/downing/StaggeredDetection.test.ts`
+  replays the tick sequence over hand-built views with no timing at all, so the
+  premise cannot rot; `tests/multi-node/DowningStabilityWindow.test.ts` drives a
+  real staggered partition and goes red when the window is removed. A case
+  asserting that the *defect* occurs was written, measured at one failure in
+  six, and deliberately not shipped — it would have been a test asserting that a
+  race went one way.
+
+  `down-all-when-unstable` and `down-removal-margin` are deliberately not part
+  of this: a key nothing reads is refused by
+  `tests/unit/config/NoDeadConfigKeys.test.ts`, and they are separate work on
+  the same machinery.
+
 - **A deployment can now name its seed peers and its role tags in HOCON —
   `actor-ts.cluster.seed-nodes` and `actor-ts.cluster.roles`, both shipping
   `[]` and both layered under an explicit `withSeeds(…)` / `withRoles(…)`

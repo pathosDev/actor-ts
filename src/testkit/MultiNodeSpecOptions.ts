@@ -23,6 +23,16 @@ export type MultiNodeSpecOptionsType = {
   readonly logLevel?: LogLevel;
   /** Per-role split-brain resolver factory. */
   readonly downing?: (role: string) => DowningProvider | undefined;
+  /**
+   * When the resolver is consulted, as opposed to which one (#839).
+   *
+   * A spec that partitions and then asserts on the outcome has to say this:
+   * the production default is 20 s, which is longer than any test wants to
+   * wait, and the window is deliberately not something a strategy carries — it
+   * belongs to the cluster.  A test with a real partition sets a window wider
+   * than the spread between its own detections and shorter than its patience.
+   */
+  readonly splitBrainResolver?: ClusterOptionsType['splitBrainResolver'];
 };
 
 /** Fluent builder for {@link MultiNodeSpecOptionsType}. */
@@ -70,6 +80,13 @@ export class MultiNodeSpecOptionsBuilder extends OptionsBuilder<MultiNodeSpecOpt
   /** Per-role split-brain resolver factory. */
   withDowning(downing: (role: string) => DowningProvider | undefined): this {
     return this.set('downing', downing);
+  }
+
+  /** How long the view must be unchanged before the resolver decides. */
+  withSplitBrainResolver(
+    splitBrainResolver: ClusterOptionsType['splitBrainResolver'],
+  ): this {
+    return this.set('splitBrainResolver', splitBrainResolver);
   }
 }
 

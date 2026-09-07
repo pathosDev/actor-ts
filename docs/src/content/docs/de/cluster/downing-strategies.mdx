@@ -75,6 +75,62 @@ mit der aktuellen Sicht erneut aus; er gibt die Menge der Adressen
 zurück, die zwangsweise herabgestuft werden sollen. Eine leere
 Menge bedeutet "noch keine Entscheidung — abwarten."
 
+### Das Stabilitätsfenster
+
+Eine Strategie wird erst gefragt, wenn die Mitgliedersicht `stable-after` lang
+**unverändert** war — voreingestellt sind **20 s**:
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withDowning(new KeepMajority())
+  .withSplitBrainResolver({ stableAfterMs: 20_000 });
+```
+
+```hocon
+actor-ts.cluster.split-brain-resolver.stable-after = 20s
+```
+
+Das ist kein Flap-Filter, jedenfalls nicht nur. **Eine Partition ist kein
+einzelnes Ereignis, das das Cluster beobachtet, sondern eine Folge davon.** Der
+Failure Detector markiert Peers einen nach dem anderen als unreachable, sobald
+jeder `unreachable-after` überschreitet, und Downing wurde am Ende genau dieses
+Ticks ausgewertet — eine 2/2-Partition, deren beide entfernte Peers auf
+verschiedenen Ticks erkannt wurden, wurde deshalb als zwei aufeinanderfolgende
+*Mehrheits*-Entscheidungen aufgelöst statt als eine Gleichstands-Entscheidung:
+
+```text
+Tick 1:  a=up b=up c=unreachable d=up          3 von 4 erreichbar  ->  c herabstufen
+Tick 2:  a=up b=up c=removed  d=unreachable    2 von 3 erreichbar  ->  d herabstufen
+```
+
+Der Tombstone schließt die Falle: ein Force-Down setzt das Mitglied auf
+`removed`, und jede Strategie filtert ihre Kandidaten auf
+`up | leaving | unreachable` — der Nenner schrumpft also mit dem Zähler, und was
+von der Seite übrig ist, liest sich als Mehrheit davon. Beide Hälften rechnen
+dasselbe über ihr Spiegelbild, und **beide überleben** — bei `LeaseMajority`
+wird die Lease dabei überhaupt nie angefragt, weil der Gleichstands-Zweig, der
+zu ihr führt, nie genommen wird.
+
+Gemessen war das kein Randfall: der eigene Vier-Knoten-Partitionstest des
+Frameworks fiel ohne Fenster in **8 von 15 Läufen** um und mit einem 1-s-Fenster
+in **0 von 30** — auf derselben Maschine, in derselben Minute.
+
+Zwei Konsequenzen, die man kennen sollte:
+
+- **Das Fenster muss länger sein als der Abstand zwischen der ersten und der
+  letzten Erkennung einer Partition**, zuzüglich der anschließenden Gossip-Runde
+  — nicht bloß länger als ein Flap. Ein Fenster, das kürzer ist als dieser
+  Abstand, lässt die Folge wieder durch.
+- **Es kostet Failover-Latenz.** Es wird nichts herabgestuft, bevor die Sicht so
+  lange still war, ein echter Knotenausfall braucht also entsprechend länger.
+  Die 20 s sind der etablierte Wert für diese Stellschraube und ein bewusster
+  Tausch von Verfügbarkeit gegen Integrität; wer schnelleres Failover braucht,
+  sollte den Wert wissentlich senken statt durch Unterlassen.
+
+`stable-after = 0` stellt das Verhalten vor dem Fenster wieder her, und damit den
+oben beschriebenen Defekt. Der Wert existiert, damit eine Installation das
+ausdrücklich verlangen kann.
+
 ### Aus der Config-Datei
 
 Vier der fünf Strategien lassen sich ohne Code-Änderung wählen — genau
