@@ -1865,6 +1865,57 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **Every suite runs in CI again, and no environment variable can change that**
+  (#538, #1330).
+
+  Three suites ran in no CI job at all for months: `ACTOR_TS_SKIP_FLAKY_MNS=1`
+  in `test.yml`, `multi-runtime.yml` and `publish.yml`, and three copy-pasted
+  `process.env.… ? describe.skip : describe` ternaries. The stated reason was
+  that Bun on GitHub's hosted runners cannot respawn functional worker threads
+  after the first worker test.
+
+  Both halves of that turned out to be wrong, in different ways:
+
+  - **The worker-thread suites had already earned their way back.** The written
+    exit criterion was fourteen consecutive green nights of
+    `nightly-flakes.yml` running exactly those suites with the flag off. They
+    reached twenty-one — 63 executions on `ubuntu-latest`, not one hang. Nobody
+    had read the criterion against the runs, which is precisely what the
+    workflow predicted about itself: "Nothing accumulates the streak. It is
+    counted by a human reading these annotations, which is the same failure
+    that made the quarantine permanent in the first place."
+  - **`LeaseMajority` was never a runner problem.** Its cause was the
+    split-brain resolution defect fixed under #839 in this release. The
+    quarantine had been hiding a product bug rather than measuring a runner.
+
+  What changed, beyond deleting the flag: `bunfig.toml`'s
+  `coveragePathIgnorePatterns` block (it removed the worker harness from the
+  coverage denominator only because that harness could not run on CI) and
+  `--exclude=worker` in `benchmarks.yml` (same cause, and invisible to a grep
+  for the flag, which is how it would have been missed). Coverage was
+  re-measured over the un-quarantined population and went **up**: 94.39 %
+  aggregate, `src/cluster/` 97.55 %, `src/persistence/` 95.56 %.
+
+  Two mechanisms replace the quarantine, and they are the point of the entry:
+
+  - **`tests/unit/ci/NoEnvironmentGatedSkips.test.ts`** refuses a test whose
+    execution an environment variable decides, because that is exactly the
+    thing a workflow can set — and setting it is how a red suite becomes an
+    absent one. A *capability probe* stays fine and is the shape to reach for:
+    `available ? describe : describe.skip` asks the machine a question no
+    workflow can answer for it. An allow-list entry needs a reason it cannot
+    hide a failure; there is one, for an opt-in re-measurement path that is
+    skipped by default and so cannot hide anything.
+  - **Every job in `.github/workflows/` now declares `timeout-minutes`**, so a
+    suite that stops making progress fails inside the hour instead of burning
+    GitHub's six-hour default — the failure mode the quarantine was justified
+    by in the first place.
+
+  `nightly-flakes.yml` keeps running the three suites on their own, three
+  repeats a night: it is the regression guard now rather than the parole board.
+  The harness's `--skip-quarantined` flag and its environment handling are gone
+  with the mechanism they served, along with the test that pinned them.
+
 - **Cluster sharding now bounds how many shards a rebalance may have in
   flight at once, and ships that bound switched on** (#850).  The default
   `HashAllocationStrategy` places a shard by `shardId % candidates.length`,

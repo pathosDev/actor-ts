@@ -44,19 +44,10 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     permissions:
       contents: read
       id-token: write     # Required for both npm provenance AND OIDC trusted publishing.
-
-    # Quarantine the worker-thread multi-node suites (ParallelMultiNodeSpec +
-    # LeaseMajority e2e) on GitHub's hosted runners, exactly as test.yml does —
-    # Bun there can't respawn worker threads after the first test.  Set at JOB
-    # level so the `bun test` inside `npm publish`'s `prepublishOnly` inherits
-    # it.  Those suites run locally + in Docker; the `integration` workflow is
-    # the real multi-node gate, and `nightly-flakes.yml` is what decides when
-    # the quarantine may be lifted — #538.
-    env:
-      ACTOR_TS_SKIP_FLAKY_MNS: '1'
 
     steps:
       - name: Checkout
@@ -143,6 +134,7 @@ jobs:
   sbom:
     name: Generate CycloneDX SBOM
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
 
@@ -212,6 +204,7 @@ jobs:
     # still built above and kept as a workflow artifact.
     if: github.event_name == 'release'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
 

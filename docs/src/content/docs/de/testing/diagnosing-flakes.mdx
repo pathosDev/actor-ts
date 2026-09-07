@@ -77,14 +77,14 @@ Reports, Logs und ein maschinenlesbares `summary.json` landen in `.stress/`.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="note" title="Das Harness führt mehr aus als ein CI-Check">
-  Es **entfernt `ACTOR_TS_SKIP_FLAKY_MNS` aus der Umgebung, die es an
-  `bun test` weiterreicht** — die drei quarantänisierten Suites (siehe unten)
-  sind also enthalten, selbst wenn deine Shell oder dein Workflow das Flag
-  gesetzt hat.  Es zu erben würde eine strikt kleinere Suite messen als ein
-  lokaler Lauf und dann eine verlässliche Pass-Rate über genau die Tests
-  melden, von denen bekannt ist, dass sie nicht verlässlich sind.  Nutze
-  `--skip-quarantined`, wenn der Rest der Suite Gegenstand des Laufs ist.
+<Aside type="note" title="Was es misst, ist die ganze Suite">
+  Es **entfernte** früher `ACTOR_TS_SKIP_FLAKY_MNS` aus der Umgebung, die es an
+  `bun test` weiterreicht, weil drei Suites dahinter lagen — und zwar genau
+  die, die am ehesten flakten.  Ein Harness, das das Flag geerbt hätte, hätte
+  eine verlässliche Pass-Rate über genau die Tests gemeldet, die nicht
+  verlässlich waren.  Nichts hängt mehr an einer Umgebungsvariablen, und
+  `tests/unit/ci/NoEnvironmentGatedSkips.test.ts` hält das so — dem Harness
+  bleibt also nichts mehr zu verteidigen.
 </Aside>
 
 ### Warum man dem Harness glauben kann
@@ -159,7 +159,7 @@ Ursachen, die diese Suite tatsächlich hatte, mit ihrem jeweiligen Stand.
 | Port-Kollisionen | Geklärt | `EADDRINUSE`, nur wenn Suites sich überlappen |
 | Filesystem-Races | Geklärt | Zwei Suites lesen die Fixtures der jeweils anderen |
 | Eine Assertion über prozessweiten Zustand | Geklärt | Läuft isoliert durch, fällt im Lauf der ganzen Suite um, und es ist kein Timing beteiligt |
-| Worker-Respawn auf Hosted Runnern | Quarantäne | Worker starten, machen den Handshake, laufen dann nie — nur in CI |
+| Worker-Respawn auf Hosted Runnern | Erledigt, nächtlich bewacht | Worker starten, machen den Handshake, laufen dann nie — in 63 gemessenen Ausführungen kein einziges Mal |
 
 ### Fester Sleep vor einer Assertion
 
@@ -522,138 +522,64 @@ führen zu verschiedenen nächsten Schritten, und nur die Zahl im `summary.json`
 unterscheidet „einmal gesehen" von „oft gesehen".  Trag die Zahl hier nach,
 statt von vorn anzufangen.
 
-## Drei Suites, die CI nicht ausführt
+## Die Quarantäne, und was sie gekostet hat
 
-`ACTOR_TS_SKIP_FLAKY_MNS=1` ist in `test.yml`, `multi-runtime.yml` und
-`publish.yml` gesetzt, und drei Suites überspringen sich selbst, wenn es
-gesetzt ist:
+Monatelang liefen drei Suites in keinem einzigen CI-Job.
+`ACTOR_TS_SKIP_FLAKY_MNS=1` stand in `test.yml`, `multi-runtime.yml` und
+`publish.yml`, und drei Dateien übersprangen sich selbst, wenn es gesetzt war:
 
 - `tests/multi-node/LeaseMajority.test.ts`
 - `tests/multi-node/ParallelPubSub.test.ts`
 - `tests/unit/testkit/ParallelMultiNodeSpec.test.ts`
 
-Bun kann auf GitHubs Hosted Runnern nach dem ersten Worker-Test keine
-funktionsfähigen Worker-Threads mehr starten — sie spawnen, machen den
-Handshake und laufen dann nie — und dieselbe Ressourcen-Knappheit verzögert
-den Renewal-Timer von `LeaseMajority` über die Lease-TTL hinaus, sodass beide
-Partitionsseiten acquiren und der Test einen falschen Split-Brain sieht.
-Der *Hänger* reproduziert lokal und in Docker nicht.
+Die angegebene Begründung: Bun könne auf GitHubs Hosted Runnern nach dem ersten
+Worker-Test keine funktionsfähigen Worker-Threads mehr starten — sie starten,
+machen den Handshake und laufen dann nie — und dieselbe Ressourcenknappheit
+verzögere den Renewal-Timer von `LeaseMajority` über die Lease-TTL hinaus, so
+dass beide Seiten einer Partition die Lease bekämen und der Test ein falsches
+Split-Brain sähe.
 
-**Ein grüner CI-Check sagt über diese drei also nichts aus.**  Ein lokales
-`bun test` führt sie aus; der `integration`-Workflow über echtes Netz deckt
-den entsprechenden Bereich ebenfalls ab.
+**Alle drei laufen wieder in CI**, und wie es dazu kam, ist mehr wert als die
+Tatsache selbst.
 
-### Was sie lokal tatsächlich tun
+- **Die beiden Worker-Thread-Suites haben es sich erarbeitet, durch Messung.**
+  Das Ausstiegskriterium waren vierzehn aufeinanderfolgende grüne Nächte von
+  `nightly-flakes.yml`, das genau diese Suites ohne das Flag ausführt.  Erreicht
+  wurden einundzwanzig — 63 Ausführungen auf `ubuntu-latest`, kein einziger
+  Hänger.  Das Kriterium war erfüllt, und niemand hatte nachgesehen — genau das
+  Versagen, das der Workflow über sich selbst vorhergesagt hatte: „Nichts
+  akkumuliert die Serie.  Sie wird von einem Menschen gezählt, der diese
+  Annotations liest — dasselbe Versagen, das die Quarantäne überhaupt erst
+  dauerhaft gemacht hat."
+- **`LeaseMajority` war nie ein Runner-Problem.**  Die Ursache war ein
+  Produktdefekt in der Split-Brain-Auflösung: eine Partition, die Peer für Peer
+  erkannt wurde, wurde als Folge von *Mehrheits*-Entscheidungen aufgelöst statt
+  als eine Gleichstands-Entscheidung — beide Hälften überlebten, und die Lease
+  wurde überhaupt nie angefragt.  Jede Hypothese über Renewal-Timer und TTLs sah
+  auf Maschinerie, die nicht gelaufen war.  Behoben durch das Stabilitätsfenster
+  in [Downing-Strategien](/de/cluster/downing-strategies/); die Suite geht von 8
+  Fehlschlägen in 15 Läufen auf 0 in 30.
 
-Gemessen mit dem Harness am 2026-08-18, 15 Wiederholungen genau dieser drei
-Suites bei Concurrency 1 auf einem Windows-Laptop (`develop` @ `58fcc9fc`) —
-zwei Aufrufe, 5 Wiederholungen und dann 10 — mit 10 ausgeführten Tests pro
-Wiederholung und ohne Skips, das Flag wurde also wirklich entfernt:
+Zwei Mechanismen sind daraus entstanden, und die sind der Teil zum Merken.
 
-```sh
-bun run test:stress -- --runs=15 --run-timeout=480000 \
-  tests/multi-node/LeaseMajority.test.ts \
-  tests/multi-node/ParallelPubSub.test.ts \
-  tests/unit/testkit/ParallelMultiNodeSpec.test.ts
-```
+- **Eine Umgebungsvariable darf nicht entscheiden, ob ein Test läuft.**
+  `tests/unit/ci/NoEnvironmentGatedSkips.test.ts` weist das zurück, denn genau
+  das ist es, was ein Workflow setzen kann — und es zu setzen ist der Weg, auf
+  dem aus einer roten Suite eine abwesende wird.  Ein *Capability-Probe* ist in
+  Ordnung und die Form, zu der man stattdessen greift:
+  `available ? describe : describe.skip` fragt die Maschine, was sie kann, und
+  kein Workflow kann das für sie beantworten.  Ein Eintrag in der Allow-List
+  dieses Guards braucht eine Begründung, warum er keinen Fehlschlag verstecken
+  kann.
+- **Jeder Job trägt `timeout-minutes`.**  Eine Suite, die keinen Fortschritt mehr
+  macht, fällt jetzt innerhalb einer Stunde um, statt GitHubs
+  Sechs-Stunden-Default aufzubrauchen — genau das Versagen, mit dem die
+  Quarantäne ursprünglich begründet wurde.
 
-| Test | Fehlgeschlagen | Urteil |
-| --- | --- | --- |
-| `LeaseMajority` → `4 nodes, 2/2 partition: lease holder side survives, other side downs itself` | 1 / 15 | flaky |
-| `ParallelMultiNodeSpec — failure simulation` → `partition + heal flips reachability without dropping the workers` | 1 / 15 | flaky |
-| alles andere in den drei Suites, `ParallelPubSub` eingeschlossen | 0 / 15 | — |
-
-Zwei Schlüsse, und der zweite ist der nützliche:
-
-- **Nichts hier fällt durchgängig um.**  Beide Kandidaten sind mit rund 7 %
-  flaky, und kein Lauf hat gehangen.  Die lokale Geschichte und die
-  Hosted-Runner-Geschichte sind also wirklich verschiedene Fehler, und das
-  Aufheben der Quarantäne hängt am Runner-Pool und nicht an einem kaputten Test.
-- **„Reproduziert lokal nicht" war für die Fehlschläge selbst zu stark.**
-  `LeaseMajority` hat lokal denselben falschen Split-Brain erzeugt, den die
-  Hosted Runner erzeugen — `expect(leftAlive.length > 0 && rightAlive.length > 0)`
-  kam als `true` zurück — nachdem die handgeschriebene 25-s-Deadline-Schleife des
-  Tests (`tests/multi-node/LeaseMajority.test.ts`) still durchgefallen war und
-  zwei Assertions gegen den Zustand laufen ließ, der in diesem Moment eben
-  existierte.  Diese Schleife hat dieselbe Form, die der `ClusterBootstrap`-Fix
-  entfernt hat, und sie ist der Grund, warum der fehlgeschlagene Lauf 49 s statt
-  der 24 s der Baseline brauchte.
-
-Keine der beiden Reparaturen gehört auf diese Seite, und keine hat bisher ein
-Issue: #538 ist geschlossen, nachdem es das Nightly und das schriftliche
-Ausstiegskriterium geliefert hat, und kann sie deshalb nicht tragen.  Hierher
-gehört die Zahl — nennt ein Lauf dieser drei einen der beiden oben mit etwa 1 von
-15, ist das der *bekannte* Stand und kein neuer Befund.
-
-### Sie zurückholen
-
-`.github/workflows/nightly-flakes.yml` führt genau diese drei um 04:00 UTC
-mit **abgeschaltetem** Flag aus, drei Wiederholungen pro Nacht, und lädt die
-Reports hoch.  Der Job ist `continue-on-error`: Eine bekannt rote Messung
-darf nicht zu einem roten Pflicht-Check werden, den niemand liest — das
-Ergebnis kommt deshalb als Annotation am Lauf und als Step-Summary.
-
-Die Latte liegt bei **14 aufeinanderfolgenden grünen Nächten** — 42
-aufeinanderfolgenden grünen Ausführungen.  Zwei Kalenderwochen statt einer
-kleineren Zahl, weil der Fehler eine Eigenschaft des Runner-Pools ist und
-nicht des Codes: Vierzehn Tage decken Wochentags- und Wochenend-Pools ab,
-und genau davon muss gezeigt werden, dass es aufgehört hat.  Die Toolchain
-selbst variiert unter der Messung nicht mehr: Seit dem Bun-1.4.0-Pin
-(2026-08-21) liest jedes Bein die repo-weite `.bun-version`-Datei, Nächte
-zählen also nur, solange dieser Pin unverändert bleibt — ein Bun-Bump ist
-eine begründete Entscheidung am Experiment-Issue, und der Zähler ist mit dem
-Pin neu gestartet.  Eine einzige rote Nacht setzt den Zähler zurück; das
-`summary.json` jeder Nacht ist der Beleg (`greenRuns == runs` und ein leeres
-`runsTimedOut` — ein hängender Lauf ist rot, egal wie wenige Tests darin
-umgefallen sind).
-
-**Die ersten zwei Nächte haben überhaupt keinen Beleg behalten.**
-`actions/upload-artifact` hat `include-hidden-files` seit v4.4 auf false
-voreingestellt, `.stress` ist ein Punkt-Verzeichnis, und deshalb haben beide
-Jobs in beiden Nächten `No files were found with the provided path: .stress/`
-geloggt und null Dateien hochgeladen — während `if-no-files-found` auf `warn`
-stand, in Jobs, die `continue-on-error` sind und daher immer mit `success`
-abschließen.  Nichts wurde rot; der Satz darüber war einfach falsch.  Beide
-Schritte setzen jetzt `include-hidden-files: true` und
-`if-no-files-found: error`, und `tests/unit/ci/WorkflowHygiene.test.ts` prüft
-das Paar für jeden versteckten Upload-Pfad in `.github/workflows/`, sodass sich
-das beim nächsten Punkt-Verzeichnis-Artefakt nicht wiederholen kann.  **Nächte
-vor diesem Fix zählen nicht**: Die Läufe haben stattgefunden, aber ihr
-`summary.json` wurde nie behalten.
-
-**Diesen Zähler führt nichts mit.**  Er wird von Menschen aus den
-Lauf-Annotationen abgelesen — genau das, was die Quarantäne überhaupt erst
-dauerhaft gemacht hat.  Automatisiert ist er noch nicht, weil kein Weg billig
-ist: Beide Jobs sind `continue-on-error`, was die Job-Conclusion auf `success`
-umschreibt — der einzige dauerhafte Beleg ist also das Artefakt, und dessen
-Auslesen über frühere Nächte braucht `actions: read` plus Cross-Run-API-Paging;
-eine eingecheckte Zählerdatei bräuchte `contents: write` in einem Job, der den
-gesamten devDependency-Baum installiert, was `tests/unit/ci/WorkflowHygiene.test.ts`
-bewusst verbietet.  Bis eines davon gebaut ist: Der Stand ist etwas, das du
-aus der Lauf-Liste rekonstruieren musst, nicht etwas, das das Repository sich
-merkt.
-
-Ist die Latte erreicht, wird in einem Commit dequarantänisiert:
-
-1. `ACTOR_TS_SKIP_FLAKY_MNS` aus `test.yml`, `multi-runtime.yml` und
-   `publish.yml` entfernen.
-2. Die drei `describeMns`-Guards entfernen.
-3. Den `coveragePathIgnorePatterns`-Block in `bunfig.toml` entfernen — er
-   nimmt das Worker-Harness nur deshalb aus dem Coverage-Nenner, weil dieses
-   Harness auf dem Hosted Runner nicht ausgeführt werden kann.
-4. `--exclude=worker` aus dem Smoke-Schritt in `benchmarks.yml` entfernen.
-   Der Worker-Benchmark ist aus exakt derselben Ursache ausgeschlossen und
-   wird leicht vergessen, weil er kein Test ist.
-5. Jede Untergrenze in `scripts/coverage-gate.mjs` neu bewerten — die
-   aggregierte `DEFAULT_LINE_FLOOR` ebenso wie die beiden Modul-Untergrenzen.
-   Alle sind gegen die quarantänisierte Population gemessen: `src/cluster/`
-   misst unter seiner tatsächlichen Line-Coverage, solange `LeaseMajority`
-   nicht laufen kann, und die aggregierte Grenze stand aus demselben Grund
-   pragmatisch bei 80, bis sie bei 90 neu gemessen wurde.  `test.yml` hält
-   keine Kopie der Zahl mehr — zu ändern ist also eine Datei statt zweier, die
-   im Gleichschritt bleiben müssen.
-6. Den Nightly-Job behalten.  Er wird zur Regressionssicherung der
-   Dequarantänisierung.
+`nightly-flakes.yml` führt diese drei Suites weiterhin einzeln aus, dreimal pro
+Nacht.  Es ist jetzt der Regressions-Guard und nicht mehr die
+Bewährungskommission: eine durch Messung widerlegte Behauptung bleibt nur so
+lange widerlegt, wie jemand weitermisst.
 
 ## Wie geht's weiter
 

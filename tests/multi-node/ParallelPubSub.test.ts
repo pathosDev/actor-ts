@@ -17,14 +17,13 @@ import { describe, expect, test } from 'bun:test';
 import { ParallelMultiNodeSpec } from '../../src/testkit/ParallelMultiNodeSpec.js';
 import { awaitCondition, sleep } from '../util/AwaitCondition.js';
 
-// Quarantined on GitHub's hosted runners (ACTOR_TS_SKIP_FLAKY_MNS=1) —
-// Bun there cannot respawn functional worker threads after the first
-// worker-thread test (workers spawn + handshake, then never run);
-// reproducible only on the hosted runners.  Runs locally + in Docker.
-// #538 tracks the quarantine: `.github/workflows/nightly-flakes.yml` runs
-// this suite nightly with the flag OFF, and 14 consecutive green nights are
-// what removes this line.
-const describeMns = process.env.ACTOR_TS_SKIP_FLAKY_MNS === '1' ? describe.skip : describe;
+// Runs in CI.  The quarantine this file carried (`ACTOR_TS_SKIP_FLAKY_MNS=1`,
+// #538) rested on the claim that Bun cannot respawn functional worker threads
+// on GitHub's hosted runners after the first worker-thread test.  Measured
+// against that claim: `.github/workflows/nightly-flakes.yml` has run exactly
+// these suites on `ubuntu-latest` with the flag off, three repeats a night, for
+// 21 consecutive nights (2026-08-17 to 2026-09-06) — 63 executions, and not one
+// hang.  The written exit criterion was fourteen.
 
 const TIGHT_FD = {
   heartbeatIntervalMs: 100,
@@ -32,7 +31,7 @@ const TIGHT_FD = {
   downAfterMs: 5_000,
 } as const;
 
-describeMns('ParallelMultiNodeSpec — DistributedPubSub e2e', () => {
+describe('ParallelMultiNodeSpec — DistributedPubSub e2e', () => {
   test('publish from a reaches subscribers on b and c, across worker threads', async () => {
     const spec = new ParallelMultiNodeSpec({
       roles: ['a', 'b', 'c'],

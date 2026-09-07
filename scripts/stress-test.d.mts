@@ -118,7 +118,6 @@ export type StressOptions = {
   readonly maximumFlakyTests: number;
   readonly runTimeoutMs: number;
   readonly reportDirectory: string;
-  readonly skipQuarantined: boolean;
   /** Shuffle test order in each child run, to surface order dependence. */
   readonly randomize: boolean;
   /** Fix the shuffle's seed.  Setting it implies {@link StressOptions.randomize}. */

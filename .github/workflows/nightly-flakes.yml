@@ -2,15 +2,15 @@ name: nightly-flakes
 
 # The two questions a single `bun test` cannot answer (#290, #538).
 #
-# 1. **Are the quarantined suites still broken on hosted runners?**  Three
-#    suites are removed from every CI run by `ACTOR_TS_SKIP_FLAKY_MNS=1`
-#    (test.yml, multi-runtime.yml, publish.yml) because Bun on GitHub's
-#    hosted runners cannot respawn functional worker threads after the first
-#    worker test, which also starves LeaseMajority's in-process lease
-#    arbitration into a false split-brain.  Nothing re-checks that, so the
-#    quarantine has no exit: it is permanent by default rather than by
-#    decision.  The `quarantined` job below runs exactly those three suites
-#    with the flag OFF and records the result.
+# 1. **Do the worker-thread multi-node suites still work on hosted runners?**
+#    They were removed from every CI run for months by
+#    `ACTOR_TS_SKIP_FLAKY_MNS=1`, on the claim that Bun on GitHub's runners
+#    cannot respawn functional worker threads after the first worker test.  The
+#    `worker-suites` job below runs exactly those suites, three repeats a night,
+#    and that is what settled it: 21 consecutive nights without a single hang,
+#    against a written criterion of fourteen.  The quarantine is gone; the job
+#    stays as its regression guard, because the claim it retired can only be
+#    retired for as long as somebody keeps measuring.
 #
 # 2. **Which tests are flaky, as opposed to which build was red?**  A red
 #    build names one run's failures and then the log ages out.  The `stress`
@@ -18,49 +18,36 @@ name: nightly-flakes
 #    "this test failed 2 of 5 times" is a fact you can act on instead of two
 #    unrelated red builds a week apart.
 #
-# **Both jobs are `continue-on-error` on purpose.**  The quarantined suites
-# are expected to be red — that is why they are quarantined — and the suite
-# still carries fixed sleeps that a stress loop is designed to surface
-# (#418).  A red required check for a known-red measurement trains people to
-# ignore it; the signal lives in the step summary, the `::warning::`
-# annotation on the run, and the uploaded reports.
+# ## What the quarantine cost, since it is the reason this file is careful
 #
-# ## Decision path: when may a quarantined suite come back?
+# Three suites were hidden, and when the criterion was finally read against the
+# runs it had been met for two of them.  The third, `LeaseMajority`, was not a
+# runner problem at all: it was a product defect in split-brain resolution
+# (#839) — a partition detected one peer at a time was resolved as a run of
+# majority decisions, so both halves survived and the lease was never consulted.
+# The quarantine had been hiding that for months rather than measuring it.
 #
-# **14 consecutive green nights** of the `quarantined` job, then un-quarantine
-# in one change.  Fourteen rather than a smaller number because the failure is
-# a property of the runner pool, not of the code: two calendar weeks spans
-# weekday and weekend pools, which is what has to be shown to have stopped
-# happening.  Each night is 3 repeats of all three suites, so the bar is 42
-# consecutive green executions.  The toolchain no longer rolls underneath the
-# experiment: every leg reads the repo-wide `.bun-version` pin, so nights
-# count only while that pin is unchanged — a Bun bump is a logged decision on
-# the experiment issue (continue or reset, with reasoning), and the count
-# restarted at the Bun 1.4.0 pin (2026-08-21, #1330).  Before the pin,
-# `bun-version: latest` rolled silently under the count.
+# Two mechanisms came out of that.  `tests/unit/ci/NoEnvironmentGatedSkips.test.ts`
+# forbids an environment variable deciding whether a test runs, because that is
+# precisely the thing a workflow can set; a capability probe, which asks the
+# machine a question no workflow can answer, stays fine.  And every job in
+# `.github/workflows/` now carries `timeout-minutes`, so a suite that stops
+# making progress fails inside the hour instead of burning the six-hour default
+# — the failure mode this quarantine was originally justified by.
 #
-# Un-quarantining is then, in one commit:
-#   - drop `ACTOR_TS_SKIP_FLAKY_MNS` from test.yml, multi-runtime.yml and
-#     publish.yml;
-#   - drop the three `describeMns` guards (tests/multi-node/LeaseMajority.test.ts,
-#     tests/multi-node/ParallelPubSub.test.ts,
-#     tests/unit/testkit/ParallelMultiNodeSpec.test.ts);
-#   - drop the `coveragePathIgnorePatterns` block in bunfig.toml, which exists
-#     only because the worker harness cannot execute here;
-#   - drop `--exclude=worker` from benchmarks.yml's smoke step — same cause,
-#     and easy to miss because it is not a test;
-#   - revisit every floor in scripts/coverage-gate.mjs — the aggregate
-#     DEFAULT_LINE_FLOOR and the two per-module ones alike.  All of them are
-#     measured against the quarantined population: src/cluster/ reads below its
-#     true line coverage while LeaseMajority cannot run, and the aggregate sat
-#     at a pragmatic 80 for the same reason until #541 re-measured it at 90.
-#     test.yml no longer carries a copy of the number, so this is one file;
-#   - keep this job — it becomes the regression guard for the un-quarantining.
+# **Both jobs are `continue-on-error` on purpose.**  The suite still carries
+# fixed sleeps that a stress loop is designed to surface (#418), and a red
+# required check for a measurement trains people to ignore it.  The signal lives
+# in the step summary, the annotation on the run, and the uploaded reports.
+# That is also the weakest part of this file and is known to be: nothing reads
+# the annotation on a schedule, which is how the fourteen-night criterion went
+# uncounted for months (#1310).
 #
-# A single red night resets the count.  The evidence is the `summary.json` in
-# each night's artifact; `greenRuns == runs` is the green condition, and a
-# non-empty `runsTimedOut` is a red night regardless of what else it says —
-# the suite stopped making progress, so nothing can be said about its tests.
+# The evidence is the `summary.json` in each night's artifact; `greenRuns ==
+# runs` is the green condition, and a non-empty `runsTimedOut` is red regardless
+# of what else it says — the suite stopped making progress, so nothing can be
+# said about its tests.  Since #1359 the harness also refuses to call a run
+# green that no offender explains, which is what it used to do.
 #
 # **The first two nights produced no artifact at all** (2026-08-17 and
 # 2026-08-18, both jobs: `No files were found with the provided path: .stress/`,
@@ -69,21 +56,10 @@ name: nightly-flakes
 # `if-no-files-found: error` so a silent zero-file upload fails the step instead
 # of warning into a log nobody reads;
 # `tests/unit/ci/WorkflowHygiene.test.ts` asserts the pair for every hidden
-# path in this directory.  Nothing before that fix can be counted towards the
-# fourteen: the runs happened, but their evidence was never kept.
-#
-# **Nothing accumulates the streak.**  It is counted by a human reading these
-# annotations, which is the same failure that made the quarantine permanent in
-# the first place.  Automating it is not cheap here: both jobs are
-# `continue-on-error`, which rewrites the job conclusion to `success`, so the
-# only durable evidence is the artifact — and reading previous nights' artifacts
-# needs `actions: read` plus cross-run API paging, while a committed counter
-# file would need `contents: write` in a job that installs the whole
-# devDependency tree, which `tests/unit/ci/WorkflowHygiene.test.ts` forbids on
-# purpose.  Until one of those is built, this comment is the criterion.
+# path in this directory.  Those two nights were never counted.
 #
 # Docs: docs/src/content/docs/testing/diagnosing-flakes.mdx (EN) and its DE
-# mirror carry the same decision path for contributors who never read CI YAML.
+# mirror carry the same history for contributors who never read CI YAML.
 
 on:
   # 04:00 UTC — after integration.yml (03:00) and integration-brokers.yml
@@ -95,8 +71,8 @@ on:
   # whether a specific change moved the numbers, which cannot wait for 04:00.
   workflow_dispatch:
     inputs:
-      quarantined-runs:
-        description: 'Repeats of the three quarantined suites'
+      worker-suite-runs:
+        description: 'Repeats of the three worker-thread multi-node suites'
         required: false
         default: '3'
       stress-runs:
@@ -110,12 +86,13 @@ permissions:
   contents: read
 
 jobs:
-  # The quarantine's exit criterion, measured.  Runs the three gated suites
-  # with the flag deliberately absent — `scripts/stress-test.mjs` drops
-  # `ACTOR_TS_SKIP_FLAKY_MNS` from the child environment by default, so this
-  # cannot silently degrade into "3 repeats of 6 skipped tests".
-  quarantined:
-    name: quarantined multi-node suites (flag off)
+  # The regression guard for the un-quarantining.  These three suites spawn real
+  # OS threads and drive real partitions, which is the combination that was
+  # claimed not to work on hosted runners; running them on their own, several
+  # times, is how that claim stays checked now that they also run in `test.yml`
+  # like any other suite.
+  worker-suites:
+    name: worker-thread multi-node suites, repeated
     runs-on: ubuntu-latest
     timeout-minutes: 30
     continue-on-error: true
@@ -134,10 +111,10 @@ jobs:
       - name: Install
         run: bun install --frozen-lockfile
 
-      - name: Run the quarantined suites
+      - name: Run the worker-thread suites
         id: stress
         env:
-          RUNS: ${{ inputs.quarantined-runs || '3' }}
+          RUNS: ${{ inputs.worker-suite-runs || '3' }}
         # The harness writes its own `$GITHUB_STEP_SUMMARY` table, so the
         # workflow stays thin and a local run shows the same output — the
         # same reason integration.yml delegates to an npm script.
@@ -148,7 +125,7 @@ jobs:
         # documented symptom of these three suites is a *hang* — workers spawn,
         # handshake and never run — so the watchdog is what turns tonight into
         # a recorded result instead of a job GitHub killed with nothing to show.
-        # A `quarantined-runs` input above 3 needs `timeout-minutes` raised with
+        # A `worker-suite-runs` input above 3 needs `timeout-minutes` raised with
         # it, or the job dies before the last run's watchdog can fire.
         run: |
           bun run test:stress -- \
@@ -177,7 +154,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: quarantined-${{ github.run_id }}-${{ github.run_attempt }}
+          name: worker-suites-${{ github.run_id }}-${{ github.run_attempt }}
           path: .stress/
           include-hidden-files: true
           retention-days: 30
@@ -191,14 +168,14 @@ jobs:
           OUTCOME: ${{ steps.stress.outcome }}
         run: |
           if [[ "$OUTCOME" == "success" ]]; then
-            echo "::notice title=Quarantined suites were green::All three suites passed every repeat with ACTOR_TS_SKIP_FLAKY_MNS unset. Count this night towards the 14 needed to un-quarantine (see the header of .github/workflows/nightly-flakes.yml)."
+            echo "::notice title=Worker-thread suites green::All three passed every repeat. Nothing to do."
           else
-            echo "::warning title=Quarantined suites still failing::Expected while the quarantine stands — the un-quarantine counter resets to zero. Details in the step summary; per-run logs in the uploaded artifact. A run marked HUNG is the documented symptom (workers spawn, handshake, never run), not a harness bug."
+            echo "::warning title=Worker-thread suites failed::These run in test.yml too, so this is a real regression rather than a known-red measurement. A run marked HUNG is the old hosted-runner symptom (workers spawn, handshake, never run) and would mean the #538 defect is back. Details in the step summary; per-run logs in the uploaded artifact."
           fi
 
-  # The flake catalog's data source.  Loops the whole suite — quarantined
-  # suites included, which is the point: excluding them would report a
-  # reliable pass rate over exactly the tests known not to be reliable.
+  # The flake catalog's data source.  Loops the whole suite, which is now
+  # literally the whole suite: with nothing quarantined, `--skip-quarantined`
+  # would subtract nothing and the verdict is about every test CI runs.
   stress:
     name: whole suite, repeated
     runs-on: ubuntu-latest
@@ -227,7 +204,7 @@ jobs:
         run: bun run test:stress -- --runs="$RUNS" --run-timeout=1200000 --report-dir=.stress
 
       - name: Upload reports
-        # See the quarantined job's upload step for why both flags are here.
+        # See the worker-suites job's upload step for why both flags are here.
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

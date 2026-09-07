@@ -161,10 +161,9 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 - **The README test-count / coverage badges are bot-maintained** — a CI
   workflow pushes `chore(readme): update test count + coverage stats
   [skip ci]` commits directly to `develop` after test runs. Do NOT edit
-  those numbers by hand (the bot overwrites them, with CI-measured values
-  that skip the quarantined multi-node suites via
-  `ACTOR_TS_SKIP_FLAKY_MNS` — see *Verification gates* — so they differ
-  slightly from a local full run). After pushing `develop`, fetch again
+  those numbers by hand (the bot overwrites them with CI-measured values;
+  since nothing is quarantined they now cover the same population a local
+  full run does). After pushing `develop`, fetch again
   before branching — a bot commit may already have landed on top.
 - Adding a page: keep `docs/scripts/scaffold.mjs` and the Astro sidebar
   (`docs/astro.config.mjs`) in sync — same path and label.
@@ -272,31 +271,40 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
 
   The aggregate went **80 → 90 on 2026-08-25** (#541), and the measurement the
   policy above asks for lives beside the constant in `scripts/coverage-gate.mjs`:
-  93.63 % on the CI population locally (bun 1.4.0, `ACTOR_TS_SKIP_FLAKY_MNS=1`)
-  against 93 % from the badge bot's hosted run, with the same lcov reduced to
-  `Σ LH / Σ LF` reading 92.85 %. The 13-point band the old floor left is a
-  3-point one, and 90 clears every candidate statistic, so #1016 changing which
-  one the aggregate *is* cannot turn CI red on its own fix.
-- **Three suites do not run in CI at all.** `ACTOR_TS_SKIP_FLAKY_MNS=1` in
-  `test.yml`, `multi-runtime.yml` and `publish.yml` skips
-  `tests/multi-node/LeaseMajority.test.ts`,
-  `tests/multi-node/ParallelPubSub.test.ts` and
-  `tests/unit/testkit/ParallelMultiNodeSpec.test.ts` — Bun on GitHub's hosted
-  runners cannot respawn functional worker threads after the first worker
-  test, which also starves LeaseMajority's lease arbitration into a false
-  split-brain. **A local `bun test` runs them; a green CI check says nothing
-  about them.** `.github/workflows/nightly-flakes.yml` runs them nightly with
-  the flag OFF; its header carries the exit criterion (14 consecutive green
-  nights), and `docs/…/testing/diagnosing-flakes.mdx` states it in prose.
-  #538.
+  93.63 % on the then-CI population locally (bun 1.4.0, three suites still
+  removed by `ACTOR_TS_SKIP_FLAKY_MNS=1`) against 93 % from the badge bot's
+  hosted run, with the same lcov reduced to `Σ LH / Σ LF` reading 92.85 %. The
+  13-point band the old floor left is a 3-point one, and 90 clears every
+  candidate statistic, so #1016 changing which one the aggregate *is* cannot
+  turn CI red on its own fix. Re-measured 2026-09-07 over the whole suite, with
+  nothing quarantined: **94.39 %**, so the headroom grew rather than shrank.
+- **Every suite runs in CI, and no environment variable may change that.**
+  Three used to be removed by `ACTOR_TS_SKIP_FLAKY_MNS=1` (#538) and are back:
+  the two worker-thread ones on 21 consecutive green nights of
+  `nightly-flakes.yml` against a written criterion of fourteen, and
+  `LeaseMajority` because its cause was found rather than waited out — a
+  product defect in split-brain resolution, not a runner problem (#839).
+  `tests/unit/ci/NoEnvironmentGatedSkips.test.ts` now refuses a test gated on
+  `process.env`, because that is exactly what a workflow can set. Gate on a
+  **capability probe** instead — `available ? describe : describe.skip` asks
+  the machine a question no workflow can answer for it — or add the file to
+  that guard's allow-list with the reason it cannot hide a failure. Every job
+  in `.github/workflows/` carries `timeout-minutes`, so a suite that stops
+  making progress fails inside the hour instead of burning the six-hour
+  default. `nightly-flakes.yml` keeps running the three on their own as the
+  regression guard; `docs/…/testing/diagnosing-flakes.mdx` carries the
+  history.
 - **Repeat-run flake hunting:** `bun run test:stress`
   (`scripts/stress-test.mjs`) loops the suite N times and aggregates failures
   by test identity, splitting *flaky* (failed in some runs) from
-  *consistently failing* (broken, not flaky). It **drops
-  `ACTOR_TS_SKIP_FLAKY_MNS` from the child environment by default** — a
-  harness that inherited it would report a reliable pass rate over exactly
-  the tests known not to be reliable. Not a per-commit gate; reach for it
-  when a test fails intermittently, or when a nightly names one. #290.
+  *consistently failing* (broken, not flaky). `failedRuns` counts **runs**,
+  once per run however many testcases carried an identity, and the verdict
+  fails on a run that was not green and that no tolerated offender explains —
+  before #1359 an identity failing twice inside one run fell out of both
+  tables and the harness printed `PASS` over sixteen runs of which none was
+  green. `--randomize` / `--seed=N` surface and pin order dependence. Not a
+  per-commit gate; reach for it when a test fails intermittently, or when a
+  nightly names one. #290.
 - **Cross-runtime:** `bun run smoke` runs `tests/smoke/cases/*.mjs` on
   Bun, Node, and Deno. Add a smoke case for anything runtime-sensitive.
   A case must release every handle it opens **on every path**, not just the

@@ -79,6 +79,7 @@ jobs:
     # build itself stayed green.  One run, one source of truth; the `badge`
     # job below consumes this job's numbers and never re-runs anything.
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     # Read-only, and the checkout below drops its credential too (#622).
     # This job installs and executes the entire devDependency tree — the
     # last place a token that can write to the repository belongs.  The
@@ -160,16 +161,12 @@ jobs:
 
       - name: Tests with coverage
         id: stats
-        # The worker-thread multi-node suites (ParallelMultiNodeSpec +
-        # parallel-pubsub) and the in-process LeaseMajority e2e are
-        # quarantined on GitHub's hosted runners — Bun there can't respawn
-        # functional worker threads after the first test, which also
-        # starves the lease arbitration into a false split-brain.  They
-        # run locally + in Docker; the real-network `integration` workflow
-        # is the multi-node CI gate.  `nightly-flakes.yml` runs these three
-        # with the flag OFF and carries the exit criterion — #538.
-        env:
-          ACTOR_TS_SKIP_FLAKY_MNS: '1'
+        # Every suite runs here.  Three used to be removed by
+        # `ACTOR_TS_SKIP_FLAKY_MNS=1` (#538) and are back: the two
+        # worker-thread ones on 21 consecutive green nights of
+        # `nightly-flakes.yml` against a written criterion of fourteen, and
+        # `LeaseMajority` because its cause was found and fixed (#839) rather
+        # than waited out.
         run: |
           # bun's output goes to a FILE, never through a pipe.  Under GitHub
           # Actions bun emits one annotation line per test — ~8700 lines for
@@ -318,6 +315,7 @@ jobs:
       github.event_name == 'push' &&
       github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: write
     steps:

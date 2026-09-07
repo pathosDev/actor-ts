@@ -178,7 +178,6 @@ const defaultOptions: StressOptions = {
   maximumFlakyTests: 0,
   runTimeoutMs: 1_200_000,
   reportDirectory: '.stress',
-  skipQuarantined: false,
   randomize: false,
   seed: undefined,
   filters: [],
@@ -199,9 +198,10 @@ describe('the harness reads a JUnit report the way bun writes one', () => {
 
   /**
    * A skip that counted as a pass is the harness's worst failure mode, because
-   * it is silent and self-confirming: the three quarantined suites skip
-   * *themselves* through `describeMns`, so a harness that read `<skipped/>` as
-   * a pass would report "3/3 green" for a night in which nothing ran.
+   * it is silent and self-confirming.  The case it was written for is gone —
+   * the three multi-node suites that used to skip themselves now run — and the
+   * property is not: a suite that skips itself for any reason must not be able
+   * to report "3/3 green" for a night in which nothing ran.
    */
   test('a skipped test is neither executed nor a failure', () => {
     const parsed = parseReport(reportOf(
@@ -687,21 +687,6 @@ describe('the rendered summary says what was and was not measured', () => {
     expect(output).toContain('runs: 1');
   });
 
-  /**
-   * Which suites the number covers is part of the number.  A summary that did
-   * not say so is how "the suite is reliable" gets quoted for a run that
-   * excluded exactly the unreliable suites.
-   */
-  test('the summary states whether the quarantined suites were in the run', () => {
-    const included = render(aggregate([reportedRun(1, [])], 1), defaultOptions);
-    const excluded = render(
-      aggregate([reportedRun(1, [])], 1),
-      { ...defaultOptions, skipQuarantined: true },
-    );
-
-    expect(included).toContain('quarantined suites: included');
-    expect(excluded).toContain('quarantined suites: SKIPPED (--skip-quarantined)');
-  });
 });
 
 describe('the harness options parse the way the workflows invoke them', () => {
@@ -713,14 +698,13 @@ describe('the harness options parse the way the workflows invoke them', () => {
     expect(options.maximumFlakyTests).toBe(0);
     expect(options.runTimeoutMs).toBe(20 * 60 * 1_000);
     expect(options.reportDirectory).toBe('.stress');
-    // The default that the whole "do not measure a smaller suite" rationale
-    // rests on: quarantined suites are IN unless asked otherwise.
-    expect(options.skipQuarantined).toBe(false);
+    expect(options.randomize).toBe(false);
+    expect(options.seed).toBeUndefined();
     expect(options.filters).toEqual([]);
   });
 
-  /** Verbatim from `.github/workflows/nightly-flakes.yml`'s quarantined job. */
-  test('the nightly quarantined job\'s arguments parse as three path filters', () => {
+  /** Verbatim from `.github/workflows/nightly-flakes.yml`'s worker-suites job. */
+  test('the nightly worker-suites job\'s arguments parse as three path filters', () => {
     const options = parseArguments([
       '--runs=3',
       '--run-timeout=480000',
@@ -733,12 +717,26 @@ describe('the harness options parse the way the workflows invoke them', () => {
     expect(options.runs).toBe(3);
     expect(options.runTimeoutMs).toBe(480_000);
     expect(options.filters).toHaveLength(3);
-    expect(options.skipQuarantined).toBe(false);
   });
 
-  test('--skip-quarantined is a bare flag and turns the opt-out on', () => {
-    expect(parseArguments(['--skip-quarantined']).skipQuarantined).toBe(true);
+  /**
+   * A seed with no shuffle would be silently inert, which is the shape of a
+   * flag that looks obeyed and is not — so `--seed` sets both.
+   */
+  test('--seed implies the shuffle it seeds', () => {
+    const options = parseArguments(['--seed=4242']);
+
+    expect(options.seed).toBe(4242);
+    expect(options.randomize).toBe(true);
   });
+
+  test('--randomize on its own shuffles without pinning', () => {
+    const options = parseArguments(['--randomize']);
+
+    expect(options.randomize).toBe(true);
+    expect(options.seed).toBeUndefined();
+  });
+
 });
 
 describe('the harness is importable, which is what makes the above possible', () => {

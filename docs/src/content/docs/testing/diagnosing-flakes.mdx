@@ -70,13 +70,14 @@ Reports, logs and a machine-readable `summary.json` land in `.stress/`.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="note" title="The harness runs more than a CI check does">
-  It **removes `ACTOR_TS_SKIP_FLAKY_MNS` from the environment it hands to
-  `bun test`**, so the three quarantined suites (see below) are included even
-  when your shell or workflow has the flag set.  Inheriting it would measure a
-  strictly smaller suite than a local run and then report a reliable pass rate
-  over exactly the tests known not to be reliable.  Pass
-  `--skip-quarantined` when the subject of the run is the rest of the suite.
+<Aside type="note" title="What it measures is the whole suite">
+  It used to **delete `ACTOR_TS_SKIP_FLAKY_MNS`** from the environment it hands
+  to `bun test`, because three suites were gated behind it and they were
+  precisely the ones most likely to flake — a harness that inherited the flag
+  would have reported a reliable pass rate over exactly the tests that were not
+  reliable.  Nothing is gated on an environment variable any more, and
+  `tests/unit/ci/NoEnvironmentGatedSkips.test.ts` is what keeps it that way, so
+  the harness has nothing left to defend against.
 </Aside>
 
 ### Why you can believe the harness
@@ -145,7 +146,7 @@ Causes this suite has actually had, with how each was settled.
 | Port collisions | Settled | `EADDRINUSE`, only when suites overlap |
 | Filesystem races | Settled | Two suites reading each other's fixtures |
 | An assertion over process-global state | Settled | Passes in isolation, fails in a whole-suite run, and no timing is involved |
-| Hosted-runner worker respawn | Quarantined | Workers spawn, handshake, then never run — CI only |
+| Hosted-runner worker respawn | Retired, guarded nightly | Workers spawn, handshake, then never run — never once in 63 measured executions |
 
 ### Fixed sleep before an assertion
 
@@ -485,129 +486,57 @@ whose sleep was converted and an entry that never had one lead to different
 next steps, and only the count in `summary.json` distinguishes "seen once" from
 "seen often".  Add the count here rather than starting over.
 
-## Three suites CI does not run
+## The quarantine, and what it cost
 
-`ACTOR_TS_SKIP_FLAKY_MNS=1` is set in `test.yml`, `multi-runtime.yml` and
-`publish.yml`, and three suites skip themselves when it is:
+For months, three suites ran in no CI job at all.  `ACTOR_TS_SKIP_FLAKY_MNS=1`
+was set in `test.yml`, `multi-runtime.yml` and `publish.yml`, and three files
+skipped themselves when it was:
 
 - `tests/multi-node/LeaseMajority.test.ts`
 - `tests/multi-node/ParallelPubSub.test.ts`
 - `tests/unit/testkit/ParallelMultiNodeSpec.test.ts`
 
-Bun on GitHub's hosted runners cannot respawn functional worker threads after
-the first worker test — they spawn, handshake, and then never run — and the
-same resource starvation delays `LeaseMajority`'s renewal timer past the
-lease TTL, so both sides of a partition acquire and the test sees a false
-split-brain.  The *hang* does not reproduce locally or in Docker.
+The stated reason was that Bun on GitHub's hosted runners cannot respawn
+functional worker threads after the first worker test — they spawn, handshake,
+and then never run — and that the same resource starvation delayed
+`LeaseMajority`'s renewal timer past the lease TTL, so both sides of a partition
+acquired and the test saw a false split-brain.
 
-**A green CI check therefore says nothing about these three.**  A local
-`bun test` runs them; so does the real-network `integration` workflow's
-equivalent coverage.
+**All three run in CI again**, and how that happened is worth more than the fact.
 
-### What they actually do locally
+- **The two worker-thread suites earned it by measurement.**  The exit criterion
+  was fourteen consecutive green nights of `nightly-flakes.yml` running exactly
+  those suites with the flag off.  They reached twenty-one — 63 executions on
+  `ubuntu-latest`, not one hang.  The criterion had been met and nobody had
+  looked, which is the failure the workflow predicted about itself: "Nothing
+  accumulates the streak.  It is counted by a human reading these annotations,
+  which is the same failure that made the quarantine permanent in the first
+  place."
+- **`LeaseMajority` was never a runner problem.**  Its cause was a product
+  defect in split-brain resolution: a partition detected one peer at a time was
+  resolved as a run of *majority* decisions instead of one equal-split decision,
+  so both halves survived and the lease was never consulted at all.  Every
+  hypothesis about renewal timers and TTLs was looking at machinery that had not
+  run.  Fixed by the stability window in
+  [Downing strategies](/cluster/downing-strategies/); the suite goes from 8
+  failures in 15 runs to 0 in 30.
 
-Measured with the harness on 2026-08-18, 15 repeats of exactly these three
-suites at concurrency 1 on a Windows laptop (`develop` @ `58fcc9fc`) — two
-invocations, 5 repeats then 10 — with 10 executed tests per repeat and no
-skips, so the flag really was dropped:
+Two mechanisms came out of it, and they are the part to remember.
 
-```sh
-bun run test:stress -- --runs=15 --run-timeout=480000 \
-  tests/multi-node/LeaseMajority.test.ts \
-  tests/multi-node/ParallelPubSub.test.ts \
-  tests/unit/testkit/ParallelMultiNodeSpec.test.ts
-```
+- **An environment variable may not decide whether a test runs.**
+  `tests/unit/ci/NoEnvironmentGatedSkips.test.ts` refuses one, because that is
+  exactly the thing a workflow can set — and setting it is how a red suite
+  becomes an absent one.  A *capability probe* is fine and is the shape to reach
+  for instead: `available ? describe : describe.skip` asks the machine what it
+  can do, and no workflow can answer for it.  An entry in that guard's
+  allow-list needs a reason it cannot hide a failure.
+- **Every job carries `timeout-minutes`.**  A suite that stops making progress
+  now fails inside the hour rather than burning GitHub's six-hour default —
+  which is the failure mode the quarantine was justified by in the first place.
 
-
-| Test | Failed | Verdict |
-| --- | --- | --- |
-| `LeaseMajority` → `4 nodes, 2/2 partition: lease holder side survives, other side downs itself` | 1 / 15 | flaky |
-| `ParallelMultiNodeSpec — failure simulation` → `partition + heal flips reachability without dropping the workers` | 1 / 15 | flaky |
-| everything else in the three suites, `ParallelPubSub` included | 0 / 15 | — |
-
-Two conclusions, and the second one is the useful one:
-
-- **Nothing here is consistently failing.**  Both offenders are flaky at about
-  7 %, and no run hung.  So the local story and the hosted-runner story are
-  genuinely different failures, and lifting the quarantine is gated on the
-  runner pool rather than on a broken test.
-- **"Does not reproduce locally" was too strong for the failures themselves.**
-  `LeaseMajority` produced the same false split-brain locally that the hosted
-  runners produce — `expect(leftAlive.length > 0 && rightAlive.length > 0)`
-  came back `true` — after the test's hand-rolled 25 s deadline loop
-  (`tests/multi-node/LeaseMajority.test.ts`) fell through silently and let two
-  assertions run against whatever state existed at that moment.  That loop is
-  the same shape the `ClusterBootstrap` fix removed, and it is the reason the
-  failing run took 49 s against a 24 s baseline.
-
-Neither repair belongs on this page, and neither has an issue yet: #538 closed
-having delivered the nightly and the written exit criterion, so it cannot carry
-them.  What belongs here is the number — a run of these three that names one of
-the two above at roughly 1 in 15 is the *known* state, not a new finding.
-
-### Getting them back
-
-`.github/workflows/nightly-flakes.yml` runs exactly these three at 04:00 UTC
-with the flag **off**, three repeats a night, and uploads the reports.  It is
-`continue-on-error`: a known-red measurement must not turn into a red
-required check nobody reads, so the result arrives as a run annotation and a
-step summary.
-
-The bar is **14 consecutive green nights** — 42 consecutive green executions.
-Two calendar weeks rather than a smaller number because the failure is a
-property of the runner pool, not of the code: a fortnight spans weekday and
-weekend pools, which is what has to be shown to have stopped happening.  The
-toolchain itself no longer varies underneath the measurement: since the Bun
-1.4.0 pin (2026-08-21) every leg reads the repo-wide `.bun-version` file, so
-nights count only while that pin is unchanged — a Bun bump is a logged
-decision on the experiment issue, and the count restarted at the pin.  A
-single red night resets the count, and each night's `summary.json` is the
-evidence (`greenRuns == runs`, and an empty `runsTimedOut` — a hung run is
-red however few tests failed in it).
-
-**The first two nights kept no evidence at all.**  `actions/upload-artifact`
-has defaulted `include-hidden-files` to false since v4.4, `.stress` is a
-dot-directory, and so both jobs on both nights logged `No files were found with
-the provided path: .stress/` and uploaded zero files — while `if-no-files-found`
-was left at `warn`, in jobs that are `continue-on-error` and therefore always
-conclude `success`.  Nothing went red; the sentence above was simply false.
-Both steps now set `include-hidden-files: true` and `if-no-files-found: error`,
-and `tests/unit/ci/WorkflowHygiene.test.ts` asserts the pair for every hidden
-upload path in `.github/workflows/`, so the next dot-directory artifact cannot
-repeat it.  **Nights before that fix cannot be counted**: the runs happened,
-but their `summary.json` was never kept.
-
-**Nothing accumulates that streak.**  It is counted by a human reading run
-annotations, which is the same thing that made the quarantine permanent in the
-first place.  It is not automated yet because neither route is cheap: both
-jobs are `continue-on-error`, which rewrites the job conclusion to `success`,
-so the artifact is the only durable evidence — and reading previous nights'
-artifacts needs `actions: read` plus cross-run API paging, while a committed
-counter file would need `contents: write` in a job that installs the whole
-devDependency tree, which `tests/unit/ci/WorkflowHygiene.test.ts` forbids on
-purpose.  Until one is built, treat the count as something you have to
-reconstruct from the run list rather than something the repository remembers.
-
-On reaching it, un-quarantine in one commit:
-
-1. Drop `ACTOR_TS_SKIP_FLAKY_MNS` from `test.yml`, `multi-runtime.yml` and
-   `publish.yml`.
-2. Drop the three `describeMns` guards.
-3. Drop the `coveragePathIgnorePatterns` block in `bunfig.toml` — it excludes
-   the worker harness from the coverage denominator only because that harness
-   cannot execute on the hosted runner.
-4. Drop `--exclude=worker` from `benchmarks.yml`'s smoke step.  The worker
-   benchmark is excluded for exactly the same cause, and is easy to forget
-   because it is not a test.
-5. Revisit every floor in `scripts/coverage-gate.mjs` — the aggregate
-   `DEFAULT_LINE_FLOOR` and the two per-module ones alike.  All of them are
-   measured against the quarantined population: `src/cluster/` reads below its
-   true line coverage for as long as `LeaseMajority` cannot run, and the
-   aggregate sat at a pragmatic 80 for the same reason until it was re-measured
-   at 90.  `test.yml` no longer carries a copy of the number, so this is one
-   file to edit rather than two to keep in step.
-6. Keep the nightly job.  It becomes the regression guard for the
-   un-quarantining.
+`nightly-flakes.yml` keeps running those three suites on their own, three
+repeats a night.  It is the regression guard now rather than the parole board: a
+claim retired by measurement stays retired only while somebody keeps measuring.
 
 ## Where to next
 
