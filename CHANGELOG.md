@@ -11,6 +11,39 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`Clock` — the time a component reads, as a contract rather than a global,
+  reachable as `system.clock`** (#1424).
+
+  ```ts
+  import type { Clock } from 'actor-ts';
+
+  const at = system.clock.now();          // wall clock in production
+  ```
+
+  `system.clock` **is** the system scheduler, narrowed to one method, so under
+  a `ManualScheduler` it is virtual time. A component that only reads the time
+  should take `Clock` rather than the whole scheduler: its dependency then says
+  what it needs, and a test can supply a clock without also granting it the
+  power to arm timers.
+
+  **This closes a mixed clock that made a whole class of test unwritable.**
+  `ManualScheduler` has had virtual time since the TestKit existed, and almost
+  nothing could see it — `Scheduler` exposed no `now()`, so every component
+  that needed the time read `Date.now()` for itself, 184 times across 78 files.
+  Gossip, heartbeat and failure-detection ticks all run through the scheduler,
+  so virtual time drives them; the code they drove read the wall clock. Measured
+  as an assertion: a hundred ticks advanced through virtual time land on **100
+  distinct instants** through `system.clock` and on **2** through `Date.now()`.
+  A failure detector handed a hundred samples with no elapsed time between them
+  concludes nothing, which is why "this peer went quiet for a minute" could not
+  be written as a test.
+
+  Nothing is deprecated and no signature changed; the reads move onto the
+  contract subsystem by subsystem, held in place by a ratchet
+  (`tests/unit/ci/WallClockRatchet.test.ts`) that lets a file's count fall and
+  never rise. `performance.now()` is deliberately out of scope — it measures a
+  duration, not what time it is, and `Clock` says so.
+
 - **BREAKING — the split-brain resolver now decides on a view that has stopped
   moving: `actor-ts.cluster.split-brain-resolver.stable-after`, default 20 s**
   (#839).

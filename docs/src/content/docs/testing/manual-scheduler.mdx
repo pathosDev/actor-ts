@@ -225,15 +225,37 @@ import { Aside } from '@astrojs/starlight/components';
   }
   ```
   `ManualScheduler` virtualizes the actor system's scheduler but
-  **not** `Date.now()` or `new Date()`.  If your actor records
-  timestamps, those are real wall-clock values during tests.
-  For deterministic tests with timestamps, inject a clock:
+  **not** `Date.now()` or `new Date()`.  An actor that stamps its own
+  timestamps records real wall-clock values under a test that thinks
+  it controls time.
+
+  Read the time from the system instead.  `system.clock` **is** the
+  scheduler, narrowed to one method, so under a `ManualScheduler` it
+  is virtual time:
   ```ts
-  class MyActor extends Actor<...> {
-    constructor(private readonly clock: () => number = Date.now) { super(); }
+  override onReceive(message) {
+    const at = this.context.system.clock.now();   // ← virtual under a ManualScheduler
+    this.persist({ kind: 'observed', at });
   }
   ```
-  and in tests pass `() => scheduler.now()`.
+  A component that is not an actor takes the contract instead of the
+  whole system, so its dependency says what it needs and a test can
+  give it a clock without also granting it the power to arm timers:
+  ```ts
+  import type { Clock } from 'actor-ts';
+
+  class RetentionWindow {
+    constructor(private readonly clock: Clock) {}
+    expired(writtenAt: number): boolean { return this.clock.now() - writtenAt > 86_400_000; }
+  }
+  ```
+  Pass `system.clock` in production and a `ManualScheduler` in tests —
+  it implements `Clock`, so no adapter is involved.
+
+  **`Clock` is milliseconds since the epoch, and is not promised to be
+  monotonic**: the system clock moves, NTP steps included.  A duration
+  that must never go backwards still belongs on `performance.now()`,
+  which this contract deliberately does not cover.
 </Aside>
 
 <Aside type="caution" title="Don't mix real timers with `ManualScheduler`">

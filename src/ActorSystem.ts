@@ -36,6 +36,7 @@ import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from './logging/MultiSinkLoggerOptions.
 import type { ActorClassOrFactory } from './Actor.js';
 import type { ActorOptions, DefaultMailboxConfiguration } from './ActorOptions.js';
 import { readDefaultMailboxFromConfig } from './ActorOptions.js';
+import type { Clock } from './Clock.js';
 import { Scheduler, type SchedulerErrorSink } from './Scheduler.js';
 import type { ActorSystemOptions, ActorSystemOptionsType } from './ActorSystemOptions.js';
 import { ActorCell } from './internal/ActorCell.js';
@@ -96,6 +97,21 @@ export class ActorSystem {
   readonly startedAtMs: number;
   readonly dispatcher: Dispatcher;
   readonly scheduler: Scheduler;
+
+  /**
+   * What time it is, according to this system.
+   *
+   * The same object as {@link scheduler}, narrowed to the one method, and the
+   * narrowing is the point: a component that only reads the time should take
+   * `system.clock` rather than the whole scheduler, so its dependency says
+   * what it actually needs and a test can supply a clock without also
+   * granting it the power to arm timers.
+   *
+   * Under a `ManualScheduler` this is virtual time, which is the whole point:
+   * a component reading it advances with `advance()` instead of with the wall
+   * clock, and a test can say "a minute passed" in a millisecond.
+   */
+  get clock(): Clock { return this.scheduler; }
   readonly eventStream: EventStream;
   readonly log: Logger;
   /** How long `terminate()` waits for the logger to flush and close. */

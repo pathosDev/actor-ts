@@ -122,6 +122,8 @@ export {
 export type { Decider, SupervisorStrategy, StrategyOptions } from './Supervision.js';
 
 // Runtime services
+export { SystemClock, systemClock } from './Clock.js';
+export type { Clock } from './Clock.js';
 export { Scheduler } from './Scheduler.js';
 export type { Cancellable, SchedulerErrorSink } from './Scheduler.js';
 export {
