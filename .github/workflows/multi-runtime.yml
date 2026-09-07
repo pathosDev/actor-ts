@@ -159,4 +159,14 @@ jobs:
       # Every suite, including the three that were quarantined behind
       # `ACTOR_TS_SKIP_FLAKY_MNS` until #538's criterion was met and #839
       # removed the reason the third one was in there at all.
-      - run: bun test
+      #
+      # In shuffled order (#1422), with the seed drawn here and printed rather
+      # than left to bun: bun reports its own seed in the trailing summary
+      # block, which it stops printing under GitHub Actions.  A seed nobody can
+      # read is not a reproduction.
+      - name: Tests, in randomized order
+        run: |
+          SEED=$(( (RANDOM << 15) + RANDOM ))
+          echo "test order seed: --seed=$SEED"
+          printf 'Test order seed: `--seed=%s`\n' "$SEED" >> "$GITHUB_STEP_SUMMARY"
+          bun test --seed="$SEED"

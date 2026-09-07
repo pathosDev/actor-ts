@@ -303,11 +303,27 @@ async function loadNativeZstdDecompressCandidates(): Promise<NativeZstdDecompres
  * in {@link decompressWithinCap}, which costs the memory but never the
  * correctness.
  */
+/**
+ * Which implementation answers a zstd decode in this process.
+ *
+ * The distinction is not cosmetic and it is the whole of #580: only
+ * `node-zlib` takes `maxOutputLength`, so only it can refuse an over-cap frame
+ * *before* the output is allocated.  The other two decode first and are
+ * refused afterwards by {@link decompressWithinCap} — correct, but at exactly
+ * the cost the cap exists to avoid, which is what makes a decompression bomb a
+ * bomb.
+ */
+export type ZstdDecompressorRung = 'node-zlib' | 'bun-global' | 'fzstd';
+
+/** Set by whichever rung {@link zstdDecompressLazy} returns from. */
+let resolvedZstdDecompressorRung: ZstdDecompressorRung | undefined;
+
 const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFunction>> = Lazy.of<Promise<ZstdDecompressFunction>>(async () => {
   const candidates = await loadNativeZstdDecompressCandidates();
 
   const nodeZlibDecompress = candidates.nodeZlib;
   if (nodeZlibDecompress && decodesZstdCanary((i) => nodeZlibDecompress(i))) {
+    resolvedZstdDecompressorRung = 'node-zlib';
     return async (i: Uint8Array, maxOutputBytes?: number): Promise<Uint8Array> =>
       nodeZlibDecompress(i, capApplies(maxOutputBytes) ? { maxOutputLength: maxOutputBytes } : undefined);
   }
@@ -316,6 +332,7 @@ const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFunction>> = Lazy.of<Promis
   if (bunDecompress && decodesZstdCanary(bunDecompress)) {
     // No options parameter to pass a bound through, so `maxOutputBytes` is
     // dropped here and only the post-decode assertion remains.
+    resolvedZstdDecompressorRung = 'bun-global';
     return async (i: Uint8Array): Promise<Uint8Array> => bunDecompress(i);
   }
 
@@ -351,6 +368,7 @@ const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFunction>> = Lazy.of<Promis
     // decoded, so it accepts a frame every native decoder refuses; and it
     // reports a truncated frame in the `ZstdErrorCode` vocabulary it exports,
     // which no native decoder can produce.
+    resolvedZstdDecompressorRung = 'fzstd';
     return async (i: Uint8Array): Promise<Uint8Array> => fzstd.decompress(i);
   } catch (e) {
     throw new Error(
@@ -481,6 +499,33 @@ export function resetCompressionCache(): void {
   zstdCompressLazy.reset();
   zstdDecompressLazy.reset();
   nativeZstdDecompressCandidatesOverride = null;
+  resolvedZstdDecompressorRung = undefined;
+}
+
+/**
+ * The rung this process decodes zstd with, resolving the ladder if nothing has
+ * decoded yet.
+ *
+ * Operationally it answers "can a decompression bomb still allocate here?" —
+ * below the first rung, it can.  It exists because a test could not ask that
+ * from the outside: the error message's tail is the only other observable, and
+ * a suite that establishes which path it is on by reading the tail is
+ * establishing the thing it is trying to prove.
+ *
+ * That gap was real rather than theoretical.  A `mock.module` is process-wide
+ * and permanent — `mock.restore()` does not undo one — so a file suppressing
+ * the native candidates to reach `fzstd` moved three cap tests onto the
+ * fallback, where they went on asserting the security property of a path they
+ * were no longer on (#1422).  They failed loudly, which was luck: a
+ * differently-worded assertion would have passed.
+ *
+ * Not re-exported from any barrel, like the two seams above it.
+ */
+export async function zstdDecompressorRung(): Promise<ZstdDecompressorRung> {
+  await zstdDecompressLazy.get();
+  // The ladder cannot resolve without returning from one of its three
+  // branches, and each sets this before returning.
+  return resolvedZstdDecompressorRung as ZstdDecompressorRung;
 }
 
 /* ------------------------------- levels --------------------------------- */

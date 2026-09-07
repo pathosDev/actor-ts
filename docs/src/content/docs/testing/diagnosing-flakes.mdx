@@ -146,6 +146,7 @@ Causes this suite has actually had, with how each was settled.
 | Port collisions | Settled | `EADDRINUSE`, only when suites overlap |
 | Filesystem races | Settled | Two suites reading each other's fixtures |
 | An assertion over process-global state | Settled | Passes in isolation, fails in a whole-suite run, and no timing is involved |
+| A test that depends on running after another one | Settled, gated | Green in declaration order, red under `--seed=N`; a repeat run repeats the same order and never finds it |
 | Hosted-runner worker respawn | Retired, guarded nightly | Workers spawn, handshake, then never run — never once in 63 measured executions |
 
 ### Fixed sleep before an assertion
@@ -402,6 +403,107 @@ in a full run, and no amount of waiting changes anything — because nothing is
 in flight.  Ask what the assertion's *denominator* is.  If it is a `static`
 field, a module-level registry or a process-wide counter, narrow it to the
 entry this test owns.
+
+### A test that depends on running after another one
+
+The sibling of the entry above, and the one a repeat run cannot find at all: a
+repeat run repeats the *same* order.  Only a shuffle asks the question, and
+`bun test --seed=N` implies `--randomize` and reproduces one exact order:
+
+```sh
+bun test --seed=413044451
+```
+
+Four suites failed the first time that was asked of them, in three shapes.
+
+**A value carried from one test to the next.**  The block meant "the fixture
+boots once, not once per test" and said it by writing in one test and reading in
+the sibling that followed.  Shuffled, the reader went first and compared against
+an unwritten `null`.
+
+```ts
+// ✗ the premise is the order of its own block
+let observed: ActorSystem | null = null;
+test('returns a live system', () => { observed = sys(); });
+test('returns the SAME instance', () => { expect(sys()).toBe(observed); });
+```
+
+```ts
+// ✓ compare against what the block booted, which every test can see
+let booted!: ReturnType<typeof sys>;
+beforeAll(() => { booted = sys(); });
+test('returns the SAME instance the block booted', () => { expect(sys()).toBe(booted); });
+```
+
+**A module mock that outlived its file.**  `mock.restore()` does *not* undo
+`mock.module()` — a module mock is process-wide and permanent, so a file that
+replaces `node:zlib` to make a capability look absent hands that to whichever
+file runs next.  Two suites in `tests/unit/persistence/object-storage/` were
+failing each other in whichever direction the shuffle put them.  Snapshot the
+real module before mocking, put it back in `afterEach`, and reset whatever the
+production code memoised from it:
+
+```ts
+const REAL_NODE_ZLIB = { ...nodeZlibModule };
+
+afterEach(() => {
+  mock.module('node:zlib', () => REAL_NODE_ZLIB);
+  resetCompressionCache();
+});
+```
+
+Note the `beforeEach` half as well: a memo inherited from the *previous* file is
+just as wrong as one leaked to the next, and only one of the two is your file's
+fault.  Reset on both edges.
+
+That fixes the file that leaked.  It does nothing for the file that was *moved*,
+which is where the damage landed: three cases pinning the #580 allocation-time
+bound went on running on a rung that has no such bound, asserting its security
+property there.  They failed rather than passing quietly, and that was luck — the
+error message's tail was the only thing separating "refused before allocating"
+from "allocated, then refused", and a differently-worded assertion would have
+been satisfied by the wrong path.
+
+So a suite that *consumes* a resolved capability should be able to state which
+one it got, and assert it once up front:
+
+```ts
+beforeAll(async () => {
+  expect(await zstdDecompressorRung()).toBe('node-zlib');
+});
+```
+
+A wrong path is then one failure that names the cause, instead of five message
+mismatches that do not.  The general form: if a block's subject is a property of
+*one* implementation behind a resolver, the resolver has to be able to say which
+implementation answered — otherwise the block is asserting the thing it is
+trying to establish.
+
+**A fixed number of microtask turns.**  A test fired an operation without
+awaiting it, let two `Promise.resolve()`s go by, and asserted that a lazily
+imported SDK client had been constructed.  That is a bet on how many turns a
+dynamic `import()` takes, which is one number when the specifier is already in
+the module registry and another when this is the run's first resolution of it.
+
+```ts
+// ✗ two turns is a guess about the module registry's state
+void backend.list({ prefix: '' }).catch(() => {});
+await Promise.resolve(); await Promise.resolve();
+expect(clientsConstructed.length).toBe(1);
+```
+
+```ts
+// ✓ a completed operation has constructed the client just as well
+expect(await backend.list({ prefix: '' })).toEqual([]);
+expect(clientsConstructed.length).toBe(1);
+```
+
+Both per-commit suites now shuffle, with the seed drawn by the workflow and
+printed.  It is drawn there rather than left to bun deliberately: bun reports
+its own seed in the trailing summary block, and under GitHub Actions it stops
+printing that block and reports the totals out of band — the same trap that once
+turned an unreadable pass count into a green `tests-0 of 0` badge.  A seed nobody
+can read is not a reproduction.
 
 ## Open entries
 
