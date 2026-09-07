@@ -42,8 +42,8 @@
  * all — the connection, not the payload, is what a reply is routed on.
  */
 
-import { HELLO_TIMEOUT_MS } from './Constants.js';
 import { getTcpBackend, type TcpSocketLike, type TlsTransportOptionsType } from '../runtime/tcp/index.js';
+import type { Config } from '../config/Config.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../util/Constants.js';
 import { randomUuid } from '../util/RandomString.js';
@@ -55,7 +55,12 @@ import type {
   ClusterClientEnvelopeMessage,
   ClusterClientReplyMessage,
 } from './ClusterClientReceptionist.js';
-import { ClusterClientOptionsValidator } from './ClusterClientOptions.js';
+import {
+  ClusterClientOptionsValidator,
+  DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS,
+  DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME,
+  withClusterClientConfigDefaults,
+} from './ClusterClientOptions.js';
 import type { ClusterClientOptions, ClusterClientOptionsType } from './ClusterClientOptions.js';
 
 type PendingAsk = {
@@ -126,6 +131,7 @@ export class ClusterClient {
   private readonly identity: NodeAddress;
   private readonly tls: TlsTransportOptionsType | null;
   private readonly askTimeoutMs: number;
+  private readonly connectTimeoutMs: number;
   private readonly log: Logger;
   private socket: TcpSocketLike | null = null;
   private decoder = new FrameDecoder();
@@ -138,11 +144,28 @@ export class ClusterClient {
 
   private readonly options: ClusterClientOptionsType;
 
-  constructor(options: ClusterClientOptions) {
-    const resolvedOptions = options as ClusterClientOptionsType;
+  /**
+   * @param options  Explicit options — the highest-precedence layer.
+   * @param config   The configuration `actor-ts.cluster.client` is read from.
+   *   Defaults to {@link Config.load}, the same chain `ActorSystem.create`
+   *   uses: a `ClusterClient` holds no `ActorSystem`, so unlike every other
+   *   config consumer in the framework there is no `system.config` above it,
+   *   and without a self-load `new ClusterClient({})` could not be configured
+   *   at all.  `readWorkerClusterOptionsFromConfig` makes the same call for
+   *   the same reason.
+   *
+   *   Pass one explicitly to make a client independent of whatever
+   *   `application.conf` sits in the working directory — which is what the
+   *   unit tests do, so a stray file cannot decide whether they pass.
+   */
+  constructor(options: ClusterClientOptions, config?: Config) {
+    const resolvedOptions = withClusterClientConfigDefaults(
+      options as Partial<ClusterClientOptionsType>,
+      config,
+    );
     this.options = resolvedOptions;
     new ClusterClientOptionsValidator().validate(resolvedOptions);
-    const sysName = resolvedOptions.systemName ?? 'cluster-client';
+    const sysName = resolvedOptions.systemName ?? DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME;
     this.contactPoints = resolvedOptions.contactPoints.map((s) => {
       const withSys = s.includes('@') ? s : `${sysName}@${s}`;
       return NodeAddress.parse(withSys);
@@ -154,6 +177,8 @@ export class ClusterClient {
     this.identity = new NodeAddress(sysName, id.host, id.port);
     this.tls = resolvedOptions.tls ?? null;
     this.askTimeoutMs = resolvedOptions.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
+    this.connectTimeoutMs =
+      resolvedOptions.connectTimeoutMs ?? DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS;
     this.log = resolvedOptions.logger ?? new ConsoleLogger(LogLevel.Warn, 'cluster-client');
   }
 
@@ -255,8 +280,8 @@ export class ClusterClient {
       try {
         const sock = await new Promise<TcpSocketLike>((resolve, reject) => {
           const timer = setTimeout(() => reject(new Error(
-            `ClusterClient connect to ${target} timed out after ${HELLO_TIMEOUT_MS}ms`,
-          )), HELLO_TIMEOUT_MS);
+            `ClusterClient connect to ${target} timed out after ${this.connectTimeoutMs}ms`,
+          )), this.connectTimeoutMs);
 
           let openSock: TcpSocketLike | null = null;
           backend.connect({
