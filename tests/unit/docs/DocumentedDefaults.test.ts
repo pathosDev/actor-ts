@@ -1082,6 +1082,11 @@ const FEATURE_SWITCHES: readonly string[] = [
   // deployment's business, and the framework has no candidate to name (#864).
   'actor-ts.circuit-breaker.default.ignored-error-names',
   'actor-ts.cluster.weakly-up-after', // 0s = no auto weakly-up promotion
+  // 0s = arm no stats timer, which is what every release before #842 did.  The
+  // off state IS the field being absent at the read site — `Cluster._start`
+  // schedules the tick only for a positive value — so there is no constant for
+  // it to disagree with, exactly like the two sentinels around it.
+  'actor-ts.cluster.publish-stats-interval',
   'actor-ts.cluster.tombstone.min-retention', // 0s = derive from down-after
   'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',
   // Two more empty-list sentinels (#836), and they read exactly like the

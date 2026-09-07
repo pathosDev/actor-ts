@@ -383,6 +383,16 @@ export type ClusterOptionsType = {
    */
   readonly weaklyUpAfterMs?: number;
   /**
+   * How often this node publishes a {@link ClusterStatsPublished} sample of
+   * its own membership view on `system.eventStream`.  `0` arms no timer.
+   * Default: 0 (#842).
+   *
+   * `0` and an unset field mean the same thing — no timer — rather than `0`
+   * meaning "as fast as possible", which is the reading a cadence could
+   * otherwise be given and which nothing here would survive.
+   */
+  readonly publishStatsIntervalMs?: number;
+  /**
    * Members that must be present before **anything** moves to `up` — the
    * leader's promotions and this node's own self-election alike (#837).
    * Default: `1`, which is the historical behaviour (the first node forms a
@@ -776,6 +786,14 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   }
 
   /**
+   * Publish a `ClusterStatsPublished` sample of this node's membership view
+   * on `system.eventStream` this often.  0 arms no timer (default) (#842).
+   */
+  withPublishStatsIntervalMs(ms: number): this {
+    return this.set('publishStatsIntervalMs', ms);
+  }
+
+  /**
    * Hold every `up` promotion — the leader's and this node's own
    * self-election — until this many members are present.  Default: 1, the
    * historical behaviour (#837).
@@ -958,6 +976,9 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     // at all tolerated".
     this.positiveInt('maxVersionSkewMs');
     this.nonNegativeNumber('weaklyUpAfterMs'); // 0 disables auto weakly-up
+    // Non-negative for the same reason: `0` is the shipped value and reads as
+    // "arm no timer", not as "as fast as possible" (#842).
+    this.nonNegativeNumber('publishStatsIntervalMs');
     this.positiveInt('maxFrameBytes');
     // `0 = off` rather than `Infinity`: a count needs an integer opt-out, and
     // `positiveInt` would reject `Infinity` anyway.  Same shape as the
@@ -1322,7 +1343,8 @@ export type ClusterConfigDefaults = Partial<Pick<
   'host' | 'advertisedHost' | 'port' | 'advertisedPort' | 'seeds' | 'roles'
   | 'gossipIntervalMs' | 'seedRetryIntervalMs'
   | 'failureDetectorImplementation' | 'failureDetector' | 'phiAccrual' | 'maxFrameBytes'
-  | 'weaklyUpAfterMs' | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
+  | 'weaklyUpAfterMs' | 'publishStatsIntervalMs'
+  | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
   | 'maxMembers' | 'maxTombstones' | 'downing' | 'splitBrainResolver'
   | 'minimumMembersBeforeUp' | 'minimumMembersBeforeUpPerRole'
   | 'untrustedMode' | 'trustedSelectionPaths'
@@ -1417,6 +1439,9 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
     out.seedRetryIntervalMs = config.getDuration(keys.seedRetryInterval);
   }
   if (config.hasPath(keys.weaklyUpAfter)) out.weaklyUpAfterMs = config.getDuration(keys.weaklyUpAfter);
+  if (config.hasPath(keys.publishStatsInterval)) {
+    out.publishStatsIntervalMs = config.getDuration(keys.publishStatsInterval);
+  }
   if (config.hasPath(keys.maxMembers)) out.maxMembers = config.getInt(keys.maxMembers);
   if (config.hasPath(keys.maxTombstones)) out.maxTombstones = config.getInt(keys.maxTombstones);
   if (config.hasPath(keys.minimumMembersBeforeUp)) {

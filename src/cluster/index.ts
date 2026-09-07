@@ -89,6 +89,7 @@ export {
   MemberLeft,
   MemberRemoved,
   MemberConfigurationMismatch,
+  ClusterStatsPublished,
   ShardMapChanged,
 } from './ClusterEvents.js';
 export type { ClusterEvent } from './ClusterEvents.js';

@@ -257,6 +257,7 @@ replay from it.
 | `cluster.roles` | `[]` | Role tags this node carries.  Shard regions, singletons, the per-role thresholds and the role-filtered downing strategies all place **by** role. |
 | `cluster.seed-retry-interval` | `3s` | How often to retry seed connections during join. |
 | `cluster.weakly-up-after` | `0s` | Auto-promote a `joining` member to `weakly-up` after this long.  `0` disables it — see [Weakly-up](/cluster/weakly-up/). |
+| `cluster.publish-stats-interval` | `0s` | How often this node publishes a `ClusterStatsPublished` sample of its membership view on `system.eventStream`.  `0` arms no timer — see below. |
 | `cluster.max-members` | `1000` | Cap on live member entries gossip may introduce.  `0` disables the cap. |
 | `cluster.max-tombstones` | `10000` | Cap on `removed` tombstones gossip may introduce.  `0` disables the cap. |
 | `cluster.minimum-members-before-up` | `1` | Members that must be present before **anything** is promoted to `up`.  `1` is the historical behaviour — see below. |
@@ -311,6 +312,18 @@ The two `max-*` caps bound the local member map.  `remote.max-frame-bytes`
 bounds one gossip frame; these bound what a sequence of well-formed frames
 can accumulate, which is a different quantity — see
 [Cluster security](/operations/security/cluster-security/).
+
+`publish-stats-interval` arms a fifth periodic task on this node, and only
+when it is positive: every `interval` it publishes one
+`ClusterStatsPublished` — member count, `up` count, `unreachable` count,
+leader and this node's address — on `system.eventStream` and to every
+`cluster.subscribe` listener.  Every figure is already reachable through the
+`Cluster` API; what the key buys is the cadence.  It is node-local and
+deliberately not on the cluster-wide `cluster.eventStream`, where a per-node
+periodic sample would cost N frames per node per interval.  It is also
+`actor-ts.devtools.stats-interval`'s sibling rather than its replacement:
+same figures, different channel, and neither forwards into the other.  See
+[Cluster overview](/cluster/overview/).
 
 `split-brain-resolver.active-strategy` names a strategy rather than
 describing one, which is why the object it builds needs no HOCON shape of

@@ -227,6 +227,56 @@ The replay always reflects `getMembers()`: tombstones are excluded,
 and every member is announced in the status it actually holds — an
 `unreachable` peer replays as unreachable, not as a fresh join.
 
+### A periodic sample, when you want one
+
+Every event above states a *change*.  If what you want is "tell me
+where the membership stands every N seconds", set a cadence and
+subscribe to `ClusterStatsPublished`:
+
+```hocon
+actor-ts.cluster.publish-stats-interval = 30s   # 0 (the default) arms no timer
+```
+
+```ts
+import { ClusterStatsPublished } from 'actor-ts/cluster';
+
+cluster.subscribe((evt) => {
+  if (evt instanceof ClusterStatsPublished) {
+    console.log(`${evt.up}/${evt.members} up, ${evt.unreachable} unreachable`);
+  }
+});
+```
+
+It carries the member count, the `up` count, the `unreachable` count,
+the leader as an `Option<Member>` and this node's own address — every
+one of them already reachable through the `Cluster` API, which is the
+point: what the key buys is the **cadence**, so a dashboard does not
+have to run a polling loop of its own.
+
+Three properties worth knowing:
+
+- **Node-local**, like every other cluster event, and reached through
+  `system.eventStream` as well as `cluster.subscribe`.  It is
+  deliberately not on [`cluster.eventStream`](/cluster/event-stream/):
+  a per-node periodic sample on the cluster-wide bus costs N frames per
+  node per interval to say what each node can already read locally.
+  Bridge it yourself if you want a fleet-wide view — `selfAddress` is
+  there so the samples stay distinguishable when you do.
+- **Never replayed.**  A subscriber that attaches gets the membership
+  replay described above and no stats sample: replaying a measurement
+  taken before you were listening is just a stale number.
+- **Off by default.**  `0` arms no timer at all, which is what every
+  release before the key did.
+
+It is not the only place these figures appear, and the three do not
+answer quite the same question.  The
+[DevTools dashboard](/observability/devtools/overview/) samples them on
+its own ticker and additionally counts nodes that recently *left*, so a
+cluster of three that lost one still reads "2 / 3 up" — this event
+counts the live member map instead.  The `cluster_members_up`
+[metric](/observability/metrics/stock-metrics/) is a pull surface with no
+callback.  This one is the framework-native push.
+
 ### The leader
 
 `cluster.leader()` returns the **lowest-addressed** `up` member —

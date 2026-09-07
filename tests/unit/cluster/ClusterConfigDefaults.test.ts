@@ -200,6 +200,15 @@ describe('readClusterOptionsFromConfig', () => {
       .not.toHaveProperty('downing');
   });
 
+  test('the stats cadence reads through with its own value (#842)', () => {
+    // `Config.parseString`, never `Config.fromObject` with a dotted key: the
+    // dotted string would stay a literal top-level key and `hasPath` would
+    // resolve the shipped `0s` behind it instead of the value written here.
+    const configured = Config.parseString('actor-ts.cluster.publish-stats-interval = 30s');
+
+    expect(readClusterOptionsFromConfig(configured)).toEqual({ publishStatsIntervalMs: 30_000 });
+  });
+
   test('the resolver policy reads through with its own values (#839)', () => {
     // `Config.parseString`, never `Config.fromObject` with dotted keys: the
     // dotted string stays a literal top-level key, `hasPath` resolves the
@@ -258,6 +267,11 @@ describe('readClusterOptionsFromConfig', () => {
       gossipIntervalMs: DEFAULT_GOSSIP_INTERVAL_MS,
       seedRetryIntervalMs: DEFAULT_SEED_RETRY_INTERVAL_MS,
       weaklyUpAfterMs: 0,
+      // 0 = arm no stats timer (#842).  Pinned here rather than only in the
+      // reference file, because this exact-object shape is what says the leaf
+      // reaches `ClusterOptions` at all — `NoDeadConfigKeys` passes on a leaf
+      // nothing reads whenever another key in the same group is referenced.
+      publishStatsIntervalMs: 0,
       maxMembers: DEFAULT_MAX_MEMBERS,
       maxTombstones: DEFAULT_MAX_TOMBSTONES,
       // The Up threshold ships a leaf, so it always lands; the per-role

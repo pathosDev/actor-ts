@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  ClusterStatsPublished,
   CurrentClusterState,
   LeaderChanged,
   MemberDown,
@@ -79,6 +80,26 @@ describe('Cluster event classes', () => {
     expect(event.version).toBe(7);
     // Regions are optional so a producer that only knows the map still fits.
     expect(event.regions).toEqual([]);
+  });
+
+  test('ClusterStatsPublished carries counts, a leader Option and the node (#842)', () => {
+    // The one member of the union that is a measurement rather than a
+    // transition, which is also why it carries no `member`: it describes the
+    // whole view, so `ClusterTap` has an explicit arm for it instead of
+    // letting it fall through to the member-event path.
+    const event = new ClusterStatsPublished(3, 2, 1, some(member), addr);
+    expect(event.members).toBe(3);
+    expect(event.up).toBe(2);
+    expect(event.unreachable).toBe(1);
+    expect(event.leader.getOrElse(null as Member | null)).toBe(member);
+    expect(event.selfAddress).toBe(addr);
+    expect(event.toString())
+      .toBe(`ClusterStatsPublished(${addr}, members=3, up=2, unreachable=1)`);
+  });
+
+  test('ClusterStatsPublished states "no leader" as an empty Option (#842)', () => {
+    const event = new ClusterStatsPublished(1, 0, 0, none, addr);
+    expect(event.leader.isSome()).toBe(false);
   });
 
   test('ShardMapChanged carries the region table when the producer has it', () => {

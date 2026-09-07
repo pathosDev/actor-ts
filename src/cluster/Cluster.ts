@@ -48,6 +48,7 @@ import {
 } from './ClusterOptions.js';
 import type { ClusterOptions, ClusterOptionsType, SelfElectionPolicy } from './ClusterOptions.js';
 import {
+  ClusterStatsPublished,
   CurrentClusterState,
   LeaderChanged,
   MemberConfigurationMismatch,
@@ -328,6 +329,8 @@ export class Cluster {
   private weaklyUpTimer: Cancellable | null = null;
   private tombstonePruneTimer: Cancellable | null = null;
   private selfElectionTimer: Cancellable | null = null;
+  /** Armed only when `publish-stats-interval` is positive (#842). */
+  private statsTimer: Cancellable | null = null;
   /** Fruitless seed-contact rounds so far, and whether the stall was reported (#1351). */
   private seedRounds = 0;
   private coldStartStallReported = false;
@@ -340,6 +343,7 @@ export class Cluster {
   private _selfElected = false;
   private currentLeader: Option<Member> = none;
   private readonly weaklyUpAfterMs: number;
+  private readonly publishStatsIntervalMs: number;
   private readonly selfElection: SelfElectionPolicy;
   private readonly minimumMembersBeforeUp: number;
   private readonly minimumMembersBeforeUpPerRole: Readonly<Record<string, number>>;
@@ -501,6 +505,9 @@ export class Cluster {
     this.gossipIntervalMs = options.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
     this.seedRetryIntervalMs = options.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;
     this.weaklyUpAfterMs = options.weaklyUpAfterMs ?? 0;
+    // Same `0` sentinel one line up: no timer, which is what an unset field
+    // means too (#842).
+    this.publishStatsIntervalMs = options.publishStatsIntervalMs ?? 0;
     this.selfElection = options.selfElection ?? 'immediate';
     this.minimumMembersBeforeUp = options.minimumMembersBeforeUp ?? DEFAULT_MINIMUM_MEMBERS_BEFORE_UP;
     this.minimumMembersBeforeUpPerRole = options.minimumMembersBeforeUpPerRole ?? {};
@@ -1316,6 +1323,7 @@ export class Cluster {
     this.weaklyUpTimer?.cancel();
     this.tombstonePruneTimer?.cancel();
     this.selfElectionTimer?.cancel();
+    this.statsTimer?.cancel();
     await this.transport.shutdown();
   }
 
@@ -1410,6 +1418,16 @@ export class Cluster {
       this.tombstonePruneIntervalMs, this.tombstonePruneIntervalMs,
       () => this.tombstonePruneTick(),
     );
+    // Armed only when asked for.  The other four timers are how the cluster
+    // works; this one is a reporting convenience, so an unconfigured node
+    // schedules nothing at all rather than a task that publishes to nobody
+    // (#842).
+    if (this.publishStatsIntervalMs > 0) {
+      this.statsTimer = this.system.scheduler.scheduleAtFixedRateFunction(
+        this.publishStatsIntervalMs, this.publishStatsIntervalMs,
+        () => this.publishStatsTick(),
+      );
+    }
 
     // Last, so a start that threw earlier leaves nothing registered: the
     // rollback in `join` puts the extension slot back but has no cluster to
@@ -3087,6 +3105,30 @@ export class Cluster {
       this.log.debug(`leader changed: ${prevStr} → ${nextStr}`);
       this.emit(new LeaderChanged(newLeader));
     }
+  }
+
+  /**
+   * Publish one sample of this node's membership view (#842).
+   *
+   * Through {@link emit}, so it reaches `system.eventStream` *and* every
+   * `Cluster.subscribe` listener the way every other cluster event does — and
+   * node-locally, never on `cluster.eventStream`: that bus fans out to every
+   * peer, and a per-node periodic sample there costs N frames per node per
+   * interval to say what each node can already read locally.
+   *
+   * Recomputed from the public accessors rather than kept as counters, because
+   * a counter maintained beside the member map is a second copy of the same
+   * fact and this is the surface that would report it when the two disagree.
+   */
+  private publishStatsTick(): void {
+    const members = this.getMembers();
+    this.emit(new ClusterStatsPublished(
+      members.length,
+      this.upMembers().length,
+      members.filter((member) => member.status === 'unreachable').length,
+      this.leader(),
+      this.selfAddress,
+    ));
   }
 
   private emit(event: ClusterEvent): void {

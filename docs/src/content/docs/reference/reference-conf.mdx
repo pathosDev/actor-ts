@@ -411,6 +411,17 @@ actor-ts {
     seed-retry-interval = 3s
     weakly-up-after = 0s   # 0 disables auto weakly-up promotion
 
+    # How often this node publishes a snapshot of its own membership view --
+    # member count, up count, unreachable count, leader, self address -- as a
+    # ClusterStatsPublished event on system.eventStream.  0 arms no timer,
+    # which is what every release before this key did.
+    #
+    # Node-local, deliberately: on the cluster-wide bus a per-node periodic
+    # sample would be N frames per node per interval.  Every figure is already
+    # reachable through the Cluster API; what this buys is the cadence, so a
+    # dashboard subscriber does not write a polling loop of its own.
+    publish-stats-interval = 0s
+
     # Caps on the local member map.  max-frame-bytes bounds ONE gossip frame;
     # these bound what a sequence of well-formed frames can accumulate, since
     # gossip is what introduces addresses in the first place.  0 disables

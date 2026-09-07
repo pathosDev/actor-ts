@@ -266,6 +266,7 @@ man daraus erneut zustellt.
 | `cluster.roles` | `[]` | Rollen-Tags dieses Nodes.  Shard-Regionen, Singletons, die Schwellen pro Rolle und die rollengefilterten Downing-Strategien platzieren alle **nach** Rolle. |
 | `cluster.seed-retry-interval` | `3s` | Wie oft Seed-Verbindungen während des Joins wiederholt werden. |
 | `cluster.weakly-up-after` | `0s` | Befördert ein `joining`-Mitglied nach dieser Zeit automatisch zu `weakly-up`.  `0` schaltet das ab — siehe [Weakly-up](/de/cluster/weakly-up/). |
+| `cluster.publish-stats-interval` | `0s` | Wie oft dieser Node eine `ClusterStatsPublished`-Momentaufnahme seines Mitgliederbilds auf `system.eventStream` veröffentlicht.  `0` startet keinen Timer — siehe unten. |
 | `cluster.max-members` | `1000` | Obergrenze für lebende Mitgliedseinträge, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
 | `cluster.max-tombstones` | `10000` | Obergrenze für `removed`-Tombstones, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
 | `cluster.minimum-members-before-up` | `1` | Mitglieder, die vorhanden sein müssen, bevor **irgendetwas** zu `up` befördert wird.  `1` ist das bisherige Verhalten — siehe unten. |
@@ -321,6 +322,19 @@ Die beiden `max-*`-Grenzen begrenzen die lokale Mitgliederkarte.
 `remote.max-frame-bytes` begrenzt *einen* Gossip-Frame; diese begrenzen,
 was eine Folge wohlgeformter Frames ansammeln kann — eine andere Größe,
 siehe [Cluster-Sicherheit](/de/operations/security/cluster-security/).
+
+`publish-stats-interval` startet auf diesem Node eine fünfte periodische
+Aufgabe, und nur bei positivem Wert: alle `interval` veröffentlicht sie ein
+`ClusterStatsPublished` — Mitgliederzahl, `up`-Zahl, `unreachable`-Zahl,
+Leader und die eigene Adresse dieses Nodes — auf `system.eventStream` und an
+jeden `cluster.subscribe`-Listener.  Jede Zahl ist über die `Cluster`-API
+ohnehin erreichbar; was der Key bringt, ist die Taktung.  Er ist node-lokal
+und bewusst nicht auf dem clusterweiten `cluster.eventStream`, wo eine
+periodische Momentaufnahme pro Node N Frames pro Node und Intervall kosten
+würde.  Er ist außerdem das Geschwister von
+`actor-ts.devtools.stats-interval`, nicht dessen Ersatz: dieselben Zahlen,
+ein anderer Kanal, und keiner leitet in den anderen weiter.  Siehe
+[Cluster — Überblick](/de/cluster/overview/).
 
 `split-brain-resolver.active-strategy` *benennt* eine Strategie, statt sie
 zu beschreiben — deshalb braucht das gebaute Objekt keine eigene

@@ -949,6 +949,22 @@ export const ConfigKeys = {
     /** Auto-promotion `joining` → `weakly-up`; `0` keeps it opt-in (#841). */
     weaklyUpAfter: 'actor-ts.cluster.weakly-up-after',
     /**
+     * How often this node publishes a `ClusterStatsPublished` sample of its own
+     * membership view on `system.eventStream` (#842).  `0` arms no timer, which
+     * is what every release before the key did.
+     *
+     * Read by `readClusterOptionsFromConfig` into
+     * `ClusterOptionsType.publishStatsIntervalMs`; `Cluster._start` arms the
+     * timer only for a positive value.
+     *
+     * Not `actor-ts.devtools.stats-interval`, which paces the DevTools
+     * dashboard's own sampler over the websocket.  Same figures, different
+     * channel and different audience — and neither forwards into the other,
+     * because one number with two periodic sources is how two views of a
+     * cluster start disagreeing about it.
+     */
+    publishStatsInterval: 'actor-ts.cluster.publish-stats-interval',
+    /**
      * The two membership caps (#138).  They bound what unauthenticated gossip
      * can make the local member map hold — `maxFrameBytes` bounds one frame,
      * these bound what a sequence of well-formed frames accumulates.  `0`
