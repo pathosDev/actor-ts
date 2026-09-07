@@ -54,6 +54,17 @@ const SLOW_EVICTION: FailureDetectorOptionsType = {
   heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 4_000,
 };
 
+/**
+ * The stability window every configured arm pins (#839).
+ *
+ * The shipped default is 20 s — the resolver is not consulted until the view
+ * has held still that long — so an arm that left it alone would assert on a
+ * cluster still inside its window and time out.  Written into the same HOCON
+ * block as `active-strategy`, which is also where an operator writes it, so
+ * this file keeps saying what it says: the *only* downing input is the config.
+ */
+const SHORT_STABILITY_WINDOW = '1ms';
+
 type Node = { sys: ActorSystem; cluster: Cluster };
 
 /**
@@ -109,9 +120,12 @@ const knows = (node: Node, address: string): boolean =>
 describe('a split-brain resolver selected from config (#838)', () => {
   test('keep-majority downs the minority side, with no code-side downing setup', async () => {
     const systemName = 'sbr-config-majority';
-    const config = Config.parseString(
-      'actor-ts.cluster.split-brain-resolver.active-strategy = keep-majority',
-    );
+    const config = Config.parseString(`
+      actor-ts.cluster.split-brain-resolver {
+        active-strategy = keep-majority
+        stable-after    = ${SHORT_STABILITY_WINDOW}
+      }
+    `);
     const [seed, second, third] = await startThree(systemName, 64_101, config);
     const isolatedAddress = third.cluster.selfAddress.toString();
 
@@ -180,9 +194,12 @@ describe('a split-brain resolver selected from config (#838)', () => {
     // `unreachable` — inside a window where the configured strategy would
     // long since have evicted it.
     const systemName = 'sbr-config-overridden';
-    const config = Config.parseString(
-      'actor-ts.cluster.split-brain-resolver.active-strategy = keep-majority',
-    );
+    const config = Config.parseString(`
+      actor-ts.cluster.split-brain-resolver {
+        active-strategy = keep-majority
+        stable-after    = ${SHORT_STABILITY_WINDOW}
+      }
+    `);
     let consulted = 0;
     const systemOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())

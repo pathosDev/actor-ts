@@ -14,6 +14,8 @@ import {
 import type { Transport } from './Transport.js';
 import { readDowningFromConfig } from './downing/DowningFromConfig.js';
 import type { DowningProvider } from './downing/DowningProvider.js';
+import { readSplitBrainResolverOptionsFromConfig } from './downing/SplitBrainResolverOptions.js';
+import type { SplitBrainResolverOptionsType } from './downing/SplitBrainResolverOptions.js';
 
 /**
  * Built-in default for {@link ClusterOptionsType.failureDetectorImplementation}
@@ -381,6 +383,16 @@ export type ClusterOptionsType = {
    */
   readonly weaklyUpAfterMs?: number;
   /**
+   * How often this node publishes a {@link ClusterStatsPublished} sample of
+   * its own membership view on `system.eventStream`.  `0` arms no timer.
+   * Default: 0 (#842).
+   *
+   * `0` and an unset field mean the same thing — no timer — rather than `0`
+   * meaning "as fast as possible", which is the reading a cadence could
+   * otherwise be given and which nothing here would survive.
+   */
+  readonly publishStatsIntervalMs?: number;
+  /**
    * Members that must be present before **anything** moves to `up` — the
    * leader's promotions and this node's own self-election alike (#837).
    * Default: `1`, which is the historical behaviour (the first node forms a
@@ -452,6 +464,20 @@ export type ClusterOptionsType = {
    * KeepOldest, KeepReferee, StaticQuorum, LeaseMajority).
    */
   readonly downing?: DowningProvider;
+  /**
+   * *When* {@link downing} is consulted, as against which provider it is —
+   * the stability window and the unstable-escalation switch (#839).
+   *
+   * A nested block rather than two flat fields, for the reason
+   * {@link failureDetector} is one: the two are read together as one policy,
+   * and grouping them is what lets `withClusterConfigDefaults` merge them
+   * per field so an explicit `{ stableAfterMs }` does not silently drop the
+   * config file's `downAllWhenUnstable`.
+   *
+   * Inert without a provider: `Cluster.evaluateDowning` is the only reader
+   * and it returns immediately when {@link downing} is unset.
+   */
+  readonly splitBrainResolver?: Partial<SplitBrainResolverOptionsType>;
   /**
    * Per-frame cap on the cluster wire, in bytes.  Frames whose
    * length-prefix exceeds it are rejected before any payload is
@@ -760,6 +786,14 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   }
 
   /**
+   * Publish a `ClusterStatsPublished` sample of this node's membership view
+   * on `system.eventStream` this often.  0 arms no timer (default) (#842).
+   */
+  withPublishStatsIntervalMs(ms: number): this {
+    return this.set('publishStatsIntervalMs', ms);
+  }
+
+  /**
    * Hold every `up` promotion — the leader's and this node's own
    * self-election — until this many members are present.  Default: 1, the
    * historical behaviour (#837).
@@ -789,6 +823,15 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   /** Optional split-brain resolver (KeepMajority, KeepOldest, …). */
   withDowning(downing: DowningProvider): this {
     return this.set('downing', downing);
+  }
+
+  /**
+   * When the resolver is consulted — the stability window and the
+   * unstable-escalation switch (#839).  Merged per field over the config
+   * file's values, like {@link withFailureDetector}.
+   */
+  withSplitBrainResolver(splitBrainResolver: Partial<SplitBrainResolverOptionsType>): this {
+    return this.set('splitBrainResolver', splitBrainResolver);
   }
 
   /** Per-frame wire cap for the cluster's own transport.  Default: 16 MiB. */
@@ -933,6 +976,9 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     // at all tolerated".
     this.positiveInt('maxVersionSkewMs');
     this.nonNegativeNumber('weaklyUpAfterMs'); // 0 disables auto weakly-up
+    // Non-negative for the same reason: `0` is the shipped value and reads as
+    // "arm no timer", not as "as fast as possible" (#842).
+    this.nonNegativeNumber('publishStatsIntervalMs');
     this.positiveInt('maxFrameBytes');
     // `0 = off` rather than `Infinity`: a count needs an integer opt-out, and
     // `positiveInt` would reject `Infinity` anyway.  Same shape as the
@@ -1297,8 +1343,9 @@ export type ClusterConfigDefaults = Partial<Pick<
   'host' | 'advertisedHost' | 'port' | 'advertisedPort' | 'seeds' | 'roles'
   | 'gossipIntervalMs' | 'seedRetryIntervalMs'
   | 'failureDetectorImplementation' | 'failureDetector' | 'phiAccrual' | 'maxFrameBytes'
-  | 'weaklyUpAfterMs' | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
-  | 'maxMembers' | 'maxTombstones' | 'downing'
+  | 'weaklyUpAfterMs' | 'publishStatsIntervalMs'
+  | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
+  | 'maxMembers' | 'maxTombstones' | 'downing' | 'splitBrainResolver'
   | 'minimumMembersBeforeUp' | 'minimumMembersBeforeUpPerRole'
   | 'untrustedMode' | 'trustedSelectionPaths'
   | 'configurationCompatibilityEnforce' | 'configurationCompatibilityCheckedPaths'
@@ -1392,6 +1439,9 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
     out.seedRetryIntervalMs = config.getDuration(keys.seedRetryInterval);
   }
   if (config.hasPath(keys.weaklyUpAfter)) out.weaklyUpAfterMs = config.getDuration(keys.weaklyUpAfter);
+  if (config.hasPath(keys.publishStatsInterval)) {
+    out.publishStatsIntervalMs = config.getDuration(keys.publishStatsInterval);
+  }
   if (config.hasPath(keys.maxMembers)) out.maxMembers = config.getInt(keys.maxMembers);
   if (config.hasPath(keys.maxTombstones)) out.maxTombstones = config.getInt(keys.maxTombstones);
   if (config.hasPath(keys.minimumMembersBeforeUp)) {
@@ -1438,6 +1488,12 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   // that never mentioned downing would carry an explicit one.
   const downing = readDowningFromConfig(config);
   if (downing !== undefined) out.downing = downing;
+  // The policy half of the same block, and a *separate* field from `downing`
+  // because it survives `active-strategy = off`: an operator who stages a
+  // window and flips the strategy on later must find the window still there
+  // (#839).  Omitted when neither leaf is set, the `failureDetector` rule.
+  const splitBrainResolver = readSplitBrainResolverOptionsFromConfig(config);
+  if (Object.keys(splitBrainResolver).length > 0) out.splitBrainResolver = splitBrainResolver;
   return out;
 }
 
@@ -1486,6 +1542,12 @@ export function isRemoteTlsRequested(config: Config): boolean {
  * `phiAccrual` needs the same pass for the same reason, one block over — an
  * explicit `{ downThreshold: 16 }` must not blank the file's other four
  * φ settings (#840).
+ *
+ * So does `splitBrainResolver`, and there the two fields are a duration and a
+ * switch rather than three of a kind: an explicit
+ * `withSplitBrainResolver({ stableAfterMs })` dropping the file's
+ * `downAllWhenUnstable` would silently turn an escalation the deployment asked
+ * for back off (#839).
  */
 export function withClusterConfigDefaults(
   config: Config,
@@ -1501,10 +1563,19 @@ export function withClusterConfigDefaults(
     ...fromConfig.phiAccrual,
     ...stripUndefined(options.phiAccrual ?? {}),
   };
+  const splitBrainResolver = {
+    ...fromConfig.splitBrainResolver,
+    ...stripUndefined(options.splitBrainResolver ?? {}),
+  };
   const withNested: ClusterOptionsType = Object.keys(failureDetector).length > 0
     ? { ...merged, failureDetector }
     : merged;
-  return Object.keys(phiAccrual).length > 0 ? { ...withNested, phiAccrual } : withNested;
+  const withPhi = Object.keys(phiAccrual).length > 0
+    ? { ...withNested, phiAccrual }
+    : withNested;
+  return Object.keys(splitBrainResolver).length > 0
+    ? { ...withPhi, splitBrainResolver }
+    : withPhi;
 }
 
 /**

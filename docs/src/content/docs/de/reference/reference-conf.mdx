@@ -412,6 +412,17 @@ actor-ts {
     seed-retry-interval = 3s
     weakly-up-after = 0s   # 0 disables auto weakly-up promotion
 
+    # How often this node publishes a snapshot of its own membership view --
+    # member count, up count, unreachable count, leader, self address -- as a
+    # ClusterStatsPublished event on system.eventStream.  0 arms no timer,
+    # which is what every release before this key did.
+    #
+    # Node-local, deliberately: on the cluster-wide bus a per-node periodic
+    # sample would be N frames per node per interval.  Every figure is already
+    # reachable through the Cluster API; what this buys is the cadence, so a
+    # dashboard subscriber does not write a polling loop of its own.
+    publish-stats-interval = 0s
+
     # Caps on the local member map.  max-frame-bytes bounds ONE gossip frame;
     # these bound what a sequence of well-formed frames can accumulate, since
     # gossip is what introduces addresses in the first place.  0 disables
@@ -548,6 +559,31 @@ actor-ts {
     # can name one.  Build it in code -- withDowning(new LeaseMajority(...)).
     split-brain-resolver {
       active-strategy = off   # off | keep-majority | keep-oldest | keep-referee | static-quorum
+
+      # How long the membership AND reachability view must be unchanged before
+      # the strategy above is consulted at all.  Every bundled strategy is a
+      # pure function of one view, so a view captured mid-churn is a decision
+      # made on evidence that was never true at any instant.  The clock is the
+      # failure-detection tick, so the resolution is heartbeat-interval.
+      #
+      # No upper bound against failure-detector.down-after: with a strategy
+      # configured the detector parks an unreachable peer and evicts nothing,
+      # so the window has no deadline to out-run.  Ignored entirely when
+      # active-strategy = off -- the detector's own cascade is timed by
+      # down-after, not by this.
+      stable-after = 20s
+
+      # Down EVERY member, self included, when the view never once holds still
+      # for stable-after across a run of changes lasting 3x stable-after --
+      # and only while something is still unreachable, since a view that moves
+      # because members join and leave cleanly is churn, not a partition.
+      #
+      # Off, because it is the one action here that stops the whole cluster and
+      # it is reached by a timer rather than by a strategy's verdict: a rolling
+      # restart whose replacements arrive less than stable-after apart looks
+      # exactly like a cluster that will not settle.  On is a deployment saying
+      # it would rather be down than be uncertain.
+      down-all-when-unstable = off
 
       # "" = every member counts.  A role narrows the candidate set a strategy
       # arbitrates over; it never grants one.

@@ -60,6 +60,7 @@ type MultiNodeSpecOptionsType = {
   awaitTimeoutMs?:   number;                  // Default 10_000 — wie lange await*-Helfer warten
   logLevel?:         LogLevel;                // Default: ein leiser NoopLogger
   downing?:          (role: string) => DowningProvider | undefined;
+  stableAfterMs?:    number;                  // Default 100 (vs. 20 s in Produktion)
 };
 ```
 
@@ -73,6 +74,7 @@ type MultiNodeSpecOptionsType = {
 | `awaitTimeoutMs` | Default-Timeout für die `await*`-Helfer. Default 10 s. |
 | `logLevel` | Log-Level — standardmäßig leise. |
 | `downing` | Per-Rolle Split-Brain-Resolver-Factory. |
+| `stableAfterMs` | Wie lange das Bild stillstehen muss, bevor `downing` gefragt wird. Default 100 ms — die ausgelieferten 20 s sind das Doppelte von `awaitTimeoutMs`, ein Spec mit dem Produktionswert liefe also ins Timeout, bevor sein Resolver überhaupt gefragt wurde. |
 
 Übergib ein einfaches Objekt wie gezeigt, oder baue es fluent mit
 `MultiNodeSpecOptions.create().withRoles(['a', 'b', 'c'])`.

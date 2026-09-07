@@ -295,11 +295,61 @@ export class MemberConfigurationMismatch {
   }
 }
 
+/**
+ * A periodic sample of this node's membership view — the only event here that
+ * is not a transition (#842).
+ *
+ * It exists because "how big is the cluster right now" had three answers and
+ * none of them was the framework's own: the DevTools `stats` stream (needs the
+ * DevTools server and a websocket client), the `cluster_members_up` gauge
+ * (needs a metrics adapter, and is a pull surface with no callback), and a
+ * polling loop the application writes itself.  `system.eventStream` is the one
+ * surface every actor already has, and `publish-stats-interval` is the cadence
+ * it is sampled at.  Off by default: a timer in every clustered process for a
+ * feature most deployments will not subscribe to is not a default.
+ *
+ * The field set mirrors DevTools' `ClusterStatsSummary` deliberately, so the
+ * two never grow into different vocabularies for one question — but the
+ * *populations* differ, and that is not an oversight: this one counts the live
+ * member map, while the dashboard additionally retains recently departed nodes
+ * so a cluster of three that lost one still reads "2 / 3 up".  The numbers may
+ * therefore disagree during the minutes after a node leaves, and the honest
+ * reading is that the dashboard is answering "what was here", this event
+ * "what is here".
+ *
+ * **Never replayed on subscribe.**  Every other member of this union states a
+ * change, so replaying it reconstructs a subscriber's starting point; this one
+ * states a measurement, and a replayed measurement is simply stale.
+ */
+export class ClusterStatsPublished {
+  constructor(
+    /** Members in the live map — `removed` tombstones excluded. */
+    public readonly members: number,
+    /** Of those, the ones whose status is `up`. */
+    public readonly up: number,
+    /** Of those, the ones whose status is `unreachable`. */
+    public readonly unreachable: number,
+    /** The lowest-addressed `up` member, or none while there is no leader. */
+    public readonly leader: Option<Member>,
+    /**
+     * The node this sample is about.  Redundant to a local subscriber and
+     * load-bearing to a remote one: the event is node-local, so an
+     * application that bridges it cluster-wide has nothing else to key on.
+     */
+    public readonly selfAddress: NodeAddress,
+  ) {}
+  toString(): string {
+    return `ClusterStatsPublished(${this.selfAddress}, members=${this.members},`
+      + ` up=${this.up}, unreachable=${this.unreachable})`;
+  }
+}
+
 export type ClusterEvent =
   | SelfUp
   | SelfRemoved
   | LeaderChanged
   | CurrentClusterState
+  | ClusterStatsPublished
   | MemberJoined
   | MemberUp
   | MemberWeaklyUp

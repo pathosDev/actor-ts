@@ -23,6 +23,18 @@ export type MultiNodeSpecOptionsType = {
   readonly logLevel?: LogLevel;
   /** Per-role split-brain resolver factory. */
   readonly downing?: (role: string) => DowningProvider | undefined;
+  /**
+   * How long the membership view must hold still before {@link downing} is
+   * consulted, in ms.  Default 100 (vs production 20 s) — #839.
+   *
+   * Scaled down for the same reason {@link gossipIntervalMs} and the harness's
+   * seed-retry interval are: a spec's whole point is to partition a cluster
+   * and assert on what happens next, and the shipped window is twice the
+   * default {@link awaitTimeoutMs}, so a spec that inherited it would time out
+   * before its resolver was asked anything.  Raise it in a spec that is
+   * *about* the window.
+   */
+  readonly stableAfterMs?: number;
 };
 
 /** Fluent builder for {@link MultiNodeSpecOptionsType}. */
@@ -70,6 +82,11 @@ export class MultiNodeSpecOptionsBuilder extends OptionsBuilder<MultiNodeSpecOpt
   /** Per-role split-brain resolver factory. */
   withDowning(downing: (role: string) => DowningProvider | undefined): this {
     return this.set('downing', downing);
+  }
+
+  /** Stability window before the resolver is consulted, in ms.  Default 100. */
+  withStableAfterMs(stableAfterMs: number): this {
+    return this.set('stableAfterMs', stableAfterMs);
   }
 }
 

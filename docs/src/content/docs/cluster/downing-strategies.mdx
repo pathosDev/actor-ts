@@ -118,6 +118,90 @@ and no config key can name one — `actor-ts.coordination` tunes leases but
 does not choose a backend.  Writing the name into `active-strategy` is
 refused rather than silently ignored; build it in code as shown below.
 
+## The stability window
+
+A strategy is not asked the moment a peer goes silent.  The membership
+**and** reachability view has to hold still for `stable-after` first — 20 s
+by default — and only then is the configured provider consulted:
+
+```hocon
+actor-ts.cluster.split-brain-resolver {
+  active-strategy = keep-majority
+
+  # The view must be unchanged this long before the strategy is asked.
+  stable-after = 20s
+
+  # Down everyone, self included, when it never once is.
+  down-all-when-unstable = off
+}
+```
+
+Or in code, where the same two settings are one nested block:
+
+```ts
+import { ClusterOptions, SplitBrainResolverOptions } from 'actor-ts/cluster';
+
+const resolverPolicy = SplitBrainResolverOptions.create()
+  .withStableAfterMs(30_000)
+  .withDownAllWhenUnstable(true);
+const clusterOptions = ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withDowning(new KeepMajority())
+  .withSplitBrainResolver(resolverPolicy);
+```
+
+**Why a mid-churn decision is the wrong decision.**  Every bundled strategy
+is a pure function of one view — `KeepMajority` counts it, `KeepOldest`
+orders it, `StaticQuorum` measures it.  A partition does not arrive as one
+event: peers cross `unreachable-after` a few hundred milliseconds apart, and
+a view sampled in the middle of that shows a cluster that existed at no
+instant.  Counting a majority against it is how a node concludes it is in the
+minority a second before the rest of its own side is marked unreachable too.
+The window is what makes the input a settled fact rather than a snapshot of a
+transition.
+
+The clock is the failure-detection tick, so the window's resolution is
+`actor-ts.cluster.failure-detector.heartbeat-interval` — 500 ms by default.
+That is irrelevant at twenty seconds and worth knowing if you tune the window
+down to a few hundred milliseconds.
+
+**There is no upper bound against `failure-detector.down-after`.**  Once a
+strategy is configured the detector stops evicting entirely: it parks an
+unreachable peer and leaves the `down`/`removed` transition to the resolver,
+so the window has no deadline to out-run and may be as long as the
+deployment wants.  With **no** strategy configured, the two settings do
+nothing at all — the detector's own `unreachable → down` cascade is timed by
+`down-after`, and that is the only knob in play.
+
+### When the view never settles
+
+`down-all-when-unstable` is the escalation for a cluster that will not
+converge: if the view has not once held still for a whole `stable-after`
+across `3 × stable-after` of continuous change — **and** something is still
+unreachable — every member is downed, this node included, and the reason is
+logged at `warn`.  No strategy is consulted; a view that unsettled is not
+evidence any of them could decide on.
+
+The margin is derived from the window rather than configured beside it.  It
+only ever means "several times however long this deployment thinks a view
+needs to settle", so a second key would be one more number to keep consistent
+— and a margin *below* the window could never observe one quiet window before
+firing.
+
+:::caution[It ships off, and turning it on is a posture]
+This is the only setting on this page that stops the **whole** cluster, and
+it is reached by a timer rather than by a strategy's verdict.  A rolling
+restart whose replacements arrive less than `stable-after` apart looks
+exactly like a cluster that will not settle.  Turning it on says you would
+rather the cluster stop than keep running on a membership view nobody can
+trust — a real position, but state it deliberately.
+
+What it will *not* do is fire on ordinary churn: an empty unreachable set is
+a hard precondition, so members joining and leaving cleanly never escalate,
+however fast they do it.
+:::
+
 ## KeepMajority
 
 ```ts
