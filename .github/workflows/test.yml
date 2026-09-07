@@ -319,6 +319,82 @@ jobs:
   #
   # The workflow-level `concurrency` group covers this job too, so two
   # develop pushes still queue instead of racing on `git push`.
+  # A flaky test is cheapest to fix in the change that introduces it, and that is
+  # the one moment nothing here looked for one.  The suite above runs every test
+  # once, so a test that fails one run in five passes it four times out of five
+  # and enters the tree; `nightly-flakes.yml` then finds it days later,
+  # attributed to nobody.  Repetition is what separates the two cases, and it
+  # only has to be paid on what changed.
+  #
+  # The two questions are different, and this is the second one.  A shuffled run
+  # asks whether a test depends on running *after* another one — the suite above
+  # now asks that.  Repetition asks whether it depends on the run it was written
+  # in, and nothing asked that per branch.
+  #
+  # **Scoped to changed test files rather than to what `--changed` selects, and
+  # the numbers are why.**  `--changed` follows imports transitively: measured on
+  # this tree, one edit to `src/persistence/object-storage/Compression.ts`
+  # selected 346 files and 5 505 tests in 209 s, and a base whose diff reached a
+  # `tests/util/` helper selected 468 files and 8 777 tests in 252 s.  Five
+  # reruns of either is a half-hour job, and what it would add over the suite
+  # above is repetition — which pays off where the code is new.  So the probe
+  # follows the new code, and a `src/` or helper change stays covered once by
+  # the suite above, exactly as before.
+  #
+  # A branch that adds no test therefore gets no probe.  That is the honest
+  # scope: what is being looked for is a flaky test a branch adds.
+  changed-probe:
+    name: changed tests, five times over
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The merge base has to exist locally for `git diff` to reach it; a
+          # depth-1 checkout has neither it nor the base commit.
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - name: Re-run the changed tests five times, shuffled
+        env:
+          # Through the environment rather than interpolated into the script: on
+          # a fork pull request this is attacker-controlled text.
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          SUITES=$(git diff --name-only "$BASE_SHA"...HEAD -- 'tests/**/*.test.ts')
+          if [ -z "$SUITES" ]; then
+            echo "no test file changed on this branch - nothing to probe."
+            exit 0
+          fi
+          echo "changed suites:"
+          printf '%s\n' "$SUITES"
+
+          # A deleted or renamed-away suite is still named by the diff, and bun
+          # fails on a path that is not there.
+          PRESENT=''
+          for suite in $SUITES; do
+            if [ -f "$suite" ]; then PRESENT="$PRESENT $suite"; fi
+          done
+          if [ -z "$PRESENT" ]; then
+            echo "every changed suite was deleted - nothing to probe."
+            exit 0
+          fi
+
+          SEED=$(( (RANDOM << 15) + RANDOM ))
+          echo "test order seed: --seed=$SEED"
+          printf 'Probe seed: `--seed=%s`\n' "$SEED" >> "$GITHUB_STEP_SUMMARY"
+
+          # Unquoted on purpose: the list is one path per argument and has to
+          # split. Paths in this tree carry no spaces, and one that did would be
+          # a finding of its own.
+          # shellcheck disable=SC2086
+          bun test --rerun-each=5 --seed="$SEED" $PRESENT
+
   badge:
     name: README badges
     needs: test
