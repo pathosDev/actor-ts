@@ -28,6 +28,23 @@ import { OptionsValidator } from './util/OptionsValidator.js';
 export const DEFAULT_SCATTER_GATHER_TIMEOUT_MS = 4_500;
 
 /**
+ * The smallest ask deadline under which a router left on
+ * {@link DEFAULT_SCATTER_GATHER_TIMEOUT_MS} can still report (#863).
+ *
+ * The same margin the comment above spends its last paragraph on, given a name
+ * because it stopped being an argument about one literal the moment
+ * `actor-ts.actor.ask-timeout` made the other side of the comparison settable.
+ * `ActorSystem` warns when the configured ask timeout falls below this, and
+ * `Router.test.ts` asserts the shipped default clears it — two readers of one
+ * number instead of two copies of `4_500 + 100`.
+ *
+ * Derived rather than written out for the same reason: raising the scatter
+ * default without raising this would leave the warning quietly checking a
+ * threshold the router had already passed.
+ */
+export const MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS = DEFAULT_SCATTER_GATHER_TIMEOUT_MS + 100;
+
+/**
  * Plain options-object shape accepted by
  * `Router.scatterGatherFirstCompleted(...)`.
  */

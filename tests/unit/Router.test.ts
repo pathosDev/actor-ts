@@ -19,6 +19,7 @@ import {
 } from '../../src/Router.js';
 import {
   DEFAULT_SCATTER_GATHER_TIMEOUT_MS,
+  MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS,
   ScatterGatherOptions,
 } from '../../src/ScatterGatherOptions.js';
 import type { ActorRef } from '../../src/ActorRef.js';
@@ -844,6 +845,15 @@ describe('Router.scatterGatherFirstCompleted (#153)', () => {
     // A margin that survives scheduler jitter — a Windows timer quantum is
     // 15.6 ms and Bun can fire a whole one early (#477).
     expect(DEFAULT_ASK_TIMEOUT_MS - DEFAULT_SCATTER_GATHER_TIMEOUT_MS).toBeGreaterThanOrEqual(100);
+    // Since #863 the caller's side of that comparison is settable
+    // (`actor-ts.actor.ask-timeout`), so the margin above also has a name the
+    // `ActorSystem` can warn against.  Asserted here as well, because the two
+    // must not drift: raising the scatter default without raising the named
+    // floor would leave the warning checking a threshold the router had
+    // already passed, and the shipped ask default has to clear it or every
+    // untouched system would warn.
+    expect(MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS).toBeGreaterThan(DEFAULT_SCATTER_GATHER_TIMEOUT_MS);
+    expect(DEFAULT_ASK_TIMEOUT_MS).toBeGreaterThanOrEqual(MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS);
   });
 
   test('nobody answering in time rejects with the per-routee ask timeouts', async () => {

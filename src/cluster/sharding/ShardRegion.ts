@@ -2039,6 +2039,14 @@ export class RemoteShardRef extends ActorRef<ShardMessage> {
     this.region.tell({ kind: 'sharding.ToShard', shardId: this.shardId, message }, sender);
   }
 
+  /**
+   * @internal Borrowed from the region ref, which already holds the cluster —
+   * the constructor's `cluster` is handed straight to it and not kept (#863).
+   */
+  override _defaultAskTimeoutMs(): number {
+    return this.region._defaultAskTimeoutMs();
+  }
+
   /** The shard's path, not the region's — the region is only the delivery route. */
   override toString(): string { return this.path.toString(); }
 }
@@ -2079,5 +2087,13 @@ export class ShardSenderRef extends ActorRef<unknown> {
       return;
     }
     new RemoteActorRef<ShardingMessage>(this.originNode, this.originRegion, this.cluster).tell(reply);
+  }
+
+  /**
+   * @internal This node's `actor-ts.actor.ask-timeout` (#863) — the node
+   * hosting the entity, which is the one that would be waiting.
+   */
+  override _defaultAskTimeoutMs(): number {
+    return this.cluster.system._defaultAskTimeoutMs;
   }
 }

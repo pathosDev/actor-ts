@@ -83,6 +83,18 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
   }
 
   /**
+   * @internal This node's `actor-ts.actor.ask-timeout` (#863).
+   *
+   * Worth having even though the proxy buffers: an ask that arrives while
+   * nothing hosts the singleton spends its whole deadline in the buffer, so
+   * the configured value is exactly what decides whether it survives a
+   * hand-over.
+   */
+  override _defaultAskTimeoutMs(): number {
+    return this.cluster.system._defaultAskTimeoutMs;
+  }
+
+  /**
    * Hold a message until a host appears — but only up to `bufferSize`.
    *
    * "No host yet" is normally momentary, which is why buffering is the right

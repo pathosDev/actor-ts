@@ -77,8 +77,13 @@ const TEMP_SEGMENT = 'temp';
  * `ScatterGatherOptions.timeoutMs`, `ClusterClientOptions.askTimeoutMs` and
  * `ClusterClientReceptionistOptions.askTimeoutMs` all validate with
  * `positiveNumber`, which rejects it — and makes the documented "mandatory in
- * spirit" deadline mandatory in fact.  Omitting the argument still yields
- * {@link DEFAULT_ASK_TIMEOUT_MS}, as does an explicit `undefined`.
+ * spirit" deadline mandatory in fact.  Omitting the argument still yields a
+ * deadline, as does an explicit `undefined`: whatever
+ * {@link ActorRef._defaultAskTimeoutMs} answers, which is
+ * `actor-ts.actor.ask-timeout` where the ref can see a system and
+ * {@link DEFAULT_ASK_TIMEOUT_MS} where it cannot.  A configured value is
+ * refused by `ActorSystem` at startup, so nothing this function would reject
+ * can arrive through that door (#863).
  *
  * Written out rather than run through an `OptionsValidator` subclass on
  * purpose: the rule is one comparison on one positional argument, and the
@@ -125,24 +130,32 @@ export abstract class ActorRef<TMessage = unknown> {
    *
    *     const value = await counter.ask<number>({ kind: 'get' });
    *
-   * `timeoutMs` must be a positive finite number; omit it to get
-   * {@link DEFAULT_ASK_TIMEOUT_MS}.  `0`, a negative value, `NaN` and
-   * `Infinity` throw {@link OptionsError} — see {@link assertAskTimeout} for
-   * why an ask has no "no deadline" mode.
+   * `timeoutMs` must be a positive finite number; omit it (or pass
+   * `undefined`) to get {@link ActorRef._defaultAskTimeoutMs} — the configured
+   * `actor-ts.actor.ask-timeout` on a ref that can reach its `ActorSystem`,
+   * and {@link DEFAULT_ASK_TIMEOUT_MS} on one that cannot.  `0`, a negative
+   * value, `NaN` and `Infinity` throw {@link OptionsError} — see
+   * {@link assertAskTimeout} for why an ask has no "no deadline" mode.
    */
   ask<TResponse = unknown>(
     message: OmitReplyTo<TMessage>,
-    timeoutMs: number = DEFAULT_ASK_TIMEOUT_MS,
+    timeoutMs?: number,
   ): Promise<TResponse> {
+    // `??`, so the override is consulted only when the caller said nothing —
+    // an explicit argument never pays for the virtual call, and the resolved
+    // value is what the reply ref and the error message both quote.
+    const resolvedTimeoutMs = timeoutMs ?? this._defaultAskTimeoutMs();
     // Before anything is allocated or sent, and thrown rather than returned as
     // a rejected promise: an argument outside its domain is a defect at the
     // call site, so the failure belongs on the caller's stack.  A rejected
     // promise would instead surface as an unhandled rejection for the
     // fire-and-forget `void ref.ask(...)` shape the cluster client uses.
-    assertAskTimeout(timeoutMs);
+    assertAskTimeout(resolvedTimeoutMs);
     const name = nextAskName();
     const systemName = this.path.systemName;
-    const ref = new AskResponseRef<TResponse>(systemName, name, timeoutMs, this.path.toString());
+    const ref = new AskResponseRef<TResponse>(
+      systemName, name, resolvedTimeoutMs, this.path.toString(),
+    );
     // Inject `replyTo: ref` into the message so recipients that read
     // `msg.replyTo` work without the caller supplying it.  Recipients
     // that read `this.sender` see the same ref (passed via `tell`'s
@@ -160,6 +173,33 @@ export abstract class ActorRef<TMessage = unknown> {
     this.tell(enriched, ref as unknown as ActorRef);
     return ref.promise;
   }
+
+  /**
+   * @internal The deadline {@link ask} arms when the caller names none.
+   *
+   * A method rather than a field because the answer belongs to the ref's
+   * `ActorSystem`, and the refs do not agree on whether they have one.  The
+   * seven that do — {@link LocalActorRef}, `TestProbe`, `RemoteActorRef`,
+   * `ClusterSingletonProxy`, `RemoteShardRef`, `ShardSenderRef`, and
+   * `EntityRef` through its region — override this with
+   * `system._defaultAskTimeoutMs`, so `actor-ts.actor.ask-timeout` reaches
+   * every ask a caller is likely to make (#863).  The other six hold a
+   * `systemName` string and no system — {@link NobodyRef},
+   * {@link AskResponseRef}, `DeadLetterRef`, `UnresolvedPathRef`,
+   * `WebsocketConnectionImplementation` and `GracefulStop`'s
+   * `TerminationWatcher` — and keep the built-in constant.  None of them has
+   * an actor behind it, so an ask on one is waiting for a reply that is not
+   * coming; the deadline decides how fast that is discovered, not whether.
+   * That split is documented rather than papered
+   * over: the alternative, a process-global `Map<systemName, number>`, buys
+   * uniformity with a lookup on the ask path and mutable state two systems in
+   * one process would share by name.
+   *
+   * Public (not `protected`) because {@link EntityRef} delegates through a
+   * region typed as a bare `ActorRef`, which TypeScript will not let a
+   * sibling subclass reach a `protected` member on.
+   */
+  _defaultAskTimeoutMs(): number { return DEFAULT_ASK_TIMEOUT_MS; }
 
   /** Gracefully stop this actor after it drains its mailbox. */
   stop(): void { this.tell(PoisonPill.instance as unknown as TMessage, null); }

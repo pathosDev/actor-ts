@@ -54,8 +54,23 @@ export const ConfigKeys = {
     },
   },
 
-  /** Per-actor message-loop tuning — `actor-ts.actor.*`. */
+  /**
+   * System-wide actor defaults — `actor-ts.actor.*`.
+   *
+   * The two leaves are not the same kind of knob: `throughput` is per-actor
+   * message-loop tuning, `ask-timeout` the caller-side deadline `ActorRef.ask`
+   * arms when nobody names one (#863).  What puts them in one block is where
+   * they are answered — both are resolved once in the `ActorSystem`
+   * constructor and layered *under* an explicit argument, because neither a
+   * cell nor a ref reads config for itself.
+   *
+   * Full dotted leaves rather than an `actor` block root, for the reason
+   * spelled out under `mailbox` below: `NoDeadConfigKeys.coveringAccessor`
+   * falls back to the nearest root, so a root entry would satisfy the guard
+   * for a leaf nothing reads.
+   */
   actor: {
+    askTimeout: 'actor-ts.actor.ask-timeout',
     throughput: 'actor-ts.actor.throughput',
   },
 
