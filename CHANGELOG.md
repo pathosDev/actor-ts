@@ -11,6 +11,67 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **A split-brain resolver is no longer consulted on whichever membership
+  view the failure detector happened to leave behind at the end of a tick**
+  (#839).  Two new keys under `actor-ts.cluster.split-brain-resolver` gate
+  it: `stable-after` (20s) is how long the membership **and** reachability
+  view must hold still before the configured strategy is asked anything, and
+  `down-all-when-unstable` (off) escalates to downing every member — this
+  node included — when the view never once holds still for a whole window
+  across three windows of continuous change, and something is still
+  unreachable. Every bundled strategy is a pure function of one view, and a
+  partition does not arrive as one event: peers cross `unreachable-after` a
+  few hundred milliseconds apart, so a view read mid-transition describes a
+  cluster that existed at no instant, and counting a majority against it is
+  how a node concludes it is in the minority a second before the rest of its
+  own side is marked unreachable too. The whole change lives in
+  `Cluster.evaluateDowning`; no strategy sees either value, and the
+  failure-detection tick is the clock, so no new timer exists. It is only
+  expressible since #929 stopped the detector evicting an unreachable peer
+  behind the resolver's back, which is why there is deliberately no upper
+  bound tying `stable-after` to `failure-detector.down-after`. Configurable
+  in code as one nested block, `ClusterOptions.withSplitBrainResolver(...)`,
+  merged per field over the file so pinning the window does not silently
+  drop the file's escalation switch. The escalation ships off on purpose: it
+  is the only action in the subsystem that stops the whole cluster and it is
+  reached by a timer rather than by a strategy's verdict, so a rolling
+  restart whose replacements arrive less than `stable-after` apart looks
+  exactly like a cluster that will not settle. `MultiNodeSpec` gained a
+  matching `stableAfterMs`, defaulting to 100 ms the way its gossip and
+  seed-retry intervals already default to test scale.
+
+- **`actor-ts.cluster.publish-stats-interval` arms a periodic membership
+  sample on the node — every interval it emits one `ClusterStatsPublished`
+  (member count, `up` count, `unreachable` count, the leader as an
+  `Option<Member>`, and this node's address) on `system.eventStream` and to
+  every `Cluster.subscribe` listener** (#842).  `0`, the shipped value, arms
+  no timer at all. Every figure was already reachable through the `Cluster`
+  API; what the key buys is the cadence, so "tell me where the membership
+  stands every N seconds" stops being a polling loop each application writes
+  for itself. The event is node-local and deliberately not on the
+  cluster-wide `cluster.eventStream`, where a per-node periodic sample would
+  cost N frames per node per interval, and it is never replayed on
+  subscribe: every other cluster event states a change, this one states a
+  measurement, and a replayed measurement is a stale number. Its field set
+  mirrors the DevTools dashboard's `ClusterStatsSummary` so the two do not
+  grow separate vocabularies, but the populations differ on purpose — this
+  counts the live member map, the dashboard additionally retains recently
+  departed nodes. Four of the six keys the issue proposed do not ship and
+  are refused in writing rather than left to be re-proposed:
+  `gossip-time-to-live` (frames are dispatched synchronously and never
+  queue, so there is nothing to expire), `leader-actions-interval` (there is
+  no leader-actions timer — promotion runs inline at the tail of gossip
+  receipt, and putting it on one is a membership-semantics change to the
+  lines #837 rewrote), `unreachable-nodes-reaper-interval` (already
+  configurable as `failure-detector.heartbeat-interval`; a second key would
+  reverse the decision to run one heartbeat cadence) and
+  `gossip-different-view-probability` (gossip carries no whole-view version
+  to compare, pending survey #1187). A fifth,
+  `periodic-tasks-initial-delay`, is also not shipped: its stated purpose is
+  a cold-start stagger, and one value read from a file every node of the
+  deployment shares shifts every node's first tick by the same amount,
+  de-aligning nothing.
+
 - **A deployment can now name its seed peers and its role tags in HOCON —
   `actor-ts.cluster.seed-nodes` and `actor-ts.cluster.roles`, both shipping
   `[]` and both layered under an explicit `withSeeds(…)` / `withRoles(…)`

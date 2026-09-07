@@ -18,6 +18,7 @@ import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetec
 import { DEFAULT_MINIMUM_MEMBERS_BEFORE_UP } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS, DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE } from '../../../src/cluster/ClusterOptions.js';
 import { DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY } from '../../../src/cluster/downing/DowningFromConfig.js';
+import { DEFAULT_DOWN_ALL_WHEN_UNSTABLE, DEFAULT_STABLE_AFTER_MS } from '../../../src/cluster/downing/SplitBrainResolverOptions.js';
 import { DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION } from '../../../src/cluster/ClusterOptions.js';
 import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
 import { DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS, DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS, DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES, DEFAULT_SINGLETON_RESTART_ON_TERMINATION } from '../../../src/cluster/Constants.js';
@@ -290,6 +291,14 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.cluster.receptionist.gossip-interval', kind: 'duration', constant: DEFAULT_GOSSIP_INTERVAL_MS },
   { key: 'actor-ts.distributed-data.gossip-interval', kind: 'duration', constant: DEFAULT_GOSSIP_INTERVAL_MS },
   { key: 'actor-ts.cluster.split-brain-resolver.active-strategy', kind: 'string', constant: DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY },
+  { key: 'actor-ts.cluster.split-brain-resolver.stable-after', kind: 'duration', constant: DEFAULT_STABLE_AFTER_MS },
+  // In the table rather than in FEATURE_SWITCHES, though the published value is
+  // `off`, for the reason `configuration-compatibility-check.enforce` is: it
+  // HAS a constant to disagree with.  The escalation's off state is not "the
+  // field is absent at the read site" — `Cluster` resolves the field to a
+  // boolean either way and branches on it, so a published `on` against a
+  // shipped `false` would be a real divergence this row catches (#839).
+  { key: 'actor-ts.cluster.split-brain-resolver.down-all-when-unstable', kind: 'bool', constant: DEFAULT_DOWN_ALL_WHEN_UNSTABLE },
   { key: 'actor-ts.cluster.failure-detector.implementation', kind: 'string', constant: DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION },
   { key: 'actor-ts.cluster.failure-detector.heartbeat-interval', kind: 'duration', constant: DEFAULT_HEARTBEAT_INTERVAL_MS },
   { key: 'actor-ts.cluster.failure-detector.unreachable-after', kind: 'duration', constant: defaultFailureDetectorOptions.unreachableAfterMs },
@@ -1073,6 +1082,11 @@ const FEATURE_SWITCHES: readonly string[] = [
   // deployment's business, and the framework has no candidate to name (#864).
   'actor-ts.circuit-breaker.default.ignored-error-names',
   'actor-ts.cluster.weakly-up-after', // 0s = no auto weakly-up promotion
+  // 0s = arm no stats timer, which is what every release before #842 did.  The
+  // off state IS the field being absent at the read site — `Cluster._start`
+  // schedules the tick only for a positive value — so there is no constant for
+  // it to disagree with, exactly like the two sentinels around it.
+  'actor-ts.cluster.publish-stats-interval',
   'actor-ts.cluster.tombstone.min-retention', // 0s = derive from down-after
   'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',
   // Two more empty-list sentinels (#836), and they read exactly like the

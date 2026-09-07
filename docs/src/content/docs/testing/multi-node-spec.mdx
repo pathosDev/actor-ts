@@ -60,6 +60,7 @@ type MultiNodeSpecOptionsType = {
   awaitTimeoutMs?:   number;                  // default 10_000 — how long await* helpers wait
   logLevel?:         LogLevel;                // defaults to a quiet NoopLogger
   downing?:          (role: string) => DowningProvider | undefined;
+  stableAfterMs?:    number;                  // default 100 (vs. 20 s in production)
 };
 ```
 
@@ -73,6 +74,7 @@ type MultiNodeSpecOptionsType = {
 | `awaitTimeoutMs` | Default timeout for the `await*` helpers.  Default 10 s. |
 | `logLevel` | Log level — quiet by default. |
 | `downing` | Per-role split-brain resolver factory. |
+| `stableAfterMs` | How long the view must hold still before `downing` is consulted.  Default 100 ms — the shipped 20 s is twice `awaitTimeoutMs`, so a spec that inherited it would time out before its resolver was asked anything. |
 
 Pass a plain object as shown, or build it fluently with
 `MultiNodeSpecOptions.create().withRoles(['a', 'b', 'c'])`.

@@ -18,6 +18,17 @@ export {
   readDowningFromConfig,
 } from './DowningFromConfig.js';
 export type { SplitBrainResolverStrategy } from './DowningFromConfig.js';
+export {
+  DEFAULT_DOWN_ALL_WHEN_UNSTABLE,
+  DEFAULT_STABLE_AFTER_MS,
+  DEFAULT_UNSTABLE_ESCALATION_FACTOR,
+  SplitBrainResolverOptions,
+  SplitBrainResolverOptionsBuilder,
+  SplitBrainResolverOptionsValidator,
+  readSplitBrainResolverOptionsFromConfig,
+  unstableEscalationDeadlineMs,
+} from './SplitBrainResolverOptions.js';
+export type { SplitBrainResolverOptionsType } from './SplitBrainResolverOptions.js';
 export { addrKey } from './DowningProvider.js';
 export type {
   DowningProvider,

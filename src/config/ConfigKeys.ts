@@ -949,6 +949,22 @@ export const ConfigKeys = {
     /** Auto-promotion `joining` → `weakly-up`; `0` keeps it opt-in (#841). */
     weaklyUpAfter: 'actor-ts.cluster.weakly-up-after',
     /**
+     * How often this node publishes a `ClusterStatsPublished` sample of its own
+     * membership view on `system.eventStream` (#842).  `0` arms no timer, which
+     * is what every release before the key did.
+     *
+     * Read by `readClusterOptionsFromConfig` into
+     * `ClusterOptionsType.publishStatsIntervalMs`; `Cluster._start` arms the
+     * timer only for a positive value.
+     *
+     * Not `actor-ts.devtools.stats-interval`, which paces the DevTools
+     * dashboard's own sampler over the websocket.  Same figures, different
+     * channel and different audience — and neither forwards into the other,
+     * because one number with two periodic sources is how two views of a
+     * cluster start disagreeing about it.
+     */
+    publishStatsInterval: 'actor-ts.cluster.publish-stats-interval',
+    /**
      * The two membership caps (#138).  They bound what unauthenticated gossip
      * can make the local member map hold — `maxFrameBytes` bounds one frame,
      * these bound what a sequence of well-formed frames accumulates.  `0`
@@ -1099,6 +1115,22 @@ export const ConfigKeys = {
      */
     splitBrainResolver: {
       activeStrategy: 'actor-ts.cluster.split-brain-resolver.active-strategy',
+      /**
+       * The policy half of the block (#839) — *when* the resolver is asked,
+       * as against which one `active-strategy` above builds.  Read by
+       * `readSplitBrainResolverOptionsFromConfig`
+       * (`src/cluster/downing/SplitBrainResolverOptions.ts`) into
+       * `ClusterOptionsType.splitBrainResolver`, and consumed by
+       * `Cluster.evaluateDowning`; no bundled strategy sees either value.
+       *
+       * They configure the *provider* path only.  With no provider the
+       * failure detector still runs its own `unreachable → down` cascade on
+       * `failure-detector.down-after`, and putting a second window in front
+       * of that from this block would be two thresholds for one decision,
+       * under a name that says "resolver".
+       */
+      stableAfter: 'actor-ts.cluster.split-brain-resolver.stable-after',
+      downAllWhenUnstable: 'actor-ts.cluster.split-brain-resolver.down-all-when-unstable',
       keepMajority: {
         role: 'actor-ts.cluster.split-brain-resolver.keep-majority.role',
       },

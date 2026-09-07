@@ -48,6 +48,7 @@ import {
 } from './ClusterOptions.js';
 import type { ClusterOptions, ClusterOptionsType, SelfElectionPolicy } from './ClusterOptions.js';
 import {
+  ClusterStatsPublished,
   CurrentClusterState,
   LeaderChanged,
   MemberConfigurationMismatch,
@@ -105,6 +106,13 @@ import type {
   ClusterPartitionView,
   DowningProvider,
 } from './downing/DowningProvider.js';
+import {
+  DEFAULT_DOWN_ALL_WHEN_UNSTABLE,
+  DEFAULT_STABLE_AFTER_MS,
+  SplitBrainResolverOptionsValidator,
+  unstableEscalationDeadlineMs,
+} from './downing/SplitBrainResolverOptions.js';
+import type { SplitBrainResolverOptionsType } from './downing/SplitBrainResolverOptions.js';
 
 type EnvelopeHandler = (env: EnvelopeMessage, from: NodeAddress) => void;
 
@@ -321,6 +329,8 @@ export class Cluster {
   private weaklyUpTimer: Cancellable | null = null;
   private tombstonePruneTimer: Cancellable | null = null;
   private selfElectionTimer: Cancellable | null = null;
+  /** Armed only when `publish-stats-interval` is positive (#842). */
+  private statsTimer: Cancellable | null = null;
   /** Fruitless seed-contact rounds so far, and whether the stall was reported (#1351). */
   private seedRounds = 0;
   private coldStartStallReported = false;
@@ -333,6 +343,7 @@ export class Cluster {
   private _selfElected = false;
   private currentLeader: Option<Member> = none;
   private readonly weaklyUpAfterMs: number;
+  private readonly publishStatsIntervalMs: number;
   private readonly selfElection: SelfElectionPolicy;
   private readonly minimumMembersBeforeUp: number;
   private readonly minimumMembersBeforeUpPerRole: Readonly<Record<string, number>>;
@@ -363,6 +374,37 @@ export class Cluster {
    * unreachable peer" state would call `decide()` on every tick.
    */
   private lastDownedView: string | null = null;
+  /**
+   * How long the view must hold still before {@link downing} is consulted, and
+   * whether a view that never does escalates to downing everything (#839).
+   *
+   * Read once here rather than off `options` at each tick: the merge that
+   * layers explicit options over HOCON over the built-in defaults happens once,
+   * in `Cluster.join`, and a second read site would be a second answer.
+   */
+  private readonly stableAfterMs: number;
+  private readonly downAllWhenUnstable: boolean;
+  /**
+   * The view fingerprint {@link stableSince} refers to, and when it was first
+   * seen — the stability window's whole state (#839).
+   *
+   * Separate from {@link lastDownedView}, which answers a different question:
+   * that one is "did we already act on this exact view", this one is "has this
+   * view held long enough to be worth acting on".  Collapsing them would make
+   * an applied decision reset the window and an unchanged view suppress it,
+   * which are each other's opposite.
+   */
+  private stableSince = 0;
+  private currentView: string | null = null;
+  /**
+   * When the current run of view changes began, or `null` while the view is
+   * settled — the only state `down-all-when-unstable` needs (#839).
+   *
+   * Cleared the moment a full {@link stableAfterMs} elapses without a change,
+   * so the escalation deadline measures *uninterrupted* churn rather than the
+   * age of the cluster's last quiet moment.
+   */
+  private unstableSince: number | null = null;
 
   private constructor(system: ActorSystem, options: ClusterOptionsType) {
     this.system = system;
@@ -463,10 +505,24 @@ export class Cluster {
     this.gossipIntervalMs = options.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
     this.seedRetryIntervalMs = options.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;
     this.weaklyUpAfterMs = options.weaklyUpAfterMs ?? 0;
+    // Same `0` sentinel one line up: no timer, which is what an unset field
+    // means too (#842).
+    this.publishStatsIntervalMs = options.publishStatsIntervalMs ?? 0;
     this.selfElection = options.selfElection ?? 'immediate';
     this.minimumMembersBeforeUp = options.minimumMembersBeforeUp ?? DEFAULT_MINIMUM_MEMBERS_BEFORE_UP;
     this.minimumMembersBeforeUpPerRole = options.minimumMembersBeforeUpPerRole ?? {};
     this.downing = options.downing ?? null;
+    // Validated here rather than in `ClusterOptionsValidator`, which is the
+    // shape the rest of `src/` uses for a nested options block: the detector
+    // and the φ block are each checked by their own validator in their own
+    // consumer's constructor (`FailureDetector`, `PhiAccrualFailureDetector`),
+    // and this block's consumer is `Cluster` itself (#839).
+    const splitBrainResolver: Partial<SplitBrainResolverOptionsType> =
+      options.splitBrainResolver ?? {};
+    new SplitBrainResolverOptionsValidator().validate(splitBrainResolver);
+    this.stableAfterMs = splitBrainResolver.stableAfterMs ?? DEFAULT_STABLE_AFTER_MS;
+    this.downAllWhenUnstable =
+      splitBrainResolver.downAllWhenUnstable ?? DEFAULT_DOWN_ALL_WHEN_UNSTABLE;
     this.tombstoneTtlMs = options.tombstoneTtlMs ?? DEFAULT_TOMBSTONE_TTL_MS;
     this.tombstonePruneIntervalMs = options.tombstonePruneIntervalMs ?? DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS;
     // `0` is not "no floor" but "derive one", so it falls through exactly like
@@ -1267,6 +1323,7 @@ export class Cluster {
     this.weaklyUpTimer?.cancel();
     this.tombstonePruneTimer?.cancel();
     this.selfElectionTimer?.cancel();
+    this.statsTimer?.cancel();
     await this.transport.shutdown();
   }
 
@@ -1361,6 +1418,16 @@ export class Cluster {
       this.tombstonePruneIntervalMs, this.tombstonePruneIntervalMs,
       () => this.tombstonePruneTick(),
     );
+    // Armed only when asked for.  The other four timers are how the cluster
+    // works; this one is a reporting convenience, so an unconfigured node
+    // schedules nothing at all rather than a task that publishes to nobody
+    // (#842).
+    if (this.publishStatsIntervalMs > 0) {
+      this.statsTimer = this.system.scheduler.scheduleAtFixedRateFunction(
+        this.publishStatsIntervalMs, this.publishStatsIntervalMs,
+        () => this.publishStatsTick(),
+      );
+    }
 
     // Last, so a start that threw earlier leaves nothing registered: the
     // rollback in `join` puts the extension slot back but has no cluster to
@@ -2397,6 +2464,18 @@ export class Cluster {
    * (if any) need to be force-downed.  Debounces by the JSON shape of
    * the unreachable set + member view so a steady-state cluster
    * doesn't re-invoke the provider on every tick.
+   *
+   * In front of that sits the **stability window** (#839): the provider is not
+   * asked at all until the view has held still for `stableAfterMs`.  Every
+   * bundled strategy is a pure function of one view, so a view read mid-churn
+   * — half the peers already `unreachable`, the rest about to be — produces a
+   * verdict about a cluster that existed at no instant.  The window is what
+   * makes a decision be about a settled fact.
+   *
+   * No new timer: this method is already called from `failureDetectionTick`,
+   * so the clock is `failureDetector.interval` and the window's resolution is
+   * one heartbeat cadence (500 ms shipped).  That is invisible at the shipped
+   * 20 s window and worth knowing at a 200 ms one.
    */
   private evaluateDowning(): void {
     if (!this.downing) return;
@@ -2413,6 +2492,10 @@ export class Cluster {
       .map((member) => `${member.address.toString()}:${member.status}`)
       .sort()
       .join('|');
+    if (!this.viewHasSettled(fingerprint)) {
+      this.escalateIfPersistentlyUnstable(allMembers, unreachable, fingerprint);
+      return;
+    }
     // Debounce only when the LAST evaluation produced an applied
     // decision.  Strategies that need multiple ticks to converge
     // (e.g. `LeaseMajority` with an in-flight `acquire()`) will
@@ -2434,6 +2517,86 @@ export class Cluster {
       return;
     }
     if (toDown.size === 0) return;
+    this.applyDowningDecision(toDown, fingerprint);
+  }
+
+  /**
+   * Fold this tick's view fingerprint into the stability window, and answer
+   * whether the window has elapsed (#839).
+   *
+   * Three states, in the order they are tested: the view just moved (record
+   * when, and it is by definition not stable); it has held but not long
+   * enough; it has held for `stableAfterMs`, which also ends whatever run of
+   * changes preceded it.
+   *
+   * The **first** observation is deliberately not counted as a change.  A node
+   * that has just started has no previous view to differ from, so treating it
+   * as churn would begin every node's life inside an instability run —
+   * `down-all-when-unstable` would then be measuring cluster formation.
+   */
+  private viewHasSettled(fingerprint: string): boolean {
+    const now = Date.now();
+    if (fingerprint !== this.currentView) {
+      if (this.currentView !== null && this.unstableSince === null) this.unstableSince = now;
+      this.currentView = fingerprint;
+      this.stableSince = now;
+      return false;
+    }
+    if (now - this.stableSince < this.stableAfterMs) return false;
+    this.unstableSince = null;
+    return true;
+  }
+
+  /**
+   * `down-all-when-unstable`: stop the whole cluster, self included, when the
+   * view has never once held still for `stableAfterMs` across a run of changes
+   * longer than {@link unstableEscalationDeadlineMs} (#839).
+   *
+   * Two guards before the deadline, and both are load-bearing.  The switch is
+   * off unless a deployment asked for it, because this is the one action in
+   * the subsystem that ends the cluster rather than a side of it.  And nothing
+   * escalates while `unreachable` is empty: a view that moves because members
+   * join and leave cleanly is churn, not a partition, and a rolling deploy
+   * whose replacements arrive faster than the window is exactly that shape.
+   *
+   * Announced at `warn` with the span and the member count.  An operator who
+   * finds a cluster gone has to be able to find the line that says a timer did
+   * it, not a strategy.
+   */
+  private escalateIfPersistentlyUnstable(
+    allMembers: readonly Member[],
+    unreachable: ReadonlySet<string>,
+    fingerprint: string,
+  ): void {
+    if (!this.downAllWhenUnstable) return;
+    if (unreachable.size === 0) return;
+    const since = this.unstableSince;
+    if (since === null) return;
+    const unstableForMs = Date.now() - since;
+    if (unstableForMs <= unstableEscalationDeadlineMs(this.stableAfterMs)) return;
+    this.log.warn(
+      `${ConfigKeys.cluster.splitBrainResolver.downAllWhenUnstable} is on and the membership `
+      + `view has not held still for ${this.stableAfterMs} ms at any point in the last `
+      + `${unstableForMs} ms, with ${unreachable.size} member(s) still unreachable — downing `
+      + `all ${allMembers.length} member(s), this node included. No strategy was consulted: `
+      + 'a view this unsettled is not evidence any of them could decide on.',
+    );
+    // Cleared before the decision is applied, not after: applying it downs
+    // this node too, and a second escalation on the way out would log the
+    // whole thing again from a cluster that is already leaving.
+    this.unstableSince = null;
+    this.applyDowningDecision(
+      new Set(allMembers.map((member) => member.address.toString())),
+      fingerprint,
+    );
+  }
+
+  /**
+   * Force-down every address in a decision — the one place a downing verdict
+   * is turned into membership changes, whether it came from the provider or
+   * from the unstable-escalation path.
+   */
+  private applyDowningDecision(toDown: ReadonlySet<string>, fingerprint: string): void {
     this.lastDownedView = fingerprint;
     const selfKey = this.selfAddress.toString();
     const downsSelf = toDown.has(selfKey);
@@ -2942,6 +3105,30 @@ export class Cluster {
       this.log.debug(`leader changed: ${prevStr} → ${nextStr}`);
       this.emit(new LeaderChanged(newLeader));
     }
+  }
+
+  /**
+   * Publish one sample of this node's membership view (#842).
+   *
+   * Through {@link emit}, so it reaches `system.eventStream` *and* every
+   * `Cluster.subscribe` listener the way every other cluster event does — and
+   * node-locally, never on `cluster.eventStream`: that bus fans out to every
+   * peer, and a per-node periodic sample there costs N frames per node per
+   * interval to say what each node can already read locally.
+   *
+   * Recomputed from the public accessors rather than kept as counters, because
+   * a counter maintained beside the member map is a second copy of the same
+   * fact and this is the surface that would report it when the two disagree.
+   */
+  private publishStatsTick(): void {
+    const members = this.getMembers();
+    this.emit(new ClusterStatsPublished(
+      members.length,
+      this.upMembers().length,
+      members.filter((member) => member.status === 'unreachable').length,
+      this.leader(),
+      this.selfAddress,
+    ));
   }
 
   private emit(event: ClusterEvent): void {

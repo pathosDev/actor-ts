@@ -18,7 +18,9 @@ import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { Cluster } from '../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../src/cluster/ClusterOptions.js';
+import { ClusterStatsPublished, LeaderChanged } from '../../../src/cluster/ClusterEvents.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
+import { none } from '../../../src/util/Option.js';
 import type { MemberData, MemberStatus } from '../../../src/cluster/Protocol.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
 import { ClusterMembership } from '../../../src/devtools/internal/ClusterMembership.js';
@@ -172,5 +174,54 @@ describe('ClusterTap — reachability (#161)', () => {
         .filter((payload) => payload.event === 'reachability-changed')
         .map((payload) => payload.reachable),
     ).toEqual([false, true]);
+  });
+});
+
+describe('ClusterTap — the periodic stats sample (#842)', () => {
+  test('a stats sample produces no payload at all', async () => {
+    // Not a membership change, so the cluster panel has nothing to render —
+    // and `StatsTap` already streams the same figures on its own ticker, so
+    // forwarding them here would give one number two periodic sources.
+    const harness = await startTapped('tap-stats', 9_326);
+    gossipSelfRecord(harness.cluster, peerAddress('tap-stats', 9_396), 'up');
+    harness.tap.install((payload) => { harness.emitted.push(payload); });
+
+    harness.cluster._publishClusterEvent(
+      new ClusterStatsPublished(2, 2, 0, harness.cluster.leader(), harness.address),
+    );
+
+    expect(harness.emitted).toEqual([]);
+  });
+
+  test('a membership change through the same door still reports (#842)', async () => {
+    // The control arm: `_publishClusterEvent` is not a channel the tap
+    // ignores, so the assertion above is about the event and not about the
+    // door it came through.
+    const harness = await startTapped('tap-stats-control', 9_327);
+    harness.tap.install((payload) => { harness.emitted.push(payload); });
+
+    gossipSelfRecord(harness.cluster, peerAddress('tap-stats-control', 9_397), 'up');
+
+    expect(eventsIn(harness.emitted).length).toBeGreaterThan(0);
+  });
+
+  test('the compiler is NOT what keeps this event out of onMemberEvent (#842)', () => {
+    // Measured while adding the arm above, and it refutes what
+    // `onShardRegistrationEvent`'s comment implies about the whole family:
+    // deleting the `ClusterStatsPublished` arm AND dropping the type from
+    // `onMemberEvent`'s `Exclude` compiles clean, and the runtime difference
+    // is nil because `onUnknownEvent` is an empty method.  So neither
+    // `bun run typecheck` nor any test would notice the arm going away.
+    //
+    // The mechanism is this assignment, which is why it is written as one
+    // rather than described: `ClusterStatsPublished` carries
+    // `leader: Option<Member>`, so it is structurally assignable to
+    // `LeaderChanged`, and `Exclude` works by assignability — the union member
+    // removes itself. This line stops compiling the day the shape changes,
+    // which is the day the compiler starts guarding the arm again.
+    const asLeaderChanged: LeaderChanged =
+      new ClusterStatsPublished(3, 2, 1, none, new NodeAddress('probe', 'h', 1));
+
+    expect(asLeaderChanged.leader.isSome()).toBe(false);
   });
 });

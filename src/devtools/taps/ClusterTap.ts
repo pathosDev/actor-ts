@@ -20,6 +20,7 @@ import { SWEEP_INTERVAL_MS } from '../Constants.js';
 import type { Cluster } from '../../cluster/Cluster.js';
 import type { Member } from '../../cluster/Member.js';
 import {
+  ClusterStatsPublished,
   CurrentClusterState,
   LeaderChanged,
   MemberConfigurationMismatch,
@@ -154,8 +155,34 @@ export class ClusterTap implements DevToolsTap {
         () => this.onShardRegistrationEvent(),
       )
       .with(P.instanceOf(MemberConfigurationMismatch), () => this.onConfigurationMismatch())
+      .with(P.instanceOf(ClusterStatsPublished), () => this.onStatsPublished())
       .otherwise((e) => this.onMemberEvent(e));
   }
+
+  /**
+   * A periodic membership sample is not a membership change, and this panel
+   * renders changes.  The same figures already reach the dashboard on
+   * `StatsTap`'s own ticker, so forwarding them here would give one number two
+   * periodic sources — which is how two views of one cluster start disagreeing
+   * about it (#842).
+   *
+   * An explicit arm rather than a fall-through, for the reason
+   * {@link onShardRegistrationEvent} states: `otherwise` leads to
+   * {@link onMemberEvent}, whose whole contract is that every event it sees
+   * carries a `member`, and this one has none.
+   *
+   * **Nothing would have caught its absence, and that was measured.**  Deleting
+   * this arm *and* dropping the type from the `Exclude` below compiles clean:
+   * `ClusterStatsPublished` carries `leader: Option<Member>`, which makes it
+   * structurally assignable to {@link LeaderChanged}, and `Exclude` works by
+   * assignability — so the union member vanishes from `onMemberEvent`'s
+   * parameter on its own and `event.member` never has to be explained.  At
+   * runtime it would then reach `onUnknownEvent`, which is an empty method, so
+   * no test can see the difference either.  The comment on
+   * {@link onShardRegistrationEvent} claims the compiler is the guard here; for
+   * a *member-carrying* event that is true, and for this one it is not.
+   */
+  private onStatsPublished(): void { /* not a membership change */ }
 
   /**
    * A configuration divergence carries a `member`, so it would otherwise fall
@@ -193,7 +220,7 @@ export class ClusterTap implements DevToolsTap {
       ClusterEvent,
       LeaderChanged | ShardMapChanged | CurrentClusterState | ReachabilityChanged
       | ShardRegionRegistered | ShardRegionRegistrationRefused
-      | MemberConfigurationMismatch
+      | MemberConfigurationMismatch | ClusterStatsPublished
     >,
   ): void {
     const name = MEMBER_EVENT_NAMES.get(event.constructor as MemberEventClass);

@@ -241,6 +241,60 @@ vor, und jedes Member wird in dem Status angekündigt, den es
 tatsächlich hat — ein `unreachable`-Peer wird als unreachable
 abgespielt, nicht als frischer Join.
 
+### Eine periodische Momentaufnahme, wenn du eine willst
+
+Jedes Event oben beschreibt eine *Änderung*.  Wenn du stattdessen
+„sag mir alle N Sekunden, wo die Mitgliedschaft steht“ willst, setze
+eine Taktung und abonniere `ClusterStatsPublished`:
+
+```hocon
+actor-ts.cluster.publish-stats-interval = 30s   # 0 (der Default) startet keinen Timer
+```
+
+```ts
+import { ClusterStatsPublished } from 'actor-ts/cluster';
+
+cluster.subscribe((evt) => {
+  if (evt instanceof ClusterStatsPublished) {
+    console.log(`${evt.up}/${evt.members} up, ${evt.unreachable} unreachable`);
+  }
+});
+```
+
+Es trägt die Mitgliederzahl, die `up`-Zahl, die `unreachable`-Zahl, den
+Leader als `Option<Member>` und die eigene Adresse dieses Nodes —
+jedes davon ohnehin über die `Cluster`-API erreichbar, und genau das
+ist der Punkt: Was der Key bringt, ist die **Taktung**, damit ein
+Dashboard keine eigene Polling-Schleife braucht.
+
+Drei Eigenschaften sind wissenswert:
+
+- **Node-lokal**, wie jedes andere Cluster-Event, und erreichbar über
+  `system.eventStream` ebenso wie über `cluster.subscribe`.  Bewusst
+  *nicht* auf [`cluster.eventStream`](/de/cluster/event-stream/): eine
+  periodische Momentaufnahme pro Node kostet auf dem clusterweiten Bus
+  N Frames pro Node und Intervall, um zu sagen, was jeder Node lokal
+  ohnehin lesen kann.  Bridge es selbst, wenn du eine flottenweite
+  Sicht willst — `selfAddress` ist dafür da, dass die Proben dann
+  unterscheidbar bleiben.
+- **Wird nie abgespielt.**  Ein später hinzukommender Subscriber
+  bekommt das oben beschriebene Mitgliedschafts-Replay und keine
+  Stats-Probe: eine Messung von vor deinem Zuhören erneut zu liefern
+  ist schlicht eine veraltete Zahl.
+- **Standardmäßig aus.**  `0` startet gar keinen Timer — das Verhalten
+  jeder Version vor diesem Key.
+
+Es ist nicht der einzige Ort, an dem diese Zahlen auftauchen, und die
+drei beantworten nicht ganz dieselbe Frage.  Das
+[DevTools-Dashboard](/de/observability/devtools/overview/) tastet sie
+mit eigenem Ticker ab und zählt zusätzlich kürzlich *gegangene* Nodes
+mit, sodass ein Cluster aus dreien, der einen verloren hat, weiterhin
+„2 / 3 up“ liest — dieses Event zählt stattdessen die lebende
+Mitgliederkarte.  Die Metrik `cluster_members_up`
+([Metriken](/de/observability/metrics/stock-metrics/)) ist eine
+Pull-Oberfläche ohne Callback.  Dieses hier ist der Framework-eigene
+Push.
+
 ### Der Leader
 
 `cluster.leader()` liefert das **niedrigst-adressierte** `up`-Member —

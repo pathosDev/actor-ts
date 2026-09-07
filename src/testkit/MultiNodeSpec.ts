@@ -92,6 +92,10 @@ export class MultiNodeSpec {
       gossipIntervalMs: options.gossipIntervalMs ?? 100,
       awaitTimeoutMs: options.awaitTimeoutMs ?? 10_000,
       logLevel: options.logLevel ?? LogLevel.Off,
+      // Test-scale like the two intervals above: the shipped stability window
+      // is 20 s, twice `awaitTimeoutMs`, so a spec inheriting it would time
+      // out before its resolver had been consulted once (#839).
+      stableAfterMs: options.stableAfterMs ?? 100,
       addresses: options.addresses,
       failureDetector: options.failureDetector,
       downing: options.downing,
@@ -138,7 +142,8 @@ export class MultiNodeSpec {
         .withSeeds(seeds)
         .withTransport(transport)
         .withGossipIntervalMs(this.options.gossipIntervalMs)
-        .withSeedRetryIntervalMs(100);
+        .withSeedRetryIntervalMs(100)
+        .withSplitBrainResolver({ stableAfterMs: this.options.stableAfterMs });
       if (this.options.failureDetector) {
         clusterOptions.withFailureDetector(this.options.failureDetector);
       }
