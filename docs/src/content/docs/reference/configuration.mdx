@@ -274,6 +274,8 @@ replay from it.
 | `cluster.failure-detector.phi.min-std-deviation` | `100ms` | Floor on the sampled standard deviation, so a very steady peer is not flagged on noise. |
 | `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `0s` | Grace added to the last heartbeat before φ starts rising. |
 | `cluster.split-brain-resolver.active-strategy` | `off` | Which downing strategy arbitrates a partition — `off`, `keep-majority`, `keep-oldest`, `keep-referee` or `static-quorum`. |
+| `cluster.split-brain-resolver.stable-after` | `20s` | How long the membership **and** reachability view must hold still before the strategy is consulted at all — see below. |
+| `cluster.split-brain-resolver.down-all-when-unstable` | `off` | Down every member, this node included, when the view never once holds still for `stable-after` across `3 × stable-after` of churn.  Off — see below. |
 | `cluster.split-brain-resolver.keep-majority.role` | `""` | Only members carrying this role count toward the majority.  `""` counts every member. |
 | `cluster.split-brain-resolver.keep-oldest.role` | `""` | Only members with this role are eligible "oldest".  `""` considers every member. |
 | `cluster.split-brain-resolver.static-quorum.role` | `""` | Only members carrying this role count toward quorum.  `""` counts every member. |
@@ -331,6 +333,42 @@ startup with the missing key in the message.
 `actor-ts.coordination` tunes leases but does not choose a backend.  Build
 it in code: `withDowning(new LeaseMajority(…))`.  Writing the name into
 this key is refused rather than ignored, and the message says so.
+
+`stable-after` and `down-all-when-unstable` are the block's *policy* half:
+they decide **when** the strategy is asked, not which one.  Both are ignored
+while `active-strategy = off` — with no resolver the failure detector runs
+its own `unreachable → down` cascade, timed by `failure-detector.down-after`,
+and a second window in front of that would be two thresholds for one
+decision.
+
+`stable-after` is what makes a decision be about a settled fact.  Every
+bundled strategy is a pure function of one view, so a view read mid-churn —
+half the peers already `unreachable`, the rest about to be — yields a verdict
+about a cluster that existed at no instant.  The clock is the
+failure-detection tick, so the effective resolution is
+`failure-detector.heartbeat-interval`: invisible at twenty seconds, worth
+knowing at two hundred milliseconds.  There is deliberately **no** upper
+bound tying it to `failure-detector.down-after`: with a strategy configured
+the detector parks an unreachable peer and evicts nothing, so the window has
+no deadline to out-run.
+
+`down-all-when-unstable` is the escalation for the cluster that never
+settles: when the view has not once held still for a whole `stable-after`
+across `3 × stable-after` of continuous change — *and* something is still
+unreachable — every member is downed, this node included, and the log says
+so at `warn`.  The margin is derived rather than configured, because it only
+ever means "several times however long this deployment thinks a view needs to
+settle", and a margin below the window could never observe one quiet window
+before firing.
+
+It ships **off**, and turning it on is a durability-over-availability
+posture rather than a detail.  It is the only setting in this subsystem that
+stops the whole cluster, and it is reached by a timer rather than by a
+strategy's verdict — a rolling restart whose replacements arrive less than
+`stable-after` apart looks exactly like a cluster that will not settle.  A
+view that moves only because members join and leave cleanly never escalates:
+churn is not a partition, which is why an empty unreachable set is a hard
+precondition.
 
 `configuration-compatibility-check` compares **effective** values, not config
 values.  Each node publishes what it actually resolved for every setting in

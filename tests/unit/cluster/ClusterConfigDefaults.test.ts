@@ -18,6 +18,10 @@ import {
 import type { ClusterOptionsType } from '../../../src/cluster/ClusterOptions.js';
 import { KeepMajority } from '../../../src/cluster/downing/KeepMajority.js';
 import { KeepOldest } from '../../../src/cluster/downing/KeepOldest.js';
+import {
+  DEFAULT_DOWN_ALL_WHEN_UNSTABLE,
+  DEFAULT_STABLE_AFTER_MS,
+} from '../../../src/cluster/downing/SplitBrainResolverOptions.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
 import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
@@ -196,6 +200,54 @@ describe('readClusterOptionsFromConfig', () => {
       .not.toHaveProperty('downing');
   });
 
+  test('the resolver policy reads through with its own values (#839)', () => {
+    // `Config.parseString`, never `Config.fromObject` with dotted keys: the
+    // dotted string stays a literal top-level key, `hasPath` resolves the
+    // *reference* value behind it, and both numbers below would be the shipped
+    // defaults rather than the ones written here.
+    const configured = Config.parseString(`
+      actor-ts.cluster.split-brain-resolver {
+        stable-after           = 45s
+        down-all-when-unstable = on
+      }
+    `);
+
+    // The whole object: the two policy leaves must NOT drag a `downing` key in
+    // with them.  `active-strategy` is absent here, and a reader that folded
+    // the block in as one unit would build a provider nobody asked for.
+    expect(readClusterOptionsFromConfig(configured)).toEqual({
+      splitBrainResolver: { stableAfterMs: 45_000, downAllWhenUnstable: true },
+    });
+  });
+
+  test('omits splitBrainResolver entirely when neither policy leaf is set (#839)', () => {
+    // Same rule as `failureDetector` and `phiAccrual`: an absent leaf falls
+    // through to the built-in default rather than landing as an explicit
+    // value.  Asserted with the *selector* present, because that is the shape
+    // that would tempt a reader into emitting an empty policy object beside
+    // the provider it just built.
+    const configured = Config.parseString(
+      'actor-ts.cluster.split-brain-resolver.active-strategy = keep-oldest',
+    );
+
+    expect(readClusterOptionsFromConfig(configured)).not.toHaveProperty('splitBrainResolver');
+  });
+
+  test('one explicit policy field does not blank the other from the file (#839)', () => {
+    // The nested merge pass, and the bug it exists to stop: a caller who pins
+    // only the window must keep the file's escalation switch.  The shallow
+    // merge would replace the whole object and silently turn the escalation
+    // this deployment asked for back off.
+    const configured = Config.parseString(
+      'actor-ts.cluster.split-brain-resolver.down-all-when-unstable = on',
+    );
+
+    expect(withClusterConfigDefaults(
+      configured,
+      { host: 'h', port: 1, splitBrainResolver: { stableAfterMs: 9_000 } } as ClusterOptionsType,
+    ).splitBrainResolver).toEqual({ stableAfterMs: 9_000, downAllWhenUnstable: true });
+  });
+
   test('the reference defaults round-trip to the built-in ones', () => {
     // Wiring the block must not move any default, so the two are pinned
     // together here rather than trusted to stay in sync by eye.
@@ -249,6 +301,15 @@ describe('readClusterOptionsFromConfig', () => {
       incompleteFrameIdleMs: INCOMPLETE_FRAME_IDLE_MS,
       failureDetectorImplementation: DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
       failureDetector: defaultFailureDetectorOptions,
+      // The resolver's POLICY half (#839) — how long the view must hold still
+      // and what happens when it never does.  A sibling of `downing` rather
+      // than part of it: `active-strategy = off` leaves no `downing` key at
+      // all (asserted two tests up), and these two must still land, or a
+      // deployment could not stage a window and turn the strategy on later.
+      splitBrainResolver: {
+        stableAfterMs: DEFAULT_STABLE_AFTER_MS,
+        downAllWhenUnstable: DEFAULT_DOWN_ALL_WHEN_UNSTABLE,
+      },
       // Field by field rather than against `defaultPhiAccrualOptions` whole:
       // that object also carries `heartbeatIntervalMs`, and the φ block has no
       // leaf for it on purpose — the cadence comes from

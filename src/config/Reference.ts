@@ -529,6 +529,31 @@ actor-ts {
     split-brain-resolver {
       active-strategy = off   # off | keep-majority | keep-oldest | keep-referee | static-quorum
 
+      # How long the membership AND reachability view must be unchanged before
+      # the strategy above is consulted at all.  Every bundled strategy is a
+      # pure function of one view, so a view captured mid-churn is a decision
+      # made on evidence that was never true at any instant.  The clock is the
+      # failure-detection tick, so the resolution is heartbeat-interval.
+      #
+      # No upper bound against failure-detector.down-after: with a strategy
+      # configured the detector parks an unreachable peer and evicts nothing,
+      # so the window has no deadline to out-run.  Ignored entirely when
+      # active-strategy = off -- the detector's own cascade is timed by
+      # down-after, not by this.
+      stable-after = 20s
+
+      # Down EVERY member, self included, when the view never once holds still
+      # for stable-after across a run of changes lasting 3x stable-after --
+      # and only while something is still unreachable, since a view that moves
+      # because members join and leave cleanly is churn, not a partition.
+      #
+      # Off, because it is the one action here that stops the whole cluster and
+      # it is reached by a timer rather than by a strategy's verdict: a rolling
+      # restart whose replacements arrive less than stable-after apart looks
+      # exactly like a cluster that will not settle.  On is a deployment saying
+      # it would rather be down than be uncertain.
+      down-all-when-unstable = off
+
       # "" = every member counts.  A role narrows the candidate set a strategy
       # arbitrates over; it never grants one.
       keep-majority.role = ""

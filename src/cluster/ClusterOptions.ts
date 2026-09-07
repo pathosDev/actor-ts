@@ -14,6 +14,8 @@ import {
 import type { Transport } from './Transport.js';
 import { readDowningFromConfig } from './downing/DowningFromConfig.js';
 import type { DowningProvider } from './downing/DowningProvider.js';
+import { readSplitBrainResolverOptionsFromConfig } from './downing/SplitBrainResolverOptions.js';
+import type { SplitBrainResolverOptionsType } from './downing/SplitBrainResolverOptions.js';
 
 /**
  * Built-in default for {@link ClusterOptionsType.failureDetectorImplementation}
@@ -453,6 +455,20 @@ export type ClusterOptionsType = {
    */
   readonly downing?: DowningProvider;
   /**
+   * *When* {@link downing} is consulted, as against which provider it is —
+   * the stability window and the unstable-escalation switch (#839).
+   *
+   * A nested block rather than two flat fields, for the reason
+   * {@link failureDetector} is one: the two are read together as one policy,
+   * and grouping them is what lets `withClusterConfigDefaults` merge them
+   * per field so an explicit `{ stableAfterMs }` does not silently drop the
+   * config file's `downAllWhenUnstable`.
+   *
+   * Inert without a provider: `Cluster.evaluateDowning` is the only reader
+   * and it returns immediately when {@link downing} is unset.
+   */
+  readonly splitBrainResolver?: Partial<SplitBrainResolverOptionsType>;
+  /**
    * Per-frame cap on the cluster wire, in bytes.  Frames whose
    * length-prefix exceeds it are rejected before any payload is
    * buffered, so it bounds what one peer can make this node hold.
@@ -789,6 +805,15 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   /** Optional split-brain resolver (KeepMajority, KeepOldest, …). */
   withDowning(downing: DowningProvider): this {
     return this.set('downing', downing);
+  }
+
+  /**
+   * When the resolver is consulted — the stability window and the
+   * unstable-escalation switch (#839).  Merged per field over the config
+   * file's values, like {@link withFailureDetector}.
+   */
+  withSplitBrainResolver(splitBrainResolver: Partial<SplitBrainResolverOptionsType>): this {
+    return this.set('splitBrainResolver', splitBrainResolver);
   }
 
   /** Per-frame wire cap for the cluster's own transport.  Default: 16 MiB. */
@@ -1298,7 +1323,7 @@ export type ClusterConfigDefaults = Partial<Pick<
   | 'gossipIntervalMs' | 'seedRetryIntervalMs'
   | 'failureDetectorImplementation' | 'failureDetector' | 'phiAccrual' | 'maxFrameBytes'
   | 'weaklyUpAfterMs' | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
-  | 'maxMembers' | 'maxTombstones' | 'downing'
+  | 'maxMembers' | 'maxTombstones' | 'downing' | 'splitBrainResolver'
   | 'minimumMembersBeforeUp' | 'minimumMembersBeforeUpPerRole'
   | 'untrustedMode' | 'trustedSelectionPaths'
   | 'configurationCompatibilityEnforce' | 'configurationCompatibilityCheckedPaths'
@@ -1438,6 +1463,12 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   // that never mentioned downing would carry an explicit one.
   const downing = readDowningFromConfig(config);
   if (downing !== undefined) out.downing = downing;
+  // The policy half of the same block, and a *separate* field from `downing`
+  // because it survives `active-strategy = off`: an operator who stages a
+  // window and flips the strategy on later must find the window still there
+  // (#839).  Omitted when neither leaf is set, the `failureDetector` rule.
+  const splitBrainResolver = readSplitBrainResolverOptionsFromConfig(config);
+  if (Object.keys(splitBrainResolver).length > 0) out.splitBrainResolver = splitBrainResolver;
   return out;
 }
 
@@ -1486,6 +1517,12 @@ export function isRemoteTlsRequested(config: Config): boolean {
  * `phiAccrual` needs the same pass for the same reason, one block over — an
  * explicit `{ downThreshold: 16 }` must not blank the file's other four
  * φ settings (#840).
+ *
+ * So does `splitBrainResolver`, and there the two fields are a duration and a
+ * switch rather than three of a kind: an explicit
+ * `withSplitBrainResolver({ stableAfterMs })` dropping the file's
+ * `downAllWhenUnstable` would silently turn an escalation the deployment asked
+ * for back off (#839).
  */
 export function withClusterConfigDefaults(
   config: Config,
@@ -1501,10 +1538,19 @@ export function withClusterConfigDefaults(
     ...fromConfig.phiAccrual,
     ...stripUndefined(options.phiAccrual ?? {}),
   };
+  const splitBrainResolver = {
+    ...fromConfig.splitBrainResolver,
+    ...stripUndefined(options.splitBrainResolver ?? {}),
+  };
   const withNested: ClusterOptionsType = Object.keys(failureDetector).length > 0
     ? { ...merged, failureDetector }
     : merged;
-  return Object.keys(phiAccrual).length > 0 ? { ...withNested, phiAccrual } : withNested;
+  const withPhi = Object.keys(phiAccrual).length > 0
+    ? { ...withNested, phiAccrual }
+    : withNested;
+  return Object.keys(splitBrainResolver).length > 0
+    ? { ...withPhi, splitBrainResolver }
+    : withPhi;
 }
 
 /**

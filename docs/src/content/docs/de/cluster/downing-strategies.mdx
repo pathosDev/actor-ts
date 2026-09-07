@@ -124,6 +124,94 @@ dieses Nodes ist, und kein Config-Key kann eines benennen —
 den Namen in `active-strategy` schreibt, bekommt eine Ablehnung statt
 stillen Ignorierens; baue es wie unten gezeigt im Code.
 
+## Das Stabilitätsfenster
+
+Eine Strategie wird nicht in dem Moment gefragt, in dem ein Peer verstummt.
+Das Mitglieder- **und** Erreichbarkeitsbild muss zuerst `stable-after` lang
+stillstehen — standardmäßig 20 s —, und erst dann wird der konfigurierte
+Provider konsultiert:
+
+```hocon
+actor-ts.cluster.split-brain-resolver {
+  active-strategy = keep-majority
+
+  # The view must be unchanged this long before the strategy is asked.
+  stable-after = 20s
+
+  # Down everyone, self included, when it never once is.
+  down-all-when-unstable = off
+}
+```
+
+Oder im Code, wo dieselben zwei Einstellungen ein verschachtelter Block sind:
+
+```ts
+import { ClusterOptions, SplitBrainResolverOptions } from 'actor-ts/cluster';
+
+const resolverPolicy = SplitBrainResolverOptions.create()
+  .withStableAfterMs(30_000)
+  .withDownAllWhenUnstable(true);
+const clusterOptions = ClusterOptions.create()
+  .withHost(host)
+  .withPort(port)
+  .withDowning(new KeepMajority())
+  .withSplitBrainResolver(resolverPolicy);
+```
+
+**Warum eine Entscheidung mitten in der Unruhe die falsche ist.**  Jede
+eingebaute Strategie ist eine reine Funktion *eines* Bildes — `KeepMajority`
+zählt es, `KeepOldest` ordnet es, `StaticQuorum` misst es.  Eine Partition
+tritt nicht als ein Ereignis auf: Peers überschreiten `unreachable-after`
+einige hundert Millisekunden auseinander, und ein mittendrin gelesenes Bild
+zeigt einen Cluster, den es zu keinem Zeitpunkt gab.  Eine Mehrheit dagegen
+zu zählen ist genau der Weg, auf dem ein Node sich in der Minderheit wähnt —
+eine Sekunde bevor der Rest seiner eigenen Seite ebenfalls als unerreichbar
+markiert wird.  Das Fenster macht die Eingabe zu einem ruhenden Stand statt
+zu einer Momentaufnahme eines Übergangs.
+
+Die Uhr ist der Failure-Detection-Tick, die Auflösung des Fensters damit
+`actor-ts.cluster.failure-detector.heartbeat-interval` — standardmäßig
+500 ms.  Bei zwanzig Sekunden ist das belanglos; wenn du das Fenster auf
+einige hundert Millisekunden herunterdrehst, ist es wissenswert.
+
+**Es gibt keine Obergrenze gegen `failure-detector.down-after`.**  Sobald
+eine Strategie konfiguriert ist, entfernt der Detector überhaupt nichts
+mehr: er parkt einen unerreichbaren Peer und überlässt den Übergang nach
+`down`/`removed` dem Resolver.  Das Fenster hat also keine Frist zu schlagen
+und darf so lang sein, wie das Deployment möchte.  **Ohne** konfigurierte
+Strategie tun beide Einstellungen gar nichts — dann läuft die Kaskade
+`unreachable → down` des Detectors, getaktet allein von `down-after`.
+
+### Wenn das Bild nie zur Ruhe kommt
+
+`down-all-when-unstable` ist die Eskalation für einen Cluster, der nicht
+konvergiert: hat das Bild über `3 × stable-after` durchgehender Änderung kein
+einziges Mal ein volles `stable-after` stillgestanden — **und** ist weiterhin
+etwas unerreichbar —, werden alle Mitglieder gedownt, dieser Node
+eingeschlossen, und der Grund wird auf `warn` protokolliert.  Keine Strategie
+wird gefragt; ein derart unruhiges Bild ist kein Stand, über den eine von
+ihnen entscheiden könnte.
+
+Der Abstand ist aus dem Fenster abgeleitet statt daneben konfiguriert.  Er
+bedeutet ohnehin nur „ein Vielfaches dessen, was dieses Deployment für die
+Beruhigungszeit hält“ — ein zweiter Key wäre also nur eine weitere Zahl, die
+konsistent bleiben muss, und ein Abstand *unterhalb* des Fensters könnte nie
+ein einziges ruhiges Fenster abwarten, bevor er auslöst.
+
+:::caution[Ausgeliefert wird „aus“, und das Einschalten ist eine Haltung]
+Dies ist die einzige Einstellung auf dieser Seite, die den **ganzen** Cluster
+stoppt, und sie wird von einer Uhr ausgelöst, nicht vom Urteil einer
+Strategie.  Ein rollierender Neustart, dessen Ersatz-Nodes weniger als
+`stable-after` auseinander eintreffen, sieht genau wie ein Cluster aus, der
+sich nicht beruhigt.  Einschalten heißt: lieber steht der Cluster still, als
+dass er auf einem Mitgliederbild weiterläuft, dem niemand trauen kann — eine
+legitime Position, aber eine, die man bewusst einnimmt.
+
+Was nicht passiert: ein Auslösen bei gewöhnlicher Unruhe.  Eine leere
+Unerreichbar-Menge ist harte Vorbedingung, saubere Beitritte und Abgänge
+eskalieren also nie, so schnell sie auch aufeinander folgen.
+:::
+
 ## KeepMajority
 
 ```ts

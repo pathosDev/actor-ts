@@ -283,6 +283,8 @@ man daraus erneut zustellt.
 | `cluster.failure-detector.phi.min-std-deviation` | `100ms` | Untergrenze für die gemessene Standardabweichung, damit ein sehr gleichmäßiger Peer nicht wegen Rauschen auffällt. |
 | `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `0s` | Kulanz auf den letzten Heartbeat, bevor φ zu steigen beginnt. |
 | `cluster.split-brain-resolver.active-strategy` | `off` | Welche Downing-Strategie eine Partition entscheidet — `off`, `keep-majority`, `keep-oldest`, `keep-referee` oder `static-quorum`. |
+| `cluster.split-brain-resolver.stable-after` | `20s` | Wie lange das Mitglieder- **und** Erreichbarkeitsbild unverändert bleiben muss, bevor die Strategie überhaupt gefragt wird — siehe unten. |
+| `cluster.split-brain-resolver.down-all-when-unstable` | `off` | Alle Mitglieder downen, diesen Node eingeschlossen, wenn das Bild über `3 × stable-after` Unruhe kein einziges Mal für `stable-after` stillsteht.  Aus — siehe unten. |
 | `cluster.split-brain-resolver.keep-majority.role` | `""` | Nur Mitglieder mit dieser Rolle zählen zur Mehrheit.  `""` zählt alle. |
 | `cluster.split-brain-resolver.keep-oldest.role` | `""` | Nur Mitglieder mit dieser Rolle kommen als „ältestes“ infrage.  `""` betrachtet alle. |
 | `cluster.split-brain-resolver.static-quorum.role` | `""` | Nur Mitglieder mit dieser Rolle zählen zum Quorum.  `""` zählt alle. |
@@ -343,6 +345,43 @@ kein Key kann eines benennen — `actor-ts.coordination` stellt Leases ein,
 wählt aber kein Backend.  Baue es im Code:
 `withDowning(new LeaseMajority(…))`.  Wer den Namen trotzdem in diesen Key
 schreibt, bekommt eine Ablehnung statt stillen Ignorierens.
+
+`stable-after` und `down-all-when-unstable` sind die *Policy*-Hälfte des
+Blocks: sie entscheiden, **wann** die Strategie gefragt wird, nicht welche.
+Beide sind wirkungslos, solange `active-strategy = off` — ohne Resolver
+läuft die Kaskade `unreachable → down` des Failure Detectors, getaktet von
+`failure-detector.down-after`, und ein zweites Fenster davor wären zwei
+Schwellen für eine Entscheidung.
+
+`stable-after` sorgt dafür, dass eine Entscheidung über einen ruhenden Stand
+fällt.  Jede eingebaute Strategie ist eine reine Funktion *eines* Bildes;
+ein mitten in der Unruhe gelesenes Bild — die Hälfte der Peers schon
+`unreachable`, der Rest gleich — liefert also ein Urteil über einen Cluster,
+den es zu keinem Zeitpunkt gab.  Die Uhr ist der Failure-Detection-Tick, die
+effektive Auflösung damit `failure-detector.heartbeat-interval`: bei zwanzig
+Sekunden unsichtbar, bei zweihundert Millisekunden wissenswert.  Es gibt
+bewusst **keine** Obergrenze gegen `failure-detector.down-after`: mit
+konfigurierter Strategie parkt der Detector einen unerreichbaren Peer und
+entfernt nichts, das Fenster hat also keine Frist zu schlagen.
+
+`down-all-when-unstable` ist die Eskalation für den Cluster, der nie zur
+Ruhe kommt: hat das Bild über `3 × stable-after` durchgehender Änderung kein
+einziges Mal ein volles `stable-after` stillgestanden — *und* ist weiterhin
+etwas unerreichbar —, werden alle Mitglieder gedownt, dieser Node
+eingeschlossen, und das Log sagt es auf `warn`.  Der Abstand ist abgeleitet
+statt konfiguriert, denn er bedeutet ohnehin nur „ein Vielfaches dessen, was
+dieses Deployment für die Beruhigungszeit hält“ — und ein Abstand unterhalb
+des Fensters könnte nie ein einziges ruhiges Fenster abwarten.
+
+Ausgeliefert wird **aus**; das Einschalten ist eine Haltung zugunsten von
+Integrität statt Verfügbarkeit, keine Kleinigkeit.  Es ist die einzige
+Einstellung in diesem Bereich, die den ganzen Cluster stoppt, und sie wird
+von einer Uhr ausgelöst, nicht vom Urteil einer Strategie — ein rollierender
+Neustart, dessen Ersatz-Nodes weniger als `stable-after` auseinander
+eintreffen, sieht genau wie ein Cluster aus, der sich nicht beruhigt.  Ein
+Bild, das sich nur durch saubere Beitritte und Abgänge bewegt, eskaliert
+nie: Unruhe ist keine Partition, weshalb eine leere Unerreichbar-Menge eine
+harte Vorbedingung ist.
 
 `configuration-compatibility-check` vergleicht **effektive** Werte, keine
 Config-Werte.  Jeder Node veröffentlicht, was er für jede Einstellung aus

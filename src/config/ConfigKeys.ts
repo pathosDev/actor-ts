@@ -1099,6 +1099,22 @@ export const ConfigKeys = {
      */
     splitBrainResolver: {
       activeStrategy: 'actor-ts.cluster.split-brain-resolver.active-strategy',
+      /**
+       * The policy half of the block (#839) — *when* the resolver is asked,
+       * as against which one `active-strategy` above builds.  Read by
+       * `readSplitBrainResolverOptionsFromConfig`
+       * (`src/cluster/downing/SplitBrainResolverOptions.ts`) into
+       * `ClusterOptionsType.splitBrainResolver`, and consumed by
+       * `Cluster.evaluateDowning`; no bundled strategy sees either value.
+       *
+       * They configure the *provider* path only.  With no provider the
+       * failure detector still runs its own `unreachable → down` cascade on
+       * `failure-detector.down-after`, and putting a second window in front
+       * of that from this block would be two thresholds for one decision,
+       * under a name that says "resolver".
+       */
+      stableAfter: 'actor-ts.cluster.split-brain-resolver.stable-after',
+      downAllWhenUnstable: 'actor-ts.cluster.split-brain-resolver.down-all-when-unstable',
       keepMajority: {
         role: 'actor-ts.cluster.split-brain-resolver.keep-majority.role',
       },
