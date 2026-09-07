@@ -228,17 +228,41 @@ import { Aside } from '@astrojs/starlight/components';
     this.persist({ kind: 'observed', at });
   }
   ```
-  `ManualScheduler` virtualisiert den Scheduler des Actor-Systems
-  **nicht** `Date.now()` oder `new Date()`. Wenn dein Actor
-  Zeitstempel aufzeichnet, sind das echte Wall-Clock-Werte
-  während Tests. Für deterministische Tests mit Zeitstempeln
-  injiziere eine Clock:
+  `ManualScheduler` virtualisiert den Scheduler des Actor-Systems,
+  aber **nicht** `Date.now()` oder `new Date()`. Ein Actor, der seine
+  Zeitstempel selbst setzt, zeichnet echte Wall-Clock-Werte auf —
+  unter einem Test, der glaubt, die Zeit zu kontrollieren.
+
+  Lies die Zeit stattdessen vom System. `system.clock` **ist** der
+  Scheduler, auf eine Methode verengt, und unter einem
+  `ManualScheduler` also virtuelle Zeit:
   ```ts
-  class MyActor extends Actor<...> {
-    constructor(private readonly clock: () => number = Date.now) { super(); }
+  override onReceive(message) {
+    const at = this.context.system.clock.now();   // ← virtuell unter ManualScheduler
+    this.persist({ kind: 'observed', at });
   }
   ```
-  und übergib in Tests `() => scheduler.now()`.
+  Eine Komponente, die kein Actor ist, nimmt den Vertrag statt des
+  ganzen Systems — dann sagt ihre Abhängigkeit, was sie wirklich
+  braucht, und ein Test kann ihr eine Clock geben, ohne ihr zugleich
+  die Macht zu geben, Timer zu stellen:
+  ```ts
+  import type { Clock } from 'actor-ts';
+
+  class RetentionWindow {
+    constructor(private readonly clock: Clock) {}
+    expired(writtenAt: number): boolean { return this.clock.now() - writtenAt > 86_400_000; }
+  }
+  ```
+  In Produktion `system.clock` übergeben, im Test einen
+  `ManualScheduler` — der implementiert `Clock`, ein Adapter ist
+  nicht nötig.
+
+  **`Clock` sind Millisekunden seit der Epoche und ist nicht als
+  monoton zugesichert**: die Systemuhr bewegt sich, NTP-Sprünge
+  eingeschlossen. Eine Dauer, die niemals rückwärts laufen darf,
+  gehört weiterhin auf `performance.now()`, das dieser Vertrag
+  bewusst nicht abdeckt.
 </Aside>
 
 <Aside type="caution" title="Misch keine echten Timer mit `ManualScheduler`">
