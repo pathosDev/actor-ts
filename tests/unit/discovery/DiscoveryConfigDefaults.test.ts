@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Config, ConfigError } from '../../../src/config/Config.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import {
@@ -110,11 +110,26 @@ describe('readAutoDiscoveryOptionsFromConfig', () => {
     expect(fromReference).toEqual({
       dnsCacheTtlMs: 60_000,
       dnsUseSrv: false,
-      kubernetesNamespace: 'default',
     });
-    // The comment-only three must be absent, and `toEqual` alone cannot say so.
-    expect(Object.keys(fromReference).sort())
-      .toEqual(['dnsCacheTtlMs', 'dnsUseSrv', 'kubernetesNamespace']);
+    // The comment-only four must be absent, and `toEqual` alone cannot say so.
+    expect(Object.keys(fromReference).sort()).toEqual(['dnsCacheTtlMs', 'dnsUseSrv']);
+  });
+
+  test('the shipped reference names no namespace, so CLUSTER_NAMESPACE stays reachable', () => {
+    // The regression `5a72410c` shipped, stated at the reader: `namespace =
+    // "default"` was published, so this returned a `kubernetesNamespace` on
+    // every node and `bootstrapCluster` layered it above `CLUSTER_NAMESPACE`.
+    // Asserted separately from the test above and with `Object.keys`, because
+    // `toEqual` reads a present-but-undefined property as absent — the exact
+    // hole the reader is written to avoid.
+    expect(Object.keys(readAutoDiscoveryOptionsFromConfig(Config.loadReference())))
+      .not.toContain('kubernetesNamespace');
+
+    // And it is still a live key, not a deleted one: a node that names a
+    // namespace is read as before.
+    expect(readAutoDiscoveryOptionsFromConfig(
+      Config.parseString('actor-ts.discovery.kubernetes.namespace = "actors"'),
+    )).toEqual({ kubernetesNamespace: 'actors' });
   });
 });
 
@@ -265,21 +280,21 @@ describe('where the environment sits (#860)', () => {
   });
 });
 
-describe('bootstrapCluster reads the block', () => {
-  /** A bootstrap that fails during seed resolution, so nothing binds a socket. */
-  function bootstrapOptions(port: number, configuration: string): ClusterBootstrapOptions {
-    return ClusterBootstrapOptions.create(`discovery-config-${port}`)
-      .withHost('127.0.0.1')
-      .withPort(port)
-      .withTransport(new InMemoryTransport(new NodeAddress(`discovery-config-${port}`, '127.0.0.1', port)))
-      .withConfig(Config.parseString(configuration))
-      .withReceptionist(false)
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off)
-      .withShutdownOnSignals(false)
-      .withAwaitReady(false);
-  }
+/** A bootstrap that fails during seed resolution, so nothing binds a socket. */
+function bootstrapOptions(port: number, configuration: string): ClusterBootstrapOptions {
+  return ClusterBootstrapOptions.create(`discovery-config-${port}`)
+    .withHost('127.0.0.1')
+    .withPort(port)
+    .withTransport(new InMemoryTransport(new NodeAddress(`discovery-config-${port}`, '127.0.0.1', port)))
+    .withConfig(Config.parseString(configuration))
+    .withReceptionist(false)
+    .withLogger(new NoopLogger())
+    .withLogLevel(LogLevel.Off)
+    .withShutdownOnSignals(false)
+    .withAwaitReady(false);
+}
 
+describe('bootstrapCluster reads the block', () => {
   test('the configured method selects the provider — and the configured service name reaches it', async () => {
     // `method` bound: under the shipped `auto` this returns an empty aggregate
     // and the bootstrap succeeds, so a reader that ignored the key could not
@@ -305,5 +320,146 @@ describe('bootstrapCluster reads the block', () => {
     }
     expect(caught).toBeInstanceOf(Error);
     expect((caught as Error).message).not.toMatch(/service name must be set/);
+  });
+});
+
+/**
+ * The `actor-ts.discovery.*` → provider seam, exercised through the real
+ * `Cluster.bootstrap` instead of through a re-implementation of the layering.
+ *
+ * The tests under "the config block reaches the providers" above assemble the
+ * merged options themselves (`discoveryOptionsFrom`) and call
+ * `singleProviderDiscovery` directly, so they prove the *providers* read their
+ * options and say nothing about whether `buildSeedProvider` ever hands them the
+ * block.  Measured: replacing `discoverySettings.fromConfig` with `{}` in
+ * `ClusterBootstrap.buildSeedProvider` left the whole suite green.  Three of
+ * the four below go red for it.
+ *
+ * The fourth is the one that cannot: it asserts that an *unset* key falls
+ * through, which severing the seam produces by accident.  It covers the other
+ * direction — a `reference.conf` leaf filling the field nobody configured — and
+ * the two failures are only distinguishable by having both tests.
+ *
+ * Observed through the option validators for the reason the block above gives —
+ * a value the rung would refuse names, in its own rejection, which layer won,
+ * and each pair below is chosen so exactly one side of it is refusable.
+ *
+ * `CLUSTER_NAMESPACE` is set on `process.env` because that is the only place
+ * this path can read it from: `env` is one of the four fields
+ * `actor-ts.discovery.*` deliberately ships no leaf for, and `buildSeedProvider`
+ * applies only `systemName`, `port` and `log` on top of the config block.  Saved
+ * and restored per test so nothing this file sets leaks into another.
+ */
+describe('the discovery block reaches the providers through Cluster.bootstrap', () => {
+  const DISCOVERY_VARIABLES = ['CLUSTER_NAMESPACE', 'CLUSTER_SERVICE_NAME', 'CLUSTER_SEEDS'] as const;
+  const savedVariables = new Map<string, string | undefined>();
+
+  /** How the Kubernetes rung refuses a namespace Kubernetes could not have created. */
+  const NAMESPACE_REFUSAL = /namespace must be a DNS-1123 label/;
+
+  beforeEach(() => {
+    for (const name of DISCOVERY_VARIABLES) {
+      savedVariables.set(name, process.env[name]);
+      delete process.env[name];
+    }
+  });
+
+  afterEach(() => {
+    for (const [name, value] of savedVariables) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    savedVariables.clear();
+  });
+
+  /**
+   * The error a bootstrap that cannot resolve seeds rejects with.  Caught
+   * rather than asserted with `.rejects`, so the message can be matched twice —
+   * once for the rule that refused it and once for the value it refused, which
+   * is what makes the pairs below discriminate.
+   */
+  async function bootstrapFailure(port: number, configuration: string): Promise<Error> {
+    let caught: unknown;
+    try {
+      await Cluster.bootstrap(bootstrapOptions(port, configuration));
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught, 'the bootstrap was expected to fail during seed resolution').toBeInstanceOf(Error);
+    return caught as Error;
+  }
+
+  test('an unconfigured namespace falls through to CLUSTER_NAMESPACE', async () => {
+    // The regression `5a72410c` shipped: `reference.conf` published
+    // `namespace = "default"`, so `readAutoDiscoveryOptionsFromConfig` returned
+    // a namespace on every node and the variable underneath it was unreachable
+    // on this path — a pod outside `default` read the wrong Endpoints object,
+    // found no seeds and self-elected, which is the cold-start split brain the
+    // bootstrap exists to close.
+    //
+    // The bad value is the environment's here and the config's in the next
+    // test, so the refusal names which of the two arrived.
+    process.env.CLUSTER_NAMESPACE = 'Not_A_Label';
+
+    const error = await bootstrapFailure(50873, `
+      actor-ts.cluster.bootstrap.discovery {
+        method       = "kubernetes"
+        service-name = "my-svc"
+      }
+    `);
+
+    expect(error.message).toMatch(NAMESPACE_REFUSAL);
+    expect(error.message).toMatch(/Not_A_Label/);
+  });
+
+  test('a configured namespace still outranks CLUSTER_NAMESPACE', async () => {
+    // The other half of the same seam, and why the fix is a comment-only leaf
+    // rather than the reader dropping `"default"`: a namespace someone actually
+    // wrote has to keep winning, `"default"` included.
+    process.env.CLUSTER_NAMESPACE = 'actors';
+
+    const error = await bootstrapFailure(50874, `
+      actor-ts.cluster.bootstrap.discovery {
+        method       = "kubernetes"
+        service-name = "my-svc"
+      }
+      actor-ts.discovery.kubernetes.namespace = "Not_A_Label"
+    `);
+
+    expect(error.message).toMatch(NAMESPACE_REFUSAL);
+    expect(error.message).toMatch(/Not_A_Label/);
+  });
+
+  test('the Kubernetes pin list reaches the provider', async () => {
+    // A host suffix is refused there because Endpoints resolve to IPs, so the
+    // rejection is proof the list travelled rather than proof of its contents.
+    const error = await bootstrapFailure(50875, `
+      actor-ts.cluster.bootstrap.discovery {
+        method       = "kubernetes"
+        service-name = "my-svc"
+      }
+      actor-ts.discovery.kubernetes.pinned-addresses = ["svc.cluster.local"]
+    `);
+
+    expect(error.message).toMatch(/CIDRs only/);
+  });
+
+  test('the DNS rung reads use-srv and its pin list from the block', async () => {
+    // Two keys proved by one construction, as above: a CIDR-only list is legal
+    // in A-record mode and illegal in SRV mode, so a bootstrap that dropped
+    // either key would build this provider without complaint.
+    const error = await bootstrapFailure(50876, `
+      actor-ts.cluster.bootstrap.discovery {
+        method       = "dns"
+        service-name = "my-svc"
+      }
+      actor-ts.discovery.dns {
+        use-srv          = true
+        pinned-addresses = ["10.0.0.0/8"]
+      }
+    `);
+
+    expect(error.message).toMatch(/pinnedAddresses/);
+    expect(error.message).toMatch(/SRV mode/);
   });
 });

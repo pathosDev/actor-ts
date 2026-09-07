@@ -70,7 +70,6 @@ import {
 } from '../../../src/discovery/ReceptionistOptions.js';
 import { DEFAULT_DISCOVERY_METHOD } from '../../../src/cluster/ClusterBootstrapOptions.js';
 import { DEFAULT_DNS_CACHE_TTL_MS, DEFAULT_DNS_USE_SRV } from '../../../src/discovery/DnsSeedProviderOptions.js';
-import { DEFAULT_KUBERNETES_NAMESPACE } from '../../../src/discovery/KubernetesApiSeedProviderOptions.js';
 import {
   DEFAULT_NUM_SHARDS,
   DEFAULT_PASSIVATION_IDLE_MS,
@@ -393,15 +392,20 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // and not in FEATURE_SWITCHES for the reason `remote.untrusted-mode` is:
   // that group's stated reason is having no constant to disagree with, and
   // this one has `DnsSeedProvider` reading `options.useSrv ?? DEFAULT_DNS_USE_SRV`.
-  // `namespace` is likewise a real constant rather than a literal at the read
-  // site — the two `?? 'default'` spellings in `AutoDiscovery` were named in
-  // the same change.  The two `pinned-addresses` lists and `config.seeds` are
-  // comment-only in reference.conf (unset means "no pinning" / "no static
-  // list", which an always-present empty list could not say), so there is no
-  // leaf here to assert.
+  // These two are also the whole of the block that MAY carry a published
+  // value: a leaf here occupies the config layer on a node that configured
+  // nothing, and `cache-ttl` / `use-srv` are the two with no environment
+  // variable underneath them to shadow.
+  //
+  // The other four are comment-only in reference.conf and so have no leaf to
+  // assert.  Three of them for expressiveness — an always-present empty list
+  // cannot say "no pinning", and a static seed list is correct on no node.
+  // `kubernetes.namespace` for precedence: it shipped `"default"` in the
+  // first cut of this block, which made `CLUSTER_NAMESPACE` unreachable on the
+  // `Cluster.bootstrap` path, and `DEFAULT_KUBERNETES_NAMESPACE` is now the
+  // bottom of the fallback chain rather than a published default.
   { key: 'actor-ts.discovery.dns.cache-ttl', kind: 'duration', constant: DEFAULT_DNS_CACHE_TTL_MS },
   { key: 'actor-ts.discovery.dns.use-srv', kind: 'bool', constant: DEFAULT_DNS_USE_SRV },
-  { key: 'actor-ts.discovery.kubernetes.namespace', kind: 'string', constant: DEFAULT_KUBERNETES_NAMESPACE },
 
   /* --- remote --- */
   { key: 'actor-ts.remote.tcp.port', kind: 'int', constant: DEFAULT_PORT },

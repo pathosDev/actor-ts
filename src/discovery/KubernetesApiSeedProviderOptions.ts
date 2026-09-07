@@ -46,8 +46,12 @@ const DNS_1123_SUBDOMAIN: KubernetesNameShape = {
  * one.  Kubernetes' own default for an object created without a namespace,
  * so a single-namespace deployment needs no configuration at all.
  *
- * Named out of the `?? 'default'` literals in `AutoDiscovery` so the
- * published key has a constant to be pinned against (#860); the field on
+ * Named out of the two `?? 'default'` literals in `AutoDiscovery` (#860), so
+ * the bottom of the fallback chain is one value rather than two spellings of
+ * it.  It is deliberately **not** published as
+ * `actor-ts.discovery.kubernetes.namespace`: that key ships comment-only, and
+ * a leaf carrying this string would sit *above* `CLUSTER_NAMESPACE` and end
+ * the chain before the environment is consulted at all.  The field on
  * {@link KubernetesApiSeedProviderOptionsType} itself stays **required**,
  * because a provider built by hand should say which namespace it means.
  */
