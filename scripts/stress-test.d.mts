@@ -63,6 +63,12 @@ export type RunOutcome = {
 /** A {@link RunOutcome} with its report folded in, per {@link collectRun}. */
 export type CollectedRun = RunOutcome & ParsedReport & {
   /**
+   * The seed bun shuffled this run with, when the order was randomised.
+   * Attached by the driver rather than by {@link collectRun}, which reads the
+   * report and not the log.
+   */
+  readonly seed?: number | undefined;
+  /**
    * True when the run produced no readable report *and* did not time out — the
    * two are kept disjoint on purpose, because a hang and a truncated report
    * have different causes and different fixes.
@@ -74,7 +80,15 @@ export type CollectedRun = RunOutcome & ParsedReport & {
 /** One test that failed at least once, with the runs it failed in. */
 export type Offender = ReportedTestCase & {
   readonly identity: string;
+  /** The runs it failed in, each named once however many testcases carried it. */
   readonly failedRuns: readonly number[];
+  /**
+   * Failing testcases in total, which exceeds `failedRuns.length` when one run
+   * reported this identity more than once — a hook timeout collapsing a block,
+   * a `test.each` row, a retry.  Kept apart from the run count because
+   * conflating them is what made an offender vanish from both tables (#1359).
+   */
+  readonly failureCount: number;
 };
 
 /** The verdict over all runs, per {@link aggregate}. */
@@ -85,6 +99,12 @@ export type AggregatedRuns = {
   readonly runsTimedOut: readonly number[];
   readonly runsWithoutReport: readonly number[];
   readonly runsRedWithoutFailures: readonly number[];
+  /**
+   * Runs that reported failing tests which no offender accounts for.  Empty by
+   * construction; computed so the verdict can say "something escaped the
+   * identity map" instead of quietly getting smaller.
+   */
+  readonly unexplainedRedRuns: readonly number[];
   readonly totalExecuted: number;
   readonly totalFailures: number;
   readonly flaky: readonly Offender[];
@@ -99,6 +119,10 @@ export type StressOptions = {
   readonly runTimeoutMs: number;
   readonly reportDirectory: string;
   readonly skipQuarantined: boolean;
+  /** Shuffle test order in each child run, to surface order dependence. */
+  readonly randomize: boolean;
+  /** Fix the shuffle's seed.  Setting it implies {@link StressOptions.randomize}. */
+  readonly seed: number | undefined;
   readonly filters: readonly string[];
 };
 
@@ -112,3 +136,5 @@ export function parseSummary(xml: string): ReportTotals | undefined;
 export function collectRun(result: RunOutcome, reportPath: string): CollectedRun;
 export function aggregate(results: readonly CollectedRun[], runs: number): AggregatedRuns;
 export function render(aggregated: AggregatedRuns, options: StressOptions): string;
+export function bunArgumentsFor(options: StressOptions): string[];
+export function seedOf(log: string): number | undefined;

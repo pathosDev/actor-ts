@@ -28,13 +28,22 @@ ankommt:
 | **flaky** — in einigen Läufen umgefallen | Das Ergebnis hängt an Timing, Reihenfolge oder Maschine. | Gegen den Katalog unten halten. |
 | **durchgehend rot** — in jedem Lauf umgefallen | Kaputt.  Wiederholung sagt dir nichts Neues. | Reparieren oder ein Issue aufmachen.  Das ist kein Flake. |
 
-Eine Lücke in diesem Urteil, die man kennen sollte, bevor man einer leeren
-Tabelle glaubt: Ein Test, der **innerhalb eines einzelnen Laufs mehr als einmal**
-umfällt, fällt derzeit aus *beiden* Kategorien heraus — der Harness schreibt dann
-„No test failed in any run that reported“ und endet mit Exit-Code 0, auch wenn
-kein einziger Lauf grün war (#1359).  Ein Hook-Timeout ist der einfachste Weg
-dorthin, weil der ganze Block auf eine `(unnamed)`-Identität zusammenfällt.  Bis
-das behoben ist: `runs: N/N green` lesen, nicht die PASS-Zeile.
+Ein Test, der **innerhalb eines einzelnen Laufs mehr als einmal** umfiel, fiel
+früher aus *beiden* Kategorien heraus — der Harness schrieb dann „No test failed
+in any run that reported“ und endete mit Exit-Code 0, über sechzehn Läufen, von
+denen keiner grün war, zwei Zeilen unter einer Fehlerrate von 100 % (#1359).
+`failedRuns` zählt jetzt Läufe, jeden Lauf einmal, gleich wie viele Testfälle die
+Identität getragen haben, und die Zahl der Vorkommen steht daneben
+(`4 failing testcases in total`), statt in die Klassifikation einzufließen.  Ein
+Hook-Timeout erzeugt die Form weiterhin am leichtesten: ein `describe`, dessen
+`beforeAll` und `afterAll` beide ihr Budget sprengen, liefert zwei
+`(unnamed)`-Fälle unter einem Classname.
+
+Das Urteil fällt jetzt außerdem über **Läufe**, nicht nur über Tests.  Ein Lauf,
+der nicht grün war und den kein tolerierter Offender erklärt, ist rot, egal was
+die Tabellen sagen — und genau in diesem Feld ist das Ausstiegskriterium der
+Quarantäne formuliert (`greenRuns == runs`), das das alte Urteil berechnete,
+ausgab und dann nicht anwandte.
 
 Drei weitere Dinge benennt es, statt sie zu schlucken: einen Lauf, der
 **nie beendet wurde** (siehe unten), einen Lauf, der **gar keinen

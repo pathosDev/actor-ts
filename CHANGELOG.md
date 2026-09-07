@@ -1913,6 +1913,56 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`bun run test:stress` reported `PASS` over sixteen runs of which none was
+  green** (#1359).
+
+  A test that failed more than once inside a single run pushed its run index
+  onto `failedRuns` once per failing *testcase*, so `failedRuns.length` could
+  exceed the run count — matching neither `< runs` (flaky) nor `=== runs`
+  (consistent). The offender fell out of both tables, out of `summary.json`'s
+  `offenders`, and out of the `$GITHUB_STEP_SUMMARY` table the nightly job is
+  read from; `offenderCount` was then zero, which is inside any budget, and the
+  run exited 0 printing "No test failed in any run that reported" two lines
+  under a failure rate of 100 %.
+
+  `nightly-flakes.yml` is `continue-on-error`, so those tables and that exit
+  status are the only signal it produces. A night in which a hook timed out
+  therefore annotated "nothing to add to the flake catalog tonight".
+
+  Four changes, and the last is the one that makes the other three unable to
+  rot:
+
+  - `failedRuns` counts **runs**, once per run however many testcases carried
+    the identity. The occurrence count survives as `failureCount` and is
+    reported beside the run count rather than folded into it.
+  - `consistent` matches `>= runs` rather than `=== runs`, so an off-by-one
+    anywhere upstream widens the "broken" bucket instead of re-opening the hole.
+  - `unexplainedRedRuns` names any run that reported failing tests which no
+    offender accounts for — empty by construction, computed anyway, and a
+    failure of the gate. It is a self-check on the identity map, in the shape
+    `runsRedWithoutFailures` already had for exit codes.
+  - The verdict now gates on **runs**: a run that was not green and that no
+    tolerated offender explains fails the harness however the tables read.
+    `greenRuns` is the field the quarantine's exit criterion is written in, and
+    the harness computed it, printed it, wrote it to `summary.json` and then
+    never acted on it.
+
+  `summary.json` gains what a nightly artifact needs to be read a week later:
+  `bunVersion` (a night is comparable with another night only while the
+  toolchain is), `randomized`, `unexplainedRedRuns`, per-offender
+  `failureCount`, and a `runsDetail` array carrying each run's duration, exit
+  status, counts and seed. The harness also learns `--randomize` and `--seed=N`
+  (the seed implies the shuffle, so it can never be silently inert), and prints
+  the seed on each run line, so an order-dependent failure is reproducible from
+  the artifact rather than from a log that has aged out.
+
+  Bound by a fixture that reproduces the real shape rather than a synthetic one:
+  a `describe` whose `beforeAll` and `afterAll` both blow their budget makes bun
+  emit two `(unnamed)` testcases under one classname. A throwing hook does not
+  reproduce it — bun names each test individually — and neither do two separate
+  blocks, whose classnames differ. Reverting the arithmetic turns the new cases
+  red.
+
 - **An actor restarts `maxRetries` times, not `maxRetries + 1`.**
   `ActorCell` kept its own restart tally and its own arithmetic over it
   while `RestartBudget` kept another, and the two disagreed by one.
