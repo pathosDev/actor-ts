@@ -198,13 +198,24 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   SSE-Stream bleiben unberührt. `max-connections` begrenzt, wie viele
   Verbindungen der Prozess gleichzeitig annimmt, und `idle-timeout`, wie lange
   ein stiller Keep-Alive-Socket gehalten wird; beide liefern keinen Wert, es ist
-  also nichts begrenzt, bis du es sagst. **Es sind Eigenschaften eines
-  `node:http`-Servers**: Fastify, Express und Hono-auf-Node setzen sie um, Hono
-  auf Bun oder Deno kann es nicht — die Tabelle steht in der
+  also nichts begrenzt, bis du es sagst. **Die drei Timeouts sind Eigenschaften
+  eines `node:http`-Servers**: Fastify, Express und Hono-auf-Node setzen sie um,
+  Hono auf Bun oder Deno kann es nicht — die Tabelle steht in der
   [Konfigurationsreferenz](/de/reference/configuration/). Die beiden
   Empfangs-Deadlines werden über einen 30-s-Sweep durchgesetzt, den die Runtime
   nicht herausgibt; eine Verbindung wird also spätestens einen Sweep nach dem
   gesetzten Wert geschlossen.
+
+  **`max-connections` ist anders, und das mit Absicht: actor-ts zählt die
+  Verbindungen selbst, statt die Zahl an die Runtime zu reichen und zu hoffen.**
+  Die Eigenschaft wird weiterhin gesetzt — wo eine Runtime sie umsetzt, wird der
+  Socket abgewiesen, bevor er uns erreicht, was billiger ist —, aber die
+  Schranke hängt nicht daran. Sie kann es nicht: dieselbe Runtime-Version wurde
+  dabei gemessen, wie sie die Eigenschaft auf einem Betriebssystem umsetzt und
+  auf einem anderen ignoriert. Für einen Tuning-Hinweis ist das in Ordnung, für
+  die Kontrolle, die diese Seite als Antwort auf eine Verbindungsflut anbietet,
+  nicht. Wo ein Backend gar kein Server-Objekt herausgibt (Hono auf Bun oder
+  Deno), gibt es nichts zu zählen und die Schranke bleibt nicht verfügbar.
 - **WebSocket-Frames** werden durch `maxFrameBytes` gekappt (1 MiB Default).
   Das Framework weist einen zu großen Frame immer ab, bevor er deinen Actor
   erreicht; auf den meisten Laufzeit/Backend-Paaren geht das aufgelöste Limit

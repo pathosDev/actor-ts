@@ -168,3 +168,104 @@ describe('applyServerOptions', () => {
     expect(applyServerOptions(null, { maxConnections: 1 }).maxConnections).toBe(false);
   });
 });
+
+/**
+ * The cap held in this repository, against a server that ignores the property.
+ *
+ * This is the half no end-to-end case here can reach.  The three cases above
+ * pass locally *because the runtime enforces `maxConnections` itself* — probed
+ * on bun 1.4.0 and node v26.7.0, the second connection is closed and only one
+ * `'connection'` event is emitted, the refused socket never reaching a
+ * listener.  On GitHub's Linux runners the same bun release does not, which is
+ * how those three cases were red on `develop` in two independent workflows
+ * while green on every developer machine.
+ *
+ * A fake stands in for that runtime deliberately: it is the only way to write
+ * "the property was set and the runtime did nothing about it" as a test that
+ * fails on the machine reading it, rather than only on an operating system
+ * this suite cannot run.  What the fake does *not* stand in for is whether the
+ * event fires at all on that runtime — that stays a CI observation, and the
+ * three cases above are what report it.
+ */
+describe('the connection cap is enforced here, not delegated', () => {
+  type FakeSocket = { destroy: () => void; once: (event: 'close', listener: () => void) => unknown };
+
+  function fakeServer() {
+    const listeners: Array<(socket: FakeSocket) => void> = [];
+    const server: NodeHttpServerLike = {
+      on: (_event, listener) => { listeners.push(listener as (socket: FakeSocket) => void); return server; },
+    };
+    const open = (): { destroyed: boolean; close: () => void } => {
+      let destroyed = false;
+      const closeListeners: Array<() => void> = [];
+      const socket: FakeSocket = {
+        destroy: () => { destroyed = true; },
+        once: (_event, listener) => { closeListeners.push(listener); return socket; },
+      };
+      for (const listener of listeners) listener(socket);
+      return { get destroyed() { return destroyed; }, close: () => { for (const l of closeListeners) l(); } };
+    };
+    return { server, open };
+  }
+
+  test('a runtime that ignores maxConnections still gets the documented cap', () => {
+    const { server, open } = fakeServer();
+    applyServerOptions(server, { maxConnections: 2 });
+
+    // The fake never acts on this, which is the whole point of the fake.
+    expect(server.maxConnections).toBe(2);
+
+    const first = open();
+    const second = open();
+    const third = open();
+
+    expect(first.destroyed).toBe(false);
+    expect(second.destroyed).toBe(false);
+    expect(third.destroyed, 'the connection past the cap was admitted').toBe(true);
+  });
+
+  test('a closed connection releases its slot, so the cap bounds concurrency and not a lifetime', () => {
+    // Without the 'close' bookkeeping the count only rises and `max-connections
+    // = 2` becomes "two connections, ever" — a server that stops accepting
+    // after its third client and reports nothing.
+    const { server, open } = fakeServer();
+    applyServerOptions(server, { maxConnections: 2 });
+
+    const first = open();
+    open();
+
+    // Both halves, or this passes against no guard at all: with the cap full a
+    // further connection must be refused, and after a close the next one must
+    // not be.  Asserting only the second is true of a server that never
+    // refuses anything.
+    expect(open().destroyed, 'the cap was not holding before the close').toBe(true);
+    first.close();
+    expect(open().destroyed, 'a slot freed by a close was not reused').toBe(false);
+  });
+
+  test('an unset max-connections installs no cap at all', () => {
+    // The negative control: the guard must not be armed by the other three
+    // knobs, or a policy that only sets timeouts would start dropping traffic.
+    const { server, open } = fakeServer();
+    applyServerOptions(server, { idleTimeoutMs: 1_000, headerTimeoutMs: 2_000, requestTimeoutMs: 3_000 });
+
+    for (let i = 0; i < 50; i++) expect(open().destroyed).toBe(false);
+  });
+
+  test('Infinity installs no cap, matching the property that is deliberately not written', () => {
+    const { server, open } = fakeServer();
+    applyServerOptions(server, { maxConnections: Infinity });
+
+    expect(server.maxConnections).toBeUndefined();
+    for (let i = 0; i < 50; i++) expect(open().destroyed).toBe(false);
+  });
+
+  test('a server that cannot report connections is left alone rather than half-guarded', () => {
+    // `Bun.serve` / `Deno.serve` handles reach `applyServerOptions` as objects
+    // with no `on`.  Writing the property and installing nothing is the honest
+    // outcome; throwing would take down a bind that works today.
+    const server: NodeHttpServerLike = {};
+    expect(() => applyServerOptions(server, { maxConnections: 1 })).not.toThrow();
+    expect(server.maxConnections).toBe(1);
+  });
+});
