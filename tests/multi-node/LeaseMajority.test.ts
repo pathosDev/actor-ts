@@ -27,16 +27,22 @@ import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
 import { sleep } from '../util/AwaitCondition.js';
 
-// Quarantined on GitHub's hosted runners (ACTOR_TS_SKIP_FLAKY_MNS=1): the
-// in-process arbitration here is starved into a false split-brain by the
-// same hosted-runner resource issue that kills the worker-thread suites
-// (the lease holder's renewal timer is delayed past the TTL, so both
-// sides acquire).  Not reproducible locally or in Docker.  Runs there;
-// the real-network `integration` suite is the multi-node CI gate.  #538
-// tracks the quarantine: `.github/workflows/nightly-flakes.yml` runs this
-// suite nightly with the flag OFF, and 14 consecutive green nights are what
-// removes this line.
-const describeMns = process.env.ACTOR_TS_SKIP_FLAKY_MNS === '1' ? describe.skip : describe;
+// Runs in CI.  This file was quarantined (`ACTOR_TS_SKIP_FLAKY_MNS=1`, #538) on
+// a diagnosis that turned out to be wrong: the lease holder's renewal timer was
+// said to be starved past its TTL by the same hosted-runner problem that was
+// blamed for the worker-thread suites, so both sides re-acquired.
+//
+// The lease is never acquired by anybody in a failing run.  What happened is
+// that the two remote peers crossed `unreachableAfterMs` on different
+// failure-detector ticks, and downing was evaluated on each of them — so each
+// side saw a majority twice in a row instead of an equal split once, and
+// `LeaseMajority`'s arbitration was never reached.  #839's stability window
+// makes the resolver wait for a view that has stopped moving, which is what
+// this file's `splitBrainResolver` setting below asks for.
+//
+// Measured on one machine within one minute: 8 of 15 runs failed with the
+// window disabled, 0 of 30 with it.  `tests/unit/cluster/downing/
+// StaggeredDetection.test.ts` pins the arithmetic with no timing at all.
 
 const TIGHT_FD = {
   heartbeatIntervalMs: 50,
@@ -46,7 +52,7 @@ const TIGHT_FD = {
   downAfterMs: 30_000,
 } as const;
 
-describeMns('LeaseMajority — end-to-end split-brain', () => {
+describe('LeaseMajority — end-to-end split-brain', () => {
   test('4 nodes, 2/2 partition: lease holder side survives, other side downs itself', async () => {
     inMemoryLeaseStore._clear();
     const spec = new MultiNodeSpec({

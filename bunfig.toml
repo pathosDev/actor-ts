@@ -1,21 +1,16 @@
 # Bun test configuration.
 #
-# coveragePathIgnorePatterns: exclude the worker-thread multi-node TEST
-# HARNESS from the coverage denominator.  These files are testing tools
-# (used to *write* tests), exercised only by the ParallelMultiNodeSpec /
-# parallel-pubsub suites — which are quarantined on GitHub's hosted
-# runners because Bun there can't respawn functional worker threads after
-# the first test (#538).  They run + are covered locally and in Docker;
-# gating CI line-coverage on infra that can't execute on the hosted runner
-# would be a false signal.  Product code (incl. LeaseMajority, the cluster,
-# persistence) is unaffected.
+# Deliberately almost empty.  The per-test timeout stays at bun's own 5 000 ms:
+# `tests/unit/ci/AwaitConditionBudgets.test.ts` gates every `awaitCondition`
+# budget against that number and re-measures it in a child process rather than
+# assuming it, and the "the cap is a backstop, the budget is what reports"
+# doctrine in `docs/…/testing/diagnosing-flakes.mdx` rests on it being the same
+# number everywhere.  A test that needs longer says so in its own third
+# argument, sized by measurement.
 #
-# This block goes away with the quarantine.  `nightly-flakes.yml` measures
-# whether it still has to stand and carries the decision path (14 consecutive
-# green nights); `docs/…/testing/diagnosing-flakes.mdx` states it in prose.
-[test]
-coveragePathIgnorePatterns = [
-  "src/testkit/ParallelMultiNodeSpec.ts",
-  "src/testkit/internal/MultiNodeBroker.ts",
-  "src/testkit/internal/ParallelMultiNodeBootstrap.ts",
-]
+# The `coveragePathIgnorePatterns` block that used to live here is gone with the
+# quarantine it existed for (#538): it removed the worker-thread multi-node
+# harness from the coverage denominator only because that harness could not
+# execute on GitHub's hosted runners.  It can, and does — 21 consecutive green
+# nights of `nightly-flakes.yml` against a written criterion of fourteen — so
+# the three files are covered by the runs that exercise them like any other.

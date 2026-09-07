@@ -209,17 +209,18 @@ Schweigen statt einer Diagnose.
   laufende Specs hinweg eindeutig.
 </Aside>
 
-<Aside type="caution" title="Diese Suites laufen nicht in CI">
-  Bun kann auf GitHubs Hosted Runnern nach dem ersten Worker-Test
-  keine funktionsfähigen Worker-Threads mehr starten — sie spawnen,
-  machen den Handshake und laufen dann nie.  `ACTOR_TS_SKIP_FLAKY_MNS=1`
-  überspringt dort deshalb jede `ParallelMultiNodeSpec`-Suite, und ein
-  grüner CI-Check sagt über sie nichts aus.  Bei einem lokalen
-  `bun test` und in Docker laufen sie, und ein Nightly-Job führt sie
-  mit abgeschaltetem Flag erneut aus.
+<Aside type="note" title="Diese Suites laufen wieder in CI">
+  Von Bun hieß es, es könne auf GitHubs Hosted Runnern nach dem ersten
+  Worker-Test keine funktionsfähigen Worker-Threads mehr starten — sie
+  spawnen, machen den Handshake und laufen dann nie —, weshalb dort
+  jede `ParallelMultiNodeSpec`-Suite von `ACTOR_TS_SKIP_FLAKY_MNS=1`
+  übersprungen wurde.
 
-  Das heißt: **Lass deinen Worker-Thread-Test lokal laufen, bevor du
-  ihm traust.**  Das Ausstiegskriterium für die Quarantäne steht in
+  An dieser Behauptung gemessen hielt sie nicht: ein Nightly-Job führte
+  genau diese Suites ohne das Flag aus, dreimal pro Nacht, 21 Nächte in
+  Folge, ohne einen einzigen Hänger.  Sie laufen jetzt in `test.yml` wie
+  jede andere Suite, und das Nightly bleibt als Regressions-Guard.  Die
+  Geschichte dazu steht in
   [Test-Flakes diagnostizieren](/de/testing/diagnosing-flakes/).
 </Aside>
 

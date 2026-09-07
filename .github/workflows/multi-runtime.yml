@@ -58,6 +58,7 @@ permissions:
 jobs:
   smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       # fail-fast: false so a Deno-only regression doesn't mask a
       # Node-only one.  Each runtime gets its own red mark.
@@ -139,6 +140,7 @@ jobs:
   # effect — that stays in test.yml as the canonical updater.
   unit-bun:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     name: bun unit suite
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -154,10 +156,7 @@ jobs:
       # (#483) — so CI is where the nested Angular install has to exist.
       - run: bun run ui:install
       - run: bun run typecheck
-      # Worker-thread multi-node suites + LeaseMajority e2e are quarantined
-      # on hosted runners (Bun can't respawn functional workers there) —
-      # they run locally + in Docker; `integration` is the CI gate.
-      # `nightly-flakes.yml` runs them with the flag OFF — #538.
+      # Every suite, including the three that were quarantined behind
+      # `ACTOR_TS_SKIP_FLAKY_MNS` until #538's criterion was met and #839
+      # removed the reason the third one was in there at all.
       - run: bun test
-        env:
-          ACTOR_TS_SKIP_FLAKY_MNS: '1'

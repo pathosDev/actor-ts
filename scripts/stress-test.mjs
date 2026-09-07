@@ -14,13 +14,14 @@
  *
  * Trailing non-flag arguments are passed to `bun test` as path filters.
  *
- * **The quarantine flag is dropped from the child environment.**  Three
- * suites are gated behind `ACTOR_TS_SKIP_FLAKY_MNS=1` on GitHub's hosted
- * runners (#538), and they are precisely the ones most likely to flake.  A
- * harness that inherited the flag would measure a strictly smaller suite than
- * a local run and then report a reliable pass rate over exactly the tests
- * that are not reliable.  Pass `--skip-quarantined` to opt back in when the
- * subject of the run is the rest of the suite.
+ * **What it measures is the whole suite, and that is now structural.**  This
+ * script used to delete `ACTOR_TS_SKIP_FLAKY_MNS` from the child environment,
+ * because three suites were gated behind it (#538) and they were precisely the
+ * ones most likely to flake — a harness that inherited the flag would have
+ * reported a reliable pass rate over exactly the tests that were not reliable.
+ * The gating is gone, and `tests/unit/ci/NoEnvironmentGatedSkips.test.ts` is
+ * what keeps it gone: no environment variable may decide whether a test runs,
+ * so there is nothing left for this script to defend against.
  *
  * **What a green stress run does and does not prove.**  The loop drives up
  * the probability of a load-sensitive flake — a fixed sleep that is long
@@ -105,7 +106,6 @@ export function parseArguments(argv) {
       process.env.ACTOR_TS_STRESS_RUN_TIMEOUT_MS ?? DEFAULT_RUN_TIMEOUT_MS,
     ),
     reportDirectory: process.env.ACTOR_TS_STRESS_REPORT_DIR ?? DEFAULT_REPORT_DIRECTORY,
-    skipQuarantined: false,
     randomize: process.env.ACTOR_TS_STRESS_RANDOMIZE === '1',
     seed: process.env.ACTOR_TS_STRESS_SEED === undefined
       ? undefined
@@ -125,7 +125,6 @@ export function parseArguments(argv) {
       case 'max-flaky': options.maximumFlakyTests = Number(value); break;
       case 'run-timeout': options.runTimeoutMs = Number(value); break;
       case 'report-dir': options.reportDirectory = value ?? DEFAULT_REPORT_DIRECTORY; break;
-      case 'skip-quarantined': options.skipQuarantined = true; break;
       case 'randomize': options.randomize = true; break;
       // A seed implies the shuffle it seeds: `--seed` alone would be silently
       // inert, which is the shape of a flag that looks obeyed and is not.
@@ -147,7 +146,6 @@ function printUsage() {
   --max-flaky=N         tests allowed to fail at least once  (default ${DEFAULT_MAXIMUM_FLAKY_TESTS})
   --run-timeout=MS      one run's watchdog, then it is a HANG (default ${DEFAULT_RUN_TIMEOUT_MS})
   --report-dir=DIR      where reports and logs are written   (default ${DEFAULT_REPORT_DIRECTORY})
-  --skip-quarantined    keep ACTOR_TS_SKIP_FLAKY_MNS=1 instead of dropping it
   --randomize           shuffle test order, to surface order dependence
   --seed=N              fix the shuffle's seed (implies --randomize)
   --help                this text
@@ -570,7 +568,6 @@ export function render(aggregated, options) {
     ? 'n/a'
     : `${((aggregated.totalFailures / aggregated.totalExecuted) * 100).toFixed(4)}%`;
   lines.push(`failure rate:    ${aggregated.totalFailures} / ${aggregated.totalExecuted} = ${rate}`);
-  lines.push(`quarantined suites: ${options.skipQuarantined ? 'SKIPPED (--skip-quarantined)' : 'included'}`);
   if (aggregated.runsTimedOut.length > 0) {
     lines.push('');
     lines.push(
@@ -653,7 +650,6 @@ function writeStepSummary(aggregated, options) {
     '',
     `- **${aggregated.greenRuns}/${aggregated.runs}** runs green`,
     `- **${aggregated.totalFailures}** failures across **${aggregated.totalExecuted}** test executions`,
-    `- quarantined suites: ${options.skipQuarantined ? 'skipped' : 'included'}`,
     // A hang is the outcome the quarantined suites are most likely to produce,
     // so it belongs in the summary a human reads from the run list rather than
     // only in a log they would have to download to find it.
@@ -694,13 +690,8 @@ async function main() {
   mkdirSync(reportDirectory, { recursive: true });
 
   const environment = { ...process.env };
-  if (!options.skipQuarantined) delete environment.ACTOR_TS_SKIP_FLAKY_MNS;
-  else environment.ACTOR_TS_SKIP_FLAKY_MNS = '1';
 
-  console.log(
-    `stress-test: ${options.runs} run(s), concurrency ${options.concurrency}, `
-    + `quarantined suites ${options.skipQuarantined ? 'skipped' : 'included'}`,
-  );
+  console.log(`stress-test: ${options.runs} run(s), concurrency ${options.concurrency}`);
   if (options.filters.length > 0) console.log(`stress-test: filters — ${options.filters.join(' ')}`);
   console.log(`stress-test: reports in ${relative(process.cwd(), reportDirectory) || '.'}`);
   if (options.concurrency > 1) {
@@ -729,7 +720,6 @@ async function main() {
         runs: aggregated.runs,
         greenRuns: aggregated.greenRuns,
         filters: options.filters,
-        quarantinedSuitesIncluded: !options.skipQuarantined,
         randomized: options.randomize,
         totalExecuted: aggregated.totalExecuted,
         totalFailures: aggregated.totalFailures,

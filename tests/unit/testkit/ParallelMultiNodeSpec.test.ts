@@ -30,15 +30,13 @@ import {
   FakeWorkerBackend,
 } from '../worker/__fixtures__/InMemoryWorkerThread.js';
 
-// Quarantined on GitHub's hosted runners (ACTOR_TS_SKIP_FLAKY_MNS=1) —
-// Bun there can't respawn functional worker threads after the first test
-// (they spawn + handshake, then never run; reproducible only on the
-// hosted runners, never locally or in Docker).  Runs locally + in Docker.
-// #538 tracks the quarantine: `.github/workflows/nightly-flakes.yml` runs
-// this suite nightly with the flag OFF, and 14 consecutive green nights are
-// what removes this line.  The `construction` and control-RPC correlation
-// describes spawn no workers, so they stay un-gated.
-const describeMns = process.env.ACTOR_TS_SKIP_FLAKY_MNS === '1' ? describe.skip : describe;
+// Runs in CI.  The quarantine this file carried (`ACTOR_TS_SKIP_FLAKY_MNS=1`,
+// #538) rested on the claim that Bun cannot respawn functional worker threads
+// on GitHub's hosted runners after the first worker-thread test.  Measured
+// against that claim: `.github/workflows/nightly-flakes.yml` has run exactly
+// these suites on `ubuntu-latest` with the flag off, three repeats a night, for
+// 21 consecutive nights (2026-08-17 to 2026-09-06) — 63 executions, and not one
+// hang.  The written exit criterion was fourteen.
 
 const TIGHT_FD = {
   heartbeatIntervalMs: 100,
@@ -59,10 +57,10 @@ describe('ParallelMultiNodeSpec — construction', () => {
 /* ------------------- control-RPC correlation (#777) -------------------- */
 
 /**
- * These spawn no OS threads, so they stay OUT of the `describeMns` quarantine
- * above and actually run in CI — which is the point: the correlation bug they
- * pin surfaces as a 30 s `await*` timeout, exactly the shape #538 taught
- * everyone to dismiss as hosted-runner flakiness.
+ * These spawn no OS threads at all, which is why they ran in CI throughout the
+ * years this file's thread-spawning half was quarantined — and the correlation
+ * bug they pin surfaces as a 30 s `await*` timeout, exactly the shape #538
+ * taught everyone to dismiss as hosted-runner flakiness.
  *
  * The seam is `ParallelMultiNodeSpecOptions.backend` (#520): the fake backend
  * hands back in-memory workers whose handshake `autoHandshake` completes on a
@@ -517,7 +515,7 @@ describe('ParallelMultiNodeSpec — handshake', () => {
   });
 });
 
-describeMns('ParallelMultiNodeSpec — bootstrap', () => {
+describe('ParallelMultiNodeSpec — bootstrap', () => {
   test('three roles, all see each other Up via worker-side cluster', async () => {
     const spec = new ParallelMultiNodeSpec({
       roles: ['a', 'b', 'c'],
@@ -563,7 +561,7 @@ describeMns('ParallelMultiNodeSpec — bootstrap', () => {
   }, 150_000);
 });
 
-describeMns('ParallelMultiNodeSpec — failure simulation', () => {
+describe('ParallelMultiNodeSpec — failure simulation', () => {
   test('crash(role) drops the worker; other roles see only 2 members', async () => {
     const spec = new ParallelMultiNodeSpec({
       roles: ['a', 'b', 'c'],
@@ -645,7 +643,7 @@ describeMns('ParallelMultiNodeSpec — failure simulation', () => {
   }, 150_000);
 });
 
-describeMns('ParallelMultiNodeSpec — await* timeouts', () => {
+describe('ParallelMultiNodeSpec — await* timeouts', () => {
   test('awaitMembers throws when count never converges', async () => {
     const spec = new ParallelMultiNodeSpec({
       roles: ['solo'],
