@@ -237,12 +237,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     legitimate for an application whose routers set their own
     `ScatterGatherOptions.withTimeoutMs()`.
 
-  The ask defaults in `ClusterClient`, `ClusterClientReceptionist` and
-  distributed-data quorum reads and writes are unchanged. `ClusterClient`
-  has no `ActorSystem` and no `Config` by design, and all three belong under
-  blocks owned by #858 (`actor-ts.cluster.client`) and #856
-  (`actor-ts.distributed-data`); the quorum-reads page now says so and
-  points at #856.
+  The distributed-data quorum read and write ask defaults are unchanged and
+  belong under the block owned by #856 (`actor-ts.distributed-data`); the
+  quorum-reads page says so and points there.  The `ClusterClient` and
+  `ClusterClientReceptionist` defaults were left alone here for the same
+  reason — they belong to `actor-ts.cluster.client`, and a client holds no
+  `ActorSystem` to read a config from — and #858, further up this section,
+  went on to give them that block and a config layer of their own.
 
 - **Cluster sharding can now choose *which* entity a full node gives up, not
   just how many it keeps** (#848).  A new `actor-ts.sharding.passivation`
@@ -1992,6 +1993,66 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **BREAKING — A cluster singleton's proxy now settles a role by which layer
+  it came from rather than by the order `ref()` and `start()` were called on
+  the node (#855).**
+
+  Since the `actor-ts.cluster.singleton.*` block landed, a node that called
+  `ref()` first kept the configured role and refused the explicit one that
+  followed — so its proxy resolved a different host class than that node's
+  own manager, and it logged a conflicting-role warning naming the role that
+  should have won. The reverse order routed correctly but warned that a
+  documented, supported combination was impossible. An explicit role —
+  `StartSingletonOptions.withRole`, or one declared on the actor class's
+  `SingletonKey` — now wins over a configured one in either call order and
+  is not warned about, and a configured role arriving behind an explicit one
+  is discarded in silence, because that is the documented
+  explicit-over-HOCON precedence resolving. Two roles from the same layer
+  are still reported as the misconfiguration they are: one singleton cannot
+  be restricted two ways.
+
+  *Migration:* `ClusterSingletonProxy`'s constructor gained a `roleOrigin`
+  parameter in fifth position, ahead of `bufferSize`: a hand-written `new
+  ClusterSingletonProxy(cluster, key, resolveManager, role, bufferSize)`
+  becomes `(cluster, key, resolveManager, role, 'explicit', bufferSize)`. It
+  fails at compile time, not silently. Nothing else moves, and the proxy is
+  normally obtained from `cluster.singleton.start()` / `.ref()` rather than
+  constructed.
+
+- **Seed discovery once again reads `CLUSTER_NAMESPACE`**
+  (#860).  `reference.conf` published
+  `actor-ts.discovery.kubernetes.namespace = "default"`, and because the
+  config reader decides every field by whether the key is present, that leaf
+  was an explicit namespace on every node — layered above the environment by
+  `Cluster.bootstrap` and leaving the variable unreachable even where a
+  deployment had configured nothing. The Kubernetes rung then read
+  `/api/v1/namespaces/default/endpoints/<service>` with a namespace-scoped
+  ServiceAccount token, so a pod anywhere but `default` found no seeds and
+  self-elected: the cold-start split brain the bootstrap exists to close.
+  The key now ships comment-only, the same shape
+  `remote.tcp.advertised-host` uses, so `unset` is expressible again and the
+  chain is the key, then `CLUSTER_NAMESPACE`, then the built-in `default`. A
+  namespace written in config still wins, `"default"` included — which is
+  why the fix is an unpublished key rather than a reader that discards the
+  string. `dns.cache-ttl` and `dns.use-srv` keep their published values
+  deliberately: they have no environment layer beneath them to shadow. The
+  `actor-ts.discovery.*` block is now bound to the providers by tests that
+  drive the real `Cluster.bootstrap`; the previous ones re-implemented the
+  layering, so cutting the config block out of the bootstrap left the suite
+  green.
+
+  *Note:* No API change and no migration needed. One behaviour change to be
+  aware of: on a node that sets `CLUSTER_NAMESPACE` and configures no
+  namespace of its own, the Kubernetes discovery rung now reads that
+  variable's namespace instead of `"default"`. That is the documented
+  behaviour being restored, but a deployment that had (unknowingly) come to
+  rely on discovery hitting the default namespace will now hit the one its
+  variable names. A deployment that wants a fixed namespace regardless of
+  the environment writes `actor-ts.discovery.kubernetes.namespace` explicitly,
+  which still wins; a deployment that wants the variable at config
+  precedence keeps the documented substitution, namespace =
+  ${?CLUSTER_NAMESPACE}.
 
 - **An actor restarts `maxRetries` times, not `maxRetries + 1`.**
   `ActorCell` kept its own restart tally and its own arithmetic over it
