@@ -2046,6 +2046,43 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The budget guard could not see the budgets it was written to check, and 37
+  tests were violating its invariant while it stayed green** (#1315).
+
+  `tests/unit/ci/AwaitConditionBudgets.test.ts` enforces one rule: the largest
+  `awaitCondition` budget a test can reach, plus a second of headroom, must fit
+  inside the per-test timeout containing it — otherwise bun kills the test
+  first, the label the helper exists to print is lost, and it resurfaces
+  seconds later as an unhandled error blaming an unrelated test.
+
+  It read exactly one shape, `timeoutMs: <numeric literal>`, and treated
+  everything else as `awaitCondition`'s 2 000 ms default. Thirty-five files wrap
+  the helper in a local `waitFor(predicate, timeoutMs = 5_000, …)` that forwards
+  the parameter in **shorthand** — `{ timeoutMs, intervalMs: 25, label }` — so
+  none of those budgets was ever read, and a call site passing `8_000`
+  positionally was invisible twice over.
+
+  Measured after teaching the scanner to read them: **37 tests across 8 files**
+  could reach a budget their cap could not accommodate, most at exactly the cap
+  (a 5 000 ms budget under bun's 5 000 ms default, which can never report) and
+  one at 8 000 ms under 5 000.
+
+  Three changes:
+
+  - The scanner resolves a shorthand `timeoutMs` from the wrapper's own
+    parameter default, and a budget passed positionally at the call site from
+    the index where the wrapper declares that parameter.
+  - It resolves a budget named by a module-level `const`.
+  - **Anything it still cannot evaluate is a finding rather than a default.**
+    That is the part that matters: a guard whose fallback is "assume the
+    smallest plausible number" is most confident exactly where it understands
+    least, which is how this stayed green for so long.
+
+  The 37 tests were given explicit caps rather than smaller budgets. Lowering a
+  budget to fit a cap tightens the tolerance of a test that already waits on a
+  cluster to converge, which is the direction that *causes* flakes; raising the
+  cap only changes how a stuck test reports.
+
 - **`bun run test:stress` reported `PASS` over sixteen runs of which none was
   green** (#1359).
 

@@ -100,7 +100,7 @@ describe('ClusterSharding — initialization after convergence', () => {
     expect(reply).toBe('pong');
 
     await stopAll(nodes);
-  });
+  }, 15_000);
 
   test('ask reaches entities on both nodes (remote + local shard homes)', async () => {
     const sysName = 'init-b';
@@ -131,7 +131,7 @@ describe('ClusterSharding — initialization after convergence', () => {
     expect(replies).toEqual(Array.from({ length: 16 }, (_, i) => `reply-${i}`));
 
     await stopAll(nodes);
-  });
+  }, 15_000);
 
   test('ask works from either node to entities on either node', async () => {
     const sysName = 'init-c';
@@ -160,7 +160,7 @@ describe('ClusterSharding — initialization after convergence', () => {
     }
 
     await stopAll(nodes);
-  });
+  }, 15_000);
 
   test('ask succeeds after sleeping past the rebalance tick', async () => {
     const sysName = 'init-d';
@@ -177,7 +177,7 @@ describe('ClusterSharding — initialization after convergence', () => {
     expect(reply).toBe('pong');
 
     await stopAll(nodes);
-  });
+  }, 15_000);
 });
 
 /* -------------------------- cluster.sharding facade --------------------- */
@@ -239,7 +239,7 @@ describe('cluster.sharding', () => {
       await cluster.leave();
       await sys.terminate();
     }
-  });
+  }, 15_000);
 });
 
 /* -------------------------- LRU passivation (#82) ----------------------- */

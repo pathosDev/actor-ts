@@ -126,7 +126,7 @@ describe('ClusterSharding shard-count propagation', () => {
     // refuses the home, and the message waits in the region's buffer.
     await waitFor(() => delivered.has(farEntity));
     expect(delivered.has(farEntity)).toBe(true);
-  });
+  }, 15_000);
 
   test('an entity inside the default range keeps working', async () => {
     // The control: shard ids below 64 were always allocated, so this passed
@@ -165,5 +165,5 @@ describe('ClusterSharding shard-count propagation', () => {
     region.tell({ id: nearEntity, kind: 'work' });
     await waitFor(() => delivered.has(nearEntity));
     expect(delivered.has(nearEntity)).toBe(true);
-  });
+  }, 15_000);
 });
