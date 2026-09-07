@@ -1865,6 +1865,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **Three object-storage suites state the budget their temp-tree hooks run
+  under, instead of inheriting one nobody chose** (#290, #1282).
+
+  Their `beforeEach` builds a real object-storage tree and their `afterEach`
+  deletes it recursively. Idle that costs single-digit milliseconds; under
+  whole-suite disk contention a hook in `IntegrityTampering` was seen at 11.4 s
+  and two in `ReEncryptionSweep` at 24.8 s and 69.0 s — against bun's
+  undeclared 5 000 ms cap, which reports as `(unnamed)` with "a
+  beforeEach/afterEach hook timed out" and names neither the file, the hook kind
+  nor a cause.
+
+  Neither observation reproduced, and the change is sized for that. It is a
+  bound on work that is unbounded in principle — a recursive delete of a tree
+  whose size the test decides, on a disk the rest of the suite is also using —
+  not a number tuned until a red run went away. The other 22 files with the same
+  hook shape are deliberately left alone: two unreproduced observations do not
+  justify a sweep, and a guard that demanded a budget everywhere would be
+  asserting a hazard rather than a finding.
+
+  Verified rather than assumed: bun 1.4.0 honours the second argument on
+  `beforeEach` and `afterEach`, not only on `beforeAll` — a 6 s hook passes
+  under a 20 s budget and dies at 5 000 ms without one.
+
 - **Every suite runs in CI again, and no environment variable can change that**
   (#538, #1330).
 
