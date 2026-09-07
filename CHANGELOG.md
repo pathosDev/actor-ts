@@ -11,6 +11,36 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **A divergence CI takes on purpose now needs an owner and an expiry date —
+  `tests/quarantine.json`, `platformDependent(...)` and the guard that pairs
+  them** (#1410).
+
+  An assertion whose subject genuinely behaves differently per platform had
+  two shapes available, and both were wrong: assert one platform's behaviour
+  and the other is red for a reason that is true, or skip on the other
+  platform and the behaviour is asserted nowhere, with nobody owning it. The
+  difference only shows up on the day the runtimes converge — a skip stays
+  quietly green forever, an asserted divergence goes red and forces the
+  caveat to be revisited.
+
+  `platformDependent(import.meta, label, { win32, default })` makes both
+  platforms assert, and refuses to run without a registry entry carrying the
+  issue that owns the divergence, the measurement behind it, and a date at
+  most 45 days out. `tests/unit/ci/QuarantineRegistry.test.ts` enforces the
+  pairing in both directions and **fails once an entry is past its date** —
+  deliberately, because that is what an entry needs so it cannot be forgotten
+  the way a quarantine can. Renewal is allowed three times and costs a line
+  saying what was measured.
+
+  The helper is also the only place under `tests/` that may read
+  `process.platform` for an expectation; reading it to pick a mechanism (the
+  symlink type, the signal a platform can deliver) stays where it is, on a
+  short allow-list carrying the reason each file is entitled to.
+
+  The registry is deliberately one file for both kinds of divergence — the
+  suites CI does not run move into it next, from the six places that list
+  them today.
+
 - **A deployment can now name its seed peers and its role tags in HOCON —
   `actor-ts.cluster.seed-nodes` and `actor-ts.cluster.roles`, both shipping
   `[]` and both layered under an explicit `withSeeds(…)` / `withRoles(…)`
@@ -1912,6 +1942,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **`develop` was red on Linux because three tests asserted a connection cap
+  the runtime there does not enforce** (#1409, #1410).
+
+  `actor-ts.http.server.max-connections` is installed by writing
+  `server.maxConnections` on the `node:http` server a backend just started
+  listening on. Node enforces that property, and so does Bun — on Windows.
+  On the `ubuntu-latest` runner it does nothing: the connection past a cap of
+  1 is served like any other, measured 5 of 5 in the nightly stress job on
+  two consecutive nights, while a standalone `node:http` probe closes it
+  under bun 1.4.0 and node v26.7.0 on Windows.
+
+  The three tests now assert what each runtime actually does, through the
+  `platformDependent(...)` helper and the `tests/quarantine.json` entry
+  recorded under Added. **The gap itself is not fixed and is not being papered
+  over**: a documented connection bound that does nothing on the platform
+  most deployments run on is tracked as #1409, with the registry entry's
+  expiry as the thing that brings it back.
 
 - **BREAKING — `websocket()` routes require a same-origin upgrade by
   default, and the client keepalive stops pretending (#756, #751).**

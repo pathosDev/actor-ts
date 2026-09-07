@@ -149,6 +149,7 @@ Ursachen, die diese Suite tatsächlich hatte, mit ihrem jeweiligen Stand.
 | Dispatcher-Hop zwischen Warten und Prüfen | Geklärt | Isoliert nie reproduzierbar; fällt nur im großen Parallel-Lauf um |
 | Port-Kollisionen | Geklärt | `EADDRINUSE`, nur wenn Suites sich überlappen |
 | Filesystem-Races | Geklärt | Zwei Suites lesen die Fixtures der jeweils anderen |
+| Eine Runtime, die sich je Plattform anders verhält | Wird assertiert, mit Ablaufdatum | Auf einem Betriebssystem grün, auf dem anderen rot, über einem byte-identischen Baum |
 | Eine Assertion über prozessweiten Zustand | Geklärt | Läuft isoliert durch, fällt im Lauf der ganzen Suite um, und es ist kein Timing beteiligt |
 | Worker-Respawn auf Hosted Runnern | Quarantäne | Worker starten, machen den Handshake, laufen dann nie — nur in CI |
 
@@ -393,6 +394,74 @@ einschleppen kann.
 - **Temp-Verzeichnisse.**  `mkdtemp` oder ein `randomUUID`-Suffix pro Test,
   niemals ein geteilter Fixture-Pfad.  Rund zwei Dutzend Suites machen das
   heute; kopiere eine der Object-Storage-Suites, wenn du ein Muster brauchst.
+
+### Eine Runtime, die sich je Plattform anders verhält
+
+Streng genommen kein Flake — nichts daran ist zufällig, und ein Wiederholungslauf
+reproduziert es exakt — aber es kommt als einer daher: derselbe Commit ist auf
+dem Laptop grün und in CI rot, und der erste Reflex ist ein Re-Run.
+
+Der Fall, den diese Suite hatte, ist `server.maxConnections`.  Wir schreiben die
+Eigenschaft auf den `node:http`-Server, auf dem ein Backend gerade zu lauschen
+begonnen hat, Node setzt sie durch, und Bun setzt sie **unter Windows durch und
+auf dem `ubuntu-latest`-Runner nicht**, wo die Verbindung jenseits des Limits
+einfach bedient wird (#1409).  Drei Tests assertierten das Schließen, also war
+`develop` unter Linux rot — aus einem Grund, der zutraf.
+
+Ohne Hilfsmittel gibt es zwei Formen, und beide sind falsch.  Das Verhalten
+einer Plattform zu assertieren lässt die andere rot.  Auf der anderen Plattform
+zu skippen lässt das Verhalten nirgends assertiert, ohne Zuständigen und ohne
+Ablaufdatum — und der Unterschied zeigt sich erst an dem Tag, an dem die
+Runtimes zusammenlaufen: ein Skip bleibt für immer still grün, während eine
+assertierte Divergenz **rot** wird und den Vorbehalt zwingend wieder auf den
+Tisch legt.
+
+Also assertiert man, was jede Runtime tatsächlich tut:
+
+```ts
+import { platformDependent } from '../../util/Platform.js';
+
+expect(await closedWithin(second, 3_000)).toBe(
+  platformDependent(import.meta, 'max-connections enforced by the runtime', {
+    win32: true,
+    default: false,
+  }),
+);
+```
+
+Jeder Aufruf ist durch einen Eintrag in `tests/quarantine.json` gedeckt — der
+einen Liste aller Divergenzen, die diese Suite bewusst in Kauf nimmt — mit dem
+Issue, dem sie gehört, der Begründung samt Messung dahinter und einem Datum
+höchstens 45 Tage in der Zukunft:
+
+```json
+{
+  "kind": "platform-expectation",
+  "file": "tests/unit/http/HttpConfigDefaults.test.ts",
+  "label": "max-connections enforced by the runtime",
+  "issue": 1409,
+  "since": "2026-09-07",
+  "expires": "2026-10-22",
+  "reason": "Bun honours server.maxConnections on Windows and not on ubuntu-latest.",
+  "history": []
+}
+```
+
+`tests/unit/ci/QuarantineRegistry.test.ts` erzwingt die Paarung in beide
+Richtungen — ein Aufruf ohne Eintrag wirft beim Import, ein Eintrag, den
+niemand nutzt, fällt um — und **fällt um, sobald ein Eintrag sein Datum
+überschritten hat**.  Dieses Umfallen ist das Feature, kein Versehen: es ist
+genau das, was ein Eintrag braucht, damit er nicht so vergessen werden kann wie
+eine Quarantäne.  Verlängern ist dreimal erlaubt und kostet eine Zeile in
+`history` mit dem, was gemessen wurde; danach bleibt nur, das Subjekt zu
+reparieren oder den Test zu löschen.
+
+Der Helper ist außerdem die einzige Stelle unter `tests/`, die
+`process.platform` für eine Erwartung lesen darf.  Es zu lesen, um einen
+*Mechanismus* zu wählen — den Symlink-Typ, den `symlink()` braucht, das Signal,
+das eine Plattform zustellen kann — ist keine Erwartung und bleibt, wo es ist:
+auf einer kurzen Allow-List im Guard, mit dem Grund, auf den jede Datei sich
+beruft.
 
 ### Eine Assertion über prozessweiten Zustand
 

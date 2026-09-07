@@ -1,0 +1,40 @@
+{
+  "$comment": [
+    "Every divergence CI takes on purpose, in one list, with the issue that owns it and the date it expires.",
+    "",
+    "Two kinds live here:",
+    "  quarantine           - a suite CI does not run.  tests/util/Quarantine.ts reads it.",
+    "  platform-expectation - an assertion whose expected value differs per platform, because the",
+    "                         runtime does.  tests/util/Platform.ts reads it.",
+    "",
+    "tests/unit/ci/QuarantineRegistry.test.ts enforces this file in both directions: an entry that",
+    "nothing uses fails, a use with no entry fails, and an entry past its `expires` fails.  That last",
+    "one is the point.  A quarantine that cannot expire is what this file replaces: the previous",
+    "arrangement wrote the exit criterion into a YAML comment and asked a human to count nights.",
+    "",
+    "To renew, push { date, reason } onto `history` and move `expires`.  Three renewals is the cap;",
+    "after that the choice is to fix the subject or to delete the test, and neither is a config change."
+  ],
+  "entries": [
+    {
+      "kind": "platform-expectation",
+      "file": "tests/unit/http/HttpConfigDefaults.test.ts",
+      "label": "max-connections enforced by the runtime",
+      "issue": 1409,
+      "since": "2026-09-07",
+      "expires": "2026-10-22",
+      "reason": "Bun honours server.maxConnections on Windows and not on ubuntu-latest. Measured: 5/5 red in the nightly stress job on 2026-09-05 and 2026-09-06, and a standalone node:http probe closes the second connection under bun 1.4.0 and node v26.7.0 on Windows.",
+      "history": []
+    },
+    {
+      "kind": "platform-expectation",
+      "file": "tests/unit/http/ServerTuningParity.test.ts",
+      "label": "max-connections enforced by the runtime",
+      "issue": 1409,
+      "since": "2026-09-07",
+      "expires": "2026-10-22",
+      "reason": "Same divergence as the HttpConfigDefaults entry, seen through the per-backend parity table: fastify and express install the cap on a node:http server that Bun honours on Windows and not on ubuntu-latest.",
+      "history": []
+    }
+  ]
+}

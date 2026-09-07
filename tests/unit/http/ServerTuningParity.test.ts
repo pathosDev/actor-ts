@@ -16,6 +16,7 @@ import { HttpServerOptions } from '../../../src/http/HttpServerOptions.js';
 import { complete, get, type Route } from '../../../src/http/Route.js';
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { platformDependent } from '../../util/Platform.js';
 
 /**
  * #870 — `actor-ts.http.server` installs connection-level bounds on the server
@@ -36,12 +37,36 @@ import { LogLevel, NoopLogger } from '../../../src/Logger.js';
  * equivalent knob — so the cap is *not installed*, and the test says so out
  * loud.  The day a Hono runner exposes one, this case goes red and both the
  * docs caveat and the table in `applyServerOptions` can be lifted.
+ *
+ * **There is a second axis, and it is not Hono's.**  Fastify and Express do
+ * hand back a real `node:http` server and we do write `maxConnections` on it —
+ * but writing it is not enforcing it: Bun honours the property on Windows and
+ * ignores it on the `ubuntu-latest` runner, where the second connection is
+ * served like any other (#1409).  So "does this backend own a server" and
+ * "does this runtime enforce the bound" are separate questions, and the table
+ * answers them separately: the third column is a constant for Hono, whose
+ * answer is about the backend, and a platform-dependent value for the other
+ * two, whose answer is about the runtime.
  */
 
+/**
+ * Whether the runtime enforces a `maxConnections` we successfully wrote.
+ *
+ * Backed by an entry in `tests/quarantine.json` carrying #1409 and an expiry,
+ * so the divergence is asserted on both platforms rather than skipped on one —
+ * and goes red, rather than quietly green, on the day Bun converges.
+ */
+const runtimeEnforcesConnectionCap = platformDependent(
+  import.meta,
+  'max-connections enforced by the runtime',
+  { win32: true, default: false },
+);
+
 const backends: Array<[name: string, make: () => HttpServerBackend, installsCap: boolean]> = [
-  ['fastify', () => new FastifyBackend({ logger: false }), true],
-  ['express', () => new ExpressBackend(), true],
-  // false under Bun — see the note above; it would be true under Node.
+  ['fastify', () => new FastifyBackend({ logger: false }), runtimeEnforcesConnectionCap],
+  ['express', () => new ExpressBackend(), runtimeEnforcesConnectionCap],
+  // false on every platform — the backend owns no server to write to, which is
+  // a different reason from the two above and does not move with the runtime.
   ['hono', () => new HonoBackend(), false],
 ];
 
@@ -100,10 +125,12 @@ describe('the resolved server policy reaches each backend', () => {
     await open(binding);
     const second = await open(binding);
 
-    // One assertion, two meanings, and the boolean in the table is the whole
-    // point: on a backend that owns a node:http server the cap closes the
-    // second connection; on one that does not, the connection survives and
-    // the key is documented as unavailable rather than quietly ineffective.
+    // One assertion, three meanings, and the boolean in the table is the whole
+    // point: on a backend that owns a node:http server under a runtime that
+    // honours the property, the cap closes the second connection; on a backend
+    // that owns no server, or under a runtime that ignores what we wrote, the
+    // connection survives — and the key is documented as unavailable rather
+    // than quietly ineffective.
     expect(await closedWithin(second, 3_000)).toBe(installsCap);
   });
 });
