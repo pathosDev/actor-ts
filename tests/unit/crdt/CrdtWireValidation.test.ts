@@ -353,3 +353,92 @@ describe('LWWRegister replica ids (#724)', () => {
       .toBeNull();
   });
 });
+
+/**
+ * #1407 — the slot *count* across merges, which the per-slot ceiling assumes
+ * is bounded and did not bound.
+ *
+ * `MAX_COUNTER_SLOT` is computed as `MAX_SAFE_INTEGER / MAX_CRDT_ENTRIES`, so
+ * the ceiling is only sound while a counter holds at most `MAX_CRDT_ENTRIES`
+ * slots.  A decoder enforces that per frame; merge accumulates across frames,
+ * and used to do so without a bound.
+ */
+describe('GCounter.merge — the slot-count bound (#1407)', () => {
+  const slots = (prefix: string, count: number, each: number): Record<string, number> => {
+    const state: Record<string, number> = {};
+    for (let index = 0; index < count; index++) state[`${prefix}-${index}@10.0.0.1:2552`] = each;
+    return state;
+  };
+  const counter = (prefix: string, count: number, each = MAX_COUNTER_SLOT): GCounter =>
+    GCounter.fromJSON({ kind: 'GCounter', state: slots(prefix, count, each) } as never);
+
+  test('two frames a decoder accepts cannot merge into one it refuses', () => {
+    // The reported defect, end to end: both operands decode, so nothing on the
+    // wire path is in a position to refuse them, and before the bound the
+    // result was undecodable to every peer in the cluster — including the node
+    // holding it, which could therefore never gossip the key back into health.
+    const merged = counter('local', MAX_CRDT_ENTRIES).merge(counter('peer', MAX_CRDT_ENTRIES));
+
+    expect(Object.keys(merged.toJSON().state).length).toBe(MAX_CRDT_ENTRIES);
+    expect(() => GCounter.fromJSON(merged.toJSON())).not.toThrow();
+  });
+
+  test('value() stays a safe integer, which is what the ceiling was sized for', () => {
+    // Asserted rather than inferred from the constant's derivation: that
+    // derivation is exactly what merge was invalidating.
+    const merged = counter('local', MAX_CRDT_ENTRIES).merge(counter('peer', MAX_CRDT_ENTRIES));
+
+    expect(Number.isSafeInteger(merged.value())).toBe(true);
+    expect(merged.value()).toBeLessThanOrEqual(Number.MAX_SAFE_INTEGER);
+  });
+
+  test('a slot already held is never given up to make room', () => {
+    // The invariant the chosen trade-off protects.  A grow-only counter that
+    // can lose a count it already had would be broken in a worse way than the
+    // one this bound fixes, so the overflow is paid for by newcomers only —
+    // including, and especially, the local replica's own slot.
+    const mine = GCounter.empty().increment('mine@10.0.0.9:2552', 7);
+    const flooded = mine.merge(counter('peer', MAX_CRDT_ENTRIES));
+
+    expect(Object.keys(flooded.toJSON().state).length).toBe(MAX_CRDT_ENTRIES);
+    expect(flooded.toJSON().state['mine@10.0.0.9:2552']).toBe(7);
+  });
+
+  test('an existing slot still takes the componentwise maximum when the counter is full', () => {
+    // The bound must not turn a full counter into a frozen one: known replicas
+    // keep converging, it is only new ids that are refused.
+    const full = counter('node', MAX_CRDT_ENTRIES, 1);
+    const higher = counter('node', MAX_CRDT_ENTRIES, 5);
+
+    expect(full.merge(higher).value()).toBe(MAX_CRDT_ENTRIES * 5);
+  });
+
+  test('which newcomers get in does not depend on Map insertion order', () => {
+    // Sorted admission, so two replicas that merge the same pair of counters
+    // reach the same state.  Built in opposite orders on purpose: without the
+    // sort this passes or fails on how a Map happened to be filled.
+    const base = counter('base', MAX_CRDT_ENTRIES - 2, 1);
+    const ascending: Record<string, number> = { 'aaa@1:1': 1, 'bbb@1:1': 1, 'ccc@1:1': 1 };
+    const descending: Record<string, number> = { 'ccc@1:1': 1, 'bbb@1:1': 1, 'aaa@1:1': 1 };
+
+    const one = base.merge(GCounter.fromJSON({ kind: 'GCounter', state: ascending } as never));
+    const two = base.merge(GCounter.fromJSON({ kind: 'GCounter', state: descending } as never));
+
+    expect(Object.keys(one.toJSON().state).sort()).toEqual(Object.keys(two.toJSON().state).sort());
+    // And the two that fit are the two lowest ids, not whichever arrived first.
+    expect(one.toJSON().state['aaa@1:1']).toBe(1);
+    expect(one.toJSON().state['bbb@1:1']).toBe(1);
+    expect(one.toJSON().state['ccc@1:1']).toBeUndefined();
+  });
+
+  test('below the cap the join is exactly what it always was', () => {
+    // The regression guard: normal clusters are nowhere near 4096 replicas and
+    // must not be able to tell this bound exists.
+    const a = GCounter.empty().increment('a@1:1', 3).increment('b@1:1', 1);
+    const b = GCounter.empty().increment('b@1:1', 9).increment('c@1:1', 4);
+
+    expect(a.merge(b).toJSON().state).toEqual({ 'a@1:1': 3, 'b@1:1': 9, 'c@1:1': 4 });
+    expect(a.merge(b).value()).toBe(16);
+    expect(b.merge(a).value()).toBe(16);
+  });
+});
