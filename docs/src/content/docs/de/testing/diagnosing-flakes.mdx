@@ -159,6 +159,7 @@ Ursachen, die diese Suite tatsächlich hatte, mit ihrem jeweiligen Stand.
 | Port-Kollisionen | Geklärt | `EADDRINUSE`, nur wenn Suites sich überlappen |
 | Filesystem-Races | Geklärt | Zwei Suites lesen die Fixtures der jeweils anderen |
 | Eine Assertion über prozessweiten Zustand | Geklärt | Läuft isoliert durch, fällt im Lauf der ganzen Suite um, und es ist kein Timing beteiligt |
+| Ein Test, der davon abhängt, nach einem anderen zu laufen | Geklärt, geprüft | Grün in Deklarationsreihenfolge, rot unter `--seed=N`; ein Wiederholungslauf wiederholt dieselbe Reihenfolge und findet ihn nie |
 | Worker-Respawn auf Hosted Runnern | Erledigt, nächtlich bewacht | Worker starten, machen den Handshake, laufen dann nie — in 63 gemessenen Ausführungen kein einziges Mal |
 
 ### Fester Sleep vor einer Assertion
@@ -432,6 +433,113 @@ nur im vollen Lauf um, und keine Menge Warten ändert etwas — weil nichts
 unterwegs ist.  Frage, was der *Nenner* der Assertion ist.  Ist es ein
 `static`-Feld, eine modulweite Registry oder ein prozessweiter Zähler, dann
 verenge sie auf den Eintrag, der diesem Test gehört.
+
+### Ein Test, der davon abhängt, nach einem anderen zu laufen
+
+Das Geschwister des Eintrags darüber — und das, was ein Wiederholungslauf gar
+nicht finden kann: Ein Wiederholungslauf wiederholt *dieselbe* Reihenfolge.  Nur
+ein Shuffle stellt die Frage, und `bun test --seed=N` impliziert `--randomize`
+und reproduziert genau eine Reihenfolge:
+
+```sh
+bun test --seed=413044451
+```
+
+Vier Suites fielen um, als das zum ersten Mal gefragt wurde — in drei Formen.
+
+**Ein Wert, der von einem Test in den nächsten getragen wird.**  Der Block
+meinte „die Fixture bootet einmal, nicht einmal pro Test" und sagte das, indem
+er in einem Test schrieb und im nachfolgenden Geschwister las.  Gemischt lief
+der Leser zuerst und verglich gegen ein ungeschriebenes `null`.
+
+```ts
+// ✗ die Prämisse ist die Reihenfolge des eigenen Blocks
+let observed: ActorSystem | null = null;
+test('returns a live system', () => { observed = sys(); });
+test('returns the SAME instance', () => { expect(sys()).toBe(observed); });
+```
+
+```ts
+// ✓ gegen das vergleichen, was der Block gebootet hat — das sieht jeder Test
+let booted!: ReturnType<typeof sys>;
+beforeAll(() => { booted = sys(); });
+test('returns the SAME instance the block booted', () => { expect(sys()).toBe(booted); });
+```
+
+**Ein Modul-Mock, der seine Datei überlebt hat.**  `mock.restore()` macht
+`mock.module()` *nicht* rückgängig — ein Modul-Mock ist prozessweit und
+dauerhaft.  Eine Datei, die `node:zlib` ersetzt, um eine Fähigkeit als abwesend
+erscheinen zu lassen, reicht das an die nächste Datei weiter.  Zwei Suites in
+`tests/unit/persistence/object-storage/` brachten einander zu Fall, je nachdem,
+in welche Richtung der Shuffle sie stellte.  Also: das echte Modul vor dem
+Mocken schnappschussen, es im `afterEach` zurücklegen und alles zurücksetzen,
+was der Produktivcode daraus memoisiert hat:
+
+```ts
+const REAL_NODE_ZLIB = { ...nodeZlibModule };
+
+afterEach(() => {
+  mock.module('node:zlib', () => REAL_NODE_ZLIB);
+  resetCompressionCache();
+});
+```
+
+Die `beforeEach`-Hälfte gehört genauso dazu: Ein Memo, das aus der *vorherigen*
+Datei geerbt wurde, ist genauso falsch wie eines, das an die nächste durchsickert
+— und nur eines von beiden ist die Schuld der eigenen Datei.  Auf beiden Kanten
+zurücksetzen.
+
+Das repariert die Datei, die geleckt hat.  Für die Datei, die *verschoben* wurde,
+tut es nichts — und genau dort landete der Schaden: Drei Fälle, die die
+Allokationszeit-Schranke aus #580 festnageln, liefen weiter auf einer Sprosse,
+die gar keine solche Schranke hat, und prüften dort deren Sicherheitseigenschaft.
+Dass sie umfielen statt still durchzulaufen, war Glück — das Ende der
+Fehlermeldung war das Einzige, was „abgelehnt vor der Allokation" von
+„allokiert, dann abgelehnt" trennte, und eine anders formulierte Assertion wäre
+vom falschen Pfad erfüllt worden.
+
+Eine Suite, die eine aufgelöste Fähigkeit nur *benutzt*, sollte deshalb sagen
+können, welche sie bekommen hat — und das einmal vorab prüfen:
+
+```ts
+beforeAll(async () => {
+  expect(await zstdDecompressorRung()).toBe('node-zlib');
+});
+```
+
+Ein falscher Pfad ist dann ein Fehlschlag, der die Ursache benennt, statt fünf
+Meldungs-Abweichungen, die es nicht tun.  Die allgemeine Form: Ist das Thema
+eines Blocks eine Eigenschaft *einer* Implementierung hinter einem Resolver, dann
+muss der Resolver sagen können, welche Implementierung geantwortet hat — sonst
+prüft der Block genau das, was er erst herstellen will.
+
+**Eine feste Anzahl Microtask-Runden.**  Ein Test stieß eine Operation an, ohne
+sie abzuwarten, ließ zwei `Promise.resolve()` verstreichen und prüfte dann, dass
+ein lazy importierter SDK-Client konstruiert worden war.  Das ist eine Wette
+darauf, wie viele Runden ein dynamisches `import()` braucht — eine Zahl, wenn
+der Specifier schon in der Modul-Registry liegt, und eine andere, wenn dies die
+erste Auflösung im Lauf ist.
+
+```ts
+// ✗ zwei Runden sind eine Vermutung über den Zustand der Modul-Registry
+void backend.list({ prefix: '' }).catch(() => {});
+await Promise.resolve(); await Promise.resolve();
+expect(clientsConstructed.length).toBe(1);
+```
+
+```ts
+// ✓ eine abgeschlossene Operation hat den Client genauso konstruiert
+expect(await backend.list({ prefix: '' })).toEqual([]);
+expect(clientsConstructed.length).toBe(1);
+```
+
+Beide Per-Commit-Suites mischen jetzt, mit einem Seed, den der Workflow zieht
+und ausgibt.  Er wird dort gezogen und nicht bun überlassen, und zwar mit
+Absicht: bun meldet seinen Seed im abschließenden Summary-Block, und unter
+GitHub Actions hört es auf, diesen Block zu drucken, und meldet die Summen out
+of band — dieselbe Falle, die einmal aus einer unlesbaren Pass-Zahl ein grünes
+`tests-0 of 0`-Badge gemacht hat.  Ein Seed, den niemand lesen kann, ist keine
+Reproduktion.
 
 ## Offene Einträge
 

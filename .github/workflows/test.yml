@@ -186,8 +186,23 @@ jobs:
           # to reach `steps.stats.outputs` so the README can still flip to a
           # red badge when the suite breaks.  bun's exit status is replayed
           # at the end so the job's own result is unchanged.
+          # Randomized test order (#1422).  Four suites rested on declaration
+          # order and passed every run in it: a fixture block that wrote a value
+          # in one test and read it in the next, two files a process-wide module
+          # mock moved onto the wrong code path, and one that counted microtask
+          # turns behind a dangling operation.  A shuffle is what found them.
+          #
+          # The seed is drawn HERE rather than left to bun, because a seed
+          # nobody can read is not a reproduction: bun reports it in the
+          # trailing summary block, and under GitHub Actions it stops printing
+          # that block and reports the totals out of band.  That is the same
+          # trap the JUnit parse below exists to avoid.
+          SEED=$(( (RANDOM << 15) + RANDOM ))
+          echo "test order seed: --seed=$SEED"
+          printf 'Test order seed: `--seed=%s`\n' "$SEED" >> "$GITHUB_STEP_SUMMARY"
+
           set +e
-          bun test --coverage \
+          bun test --coverage --seed="$SEED" \
             --coverage-reporter=text --coverage-reporter=lcov \
             --coverage-dir="$COVERAGE_DIR" \
             --reporter=junit --reporter-outfile="$JUNIT_FILE" > "$LOG_FILE" 2>&1

@@ -218,6 +218,45 @@ function installSteps({ name, lines }: WorkflowFile): InstallStep[] {
 
 const installs = workflows.flatMap(installSteps);
 
+/** A single backslash, spelled so no shell heredoc or editor can eat it. */
+const BACKSLASH = String.fromCharCode(92);
+
+type BunTestRun = {
+  readonly workflow: string;
+  readonly line: number;
+  /** The whole logical command, with shell line continuations joined back up. */
+  readonly command: string;
+};
+
+/**
+ * `bun test …` invocations, as a `run:` value or a line inside a block scalar.
+ *
+ * Continuations are followed on purpose.  `test.yml` writes its coverage run
+ * across four lines, three of them continued, so a flag added to it does not
+ * necessarily land on the line the command starts on — and a scanner reading
+ * one line at a time would have declared that command free of everything below
+ * while looking at a quarter of it.
+ */
+function bunTestRuns({ name, lines }: WorkflowFile): BunTestRun[] {
+  const out: BunTestRun[] = [];
+  lines.forEach((line, index) => {
+    const match = /^\s*(?:- )?run:\s*(bun test\b.*)$/.exec(line)
+      ?? /^\s*(bun test\b.*)$/.exec(line);
+    if (!match) return;
+    let command = (match[1] ?? '').trim();
+    for (let next = index + 1; command.endsWith(BACKSLASH) && next < lines.length; next++) {
+      command = `${command.slice(0, -1).trim()} ${(lines[next] ?? '').trim()}`;
+    }
+    out.push({ workflow: name, line: index + 1, command });
+  });
+  return out;
+}
+
+const bunTests = workflows.flatMap(bunTestRuns);
+
+/** The suites that gate a commit, and therefore have to shuffle (#1422). */
+const PER_COMMIT_SUITES: readonly string[] = ['test.yml', 'multi-runtime.yml'];
+
 type ArtifactUpload = {
   readonly workflow: string;
   readonly line: number;
@@ -639,6 +678,115 @@ describe('workflow hygiene', () => {
    * install next to `id-token: write` — narrowing that one is #703, and
    * asserting it here would only produce a permanent exemption entry.
    */
+  /**
+   * A job with no `timeout-minutes` inherits GitHub's six-hour default, and a
+   * suite that stops making progress then burns six hours of a hosted runner
+   * before anyone learns anything from it.
+   *
+   * That is not hypothetical here: it is the failure mode the `ACTOR_TS_SKIP_FLAKY_MNS`
+   * quarantine was originally justified by (#538).  Bun on hosted runners could
+   * not respawn worker threads, the suites hung rather than failed, and hiding
+   * them was cheaper than watching a job time out.  A bounded job turns that
+   * into a red check inside the hour, which is a thing you can act on.
+   *
+   * Every job in the directory carries one today; this keeps the next one from
+   * being added without.  A job that only `uses:` a reusable workflow cannot
+   * carry `timeout-minutes` and would need an exemption — there are none, and
+   * adding the first should be a decision, not a silent pass.
+   */
+  test.each(jobs)('$workflow#$name bounds its own runtime', (job) => {
+    expect(
+      job.lines.some((line) => /^\s{4}timeout-minutes:\s*[0-9]+\s*$/.test(line)),
+      `${job.workflow}#${job.name} declares no timeout-minutes, so it inherits `
+      + "GitHub's six-hour default. A job that stops making progress should fail "
+      + 'inside the hour instead — that is the failure mode the multi-node '
+      + 'quarantine was justified by (#538).',
+    ).toBe(true);
+  });
+
+  test('the scanner found the bun test runs it reasons about', () => {
+    // Both assertions below are `test.each` over this list. An empty list would
+    // satisfy them by running nothing at all.
+    expect(
+      bunTests.map((run) => `${run.workflow}:${run.line}`),
+      'No `bun test` invocation was found in .github/workflows/. Either the '
+      + 'suite stopped running in CI or this scanner stopped reading it; both '
+      + 'are worth failing on.',
+    ).not.toEqual([]);
+  });
+
+  /**
+   * **`--retry` is never a gate.**  A test that passes on the second attempt is
+   * a flake, and retrying it discards the one observation that says so — the
+   * check goes green, the report says nothing, and the defect keeps shipping.
+   *
+   * The repository has the counter-example on file.  `LeaseMajority` failed 13
+   * of 21 nights, and the cause was not the runner every hypothesis blamed: it
+   * was a product defect in split-brain resolution (#839), a partition detected
+   * one peer at a time resolved as a run of majority decisions.  A retry would
+   * have hidden that for as long as the retry budget held.
+   *
+   * Repeat *runs* are the opposite tool and stay: `--rerun-each` and
+   * `bun run test:stress` exist to make a flake more visible, not less, and
+   * they aggregate what failed instead of forgetting it.
+   */
+  test.each(bunTests)('$workflow:$line does not retry a failing test', ({ command }) => {
+    expect(
+      command,
+      'A retried test is a flake whose evidence was thrown away: the check goes '
+      + 'green and the report says nothing. Treat the failure as a defect — '
+      + '`bun run test:stress` measures how often it happens, and '
+      + '`--rerun-each` makes it more visible rather than less.',
+    ).not.toMatch(/--retry(?:=|\s|$)/);
+  });
+
+  /**
+   * `--timeout` sets bun's per-test cap for the **whole run**, which is a
+   * different thing from the cap a slow test declares for itself.
+   *
+   * The tree caps per test, as the third argument to `test(...)`, and
+   * `tests/unit/ci/AwaitConditionBudgets.test.ts` checks that each of those
+   * caps is actually reachable from the budgets inside it.  A run-wide raise
+   * would grant every test the loosest cap any one of them needed, so a test
+   * that quietly started taking twenty seconds would stop being a finding —
+   * and the per-test caps would go on describing a bound nothing enforced.
+   */
+  test.each(bunTests)('$workflow:$line does not raise the per-test cap run-wide', ({ command }) => {
+    expect(
+      command,
+      'A run-wide --timeout grants every test the loosest cap any one of them '
+      + 'needs, which makes the per-test caps decorative and hides a test that '
+      + 'started taking longer. Raise the cap on the test that needs it, as the '
+      + 'third argument to test(...).',
+    ).not.toMatch(/--timeout(?:=|\s|$)/);
+  });
+
+  /**
+   * #1422 — declaration order is a premise no test should be resting on, and
+   * four were: a fixture block that wrote a value in one test and read it in
+   * the next, a suite whose module mock was undone by whoever ran after it, and
+   * one that counted microtask turns behind a dangling operation.  All four
+   * passed every run in declaration order and failed under a shuffle.
+   *
+   * So the per-commit gate shuffles.  The seed is chosen by the workflow and
+   * echoed rather than scraped back out of bun's output: bun prints it in the
+   * summary block it stops printing under GitHub Actions, which is the same
+   * trap that once turned an unreadable pass count into a green `0 of 0` badge.
+   */
+  test.each([...PER_COMMIT_SUITES])('%s runs its tests in randomized order', (workflow) => {
+    const runs = bunTests.filter((run) => run.workflow === workflow);
+    expect(runs, `${workflow} runs no bun test at all`).not.toEqual([]);
+    for (const run of runs) {
+      expect(
+        run.command,
+        `${workflow}:${run.line} runs the suite in declaration order, so a test `
+        + 'that depends on running after another one passes here and fails for '
+        + 'whoever runs them differently (#1422). Pass --seed, which implies '
+        + '--randomize, and echo the seed so a red run is reproducible.',
+      ).toMatch(/--seed(?:=|\s)|--randomize\b/);
+    }
+  });
+
   test.each(jobs)('$workflow#$name keeps write access away from installs', (job) => {
     if (!job.lines.some((line) => /^\s+contents:\s*write\s*$/.test(line))) return;
     const offender = job.lines.find((line) => INSTALL_COMMAND.test(line) && !line.trim().startsWith('#'));
