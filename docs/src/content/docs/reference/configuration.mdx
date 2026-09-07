@@ -749,7 +749,7 @@ or have all of them form a cluster at once.
 | `discovery.dns.cache-ttl` | `60s` | How long the DNS provider reuses one resolved answer.  In-process and per provider; failures are never cached.  `0` disables caching. |
 | `discovery.dns.use-srv` | `false` | Read SRV records instead of A records.  SRV carries a port per target, so each address is paired with the record's port rather than this node's remoting port. |
 | `discovery.dns.pinned-addresses` | *(unset)* | CIDRs (A-record mode) and/or host suffixes (SRV mode) a resolved address must match; anything else is discarded rather than offered as a seed.  Comment-only in `reference.conf`, because an always-present empty list could not say "no pinning" — see below. |
-| `discovery.kubernetes.namespace` | `"default"` | Namespace whose `Endpoints` object the Kubernetes provider reads. |
+| `discovery.kubernetes.namespace` | *(unset)* | Namespace whose `Endpoints` object the Kubernetes provider reads.  Comment-only in `reference.conf`, for a different reason than the pin lists: `CLUSTER_NAMESPACE` sits underneath it, so a published value would be the config layer on every node and the variable would be unreachable.  Unset, the chain is this key, then the variable, then the built-in `"default"`. |
 | `discovery.kubernetes.pinned-addresses` | *(unset)* | CIDRs the discovered pod IPs must fall inside.  CIDRs only — `Endpoints` resolve to IPs, so a host suffix could never match.  Comment-only, same reason. |
 | `discovery.config.seeds` | *(unset)* | Static `[system@]host:port` list for the `config` provider.  Comment-only: a seed list is per-deployment identity with no publishable default, and an empty list already means "we are alone". |
 
@@ -775,6 +775,15 @@ which is the framework's ordinary precedence with the environment appended at
 the bottom, not a fourth layer bolted on top of it. An env-only deployment
 therefore behaves exactly as it did before these keys existed, and an
 `application.conf` can now override a variable it could not previously reach.
+
+That last claim is about `reference.conf` as much as about the ordering, and it
+is what decides which of these keys may ship a value at all. Presence *is* the
+read — a published leaf is a configured value on a node that configured nothing
+— so a key with a `CLUSTER_*` variable beneath it ships comment-only:
+`discovery.kubernetes.namespace` and `discovery.config.seeds`, with
+`cluster.bootstrap.discovery.service-name` solving the same problem the other
+way, published as `""` and dropped by its reader. `cache-ttl` and `use-srv`
+carry published values because nothing sits under them to shadow.
 
 A deployment that wants a variable to outrank its own `application.conf`
 lifts it there itself:

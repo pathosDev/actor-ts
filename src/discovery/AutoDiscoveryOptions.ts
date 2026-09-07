@@ -82,6 +82,10 @@ export type AutoDiscoveryOptionsType = {
    * Namespace the Kubernetes rung reads `Endpoints` from.  Unset falls
    * through to `CLUSTER_NAMESPACE` and then to
    * {@link DEFAULT_KUBERNETES_NAMESPACE}.
+   *
+   * Which is why `actor-ts.discovery.kubernetes.namespace` ships comment-only:
+   * a published leaf would fill this field on every node and the fallback
+   * chain would end here.
    */
   readonly kubernetesNamespace?: string;
   /**
@@ -221,11 +225,29 @@ export class AutoDiscoveryOptionsValidator extends OptionsValidator<AutoDiscover
  * `actor-ts.remote.tcp.*` by way of the bootstrap), and the last two are
  * objects HOCON cannot express.
  *
- * The three comment-only keys — both `pinned-addresses` lists and
- * `config.seeds` — are read exactly like the published ones.  They ship
- * without a value because "unset" has to stay expressible (no pinning is the
- * default, and a seed list written once is correct on no node), not because
+ * The four comment-only keys — both `pinned-addresses` lists, `config.seeds`
+ * and `kubernetes.namespace` — are read exactly like the published ones.  They
+ * ship without a value because "unset" has to stay expressible, not because
  * they are unread.
+ *
+ * For the first three that is expressiveness: no pinning is the default and an
+ * always-present empty list could not say so, and a seed list written once is
+ * correct on no node.  For `namespace` it is **precedence**, and the reason
+ * this reader is not the place to fix it.  Every field here is decided by
+ * `hasPath`, so a published leaf is indistinguishable from a configured one —
+ * the first cut of this block shipped `namespace = "default"` and therefore
+ * returned a namespace on every node, which put a value nobody wrote into the
+ * layer above `CLUSTER_NAMESPACE` and made the variable unreachable on the
+ * `Cluster.bootstrap` path.
+ *
+ * The alternative was for this reader to drop `"default"` the way
+ * `readClusterBootstrapDiscoveryFromConfig` drops the empty `service-name`.
+ * It was rejected: `""` is not a service anyone runs, so dropping it discards
+ * nothing, while `"default"` **is** a namespace someone may mean — a
+ * deployment that writes it to override an inherited `CLUSTER_NAMESPACE`
+ * would have been silently overruled by the environment it was overriding.
+ * Not publishing the leaf keeps "unset" and "set to default" distinguishable,
+ * which is the same trade `remote.tcp.advertised-host` makes.
  */
 export function readAutoDiscoveryOptionsFromConfig(config: Config): Partial<AutoDiscoveryOptionsType> {
   const keys = ConfigKeys.discovery;

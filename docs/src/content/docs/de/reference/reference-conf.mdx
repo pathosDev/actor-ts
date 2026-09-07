@@ -1005,6 +1005,15 @@ actor-ts {
   # one of them at config precedence lifts it with a substitution --
   # namespace = ${?CLUSTER_NAMESPACE} -- which the parser resolves while
   # reading the file, so it is still three layers and not four.
+  #
+  # That ordering is what decides which of these keys may ship a value at all.
+  # Every leaf here is READ by whether it is present, so a published default
+  # occupies the config layer on a node that configured nothing -- harmless
+  # where nothing sits underneath (cache-ttl, use-srv), and the whole of the
+  # bug where something does.  The keys with a CLUSTER_* variable beneath them
+  # therefore ship as comments: namespace here, config.seeds below, and
+  # cluster.bootstrap.discovery.service-name is the same rule solved the other
+  # way, published empty and dropped by its reader.
   discovery {
     dns {
       # How long one resolved answer is reused before the resolver is asked
@@ -1036,9 +1045,18 @@ actor-ts {
     }
 
     kubernetes {
-      # Namespace whose Endpoints object is read.  Same value as the
-      # CLUSTER_NAMESPACE variable, which stays the layer below.
-      namespace = "default"
+      # namespace -- the namespace whose Endpoints object is read.  Ships no
+      # value on purpose, the remote.tcp.advertised-host shape: this key has
+      # the CLUSTER_NAMESPACE variable underneath it, and a key that is always
+      # present cannot express "unset", so a published default would BE the
+      # config layer on every node and the variable below it would be
+      # unreachable.  Which is what shipped in the first cut of this block and
+      # broke every pod outside the default namespace -- it read the wrong
+      # Endpoints object, found no seeds and self-elected, the cold-start split
+      # brain the bootstrap exists to close.  Unset, the fallback chain is
+      # reachable again: CLUSTER_NAMESPACE, then the built-in "default".
+      #
+      #   namespace = "my-namespace"
 
       # pinned-addresses -- deliberately unset for the same reason as the DNS
       # one, and CIDRs only: Endpoints resolve to pod IPs, so a host suffix

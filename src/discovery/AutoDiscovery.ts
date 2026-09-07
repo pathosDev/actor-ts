@@ -28,6 +28,17 @@ function parseSeedList(raw: string): string[] {
  * `application.conf` lifts it there with a `${?VAR}` substitution, which is
  * a read during parsing and not a fourth layer.
  *
+ * "Env-only" is a claim about `reference.conf` as much as about this code,
+ * and it is the half that broke: each `??` below is reached only while the
+ * option to its left is unset, so a *published* leaf feeding one of these
+ * three is a configured value on every node and the variable after it is
+ * dead.  All three keys therefore keep "unset" reachable, in one of the two
+ * shapes the project has for it — `discovery.kubernetes.namespace` and
+ * `discovery.config.seeds` ship comment-only, and
+ * `cluster.bootstrap.discovery.service-name` publishes `""` and is dropped by
+ * its reader.  A key added here that shadows a `CLUSTER_*` variable needs one
+ * of those two shapes.
+ *
  * `seeds` distinguishes an explicit empty array from unset: `[]` is a
  * deliberate "there is no static list" and must not fall through to
  * `CLUSTER_SEEDS`, or a config file could never turn the variable off.

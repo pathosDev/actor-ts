@@ -89,9 +89,14 @@ actor-ts {
 
 The `CLUSTER_SEEDS` / `CLUSTER_SERVICE_NAME` / `CLUSTER_NAMESPACE` variables
 still work and sit **below** those keys: explicit options, then the config
-block, then the environment, then the built-in defaults.  Building a provider
-by hand — the snippet at the top of this page — bypasses all of it, which is
-the point of that form.
+block, then the environment, then the built-in defaults.  That holds only
+because none of the three keys they back publishes a value a node would
+inherit: `discovery.kubernetes.namespace` and `discovery.config.seeds` ship as
+comments in `reference.conf`, and `cluster.bootstrap.discovery.service-name`
+ships as `""` and is dropped by its reader — a published default there would be
+a configured value on every node, and the variable under it would never be
+read.  Building a provider by hand — the snippet at the top of this page —
+bypasses all of it, which is the point of that form.
 
 ### One lookup is not an answer
 
