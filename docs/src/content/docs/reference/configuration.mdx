@@ -516,11 +516,12 @@ pre-claim its slot, and a fleet sharing one configured value is exactly what
 that draw exists to prevent.  Set it with `withClientIdentity(host, port)` if
 you need a stable one.
 
-`seeds`, `roles` and the transport have no HOCON form — the first two are
-per-deployment identity that belongs at the join site, and the transport is
-an object a config file cannot express.  A per-role *threshold* is not an
-exception to that: it names a role rather than assigning one, and the
-assignment still happens at the join site.
+The transport has no HOCON form — it is an object a config file cannot
+express.  `seeds` and `roles` do have one, `cluster.seed-nodes` and
+`cluster.roles` above: they are per-deployment identity, which is why each
+entry takes its own optional substitution rather than a shared default.  A
+per-role *threshold* names a role rather than assigning one, so it reads from
+the file even though the assignment still happens at the join site.
 
 ### `actor-ts.cluster.singleton`
 
@@ -543,10 +544,18 @@ configured role reaching only `start()` leaves such a node routing at the
 plain leader while the managers host on the role member.
 
 Precedence has one turn that reads backwards: a role declared on the actor
-class's `SingletonKey` **beats** the config file, because the key is code and
-code is the higher layer.  Two nodes disagreeing about the role — one from a
-key, one from HOCON — is a genuine misconfiguration, and the proxy says so:
-it keeps the first role it was addressed with and warns about the second.
+class's `SingletonKey` — or passed to `withRole(…)` — **beats** the config
+file, because both are code and code is the higher layer.  That holds on the
+proxy too, and in either call order: a node that calls `ref` before `start`
+builds its proxy from the file, and the explicit role the `start` carries then
+*replaces* it rather than losing to it.  A configured role arriving after an
+explicit one is discarded in silence for the same reason — it is precedence
+resolving, not a problem to report.
+
+What the proxy does warn about is two roles from the **same** layer — two
+`withRole` calls, or a key and an options object that disagree.  One singleton
+cannot be restricted two ways and nothing outranks anything, so it keeps the
+first and names the second in the log.
 
 `role = ""` is the shape of the key, not a value anyone runs with.  It is
 dropped rather than passed on, and here that is load-bearing twice over: `''`
@@ -749,7 +758,7 @@ or have all of them form a cluster at once.
 | `discovery.dns.cache-ttl` | `60s` | How long the DNS provider reuses one resolved answer.  In-process and per provider; failures are never cached.  `0` disables caching. |
 | `discovery.dns.use-srv` | `false` | Read SRV records instead of A records.  SRV carries a port per target, so each address is paired with the record's port rather than this node's remoting port. |
 | `discovery.dns.pinned-addresses` | *(unset)* | CIDRs (A-record mode) and/or host suffixes (SRV mode) a resolved address must match; anything else is discarded rather than offered as a seed.  Comment-only in `reference.conf`, because an always-present empty list could not say "no pinning" — see below. |
-| `discovery.kubernetes.namespace` | `"default"` | Namespace whose `Endpoints` object the Kubernetes provider reads. |
+| `discovery.kubernetes.namespace` | *(unset)* | Namespace whose `Endpoints` object the Kubernetes provider reads.  Comment-only in `reference.conf`, for a different reason than the pin lists: `CLUSTER_NAMESPACE` sits underneath it, so a published value would be the config layer on every node and the variable would be unreachable.  Unset, the chain is this key, then the variable, then the built-in `"default"`. |
 | `discovery.kubernetes.pinned-addresses` | *(unset)* | CIDRs the discovered pod IPs must fall inside.  CIDRs only — `Endpoints` resolve to IPs, so a host suffix could never match.  Comment-only, same reason. |
 | `discovery.config.seeds` | *(unset)* | Static `[system@]host:port` list for the `config` provider.  Comment-only: a seed list is per-deployment identity with no publishable default, and an empty list already means "we are alone". |
 
@@ -775,6 +784,15 @@ which is the framework's ordinary precedence with the environment appended at
 the bottom, not a fourth layer bolted on top of it. An env-only deployment
 therefore behaves exactly as it did before these keys existed, and an
 `application.conf` can now override a variable it could not previously reach.
+
+That last claim is about `reference.conf` as much as about the ordering, and it
+is what decides which of these keys may ship a value at all. Presence *is* the
+read — a published leaf is a configured value on a node that configured nothing
+— so a key with a `CLUSTER_*` variable beneath it ships comment-only:
+`discovery.kubernetes.namespace` and `discovery.config.seeds`, with
+`cluster.bootstrap.discovery.service-name` solving the same problem the other
+way, published as `""` and dropped by its reader. `cache-ttl` and `use-srv`
+carry published values because nothing sits under them to shadow.
 
 A deployment that wants a variable to outrank its own `application.conf`
 lifts it there itself:

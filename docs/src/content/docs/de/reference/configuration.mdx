@@ -543,11 +543,13 @@ Flotte, die sich einen konfigurierten Wert teilt, ist genau das, was diese
 Ziehung verhindern soll.  Setzen Sie ihn mit `withClientIdentity(host, port)`,
 wenn Sie einen stabilen brauchen.
 
-`seeds`, `roles` und der Transport haben keine HOCON-Form — die ersten
-beiden sind Deployment-Identität, die an die Join-Stelle gehört, und der
-Transport ist ein Objekt, das eine Config-Datei nicht ausdrücken kann.  Eine
-Schwelle *pro Rolle* ist davon keine Ausnahme: sie benennt eine Rolle, statt
-eine zuzuweisen, und die Zuweisung passiert weiterhin an der Join-Stelle.
+Der Transport hat keine HOCON-Form — er ist ein Objekt, das eine Config-Datei
+nicht ausdrücken kann.  `seeds` und `roles` haben eine, `cluster.seed-nodes`
+und `cluster.roles` weiter oben: sie sind Deployment-Identität, und genau
+deshalb bekommt jeder Eintrag seine eigene optionale Substitution statt eines
+geteilten Defaults.  Eine Schwelle *pro Rolle* benennt eine Rolle, statt eine
+zuzuweisen — sie liest also aus der Datei, obwohl die Zuweisung weiterhin an
+der Join-Stelle passiert.
 
 ### `actor-ts.cluster.singleton`
 
@@ -571,11 +573,20 @@ lässt einen solchen Node beim einfachen Leader routen, während die Manager auf
 dem Rollen-Member hosten.
 
 Eine Stelle der Präzedenz liest sich verkehrt herum: eine Rolle, die am
-`SingletonKey` der Actor-Klasse deklariert ist, **schlägt** die Config-Datei,
-denn der Key ist Code, und Code ist die höhere Schicht.  Zwei Nodes, die sich
-über die Rolle uneinig sind — einer aus einem Key, einer aus HOCON — sind eine
-echte Fehlkonfiguration, und der Proxy sagt das auch: er behält die erste
-Rolle, mit der er adressiert wurde, und warnt vor der zweiten.
+`SingletonKey` der Actor-Klasse deklariert ist — oder an `withRole(…)`
+übergeben wird —, **schlägt** die Config-Datei, denn beides ist Code, und Code
+ist die höhere Schicht.  Das gilt auch auf dem Proxy, und zwar in beiden
+Aufrufreihenfolgen: ein Node, der `ref` vor `start` aufruft, baut seinen Proxy
+aus der Datei, und die explizite Rolle, die das `start` mitbringt, *ersetzt*
+sie dann, statt gegen sie zu verlieren.  Eine konfigurierte Rolle, die nach
+einer expliziten eintrifft, wird aus demselben Grund stillschweigend verworfen
+— das ist die Präzedenz bei der Arbeit, kein zu meldendes Problem.
+
+Wovor der Proxy sehr wohl warnt, sind zwei Rollen aus **derselben** Schicht —
+zwei `withRole`-Aufrufe, oder ein Key und ein Optionsobjekt, die sich
+widersprechen.  Ein Singleton lässt sich nicht auf zwei Arten beschränken, und
+nichts schlägt hier etwas anderes: er behält die erste und nennt die zweite im
+Log.
 
 `role = ""` ist die Gestalt des Keys, kein Wert, mit dem jemand betreibt.  Er
 wird verworfen statt weitergereicht, und das trägt hier gleich doppelt: `''`
@@ -793,7 +804,7 @@ lassen.
 | `discovery.dns.cache-ttl` | `60s` | Wie lange der DNS-Provider eine aufgelöste Antwort wiederverwendet.  In-Process und pro Provider; Fehlschläge werden nie gecacht.  `0` schaltet den Cache ab. |
 | `discovery.dns.use-srv` | `false` | SRV-Records statt A-Records lesen.  SRV trägt einen Port pro Ziel, jede Adresse wird also mit dem Port des Records gepaart statt mit dem Remoting-Port dieses Knotens. |
 | `discovery.dns.pinned-addresses` | *(nicht gesetzt)* | CIDRs (A-Record-Modus) und/oder Host-Suffixe (SRV-Modus), auf die eine aufgelöste Adresse passen muss; alles andere wird verworfen statt als Seed angeboten.  In `reference.conf` nur als Kommentar, weil eine immer vorhandene leere Liste „kein Pinning“ nicht ausdrücken könnte — siehe unten. |
-| `discovery.kubernetes.namespace` | `"default"` | Namespace, dessen `Endpoints`-Objekt der Kubernetes-Provider liest. |
+| `discovery.kubernetes.namespace` | *(nicht gesetzt)* | Namespace, dessen `Endpoints`-Objekt der Kubernetes-Provider liest.  In `reference.conf` nur als Kommentar, aber aus einem anderen Grund als die Pin-Listen: Unter diesem Key liegt `CLUSTER_NAMESPACE`, ein veröffentlichter Wert wäre also auf jedem Knoten die Config-Schicht und die Variable damit unerreichbar.  Nicht gesetzt lautet die Kette: dieser Key, dann die Variable, dann das eingebaute `"default"`. |
 | `discovery.kubernetes.pinned-addresses` | *(nicht gesetzt)* | CIDRs, in die die gefundenen Pod-IPs fallen müssen.  Nur CIDRs — `Endpoints` lösen zu IPs auf, ein Host-Suffix könnte nie passen.  Nur als Kommentar, aus demselben Grund. |
 | `discovery.config.seeds` | *(nicht gesetzt)* | Statische `[system@]host:port`-Liste für den `config`-Provider.  Nur als Kommentar: Eine Seed-Liste ist Deployment-Identität ohne veröffentlichbaren Default, und eine leere Liste heißt bereits „wir sind allein“. |
 
@@ -820,6 +831,17 @@ am unteren Ende, keine vierte Schicht obendrauf.  Ein Deployment, das nur
 Umgebungsvariablen benutzt, verhält sich also exakt wie vor diesen Keys, und
 eine `application.conf` kann jetzt eine Variable überschreiben, die sie vorher
 gar nicht erreichte.
+
+Diese letzte Aussage betrifft `reference.conf` genauso wie die Reihenfolge, und
+sie entscheidet, welcher dieser Keys überhaupt einen Wert ausliefern darf.  Das
+Vorhandensein *ist* die Lesung — ein veröffentlichtes Leaf ist ein
+konfigurierter Wert auf einem Knoten, der nichts konfiguriert hat.  Ein Key mit
+einer `CLUSTER_*`-Variablen darunter wird deshalb nur als Kommentar
+ausgeliefert: `discovery.kubernetes.namespace` und `discovery.config.seeds`;
+`cluster.bootstrap.discovery.service-name` löst dasselbe Problem andersherum,
+veröffentlicht als `""` und von seinem Reader verworfen.  `cache-ttl` und
+`use-srv` tragen veröffentlichte Werte, weil unter ihnen nichts liegt, das sie
+verdecken könnten.
 
 Ein Deployment, das eine Variable über die eigene `application.conf` stellen
 will, hebt sie selbst dorthin:
