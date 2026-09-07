@@ -143,11 +143,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the builder alongside the existing setters.  Set `contact-points` and a
   client built with no options at all connects:
 
-  ```hocon actor-ts.cluster.client { contact-points  =
-  ["orders@10.0.0.1:2552", "orders@10.0.0.2:2552"] connect-timeout = 2s }
+  ```hocon
+  actor-ts.cluster.client {
+    contact-points  = ["orders@10.0.0.1:2552", "orders@10.0.0.2:2552"]
+    connect-timeout = 2s
+  }
   ```
 
-  ```ts const client = new ClusterClient({}); ```
+  ```ts
+  const client = new ClusterClient({});
+  ```
 
   The constructor loads that configuration itself — the same chain
   `ActorSystem.create` uses, honouring `ACTOR_TS_CONFIG` and
@@ -581,8 +586,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   one defaults `off`; a system nobody configured writes exactly what it
   wrote before.
 
-  ```hocon actor-ts.diagnostics { log-config-on-start = off debug {
-  unhandled  = off lifecycle  = off event-stream = off } } ```
+  ```hocon
+  actor-ts.diagnostics {
+    log-config-on-start = off
+    debug {
+      unhandled    = off
+      lifecycle    = off
+      event-stream = off
+    }
+  }
+  ```
 
   `log-config-on-start` is the answer to "why is this setting not what I
   wrote". It writes one `info` record holding the whole merged tree — every
@@ -683,8 +696,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   cap, and a stall deadline on a half-received frame — and until now were
   four hard-coded numbers with no key at all.
 
-  ```hocon actor-ts.remote { handshake-timeout  = 5s outbound-queue-size  =
-  1000 max-inbound-connections = 1024 incomplete-frame-idle  = 30s } ```
+  ```hocon
+  actor-ts.remote {
+    handshake-timeout       = 5s
+    outbound-queue-size     = 1000
+    max-inbound-connections = 1024
+    incomplete-frame-idle   = 30s
+  }
+  ```
 
   Every default is exactly where it was — wiring a bound must not move it,
   and `ClusterConfigDefaults.test.ts` pins the published four to the
