@@ -225,6 +225,8 @@ replay from it.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `cluster.gossip-interval` | `1s` | How often gossip is exchanged with a random peer. |
+| `cluster.seed-nodes` | `[]` | Peers this node announces itself to at start-up, `"system@host:port"` (or `"host:port"`).  Empty = "I am the first node" — see below. |
+| `cluster.roles` | `[]` | Role tags this node carries.  Shard regions, singletons, the per-role thresholds and the role-filtered downing strategies all place **by** role. |
 | `cluster.seed-retry-interval` | `3s` | How often to retry seed connections during join. |
 | `cluster.weakly-up-after` | `0s` | Auto-promote a `joining` member to `weakly-up` after this long.  `0` disables it — see [Weakly-up](/cluster/weakly-up/). |
 | `cluster.max-members` | `1000` | Cap on live member entries gossip may introduce.  `0` disables the cap. |
@@ -351,11 +353,48 @@ naming the key and the current count — rather than reporting the cold-start
 stall diagnosis, which would be a false verdict here.  See
 [Joining and seeds](/cluster/joining-and-seeds/).
 
-`seeds`, `roles` and the transport have no HOCON form — the first two are
-per-deployment identity that belongs at the join site, and the transport is
-an object a config file cannot express.  A per-role *threshold* is not an
-exception to that: it names a role rather than assigning one, and the
-assignment still happens at the join site.
+`seed-nodes` is one list that is correct on **every** node of a deployment,
+which is why it is a key at all.  A node removes its own address from the
+list before dialling, so naming the designated first node and shipping the
+same file everywhere leaves that node with an empty list — and self-electing
+— while every other node dials it.  The shape that does not work is the
+symmetric one, every node listed: self-exclusion then leaves nobody with the
+empty list `selfElection: 'immediate'` requires, so nobody is ever promoted.
+Config does not create that trap, and the node
+[diagnoses it](/cluster/joining-and-seeds/), but it does make it a one-line
+mistake — [cluster bootstrap](/cluster/cluster-bootstrap/) is the way out
+when the members are not known in advance.
+
+Both leaves are read as **lists** and only as lists, so a single
+`seed-nodes = ${?SEED_NODES}` is refused at start-up rather than split on
+commas.  Write one optional substitution per entry — unset ones drop out of
+the array:
+
+```hocon
+actor-ts.cluster {
+  seed-nodes = [ ${?SEED_1}, ${?SEED_2}, ${?SEED_3} ]
+  roles      = [ ${?NODE_ROLE} ]
+}
+```
+
+For the single comma-separated variable, `seedsFromEnv(...)` in code is the
+first-class form — see [seed providers](/discovery/seed-providers/config/).
+A malformed entry is refused by `Cluster.join` before the transport binds,
+with the offending string in the message.
+
+`cluster.seed-nodes` and `discovery.config.seeds` are not two answers to one
+question, and the order between them is fixed: `Cluster.bootstrap` runs
+discovery first and forwards what it found, so a discovered seed wins; this
+key applies when discovery named nothing.  An explicit `seeds: []` passed to
+`Cluster.bootstrap` still wins over both — it says "there is nobody else",
+which is an answer rather than a silence.
+
+`selfElection` and the transport have no HOCON form.  The transport is an
+object a config file cannot express.  `selfElection` is the one setting whose
+shared value is not merely useless but unsafe: all-`'never'` never starts a
+cluster and all-`<delay>` has every node self-elect at the same moment, which
+is the split brain the option exists to close — cluster bootstrap is what
+hands out a per-node value.
 
 ### `actor-ts.cluster.singleton`
 
@@ -1682,8 +1721,8 @@ cluster.sharding.start(shardingOptions);
 #### A role names, it does not grant
 
 `sharding.role` says **which** role hosts a type.  It does **not** give the
-node that role.  A node's own roles are per-node identity rather than tuning,
-so `ClusterOptions.roles` has no config leaf at all and stays in code:
+node that role.  A node's own roles are a separate setting, assigned in code
+or through [`actor-ts.cluster.roles`](#actor-tscluster):
 
 ```ts
 // On every node that should host the shards:

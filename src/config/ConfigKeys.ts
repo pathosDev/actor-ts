@@ -954,6 +954,33 @@ export const ConfigKeys = {
      */
     minimumMembersBeforeUp: 'actor-ts.cluster.minimum-members-before-up',
     /**
+     * The peers this node announces itself to at start-up (#836).
+     *
+     * In config despite being per-node identity, and the reason is that it is
+     * *not* per-node in the shape the project prescribes: `Cluster` removes
+     * this node's own address before dialling, so a file naming the designated
+     * first node is correct on every node of the deployment — that node is
+     * left with an empty list and self-elects, everyone else dials it.  What
+     * stays out is `selfElection`, whose shared value is not merely useless
+     * but unsafe; the ranking is in `ClusterConfigDefaults`' own doc.
+     *
+     * Read as a **list** and only as a list: a single `${?SEED_NODES}` lands a
+     * string and `getStringList` refuses it.  The per-entry substitution form
+     * is what works, and `reference.conf` spells it out beside the key.
+     */
+    seedNodes: 'actor-ts.cluster.seed-nodes',
+    /**
+     * The role tags this node carries (#836) — what shard regions, singletons,
+     * the per-role thresholds above and the role-filtered downing strategies
+     * place on.
+     *
+     * The half of #836 that reverses nothing: no file ever gave a
+     * roles-specific reason to keep it out of HOCON, and `sharding.role`
+     * already lets a config file *filter* on a role, which is only usable if
+     * the same file can assign one.
+     */
+    roles: 'actor-ts.cluster.roles',
+    /**
      * Root of the per-role Up thresholds —
      * `actor-ts.cluster.role.<role>.minimum-members-before-up` (#837).
      *
@@ -1465,8 +1492,8 @@ export const ConfigKeys = {
    * buffer*, the opposite polarity to `maxEntities = 0`, which means *no cap*.
    *
    * `role` names **which** role hosts a type; it does not *give* a node that
-   * role, because `ClusterOptions.roles` is per-node identity and deliberately
-   * has no leaf of its own.  Which role hosts a type is uniform across a
+   * role — `actor-ts.cluster.roles` does, and did not exist when this key
+   * shipped (#836).  Which role hosts a type is uniform across a
    * deployment — which roles a node carries is not — and that asymmetry is
    * both the argument for the key and the reason it ships as `""`: the empty
    * string is the only way a shipped leaf can still mean *unrestricted*, since

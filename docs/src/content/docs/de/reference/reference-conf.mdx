@@ -421,6 +421,46 @@ actor-ts {
     # split-brain-resolver below.
     minimum-members-before-up = 1
 
+    # Peers this node announces itself to at start-up, "system@host:port" (or
+    # "host:port", which takes this system's own name).  Empty is the
+    # documented "I am the first node": under the default 'immediate'
+    # self-election policy, a node whose seed list is empty forms a cluster of
+    # one and everybody else joins it.
+    #
+    # ONE list is correct on every node of a deployment, which is why this is
+    # a key and not only a join-site argument: a node removes its OWN address
+    # before dialling, so naming the designated first node here and shipping
+    # the same file everywhere leaves that node with an empty list -- and
+    # self-electing -- while every other node dials it.
+    #
+    # The shape that does NOT work is the symmetric one, every node listed:
+    # self-exclusion then leaves nobody with an empty list, so nobody may
+    # self-elect and nobody is ever promoted.  Config does not create that
+    # trap and the node diagnoses it, but it does make it a one-line mistake.
+    # cluster.bootstrap below is the way out when the members are not known
+    # in advance.
+    #
+    # A single substitution does NOT work: seed-nodes = ${?SEED_NODES} lands a
+    # string where a list is read, and the node refuses to start.  Write one
+    # optional substitution per entry -- unset ones drop out of the array:
+    #
+    #   seed-nodes = [ ${?SEED_1}, ${?SEED_2} ]
+    #
+    # For the single comma-separated variable, use seedsFromEnv(...) in code.
+    seed-nodes = []
+
+    # Role tags this node carries.  Shard regions, cluster singletons, the
+    # per-role thresholds above and the role-filtered downing strategies are
+    # all placed BY role, so this key decides what this node is a candidate
+    # for.  Empty = no roles, and every role filter reads that as "not a
+    # candidate"; an unfiltered feature is unaffected either way.
+    #
+    # Unlike the seed list this one is usually per-node, so the substitution
+    # form is the common one:
+    #
+    #   roles = [ ${?NODE_ROLE} ]
+    roles = []
+
     # Per-role thresholds compose with the one above as an AND: the global
     # count and every configured role's count must be met.  Counted over the
     # same three statuses, filtered by role; a role absent from the block is
@@ -1773,8 +1813,8 @@ actor-ts {
   sharding {
     number-of-shards = 64
     # Which role hosts shards; "" = unrestricted.  This names the role, it does
-    #   NOT give a node one -- a node's own roles stay code-only
-    #   (ClusterOptions.withRoles), so a role no up member carries places
+    #   NOT give a node one -- that is cluster.roles above (or
+    #   ClusterOptions.withRoles), so a role no up member carries places
     #   nothing at all and every message for the type sits in the region buffer.
     role = ""
     rebalance-interval = 2s

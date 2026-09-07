@@ -1053,6 +1053,17 @@ const FEATURE_SWITCHES: readonly string[] = [
   'actor-ts.cluster.weakly-up-after', // 0s = no auto weakly-up promotion
   'actor-ts.cluster.tombstone.min-retention', // 0s = derive from down-after
   'actor-ts.cluster.pub-sub.send-to-dead-letters-when-no-subscribers',
+  // Two more empty-list sentinels (#836), and they read exactly like the
+  // others in this group: `Cluster.join` does `resolvedOptions.seeds ?? []` and
+  // the constructor does `options.roles ?? []`, so an empty list and an unset
+  // key produce the identical node.  No constant either — which peers to dial
+  // and which tags to carry are the deployment's, and the framework has no
+  // candidate to name.  `[]` is load-bearing for `seed-nodes` in the way
+  // `durable-keys` is: it is the documented "I am the first node", not "no
+  // seeds configured yet", which is why the behaviour is pinned in
+  // `ClusterSeedsAndRolesFromConfig.test.ts` rather than only written here.
+  'actor-ts.cluster.seed-nodes',
+  'actor-ts.cluster.roles',
   'actor-ts.remote.tls.enabled',
   // `[]` = admit nothing beyond the registered framework endpoints — the same
   // sentinel shape as `devtools.allowed-origins` and `http.cors.exposed-headers`

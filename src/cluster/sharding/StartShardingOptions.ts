@@ -243,8 +243,8 @@ export class StartShardingOptionsValidator<TMessage>
  *
  * `role` is the one member here that is placement rather than tuning, and it is
  * in on purpose: *which* role hosts a type is uniform across a deployment,
- * while *which* roles a node carries is per-node identity and stays code-only
- * (`ClusterOptions.roles` has no leaf, see `ConfigKeys.sharding`).  `proxy` is
+ * while *which* roles a node carries is not — that half is assigned separately,
+ * by `actor-ts.cluster.roles` (#836).  `proxy` is
  * the counter-example and stays out: it is per-node topology, a second `start`
  * disagreeing about it throws, and a deployment-wide `proxy = on` would leave
  * nothing hosting anything (#847).
