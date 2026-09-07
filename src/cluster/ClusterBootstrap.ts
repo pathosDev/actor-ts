@@ -146,8 +146,30 @@ export async function bootstrapCluster(
 
   const clusterOptions = ClusterOptions.create()
     .withHost(host)
-    .withPort(port)
-    .withSeeds([...seeds]);
+    .withPort(port);
+  // Conditional, and that is the whole of what makes `actor-ts.cluster
+  // .seed-nodes` work on this path (#836).  `mergeOptions` strips `undefined`
+  // and not `[]`, so an unconditional `.withSeeds([])` is an explicit empty
+  // list — it outranks HOCON per the documented precedence and silently
+  // shadows the file's seeds on every `Cluster.bootstrap` call.  Every gate
+  // stays green while it does: `NoDeadConfigKeys` asks whether the key is
+  // *read*, and it is; it just never reaches anything.  Same shape as `roles`
+  // below, and the same reason.
+  //
+  // Two clauses, because "the plan is empty" has two causes and they mean
+  // opposite things.  A caller who wrote `seeds: []` said "there is nobody
+  // else", which is an explicit option and must outrank the file — so it is
+  // still forwarded.  A plan that came up empty because nobody named a list
+  // and discovery found none has said nothing at all, and that silence is
+  // what the file is for.
+  //
+  // The stable-observation branch composes with this rather than needing a
+  // case of its own: the node it elects gets an empty list *and* a deferred
+  // `selfElection`, so it dials whatever the file names and self-elects only
+  // if that produced nothing — which is what the deferred policy is for.
+  if (seeds.length > 0 || resolvedOptions.seeds !== undefined) {
+    clusterOptions.withSeeds([...seeds]);
+  }
   // Forward only what the caller actually named, never the value derived from
   // it.  `Cluster.join` runs the same chain over the same `host` and the same
   // environment, so it arrives at the same answer — and it can still tell that

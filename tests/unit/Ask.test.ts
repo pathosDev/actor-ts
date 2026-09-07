@@ -5,6 +5,10 @@ import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { AskTimeoutError } from '../../src/SystemMessages.js';
 import { OptionsError } from '../../src/util/OptionsValidator.js';
+import { DEFAULT_ASK_TIMEOUT_MS } from '../../src/util/Constants.js';
+import { Nobody } from '../../src/ActorRef.js';
+import { EntityRef } from '../../src/cluster/sharding/EntityRef.js';
+import { TestProbe } from '../../src/testkit/TestProbe.js';
 import { sleep } from '../util/AwaitCondition.js';
 
 const newSystem = (name = 'ask-unit'): ActorSystem => {
@@ -228,5 +232,100 @@ describe('ask — reply-ref naming (#119)', () => {
 
     await first.terminate();
     await second.terminate();
+  });
+});
+
+describe('ask — the configured default deadline (#863)', () => {
+  /**
+   * Nested and not `{'actor-ts.actor.ask-timeout': …}`: a dotted string stays a
+   * literal top-level key, so the read would fall through to the reference
+   * value and every assertion below would pass against a system that ignored
+   * the configuration entirely.
+   */
+  const configuredSystem = (askTimeout: string, name = 'ask-configured'): ActorSystem => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({ 'actor-ts': { actor: { 'ask-timeout': askTimeout } } });
+    return ActorSystem.create(name, sysOptions);
+  };
+
+  class Silent extends Actor<string> { override onReceive(_: string): void {} }
+
+  test('an omitted deadline on a local ref arms the configured value', async () => {
+    const sys = configuredSystem('40ms');
+    const ref = sys.spawn(Silent, 's');
+
+    // Asserted through the rejection message rather than by timing the await:
+    // the message quotes the deadline that was actually armed, so a system
+    // that fell back to the 5 000 ms constant fails here in milliseconds
+    // instead of failing five seconds later, or passing on a slow machine.
+    let caught: unknown = null;
+    try { await ref.ask('hi'); } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(AskTimeoutError);
+    expect((caught as Error).message).toContain('after 40ms');
+
+    // `undefined` takes the same road as an omitted argument — the parameter
+    // is optional now rather than defaulted, and `??` is what resolves it.
+    let caughtUndefined: unknown = null;
+    try { await ref.ask('hi', undefined); } catch (e) { caughtUndefined = e; }
+    expect((caughtUndefined as Error).message).toContain('after 40ms');
+
+    await sys.terminate();
+  });
+
+  test('an explicit per-call deadline still wins over the configured one', async () => {
+    const sys = configuredSystem('40ms', 'ask-explicit-wins');
+    const ref = sys.spawn(Silent, 's');
+    let caught: unknown = null;
+    try { await ref.ask('hi', 90); } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(AskTimeoutError);
+    expect((caught as Error).message).toContain('after 90ms');
+    await sys.terminate();
+  });
+
+  test('a configured value still has to be positive at the call site', async () => {
+    // The system refuses a non-positive `ask-timeout` at construction, so this
+    // is the other half: an explicit `0` is not rescued by a healthy configured
+    // default — the per-call guard is unchanged and still owns that domain.
+    const sys = configuredSystem('40ms', 'ask-explicit-zero');
+    const ref = sys.spawn(Silent, 's');
+    let caught: unknown = null;
+    try { void ref.ask('hi', 0).catch(() => undefined); } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(OptionsError);
+    expect((caught as OptionsError).field).toBe('timeoutMs');
+    await sys.terminate();
+  });
+
+  test('which refs honour the key, and which keep the constant', async () => {
+    const sys = configuredSystem('40ms', 'ask-ref-coverage');
+    const local = sys.spawn(Silent, 's');
+    const probe = new TestProbe(sys);
+    // A local region ref stands in for the sharding one: `EntityRef` reaches
+    // its system only through whatever ref it was handed, and that delegation
+    // is the whole mechanism — the region's own kind is not part of it.
+    const entity = new EntityRef(local, 'counter', 'user-42', 8, sys.name);
+
+    expect(local._defaultAskTimeoutMs()).toBe(40);
+    expect(probe._defaultAskTimeoutMs()).toBe(40);
+    expect(entity._defaultAskTimeoutMs()).toBe(40);
+
+    // Documented partial coverage, asserted so it stays a decision rather than
+    // becoming an accident: these hold a system *name*, not a system, and the
+    // configured value cannot reach them.  Widening the key to cover them means
+    // changing this test on purpose.
+    expect(sys.deadLetters._defaultAskTimeoutMs()).toBe(DEFAULT_ASK_TIMEOUT_MS);
+    expect(Nobody._defaultAskTimeoutMs()).toBe(DEFAULT_ASK_TIMEOUT_MS);
+
+    await sys.terminate();
+  });
+
+  test('an untouched system still arms the built-in constant', async () => {
+    // The reference default and the built-in fallback are two numbers that
+    // could drift apart; this is the one assertion that reads them as one.
+    const sys = newSystem('ask-untouched');
+    const ref = sys.spawn(Silent, 's');
+    expect(ref._defaultAskTimeoutMs()).toBe(DEFAULT_ASK_TIMEOUT_MS);
+    await sys.terminate();
   });
 });

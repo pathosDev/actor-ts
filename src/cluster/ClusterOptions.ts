@@ -3,6 +3,7 @@ import { ConfigKeys } from '../config/ConfigKeys.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import { mergeOptions, stripUndefined } from '../util/OptionsMerge.js';
+import { NodeAddress } from './NodeAddress.js';
 import type { FailureDetectorImplementation } from './FailureDetector.js';
 import type { FailureDetectorOptionsType } from './FailureDetectorOptions.js';
 import type { PhiAccrualOptionsType } from './PhiAccrualOptions.js';
@@ -273,9 +274,26 @@ export type ClusterOptionsType = {
    * the bound one, and both are dialable by construction.
    */
   readonly advertisedPort?: number;
-  /** Other nodes this node should try to contact on startup. */
+  /**
+   * Other nodes this node should try to contact on startup, as
+   * `system@host:port` (or `host:port`, which takes this system's name).
+   *
+   * Empty is the documented "I am the first node": under the default
+   * `'immediate'` {@link selfElection} a node with no seed forms a cluster of
+   * one.  This node's own address is removed from the list before it dials,
+   * which is what makes one shared list correct on every node of a deployment
+   * — and what makes `actor-ts.cluster.seed-nodes` a usable HOCON key (#836).
+   */
   readonly seeds?: string[];
-  /** Role tags exposed to other members — used to constrain sharding placement. */
+  /**
+   * Role tags exposed to other members — what shard regions, cluster
+   * singletons, the per-role Up thresholds and the role-filtered downing
+   * strategies place on.
+   *
+   * Configurable as `actor-ts.cluster.roles` (#836): a role is what the rest
+   * of the framework filters *by*, and `actor-ts.sharding.role` already lets a
+   * config file name one, so the same file has to be able to assign one.
+   */
   readonly roles?: string[];
   /**
    * Which detection algorithm this node runs — `'simple'` (default) or
@@ -411,12 +429,14 @@ export type ClusterOptionsType = {
    * When this node may declare itself the first member of a new cluster —
    * see {@link SelfElectionPolicy}.  Default: `'immediate'`.
    *
-   * Deliberately absent from {@link ClusterConfigDefaults}: it is per-node
-   * identity, not tuning, exactly like `seeds` and `roles`.  A HOCON leaf
-   * would be applied to every node of a deployment identically, and both
-   * uniform answers are wrong — all-`'never'` never starts a cluster, and
-   * all-`<delay>` has every node self-elect at the same moment, which is the
-   * split brain this option exists to close.
+   * Deliberately absent from {@link ClusterConfigDefaults}, and now the only
+   * one of its old group that is (#836).  It used to be justified by analogy
+   * to `seeds` and `roles`; that analogy is gone, because a shared seed list
+   * turns out to be correct on every node — this one is not merely useless
+   * when shared, it is unsafe.  Both uniform answers are wrong:
+   * all-`'never'` never starts a cluster, and all-`<delay>` has every node
+   * self-elect at the same moment, which is the split brain this option
+   * exists to close.  Cluster bootstrap is what hands out a per-node value.
    */
   readonly selfElection?: SelfElectionPolicy;
   /**
@@ -846,6 +866,18 @@ export class ClusterOptionsBuilder extends OptionsBuilder<ClusterOptionsType> {
   }
 }
 
+/**
+ * Stand-in system name used only while checking a seed entry written in the
+ * bare `host:port` form (#836).
+ *
+ * `NodeAddress.parse` requires the `system@` prefix, and `Cluster._start`
+ * supplies this system's own name for an entry that omits it.  The validator
+ * runs before there is a `Cluster` to ask, and the name is not what it is
+ * checking, so any syntactically valid one does — it is discarded with the
+ * parsed address.  Not exported: it has no meaning outside the one rule.
+ */
+const SEED_SYSTEM_NAME_PLACEHOLDER = 'system';
+
 /** Validates resolved {@link ClusterOptionsType} settings. */
 export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType> {
   constructor() {
@@ -956,8 +988,52 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
         selfElection,
       );
     }
+    this.checkSeeds(s.seeds);
     this.checkTrustedSelectionPaths(s.trustedSelectionPaths);
     this.checkConfigurationCheckedPaths(s.configurationCompatibilityCheckedPaths);
+  }
+
+  /**
+   * Reject a seed address that `NodeAddress.parse` could not read (#836).
+   *
+   * Deliberately **not** `nonEmptyArray`: an empty seed list is the documented
+   * "I am the first node", so the list itself is never the mistake — the
+   * entries are.  What this buys is *where* the refusal happens.
+   * `NodeAddress.parse` throws a bare `Error`, and `Cluster` calls it inside
+   * `_start`, **after** `transport.start()` — so a typo takes the node down
+   * with a bound socket behind it and a message that names neither the field
+   * nor the config key.  This runs in `Cluster.join`, before the constructor
+   * and before any socket, and names the offending entry.
+   *
+   * A config-sourced list makes that far likelier than a code-sourced one,
+   * which is why the rule lands with the key rather than being decoration on
+   * it.
+   *
+   * The bare `host:port` form is accepted because `Cluster._start` accepts it
+   * and prefixes this system's own name; the placeholder below stands in for
+   * the name the cluster will supply, so the check is over the half an
+   * operator actually wrote.
+   */
+  private checkSeeds(seeds: readonly string[] | undefined): void {
+    if (seeds === undefined) return;
+    if (!Array.isArray(seeds)) {
+      this.fail('seeds', 'must be a list of "system@host:port" addresses', seeds);
+    }
+    for (const seed of seeds) {
+      if (typeof seed !== 'string' || seed.trim() === '') {
+        this.fail('seeds', 'entries must be non-empty "system@host:port" addresses', seed);
+      }
+      try {
+        NodeAddress.parse(seed.includes('@') ? seed : `${SEED_SYSTEM_NAME_PLACEHOLDER}@${seed}`);
+      } catch {
+        this.fail(
+          'seeds',
+          'entries are "system@host:port", or "host:port" to mean this system — a missing port '
+          + 'is the usual cause',
+          seed,
+        );
+      }
+    }
   }
 
   /**
@@ -1184,18 +1260,29 @@ export function resolveAdvertisedPort(
  * plus the bind address, the advertised address and the wire cap under
  * `actor-ts.remote.*`.
  *
- * `advertisedHost` is in and `seeds` is out for the same reason, read two
- * ways.  Both are per-node identity, but only one of them is *derivable* from
- * the platform: a Deployment gives every pod the same manifest and a different
- * `POD_IP`, so `advertised-host = ${?POD_IP}` is one line that is correct on
- * every node, where a seed list written once is correct on none of them.
+ * `seeds` and `roles` used to be excluded here beside `selfElection`, on the
+ * argument that a seed list written once is "correct on none of them".  That
+ * was false about this framework, and #836 corrects it: {@link Cluster}
+ * removes this node's own address from the list before dialling, so the shape
+ * the docs actually prescribe — name the designated first node, ship one file
+ * everywhere — is correct on *every* node.  That node reads an empty
+ * `seedAddrs` and self-elects; the rest dial it.  The shape it is wrong for is
+ * the symmetric list naming every node, which deadlocks whether it came from
+ * config or from code, and which the framework already detects and diagnoses.
+ * `roles` never had an argument against it at all: it was only ever named
+ * alongside `seeds`, and `sharding.role` already lets a config file filter on
+ * a role, which is unusable if the same file cannot assign one.
  *
- * `seeds`, `roles`, `selfElection` and `transport` are absent on purpose: the
- * transport is an object HOCON cannot express, and the first three are
- * per-deployment identity rather than tuning — they belong at the join site
- * where the node knows who it is.  `selfElection` is the sharpest of the
- * three, because a shared value is not merely useless but actively unsafe —
- * see the field's own doc.
+ * `selfElection` and `transport` stay out, and for two different reasons.  The
+ * transport is an object HOCON cannot express.  `selfElection` is the one
+ * whose shared value is not merely useless but actively unsafe — see the
+ * field's own doc — which is what makes it the sharpest of the group and the
+ * only one left in it.
+ *
+ * `advertisedHost` is the other half of the identity question and was always
+ * in, because the platform derives it: a Deployment gives every pod the same
+ * manifest and a different `POD_IP`, so `advertised-host = ${?POD_IP}` is one
+ * line that is correct on every node.
  *
  * `downing` used to be in that sentence beside `transport`, and is not any
  * more (#838).  It is an object too, but the difference is that HOCON does not
@@ -1207,7 +1294,8 @@ export function resolveAdvertisedPort(
  */
 export type ClusterConfigDefaults = Partial<Pick<
   ClusterOptionsType,
-  'host' | 'advertisedHost' | 'port' | 'advertisedPort' | 'gossipIntervalMs' | 'seedRetryIntervalMs'
+  'host' | 'advertisedHost' | 'port' | 'advertisedPort' | 'seeds' | 'roles'
+  | 'gossipIntervalMs' | 'seedRetryIntervalMs'
   | 'failureDetectorImplementation' | 'failureDetector' | 'phiAccrual' | 'maxFrameBytes'
   | 'weaklyUpAfterMs' | 'tombstoneTtlMs' | 'tombstonePruneIntervalMs' | 'tombstoneMinRetentionMs'
   | 'maxMembers' | 'maxTombstones' | 'downing'
@@ -1291,6 +1379,14 @@ export function readClusterOptionsFromConfig(config: Config): ClusterConfigDefau
   if (config.hasPath(remote.incompleteFrameIdle)) {
     out.incompleteFrameIdleMs = config.getDuration(remote.incompleteFrameIdle);
   }
+  // Both ship `[]`, so both always land once the reference layer is loaded —
+  // which is behaviourally identical to their being absent, since every read
+  // site is already `?? []`.  The presence checks stay for the reason the
+  // wire-trust pair's do: `getStringList` rejects a missing path rather than
+  // returning a default, so a config built without the reference layer would
+  // throw out of the reader (#836).
+  if (config.hasPath(keys.seedNodes)) out.seeds = config.getStringList(keys.seedNodes);
+  if (config.hasPath(keys.roles)) out.roles = config.getStringList(keys.roles);
   if (config.hasPath(keys.gossipInterval)) out.gossipIntervalMs = config.getDuration(keys.gossipInterval);
   if (config.hasPath(keys.seedRetryInterval)) {
     out.seedRetryIntervalMs = config.getDuration(keys.seedRetryInterval);

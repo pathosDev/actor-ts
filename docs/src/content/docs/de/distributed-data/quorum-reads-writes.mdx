@@ -175,7 +175,13 @@ await dd.updateAsync('x', ..., {
 ```
 
 Default-Timeout ist feste 5 Sekunden (`DEFAULT_ASK_TIMEOUT_MS`),
-unabhängig vom Gossip-Intervall.  Pro Call überschreiben, wenn:
+unabhängig vom Gossip-Intervall.  Es bleibt auch dann fest, wenn
+`actor-ts.actor.ask-timeout` konfiguriert ist: Dieser Key verschiebt den
+Default von `ActorRef.ask`, während die Quorum-Frist vom
+Distributed-Data-Handle aufgelöst wird, das bislang keine eigene
+Konfiguration liest.  Sie einstellbar zu machen gehört in den Block
+`actor-ts.distributed-data` — verfolgt als #856.  Pro Call
+überschreiben, wenn:
 
 - **Strengeres Latenz-Budget** — niedriger setzen; früh ablehnen,
   wenn Konsistenz nicht erreicht werden kann.

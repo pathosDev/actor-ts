@@ -256,6 +256,28 @@ actor-ts {
     # fairness for throughput, since nothing else on the event loop runs until
     # the actor yields.  Override per actor with ActorOptions.withThroughput().
     throughput = 16
+
+    # How long ActorRef.ask waits for a reply when the caller names no
+    # timeoutMs.  A per-call argument always wins — this is only the answer to
+    # "nobody said".
+    #
+    # Honoured by every ref that can reach its ActorSystem: local refs, the
+    # TestProbe, the remote / singleton / shard refs, and EntityRef through its
+    # region.  The refs that carry a system NAME and no system — dead letters,
+    # Nobody, an unresolved path, the one-shot reply ref an ask synthesises, and
+    # two framework-internal handles — keep the built-in 5s.  Every one of them
+    # is a ref with no actor behind it, so an ask on one is waiting for a reply
+    # that is not coming either way.  Reference -> Configuration has the split.
+    #
+    # Rejected rather than clamped when it is not a positive finite duration,
+    # unlike throughput above: an ask that arms no deadline can never settle
+    # (#765), so there is no nearest-sensible value to clamp to.  The system
+    # refuses to start instead of throwing at every ask site.
+    #
+    # Below 4.6s the default scatter-gather router (4.5s) can no longer report
+    # before the caller gives up, which is the defect #1088 fixed — the system
+    # logs a WARN naming both knobs when that happens.
+    ask-timeout = 5s
   }
 
   mailbox {
@@ -419,6 +441,46 @@ actor-ts {
     # "up", so this bounds accidents, not adversaries.  Arbitration is
     # split-brain-resolver below.
     minimum-members-before-up = 1
+
+    # Peers this node announces itself to at start-up, "system@host:port" (or
+    # "host:port", which takes this system's own name).  Empty is the
+    # documented "I am the first node": under the default 'immediate'
+    # self-election policy, a node whose seed list is empty forms a cluster of
+    # one and everybody else joins it.
+    #
+    # ONE list is correct on every node of a deployment, which is why this is
+    # a key and not only a join-site argument: a node removes its OWN address
+    # before dialling, so naming the designated first node here and shipping
+    # the same file everywhere leaves that node with an empty list -- and
+    # self-electing -- while every other node dials it.
+    #
+    # The shape that does NOT work is the symmetric one, every node listed:
+    # self-exclusion then leaves nobody with an empty list, so nobody may
+    # self-elect and nobody is ever promoted.  Config does not create that
+    # trap and the node diagnoses it, but it does make it a one-line mistake.
+    # cluster.bootstrap below is the way out when the members are not known
+    # in advance.
+    #
+    # A single substitution does NOT work: seed-nodes = ${?SEED_NODES} lands a
+    # string where a list is read, and the node refuses to start.  Write one
+    # optional substitution per entry -- unset ones drop out of the array:
+    #
+    #   seed-nodes = [ ${?SEED_1}, ${?SEED_2} ]
+    #
+    # For the single comma-separated variable, use seedsFromEnv(...) in code.
+    seed-nodes = []
+
+    # Role tags this node carries.  Shard regions, cluster singletons, the
+    # per-role thresholds above and the role-filtered downing strategies are
+    # all placed BY role, so this key decides what this node is a candidate
+    # for.  Empty = no roles, and every role filter reads that as "not a
+    # candidate"; an unfiltered feature is unaffected either way.
+    #
+    # Unlike the seed list this one is usually per-node, so the substitution
+    # form is the common one:
+    #
+    #   roles = [ ${?NODE_ROLE} ]
+    roles = []
 
     # Per-role thresholds compose with the one above as an AND: the global
     # count and every configured role's count must be met.  Counted over the
@@ -645,6 +707,65 @@ actor-ts {
       # is per singleton rather than per node, so a deployment mixing both
       # styles sets it with withRestartOnTermination.
       restart-on-termination = on
+    }
+
+    # The outside-in ClusterClient and the cluster-side endpoint it dials.
+    # Nested under cluster.client and NOT merged into cluster.receptionist
+    # below: that block belongs to the discovery Receptionist, a different
+    # actor with a different protocol that happens to share the word.
+    #
+    # A ClusterClient is standalone -- it holds no ActorSystem, so unlike every
+    # other block here there is no system.config to read it from.  It is loaded
+    # with the same chain ActorSystem.create uses (ACTOR_TS_CONFIG, then
+    # ./application.conf, then these defaults), which is what makes a client
+    # built with no options at all a configurable thing rather than a broken
+    # one.  The receptionist half below is asymmetric on purpose: it runs
+    # inside a system, so it reads that system's config and loads nothing.
+    #
+    # Three options stay code-only and have no leaf here.  client-identity is
+    # a security decision, not a packaging one -- the per-client half of the
+    # wire address is drawn from the CSPRNG so two clients cannot collide or
+    # pre-claim each other's slot, and one value shared by a fleet is exactly
+    # what that defeats.  tls carries certificate material, and logger is a
+    # Logger instance; neither has a HOCON spelling.
+    client {
+      # Cluster nodes an otherwise-unconfigured client dials, each "host:port"
+      # or "<system>@host:port", tried in order and re-tried round-robin on a
+      # dial failure.  Ships no value on purpose, the remote.tcp.advertised-host
+      # shape: the list is per-deployment identity no default could state, and
+      # an empty list is not the absence of one -- it is refused by the
+      # validator, so a shipped leaf could only be a value that stops every
+      # client that merely copied this file.
+      #
+      #   contact-points = ["orders@10.0.0.1:2552", "orders@10.0.0.2:2552"]
+
+      # Synthetic system name the client puts in its hello.  It names the
+      # client's side of the handshake and nothing else -- it is not an
+      # identity and not an authorisation, and the cluster it dials need not
+      # be called this.
+      system-name = "cluster-client"
+
+      # Deadline for ask(path, message) when the call itself names none.  A
+      # per-call timeoutMs still wins, as it does for ActorRef.ask.
+      ask-timeout = 5s
+
+      # How long ONE contact point gets to answer the hello handshake before
+      # the client gives up on it and moves to the next.  This bounds the same
+      # handshake remote.handshake-timeout bounds from the accepting side, and
+      # shares its 5s for the reason stated there -- the dialling side's clock
+      # starts first, so it is always the one that gives up first.
+      connect-timeout = 5s
+
+      # Cluster-side endpoint, started per node with
+      # system.extension(ClusterClientReceptionistId).start(cluster).
+      receptionist {
+        # Deadline for the ask this node makes on the client's behalf when an
+        # arriving envelope carries an askId.  Deliberately independent of the
+        # client's own ask-timeout above: they are two hops of one round trip,
+        # set on two different machines, and the client's is the one the caller
+        # actually waits out.
+        ask-timeout = 5s
+      }
     }
 
     # Cluster-wide publish/subscribe (DistributedPubSub).  The caps bound what
@@ -1772,8 +1893,8 @@ actor-ts {
   sharding {
     number-of-shards = 64
     # Which role hosts shards; "" = unrestricted.  This names the role, it does
-    #   NOT give a node one -- a node's own roles stay code-only
-    #   (ClusterOptions.withRoles), so a role no up member carries places
+    #   NOT give a node one -- that is cluster.roles above (or
+    #   ClusterOptions.withRoles), so a role no up member carries places
     #   nothing at all and every message for the type sits in the region buffer.
     role = ""
     rebalance-interval = 2s

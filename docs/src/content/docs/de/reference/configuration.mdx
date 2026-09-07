@@ -140,6 +140,36 @@ Platziere das im Projekt-Root.  Das Framework lädt es bei
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `actor.throughput` | `16` | User-Nachrichten, die **ein** Actor pro Dispatcher-Turn vor dem Yield abarbeitet.  Pro Actor überschreibbar mit `ActorOptions.withThroughput()`. |
+| `actor.ask-timeout` | `5s` | Frist, die `ActorRef.ask` setzt, wenn der Aufrufer kein `timeoutMs` nennt.  Ein `ask(message, ms)` pro Aufruf gewinnt immer.  Nicht jede Ref beachtet den Wert — siehe unten. |
+
+**`ask-timeout` erreicht die meisten Refs, aber nicht alle — und das sollte man
+vor dem Tuning wissen.**  Eine Ref wendet den konfigurierten Wert nur an, wenn
+sie das `ActorSystem` erreichen kann, das ihn gelesen hat.  Sieben können das:
+die gewöhnliche lokale Ref, `TestProbe`, `RemoteActorRef`,
+`ClusterSingletonProxy`, die beiden Shard-Refs und `EntityRef` über ihre Region.
+Die übrigen tragen einen System*namen* und kein System und behalten die
+eingebauten 5 s: die Dead-Letter-Ref, `Nobody`, eine Ref auf einen nicht
+aufgelösten Pfad und die einmalige Antwort-Ref, die ein Ask sich selbst erzeugt,
+dazu zwei Framework-interne Handles (eine WebSocket-Verbindung und der
+Graceful-Stop-Watcher), auf die überhaupt nichts antworten kann.  Sie alle hält
+man dort, wo kein lebender Actor dahintersteht — ein Ask darauf wartet also auf
+eine Antwort, die nicht kommt; der Timeout entscheidet nur, wie schnell man das
+erfährt, nicht ob.
+
+**Ein ungültiger Wert wird abgelehnt, nicht geklemmt** — anders als
+`actor.throughput` oben.  `ask-timeout = 0` würde gar keine Frist setzen, und
+ein Ask ohne Frist kann nie beendet werden; es gibt also keinen sinnvollen
+Nachbarwert, auf den man klemmen könnte.  Das System wirft in
+`ActorSystem.create` und nennt dabei den Key, statt später an jeder Ask-Stelle.
+
+**Unter `4.6s` kollidiert der Wert mit dem Scatter-Gather-Routing.**  Ein Router
+aus `Router.scatterGatherFirstCompleted(…)` hat genau deshalb eine Frist von
+4,5 s als Default, damit er die Fehler seiner Routees einsammeln und antworten
+kann, bevor das Ask des Aufrufers aufgibt.  Ein kürzerer Ask-Timeout führt dazu,
+dass der Aufrufer `AskTimeoutError` sieht statt des `AggregateError`, der die
+fehlgeschlagenen Routees benennt.  Das System schreibt in diesem Fall beim Start
+eine `warn`-Zeile; wenn die kürzere Ask-Frist gewollt ist, gib dem Router mit
+`ScatterGatherOptions.withTimeoutMs()` seine eigene.
 
 ### `actor-ts.diagnostics`
 
@@ -232,6 +262,8 @@ man daraus erneut zustellt.
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `cluster.gossip-interval` | `1s` | Wie oft Gossip mit einem zufälligen Peer ausgetauscht wird. |
+| `cluster.seed-nodes` | `[]` | Peers, bei denen sich dieser Node beim Start meldet, `"system@host:port"` (oder `"host:port"`).  Leer = „Ich bin der erste Node“ — siehe unten. |
+| `cluster.roles` | `[]` | Rollen-Tags dieses Nodes.  Shard-Regionen, Singletons, die Schwellen pro Rolle und die rollengefilterten Downing-Strategien platzieren alle **nach** Rolle. |
 | `cluster.seed-retry-interval` | `3s` | Wie oft Seed-Verbindungen während des Joins wiederholt werden. |
 | `cluster.weakly-up-after` | `0s` | Befördert ein `joining`-Mitglied nach dieser Zeit automatisch zu `weakly-up`.  `0` schaltet das ab — siehe [Weakly-up](/de/cluster/weakly-up/). |
 | `cluster.max-members` | `1000` | Obergrenze für lebende Mitgliedseinträge, die Gossip anlegen darf.  `0` schaltet die Grenze ab. |
@@ -367,6 +399,96 @@ Solange die Schwelle nicht erreicht ist, bleibt der Node `joining` und sagt
 das einmalig — mit Schlüsselname und aktueller Zahl — statt die
 Cold-Start-Stall-Diagnose zu melden, die hier ein falsches Urteil wäre.
 Siehe [Joining und Seeds](/de/cluster/joining-and-seeds/).
+
+`seed-nodes` ist eine Liste, die auf **jedem** Node eines Deployments richtig
+ist — genau deshalb gibt es den Schlüssel überhaupt.  Ein Node entfernt seine
+eigene Adresse aus der Liste, bevor er wählt; wer also den designierten
+ersten Node einträgt und dieselbe Datei überall ausliefert, lässt genau
+diesen Node mit einer leeren Liste zurück — er wählt sich selbst —, während
+alle anderen ihn kontaktieren.  Was nicht funktioniert, ist die symmetrische
+Form, in der jeder Node gelistet ist: durch das Selbst-Ausschließen bleibt
+niemand mit der leeren Liste übrig, die `selfElection: 'immediate'`
+verlangt, also wird niemand jemals befördert.  Die Config erzeugt diese Falle
+nicht, und der Node
+[diagnostiziert sie](/de/cluster/joining-and-seeds/), aber sie wird damit zu
+einem Einzeiler — [Cluster-Bootstrap](/de/cluster/cluster-bootstrap/) ist der
+Ausweg, wenn die Mitglieder vorab nicht bekannt sind.
+
+Beide Leaves werden als **Liste** gelesen und nur als Liste; ein einzelnes
+`seed-nodes = ${?SEED_NODES}` wird beim Start abgelehnt statt an Kommata
+zerlegt.  Schreiben Sie eine optionale Substitution pro Eintrag — nicht
+gesetzte fallen aus dem Array heraus:
+
+```hocon
+actor-ts.cluster {
+  seed-nodes = [ ${?SEED_1}, ${?SEED_2}, ${?SEED_3} ]
+  roles      = [ ${?NODE_ROLE} ]
+}
+```
+
+Für die einzelne kommaseparierte Variable ist `seedsFromEnv(...)` im Code die
+vorgesehene Form — siehe
+[Seed-Provider](/de/discovery/seed-providers/config/).  Ein fehlerhafter
+Eintrag wird von `Cluster.join` abgelehnt, bevor der Transport bindet, und
+die Meldung nennt die betroffene Zeichenkette.
+
+`cluster.seed-nodes` und `discovery.config.seeds` sind nicht zwei Antworten
+auf dieselbe Frage, und die Reihenfolge steht fest: `Cluster.bootstrap` führt
+zuerst die Discovery aus und reicht deren Ergebnis weiter, ein gefundener Seed
+gewinnt also; dieser Schlüssel greift, wenn die Discovery nichts genannt hat.
+Ein explizites `seeds: []` an `Cluster.bootstrap` gewinnt weiterhin über
+beide — es sagt „es gibt sonst niemanden“, und das ist eine Antwort, kein
+Schweigen.
+
+`selfElection` und der Transport haben keine HOCON-Form.  Der Transport ist
+ein Objekt, das eine Config-Datei nicht ausdrücken kann.  `selfElection` ist
+die eine Einstellung, deren gemeinsamer Wert nicht bloß nutzlos, sondern
+unsicher ist: durchgängig `'never'` startet nie einen Cluster, und
+durchgängig `<delay>` lässt alle Nodes im selben Moment sich selbst wählen —
+genau das Split-Brain, das die Option verhindern soll.  Einen Wert pro Node
+verteilt der Cluster-Bootstrap.
+
+#### Der eigenständige `ClusterClient`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `cluster.client.contact-points` | *(nicht gesetzt)* | Cluster-Nodes, die ein Client ohne eigene Liste anwählt — jeweils `host:port` oder `<system>@host:port`, der Reihe nach probiert.  In `reference.conf` nur als Kommentar; siehe unten. |
+| `cluster.client.system-name` | `"cluster-client"` | Synthetischer System-Name im `hello` des Clients.  Er benennt die Client-Seite des Handshakes und ist keine Identität. |
+| `cluster.client.ask-timeout` | `5s` | Frist für `ask(path, message)`, wenn der Aufruf selbst keine nennt.  Ein `timeoutMs` pro Aufruf gewinnt weiterhin. |
+| `cluster.client.connect-timeout` | `5s` | Wie lange **ein** Kontaktpunkt Zeit hat, den `hello`-Handshake zu beantworten, bevor der Client ihn aufgibt und den nächsten wählt. |
+| `cluster.client.receptionist.ask-timeout` | `5s` | Frist für das ask, das ein Cluster-Node stellvertretend für einen Client stellt, wenn ein ankommendes Envelope eine `askId` trägt. |
+
+Dieser Block wird anders gelesen als jeder andere auf dieser Seite, und
+[`ClusterClient`](/de/cluster/cluster-client/) ist der Grund: ein Client ist
+per Definition *außerhalb* des Clusters, hält also kein `ActorSystem` und hat
+kein `system.config` über sich.  Sein Konstruktor lädt die Konfiguration
+deshalb selbst — dieselbe Kette, die `ActorSystem.create` benutzt:
+`ACTOR_TS_CONFIG`, dann `./application.conf`, dann die eingebauten Defaults.
+Genau das macht einen ganz ohne Optionen gebauten Client zu etwas
+Konfigurierbarem statt zu etwas Kaputtem.  Übergeben Sie ein `Config` als
+zweites Konstruktor-Argument, um ihn stattdessen festzunageln; dann wird das
+Dateisystem nie befragt.
+
+Die `receptionist`-Hälfte ist die asymmetrische.  `ClusterClientReceptionist`
+läuft *innerhalb* eines Systems, liest also dessen Config und lädt nichts.
+Sie liegt unter `cluster.client` statt bei `actor-ts.cluster.receptionist`
+oben — jener Block gehört dem Discovery-`Receptionist`, einem anderen Actor
+mit einem anderen Protokoll, der zufällig dasselbe Wort trägt.
+
+`contact-points` wird **nur als Kommentar** ausgeliefert, dieselbe Form wie
+`remote.tcp.advertised-host`: die Liste ist Deployment-Identität, die kein
+Default aussprechen könnte, und `[]` ist nicht deren Abwesenheit — eine leere
+Liste weist der Validator zurück, ein ausgelieferter Leaf-Wert könnte also nur
+ein Wert sein, der jeden Client stoppt, der die Datei bloß kopiert hat.
+
+`client-identity`, `tls` und `logger` haben überhaupt keine HOCON-Form.  Die
+letzten beiden sind Zertifikatsmaterial und eine `Logger`-Instanz.  Das erste
+ist die Entscheidung, die eine *Sicherheits*- und keine Verpackungsfrage ist:
+der synthetische Port eines Clients wird aus dem CSPRNG gezogen, damit kein
+Peer seinen Slot vorhersagen, adressieren oder vorwegnehmen kann — und eine
+Flotte, die sich einen konfigurierten Wert teilt, ist genau das, was diese
+Ziehung verhindern soll.  Setzen Sie ihn mit `withClientIdentity(host, port)`,
+wenn Sie einen stabilen brauchen.
 
 `seeds`, `roles` und der Transport haben keine HOCON-Form — die ersten
 beiden sind Deployment-Identität, die an die Join-Stelle gehört, und der
@@ -1776,9 +1898,9 @@ cluster.sharding.start(shardingOptions);
 #### Eine Rolle wird benannt, nicht vergeben
 
 `sharding.role` sagt, **welche** Rolle einen Typ hostet.  Der Key gibt dem
-Node diese Rolle **nicht**.  Die eigenen Rollen eines Nodes sind Identität
-statt Tuning, deshalb hat `ClusterOptions.roles` überhaupt keinen Config-Key
-und bleibt im Code:
+Node diese Rolle **nicht**.  Die eigenen Rollen eines Nodes sind eine eigene
+Einstellung — im Code vergeben oder über
+[`actor-ts.cluster.roles`](#actor-tscluster):
 
 ```ts
 // On every node that should host the shards:

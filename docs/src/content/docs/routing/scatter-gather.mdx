@@ -153,6 +153,15 @@ given up and raised `AskTimeoutError` instead.  Whatever you set here,
 keep the caller's `ask` timeout above it — otherwise you get your own
 timeout rather than the `AggregateError` this router exists to produce.
 
+The caller's side of that comparison is settable too, and lowering it is
+the easy way to break the gap without touching this page:
+`actor-ts.actor.ask-timeout` moves the `5_000` above.  Set it under
+`4_600` and every router still on the default deadline stops being able
+to report.  The system logs a `warn` at startup naming both knobs when
+that combination is configured, but it does not adjust either — a router
+that names its own `withTimeoutMs` is unaffected, and so is an
+application with no scatter-gather router at all.
+
 ```ts
 const hedgeOptions = ScatterGatherOptions.create().withTimeoutMs(250);
 ```

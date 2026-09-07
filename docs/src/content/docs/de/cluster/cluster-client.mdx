@@ -74,6 +74,7 @@ type ClusterClientOptionsType = {
   systemName?: string;                             // synthetischer System-Name im Hello des Clients
   clientIdentity?: { host: string; port: number }; // im Hello des Clients angekündigte Identität
   askTimeoutMs?: number;                           // Standard-Ask-Timeout (ms; Standard 5000)
+  connectTimeoutMs?: number;                       // Wartezeit je Kontaktpunkt auf hello-ack (ms; Standard 5000)
   tls?: TlsTransportOptionsType;                   // muss zum Cluster passen
   logger?: Logger;                                 // Standard: ConsoleLogger auf WARN
 };
@@ -82,11 +83,72 @@ type ClusterClientOptionsType = {
 `contactPoints` ist die Liste der zu wählenden Cluster-Nodes —
 jeweils ein `host:port`- oder `<system>@host:port`-String. Der
 Client probiert sie der Reihe nach; bei Ausfall fällt er auf den
-nächsten zurück.
+nächsten zurück. `connectTimeoutMs` begrenzt, wie lange **einer**
+von ihnen Zeit hat, den `hello`-Handshake zu beantworten, bevor
+der Client weiterzieht.
 
 Für **stabile Kontaktadressen** betreibt die Cluster-Seite typisch
 einen `ClusterClientReceptionist` auf einem festen Satz von Nodes,
 deren Adressen zu den Kontaktpunkten des Clients werden.
+
+### Aus einer Config-Datei
+
+Alles oben außer `clientIdentity`, `tls` und `logger` kann
+stattdessen aus HOCON kommen:
+
+```hocon
+actor-ts.cluster.client {
+  contact-points  = ["orders@10.0.0.1:2552", "orders@10.0.0.2:2552"]
+  system-name     = "checkout-client"
+  ask-timeout     = 5s
+  connect-timeout = 5s
+
+  receptionist {
+    ask-timeout = 5s
+  }
+}
+```
+
+Liegt das auf der Platte, verbindet sich ein Client, der **ganz
+ohne Optionen** gebaut wurde:
+
+```ts
+const client = new ClusterClient({});
+```
+
+Dieser Block wird anders geladen als der Rest der Konfiguration
+des Frameworks, und die Natur des Clients ist der Grund: er ist
+per Definition *außerhalb* des Clusters, hält also kein
+`ActorSystem` und hat kein `system.config` über sich, aus dem er
+lesen könnte. Der Konstruktor lädt die Config deshalb selbst —
+dieselbe Kette, die `ActorSystem.create` benutzt, samt
+`ACTOR_TS_CONFIG` und `./application.conf`. Die Reihenfolge ist
+die übliche: explizite Optionen schlagen die Datei, die Datei
+schlägt die eingebauten Defaults.
+
+Übergeben Sie ein `Config` als zweites Argument, um festzulegen,
+was gelesen wird — dann ist der Client unabhängig davon, welche
+`application.conf` zufällig im Arbeitsverzeichnis liegt:
+
+```ts
+const client = new ClusterClient({ contactPoints: ['orders@10.0.0.1:2552'] }, Config.empty());
+```
+
+`contact-points` wird in `reference.conf` **auskommentiert**
+ausgeliefert. Die Liste ist Deployment-Identität, die kein Default
+aussprechen könnte, und eine leere Liste ist nicht deren
+Abwesenheit — sie wird zurückgewiesen, ein ausgelieferter Wert
+könnte also nur einer sein, der jeden Client stoppt.
+
+`clientIdentity` bleibt absichtlich reiner Code, und das ist eine
+Sicherheits- und keine Verpackungsentscheidung. Der synthetische
+Port eines Clients wird aus dem CSPRNG gezogen, damit kein Peer
+seinen Slot vorhersagen, adressieren oder vorwegnehmen kann; eine
+Flotte, die sich einen konfigurierten Wert teilt, würde jeden
+Client dieselbe Wire-Adresse ankündigen lassen — genau das, was
+die Ziehung verhindert. `tls` trägt Zertifikatsmaterial und
+`logger` ist ein Objekt, also hat auch keines von beiden eine
+HOCON-Schreibweise.
 
 ## Serverseite — ClusterClientReceptionist
 
@@ -106,7 +168,18 @@ die Nachricht zu — jeder bereits unter `/user` laufende Actor ist
 
 Seine einzige Option, `askTimeoutMs`, begrenzt die Wartezeit, wenn
 ein Client-Envelope ein ask trägt; setze sie über
-`ClusterClientReceptionistOptions`.
+`ClusterClientReceptionistOptions` — oder aus der Datei:
+
+```hocon
+actor-ts.cluster.client.receptionist.ask-timeout = 3s
+```
+
+Dieser Leaf liegt unter `cluster.client` statt unter
+`actor-ts.cluster.receptionist`, das dem Discovery-`Receptionist`
+gehört — einem anderen Actor mit einem anderen Protokoll. Und
+anders als die Client-Hälfte oben liest diese hier die Config des
+Systems, in dem sie gestartet wurde; sie lädt nie eine eigene,
+weil sie immer eine hat.
 
 ## An wen die Antwort geht
 

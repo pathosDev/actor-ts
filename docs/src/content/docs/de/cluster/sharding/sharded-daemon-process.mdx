@@ -202,7 +202,8 @@ actor-ts.sharded-daemon-process.role  = "batch"     # daemons on the batch nodes
 ```
 
 Wie `sharding.role` **benennt** der Key eine Rolle und vergibt sie nicht — die
-Rollen eines Nodes bleiben im Code, als `ClusterOptions.withRoles([...])`.
+Rollen eines Nodes sind eine eigene Einstellung — `ClusterOptions.withRoles([...])`
+oder `actor-ts.cluster.roles`.
 Eine Rolle, die kein Up-Mitglied trägt, allokiert nichts, und bei Daemons
 passiert das lautlos: Niemand schickt einem Daemon eine erste Nachricht, es
 gibt also keine Antwort, auf die man wartet, und keinen Puffer, der volläuft.

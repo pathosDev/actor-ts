@@ -56,14 +56,6 @@ export const DEFAULT_HEARTBEAT_INTERVAL_MS = 500;
 export const MAX_WALL_CLOCK_SKEW_MS = 24 * 60 * 60 * 1_000;
 
 /**
- * How long a `ClusterClient` waits for the receptionist's `hello-ack` before
- * giving up on a contact point and trying the next one.  Matches
- * {@link HANDSHAKE_TIMEOUT_MS}: both bound the same thing from opposite ends
- * of the same handshake.
- */
-export const HELLO_TIMEOUT_MS = 5_000;
-
-/**
  * How long a connection may sit without its half of the handshake before it is
  * torn down and whatever it holds released.  A peer that accepts TCP but never
  * speaks the protocol would otherwise hold that resource — for the process's
@@ -92,6 +84,15 @@ export const HELLO_TIMEOUT_MS = 5_000;
  * ordering it relies on is free while the two sides read one number, and a
  * dial/accept pair would hand an operator the ability to set the acceptor
  * stricter than the dialler and make a healthy peer permanently unjoinable.
+ *
+ * The **third** number in that story is `ClusterClient`'s per-contact-point
+ * wait for its `hello-ack`.  It is the same 5 s and the same handshake seen
+ * from the outside, and it lives in `ClusterClientOptions.ts` as
+ * `DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS` because it is that options
+ * type's built-in default and the published default of
+ * `actor-ts.cluster.client.connect-timeout` (#858).  A client is not a peer,
+ * so it never joins the association this constant guards — which is why the
+ * two are separate keys rather than one.
  */
 export const HANDSHAKE_TIMEOUT_MS = 5_000;
 

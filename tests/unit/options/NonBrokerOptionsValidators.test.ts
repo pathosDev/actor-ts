@@ -6,6 +6,7 @@ import {
   ClusterClientReceptionistOptionsValidator,
   type ClusterClientReceptionistOptionsType,
 } from '../../../src/cluster/ClusterClientReceptionistOptions.js';
+import { ClusterClientOptionsValidator, type ClusterClientOptionsType } from '../../../src/cluster/ClusterClientOptions.js';
 import { ClusterOptionsValidator, type ClusterOptionsType } from '../../../src/cluster/ClusterOptions.js';
 import {
   ClusterBootstrapOptionsValidator,
@@ -120,6 +121,38 @@ describe('ClusterClientReceptionistOptionsValidator', () => {
   test('accepts an unset or positive askTimeoutMs', () => {
     expect(() => check({})).not.toThrow();
     expect(() => check({ askTimeoutMs: 3_000 })).not.toThrow();
+  });
+});
+
+describe('ClusterClientOptionsValidator', () => {
+  const check = (s: Partial<ClusterClientOptionsType>): void =>
+    new ClusterClientOptionsValidator().validate(s);
+  const dialable = ['sys@127.0.0.1:2551'];
+
+  test('rejects absent or empty contactPoints', () => {
+    // By hand rather than through a field helper: every helper is a no-op on
+    // `undefined` by design, so required-ness has to be checked separately.
+    expect(() => check({})).toThrow(OptionsError);
+    expect(() => check({ contactPoints: [] })).toThrow(OptionsError);
+  });
+
+  test('rejects a non-positive askTimeoutMs or connectTimeoutMs', () => {
+    expect(() => check({ contactPoints: dialable, askTimeoutMs: 0 })).toThrow(OptionsError);
+    expect(() => check({ contactPoints: dialable, connectTimeoutMs: 0 })).toThrow(OptionsError);
+    expect(() => check({ contactPoints: dialable, connectTimeoutMs: -1 })).toThrow(OptionsError);
+  });
+
+  test('names the field it rejected, so a bad HOCON leaf is attributable', () => {
+    // The validator now runs on the *merged* settings, so this same message is
+    // what a bad `actor-ts.cluster.client.connect-timeout` produces (#858).
+    expect(() => check({ contactPoints: dialable, connectTimeoutMs: 0 }))
+      .toThrow(/connectTimeoutMs/);
+  });
+
+  test('accepts unset timeouts alongside a dialable contact point', () => {
+    expect(() => check({ contactPoints: dialable })).not.toThrow();
+    expect(() => check({ contactPoints: dialable, askTimeoutMs: 3_000, connectTimeoutMs: 1_500 }))
+      .not.toThrow();
   });
 });
 

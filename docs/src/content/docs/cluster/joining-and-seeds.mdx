@@ -75,6 +75,40 @@ The seed-related knobs:
 | `seedRetryIntervalMs` | 3000 | If no seed responds, retry the list this often until one does. |
 | `selfElection` | `'immediate'` | When this node may form a cluster alone: `'immediate'` (only on an empty seed list), `'never'`, or a millisecond grace.  Set by [cluster bootstrap](/cluster/cluster-bootstrap/). |
 
+### The same two settings in HOCON
+
+`seeds` and `roles` also have a config form, so a deployment can move them
+out of the code:
+
+```hocon
+actor-ts.cluster {
+  seed-nodes = ["billing@10.0.0.5:2552"]
+  roles      = ["backend"]
+}
+```
+
+Precedence is the framework's usual one, per field: an explicit
+`.withSeeds(…)` wins, an unset one falls through to the file.  What makes
+one file work for the whole deployment is that a node removes its **own**
+address before dialling — so the recipe below (one designated first node,
+the rest pointing at it) is a single list that is correct on every node:
+the named node reads its own address, filters it out, and self-elects.
+
+Both keys are read as lists and only as lists, so the tempting
+`seed-nodes = ${?SEED_NODES}` is refused at start-up rather than split on
+commas.  One optional substitution per entry is the form that works — unset
+ones drop out of the array:
+
+```hocon
+actor-ts.cluster.seed-nodes = [ ${?SEED_1}, ${?SEED_2}, ${?SEED_3} ]
+actor-ts.cluster.roles      = [ ${?NODE_ROLE} ]
+```
+
+For a single comma-separated variable, use
+[`seedsFromEnv(…)`](/discovery/seed-providers/config/) in code instead.  A
+malformed entry — a host with no port, say — is refused by `Cluster.join`
+before the transport binds, with the offending string in the message.
+
 ## The first node
 
 ```ts
@@ -194,6 +228,13 @@ Two ways out:
   gets the same configuration and the framework elects exactly one to
   break the tie.  This is the option to reach for whenever nodes start
   simultaneously.
+
+The trap is the same when the list comes from a shared `application.conf`.
+Self-exclusion is what makes one file safe, and it only helps if the file
+names *one* node: `seed-nodes = ["app@n1:2552"]` shipped everywhere is the
+first way out written once, while `seed-nodes` listing every node is this
+deadlock written once.  Cluster bootstrap is the answer whenever the members
+are not known in advance.
 
 The `seedRetryIntervalMs` retry loop still matters, but it solves a
 different problem: a seed that is reachable *eventually*.  It cannot
