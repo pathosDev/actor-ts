@@ -351,6 +351,47 @@ naming the key and the current count — rather than reporting the cold-start
 stall diagnosis, which would be a false verdict here.  See
 [Joining and seeds](/cluster/joining-and-seeds/).
 
+#### The standalone `ClusterClient`
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `cluster.client.contact-points` | *(unset)* | Cluster nodes a client with no explicit list dials — each `host:port` or `<system>@host:port`, tried in order.  Comment-only in `reference.conf`; see below. |
+| `cluster.client.system-name` | `"cluster-client"` | Synthetic system name the client puts in its `hello`.  It names the client's side of the handshake and is not an identity. |
+| `cluster.client.ask-timeout` | `5s` | Deadline for `ask(path, message)` when the call itself names none.  A per-call `timeoutMs` still wins. |
+| `cluster.client.connect-timeout` | `5s` | How long **one** contact point gets to answer the `hello` handshake before the client gives up on it and dials the next. |
+| `cluster.client.receptionist.ask-timeout` | `5s` | Deadline for the ask a cluster node makes on a client's behalf when an arriving envelope carries an `askId`. |
+
+This block is read differently from every other one on this page, and
+[`ClusterClient`](/cluster/cluster-client/) is why: a client is by definition
+*outside* the cluster, so it holds no `ActorSystem` and there is no
+`system.config` above it.  Its constructor therefore loads the configuration
+itself — the same chain `ActorSystem.create` uses, `ACTOR_TS_CONFIG` then
+`./application.conf` then the built-in defaults — which is what makes a client
+built with no options at all a configurable thing rather than a broken one.
+Pass a `Config` as the constructor's second argument to pin it instead, and
+the filesystem is never consulted.
+
+The `receptionist` half is the asymmetric one.  `ClusterClientReceptionist`
+runs *inside* a system, so it reads that system's config and loads nothing.
+It nests under `cluster.client` rather than joining
+`actor-ts.cluster.receptionist` above, which belongs to the discovery
+`Receptionist` — a different actor with a different protocol that happens to
+share the word.
+
+`contact-points` ships **comment-only**, the same shape as
+`remote.tcp.advertised-host`: the list is per-deployment identity that no
+default could state, and `[]` is not the absence of one — an empty list is
+refused by the validator, so a shipped leaf could only be a value that stops
+every client that merely copied the file.
+
+`client-identity`, `tls` and `logger` have no HOCON form at all.  The last two
+are certificate material and a `Logger` instance.  The first is the one that
+is a *security* decision rather than a packaging one: a client's synthetic
+port is drawn from the CSPRNG so that no peer can predict, address or
+pre-claim its slot, and a fleet sharing one configured value is exactly what
+that draw exists to prevent.  Set it with `withClientIdentity(host, port)` if
+you need a stable one.
+
 `seeds`, `roles` and the transport have no HOCON form — the first two are
 per-deployment identity that belongs at the join site, and the transport is
 an object a config file cannot express.  A per-role *threshold* is not an

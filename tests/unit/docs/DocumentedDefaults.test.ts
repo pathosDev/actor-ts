@@ -21,6 +21,8 @@ import { DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION } from '../../../src/cluster/Cl
 import { defaultPhiAccrualOptions } from '../../../src/cluster/PhiAccrualFailureDetector.js';
 import { DEFAULT_SINGLETON_ACQUIRE_RETRY_INTERVAL_MS, DEFAULT_SINGLETON_HAND_OVER_TIMEOUT_MS, DEFAULT_SINGLETON_MAX_HAND_OVER_STATE_BYTES, DEFAULT_SINGLETON_RESTART_ON_TERMINATION } from '../../../src/cluster/Constants.js';
 import { DEFAULT_BUFFER_SIZE as DEFAULT_SINGLETON_BUFFER_SIZE } from '../../../src/cluster/singleton/StartSingletonOptions.js';
+import { DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS, DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME } from '../../../src/cluster/ClusterClientOptions.js';
+import { DEFAULT_ASK_TIMEOUT_MS as DEFAULT_CLUSTER_CLIENT_ASK_TIMEOUT_MS } from '../../../src/util/Constants.js';
 import {
   DEFAULT_DEAD_LETTER_MAX_ENTRIES,
   DEFAULT_DEAD_LETTER_MAX_REPLAYS,
@@ -320,6 +322,24 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // constant behind it, not the `[]` sentinel its four list-valued
   // predecessors are.
   { key: 'actor-ts.cluster.configuration-compatibility-check.checked-paths', kind: 'list', constant: DEFAULT_CONFIGURATION_COMPATIBILITY_CHECKED_PATHS },
+
+  /* --- cluster client --- */
+  // The outside-in `ClusterClient` and its cluster-side endpoint (#858).
+  // `contact-points` ships comment-only — a list is per-deployment identity
+  // and `[]` is refused by the validator rather than meaning "unset" — so it
+  // carries no leaf to assert.  `system-name` is in the table rather than in
+  // LITERAL_AT_THE_READ_SITE because publishing the key is what gave the
+  // constructor's `?? 'cluster-client'` a name to disagree with.
+  //
+  // Both ask deadlines resolve to the framework-wide `DEFAULT_ASK_TIMEOUT_MS`,
+  // aliased at the import so the name at each use site says which block is
+  // being pinned.  They stay two keys: the client's bounds the round trip the
+  // caller waits out, the receptionist's bounds the hop this node makes on the
+  // client's behalf, and the two are configured on different machines.
+  { key: 'actor-ts.cluster.client.system-name', kind: 'string', constant: DEFAULT_CLUSTER_CLIENT_SYSTEM_NAME },
+  { key: 'actor-ts.cluster.client.ask-timeout', kind: 'duration', constant: DEFAULT_CLUSTER_CLIENT_ASK_TIMEOUT_MS },
+  { key: 'actor-ts.cluster.client.connect-timeout', kind: 'duration', constant: DEFAULT_CLUSTER_CLIENT_CONNECT_TIMEOUT_MS },
+  { key: 'actor-ts.cluster.client.receptionist.ask-timeout', kind: 'duration', constant: DEFAULT_CLUSTER_CLIENT_ASK_TIMEOUT_MS },
 
   /* --- singleton --- */
   // The `role` sibling is a PLACEHOLDERS entry, for the reason `sharding.role`

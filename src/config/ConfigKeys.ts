@@ -1159,6 +1159,54 @@ export const ConfigKeys = {
     },
 
     /**
+     * The outside-in `ClusterClient` and its cluster-side endpoint —
+     * `actor-ts.cluster.client.*` (#858).
+     *
+     * The client half is read by `readClusterClientOptionsFromConfig`, which
+     * — alone among the framework's config readers, and for the reason
+     * `readWorkerClusterOptionsFromConfig` states — loads the config itself:
+     * `new ClusterClient(options)` holds no `ActorSystem`, so there is no
+     * `system.config` above it.  The `receptionist` sub-block is read by
+     * `readClusterClientReceptionistOptionsFromConfig` from the system the
+     * extension runs in, and never self-loads.
+     *
+     * Nested here rather than folded into `receptionist` below, which is the
+     * *discovery* `Receptionist` (`src/discovery/Receptionist.ts`) — a
+     * different actor with a different protocol.  One shared word is not a
+     * reason to give an operator one block whose halves are read by two
+     * unrelated readers.
+     *
+     * `contact-points` ships **comment-only** in `reference.conf`, the
+     * `remote.tcp.advertised-host` shape: the list is per-deployment identity,
+     * and `[]` is refused by `ClusterClientOptionsValidator` rather than
+     * meaning "unset".  It is read all the same, which is what this entry
+     * records.
+     *
+     * Full dotted leaves rather than a `client` root, for the reason
+     * `failure-detector.phi` above states: `NoDeadConfigKeys`'
+     * `coveringAccessor` falls back to the nearest root, so a root alone would
+     * pass the guard for every leaf under it whether or not a reader ever
+     * addressed one.  What checks the leaves themselves is
+     * `ClusterClientConfigDefaults.test.ts`, which pins each reader's return
+     * value exactly.
+     *
+     * `client-identity`, `tls` and `logger` are absent on purpose and stay
+     * that way: the first is the CSPRNG-drawn wire address a shared config
+     * value would defeat, the second is certificate material, and the third
+     * is a `Logger` instance.  `buffer-size` and `reconnect-timeout` are
+     * absent because the mechanisms are — #689 owns both and adds them here.
+     */
+    client: {
+      contactPoints: 'actor-ts.cluster.client.contact-points',
+      systemName: 'actor-ts.cluster.client.system-name',
+      askTimeout: 'actor-ts.cluster.client.ask-timeout',
+      connectTimeout: 'actor-ts.cluster.client.connect-timeout',
+      receptionist: {
+        askTimeout: 'actor-ts.cluster.client.receptionist.ask-timeout',
+      },
+    },
+
+    /**
      * DistributedPubSub mediator tuning — `actor-ts.cluster.pub-sub.*`.
      * Read once per `DistributedPubSub.start`, which layers them under the
      * explicit options.  The three caps bound what one mediator can be made

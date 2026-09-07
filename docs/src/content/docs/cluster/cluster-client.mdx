@@ -70,6 +70,7 @@ type ClusterClientOptionsType = {
   systemName?: string;                             // synthetic system name in the client's hello
   clientIdentity?: { host: string; port: number }; // identity announced in the client's hello
   askTimeoutMs?: number;                           // default ask timeout (ms; default 5000)
+  connectTimeoutMs?: number;                       // per-contact-point wait for hello-ack (ms; default 5000)
   tls?: TlsTransportOptionsType;                   // must match the cluster's
   logger?: Logger;                                 // default: ConsoleLogger at WARN
 };
@@ -78,10 +79,68 @@ type ClusterClientOptionsType = {
 `contactPoints` is the list of cluster nodes to dial — each a
 `host:port` or `<system>@host:port` string.  The client tries
 them in order; on failure, it falls back to the next.
+`connectTimeoutMs` bounds how long **one** of them gets to answer
+the `hello` handshake before the client moves on.
 
 For **stable contact addresses**, the cluster side typically
 runs a `ClusterClientReceptionist` on a fixed set of nodes,
 whose addresses become the client's contact points.
+
+### From a config file
+
+Everything above except `clientIdentity`, `tls` and `logger` can
+come from HOCON instead:
+
+```hocon
+actor-ts.cluster.client {
+  contact-points  = ["orders@10.0.0.1:2552", "orders@10.0.0.2:2552"]
+  system-name     = "checkout-client"
+  ask-timeout     = 5s
+  connect-timeout = 5s
+
+  receptionist {
+    ask-timeout = 5s
+  }
+}
+```
+
+With that on disk, a client built with **no options at all**
+connects:
+
+```ts
+const client = new ClusterClient({});
+```
+
+This block is loaded differently from the rest of the framework's
+configuration, and the client's own nature is why: it is by
+definition *outside* the cluster, so it holds no `ActorSystem`
+and there is no `system.config` above it to read.  The
+constructor therefore loads the config itself — the same chain
+`ActorSystem.create` uses, honouring `ACTOR_TS_CONFIG` and
+`./application.conf`.  Precedence is the usual one: explicit
+options beat the file, the file beats the built-in defaults.
+
+Pass a `Config` as the second argument to pin what it reads, so
+the client is independent of whatever `application.conf` happens
+to sit in the working directory:
+
+```ts
+const client = new ClusterClient({ contactPoints: ['orders@10.0.0.1:2552'] }, Config.empty());
+```
+
+`contact-points` ships **commented out** in `reference.conf`.
+The list is per-deployment identity that no default could state,
+and an empty list is not the absence of one — it is refused, so a
+shipped value could only be one that stops every client.
+
+`clientIdentity` stays code-only on purpose, and that is a
+security decision rather than a packaging one.  A client's
+synthetic port is drawn from the CSPRNG so that no peer can
+predict, address or pre-claim its slot; a fleet sharing one
+configured value would have every client announce the same wire
+address, which is precisely what the draw prevents.  `tls`
+carries certificate material and `logger` is an object, so
+neither has a HOCON spelling either.
 
 ## Server side — ClusterClientReceptionist
 
@@ -101,7 +160,18 @@ tree and delivers the message — any actor already running under
 
 Its one option, `askTimeoutMs`, bounds the wait when a client
 envelope carries an ask; set it via
-`ClusterClientReceptionistOptions`.
+`ClusterClientReceptionistOptions`, or from the file:
+
+```hocon
+actor-ts.cluster.client.receptionist.ask-timeout = 3s
+```
+
+That leaf nests under `cluster.client` rather than under
+`actor-ts.cluster.receptionist`, which belongs to the discovery
+`Receptionist` — a different actor with a different protocol.
+And unlike the client half above, this one reads the config of
+the system it was started in; it never loads one of its own,
+because it always has one.
 
 ## Who the reply goes to
 

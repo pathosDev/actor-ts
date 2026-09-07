@@ -647,6 +647,65 @@ actor-ts {
       restart-on-termination = on
     }
 
+    # The outside-in ClusterClient and the cluster-side endpoint it dials.
+    # Nested under cluster.client and NOT merged into cluster.receptionist
+    # below: that block belongs to the discovery Receptionist, a different
+    # actor with a different protocol that happens to share the word.
+    #
+    # A ClusterClient is standalone -- it holds no ActorSystem, so unlike every
+    # other block here there is no system.config to read it from.  It is loaded
+    # with the same chain ActorSystem.create uses (ACTOR_TS_CONFIG, then
+    # ./application.conf, then these defaults), which is what makes a client
+    # built with no options at all a configurable thing rather than a broken
+    # one.  The receptionist half below is asymmetric on purpose: it runs
+    # inside a system, so it reads that system's config and loads nothing.
+    #
+    # Three options stay code-only and have no leaf here.  client-identity is
+    # a security decision, not a packaging one -- the per-client half of the
+    # wire address is drawn from the CSPRNG so two clients cannot collide or
+    # pre-claim each other's slot, and one value shared by a fleet is exactly
+    # what that defeats.  tls carries certificate material, and logger is a
+    # Logger instance; neither has a HOCON spelling.
+    client {
+      # Cluster nodes an otherwise-unconfigured client dials, each "host:port"
+      # or "<system>@host:port", tried in order and re-tried round-robin on a
+      # dial failure.  Ships no value on purpose, the remote.tcp.advertised-host
+      # shape: the list is per-deployment identity no default could state, and
+      # an empty list is not the absence of one -- it is refused by the
+      # validator, so a shipped leaf could only be a value that stops every
+      # client that merely copied this file.
+      #
+      #   contact-points = ["orders@10.0.0.1:2552", "orders@10.0.0.2:2552"]
+
+      # Synthetic system name the client puts in its hello.  It names the
+      # client's side of the handshake and nothing else -- it is not an
+      # identity and not an authorisation, and the cluster it dials need not
+      # be called this.
+      system-name = "cluster-client"
+
+      # Deadline for ask(path, message) when the call itself names none.  A
+      # per-call timeoutMs still wins, as it does for ActorRef.ask.
+      ask-timeout = 5s
+
+      # How long ONE contact point gets to answer the hello handshake before
+      # the client gives up on it and moves to the next.  This bounds the same
+      # handshake remote.handshake-timeout bounds from the accepting side, and
+      # shares its 5s for the reason stated there -- the dialling side's clock
+      # starts first, so it is always the one that gives up first.
+      connect-timeout = 5s
+
+      # Cluster-side endpoint, started per node with
+      # system.extension(ClusterClientReceptionistId).start(cluster).
+      receptionist {
+        # Deadline for the ask this node makes on the client's behalf when an
+        # arriving envelope carries an askId.  Deliberately independent of the
+        # client's own ask-timeout above: they are two hops of one round trip,
+        # set on two different machines, and the client's is the one the caller
+        # actually waits out.
+        ask-timeout = 5s
+      }
+    }
+
     # Cluster-wide publish/subscribe (DistributedPubSub).  The caps bound what
     # one mediator can be made to hold -- by local subscribers and by a peer's
     # gossiped topic claims alike.  A Subscribe over a cap is answered with

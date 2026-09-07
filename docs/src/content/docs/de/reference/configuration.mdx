@@ -368,6 +368,48 @@ das einmalig — mit Schlüsselname und aktueller Zahl — statt die
 Cold-Start-Stall-Diagnose zu melden, die hier ein falsches Urteil wäre.
 Siehe [Joining und Seeds](/de/cluster/joining-and-seeds/).
 
+#### Der eigenständige `ClusterClient`
+
+| Key | Default | Zweck |
+| --- | --- | --- |
+| `cluster.client.contact-points` | *(nicht gesetzt)* | Cluster-Nodes, die ein Client ohne eigene Liste anwählt — jeweils `host:port` oder `<system>@host:port`, der Reihe nach probiert.  In `reference.conf` nur als Kommentar; siehe unten. |
+| `cluster.client.system-name` | `"cluster-client"` | Synthetischer System-Name im `hello` des Clients.  Er benennt die Client-Seite des Handshakes und ist keine Identität. |
+| `cluster.client.ask-timeout` | `5s` | Frist für `ask(path, message)`, wenn der Aufruf selbst keine nennt.  Ein `timeoutMs` pro Aufruf gewinnt weiterhin. |
+| `cluster.client.connect-timeout` | `5s` | Wie lange **ein** Kontaktpunkt Zeit hat, den `hello`-Handshake zu beantworten, bevor der Client ihn aufgibt und den nächsten wählt. |
+| `cluster.client.receptionist.ask-timeout` | `5s` | Frist für das ask, das ein Cluster-Node stellvertretend für einen Client stellt, wenn ein ankommendes Envelope eine `askId` trägt. |
+
+Dieser Block wird anders gelesen als jeder andere auf dieser Seite, und
+[`ClusterClient`](/de/cluster/cluster-client/) ist der Grund: ein Client ist
+per Definition *außerhalb* des Clusters, hält also kein `ActorSystem` und hat
+kein `system.config` über sich.  Sein Konstruktor lädt die Konfiguration
+deshalb selbst — dieselbe Kette, die `ActorSystem.create` benutzt:
+`ACTOR_TS_CONFIG`, dann `./application.conf`, dann die eingebauten Defaults.
+Genau das macht einen ganz ohne Optionen gebauten Client zu etwas
+Konfigurierbarem statt zu etwas Kaputtem.  Übergeben Sie ein `Config` als
+zweites Konstruktor-Argument, um ihn stattdessen festzunageln; dann wird das
+Dateisystem nie befragt.
+
+Die `receptionist`-Hälfte ist die asymmetrische.  `ClusterClientReceptionist`
+läuft *innerhalb* eines Systems, liest also dessen Config und lädt nichts.
+Sie liegt unter `cluster.client` statt bei `actor-ts.cluster.receptionist`
+oben — jener Block gehört dem Discovery-`Receptionist`, einem anderen Actor
+mit einem anderen Protokoll, der zufällig dasselbe Wort trägt.
+
+`contact-points` wird **nur als Kommentar** ausgeliefert, dieselbe Form wie
+`remote.tcp.advertised-host`: die Liste ist Deployment-Identität, die kein
+Default aussprechen könnte, und `[]` ist nicht deren Abwesenheit — eine leere
+Liste weist der Validator zurück, ein ausgelieferter Leaf-Wert könnte also nur
+ein Wert sein, der jeden Client stoppt, der die Datei bloß kopiert hat.
+
+`client-identity`, `tls` und `logger` haben überhaupt keine HOCON-Form.  Die
+letzten beiden sind Zertifikatsmaterial und eine `Logger`-Instanz.  Das erste
+ist die Entscheidung, die eine *Sicherheits*- und keine Verpackungsfrage ist:
+der synthetische Port eines Clients wird aus dem CSPRNG gezogen, damit kein
+Peer seinen Slot vorhersagen, adressieren oder vorwegnehmen kann — und eine
+Flotte, die sich einen konfigurierten Wert teilt, ist genau das, was diese
+Ziehung verhindern soll.  Setzen Sie ihn mit `withClientIdentity(host, port)`,
+wenn Sie einen stabilen brauchen.
+
 `seeds`, `roles` und der Transport haben keine HOCON-Form — die ersten
 beiden sind Deployment-Identität, die an die Join-Stelle gehört, und der
 Transport ist ein Objekt, das eine Config-Datei nicht ausdrücken kann.  Eine

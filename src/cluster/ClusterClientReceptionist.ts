@@ -56,7 +56,10 @@ import { NodeAddress } from './NodeAddress.js';
 import type { WireMessage } from './Protocol.js';
 import { isNodeAddressData } from './WireValidation.js';
 import type { Cluster } from './Cluster.js';
-import { ClusterClientReceptionistOptionsValidator } from './ClusterClientReceptionistOptions.js';
+import {
+  ClusterClientReceptionistOptionsValidator,
+  withClusterClientReceptionistConfigDefaults,
+} from './ClusterClientReceptionistOptions.js';
 import type { ClusterClientReceptionistOptions, ClusterClientReceptionistOptionsType } from './ClusterClientReceptionistOptions.js';
 
 /* ============================ wire shapes =========================== */
@@ -112,7 +115,14 @@ export class ClusterClientReceptionist implements Extension {
       throw new Error('ClusterClientReceptionist is already bound to a different cluster');
     }
     this._cluster = cluster;
-    const resolvedOptions = (options as ClusterClientReceptionistOptionsType);
+    // `this.system.config`, never `Config.load()`: this half of the block runs
+    // inside a system that already resolved its configuration, and a second
+    // load could disagree with it.  The client half is the asymmetric one and
+    // says why (#858).
+    const resolvedOptions = withClusterClientReceptionistConfigDefaults(
+      options as Partial<ClusterClientReceptionistOptionsType>,
+      this.system.config,
+    );
     new ClusterClientReceptionistOptionsValidator().validate(resolvedOptions);
     const askTimeoutMs = resolvedOptions.askTimeoutMs ?? DEFAULT_ASK_TIMEOUT_MS;
     const log = this.system.log.withSource(`cluster-client-receptionist@${cluster.selfAddress}`);
