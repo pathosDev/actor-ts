@@ -498,11 +498,18 @@ class CartActor extends Actor<CartCommand> {
 
 Die Stop-Nachricht ist eine *Bitte*: die Entity entscheidet, wann sie darauf
 reagiert. Tut sie es nie, terminiert sie nie — und ihr Platz bleibt für die
-Lebensdauer des Nodes gegen `maxEntities` belegt. Der Shard rüstet deshalb eine
-Rückfallebene: nach `passivationStopTimeoutMs` (Default 10 Sekunden,
-`actor-ts.sharding.passivation.stop-timeout`) stoppt er die Entity hart, genau
-so, wie es eine von der Region getriebene Passivierung tut. Setze `0`, wo das
-geordnete Herunterfahren tatsächlich keine Schranke hat.
+Lebensdauer des Nodes gegen `maxEntities` belegt. `passivationStopTimeoutMs`
+(`actor-ts.sharding.passivation.stop-timeout`) ist die Rückfallebene dafür:
+danach stoppt der Shard die Entity hart, genau so, wie es eine von der Region
+getriebene Passivierung tut.
+
+Sie ist **standardmäßig aus** (`0`, unbegrenztes Warten), und zwar weil der
+kooperative Vertrag der Punkt ist. Eine Entity mitten im Leeren — ein langer
+Flush, ein langsamer letzter Write — darf so lange brauchen, wie das Leeren
+dauert, und ein harter Stopp bricht diesen Flush ab; nur du weißt, wie lange
+deiner legitim laufen darf. Setze sie dort, wo eine Entity, die nie auf die
+Nachricht reagiert, ein Fehler wäre, den es einzudämmen gilt. Sie ist von
+`maxEntities` unabhängig: ein positiver Wert schärft sie mit oder ohne Cap.
 
 ### Wählen, was ein voller Node hergibt
 
