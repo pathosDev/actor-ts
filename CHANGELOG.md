@@ -1746,6 +1746,58 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **An actor restarts `maxRetries` times, not `maxRetries + 1`.**
+  `ActorCell` kept its own restart tally and its own arithmetic over it
+  while `RestartBudget` kept another, and the two disagreed by one.
+
+  Two implementations of one documented rule, read by different subsystems:
+  the worker mesh budgets slot respawns through the class (#734), an
+  ordinary supervised child went through the cell.  `maxRetries: 5`
+  therefore bought five restarts in one place and six in the other, and
+  `defaultStrategy`'s own "up to 10 times per minute" could not be true of
+  both.  The cell now delegates to the budget.  Nothing in the suite
+  observed the difference — 9209 cases stayed green through the change — so
+  two tests come with it, one driving a real supervised child to exhaustion
+  and one stating the two allowances as an equality.
+
+- **`parseDuration` accepts every spelling of the microsecond prefix.**  The
+  unit pattern admitted only U+03BC GREEK SMALL LETTER MU, so `1 µs` written
+  with U+00B5 MICRO SIGN — the character a German keyboard produces and most
+  copied text carries — was refused.
+
+  It was refused in the least helpful way available, too: the pattern runs
+  before the unit table is consulted, so the error read `Invalid duration`
+  and pointed at the number rather than at the letter.  U+039C GREEK CAPITAL
+  MU was rejected for the same reason, though the units are documented
+  case-insensitive and the ASCII spellings already were.  The unit is now
+  folded with NFKC before lower-casing; what counts as a unit is unchanged,
+  still decided by the table.
+
+- **`HttpServerOptions`' documented example no longer shows a wildcard bind,
+  or the wrong signature.**  It read `system.http('0.0.0.0', 8080)`, which
+  passes a host where the port goes and would not have compiled.
+
+  Found by widening the #756 bind guard, which had exempted
+  `system.http(port)` outright on the stated grounds that a host-less call
+  is "configuration".  It is not: `ActorSystem.http` resolves a missing host
+  to `0.0.0.0`, so the bare form binds the wildcard exactly as the literal
+  does and only hides it from the reader.  The guard now flags that form in
+  examples, the one example that genuinely wants a wildcard spells it out in
+  its own source and is named in an allow-list with the reason, and a third
+  pattern catches a positional host on both surfaces.  The framework default
+  itself is #1408.
+
+- **`Mailbox.prependUser`'s contract no longer tells a subclass author to
+  reintroduce a fixed defect.**  It ended "a signal is exempt from a bound,
+  a replay is not", which the fix for #729 made false.
+
+  A replayed lifecycle notification *is* exempt — that was the fix — and
+  both shipped overrides route an undroppable envelope to `enqueueSignal`.
+  The commit that changed the behaviour updated two neighbouring JSDoc
+  blocks and left this one, which is the worst of the three to leave stale:
+  it is not a description but the contract of an extension point, read by
+  anyone writing a bounded mailbox to learn what their override owes.
+
 - **BREAKING — `websocket()` routes require a same-origin upgrade by
   default, and the client keepalive stops pretending (#756, #751).**
 
@@ -2132,6 +2184,51 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`fundamentals/throttling`, EN + DE).
 
 ### Security
+
+- **A `max-connections` cap is held by the framework rather than handed to
+  the runtime** (#870).  It is counted here and the offending socket
+  destroyed, instead of writing `maxConnections` onto the server and
+  trusting it to be honoured.
+
+  The property is still written — where a runtime enforces it the socket is
+  refused before `'connection'` is emitted, which is earlier and cheaper,
+  and a refused socket therefore never reaches the listener that does the
+  counting.  What changes is that the bound no longer depends on it.  The
+  same runtime release was measured honouring the property on one operating
+  system and ignoring it on another, which showed up as three tests red on
+  CI and green on every developer machine.  That is an acceptable outcome
+  for a tuning hint and not for the control `http/security.mdx` offers as
+  the answer to a connection flood: a cap an operator sets and the process
+  does not hold is worse than an absent one, because it is believed.
+
+  Unchanged where it was already honest: a backend that exposes no server
+  object (Hono on Bun or Deno) has nothing to count, and still reports the
+  cap as not installed rather than pretending.
+
+- **`GCounter.merge` bounds the number of slots it accumulates** (#1407).
+  Two counters that each decode could merge into one that no decoder would
+  accept, and every peer then dropped that key.
+
+  `MAX_COUNTER_SLOT` is computed as `MAX_SAFE_INTEGER / MAX_CRDT_ENTRIES`,
+  so the per-slot ceiling is sound only while the slot *count* is bounded —
+  and merge was the one operation that could raise the count without passing
+  a decoder.  Measured: two wire-valid counters of 4096 slots merged to
+  8192, `value()` returned 18014398509477888, and re-encoding threw.  Since
+  every wire call site routes through `decodeOrDrop`, the key then stopped
+  converging cluster-wide, and the holder could not gossip it back into
+  health because what it would send is exactly what everyone refuses.  One
+  valid frame from one peer was enough.
+
+  Slots already held are never given up: each still takes its componentwise
+  maximum, so no replica loses a count it had and the local replica's own
+  contribution is safe.  Only new replica ids compete for the remaining
+  room, admitted in sorted id order so the outcome does not depend on `Map`
+  iteration order.  The cost is commutativity **in the overflow case only**
+  — with more than `MAX_CRDT_ENTRIES` distinct ids in play, `a.merge(b)` and
+  `b.merge(a)` can keep different newcomers.  Refusing the merge would have
+  made a CRDT join partial; evicting the smallest slots would have let a
+  grow-only counter go down.  Bounding who may occupy a slot at all stays
+  upstream, in #955's pruning.
 
 - **BREAKING — A cluster peer, or an outside `ClusterClient`, can no longer
   reach a `/system` framework actor by naming its path (#877).**
