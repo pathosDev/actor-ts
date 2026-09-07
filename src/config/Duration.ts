@@ -103,10 +103,22 @@ export function parseDuration(input: string | number): number {
   // double parses cleanly and comes back `Infinity`.
   if (/^[+-]?\d+(?:\.\d+)?$/.test(trimmed)) return finiteDuration(parseFloat(trimmed), input);
 
-  const match = trimmed.match(/^([+-]?\d+(?:\.\d+)?)\s*([A-Za-zμ]+)$/);
+  // Three spellings of one letter reach this, and only one of them used to.
+  // U+03BC GREEK SMALL LETTER MU is what the table is keyed on; U+00B5 MICRO
+  // SIGN is what a keyboard produces (AltGr+M on a German layout) and what most
+  // copied text carries; U+039C GREEK CAPITAL LETTER MU is the upper case of
+  // the first.  The class has to admit all three, because it runs *before* any
+  // normalisation and a unit it does not match is rejected as a malformed
+  // duration rather than as an unknown unit.
+  const match = trimmed.match(/^([+-]?\d+(?:\.\d+)?)\s*([A-Za-zµΜμ]+)$/);
   if (!match) throw new Error(`Invalid duration: ${input}`);
   const [, num, unitRaw] = match;
-  const unit = unitRaw!.toLowerCase();
+  // NFKC first, then lower case, and the order is not interchangeable: NFKC is
+  // what folds the micro sign onto the Greek mu (`toLowerCase` leaves U+00B5
+  // exactly where it is), and lower-casing is what folds the capital.  Applied
+  // to the whole unit rather than to one character, so `Μs`, `µS` and `μs` all
+  // arrive at the single key the table declares.
+  const unit = unitRaw!.normalize('NFKC').toLowerCase();
   // Positive — "is it declared here" — rather than a list of names to refuse,
   // for the reason #589 settled: a blocklist cannot enumerate a prototype
   // chain that engine and host additions keep extending.  Redundant with the
