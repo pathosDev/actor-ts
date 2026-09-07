@@ -169,7 +169,12 @@ await dd.updateAsync('x', ..., {
 ```
 
 Default timeout is a fixed 5 seconds (`DEFAULT_ASK_TIMEOUT_MS`),
-independent of the gossip interval.  Override per call when:
+independent of the gossip interval.  It stays fixed even where
+`actor-ts.actor.ask-timeout` is configured: that key moves the default
+of `ActorRef.ask`, and the quorum deadline is resolved by the
+distributed-data handle, which reads no configuration of its own yet.
+Making it settable belongs to the `actor-ts.distributed-data` block —
+tracked as #856.  Override per call when:
 
 - **Stricter latency budget** — set lower; reject early if
   consistency can't be achieved.

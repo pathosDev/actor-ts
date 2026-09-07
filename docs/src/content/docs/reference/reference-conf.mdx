@@ -256,6 +256,28 @@ actor-ts {
     # fairness for throughput, since nothing else on the event loop runs until
     # the actor yields.  Override per actor with ActorOptions.withThroughput().
     throughput = 16
+
+    # How long ActorRef.ask waits for a reply when the caller names no
+    # timeoutMs.  A per-call argument always wins — this is only the answer to
+    # "nobody said".
+    #
+    # Honoured by every ref that can reach its ActorSystem: local refs, the
+    # TestProbe, the remote / singleton / shard refs, and EntityRef through its
+    # region.  The refs that carry a system NAME and no system — dead letters,
+    # Nobody, an unresolved path, the one-shot reply ref an ask synthesises, and
+    # two framework-internal handles — keep the built-in 5s.  Every one of them
+    # is a ref with no actor behind it, so an ask on one is waiting for a reply
+    # that is not coming either way.  Reference -> Configuration has the split.
+    #
+    # Rejected rather than clamped when it is not a positive finite duration,
+    # unlike throughput above: an ask that arms no deadline can never settle
+    # (#765), so there is no nearest-sensible value to clamp to.  The system
+    # refuses to start instead of throwing at every ask site.
+    #
+    # Below 4.6s the default scatter-gather router (4.5s) can no longer report
+    # before the caller gives up, which is the defect #1088 fixed — the system
+    # logs a WARN naming both knobs when that happens.
+    ask-timeout = 5s
   }
 
   mailbox {

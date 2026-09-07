@@ -12,6 +12,7 @@ import {
 import { DEFAULT_SHUTDOWN_EXIT_CODE } from '../../../src/Constants.js';
 import { DEFAULT_MAILBOX_OVERFLOW } from '../../../src/ActorOptions.js';
 import { DEFAULT_GOSSIP_INTERVAL_MS } from '../../../src/util/Constants.js';
+import { DEFAULT_ASK_TIMEOUT_MS } from '../../../src/util/Constants.js';
 import { DEFAULT_HEARTBEAT_INTERVAL_MS } from '../../../src/cluster/Constants.js';
 import { defaultFailureDetectorOptions } from '../../../src/cluster/FailureDetector.js';
 import { DEFAULT_MINIMUM_MEMBERS_BEFORE_UP } from '../../../src/cluster/ClusterOptions.js';
@@ -277,6 +278,7 @@ const deliveryDefaults: readonly DocumentedDefault[] = BATCHING_SINKS.flatMap((s
 const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   /* --- core --- */
   { key: 'actor-ts.actor.throughput', kind: 'int', constant: DEFAULT_ACTOR_THROUGHPUT },
+  { key: 'actor-ts.actor.ask-timeout', kind: 'duration', constant: DEFAULT_ASK_TIMEOUT_MS },
   { key: 'actor-ts.dispatcher.throughput', kind: 'int', constant: DEFAULT_DISPATCHER_THROUGHPUT },
   { key: 'actor-ts.coordinated-shutdown.default-phase-timeout', kind: 'duration', constant: DEFAULT_PHASE_TIMEOUT_MS },
   { key: 'actor-ts.coordinated-shutdown.exit-code', kind: 'int', constant: DEFAULT_SHUTDOWN_EXIT_CODE },

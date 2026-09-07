@@ -49,6 +49,18 @@ export class RemoteActorRef<TMessage = unknown> extends ActorRef<TMessage> {
     this.cluster._sendEnvelope(this.targetNode, envelope);
   }
 
+  /**
+   * @internal The *sending* node's `actor-ts.actor.ask-timeout` (#863).
+   *
+   * Deliberately this node's and not the target's: the deadline is the
+   * caller's patience, and it arms a timer here.  A cross-node ask between
+   * members configured differently therefore behaves the way a local one
+   * does — the side that waits decides how long.
+   */
+  override _defaultAskTimeoutMs(): number {
+    return this.cluster.system._defaultAskTimeoutMs;
+  }
+
   override toString(): string {
     return `${this.targetNode}${this.targetPath}`;
   }

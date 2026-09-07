@@ -138,6 +138,34 @@ Place this at the project root.  The framework auto-loads it on
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `actor.throughput` | `16` | User messages **one** actor handles per dispatcher turn before yielding.  Override per actor with `ActorOptions.withThroughput()`. |
+| `actor.ask-timeout` | `5s` | Deadline `ActorRef.ask` arms when the caller names no `timeoutMs`.  A per-call `ask(message, ms)` always wins.  Not honoured by every ref — see below. |
+
+**`ask-timeout` reaches most refs, not all of them, and that is worth knowing
+before you tune it.**  A ref applies the configured value only if it can reach
+the `ActorSystem` that read it.  Seven can: the ordinary local ref, `TestProbe`,
+`RemoteActorRef`, `ClusterSingletonProxy`, the two shard refs, and `EntityRef`
+through its region.  The rest carry a system *name* and no system, and keep the
+built-in 5 s — the dead-letter ref, `Nobody`, an unresolved-path ref and the
+one-shot reply ref an ask synthesises for itself, plus two framework-internal
+handles (a WebSocket connection and the graceful-stop watcher) that nothing can
+reply to at all.  Every one of them is a ref you hold where no live actor is
+behind it, so an ask on one is waiting for a reply that is not coming — the
+timeout decides how fast you find that out, not whether you find it out.
+
+**A bad value is refused, not clamped** — unlike `actor.throughput` above.
+`ask-timeout = 0` would arm no deadline, and an ask with no deadline can never
+settle, so there is no nearest-sensible value to fall back to; the system
+throws at `ActorSystem.create`, naming the key, rather than at every ask site
+later.
+
+**Below `4.6s` it collides with scatter-gather routing.**  A router from
+`Router.scatterGatherFirstCompleted(…)` defaults to a 4.5 s deadline precisely
+so that it can collect its routees' failures and answer before the caller's own
+ask gives up.  Configure an ask timeout under that and the caller sees
+`AskTimeoutError` instead of the `AggregateError` naming the failing routees.
+The system logs one `warn` at startup when it happens; give the router its own
+`ScatterGatherOptions.withTimeoutMs()` if the shorter ask deadline is what you
+want.
 
 ### `actor-ts.diagnostics`
 

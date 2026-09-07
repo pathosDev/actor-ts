@@ -4,6 +4,10 @@ import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config } from '../../../src/config/Config.js';
 import { MicrotaskDispatcher, ThroughputDispatcher } from '../../../src/Dispatcher.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { DEFAULT_ASK_TIMEOUT_MS } from '../../../src/util/Constants.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { DEFAULT_SCATTER_GATHER_TIMEOUT_MS, MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS } from '../../../src/ScatterGatherOptions.js';
+import { RecordingLogger } from '../../util/RecordingLogger.js';
 
 describe('ActorSystem — config integration', () => {
   test('exposes the merged config on `.config`', async () => {
@@ -79,6 +83,79 @@ describe('ActorSystem — config integration', () => {
     const zero = ActorSystem.create('cfg', zeroOptions);
     expect(zero._actorThroughput).toBe(1);
     await zero.terminate();
+  });
+
+  test('the default ask deadline defaults, reads config, and refuses a value no ask could arm', async () => {
+    // Nested and not `{'actor-ts.actor.ask-timeout': '2s'}`: a dotted string
+    // stays a literal top-level key, so `hasPath` would still resolve the
+    // reference value and the assertion would prove nothing.
+    const plainOptions = ActorSystemOptions.create().withLogger(new NoopLogger());
+    const plain = ActorSystem.create('cfg', plainOptions);
+    expect(plain._defaultAskTimeoutMs).toBe(DEFAULT_ASK_TIMEOUT_MS);
+    await plain.terminate();
+
+    const tunedOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withConfig({ 'actor-ts': { actor: { 'ask-timeout': '2s' } } });
+    const tuned = ActorSystem.create('cfg', tunedOptions);
+    expect(tuned._defaultAskTimeoutMs).toBe(2_000);
+    await tuned.terminate();
+
+    // NOT clamped the way `throughput` above is, and the difference is the
+    // point: `throughput = 0` has a nearest honest reading, `ask-timeout = 0`
+    // has none — an ask that arms no deadline can never settle (#765).  So the
+    // system refuses to start and names the key, rather than throwing later at
+    // every ask site in the application.
+    for (const bad of ['0s', '-1s']) {
+      const badOptions = ActorSystemOptions.create()
+        .withLogger(new NoopLogger())
+        .withConfig({ 'actor-ts': { actor: { 'ask-timeout': bad } } });
+      let caught: unknown = null;
+      try { ActorSystem.create('cfg', badOptions); } catch (e) { caught = e; }
+      expect(caught).toBeInstanceOf(OptionsError);
+      expect((caught as OptionsError).field).toBe('ask-timeout');
+      expect((caught as OptionsError).message).toContain('actor-ts.actor.ask-timeout');
+    }
+  });
+
+  test('an ask timeout that undercuts the scatter-gather default warns once, naming both knobs', async () => {
+    // #1088 in reverse: the scatter default sits under the ask default so the
+    // router can name the failing routees first.  Lowering the ask default
+    // past it silently restores the defect, and nothing downstream can notice
+    // — the router resolves its own default at a call site with no system.
+    const quietLog = new RecordingLogger();
+    const quietOptions = ActorSystemOptions.create()
+      .withLogger(quietLog)
+      .withConfig({ 'actor-ts': { actor: { 'ask-timeout': `${MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS}ms` } } });
+    const quiet = ActorSystem.create('cfg', quietOptions);
+    expect(quiet._defaultAskTimeoutMs).toBe(MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS);
+    // Exactly at the floor is fine — the comparison is `>=`, so the boundary
+    // is not a warning, which is what makes the number a threshold and not an
+    // approximation.
+    expect(quietLog.records.filter((r) => r.message.includes('ask-timeout'))).toHaveLength(0);
+    await quiet.terminate();
+
+    const loudLog = new RecordingLogger();
+    const loudOptions = ActorSystemOptions.create()
+      .withLogger(loudLog)
+      .withConfig({ 'actor-ts': { actor: { 'ask-timeout': `${MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS - 1}ms` } } });
+    const loud = ActorSystem.create('cfg', loudOptions);
+    const warnings = loudLog.records.filter((r) => r.message.includes('actor-ts.actor.ask-timeout'));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]!.level).toBe('warn');
+    // Both knobs, because the operator has to decide which of the two they
+    // meant — a warning naming only the one they just set says nothing.
+    expect(warnings[0]!.message).toContain(String(DEFAULT_SCATTER_GATHER_TIMEOUT_MS));
+    expect(warnings[0]!.message).toContain('ScatterGatherOptions.withTimeoutMs()');
+    await loud.terminate();
+
+    // And the shipped default is above the floor, so an untouched system is
+    // silent — a warning every process printed would be one nobody reads.
+    const defaultLog = new RecordingLogger();
+    const defaultOptions = ActorSystemOptions.create().withLogger(defaultLog);
+    const untouched = ActorSystem.create('cfg', defaultOptions);
+    expect(defaultLog.records.filter((r) => r.message.includes('ask-timeout'))).toHaveLength(0);
+    await untouched.terminate();
   });
 
   test('the global mailbox bound defaults to off, reads config, and treats 0 as off', async () => {
