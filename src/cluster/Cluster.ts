@@ -110,9 +110,9 @@ import {
   DEFAULT_DOWN_ALL_WHEN_UNSTABLE,
   DEFAULT_STABLE_AFTER_MS,
   SplitBrainResolverOptionsValidator,
-  unstableEscalationDeadlineMs,
 } from './downing/SplitBrainResolverOptions.js';
 import type { SplitBrainResolverOptionsType } from './downing/SplitBrainResolverOptions.js';
+import { StabilityWindow } from './downing/StabilityWindow.js';
 
 type EnvelopeHandler = (env: EnvelopeMessage, from: NodeAddress) => void;
 
@@ -375,36 +375,20 @@ export class Cluster {
    */
   private lastDownedView: string | null = null;
   /**
-   * How long the view must hold still before {@link downing} is consulted, and
-   * whether a view that never does escalates to downing everything (#839).
+   * How long the view must hold still before {@link downing} is consulted
+   * (#839) — kept beside the window because the escalation log quotes it.
    *
    * Read once here rather than off `options` at each tick: the merge that
    * layers explicit options over HOCON over the built-in defaults happens once,
    * in `Cluster.join`, and a second read site would be a second answer.
    */
   private readonly stableAfterMs: number;
-  private readonly downAllWhenUnstable: boolean;
   /**
-   * The view fingerprint {@link stableSince} refers to, and when it was first
-   * seen — the stability window's whole state (#839).
-   *
-   * Separate from {@link lastDownedView}, which answers a different question:
-   * that one is "did we already act on this exact view", this one is "has this
-   * view held long enough to be worth acting on".  Collapsing them would make
-   * an applied decision reset the window and an unchanged view suppress it,
-   * which are each other's opposite.
+   * The stability window in front of {@link downing} (#839) — all of "may the
+   * resolver be asked yet", in a class of its own so each of its guards is
+   * reachable from a unit test with the clock supplied.
    */
-  private stableSince = 0;
-  private currentView: string | null = null;
-  /**
-   * When the current run of view changes began, or `null` while the view is
-   * settled — the only state `down-all-when-unstable` needs (#839).
-   *
-   * Cleared the moment a full {@link stableAfterMs} elapses without a change,
-   * so the escalation deadline measures *uninterrupted* churn rather than the
-   * age of the cluster's last quiet moment.
-   */
-  private unstableSince: number | null = null;
+  private readonly stabilityWindow: StabilityWindow;
 
   private constructor(system: ActorSystem, options: ClusterOptionsType) {
     this.system = system;
@@ -521,8 +505,10 @@ export class Cluster {
       options.splitBrainResolver ?? {};
     new SplitBrainResolverOptionsValidator().validate(splitBrainResolver);
     this.stableAfterMs = splitBrainResolver.stableAfterMs ?? DEFAULT_STABLE_AFTER_MS;
-    this.downAllWhenUnstable =
-      splitBrainResolver.downAllWhenUnstable ?? DEFAULT_DOWN_ALL_WHEN_UNSTABLE;
+    this.stabilityWindow = new StabilityWindow(
+      this.stableAfterMs,
+      splitBrainResolver.downAllWhenUnstable ?? DEFAULT_DOWN_ALL_WHEN_UNSTABLE,
+    );
     this.tombstoneTtlMs = options.tombstoneTtlMs ?? DEFAULT_TOMBSTONE_TTL_MS;
     this.tombstonePruneIntervalMs = options.tombstonePruneIntervalMs ?? DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS;
     // `0` is not "no floor" but "derive one", so it falls through exactly like
@@ -2472,10 +2458,21 @@ export class Cluster {
    * verdict about a cluster that existed at no instant.  The window is what
    * makes a decision be about a settled fact.
    *
+   * …with a ceiling on it, because a window with none is not a careful version
+   * of arbitration but the absence of it: the fingerprint covers every
+   * member's status, so any join, leave or transition anywhere restarts the
+   * window, and a deployment whose membership moves more often than
+   * `stable-after` would never arbitrate a partition at all.  Once one peer
+   * has been continuously unreachable for `unreachableArbitrationDeadlineMs`,
+   * that peer's silence is a settled fact whatever else is moving, and the
+   * provider is consulted on it.
+   *
    * No new timer: this method is already called from `failureDetectionTick`,
    * so the clock is `failureDetector.interval` and the window's resolution is
    * one heartbeat cadence (500 ms shipped).  That is invisible at the shipped
-   * 20 s window and worth knowing at a 200 ms one.
+   * 20 s window and worth knowing at a 200 ms one.  `Date.now()` is read once
+   * per tick and handed to all three window calls, so one tick cannot be
+   * measured against two different instants.
    */
   private evaluateDowning(): void {
     if (!this.downing) return;
@@ -2492,9 +2489,18 @@ export class Cluster {
       .map((member) => `${member.address.toString()}:${member.status}`)
       .sort()
       .join('|');
-    if (!this.viewHasSettled(fingerprint)) {
-      this.escalateIfPersistentlyUnstable(allMembers, unreachable, fingerprint);
-      return;
+    const now = Date.now();
+    if (!this.stabilityWindow.observe(fingerprint, unreachable, now)) {
+      // Escalation is asked first: stopping a cluster that cannot converge at
+      // all outranks arbitrating one peer inside it, and the ceiling below
+      // would otherwise put the provider in front of a switch an operator
+      // turned on precisely to bypass every strategy.
+      const unstableForMs = this.stabilityWindow.takeEscalation(unreachable, now);
+      if (unstableForMs !== null) {
+        this.downAllBecauseUnstable(unstableForMs, allMembers, unreachable, fingerprint);
+        return;
+      }
+      if (!this.stabilityWindow.hasOutlastedChurn(now)) return;
     }
     // Debounce only when the LAST evaluation produced an applied
     // decision.  Strategies that need multiple ticks to converge
@@ -2521,59 +2527,25 @@ export class Cluster {
   }
 
   /**
-   * Fold this tick's view fingerprint into the stability window, and answer
-   * whether the window has elapsed (#839).
+   * `down-all-when-unstable` has fired: stop the whole cluster, self included,
+   * because the view never once held still for `stableAfterMs` across a run of
+   * changes longer than `unstableEscalationDeadlineMs` (#839).
    *
-   * Three states, in the order they are tested: the view just moved (record
-   * when, and it is by definition not stable); it has held but not long
-   * enough; it has held for `stableAfterMs`, which also ends whatever run of
-   * changes preceded it.
-   *
-   * The **first** observation is deliberately not counted as a change.  A node
-   * that has just started has no previous view to differ from, so treating it
-   * as churn would begin every node's life inside an instability run —
-   * `down-all-when-unstable` would then be measuring cluster formation.
-   */
-  private viewHasSettled(fingerprint: string): boolean {
-    const now = Date.now();
-    if (fingerprint !== this.currentView) {
-      if (this.currentView !== null && this.unstableSince === null) this.unstableSince = now;
-      this.currentView = fingerprint;
-      this.stableSince = now;
-      return false;
-    }
-    if (now - this.stableSince < this.stableAfterMs) return false;
-    this.unstableSince = null;
-    return true;
-  }
-
-  /**
-   * `down-all-when-unstable`: stop the whole cluster, self included, when the
-   * view has never once held still for `stableAfterMs` across a run of changes
-   * longer than {@link unstableEscalationDeadlineMs} (#839).
-   *
-   * Two guards before the deadline, and both are load-bearing.  The switch is
-   * off unless a deployment asked for it, because this is the one action in
-   * the subsystem that ends the cluster rather than a side of it.  And nothing
-   * escalates while `unreachable` is empty: a view that moves because members
-   * join and leave cleanly is churn, not a partition, and a rolling deploy
-   * whose replacements arrive faster than the window is exactly that shape.
+   * Whether it fires is {@link StabilityWindow.takeEscalation}'s decision,
+   * which also consumes the run so this announces itself exactly once; what
+   * remains here is the announcement and the decision, because both need the
+   * cluster's own log and member map.
    *
    * Announced at `warn` with the span and the member count.  An operator who
    * finds a cluster gone has to be able to find the line that says a timer did
    * it, not a strategy.
    */
-  private escalateIfPersistentlyUnstable(
+  private downAllBecauseUnstable(
+    unstableForMs: number,
     allMembers: readonly Member[],
     unreachable: ReadonlySet<string>,
     fingerprint: string,
   ): void {
-    if (!this.downAllWhenUnstable) return;
-    if (unreachable.size === 0) return;
-    const since = this.unstableSince;
-    if (since === null) return;
-    const unstableForMs = Date.now() - since;
-    if (unstableForMs <= unstableEscalationDeadlineMs(this.stableAfterMs)) return;
     this.log.warn(
       `${ConfigKeys.cluster.splitBrainResolver.downAllWhenUnstable} is on and the membership `
       + `view has not held still for ${this.stableAfterMs} ms at any point in the last `
@@ -2581,10 +2553,6 @@ export class Cluster {
       + `all ${allMembers.length} member(s), this node included. No strategy was consulted: `
       + 'a view this unsettled is not evidence any of them could decide on.',
     );
-    // Cleared before the decision is applied, not after: applying it downs
-    // this node too, and a second escalation on the way out would log the
-    // whole thing again from a cluster that is already leaving.
-    this.unstableSince = null;
     this.applyDowningDecision(
       new Set(allMembers.map((member) => member.address.toString())),
       fingerprint,

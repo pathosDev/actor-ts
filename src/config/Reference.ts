@@ -2035,10 +2035,14 @@ actor-ts {
       admission-window-proportion = 0.0     # 0 = no probationary window
       admission-filter = off                # off | frequency-sketch
       # How long an entity may take to act on the stop-message a Passivate sent
-      #   it before the shard stops it outright.  0 waits forever, which is what
-      #   releases before this did -- and an entity that never acts on the
-      #   message held its slot against max-entities for the life of the node.
-      stop-timeout = 10s
+      #   it before the shard stops it outright.  Ships OFF: the stop-message is
+      #   a request, and an entity mid-drain -- a long flush, a slow final write
+      #   -- is entitled to take as long as the drain takes, so the bound is for
+      #   the operator who knows the drain to set.  Independent of max-entities:
+      #   a positive value arms the backstop with or without a cap.  Unset, an
+      #   entity that never acts on the message never terminates and holds its
+      #   slot against max-entities for the life of the node.
+      stop-timeout = 0ms
     }
   }
 

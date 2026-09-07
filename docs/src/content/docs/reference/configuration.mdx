@@ -275,7 +275,7 @@ replay from it.
 | `cluster.failure-detector.phi.min-std-deviation` | `100ms` | Floor on the sampled standard deviation, so a very steady peer is not flagged on noise. |
 | `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `0s` | Grace added to the last heartbeat before φ starts rising. |
 | `cluster.split-brain-resolver.active-strategy` | `off` | Which downing strategy arbitrates a partition — `off`, `keep-majority`, `keep-oldest`, `keep-referee` or `static-quorum`. |
-| `cluster.split-brain-resolver.stable-after` | `20s` | How long the membership **and** reachability view must hold still before the strategy is consulted at all — see below. |
+| `cluster.split-brain-resolver.stable-after` | `20s` | How long the membership **and** reachability view must hold still before the strategy is consulted — or, if it never does, half of how long one peer must have been continuously unreachable.  See below. |
 | `cluster.split-brain-resolver.down-all-when-unstable` | `off` | Down every member, this node included, when the view never once holds still for `stable-after` across `3 × stable-after` of churn.  Off — see below. |
 | `cluster.split-brain-resolver.keep-majority.role` | `""` | Only members carrying this role count toward the majority.  `""` counts every member. |
 | `cluster.split-brain-resolver.keep-oldest.role` | `""` | Only members with this role are eligible "oldest".  `""` considers every member. |
@@ -364,6 +364,17 @@ knowing at two hundred milliseconds.  There is deliberately **no** upper
 bound tying it to `failure-detector.down-after`: with a strategy configured
 the detector parks an unreachable peer and evicts nothing, so the window has
 no deadline to out-run.
+
+It is a preference rather than a precondition.  The view it watches is every
+member's address *and* status, so any join, leave or transition anywhere
+restarts it — and a deployment whose membership moves more often than
+`stable-after` would otherwise never arbitrate a partition at all, with the
+detector no longer evicting to fall back on.  A peer that has been
+**continuously** unreachable for `2 × stable-after` is therefore put to the
+strategy whatever else is moving.  That multiple sits above one window, so a
+view that does settle is always arbitrated the ordinary way first, and below
+the `3 × stable-after` escalation deadline, so a strategy is asked before
+`down-all-when-unstable` can stop the cluster.
 
 `down-all-when-unstable` is the escalation for the cluster that never
 settles: when the view has not once held still for a whole `stable-after`
@@ -1834,7 +1845,7 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.passivation.segmented-protected-proportion` | `0.8` | Share of the cap held by the *protected* segment under `segmented-least-recently-used`; the rest is probation.  Ignored under every other policy. |
 | `sharding.passivation.admission-window-proportion` | `0.0` | Share of the cap held as a probationary window in front of the policy.  `0` = no window.  Required by `admission-filter`. |
 | `sharding.passivation.admission-filter` | `off` | `frequency-sketch` makes a candidate leaving the window out-rank the entity it would displace.  Rejected at `sharding.start(...)` unless `admission-window-proportion > 0`. |
-| `sharding.passivation.stop-timeout` | `10s` | How long an entity may take to act on the stop-message a `Passivate` handed it before the shard stops it outright.  `0` waits forever. |
+| `sharding.passivation.stop-timeout` | `0ms` | How long an entity may take to act on the stop-message a `Passivate` handed it before the shard stops it outright.  `0` waits forever, which is the shipped behaviour. |
 | `sharding.buffer-size` | `100000` | How many messages one region may hold **across all its shards** while their homes are unknown or handing off.  Past the cap the *newest* message is dropped to dead letters with its sender, so what is already queued keeps the order the caller sent it in.  **Mind the polarity against `max-entities` above**: here `0` means *never buffer — dead-letter immediately*, not "no cap". |
 | `sharding.register-retry-interval` | `500ms` | How often a region re-sends an unacknowledged registration to the coordinator.  Everything routed for the type buffers until the coordinator answers, so this is also how long a lost `Register` stalls it. |
 | `sharding.shard-region-query-timeout` | `5s` | Default wait for `sharding.shards()` and `sharding.shardRefFor()`.  An explicit `timeoutMs` argument still wins over it.  Unrelated to how long the region keeps a correlation for a cross-node `ask`, which is minutes on purpose. |
@@ -2076,14 +2087,19 @@ count halved periodically so the ranking follows recent traffic rather than a
 lifetime total.  It suits a working set that is stable but not recent — a fleet
 of devices reporting on a slow cycle — where recency says almost nothing.
 
-`stop-timeout` is unrelated to the choice above and applies to every cap.  When
-an entity passivates itself with
-[`Passivate`](/cluster/sharding/overview/#passivation), the stop-message is a
-request: the entity decides when to act on it.  If it never does, the entity
-never terminates and its slot is held against `max-entities` for the lifetime
-of the node.  After `stop-timeout` the shard stops it outright.  `0` restores
-the unbounded wait, which is right where a graceful shutdown genuinely has no
-bound.
+`stop-timeout` is unrelated to the choice above, and unrelated to `max-entities`
+too: a positive value arms it with or without a cap.  When an entity passivates
+itself with [`Passivate`](/cluster/sharding/overview/#passivation), the
+stop-message is a request: the entity decides when to act on it.  If it never
+does, the entity never terminates and its slot is held against `max-entities`
+for the lifetime of the node.  After `stop-timeout` the shard stops it outright.
+
+It ships **off** (`0`, the unbounded wait), so nothing changes for a deployment
+that does not name it.  That is deliberate rather than cautious: an entity
+mid-drain — a long flush, a slow final write — is entitled to take as long as
+the drain takes, and a forced stop there abandons the flush.  The operator who
+knows how long the drain can legitimately run is the one who can pick the bound,
+so it is opt-in.
 
 A per-type setting therefore belongs in the builder; the config file is for
 the node-wide baseline you want to move between staging and production
