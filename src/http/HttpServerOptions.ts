@@ -12,7 +12,9 @@
  *     const serverOptions = HttpServerOptions.create()
  *       .withIdleTimeoutMs(5_000)
  *       .withMaxConnections(1_000);
- *     await system.http('0.0.0.0', 8080).withServerOptions(serverOptions).bind(routes);
+ *     await system.http(8080, { host: '127.0.0.1' })
+ *       .withServerOptions(serverOptions)
+ *       .bind(routes);
  *
  * These are bounds on the **connection**, not on a route: they belong to the
  * one listening socket a `bind()` opens, so they are resolved once at `bind()`

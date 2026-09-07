@@ -135,7 +135,6 @@ Causes this suite has actually had, with how each was settled.
 | A dispatcher hop between wait and assert | Settled | Never reproduces in isolation; fails only in a big parallel run |
 | Port collisions | Settled | `EADDRINUSE`, only when suites overlap |
 | Filesystem races | Settled | Two suites reading each other's fixtures |
-| A runtime that differs by platform | Asserted, with an expiry | Green on one operating system and red on the other, over a byte-identical tree |
 | An assertion over process-global state | Settled | Passes in isolation, fails in a whole-suite run, and no timing is involved |
 | Hosted-runner worker respawn | Quarantined | Workers spawn, handshake, then never run — CI only |
 
@@ -363,69 +362,6 @@ Both settled, and worth knowing because a new test can reintroduce either.
 - **Temp directories.**  `mkdtemp` or a `randomUUID` suffix per test, never a
   shared fixture path.  Roughly two dozen suites do this today; copy one of
   the object-storage suites if you need a pattern.
-
-### A runtime that differs by platform
-
-Not a flake in the strict sense — nothing here is random, and a repeat run
-reproduces it exactly — but it arrives looking like one: the same commit is
-green on a laptop and red on CI, and the first instinct is to re-run.
-
-The case this suite had is `server.maxConnections`.  We write the property onto
-the `node:http` server a backend just started listening on, Node enforces it,
-and Bun enforces it **on Windows and not on the `ubuntu-latest` runner**, where
-the connection past the cap is simply served (#1409).  Three tests asserted the
-close, so `develop` was red on Linux for a reason that was true.
-
-Two shapes are available without help, and both are wrong.  Asserting one
-platform's behaviour leaves the other red.  Skipping on the other platform
-leaves the behaviour asserted nowhere, with no owner and no expiry — and the
-difference between the two only shows up on the day the runtimes converge: a
-skip stays quietly green forever, while an assertion of the divergence goes
-**red** and forces the caveat to be revisited.
-
-So assert what each runtime actually does:
-
-```ts
-import { platformDependent } from '../../util/Platform.js';
-
-expect(await closedWithin(second, 3_000)).toBe(
-  platformDependent(import.meta, 'max-connections enforced by the runtime', {
-    win32: true,
-    default: false,
-  }),
-);
-```
-
-Every call is backed by an entry in `tests/quarantine.json` — the one list of
-divergences this suite takes on purpose — carrying the issue that owns it, the
-reason with the measurement behind it, and a date at most 45 days out:
-
-```json
-{
-  "kind": "platform-expectation",
-  "file": "tests/unit/http/HttpConfigDefaults.test.ts",
-  "label": "max-connections enforced by the runtime",
-  "issue": 1409,
-  "since": "2026-09-07",
-  "expires": "2026-10-22",
-  "reason": "Bun honours server.maxConnections on Windows and not on ubuntu-latest.",
-  "history": []
-}
-```
-
-`tests/unit/ci/QuarantineRegistry.test.ts` enforces the pairing in both
-directions — a call with no entry throws at import, an entry nothing uses
-fails — and **fails once an entry is past its date**.  That failure is the
-feature, not an accident: it is what an entry needs so that it cannot be
-forgotten the way a quarantine can.  Renewing is allowed three times and costs
-a line in `history` saying what was measured; after that the choice is to fix
-the subject or to delete the test.
-
-The helper is also the only place under `tests/` that may read
-`process.platform` for an expectation.  Reading it to pick a *mechanism* — the
-symlink type `symlink()` needs, the signal a platform can deliver — is not an
-expectation and stays where it is, on a short allow-list in the guard with the
-reason each file is entitled to.
 
 ### An assertion over process-global state
 

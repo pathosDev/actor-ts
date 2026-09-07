@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 
@@ -18,11 +18,21 @@ import { describe, expect, test } from 'bun:test';
  * forms are checked, and they are the only two the tree uses to say "bind
  * here" — `newServerAt('<host>', port)` and the `host: '<host>'` property of
  * `system.http(port, { … })`.  A host that comes from a variable, a command
- * line or an environment variable is not flagged, and neither is
- * `system.http(port)` with no host at all: those are *configuration*, and an
- * example whose whole point is to be reachable from a pod
- * (`examples/management/k8s-probes.ts`) is entitled to them.  What is never
+ * line or an environment variable is not flagged: that is *configuration*, and
+ * an example whose whole point is to be reachable from a pod
+ * (`examples/management/k8s-probes.ts`) is entitled to it.  What is never
  * entitled is a wildcard baked into a snippet whose readers will paste it.
+ *
+ * **`system.http(port)` with no host is a third form, and it was exempt on a
+ * false premise.**  This header called it configuration; it is not.
+ * `ActorSystem.http` resolves a missing host to `options.host ?? '0.0.0.0'`,
+ * so the bare call binds the wildcard exactly as surely as the literal does —
+ * the only difference is that the reader cannot see it, which for a guard
+ * about what readers paste is the wrong way round.  It is now flagged like the
+ * other two, and the one example that genuinely wants a wildcard says so in
+ * its own source and is named in {@link ENTITLED_TO_A_WILDCARD} with the
+ * reason.  Changing the framework default is a separate, breaking question and
+ * is not this guard's to decide.
  *
  * `examples/devtools.ts` is the proof that the narrowness is load-bearing
  * rather than a shortcut: it mentions `0.0.0.0` twice, in a comment and in
@@ -49,6 +59,43 @@ const WILDCARD_HOSTS: ReadonlySet<string> = new Set(['0.0.0.0', '::', '[::]', '*
 const NEW_SERVER_AT = /newServerAt\(\s*(['"])([^'"]*)\1/g;
 /** `host: '<host>'` — the options-bag form `system.http(port, { … })` takes. */
 const HOST_PROPERTY = /\bhost\s*:\s*(['"])([^'"]*)\1/g;
+
+/**
+ * `.http(<port>)` with nothing after the port — the form that inherits
+ * `ActorSystem.http`'s `'0.0.0.0'` default.  The port may be a literal or a
+ * name; what matters is that there is no second argument, so the character
+ * class stops at the first `,` or `)`.
+ */
+const BARE_HTTP_CALL = /\.http\(\s*[^,)]*\)/g;
+
+/**
+ * `.http('<host>'` — a wildcard passed positionally.
+ *
+ * Found by widening this guard rather than reasoned about in advance:
+ * `HttpServerOptions.ts` carried `system.http('0.0.0.0', 8080)` in a JSDoc
+ * snippet, which slipped past both original patterns because it is neither
+ * `newServerAt(` nor a `host:` property — and which does not compile either,
+ * since the port is the first parameter.  Unlike {@link BARE_HTTP_CALL} this
+ * one applies to documentation too: an explicit wildcard is a wildcard
+ * wherever it is written.
+ */
+const HTTP_POSITIONAL_HOST = /\.http\(\s*(['"])([^'"]*)\1/g;
+
+/**
+ * Files allowed to bind a wildcard, each for a reason about that file.
+ *
+ * A named list rather than a rule: "an example that has to be reachable from
+ * outside the pod" is not something a regular expression can recognise, and
+ * the previous attempt to express it as one — exempting a whole call form —
+ * exempted every future example along with it.
+ */
+const ENTITLED_TO_A_WILDCARD: ReadonlyMap<string, string> = new Map([
+  [
+    'examples/management/k8s-probes.ts',
+    'liveness and readiness probes are dialled by the kubelet from outside the '
+    + "pod's network namespace, so a loopback bind would make the example not work",
+  ],
+]);
 
 /**
  * `source` with every comment replaced by spaces, character for character so
@@ -137,10 +184,20 @@ function documentationText(source: string): string {
 
 type WildcardBind = { readonly file: string; readonly line: number; readonly host: string };
 
-function findWildcardBindsIn(file: string, code: string): WildcardBind[] {
+/**
+ * @param includeBareCall whether `.http(port)` with no host counts.
+ *
+ * It does for an example, which is a program someone copies whole, and does
+ * not for a `src/` doc comment, where the short form *is* the API being
+ * documented — `ActorSystem.http`'s own JSDoc has to show it.  The fix for
+ * that side is the framework default itself, which is a breaking change and a
+ * separate decision; annotating every snippet around it would be a guard
+ * dictating prose.
+ */
+function findWildcardBindsIn(file: string, code: string, includeBareCall: boolean): WildcardBind[] {
   const lineOfOffset = (offset: number): number => code.slice(0, offset).split('\n').length;
   const found: WildcardBind[] = [];
-  for (const pattern of [NEW_SERVER_AT, HOST_PROPERTY]) {
+  for (const pattern of [NEW_SERVER_AT, HOST_PROPERTY, HTTP_POSITIONAL_HOST]) {
     pattern.lastIndex = 0;
     for (const match of code.matchAll(pattern)) {
       const host = match[2] ?? '';
@@ -148,14 +205,25 @@ function findWildcardBindsIn(file: string, code: string): WildcardBind[] {
       found.push({ file, line: lineOfOffset(match.index), host });
     }
   }
+  if (!includeBareCall) return found;
+  BARE_HTTP_CALL.lastIndex = 0;
+  for (const match of code.matchAll(BARE_HTTP_CALL)) {
+    // Reported as the address it resolves to rather than as an absent host:
+    // what the finding is about is what the process ends up bound to.
+    found.push({
+      file,
+      line: lineOfOffset(match.index),
+      host: '0.0.0.0 (ActorSystem.http default)',
+    });
+  }
   return found;
 }
 
 const findWildcardBinds = (file: string, source: string): WildcardBind[] =>
-  findWildcardBindsIn(file, blankComments(source));
+  findWildcardBindsIn(file, blankComments(source), true);
 
 const findDocumentedWildcardBinds = (file: string, source: string): WildcardBind[] =>
-  findWildcardBindsIn(file, documentationText(source));
+  findWildcardBindsIn(file, documentationText(source), false);
 
 /** Every `.ts` the library itself ships. */
 function librarySources(directory: string, found: string[] = []): string[] {
@@ -190,12 +258,57 @@ describe('examples/ bind addresses (#756)', () => {
     expect(loopback.length).toBeGreaterThanOrEqual(8);
   });
 
-  test('no example hard-codes a wildcard bind address', () => {
+  test('no example binds a wildcard address, by literal or by default', () => {
     const violations = files.flatMap((file) => {
       const label = relative(REPOSITORY_ROOT, file).split('\\').join('/');
+      if (ENTITLED_TO_A_WILDCARD.has(label)) return [];
       return findWildcardBinds(label, readFileSync(file, 'utf8'));
     });
     expect(violations).toEqual([]);
+  });
+
+  test('every entitled file still exists and still binds a wildcard', () => {
+    // An allow-list nobody prunes turns into a list of files that moved away.
+    // Both directions are checked: the path resolves, and the entry is still
+    // earning its place rather than quietly covering a file that stopped
+    // needing it.
+    for (const [label, reason] of ENTITLED_TO_A_WILDCARD) {
+      const full = join(REPOSITORY_ROOT, label);
+      expect(existsSync(full), `${label} is allow-listed and does not exist`).toBe(true);
+      expect(reason.length, `${label} is allow-listed without a reason`).toBeGreaterThan(40);
+      expect(
+        findWildcardBinds(label, readFileSync(full, 'utf8')).length,
+        `${label} no longer binds a wildcard — remove it from the allow-list`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  test('the bare call form is caught, which is the gap this guard had', () => {
+    // Before this, the first snippet was invisible to the guard and the second
+    // was caught, though the process ends up bound to the same address.
+    expect(findWildcardBinds('probe.ts', 'await system.http(8080).bind(routes);').length).toBe(1);
+    expect(
+      findWildcardBinds('probe.ts', "await system.http(8080, { host: '0.0.0.0' }).bind(r);").length,
+    ).toBe(1);
+    // A host that is actually given stays clean — including the loopback form
+    // the rest of the tree uses, which must not become a finding.
+    expect(findWildcardBinds('probe.ts', "await system.http(8080, { host: '127.0.0.1' }).bind(r);"))
+      .toEqual([]);
+  });
+
+  test('a positional wildcard is caught on both surfaces, the bare form only here', () => {
+    // The asymmetry is the design, so it is asserted rather than left to the
+    // reader of two wrapper functions.
+    // Each surface gets the shape it actually scans: the example scan blanks
+    // comments and reads code, the documentation scan does the reverse.
+    const asCode = "await system.http('0.0.0.0', 8080).bind(r);";
+    const asDoc = "/** await system.http('0.0.0.0', 8080).bind(r); */";
+    expect(findWildcardBinds('probe.ts', asCode).length).toBeGreaterThan(0);
+    expect(findDocumentedWildcardBinds('probe.ts', asDoc).length).toBeGreaterThan(0);
+
+    expect(findWildcardBinds('probe.ts', 'await system.http(8080).bind(routes);').length).toBe(1);
+    expect(findDocumentedWildcardBinds('probe.ts', '/** await system.http(8080).bind(r); */'))
+      .toEqual([]);
   });
 
   test('the scanner discriminates a bind from a mention of the same address', () => {
