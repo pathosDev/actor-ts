@@ -4,6 +4,7 @@ import { Config } from '../../../../src/config/Config.js';
 import { ConfigKeys } from '../../../../src/config/ConfigKeys.js';
 import { ShardRegion } from '../../../../src/cluster/sharding/ShardRegion.js';
 import type { ShardingOptionsType } from '../../../../src/cluster/sharding/ShardingOptions.js';
+import { DEFAULT_PASSIVATION_STOP_TIMEOUT_MS } from '../../../../src/cluster/sharding/ShardingOptions.js';
 import { readShardingOptionsFromConfig } from '../../../../src/cluster/sharding/StartShardingOptions.js';
 import type { Cluster } from '../../../../src/cluster/Cluster.js';
 import { mergeOptions } from '../../../../src/util/OptionsMerge.js';
@@ -143,8 +144,26 @@ describe('readShardingOptionsFromConfig', () => {
       passivationSegmentedProtectedProportion: 0.8,
       passivationAdmissionWindowProportion: 0,
       passivationAdmissionFilter: 'off',
-      passivationStopTimeoutMs: 10_000,
+      // `0` — the unbounded cooperative wait every release before #848 had.
+      // See the dedicated test below for why the shipped value is not `10s`.
+      passivationStopTimeoutMs: 0,
     });
+  });
+
+  test('the shipped stop-timeout arms no backstop, so an upgrade changes no behaviour (#848)', () => {
+    // The compatibility claim #848 shipped with, as an assertion rather than
+    // prose.  `Passivate`'s stop-message has always been a *request*: the entity
+    // decides when to act on it, and an entity mid-drain — a long flush, a slow
+    // final write — is entitled to take as long as the drain takes.  A shipped
+    // `10s` turned that into a deadline for every deployment that upgraded,
+    // including ones that had never heard of the key, and a forced stop there
+    // abandons the flush.  So the backstop ships **off** and an operator opts
+    // in, which is also what keeps the key orthogonal to `max-entities`: it
+    // arms on the value alone, with or without a cap.
+    const reference = readShardingOptionsFromConfig(Config.loadReference());
+
+    expect(reference.passivationStopTimeoutMs).toBe(0);
+    expect(DEFAULT_PASSIVATION_STOP_TIMEOUT_MS).toBe(0);
   });
 
   test('reads shard-passivation-idle when an operator sets it', () => {

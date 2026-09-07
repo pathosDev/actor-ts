@@ -1920,7 +1920,7 @@ pro Consumer](/de/cache/in-memory/#ein-cache-pro-consumer) braucht.
 | `sharding.passivation.segmented-protected-proportion` | `0.8` | Anteil des Caps im *geschützten* Segment unter `segmented-least-recently-used`; der Rest ist Bewährung.  Unter jeder anderen Strategie wirkungslos. |
 | `sharding.passivation.admission-window-proportion` | `0.0` | Anteil des Caps, der als Bewährungsfenster vor der Strategie reserviert wird.  `0` = kein Fenster.  Vom `admission-filter` vorausgesetzt. |
 | `sharding.passivation.admission-filter` | `off` | `frequency-sketch` verlangt von einem Kandidaten, der das Fenster verlässt, dass er die Entität überbietet, die er verdrängen würde.  Ohne `admission-window-proportion > 0` bei `sharding.start(...)` abgelehnt. |
-| `sharding.passivation.stop-timeout` | `10s` | Wie lange eine Entität auf die Stop-Nachricht eines `Passivate` reagieren darf, bevor der Shard sie hart stoppt.  `0` wartet unbegrenzt. |
+| `sharding.passivation.stop-timeout` | `0ms` | Wie lange eine Entität auf die Stop-Nachricht eines `Passivate` reagieren darf, bevor der Shard sie hart stoppt.  `0` wartet unbegrenzt — das ist das ausgelieferte Verhalten. |
 | `sharding.buffer-size` | `100000` | Wie viele Nachrichten eine Region **über alle ihre Shards zusammen** halten darf, solange deren Heimat unbekannt ist oder gerade übergeben wird.  Jenseits des Caps wird die *neueste* Nachricht mit ihrem Sender an die Dead Letters gegeben — was schon in der Queue steht, behält so die Reihenfolge des Senders.  **Achte auf die umgekehrte Polarität zu `max-entities` oben**: hier bedeutet `0` *niemals puffern — sofort Dead Letter*, nicht „kein Cap". |
 | `sharding.register-retry-interval` | `500ms` | Wie oft eine Region eine unbestätigte Registrierung erneut an den Koordinator schickt.  Alles, was für den Typ geroutet wird, puffert bis zur Antwort des Koordinators — das ist also zugleich die Dauer, die ein verlorenes `Register` den Typ blockiert. |
 | `sharding.shard-region-query-timeout` | `5s` | Default-Wartezeit für `sharding.shards()` und `sharding.shardRefFor()`.  Ein explizites `timeoutMs`-Argument sticht sie weiterhin.  Unabhängig davon, wie lange die Region eine Korrelation für ein knotenübergreifendes `ask` hält — das sind bewusst Minuten. |
@@ -2183,14 +2183,21 @@ dem jüngeren Verkehr folgt statt einer Lebenszeitsumme.  Sie passt zu einem
 Arbeitsset, das stabil, aber nicht aktuell ist — eine Flotte von Geräten, die
 in langsamem Takt meldet —, wo Aktualität fast nichts aussagt.
 
-`stop-timeout` hat mit dieser Wahl nichts zu tun und gilt für jedes Cap.  Wenn
+`stop-timeout` hat mit dieser Wahl nichts zu tun — und mit `max-entities`
+ebenso wenig: ein positiver Wert schärft die Schranke mit oder ohne Cap.  Wenn
 sich eine Entität mit
 [`Passivate`](/de/cluster/sharding/overview/#passivierung) selbst passiviert,
 ist die Stop-Nachricht eine Bitte: die Entität entscheidet, wann sie darauf
 reagiert.  Tut sie es nie, terminiert sie nie, und ihr Platz bleibt für die
 Lebensdauer des Nodes gegen `max-entities` belegt.  Nach `stop-timeout` stoppt
-der Shard sie hart.  `0` stellt das unbegrenzte Warten wieder her, was dort
-richtig ist, wo ein geordnetes Herunterfahren tatsächlich keine Schranke hat.
+der Shard sie hart.
+
+Ausgeliefert wird sie **aus** (`0`, das unbegrenzte Warten), sodass sich für
+eine Deployment, die den Key nicht nennt, nichts ändert.  Das ist Absicht und
+nicht Vorsicht: eine Entität mitten im Leeren — ein langer Flush, ein langsamer
+letzter Write — darf so lange brauchen, wie das Leeren dauert, und ein harter
+Stopp bricht diesen Flush ab.  Wer weiß, wie lange das Leeren legitim laufen
+darf, ist die Betreiberin — also entscheidet sie, und der Key ist Opt-in.
 
 Ein Setting für genau einen Typ gehört deshalb in den Builder; die
 Config-Datei ist für die node-weite Grundeinstellung, die du ohne Rebuild

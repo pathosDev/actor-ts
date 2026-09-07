@@ -9,6 +9,7 @@ import { ClusterOptions } from '../../../../../src/cluster/ClusterOptions.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
 import { Passivate } from '../../../../../src/cluster/sharding/Passivate.js';
+import { PoisonPill } from '../../../../../src/SystemMessages.js';
 import { StartShardingOptions } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import type { StartShardingOptionsBuilder } from '../../../../../src/cluster/sharding/StartShardingOptions.js';
 import type { StartEntities } from '../../../../../src/cluster/sharding/ShardingProtocol.js';
@@ -35,6 +36,12 @@ import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 type WorkCommand = { id: string; kind: 'work' };
 type CheckoutCommand = { id: string; kind: 'checkout' };
 /**
+ * Passivate the way the documentation shows it — a `PoisonPill` stop-message
+ * the entity therefore does act on, so the entity really terminates and the
+ * region hears `EntityStopped`.
+ */
+type GracefulCheckoutCommand = { id: string; kind: 'graceful-checkout' };
+/**
  * The stop-message a `Passivate` hands back to the entity — and the entity
  * ignores it, which is the whole point.  It carries an `id` like its siblings
  * only so the union stays uniform for `extractEntityId`; nothing ever routes
@@ -42,7 +49,11 @@ type CheckoutCommand = { id: string; kind: 'checkout' };
  */
 type IgnoredStopCommand = { id: string; kind: 'ignored-stop' };
 
-type Command = WorkCommand | CheckoutCommand | IgnoredStopCommand;
+type Command =
+  | WorkCommand
+  | CheckoutCommand
+  | GracefulCheckoutCommand
+  | IgnoredStopCommand;
 
 const TYPE_NAME = 'entity';
 /**
@@ -79,12 +90,24 @@ class Entity extends Actor<Command> {
     match(message)
       .with({ kind: 'work' }, () => this.onWork())
       .with({ kind: 'checkout' }, () => this.onCheckout())
+      .with({ kind: 'graceful-checkout' }, () => this.onGracefulCheckout())
       .with({ kind: 'ignored-stop' }, () => this.onIgnoredStop())
       .exhaustive();
   }
 
   /** Receiving anything is what makes an entity "used" as far as the region sees. */
   private onWork(): void {}
+
+  /**
+   * The passivation the overview page documents: `PoisonPill` as the
+   * stop-message, so the entity terminates and the region learns of it through
+   * `EntityStopped` — the one release path the region has for an entity it
+   * never asked to be stopped.
+   */
+  private onGracefulCheckout(): void {
+    this.context.parent.forEach((parent) =>
+      parent.tell(new Passivate(PoisonPill.instance, this.self) as never, this.self));
+  }
 
   /**
    * Ask to be passivated with a stop-message this actor deliberately does
@@ -317,6 +340,24 @@ describe('passivation.stop-timeout (#848)', () => {
     expect(stopped).toEqual(['e-1']);
   });
 
+  test('it arms without a cap, because the key is not part of the cap', async () => {
+    // The shipped default is `0`, so nothing here happens to a deployment that
+    // does not ask for it — and once asked for, it arms on its own value.
+    // Gating it on `max-entities` instead would make a configured key silently
+    // do nothing, which is what `admission-filter` is rejected for; it would
+    // also still have changed behaviour, silently, for every deployment that
+    // already had a cap.
+    const node = await startNode('passivation-stop-uncapped', 47_711, {
+      'actor-ts': { sharding: { passivation: { 'stop-timeout': '150ms' } } },
+    });
+
+    node.region.tell({ id: 'e-1', kind: 'work' });
+    await waitFor(() => started.includes('e-1'));
+    node.region.tell({ id: 'e-1', kind: 'checkout' });
+
+    await waitFor(() => stopped.includes('e-1'), 4_000, 10, 'the ignored stop-message was forced');
+  });
+
   test('stop-timeout = 0 keeps waiting, which is the pre-#848 behaviour', async () => {
     // Kept expressible on purpose: an entity whose graceful shutdown genuinely
     // has no bound — draining a long-running job — is a real shape, and there a
@@ -375,5 +416,139 @@ describe('the cap sees every admission point (#848)', () => {
     // other.
     await waitFor(() => stopped.length === 2, 4_000, 10, 'the cap evicted down to two');
     expect([...stopped].sort()).toEqual(['e-1', 'e-2']);
+  });
+});
+
+/**
+ * Every way an entity can leave, and the slot of the cap it owes back (#848).
+ *
+ * Three production call sites release a slot — the passivation request, the
+ * `EntityStopped` report, and a shard's entities going with it — and deleting
+ * all three left the whole suite green.  The shape that makes a release
+ * observable is the same in all three: the departing entity has to be one the
+ * replacement policy would *not* have picked next.  A ghost that is already the
+ * next victim is evicted harmlessly on the following admission and nothing about
+ * it is visible, which is precisely why these paths were never bound.
+ */
+describe('a departing entity releases its slot of the cap (#848)', () => {
+  test('an entity that acts on its stop-message gives its slot back', async () => {
+    // `EntityStopped` is the only release for an entity the region never asked
+    // to be stopped — the documented `Passivate(PoisonPill)` a cart sends itself
+    // when it checks out.  The departing entity is the most recently used one,
+    // so a leaked slot costs the *oldest* resident entity instead: the region
+    // evicts while it is under its own cap.
+    const node = await startNode('passivation-release-stopped', 47_708, {
+      'actor-ts': { sharding: { 'max-entities': 3, 'passivation-idle': '0ms' } },
+    });
+
+    for (const id of ['e-1', 'e-2', 'e-3']) {
+      node.region.tell({ id, kind: 'work' });
+      await waitFor(() => started.includes(id));
+    }
+
+    node.region.tell({ id: 'e-3', kind: 'graceful-checkout' });
+    await waitFor(() => stopped.includes('e-3'));
+
+    node.region.tell({ id: 'e-4', kind: 'work' });
+    await waitFor(() => started.includes('e-4'));
+    // An absence: three residents against a cap of three is not a full region.
+    await sleep(300);
+
+    expect(stopped).toEqual(['e-3']);
+  });
+
+  test('an entity the idle sweep passivated does not hold its slot while it drains', async () => {
+    // The sweep's own release, and the one path where it is load-bearing: an
+    // entity that is *already* passivating is a no-op at the shard, so nothing
+    // stops, nothing terminates, and `EntityStopped` never comes.  The request
+    // is then the only place the slot can come back.
+    //
+    // `least-frequently-used` is what makes the leak visible.  Under recency the
+    // swept entity is by construction the least recently used, so it is the
+    // victim the next admission would pick anyway; under frequency a wedged
+    // entity with a large access count outranks every newcomer and shields
+    // itself while they are evicted in its place.
+    const node = await startNode('passivation-release-swept', 47_709, {
+      'actor-ts': {
+        sharding: {
+          'max-entities': 3,
+          'passivation-idle': '1s',
+          passivation: { replacement: 'least-frequently-used', 'stop-timeout': '0ms' },
+        },
+      },
+    });
+
+    // Twelve accesses, so nothing admitted later comes close to its count.
+    for (let access = 0; access < 12; access++) node.region.tell({ id: 'hot', kind: 'work' });
+    await waitFor(() => started.includes('hot'));
+    // Wedged from here on: the shard is buffering for it and it never terminates.
+    node.region.tell({ id: 'hot', kind: 'checkout' });
+
+    for (const id of ['cold-1', 'cold-2']) {
+      node.region.tell({ id, kind: 'work' });
+      await waitFor(() => started.includes(id));
+    }
+
+    // The sweep names all three; only the two that are not already passivating
+    // can actually stop.
+    await waitFor(
+      () => stopped.includes('cold-1') && stopped.includes('cold-2'),
+      6_000, 10,
+      'the idle sweep stopped both cold entities',
+    );
+
+    for (const id of ['new-1', 'new-2', 'new-3']) node.region.tell({ id, kind: 'work' });
+    await waitFor(() => ['new-1', 'new-2', 'new-3'].every((id) => started.includes(id)));
+    // An absence — no further eviction — so there is nothing to poll for.
+    await sleep(300);
+
+    // Three newcomers against a cap of three, with the wedged entity holding no
+    // slot: nobody else had to go.
+    expect([...stopped].sort()).toEqual(['cold-1', 'cold-2']);
+  });
+
+  test('entities that leave with their shard give their slots back', async () => {
+    // A shard's entities are gone from this node whether it handed off, was
+    // released after a refusal, or simply died — and the region drops their
+    // bookkeeping in one place for all of those.  Left behind, they are ghosts
+    // the cap can never release: their shard cannot be told to passivate what it
+    // no longer has.
+    //
+    // Two shards, so the loss is partial.  A whole-region loss hides the defect:
+    // every ghost is then older than every newcomer and drains harmlessly.
+    const node = await startNode('passivation-release-shard', 47_710, {
+      'actor-ts': { sharding: { 'max-entities': 3, 'passivation-idle': '0ms' } },
+    }, (builder) => builder.withNumShards(2));
+
+    // `keeper` hashes to shard 1 and the two doomed ids to shard 0; the newcomers
+    // land on shard 1 as well, so nothing re-creates the shard that died.
+    for (const id of ['keeper', 'doomed-2', 'doomed-4']) {
+      node.region.tell({ id, kind: 'work' });
+      await waitFor(() => started.includes(id));
+    }
+
+    const shard = node.system._resolvePath([
+      ...regionSegments(node.system.name, TYPE_NAME),
+      'shard-0',
+    ]);
+    if (shard.isNone()) throw new Error('shard actor not found');
+    (shard.value as ActorRef<unknown>).stop();
+    await waitFor(
+      () => stopped.includes('doomed-2') && stopped.includes('doomed-4'),
+      4_000, 10,
+      'the shard took its entities with it',
+    );
+
+    for (const id of ['newcomer-1', 'newcomer-3']) {
+      node.region.tell({ id, kind: 'work' });
+      await waitFor(() => started.includes(id));
+    }
+    // An absence — `keeper` must not be evicted — so there is nothing to poll for.
+    await sleep(300);
+
+    // `keeper` is the least recently used of the three the cap knew about, so a
+    // ghost pair that kept its slots would have cost exactly this entity.
+    expect(stopped).not.toContain('keeper');
+    expect(started.filter((id) => id === 'keeper')).toEqual(['keeper']);
   });
 });

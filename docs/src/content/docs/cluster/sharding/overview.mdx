@@ -478,11 +478,18 @@ class CartActor extends Actor<CartCommand> {
 
 The stop-message is a *request*: the entity decides when to act on it.  If it
 never does, it never terminates — and its slot stays charged to `maxEntities`
-for the lifetime of the node.  So the shard arms a backstop, and after
-`passivationStopTimeoutMs` (10 seconds by default,
-`actor-ts.sharding.passivation.stop-timeout`) it stops the entity outright, the
-same way a region-driven passivation does.  Set it to `0` where the graceful
-shutdown genuinely has no bound.
+for the lifetime of the node.  `passivationStopTimeoutMs`
+(`actor-ts.sharding.passivation.stop-timeout`) is the backstop for that: after
+it, the shard stops the entity outright, the same way a region-driven
+passivation does.
+
+It is **off by default** (`0`, wait forever), and it is off because the
+cooperative contract is the point.  An entity mid-drain — a long flush, a slow
+final write — is entitled to take as long as the drain takes, and a forced stop
+there abandons the flush; only you know how long yours may legitimately run.
+Set it where an entity that never acts on the message would be a bug worth
+containing.  It is independent of `maxEntities`: a positive value arms it with
+or without a cap.
 
 ### Choosing what a full node gives up
 
