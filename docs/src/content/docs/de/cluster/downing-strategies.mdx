@@ -182,6 +182,38 @@ und darf so lang sein, wie das Deployment möchte.  **Ohne** konfigurierte
 Strategie tun beide Einstellungen gar nichts — dann läuft die Kaskade
 `unreachable → down` des Detectors, getaktet allein von `down-after`.
 
+### Das Fenster hat eine Obergrenze
+
+`stable-after` ist eine Präferenz, keine Vorbedingung — und der Grund ist
+derselbe Satz, andersherum gelesen.  Das Bild, das das Fenster beobachtet,
+umfasst Adresse **und** Status *jedes* Mitglieds; jeder Beitritt, jedes
+Verlassen und jeder Statuswechsel irgendwo im Cluster startet es also neu.
+Ein Deployment, dessen Mitgliederbild sich häufiger bewegt als `stable-after`,
+würde eine Partition damit überhaupt nie entscheiden — und bei den
+ausgelieferten zwanzig Sekunden ist das eine gewöhnliche Autoscaling-Gruppe,
+ein rollierendes Deployment oder ein einziger flatternder Node.  Es wäre auch
+kein sicheres Scheitern: mit konfigurierter Strategie entfernt der Failure
+Detector nichts mehr, eine von niemandem entschiedene Partition bleibt also
+einfach bestehen.
+
+Deshalb wird ein Peer, der **durchgehend** `2 × stable-after` lang
+unerreichbar war, der Strategie vorgelegt, gleich was sich sonst bewegt.  Das
+Verstummen dieses einen Peers ist für sich genommen ein ruhender Stand; die
+Unruhe ringsum betrifft andere Mitglieder, und geschuldet ist ein Urteil über
+die Partition, nicht über die Unruhe.
+
+Das Vielfache liegt bewusst zwischen den beiden Schwellen zu seinen Seiten:
+oberhalb eines Fensters, damit ein Bild, das doch stillsteht, immer zuerst auf
+dem gewöhnlichen Weg entschieden wird und die Obergrenze nie zum Normalfall
+wird; und unterhalb der Eskalationsfrist `3 × stable-after` weiter unten,
+damit eine Strategie gefragt wird, bevor `down-all-when-unstable` den Cluster
+stoppen kann.
+
+Ein Peer, der sich erholt, verliert seinen Platz: die Uhr misst einen
+*ununterbrochenen* Lauf des Verstummens, ein flatternder Peer sammelt sich
+also nie aus Intervallen zur Obergrenze, von denen keines für sich etwas
+bedeutet hätte.
+
 ### Wenn das Bild nie zur Ruhe kommt
 
 `down-all-when-unstable` ist die Eskalation für einen Cluster, der nicht

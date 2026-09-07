@@ -453,12 +453,20 @@ export type ClusterOptionsType = {
   readonly selfElection?: SelfElectionPolicy;
   /**
    * Optional split-brain resolver.  When provided, the cluster invokes
-   * `provider.decide(view)` whenever a member transitions to / from
-   * `unreachable`, and force-downs every address in the returned set
-   * (regardless of failure-detector state).  Without a provider, the
-   * cluster relies solely on the failure detector's elapsed-time
-   * `unreachable → down → removed` cascade — fine for unilateral
-   * crashes, weak under network partitions.
+   * `provider.decide(view)` and force-downs every address in the returned set,
+   * regardless of failure-detector state.  Without a provider, the cluster
+   * relies solely on the failure detector's elapsed-time
+   * `unreachable → down → removed` cascade — fine for unilateral crashes, weak
+   * under network partitions.
+   *
+   * **Not on every transition.**  Since #839 the call is gated by
+   * {@link splitBrainResolver}: the provider is consulted once the membership
+   * and reachability view has held still for `stableAfterMs` — twenty seconds
+   * by default — or, if the view keeps moving, once some peer has been
+   * continuously unreachable for `unreachableArbitrationDeadlineMs`.  A
+   * deployment that wants the pre-#839 cadence sets a short `stableAfterMs`;
+   * `0` is refused, because "do not arbitrate" already has a spelling in
+   * `active-strategy = off`.
    *
    * See `src/cluster/downing/` for the bundled strategies (KeepMajority,
    * KeepOldest, KeepReferee, StaticQuorum, LeaseMajority).
