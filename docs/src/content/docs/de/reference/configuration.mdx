@@ -1405,7 +1405,7 @@ ein eigenes Folge-Issue statt eines Blatts, das niemand bemessen hat.
 | Key | Default | Zweck |
 | --- | --- | --- |
 | `serialization.read-constraints.max-nesting-depth` | `256` | Container-Ebenen, in die ein Decoder absteigt, bevor er das Payload ablehnt.  Nie über die eigene Obergrenze des Encoders hinaus. |
-| `serialization.read-constraints.max-document-bytes` | `0` | Obergrenze für ein Dokument, das an `JsonSerializer` / `CborSerializer` übergeben wird, geprüft vor dem Parsen.  `0` = keine eigene Obergrenze. |
+| `serialization.read-constraints.max-document-bytes` | `0` | Obergrenze für ein Dokument vor dem Parsen — geprüft in `JsonSerializer` / `CborSerializer` und auf dem Cluster-Wire gegen das Längen-Präfix des Frames.  `0` = keine eigene Obergrenze. |
 | `serialization.read-constraints.max-string-length` | `20M` | Obergrenze für einen CBOR-Byte-String, Text-String oder Map-Key, geprüft am Längen-Präfix, bevor die Bytes alloziert werden.  `0` hebt sie auf. |
 
 Diese Grenzen binden, was dieser Knoten **liest**, nie was er schreibt.  Ein
@@ -1426,10 +1426,28 @@ würde ein Payload akzeptieren, das er selbst nicht erzeugen kann.  Ein höherer
 Wert ist ein `OptionsError` beim Start.
 
 `max-document-bytes` wird als `0` ausgeliefert, weil jeder Pfad, den das
-Framework selbst besitzt, bereits begrenzt ist — `remote.max-frame-bytes` auf
-dem Cluster-Wire, das Body-Limit des Servers über HTTP.  Setze den Wert dort,
-wo ein Serializer auf anderem Weg erreicht wird (ein Broker-Payload, eine
-Queue-Nachricht) und stromaufwärts niemand eine Meinung dazu hat.
+Framework selbst besitzt, bereits in **Bytes** begrenzt ist —
+`remote.max-frame-bytes` auf dem Cluster-Wire, das Body-Limit des Servers über
+HTTP.  Setze den Wert dort, wo ein Serializer auf anderem Weg erreicht wird (ein
+Broker-Payload, eine Queue-Nachricht) und stromaufwärts niemand eine Meinung
+dazu hat — oder dort, wo die Byte-Grenze stromaufwärts lockerer ist als das
+Dokument, das du zu parsen bereit bist.  Auf dem Cluster-Wire wird der Wert
+gegen das 4-Byte-Längen-Präfix des Frames geprüft, der Frame wird also abgelehnt,
+bevor sein Payload gepuffert und erst recht bevor es geparst wird; das ist der
+früheste Punkt im Framework, an dem er greifen kann, und früher als es den
+Serializern möglich ist, denn die bekommen Bytes, die es bereits gibt.
+
+In Bytes begrenzt zu sein ist nicht dasselbe wie in **Arbeit** begrenzt zu sein,
+und die Lücke gehört benannt: in der Auslieferungskonfiguration wird ein über
+`max-nesting-depth` hinaus verschachtelter Frame erst abgelehnt, nachdem
+`JSON.parse` ihn materialisiert hat.  Auf Bun 1.4 gemessen kostet ein einzelner
+16-MiB-Frame aus ausbalancierten `[` rund 1,0 s CPU und 260 MiB Heap, bevor die
+Tiefengrenze ihn meldet — etwa das Vierfache eines legitimen Frames derselben
+Größe, und wiederholbar für jeden Peer, der den Handshake abgeschlossen hat.
+`remote.max-frame-bytes` und `max-document-bytes` sind die beiden
+Stellschrauben, die das begrenzen.  Ein Vorab-Scan des Rohpuffers würde es ohne
+beide schließen; er wurde gemessen und nicht ausgeliefert, weil er 18–28 % jeder
+Frame-Dekodierung kostet, um eine vierfache Verstärkung zu beseitigen.
 
 `max-string-length` bindet **nur bei CBOR**, und der Default liegt bewusst über
 `remote.max-frame-bytes`: auf dem Cluster-Wire ist damit das Frame-Limit die
