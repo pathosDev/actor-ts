@@ -170,6 +170,37 @@ asked on a smaller population. Repetition pays off where the code is new, so the
 probe follows the new code — and a change under `src/` is covered once by the
 shuffled suite, exactly as before.
 
+### Generative tests run against a pinned seed
+
+A property test with a random seed can fail on one run and pass on the next.
+That is a flake by definition, and the worst kind available: the counterexample
+exists only in the run log, so when that rotates the failing case is gone and
+nobody can reproduce what happened.  Before #1372 this repository had ~52
+`fc.assert` call sites, no `seed`, no `endOnFailure`, and no regression corpus.
+
+`tests/setup/property-seed.ts` pins the seed for the whole process through
+`fc.configureGlobal`, loaded by `bunfig.toml`'s `preload` — one place rather
+than fifty-two, so a new property file gets the policy without its author having
+to know it exists.
+
+The trade is real and worth stating: a fixed seed explores the same cases every
+run, so the suite stops finding *new* counterexamples on its own.  That is
+acceptable because it was never really doing that.  A case found by an unlucky
+nightly and then lost to log rotation was never turned into a regression test,
+so the exploration produced red builds rather than knowledge.  New cases now
+come from raising `PROPERTY_RUNS` or changing `PROPERTY_SEED` — a decision
+somebody makes, in a diff, and expects to be the commit that finds something.
+
+**When a property does fail, copy the shrunk counterexample into a plain example
+test beside it before fixing anything.**  The property proves the law; the
+example is what stops that specific case coming back, and unlike a log line it
+survives.
+
+`tests/unit/ci/PropertySeedPolicy.test.ts` keeps the two halves wired together,
+and its last assertion is the one that matters: it asks fast-check what seed it
+is *actually* running with, so a preload that was registered and never loaded
+fails rather than quietly restoring the random default.
+
 ## The catalog
 
 Causes this suite has actually had, with how each was settled.

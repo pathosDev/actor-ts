@@ -14,3 +14,10 @@
 # execute on GitHub's hosted runners.  It can, and does — 21 consecutive green
 # nights of `nightly-flakes.yml` against a written criterion of fourteen — so
 # the three files are covered by the runs that exercise them like any other.
+
+[test]
+# Pins fast-check's seed for the whole process — see the file's own header for
+# why a generative test with a random seed is the worst kind of flake, and
+# `tests/unit/ci/PropertySeedPolicy.test.ts` for the guard that keeps this line
+# and that file wired together.
+preload = ["./tests/setup/property-seed.ts"]

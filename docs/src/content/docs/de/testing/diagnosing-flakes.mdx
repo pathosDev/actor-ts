@@ -186,6 +186,39 @@ kleinere Population. Wiederholung zahlt sich dort aus, wo der Code neu ist —
 also folgt die Sonde dem neuen Code, und eine Änderung unter `src/` deckt
 weiterhin die gemischte Suite einmal ab, genau wie zuvor.
 
+### Generative Tests laufen gegen einen fixierten Seed
+
+Ein Property-Test mit zufälligem Seed kann in einem Lauf umfallen und im
+nächsten durchgehen.  Das ist per Definition ein Flake, und die schlimmste
+verfügbare Sorte: Das Gegenbeispiel existiert nur im Run-Log, und wenn das
+rotiert, ist der fehlschlagende Fall weg und niemand kann reproduzieren, was
+passiert ist.  Vor #1372 hatte dieses Repository ~52 `fc.assert`-Aufrufstellen,
+keinen `seed`, kein `endOnFailure` und nirgends einen Regressions-Korpus.
+
+`tests/setup/property-seed.ts` fixiert den Seed für den ganzen Prozess über
+`fc.configureGlobal`, geladen durch `preload` in `bunfig.toml` — eine Stelle
+statt zweiundfünfzig, sodass eine neue Property-Datei die Policy bekommt, ohne
+dass ihre Autorin von ihr wissen muss.
+
+Der Preis ist real und gehört ausgesprochen: Ein fester Seed erkundet in jedem
+Lauf dieselben Fälle, die Suite findet also von selbst keine *neuen*
+Gegenbeispiele mehr.  Das ist vertretbar, weil sie das nie wirklich tat.  Ein
+Fall, den eine unglückliche Nacht fand und den die Log-Rotation dann verschluckte,
+wurde nie zu einem Regressionstest — die Erkundung produzierte rote Builds statt
+Wissen.  Neue Fälle kommen jetzt daher, dass jemand `PROPERTY_RUNS` erhöht oder
+`PROPERTY_SEED` ändert: eine Entscheidung, in einem Diff, von der man erwartet,
+dass sie der Commit ist, der etwas findet.
+
+**Wenn eine Property doch umfällt, kopiere das geschrumpfte Gegenbeispiel als
+schlichten Beispieltest daneben — bevor du irgendetwas reparierst.**  Die
+Property beweist das Gesetz; das Beispiel verhindert, dass genau dieser Fall
+zurückkommt, und überlebt anders als eine Log-Zeile.
+
+`tests/unit/ci/PropertySeedPolicy.test.ts` hält beide Hälften verdrahtet, und
+seine letzte Assertion ist die entscheidende: Sie fragt fast-check, mit welchem
+Seed es *tatsächlich* läuft — ein Preload, der eingetragen und nie geladen
+wurde, fällt damit um, statt still den Zufalls-Default wiederherzustellen.
+
 ## Der Katalog
 
 Ursachen, die diese Suite tatsächlich hatte, mit ihrem jeweiligen Stand.
