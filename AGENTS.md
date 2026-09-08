@@ -317,6 +317,18 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   (#1310). A summary that is *missing* counts as red, deliberately: "the job
   produced no verdict" and "the job was green" are opposite facts, and the first
   two nights of that workflow uploaded no artifact while nobody noticed.
+- **Generative tests run against a pinned seed.**
+  `tests/setup/property-seed.ts` calls `fc.configureGlobal` and is loaded by
+  `bunfig.toml`'s `preload`, so all ~52 `fc.assert` sites share one seed, one
+  `numRuns` floor and `endOnFailure` — a property with a random seed can pass on
+  the next run, and its counterexample lives only in a log that rotates (#1372).
+  A fixed seed stops the suite finding *new* cases on its own; that is the trade
+  and it is worth it, because a case found by an unlucky nightly and then lost
+  was never turned into a regression test anyway. **When a property fails, copy
+  the shrunk counterexample into a plain example test beside it before fixing
+  anything.** `tests/unit/ci/PropertySeedPolicy.test.ts` asks fast-check what
+  seed it is *actually* running with, so a preload that is registered and never
+  loaded fails instead of silently restoring the random default.
 - **Cross-runtime:** `bun run smoke` runs `tests/smoke/cases/*.mjs` on
   Bun, Node, and Deno. Add a smoke case for anything runtime-sensitive.
   A case must release every handle it opens **on every path**, not just the
