@@ -216,23 +216,28 @@ gelten für das Konfigurations-Panel der DevTools.
 
 | Key | Default | Zweck |
 | --- | --- | --- |
-| `mailbox.default.capacity` | `0` | Begrenzt jeden Actor unter `/user` auf so viele eingereihte User-Nachrichten, ohne eine Spawn-Stelle anzufassen.  `0` heißt: keine globale Schranke — das ist das ausgelieferte Verhalten.  Das hier ist also kein Nachjustieren, sondern der Schalter, der für alle Anwendungs-Actors auf einmal Nachrichtenverlust einführt. |
+| `mailbox.default.capacity` | `0` | Begrenzt jeden Actor, den die Anwendung geschrieben hat, auf so viele eingereihte User-Nachrichten, ohne eine Spawn-Stelle anzufassen.  `0` heißt: keine globale Schranke — das ist das ausgelieferte Verhalten.  Das hier ist also kein Nachjustieren, sondern der Schalter, der für alle Anwendungs-Actors auf einmal Nachrichtenverlust einführt. |
 | `mailbox.default.overflow` | `"drop-head"` | Systemweite Policy für **jede** begrenzte Mailbox: die globale Schranke oben und jeden Actor, der `withMailboxCapacity()` setzt, ohne eine eigene Policy zu nennen.  `drop-head` / `drop-new` / `reject`. |
 
-Die Schranke erreicht ausschließlich echte Nachfahren von `/user`.  Die
-eigenen Actors des Frameworks leben unter `/system` — Shard-Regions, der
-Pub-Sub-Mediator, der Reliable-Delivery-Producer, der DevTools-Hub — und ihren
-Verkehr abzuwerfen würde Invarianten brechen, nach denen die Anwendung nie
-gefragt hat und die sie nicht sieht.  Eine Spawn-Stelle sticht beide Keys:
+Die Schranke erreicht die Actors, die die Anwendung *geschrieben* hat — und
+das ist nicht dieselbe Menge wie die Actors unter `/user`: eine Sharded Entity
+wird von ihrem Shard gespawnt, ein Cluster Singleton von seinem Manager, beide
+unter `/system`, und beide sind Klassen der Anwendung.  Ausgenommen sind die
+Actors, die das Framework geschrieben *und* gespawnt hat — Shard-Regions und
+Shards, Singleton-Manager, der Pub-Sub-Mediator, der
+Reliable-Delivery-Producer, der DevTools-Hub — denn ihren Verkehr abzuwerfen
+würde Invarianten brechen, nach denen die Anwendung nie gefragt hat und die
+sie nicht sieht.  Eine Spawn-Stelle sticht beide Keys:
 `ActorOptions.withMailboxCapacity()` überschreibt die Kapazität,
 `withMailbox()` ersetzt die Queue vollständig.
 
 Lies [Mailbox-Dimensionierung](/de/operations/tuning/mailbox-sizing/), bevor
 du das einschaltest.  Es ist der einzige Key in dieser Datei, der eine
 Nachricht in einem Actor verlieren kann, dessen Code nichts über eine Mailbox
-sagt — und die Seite nennt die beiden Fälle, `WebsocketServerActor` und seine
-Connections, in denen eine pauschale Schranke weiterhin erreichbar ist, weil
-User-Code sie spawnt.
+sagt — und die Seite nennt die vom Framework geschriebenen Actors, die eine
+pauschale Schranke weiterhin erreicht, weil Anwendungscode sie spawnt: den
+WebSocket-Hub und seine Connections, die Broker-Adapter, den gRPC-Client und
+-Server.
 
 ### `actor-ts.dispatcher`
 
