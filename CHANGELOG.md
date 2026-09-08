@@ -2688,6 +2688,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **`actor-ts.serialization.read-constraints.max-document-bytes` now bounds
+  the cluster wire too** (#880).  A frame is handed to `JSON.parse` and the
+  tagged-tree walker directly and never passes through a serializer, so the
+  key that both serializers honoured governed every untrusted decode in the
+  process except the one whose bytes a hostile peer chooses — set it and the
+  wire ignored you. It is now checked against the frame's 4-byte length
+  prefix, beside `remote.max-frame-bytes`, which refuses the frame before
+  its payload is buffered and is the earliest point in the framework at
+  which the key can act. The default stays `0` (off). The residual is now
+  documented with its measurements: at shipped defaults an over-deep frame
+  is still refused only after the parse has materialised it — one 16 MiB
+  frame of balanced `[` costs about 1.0 s of CPU and 260 MiB of heap on Bun
+  1.4, roughly four times what a legitimate frame of the same size costs. A
+  pre-parse scan of the raw buffer would close that with neither knob set;
+  it was measured at 18-28 % of every frame decode and not shipped. The
+  block's other two guarantees — that every tagged container charges the
+  depth cap for its own level, and that the three config-to-runtime sites
+  carry the configured ceilings — were correct as shipped and are now held
+  by tests rather than by nothing.
+
+  *Note:* None. The default stays `0` (off), so no payload that decodes
+  today stops decoding; a deployment that had set the key now gets it
+  enforced on the cluster wire as well as in the two serializers.
+
 - **A `max-connections` cap is held by the framework rather than handed to
   the runtime** (#870).  It is counted here and the offending socket
   destroyed, instead of writing `maxConnections` onto the server and
