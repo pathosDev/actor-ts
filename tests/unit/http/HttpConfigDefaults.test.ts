@@ -374,6 +374,23 @@ describe('actor-ts.http.server', () => {
     });
   }
 
+  /**
+   * `closedWithin`, keeping what the server wrote on the way out.
+   *
+   * The bytes are the half a boolean cannot carry: a slow-loris guard that
+   * hangs the socket up and one that answers `408` first are the same close,
+   * and only one of them is what `http/security.mdx` promises.
+   */
+  function observeClose(socket: Socket, withinMs: number): Promise<{ closed: boolean; received: string }> {
+    return new Promise((resolve) => {
+      let received = '';
+      socket.on('data', (chunk) => { received += chunk.toString('utf8'); });
+      socket.once('close', () => resolve({ closed: true, received }));
+      const timer = setTimeout(() => resolve({ closed: false, received }), withinMs);
+      (timer as { unref?: () => void }).unref?.();
+    });
+  }
+
   afterEach(() => {
     while (sockets.length) sockets.shift()!.destroy();
   });
@@ -431,12 +448,19 @@ describe('actor-ts.http.server', () => {
   });
 
   test('the receive deadlines reach the server Fastify built', async () => {
-    // Asserted as installed rather than as observed, and the reason is in the
-    // runtime: both are enforced by a sweep whose interval is a factory option
-    // fixed at 30 s, so a test that waited for the close would have to wait
-    // half a minute to learn anything.  `requestTimeout` is the case that
-    // matters — Fastify ships it at 0, no bound at all — so this is the
-    // assertion that the published 300 s actually lands on the default backend.
+    // `requestTimeout` is asserted as installed rather than as observed, and
+    // the reason is in the runtime: it is enforced by a sweep whose interval
+    // is a factory option fixed at 30 s, so a test that waited for the close
+    // would have to wait half a minute to learn anything.  It is also the
+    // case that matters here — Fastify ships it at 0, no bound at all — so
+    // this is the assertion that the published 300 s lands on the default
+    // backend.
+    //
+    // `headersTimeout` is asserted the same way for a *different* reason, and
+    // it used to be the only assertion this key had: the property is stored
+    // and reported back unchanged by every runtime, and enforced by only one
+    // of them, so reading it back proves the wiring and nothing about the
+    // guard.  The next case observes that half from a socket instead (#870).
     const backend = new FastifyBackend({ logger: false });
     const system = systemWith({ 'actor-ts': { http: { server: { 'header-timeout': '11s' } } } });
     const binding = await system.extension(HttpExtensionId)
@@ -461,6 +485,47 @@ describe('actor-ts.http.server', () => {
     await open(binding);
     const second = await open(binding);
     expect(await closedWithin(second, 1_000)).toBe(false);
+  });
+
+  test('header-timeout closes a connection that never finishes its headers', async () => {
+    // Observed, not read back off the server, and that distinction is the
+    // whole test: `server.headersTimeout` is stored and reported unchanged by
+    // every runtime here, and honoured by only some of them.  Measured on a
+    // bare `node:http` server: node v26.7.0 answers `408` and closes; bun
+    // 1.4.0 ignores the property entirely — 2 s, 40 s, 120 s and `0` all
+    // produced the same ~12 s close with no `408` — and deno 2.6.8 ignores it
+    // and never closes at all.  So the deadline is held here (#870).
+    const binding = await bindWith({ 'actor-ts': { http: { server: { 'header-timeout': '500ms' } } } });
+    const socket = await open(binding);
+    // The slow-loris shape: a header block with no terminating blank line.
+    socket.write('GET / HTTP/1.1\r\nHost: x\r\n');
+
+    // Comfortably inside the runner's own 5 s per-test cap, so a guard that
+    // never fires reads as a failed assertion rather than as a timed-out test.
+    const observed = await observeClose(socket, 3_000);
+    expect(observed.closed, 'the header deadline never closed the connection').toBe(true);
+    expect(observed.received, 'closed without the documented 408').toContain('408');
+  });
+
+  test('a request that does deliver its headers is not cut off by that deadline', async () => {
+    // The negative control.  Without it the case above passes against a guard
+    // that destroys every connection it is armed on, which would take the
+    // whole server down rather than close a slow-loris.
+    const binding = await bindWith({ 'actor-ts': { http: { server: { 'header-timeout': '300ms' } } } });
+    const socket = await open(binding);
+    socket.write('GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n');
+
+    expect(await closedWithin(socket, 3_000)).toBe(false);
+  });
+
+  test('header-timeout = 0 arms no deadline, which is what "disables it" has to mean', async () => {
+    // The documented opt-out.  A guard that read `0` as "close immediately"
+    // would refuse every connection on a server that asked for no guard.
+    const binding = await bindWith({ 'actor-ts': { http: { server: { 'header-timeout': 0 } } } });
+    const socket = await open(binding);
+    socket.write('GET / HTTP/1.1\r\nHost: x\r\n');
+
+    expect(await closedWithin(socket, 3_000)).toBe(false);
   });
 
   test('a value outside its domain is an OptionsError from bind(), not a broken bound', async () => {

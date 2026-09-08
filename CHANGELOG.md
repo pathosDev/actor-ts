@@ -11,6 +11,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **The four JetStream caps that pass through to nats.js verbatim accept
+  NATS's own spelling of "no limit" (#871): `-1` on `stream.maxMessages`,
+  `stream.maxBytes` and `consumer.maxAcknowledgmentPending`, and `0` on
+  `stream.maxAge` — which is a nanosecond span, where a negative value would
+  mean nothing** (#871).  The set is per field and asymmetric because the
+  server's is, and everything else non-positive is still refused at startup,
+  so `-2` remains the typo it is and the rejection now names the sentinel it
+  would have taken. `consumer.ackWaitMs` deliberately has no sentinel: NATS
+  reads a zero ack-wait as "use the server default", which is exactly what
+  leaving the field unset already says, so both `0` and `-1` stay refused
+  there. Both jetstream pages state the domain per field.
+
+  *Note:* None required against any released version. 6c43f21d is NOT an
+  ancestor of v0.17.0 (`git merge-base --is-ancestor 6c43f21d v0.17.0` exits
+  1), so the narrowing existed only on develop and no published release ever
+  refused these values. Anyone running the develop tip with
+  `stream.maxMessages = -1`, `stream.maxBytes = -1`, `stream.maxAge = 0` or
+  `consumer.max-acknowledgment-pending = -1` saw the actor throw
+  OptionsError in preStart and never connect; with this change those
+  configurations start again with no edit.
+
 - **BREAKING — A split-brain resolver is no longer consulted on whichever
   membership view the failure detector happened to leave behind at the end
   of a tick (#839).**
@@ -333,18 +354,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `actor-ts.circuit-breaker.<id>` where #864 put them, so there is no second
   copy of `max-failures` to drift.
 
-  The journal breaker closes the hazard #913 reported: `await
-  this._journal.append(...)` had no ceiling of any kind, so a backend that
-  accepted the connection and then stalled left the actor's turn open
-  forever and every later command queued in an unbounded mailbox with
-  nothing thrown. Setting
-  `actor-ts.circuit-breaker.persistence-journal.call-timeout = 10s` now cuts
-  the stalled append at the stall. A `JournalConcurrencyError` never counts
-  against a breaker — it is the ownership verdict of a conditional append,
-  not an outage — and neither does a `JournalIntegrityError` or
-  `SnapshotIntegrityError`, which are durable facts about the stored bytes.
-  `PersistenceExtension.journal` and `.snapshotStore` still hand out the raw
-  store rather than a wrapper. #874
+  The journal breaker makes the hazard #913 reported *closable*, and does
+  not close it by default: `await this._journal.append(...)` had no ceiling
+  of any kind, so a backend that accepted the connection and then stalled
+  left the actor's turn open forever and every later command queued in an
+  unbounded mailbox with nothing thrown. Setting
+  `actor-ts.circuit-breaker.persistence-journal.call-timeout = 10s` cuts the
+  stalled append at the stall — one config line, no deploy. It ships unset
+  on purpose, because omitting it is what expresses "no deadline" and a
+  shipped ceiling would fail a slow-but-healthy store that every earlier
+  release served fine; `max-failures` cannot stand in for it, since a call
+  that never returns is never counted as a failure. Pick the value from the
+  backend's own P99 write latency with headroom.
+
+  A `JournalConcurrencyError` never counts against a breaker — it is the
+  ownership verdict of a conditional append, not an outage — and neither
+  does a `JournalIntegrityError` or `SnapshotIntegrityError`, which are
+  durable facts about the stored bytes. That carve-out travels with the call
+  rather than with the breaker instance, so it holds however the shared id
+  was reached: `CircuitBreaker.call(factory, isFailure?)` now takes the
+  classifier per call and it wins over the instance's own, while
+  `ignored-error-names` — the operator's half — is still consulted first and
+  still wins over both. An excused error stays neither a failure nor a
+  success, so the consecutive-failure count survives it and one lost race
+  between two real outages cannot keep a dead journal from opening the
+  breaker. `PersistenceExtension.journal` and `.snapshotStore` still hand
+  out the raw store rather than a wrapper. #874
 
 - **`actor-ts.cluster.minimum-members-before-up` (int, default `1`) holds
   every `joining` / `weakly-up` → `up` transition until at least that many
@@ -477,17 +512,33 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the framework builds. The parameter stays optional: a backend written
   outside the repository still satisfies the interface.
 
-  What can honour it was measured rather than assumed, on bun 1.4.0 and node
-  v26.7.0. All four properties are honoured identically on Bun's `node:http`
-  shim and on Node — `headersTimeout` really does answer `408` and destroy
-  the socket — so this is not the `ws` `maxPayload` situation. Fastify,
-  Express and Hono-on-Node all expose the server the values are written to;
-  `Bun.serve` and `Deno.serve` expose neither it nor an equivalent knob, so
-  on the Hono backend under Bun or Deno none of the four is installed at
-  all, and the docs and the parity suite both say so rather than
-  approximating. `header-timeout` and `request-timeout` are enforced by a
-  sweep whose interval the runtime fixes at 30 s, so a connection is closed
-  no earlier than the value set and no later than one sweep after it.
+  What can honour it was measured rather than assumed, and two of the four
+  turned out not to be safe to delegate. `idle-timeout` and
+  `request-timeout` are the runtime's: both are honoured on bun 1.4.0 and
+  node v26.7.0, and `request-timeout` is enforced by a sweep whose interval
+  the runtime fixes at 30 s, so a connection is closed no earlier than the
+  value set and no later than one sweep after it. `header-timeout` and
+  `max-connections` are held by actor-ts itself. The property is still
+  written, but the bound no longer depends on it: measured against a socket
+  that sends a header block and never the terminating blank line, node
+  v26.7.0 answers `408` and closes, bun 1.4.0 stores `headersTimeout`,
+  reports it back unchanged and enforces nothing — `2s`, `40s`, `120s` and
+  `0` alike closed at ~12 s with no `408`, which is Bun's own idle timeout —
+  and deno 2.6.8 never closes at all. So the deadline is armed from the
+  accepted connection and cleared the moment a request or a WebSocket
+  upgrade completes its headers, which makes the documented `408` true on
+  the primary toolchain and makes the number exact rather than rounded up to
+  a sweep. `max-connections` is counted here for the same reason, one
+  operating system apart.
+
+  Both of those rest on the server reporting its accepted connections, which
+  is where they run out. Fastify, Express and Hono-on-Node expose the
+  `node:http` server all four are written to; `Bun.serve` and `Deno.serve`
+  expose neither it nor an equivalent knob, so on the Hono backend under Bun
+  or Deno none of the four is installed at all, and the docs and the parity
+  suite say so rather than approximating. Deno's `node:http` shim
+  additionally emits no `connection` event, so on Deno the header deadline
+  and the connection cap are unavailable whatever backend is mounted.
 
   The two published values are the numbers `http.createServer` already uses,
   which is the same decision #357 made for `bodyLimit`: the bound is the
@@ -858,6 +909,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `OptionsError` naming `maxResetTimeoutMs` instead of the window being
   silently clamped. Nothing in the repository, the examples or the docs
   configures a window above 60 s.
+
+  The grown reopen window is now finite for every legal combination of
+  settings, at every consecutive-open count. Growth is clamped before it is
+  multiplied into the base rather than only afterwards: `Math.pow` overflows
+  to `Infinity` on its own, `0 * Infinity` is `NaN`, and `Math.min`
+  propagates a `NaN` instead of clamping it. A `resetTimeoutMs` of `0` —
+  legal, and the way to say "probe immediately" — paired with any
+  `backoffFactor` above `1` therefore scheduled `nextProbeAt = NaN` once the
+  consecutive opens ran up (the 1025th open with a factor of `2`, the 310th
+  with a factor of `10`), and `Date.now() >= NaN` is false forever, so the
+  breaker stopped probing and refused every further call including ones
+  whose factory would have succeeded. With a zero window every rejection is
+  instantly a fresh open cycle, so a hard-down upstream reached that state
+  in a fraction of a second. The same pair arrives from HOCON as
+  `reset-timeout = 0` with `backoff-factor = 2.0`. Every finite window
+  computes exactly what it did before.
 
 - **BREAKING — `BackoffSupervisor` now takes its defaults from
   `actor-ts.backoff-supervisor.*`, and gained the options triad every other
@@ -1964,6 +2031,56 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   rather than prose.
 
 ### Changed
+
+- **BREAKING — The dump withholds a value when a whole word of the key's
+  name is `password`, `passphrase`, `secret`, `token`, `key`, `credential`
+  or `auth` — singular or plural, in any path segment, so a branch named
+  `credentials` withholds everything beneath it (#867).**
+
+  Whole words, and the last word of each name at that, because that is the
+  word saying what the value is: `api-key` is a key, but `key-prefix` is a
+  prefix, `passivation-idle` is a timeout and `max-subscribers-per-key` is a
+  count. A preposition moves that head in front of it, and a value drawn
+  from HOCON's boolean vocabulary is never withheld whatever its key is
+  called. A stock configuration withholds twelve keys, every one a
+  credential slot. It is the same list and the same rule the DevTools config
+  panel has used since #553 — the walk, the layer attribution and the
+  redaction now live in one place (`src/diagnostics/ConfigDump.ts`) rather
+  than two, so a key withheld from the panel cannot reach a log file
+  instead.
+
+  Redaction by key name is a heuristic and it is the weaker half of the
+  guarantee: by the time the tree is merged, a `${?DATABASE_PASSWORD}` is an
+  ordinary string, so a secret in a key called `dsn` or `connection-string`
+  is printed in full. Nor is a name whose last word is an identifier or a
+  location read as the thing itself — `kms-key-id` is an id and `token-path`
+  is a filesystem path, and both print. Both `configuration.mdx` pages and
+  `troubleshooting.mdx` say so in as many words, a test pins the gap open so
+  that sentence cannot rot, and the key ships `off` because the defence that
+  does not depend on a guess is not printing the tree. Values are
+  JSON-encoded, so a newline inside one cannot forge a line of the dump it
+  is part of.
+
+  `CONFIG_SECRET_PATTERN`, `CONFIG_NEVER_REDACTED_PATHS` and
+  `CONFIG_REDACTED` live in `src/util/Constants.ts` and are on the
+  `actor-ts/util` subpath; `actor-ts/devtools`'s protocol re-exports all
+  three. The pattern is anchored and applies to one word of a key; the
+  exemption list holds full paths of keys `reference.conf` declares whose
+  names the rule would otherwise read wrong, and `ConfigDump.test.ts`
+  asserts a stock tree's entire withheld set so an addition to it is a
+  visible line in a diff.
+
+  *Migration:* `CONFIG_SECRET_PATTERN` is now anchored and is matched
+  against a single word of a key, not against a whole dotted path —
+  `CONFIG_SECRET_PATTERN.test('a.b.password')` is `false` where it used to
+  be `true`. Apply it per word, or call `resolveConfigLeaves(config)` and
+  read each leaf's `secret` flag, which is the supported way to ask the
+  question. The DevTools config panel consequently shows values it withheld
+  in 0.17.0 — `sharding.passivation-*`, `cassandra.keyspace`,
+  `cache.*.key-prefix`, `cluster.receptionist.max-subscribers-per-key`,
+  `coordination.lease.kubernetes.token-*` and
+  `management.auth-protect-health` — none of which is a credential; a stock
+  configuration now withholds twelve keys instead of thirty-one.
 
 - **Cluster sharding now bounds how many shards a rebalance may have in
   flight at once, and ships that bound switched on** (#850).  The default

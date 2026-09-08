@@ -51,11 +51,14 @@ HOCON-Auflösung — und die exakt.
 
 ## Geheimnisse
 
-Ein Wert, dessen **Key** ein Geheimnis benennt — alles, was auf `pass`,
-`secret`, `token`, `key`, `credential` oder `auth` passt — wird durch
+Ein Wert, dessen **Key** ein Geheimnis benennt — wenn ein ganzes Wort
+davon `password`, `passphrase`, `secret`, `token`, `key`, `credential`
+oder `auth` lautet, und zwar das letzte Wort des Namens — wird durch
 `<redacted>` ersetzt, bevor er den Prozess verlässt. Nach Key statt nach
 Wert, denn ein Passwort, das zufällig gewöhnlich aussieht, ist immer noch
-ein Passwort, und der Key ist es, der es benennt.
+ein Passwort, und der Key ist es, der es benennt. `api-key` wird also
+zurückgehalten, `key-prefix` und `passivation-idle` dagegen gezeigt — und
+ein Boolean nie zurückgehalten, wie er auch heißt.
 
 Das ist bewusst ein grobes Werkzeug. Ein Konfigurationsbaum verrät auch
 geschwärzt eine Menge über ein Deployment — Hosts, Ports, Seed-Nodes,

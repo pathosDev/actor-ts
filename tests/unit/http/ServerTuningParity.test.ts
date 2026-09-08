@@ -7,6 +7,7 @@ import { FastifyBackend } from '../../../src/http/backend/FastifyBackend.js';
 import { HonoBackend } from '../../../src/http/backend/HonoBackend.js';
 import {
   applyServerOptions,
+  enforceHeaderTimeout,
   type HttpServerBackend,
   type NodeHttpServerLike,
   type ServerBinding,
@@ -166,6 +167,165 @@ describe('applyServerOptions', () => {
   test('an absent server is ordinary — it is how an untunable runtime reports itself', () => {
     expect(applyServerOptions(undefined, { maxConnections: 1 }).maxConnections).toBe(false);
     expect(applyServerOptions(null, { maxConnections: 1 }).maxConnections).toBe(false);
+  });
+});
+
+/**
+ * The header deadline held in this repository, against a server that ignores
+ * the property — which on the primary toolchain is every server there is.
+ *
+ * Measured on a bare `node:http` server, a socket that sends a header block
+ * with no terminating blank line: node v26.7.0 answers `408` and closes;
+ * bun 1.4.0 stores `headersTimeout`, reports it back unchanged and enforces
+ * nothing (`2000`, `40000`, `120000` and `0` all closed at ~12 s with no bytes
+ * received, which is Bun's own idle timeout); deno 2.6.8 ignores it and never
+ * closes at all.  `HttpConfigDefaults.test.ts` observes the repaired behaviour
+ * end to end; this pins the mechanism, including the two halves that suite
+ * cannot reach — the `'upgrade'` path and a runtime with no seam (#870).
+ */
+describe('the header deadline is enforced here, not delegated', () => {
+  type FakeSocket = {
+    destroy: () => void;
+    once: (event: 'close', listener: () => void) => unknown;
+    end: (data?: string) => unknown;
+  };
+  type FakeListener = (...args: ReadonlyArray<unknown>) => void;
+
+  /** Long enough to be unambiguous under load, short enough to stay a unit test. */
+  const DEADLINE_MS = 25;
+  const SETTLE_MS = 400;
+
+  const settle = (): Promise<void> => new Promise((resolve) => {
+    const timer = setTimeout(resolve, SETTLE_MS);
+    (timer as { unref?: () => void }).unref?.();
+  });
+
+  function fakeServer() {
+    const listeners = new Map<string, FakeListener[]>();
+    const record = (event: string, listener: FakeListener): unknown => {
+      const existing = listeners.get(event);
+      if (existing) existing.push(listener);
+      else listeners.set(event, [listener]);
+      return undefined;
+    };
+    const server: NodeHttpServerLike = { on: record as NodeHttpServerLike['on'] };
+    const emit = (event: string, ...args: ReadonlyArray<unknown>): void => {
+      for (const listener of listeners.get(event) ?? []) listener(...args);
+    };
+    const connect = () => {
+      let destroyed = false;
+      let wrote = '';
+      const closeListeners: Array<() => void> = [];
+      const socket: FakeSocket = {
+        destroy: () => { destroyed = true; },
+        once: (_event, listener) => { closeListeners.push(listener); return socket; },
+        end: (data) => { wrote += data ?? ''; return socket; },
+      };
+      emit('connection', socket);
+      return {
+        socket,
+        get destroyed() { return destroyed; },
+        get wrote() { return wrote; },
+        close: () => { for (const listener of closeListeners) listener(); },
+      };
+    };
+    return { server, connect, emit };
+  }
+
+  test('a runtime that ignores headersTimeout still hangs up on a slow-loris', async () => {
+    const { server, connect } = fakeServer();
+    applyServerOptions(server, { headerTimeoutMs: DEADLINE_MS });
+
+    // The fake never acts on this, which is the whole point of the fake.
+    expect(server.headersTimeout).toBe(DEADLINE_MS);
+
+    const connection = connect();
+    await settle();
+
+    expect(connection.destroyed, 'the header deadline never fired').toBe(true);
+    expect(connection.wrote, 'hung up without the documented 408').toContain('408 Request Timeout');
+  });
+
+  test('a completed header block disarms the deadline', async () => {
+    // Both halves, or this passes against a guard that never arms: the socket
+    // that finished its headers survives, the one beside it that did not does
+    // not.
+    const { server, connect, emit } = fakeServer();
+    applyServerOptions(server, { headerTimeoutMs: DEADLINE_MS });
+
+    const completed = connect();
+    const dribbling = connect();
+    emit('request', { socket: completed.socket }, {});
+    await settle();
+
+    expect(completed.destroyed, 'a request that delivered its headers was cut off').toBe(false);
+    expect(dribbling.destroyed, 'the deadline was not armed at all').toBe(true);
+  });
+
+  test('a WebSocket upgrade disarms it too, or every socket dies one timeout in', async () => {
+    // `'upgrade'` hands (request, socket, head) — the socket at a different
+    // index than `'request'` puts it, which is why the guard matches by
+    // identity.  Without this arm a WebSocket connection, whose whole purpose
+    // is to outlive its handshake, is destroyed a header timeout after it
+    // opens.
+    const { server, connect, emit } = fakeServer();
+    applyServerOptions(server, { headerTimeoutMs: DEADLINE_MS });
+
+    const upgraded = connect();
+    emit('upgrade', {}, upgraded.socket, new Uint8Array());
+    await settle();
+
+    expect(upgraded.destroyed).toBe(false);
+  });
+
+  test('0 arms nothing — the documented opt-out, not "close immediately"', async () => {
+    const { server, connect } = fakeServer();
+    applyServerOptions(server, { headerTimeoutMs: 0 });
+
+    // Still written: `0` is also `node:http`'s own spelling for "no bound".
+    expect(server.headersTimeout).toBe(0);
+
+    const connection = connect();
+    await settle();
+
+    expect(connection.destroyed).toBe(false);
+  });
+
+  test('the other three knobs arm no deadline of their own', async () => {
+    // The negative control: a policy that only caps connections must not start
+    // hanging up on connections that are merely slow.
+    const { server, connect } = fakeServer();
+    applyServerOptions(server, { idleTimeoutMs: 1_000, requestTimeoutMs: 3_000, maxConnections: 10 });
+
+    const connection = connect();
+    await settle();
+
+    expect(connection.destroyed).toBe(false);
+  });
+
+  test('a closed connection disarms itself, so nothing is left holding a timer', async () => {
+    const { server, connect } = fakeServer();
+    applyServerOptions(server, { headerTimeoutMs: DEADLINE_MS });
+
+    const connection = connect();
+    connection.close();
+    await settle();
+
+    // `destroy` on an already-closed socket is harmless, but a guard that
+    // still fired would also still be writing to it — and, on a real server,
+    // holding the timer that keeps the process awake.
+    expect(connection.wrote).toBe('');
+  });
+
+  test('a server that emits no connections is left alone rather than half-guarded', () => {
+    // `Bun.serve` / `Deno.serve` handles reach `applyServerOptions` with no
+    // `on` at all, and Deno's `node:http` shim has one that never emits
+    // `'connection'`.  Writing the property and installing nothing is the
+    // honest outcome; throwing would take down a bind that works today.
+    const server: NodeHttpServerLike = {};
+    expect(() => applyServerOptions(server, { headerTimeoutMs: 1_000 })).not.toThrow();
+    expect(server.headersTimeout).toBe(1_000);
+    expect(enforceHeaderTimeout(server, 1_000)).toBe(false);
   });
 });
 

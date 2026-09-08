@@ -123,6 +123,27 @@ export class JetStreamOptionsBuilder extends BrokerOptionsBuilder<JetStreamOptio
 }
 
 /**
+ * NATS's spelling of "no limit" on a count- or byte-valued cap — `max_msgs`,
+ * `max_bytes`, `max_ack_pending`.
+ *
+ * A bound the {@link JetStreamOptionsValidator} admits rather than a default:
+ * these fields are unset by default and pass through verbatim, so the value
+ * exists here only because the validator has to recognise it. Named for the
+ * vendor, because "unlimited" is a protocol constant and not a house one.
+ */
+const NATS_UNLIMITED_COUNT = -1;
+
+/**
+ * NATS's spelling of "no limit" on `max_age`.
+ *
+ * Not {@link NATS_UNLIMITED_COUNT}: the field is a **nanosecond span**, where
+ * the absent bound is zero and a negative value has no meaning at all. The
+ * asymmetry is the server's, and the two constants are kept apart so a reader
+ * cannot assume it away.
+ */
+const NATS_UNLIMITED_AGE_NANOSECONDS = 0;
+
+/**
  * A `stream` / `consumer` leaf that is present but outside its domain — the
  * shape `FramingViolation` in `TcpFraming.ts` has, kept module-local because
  * nothing outside this file reports one.
@@ -213,11 +234,23 @@ export class JetStreamOptionsValidator extends BrokerOptionsValidator<JetStreamO
     this.commonRules(s);
     this.nonEmptyStringOrArray('servers', s.servers);
     this.positiveNumber('acknowledgmentTimeout');
-    this.nestedPositive('stream.maxMessages', s.stream?.maxMessages);
-    this.nestedPositive('stream.maxBytes', s.stream?.maxBytes);
-    this.nestedPositive('stream.maxAge', s.stream?.maxAge);
+    // The four caps below reach `jsm.streams.add` / `jsm.consumers.add`
+    // verbatim, so their domain is NATS's and not ours: the server spells "no
+    // limit" as `-1` on `max_msgs`, `max_bytes` and `max_ack_pending`, and as
+    // `0` on `max_age` — which is a nanosecond span, where a negative value
+    // would mean nothing.  Asymmetric on purpose; see NATS's stream and
+    // consumer configuration reference.
+    this.nestedPositiveOrSentinel('stream.maxMessages', s.stream?.maxMessages, NATS_UNLIMITED_COUNT);
+    this.nestedPositiveOrSentinel('stream.maxBytes', s.stream?.maxBytes, NATS_UNLIMITED_COUNT);
+    this.nestedPositiveOrSentinel('stream.maxAge', s.stream?.maxAge, NATS_UNLIMITED_AGE_NANOSECONDS);
+    // `ackWaitMs` keeps the plain positive bound, and that is not an
+    // oversight: NATS reads a zero `ack_wait` as "use the server default",
+    // which is what leaving this unset already says (the actor substitutes
+    // 30 s), and there is no unlimited spelling for it at all.
     this.nestedPositive('consumer.ackWaitMs', s.consumer?.ackWaitMs);
-    this.nestedPositive('consumer.maxAcknowledgmentPending', s.consumer?.maxAcknowledgmentPending);
+    this.nestedPositiveOrSentinel(
+      'consumer.maxAcknowledgmentPending', s.consumer?.maxAcknowledgmentPending, NATS_UNLIMITED_COUNT,
+    );
     const groupProblem = findJetStreamGroupProblem(s);
     if (groupProblem !== undefined) {
       this.fail(groupProblem.field, groupProblem.reason, groupProblem.value);

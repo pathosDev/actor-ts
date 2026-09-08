@@ -92,8 +92,27 @@ export class CircuitBreaker {
    */
   get consecutiveOpens(): number { return this._consecutiveOpens; }
 
-  /** Call `factory` under breaker supervision.  Throws `CircuitBreakerOpenError` when open. */
-  async call<T>(factory: () => Promise<T>): Promise<T> {
+  /**
+   * Call `factory` under breaker supervision.  Throws `CircuitBreakerOpenError`
+   * when open.
+   *
+   * `isFailure` classifies *this call's* errors and takes precedence over the
+   * instance's {@link CircuitBreakerOptionsType.isFailure}.  It exists because
+   * a breaker resolved by id through `CircuitBreakerExtension` is **shared**:
+   * the registry hands back the instance that already exists rather than
+   * reconfiguring it, so a predicate supplied as a construction option reaches
+   * the instance only when its supplier happened to be the first caller.  A
+   * classifier that belongs to the protected dependency rather than to one
+   * caller therefore has to travel with the call, where no resolution order
+   * can drop it (#874).
+   *
+   * `ignoredErrorNames` is still consulted first and still wins — see there
+   * for why the operator's half of the classifier outranks a compiled one,
+   * per-call or not.  An excused error is neither a failure nor a success:
+   * the consecutive-failure count survives it untouched, so one excused error
+   * between every two real ones cannot hold a dead dependency open forever.
+   */
+  async call<T>(factory: () => Promise<T>, isFailure?: (error: Error) => boolean): Promise<T> {
     this.maybeTransitionToHalfOpen();
     if (this._state === 'open') throw new CircuitBreakerOpenError();
 
@@ -107,7 +126,7 @@ export class CircuitBreaker {
       return value;
     } catch (err) {
       const asErr = err instanceof Error ? err : new Error(String(err));
-      if (this.countsAsFailure(asErr)) this.onFailure();
+      if (this.countsAsFailure(asErr, isFailure)) this.onFailure();
       throw asErr;
     }
   }
@@ -173,17 +192,30 @@ export class CircuitBreaker {
    * `setTimeout`, whose 32-bit argument turns an overflow into a hot loop.
    * Nothing here reaches a timer: the window is a timestamp compared against
    * `Date.now()` on the next `call()`, so a value past the ceiling costs an
-   * over-long wait and not a busy loop, and `maxResetTimeoutMs` is validated
-   * finite so the product cannot reach `Infinity` either way.
+   * over-long wait and not a busy loop.
+   *
+   * The *growth* is clamped before it is multiplied in, and that half is
+   * load-bearing rather than tidy.  A finite `maxResetTimeoutMs` bounds the
+   * product but not the factor: `Math.pow` overflows to `Infinity` on its own
+   * (2^1024, 10^309), and `0 * Infinity` is `NaN`, which `Math.min` propagates
+   * instead of clamping.  A `resetTimeoutMs` of `0` — legal, and the way to
+   * say "probe immediately" — with any `backoffFactor > 1` therefore used to
+   * schedule `_nextProbeAt = NaN`, and `Date.now() >= NaN` is `false` forever,
+   * so the breaker stopped probing a recovered dependency for good (#864).
+   * Cutting the growth at the point past which the clamp swallows it anyway
+   * keeps `Infinity` out of the multiplication, so no combination of legal
+   * options can reach a non-finite window at any open count.
    */
   private reopenDelayMs(): number {
     const factor = this.options.backoffFactor ?? DEFAULT_CIRCUIT_BREAKER_BACKOFF_FACTOR;
     const ceiling = this.options.maxResetTimeoutMs ?? DEFAULT_CIRCUIT_BREAKER_MAX_RESET_TIMEOUT_MS;
     const randomFactor = this.options.randomFactor ?? DEFAULT_CIRCUIT_BREAKER_RANDOM_FACTOR;
-    const grown = Math.min(
-      this.options.resetTimeoutMs * Math.pow(factor, this._consecutiveOpens - 1),
-      ceiling,
-    );
+    const base = this.options.resetTimeoutMs;
+    // A zero base has no useful growth at all — hence the `1` — which is the
+    // case that used to produce the `NaN`.
+    const maxUsefulGrowth = base > 0 ? ceiling / base : 1;
+    const growth = Math.min(Math.pow(factor, this._consecutiveOpens - 1), maxUsefulGrowth);
+    const grown = Math.min(base * growth, ceiling);
     return applyJitter(grown, randomFactor, this.options.random ?? Math.random);
   }
 
@@ -192,10 +224,17 @@ export class CircuitBreaker {
    * consulted first and short-circuits — see
    * `CircuitBreakerOptionsType.ignoredErrorNames` for why that order and not
    * the other one.
+   *
+   * Below it, the call's own `isFailure` **replaces** the instance's rather
+   * than joining it: the two are the same kind of verdict said by two parties,
+   * and the caller is the one that knows what this call means.  Combining them
+   * would make a shared instance's option — whose value depends on which
+   * caller resolved the id first — silently narrow or widen every other
+   * caller's classification.
    */
-  private countsAsFailure(error: Error): boolean {
+  private countsAsFailure(error: Error, isFailure: ((error: Error) => boolean) | undefined): boolean {
     if (this.options.ignoredErrorNames?.includes(error.name)) return false;
-    return this.options.isFailure?.(error) ?? true;
+    return (isFailure ?? this.options.isFailure)?.(error) ?? true;
   }
 
   private maybeTransitionToHalfOpen(): void {

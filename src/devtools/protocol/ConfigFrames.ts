@@ -58,11 +58,19 @@ export type ResolvedConfigResult = {
  * Keys whose values are redacted before they leave the process, and what
  * they are replaced with.
  *
- * Re-exported rather than declared: both now also guard the boot config
+ * Re-exported rather than declared: all three now also guard the boot config
  * dump (#867), which is core and imports nothing from `src/devtools/`, so
  * the declarations live in `src/util/Constants.ts` — the one tier two
  * subsystems may share.  The names stay here because `<redacted>` is wire
  * vocabulary the panel compares against, and a protocol constant that
  * moved would be a protocol change.
+ *
+ * The exemption list travels with the pattern deliberately: a client that
+ * reads one to explain why a value is missing needs the other to explain why
+ * one it expected to be missing is not.
  */
-export { CONFIG_REDACTED, CONFIG_SECRET_PATTERN } from '../../util/Constants.js';
+export {
+  CONFIG_REDACTED,
+  CONFIG_SECRET_PATTERN,
+  CONFIG_NEVER_REDACTED_PATHS,
+} from '../../util/Constants.js';

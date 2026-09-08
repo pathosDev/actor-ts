@@ -232,6 +232,29 @@ export abstract class BrokerOptionsValidator<T extends BrokerCommonOptionsType> 
   }
 
   /**
+   * {@link nestedPositive} for a leaf whose broker also gives "no bound" an
+   * out-of-band spelling — NATS's `-1` on `max_msgs`, its `0` on `max_age`.
+   *
+   * A sentinel is not a bound of zero; it is the same category of value as
+   * `undefined`, which every helper here already passes over, so it is
+   * admitted rather than rounded up into the positive range.  Refusing it
+   * would refuse a configuration the broker's own documentation prescribes,
+   * and the field passes through verbatim, so the validator's domain has to
+   * be the wire protocol's and not a symmetric guess (#871).
+   *
+   * The sentinel is a parameter for the same reason: the values are per
+   * field, not per broker — NATS spells the unlimited count `-1` and the
+   * unlimited age `0`.  Everything else non-positive is still refused, so
+   * `-2` remains the typo it is.
+   */
+  protected nestedPositiveOrSentinel(field: string, v: number | undefined, sentinel: number): void {
+    if (v === sentinel) return;
+    if (v !== undefined && (typeof v !== 'number' || !Number.isFinite(v) || v <= 0)) {
+      this.fail(field, `must be a positive finite number, or ${sentinel} for "no limit"`, v);
+    }
+  }
+
+  /**
    * Non-empty check for a `string | string[]` field (Kafka `brokers`, NATS
    * `servers`) — a union the typed helpers can't address.  No-op if unset.
    */

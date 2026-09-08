@@ -1,4 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { Config } from '../../../src/config/Config.js';
+import { REFERENCE_CONF } from '../../../src/config/Reference.js';
 import { CircuitBreakerOpenError, CircuitBreakerTimeoutError } from '../../../src/pattern/CircuitBreaker.js';
 import { CircuitBreakerExtensionId } from '../../../src/pattern/CircuitBreakerExtension.js';
 import { JournalConcurrencyError } from '../../../src/persistence/JournalTypes.js';
@@ -61,6 +63,26 @@ describe('PersistenceExtension — breaker resolution', () => {
     expect(breaker).not.toBeNull();
     expect(breaker!.options.maxFailures).toBe(2);
     expect(breaker!.options.resetTimeoutMs).toBe(5_000);
+    await system.terminate();
+  });
+
+  test('a stock system gets NO call-timeout, so an append still has no ceiling', async () => {
+    // The #913 hazard is reachable in one config line, and is not closed by
+    // default (#874).  That is a decision — a shipped ceiling would fail a
+    // slow-but-healthy store that every release before this one served fine —
+    // but it was a decision nothing asserted, which is how "the breakers ship
+    // on" reads as "the stall is handled".  It is not: `max-failures` cannot
+    // substitute, because a call that never returns is never counted.
+    expect(Config.parseString(REFERENCE_CONF).hasPath(
+      'actor-ts.circuit-breaker.persistence-journal.call-timeout',
+    )).toBe(false);
+    expect(Config.parseString(REFERENCE_CONF).hasPath(
+      'actor-ts.circuit-breaker.default.call-timeout',
+    )).toBe(false);
+
+    const { system, extension } = persistenceOf();
+    expect(extension.journalBreaker!.options.callTimeoutMs).toBeUndefined();
+    expect(extension.snapshotBreaker!.options.callTimeoutMs).toBeUndefined();
     await system.terminate();
   });
 
@@ -174,6 +196,128 @@ describe('PersistenceExtension — what counts as an outage', () => {
       .rejects.toBeInstanceOf(JournalUnavailableError);
 
     expect(extension.snapshotBreaker!.state).toBe('open');
+    expect(extension.journalBreaker!.state).toBe('closed');
+    await system.terminate();
+  });
+});
+
+/**
+ * The carve-out is a property of the **call**, not of whoever reached the id
+ * first.
+ *
+ * `actor-ts.persistence.journal-breaker` publishes `persistence-journal` as a
+ * configuration path, `PersistenceExtension.journalBreaker` invites a
+ * dashboard to read the state, and `CircuitBreakerExtension.breaker(id)`
+ * hands back the instance that already exists rather than reconfiguring it.
+ * Put together, that made the classifier reachable only when persistence
+ * happened to construct the instance — one earlier
+ * `breaker('persistence-journal')` anywhere in the process and a burst of
+ * losing conditional appends fast-failed every healthy entity on the node.
+ */
+describe('PersistenceExtension — the carve-out survives any resolution order', () => {
+  const losingAppends = async (
+    extension: ReturnType<typeof persistenceOf>['extension'],
+    attempts: number,
+  ): Promise<void> => {
+    const journal = new RejectingJournal(() => new JournalConcurrencyError('acct-1', 4, 7));
+    for (let i = 0; i < attempts; i++) {
+      await expect(extension.callThroughJournalBreaker(
+        () => journal.append('acct-1', [{ event: { kind: 'deposited' } }], 0),
+      )).rejects.toBeInstanceOf(JournalConcurrencyError);
+    }
+  };
+
+  test('a JournalConcurrencyError never counts when the registry resolved the id first', async () => {
+    const system = createTestActorSystem({
+      name: 'persistence-breakers-order',
+      config: { 'actor-ts': { 'circuit-breaker': { 'persistence-journal': { 'max-failures': 3 } } } },
+    });
+    // The one line that used to decide it: an observer resolving the published
+    // id before persistence ever asks for it.
+    const preResolved = system.extension(CircuitBreakerExtensionId).breaker('persistence-journal');
+    const extension = system.extension(PersistenceExtensionId);
+    expect(extension.journalBreaker).toBe(preResolved);
+
+    await losingAppends(extension, 10);
+
+    expect(extension.journalBreaker!.state).toBe('closed');
+    await expect(extension.callThroughJournalBreaker(async () => 'still served')).resolves.toBe('still served');
+    await system.terminate();
+  });
+
+  test('an integrity verdict never counts when the registry resolved the id first', async () => {
+    const system = createTestActorSystem({
+      name: 'persistence-breakers-order-integrity',
+      config: {
+        'actor-ts': {
+          'circuit-breaker': {
+            'persistence-journal': { 'max-failures': 2 },
+            'persistence-snapshot': { 'max-failures': 2 },
+          },
+        },
+      },
+    });
+    const registry = system.extension(CircuitBreakerExtensionId);
+    registry.breaker('persistence-journal');
+    registry.breaker('persistence-snapshot');
+    const extension = system.extension(PersistenceExtensionId);
+
+    for (let i = 0; i < 4; i++) {
+      await expect(extension.callThroughJournalBreaker(async () => {
+        throw new JournalIntegrityError('holed', 'acct-1', 3);
+      })).rejects.toBeInstanceOf(JournalIntegrityError);
+      await expect(extension.callThroughSnapshotBreaker(async () => {
+        throw new SnapshotIntegrityError('ahead', 'acct-1', 9);
+      })).rejects.toBeInstanceOf(SnapshotIntegrityError);
+    }
+
+    expect(extension.journalBreaker!.state).toBe('closed');
+    expect(extension.snapshotBreaker!.state).toBe('closed');
+    await system.terminate();
+  });
+
+  test('a real outage still opens the pre-resolved breaker', async () => {
+    // The carve-out must not have become "nothing counts".
+    const system = createTestActorSystem({
+      name: 'persistence-breakers-order-outage',
+      config: { 'actor-ts': { 'circuit-breaker': { 'persistence-journal': { 'max-failures': 2 } } } },
+    });
+    system.extension(CircuitBreakerExtensionId).breaker('persistence-journal');
+    const extension = system.extension(PersistenceExtensionId);
+
+    for (let i = 0; i < 2; i++) {
+      await expect(extension.callThroughJournalBreaker(async () => {
+        throw new JournalUnavailableError('append');
+      })).rejects.toBeInstanceOf(JournalUnavailableError);
+    }
+
+    expect(extension.journalBreaker!.state).toBe('open');
+    await system.terminate();
+  });
+
+  test('the operator half of the classifier still wins on a pre-resolved breaker', async () => {
+    // `ignored-error-names` is read from the id's own block whoever builds the
+    // instance, so it was never order-dependent — but it must still come first
+    // now that the code-side predicate travels with the call.
+    const system = createTestActorSystem({
+      name: 'persistence-breakers-order-ignored',
+      config: {
+        'actor-ts': {
+          'circuit-breaker': {
+            'persistence-journal': { 'max-failures': 2, 'ignored-error-names': ['JournalUnavailableError'] },
+          },
+        },
+      },
+    });
+    system.extension(CircuitBreakerExtensionId).breaker('persistence-journal');
+    const extension = system.extension(PersistenceExtensionId);
+
+    for (let i = 0; i < 5; i++) {
+      await expect(extension.callThroughJournalBreaker(async () => {
+        throw new JournalUnavailableError('append');
+      })).rejects.toBeInstanceOf(JournalUnavailableError);
+    }
+
     expect(extension.journalBreaker!.state).toBe('closed');
     await system.terminate();
   });

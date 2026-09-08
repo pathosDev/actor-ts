@@ -486,12 +486,15 @@ the file that was looked for, which settles the first of those on its own.
 
 Two things to know before you paste that record into a ticket.  It is an
 `info` record, so it needs no second switch — but it **prints your
-configuration**, and values are withheld only when the *key name* matches
-`pass`, `secret`, `token`, `key`, `credential` or `auth`.  A secret in a key
-called `dsn` or `connection-string` is printed in full, and no heuristic can
-fix that: by the time the tree is merged, a `${?DATABASE_PASSWORD}` is an
-ordinary string.  [Configuration](/reference/configuration/) states the limits
-in full.
+configuration**, and values are withheld only when a whole word of the *key
+name* is `password`, `passphrase`, `secret`, `token`, `key`, `credential` or
+`auth`.  A secret in a key called `dsn` or `connection-string` is printed in
+full, and no heuristic can fix that: by the time the tree is merged, a
+`${?DATABASE_PASSWORD}` is an ordinary string.  Ordinary tuning values are
+*not* withheld just for spelling one of those words inside a longer one —
+`passivation-idle` and `keyspace` print, as they must for the dump to be worth
+reading.  [Configuration](/reference/configuration/) states the limits in
+full.
 
 The three `debug.*` switches need **two** switches, and this is the usual
 reason one of them appears not to work: the key decides whether a record is

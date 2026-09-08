@@ -174,6 +174,12 @@ succeeds and the breaker closes, so a dependency that recovers starts
 over at the first window rather than staying in a long one it earned
 while it was down.
 
+A `resetTimeoutMs` of `0` — "probe on the very next call" — stays `0`
+at every open count, whatever the factor: the growth is multiplicative
+and there is nothing to multiply.  It is a legal pairing and it stays
+one; the window is a finite number of milliseconds for every legal
+combination of these four settings, however long the outage runs.
+
 Jitter is the same contract `retry` and `exponentialBackoff` use, and
 it buys the same thing here: N replicas that opened on one upstream
 event stop probing it in lockstep, so the recovering dependency meets
@@ -241,6 +247,34 @@ Read them once, when the instance is created — a later
 rather than reconfiguring it.  A bad value in either block throws
 `OptionsError` at that first call, so a typo'd override fails loudly
 instead of leaving one breaker quietly running the framework defaults.
+
+#### A classifier that belongs to the dependency, not to one caller
+
+That "read once" rule has a sharp edge as soon as more than one place
+resolves the same id: whoever gets there first decides, and every later
+caller's `isFailure` is silently dropped.  Passing the predicate to
+`call` instead sidesteps it — it classifies *that* call's errors and
+takes precedence over whatever the instance was built with:
+
+```ts
+const journal = breakers.breaker('persistence-journal');
+
+await journal.call(
+  () => store.append(id, entries, expectedSeq),
+  (err) => !(err instanceof ConcurrencyError),
+);
+```
+
+Use the construction option when the breaker's settings are yours
+alone, and the per-call argument when the id is shared or published —
+which is what the framework does for
+`actor-ts.persistence.journal-breaker`, whose id is a documented config
+path anyone may resolve.
+
+`ignoredErrorNames` still comes first either way, and an excused error
+is still neither a failure nor a success: the consecutive-failure count
+survives it untouched, so one excused error between every two real ones
+cannot keep a dead dependency from opening the breaker.
 
 The full key list is in the [configuration
 reference](/reference/configuration/#actor-tscircuit-breaker).

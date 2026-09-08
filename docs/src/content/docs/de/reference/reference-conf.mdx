@@ -1242,9 +1242,17 @@ actor-ts {
     # all expose the node:http server these are written to; Bun.serve and
     # Deno.serve expose neither that server nor an equivalent knob, so under
     # the Hono backend on Bun or Deno all four are unavailable rather than
-    # quietly ignored.  header-timeout and request-timeout are enforced by a
-    # periodic sweep the runtime fixes at 30s, so a connection is closed no
-    # earlier than the value set here and no later than one sweep after it.
+    # quietly ignored.  request-timeout is enforced by a periodic sweep the
+    # runtime fixes at 30s, so a connection is closed no earlier than the value
+    # set here and no later than one sweep after it.
+    #
+    # header-timeout is not swept, because it is not the runtime that enforces
+    # it: writing server.headersTimeout is honoured on node and accepted-and-
+    # ignored on bun and on deno, so actor-ts arms the deadline itself, from
+    # the accepted connection, and it fires at the value set here.  That needs
+    # the server to report its connections -- deno's node:http shim emits no
+    # 'connection' event, so on deno it is unavailable whatever the backend.
+    # 0 disables it (#870).
     #
     # Two leaves ship no value, because "unset" is a state neither of them has
     # a number for:

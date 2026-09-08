@@ -116,12 +116,14 @@ liefern einen Wert; lässt du `idleTimeoutMs` und `maxConnections` ungesetzt,
 bleibt es bei der Wahl des Backends beziehungsweise bei „unbegrenzt" — genau
 das, was jedes Release davor getan hat.
 
-Es sind Eigenschaften eines `node:http`-Servers, **Hono auf Bun oder Deno kann
-also keinen davon umsetzen**: keine der beiden Runtimes gibt den Server oder
-einen gleichwertigen Knopf heraus.  Die
-[Konfigurationsreferenz](/de/reference/configuration/) enthält die Tabelle pro
-Backend und den Hinweis darauf, wie die beiden Empfangs-Deadlines durchgesetzt
-werden.
+Sie erreichen eine Verbindung über einen `node:http`-Server, **Hono auf Bun oder
+Deno kann also keinen davon umsetzen**: keine der beiden Runtimes gibt den
+Server oder einen gleichwertigen Knopf heraus.  Zwei von ihnen,
+`header-timeout` und `max-connections`, hält actor-ts zusätzlich zur Property
+selbst, weil die Runtimes uneins sind, ob das Schreiben der Property überhaupt
+etwas bewirkt.  Die [Konfigurationsreferenz](/de/reference/configuration/)
+enthält die Tabelle pro Backend, diesen Unterschied und den Sweep-Hinweis zu
+`request-timeout`.
 
 ## Der HTTP-Client
 

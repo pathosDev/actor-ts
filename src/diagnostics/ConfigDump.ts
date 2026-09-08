@@ -1,6 +1,39 @@
 import type { Config, ConfigLayers } from '../config/Config.js';
 import type { ConfigObject, ConfigValue } from '../config/HoconParser.js';
-import { CONFIG_REDACTED, CONFIG_SECRET_PATTERN } from '../util/Constants.js';
+import {
+  CONFIG_NEVER_REDACTED_PATHS,
+  CONFIG_REDACTED,
+  CONFIG_SECRET_PATTERN,
+} from '../util/Constants.js';
+
+/**
+ * The six spellings `Config.getBoolean` accepts, and the reason the value of
+ * a leaf can veto its key.
+ *
+ * A boolean carries no secret whatever the key is called: there are two
+ * states, both public, and `<redacted>` in their place is pure noise —
+ * `management.auth-protect-health = false` told a reader nothing they did not
+ * already know (#867).  Kept in lockstep with `Config.getBoolean` on purpose:
+ * a spelling that file accepts and this one does not is a key an operator set
+ * to a boolean and still cannot read back.
+ */
+const HOCON_BOOLEAN_WORDS: ReadonlySet<string> = new Set([
+  'true', 'yes', 'on', 'false', 'no', 'off',
+]);
+
+/**
+ * Words after which the head of a config key's name moves in front of them.
+ *
+ * An English compound is head-final — `api-key` is a key — but a preposition
+ * inverts that: `max-subscribers-per-key` is a count of *subscribers*, and the
+ * `key` is only what they are counted per.  Reading it the other way is how a
+ * tuning number came to print as `<redacted>` (#867).
+ *
+ * The particles of a phrasal verb are deliberately absent.  `in` would make
+ * `sign-in-key` a `sign`, and a redaction with that hole in it is worse than
+ * the false positive it removes.
+ */
+const NAME_PREPOSITIONS: ReadonlySet<string> = new Set(['per', 'of', 'by', 'for']);
 
 /**
  * Which layer's value survived the merge for one key.
@@ -33,7 +66,7 @@ export type ResolvedConfigLeaf = {
   readonly layer: ConfigLayerName;
   /** True when a layer below the winning one also set this key. */
   readonly displaced: boolean;
-  /** True when {@link CONFIG_SECRET_PATTERN} matched the path. */
+  /** True when {@link namesSecretConfigValue} read the key as a credential. */
   readonly secret: boolean;
 };
 
@@ -68,7 +101,7 @@ export function resolveConfigLeaves(config: Config): ResolvedConfigLeaf[] {
       value,
       layer,
       displaced: layers === null ? false : displaced(layers, path, layer),
-      secret: CONFIG_SECRET_PATTERN.test(path),
+      secret: namesSecretConfigValue(path, value),
     });
   }
   out.sort((left, right) => left.path.localeCompare(right.path));
@@ -115,6 +148,71 @@ export function configDumpLines(config: Config): string {
   });
 
   return [head, ...body].join('\n');
+}
+
+/**
+ * Whether the key at `path` says its value is a credential.
+ *
+ * The single decision both renderers share, so a key withheld from the
+ * DevTools panel cannot still reach a log file.  Three steps, in the order
+ * that makes each one cheap to justify:
+ *
+ * 1. A key `reference.conf` ships and this project has read is answered from
+ *    {@link CONFIG_NEVER_REDACTED_PATHS} rather than guessed at.
+ * 2. A value that is a boolean carries nothing — see
+ *    {@link HOCON_BOOLEAN_WORDS}.  This is the only thing the value gets a
+ *    say in; everything else is decided by the name.
+ * 3. **Every segment** of the path is read, not just the leaf, and each is
+ *    reduced to its head word.  Every segment because a branch named
+ *    `credentials` or `secrets` declares its whole subtree — dropping to the
+ *    leaf alone would print `my-app.secrets.stripe` in full.  The head word
+ *    because `passivation` is not `pass` and `key-prefix` is a prefix, which
+ *    is what a bare substring test could not tell apart (#867).
+ */
+function namesSecretConfigValue(path: string, value: ConfigValue): boolean {
+  if (CONFIG_NEVER_REDACTED_PATHS.has(path)) return false;
+  if (statesOnlyABoolean(value)) return false;
+  return path.split('.').some((segment) => CONFIG_SECRET_PATTERN.test(headWordOf(segment)));
+}
+
+/** True when `value` can only be one of HOCON's two boolean states. */
+function statesOnlyABoolean(value: ConfigValue): boolean {
+  if (typeof value === 'boolean') return true;
+  return typeof value === 'string' && HOCON_BOOLEAN_WORDS.has(value.toLowerCase());
+}
+
+/**
+ * The word in one path segment that says what the value **is**.
+ *
+ * Head-final, unless a {@link NAME_PREPOSITIONS} entry intervenes, in which
+ * case the head is the word in front of it.  Taking the *first* preposition
+ * and not the last is what keeps `max-requests-per-token-per-tenant` a count
+ * of requests, and it errs the safe way besides: in `secret-per-tenant` the
+ * word in front is the one that names a credential.
+ */
+function headWordOf(segment: string): string {
+  const words = wordsOf(segment);
+  if (words.length === 0) return '';
+  const preposition = words.findIndex((word) => NAME_PREPOSITIONS.has(word));
+  if (preposition > 0) return words[preposition - 1]!;
+  return words[words.length - 1]!;
+}
+
+/**
+ * One path segment, lower-cased and cut into words.
+ *
+ * Kebab-case is this project's own convention, but the tree also carries an
+ * application's keys and nothing forces those into it — so camel humps split
+ * too, `APIKey` included.  A redaction that understands one spelling of
+ * `apiKey` and not another is a redaction with a hole in it.
+ */
+function wordsOf(segment: string): string[] {
+  return segment
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^A-Za-z0-9]+/)
+    .filter((word) => word !== '')
+    .map((word) => word.toLowerCase());
 }
 
 /** Which layer's value survived the merge for `path`. */
