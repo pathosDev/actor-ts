@@ -103,6 +103,19 @@ export const PAYLOAD_TOO_LARGE_RESPONSE: HttpResponse = Object.freeze({
 });
 
 /**
+ * What {@link enforceHeaderTimeout} writes to a socket that never finished its
+ * header block, before hanging up.
+ *
+ * Raw wire bytes rather than an {@link HttpResponse}, and it has to be: there
+ * is no request to answer.  The backend's `writeResponse` needs a parsed
+ * request to reply to, and the whole point of this deadline is the connection
+ * on which one never arrived — so the status line is assembled here, byte for
+ * byte as `node:http` writes its own.  Matching it exactly is what keeps a
+ * client unable to tell which half of the stack timed it out.
+ */
+const HEADER_TIMEOUT_RAW_RESPONSE = 'HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n';
+
+/**
  * True when a declared `Content-Length` exceeds `cap`.
  *
  * Shared by the backends that read a body themselves (Express, Hono) so both
@@ -188,21 +201,38 @@ export type NodeHttpServerLike = {
   requestTimeout?: number;
   maxConnections?: number;
   /**
-   * `net.Server`'s accepted-connection event, used by
-   * {@link enforceMaxConnections} to hold the cap in this repository rather
-   * than delegate it — see there for why.  A function-typed property rather
-   * than a method signature, so this stays a data shape.
+   * The server events the two guards below subscribe to, so the cap and the
+   * header deadline are held in this repository rather than delegated — see
+   * {@link enforceMaxConnections} and {@link enforceHeaderTimeout} for why.
+   * A function-typed property rather than a method signature, so this stays a
+   * data shape; the intersection is how a data shape spells an overload.
+   *
+   * `'request'` and `'upgrade'` take their arguments as `unknown` on purpose.
+   * They are the two ways a header block finishes and their shapes differ —
+   * `(request, response)` against `(request, socket, head)` — while the only
+   * thing wanted from either is the socket, which
+   * {@link enforceHeaderTimeout} recognises by identity rather than by
+   * position.  Naming the runtime's own types here would be a second, weaker
+   * copy of `node:http`'s for no gain.
    */
-  on?: (event: 'connection', listener: (socket: ServerSocketLike) => void) => unknown;
+  on?: ((event: 'connection', listener: (socket: ServerSocketLike) => void) => unknown)
+    & ((event: 'request' | 'upgrade', listener: (...args: ReadonlyArray<unknown>) => void) => unknown);
 };
 
 /**
- * The slice of an accepted `net.Socket` the connection cap needs: something to
- * hang up, and a way to learn it hung up.
+ * The slice of an accepted `net.Socket` the two guards need: something to hang
+ * up, a way to learn it hung up, and a way to say why first.
  */
 export type ServerSocketLike = {
   destroy: () => void;
   once?: (event: 'close', listener: () => void) => unknown;
+  /**
+   * Write a last response and half-close.  Optional because a runtime that
+   * cannot offer it still gets the close from `destroy` — a peer that is
+   * hung up on without a status line learns the same thing, later and less
+   * politely.
+   */
+  end?: (data?: string) => unknown;
 };
 
 /** Which fields {@link applyServerOptions} actually wrote.  @internal */
@@ -259,14 +289,15 @@ const APPLIED_NOTHING: AppliedServerOptions = Object.freeze({
  * unlimited default for `maxConnections`, and `net.Server` wants the property
  * absent for that, not set to a non-finite number.
  *
- * The two sweep-driven guards carry a caveat worth knowing before trusting a
- * number: `headersTimeout` and `requestTimeout` are enforced by a periodic
- * sweep whose interval (`connectionsCheckingInterval`) is a *factory* option
- * defaulting to 30 s, so a connection is closed no earlier than the configured
- * value and no later than one sweep after it.  Measured on node v26.7.0: a
- * 3 s `headersTimeout` closed at 30.0 s with the default sweep and at 3.0 s
- * with a 1 s one.  `keepAliveTimeout` and `maxConnections` are not swept and
- * are exact.
+ * `requestTimeout` carries a caveat worth knowing before trusting the number:
+ * the runtime enforces it on a periodic sweep whose interval
+ * (`connectionsCheckingInterval`) is a *factory* option defaulting to 30 s, so
+ * a connection is closed no earlier than the configured value and no later
+ * than one sweep after it.  Measured on bun 1.4.0: a 2 s `requestTimeout`
+ * answered `408` and closed at 30.0 s, and `0` left the connection open past
+ * 45 s.  `keepAliveTimeout` is not swept and is exact; `headersTimeout` is not
+ * swept either, because it is no longer the runtime that enforces it — see
+ * {@link enforceHeaderTimeout}.
  */
 export function applyServerOptions(
   server: NodeHttpServerLike | null | undefined,
@@ -286,6 +317,11 @@ export function applyServerOptions(
   if (options.headerTimeoutMs !== undefined) {
     server.headersTimeout = options.headerTimeoutMs;
     applied.headerTimeoutMs = true;
+    // `0` is the documented opt-out, and arming a zero-length deadline would
+    // read it as "close every connection at once" — the exact inversion of
+    // what it asks for.  Same "not folded into `applied`" reasoning as the
+    // connection cap below.
+    if (options.headerTimeoutMs > 0) enforceHeaderTimeout(server, options.headerTimeoutMs);
   }
   if (options.requestTimeoutMs !== undefined) {
     server.requestTimeout = options.requestTimeoutMs;
@@ -304,6 +340,105 @@ export function applyServerOptions(
 }
 
 /**
+ * Hold the header-phase deadline here, timing it from the accepted connection
+ * rather than trusting the runtime to honour the `headersTimeout` property
+ * written above.
+ *
+ * **Why this exists, given the property is written anyway.**  On the primary
+ * toolchain the property does nothing.  Measured on a bare `node:http` server,
+ * a socket that sends `GET / HTTP/1.1\r\nHost: x\r\n` and then never sends the
+ * terminating blank line:
+ *
+ *   - **node v26.7.0** — honours it.  `headersTimeout = 2000` answered
+ *     `408 Request Timeout` and closed at 30.0 s (the configured value, plus
+ *     the sweep `requestTimeout` also rides on); `0` left the connection open
+ *     past 45 s, which is the documented opt-out working.
+ *   - **bun 1.4.0** — stores the number, reads it back unchanged, and enforces
+ *     nothing.  `2000`, `40000`, `120000` and `0` all produced the same close
+ *     at ~12.0 s with **zero bytes received** — Bun's own whole-connection
+ *     idle timeout, not this guard, and no `408`.  `0`, which is documented as
+ *     disabling the guard, disabled nothing.
+ *   - **deno 2.6.8** — stores it, enforces nothing, and applies no idle close
+ *     either: the connection was **still open after 45 s**.
+ *
+ * That is the slow-loris hole the key exists to close, standing open on two of
+ * the three supported runtimes while five surfaces said it was shut (#870).  A
+ * security control that holds on the runtime a reader is least likely to be
+ * using is not a weaker guarantee but a wrong one — the same reasoning
+ * {@link enforceMaxConnections} carries, arrived at from the other direction.
+ *
+ * **The seam, and where it runs out.**  Arm a timer when the connection is
+ * accepted; disarm it the moment the header block completes, which is exactly
+ * what `'request'` and `'upgrade'` announce.  Measured on bun 1.4.0 and node
+ * v26.7.0: a manual 1500 ms deadline delivered the `408` and closed at 1531 ms
+ * and 1536 ms respectively, and the socket `'request'`/`'upgrade'` hand back
+ * is the *same object* `'connection'` gave us, so identity is enough to match
+ * them.  **Deno's `node:http` shim emits no `'connection'` event at all** — a
+ * complete request there fires `'request'` and nothing else — so on Deno there
+ * is no seam and this returns `false`, the same way an absent `on` does.
+ *
+ * `'upgrade'` is not an optional extra: a WebSocket handshake completes its
+ * headers and then holds the socket open for hours, so a deadline that only
+ * watched `'request'` would tear down every WebSocket connection one header
+ * timeout after it opened.
+ *
+ * The deadline is per **connection**, not per request: it bounds the window
+ * from accept to the first complete header block, which is the shape of the
+ * attack.  A later request on a kept-alive connection is bounded by
+ * `idle-timeout` and by the runtime's own `headersTimeout` where that works.
+ *
+ * The cost is one timer per accepted connection, cleared on the first request.
+ * That is the price of not delegating; the runtime's sweep is cheaper and, on
+ * two runtimes out of three, imaginary.
+ *
+ * Returns whether the guard was installed, so a server that cannot host it
+ * reports itself rather than pretending.
+ */
+export function enforceHeaderTimeout(server: NodeHttpServerLike, deadlineMs: number): boolean {
+  if (typeof server.on !== 'function') return false;
+  // Weak because a socket that closes before its headers complete must not be
+  // held alive by the bookkeeping meant to hang up on it.
+  const armed = new WeakMap<object, ReturnType<typeof setTimeout>>();
+  const disarm = (candidate: unknown): boolean => {
+    if (typeof candidate !== 'object' || candidate === null) return false;
+    const timer = armed.get(candidate);
+    if (timer === undefined) return false;
+    clearTimeout(timer);
+    armed.delete(candidate);
+    return true;
+  };
+  const onHeadersComplete = (...args: ReadonlyArray<unknown>): void => {
+    // `'request'` hands (request, response) and `'upgrade'` hands (request,
+    // socket, head), so the socket is at a different index in each — and on a
+    // runtime this repository has not measured, at neither.  Trying every
+    // argument, and the `.socket` of every argument, finds it by identity in
+    // all three shapes and cannot mistake a foreign object for one of ours.
+    for (const argument of args) {
+      if (disarm(argument)) return;
+      if (disarm((argument as { socket?: unknown } | null | undefined)?.socket)) return;
+    }
+  };
+  server.on('connection', (socket) => {
+    const timer = setTimeout(() => {
+      armed.delete(socket);
+      // `end` first so the peer learns why, `destroy` after so it goes even if
+      // the write cannot flush.  Measured on bun 1.4.0 and node v26.7.0: the
+      // client receives the full status line in that order.
+      socket.end?.(HEADER_TIMEOUT_RAW_RESPONSE);
+      socket.destroy();
+    }, deadlineMs);
+    // Unreferenced, or an idle server with one open connection would hold the
+    // process up for a header timeout after everything else had finished.
+    (timer as { unref?: () => void }).unref?.();
+    armed.set(socket, timer);
+    socket.once?.('close', () => { disarm(socket); });
+  });
+  server.on('request', onHeadersComplete);
+  server.on('upgrade', onHeadersComplete);
+  return true;
+}
+
+/**
  * Hold `cap` concurrent accepted connections, counting them here rather than
  * trusting the runtime to honour the `maxConnections` property written above.
  *
@@ -314,7 +449,9 @@ export function applyServerOptions(
  * is dependable: the design this replaces rested on a measurement that
  * `keepAliveTimeout`, `headersTimeout`, `requestTimeout` and `maxConnections`
  * are "honoured, identically" on bun and node (#870), and that measurement was
- * taken on one operating system.  On GitHub's Linux runners the same bun
+ * taken on one operating system — and, for `headersTimeout`, was wrong on that
+ * one too, which is what {@link enforceHeaderTimeout} exists to fix.  On
+ * GitHub's Linux runners the same bun
  * release does not close the second connection, so three tests asserting the
  * documented cap have been red on `develop` while passing locally — twice, in
  * two independent workflows, which is what distinguishes it from a flake.  The
