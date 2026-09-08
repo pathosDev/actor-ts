@@ -991,7 +991,10 @@ frame — it is re-armed on every chunk, so a peer pushing a large frame over a
 congested link is never punished for being slow, only for stopping. Keep it
 above `handshake-timeout`; both validators refuse a value at or below it,
 because a socket that sends nothing at all never reaches this deadline and the
-handshake timer is what covers that one.
+handshake timer is what covers that one. What they compare is the **resolved**
+pair, not the pair you wrote: writing one of the two keys on its own is checked
+against the other's built-in default, so a lone `incomplete-frame-idle = 1s` is
+refused for sitting under the 5 s `handshake-timeout` it would run against.
 
 `max-inbound-connections` is what stops either cost from being multiplied by
 opening sockets in a loop, and it is the half of the inbound-memory bound worth
