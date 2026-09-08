@@ -83,6 +83,24 @@ export class Scheduler implements Clock {
   now(): number { return Date.now(); }
 
   /**
+   * Does time here move only when someone advances it?
+   *
+   * Asked by the few places that would otherwise arm a raw `setTimeout` on a
+   * path hot enough to care.  Routing a deadline through a scheduler buys
+   * exactly one thing — a test can advance past it — and a wall-clock scheduler
+   * cannot offer that, so where the answer is `false` those places keep the
+   * host timer.
+   *
+   * Measured rather than assumed: arming every `ask` deadline through
+   * {@link scheduleOnceFunction} costs ~13% of `ask-throughput` (195k -> 170k
+   * ask/s, p50 2.8 -> 3.1 µs) for the `SimpleCancellable`, the {@link live} Set
+   * insert and delete, and the guarded closure.  Keeping the dispatch but
+   * bypassing the scheduler restores the figure exactly, which is what isolates
+   * the cost to this path rather than to the lookup that reaches it.
+   */
+  get isVirtual(): boolean { return false; }
+
+  /**
    * Where a scheduled task that threw is reported.  Optional so that a
    * scheduler stays usable with no system at all — a bare `new Scheduler()`
    * in a test, or one constructed before `ActorSystem.create` returns — and

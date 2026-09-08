@@ -27,7 +27,7 @@ import type {
 } from './ShardingOptions.js';
 import { createPassivationStrategy } from './PassivationStrategy.js';
 import type { PassivationStrategy } from './PassivationStrategy.js';
-import type { Cancellable } from '../../Scheduler.js';
+import type { Cancellable, Scheduler } from '../../Scheduler.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { DeadLetter, Terminated } from '../../SystemMessages.js';
 import { SystemGroups, shardCoordinatorName, systemActorPath } from '../../internal/SystemPaths.js';
@@ -2047,6 +2047,8 @@ export class RemoteShardRef extends ActorRef<ShardMessage> {
     return this.region._defaultAskTimeoutMs();
   }
 
+  override _virtualScheduler(): Scheduler | null { return this.region._virtualScheduler(); }
+
   /** The shard's path, not the region's — the region is only the delivery route. */
   override toString(): string { return this.path.toString(); }
 }
@@ -2096,4 +2098,6 @@ export class ShardSenderRef extends ActorRef<unknown> {
   override _defaultAskTimeoutMs(): number {
     return this.cluster.system._defaultAskTimeoutMs;
   }
+
+  override _virtualScheduler(): Scheduler | null { return this.cluster.system._virtualScheduler; }
 }

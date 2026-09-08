@@ -1,3 +1,4 @@
+import type { Cancellable, Scheduler } from './Scheduler.js';
 import { ActorPath } from './ActorPath.js';
 import { AskTimeoutError, PoisonPill, Kill } from './SystemMessages.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from './util/Constants.js';
@@ -154,7 +155,7 @@ export abstract class ActorRef<TMessage = unknown> {
     const name = nextAskName();
     const systemName = this.path.systemName;
     const ref = new AskResponseRef<TResponse>(
-      systemName, name, resolvedTimeoutMs, this.path.toString(),
+      systemName, name, resolvedTimeoutMs, this.path.toString(), this._virtualScheduler(),
     );
     // Inject `replyTo: ref` into the message so recipients that read
     // `msg.replyTo` work without the caller supplying it.  Recipients
@@ -200,6 +201,30 @@ export abstract class ActorRef<TMessage = unknown> {
    * sibling subclass reach a `protected` member on.
    */
   _defaultAskTimeoutMs(): number { return DEFAULT_ASK_TIMEOUT_MS; }
+
+  /**
+   * @internal The scheduler an ask's deadline is armed on when that scheduler
+   * is **virtual**, and `null` otherwise — including on a real one.
+   *
+   * The same question {@link _defaultAskTimeoutMs} answers, with the same split
+   * and for the same reason — the refs do not agree on whether they can see an
+   * `ActorSystem` — so the refs that can override both together.
+   *
+   * What it buys is a deadline a test can advance past.  Without it, a test for
+   * "the reply never came" has to let the deadline elapse on the wall clock, so
+   * it is written with an unrealistically short one and then fails on a loaded
+   * machine — the commonest shape in this repository's flake catalogue (#1424).
+   *
+   * **Virtual only, and that is measured, not cautious.**  Arming every ask
+   * through the scheduler costs ~13% of `ask-throughput` (195k → 170k ask/s,
+   * p50 2.8 → 3.1 µs) in cancellable allocation and set bookkeeping.  A
+   * wall-clock scheduler offers nothing in return for it — nobody can advance
+   * past a real deadline — so a real one answers `null` here and the
+   * `setTimeout` branch in {@link AskResponseRef} is exactly the code it always
+   * was.  The lookup itself is free: keeping this call and bypassing the
+   * scheduler restores the baseline figure.
+   */
+  _virtualScheduler(): Scheduler | null { return null; }
 
   /** Gracefully stop this actor after it drains its mailbox. */
   stop(): void { this.tell(PoisonPill.instance as unknown as TMessage, null); }
@@ -254,7 +279,7 @@ export class AskResponseRef<T = unknown> extends ActorRef<unknown> {
   private resolveFunction!: (value: T) => void;
   private rejectFunction!: (err: Error) => void;
   private settled = false;
-  private timer: ReturnType<typeof setTimeout> | null = null;
+  private timer: Cancellable | ReturnType<typeof setTimeout> | null = null;
   /**
    * `null` until something registers, which for a local ask is never.
    *
@@ -263,7 +288,13 @@ export class AskResponseRef<T = unknown> extends ActorRef<unknown> {
    */
   private settleCallbacks: Array<() => void> | null = null;
 
-  constructor(systemName: string, name: string, timeoutMs: number, targetLabel: string) {
+  constructor(
+    systemName: string,
+    name: string,
+    timeoutMs: number,
+    targetLabel: string,
+    scheduler: Scheduler | null = null,
+  ) {
     super();
     // Two of the three path constructions per ask were the same constant
     // prefix, rebuilt (and re-validated, character by character) every time.
@@ -290,13 +321,20 @@ export class AskResponseRef<T = unknown> extends ActorRef<unknown> {
     // exercise the wire registration, which settle on a reply rather than a
     // clock — arming a real timer for those would race the reply under test.
     if (timeoutMs > 0) {
-      this.timer = setTimeout(() => {
+      const expire = (): void => {
         if (this.settled) return;
         this.settle();
         this.rejectFunction(new AskTimeoutError(
           `Ask timed out after ${timeoutMs}ms waiting for reply from ${targetLabel}`,
         ));
-      }, timeoutMs);
+      };
+      // The scheduler where the ref could reach one, so a `ManualScheduler`
+      // makes the deadline virtual; a raw timer otherwise, unchanged (#1424).
+      // Virtual time where there is any, so a test can advance past the
+      // deadline; the host timer otherwise, unchanged and uncosted (#1424).
+      this.timer = scheduler === null
+        ? setTimeout(expire, timeoutMs)
+        : scheduler.scheduleOnceFunction(timeoutMs, expire);
     }
   }
 
@@ -323,7 +361,18 @@ export class AskResponseRef<T = unknown> extends ActorRef<unknown> {
 
   private settle(): void {
     this.settled = true;
-    if (this.timer) { clearTimeout(this.timer); this.timer = null; }
+    if (this.timer) {
+      // A `Cancellable` when a scheduler armed it, a host timer handle
+      // otherwise. Distinguished structurally rather than by a second field:
+      // the alternative is another per-ask property on the path the message
+      // spread is documented as the last allocation worth keeping.
+      if (typeof (this.timer as Cancellable).cancel === 'function') {
+        (this.timer as Cancellable).cancel();
+      } else {
+        clearTimeout(this.timer as ReturnType<typeof setTimeout>);
+      }
+      this.timer = null;
+    }
     if (this.settleCallbacks !== null) {
       for (const callback of this.settleCallbacks) callback();
       this.settleCallbacks = null;

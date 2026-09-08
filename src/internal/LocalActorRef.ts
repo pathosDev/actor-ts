@@ -1,3 +1,4 @@
+import type { Scheduler } from '../Scheduler.js';
 import { ActorRef } from '../ActorRef.js';
 import type { ActorPath } from '../ActorPath.js';
 import { LogContext } from '../LogContext.js';
@@ -42,6 +43,8 @@ export class LocalActorRef<TMessage = unknown> extends ActorRef<TMessage> {
   override _defaultAskTimeoutMs(): number {
     return this.cell.system._defaultAskTimeoutMs;
   }
+
+  override _virtualScheduler(): Scheduler | null { return this.cell.system._virtualScheduler; }
 
   /** @internal */
   getCell(): ActorCell<TMessage> {
