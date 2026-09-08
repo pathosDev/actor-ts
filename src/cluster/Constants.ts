@@ -151,9 +151,10 @@ export const RETAINED_FRAME_BUFFER_BYTES = 64 * 1_024;
  *
  * Built-in default for `actor-ts.remote.incomplete-frame-idle` (#846), on both
  * `ClusterOptionsType` and `TcpTransportOptionsType`.  Both validators refuse
- * a configured value at or below `handshake-timeout`: the paragraph above is
- * why — the two deadlines cover disjoint failures, and the handshake one is
- * the shorter of the pair by construction.
+ * a *resolved* value at or below `handshake-timeout` — this number included,
+ * so raising the handshake deadline past it without moving this one is refused
+ * too.  The paragraph above is why: the two deadlines cover disjoint failures,
+ * and the handshake one is the shorter of the pair by construction.
  */
 export const INCOMPLETE_FRAME_IDLE_MS = 30_000;
 

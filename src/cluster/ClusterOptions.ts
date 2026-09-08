@@ -11,6 +11,7 @@ import {
   CONFIGURATION_FACT_NAME_PATTERN,
   MAX_CONFIGURATION_FACT_NAME_LENGTH,
 } from './Protocol.js';
+import { findStallDeadlineOrderingViolation } from './TcpTransportOptions.js';
 import type { Transport } from './Transport.js';
 import { readDowningFromConfig } from './downing/DowningFromConfig.js';
 import type { DowningProvider } from './downing/DowningProvider.js';
@@ -668,9 +669,11 @@ export type ClusterOptionsType = {
    *
    * A **stall** bound, not a budget for the frame: it is re-armed on every
    * chunk, so a peer pushing a large frame over a congested link keeps its
-   * connection for as long as it keeps making progress.  Keep it above
+   * connection for as long as it keeps making progress.  It has to stay above
    * {@link handshakeTimeoutMs} — a socket that sends nothing at all never
-   * reaches this deadline, and the handshake timer is what covers that one.
+   * reaches this deadline, and the handshake timer is what covers that one —
+   * and the validator refuses the pair otherwise, with either half's default
+   * standing in for a value this node did not configure.
    */
   readonly incompleteFrameIdleMs?: number;
 };
@@ -1011,21 +1014,13 @@ export class ClusterOptionsValidator extends OptionsValidator<ClusterOptionsType
     this.positiveInt('maxInboundConnections');
     this.positiveNumber('incompleteFrameIdleMs');
     // Cross-field, and checked here as well as in `TcpTransportOptionsValidator`
-    // because this is the layer that sees the HOCON values: a socket that sends
-    // *nothing at all* never reaches the stall deadline — it has no
-    // half-received frame to track — so the handshake timer is the only thing
-    // that reclaims it, and a stall deadline below it swaps the two roles for a
-    // peer that sends three bytes and stops.
-    if (s.handshakeTimeoutMs !== undefined && s.incompleteFrameIdleMs !== undefined
-      && s.incompleteFrameIdleMs <= s.handshakeTimeoutMs) {
-      this.fail(
-        'incompleteFrameIdleMs',
-        `must be greater than handshakeTimeoutMs (${s.handshakeTimeoutMs} ms): the stall deadline `
-        + 'bounds a peer that went silent mid-frame, the handshake deadline bounds one that never '
-        + 'spoke, and the second is the shorter of the two by construction',
-        s.incompleteFrameIdleMs,
-      );
-    }
+    // because this is the layer that sees the HOCON values.  The rule itself —
+    // including why it resolves the pair against the transport's defaults
+    // before comparing it — lives with the transport's options, so the two
+    // validators cannot drift into refusing different pairs while the docs go
+    // on saying "both validators refuse".
+    const violation = findStallDeadlineOrderingViolation(s);
+    if (violation !== undefined) this.fail(violation.field, violation.reason, violation.value);
     // A keyword-or-duration union, so the field helpers (which are keyed on a
     // single value type) cannot express it — checked by hand, the same shape
     // `ClusterBootstrapOptionsValidator` uses for `awaitReady`.  `0` is

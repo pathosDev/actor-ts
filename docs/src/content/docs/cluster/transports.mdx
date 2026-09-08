@@ -155,7 +155,11 @@ the accepting side after the accept, so with one number the peer that is still
 trying has always given up first.  `incompleteFrameIdleMs` has to stay above it
 — a socket that sends nothing at all never reaches the stall deadline, so the
 handshake timer is the only thing that reclaims it — and construction throws if
-it does not.  None of the four has an "off" spelling: `0` is refused for each.
+it does not.  The pair it checks is the pair the transport will *run* with, so
+one of the two set alone is checked against the other's built-in default:
+`.withIncompleteFrameIdleMs(1_000)` on its own is refused, because the handshake
+deadline it would run against is the 5 s default.  None of the four has an "off"
+spelling: `0` is refused for each.
 
 A transport you build yourself carries its own values.  The cluster only passes
 the config block's to a transport *it* constructed, never to one handed in via

@@ -1050,7 +1050,11 @@ gestellt, ein Peer, der ein großes Frame über eine verstopfte Leitung schiebt,
 wird also nie für seine Langsamkeit bestraft, nur fürs Aufhören. Halte sie über
 `handshake-timeout`; beide Validatoren lehnen einen Wert darunter oder darauf
 ab, denn ein Socket, der überhaupt nichts sendet, erreicht diese Frist nie —
-dafür ist der Handshake-Timer da.
+dafür ist der Handshake-Timer da. Verglichen wird das **aufgelöste** Paar, nicht
+das geschriebene: Steht nur einer der beiden Keys in der Config, wird er gegen
+den eingebauten Default des anderen geprüft. Ein einzelnes
+`incomplete-frame-idle = 1s` wird also abgelehnt, weil es unter dem
+`handshake-timeout` von 5 s liegt, gegen das es liefe.
 
 `max-inbound-connections` verhindert, dass sich beide Kosten durch Sockets im
 Loop vervielfachen lassen, und ist die Hälfte der Schranke für eingehenden
