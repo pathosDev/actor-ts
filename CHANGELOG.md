@@ -11,6 +11,47 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`MultiNodeSpec` can run every node on one shared virtual clock, with
+  `advance` and `advanceUntil`** (#1424).
+
+  ```ts
+  const scheduler = new ManualScheduler();
+  const spec = new MultiNodeSpec(
+    MultiNodeSpecOptions.create().withRoles(['a', 'b', 'c']).withScheduler(scheduler),
+  );
+  await spec.start();
+  await spec.advanceUntil(() => spec.clusterFor('a').members().length === 3, {
+    description: 'the cluster converged',
+  });
+  ```
+
+  A cluster's interesting questions are all about convergence, and convergence
+  takes gossip rounds — so a multi-node assertion is a race between "has it
+  converged yet" and a real-time budget. That is most of the flake catalogue.
+  One scheduler shared by every node makes an advance mean *one round happened
+  everywhere* rather than *one node's timer fired*, and `advanceUntil` replaces
+  a real-time poll, which on a virtual clock cannot work at all: nothing
+  advances while the poller sleeps, so the condition can never become true.
+
+  Both throw rather than no-op on a spec without a virtual clock, since silently
+  succeeding would make every assertion after them a race.
+
+- **BREAKING — `terminate()` no longer shuts down a scheduler it was given**
+  (#1424).
+
+  A scheduler passed through `ActorSystemOptions.withScheduler` belongs to
+  whoever passed it, exactly as the dispatcher always has. It was shut down
+  anyway, which is invisible while one system holds it and wrong the moment two
+  do: the first `terminate()` disarmed every handle the second still owned. The
+  code already reasoned this way one line further down, where it declines to
+  clear the error sink of a scheduler that "outlives the system and is advanced
+  by the test afterwards".
+
+  A system that built its own scheduler still shuts it down, so an armed
+  interval cannot hold the event loop open after `terminate()` (#641). Only a
+  caller who *relied* on their own scheduler being stopped for them is affected;
+  call `scheduler.shutdown()` where you used to expect it.
+
 - **`LeaseOptions.withScheduler` puts the whole lease lifecycle on virtual
   time** (#1424).
 

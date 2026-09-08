@@ -283,6 +283,18 @@ export class ActorSystem {
    */
   private readonly schedulerErrorSink: SchedulerErrorSink;
 
+  /**
+   * Did this system construct {@link scheduler} itself?
+   *
+   * Decides whether `terminate()` may shut it down.  A scheduler handed in
+   * through `ActorSystemOptions` belongs to whoever handed it over, exactly as
+   * the dispatcher does — and unlike the dispatcher it used to be shut down
+   * anyway, which is only invisible while one system holds it.  Share a
+   * `ManualScheduler` across two systems and the first `terminate()` disarms
+   * every handle the second one still owns (#1424).
+   */
+  private readonly ownsScheduler: boolean;
+
   private constructor(name: string | undefined, options: ActorSystemOptionsType) {
     this.startedAtMs = Date.now();
     // Config first: the name may come out of it, and nothing in the build
@@ -290,6 +302,9 @@ export class ActorSystem {
     this.config = buildConfig(options);
     this.name = name ?? systemNameFromConfig(this.config);
     this.dispatcher = options.dispatcher ?? dispatcherFromConfig(this.config);
+    // Whether this system built its own scheduler, which is the same question
+    // as "may this system shut it down" — see `_rootTerminated`.
+    this.ownsScheduler = options.scheduler === undefined;
     this.scheduler = options.scheduler ?? new Scheduler();
     this._virtualScheduler = this.scheduler.isVirtual ? this.scheduler : null;
     this.eventStream = new EventStream();
@@ -1002,17 +1017,20 @@ export class ActorSystem {
   /** @internal — called by the root cell once it has finished terminating. */
   _rootTerminated(_cell: ActorCell<any>): void {
     this._terminated = true;
-    this.scheduler.shutdown();
+    // Only a scheduler this system built.  One passed in belongs to the caller,
+    // the same rule the dispatcher below has always followed — and the reason
+    // it matters is that a shared one is still in use: the second of two
+    // systems on one `ManualScheduler` would find every handle disarmed by the
+    // first one's teardown (#1424).
+    if (this.ownsScheduler) this.scheduler.shutdown();
     // Stop reporting into a logger that is about to be closed.  Only our
     // own sink is removed: a dispatcher passed in through
     // `ActorSystemOptions` outlives this system, and one the owner wired
     // themselves is theirs to keep.
     if (this.dispatcher.onError === this.dispatcherErrorSink) this.dispatcher.onError = undefined;
-    // Same for the scheduler.  `shutdown()` above already disarmed every
-    // handle this system owns, so nothing of ours can still fire — but a
-    // `ManualScheduler` handed in through `ActorSystemOptions` outlives the
-    // system and is advanced by the test afterwards, and its ticks must not
-    // report into a logger that is about to be closed.
+    // Same for the scheduler, and for a borrowed one this is the whole of the
+    // cleanup: it stays armed and advancing for whoever still holds it, so its
+    // ticks must not report into a logger that is about to be closed.
     if (this.scheduler.onError === this.schedulerErrorSink) this.scheduler.onError = undefined;
     const resolvers = this._terminationResolvers;
     this._terminationResolvers = [];
