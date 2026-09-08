@@ -1,3 +1,6 @@
+import type { Clock } from './Clock.js';
+import { systemClock } from './Clock.js';
+
 /** Supervisor directives decide what happens to a failing child actor. */
 export enum Directive {
   /** Ignore the failure and keep the actor state; resume message processing. */
@@ -68,7 +71,7 @@ export class AllForOneStrategy implements SupervisorStrategy {
  * is full nothing more is pushed — so it cannot grow for the lifetime of the
  * process even with `withinTimeRangeMs: 0`, where no pruning ever happens.
  *
- * `now` is injectable so the window can be exercised without sleeping: the
+ * The clock is injectable so the window can be exercised without sleeping: the
  * only alternative is a real `withinTimeRangeMs` wait per assertion, which is
  * both slow and the classic source of a timing-flaky suite.
  */
@@ -84,7 +87,7 @@ export class RestartBudget {
      * fabricate both.  A `SupervisorStrategy` still satisfies it.
      */
     private readonly strategy: Pick<SupervisorStrategy, 'maxRetries' | 'withinTimeRangeMs'>,
-    private readonly now: () => number = Date.now,
+    private readonly clock: Clock = systemClock,
   ) {}
 
   /**
@@ -96,7 +99,7 @@ export class RestartBudget {
    */
   registerRestart(): boolean {
     if (this.strategy.maxRetries < 0) return true;
-    const now = this.now();
+    const now = this.clock.now();
     if (this.strategy.withinTimeRangeMs > 0) {
       const threshold = now - this.strategy.withinTimeRangeMs;
       this.failureTimes = this.failureTimes.filter((timestamp) => timestamp >= threshold);

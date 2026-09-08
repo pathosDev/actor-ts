@@ -38,11 +38,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   concludes nothing, which is why "this peer went quiet for a minute" could not
   be written as a test.
 
-  Nothing is deprecated and no signature changed; the reads move onto the
-  contract subsystem by subsystem, held in place by a ratchet
-  (`tests/unit/ci/WallClockRatchet.test.ts`) that lets a file's count fall and
-  never rise. `performance.now()` is deliberately out of scope — it measures a
-  duration, not what time it is, and `Clock` says so.
+  The reads move onto the contract subsystem by subsystem, held in place by a
+  ratchet (`tests/unit/ci/WallClockRatchet.test.ts`) that lets a file's count
+  fall and never rise. `performance.now()` is deliberately out of scope — it
+  measures a duration, not what time it is, and `Clock` says so.
+
+  **BREAKING — the four ad-hoc time seams are now one.** Three constructor
+  parameters typed `() => number` and one builder method, each added for a
+  single call site, each with its own name for the same idea:
+
+  | Before | Now |
+  | --- | --- |
+  | `ThrottleOptions.create().withNow(() => t)` | `.withClock({ now: () => t })` |
+  | `new TokenBucket({ qps, now: () => t })` | `new TokenBucket({ qps, clock: { now: () => t } })` |
+  | `new RestartBudget(strategy, () => t)` | `new RestartBudget(strategy, { now: () => t })` |
+  | `new SinkReporter(name, () => t)` | `new SinkReporter(name, { now: () => t })` |
+
+  Migration is mechanical: wrap the function in `{ now }`, or pass
+  `system.clock` and get virtual time under a `ManualScheduler` for free. Any
+  object with a `now()` is a `Clock`, so a test's existing hand-rolled clock
+  usually needs no change at all beyond the property name.
 
 - **BREAKING — the split-brain resolver now decides on a view that has stopped
   moving: `actor-ts.cluster.split-brain-resolver.stable-after`, default 20 s**

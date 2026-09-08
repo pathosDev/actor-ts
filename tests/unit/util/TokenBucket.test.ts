@@ -4,10 +4,16 @@
  * mock clock and re-querying the bucket.
  */
 import { describe, expect, test } from 'bun:test';
+import type { Clock } from '../../../src/Clock.js';
 import { TokenBucket } from '../../../src/util/TokenBucket.js';
 
-/** Helper: a mutable mock clock starting at a fixed wall-clock instant. */
-function mockClock(start: number = 1_000_000): { now: () => number; advance(ms: number): void } {
+/**
+ * Helper: a mutable mock clock starting at a fixed wall-clock instant.
+ *
+ * Structurally a {@link Clock}, so it goes straight into `TokenBucketOptions`
+ * with no adapter — which is the shape the contract exists to make ordinary.
+ */
+function mockClock(start: number = 1_000_000): Clock & { advance(ms: number): void } {
   let now = start;
   return {
     now: () => now,
@@ -18,7 +24,7 @@ function mockClock(start: number = 1_000_000): { now: () => number; advance(ms: 
 describe('TokenBucket', () => {
   test('starts full and lets a burst of `burst` messages through immediately', () => {
     const clock = mockClock();
-    const bucket = new TokenBucket({ qps: 10, burst: 5, now: clock.now });
+    const bucket = new TokenBucket({ qps: 10, burst: 5, clock });
     // 5 burst tokens → 5 immediate consumes succeed, the 6th fails.
     for (let i = 0; i < 5; i++) {
       expect(bucket.tryConsume(1)).toBe(true);
@@ -28,7 +34,7 @@ describe('TokenBucket', () => {
 
   test('refills tokens at qps rate over wall-clock time', () => {
     const clock = mockClock();
-    const bucket = new TokenBucket({ qps: 10, burst: 5, now: clock.now });
+    const bucket = new TokenBucket({ qps: 10, burst: 5, clock });
     // Drain the bucket.
     while (bucket.tryConsume(1)) { /* drain */ }
     expect(bucket.tryConsume(1)).toBe(false);
@@ -48,7 +54,7 @@ describe('TokenBucket', () => {
 
   test('partial consumption is all-or-nothing', () => {
     const clock = mockClock();
-    const bucket = new TokenBucket({ qps: 10, burst: 5, now: clock.now });
+    const bucket = new TokenBucket({ qps: 10, burst: 5, clock });
     // Try to consume 7 from a 5-burst bucket → fail, no partial deduct.
     expect(bucket.tryConsume(7)).toBe(false);
     // Bucket still has the original 5 tokens.
@@ -59,7 +65,7 @@ describe('TokenBucket', () => {
 
   test('default burst equals qps when omitted', () => {
     const clock = mockClock();
-    const bucket = new TokenBucket({ qps: 7, now: clock.now });
+    const bucket = new TokenBucket({ qps: 7, clock });
     // Default burst = qps = 7.
     for (let i = 0; i < 7; i++) {
       expect(bucket.tryConsume(1)).toBe(true);
@@ -69,7 +75,7 @@ describe('TokenBucket', () => {
 
   test('timeUntilNext reports 0 when tokens are available, ms otherwise', () => {
     const clock = mockClock();
-    const bucket = new TokenBucket({ qps: 10, burst: 5, now: clock.now });
+    const bucket = new TokenBucket({ qps: 10, burst: 5, clock });
     expect(bucket.timeUntilNext(1)).toBe(0); // bucket starts full
 
     while (bucket.tryConsume(1)) { /* drain */ }
@@ -94,7 +100,7 @@ describe('TokenBucket', () => {
 
   test('resetToFull restores capacity and resets the refill clock', () => {
     const clock = mockClock();
-    const bucket = new TokenBucket({ qps: 10, burst: 5, now: clock.now });
+    const bucket = new TokenBucket({ qps: 10, burst: 5, clock });
     while (bucket.tryConsume(1)) { /* drain */ }
     expect(bucket.currentTokens()).toBe(0);
     bucket.resetToFull();
@@ -103,7 +109,7 @@ describe('TokenBucket', () => {
 
   test('currentTokens reflects elapsed time since the last refill', () => {
     const clock = mockClock();
-    const bucket = new TokenBucket({ qps: 100, burst: 10, now: clock.now });
+    const bucket = new TokenBucket({ qps: 100, burst: 10, clock });
     while (bucket.tryConsume(1)) { /* drain */ }
     expect(bucket.currentTokens()).toBe(0);
     clock.advance(50); // 50 ms × 100 qps / 1000 = 5 tokens earned.
