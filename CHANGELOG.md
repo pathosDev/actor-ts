@@ -59,6 +59,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   object with a `now()` is a `Clock`, so a test's existing hand-rolled clock
   usually needs no change at all beyond the property name.
 
+  **Both failure detectors now take a `Clock`, and the cluster hands them its
+  own.** `FailureDetector` and `PhiAccrualFailureDetector` gained an optional
+  second constructor argument, and `createFailureDetector` an optional fourth;
+  every `now` parameter now defaults to that clock rather than to `Date.now()`.
+  Nothing at a call site changes — `Cluster`'s six parameterless calls are
+  simply correct under virtual time now — but the consequence is that a
+  four-node partition, a heartbeat timeout and a φ value can all be asserted in
+  milliseconds of real time. `tests/unit/cluster/FailureDetectorClock.test.ts`
+  does exactly that; putting the detectors back on `Date.now()` fails 7 of its
+  9 cases, and the 2 that survive are the two that never consult the clock.
+
 - **BREAKING — the split-brain resolver now decides on a view that has stopped
   moving: `actor-ts.cluster.split-brain-resolver.stable-after`, default 20 s**
   (#839).
