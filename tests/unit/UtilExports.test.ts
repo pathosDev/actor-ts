@@ -257,7 +257,7 @@ describe('the rest of the util toolbox is reachable on actor-ts/util (#1404)', (
   describe('TokenBucket', () => {
     test('burst is spent, then refilled from the injected clock', () => {
       let clock = 0;
-      const options: TokenBucketOptions = { qps: 2, burst: 2, now: () => clock };
+      const options: TokenBucketOptions = { qps: 2, burst: 2, clock: { now: () => clock } };
       const bucket = new TokenBucket(options);
 
       expect(bucket.tryConsume()).toBe(true);

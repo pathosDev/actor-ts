@@ -49,13 +49,38 @@ const info = 'acme/test/snapshot/v1';
 const INTEGRITY_KEY = new Uint8Array(32).fill(7);
 const OTHER_KEY     = new Uint8Array(32).fill(8);
 
+/**
+ * Budget for the per-test temp tree, stated rather than inherited.
+ *
+ * These hooks build and delete a real object-storage tree per test.  Idle they
+ * cost single-digit milliseconds; under whole-suite disk contention a hook here
+ * has been seen at 11.4 s and, in a sibling file, at 69 s — against bun's
+ * undeclared 5 000 ms cap, which reports as `(unnamed)` and "a
+ * beforeEach/afterEach hook timed out" without naming the file, the hook kind or
+ * a cause.
+ *
+ * Neither observation reproduced, and the budget is sized for that: it is a
+ * bound on a hook whose work is unbounded in principle (a recursive delete of a
+ * tree whose size the test decides, on a disk the rest of the suite is also
+ * using), not a number tuned until a red run went away.  What it buys is that
+ * transient contention costs a slow run instead of an unattributable failure —
+ * and that the cap is a decision somebody made. *
+ * Verified rather than assumed: a 6 s `beforeEach` and a 6 s `afterEach` both
+ * pass under a 20 s budget on bun 1.4.0, and the same hook without one dies at
+ * 5 000 ms.  The second argument works on every hook kind, not only `beforeAll`.
+ */
+const TEMP_TREE_BUDGET_MS = 30_000;
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'actor-ts-integrity-'));
   const backendOptions = FilesystemObjectStorageOptions.create()
     .withDir(dir);
   backend = new FilesystemObjectStorageBackend(backendOptions);
-});
-afterEach(() => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });
+}, TEMP_TREE_BUDGET_MS);
+afterEach(
+  () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } },
+  TEMP_TREE_BUDGET_MS,
+);
 
 /**
  * The FS backend stores each key at `dir/<key>` 1:1, so for DurableState

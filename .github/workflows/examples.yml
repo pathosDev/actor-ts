@@ -99,6 +99,7 @@ permissions:
 jobs:
   frontend:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     strategy:
       # fail-fast: false so an Angular-only regression doesn't mask a
       # Next-only one.  Each frontend gets its own red mark — the same

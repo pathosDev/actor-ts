@@ -28,13 +28,22 @@ ankommt:
 | **flaky** — in einigen Läufen umgefallen | Das Ergebnis hängt an Timing, Reihenfolge oder Maschine. | Gegen den Katalog unten halten. |
 | **durchgehend rot** — in jedem Lauf umgefallen | Kaputt.  Wiederholung sagt dir nichts Neues. | Reparieren oder ein Issue aufmachen.  Das ist kein Flake. |
 
-Eine Lücke in diesem Urteil, die man kennen sollte, bevor man einer leeren
-Tabelle glaubt: Ein Test, der **innerhalb eines einzelnen Laufs mehr als einmal**
-umfällt, fällt derzeit aus *beiden* Kategorien heraus — der Harness schreibt dann
-„No test failed in any run that reported“ und endet mit Exit-Code 0, auch wenn
-kein einziger Lauf grün war (#1359).  Ein Hook-Timeout ist der einfachste Weg
-dorthin, weil der ganze Block auf eine `(unnamed)`-Identität zusammenfällt.  Bis
-das behoben ist: `runs: N/N green` lesen, nicht die PASS-Zeile.
+Ein Test, der **innerhalb eines einzelnen Laufs mehr als einmal** umfiel, fiel
+früher aus *beiden* Kategorien heraus — der Harness schrieb dann „No test failed
+in any run that reported“ und endete mit Exit-Code 0, über sechzehn Läufen, von
+denen keiner grün war, zwei Zeilen unter einer Fehlerrate von 100 % (#1359).
+`failedRuns` zählt jetzt Läufe, jeden Lauf einmal, gleich wie viele Testfälle die
+Identität getragen haben, und die Zahl der Vorkommen steht daneben
+(`4 failing testcases in total`), statt in die Klassifikation einzufließen.  Ein
+Hook-Timeout erzeugt die Form weiterhin am leichtesten: ein `describe`, dessen
+`beforeAll` und `afterAll` beide ihr Budget sprengen, liefert zwei
+`(unnamed)`-Fälle unter einem Classname.
+
+Das Urteil fällt jetzt außerdem über **Läufe**, nicht nur über Tests.  Ein Lauf,
+der nicht grün war und den kein tolerierter Offender erklärt, ist rot, egal was
+die Tabellen sagen — und genau in diesem Feld ist das Ausstiegskriterium der
+Quarantäne formuliert (`greenRuns == runs`), das das alte Urteil berechnete,
+ausgab und dann nicht anwandte.
 
 Drei weitere Dinge benennt es, statt sie zu schlucken: einen Lauf, der
 **nie beendet wurde** (siehe unten), einen Lauf, der **gar keinen
@@ -68,14 +77,14 @@ Reports, Logs und ein maschinenlesbares `summary.json` landen in `.stress/`.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="note" title="Das Harness führt mehr aus als ein CI-Check">
-  Es **entfernt `ACTOR_TS_SKIP_FLAKY_MNS` aus der Umgebung, die es an
-  `bun test` weiterreicht** — die drei quarantänisierten Suites (siehe unten)
-  sind also enthalten, selbst wenn deine Shell oder dein Workflow das Flag
-  gesetzt hat.  Es zu erben würde eine strikt kleinere Suite messen als ein
-  lokaler Lauf und dann eine verlässliche Pass-Rate über genau die Tests
-  melden, von denen bekannt ist, dass sie nicht verlässlich sind.  Nutze
-  `--skip-quarantined`, wenn der Rest der Suite Gegenstand des Laufs ist.
+<Aside type="note" title="Was es misst, ist die ganze Suite">
+  Es **entfernte** früher `ACTOR_TS_SKIP_FLAKY_MNS` aus der Umgebung, die es an
+  `bun test` weiterreicht, weil drei Suites dahinter lagen — und zwar genau
+  die, die am ehesten flakten.  Ein Harness, das das Flag geerbt hätte, hätte
+  eine verlässliche Pass-Rate über genau die Tests gemeldet, die nicht
+  verlässlich waren.  Nichts hängt mehr an einer Umgebungsvariablen, und
+  `tests/unit/ci/NoEnvironmentGatedSkips.test.ts` hält das so — dem Harness
+  bleibt also nichts mehr zu verteidigen.
 </Aside>
 
 ### Warum man dem Harness glauben kann
@@ -135,6 +144,81 @@ Die zweite Familie findet man durch Lesen:
 Wenn ja, ist das Warten ein Stellvertreter, den ein halb fertiger Schritt
 bereits erfüllt — warte stattdessen auf den *geprüften* Zustand.
 
+### Wo die Wiederholung bezahlt wird
+
+An drei Stellen, jede mit einer anderen Frage.
+
+- **Bei jedem Commit** führen `test.yml` und `multi-runtime.yml` die ganze Suite
+  **einmal, gemischt** aus — „hängt irgendetwas davon ab, nach etwas anderem zu
+  laufen".
+- **Bei jedem Pull Request** wiederholt eine Sonde die **geänderten Testdateien
+  des Branches fünfmal** — „hängt ein Test, den dieser Branch hinzufügt, von dem
+  Lauf ab, in dem er geschrieben wurde". Das ist der Moment, in dem ein neuer
+  Flake am billigsten zu beheben ist, und der einzige, in dem er einen
+  offensichtlichen Verantwortlichen hat.
+- **Jede Nacht** schleift `nightly-flakes.yml` die ganze Suite und aggregiert
+  nach Test-Identität — die lastabhängige Familie von oben, über eine
+  Population, die kein Branch anfasst. **Eine Nacht, die nicht grün ist, öffnet
+  ein Issue**, und eine grüne schließt es wieder.
+
+Der letzte Punkt hat am längsten gebraucht, und es lohnt sich zu sagen, warum.
+Die Nightly hat diese Suite monatelang gemessen, und die Messung erreichte
+niemanden: beide Jobs waren `continue-on-error`, und das Urteil ging in eine
+Step-Summary und eine Run-Annotation. Der Workflow hat sein eigenes Versagen in
+einem Kommentar vorhergesagt — „Nichts akkumuliert die Serie. Sie wird von einem
+Menschen gezählt, der diese Annotations liest — dasselbe Versagen, das die
+Quarantäne überhaupt erst dauerhaft gemacht hat." Niemand zählte. Das
+Vierzehn-Nächte-Kriterium stand bei einundzwanzig, bevor jemand nachsah.
+
+Ein Issue hat einen Verantwortlichen, eine Historie und eine Benachrichtigung —
+was eine Annotation nie hatte. Und weil der Befund damit handhabbar ist, ist ein
+roter Job eine Tatsache statt Rauschen: die Unterdrückung ist weg. An einem
+geplanten Workflow hängt nichts, und Rot dort blockiert keinen Pull Request.
+
+Die Sonde folgt den *geänderten Testdateien* und nicht allem, was eine Änderung
+erreicht — und die Zahlen sind der Grund. `bun test --changed` folgt Importen
+transitiv: gemessen an diesem Baum wählte eine Änderung an einem
+Persistence-Modul 346 Dateien und 5 505 Tests in 209 s aus, und eine Basis,
+deren Diff einen `tests/util/`-Helper berührte, 468 Dateien und 8 777 Tests in
+252 s. Fünf Wiederholungen davon sind ein halbstündiger Job, und was er
+gegenüber der nächtlichen Schleife hinzufügt, ist dieselbe Frage über eine
+kleinere Population. Wiederholung zahlt sich dort aus, wo der Code neu ist —
+also folgt die Sonde dem neuen Code, und eine Änderung unter `src/` deckt
+weiterhin die gemischte Suite einmal ab, genau wie zuvor.
+
+### Generative Tests laufen gegen einen fixierten Seed
+
+Ein Property-Test mit zufälligem Seed kann in einem Lauf umfallen und im
+nächsten durchgehen.  Das ist per Definition ein Flake, und die schlimmste
+verfügbare Sorte: Das Gegenbeispiel existiert nur im Run-Log, und wenn das
+rotiert, ist der fehlschlagende Fall weg und niemand kann reproduzieren, was
+passiert ist.  Vor #1372 hatte dieses Repository ~52 `fc.assert`-Aufrufstellen,
+keinen `seed`, kein `endOnFailure` und nirgends einen Regressions-Korpus.
+
+`tests/setup/property-seed.ts` fixiert den Seed für den ganzen Prozess über
+`fc.configureGlobal`, geladen durch `preload` in `bunfig.toml` — eine Stelle
+statt zweiundfünfzig, sodass eine neue Property-Datei die Policy bekommt, ohne
+dass ihre Autorin von ihr wissen muss.
+
+Der Preis ist real und gehört ausgesprochen: Ein fester Seed erkundet in jedem
+Lauf dieselben Fälle, die Suite findet also von selbst keine *neuen*
+Gegenbeispiele mehr.  Das ist vertretbar, weil sie das nie wirklich tat.  Ein
+Fall, den eine unglückliche Nacht fand und den die Log-Rotation dann verschluckte,
+wurde nie zu einem Regressionstest — die Erkundung produzierte rote Builds statt
+Wissen.  Neue Fälle kommen jetzt daher, dass jemand `PROPERTY_RUNS` erhöht oder
+`PROPERTY_SEED` ändert: eine Entscheidung, in einem Diff, von der man erwartet,
+dass sie der Commit ist, der etwas findet.
+
+**Wenn eine Property doch umfällt, kopiere das geschrumpfte Gegenbeispiel als
+schlichten Beispieltest daneben — bevor du irgendetwas reparierst.**  Die
+Property beweist das Gesetz; das Beispiel verhindert, dass genau dieser Fall
+zurückkommt, und überlebt anders als eine Log-Zeile.
+
+`tests/unit/ci/PropertySeedPolicy.test.ts` hält beide Hälften verdrahtet, und
+seine letzte Assertion ist die entscheidende: Sie fragt fast-check, mit welchem
+Seed es *tatsächlich* läuft — ein Preload, der eingetragen und nie geladen
+wurde, fällt damit um, statt still den Zufalls-Default wiederherzustellen.
+
 ## Der Katalog
 
 Ursachen, die diese Suite tatsächlich hatte, mit ihrem jeweiligen Stand.
@@ -145,12 +229,13 @@ Ursachen, die diese Suite tatsächlich hatte, mit ihrem jeweiligen Stand.
 | Ein Budget, das der Test-Timeout nie erreicht | Geprüft | `this test timed out after 5000ms`, wo ein `awaitCondition`-Label erwartet war |
 | Echte Arbeit in einem Hook, gegen ein Limit, das niemand gesetzt hat | Geklärt | `(unnamed)` und „a beforeEach/afterEach hook timed out“, ohne Testnamen |
 | Echte Arbeit in einem Test-Body, gegen ein Limit, das niemand gesetzt hat | Geklärt | `this test timed out after 5000ms` mit einem Testnamen, der begrenzte Arbeit tut und allein durchläuft |
-| Buns Timer-Quantum | Geklärt | Eine Elapsed-Time-Assertion fällt um ~15 ms daneben, auf unbeschäftigter Maschine |
+| Buns Timer-Quantum | Frühe Hälfte mit bun 1.4 erledigt | Eine Elapsed-Time-Assertion fällt um ~15 ms daneben, auf unbeschäftigter Maschine |
 | Dispatcher-Hop zwischen Warten und Prüfen | Geklärt | Isoliert nie reproduzierbar; fällt nur im großen Parallel-Lauf um |
 | Port-Kollisionen | Geklärt | `EADDRINUSE`, nur wenn Suites sich überlappen |
 | Filesystem-Races | Geklärt | Zwei Suites lesen die Fixtures der jeweils anderen |
 | Eine Assertion über prozessweiten Zustand | Geklärt | Läuft isoliert durch, fällt im Lauf der ganzen Suite um, und es ist kein Timing beteiligt |
-| Worker-Respawn auf Hosted Runnern | Quarantäne | Worker starten, machen den Handshake, laufen dann nie — nur in CI |
+| Ein Test, der davon abhängt, nach einem anderen zu laufen | Geklärt, geprüft | Grün in Deklarationsreihenfolge, rot unter `--seed=N`; ein Wiederholungslauf wiederholt dieselbe Reihenfolge und findet ihn nie |
+| Worker-Respawn auf Hosted Runnern | Erledigt, nächtlich bewacht | Worker starten, machen den Handshake, laufen dann nie — in 63 gemessenen Ausführungen kein einziges Mal |
 
 ### Fester Sleep vor einer Assertion
 
@@ -177,32 +262,47 @@ behandelt, wann ein Sleep weiterhin richtig ist — eine Abwesenheit, der man
 nur ein Zeitfenster geben kann, eine Dauer, die *selbst* die Assertion ist,
 eine Verschränkung, die ein Test braucht.
 
-**Diese Umstellung ist nicht abgeschlossen.**  479 Stellen unter `tests/`
-warten weiterhin mit `await sleep(N)`, und 132 weitere gehen dieselbe Wette
-ohne das Wort `sleep` ein — ein direktes `Bun.sleep(20)` oder ein
-`new Promise((r) => setTimeout(r, 20))`.  Insgesamt 611 Wartezeiten mit fester
-Dauer, und **486 davon nennen keinen Grund für die Verzögerung**.  Dazu kommen
-zwei Doppelungen: 93 Module deklarieren ihr eigenes `sleep`, statt das
-gemeinsame zu importieren (8 importieren es), und 35 bauen sich ein eigenes
-`waitFor` / `waitUntil` / `awaitConvergence` mit eigenem Timeout, eigenem
-Poll-Schritt und ohne Label.  Behandle ein `sleep`-dann-`expect`-Paar in einem
-umgefallenen Test als Verdächtigen, bevor du nach etwas Raffinierterem suchst.
+**Die Umstellung ist im Wesentlichen angekommen, und die Form des Rests ist
+der nützliche Teil.**  486 Wartezeiten mit fester Dauer bleiben unter `tests/` —
+440 als `await sleep(N)` geschrieben, 46 als direktes `Bun.sleep(20)` —, aber
+**483 davon nennen inzwischen einen Grund für die Verzögerung**.  Drei tun es
+nicht, und alle drei stehen in Helper-Dateien statt in einem Test:
+`tests/util/AwaitCondition.ts` (das gemeinsame `sleep` selbst) und zwei im
+Integration-Scenario-Baum.
 
-Die Zahl ist während der Planung der Umstellung eine Woche lang *gestiegen* —
-448 am 11.08.2026 gegen 479 am 18.08.2026 —, weil unbeteiligte neue Tests
-weiter in der alten Form ankamen, zwei davon an einem einzigen Tag mit einem
-frischen dateilokalen Shim.  Diese Zahlen sind deshalb nicht mehr nur
-Dokumentation: `tests/unit/ci/SleepRatchet.test.ts` misst sie bei jedem
-`bun test` nach und schlägt fehl, sobald eine steigt — pro Modul.  Die Schuld
-kann also schrumpfen und nicht wieder wachsen.  Verboten wird dabei nicht das
-Warten — eine Abwesenheit lässt sich nicht pollen, und auf 57 der Wartezeiten
-folgt eine Assertion, dass etwas *nicht* passiert ist —, sondern eine
-*unbegründete* Wartezeit, ein neu deklariertes
-`sleep` und eine neu erfundene Poll-Schleife; für alle drei nennt die
-Fehlermeldung eine einzeilige Abhilfe.  Erhoben am 18.08.2026 auf `95db877c`;
-ein `grep -ro '<pattern>' tests/ --include=*.ts | wc -l` misst grob nach, zählt
-aber auch Kommentare und zitierte Beispiele mit, die der Scanner der Prüfung
-vorher ausblendet.
+Die beiden Doppelungen, die diese Seite früher meldete, sind praktisch weg.
+**Eine** Datei deklariert noch ihr eigenes `sleep` —
+`tests/integration/scenarios/Types.ts`, die es für diesen Baum exportiert —
+gegen **129**, die das gemeinsame importieren, und 11 Module bauen sich noch
+eine `while (Date.now() < deadline)`-Schleife, statt `awaitCondition` zu rufen.
+Behandle ein `sleep`-dann-`expect`-Paar in einem umgefallenen Test als
+Verdächtigen, bevor du nach etwas Raffinierterem suchst — und lies zuerst
+seinen Begründungskommentar: meist sagt er dir, ob das Warten die Wette ist
+oder die Assertion.
+
+Diese Zahlen sind nicht nur Dokumentation.
+`tests/unit/ci/SleepRatchet.test.ts` misst sie bei jedem `bun test` nach und
+schlägt fehl, sobald eine steigt — pro Modul.  Die Schuld kann also schrumpfen
+und nicht wieder wachsen.  Verboten wird dabei nicht das Warten — eine
+Abwesenheit lässt sich nicht pollen, und auf viele der Wartezeiten folgt eine
+Assertion, dass etwas *nicht* passiert ist —, sondern eine *unbegründete*
+Wartezeit, ein neu deklariertes `sleep` und eine neu erfundene Poll-Schleife;
+für alle drei nennt die Fehlermeldung eine einzeilige Abhilfe.
+
+Erhoben am 08.09.2026 auf `5c7064f5`, über Quelltext mit ausgeblendeten
+Kommentaren und String-Literalen — genau das, was der Scanner der Prüfung tut.
+Ein rohes `grep -ro '<pattern>' tests/ --include=*.ts | wc -l` misst grob nach
+und liegt zu hoch, weil es auch die Prosa und die zitierten Beispiele mitzählt —
+diese Seite eingeschlossen.
+
+Die früheren Zahlen auf dieser Seite wurden am 18.08.2026 auf `95db877c`
+erhoben, *bevor* die Umstellungs-Welle aus #418 gemergt wurde — sie
+beschrieben also den Baum vor genau der Arbeit, um die es auf dieser Seite
+geht.  Zwei von ihnen waren nicht nur veraltet, sondern invertiert: Die Seite
+sagte einer Mitwirkenden, 93 Dateien deklarierten `sleep` neu, „statt das
+gemeinsame zu importieren (8 importieren es)" — heute deklariert es eine Datei
+und 129 importieren es (#1313).  Eine gemessene Behauptung trägt genau deshalb
+die Revision mit sich, auf der sie erhoben wurde.
 
 ### Ein Budget, das der Test-Timeout nie erreicht
 
@@ -356,22 +456,36 @@ ein echter Lauf der ganzen Suite her.  Klär den Mechanismus stattdessen per
 Messung — die Modul-Scope-Fixture oben entscheidet ihn in einem einzigen Lauf,
 ohne den Flake je zu reproduzieren.
 
-### Buns Timer-Quantum
+### Buns Timer-Quantum — die frühe Hälfte ist erledigt
 
 Die Standard-Timer-Auflösung unter Windows ist 15,625 ms, und Buns Event-Loop
-entscheidet auf dieser Tick-Grenze, dass ein Timer fällig ist — ein
-`setTimeout`, dessen Deadline knapp *unter* einem Tick-Vielfachen liegt,
-feuert also einen ganzen Tick **zu früh**.  Ein `setTimeout(30)` wurde auf
-einer unbeschäftigten Maschine mit 18,67 ms gemessen.
+entschied in 1.3 auf dieser Tick-Grenze, dass ein Timer fällig ist — ein
+`setTimeout`, dessen Deadline knapp *unter* einem Tick-Vielfachen lag, feuerte
+also einen ganzen Tick **zu früh**.  Ein `setTimeout(30)` wurde auf einer
+unbeschäftigten Maschine mit 18,67 ms gemessen; 30 ms war pathologisch, weil es
+knapp unter `2 × 15,625` liegt.
 
-Die Uhr ist nicht das Problem, genauer messen hilft also nicht; die Toleranz
-war falsch.  `tests/util/TimerTolerance.ts` trägt die Messungen und
-`minimumElapsedMs()`, das eine Untergrenze ein volles Quantum unter den
-Nominalwert legt.  Eine sichere **Obergrenze** gibt es nicht — derselbe
-30-ms-Timer wurde unter CPU-Last mit 201 ms gemessen, und eine Grenze, die
-locker genug ist, das zu überleben, kann die geprüfte Verzögerung nicht mehr
-von einer längeren unterscheiden.  Prüfe stattdessen virtuelle Zeit mit dem
-[ManualScheduler](/de/testing/manual-scheduler/).
+**Bun 1.4 hat das behoben.**  Neu gemessen am 08.09.2026, 60 Stichproben bei je
+5, 20, 30 und 60 ms: kein einziges Feuern unter dem Nominalwert, und die
+30-ms-Zeile kam mit minimal 30,04 ms zurück.  `minimumElapsedMs()` gibt daher
+kein Quantum mehr her — sein Spielraum gilt nur noch der Verspätung, und
+`tests/util/TimerTolerance.ts` trägt beide Messungen, denn eine Toleranz, die
+nur festhält, was heute gilt, erklärt nicht, warum es sie gibt.
+
+Eine Folge, die zu nennen sich lohnt, weil sie Arbeit *streicht*: **ein
+30-ms-Sleep ist kein zu vermeidender Wert mehr.**  Er stand auf der Liste der
+Dinge, die aus der Suite gefegt werden sollten; der Sweep entfällt, weil sein
+Grund weg ist und 44 Stellen für eine Zahl umzuschreiben, die sich jetzt
+benimmt, nichts einbrächte.
+
+**Die späte Hälfte ist nicht verschwunden, und sie ist die wichtigere.**  Eine
+sichere **Obergrenze** gibt es weiterhin nicht — derselbe 30-ms-Timer wurde
+unter CPU-Last mit 201 ms gemessen, Verspätung ist das, was der OS-Scheduler
+entscheidet, und eine Grenze, die locker genug ist, das zu überleben, kann die
+geprüfte Verzögerung nicht mehr von einer längeren unterscheiden.  Prüfe
+stattdessen virtuelle Zeit mit dem
+[ManualScheduler](/de/testing/manual-scheduler/), der inzwischen fast überall
+hinreicht, wo das Framework wartet.
 
 ### Dispatcher-Hop zwischen Warten und Prüfen
 
@@ -423,6 +537,113 @@ nur im vollen Lauf um, und keine Menge Warten ändert etwas — weil nichts
 unterwegs ist.  Frage, was der *Nenner* der Assertion ist.  Ist es ein
 `static`-Feld, eine modulweite Registry oder ein prozessweiter Zähler, dann
 verenge sie auf den Eintrag, der diesem Test gehört.
+
+### Ein Test, der davon abhängt, nach einem anderen zu laufen
+
+Das Geschwister des Eintrags darüber — und das, was ein Wiederholungslauf gar
+nicht finden kann: Ein Wiederholungslauf wiederholt *dieselbe* Reihenfolge.  Nur
+ein Shuffle stellt die Frage, und `bun test --seed=N` impliziert `--randomize`
+und reproduziert genau eine Reihenfolge:
+
+```sh
+bun test --seed=413044451
+```
+
+Vier Suites fielen um, als das zum ersten Mal gefragt wurde — in drei Formen.
+
+**Ein Wert, der von einem Test in den nächsten getragen wird.**  Der Block
+meinte „die Fixture bootet einmal, nicht einmal pro Test" und sagte das, indem
+er in einem Test schrieb und im nachfolgenden Geschwister las.  Gemischt lief
+der Leser zuerst und verglich gegen ein ungeschriebenes `null`.
+
+```ts
+// ✗ die Prämisse ist die Reihenfolge des eigenen Blocks
+let observed: ActorSystem | null = null;
+test('returns a live system', () => { observed = sys(); });
+test('returns the SAME instance', () => { expect(sys()).toBe(observed); });
+```
+
+```ts
+// ✓ gegen das vergleichen, was der Block gebootet hat — das sieht jeder Test
+let booted!: ReturnType<typeof sys>;
+beforeAll(() => { booted = sys(); });
+test('returns the SAME instance the block booted', () => { expect(sys()).toBe(booted); });
+```
+
+**Ein Modul-Mock, der seine Datei überlebt hat.**  `mock.restore()` macht
+`mock.module()` *nicht* rückgängig — ein Modul-Mock ist prozessweit und
+dauerhaft.  Eine Datei, die `node:zlib` ersetzt, um eine Fähigkeit als abwesend
+erscheinen zu lassen, reicht das an die nächste Datei weiter.  Zwei Suites in
+`tests/unit/persistence/object-storage/` brachten einander zu Fall, je nachdem,
+in welche Richtung der Shuffle sie stellte.  Also: das echte Modul vor dem
+Mocken schnappschussen, es im `afterEach` zurücklegen und alles zurücksetzen,
+was der Produktivcode daraus memoisiert hat:
+
+```ts
+const REAL_NODE_ZLIB = { ...nodeZlibModule };
+
+afterEach(() => {
+  mock.module('node:zlib', () => REAL_NODE_ZLIB);
+  resetCompressionCache();
+});
+```
+
+Die `beforeEach`-Hälfte gehört genauso dazu: Ein Memo, das aus der *vorherigen*
+Datei geerbt wurde, ist genauso falsch wie eines, das an die nächste durchsickert
+— und nur eines von beiden ist die Schuld der eigenen Datei.  Auf beiden Kanten
+zurücksetzen.
+
+Das repariert die Datei, die geleckt hat.  Für die Datei, die *verschoben* wurde,
+tut es nichts — und genau dort landete der Schaden: Drei Fälle, die die
+Allokationszeit-Schranke aus #580 festnageln, liefen weiter auf einer Sprosse,
+die gar keine solche Schranke hat, und prüften dort deren Sicherheitseigenschaft.
+Dass sie umfielen statt still durchzulaufen, war Glück — das Ende der
+Fehlermeldung war das Einzige, was „abgelehnt vor der Allokation" von
+„allokiert, dann abgelehnt" trennte, und eine anders formulierte Assertion wäre
+vom falschen Pfad erfüllt worden.
+
+Eine Suite, die eine aufgelöste Fähigkeit nur *benutzt*, sollte deshalb sagen
+können, welche sie bekommen hat — und das einmal vorab prüfen:
+
+```ts
+beforeAll(async () => {
+  expect(await zstdDecompressorRung()).toBe('node-zlib');
+});
+```
+
+Ein falscher Pfad ist dann ein Fehlschlag, der die Ursache benennt, statt fünf
+Meldungs-Abweichungen, die es nicht tun.  Die allgemeine Form: Ist das Thema
+eines Blocks eine Eigenschaft *einer* Implementierung hinter einem Resolver, dann
+muss der Resolver sagen können, welche Implementierung geantwortet hat — sonst
+prüft der Block genau das, was er erst herstellen will.
+
+**Eine feste Anzahl Microtask-Runden.**  Ein Test stieß eine Operation an, ohne
+sie abzuwarten, ließ zwei `Promise.resolve()` verstreichen und prüfte dann, dass
+ein lazy importierter SDK-Client konstruiert worden war.  Das ist eine Wette
+darauf, wie viele Runden ein dynamisches `import()` braucht — eine Zahl, wenn
+der Specifier schon in der Modul-Registry liegt, und eine andere, wenn dies die
+erste Auflösung im Lauf ist.
+
+```ts
+// ✗ zwei Runden sind eine Vermutung über den Zustand der Modul-Registry
+void backend.list({ prefix: '' }).catch(() => {});
+await Promise.resolve(); await Promise.resolve();
+expect(clientsConstructed.length).toBe(1);
+```
+
+```ts
+// ✓ eine abgeschlossene Operation hat den Client genauso konstruiert
+expect(await backend.list({ prefix: '' })).toEqual([]);
+expect(clientsConstructed.length).toBe(1);
+```
+
+Beide Per-Commit-Suites mischen jetzt, mit einem Seed, den der Workflow zieht
+und ausgibt.  Er wird dort gezogen und nicht bun überlassen, und zwar mit
+Absicht: bun meldet seinen Seed im abschließenden Summary-Block, und unter
+GitHub Actions hört es auf, diesen Block zu drucken, und meldet die Summen out
+of band — dieselbe Falle, die einmal aus einer unlesbaren Pass-Zahl ein grünes
+`tests-0 of 0`-Badge gemacht hat.  Ein Seed, den niemand lesen kann, ist keine
+Reproduktion.
 
 ## Offene Einträge
 
@@ -513,138 +734,64 @@ führen zu verschiedenen nächsten Schritten, und nur die Zahl im `summary.json`
 unterscheidet „einmal gesehen" von „oft gesehen".  Trag die Zahl hier nach,
 statt von vorn anzufangen.
 
-## Drei Suites, die CI nicht ausführt
+## Die Quarantäne, und was sie gekostet hat
 
-`ACTOR_TS_SKIP_FLAKY_MNS=1` ist in `test.yml`, `multi-runtime.yml` und
-`publish.yml` gesetzt, und drei Suites überspringen sich selbst, wenn es
-gesetzt ist:
+Monatelang liefen drei Suites in keinem einzigen CI-Job.
+`ACTOR_TS_SKIP_FLAKY_MNS=1` stand in `test.yml`, `multi-runtime.yml` und
+`publish.yml`, und drei Dateien übersprangen sich selbst, wenn es gesetzt war:
 
 - `tests/multi-node/LeaseMajority.test.ts`
 - `tests/multi-node/ParallelPubSub.test.ts`
 - `tests/unit/testkit/ParallelMultiNodeSpec.test.ts`
 
-Bun kann auf GitHubs Hosted Runnern nach dem ersten Worker-Test keine
-funktionsfähigen Worker-Threads mehr starten — sie spawnen, machen den
-Handshake und laufen dann nie — und dieselbe Ressourcen-Knappheit verzögert
-den Renewal-Timer von `LeaseMajority` über die Lease-TTL hinaus, sodass beide
-Partitionsseiten acquiren und der Test einen falschen Split-Brain sieht.
-Der *Hänger* reproduziert lokal und in Docker nicht.
+Die angegebene Begründung: Bun könne auf GitHubs Hosted Runnern nach dem ersten
+Worker-Test keine funktionsfähigen Worker-Threads mehr starten — sie starten,
+machen den Handshake und laufen dann nie — und dieselbe Ressourcenknappheit
+verzögere den Renewal-Timer von `LeaseMajority` über die Lease-TTL hinaus, so
+dass beide Seiten einer Partition die Lease bekämen und der Test ein falsches
+Split-Brain sähe.
 
-**Ein grüner CI-Check sagt über diese drei also nichts aus.**  Ein lokales
-`bun test` führt sie aus; der `integration`-Workflow über echtes Netz deckt
-den entsprechenden Bereich ebenfalls ab.
+**Alle drei laufen wieder in CI**, und wie es dazu kam, ist mehr wert als die
+Tatsache selbst.
 
-### Was sie lokal tatsächlich tun
+- **Die beiden Worker-Thread-Suites haben es sich erarbeitet, durch Messung.**
+  Das Ausstiegskriterium waren vierzehn aufeinanderfolgende grüne Nächte von
+  `nightly-flakes.yml`, das genau diese Suites ohne das Flag ausführt.  Erreicht
+  wurden einundzwanzig — 63 Ausführungen auf `ubuntu-latest`, kein einziger
+  Hänger.  Das Kriterium war erfüllt, und niemand hatte nachgesehen — genau das
+  Versagen, das der Workflow über sich selbst vorhergesagt hatte: „Nichts
+  akkumuliert die Serie.  Sie wird von einem Menschen gezählt, der diese
+  Annotations liest — dasselbe Versagen, das die Quarantäne überhaupt erst
+  dauerhaft gemacht hat."
+- **`LeaseMajority` war nie ein Runner-Problem.**  Die Ursache war ein
+  Produktdefekt in der Split-Brain-Auflösung: eine Partition, die Peer für Peer
+  erkannt wurde, wurde als Folge von *Mehrheits*-Entscheidungen aufgelöst statt
+  als eine Gleichstands-Entscheidung — beide Hälften überlebten, und die Lease
+  wurde überhaupt nie angefragt.  Jede Hypothese über Renewal-Timer und TTLs sah
+  auf Maschinerie, die nicht gelaufen war.  Behoben durch das Stabilitätsfenster
+  in [Downing-Strategien](/de/cluster/downing-strategies/); die Suite geht von 8
+  Fehlschlägen in 15 Läufen auf 0 in 30.
 
-Gemessen mit dem Harness am 2026-08-18, 15 Wiederholungen genau dieser drei
-Suites bei Concurrency 1 auf einem Windows-Laptop (`develop` @ `58fcc9fc`) —
-zwei Aufrufe, 5 Wiederholungen und dann 10 — mit 10 ausgeführten Tests pro
-Wiederholung und ohne Skips, das Flag wurde also wirklich entfernt:
+Zwei Mechanismen sind daraus entstanden, und die sind der Teil zum Merken.
 
-```sh
-bun run test:stress -- --runs=15 --run-timeout=480000 \
-  tests/multi-node/LeaseMajority.test.ts \
-  tests/multi-node/ParallelPubSub.test.ts \
-  tests/unit/testkit/ParallelMultiNodeSpec.test.ts
-```
+- **Eine Umgebungsvariable darf nicht entscheiden, ob ein Test läuft.**
+  `tests/unit/ci/NoEnvironmentGatedSkips.test.ts` weist das zurück, denn genau
+  das ist es, was ein Workflow setzen kann — und es zu setzen ist der Weg, auf
+  dem aus einer roten Suite eine abwesende wird.  Ein *Capability-Probe* ist in
+  Ordnung und die Form, zu der man stattdessen greift:
+  `available ? describe : describe.skip` fragt die Maschine, was sie kann, und
+  kein Workflow kann das für sie beantworten.  Ein Eintrag in der Allow-List
+  dieses Guards braucht eine Begründung, warum er keinen Fehlschlag verstecken
+  kann.
+- **Jeder Job trägt `timeout-minutes`.**  Eine Suite, die keinen Fortschritt mehr
+  macht, fällt jetzt innerhalb einer Stunde um, statt GitHubs
+  Sechs-Stunden-Default aufzubrauchen — genau das Versagen, mit dem die
+  Quarantäne ursprünglich begründet wurde.
 
-| Test | Fehlgeschlagen | Urteil |
-| --- | --- | --- |
-| `LeaseMajority` → `4 nodes, 2/2 partition: lease holder side survives, other side downs itself` | 1 / 15 | flaky |
-| `ParallelMultiNodeSpec — failure simulation` → `partition + heal flips reachability without dropping the workers` | 1 / 15 | flaky |
-| alles andere in den drei Suites, `ParallelPubSub` eingeschlossen | 0 / 15 | — |
-
-Zwei Schlüsse, und der zweite ist der nützliche:
-
-- **Nichts hier fällt durchgängig um.**  Beide Kandidaten sind mit rund 7 %
-  flaky, und kein Lauf hat gehangen.  Die lokale Geschichte und die
-  Hosted-Runner-Geschichte sind also wirklich verschiedene Fehler, und das
-  Aufheben der Quarantäne hängt am Runner-Pool und nicht an einem kaputten Test.
-- **„Reproduziert lokal nicht" war für die Fehlschläge selbst zu stark.**
-  `LeaseMajority` hat lokal denselben falschen Split-Brain erzeugt, den die
-  Hosted Runner erzeugen — `expect(leftAlive.length > 0 && rightAlive.length > 0)`
-  kam als `true` zurück — nachdem die handgeschriebene 25-s-Deadline-Schleife des
-  Tests (`tests/multi-node/LeaseMajority.test.ts`) still durchgefallen war und
-  zwei Assertions gegen den Zustand laufen ließ, der in diesem Moment eben
-  existierte.  Diese Schleife hat dieselbe Form, die der `ClusterBootstrap`-Fix
-  entfernt hat, und sie ist der Grund, warum der fehlgeschlagene Lauf 49 s statt
-  der 24 s der Baseline brauchte.
-
-Keine der beiden Reparaturen gehört auf diese Seite, und keine hat bisher ein
-Issue: #538 ist geschlossen, nachdem es das Nightly und das schriftliche
-Ausstiegskriterium geliefert hat, und kann sie deshalb nicht tragen.  Hierher
-gehört die Zahl — nennt ein Lauf dieser drei einen der beiden oben mit etwa 1 von
-15, ist das der *bekannte* Stand und kein neuer Befund.
-
-### Sie zurückholen
-
-`.github/workflows/nightly-flakes.yml` führt genau diese drei um 04:00 UTC
-mit **abgeschaltetem** Flag aus, drei Wiederholungen pro Nacht, und lädt die
-Reports hoch.  Der Job ist `continue-on-error`: Eine bekannt rote Messung
-darf nicht zu einem roten Pflicht-Check werden, den niemand liest — das
-Ergebnis kommt deshalb als Annotation am Lauf und als Step-Summary.
-
-Die Latte liegt bei **14 aufeinanderfolgenden grünen Nächten** — 42
-aufeinanderfolgenden grünen Ausführungen.  Zwei Kalenderwochen statt einer
-kleineren Zahl, weil der Fehler eine Eigenschaft des Runner-Pools ist und
-nicht des Codes: Vierzehn Tage decken Wochentags- und Wochenend-Pools ab,
-und genau davon muss gezeigt werden, dass es aufgehört hat.  Die Toolchain
-selbst variiert unter der Messung nicht mehr: Seit dem Bun-1.4.0-Pin
-(2026-08-21) liest jedes Bein die repo-weite `.bun-version`-Datei, Nächte
-zählen also nur, solange dieser Pin unverändert bleibt — ein Bun-Bump ist
-eine begründete Entscheidung am Experiment-Issue, und der Zähler ist mit dem
-Pin neu gestartet.  Eine einzige rote Nacht setzt den Zähler zurück; das
-`summary.json` jeder Nacht ist der Beleg (`greenRuns == runs` und ein leeres
-`runsTimedOut` — ein hängender Lauf ist rot, egal wie wenige Tests darin
-umgefallen sind).
-
-**Die ersten zwei Nächte haben überhaupt keinen Beleg behalten.**
-`actions/upload-artifact` hat `include-hidden-files` seit v4.4 auf false
-voreingestellt, `.stress` ist ein Punkt-Verzeichnis, und deshalb haben beide
-Jobs in beiden Nächten `No files were found with the provided path: .stress/`
-geloggt und null Dateien hochgeladen — während `if-no-files-found` auf `warn`
-stand, in Jobs, die `continue-on-error` sind und daher immer mit `success`
-abschließen.  Nichts wurde rot; der Satz darüber war einfach falsch.  Beide
-Schritte setzen jetzt `include-hidden-files: true` und
-`if-no-files-found: error`, und `tests/unit/ci/WorkflowHygiene.test.ts` prüft
-das Paar für jeden versteckten Upload-Pfad in `.github/workflows/`, sodass sich
-das beim nächsten Punkt-Verzeichnis-Artefakt nicht wiederholen kann.  **Nächte
-vor diesem Fix zählen nicht**: Die Läufe haben stattgefunden, aber ihr
-`summary.json` wurde nie behalten.
-
-**Diesen Zähler führt nichts mit.**  Er wird von Menschen aus den
-Lauf-Annotationen abgelesen — genau das, was die Quarantäne überhaupt erst
-dauerhaft gemacht hat.  Automatisiert ist er noch nicht, weil kein Weg billig
-ist: Beide Jobs sind `continue-on-error`, was die Job-Conclusion auf `success`
-umschreibt — der einzige dauerhafte Beleg ist also das Artefakt, und dessen
-Auslesen über frühere Nächte braucht `actions: read` plus Cross-Run-API-Paging;
-eine eingecheckte Zählerdatei bräuchte `contents: write` in einem Job, der den
-gesamten devDependency-Baum installiert, was `tests/unit/ci/WorkflowHygiene.test.ts`
-bewusst verbietet.  Bis eines davon gebaut ist: Der Stand ist etwas, das du
-aus der Lauf-Liste rekonstruieren musst, nicht etwas, das das Repository sich
-merkt.
-
-Ist die Latte erreicht, wird in einem Commit dequarantänisiert:
-
-1. `ACTOR_TS_SKIP_FLAKY_MNS` aus `test.yml`, `multi-runtime.yml` und
-   `publish.yml` entfernen.
-2. Die drei `describeMns`-Guards entfernen.
-3. Den `coveragePathIgnorePatterns`-Block in `bunfig.toml` entfernen — er
-   nimmt das Worker-Harness nur deshalb aus dem Coverage-Nenner, weil dieses
-   Harness auf dem Hosted Runner nicht ausgeführt werden kann.
-4. `--exclude=worker` aus dem Smoke-Schritt in `benchmarks.yml` entfernen.
-   Der Worker-Benchmark ist aus exakt derselben Ursache ausgeschlossen und
-   wird leicht vergessen, weil er kein Test ist.
-5. Jede Untergrenze in `scripts/coverage-gate.mjs` neu bewerten — die
-   aggregierte `DEFAULT_LINE_FLOOR` ebenso wie die beiden Modul-Untergrenzen.
-   Alle sind gegen die quarantänisierte Population gemessen: `src/cluster/`
-   misst unter seiner tatsächlichen Line-Coverage, solange `LeaseMajority`
-   nicht laufen kann, und die aggregierte Grenze stand aus demselben Grund
-   pragmatisch bei 80, bis sie bei 90 neu gemessen wurde.  `test.yml` hält
-   keine Kopie der Zahl mehr — zu ändern ist also eine Datei statt zweier, die
-   im Gleichschritt bleiben müssen.
-6. Den Nightly-Job behalten.  Er wird zur Regressionssicherung der
-   Dequarantänisierung.
+`nightly-flakes.yml` führt diese drei Suites weiterhin einzeln aus, dreimal pro
+Nacht.  Es ist jetzt der Regressions-Guard und nicht mehr die
+Bewährungskommission: eine durch Messung widerlegte Behauptung bleibt nur so
+lange widerlegt, wie jemand weitermisst.
 
 ## Wie geht's weiter
 

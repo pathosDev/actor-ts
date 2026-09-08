@@ -5,6 +5,7 @@
  * ADDITIVE — `context.throttle(...)` still accepts a plain options object
  * exactly as before.
  */
+import type { Clock } from './Clock.js';
 import { OptionsBuilder } from './util/OptionsBuilder.js';
 import { OptionsValidator } from './util/OptionsValidator.js';
 
@@ -39,8 +40,8 @@ export type ThrottleOptionsType = {
   readonly burst?: number;
   /** What to do when the bucket is empty.  Default: `'pause'`. */
   readonly onExcess?: ThrottleOnExcess;
-  /** Time source — pass a deterministic clock for tests.  Default: `Date.now`. */
-  readonly now?: () => number;
+  /** Where the throttle reads the time.  Default: the wall clock. */
+  readonly clock?: Clock;
 };
 
 /**
@@ -73,9 +74,14 @@ export class ThrottleOptionsBuilder extends OptionsBuilder<ThrottleOptionsType> 
     return this.set('onExcess', onExcess);
   }
 
-  /** Time source — pass a deterministic clock for tests.  Default: `Date.now`. */
-  withNow(now: () => number): this {
-    return this.set('now', now);
+  /**
+   * Where the throttle reads the time.  Default: the wall clock.
+   *
+   * Pass `system.clock` and a `ManualScheduler` drives the bucket's refill, so
+   * a throttling test advances time instead of waiting for it.
+   */
+  withClock(clock: Clock): this {
+    return this.set('clock', clock);
   }
 }
 
@@ -87,7 +93,7 @@ export class ThrottleOptionsBuilder extends OptionsBuilder<ThrottleOptionsType> 
  * (it requires `Number.isFinite`), so its rule is bespoke, the same shape
  * `ConsumerControllerOptionsValidator` uses for its unbounded-map opt-out.
  * `burst` is a real capacity (finite `> 0`); `onExcess` one of the two
- * known modes.  `now` is a callback and is not validated.
+ * known modes.  `clock` is an object and is not validated.
  */
 export class ThrottleOptionsValidator extends OptionsValidator<ThrottleOptionsType> {
   constructor() {

@@ -1,3 +1,4 @@
+import type { Scheduler } from '../../Scheduler.js';
 import { match, P } from 'ts-pattern';
 import { ActorPath } from '../../ActorPath.js';
 import { ActorRef } from '../../ActorRef.js';
@@ -113,6 +114,8 @@ export class ClusterSingletonProxy<TCommand> extends ActorRef<TCommand> {
   override _defaultAskTimeoutMs(): number {
     return this.cluster.system._defaultAskTimeoutMs;
   }
+
+  override _virtualScheduler(): Scheduler | null { return this.cluster.system._virtualScheduler; }
 
   /**
    * Hold a message until a host appears — but only up to `bufferSize`.

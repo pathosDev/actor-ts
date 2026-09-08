@@ -1,3 +1,5 @@
+import type { Clock } from '../Clock.js';
+import { systemClock } from '../Clock.js';
 import { NodeAddress } from './NodeAddress.js';
 import type { FailureDecision } from './FailureDetector.js';
 import { fromNullable, type Option } from '../util/Option.js';
@@ -37,7 +39,12 @@ export class PhiAccrualFailureDetector {
   private readonly peers = new Map<string, PeerState>();
   private readonly options: PhiAccrualOptionsType;
 
-  constructor(options: PhiAccrualOptions = {}) {
+  /**
+   * @param clock Where every `now` default comes from — `system.clock` in a
+   *   cluster, so the detector's notion of elapsed time is the same one the
+   *   heartbeat ticks are scheduled on (#1424).
+   */
+  constructor(options: PhiAccrualOptions = {}, private readonly clock: Clock = systemClock) {
     this.options = { ...defaultPhiAccrualOptions, ...(options as Partial<PhiAccrualOptionsType>) };
     new PhiAccrualOptionsValidator().validate(this.options);
   }
@@ -45,7 +52,7 @@ export class PhiAccrualFailureDetector {
   get interval(): number { return this.options.heartbeatIntervalMs; }
 
   /** Peer is now known.  No sample added until the first heartbeat. */
-  register(peer: NodeAddress, _now: number = Date.now()): void {
+  register(peer: NodeAddress, _now: number = this.clock.now()): void {
     const key = peer.toString();
     if (!this.peers.has(key)) {
       this.peers.set(key, {
@@ -59,7 +66,7 @@ export class PhiAccrualFailureDetector {
   }
 
   /** Record a received heartbeat for `peer` at time `now`. */
-  heartbeat(peer: NodeAddress, now: number = Date.now()): void {
+  heartbeat(peer: NodeAddress, now: number = this.clock.now()): void {
     const key = peer.toString();
     let state = this.peers.get(key);
     if (!state) {
@@ -82,7 +89,7 @@ export class PhiAccrualFailureDetector {
   }
 
   /** Current phi value for `peer` — the higher, the more suspicious. */
-  phi(peer: NodeAddress, now: number = Date.now()): number {
+  phi(peer: NodeAddress, now: number = this.clock.now()): number {
     const state = this.peers.get(peer.toString());
     if (!state || !state.everSeen) return 0;
     const effectiveElapsed = Math.max(0, now - state.lastHeartbeat - this.options.acceptableHeartbeatPauseMs);
@@ -101,7 +108,7 @@ export class PhiAccrualFailureDetector {
     return -Math.log10(prob);
   }
 
-  decide(peer: NodeAddress, now: number = Date.now()): FailureDecision {
+  decide(peer: NodeAddress, now: number = this.clock.now()): FailureDecision {
     const phi = this.phi(peer, now);
     if (phi >= this.options.downThreshold) return 'down';
     if (phi >= this.options.unreachableThreshold) return 'unreachable';

@@ -10,6 +10,7 @@ import {
   QUIESCENCE_POLL_MAX_INTERVAL_MS,
 } from './Constants.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from './util/Constants.js';
+import { SETTLE_MAX_TURNS } from './Constants.js';
 import { DEFAULT_SCATTER_GATHER_TIMEOUT_MS, MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS } from './ScatterGatherOptions.js';
 import { OptionsError } from './util/OptionsValidator.js';
 import { Config } from './config/Config.js';
@@ -36,6 +37,7 @@ import { DEFAULT_SINK_CLOSE_TIMEOUT_MS } from './logging/MultiSinkLoggerOptions.
 import type { ActorClassOrFactory } from './Actor.js';
 import type { ActorOptions, DefaultMailboxConfiguration } from './ActorOptions.js';
 import { readDefaultMailboxFromConfig } from './ActorOptions.js';
+import type { Clock } from './Clock.js';
 import { Scheduler, type SchedulerErrorSink } from './Scheduler.js';
 import type { ActorSystemOptions, ActorSystemOptionsType } from './ActorSystemOptions.js';
 import { ActorCell } from './internal/ActorCell.js';
@@ -96,6 +98,36 @@ export class ActorSystem {
   readonly startedAtMs: number;
   readonly dispatcher: Dispatcher;
   readonly scheduler: Scheduler;
+
+  /**
+   * What time it is, according to this system.
+   *
+   * The same object as {@link scheduler}, narrowed to the one method, and the
+   * narrowing is the point: a component that only reads the time should take
+   * `system.clock` rather than the whole scheduler, so its dependency says
+   * what it actually needs and a test can supply a clock without also
+   * granting it the power to arm timers.
+   *
+   * Under a `ManualScheduler` this is virtual time, which is the whole point:
+   * a component reading it advances with `advance()` instead of with the wall
+   * clock, and a test can say "a minute passed" in a millisecond.
+   */
+  get clock(): Clock { return this.scheduler; }
+
+  /**
+   * @internal This system's scheduler when its time is virtual, `null` when it
+   * is the wall clock.
+   *
+   * A field resolved once at construction rather than a check per use, because
+   * the caller is `ActorRef.ask` and the answer cannot change: a system's
+   * scheduler is fixed for its lifetime.
+   *
+   * The narrowing is what keeps the deadline seam free in production. Arming
+   * every ask through the scheduler costs ~13% of `ask-throughput`; arming only
+   * the ones a test can actually advance past costs nothing, because the branch
+   * that reads this is already there.
+   */
+  readonly _virtualScheduler: Scheduler | null;
   readonly eventStream: EventStream;
   readonly log: Logger;
   /** How long `terminate()` waits for the logger to flush and close. */
@@ -251,6 +283,18 @@ export class ActorSystem {
    */
   private readonly schedulerErrorSink: SchedulerErrorSink;
 
+  /**
+   * Did this system construct {@link scheduler} itself?
+   *
+   * Decides whether `terminate()` may shut it down.  A scheduler handed in
+   * through `ActorSystemOptions` belongs to whoever handed it over, exactly as
+   * the dispatcher does — and unlike the dispatcher it used to be shut down
+   * anyway, which is only invisible while one system holds it.  Share a
+   * `ManualScheduler` across two systems and the first `terminate()` disarms
+   * every handle the second one still owns (#1424).
+   */
+  private readonly ownsScheduler: boolean;
+
   private constructor(name: string | undefined, options: ActorSystemOptionsType) {
     this.startedAtMs = Date.now();
     // Config first: the name may come out of it, and nothing in the build
@@ -258,7 +302,11 @@ export class ActorSystem {
     this.config = buildConfig(options);
     this.name = name ?? systemNameFromConfig(this.config);
     this.dispatcher = options.dispatcher ?? dispatcherFromConfig(this.config);
+    // Whether this system built its own scheduler, which is the same question
+    // as "may this system shut it down" — see `_rootTerminated`.
+    this.ownsScheduler = options.scheduler === undefined;
     this.scheduler = options.scheduler ?? new Scheduler();
+    this._virtualScheduler = this.scheduler.isVirtual ? this.scheduler : null;
     this.eventStream = new EventStream();
     this.loggerCloseTimeoutMs = loggerCloseTimeoutFromConfig(this.config);
     this.shutdownDrainTimeoutMs = shutdownDrainTimeoutFromConfig(this.config);
@@ -746,6 +794,48 @@ export class ActorSystem {
     return this.isUserTreeQuiescent();
   }
 
+  /**
+   * @internal Let every actor turn that is already armed run, and every turn
+   * those arm, until the `/user` tree is quiet.
+   *
+   * **The primitive the TestKit's `advance` needed and did not have.**
+   * `ManualScheduler.advance` fires a timer *synchronously*, but the `tell` the
+   * timer performs is delivered by the dispatcher on a later turn — so
+   * `scheduler.advance(100); expect(probe.received).toHaveLength(1)` reads an
+   * empty probe, and the two flagship determinism samples in the documentation
+   * did not work as written (#1025).  Virtual time makes *when* a timer fires
+   * deterministic; it says nothing about when its effects have landed.
+   *
+   * Distinct from {@link awaitQuiescence}, which this deliberately does not
+   * reuse. That one is a **drain with a deadline**: it backs off from 1 ms to
+   * 25 ms because it runs on every `terminate()` and may be waiting on a real
+   * system doing real work. This one is a **settle with a turn budget**: it
+   * never sleeps, because there is nothing to wait *for* — the work is already
+   * armed and only needs the event loop to reach it. Sleeping here would put a
+   * fixed delay into the one place the test suite is trying to remove them
+   * from.
+   *
+   * The yield is a macrotask, not a microtask, and that is load-bearing: the
+   * default dispatcher spends a microtask budget before yielding, so a
+   * microtask-only loop can spin against it forever without the runner's own
+   * timeout ever firing (#1360).
+   *
+   * Only `/user` is inspected, for the reason {@link awaitQuiescence} gives:
+   * the framework actors under `/system` are never quiet by design.
+   *
+   * @returns whether the tree actually became quiet. A `false` means the budget
+   *   ran out, which is a finding rather than a timing accident.
+   */
+  async _settle(maxTurns: number = SETTLE_MAX_TURNS): Promise<boolean> {
+    if (this._terminated) return true;
+    for (let turn = 0; turn < maxTurns; turn++) {
+      // Probed before the first yield, so an already-quiet system pays nothing.
+      if (this.isUserTreeQuiescent()) return true;
+      await sleep(0);
+    }
+    return this.isUserTreeQuiescent();
+  }
+
   /** Is every cell under `/user` — the guardian included — out of work? */
   private isUserTreeQuiescent(): boolean {
     const busy = (cell: ActorCell<unknown>): boolean => {
@@ -927,17 +1017,20 @@ export class ActorSystem {
   /** @internal — called by the root cell once it has finished terminating. */
   _rootTerminated(_cell: ActorCell<any>): void {
     this._terminated = true;
-    this.scheduler.shutdown();
+    // Only a scheduler this system built.  One passed in belongs to the caller,
+    // the same rule the dispatcher below has always followed — and the reason
+    // it matters is that a shared one is still in use: the second of two
+    // systems on one `ManualScheduler` would find every handle disarmed by the
+    // first one's teardown (#1424).
+    if (this.ownsScheduler) this.scheduler.shutdown();
     // Stop reporting into a logger that is about to be closed.  Only our
     // own sink is removed: a dispatcher passed in through
     // `ActorSystemOptions` outlives this system, and one the owner wired
     // themselves is theirs to keep.
     if (this.dispatcher.onError === this.dispatcherErrorSink) this.dispatcher.onError = undefined;
-    // Same for the scheduler.  `shutdown()` above already disarmed every
-    // handle this system owns, so nothing of ours can still fire — but a
-    // `ManualScheduler` handed in through `ActorSystemOptions` outlives the
-    // system and is advanced by the test afterwards, and its ticks must not
-    // report into a logger that is about to be closed.
+    // Same for the scheduler, and for a borrowed one this is the whole of the
+    // cleanup: it stays armed and advancing for whoever still holds it, so its
+    // ticks must not report into a logger that is about to be closed.
     if (this.scheduler.onError === this.schedulerErrorSink) this.scheduler.onError = undefined;
     const resolvers = this._terminationResolvers;
     this._terminationResolvers = [];

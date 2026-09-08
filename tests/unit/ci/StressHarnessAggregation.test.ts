@@ -6,6 +6,7 @@ import { describe, expect, test } from 'bun:test';
 import {
   aggregate,
   attributesOf,
+  bunArgumentsFor,
   collectRun,
   identityOf,
   normalisePath,
@@ -13,6 +14,7 @@ import {
   parseReport,
   parseSummary,
   render,
+  seedOf,
   unescapeXml,
   type CollectedRun,
   type ReportedTestCase,
@@ -176,7 +178,8 @@ const defaultOptions: StressOptions = {
   maximumFlakyTests: 0,
   runTimeoutMs: 1_200_000,
   reportDirectory: '.stress',
-  skipQuarantined: false,
+  randomize: false,
+  seed: undefined,
   filters: [],
 };
 
@@ -195,9 +198,10 @@ describe('the harness reads a JUnit report the way bun writes one', () => {
 
   /**
    * A skip that counted as a pass is the harness's worst failure mode, because
-   * it is silent and self-confirming: the three quarantined suites skip
-   * *themselves* through `describeMns`, so a harness that read `<skipped/>` as
-   * a pass would report "3/3 green" for a night in which nothing ran.
+   * it is silent and self-confirming.  The case it was written for is gone —
+   * the three multi-node suites that used to skip themselves now run — and the
+   * property is not: a suite that skips itself for any reason must not be able
+   * to report "3/3 green" for a night in which nothing ran.
    */
   test('a skipped test is neither executed nor a failure', () => {
     const parsed = parseReport(reportOf(
@@ -477,6 +481,109 @@ describe('aggregate tells a flaky test from a broken one', () => {
     expect(aggregated.consistent).toEqual([]);
     expect(aggregated.totalFailures).toBe(0);
   });
+
+  /**
+   * #1359, and the reason it is worth a case of its own rather than a wider
+   * assertion: the harness reported `PASS` over sixteen runs of which **none**
+   * was green, with a 100 % failure rate printed two lines above the word.
+   *
+   * One identity failing twice inside a single run pushed its run index onto
+   * `failedRuns` twice, so `failedRuns.length` exceeded `runs` — which matched
+   * neither `< runs` (flaky) nor `=== runs` (consistent).  The offender fell
+   * out of both tables, out of `summary.json`, and out of the step summary the
+   * nightly job is read from, and `offenderCount` was then 0, which is inside
+   * any budget.
+   *
+   * A hook timeout is the easy way to produce it, because bun collapses the
+   * whole block to one `(unnamed)` identity and can report it more than once;
+   * nothing about the arithmetic is specific to that.
+   */
+  test('a test that fails twice inside one run counts that run once', () => {
+    const aggregated = aggregate(
+      [reportedRun(1, [lease, lease]), reportedRun(2, [lease, lease])],
+      2,
+    );
+
+    expect(aggregated.consistent).toHaveLength(1);
+    expect(aggregated.flaky).toEqual([]);
+    // The run count is a count of runs...
+    expect(aggregated.consistent[0]!.failedRuns).toEqual([1, 2]);
+    // ...and the occurrence count is kept, because it is real information.
+    expect(aggregated.consistent[0]!.failureCount).toBe(4);
+    expect(aggregated.greenRuns).toBe(0);
+    expect(aggregated.unexplainedRedRuns).toEqual([]);
+  });
+
+  test('the same identity twice in one run of many is still flaky, not lost', () => {
+    const aggregated = aggregate(
+      [reportedRun(1, [lease, lease]), reportedRun(2, []), reportedRun(3, [])],
+      3,
+    );
+
+    expect(aggregated.flaky).toHaveLength(1);
+    expect(aggregated.flaky[0]!.failedRuns).toEqual([1]);
+    expect(aggregated.flaky[0]!.failureCount).toBe(2);
+    expect(aggregated.consistent).toEqual([]);
+    expect(aggregated.greenRuns).toBe(2);
+  });
+
+  test('two different tests in one run are two offenders, one run each', () => {
+    // The other side of the dedupe: it collapses repeats of one identity and
+    // must not collapse two identities that happen to share a run.
+    const aggregated = aggregate([reportedRun(1, [lease, bootstrap])], 1);
+
+    expect(aggregated.consistent).toHaveLength(2);
+    expect(aggregated.consistent.map((entry) => entry.failedRuns)).toEqual([[1], [1]]);
+    expect(aggregated.consistent.every((entry) => entry.failureCount === 1)).toBe(true);
+  });
+
+  test('a red run every offender accounts for leaves nothing unexplained', () => {
+    // `unexplainedRedRuns` is a self-check on the identity map rather than a
+    // statement about the suite, so the assertion that matters most is that it
+    // is empty on inputs where the map worked.
+    const aggregated = aggregate(
+      [reportedRun(1, [lease, lease]), reportedRun(2, [bootstrap]), reportedRun(3, [])],
+      3,
+    );
+
+    expect(aggregated.unexplainedRedRuns).toEqual([]);
+    expect([...aggregated.flaky].map((entry) => entry.identity).sort())
+      .toEqual([identityOf(bootstrap), identityOf(lease)].sort());
+  });
+});
+
+describe('the order-control flags reach the child, and its seed comes back', () => {
+  /**
+   * `--randomize` is what surfaces an order-dependent test, and a seed is what
+   * makes the failure re-runnable a week later from an artifact.  Neither is
+   * worth much without the other: a shuffle nobody can reproduce turns one
+   * flake into an unattributable one.
+   */
+  test('no flags by default, so an ordinary run is unchanged', () => {
+    expect(bunArgumentsFor(defaultOptions)).toEqual([]);
+  });
+
+  test('--randomize alone shuffles without pinning', () => {
+    expect(bunArgumentsFor({ ...defaultOptions, randomize: true })).toEqual(['--randomize']);
+  });
+
+  test('a seed is passed with the shuffle it seeds, never on its own', () => {
+    // `parseArguments` sets `randomize` when `--seed` is given; this is the
+    // second half of that contract, at the point the child is built.
+    expect(bunArgumentsFor({ ...defaultOptions, randomize: true, seed: 42 }))
+      .toEqual(['--randomize', '--seed=42']);
+    // A non-finite seed is dropped rather than passed as `--seed=NaN`, which
+    // bun would reject and which would make every run fail identically.
+    expect(bunArgumentsFor({ ...defaultOptions, randomize: true, seed: Number.NaN }))
+      .toEqual(['--randomize']);
+  });
+
+  test('the seed is read back out of the run log bun wrote it to', () => {
+    expect(seedOf('bun test v1.4.0\n\n 12 pass\n 0 fail\nRan 12 tests. --seed=123456\n'))
+      .toBe(123456);
+    expect(seedOf('bun test v1.4.0\n 12 pass\n 0 fail\n')).toBeUndefined();
+    expect(seedOf('')).toBeUndefined();
+  });
 });
 
 describe('collectRun keeps a hang and a truncated report apart', () => {
@@ -580,21 +687,6 @@ describe('the rendered summary says what was and was not measured', () => {
     expect(output).toContain('runs: 1');
   });
 
-  /**
-   * Which suites the number covers is part of the number.  A summary that did
-   * not say so is how "the suite is reliable" gets quoted for a run that
-   * excluded exactly the unreliable suites.
-   */
-  test('the summary states whether the quarantined suites were in the run', () => {
-    const included = render(aggregate([reportedRun(1, [])], 1), defaultOptions);
-    const excluded = render(
-      aggregate([reportedRun(1, [])], 1),
-      { ...defaultOptions, skipQuarantined: true },
-    );
-
-    expect(included).toContain('quarantined suites: included');
-    expect(excluded).toContain('quarantined suites: SKIPPED (--skip-quarantined)');
-  });
 });
 
 describe('the harness options parse the way the workflows invoke them', () => {
@@ -606,14 +698,13 @@ describe('the harness options parse the way the workflows invoke them', () => {
     expect(options.maximumFlakyTests).toBe(0);
     expect(options.runTimeoutMs).toBe(20 * 60 * 1_000);
     expect(options.reportDirectory).toBe('.stress');
-    // The default that the whole "do not measure a smaller suite" rationale
-    // rests on: quarantined suites are IN unless asked otherwise.
-    expect(options.skipQuarantined).toBe(false);
+    expect(options.randomize).toBe(false);
+    expect(options.seed).toBeUndefined();
     expect(options.filters).toEqual([]);
   });
 
-  /** Verbatim from `.github/workflows/nightly-flakes.yml`'s quarantined job. */
-  test('the nightly quarantined job\'s arguments parse as three path filters', () => {
+  /** Verbatim from `.github/workflows/nightly-flakes.yml`'s worker-suites job. */
+  test('the nightly worker-suites job\'s arguments parse as three path filters', () => {
     const options = parseArguments([
       '--runs=3',
       '--run-timeout=480000',
@@ -626,12 +717,26 @@ describe('the harness options parse the way the workflows invoke them', () => {
     expect(options.runs).toBe(3);
     expect(options.runTimeoutMs).toBe(480_000);
     expect(options.filters).toHaveLength(3);
-    expect(options.skipQuarantined).toBe(false);
   });
 
-  test('--skip-quarantined is a bare flag and turns the opt-out on', () => {
-    expect(parseArguments(['--skip-quarantined']).skipQuarantined).toBe(true);
+  /**
+   * A seed with no shuffle would be silently inert, which is the shape of a
+   * flag that looks obeyed and is not — so `--seed` sets both.
+   */
+  test('--seed implies the shuffle it seeds', () => {
+    const options = parseArguments(['--seed=4242']);
+
+    expect(options.seed).toBe(4242);
+    expect(options.randomize).toBe(true);
   });
+
+  test('--randomize on its own shuffles without pinning', () => {
+    const options = parseArguments(['--randomize']);
+
+    expect(options.randomize).toBe(true);
+    expect(options.seed).toBeUndefined();
+  });
+
 });
 
 describe('the harness is importable, which is what makes the above possible', () => {

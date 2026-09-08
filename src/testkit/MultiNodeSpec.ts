@@ -1,3 +1,4 @@
+import type { ManualScheduler } from './ManualScheduler.js';
 import type { MultiNodeSpecOptions, MultiNodeSpecOptionsType } from './MultiNodeSpecOptions.js';
 import { ActorSystem } from '../ActorSystem.js';
 import { ActorSystemOptions } from '../ActorSystemOptions.js';
@@ -72,8 +73,14 @@ type BarrierEntry = {
 };
 
 export class MultiNodeSpec {
-  private readonly options: Required<Omit<MultiNodeSpecOptionsType, 'addresses' | 'failureDetector' | 'downing'>>
-    & Pick<MultiNodeSpecOptionsType, 'addresses' | 'failureDetector' | 'downing'>;
+  private readonly options: Required<Omit<
+    MultiNodeSpecOptionsType,
+    'addresses' | 'failureDetector' | 'downing' | 'scheduler'
+  >>
+    & Pick<
+      MultiNodeSpecOptionsType,
+      'addresses' | 'failureDetector' | 'downing' | 'scheduler'
+    >;
   private readonly nodes = new Map<string, NodeRecord>();
   private started = false;
   private readonly barriers = new Map<string, BarrierEntry>();
@@ -99,6 +106,7 @@ export class MultiNodeSpec {
       addresses: options.addresses,
       failureDetector: options.failureDetector,
       downing: options.downing,
+      scheduler: options.scheduler,
     };
   }
 
@@ -133,9 +141,15 @@ export class MultiNodeSpec {
     for (const role of orderedRoles) {
       const address = addressByRole.get(role)!;
       const transport = new MultiNodeTransport(address);
-      const system = ActorSystem.create(role, ActorSystemOptions.create()
+      const systemOptions = ActorSystemOptions.create()
         .withLogger(new NoopLogger())
-        .withLogLevel(this.options.logLevel));
+        .withLogLevel(this.options.logLevel);
+      // One scheduler for the whole cluster, so `advance` moves every node's
+      // gossip, heartbeat and detection ticks by the same amount at the same
+      // instant.  Giving each node its own would put them on separate virtual
+      // clocks, which is worse than sharing a real one.
+      if (this.options.scheduler) systemOptions.withScheduler(this.options.scheduler);
+      const system = ActorSystem.create(role, systemOptions);
       const clusterOptions = ClusterOptions.create()
         .withHost(address.host)
         .withPort(address.port)
@@ -294,6 +308,72 @@ export class MultiNodeSpec {
     const node = this.nodes.get(role);
     if (!node) throw new Error(`MultiNodeSpec: unknown role '${role}'`);
     return node;
+  }
+
+  /**
+   * The shared virtual clock, or `null` when this spec runs on real time.
+   *
+   * @throws when asked for and absent, because a silent no-op would make every
+   *   assertion that follows a race rather than a failure.
+   */
+  private requireVirtualClock(caller: string): ManualScheduler {
+    const scheduler = this.options.scheduler;
+    if (scheduler === undefined || !scheduler.isVirtual) {
+      throw new Error(
+        `MultiNodeSpec.${caller}: this spec has no virtual clock to advance. `
+        + 'Build it with `MultiNodeSpecOptions.create().withScheduler(new ManualScheduler())`.',
+      );
+    }
+    return scheduler as ManualScheduler;
+  }
+
+  /**
+   * Advance every node's clock by `ms`, then let each node's actors run.
+   *
+   * The multi-node twin of `TestKit.advance`, and it settles every system
+   * rather than one: a gossip tick on node A produces work on node B, so
+   * settling only the node whose timer fired would leave the cluster
+   * half-way through the round the advance started.
+   */
+  async advance(ms: number): Promise<void> {
+    this.requireVirtualClock('advance').advance(ms);
+    for (const node of this.nodes.values()) await node.system._settle();
+  }
+
+  /**
+   * Advance in `stepMs` slices until `cond()` holds, or until `budgetMs` of
+   * **virtual** time has passed.
+   *
+   * The replacement for polling a real-time deadline, which cannot work on a
+   * virtual clock at all: nothing advances while the poller sleeps, so the
+   * condition can never become true and the wait can only ever time out.
+   *
+   * `stepMs` defaults to the gossip interval — the cadence at which anything in
+   * a cluster actually changes, so a smaller slice costs settles that observe
+   * nothing and a larger one can step over a window entirely.
+   */
+  async advanceUntil(
+    cond: () => boolean,
+    options: { readonly budgetMs?: number; readonly stepMs?: number; readonly description?: string } = {},
+  ): Promise<void> {
+    const budgetMs = options.budgetMs ?? this.options.awaitTimeoutMs;
+    const stepMs = options.stepMs ?? this.options.gossipIntervalMs;
+    const scheduler = this.requireVirtualClock('advanceUntil');
+    const deadline = scheduler.now() + budgetMs;
+
+    // Probed before the first advance, so a condition that already holds costs
+    // no virtual time — the same rule `awaitQuiescence` follows for real time.
+    for (const node of this.nodes.values()) await node.system._settle();
+    if (cond()) return;
+
+    while (scheduler.now() < deadline) {
+      await this.advance(stepMs);
+      if (cond()) return;
+    }
+    throw new Error(
+      `MultiNodeSpec.advanceUntil: ${options.description ?? 'condition'} did not hold within `
+      + `${budgetMs} ms of virtual time (${stepMs} ms steps)`,
+    );
   }
 
   private async awaitCondition(

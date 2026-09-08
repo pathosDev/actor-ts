@@ -7,11 +7,12 @@
  * Until #701's second pass this file had **no** suite at all, and that absence
  * is why it kept the unguarded `fromJSON(env.to)` shape for the whole of the
  * first fix.  The only suite that exercises it indirectly —
- * `tests/unit/testkit/ParallelMultiNodeSpec.test.ts` — is one of the three
- * quarantined behind `ACTOR_TS_SKIP_FLAKY_MNS`, so a regression there is
- * invisible to CI.  Everything here drives the broker through the `FakePort`
- * shim instead: no worker is spawned, so this suite runs everywhere, on every
- * push.
+ * `tests/unit/testkit/ParallelMultiNodeSpec.test.ts` — was one of the three
+ * removed from CI by `ACTOR_TS_SKIP_FLAKY_MNS`, so a regression there was
+ * invisible; it runs everywhere now, and the reasoning here is unchanged either
+ * way.  Everything below drives the broker through the `FakePort` shim: no
+ * worker is spawned, so this suite is fast and cannot be perturbed by thread
+ * scheduling at all.
  *
  * The shim is the same `FakePort` `tests/unit/worker/WorkerBroker.test.ts`
  * uses, and the malformed-frame corpus is now literally the same array —

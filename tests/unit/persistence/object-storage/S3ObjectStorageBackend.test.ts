@@ -506,11 +506,18 @@ describe('S3ObjectStorageBackend — close()', () => {
 
   test('close after operation destroys the constructed S3Client', async () => {
     const backend = new S3ObjectStorageBackend(s3Opts());
-    void backend.list({ prefix: '' }).catch(() => {});
-    await Promise.resolve(); await Promise.resolve();
+    // Await the operation instead of counting microtask turns behind a dangling
+    // one.  This used to fire `list()` without awaiting it and then let two
+    // `Promise.resolve()`s go by before asserting the client existed — a bet on
+    // how many turns `s3SdkLazy`'s dynamic `import()` takes, which is one number
+    // when the specifier is already in the module registry and another when this
+    // is the run's first resolution of it.  Under `bun test --randomize` the bet
+    // came up short and nothing had been constructed yet (#1422).  Nothing in
+    // the claim needs the operation still in flight: a *completed* `list()` has
+    // constructed the client just as well, and the fake's default `send` answers
+    // `{}`, which the backend lists as empty and never rejects on.
+    expect(await backend.list({ prefix: '' })).toEqual([]);
     expect(fakeClientsConstructed.length).toBe(1);
-    // Replace send so close()'s await doesn't trip on the default empty result.
-    fakeClientsConstructed[0]!.send = async () => ({ Contents: [], IsTruncated: false });
     await backend.close();
     expect(fakeClientsConstructed[0]!.destroyed).toBe(true);
   });

@@ -202,16 +202,17 @@ diagnostic.
   them unique across concurrently-running specs.
 </Aside>
 
-<Aside type="caution" title="These suites do not run on CI">
-  Bun on GitHub's hosted runners cannot respawn functional worker
-  threads after the first worker test — they spawn, handshake, and
-  then never run.  So `ACTOR_TS_SKIP_FLAKY_MNS=1` skips every
-  `ParallelMultiNodeSpec` suite there, and a green CI check says
-  nothing about them.  They do run on a local `bun test` and in
-  Docker, and a nightly job re-runs them with the flag off.
+<Aside type="note" title="These suites run on CI again">
+  Bun on GitHub's hosted runners was said not to be able to respawn
+  functional worker threads after the first worker test — they spawn,
+  handshake, and then never run — so every `ParallelMultiNodeSpec`
+  suite was skipped there by `ACTOR_TS_SKIP_FLAKY_MNS=1`.
 
-  Which means: **run your worker-thread test locally before
-  trusting it.**  The exit criterion for the quarantine is in
+  Measured against that claim, it did not hold: a nightly job ran
+  exactly those suites with the flag off, three repeats a night, for
+  21 consecutive nights without one hang.  They run in `test.yml` like
+  any other suite now, and the nightly stays on as the regression
+  guard.  The history is in
   [Diagnosing test flakes](/testing/diagnosing-flakes/).
 </Aside>
 

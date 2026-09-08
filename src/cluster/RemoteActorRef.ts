@@ -1,3 +1,4 @@
+import type { Scheduler } from '../Scheduler.js';
 import { ActorPath, parsePathSegments } from '../ActorPath.js';
 import { ActorRef } from '../ActorRef.js';
 import { LogContext } from '../LogContext.js';
@@ -60,6 +61,8 @@ export class RemoteActorRef<TMessage = unknown> extends ActorRef<TMessage> {
   override _defaultAskTimeoutMs(): number {
     return this.cluster.system._defaultAskTimeoutMs;
   }
+
+  override _virtualScheduler(): Scheduler | null { return this.cluster.system._virtualScheduler; }
 
   override toString(): string {
     return `${this.targetNode}${this.targetPath}`;

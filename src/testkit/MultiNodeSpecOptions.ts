@@ -1,3 +1,4 @@
+import type { Scheduler } from '../Scheduler.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import type { ClusterOptionsType } from '../cluster/ClusterOptions.js';
 import type { DowningProvider } from '../cluster/downing/index.js';
@@ -19,6 +20,20 @@ export type MultiNodeSpecOptionsType = {
   readonly gossipIntervalMs?: number;
   /** How long synchronous `await*` helpers wait before throwing.  Default 10 s. */
   readonly awaitTimeoutMs?: number;
+  /**
+   * One scheduler shared by every node in the spec.  Default: each node system
+   * builds its own wall-clock one.
+   *
+   * Pass a `ManualScheduler` and the whole cluster runs on one virtual clock —
+   * gossip, heartbeats, failure detection and downing all advance together
+   * through {@link MultiNodeSpec.advance}, which is the only way to make a
+   * convergence question deterministic rather than a race against a budget.
+   *
+   * Sharing one across four systems is what made the ownership rule in
+   * `ActorSystem` matter: a borrowed scheduler is not shut down by the first
+   * node that terminates (#1424).
+   */
+  readonly scheduler?: Scheduler;
   /** Log level — defaults to a quiet NoopLogger. */
   readonly logLevel?: LogLevel;
   /** Per-role split-brain resolver factory. */
@@ -65,6 +80,11 @@ export class MultiNodeSpecOptionsBuilder extends OptionsBuilder<MultiNodeSpecOpt
   }
 
   /** Gossip interval in ms.  Default 100. */
+  /** One scheduler shared by every node — pass a `ManualScheduler` for virtual time. */
+  withScheduler(scheduler: Scheduler): this {
+    return this.set('scheduler', scheduler);
+  }
+
   withGossipIntervalMs(gossipIntervalMs: number): this {
     return this.set('gossipIntervalMs', gossipIntervalMs);
   }

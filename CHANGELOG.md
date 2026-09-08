@@ -119,6 +119,302 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   a cold-start stagger, and one value read from a file every node of the
   deployment shares shifts every node's first tick by the same amount,
   de-aligning nothing.
+- **`MultiNodeSpec` can run every node on one shared virtual clock, with
+  `advance` and `advanceUntil`** (#1424).
+
+  ```ts
+  const scheduler = new ManualScheduler();
+  const spec = new MultiNodeSpec(
+    MultiNodeSpecOptions.create().withRoles(['a', 'b', 'c']).withScheduler(scheduler),
+  );
+  await spec.start();
+  await spec.advanceUntil(() => spec.clusterFor('a').members().length === 3, {
+    description: 'the cluster converged',
+  });
+  ```
+
+  A cluster's interesting questions are all about convergence, and convergence
+  takes gossip rounds — so a multi-node assertion is a race between "has it
+  converged yet" and a real-time budget. That is most of the flake catalogue.
+  One scheduler shared by every node makes an advance mean *one round happened
+  everywhere* rather than *one node's timer fired*, and `advanceUntil` replaces
+  a real-time poll, which on a virtual clock cannot work at all: nothing
+  advances while the poller sleeps, so the condition can never become true.
+
+  Both throw rather than no-op on a spec without a virtual clock, since silently
+  succeeding would make every assertion after them a race.
+
+- **BREAKING — `terminate()` no longer shuts down a scheduler it was given**
+  (#1424).
+
+  A scheduler passed through `ActorSystemOptions.withScheduler` belongs to
+  whoever passed it, exactly as the dispatcher always has. It was shut down
+  anyway, which is invisible while one system holds it and wrong the moment two
+  do: the first `terminate()` disarmed every handle the second still owned. The
+  code already reasoned this way one line further down, where it declines to
+  clear the error sink of a scheduler that "outlives the system and is advanced
+  by the test afterwards".
+
+  A system that built its own scheduler still shuts it down, so an armed
+  interval cannot hold the event loop open after `terminate()` (#641). Only a
+  caller who *relied* on their own scheduler being stopped for them is affected;
+  call `scheduler.shutdown()` where you used to expect it.
+
+- **`LeaseOptions.withScheduler` puts the whole lease lifecycle on virtual
+  time** (#1424).
+
+  ```ts
+  const lease = new InMemoryLease(
+    LeaseOptions.create()
+      .withName('singleton')
+      .withOwner(nodeId)
+      .withTtlMs(30_000)
+      .withScheduler(system.scheduler),
+  );
+  ```
+
+  Everything interesting a lease does is a duration — the TTL, the renewal
+  cadence, the gap between acquire retries — and all three were measured on the
+  wall clock, so a test could only cross one by waiting for it. Which is why
+  lease tests used TTLs of tens of milliseconds and then asserted on behaviour a
+  production TTL of thirty seconds shows quite differently. Ten TTLs of renewal
+  now cost nothing instead of five real minutes.
+
+  `InMemoryLeaseStore.tryAcquire` takes the caller's `now` rather than reading a
+  clock: it is a process-wide singleton every lease competes against, so it has
+  none of its own, and two leases in one test may legitimately hold different
+  ones. `peek` takes an optional `now` and still defaults to the wall clock.
+
+  This is also the machinery `LeaseMajority` was blamed for over thirteen red
+  nights before the cause turned out to be a product defect in split-brain
+  resolution (#839). The hypothesis was wrong — but it was never *checkable*,
+  and that is the part this changes.
+
+  A `KubernetesLease` accepts the option too, and it moves only the renewal
+  cadence: its HTTP calls are real requests to a real API server and stay that
+  way.
+
+- **`CircuitBreaker`, `after`, `retry` and `gracefulStop` can take their time
+  from a scheduler** (#1424).
+
+  ```ts
+  const breaker = new CircuitBreaker(
+    CircuitBreakerOptions.create()
+      .withMaxFailures(1)
+      .withResetTimeoutMs(10_000)
+      .withScheduler(system.scheduler),
+  );
+  ```
+
+  Each held a duration a test has to cross, and each armed a raw timer — so the
+  only way to cross one was to wait for it. The circuit breaker's reset window
+  is the worst case: a realistic one is seconds, so a test of "it reopens after
+  the window" either waits those seconds or shrinks the window until it is
+  asserting a shape production never takes.
+
+  - `CircuitBreakerOptions` gains `withScheduler` / `scheduler`, used for the
+    reset window and — only where that scheduler's time is virtual — for the
+    per-call timeout.
+  - `after(delayMs, factory, scheduler?)` takes an optional third argument.
+  - `RetryOptions` gains `scheduler`, which supplies the delay between attempts
+    without the caller writing the `sleep` adapter by hand. An explicit `sleep`
+    still wins; it is the lower-level door.
+  - `gracefulStop` needs no new argument at all — it reaches the scheduler
+    through the local ref it was given, and does so unconditionally, since a
+    graceful stop happens once per actor at shutdown and has no hot path to
+    protect.
+
+  All four defaults are unchanged: without a scheduler every one of them arms
+  the host timer it always did.
+
+- **An `ask` deadline and a receive timeout are virtual under a
+  `ManualScheduler`** (#1424).
+
+  ```ts
+  const { kit, scheduler } = TestKit.withManualScheduler();
+  const pending = silent.ask({ kind: 'ping' }, 5_000);
+  scheduler.advance(5_000);
+  await expect(pending).rejects.toThrow(AskTimeoutError);   // in no real time
+  ```
+
+  This is the commonest shape in the flake catalogue. A test for "the reply
+  never came" has to let the deadline elapse; on the wall clock the only way is
+  to wait, so it gets written with an unrealistically short deadline and then
+  fails on a loaded machine, because 40 ms of wall clock is not 40 ms of
+  scheduling. Both halves of that trade go away.
+
+  **Only where time is actually virtual, and that is measured rather than
+  cautious.** `Scheduler` gained `isVirtual` (`false`; `ManualScheduler`
+  overrides it to `true`), and a real scheduler keeps the raw `setTimeout` the
+  ask path always used. Arming *every* ask through the scheduler costs ~13 % of
+  `ask-throughput` — 195k → 170k ask/s, p50 2.8 → 3.1 µs — in cancellable
+  allocation and set bookkeeping, and buys nothing in production, since nobody
+  can advance past a real deadline. Keeping the dispatch and bypassing the
+  scheduler restored the baseline exactly, which is what isolates the cost to
+  that path rather than to the lookup reaching it. Re-measured after narrowing:
+  181–196k ask/s against a 177–202k baseline, p50 unchanged.
+
+  The receive timeout moves unconditionally, because it is not on a hot path —
+  it re-arms once per handled message and the framework's own comment notes
+  that almost no actor sets one.
+
+- **`TestKit.settle()` and `TestKit.advance(ms)` — the half of deterministic
+  testing that virtual time does not cover** (#1025, #1424).
+
+  ```ts
+  const { kit } = TestKit.withManualScheduler();
+  const recorder = kit.system.spawn(Recorder, 'recorder');
+  kit.system.scheduler.scheduleOnce(250, recorder, 'later');
+
+  await kit.advance(250);                 // fires the timer AND lands its tell
+  expect(Recorder.seen).toEqual(['later']);
+  ```
+
+  `ManualScheduler.advance` fires a timer **synchronously**, but the `tell` it
+  performs is delivered by the dispatcher on a later turn of the event loop. So
+  virtual time makes *when* a timer fires deterministic and says nothing about
+  when its effects have landed, and
+
+  ```ts
+  scheduler.advance(100);
+  expect(probe.messageCount).toBe(1);     // ✗ reads an empty probe, always
+  ```
+
+  never worked. **Including in this repository's own documentation**: both
+  flagship `ManualScheduler` samples called `advance` before the actor had
+  handled the `tell` that arms the timer, so the clock swept past a timer nobody
+  had set. Where they appeared to pass, `probe.expectMessage` was doing the
+  settling by polling on real time — which means the sample was green for a
+  reason unrelated to the code it demonstrates. Both are corrected.
+
+  `settle()` lets every armed actor turn run, and every turn those arm, until
+  the `/user` tree is quiet. It **never sleeps** — nothing is being waited for,
+  the work is already armed and only needs the event loop to reach it, so this
+  adds no fixed delay to a suite that is busy removing them. It throws rather
+  than hanging when the tree never becomes quiet, which is what an exchange with
+  no end looks like; the turn budget exists for that case and for no other, since
+  one yield settles every ordinary exchange measured here.
+
+  `advance(ms)` is both halves in the right order, and refuses a kit built
+  without a `ManualScheduler` rather than silently doing nothing.
+
+- **`Clock` — the time a component reads, as a contract rather than a global,
+  reachable as `system.clock`** (#1424).
+
+  ```ts
+  import type { Clock } from 'actor-ts';
+
+  const at = system.clock.now();          // wall clock in production
+  ```
+
+  `system.clock` **is** the system scheduler, narrowed to one method, so under
+  a `ManualScheduler` it is virtual time. A component that only reads the time
+  should take `Clock` rather than the whole scheduler: its dependency then says
+  what it needs, and a test can supply a clock without also granting it the
+  power to arm timers.
+
+  **This closes a mixed clock that made a whole class of test unwritable.**
+  `ManualScheduler` has had virtual time since the TestKit existed, and almost
+  nothing could see it — `Scheduler` exposed no `now()`, so every component
+  that needed the time read `Date.now()` for itself, 184 times across 78 files.
+  Gossip, heartbeat and failure-detection ticks all run through the scheduler,
+  so virtual time drives them; the code they drove read the wall clock. Measured
+  as an assertion: a hundred ticks advanced through virtual time land on **100
+  distinct instants** through `system.clock` and on **2** through `Date.now()`.
+  A failure detector handed a hundred samples with no elapsed time between them
+  concludes nothing, which is why "this peer went quiet for a minute" could not
+  be written as a test.
+
+  The reads move onto the contract subsystem by subsystem, held in place by a
+  ratchet (`tests/unit/ci/WallClockRatchet.test.ts`) that lets a file's count
+  fall and never rise. `performance.now()` is deliberately out of scope — it
+  measures a duration, not what time it is, and `Clock` says so.
+
+  **BREAKING — the four ad-hoc time seams are now one.** Three constructor
+  parameters typed `() => number` and one builder method, each added for a
+  single call site, each with its own name for the same idea:
+
+  | Before | Now |
+  | --- | --- |
+  | `ThrottleOptions.create().withNow(() => t)` | `.withClock({ now: () => t })` |
+  | `new TokenBucket({ qps, now: () => t })` | `new TokenBucket({ qps, clock: { now: () => t } })` |
+  | `new RestartBudget(strategy, () => t)` | `new RestartBudget(strategy, { now: () => t })` |
+  | `new SinkReporter(name, () => t)` | `new SinkReporter(name, { now: () => t })` |
+
+  Migration is mechanical: wrap the function in `{ now }`, or pass
+  `system.clock` and get virtual time under a `ManualScheduler` for free. Any
+  object with a `now()` is a `Clock`, so a test's existing hand-rolled clock
+  usually needs no change at all beyond the property name.
+
+  **Both failure detectors now take a `Clock`, and the cluster hands them its
+  own.** `FailureDetector` and `PhiAccrualFailureDetector` gained an optional
+  second constructor argument, and `createFailureDetector` an optional fourth;
+  every `now` parameter now defaults to that clock rather than to `Date.now()`.
+  Nothing at a call site changes — `Cluster`'s six parameterless calls are
+  simply correct under virtual time now — but the consequence is that a
+  four-node partition, a heartbeat timeout and a φ value can all be asserted in
+  milliseconds of real time. `tests/unit/cluster/FailureDetectorClock.test.ts`
+  does exactly that; putting the detectors back on `Date.now()` fails 7 of its
+  9 cases, and the 2 that survive are the two that never consult the clock.
+
+- **BREAKING — the split-brain resolver now decides on a view that has stopped
+  moving: `actor-ts.cluster.split-brain-resolver.stable-after`, default 20 s**
+  (#839).
+
+  A strategy is asked nothing until the member view has been *unchanged* for
+  the window. Migration: nothing to change unless the added failover latency
+  matters, in which case lower it —
+  `withSplitBrainResolver({ stableAfterMs: 5_000 })` or
+  `actor-ts.cluster.split-brain-resolver.stable-after = 5s`. `0` restores the
+  previous behaviour exactly, along with the defect below.
+
+  **The window is a correctness fix rather than a hardening measure, and the
+  distinction is the whole entry.** The issue was filed for flapping links; what
+  the measurement found is that a partition which does not flap at all was
+  already being resolved wrongly, because the decision was taken before the
+  partition had finished being *detected*.
+
+  `Cluster.failureDetectionTick` marks peers unreachable one at a time, as each
+  crosses `unreachable-after`, and evaluated downing at the end of that same
+  tick. So a 2/2 partition whose two remote peers were detected on different
+  ticks was resolved as two successive *majority* decisions instead of one
+  equal-split decision:
+
+  ```text
+  tick 1:  a=up b=up c=unreachable d=up          3 reachable of 4  ->  down c
+  tick 2:  a=up b=up c=removed  d=unreachable    2 reachable of 3  ->  down d
+  ```
+
+  The tombstone closes the trap: a force-down writes `withRemoved(...)`, and
+  every bundled strategy filters candidates to `up | leaving | unreachable`, so
+  the denominator shrinks with the numerator. Both halves ran the identical
+  computation over their mirror image and both survived — and with
+  `LeaseMajority` the lease was never contended for by anybody, because the
+  equal-split branch that reaches it was never taken. `KeepMajority` has the
+  same defect by the same two lines, and a 3/2 split can be walked down the
+  same way.
+
+  Measured on one machine within one minute: the four-node partition test
+  failed **8 of 15** runs with the window disabled and **0 of 30** with a
+  1 s window.
+
+  This is also the diagnosis for #1343 and #1309 — the `LeaseMajority` suite
+  that has been red on roughly 13 of 21 nights. It was never a timing budget:
+  the arbitration chain those issues asked to be instrumented is not slow, it
+  is not entered.
+
+  Bound from both sides. `tests/unit/cluster/downing/StaggeredDetection.test.ts`
+  replays the tick sequence over hand-built views with no timing at all, so the
+  premise cannot rot; `tests/multi-node/DowningStabilityWindow.test.ts` drives a
+  real staggered partition and goes red when the window is removed. A case
+  asserting that the *defect* occurs was written, measured at one failure in
+  six, and deliberately not shipped — it would have been a test asserting that a
+  race went one way.
+
+  `down-all-when-unstable` and `down-removal-margin` are deliberately not part
+  of this: a key nothing reads is refused by
+  `tests/unit/config/NoDeadConfigKeys.test.ts`, and they are separate work on
+  the same machinery.
 
 - **A deployment can now name its seed peers and its role tags in HOCON —
   `actor-ts.cluster.seed-nodes` and `actor-ts.cluster.roles`, both shipping
@@ -2081,6 +2377,79 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `coordination.lease.kubernetes.token-*` and
   `management.auth-protect-health` — none of which is a credential; a stock
   configuration now withholds twelve keys instead of thirty-one.
+- **Three object-storage suites state the budget their temp-tree hooks run
+  under, instead of inheriting one nobody chose** (#290, #1282).
+
+  Their `beforeEach` builds a real object-storage tree and their `afterEach`
+  deletes it recursively. Idle that costs single-digit milliseconds; under
+  whole-suite disk contention a hook in `IntegrityTampering` was seen at 11.4 s
+  and two in `ReEncryptionSweep` at 24.8 s and 69.0 s — against bun's
+  undeclared 5 000 ms cap, which reports as `(unnamed)` with "a
+  beforeEach/afterEach hook timed out" and names neither the file, the hook kind
+  nor a cause.
+
+  Neither observation reproduced, and the change is sized for that. It is a
+  bound on work that is unbounded in principle — a recursive delete of a tree
+  whose size the test decides, on a disk the rest of the suite is also using —
+  not a number tuned until a red run went away. The other 22 files with the same
+  hook shape are deliberately left alone: two unreproduced observations do not
+  justify a sweep, and a guard that demanded a budget everywhere would be
+  asserting a hazard rather than a finding.
+
+  Verified rather than assumed: bun 1.4.0 honours the second argument on
+  `beforeEach` and `afterEach`, not only on `beforeAll` — a 6 s hook passes
+  under a 20 s budget and dies at 5 000 ms without one.
+
+- **Every suite runs in CI again, and no environment variable can change that**
+  (#538, #1330).
+
+  Three suites ran in no CI job at all for months: `ACTOR_TS_SKIP_FLAKY_MNS=1`
+  in `test.yml`, `multi-runtime.yml` and `publish.yml`, and three copy-pasted
+  `process.env.… ? describe.skip : describe` ternaries. The stated reason was
+  that Bun on GitHub's hosted runners cannot respawn functional worker threads
+  after the first worker test.
+
+  Both halves of that turned out to be wrong, in different ways:
+
+  - **The worker-thread suites had already earned their way back.** The written
+    exit criterion was fourteen consecutive green nights of
+    `nightly-flakes.yml` running exactly those suites with the flag off. They
+    reached twenty-one — 63 executions on `ubuntu-latest`, not one hang. Nobody
+    had read the criterion against the runs, which is precisely what the
+    workflow predicted about itself: "Nothing accumulates the streak. It is
+    counted by a human reading these annotations, which is the same failure
+    that made the quarantine permanent in the first place."
+  - **`LeaseMajority` was never a runner problem.** Its cause was the
+    split-brain resolution defect fixed under #839 in this release. The
+    quarantine had been hiding a product bug rather than measuring a runner.
+
+  What changed, beyond deleting the flag: `bunfig.toml`'s
+  `coveragePathIgnorePatterns` block (it removed the worker harness from the
+  coverage denominator only because that harness could not run on CI) and
+  `--exclude=worker` in `benchmarks.yml` (same cause, and invisible to a grep
+  for the flag, which is how it would have been missed). Coverage was
+  re-measured over the un-quarantined population and went **up**: 94.39 %
+  aggregate, `src/cluster/` 97.55 %, `src/persistence/` 95.56 %.
+
+  Two mechanisms replace the quarantine, and they are the point of the entry:
+
+  - **`tests/unit/ci/NoEnvironmentGatedSkips.test.ts`** refuses a test whose
+    execution an environment variable decides, because that is exactly the
+    thing a workflow can set — and setting it is how a red suite becomes an
+    absent one. A *capability probe* stays fine and is the shape to reach for:
+    `available ? describe : describe.skip` asks the machine a question no
+    workflow can answer for it. An allow-list entry needs a reason it cannot
+    hide a failure; there is one, for an opt-in re-measurement path that is
+    skipped by default and so cannot hide anything.
+  - **Every job in `.github/workflows/` now declares `timeout-minutes`**, so a
+    suite that stops making progress fails inside the hour instead of burning
+    GitHub's six-hour default — the failure mode the quarantine was justified
+    by in the first place.
+
+  `nightly-flakes.yml` keeps running the three suites on their own, three
+  repeats a night: it is the regression guard now rather than the parole board.
+  The harness's `--skip-quarantined` flag and its environment handling are gone
+  with the mechanism they served, along with the test that pinned them.
 
 - **Cluster sharding now bounds how many shards a rebalance may have in
   flight at once, and ships that bound switched on** (#850).  The default
@@ -2273,6 +2642,92 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   which still wins; a deployment that wants the variable at config
   precedence keeps the documented substitution, namespace =
   ${?CLUSTER_NAMESPACE}.
+- **The budget guard could not see the budgets it was written to check, and 37
+  tests were violating its invariant while it stayed green** (#1315).
+
+  `tests/unit/ci/AwaitConditionBudgets.test.ts` enforces one rule: the largest
+  `awaitCondition` budget a test can reach, plus a second of headroom, must fit
+  inside the per-test timeout containing it — otherwise bun kills the test
+  first, the label the helper exists to print is lost, and it resurfaces
+  seconds later as an unhandled error blaming an unrelated test.
+
+  It read exactly one shape, `timeoutMs: <numeric literal>`, and treated
+  everything else as `awaitCondition`'s 2 000 ms default. Thirty-five files wrap
+  the helper in a local `waitFor(predicate, timeoutMs = 5_000, …)` that forwards
+  the parameter in **shorthand** — `{ timeoutMs, intervalMs: 25, label }` — so
+  none of those budgets was ever read, and a call site passing `8_000`
+  positionally was invisible twice over.
+
+  Measured after teaching the scanner to read them: **37 tests across 8 files**
+  could reach a budget their cap could not accommodate, most at exactly the cap
+  (a 5 000 ms budget under bun's 5 000 ms default, which can never report) and
+  one at 8 000 ms under 5 000.
+
+  Three changes:
+
+  - The scanner resolves a shorthand `timeoutMs` from the wrapper's own
+    parameter default, and a budget passed positionally at the call site from
+    the index where the wrapper declares that parameter.
+  - It resolves a budget named by a module-level `const`.
+  - **Anything it still cannot evaluate is a finding rather than a default.**
+    That is the part that matters: a guard whose fallback is "assume the
+    smallest plausible number" is most confident exactly where it understands
+    least, which is how this stayed green for so long.
+
+  The 37 tests were given explicit caps rather than smaller budgets. Lowering a
+  budget to fit a cap tightens the tolerance of a test that already waits on a
+  cluster to converge, which is the direction that *causes* flakes; raising the
+  cap only changes how a stuck test reports.
+
+- **`bun run test:stress` reported `PASS` over sixteen runs of which none was
+  green** (#1359).
+
+  A test that failed more than once inside a single run pushed its run index
+  onto `failedRuns` once per failing *testcase*, so `failedRuns.length` could
+  exceed the run count — matching neither `< runs` (flaky) nor `=== runs`
+  (consistent). The offender fell out of both tables, out of `summary.json`'s
+  `offenders`, and out of the `$GITHUB_STEP_SUMMARY` table the nightly job is
+  read from; `offenderCount` was then zero, which is inside any budget, and the
+  run exited 0 printing "No test failed in any run that reported" two lines
+  under a failure rate of 100 %.
+
+  `nightly-flakes.yml` is `continue-on-error`, so those tables and that exit
+  status are the only signal it produces. A night in which a hook timed out
+  therefore annotated "nothing to add to the flake catalog tonight".
+
+  Four changes, and the last is the one that makes the other three unable to
+  rot:
+
+  - `failedRuns` counts **runs**, once per run however many testcases carried
+    the identity. The occurrence count survives as `failureCount` and is
+    reported beside the run count rather than folded into it.
+  - `consistent` matches `>= runs` rather than `=== runs`, so an off-by-one
+    anywhere upstream widens the "broken" bucket instead of re-opening the hole.
+  - `unexplainedRedRuns` names any run that reported failing tests which no
+    offender accounts for — empty by construction, computed anyway, and a
+    failure of the gate. It is a self-check on the identity map, in the shape
+    `runsRedWithoutFailures` already had for exit codes.
+  - The verdict now gates on **runs**: a run that was not green and that no
+    tolerated offender explains fails the harness however the tables read.
+    `greenRuns` is the field the quarantine's exit criterion is written in, and
+    the harness computed it, printed it, wrote it to `summary.json` and then
+    never acted on it.
+
+  `summary.json` gains what a nightly artifact needs to be read a week later:
+  `bunVersion` (a night is comparable with another night only while the
+  toolchain is), `randomized`, `unexplainedRedRuns`, per-offender
+  `failureCount`, and a `runsDetail` array carrying each run's duration, exit
+  status, counts and seed. The harness also learns `--randomize` and `--seed=N`
+  (the seed implies the shuffle, so it can never be silently inert), and prints
+  the seed on each run line, so an order-dependent failure is reproducible from
+  the artifact rather than from a log that has aged out.
+
+  Bound by a fixture that reproduces the real shape rather than a synthetic one:
+  a `describe` whose `beforeAll` and `afterAll` both blow their budget makes bun
+  emit two `(unnamed)` testcases under one classname. A throwing hook does not
+  reproduce it — bun names each test individually — and neither do two separate
+  blocks, whose classnames differ. Reverting the arithmetic turns the new cases
+  red.
 
 - **An actor restarts `maxRetries` times, not `maxRetries + 1`.**
   `ActorCell` kept its own restart tally and its own arithmetic over it

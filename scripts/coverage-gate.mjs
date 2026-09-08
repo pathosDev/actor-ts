@@ -103,9 +103,12 @@ const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
  * than assumed.
  *
  * **90, ratcheted from 80 on 2026-08-25 (#541).**  The measurement the ratchet
- * policy in `AGENTS.md` requires beside the number, all on the CI population
- * (`ACTOR_TS_SKIP_FLAKY_MNS=1`, 8186 pass / 35 skip across 522 files, bun
- * 1.4.0):
+ * policy in `AGENTS.md` requires beside the number, taken when three suites
+ * were still removed from the CI population by `ACTOR_TS_SKIP_FLAKY_MNS=1`
+ * (8186 pass / 35 skip across 522 files, bun 1.4.0).  **Re-measured
+ * 2026-09-07 over the whole suite, now that nothing is quarantined: 94.39 %
+ * aggregate, 11 664 pass across 615 files** — so the floor has more headroom
+ * than these figures show, not less:
  *
  *   bun `All files` % Lines (what this floor gates) ....... 93.63 %
  *   Σ LH / Σ LF over the same 679 lcov records ............ 92.85 %
@@ -143,13 +146,17 @@ export const DEFAULT_LINE_FLOOR = 90;
  * aggregate floor ("product code (cluster, persistence, …) stays well above
  * it") — a claim that, until this table, nothing measured.
  *
- * **Re-measured 2026-08-25** over the CI population (`ACTOR_TS_SKIP_FLAKY_MNS=1`,
- * which removes `LeaseMajority` and with it some of `src/cluster/`'s own
- * coverage), 8186 pass / 35 skip across 522 files, bun 1.4.0 — the 2026-08-19
- * figures beside them, from 7695 tests on bun 1.3.1:
+ * **Re-measured 2026-09-07** over the whole suite.  The 2026-08-25 figures
+ * beside them were taken while `ACTOR_TS_SKIP_FLAKY_MNS=1` removed
+ * `LeaseMajority` and with it some of `src/cluster/`'s own coverage; nothing is
+ * quarantined now, so the population is the same one CI runs:
  *
- *   src/cluster/      97.29 %  (7317/7521 lines,  82 files)   was 97.39 %
- *   src/persistence/  95.22 %  (8832/9275 lines, 157 files)   was 95.35 %
+ *   src/cluster/      97.55 %  (9568/9808  lines,  90 files)   was 97.29 %
+ *   src/persistence/  95.56 %  (10903/11409 lines, 166 files)  was 95.22 %
+ *
+ * Both moved *up* when the quarantined suites came back, which is the direction
+ * the un-quarantining predicted and the reason it was worth re-measuring rather
+ * than assuming.
  *
  * Both held to within a tenth of a point across ~500 added tests, which is the
  * evidence that would justify raising them — and the reason not to yet is that

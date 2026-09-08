@@ -161,10 +161,9 @@ conservative SemVer.) See `docs/.../reference/version-policy.mdx`.
 - **The README test-count / coverage badges are bot-maintained** — a CI
   workflow pushes `chore(readme): update test count + coverage stats
   [skip ci]` commits directly to `develop` after test runs. Do NOT edit
-  those numbers by hand (the bot overwrites them, with CI-measured values
-  that skip the quarantined multi-node suites via
-  `ACTOR_TS_SKIP_FLAKY_MNS` — see *Verification gates* — so they differ
-  slightly from a local full run). After pushing `develop`, fetch again
+  those numbers by hand (the bot overwrites them with CI-measured values;
+  since nothing is quarantined they now cover the same population a local
+  full run does). After pushing `develop`, fetch again
   before branching — a bot commit may already have landed on top.
 - Adding a page: keep `docs/scripts/scaffold.mjs` and the Astro sidebar
   (`docs/astro.config.mjs`) in sync — same path and label.
@@ -272,31 +271,77 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
 
   The aggregate went **80 → 90 on 2026-08-25** (#541), and the measurement the
   policy above asks for lives beside the constant in `scripts/coverage-gate.mjs`:
-  93.63 % on the CI population locally (bun 1.4.0, `ACTOR_TS_SKIP_FLAKY_MNS=1`)
-  against 93 % from the badge bot's hosted run, with the same lcov reduced to
-  `Σ LH / Σ LF` reading 92.85 %. The 13-point band the old floor left is a
-  3-point one, and 90 clears every candidate statistic, so #1016 changing which
-  one the aggregate *is* cannot turn CI red on its own fix.
-- **Three suites do not run in CI at all.** `ACTOR_TS_SKIP_FLAKY_MNS=1` in
-  `test.yml`, `multi-runtime.yml` and `publish.yml` skips
-  `tests/multi-node/LeaseMajority.test.ts`,
-  `tests/multi-node/ParallelPubSub.test.ts` and
-  `tests/unit/testkit/ParallelMultiNodeSpec.test.ts` — Bun on GitHub's hosted
-  runners cannot respawn functional worker threads after the first worker
-  test, which also starves LeaseMajority's lease arbitration into a false
-  split-brain. **A local `bun test` runs them; a green CI check says nothing
-  about them.** `.github/workflows/nightly-flakes.yml` runs them nightly with
-  the flag OFF; its header carries the exit criterion (14 consecutive green
-  nights), and `docs/…/testing/diagnosing-flakes.mdx` states it in prose.
-  #538.
+  93.63 % on the then-CI population locally (bun 1.4.0, three suites still
+  removed by `ACTOR_TS_SKIP_FLAKY_MNS=1`) against 93 % from the badge bot's
+  hosted run, with the same lcov reduced to `Σ LH / Σ LF` reading 92.85 %. The
+  13-point band the old floor left is a 3-point one, and 90 clears every
+  candidate statistic, so #1016 changing which one the aggregate *is* cannot
+  turn CI red on its own fix. Re-measured 2026-09-07 over the whole suite, with
+  nothing quarantined: **94.39 %**, so the headroom grew rather than shrank.
+- **Every suite runs in CI, and no environment variable may change that.**
+  Three used to be removed by `ACTOR_TS_SKIP_FLAKY_MNS=1` (#538) and are back:
+  the two worker-thread ones on 21 consecutive green nights of
+  `nightly-flakes.yml` against a written criterion of fourteen, and
+  `LeaseMajority` because its cause was found rather than waited out — a
+  product defect in split-brain resolution, not a runner problem (#839).
+  `tests/unit/ci/NoEnvironmentGatedSkips.test.ts` now refuses a test gated on
+  `process.env`, because that is exactly what a workflow can set. Gate on a
+  **capability probe** instead — `available ? describe : describe.skip` asks
+  the machine a question no workflow can answer for it — or add the file to
+  that guard's allow-list with the reason it cannot hide a failure. Every job
+  in `.github/workflows/` carries `timeout-minutes`, so a suite that stops
+  making progress fails inside the hour instead of burning the six-hour
+  default. `nightly-flakes.yml` keeps running the three on their own as the
+  regression guard; `docs/…/testing/diagnosing-flakes.mdx` carries the
+  history.
 - **Repeat-run flake hunting:** `bun run test:stress`
   (`scripts/stress-test.mjs`) loops the suite N times and aggregates failures
   by test identity, splitting *flaky* (failed in some runs) from
-  *consistently failing* (broken, not flaky). It **drops
-  `ACTOR_TS_SKIP_FLAKY_MNS` from the child environment by default** — a
-  harness that inherited it would report a reliable pass rate over exactly
-  the tests known not to be reliable. Not a per-commit gate; reach for it
-  when a test fails intermittently, or when a nightly names one. #290.
+  *consistently failing* (broken, not flaky). `failedRuns` counts **runs**,
+  once per run however many testcases carried an identity, and the verdict
+  fails on a run that was not green and that no tolerated offender explains —
+  before #1359 an identity failing twice inside one run fell out of both
+  tables and the harness printed `PASS` over sixteen runs of which none was
+  green. `--randomize` / `--seed=N` surface and pin order dependence. Not a
+  per-commit gate; reach for it when a test fails intermittently, or when a
+  nightly names one. #290.
+
+  **A red night files an issue** (`nightly-flake` label, one open at a time),
+  and a green one closes it — `scripts/nightly-flake-report.mjs` builds the
+  body, `tests/unit/ci/NightlyFlakeReport.test.ts` covers it. Both nightly jobs
+  are allowed to go red now that the finding is actionable; nothing is gated on
+  a scheduled workflow. The `continue-on-error` they carried was defensible on
+  its own terms — a red check for a *measurement* trains people to ignore it —
+  and the alternative it chose was no conclusion at all, which is exactly how a
+  fourteen-night exit criterion stood at twenty-one before anybody read it
+  (#1310). A summary that is *missing* counts as red, deliberately: "the job
+  produced no verdict" and "the job was green" are opposite facts, and the first
+  two nights of that workflow uploaded no artifact while nobody noticed.
+- **`bun test --parallel` is on for the plain suite and off for the coverage
+  run**, and the split is measured (#1332). On 32 cores the suite goes 293 s →
+  **28 s**, 11 962 tests green, 5 of 5 green when repeated under different
+  shuffles — nothing depends on cross-file state that the implied `--isolate`
+  breaks. But under `--parallel` bun instruments *more lines per file* for
+  identical execution: 721 of 723 files report the same hit count and the
+  numerator is byte-for-byte the same 55 293 lines, while 407 files report a
+  larger denominator and none a smaller one. The aggregate then reads **79.16 %
+  against 93.82 % on the same code**, straight through the 90 % floor by
+  changing what is measured rather than what is tested. `multi-runtime.yml`
+  therefore runs parallel and `test.yml`'s coverage step does not;
+  `tests/unit/ci/WorkflowHygiene.test.ts` keeps it that way, because the obvious
+  response to that red gate would be to lower the floor.
+- **Generative tests run against a pinned seed.**
+  `tests/setup/property-seed.ts` calls `fc.configureGlobal` and is loaded by
+  `bunfig.toml`'s `preload`, so all ~52 `fc.assert` sites share one seed, one
+  `numRuns` floor and `endOnFailure` — a property with a random seed can pass on
+  the next run, and its counterexample lives only in a log that rotates (#1372).
+  A fixed seed stops the suite finding *new* cases on its own; that is the trade
+  and it is worth it, because a case found by an unlucky nightly and then lost
+  was never turned into a regression test anyway. **When a property fails, copy
+  the shrunk counterexample into a plain example test beside it before fixing
+  anything.** `tests/unit/ci/PropertySeedPolicy.test.ts` asks fast-check what
+  seed it is *actually* running with, so a preload that is registered and never
+  loaded fails instead of silently restoring the random default.
 - **Cross-runtime:** `bun run smoke` runs `tests/smoke/cases/*.mjs` on
   Bun, Node, and Deno. Add a smoke case for anything runtime-sensitive.
   A case must release every handle it opens **on every path**, not just the

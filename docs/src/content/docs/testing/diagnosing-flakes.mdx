@@ -26,12 +26,21 @@ identity.  Its output splits the two cases that matter:
 | **flaky** — failed in some runs | The outcome depends on timing, ordering or the machine. | Match it against the catalog below. |
 | **consistently failing** — failed in every run | Broken.  Repetition tells you nothing more. | Fix it, or open an issue.  It is not a flake. |
 
-One gap in that verdict, worth knowing before you trust an empty table: a test
-that fails **more than once inside a single run** currently falls out of *both*
-categories, and the harness then prints "No test failed in any run that
-reported" and exits 0 — even with zero runs green (#1359).  A hook timeout is the
-easy way to hit it, since the whole block collapses to one `(unnamed)` identity.
-Until that is fixed, read `runs: N/N green` rather than the PASS line.
+A test that fails **more than once inside a single run** used to fall out of
+*both* categories, and the harness then printed "No test failed in any run that
+reported" and exited 0 — over sixteen runs of which none was green, two lines
+under a 100 % failure rate (#1359).  `failedRuns` counts runs now, once per run
+however many testcases carried the identity, and the occurrence count is
+reported beside it (`4 failing testcases in total`) rather than folded into the
+classification.  A hook timeout is still the easy way to produce the shape: a
+`describe` whose `beforeAll` and `afterAll` both blow their budget emits two
+`(unnamed)` cases under one classname.
+
+The verdict now also fails on **runs**, not only on tests.  A run that was not
+green and that no tolerated offender explains is red however the tables read —
+which is the field the quarantine's exit criterion is written in
+(`greenRuns == runs`), and the one the old verdict computed, printed, and then
+did not act on.
 
 Other things it names rather than swallows: a run that **never exited** (see
 below), a run that produced **no JUnit report at all** (Bun died before the
@@ -61,13 +70,14 @@ Reports, logs and a machine-readable `summary.json` land in `.stress/`.
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="note" title="The harness runs more than a CI check does">
-  It **removes `ACTOR_TS_SKIP_FLAKY_MNS` from the environment it hands to
-  `bun test`**, so the three quarantined suites (see below) are included even
-  when your shell or workflow has the flag set.  Inheriting it would measure a
-  strictly smaller suite than a local run and then report a reliable pass rate
-  over exactly the tests known not to be reliable.  Pass
-  `--skip-quarantined` when the subject of the run is the rest of the suite.
+<Aside type="note" title="What it measures is the whole suite">
+  It used to **delete `ACTOR_TS_SKIP_FLAKY_MNS`** from the environment it hands
+  to `bun test`, because three suites were gated behind it and they were
+  precisely the ones most likely to flake — a harness that inherited the flag
+  would have reported a reliable pass rate over exactly the tests that were not
+  reliable.  Nothing is gated on an environment variable any more, and
+  `tests/unit/ci/NoEnvironmentGatedSkips.test.ts` is what keeps it that way, so
+  the harness has nothing left to defend against.
 </Aside>
 
 ### Why you can believe the harness
@@ -121,6 +131,76 @@ health.  The second family is found by reading:
 If yes, the wait is a proxy that a half-finished step already satisfies —
 wait on the *asserted* state instead.
 
+### Where the repetition is paid
+
+Three places, each asking a different question.
+
+- **Every commit**, `test.yml` and `multi-runtime.yml` run the whole suite
+  **once, shuffled** — "does anything depend on running after anything else".
+- **Every pull request**, a probe re-runs the branch's **changed test files five
+  times** — "does a test this branch adds depend on the run it was written in".
+  That is the moment a new flake is cheapest to fix, and the only moment it has
+  an obvious owner.
+- **Every night**, `nightly-flakes.yml` loops the whole suite and aggregates by
+  test identity — the load-sensitive family above, over a population no branch
+  touches. **A night that is not green opens an issue**, and a green one closes
+  it again.
+
+That last clause is the part that took longest to get right, and it is worth
+saying why. The nightly measured this suite for months and the measurement
+reached nobody: both jobs were `continue-on-error`, and the verdict went to a
+step summary and a run annotation. The workflow predicted its own failure in a
+comment — *"Nothing accumulates the streak. It is counted by a human reading
+these annotations, which is the same failure that made the quarantine permanent
+in the first place."* Nobody counted. The fourteen-night exit criterion stood at
+twenty-one before anyone looked.
+
+An issue has an owner, a history and a notification, which an annotation never
+had. And with the finding actionable, a red job is a fact rather than noise, so
+the suppression came off: nothing is gated on a scheduled workflow, and red
+there blocks no pull request.
+
+The probe follows the *changed test files* rather than everything a change
+reaches, and the numbers are the reason. `bun test --changed` follows imports
+transitively: measured on this tree, one edit to a persistence module selected
+346 files and 5 505 tests in 209 s, and a base whose diff reached a `tests/util/`
+helper selected 468 files and 8 777 tests in 252 s. Five reruns of either is a
+half-hour job, and what it would add over the nightly loop is the same question
+asked on a smaller population. Repetition pays off where the code is new, so the
+probe follows the new code — and a change under `src/` is covered once by the
+shuffled suite, exactly as before.
+
+### Generative tests run against a pinned seed
+
+A property test with a random seed can fail on one run and pass on the next.
+That is a flake by definition, and the worst kind available: the counterexample
+exists only in the run log, so when that rotates the failing case is gone and
+nobody can reproduce what happened.  Before #1372 this repository had ~52
+`fc.assert` call sites, no `seed`, no `endOnFailure`, and no regression corpus.
+
+`tests/setup/property-seed.ts` pins the seed for the whole process through
+`fc.configureGlobal`, loaded by `bunfig.toml`'s `preload` — one place rather
+than fifty-two, so a new property file gets the policy without its author having
+to know it exists.
+
+The trade is real and worth stating: a fixed seed explores the same cases every
+run, so the suite stops finding *new* counterexamples on its own.  That is
+acceptable because it was never really doing that.  A case found by an unlucky
+nightly and then lost to log rotation was never turned into a regression test,
+so the exploration produced red builds rather than knowledge.  New cases now
+come from raising `PROPERTY_RUNS` or changing `PROPERTY_SEED` — a decision
+somebody makes, in a diff, and expects to be the commit that finds something.
+
+**When a property does fail, copy the shrunk counterexample into a plain example
+test beside it before fixing anything.**  The property proves the law; the
+example is what stops that specific case coming back, and unlike a log line it
+survives.
+
+`tests/unit/ci/PropertySeedPolicy.test.ts` keeps the two halves wired together,
+and its last assertion is the one that matters: it asks fast-check what seed it
+is *actually* running with, so a preload that was registered and never loaded
+fails rather than quietly restoring the random default.
+
 ## The catalog
 
 Causes this suite has actually had, with how each was settled.
@@ -136,7 +216,8 @@ Causes this suite has actually had, with how each was settled.
 | Port collisions | Settled | `EADDRINUSE`, only when suites overlap |
 | Filesystem races | Settled | Two suites reading each other's fixtures |
 | An assertion over process-global state | Settled | Passes in isolation, fails in a whole-suite run, and no timing is involved |
-| Hosted-runner worker respawn | Quarantined | Workers spawn, handshake, then never run — CI only |
+| A test that depends on running after another one | Settled, gated | Green in declaration order, red under `--seed=N`; a repeat run repeats the same order and never finds it |
+| Hosted-runner worker respawn | Retired, guarded nightly | Workers spawn, handshake, then never run — never once in 63 measured executions |
 
 ### Fixed sleep before an assertion
 
@@ -161,30 +242,42 @@ expect(stopped).toBe(true);
 covers when a sleep is still the right call — an absence you can only give a
 window to, a duration that *is* the assertion, an interleaving a test needs.
 
-**This conversion is unfinished.**  479 sites under `tests/` still
-`await sleep(N)`, and 132 more take the same bet without the word `sleep` in
-it — an inline `Bun.sleep(20)`, or a `new Promise((r) => setTimeout(r, 20))`.
-611 fixed-delay waits in total, and **486 of them state no reason for the
-delay**.  Two duplications sit on top of that: 93 modules re-declare their own
-`sleep` rather than importing the shared one (8 import it), and 35 hand-roll a
-`waitFor` / `waitUntil` / `awaitConvergence` with its own timeout, its own
-poll step and no label.  Treat a `sleep`-then-`expect` pair in a failing test
-as a suspect before looking for anything cleverer.
+**The conversion has largely landed, and the shape of what is left is the
+useful part.**  486 fixed-delay waits remain under `tests/` — 440 written
+`await sleep(N)` and 46 as an inline `Bun.sleep(20)` — but **483 of them now
+state a reason for the delay**.  Three do not, and all three are in helper
+files rather than in a test: `tests/util/AwaitCondition.ts` (the shared `sleep`
+itself), and two in the integration-scenario tree.
 
-The count *rose* for a week while the conversion was being planned — 448 on
-2026-08-11 against 479 on 2026-08-18 — because unrelated new tests kept
-arriving in the old shape, two of them with a fresh per-file shim on a single
-day.  So those numbers are no longer only documentation.
+The two duplications the page used to report have essentially gone.  **One**
+file re-declares its own `sleep` — `tests/integration/scenarios/Types.ts`, which
+exports it for that tree — against **129** that import the shared one, and 11
+modules still hand-roll a `while (Date.now() < deadline)` loop rather than
+calling `awaitCondition`.  Treat a `sleep`-then-`expect` pair in a failing test
+as a suspect before looking for anything cleverer, and read its reason comment
+first: it will usually tell you whether the wait is the bet or the assertion.
+
+Those numbers are not only documentation.
 `tests/unit/ci/SleepRatchet.test.ts` re-measures them on every `bun test` and
 fails when one goes up, per module: the debt can shrink and cannot grow back.
-It does not forbid waiting — an absence cannot be polled for, and 57 of the
+It does not forbid waiting — an absence cannot be polled for, and many of the
 waits are followed by an assertion that something did *not* happen — it
-forbids an *unexplained* wait, a re-declared
-`sleep` and a re-invented poll loop, each with a one-line remedy the failure
-message spells out.  Measured 2026-08-18 at `95db877c`; a
-`grep -ro '<pattern>' tests/ --include=*.ts | wc -l` re-measures them roughly,
-but it also counts comments and quoted examples, which the gate's scanner
-blanks out first.
+forbids an *unexplained* wait, a re-declared `sleep` and a re-invented poll
+loop, each with a one-line remedy the failure message spells out.
+
+Measured 2026-09-08 at `5c7064f5`, over source with comments and string
+literals blanked, which is what the gate's own scanner does.  A raw
+`grep -ro '<pattern>' tests/ --include=*.ts | wc -l` re-measures them roughly
+and reads high, because it also counts the prose and the quoted examples — this
+page included.
+
+The previous figures on this page were measured at `95db877c` on 2026-08-18,
+*before* the #418 conversion sweep merged, so they described the tree before the
+work the page is about.  Two of them had not merely drifted but inverted: the
+page told a contributor that 93 files re-declare `sleep` "rather than importing
+the shared one (8 import it)", when today one file declares it and 129 import
+it (#1313).  A measured claim carries the revision it was measured at for
+exactly this reason.
 
 ### A budget the per-test timeout cannot reach
 
@@ -329,20 +422,32 @@ counters, which only a real whole-suite run recreates.  Establish the mechanism
 by measurement instead — the module-scope fixture above settles it in a single
 run, without ever reproducing the flake.
 
-### Bun's timer quantum
+### Bun's timer quantum — the early half is retired
 
-Windows' default timer resolution is 15.625 ms, and Bun's event loop decides
-a timer is due on that tick boundary — so a `setTimeout` whose deadline sits
-just *below* a tick multiple fires a full tick **early**.  A `setTimeout(30)`
-was measured firing at 18.67 ms on an idle machine.
+Windows' default timer resolution is 15.625 ms, and Bun 1.3's event loop decided
+a timer was due on that tick boundary — so a `setTimeout` whose deadline sat
+just *below* a tick multiple fired a full tick **early**.  A `setTimeout(30)`
+was measured firing at 18.67 ms on an idle machine, 30 ms being pathological
+because it sits just under `2 × 15.625`.
 
-The clock is not the problem, so measuring more precisely does not help; the
-tolerance was wrong.  `tests/util/TimerTolerance.ts` carries the measurements
-and `minimumElapsedMs()`, which puts a lower bound a full quantum below
-nominal.  There is **no safe upper bound** — the same 30 ms timer was
-measured at 201 ms under CPU load, and a bound loose enough to survive that
-can no longer tell the delay it is checking apart from a longer one.  Assert
-virtual time with [ManualScheduler](/testing/manual-scheduler/) instead.
+**Bun 1.4 fixed it.**  Re-measured 2026-09-08, 60 samples at each of 5, 20, 30
+and 60 ms: not one fire below nominal, and the 30 ms row came back at 30.04 ms
+minimum.  So `minimumElapsedMs()` no longer gives a quantum away — its slack is
+lateness-only, and `tests/util/TimerTolerance.ts` carries both measurements,
+because a tolerance that records only what is true today explains nothing about
+why it exists.
+
+A consequence worth stating, since it removes work rather than adding it: **a
+30 ms sleep is no longer a value to avoid.**  It was on the list of things to
+sweep out of the suite; the sweep is off, because the reason for it is gone and
+churning 44 sites to change a number that now behaves would buy nothing.
+
+**The late half has not gone anywhere, and it is the half that matters.**  There
+is still no safe upper bound — the same 30 ms timer was measured at 201 ms under
+CPU load, lateness is whatever the OS scheduler decides, and a bound loose enough
+to survive it can no longer tell the delay it is checking apart from a longer
+one.  Assert virtual time with [ManualScheduler](/testing/manual-scheduler/)
+instead, which now reaches nearly everywhere the framework waits.
 
 ### A dispatcher hop between wait and assert
 
@@ -392,6 +497,107 @@ in a full run, and no amount of waiting changes anything — because nothing is
 in flight.  Ask what the assertion's *denominator* is.  If it is a `static`
 field, a module-level registry or a process-wide counter, narrow it to the
 entry this test owns.
+
+### A test that depends on running after another one
+
+The sibling of the entry above, and the one a repeat run cannot find at all: a
+repeat run repeats the *same* order.  Only a shuffle asks the question, and
+`bun test --seed=N` implies `--randomize` and reproduces one exact order:
+
+```sh
+bun test --seed=413044451
+```
+
+Four suites failed the first time that was asked of them, in three shapes.
+
+**A value carried from one test to the next.**  The block meant "the fixture
+boots once, not once per test" and said it by writing in one test and reading in
+the sibling that followed.  Shuffled, the reader went first and compared against
+an unwritten `null`.
+
+```ts
+// ✗ the premise is the order of its own block
+let observed: ActorSystem | null = null;
+test('returns a live system', () => { observed = sys(); });
+test('returns the SAME instance', () => { expect(sys()).toBe(observed); });
+```
+
+```ts
+// ✓ compare against what the block booted, which every test can see
+let booted!: ReturnType<typeof sys>;
+beforeAll(() => { booted = sys(); });
+test('returns the SAME instance the block booted', () => { expect(sys()).toBe(booted); });
+```
+
+**A module mock that outlived its file.**  `mock.restore()` does *not* undo
+`mock.module()` — a module mock is process-wide and permanent, so a file that
+replaces `node:zlib` to make a capability look absent hands that to whichever
+file runs next.  Two suites in `tests/unit/persistence/object-storage/` were
+failing each other in whichever direction the shuffle put them.  Snapshot the
+real module before mocking, put it back in `afterEach`, and reset whatever the
+production code memoised from it:
+
+```ts
+const REAL_NODE_ZLIB = { ...nodeZlibModule };
+
+afterEach(() => {
+  mock.module('node:zlib', () => REAL_NODE_ZLIB);
+  resetCompressionCache();
+});
+```
+
+Note the `beforeEach` half as well: a memo inherited from the *previous* file is
+just as wrong as one leaked to the next, and only one of the two is your file's
+fault.  Reset on both edges.
+
+That fixes the file that leaked.  It does nothing for the file that was *moved*,
+which is where the damage landed: three cases pinning the #580 allocation-time
+bound went on running on a rung that has no such bound, asserting its security
+property there.  They failed rather than passing quietly, and that was luck — the
+error message's tail was the only thing separating "refused before allocating"
+from "allocated, then refused", and a differently-worded assertion would have
+been satisfied by the wrong path.
+
+So a suite that *consumes* a resolved capability should be able to state which
+one it got, and assert it once up front:
+
+```ts
+beforeAll(async () => {
+  expect(await zstdDecompressorRung()).toBe('node-zlib');
+});
+```
+
+A wrong path is then one failure that names the cause, instead of five message
+mismatches that do not.  The general form: if a block's subject is a property of
+*one* implementation behind a resolver, the resolver has to be able to say which
+implementation answered — otherwise the block is asserting the thing it is
+trying to establish.
+
+**A fixed number of microtask turns.**  A test fired an operation without
+awaiting it, let two `Promise.resolve()`s go by, and asserted that a lazily
+imported SDK client had been constructed.  That is a bet on how many turns a
+dynamic `import()` takes, which is one number when the specifier is already in
+the module registry and another when this is the run's first resolution of it.
+
+```ts
+// ✗ two turns is a guess about the module registry's state
+void backend.list({ prefix: '' }).catch(() => {});
+await Promise.resolve(); await Promise.resolve();
+expect(clientsConstructed.length).toBe(1);
+```
+
+```ts
+// ✓ a completed operation has constructed the client just as well
+expect(await backend.list({ prefix: '' })).toEqual([]);
+expect(clientsConstructed.length).toBe(1);
+```
+
+Both per-commit suites now shuffle, with the seed drawn by the workflow and
+printed.  It is drawn there rather than left to bun deliberately: bun reports
+its own seed in the trailing summary block, and under GitHub Actions it stops
+printing that block and reports the totals out of band — the same trap that once
+turned an unreadable pass count into a green `tests-0 of 0` badge.  A seed nobody
+can read is not a reproduction.
 
 ## Open entries
 
@@ -476,129 +682,57 @@ whose sleep was converted and an entry that never had one lead to different
 next steps, and only the count in `summary.json` distinguishes "seen once" from
 "seen often".  Add the count here rather than starting over.
 
-## Three suites CI does not run
+## The quarantine, and what it cost
 
-`ACTOR_TS_SKIP_FLAKY_MNS=1` is set in `test.yml`, `multi-runtime.yml` and
-`publish.yml`, and three suites skip themselves when it is:
+For months, three suites ran in no CI job at all.  `ACTOR_TS_SKIP_FLAKY_MNS=1`
+was set in `test.yml`, `multi-runtime.yml` and `publish.yml`, and three files
+skipped themselves when it was:
 
 - `tests/multi-node/LeaseMajority.test.ts`
 - `tests/multi-node/ParallelPubSub.test.ts`
 - `tests/unit/testkit/ParallelMultiNodeSpec.test.ts`
 
-Bun on GitHub's hosted runners cannot respawn functional worker threads after
-the first worker test — they spawn, handshake, and then never run — and the
-same resource starvation delays `LeaseMajority`'s renewal timer past the
-lease TTL, so both sides of a partition acquire and the test sees a false
-split-brain.  The *hang* does not reproduce locally or in Docker.
+The stated reason was that Bun on GitHub's hosted runners cannot respawn
+functional worker threads after the first worker test — they spawn, handshake,
+and then never run — and that the same resource starvation delayed
+`LeaseMajority`'s renewal timer past the lease TTL, so both sides of a partition
+acquired and the test saw a false split-brain.
 
-**A green CI check therefore says nothing about these three.**  A local
-`bun test` runs them; so does the real-network `integration` workflow's
-equivalent coverage.
+**All three run in CI again**, and how that happened is worth more than the fact.
 
-### What they actually do locally
+- **The two worker-thread suites earned it by measurement.**  The exit criterion
+  was fourteen consecutive green nights of `nightly-flakes.yml` running exactly
+  those suites with the flag off.  They reached twenty-one — 63 executions on
+  `ubuntu-latest`, not one hang.  The criterion had been met and nobody had
+  looked, which is the failure the workflow predicted about itself: "Nothing
+  accumulates the streak.  It is counted by a human reading these annotations,
+  which is the same failure that made the quarantine permanent in the first
+  place."
+- **`LeaseMajority` was never a runner problem.**  Its cause was a product
+  defect in split-brain resolution: a partition detected one peer at a time was
+  resolved as a run of *majority* decisions instead of one equal-split decision,
+  so both halves survived and the lease was never consulted at all.  Every
+  hypothesis about renewal timers and TTLs was looking at machinery that had not
+  run.  Fixed by the stability window in
+  [Downing strategies](/cluster/downing-strategies/); the suite goes from 8
+  failures in 15 runs to 0 in 30.
 
-Measured with the harness on 2026-08-18, 15 repeats of exactly these three
-suites at concurrency 1 on a Windows laptop (`develop` @ `58fcc9fc`) — two
-invocations, 5 repeats then 10 — with 10 executed tests per repeat and no
-skips, so the flag really was dropped:
+Two mechanisms came out of it, and they are the part to remember.
 
-```sh
-bun run test:stress -- --runs=15 --run-timeout=480000 \
-  tests/multi-node/LeaseMajority.test.ts \
-  tests/multi-node/ParallelPubSub.test.ts \
-  tests/unit/testkit/ParallelMultiNodeSpec.test.ts
-```
+- **An environment variable may not decide whether a test runs.**
+  `tests/unit/ci/NoEnvironmentGatedSkips.test.ts` refuses one, because that is
+  exactly the thing a workflow can set — and setting it is how a red suite
+  becomes an absent one.  A *capability probe* is fine and is the shape to reach
+  for instead: `available ? describe : describe.skip` asks the machine what it
+  can do, and no workflow can answer for it.  An entry in that guard's
+  allow-list needs a reason it cannot hide a failure.
+- **Every job carries `timeout-minutes`.**  A suite that stops making progress
+  now fails inside the hour rather than burning GitHub's six-hour default —
+  which is the failure mode the quarantine was justified by in the first place.
 
-
-| Test | Failed | Verdict |
-| --- | --- | --- |
-| `LeaseMajority` → `4 nodes, 2/2 partition: lease holder side survives, other side downs itself` | 1 / 15 | flaky |
-| `ParallelMultiNodeSpec — failure simulation` → `partition + heal flips reachability without dropping the workers` | 1 / 15 | flaky |
-| everything else in the three suites, `ParallelPubSub` included | 0 / 15 | — |
-
-Two conclusions, and the second one is the useful one:
-
-- **Nothing here is consistently failing.**  Both offenders are flaky at about
-  7 %, and no run hung.  So the local story and the hosted-runner story are
-  genuinely different failures, and lifting the quarantine is gated on the
-  runner pool rather than on a broken test.
-- **"Does not reproduce locally" was too strong for the failures themselves.**
-  `LeaseMajority` produced the same false split-brain locally that the hosted
-  runners produce — `expect(leftAlive.length > 0 && rightAlive.length > 0)`
-  came back `true` — after the test's hand-rolled 25 s deadline loop
-  (`tests/multi-node/LeaseMajority.test.ts`) fell through silently and let two
-  assertions run against whatever state existed at that moment.  That loop is
-  the same shape the `ClusterBootstrap` fix removed, and it is the reason the
-  failing run took 49 s against a 24 s baseline.
-
-Neither repair belongs on this page, and neither has an issue yet: #538 closed
-having delivered the nightly and the written exit criterion, so it cannot carry
-them.  What belongs here is the number — a run of these three that names one of
-the two above at roughly 1 in 15 is the *known* state, not a new finding.
-
-### Getting them back
-
-`.github/workflows/nightly-flakes.yml` runs exactly these three at 04:00 UTC
-with the flag **off**, three repeats a night, and uploads the reports.  It is
-`continue-on-error`: a known-red measurement must not turn into a red
-required check nobody reads, so the result arrives as a run annotation and a
-step summary.
-
-The bar is **14 consecutive green nights** — 42 consecutive green executions.
-Two calendar weeks rather than a smaller number because the failure is a
-property of the runner pool, not of the code: a fortnight spans weekday and
-weekend pools, which is what has to be shown to have stopped happening.  The
-toolchain itself no longer varies underneath the measurement: since the Bun
-1.4.0 pin (2026-08-21) every leg reads the repo-wide `.bun-version` file, so
-nights count only while that pin is unchanged — a Bun bump is a logged
-decision on the experiment issue, and the count restarted at the pin.  A
-single red night resets the count, and each night's `summary.json` is the
-evidence (`greenRuns == runs`, and an empty `runsTimedOut` — a hung run is
-red however few tests failed in it).
-
-**The first two nights kept no evidence at all.**  `actions/upload-artifact`
-has defaulted `include-hidden-files` to false since v4.4, `.stress` is a
-dot-directory, and so both jobs on both nights logged `No files were found with
-the provided path: .stress/` and uploaded zero files — while `if-no-files-found`
-was left at `warn`, in jobs that are `continue-on-error` and therefore always
-conclude `success`.  Nothing went red; the sentence above was simply false.
-Both steps now set `include-hidden-files: true` and `if-no-files-found: error`,
-and `tests/unit/ci/WorkflowHygiene.test.ts` asserts the pair for every hidden
-upload path in `.github/workflows/`, so the next dot-directory artifact cannot
-repeat it.  **Nights before that fix cannot be counted**: the runs happened,
-but their `summary.json` was never kept.
-
-**Nothing accumulates that streak.**  It is counted by a human reading run
-annotations, which is the same thing that made the quarantine permanent in the
-first place.  It is not automated yet because neither route is cheap: both
-jobs are `continue-on-error`, which rewrites the job conclusion to `success`,
-so the artifact is the only durable evidence — and reading previous nights'
-artifacts needs `actions: read` plus cross-run API paging, while a committed
-counter file would need `contents: write` in a job that installs the whole
-devDependency tree, which `tests/unit/ci/WorkflowHygiene.test.ts` forbids on
-purpose.  Until one is built, treat the count as something you have to
-reconstruct from the run list rather than something the repository remembers.
-
-On reaching it, un-quarantine in one commit:
-
-1. Drop `ACTOR_TS_SKIP_FLAKY_MNS` from `test.yml`, `multi-runtime.yml` and
-   `publish.yml`.
-2. Drop the three `describeMns` guards.
-3. Drop the `coveragePathIgnorePatterns` block in `bunfig.toml` — it excludes
-   the worker harness from the coverage denominator only because that harness
-   cannot execute on the hosted runner.
-4. Drop `--exclude=worker` from `benchmarks.yml`'s smoke step.  The worker
-   benchmark is excluded for exactly the same cause, and is easy to forget
-   because it is not a test.
-5. Revisit every floor in `scripts/coverage-gate.mjs` — the aggregate
-   `DEFAULT_LINE_FLOOR` and the two per-module ones alike.  All of them are
-   measured against the quarantined population: `src/cluster/` reads below its
-   true line coverage for as long as `LeaseMajority` cannot run, and the
-   aggregate sat at a pragmatic 80 for the same reason until it was re-measured
-   at 90.  `test.yml` no longer carries a copy of the number, so this is one
-   file to edit rather than two to keep in step.
-6. Keep the nightly job.  It becomes the regression guard for the
-   un-quarantining.
+`nightly-flakes.yml` keeps running those three suites on their own, three
+repeats a night.  It is the regression guard now rather than the parole board: a
+claim retired by measurement stays retired only while somebody keeps measuring.
 
 ## Where to next
 

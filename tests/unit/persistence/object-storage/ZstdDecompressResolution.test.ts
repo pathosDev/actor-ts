@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { ZstdErrorCode, decompress as fzstdDecompress } from 'fzstd';
 import * as nodeZlibModule from 'node:zlib';
 import { constants as zlibConstants, zstdCompressSync, zstdDecompressSync } from 'node:zlib';
@@ -6,6 +6,7 @@ import {
   compressorFor,
   resetCompressionCache,
   setNativeZstdDecompressCandidatesOverride,
+  zstdDecompressorRung,
 } from '../../../../src/persistence/object-storage/Compression.js';
 
 /**
@@ -126,15 +127,55 @@ function nativeFailureCode(frame: Uint8Array): unknown {
   }
 }
 
+/**
+ * The real `node:zlib`, snapshotted at load before anything replaces it.
+ *
+ * Kept as a plain object rather than the live namespace on purpose: once
+ * `mock.module('node:zlib', …)` has run, what an import of that specifier
+ * yields is the replacement, so a restore that re-read the namespace would
+ * reinstall the suppression it is undoing.
+ */
+const REAL_NODE_ZLIB = { ...nodeZlibModule };
+
+/**
+ * Start every test from a known resolution, not from whatever the previous one
+ * left — and "the previous one" includes the previous *file*.
+ *
+ * `Compression.ts` memoises the resolved zstd decoder at module scope, and bun
+ * runs the whole tree in one process, so a suite that decompressed anything
+ * before this file leaves that memo warm and pointing at the native rung.  The
+ * cleanup below then runs too late to help the first test here: it fires after
+ * it.  In the default order the first test happened not to care; under
+ * `bun test --randomize` the case that needs the native rungs suppressed can be
+ * first, and it resolves against the inherited memo instead of its own override
+ * (#1422).
+ */
+beforeEach(() => {
+  setNativeZstdDecompressCandidatesOverride(null);
+  resetCompressionCache();
+});
+
 afterEach(() => {
   // Either call clears the override; both are here so this stays correct if
   // `resetCompressionCache` ever stops doing it. bun runs every test file in
   // one process, and a leaked suppression would quietly move unrelated suites
   // onto the pure-JS read path.
   setNativeZstdDecompressCandidatesOverride(null);
-  // The last block replaces `node:zlib` itself, which is process-wide for the
-  // same reason and worse: an unrestored module mock would take zstd away
-  // from every suite that runs after this file.
+  // The last block replaces `node:zlib` itself, which is process-wide and
+  // worse than the override: an unrestored module mock takes zstd away from
+  // every suite that runs after this file.
+  //
+  // `mock.restore()` does NOT undo `mock.module()` — this file used to say it
+  // did, in a comment, and nothing checked.  It does not fail in the default
+  // order because the suppressing block happens to run after everything that
+  // would notice; `bun test --randomize` is red on every seed, and three cases
+  // in `tests/unit/persistence/DecompressCap.test.ts` then assert the native
+  // "aborted before the output was allocated" cap while actually exercising the
+  // fzstd rung, which allocates first and checks afterwards (#1422).
+  //
+  // So the restore is an explicit re-install of the snapshot above, and
+  // `mock.restore()` stays for the function mocks it does cover.
+  mock.module('node:zlib', () => REAL_NODE_ZLIB);
   mock.restore();
   resetCompressionCache();
 });
@@ -168,6 +209,14 @@ describe('zstd read resolution — the fzstd fallback rung (#780)', () => {
     // happen, and the assertion above was never about fzstd.
     await expect(compressorFor('zstd').decompress(frame, 16))
       .rejects.toThrow(MEASURED_AFTER_DECODING);
+
+    // The same fact stated where another suite can read it. `decodeLog` below
+    // observes the rung only through an injected fake, and the message tails
+    // above observe it only through a property this file is trying to
+    // establish; a suite that merely CONSUMES the ladder has neither, which is
+    // how three cap tests came to assert the allocation-time bound while
+    // running on a rung that has none (#1422).
+    expect(await zstdDecompressorRung()).toBe('fzstd');
   });
 
   test('a native decoder that fails the canary is skipped, and fzstd catches the fall', async () => {
@@ -319,6 +368,7 @@ describe('zstd read resolution — rung order (#580)', () => {
 
     expect(await compressorFor('zstd').decompress(frame)).toEqual(PAYLOAD);
     expect(decodeLog.at(-1)).toBe('node:zlib');
+    expect(await zstdDecompressorRung()).toBe('node-zlib');
     await expect(compressorFor('zstd').decompress(frame, 16))
       .rejects.toThrow(ABORTED_BEFORE_ALLOCATION);
   });
@@ -332,6 +382,7 @@ describe('zstd read resolution — rung order (#580)', () => {
 
     expect(await compressorFor('zstd').decompress(frame)).toEqual(PAYLOAD);
     expect(decodeLog.at(-1)).toBe('Bun');
+    expect(await zstdDecompressorRung()).toBe('bun-global');
     // No options parameter to carry a bound, so this rung is a post-mortem too.
     await expect(compressorFor('zstd').decompress(frame, 16))
       .rejects.toThrow(MEASURED_AFTER_DECODING);
@@ -395,7 +446,7 @@ describe('zstd read resolution — the runtime read behind the Bun rung (#780)',
   /** `node:zlib` with its zstd decoder taken away — a Bun that predates it. */
   const suppressNodeZlibZstd = (): void => {
     mock.module('node:zlib', () => ({
-      ...nodeZlibModule,
+      ...REAL_NODE_ZLIB,
       zstdDecompressSync: () => {
         throw new TypeError('binding.ZstdDecompress is not a constructor');
       },

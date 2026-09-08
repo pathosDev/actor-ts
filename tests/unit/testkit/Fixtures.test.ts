@@ -14,18 +14,29 @@ import { systemFixture, testKitFixture } from '../__shared__/SystemFixture.js';
 describe('systemFixture', () => {
   const sys = systemFixture('shared-sys-test');
 
-  let observedSystemA: unknown = null;
-  let observedSystemB: unknown = null;
+  /**
+   * The instance the fixture booted, recorded by a `beforeAll` of our own —
+   * bun runs it after the fixture's, so the system exists by then.
+   *
+   * Every case below compares against *this* rather than against a value a
+   * sibling test happened to store, and that is the whole point: the block used
+   * to assert "the same instance across tests" by writing in one test and
+   * reading in the next, which makes the test's premise the order of its own
+   * block.  Under `bun test --randomize` the reader ran first, compared against
+   * an unwritten `null`, and failed in 4 of 5 seeds (#1422).  The property it
+   * was reaching for — the fixture boots once, not once per test — is unchanged
+   * and is still exactly what the comparison says.
+   */
+  let booted!: ReturnType<typeof sys>;
+  beforeAll(() => { booted = sys(); });
 
   test('returns a live ActorSystem inside a test()', () => {
     expect(sys().name).toBe('shared-sys-test');
-    observedSystemA = sys();
   });
 
-  test('returns the SAME instance across tests in the block', () => {
-    observedSystemB = sys();
+  test('returns the SAME instance the block booted, in whatever order tests run', () => {
     // Same reference — confirms beforeAll booted exactly once, not per-test.
-    expect(observedSystemB).toBe(observedSystemA);
+    expect(sys()).toBe(booted);
   });
 
   test('can spawn actors against the shared system', () => {

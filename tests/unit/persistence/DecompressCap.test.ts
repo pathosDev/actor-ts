@@ -1,6 +1,6 @@
-import { describe, expect, test } from 'bun:test';
+import { beforeAll, describe, expect, test } from 'bun:test';
 import { encodeBody, decodeBody } from '../../../src/persistence/object-storage/BodyCodec.js';
-import { compressorFor } from '../../../src/persistence/object-storage/Compression.js';
+import { compressorFor, zstdDecompressorRung } from '../../../src/persistence/object-storage/Compression.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { ObjectStorageSnapshotStoreOptionsValidator } from '../../../src/persistence/snapshot-stores/ObjectStorageSnapshotStoreOptions.js';
 import { ObjectStorageDurableStateStoreOptionsValidator } from '../../../src/persistence/durable-state-stores/ObjectStorageDurableStateStoreOptions.js';
@@ -71,6 +71,35 @@ describe('BodyCodec — decompression cap (#3)', () => {
  * `.rejects.toThrow()` would stay green throughout.
  */
 describe('BodyCodec — zstd decompression cap (#580)', () => {
+  /**
+   * State the path before asserting its property.
+   *
+   * Everything below pins the ALLOCATION-TIME bound, and only the `node:zlib`
+   * rung can enforce one — the other two decode first and are refused
+   * afterwards, which is the behaviour these cases exist to rule out.  Until
+   * #1422 the block said so only through the error message's tail, so being on
+   * the wrong path surfaced as five confusing message mismatches rather than as
+   * the one fact that explains them.
+   *
+   * It surfaced at all by luck.  A `mock.module` is process-wide and permanent
+   * — `mock.restore()` does not undo one — and under `bun test --randomize` the
+   * file that suppresses the native candidates to reach `fzstd` ran first and
+   * took the rung away for the rest of the process.  A differently-worded
+   * assertion would have passed here while testing the opposite of the security
+   * property it names.
+   */
+  beforeAll(async () => {
+    expect(
+      await zstdDecompressorRung(),
+      'These cases pin a bound that is applied before the output is allocated, '
+      + 'and only the node:zlib rung applies one — the other two decode first. '
+      + 'Something earlier in this process took that rung away; a mock.module is '
+      + 'the usual way, since it is process-wide and permanent and mock.restore() '
+      + 'does not undo one (#1422). The suppressing file has to re-mock node:zlib '
+      + 'with the real module and call resetCompressionCache() on both edges.',
+    ).toBe('node-zlib');
+  });
+
   test('a zstd bomb is refused before its output is allocated', async () => {
     // 64 MiB of zeros → a ~2 KB frame.  The ratio is what makes it a bomb;
     // the cap has to act on the frame's declared output, not on its size.

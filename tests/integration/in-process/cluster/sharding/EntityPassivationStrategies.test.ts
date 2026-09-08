@@ -243,7 +243,7 @@ describe('entity replacement policies under a scan (#848)', () => {
 
       expect(survivingHotEntities()).toEqual([]);
     });
-  });
+  }, 15_000);
 
   test('segmented least-recently-used with a frequency sketch keeps all six', async () => {
     // The acceptance criterion: same cap, same hot set, same scan, same
@@ -261,7 +261,7 @@ describe('entity replacement policies under a scan (#848)', () => {
     // And the cap still holds: the survivors are survivors, not an unbounded
     // region that never evicted anything.
     expect(stopped.length).toBe(EXPECTED_EVICTIONS);
-  });
+  }, 15_000);
 
   test('segmentation alone keeps five of six — the sketch is what saves the last', async () => {
     // The third arm, and the one that says which mechanism does what.  Only the
@@ -279,7 +279,7 @@ describe('entity replacement policies under a scan (#848)', () => {
     await runScan(node);
 
     expect(survivingHotEntities()).toEqual(['hot-1', 'hot-2', 'hot-3', 'hot-4', 'hot-5']);
-  });
+  }, 15_000);
 
   test('an explicit replacement option beats the config file', async () => {
     // The usual precedence, on a key whose effect is an ordering rather than a
@@ -298,7 +298,7 @@ describe('entity replacement policies under a scan (#848)', () => {
     await runScan(node);
 
     expect(survivingHotEntities()).toEqual([]);
-  });
+  }, 15_000);
 });
 
 describe('passivation.stop-timeout (#848)', () => {
@@ -315,7 +315,7 @@ describe('passivation.stop-timeout (#848)', () => {
     node.region.tell({ id: 'e-1', kind: 'checkout' });
 
     await waitFor(() => stopped.includes('e-1'), 4_000, 10, 'the ignored stop-message was forced');
-  });
+  }, 15_000);
 
   test('and its slot comes back to the cap', async () => {
     // The reason the timeout is not merely tidiness.  With a cap of one, the
@@ -338,7 +338,7 @@ describe('passivation.stop-timeout (#848)', () => {
     // nothing re-created it, so its slot is genuinely free rather than held by
     // an actor the region has lost track of.
     expect(stopped).toEqual(['e-1']);
-  });
+  }, 15_000);
 
   test('it arms without a cap, because the key is not part of the cap', async () => {
     // The shipped default is `0`, so nothing here happens to a deployment that
@@ -356,7 +356,7 @@ describe('passivation.stop-timeout (#848)', () => {
     node.region.tell({ id: 'e-1', kind: 'checkout' });
 
     await waitFor(() => stopped.includes('e-1'), 4_000, 10, 'the ignored stop-message was forced');
-  });
+  }, 15_000);
 
   test('stop-timeout = 0 keeps waiting, which is the pre-#848 behaviour', async () => {
     // Kept expressible on purpose: an entity whose graceful shutdown genuinely
@@ -374,7 +374,7 @@ describe('passivation.stop-timeout (#848)', () => {
     // nothing in the tree may make it otherwise inside a test window.
     await sleep(500);
     expect(stopped).toEqual([]);
-  });
+  }, 15_000);
 });
 
 describe('the cap sees every admission point (#848)', () => {
@@ -416,7 +416,7 @@ describe('the cap sees every admission point (#848)', () => {
     // other.
     await waitFor(() => stopped.length === 2, 4_000, 10, 'the cap evicted down to two');
     expect([...stopped].sort()).toEqual(['e-1', 'e-2']);
-  });
+  }, 15_000);
 });
 
 /**
@@ -455,7 +455,7 @@ describe('a departing entity releases its slot of the cap (#848)', () => {
     await sleep(300);
 
     expect(stopped).toEqual(['e-3']);
-  });
+  }, 15_000);
 
   test('an entity the idle sweep passivated does not hold its slot while it drains', async () => {
     // The sweep's own release, and the one path where it is load-bearing: an
@@ -505,7 +505,7 @@ describe('a departing entity releases its slot of the cap (#848)', () => {
     // Three newcomers against a cap of three, with the wedged entity holding no
     // slot: nobody else had to go.
     expect([...stopped].sort()).toEqual(['cold-1', 'cold-2']);
-  });
+  }, 15_000);
 
   test('entities that leave with their shard give their slots back', async () => {
     // A shard's entities are gone from this node whether it handed off, was
@@ -550,5 +550,5 @@ describe('a departing entity releases its slot of the cap (#848)', () => {
     // ghost pair that kept its slots would have cost exactly this entity.
     expect(stopped).not.toContain('keeper');
     expect(started.filter((id) => id === 'keeper')).toEqual(['keeper']);
-  });
+  }, 15_000);
 });

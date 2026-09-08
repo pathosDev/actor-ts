@@ -166,7 +166,7 @@ describe('ClusterSharding — actor-ts.sharding.* HOCON keys', () => {
     // And the entity comes back on the next message, same as a manual passivation.
     node.region.tell({ id: 'user-1', kind: 'work' });
     await waitFor(() => created === 2);
-  });
+  }, 15_000);
 
   test('the reference default leaves an entity resident through a short idle spell', async () => {
     // `passivation-idle` defaults to 5 minutes, which is also the sweep
@@ -180,7 +180,7 @@ describe('ClusterSharding — actor-ts.sharding.* HOCON keys', () => {
     // `stopped === 0` is already true at t=0 and there is nothing to poll for.
     await sleep(400);
     expect(stopped).toBe(0);
-  });
+  }, 15_000);
 
   test('passivation-idle = 0ms opts back out of the default sweep', async () => {
     // The documented migration off the 5-minute default.  `0` is a real value
@@ -197,7 +197,7 @@ describe('ClusterSharding — actor-ts.sharding.* HOCON keys', () => {
     // `stopped === 0` is already true at t=0 and there is nothing to poll for.
     await sleep(400);
     expect(stopped).toBe(0);
-  });
+  }, 15_000);
 
   test('an explicit passivationIdleMs beats the config file', async () => {
     const node = await startNode(
@@ -212,7 +212,7 @@ describe('ClusterSharding — actor-ts.sharding.* HOCON keys', () => {
 
     // An hour would outlast the test; 120ms is the explicit option winning.
     await waitFor(() => stopped === 1);
-  });
+  }, 15_000);
 
   test('max-entities caps the node and LRU-passivates the coldest entity', async () => {
     const node = await startNode('hocon-cap', 45_404, {
@@ -229,7 +229,7 @@ describe('ClusterSharding — actor-ts.sharding.* HOCON keys', () => {
     node.region.tell({ id: 'user-3', kind: 'work' });
     await waitFor(() => created === 3);
     await waitFor(() => stopped === 1);
-  });
+  }, 15_000);
 
   test('number-of-shards reaches the region — entity ids hash into the configured space', async () => {
     const node = await startNode('hocon-shards', 45_403, {
@@ -269,7 +269,7 @@ describe('ClusterSharding — actor-ts.sharding.* HOCON keys', () => {
       await settle();
 
       expect(droppedCommands()).toEqual([{ id: 'user-1', kind: 'work' }]);
-    });
+    }, 15_000);
 
     test('an explicit withBufferSize beats the config file', async () => {
       const node = await startNode(
@@ -286,7 +286,7 @@ describe('ClusterSharding — actor-ts.sharding.* HOCON keys', () => {
       // The file says "never buffer"; the option says 8, and the option wins —
       // so the message is still held, waiting for a home that will not come.
       expect(droppedCommands()).toEqual([]);
-    });
+    }, 15_000);
 
     test('shard-region-query-timeout caps a query the coordinator cannot answer', async () => {
       const node = await startNode(

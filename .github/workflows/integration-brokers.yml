@@ -120,7 +120,16 @@ jobs:
         # The driver passes `--exit-code-from runner`, which propagates
         # the runner's exit status from inside the container, so a
         # failing scenario turns this step red.
-        run: bun run test:integration:broker ${{ matrix.broker.dir }}
+        #
+        # The matrix value reaches the script through `env:` rather than being
+        # interpolated into it.  It was never an exposure — the matrix is a
+        # literal in this file — but an expression inside a `run:` body is
+        # substituted before bash parses it, so the safe cases and the unsafe
+        # ones are written identically, and only one of them is checkable.
+        # `tests/unit/ci/WorkflowHygiene.test.ts` therefore forbids all of them.
+        env:
+          BROKER_DIRECTORY: ${{ matrix.broker.dir }}
+        run: bun run test:integration:broker "$BROKER_DIRECTORY"
 
       - name: Capture container logs on failure
         if: failure()
@@ -129,8 +138,12 @@ jobs:
         # locally and pray for repro.  JSON-formatted by JsonLogger where
         # applicable.  Through the driver so the compose path is built in
         # exactly one place.
-        run: bun scripts/integration-compose.mjs ${{ matrix.broker.dir }} --logs || true
+        env:
+          BROKER_DIRECTORY: ${{ matrix.broker.dir }}
+        run: bun scripts/integration-compose.mjs "$BROKER_DIRECTORY" --logs || true
 
       - name: Tear down
         if: always()
-        run: bun run test:integration:broker:teardown ${{ matrix.broker.dir }}
+        env:
+          BROKER_DIRECTORY: ${{ matrix.broker.dir }}
+        run: bun run test:integration:broker:teardown "$BROKER_DIRECTORY"

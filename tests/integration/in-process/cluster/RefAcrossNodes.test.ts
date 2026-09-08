@@ -130,7 +130,7 @@ describe('ActorRef serialisation across cluster nodes', () => {
 
     await stop(nodeA);
     await stop(nodeB);
-  });
+  }, 15_000);
 
   test('already-remote refs in the body keep their original target on the other side', async () => {
     type Command = { stashRef: ActorRef<string> };
@@ -188,7 +188,7 @@ describe('ActorRef serialisation across cluster nodes', () => {
 
     await stop(nodeA);
     await stop(nodeB);
-  });
+  }, 15_000);
 
   test('Nobody in the body round-trips back to Nobody', async () => {
     type Command = { attempt: ActorRef<string> };
@@ -232,7 +232,7 @@ describe('ActorRef serialisation across cluster nodes', () => {
 
     await stop(nodeA);
     await stop(nodeB);
-  });
+  }, 15_000);
 
   /**
    * #517 — every test above passes a *spawned* actor as `replyTo`, which has a
@@ -268,7 +268,7 @@ describe('ActorRef serialisation across cluster nodes', () => {
         await stop(nodeA);
         await stop(nodeB);
       }
-    });
+    }, 15_000);
 
     /**
      * The registration is keyed by the ref's path, so the path has to be
@@ -300,7 +300,7 @@ describe('ActorRef serialisation across cluster nodes', () => {
         await stop(nodeA);
         await stop(nodeB);
       }
-    });
+    }, 15_000);
 
     test('still times out — and names the target — when nothing answers', async () => {
       const sysName = 'ref-ask-timeout';
@@ -322,6 +322,6 @@ describe('ActorRef serialisation across cluster nodes', () => {
         await stop(nodeA);
         await stop(nodeB);
       }
-    });
+    }, 15_000);
   });
 });

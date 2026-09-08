@@ -72,6 +72,59 @@ Pass the provider as `downing`.  Every cluster event
 with the current view; it returns the set of addresses to forcibly
 down.  Returning an empty set means "no decision yet — wait."
 
+### The stability window
+
+A strategy is asked nothing until the member view has been **unchanged** for
+`stable-after`, which defaults to **20 s**:
+
+```ts
+const clusterOptions = ClusterOptions.create()
+  .withDowning(new KeepMajority())
+  .withSplitBrainResolver({ stableAfterMs: 20_000 });
+```
+
+```hocon
+actor-ts.cluster.split-brain-resolver.stable-after = 20s
+```
+
+This is not a flap filter, or not only one. **A partition is not one event the
+cluster observes; it is a sequence of them.** The failure detector marks peers
+unreachable one at a time, as each crosses `unreachable-after`, and downing used
+to be evaluated at the end of that same tick — so a 2/2 partition whose two
+remote peers were detected on different ticks was resolved as two successive
+*majority* decisions rather than one equal-split decision:
+
+```text
+tick 1:  a=up b=up c=unreachable d=up          3 reachable of 4  ->  down c
+tick 2:  a=up b=up c=removed  d=unreachable    2 reachable of 3  ->  down d
+```
+
+The tombstone closes the trap: a force-down marks the member `removed`, and
+every strategy filters its candidates to `up | leaving | unreachable`, so the
+denominator shrinks along with the numerator and what is left of the side reads
+as a majority of it. Both halves run the identical computation over their mirror
+image and **both survive** — and with `LeaseMajority` the lease is never
+contended for at all, because the equal-split branch that reaches it is never
+taken.
+
+Measured, that was not a corner case: the framework's own four-node partition
+test failed **8 of 15 runs** with the window disabled and **0 of 30** with a
+1 s window, on the same machine within the same minute.
+
+Two consequences worth knowing:
+
+- **The window must outlast the spread between the first and last detection of
+  one partition**, plus the gossip that follows — not merely the duration of a
+  flap. A window shorter than the spread lets the sequence through again.
+- **It costs failover latency.** Nothing is downed until the view has been still
+  for the window, so a genuine node loss takes that much longer to resolve. The
+  20 s default is the established value for this knob and is a deliberate trade
+  of availability for integrity; a cluster that needs faster failover should
+  lower it knowingly rather than by omission.
+
+`stable-after = 0` restores the pre-window behaviour, and the defect above with
+it. It exists so a deployment can ask for that explicitly.
+
 ### From the config file
 
 Four of the five strategies can be selected without touching the code,

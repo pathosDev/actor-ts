@@ -481,10 +481,15 @@ export class Cluster {
     // only its `heartbeatIntervalMs`: the cadence is the cluster's, and the
     // heartbeat and detection ticks `_start` arms are both scheduled from
     // `failureDetector.interval` whichever implementation answers it (#1142).
+    // The system's clock, not the wall clock: the heartbeat and detection ticks
+    // below are scheduled on `system.scheduler`, so under a `ManualScheduler`
+    // they are driven by virtual time — and a detector reading `Date.now()`
+    // would see a hundred of them arrive at the same instant (#1424).
     this.failureDetector = createFailureDetector(
       options.failureDetectorImplementation ?? DEFAULT_FAILURE_DETECTOR_IMPLEMENTATION,
       fdOptions,
       options.phiAccrual,
+      this.system.clock,
     );
     this.gossipIntervalMs = options.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
     this.seedRetryIntervalMs = options.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;

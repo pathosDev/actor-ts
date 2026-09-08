@@ -47,6 +47,7 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     # Reads the repository and uploads an artifact — nothing else.  The
     # upload action uses the Actions runtime token, not `GITHUB_TOKEN`,
     # so it needs no Pages scope of its own.
@@ -117,6 +118,7 @@ jobs:
     name: Deploy to GitHub Pages
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # The two scopes `actions/deploy-pages` documents as its minimum, and
     # they live here rather than at workflow level so only this job — one
     # step, no checkout, no dependencies — can mint them.  `contents: read`
