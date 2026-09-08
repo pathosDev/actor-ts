@@ -909,6 +909,66 @@ describe('KubernetesLease — credential freshness (#760)', () => {
   });
 });
 
+describe('KubernetesLease — namespace from the ServiceAccount mount (#859)', () => {
+  /**
+   * The fallback these two cases hold is the whole justification for `namespace`
+   * having left `requiredFields()`, and it is the only observable effect
+   * `namespace-path` has.  Nothing bound it before: {@link FakeServiceAccountMount}
+   * reports `default` and every test using it also passes `namespace: 'default'`,
+   * so the two sources were never distinguishable and reducing
+   * `this.options.namespace ?? credentials.defaultNamespace` to
+   * `this.options.namespace` moved no test at all.
+   *
+   * Distinguishing them is the entire trick: the mount reports one namespace,
+   * the options carry a different one, and which of the two addresses the Lease
+   * object on the wire is then unambiguous.
+   */
+  const mountReportingNamespace = (defaultNamespace: string): MountedCredentialLoader => ({
+    read: async () => ({
+      credentials: {
+        apiServerUrl: 'https://kubernetes.default.svc',
+        authToken: 'mounted-token-1',
+        caCert: '<<mounted-ca-cert>>',
+        defaultNamespace,
+      },
+      tokenModifiedAt: 1_000,
+    }),
+    tokenModifiedAt: async () => 1_000,
+  });
+
+  const leaseAgainstMount = (
+    mount: MountedCredentialLoader,
+    namespace?: string,
+  ): KubernetesLease => {
+    const leaseOptions = KubernetesLeaseOptions.create()
+      .withName('test-lease')
+      .withOwner('test-pod')
+      .withTtlMs(5_000)
+      .withRenewalIntervalMs(50)
+      .withClient(server)
+      .withCredentialLoader(mount);
+    if (namespace !== undefined) leaseOptions.withNamespace(namespace);
+    return new KubernetesLease(leaseOptions);
+  };
+
+  test('the namespace the mount reports addresses the lease when none is configured', async () => {
+    const lease = leaseAgainstMount(mountReportingNamespace('mounted-namespace'));
+    expect(await lease.acquire()).toBe(true);
+    expect(server.peek('mounted-namespace', 'test-lease')?.spec.holderIdentity).toBe('test-pod');
+    await lease.release();
+  });
+
+  test('an explicit namespace outranks the one the mount reports', async () => {
+    const lease = leaseAgainstMount(mountReportingNamespace('mounted-namespace'), 'configured-namespace');
+    expect(await lease.acquire()).toBe(true);
+    expect(server.peek('configured-namespace', 'test-lease')?.spec.holderIdentity).toBe('test-pod');
+    // The other direction of the same `??`: a mount that reports a namespace
+    // must not steer a lease whose namespace was chosen in code.
+    expect(server.peek('mounted-namespace', 'test-lease')).toBeUndefined();
+    await lease.release();
+  });
+});
+
 describe('KubernetesLease — multi-process arbitration', () => {
   test('two leases against the same key — only one wins', async () => {
     const leaseA = new KubernetesLease(baseOptions({ owner: 'pod-A' }));
