@@ -2134,11 +2134,24 @@ actor-ts.sharding.stale-region-detection {
 }
 ```
 
-Vier Dinge sind vor dem Einschalten wissenswert:
+Fünf Dinge sind vor dem Einschalten wissenswert:
 
 - **Der Schalter steuert beide Hälften.**  Aus schlägt keine Region und fegt
   kein Koordinator, der Mechanismus kostet also überhaupt nichts.  An schickt
   jede Region jedes Sharded Type einen kleinen Frame pro `heartbeat-interval`.
+- **Eine entfernte Region, die noch lebt, wird benachrichtigt und kommt
+  zurück.**  Der Koordinator kann eine verschwundene Region nicht von einer
+  unterscheiden, deren Schläge verloren gingen — eine Entfernung ist also eine
+  Entscheidung, die er falsch treffen kann, und eine noch lebende Region
+  erführe sonst nichts davon, behielte ihre Shards und bediente deren Entities
+  weiter: ein Shard mit zwei lebenden Zuhause, so lange der Node oben bleibt.
+  Sie bekommt deshalb eine Meldung: Eine wirklich verschwundene oder verklemmte
+  verarbeitet sie nie, eine nur verstummte gibt jeden gehaltenen Shard auf —
+  die Entities stoppen, eine persistente flusht also — und registriert sich
+  sofort neu.  Diese Region hat dann null Mal an den Koordinator geschlagen und
+  ist erst wieder Sweep-Kandidat, wenn ein eigener Schlag ankommt; genau das
+  verhindert, dass eine dauerhaft verstummte Region alle `stale-after` erneut
+  entfernt wird.
 - **Der Schlag geht pro Sharded Type, nicht pro Node.**  Zehn Typen auf einem
   Node sind zehn Frames pro Intervall, zusätzlich zu den Heartbeats des
   Clusters selbst.

@@ -2013,11 +2013,22 @@ actor-ts.sharding.stale-region-detection {
 }
 ```
 
-Four things worth knowing before turning it on:
+Five things worth knowing before turning it on:
 
 - **The switch drives both halves.**  Off, no region beats and no coordinator
   sweeps, so the mechanism costs nothing at all.  On, every region of every
   sharded type sends one small frame per `heartbeat-interval`.
+- **An evicted region that is still alive is told, and comes back.**  The
+  coordinator cannot tell a region that is gone from one whose beats were lost,
+  so an eviction is a decision it can get wrong — and a region that is still
+  alive would otherwise learn nothing, keep its shards and keep serving their
+  entities, leaving one shard with two live homes for as long as the node
+  stayed up.  It is therefore sent a notice: one that is really gone or wedged
+  never processes it, and one that was merely silent gives up every shard it
+  holds — the entities stop, so a persistent one flushes — and registers again
+  at once.  That region has then beaten to the coordinator zero times, so it is
+  not a sweep candidate again until a beat of its own arrives, which is what
+  stops a permanently muted region cycling every `stale-after`.
 - **The beat is per sharded type, not per node.**  Ten types on a node is ten
   frames per interval, on top of the cluster's own heartbeats.
 - **A region that never beats is never swept.**  That is what makes turning the
