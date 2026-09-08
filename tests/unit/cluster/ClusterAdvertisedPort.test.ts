@@ -12,9 +12,13 @@
  * What is pinned here is the seam: the transport listens on `bindPort` while
  * `self` keeps the port peers dial, the resolver answers the same way for
  * `Cluster.join` and `bootstrapCluster`, and an unset advertised port still
- * means "the bound one".
+ * means "the bound one".  The last section pins the half that a forwarded
+ * `selfAddress` cannot cover — the three decisions `bootstrapCluster` takes
+ * with the advertised port *before* it calls `join`.
  */
 import { afterAll, afterEach, describe, expect, test } from 'bun:test';
+import { createSocket } from 'node:dgram';
+import type { Socket } from 'node:dgram';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../src/cluster/Cluster.js';
@@ -29,10 +33,14 @@ import type { ClusterOptionsType } from '../../../src/cluster/ClusterOptions.js'
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { Config } from '../../../src/config/Config.js';
 import { InMemoryTransport, TcpTransport } from '../../../src/cluster/Transport.js';
+import type { Transport, WireHandler } from '../../../src/cluster/Transport.js';
+import type { WireMessage } from '../../../src/cluster/Protocol.js';
+import type { SeedProvider } from '../../../src/discovery/index.js';
 import { NoopLogger } from '../../../src/Logger.js';
 import { getTcpBackend } from '../../../src/runtime/tcp/index.js';
 import type { TcpListener } from '../../../src/runtime/tcp/index.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 /* -------------------------------------------------------------------------- */
 /* resolveAdvertisedPort — one rule, and the reason it is a function            */
@@ -246,4 +254,250 @@ describe('Cluster.join gossips the advertised port, not the bound one', () => {
       await shutdown();
     }
   });
+});
+
+/* -------------------------------------------------------------------------- */
+/* bootstrapCluster — the advertised port *before* the join                     */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * `bootstrapCluster` resolves the advertised port a second time rather than
+ * letting `Cluster.join` own it, because three things need it *before* the
+ * join and therefore have no cluster to ask: the stable-observation election
+ * orders on this node's identity, the seed filter compares the discovered
+ * addresses against it, and discovery pairs it with every peer host it
+ * resolves.  Forwarding is not enough for any of them — by the time `join`
+ * has derived the identity, all three decisions have been taken.
+ *
+ * The test above forwards and then reads `selfAddress` back, which the
+ * forwarding at the end of `bootstrapCluster` satisfies on its own; it says
+ * nothing about the three pre-join consumers.  These do, one each, and each
+ * is written so that substituting the bound port at exactly *that* site — and
+ * only that one — changes the outcome.
+ */
+
+/** Records every address the cluster dialled, and is otherwise the inner one. */
+class DiallingTransport implements Transport {
+  readonly dialled: string[] = [];
+
+  constructor(private readonly inner: InMemoryTransport) {}
+
+  get self(): NodeAddress { return this.inner.self; }
+  start(): Promise<void> { return this.inner.start(); }
+  shutdown(): Promise<void> { return this.inner.shutdown(); }
+  setHandler(handler: WireHandler): void { this.inner.setHandler(handler); }
+  send(to: NodeAddress, message: WireMessage): void {
+    this.dialled.push(to.toString());
+    this.inner.send(to, message);
+  }
+  disconnect(peer: NodeAddress): void { this.inner.disconnect(peer); }
+  peers(): NodeAddress[] { return this.inner.peers(); }
+}
+
+/**
+ * One A record for whatever was asked: echo the header and question, flip the
+ * response bits, and append an answer whose name is the 0xc00c pointer back to
+ * the question.  Enough of the format to satisfy one `resolve4`, and no more.
+ */
+function answerFor(query: Buffer, octets: readonly number[]): Buffer {
+  let cursor = 12; // the fixed header; the question name starts here
+  while (query[cursor] !== 0) cursor += query[cursor]! + 1;
+  const questionEnd = cursor + 1 + 4; // the null label, then QTYPE and QCLASS
+  const head = Buffer.from(query.subarray(0, questionEnd));
+  head.writeUInt16BE(0x8180, 2); // response, recursion desired + available
+  head.writeUInt16BE(1, 6); // one answer
+  const answer = Buffer.alloc(16);
+  answer.writeUInt16BE(0xc00c, 0); // name: pointer back to the question
+  answer.writeUInt16BE(1, 2); // TYPE A
+  answer.writeUInt16BE(1, 4); // CLASS IN
+  answer.writeUInt32BE(60, 6); // TTL
+  answer.writeUInt16BE(4, 10); // four bytes of address follow
+  for (const [index, octet] of octets.entries()) answer.writeUInt8(octet, 12 + index);
+  return Buffer.concat([head, answer]);
+}
+
+/**
+ * Run `body` with a one-answer DNS server on loopback, because the discovery
+ * port has no cheaper observable.
+ *
+ * That port is what turns a discovered *host* into a dialable address, and the
+ * only two rungs that consume it — `DnsSeedProvider` in A-record mode and
+ * `KubernetesApiSeedProvider` — have to resolve something before they can
+ * stamp it on anything.  Neither takes an injected fetcher through
+ * `AutoDiscoveryOptionsType`, and the two object forms of `discovery:` (a
+ * `SeedProvider`, a `{ providers }` chain) bypass the port entirely, so a fake
+ * provider observes nothing.  Answering the query is what is left, and
+ * `node:dns/promises` honours a server named `host:port` — so this costs one
+ * datagram and no real name resolution.
+ */
+async function withDnsAnswering(
+  octets: readonly number[],
+  body: () => Promise<void>,
+): Promise<void> {
+  const dns = await import('node:dns/promises');
+  const socket: Socket = createSocket('udp4');
+  socket.on('message', (message, remote) => {
+    socket.send(answerFor(message, octets), remote.port, remote.address);
+  });
+  await new Promise<void>((resolve) => { socket.bind(0, '127.0.0.1', resolve); });
+  // `setServers` is process-wide, so the restore below is not optional — and
+  // neither is closing the socket, which would otherwise hold the loop open.
+  const savedServers = dns.getServers();
+  try {
+    dns.setServers([`127.0.0.1:${socket.address().port}`]);
+    await body();
+  } finally {
+    dns.setServers(savedServers);
+    socket.close();
+  }
+}
+
+describe('bootstrapCluster resolves the advertised port for the pre-join steps', () => {
+  test('the stable-observation election orders on the advertised identity', async () => {
+    // Three addresses, ordered the way `Cluster.leader` orders them —
+    // lexicographically on `system@host:port`, so `:3000` < `:4000` < `:57401`.
+    // The discovered peer sits between the two identities this node could
+    // present, which is what makes the election decide differently on each:
+    // advertised, this node is the lowest and wins; bound, the peer is.
+    //
+    // The election's whole output is the self-election policy, and a loser
+    // gets `'never'` — it stays `joining` until a peer promotes it.  Nothing
+    // is listening on `:4000`, so reaching `up` here is only possible by
+    // having been elected initial seed.
+    const name = 'advertised-port-election';
+    const peer = new NodeAddress(name, '127.0.0.1', 4000);
+    const discovery: SeedProvider = { lookup: async () => [peer] };
+    const bootstrapOptions = ClusterBootstrapOptions.create(name)
+      .withHost('127.0.0.1')
+      .withPort(57401)
+      .withAdvertisedPort(3000)
+      .withDiscovery(discovery)
+      .withStableObservation({
+        pollIntervalMs: 5,
+        stableMarginMs: 0,
+        maxWaitMs: 2_000,
+        requiredContactPoints: 2,
+        selfElectionGraceMs: 50,
+      })
+      // The bootstrap's own readiness wait would turn a lost election into a
+      // `ClusterReadyTimeoutError` out of `bootstrapCluster` itself; waiting
+      // on the observable instead keeps the failure attributable.
+      .withAwaitReady(false)
+      .withTransport(new InMemoryTransport(new NodeAddress(name, '127.0.0.1', 3000)))
+      .withReceptionist(false)
+      .withShutdownOnSignals(false)
+      .withLogger(new NoopLogger());
+
+    const bootstrapped = await bootstrapCluster(bootstrapOptions);
+    started.push(bootstrapped.system);
+    try {
+      await awaitCondition(() => bootstrapped.formedNewCluster, {
+        timeoutMs: 3_000,
+        label: 'the node won the election on its advertised identity and formed the cluster',
+      });
+    } finally {
+      await bootstrapped.shutdown();
+    }
+  }, 15_000);
+
+  test('the seed filter excludes the advertised address, and only that one', async () => {
+    // The discovered set holds both identities this node could be named by:
+    // the advertised one peers dial, and the bound one that is not an identity
+    // at all.  Exactly one of them must survive, and it must be the bound one.
+    //
+    // Asserting only "self was excluded" would prove nothing, because `Cluster`
+    // drops a seed equal to its own address as well — the wrong port passes
+    // that half of the check for free.  What it cannot survive is the other
+    // half: filtering on the bound port removes the one entry that was a
+    // genuine seed and leaves the node holding its own address, which
+    // `Cluster` then drops too.  The node is left with no seeds at all, and
+    // `'immediate'` self-election reads an empty seed list as "I am the first
+    // node" — the split brain this whole split exists to keep shut.
+    const name = 'advertised-port-seed-filter';
+    const advertised = new NodeAddress(name, '127.0.0.1', 3000);
+    const bound = new NodeAddress(name, '127.0.0.1', 57402);
+    const discovery: SeedProvider = { lookup: async () => [advertised, bound] };
+    const transport = new DiallingTransport(new InMemoryTransport(advertised));
+    const bootstrapOptions = ClusterBootstrapOptions.create(name)
+      .withHost('127.0.0.1')
+      .withPort(57402)
+      .withAdvertisedPort(3000)
+      .withDiscovery(discovery)
+      .withAwaitReady(false)
+      .withTransport(transport)
+      .withReceptionist(false)
+      .withShutdownOnSignals(false)
+      .withLogger(new NoopLogger());
+
+    const bootstrapped = await bootstrapCluster(bootstrapOptions);
+    started.push(bootstrapped.system);
+    try {
+      // Seed contact is synchronous inside the join, so the first round is
+      // already recorded; snapshot it so a later gossip tick cannot drift the
+      // assertion either way.
+      const dialled = [...transport.dialled];
+
+      expect(dialled).toContain(bound.toString());
+      expect(dialled).not.toContain(advertised.toString());
+      // It had a seed, so it never concluded it was alone.
+      expect(bootstrapped.formedNewCluster).toBe(false);
+    } finally {
+      await bootstrapped.shutdown();
+    }
+  }, 15_000);
+
+  test('discovery pairs peer hosts with the advertised port, not the bound one', async () => {
+    // The deployment this whole split is for is symmetric: every node is
+    // published on the same remapped port, so the port that turns a discovered
+    // *host* into a dialable address is the advertised one.  Pairing peers
+    // with the local bind port instead sends every node's first gossip frame
+    // to a port nothing is published on — a cluster that never forms, from a
+    // discovery answer that was entirely correct.
+    //
+    // Nothing cheaper reaches this: `DnsSeedProvider` (A-record mode) and
+    // `KubernetesApiSeedProvider` are the only consumers of that port, and
+    // both have to resolve something before they can stamp it on an address.
+    const name = 'advertised-port-discovery';
+    const serviceName = 'nodes.actor-ts.test';
+    const config = Config.parseString(
+      `actor-ts.cluster.bootstrap.discovery.service-name = "${serviceName}"`,
+    );
+    const transport = new DiallingTransport(
+      new InMemoryTransport(new NodeAddress(name, '127.0.0.1', 3000)),
+    );
+
+    await withDnsAnswering([10, 0, 0, 9], async () => {
+      const bootstrapOptions = ClusterBootstrapOptions.create(name)
+        .withHost('127.0.0.1')
+        .withPort(57403)
+        .withAdvertisedPort(3000)
+        .withDiscovery('dns')
+        .withConfig(config)
+        // Stable observation, because this is the branch that builds its own
+        // provider; the other branch's port is the seed filter's, pinned above.
+        .withStableObservation({
+          pollIntervalMs: 5,
+          stableMarginMs: 0,
+          maxWaitMs: 2_000,
+          requiredContactPoints: 2,
+          selfElectionGraceMs: 50,
+        })
+        .withAwaitReady(false)
+        .withTransport(transport)
+        .withReceptionist(false)
+        .withShutdownOnSignals(false)
+        .withLogger(new NoopLogger());
+
+      const bootstrapped = await bootstrapCluster(bootstrapOptions);
+      started.push(bootstrapped.system);
+      try {
+        const dialled = [...transport.dialled];
+
+        expect(dialled).toContain(`${name}@10.0.0.9:3000`);
+        expect(dialled).not.toContain(`${name}@10.0.0.9:57403`);
+      } finally {
+        await bootstrapped.shutdown();
+      }
+    });
+  }, 15_000);
 });

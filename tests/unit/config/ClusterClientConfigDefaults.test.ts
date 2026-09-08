@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
@@ -13,7 +16,12 @@ import {
 } from '../../../src/cluster/ClusterClientReceptionist.js';
 import { EnvelopeTrust } from '../../../src/cluster/EnvelopeTrust.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
-import type { WireMessage } from '../../../src/cluster/Protocol.js';
+import {
+  encodeFrame,
+  FrameDecoder,
+  type HelloAcknowledgmentMessage,
+  type WireMessage,
+} from '../../../src/cluster/Protocol.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 import {
   ClusterClientOptions,
@@ -28,7 +36,11 @@ import {
 } from '../../../src/cluster/ClusterClientReceptionistOptions.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from '../../../src/util/Constants.js';
-import { getTcpBackend, type TcpListener } from '../../../src/runtime/tcp/index.js';
+import {
+  getTcpBackend,
+  type TcpListener,
+  type TcpSocketLike,
+} from '../../../src/runtime/tcp/index.js';
 
 /**
  * #858 — `actor-ts.cluster.client` is the block for the one config consumer in
@@ -77,6 +89,80 @@ async function silentContactPoint(): Promise<TcpListener> {
   });
   listeners.push(listener);
   return listener;
+}
+
+/**
+ * A contact point that completes the handshake and then stops answering.
+ *
+ * {@link silentContactPoint} is enough for the *connect* deadline, which bounds
+ * the dial itself.  An *ask* deadline is unreachable behind it: `ask()` awaits
+ * `ensureConnected()` first, and the only thing that ever resolves that is a
+ * `hello-ack`.  So this listener answers the handshake and then ignores the
+ * `cluster-client-envelope` that follows, which leaves the ask timer as the one
+ * thing that can settle the promise — and the deadline it was armed with as the
+ * only number the failure can carry.
+ */
+async function handshakingContactPoint(): Promise<TcpListener> {
+  const backend = await getTcpBackend();
+  // One decoder per connection: `FrameDecoder` holds the partial-frame buffer,
+  // so a shared one would interleave two sockets' bytes into a single stream.
+  const decoders = new WeakMap<TcpSocketLike, FrameDecoder>();
+  let boundPort = 0;
+  const listener = await backend.listen({
+    host: '127.0.0.1',
+    // Port 0, for the reason silentContactPoint gives.
+    port: 0,
+    handlers: {
+      onOpen: () => {},
+      onData: (sock, chunk) => {
+        // Created here rather than in `onOpen` so the fixture does not rest on
+        // the two callbacks' ordering, which is a per-backend detail.
+        let decoder = decoders.get(sock);
+        if (decoder === undefined) {
+          decoder = new FrameDecoder();
+          decoders.set(sock, decoder);
+        }
+        for (const frame of decoder.push(chunk)) {
+          if (frame.kind !== 'hello') continue;
+          const acknowledgment: HelloAcknowledgmentMessage = {
+            kind: 'hello-ack',
+            self: new NodeAddress('contact-point', '127.0.0.1', boundPort).toJSON(),
+          };
+          sock.write(encodeFrame(acknowledgment));
+        }
+      },
+      onClose: () => {},
+      onError: () => {},
+    },
+  });
+  boundPort = listener.port;
+  listeners.push(listener);
+  return listener;
+}
+
+/**
+ * Run `body` with `ACTOR_TS_CONFIG` pointing at a temporary `application.conf`.
+ *
+ * The one way to reach {@link ClusterClient}'s self-load branch — the client
+ * holds no `ActorSystem`, so a constructor called with no `Config` loads the
+ * standard chain itself.  Through the environment variable rather than
+ * `./application.conf`, because the CWD fallback would make the result depend
+ * on the directory the suite was started from.  Same shape as
+ * `tests/unit/coordination/LeaseConfigDefaults.test.ts`, for the same reason.
+ */
+function withApplicationConf<T>(source: string, body: () => T): T {
+  const directory = mkdtempSync(join(tmpdir(), 'actor-ts-cluster-client-conf-'));
+  const path = join(directory, 'application.conf');
+  writeFileSync(path, source, 'utf8');
+  const previous = process.env.ACTOR_TS_CONFIG;
+  process.env.ACTOR_TS_CONFIG = path;
+  try {
+    return body();
+  } finally {
+    if (previous === undefined) delete process.env.ACTOR_TS_CONFIG;
+    else process.env.ACTOR_TS_CONFIG = previous;
+    rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 /** The reference layer with `overlay` written on top, as an application.conf would be. */
@@ -340,5 +426,74 @@ describe('the block reaches the code that reads it', () => {
     clients.push(client);
     await expect(client.ask('/user/nobody', { kind: 'ping' }))
       .rejects.toThrow(/timed out after 60ms/);
+  });
+
+  test('the configured ask-timeout is what bounds the wait for a reply', async () => {
+    // The sibling of the arm above, and the one the commit's own argument asks
+    // for without having written it: `ClusterClient` reads `askTimeoutMs` into
+    // a field and nothing downstream of that field was ever observed, so
+    // replacing the read with the bare `DEFAULT_ASK_TIMEOUT_MS` left the whole
+    // suite green.
+    //
+    // A contact point that answers `hello` and then goes quiet: the handshake
+    // resolves, the envelope is written, and no reply ever comes — so the ask
+    // can only end on its own deadline.
+    const listener = await handshakingContactPoint();
+    const config = referenceWith(`
+      actor-ts.cluster.client {
+        contact-points = ["silent@127.0.0.1:${listener.port}"]
+        ask-timeout    = 120ms
+      }
+    `);
+
+    const client = new ClusterClient({}, config);
+    clients.push(client);
+
+    const startedAt = Date.now();
+    // `ask` is called with no explicit timeout, so the number interpolated into
+    // the failure is the number the timer was armed with — which is the field,
+    // and therefore the config leaf behind it.
+    await expect(client.ask('/user/nobody', { kind: 'ping' }))
+      .rejects.toThrow(/timed out after 120ms/);
+    // And the clock, so a build that *reports* the configured value while
+    // arming the timer with the built-in one is caught as well.  The window is
+    // twenty times the configured deadline and half the 5 s default, and it
+    // contains the handshake too: neither a slow machine nor a busy one can
+    // confuse the two outcomes.
+    expect(Date.now() - startedAt).toBeLessThan(2_500);
+    // Restated so a later change to the default cannot quietly bring the two
+    // numbers together and leave this arm asserting nothing.
+    expect(DEFAULT_ASK_TIMEOUT_MS).toBe(5_000);
+    // Raised above bun's implicit 5 000 ms because the *failing* run is the one
+    // that has to be legible: with the deadline discarded the ask settles at
+    // exactly the default, and under the implicit cap the report would be the
+    // runner's "timed out after 5000ms" instead of the assertion above.
+  }, 15_000);
+
+  test('a client handed no Config loads the standard chain itself', () => {
+    // The acceptance criterion's own shape — `new ClusterClient({})`, one
+    // argument — and the branch every other arm in this file steps around by
+    // passing a Config.  A client holds no `ActorSystem`, so this constructor
+    // is the single place in the framework that calls `Config.load()` on its
+    // own behalf; until now nothing exercised it, and the block could have
+    // been reachable only by a caller who already held a `Config`.
+    withApplicationConf(
+      `
+        actor-ts.cluster.client {
+          contact-points = ["orders@10.0.0.7:2552"]
+          system-name    = "loaded-from-file"
+        }
+      `,
+      () => {
+        const client = new ClusterClient({});
+        clients.push(client);
+        // Constructing at all is half the assertion: the validator refuses a
+        // client with no contact points, so reaching this line means the file
+        // supplied them.  The system name is the other half — it is built into
+        // the synthetic handshake address, so it proves the loaded config
+        // reached the constructor and not merely the reader.
+        expect(client.clientAddress.systemName).toBe('loaded-from-file');
+      },
+    );
   });
 });
