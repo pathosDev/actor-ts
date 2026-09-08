@@ -1,3 +1,5 @@
+import type { Clock } from '../Clock.js';
+import { systemClock } from '../Clock.js';
 import { match } from 'ts-pattern';
 import { NodeAddress } from './NodeAddress.js';
 import { fromNullable, type Option } from '../util/Option.js';
@@ -40,7 +42,18 @@ export type FailureDetectorImplementation = 'simple' | 'phi';
  * own diagnostic, not something the cluster may assume of a detector.
  */
 export interface FailureDetectorLike {
-  /** Record that we know about a peer even if we haven't heard from it yet. */
+  /**
+   * Record that we know about a peer even if we haven't heard from it yet.
+   *
+   * `now` defaults to the {@link Clock} the detector was built with, **not** to
+   * the wall clock, and the difference is the whole of #1424 for this contract.
+   * The cluster schedules its heartbeat and detection ticks on
+   * `system.scheduler`, so a `ManualScheduler` drives them; before the clock
+   * was injected the detector read `Date.now()` regardless, so a hundred
+   * advanced ticks delivered a hundred heartbeats that all arrived at the same
+   * real instant. A detector handed a hundred samples with no elapsed time
+   * between them concludes nothing.
+   */
   register(peer: NodeAddress, now?: number): void;
   /** Record that a message was received from `peer` (any message counts). */
   heartbeat(peer: NodeAddress, now?: number): void;
@@ -69,21 +82,27 @@ export class FailureDetector {
   private samples = new Map<string, Sample>();
   private readonly options: FailureDetectorOptionsType;
 
-  constructor(options: FailureDetectorOptions = {}) {
+  /**
+   * @param clock Where every `now` default comes from. Pass `system.clock` and
+   *   the detector advances with a `ManualScheduler` instead of with the wall
+   *   clock, which is what makes "this peer went quiet for a minute" writable
+   *   as a test (#1424).
+   */
+  constructor(options: FailureDetectorOptions = {}, private readonly clock: Clock = systemClock) {
     // Unset builder fields fall through to the built-in defaults.
     this.options = { ...defaultFailureDetectorOptions, ...(options as Partial<FailureDetectorOptionsType>) };
     new FailureDetectorOptionsValidator().validate(this.options);
   }
 
   /** Record that a message was received from `peer` (any message counts). */
-  heartbeat(peer: NodeAddress, now: number = Date.now()): void {
+  heartbeat(peer: NodeAddress, now: number = this.clock.now()): void {
     const key = peer.toString();
     const prev = this.samples.get(key);
     this.samples.set(key, { lastSeen: now, everSeen: prev?.everSeen ?? true });
   }
 
   /** Record that we know about a peer even if we haven't heard from it yet. */
-  register(peer: NodeAddress, now: number = Date.now()): void {
+  register(peer: NodeAddress, now: number = this.clock.now()): void {
     const key = peer.toString();
     if (!this.samples.has(key)) this.samples.set(key, { lastSeen: now, everSeen: false });
   }
@@ -92,7 +111,7 @@ export class FailureDetector {
     this.samples.delete(peer.toString());
   }
 
-  decide(peer: NodeAddress, now: number = Date.now()): FailureDecision {
+  decide(peer: NodeAddress, now: number = this.clock.now()): FailureDecision {
     const sample = this.samples.get(peer.toString());
     if (!sample) return 'healthy';
     const elapsed = now - sample.lastSeen;
@@ -133,12 +152,13 @@ export function createFailureDetector(
   implementation: FailureDetectorImplementation,
   failureDetector: FailureDetectorOptionsType,
   phiAccrual: Partial<PhiAccrualOptionsType> = {},
+  clock: Clock = systemClock,
 ): FailureDetectorLike {
   return match(implementation)
-    .with('simple', () => new FailureDetector(failureDetector))
+    .with('simple', () => new FailureDetector(failureDetector, clock))
     .with('phi', () => new PhiAccrualFailureDetector({
       ...stripUndefined(phiAccrual),
       heartbeatIntervalMs: failureDetector.heartbeatIntervalMs,
-    }))
+    }, clock))
     .exhaustive();
 }

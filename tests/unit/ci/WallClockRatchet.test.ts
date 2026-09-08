@@ -55,7 +55,7 @@ const BACKSLASH = String.fromCharCode(92);
  * The revision the ledger below was measured at, so a later reader can see how
  * far the tree has moved without re-deriving the baseline.
  */
-const LEDGER_REVISION = '75aeeb12';
+const LEDGER_REVISION = 'da7d7200';
 const LEDGER_MEASURED_ON = '2026-09-07';
 
 /**
@@ -70,7 +70,7 @@ const CANONICAL_CLOCKS: readonly string[] = ['src/Clock.ts', 'src/Scheduler.ts']
 
 /**
  * Direct wall-clock reads per file, measured at {@link LEDGER_REVISION}:
- * **186 across 80 files**, counting `Date.now` and a bare `new Date()` over
+ * **179 across 78 files**, counting `Date.now` and a bare `new Date()` over
  * source with comments and string literals blanked.
  *
  * A raw `grep` says 213 across 87 files. The difference is reads inside
@@ -84,8 +84,6 @@ const LEGACY_WALL_CLOCK_READS: Readonly<Record<string, number>> = {
   'src/cache/InMemoryCache.ts': 8,
   'src/cluster/Cluster.ts': 13,
   'src/cluster/EnvelopeTrust.ts': 1,
-  'src/cluster/FailureDetector.ts': 3,
-  'src/cluster/PhiAccrualFailureDetector.ts': 4,
   'src/cluster/bootstrap/StableObservation.ts': 5,
   'src/cluster/downing/LeaseMajority.ts': 2,
   'src/cluster/router/MailboxDepthProbe.ts': 3,
@@ -165,7 +163,7 @@ const LEGACY_WALL_CLOCK_READS: Readonly<Record<string, number>> = {
  *
  * Every assertion below is satisfied by finding nothing, so a scanner that
  * stopped reading — a moved directory, a blanking bug that ate the file —
- * would report a tree with no wall-clock reads at all and pass. 186 were found
+ * would report a tree with no wall-clock reads at all and pass. 179 were found
  * at {@link LEDGER_REVISION}; the floor sits far enough below that the migration
  * this ratchet exists to enable does not trip it, and far enough above zero to
  * catch a scanner that broke.
