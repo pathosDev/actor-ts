@@ -192,18 +192,29 @@ Setting only one of them looks exactly like a switch that does not work.
 record, because an operator who asked for a config dump asked for output.
 
 **What the config dump redacts, and what it does not.**  A value is withheld
-when its **key name** matches `pass`, `secret`, `token`, `key`, `credential`
-or `auth` — so `cache.redis.password` and an `api-key` print as `<redacted>`.
+when a **whole word** of its key is `password`, `passphrase`, `secret`,
+`token`, `key`, `credential` or `auth`, singular or plural — so
+`cache.redis.password` and an `api-key` print as `<redacted>`, and so does
+every key beneath a branch named `credentials`.  Whole words, and the *last*
+word of a name at that, because that is the word saying what the value **is**:
+`api-key` is a key, but `key-prefix` is a prefix, `passivation-idle` is a
+timeout and `max-subscribers-per-key` is a count.  A value that is a boolean
+is never withheld whatever its key is called, since both of its states are
+public.
+
 That is a heuristic over key names, and it is the weaker half of the
 guarantee: it cannot catch a secret whose key does not say so — a `dsn`, a
 `connection-string`, a `uri` with a password in it — because by the time the
 merged tree exists a `${?DATABASE_PASSWORD}` has resolved into an ordinary
-string with nothing left to say where it came from.  Nor is the list widened
-further: `seed` would redact `cluster.seed-nodes`, and a dump whose ordinary
-keys read `<redacted>` is a dump nobody reads.  So treat the output as
-sensitive, keep the key `off` outside an investigation, and check what your
-own keys are called before pasting a dump into a ticket.  The same rule, the
-same list and the same limits apply to the DevTools config panel.
+string with nothing left to say where it came from.  Nor does it read a name
+whose last word is an identifier or a location as the thing itself:
+`kms-key-id` is an id and `token-path` is a filesystem path, and both print.
+Nor is the list widened further: `seed` would redact `cluster.seed-nodes`, and
+a dump whose ordinary keys read `<redacted>` is a dump nobody reads.  So treat
+the output as sensitive, keep the key `off` outside an investigation, and
+check what your own keys are called before pasting a dump into a ticket.  The
+same rule, the same list and the same limits apply to the DevTools config
+panel.
 
 ### `actor-ts.mailbox`
 
