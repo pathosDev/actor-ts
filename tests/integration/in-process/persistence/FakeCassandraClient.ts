@@ -75,6 +75,14 @@ export class FakeCassandraClient implements CassandraClientLike {
   private readonly tables = new Map<string, TableState>();
   private connected = false;
   private shuttingDown = false;
+  /**
+   * Every statement text, in order — the same surface `FakePgPool` and the
+   * other fakes expose.  DDL is recorded too, deliberately: the keyspace and
+   * the four table names appear in `CREATE TABLE` before any row exists, and a
+   * test asking which containers a configured store actually addressed wants
+   * them.
+   */
+  readonly log: string[] = [];
 
   async connect(): Promise<void> { this.connected = true; }
   async shutdown(): Promise<void> { this.shuttingDown = true; this.connected = false; }
@@ -85,6 +93,7 @@ export class FakeCassandraClient implements CassandraClientLike {
     _options?: { prepare?: boolean; consistency?: number },
   ): Promise<CassandraRowResult> {
     const statement = query.trim().replace(/\s+/g, ' ');
+    this.log.push(statement);
     const upper = statement.toUpperCase();
     if (upper.startsWith('CREATE KEYSPACE') || upper.startsWith('CREATE TABLE')) {
       // DDL — no-op in the fake.
