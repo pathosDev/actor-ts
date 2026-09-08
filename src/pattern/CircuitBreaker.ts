@@ -1,3 +1,6 @@
+import type { Clock } from '../Clock.js';
+import { systemClock } from '../Clock.js';
+import type { Scheduler } from '../Scheduler.js';
 import {
   CircuitBreakerOptionsValidator,
   DEFAULT_CIRCUIT_BREAKER_BACKOFF_FACTOR,
@@ -67,10 +70,28 @@ export class CircuitBreaker {
 
   public readonly options: CircuitBreakerOptionsType;
 
+  /**
+   * Where the reset window is measured.  Resolved once: a breaker's scheduler
+   * cannot change, and both readers sit on the protected-call path.
+   */
+  private readonly clock: Clock;
+
+  /**
+   * The same object when one was supplied, `null` when none was.
+   *
+   * Separate from {@link clock} because the two are used for different things
+   * and only one has a free fallback: reading the time falls back to
+   * `systemClock`, while arming a timer falls back to `setTimeout` — which is
+   * cheaper than any scheduler and is exactly what this always did.
+   */
+  private readonly scheduler: Scheduler | null;
+
   constructor(options: CircuitBreakerOptions) {
     const settings = { ...(options as Partial<CircuitBreakerOptionsType>) };
     new CircuitBreakerOptionsValidator().validate(settings);
     this.options = settings as CircuitBreakerOptionsType;
+    this.scheduler = this.options.scheduler ?? null;
+    this.clock = this.scheduler ?? systemClock;
   }
 
   get state(): CircuitState { return this._state; }
@@ -139,7 +160,7 @@ export class CircuitBreaker {
     if (next === 'closed') this._consecutiveOpens = 0;
     if (next === 'open') {
       this._consecutiveOpens++;
-      this._nextProbeAt = Date.now() + this.reopenDelayMs();
+      this._nextProbeAt = this.clock.now() + this.reopenDelayMs();
     }
     for (const listener of this.listeners) { try { listener(next); } catch { /* ignore */ } }
   }
@@ -200,11 +221,25 @@ export class CircuitBreaker {
 
   private maybeTransitionToHalfOpen(): void {
     if (this._state !== 'open') return;
-    if (Date.now() >= this._nextProbeAt) this.setState('half-open');
+    if (this.clock.now() >= this._nextProbeAt) this.setState('half-open');
   }
 
   private applyTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
     return new Promise<T>((resolve, reject) => {
+      // Only where time is virtual, for the reason `ActorRef._virtualScheduler`
+      // documents with figures: routing a per-call deadline through a scheduler
+      // costs a cancellable and two set operations, and buys nothing when
+      // nobody can advance past it (#1424).
+      if (this.scheduler !== null && this.scheduler.isVirtual) {
+        const armed = this.scheduler.scheduleOnceFunction(
+          ms, () => reject(new CircuitBreakerTimeoutError(ms)),
+        );
+        p.then(
+          (v) => { armed.cancel(); resolve(v); },
+          (e) => { armed.cancel(); reject(e); },
+        );
+        return;
+      }
       const timer = setTimeout(() => reject(new CircuitBreakerTimeoutError(ms)), ms);
       p.then(
         (v) => { clearTimeout(timer); resolve(v); },

@@ -57,13 +57,18 @@ export function gracefulStop(ref: ActorRef, timeoutMs: number): Promise<boolean>
     const watcher = new TerminationWatcher(ref.path.systemName, () => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      timer.cancel();
       resolve(true);
     });
     // Registered after the watcher exists, because `_addWatcher` answers a
     // target that is already gone on the spot rather than through the
     // mailbox — the callback has to be in place before the call, not after.
-    const timer = setTimeout(() => {
+    //
+    // Through the cell's own system scheduler rather than a host timer, so a
+    // `ManualScheduler` can advance past the budget.  Unconditionally, unlike
+    // the ask deadline: a graceful stop happens once per actor at shutdown, so
+    // there is no hot path to protect and no reason for two branches (#1424).
+    const timer = cell.system.scheduler.scheduleOnceFunction(timeoutMs, () => {
       if (settled) return;
       settled = true;
       cell._removeWatcher(watcher);
@@ -71,7 +76,7 @@ export function gracefulStop(ref: ActorRef, timeoutMs: number): Promise<boolean>
       // the PoisonPill is still waiting on.
       cell.enqueueSystem({ kind: 'terminate' });
       resolve(false);
-    }, timeoutMs);
+    });
     cell._addWatcher(watcher);
   });
 }
