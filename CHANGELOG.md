@@ -11,6 +11,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`LeaseOptions.withScheduler` puts the whole lease lifecycle on virtual
+  time** (#1424).
+
+  ```ts
+  const lease = new InMemoryLease(
+    LeaseOptions.create()
+      .withName('singleton')
+      .withOwner(nodeId)
+      .withTtlMs(30_000)
+      .withScheduler(system.scheduler),
+  );
+  ```
+
+  Everything interesting a lease does is a duration — the TTL, the renewal
+  cadence, the gap between acquire retries — and all three were measured on the
+  wall clock, so a test could only cross one by waiting for it. Which is why
+  lease tests used TTLs of tens of milliseconds and then asserted on behaviour a
+  production TTL of thirty seconds shows quite differently. Ten TTLs of renewal
+  now cost nothing instead of five real minutes.
+
+  `InMemoryLeaseStore.tryAcquire` takes the caller's `now` rather than reading a
+  clock: it is a process-wide singleton every lease competes against, so it has
+  none of its own, and two leases in one test may legitimately hold different
+  ones. `peek` takes an optional `now` and still defaults to the wall clock.
+
+  This is also the machinery `LeaseMajority` was blamed for over thirteen red
+  nights before the cause turned out to be a product defect in split-brain
+  resolution (#839). The hypothesis was wrong — but it was never *checkable*,
+  and that is the part this changes.
+
+  A `KubernetesLease` accepts the option too, and it moves only the renewal
+  cadence: its HTTP calls are real requests to a real API server and stay that
+  way.
+
 - **`CircuitBreaker`, `after`, `retry` and `gracefulStop` can take their time
   from a scheduler** (#1424).
 

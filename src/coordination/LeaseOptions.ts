@@ -1,3 +1,4 @@
+import type { Scheduler } from '../Scheduler.js';
 import { Config } from '../config/Config.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
@@ -23,6 +24,20 @@ export type LeaseOptionsType = {
   readonly acquireRetries?: number;
   /** Delay between acquire retries. */
   readonly acquireRetryDelayMs?: number;
+  /**
+   * Where the lease reads the time and arms its renewal loop.  Default: the
+   * wall clock.
+   *
+   * Every interesting thing a lease does is a duration — the TTL, the renewal
+   * cadence, the gap between acquire retries — so on the wall clock the only
+   * way to observe one is to wait for it.  Pass `system.scheduler` and a
+   * `ManualScheduler` crosses all three (#1424).
+   *
+   * It does **not** virtualize a `KubernetesLease`'s HTTP calls: those are real
+   * requests to a real API server, and only its renewal cadence moves onto the
+   * scheduler.
+   */
+  readonly scheduler?: Scheduler;
 };
 
 /**
@@ -58,6 +73,11 @@ export class LeaseOptionsBuilder<T extends LeaseOptionsType = LeaseOptionsType> 
   }
 
   /** Time-to-live in ms — the backend auto-expires if we fail to renew. */
+  /** Where the lease reads the time and arms its renewal loop. */
+  withScheduler(scheduler: Scheduler): this {
+    return this.set('scheduler', scheduler);
+  }
+
   withTtlMs(ttlMs: number): this {
     return this.set('ttlMs' as keyof T, ttlMs as T[keyof T]);
   }

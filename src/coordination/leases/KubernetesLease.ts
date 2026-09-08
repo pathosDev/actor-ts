@@ -1,3 +1,4 @@
+import type { Cancellable, Scheduler } from '../../Scheduler.js';
 import type { Lease } from '../Lease.js';
 import {
   DEFAULT_K8S_OPERATION_TIMEOUT_MS,
@@ -132,7 +133,16 @@ function isCredentialRejection(error: unknown): boolean {
 export class KubernetesLease implements Lease {
   private readonly renewalIntervalMs: number;
   private readonly tokenReloadIntervalMs: number;
-  private renewalTimer: ReturnType<typeof setInterval> | null = null;
+  private renewalTimer: Cancellable | ReturnType<typeof setInterval> | null = null;
+
+  /**
+   * Where the renewal cadence is armed, when the caller supplied a scheduler.
+   *
+   * Only the cadence.  A `KubernetesLease` talks to a real API server, so its
+   * requests, their timeouts and the token reload interval stay on real time —
+   * virtualizing those would mean pretending an HTTP call had returned (#1424).
+   */
+  private readonly scheduler: Scheduler | null;
   /**
    * The renewal currently on the wire, or `null` when none is — the guard
    * that keeps two renewals from overlapping (#761).
@@ -195,6 +205,7 @@ export class KubernetesLease implements Lease {
     validator.validate(this.options);
     this.renewalIntervalMs = this.options.renewalIntervalMs
       ?? Math.max(500, Math.floor(this.options.ttlMs / 3));
+    this.scheduler = this.options.scheduler ?? null;
     this.tokenReloadIntervalMs = this.options.tokenReloadIntervalMs
       ?? DEFAULT_TOKEN_RELOAD_INTERVAL_MS;
     this.operationTimeoutMs = this.options.operationTimeoutMs
@@ -533,10 +544,7 @@ export class KubernetesLease implements Lease {
   async release(): Promise<void> {
     if (!this.held) return;
     this.held = false;
-    if (this.renewalTimer) {
-      clearInterval(this.renewalTimer);
-      this.renewalTimer = null;
-    }
+    this.stopRenewalLoop();
     this.currentLease = null;
     await this.withFreshCredentials((credentials) =>
       deleteLease(credentials, this.namespaceOf(credentials), this.leaseName, this.callOptions));
@@ -553,9 +561,23 @@ export class KubernetesLease implements Lease {
 
   private startRenewalLoop(): void {
     if (this.renewalTimer) return;
-    this.renewalTimer = setInterval(() => {
-      void this.renewOnce();
-    }, this.renewalIntervalMs);
+    const tick = (): void => { void this.renewOnce(); };
+    this.renewalTimer = this.scheduler === null
+      ? setInterval(tick, this.renewalIntervalMs)
+      : this.scheduler.scheduleAtFixedRateFunction(
+        this.renewalIntervalMs, this.renewalIntervalMs, tick,
+      );
+  }
+
+  /** Disarm whichever kind of handle {@link startRenewalLoop} produced. */
+  private stopRenewalLoop(): void {
+    if (this.renewalTimer === null) return;
+    if (typeof (this.renewalTimer as Cancellable).cancel === 'function') {
+      (this.renewalTimer as Cancellable).cancel();
+    } else {
+      clearInterval(this.renewalTimer as ReturnType<typeof setInterval>);
+    }
+    this.renewalTimer = null;
   }
 
   /**
@@ -672,10 +694,7 @@ export class KubernetesLease implements Lease {
   private fireLost(reason: string): void {
     if (!this.held) return;
     this.held = false;
-    if (this.renewalTimer) {
-      clearInterval(this.renewalTimer);
-      this.renewalTimer = null;
-    }
+    this.stopRenewalLoop();
     this.currentLease = null;
     for (const handler of this.onLostHandlers) {
       try { handler(reason); } catch { /* swallow */ }

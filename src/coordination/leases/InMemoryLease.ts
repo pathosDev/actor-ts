@@ -1,3 +1,6 @@
+import type { Clock } from '../../Clock.js';
+import { systemClock } from '../../Clock.js';
+import type { Cancellable, Scheduler } from '../../Scheduler.js';
 import type { Lease } from '../Lease.js';
 import { LeaseOptionsValidator, withLeaseConfigDefaults } from '../LeaseOptions.js';
 import type { LeaseOptions, LeaseOptionsType } from '../LeaseOptions.js';
@@ -14,10 +17,16 @@ type LeaseRecord = {
 class InMemoryLeaseStore {
   private readonly leases = new Map<string, LeaseRecord>();
 
-  /** Try to take the lease named `name` for `owner` until `expiresAt`.
-   *  Returns the new version number on success, or 0 on failure. */
-  tryAcquire(name: string, owner: string, expiresAt: number): number {
-    const now = Date.now();
+  /**
+   * Try to take the lease named `name` for `owner` until `expiresAt`.
+   * Returns the new version number on success, or 0 on failure.
+   *
+   * `now` is a parameter rather than a clock read because the store is a
+   * process-wide singleton every lease competes against, so it has no clock of
+   * its own to consult — two leases in one test may legitimately be reading
+   * different ones. The caller knows which clock it is holding (#1424).
+   */
+  tryAcquire(name: string, owner: string, expiresAt: number, now: number): number {
     const existing = this.leases.get(name);
     if (existing && existing.owner !== owner && existing.expiresAt > now) return 0;
     const version = (existing?.version ?? 0) + 1;
@@ -37,9 +46,10 @@ class InMemoryLeaseStore {
     if (existing && existing.owner === owner) this.leases.delete(name);
   }
 
-  peek(name: string): LeaseRecord | undefined {
+  /** @param now The caller's clock reading — see {@link tryAcquire}. */
+  peek(name: string, now: number = Date.now()): LeaseRecord | undefined {
     const lease = this.leases.get(name);
-    if (lease && lease.expiresAt <= Date.now()) { this.leases.delete(name); return undefined; }
+    if (lease && lease.expiresAt <= now) { this.leases.delete(name); return undefined; }
     return lease;
   }
 
@@ -64,7 +74,12 @@ export const inMemoryLeaseStore = new InMemoryLeaseStore();
  */
 export class InMemoryLease implements Lease {
   private readonly renewalIntervalMs: number;
-  private renewalTimer: ReturnType<typeof setInterval> | null = null;
+  private renewalTimer: Cancellable | ReturnType<typeof setInterval> | null = null;
+
+  /** Where the TTL is measured.  The scheduler when one was given, else the wall clock. */
+  private readonly clock: Clock;
+  /** The same object when one was given, `null` when none was — see {@link clock}. */
+  private readonly scheduler: Scheduler | null;
   private held = false;
   private readonly onLostHandlers = new Set<(reason: string) => void>();
 
@@ -83,6 +98,8 @@ export class InMemoryLease implements Lease {
     validator.validateRequired(this.options);
     validator.validate(this.options);
     this.renewalIntervalMs = this.options.renewalIntervalMs ?? Math.max(100, Math.floor(this.options.ttlMs / 3));
+    this.scheduler = this.options.scheduler ?? null;
+    this.clock = this.scheduler ?? systemClock;
   }
 
   async acquire(): Promise<boolean> {
@@ -99,14 +116,17 @@ export class InMemoryLease implements Lease {
     const retries = this.options.acquireRetries ?? 1;
     const delay = this.options.acquireRetryDelayMs ?? 50;
     for (let i = 0; i < retries; i++) {
-      const expiresAt = Date.now() + this.options.ttlMs;
-      const version = inMemoryLeaseStore.tryAcquire(this.options.name, this.options.owner, expiresAt);
+      const now = this.clock.now();
+      const expiresAt = now + this.options.ttlMs;
+      const version = inMemoryLeaseStore.tryAcquire(
+        this.options.name, this.options.owner, expiresAt, now,
+      );
       if (version > 0) {
         this.held = true;
         this.startRenewalLoop();
         return { token: `${this.options.name}@v${version}` };
       }
-      if (i < retries - 1) await sleep(delay);
+      if (i < retries - 1) await sleep(delay, this.scheduler);
     }
     return null;
   }
@@ -114,7 +134,7 @@ export class InMemoryLease implements Lease {
   async release(): Promise<void> {
     if (!this.held) return;
     this.held = false;
-    if (this.renewalTimer) { clearInterval(this.renewalTimer); this.renewalTimer = null; }
+    this.stopRenewalLoop();
     inMemoryLeaseStore.release(this.options.name, this.options.owner);
   }
 
@@ -126,21 +146,38 @@ export class InMemoryLease implements Lease {
   }
 
   private startRenewalLoop(): void {
-    this.renewalTimer = setInterval(() => {
+    const renew = (): void => {
       if (!this.held) return;
-      const expiresAt = Date.now() + this.options.ttlMs;
-      const ok = inMemoryLeaseStore.renew(this.options.name, this.options.owner, expiresAt);
-      if (!ok) {
-        this.held = false;
-        if (this.renewalTimer) { clearInterval(this.renewalTimer); this.renewalTimer = null; }
-        for (const handler of this.onLostHandlers) {
-          try { handler('lease lost during renewal'); } catch { /* swallow */ }
-        }
+      const ok = inMemoryLeaseStore.renew(
+        this.options.name, this.options.owner, this.clock.now() + this.options.ttlMs,
+      );
+      if (ok) return;
+      this.held = false;
+      this.stopRenewalLoop();
+      for (const handler of this.onLostHandlers) {
+        try { handler('lease lost during renewal'); } catch { /* swallow */ }
       }
-    }, this.renewalIntervalMs);
+    };
+    this.renewalTimer = this.scheduler === null
+      ? setInterval(renew, this.renewalIntervalMs)
+      : this.scheduler.scheduleAtFixedRateFunction(
+        this.renewalIntervalMs, this.renewalIntervalMs, renew,
+      );
+  }
+
+  /** Disarm whichever kind of handle {@link startRenewalLoop} produced. */
+  private stopRenewalLoop(): void {
+    if (this.renewalTimer === null) return;
+    if (typeof (this.renewalTimer as Cancellable).cancel === 'function') {
+      (this.renewalTimer as Cancellable).cancel();
+    } else {
+      clearInterval(this.renewalTimer as ReturnType<typeof setInterval>);
+    }
+    this.renewalTimer = null;
   }
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+function sleep(ms: number, scheduler: Scheduler | null): Promise<void> {
+  if (scheduler === null) return new Promise((r) => setTimeout(r, ms));
+  return new Promise((r) => { scheduler.scheduleOnceFunction(ms, () => { r(); }); });
 }
