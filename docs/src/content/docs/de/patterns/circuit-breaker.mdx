@@ -254,6 +254,36 @@ der beiden Blöcke wirft bei genau diesem ersten Aufruf `OptionsError`,
 ein vertippter Override scheitert also laut, statt einen Breaker still
 auf den Framework-Defaults laufen zu lassen.
 
+#### Ein Klassifikator, der zur Abhängigkeit gehört, nicht zu einem Aufrufer
+
+Diese „einmal gelesen“-Regel hat eine scharfe Kante, sobald mehr als
+eine Stelle dieselbe Id auflöst: wer zuerst da ist, entscheidet, und
+das `isFailure` jedes späteren Aufrufers fällt still unter den Tisch.
+Das Prädikat stattdessen an `call` zu übergeben umgeht das — es
+klassifiziert die Fehler *dieses* Calls und sticht das, womit die
+Instanz gebaut wurde:
+
+```ts
+const journal = breakers.breaker('persistence-journal');
+
+await journal.call(
+  () => store.append(id, entries, expectedSeq),
+  (err) => !(err instanceof ConcurrencyError),
+);
+```
+
+Nimm die Konstruktions-Option, wenn die Settings des Breakers dir
+allein gehören, und das Per-Call-Argument, wenn die Id geteilt oder
+veröffentlicht ist — genau das tut das Framework für
+`actor-ts.persistence.journal-breaker`, dessen Id ein dokumentierter
+Config-Pfad ist, den jeder auflösen darf.
+
+`ignoredErrorNames` kommt in beiden Fällen zuerst, und ein
+entschuldigter Fehler ist weiterhin weder Fehler noch Erfolg: der
+Zähler aufeinanderfolgender Fehler überlebt ihn unverändert, ein
+entschuldigter Fehler zwischen je zwei echten kann den Breaker also
+nicht daran hindern, sich zu öffnen.
+
 Die vollständige Key-Liste steht in der
 [Konfigurations-Referenz](/de/reference/configuration/#actor-tscircuit-breaker).
 

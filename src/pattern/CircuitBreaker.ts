@@ -92,8 +92,27 @@ export class CircuitBreaker {
    */
   get consecutiveOpens(): number { return this._consecutiveOpens; }
 
-  /** Call `factory` under breaker supervision.  Throws `CircuitBreakerOpenError` when open. */
-  async call<T>(factory: () => Promise<T>): Promise<T> {
+  /**
+   * Call `factory` under breaker supervision.  Throws `CircuitBreakerOpenError`
+   * when open.
+   *
+   * `isFailure` classifies *this call's* errors and takes precedence over the
+   * instance's {@link CircuitBreakerOptionsType.isFailure}.  It exists because
+   * a breaker resolved by id through `CircuitBreakerExtension` is **shared**:
+   * the registry hands back the instance that already exists rather than
+   * reconfiguring it, so a predicate supplied as a construction option reaches
+   * the instance only when its supplier happened to be the first caller.  A
+   * classifier that belongs to the protected dependency rather than to one
+   * caller therefore has to travel with the call, where no resolution order
+   * can drop it (#874).
+   *
+   * `ignoredErrorNames` is still consulted first and still wins — see there
+   * for why the operator's half of the classifier outranks a compiled one,
+   * per-call or not.  An excused error is neither a failure nor a success:
+   * the consecutive-failure count survives it untouched, so one excused error
+   * between every two real ones cannot hold a dead dependency open forever.
+   */
+  async call<T>(factory: () => Promise<T>, isFailure?: (error: Error) => boolean): Promise<T> {
     this.maybeTransitionToHalfOpen();
     if (this._state === 'open') throw new CircuitBreakerOpenError();
 
@@ -107,7 +126,7 @@ export class CircuitBreaker {
       return value;
     } catch (err) {
       const asErr = err instanceof Error ? err : new Error(String(err));
-      if (this.countsAsFailure(asErr)) this.onFailure();
+      if (this.countsAsFailure(asErr, isFailure)) this.onFailure();
       throw asErr;
     }
   }
@@ -192,10 +211,17 @@ export class CircuitBreaker {
    * consulted first and short-circuits — see
    * `CircuitBreakerOptionsType.ignoredErrorNames` for why that order and not
    * the other one.
+   *
+   * Below it, the call's own `isFailure` **replaces** the instance's rather
+   * than joining it: the two are the same kind of verdict said by two parties,
+   * and the caller is the one that knows what this call means.  Combining them
+   * would make a shared instance's option — whose value depends on which
+   * caller resolved the id first — silently narrow or widen every other
+   * caller's classification.
    */
-  private countsAsFailure(error: Error): boolean {
+  private countsAsFailure(error: Error, isFailure: ((error: Error) => boolean) | undefined): boolean {
     if (this.options.ignoredErrorNames?.includes(error.name)) return false;
-    return this.options.isFailure?.(error) ?? true;
+    return (isFailure ?? this.options.isFailure)?.(error) ?? true;
   }
 
   private maybeTransitionToHalfOpen(): void {
