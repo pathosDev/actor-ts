@@ -57,8 +57,20 @@ import { StorageLocalityAdvisory, type ObservedStore } from './StorageLocalityAd
  */
 /**
  * Does this error mean the store is unavailable, as opposed to having
- * answered a question?  The `isFailure` predicate both persistence breakers
- * are built with (#874).
+ * answered a question?  The `isFailure` classifier both persistence breakers
+ * are *called* with (#874).
+ *
+ * Passed per call rather than as a construction option, and that is the whole
+ * of it: `CircuitBreakerExtension.breaker(id, options)` returns the instance
+ * that already exists rather than reconfiguring it, so a predicate handed over
+ * at construction only reached the breaker when persistence happened to be the
+ * first caller for that id.  The id is published as a configuration path and
+ * {@link PersistenceExtension.journalBreaker} invites a dashboard to read the
+ * state, so one earlier `breaker('persistence-journal')` anywhere in the
+ * process was enough to lose the carve-out — and then a burst of losing
+ * conditional appends fast-failed every healthy entity on the node, which is
+ * the exact outage this exists to prevent.  A classifier that belongs to the
+ * protected dependency has to travel with the call.
  *
  * Three verdicts are excluded, and each one would otherwise be a way to
  * fast-fail a healthy system:
@@ -272,16 +284,21 @@ export class PersistenceExtension implements Extension {
     return this._snapshotBreaker;
   }
 
-  /** Run `call` under {@link journalBreaker}, or plainly when there is none. */
+  /**
+   * Run `call` under {@link journalBreaker}, or plainly when there is none.
+   *
+   * {@link isStoreOutage} travels with the call rather than with the instance
+   * — see there for why, and for what went wrong when it did not.
+   */
   callThroughJournalBreaker<T>(call: () => Promise<T>): Promise<T> {
     const breaker = this.journalBreaker;
-    return breaker ? breaker.call(call) : call();
+    return breaker ? breaker.call(call, isStoreOutage) : call();
   }
 
-  /** Run `call` under {@link snapshotBreaker}, or plainly when there is none. */
+  /** As {@link callThroughJournalBreaker}, for the snapshot store. */
   callThroughSnapshotBreaker<T>(call: () => Promise<T>): Promise<T> {
     const breaker = this.snapshotBreaker;
-    return breaker ? breaker.call(call) : call();
+    return breaker ? breaker.call(call, isStoreOutage) : call();
   }
 
   /**
@@ -408,14 +425,16 @@ export class PersistenceExtension implements Extension {
   /**
    * Resolve one breaker id, or `null` for the empty id.
    *
-   * `isFailure` is the one thing a config file cannot express and is
-   * therefore exactly what `breaker(id, explicitOptions)` is for.  The
-   * numbers stay in HOCON, where an operator can change them.
+   * Deliberately with **no** explicit options: everything a breaker needs is
+   * either in HOCON under its own id, where an operator can change it, or —
+   * for {@link isStoreOutage}, which a config file cannot express — supplied
+   * per call.  That leaves the shared instance identical however it is
+   * reached, so `breaker(id)`'s documented first-caller-wins contract has
+   * nothing left to drop here.
    */
   private resolveBreaker(id: string): CircuitBreaker | null {
     if (id === '') return null;
-    return this.system.extension(CircuitBreakerExtensionId)
-      .breaker(id, { isFailure: isStoreOutage });
+    return this.system.extension(CircuitBreakerExtensionId).breaker(id);
   }
 
   private currentJournalPluginId(): string {

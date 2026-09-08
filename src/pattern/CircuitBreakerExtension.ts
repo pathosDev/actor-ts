@@ -77,6 +77,14 @@ export class CircuitBreakerExtension implements Extension {
    * the same contract `CacheExtension.cache(name)` has.  Options a config file
    * cannot express (`isFailure`, `random`) are what it is for.
    *
+   * **Which makes it the wrong door for a *shared* or published id.**  Whoever
+   * resolves the id first decides, and every later caller's options are
+   * dropped in silence — so an `isFailure` handed over here reaches the
+   * breaker only by luck of ordering, and a classifier that belongs to the
+   * protected dependency should be passed to `CircuitBreaker.call` instead,
+   * where it travels with the call (#874).  The framework's own persistence
+   * breakers do exactly that and pass no options here at all.
+   *
    * Values from either block are validated when the breaker is constructed, so
    * a typo'd override throws `OptionsError` at the first `breaker(id)` rather
    * than leaving that one instance quietly running the framework defaults.
