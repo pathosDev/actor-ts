@@ -1,3 +1,4 @@
+import type { Clock } from '../../src/Clock.js';
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../src/Actor.js';
 import { ActorRestarted, ActorStopped } from '../../src/SystemMessages.js';
@@ -397,7 +398,9 @@ describe('resume after a failure', () => {
  */
 describe('RestartBudget', () => {
   /** A clock the test moves by hand, so no assertion ever waits on real time. */
-  const manualClock = (): { now: () => number; advance: (ms: number) => void } => {
+  // Structurally a `Clock`, so it goes straight into `RestartBudget` with no
+  // adapter — the shape the contract exists to make ordinary (#1424).
+  const manualClock = (): Clock & { advance: (ms: number) => void } => {
     let current = 1_000_000;
     return { now: () => current, advance: (ms: number) => { current += ms; } };
   };
@@ -438,7 +441,7 @@ describe('RestartBudget', () => {
       () => Directive.Restart,
       { maxRetries: 2, withinTimeRangeMs: 1_000 },
     );
-    const budget = new RestartBudget(strategy, clock.now);
+    const budget = new RestartBudget(strategy, clock);
 
     expect(budget.registerRestart()).toBe(true);
     expect(budget.registerRestart()).toBe(true);
@@ -458,7 +461,7 @@ describe('RestartBudget', () => {
       () => Directive.Restart,
       { maxRetries: 2, withinTimeRangeMs: 1_000 },
     );
-    const budget = new RestartBudget(strategy, clock.now);
+    const budget = new RestartBudget(strategy, clock);
 
     expect(budget.registerRestart()).toBe(true);   // at t
     clock.advance(600);
@@ -474,7 +477,7 @@ describe('RestartBudget', () => {
   test('withinTimeRangeMs: 0 is a process-lifetime cap that never resets', () => {
     const clock = manualClock();
     const strategy = new OneForOneStrategy(() => Directive.Restart, { maxRetries: 2 });
-    const budget = new RestartBudget(strategy, clock.now);
+    const budget = new RestartBudget(strategy, clock);
 
     expect(budget.registerRestart()).toBe(true);
     expect(budget.registerRestart()).toBe(true);

@@ -55,7 +55,7 @@ const BACKSLASH = String.fromCharCode(92);
  * The revision the ledger below was measured at, so a later reader can see how
  * far the tree has moved without re-deriving the baseline.
  */
-const LEDGER_REVISION = '2eaab0b4';
+const LEDGER_REVISION = '75aeeb12';
 const LEDGER_MEASURED_ON = '2026-09-07';
 
 /**
@@ -70,7 +70,7 @@ const CANONICAL_CLOCKS: readonly string[] = ['src/Clock.ts', 'src/Scheduler.ts']
 
 /**
  * Direct wall-clock reads per file, measured at {@link LEDGER_REVISION}:
- * **184 across 78 files**, counting `Date.now()` and a bare `new Date()` over
+ * **186 across 80 files**, counting `Date.now` and a bare `new Date()` over
  * source with comments and string literals blanked.
  *
  * A raw `grep` says 213 across 87 files. The difference is reads inside
@@ -117,6 +117,7 @@ const LEGACY_WALL_CLOCK_READS: Readonly<Record<string, number>> = {
   'src/discovery/DnsSeedProvider.ts': 1,
   'src/http/HttpExtension.ts': 4,
   'src/internal/ActorCell.ts': 4,
+  'src/internal/DeadLetterRef.ts': 1,
   'src/io/broker/BrokerActor.ts': 7,
   'src/io/broker/GrpcClientActor.ts': 1,
   'src/io/broker/JetStreamActor.ts': 1,
@@ -124,6 +125,7 @@ const LEGACY_WALL_CLOCK_READS: Readonly<Record<string, number>> = {
   'src/logging/FileSink.ts': 1,
   'src/logging/HttpDelivery.ts': 1,
   'src/logging/MultiSinkLogger.ts': 1,
+  'src/pattern/BackoffSupervisor.ts': 1,
   'src/pattern/CircuitBreaker.ts': 2,
   'src/persistence/ReplicatedEventSourcedActor.ts': 2,
   'src/persistence/durable-state-stores/DynamoDbDurableStateStore.ts': 1,
@@ -163,7 +165,7 @@ const LEGACY_WALL_CLOCK_READS: Readonly<Record<string, number>> = {
  *
  * Every assertion below is satisfied by finding nothing, so a scanner that
  * stopped reading — a moved directory, a blanking bug that ate the file —
- * would report a tree with no wall-clock reads at all and pass. 184 were found
+ * would report a tree with no wall-clock reads at all and pass. 186 were found
  * at {@link LEDGER_REVISION}; the floor sits far enough below that the migration
  * this ratchet exists to enable does not trip it, and far enough above zero to
  * catch a scanner that broke.
@@ -219,8 +221,16 @@ function blankNonCode(source: string): string {
   return out.join('');
 }
 
-/** `Date.now()` and a bare `new Date()` — the two ordinary ways to read it. */
-const WALL_CLOCK_READ = /\bDate\s*\.\s*now\s*\(\s*\)|\bnew\s+Date\s*\(\s*\)/g;
+/**
+ * `Date.now` and a bare `new Date()` — the two ordinary ways to read the clock.
+ *
+ * The `Date.now` half deliberately does **not** require the call parentheses.
+ * `private readonly now: () => number = Date.now` reads the wall clock just as
+ * surely as calling it, only later — and it is the exact shape of the ad-hoc
+ * time seams this contract replaced, so a ratchet blind to it could watch every
+ * one of them come back.
+ */
+const WALL_CLOCK_READ = /\bDate\s*\.\s*now\b|\bnew\s+Date\s*\(\s*\)/g;
 
 function wallClockReadsIn(source: string): number {
   return blankNonCode(source).match(WALL_CLOCK_READ)?.length ?? 0;
@@ -349,6 +359,12 @@ describe('the guards on the guard', () => {
     // scanner resumes reading code on the second line of a template.
     const source = ['const doc = `', '  Date.now() appears here as prose.', '`;'].join('\n');
     expect(wallClockReadsIn(source)).toBe(0);
+  });
+
+  test('it counts a bare `Date.now` handed around as a function', () => {
+    // The shape of every ad-hoc time seam this contract replaced. A regex that
+    // required the parentheses would let all of them come back unnoticed.
+    expect(wallClockReadsIn('constructor(private readonly now: () => number = Date.now) {}')).toBe(1);
   });
 
   test('it does not count performance.now(), which measures a duration', () => {

@@ -6,6 +6,7 @@
  * drop-mode loss, system messages bypassing the gate, and
  * cancelThrottle restoring full speed.
  */
+import { systemClock } from '../../../src/Clock.js';
 import { match } from 'ts-pattern';
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { Actor } from '../../../src/Actor.js';
@@ -67,7 +68,7 @@ class Counter extends Actor<CountMessage> {
       .withQps(10)
       .withBurst(2)
       .withOnExcess('pause')
-      .withNow(() => Date.now());
+      .withClock(systemClock);
     this.context.throttle(throttleOptions);
   }
 

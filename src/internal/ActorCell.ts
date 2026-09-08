@@ -875,7 +875,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this._throttleBucket = new TokenBucket({
       qps: settings.qps,
       burst: settings.burst,
-      now: settings.now,
+      clock: settings.clock,
     });
     this._throttleOnExcess = settings.onExcess ?? 'pause';
     // Switching configs invalidates any pending pause-resume timer
