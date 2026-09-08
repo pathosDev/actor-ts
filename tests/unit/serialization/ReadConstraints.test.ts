@@ -120,6 +120,97 @@ describe('JSON tree — the depth cap reaches every recursion site', () => {
   });
 });
 
+/**
+ * What the per-tag table above cannot see.
+ *
+ * Every case there wraps `deepPlainObject(60)`, so sixty PLAIN-object levels
+ * do all the charging and the tag contributes one level to a payload that was
+ * already twenty-five times past the cap.  Re-entering a tag's members at the
+ * tag's OWN depth — `childDepth = depth` — leaves that whole table green, and
+ * leaves the wire unguarded for exactly the shape an attacker would send: a
+ * chain of nothing but tagged containers, where the tag's level is the only
+ * level there is.
+ *
+ * So each arm below is a chain of ONE tag and no plain nesting, pinned at both
+ * boundaries.  Pinning both is what makes the arithmetic the subject: a cap of
+ * `deepestCharged` must accept and one below it must refuse, which no
+ * mis-charging can satisfy at the same time.
+ */
+describe('JSON tree — a tagged container charges for its own level', () => {
+  /** Levels in every chain; small, because both boundaries are asserted exactly. */
+  const CHAIN_LEVELS = 12;
+
+  /**
+   * One tag's chain, as the JSON text a peer would put on the wire.  Written
+   * as text rather than built through `encodeJsonTree`, because the encoder
+   * cannot produce some of these — a `Set` of a `Set` twelve deep is fine, an
+   * `__error__` whose cause is an `__error__` twelve deep is a shape only a
+   * hostile peer bothers to construct.
+   *
+   * `chargesPerLevel` is 2 where the tag's payload is itself walked as an
+   * object — `__error__` reaches its `cause` through `decodeError`, and
+   * `__literal__` reaches its members through `decodePlainObject`, each adding
+   * a level of its own on top of the tag's.
+   */
+  type TagChain = {
+    readonly tag: string;
+    readonly open: string;
+    readonly close: string;
+    readonly chargesPerLevel: 1 | 2;
+  };
+
+  const chains: readonly TagChain[] = [
+    { tag: '__map__', open: '{"__map__":[["k",', close: ']]}', chargesPerLevel: 1 },
+    { tag: '__set__', open: '{"__set__":[', close: ']}', chargesPerLevel: 1 },
+    {
+      tag: '__bidirectionalmap__',
+      open: '{"__bidirectionalmap__":[["k",',
+      close: ']]}',
+      chargesPerLevel: 1,
+    },
+    {
+      tag: '__bidirectionalmultimap__',
+      open: '{"__bidirectionalmultimap__":[["k",[',
+      close: ']]]}',
+      chargesPerLevel: 1,
+    },
+    {
+      tag: '__error__',
+      open: '{"__error__":{"name":"Error","message":"m","cause":',
+      close: '}}',
+      chargesPerLevel: 2,
+    },
+    { tag: '__literal__', open: '{"__literal__":{"nested":', close: '}}', chargesPerLevel: 2 },
+  ];
+
+  test.each(chains.map((chain) => [chain.tag, chain] as const))(
+    'a chain of %s containers is refused one level under the cap it fits in',
+    (_tag, chain) => {
+      const json = chain.open.repeat(CHAIN_LEVELS) + '1' + chain.close.repeat(CHAIN_LEVELS);
+      const parsed = JSON.parse(json) as unknown;
+      const deepestCharged = chain.chargesPerLevel * (CHAIN_LEVELS - 1);
+
+      expect(() => decodeJsonTree(parsed, { maxNestingDepth: deepestCharged - 1 }))
+        .toThrow(SerializationError);
+      let decoded: unknown;
+      expect(() => { decoded = decodeJsonTree(parsed, { maxNestingDepth: deepestCharged }); })
+        .not.toThrow();
+      expect(decoded).toBeDefined();
+    },
+  );
+
+  test('a chain long enough to overflow the stack is refused by the cap, not by the stack', () => {
+    // 20 000 levels of `{"__set__":[` — 240 KB on the wire, and past the depth
+    // at which the walker's own recursion gives out.  An uncharged tag turns
+    // the typed refusal back into the `RangeError` #880 was filed to remove.
+    const json = '{"__set__":['.repeat(20_000) + '1' + ']}'.repeat(20_000);
+    const parsed = JSON.parse(json) as unknown;
+
+    expect(() => decodeJsonTree(parsed)).toThrow(/nesting deeper than 256/);
+    expect(() => decodeJsonTree(parsed)).not.toThrow(RangeError);
+  });
+});
+
 describe('CBOR — the configurable ceilings', () => {
   test('the #618 default still refuses a 100k-deep payload', () => {
     const deep = new Uint8Array(100_000).fill(0x81);

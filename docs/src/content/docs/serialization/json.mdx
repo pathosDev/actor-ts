@@ -111,7 +111,7 @@ the ceilings in
 | Ceiling | Default | What it refuses |
 | --- | --- | --- |
 | `max-nesting-depth` | `256` | A tree nested deeper than this — arrays, objects and tagged containers all count one level each. |
-| `max-document-bytes` | `0` (off) | A document larger than this, checked before `JSON.parse` runs. |
+| `max-document-bytes` | `0` (off) | A document larger than this — checked before `JSON.parse` runs, and on the cluster wire before the frame's bytes are even buffered. |
 
 `max-nesting-depth` is not decoration.  `JSON.parse` gives you nothing to lean
 on here: measured on Bun, Node and Deno alike, it accepts a hundred thousand
@@ -125,6 +125,24 @@ The ceiling can be lowered but not raised past `256`, which is the encoder's own
 hard cap: a node that read deeper than it writes would accept a payload it
 cannot produce.  Both are per-decode ceilings — they say nothing about what
 `toBinary` will emit.
+
+`max-document-bytes` bounds the **cost** rather than the shape, and it is the
+only ceiling that can act before the parse allocates anything.  On the cluster
+wire it is checked against the frame's 4-byte length prefix, which is earlier
+than either serializer can manage — those are handed bytes that already exist.
+It ships as `0`, so nothing changes until a deployment sets it.
+
+Which leaves a residual worth stating plainly: **at the shipped defaults an
+over-deep frame is refused only after `JSON.parse` has already built it.**
+Measured on Bun 1.4, one 16 MiB frame of balanced `[` costs about 1.0 s of CPU
+and 260 MiB of heap before the depth ceiling reports it — roughly four times
+what a legitimate frame of the same size costs, and repeatable by any peer that
+completed the handshake.  Two knobs bound it and neither is on by default:
+`actor-ts.remote.max-frame-bytes` caps the bytes at 16 MiB, and
+`max-document-bytes` caps the document on the same prefix.  A pre-parse scan of
+the raw buffer would close it without either; it was measured and not shipped,
+because it costs 18–28 % of every frame decode to remove a fourfold
+amplification.
 
 Journal and snapshot rows are deliberately exempt.  Those bytes were written by
 actor-ts itself, so a tightened ceiling there would turn recoverable history

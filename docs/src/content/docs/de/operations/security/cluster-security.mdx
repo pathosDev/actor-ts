@@ -491,6 +491,24 @@ senken ist auch der Hebel für ein Deployment, das nie große
 Envelopes schickt — die residenten Kosten pro Verbindung folgen
 ihm direkt.
 
+Bytes und *Arbeit* sind nicht dieselbe Grenze, und hier trennen
+sich die beiden. Ein akzeptierter Frame geht an `JSON.parse` und
+erst danach an den Tagged-Tree-Walker; die Tiefengrenze
+(`actor-ts.serialization.read-constraints.max-nesting-depth`)
+meldet ein zu tiefes Payload also erst, nachdem das Parsen es
+bereits aufgebaut hat. Auf Bun 1.4 gemessen kostet ein einzelner
+16-MiB-Frame aus ausbalancierten `[` rund 1,0 s CPU und 260 MiB
+Heap bis zur Ablehnung — etwa das Vierfache eines legitimen
+Frames derselben Größe, und wiederholbar für jeden Peer, der den
+Handshake abgeschlossen hat. Zwei Keys begrenzen das, keiner
+davon ist per Default aktiv: `remote.max-frame-bytes` und
+`serialization.read-constraints.max-document-bytes`, das gegen
+dasselbe 4-Byte-Längen-Präfix geprüft wird und den Frame
+ablehnt, bevor sein Payload überhaupt gepuffert ist. Ein
+Vorab-Scan des Rohpuffers würde es ohne beide schließen; er
+wurde mit 18–28 % jeder Frame-Dekodierung gemessen und für eine
+vierfache Verstärkung nicht ausgeliefert (#880).
+
 ## Was ein wohlgeformter Frame trotzdem nicht wachsen lassen kann
 
 Die Shape-Prüfung sagt, dass ein Frame *lesbar* ist — nicht,

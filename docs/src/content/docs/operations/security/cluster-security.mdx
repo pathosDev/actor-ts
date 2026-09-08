@@ -460,6 +460,24 @@ that key is also the lever for a deployment that never sends
 large envelopes — the resident cost per connection follows it
 directly.
 
+Bytes and *work* are not the same bound, and this is where the
+two part company. An accepted frame goes to `JSON.parse` and
+only then to the tagged-tree walker, so the depth ceiling
+(`actor-ts.serialization.read-constraints.max-nesting-depth`)
+reports an over-deep payload after the parse has already built
+it. Measured on Bun 1.4, one 16 MiB frame of balanced `[` costs
+about 1.0 s of CPU and 260 MiB of heap before the refusal —
+roughly four times what a legitimate frame of the same size
+costs, and repeatable by any peer that completed the handshake.
+Two keys bound it and neither is on by default:
+`remote.max-frame-bytes`, and
+`serialization.read-constraints.max-document-bytes`, which is
+checked against the same 4-byte length prefix and refuses the
+frame before its payload is buffered at all. A pre-parse scan
+of the raw buffer would close it with neither set; it was
+measured at 18–28 % of every frame decode and not shipped, for
+a fourfold amplification (#880).
+
 ## What a well-formed frame still cannot grow
 
 Shape validation says a frame is *readable*, not that acting on
