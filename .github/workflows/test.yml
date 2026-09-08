@@ -201,6 +201,19 @@ jobs:
           echo "test order seed: --seed=$SEED"
           printf 'Test order seed: `--seed=%s`\n' "$SEED" >> "$GITHUB_STEP_SUMMARY"
 
+          # Single-process, and `--parallel` must not be added here however
+          # tempting the wall time is (#1332).  Measured on this tree: the
+          # parallel run executes *identically* — 721 of 723 files report the
+          # same hit count, and the aggregate numerator is byte-for-byte the
+          # same 55 293 lines — but 407 files report a larger instrumented-line
+          # denominator and none a smaller one, so `src/cluster/Cluster.ts` goes
+          # from 1 077 to 1 469 instrumented lines against the same 1 074 hit.
+          #
+          # The aggregate therefore reads 79.16 % instead of 93.82 % on the same
+          # code, which walks straight through the 90 % floor by changing what is
+          # measured rather than what is tested.  The floors in
+          # `scripts/coverage-gate.mjs` were calibrated against this denominator.
+          # `tests/unit/ci/WorkflowHygiene.test.ts` asserts the flag stays off.
           set +e
           bun test --coverage --seed="$SEED" \
             --coverage-reporter=text --coverage-reporter=lcov \
