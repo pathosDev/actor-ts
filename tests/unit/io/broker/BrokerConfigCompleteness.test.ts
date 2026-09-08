@@ -385,9 +385,26 @@ const rows = INVENTORY.map((entry) => ({
   readerText: sourceOf(entry.readerFile),
 }));
 
-/** Does `readerText` look up `leaf` on the actor's own config subtree? */
+/**
+ * Does `readerText` look up `leaf` on the actor's own config subtree?
+ *
+ * The *receiver* is half the question, not decoration.  Every reader here
+ * resolves its top-level leaves off a `Config` bound to the actor's own block
+ * and named `config`; a nested group (`stream { … }`, `will { … }`,
+ * `producer { … }`) is read through its own descended handle — `streamConfig`,
+ * `willConfig`, `producerConfig`.  A search for the bare call text cannot tell
+ * the two apart, so a nested leaf spelled like a top-level one satisfies the
+ * top-level row on the strength of the nested read.  Two pairs are spelled
+ * that way today — `mqtt.qos` beside `mqtt.will.qos`, `jetstream.name` beside
+ * `jetstream.stream.name` — and both were created by #871, whose header faults
+ * `NoDeadConfigKeys` for exactly this substring collapse.
+ *
+ * Anchored on a non-identifier character so a future `parentConfig` cannot
+ * creep back in through the suffix.
+ */
 function readsLeaf(readerText: string, leaf: string): boolean {
-  return readerText.includes(`hasPath('${leaf}')`);
+  const escaped = leaf.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
+  return new RegExp(`(^|[^\\w$.])config\\.hasPath\\('${escaped}'\\)`, 'm').test(readerText);
 }
 
 describe('every broker options field is configured or documented code-only', () => {
@@ -423,6 +440,38 @@ describe('every broker options field is configured or documented code-only', () 
     const mqttActor = sourceOf('io/broker/MqttActor.ts');
     expect(readsLeaf(mqttActor, 'will')).toBe(true);
     expect(readsLeaf(mqttActor, 'codec')).toBe(false);
+  });
+
+  /*
+   * A nested group read must not satisfy a top-level row.
+   *
+   * Two leaves are spelled the same at both levels — `mqtt.qos` beside
+   * `mqtt.will.qos`, `jetstream.name` beside `jetstream.stream.name` — and a
+   * check that searches the reader file for the bare call text cannot tell
+   * them apart.  The top-level read could then be deleted with the guard
+   * still green, on the strength of the nested one: exactly the substring
+   * collapse this file's header faults `NoDeadConfigKeys` for.
+   *
+   * The deletion is simulated on the real source rather than asserted against
+   * a hand-written fixture, so the two rows are checked as they are actually
+   * written today.
+   */
+  test.each([
+    { readerFile: 'io/broker/MqttActor.ts', leaf: 'qos', topLevelRead: "if (config.hasPath('qos')) out.qos = config.getInt('qos') as MqttQos;" },
+    { readerFile: 'io/broker/JetStreamActor.ts', leaf: 'name', topLevelRead: "if (config.hasPath('name')) out.name = config.getString('name');" },
+  ])('$readerFile — a nested $leaf read does not stand in for the top-level one', (probe) => {
+    const source = sourceOf(probe.readerFile);
+    expect(source, 'the probe no longer quotes the reader verbatim').toContain(probe.topLevelRead);
+    expect(readsLeaf(source, probe.leaf)).toBe(true);
+
+    const withoutTopLevel = source.replace(probe.topLevelRead, '');
+    // The nested read is still in there — that is the whole point.
+    expect(withoutTopLevel).toContain(`Config.hasPath('${probe.leaf}')`);
+    expect(
+      readsLeaf(withoutTopLevel, probe.leaf),
+      `deleting the top-level read of '${probe.leaf}' left the guard green, so `
+      + 'that leaf could go dead without any gate noticing.',
+    ).toBe(false);
   });
 
   test.each(rows)('$optionsType classifies every field it declares', (row) => {

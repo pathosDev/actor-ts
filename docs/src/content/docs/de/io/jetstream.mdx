@@ -105,9 +105,16 @@ aktualisieren** soll (`create` ist standardmäßig `true`).
 | `subjects` | Vom Stream erfasste Subjects, z. B. `['orders.>']` (erforderlich). |
 | `retention` | `'limits'` *(Default)*, `'interest'` oder `'workqueue'`. |
 | `storage` | `'file'` (dauerhaft) oder `'memory'`. |
-| `maxMessages` / `maxBytes` | Aufbewahrungs-Obergrenzen. |
-| `maxAge` | Max. Alter in **Nanosekunden** (unverändert durchgereicht). |
+| `maxMessages` / `maxBytes` | Aufbewahrungs-Obergrenzen.  `-1` bedeutet **keine Grenze**. |
+| `maxAge` | Max. Alter in **Nanosekunden** (unverändert durchgereicht).  `0` bedeutet **keine Grenze**. |
 | `create` | Stream beim Verbinden anlegen/aktualisieren.  Default `true`. |
+
+Die Schreibweisen für „keine Grenze“ stammen von NATS selbst und sind **nicht**
+symmetrisch: die beiden Mengen-Obergrenzen nehmen `-1`, `maxAge` nimmt `0` — es
+ist eine Nanosekunden-Spanne, bei der ein negativer Wert nichts bedeuten würde.
+Sie werden unverändert an den Server durchgereicht.  Jeder *andere* nicht
+positive Wert wird beim Start abgelehnt, `-2` bleibt also der Tippfehler, der er
+ist.
 
 ### Consumer-Konfiguration
 
@@ -121,8 +128,12 @@ Setze `consumer`, um eine dauerhafte Subscription zu binden.
 | `ackPolicy` | `'explicit'` *(Default — ack/nak/term erforderlich)*, `'none'` oder `'all'`. |
 | `ackWaitMs` | Zeit, bevor der Server ohne Ack erneut zustellt.  Default `30_000`. |
 | `filterSubject` | Subject-Filter — standardmäßig alle Subjects des Streams. |
-| `maxAcknowledgmentPending` | Max. unbestätigte Nachrichten in Flight.  Default `1024`. |
+| `maxAcknowledgmentPending` | Max. unbestätigte Nachrichten in Flight.  Default `1024`; `-1` bedeutet **keine Grenze**. |
 | `create` | Consumer beim Verbinden anlegen/aktualisieren.  Default `true`. |
+
+`ackWaitMs` hat keine solche Schreibweise — NATS liest ein Ack-Wait von null als
+„Server-Default verwenden“, und genau das sagt bereits ein nicht gesetztes Feld
+— der Wert muss also positiv sein.
 
 ### Beide Gruppen aus HOCON
 

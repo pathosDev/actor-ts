@@ -170,15 +170,30 @@ class MockJetStream implements JetStreamClientLike {
 }
 
 class MockJsm implements JetStreamManagerLike {
-  readonly streamsAdd: Array<{ name: string; subjects: string[] }> = [];
+  /**
+   * The three retention caps are captured, not just the identity fields: they
+   * are the only place a test can see that a value survived the validator
+   * *and* the mapping into nats.js's snake_case wire names unchanged, which is
+   * what a "no limit" sentinel needs proving about it (#871).
+   */
+  readonly streamsAdd: Array<{
+    name: string; subjects: string[];
+    max_msgs?: number; max_bytes?: number; max_age?: number;
+  }> = [];
   readonly streamsUpdate: Array<{ name: string }> = [];
   readonly consumersAdd: Array<{
     stream: string; durable: string; deliver_policy?: string; ack_wait?: number;
-    opt_start_seq?: number; opt_start_time?: string;
+    max_ack_pending?: number; opt_start_seq?: number; opt_start_time?: string;
   }> = [];
   readonly streams = {
     add: async (config: { name: string; subjects: string[]; retention?: string; storage?: string; max_msgs?: number; max_bytes?: number; max_age?: number }) => {
-      this.streamsAdd.push({ name: config.name, subjects: [...config.subjects] });
+      this.streamsAdd.push({
+        name: config.name,
+        subjects: [...config.subjects],
+        max_msgs: config.max_msgs,
+        max_bytes: config.max_bytes,
+        max_age: config.max_age,
+      });
     },
     update: async (name: string) => {
       this.streamsUpdate.push({ name });
@@ -195,6 +210,7 @@ class MockJsm implements JetStreamManagerLike {
         durable: config.durable_name,
         deliver_policy: config.deliver_policy,
         ack_wait: config.ack_wait,
+        max_ack_pending: config.max_ack_pending,
         opt_start_seq: config.opt_start_seq,
         opt_start_time: config.opt_start_time,
       });
@@ -782,7 +798,13 @@ describe('JetStreamActor — HOCON stream / consumer / acknowledgment-timeout (#
       // be behind it — a getNumber would have thrown on this value.
       expect(resolved.acknowledgmentTimeout).toBe(45_000);
       // …and it is not only an options object: the manager was asked for it.
-      expect(mock.mockConnection.jsm.streamsAdd[0]).toEqual({ name: 'BILLING', subjects: ['billing.>'] });
+      expect(mock.mockConnection.jsm.streamsAdd[0]).toEqual({
+        name: 'BILLING',
+        subjects: ['billing.>'],
+        max_msgs: 1000,
+        max_bytes: 8 * 1024 * 1024,
+        max_age: 3_600_000_000_000,
+      });
       expect(mock.mockConnection.jsm.consumersAdd[0]?.deliver_policy).toBe('last');
       expect(mock.mockConnection.jsm.consumersAdd[0]?.ack_wait).toBe(10_000 * 1_000_000);
     } finally {
@@ -868,6 +890,105 @@ describe('JetStreamOptionsValidator — the stream / consumer group rules (#871)
 
   test('an unset group passes', () => {
     expect(() => validate({ servers: ['nats://h:4222'] })).not.toThrow();
+  });
+});
+
+/*
+ * NATS spells "no limit" out of band on four of the five bounded leaves, and
+ * those spellings are non-positive numbers — so a plain positive bound refuses
+ * a configuration the server documents.  The values are per field, not
+ * symmetric: `max_msgs`, `max_bytes` and `max_ack_pending` take `-1`, while
+ * `max_age` takes `0` (it is a nanosecond span, and a negative one has no
+ * meaning).  `ack_wait` has no unlimited spelling at all — a zero there means
+ * "use the server default", which `undefined` already says here — so it keeps
+ * the plain positive bound and is asserted below as the deliberate asymmetry.
+ */
+describe('JetStreamOptionsValidator — the NATS "unlimited" sentinels', () => {
+  const validate = (s: Partial<JetStreamOptionsType>): void =>
+    new JetStreamOptionsValidator().validate(s);
+  const stream = (
+    limits: Partial<Pick<NonNullable<JetStreamOptionsType['stream']>, 'maxMessages' | 'maxBytes' | 'maxAge'>>,
+  ): Partial<JetStreamOptionsType> => ({ stream: { name: 'S', subjects: ['a.>'], ...limits } });
+
+  test('accepts -1 on the two count/byte caps and 0 on the age cap', () => {
+    expect(() => validate(stream({ maxMessages: -1 }))).not.toThrow();
+    expect(() => validate(stream({ maxBytes: -1 }))).not.toThrow();
+    expect(() => validate(stream({ maxAge: 0 }))).not.toThrow();
+    expect(() => validate({ consumer: { durable: 'd', maxAcknowledgmentPending: -1 } })).not.toThrow();
+  });
+
+  test('refuses a non-positive value that is not that field\'s sentinel', () => {
+    // -2 is not a spelling of anything on any of them.
+    expect(() => validate(stream({ maxMessages: -2 }))).toThrow(/stream\.maxMessages/);
+    expect(() => validate(stream({ maxBytes: -2 }))).toThrow(/stream\.maxBytes/);
+    expect(() => validate(stream({ maxAge: -2 }))).toThrow(/stream\.maxAge/);
+    expect(() => validate({ consumer: { durable: 'd', maxAcknowledgmentPending: -2 } }))
+      .toThrow(/consumer\.maxAcknowledgmentPending/);
+    // The sentinel is per field: 0 is unlimited only on the age cap, and -1
+    // only on the other three.
+    expect(() => validate(stream({ maxMessages: 0 }))).toThrow(/stream\.maxMessages/);
+    expect(() => validate(stream({ maxBytes: 0 }))).toThrow(/stream\.maxBytes/);
+    expect(() => validate(stream({ maxAge: -1 }))).toThrow(/stream\.maxAge/);
+    expect(() => validate({ consumer: { durable: 'd', maxAcknowledgmentPending: 0 } }))
+      .toThrow(/consumer\.maxAcknowledgmentPending/);
+  });
+
+  test('consumer.ackWaitMs has no sentinel — 0 and -1 both stay refused', () => {
+    expect(() => validate({ consumer: { durable: 'd', ackWaitMs: 0 } })).toThrow(/consumer\.ackWaitMs/);
+    expect(() => validate({ consumer: { durable: 'd', ackWaitMs: -1 } })).toThrow(/consumer\.ackWaitMs/);
+  });
+
+  test('a sentinel reaches the manager verbatim rather than being normalised', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off);
+    const sys = ActorSystem.create('js-unlimited', sysOptions);
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'UNBOUNDED', subjects: ['u.>'], maxMessages: -1, maxBytes: -1, maxAge: 0 })
+        .withConsumer({ durable: 'u-proc', maxAcknowledgmentPending: -1 });
+      const { mock } = await bootActor(sys, jetstreamOptions);
+      expect(mock.mockConnection.jsm.streamsAdd[0]).toEqual({
+        name: 'UNBOUNDED', subjects: ['u.>'], max_msgs: -1, max_bytes: -1, max_age: 0,
+      });
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.max_ack_pending).toBe(-1);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('the sentinels survive the HOCON round trip too', async () => {
+    const sysOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({
+        'actor-ts': {
+          io: {
+            broker: {
+              jetstream: {
+                servers: ['nats://fake:4222'],
+                stream: {
+                  name: 'UNBOUNDED', subjects: ['u.>'],
+                  'max-messages': -1, 'max-bytes': -1, 'max-age': 0,
+                },
+                consumer: { durable: 'u-proc', 'max-acknowledgment-pending': -1 },
+              },
+            },
+          },
+        },
+      });
+    const sys = ActorSystem.create('js-unlimited-hocon', sysOptions);
+    try {
+      const { mock } = await bootActor(sys, JetStreamOptions.create());
+      const resolved = mock.publicResolvedOptions();
+      expect(resolved.stream?.maxMessages).toBe(-1);
+      expect(resolved.stream?.maxBytes).toBe(-1);
+      expect(resolved.stream?.maxAge).toBe(0);
+      expect(resolved.consumer?.maxAcknowledgmentPending).toBe(-1);
+    } finally {
+      await sys.terminate();
+    }
   });
 });
 
