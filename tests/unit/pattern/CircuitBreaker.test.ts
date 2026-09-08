@@ -303,6 +303,85 @@ describe('CircuitBreaker — reopen backoff', () => {
   });
 });
 
+/**
+ * `nextProbeAt` is compared against `Date.now()` and nothing else, so a
+ * non-finite one is not a wrong delay — it is a breaker that has stopped being
+ * a breaker.  `Date.now() >= NaN` is `false` forever, so
+ * `maybeTransitionToHalfOpen` never fires again and a recovered dependency is
+ * never probed.  Nothing about that state is observable from the outside
+ * except by trying a call that should have gone through, which is why the
+ * schedule is asserted directly here rather than through elapsed time.
+ */
+describe('CircuitBreaker — the reopen window stays finite', () => {
+  /**
+   * Walk `breaker` through `opens` open cycles and collect the schedule it
+   * computed each time.  Every open runs through `setState`, so alternating it
+   * is the same code path a failing half-open probe takes — and it costs no
+   * wall time, which is what makes a count past 1024 assertable at all.
+   */
+  function walkOpenCycles(breaker: CircuitBreaker, opens: number): readonly number[] {
+    const scheduled: number[] = [];
+    for (let cycle = 0; cycle < opens; cycle++) {
+      if (breaker.state === 'open') breaker.setState('half-open');
+      breaker.setState('open');
+      scheduled.push(breaker.nextProbeAt);
+    }
+    return scheduled;
+  }
+
+  test('a zero window with a backoff factor still probes a recovered dependency', async () => {
+    // `resetTimeoutMs: 0` is pinned legal above, and 0 with `backoffFactor: 2`
+    // is what the normal-operation test one describe up already ships.  With a
+    // zero window every rejection is instantly a fresh open cycle, so a hard-
+    // down upstream reaches four figures of consecutive opens in a fraction of
+    // a second — and `Math.pow(2, 1024)` is `Infinity`, `0 * Infinity` is
+    // `NaN`, and `Math.min` propagates that instead of clamping it (#864).
+    const breaker = new CircuitBreaker({
+      maxFailures: 1, resetTimeoutMs: 0, backoffFactor: 2, maxResetTimeoutMs: 60_000,
+    });
+    for (let attempt = 0; attempt < 1_200; attempt++) {
+      await expect(breaker.call(async () => { throw new Error('still down'); }))
+        .rejects.toThrow('still down');
+    }
+    expect(breaker.consecutiveOpens).toBeGreaterThan(1_024);
+
+    // The upstream recovers.  A zero window means the very next call is a
+    // probe, so this factory has to actually run.
+    let attempted = false;
+    const value = await breaker.call(async () => { attempted = true; return 'recovered'; });
+    expect(attempted).toBe(true);
+    expect(value).toBe('recovered');
+    expect(breaker.state).toBe('closed');
+  });
+
+  test('nextProbeAt is finite for every legal window at every open count', () => {
+    // The exponent that overflows `Math.pow` depends on the factor (1024
+    // doublings, 2^1024 for 1.5 is reached later), so the sweep runs past the
+    // worst of them rather than at one hand-picked count.
+    const wedged: string[] = [];
+    for (const resetTimeoutMs of [0, 1, 1_000]) {
+      for (const backoffFactor of [1, 1.5, 2, 10]) {
+        for (const randomFactor of [0, 0.5]) {
+          const breaker = new CircuitBreaker({
+            maxFailures: 1, resetTimeoutMs, backoffFactor, randomFactor,
+            maxResetTimeoutMs: 60_000, random: () => 0.75,
+          });
+          for (const [index, probeAt] of walkOpenCycles(breaker, 2_100).entries()) {
+            if (!Number.isFinite(probeAt)) {
+              wedged.push(
+                `resetTimeoutMs=${resetTimeoutMs} backoffFactor=${backoffFactor}`
+                + ` randomFactor=${randomFactor} firstWedgedAtOpen=${index + 1}`,
+              );
+              break;
+            }
+          }
+        }
+      }
+    }
+    expect(wedged).toEqual([]);
+  });
+});
+
 describe('CircuitBreaker — ignored error names', () => {
   /** Throw `name` from a breaker call and hand back the error it rejected with. */
   async function callThrowing(breaker: CircuitBreaker, name: string): Promise<Error> {

@@ -173,17 +173,30 @@ export class CircuitBreaker {
    * `setTimeout`, whose 32-bit argument turns an overflow into a hot loop.
    * Nothing here reaches a timer: the window is a timestamp compared against
    * `Date.now()` on the next `call()`, so a value past the ceiling costs an
-   * over-long wait and not a busy loop, and `maxResetTimeoutMs` is validated
-   * finite so the product cannot reach `Infinity` either way.
+   * over-long wait and not a busy loop.
+   *
+   * The *growth* is clamped before it is multiplied in, and that half is
+   * load-bearing rather than tidy.  A finite `maxResetTimeoutMs` bounds the
+   * product but not the factor: `Math.pow` overflows to `Infinity` on its own
+   * (2^1024, 10^309), and `0 * Infinity` is `NaN`, which `Math.min` propagates
+   * instead of clamping.  A `resetTimeoutMs` of `0` — legal, and the way to
+   * say "probe immediately" — with any `backoffFactor > 1` therefore used to
+   * schedule `_nextProbeAt = NaN`, and `Date.now() >= NaN` is `false` forever,
+   * so the breaker stopped probing a recovered dependency for good (#864).
+   * Cutting the growth at the point past which the clamp swallows it anyway
+   * keeps `Infinity` out of the multiplication, so no combination of legal
+   * options can reach a non-finite window at any open count.
    */
   private reopenDelayMs(): number {
     const factor = this.options.backoffFactor ?? DEFAULT_CIRCUIT_BREAKER_BACKOFF_FACTOR;
     const ceiling = this.options.maxResetTimeoutMs ?? DEFAULT_CIRCUIT_BREAKER_MAX_RESET_TIMEOUT_MS;
     const randomFactor = this.options.randomFactor ?? DEFAULT_CIRCUIT_BREAKER_RANDOM_FACTOR;
-    const grown = Math.min(
-      this.options.resetTimeoutMs * Math.pow(factor, this._consecutiveOpens - 1),
-      ceiling,
-    );
+    const base = this.options.resetTimeoutMs;
+    // A zero base has no useful growth at all — hence the `1` — which is the
+    // case that used to produce the `NaN`.
+    const maxUsefulGrowth = base > 0 ? ceiling / base : 1;
+    const growth = Math.min(Math.pow(factor, this._consecutiveOpens - 1), maxUsefulGrowth);
+    const grown = Math.min(base * growth, ceiling);
     return applyJitter(grown, randomFactor, this.options.random ?? Math.random);
   }
 
