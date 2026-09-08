@@ -2,14 +2,14 @@
  * A ShardRegion credits the connection, not the `kind` string (#584).
  *
  * The region used to treat any frame whose `kind` started with `sharding.` as a
- * framework directive.  Four of those kinds are things only the coordinator may
+ * framework directive.  Five of those kinds are things only the coordinator may
  * say — `HandOff` stops every entity under a shard, `ShardHome` moves
  * ownership, `RememberedEntities` pre-creates entities, `ShardMapUpdate`
- * publishes an allocation map to every local subscriber — and the region
- * honoured all of them without ever asking who sent it.  It could not have
- * asked: sharding registered no per-path envelope handler, so an inbound frame
- * reached the actor through generic path resolution, which delivers with no
- * sender at all.
+ * publishes an allocation map to every local subscriber, and `RegionEvicted`
+ * (#853) drops *every* shard the region holds — and the region honoured all of
+ * them without ever asking who sent it.  It could not have asked: sharding
+ * registered no per-path envelope handler, so an inbound frame reached the
+ * actor through generic path resolution, which delivers with no sender at all.
  *
  * The forging is done with a plain `InMemoryTransport` under an attacker
  * address, the same way `tests/unit/crdt/DistributedDataAuthority.test.ts`
@@ -320,6 +320,35 @@ describe('ShardRegion coordinator authority (#584)', () => {
     // The coordinator's own broadcasts still arrive, so assert on the forgery
     // rather than on the absence of events.
     expect(victim.mapEvents.map((event) => event.type)).not.toContain('forged-type');
+  });
+
+  test('a forged RegionEvicted does not empty the region', async () => {
+    // The most destructive kind on the list, and the newest (#853): honoured,
+    // it drops *every* shard this region holds — not one, as `HandOff` does —
+    // stops every entity beneath them, and throws away the whole routing cache.
+    // One 90-byte frame per node, and the type is dark for as long as the
+    // re-registration takes.
+    const victim = await startVictim('authority-evicted', 47_360);
+    expect(entityIsUp(victim)).toBe(true);
+    const evil = await attacker('evil-evicted', 47_361);
+
+    forge(evil, victim, victim.regionPath, {
+      kind: 'sharding.RegionEvicted',
+      coordinator: '/system/cluster/sharding/coordinator-entity',
+      silentForMs: 60_000,
+    });
+    // The assertion is an absence: give the region a turn to act on the forged
+    // frame, then prove it did not.  A poll cannot express this — the condition
+    // is already true at t=0 and must still hold later.
+    await sleep(200);
+
+    expect(entityIsUp(victim)).toBe(true);
+    expect(regionState(victim).localShards.has(victim.shardId)).toBe(true);
+    victim.region.tell({ id: ENTITY_ID, kind: 'work' });
+    await awaitCondition(() => delivered === 2, {
+      timeoutMs: 4_000,
+      label: 'the region still owns its shard and routes to it',
+    });
   });
 });
 

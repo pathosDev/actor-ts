@@ -50,14 +50,16 @@ Four paths:
    notification from path 3.  With
    `actor-ts.sharding.stale-region-detection.enabled = on` every region
    beats to the coordinator, and a region that stops beating for
-   `stale-after` is treated exactly as if it had said goodbye.  Off by
-   default; see [detecting a region that went
+   `stale-after` is dropped from the registry and its shards re-homed.
+   The coordinator then *tells* that region it was evicted, which path 3
+   never has to do — see below for why the two are not the same thing.
+   Off by default; see [detecting a region that went
    silent](/reference/configuration/#detecting-a-region-that-went-silent)
    for what it does and does not cover.
 
 The first two feed into the handoff protocol below.  The last two do
-not: the region is already gone, so there is nothing to hand off —
-the coordinator simply drops it from the registry and re-allocates.
+not: there is nobody to hand off *to* — the coordinator drops the region
+from the registry and re-allocates in one step.
 
 Without that third path a stopped region left its shards **orphaned**:
 the coordinator kept naming it as their home, senders cached that home
@@ -79,6 +81,30 @@ The sweep rides the same periodic tick as path 2, inside the same
 "am I the active coordinator?" guard, and evicts through the same code
 path as path 3, so a region that did manage to say goodbye is already
 gone from the registry and cannot be evicted twice.
+
+**An eviction is not a goodbye, though, and the difference is the whole
+safety of the path.**  Path 3 starts at a region that is on its way
+down and knows it.  Path 4 starts at a coordinator that has *inferred*
+a region is gone from the absence of a beat — and the inference can be
+wrong, because a lost frame looks the same from there.  A region that
+is still alive learns nothing from a shard map it is no longer in, so
+left to itself it would keep its shards, keep their entities running
+and keep serving every sender that had cached the old home: one shard,
+two live homes, for as long as the node stayed up.
+
+So the coordinator sends the evicted region a notice.  A region that
+receives one gives up every shard it holds — the shard actors stop, so
+the entities beneath them run `postStop` and a persistent one flushes —
+and registers again immediately.  Receiving it at all is the evidence
+the eviction was a false positive, and registering again is the repair:
+the node is healthy, so it should be hosting shards.  A region that is
+really gone, or wedged, never processes the notice, and the eviction
+stands exactly as before.
+
+The notice cannot start a loop.  A re-registered region is a **new**
+registry entry, one that has beaten to this coordinator zero times, and
+a region that has never beaten is never swept — so a region whose beats
+are being lost wholesale is evicted once, not once every `stale-after`.
 
 ## The handoff sequence
 

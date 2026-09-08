@@ -55,15 +55,18 @@ Vier Pfade:
    eine verlorene Meldung aus Pfad 3. Mit
    `actor-ts.sharding.stale-region-detection.enabled = on` schlägt
    jede Region an den Koordinator, und eine Region, die
-   `stale-after` lang nicht mehr schlägt, wird genauso behandelt, als
-   hätte sie sich abgemeldet. Per Default aus; siehe [Eine verstummte
+   `stale-after` lang nicht mehr schlägt, wird aus der Registry
+   gestrichen und ihre Shards werden neu verteilt. Der Koordinator
+   *meldet* dieser Region danach, dass sie entfernt wurde — was Pfad 3
+   nie tun muss; unten steht, warum die beiden nicht dasselbe sind.
+   Per Default aus; siehe [Eine verstummte
    Region erkennen](/de/reference/configuration/#eine-verstummte-region-erkennen)
    dazu, was der Pfad abdeckt und was nicht.
 
 Die ersten beiden speisen den Handoff-Mechanismus unten. Die letzten
-beiden nicht: Die Region ist bereits weg, es gibt also nichts zu
-übergeben — der Koordinator streicht sie schlicht aus der Registry und
-alloziert neu.
+beiden nicht: Es gibt niemanden, an den zu übergeben *wäre* — der
+Koordinator streicht die Region aus der Registry und alloziert in einem
+Schritt neu.
 
 Ohne diesen dritten Pfad ließ eine gestoppte Region ihre Shards
 **verwaist** zurück: Der Koordinator nannte sie weiterhin als deren
@@ -89,6 +92,34 @@ aktive Koordinator?"-Prüfung, und entfernt über denselben Code-Pfad
 wie Pfad 3 — eine Region, die sich noch abmelden konnte, ist also
 bereits aus der Registry verschwunden und kann nicht zweimal entfernt
 werden.
+
+**Eine Entfernung ist aber keine Abmeldung, und dieser Unterschied ist
+die ganze Sicherheit des Pfades.** Pfad 3 beginnt bei einer Region, die
+heruntergefahren wird und das weiß. Pfad 4 beginnt bei einem
+Koordinator, der aus dem Ausbleiben eines Schlags *geschlossen* hat,
+dass eine Region weg ist — und dieser Schluss kann falsch sein, denn
+ein verlorener Frame sieht von dort aus genauso aus. Eine Region, die
+noch lebt, erfährt aus einer Shard-Map, in der sie nicht mehr steht,
+gar nichts: Sich selbst überlassen behielte sie ihre Shards, ließe
+deren Entities weiterlaufen und bediente weiter jeden Sender, der das
+alte Zuhause gecacht hat — ein Shard, zwei lebende Zuhause, so lange
+der Node oben bleibt.
+
+Deshalb schickt der Koordinator der entfernten Region eine Meldung.
+Eine Region, die sie erhält, gibt jeden gehaltenen Shard auf — die
+Shard-Actors stoppen, die Entities darunter laufen also durch
+`postStop`, und eine persistente flusht — und registriert sich sofort
+neu. Dass sie die Meldung überhaupt erhält, ist der Beleg dafür, dass
+die Entfernung ein Fehlalarm war, und die Neuregistrierung ist die
+Reparatur: Der Node ist gesund, also soll er Shards hosten. Eine
+Region, die wirklich weg oder verklemmt ist, verarbeitet die Meldung
+nie, und die Entfernung bleibt genau wie bisher bestehen.
+
+Die Meldung kann keine Schleife auslösen. Eine neu registrierte Region
+ist ein **neuer** Registry-Eintrag, der zu diesem Koordinator null Mal
+geschlagen hat, und eine Region, die nie geschlagen hat, wird nie
+entfernt — eine Region, deren Schläge durchgehend verloren gehen, wird
+also einmal entfernt und nicht alle `stale-after` erneut.
 
 ## Die Handoff-Sequenz
 

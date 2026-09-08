@@ -127,6 +127,43 @@ export type RegionHeartbeat = {
   readonly node: NodeAddressData;
 };
 
+/**
+ * Coordinator → region: you have been removed from the registry and your
+ * shards have been re-homed (#853).
+ *
+ * The other half of the stale sweep, and without it the sweep is a
+ * double-hosting bug rather than a backstop.  Eviction rewrites the
+ * coordinator's own map and nothing else: {@link ShardMapUpdate} goes out over
+ * the surviving registry, so the region that was just deleted is the one node
+ * that is never told; nothing on the region side re-enters `ensureRegistered`
+ * either, because the node is still up and the leader has not moved.  It
+ * therefore kept `localShards`, kept its shard actors, and kept serving live
+ * entities for shards a second region had just been given — two homes for one
+ * shard, indefinitely, in exactly the case the sweep exists to catch.
+ *
+ * A region that is genuinely gone or wedged — the case the sweep is *for* —
+ * never processes this, and the eviction stands unchanged.  One that was only
+ * silent releases and registers again, which is the self-heal: the coordinator
+ * cannot tell those apart from the outside, and this frame is what makes the
+ * benign one converge instead of splitting.
+ *
+ * It carries no shard ids.  What the region has to give up is everything it
+ * holds for the type — it is not registered any more, so an id-by-id list
+ * could only be a second, staler copy of a set the region already has.
+ */
+export type RegionEvicted = {
+  readonly kind: 'sharding.RegionEvicted';
+  readonly coordinator: string;
+  /**
+   * How long the coordinator had heard nothing when it decided, in ms.
+   *
+   * For the region's log line only, and deliberately: an operator reading
+   * "evicted" on a node that is plainly healthy needs the number that
+   * triggered it to know whether `stale-after` is set too tight.
+   */
+  readonly silentForMs: number;
+};
+
 export type EntityStarted = {
   readonly kind: 'sharding.EntityStarted';
   readonly shardId: number;
@@ -378,6 +415,7 @@ export type ShardingMessage =
   | HandOffComplete
   | RegionTerminated
   | RegionHeartbeat
+  | RegionEvicted
   | EntityStarted
   | EntityStopped
   | RememberedEntities
@@ -410,17 +448,17 @@ export function isShardingMessage(message: unknown): message is ShardingMessage 
  *
  * Used in **both** directions, because both ends acted on the `kind` string
  * alone.  Several of the region's inbound kinds are coordinator directives —
- * `HandOff` tears a shard's entities down, `ShardHome` moves ownership,
- * `RememberedEntities` pre-creates entities, `ShardMapUpdate` publishes an
- * allocation map to every local subscriber, `RegisterAcknowledgment` settles
- * the register loop — and the region used to honour all of them on the word of
- * anything that could complete a `hello` (#584).  Every one of the
- * coordinator's inbound kinds is in turn a claim about the sender's own node —
- * which shards it hosts, that its region is gone, where to send a reply — and
- * the coordinator read those out of the payload while the authenticated peer
- * went in the bin (#712).  The identity is known at the transport, but it has to
- * survive the trip through the actor's mailbox to be worth anything, which is
- * what this wrapper is for.
+ * `HandOff` tears a shard's entities down, {@link RegionEvicted} tears every
+ * shard's down, `ShardHome` moves ownership, `RememberedEntities` pre-creates
+ * entities, `ShardMapUpdate` publishes an allocation map to every local
+ * subscriber, `RegisterAcknowledgment` settles the register loop — and the
+ * region used to honour all of them on the word of anything that could complete
+ * a `hello` (#584).  Every one of the coordinator's inbound kinds is in turn a
+ * claim about the sender's own node — which shards it hosts, that its region is
+ * gone, where to send a reply — and the coordinator read those out of the
+ * payload while the authenticated peer went in the bin (#712).  The identity is
+ * known at the transport, but it has to survive the trip through the actor's
+ * mailbox to be worth anything, which is what this wrapper is for.
  *
  * **Deliberately a class, not a `{ kind }` tag.**  A wire body is always plain
  * JSON, so a class instance is a shape the wire cannot mint — `instanceof` is
