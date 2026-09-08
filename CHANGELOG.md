@@ -723,6 +723,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     entry rather than the member record. The report latch is capped too,
     since both halves of its key come off the wire.
 
+  Only the member itself may change a claim about itself.  A member restates
+  its facts by publishing them — `Cluster.publishConfigurationFact` from
+  anywhere that has the resolved value, at any point in the node's life —
+  and peers adopt the new values, compare them and enforce on the result.  A
+  copy relayed by a third node still fills an empty slot and never
+  overwrites one, so an arbitrarily old copy arriving over the epidemic lane
+  cannot flap the comparison against whichever frame landed last.
+
   Closes #844.
 
 - **BREAKING — The cluster transport's four association-lifecycle bounds are
@@ -1107,6 +1115,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   seeded from a persisted snapshot is stamped fresh and left unarmed, which
   is derived rather than configured. #853
 
+  An evicted region is told, on a new coordinator-to-region
+  `sharding.RegionEvicted` frame, and answers by releasing every shard and
+  cached home and re-registering.  Without it the sweep re-homed the shards
+  and the old region kept serving them: the `ShardMapUpdate` broadcast runs
+  over the surviving registry, so the one node that needed telling was the
+  one node never told, and nothing on the region side re-registers while its
+  node is up and the leader has not moved.  The notice is sent after the
+  registry delete rather than before it, because the region answers by
+  registering and a `Register` that overtook the delete would be undone by
+  it.
+
 - **`actor-ts.distributed-data` gains two keys, `log-data-size-exceeding`
   and `durable-keys`, both wired to mechanisms that already existed**
   (#856).
@@ -1327,27 +1346,50 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 - **`actor-ts.mailbox.default.capacity` and
   `actor-ts.mailbox.default.overflow` let an operator bound every actor the
-  application spawns without touching a spawn site** (#862).  The block
+  application *wrote*, without touching a spawn site** (#862).  The block
   ships as `capacity = 0`, meaning off: since #1148 a mailbox is unbounded
   unless somebody asks for a ceiling, so this key does not retune an
   existing bound — it introduces one, for every application actor at once.
-  It reaches strict descendants of `/user` only. The framework's own actors
-  are spawned through a single internal door and land under `/system`, so
-  shard regions, the cluster event stream, the pub-sub mediator, the
-  reliable-delivery producer, projections and the DevTools hub stay
-  unbounded, and the undroppable signal lane keeps a death-watch
-  `Terminated`, the WebSocket accept command and a connection's own `close`
-  out of reach of any policy. A spawn site still wins in both directions —
-  `withMailboxCapacity()` overrides the capacity, `withMailbox()` replaces
-  the queue outright — and `withMailbox()` keeps validating, because the
-  global capacity is layered in the cell rather than merged into the
-  blueprint that `ActorOptionsValidator` sees. The `overflow` leaf is the
-  system-wide policy for any bounded mailbox, not only the global one, so
-  "this deployment rejects instead of dropping" is a single line. One
-  residual risk is documented rather than fixed: `WebsocketServerActor` and
-  the connections it accepts are spawned by user code under `/user`, so a
-  global bound reaches them — both mailbox-sizing pages say so and tell the
-  reader to size that hub explicitly.
+  What decides whether the bound reaches an actor is who wrote its class,
+  not where it sits in the tree, and the difference is the point:
+  `ClusterSharding` spawns its region under `/system`, the region spawns
+  each shard, and the shard spawns the application's entity actor, so a
+  sharded entity is three levels down a `/system` path while being as much
+  the application's actor as anything it spawns itself. The same chain runs
+  for a cluster singleton, spawned by its manager. Both are inside the
+  bound, which is what makes the key usable in the deployment shape its
+  documentation offers it for — a memory-constrained sharded node, where the
+  entities are the largest population of actors and the least editable.
+  Exempt are the actors the framework wrote as well as spawned: shard
+  regions, coordinators and shards, singleton managers, the cluster event
+  stream, the pub-sub mediator, the reliable-delivery producer, projections
+  and the DevTools hub. A bounded mailbox on any of those sheds messages
+  that hold a cluster invariant together. The undroppable signal lane keeps
+  a death-watch `Terminated`, the WebSocket accept command and a
+  connection's own `close` out of reach of any policy regardless. A spawn
+  site still wins in both directions — `withMailboxCapacity()` overrides the
+  capacity, `withMailbox()` replaces the queue outright — and
+  `withMailbox()` keeps validating, because the global capacity is layered
+  in the cell rather than merged into the blueprint that
+  `ActorOptionsValidator` sees. The `overflow` leaf is the system-wide
+  policy for any bounded mailbox, not only the global one, so "this
+  deployment rejects instead of dropping" is a single line. One exposure is
+  documented rather than fixed: the framework also ships actors that
+  application code spawns — the WebSocket hub and the connections it
+  accepts, the broker adapters, the TCP and UDP socket actors, the gRPC
+  client and server — and a global bound reaches all of them, so both
+  mailbox-sizing pages tell the reader to size a WebSocket hub explicitly.
+  `ActorOptions.withApplicationOwned()` is the seam, public for the same
+  reason `withEntity` is: a test bench spawning an entity with no cluster
+  behind it.
+
+  *Note:* Nothing to migrate. `actor-ts.mailbox.default.*` has never been
+  released — it and the repaired scope both sit in [Unreleased], added by
+  f234dac6 after v0.17.0 — so no deployment can have relied on the narrower
+  reach. A deployment that had already picked up the pre-release key and set
+  a capacity gets it applied to its sharded entities and singleton instances
+  as well from here on, which is what the key's own documentation always
+  said it did.
 
 - **BREAKING — `actor-ts.coordination` is a new HOCON block, and the two
   `Lease` backends read it (#859).**
