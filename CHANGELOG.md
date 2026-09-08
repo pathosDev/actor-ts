@@ -11,6 +11,114 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **The four JetStream caps that pass through to nats.js verbatim accept
+  NATS's own spelling of "no limit" (#871): `-1` on `stream.maxMessages`,
+  `stream.maxBytes` and `consumer.maxAcknowledgmentPending`, and `0` on
+  `stream.maxAge` — which is a nanosecond span, where a negative value would
+  mean nothing** (#871).  The set is per field and asymmetric because the
+  server's is, and everything else non-positive is still refused at startup,
+  so `-2` remains the typo it is and the rejection now names the sentinel it
+  would have taken. `consumer.ackWaitMs` deliberately has no sentinel: NATS
+  reads a zero ack-wait as "use the server default", which is exactly what
+  leaving the field unset already says, so both `0` and `-1` stay refused
+  there. Both jetstream pages state the domain per field.
+
+  *Note:* None required against any released version. 6c43f21d is NOT an
+  ancestor of v0.17.0 (`git merge-base --is-ancestor 6c43f21d v0.17.0` exits
+  1), so the narrowing existed only on develop and no published release ever
+  refused these values. Anyone running the develop tip with
+  `stream.maxMessages = -1`, `stream.maxBytes = -1`, `stream.maxAge = 0` or
+  `consumer.max-acknowledgment-pending = -1` saw the actor throw
+  OptionsError in preStart and never connect; with this change those
+  configurations start again with no edit.
+
+- **BREAKING — A split-brain resolver is no longer consulted on whichever
+  membership view the failure detector happened to leave behind at the end
+  of a tick (#839).**
+
+  Two new keys under `actor-ts.cluster.split-brain-resolver` gate it:
+  `stable-after` (20s) is how long the membership and reachability view must
+  hold still before the configured strategy is asked anything, and
+  `down-all-when-unstable` (off) escalates to downing every member — this
+  node included — when the view never once holds still for a whole window
+  across three windows of continuous change, and something is still
+  unreachable. Every bundled strategy is a pure function of one view, and a
+  partition does not arrive as one event: peers cross `unreachable-after` a
+  few hundred milliseconds apart, so a view read mid-transition describes a
+  cluster that existed at no instant, and counting a majority against it is
+  how a node concludes it is in the minority a second before the rest of its
+  own side is marked unreachable too. The window has a ceiling, and it needs
+  one: its fingerprint covers every member's address and status, so any
+  join, leave or transition anywhere restarts it, and a deployment whose
+  membership moves more often than `stable-after` would otherwise never
+  arbitrate a partition at all — an autoscaling group, a rolling deploy, or
+  one flapping node at the shipped twenty seconds. A peer that has been
+  continuously unreachable for `2 x stable-after` is therefore put to the
+  strategy whatever else is moving; that multiple sits above one window, so
+  a view that does settle is always arbitrated the ordinary way first, and
+  below the three-window escalation deadline, so a strategy is asked before
+  `down-all-when-unstable` can stop the cluster. The whole change lives in
+  `Cluster.evaluateDowning` and `src/cluster/downing/StabilityWindow.ts`; no
+  strategy sees any of these values, and the failure-detection tick is the
+  clock, so no new timer exists. It is only expressible since #929 stopped
+  the detector evicting an unreachable peer behind the resolver's back,
+  which is why there is deliberately no upper bound tying `stable-after` to
+  `failure-detector.down-after`. Configurable in code as one nested block,
+  `ClusterOptions.withSplitBrainResolver(...)`, merged per field over the
+  file so pinning the window does not silently drop the file's escalation
+  switch. The escalation ships off on purpose: it is the only action in the
+  subsystem that stops the whole cluster and it is reached by a timer rather
+  than by a strategy's verdict, so a rolling restart whose replacements
+  arrive less than `stable-after` apart looks exactly like a cluster that
+  will not settle. `MultiNodeSpec` gained a matching `stableAfterMs`,
+  defaulting to 100 ms the way its gossip and seed-retry intervals already
+  default to test scale.
+
+  *Migration:* Every deployment that already had
+  `actor-ts.cluster.split-brain-resolver.active-strategy` set, or
+  `ClusterOptions.withDowning(...)` configured, now waits before its
+  strategy is asked anything — up to `stable-after` (20s) for a settled
+  view, and up to `2 x stable-after` (40s) if the membership keeps moving.
+  Before this change the strategy was consulted on the first tick that saw a
+  partition. Nothing else evicts in the meantime: since #929 a configured
+  provider owns the eviction, so the peer sits at `unreachable` for the
+  whole wait. If your recovery objective is shorter than that, set
+  `actor-ts.cluster.split-brain-resolver.stable-after` (or
+  `withSplitBrainResolver({ stableAfterMs })`) to a value your SLO
+  tolerates; `0` is refused, because "do not arbitrate" is spelled
+  `active-strategy = off`. No API changes and no config keys were removed.
+
+- **`actor-ts.cluster.publish-stats-interval` arms a periodic membership
+  sample on the node — every interval it emits one `ClusterStatsPublished`
+  (member count, `up` count, `unreachable` count, the leader as an
+  `Option<Member>`, and this node's address) on `system.eventStream` and to
+  every `Cluster.subscribe` listener** (#842).  `0`, the shipped value, arms
+  no timer at all. Every figure was already reachable through the `Cluster`
+  API; what the key buys is the cadence, so "tell me where the membership
+  stands every N seconds" stops being a polling loop each application writes
+  for itself. The event is node-local and deliberately not on the
+  cluster-wide `cluster.eventStream`, where a per-node periodic sample would
+  cost N frames per node per interval, and it is never replayed on
+  subscribe: every other cluster event states a change, this one states a
+  measurement, and a replayed measurement is a stale number. Its field set
+  mirrors the DevTools dashboard's `ClusterStatsSummary` so the two do not
+  grow separate vocabularies, but the populations differ on purpose — this
+  counts the live member map, the dashboard additionally retains recently
+  departed nodes. Four of the six keys the issue proposed do not ship and
+  are refused in writing rather than left to be re-proposed:
+  `gossip-time-to-live` (frames are dispatched synchronously and never
+  queue, so there is nothing to expire), `leader-actions-interval` (there is
+  no leader-actions timer — promotion runs inline at the tail of gossip
+  receipt, and putting it on one is a membership-semantics change to the
+  lines #837 rewrote), `unreachable-nodes-reaper-interval` (already
+  configurable as `failure-detector.heartbeat-interval`; a second key would
+  reverse the decision to run one heartbeat cadence) and
+  `gossip-different-view-probability` (gossip carries no whole-view version
+  to compare, pending survey #1187). A fifth,
+  `periodic-tasks-initial-delay`, is also not shipped: its stated purpose is
+  a cold-start stagger, and one value read from a file every node of the
+  deployment shares shifts every node's first tick by the same amount,
+  de-aligning nothing.
 - **`MultiNodeSpec` can run every node on one shared virtual clock, with
   `advance` and `advanceUntil`** (#1424).
 
@@ -379,11 +487,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the builder alongside the existing setters.  Set `contact-points` and a
   client built with no options at all connects:
 
-  ```hocon actor-ts.cluster.client { contact-points  =
-  ["orders@10.0.0.1:2552", "orders@10.0.0.2:2552"] connect-timeout = 2s }
+  ```hocon
+  actor-ts.cluster.client {
+    contact-points  = ["orders@10.0.0.1:2552", "orders@10.0.0.2:2552"]
+    connect-timeout = 2s
+  }
   ```
 
-  ```ts const client = new ClusterClient({}); ```
+  ```ts
+  const client = new ClusterClient({});
+  ```
 
   The constructor loads that configuration itself — the same chain
   `ActorSystem.create` uses, honouring `ACTOR_TS_CONFIG` and
@@ -468,12 +581,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     legitimate for an application whose routers set their own
     `ScatterGatherOptions.withTimeoutMs()`.
 
-  The ask defaults in `ClusterClient`, `ClusterClientReceptionist` and
-  distributed-data quorum reads and writes are unchanged. `ClusterClient`
-  has no `ActorSystem` and no `Config` by design, and all three belong under
-  blocks owned by #858 (`actor-ts.cluster.client`) and #856
-  (`actor-ts.distributed-data`); the quorum-reads page now says so and
-  points at #856.
+  The distributed-data quorum read and write ask defaults are unchanged and
+  belong under the block owned by #856 (`actor-ts.distributed-data`); the
+  quorum-reads page says so and points there.  The `ClusterClient` and
+  `ClusterClientReceptionist` defaults were left alone here for the same
+  reason — they belong to `actor-ts.cluster.client`, and a client holds no
+  `ActorSystem` to read a config from — and #858, further up this section,
+  went on to give them that block and a config layer of their own.
 
 - **Cluster sharding can now choose *which* entity a full node gives up, not
   just how many it keeps** (#848).  A new `actor-ts.sharding.passivation`
@@ -482,9 +596,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `segmented-protected-proportion`, `admission-window-proportion`,
   `admission-filter` (`off` or `frequency-sketch`) and `stop-timeout` — with
   matching `withPassivationX` builder methods. The defaults are the plain
-  LRU every earlier release had, and the whole subsystem is inert while
-  `max-entities = 0`, so a deployment that configures neither
-  `passivation-idle` nor `max-entities` behaves exactly as before. #848
+  LRU every earlier release had, the replacement machinery is inert while
+  `max-entities = 0`, and `stop-timeout` ships as `0`, so a deployment that
+  configures none of these behaves exactly as before.
 
   The policy this exists for is `segmented-least-recently-used` with
   `admission-filter = frequency-sketch`. Recency alone cannot tell "touched
@@ -494,21 +608,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   six-entity hot set against a cap of twelve survives a forty-entity scan
   intact under the segmented policy and is lost entirely under plain LRU.
 
-  Two related behaviour changes on existing features:
+  `stop-timeout` bounds the *other* half of passivation, and it is opt-in.
+  The stop-message a `Passivate` hands an entity is a request: the entity
+  decides when to act on it, and an entity mid-drain — a long flush, a slow
+  final write — is entitled to take as long as the drain takes. Left unset,
+  an entity that never acts on the message never terminates, `EntityStopped`
+  never reaches the region, and its slot is charged to `max-entities` for
+  the lifetime of the node; set, the shard stops it outright after the
+  window. It is independent of `max-entities` — a positive value arms it
+  with or without a cap — and it is off by default because only the operator
+  who knows the drain can pick the bound.
+  `ShardConfig.passivationStopTimeoutMs` is optional and absence means the
+  same as `0`, so an application that builds a `ShardConfig` itself is
+  unaffected.
 
-  - A remembered entity that a shard pre-creates during recovery now counts
-    against `max-entities`. It previously wrote the region's entity index
-    directly, so a node handed a registry larger than the cap exceeded it by
-    the size of the registry and stayed over it.
-  - An entity that ignores the stop-message a `Passivate` handed it is now
-    stopped outright after `passivation.stop-timeout` (10 s by default; `0`
-    restores the unbounded wait). Without it the entity never terminated,
-    `EntityStopped` never reached the region, and its slot was charged to
-    the cap for the lifetime of the node.
+  One related behaviour change on an existing feature: a remembered entity
+  that a shard pre-creates during recovery now counts against
+  `max-entities`. It previously wrote the region's entity index directly, so
+  a node handed a registry larger than the cap exceeded it by the size of
+  the registry and stayed over it.
 
   The eviction path is also no longer a linear scan of every resident entity
   on the first message for each new one — every replacement operation is now
-  O(1) amortised.
+  O(1) amortised, and an entity that is evicted, stops on its own, or leaves
+  with its shard releases its slot of the cap on all three paths.
 
 - **`actor-ts.persistence` gained five wired behaviour keys, so a deployment
   can bound a journal call, cap a restart storm and trade replay time for
@@ -527,18 +650,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `actor-ts.circuit-breaker.<id>` where #864 put them, so there is no second
   copy of `max-failures` to drift.
 
-  The journal breaker closes the hazard #913 reported: `await
-  this._journal.append(...)` had no ceiling of any kind, so a backend that
-  accepted the connection and then stalled left the actor's turn open
-  forever and every later command queued in an unbounded mailbox with
-  nothing thrown. Setting
-  `actor-ts.circuit-breaker.persistence-journal.call-timeout = 10s` now cuts
-  the stalled append at the stall. A `JournalConcurrencyError` never counts
-  against a breaker — it is the ownership verdict of a conditional append,
-  not an outage — and neither does a `JournalIntegrityError` or
-  `SnapshotIntegrityError`, which are durable facts about the stored bytes.
-  `PersistenceExtension.journal` and `.snapshotStore` still hand out the raw
-  store rather than a wrapper. #874
+  The journal breaker makes the hazard #913 reported *closable*, and does
+  not close it by default: `await this._journal.append(...)` had no ceiling
+  of any kind, so a backend that accepted the connection and then stalled
+  left the actor's turn open forever and every later command queued in an
+  unbounded mailbox with nothing thrown. Setting
+  `actor-ts.circuit-breaker.persistence-journal.call-timeout = 10s` cuts the
+  stalled append at the stall — one config line, no deploy. It ships unset
+  on purpose, because omitting it is what expresses "no deadline" and a
+  shipped ceiling would fail a slow-but-healthy store that every earlier
+  release served fine; `max-failures` cannot stand in for it, since a call
+  that never returns is never counted as a failure. Pick the value from the
+  backend's own P99 write latency with headroom.
+
+  A `JournalConcurrencyError` never counts against a breaker — it is the
+  ownership verdict of a conditional append, not an outage — and neither
+  does a `JournalIntegrityError` or `SnapshotIntegrityError`, which are
+  durable facts about the stored bytes. That carve-out travels with the call
+  rather than with the breaker instance, so it holds however the shared id
+  was reached: `CircuitBreaker.call(factory, isFailure?)` now takes the
+  classifier per call and it wins over the instance's own, while
+  `ignored-error-names` — the operator's half — is still consulted first and
+  still wins over both. An excused error stays neither a failure nor a
+  success, so the consecutive-failure count survives it and one lost race
+  between two real outages cannot keep a dead journal from opening the
+  breaker. `PersistenceExtension.journal` and `.snapshotStore` still hand
+  out the raw store rather than a wrapper. #874
 
 - **`actor-ts.cluster.minimum-members-before-up` (int, default `1`) holds
   every `joining` / `weakly-up` → `up` transition until at least that many
@@ -671,17 +808,33 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   the framework builds. The parameter stays optional: a backend written
   outside the repository still satisfies the interface.
 
-  What can honour it was measured rather than assumed, on bun 1.4.0 and node
-  v26.7.0. All four properties are honoured identically on Bun's `node:http`
-  shim and on Node — `headersTimeout` really does answer `408` and destroy
-  the socket — so this is not the `ws` `maxPayload` situation. Fastify,
-  Express and Hono-on-Node all expose the server the values are written to;
-  `Bun.serve` and `Deno.serve` expose neither it nor an equivalent knob, so
-  on the Hono backend under Bun or Deno none of the four is installed at
-  all, and the docs and the parity suite both say so rather than
-  approximating. `header-timeout` and `request-timeout` are enforced by a
-  sweep whose interval the runtime fixes at 30 s, so a connection is closed
-  no earlier than the value set and no later than one sweep after it.
+  What can honour it was measured rather than assumed, and two of the four
+  turned out not to be safe to delegate. `idle-timeout` and
+  `request-timeout` are the runtime's: both are honoured on bun 1.4.0 and
+  node v26.7.0, and `request-timeout` is enforced by a sweep whose interval
+  the runtime fixes at 30 s, so a connection is closed no earlier than the
+  value set and no later than one sweep after it. `header-timeout` and
+  `max-connections` are held by actor-ts itself. The property is still
+  written, but the bound no longer depends on it: measured against a socket
+  that sends a header block and never the terminating blank line, node
+  v26.7.0 answers `408` and closes, bun 1.4.0 stores `headersTimeout`,
+  reports it back unchanged and enforces nothing — `2s`, `40s`, `120s` and
+  `0` alike closed at ~12 s with no `408`, which is Bun's own idle timeout —
+  and deno 2.6.8 never closes at all. So the deadline is armed from the
+  accepted connection and cleared the moment a request or a WebSocket
+  upgrade completes its headers, which makes the documented `408` true on
+  the primary toolchain and makes the number exact rather than rounded up to
+  a sweep. `max-connections` is counted here for the same reason, one
+  operating system apart.
+
+  Both of those rest on the server reporting its accepted connections, which
+  is where they run out. Fastify, Express and Hono-on-Node expose the
+  `node:http` server all four are written to; `Bun.serve` and `Deno.serve`
+  expose neither it nor an equivalent knob, so on the Hono backend under Bun
+  or Deno none of the four is installed at all, and the docs and the parity
+  suite say so rather than approximating. Deno's `node:http` shim
+  additionally emits no `connection` event, so on Deno the header deadline
+  and the connection cap are unavailable whatever backend is mounted.
 
   The two published values are the numbers `http.createServer` already uses,
   which is the same decision #357 made for `bodyLimit`: the bound is the
@@ -817,8 +970,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   one defaults `off`; a system nobody configured writes exactly what it
   wrote before.
 
-  ```hocon actor-ts.diagnostics { log-config-on-start = off debug {
-  unhandled  = off lifecycle  = off event-stream = off } } ```
+  ```hocon
+  actor-ts.diagnostics {
+    log-config-on-start = off
+    debug {
+      unhandled    = off
+      lifecycle    = off
+      event-stream = off
+    }
+  }
+  ```
 
   `log-config-on-start` is the answer to "why is this setting not what I
   wrote". It writes one `info` record holding the whole merged tree — every
@@ -909,6 +1070,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
     entry rather than the member record. The report latch is capped too,
     since both halves of its key come off the wire.
 
+  Only the member itself may change a claim about itself.  A member restates
+  its facts by publishing them — `Cluster.publishConfigurationFact` from
+  anywhere that has the resolved value, at any point in the node's life —
+  and peers adopt the new values, compare them and enforce on the result.  A
+  copy relayed by a third node still fills an empty slot and never
+  overwrites one, so an arbitrarily old copy arriving over the epidemic lane
+  cannot flap the comparison against whichever frame landed last.
+
   Closes #844.
 
 - **BREAKING — The cluster transport's four association-lifecycle bounds are
@@ -919,8 +1088,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   cap, and a stall deadline on a half-received frame — and until now were
   four hard-coded numbers with no key at all.
 
-  ```hocon actor-ts.remote { handshake-timeout  = 5s outbound-queue-size  =
-  1000 max-inbound-connections = 1024 incomplete-frame-idle  = 30s } ```
+  ```hocon
+  actor-ts.remote {
+    handshake-timeout       = 5s
+    outbound-queue-size     = 1000
+    max-inbound-connections = 1024
+    incomplete-frame-idle   = 30s
+  }
+  ```
 
   Every default is exactly where it was — wiring a bound must not move it,
   and `ClusterConfigDefaults.test.ts` pins the published four to the
@@ -1030,6 +1205,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `OptionsError` naming `maxResetTimeoutMs` instead of the window being
   silently clamped. Nothing in the repository, the examples or the docs
   configures a window above 60 s.
+
+  The grown reopen window is now finite for every legal combination of
+  settings, at every consecutive-open count. Growth is clamped before it is
+  multiplied into the base rather than only afterwards: `Math.pow` overflows
+  to `Infinity` on its own, `0 * Infinity` is `NaN`, and `Math.min`
+  propagates a `NaN` instead of clamping it. A `resetTimeoutMs` of `0` —
+  legal, and the way to say "probe immediately" — paired with any
+  `backoffFactor` above `1` therefore scheduled `nextProbeAt = NaN` once the
+  consecutive opens ran up (the 1025th open with a factor of `2`, the 310th
+  with a factor of `10`), and `Date.now() >= NaN` is false forever, so the
+  breaker stopped probing and refused every further call including ones
+  whose factory would have succeeded. With a zero window every rejection is
+  instantly a fresh open cycle, so a hard-down upstream reached that state
+  in a fraction of a second. The same pair arrives from HOCON as
+  `reset-timeout = 0` with `backoff-factor = 2.0`. Every finite window
+  computes exactly what it did before.
 
 - **BREAKING — `BackoffSupervisor` now takes its defaults from
   `actor-ts.backoff-supervisor.*`, and gained the options triad every other
@@ -1287,6 +1478,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   seeded from a persisted snapshot is stamped fresh and left unarmed, which
   is derived rather than configured. #853
 
+  An evicted region is told, on a new coordinator-to-region
+  `sharding.RegionEvicted` frame, and answers by releasing every shard and
+  cached home and re-registering.  Without it the sweep re-homed the shards
+  and the old region kept serving them: the `ShardMapUpdate` broadcast runs
+  over the surviving registry, so the one node that needed telling was the
+  one node never told, and nothing on the region side re-registers while its
+  node is up and the leader has not moved.  The notice is sent after the
+  registry delete rather than before it, because the region answers by
+  registering and a `Register` that overtook the delete would be undone by
+  it.
+
 - **`actor-ts.distributed-data` gains two keys, `log-data-size-exceeding`
   and `durable-keys`, both wired to mechanisms that already existed**
   (#856).
@@ -1507,27 +1709,50 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 - **`actor-ts.mailbox.default.capacity` and
   `actor-ts.mailbox.default.overflow` let an operator bound every actor the
-  application spawns without touching a spawn site** (#862).  The block
+  application *wrote*, without touching a spawn site** (#862).  The block
   ships as `capacity = 0`, meaning off: since #1148 a mailbox is unbounded
   unless somebody asks for a ceiling, so this key does not retune an
   existing bound — it introduces one, for every application actor at once.
-  It reaches strict descendants of `/user` only. The framework's own actors
-  are spawned through a single internal door and land under `/system`, so
-  shard regions, the cluster event stream, the pub-sub mediator, the
-  reliable-delivery producer, projections and the DevTools hub stay
-  unbounded, and the undroppable signal lane keeps a death-watch
-  `Terminated`, the WebSocket accept command and a connection's own `close`
-  out of reach of any policy. A spawn site still wins in both directions —
-  `withMailboxCapacity()` overrides the capacity, `withMailbox()` replaces
-  the queue outright — and `withMailbox()` keeps validating, because the
-  global capacity is layered in the cell rather than merged into the
-  blueprint that `ActorOptionsValidator` sees. The `overflow` leaf is the
-  system-wide policy for any bounded mailbox, not only the global one, so
-  "this deployment rejects instead of dropping" is a single line. One
-  residual risk is documented rather than fixed: `WebsocketServerActor` and
-  the connections it accepts are spawned by user code under `/user`, so a
-  global bound reaches them — both mailbox-sizing pages say so and tell the
-  reader to size that hub explicitly.
+  What decides whether the bound reaches an actor is who wrote its class,
+  not where it sits in the tree, and the difference is the point:
+  `ClusterSharding` spawns its region under `/system`, the region spawns
+  each shard, and the shard spawns the application's entity actor, so a
+  sharded entity is three levels down a `/system` path while being as much
+  the application's actor as anything it spawns itself. The same chain runs
+  for a cluster singleton, spawned by its manager. Both are inside the
+  bound, which is what makes the key usable in the deployment shape its
+  documentation offers it for — a memory-constrained sharded node, where the
+  entities are the largest population of actors and the least editable.
+  Exempt are the actors the framework wrote as well as spawned: shard
+  regions, coordinators and shards, singleton managers, the cluster event
+  stream, the pub-sub mediator, the reliable-delivery producer, projections
+  and the DevTools hub. A bounded mailbox on any of those sheds messages
+  that hold a cluster invariant together. The undroppable signal lane keeps
+  a death-watch `Terminated`, the WebSocket accept command and a
+  connection's own `close` out of reach of any policy regardless. A spawn
+  site still wins in both directions — `withMailboxCapacity()` overrides the
+  capacity, `withMailbox()` replaces the queue outright — and
+  `withMailbox()` keeps validating, because the global capacity is layered
+  in the cell rather than merged into the blueprint that
+  `ActorOptionsValidator` sees. The `overflow` leaf is the system-wide
+  policy for any bounded mailbox, not only the global one, so "this
+  deployment rejects instead of dropping" is a single line. One exposure is
+  documented rather than fixed: the framework also ships actors that
+  application code spawns — the WebSocket hub and the connections it
+  accepts, the broker adapters, the TCP and UDP socket actors, the gRPC
+  client and server — and a global bound reaches all of them, so both
+  mailbox-sizing pages tell the reader to size a WebSocket hub explicitly.
+  `ActorOptions.withApplicationOwned()` is the seam, public for the same
+  reason `withEntity` is: a test bench spawning an entity with no cluster
+  behind it.
+
+  *Note:* Nothing to migrate. `actor-ts.mailbox.default.*` has never been
+  released — it and the repaired scope both sit in [Unreleased], added by
+  f234dac6 after v0.17.0 — so no deployment can have relied on the narrower
+  reach. A deployment that had already picked up the pre-release key and set
+  a capacity gets it applied to its sharded entities and singleton instances
+  as well from here on, which is what the key's own documentation always
+  said it did.
 
 - **BREAKING — `actor-ts.coordination` is a new HOCON block, and the two
   `Lease` backends read it (#859).**
@@ -2103,6 +2328,55 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — The dump withholds a value when a whole word of the key's
+  name is `password`, `passphrase`, `secret`, `token`, `key`, `credential`
+  or `auth` — singular or plural, in any path segment, so a branch named
+  `credentials` withholds everything beneath it (#867).**
+
+  Whole words, and the last word of each name at that, because that is the
+  word saying what the value is: `api-key` is a key, but `key-prefix` is a
+  prefix, `passivation-idle` is a timeout and `max-subscribers-per-key` is a
+  count. A preposition moves that head in front of it, and a value drawn
+  from HOCON's boolean vocabulary is never withheld whatever its key is
+  called. A stock configuration withholds twelve keys, every one a
+  credential slot. It is the same list and the same rule the DevTools config
+  panel has used since #553 — the walk, the layer attribution and the
+  redaction now live in one place (`src/diagnostics/ConfigDump.ts`) rather
+  than two, so a key withheld from the panel cannot reach a log file
+  instead.
+
+  Redaction by key name is a heuristic and it is the weaker half of the
+  guarantee: by the time the tree is merged, a `${?DATABASE_PASSWORD}` is an
+  ordinary string, so a secret in a key called `dsn` or `connection-string`
+  is printed in full. Nor is a name whose last word is an identifier or a
+  location read as the thing itself — `kms-key-id` is an id and `token-path`
+  is a filesystem path, and both print. Both `configuration.mdx` pages and
+  `troubleshooting.mdx` say so in as many words, a test pins the gap open so
+  that sentence cannot rot, and the key ships `off` because the defence that
+  does not depend on a guess is not printing the tree. Values are
+  JSON-encoded, so a newline inside one cannot forge a line of the dump it
+  is part of.
+
+  `CONFIG_SECRET_PATTERN`, `CONFIG_NEVER_REDACTED_PATHS` and
+  `CONFIG_REDACTED` live in `src/util/Constants.ts` and are on the
+  `actor-ts/util` subpath; `actor-ts/devtools`'s protocol re-exports all
+  three. The pattern is anchored and applies to one word of a key; the
+  exemption list holds full paths of keys `reference.conf` declares whose
+  names the rule would otherwise read wrong, and `ConfigDump.test.ts`
+  asserts a stock tree's entire withheld set so an addition to it is a
+  visible line in a diff.
+
+  *Migration:* `CONFIG_SECRET_PATTERN` is now anchored and is matched
+  against a single word of a key, not against a whole dotted path —
+  `CONFIG_SECRET_PATTERN.test('a.b.password')` is `false` where it used to
+  be `true`. Apply it per word, or call `resolveConfigLeaves(config)` and
+  read each leaf's `secret` flag, which is the supported way to ask the
+  question. The DevTools config panel consequently shows values it withheld
+  in 0.17.0 — `sharding.passivation-*`, `cassandra.keyspace`,
+  `cache.*.key-prefix`, `cluster.receptionist.max-subscribers-per-key`,
+  `coordination.lease.kubernetes.token-*` and
+  `management.auth-protect-health` — none of which is a credential; a stock
+  configuration now withholds twelve keys instead of thirty-one.
 - **Three object-storage suites state the budget their temp-tree hooks run
   under, instead of inheriting one nobody chose** (#290, #1282).
 
@@ -2284,6 +2558,90 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The transport's stall-deadline / handshake-deadline ordering rule is now
+  checked against the pair the transport will run with, not the pair the
+  caller supplied** (#846).  It guarded on both values being present, so
+  `new TcpTransport(self, log, { incompleteFrameIdleMs: 1_000 })` — and a
+  lone `actor-ts.remote.incomplete-frame-idle = 1s` — resolved to the
+  inverted pair (5 s handshake, 1 s stall) and was accepted: exactly the
+  inversion the rule exists to prevent, and the opposite of what the
+  transports page and the `actor-ts.remote` reference already said. The same
+  held from the other side, where raising `handshake-timeout` past the 30 s
+  stall default was waved through. The rule now lives in one place shared by
+  both validators, so they cannot drift into refusing different pairs, and
+  the failure names the half you actually wrote rather than a default you
+  never typed. Either bound may still move alone, as far as the other's
+  built-in default allows. The hop from `actor-ts.remote.*` into the
+  transport `Cluster` builds is now bound by a test too — deleting the four
+  option lines from that constructor made all four keys inert with every
+  suite still green.
+
+  *Note:* The rule this enforces was announced in the same
+  still-unreleased #846 entry, so no release ever shipped the hole; a config
+  that sets only one of the two keys such that the resolved pair inverts (a
+  lone `incomplete-frame-idle` below 5s, or a `handshake-timeout` at or
+  above 30s) is now refused at startup instead of running inverted — move
+  the other key with it.
+
+- **BREAKING — A cluster singleton's proxy now settles a role by which layer
+  it came from rather than by the order `ref()` and `start()` were called on
+  the node (#855).**
+
+  Since the `actor-ts.cluster.singleton.*` block landed, a node that called
+  `ref()` first kept the configured role and refused the explicit one that
+  followed — so its proxy resolved a different host class than that node's
+  own manager, and it logged a conflicting-role warning naming the role that
+  should have won. The reverse order routed correctly but warned that a
+  documented, supported combination was impossible. An explicit role —
+  `StartSingletonOptions.withRole`, or one declared on the actor class's
+  `SingletonKey` — now wins over a configured one in either call order and
+  is not warned about, and a configured role arriving behind an explicit one
+  is discarded in silence, because that is the documented
+  explicit-over-HOCON precedence resolving. Two roles from the same layer
+  are still reported as the misconfiguration they are: one singleton cannot
+  be restricted two ways.
+
+  *Migration:* `ClusterSingletonProxy`'s constructor gained a `roleOrigin`
+  parameter in fifth position, ahead of `bufferSize`: a hand-written `new
+  ClusterSingletonProxy(cluster, key, resolveManager, role, bufferSize)`
+  becomes `(cluster, key, resolveManager, role, 'explicit', bufferSize)`. It
+  fails at compile time, not silently. Nothing else moves, and the proxy is
+  normally obtained from `cluster.singleton.start()` / `.ref()` rather than
+  constructed.
+
+- **Seed discovery once again reads `CLUSTER_NAMESPACE`**
+  (#860).  `reference.conf` published
+  `actor-ts.discovery.kubernetes.namespace = "default"`, and because the
+  config reader decides every field by whether the key is present, that leaf
+  was an explicit namespace on every node — layered above the environment by
+  `Cluster.bootstrap` and leaving the variable unreachable even where a
+  deployment had configured nothing. The Kubernetes rung then read
+  `/api/v1/namespaces/default/endpoints/<service>` with a namespace-scoped
+  ServiceAccount token, so a pod anywhere but `default` found no seeds and
+  self-elected: the cold-start split brain the bootstrap exists to close.
+  The key now ships comment-only, the same shape
+  `remote.tcp.advertised-host` uses, so `unset` is expressible again and the
+  chain is the key, then `CLUSTER_NAMESPACE`, then the built-in `default`. A
+  namespace written in config still wins, `"default"` included — which is
+  why the fix is an unpublished key rather than a reader that discards the
+  string. `dns.cache-ttl` and `dns.use-srv` keep their published values
+  deliberately: they have no environment layer beneath them to shadow. The
+  `actor-ts.discovery.*` block is now bound to the providers by tests that
+  drive the real `Cluster.bootstrap`; the previous ones re-implemented the
+  layering, so cutting the config block out of the bootstrap left the suite
+  green.
+
+  *Note:* No API change and no migration needed. One behaviour change to be
+  aware of: on a node that sets `CLUSTER_NAMESPACE` and configures no
+  namespace of its own, the Kubernetes discovery rung now reads that
+  variable's namespace instead of `"default"`. That is the documented
+  behaviour being restored, but a deployment that had (unknowingly) come to
+  rely on discovery hitting the default namespace will now hit the one its
+  variable names. A deployment that wants a fixed namespace regardless of
+  the environment writes `actor-ts.discovery.kubernetes.namespace` explicitly,
+  which still wins; a deployment that wants the variable at config
+  precedence keeps the documented substitution, namespace =
+  ${?CLUSTER_NAMESPACE}.
 - **The budget guard could not see the budgets it was written to check, and 37
   tests were violating its invariant while it stayed green** (#1315).
 
@@ -2809,6 +3167,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`fundamentals/throttling`, EN + DE).
 
 ### Security
+
+- **`actor-ts.serialization.read-constraints.max-document-bytes` now bounds
+  the cluster wire too** (#880).  A frame is handed to `JSON.parse` and the
+  tagged-tree walker directly and never passes through a serializer, so the
+  key that both serializers honoured governed every untrusted decode in the
+  process except the one whose bytes a hostile peer chooses — set it and the
+  wire ignored you. It is now checked against the frame's 4-byte length
+  prefix, beside `remote.max-frame-bytes`, which refuses the frame before
+  its payload is buffered and is the earliest point in the framework at
+  which the key can act. The default stays `0` (off). The residual is now
+  documented with its measurements: at shipped defaults an over-deep frame
+  is still refused only after the parse has materialised it — one 16 MiB
+  frame of balanced `[` costs about 1.0 s of CPU and 260 MiB of heap on Bun
+  1.4, roughly four times what a legitimate frame of the same size costs. A
+  pre-parse scan of the raw buffer would close that with neither knob set;
+  it was measured at 18-28 % of every frame decode and not shipped. The
+  block's other two guarantees — that every tagged container charges the
+  depth cap for its own level, and that the three config-to-runtime sites
+  carry the configured ceilings — were correct as shipped and are now held
+  by tests rather than by nothing.
+
+  *Note:* None. The default stays `0` (off), so no payload that decodes
+  today stops decoding; a deployment that had set the key now gets it
+  enforced on the cluster wire as well as in the two serializers.
 
 - **A `max-connections` cap is held by the framework rather than handed to
   the runtime** (#870).  It is counted here and the offending socket

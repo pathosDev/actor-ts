@@ -69,7 +69,14 @@ export type CircuitBreakerOptionsType = {
   readonly resetTimeoutMs: number;
   /** Per-call timeout; exceeding this counts as a failure. */
   readonly callTimeoutMs?: number;
-  /** Optional: classify errors as non-failures to bypass breaker counting. */
+  /**
+   * Optional: classify errors as non-failures to bypass breaker counting.
+   *
+   * Belongs to the *instance*, so it is right for a breaker built in code and
+   * wrong for one resolved by a shared id — there the first caller's predicate
+   * is the only one that ever runs.  `CircuitBreaker.call` takes the same
+   * predicate per call for that case, and it wins over this one (#874).
+   */
   readonly isFailure?: (err: Error) => boolean;
   /**
    * Ceiling the reopen window may grow to under {@link backoffFactor}, in ms.

@@ -457,7 +457,10 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
     const transport = new TcpTransport(
       new NodeAddress('inbound-guards', '127.0.0.1', 19_404),
       log,
-      { incompleteFrameIdleMs: 1_500 },
+      // The handshake deadline rides along because the ordering rule resolves
+      // the pair: a lone 1500 ms stall deadline would sit under the 5 s default
+      // handshake deadline, which is the inversion the validator refuses.
+      { handshakeTimeoutMs: 500, incompleteFrameIdleMs: 1_500 },
     );
     const socket = mockSocket();
     internals(transport).attachInbound(socket);
@@ -504,10 +507,34 @@ describe('the association-lifecycle bounds are configurable (#846)', () => {
       handshakeTimeoutMs: 5_000,
       incompleteFrameIdleMs: 1_000,
     })).toThrow(/must be greater than handshakeTimeoutMs/);
-    // Each alone is fine: the unset half falls through to a default the set
-    // half clears.
+    // Neither set is the shipped pair, and it is ordered.
+    expect(() => new TcpTransport(address, new NoopLogger(), {})).not.toThrow();
+  });
+
+  test('one bound alone is checked against the default the other resolves to', () => {
+    // The rule is about the pair the transport will *run* with, not about the
+    // pair the caller happened to type.  An unsupplied half is not absent at
+    // run time — `Transport`'s constructor fills it from `cluster/Constants.ts`
+    // one line after the validator has been and gone — so a rule that only
+    // fired when both were supplied was silent for exactly the inputs an
+    // operator writes: one key.
+    const address = new NodeAddress('inbound-guards', '127.0.0.1', 19_409);
+    // The measured hole: this transport used to construct, and resolved to the
+    // inverted pair (5000, 1000) the rule exists to prevent.
+    expect(() => new TcpTransport(address, new NoopLogger(), { incompleteFrameIdleMs: 1_000 }))
+      .toThrow(new RegExp(`must be greater than handshakeTimeoutMs \\(${HANDSHAKE_TIMEOUT_MS} ms`));
+    // Raising the handshake deadline past the default stall deadline is the
+    // same inversion from the other side.
+    expect(() => new TcpTransport(address, new NoopLogger(), {
+      handshakeTimeoutMs: INCOMPLETE_FRAME_IDLE_MS,
+    })).toThrow(/handshakeTimeoutMs must be less than incompleteFrameIdleMs/);
+    // Either half may still move alone, as far as the other one's default
+    // allows: this is a bound on the pair, not a freeze on the two numbers.
     expect(() => new TcpTransport(address, new NoopLogger(), { handshakeTimeoutMs: 1_000 }))
       .not.toThrow();
+    expect(() => new TcpTransport(address, new NoopLogger(), {
+      incompleteFrameIdleMs: HANDSHAKE_TIMEOUT_MS + 1,
+    })).not.toThrow();
   });
 
   test('none of the four has an "off" spelling', () => {

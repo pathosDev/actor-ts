@@ -39,15 +39,17 @@ export type MultiNodeSpecOptionsType = {
   /** Per-role split-brain resolver factory. */
   readonly downing?: (role: string) => DowningProvider | undefined;
   /**
-   * When the resolver is consulted, as opposed to which one (#839).
+   * How long the membership view must hold still before {@link downing} is
+   * consulted, in ms.  Default 100 (vs production 20 s) — #839.
    *
-   * A spec that partitions and then asserts on the outcome has to say this:
-   * the production default is 20 s, which is longer than any test wants to
-   * wait, and the window is deliberately not something a strategy carries — it
-   * belongs to the cluster.  A test with a real partition sets a window wider
-   * than the spread between its own detections and shorter than its patience.
+   * Scaled down for the same reason {@link gossipIntervalMs} and the harness's
+   * seed-retry interval are: a spec's whole point is to partition a cluster
+   * and assert on what happens next, and the shipped window is twice the
+   * default {@link awaitTimeoutMs}, so a spec that inherited it would time out
+   * before its resolver was asked anything.  Raise it in a spec that is
+   * *about* the window.
    */
-  readonly splitBrainResolver?: ClusterOptionsType['splitBrainResolver'];
+  readonly stableAfterMs?: number;
 };
 
 /** Fluent builder for {@link MultiNodeSpecOptionsType}. */
@@ -102,11 +104,9 @@ export class MultiNodeSpecOptionsBuilder extends OptionsBuilder<MultiNodeSpecOpt
     return this.set('downing', downing);
   }
 
-  /** How long the view must be unchanged before the resolver decides. */
-  withSplitBrainResolver(
-    splitBrainResolver: ClusterOptionsType['splitBrainResolver'],
-  ): this {
-    return this.set('splitBrainResolver', splitBrainResolver);
+  /** Stability window before the resolver is consulted, in ms.  Default 100. */
+  withStableAfterMs(stableAfterMs: number): this {
+    return this.set('stableAfterMs', stableAfterMs);
   }
 }
 

@@ -75,11 +75,11 @@ type BarrierEntry = {
 export class MultiNodeSpec {
   private readonly options: Required<Omit<
     MultiNodeSpecOptionsType,
-    'addresses' | 'failureDetector' | 'downing' | 'splitBrainResolver' | 'scheduler'
+    'addresses' | 'failureDetector' | 'downing' | 'scheduler'
   >>
     & Pick<
       MultiNodeSpecOptionsType,
-      'addresses' | 'failureDetector' | 'downing' | 'splitBrainResolver' | 'scheduler'
+      'addresses' | 'failureDetector' | 'downing' | 'scheduler'
     >;
   private readonly nodes = new Map<string, NodeRecord>();
   private started = false;
@@ -99,10 +99,13 @@ export class MultiNodeSpec {
       gossipIntervalMs: options.gossipIntervalMs ?? 100,
       awaitTimeoutMs: options.awaitTimeoutMs ?? 10_000,
       logLevel: options.logLevel ?? LogLevel.Off,
+      // Test-scale like the two intervals above: the shipped stability window
+      // is 20 s, twice `awaitTimeoutMs`, so a spec inheriting it would time
+      // out before its resolver had been consulted once (#839).
+      stableAfterMs: options.stableAfterMs ?? 100,
       addresses: options.addresses,
       failureDetector: options.failureDetector,
       downing: options.downing,
-      splitBrainResolver: options.splitBrainResolver,
       scheduler: options.scheduler,
     };
   }
@@ -153,15 +156,13 @@ export class MultiNodeSpec {
         .withSeeds(seeds)
         .withTransport(transport)
         .withGossipIntervalMs(this.options.gossipIntervalMs)
-        .withSeedRetryIntervalMs(100);
+        .withSeedRetryIntervalMs(100)
+        .withSplitBrainResolver({ stableAfterMs: this.options.stableAfterMs });
       if (this.options.failureDetector) {
         clusterOptions.withFailureDetector(this.options.failureDetector);
       }
       const downing = this.options.downing?.(role);
       if (downing) clusterOptions.withDowning(downing);
-      if (this.options.splitBrainResolver) {
-        clusterOptions.withSplitBrainResolver(this.options.splitBrainResolver);
-      }
       const cluster = await Cluster.join(system, clusterOptions);
       this.nodes.set(role, {
         role,

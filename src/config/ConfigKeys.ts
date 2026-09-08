@@ -949,6 +949,22 @@ export const ConfigKeys = {
     /** Auto-promotion `joining` → `weakly-up`; `0` keeps it opt-in (#841). */
     weaklyUpAfter: 'actor-ts.cluster.weakly-up-after',
     /**
+     * How often this node publishes a `ClusterStatsPublished` sample of its own
+     * membership view on `system.eventStream` (#842).  `0` arms no timer, which
+     * is what every release before the key did.
+     *
+     * Read by `readClusterOptionsFromConfig` into
+     * `ClusterOptionsType.publishStatsIntervalMs`; `Cluster._start` arms the
+     * timer only for a positive value.
+     *
+     * Not `actor-ts.devtools.stats-interval`, which paces the DevTools
+     * dashboard's own sampler over the websocket.  Same figures, different
+     * channel and different audience — and neither forwards into the other,
+     * because one number with two periodic sources is how two views of a
+     * cluster start disagreeing about it.
+     */
+    publishStatsInterval: 'actor-ts.cluster.publish-stats-interval',
+    /**
      * The two membership caps (#138).  They bound what unauthenticated gossip
      * can make the local member map hold — `maxFrameBytes` bounds one frame,
      * these bound what a sequence of well-formed frames accumulates.  `0`
@@ -1100,13 +1116,21 @@ export const ConfigKeys = {
     splitBrainResolver: {
       activeStrategy: 'actor-ts.cluster.split-brain-resolver.active-strategy',
       /**
-       * How long the unreachable set must be unchanged before any strategy is
-       * consulted (#839).  Read by `Cluster.evaluateDowning`, not by
-       * `readDowningFromConfig`: it is a property of *when* the cluster asks,
-       * so it applies to every strategy including `lease-majority`, which the
-       * `active-strategy` leaf cannot name.
+       * The policy half of the block (#839) — *when* the resolver is asked,
+       * as against which one `active-strategy` above builds.  Read by
+       * `readSplitBrainResolverOptionsFromConfig`
+       * (`src/cluster/downing/SplitBrainResolverOptions.ts`) into
+       * `ClusterOptionsType.splitBrainResolver`, and consumed by
+       * `Cluster.evaluateDowning`; no bundled strategy sees either value.
+       *
+       * They configure the *provider* path only.  With no provider the
+       * failure detector still runs its own `unreachable → down` cascade on
+       * `failure-detector.down-after`, and putting a second window in front
+       * of that from this block would be two thresholds for one decision,
+       * under a name that says "resolver".
        */
       stableAfter: 'actor-ts.cluster.split-brain-resolver.stable-after',
+      downAllWhenUnstable: 'actor-ts.cluster.split-brain-resolver.down-all-when-unstable',
       keepMajority: {
         role: 'actor-ts.cluster.split-brain-resolver.keep-majority.role',
       },
@@ -1303,11 +1327,16 @@ export const ConfigKeys = {
    * `reference.conf` leaf at all, which would have left them checked by
    * nothing whatsoever.
    *
-   * `dns.pinned-addresses`, `kubernetes.pinned-addresses` and `config.seeds`
-   * are the comment-only three.  The pins need "unset" to stay expressible —
-   * an always-present empty list cannot say "no pinning", and no pinning is
-   * the default (#145).  `config.seeds` is per-deployment identity with no
-   * publishable default, and an empty list already means "we are alone".
+   * `dns.pinned-addresses`, `kubernetes.pinned-addresses`, `config.seeds` and
+   * `kubernetes.namespace` are the comment-only four.  The pins need "unset"
+   * to stay expressible — an always-present empty list cannot say "no
+   * pinning", and no pinning is the default (#145).  `config.seeds` is
+   * per-deployment identity with no publishable default, and an empty list
+   * already means "we are alone".  `namespace` is the one that has to be
+   * unset for a *precedence* reason rather than an expressiveness one: it has
+   * `CLUSTER_NAMESPACE` beneath it, and a published value would occupy the
+   * config layer on every node that configured nothing, which is exactly how
+   * the first cut of this block made that variable unreachable.
    *
    * The two pin entries are spelled `dnsPinnedAddresses` /
    * `kubernetesPinnedAddresses` rather than sharing one `pinnedAddresses`
@@ -1325,6 +1354,7 @@ export const ConfigKeys = {
       dnsPinnedAddresses: 'actor-ts.discovery.dns.pinned-addresses',
     },
     kubernetes: {
+      /** Comment-only in `reference.conf` — unset falls through to `CLUSTER_NAMESPACE`. */
       namespace: 'actor-ts.discovery.kubernetes.namespace',
       /** Comment-only in `reference.conf` — unset means no pinning. */
       kubernetesPinnedAddresses: 'actor-ts.discovery.kubernetes.pinned-addresses',

@@ -119,36 +119,78 @@ export const PATH_TRAVERSAL_SEGMENTS: ReadonlySet<string> = new Set(['.', '..'])
 export const MAXIMUM_DRAW_ATTEMPTS = 1_000;
 
 /**
- * Config **paths** whose value is withheld wherever the merged tree is
- * rendered — DevTools' `config.resolved` pull (#553) and the boot dump
+ * The words a config key uses to say that its value is a credential — the
+ * test behind every redaction in a rendered merged tree, DevTools'
+ * `config.resolved` pull (#553) and the boot dump
  * `actor-ts.diagnostics.log-config-on-start` turns on (#867).
  *
- * It moved here from `devtools/protocol/ConfigFrames.ts` the moment the
+ * It lives here rather than in `devtools/protocol/ConfigFrames.ts` because a
  * second renderer appeared: `src/` outside `src/devtools/` imports nothing
- * from it, deliberately — the DevTools protocol is an attached debugger's
- * vocabulary and the core does not carry it — so the choice was this file
- * or a second copy of the pattern, and two redaction lists is how one of
- * them stops being extended.
+ * from that tree, deliberately — the DevTools protocol is an attached
+ * debugger's vocabulary and the core does not carry it — so the choice was
+ * this file or a second copy of the pattern, and two redaction lists is how
+ * one of them stops being extended.
  *
- * **Matched against the path, never the value.**  A password that happens
- * to look ordinary is still a password, and the key is what names it.
+ * **Anchored, and matched against one word of a key — never the whole
+ * dotted path.**  That anchoring is the whole point of the pattern and it
+ * was learned the expensive way: as a bare alternation over the path it
+ * withheld thirty-one keys of a stock configuration, twenty of them
+ * ordinary tuning values, because `passivation` contains `pass` and
+ * `keyspace` contains `key` (#867).  A dump that hides `passivation-idle`
+ * hides exactly what the operator turned it on to read.
+ * `namesSecretConfigValue` in `diagnostics/ConfigDump.ts` is what cuts a
+ * path into the words this is applied to; the rule it implements is that an
+ * English compound is head-final, so the *last* word says what the value
+ * **is** and the ones in front of it say what it is *about* — `api-key` is
+ * a key, `key-prefix` is a prefix.
+ *
+ * **Matched against the key, not the value.**  A password that happens to
+ * look ordinary is still a password, and the key is what names it.  The one
+ * thing the value can do is veto: a value drawn from HOCON's boolean
+ * vocabulary carries no secret whatever its key is called, because all six
+ * spellings of it are public.
  *
  * **It is a heuristic, and it is the weaker half of the guarantee.**  It
- * catches `password`, `api-key`, `secret`, `auth-token`, `credentials` and
- * anything else spelling one of the six fragments.  It does not catch a
+ * catches `password`, `api-key`, `secret`, `auth-token`, `credentials`, and
+ * every key beneath a branch one of those names.  It does not catch a
  * secret whose key does not say so — `dsn`, `connection-string`, a `uri`
  * with userinfo in it — and it cannot: the merged tree is a tree of
  * strings, and by the time it exists a `${?DATABASE_PASSWORD}` has
- * resolved into a value with nothing left to say where it came from.  The
- * defence that does not depend on a guess is not printing the tree, which
- * is why both renderers are opt-in and the boot dump ships `off`.
+ * resolved into a value with nothing left to say where it came from.  Nor
+ * does it read a name whose head is an identifier or a location as the
+ * thing itself: `kms-key-id` is an id and `token-path` is a filesystem
+ * path.  The defence that does not depend on a guess is not printing the
+ * tree, which is why both renderers are opt-in and the boot dump ships
+ * `off`.
  *
- * Deliberately not widened past these six.  `seed` would redact
+ * Deliberately not widened past these words.  `seed` would redact
  * `cluster.seed-nodes`, `id` would redact half the file, and a dump whose
  * ordinary keys read `<redacted>` teaches an operator to stop reading it —
- * which costs more than the fragment would have bought.
+ * which costs more than the word would have bought.
  */
-export const CONFIG_SECRET_PATTERN = /pass|secret|token|key|credential|auth/i;
+export const CONFIG_SECRET_PATTERN =
+  /^(?:pass(?:word|phrase|wd)|secret|token|key|credential|auth)s?$/i;
+
+/**
+ * Keys this project ships that {@link CONFIG_SECRET_PATTERN} reads wrong,
+ * with the reason each one is safe.
+ *
+ * A supplement to the pattern and never the mechanism: entries are full
+ * dotted paths of keys **`reference.conf` declares**, so their meaning is
+ * known here and a wildcard is never needed.  An application's own key is
+ * not eligible — this file cannot know what one holds — and the pattern is
+ * what has to be right for those.
+ *
+ * `ConfigDump.test.ts` asserts the entire withheld set of a stock tree, so
+ * an addition is a visible line in a diff rather than a quiet loosening.
+ */
+export const CONFIG_NEVER_REDACTED_PATHS: ReadonlySet<string> = new Set([
+  // The *names* of the DistributedData keys a durable store persists
+  // (`session-*` and friends), never key material — a list of them says
+  // which replicas survive a restart, which is the one thing an operator
+  // reading this key came to check.
+  'actor-ts.distributed-data.durable-keys',
+]);
 
 /** What a value redacted by {@link CONFIG_SECRET_PATTERN} is replaced with. */
 export const CONFIG_REDACTED = '<redacted>';

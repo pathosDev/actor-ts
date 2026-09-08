@@ -31,6 +31,7 @@ import type {
   GetRememberedEntities,
   GetShardHome,
   HandOffComplete,
+  RegionEvicted,
   RegionHeartbeat,
   RegionTerminated,
   RegisterAcknowledgment,
@@ -1591,6 +1592,13 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
    *   two that can drift.  A region that already sent its own
    *   `RegionTerminated` is gone from `regions`, so the sweep cannot
    *   double-evict it.
+   *
+   * And the region is **told**, which the other two eviction paths neither need
+   * nor can do — `onMemberRemoved` fires for a node that has left, and a
+   * region's own `RegionTerminated` comes from a region that is already
+   * stopping.  This one alone evicts a peer the coordinator has every reason to
+   * think is still there, so it is the only one that can leave the shard with a
+   * second live home; see {@link RegionEvicted}.
    */
   private sweepStaleRegions(): void {
     if (!this.options.staleRegionDetection) return;
@@ -1611,6 +1619,37 @@ export class ShardCoordinator extends Actor<CoordinatorInbox> {
         region: info.path,
         node: info.node.toJSON(),
       });
+      this.notifyEvicted(info, silentForMs);
+    }
+  }
+
+  /**
+   * Tell a region the sweep just removed that it has been removed (#853).
+   *
+   * Sent through {@link replyTo} rather than {@link sendToRegion}, which
+   * resolves its target out of `regions` — and the entry is gone by the time
+   * this runs.  Notifying *after* the eviction rather than before it is
+   * deliberate: the region answers by releasing and registering afresh, and a
+   * `Register` that overtook the delete would be undone by it.
+   *
+   * A send failure is swallowed at debug.  Every reason this frame cannot be
+   * delivered is a reason the eviction was right — the region is gone, its node
+   * is unreachable — and a coordinator that let a broken transport throw out of
+   * its rebalance tick would skip the remaining regions in the sweep.
+   */
+  private notifyEvicted(info: RegionInfo, silentForMs: number): void {
+    const evicted: RegionEvicted = {
+      kind: 'sharding.RegionEvicted',
+      coordinator: this.self.path.toString(),
+      silentForMs,
+    };
+    try {
+      this.replyTo(info.path, info.node.toJSON(), evicted);
+    } catch (error) {
+      this.log.debug(
+        `[sharding] could not tell region ${info.path} on ${info.node} that it was evicted`,
+        error,
+      );
     }
   }
 

@@ -159,8 +159,12 @@ annehmende erst nach dem Accept — mit einer Zahl hat der Peer, der es noch
 versucht, also immer zuerst aufgegeben. `incompleteFrameIdleMs` muss darüber
 bleiben — ein Socket, der überhaupt nichts sendet, erreicht die Stall-Frist nie,
 der Handshake-Timer ist also das Einzige, was ihn zurückholt — und die
-Konstruktion wirft, wenn das nicht gilt. Keine der vier hat eine
-„Aus"-Schreibweise: `0` wird für jede abgelehnt.
+Konstruktion wirft, wenn das nicht gilt. Geprüft wird das Paar, mit dem der
+Transport *läuft*: Setzt man nur einen der beiden Werte, wird er gegen den
+eingebauten Default des anderen geprüft. `.withIncompleteFrameIdleMs(1_000)`
+allein wird also abgelehnt, weil die Handshake-Frist, gegen die er liefe, der
+Default von 5 s ist. Keine der vier hat eine „Aus"-Schreibweise: `0` wird für
+jede abgelehnt.
 
 Ein selbst gebauter Transport trägt seine eigenen Werte. Der Cluster reicht die
 des Config-Blocks nur an einen Transport weiter, den *er* konstruiert hat, nie

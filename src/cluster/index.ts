@@ -89,6 +89,7 @@ export {
   MemberLeft,
   MemberRemoved,
   MemberConfigurationMismatch,
+  ClusterStatsPublished,
   ShardMapChanged,
 } from './ClusterEvents.js';
 export type { ClusterEvent } from './ClusterEvents.js';
@@ -129,7 +130,17 @@ export type { PhiAccrualOptionsType } from './PhiAccrualOptions.js';
 // Split-Brain Resolver strategies.
 export {
   DEFAULT_SPLIT_BRAIN_RESOLVER_STRATEGY,
+  DEFAULT_DOWN_ALL_WHEN_UNSTABLE,
+  DEFAULT_STABLE_AFTER_MS,
+  DEFAULT_UNREACHABLE_ARBITRATION_FACTOR,
+  DEFAULT_UNSTABLE_ESCALATION_FACTOR,
+  SplitBrainResolverOptions,
+  SplitBrainResolverOptionsBuilder,
+  SplitBrainResolverOptionsValidator,
   readDowningFromConfig,
+  readSplitBrainResolverOptionsFromConfig,
+  unreachableArbitrationDeadlineMs,
+  unstableEscalationDeadlineMs,
   KeepMajority,
   KeepOldest,
   KeepOldestOptions,
@@ -151,6 +162,7 @@ export type {
   DowningDecision,
   ClusterPartitionView,
   SplitBrainResolverStrategy,
+  SplitBrainResolverOptionsType,
   KeepMajorityOptionsType,
   KeepOldestOptionsType,
   StaticQuorumOptionsType,
@@ -181,6 +193,7 @@ export type {
   SingletonActorClass,
   SingletonKeyedClass,
   SingletonReference,
+  SingletonRoleOrigin,
   ClusterSingletonManagerOptionsType,
   SingletonDeliver,
   WarmHandOverActor,

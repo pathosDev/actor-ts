@@ -2,6 +2,7 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import type { TlsTransportOptionsType } from '../runtime/tcp/index.js';
 import type { ReadConstraintsOptions } from '../serialization/ReadConstraintsOptions.js';
+import { HANDSHAKE_TIMEOUT_MS, INCOMPLETE_FRAME_IDLE_MS } from './Constants.js';
 
 /**
  * Everything `TcpTransport` accepts beyond its identity and its logger.
@@ -111,12 +112,85 @@ export type TcpTransportOptionsType = {
    *
    * A **stall** bound, not a budget for the frame: it is re-armed on every
    * chunk, so a peer shipping a large frame over a slow link is never punished
-   * for being slow — only for going silent.  Keep it comfortably above
-   * {@link handshakeTimeoutMs}: a socket that sends nothing at all never
-   * reaches this deadline, and the handshake timer is what covers that one.
+   * for being slow — only for going silent.  It has to stay above
+   * {@link handshakeTimeoutMs} — a socket that sends nothing at all never
+   * reaches this deadline, and the handshake timer is what covers that one —
+   * and {@link findStallDeadlineOrderingViolation} refuses the pair otherwise,
+   * with either half's default standing in for a value that was not supplied.
    */
   readonly incompleteFrameIdleMs?: number;
 };
+
+/**
+ * A cross-field rejection, in the shape `OptionsValidator.fail` takes.
+ *
+ * Returned rather than thrown because the rule below belongs to two validators
+ * and the error each of them raises is not the same error: `fail` prefixes the
+ * options family it was called on, so a `ClusterOptions` operator reading the
+ * message is told which options type refused their value.
+ */
+export type StallDeadlineOrderingViolation = {
+  readonly field: 'handshakeTimeoutMs' | 'incompleteFrameIdleMs';
+  readonly reason: string;
+  readonly value: number;
+};
+
+/**
+ * The one cross-field rule of the association-lifecycle bounds (#846), checked
+ * against the pair the transport will **run** with rather than the pair the
+ * caller happened to supply.
+ *
+ * The rule exists because the two deadlines cover disjoint failures and the
+ * handshake one is the shorter of the pair by construction: a socket that sends
+ * *nothing at all* never reaches the stall deadline — it has no half-received
+ * frame to track — so the handshake timer is the only thing that reclaims it.
+ * With the stall deadline at or below the handshake deadline the two swap roles
+ * for a peer that sends three bytes and stops, and the connection is torn down
+ * on a clock that was never meant to bound the handshake.
+ *
+ * Resolving before comparing is the whole point, and the shipped version of
+ * this rule did not: it fired only when both halves were supplied, which made
+ * it silent for exactly the input an operator is most likely to write — one of
+ * the two keys.  An unsupplied half is not absent at run time.  It falls
+ * through to the constant `TcpTransport`'s constructor applies one line after
+ * the validator has been and gone, so a lone `incomplete-frame-idle = 1s`
+ * resolved to (5000, 1000): the inversion this rule exists to prevent, accepted
+ * because half of it was a default.  Being a no-op on an unset field is right
+ * for a per-field helper — required-ness lives elsewhere — and wrong for a rule
+ * whose subject is the pair.
+ *
+ * The failure names the half the caller actually wrote, because that is the
+ * line they can edit: naming a defaulted `incompleteFrameIdleMs` at an operator
+ * who only ever set `handshake-timeout` sends them looking for a key that is
+ * not in their config.
+ */
+export function findStallDeadlineOrderingViolation(
+  settings: Pick<
+    Partial<TcpTransportOptionsType>,
+    'handshakeTimeoutMs' | 'incompleteFrameIdleMs'
+  >,
+): StallDeadlineOrderingViolation | undefined {
+  const handshakeTimeoutMs = settings.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS;
+  const incompleteFrameIdleMs = settings.incompleteFrameIdleMs ?? INCOMPLETE_FRAME_IDLE_MS;
+  if (incompleteFrameIdleMs > handshakeTimeoutMs) return undefined;
+  const why = 'the stall deadline bounds a peer that went silent mid-frame, the handshake '
+    + 'deadline bounds one that never spoke, and the second is the shorter of the two by '
+    + 'construction';
+  if (settings.incompleteFrameIdleMs === undefined) {
+    return {
+      field: 'handshakeTimeoutMs',
+      reason: `must be less than incompleteFrameIdleMs (${incompleteFrameIdleMs} ms, the `
+        + `built-in default): ${why}`,
+      value: handshakeTimeoutMs,
+    };
+  }
+  const defaulted = settings.handshakeTimeoutMs === undefined ? ', the built-in default' : '';
+  return {
+    field: 'incompleteFrameIdleMs',
+    reason: `must be greater than handshakeTimeoutMs (${handshakeTimeoutMs} ms${defaulted}): ${why}`,
+    value: incompleteFrameIdleMs,
+  };
+}
 
 /**
  * Fluent builder for {@link TcpTransportOptionsType}.
@@ -203,24 +277,12 @@ export class TcpTransportOptionsValidator extends OptionsValidator<TcpTransportO
     this.positiveInt('maxInboundConnections');
     this.positiveNumber('incompleteFrameIdleMs');
     // The one cross-field rule, and the reason it is a rule rather than a
-    // sentence in the docs: a socket that sends *nothing at all* never reaches
-    // the stall deadline — it has no half-received frame to track — so the
-    // handshake timer is the only thing that reclaims it.  With the stall
-    // deadline set below the handshake deadline the two swap roles for a peer
-    // that sends three bytes and stops, and the connection is torn down on a
-    // clock that was never meant to bound the handshake.  Checked only when
-    // both are set; either alone falls back to a default the other clears.
-    const { handshakeTimeoutMs, incompleteFrameIdleMs } = s;
-    if (handshakeTimeoutMs !== undefined && incompleteFrameIdleMs !== undefined
-      && incompleteFrameIdleMs <= handshakeTimeoutMs) {
-      this.fail(
-        'incompleteFrameIdleMs',
-        `must be greater than handshakeTimeoutMs (${handshakeTimeoutMs} ms): the stall deadline `
-        + 'bounds a peer that went silent mid-frame, the handshake deadline bounds one that never '
-        + 'spoke, and the second is the shorter of the two by construction',
-        incompleteFrameIdleMs,
-      );
-    }
+    // sentence in the docs is in {@link findStallDeadlineOrderingViolation} —
+    // along with why it resolves the pair against the defaults before comparing
+    // it.  Run last, so a value that is out of its own domain is reported as
+    // that rather than as one end of a bad pair.
+    const violation = findStallDeadlineOrderingViolation(s);
+    if (violation !== undefined) this.fail(violation.field, violation.reason, violation.value);
   }
 }
 

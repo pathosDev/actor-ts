@@ -44,7 +44,7 @@ describe('KeepMajority — wired into cluster', () => {
       // detected one peer at a time is resolved as a run of majorities.  Here
       // the two detections land within a heartbeat of each other, so 1 s is
       // several orders of margin and still inside the budgets below.
-      splitBrainResolver: { stableAfterMs: 1_000 },
+      stableAfterMs: 1_000,
       // Each role gets its own KeepMajority instance.  The strategy
       // is stateless so a single shared one would work too, but
       // factoring this way keeps consistency with stateful strategies

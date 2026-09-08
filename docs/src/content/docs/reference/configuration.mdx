@@ -192,38 +192,54 @@ Setting only one of them looks exactly like a switch that does not work.
 record, because an operator who asked for a config dump asked for output.
 
 **What the config dump redacts, and what it does not.**  A value is withheld
-when its **key name** matches `pass`, `secret`, `token`, `key`, `credential`
-or `auth` — so `cache.redis.password` and an `api-key` print as `<redacted>`.
+when a **whole word** of its key is `password`, `passphrase`, `secret`,
+`token`, `key`, `credential` or `auth`, singular or plural — so
+`cache.redis.password` and an `api-key` print as `<redacted>`, and so does
+every key beneath a branch named `credentials`.  Whole words, and the *last*
+word of a name at that, because that is the word saying what the value **is**:
+`api-key` is a key, but `key-prefix` is a prefix, `passivation-idle` is a
+timeout and `max-subscribers-per-key` is a count.  A value that is a boolean
+is never withheld whatever its key is called, since both of its states are
+public.
+
 That is a heuristic over key names, and it is the weaker half of the
 guarantee: it cannot catch a secret whose key does not say so — a `dsn`, a
 `connection-string`, a `uri` with a password in it — because by the time the
 merged tree exists a `${?DATABASE_PASSWORD}` has resolved into an ordinary
-string with nothing left to say where it came from.  Nor is the list widened
-further: `seed` would redact `cluster.seed-nodes`, and a dump whose ordinary
-keys read `<redacted>` is a dump nobody reads.  So treat the output as
-sensitive, keep the key `off` outside an investigation, and check what your
-own keys are called before pasting a dump into a ticket.  The same rule, the
-same list and the same limits apply to the DevTools config panel.
+string with nothing left to say where it came from.  Nor does it read a name
+whose last word is an identifier or a location as the thing itself:
+`kms-key-id` is an id and `token-path` is a filesystem path, and both print.
+Nor is the list widened further: `seed` would redact `cluster.seed-nodes`, and
+a dump whose ordinary keys read `<redacted>` is a dump nobody reads.  So treat
+the output as sensitive, keep the key `off` outside an investigation, and
+check what your own keys are called before pasting a dump into a ticket.  The
+same rule, the same list and the same limits apply to the DevTools config
+panel.
 
 ### `actor-ts.mailbox`
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `mailbox.default.capacity` | `0` | Bound every actor under `/user` at this many queued user messages, without touching a spawn site.  `0` means no global bound, which is the shipped behaviour — so this is not a retune, it is the switch that introduces message loss for every application actor at once. |
+| `mailbox.default.capacity` | `0` | Bound every actor the application wrote at this many queued user messages, without touching a spawn site.  `0` means no global bound, which is the shipped behaviour — so this is not a retune, it is the switch that introduces message loss for every application actor at once. |
 | `mailbox.default.overflow` | `"drop-head"` | System-wide policy for **any** bounded mailbox: the global bound above, and every actor that sets `withMailboxCapacity()` without naming a policy of its own.  `drop-head` / `drop-new` / `reject`. |
 
-The bound reaches strict descendants of `/user` only.  The framework's own
-actors live under `/system` — shard regions, the pub-sub mediator, the
-reliable-delivery producer, the DevTools hub — and shedding their traffic
-would break invariants the application never asked about and cannot see.  A
-spawn site wins over both keys: `ActorOptions.withMailboxCapacity()` overrides
-the capacity, `withMailbox()` replaces the queue outright.
+The bound reaches the actors the application *wrote*, which is not the same
+set as the actors under `/user`: a sharded entity is spawned by its shard and
+a cluster singleton by its manager, both under `/system`, and both are the
+application's classes.  Exempt are the actors the framework wrote as well as
+spawned — shard regions and shards, singleton managers, the pub-sub mediator,
+the reliable-delivery producer, the DevTools hub — because shedding their
+traffic would break invariants the application never asked about and cannot
+see.  A spawn site wins over both keys:
+`ActorOptions.withMailboxCapacity()` overrides the capacity, `withMailbox()`
+replaces the queue outright.
 
 Read [Mailbox sizing](/operations/tuning/mailbox-sizing/) before turning it
 on.  It is the one key in this file that can lose a message in an actor whose
-code says nothing about a mailbox, and the page names the two cases —
-`WebsocketServerActor` and its connections — where a blanket bound is still
-reachable because user code spawns them.
+code says nothing about a mailbox, and the page names the framework-written
+actors a blanket bound still reaches because application code spawns them —
+the WebSocket hub and its connections, the broker adapters, the gRPC client
+and server.
 
 ### `actor-ts.dispatcher`
 
@@ -257,6 +273,7 @@ replay from it.
 | `cluster.roles` | `[]` | Role tags this node carries.  Shard regions, singletons, the per-role thresholds and the role-filtered downing strategies all place **by** role. |
 | `cluster.seed-retry-interval` | `3s` | How often to retry seed connections during join. |
 | `cluster.weakly-up-after` | `0s` | Auto-promote a `joining` member to `weakly-up` after this long.  `0` disables it — see [Weakly-up](/cluster/weakly-up/). |
+| `cluster.publish-stats-interval` | `0s` | How often this node publishes a `ClusterStatsPublished` sample of its membership view on `system.eventStream`.  `0` arms no timer — see below. |
 | `cluster.max-members` | `1000` | Cap on live member entries gossip may introduce.  `0` disables the cap. |
 | `cluster.max-tombstones` | `10000` | Cap on `removed` tombstones gossip may introduce.  `0` disables the cap. |
 | `cluster.minimum-members-before-up` | `1` | Members that must be present before **anything** is promoted to `up`.  `1` is the historical behaviour — see below. |
@@ -274,6 +291,8 @@ replay from it.
 | `cluster.failure-detector.phi.min-std-deviation` | `100ms` | Floor on the sampled standard deviation, so a very steady peer is not flagged on noise. |
 | `cluster.failure-detector.phi.acceptable-heartbeat-pause` | `0s` | Grace added to the last heartbeat before φ starts rising. |
 | `cluster.split-brain-resolver.active-strategy` | `off` | Which downing strategy arbitrates a partition — `off`, `keep-majority`, `keep-oldest`, `keep-referee` or `static-quorum`. |
+| `cluster.split-brain-resolver.stable-after` | `20s` | How long the membership **and** reachability view must hold still before the strategy is consulted — or, if it never does, half of how long one peer must have been continuously unreachable.  See below. |
+| `cluster.split-brain-resolver.down-all-when-unstable` | `off` | Down every member, this node included, when the view never once holds still for `stable-after` across `3 × stable-after` of churn.  Off — see below. |
 | `cluster.split-brain-resolver.keep-majority.role` | `""` | Only members carrying this role count toward the majority.  `""` counts every member. |
 | `cluster.split-brain-resolver.keep-oldest.role` | `""` | Only members with this role are eligible "oldest".  `""` considers every member. |
 | `cluster.split-brain-resolver.static-quorum.role` | `""` | Only members carrying this role count toward quorum.  `""` counts every member. |
@@ -310,6 +329,18 @@ bounds one gossip frame; these bound what a sequence of well-formed frames
 can accumulate, which is a different quantity — see
 [Cluster security](/operations/security/cluster-security/).
 
+`publish-stats-interval` arms a fifth periodic task on this node, and only
+when it is positive: every `interval` it publishes one
+`ClusterStatsPublished` — member count, `up` count, `unreachable` count,
+leader and this node's address — on `system.eventStream` and to every
+`cluster.subscribe` listener.  Every figure is already reachable through the
+`Cluster` API; what the key buys is the cadence.  It is node-local and
+deliberately not on the cluster-wide `cluster.eventStream`, where a per-node
+periodic sample would cost N frames per node per interval.  It is also
+`actor-ts.devtools.stats-interval`'s sibling rather than its replacement:
+same figures, different channel, and neither forwards into the other.  See
+[Cluster overview](/cluster/overview/).
+
 `split-brain-resolver.active-strategy` names a strategy rather than
 describing one, which is why the object it builds needs no HOCON shape of
 its own.  The provider it constructs lands in the same slot
@@ -331,6 +362,53 @@ startup with the missing key in the message.
 `actor-ts.coordination` tunes leases but does not choose a backend.  Build
 it in code: `withDowning(new LeaseMajority(…))`.  Writing the name into
 this key is refused rather than ignored, and the message says so.
+
+`stable-after` and `down-all-when-unstable` are the block's *policy* half:
+they decide **when** the strategy is asked, not which one.  Both are ignored
+while `active-strategy = off` — with no resolver the failure detector runs
+its own `unreachable → down` cascade, timed by `failure-detector.down-after`,
+and a second window in front of that would be two thresholds for one
+decision.
+
+`stable-after` is what makes a decision be about a settled fact.  Every
+bundled strategy is a pure function of one view, so a view read mid-churn —
+half the peers already `unreachable`, the rest about to be — yields a verdict
+about a cluster that existed at no instant.  The clock is the
+failure-detection tick, so the effective resolution is
+`failure-detector.heartbeat-interval`: invisible at twenty seconds, worth
+knowing at two hundred milliseconds.  There is deliberately **no** upper
+bound tying it to `failure-detector.down-after`: with a strategy configured
+the detector parks an unreachable peer and evicts nothing, so the window has
+no deadline to out-run.
+
+It is a preference rather than a precondition.  The view it watches is every
+member's address *and* status, so any join, leave or transition anywhere
+restarts it — and a deployment whose membership moves more often than
+`stable-after` would otherwise never arbitrate a partition at all, with the
+detector no longer evicting to fall back on.  A peer that has been
+**continuously** unreachable for `2 × stable-after` is therefore put to the
+strategy whatever else is moving.  That multiple sits above one window, so a
+view that does settle is always arbitrated the ordinary way first, and below
+the `3 × stable-after` escalation deadline, so a strategy is asked before
+`down-all-when-unstable` can stop the cluster.
+
+`down-all-when-unstable` is the escalation for the cluster that never
+settles: when the view has not once held still for a whole `stable-after`
+across `3 × stable-after` of continuous change — *and* something is still
+unreachable — every member is downed, this node included, and the log says
+so at `warn`.  The margin is derived rather than configured, because it only
+ever means "several times however long this deployment thinks a view needs to
+settle", and a margin below the window could never observe one quiet window
+before firing.
+
+It ships **off**, and turning it on is a durability-over-availability
+posture rather than a detail.  It is the only setting in this subsystem that
+stops the whole cluster, and it is reached by a timer rather than by a
+strategy's verdict — a rolling restart whose replacements arrive less than
+`stable-after` apart looks exactly like a cluster that will not settle.  A
+view that moves only because members join and leave cleanly never escalates:
+churn is not a partition, which is why an empty unreachable set is a hard
+precondition.
 
 `configuration-compatibility-check` compares **effective** values, not config
 values.  Each node publishes what it actually resolved for every setting in
@@ -465,11 +543,12 @@ pre-claim its slot, and a fleet sharing one configured value is exactly what
 that draw exists to prevent.  Set it with `withClientIdentity(host, port)` if
 you need a stable one.
 
-`seeds`, `roles` and the transport have no HOCON form — the first two are
-per-deployment identity that belongs at the join site, and the transport is
-an object a config file cannot express.  A per-role *threshold* is not an
-exception to that: it names a role rather than assigning one, and the
-assignment still happens at the join site.
+The transport has no HOCON form — it is an object a config file cannot
+express.  `seeds` and `roles` do have one, `cluster.seed-nodes` and
+`cluster.roles` above: they are per-deployment identity, which is why each
+entry takes its own optional substitution rather than a shared default.  A
+per-role *threshold* names a role rather than assigning one, so it reads from
+the file even though the assignment still happens at the join site.
 
 ### `actor-ts.cluster.singleton`
 
@@ -492,10 +571,18 @@ configured role reaching only `start()` leaves such a node routing at the
 plain leader while the managers host on the role member.
 
 Precedence has one turn that reads backwards: a role declared on the actor
-class's `SingletonKey` **beats** the config file, because the key is code and
-code is the higher layer.  Two nodes disagreeing about the role — one from a
-key, one from HOCON — is a genuine misconfiguration, and the proxy says so:
-it keeps the first role it was addressed with and warns about the second.
+class's `SingletonKey` — or passed to `withRole(…)` — **beats** the config
+file, because both are code and code is the higher layer.  That holds on the
+proxy too, and in either call order: a node that calls `ref` before `start`
+builds its proxy from the file, and the explicit role the `start` carries then
+*replaces* it rather than losing to it.  A configured role arriving after an
+explicit one is discarded in silence for the same reason — it is precedence
+resolving, not a problem to report.
+
+What the proxy does warn about is two roles from the **same** layer — two
+`withRole` calls, or a key and an options object that disagree.  One singleton
+cannot be restricted two ways and nothing outranks anything, so it keeps the
+first and names the second in the log.
 
 `role = ""` is the shape of the key, not a value anyone runs with.  It is
 dropped rather than passed on, and here that is load-bearing twice over: `''`
@@ -698,7 +785,7 @@ or have all of them form a cluster at once.
 | `discovery.dns.cache-ttl` | `60s` | How long the DNS provider reuses one resolved answer.  In-process and per provider; failures are never cached.  `0` disables caching. |
 | `discovery.dns.use-srv` | `false` | Read SRV records instead of A records.  SRV carries a port per target, so each address is paired with the record's port rather than this node's remoting port. |
 | `discovery.dns.pinned-addresses` | *(unset)* | CIDRs (A-record mode) and/or host suffixes (SRV mode) a resolved address must match; anything else is discarded rather than offered as a seed.  Comment-only in `reference.conf`, because an always-present empty list could not say "no pinning" — see below. |
-| `discovery.kubernetes.namespace` | `"default"` | Namespace whose `Endpoints` object the Kubernetes provider reads. |
+| `discovery.kubernetes.namespace` | *(unset)* | Namespace whose `Endpoints` object the Kubernetes provider reads.  Comment-only in `reference.conf`, for a different reason than the pin lists: `CLUSTER_NAMESPACE` sits underneath it, so a published value would be the config layer on every node and the variable would be unreachable.  Unset, the chain is this key, then the variable, then the built-in `"default"`. |
 | `discovery.kubernetes.pinned-addresses` | *(unset)* | CIDRs the discovered pod IPs must fall inside.  CIDRs only — `Endpoints` resolve to IPs, so a host suffix could never match.  Comment-only, same reason. |
 | `discovery.config.seeds` | *(unset)* | Static `[system@]host:port` list for the `config` provider.  Comment-only: a seed list is per-deployment identity with no publishable default, and an empty list already means "we are alone". |
 
@@ -724,6 +811,15 @@ which is the framework's ordinary precedence with the environment appended at
 the bottom, not a fourth layer bolted on top of it. An env-only deployment
 therefore behaves exactly as it did before these keys existed, and an
 `application.conf` can now override a variable it could not previously reach.
+
+That last claim is about `reference.conf` as much as about the ordering, and it
+is what decides which of these keys may ship a value at all. Presence *is* the
+read — a published leaf is a configured value on a node that configured nothing
+— so a key with a `CLUSTER_*` variable beneath it ships comment-only:
+`discovery.kubernetes.namespace` and `discovery.config.seeds`, with
+`cluster.bootstrap.discovery.service-name` solving the same problem the other
+way, published as `""` and dropped by its reader. `cache-ttl` and `use-srv`
+carry published values because nothing sits under them to shadow.
 
 A deployment that wants a variable to outrank its own `application.conf`
 lifts it there itself:
@@ -895,7 +991,10 @@ frame — it is re-armed on every chunk, so a peer pushing a large frame over a
 congested link is never punished for being slow, only for stopping. Keep it
 above `handshake-timeout`; both validators refuse a value at or below it,
 because a socket that sends nothing at all never reaches this deadline and the
-handshake timer is what covers that one.
+handshake timer is what covers that one. What they compare is the **resolved**
+pair, not the pair you wrote: writing one of the two keys on its own is checked
+against the other's built-in default, so a lone `incomplete-frame-idle = 1s` is
+refused for sitting under the 5 s `handshake-timeout` it would run against.
 
 `max-inbound-connections` is what stops either cost from being multiplied by
 opening sockets in a loop, and it is the half of the inbound-memory bound worth
@@ -987,7 +1086,7 @@ The bounds on a **connection** — as against a route on it — come from
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `http.server.idle-timeout` | *(backend's own)* | How long an idle keep-alive connection is held before it is destroyed.  Ships **no leaf** — see below.  `0` disables it. |
-| `http.server.header-timeout` | `60s` | How long a connection may take to deliver its complete header block before it is answered `408` and destroyed.  The slow-loris guard. |
+| `http.server.header-timeout` | `60s` | How long a connection may take to deliver its complete header block before it is answered `408` and destroyed.  The slow-loris guard, held by actor-ts itself — see below.  `0` disables it. |
 | `http.server.request-timeout` | `300s` | How long a connection may take to deliver a request in full, headers and body.  Bounds *receiving*, never answering. |
 | `http.server.max-connections` | *(unlimited)* | Concurrent connections the listening socket accepts before it starts closing new ones.  Ships **no leaf** — see below. |
 
@@ -1007,14 +1106,14 @@ actor-ts.http.server {
 
 :::caution[Not every backend can honour these]
 They are properties of a `node:http` server, so they hold exactly where one
-exists.
+exists — and two of them, marked †, are held by actor-ts on top of it.
 
 | Key | Fastify | Express | Hono / Node | Hono / Bun | Hono / Deno |
 | --- | --- | --- | --- | --- | --- |
 | `idle-timeout` | yes | yes | yes | **no** | **no** |
-| `header-timeout` | yes | yes | yes | **no** | **no** |
+| `header-timeout` | yes † | yes † | yes † | **no** | **no** |
 | `request-timeout` | yes | yes | yes | **no** | **no** |
-| `max-connections` | yes | yes | yes | **no** | **no** |
+| `max-connections` | yes † | yes † | yes † | **no** | **no** |
 
 Hono owns no server of its own — it delegates to a per-runtime runner — and
 only `@hono/node-server` hands its `node:http` server back.  `Bun.serve` and
@@ -1024,6 +1123,27 @@ a gap, not a silent partial: nothing is written and nothing pretends to have
 been.  Bun does have a whole-connection `idleTimeout` on `Bun.serve`, in
 *seconds* rather than milliseconds, which is close enough to be tempting and
 different enough to be wrong; it is not wired here.
+
+**† actor-ts holds these two itself rather than handing the number to the
+runtime and hoping.**  The property is still written — where a runtime honours
+it the work happens earlier and more cheaply — but neither bound depends on
+that, because on the primary toolchain one of them was not being held at all.
+Measured on a bare `node:http` server against a socket that sends a header
+block and never the terminating blank line: node v26.7.0 answers `408` and
+closes, **bun 1.4.0 stores `headersTimeout`, reports it back unchanged and
+enforces nothing** — `2s`, `40s`, `120s` and `0` alike produced the same ~12 s
+close with no `408`, which is Bun's own idle timeout and not this guard — and
+**deno 2.6.8 ignores it and never closes the connection at all**.  A control
+this documentation offers as the answer to a slow-loris cannot be a `yes` on
+one runtime of three, so the deadline is armed here, from the accepted
+connection, and cleared the moment a request or a WebSocket upgrade completes
+its headers.
+
+Where that still runs out is the event it rests on: **Deno's `node:http` shim
+emits no `connection` event**, so on Deno neither guard can be installed by any
+backend.  Fastify and Express are supported on Bun and Node, so every `yes`
+above holds — but mounting one of them on Deno anyway leaves both of these two
+unenforced, quietly.
 :::
 
 Two leaves ship **no value** and are listed above only so the names are
@@ -1044,15 +1164,25 @@ this binding — WebSocket upgrades included, and an attached
 [DevTools](/observability/devtools/overview/) server too, since DevTools binds
 through the same `system.http(...)` path.
 
-`header-timeout` and `request-timeout` are enforced by a periodic sweep whose
-interval the runtime fixes at 30 s and does not expose, so a connection is
-closed **no earlier than** the value set here and **no later than one sweep
-after it**.  Both ship the number `http.createServer` already uses, so
-publishing them changed nothing on Express or Hono — but Fastify sets
+`request-timeout` is enforced by a periodic sweep whose interval the runtime
+fixes at 30 s and does not expose, so a connection is closed **no earlier
+than** the value set here and **no later than one sweep after it** — measured
+on bun 1.4.0, a `2s` `request-timeout` answered `408` and closed at 30.0 s.
+`header-timeout` is not swept, because it is not the runtime that enforces it:
+it fires at the value set here.
+
+Both ship the number `http.createServer` already uses, so publishing them
+changed no bound that was already being held — but Fastify sets
 `requestTimeout` to `0`, no bound at all, so on the default backend the
 published `300s` is a deadline where there previously was none.  At the 1 MiB
 body cap that is a client sending under 3.5 KB/s; raise it if you accept
 legitimately slower uploads, or set `0` to opt out.
+
+Setting `header-timeout = 0` opts out of the slow-loris guard entirely: no
+deadline is armed and the property is cleared.  A runtime may still hang up on
+its own — bun 1.4.0 drops a connection carrying no complete request after about
+12 s whatever this says — so `0` buys an unbounded header phase only where the
+runtime grants one.
 
 `request-timeout` bounds *receiving* only — the clock stops once the request has
 arrived — so a slow handler, a long poll and an SSE stream are unaffected.  The
@@ -1194,7 +1324,7 @@ leaf nobody sized.
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `serialization.read-constraints.max-nesting-depth` | `256` | Container levels a decoder will descend before refusing the payload.  Never raised past the encoder's own ceiling. |
-| `serialization.read-constraints.max-document-bytes` | `0` | Ceiling on one document handed to `JsonSerializer` / `CborSerializer`, checked before it is parsed.  `0` = no ceiling of our own. |
+| `serialization.read-constraints.max-document-bytes` | `0` | Ceiling on one document before it is parsed — checked in `JsonSerializer` / `CborSerializer`, and on the cluster wire against the frame's length prefix.  `0` = no ceiling of our own. |
 | `serialization.read-constraints.max-string-length` | `20M` | Ceiling on one CBOR byte string, text string or map key, checked against the length prefix before the bytes are allocated.  `0` removes it. |
 
 These bound what this node **reads**, never what it writes.  A peer that
@@ -1213,9 +1343,26 @@ read deeper than it writes would accept a payload it is unable to produce.
 Raising it is an `OptionsError` at startup.
 
 `max-document-bytes` ships as `0` because every path the framework owns is
-already bounded — `remote.max-frame-bytes` on the cluster wire, the server's
-body cap over HTTP.  Set it where a serializer is reached some other way (a
-broker payload, a queue message) and nothing upstream has an opinion.
+already bounded in **bytes** — `remote.max-frame-bytes` on the cluster wire, the
+server's body cap over HTTP.  Set it where a serializer is reached some other
+way (a broker payload, a queue message) and nothing upstream has an opinion, or
+where the byte bound upstream is looser than the document you are willing to
+parse.  On the cluster wire it is enforced against the frame's 4-byte length
+prefix, so the frame is refused before its payload is buffered, let alone
+parsed; that is the earliest point in the framework at which it can act, and it
+is earlier than the serializers manage, because they are handed bytes that
+already exist.
+
+Being bounded in bytes is not the same as being bounded in **work**, and the gap
+is worth stating: at the shipped defaults a frame nested past
+`max-nesting-depth` is refused only after `JSON.parse` has materialised it.
+Measured on Bun 1.4, one 16 MiB frame of balanced `[` costs about 1.0 s of CPU
+and 260 MiB of heap before the depth ceiling reports it — roughly four times
+what a legitimate frame of the same size costs, and repeatable by any peer that
+completed the handshake.  `remote.max-frame-bytes` and `max-document-bytes` are
+the two knobs that bound it.  A pre-parse scan of the raw buffer would close it
+with neither set, and was measured and not shipped: it costs 18–28 % of every
+frame decode to remove a fourfold amplification.
 
 `max-string-length` binds on **CBOR only**, and its default sits deliberately
 above `remote.max-frame-bytes`, so on the cluster wire the frame cap is the
@@ -1765,7 +1912,7 @@ consumer](/cache/in-memory/#one-cache-per-consumer) advice needs.
 | `sharding.passivation.segmented-protected-proportion` | `0.8` | Share of the cap held by the *protected* segment under `segmented-least-recently-used`; the rest is probation.  Ignored under every other policy. |
 | `sharding.passivation.admission-window-proportion` | `0.0` | Share of the cap held as a probationary window in front of the policy.  `0` = no window.  Required by `admission-filter`. |
 | `sharding.passivation.admission-filter` | `off` | `frequency-sketch` makes a candidate leaving the window out-rank the entity it would displace.  Rejected at `sharding.start(...)` unless `admission-window-proportion > 0`. |
-| `sharding.passivation.stop-timeout` | `10s` | How long an entity may take to act on the stop-message a `Passivate` handed it before the shard stops it outright.  `0` waits forever. |
+| `sharding.passivation.stop-timeout` | `0ms` | How long an entity may take to act on the stop-message a `Passivate` handed it before the shard stops it outright.  `0` waits forever, which is the shipped behaviour. |
 | `sharding.buffer-size` | `100000` | How many messages one region may hold **across all its shards** while their homes are unknown or handing off.  Past the cap the *newest* message is dropped to dead letters with its sender, so what is already queued keeps the order the caller sent it in.  **Mind the polarity against `max-entities` above**: here `0` means *never buffer — dead-letter immediately*, not "no cap". |
 | `sharding.register-retry-interval` | `500ms` | How often a region re-sends an unacknowledged registration to the coordinator.  Everything routed for the type buffers until the coordinator answers, so this is also how long a lost `Register` stalls it. |
 | `sharding.shard-region-query-timeout` | `5s` | Default wait for `sharding.shards()` and `sharding.shardRefFor()`.  An explicit `timeoutMs` argument still wins over it.  Unrelated to how long the region keeps a correlation for a cross-node `ask`, which is minutes on purpose. |
@@ -1933,11 +2080,22 @@ actor-ts.sharding.stale-region-detection {
 }
 ```
 
-Four things worth knowing before turning it on:
+Five things worth knowing before turning it on:
 
 - **The switch drives both halves.**  Off, no region beats and no coordinator
   sweeps, so the mechanism costs nothing at all.  On, every region of every
   sharded type sends one small frame per `heartbeat-interval`.
+- **An evicted region that is still alive is told, and comes back.**  The
+  coordinator cannot tell a region that is gone from one whose beats were lost,
+  so an eviction is a decision it can get wrong — and a region that is still
+  alive would otherwise learn nothing, keep its shards and keep serving their
+  entities, leaving one shard with two live homes for as long as the node
+  stayed up.  It is therefore sent a notice: one that is really gone or wedged
+  never processes it, and one that was merely silent gives up every shard it
+  holds — the entities stop, so a persistent one flushes — and registers again
+  at once.  That region has then beaten to the coordinator zero times, so it is
+  not a sweep candidate again until a beat of its own arrives, which is what
+  stops a permanently muted region cycling every `stale-after`.
 - **The beat is per sharded type, not per node.**  Ten types on a node is ten
   frames per interval, on top of the cluster's own heartbeats.
 - **A region that never beats is never swept.**  That is what makes turning the
@@ -2007,14 +2165,19 @@ count halved periodically so the ranking follows recent traffic rather than a
 lifetime total.  It suits a working set that is stable but not recent — a fleet
 of devices reporting on a slow cycle — where recency says almost nothing.
 
-`stop-timeout` is unrelated to the choice above and applies to every cap.  When
-an entity passivates itself with
-[`Passivate`](/cluster/sharding/overview/#passivation), the stop-message is a
-request: the entity decides when to act on it.  If it never does, the entity
-never terminates and its slot is held against `max-entities` for the lifetime
-of the node.  After `stop-timeout` the shard stops it outright.  `0` restores
-the unbounded wait, which is right where a graceful shutdown genuinely has no
-bound.
+`stop-timeout` is unrelated to the choice above, and unrelated to `max-entities`
+too: a positive value arms it with or without a cap.  When an entity passivates
+itself with [`Passivate`](/cluster/sharding/overview/#passivation), the
+stop-message is a request: the entity decides when to act on it.  If it never
+does, the entity never terminates and its slot is held against `max-entities`
+for the lifetime of the node.  After `stop-timeout` the shard stops it outright.
+
+It ships **off** (`0`, the unbounded wait), so nothing changes for a deployment
+that does not name it.  That is deliberate rather than cautious: an entity
+mid-drain — a long flush, a slow final write — is entitled to take as long as
+the drain takes, and a forced stop there abandons the flush.  The operator who
+knows how long the drain can legitimately run is the one who can pick the bound,
+so it is opt-in.
 
 A per-type setting therefore belongs in the builder; the config file is for
 the node-wide baseline you want to move between staging and production

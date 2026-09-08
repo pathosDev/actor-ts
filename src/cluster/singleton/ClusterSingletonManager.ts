@@ -1,6 +1,7 @@
 import { match, P } from 'ts-pattern';
 import { Actor } from '../../Actor.js';
 import type { ActorClassOrFactory } from '../../Actor.js';
+import type { ActorOptionsType } from '../../ActorOptions.js';
 import type { ActorRef } from '../../ActorRef.js';
 import type { Cancellable } from '../../Scheduler.js';
 import { DeadLetter, Terminated } from '../../SystemMessages.js';
@@ -1599,7 +1600,15 @@ export class ClusterSingletonManager<T> extends Actor<Inbox> {
         ? this.options.singletonActor
         : this.warmedActorFactory(warmState),
       this.options.typeName,
-      this.options.singletonActorOptions,
+      // `applicationOwned` last, so a caller's own options cannot shadow it.
+      // This manager is the framework's actor and the class it is spawning is
+      // not (#862): the singleton instance sits on a `/system` path only
+      // because its manager does, and system-wide application policy — the
+      // global mailbox bound — has to reach it.
+      {
+        ...(this.options.singletonActorOptions as Partial<ActorOptionsType<T>> | undefined),
+        applicationOwned: true,
+      },
     );
     this.context.watch(this.child);
     // This node is hosting again, so a snapshot it left for a successor is a

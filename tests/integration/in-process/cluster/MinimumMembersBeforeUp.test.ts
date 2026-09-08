@@ -12,6 +12,15 @@
  *
  * Which is why every case below has a positive half. "Nobody reaches up" is
  * only worth asserting next to "and then they all do".
+ *
+ * There are **two** gated promotion sites, and a case only binds the one it
+ * can reach. Every case that starts a cluster from cold reaches `selfElect`'s
+ * gate first: the threshold is unmet from the founder's very first moment, so
+ * that gate holds it `joining`, no `up` member exists, no leader exists, and
+ * `promoteJoiningMembers` never gets past its own `isLeader()` line — deleting
+ * the gate *inside* it changes nothing any of them observe. Reaching the second
+ * site takes a cluster that formed first and then fell below its threshold,
+ * which is what the regrow case at the bottom of this file is for.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../../../src/ActorSystem.js';
@@ -201,5 +210,74 @@ describe('Cluster — minimumMembersBeforeUp (#837)', () => {
     await sleep(QUIET_WINDOW_MS);
     expect(a.upMembers().length).toBe(1);
     expect(a.upMembers()[0]?.address.port).toBe(56_031);
+  }, TEST_TIMEOUT_MS);
+
+  test('a leader that is already up still holds a new joiner below the threshold', async () => {
+    // The *second* gated promotion site — `promoteJoiningMembers` — and the
+    // only case in this file that reaches it.  See the file header: from a
+    // cold start the founder's own gate holds everything, so there is never a
+    // leader in a position to promote and the leader's gate is unobserved.
+    //
+    // Here the cluster forms, shrinks below its threshold, and keeps the `up`
+    // it already granted (the case above).  So a leader is sitting there with
+    // the authority to promote and a member map of two — and the only thing
+    // between the joiner and `up` is the gate at the top of that method.
+    const a = await startNode({ systemName: 'mmbu-regrow', port: 56_041, seeds: [],
+      minimumMembersBeforeUp: 3 });
+    const b = await startNode({ systemName: 'mmbu-regrow', port: 56_042,
+      seeds: ['mmbu-regrow@h:56041'], minimumMembersBeforeUp: 3 });
+    const c = await startNode({ systemName: 'mmbu-regrow', port: 56_043,
+      seeds: ['mmbu-regrow@h:56041'], minimumMembersBeforeUp: 3 });
+
+    // Every node's own view, not just A's: `leave` announces itself to the
+    // peers the *leaver* knows about, so a B that has not yet heard back from
+    // the seed sends its farewell to nobody and stays `up` in A's map for
+    // good.
+    await awaitCondition(
+      () => upCounts([a, b, c]).every((count) => count === 3),
+      { timeoutMs: 4_000, intervalMs: 10, label: 'the initial three nodes to reach up' },
+    );
+
+    await b.leave();
+    await c.leave();
+    await awaitCondition(() => a.getMembers().length === 1, {
+      timeoutMs: 4_000, intervalMs: 10, label: 'both departures to reach A',
+    });
+    // A is `up`, is the leader, and is the only member the threshold counts —
+    // the preconditions the assertion below rests on, stated rather than
+    // assumed, because every one of them is what makes the gate the only
+    // remaining explanation for D staying `joining`.
+    expect(a.upMembers().length).toBe(1);
+    expect(a.isLeader()).toBe(true);
+
+    const d = await startNode({ systemName: 'mmbu-regrow', port: 56_044,
+      seeds: ['mmbu-regrow@h:56041'], minimumMembersBeforeUp: 3 });
+
+    // The leader has seen D — so it has had the chance to promote it — and the
+    // count is 2 of 3.  Without this first half the second proves nothing: a
+    // joiner whose frame never landed is also a joiner nobody promoted.
+    await awaitCondition(() => a.getMembers().length === 2, {
+      timeoutMs: 4_000, intervalMs: 10, label: "D to appear in the leader's member map",
+    });
+    // Absence assertion: nothing will arrive to make this true, so the elapsed
+    // gossip rounds are the whole of the evidence.
+    await sleep(QUIET_WINDOW_MS);
+    // The leader's own view first — it is the node whose gate is under test —
+    // and then D's, which is what an operator would look at.
+    expect(a.getMembers().find((member) => member.address.port === 56_044)?.status)
+      .toBe('joining');
+    expect(d.selfMember()?.status).toBe('joining');
+    expect(a.upMembers().length).toBe(1);
+
+    // The positive half: a third counted member opens the gate and the leader
+    // promotes everything it was holding, in one pass.
+    const e = await startNode({ systemName: 'mmbu-regrow', port: 56_045,
+      seeds: ['mmbu-regrow@h:56041'], minimumMembersBeforeUp: 3 });
+
+    await awaitCondition(
+      () => upCounts([a, d, e]).every((count) => count === 3),
+      { timeoutMs: 4_000, intervalMs: 10, label: 'A, D and E to reach up' },
+    );
+    expect(upCounts([a, d, e])).toEqual([3, 3, 3]);
   }, TEST_TIMEOUT_MS);
 });

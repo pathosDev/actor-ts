@@ -393,7 +393,23 @@ cluster.publishConfigurationFact('acme.orders.partition-count', String(partition
 
 Sie reist nur, wenn `checked-paths` den Namen führt — diese Liste ist eine
 Erlaubnisliste dessen, was den Node *verlässt*, und genau deshalb gibt es
-keine zweite Liste von Pfaden zum Schwärzen.
+keine zweite Liste von Pfaden zum Schwärzen.  Ein Name außerhalb des
+Zeichensatzes eines HOCON-Pfads (Kleinbuchstaben, Punkte und Bindestriche)
+wird bei der Validierung der Optionen abgelehnt, statt veröffentlicht und
+von jedem Peer stillschweigend verworfen zu werden.
+
+**Jeder Zeitpunkt im Leben eines Nodes ist ein gültiger Moment für diesen
+Aufruf**, und darum gibt es ihn überhaupt: die drei Einstellungen oben sind
+aufgelöst, bevor der erste Gossip-Frame läuft — eine Partitionsanzahl, die
+aus einer Migration oder von einem Broker zurückkommt, ist es nicht.  Eine
+Tatsache, die veröffentlicht wird, nachdem sich der Record jedes Peers
+gesetzt hat, erreicht trotzdem den Vergleich jedes Peers: das eigene Gossip
+jedes Nodes trägt seine aktuellen Tatsachen, und ein Peer ersetzt das, was er
+für ein Mitglied hält, wenn **dieses Mitglied selbst** es neu ausspricht.
+Eine von einem dritten Node weitergereichte Kopie füllt eine Lücke, aber
+überschreibt nie — eine veraltete Kopie, die die Runde macht, kann den
+Vergleich also nicht flattern lassen.  Denselben Wert erneut zu
+veröffentlichen ändert nichts und kostet nichts.
 
 Sind sich zwei Nodes uneinig, loggt jeder eine Zeile, die die Einstellung und
 **beide** Werte nennt, und veröffentlicht ein `MemberConfigurationMismatch`
@@ -404,8 +420,10 @@ Einstellung nicht führt, meldet nichts — statt während eines Rolling
 Upgrades alles zu melden.
 
 `enforce = on` fügt genau eine Sache hinzu: der abweichende Peer ist kein
-Platzierungskandidat dieses Nodes mehr, ein Cluster-Router routet also nicht
-mehr zu ihm.  Es downed oder quarantäniert niemanden, und nichts, das eine
+Platzierungskandidat dieses Nodes mehr, ein
+[Cluster-Router](/de/cluster/cluster-router/#kandidaten-nicht-einfach-up-mitglieder)
+routet also nicht mehr zu ihm.  Es downed oder quarantäniert niemanden, und
+nichts, das eine
 Rolle *wählt*, liest diese Menge: eine falsch konfigurierte Mehrheit würde
 sonst die korrekt konfigurierte Minderheit verdrängen, und eine asymmetrische
 Kandidatensicht würde zwei Singleton-Hosts wählen statt einem.  Standardmäßig

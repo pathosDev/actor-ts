@@ -381,7 +381,20 @@ cluster.publishConfigurationFact('acme.orders.partition-count', String(partition
 
 It travels only if `checked-paths` lists the name — that list is an
 allow-list of what *leaves* the node, which is why there is no second list
-of paths to redact.
+of paths to redact.  A name outside the character set a HOCON path uses
+(lower-case, dots and hyphens) is refused when the options are validated,
+rather than published and silently dropped by every peer.
+
+**Any point in a node's life is a valid moment to call it**, and that is
+the point of the call existing at all: the three settings above are
+resolved before the first gossip frame moves, but a partition count that
+comes back from a migration or a broker is not.  A fact published after
+every peer's record has settled still reaches every peer's comparison —
+each node's own gossip carries its current facts, and a peer replaces what
+it holds for a member when **that member itself** restates them.  A copy
+relayed by a third node fills a gap but never overwrites, so a stale copy
+doing the rounds cannot flap the comparison.  Publishing the same value
+again changes nothing and costs nothing.
 
 When two nodes disagree, each logs one line naming the setting and **both**
 values, and publishes a `MemberConfigurationMismatch` carrying the same.
@@ -391,8 +404,10 @@ side is silence: a peer running an older version, or one whose
 reporting everything during a rolling upgrade.
 
 `enforce = on` adds exactly one thing — the diverging peer stops being one
-of this node's placement candidates, so a cluster router will not route to
-it.  It never downs or quarantines anyone, and nothing that *elects* a role
+of this node's placement candidates, so a
+[cluster router](/cluster/cluster-router/#candidates-not-simply-up-members)
+will not route to it.  It never downs or quarantines anyone, and nothing
+that *elects* a role
 reads that set: a misconfigured majority would otherwise evict the
 correctly-configured minority, and an asymmetric candidate view would elect
 two singleton hosts rather than one.  Off by default, because an enforcing

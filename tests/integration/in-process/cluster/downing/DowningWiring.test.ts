@@ -18,6 +18,10 @@
  *   6. …and keeps re-asking the resolver past `downAfterMs`, which is what
  *      makes an asynchronous strategy (`LeaseMajority`) and a stability
  *      window (#839) possible at all.
+ *   7. The stability window itself (#839), in its own `describe`: the provider
+ *      is not consulted while the view is still moving, a settled partition is
+ *      still resolved and no earlier than the window, and
+ *      `down-all-when-unstable` escalates only when it is switched on.
  *
  * Tests 1, 5 and 6 deliberately run *past* `downAfterMs`, which is the
  * opposite of what the rest of this file does: 2, 3 and 4 keep the
@@ -40,7 +44,10 @@ import type {
   ClusterPartitionView,
   DowningProvider,
 } from '../../../../../src/cluster/downing/index.js';
+import type { SplitBrainResolverOptionsType } from '../../../../../src/cluster/downing/index.js';
+import { unstableEscalationDeadlineMs } from '../../../../../src/cluster/downing/index.js';
 import type { FailureDetectorOptionsType } from '../../../../../src/cluster/FailureDetectorOptions.js';
+import { Member } from '../../../../../src/cluster/Member.js';
 import type { GossipMessage } from '../../../../../src/cluster/Protocol.js';
 import { InMemoryTransport } from '../../../../../src/cluster/Transport.js';
 import { NodeAddress } from '../../../../../src/cluster/NodeAddress.js';
@@ -96,14 +103,21 @@ const FAST_EVICTION: FailureDetectorOptionsType = {
   heartbeatIntervalMs: 50, unreachableAfterMs: 200, downAfterMs: 600,
 };
 
-/** The stability window these cases run with — see `startNode`. */
-const STABLE_AFTER_MS = 50;
+/**
+ * Every test outside the `#839` block predates the stability window and was
+ * written against a resolver consulted on the first tick that saw a partition.
+ * The shipped 20 s window would make every one of them time out, so the shared
+ * fixture pins a window shorter than a single failure-detector round: these
+ * tests are about the wiring, and the window has its own `describe` below.
+ */
+const NO_STABILITY_WINDOW: Partial<SplitBrainResolverOptionsType> = { stableAfterMs: 1 };
 
 async function startNode(
   systemName: string, port: number, options: {
     seeds?: string[];
     downing?: DowningProvider;
     failureDetector?: FailureDetectorOptionsType;
+    splitBrainResolver?: Partial<SplitBrainResolverOptionsType>;
   } = {},
 ): Promise<Node> {
   const sysOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
@@ -113,22 +127,35 @@ async function startNode(
     .withPort(port)
     .withTransport(new InMemoryTransport(new NodeAddress(systemName, 'h', port)))
     .withFailureDetector(options.failureDetector ?? SLOW_EVICTION)
+    .withSplitBrainResolver(options.splitBrainResolver ?? NO_STABILITY_WINDOW)
     .withGossipIntervalMs(80);
   if (options.seeds !== undefined) clusterOptions = clusterOptions.withSeeds(options.seeds);
-  if (options.downing !== undefined) {
-    clusterOptions = clusterOptions
-      .withDowning(options.downing)
-      // Every case here drives a partition and then asserts on the resolver's
-      // answer within a few seconds.  The production window is 20 s (#839) —
-      // the view has to stop moving before a strategy is asked anything, which
-      // is what stops a partition detected one peer at a time from being
-      // resolved as a run of majorities.  These are two-node partitions with a
-      // single detection, so there is no spread for a window to cover and 50 ms
-      // is enough to be a window at all.
-      .withSplitBrainResolver({ stableAfterMs: STABLE_AFTER_MS });
-  }
+  if (options.downing !== undefined) clusterOptions = clusterOptions.withDowning(options.downing);
   const cluster = await Cluster.join(sys, clusterOptions);
   return { sys, cluster };
+}
+
+/**
+ * Introduce one member nobody is listening on, as a third-party claim from a
+ * live peer (which `maySpeakFor` admits because that peer is `up`).
+ *
+ * It is the cheapest legal source of view churn there is, and it produces
+ * exactly the two conditions `down-all-when-unstable` reacts to: every call
+ * moves the fingerprint, and `mergeMember` registers the address with the
+ * failure detector, so each phantom becomes `unreachable` a round later and
+ * the unreachable set is never empty.  The alternative — starting and killing
+ * real nodes on a 60 ms cadence — measures the same thing and spends a second
+ * of wall clock doing it.
+ */
+function introducePhantom(from: Node, to: Node, systemName: string, port: number): void {
+  const phantom = new Member(new NodeAddress(systemName, 'h', port), 'up', Date.now(), new Set());
+  const frame: GossipMessage = {
+    kind: 'gossip',
+    from: from.cluster.selfAddress.toJSON(),
+    sequence: Date.now(),
+    members: [phantom.toData()],
+  };
+  from.cluster.transport.send(to.cluster.selfAddress, frame);
 }
 
 async function stop(n: Node): Promise<void> {
@@ -172,63 +199,52 @@ describe('Cluster + DowningProvider — wiring', () => {
   test('downing provider invoked on partition; decision applied (others)', async () => {
     const sysName = 'down-others';
     let invocations = 0;
-    // The view that carried the *decision*, not merely the last one seen.
-    // `decide` keeps being called after the peer is tombstoned — the
-    // fingerprint changed, so the debounce lets it through — and that later
-    // view has an empty unreachable set.  Asserting on "the last view" made
-    // the test a race between the assertion and the next failure-detector
-    // tick, which the stability window (#839) shifted and would have shifted
-    // again on a slower machine.
-    let decidingView: ClusterPartitionView | null = null;
+    let lastView: ClusterPartitionView | null = null;
     const provider: DowningProvider = {
       decide(view) {
         invocations++;
         // Force-down anything we see as unreachable.
-        const decision = new Set(view.allMembers
+        const toDown = new Set(view.allMembers
           .filter((m) => view.unreachable.has(addrKey(m)))
           .map(addrKey));
-        if (decision.size > 0) decidingView = view;
-        return decision;
+        // The view the DECISION was made on, not merely the last one seen.
+        // The tick after an eviction lands legitimately shows a healed
+        // cluster, so which of the two a bare `lastView = view` ends up
+        // holding depends only on when the poll below happened to return.
+        if (toDown.size > 0) lastView = view;
+        return toDown;
       },
     };
 
     const seed = await startNode(sysName, 64_011, { downing: provider });
     const peer = await startNode(sysName, 64_012, { seeds: [`${sysName}@h:64011`] });
-    const peerAddress = peer.cluster.selfAddress.toString();
     await waitFor(() =>
       seed.cluster.upMembers().length === 2 && peer.cluster.upMembers().length === 2);
 
     // Reset counter — initial join may have fingerprint changes that
     // legitimately invoke decide() before the partition.
     invocations = 0;
+    const peerKey = peer.cluster.selfAddress.toString();
 
     // Crash peer → seed marks it unreachable → provider decides to down it.
     await peer.cluster.transport.shutdown();
 
     // Provider should fire and force a down/removed transition long
-    // before the FD's downAfterMs (4s) would.
-    //
-    // Waited on the decision rather than on `upMembers().length === 1`, which
-    // is what this used to poll: that count drops the moment the *detector*
-    // marks the peer unreachable, which happens before the resolver is asked
-    // anything.  So the old wait returned early and the assertions below read
-    // whatever state existed at that instant — they passed because the first
-    // `decide` call happened to have landed already, and stopped passing the
-    // moment a stability window (#839) put 50 ms between the mark and the
-    // question.  The peer being *removed* is the effect this test is named
-    // for, and it is the one thing that cannot be true before the provider has
-    // spoken.
+    // before the FD's downAfterMs (4s) would.  Waited on the *eviction* and
+    // not on `upMembers().length === 1`, which the `unreachable` transition
+    // satisfies on its own a tick or two earlier — so the old wait could
+    // return before the resolver had been consulted at all and the
+    // assertions below would then be about a race rather than about downing.
     await waitFor(
-      // `getMembers()` hides tombstones, so a removed peer is an *absent* one
-      // here rather than one with `status === 'removed'` — which is why this
-      // waits for the address to disappear.
-      () => !seed.cluster.getMembers().some((m) => m.address.toString() === peerAddress),
+      () => !seed.cluster.getMembers().some((m) => m.address.toString() === peerKey),
       2_000,
+      25,
+      'the provider\'s decision was applied',
     );
-    expect(invocations).toBeGreaterThan(0);
-    expect(decidingView).not.toBeNull();
-    expect(decidingView!.unreachable.size).toBeGreaterThan(0);
     expect(seed.cluster.upMembers().length).toBe(1);
+    expect(invocations).toBeGreaterThan(0);
+    expect(lastView).not.toBeNull();
+    expect(lastView!.unreachable.size).toBeGreaterThan(0);
 
     await stop(seed);
     await peer.sys.terminate();
@@ -461,6 +477,320 @@ describe('Cluster + DowningProvider — wiring', () => {
     // instant at which the detector used to delete it and hand the resolver
     // a view that read as a healed cluster.
     expect(decidedAt - shutdownAt).toBeGreaterThan(FAST_EVICTION.downAfterMs);
+
+    await stop(seed);
+    await peer.sys.terminate();
+  }, 20_000);
+});
+
+/**
+ * The stability window and the unstable escalation (#839).
+ *
+ * Timings are scaled down by roughly two orders of magnitude from the shipped
+ * ones (`stable-after = 20s`) so a test can watch a whole window elapse.  The
+ * *ratios* are what the assertions rest on — the window is many detector
+ * rounds long, and the escalation deadline is
+ * {@link unstableEscalationDeadlineMs} of the window — and those are the
+ * shipped ones.
+ */
+describe('Cluster + DowningProvider — the stability window (#839)', () => {
+  /**
+   * A detector fast enough that a test can see a partition inside one window,
+   * and a `down-after` the resolver's presence makes inert anyway (#929).
+   */
+  const WINDOW_EVICTION: FailureDetectorOptionsType = {
+    heartbeatIntervalMs: 40, unreachableAfterMs: 160, downAfterMs: 400,
+  };
+
+  /**
+   * The same detector with more headroom on `unreachable-after`, for the
+   * three-node churn test below: it keeps a live third node from being read as
+   * silent while the seed is merging a phantom every 200 ms, which would swap
+   * the partition the test is about for one it invented.
+   */
+  const CHURN_EVICTION: FailureDetectorOptionsType = {
+    heartbeatIntervalMs: 40, unreachableAfterMs: 320, downAfterMs: 8_000,
+  };
+
+  test('a partitioned peer is arbitrated even while the membership keeps moving', async () => {
+    // The regression the window itself introduced: it fingerprints *every*
+    // member as `address:status`, so any join, leave or status change anywhere
+    // restarts it — and at the shipped `stable-after = 20s` a cluster whose
+    // membership moves more often than that (autoscaling, a rolling deploy,
+    // one flapping node) never arbitrates a partition at all.  Since #929
+    // nothing else resolves it either: with a provider configured the detector
+    // parks the peer at `unreachable` and evicts nothing.
+    //
+    // Three nodes, so the churn has a source that is not the partitioned peer,
+    // and the churn runs from before the partition rather than after it — that
+    // ordering is what keeps the assertion from passing on a lucky quiet
+    // window between the `unreachable` transition and the first phantom.
+    const sysName = 'window-churn';
+    const STABLE_AFTER_MS = 500;
+    let invocations = 0;
+    const provider: DowningProvider = {
+      decide(view) {
+        invocations++;
+        return new Set(view.allMembers
+          .filter((m) => view.unreachable.has(addrKey(m)))
+          .map(addrKey));
+      },
+    };
+
+    const seed = await startNode(sysName, 64_221, {
+      downing: provider,
+      failureDetector: CHURN_EVICTION,
+      splitBrainResolver: { stableAfterMs: STABLE_AFTER_MS },
+    });
+    const peer = await startNode(sysName, 64_222, {
+      seeds: [`${sysName}@h:64221`], failureDetector: CHURN_EVICTION,
+    });
+    const churnSource = await startNode(sysName, 64_223, {
+      seeds: [`${sysName}@h:64221`], failureDetector: CHURN_EVICTION,
+    });
+    await waitFor(
+      () => seed.cluster.upMembers().length === 3
+        && peer.cluster.upMembers().length === 3
+        && churnSource.cluster.upMembers().length === 3,
+      6_000,
+      25,
+      'all three nodes saw each other',
+    );
+    const peerKey = peer.cluster.selfAddress.toString();
+    invocations = 0;
+
+    // One fresh member every 200 ms — comfortably inside a 500 ms window, so
+    // the full-view fingerprint never once holds still.  That is the shape of
+    // an autoscaling group, not of an attack.
+    let phantomPort = 65_300;
+    const churn = setInterval(
+      () => introducePhantom(churnSource, seed, sysName, phantomPort++), 200);
+    try {
+      await peer.cluster.transport.shutdown();
+      await waitFor(
+        () => {
+          const record = seed.cluster.getMembers()
+            .find((m) => m.address.toString() === peerKey);
+          return record === undefined || record.status === 'down'
+            || record.status === 'removed';
+        },
+        8_000,
+        25,
+        'the genuinely partitioned peer was arbitrated despite the churn',
+      );
+    } finally {
+      clearInterval(churn);
+    }
+
+    // Not merely "something downed it": the provider was the thing consulted.
+    expect(invocations).toBeGreaterThan(0);
+
+    await stop(seed);
+    await stop(churnSource);
+    await peer.sys.terminate();
+  }, 30_000);
+
+  test('the provider is not consulted while the view is still moving', async () => {
+    const sysName = 'window-suppresses';
+    let invocations = 0;
+    // Would down every unreachable member the instant it were asked, so the
+    // only thing standing between the partition below and an eviction is the
+    // window.
+    const provider: DowningProvider = {
+      decide(view) {
+        invocations++;
+        return new Set(view.allMembers
+          .filter((m) => view.unreachable.has(addrKey(m)))
+          .map(addrKey));
+      },
+    };
+
+    const seed = await startNode(sysName, 64_081, {
+      downing: provider,
+      failureDetector: WINDOW_EVICTION,
+      splitBrainResolver: { stableAfterMs: 4_000 },
+    });
+    const peer = await startNode(sysName, 64_082, {
+      seeds: [`${sysName}@h:64081`], failureDetector: WINDOW_EVICTION,
+    });
+    await waitFor(() =>
+      seed.cluster.upMembers().length === 2 && peer.cluster.upMembers().length === 2);
+    const peerKey = peer.cluster.selfAddress.toString();
+
+    // Reset AFTER the join has settled: forming a cluster moves the view
+    // several times, and each of those legitimately restarts the window.
+    invocations = 0;
+    await peer.cluster.transport.shutdown();
+    await awaitUnreachable(seed, 'a partition inside the stability window');
+
+    // A bare sleep, deliberately: the assertion is an absence.  ~30 detector
+    // ticks pass inside a 4 s window, and before this change every one of them
+    // put the view to the provider — the counter is the difference between
+    // "the window suppressed it" and "nothing happened to be scheduled".
+    await sleep(1_200);
+
+    expect(invocations).toBe(0);
+    const parked = seed.cluster.getMembers().find((m) => m.address.toString() === peerKey);
+    expect(parked?.status).toBe('unreachable');
+    expect(seed.cluster.upMembers().length).toBe(1);
+
+    await stop(seed);
+    await peer.sys.terminate();
+  }, 15_000);
+
+  test('a settled partition still resolves, and no earlier than the window', async () => {
+    const sysName = 'window-resolves';
+    const STABLE_AFTER_MS = 900;
+    let decidedAt = 0;
+    const provider: DowningProvider = {
+      decide(view) {
+        if (view.unreachable.size === 0) return new Set();
+        decidedAt = Date.now();
+        return new Set(view.allMembers
+          .filter((m) => view.unreachable.has(addrKey(m)))
+          .map(addrKey));
+      },
+    };
+
+    const seed = await startNode(sysName, 64_091, {
+      downing: provider,
+      failureDetector: WINDOW_EVICTION,
+      splitBrainResolver: { stableAfterMs: STABLE_AFTER_MS },
+    });
+    const peer = await startNode(sysName, 64_092, {
+      seeds: [`${sysName}@h:64091`], failureDetector: WINDOW_EVICTION,
+    });
+    await waitFor(() =>
+      seed.cluster.upMembers().length === 2 && peer.cluster.upMembers().length === 2);
+    const peerKey = peer.cluster.selfAddress.toString();
+
+    const shutdownAt = Date.now();
+    await peer.cluster.transport.shutdown();
+    await waitFor(
+      () => !seed.cluster.getMembers().some((m) => m.address.toString() === peerKey),
+      6_000,
+      25,
+      'the partition was resolved once the window had elapsed',
+    );
+
+    // The window is not a decoration on a decision that would have happened
+    // anyway: the view cannot have been settled before the peer was even
+    // marked unreachable, so the decision has to land at least a whole window
+    // after the peer fell silent.  Measured from `shutdownAt` rather than from
+    // the `unreachable` transition because that instant is only observable by
+    // polling, and a poll's own latency would go into the margin.
+    expect(decidedAt - shutdownAt).toBeGreaterThanOrEqual(STABLE_AFTER_MS);
+
+    await stop(seed);
+    await peer.sys.terminate();
+  }, 20_000);
+
+  test('down-all-when-unstable stops the whole cluster when the view will not settle', async () => {
+    const sysName = 'window-escalates';
+    const STABLE_AFTER_MS = 300;
+    // Never decides anything.  That is what makes the assertion unambiguous:
+    // whatever downs this cluster was the escalation, because the strategy
+    // returned an empty set every single time it was asked.
+    const provider: DowningProvider = { decide: () => new Set() };
+
+    // Before the first node exists, so it is an instant the cluster's own
+    // instability run provably cannot predate — see the assertion below.
+    const startedAt = Date.now();
+    const seed = await startNode(sysName, 64_201, {
+      downing: provider,
+      failureDetector: WINDOW_EVICTION,
+      splitBrainResolver: { stableAfterMs: STABLE_AFTER_MS, downAllWhenUnstable: true },
+    });
+    const peer = await startNode(sysName, 64_202, {
+      seeds: [`${sysName}@h:64201`], failureDetector: WINDOW_EVICTION,
+    });
+    await waitFor(() =>
+      seed.cluster.upMembers().length === 2 && peer.cluster.upMembers().length === 2);
+    const selfKey = seed.cluster.selfAddress.toString();
+
+    // One fresh address every 60 ms, so no 300 ms window can ever elapse
+    // without the fingerprint moving — and each one goes unreachable a round
+    // later, which is the second condition escalation insists on.
+    let phantomPort = 64_900;
+    let escalatedAt = 0;
+    const churn = setInterval(() => introducePhantom(peer, seed, sysName, phantomPort++), 60);
+    try {
+      await waitFor(
+        () => {
+          const me = seed.cluster.getMembers().find((m) => m.address.toString() === selfKey);
+          return !me || me.status === 'leaving' || me.status === 'removed';
+        },
+        8_000,
+        25,
+        'the unstable-escalation downed this node too',
+      );
+    } finally {
+      escalatedAt = Date.now();
+      clearInterval(churn);
+    }
+
+    // Self left through `leave()`, and the peer was force-downed — escalation
+    // downs everyone, which is the whole of what distinguishes it from a
+    // strategy picking a side.
+    const peerRecord = seed.cluster.getMembers()
+      .find((m) => m.address.toString() === peer.cluster.selfAddress.toString());
+    expect(peerRecord === undefined || peerRecord.status === 'removed'
+      || peerRecord.status === 'down').toBe(true);
+    // The escalation waited: a live cluster really did spend a whole deadline
+    // churning before the timer fired, rather than escalating on the first
+    // tick that saw a moving view.  Measured from before the first node
+    // existed, because that is the only instant this test can prove the
+    // instability run does not predate — the run starts at the seed's first
+    // *view change*, which is somewhere inside cluster formation and is not
+    // observable from out here.
+    //
+    // The previous assertion in this slot was
+    // `expect(unstableEscalationDeadlineMs(STABLE_AFTER_MS)).toBe(… * 3)`
+    // under a comment claiming non-vacuity.  It is arithmetic on a pure
+    // function that never observes a cluster: it cannot fail for any
+    // implementation of the gate, and saying otherwise stopped the next person
+    // looking.  That identity, and the `<=` at its boundary, are bound in
+    // `tests/unit/cluster/SplitBrainStabilityWindow.test.ts`, where the clock
+    // is supplied and the assertion can be exact.
+    expect(escalatedAt - startedAt)
+      .toBeGreaterThanOrEqual(unstableEscalationDeadlineMs(STABLE_AFTER_MS));
+
+    await seed.sys.terminate();
+    await peer.sys.terminate();
+  }, 20_000);
+
+  test('the same churn with the switch unset downs nobody', async () => {
+    const sysName = 'window-no-escalation';
+    const STABLE_AFTER_MS = 300;
+    const provider: DowningProvider = { decide: () => new Set() };
+
+    const seed = await startNode(sysName, 64_211, {
+      downing: provider,
+      failureDetector: WINDOW_EVICTION,
+      splitBrainResolver: { stableAfterMs: STABLE_AFTER_MS },
+    });
+    const peer = await startNode(sysName, 64_212, {
+      seeds: [`${sysName}@h:64211`], failureDetector: WINDOW_EVICTION,
+    });
+    await waitFor(() =>
+      seed.cluster.upMembers().length === 2 && peer.cluster.upMembers().length === 2);
+    const selfKey = seed.cluster.selfAddress.toString();
+
+    let phantomPort = 65_100;
+    const churn = setInterval(() => introducePhantom(peer, seed, sysName, phantomPort++), 60);
+    try {
+      // Several escalation deadlines' worth, so the switch being off is the
+      // only thing that kept this cluster alive.
+      await sleep(unstableEscalationDeadlineMs(STABLE_AFTER_MS) * 4);
+    } finally {
+      clearInterval(churn);
+    }
+
+    const me = seed.cluster.getMembers().find((m) => m.address.toString() === selfKey);
+    expect(me?.status).toBe('up');
+    const peerRecord = seed.cluster.getMembers()
+      .find((m) => m.address.toString() === peer.cluster.selfAddress.toString());
+    expect(peerRecord?.status).toBe('up');
 
     await stop(seed);
     await peer.sys.terminate();

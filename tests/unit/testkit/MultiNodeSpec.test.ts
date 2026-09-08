@@ -11,10 +11,14 @@
  *   - the await* helpers reach steady state
  *   - the await* helpers throw on timeout instead of hanging forever
  *   - accessor helpers (systemFor / clusterFor / addressFor) and unknown-role errors
+ *   - the harness's test-scaled split-brain stability window (#839)
  */
 import { describe, expect, test } from 'bun:test';
 import { MultiNodeSpec } from '../../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../../src/testkit/internal/MultiNodeTransport.js';
+import { DEFAULT_STABLE_AFTER_MS } from '../../../src/cluster/downing/index.js';
+import type { DowningProvider } from '../../../src/cluster/downing/index.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 const TIGHT_FD = {
   heartbeatIntervalMs: 50,
@@ -210,4 +214,54 @@ describe('MultiNodeSpec — await timeouts', () => {
       MultiNodeTransport._resetRegistryForTest();
     }
   }, 5_000);
+});
+
+describe('MultiNodeSpec — the stability window is test-scaled (#839)', () => {
+  test('a spec resolver is consulted about a partition well inside the shipped window', async () => {
+    // `MultiNodeSpec` overrides `stable-after` down to 100 ms for the same
+    // reason it overrides the gossip interval, and nothing detected the
+    // override's absence: removing it leaves this file at 120 pass / 0 fail
+    // and `tests/multi-node/LeaseMajority.test.ts` green.  It is not inert
+    // though — LeaseMajority goes from 879 ms to 20.97 s without it, because
+    // every partition in every spec then waits out the shipped 20 s window
+    // before a strategy is asked anything.
+    //
+    // A guard rather than a comment naming that cost, because a twenty-fold
+    // slowdown that no test fails on is exactly the shape that comes back.
+    //
+    // What binds it is the *unreachable* view reaching the provider.  A
+    // provider that decides nothing is re-asked on every settled tick, so
+    // "was it called at all" would go true before the crash and assert
+    // nothing.  With the override gone the window is 20 s and its ceiling
+    // 40 s, so neither path reaches the provider inside this budget.
+    let sawUnreachable = false;
+    const provider: DowningProvider = {
+      decide(view) {
+        if (view.unreachable.size > 0) sawUnreachable = true;
+        return new Set();
+      },
+    };
+    const spec = new MultiNodeSpec({
+      roles: ['seed', 'peer'],
+      failureDetector: TIGHT_FD,
+      downing: (role) => (role === 'seed' ? provider : undefined),
+    });
+    try {
+      await spec.start();
+      await spec.awaitMembers('seed', 2);
+      sawUnreachable = false;
+
+      const crashedAt = Date.now();
+      await spec.crash('peer');
+      await awaitCondition(() => sawUnreachable, {
+        timeoutMs: 4_000,
+        intervalMs: 25,
+        label: 'the spec resolver was consulted about the partitioned peer',
+      });
+      expect(Date.now() - crashedAt).toBeLessThan(DEFAULT_STABLE_AFTER_MS);
+    } finally {
+      await spec.stop();
+      MultiNodeTransport._resetRegistryForTest();
+    }
+  }, 15_000);
 });

@@ -89,9 +89,15 @@ actor-ts {
 
 Die Variablen `CLUSTER_SEEDS` / `CLUSTER_SERVICE_NAME` / `CLUSTER_NAMESPACE`
 funktionieren weiterhin und liegen **unter** diesen Keys: explizite Optionen,
-dann der Config-Block, dann die Umgebung, dann die eingebauten Defaults.  Einen
-Provider von Hand zu bauen — das Snippet oben auf dieser Seite — umgeht all
-das, und genau dafür gibt es diese Form.
+dann der Config-Block, dann die Umgebung, dann die eingebauten Defaults.  Das
+gilt nur, weil keiner der drei zugehörigen Keys einen Wert veröffentlicht, den
+ein Knoten erben würde: `discovery.kubernetes.namespace` und
+`discovery.config.seeds` stehen in `reference.conf` nur als Kommentar, und
+`cluster.bootstrap.discovery.service-name` wird als `""` ausgeliefert und von
+seinem Reader verworfen — ein veröffentlichter Default wäre dort auf jedem
+Knoten ein konfigurierter Wert, und die Variable darunter würde nie gelesen.
+Einen Provider von Hand zu bauen — das Snippet oben auf dieser Seite — umgeht
+all das, und genau dafür gibt es diese Form.
 
 ### Ein Lookup ist noch keine Antwort
 

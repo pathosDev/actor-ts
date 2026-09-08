@@ -48,11 +48,14 @@ that.  What it shows is the HOCON resolution, exactly.
 
 ## Secrets
 
-A value whose **key** names a secret — anything matching `pass`,
-`secret`, `token`, `key`, `credential` or `auth` — is replaced with
+A value whose **key** names a secret — a whole word of it being
+`password`, `passphrase`, `secret`, `token`, `key`, `credential` or
+`auth`, and the last word of the name at that — is replaced with
 `<redacted>` before it leaves the process. By key rather than by value,
 because a password that happens to look ordinary is still a password and
-the key is what names it.
+the key is what names it. So `api-key` is withheld while `key-prefix` and
+`passivation-idle` are shown, and a boolean is never withheld whatever it
+is called.
 
 That is a blunt instrument on purpose. A configuration tree still says a
 great deal about a deployment even redacted — hosts, ports, seed nodes,

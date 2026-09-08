@@ -93,7 +93,7 @@ function specWith(stableAfterMs: number): MultiNodeSpec {
     .withRoles([...ROLES])
     .withFailureDetector({ ...TIGHT_FD })
     .withGossipIntervalMs(80)
-    .withSplitBrainResolver({ stableAfterMs })
+    .withStableAfterMs(stableAfterMs)
     .withDowning((role: string) => {
       // One named lease, one owner per node — the production shape, and the
       // reason the store below is process-global.

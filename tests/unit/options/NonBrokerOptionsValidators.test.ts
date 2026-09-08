@@ -57,6 +57,7 @@ import {
   type ThrottleOnExcess,
 } from '../../../src/ThrottleOptions.js';
 import { MAX_DELIVERY_IDENTIFIER_LENGTH } from '../../../src/delivery/Constants.js';
+import { HANDSHAKE_TIMEOUT_MS, INCOMPLETE_FRAME_IDLE_MS } from '../../../src/cluster/Constants.js';
 import { AutoDiscoveryOptionsValidator, type AutoDiscoveryOptionsType } from '../../../src/discovery/AutoDiscoveryOptions.js';
 import {
   ConfigSeedProviderOptionsValidator,
@@ -202,9 +203,35 @@ describe('ClusterOptionsValidator', () => {
       .toThrow(/must be greater than handshakeTimeoutMs/);
     expect(() => check({ handshakeTimeoutMs: 5_000, incompleteFrameIdleMs: 30_000 }))
       .not.toThrow();
-    // Either alone passes: the unset half falls through to a default that the
-    // set half clears, and a helper is a no-op on an unset field.
-    expect(() => check({ incompleteFrameIdleMs: 1_000 })).not.toThrow();
+  });
+
+  test('the ordering rule is checked against the resolved pair, not the supplied one (#846)', () => {
+    // The five cases the rule has, and the two that used to slip through.
+    //
+    // Guarding on "both supplied" made the rule vacuous for exactly the inputs
+    // an operator is most likely to write — one of the two keys — because the
+    // unsupplied half is not absent at run time.  It falls through to the
+    // constant the transport applies, so a lone `incomplete-frame-idle = 1s`
+    // resolved to the inverted pair (5000, 1000) and was accepted.  A helper
+    // being a no-op on an unset field is right for a per-field rule; a
+    // cross-field rule about the pair the node will run with has to resolve
+    // the pair first.
+    //
+    // Neither set: the shipped pair is ordered, so the common case passes.
+    expect(() => check({})).not.toThrow();
+    // Stall deadline alone, under the default handshake deadline — the
+    // measured hole.
+    expect(() => check({ incompleteFrameIdleMs: 1_000 }))
+      .toThrow(new RegExp(`must be greater than handshakeTimeoutMs \\(${HANDSHAKE_TIMEOUT_MS} ms`));
+    // ... and it may still be lowered below its own default, as long as it
+    // stays above the handshake deadline it will actually run against.
+    expect(() => check({ incompleteFrameIdleMs: HANDSHAKE_TIMEOUT_MS + 1 })).not.toThrow();
+    // Handshake deadline alone, raised past the default stall deadline — the
+    // same inversion approached from the other side, and the message names the
+    // half the caller actually wrote.
+    expect(() => check({ handshakeTimeoutMs: INCOMPLETE_FRAME_IDLE_MS }))
+      .toThrow(new RegExp(`handshakeTimeoutMs must be less than incompleteFrameIdleMs \\(${INCOMPLETE_FRAME_IDLE_MS} ms`));
+    expect(() => check({ handshakeTimeoutMs: INCOMPLETE_FRAME_IDLE_MS - 1 })).not.toThrow();
   });
 });
 

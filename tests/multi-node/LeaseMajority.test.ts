@@ -65,7 +65,7 @@ describe('LeaseMajority — end-to-end split-brain', () => {
       // detected one peer at a time is resolved as a run of majorities.  Here
       // the two detections land within a heartbeat of each other, so 1 s is
       // several orders of margin and still inside the budgets below.
-      splitBrainResolver: { stableAfterMs: 1_000 },
+      stableAfterMs: 1_000,
       // Each role acquires the SAME named lease but with its own
       // `owner` — exactly the production shape for K8s leases.
       // The InMemoryLease store is process-global so all four

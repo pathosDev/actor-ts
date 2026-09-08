@@ -48,6 +48,7 @@ import {
 } from './ClusterOptions.js';
 import type { ClusterOptions, ClusterOptionsType, SelfElectionPolicy } from './ClusterOptions.js';
 import {
+  ClusterStatsPublished,
   CurrentClusterState,
   LeaderChanged,
   MemberConfigurationMismatch,
@@ -105,7 +106,13 @@ import type {
   ClusterPartitionView,
   DowningProvider,
 } from './downing/DowningProvider.js';
-import { DEFAULT_SPLIT_BRAIN_RESOLVER_STABLE_AFTER_MS } from './downing/SplitBrainResolverOptions.js';
+import {
+  DEFAULT_DOWN_ALL_WHEN_UNSTABLE,
+  DEFAULT_STABLE_AFTER_MS,
+  SplitBrainResolverOptionsValidator,
+} from './downing/SplitBrainResolverOptions.js';
+import type { SplitBrainResolverOptionsType } from './downing/SplitBrainResolverOptions.js';
+import { StabilityWindow } from './downing/StabilityWindow.js';
 
 type EnvelopeHandler = (env: EnvelopeMessage, from: NodeAddress) => void;
 
@@ -322,6 +329,8 @@ export class Cluster {
   private weaklyUpTimer: Cancellable | null = null;
   private tombstonePruneTimer: Cancellable | null = null;
   private selfElectionTimer: Cancellable | null = null;
+  /** Armed only when `publish-stats-interval` is positive (#842). */
+  private statsTimer: Cancellable | null = null;
   /** Fruitless seed-contact rounds so far, and whether the stall was reported (#1351). */
   private seedRounds = 0;
   private coldStartStallReported = false;
@@ -334,6 +343,7 @@ export class Cluster {
   private _selfElected = false;
   private currentLeader: Option<Member> = none;
   private readonly weaklyUpAfterMs: number;
+  private readonly publishStatsIntervalMs: number;
   private readonly selfElection: SelfElectionPolicy;
   private readonly minimumMembersBeforeUp: number;
   private readonly minimumMembersBeforeUpPerRole: Readonly<Record<string, number>>;
@@ -364,19 +374,21 @@ export class Cluster {
    * unreachable peer" state would call `decide()` on every tick.
    */
   private lastDownedView: string | null = null;
-
   /**
-   * How long the member view must be unchanged before {@link downing} is asked
-   * anything (#839).  See {@link evaluateDowning} for why the window exists.
+   * How long the view must hold still before {@link downing} is consulted
+   * (#839) — kept beside the window because the escalation log quotes it.
+   *
+   * Read once here rather than off `options` at each tick: the merge that
+   * layers explicit options over HOCON over the built-in defaults happens once,
+   * in `Cluster.join`, and a second read site would be a second answer.
    */
   private readonly stableAfterMs: number;
-
   /**
-   * The view fingerprint the stability window is currently timing, and when it
-   * was first seen.  `null` means no partition is being observed.
+   * The stability window in front of {@link downing} (#839) — all of "may the
+   * resolver be asked yet", in a class of its own so each of its guards is
+   * reachable from a unit test with the clock supplied.
    */
-  private observedView: string | null = null;
-  private observedViewSince = 0;
+  private readonly stabilityWindow: StabilityWindow;
 
   private constructor(system: ActorSystem, options: ClusterOptionsType) {
     this.system = system;
@@ -482,12 +494,26 @@ export class Cluster {
     this.gossipIntervalMs = options.gossipIntervalMs ?? DEFAULT_GOSSIP_INTERVAL_MS;
     this.seedRetryIntervalMs = options.seedRetryIntervalMs ?? DEFAULT_SEED_RETRY_INTERVAL_MS;
     this.weaklyUpAfterMs = options.weaklyUpAfterMs ?? 0;
+    // Same `0` sentinel one line up: no timer, which is what an unset field
+    // means too (#842).
+    this.publishStatsIntervalMs = options.publishStatsIntervalMs ?? 0;
     this.selfElection = options.selfElection ?? 'immediate';
     this.minimumMembersBeforeUp = options.minimumMembersBeforeUp ?? DEFAULT_MINIMUM_MEMBERS_BEFORE_UP;
     this.minimumMembersBeforeUpPerRole = options.minimumMembersBeforeUpPerRole ?? {};
     this.downing = options.downing ?? null;
-    this.stableAfterMs = options.splitBrainResolver?.stableAfterMs
-      ?? DEFAULT_SPLIT_BRAIN_RESOLVER_STABLE_AFTER_MS;
+    // Validated here rather than in `ClusterOptionsValidator`, which is the
+    // shape the rest of `src/` uses for a nested options block: the detector
+    // and the φ block are each checked by their own validator in their own
+    // consumer's constructor (`FailureDetector`, `PhiAccrualFailureDetector`),
+    // and this block's consumer is `Cluster` itself (#839).
+    const splitBrainResolver: Partial<SplitBrainResolverOptionsType> =
+      options.splitBrainResolver ?? {};
+    new SplitBrainResolverOptionsValidator().validate(splitBrainResolver);
+    this.stableAfterMs = splitBrainResolver.stableAfterMs ?? DEFAULT_STABLE_AFTER_MS;
+    this.stabilityWindow = new StabilityWindow(
+      this.stableAfterMs,
+      splitBrainResolver.downAllWhenUnstable ?? DEFAULT_DOWN_ALL_WHEN_UNSTABLE,
+    );
     this.tombstoneTtlMs = options.tombstoneTtlMs ?? DEFAULT_TOMBSTONE_TTL_MS;
     this.tombstonePruneIntervalMs = options.tombstonePruneIntervalMs ?? DEFAULT_TOMBSTONE_PRUNE_INTERVAL_MS;
     // `0` is not "no floor" but "derive one", so it falls through exactly like
@@ -921,9 +947,20 @@ export class Cluster {
    * `version + 1`, and `mergeMember` has no equal-version tie-break, so the
    * two sides wedge permanently.  The facts ride the same stamped overlay —
    * {@link memberDataForGossip} puts them on every self record this node
-   * sends, receivers fill them in version-neutrally
+   * sends, receivers take them version-neutrally
    * ({@link adoptConfigurationFacts}), and no membership event fires because
    * nothing about the topology changed.
+   *
+   * **Callable at any point in a node's life, and that is the whole point.**
+   * The three facts the framework itself publishes are resolved in the
+   * constructor, before a single frame moves, but an application's own value
+   * is often resolved later — a shard count read from a migration, a partition
+   * count a broker hands back.  A call after every peer's record has settled
+   * still reaches every peer's comparison, because
+   * {@link adoptConfigurationFacts} takes a member's restatement of its own
+   * facts and not only its first statement.  It did not, until #844's repair:
+   * an overlay claim never bumps the member version, so every frame after the
+   * first took a branch that dropped it.
    *
    * `name` is by convention the HOCON path whose effective value this is; the
    * value is stringified by the caller, because what is compared is equality
@@ -948,22 +985,83 @@ export class Cluster {
   }
 
   /**
-   * Fill configuration claims into a record we otherwise ignore (equal or
-   * older version) — the {@link adoptStorageIdentities} shape, and the same
-   * rationale: fill-only so a claim published after a member's last status
-   * change still spreads, version-neutral so adopting it cannot advance the
-   * merge clock.
+   * Take configuration claims off a record we otherwise ignore (equal or older
+   * version), version-neutrally so taking them cannot advance the merge clock.
+   *
+   * **Who may change them, not whether they have been seen before** — and that
+   * distinction is the #844 repair.  This began as a copy of
+   * {@link adoptStorageIdentities}, which is fill-only: a slot it has already
+   * written is never written again.  That reasoning is sound one lane over,
+   * and its JSDoc says why — a store identity is resolved once at construction,
+   * so a *genuinely* changed one arrives with a new incarnation's higher
+   * version and takes the full merge path, which makes any second claim at an
+   * unchanged version either a stale relay or a hostile one.
+   *
+   * It does not hold for these.  {@link publishConfigurationFact} is a public
+   * runtime API whose purpose is to state a value after the member record has
+   * settled, and an overlay claim deliberately does not bump the version — so
+   * under fill-only every publication after a peer's first frame was dropped
+   * on every peer, silently, and the whole check reduced to whatever each node
+   * happened to have resolved in its constructor.
+   *
+   * What the fill-only guard was actually protecting is worth keeping, and is
+   * kept: gossip is epidemic, so a record about B can reach this node from C
+   * carrying an arbitrarily old copy of B's facts, and letting one overwrite
+   * B's own statement would flap the comparison against whichever copy arrived
+   * last.  The rule that separates the two cases needs no new state: **only
+   * the member itself may restate its facts; anyone may relay them into an
+   * empty slot.**  `from` is the connection the frame arrived on, which is the
+   * same anchor {@link maySpeakFor}'s second rule already rests the whole
+   * merge path on — a payload field is the one thing an attacker fully
+   * controls, a connection is not.
+   *
+   * Three shapes were weighed against that one:
+   *
+   * - **A separate clock for the overlay**, bumped on publish and compared
+   *   independently of the member version.  It converges through relays, which
+   *   this does not, and costs a wire field that is a peer-supplied number
+   *   deciding whether a claim wins — so it would need its own plausibility
+   *   cap, or a peer pins its claim forever at `Infinity`.  The convergence it
+   *   buys is not needed: the subject's own frame is the freshest statement of
+   *   its own facts by construction, and every member gossips to every other.
+   * - **Bumping the member version on publish.**  Still refused, and the
+   *   reason has not weakened: {@link publishStorageIdentity} records that a
+   *   self bump races the leader's `joining → up` promotion to the same
+   *   `version + 1`, which `mergeMember` has no tie-break for, and the two
+   *   sides then wedge forever.  A runtime publish makes that race *more*
+   *   likely, not less, because it can happen at any moment rather than only
+   *   at startup.
+   * - **Comparing without adopting**, so a divergence is reported even where
+   *   the stored copy is left alone.  Refused because
+   *   {@link divergesInConfiguration} reads the stored record: reporting off a
+   *   copy this node did not store would print an `error` saying it has
+   *   stopped placing work on a peer that {@link placementCandidates} still
+   *   returns.  The report and the enforcement have to read the same record.
+   *
+   * An unchanged restatement — the steady state, since every round carries the
+   * whole member map — is not a write.  Without that check the member entry
+   * would be replaced once per round per peer for no change at all.
    *
    * It re-reads the member from the map rather than trusting `existing`,
    * because the identity overlay one lane over may already have replaced it in
    * this same merge — writing a stale `existing` back would drop whatever that
    * one just filled in.
+   *
+   * Residual, and self-healing: the higher-version path merges a record
+   * wholesale from whichever peer sent it, so a relay's older copy of B's
+   * facts can land there on a status change.  B's own next frame restates the
+   * current ones and this method now takes them, which is the half that did
+   * not exist before.
    */
-  private adoptConfigurationFacts(existing: Member, incoming: Member): void {
+  private adoptConfigurationFacts(from: NodeAddress, existing: Member, incoming: Member): void {
     if (incoming.configurationFacts === undefined) return;
     if (incoming.address.equals(this.selfAddress)) return;
     const current = this.members.get(incoming.address.toString()) ?? existing;
-    if (current.configurationFacts !== undefined) return;
+    const held = current.configurationFacts;
+    if (held !== undefined) {
+      if (!incoming.address.equals(from)) return;
+      if (sameConfigurationFacts(held, incoming.configurationFacts)) return;
+    }
     this.setMember(current.withConfigurationFacts(incoming.configurationFacts));
     this.checkConfigurationAgreement(incoming);
   }
@@ -1063,7 +1161,17 @@ export class Cluster {
    * Derived from the member record on every call rather than remembered in a
    * set, so it cannot go stale, cannot leak with the member map, and stays
    * correct for peers whose divergence was past
-   * {@link MAX_REPORTED_CONFIGURATION_MISMATCHES} to report.
+   * {@link MAX_REPORTED_CONFIGURATION_MISMATCHES} to report.  The record now
+   * carries a peer's *latest* statement rather than only its first
+   * ({@link adoptConfigurationFacts}), which is what makes a divergence
+   * introduced at runtime — or repaired at runtime — reach this at all.
+   *
+   * A second, independent copy of {@link checkConfigurationAgreement}'s loop,
+   * and it needs both of that one's guards for its own reasons: absence has to
+   * stay silent or every rolling deploy bars half the cluster, and the read
+   * has to go through `Object.hasOwn` or a fact legitimately named
+   * `constructor` is answered by `Object.prototype` and bars every peer that
+   * does not publish it.
    */
   private divergesInConfiguration(member: Member): boolean {
     const claims = member.configurationFacts;
@@ -1288,6 +1396,7 @@ export class Cluster {
     this.weaklyUpTimer?.cancel();
     this.tombstonePruneTimer?.cancel();
     this.selfElectionTimer?.cancel();
+    this.statsTimer?.cancel();
     await this.transport.shutdown();
   }
 
@@ -1382,6 +1491,16 @@ export class Cluster {
       this.tombstonePruneIntervalMs, this.tombstonePruneIntervalMs,
       () => this.tombstonePruneTick(),
     );
+    // Armed only when asked for.  The other four timers are how the cluster
+    // works; this one is a reporting convenience, so an unconfigured node
+    // schedules nothing at all rather than a task that publishes to nobody
+    // (#842).
+    if (this.publishStatsIntervalMs > 0) {
+      this.statsTimer = this.system.scheduler.scheduleAtFixedRateFunction(
+        this.publishStatsIntervalMs, this.publishStatsIntervalMs,
+        () => this.publishStatsTick(),
+      );
+    }
 
     // Last, so a start that threw earlier leaves nothing registered: the
     // rollback in `join` puts the extension slot back but has no cluster to
@@ -2418,6 +2537,29 @@ export class Cluster {
    * (if any) need to be force-downed.  Debounces by the JSON shape of
    * the unreachable set + member view so a steady-state cluster
    * doesn't re-invoke the provider on every tick.
+   *
+   * In front of that sits the **stability window** (#839): the provider is not
+   * asked at all until the view has held still for `stableAfterMs`.  Every
+   * bundled strategy is a pure function of one view, so a view read mid-churn
+   * — half the peers already `unreachable`, the rest about to be — produces a
+   * verdict about a cluster that existed at no instant.  The window is what
+   * makes a decision be about a settled fact.
+   *
+   * …with a ceiling on it, because a window with none is not a careful version
+   * of arbitration but the absence of it: the fingerprint covers every
+   * member's status, so any join, leave or transition anywhere restarts the
+   * window, and a deployment whose membership moves more often than
+   * `stable-after` would never arbitrate a partition at all.  Once one peer
+   * has been continuously unreachable for `unreachableArbitrationDeadlineMs`,
+   * that peer's silence is a settled fact whatever else is moving, and the
+   * provider is consulted on it.
+   *
+   * No new timer: this method is already called from `failureDetectionTick`,
+   * so the clock is `failureDetector.interval` and the window's resolution is
+   * one heartbeat cadence (500 ms shipped).  That is invisible at the shipped
+   * 20 s window and worth knowing at a 200 ms one.  `Date.now()` is read once
+   * per tick and handed to all three window calls, so one tick cannot be
+   * measured against two different instants.
    */
   private evaluateDowning(): void {
     if (!this.downing) return;
@@ -2434,37 +2576,19 @@ export class Cluster {
       .map((member) => `${member.address.toString()}:${member.status}`)
       .sort()
       .join('|');
-    // The stability window (#839).  A partition is not an event this loop
-    // observes; it is a sequence of them.  `failureDetectionTick` marks peers
-    // unreachable **one at a time**, as each crosses `unreachableAfterMs`, and
-    // then calls this method at the end of that same tick — so a 2/2 partition
-    // whose two remote peers cross the threshold on different ticks used to be
-    // resolved as two successive *majority* decisions rather than one
-    // equal-split decision:
-    //
-    //   tick 1:  a=up b=up c=unreachable d=up          3 reachable of 4  -> down c
-    //   tick 2:  a=up b=up c=removed  d=unreachable    2 reachable of 3  -> down d
-    //
-    // The tombstone is what closes the trap: the force-down below writes
-    // `withRemoved(...)`, and every bundled strategy filters candidates to
-    // `up | leaving | unreachable`, so the denominator shrinks along with the
-    // numerator and the surviving half is a majority of what is left.  Both
-    // halves run the identical computation over their mirror image, both
-    // survive, and with `LeaseMajority` the lease is never acquired by anybody
-    // — the equal-split path the strategy exists for is not reached at all.
-    // That is a split brain produced by the resolver, on an ordinary partition
-    // whose two detections landed 50 ms apart.
-    //
-    // Requiring the view to be *unchanged* for `stableAfterMs` collapses the
-    // sequence back into the single observation the strategies are written
-    // against.  A flap shorter than the window is the easier case it also
-    // covers, and was the motivation the key was originally filed with.
     const now = Date.now();
-    if (fingerprint !== this.observedView) {
-      this.observedView = fingerprint;
-      this.observedViewSince = now;
+    if (!this.stabilityWindow.observe(fingerprint, unreachable, now)) {
+      // Escalation is asked first: stopping a cluster that cannot converge at
+      // all outranks arbitrating one peer inside it, and the ceiling below
+      // would otherwise put the provider in front of a switch an operator
+      // turned on precisely to bypass every strategy.
+      const unstableForMs = this.stabilityWindow.takeEscalation(unreachable, now);
+      if (unstableForMs !== null) {
+        this.downAllBecauseUnstable(unstableForMs, allMembers, unreachable, fingerprint);
+        return;
+      }
+      if (!this.stabilityWindow.hasOutlastedChurn(now)) return;
     }
-    if (unreachable.size > 0 && now - this.observedViewSince < this.stableAfterMs) return;
     // Debounce only when the LAST evaluation produced an applied
     // decision.  Strategies that need multiple ticks to converge
     // (e.g. `LeaseMajority` with an in-flight `acquire()`) will
@@ -2486,6 +2610,48 @@ export class Cluster {
       return;
     }
     if (toDown.size === 0) return;
+    this.applyDowningDecision(toDown, fingerprint);
+  }
+
+  /**
+   * `down-all-when-unstable` has fired: stop the whole cluster, self included,
+   * because the view never once held still for `stableAfterMs` across a run of
+   * changes longer than `unstableEscalationDeadlineMs` (#839).
+   *
+   * Whether it fires is {@link StabilityWindow.takeEscalation}'s decision,
+   * which also consumes the run so this announces itself exactly once; what
+   * remains here is the announcement and the decision, because both need the
+   * cluster's own log and member map.
+   *
+   * Announced at `warn` with the span and the member count.  An operator who
+   * finds a cluster gone has to be able to find the line that says a timer did
+   * it, not a strategy.
+   */
+  private downAllBecauseUnstable(
+    unstableForMs: number,
+    allMembers: readonly Member[],
+    unreachable: ReadonlySet<string>,
+    fingerprint: string,
+  ): void {
+    this.log.warn(
+      `${ConfigKeys.cluster.splitBrainResolver.downAllWhenUnstable} is on and the membership `
+      + `view has not held still for ${this.stableAfterMs} ms at any point in the last `
+      + `${unstableForMs} ms, with ${unreachable.size} member(s) still unreachable — downing `
+      + `all ${allMembers.length} member(s), this node included. No strategy was consulted: `
+      + 'a view this unsettled is not evidence any of them could decide on.',
+    );
+    this.applyDowningDecision(
+      new Set(allMembers.map((member) => member.address.toString())),
+      fingerprint,
+    );
+  }
+
+  /**
+   * Force-down every address in a decision — the one place a downing verdict
+   * is turned into membership changes, whether it came from the provider or
+   * from the unstable-escalation path.
+   */
+  private applyDowningDecision(toDown: ReadonlySet<string>, fingerprint: string): void {
     this.lastDownedView = fingerprint;
     const selfKey = this.selfAddress.toString();
     const downsSelf = toDown.has(selfKey);
@@ -2836,9 +3002,11 @@ export class Cluster {
     if (incoming.version <= existing.version) {
       // Ignored for membership — but the two overlays still land, or a claim
       // published after a member's last status change would never spread
-      // (#1358, #844).
+      // (#1358, #844).  `from` goes only to the configuration lane: it decides
+      // who may *restate* a claim, which is a question the identity lane does
+      // not have, being fill-only.
       this.adoptStorageIdentities(existing, incoming);
-      this.adoptConfigurationFacts(existing, incoming);
+      this.adoptConfigurationFacts(from, existing, incoming);
       return;
     }
     // The mirror of the revival check: a live member gossiped as `removed`
@@ -2887,9 +3055,15 @@ export class Cluster {
     // The configuration facts are the same kind of thing one field over
     // (#844): what this node resolved for itself, which no peer is in a
     // position to restate.  A promotion merged wholesale from a view that
-    // predates our publication would otherwise wipe them and leave this node
-    // publishing nothing until it next resolved them — which it never does,
-    // since they are resolved once in the constructor.
+    // predates our publication would otherwise wipe them from the stored self
+    // record, so `selfMember`, `getMembers` and every membership event would
+    // report this node as publishing nothing.  What it would NOT stop is the
+    // publishing itself: `memberDataForGossip` stamps outgoing frames from
+    // `selfConfigurationFacts`, never from the record, so the frames stay
+    // correct either way.  Worth stating precisely rather than overclaiming —
+    // the field is read by operators and by the DevTools tap, and a self
+    // record that contradicts the frames the same node is sending is its own
+    // kind of wrong.
     const ownFacts = this.selfConfigurationFactsSnapshot() ?? member.configurationFacts;
     if (member.address.incarnation === this.selfAddress.incarnation
       && ownIdentities === member.storageIdentities
@@ -2996,6 +3170,30 @@ export class Cluster {
     }
   }
 
+  /**
+   * Publish one sample of this node's membership view (#842).
+   *
+   * Through {@link emit}, so it reaches `system.eventStream` *and* every
+   * `Cluster.subscribe` listener the way every other cluster event does — and
+   * node-locally, never on `cluster.eventStream`: that bus fans out to every
+   * peer, and a per-node periodic sample there costs N frames per node per
+   * interval to say what each node can already read locally.
+   *
+   * Recomputed from the public accessors rather than kept as counters, because
+   * a counter maintained beside the member map is a second copy of the same
+   * fact and this is the surface that would report it when the two disagree.
+   */
+  private publishStatsTick(): void {
+    const members = this.getMembers();
+    this.emit(new ClusterStatsPublished(
+      members.length,
+      this.upMembers().length,
+      members.filter((member) => member.status === 'unreachable').length,
+      this.leader(),
+      this.selfAddress,
+    ));
+  }
+
   private emit(event: ClusterEvent): void {
     this.system.eventStream.publish(event as object);
     for (const listener of this._listeners) {
@@ -3072,6 +3270,37 @@ function reportDerivedAdvertisedHost(system: ActorSystem, options: ClusterOption
     `cluster: binding ${options.host}:${options.port} and advertising ${advertised}, `
     + `taken from the environment (${looked}) because the bind host is a wildcard.`,
   );
+}
+
+/**
+ * Whether two configuration-fact records state exactly the same thing (#844).
+ *
+ * The steady state of gossip is a peer restating what it already said, once
+ * per round, so `Cluster.adoptConfigurationFacts` asks this before writing:
+ * the answer decides between no work at all and a member-map replacement plus
+ * an agreement check.
+ *
+ * Own keys and an `Object.hasOwn` read, for the reason the sanitiser in
+ * `Member.ts` gives at length: fact names come off the wire and `constructor`
+ * is spellable under {@link CONFIGURATION_FACT_NAME_PATTERN}, so an unguarded
+ * `incoming[name]` is answered by `Object.prototype` rather than by the
+ * record.  Stated precisely rather than overclaimed: with the key counts
+ * compared first and values constrained to strings, the answer would be right
+ * even without the guard — a prototype member is a function and never equals a
+ * string.  It is here so the comparison never reads through a prototype at
+ * all, which is what keeps the property from depending on the value type
+ * staying `string`, exactly as `Member.ts`'s `defineProperty` write does on
+ * the other side.
+ */
+function sameConfigurationFacts(
+  held: ConfigurationFactsData, incoming: ConfigurationFactsData,
+): boolean {
+  const names = Object.keys(held);
+  if (names.length !== Object.keys(incoming).length) return false;
+  for (const name of names) {
+    if (!Object.hasOwn(incoming, name) || incoming[name] !== held[name]) return false;
+  }
+  return true;
 }
 
 /** Helper — creates an InMemoryTransport for tests. */

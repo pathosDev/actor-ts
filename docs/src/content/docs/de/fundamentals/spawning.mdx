@@ -149,6 +149,7 @@ class ActorOptionsBuilder<TMessage> {
   withInternal(internal?: boolean): this;
   withDisplayName(displayName: string): this;
   withEntity(entity: EntityContext): this;
+  withApplicationOwned(applicationOwned?: boolean): this;
 }
 ```
 
@@ -354,6 +355,36 @@ const cartOptions = ActorOptions.create()
 
 const cart = system.spawn(CartEntity, 'cart-under-test', cartOptions);
 ```
+
+### `withApplicationOwned`
+
+Sagt, dass die Klasse des Actors aus der **Anwendung** stammt, auch wenn das
+Framework ihn gespawnt hat — und seine Kinder mit ihm.  `ClusterSharding` und
+`ClusterSingleton` setzen es für jede Entity und jede Singleton-Instanz
+selbst, denn beide landen auf einem `/system`-Pfad und sind trotzdem dein
+Code.
+
+Genau diese Unterscheidung fragt systemweite Anwendungs-Policy ab;
+`actor-ts.mailbox.default.capacity` ist heute die einzige davon, und sie ist
+dafür da, dem Betrieb Actors erreichbar zu machen, die er nicht bearbeiten
+kann — was nutzlos wäre, wenn sie an dem Baum haltmachte, in den das
+Framework sie zufällig spawnt.
+
+```ts
+import { ActorOptions } from 'actor-ts';
+
+const cartOptions = ActorOptions.create()
+  .withEntity({ entityId: 'user-42', typeName: 'cart', shardId: 3 })
+  .withApplicationOwned();
+
+const cart = system.spawn(CartEntity, 'cart-under-test', cartOptions);
+```
+
+Öffentlich aus demselben Grund wie `withEntity` — ein Prüfstand, der eine
+Entity ohne dahinterstehenden Cluster erzeugt.  An einem Actor, der ohnehin
+unter `/user` liegt, ändert es nichts, und Framework-Actors tragen es nie:
+eine begrenzte Mailbox an einem Shard-Coordinator oder einem Gossip-Actor ist
+der Weg, auf dem ein Cluster unter Last verklemmt.
 
 ## Gängige Muster
 

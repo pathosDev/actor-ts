@@ -51,8 +51,10 @@ not hold up:
 
 So the loss is now something you ask for — per actor at the spawn site,
 or once for a whole deployment through
-`actor-ts.mailbox.default.capacity`, which bounds everything under
-`/user` and leaves the framework's own actors under `/system` alone.
+`actor-ts.mailbox.default.capacity`, which bounds every actor your
+application wrote — sharded entities and cluster singletons included,
+even though the framework spawns those — and leaves the framework's own
+actors alone.
 That key ships as `0`, meaning off, and turning it on is the same
 decision as bounding one actor, taken for all of them at once: see
 [Mailbox sizing](/operations/tuning/mailbox-sizing/) for what it does

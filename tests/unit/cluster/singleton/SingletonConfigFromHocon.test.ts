@@ -34,8 +34,8 @@ import { SingletonKey } from '../../../../src/cluster/singleton/SingletonKey.js'
 import { StartSingletonOptions } from '../../../../src/cluster/singleton/StartSingletonOptions.js';
 import type { ClusterSingletonProxy } from '../../../../src/cluster/singleton/ClusterSingletonProxy.js';
 import { OptionsError } from '../../../../src/util/OptionsValidator.js';
-import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 import { awaitCondition } from '../../../util/AwaitCondition.js';
+import { RecordingLogger } from '../../../util/RecordingLogger.js';
 
 const TYPE_NAME = 'configured';
 
@@ -55,7 +55,7 @@ type ManagerInternals = {
   };
 };
 
-type Node = { readonly system: ActorSystem; readonly cluster: Cluster };
+type Node = { readonly system: ActorSystem; readonly cluster: Cluster; readonly log: RecordingLogger };
 
 let running: Node | null = null;
 
@@ -74,9 +74,12 @@ afterEach(async () => {
  * below would be against the shipped defaults.
  */
 async function startNode(name: string, port: number, hocon?: string): Promise<Node> {
-  const systemOptions = ActorSystemOptions.create()
-    .withLogger(new NoopLogger())
-    .withLogLevel(LogLevel.Off);
+  // A recording logger rather than a `NoopLogger`: it is as quiet (nothing
+  // reaches a console) and it is the only instrument that can assert the
+  // *absence* of the misconfiguration warning, which is half of what role
+  // precedence promises.
+  const log = new RecordingLogger();
+  const systemOptions = ActorSystemOptions.create().withLogger(log);
   if (hocon !== undefined) systemOptions.withConfig(Config.parseString(hocon));
   const system = ActorSystem.create(name, systemOptions);
 
@@ -88,9 +91,21 @@ async function startNode(name: string, port: number, hocon?: string): Promise<No
     .withGossipIntervalMs(50);
   const cluster = await Cluster.join(system, clusterOptions);
 
-  const node: Node = { system, cluster };
+  const node: Node = { system, cluster, log };
   running = node;
   return node;
+}
+
+/** The role a proxy will actually resolve its host with — a private field. */
+function proxyRole(ref: unknown): string | undefined {
+  return (ref as { role?: string }).role;
+}
+
+/** Every warning this node emitted about being addressed with two roles. */
+function conflictWarnings(node: Node): readonly string[] {
+  return node.log.records
+    .filter((record) => record.level === 'warn' && record.message.includes('conflicting role'))
+    .map((record) => record.message);
 }
 
 function managerInstance(node: Node): ManagerInternals | null {
@@ -161,7 +176,7 @@ describe('start() layers actor-ts.cluster.singleton under the caller (#855)', ()
     expect((await manager(node)).options).toMatchObject({ role: 'backend', handOverTimeoutMs: 7_000 });
   });
 
-  test('a role declared on the actor class beats the configured one', async () => {
+  test('a role declared on the actor class beats the configured one, with the block still read', async () => {
     // Backwards from the "config file wins" intuition, and right: the key is
     // code, and `shorthandOptions` folds it into the explicit layer before the
     // merge ever runs.
@@ -170,14 +185,21 @@ describe('start() layers actor-ts.cluster.singleton under the caller (#855)', ()
       override onReceive(): void { /* placement only */ }
     }
 
-    const node = await startNode(
-      'sng-config-key-role',
-      48_513,
-      'actor-ts.cluster.singleton.role = "backend"',
-    );
+    const node = await startNode('sng-config-key-role', 48_513, `
+      actor-ts.cluster.singleton {
+        role              = "backend"
+        hand-over-timeout = 3s
+      }
+    `);
     node.cluster.singleton.start(KeyedWorkerActor);
 
-    expect((await manager(node)).options.role).toBe('edge');
+    // `handOverTimeoutMs` is the witness, and it is what makes this a
+    // *precedence* assertion rather than a tautology: the key-declared role
+    // reaches the manager whether or not the config layer is merged at all, so
+    // on its own `role: 'edge'` also passes with `withConfigDefaults` deleted.
+    // A second field that can only have come from the file says the losing
+    // layer was genuinely consulted and genuinely lost.
+    expect((await manager(node)).options).toMatchObject({ role: 'edge', handOverTimeoutMs: 3_000 });
   });
 
   test('the merge runs before the validator, so a bad configured value is refused by name', async () => {
@@ -220,20 +242,25 @@ describe('ref() reads the block too — the proxy-only node (#855)', () => {
     expect(proxy.droppedCount).toBe(3);
   });
 
-  test('a role on the key still wins over the configured one on the ref() path', async () => {
-    const node = await startNode(
-      'sng-config-ref-key-role',
-      48_516,
-      'actor-ts.cluster.singleton.role = "backend"',
-    );
+  test('a role on the key still wins over the configured one on the ref() path, with the block still read', async () => {
+    const node = await startNode('sng-config-ref-key-role', 48_516, `
+      actor-ts.cluster.singleton {
+        role        = "backend"
+        buffer-size = 2
+      }
+    `);
 
     const key = SingletonKey.of<string>(TYPE_NAME, 'edge');
     const proxy = node.cluster.singleton.ref<string>(key) as unknown as ClusterSingletonProxy<string>;
+    for (let i = 0; i < 5; i++) proxy.tell(`m${i}`);
 
-    // Read back through `_adoptRole`, which keeps the first role and warns on a
-    // conflicting second: adopting `backend` is a no-op iff the proxy already
-    // holds `edge`, and the private field is what says which.
-    expect((proxy as unknown as { role?: string }).role).toBe('edge');
+    // The role assertion alone is a tautology — a key that carries a role never
+    // enters the branch that consults the file, so it also passes with the
+    // whole `ref()` config read deleted.  The buffer cap is the witness that
+    // the read happened: three of five dropped is the configured `2`, where the
+    // built-in `1000` would have held all five.
+    expect(proxyRole(proxy)).toBe('edge');
+    expect(proxy.droppedCount).toBe(3);
   });
 
   test('with no configured role a ref()-only node still routes at the leader', async () => {
@@ -245,8 +272,113 @@ describe('ref() reads the block too — the proxy-only node (#855)', () => {
     const proxy = node.cluster.singleton.ref<string>(TYPE_NAME) as unknown as ClusterSingletonProxy<string>;
     proxy.tell('m0');
 
-    expect((proxy as unknown as { role?: string }).role).toBeUndefined();
+    expect(proxyRole(proxy)).toBeUndefined();
     expect(proxy.hasPending()).toBe(false);
     expect(proxy.droppedCount).toBe(0);
+  });
+});
+
+/**
+ * Precedence is a property of the *layers*, not of the call order (#855).
+ *
+ * The proxy is memoised per `typeName` and both doors reach the same instance,
+ * so whichever of `ref()` and `start()` runs first decides which role the proxy
+ * is constructed with.  That is only harmless while the two roles are peers —
+ * and they are not: one comes from code, the other from a file the project
+ * documents as the lower layer.  A proxy that keeps whichever arrived first
+ * inverts `explicit > HOCON` for exactly one of the two orderings, and then
+ * routes at a different host class than this node's own manager.
+ *
+ * Each test below therefore asserts on **both** ends — the proxy's role and the
+ * manager's — because agreeing with each other is the property that matters;
+ * a proxy that is right about a singleton the local manager hosts elsewhere is
+ * still the #637 divergence.
+ */
+describe('an explicit role wins over a configured one in either call order (#855)', () => {
+  test('a role on the options replaces the configured one a ref() adopted first', async () => {
+    const node = await startNode(
+      'sng-role-ref-then-options',
+      48_518,
+      'actor-ts.cluster.singleton.role = "backend"',
+    );
+
+    // The ordering that matters: the proxy exists, holding the configured role,
+    // before the call that carries the explicit one.
+    const proxy = node.cluster.singleton.ref<string>(TYPE_NAME) as unknown as ClusterSingletonProxy<string>;
+    const singletonOptions = StartSingletonOptions.create<string>()
+      .withTypeName(TYPE_NAME)
+      .withActor(WorkerActor)
+      .withRole('edge');
+    node.cluster.singleton.start(singletonOptions);
+
+    expect((await manager(node)).options.role).toBe('edge');
+    expect(proxyRole(proxy)).toBe('edge');
+    expect(conflictWarnings(node)).toEqual([]);
+  });
+
+  test('a role on the actor class key replaces the configured one a ref() adopted first', async () => {
+    class KeyedWorkerActor extends Actor<string> {
+      static readonly singleton = SingletonKey.of<string>(TYPE_NAME, 'edge');
+      override onReceive(): void { /* placement only */ }
+    }
+
+    const node = await startNode(
+      'sng-role-ref-then-key',
+      48_519,
+      'actor-ts.cluster.singleton.role = "backend"',
+    );
+
+    // `ref(TYPE_NAME)` and not `ref(KeyedWorkerActor)`: the bare type name is
+    // the shape with no role of its own, which is what lets the file's role
+    // reach the proxy first and is the whole hazard the docs' "put the role on
+    // the key and every node agrees by construction" has to survive.
+    const proxy = node.cluster.singleton.ref<string>(TYPE_NAME) as unknown as ClusterSingletonProxy<string>;
+    node.cluster.singleton.start(KeyedWorkerActor);
+
+    expect((await manager(node)).options.role).toBe('edge');
+    expect(proxyRole(proxy)).toBe('edge');
+    expect(conflictWarnings(node)).toEqual([]);
+  });
+
+  test('a configured role arriving after an explicit one is precedence, not a conflict', async () => {
+    const node = await startNode(
+      'sng-role-options-then-ref',
+      48_520,
+      'actor-ts.cluster.singleton.role = "backend"',
+    );
+
+    const singletonOptions = StartSingletonOptions.create<string>()
+      .withTypeName(TYPE_NAME)
+      .withActor(WorkerActor)
+      .withRole('edge');
+    node.cluster.singleton.start(singletonOptions);
+    const proxy = node.cluster.singleton.ref<string>(TYPE_NAME) as unknown as ClusterSingletonProxy<string>;
+
+    // Routing was already right in this order.  What was wrong is the sentence
+    // the operator reads: a configured role losing to an explicit one is the
+    // documented precedence resolving, and telling them their deployment is
+    // impossible sends them to fix a file that is doing its job.
+    expect(proxyRole(proxy)).toBe('edge');
+    expect(conflictWarnings(node)).toEqual([]);
+  });
+
+  test('two explicit roles are still a conflict, warned about, and the first still wins', async () => {
+    // The warning has to survive the fix, or the repair would have removed the
+    // only signal for the misconfiguration it was written for: one singleton
+    // restricted two ways, both times by code, is not resolvable by precedence.
+    const node = await startNode('sng-role-two-explicit', 48_521);
+
+    const proxy = node.cluster.singleton.ref<string>(
+      SingletonKey.of<string>(TYPE_NAME, 'edge'),
+    ) as unknown as ClusterSingletonProxy<string>;
+    const singletonOptions = StartSingletonOptions.create<string>()
+      .withTypeName(TYPE_NAME)
+      .withActor(WorkerActor)
+      .withRole('backend');
+    node.cluster.singleton.start(singletonOptions);
+
+    expect(proxyRole(proxy)).toBe('edge');
+    expect(conflictWarnings(node)).toHaveLength(1);
+    expect(conflictWarnings(node)[0]).toContain("ignoring conflicting role 'backend'");
   });
 });

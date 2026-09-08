@@ -128,16 +128,23 @@ export const DEFAULT_PASSIVATION_ADMISSION_FILTER: EntityAdmissionFilter = 'off'
  * how long a passivating entity may take to stop before the shard stops it
  * outright (#848).  Mirrors `actor-ts.sharding.passivation.stop-timeout`.
  *
- * Ten seconds is chosen against what the window is *for* rather than against a
- * measurement: it is the budget an entity has to finish in-flight work and
- * flush state after receiving its stop message, and an entity that needs longer
- * than that is doing something a passivation cannot wait on anyway.  The cost
- * of it being too short is a stop that arrives while the entity is still
- * draining; the cost of no timeout at all — the state before #848 — is an
- * entity that ignores its stop message holding a slot against `maxEntities`
- * forever.
+ * **Off**, and that is the compatibility decision rather than a taste in
+ * numbers.  `Passivate`'s stop-message is a *request*: the entity is told what
+ * to send itself and decides when to act on it, and an entity mid-drain — a
+ * long flush, a slow final write — is entitled to take as long as the drain
+ * takes.  A backstop that is on by default turns that into a deadline for every
+ * deployment that upgrades, including ones that never heard of the key, and the
+ * forced stop abandons the flush.  #848 shipped it at `10s` and claimed a
+ * deployment configuring nothing was unaffected; both could not be true.
+ *
+ * So an operator opts in, which is also what keeps the key orthogonal to
+ * `maxEntities`: it arms on its own value, with or without a cap.  Gating it on
+ * the cap instead would have narrowed the silent change rather than removed it
+ * — a deployment that already set `max-entities` would still have gained the
+ * forced stop — and would have left a configured `stop-timeout` silently doing
+ * nothing, which is the shape `admission-filter` is rejected for.
  */
-export const DEFAULT_PASSIVATION_STOP_TIMEOUT_MS = 10_000;
+export const DEFAULT_PASSIVATION_STOP_TIMEOUT_MS = 0;
 
 /**
  * Built-in default for {@link ShardingOptionsType.bufferSize} — how many
@@ -371,14 +378,19 @@ export type ShardingOptionsType<TMessage> = {
   readonly passivationAdmissionFilter?: EntityAdmissionFilter;
   /**
    * How long an entity that was sent its `Passivate` stop-message may take to
-   * stop before the shard stops it outright, in ms (#848).  Default: `10000`;
-   * `0` waits forever, which is what every release before #848 did.
+   * stop before the shard stops it outright, in ms (#848).  Default: `0` — wait
+   * forever, which is what every release before #848 did.
    *
    * The stop-message path is cooperative by design — the entity chooses when to
-   * finish — and until this existed it was cooperative with no backstop: an
-   * entity that never acted on the message never terminated, `EntityStopped`
-   * never reached the region, and its slot was held against `maxEntities` for
-   * the lifetime of the node.
+   * finish — and without a backstop it is cooperative with no bound: an entity
+   * that never acts on the message never terminates, `EntityStopped` never
+   * reaches the region, and its slot is held against `maxEntities` for the
+   * lifetime of the node.  Setting this bounds that, at the price of a stop
+   * that can land while the entity is still draining, so it is the operator who
+   * knows the drain who picks the number.
+   *
+   * Independent of `maxEntities`: a positive value arms the backstop whether or
+   * not a cap is configured.
    */
   readonly passivationStopTimeoutMs?: number;
   /**
@@ -575,7 +587,7 @@ export class ShardingOptionsBuilder<
     return this.set('passivationAdmissionFilter', passivationAdmissionFilter);
   }
 
-  /** Force-stop an entity that ignored its stop-message after this long, in ms.  Default: 10000. */
+  /** Force-stop an entity that ignored its stop-message after this long, in ms.  Default: 0 (never). */
   withPassivationStopTimeoutMs(passivationStopTimeoutMs: number): this {
     return this.set('passivationStopTimeoutMs', passivationStopTimeoutMs);
   }

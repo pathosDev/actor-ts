@@ -11,7 +11,10 @@ import {
   mergeDevToolsOptions,
   readDevToolsOptionsFromConfig,
   DevToolsOptionsValidator,
+  type DevToolsOptionsType,
+  type DevToolsPanelOptionsType,
 } from '../../../src/devtools/DevToolsOptions.js';
+import { helloFrame, type DevToolsServerFrame } from '../../../src/devtools/protocol/index.js';
 
 /**
  * #881 — before this, DevTools was tunable only in code: there was no
@@ -50,6 +53,60 @@ function systemWith(hocon: string, name = 'devtools-config'): ActorSystem {
   const system = ActorSystem.create(name, systemOptions);
   systems.push(system);
   return system;
+}
+
+/**
+ * Open the tap socket, run one exchange, and always close it.
+ *
+ * The panel switches are checked here rather than only against
+ * `/api/info` because the card's status is a statement about the UI and
+ * the socket is where the data actually leaves the process: a panel whose
+ * pull method is still registered serves payloads to any client that asks
+ * for it by name, greyed-out card or not.
+ */
+async function withTapSocket<T>(
+  url: string,
+  exchange: (socket: WebSocket, next: () => Promise<DevToolsServerFrame>) => Promise<T>,
+): Promise<T> {
+  const socket = new WebSocket(`${url.replace(/^http/, 'ws')}/api/ws`);
+  const inbox: DevToolsServerFrame[] = [];
+  const waiters: ((frame: DevToolsServerFrame) => void)[] = [];
+  socket.addEventListener('message', (event) => {
+    const frame = JSON.parse(String(event.data)) as DevToolsServerFrame;
+    const waiter = waiters.shift();
+    if (waiter) waiter(frame);
+    else inbox.push(frame);
+  });
+  const next = (): Promise<DevToolsServerFrame> => {
+    const buffered = inbox.shift();
+    if (buffered) return Promise.resolve(buffered);
+    return new Promise<DevToolsServerFrame>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('timed out waiting for a DevTools frame')), 5000);
+      waiters.push((frame) => {
+        clearTimeout(timer);
+        resolve(frame);
+      });
+    });
+  };
+  await new Promise<void>((resolve, reject) => {
+    socket.addEventListener('open', () => resolve());
+    socket.addEventListener('error', () => reject(new Error('websocket failed to open')));
+  });
+  try {
+    return await exchange(socket, next);
+  } finally {
+    socket.close();
+  }
+}
+
+/** Ask one pull method over the tap socket and return the answering frame. */
+function requestOverTap(url: string, method: string): Promise<DevToolsServerFrame> {
+  return withTapSocket(url, async (socket, next) => {
+    socket.send(JSON.stringify(helloFrame()));
+    await next();
+    socket.send(JSON.stringify({ kind: 'request', requestId: 881, method }));
+    return next();
+  });
 }
 
 describe('readDevToolsOptionsFromConfig', () => {
@@ -297,4 +354,175 @@ describe('DevTools attached without options reflects the config block', () => {
     expect(info.panels.find((panel) => panel.id === 'tracing')?.status).toBe('disabled');
     expect(info.panels.find((panel) => panel.id === 'explain')?.status).toBe('active');
   });
+});
+
+/**
+ * Every panel leaf paired with the field it must set.
+ *
+ * The pairing itself is the property, so it is walked one row at a time.
+ * The two tests further up cannot see it: the mapping test sets all ten
+ * leaves to `false` and the reference.conf test reads all ten as `true`,
+ * so both are invariant under *any* permutation of the ten reads — a
+ * reader answering `time-travel` out of the `explain` leaf left the whole
+ * file green when it was measured.  Nine of the ten switches could be
+ * cross-wired to each other that way, and three of them —
+ * {@link DevToolsPanelOptionsType.timeTravel},
+ * {@link DevToolsPanelOptionsType.deadLetters} and
+ * {@link DevToolsPanelOptionsType.eventStream} — are the ones
+ * `reference.conf` itself names as surfacing message payloads, which
+ * makes a misdirected switch a disclosure rather than a nuisance.  #881.
+ */
+const PANEL_SWITCHES: ReadonlyArray<readonly [string, keyof DevToolsPanelOptionsType]> = [
+  ['actors', 'actors'],
+  ['cluster', 'cluster'],
+  ['tracing', 'tracing'],
+  ['explain', 'explain'],
+  ['time-travel', 'timeTravel'],
+  ['profiler', 'profiler'],
+  ['dead-letters', 'deadLetters'],
+  ['event-stream', 'eventStream'],
+  ['config', 'config'],
+  ['send', 'send'],
+];
+
+describe('each panel leaf reaches its own switch and no other', () => {
+  for (const [leaf, field] of PANEL_SWITCHES) {
+    test(`\`${leaf}\` on its own lands on \`${field}\``, () => {
+      // The `hasPath` half of the pairing.  With nine leaves absent, a
+      // guard naming the wrong one sees nothing at all, and the strict
+      // comparison also refuses a second switch appearing beside the one
+      // that was actually set.
+      const config = Config.parseString(`actor-ts.devtools.panels { ${leaf} = false }`);
+      expect(readDevToolsOptionsFromConfig(config)).toStrictEqual({ panels: { [field]: false } });
+    });
+
+    test(`\`${leaf} = false\` switches off \`${field}\` and leaves the other nine on`, () => {
+      // The `getBoolean` half.  With all ten present a swapped read still
+      // finds a value — the wrong one — so only a leaf whose value differs
+      // from its neighbours' can tell them apart.
+      const block = PANEL_SWITCHES
+        .map(([name]) => `  ${name} = ${name === leaf ? 'false' : 'true'}`)
+        .join('\n');
+      const expected = Object.fromEntries(
+        PANEL_SWITCHES.map(([, name]) => [name, name !== field]),
+      );
+      const read = readDevToolsOptionsFromConfig(
+        Config.parseString(`actor-ts.devtools.panels {\n${block}\n}`),
+      );
+      expect(read.panels).toStrictEqual(expected);
+    });
+  }
+});
+
+/**
+ * The same blindness one level up: three booleans read in a row out of
+ * the same block, and the mapping test gives two of them the same value.
+ */
+const BOOLEAN_LEAVES: ReadonlyArray<readonly [string, keyof DevToolsOptionsType]> = [
+  ['allow-remote', 'allowRemote'],
+  ['serve-ui', 'serveUi'],
+  ['replay-auto-capture', 'replayAutoCapture'],
+];
+
+describe('each boolean leaf of the devtools block reaches its own field', () => {
+  for (const [leaf, field] of BOOLEAN_LEAVES) {
+    test(`\`${leaf}\` on its own lands on \`${field}\``, () => {
+      const config = Config.parseString(`actor-ts.devtools { ${leaf} = false }`);
+      expect(readDevToolsOptionsFromConfig(config)).toStrictEqual({ [field]: false });
+    });
+  }
+
+  test('all three at once, each with its own value', () => {
+    // `allow-remote` differs from the other two, which are the pair the
+    // mapping test above sets to the same `false` and `reference.conf`
+    // publishes as the same `true` — invariant under a swap either way.
+    const config = Config.parseString(`
+      actor-ts.devtools {
+        allow-remote = true
+        serve-ui = true
+        replay-auto-capture = false
+      }
+    `);
+    expect(readDevToolsOptionsFromConfig(config)).toStrictEqual({
+      allowRemote: true,
+      serveUi: true,
+      replayAutoCapture: false,
+    });
+  });
+});
+
+/**
+ * The three panels `reference.conf` names as the ones that surface message
+ * payloads, taken end to end the way `profiler` and `tracing` already are.
+ *
+ * `method` is a pull operation registered *inside* that panel's
+ * `isPanelEnabled` branch in `DevToolsServer.start`, so it is available
+ * exactly when the panel is — which is the assertion that says the data
+ * cannot leave the process, as opposed to merely being hidden.
+ */
+const PAYLOAD_PANELS = [
+  { leaf: 'time-travel', id: 'time-travel', method: 'journal.ids', stream: undefined },
+  { leaf: 'dead-letters', id: 'dead-letters', method: 'deadletters.list', stream: undefined },
+  { leaf: 'event-stream', id: 'event-stream', method: 'pubsub.topics', stream: 'events' },
+] as const;
+
+describe('a payload-surfacing panel switched off in a file serves nothing', () => {
+  test('with no panels block every one of the three answers', async () => {
+    // The positive control the three tests below need: `unavailable`
+    // there has to mean "this switch turned it off", not "this method is
+    // never registered on a system shaped like the fixture".
+    const system = systemWith(`
+      actor-ts.devtools { port = 0, serve-ui = false }
+    `, 'devtools-payload-panels-on');
+    const binding = await DevTools.attach(system);
+
+    const info = await (await fetch(`${binding.url}/api/info`)).json() as {
+      streams: string[];
+      panels: { id: string; status: string }[];
+    };
+    expect(info.streams).toContain('events');
+    for (const panel of PAYLOAD_PANELS) {
+      expect(info.panels.find((entry) => entry.id === panel.id)?.status).not.toBe('disabled');
+      const frame = await requestOverTap(binding.url, panel.method);
+      expect(frame.kind).toBe('response');
+    }
+  });
+
+  for (const panel of PAYLOAD_PANELS) {
+    test(`\`${panel.leaf} = false\` disables ${panel.id} and refuses its data`, async () => {
+      const system = systemWith(`
+        actor-ts.devtools {
+          port = 0
+          serve-ui = false
+          panels { ${panel.leaf} = false }
+        }
+      `, `devtools-off-${panel.id}`);
+      const binding = await DevTools.attach(system);
+
+      const info = await (await fetch(`${binding.url}/api/info`)).json() as {
+        streams: string[];
+        panels: { id: string; status: string; reason?: string }[];
+      };
+      const target = info.panels.find((entry) => entry.id === panel.id);
+      expect(target?.status).toBe('disabled');
+      expect(target?.reason).toContain('switched off');
+      // …and it is *this* panel that went off.  The three share a block,
+      // a shape and a default, so a switch wired to a sibling would still
+      // produce one greyed-out card and satisfy the assertion above.
+      for (const other of PAYLOAD_PANELS) {
+        if (other.id === panel.id) continue;
+        expect(info.panels.find((entry) => entry.id === other.id)?.status).not.toBe('disabled');
+      }
+      if (panel.stream !== undefined) expect(info.streams).not.toContain(panel.stream);
+
+      const frame = await requestOverTap(binding.url, panel.method);
+      expect(frame.kind).toBe('error');
+      if (frame.kind !== 'error') throw new Error('expected an error frame');
+      expect(frame.code).toBe('unavailable');
+      // Names the method, so this is "no handler is registered" and not
+      // the hub's in-flight cap refusing with the same code.
+      expect(frame.message).toContain(panel.method);
+      expect(frame.requestId).toBe(881);
+    });
+  }
 });

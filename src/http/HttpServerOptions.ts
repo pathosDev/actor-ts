@@ -36,16 +36,25 @@ import { OptionsValidator } from '../util/OptionsValidator.js';
  * The slow-loris control, and the reason this block exists at all: a peer that
  * opens a socket and dribbles header bytes forever occupies a connection with
  * no request to time out, so neither a route-level `timeout()` middleware nor
- * `requestTimeoutMs` ever sees it.  Node answers `408 Request Timeout` and
- * destroys the socket when this elapses.
+ * `requestTimeoutMs` ever sees it.  When it elapses the connection is answered
+ * `408 Request Timeout` and destroyed.
  *
- * 60 s is chosen to be **exactly what all three backends already do**, so
- * publishing it changes nothing: it is `http.createServer`'s own default, and
- * Fastify does not override it (measured on bun 1.4.0 and node v26.7.0 —
- * `server.headersTimeout` reads 60000 on a bare `node:http` server, on Fastify
- * and on Express).  What the key buys is that the number is now *movable*
- * without a code change, and that it is written down somewhere an operator can
- * find it.
+ * 60 s matches `http.createServer`'s own `headersTimeout`, and Fastify does not
+ * override it, so publishing the number changes no bound that was already
+ * being held.  What it buys is that the number is *movable* without a code
+ * change, and written down where an operator can find it.
+ *
+ * **What holds the deadline is this framework, not the property.**  Writing
+ * `server.headersTimeout` is enough only on Node.  Measured on a bare
+ * `node:http` server against a socket that never sends its terminating blank
+ * line: node v26.7.0 answers `408` and closes, but **bun 1.4.0 stores the
+ * number, reports it back unchanged and enforces nothing** — `2000`, `40000`,
+ * `120000` and `0` all closed at ~12 s with no bytes received, which is Bun's
+ * own idle timeout rather than this guard — and **deno 2.6.8 ignores it and
+ * never closes at all**.  So `applyServerOptions` arms the deadline itself on
+ * every server that reports its accepted connections; see
+ * `enforceHeaderTimeout` for the seam and for the one runtime that offers
+ * none (#870).
  */
 export const DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS = 60_000;
 
@@ -96,9 +105,17 @@ export type HttpServerOptionsType = {
   readonly idleTimeoutMs?: number;
   /**
    * How long a connection may take to deliver its complete header block
-   * (`server.headersTimeout`) before it is answered `408` and destroyed.
-   * Default 60 s.  `0` disables the guard — which reopens the slow-loris hole
-   * this key exists to close, so it is a deliberate act.
+   * before it is answered `408` and destroyed.  Default 60 s.  Timed from the
+   * accepted connection to the first completed header block — the shape of a
+   * slow-loris — and held by this framework rather than by
+   * `server.headersTimeout`, which two of the three supported runtimes accept
+   * and ignore (#870).
+   *
+   * `0` disables the guard — which reopens the slow-loris hole this key exists
+   * to close, so it is a deliberate act.  It clears the property too, and a
+   * runtime may still apply an idle close of its own: on bun 1.4.0 a
+   * connection with no complete request is dropped after about 12 s whatever
+   * this says.
    */
   readonly headerTimeoutMs?: number;
   /**
@@ -158,7 +175,9 @@ export class HttpServerOptionsBuilder extends OptionsBuilder<HttpServerOptionsTy
  * The three timeouts are **non-negative rather than positive**, unlike the
  * client's `defaultTimeoutMs`.  The asymmetry is deliberate and is the
  * runtime's, not a relaxation: `0` is `node:http`'s own spelling for "no
- * bound" on all three properties, so refusing it would leave an operator who
+ * bound" on all three properties — and it is what `headerTimeoutMs` reads as
+ * "arm no deadline", the one of the three this framework enforces itself — so
+ * refusing it would leave an operator who
  * wants Fastify's historical unbounded `requestTimeout` back with no way to
  * ask for it.  What the rule still catches is the failure that has no
  * spelling: `NaN` and a negative both arm a guard that never fires, which

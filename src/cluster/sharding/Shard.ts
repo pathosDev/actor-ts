@@ -7,6 +7,7 @@ import type { Cancellable } from '../../Scheduler.js';
 import { Terminated } from '../../SystemMessages.js';
 import { BidirectionalMap } from '../../util/BidirectionalMap.js';
 import { Passivate } from './Passivate.js';
+import { DEFAULT_PASSIVATION_STOP_TIMEOUT_MS } from './ShardingOptions.js';
 import type {
   EntityEnvelope,
   EntityStarted,
@@ -25,8 +26,15 @@ export type ShardConfig = {
   /**
    * How long an entity sent its `Passivate` stop-message may take to stop
    * before the shard stops it outright, in ms; `0` waits forever (#848).
+   *
+   * Optional, and absent means the same as `0`.  This type is exported from
+   * `actor-ts/cluster`, so an application may build one — and a field it cannot
+   * know about must not change what its shard does.  While it was required the
+   * absence was not even inert: `undefined <= 0` is false and `setTimeout`
+   * reads `undefined` as zero, so a `ShardConfig` written against the previous
+   * release force-stopped every cooperative passivation on the next tick.
    */
-  readonly passivationStopTimeoutMs: number;
+  readonly passivationStopTimeoutMs?: number;
 };
 
 /** What a shard accepts from the outside — its region, or a holder of its ref. */
@@ -105,6 +113,15 @@ export class Shard extends Actor<ShardInbox> {
   private readonly entityPaths = new BidirectionalMap<string, string>();
 
   constructor(public readonly config: ShardConfig) { super(); }
+
+  /**
+   * The cooperative-stop bound this shard runs under.  Resolved once here
+   * rather than at each read so an absent field and an explicit `0` cannot
+   * drift apart — they are the same instruction.
+   */
+  private get stopTimeoutMs(): number {
+    return this.config.passivationStopTimeoutMs ?? DEFAULT_PASSIVATION_STOP_TIMEOUT_MS;
+  }
 
   /**
    * Arm order is deliberate: every message to an entity lands here, and the
@@ -215,7 +232,7 @@ export class Shard extends Actor<ShardInbox> {
     state.stopTimer = null;
     this.log.warn(
       `[sharding] entity '${message.entityId}' in shard ${this.config.shardId} of `
-      + `'${this.config.typeName}' did not stop within ${this.config.passivationStopTimeoutMs}ms `
+      + `'${this.config.typeName}' did not stop within ${this.stopTimeoutMs}ms `
       + 'of its passivation stop-message; stopping it',
     );
     state.ref.stop();
@@ -244,17 +261,18 @@ export class Shard extends Actor<ShardInbox> {
   /**
    * Arm the cooperative-stop backstop for one entity (#848).
    *
-   * `0` opts out and waits forever, which is what every release before #848 did
-   * — kept expressible because an entity whose graceful shutdown genuinely has
-   * no bound (draining a long-running job) is a real shape, and a forced stop
-   * would then be the bug rather than the fix.
+   * `0` — the default, and what an absent field resolves to — opts out and
+   * waits forever, which is what every release before #848 did.  An entity
+   * whose graceful shutdown genuinely has no bound (draining a long-running
+   * job) is a real shape, and there a forced stop is the bug rather than the
+   * fix; the operator who knows the drain is the one who sets a bound.
    *
    * The callback only ever sends: the state it has to clear lives on the
    * shard's turn, and mutating it from the scheduler is the shape #952 was
    * about.
    */
   private armStopTimeout(entityId: string, state: EntityState): void {
-    const timeoutMs = this.config.passivationStopTimeoutMs;
+    const timeoutMs = this.stopTimeoutMs;
     if (timeoutMs <= 0 || state.stopTimer !== null) return;
     state.stopTimer = this.system.scheduler.scheduleOnceFunction(
       timeoutMs,
@@ -278,10 +296,17 @@ export class Shard extends Actor<ShardInbox> {
     // The child name is a lossy rendering of the id (see `entityName`), so
     // the identity travels in the spawn options instead — that is the only
     // copy the entity can read back verbatim.  A fresh object per entity, and
-    // `entity` last so a caller's own options can never shadow it.
+    // the two framework-set fields last so a caller's own options can never
+    // shadow them.
+    //
+    // `applicationOwned` because this shard is the framework's actor and the
+    // class it is spawning is not (#862): the entity sits on a `/system` path
+    // only because a region does, and system-wide application policy — the
+    // global mailbox bound — has to reach it.
     const ref = this.context.spawn(this.config.entityActor, entityName(entityId), {
       ...(this.config.entityOptions as Partial<ActorOptionsType<unknown>> | undefined),
       entity: { entityId, typeName: this.config.typeName, shardId: this.config.shardId },
+      applicationOwned: true,
     });
     this.context.watch(ref);
     const state: EntityState = { ref: ref as ActorRef<unknown>, passivating: null, stopTimer: null };
