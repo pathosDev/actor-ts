@@ -35,13 +35,21 @@ name: nightly-flakes
 # making progress fails inside the hour instead of burning the six-hour default
 # — the failure mode this quarantine was originally justified by.
 #
-# **Both jobs are `continue-on-error` on purpose.**  The suite still carries
-# fixed sleeps that a stress loop is designed to surface (#418), and a red
-# required check for a measurement trains people to ignore it.  The signal lives
-# in the step summary, the annotation on the run, and the uploaded reports.
-# That is also the weakest part of this file and is known to be: nothing reads
-# the annotation on a schedule, which is how the fourteen-night criterion went
-# uncounted for months (#1310).
+# **A red night files an issue, and the jobs are allowed to fail.**  Both used to
+# be `continue-on-error`, on the reasoning that a red check for a *measurement*
+# trains people to ignore it.  That reasoning was sound and the conclusion was
+# still wrong, because the alternative it chose was no conclusion at all: the
+# verdict went to a step summary and a run annotation, and the file said so
+# about itself — "Nothing accumulates the streak.  It is counted by a human
+# reading these annotations, which is the same failure that made the quarantine
+# permanent in the first place" (#1310).
+#
+# The `report` job below is the missing half.  A night that is not green opens
+# or comments on one issue; a green night closes it.  An issue has an owner, a
+# history and a notification, which is what an annotation never had — and with
+# the finding actionable, a red job is a fact rather than noise, so the
+# suppression comes off.  This is a scheduled workflow: nothing is gated on it,
+# and red here blocks no pull request.
 #
 # The evidence is the `summary.json` in each night's artifact; `greenRuns ==
 # runs` is the green condition, and a non-empty `runsTimedOut` is red regardless
@@ -95,7 +103,6 @@ jobs:
     name: worker-thread multi-node suites, repeated
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -180,7 +187,6 @@ jobs:
     name: whole suite, repeated
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -223,4 +229,90 @@ jobs:
             echo "::notice title=No test failed in any repeat::Nothing to add to the flake catalog tonight."
           else
             echo "::warning title=At least one test failed in some repeats::Add the named tests to the catalog in docs/src/content/docs/testing/diagnosing-flakes.mdx, or fix them. A test that failed in EVERY repeat is broken rather than flaky and belongs in an issue, not the catalog."
+          fi
+
+  # The half that makes the measurement land.  Reads both jobs' summaries and
+  # turns them into one issue — or closes it when the night is clean.
+  #
+  # **Installs nothing, deliberately.**  It is the only job here holding
+  # `issues: write`, and the house rule (#622, asserted by
+  # `tests/unit/ci/WorkflowHygiene.test.ts`) is that a job with a write
+  # credential does not also execute the dependency tree.  `node`, `gh` and
+  # `jq` are all preinstalled on the runner, and the report itself lives in
+  # `scripts/nightly-flake-report.mjs` where it has unit tests — the same
+  # reason the jobs above delegate their tables to the stress harness.
+  report:
+    name: report the night
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [worker-suites, stress]
+    # `always()`: a job that died before writing a summary is exactly the night
+    # most worth reporting, and the report says so rather than staying silent.
+    if: always()
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the whole-suite report
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: stress-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .reports/whole-suite
+
+      - name: Download the worker-suite report
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: worker-suites-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .reports/worker-suites
+
+      - name: Build the report
+        id: report
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          node scripts/nightly-flake-report.mjs \
+            --summary="whole suite:.reports/whole-suite/summary.json" \
+            --summary="worker suites:.reports/worker-suites/summary.json" \
+            --run-url="$RUN_URL" \
+            --out=nightly-report.md >> "$GITHUB_OUTPUT"
+          cat nightly-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open, update or close the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RED: ${{ steps.report.outputs.red }}
+          TITLE: ${{ steps.report.outputs.title }}
+        run: |
+          # One open issue at a time, found by label rather than by title: the
+          # title names tonight's failing jobs and therefore changes, while the
+          # thread should not.
+          EXISTING=$(gh issue list --state open --label 'nightly-flake' \
+            --json number --jq '.[0].number // empty')
+
+          if [[ "$RED" != "true" ]]; then
+            if [[ -n "$EXISTING" ]]; then
+              gh issue comment "$EXISTING" --body-file nightly-report.md
+              gh issue close "$EXISTING" \
+                --comment 'Closing: the nightly flake run is green again. It will reopen on its own if that changes.'
+            fi
+            echo 'Green night; nothing to file.'
+            exit 0
+          fi
+
+          if [[ -n "$EXISTING" ]]; then
+            # A comment rather than an edited body, so the sequence of nights
+            # stays readable — the same reason the issue workflow in AGENTS.md
+            # asks for a new comment when the diagnosis moves.
+            gh issue comment "$EXISTING" --body-file nightly-report.md
+            gh issue edit "$EXISTING" --title "$TITLE"
+          else
+            gh issue create --title "$TITLE" --body-file nightly-report.md \
+              --label 'nightly-flake' --label 'bug' --label 'infrastructure'
           fi

@@ -305,6 +305,18 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   green. `--randomize` / `--seed=N` surface and pin order dependence. Not a
   per-commit gate; reach for it when a test fails intermittently, or when a
   nightly names one. #290.
+
+  **A red night files an issue** (`nightly-flake` label, one open at a time),
+  and a green one closes it — `scripts/nightly-flake-report.mjs` builds the
+  body, `tests/unit/ci/NightlyFlakeReport.test.ts` covers it. Both nightly jobs
+  are allowed to go red now that the finding is actionable; nothing is gated on
+  a scheduled workflow. The `continue-on-error` they carried was defensible on
+  its own terms — a red check for a *measurement* trains people to ignore it —
+  and the alternative it chose was no conclusion at all, which is exactly how a
+  fourteen-night exit criterion stood at twenty-one before anybody read it
+  (#1310). A summary that is *missing* counts as red, deliberately: "the job
+  produced no verdict" and "the job was green" are opposite facts, and the first
+  two nights of that workflow uploaded no artifact while nobody noticed.
 - **Cross-runtime:** `bun run smoke` runs `tests/smoke/cases/*.mjs` on
   Bun, Node, and Deno. Add a smoke case for anything runtime-sensitive.
   A case must release every handle it opens **on every path**, not just the
