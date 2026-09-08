@@ -128,6 +128,29 @@ export type ActorOptionsType<TMessage = unknown> = {
    */
   readonly internal?: boolean;
   /**
+   * This actor's class came from the **application**, even though the
+   * framework spawned it (#862).
+   *
+   * Two populations are like this, and both are large: a sharded entity, whose
+   * parent chain is `ShardRegion` → `Shard` under `/system`, and a cluster
+   * singleton, spawned by its manager there.  Where an actor sits in the tree
+   * therefore does not answer "whose actor is this" — which is the question
+   * system-wide application policy has to ask, because that policy exists to
+   * let an operator reach code they cannot edit.  Today the one such policy is
+   * `actor-ts.mailbox.default.capacity`.
+   *
+   * Children inherit it: an entity's children are the application's too.  The
+   * framework's *own* actors under `/system` never carry it, and must not —
+   * a bounded mailbox on a coordinator or a gossip actor sheds messages that
+   * hold a cluster invariant together.
+   *
+   * `ClusterSharding` and `ClusterSingleton` set this themselves.  It is
+   * public for the same reason {@link entity} is — a test bench that spawns an
+   * entity without a cluster behind it — and setting it on an actor already
+   * under `/user` changes nothing.
+   */
+  readonly applicationOwned?: boolean;
+  /**
    * Human-readable name for log lines and the DevTools tree (#891) — the
    * spawn-site counterpart to overriding `Actor.displayName()`, for a
    * framework-constructed actor with no subclass of your own: a `Behaviors`
@@ -198,6 +221,14 @@ export class ActorOptionsBuilder<TMessage = unknown>
   /** Mark this actor as tooling — see {@link ActorOptionsType.internal}. */
   withInternal(internal = true): this {
     return this.set('internal', internal);
+  }
+
+  /**
+   * Mark this actor as the application's rather than the framework's — see
+   * {@link ActorOptionsType.applicationOwned}.
+   */
+  withApplicationOwned(applicationOwned = true): this {
+    return this.set('applicationOwned', applicationOwned);
   }
 
   /** Name this actor in logs and the DevTools tree — see {@link ActorOptionsType.displayName}. */

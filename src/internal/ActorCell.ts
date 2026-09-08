@@ -231,20 +231,39 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   readonly _internal: boolean;
 
   /**
-   * This cell is `/user` itself or one of its descendants (#862).
+   * This cell is the `/user` guardian.
    *
-   * The discriminator for the global mailbox bound, which reaches the
-   * application's actors and not the framework's.  Inclusive of the guardian
-   * so that it can be inherited in one step; a caller who wants *strict*
-   * descendants — the bound does — asks `this._parent?._userTree === true`,
-   * which excludes the guardian without a second field.
-   *
-   * A boolean and not a path walk: `ActorPath.elements()` allocates, and this
-   * is decided on the constructor of the framework's most-created object.
-   * `_internal` is deliberately not the discriminator — `SystemPaths` marks
-   * only the DevTools group with it, so it answers a different question.
+   * Only ever read by a *child*, to decide {@link _applicationTree} — the
+   * guardian is the framework's own actor, so it is the one cell that is the
+   * top of the application's tree without being in it.
    */
-  readonly _userTree: boolean;
+  private readonly _userGuardian: boolean;
+
+  /**
+   * This cell holds an actor the **application** wrote (#862).
+   *
+   * The discriminator for system-wide application policy — today the global
+   * mailbox bound, which is there to let an operator reach code they cannot
+   * edit and must not reach the framework's own actors, whose queues hold
+   * cluster invariants together.
+   *
+   * It was a path test (`/user` and below) until the sharded and singleton
+   * populations showed that the path answers a different question: a shard
+   * region is spawned under `/system`, so the entity three levels beneath it
+   * is on a `/system` path while being as much the application's actor as
+   * anything it spawns itself.  So the seed is provenance —
+   * `ActorOptionsType.applicationOwned`, which `ClusterSharding` and
+   * `ClusterSingleton` set on the class they were handed — plus the one
+   * structural case that needs no marker, being a child of `/user`.
+   *
+   * Inherited downward from either seed: an entity's children are the
+   * application's too.  A boolean and not a path walk, because
+   * `ActorPath.elements()` allocates and this is decided in the constructor of
+   * the framework's most-created object.  `_internal` is deliberately not the
+   * discriminator — `SystemPaths` marks only the DevTools group with it, so it
+   * answers a third question again.
+   */
+  private readonly _applicationTree: boolean;
 
   /**
    * Sharding identity when a `Shard` spawned this cell as an entity.
@@ -319,12 +338,17 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this._internal = blueprint.internal === true || parent?._internal === true;
     // The root is the only cell with no parent, and `/user` and `/system` are
     // its only two children — so "my parent is the root and I am called
-    // `user`" identifies the user guardian exactly, and everything below it
-    // inherits.  The root cell is built from a literal blueprint rather than
-    // through `actorBlueprintOf`, which is why this is derived from the tree
-    // and not from an option.
-    this._userTree = parent !== null
-      && (parent._userTree || (parent._parent === null && name === USER_GUARDIAN_NAME));
+    // `user`" identifies the user guardian exactly.  The root cell is built
+    // from a literal blueprint rather than through `actorBlueprintOf`, which is
+    // why this is derived from the tree and not from an option.
+    this._userGuardian = parent !== null
+      && parent._parent === null && name === USER_GUARDIAN_NAME;
+    // The guardian itself is excluded: it is the framework's actor, and only
+    // what it is asked to spawn is the application's.
+    this._applicationTree = !this._userGuardian
+      && (blueprint.applicationOwned === true
+        || parent?._applicationTree === true
+        || parent?._userGuardian === true);
     this._entity = blueprint.entity ?? null;
     this._displayNameOverride = blueprint.displayName ?? null;
     this.throughput = Math.max(1, blueprint.throughput ?? system._actorThroughput);
@@ -1731,14 +1755,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    *   2. `withMailboxCapacity(n)` — a `BoundedMailbox`.  The only place the
    *      framework picks an overflow policy on a caller's behalf.
    *   3. `actor-ts.mailbox.default.capacity` — the same `BoundedMailbox`, from
-   *      the operator rather than from the spawn site (#862), and only for a
-   *      strict descendant of `/user`.  The framework's own actors are under
-   *      `/system` and stay unbounded: a shard region or a reliable-delivery
-   *      producer that sheds messages breaks an invariant the application
-   *      never asked about and cannot see.  That scope is `_userTree`, which
-   *      is derived from the tree rather than from an opt-out list — every
-   *      framework actor goes through `ActorSystem._spawnSystemActor`, so
-   *      there is no list to keep current.
+   *      the operator rather than from the spawn site (#862), and only for an
+   *      actor the application wrote.  The framework's own stay unbounded: a
+   *      shard region or a reliable-delivery producer that sheds messages
+   *      breaks an invariant the application never asked about and cannot see.
+   *      That scope is {@link _applicationTree} — a child of `/user`, or a
+   *      class the framework was *handed* and spawned under `/system` for the
+   *      application (a sharded entity, a singleton instance), plus everything
+   *      either of those two spawns in turn.
    *   4. Nothing — the unbounded base `Mailbox`.  #310 made bounded the
    *      default and #1148 reversed it: a ceiling that discards the oldest
    *      queued message is not one an actor framework can impose unasked,
@@ -1797,12 +1821,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    */
   private _buildMailbox(blueprint: ActorBlueprint<TMessage>): Mailbox<TMessage> {
     if (blueprint.mailbox) return blueprint.mailbox();
-    // `_parent?._userTree`, not `this._userTree`: the flag includes the `/user`
-    // guardian itself, and the guardians are the framework's, not the
-    // application's.
     const systemDefault = this.system._defaultMailbox;
     const capacity = blueprint.mailboxCapacity
-      ?? (this._parent?._userTree === true ? systemDefault.capacity : undefined);
+      ?? (this._applicationTree ? systemDefault.capacity : undefined);
     if (capacity === undefined) return new Mailbox<TMessage>();
     return new BoundedMailbox<TMessage>({
       capacity,

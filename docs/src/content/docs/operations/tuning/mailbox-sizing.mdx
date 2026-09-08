@@ -141,20 +141,26 @@ actor-ts.mailbox.default {
 }
 ```
 
-Read that as "bound every actor the application spawns", because that is
-literally what it does.  It is the same `BoundedMailbox` the three cases
-above build, layered **under** the spawn site: an actor with
-`withMailboxCapacity()` keeps its own number, an actor with `withMailbox()`
-keeps its own queue, and everything else picks this up.
+Read that as "bound every actor your application wrote".  *Who wrote the
+class* is the test, not where the actor sits in the tree — a sharded entity
+is spawned by its shard and a cluster singleton by its manager, both under
+`/system`, and both are your classes, so the bound reaches them.  That is
+deliberate: a memory-constrained sharded deployment is the case this key
+exists for, and its entities are usually the largest population of actors on
+the node.  It is the same `BoundedMailbox` the three cases above build,
+layered **under** the spawn site: an actor with `withMailboxCapacity()` keeps
+its own number, an actor with `withMailbox()` keeps its own queue, and
+everything else picks this up.
 
 What it does **not** bound, and the boundaries matter more here than the
 number does:
 
-- **Nothing under `/system`.**  The framework's own actors — shard regions,
-  the cluster event stream, the pub-sub mediator, the reliable-delivery
-  producer, projections, the DevTools hub — are spawned through one internal
-  door and land under `/system`, which this bound does not cross.  Shedding
-  their traffic would break invariants your application never asked about.
+- **The framework's own actors.**  Shard regions, coordinators and shards,
+  singleton managers, the cluster event stream, the pub-sub mediator, the
+  reliable-delivery producer, projections, the DevTools hub — every actor the
+  framework both wrote *and* spawned.  Shedding their traffic would break
+  invariants your application never asked about.  The path is not what
+  exempts them: a shard is exempt and the entity beneath it is not.
 - **No undroppable envelope.**  A death-watch `Terminated`, the command that
   hands an upgraded socket to its hub, and a connection's own `close` take a
   lane no overflow policy can shed.  A bounded actor still learns that what
@@ -163,11 +169,15 @@ number does:
   `mailbox.default.overflow` is the system-wide policy for *any* bounded
   mailbox; on its own it bounds nothing.
 
-And one thing it does that is worth knowing before you set it:
-`WebsocketServerActor` and the connections it accepts are spawned by **your**
-code, under `/user`, so a global bound reaches them.  The accept and close
-commands survive it (above), but the rest of a hub's traffic does not — see
-the caution at the end of this page.
+And one thing it does that is worth knowing before you set it: the framework
+also ships actors that **your** code spawns — the WebSocket hub
+(`WebsocketServerActor`) and the connections it accepts, the broker adapters
+(`KafkaActor`, `MqttActor`, `NatsActor`, `AmqpActor`, `JetStreamActor`,
+`RedisStreamsActor`, `SseActor`, `EmailBridgeActor`), the TCP and UDP socket
+actors, and the gRPC client and server.  Spawned by you, they are inside the
+bound like anything else you spawn.  The accept and close commands survive it
+(above), but the rest of a hub's traffic does not — see the caution at the
+end of this page.
 
 ## Picking capacity
 
@@ -434,15 +444,17 @@ protocol design.
   Everything else in your protocol, the rest of that hub's traffic
   included, is still yours to assess.
 
-  `actor-ts.mailbox.default.capacity` exempts `/system` for you, so the
-  delivery producer and the shard regions are covered.  It cannot exempt
-  the WebSocket hub, because **your** code spawns it, under `/user`.  A
-  hub whose backlog is shed still loses the frames between an accept and
-  a close, and a bound is not a substitute for reading the connection's
-  own limits — so if you turn the global capacity on and serve
-  WebSockets, give that hub an explicit `withMailboxCapacity()` you have
-  actually sized, rather than letting it inherit a number chosen for
-  something else.
+  `actor-ts.mailbox.default.capacity` exempts the framework's own actors
+  for you, so the delivery producer, the shard regions and the shards are
+  covered.  It cannot exempt the WebSocket hub, the broker adapters or the
+  gRPC client, because **your** code spawns those; and it deliberately
+  does not exempt your sharded entities or your singletons, which the
+  framework spawns on your behalf out of classes you wrote.  A hub whose
+  backlog is shed still loses the frames between an accept and a close,
+  and a bound is not a substitute for reading the connection's own limits
+  — so if you turn the global capacity on and serve WebSockets, give that
+  hub an explicit `withMailboxCapacity()` you have actually sized, rather
+  than letting it inherit a number chosen for something else.
 </Aside>
 
 <Aside type="caution" title="Tiny capacities">

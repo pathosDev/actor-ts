@@ -942,9 +942,20 @@ export class Cluster {
    * `version + 1`, and `mergeMember` has no equal-version tie-break, so the
    * two sides wedge permanently.  The facts ride the same stamped overlay —
    * {@link memberDataForGossip} puts them on every self record this node
-   * sends, receivers fill them in version-neutrally
+   * sends, receivers take them version-neutrally
    * ({@link adoptConfigurationFacts}), and no membership event fires because
    * nothing about the topology changed.
+   *
+   * **Callable at any point in a node's life, and that is the whole point.**
+   * The three facts the framework itself publishes are resolved in the
+   * constructor, before a single frame moves, but an application's own value
+   * is often resolved later — a shard count read from a migration, a partition
+   * count a broker hands back.  A call after every peer's record has settled
+   * still reaches every peer's comparison, because
+   * {@link adoptConfigurationFacts} takes a member's restatement of its own
+   * facts and not only its first statement.  It did not, until #844's repair:
+   * an overlay claim never bumps the member version, so every frame after the
+   * first took a branch that dropped it.
    *
    * `name` is by convention the HOCON path whose effective value this is; the
    * value is stringified by the caller, because what is compared is equality
@@ -969,22 +980,83 @@ export class Cluster {
   }
 
   /**
-   * Fill configuration claims into a record we otherwise ignore (equal or
-   * older version) — the {@link adoptStorageIdentities} shape, and the same
-   * rationale: fill-only so a claim published after a member's last status
-   * change still spreads, version-neutral so adopting it cannot advance the
-   * merge clock.
+   * Take configuration claims off a record we otherwise ignore (equal or older
+   * version), version-neutrally so taking them cannot advance the merge clock.
+   *
+   * **Who may change them, not whether they have been seen before** — and that
+   * distinction is the #844 repair.  This began as a copy of
+   * {@link adoptStorageIdentities}, which is fill-only: a slot it has already
+   * written is never written again.  That reasoning is sound one lane over,
+   * and its JSDoc says why — a store identity is resolved once at construction,
+   * so a *genuinely* changed one arrives with a new incarnation's higher
+   * version and takes the full merge path, which makes any second claim at an
+   * unchanged version either a stale relay or a hostile one.
+   *
+   * It does not hold for these.  {@link publishConfigurationFact} is a public
+   * runtime API whose purpose is to state a value after the member record has
+   * settled, and an overlay claim deliberately does not bump the version — so
+   * under fill-only every publication after a peer's first frame was dropped
+   * on every peer, silently, and the whole check reduced to whatever each node
+   * happened to have resolved in its constructor.
+   *
+   * What the fill-only guard was actually protecting is worth keeping, and is
+   * kept: gossip is epidemic, so a record about B can reach this node from C
+   * carrying an arbitrarily old copy of B's facts, and letting one overwrite
+   * B's own statement would flap the comparison against whichever copy arrived
+   * last.  The rule that separates the two cases needs no new state: **only
+   * the member itself may restate its facts; anyone may relay them into an
+   * empty slot.**  `from` is the connection the frame arrived on, which is the
+   * same anchor {@link maySpeakFor}'s second rule already rests the whole
+   * merge path on — a payload field is the one thing an attacker fully
+   * controls, a connection is not.
+   *
+   * Three shapes were weighed against that one:
+   *
+   * - **A separate clock for the overlay**, bumped on publish and compared
+   *   independently of the member version.  It converges through relays, which
+   *   this does not, and costs a wire field that is a peer-supplied number
+   *   deciding whether a claim wins — so it would need its own plausibility
+   *   cap, or a peer pins its claim forever at `Infinity`.  The convergence it
+   *   buys is not needed: the subject's own frame is the freshest statement of
+   *   its own facts by construction, and every member gossips to every other.
+   * - **Bumping the member version on publish.**  Still refused, and the
+   *   reason has not weakened: {@link publishStorageIdentity} records that a
+   *   self bump races the leader's `joining → up` promotion to the same
+   *   `version + 1`, which `mergeMember` has no tie-break for, and the two
+   *   sides then wedge forever.  A runtime publish makes that race *more*
+   *   likely, not less, because it can happen at any moment rather than only
+   *   at startup.
+   * - **Comparing without adopting**, so a divergence is reported even where
+   *   the stored copy is left alone.  Refused because
+   *   {@link divergesInConfiguration} reads the stored record: reporting off a
+   *   copy this node did not store would print an `error` saying it has
+   *   stopped placing work on a peer that {@link placementCandidates} still
+   *   returns.  The report and the enforcement have to read the same record.
+   *
+   * An unchanged restatement — the steady state, since every round carries the
+   * whole member map — is not a write.  Without that check the member entry
+   * would be replaced once per round per peer for no change at all.
    *
    * It re-reads the member from the map rather than trusting `existing`,
    * because the identity overlay one lane over may already have replaced it in
    * this same merge — writing a stale `existing` back would drop whatever that
    * one just filled in.
+   *
+   * Residual, and self-healing: the higher-version path merges a record
+   * wholesale from whichever peer sent it, so a relay's older copy of B's
+   * facts can land there on a status change.  B's own next frame restates the
+   * current ones and this method now takes them, which is the half that did
+   * not exist before.
    */
-  private adoptConfigurationFacts(existing: Member, incoming: Member): void {
+  private adoptConfigurationFacts(from: NodeAddress, existing: Member, incoming: Member): void {
     if (incoming.configurationFacts === undefined) return;
     if (incoming.address.equals(this.selfAddress)) return;
     const current = this.members.get(incoming.address.toString()) ?? existing;
-    if (current.configurationFacts !== undefined) return;
+    const held = current.configurationFacts;
+    if (held !== undefined) {
+      if (!incoming.address.equals(from)) return;
+      if (sameConfigurationFacts(held, incoming.configurationFacts)) return;
+    }
     this.setMember(current.withConfigurationFacts(incoming.configurationFacts));
     this.checkConfigurationAgreement(incoming);
   }
@@ -1084,7 +1156,17 @@ export class Cluster {
    * Derived from the member record on every call rather than remembered in a
    * set, so it cannot go stale, cannot leak with the member map, and stays
    * correct for peers whose divergence was past
-   * {@link MAX_REPORTED_CONFIGURATION_MISMATCHES} to report.
+   * {@link MAX_REPORTED_CONFIGURATION_MISMATCHES} to report.  The record now
+   * carries a peer's *latest* statement rather than only its first
+   * ({@link adoptConfigurationFacts}), which is what makes a divergence
+   * introduced at runtime — or repaired at runtime — reach this at all.
+   *
+   * A second, independent copy of {@link checkConfigurationAgreement}'s loop,
+   * and it needs both of that one's guards for its own reasons: absence has to
+   * stay silent or every rolling deploy bars half the cluster, and the read
+   * has to go through `Object.hasOwn` or a fact legitimately named
+   * `constructor` is answered by `Object.prototype` and bars every peer that
+   * does not publish it.
    */
   private divergesInConfiguration(member: Member): boolean {
     const claims = member.configurationFacts;
@@ -2915,9 +2997,11 @@ export class Cluster {
     if (incoming.version <= existing.version) {
       // Ignored for membership — but the two overlays still land, or a claim
       // published after a member's last status change would never spread
-      // (#1358, #844).
+      // (#1358, #844).  `from` goes only to the configuration lane: it decides
+      // who may *restate* a claim, which is a question the identity lane does
+      // not have, being fill-only.
       this.adoptStorageIdentities(existing, incoming);
-      this.adoptConfigurationFacts(existing, incoming);
+      this.adoptConfigurationFacts(from, existing, incoming);
       return;
     }
     // The mirror of the revival check: a live member gossiped as `removed`
@@ -2966,9 +3050,15 @@ export class Cluster {
     // The configuration facts are the same kind of thing one field over
     // (#844): what this node resolved for itself, which no peer is in a
     // position to restate.  A promotion merged wholesale from a view that
-    // predates our publication would otherwise wipe them and leave this node
-    // publishing nothing until it next resolved them — which it never does,
-    // since they are resolved once in the constructor.
+    // predates our publication would otherwise wipe them from the stored self
+    // record, so `selfMember`, `getMembers` and every membership event would
+    // report this node as publishing nothing.  What it would NOT stop is the
+    // publishing itself: `memberDataForGossip` stamps outgoing frames from
+    // `selfConfigurationFacts`, never from the record, so the frames stay
+    // correct either way.  Worth stating precisely rather than overclaiming —
+    // the field is read by operators and by the DevTools tap, and a self
+    // record that contradicts the frames the same node is sending is its own
+    // kind of wrong.
     const ownFacts = this.selfConfigurationFactsSnapshot() ?? member.configurationFacts;
     if (member.address.incarnation === this.selfAddress.incarnation
       && ownIdentities === member.storageIdentities
@@ -3175,6 +3265,37 @@ function reportDerivedAdvertisedHost(system: ActorSystem, options: ClusterOption
     `cluster: binding ${options.host}:${options.port} and advertising ${advertised}, `
     + `taken from the environment (${looked}) because the bind host is a wildcard.`,
   );
+}
+
+/**
+ * Whether two configuration-fact records state exactly the same thing (#844).
+ *
+ * The steady state of gossip is a peer restating what it already said, once
+ * per round, so `Cluster.adoptConfigurationFacts` asks this before writing:
+ * the answer decides between no work at all and a member-map replacement plus
+ * an agreement check.
+ *
+ * Own keys and an `Object.hasOwn` read, for the reason the sanitiser in
+ * `Member.ts` gives at length: fact names come off the wire and `constructor`
+ * is spellable under {@link CONFIGURATION_FACT_NAME_PATTERN}, so an unguarded
+ * `incoming[name]` is answered by `Object.prototype` rather than by the
+ * record.  Stated precisely rather than overclaimed: with the key counts
+ * compared first and values constrained to strings, the answer would be right
+ * even without the guard — a prototype member is a function and never equals a
+ * string.  It is here so the comparison never reads through a prototype at
+ * all, which is what keeps the property from depending on the value type
+ * staying `string`, exactly as `Member.ts`'s `defineProperty` write does on
+ * the other side.
+ */
+function sameConfigurationFacts(
+  held: ConfigurationFactsData, incoming: ConfigurationFactsData,
+): boolean {
+  const names = Object.keys(held);
+  if (names.length !== Object.keys(incoming).length) return false;
+  for (const name of names) {
+    if (!Object.hasOwn(incoming, name) || incoming[name] !== held[name]) return false;
+  }
+  return true;
 }
 
 /** Helper — creates an InMemoryTransport for tests. */

@@ -54,6 +54,7 @@ import {
   isShardingMessage,
   type RegisterRegion,
   type RegisterRefused,
+  type RegionEvicted,
   type RegionHeartbeat,
   type RegionTerminated,
   type ShardEnvelope,
@@ -208,12 +209,13 @@ export class ShardRegion<TMessage = unknown>
   /** Shards stopped on purpose because they stood empty — likewise an expected stop. */
   private readonly passivatingShards = new Set<number>();
   /**
-   * Shards being given up because the coordinator refused this region (#633).
-   * A third kind of expected stop, and deliberately not either of the other
-   * two: a handoff has a coordinator waiting for `HandOffComplete` and a
+   * Shards being given up because the coordinator took this region's
+   * registration away — a `numShards` refusal (#633) or a staleness eviction
+   * (#853).  A third kind of expected stop, and deliberately not either of the
+   * other two: a handoff has a coordinator waiting for `HandOffComplete` and a
    * passivation keeps ownership, while a release has neither — the coordinator
-   * never recorded this region, so there is nobody to answer and nothing to
-   * come back to.
+   * does not have this region in `regions`, so there is nobody to answer and no
+   * ownership to come back to.
    */
   private readonly releasingShards = new Set<number>();
   /** shardId → when it last became empty (or was created).  The shard sweep's clock. */
@@ -995,6 +997,7 @@ export class ShardRegion<TMessage = unknown>
     match(message)
       .with({ kind: 'sharding.RegisterAcknowledgment' }, (m) => this.onRegisterAcknowledgment(m, peer))
       .with({ kind: 'sharding.RegisterRefused' }, (m) => this.onRegisterRefused(m, peer))
+      .with({ kind: 'sharding.RegionEvicted' }, (m) => this.onRegionEvicted(m, peer))
       .with({ kind: 'sharding.ShardHome' }, (m) => this.onShardHome(m, peer))
       .with({ kind: 'sharding.HandOff' }, (m) => this.onHandOff(m, peer))
       .with({ kind: 'sharding.RememberedEntities' }, (m) => this.onRememberedEntities(m, peer))
@@ -1025,10 +1028,11 @@ export class ShardRegion<TMessage = unknown>
    * Whether a coordinator directive may be honoured.
    *
    * Everything the coordinator tells a region is destructive to some degree —
-   * `HandOff` stops every entity under a shard, `ShardHome` moves ownership,
-   * `ShardMapUpdate` publishes an allocation map to every local subscriber —
-   * and until #584 the region applied all of it on nothing but the `kind`
-   * string.  Two conditions have to hold: the frame arrived inside an
+   * `HandOff` stops every entity under a shard, `RegionEvicted` stops every
+   * entity under *every* shard, `ShardHome` moves ownership, `ShardMapUpdate`
+   * publishes an allocation map to every local subscriber — and until #584 the
+   * region applied all of it on nothing but the `kind` string.  Two conditions
+   * have to hold: the frame arrived inside an
    * {@link AuthenticatedShardingMessage}, which the wire cannot mint, *and* the
    * peer that sent it is the node this region currently believes hosts the
    * coordinator.  The second half is not redundant — an authenticated peer is
@@ -1184,9 +1188,78 @@ export class ShardRegion<TMessage = unknown>
    * refusal exists to prevent survived, reached through a leadership move
    * rather than a fresh start.
    *
+   * The mechanics are {@link releaseEverything}'s, shared with the staleness
+   * eviction (#853); what is specific to a refusal is that nothing here comes
+   * back on its own, which is what the log line has to say.
+   */
+  private releaseShardsAfterRefusal(): void {
+    const released = this.releaseEverything();
+    if (released === 0) return;
+    this.log.warn(
+      `[sharding] giving up the ${released} shard(s) of '${this.config.typeName}' this refused `
+      + `region was still hosting; their entities stop here and stay stopped until the configured `
+      + `numShards agrees with the coordinator's`,
+    );
+  }
+
+  /**
+   * The coordinator removed this region from its registry and re-homed the
+   * shards it held (#853).
+   *
+   * There are two ways a region stops being registered without having asked,
+   * and this is the second one.  A refusal (#633) is a verdict about the
+   * region's *configuration* and latches: nothing it can do makes it welcome
+   * again until an operator changes `numShards`.  An eviction is a verdict
+   * about its *liveness*, reached from the absence of a beat, and the region
+   * receiving this frame is by construction evidence the verdict was wrong —
+   * a region that is really gone or wedged never gets here, and the eviction
+   * simply stands.
+   *
+   * So the release is the same and the sequel is the opposite: register again,
+   * immediately.  Standing down without re-registering would trade the
+   * double-hosting for a live node in the cluster hosting nothing — nothing
+   * else would put it back, since `ensureRegistered` re-enters only from a
+   * leader or membership change and the register retry was cancelled by the
+   * acknowledgment this eviction has just annulled.
+   *
+   * The re-registration cannot loop.  `ShardCoordinator.onRegister` carries
+   * `lastHeartbeatAtMs` across only a *surviving* entry, so the rebuilt one has
+   * never beaten to that coordinator and is not a sweep candidate at all until
+   * a beat of this region's actually arrives.
+   */
+  private onRegionEvicted(message: RegionEvicted, peer: NodeAddress | null): void {
+    if (!this.fromCoordinator(message, peer)) return;
+    const released = this.releaseEverything();
+    // The key path is named in prose rather than through `ConfigKeys`: this
+    // region reads neither leaf — `readShardingOptionsFromConfig` does — and a
+    // `ConfigKeys.sharding.staleRegionDetection.staleAfter` here would make
+    // `NoDeadConfigKeys` count a log line as a reader.
+    this.log.warn(
+      `[sharding] the coordinator evicted this region of '${this.config.typeName}' after hearing `
+      + `nothing from it for ${message.silentForMs} ms and re-homed its shards; giving up the `
+      + `${released} shard(s) still hosted here and registering again. A node that is plainly `
+      + `healthy seeing this is beating every ${this.config.regionHeartbeatIntervalMs} ms into a `
+      + `stale-after that is too tight for it, or its beats are being lost on the way.`,
+    );
+    // The region is unregistered as of now, so the next acknowledgment is a
+    // real transition again rather than a silent one — same reason as the
+    // refusal path.
+    this.registrationAnnounced = false;
+    this.ensureRegistered();
+  }
+
+  /**
+   * Drop every shard this region hosts and every cached home it routes by, and
+   * report how many shard actors were stopped.
+   *
+   * Shared by the two paths that take a region's registration away from it
+   * without its consent — a `numShards` refusal (#633) and a staleness eviction
+   * (#853).  The caller logs, because what an operator should do about the two
+   * could not be more different, and only the caller knows which happened.
+   *
    * The release is unilateral and tells the coordinator nothing, because there
-   * is nothing to tell: it never recorded this region, so a `HandOffComplete`
-   * would name a shard it does not believe we own.
+   * is nothing to tell: it does not believe this region owns anything, so a
+   * `HandOffComplete` would name a shard it has already given to somebody else.
    *
    * Order is what keeps it loss-free, and it is the order {@link onHandOff} and
    * {@link passivateShard} already use — ownership goes *synchronously*, before
@@ -1197,18 +1270,12 @@ export class ShardRegion<TMessage = unknown>
    * {@link completeShardRelease} closes the loop when the `Terminated` watch
    * reports them gone.
    */
-  private releaseShardsAfterRefusal(): void {
+  private releaseEverything(): number {
     this.shardHomes.clear();
     this.shardHomeNodes.clear();
     this.localShards.clear();
     this.shardState.clear();
     const hosted = Array.from(this.shards.entries());
-    if (hosted.length === 0) return;
-    this.log.warn(
-      `[sharding] giving up the ${hosted.length} shard(s) of '${this.config.typeName}' this refused `
-      + `region was still hosting; their entities stop here and stay stopped until the configured `
-      + `numShards agrees with the coordinator's`,
-    );
     for (const [shardId, shard] of hosted) {
       // A shard already on its way out for another reason is still ours to
       // release, and the release supersedes both: neither outcome — a handoff
@@ -1220,6 +1287,7 @@ export class ShardRegion<TMessage = unknown>
       this.forgetShardEntities(shardId);
       shard.stop();
     }
+    return hosted.length;
   }
 
   /**
@@ -1593,12 +1661,17 @@ export class ShardRegion<TMessage = unknown>
   }
 
   /**
-   * A shard released after a refusal is gone (#633).  Nothing is restored and
-   * nobody is told: {@link releaseShardsAfterRefusal} dropped the ownership in
-   * the same step it ordered the stop, and while the refusal stands
-   * {@link route} finds no home and {@link askCoordinator} does not go looking
-   * for one — so whatever arrived during the stop stays buffered until the
-   * counts agree, which is the whole point of the release.
+   * A released shard is gone (#633, #853).  Nothing is restored and nobody is
+   * told: {@link releaseEverything} dropped the ownership in the same step it
+   * ordered the stop, so whatever arrived during the stop stays buffered.
+   *
+   * How long it stays there is the one difference between the two callers.
+   * While a refusal stands, {@link route} finds no home and
+   * {@link askCoordinator} does not go looking for one, so the buffer holds
+   * until the counts agree — the whole point of that release.  After an
+   * eviction the region registers again at once, and the buffer flushes to
+   * whichever region the coordinator's answer names, which may well be this
+   * one.
    */
   private completeShardRelease(shardId: number): void {
     this.releasingShards.delete(shardId);
@@ -1768,10 +1841,10 @@ export class ShardRegion<TMessage = unknown>
    * A shard actor stopped.  Expected during handoff — that is how we learn
    * the entities are really gone — expected after a passivation, where it is
    * how we learn the shard is clear to be re-created, and expected after a
-   * refusal, where it is how we learn nothing of the shard is running here any
-   * more.  Otherwise the shard died past its supervisor's budget; drop it so
-   * the next message respawns it, and keep the ownership so buffered work is
-   * not thrown away.
+   * release (a refusal, or a staleness eviction), where it is how we learn
+   * nothing of the shard is running here any more.  Otherwise the shard died
+   * past its supervisor's budget; drop it so the next message respawns it, and
+   * keep the ownership so buffered work is not thrown away.
    */
   private handleShardTerminated(t: Terminated): void {
     for (const [shardId, ref] of this.shards) {
@@ -1779,7 +1852,7 @@ export class ShardRegion<TMessage = unknown>
       // Ahead of the other two: a release can overtake a handoff or a
       // passivation already in flight, and it is the one that must win —
       // acknowledging a handoff or reclaiming ownership would both put this
-      // region back in a position the coordinator has refused it.
+      // region back in a position the coordinator has taken away from it.
       if (this.releasingShards.has(shardId)) { this.completeShardRelease(shardId); return; }
       if (this.handingOff.has(shardId)) { this.completeHandOff(shardId); return; }
       if (this.passivatingShards.has(shardId)) { this.completeShardPassivation(shardId); return; }

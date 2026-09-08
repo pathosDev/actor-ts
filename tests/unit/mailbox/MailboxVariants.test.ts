@@ -1151,20 +1151,22 @@ describe('actor-ts.mailbox.default — the global bound (#862)', () => {
   });
 
   test('a framework actor under /system is exempt, and so is the /user guardian', async () => {
-    // The scope is read off the tree rather than off an opt-out list: every
-    // framework actor is spawned through `_spawnSystemActor`, so there is no
-    // list that has to be kept current for this to stay true.
+    // A framework actor spawned through `_spawnSystemActor` carries no
+    // `applicationOwned` mark and none of its ancestors is `/user`, so it is
+    // outside the scope.  What the path alone does *not* settle is the
+    // application's own actors underneath one of these — a sharded entity, a
+    // singleton instance; `GlobalMailboxBoundScope.test.ts` holds that half.
     const kit = kitWithMailboxDefault('mbox-global-system-exempt', { capacity: 4 });
     const systemRef = kit.system._spawnSystemActor(Latched, SystemGroups.delivery, 'bound-probe');
 
     expect(mailboxOf(systemRef)).not.toBeInstanceOf(BoundedMailbox);
     expect(mailboxOf(systemRef)).toBeInstanceOf(Mailbox);
 
-    // The guardian itself is the framework's too — `_userTree` includes it so
-    // it can be inherited in one step, and the bound asks for STRICT
-    // descendants.  Reached through the private field because there is no
-    // public handle on a guardian cell, which is itself why the bound cannot
-    // be scoped by anything a caller passes in.
+    // The guardian itself is the framework's too — it is the top of the
+    // application's tree without being in it, so it is the one cell excluded
+    // by name.  Reached through the private field because there is no public
+    // handle on a guardian cell, which is itself why the bound cannot be
+    // scoped by anything a caller passes in at the top.
     const guardian = (kit.system as unknown as {
       userGuardianCell: { _mailboxForTest(): unknown };
     }).userGuardianCell;
