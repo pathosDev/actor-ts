@@ -2189,6 +2189,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The transport's stall-deadline / handshake-deadline ordering rule is now
+  checked against the pair the transport will run with, not the pair the
+  caller supplied** (#846).  It guarded on both values being present, so
+  `new TcpTransport(self, log, { incompleteFrameIdleMs: 1_000 })` — and a
+  lone `actor-ts.remote.incomplete-frame-idle = 1s` — resolved to the
+  inverted pair (5 s handshake, 1 s stall) and was accepted: exactly the
+  inversion the rule exists to prevent, and the opposite of what the
+  transports page and the `actor-ts.remote` reference already said. The same
+  held from the other side, where raising `handshake-timeout` past the 30 s
+  stall default was waved through. The rule now lives in one place shared by
+  both validators, so they cannot drift into refusing different pairs, and
+  the failure names the half you actually wrote rather than a default you
+  never typed. Either bound may still move alone, as far as the other's
+  built-in default allows. The hop from `actor-ts.remote.*` into the
+  transport `Cluster` builds is now bound by a test too — deleting the four
+  option lines from that constructor made all four keys inert with every
+  suite still green.
+
+  *Note:* The rule this enforces was announced in the same
+  still-unreleased #846 entry, so no release ever shipped the hole; a config
+  that sets only one of the two keys such that the resolved pair inverts (a
+  lone `incomplete-frame-idle` below 5s, or a `handshake-timeout` at or
+  above 30s) is now refused at startup instead of running inverted — move
+  the other key with it.
+
 - **BREAKING — A cluster singleton's proxy now settles a role by which layer
   it came from rather than by the order `ref()` and `start()` were called on
   the node (#855).**
