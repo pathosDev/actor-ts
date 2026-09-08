@@ -7,8 +7,9 @@ import { ConfigError } from '../../../src/config/Config.js';
 import { FastifyBackend } from '../../../src/http/backend/FastifyBackend.js';
 import { HttpResponseTooLargeError } from '../../../src/http/HttpClient.js';
 import { HttpExtensionId } from '../../../src/http/HttpExtension.js';
-import { complete, get, path, type Route } from '../../../src/http/Route.js';
+import { complete, concat, get, path, withMiddleware, type Route } from '../../../src/http/Route.js';
 import { cors } from '../../../src/http/middleware/Cors.js';
+import { headerDecorator } from '../../../src/http/middleware/Headers.js';
 import { CorsOptions } from '../../../src/http/middleware/CorsOptions.js';
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
@@ -337,6 +338,75 @@ describe('actor-ts.http.cors', () => {
     await expect(system.extension(HttpExtensionId).newServerAt('127.0.0.1', 0).bind(apiRoutes()))
       .rejects.toThrow(OptionsError);
     await system.terminate();
+  });
+
+  /**
+   * The seam is `compile()` carrying `config` down the tree, and every test
+   * above builds the `cors()` node at the **root** — the one shape that needs
+   * no carrying at all, because `HttpExtension.bind` hands `compile()` the
+   * config and the cors arm reads it straight off its own parameter.  A
+   * `cors()` under any combinator only ever sees a config because the arm
+   * above it passed one down, and each of those four recursive calls is a
+   * separate argument that can be dropped in isolation.  Dropping one is
+   * silent: the nested route serves whatever its code options say and the
+   * deployment's `application.conf` is ignored with no error at all.
+   *
+   * So each case here nests `cors({})` under exactly one combinator and puts
+   * the *whole* policy in HOCON — no code options, which makes `origins`
+   * unreachable unless the arm above delivered the config, and makes each
+   * case red under exactly the one dropped argument that concerns it.
+   */
+  describe('a nested cors() still reaches the config', () => {
+    const DENIED = 'https://evil.example';
+
+    /** The nested route's policy is the config's, both ways round. */
+    async function expectConfiguredPolicyAt(url: string, routePath: string): Promise<void> {
+      const allowed = await fetch(`${url}${routePath}`, { headers: { origin: ALLOWED } });
+      expect(allowed.headers.get('access-control-allow-origin')).toBe(ALLOWED);
+      const disallowed = await fetch(`${url}${routePath}`, { headers: { origin: DENIED } });
+      expect(disallowed.headers.get('access-control-allow-origin')).toBeNull();
+    }
+
+    const nestedApi = (): Route => cors({}, path('api', get(() => complete(Status.OK, 'data'))));
+
+    test('under path()', async () => {
+      const system = systemWith(corsConfig({ origins: [ALLOWED] }));
+      const url = await serve(system, path('v1', cors({}, get(() => complete(Status.OK, 'data')))));
+      await expectConfiguredPolicyAt(url, '/v1');
+    });
+
+    test('under concat()', async () => {
+      const system = systemWith(corsConfig({ origins: [ALLOWED] }));
+      // The sibling is deliberately not a cors() node: it makes the concat
+      // arm the only recursion between the root and the policy.
+      const url = await serve(system, concat(
+        path('open', get(() => complete(Status.OK, 'open'))),
+        nestedApi(),
+      ));
+      await expectConfiguredPolicyAt(url, '/api');
+    });
+
+    test('under withMiddleware()', async () => {
+      const system = systemWith(corsConfig({ origins: [ALLOWED] }));
+      const url = await serve(system, withMiddleware(headerDecorator({ 'x-middleware': 'ran' }), nestedApi()));
+      await expectConfiguredPolicyAt(url, '/api');
+      // The middleware really is in the path — otherwise the assertion above
+      // would hold over a tree the compiler had folded the node out of.
+      const response = await fetch(`${url}/api`, { headers: { origin: ALLOWED } });
+      expect(response.headers.get('x-middleware')).toBe('ran');
+    });
+
+    test('under another cors()', async () => {
+      const system = systemWith(corsConfig({ origins: [ALLOWED] }));
+      // The outer allowlist is disjoint from the configured one, so it can
+      // decorate neither request below and every header they do carry is the
+      // inner node's — i.e. the HOCON layer it had to have been handed.
+      const url = await serve(system, cors(
+        CorsOptions.create().withOrigins('https://outer.example'),
+        nestedApi(),
+      ));
+      await expectConfiguredPolicyAt(url, '/api');
+    });
   });
 });
 

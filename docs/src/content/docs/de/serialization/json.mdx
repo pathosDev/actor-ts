@@ -116,7 +116,7 @@ an:
 | Obergrenze | Default | Was sie ablehnt |
 | --- | --- | --- |
 | `max-nesting-depth` | `256` | Einen tiefer verschachtelten Baum — Arrays, Objekte und getaggte Container zählen je eine Ebene. |
-| `max-document-bytes` | `0` (aus) | Ein größeres Dokument, geprüft bevor `JSON.parse` läuft. |
+| `max-document-bytes` | `0` (aus) | Ein größeres Dokument — geprüft bevor `JSON.parse` läuft, und auf dem Cluster-Wire, bevor die Bytes des Frames überhaupt gepuffert werden. |
 
 `max-nesting-depth` ist keine Dekoration.  `JSON.parse` bietet hier nichts, worauf
 man sich stützen könnte: auf Bun, Node und Deno gleichermaßen gemessen,
@@ -131,6 +131,26 @@ Die Grenze darf gesenkt, aber nicht über `256` angehoben werden — das ist die
 harte Obergrenze des Encoders: ein Knoten, der tiefer liest als er schreibt,
 würde ein Payload akzeptieren, das er selbst nicht erzeugen kann.  Beide sind
 Obergrenzen pro Dekodierung — über das, was `toBinary` ausgibt, sagen sie nichts.
+
+`max-document-bytes` begrenzt die **Kosten** statt der Form und ist die einzige
+Obergrenze, die greifen kann, bevor das Parsen überhaupt etwas alloziert.  Auf
+dem Cluster-Wire wird sie gegen das 4-Byte-Längenpräfix des Frames geprüft — und
+damit früher, als es beiden Serializern möglich ist: die bekommen Bytes, die es
+bereits gibt.  Ausgeliefert wird `0`, es ändert sich also nichts, solange eine
+Installation sie nicht setzt.
+
+Bleibt ein Rest, der klar benannt gehört: **in der Auslieferungskonfiguration
+wird ein zu tiefer Frame erst abgelehnt, nachdem `JSON.parse` ihn bereits
+aufgebaut hat.**  Auf Bun 1.4 gemessen kostet ein einzelner 16-MiB-Frame aus
+ausbalancierten `[` rund 1,0 s CPU und 260 MiB Heap, bevor die Tiefengrenze ihn
+meldet — etwa das Vierfache eines legitimen Frames derselben Größe, und
+wiederholbar für jeden Peer, der den Handshake abgeschlossen hat.  Zwei
+Stellschrauben begrenzen das, keine davon ist per Default aktiv:
+`actor-ts.remote.max-frame-bytes` deckelt die Bytes bei 16 MiB, und
+`max-document-bytes` deckelt das Dokument auf demselben Präfix.  Ein Vorab-Scan
+des Rohpuffers würde es ohne beide schließen; er wurde gemessen und nicht
+ausgeliefert, weil er 18–28 % jeder Frame-Dekodierung kostet, um eine
+vierfache Verstärkung zu beseitigen.
 
 Journal- und Snapshot-Zeilen sind bewusst ausgenommen.  Diese Bytes hat actor-ts
 selbst geschrieben; eine verschärfte Grenze würde dort wiederherstellbare

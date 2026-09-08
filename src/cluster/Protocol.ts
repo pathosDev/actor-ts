@@ -377,12 +377,15 @@ export class FrameDecoder {
   private writeOffset = 0;
   private readonly maxFrameBytes: number;
   /**
-   * Ceilings for the tagged-JSON walk of an accepted frame.  Separate from
-   * {@link maxFrameBytes} because the two bound different things: a frame cap
-   * bounds the bytes a peer may make this node buffer, and this bounds the
-   * work it may make the *decoder* do with bytes that already fit — a 16 MiB
-   * frame of `[[[[…` is inside every byte cap here and still overflows the
-   * walker's stack without it (#880).
+   * Decode ceilings, applied at two points: `maxDocumentBytes` on the length
+   * prefix, beside {@link maxFrameBytes}, and `maxNestingDepth` on the
+   * tagged-JSON walk of an accepted frame.
+   *
+   * Separate from {@link maxFrameBytes} because the two bound different
+   * things: a frame cap bounds the bytes a peer may make this node buffer, and
+   * these bound the work it may make the *decoder* do with bytes that already
+   * fit — a 16 MiB frame of `[[[[…` is inside every byte cap here and still
+   * overflows the walker's stack without them (#880).
    */
   private readonly readConstraints: Required<ReadConstraintsOptionsType>;
 
@@ -429,6 +432,25 @@ export class FrameDecoder {
         throw new Error(
           `wire frame claims length ${length} > maxFrameBytes ${this.maxFrameBytes} — `
           + `connection terminated to prevent OOM/DoS`,
+        );
+      }
+      // The second bound on the same prefix, and the earliest point in the
+      // framework at which `max-document-bytes` can be enforced at all: both
+      // serializers check it against bytes that already exist, whereas here
+      // the payload has not arrived yet.
+      //
+      // It answers a different question from the frame cap above — that one is
+      // how many bytes this node will BUFFER for a transport, this one how
+      // large a JSON document it will PARSE — and the difference matters most
+      // on this path, because a frame goes to `JSON.parse` directly and never
+      // through a serializer.  Without the check here the key governed every
+      // untrusted decode in the process except the one whose bytes a hostile
+      // peer actually chooses (#880).
+      const documentCeiling = this.readConstraints.maxDocumentBytes;
+      if (documentCeiling > 0 && length > documentCeiling) {
+        throw new Error(
+          `wire frame of ${length} bytes exceeds maxDocumentBytes ${documentCeiling} — `
+          + `connection terminated before the document is buffered`,
         );
       }
       if (this.pendingBytes() < HEADER_SIZE + length) break;
