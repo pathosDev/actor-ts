@@ -1,3 +1,4 @@
+import type { Scheduler } from '../../Scheduler.js';
 import { ActorPath } from '../../ActorPath.js';
 import { ActorRef } from '../../ActorRef.js';
 import { entityName } from './Shard.js';
@@ -68,4 +69,6 @@ export class EntityRef<TMessage = unknown> extends ActorRef<TMessage> {
   override _defaultAskTimeoutMs(): number {
     return this.region._defaultAskTimeoutMs();
   }
+
+  override _virtualScheduler(): Scheduler | null { return this.region._virtualScheduler(); }
 }

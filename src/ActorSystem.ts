@@ -113,6 +113,21 @@ export class ActorSystem {
    * clock, and a test can say "a minute passed" in a millisecond.
    */
   get clock(): Clock { return this.scheduler; }
+
+  /**
+   * @internal This system's scheduler when its time is virtual, `null` when it
+   * is the wall clock.
+   *
+   * A field resolved once at construction rather than a check per use, because
+   * the caller is `ActorRef.ask` and the answer cannot change: a system's
+   * scheduler is fixed for its lifetime.
+   *
+   * The narrowing is what keeps the deadline seam free in production. Arming
+   * every ask through the scheduler costs ~13% of `ask-throughput`; arming only
+   * the ones a test can actually advance past costs nothing, because the branch
+   * that reads this is already there.
+   */
+  readonly _virtualScheduler: Scheduler | null;
   readonly eventStream: EventStream;
   readonly log: Logger;
   /** How long `terminate()` waits for the logger to flush and close. */
@@ -276,6 +291,7 @@ export class ActorSystem {
     this.name = name ?? systemNameFromConfig(this.config);
     this.dispatcher = options.dispatcher ?? dispatcherFromConfig(this.config);
     this.scheduler = options.scheduler ?? new Scheduler();
+    this._virtualScheduler = this.scheduler.isVirtual ? this.scheduler : null;
     this.eventStream = new EventStream();
     this.loggerCloseTimeoutMs = loggerCloseTimeoutFromConfig(this.config);
     this.shutdownDrainTimeoutMs = shutdownDrainTimeoutFromConfig(this.config);

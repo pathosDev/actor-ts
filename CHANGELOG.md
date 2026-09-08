@@ -11,6 +11,37 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **An `ask` deadline and a receive timeout are virtual under a
+  `ManualScheduler`** (#1424).
+
+  ```ts
+  const { kit, scheduler } = TestKit.withManualScheduler();
+  const pending = silent.ask({ kind: 'ping' }, 5_000);
+  scheduler.advance(5_000);
+  await expect(pending).rejects.toThrow(AskTimeoutError);   // in no real time
+  ```
+
+  This is the commonest shape in the flake catalogue. A test for "the reply
+  never came" has to let the deadline elapse; on the wall clock the only way is
+  to wait, so it gets written with an unrealistically short deadline and then
+  fails on a loaded machine, because 40 ms of wall clock is not 40 ms of
+  scheduling. Both halves of that trade go away.
+
+  **Only where time is actually virtual, and that is measured rather than
+  cautious.** `Scheduler` gained `isVirtual` (`false`; `ManualScheduler`
+  overrides it to `true`), and a real scheduler keeps the raw `setTimeout` the
+  ask path always used. Arming *every* ask through the scheduler costs ~13 % of
+  `ask-throughput` — 195k → 170k ask/s, p50 2.8 → 3.1 µs — in cancellable
+  allocation and set bookkeeping, and buys nothing in production, since nobody
+  can advance past a real deadline. Keeping the dispatch and bypassing the
+  scheduler restored the baseline exactly, which is what isolates the cost to
+  that path rather than to the lookup reaching it. Re-measured after narrowing:
+  181–196k ask/s against a 177–202k baseline, p50 unchanged.
+
+  The receive timeout moves unconditionally, because it is not on a hot path —
+  it re-arms once per handled message and the framework's own comment notes
+  that almost no actor sets one.
+
 - **`TestKit.settle()` and `TestKit.advance(ms)` — the half of deterministic
   testing that virtual time does not cover** (#1025, #1424).
 

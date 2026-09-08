@@ -203,7 +203,7 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   private _restartBudgetStrategy: SupervisorStrategy | null = null;
 
   private _receiveTimeoutMs = 0;
-  private _receiveTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  private _receiveTimeoutHandle: Cancellable | null = null;
 
   /** Envelope currently being handed to the user — drives `context.stash()`. */
   private _currentEnvelope: Envelope<TMessage> | null = null;
@@ -2480,14 +2480,19 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       return;
     }
     this._clearReceiveTimer();
-    this._receiveTimeoutHandle = setTimeout(() => {
-      this.enqueueSystem({ kind: 'receiveTimeout' });
-    }, this._receiveTimeoutMs);
+    // Through the system scheduler rather than a raw `setTimeout`, so a
+    // `ManualScheduler` fires it: a receive timeout is a duration a test wants
+    // to cross deliberately, and on the wall clock the only way to cross a
+    // realistic one is to wait for it (#1424).
+    this._receiveTimeoutHandle = this.system.scheduler.scheduleOnceFunction(
+      this._receiveTimeoutMs,
+      () => { this.enqueueSystem({ kind: 'receiveTimeout' }); },
+    );
   }
 
   private _clearReceiveTimer(): void {
     if (this._receiveTimeoutHandle) {
-      clearTimeout(this._receiveTimeoutHandle);
+      this._receiveTimeoutHandle.cancel();
       this._receiveTimeoutHandle = null;
     }
   }

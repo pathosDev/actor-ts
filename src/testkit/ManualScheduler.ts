@@ -82,6 +82,9 @@ export class ManualScheduler extends Scheduler {
    */
   override now(): number { return this._now; }
 
+  /** Time here moves only through {@link advance}, which is the whole point. */
+  override get isVirtual(): boolean { return true; }
+
   /** Number of scheduled non-cancelled tasks. */
   get pendingCount(): number {
     return this.tasks.filter(t => !t.cancelled).length;

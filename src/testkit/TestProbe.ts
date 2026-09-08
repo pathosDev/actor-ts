@@ -1,3 +1,4 @@
+import type { Scheduler } from '../Scheduler.js';
 import { ActorPath } from '../ActorPath.js';
 import { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
@@ -81,6 +82,8 @@ export class TestProbe extends ActorRef<unknown> {
   override _defaultAskTimeoutMs(): number {
     return this.system._defaultAskTimeoutMs;
   }
+
+  override _virtualScheduler(): Scheduler | null { return this.system._virtualScheduler; }
 
   /** Number of messages currently buffered. */
   get messageCount(): number { return this.queue.length; }
