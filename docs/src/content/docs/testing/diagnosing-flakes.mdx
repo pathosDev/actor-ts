@@ -143,7 +143,22 @@ Three places, each asking a different question.
   an obvious owner.
 - **Every night**, `nightly-flakes.yml` loops the whole suite and aggregates by
   test identity — the load-sensitive family above, over a population no branch
-  touches.
+  touches. **A night that is not green opens an issue**, and a green one closes
+  it again.
+
+That last clause is the part that took longest to get right, and it is worth
+saying why. The nightly measured this suite for months and the measurement
+reached nobody: both jobs were `continue-on-error`, and the verdict went to a
+step summary and a run annotation. The workflow predicted its own failure in a
+comment — *"Nothing accumulates the streak. It is counted by a human reading
+these annotations, which is the same failure that made the quarantine permanent
+in the first place."* Nobody counted. The fourteen-night exit criterion stood at
+twenty-one before anyone looked.
+
+An issue has an owner, a history and a notification, which an annotation never
+had. And with the finding actionable, a red job is a fact rather than noise, so
+the suppression came off: nothing is gated on a scheduled workflow, and red
+there blocks no pull request.
 
 The probe follows the *changed test files* rather than everything a change
 reaches, and the numbers are the reason. `bun test --changed` follows imports

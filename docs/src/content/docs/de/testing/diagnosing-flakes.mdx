@@ -158,7 +158,22 @@ An drei Stellen, jede mit einer anderen Frage.
   offensichtlichen Verantwortlichen hat.
 - **Jede Nacht** schleift `nightly-flakes.yml` die ganze Suite und aggregiert
   nach Test-Identität — die lastabhängige Familie von oben, über eine
-  Population, die kein Branch anfasst.
+  Population, die kein Branch anfasst. **Eine Nacht, die nicht grün ist, öffnet
+  ein Issue**, und eine grüne schließt es wieder.
+
+Der letzte Punkt hat am längsten gebraucht, und es lohnt sich zu sagen, warum.
+Die Nightly hat diese Suite monatelang gemessen, und die Messung erreichte
+niemanden: beide Jobs waren `continue-on-error`, und das Urteil ging in eine
+Step-Summary und eine Run-Annotation. Der Workflow hat sein eigenes Versagen in
+einem Kommentar vorhergesagt — „Nichts akkumuliert die Serie. Sie wird von einem
+Menschen gezählt, der diese Annotations liest — dasselbe Versagen, das die
+Quarantäne überhaupt erst dauerhaft gemacht hat." Niemand zählte. Das
+Vierzehn-Nächte-Kriterium stand bei einundzwanzig, bevor jemand nachsah.
+
+Ein Issue hat einen Verantwortlichen, eine Historie und eine Benachrichtigung —
+was eine Annotation nie hatte. Und weil der Befund damit handhabbar ist, ist ein
+roter Job eine Tatsache statt Rauschen: die Unterdrückung ist weg. An einem
+geplanten Workflow hängt nichts, und Rot dort blockiert keinen Pull Request.
 
 Die Sonde folgt den *geänderten Testdateien* und nicht allem, was eine Änderung
 erreicht — und die Zahlen sind der Grund. `bun test --changed` folgt Importen
