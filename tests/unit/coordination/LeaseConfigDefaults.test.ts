@@ -22,6 +22,7 @@ import {
 } from '../../../src/coordination/leases/KubernetesLeaseOptions.js';
 import { InMemoryLease } from '../../../src/coordination/leases/InMemoryLease.js';
 import { KubernetesLease } from '../../../src/coordination/leases/KubernetesLease.js';
+import type { K8sFetchClient, ServiceAccountPaths } from '../../../src/coordination/leases/K8sApi.js';
 
 /**
  * `Config.parseString` throughout, never `Config.fromObject({'a.b.c': 1})`:
@@ -55,9 +56,64 @@ function withApplicationConf<T>(source: string, body: () => T): T {
 }
 
 const releasable: Array<{ release(): Promise<void> }> = [];
+/**
+ * Temporary ServiceAccount mounts, removed after the test rather than by a
+ * scope function: the lease reads the files asynchronously, so a helper that
+ * cleaned up when its body returned would delete them out from under the
+ * `acquire()` it had just set up.
+ */
+const temporaryMounts: string[] = [];
 afterEach(async () => {
   for (const lease of releasable.splice(0)) await lease.release().catch(() => { /* cleanup */ });
+  for (const directory of temporaryMounts.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
+
+/** Write a ServiceAccount mount into a fresh temporary directory and name its three files. */
+function serviceAccountMount(contents: {
+  namespace: string;
+  token: string;
+  caCert: string;
+}): ServiceAccountPaths {
+  const directory = mkdtempSync(join(tmpdir(), 'actor-ts-sa-mount-'));
+  temporaryMounts.push(directory);
+  const paths: ServiceAccountPaths = {
+    namespacePath: join(directory, 'namespace'),
+    tokenPath: join(directory, 'token'),
+    caPath: join(directory, 'ca.crt'),
+  };
+  writeFileSync(paths.namespacePath, contents.namespace, 'utf8');
+  writeFileSync(paths.tokenPath, contents.token, 'utf8');
+  writeFileSync(paths.caPath, contents.caCert, 'utf8');
+  return paths;
+}
+
+/** What one request carried, which is where a mounted credential becomes observable. */
+type RecordedRequest = {
+  readonly path: string;
+  readonly authToken: string;
+  readonly caCert: string;
+};
+
+/**
+ * The shortest client that completes one acquire pass — 404 to the GET, 409 to
+ * the CREATE — recording the credential each request was sent with.
+ */
+function recordingClient(recorded: RecordedRequest[]): K8sFetchClient {
+  return {
+    async request(credentials, options) {
+      recorded.push({
+        path: options.path,
+        authToken: credentials.authToken,
+        caCert: credentials.caCert,
+      });
+      return options.method === 'GET'
+        ? { status: 404, body: { code: 404 } }
+        : { status: 409, body: { code: 409 } };
+    },
+  };
+}
 
 describe('readLeaseOptionsFromConfig', () => {
   test('the bundled reference supplies neither key', () => {
@@ -220,6 +276,79 @@ describe('the lease constructors actually read the block (#859)', () => {
     expect(requested[0]).toContain('/namespaces/from-config/leases/');
     const name = decodeURIComponent(requested[0]!.split('/leases/')[1]!);
     expect(name.length).toBeLessThanOrEqual(32);
+  });
+});
+
+describe('a redirected mount is the mount the lease actually reads (#859)', () => {
+  /**
+   * Everything above stops at the reader: the three path keys are asserted to
+   * land in an options object, and the validator's redirect rule is asserted to
+   * fire — but nothing drove a lease against a mount that had been moved.  So
+   * ignoring the paths entirely and reading the kubelet's defaults instead was
+   * green over the whole coordination, config and docs suites, which is to say
+   * `namespace-path`, `token-path` and `ca-path` were wired and held by nothing.
+   *
+   * These two cases use real files, one per credential half, with contents that
+   * exist nowhere else.  The kubelet defaults they would otherwise be read from
+   * are absent on a test machine, so a loader that ignored the paths could not
+   * produce these bytes even by accident — it fails to find a mount at all.
+   */
+  const mountContents = {
+    namespace: 'namespace-from-redirected-mount',
+    token: 'token-from-redirected-mount',
+    caCert: '<<ca-from-redirected-mount>>',
+  };
+
+  /** The credential a request carried came from the temp files, and from nowhere else. */
+  const expectRedirectedMount = (recorded: RecordedRequest[]): void => {
+    expect(recorded).not.toHaveLength(0);
+    expect(recorded[0]!.authToken).toBe(mountContents.token);
+    expect(recorded[0]!.caCert).toBe(mountContents.caCert);
+    // `namespace-path`'s only observable effect: the namespace it names is the
+    // one the Lease object is addressed in.
+    expect(recorded[0]!.path).toContain(`/namespaces/${mountContents.namespace}/leases/`);
+  };
+
+  test('the three path keys from application.conf name the files the credential comes from', async () => {
+    const paths = serviceAccountMount(mountContents);
+    const recorded: RecordedRequest[] = [];
+    const leaseOptions = KubernetesLeaseOptions.create()
+      .withName('redirected-mount-lease')
+      .withOwner('pod-1')
+      .withTtlMs(5_000)
+      .withAcquireRetries(1)
+      .withClient(recordingClient(recorded));
+    // JSON.stringify rather than the raw path: on Windows these are backslash
+    // paths, and a bare `"C:\Users\…"` in HOCON is a run of invalid escapes.
+    const lease = withApplicationConf(
+      `actor-ts.coordination.lease.kubernetes {
+         namespace-path = ${JSON.stringify(paths.namespacePath)}
+         token-path     = ${JSON.stringify(paths.tokenPath)}
+         ca-path        = ${JSON.stringify(paths.caPath)}
+       }`,
+      () => new KubernetesLease(leaseOptions),
+    );
+    await lease.acquire();
+
+    expectRedirectedMount(recorded);
+  });
+
+  test('the same three paths supplied in code reach the same files', async () => {
+    const paths = serviceAccountMount(mountContents);
+    const recorded: RecordedRequest[] = [];
+    const leaseOptions = KubernetesLeaseOptions.create()
+      .withName('redirected-mount-lease')
+      .withOwner('pod-1')
+      .withTtlMs(5_000)
+      .withAcquireRetries(1)
+      .withNamespacePath(paths.namespacePath)
+      .withTokenPath(paths.tokenPath)
+      .withCaPath(paths.caPath)
+      .withClient(recordingClient(recorded));
+    const lease = new KubernetesLease(leaseOptions);
+    await lease.acquire();
+
+    expectRedirectedMount(recorded);
   });
 });
 
