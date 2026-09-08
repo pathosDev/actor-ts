@@ -1,3 +1,5 @@
+import type { Scheduler } from '../Scheduler.js';
+
 export type RetryOptions = {
   /** Total attempts including the initial call.  Must be >= 1. */
   readonly attempts: number;
@@ -43,6 +45,18 @@ export type RetryOptions = {
    * `random` above, for the other half of the schedule.
    */
   readonly sleep?: (ms: number) => Promise<void>;
+  /**
+   * Where the delay between attempts is armed.  Default: a host timer.
+   *
+   * The same thing {@link sleep} buys, without the caller writing the adapter:
+   * `scheduler: system.scheduler` puts the whole backoff schedule on virtual
+   * time under a `ManualScheduler`, so a five-attempt exponential backoff is
+   * exact and instant instead of being the sum of five real delays (#1424).
+   *
+   * `sleep` wins if both are given — it is the lower-level door, and a caller
+   * that supplied one meant it.
+   */
+  readonly scheduler?: Scheduler;
 };
 
 const setTimeoutSleep = (ms: number): Promise<void> =>
@@ -132,7 +146,15 @@ export async function retry<T>(factory: () => Promise<T>, options: RetryOptions)
   }
   const random = options.random ?? Math.random;
   const shouldRetry = options.shouldRetry ?? ((): boolean => true);
-  const sleep = options.sleep ?? setTimeoutSleep;
+  // `sleep` first: it is the lower-level door, and a caller who supplied one
+  // meant it. A scheduler is the same thing without the adapter (#1424).
+  const scheduler = options.scheduler;
+  const sleep = options.sleep
+    ?? (scheduler === undefined
+      ? setTimeoutSleep
+      : (ms: number): Promise<void> => new Promise((resolve) => {
+        scheduler.scheduleOnceFunction(ms, () => { resolve(); });
+      }));
 
   let lastError: unknown;
   for (let attempt = 1; attempt <= max; attempt++) {

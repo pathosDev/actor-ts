@@ -1,3 +1,4 @@
+import type { Scheduler } from '../Scheduler.js';
 import type { Config } from '../config/Config.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
@@ -128,6 +129,16 @@ export type CircuitBreakerOptionsType = {
    * range, which is a test that passes for a broken multiplier.
    */
   readonly random?: () => number;
+  /**
+   * Where the breaker reads the time and arms its call timeout.  Default: the
+   * wall clock.
+   *
+   * The reset window is the reason this exists.  A realistic one is seconds, so
+   * a test of "the breaker reopens after the window" either waits those seconds
+   * or shortens the window until it is asserting a shape production never takes.
+   * Pass `system.scheduler` and a `ManualScheduler` crosses it for free (#1424).
+   */
+  readonly scheduler?: Scheduler;
 };
 
 /**
@@ -184,6 +195,11 @@ export class CircuitBreakerOptionsBuilder extends OptionsBuilder<CircuitBreakerO
   }
 
   /** Override `Math.random` — deterministic jitter for tests. */
+  /** Where the breaker reads the time and arms its call timeout. */
+  withScheduler(scheduler: Scheduler): this {
+    return this.set('scheduler', scheduler);
+  }
+
   withRandom(random: () => number): this {
     return this.set('random', random);
   }

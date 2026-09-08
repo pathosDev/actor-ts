@@ -11,6 +11,39 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`CircuitBreaker`, `after`, `retry` and `gracefulStop` can take their time
+  from a scheduler** (#1424).
+
+  ```ts
+  const breaker = new CircuitBreaker(
+    CircuitBreakerOptions.create()
+      .withMaxFailures(1)
+      .withResetTimeoutMs(10_000)
+      .withScheduler(system.scheduler),
+  );
+  ```
+
+  Each held a duration a test has to cross, and each armed a raw timer — so the
+  only way to cross one was to wait for it. The circuit breaker's reset window
+  is the worst case: a realistic one is seconds, so a test of "it reopens after
+  the window" either waits those seconds or shrinks the window until it is
+  asserting a shape production never takes.
+
+  - `CircuitBreakerOptions` gains `withScheduler` / `scheduler`, used for the
+    reset window and — only where that scheduler's time is virtual — for the
+    per-call timeout.
+  - `after(delayMs, factory, scheduler?)` takes an optional third argument.
+  - `RetryOptions` gains `scheduler`, which supplies the delay between attempts
+    without the caller writing the `sleep` adapter by hand. An explicit `sleep`
+    still wins; it is the lower-level door.
+  - `gracefulStop` needs no new argument at all — it reaches the scheduler
+    through the local ref it was given, and does so unconditionally, since a
+    graceful stop happens once per actor at shutdown and has no hot path to
+    protect.
+
+  All four defaults are unchanged: without a scheduler every one of them arms
+  the host timer it always did.
+
 - **An `ask` deadline and a receive timeout are virtual under a
   `ManualScheduler`** (#1424).
 
