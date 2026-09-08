@@ -242,30 +242,42 @@ expect(stopped).toBe(true);
 covers when a sleep is still the right call — an absence you can only give a
 window to, a duration that *is* the assertion, an interleaving a test needs.
 
-**This conversion is unfinished.**  479 sites under `tests/` still
-`await sleep(N)`, and 132 more take the same bet without the word `sleep` in
-it — an inline `Bun.sleep(20)`, or a `new Promise((r) => setTimeout(r, 20))`.
-611 fixed-delay waits in total, and **486 of them state no reason for the
-delay**.  Two duplications sit on top of that: 93 modules re-declare their own
-`sleep` rather than importing the shared one (8 import it), and 35 hand-roll a
-`waitFor` / `waitUntil` / `awaitConvergence` with its own timeout, its own
-poll step and no label.  Treat a `sleep`-then-`expect` pair in a failing test
-as a suspect before looking for anything cleverer.
+**The conversion has largely landed, and the shape of what is left is the
+useful part.**  486 fixed-delay waits remain under `tests/` — 440 written
+`await sleep(N)` and 46 as an inline `Bun.sleep(20)` — but **483 of them now
+state a reason for the delay**.  Three do not, and all three are in helper
+files rather than in a test: `tests/util/AwaitCondition.ts` (the shared `sleep`
+itself), and two in the integration-scenario tree.
 
-The count *rose* for a week while the conversion was being planned — 448 on
-2026-08-11 against 479 on 2026-08-18 — because unrelated new tests kept
-arriving in the old shape, two of them with a fresh per-file shim on a single
-day.  So those numbers are no longer only documentation.
+The two duplications the page used to report have essentially gone.  **One**
+file re-declares its own `sleep` — `tests/integration/scenarios/Types.ts`, which
+exports it for that tree — against **129** that import the shared one, and 11
+modules still hand-roll a `while (Date.now() < deadline)` loop rather than
+calling `awaitCondition`.  Treat a `sleep`-then-`expect` pair in a failing test
+as a suspect before looking for anything cleverer, and read its reason comment
+first: it will usually tell you whether the wait is the bet or the assertion.
+
+Those numbers are not only documentation.
 `tests/unit/ci/SleepRatchet.test.ts` re-measures them on every `bun test` and
 fails when one goes up, per module: the debt can shrink and cannot grow back.
-It does not forbid waiting — an absence cannot be polled for, and 57 of the
+It does not forbid waiting — an absence cannot be polled for, and many of the
 waits are followed by an assertion that something did *not* happen — it
-forbids an *unexplained* wait, a re-declared
-`sleep` and a re-invented poll loop, each with a one-line remedy the failure
-message spells out.  Measured 2026-08-18 at `95db877c`; a
-`grep -ro '<pattern>' tests/ --include=*.ts | wc -l` re-measures them roughly,
-but it also counts comments and quoted examples, which the gate's scanner
-blanks out first.
+forbids an *unexplained* wait, a re-declared `sleep` and a re-invented poll
+loop, each with a one-line remedy the failure message spells out.
+
+Measured 2026-09-08 at `5c7064f5`, over source with comments and string
+literals blanked, which is what the gate's own scanner does.  A raw
+`grep -ro '<pattern>' tests/ --include=*.ts | wc -l` re-measures them roughly
+and reads high, because it also counts the prose and the quoted examples — this
+page included.
+
+The previous figures on this page were measured at `95db877c` on 2026-08-18,
+*before* the #418 conversion sweep merged, so they described the tree before the
+work the page is about.  Two of them had not merely drifted but inverted: the
+page told a contributor that 93 files re-declare `sleep` "rather than importing
+the shared one (8 import it)", when today one file declares it and 129 import
+it (#1313).  A measured claim carries the revision it was measured at for
+exactly this reason.
 
 ### A budget the per-test timeout cannot reach
 

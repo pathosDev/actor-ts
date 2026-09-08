@@ -262,32 +262,47 @@ behandelt, wann ein Sleep weiterhin richtig ist — eine Abwesenheit, der man
 nur ein Zeitfenster geben kann, eine Dauer, die *selbst* die Assertion ist,
 eine Verschränkung, die ein Test braucht.
 
-**Diese Umstellung ist nicht abgeschlossen.**  479 Stellen unter `tests/`
-warten weiterhin mit `await sleep(N)`, und 132 weitere gehen dieselbe Wette
-ohne das Wort `sleep` ein — ein direktes `Bun.sleep(20)` oder ein
-`new Promise((r) => setTimeout(r, 20))`.  Insgesamt 611 Wartezeiten mit fester
-Dauer, und **486 davon nennen keinen Grund für die Verzögerung**.  Dazu kommen
-zwei Doppelungen: 93 Module deklarieren ihr eigenes `sleep`, statt das
-gemeinsame zu importieren (8 importieren es), und 35 bauen sich ein eigenes
-`waitFor` / `waitUntil` / `awaitConvergence` mit eigenem Timeout, eigenem
-Poll-Schritt und ohne Label.  Behandle ein `sleep`-dann-`expect`-Paar in einem
-umgefallenen Test als Verdächtigen, bevor du nach etwas Raffinierterem suchst.
+**Die Umstellung ist im Wesentlichen angekommen, und die Form des Rests ist
+der nützliche Teil.**  486 Wartezeiten mit fester Dauer bleiben unter `tests/` —
+440 als `await sleep(N)` geschrieben, 46 als direktes `Bun.sleep(20)` —, aber
+**483 davon nennen inzwischen einen Grund für die Verzögerung**.  Drei tun es
+nicht, und alle drei stehen in Helper-Dateien statt in einem Test:
+`tests/util/AwaitCondition.ts` (das gemeinsame `sleep` selbst) und zwei im
+Integration-Scenario-Baum.
 
-Die Zahl ist während der Planung der Umstellung eine Woche lang *gestiegen* —
-448 am 11.08.2026 gegen 479 am 18.08.2026 —, weil unbeteiligte neue Tests
-weiter in der alten Form ankamen, zwei davon an einem einzigen Tag mit einem
-frischen dateilokalen Shim.  Diese Zahlen sind deshalb nicht mehr nur
-Dokumentation: `tests/unit/ci/SleepRatchet.test.ts` misst sie bei jedem
-`bun test` nach und schlägt fehl, sobald eine steigt — pro Modul.  Die Schuld
-kann also schrumpfen und nicht wieder wachsen.  Verboten wird dabei nicht das
-Warten — eine Abwesenheit lässt sich nicht pollen, und auf 57 der Wartezeiten
-folgt eine Assertion, dass etwas *nicht* passiert ist —, sondern eine
-*unbegründete* Wartezeit, ein neu deklariertes
-`sleep` und eine neu erfundene Poll-Schleife; für alle drei nennt die
-Fehlermeldung eine einzeilige Abhilfe.  Erhoben am 18.08.2026 auf `95db877c`;
-ein `grep -ro '<pattern>' tests/ --include=*.ts | wc -l` misst grob nach, zählt
-aber auch Kommentare und zitierte Beispiele mit, die der Scanner der Prüfung
-vorher ausblendet.
+Die beiden Doppelungen, die diese Seite früher meldete, sind praktisch weg.
+**Eine** Datei deklariert noch ihr eigenes `sleep` —
+`tests/integration/scenarios/Types.ts`, die es für diesen Baum exportiert —
+gegen **129**, die das gemeinsame importieren, und 11 Module bauen sich noch
+eine `while (Date.now() < deadline)`-Schleife, statt `awaitCondition` zu rufen.
+Behandle ein `sleep`-dann-`expect`-Paar in einem umgefallenen Test als
+Verdächtigen, bevor du nach etwas Raffinierterem suchst — und lies zuerst
+seinen Begründungskommentar: meist sagt er dir, ob das Warten die Wette ist
+oder die Assertion.
+
+Diese Zahlen sind nicht nur Dokumentation.
+`tests/unit/ci/SleepRatchet.test.ts` misst sie bei jedem `bun test` nach und
+schlägt fehl, sobald eine steigt — pro Modul.  Die Schuld kann also schrumpfen
+und nicht wieder wachsen.  Verboten wird dabei nicht das Warten — eine
+Abwesenheit lässt sich nicht pollen, und auf viele der Wartezeiten folgt eine
+Assertion, dass etwas *nicht* passiert ist —, sondern eine *unbegründete*
+Wartezeit, ein neu deklariertes `sleep` und eine neu erfundene Poll-Schleife;
+für alle drei nennt die Fehlermeldung eine einzeilige Abhilfe.
+
+Erhoben am 08.09.2026 auf `5c7064f5`, über Quelltext mit ausgeblendeten
+Kommentaren und String-Literalen — genau das, was der Scanner der Prüfung tut.
+Ein rohes `grep -ro '<pattern>' tests/ --include=*.ts | wc -l` misst grob nach
+und liegt zu hoch, weil es auch die Prosa und die zitierten Beispiele mitzählt —
+diese Seite eingeschlossen.
+
+Die früheren Zahlen auf dieser Seite wurden am 18.08.2026 auf `95db877c`
+erhoben, *bevor* die Umstellungs-Welle aus #418 gemergt wurde — sie
+beschrieben also den Baum vor genau der Arbeit, um die es auf dieser Seite
+geht.  Zwei von ihnen waren nicht nur veraltet, sondern invertiert: Die Seite
+sagte einer Mitwirkenden, 93 Dateien deklarierten `sleep` neu, „statt das
+gemeinsame zu importieren (8 importieren es)" — heute deklariert es eine Datei
+und 129 importieren es (#1313).  Eine gemessene Behauptung trägt genau deshalb
+die Revision mit sich, auf der sie erhoben wurde.
 
 ### Ein Budget, das der Test-Timeout nie erreicht
 
