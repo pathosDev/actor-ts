@@ -405,6 +405,13 @@ describe('what the detector announces while a downing provider holds a peer (#92
     lastHeardFrom(node.cluster, peer, SILENT_PAST_DOWN_MS);
     for (let tick = 0; tick < HELD_TICKS; tick++) {
       internals(node.cluster).failureDetectionTick();
+      // The elapsed time IS the assertion here, so this wait stays: since #839
+      // the provider is consulted only once the view has held still for
+      // `stableAfterMs`, which is wall-clock and not a tick count.  Drive the
+      // ticks with no time between them and the window never opens —
+      // `consultedAboutPartition` stays 0 rather than merely small, which is
+      // what makes this the one test in the file that cannot use the bare loop
+      // its three siblings share.
       await sleep(1);
     }
 
