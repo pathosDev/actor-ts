@@ -504,11 +504,15 @@ nach der gesucht wurde — was den ersten Fall schon allein klärt.
 
 Zwei Dinge, bevor du diesen Eintrag in ein Ticket kopierst.  Es ist ein
 `info`-Eintrag, braucht also keinen zweiten Schalter — aber er **druckt deine
-Konfiguration**, und Werte werden nur zurückgehalten, wenn der *Key-Name* auf
-`pass`, `secret`, `token`, `key`, `credential` oder `auth` passt.  Ein
-Geheimnis in einem Key namens `dsn` oder `connection-string` steht vollständig
-da, und keine Heuristik behebt das: Wenn der Baum zusammengeführt ist, ist ein
-`${?DATABASE_PASSWORD}` eine gewöhnliche Zeichenkette.
+Konfiguration**, und Werte werden nur zurückgehalten, wenn ein ganzes Wort des
+*Key-Namens* `password`, `passphrase`, `secret`, `token`, `key`, `credential`
+oder `auth` lautet.  Ein Geheimnis in einem Key namens `dsn` oder
+`connection-string` steht vollständig da, und keine Heuristik behebt das: Wenn
+der Baum zusammengeführt ist, ist ein `${?DATABASE_PASSWORD}` eine gewöhnliche
+Zeichenkette.  Gewöhnliche Tuning-Werte werden *nicht* zurückgehalten, bloß
+weil sie eines dieser Wörter in einem längeren Wort buchstabieren —
+`passivation-idle` und `keyspace` werden gedruckt, und das müssen sie auch,
+damit der Dump lesenswert bleibt.
 [Konfiguration](/de/reference/configuration/) nennt die Grenzen vollständig.
 
 Die drei `debug.*`-Schalter brauchen **zwei** Schalter, und das ist der

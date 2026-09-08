@@ -197,20 +197,31 @@ absichtlich nicht zu dieser Familie — es ist ein `info`-Eintrag, denn wer
 einen Konfigurations-Dump anfordert, hat um Ausgabe gebeten.
 
 **Was der Dump schwärzt und was nicht.**  Ein Wert wird zurückgehalten, wenn
-sein **Key-Name** auf `pass`, `secret`, `token`, `key`, `credential` oder
-`auth` passt — `cache.redis.password` und ein `api-key` erscheinen also als
-`<redacted>`.  Das ist eine Heuristik über Key-Namen und die schwächere
-Hälfte der Zusage: Ein Geheimnis, dessen Key es nicht verrät — ein `dsn`, ein
+ein **ganzes Wort** seines Keys `password`, `passphrase`, `secret`, `token`,
+`key`, `credential` oder `auth` lautet, im Singular wie im Plural —
+`cache.redis.password` und ein `api-key` erscheinen also als `<redacted>`, und
+ebenso jeder Key unterhalb eines Zweigs namens `credentials`.  Ganze Wörter,
+und dabei das *letzte* Wort eines Namens, denn dieses Wort sagt, was der Wert
+**ist**: `api-key` ist ein Key, `key-prefix` dagegen ein Prefix,
+`passivation-idle` ein Timeout und `max-subscribers-per-key` eine Anzahl.  Ein
+Wert, der ein Boolean ist, wird nie zurückgehalten — egal wie sein Key heißt,
+denn beide Zustände sind öffentlich.
+
+Das ist eine Heuristik über Key-Namen und die schwächere Hälfte der Zusage:
+Ein Geheimnis, dessen Key es nicht verrät — ein `dsn`, ein
 `connection-string`, eine `uri` mit Passwort darin — kann sie nicht fassen,
 denn wenn der zusammengeführte Baum existiert, ist ein
 `${?DATABASE_PASSWORD}` längst zu einer gewöhnlichen Zeichenkette aufgelöst,
-der man ihre Herkunft nicht mehr ansieht.  Die Liste wird auch nicht weiter
-gefasst: `seed` würde `cluster.seed-nodes` schwärzen, und ein Dump, dessen
-gewöhnliche Keys `<redacted>` lauten, wird nicht mehr gelesen.  Behandle die
-Ausgabe also als vertraulich, lass den Key außerhalb einer Untersuchung auf
-`off`, und sieh nach, wie deine eigenen Keys heißen, bevor du einen Dump in
-ein Ticket kopierst.  Dieselbe Regel, dieselbe Liste und dieselben Grenzen
-gelten für das Konfigurations-Panel der DevTools.
+der man ihre Herkunft nicht mehr ansieht.  Sie liest auch einen Namen, dessen
+letztes Wort ein Bezeichner oder ein Ort ist, nicht als die Sache selbst:
+`kms-key-id` ist eine Id und `token-path` ein Dateipfad — beide werden
+gedruckt.  Und die Liste wird nicht weiter gefasst: `seed` würde
+`cluster.seed-nodes` schwärzen, und ein Dump, dessen gewöhnliche Keys
+`<redacted>` lauten, wird nicht mehr gelesen.  Behandle die Ausgabe also als
+vertraulich, lass den Key außerhalb einer Untersuchung auf `off`, und sieh
+nach, wie deine eigenen Keys heißen, bevor du einen Dump in ein Ticket
+kopierst.  Dieselbe Regel, dieselbe Liste und dieselben Grenzen gelten für das
+Konfigurations-Panel der DevTools.
 
 ### `actor-ts.mailbox`
 

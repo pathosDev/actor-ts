@@ -22,6 +22,7 @@ import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config } from '../../../src/config/Config.js';
 import { configDumpLines } from '../../../src/diagnostics/ConfigDump.js';
 import { DiagnosticsOptions } from '../../../src/diagnostics/DiagnosticsOptions.js';
+import { CONFIG_REDACTED } from '../../../src/util/Constants.js';
 import { RecordingLogger, type RecordedLog } from '../../util/RecordingLogger.js';
 
 /**
@@ -36,6 +37,42 @@ const layered = (overrides: Record<string, unknown>): Config =>
 
 const dumpOf = (log: RecordingLogger): RecordedLog[] =>
   log.records.filter((record) => record.message.startsWith('configuration in effect'));
+
+/** One body line of a dump, split back into the two columns that matter. */
+type DumpLine = {
+  readonly path: string;
+  readonly value: string;
+};
+
+/**
+ * The body of a dump, parsed.
+ *
+ * The header is dropped and the `  [layer]` suffix stripped, so a case can ask
+ * what a key printed without restating the whole line format.  A path never
+ * contains a space, so the first ` = ` is the column separator even when the
+ * value holds one.
+ */
+const bodyOf = (text: string): DumpLine[] =>
+  text.split('\n').slice(1).map((line) => {
+    const at = line.indexOf(' = ');
+    return { path: line.slice(2, at), value: line.slice(at + 3).replace(/ {2}\[[^\]]*\]$/, '') };
+  });
+
+/**
+ * What one key printed, or a throw naming the key that has gone.
+ *
+ * The throw is the point: a case naming a key `reference.conf` no longer ships
+ * would otherwise pass by asserting nothing.
+ */
+const printed = (text: string, path: string): string => {
+  const line = bodyOf(text).find((one) => one.path === path);
+  if (line === undefined) throw new Error(`the dump has no line for ${path}`);
+  return line.value;
+};
+
+/** Every path the dump withheld, sorted as the dump sorts. */
+const withheld = (text: string): string[] =>
+  bodyOf(text).filter((line) => line.value === CONFIG_REDACTED).map((line) => line.path);
 
 describe('configDumpLines — the text the dump writes', () => {
   test('a value whose KEY says it is a secret is withheld', () => {
@@ -112,6 +149,164 @@ describe('configDumpLines — the text the dump writes', () => {
     }));
 
     expect(text).toContain('actor-ts.cluster.seed-nodes = ["one","two"]');
+  });
+});
+
+/**
+ * The keys `reference.conf` ships that hold a credential slot.
+ *
+ * Named in full rather than counted, and asserted as the *whole* withheld set,
+ * because both halves of that are the property worth pinning.  A shipped key
+ * that stops being withheld is a leak; a shipped tuning value that starts
+ * being withheld is the defect this block exists for — the heuristic reading
+ * four letters of a longer word and hiding a number an operator came to check.
+ * Either direction has to show up as a diff of this list.
+ */
+const STOCK_WITHHELD: readonly string[] = [
+  'actor-ts.cache.memcached.password',
+  'actor-ts.cache.redis.password',
+  'actor-ts.logger.sinks.parseable.api-key',
+  'actor-ts.logger.sinks.parseable.password',
+  'actor-ts.logger.sinks.seq.api-key',
+  'actor-ts.logger.sinks.splunk.token',
+  'actor-ts.persistence.durable-state.cloudflare-d1.api-token',
+  'actor-ts.persistence.durable-state.libsql.auth-token',
+  'actor-ts.persistence.journal.cloudflare-d1.api-token',
+  'actor-ts.persistence.journal.libsql.auth-token',
+  'actor-ts.persistence.snapshot-store.cloudflare-d1.api-token',
+  'actor-ts.persistence.snapshot-store.libsql.auth-token',
+];
+
+/**
+ * Shipped tuning values whose names merely *contain* letters a credential also
+ * spells, with the value each one has to print.
+ *
+ * Every one of these read `<redacted>` while the pattern was a bare substring
+ * alternation over the full dotted path: `passivation` contains `pass`,
+ * `keyspace` contains `key`, and `token-reload-interval` is a duration.  A
+ * dump that hides these is worse than useless — it hides exactly the tuning an
+ * operator turned the dump on to check, and teaches them the output cannot be
+ * trusted.
+ */
+const STOCK_PRINTED: readonly (readonly [string, string])[] = [
+  ['actor-ts.sharding.passivation-idle', '"5m"'],
+  ['actor-ts.sharding.passivation.stop-timeout', '"0ms"'],
+  ['actor-ts.sharding.passivation.replacement', '"least-recently-used"'],
+  ['actor-ts.sharding.passivation.admission-filter', '"off"'],
+  ['actor-ts.sharding.passivation.admission-window-proportion', '0'],
+  ['actor-ts.sharding.passivation.segmented-protected-proportion', '0.8'],
+  ['actor-ts.cluster.receptionist.max-subscribers-per-key', '1000'],
+  ['actor-ts.distributed-data.durable-keys', '[]'],
+  ['actor-ts.cache.redis.key-prefix', '""'],
+  ['actor-ts.cache.memcached.key-prefix', '""'],
+  ['actor-ts.persistence.journal.cassandra.keyspace', '""'],
+  ['actor-ts.persistence.journal.cassandra.auto-create-keyspace', '"off"'],
+  ['actor-ts.persistence.snapshot-store.cassandra.keyspace', '""'],
+  ['actor-ts.persistence.snapshot-store.cassandra.auto-create-keyspace', '"off"'],
+  ['actor-ts.http.cors.credentials', '"off"'],
+  ['actor-ts.management.auth-protect-health', 'false'],
+  ['actor-ts.coordination.lease.kubernetes.token-path',
+    '"/var/run/secrets/kubernetes.io/serviceaccount/token"'],
+  ['actor-ts.coordination.lease.kubernetes.token-reload-interval', '"1m"'],
+  ['actor-ts.persistence.snapshot-store.object-storage.encryption.kms-key-id', '""'],
+];
+
+describe('what the dump withholds in a stock configuration (#867)', () => {
+  test.each(STOCK_PRINTED)('%s prints its value rather than <redacted>', (path, value) => {
+    expect(printed(configDumpLines(layered({})), path)).toBe(value);
+  });
+
+  test.each([...STOCK_WITHHELD])('%s is withheld', (path) => {
+    expect(printed(configDumpLines(layered({})), path)).toBe(CONFIG_REDACTED);
+  });
+
+  test('those credential slots are the ONLY keys a stock tree withholds', () => {
+    expect(withheld(configDumpLines(layered({})))).toEqual([...STOCK_WITHHELD]);
+  });
+});
+
+describe('which key names count as naming a secret', () => {
+  test('a secret word inside a longer word is not that word', () => {
+    // `passivation` is not `pass` and `keyspace` is not `key`.  A substring
+    // alternation cannot tell them apart; the tokens of the name can.
+    const text = configDumpLines(layered({
+      'my-app': { passivation: 'aggressive', keyspace: 'billing', authority: 'eu-west' },
+    }));
+
+    expect(printed(text, 'my-app.passivation')).toBe('"aggressive"');
+    expect(printed(text, 'my-app.keyspace')).toBe('"billing"');
+    expect(printed(text, 'my-app.authority')).toBe('"eu-west"');
+  });
+
+  test('the last word of the name says what the value is', () => {
+    // `api-key` is a key; `key-prefix` is a prefix that happens to be about
+    // keys.  Head-final is what separates the credential from the setting
+    // named after one.
+    const text = configDumpLines(layered({
+      'my-app': { 'api-key': 'sk-live-1', 'key-prefix': 'orders:', 'token-path': '/run/tok' },
+    }));
+
+    expect(printed(text, 'my-app.api-key')).toBe(CONFIG_REDACTED);
+    expect(printed(text, 'my-app.key-prefix')).toBe('"orders:"');
+    expect(printed(text, 'my-app.token-path')).toBe('"/run/tok"');
+  });
+
+  test('a preposition moves the head in front of it', () => {
+    // `subscribers-per-key` is a count of subscribers.  `secret-per-tenant`
+    // is still a secret — the rule takes what precedes the preposition, so it
+    // reads the qualified side, not the object.
+    const text = configDumpLines(layered({
+      'my-app': { 'max-requests-per-token': 50, 'secret-per-tenant': 'hunter2' },
+    }));
+
+    expect(printed(text, 'my-app.max-requests-per-token')).toBe('50');
+    expect(printed(text, 'my-app.secret-per-tenant')).toBe(CONFIG_REDACTED);
+  });
+
+  test('a camelCase key is read as words too, so it cannot slip through', () => {
+    // Nothing forces an application subtree into kebab-case, and a redaction
+    // that only understands one spelling is a redaction with a hole in it.
+    const text = configDumpLines(layered({
+      'my-app': { apiKey: 'sk-live-2', clientSecret: 'hunter2', keyPrefix: 'orders:' },
+    }));
+
+    expect(printed(text, 'my-app.apiKey')).toBe(CONFIG_REDACTED);
+    expect(printed(text, 'my-app.clientSecret')).toBe(CONFIG_REDACTED);
+    expect(printed(text, 'my-app.keyPrefix')).toBe('"orders:"');
+  });
+
+  test('a value from HOCON’s boolean vocabulary is never withheld', () => {
+    // Six spellings, all of them public.  `auth-protect-health = false` says
+    // nothing a reader did not already know, whatever the key is called, and
+    // a `<redacted>` there is pure noise.
+    const text = configDumpLines(layered({
+      'my-app': { password: 'off', 'api-token': false, 'client-secret': 'yes' },
+    }));
+
+    expect(printed(text, 'my-app.password')).toBe('"off"');
+    expect(printed(text, 'my-app.api-token')).toBe('false');
+    expect(printed(text, 'my-app.client-secret')).toBe('"yes"');
+  });
+
+  test('a real credential is still withheld under every spelling', () => {
+    const text = configDumpLines(layered({
+      'my-app': {
+        password: 'hunter2',
+        passphrase: 'correct horse',
+        secret: 's',
+        'client-secret': 's',
+        token: 't',
+        'auth-token': 't',
+        'api-key': 'k',
+        'private-key': 'k',
+        credentials: 'c',
+        'api-keys': ['k1', 'k2'],
+      },
+    }));
+
+    for (const line of bodyOf(text).filter((one) => one.path.startsWith('my-app.'))) {
+      expect(line.value).toBe(CONFIG_REDACTED);
+    }
   });
 });
 
