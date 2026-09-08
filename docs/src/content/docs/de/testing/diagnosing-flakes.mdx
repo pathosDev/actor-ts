@@ -229,7 +229,7 @@ Ursachen, die diese Suite tatsächlich hatte, mit ihrem jeweiligen Stand.
 | Ein Budget, das der Test-Timeout nie erreicht | Geprüft | `this test timed out after 5000ms`, wo ein `awaitCondition`-Label erwartet war |
 | Echte Arbeit in einem Hook, gegen ein Limit, das niemand gesetzt hat | Geklärt | `(unnamed)` und „a beforeEach/afterEach hook timed out“, ohne Testnamen |
 | Echte Arbeit in einem Test-Body, gegen ein Limit, das niemand gesetzt hat | Geklärt | `this test timed out after 5000ms` mit einem Testnamen, der begrenzte Arbeit tut und allein durchläuft |
-| Buns Timer-Quantum | Geklärt | Eine Elapsed-Time-Assertion fällt um ~15 ms daneben, auf unbeschäftigter Maschine |
+| Buns Timer-Quantum | Frühe Hälfte mit bun 1.4 erledigt | Eine Elapsed-Time-Assertion fällt um ~15 ms daneben, auf unbeschäftigter Maschine |
 | Dispatcher-Hop zwischen Warten und Prüfen | Geklärt | Isoliert nie reproduzierbar; fällt nur im großen Parallel-Lauf um |
 | Port-Kollisionen | Geklärt | `EADDRINUSE`, nur wenn Suites sich überlappen |
 | Filesystem-Races | Geklärt | Zwei Suites lesen die Fixtures der jeweils anderen |
@@ -456,22 +456,36 @@ ein echter Lauf der ganzen Suite her.  Klär den Mechanismus stattdessen per
 Messung — die Modul-Scope-Fixture oben entscheidet ihn in einem einzigen Lauf,
 ohne den Flake je zu reproduzieren.
 
-### Buns Timer-Quantum
+### Buns Timer-Quantum — die frühe Hälfte ist erledigt
 
 Die Standard-Timer-Auflösung unter Windows ist 15,625 ms, und Buns Event-Loop
-entscheidet auf dieser Tick-Grenze, dass ein Timer fällig ist — ein
-`setTimeout`, dessen Deadline knapp *unter* einem Tick-Vielfachen liegt,
-feuert also einen ganzen Tick **zu früh**.  Ein `setTimeout(30)` wurde auf
-einer unbeschäftigten Maschine mit 18,67 ms gemessen.
+entschied in 1.3 auf dieser Tick-Grenze, dass ein Timer fällig ist — ein
+`setTimeout`, dessen Deadline knapp *unter* einem Tick-Vielfachen lag, feuerte
+also einen ganzen Tick **zu früh**.  Ein `setTimeout(30)` wurde auf einer
+unbeschäftigten Maschine mit 18,67 ms gemessen; 30 ms war pathologisch, weil es
+knapp unter `2 × 15,625` liegt.
 
-Die Uhr ist nicht das Problem, genauer messen hilft also nicht; die Toleranz
-war falsch.  `tests/util/TimerTolerance.ts` trägt die Messungen und
-`minimumElapsedMs()`, das eine Untergrenze ein volles Quantum unter den
-Nominalwert legt.  Eine sichere **Obergrenze** gibt es nicht — derselbe
-30-ms-Timer wurde unter CPU-Last mit 201 ms gemessen, und eine Grenze, die
-locker genug ist, das zu überleben, kann die geprüfte Verzögerung nicht mehr
-von einer längeren unterscheiden.  Prüfe stattdessen virtuelle Zeit mit dem
-[ManualScheduler](/de/testing/manual-scheduler/).
+**Bun 1.4 hat das behoben.**  Neu gemessen am 08.09.2026, 60 Stichproben bei je
+5, 20, 30 und 60 ms: kein einziges Feuern unter dem Nominalwert, und die
+30-ms-Zeile kam mit minimal 30,04 ms zurück.  `minimumElapsedMs()` gibt daher
+kein Quantum mehr her — sein Spielraum gilt nur noch der Verspätung, und
+`tests/util/TimerTolerance.ts` trägt beide Messungen, denn eine Toleranz, die
+nur festhält, was heute gilt, erklärt nicht, warum es sie gibt.
+
+Eine Folge, die zu nennen sich lohnt, weil sie Arbeit *streicht*: **ein
+30-ms-Sleep ist kein zu vermeidender Wert mehr.**  Er stand auf der Liste der
+Dinge, die aus der Suite gefegt werden sollten; der Sweep entfällt, weil sein
+Grund weg ist und 44 Stellen für eine Zahl umzuschreiben, die sich jetzt
+benimmt, nichts einbrächte.
+
+**Die späte Hälfte ist nicht verschwunden, und sie ist die wichtigere.**  Eine
+sichere **Obergrenze** gibt es weiterhin nicht — derselbe 30-ms-Timer wurde
+unter CPU-Last mit 201 ms gemessen, Verspätung ist das, was der OS-Scheduler
+entscheidet, und eine Grenze, die locker genug ist, das zu überleben, kann die
+geprüfte Verzögerung nicht mehr von einer längeren unterscheiden.  Prüfe
+stattdessen virtuelle Zeit mit dem
+[ManualScheduler](/de/testing/manual-scheduler/), der inzwischen fast überall
+hinreicht, wo das Framework wartet.
 
 ### Dispatcher-Hop zwischen Warten und Prüfen
 

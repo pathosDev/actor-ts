@@ -422,20 +422,32 @@ counters, which only a real whole-suite run recreates.  Establish the mechanism
 by measurement instead — the module-scope fixture above settles it in a single
 run, without ever reproducing the flake.
 
-### Bun's timer quantum
+### Bun's timer quantum — the early half is retired
 
-Windows' default timer resolution is 15.625 ms, and Bun's event loop decides
-a timer is due on that tick boundary — so a `setTimeout` whose deadline sits
-just *below* a tick multiple fires a full tick **early**.  A `setTimeout(30)`
-was measured firing at 18.67 ms on an idle machine.
+Windows' default timer resolution is 15.625 ms, and Bun 1.3's event loop decided
+a timer was due on that tick boundary — so a `setTimeout` whose deadline sat
+just *below* a tick multiple fired a full tick **early**.  A `setTimeout(30)`
+was measured firing at 18.67 ms on an idle machine, 30 ms being pathological
+because it sits just under `2 × 15.625`.
 
-The clock is not the problem, so measuring more precisely does not help; the
-tolerance was wrong.  `tests/util/TimerTolerance.ts` carries the measurements
-and `minimumElapsedMs()`, which puts a lower bound a full quantum below
-nominal.  There is **no safe upper bound** — the same 30 ms timer was
-measured at 201 ms under CPU load, and a bound loose enough to survive that
-can no longer tell the delay it is checking apart from a longer one.  Assert
-virtual time with [ManualScheduler](/testing/manual-scheduler/) instead.
+**Bun 1.4 fixed it.**  Re-measured 2026-09-08, 60 samples at each of 5, 20, 30
+and 60 ms: not one fire below nominal, and the 30 ms row came back at 30.04 ms
+minimum.  So `minimumElapsedMs()` no longer gives a quantum away — its slack is
+lateness-only, and `tests/util/TimerTolerance.ts` carries both measurements,
+because a tolerance that records only what is true today explains nothing about
+why it exists.
+
+A consequence worth stating, since it removes work rather than adding it: **a
+30 ms sleep is no longer a value to avoid.**  It was on the list of things to
+sweep out of the suite; the sweep is off, because the reason for it is gone and
+churning 44 sites to change a number that now behaves would buy nothing.
+
+**The late half has not gone anywhere, and it is the half that matters.**  There
+is still no safe upper bound — the same 30 ms timer was measured at 201 ms under
+CPU load, lateness is whatever the OS scheduler decides, and a bound loose enough
+to survive it can no longer tell the delay it is checking apart from a longer
+one.  Assert virtual time with [ManualScheduler](/testing/manual-scheduler/)
+instead, which now reaches nearly everywhere the framework waits.
 
 ### A dispatcher hop between wait and assert
 
