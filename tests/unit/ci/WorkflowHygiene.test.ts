@@ -924,6 +924,49 @@ describe('workflow hygiene', () => {
     ).toBeUndefined();
   });
 
+  /**
+   * **`--parallel` must not reach the coverage run**, and the reason is a
+   * measurement rather than a worry.
+   *
+   * It executes identically: on this tree a parallel run reports the same hit
+   * count for 721 of 723 files, and the aggregate numerator is byte-for-byte
+   * the same 55 293 lines.  What changes is the denominator — 407 files report
+   * *more* instrumented lines and none fewer, so `src/cluster/Cluster.ts` goes
+   * from 1 077 to 1 469 against the same 1 074 hit.  The aggregate then reads
+   * **79.16 % instead of 93.82 % on the same code**, which is straight through
+   * the 90 % floor.
+   *
+   * That is the dangerous shape: nothing is tested less, the number simply
+   * moves, and the obvious response to a red gate would be to lower the floor.
+   * The floors in `scripts/coverage-gate.mjs` were calibrated against the
+   * single-process denominator, so the two have to stay together.
+   *
+   * The flag is genuinely worth having elsewhere — 293 s to 28 s on 32 cores —
+   * and `multi-runtime.yml` uses it.  This is about one step.
+   */
+  test.each(bunTests.filter((run) => run.command.includes('--coverage')))(
+    '$workflow:$line measures coverage in one process',
+    ({ command }) => {
+      expect(
+        command,
+        'A coverage run with --parallel reports a ~19% larger instrumented-line '
+        + 'denominator for identical execution (79.16% against 93.82% on this '
+        + 'tree), which fails the 90% floor by changing what is measured rather '
+        + 'than what is tested. The floors in scripts/coverage-gate.mjs are '
+        + 'calibrated against the single-process denominator. Speed up the '
+        + 'plain suite instead — multi-runtime.yml already does (#1332).',
+      ).not.toMatch(/--parallel\b/);
+    },
+  );
+
+  test('the coverage run this reasons about is still there', () => {
+    // The assertion above is a `test.each` over a filter, and a filter that
+    // matches nothing passes silently.
+    expect(
+      bunTests.filter((run) => run.command.includes('--coverage')).length,
+    ).toBeGreaterThan(0);
+  });
+
   test.each(jobs)('$workflow#$name keeps write access away from installs', (job) => {
     if (!job.lines.some((line) => /^\s+contents:\s*write\s*$/.test(line))) return;
     const offender = job.lines.find((line) => INSTALL_COMMAND.test(line) && !line.trim().startsWith('#'));

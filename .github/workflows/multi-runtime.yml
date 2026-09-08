@@ -164,9 +164,23 @@ jobs:
       # than left to bun: bun reports its own seed in the trailing summary
       # block, which it stops printing under GitHub Actions.  A seed nobody can
       # read is not a reproduction.
+      #
+      # **`--parallel` here and deliberately not in `test.yml`** (#1332).  It is
+      # measured, not assumed: on a 32-core machine the suite goes from 293 s to
+      # 28 s — 10.5x — with 11 962 tests green, and 5 of 5 green when repeated
+      # under different shuffles.  Nothing depends on cross-file state that the
+      # implied `--isolate` breaks.
+      #
+      # The coverage run in `test.yml` stays single-process because the same
+      # measurement showed why it must: identical execution, but a 19 % larger
+      # instrumented-line denominator.  See the comment on that step.
+      #
+      # Running the two gates under *different* schedulings is a small bonus
+      # rather than a redundancy — one shuffle across one process, one across
+      # thirty-two, is more of the ordering space than either alone.
       - name: Tests, in randomized order
         run: |
           SEED=$(( (RANDOM << 15) + RANDOM ))
           echo "test order seed: --seed=$SEED"
           printf 'Test order seed: `--seed=%s`\n' "$SEED" >> "$GITHUB_STEP_SUMMARY"
-          bun test --seed="$SEED"
+          bun test --parallel --seed="$SEED"

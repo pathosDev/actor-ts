@@ -317,6 +317,19 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   (#1310). A summary that is *missing* counts as red, deliberately: "the job
   produced no verdict" and "the job was green" are opposite facts, and the first
   two nights of that workflow uploaded no artifact while nobody noticed.
+- **`bun test --parallel` is on for the plain suite and off for the coverage
+  run**, and the split is measured (#1332). On 32 cores the suite goes 293 s →
+  **28 s**, 11 962 tests green, 5 of 5 green when repeated under different
+  shuffles — nothing depends on cross-file state that the implied `--isolate`
+  breaks. But under `--parallel` bun instruments *more lines per file* for
+  identical execution: 721 of 723 files report the same hit count and the
+  numerator is byte-for-byte the same 55 293 lines, while 407 files report a
+  larger denominator and none a smaller one. The aggregate then reads **79.16 %
+  against 93.82 % on the same code**, straight through the 90 % floor by
+  changing what is measured rather than what is tested. `multi-runtime.yml`
+  therefore runs parallel and `test.yml`'s coverage step does not;
+  `tests/unit/ci/WorkflowHygiene.test.ts` keeps it that way, because the obvious
+  response to that red gate would be to lower the floor.
 - **Generative tests run against a pinned seed.**
   `tests/setup/property-seed.ts` calls `fc.configureGlobal` and is loaded by
   `bunfig.toml`'s `preload`, so all ~52 `fc.assert` sites share one seed, one
