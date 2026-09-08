@@ -1072,7 +1072,7 @@ The bounds on a **connection** — as against a route on it — come from
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `http.server.idle-timeout` | *(backend's own)* | How long an idle keep-alive connection is held before it is destroyed.  Ships **no leaf** — see below.  `0` disables it. |
-| `http.server.header-timeout` | `60s` | How long a connection may take to deliver its complete header block before it is answered `408` and destroyed.  The slow-loris guard. |
+| `http.server.header-timeout` | `60s` | How long a connection may take to deliver its complete header block before it is answered `408` and destroyed.  The slow-loris guard, held by actor-ts itself — see below.  `0` disables it. |
 | `http.server.request-timeout` | `300s` | How long a connection may take to deliver a request in full, headers and body.  Bounds *receiving*, never answering. |
 | `http.server.max-connections` | *(unlimited)* | Concurrent connections the listening socket accepts before it starts closing new ones.  Ships **no leaf** — see below. |
 
@@ -1092,14 +1092,14 @@ actor-ts.http.server {
 
 :::caution[Not every backend can honour these]
 They are properties of a `node:http` server, so they hold exactly where one
-exists.
+exists — and two of them, marked †, are held by actor-ts on top of it.
 
 | Key | Fastify | Express | Hono / Node | Hono / Bun | Hono / Deno |
 | --- | --- | --- | --- | --- | --- |
 | `idle-timeout` | yes | yes | yes | **no** | **no** |
-| `header-timeout` | yes | yes | yes | **no** | **no** |
+| `header-timeout` | yes † | yes † | yes † | **no** | **no** |
 | `request-timeout` | yes | yes | yes | **no** | **no** |
-| `max-connections` | yes | yes | yes | **no** | **no** |
+| `max-connections` | yes † | yes † | yes † | **no** | **no** |
 
 Hono owns no server of its own — it delegates to a per-runtime runner — and
 only `@hono/node-server` hands its `node:http` server back.  `Bun.serve` and
@@ -1109,6 +1109,27 @@ a gap, not a silent partial: nothing is written and nothing pretends to have
 been.  Bun does have a whole-connection `idleTimeout` on `Bun.serve`, in
 *seconds* rather than milliseconds, which is close enough to be tempting and
 different enough to be wrong; it is not wired here.
+
+**† actor-ts holds these two itself rather than handing the number to the
+runtime and hoping.**  The property is still written — where a runtime honours
+it the work happens earlier and more cheaply — but neither bound depends on
+that, because on the primary toolchain one of them was not being held at all.
+Measured on a bare `node:http` server against a socket that sends a header
+block and never the terminating blank line: node v26.7.0 answers `408` and
+closes, **bun 1.4.0 stores `headersTimeout`, reports it back unchanged and
+enforces nothing** — `2s`, `40s`, `120s` and `0` alike produced the same ~12 s
+close with no `408`, which is Bun's own idle timeout and not this guard — and
+**deno 2.6.8 ignores it and never closes the connection at all**.  A control
+this documentation offers as the answer to a slow-loris cannot be a `yes` on
+one runtime of three, so the deadline is armed here, from the accepted
+connection, and cleared the moment a request or a WebSocket upgrade completes
+its headers.
+
+Where that still runs out is the event it rests on: **Deno's `node:http` shim
+emits no `connection` event**, so on Deno neither guard can be installed by any
+backend.  Fastify and Express are supported on Bun and Node, so every `yes`
+above holds — but mounting one of them on Deno anyway leaves both of these two
+unenforced, quietly.
 :::
 
 Two leaves ship **no value** and are listed above only so the names are
@@ -1129,15 +1150,25 @@ this binding — WebSocket upgrades included, and an attached
 [DevTools](/observability/devtools/overview/) server too, since DevTools binds
 through the same `system.http(...)` path.
 
-`header-timeout` and `request-timeout` are enforced by a periodic sweep whose
-interval the runtime fixes at 30 s and does not expose, so a connection is
-closed **no earlier than** the value set here and **no later than one sweep
-after it**.  Both ship the number `http.createServer` already uses, so
-publishing them changed nothing on Express or Hono — but Fastify sets
+`request-timeout` is enforced by a periodic sweep whose interval the runtime
+fixes at 30 s and does not expose, so a connection is closed **no earlier
+than** the value set here and **no later than one sweep after it** — measured
+on bun 1.4.0, a `2s` `request-timeout` answered `408` and closed at 30.0 s.
+`header-timeout` is not swept, because it is not the runtime that enforces it:
+it fires at the value set here.
+
+Both ship the number `http.createServer` already uses, so publishing them
+changed no bound that was already being held — but Fastify sets
 `requestTimeout` to `0`, no bound at all, so on the default backend the
 published `300s` is a deadline where there previously was none.  At the 1 MiB
 body cap that is a client sending under 3.5 KB/s; raise it if you accept
 legitimately slower uploads, or set `0` to opt out.
+
+Setting `header-timeout = 0` opts out of the slow-loris guard entirely: no
+deadline is armed and the property is cleared.  A runtime may still hang up on
+its own — bun 1.4.0 drops a connection carrying no complete request after about
+12 s whatever this says — so `0` buys an unbounded header phase only where the
+runtime grants one.
 
 `request-timeout` bounds *receiving* only — the clock stops once the request has
 arrived — so a slow handler, a long poll and an SSE stream are unaffected.  The
