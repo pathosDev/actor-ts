@@ -11,6 +11,46 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`TestKit.settle()` and `TestKit.advance(ms)` — the half of deterministic
+  testing that virtual time does not cover** (#1025, #1424).
+
+  ```ts
+  const { kit } = TestKit.withManualScheduler();
+  const recorder = kit.system.spawn(Recorder, 'recorder');
+  kit.system.scheduler.scheduleOnce(250, recorder, 'later');
+
+  await kit.advance(250);                 // fires the timer AND lands its tell
+  expect(Recorder.seen).toEqual(['later']);
+  ```
+
+  `ManualScheduler.advance` fires a timer **synchronously**, but the `tell` it
+  performs is delivered by the dispatcher on a later turn of the event loop. So
+  virtual time makes *when* a timer fires deterministic and says nothing about
+  when its effects have landed, and
+
+  ```ts
+  scheduler.advance(100);
+  expect(probe.messageCount).toBe(1);     // ✗ reads an empty probe, always
+  ```
+
+  never worked. **Including in this repository's own documentation**: both
+  flagship `ManualScheduler` samples called `advance` before the actor had
+  handled the `tell` that arms the timer, so the clock swept past a timer nobody
+  had set. Where they appeared to pass, `probe.expectMessage` was doing the
+  settling by polling on real time — which means the sample was green for a
+  reason unrelated to the code it demonstrates. Both are corrected.
+
+  `settle()` lets every armed actor turn run, and every turn those arm, until
+  the `/user` tree is quiet. It **never sleeps** — nothing is being waited for,
+  the work is already armed and only needs the event loop to reach it, so this
+  adds no fixed delay to a suite that is busy removing them. It throws rather
+  than hanging when the tree never becomes quiet, which is what an exchange with
+  no end looks like; the turn budget exists for that case and for no other, since
+  one yield settles every ordinary exchange measured here.
+
+  `advance(ms)` is both halves in the right order, and refuses a kit built
+  without a `ManualScheduler` rather than silently doing nothing.
+
 - **`Clock` — the time a component reads, as a contract rather than a global,
   reachable as `system.clock`** (#1424).
 

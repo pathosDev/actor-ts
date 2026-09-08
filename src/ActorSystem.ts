@@ -10,6 +10,7 @@ import {
   QUIESCENCE_POLL_MAX_INTERVAL_MS,
 } from './Constants.js';
 import { DEFAULT_ASK_TIMEOUT_MS } from './util/Constants.js';
+import { SETTLE_MAX_TURNS } from './Constants.js';
 import { DEFAULT_SCATTER_GATHER_TIMEOUT_MS, MINIMUM_ASK_TIMEOUT_FOR_SCATTER_GATHER_MS } from './ScatterGatherOptions.js';
 import { OptionsError } from './util/OptionsValidator.js';
 import { Config } from './config/Config.js';
@@ -758,6 +759,48 @@ export class ActorSystem {
       await sleep(intervalMs);
       if (this.isUserTreeQuiescent()) return true;
       intervalMs = Math.min(intervalMs * 2, QUIESCENCE_POLL_MAX_INTERVAL_MS);
+    }
+    return this.isUserTreeQuiescent();
+  }
+
+  /**
+   * @internal Let every actor turn that is already armed run, and every turn
+   * those arm, until the `/user` tree is quiet.
+   *
+   * **The primitive the TestKit's `advance` needed and did not have.**
+   * `ManualScheduler.advance` fires a timer *synchronously*, but the `tell` the
+   * timer performs is delivered by the dispatcher on a later turn — so
+   * `scheduler.advance(100); expect(probe.received).toHaveLength(1)` reads an
+   * empty probe, and the two flagship determinism samples in the documentation
+   * did not work as written (#1025).  Virtual time makes *when* a timer fires
+   * deterministic; it says nothing about when its effects have landed.
+   *
+   * Distinct from {@link awaitQuiescence}, which this deliberately does not
+   * reuse. That one is a **drain with a deadline**: it backs off from 1 ms to
+   * 25 ms because it runs on every `terminate()` and may be waiting on a real
+   * system doing real work. This one is a **settle with a turn budget**: it
+   * never sleeps, because there is nothing to wait *for* — the work is already
+   * armed and only needs the event loop to reach it. Sleeping here would put a
+   * fixed delay into the one place the test suite is trying to remove them
+   * from.
+   *
+   * The yield is a macrotask, not a microtask, and that is load-bearing: the
+   * default dispatcher spends a microtask budget before yielding, so a
+   * microtask-only loop can spin against it forever without the runner's own
+   * timeout ever firing (#1360).
+   *
+   * Only `/user` is inspected, for the reason {@link awaitQuiescence} gives:
+   * the framework actors under `/system` are never quiet by design.
+   *
+   * @returns whether the tree actually became quiet. A `false` means the budget
+   *   ran out, which is a finding rather than a timing accident.
+   */
+  async _settle(maxTurns: number = SETTLE_MAX_TURNS): Promise<boolean> {
+    if (this._terminated) return true;
+    for (let turn = 0; turn < maxTurns; turn++) {
+      // Probed before the first yield, so an already-quiet system pays nothing.
+      if (this.isUserTreeQuiescent()) return true;
+      await sleep(0);
     }
     return this.isUserTreeQuiescent();
   }

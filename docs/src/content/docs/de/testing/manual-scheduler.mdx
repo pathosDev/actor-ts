@@ -3,6 +3,8 @@ title: ManualScheduler
 description: Ein Virtual-Clock-`Scheduler`, der Timer nur feuert, wenn du `advance(ms)` aufrufst. Das Standard-Werkzeug für deterministische Tests von Actor, die `context.timers` oder `system.scheduler` nutzen.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 `ManualScheduler` ist eine `Scheduler`-Implementierung, bei der
 **Zeit nicht von selbst voranschreitet**. Plane einen
 5-Sekunden-Timer; nichts feuert, bis du explizit
@@ -182,10 +184,11 @@ describe('Session-Expiry', () => {
       new Session(probe, 'user-42'));
 
     session.tell({ kind: 'activity' });   // setzt den Timer zurück
-    scheduler.advance(14 * 60_000);
+    await kit.settle();                   // ← jetzt hat der Actor ihn gestellt
+    await kit.advance(14 * 60_000);
     await probe.expectNoMessage(0);       // noch nicht abgelaufen
 
-    scheduler.advance(60_000 + 1);        // überquert 15 Min
+    await kit.advance(60_000 + 1);        // überquert 15 Min
     await probe.expectMessage({ kind: 'session-expired', userId: 'user-42' });
   });
 });
@@ -194,32 +197,61 @@ describe('Session-Expiry', () => {
 Der Test läuft in **Mikrosekunden Wall-Clock-Zeit**, übt aber
 ein 15-Minuten-Idle-Timeout exakt aus.
 
-## Interaktion mit `await` und Microtasks
+Das `settle` in der dritten Zeile ist keine Deko — ohne es war dieses Beispiel
+schlicht falsch (#1025).  `tell` stellt nur in die Queue: als `advance` in der
+nächsten Zeile lief, hatte der Actor `activity` noch nicht *verarbeitet*, also
+existierte der 15-Minuten-Timer, den er beim Empfang stellt, gar nicht — und die
+Uhr fegte an einem Timer vorbei, den niemand gesetzt hatte.  `settle` lässt die
+gestellten Turns laufen, sodass der Timer da ist, wenn die Zeit sich bewegt.
+
+`kit.advance(ms)` ist `advance` und `settle` in genau dieser Reihenfolge —
+deshalb brauchen die beiden Zeilen danach nichts weiter.
+
+## Warum `advance` nicht die ganze Geschichte ist
 
 ```ts
 ref.tell({ kind: 'start' });
-scheduler.advance(5_000);
-await probe.expectMessage('tick');
+await kit.settle();            // 'start' ist verarbeitet
+await kit.advance(5_000);      // der Timer feuert UND sein tell landet
+expect(probe.messageCount).toBe(1);
 ```
 
-Zweistufige Verarbeitung:
+Zwei Stufen, und virtuelle Zeit kontrolliert nur die erste:
 
-1. `advance` feuert den Timer synchron — er `tell`t den Actor.
-2. Der `tell` wird vom Dispatcher in der nächsten Microtask-
-   Runde verarbeitet, die läuft, wenn du etwas `await`est.
+1. `advance` feuert den Timer **synchron** — er `tell`t den Actor.
+2. Dieser `tell` wird vom Dispatcher in einem **späteren Turn der Event-Loop**
+   zugestellt, nicht sofort.
 
-`expectMessage` gibt eine Promise zurück, die intern `await`et —
-also wurde der Tick bis zur Auflösung verarbeitet und die
-Nachricht ist im Buffer der Probe.
+`scheduler.advance(5_000)` gefolgt von einer synchronen Assertion liest also
+jedes Mal eine leere Probe.  Virtuelle Zeit macht deterministisch, *wann* ein
+Timer feuert; über den Zeitpunkt, zu dem seine Wirkungen gelandet sind, sagt sie
+nichts.
 
-Du musst meistens nicht darüber nachdenken. Aber wenn du
-synchron nach `advance` zu `probe.messageCount` greifst und 0
-siehst, wurde der Actor noch nicht dispatched — `await` etwas,
-um zu yielden.
+`kit.settle()` ist diese zweite Hälfte: es lässt jeden gestellten Actor-Turn
+laufen, und jeden Turn, den diese stellen, bis der `/user`-Baum ruhig ist.  Es
+schläft nie — es wird auf nichts *gewartet*, die Arbeit ist bereits gestellt und
+braucht nur die Event-Loop — und es wirft, statt zu hängen, wenn der Baum nie
+ruhig wird, was genau so aussieht wie ein Austausch ohne Ende.
+
+`kit.advance(ms)` macht beides in der richtigen Reihenfolge und ist das, worum
+eine timergetriebene Assertion herum geschrieben werden sollte.
+
+<Aside type="note" title="„Einfach irgendwas `await`en&quot; reicht nicht">
+  Auf dieser Seite stand früher, der Tell werde „in der nächsten Microtask-Runde
+  verarbeitet, die läuft, wenn du etwas `await`est".  Beide Hälften sind oft
+  genug falsch, um zu schaden.  Der Default-Dispatcher *ist* nicht die
+  Microtask-Queue: er verbraucht ein Microtask-*Budget* und gibt dann einen
+  Macrotask ab — genau damit zwei sich zuspielende Actors Timer und I/O nicht
+  aushungern können.  `await Promise.resolve()` gibt ihm also unter Umständen
+  gar nichts ab.
+
+  `probe.expectMessage(...)` funktioniert trotzdem, weil es auf echter Zeit
+  pollt statt an einem einzelnen `await` zu hängen — was zugleich heißt, dass
+  ein darauf gebautes Beispiel aus einem Grund grün ist, der mit dem gezeigten
+  Code nichts zu tun hat.  Nimm `settle`.
+</Aside>
 
 ## Stolperfallen
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`new Date()` und `Date.now()` werden nicht virtualisiert">
   ```ts

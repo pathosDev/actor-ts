@@ -3,6 +3,8 @@ title: ManualScheduler
 description: A virtual-clock `Scheduler` that fires timers only when you call `advance(ms)`. The standard tool for deterministic tests of actors that use `context.timers` or `system.scheduler`.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 `ManualScheduler` is a `Scheduler` implementation where **time
 doesn't advance on its own**.  Schedule a 5-second timer; nothing
 fires until you explicitly call `scheduler.advance(5_000)`.  The
@@ -178,10 +180,11 @@ describe('Session expiry', () => {
       new Session(probe, 'user-42'));
 
     session.tell({ kind: 'activity' });   // resets the timer
-    scheduler.advance(14 * 60_000);
+    await kit.settle();                   // ← the actor has now armed it
+    await kit.advance(14 * 60_000);
     await probe.expectNoMessage(0);       // not yet expired
 
-    scheduler.advance(60_000 + 1);        // crosses 15 min
+    await kit.advance(60_000 + 1);        // crosses 15 min
     await probe.expectMessage({ kind: 'session-expired', userId: 'user-42' });
   });
 });
@@ -190,32 +193,58 @@ describe('Session expiry', () => {
 The test runs in **microseconds of wall-clock time** but exercises
 a 15-minute idle timeout precisely.
 
-## Interaction with `await` and microtasks
+The `settle` on the third line is not decoration, and this sample was wrong
+without it (#1025).  `tell` only queues: when `advance` ran on the next line the
+actor had not yet *handled* `activity`, so the 15-minute timer it arms on
+receiving one did not exist, and the clock swept past a timer nobody had set.
+`settle` lets the armed turns run, so by the time time moves the timer is there.
+
+`kit.advance(ms)` is `advance` and `settle` in that order, which is why the two
+lines after it need nothing further.
+
+## Why `advance` is not the whole story
 
 ```ts
 ref.tell({ kind: 'start' });
-scheduler.advance(5_000);
-await probe.expectMessage('tick');
+await kit.settle();            // 'start' has been handled
+await kit.advance(5_000);      // the timer fires AND its tell lands
+expect(probe.messageCount).toBe(1);
 ```
 
-Two-stage processing:
+Two stages, and virtual time only controls the first:
 
-1. `advance` fires the timer synchronously — it `tell`s the actor.
-2. The `tell` is processed by the dispatcher on the next microtask
-   turn, which runs when you `await` something.
+1. `advance` fires the timer **synchronously** — it `tell`s the actor.
+2. That `tell` is delivered by the dispatcher on a **later turn of the event
+   loop**, not immediately.
 
-`expectMessage` returns a Promise that does `await` internally — so by
-the time it resolves, the tick has been processed and the message
-is in the probe's buffer.
+So `scheduler.advance(5_000)` followed by a synchronous assertion reads an empty
+probe every time.  Virtual time makes *when* a timer fires deterministic; it
+says nothing about when the effects of firing have landed.
 
-You generally don't need to think about this.  But if you reach
-for `probe.messageCount` synchronously right after `advance` and
-see 0, the actor hasn't been dispatched yet — `await`
-something to yield.
+`kit.settle()` is that second half: it lets every armed actor turn run, and
+every turn those arm, until the `/user` tree is quiet.  It never sleeps —
+nothing is being waited *for*, the work is already armed and only needs the
+event loop to reach it — and it throws rather than hanging if the tree never
+becomes quiet, which is what an exchange with no end looks like.
+
+`kit.advance(ms)` does both in the right order and is what a timer-driven
+assertion should be written around.
+
+<Aside type="note" title="&quot;Just `await` something&quot; is not enough">
+  This page used to say the tell is processed "on the next microtask turn,
+  which runs when you `await` something".  Both halves are wrong often enough
+  to matter.  The default dispatcher is not the microtask queue: it spends a
+  microtask *budget* and then yields a macrotask, precisely so two actors
+  volleying cannot starve timers and I/O.  So `await Promise.resolve()` may
+  yield nothing at all to it.
+
+  `probe.expectMessage(...)` does still work, because it polls on real time
+  rather than on a single `await` — which also means a sample built on it is
+  passing for a reason that has nothing to do with the code being demonstrated.
+  Use `settle`.
+</Aside>
 
 ## Pitfalls
-
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="`new Date()` and `Date.now()` aren't virtualized">
   ```ts

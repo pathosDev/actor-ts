@@ -174,6 +174,30 @@ export const QUIESCENCE_POLL_INTERVAL_MS = 1;
 export const QUIESCENCE_POLL_MAX_INTERVAL_MS = 25;
 
 /**
+ * How many macrotask yields `ActorSystem._settle()` spends before giving up.
+ *
+ * A bound rather than a duration, because settling is not a wait: the work is
+ * already armed and only needs the event loop to reach it.
+ *
+ * **Measured, because the obvious guess is wrong.**  One yield looks like it
+ * should settle one hop and no more, so a chain of actors should need a yield
+ * each.  It does not: the default dispatcher spends a microtask budget before
+ * it yields, so a whole ping-pong resolves inside a single macrotask turn.
+ * Every settle in this repository's own suite — a timer's `tell`, a relay
+ * forwarding to a second actor, sixty ticks delivered from one `advance` —
+ * completes with `maxTurns` set to **1**.
+ *
+ * So the ceiling is not sized for depth.  It exists so an exchange that is
+ * never going to become quiet — two actors volleying, a handler that re-sends
+ * to itself every turn — **fails the assertion instead of hanging the runner**,
+ * which is the failure mode a drain with no bound has and which bun's per-test
+ * timeout does not rescue (#1360).  200 is simply far enough above 1 that
+ * reaching it means the system is not settling, not that it needed one more
+ * turn.
+ */
+export const SETTLE_MAX_TURNS = 200;
+
+/**
  * How often the keep-alive timer inside `ActorSystem.runUntilTerminated()`
  * fires while it waits to be signalled.
  *
