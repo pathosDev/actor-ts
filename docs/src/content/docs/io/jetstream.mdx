@@ -103,9 +103,14 @@ connect time (`create` defaults to `true`).
 | `subjects` | Subjects captured by the stream, e.g. `['orders.>']` (required). |
 | `retention` | `'limits'` *(default)*, `'interest'`, or `'workqueue'`. |
 | `storage` | `'file'` (durable) or `'memory'`. |
-| `maxMessages` / `maxBytes` | Retention caps. |
-| `maxAge` | Max age in **nanoseconds** (passed through verbatim). |
+| `maxMessages` / `maxBytes` | Retention caps.  `-1` means **no limit**. |
+| `maxAge` | Max age in **nanoseconds** (passed through verbatim).  `0` means **no limit**. |
 | `create` | Create/update the stream at connect time.  Default `true`. |
+
+The "no limit" spellings are NATS's own and are **not** symmetric: the two
+count caps take `-1`, `maxAge` takes `0` — a nanosecond span, where a negative
+value would mean nothing.  They pass through to the server verbatim.  Any
+*other* non-positive value is refused at startup, so `-2` stays the typo it is.
 
 ### Consumer config
 
@@ -119,8 +124,12 @@ Set `consumer` to bind a durable subscription.
 | `ackPolicy` | `'explicit'` *(default — ack/nak/term required)*, `'none'`, or `'all'`. |
 | `ackWaitMs` | Time before the server redelivers without an ack.  Default `30_000`. |
 | `filterSubject` | Subject filter — defaults to all subjects in the stream. |
-| `maxAcknowledgmentPending` | Max in-flight unacked messages.  Default `1024`. |
+| `maxAcknowledgmentPending` | Max in-flight unacked messages.  Default `1024`; `-1` means **no limit**. |
 | `create` | Create/update the consumer at connect time.  Default `true`. |
+
+`ackWaitMs` has no such spelling — NATS reads a zero ack-wait as "use the
+server default", which is what leaving the field unset already says — so it
+must be positive.
 
 ### Both groups, from HOCON
 
