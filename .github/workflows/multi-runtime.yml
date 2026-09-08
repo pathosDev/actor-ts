@@ -184,3 +184,68 @@ jobs:
           echo "test order seed: --seed=$SEED"
           printf 'Test order seed: `--seed=%s`\n' "$SEED" >> "$GITHUB_STEP_SUMMARY"
           bun test --parallel --seed="$SEED"
+
+  # **The only non-Linux job in the repository** (#816).  Every other job across
+  # all ten workflows runs `ubuntu-latest`, while development happens on
+  # Windows — and that gap has already shipped a bug: #521, the DevTools UI
+  # freshness gate that could never pass from a Windows checkout, existed
+  # precisely because nothing here ran Windows.
+  #
+  # The specific thing it buys is not "the same tests again".  `bun test`
+  # enumerates files in a different order on Windows, so a green Linux run
+  # proves nothing about ordering effects and vice versa — and bun's *runtime*
+  # semantics differ too, not just its file order: `server.maxConnections` is
+  # enforced on Windows and not on the Linux runner, which is a whole class of
+  # defect a Linux-only matrix cannot see.
+  #
+  # Deliberately narrower than `unit-bun` above.  No `typecheck` and no
+  # `ui:install`: the compiler's output does not depend on the OS, and the
+  # Angular toolchain is a slow install whose staleness gate lives in the
+  # `build` workflow.  What is left is what is actually platform-sensitive —
+  # the suite, and the cross-runtime smoke cases that open real sockets and
+  # spawn real processes.
+  #
+  # The proposal in #816 also asked for `ACTOR_TS_SKIP_FLAKY_MNS=1` here, to
+  # match the Linux job.  That is not carried over and cannot be: the
+  # quarantine is gone, all three suites run everywhere, and
+  # `tests/unit/ci/NoEnvironmentGatedSkips.test.ts` refuses a test an
+  # environment variable can remove.  A Windows-only failure is a finding to
+  # triage, which is the whole reason for adding the leg.
+  unit-windows:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    name: bun unit suite (windows)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+
+      # Same shape as the Linux leg: shuffled, with the seed drawn here and
+      # printed, because bun stops printing its own under GitHub Actions.
+      # `--parallel` was measured at 10.5x on 32 cores; a hosted runner has
+      # far fewer, and the floor is 1x.
+      - name: Tests, in randomized order
+        shell: bash
+        run: |
+          SEED=$(( (RANDOM << 15) + RANDOM ))
+          echo "test order seed: --seed=$SEED"
+          printf 'Windows test order seed: `--seed=%s`\n' "$SEED" >> "$GITHUB_STEP_SUMMARY"
+          bun test --parallel --seed="$SEED"
+
+      # The smoke cases are where a platform difference shows up as a hang
+      # rather than a failure — a socket left open keeps the loop alive — so
+      # they are worth running on the OS the runtime abstractions were written
+      # against second.
+      - name: Smoke (Bun)
+        run: bun run smoke:bun
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+      - name: Build (tsc -> dist/)
+        run: bun run build:lib
+      - name: Smoke (Node)
+        run: bun run smoke:node
