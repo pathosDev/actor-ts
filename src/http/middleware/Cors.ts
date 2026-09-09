@@ -163,10 +163,74 @@ function isAllowed(origins: CorsOrigin, origin: string): boolean {
   return origins.includes(origin);
 }
 
-/** Echo the request origin, or literal `*` only when wildcard AND not credentialed. */
-function allowOriginValue(settings: CorsRouteOptions, origin: string): string {
-  return settings.origins === CORS_WILDCARD_ORIGIN && !settings.credentials ? CORS_WILDCARD_ORIGIN : origin;
+/**
+ * Is `origin` a value this middleware may write back into a response header?
+ *
+ * The check is a **round trip through the URL parser**, not a pattern: an
+ * origin is well-formed exactly when the parser's own serialisation of it is
+ * the string it was handed.  That is stricter than a regular expression and
+ * cheaper to trust, because every way of being malformed shows up the same
+ * way — the parser strips ASCII tab and newline, lower-cases the scheme and
+ * host, drops a trailing slash, and answers `null` for an opaque origin, so
+ * anything carrying those differs from its own round trip.  Measured
+ * identical on bun 1.4.0 and node v26.7.0 across fourteen cases.
+ *
+ * The literal `null` is admitted because it is a real `Origin` a browser
+ * sends — a sandboxed iframe, a `data:` document, a redirected cross-origin
+ * form post — and a middleware that refused it would deny requests the Fetch
+ * spec expects it to answer.
+ *
+ * Deliberately *not* a normaliser.  A browser compares the value it receives
+ * against the origin it sent, byte for byte, so echoing a repaired spelling
+ * fails the check on the client anyway while looking, from the server side,
+ * as though the request had been allowed.
+ */
+function isEchoableOrigin(origin: string): boolean {
+  if (origin === OPAQUE_ORIGIN) return true;
+  try {
+    return new URL(origin).origin === origin;
+  } catch {
+    return false;
+  }
 }
+
+/**
+ * The value for `Access-Control-Allow-Origin`, or `null` when there is none
+ * that can be written safely.
+ *
+ * Two of the three configurations cannot reach the second case, and saying
+ * which bounds what this guard is for.  `withOrigins(...)` matches with
+ * `origins.includes(origin)`, so a matched origin *is* one of the configured
+ * strings; `withAnyOrigin()` answers the `*` literal, and the credentialed
+ * combination that would fall through to an echo is refused at construction
+ * because the Fetch spec forbids it.  Only `withOriginPredicate(...)` echoes
+ * text nothing constrained: the predicate answers a boolean about a string it
+ * was handed, and before #1516 that string went into the header verbatim —
+ * `Origin: https://evil\r\nSet-Cookie: stolen=1.example` came back out of the
+ * synthesised OPTIONS handler unchanged.
+ *
+ * Nothing could split a response with it today, for the reasons the sibling
+ * guard on the echoed header list records (#792): every runtime's request
+ * parser rejects a bare CR/LF, and `setHeader` / `Headers.set` reject one on
+ * the way out.  It is closed here for that commit's own stated reason — an
+ * echo that is load-bearing must not depend on the layers beneath it.
+ */
+function allowOriginValue(settings: CorsRouteOptions, origin: string): string | null {
+  if (settings.origins === CORS_WILDCARD_ORIGIN && !settings.credentials) return CORS_WILDCARD_ORIGIN;
+  return isEchoableOrigin(origin) ? origin : null;
+}
+
+/**
+ * The `Origin` a browser sends for a request whose origin is opaque — a
+ * sandboxed iframe, a `data:` document, a cross-origin form post that
+ * redirected.  The string `null`, not the value: it arrives as three ASCII
+ * characters in a header.
+ *
+ * It lives here rather than in `CorsOptions.ts` because it is not the default
+ * of any option — it is a value the wire carries, which the file that reads
+ * the wire has to recognise.
+ */
+const OPAQUE_ORIGIN = 'null';
 
 /**
  * RFC 7230 `tchar` — the alphabet of a header *name*, which is the only thing
@@ -218,6 +282,11 @@ function decorateResponse(settings: CorsRouteOptions, response: HttpResponse, re
   const origin = request.headers['origin'];
   if (!origin || !isAllowed(settings.origins, origin)) return response;
   const acao = allowOriginValue(settings, origin);
+  // The same outcome as an origin that did not match: no CORS headers, so the
+  // browser refuses the response.  An origin we cannot echo is not one we can
+  // allow, and answering with a repaired spelling would read as success here
+  // while failing the client's own comparison.
+  if (acao === null) return response;
   const add: Record<string, string> = { 'access-control-allow-origin': acao };
   if (settings.credentials) add['access-control-allow-credentials'] = 'true';
   if (settings.exposedHeaders && settings.exposedHeaders.length > 0) {
@@ -243,9 +312,13 @@ function preflightResponse(settings: CorsRouteOptions, methods: ReadonlyArray<st
     // No ACA-* headers → the browser fails the preflight; no info leak.
     return { status: 204, headers: { vary: PREFLIGHT_VARY }, body: null };
   }
+  const acao = allowOriginValue(settings, origin);
+  // Same shape as the disallowed branch above, and for the same reason: a
+  // preflight that cannot name the origin it is allowing has nothing to say.
+  if (acao === null) return { status: 204, headers: { vary: PREFLIGHT_VARY }, body: null };
   const headers: Record<string, string> = {
     vary: PREFLIGHT_VARY,
-    'access-control-allow-origin': allowOriginValue(settings, origin),
+    'access-control-allow-origin': acao,
     'access-control-allow-methods': (settings.methods ?? methods).join(', '),
   };
   if (settings.allowedHeaders && settings.allowedHeaders.length > 0) {

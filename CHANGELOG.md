@@ -3189,6 +3189,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **`cors()` no longer echoes an `Origin` it cannot serialise back**
+  (#1516).  `Access-Control-Allow-Origin` carried the request header
+  verbatim whenever the matcher was a predicate.
+
+  Only that one configuration reached it, and saying which bounds the
+  change: an allowlist matches with `origins.includes(origin)`, so a matched
+  origin *is* one of the configured strings, and the wildcard answers a
+  literal — while the credentialed wildcard that would fall through to an
+  echo is already refused at construction because the Fetch spec forbids it.
+  A predicate is different in kind: it returns a boolean about text nothing
+  constrained, so whatever satisfied it went into the header.
+
+  An origin is now echoed only when it round-trips through the URL parser
+  unchanged, and the header is omitted otherwise — the same thing the
+  browser sees for an origin that did not match.  The round trip is the
+  check rather than a pattern: the parser strips tab and newline,
+  lower-cases the scheme and host, drops a trailing slash and answers `null`
+  for an opaque origin, so every way of being malformed shows up as a
+  difference from its own serialisation.  The literal `null` is admitted,
+  because a sandboxed iframe really sends it.
+
+  Nothing is repaired and re-sent, which is where this differs from the
+  sibling guard on the echoed header list (#792): a browser compares the
+  value byte for byte against the origin it sent, so a corrected spelling
+  would fail on the client while reading as allowed on the server.
+  Stripping the offending characters is the plausible wrong fix here and the
+  new cases fail against it, deliberately.
+
+  Latent rather than exploitable, for the reasons #792 records — every
+  runtime's request parser rejects a bare CR/LF and `setHeader` /
+  `Headers.set` reject one on the way out — and closed for that commit's own
+  stated reason: an echo that is load-bearing must not depend on the layers
+  beneath it.
+
 - **The connection cap no longer fails open on a socket that cannot report
   its close** (#1409).  `enforceMaxConnections` counted such a connection
   and un-counted it in the same breath, so the held count never grew and the
