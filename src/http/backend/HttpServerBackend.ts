@@ -220,6 +220,27 @@ export type NodeHttpServerLike = {
 };
 
 /**
+ * What {@link enforceMaxConnections} has observed since `listen`.
+ *
+ * It exists because the cap failed on one runtime and passed on another with
+ * no way to tell which half was missing — whether the guard was installed at
+ * all, whether the connection event ever reached it, or whether it refused a
+ * socket the peer then did not see close.  Three numbers separate those, and
+ * a test that asserts on them reports the cause in its failure message rather
+ * than leaving the next reader to reason from a timeout (#870).
+ */
+export type ConnectionCapReport = {
+  /** `false` when the server exposes no `on` — nothing was installed. */
+  readonly installed: boolean;
+  /** Accepted connections the guard has been handed. */
+  readonly seen: number;
+  /** Of those, the ones it hung up on because the cap was full. */
+  readonly refused: number;
+  /** Connections it currently counts as held. */
+  readonly held: number;
+};
+
+/**
  * The slice of an accepted `net.Socket` the two guards need: something to hang
  * up, a way to learn it hung up, and a way to say why first.
  */
@@ -464,32 +485,48 @@ export function enforceHeaderTimeout(server: NodeHttpServerLike, deadlineMs: num
  * that can emit the event, which is the property the documentation claims and
  * the one a security control has to have.
  *
- * Returns whether the guard was installed: a server object without `on` — the
- * `Bun.serve` and `Deno.serve` handles Hono exposes — reports itself the same
- * way the rest of {@link applyServerOptions} does, by answering `false` rather
- * than by pretending.
+ * Returns a live {@link ConnectionCapReport} reader rather than a boolean: a
+ * server object without `on` — the `Bun.serve` and `Deno.serve` handles Hono
+ * exposes — reports `installed: false` rather than pretending, and the three
+ * counters beside it are what let a failing cap say which half is missing.
  */
-export function enforceMaxConnections(server: NodeHttpServerLike, cap: number): boolean {
-  if (typeof server.on !== 'function') return false;
-  let active = 0;
+export function enforceMaxConnections(
+  server: NodeHttpServerLike,
+  cap: number,
+): () => ConnectionCapReport {
+  let seen = 0;
+  let refused = 0;
+  let held = 0;
+  let installed = false;
+  const report = (): ConnectionCapReport => ({ installed, seen, refused, held });
+  if (typeof server.on !== 'function') return report;
+  installed = true;
   server.on('connection', (socket) => {
+    seen++;
     // `>=` because this connection is the one being decided: at `cap` already
     // held, admitting it would make `cap + 1`.
-    if (active >= cap) {
+    if (held >= cap) {
+      refused++;
+      // `end` first, then `destroy`, which is the order `enforceHeaderTimeout`
+      // measured as the one a client actually observes on bun and node — a
+      // bare `destroy` on a socket that has neither read nor written is the
+      // shape whose close the peer was not seeing.  No body: there is no
+      // request to answer, and a status line would be a lie about having
+      // considered one.
+      socket.end?.();
       socket.destroy();
       return;
     }
-    active++;
-    // Without `once` the count only ever rises and the cap becomes a lifetime
-    // budget instead of a concurrency bound, so a server that cannot report a
-    // close must not be counted at all.
-    if (typeof socket.once !== 'function') {
-      active--;
-      return;
-    }
-    socket.once('close', () => { active--; });
+    held++;
+    // A runtime that cannot report a close leaves the count rising, which
+    // turns the cap into a lifetime budget rather than a concurrency bound.
+    // That is stricter than asked for and wrong; it is not *open*, which the
+    // previous shape was: it decremented on the spot when `once` was missing,
+    // so `held` never grew and the cap never fired at all.  A security
+    // control that degrades has to degrade towards refusing.
+    socket.once?.('close', () => { held--; });
   });
-  return true;
+  return report;
 }
 
 /**

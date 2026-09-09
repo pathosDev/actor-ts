@@ -223,6 +223,12 @@ the [Route DSL](/http/route-dsl/).
   Deno) there is nothing to hook, and **Deno's `node:http` shim emits no
   `connection` event** even where a server object exists — so on Deno neither
   the header deadline nor the connection cap is installed by any backend.
+
+  **One measured gap, open as #1409:** on GitHub's Linux runners the
+  connection cap is not observed to hold end to end, while the header deadline
+  on the same event is. Treat `max-connections` as verified on Bun/Windows and
+  on Node, and as under investigation elsewhere, until that issue closes. The
+  header deadline is unaffected.
 - **WebSocket frames** are capped by `maxFrameBytes` (1 MiB default). The
   framework always refuses an oversize frame before it reaches your actor; on
   most runtime/backend pairs the resolved cap is *also* handed to the runtime's

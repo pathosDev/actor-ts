@@ -159,3 +159,19 @@ export const MAXIMUM_INBOUND_SHAPE_LABEL_LENGTH = 32;
  * names are echoed; this decides how much of them fits once they are.
  */
 export const MAXIMUM_ECHOED_CORS_HEADERS_LENGTH = 1024;
+
+/**
+ * The interface `ActorSystem.http(port)` binds when the caller names none —
+ * loopback.
+ *
+ * It was `0.0.0.0` until #1408, which made the shortest form of the shortcut
+ * the one that published the server on every interface: a reader who wanted
+ * that had no way to tell they were getting it, and a reader who did not want
+ * it had to know to ask.  Defaults decide what happens when nobody thought
+ * about it, and "reachable from the whole network" is not that answer.
+ *
+ * Only the *shortcut* defaults.  `newServerAt(host, port)` still takes the
+ * host as a required argument, because a call that names the interface is
+ * already saying what it means.
+ */
+export const DEFAULT_HTTP_BIND_HOST = '127.0.0.1';

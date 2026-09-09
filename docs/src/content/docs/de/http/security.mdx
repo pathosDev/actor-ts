@@ -239,6 +239,13 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   `node:http`-Shim sendet kein `connection`-Event**, selbst wo ein Server-Objekt
   existiert — auf Deno installiert also kein Backend die Header-Deadline oder
   die Verbindungsschranke.
+
+  **Eine gemessene Lücke, offen als #1409:** Auf GitHubs Linux-Runnern wird
+  nicht beobachtet, dass die Verbindungsschranke Ende-zu-Ende hält — die
+  Header-Deadline auf demselben Event dagegen schon. Betrachte
+  `max-connections` als verifiziert auf Bun/Windows und auf Node und andernorts
+  als in Klärung, bis dieses Issue geschlossen ist. Die Header-Deadline ist
+  davon nicht betroffen.
 - **WebSocket-Frames** werden durch `maxFrameBytes` gekappt (1 MiB Default).
   Das Framework weist einen zu großen Frame immer ab, bevor er deinen Actor
   erreicht; auf den meisten Laufzeit/Backend-Paaren geht das aufgelöste Limit
