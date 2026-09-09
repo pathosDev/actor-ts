@@ -634,6 +634,92 @@ export function render(aggregated, options) {
 }
 
 /**
+ * The document written to `summary.json`, as a value.
+ *
+ * It is a function, and exported, because it is a **contract with another
+ * program**.  `scripts/nightly-flake-report.mjs` reads this file to build the
+ * issue a red night files, and until #1506 it read two fields — `flaky` and
+ * `consistent` — that nothing here has ever written.  Every artifact around it
+ * agreed with the mistake: `nightly-flake-report.d.mts` declared both, above a
+ * comment claiming they were written "as the stress harness writes it", and
+ * that script's guard built its fixtures by hand from the same imagination.
+ * `skipLibCheck` means a declaration is never checked against the module it
+ * describes, so nothing anywhere compared any of it with this file.
+ *
+ * What that cost: a night with three tests failing in **all five** runs filed
+ * an issue reading *"No test was named by any run"*, while the three names sat
+ * in the artifact beside it, correctly aggregated, all along.  The classifier
+ * was right; the sentence a human read was not.
+ *
+ * The root cause is why this is a function at all.  The shape on disk used to
+ * be an object literal buried inside a side-effecting `main()` — unreachable
+ * from any test, so both readers were written against a *memory* of it instead
+ * of against it.  Now the writer is pure, and
+ * `tests/unit/ci/NightlyFlakeReport.test.ts` builds its fixtures by calling it,
+ * which is what makes a renamed field a red test rather than a quiet lie.
+ */
+export function summaryDocument({ aggregated, options, results, bunVersion }) {
+  /**
+   * One offender, with its bucket recorded rather than left to be re-derived.
+   *
+   * The reader needs the flaky/consistent split — it is the difference between
+   * "catalogue this" and "fix this" and the report says so in its closing
+   * paragraph.  Writing the verdict down keeps the rule that produces it in one
+   * place, {@link aggregate}.  A reader re-deriving it from `failedRuns.length`
+   * would be a second copy of the classification, free to disagree with the
+   * first, which is the failure this whole function exists to close.
+   */
+  const offender = (entry, consistent) => ({
+    identity: entry.identity,
+    file: entry.file,
+    suite: entry.suite,
+    name: entry.name,
+    failedRuns: entry.failedRuns,
+    failureCount: entry.failureCount,
+    consistent,
+  });
+  return {
+    generatedAt: new Date().toISOString(),
+    // What produced these numbers.  A night is comparable with another
+    // night only while the toolchain is the same one — the quarantine's
+    // exit criterion says so in prose and could not check it, because the
+    // artifact never recorded which bun ran.
+    bunVersion: bunVersion ?? null,
+    runs: aggregated.runs,
+    greenRuns: aggregated.greenRuns,
+    filters: options.filters,
+    randomized: options.randomize,
+    totalExecuted: aggregated.totalExecuted,
+    totalFailures: aggregated.totalFailures,
+    runTimeoutMs: options.runTimeoutMs,
+    runsTimedOut: aggregated.runsTimedOut,
+    runsWithoutReport: aggregated.runsWithoutReport,
+    runsRedWithoutFailures: aggregated.runsRedWithoutFailures,
+    unexplainedRedRuns: aggregated.unexplainedRedRuns,
+    // Per run, so a reader can tell a slow night from a failing one and can
+    // reproduce an order-dependent failure from the artifact alone.  The
+    // aggregate hid both: a run that took four times as long as its
+    // siblings and a run shuffled into a losing order look identical in a
+    // count of green runs.
+    runsDetail: results.map((run) => ({
+      index: run.index,
+      status: run.status,
+      durationMs: run.durationMs,
+      executed: run.executed,
+      skipped: run.skipped,
+      failures: run.failures.length,
+      timedOut: run.timedOut,
+      reportMissing: run.reportMissing,
+      seed: run.seed ?? null,
+    })),
+    offenders: [
+      ...aggregated.flaky.map((entry) => offender(entry, false)),
+      ...aggregated.consistent.map((entry) => offender(entry, true)),
+    ],
+  };
+}
+
+/**
  * A nightly job's log is read once, when it goes red.  The step summary is
  * read from the run list, so the offender names belong there — otherwise the
  * decision "was tonight green?" costs a log download.
@@ -710,49 +796,12 @@ async function main() {
   writeFileSync(
     join(reportDirectory, 'summary.json'),
     `${JSON.stringify(
-      {
-        generatedAt: new Date().toISOString(),
-        // What produced these numbers.  A night is comparable with another
-        // night only while the toolchain is the same one — the quarantine's
-        // exit criterion says so in prose and could not check it, because the
-        // artifact never recorded which bun ran.
+      summaryDocument({
+        aggregated,
+        options,
+        results,
         bunVersion: process.versions.bun ?? null,
-        runs: aggregated.runs,
-        greenRuns: aggregated.greenRuns,
-        filters: options.filters,
-        randomized: options.randomize,
-        totalExecuted: aggregated.totalExecuted,
-        totalFailures: aggregated.totalFailures,
-        runTimeoutMs: options.runTimeoutMs,
-        runsTimedOut: aggregated.runsTimedOut,
-        runsWithoutReport: aggregated.runsWithoutReport,
-        runsRedWithoutFailures: aggregated.runsRedWithoutFailures,
-        unexplainedRedRuns: aggregated.unexplainedRedRuns,
-        // Per run, so a reader can tell a slow night from a failing one and can
-        // reproduce an order-dependent failure from the artifact alone.  The
-        // aggregate hid both: a run that took four times as long as its
-        // siblings and a run shuffled into a losing order look identical in a
-        // count of green runs.
-        runsDetail: results.map((run) => ({
-          index: run.index,
-          status: run.status,
-          durationMs: run.durationMs,
-          executed: run.executed,
-          skipped: run.skipped,
-          failures: run.failures.length,
-          timedOut: run.timedOut,
-          reportMissing: run.reportMissing,
-          seed: run.seed ?? null,
-        })),
-        offenders: [...aggregated.flaky, ...aggregated.consistent].map((entry) => ({
-          identity: entry.identity,
-          file: entry.file,
-          suite: entry.suite,
-          name: entry.name,
-          failedRuns: entry.failedRuns,
-          failureCount: entry.failureCount,
-        })),
-      },
+      }),
       null,
       2,
     )}\n`,

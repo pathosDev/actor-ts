@@ -2558,6 +2558,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A red nightly filed an issue naming no test, while the artifact beside it
+  named three** (#1506).  `scripts/nightly-flake-report.mjs` read `flaky` and
+  `consistent` off a night's `summary.json`; `scripts/stress-test.mjs` has
+  never written either field, only one `offenders` array.  So run 34329418185
+  — three tests failing in **all five** runs, aggregated correctly, written to
+  the artifact correctly — filed *"No test was named by any run"*, and the
+  first real red night the auto-issue mechanism ever saw reported nothing
+  actionable.  The classifier was not at fault and is unchanged.
+
+  What made it possible is that the document on disk was an object literal
+  inside a side-effecting `main()`, so no test could hold it: the reader's
+  hand-written `.d.mts` declared the two fields above a comment claiming they
+  were the harness's shape, `skipLibCheck` means a declaration is never checked
+  against its module, and the reader's own guard built its fixtures by hand
+  from the same imagination.  Three artifacts agreeing with each other and none
+  of them with the program.  `summaryDocument` is now an exported pure
+  function, every fixture in `tests/unit/ci/NightlyFlakeReport.test.ts` is
+  produced by calling it, and each offender carries its own `consistent` flag
+  so the flaky/broken split has one home rather than a copy in each reader.
+
 - **The transport's stall-deadline / handshake-deadline ordering rule is now
   checked against the pair the transport will run with, not the pair the
   caller supplied** (#846).  It guarded on both values being present, so
