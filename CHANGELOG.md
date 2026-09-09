@@ -3189,6 +3189,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **The connection cap no longer fails open on a socket that cannot report
+  its close** (#1409).  `enforceMaxConnections` counted such a connection
+  and un-counted it in the same breath, so the held count never grew and the
+  cap never fired at all.
+
+  Silently, and while reporting itself installed — which is the shape of the
+  defect that had `actor-ts.http.server.max-connections` doing nothing on
+  the Linux runners while passing everywhere else.  The count is now kept
+  either way: a runtime that cannot report a close makes the bound a
+  lifetime budget rather than a concurrency one, which is stricter than
+  asked for and is the wrong answer in the right direction.  A refusal also
+  writes `end()` before `destroy()`, the order the sibling header deadline
+  measured as the one a peer actually observes.
+
+  Whether that was the whole cause is not settled, and the guesswork is
+  replaced by a measurement rather than a claim: the guard reports what it
+  has seen — installed, seen, refused, held — and a new case drives a bare
+  `node:http` server with the runtime property deliberately unset, so
+  nothing but the guard can close anything.  Its failure message carries the
+  report, which separates "never installed" from "never saw the event" from
+  "hung up and the peer did not notice".  #1409 tracks the end-to-end
+  result, and both security pages now say the cap is verified on Bun/Windows
+  and Node and under investigation elsewhere.
+
 - **`actor-ts.serialization.read-constraints.max-document-bytes` now bounds
   the cluster wire too** (#880).  A frame is handed to `JSON.parse` and the
   tagged-tree walker directly and never passes through a serializer, so the
