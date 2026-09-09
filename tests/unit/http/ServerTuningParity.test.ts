@@ -17,6 +17,7 @@ import { HttpServerOptions } from '../../../src/http/HttpServerOptions.js';
 import { complete, get, type Route } from '../../../src/http/Route.js';
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { diagnoseMaxConnections } from '../../util/MaxConnectionsSupport.js';
 
 /**
  * #870 — `actor-ts.http.server` installs connection-level bounds on the server
@@ -75,10 +76,31 @@ async function start(backend: HttpServerBackend, maxConnections: number): Promis
   return binding;
 }
 
+/**
+ * Connect, and **speak** — a connection the server has never heard from is not
+ * a connection it can be asked about.
+ *
+ * Measured on bun 1.4.0 (#1505): a `node:http` server on Linux surfaces an
+ * accepted socket only once its first byte arrives — no `'connection'` event,
+ * and `getConnections()` answers 0 — while on Windows and on node the event
+ * fires on accept.  A test that connects and stays silent therefore asks the
+ * Linux server about a connection it does not have, and the cap it is testing
+ * cannot act on one it cannot see.  Sending a request makes the two platforms
+ * agree, and it is also the connection a cap is actually about.
+ *
+ * An `'error'` after the connect is expected rather than exceptional: the cap
+ * refuses by destroying, which reaches the client as `ECONNRESET`.  It is
+ * swallowed here and observed as the `'close'` that follows it.
+ */
 function open(binding: ServerBinding): Promise<Socket> {
   return new Promise((resolve, reject) => {
-    const socket = connect({ host: binding.host, port: binding.port }, () => resolve(socket));
-    socket.once('error', reject);
+    let connected = false;
+    const socket = connect({ host: binding.host, port: binding.port }, () => {
+      connected = true;
+      resolve(socket);
+      socket.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n');
+    });
+    socket.on('error', (error) => { if (!connected) reject(error); });
     sockets.push(socket);
   });
 }
@@ -105,7 +127,14 @@ describe('the resolved server policy reaches each backend', () => {
     // point: on a backend that owns a node:http server the cap closes the
     // second connection; on one that does not, the connection survives and
     // the key is documented as unavailable rather than quietly ineffective.
-    expect(await closedWithin(second, 3_000)).toBe(installsCap);
+    const closed = await closedWithin(second, 3_000);
+    // Only when it is about to fail: the probe binds two servers and costs
+    // about two seconds, which is worth paying once on a red run and never on
+    // a green one.  `expect(true).toBe(false)` is what this said on the Linux
+    // runners for five runs of five, and it named neither the layer nor the
+    // platform (#1505).
+    const diagnosis = closed === installsCap ? undefined : await diagnoseMaxConnections();
+    expect(closed, diagnosis).toBe(installsCap);
   });
 });
 

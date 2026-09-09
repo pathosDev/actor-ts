@@ -2558,6 +2558,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The documented connection cap was red on Linux and green on Windows, and
+  the cause was neither the cap nor a flake** (#1505).  Measured on bun 1.4.0
+  with the runtime installed locally on both: an `http.Server` emits
+  `'connection'` for an accepted socket **immediately on Windows and only on
+  its first byte on Linux**, where `getConnections()` answers `0` until then —
+  so a socket that connects and stays silent is invisible to the server object
+  rather than merely uncounted.  `server.maxConnections` is ignored on that
+  pair as well, so neither enforcement can act on a silent client.
+
+  The three failing cases opened silent sockets, which is a connection the
+  Linux server does not have.  They now send a request, which is the connection
+  a cap is actually about, and pass on both platforms — verified by running
+  them under Linux, not inferred.  A connection that speaks is capped
+  identically everywhere; one that never speaks is bounded by nothing actor-ts
+  can see on Linux, and `http/security.mdx` now carries that gap and names the
+  OS- or proxy-level limit that closes it.
+
 - **A red nightly filed an issue naming no test, while the artifact beside it
   named three** (#1506).  `scripts/nightly-flake-report.mjs` read `flaky` and
   `consistent` off a night's `summary.json`; `scripts/stress-test.mjs` has

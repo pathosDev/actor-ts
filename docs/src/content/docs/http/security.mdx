@@ -223,6 +223,17 @@ the [Route DSL](/http/route-dsl/).
   Deno) there is nothing to hook, and **Deno's `node:http` shim emits no
   `connection` event** even where a server object exists — so on Deno neither
   the header deadline nor the connection cap is installed by any backend.
+
+  **A connection that says nothing is the gap that remains, and it is
+  platform-shaped.** Measured on bun 1.4.0: an `http.Server` emits `connection`
+  for an accepted socket immediately on Windows, and on Linux only once that
+  socket's first byte arrives — until then `getConnections()` answers `0` too,
+  so the connection is invisible to the process rather than merely uncounted.
+  On that pair neither enforcement can act on a silent client: the property is
+  ignored there, and the event has not fired yet. It is bounded the moment it
+  sends anything, which covers every real client and no slow-loris. If idle
+  sockets are part of your threat model, pair the cap with a limit that sits
+  below the runtime — an OS-level connection limit, or a reverse proxy (#1505).
 - **WebSocket frames** are capped by `maxFrameBytes` (1 MiB default). The
   framework always refuses an oversize frame before it reaches your actor; on
   most runtime/backend pairs the resolved cap is *also* handed to the runtime's

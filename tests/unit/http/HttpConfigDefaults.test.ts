@@ -14,6 +14,7 @@ import { CorsOptions } from '../../../src/http/middleware/CorsOptions.js';
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { diagnoseMaxConnections } from '../../util/MaxConnectionsSupport.js';
 import type { NodeHttpServerLike, ServerBinding } from '../../../src/http/backend/HttpServerBackend.js';
 import {
   DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS,
@@ -429,6 +430,40 @@ describe('actor-ts.http.server', () => {
     });
   }
 
+  /**
+   * Connect, and **speak** — a connection the server has never heard from is
+   * not a connection it can be asked about.
+   *
+   * Measured on bun 1.4.0 (#1505): a `node:http` server on Linux surfaces an
+   * accepted socket only once its first byte arrives — no `'connection'`
+   * event, and `getConnections()` answers 0 — while on Windows and on node
+   * the event fires on accept.  A cap test that connects and stays silent
+   * therefore asks the Linux server about a connection it does not have, and
+   * no cap can act on one it cannot see.  Sending a request makes the two
+   * platforms agree, and it is also the connection a cap is about.
+   *
+   * Only the three connection-cap cases use it.  The header-deadline cases
+   * below need the opposite — a connection that never finishes its headers —
+   * which is why {@link open} stays silent and this is a second helper rather
+   * than a change to that one.
+   *
+   * An `'error'` after the connect is expected rather than exceptional: the
+   * cap refuses by destroying, which reaches the client as `ECONNRESET`, and
+   * it is observed as the `'close'` that follows.
+   */
+  function openSpeaking(binding: ServerBinding): Promise<Socket> {
+    return new Promise((resolve, reject) => {
+      let connected = false;
+      const socket = connect({ host: binding.host, port: binding.port }, () => {
+        connected = true;
+        resolve(socket);
+        socket.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n');
+      });
+      socket.on('error', (error) => { if (!connected) reject(error); });
+      sockets.push(socket);
+    });
+  }
+
   /** Resolve `true` if the server closes `socket` within `withinMs`. */
   function closedWithin(socket: Socket, withinMs: number): Promise<boolean> {
     return new Promise((resolve) => {
@@ -477,10 +512,12 @@ describe('actor-ts.http.server', () => {
   test('max-connections closes the connection past the cap', async () => {
     const binding = await bindWith({ 'actor-ts': { http: { server: { 'max-connections': 1 } } } });
 
-    const first = await open(binding);
-    const second = await open(binding);
+    const first = await openSpeaking(binding);
+    const second = await openSpeaking(binding);
 
-    expect(await closedWithin(second, 3_000)).toBe(true);
+    const closed = await closedWithin(second, 3_000);
+    // See ServerTuningParity for why the probe is lazy and what it answers.
+    expect(closed, closed ? undefined : await diagnoseMaxConnections()).toBe(true);
     expect(first.destroyed).toBe(false);
   });
 
@@ -490,8 +527,8 @@ describe('actor-ts.http.server', () => {
     // reason, which is not the property being claimed.
     const binding = await bindWith({});
 
-    await open(binding);
-    const second = await open(binding);
+    await openSpeaking(binding);
+    const second = await openSpeaking(binding);
 
     expect(await closedWithin(second, 1_000)).toBe(false);
   });
@@ -552,8 +589,8 @@ describe('actor-ts.http.server', () => {
     );
 
     // Explicit > HOCON: the config's cap of 1 would have closed this one.
-    await open(binding);
-    const second = await open(binding);
+    await openSpeaking(binding);
+    const second = await openSpeaking(binding);
     expect(await closedWithin(second, 1_000)).toBe(false);
   });
 

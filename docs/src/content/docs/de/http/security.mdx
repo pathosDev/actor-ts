@@ -239,6 +239,19 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   `node:http`-Shim sendet kein `connection`-Event**, selbst wo ein Server-Objekt
   existiert — auf Deno installiert also kein Backend die Header-Deadline oder
   die Verbindungsschranke.
+
+  **Eine Verbindung, die nichts sagt, ist die verbleibende Lücke — und sie hat
+  eine Plattform-Form.** Gemessen auf bun 1.4.0: ein `http.Server` sendet
+  `connection` für einen angenommenen Socket unter Windows sofort, unter Linux
+  erst, sobald dessen erstes Byte eintrifft — bis dahin antwortet auch
+  `getConnections()` mit `0`, die Verbindung ist für den Prozess also nicht
+  bloß ungezählt, sondern unsichtbar. Auf dieser Paarung greift bei einem
+  schweigenden Client keine der beiden Durchsetzungen: die Eigenschaft wird dort
+  ignoriert, und das Event ist noch nicht gefeuert. Sobald er irgendetwas
+  sendet, ist er beschränkt — das deckt jeden echten Client ab und keinen
+  Slow-Loris. Wenn stille Sockets zu deinem Bedrohungsmodell gehören, kombiniere
+  die Schranke mit einer Grenze unterhalb der Runtime: einem Verbindungslimit
+  des Betriebssystems oder einem Reverse-Proxy (#1505).
 - **WebSocket-Frames** werden durch `maxFrameBytes` gekappt (1 MiB Default).
   Das Framework weist einen zu großen Frame immer ab, bevor er deinen Actor
   erreicht; auf den meisten Laufzeit/Backend-Paaren geht das aufgelöste Limit
