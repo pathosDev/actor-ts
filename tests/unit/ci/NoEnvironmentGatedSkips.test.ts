@@ -210,7 +210,7 @@ describe('no environment variable removes a test from CI', () => {
       + 'do, which no workflow can answer for it — or add the file to '
       + 'ENVIRONMENT_GATED_SKIPS with the reason it cannot hide a failure.',
     ).toEqual([]);
-  });
+  }, 30_000);
 
   test.each([...ENVIRONMENT_GATED_SKIPS])(
     '%s is still gated, so its entry is not stale',

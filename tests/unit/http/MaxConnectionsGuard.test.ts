@@ -128,7 +128,7 @@ describe('the cap holds on a real server, with no help from the runtime', () => 
     expect(first.closed).toBe(false);
     expect(second.closed).toBe(false);
     expect(third.closed, 'the third connection through a cap of two was admitted').toBe(true);
-  });
+  }, 15_000);
 
   test('a slot freed by a close is reused, against a server that really closes', async () => {
     // The fake-server sibling of this asserts the bookkeeping; this asserts
@@ -145,7 +145,7 @@ describe('the cap holds on a real server, with no help from the runtime', () => 
     const second = await speak(port);
     expect(second.closed, 'the slot freed by a close was not reused').toBe(false);
     expect(second.served).toBe(true);
-  });
+  }, 15_000);
 
   test('a cap of zero refuses everything rather than meaning unlimited', async () => {
     // `0` reaches the guard only from an explicit setting — `applyServerOptions`

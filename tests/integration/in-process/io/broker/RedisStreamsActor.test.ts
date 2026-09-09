@@ -481,7 +481,7 @@ describe('RedisStreamsActor — consumer-loop failure classification (#742)', ()
     } finally {
       await system.terminate();
     }
-  });
+  }, 15_000);
 });
 
 describe('RedisStreamsActor — connect can fail (#742)', () => {

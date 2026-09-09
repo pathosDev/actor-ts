@@ -164,7 +164,7 @@ describe('the system queue names its real producers — #794', () => {
     // a variant that lost its last one has to enter it — either way the
     // enumerations below have to be revisited in the same change.
     expect(dormant).toEqual(sorted(new Set(KINDS_WITH_NO_PRODUCER.keys())));
-  });
+  }, 30_000);
 
   test("Mailbox.enqueueSystem's JSDoc enumerates exactly the real producers", () => {
     const produced = producedKinds();
@@ -175,7 +175,7 @@ describe('the system queue names its real producers — #794', () => {
     // makes the argument cover traffic that does not exist; a missing one leaves
     // a real source unaccounted for.
     expect(sorted(kindsNamedIn(paragraph, declaredKinds()))).toEqual(sorted(produced));
-  });
+  }, 30_000);
 
   for (const [language, { page, lead }] of SYSTEM_QUEUE_PARAGRAPHS) {
     test(`the mailboxes page attributes only real producers to it (${language})`, () => {
@@ -195,6 +195,6 @@ describe('the system queue names its real producers — #794', () => {
       expect(sorted(new Set([...named].filter((kind) => !produced.has(kind))))).toEqual([]);
       expect(named.has('childTerminated')).toBe(true);
       expect(named.has('failure')).toBe(true);
-    });
+    }, 30_000);
   }
 });

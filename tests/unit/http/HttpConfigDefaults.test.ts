@@ -552,7 +552,7 @@ describe('actor-ts.http.server', () => {
     socket.write('GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n');
 
     expect(await closedWithin(socket, 2_000)).toBe(false);
-  });
+  }, 15_000);
 
   test('the receive deadlines reach the server Fastify built', async () => {
     // `requestTimeout` is asserted as installed rather than as observed, and
@@ -623,7 +623,7 @@ describe('actor-ts.http.server', () => {
     socket.write('GET / HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n');
 
     expect(await closedWithin(socket, 3_000)).toBe(false);
-  });
+  }, 15_000);
 
   test('header-timeout = 0 arms no deadline, which is what "disables it" has to mean', async () => {
     // The documented opt-out.  A guard that read `0` as "close immediately"
@@ -633,7 +633,7 @@ describe('actor-ts.http.server', () => {
     socket.write('GET / HTTP/1.1\r\nHost: x\r\n');
 
     expect(await closedWithin(socket, 3_000)).toBe(false);
-  });
+  }, 15_000);
 
   test('a value outside its domain is an OptionsError from bind(), not a broken bound', async () => {
     const system = systemWith({ 'actor-ts': { http: { server: { 'max-connections': 0 } } } });

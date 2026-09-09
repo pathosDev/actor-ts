@@ -2558,6 +2558,29 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **Three HTTP-backend tests missed bun's undeclared 5 000 ms cap in a full run
+  and passed in isolation** (#1504).  Fixed the way the issue asked for — by
+  checking whether the work was avoidable before budgeting for it.
+
+  `StaticFiles.test.ts` started an `ActorSystem` and bound a server in each of
+  seventeen cases, three backends over, so a file about reading files off a disk
+  paid fifty-one server lifecycles.  Nothing there mutates server state, so the
+  isolation that bought was isolation from nothing; the block now binds one
+  server per backend and the file is ~24 % faster even idle.  The two
+  `BackendTransportFrameCap` cases genuinely cannot share one — the cap under
+  test is installed *during* the bind and each needs its own backend — so those
+  get a declared budget, and so do the other seven cases in that file, which do
+  the same work and differ only in which crossed the line first.
+
+  **The verification run then failed a fourth test of the same family**, and
+  measuring rather than patching it turned up the real shape: the same test took
+  **1.51 s in one parallel run and 5.05 s in another**, a 3.3× spread. So any
+  unbudgeted test above ~1.5 s is one load spike from the cap, which is a line
+  drawn from data rather than taste. Nine files were over it; all now declare a
+  budget — 30 s for the repo-file scanners that read every source under `src/`,
+  15 s for the cases that wait on a real server. Two full parallel runs green,
+  12 279 tests.
+
 - **The documented connection cap was red on Linux and green on Windows, and
   the cause was neither the cap nor a flake** (#1505).  Measured on bun 1.4.0
   with the runtime installed locally on both: an `http.Server` emits
