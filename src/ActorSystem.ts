@@ -78,6 +78,7 @@ import type { Cluster } from './cluster/Cluster.js';
 import { ClusterExtensionId } from './cluster/ClusterExtension.js';
 import { PersistenceExtensionId } from './persistence/PersistenceExtension.js';
 import type { HttpServerBackend } from './http/backend/HttpServerBackend.js';
+import { DEFAULT_HTTP_BIND_HOST } from './http/Constants.js';
 import { HttpExtensionId, type ServerBuilder } from './http/HttpExtension.js';
 import type { Behavior } from './typed/Behavior.js';
 import { typedActor } from './typed/Spawn.js';
@@ -499,8 +500,19 @@ export class ActorSystem {
    * with the framework's default Fastify backend.  Equivalent to:
    *
    *     system.extension(HttpExtensionId)
-   *           .newServerAt(host ?? '0.0.0.0', port)
+   *           .newServerAt(host ?? '127.0.0.1', port)
    *           .useBackend(backend ?? new FastifyBackend())
+   *
+   * **The default host is loopback, and that is a change** (#1408).  It used
+   * to be the IPv4 wildcard, which made the shortest and most-copied form of
+   * this call the one that published the server on every interface — a
+   * decision nothing at the call site recorded and most callers never made.
+   * A server that should be reachable from outside the host now says so, by
+   * passing the interface it means through `options.host`.
+   *
+   * The wildcard is deliberately not spelled out here: this comment is a
+   * copy-paste surface, and `tests/unit/ci/ExampleBindAddresses.test.ts`
+   * flags one baked into a snippet for exactly that reason (#756).
    *
    * For non-default backends, pass `backend:` — typically
    * `new ExpressBackend(opts)` or `new HonoBackend(opts)`.  Returns
@@ -515,7 +527,8 @@ export class ActorSystem {
     port: number,
     options: { readonly host?: string; readonly backend?: HttpServerBackend } = {},
   ): ServerBuilder {
-    const builder = this.extensions.get(HttpExtensionId).newServerAt(options.host ?? '0.0.0.0', port);
+    const builder = this.extensions.get(HttpExtensionId)
+      .newServerAt(options.host ?? DEFAULT_HTTP_BIND_HOST, port);
     return options.backend ? builder.useBackend(options.backend) : builder;
   }
 

@@ -2328,6 +2328,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — `ActorSystem.http(port)` binds loopback when no host is
+  given** (#1408).  It bound the IPv4 wildcard, so the shortest and
+  most-copied form of the shortcut was the one that published the server on
+  every interface.
+
+  *Migration:* a server that should be reachable from outside the host names
+  the interface — `system.http(port, { host })`.  Nothing else moves:
+  `newServerAt(host, port)` always took the host as a required argument, and
+  every example in the tree except the Kubernetes probe endpoint already
+  bound loopback explicitly.
+
+  This is the quiet kind of breaking change, which is why it is called out
+  rather than folded into a list: an affected deployment keeps starting
+  after the upgrade and simply stops being reachable, with nothing in the
+  log connecting that to the change.  The default was found by widening the
+  guard over `examples/` (#756), which had exempted the host-less call on
+  the stated grounds that it was "configuration" — it was not, it was a
+  hard-coded address one function call away.  That guard now pins the
+  default itself instead of the call shape, so the two cannot drift apart
+  again.
+
 - **BREAKING — The dump withholds a value when a whole word of the key's
   name is `password`, `passphrase`, `secret`, `token`, `key`, `credential`
   or `auth` — singular or plural, in any path segment, so a branch named
