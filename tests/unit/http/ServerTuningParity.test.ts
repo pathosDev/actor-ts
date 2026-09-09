@@ -8,6 +8,7 @@ import { HonoBackend } from '../../../src/http/backend/HonoBackend.js';
 import {
   applyServerOptions,
   enforceHeaderTimeout,
+  enforceMaxConnections,
   type HttpServerBackend,
   type NodeHttpServerLike,
   type ServerBinding,
@@ -397,6 +398,34 @@ describe('the connection cap is enforced here, not delegated', () => {
     return { server, open };
   }
 
+  test('a socket that cannot report its close is still counted, not waved through', () => {
+    // The direction a security control has to degrade in.  The first shape of
+    // this guard read `if (typeof socket.once !== 'function') { held--; return; }`
+    // — so on a runtime whose sockets carry no `once`, every connection was
+    // counted and immediately uncounted, `held` never grew, and the cap never
+    // fired at all.  Failing open is the one outcome a cap must not have; a
+    // count that only rises is stricter than asked for, which is the wrong
+    // answer in the right direction.
+    const listeners: Array<(socket: { destroy: () => void }) => void> = [];
+    const server: NodeHttpServerLike = {
+      on: (_event, listener) => {
+        listeners.push(listener as (socket: { destroy: () => void }) => void);
+        return server;
+      },
+    };
+    const report = enforceMaxConnections(server, 1);
+    const openWithoutOnce = (): boolean => {
+      let destroyed = false;
+      // No `once` — the shape the old guard silently gave up on.
+      for (const listener of listeners) listener({ destroy: () => { destroyed = true; } });
+      return destroyed;
+    };
+
+    expect(openWithoutOnce()).toBe(false);
+    expect(openWithoutOnce(), 'the cap failed open on a socket with no close event').toBe(true);
+    expect(report().refused).toBe(1);
+  });
+
   test('a runtime that ignores maxConnections still gets the documented cap', () => {
     const { server, open } = fakeServer();
     applyServerOptions(server, { maxConnections: 2 });
@@ -456,5 +485,83 @@ describe('the connection cap is enforced here, not delegated', () => {
     const server: NodeHttpServerLike = {};
     expect(() => applyServerOptions(server, { maxConnections: 1 })).not.toThrow();
     expect(server.maxConnections).toBe(1);
+  });
+});
+
+/**
+ * The connection cap against a **real** `node:http` server, with the runtime's
+ * own `maxConnections` deliberately left unset.
+ *
+ * This case exists to answer a question the three end-to-end cases above
+ * cannot: they were red on GitHub's Linux runners and green on Windows and in
+ * every local run, and a timeout tells you only that the second connection
+ * lived — not whether the guard was installed, whether the connection event
+ * ever reached it, or whether it hung up on a socket whose close the peer did
+ * not observe.  Those are three different defects with three different fixes.
+ *
+ * So: no backend, no framework, no property for the runtime to honour.  If
+ * this passes where those fail, the guard works and the gap is in what the
+ * backend hands us; if it fails, the report in the message says which half.
+ */
+/** Enough of a request for a server to surface the connection — see below. */
+const REQUEST_BYTES = 'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n';
+
+describe('the connection cap on a bare node:http server', () => {
+  test('holds without the runtime property, and says what it saw if it does not', async () => {
+    const { createServer } = await import('node:http');
+    const server = createServer((_request, response) => { response.end('ok'); });
+    // Unset on purpose: with it, a runtime that honours the property would
+    // close the socket and this case would pass without exercising the guard.
+    expect(server.maxConnections).toBeUndefined();
+
+    const report = enforceMaxConnections(server as unknown as NodeHttpServerLike, 1);
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve); });
+    const address = server.address();
+    const port = typeof address === 'object' && address !== null ? address.port : 0;
+
+    // The connection has to **speak**.  Measured on bun 1.4.0: an `http.Server`
+    // emits `'connection'` for an accepted socket immediately on Windows and on
+    // node, and on Linux only once its first byte arrives — `getConnections()`
+    // answers 0 until then, so a silent socket is invisible to the server
+    // object rather than merely uncounted.  Dialling and staying quiet asks the
+    // Linux server about a connection it does not have, and this case's own
+    // message says so: `seen=0` (#1505).
+    //
+    // That is also the split #1409 could not explain — the header deadline held
+    // on that runner while the cap did not, on what looked like the same event.
+    // A slow-loris writes a partial header block; these dials wrote nothing.
+    const dial = (): Promise<Socket> => new Promise((resolve, reject) => {
+      let connected = false;
+      const socket = connect({ host: '127.0.0.1', port }, () => {
+        connected = true;
+        resolve(socket);
+        socket.write(REQUEST_BYTES);
+      });
+      // A refusal arrives as ECONNRESET rather than a clean FIN; it is observed
+      // by `closedWithin` below, so it must not reject the dial.
+      socket.on('error', (error) => { if (!connected) reject(error); });
+      sockets.push(socket);
+    });
+
+    try {
+      await dial();
+      const second = await dial();
+      const closed = await closedWithin(second, 3_000);
+
+      const seen = report();
+      expect(
+        closed,
+        `the cap did not close the second connection — installed=${seen.installed} `
+        + `seen=${seen.seen} refused=${seen.refused} held=${seen.held}. `
+        + 'installed=false means the server exposed no `on`; seen=0 means the '
+        + 'connection event never arrived; refused>0 with closed=false means the '
+        + 'guard hung up and the peer did not observe it.',
+      ).toBe(true);
+      expect(seen.installed).toBe(true);
+      expect(seen.seen).toBe(2);
+      expect(seen.refused).toBe(1);
+    } finally {
+      await new Promise<void>((resolve) => { server.close(() => resolve()); });
+    }
   });
 });

@@ -1,7 +1,10 @@
 import { createServer, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { afterEach, describe, expect, test } from 'bun:test';
-import { enforceMaxConnections } from '../../../src/http/backend/HttpServerBackend.js';
+import {
+  enforceMaxConnections,
+  type ConnectionCapReport,
+} from '../../../src/http/backend/HttpServerBackend.js';
 
 /**
  * #1505 — the connection cap against a **real** `node:http` server.
@@ -59,14 +62,16 @@ afterEach(async () => {
  * `maxConnections` is never assigned — that is the point. Setting it would
  * hand the job to the runtime, and this file would be measuring the runtime.
  */
-async function guardedServer(cap: number): Promise<{ port: number; installed: boolean }> {
+async function guardedServer(
+  cap: number,
+): Promise<{ port: number; report: () => ConnectionCapReport }> {
   const server = createServer((_request, response) => response.end('ok'));
   servers.push(server);
-  const installed = enforceMaxConnections(server, cap);
+  const report = enforceMaxConnections(server, cap);
   await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', () => resolve()); });
   const address = server.address();
   if (address === null || typeof address === 'string') throw new Error('no port');
-  return { port: address.port, installed };
+  return { port: address.port, report };
 }
 
 /** What became of one connection that connected and sent a request. */
@@ -106,8 +111,8 @@ function speak(port: number): Promise<Attempt> {
 
 describe('the cap holds on a real server, with no help from the runtime', () => {
   test('a connection past the cap is refused and the one under it is served', async () => {
-    const { port, installed } = await guardedServer(1);
-    expect(installed).toBe(true);
+    const { port, report } = await guardedServer(1);
+    expect(report().installed).toBe(true);
 
     const first = await speak(port);
     expect(first.served, 'the connection under the cap was not served').toBe(true);
@@ -116,6 +121,11 @@ describe('the cap holds on a real server, with no help from the runtime', () => 
     const second = await speak(port);
     expect(second.closed, 'the connection past the cap was not refused').toBe(true);
     expect(second.served).toBe(false);
+
+    // The counters say which half happened, which is what the report is for:
+    // a cap that never saw the connection and a cap that saw and refused it
+    // fail a boolean assertion identically.
+    expect(report()).toMatchObject({ installed: true, seen: 2, refused: 1, held: 1 });
   });
 
   test('the boundary is the cap itself, not one past it', async () => {
@@ -156,11 +166,15 @@ describe('the cap holds on a real server, with no help from the runtime', () => 
   });
 });
 
-describe('a connection the guard cannot account for is not counted', () => {
-  test('a socket that cannot report its close is left out of the count entirely', () => {
-    // Not reachable through a real server, and not covered by the fake-server
-    // cases either: counting a socket whose end is unobservable would turn the
-    // cap into a lifetime budget for the whole server after the first one.
+describe('a connection the guard cannot account for degrades towards refusing', () => {
+  test('a socket that cannot report its close still fills the cap', () => {
+    // **This case asserted the opposite until `d57f0aee`, and that commit is
+    // right.**  The guard used to decrement on the spot when `once` was
+    // missing, so `held` never grew and the cap never fired at all — open,
+    // silently, while reporting itself installed (#1409).  Counting anyway
+    // turns the bound into a lifetime budget rather than a concurrency one,
+    // which is stricter than asked for; a security control that degrades has
+    // to degrade towards refusing.
     const listeners: Array<(socket: unknown) => void> = [];
     const server = {
       on: (event: string, listener: (socket: unknown) => void) => {
@@ -168,13 +182,15 @@ describe('a connection the guard cannot account for is not counted', () => {
       },
     } as unknown as Parameters<typeof enforceMaxConnections>[0];
 
-    expect(enforceMaxConnections(server, 1)).toBe(true);
+    const report = enforceMaxConnections(server, 1);
+    expect(report().installed).toBe(true);
 
     let destroyed = 0;
     const uncloseable = { destroy: () => { destroyed++; } };
-    // Three connections through a cap of one. None can report a close, so none
-    // is counted, and none is destroyed — the cap never fills.
+    // Three connections through a cap of one.  The first fills it; the next
+    // two are refused, because none of them can ever give the slot back.
     for (let index = 0; index < 3; index++) for (const listener of listeners) listener(uncloseable);
-    expect(destroyed).toBe(0);
+    expect(destroyed).toBe(2);
+    expect(report()).toMatchObject({ seen: 3, refused: 2, held: 1 });
   });
 });

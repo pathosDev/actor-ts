@@ -430,3 +430,94 @@ describe.each(backends)('cors — %s backend', (_name, mk) => {
     expect(await response.text()).toBe('custom-options');
   });
 });
+
+/**
+ * The echoed `Access-Control-Allow-Origin` (#1516).
+ *
+ * `allowOriginValue` returned the request's `Origin` verbatim for every
+ * configuration but the uncredentialed wildcard, and one of those reaches it
+ * with text nothing constrained: `withOriginPredicate` answers a boolean about
+ * a string it was handed, so whatever satisfied the predicate went into the
+ * header.  The sibling guard four functions above it (#792) had already argued
+ * the case — an echo that is load-bearing must not depend on the layers
+ * beneath it — and this one was not touched at the time.
+ *
+ * These drive the compiled handler for the reason the #792 block records: no
+ * runtime's request parser will deliver a bare CR/LF to a handler, so a
+ * live-server test cannot put the bytes where the guard has to see them.
+ */
+describe('cors — the echoed Access-Control-Allow-Origin (#1516)', () => {
+  const HOSTILE_ORIGIN = 'https://evil\r\nSet-Cookie: stolen=1.example';
+  const WELL_FORMED = 'https://good.example';
+
+  const echoedOrigin = async (
+    options: CorsOptions,
+    origin: string,
+    method: 'OPTIONS' | 'GET' = 'OPTIONS',
+  ): Promise<string | undefined> => {
+    const compiled = compile(cors(options, path('api', get(() => complete(Status.OK, 'data')))));
+    const route = compiled.find((c) => c.kind === 'http' && c.method === method);
+    if (!route || route.kind !== 'http') throw new Error(`expected a ${method} route`);
+    const response = await route.handler({
+      method,
+      path: '/api',
+      headers: { origin, 'access-control-request-method': 'GET' },
+      query: {},
+      params: {},
+      body: null,
+    });
+    const headers = response.headers ?? {};
+    const key = Object.keys(headers).find((k) => k.toLowerCase() === 'access-control-allow-origin');
+    return key === undefined ? undefined : headers[key];
+  };
+
+  const predicateAllowingEverything = (): CorsOptions =>
+    CorsOptions.create().withOriginPredicate(() => true);
+
+  test('a predicate that accepts a malformed origin does not put it in the header', async () => {
+    // The reported defect, on the preflight path.
+    expect(await echoedOrigin(predicateAllowingEverything(), HOSTILE_ORIGIN)).toBeUndefined();
+  });
+
+  test('and not on the actual-response path either', async () => {
+    // `decorateResponse` is a second call site with its own deny branch; the
+    // first version of this fix guarded only the preflight.
+    expect(await echoedOrigin(predicateAllowingEverything(), HOSTILE_ORIGIN, 'GET')).toBeUndefined();
+  });
+
+  test('a predicate that accepts a well-formed origin still echoes it', async () => {
+    // The control that keeps this a guard rather than a removal: refusing
+    // everything would satisfy the case above and break the feature.
+    expect(await echoedOrigin(predicateAllowingEverything(), WELL_FORMED)).toBe(WELL_FORMED);
+  });
+
+  test('the opaque origin `null` is echoed, because a browser really sends it', async () => {
+    // A sandboxed iframe, a `data:` document, a cross-origin form post that
+    // redirected. Refusing it would deny requests the Fetch spec expects an
+    // answer to, and it is the one value that cannot survive a URL round trip.
+    expect(await echoedOrigin(predicateAllowingEverything(), 'null')).toBe('null');
+  });
+
+  test.each([
+    ['a trailing slash', 'https://good.example/'],
+    ['a path', 'https://good.example/admin'],
+    ['embedded credentials', 'https://user:pw@good.example'],
+    ['a leading space', ' https://good.example'],
+    ['an embedded tab', 'https://good\texample'],
+  ])('refuses %s', async (_label, origin) => {
+    // Each is a value the URL parser normalises away rather than preserves, so
+    // echoing it would hand the browser a string it never sent — which fails
+    // the client's own byte comparison while reading as success on this side.
+    expect(await echoedOrigin(predicateAllowingEverything(), origin)).toBeUndefined();
+  });
+
+  test('the wildcard and exact-allowlist paths are unchanged', async () => {
+    // Neither can produce attacker-shaped text — the wildcard answers a
+    // literal and an allowlist match *is* a configured string — so the fix
+    // deliberately does not reach them, and that is asserted rather than
+    // assumed.
+    expect(await echoedOrigin(CorsOptions.create().withAnyOrigin(), HOSTILE_ORIGIN)).toBe('*');
+    expect(await echoedOrigin(CorsOptions.create().withOrigins(WELL_FORMED), WELL_FORMED))
+      .toBe(WELL_FORMED);
+  });
+});

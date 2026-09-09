@@ -43,6 +43,13 @@ Drei Dinge passieren hier:
   einen Server mit dem Standard-Fastify-Backend.  Für ein anderes
   Backend übergibst Du `backend:` (siehe unten).
 
+  Ohne Host-Angabe bindet er **Loopback** — `127.0.0.1` —, die kürzeste
+  Form ist also von der Maschine aus erreichbar und sonst nirgends.  Ein
+  Server, der von außen antworten soll, sagt das: `system.http(port, {
+  host })`.  Das hat sich mit #1408 geändert; vorher band er jede
+  Schnittstelle, womit ausgerechnet die meistkopierte Form den Server
+  veröffentlichte, ohne es zu erwähnen.
+
 ## Die drei Bausteine
 
 | Baustein | Lebt in | Seite |

@@ -41,6 +41,13 @@ Three things going on:
   server with the default Fastify backend.  For a different
   backend, pass `backend:` (see below).
 
+  It binds **loopback** — `127.0.0.1` — when you name no host, so the
+  shortest form is reachable from the machine and nowhere else.  A server
+  that should answer from outside says so: `system.http(port, { host })`.
+  This changed in #1408; it used to bind every interface, which meant the
+  form most people copied was the one that published the server without
+  saying so.
+
 ## The three pieces
 
 | Piece | Lives in | Page |

@@ -33,12 +33,28 @@ responses get `Access-Control-Allow-Origin` + `Vary: Origin`.
 | --- | --- | --- |
 | `withOrigins(...o)` | `origins` | Exact-match allowlist. Config: `origins`. |
 | `withAnyOrigin()` | `origins` | Allow any origin (`*`). Must be explicit — **code-only**. |
-| `withOriginPredicate(predicate)` | `origins` | Decide per request; a throwing predicate denies. **Code-only**. |
+| `withOriginPredicate(predicate)` | `origins` | Decide per request; a throwing predicate denies. A predicate that accepts a value which is not a well-formed origin also denies — see below. **Code-only**. |
 | `withMethods(...m)` | `methods` | `Access-Control-Allow-Methods`. Default: the methods registered at the pattern. Config: `methods`. |
 | `withAllowedHeaders(...h)` | `allowedHeaders` | Default: echo the (sanitised) request headers. Config: `allowed-headers`. |
 | `withExposedHeaders(...h)` | `exposedHeaders` | `Access-Control-Expose-Headers`. Config: `exposed-headers`. |
 | `withCredentials(flag?)` | `credentials` | `Access-Control-Allow-Credentials: true`. Config: `credentials`. |
 | `withMaxAge(seconds)` | `maxAge` | Preflight cache duration. Config: `max-age`. |
+
+:::caution[A predicate answers about text, so the text is checked too]
+`Access-Control-Allow-Origin` echoes the origin the client sent, and with an
+allowlist that is safe because a match *is* one of your configured strings.
+A predicate is different: it returns a boolean about whatever arrived, so
+accepting `(origin) => origin.endsWith('.example')` would have reflected an
+`Origin` header carrying a carriage return, a line feed and a second header
+straight back into the response.
+
+The middleware therefore echoes an origin only when it round-trips through the
+URL parser unchanged, and omits the header otherwise — the same outcome the
+browser sees for an origin that did not match. The opaque origin `null` is
+admitted, because browsers really send it. Nothing is repaired and re-sent: a
+browser compares the value byte for byte against what it sent, so a corrected
+spelling would fail on the client while looking allowed on the server (#1516).
+:::
 
 Every field except the wildcard and the predicate is also settable from
 `actor-ts.http.cors`, under the same name in kebab-case — `origins`,

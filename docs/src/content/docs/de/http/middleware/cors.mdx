@@ -34,12 +34,29 @@ erhält `204` mit den `Access-Control-Allow-*`-Headern, und die eigentlichen
 | --- | --- | --- |
 | `withOrigins(...o)` | `origins` | Exakte Allowlist. Config: `origins`. |
 | `withAnyOrigin()` | `origins` | Jeden Origin erlauben (`*`). Muss explizit sein — **nur im Code**. |
-| `withOriginPredicate(predicate)` | `origins` | Pro Request entscheiden; ein werfendes Prädikat verweigert. **Nur im Code**. |
+| `withOriginPredicate(predicate)` | `origins` | Pro Request entscheiden; ein werfendes Prädikat verweigert. **Nur im Code**. Ein Prädikat, das einen nicht wohlgeformten Origin akzeptiert, verweigert ebenfalls — siehe unten. |
 | `withMethods(...m)` | `methods` | `Access-Control-Allow-Methods`. Default: die am Pattern registrierten Methoden. Config: `methods`. |
 | `withAllowedHeaders(...h)` | `allowedHeaders` | Default: die (sanitisierten) Request-Header echoen. Config: `allowed-headers`. |
 | `withExposedHeaders(...h)` | `exposedHeaders` | `Access-Control-Expose-Headers`. Config: `exposed-headers`. |
 | `withCredentials(flag?)` | `credentials` | `Access-Control-Allow-Credentials: true`. Config: `credentials`. |
 | `withMaxAge(seconds)` | `maxAge` | Preflight-Cache-Dauer. Config: `max-age`. |
+
+:::caution[Ein Prädikat entscheidet über Text — also wird der Text mitgeprüft]
+`Access-Control-Allow-Origin` gibt den Origin zurück, den der Client geschickt
+hat. Bei einer Allowlist ist das unbedenklich, denn ein Treffer *ist* einer
+Deiner konfigurierten Werte. Ein Prädikat ist anders: es liefert einen
+Boolean über das, was ankam — `(origin) => origin.endsWith('.example')` hätte
+also einen `Origin`-Header mit Wagenrücklauf, Zeilenvorschub und einem zweiten
+Header unverändert zurückgespiegelt.
+
+Deshalb wird ein Origin nur zurückgegeben, wenn er den URL-Parser unverändert
+übersteht; andernfalls entfällt der Header — dasselbe, was der Browser bei
+einem nicht passenden Origin sieht. Der opake Origin `null` ist zugelassen,
+weil Browser ihn tatsächlich senden. Nichts wird repariert und trotzdem
+gesendet: ein Browser vergleicht den Wert Byte für Byte mit dem gesendeten,
+eine korrigierte Schreibweise schlüge also beim Client fehl und sähe auf dem
+Server nach Erlaubnis aus (#1516).
+:::
 
 Jedes Feld außer der Wildcard und dem Prädikat ist auch über
 `actor-ts.http.cors` setzbar, unter demselben Namen in kebab-case — `origins`,
