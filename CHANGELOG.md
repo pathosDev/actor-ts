@@ -2358,6 +2358,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The four CRDTs that had no shrinking property coverage now have it, and the
+  unseeded generator that stood in for it is gone** (#1372). `GCounterMap`,
+  `LWWMap`, `MVRegister` and `ORMap` were checked only by a hand-rolled
+  generator over bare `Math.random()`, 25 triples apiece — no shrinking, so a
+  broken merge law reported whichever three large maps the draw produced rather
+  than the two-element pair that breaks it, and no seed, so the failure could
+  not be re-run at all. All nine types are now under `fast-check` with the seed
+  pinned globally by `tests/setup/property-seed.ts`.
+
+  The new `LWWMap` property **failed on its first run**, which is the argument
+  for the change in one line: two maps that both wrote one key at timestamp 3
+  from the same replica, one a value and one a removal. That is `LWWRegister`'s
+  documented tie behaviour (#950) reached one level up rather than a new defect,
+  so the generator now derives both the value and the put/remove choice from
+  `(replica, timestamp)` — modelling "a replica writes one thing at one instant"
+  instead of filtering the case out afterwards with an `fc.pre` that would throw
+  most runs away.
+
+  The counterexample is pinned as an example test regardless, which is the
+  corpus the issue asks for: the generator can no longer produce that case, so
+  without the example nothing would notice if the behaviour changed. The nine
+  now-redundant law loops are removed along with every `Math.random()` call in
+  that file; what stays there is the hand-picked cases that say what each type
+  *means*.
+
 - **BREAKING — The dump withholds a value when a whole word of the key's
   name is `password`, `passphrase`, `secret`, `token`, `key`, `credential`
   or `auth` — singular or plural, in any path segment, so a branch named
