@@ -11,6 +11,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **One factor scales every testkit deadline** (#1376).
+  `ACTOR_TS_TEST_TIME_FACTOR` multiplies `TestProbe`'s timeouts,
+  `MultiNodeSpec` and `ParallelMultiNodeSpec`'s await timeouts, the worker
+  handshake and control RPC, and every `awaitCondition` budget. Default 1, so it
+  is inert until asked for; a malformed value throws rather than falling back,
+  because ignoring a typo hands the setter the failure they were trying to fix.
+  Every message the factor lengthened names it.
+
+  **The design question the issue poses is answered by making the guard scale
+  too.** Bun's per-test cap is not reachable from this repository — it is the
+  5 000 ms default or a literal third argument — so a factor that quietly
+  tripled a budget under an untouched cap would recreate the exact failure
+  `AwaitConditionBudgets` exists to prevent. That guard now measures the
+  *scaled* budget against the literal cap and recognises `scaledMs(N)` as a cap
+  that rises with it. Run at factor 3 over the whole tree it reports ~1 200
+  tests whose caps no longer contain their budgets, which is true — so a raised
+  factor is a per-suite tool, not a global switch, and the docs say so.
+
+  `nightly-flakes.yml` gains the demonstration the issue asks for: the three
+  suites that #538 removed from CI for being too slow now run nightly at factor
+  3 as a recorded measurement rather than a gate. Both factors are green
+  locally, which is itself the answer to the quarantine's original question —
+  those suites were not merely slow.
+
 - **A network that works *badly*, not just perfectly or not at all** (#1023).
   Every multi-node test ran on a transport that was either flawless or severed:
   `MultiNodeTransport` offered a bidirectional block and `InMemoryTransport`

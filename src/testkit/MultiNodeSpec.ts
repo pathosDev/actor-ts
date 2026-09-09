@@ -9,6 +9,7 @@ import { type Member } from '../cluster/Member.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../Logger.js';
 import { MultiNodeTransport } from './internal/MultiNodeTransport.js';
+import { describeTimeFactor, scaledMs } from './TimeFactor.js';
 import { FaultyTransport } from './FaultyTransport.js';
 import {
   DEFAULT_TRANSPORT_FAULT_SEED,
@@ -113,7 +114,9 @@ export class MultiNodeSpec {
       roles: options.roles,
       seedRoles: options.seedRoles ?? [options.roles[0]!],
       gossipIntervalMs: options.gossipIntervalMs ?? 100,
-      awaitTimeoutMs: options.awaitTimeoutMs ?? 10_000,
+      // Scaled once, at resolution, so every `await*` helper and every
+      // barrier inherits the machine's factor (#1376).
+      awaitTimeoutMs: scaledMs(options.awaitTimeoutMs ?? 10_000),
       logLevel: options.logLevel ?? LogLevel.Off,
       // Test-scale like the two intervals above: the shipped stability window
       // is 20 s, twice `awaitTimeoutMs`, so a spec inheriting it would time
@@ -453,7 +456,8 @@ export class MultiNodeSpec {
       await new Promise((r) => setTimeout(r, 25));
     }
     throw new Error(
-      `MultiNodeSpec: timeout after ${timeoutMs} ms — ${description}${this.reproductionHint()}`,
+      `MultiNodeSpec: timeout after ${timeoutMs} ms${describeTimeFactor()} — `
+      + `${description}${this.reproductionHint()}`,
     );
   }
 

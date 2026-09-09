@@ -5,6 +5,13 @@ export { TestProbe } from './TestProbe.js';
 export { TestProbeOptions, TestProbeOptionsBuilder, TestProbeOptionsValidator } from './TestProbeOptions.js';
 export type { TestProbeOptionsType } from './TestProbeOptions.js';
 export { ManualScheduler } from './ManualScheduler.js';
+export {
+  DEFAULT_TEST_TIME_FACTOR,
+  TEST_TIME_FACTOR_VARIABLE,
+  describeTimeFactor,
+  scaledMs,
+  testTimeFactor,
+} from './TimeFactor.js';
 export { FaultyTransport } from './FaultyTransport.js';
 export {
   FaultyTransportOptions,

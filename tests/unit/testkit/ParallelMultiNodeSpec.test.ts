@@ -19,6 +19,7 @@
  * the `backend` option.  Both stay outside the quarantine below, so they are
  * the only part of this file CI ever executes.
  */
+import { scaledMs } from '../../../src/testkit/TimeFactor.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
@@ -542,7 +543,7 @@ describe('ParallelMultiNodeSpec — bootstrap', () => {
     } finally {
       await spec.stop();
     }
-  }, 150_000);
+  }, scaledMs(150_000));
 
   test('addressFor + allRoles work after start', async () => {
     const spec = new ParallelMultiNodeSpec({
@@ -558,7 +559,7 @@ describe('ParallelMultiNodeSpec — bootstrap', () => {
     } finally {
       await spec.stop();
     }
-  }, 150_000);
+  }, scaledMs(150_000));
 });
 
 describe('ParallelMultiNodeSpec — failure simulation', () => {
@@ -586,7 +587,7 @@ describe('ParallelMultiNodeSpec — failure simulation', () => {
     } finally {
       await spec.stop();
     }
-  }, 150_000);
+  }, scaledMs(150_000));
 
   test('leave(role) advertises a graceful exit to peers', async () => {
     const spec = new ParallelMultiNodeSpec({
@@ -611,7 +612,7 @@ describe('ParallelMultiNodeSpec — failure simulation', () => {
     } finally {
       await spec.stop();
     }
-  }, 150_000);
+  }, scaledMs(150_000));
 
   test('partition + heal flips reachability without dropping the workers', async () => {
     const spec = new ParallelMultiNodeSpec({
@@ -640,7 +641,7 @@ describe('ParallelMultiNodeSpec — failure simulation', () => {
     } finally {
       await spec.stop();
     }
-  }, 150_000);
+  }, scaledMs(150_000));
 });
 
 describe('ParallelMultiNodeSpec — await* timeouts', () => {
@@ -659,5 +660,5 @@ describe('ParallelMultiNodeSpec — await* timeouts', () => {
     } finally {
       await spec.stop();
     }
-  }, 45_000);
+  }, scaledMs(45_000));
 });

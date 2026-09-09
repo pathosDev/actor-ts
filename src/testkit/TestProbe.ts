@@ -2,6 +2,7 @@ import type { Scheduler } from '../Scheduler.js';
 import { ActorPath } from '../ActorPath.js';
 import { ActorRef } from '../ActorRef.js';
 import type { ActorSystem } from '../ActorSystem.js';
+import { describeTimeFactor, scaledMs } from './TimeFactor.js';
 import { TestProbeOptionsValidator } from './TestProbeOptions.js';
 import type { TestProbeOptions, TestProbeOptionsType } from './TestProbeOptions.js';
 
@@ -55,7 +56,9 @@ export class TestProbe extends ActorRef<unknown> {
     new TestProbeOptionsValidator().validate(resolvedOptions);
     const name = resolvedOptions.name ?? `test-probe-${++probeCounter}`;
     this.path = new ActorPath('', null, system.name).child(name);
-    this.defaultTimeoutMs = resolvedOptions.defaultTimeoutMs ?? 3_000;
+    // Scaled once, here, so every `receiveOne`/`expectMessage` that omits a
+    // timeout inherits the machine's factor without each call site knowing.
+    this.defaultTimeoutMs = scaledMs(resolvedOptions.defaultTimeoutMs ?? 3_000);
   }
 
   tell(message: unknown, sender: ActorRef | null = null): void {
@@ -139,7 +142,7 @@ export class TestProbe extends ActorRef<unknown> {
   }
 
   /** Assert NO message arrives within the timeout. */
-  async expectNoMessage(timeoutMs: number = 300): Promise<void> {
+  async expectNoMessage(timeoutMs: number = scaledMs(300)): Promise<void> {
     if (this.queue.length > 0) {
       throw new Error(`expectNoMessage: queue contains ${stringify(this.queue[0]!.message)}`);
     }
@@ -199,7 +202,7 @@ export class TestProbe extends ActorRef<unknown> {
         entry.timer = setTimeout(() => {
           const index = this.waiters.indexOf(entry);
           if (index >= 0) this.waiters.splice(index, 1);
-          reject(new Error(`TestProbe timeout after ${timeout}ms`));
+          reject(new Error(`TestProbe timeout after ${timeout}ms${describeTimeFactor()}`));
         }, timeout);
       }
       this.waiters.push(entry);

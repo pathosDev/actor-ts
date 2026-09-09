@@ -13,6 +13,7 @@
  * worker-thread harness reaches the same semantics with real OS
  * threads in play.
  */
+import { scaledMs } from '../../src/testkit/TimeFactor.js';
 import { describe, expect, test } from 'bun:test';
 import { ParallelMultiNodeSpec } from '../../src/testkit/ParallelMultiNodeSpec.js';
 import { awaitCondition, sleep } from '../util/AwaitCondition.js';
@@ -81,5 +82,5 @@ describe('ParallelMultiNodeSpec — DistributedPubSub e2e', () => {
     } finally {
       await spec.stop();
     }
-  }, 60_000);
+  }, scaledMs(60_000));
 });
