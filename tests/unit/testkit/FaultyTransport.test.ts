@@ -333,7 +333,10 @@ describe('it decorates any transport, which is why it is a decorator', () => {
 
     await sender.shutdown();
     await receiver.shutdown();
-  });
+    // A declared cap, because the poll above carries a 5 000 ms budget and
+    // bun's undeclared default is also 5 000 — so the budget could never
+    // report, and `AwaitConditionBudgets` says so.
+  }, 15_000);
 
   test('the seed is readable, so a failure can name what reproduces it', () => {
     const link = new FaultyTransport(new RecordingTransport(address('a')), { seed: 4_242 });
