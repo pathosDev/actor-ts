@@ -50,6 +50,16 @@ export type MultiNodeSpecOptionsType = {
    * *about* the window.
    */
   readonly stableAfterMs?: number;
+  /**
+   * Seed for every transport fault this spec injects — see
+   * `MultiNodeSpec.degrade`.  Default `DEFAULT_TRANSPORT_FAULT_SEED`.
+   *
+   * Fixed rather than random on purpose: an unreproducible chaos test is a
+   * flake generator, and this repository has a flake catalogue it is trying to
+   * shrink.  A failing spec names this number in its timeout message, so the
+   * red run reproduces from the log alone (#1023).
+   */
+  readonly faultSeed?: number;
 };
 
 /** Fluent builder for {@link MultiNodeSpecOptionsType}. */
@@ -107,6 +117,11 @@ export class MultiNodeSpecOptionsBuilder extends OptionsBuilder<MultiNodeSpecOpt
   /** Stability window before the resolver is consulted, in ms.  Default 100. */
   withStableAfterMs(stableAfterMs: number): this {
     return this.set('stableAfterMs', stableAfterMs);
+  }
+
+  /** Seed for every injected transport fault.  Default `DEFAULT_TRANSPORT_FAULT_SEED`. */
+  withFaultSeed(faultSeed: number): this {
+    return this.set('faultSeed', faultSeed);
   }
 }
 

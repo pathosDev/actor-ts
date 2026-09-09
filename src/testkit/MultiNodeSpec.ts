@@ -9,6 +9,11 @@ import { type Member } from '../cluster/Member.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
 import { LogLevel, NoopLogger } from '../Logger.js';
 import { MultiNodeTransport } from './internal/MultiNodeTransport.js';
+import { FaultyTransport } from './FaultyTransport.js';
+import {
+  DEFAULT_TRANSPORT_FAULT_SEED,
+  type TransportFaultProfileType,
+} from './FaultyTransportOptions.js';
 
 /**
  * Multi-node-spec test harness — runs multiple `ActorSystem` + `Cluster`
@@ -50,6 +55,17 @@ type NodeRecord = {
   readonly role: string;
   readonly address: NodeAddress;
   readonly transport: MultiNodeTransport;
+  /**
+   * The fault layer wrapping {@link transport}, and the transport the cluster
+   * was actually given.
+   *
+   * Both are kept because they answer different questions: partition and crash
+   * are properties of the inner link, and loss/reordering/duplication/latency
+   * are properties of the wrapper. Folding them into one would mean either the
+   * partition controls growing fault logic or the reverse — the thing
+   * decorating exists to avoid (#1023).
+   */
+  readonly faults: FaultyTransport;
   system: ActorSystem;
   cluster: Cluster;
   /** True after the node was crashed or removed.  Idempotent guard. */
@@ -103,6 +119,7 @@ export class MultiNodeSpec {
       // is 20 s, twice `awaitTimeoutMs`, so a spec inheriting it would time
       // out before its resolver had been consulted once (#839).
       stableAfterMs: options.stableAfterMs ?? 100,
+      faultSeed: options.faultSeed ?? DEFAULT_TRANSPORT_FAULT_SEED,
       addresses: options.addresses,
       failureDetector: options.failureDetector,
       downing: options.downing,
@@ -141,6 +158,15 @@ export class MultiNodeSpec {
     for (const role of orderedRoles) {
       const address = addressByRole.get(role)!;
       const transport = new MultiNodeTransport(address);
+      // Always wrapped, never conditionally: `degrade` has to be able to
+      // start a fault after `start()`, and a spec that decided at construction
+      // whether it might later want one would be back to a network that can
+      // only be broken before the nodes come up.  A clean link costs one map
+      // lookup per frame — see `FaultyTransport.send`.
+      const faults = new FaultyTransport(transport, {
+        seed: this.options.faultSeed,
+        ...(this.options.scheduler ? { scheduler: this.options.scheduler } : {}),
+      });
       const systemOptions = ActorSystemOptions.create()
         .withLogger(new NoopLogger())
         .withLogLevel(this.options.logLevel);
@@ -154,7 +180,7 @@ export class MultiNodeSpec {
         .withHost(address.host)
         .withPort(address.port)
         .withSeeds(seeds)
-        .withTransport(transport)
+        .withTransport(faults)
         .withGossipIntervalMs(this.options.gossipIntervalMs)
         .withSeedRetryIntervalMs(100)
         .withSplitBrainResolver({ stableAfterMs: this.options.stableAfterMs });
@@ -168,6 +194,7 @@ export class MultiNodeSpec {
         role,
         address,
         transport,
+        faults,
         system,
         cluster,
         removed: false,
@@ -213,7 +240,9 @@ export class MultiNodeSpec {
     const node = this.requireNode(role);
     if (node.removed) return;
     node.removed = true;
-    await node.transport.shutdown();
+    // Through the wrapper, so anything its reorder window is still holding is
+    // dropped rather than delivered from a node that has crashed.
+    await node.faults.shutdown();
   }
 
   /** Graceful leave — node sends a Leaving gossip, then shuts down. */
@@ -239,6 +268,45 @@ export class MultiNodeSpec {
     nodeA.transport.unblockOutgoing(nodeB.address);
     nodeB.transport.unblockOutgoing(nodeA.address);
   }
+
+  /**
+   * Degrade the link between two roles without severing it (#1023).
+   *
+   * The verb `partition` and `crash` could not express: a network that is
+   * *working badly* rather than not at all.  Bidirectional, like `partition`,
+   * because a one-way degradation is a different and rarer scenario — reach
+   * for `transportFor(role).degradeTo(address, profile)` when that is what is
+   * wanted.
+   *
+   * Deterministic: every decision comes from the spec's seed, so a run that
+   * goes red reproduces from the number in its failure message.
+   *
+   * ```ts
+   * spec.degrade('a', 'b', { dropProbability: 0.2, reorderWindow: 4 });
+   * await spec.advance(5_000);
+   * await spec.awaitMembers('a', 3);   // still converges, just later
+   * ```
+   */
+  degrade(roleA: string, roleB: string, profile: TransportFaultProfileType): void {
+    const nodeA = this.requireNode(roleA);
+    const nodeB = this.requireNode(roleB);
+    nodeA.faults.degradeTo(nodeB.address, profile);
+    nodeB.faults.degradeTo(nodeA.address, profile);
+  }
+
+  /** Undo `degrade(roleA, roleB)`, releasing whatever the link was holding. */
+  restore(roleA: string, roleB: string): void {
+    const nodeA = this.requireNode(roleA);
+    const nodeB = this.requireNode(roleB);
+    nodeA.faults.restoreTo(nodeB.address);
+    nodeB.faults.restoreTo(nodeA.address);
+  }
+
+  /**
+   * The fault layer in front of one role's transport, for the asymmetric cases
+   * {@link degrade} deliberately does not cover.
+   */
+  faultsFor(role: string): FaultyTransport { return this.requireNode(role).faults; }
 
   /* --------------------------- await helpers --------------------------- */
 
@@ -372,7 +440,7 @@ export class MultiNodeSpec {
     }
     throw new Error(
       `MultiNodeSpec.advanceUntil: ${options.description ?? 'condition'} did not hold within `
-      + `${budgetMs} ms of virtual time (${stepMs} ms steps)`,
+      + `${budgetMs} ms of virtual time (${stepMs} ms steps)${this.reproductionHint()}`,
     );
   }
 
@@ -384,7 +452,27 @@ export class MultiNodeSpec {
       if (cond()) return;
       await new Promise((r) => setTimeout(r, 25));
     }
-    throw new Error(`MultiNodeSpec: timeout after ${timeoutMs} ms — ${description}`);
+    throw new Error(
+      `MultiNodeSpec: timeout after ${timeoutMs} ms — ${description}${this.reproductionHint()}`,
+    );
+  }
+
+  /**
+   * What to say after a timeout on a network that was deliberately broken.
+   *
+   * Empty on a clean spec, because a hint about a seed nothing used would send
+   * the reader looking for a fault that is not there.  When faults *are* in
+   * play the seed is the whole reproduction: it is the difference between a
+   * chaos test and an unreproducible red run, which is the trade #1023 accepts
+   * by fixing the seed in the first place.
+   */
+  private reproductionHint(): string {
+    const faulty = [...this.nodes.values()].filter((node) => node.faults.hasFaults);
+    if (faulty.length === 0) return '';
+    const seed = faulty[0]!.faults.seed;
+    return `
+  Faults were injected on: ${faulty.map((node) => node.role).join(', ')}.`
+      + ` Reproduce with withFaultSeed(${seed}).`;
   }
 
   /* --------------------------- enterBarrier (#198) ---------------------------- */

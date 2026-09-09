@@ -165,6 +165,88 @@ Downing + Failover aus. Die `await*`-Helfer ersetzen fragile
 `setTimeout`-Schlafphasen — sie pollen, bis die Bedingung gilt
 (oder werfen nach `awaitTimeoutMs`).
 
+## Ein Netz, das schlecht funktioniert
+
+`partition` und `crash` beschreiben ein Netz, das perfekt oder durchtrennt ist.
+Dazwischen liegt jeder Zustand, in dem ein Cluster tatsächlich läuft: ein
+Fünftel der Gossip-Pushes verloren, Frames, die einander überholen, ein Peer,
+der langsam statt tot ist. `degrade(roleA, roleB, profile)` ist diese Mitte,
+`restore(roleA, roleB)` nimmt sie zurück.
+
+```ts
+const spec = new MultiNodeSpec(MultiNodeSpecOptions.create()
+  .withRoles(['a', 'b', 'c'])
+  .withScheduler(new ManualScheduler())
+  .withFaultSeed(20_231));
+
+await spec.start();
+
+// Der Cluster bildet sich auf einem sauberen Netz, danach wird es schlechter.
+spec.degrade('a', 'b', {
+  dropProbability:      0.2,   // ein Fünftel der Frames kommt nie an
+  duplicateProbability: 0.1,   // ein Zehntel kommt doppelt an
+  reorderWindow:        4,     // bis zu vier Frames dürfen einander überholen
+  latencyMs:            50,    // auf dem Scheduler der Spec gemessen
+});
+
+await spec.advanceUntil(
+  () => spec.clusterFor('a').getMembers().filter((m) => m.status === 'up').length === 3,
+  { budgetMs: 60_000, description: 'die Sicht konvergiert trotz der Verluste' },
+);
+
+spec.restore('a', 'b');
+```
+
+Jedes Feld ist optional und steht per Default auf „kein Fehler", ein Profil
+nennt also nur, was es ändert. `degrade` wirkt beidseitig wie `partition`; für
+eine einseitige Verschlechterung greifst du zu
+`spec.faultsFor(role).degradeTo(address, profile)`.
+
+### Die Fehler sind deterministisch
+
+Jede Entscheidung stammt aus einem geseedeten Generator pro Node, gezogen in
+Sende-Reihenfolge — und unter einem geteilten `ManualScheduler` ist diese
+Reihenfolge selbst deterministisch. Ein rot gewordener Lauf reproduziert also
+exakt, und die Timeout-Meldungen der Spec nennen den Seed dazu:
+
+```
+MultiNodeSpec: timeout after 10000 ms — awaitMembers(a, expected=3) — current: 2
+  Faults were injected on: a, b. Reproduce with withFaultSeed(20231).
+```
+
+Das ist kein Detail. Ein nicht reproduzierbarer Chaos-Test ist ein
+Flake-Generator; ein fester Seed macht den Unterschied — der Preis ist, dass die
+Suite von sich aus keine *neuen* Netze mehr findet. Variiere den Seed bewusst
+(eine Schleife über `withFaultSeed`), wenn die Frage „gilt das für viele Netze"
+lautet und nicht „gilt das für das Netz, das kaputtging".
+
+### `latencyMs` braucht einen Scheduler
+
+Eine Verzögerung von der Wanduhr würde genau die Timing-Abhängigkeit
+zurückholen, die [`ManualScheduler`](/de/testing/manual-scheduler/) beseitigen
+soll — sie wird deshalb abgelehnt statt stillschweigend genommen: ein
+`latencyMs` ungleich null ohne Scheduler wirft schon bei der Konstruktion. Die
+anderen drei Fehler brauchen gar keine Uhr.
+
+### `reorderWindow` ist eine Tiefe, kein Shuffle
+
+Ein Fenster von `n` hält bis zu `n` Frames zurück und gibt sie als eine
+permutierte Charge frei; ein Frame verschiebt sich also um **weniger als `n`
+Positionen**. Genau diese Schranke ist der Punkt: ein Shuffle könnte einen Frame
+ans Ende des Laufs permutieren und einen Test auf etwas warten lassen, das nie
+kommt. Die letzte unvollständige Charge geben `restore`, `stop` und die nächste
+volle Charge frei — kontinuierliches Gossip erledigt Letzteres von allein.
+
+### Es funktioniert auf jedem Transport
+
+`FaultyTransport` ist ein Dekorator: `InMemoryTransport`, `MultiNodeTransport`
+und `MessageChannelTransport` bekommen dieselben Regler, ohne dass einer von
+ihnen Fehler-Logik dazubekommt. Außerhalb einer Spec:
+
+```ts
+const link = new FaultyTransport(new InMemoryTransport(address), { dropProbability: 0.2 });
+```
+
 ## Per-Node-TestProbe
 
 `MultiNodeSpec` hat keine Probe-Factory — konstruiere eine

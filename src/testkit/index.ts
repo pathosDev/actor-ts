@@ -5,6 +5,16 @@ export { TestProbe } from './TestProbe.js';
 export { TestProbeOptions, TestProbeOptionsBuilder, TestProbeOptionsValidator } from './TestProbeOptions.js';
 export type { TestProbeOptionsType } from './TestProbeOptions.js';
 export { ManualScheduler } from './ManualScheduler.js';
+export { FaultyTransport } from './FaultyTransport.js';
+export {
+  FaultyTransportOptions,
+  FaultyTransportOptionsBuilder,
+  FaultyTransportOptionsValidator,
+} from './FaultyTransportOptions.js';
+export type {
+  FaultyTransportOptionsType,
+  TransportFaultProfileType,
+} from './FaultyTransportOptions.js';
 export { MultiNodeSpec } from './MultiNodeSpec.js';
 export { MultiNodeSpecOptions, MultiNodeSpecOptionsBuilder } from './MultiNodeSpecOptions.js';
 export type { MultiNodeSpecOptionsType } from './MultiNodeSpecOptions.js';

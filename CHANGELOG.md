@@ -11,6 +11,36 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **A network that works *badly*, not just perfectly or not at all** (#1023).
+  Every multi-node test ran on a transport that was either flawless or severed:
+  `MultiNodeTransport` offered a bidirectional block and `InMemoryTransport`
+  offered nothing, while delivery was a bare `queueMicrotask` — strictly FIFO,
+  exactly-once, zero-latency. So probabilistic loss, reordering, duplication
+  and a slow-but-alive peer were structurally untestable, and every
+  order-independence and idempotence claim in `Cluster` was exercised by
+  nothing.
+
+  `FaultyTransport` is a **decorator**, so `InMemoryTransport`,
+  `MultiNodeTransport` and `MessageChannelTransport` gain drop, duplicate,
+  reorder and latency controls without any of them growing a line of fault
+  logic — per link, and configured through the usual `FaultyTransportOptions`
+  triad. `MultiNodeSpec` exposes it as `degrade(a, b, profile)` / `restore(a,
+  b)` beside `partition` / `heal` / `crash`.
+
+  **Deterministic by construction.** One seeded generator per node drawn in
+  send order, and under a shared `ManualScheduler` that order is deterministic
+  too — so a red run reproduces exactly, and the spec's timeout messages name
+  the seed that does it. Latency is measured on the scheduler and *refused*
+  without one, rather than quietly taken from the wall clock. `reorderWindow`
+  is a depth rather than a shuffle: a frame is displaced by strictly fewer than
+  `n` positions, so a reordered link cannot leave a test waiting forever.
+
+  Two claims are now tested rather than asserted in prose: membership converges
+  under 20 % loss given enough rounds, and shard-home updates survive a link
+  that turns lossy *during* a rebalance — measured to hold at 90 % loss and to
+  fail only when the link is severed outright, which is a partition rather than
+  a degradation. EN + DE testkit docs describe the controls.
+
 - **The four JetStream caps that pass through to nats.js verbatim accept
   NATS's own spelling of "no limit" (#871): `-1` on `stream.maxMessages`,
   `stream.maxBytes` and `consumer.maxAcknowledgmentPending`, and `0` on
