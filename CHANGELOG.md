@@ -2382,6 +2382,26 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **Every two-sided elapsed-time assertion is gone** (#1338). Twelve tests
+  asserted that something took *less* than N milliseconds — which is an
+  assertion about the machine, not about the code, and the family the flake
+  programme keeps meeting. Each is now the fact it was standing in for:
+
+  - Three push-query cases set `pollIntervalMs` an hour out, so "delivered
+    fast" becomes "delivered by the push path" — a regression now hangs the
+    case instead of passing slowly on a quick machine.
+  - Two distributed-data cases set the gossip interval out of reach, and the
+    `local`-consistency one partitions the peer outright, so "no peer
+    round-trip" is a fact rather than a duration.
+  - `CoordinatedShutdown`'s parallelism check records **one interleaved
+    trace**; the two arrays it used to keep could not tell the schedules apart
+    (both read `['1', '2']` either way), so the wall-clock bound had been
+    carrying the whole assertion.
+  - Four are redundant: the error message, the drained count, and bun's own
+    per-test cap already prove what the stopwatch restated.
+  - Two keep a lower bound only, where elapsed time genuinely is the subject —
+    a fallback that resolves via its own bound rather than a confirmation.
+
 - **The four CRDTs that had no shrinking property coverage now have it, and the
   unseeded generator that stood in for it is gone** (#1372). `GCounterMap`,
   `LWWMap`, `MVRegister` and `ORMap` were checked only by a hand-rolled

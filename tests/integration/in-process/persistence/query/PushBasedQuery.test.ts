@@ -4,8 +4,9 @@
  * The contract:
  *
  *   - When `journal.events` exists, `eventsByPersistenceId` and
- *     `eventsByTag` deliver events within a few ms of `append`
- *     (vs. up to `pollIntervalMs` for the poll fallback).
+ *     `eventsByTag` deliver events through the journal's event bus rather
+ *     than by polling — asserted by setting `pollIntervalMs` out of reach,
+ *     so a delivery that happened at all can only have been pushed.
  *   - The catch-up read + bus-subscribe race doesn't double-emit
  *     events that arrived during the catch-up window.
  *   - `iterator.return()` unsubscribes from the bus.
@@ -24,6 +25,22 @@ import type { PersistentEvent } from '../../../../../src/persistence/JournalType
 import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
 
 /**
+ * A poll interval no test here can reach, so "delivered promptly" becomes
+ * "delivered by the push path" — a structural fact instead of a stopwatch.
+ *
+ * These three cases used to assert `elapsed < 100`, which is a claim about the
+ * machine as much as about the code: on a loaded runner a correct push can
+ * cross 100 ms, and a *wrong* one that fell back to polling would still pass
+ * whenever the default interval happened to be short.  With the fallback set
+ * an hour out, the push path delivering is the only way `next()` ever
+ * resolves, and a regression hangs the case instead of slowing it (#1338).
+ *
+ * Test 4 deliberately does not use it: that one is the poll-fallback
+ * regression guard, and polling is the behaviour it exists to check.
+ */
+const UNREACHABLE_POLL_INTERVAL_MS = 60 * 60 * 1_000;
+
+/**
  * Every remaining sleep here is a fixture rather than a wait, and each says so
  * at its own call site.
  *
@@ -37,10 +54,17 @@ import { awaitCondition, sleep } from '../../../../util/AwaitCondition.js';
  */
 
 describe('Push-based PersistenceQuery — InMemoryJournal', () => {
-  test('1. delivers a freshly-appended event in well under 100ms', async () => {
+  test('1. delivers a freshly-appended event through the push path, not the poll', async () => {
     const journal = new InMemoryJournal();
     const query = new InMemoryQuery(journal);
-    const stream = query.eventsByPersistenceId<{ n: number }>('a', 1);
+    // A poll interval that cannot fire inside this test's cap.  The claim is
+    // *which path delivered the event*, and this makes it structural: with the
+    // push path working the event arrives at once, and if it ever routed
+    // through the poll fallback instead the test hangs rather than passing
+    // slowly.  That is what the elapsed-time bound below used to approximate.
+    const stream = query.eventsByPersistenceId<{ n: number }>('a', 1, {
+      pollIntervalMs: UNREACHABLE_POLL_INTERVAL_MS,
+    });
     const it = stream[Symbol.asyncIterator]();
 
     // Schedule an append AFTER the iterator is already waiting.
@@ -51,10 +75,8 @@ describe('Push-based PersistenceQuery — InMemoryJournal', () => {
     })();
 
     const result = await it.next();
-    const elapsed = Date.now() - t0;
     expect(result.done).toBe(false);
     expect((result.value as PersistentEvent<{ n: number }>).event.n).toBe(42);
-    expect(elapsed).toBeLessThan(100);
 
     await it.return!();
   });
@@ -92,10 +114,12 @@ describe('Push-based PersistenceQuery — InMemoryJournal', () => {
     await it.return!();
   });
 
-  test('3. tag query gets push delivery within 100ms', async () => {
+  test('3. tag query is delivered by the push path too', async () => {
     const journal = new InMemoryJournal();
     const query = new InMemoryQuery(journal);
-    const stream = query.eventsByTag<{ message: string }>('orders', offsetStart);
+    const stream = query.eventsByTag<{ message: string }>('orders', offsetStart, {
+      pollIntervalMs: UNREACHABLE_POLL_INTERVAL_MS,
+    });
     const it = stream[Symbol.asyncIterator]();
 
     const t0 = Date.now();
@@ -105,10 +129,8 @@ describe('Push-based PersistenceQuery — InMemoryJournal', () => {
     })();
 
     const result = await it.next();
-    const elapsed = Date.now() - t0;
     expect(result.done).toBe(false);
     expect((result.value as { event: PersistentEvent<{ message: string }> }).event.event.message).toBe('one');
-    expect(elapsed).toBeLessThan(100);
 
     await it.return!();
   });
@@ -138,14 +160,16 @@ describe('Push-based PersistenceQuery — InMemoryJournal', () => {
 });
 
 describe('Push-based PersistenceQuery — SqliteJournal', () => {
-  test('5. delivers a freshly-appended event in well under 100ms', async () => {
+  test('5. the SQLite journal delivers through the push path as well', async () => {
     const journalOptions = SqliteJournalOptions.create()
       .withPath(':memory:');
     const journal = new SqliteJournal(journalOptions);
     // Force-init the DB so the bus + statements are wired up.
     await journal.persistenceIds();
     const query = new InMemoryQuery(journal);
-    const stream = query.eventsByPersistenceId<{ k: string }>('z', 1);
+    const stream = query.eventsByPersistenceId<{ k: string }>('z', 1, {
+      pollIntervalMs: UNREACHABLE_POLL_INTERVAL_MS,
+    });
     const it = stream[Symbol.asyncIterator]();
 
     const t0 = Date.now();
@@ -155,10 +179,8 @@ describe('Push-based PersistenceQuery — SqliteJournal', () => {
     })();
 
     const result = await it.next();
-    const elapsed = Date.now() - t0;
     expect(result.done).toBe(false);
     expect((result.value as PersistentEvent<{ k: string }>).event.k).toBe('hi');
-    expect(elapsed).toBeLessThan(100);
 
     await it.return!();
     await journal.close();

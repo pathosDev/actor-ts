@@ -140,15 +140,15 @@ describe('terminate drains the user tree', () => {
     const ref = system.spawn(Perpetual, 'perpetual');
     ref.tell('go');
 
-    const startedAt = Date.now();
     await system.terminate();
-    const elapsedMs = Date.now() - startedAt;
 
+    // A perpetual actor cannot keep the system alive: the drain budget ends
+    // the turn-taking and teardown proceeds.  The `await` returning at all is
+    // that fact — an unbounded drain never returns, and the per-test cap below
+    // is what reports it.  The `elapsed < 2 000` this replaces bounded the same
+    // thing against the machine's speed rather than against the budget.
     expect(handled).toBeGreaterThan(1);
     expect(system.isTerminated).toBe(true);
-    // The budget bounds it; the teardown that follows is what the rest of the
-    // slack is for.
-    expect(elapsedMs).toBeLessThan(2_000);
   }, 6_000);
 
   test('a drain budget of 0 restores the undrained teardown', async () => {
@@ -237,7 +237,10 @@ describe('gracefulStop', () => {
     // timer up to a full 15.6 ms scheduling quantum early (#477), so pinning
     // this near the budget is a flake, not a stronger assertion.
     expect(elapsedMs).toBeGreaterThanOrEqual(100);
-    expect(elapsedMs).toBeLessThan(1_500);
+    // Lower bound only.  An upper bound here would be a claim about how fast
+    // the machine got back to us after the budget expired, which is not a
+    // property of `gracefulStop`; `stopped === false` above is the behaviour
+    // under test and the per-test cap is what catches a wait that never ends.
 
     // Escalation is the point of the `false`: a caller who ran out of patience
     // must not also be left with a live actor.  Releasing the in-flight turn
