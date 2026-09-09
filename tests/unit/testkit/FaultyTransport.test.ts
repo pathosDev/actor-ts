@@ -6,6 +6,7 @@ import { FaultyTransport } from '../../../src/testkit/FaultyTransport.js';
 import { FaultyTransportOptions } from '../../../src/testkit/FaultyTransportOptions.js';
 import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 
 /**
  * #1023 — the fault-injection layer, driven against a recording transport.
@@ -323,7 +324,11 @@ describe('it decorates any transport, which is why it is a decorator', () => {
     // And the same transport, undecorated, still delivers — so the empty
     // result above is the wrapper's doing and not a broken fixture.
     sender.send(receiver.self, frame(2));
-    await new Promise((resolve) => { setTimeout(resolve, 10); });
+    await awaitCondition(() => received.length > 0, {
+      timeoutMs: 5_000,
+      intervalMs: 1,
+      label: 'the undecorated transport delivered its frame',
+    });
     expect(received).toEqual([2]);
 
     await sender.shutdown();
