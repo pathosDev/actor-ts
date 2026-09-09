@@ -100,6 +100,29 @@ type ExpressBackendView = { readonly wss: WebsocketServerView | null };
 /** `@fastify/websocket` 11.x decorates the instance with `websocketServer`. */
 type FastifyBackendView = { readonly app: { readonly websocketServer?: WebsocketServerView } };
 
+/**
+ * Per-test cap for the cases that bind a real server (#1504).
+ *
+ * Every case here creates an `ActorSystem`, spawns an actor and binds an
+ * Express or Fastify server on a real port — the most contention-sensitive
+ * thing in this tree — and then asserts on a property of the backend.  None of
+ * that is avoidable: the cap under test is installed *during* the bind, and
+ * each case needs its own backend built with its own options, so there is no
+ * server to share the way `StaticFiles.test.ts` now shares one.
+ *
+ * So this is the case where a budget is the honest answer rather than the lazy
+ * one.  Undeclared, these inherit bun's 5 000 ms, and in a 431 s full run two
+ * of them took 9 507 ms and 10 264 ms and were killed by it while passing in
+ * isolation and on an immediate repeat.  30 s is three times the worst
+ * observation: a cap is there to catch a bind that has wedged, not to be tight,
+ * and one that a busier machine can cross turns a slow run into a red one.
+ *
+ * It is applied to all nine rather than to the two that were seen to fail.
+ * They do the same work; which two crossed the line first is a property of that
+ * night's load, not of those tests.
+ */
+const BIND_BUDGET_MS = 30_000;
+
 const systems: ActorSystem[] = [];
 const bindings: ServerBinding[] = [];
 
@@ -209,7 +232,7 @@ describe('Express backend — the transport frame cap it installs (#373)', () =>
     // Named separately from the equality above: this is the assertion that
     // fails if the backend goes back to passing the constant, and it says so.
     expect(expressInstalledCap(backend)).not.toBe(DEFAULT_WEBSOCKET_MAX_FRAME_BYTES);
-  });
+  }, BIND_BUDGET_MS);
 
   test('a route that lowers the cap narrows the installed window below the default', async () => {
     const backend = new ExpressBackend();
@@ -221,7 +244,7 @@ describe('Express backend — the transport frame cap it installs (#373)', () =>
 
     expect(expressInstalledCap(backend)).toBe(NARROW_ROUTE_FRAME_CAP_BYTES);
     expect(expressInstalledCap(backend)!).toBeLessThan(DEFAULT_WEBSOCKET_MAX_FRAME_BYTES);
-  });
+  }, BIND_BUDGET_MS);
 
   test('two routes on one app reconcile to the widest of them', async () => {
     // One `WebSocketServer` serves the whole Express app, so the two routes
@@ -237,7 +260,7 @@ describe('Express backend — the transport frame cap it installs (#373)', () =>
     });
 
     expect(expressInstalledCap(backend)).toBe(MIDDLE_ROUTE_FRAME_CAP_BYTES);
-  });
+  }, BIND_BUDGET_MS);
 
   test('a HOCON-lowered cap reaches the ws server with no route option at all', async () => {
     const backend = new ExpressBackend();
@@ -249,7 +272,7 @@ describe('Express backend — the transport frame cap it installs (#373)', () =>
     });
 
     expect(expressInstalledCap(backend)).toBe(NARROW_ROUTE_FRAME_CAP_BYTES);
-  });
+  }, BIND_BUDGET_MS);
 });
 
 describe('Fastify backend — the transport frame cap it installs (#373)', () => {
@@ -263,7 +286,7 @@ describe('Fastify backend — the transport frame cap it installs (#373)', () =>
 
     expect(fastifyInstalledCap(backend)).toBe(WIDE_ROUTE_FRAME_CAP_BYTES);
     expect(fastifyInstalledCap(backend)).not.toBe(DEFAULT_WEBSOCKET_MAX_FRAME_BYTES);
-  });
+  }, BIND_BUDGET_MS);
 
   test('two routes on one instance reconcile to the widest of them', async () => {
     // `@fastify/websocket` is registered once for the whole instance, so the
@@ -280,7 +303,7 @@ describe('Fastify backend — the transport frame cap it installs (#373)', () =>
     });
 
     expect(fastifyInstalledCap(backend)).toBe(MIDDLE_ROUTE_FRAME_CAP_BYTES);
-  });
+  }, BIND_BUDGET_MS);
 
   test('a HOCON-lowered cap reaches the ws server with no route option at all', async () => {
     const backend = new FastifyBackend({ logger: false });
@@ -292,7 +315,7 @@ describe('Fastify backend — the transport frame cap it installs (#373)', () =>
     });
 
     expect(fastifyInstalledCap(backend)).toBe(NARROW_ROUTE_FRAME_CAP_BYTES);
-  });
+  }, BIND_BUDGET_MS);
 });
 
 describe('Express backend — which layer refuses the oversize frame (#373)', () => {
@@ -360,7 +383,7 @@ describe('Express backend — which layer refuses the oversize frame (#373)', ()
     expect(detectRuntime()).toBe('bun');
     expect(closes[0]!.initiatedBy).toBe('server');
     expect(closes[0]!.code).toBe(1009);
-  });
+  }, BIND_BUDGET_MS);
 
   test('a frame under the route cap still reaches the application', async () => {
     // Guards the over-correction: a transport or an actor that refused
@@ -381,5 +404,5 @@ describe('Express backend — which layer refuses the oversize frame (#373)', ()
     expect(await outcome).toEqual({ kind: 'message' });
     expect(accepted).toEqual([1024]);
     socket.close();
-  });
+  }, BIND_BUDGET_MS);
 });

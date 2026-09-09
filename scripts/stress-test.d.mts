@@ -125,6 +125,51 @@ export type StressOptions = {
   readonly filters: readonly string[];
 };
 
+/**
+ * One offender as `summary.json` records it — an {@link Offender} with its
+ * bucket written down.
+ *
+ * `consistent` exists so a reader does not re-derive the classification from
+ * `failedRuns.length`, which would be a second copy of a rule that lives in
+ * {@link aggregate} and free to disagree with it (#1506).
+ */
+export type SummaryOffender = Offender & { readonly consistent: boolean };
+
+/**
+ * The document `summary.json` holds — the harness's contract with
+ * `scripts/nightly-flake-report.mjs`, and with a reader comparing two nights.
+ *
+ * Typed here because it is read by another program.  The version of this shape
+ * that lived only in the reader's imagination is what #1506 was.
+ */
+export type SummaryDocument = {
+  readonly generatedAt: string;
+  readonly bunVersion: string | null;
+  readonly runs: number;
+  readonly greenRuns: number;
+  readonly filters: readonly string[];
+  readonly randomized: boolean;
+  readonly totalExecuted: number;
+  readonly totalFailures: number;
+  readonly runTimeoutMs: number;
+  readonly runsTimedOut: readonly number[];
+  readonly runsWithoutReport: readonly number[];
+  readonly runsRedWithoutFailures: readonly number[];
+  readonly unexplainedRedRuns: readonly number[];
+  readonly runsDetail: readonly {
+    readonly index: number;
+    readonly status: number | null;
+    readonly durationMs: number;
+    readonly executed: number;
+    readonly skipped: number;
+    readonly failures: number;
+    readonly timedOut: boolean;
+    readonly reportMissing: boolean;
+    readonly seed: number | null;
+  }[];
+  readonly offenders: readonly SummaryOffender[];
+};
+
 export function parseArguments(argv: readonly string[]): StressOptions;
 export function unescapeXml(value: string): string;
 export function attributesOf(source: string): Map<string, string>;
@@ -137,3 +182,9 @@ export function aggregate(results: readonly CollectedRun[], runs: number): Aggre
 export function render(aggregated: AggregatedRuns, options: StressOptions): string;
 export function bunArgumentsFor(options: StressOptions): string[];
 export function seedOf(log: string): number | undefined;
+export function summaryDocument(input: {
+  readonly aggregated: AggregatedRuns;
+  readonly options: StressOptions;
+  readonly results: readonly CollectedRun[];
+  readonly bunVersion?: string | null;
+}): SummaryDocument;

@@ -1,70 +1,41 @@
 /**
- * Property tests for the CRDT primitives.  Three properties every
- * CRDT must satisfy:
+ * Worked examples for the CRDT primitives — the named cases, not the laws.
  *
- *   - Idempotent:    merge(a, a)             === a
- *   - Commutative:   merge(a, b)             === merge(b, a)
- *   - Associative:   merge(merge(a, b), c)   === merge(a, merge(b, c))
+ * **The laws moved out (#1372).**  This file used to check idempotence,
+ * commutativity and associativity for all nine types with a hand-rolled
+ * generator over bare `Math.random()`, 25 triples apiece, and its header said
+ * why: *"for these five small CRDTs a hand-rolled generator + a few hundred
+ * random samples cover the shape adequately ... if a regression slips in,
+ * re-running the test once will usually surface a failing seed."*
  *
- * We don't pull in `fast-check` — for these five small CRDTs a
- * hand-rolled generator + a few hundred random samples cover the
- * shape adequately.  The generators below are deterministic given
- * a Math.random sequence; if a regression slips in, re-running the
- * test once will usually surface a failing seed.
+ * Both halves of that turned out to be wrong in the same way.  There was no
+ * seed to surface — `Math.random()` is unseeded, so a failure could not be
+ * re-run at all — and there was no shrinking, so a broken merge law reported
+ * whichever three 40-element maps the draw happened to produce rather than the
+ * two-element pair that actually breaks it.  For the shapes these bugs take
+ * (#950, #955, #935) that is the difference between a two-line report and an
+ * afternoon.
  *
- * Each block:
- *   - generates random replicas of the CRDT (`gen()`),
- *   - asserts the three laws on every triple (a, b, c),
- *   - then a couple of hand-picked smoke cases for legibility.
+ * `Properties.test.ts` now covers all nine under `fast-check`, with shrinking,
+ * 120 runs and the seed pinned globally by `tests/setup/property-seed.ts`.  It
+ * found a case on its first run, which is the argument in one line.
+ *
+ * What stays here is what a property test is bad at: the hand-picked cases that
+ * say what the type *means* — add-wins under a concurrent remove, a tombstone
+ * that an older put must not resurrect, custom identity on a BigInt, JSON
+ * round-trips.  Those are legible precisely because they are not random, and
+ * no `Math.random()` call is left in the file — the three mentions above are
+ * this comment talking about the ones that went.
  */
 import { describe, expect, test } from 'bun:test';
 import {
   GCounter, PNCounter, GSet, ORSet, LWWRegister,
   GCounterMap, LWWMap, MVRegister, ORMap,
 } from '../../../src/crdt/index.js';
-import type { Crdt } from '../../../src/crdt/index.js';
-
-const REPLICAS = ['r-a', 'r-b', 'r-c', 'r-d'];
-const SAMPLES = 25; // triples per CRDT; runs ~100 merges total per type
-
-function pickReplica(): string {
-  return REPLICAS[Math.floor(Math.random() * REPLICAS.length)]!;
-}
-
-function eq<C extends Crdt<C>>(
-  first: C, second: C, equalsImplementation?: (x: C, y: C) => boolean,
-): boolean {
-  if (equalsImplementation) return equalsImplementation(first, second);
-  return JSON.stringify(first.toJSON()) === JSON.stringify(second.toJSON());
-}
-
-function checkLaws<C extends Crdt<C>>(
-  gen: () => C, equalsImplementation?: (first: C, second: C) => boolean,
-): void {
-  for (let i = 0; i < SAMPLES; i++) {
-    const first = gen(), second = gen(), third = gen();
-    expect(eq(first.merge(first), first, equalsImplementation)).toBe(true);                       // idempotent
-    expect(eq(first.merge(second), second.merge(first), equalsImplementation)).toBe(true);              // commutative
-    expect(eq(first.merge(second).merge(third), first.merge(second.merge(third)), equalsImplementation))        // associative
-      .toBe(true);
-  }
-}
 
 /* ============================== GCounter ============================== */
 
 describe('GCounter — laws', () => {
-  test('idempotent / commutative / associative', () => {
-    const gen = (): GCounter => {
-      let counter = GCounter.empty();
-      const ops = 1 + Math.floor(Math.random() * 8);
-      for (let i = 0; i < ops; i++) {
-        counter = counter.increment(pickReplica(), 1 + Math.floor(Math.random() * 5));
-      }
-      return counter;
-    };
-    checkLaws(gen, (first, second) => first.equals(second));
-  });
-
   test('increments sum across replicas', () => {
     const first = GCounter.empty().increment('a', 3);
     const second = GCounter.empty().increment('b', 5);
@@ -87,21 +58,6 @@ describe('GCounter — laws', () => {
 /* ============================== PNCounter ============================= */
 
 describe('PNCounter — laws', () => {
-  test('idempotent / commutative / associative', () => {
-    const gen = (): PNCounter => {
-      let pnCounter = PNCounter.empty();
-      const ops = 1 + Math.floor(Math.random() * 10);
-      for (let i = 0; i < ops; i++) {
-        const delta = 1 + Math.floor(Math.random() * 5);
-        pnCounter = Math.random() < 0.5
-          ? pnCounter.increment(pickReplica(), delta)
-          : pnCounter.decrement(pickReplica(), delta);
-      }
-      return pnCounter;
-    };
-    checkLaws(gen, (first, second) => first.equals(second));
-  });
-
   test('decrement subtracts from the merged value', () => {
     const first = PNCounter.empty().increment('a', 10);
     const second = PNCounter.empty().decrement('b', 4);
@@ -117,16 +73,6 @@ describe('PNCounter — laws', () => {
 /* ============================== GSet ================================== */
 
 describe('GSet — laws', () => {
-  test('idempotent / commutative / associative', () => {
-    const gen = (): GSet<number> => {
-      let set = GSet.empty<number>();
-      const ops = 1 + Math.floor(Math.random() * 8);
-      for (let i = 0; i < ops; i++) set = set.add(Math.floor(Math.random() * 5));
-      return set;
-    };
-    checkLaws(gen, (first, second) => first.equals(second));
-  });
-
   test('union semantics — adds win', () => {
     const first = GSet.empty<string>().add('apple').add('banana');
     const second = GSet.empty<string>().add('banana').add('cherry');
@@ -145,19 +91,6 @@ describe('GSet — laws', () => {
 /* ============================== ORSet ================================= */
 
 describe('ORSet — laws', () => {
-  test('idempotent / commutative / associative', () => {
-    const gen = (): ORSet<number> => {
-      let set = ORSet.empty<number>();
-      const ops = 1 + Math.floor(Math.random() * 8);
-      for (let i = 0; i < ops; i++) {
-        const element = Math.floor(Math.random() * 4);
-        set = Math.random() < 0.7 ? set.add(pickReplica(), element) : set.remove(element);
-      }
-      return set;
-    };
-    checkLaws(gen, (first, second) => first.equals(second));
-  });
-
   test('add wins under concurrent add + remove', () => {
     // Both replicas observe one entry, then A removes, B re-adds.
     const a0 = ORSet.empty<string>().add('A', 'apple');
@@ -187,17 +120,6 @@ describe('ORSet — laws', () => {
 /* ============================== LWWRegister =========================== */
 
 describe('LWWRegister — laws', () => {
-  test('idempotent / commutative / associative', () => {
-    let nextTs = 1;
-    const gen = (): LWWRegister<string> => {
-      // Use deterministic-ish increasing timestamps so we cover both
-      // "same ts → replica tiebreaker" and "different ts → newest wins".
-      const ts = (nextTs += 1 + Math.floor(Math.random() * 3));
-      return LWWRegister.empty<string>().assign(pickReplica(), `v-${ts}`, ts);
-    };
-    checkLaws(gen, (first, second) => first.equals(second));
-  });
-
   test('higher timestamp wins regardless of merge order', () => {
     const first = LWWRegister.empty<string>().assign('A', 'red',  100);
     const second = LWWRegister.empty<string>().assign('B', 'blue', 200);
@@ -294,23 +216,6 @@ describe('ORSet — custom identity', () => {
 /* ----------------------------- GCounterMap ---------------------------- */
 
 describe('GCounterMap — laws', () => {
-  test('idempotent / commutative / associative', () => {
-    const KEYS = ['k-a', 'k-b', 'k-c'];
-    const gen = (): GCounterMap<string> => {
-      let map = GCounterMap.empty<string>();
-      const ops = 1 + Math.floor(Math.random() * 8);
-      for (let i = 0; i < ops; i++) {
-        map = map.increment(
-          pickReplica(),
-          KEYS[Math.floor(Math.random() * KEYS.length)]!,
-          1 + Math.floor(Math.random() * 5),
-        );
-      }
-      return map;
-    };
-    checkLaws(gen, (first, second) => first.equals(second));
-  });
-
   test('per-key counters merge independently', () => {
     const first = GCounterMap.empty<string>().increment('a', 'page-views', 3);
     const second = GCounterMap.empty<string>().increment('b', 'clicks', 2);
@@ -347,26 +252,6 @@ describe('GCounterMap — laws', () => {
 /* ------------------------------ LWWMap -------------------------------- */
 
 describe('LWWMap — laws', () => {
-  test('idempotent / commutative / associative', () => {
-    const KEYS = ['theme', 'lang', 'country'];
-    let nextTs = 1;
-    const gen = (): LWWMap<string, string> => {
-      let map = LWWMap.empty<string, string>();
-      const ops = 1 + Math.floor(Math.random() * 8);
-      for (let i = 0; i < ops; i++) {
-        const key = KEYS[Math.floor(Math.random() * KEYS.length)]!;
-        const ts = (nextTs += 1 + Math.floor(Math.random() * 3));
-        if (Math.random() < 0.7) {
-          map = map.put(pickReplica(), key, `v-${ts}`, ts);
-        } else {
-          map = map.remove(pickReplica(), key, ts);
-        }
-      }
-      return map;
-    };
-    checkLaws(gen, (first, second) => first.equals(second));
-  });
-
   test('higher-timestamp put wins regardless of merge order', () => {
     const first = LWWMap.empty<string, string>().put('A', 'theme', 'dark', 100);
     const second = LWWMap.empty<string, string>().put('B', 'theme', 'light', 200);
@@ -410,18 +295,6 @@ describe('LWWMap — laws', () => {
 /* ----------------------------- MVRegister ----------------------------- */
 
 describe('MVRegister — laws', () => {
-  test('idempotent / commutative / associative', () => {
-    const gen = (): MVRegister<string> => {
-      let register = MVRegister.empty<string>();
-      const ops = 1 + Math.floor(Math.random() * 6);
-      for (let i = 0; i < ops; i++) {
-        register = register.assign(pickReplica(), `v-${i}-${Math.floor(Math.random() * 1000)}`);
-      }
-      return register;
-    };
-    checkLaws(gen, (first, second) => first.equals(second));
-  });
-
   test('concurrent assigns from independent replicas survive', () => {
     const first = MVRegister.empty<string>().assign('a', 'red');
     const second = MVRegister.empty<string>().assign('b', 'blue');
@@ -462,28 +335,6 @@ describe('MVRegister — laws', () => {
 /* ------------------------------ ORMap --------------------------------- */
 
 describe('ORMap — laws', () => {
-  test('idempotent / commutative / associative (with ORSet values)', () => {
-    const KEYS = ['cart-1', 'cart-2'];
-    const ITEMS = ['apple', 'banana', 'cherry'];
-    const gen = (): ORMap<string, ORSet<string>> => {
-      let map = ORMap.empty<string, ORSet<string>>();
-      const ops = 1 + Math.floor(Math.random() * 6);
-      for (let i = 0; i < ops; i++) {
-        const key = KEYS[Math.floor(Math.random() * KEYS.length)]!;
-        if (Math.random() < 0.7) {
-          // update inner ORSet
-          const replica = pickReplica();
-          map = map.update(replica, key, () => ORSet.empty<string>(),
-            (set) => set.add(replica, ITEMS[Math.floor(Math.random() * ITEMS.length)]!));
-        } else {
-          map = map.remove(key);
-        }
-      }
-      return map;
-    };
-    checkLaws(gen, (first, second) => first.equals(second));
-  });
-
   test('per-key inner-CRDT merge: cart contents from two replicas union', () => {
     const empty = ORMap.empty<string, ORSet<string>>();
     const first = empty.update('alice', 'cart-1', () => ORSet.empty<string>(),

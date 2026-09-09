@@ -191,7 +191,7 @@ describe('FilesystemObjectStorageBackend — concurrency', () => {
       const text = new TextDecoder().decode(final.value.body);
       expect(text).toMatch(/^v\d+$/);
     }
-  });
+  }, 15_000);
 
   test('concurrent ifMatch puts with a shared expected etag: exactly one succeeds', async () => {
     // Classic compare-and-swap race: many writers all observed v0 and

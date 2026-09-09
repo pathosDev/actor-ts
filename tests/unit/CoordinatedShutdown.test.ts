@@ -62,31 +62,34 @@ describe('CoordinatedShutdown basics', () => {
   test('tasks within a phase run in parallel', async () => {
     const sys = newSystem();
     const cs = sys.extension(CoordinatedShutdownId);
-    const starts: string[] = [];
-    const ends: string[] = [];
+    // **One** trace, not a starts array and an ends array.  Two arrays cannot
+    // tell the two schedules apart: run sequentially they read `['1', '2']` and
+    // `['1', '2']`, exactly as they do run in parallel, because each records
+    // only its own events in its own order.  Interleaving them is the whole
+    // observation.
+    const trace: string[] = [];
 
     // Equal delays are the fixture: both tasks have to be in flight at the same
-    // time, or "within a phase run in parallel" has nothing to observe.  The
-    // recorded start/end order and the elapsed bound below are the assertions.
+    // time, or "within a phase run in parallel" has nothing to observe.
     cs.addTask(Phases.BeforeServiceUnbind, 'slow-1', async () => {
-      starts.push('1');
+      trace.push('start-1');
       await sleep(30); // the overlap, not a wait — see above
-      ends.push('1');
+      trace.push('end-1');
     });
     cs.addTask(Phases.BeforeServiceUnbind, 'slow-2', async () => {
-      starts.push('2');
+      trace.push('start-2');
       await sleep(30); // the overlap, not a wait — see above
-      ends.push('2');
+      trace.push('end-2');
     });
 
-    const t0 = Date.now();
     await cs.run();
-    const elapsed = Date.now() - t0;
 
-    // Both started before either ended → parallel execution.
-    expect(starts).toEqual(['1', '2']);
-    // Shouldn't take 60ms (sequential) — should be ~30ms.
-    expect(elapsed).toBeLessThan(500);
+    // Parallelism as an ordering fact rather than a duration.  Sequential
+    // execution produces `start-1, end-1, start-2, end-2`; parallel puts both
+    // starts before either end.  The `elapsed < 500` this replaces established
+    // the same thing by asserting the machine's speed against two 30 ms tasks,
+    // and could only ever be the weaker version of it (#1338).
+    expect(trace).toEqual(['start-1', 'start-2', 'end-1', 'end-2']);
   });
 
   test('the built-in terminate task stops the system even if user code is empty', async () => {

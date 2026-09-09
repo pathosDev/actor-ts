@@ -224,11 +224,25 @@ the [Route DSL](/http/route-dsl/).
   `connection` event** even where a server object exists — so on Deno neither
   the header deadline nor the connection cap is installed by any backend.
 
-  **One measured gap, open as #1409:** on GitHub's Linux runners the
-  connection cap is not observed to hold end to end, while the header deadline
-  on the same event is. Treat `max-connections` as verified on Bun/Windows and
-  on Node, and as under investigation elsewhere, until that issue closes. The
-  header deadline is unaffected.
+  **A connection that says nothing is the gap that remains, and it is
+  platform-shaped.** Measured on bun 1.4.0 with the runtime installed on both:
+  an `http.Server` emits `connection` for an accepted socket immediately on
+  Windows and on Node, and on Linux only once that socket's **first byte**
+  arrives — until then `getConnections()` answers `0` too, so the connection is
+  invisible to the process rather than merely uncounted. On that pair neither
+  enforcement can act on a silent client: the property is ignored there, and the
+  event has not fired yet.
+
+  That also settles why the header deadline held on the same runner while the
+  cap did not (#1409): a slow-loris writes a partial header block, so its socket
+  speaks and the event fires for it. A cap test that connects and says nothing
+  is asking the Linux server about a connection it does not have.
+
+  So a connection that speaks is capped identically everywhere — every real
+  client — and one that never speaks is bounded by nothing actor-ts can see on
+  that pair. If idle sockets are part of your threat model, pair the cap with a
+  limit that sits below the runtime: an OS-level connection limit, or a reverse
+  proxy (#1505).
 - **WebSocket frames** are capped by `maxFrameBytes` (1 MiB default). The
   framework always refuses an oversize frame before it reaches your actor; on
   most runtime/backend pairs the resolved cap is *also* handed to the runtime's

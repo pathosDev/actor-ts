@@ -886,7 +886,6 @@ describe('Router.scatterGatherFirstCompleted (#153)', () => {
       'replicas',
     );
 
-    const startedAtMs = performance.now();
     const answer = pool.ask<string>('q', 4_000);
     // Both are user messages on one FIFO mailbox, so the scatter is already
     // registered by the time the PoisonPill is dequeued.
@@ -894,11 +893,12 @@ describe('Router.scatterGatherFirstCompleted (#153)', () => {
 
     let caught: unknown = null;
     try { await answer; } catch (e) { caught = e; }
-    const elapsedMs = performance.now() - startedAtMs;
 
+    // The message *is* the proof, and it is a stronger one than the elapsed
+    // bound that used to sit beside it: only `postStop` produces this text.
+    // Had the ask instead run out its own 4 s timeout the error would say so,
+    // and the test would fail here rather than on a stopwatch.
     expect((caught as Error).message).toMatch(/stopped while the scatter was still open/);
-    // Without `postStop` settling it, this would have taken the full 2 s.
-    expect(elapsedMs).toBeLessThan(1_000);
 
     await sys.terminate();
   });
@@ -965,18 +965,17 @@ describe('Router.scatterGatherFirstCompleted (#153)', () => {
       'replicas',
     );
 
-    const startedAtMs = performance.now();
     const answers = await Promise.all(
       Array.from({ length: scatters }, (_, i) => pool.ask<string>(`q${i}`, 4_000)),
     );
-    const elapsedMs = performance.now() - startedAtMs;
 
     // Each caller got the answer to its own question, from some routee.
     expect(answers.filter((a, i) => a.endsWith(`:q${i}`))).toHaveLength(scatters);
-    // An `async onReceive` awaiting the fan-out would hold the router's whole
-    // mailbox for one scatter at a time: 500 x 20 ms is ten seconds, twenty
-    // times this budget — and past Bun's own per-test timeout either way.
-    expect(elapsedMs).toBeLessThan(2_500);
+    // The serialised failure this guards against cannot reach this line at
+    // all: an `async onReceive` awaiting the fan-out would hold the router's
+    // mailbox for one scatter at a time, 500 x 20 ms — ten seconds, twice
+    // bun's per-test cap.  The cap is therefore the discriminator, and the
+    // stopwatch that used to be here only restated it less reliably.
 
     await sys.terminate();
   });

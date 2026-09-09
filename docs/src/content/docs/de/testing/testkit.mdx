@@ -226,3 +226,67 @@ import { Aside } from '@astrojs/starlight/components';
 
 Die [`TestKit`](/api/classes/testkit/)-API-Referenz deckt die
 volle Oberfläche ab.
+
+## Alle Deadlines auf einmal skalieren
+
+Jede Deadline im Testkit — der 3-s-Default von `TestProbe`, `awaitTimeoutMs` mit
+10 s in `MultiNodeSpec`, die 30 s von `ParallelMultiNodeSpec` samt Handshake und
+Control-RPC, und jedes `awaitCondition`-Budget — läuft durch einen einzigen
+Multiplikator. Für einen ganzen Lauf setzen:
+
+```bash
+ACTOR_TS_TEST_TIME_FACTOR=3 bun test tests/multi-node/
+```
+
+Der Default ist `1`, das Feature ist also wirkungslos, bis jemand danach fragt.
+Ein fehlerhafter Wert wirft, statt auf `1` zurückzufallen: Die Variable setzt
+jemand, der längere Deadlines will, und einen Tippfehler zu ignorieren hieße,
+ihm genau den Fehlschlag zurückzugeben, den er beheben wollte. Jede Meldung, die
+der Faktor verlängert hat, nennt ihn:
+
+```
+awaitCondition: the cluster converged did not become true within 6000ms
+  (ACTOR_TS_TEST_TIME_FACTOR=3, so this budget is 3x the declared one)
+```
+
+### Wo virtuelle Zeit passt, nimm virtuelle Zeit
+
+Das ist kein Ersatz für [`ManualScheduler`](/de/testing/manual-scheduler/). Wo
+ein Test eine Uhr vorstellen kann, soll er das tun: Virtuelle Zeit *entfernt*
+das Rennen, statt es zu verbreitern, und eine Deadline, die gar nicht erreicht
+werden kann, ist besser als eine bloß großzügige. Der Faktor ist für den Rest —
+Konvergenz-Waits, Probe-Timeouts, Barrier-Waits —, wo ein echter Cluster
+tatsächlich echte Zeit braucht.
+
+Das sind **Fehlerbudgets, keine erwarteten Dauern.** Auf ihnen wird nichts
+zugesichert; sie existieren, um ein Hängen in eine Meldung zu verwandeln. Genau
+das macht sie skalierbar — und aus demselben Grund gilt für eine
+Elapsed-Time-Zusicherung das Gegenteil: Ein Test, der zusichert, dass etwas
+*weniger* als N ms gedauert hat, sichert die Geschwindigkeit der Maschine zu,
+und kein Faktor macht das richtig.
+
+### Das Per-Test-Cap skaliert nicht — und der Guard sagt das
+
+Buns Per-Test-Timeout erreicht der Faktor nicht: Es ist entweder der Default von
+5 000 ms oder ein Literal als drittes Argument von `test()`. Ein Faktor, der
+stillschweigend ein 4-000-ms-Budget verdreifacht, während das 5-000-ms-Cap
+unverändert bleibt, erzeugt genau den Fehlschlag, den `AwaitConditionBudgets`
+verhindern soll: Das Timeout des Runners gewinnt das Rennen, und die Meldung des
+Budgets — die, die sagt, worauf gewartet wurde — wird nie gedruckt.
+
+Der Guard skaliert deshalb mit. Läuft er unter einem erhöhten Faktor, meldet er
+jeden Test, dessen Budget nicht mehr berichten kann, statt ihn abzunicken. Ein
+Test, der unter erhöhtem Faktor weiterlaufen soll, deklariert sein Cap über
+`scaledMs`, das der Guard erkennt:
+
+```ts
+test('the cluster converges', async () => {
+  await spec.awaitMembers('a', 3);
+}, scaledMs(30_000));      // steigt mit dem Faktor, wie die Budgets darin
+```
+
+Damit ist ein erhöhter Faktor ein Werkzeug **pro Suite**, kein globaler Schalter:
+Bei Faktor 3 über den ganzen Baum meldet der Guard rund 1 200 Tests, deren
+literale Caps ihre Budgets nicht mehr fassen — zu Recht. Die drei Suites, die
+`nightly-flakes.yml` mit Faktor 3 fährt, deklarieren genau deshalb
+`scaledMs`-Caps.

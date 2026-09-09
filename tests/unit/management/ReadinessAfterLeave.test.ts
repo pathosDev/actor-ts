@@ -119,7 +119,7 @@ describe('a node that left the cluster is not ready (#655)', () => {
 
     await binding.unbind();
     await system.terminate();
-  });
+  }, 15_000);
 
   test('the gRPC health service answers NOT_SERVING after leave', async () => {
     // Same registry, so the two probes cannot disagree about what "ready"

@@ -16,6 +16,7 @@
  * within the test budget — proving end-to-end split-brain protection
  * via Lease arbitration.
  */
+import { scaledMs } from '../../src/testkit/TimeFactor.js';
 import { describe, expect, test } from 'bun:test';
 import { LeaseMajority, LeaseMajorityOptions } from '../../src/cluster/downing/index.js';
 import {
@@ -166,5 +167,5 @@ describe('LeaseMajority — end-to-end split-brain', () => {
       MultiNodeTransport._resetRegistryForTest();
       inMemoryLeaseStore._clear();
     }
-  }, 60_000);
+  }, scaledMs(60_000));
 });

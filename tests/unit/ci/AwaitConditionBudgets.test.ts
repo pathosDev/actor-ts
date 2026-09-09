@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, test } from 'bun:test';
+import { scaledMs, testTimeFactor } from '../../../src/testkit/TimeFactor.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
 
 /**
@@ -68,6 +69,18 @@ const HEADROOM_MS = 1_000;
 
 /** `awaitCondition`'s own default, applied when a call passes no `timeoutMs`. */
 const AWAIT_CONDITION_DEFAULT_MS = 2_000;
+
+/**
+ * The factor every budget in the tree is multiplied by at run time (#1376).
+ *
+ * Read from the environment rather than assumed to be 1, because the whole
+ * point of this guard is to measure what the runner will actually do.  At the
+ * default of 1 nothing below changes; at a raised factor the budgets grow, the
+ * literal caps do not, and the pairs that stop fitting are reported — which is
+ * the design answer to the question #1376 poses: the factor cannot silently
+ * lengthen a budget past the cap that contains it, because this line notices.
+ */
+const TIME_FACTOR = testTimeFactor();
 
 /* ------------------------------------------------------------------ */
 /* A very small TypeScript scanner                                     */
@@ -166,6 +179,17 @@ function matchDelimiter(blanked: string, open: number, opener: string, closer: s
 const TEST_CALL = /\b(?:test|it)(?:\.(?:skip|todo|only|failing|if|skipIf|todoIf|each))?\s*\(/g;
 /** The third argument of `test(name, fn, timeout)` — the per-test cap. */
 const TRAILING_TIMEOUT_ARGUMENT = /,\s*([0-9][0-9_]*)\s*$/;
+/**
+ * The same argument written as `scaledMs(N)` — a cap that rises with the time
+ * factor (#1376).
+ *
+ * Recognised because the factor creates a real asymmetry: budgets scale and
+ * bun's per-test cap cannot be reached from this repository at all — it is
+ * either the 5 000 ms default or a literal.  A test that should keep working at
+ * a raised factor therefore has to say so, and this is how it says it.  A plain
+ * literal cap stays unscaled here, because that is exactly what bun will use.
+ */
+const TRAILING_SCALED_TIMEOUT_ARGUMENT = /,\s*scaledMs\(\s*([0-9][0-9_]*)\s*\)\s*$/;
 const AWAIT_CONDITION_CALL = /\bawaitCondition\s*\(/g;
 /**
  * A `timeoutMs` in an options object, in every form the tree writes it.
@@ -416,8 +440,16 @@ function scanFile(absolutePath: string, unreadable: UnreadableBudget[] = []): Te
   const out: TestBlock[] = [];
   for (const block of blocks) {
     const argumentsBlanked = blanked.slice(block.start, block.end);
+    // A literal cap is what bun will use, verbatim.  A `scaledMs(N)` cap rises
+    // with the factor exactly as the budgets inside it do, which is the only
+    // way a test stays inside its cap at a raised factor (#1376).
     const declared = TRAILING_TIMEOUT_ARGUMENT.exec(argumentsBlanked);
-    const declaredTimeoutMs = declared ? numeric(declared[1]!) : undefined;
+    const declaredScaled = TRAILING_SCALED_TIMEOUT_ARGUMENT.exec(argumentsBlanked);
+    const declaredTimeoutMs = declared
+      ? numeric(declared[1]!)
+      : declaredScaled
+        ? scaledMs(numeric(declaredScaled[1]!))
+        : undefined;
     const budgets: Budget[] = budgetsBetween(
       blanked, block.start, block.end, constants, undefined, unreadable, file,
     ).map((milliseconds) => ({ milliseconds, helper: '' }));
@@ -477,12 +509,17 @@ describe('awaitCondition budgets fit inside the per-test timeout', () => {
    */
   test('every reachable budget leaves room for its message to be thrown', () => {
     const offenders = blocks
-      .filter((block) => block.largest.milliseconds + HEADROOM_MS > block.effectiveTimeoutMs)
+      // The budget as the runner will see it: `awaitCondition` multiplies by
+      // the factor, so at a raised one the comparison has to as well or the
+      // guard would certify a budget that can no longer report (#1376).
+      .filter((block) =>
+        scaledMs(block.largest.milliseconds) + HEADROOM_MS > block.effectiveTimeoutMs)
       .map((block) =>
         `  ${block.file}:${block.line}\n`
         + `      cap ${block.effectiveTimeoutMs}ms`
         + `${block.declaredTimeoutMs === undefined ? " (bun's default — the test declares none)" : ''}`
-        + `, largest budget ${block.largest.milliseconds}ms`
+        + `, largest budget ${scaledMs(block.largest.milliseconds)}ms`
+        + `${TIME_FACTOR === 1 ? '' : ` (${block.largest.milliseconds}ms x ${TIME_FACTOR})`}`
         + `${block.largest.helper === '' ? '' : ` via ${block.largest.helper}()`}\n`
         + `      "${block.name}"`,
       );

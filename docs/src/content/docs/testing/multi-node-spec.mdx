@@ -163,6 +163,86 @@ failover.  The `await*` helpers replace fragile `setTimeout`
 sleeps — they poll until the condition holds (or throw after
 `awaitTimeoutMs`).
 
+## A network that works badly
+
+`partition` and `crash` describe a network that is perfect or severed. Between
+them lies every condition a cluster actually runs in: a fifth of the gossip
+pushes lost, frames overtaking each other, a peer that is slow rather than
+dead. `degrade(roleA, roleB, profile)` is that middle, and `restore(roleA,
+roleB)` undoes it.
+
+```ts
+const spec = new MultiNodeSpec(MultiNodeSpecOptions.create()
+  .withRoles(['a', 'b', 'c'])
+  .withScheduler(new ManualScheduler())
+  .withFaultSeed(20_231));
+
+await spec.start();
+
+// The cluster forms on a clean network, and the network then gets worse.
+spec.degrade('a', 'b', {
+  dropProbability:      0.2,   // a fifth of the frames never arrive
+  duplicateProbability: 0.1,   // a tenth arrive twice
+  reorderWindow:        4,     // up to four frames may overtake each other
+  latencyMs:            50,    // measured on the spec's scheduler
+});
+
+await spec.advanceUntil(
+  () => spec.clusterFor('a').getMembers().filter((m) => m.status === 'up').length === 3,
+  { budgetMs: 60_000, description: 'the view converges despite the loss' },
+);
+
+spec.restore('a', 'b');
+```
+
+Every field is optional and defaults to "no fault", so a profile names only what
+it changes. `degrade` is bidirectional like `partition`; for a one-way
+degradation reach for `spec.faultsFor(role).degradeTo(address, profile)`.
+
+### The faults are deterministic
+
+Every decision comes from one seeded generator per node, drawn in send order —
+and under a shared `ManualScheduler` that order is itself deterministic. So a
+run that goes red reproduces exactly, and the spec's timeout messages name the
+seed that does it:
+
+```
+MultiNodeSpec: timeout after 10000 ms — awaitMembers(a, expected=3) — current: 2
+  Faults were injected on: a, b. Reproduce with withFaultSeed(20231).
+```
+
+That is not a detail. An unreproducible chaos test is a flake generator, and a
+fixed seed is what makes the difference — the trade being that the suite stops
+finding *new* networks on its own. Vary the seed deliberately (a loop over
+`withFaultSeed`) when the question is "does this hold for many networks" rather
+than "does this hold for the network that broke".
+
+### `latencyMs` needs a scheduler
+
+A delay taken from the wall clock would reintroduce exactly the timing
+dependence [`ManualScheduler`](/testing/manual-scheduler/) exists to remove, so
+it is refused rather than quietly taken: a non-zero `latencyMs` without a
+scheduler throws at construction. The other three faults need no clock.
+
+### `reorderWindow` is a depth, not a shuffle
+
+A window of `n` holds up to `n` frames and releases them as one permuted batch,
+so a frame is displaced by **fewer than `n` positions**. That bound is the
+point: a shuffle could permute a frame to the end of the run and leave a test
+waiting for something that is never coming. The last partial batch is released
+by `restore`, by `stop`, and by the next batch filling up — continuous gossip
+does the last of those on its own.
+
+### It works on any transport
+
+`FaultyTransport` is a decorator, so `InMemoryTransport`, `MultiNodeTransport`
+and `MessageChannelTransport` all gain the same controls without any of them
+growing fault logic. Outside a spec:
+
+```ts
+const link = new FaultyTransport(new InMemoryTransport(address), { dropProbability: 0.2 });
+```
+
 ## Per-node TestProbe
 
 `MultiNodeSpec` has no probe factory — construct a `TestProbe`

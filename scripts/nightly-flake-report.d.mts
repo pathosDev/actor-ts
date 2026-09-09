@@ -17,12 +17,27 @@
  * deliberately: it is exercised by running the script.
  */
 
-/** One offender, as `scripts/stress-test.mjs` records it in `summary.json`. */
+/**
+ * One offender, as `scripts/stress-test.mjs` records it in `summary.json`.
+ *
+ * The authority for this shape is `summaryDocument` in that script, not this
+ * file: a declaration is never checked against the module it describes
+ * (`skipLibCheck`), so what keeps the two honest is
+ * `tests/unit/ci/NightlyFlakeReport.test.ts` building its fixtures by calling
+ * the writer.  Before #1506 this file declared two fields nothing wrote, in
+ * agreement with a reader that read them and a guard that invented them.
+ */
 export type StressOffender = {
   /** `file :: describe > test`, the identity failures are aggregated under. */
   readonly identity: string;
   /** Which run indices this identity failed in — counted once per run. */
   readonly failedRuns: readonly number[];
+  /**
+   * Whether it failed in *every* run — broken rather than flaky.  Optional
+   * because an artifact written before #1506 has no such flag, and for those
+   * {@link offendersOf} falls back to comparing `failedRuns.length` with `runs`.
+   */
+  readonly consistent?: boolean;
 };
 
 /**
@@ -42,8 +57,13 @@ export type StressSummary = {
   readonly unexplainedRedRuns?: readonly number[];
   readonly totalExecuted?: number;
   readonly totalFailures?: number;
-  readonly flaky?: readonly StressOffender[];
-  readonly consistent?: readonly StressOffender[];
+  /**
+   * Every test that failed at least once, flaky and broken together —
+   * {@link offendersOf} does the splitting.  Absent only in a summary this
+   * reader does not understand, which the report says out loud rather than
+   * rendering as "no test was named".
+   */
+  readonly offenders?: readonly StressOffender[];
 };
 
 /**
@@ -85,6 +105,19 @@ export function readSummary(path: string): StressSummary | MissingSummary;
  * each disqualify it — and a missing summary is never green.
  */
 export function isGreen(summary: StressSummary | MissingSummary): boolean;
+
+/**
+ * Split a summary's `offenders` into broken and flaky, or `undefined` when it
+ * carries no offender list at all.
+ *
+ * The `undefined` is load-bearing: "this summary names nobody" and "this
+ * reader could not find the list" are opposite facts, and #1506 rendered the
+ * second as the first for every red night.
+ */
+export function offendersOf(summary: StressSummary): {
+  readonly consistent: readonly StressOffender[];
+  readonly flaky: readonly StressOffender[];
+} | undefined;
 
 /** Render every section into one issue body. */
 export function buildReport(

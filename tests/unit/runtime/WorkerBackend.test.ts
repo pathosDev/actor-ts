@@ -283,10 +283,13 @@ describe('runtime/worker/WebWorkerAdapter event mapping', () => {
       await worker.terminate();
       const elapsed = performance.now() - startedAt;
       expect(native.terminateCalls).toBe(1);
-      // The elapsed time IS the assertion: it resolves via the bound, and the
-      // bound is short enough that an eight-worker teardown is not seconds long.
+      // Lower bound only, and it is the assertion: `terminate()` resolved via
+      // its own fallback bound rather than via a confirmation the runtime never
+      // sent, and nothing but elapsed time can show that.  The upper bound that
+      // used to follow was a different claim — that an eight-worker teardown is
+      // not seconds long — and it measured the machine rather than the fallback.
+      // That belongs in a benchmark; here it only made the test load-sensitive.
       expect(elapsed).toBeGreaterThanOrEqual(200);
-      expect(elapsed).toBeLessThan(1_500);
     });
   });
 });

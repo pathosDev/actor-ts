@@ -479,6 +479,28 @@ export function enforceHeaderTimeout(server: NodeHttpServerLike, deadlineMs: num
  * three sibling knobs pass there, so this is per-property rather than a blanket
  * `node:http` gap.
  *
+ * **What the event is worth, measured rather than assumed (#1505).**  Adding
+ * this guard did not turn those three tests green, and the reason is a second
+ * platform difference underneath the first.  On bun 1.4.0 an `http.Server`
+ * emits `'connection'` for an accepted socket **immediately on Windows and
+ * only on its first byte on Linux** — until then `getConnections()` answers
+ * `0` as well, so a silent socket is not merely uncounted there, it is
+ * invisible.  The three tests opened silent sockets, which is a connection the
+ * Linux server does not have; they now send a request and pass on both.
+ *
+ * That also resolves the split #1409 could not explain — why the header
+ * deadline held on that runner while the cap did not, on what looked like the
+ * same event.  A slow-loris writes a partial header block, so its socket
+ * speaks and the event fires for it; the cap's cases connected and said
+ * nothing.  Both observations follow from the one rule above.
+ *
+ * Two consequences worth keeping in view.  A connection that speaks is capped
+ * identically everywhere, which is every real client — verified against a live
+ * server on both platforms in `tests/unit/http/MaxConnectionsGuard.test.ts`.  A
+ * connection that never speaks is capped by neither mechanism on Linux, because
+ * the property is ignored and the event has not fired; `http/security.mdx`
+ * carries that gap and names the OS- or proxy-level limit that closes it.
+ *
  * A cap an operator sets and the process does not hold is worse than one that
  * is absent, because `http/security.mdx` offers it as the connection-flood
  * answer.  Counting here makes the knob mean the same thing on every runtime

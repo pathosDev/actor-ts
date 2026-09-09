@@ -297,7 +297,7 @@ describe('the devtools block goes through the same security rule as code', () =>
     // wins over the file's — and nothing is refused.
     const binding = await DevTools.attach(system, { host: '127.0.0.1', port: 0 });
     expect(binding.host).toBe('127.0.0.1');
-  });
+  }, 15_000);
 
   test('a configured value cannot be reintroduced by an unrelated code option', async () => {
     // The other direction of the same precedence: setting a port in code does

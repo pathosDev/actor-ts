@@ -11,6 +11,60 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **One factor scales every testkit deadline** (#1376).
+  `ACTOR_TS_TEST_TIME_FACTOR` multiplies `TestProbe`'s timeouts,
+  `MultiNodeSpec` and `ParallelMultiNodeSpec`'s await timeouts, the worker
+  handshake and control RPC, and every `awaitCondition` budget. Default 1, so it
+  is inert until asked for; a malformed value throws rather than falling back,
+  because ignoring a typo hands the setter the failure they were trying to fix.
+  Every message the factor lengthened names it.
+
+  **The design question the issue poses is answered by making the guard scale
+  too.** Bun's per-test cap is not reachable from this repository — it is the
+  5 000 ms default or a literal third argument — so a factor that quietly
+  tripled a budget under an untouched cap would recreate the exact failure
+  `AwaitConditionBudgets` exists to prevent. That guard now measures the
+  *scaled* budget against the literal cap and recognises `scaledMs(N)` as a cap
+  that rises with it. Run at factor 3 over the whole tree it reports ~1 200
+  tests whose caps no longer contain their budgets, which is true — so a raised
+  factor is a per-suite tool, not a global switch, and the docs say so.
+
+  `nightly-flakes.yml` gains the demonstration the issue asks for: the three
+  suites that #538 removed from CI for being too slow now run nightly at factor
+  3 as a recorded measurement rather than a gate. Both factors are green
+  locally, which is itself the answer to the quarantine's original question —
+  those suites were not merely slow.
+
+- **A network that works *badly*, not just perfectly or not at all** (#1023).
+  Every multi-node test ran on a transport that was either flawless or severed:
+  `MultiNodeTransport` offered a bidirectional block and `InMemoryTransport`
+  offered nothing, while delivery was a bare `queueMicrotask` — strictly FIFO,
+  exactly-once, zero-latency. So probabilistic loss, reordering, duplication
+  and a slow-but-alive peer were structurally untestable, and every
+  order-independence and idempotence claim in `Cluster` was exercised by
+  nothing.
+
+  `FaultyTransport` is a **decorator**, so `InMemoryTransport`,
+  `MultiNodeTransport` and `MessageChannelTransport` gain drop, duplicate,
+  reorder and latency controls without any of them growing a line of fault
+  logic — per link, and configured through the usual `FaultyTransportOptions`
+  triad. `MultiNodeSpec` exposes it as `degrade(a, b, profile)` / `restore(a,
+  b)` beside `partition` / `heal` / `crash`.
+
+  **Deterministic by construction.** One seeded generator per node drawn in
+  send order, and under a shared `ManualScheduler` that order is deterministic
+  too — so a red run reproduces exactly, and the spec's timeout messages name
+  the seed that does it. Latency is measured on the scheduler and *refused*
+  without one, rather than quietly taken from the wall clock. `reorderWindow`
+  is a depth rather than a shuffle: a frame is displaced by strictly fewer than
+  `n` positions, so a reordered link cannot leave a test waiting forever.
+
+  Two claims are now tested rather than asserted in prose: membership converges
+  under 20 % loss given enough rounds, and shard-home updates survive a link
+  that turns lossy *during* a rebalance — measured to hold at 90 % loss and to
+  fail only when the link is severed outright, which is a partition rather than
+  a degradation. EN + DE testkit docs describe the controls.
+
 - **The four JetStream caps that pass through to nats.js verbatim accept
   NATS's own spelling of "no limit" (#871): `-1` on `stream.maxMessages`,
   `stream.maxBytes` and `consumer.maxAcknowledgmentPending`, and `0` on
@@ -2328,6 +2382,51 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **Every two-sided elapsed-time assertion is gone** (#1338). Twelve tests
+  asserted that something took *less* than N milliseconds — which is an
+  assertion about the machine, not about the code, and the family the flake
+  programme keeps meeting. Each is now the fact it was standing in for:
+
+  - Three push-query cases set `pollIntervalMs` an hour out, so "delivered
+    fast" becomes "delivered by the push path" — a regression now hangs the
+    case instead of passing slowly on a quick machine.
+  - Two distributed-data cases set the gossip interval out of reach, and the
+    `local`-consistency one partitions the peer outright, so "no peer
+    round-trip" is a fact rather than a duration.
+  - `CoordinatedShutdown`'s parallelism check records **one interleaved
+    trace**; the two arrays it used to keep could not tell the schedules apart
+    (both read `['1', '2']` either way), so the wall-clock bound had been
+    carrying the whole assertion.
+  - Four are redundant: the error message, the drained count, and bun's own
+    per-test cap already prove what the stopwatch restated.
+  - Two keep a lower bound only, where elapsed time genuinely is the subject —
+    a fallback that resolves via its own bound rather than a confirmation.
+
+- **The four CRDTs that had no shrinking property coverage now have it, and the
+  unseeded generator that stood in for it is gone** (#1372). `GCounterMap`,
+  `LWWMap`, `MVRegister` and `ORMap` were checked only by a hand-rolled
+  generator over bare `Math.random()`, 25 triples apiece — no shrinking, so a
+  broken merge law reported whichever three large maps the draw produced rather
+  than the two-element pair that breaks it, and no seed, so the failure could
+  not be re-run at all. All nine types are now under `fast-check` with the seed
+  pinned globally by `tests/setup/property-seed.ts`.
+
+  The new `LWWMap` property **failed on its first run**, which is the argument
+  for the change in one line: two maps that both wrote one key at timestamp 3
+  from the same replica, one a value and one a removal. That is `LWWRegister`'s
+  documented tie behaviour (#950) reached one level up rather than a new defect,
+  so the generator now derives both the value and the put/remove choice from
+  `(replica, timestamp)` — modelling "a replica writes one thing at one instant"
+  instead of filtering the case out afterwards with an `fc.pre` that would throw
+  most runs away.
+
+  The counterexample is pinned as an example test regardless, which is the
+  corpus the issue asks for: the generator can no longer produce that case, so
+  without the example nothing would notice if the behaviour changed. The nine
+  now-redundant law loops are removed along with every `Math.random()` call in
+  that file; what stays there is the hand-picked cases that say what each type
+  *means*.
+
 - **BREAKING — `ActorSystem.http(port)` binds loopback when no host is
   given** (#1408).  It bound the IPv4 wildcard, so the shortest and
   most-copied form of the shortcut was the one that published the server on
@@ -2578,6 +2677,66 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **Three HTTP-backend tests missed bun's undeclared 5 000 ms cap in a full run
+  and passed in isolation** (#1504).  Fixed the way the issue asked for — by
+  checking whether the work was avoidable before budgeting for it.
+
+  `StaticFiles.test.ts` started an `ActorSystem` and bound a server in each of
+  seventeen cases, three backends over, so a file about reading files off a disk
+  paid fifty-one server lifecycles.  Nothing there mutates server state, so the
+  isolation that bought was isolation from nothing; the block now binds one
+  server per backend and the file is ~24 % faster even idle.  The two
+  `BackendTransportFrameCap` cases genuinely cannot share one — the cap under
+  test is installed *during* the bind and each needs its own backend — so those
+  get a declared budget, and so do the other seven cases in that file, which do
+  the same work and differ only in which crossed the line first.
+
+  **The verification run then failed a fourth test of the same family**, and
+  measuring rather than patching it turned up the real shape: the same test took
+  **1.51 s in one parallel run and 5.05 s in another**, a 3.3× spread. So any
+  unbudgeted test above ~1.5 s is one load spike from the cap, which is a line
+  drawn from data rather than taste. Nine files were over it; all now declare a
+  budget — 30 s for the repo-file scanners that read every source under `src/`,
+  15 s for the cases that wait on a real server. Two full parallel runs green,
+  12 279 tests.
+
+- **The documented connection cap was red on Linux and green on Windows, and
+  the cause was neither the cap nor a flake** (#1505).  Measured on bun 1.4.0
+  with the runtime installed locally on both: an `http.Server` emits
+  `'connection'` for an accepted socket **immediately on Windows and only on
+  its first byte on Linux**, where `getConnections()` answers `0` until then —
+  so a socket that connects and stays silent is invisible to the server object
+  rather than merely uncounted.  `server.maxConnections` is ignored on that
+  pair as well, so neither enforcement can act on a silent client.
+
+  The three failing cases opened silent sockets, which is a connection the
+  Linux server does not have.  They now send a request, which is the connection
+  a cap is actually about, and pass on both platforms — verified by running
+  them under Linux, not inferred.  A connection that speaks is capped
+  identically everywhere; one that never speaks is bounded by nothing actor-ts
+  can see on Linux, and `http/security.mdx` now carries that gap and names the
+  OS- or proxy-level limit that closes it.
+
+- **A red nightly filed an issue naming no test, while the artifact beside it
+  named three** (#1506).  `scripts/nightly-flake-report.mjs` read `flaky` and
+  `consistent` off a night's `summary.json`; `scripts/stress-test.mjs` has
+  never written either field, only one `offenders` array.  So run 34329418185
+  — three tests failing in **all five** runs, aggregated correctly, written to
+  the artifact correctly — filed *"No test was named by any run"*, and the
+  first real red night the auto-issue mechanism ever saw reported nothing
+  actionable.  The classifier was not at fault and is unchanged.
+
+  What made it possible is that the document on disk was an object literal
+  inside a side-effecting `main()`, so no test could hold it: the reader's
+  hand-written `.d.mts` declared the two fields above a comment claiming they
+  were the harness's shape, `skipLibCheck` means a declaration is never checked
+  against its module, and the reader's own guard built its fixtures by hand
+  from the same imagination.  Three artifacts agreeing with each other and none
+  of them with the program.  `summaryDocument` is now an exported pure
+  function, every fixture in `tests/unit/ci/NightlyFlakeReport.test.ts` is
+  produced by calling it, and each offender carries its own `consistent` flag
+  so the flaky/broken split has one home rather than a copy in each reader.
 
 - **The transport's stall-deadline / handshake-deadline ordering rule is now
   checked against the pair the transport will run with, not the pair the

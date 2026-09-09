@@ -8,6 +8,7 @@ import type { FailureDetectorOptionsType } from '../cluster/FailureDetectorOptio
 import type { Member } from '../cluster/Member.js';
 import { NodeAddress } from '../cluster/NodeAddress.js';
 import { LogLevel } from '../Logger.js';
+import { describeTimeFactor, scaledMs } from './TimeFactor.js';
 import {
   getWorkerBackend,
   type WorkerErrorEvent,
@@ -150,7 +151,10 @@ export class ParallelMultiNodeSpec {
       // only on the hosted runners, never locally or in Docker).  See #538
       // for the quarantine and its exit criterion.  They run locally + in
       // Docker, where this budget is ample (convergence is ~4-5s).
-      awaitTimeoutMs: options.awaitTimeoutMs ?? 30_000,
+      // Scaled once, at resolution (#1376).  This spec is the one the
+      // factor was written for: it drives real worker threads, which is
+      // where a hosted runner's slowness actually shows.
+      awaitTimeoutMs: scaledMs(options.awaitTimeoutMs ?? 30_000),
       logLevel: options.logLevel ?? LogLevel.Off,
       addresses: options.addresses,
       failureDetector: options.failureDetector,
@@ -363,7 +367,9 @@ export class ParallelMultiNodeSpec {
       try { if (await cond()) return; } catch { /* retry */ }
       await new Promise((r) => setTimeout(r, 50));
     }
-    throw new Error(`ParallelMultiNodeSpec: timeout after ${timeoutMs} ms — ${description}`);
+    throw new Error(
+      `ParallelMultiNodeSpec: timeout after ${timeoutMs} ms${describeTimeFactor()} — ${description}`,
+    );
   }
 
   /**
@@ -517,10 +523,16 @@ export class ParallelMultiNodeSpec {
     worker: WorkerLike, init: WorkerInitMessage, addr: NodeAddress,
   ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
+      // The handshake and the control RPC below scale too: they are the two
+      // deadlines a slow runner actually crosses, and #538's documented symptom
+      // is workers that spawn, handshake and then never run.
+      const handshakeMs = scaledMs(10_000);
       const timeout = setTimeout(() => {
         worker.removeEventListener('message', onMessage);
-        reject(new Error(`Worker ${addr} did not become ready within 10s`));
-      }, 10_000);
+        reject(new Error(
+          `Worker ${addr} did not become ready within ${handshakeMs}ms${describeTimeFactor()}`,
+        ));
+      }, handshakeMs);
       /**
        * First hello wins — the same latch as `WorkerCluster.handshake`, and
        * for the same reason: `postMessage` structured-clones `init` on this
@@ -569,10 +581,13 @@ export class ParallelMultiNodeSpec {
     }
     const reqId = this.nextReqId++;
     return new Promise<R>((resolve, reject) => {
+      const controlRpcMs = scaledMs(5_000);
       const timer = setTimeout(() => {
         this.pending.delete(reqId);
-        reject(new Error(`controlRpc(${request.kind}): timed out after 5s`));
-      }, 5_000);
+        reject(new Error(
+          `controlRpc(${request.kind}): timed out after ${controlRpcMs}ms${describeTimeFactor()}`,
+        ));
+      }, controlRpcMs);
       this.pending.set(reqId, {
         role: node.role,
         expectedKind: `${request.kind}-response`,

@@ -183,6 +183,63 @@ jobs:
   # The flake catalog's data source.  Loops the whole suite, which is now
   # literally the whole suite: with nothing quarantined, `--skip-quarantined`
   # would subtract nothing and the verdict is about every test CI runs.
+  time-factor:
+    name: worker suites at a raised time factor
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      # The demonstration #1376 asks for: the three suites that were removed
+      # from every CI run for being too slow for a hosted runner (#538), run
+      # with every testkit deadline tripled.
+      #
+      # It is a *measurement*, not a gate, and `continue-on-error` says so.
+      # What it answers is the question the quarantine never got to ask: are
+      # these suites slow, or are they wrong?  A green run at factor 3 and a
+      # red one at factor 1 would mean the deadlines were the problem; both
+      # green means they are not, and the factor is available for a machine
+      # that needs it rather than a workaround these suites depend on.
+      #
+      # The three files declare their per-test caps through `scaledMs(...)`,
+      # which is what lets the cap rise with the budgets inside it — a literal
+      # cap would be crossed by the runner before any scaled budget could
+      # report.  `AwaitConditionBudgets` enforces that pairing.
+      - name: Run the worker suites with tripled deadlines
+        id: factored
+        continue-on-error: true
+        env:
+          ACTOR_TS_TEST_TIME_FACTOR: '3'
+        run: |
+          bun test \
+            tests/multi-node/LeaseMajority.test.ts \
+            tests/multi-node/ParallelPubSub.test.ts \
+            tests/unit/testkit/ParallelMultiNodeSpec.test.ts
+
+      - name: Record the result
+        if: always()
+        env:
+          OUTCOME: ${{ steps.factored.outcome }}
+        run: |
+          {
+            echo "### Time factor 3 — the three #538 suites"
+            echo
+            echo "- outcome: **$OUTCOME**"
+            echo
+            echo "A measurement, not a gate. Compare against the same three"
+            echo "suites in the job above, which run them at factor 1."
+          } >> "$GITHUB_STEP_SUMMARY"
+
   stress:
     name: whole suite, repeated
     runs-on: ubuntu-latest

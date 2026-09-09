@@ -92,12 +92,44 @@ export function isGreen(summary) {
 /** `identity — failed N of M runs`, worst first, capped so an issue stays readable. */
 function offenderLines(entries, runs, limit = 20) {
   const shown = entries.slice(0, limit).map(
-    (entry) => `- \`${entry.identity}\` — failed ${entry.failedRuns.length} of ${runs}`,
+    (entry) => `- \`${entry.identity}\` — failed ${entry.failedRuns?.length ?? 0} of ${runs}`,
   );
   if (entries.length > limit) {
     shown.push(`- …and ${entries.length - limit} more, in the uploaded report.`);
   }
   return shown;
+}
+
+/**
+ * The offenders a summary names, split into broken and flaky.
+ *
+ * **This reads `offenders`, which is the field the harness writes** — see
+ * `summaryDocument` in `scripts/stress-test.mjs`.  It used to read `flaky` and
+ * `consistent`, which nothing has ever written, so every red night reported no
+ * offender at all: run 34329418185 had three tests failing in all five runs,
+ * named correctly in the artifact, and filed an issue saying *"No test was
+ * named by any run"* (#1506).
+ *
+ * The classification comes from the entry rather than from a comparison here.
+ * `failedRuns.length >= runs` is the rule, it lives in `aggregate`, and a
+ * second copy of it in this file would be free to disagree with the first —
+ * which is the shape of the defect being fixed, not a fix for it.  The
+ * comparison survives only as the fallback for an artifact written before the
+ * flag existed, where deriving it is strictly better than dropping the entry.
+ *
+ * `undefined` — distinct from an empty split — when the summary carries no
+ * offender list at all.  That is a summary this reader does not understand, and
+ * saying so is the whole lesson of #1506: silence must not be rendered as good
+ * news.
+ */
+export function offendersOf(summary) {
+  if (!Array.isArray(summary.offenders)) return undefined;
+  const isConsistent = (entry) => entry.consistent
+    ?? (entry.failedRuns?.length ?? 0) >= summary.runs;
+  return {
+    consistent: summary.offenders.filter((entry) => isConsistent(entry)),
+    flaky: summary.offenders.filter((entry) => !isConsistent(entry)),
+  };
 }
 
 /** One job's section of the report. */
@@ -139,14 +171,33 @@ function sectionFor(label, summary) {
     );
   }
 
-  if (summary.consistent?.length) {
-    lines.push('', '**Failed in every run — broken rather than flaky:**', ...offenderLines(summary.consistent, summary.runs));
+  const offenders = offendersOf(summary);
+  if (offenders?.consistent.length) {
+    lines.push('', '**Failed in every run — broken rather than flaky:**', ...offenderLines(offenders.consistent, summary.runs));
   }
-  if (summary.flaky?.length) {
-    lines.push('', '**Failed in some runs — flaky:**', ...offenderLines(summary.flaky, summary.runs));
+  if (offenders?.flaky.length) {
+    lines.push('', '**Failed in some runs — flaky:**', ...offenderLines(offenders.flaky, summary.runs));
   }
-  if (!summary.consistent?.length && !summary.flaky?.length && summary.greenRuns !== summary.runs) {
-    lines.push('', 'No test was named by any run, which is why the terms above matter.');
+  // Three different silences, and they were one sentence before #1506.  A
+  // summary this reader cannot find an offender list in is not the same fact as
+  // a red night whose offender list is genuinely empty, and neither is good
+  // news — so each says which it is, and points at the thing that explains it.
+  if (offenders === undefined && !isGreen(summary)) {
+    lines.push(
+      '',
+      '**This summary names no offenders at all** — it carries no `offenders`',
+      'field. It was written by a harness older than #1506, or by one this',
+      'report no longer understands. The failing tests are in the uploaded',
+      'JUnit reports either way; this report could not read them.',
+    );
+  } else if (offenders?.consistent.length === 0 && offenders.flaky.length === 0
+    && !isGreen(summary)) {
+    lines.push(
+      '',
+      'No test was named by any run, which is why the terms above matter: the',
+      'night was not green and yet no individual test failed. Read the lines',
+      'above for which kind of red it was.',
+    );
   }
   return lines;
 }

@@ -18,6 +18,7 @@ import { HttpServerOptions } from '../../../src/http/HttpServerOptions.js';
 import { complete, get, type Route } from '../../../src/http/Route.js';
 import { Status } from '../../../src/http/Types.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { diagnoseMaxConnections } from '../../util/MaxConnectionsSupport.js';
 
 /**
  * #870 — `actor-ts.http.server` installs connection-level bounds on the server
@@ -76,10 +77,31 @@ async function start(backend: HttpServerBackend, maxConnections: number): Promis
   return binding;
 }
 
+/**
+ * Connect, and **speak** — a connection the server has never heard from is not
+ * a connection it can be asked about.
+ *
+ * Measured on bun 1.4.0 (#1505): a `node:http` server on Linux surfaces an
+ * accepted socket only once its first byte arrives — no `'connection'` event,
+ * and `getConnections()` answers 0 — while on Windows and on node the event
+ * fires on accept.  A test that connects and stays silent therefore asks the
+ * Linux server about a connection it does not have, and the cap it is testing
+ * cannot act on one it cannot see.  Sending a request makes the two platforms
+ * agree, and it is also the connection a cap is actually about.
+ *
+ * An `'error'` after the connect is expected rather than exceptional: the cap
+ * refuses by destroying, which reaches the client as `ECONNRESET`.  It is
+ * swallowed here and observed as the `'close'` that follows it.
+ */
 function open(binding: ServerBinding): Promise<Socket> {
   return new Promise((resolve, reject) => {
-    const socket = connect({ host: binding.host, port: binding.port }, () => resolve(socket));
-    socket.once('error', reject);
+    let connected = false;
+    const socket = connect({ host: binding.host, port: binding.port }, () => {
+      connected = true;
+      resolve(socket);
+      socket.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n');
+    });
+    socket.on('error', (error) => { if (!connected) reject(error); });
     sockets.push(socket);
   });
 }
@@ -106,7 +128,14 @@ describe('the resolved server policy reaches each backend', () => {
     // point: on a backend that owns a node:http server the cap closes the
     // second connection; on one that does not, the connection survives and
     // the key is documented as unavailable rather than quietly ineffective.
-    expect(await closedWithin(second, 3_000)).toBe(installsCap);
+    const closed = await closedWithin(second, 3_000);
+    // Only when it is about to fail: the probe binds two servers and costs
+    // about two seconds, which is worth paying once on a red run and never on
+    // a green one.  `expect(true).toBe(false)` is what this said on the Linux
+    // runners for five runs of five, and it named neither the layer nor the
+    // platform (#1505).
+    const diagnosis = closed === installsCap ? undefined : await diagnoseMaxConnections();
+    expect(closed, diagnosis).toBe(installsCap);
   });
 });
 
@@ -474,6 +503,9 @@ describe('the connection cap is enforced here, not delegated', () => {
  * this passes where those fail, the guard works and the gap is in what the
  * backend hands us; if it fails, the report in the message says which half.
  */
+/** Enough of a request for a server to surface the connection — see below. */
+const REQUEST_BYTES = 'GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n';
+
 describe('the connection cap on a bare node:http server', () => {
   test('holds without the runtime property, and says what it saw if it does not', async () => {
     const { createServer } = await import('node:http');
@@ -487,9 +519,27 @@ describe('the connection cap on a bare node:http server', () => {
     const address = server.address();
     const port = typeof address === 'object' && address !== null ? address.port : 0;
 
+    // The connection has to **speak**.  Measured on bun 1.4.0: an `http.Server`
+    // emits `'connection'` for an accepted socket immediately on Windows and on
+    // node, and on Linux only once its first byte arrives — `getConnections()`
+    // answers 0 until then, so a silent socket is invisible to the server
+    // object rather than merely uncounted.  Dialling and staying quiet asks the
+    // Linux server about a connection it does not have, and this case's own
+    // message says so: `seen=0` (#1505).
+    //
+    // That is also the split #1409 could not explain — the header deadline held
+    // on that runner while the cap did not, on what looked like the same event.
+    // A slow-loris writes a partial header block; these dials wrote nothing.
     const dial = (): Promise<Socket> => new Promise((resolve, reject) => {
-      const socket = connect({ host: '127.0.0.1', port }, () => resolve(socket));
-      socket.once('error', reject);
+      let connected = false;
+      const socket = connect({ host: '127.0.0.1', port }, () => {
+        connected = true;
+        resolve(socket);
+        socket.write(REQUEST_BYTES);
+      });
+      // A refusal arrives as ECONNRESET rather than a clean FIN; it is observed
+      // by `closedWithin` below, so it must not reject the dial.
+      socket.on('error', (error) => { if (!connected) reject(error); });
       sockets.push(socket);
     });
 

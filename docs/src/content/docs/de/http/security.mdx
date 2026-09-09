@@ -240,12 +240,28 @@ nie einen rohen Request-Parameter. Siehe [Route DSL](/de/http/route-dsl/).
   existiert — auf Deno installiert also kein Backend die Header-Deadline oder
   die Verbindungsschranke.
 
-  **Eine gemessene Lücke, offen als #1409:** Auf GitHubs Linux-Runnern wird
-  nicht beobachtet, dass die Verbindungsschranke Ende-zu-Ende hält — die
-  Header-Deadline auf demselben Event dagegen schon. Betrachte
-  `max-connections` als verifiziert auf Bun/Windows und auf Node und andernorts
-  als in Klärung, bis dieses Issue geschlossen ist. Die Header-Deadline ist
-  davon nicht betroffen.
+  **Eine Verbindung, die nichts sagt, ist die verbleibende Lücke — und sie hat
+  eine Plattform-Form.** Gemessen auf bun 1.4.0, mit der Runtime auf beiden
+  Seiten installiert: ein `http.Server` sendet `connection` für einen
+  angenommenen Socket unter Windows und unter Node sofort, unter Linux erst,
+  sobald dessen **erstes Byte** eintrifft — bis dahin antwortet auch
+  `getConnections()` mit `0`, die Verbindung ist für den Prozess also nicht bloß
+  ungezählt, sondern unsichtbar. Auf dieser Paarung greift bei einem
+  schweigenden Client keine der beiden Durchsetzungen: die Eigenschaft wird dort
+  ignoriert, und das Event ist noch nicht gefeuert.
+
+  Damit ist auch geklärt, warum die Header-Deadline auf demselben Runner hielt
+  und die Schranke nicht (#1409): Ein Slow-Loris schreibt einen unvollständigen
+  Header-Block, sein Socket spricht also und das Event feuert für ihn. Ein
+  Cap-Test, der sich verbindet und schweigt, fragt den Linux-Server nach einer
+  Verbindung, die er nicht hat.
+
+  Eine Verbindung, die spricht, wird also überall gleich beschränkt — jeder
+  echte Client —, und eine, die nie spricht, wird auf dieser Paarung von nichts
+  beschränkt, was actor-ts sehen kann. Wenn stille Sockets zu deinem
+  Bedrohungsmodell gehören, kombiniere die Schranke mit einer Grenze unterhalb
+  der Runtime: einem Verbindungslimit des Betriebssystems oder einem
+  Reverse-Proxy (#1505).
 - **WebSocket-Frames** werden durch `maxFrameBytes` gekappt (1 MiB Default).
   Das Framework weist einen zu großen Frame immer ab, bevor er deinen Actor
   erreicht; auf den meisten Laufzeit/Backend-Paaren geht das aufgelöste Limit
