@@ -19,22 +19,27 @@ It is the first document-store backend, and it needs no replica set: see
 
 ## Install
 
-`mongodb` is an optional peer dependency.  **Pin it to version 6:**
+`mongodb` is an optional peer dependency.  Version 6 and version 7 are both
+supported:
 
 ```bash
-bun add mongodb@^6
+bun add mongodb@^7   # or mongodb@^6 — see the note below if you are on Bun 1.3
 ```
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="danger" title="mongodb@7 cannot be imported on Bun">
+<Aside type="caution" title="mongodb@7 needs Bun 1.4 or newer">
   Version 7 bundles a `bson` that calls
-  `v8.startupSnapshot.isBuildingSnapshot()` at module scope.  Bun does not
-  implement that API, so `import 'mongodb'` throws `ERR_NOT_IMPLEMENTED` before
-  any framework code runs — on Bun, the project's primary runtime.  Version 6
-  imports cleanly on Bun, Node and Deno alike, which is why the peer range is
-  `^6`.  If you only ever run on Node, version 7 will work, but nothing here is
-  tested against it.
+  `v8.startupSnapshot.isBuildingSnapshot()` at module scope.  Bun did not
+  implement that API until 1.4, so on an older Bun `import 'mongodb'` throws
+  `ERR_NOT_IMPLEMENTED` before any framework code runs.  Measured: v7 throws
+  exactly that on Bun 1.3.0 and imports cleanly on 1.4.2; v6 imports cleanly
+  on both, and on Node and Deno.
+
+  This project pins Bun 1.4 for its own CI, but `engines` still admits 1.3,
+  which is why the peer range is `^6 || ^7` rather than v7 alone.  **Pin `^6`
+  if you run on Bun 1.3**; otherwise v7 is what the live integration suite
+  exercises.
 </Aside>
 
 The framework lazy-imports the driver only when a MongoDB store is first used,

@@ -15,16 +15,16 @@
     "@nats-io/jetstream": "^3.4.0",
     "@nats-io/kv": "^3.4.0",
     "@nats-io/obj": "^3.4.0",
-    "ioredis": "^5.10.1",
+    "ioredis": "^6.0.0",
     "@grpc/grpc-js": "^1.14.4",
     "@grpc/proto-loader": "^0.8.1",
     "pg": "^8.23.0",
     "mariadb": "^3.5.4",
-    "@libsql/client": "^0.15.15",
+    "@libsql/client": "^0.18.0",
     "mssql": "^12.7.1",
-    "mongodb": "^6.21.0",
+    "mongodb": "^7.6.0",
     "cassandra-driver": "^4.9.0",
-    "imapflow": "^1.7.1",
-    "nodemailer": "^9.0.4"
+    "imapflow": "^2.0.1",
+    "nodemailer": "^10.0.3"
   }
 }
