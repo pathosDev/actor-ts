@@ -262,8 +262,10 @@ const distributedPubSubOptions = DistributedPubSubOptions.create().withGossipInt
 system.extension(DistributedPubSubId).start(cluster, distributedPubSubOptions);
 ```
 
-Niedrigere Intervalle → schnellere Konvergenz nach Subscribe /
-Unsubscribe, mehr Geplapper. 500 ms ist für Chat-artige Anwendungen
+Niedrigere Intervalle → schnellere Anti-Entropie, mehr Geplapper.
+Subscribe, Unsubscribe und ein Member, der `up` wird, senden jeweils
+sofort und warten nicht auf das Intervall; das Intervall repariert einen
+Frame, der verloren ging. 500 ms ist für Chat-artige Anwendungen
 vernünftig.
 
 ## Wenn Subscriber stoppen
@@ -408,11 +410,17 @@ Vier gute Anwendungsfälle:
   ps.mediator.tell(new Publish('topic', message));   // ↑ selber Node — sub bekommt es
   // Aber: ein Publish auf einem ANDEREN Node direkt nach Subscribe verpasst `sub`
   ```
-  Die Subscription muss erst zum Mediator des Publishers
-  gossipen, bevor ein Publish auf diesem Mediator zurück routet.
-  Innerhalb von 1-2 Gossip-Intervallen (1-2 s Default) tritt
-  Konvergenz ein. Für Muss-Nicht-Verpasst-Werden-Nachrichten warte
-  auf `SubscribeAcknowledgment` und füge eine kleine Verzögerung vor dem
+  Die Subscription muss erst den Mediator des Publishers erreichen, bevor
+  ein Publish auf diesem Mediator zurück routet. Zwei Ereignisse schicken
+  sie sofort dorthin — ein lokales `Subscribe` und ein Member, der `up`
+  wird — und der erste Frame eines Peers wird mit demselben Zustand
+  beantwortet, sodass ein gerade beigetretener Node an Subscriber
+  publishen kann, die schon da waren. Das Gossip-Intervall oben ist die
+  Anti-Entropie dahinter, nicht der Normalweg.
+
+  Was bleibt, ist der Round-Trip selbst. Für
+  Muss-Nicht-Verpasst-Werden-Nachrichten warte auf
+  `SubscribeAcknowledgment` und füge eine kleine Verzögerung vor dem
   ersten cross-node Publish ein.
 </Aside>
 

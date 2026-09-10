@@ -2848,6 +2848,47 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A mediator that started after its peers never learned their topics**
+  (#1193). `12-pubsub-fanout` timed out at 15 s on roughly one hosted run in
+  four, always in the same shape: the first burst, published from the node
+  listed first, reached all five subscribers; the second, published from the
+  next one along, stalled on one of them. The report put it down to resource
+  starvation after sixteen broker suites, which is where it was first seen —
+  but the hosted `integration.yml` job runs the controller suite alone on a
+  fresh runner and failed there too.
+
+  A mediator's registry only ever learns from a gossip frame that *arrives*,
+  so a node's claims spread by being sent, and two paths sent them:
+  `eagerGossip` broadcasts on a local `Subscribe`, and `gossipTick` pushes to
+  one random peer per interval as anti-entropy. Neither covers a broadcast
+  whose recipients are not listening yet — and that is every node in the
+  integration suite, each of which joins its cluster in its startup path and
+  only afterwards starts the extension that registers the pub/sub wire hook.
+  A frame `Cluster` cannot route is dropped without a trace, so whichever
+  mediator started first collected everybody's announcement and whichever
+  started last collected none. Its own announcement still went out, which is
+  why the failure was one-directional every time: publishes *to* that node
+  arrived, publishes *from* it reached only its own subscriber. Which node
+  that was came down to a five-container start-up race, so the stalling node
+  differed from run to run and the scenario looked flaky rather than wrong.
+
+  **The membership arm looked like it handled this and did not.** `onMemberUp`
+  incremented a `version` counter that rides on every gossip frame and that no
+  receiver reads — a write-only field, so the arm was a no-op with a body. It
+  now re-broadcasts, which both tells the new member and retries the peers
+  that missed the subscribe-time round. And an arriving frame is now answered,
+  once per peer: a frame that arrives is the one proof a push cannot supply —
+  that the sender is running and routing — so answering it makes the exchange
+  symmetric however two startups interleave. `gossipTick` is unchanged and
+  stays what it always was, the anti-entropy behind both.
+
+  Bound by a cross-node case that publishes from the mediator that started
+  *last* — the node with the empty registry every time, rather than whichever
+  one a container race produced — and by four unit cases, all of them run at a
+  gossip interval longer than the test, so nothing they observe can be owed to
+  the periodic round. Each half was verified by applying the wrong version and
+  watching only its own guard fail.
+
 - **JetStream push mode never worked, and it is the default** (#1526).
   `consumer.mode` defaults to `'push'`, and that path bound a push
   subscription to a durable the actor's own `upsertConsumer` had created

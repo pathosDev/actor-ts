@@ -17,6 +17,7 @@ import {
   DistributedPubSubOptions,
   Publish,
   Subscribe,
+  SubscribeAcknowledgment,
 } from '../../src/cluster/pubsub/index.js';
 import { MultiNodeSpec } from '../../src/testkit/MultiNodeSpec.js';
 import { MultiNodeTransport } from '../../src/testkit/internal/MultiNodeTransport.js';
@@ -28,6 +29,14 @@ const TIGHT_FD = {
   unreachableAfterMs: 200,
   downAfterMs: 400,
 } as const;
+
+/**
+ * A pub/sub gossip interval longer than the case that uses it can run, so
+ * nothing it observes is owed to the periodic anti-entropy round.  The
+ * membership gossip stays fast — it is the mediator, not the cluster, whose
+ * timing is under test.
+ */
+const NO_ANTI_ENTROPY_MS = 600_000;
 
 describe('multi-node PubSub', () => {
   test('publish from one node reaches subscribers on every other node', async () => {
@@ -145,4 +154,90 @@ describe('multi-node PubSub', () => {
       MultiNodeTransport._resetRegistryForTest();
     }
   }, 20_000);
+
+  /**
+   * #1193 — the mediator that starts *last* used to hear from nobody.
+   *
+   * The two cases above start every mediator before any of them subscribes,
+   * which happens to be the one order the old code converged in.  A node
+   * under `tests/integration/` does the opposite: it joins its cluster in its
+   * startup path and only afterwards starts the extension that registers the
+   * pub/sub wire hook.  Each mediator therefore announced itself to peers that
+   * were not yet listening, and a frame `Cluster` cannot route is dropped
+   * without a trace — so the one that started first collected everybody and
+   * the one that started last collected nobody.  A broadcast from the latter
+   * reached only its own subscriber.
+   *
+   * That is the asymmetry `12-pubsub-fanout` reported: its first burst is
+   * published from the node listed first and always arrived, its second from
+   * the next one along and stalled on one subscriber at a time.  The scenario
+   * then waits 15 s, which is fifteen anti-entropy rounds — enough that the
+   * gap usually closed, and did not on roughly one hosted run in four.
+   *
+   * Publishing from the *last* mediator is what makes this an assertion
+   * rather than a sample: that is the node with the empty registry every
+   * time, instead of whichever one a container start-up race produced.
+   */
+  test('a publish from the mediator that started last reaches the earlier ones (#1193)', async () => {
+    const spec = new MultiNodeSpec({
+      roles: ['a', 'b', 'c'],
+      failureDetector: TIGHT_FD,
+      gossipIntervalMs: 80,
+    });
+    try {
+      await spec.start();
+      await Promise.all([
+        spec.awaitMembers('a', 3),
+        spec.awaitMembers('b', 3),
+        spec.awaitMembers('c', 3),
+      ]);
+
+      const pubsubOptions = DistributedPubSubOptions.create()
+        .withGossipIntervalMs(NO_ANTI_ENTROPY_MS);
+      const probeA = new TestProbe(spec.systemFor('a'));
+      const probeB = new TestProbe(spec.systemFor('b'));
+      const probeC = new TestProbe(spec.systemFor('c'));
+
+      // Strictly one at a time: each mediator is subscribed and has said so
+      // before the next one exists.  Awaiting the acknowledgment is what
+      // makes the order an order rather than three calls in a row.
+      const medA = spec.systemFor('a').extension(DistributedPubSubId)
+        .start(spec.clusterFor('a'), pubsubOptions);
+      medA.tell(new Subscribe('orders', probeA, probeA));
+      await probeA.expectMessageType(SubscribeAcknowledgment, 2_000);
+
+      const medB = spec.systemFor('b').extension(DistributedPubSubId)
+        .start(spec.clusterFor('b'), pubsubOptions);
+      medB.tell(new Subscribe('orders', probeB, probeB));
+      await probeB.expectMessageType(SubscribeAcknowledgment, 2_000);
+
+      const medC = spec.systemFor('c').extension(DistributedPubSubId)
+        .start(spec.clusterFor('c'), pubsubOptions);
+      medC.tell(new Subscribe('orders', probeC, probeC));
+      await probeC.expectMessageType(SubscribeAcknowledgment, 2_000);
+
+      // Republish while waiting, for the reason the first case in this file
+      // gives: a publish that lands before the registry has merged is dropped
+      // for good.  It cannot mask the defect — at a 600 s gossip interval the
+      // old code had no path that ever filled C's registry, so no number of
+      // publishes would have arrived.
+      await awaitCondition(
+        () => {
+          medC.tell(new Publish('orders', { sku: 'XYZ-1' }));
+          return probeA.hasMessage() && probeB.hasMessage();
+        },
+        {
+          timeoutMs: 10_000,
+          intervalMs: 50,
+          label: 'a publish from the last-started mediator reached A and B',
+        },
+      );
+
+      await probeA.expectMessage({ sku: 'XYZ-1' }, 1_500);
+      await probeB.expectMessage({ sku: 'XYZ-1' }, 1_500);
+    } finally {
+      await spec.stop();
+      MultiNodeTransport._resetRegistryForTest();
+    }
+  }, 30_000);
 });
