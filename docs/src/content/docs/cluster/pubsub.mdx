@@ -250,8 +250,10 @@ const distributedPubSubOptions = DistributedPubSubOptions.create().withGossipInt
 system.extension(DistributedPubSubId).start(cluster, distributedPubSubOptions);
 ```
 
-Lower intervals → faster convergence after subscribe / unsubscribe,
-more chatter.  500 ms is reasonable for chat-style use cases.
+Lower intervals → faster anti-entropy, more chatter.  Subscribing,
+unsubscribing and a member reaching `up` each broadcast right away and do
+not wait for the interval; what the interval repairs is a frame that was
+dropped.  500 ms is reasonable for chat-style use cases.
 
 ## When subscribers stop
 
@@ -390,11 +392,17 @@ Four good fits:
   ps.mediator.tell(new Publish('topic', message));   // ↑ same node — sub gets it
   // But: a publish on ANOTHER node right after Subscribe might miss `sub`
   ```
-  The subscription has to gossip to the publisher's mediator
-  before a publish on that mediator routes back.  Within 1-2
-  gossip intervals (1-2 s default), convergence happens.  For
-  must-not-miss messages, await `SubscribeAcknowledgment` and add a small
-  delay before the first publish across nodes.
+  The subscription has to reach the publisher's mediator before a publish
+  on that mediator routes back.  Two events send it there immediately — a
+  local `Subscribe`, and a member reaching `up` — and the first frame a
+  peer sends is answered with the same state in return, so a node that has
+  just joined can publish to subscribers that were already there.  The
+  gossip interval above is the anti-entropy behind those, not the ordinary
+  path.
+
+  What is left is the round trip itself.  For must-not-miss messages, await
+  `SubscribeAcknowledgment` and add a small delay before the first publish
+  across nodes.
 </Aside>
 
 ## DistributedPubSub vs the event streams
