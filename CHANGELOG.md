@@ -2780,6 +2780,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The documentation site could not build at all** (#1525). Four pages —
+  `fundamentals/throttling` and `reference/utility-helpers`, each in both
+  languages — carried a `description` whose unquoted value contained a colon
+  followed by a space: `` `{ qps: Infinity }` `` on one pair, `actor-ts/util
+  subpath: mergeOptions, …` on the other. YAML reads that as the start of a
+  nested mapping, so `astro build` died during content sync before rendering a
+  single page. Quoting the four values fixes it, and the text they publish is
+  byte-for-byte unchanged.
+
+  **The interesting half is why it survived.** `docs.yml` is the only workflow
+  that runs `astro build`, and it fires on pushes to `main` — which happen only
+  at release time. `docs-checks.yml` runs on every branch but does an API-drift
+  scan and a frozen install, never a build. Both offending commits landed after
+  v0.17.0, so no published release carries the defect; the next one would have
+  been the first, and it would have failed at the deploy step beside the npm
+  publish rather than anywhere a reviewer looks.
+
+  So the fix comes with the gate that was missing.
+  `tests/unit/docs/FrontmatterParses.test.ts` parses every page's frontmatter
+  with `Bun.YAML.parse` — the same question the build asks, rather than a
+  hand-rolled regex that would be a second and worse YAML implementation — and
+  runs under `bun test`, on every branch, in well under a second. It carries
+  the usual pair of guard-the-guard assertions: that the tree was actually
+  walked, and that the parser still rejects the exact shape that broke the
+  build and still accepts its quoted fix.
+
 - **Three HTTP-backend tests missed bun's undeclared 5 000 ms cap in a full run
   and passed in isolation** (#1504).  Fixed the way the issue asked for — by
   checking whether the work was avoidable before budgeting for it.
