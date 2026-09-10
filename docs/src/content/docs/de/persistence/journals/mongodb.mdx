@@ -19,22 +19,27 @@ Es ist das erste Document-Store-Backend und braucht kein Replica Set: siehe
 
 ## Installation
 
-`mongodb` ist eine optionale Peer-Dependency.  **Pinne sie auf Version 6:**
+`mongodb` ist eine optionale Peer-Dependency.  Version 6 und Version 7 werden
+beide unterstützt:
 
 ```bash
-bun add mongodb@^6
+bun add mongodb@^7   # oder mongodb@^6 — siehe den Hinweis unten, wenn du auf Bun 1.3 bist
 ```
 
 import { Aside } from '@astrojs/starlight/components';
 
-<Aside type="danger" title="mongodb@7 lässt sich auf Bun nicht importieren">
+<Aside type="caution" title="mongodb@7 braucht Bun 1.4 oder neuer">
   Version 7 bringt ein `bson` mit, das auf Modulebene
-  `v8.startupSnapshot.isBuildingSnapshot()` aufruft.  Bun implementiert diese API
-  nicht, `import 'mongodb'` wirft daher `ERR_NOT_IMPLEMENTED`, bevor irgendein
-  Framework-Code läuft — auf Bun, der primären Runtime des Projekts.  Version 6
-  importiert auf Bun, Node und Deno gleichermaßen sauber, deshalb lautet die
-  Peer-Range `^6`.  Wenn du ausschließlich auf Node läufst, funktioniert Version
-  7, aber nichts hier ist dagegen getestet.
+  `v8.startupSnapshot.isBuildingSnapshot()` aufruft.  Bun implementiert diese
+  API erst seit 1.4, auf älteren Bun-Versionen wirft `import 'mongodb'` daher
+  `ERR_NOT_IMPLEMENTED`, bevor irgendein Framework-Code läuft.  Gemessen: v7
+  wirft genau das auf Bun 1.3.0 und importiert auf 1.4.2 sauber; v6 importiert
+  auf beiden sauber, ebenso auf Node und Deno.
+
+  Dieses Projekt pinnt für seine eigene CI Bun 1.4, `engines` lässt aber
+  weiterhin 1.3 zu — deshalb lautet die Peer-Range `^6 || ^7` statt nur v7.
+  **Pinne `^6`, wenn du auf Bun 1.3 läufst**; sonst ist v7 das, was die
+  Live-Integrationssuite ausübt.
 </Aside>
 
 Das Framework importiert den Treiber lazy, erst wenn ein MongoDB-Store zum ersten

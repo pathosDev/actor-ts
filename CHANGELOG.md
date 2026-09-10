@@ -2382,6 +2382,38 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **Five optional peers admit their new major** (#1520). `mongodb`, `ioredis`,
+  `nodemailer`, `imapflow` and `@libsql/client` each shipped a major since they
+  were pinned, and each range is now **widened rather than moved** — `^6 ||
+  ^7`, `^5 || ^6`, `^9 || ^10`, `^1 || ^2`, `^0.15 || ^0.17 || ^0.18`. Nothing
+  a consumer has installed stops resolving.
+
+  What moves is which version the project actually exercises:
+  `tests/integration/brokers/package.json` takes the new major, so the live
+  suites run against it. All four green against real brokers in Docker —
+  redis-streams 3 of 3, email 4 of 4, mongodb 39 of 39, libsql 39 of 39 — which
+  is the whole reason these were held back from the September sweep rather than
+  waved through.
+
+  **Two of the five needed a fact rather than a green run to be trustworthy.**
+
+  `ioredis@6` defaults to **RESP3**, which was the flagged risk:
+  `RedisStreamsActor` parses `xreadgroup` replies in RESP2 array shape. The
+  suite passes, and the reason it passes is that ioredis pairs
+  `protocol: 3` with `replyMapping: "legacy"` by default — its own
+  documentation calls those shapes *"identical across both protocols"*. So no
+  `protocol: 2` pin is needed and none is added; what would break the adapter
+  is `replyMapping: "resp3"`, which nothing here sets.
+
+  `mongodb@7` cannot be imported on the Bun version `engines` still admits.
+  Its bundled `bson` calls `v8.startupSnapshot.isBuildingSnapshot()` at module
+  scope, and Bun implemented that only in 1.4. Measured on both: v7 throws
+  `ERR_NOT_IMPLEMENTED` on Bun 1.3.0 and imports cleanly on 1.4.2, while v6
+  imports cleanly on both. So the caveat that used to read "version 7 cannot be
+  imported on Bun" becomes conditional — "v7 needs Bun 1.4 or newer" — instead
+  of disappearing, because the floor is still 1.3.0 and a consumer sitting on it
+  has to stay on v6. Docs updated in both languages.
+
 - **BREAKING: the NATS adapters moved off the deprecated `nats` package to
   nats.js v3** (#1520). npm marks `nats@2.29.3` deprecated — "moved to
   @nats-io/transport-node" — and v3 split the monolith, so the one optional

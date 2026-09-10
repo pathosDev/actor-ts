@@ -8,12 +8,17 @@ import { lazyImportModule } from '../../util/LazyImport.js';
  *
  * A real `MongoClient` satisfies `MongoClientLike` structurally.
  *
- * **Driver version matters.** The peer range is pinned to `mongodb@^6` on
- * purpose: `mongodb@7`'s bundled `bson` calls
- * `v8.startupSnapshot.isBuildingSnapshot()` at module scope, which Bun does not
- * implement — so importing it throws `ERR_NOT_IMPLEMENTED` on Bun, the
- * project's primary runtime, before any of our code runs.  Version 6 imports
- * cleanly on Bun, Node and Deno alike.
+ * **Driver version matters, and it now depends on the Bun in use.**
+ * `mongodb@7`'s bundled `bson` calls
+ * `v8.startupSnapshot.isBuildingSnapshot()` at module scope.  Bun did not
+ * implement that API until 1.4, so on the version range `engines` still
+ * admits — Bun >= 1.3.0 — importing v7 can throw `ERR_NOT_IMPLEMENTED` before
+ * any of our code runs.  Measured on 2026-09-10: v7 throws exactly that on
+ * Bun 1.3.0 and imports cleanly on 1.4.2, while v6 imports cleanly on both.
+ *
+ * Hence the peer range `^6 || ^7` rather than a bump: v7 is supported and is
+ * what the live suite exercises, but a consumer sitting on the Bun floor has
+ * to stay on v6.  The docs say so on the MongoDB page.
  */
 
 /** A BSON document, keyed by field name. */
