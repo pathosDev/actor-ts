@@ -4,7 +4,7 @@
  * Same test-seam pattern as `JetStreamActor`: subclass the actor and
  * override `createNatsConnection` to inject a pure-JS mock, so the whole
  * command surface — including the compare-and-swap path and the watch
- * pump — is driven without the `nats` peer-dep or a live server.
+ * pump — is driven without the nats.js peer-deps or a live server.
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../src/Actor.js';
@@ -20,6 +20,8 @@ import {
   type KeyValueBucketOptionsLike,
   type KeyValueEntryLike,
   type KeyValueJetStreamClientLike,
+  type KeyValueModuleLike,
+  type JetStreamModuleLike,
   type KeyValueNatsConnectionLike,
   type KeyValueStoreLike,
   type KeyValueWatchLike,
@@ -150,22 +152,19 @@ class MockWatch implements KeyValueWatchLike {
   }
 }
 
+/**
+ * A connection is just a connection in v3: the KV view moved to
+ * `@nats-io/kv`, reached through the JetStream client.  The bucket calls the
+ * tests assert against are therefore recorded by the `Kvm` double below and
+ * kept here for the assertions that already read them.
+ */
 class MockConnection implements KeyValueNatsConnectionLike {
   readonly store = new MockKeyValueStore();
-  readonly bucketCalls: Array<{ bucket: string; options?: KeyValueBucketOptionsLike }> = [];
+  readonly bucketCalls: Array<{
+    method: 'create' | 'open'; bucket: string; options?: KeyValueBucketOptionsLike;
+  }> = [];
   private closedResolve!: (e: Error | undefined) => void;
   private readonly closedPromise = new Promise<Error | undefined>((r) => { this.closedResolve = r; });
-
-  jetstream(): KeyValueJetStreamClientLike {
-    return {
-      views: {
-        kv: async (bucket: string, options?: KeyValueBucketOptionsLike): Promise<KeyValueStoreLike> => {
-          this.bucketCalls.push({ bucket, options });
-          return this.store;
-        },
-      },
-    };
-  }
 
   async drain(): Promise<void> { this.closedResolve(undefined); }
   closed(): Promise<Error | undefined> { return this.closedPromise; }
@@ -175,6 +174,26 @@ class MockKeyValueActor extends JetStreamKeyValueActor {
   readonly mockConnection = new MockConnection();
   protected override async createNatsConnection(): Promise<KeyValueNatsConnectionLike> {
     return this.mockConnection;
+  }
+
+  protected override async jetStreamModule(): Promise<JetStreamModuleLike> {
+    return { jetstream: (): KeyValueJetStreamClientLike => ({}) };
+  }
+
+  protected override async keyValueModule(): Promise<KeyValueModuleLike> {
+    const connection = this.mockConnection;
+    return {
+      Kvm: class {
+        async create(bucket: string, options?: KeyValueBucketOptionsLike): Promise<KeyValueStoreLike> {
+          connection.bucketCalls.push({ method: 'create', bucket, options });
+          return connection.store;
+        }
+        async open(bucket: string): Promise<KeyValueStoreLike> {
+          connection.bucketCalls.push({ method: 'open', bucket });
+          return connection.store;
+        }
+      } as unknown as KeyValueModuleLike['Kvm'],
+    };
   }
   /** Exposes the merged settings so the HOCON-precedence test can read them. */
   get resolvedOptions(): JetStreamKeyValueOptionsType { return this.options; }
@@ -248,14 +267,18 @@ describe('JetStreamKeyValueActor — bucket binding', () => {
     }
   });
 
-  test('create=false binds only — no create-time limits are sent', async () => {
+  test('create=false opens rather than creates — no create-time limits are sent', async () => {
     const sys = newSystem('kv-bind');
     try {
       const options = baseOptions()
         .withHistory(5)
         .withCreate(false);
       const { mock } = await boot(sys, options);
-      expect(mock.mockConnection.bucketCalls[0]?.options).toEqual({ bindOnly: true });
+      // v3 draws the distinction with the method rather than a `bindOnly`
+      // flag: `open` refuses a bucket that is not there, which is what
+      // `create: false` is asking for.
+      expect(mock.mockConnection.bucketCalls[0]?.method).toBe('open');
+      expect(mock.mockConnection.bucketCalls[0]?.options).toBeUndefined();
     } finally {
       await sys.terminate();
     }

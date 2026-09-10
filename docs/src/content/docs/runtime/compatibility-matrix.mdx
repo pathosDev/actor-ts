@@ -88,8 +88,8 @@ For each row:
 | `KafkaActor` (`kafkajs`) | ✓ | ✓ | ⚠ |
 | `MqttActor` (`mqtt`) | ✓ | ✓ | ⚠ |
 | `AmqpActor` (`amqplib`) | ⚠ | ✓ | ⚠ |
-| `NatsActor` (`nats`) | ✓ | ✓ | ⚠ |
-| `JetStreamActor` | ✓ | ✓ | ⚠ |
+| `NatsActor` (`@nats-io/transport-node`) | ✓ | ✓ | ⚠ |
+| `JetStreamActor` (`@nats-io/jetstream`) | ✓ | ✓ | ⚠ |
 | `RedisStreamsActor` (`ioredis`) | ✓ | ✓ | ⚠ |
 | `GrpcServerActor` / `GrpcClientActor` | ✓ | ✓ | ⚠ |
 | `WebsocketClientActor` | ✓ | ✓ | ✓ |
@@ -98,6 +98,13 @@ For each row:
 | `TcpSocketActor` | ✓ | ✓ | ✓ |
 | `TcpServerActor` | ✓ | ✓ | ✓ (mTLS listener: ✗) |
 | `UdpSocketActor` | ✓ | ✓ | ✓ |
+
+The NATS rows are `⚠` on Deno for a reason worth stating, because nats.js v3
+made it concrete: the transport is a separate package now, and the one this
+project declares is `@nats-io/transport-node`. There is a Deno transport,
+published on JSR rather than npm, and nothing here wires it up — so the actors
+reach Deno through its npm compatibility layer, which is untested here rather
+than known broken.
 
 ## HTTP
 

@@ -2,7 +2,8 @@
  * JetStream durable streaming demo (#3).
  *
  *   bun run examples/io/jetstream-orders.ts
- *   # (requires nats peer-dep: `bun add nats`)
+ *   # (requires the nats.js peers:
+ *   #   `bun add @nats-io/transport-node @nats-io/jetstream`)
  *   # (requires a NATS server with JetStream enabled — `nats-server -js`)
  *
  * Pattern:

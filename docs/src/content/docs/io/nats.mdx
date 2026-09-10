@@ -237,11 +237,13 @@ sweet spot for "less than Kafka, more than core NATS."
 ## Peer dependency
 
 ```bash
-npm install nats
-# or: bun add nats
+npm install @nats-io/transport-node
+# or: bun add @nats-io/transport-node
 ```
 
-The `nats` package includes both core NATS and JetStream clients.
+nats.js v3 splits what used to be one `nats` package: the transport carries
+core NATS, and JetStream, key-value and the object store each ship their own.
+Install only what you use — core NATS needs the first line alone.
 
 import { Aside } from '@astrojs/starlight/components';
 

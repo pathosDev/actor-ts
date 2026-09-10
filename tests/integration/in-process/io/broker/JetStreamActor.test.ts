@@ -3,7 +3,7 @@
  * handshake.  Same test-seam pattern as KafkaActor (#2): subclass
  * JetStreamActor and override `createNatsConnection` to inject a
  * pure-JS mock.  Lets us drive the manual-ack pump without involving
- * the real `nats` peer-dep.
+ * the real nats.js peer-deps.
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../../src/Actor.js';
@@ -20,8 +20,10 @@ import {
   type JetStreamManagerLike,
   type JetStreamMessage,
   type JetStreamMessageHandleLike,
-  type JetStreamSubscriptionLike,
+  type JetStreamMessageStreamLike,
+  type JetStreamModuleLike,
   type NatsConnectionLike,
+  type PushConsumerLike,
 } from '../../../../../src/io/broker/JetStreamActor.js';
 import { JetStreamOptions, JetStreamOptionsBuilder, JetStreamOptionsValidator, type JetStreamOptionsType } from '../../../../../src/io/broker/JetStreamOptions.js';
 import { OptionsError } from '../../../../../src/util/OptionsValidator.js';
@@ -76,7 +78,7 @@ class MockHandle implements JetStreamMessageHandleLike {
  * `for await`.  We push handles into it and observe acks via the
  * handle's flags.
  */
-class MockSubscription implements JetStreamSubscriptionLike {
+class MockSubscription implements JetStreamMessageStreamLike {
   private resolveNext: ((m: IteratorResult<JetStreamMessageHandleLike>) => void) | null = null;
   private buffer: JetStreamMessageHandleLike[] = [];
   destroyed = false;
@@ -91,7 +93,7 @@ class MockSubscription implements JetStreamSubscriptionLike {
     }
   }
 
-  async destroy(): Promise<void> {
+  stop(): void {
     this.destroyed = true;
     if (this.resolveNext) {
       const resolveNext = this.resolveNext;
@@ -138,7 +140,13 @@ class MockJetStream implements JetStreamClientLike {
     msgID?: string; expectLastSeq?: number; headers?: Record<string, string>;
   }> = [];
   readonly subscription = new MockSubscription();
-  readonly subscribeCalls: Array<{ subject: string; stream: string; consumer: string }> = [];
+  /**
+   * Which push consumer the actor asked for.  v3 reaches a push consumer
+   * through `consumers.getPushConsumer(stream, durable)` rather than
+   * `subscribe(subject, { stream, consumer })`, so there is no subject here:
+   * the filter now lives on the consumer, which is where the server keeps it.
+   */
+  readonly pushConsumerCalls: Array<{ stream: string; durable: string }> = [];
   readonly pullConsumers = new Map<string, MockPullConsumer>();
 
   async publish(subject: string, payload: Uint8Array, options?: {
@@ -154,17 +162,16 @@ class MockJetStream implements JetStreamClientLike {
     return { seq: this.published.length };
   }
 
-  async subscribe(subject: string, options: { stream: string; consumer: string }): Promise<JetStreamSubscriptionLike> {
-    this.subscribeCalls.push({ subject, stream: options.stream, consumer: options.consumer });
-    return this.subscription;
-  }
-
   readonly consumers = {
     get: async (stream: string, durable: string): Promise<MockPullConsumer> => {
       const key = `${stream}::${durable}`;
       let pc = this.pullConsumers.get(key);
       if (!pc) { pc = new MockPullConsumer(); this.pullConsumers.set(key, pc); }
       return pc;
+    },
+    getPushConsumer: async (stream: string, durable: string): Promise<PushConsumerLike> => {
+      this.pushConsumerCalls.push({ stream, durable });
+      return { consume: async () => this.subscription };
     },
   };
 }
@@ -184,6 +191,7 @@ class MockJsm implements JetStreamManagerLike {
   readonly consumersAdd: Array<{
     stream: string; durable: string; deliver_policy?: string; ack_wait?: number;
     max_ack_pending?: number; opt_start_seq?: number; opt_start_time?: string;
+    filter_subject?: string; deliver_subject?: string;
   }> = [];
   readonly streams = {
     add: async (config: { name: string; subjects: string[]; retention?: string; storage?: string; max_msgs?: number; max_bytes?: number; max_age?: number }) => {
@@ -204,6 +212,7 @@ class MockJsm implements JetStreamManagerLike {
       durable_name: string; ack_policy?: string; ack_wait?: number;
       filter_subject?: string; max_ack_pending?: number;
       deliver_policy?: string; opt_start_seq?: number; opt_start_time?: string;
+      deliver_subject?: string;
     }) => {
       this.consumersAdd.push({
         stream,
@@ -213,28 +222,53 @@ class MockJsm implements JetStreamManagerLike {
         max_ack_pending: config.max_ack_pending,
         opt_start_seq: config.opt_start_seq,
         opt_start_time: config.opt_start_time,
+        filter_subject: config.filter_subject,
+        deliver_subject: config.deliver_subject,
       });
     },
     update: async (_stream: string, _durable: string) => { /* no-op */ },
   };
 }
 
+/**
+ * A connection is just a connection in v3 — the JetStream entry points moved
+ * to `@nats-io/jetstream` as free functions.  The client and manager the
+ * tests assert against therefore hang off this double for convenience, and
+ * reach the actor through {@link MockJetStreamActor.jetStreamModule}.
+ */
 class MockNatsConnection implements NatsConnectionLike {
   readonly js = new MockJetStream();
   readonly jsm = new MockJsm();
   private closedResolve!: (e: Error | undefined) => void;
   private closedPromise = new Promise<Error | undefined>((resolveNext) => { this.closedResolve = resolveNext; });
 
-  jetstream(): JetStreamClientLike { return this.js; }
-  async jetstreamManager(): Promise<JetStreamManagerLike> { return this.jsm; }
   async drain(): Promise<void> { this.closedResolve(undefined); }
   closed(): Promise<Error | undefined> { return this.closedPromise; }
+}
+
+/**
+ * The `@nats-io/jetstream` module, faked.
+ *
+ * It resolves the client and manager **out of the connection it is handed**
+ * rather than out of a captured field, which is what the real free functions
+ * do and what a reconnecting actor needs: each connect mints a fresh
+ * connection, and its client has to be that connection's.
+ */
+function mockJetStreamModule(): JetStreamModuleLike {
+  return {
+    jetstream: (connection): JetStreamClientLike => (connection as MockNatsConnection).js,
+    jetstreamManager: async (connection): Promise<JetStreamManagerLike> => (connection as MockNatsConnection).jsm,
+  };
 }
 
 class MockJetStreamActor extends JetStreamActor {
   readonly mockConnection = new MockNatsConnection();
   protected override async createNatsConnection(): Promise<NatsConnectionLike> {
     return this.mockConnection;
+  }
+
+  protected override async jetStreamModule(): Promise<JetStreamModuleLike> {
+    return mockJetStreamModule();
   }
 
   publicConnectionState(): string { return this.connectionState; }
@@ -398,8 +432,8 @@ describe('JetStreamActor — stream + consumer lifecycle', () => {
       // ackWaitMs translates to nanoseconds in the underlying API.
       expect(mock.mockConnection.jsm.consumersAdd[0]?.ack_wait).toBe(5_000_000_000);
       // Subscription wired with stream + durable name.
-      expect(mock.mockConnection.js.subscribeCalls[0]?.stream).toBe('ORDERS');
-      expect(mock.mockConnection.js.subscribeCalls[0]?.consumer).toBe('order-proc');
+      expect(mock.mockConnection.js.pushConsumerCalls[0]?.stream).toBe('ORDERS');
+      expect(mock.mockConnection.js.pushConsumerCalls[0]?.durable).toBe('order-proc');
     } finally {
       await sys.terminate();
     }
@@ -419,7 +453,7 @@ describe('JetStreamActor — stream + consumer lifecycle', () => {
       expect(mock.mockConnection.jsm.streamsAdd).toEqual([]);
       expect(mock.mockConnection.jsm.consumersAdd).toEqual([]);
       // Subscribe should still have happened.
-      expect(mock.mockConnection.js.subscribeCalls).toHaveLength(1);
+      expect(mock.mockConnection.js.pushConsumerCalls).toHaveLength(1);
     } finally {
       await sys.terminate();
     }
@@ -717,11 +751,14 @@ describe('JetStreamActor — options parsing', () => {
         .withStream({ name: 'BILLING', subjects: ['billing.>'] })
         .withConsumer({ durable: 'billing-proc', filterSubject: 'billing.charges' });
       const { mock } = await bootActor(sys, jetstreamOptions);
-      const sub = mock.mockConnection.js.subscribeCalls[0];
-      expect(sub?.stream).toBe('BILLING');
-      expect(sub?.consumer).toBe('billing-proc');
-      // Filter subject is forwarded as the subscribe subject.
-      expect(sub?.subject).toBe('billing.charges');
+      const push = mock.mockConnection.js.pushConsumerCalls[0];
+      expect(push?.stream).toBe('BILLING');
+      expect(push?.durable).toBe('billing-proc');
+      // The filter is a property of the consumer, not of the subscription.
+      // v2 forwarded it as the subscribe subject; v3 has no subject to
+      // forward it to, so the place it has to appear is the consumer config
+      // — which is where the server kept it either way.
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.filter_subject).toBe('billing.charges');
     } finally {
       await sys.terminate();
     }
@@ -1006,8 +1043,11 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
         .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
         .withConsumer({ durable: 'puller', mode: 'pull' });
       const { mock } = await bootActor(sys, jetstreamOptions);
-      // No subscribe — pull mode is on-demand.
-      expect(mock.mockConnection.js.subscribeCalls).toHaveLength(0);
+      // No push consumer — pull mode is on-demand.
+      expect(mock.mockConnection.js.pushConsumerCalls).toHaveLength(0);
+      // And the consumer it created carries no deliver subject, which is what
+      // makes it a pull consumer server-side.
+      expect(mock.mockConnection.jsm.consumersAdd[0]?.deliver_subject).toBeUndefined();
       // Pull-consumer handle materialised for ORDERS::puller.
       expect(mock.mockConnection.js.pullConsumers.size).toBe(1);
       expect(mock.mockConnection.js.pullConsumers.has('ORDERS::puller')).toBe(true);
@@ -1077,7 +1117,10 @@ describe('JetStreamActor — pull-consumer mode (#62)', () => {
       await sleep(SETTLE_MS);  // "no messages" is the absence; see SETTLE_MS
 
       expect(target.received).toHaveLength(0);
-      expect(pc.fetchCalls).toEqual([{ max_messages: 10, expires: 100 }]);
+      // The 100 ms the command asked for is clamped to the floor nats.js
+      // enforces: below a second the client rejects the fetch outright, so a
+      // short request would be an exception rather than a short wait.
+      expect(pc.fetchCalls).toEqual([{ max_messages: 10, expires: 1_000 }]);
     } finally {
       await sys.terminate();
     }
@@ -1194,6 +1237,10 @@ class ReconnectingMockJetStreamActor extends JetStreamActor {
     const connection = new MockNatsConnection();
     this.connections.push(connection);
     return connection;
+  }
+
+  protected override async jetStreamModule(): Promise<JetStreamModuleLike> {
+    return mockJetStreamModule();
   }
 
   /** Test seam — report a lost connection the way a driver callback does. */

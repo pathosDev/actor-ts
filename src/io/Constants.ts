@@ -62,6 +62,30 @@ export const TCP_RETAINED_INBOUND_BUFFER_BYTES = 64 * 1_024;
 export const REDIS_STREAMS_COMMAND_RETRY_DELAY_MS = 500;
 
 /**
+ * How long a JetStream pull `fetch` waits for its batch to fill before the
+ * iterator completes on its own (#62).
+ *
+ * A fetch is a request for *up to* `batch` messages, so this is the latency
+ * an empty stream costs the caller, not a deadline anything fails against —
+ * an expired fetch that yielded nothing is a normal end condition. Five
+ * seconds keeps an idle consumer's request rate low while staying well inside
+ * the acknowledgment window a caller is likely to have configured.
+ */
+export const JETSTREAM_FETCH_DEFAULT_EXPIRES_MS = 5_000;
+
+/**
+ * The floor nats.js enforces on a pull `fetch`'s `expires`.
+ *
+ * Not a preference: the client rejects anything below it *before* the request
+ * reaches the server ("'expires' must be at least 1000ms"), so a caller
+ * asking for 500 ms would get a thrown fetch rather than a short one. The
+ * actor clamps to this instead, because the caller's intent — do not wait
+ * long — is served by the floor while an exception is not. It moves only if
+ * the driver's own limit moves.
+ */
+export const JETSTREAM_FETCH_MINIMUM_EXPIRES_MS = 1_000;
+
+/**
  * How long an identical Redis-Streams consumer-loop failure stays suppressed
  * before it is logged again, with the count of what it stood in for (#742).
  *

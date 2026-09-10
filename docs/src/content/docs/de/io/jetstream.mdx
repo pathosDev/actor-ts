@@ -280,11 +280,12 @@ jetStream.tell({
 ## Peer-Dependency
 
 ```bash
-npm install nats
-# oder: bun add nats
+npm install @nats-io/transport-node @nats-io/jetstream
+# oder: bun add @nats-io/transport-node @nats-io/jetstream
 ```
 
-Das `nats`-Paket enthält sowohl Core-NATS als auch den JetStream-Client.
+Seit nats.js v3 sind es zwei Pakete: der Transport verbindet,
+`@nats-io/jetstream` trägt Streams, Consumer und deren Acknowledgments.
 
 import { Aside } from '@astrojs/starlight/components';
 

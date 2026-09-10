@@ -2,7 +2,8 @@
 #
 # NATS boots in well under a second — the fastest broker in the
 # suite.  No auth, no clustering — just the standalone server on
-# port 4222.
+# port 4222, with JetStream enabled so the JetStream, key-value and
+# object-store actors have something to run against.
 #
 # Run locally:
 #   bun run test:integration:broker nats
@@ -23,7 +24,12 @@ services:
     # `waitForPort` (lib/WaitForPort.ts) polls the client port
     # until it accepts a TCP connection — same readiness shape,
     # just from the OUTSIDE.
-    command: ["-p", "4222"]
+    # `-js` enables JetStream, and it is not optional: the JetStream, KV and
+    # object-store actors all need it, and without it this suite covered core
+    # NATS only — which is how a broken push-consumer path stayed invisible
+    # (#1526).  `-sd` puts the stream store on the container filesystem, which
+    # is thrown away with the container between runs.
+    command: ["-p", "4222", "-js", "-sd", "/tmp/jetstream"]
     networks:
       natsnet: {}
 

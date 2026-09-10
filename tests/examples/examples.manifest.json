@@ -101,7 +101,7 @@
     },
     {
       "file": "examples/io/jetstream-orders.ts",
-      "skip": "Needs the `nats` optional peer and a running NATS JetStream server (tests/integration/brokers/nats brings one up under Docker)."
+      "skip": "Needs the `@nats-io/transport-node` and `@nats-io/jetstream` optional peers and a running NATS JetStream server (tests/integration/brokers/nats brings one up under Docker)."
     },
     {
       "file": "examples/io/kafka-exactly-once.ts",

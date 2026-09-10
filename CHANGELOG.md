@@ -2382,6 +2382,42 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING: the NATS adapters moved off the deprecated `nats` package to
+  nats.js v3** (#1520). npm marks `nats@2.29.3` deprecated — "moved to
+  @nats-io/transport-node" — and v3 split the monolith, so the one optional
+  peer becomes four. Which ones you need depends on which actor you use:
+
+  ```sh
+  bun remove nats
+  bun add @nats-io/transport-node                  # NatsActor
+  bun add @nats-io/jetstream                       # + JetStreamActor
+  bun add @nats-io/kv @nats-io/obj                 # + the KV / object-store actors
+  ```
+
+  No configuration changes and no message shapes move. `mode: 'push' | 'pull'`
+  **stays**, which is worth saying because the plan for this change assumed
+  otherwise: v3 removed `JetStreamClient.subscribe`, but not push consumers —
+  they are reached through `consumers.getPushConsumer(...).consume()` now, and
+  the iteration is the same async iterable the pump already walked.
+
+  Three exported test-seam types changed with the driver.
+  `NatsConnectionLike` loses `jetstream()` and `jetstreamManager()`, because v3
+  made them free functions taking the connection; `JetStreamSubscriptionLike`
+  becomes `JetStreamMessageStreamLike` (stopped rather than destroyed) and
+  `PushConsumerLike` joins it. A test double that implements these needs the
+  new shape, and the four adapters grew module seams — `jetStreamModule()`,
+  `keyValueModule()`, `objectStoreModule()` — so a fake connection alone no
+  longer stands an actor up.
+
+  `fetch`'s `expiresMs` is now clamped to a second. nats.js rejects anything
+  below that client-side before the request leaves, so a shorter request used
+  to be an exception rather than a shorter wait.
+
+  Verified against a live `nats-server -js`: eight scenarios including a
+  driver-shape probe that asserts the hand-written stubs against the real
+  modules — the check that did not exist, and whose absence is what let this
+  driver's surface drift unnoticed in the first place.
+
 - **The coverage run is parallel again, and CI's slowest gate goes from about
   six minutes to forty seconds** (#1521). `bun test --parallel` was banned from
   that one step by #1332, for a good reason that has now expired: on bun 1.4.0
@@ -2779,6 +2815,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **JetStream push mode never worked, and it is the default** (#1526).
+  `consumer.mode` defaults to `'push'`, and that path bound a push
+  subscription to a durable the actor's own `upsertConsumer` had created
+  **without a `deliver_subject`** — which is what makes a consumer a push
+  consumer server-side. Lacking it, the server creates a *pull* consumer and
+  the push subscribe throws inside the driver on connect; the actor then
+  treats it as a failed connection and retries forever. Measured against a
+  real `nats-server -js`, reproducing exactly what the actor builds and calls.
+
+  **Why nothing caught it is the more useful half.** The live NATS suite
+  started its server with `command: ["-p", "4222"]` — no `-js` — so JetStream
+  was not enabled and no JetStream, key-value or object-store scenario had
+  ever existed. The unit suites were green because they assert against
+  hand-written structural stubs, and a stub is satisfied by whatever fake
+  matches it: the stub said `subscribe(subject, { stream, consumer })` existed
+  and the fake obliged. Nothing anywhere asked the driver.
+
+  Fixed by generating the deliver subject (`_deliver.<stream>.<durable>`,
+  outside the stream's own subjects or the server refuses it as a cycle), and
+  by giving the suite the coverage it was assumed to have: `-js` on the
+  server, and five scenarios where there were none — a driver-shape probe,
+  push, pull, key-value and object store. That the push scenario actually
+  catches this was verified by re-introducing the defect and watching exactly
+  that scenario fail.
 
 - **The documentation site could not build at all** (#1525). Four pages —
   `fundamentals/throttling` and `reference/utility-helpers`, each in both

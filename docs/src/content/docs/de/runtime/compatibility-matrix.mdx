@@ -89,8 +89,8 @@ Für jede Zeile:
 | `KafkaActor` (`kafkajs`) | ✓ | ✓ | ⚠ |
 | `MqttActor` (`mqtt`) | ✓ | ✓ | ⚠ |
 | `AmqpActor` (`amqplib`) | ⚠ | ✓ | ⚠ |
-| `NatsActor` (`nats`) | ✓ | ✓ | ⚠ |
-| `JetStreamActor` | ✓ | ✓ | ⚠ |
+| `NatsActor` (`@nats-io/transport-node`) | ✓ | ✓ | ⚠ |
+| `JetStreamActor` (`@nats-io/jetstream`) | ✓ | ✓ | ⚠ |
 | `RedisStreamsActor` (`ioredis`) | ✓ | ✓ | ⚠ |
 | `GrpcServerActor` / `GrpcClientActor` | ✓ | ✓ | ⚠ |
 | `WebsocketClientActor` | ✓ | ✓ | ✓ |
@@ -99,6 +99,13 @@ Für jede Zeile:
 | `TcpSocketActor` | ✓ | ✓ | ✓ |
 | `TcpServerActor` | ✓ | ✓ | ✓ (mTLS-Listener: ✗) |
 | `UdpSocketActor` | ✓ | ✓ | ✓ |
+
+Die NATS-Zeilen stehen auf Deno aus einem Grund auf `⚠`, den nats.js v3
+konkret gemacht hat: der Transport ist jetzt ein eigenes Paket, und das hier
+deklarierte heißt `@nats-io/transport-node`. Es gibt einen Deno-Transport, auf
+JSR statt npm veröffentlicht, und nichts hier bindet ihn ein — die Actors
+erreichen Deno also über dessen npm-Kompatibilitätsschicht, was hier ungetestet
+ist, nicht bekanntermaßen kaputt.
 
 ## HTTP
 

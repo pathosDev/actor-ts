@@ -210,7 +210,7 @@ class RecordingMqttActor extends MqttActor {
 
 /* ------------------------------- NATS ----------------------------------- */
 
-/** Options the `nats` module was handed, with only the fields asserted here. */
+/** Options the transport module was handed, with only the fields asserted here. */
 type RecordedNatsOptions = { servers: string[]; tls?: BrokerDriverTlsOptions };
 
 class FakeNatsConnection implements NatsConnectionLike {

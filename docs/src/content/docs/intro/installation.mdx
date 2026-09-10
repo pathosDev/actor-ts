@@ -115,7 +115,7 @@ bun add hono @hono/node-server    # @hono/node-server is Node-only
 | `kafkajs` | `KafkaActor` — producer + consumer. |
 | `mqtt` | `MqttActor`. |
 | `amqplib` | `AmqpActor` — RabbitMQ + AMQP-compatible brokers. |
-| `nats` | `NatsActor` — including JetStream subjects. |
+| `@nats-io/transport-node` | `NatsActor`. Add `@nats-io/jetstream` for `JetStreamActor`, plus `@nats-io/kv` or `@nats-io/obj` for the key-value and object-store actors — nats.js v3 ships each separately. |
 | `@grpc/grpc-js` + `@grpc/proto-loader` | `GrpcClientActor` + `GrpcServerActor`. |
 | `ws` | Server-side WebSocket upgrades on the Express backend.  (`WebsocketClientActor` uses the runtime's native `WebSocket` — no peer dep.) |
 | `@fastify/websocket` | `websocket()` routes on the Fastify backend. |
