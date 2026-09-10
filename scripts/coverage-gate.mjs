@@ -115,6 +115,13 @@ const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
  *   Σ LH / Σ LF over the 636 records under `src/` ......... 93.81 %
  *   hosted CI, README badge bot, 2026-08-22 (`d219e970`) ... 93 %
  *
+ * **Re-measured 2026-09-10 on the bun 1.4.2 pin (#1519): 94.61 % aggregate,
+ * 13 943 pass across 643 files**, with `src/cluster/` at 97.79 % (9805/10027)
+ * and `src/persistence/` at 96.20 % (10978/11412).  Every figure is above its
+ * 2026-09-07 reading, so the toolchain bump moved the headroom up rather than
+ * down, and all three floors stay where they are — the ratchet only goes up,
+ * and a floor is raised on a hosted number rather than a local one.
+ *
  * Three properties are what make 90 safe to enforce rather than merely true
  * today.  The gap that forced `83b0a4af` down from 89 to 80 — hosted CI
  * measuring 86 % against a higher local figure — has closed: hosted reads 93

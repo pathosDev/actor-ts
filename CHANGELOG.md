@@ -2382,6 +2382,77 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The Bun toolchain is pinned to 1.4.2** (#1519), from 1.4.0 (#1328). Two
+  patches shipped since that pin — 1.4.1 with 202 fixes, 1.4.2 with roughly
+  350 upstream WebKit commits — and #1344 had named the next patch as the
+  moment to move. The version lives in `.bun-version`, which all thirteen
+  workflows read through `bun-version-file`, so the CI half is one line;
+  `@types/bun` moves to `^1.4.2` alongside it, which is where 1.4.2 fixes
+  `process.off` against the `@types/node` 24 this repository pins.
+
+  **The supported floor is unchanged** — `engines` still declares Bun
+  >= 1.3.0 and `multi-runtime.yml`'s `bun-floor` leg still tests it. The
+  nineteen integration images keep `oven/bun:1.4-debian`, which tracks 1.4.x
+  by the policy in `tests/integration/Dockerfile.node`'s header and has been
+  serving 1.4.2 since it was published; the `FROM oven/bun:1.4.0` sample in
+  `runtime/overview.mdx` (EN + DE) follows the pin, because a page telling
+  the reader to use an explicit tag should show the one this repository uses.
+
+  What 1.4.1 and 1.4.2 change **here**, checked against the tree rather than
+  read off the release notes: `AsyncLocalStorage` is about twice as fast with
+  no per-await allocation, which is `LogContext.runFresh` once per mailbox
+  turn; the `node:net` and `node:http` fixes (a paused socket that never
+  emitted `'end'`, `net.createServer(cb)` registration, `server.close()`
+  hanging, the `listen()` callback on an EADDRINUSE retry) land on exactly the
+  three HTTP tests failing on Linux today; `bun test --isolate` stopped
+  leaking between files and `--parallel` stopped under-reporting coverage
+  across workers. Three widely-quoted improvements do **not** apply: the 9.2x
+  `Buffer.read*`/`write*` JIT inlining reaches no codec here (they are
+  `DataView` and hand-rolled byte math), the `'online'`-before-first-message
+  fix reaches no worker (`WorkerCluster` runs its own three-message
+  handshake), and the sub-4-second `fetch` timeout regression reached no call
+  site (the shortest deadline in `src/` is ten seconds).
+
+  Validated on 1.4.2 before pinning: `typecheck`, `typecheck:dev`,
+  `typecheck:bench`, `typecheck:compare`; the full suite, 13 943 passing
+  across 643 files with nothing quarantined; the coverage gate at **94.61 %**
+  aggregate with `src/cluster/` 97.79 % and `src/persistence/` 96.20 %, all
+  three floors unchanged; smoke on Bun, Node 26.7 and Deno 2.6.8; 69 runnable
+  examples; `bench:smoke`; `lint:package`, `lint:audit` (clean, unchanged),
+  `check:ui`, `test:ui` and the DevTools UI's own `bun test` half.
+
+  **The workaround catalogue was re-probed row by row (#1329) and only one
+  answer moved.** The quantum-early `setTimeout` of #477 stays fixed — 0 of
+  900 samples early at 20, 30 and 50 ms, identical on both versions, so
+  `TimerTolerance`'s lateness-only slack stands. `Bun.zstdDecompressSync`
+  still takes no options (arity 1), so the `node:zlib`-first ordering in
+  `Compression.ts` remains the security control it was. The `ws` shim still
+  ignores `maxPayload`: `BackendTransportFrameCap.test.ts` is nine of nine
+  green, which is the canary reporting the defect is still there rather than
+  the absence of one. `Bun.serve` still refuses an oversize frame early
+  (45 ms for 8 MiB against a 64 KiB cap) and still closes 1006 rather than a
+  policy 1009. `performance.eventLoopUtilization` is still absent, so the
+  stock-metrics capability row stays truthful with its label extended.
+
+  The one that moved is `node:inspector`. #1339 had asked for more than a
+  constructor that stops throwing, and now there is an answer: a probe that
+  connects, enables `Profiler`, busy-loops for 250 ms and stops **comes back
+  with a populated profile** (non-empty nodes and samples). CPU profiling in
+  DevTools is genuinely reachable on Bun; the docs row and the `ProfilerTap`
+  comment are #1339's to update.
+
+  **Throughput: no measurable difference, and the measurement is worth more
+  than the number.** Eight blocks of a hundred interleaved rounds each, both
+  binaries side by side on one commit, gave deltas of at most 2.6 % against a
+  block-to-block spread of 8 to 13 % — no scenario separates. The first four
+  blocks, run `1.4.0, 1.4.2, 1.4.0, 1.4.2`, had looked like a clean 2–6 %
+  regression with every 1.4.0 block above every 1.4.2 block; running the
+  sequence the other way round dissolved it, so the alternation had been
+  tracking the slot rather than the version. That is a Windows desktop and not
+  the machine of record, so nothing is published from it and #1331's Linux
+  re-measure still decides; what it does establish is that 1.4.2 brought
+  neither a further large regression nor a recovery of the #1344 figures.
+
 - **Every two-sided elapsed-time assertion is gone** (#1338). Twelve tests
   asserted that something took *less* than N milliseconds — which is an
   assertion about the machine, not about the code, and the family the flake
