@@ -2382,6 +2382,37 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The coverage run is parallel again, and CI's slowest gate goes from about
+  six minutes to forty seconds** (#1521). `bun test --parallel` was banned from
+  that one step by #1332, for a good reason that has now expired: on bun 1.4.0
+  the flag changed what was *measured* rather than what was tested. Execution
+  was identical — 721 of 723 files reported the same hit count, the numerator
+  byte-for-byte the same 55 293 lines — but 407 files reported a **larger**
+  instrumented-line denominator and none a smaller one, so the aggregate read
+  79.16 % against 93.82 % on the same code and walked straight through the 90 %
+  floor.
+
+  Bun 1.4.1 lists a fix for under-reported coverage across workers, and on the
+  1.4.2 pin (#1519) the defect is measured gone rather than assumed gone. Two
+  runs at one seed, differing only in the flag: over **728 lcov records, zero
+  report a larger denominator**, twenty report one smaller by a line or three
+  (30 lines out of 59 593, 0.05 %), and the numerator is identical at 56 041.
+  Bun's own aggregate agrees to 0.05 points — 94.66 % parallel against 94.61 %
+  serial — and the wall time drops **352 s → 41 s**.
+
+  The flag goes *after* `--coverage`, because `tests/unit/ci/CoverageGate.test.ts`
+  locates the invocation with `startsWith('bun test --coverage')` and would
+  otherwise stop finding it. `tests/unit/ci/WorkflowHygiene.test.ts` keeps its
+  assertion but **inverts** it: the coverage run must now carry the flag, so a
+  silent revert is a red check rather than eight minutes nobody notices. That
+  the inverted guard actually discriminates was verified the only way it can be
+  — by removing the flag and watching it fail.
+
+  What has not changed is the pairing the old note was really about: the floor
+  and the denominator move together. If a future Bun re-inflates the
+  denominator the coverage gate goes red, and the answer then is to drop the
+  flag again, never to lower the floor.
+
 - **The Bun toolchain is pinned to 1.4.2** (#1519), from 1.4.0 (#1328). Two
   patches shipped since that pin — 1.4.1 with 202 fixes, 1.4.2 with roughly
   350 upstream WebKit commits — and #1344 had named the next patch as the
