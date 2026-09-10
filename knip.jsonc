@@ -43,11 +43,19 @@
 
   // Only the packages knip actually reports. Every one is reached through a
   // lazy `import()` (or is the type package for one), which static analysis
-  // cannot attribute to the manifest entry — `@hono/node-server` and
-  // `@hono/node-ws` from `HonoBackend.ts`, `better-sqlite3` from
-  // `SqliteJournal.ts` / `SqliteClient.ts`, `express` from `ExpressBackend.ts`.
-  // The rest of the optional peers resolve fine and are deliberately not listed:
-  // an ignore entry that is not needed hides a finding later.
+  // cannot attribute to the manifest entry — `better-sqlite3` from
+  // `SqliteJournal.ts` / `SqliteClient.ts`, `@fastify/static` from the static
+  // file handler. The rest of the optional peers resolve fine and are
+  // deliberately not listed: an ignore entry that is not needed hides a
+  // finding later.
+  //
+  // That rule is why this list is five entries and not ten. `@hono/node-server`,
+  // `@hono/node-ws`, `hono`, `express` and `@types/express` were listed until
+  // the knip 6.29 -> 6.35 bump, which started attributing all five to their lazy
+  // call sites; knip then reported the entries themselves as unnecessary, and a
+  // hint that names a dead exemption is exactly the finding this comment says an
+  // unneeded entry would hide. Removed, and `lint:knip` is silent rather than
+  // merely green.
   //
   // `ws` and `@types/ws` are the exception that had to be measured rather than
   // reasoned about (#676). The two peers added with them — `fzstd` and `memjs`
@@ -65,14 +73,9 @@
   // on all three runtimes.
   "ignoreDependencies": [
     "@fastify/static",
-    "@hono/node-server",
-    "@hono/node-ws",
     "@types/better-sqlite3",
-    "@types/express",
     "@types/ws",
     "better-sqlite3",
-    "express",
-    "hono",
     "ws"
   ],
 
