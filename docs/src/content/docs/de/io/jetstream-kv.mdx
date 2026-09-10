@@ -263,13 +263,15 @@ Dispatch-Pfad außerhalb der Verbindungs-Zustandsmaschine — eine größere
 ## Peer-Dependency
 
 ```bash
-npm install nats
-# or: bun add nats
+npm install @nats-io/transport-node @nats-io/jetstream @nats-io/kv @nats-io/obj
+# oder: bun add @nats-io/transport-node @nats-io/jetstream @nats-io/kv @nats-io/obj
 ```
 
-Dasselbe `nats`-Paket, das [NATS](/de/io/nats/) und
-[JetStream](/de/io/jetstream/) trägt — die KV- und
-Object-Store-Views kommen mit.
+Vier Pakete, und genau das ist die bemerkenswerte Änderung: Key-Value- und
+Object-Store-View lagen früher im selben Paket wie [NATS](/de/io/nats/) und
+[JetStream](/de/io/jetstream/), nats.js v3 hat jedem ein eigenes gegeben.
+Lass `@nats-io/obj` weg, wenn du nur Key-Value brauchst, oder `@nats-io/kv`,
+wenn du nur den Object-Store brauchst.
 
 <Aside type="caution" title="Eine fehlgeschlagene Operation trennt die Verbindung nicht">
   Ein Fehler pro Key oder pro Objekt (ein Compare-and-Swap-Konflikt, ein

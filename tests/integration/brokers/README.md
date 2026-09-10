@@ -107,6 +107,14 @@ that a consumer who skipped the optional peer cannot resolve.  Drift in a
 stub is caught here, against the live broker, rather than at compile time
 in a tree that could not compile it (#676).
 
+That last sentence was aspirational for NATS until #1526.  This suite ran
+its server without `-js`, so JetStream, key-value and the object store had
+no live coverage at all, and the nats.js v2-to-v3 split would have gone
+unnoticed by every gate.  `nats/scenarios/00-driver-shape.ts` is the shape
+the sentence promises: it imports the real modules and asserts the surface
+the stubs declare, and it is the cheapest such probe to copy into another
+suite (`cassandra/scenarios/01-driver-shape.ts` is the other one).
+
 `cassandra-driver` is the case where "here" is not a preference but the
 only available home, and it is worth knowing before someone tries to
 "simplify" it back to a root devDependency.  Its 4.9.0 release hard-pins

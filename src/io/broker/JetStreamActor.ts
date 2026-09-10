@@ -4,6 +4,7 @@ import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { Lazy } from '../../util/Lazy.js';
 import { lazyImportModule } from '../../util/LazyImport.js';
+import { JETSTREAM_FETCH_DEFAULT_EXPIRES_MS, JETSTREAM_FETCH_MINIMUM_EXPIRES_MS } from '../Constants.js';
 import { BrokerActor, type OutboundEnvelope } from './BrokerActor.js';
 import { toBrokerDriverTls } from './BrokerTls.js';
 import type { BrokerDriverTlsOptions } from './BrokerTls.js';
@@ -12,7 +13,7 @@ import type { JetStreamOptions, JetStreamOptionsType } from './JetStreamOptions.
 
 /**
  * JetStream durable-streaming actor (#3).  Sister to {@link NatsActor}
- * — same `nats` peer-dep, same broker scaffold, but the consumer
+ * — same NATS connection, same broker scaffold, but the consumer
  * binds a **push consumer** to a durable JetStream subscription so
  * recovery, replay, and explicit acks all work.  Where NatsActor is
  * fire-and-forget pub/sub, JetStreamActor is durable streaming with
@@ -205,7 +206,7 @@ export class JetStreamActor extends BrokerActor<
 > {
   private nc: NatsConnectionLike | null = null;
   private js: JetStreamClientLike | null = null;
-  private subscription: JetStreamSubscriptionLike | null = null;
+  private subscription: JetStreamMessageStreamLike | null = null;
   /** Pull-consumer handle (#62).  Non-null when consumer.mode === 'pull'. */
   private pullConsumer: PullConsumerLike | null = null;
   /**
@@ -255,12 +256,23 @@ export class JetStreamActor extends BrokerActor<
     return `nats://${typeof servers === 'string' ? servers : ''}`;
   }
 
-  /** @internal Test seam — override to inject a fake `nats` module. */
+  /** @internal Test seam — override to inject a fake transport module. */
   protected natsModule(): Promise<NatsModuleLike> { return natsLazy.get(); }
 
   /**
+   * @internal Test seam — override to inject a fake JetStream module.
+   *
+   * Separate from {@link natsModule} because nats.js v3 split the package:
+   * `connect()` lives in the transport, `jetstream()` and
+   * `jetstreamManager()` are free functions in `@nats-io/jetstream` that take
+   * the connection.  A fake connection therefore no longer carries the
+   * JetStream entry points, and a test that wants them has to say so here.
+   */
+  protected jetStreamModule(): Promise<JetStreamModuleLike> { return jetStreamLazy.get(); }
+
+  /**
    * Build a `NatsConnectionLike`.  Override in a test subclass to
-   * inject a mock connection (the `nats` peer-dep is heavy and not
+   * inject a mock connection (the transport peer-dep is heavy and not
    * necessary for unit tests).
    *
    * Overriding this replaces the connect options, TLS included — override
@@ -283,35 +295,44 @@ export class JetStreamActor extends BrokerActor<
 
   protected async connectImplementation(): Promise<void> {
     this.nc = await this.createNatsConnection();
-    this.js = this.nc.jetstream();
+    const jetStream = await this.jetStreamModule();
+    this.js = jetStream.jetstream(this.nc);
 
     // Stream lifecycle: create-or-update if asked.
     if (this.options.stream && (this.options.stream.create ?? true)) {
-      const jsm = await this.nc.jetstreamManager();
+      const jsm = await jetStream.jetstreamManager(this.nc);
       await upsertStream(jsm, this.options.stream);
     }
 
     // Consumer + subscription (push) or pull handle.
     if (this.options.consumer) {
+      const mode = this.options.consumer.mode ?? 'push';
       if (this.options.consumer.create ?? true) {
         if (!this.options.stream?.name) {
           throw new Error('JetStreamActor: consumer.create requires stream.name');
         }
-        const jsm = await this.nc.jetstreamManager();
-        await upsertConsumer(jsm, this.options.stream.name, this.options.consumer);
+        const jsm = await jetStream.jetstreamManager(this.nc);
+        await upsertConsumer(
+          jsm,
+          this.options.stream.name,
+          this.options.consumer,
+          mode === 'push' ? pushDeliverSubject(this.options.stream.name, this.options.consumer.durable) : undefined,
+        );
       }
       if (!this.options.stream?.name) {
         throw new Error('JetStreamActor: consumer requires stream.name');
       }
-      const mode = this.options.consumer.mode ?? 'push';
       if (mode === 'push') {
-        this.subscription = await this.js.subscribe(
-          this.options.consumer.filterSubject ?? `${this.options.stream.name}.>`,
-          {
-            stream: this.options.stream.name,
-            consumer: this.options.consumer.durable,
-          },
+        // A push consumer is one the *server* delivers to, which it only
+        // does when the consumer carries a `deliver_subject`.  v3 enforces
+        // that split at the accessor: `consumers.get` refuses a push
+        // consumer and `getPushConsumer` refuses a pull one, so the mode
+        // chosen here and the config written above have to agree.
+        const pushConsumer = await this.js.consumers.getPushConsumer(
+          this.options.stream.name,
+          this.options.consumer.durable,
         );
+        this.subscription = await pushConsumer.consume();
         void this.runPump();
       } else {
         // Pull mode (#62) — grab the consumer handle but DON'T start
@@ -354,7 +375,7 @@ export class JetStreamActor extends BrokerActor<
       }
     }
     if (this.subscription) {
-      try { await this.subscription.destroy(); } catch { /* */ }
+      try { this.subscription.stop(); } catch { /* */ }
       this.subscription = null;
     }
     // Pull consumer doesn't own a long-lived subscription — drop the
@@ -439,7 +460,12 @@ export class JetStreamActor extends BrokerActor<
     try {
       messages = await this.pullConsumer.fetch({
         max_messages: batch,
-        expires: expiresMs ?? 5_000,
+        // nats.js rejects anything under a second client-side, before the
+        // request reaches the server ("'expires' must be at least 1000ms"),
+        // so a caller asking for less would get a thrown fetch rather than a
+        // short one.  Clamp instead: a fetch is a batching hint, and the
+        // caller's intent — "do not wait long" — is served by the floor.
+        expires: Math.max(expiresMs ?? JETSTREAM_FETCH_DEFAULT_EXPIRES_MS, JETSTREAM_FETCH_MINIMUM_EXPIRES_MS),
       });
     } catch (err) {
       this.log.warn(`JetStreamActor: fetch failed: ${(err as Error).message}`);
@@ -703,6 +729,27 @@ type PendingAcknowledgment = {
   readonly fail: (err: Error) => void;
 };
 
+/**
+ * JetStream API error codes, as the server reports them.
+ *
+ * Driver and protocol vocabulary rather than tuned values, so they stay
+ * beside the code that interprets them — the same call
+ * `RedisStreamsActor` makes for its error table. Both mean "the thing you
+ * asked me to create is already there", which is the one rejection these
+ * upserts treat as benign.
+ */
+const STREAM_NAME_IN_USE_CODE = 10058;
+const CONSUMER_ALREADY_EXISTS_CODE = 10148;
+
+/**
+ * Prefix for the subject a push consumer's deliveries are published to.
+ *
+ * Protocol vocabulary: it exists to stay clear of the application subject
+ * space a stream is configured with, because a deliver subject the stream
+ * itself captures is refused by the server as a cycle.
+ */
+const PUSH_DELIVER_SUBJECT_PREFIX = '_deliver';
+
 async function upsertStream(
   jsm: JetStreamManagerLike, config: JetStreamStreamConfig,
 ): Promise<void> {
@@ -717,10 +764,10 @@ async function upsertStream(
       max_age: config.maxAge,
     });
   } catch (e) {
-    // If the stream exists, update it; the nats client raises a
-    // 10058 ("stream name in use") error code we treat as benign.
-    const message = e instanceof Error ? e.message : String(e);
-    if (!/in use|already exists|10058/i.test(message)) throw e;
+    // If the stream exists, update it.  v3 raises a typed `JetStreamApiError`
+    // carrying the JetStream API code, so the code is the check and the
+    // message match is the fallback for anything that reports only prose.
+    if (!isJetStreamApiCode(e, STREAM_NAME_IN_USE_CODE, /in use|already exists/i)) throw e;
     await jsm.streams.update(config.name, {
       subjects: [...config.subjects],
       retention: config.retention,
@@ -732,8 +779,21 @@ async function upsertStream(
   }
 }
 
+/**
+ * The subject the server publishes a push consumer's deliveries to.
+ *
+ * It must sit **outside** the stream's own subjects, or the server refuses
+ * the consumer with "deliver subject forms a cycle" — the stream would
+ * capture its own deliveries.  The `_deliver.` prefix keeps it clear of the
+ * application subject space a stream is configured with.
+ */
+function pushDeliverSubject(streamName: string, durable: string): string {
+  return `${PUSH_DELIVER_SUBJECT_PREFIX}.${streamName}.${durable}`;
+}
+
 async function upsertConsumer(
   jsm: JetStreamManagerLike, streamName: string, config: JetStreamConsumerConfig,
+  deliverSubject?: string,
 ): Promise<void> {
   const ackWaitNs = (config.ackWaitMs ?? 30_000) * 1_000_000;
   const consumerConfig: ConsumerAddConfig = {
@@ -743,6 +803,10 @@ async function upsertConsumer(
     filter_subject: config.filterSubject,
     max_ack_pending: config.maxAcknowledgmentPending,
     deliver_policy: 'all',
+    // Present only in push mode.  Its presence is what makes the consumer a
+    // push consumer server-side; omitting it yields a pull consumer, which
+    // is what the pull path then asks for.
+    deliver_subject: deliverSubject,
   };
   if (config.deliverPolicy === 'last') consumerConfig.deliver_policy = 'last';
   else if (config.deliverPolicy === 'new') consumerConfig.deliver_policy = 'new';
@@ -759,10 +823,25 @@ async function upsertConsumer(
   try {
     await jsm.consumers.add(streamName, consumerConfig);
   } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    if (!/already exists|in use|10148/i.test(message)) throw e;
+    if (!isJetStreamApiCode(e, CONSUMER_ALREADY_EXISTS_CODE, /already exists|in use/i)) throw e;
     await jsm.consumers.update(streamName, config.durable, consumerConfig);
   }
+}
+
+/**
+ * Does this rejection mean "the thing is already there"?
+ *
+ * v3 throws `JetStreamApiError` with the JetStream API code on `.code`, which
+ * is the precise signal.  The message pattern stays as a fallback rather than
+ * as the primary check: it is what an older driver, a proxy, or a wrapped
+ * error reports, and the cost of keeping it is one regex on a path that has
+ * already failed.
+ */
+function isJetStreamApiCode(cause: unknown, code: number, fallback: RegExp): boolean {
+  if (typeof (cause as { code?: unknown })?.code === 'number') {
+    return (cause as { code: number }).code === code;
+  }
+  return fallback.test(cause instanceof Error ? cause.message : String(cause));
 }
 
 function extractHeaders(headers: HeadersLike | undefined): Record<string, string> {
@@ -774,8 +853,9 @@ function extractHeaders(headers: HeadersLike | undefined): Record<string, string
 
 /* -------------------- nats peer-dep type stubs --------------------- */
 /*
- * Hand-written on purpose — not a placeholder for the real `nats` types.
- * `nats` is declared only in `tests/integration/brokers/package.json`, which
+ * Hand-written on purpose — not a placeholder for the real nats.js types.
+ * The `@nats-io/*` packages are declared only in
+ * `tests/integration/brokers/package.json`, which
  * the root install deliberately does not materialise, so the build compile
  * cannot resolve it; and these types are exported through `src/io/index.ts`,
  * so importing the module here would emit that specifier into a published
@@ -789,11 +869,14 @@ function extractHeaders(headers: HeadersLike | undefined): Record<string, string
  * Minimal `NatsConnection` surface the actor depends on.  Exported so
  * test seams (subclasses of `JetStreamActor` overriding
  * `createNatsConnection`) can satisfy the same shape without pulling
- * the real `nats` peer-dep.
+ * the real transport peer-dep.
+ *
+ * The JetStream entry points are **not** here any more: nats.js v3 turned
+ * `nc.jetstream()` and `nc.jetstreamManager()` into free functions that take
+ * the connection, so a connection is once again just a connection.  They live
+ * on {@link JetStreamModuleLike}.
  */
 export interface NatsConnectionLike {
-  jetstream(): JetStreamClientLike;
-  jetstreamManager(): Promise<JetStreamManagerLike>;
   drain(): Promise<void>;
   closed(): Promise<Error | undefined>;
 }
@@ -804,22 +887,35 @@ export interface JetStreamClientLike {
     expect?: { lastSequence?: number };
     headers?: Readonly<Record<string, string>>;
   }): Promise<unknown>;
-  subscribe(subject: string, options: {
-    stream: string;
-    consumer: string;
-  }): Promise<JetStreamSubscriptionLike>;
   /**
-   * Pull-consumer accessor (#62).  Returns a handle that exposes
-   * `fetch` for batched on-demand delivery — see the nats.js
-   * `consumers.get(stream, durable)` API.
+   * Consumer accessors.  The two are **not** interchangeable: v3 refuses
+   * `get` on a consumer that has a `deliver_subject` and `getPushConsumer` on
+   * one that has not, so the accessor the actor reaches for has to match the
+   * consumer its own `upsertConsumer` wrote.
    */
   readonly consumers: {
+    /** Pull consumer (#62) — batched, on-demand delivery through `fetch`. */
     get(stream: string, durable: string): Promise<PullConsumerLike>;
+    /** Push consumer — continuous delivery, iterated through `consume`. */
+    getPushConsumer(stream: string, durable: string): Promise<PushConsumerLike>;
   };
 }
 
-export interface JetStreamSubscriptionLike extends AsyncIterable<JetStreamMessageHandleLike> {
-  destroy(): Promise<void>;
+/**
+ * A push consumer handle.  `consume()` opens the delivery stream; it replaces
+ * v2's `JetStreamClient.subscribe`, which is gone.
+ */
+export interface PushConsumerLike {
+  consume(): Promise<JetStreamMessageStreamLike>;
+}
+
+/**
+ * An open delivery stream.  Async-iterable, and stopped rather than
+ * destroyed — `stop()` ends the iteration and releases the consumer's
+ * client-side resources.
+ */
+export interface JetStreamMessageStreamLike extends AsyncIterable<JetStreamMessageHandleLike> {
+  stop(): void;
 }
 
 /**
@@ -862,6 +958,7 @@ export interface JetStreamMessageHandleLike {
 
 type ConsumerAddConfig = {
   durable_name: string;
+  deliver_subject?: string;
   ack_policy?: 'explicit' | 'none' | 'all';
   ack_wait?: number;
   filter_subject?: string;
@@ -888,7 +985,9 @@ export type JetStreamManagerLike = {
   };
 };
 
-/** The `nats` module surface we use.  Exported as a test seam. */
+/**
+ * The `@nats-io/transport-node` surface we use.  Exported as a test seam.
+ */
 export interface NatsModuleLike {
   connect(options: {
     servers: string[]; token?: string; user?: string; pass?: string; name?: string;
@@ -901,6 +1000,21 @@ export interface NatsModuleLike {
   }): Promise<NatsConnectionLike>;
 }
 
+/**
+ * The `@nats-io/jetstream` surface we use.  Exported as a test seam.
+ *
+ * `jetstream` and `jetstreamManager` take the connection because v3 made them
+ * free functions — the same objects v2 hung off the connection itself.
+ */
+export interface JetStreamModuleLike {
+  jetstream(connection: NatsConnectionLike): JetStreamClientLike;
+  jetstreamManager(connection: NatsConnectionLike): Promise<JetStreamManagerLike>;
+}
+
 const natsLazy: Lazy<Promise<NatsModuleLike>> = Lazy.of(
-  () => lazyImportModule<NatsModuleLike>('nats', { context: 'JetStreamActor' }),
+  () => lazyImportModule<NatsModuleLike>('@nats-io/transport-node', { context: 'JetStreamActor' }),
+);
+
+const jetStreamLazy: Lazy<Promise<JetStreamModuleLike>> = Lazy.of(
+  () => lazyImportModule<JetStreamModuleLike>('@nats-io/jetstream', { context: 'JetStreamActor' }),
 );

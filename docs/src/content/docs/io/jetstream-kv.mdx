@@ -256,13 +256,15 @@ change than this actor.
 ## Peer dependency
 
 ```bash
-npm install nats
-# or: bun add nats
+npm install @nats-io/transport-node @nats-io/jetstream @nats-io/kv @nats-io/obj
+# or: bun add @nats-io/transport-node @nats-io/jetstream @nats-io/kv @nats-io/obj
 ```
 
-The same `nats` package that backs [NATS](/io/nats/) and
-[JetStream](/io/jetstream/) — the KV and Object-Store views ship with
-it.
+Four packages, and that is the change worth noticing: the key-value and
+object-store views used to ship inside the same package as
+[NATS](/io/nats/) and [JetStream](/io/jetstream/), and nats.js v3 gave each
+its own. Drop `@nats-io/obj` if you only need key-value, or `@nats-io/kv` if
+you only need the object store.
 
 <Aside type="caution" title="A failed operation does not drop the connection">
   A per-key or per-object failure (a compare-and-swap conflict, a name

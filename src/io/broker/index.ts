@@ -206,7 +206,8 @@ export type {
   // Test seams (re-exported so subclasses can satisfy the mock shape).
   NatsConnectionLike,
   JetStreamClientLike,
-  JetStreamSubscriptionLike,
+  JetStreamMessageStreamLike,
+  PushConsumerLike,
   JetStreamMessageHandleLike,
   JetStreamMessageInfoLike,
   JetStreamManagerLike,

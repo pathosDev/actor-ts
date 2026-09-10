@@ -576,18 +576,19 @@ describe('optional peer declarations', () => {
   });
 
   /**
-   * The opposite direction, and the one that settles #676's `nats` follow-up:
+   * The opposite direction, and the one that settles #676's NATS follow-up:
    * nothing in `src/` may name an optional peer in an import specifier. Every
    * adapter reaches its peer through a hand-written structural stub instead —
    * `NatsConnectionLike`, `CassandraDriver`, `MemjsClientStatic`,
    * `WebsocketServerLike` — and that is the design, not a placeholder.
    *
    * It reads like a placeholder, which is why this test exists. #676's
-   * round-4 scan comment asked for the reverse: replace the `nats` stubs in
+   * round-4 scan comment asked for the reverse: replace the NATS stubs in
    * `src/io/broker/NatsActor.ts` and `src/io/broker/JetStreamActor.ts` with
    * the module's real types "once this issue adds the missing
-   * devDependencies", so a `nats` major bump could not drift silently. The
-   * precondition never arrived and cannot. `nats` is declared only in
+   * devDependencies", so a NATS major bump could not drift silently. The
+   * precondition never arrived and cannot. The `@nats-io/*` packages are
+   * declared only in
    * `tests/integration/brokers/package.json`, which is deliberately not
    * installed at the root, so the build compile cannot resolve it — measured:
    * a type-only import of it from `src/` fails `bun run typecheck` with
@@ -598,7 +599,8 @@ describe('optional peer declarations', () => {
    * The stubs are *exported* — `NatsConnectionLike` and its siblings reach
    * `dist/io/index.d.ts` through `src/io/broker/index.ts`, a declared package
    * entry point — and `tsconfig.json` emits declarations. A real
-   * `import type … from 'nats'` there would be emitted into a published
+   * `import type … from '@nats-io/transport-node'` there would be emitted
+   * into a published
    * `.d.ts`, so a consumer who has not installed the optional peer resolves
    * nothing: TS2307 without `skipLibCheck`, a silent `any` with it. That is
    * precisely the cost "optional" is supposed to spare them.
@@ -608,6 +610,16 @@ describe('optional peer declarations', () => {
    * catches a rename the types would only have caught at compile time in a
    * tree that cannot compile it. The follow-up is withdrawn, and this is the
    * assertion that says so instead of the silence that implied it.
+   *
+   * That defence was thinner than it read until #1526, and the nats.js v2 to
+   * v3 migration is what showed it: the suite it points at ran its server
+   * without `-js`, so JetStream, key-value and the object store had **no**
+   * live coverage, and the v3 split — `jetstream()` moving off the connection,
+   * KV and the object store into packages of their own — would have been
+   * caught by nothing.
+   * `tests/integration/brokers/nats/scenarios/00-driver-shape.ts` now asserts
+   * the surface these stubs declare against the real modules, which is what
+   * this paragraph always claimed existed.
    */
   test('no optional peer is named by a literal import specifier in src/', () => {
     const sources = librarySources();

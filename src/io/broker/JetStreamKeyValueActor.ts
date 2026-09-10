@@ -253,7 +253,7 @@ export class JetStreamKeyValueActor extends BrokerActor<
 
   /**
    * Build a `KeyValueNatsConnectionLike`.  Override in a test subclass to
-   * inject a mock connection — the `nats` peer-dep is heavy and a KV
+   * inject a mock connection — the transport peer-dep is heavy and a KV
    * bucket needs a live server, neither of which a unit test wants.
    */
   protected async createNatsConnection(): Promise<KeyValueNatsConnectionLike> {
@@ -270,12 +270,37 @@ export class JetStreamKeyValueActor extends BrokerActor<
     });
   }
 
+  /**
+   * @internal Test seam — override to inject a fake JetStream module.
+   *
+   * Separate from {@link createNatsConnection} because nats.js v3 split the
+   * package: the view this actor uses lives in `@nats-io/jetstream` and is reached
+   * through the JetStream client rather than through the connection, so a fake
+   * connection alone no longer stands the actor up.
+   */
+  protected jetStreamModule(): Promise<JetStreamModuleLike> { return jetStreamLazy.get(); }
+
+  /**
+   * @internal Test seam — override to inject a fake key-value module.
+   *
+   * Separate from {@link createNatsConnection} because nats.js v3 split the
+   * package: the view this actor uses lives in `@nats-io/kv` and is reached
+   * through the JetStream client rather than through the connection, so a fake
+   * connection alone no longer stands the actor up.
+   */
+  protected keyValueModule(): Promise<KeyValueModuleLike> { return keyValueLazy.get(); }
+
   protected async connectImplementation(): Promise<void> {
     this.natsConnection = await this.createNatsConnection();
-    this.store = await this.natsConnection.jetstream().views.kv(
-      this.options.bucket as string,
-      this.bucketOptions(),
-    );
+    const jetStream = await this.jetStreamModule();
+    const keyValue = await this.keyValueModule();
+    const manager = new keyValue.Kvm(jetStream.jetstream(this.natsConnection));
+    // `create` is create-or-open; `open` refuses a bucket that is not there.
+    // That distinction is what `create: false` asks for, and in v3 it is the
+    // method rather than a `bindOnly` flag on the options.
+    this.store = this.options.create === false
+      ? await manager.open(this.options.bucket as string)
+      : await manager.create(this.options.bucket as string, this.bucketOptions());
 
     // The previous connection's watch handles are gone with it; the
     // desired set is what re-establishes them here.
@@ -453,12 +478,12 @@ export class JetStreamKeyValueActor extends BrokerActor<
   }
 
   /**
-   * Bucket options for `views.kv`.  With `create: false` only `bindOnly`
-   * is sent: the create-time limits are meaningless when binding, and
-   * sending them would let a typo'd bucket name look like a fresh bucket.
+   * Create-time bucket limits.  Only ever reached on the create path: with
+   * `create: false` the actor calls `open` instead, because the limits are
+   * meaningless when binding and sending them would let a typo'd bucket name
+   * look like a fresh bucket.
    */
   private bucketOptions(): KeyValueBucketOptionsLike {
-    if (this.options.create === false) return { bindOnly: true };
     return {
       history: this.options.history,
       ttl: this.options.timeToLive,
@@ -487,8 +512,9 @@ function entryMessageOf(entry: KeyValueEntryLike): KeyValueEntryMessage {
 
 /* -------------------- nats peer-dep type stubs --------------------- */
 /*
- * Hand-written on purpose — not a placeholder for the real `nats` types.
- * `nats` is declared only in `tests/integration/brokers/package.json`, which
+ * Hand-written on purpose — not a placeholder for the real nats.js types.
+ * The `@nats-io/*` packages are declared only in
+ * `tests/integration/brokers/package.json`, which
  * the root install deliberately does not materialise, so the build compile
  * cannot resolve it; and these types are exported through `src/io/index.ts`,
  * so importing the module here would emit that specifier into a published
@@ -504,18 +530,19 @@ function entryMessageOf(entry: KeyValueEntryLike): KeyValueEntryMessage {
  * `NatsConnectionLike` has no `views`, and widening it would drag the
  * stream actor's stubs into every KV change (and vice versa).  Exported
  * so a test subclass overriding `createNatsConnection` can satisfy the
- * shape without the real `nats` peer-dep.
+ * shape without the real transport peer-dep.
+ *
+ * nats.js v3 moved the KV view out of the connection and into its own
+ * package, so a connection is once again just a connection.
  */
 export interface KeyValueNatsConnectionLike {
-  jetstream(): KeyValueJetStreamClientLike;
   drain(): Promise<void>;
   closed(): Promise<Error | undefined>;
 }
 
+/** The slice of a JetStream client `Kvm` needs. */
 export interface KeyValueJetStreamClientLike {
-  readonly views: {
-    kv(bucket: string, options?: KeyValueBucketOptionsLike): Promise<KeyValueStoreLike>;
-  };
+  readonly _kv?: never;
 }
 
 /** Create-time bucket limits — nats.js `KvOptions` spelling. */
@@ -526,8 +553,6 @@ export type KeyValueBucketOptionsLike = {
   readonly storage?: 'memory' | 'file';
   readonly replicas?: number;
   readonly maxValueSize?: number;
-  /** Bind to an existing bucket instead of creating one. */
-  readonly bindOnly?: boolean;
 };
 
 export interface KeyValueStoreLike {
@@ -560,6 +585,31 @@ interface NatsModuleLike {
   }): Promise<KeyValueNatsConnectionLike>;
 }
 
+/** `jetstream()` is a free function in v3, and takes the connection. */
+export interface JetStreamModuleLike {
+  jetstream(connection: KeyValueNatsConnectionLike): KeyValueJetStreamClientLike;
+}
+
+/**
+ * `@nats-io/kv`.  `Kvm` is the bucket manager v3 replaced
+ * `JetStreamClient.views.kv` with: `create` is create-or-open, `open`
+ * refuses a bucket that does not exist.
+ */
+export interface KeyValueModuleLike {
+  readonly Kvm: new (client: KeyValueJetStreamClientLike) => {
+    create(bucket: string, options?: KeyValueBucketOptionsLike): Promise<KeyValueStoreLike>;
+    open(bucket: string): Promise<KeyValueStoreLike>;
+  };
+}
+
 const natsLazy: Lazy<Promise<NatsModuleLike>> = Lazy.of(
-  () => lazyImportModule<NatsModuleLike>('nats', { context: 'JetStreamKeyValueActor' }),
+  () => lazyImportModule<NatsModuleLike>('@nats-io/transport-node', { context: 'JetStreamKeyValueActor' }),
+);
+
+const jetStreamLazy: Lazy<Promise<JetStreamModuleLike>> = Lazy.of(
+  () => lazyImportModule<JetStreamModuleLike>('@nats-io/jetstream', { context: 'JetStreamKeyValueActor' }),
+);
+
+const keyValueLazy: Lazy<Promise<KeyValueModuleLike>> = Lazy.of(
+  () => lazyImportModule<KeyValueModuleLike>('@nats-io/kv', { context: 'JetStreamKeyValueActor' }),
 );

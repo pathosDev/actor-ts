@@ -228,7 +228,10 @@
     "mariadb": "^3.5.2",
     "memjs": "^1.3.0",
     "mqtt": "^5.15.1",
-    "nats": "^2.29.3",
+    "@nats-io/transport-node": "^3.4.0",
+    "@nats-io/jetstream": "^3.4.0",
+    "@nats-io/kv": "^3.4.0",
+    "@nats-io/obj": "^3.4.0",
     "nodemailer": "^9.0.4",
     "pg": "^8.21.0",
     "typescript": "^5.6.0 || ^6.0.0 || ^7.0.0",
@@ -304,7 +307,16 @@
     "mqtt": {
       "optional": true
     },
-    "nats": {
+    "@nats-io/transport-node": {
+      "optional": true
+    },
+    "@nats-io/jetstream": {
+      "optional": true
+    },
+    "@nats-io/kv": {
+      "optional": true
+    },
+    "@nats-io/obj": {
       "optional": true
     },
     "nodemailer": {

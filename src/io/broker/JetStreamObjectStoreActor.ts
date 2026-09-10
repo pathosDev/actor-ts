@@ -223,7 +223,7 @@ export class JetStreamObjectStoreActor extends BrokerActor<
 
   /**
    * Build an `ObjectStoreNatsConnectionLike`.  Override in a test subclass
-   * to inject a mock connection — the `nats` peer-dep is heavy and an
+   * to inject a mock connection — the transport peer-dep is heavy and an
    * object bucket needs a live server, neither of which a unit test wants.
    */
   protected async createNatsConnection(): Promise<ObjectStoreNatsConnectionLike> {
@@ -240,12 +240,37 @@ export class JetStreamObjectStoreActor extends BrokerActor<
     });
   }
 
+  /**
+   * @internal Test seam — override to inject a fake JetStream module.
+   *
+   * Separate from {@link createNatsConnection} because nats.js v3 split the
+   * package: the view this actor uses lives in `@nats-io/jetstream` and is reached
+   * through the JetStream client rather than through the connection, so a fake
+   * connection alone no longer stands the actor up.
+   */
+  protected jetStreamModule(): Promise<JetStreamModuleLike> { return jetStreamLazy.get(); }
+
+  /**
+   * @internal Test seam — override to inject a fake object-store module.
+   *
+   * Separate from {@link createNatsConnection} because nats.js v3 split the
+   * package: the view this actor uses lives in `@nats-io/obj` and is reached
+   * through the JetStream client rather than through the connection, so a fake
+   * connection alone no longer stands the actor up.
+   */
+  protected objectStoreModule(): Promise<ObjectStoreModuleLike> { return objectStoreLazy.get(); }
+
   protected async connectImplementation(): Promise<void> {
     this.natsConnection = await this.createNatsConnection();
-    this.store = await this.natsConnection.jetstream().views.os(
-      this.options.bucket as string,
-      this.bucketOptions(),
-    );
+    const jetStream = await this.jetStreamModule();
+    const objectStore = await this.objectStoreModule();
+    const manager = new objectStore.Objm(jetStream.jetstream(this.natsConnection));
+    // `create` is create-or-open; `open` refuses a bucket that is not there.
+    // That distinction is what `create: false` asks for, and in v3 it is the
+    // method rather than a `bindOnly` flag on the options.
+    this.store = this.options.create === false
+      ? await manager.open(this.options.bucket as string)
+      : await manager.create(this.options.bucket as string, this.bucketOptions());
 
     void this.natsConnection.closed().then((err) => {
       this.handleConnectionLost(err ?? new Error('nats connection closed'));
@@ -416,7 +441,6 @@ export class JetStreamObjectStoreActor extends BrokerActor<
    * sending them would let a typo'd bucket name look like a fresh bucket.
    */
   private bucketOptions(): ObjectStoreBucketOptionsLike {
-    if (this.options.create === false) return { bindOnly: true };
     return {
       description: this.options.description,
       storage: this.options.storage,
@@ -450,8 +474,9 @@ function objectInfoOf(info: ObjectInfoLike): JetStreamObjectInfo {
 
 /* -------------------- nats peer-dep type stubs --------------------- */
 /*
- * Hand-written on purpose — not a placeholder for the real `nats` types.
- * `nats` is declared only in `tests/integration/brokers/package.json`, which
+ * Hand-written on purpose — not a placeholder for the real nats.js types.
+ * The `@nats-io/*` packages are declared only in
+ * `tests/integration/brokers/package.json`, which
  * the root install deliberately does not materialise, so the build compile
  * cannot resolve it; and these types are exported through `src/io/index.ts`,
  * so importing the module here would emit that specifier into a published
@@ -468,18 +493,19 @@ function objectInfoOf(info: ObjectInfoLike): JetStreamObjectInfo {
  * slice of the JetStream client, and one widened interface would make
  * every mock in every suite carry all three.  Exported so a test subclass
  * overriding `createNatsConnection` can satisfy the shape without the real
- * `nats` peer-dep.
+ * transport peer-dep.
+ *
+ * nats.js v3 moved the object-store view out of the connection and into its
+ * own package, so a connection is once again just a connection.
  */
 export interface ObjectStoreNatsConnectionLike {
-  jetstream(): ObjectStoreJetStreamClientLike;
   drain(): Promise<void>;
   closed(): Promise<Error | undefined>;
 }
 
+/** The slice of a JetStream client `Objm` needs. */
 export interface ObjectStoreJetStreamClientLike {
-  readonly views: {
-    os(bucket: string, options?: ObjectStoreBucketOptionsLike): Promise<ObjectStoreLike>;
-  };
+  readonly _objectStore?: never;
 }
 
 /** Create-time bucket settings — nats.js `ObjectStoreOptions` spelling. */
@@ -487,8 +513,6 @@ export type ObjectStoreBucketOptionsLike = {
   readonly description?: string;
   readonly storage?: 'memory' | 'file';
   readonly replicas?: number;
-  /** Bind to an existing bucket instead of creating one. */
-  readonly bindOnly?: boolean;
 };
 
 /** Object metadata accepted by `putBlob` — nats.js `ObjectStoreMeta`. */
@@ -524,6 +548,31 @@ interface NatsModuleLike {
   }): Promise<ObjectStoreNatsConnectionLike>;
 }
 
+/** `jetstream()` is a free function in v3, and takes the connection. */
+export interface JetStreamModuleLike {
+  jetstream(connection: ObjectStoreNatsConnectionLike): ObjectStoreJetStreamClientLike;
+}
+
+/**
+ * `@nats-io/obj`.  `Objm` is the bucket manager v3 replaced
+ * `JetStreamClient.views.os` with: `create` is create-or-open, `open`
+ * refuses a bucket that does not exist.
+ */
+export interface ObjectStoreModuleLike {
+  readonly Objm: new (client: ObjectStoreJetStreamClientLike) => {
+    create(bucket: string, options?: ObjectStoreBucketOptionsLike): Promise<ObjectStoreLike>;
+    open(bucket: string): Promise<ObjectStoreLike>;
+  };
+}
+
 const natsLazy: Lazy<Promise<NatsModuleLike>> = Lazy.of(
-  () => lazyImportModule<NatsModuleLike>('nats', { context: 'JetStreamObjectStoreActor' }),
+  () => lazyImportModule<NatsModuleLike>('@nats-io/transport-node', { context: 'JetStreamObjectStoreActor' }),
+);
+
+const jetStreamLazy: Lazy<Promise<JetStreamModuleLike>> = Lazy.of(
+  () => lazyImportModule<JetStreamModuleLike>('@nats-io/jetstream', { context: 'JetStreamObjectStoreActor' }),
+);
+
+const objectStoreLazy: Lazy<Promise<ObjectStoreModuleLike>> = Lazy.of(
+  () => lazyImportModule<ObjectStoreModuleLike>('@nats-io/obj', { context: 'JetStreamObjectStoreActor' }),
 );
