@@ -63,7 +63,7 @@ you would first have to check out.
 <Aside type="caution" title="The dependency graph is not the SBOM">
 GitHub's dependency graph for this repository does **not** resolve
 the root Bun lockfile — it records the unresolved ranges out of
-`package.json` (`fastify ^5.10.0`), and misses transitive packages
+`package.json` (`fastify ^5.12.3`), and misses transitive packages
 entirely. Anything derived from that graph, including Dependabot
 alerts and `actions/dependency-review-action`, is describing
 something other than what shipped. The SBOM is generated from the

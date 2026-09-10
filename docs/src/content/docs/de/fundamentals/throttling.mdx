@@ -1,6 +1,6 @@
 ---
 title: Throttling
-description: Begrenze die Verarbeitung von Benutzernachrichten eines Actors mit einem Token-Bucket — `context.throttle({ qps, burst, onExcess })`, Backpressure via pause vs. drop, `{ qps: Infinity }` / `cancelThrottle()` zum Aufheben, und warum Systemnachrichten und Death-Watch-Benachrichtigungen ausgenommen sind.
+description: "Begrenze die Verarbeitung von Benutzernachrichten eines Actors mit einem Token-Bucket — `context.throttle({ qps, burst, onExcess })`, Backpressure via pause vs. drop, `{ qps: Infinity }` / `cancelThrottle()` zum Aufheben, und warum Systemnachrichten und Death-Watch-Benachrichtigungen ausgenommen sind."
 ---
 
 Jeder Actor leert seine Mailbox so schnell, wie sein Dispatcher es

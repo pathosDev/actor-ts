@@ -1,6 +1,6 @@
 ---
 title: Throttling
-description: Rate-limit an actor's user-message processing with a token bucket — `context.throttle({ qps, burst, onExcess })`, pause vs drop backpressure, `{ qps: Infinity }` / `cancelThrottle()` to clear, and why system messages and death notifications are exempt.
+description: "Rate-limit an actor's user-message processing with a token bucket — `context.throttle({ qps, burst, onExcess })`, pause vs drop backpressure, `{ qps: Infinity }` / `cancelThrottle()` to clear, and why system messages and death notifications are exempt."
 ---
 
 Every actor drains its mailbox as fast as its dispatcher allows.
