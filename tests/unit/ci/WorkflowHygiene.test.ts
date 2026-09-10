@@ -925,37 +925,45 @@ describe('workflow hygiene', () => {
   });
 
   /**
-   * **`--parallel` must not reach the coverage run**, and the reason is a
-   * measurement rather than a worry.
+   * **`--parallel` belongs on the coverage run**, and this assertion changed
+   * direction because the runtime did, not because the argument did.
    *
-   * It executes identically: on this tree a parallel run reports the same hit
-   * count for 721 of 723 files, and the aggregate numerator is byte-for-byte
-   * the same 55 293 lines.  What changes is the denominator — 407 files report
-   * *more* instrumented lines and none fewer, so `src/cluster/Cluster.ts` goes
-   * from 1 077 to 1 469 against the same 1 074 hit.  The aggregate then reads
-   * **79.16 % instead of 93.82 % on the same code**, which is straight through
-   * the 90 % floor.
+   * It used to forbid the flag, and #1332 was right to: on bun 1.4.0 a
+   * parallel run executed identically — the same hit count for 721 of 723
+   * files, the numerator byte-for-byte the same 55 293 lines — while 407 files
+   * reported a *larger* instrumented-line denominator and none a smaller one.
+   * `src/cluster/Cluster.ts` went from 1 077 to 1 469 against the same 1 074
+   * hit, the aggregate read **79.16 % against 93.82 % on the same code**, and
+   * the obvious response to that red gate would have been to lower the floor.
    *
-   * That is the dangerous shape: nothing is tested less, the number simply
-   * moves, and the obvious response to a red gate would be to lower the floor.
-   * The floors in `scripts/coverage-gate.mjs` were calibrated against the
-   * single-process denominator, so the two have to stay together.
+   * Bun 1.4.1 lists a fix for under-reported coverage across workers, and on
+   * the 1.4.2 pin (#1519) the defect is measured gone: over 728 lcov records,
+   * **zero** report a larger denominator, 20 report one smaller by a line or
+   * three (30 lines out of 59 593, or 0.05 %), and the numerator is identical
+   * at 56 041.  Bun's own aggregate agrees to 0.05 points — 94.66 % parallel
+   * against 94.61 % serial — and the run goes **352 s to 41 s** on 32 cores.
    *
-   * The flag is genuinely worth having elsewhere — 293 s to 28 s on 32 cores —
-   * and `multi-runtime.yml` uses it.  This is about one step.
+   * So the assertion inverts rather than disappearing.  A silently dropped
+   * flag costs eight minutes a run and shows up nowhere in a green check, and
+   * if a future Bun re-inflates the denominator the floor in
+   * `scripts/coverage-gate.mjs` reports it — which is the pair that has to
+   * stay together, in whichever direction it points.  #1521.
    */
   test.each(bunTests.filter((run) => run.command.includes('--coverage')))(
-    '$workflow:$line measures coverage in one process',
+    '$workflow:$line measures coverage in parallel',
     ({ command }) => {
       expect(
         command,
-        'A coverage run with --parallel reports a ~19% larger instrumented-line '
-        + 'denominator for identical execution (79.16% against 93.82% on this '
-        + 'tree), which fails the 90% floor by changing what is measured rather '
-        + 'than what is tested. The floors in scripts/coverage-gate.mjs are '
-        + 'calibrated against the single-process denominator. Speed up the '
-        + 'plain suite instead — multi-runtime.yml already does (#1332).',
-      ).not.toMatch(/--parallel\b/);
+        'The coverage run lost --parallel. It was deliberately absent while bun '
+        + '1.4.0 inflated the instrumented-line denominator under it (79.16% '
+        + 'against 93.82% on identical execution, #1332), and deliberately '
+        + 'present since the 1.4.2 pin, where 0 of 728 lcov records report a '
+        + 'larger denominator, the aggregate agrees to 0.05 points, and the run '
+        + 'drops from 352 s to 41 s (#1521). Dropping it is an eight-minute '
+        + 'regression per run that a green check would never show. If a future '
+        + 'bun re-inflates the denominator the coverage floor reports that — do '
+        + 'not answer it by lowering the floor.',
+      ).toMatch(/--parallel\b/);
     },
   );
 

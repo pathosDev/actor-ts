@@ -317,19 +317,27 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   (#1310). A summary that is *missing* counts as red, deliberately: "the job
   produced no verdict" and "the job was green" are opposite facts, and the first
   two nights of that workflow uploaded no artifact while nobody noticed.
-- **`bun test --parallel` is on for the plain suite and off for the coverage
-  run**, and the split is measured (#1332). On 32 cores the suite goes 293 s →
-  **28 s**, 11 962 tests green, 5 of 5 green when repeated under different
-  shuffles — nothing depends on cross-file state that the implied `--isolate`
-  breaks. But under `--parallel` bun instruments *more lines per file* for
-  identical execution: 721 of 723 files report the same hit count and the
-  numerator is byte-for-byte the same 55 293 lines, while 407 files report a
-  larger denominator and none a smaller one. The aggregate then reads **79.16 %
-  against 93.82 % on the same code**, straight through the 90 % floor by
-  changing what is measured rather than what is tested. `multi-runtime.yml`
-  therefore runs parallel and `test.yml`'s coverage step does not;
-  `tests/unit/ci/WorkflowHygiene.test.ts` keeps it that way, because the obvious
-  response to that red gate would be to lower the floor.
+- **`bun test --parallel` is on everywhere, including the coverage run** — and
+  it was off for the coverage run until the Bun 1.4.2 pin, which is the part
+  worth remembering. On 32 cores the suite goes 293 s → **28 s**, and nothing
+  depends on cross-file state that the implied `--isolate` breaks. But on bun
+  1.4.0 the flag changed *what was measured*: 721 of 723 files reported the same
+  hit count and the numerator was byte-for-byte the same 55 293 lines, while 407
+  files reported a larger instrumented-line denominator and none a smaller one,
+  so the aggregate read **79.16 % against 93.82 % on the same code** — straight
+  through the 90 % floor by changing the denominator rather than the tests
+  (#1332).
+
+  Bun 1.4.1 fixed the under-reporting across workers and 1.4.2 measures clean:
+  **0 of 728 lcov records report a larger denominator**, 20 report one smaller
+  by a line or three, the numerator is identical at 56 041, the aggregate agrees
+  to 0.05 points, and the coverage run drops **352 s → 41 s** (#1521). So
+  `test.yml`'s coverage step carries the flag too, *after* `--coverage` because
+  `tests/unit/ci/CoverageGate.test.ts` locates the invocation by that prefix, and
+  `tests/unit/ci/WorkflowHygiene.test.ts` now asserts the flag is **present**
+  rather than absent. The floor and the denominator stay the pair that moves
+  together: if a future Bun re-inflates it the gate goes red, and the answer is
+  to drop the flag again — never to lower the floor.
 - **Generative tests run against a pinned seed.**
   `tests/setup/property-seed.ts` calls `fc.configureGlobal` and is loaded by
   `bunfig.toml`'s `preload`, so all ~52 `fc.assert` sites share one seed, one
