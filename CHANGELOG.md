@@ -2382,6 +2382,54 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **Docs toolchain: Astro 7.3 + Starlight 0.42** (#1527). `astro` `^7.1.3` →
+  `^7.3.2`, `@astrojs/starlight` `^0.41.11` → `^0.42.0`,
+  `@astrojs/markdown-remark` `7.2.1` → `^7.3.1`, `starlight-typedoc` `^0.22.0`
+  → `^0.23.1`. Site-only; `docs/package.json` is `private` and never reaches
+  the published closure.
+
+  **The exact `@astrojs/markdown-remark` pin is gone, and it should never have
+  been a pin.** `c85688cf` set it to `7.2.1` to mirror what astro 7.1.3
+  declared as its optional peer — and that exact declaration was an astro bug,
+  fixed in 7.2.10 ("Fixes `@astrojs/markdown-remark` being pinned to an exact
+  version"). Astro 7.3 declares `^7.3.0`, so a caret mirrors it again.
+
+  **What the bump surfaced is worth more than the bump.** Verifying against a
+  baseline `dist/` rather than a green exit caught a live regression:
+  `@astrojs/markdown-remark@7.3.1` corrupts every rendered mermaid diagram
+  under Starlight. 7.3.1 added `rehype-collapse-script-style` — a security fix,
+  so it stays — which moves a `<style>`'s literal CSS into the element's
+  `set:html` property and empties its children. Starlight registers
+  `mdx({ optimize: true })`, whose `rehype-optimize-static` then serialises the
+  surrounding static subtree through `hast-util-to-html` — which has no idea
+  `set:html` is an Astro directive and writes it out as an ordinary attribute.
+  What ships is `<style set:html="…"></style>`: the CSS in an attribute, the
+  element body empty, and the browser applying none of it. Measured here at
+  **423 of 423** mermaid pages, every diagram losing its JetBrains Mono font,
+  its fill colours and its edge animations.
+
+  The fix uses the escape hatch Starlight's own code provides — it only injects
+  `mdx({ optimize: true })` when the site has not registered the integration —
+  so `astro.config.mjs` now registers `mdx({ optimize: false })` itself, after
+  `starlight()` because `astro-expressive-code` refuses to start when `mdx()`
+  precedes it. Pinning back to 7.3.0 would also have worked and was rejected:
+  it dodges the bug by dodging the security fix that came with it, and the
+  version number alone would not have said so.
+
+  Verified by comparing the rendered output against a baseline build of the old
+  versions, because none of this is visible in an exit code: 4951 pages both
+  times, 486 inline mermaid SVGs across `flowchart-v2`/`sequence`/`stateDiagram`,
+  0 unrendered fences, all **423** mermaid pages identical in
+  `viewBox`/`width`/`height`, the `lang-dropdown` override on every page, and
+  Shiki's HOCON (1197) and PromQL (54) block counts unchanged. Every count
+  matched on the *broken* build too — the CSS was still present, just relocated
+  into an attribute — so only the byte comparison of the SVGs found it.
+
+  Build time 3m42s → 4m02s, the cost of `optimize: false`. The audit surface
+  improves: 11 advisories (1 critical, 10 high) → 7 (7 high), with none
+  introduced. The critical is GHSA-26w7-cxv4-gfx2, Astro RCE via AVIF image
+  optimization, fixed in 7.2.8 — the site had been below that fix.
+
 - **Five optional peers admit their new major** (#1520). `mongodb`, `ioredis`,
   `nodemailer`, `imapflow` and `@libsql/client` each shipped a major since they
   were pinned, and each range is now **widened rather than moved** — `^6 ||

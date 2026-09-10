@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { defineConfig } from 'astro/config';
 import { unified } from '@astrojs/markdown-remark';
+import mdx from '@astrojs/mdx';
 import starlight from '@astrojs/starlight';
 import { createStarlightTypeDocPlugin } from 'starlight-typedoc';
 import rehypeMermaid from 'rehype-mermaid';
@@ -114,8 +115,15 @@ export default defineConfig({
   // `@astrojs/markdown-remark` — so `markdown.rehypePlugins` is
   // deprecated and `markdown.processor` is how you opt back in.  We
   // stay on unified because `rehype-mermaid` is a rehype (hast) plugin
-  // written against that pipeline; Starlight 0.41 detects either
+  // written against that pipeline; Starlight 0.42 detects either
   // processor and pushes its own plugins into whichever is configured.
+  //
+  // `docs/package.json` used to pin `@astrojs/markdown-remark` to an exact
+  // `7.2.1`, because that is what astro 7.1.3 declared as its optional
+  // peer.  That exact declaration was an astro bug, fixed in 7.2.10
+  // ("Fixes `@astrojs/markdown-remark` being pinned to an exact version");
+  // astro 7.3 declares `^7.3.0`, so the caret there mirrors astro again
+  // rather than freezing a patch level of its own accord (#1527).
   markdown: {
     syntaxHighlight: {
       type: 'shiki',
@@ -971,5 +979,33 @@ export default defineConfig({
       // sidebar is wired (Commit 2.3).
       pagination: true,
     }),
+    // Registered here for one reason: to turn `optimize` off.  Starlight
+    // adds `mdx({ optimize: true })` itself when the site has not
+    // registered the integration (`@astrojs/starlight/dist/index.js`), and
+    // with `@astrojs/markdown-remark` 7.3.1 that combination corrupts every
+    // rendered mermaid diagram.
+    //
+    // 7.3.1 added `rehype-collapse-script-style` — a security fix, so it
+    // stays: only *literal* `<style>`/`<script>` content is treated as
+    // trusted markup and anything dynamic is escaped.  It moves the literal
+    // CSS into the element's `set:html` property and empties its children.
+    // `rehype-optimize-static`, which `optimize: true` enables, then
+    // serialises the surrounding static subtree through `hast-util-to-html`
+    // — which has no idea `set:html` is an Astro directive and writes it out
+    // as an ordinary attribute.  What ships is
+    // `<style set:html="…"></style>`: the CSS sits in an attribute, the
+    // element body is empty, and the browser applies none of it.  Measured
+    // here at 423 of 423 mermaid pages, every diagram losing its font, its
+    // fill colours and its edge animations (#1527).
+    //
+    // Dropping `optimize` keeps the security fix and costs only the
+    // static-subtree collapse, which is a render optimisation rather than
+    // anything the output depends on.  Revert once the two plugins compose.
+    //
+    // It has to sit **after** `starlight()`: Starlight registers
+    // `astro-expressive-code`, which refuses to start when `mdx()` precedes
+    // it — code blocks on MDX pages would silently lose their highlighting,
+    // so it throws instead.
+    mdx({ optimize: false }),
   ],
 });
