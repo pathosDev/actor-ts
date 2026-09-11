@@ -324,6 +324,8 @@ const INVENTORY: ReadonlyArray<BrokerOptionsInventory> = [
       pingIntervalMs: hocon('pingIntervalMs'),
       idleTimeoutMs: hocon('idleTimeoutMs'),
       connectTimeoutMs: hocon('connectTimeoutMs'),
+      inboundHighWaterMark: hocon('inbound-high-water-mark'),
+      inboundLowWaterMark: hocon('inbound-low-water-mark'),
     },
   },
 ];

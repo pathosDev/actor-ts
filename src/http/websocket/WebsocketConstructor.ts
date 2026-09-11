@@ -37,6 +37,16 @@ export interface WebsocketLike {
   close(code?: number, reason?: string): void;
   ping?(): void;
   /**
+   * Receiver-side flow control: stop reading from the socket, and start
+   * again.  Bun 1.4.1 added all three to its client `WebSocket`; the WHATWG
+   * `WebSocket` that Node and Deno ship has none, so all are optional and
+   * `WebsocketClientActor` probes for them rather than assuming (#1523).
+   * Names as Bun spells them.
+   */
+  pause?(): void;
+  resume?(): void;
+  readonly isPaused?: boolean;
+  /**
    * Which shape binary payloads arrive in on the `message` listener.  The
    * three supported runtimes disagree on the default — `'nodebuffer'` on Bun,
    * `'blob'` on Node and Deno — so {@link WebsocketClientActor} sets it

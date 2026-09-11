@@ -11,6 +11,42 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Receiver-side flow control on `WebsocketClientActor`** (#1523).
+  `withInboundHighWaterMark(frames)` pauses the socket once that many decoded
+  inbound frames are waiting in the mailbox, and `withInboundLowWaterMark`
+  says where it resumes — default a quarter of the high mark, because
+  resuming at the first free slot would flap the socket once per frame.
+  HOCON: `inbound-high-water-mark` / `inbound-low-water-mark` under
+  `actor-ts.io.broker.websocket`. Off unless set, which is how every
+  version before behaved.
+
+  The backpressure story was send-side only, and the naming hid it:
+  `BackpressurePolicy` and `maxBufferedBytes` govern the outbound buffer,
+  and on the receive side every frame was decoded and `tell`'d onward the
+  instant it arrived. A peer publishing faster than `onMessage` drained had
+  nowhere to push back to; the frames piled into the mailbox, and a bounded
+  mailbox then dropped *decoded application messages* rather than pausing
+  the socket. Pausing lets TCP do the job it already has. Both docs pages
+  now say which direction each knob governs.
+
+  **Bun only, in practice, and probed rather than assumed.** Measured:
+  `pause()`/`resume()`/`isPaused` exist on Bun 1.4.2's client `WebSocket`
+  and on neither Node 26.7's nor Deno 2.6.8's WHATWG one. The actor asks the
+  socket, the way it asks for `ping()`; where the pair is absent it keeps
+  today's behaviour and warns once at connect time, because a limit that
+  looks applied and is not is worse than none.
+
+  `websocket_client_inbound_paused_seconds_total` accumulates the time spent
+  paused — booked on resume, and on a connection that drops while paused, so
+  a socket that went away mid-pause is not counted as paused forever.
+
+  Bound by a test that gates the consumer by hand and drives a fake socket
+  through pause at the eighth frame, resume at the low-water mark, delivery
+  of every accepted frame, the once-only warning on an unpausable socket, the
+  metric, and the validator's cross-field rules. Pause, resume, the warning
+  and the metric were each disabled in turn and only their own cases went
+  red.
+
 - **The docs site is built on every docs change, and the rendered output is
   asserted on** (#1528). `docs-checks.yml` gains a `build` job that mirrors the
   release build in `docs.yml` — root and docs frozen installs, Chromium for the

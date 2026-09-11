@@ -624,6 +624,12 @@ import { Aside } from '@astrojs/starlight/components';
   (`onBackpressure: 'drop'`, default) or is closed
   (`'close'`).  Broadcasts to many slow clients are where this
   bites — pick the policy that fits your protocol.
+
+  This is the **outbound** direction only — the buffer of frames waiting
+  to be sent.  A client that receives faster than it can handle is the
+  other direction, and a separate knob: the
+  [inbound high-water mark](/io/websocket/#inbound-flow-control) on
+  `WebsocketClientActor`.
 </Aside>
 
 ## Where to next

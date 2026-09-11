@@ -32,6 +32,15 @@ import { BrokerOptionsBuilder, BrokerOptionsValidator } from '../../io/broker/Br
 import type { BrokerCommonOptionsType } from '../../io/broker/BrokerOptions.js';
 import type { WebsocketCodec } from './WebsocketCodec.js';
 
+/**
+ * What the inbound low-water mark defaults to, as a divisor of the high-water
+ * mark: a quarter.  Resuming at the first free slot would flap the socket
+ * between paused and reading once per frame; a quarter leaves the consumer
+ * a run of frames to work through before the peer is asked for more, and
+ * matches the shape the issue that introduced it sketched (256 / 64).
+ */
+export const DEFAULT_WEBSOCKET_INBOUND_LOW_WATER_MARK_DIVISOR = 4;
+
 /** Plain options-object shape accepted by a {@link WebsocketClientActor}. */
 export interface WebsocketClientOptionsType<TOut = unknown, TIn = unknown> extends BrokerCommonOptionsType {
   /** WebSocket URL (`ws://…` or `wss://…`).  Required (ctor or HOCON). */
@@ -104,6 +113,33 @@ export interface WebsocketClientOptionsType<TOut = unknown, TIn = unknown> exten
    * handshake settles only on `open` or `error`.
    */
   readonly connectTimeoutMs?: number;
+  /**
+   * Receiver-side flow control: how many decoded inbound frames may be
+   * waiting in this actor's mailbox before the socket is **paused**, so the
+   * peer stops being read and TCP does the pushing back.  Unset — the
+   * default — never pauses, which is how every version before #1523
+   * behaved: each frame is decoded and `tell`'d onward the instant it
+   * arrives, and a peer that publishes faster than `onMessage` drains has
+   * nowhere to push back to.
+   *
+   * **Bun only, in practice.**  `pause()`/`resume()` exist on Bun 1.4.1+'s
+   * client `WebSocket` and on neither Node's nor Deno's; where they are
+   * absent the actor keeps today's behaviour and says so once at connect
+   * time rather than pretending to apply a limit it cannot enforce.
+   *
+   * `websocket_client_inbound_paused_seconds_total` accumulates the time
+   * spent paused, so the condition is observable rather than inferred from
+   * a stall.  Readable from HOCON as `inbound-high-water-mark`.
+   */
+  readonly inboundHighWaterMark?: number;
+  /**
+   * Where a paused socket is **resumed**: once the mailbox backlog of
+   * inbound frames has drained to this many.  Must be below
+   * {@link inboundHighWaterMark}; defaults to a quarter of it
+   * ({@link DEFAULT_WEBSOCKET_INBOUND_LOW_WATER_MARK_DIVISOR}).  Readable
+   * from HOCON as `inbound-low-water-mark`.
+   */
+  readonly inboundLowWaterMark?: number;
 }
 
 /** Fluent builder for {@link WebsocketClientOptionsType}. */
@@ -165,6 +201,21 @@ export class WebsocketClientOptionsBuilder<TOut = unknown, TIn = unknown>
   withConnectTimeoutMs(ms: number): this {
     return this.set('connectTimeoutMs', ms);
   }
+
+  /**
+   * Pause the socket once this many decoded inbound frames are waiting in
+   * the mailbox.  Default: never — see
+   * {@link WebsocketClientOptionsType.inboundHighWaterMark} for why this is
+   * Bun-only in practice.
+   */
+  withInboundHighWaterMark(frames: number): this {
+    return this.set('inboundHighWaterMark', frames);
+  }
+
+  /** Resume a paused socket once the backlog has drained to this many frames.  Default: a quarter of the high-water mark. */
+  withInboundLowWaterMark(frames: number): this {
+    return this.set('inboundLowWaterMark', frames);
+  }
 }
 
 /** Validates resolved {@link WebsocketClientOptionsType} settings. */
@@ -182,6 +233,18 @@ export class WebsocketClientOptionsValidator<TOut = unknown, TIn = unknown>
     this.nonNegativeInt('idleTimeoutMs');
     this.nonNegativeInt('connectTimeoutMs');
     this.oneOf('onInvalidMessage', ['drop', 'hook', 'disconnect']);
+    this.positiveInt('inboundHighWaterMark');
+    this.nonNegativeInt('inboundLowWaterMark');
+    // Cross-field: a low-water mark is a resume point on a pause that has
+    // to exist, and one at or above the high-water mark would resume the
+    // socket in the same breath it was paused.
+    if (s.inboundLowWaterMark !== undefined) {
+      if (s.inboundHighWaterMark === undefined) {
+        this.fail('inboundLowWaterMark', 'needs inboundHighWaterMark — it is where a paused socket resumes', s.inboundLowWaterMark);
+      } else if (s.inboundLowWaterMark >= s.inboundHighWaterMark) {
+        this.fail('inboundLowWaterMark', `must be below inboundHighWaterMark (${s.inboundHighWaterMark})`, s.inboundLowWaterMark);
+      }
+    }
   }
 }
 
