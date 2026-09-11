@@ -109,6 +109,13 @@ jobs:
         working-directory: docs
         run: bun run build
 
+      # A green build is not proof the output is right — #1527 shipped 423
+      # unstyled mermaid diagrams through one.  Same check `docs-checks.yml`
+      # runs on every docs change, here so it also gates the deploy (#1528).
+      - name: Assert on the rendered output
+        working-directory: docs
+        run: bun run check:rendered
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:

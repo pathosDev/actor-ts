@@ -11,6 +11,37 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **The docs site is built on every docs change, and the rendered output is
+  asserted on** (#1528). `docs-checks.yml` gains a `build` job that mirrors the
+  release build in `docs.yml` — root and docs frozen installs, Chromium for the
+  mermaid SSR, `astro build` — and then runs `bun run check:rendered` over
+  `dist/`. The same assertion now gates `docs.yml`'s deploy step.
+
+  Two incidents sat in the gap this closes. #1525: four pages whose frontmatter
+  could not be parsed, on `develop` for over a week, because nothing ran
+  `astro build` before a release. #1527: a dependency bump that emitted
+  `<style set:html="…"></style>` for every mermaid diagram — CSS in an
+  attribute, element body empty, 423 pages silently unstyled — **through a
+  build that exited 0 with no warnings**, and past a count-based comparison
+  that reported a perfect match because the CSS text was still present, just
+  relocated. A green build is therefore not what the new job asserts.
+
+  `docs/scripts/check-rendered-output.mjs` asserts the properties that broke,
+  each absolute so there is no baseline to maintain: no Astro directive
+  (`set:html`, `set:text`, `is:raw`, `client:*`, `server:*`, `transition:*`)
+  survives as an attribute in emitted HTML; no mermaid fence is left as a code
+  block; and every rendered mermaid SVG carries its stylesheet as a `<style>`
+  *body*. Two guards keep those from passing vacuously — the walk must find
+  pages, and a content tree with mermaid fences must produce at least one
+  rendered diagram. The directive rule is anchored on the tag, so a page that
+  merely mentions `set:html` in prose or an escaped code sample does not trip
+  it.
+
+  Bound by `tests/unit/docs/RenderedOutputCheck.test.ts`, which holds the
+  classifier to a byte-faithful reconstruction of the #1527 shape and to a
+  synthetic `dist/` where the verdict has to move. Each rule was disabled in
+  turn and only its own cases went red.
+
 - **One factor scales every testkit deadline** (#1376).
   `ACTOR_TS_TEST_TIME_FACTOR` multiplies `TestProbe`'s timeouts,
   `MultiNodeSpec` and `ParallelMultiNodeSpec`'s await timeouts, the worker

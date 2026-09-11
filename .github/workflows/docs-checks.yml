@@ -1,8 +1,9 @@
-# Fast, dependency-free documentation checks that run on every docs change —
-# distinct from `docs.yml` (which does the slow TypeDoc + Astro + Mermaid build
-# and only deploys from `main` at release time).  Doc code fences are never
-# type-checked, so a renamed/removed API silently rots in a snippet until a
-# reader copies it; the api-drift guard greps for the names that have bitten us.
+# Documentation checks that run on every docs change.  Two are fast and
+# dependency-free — the api-drift grep (doc code fences are never
+# type-checked, so a renamed/removed API rots in a snippet until a reader
+# copies it) and a frozen install.  The third is the real `astro build`, which
+# used to run only in `docs.yml` on `main` at release time, so a change that
+# broke the site was verified by nothing until a release deploy (#1528).
 name: docs-checks
 
 on:
@@ -20,6 +21,12 @@ on:
 
 permissions:
   contents: read
+
+# A push that supersedes an in-flight build makes that build's verdict
+# irrelevant, and the build job below costs minutes plus a Chromium install.
+concurrency:
+  group: docs-checks-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   api-drift:
@@ -60,3 +67,64 @@ jobs:
       - name: Frozen install
         working-directory: docs
         run: bun install --frozen-lockfile
+
+  # Two incidents sat in the gap this closes.  #1525: four pages whose
+  # frontmatter could not be parsed, on `develop` for over a week, because
+  # nothing ran `astro build` before a release.  #1527: a dependency bump
+  # that emitted `<style set:html="…"></style>` for every mermaid diagram —
+  # CSS in an attribute, element body empty, 423 pages silently unstyled —
+  # through a build that exited 0 with no warnings.  The second is why this
+  # job does not stop at a green build: `check:rendered` reads `dist/` and
+  # asserts on the properties that broke (no directive survives as an
+  # attribute, no mermaid fence is left unrendered, every diagram carries its
+  # stylesheet as an element body).  Each is absolute, so there is no
+  # baseline to maintain.
+  #
+  # The steps mirror `docs.yml`'s build job, which is the release build, minus
+  # the Pages upload — the point is to run the same build earlier, not a
+  # cheaper one.  Shallow checkout is the one deliberate difference:
+  # Starlight's `lastUpdated` reads Git history and reports "now" without it,
+  # which is fine for output nobody deploys and saves fetching the history.
+  build:
+    name: Site builds, and the rendered output is what it claims to be
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # `astro build` spawns Node through its shebang, so the system Node has
+      # to satisfy Astro's floor (>= 22.12 for Astro 7); this is the repo's
+      # `engines` floor.
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+
+      # TypeDoc compiles `../src/` for the API reference, and `src/` imports
+      # peers that live under the repo-root `node_modules/` — without this it
+      # fails on every source file with TS2307 / TS2503.
+      - name: Install root dependencies (for TypeDoc to resolve src/ imports)
+        run: bun install --frozen-lockfile
+
+      - name: Install docs dependencies
+        working-directory: docs
+        run: bun install --frozen-lockfile
+
+      # rehype-mermaid renders ```mermaid``` blocks at build time through
+      # headless Chromium; the npm package ships the bindings, not the browser.
+      - name: Install Playwright browsers (for Mermaid SSR)
+        working-directory: docs
+        run: bunx playwright install --with-deps chromium
+
+      - name: Build site (includes TypeDoc API generation)
+        working-directory: docs
+        run: bun run build
+
+      - name: Assert on the rendered output
+        working-directory: docs
+        run: bun run check:rendered
