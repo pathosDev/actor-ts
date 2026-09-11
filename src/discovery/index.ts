@@ -14,6 +14,7 @@ export type { DnsSeedProviderOptionsType } from './DnsSeedProviderOptions.js';
 export { AggregateSeedProvider, SeedDiscoveryError } from './AggregateSeedProvider.js';
 export { KubernetesApiSeedProvider } from './KubernetesApiSeedProvider.js';
 export {
+  DEFAULT_KUBERNETES_DISCOVERY_REQUEST_TIMEOUT_MS,
   DEFAULT_KUBERNETES_NAMESPACE,
   KubernetesApiSeedProviderOptions,
   KubernetesApiSeedProviderOptionsBuilder,

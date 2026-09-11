@@ -62,6 +62,7 @@ describe('readAutoDiscoveryOptionsFromConfig', () => {
           pinned-addresses = ["svc.cluster.local"]
         }
         kubernetes {
+          request-timeout  = 3s
           namespace        = "actors"
           pinned-addresses = ["10.0.0.0/8"]
         }
@@ -75,6 +76,7 @@ describe('readAutoDiscoveryOptionsFromConfig', () => {
       dnsCacheTtlMs: 15_000,
       dnsUseSrv: true,
       dnsPinnedAddresses: ['svc.cluster.local'],
+      kubernetesRequestTimeoutMs: 3_000,
       kubernetesNamespace: 'actors',
       kubernetesPinnedAddresses: ['10.0.0.0/8'],
       seeds: ['a@10.0.0.1:2552', '10.0.0.2:2552'],
@@ -110,9 +112,10 @@ describe('readAutoDiscoveryOptionsFromConfig', () => {
     expect(fromReference).toEqual({
       dnsCacheTtlMs: 60_000,
       dnsUseSrv: false,
+      kubernetesRequestTimeoutMs: 10_000,
     });
     // The comment-only four must be absent, and `toEqual` alone cannot say so.
-    expect(Object.keys(fromReference).sort()).toEqual(['dnsCacheTtlMs', 'dnsUseSrv']);
+    expect(Object.keys(fromReference).sort()).toEqual(['dnsCacheTtlMs', 'dnsUseSrv', 'kubernetesRequestTimeoutMs']);
   });
 
   test('the shipped reference names no namespace, so CLUSTER_NAMESPACE stays reachable', () => {
@@ -217,6 +220,19 @@ describe('the config block reaches the providers', () => {
     expect(() => singleProviderDiscovery('kubernetes', discoveryOptionsFrom(suffixPin, { serviceName: 'my-svc' })))
       .toThrow(/CIDRs only/);
     expect(singleProviderDiscovery('kubernetes', discoveryOptionsFrom(cidrPin, { serviceName: 'my-svc' })))
+      .toBeInstanceOf(KubernetesApiSeedProvider);
+  });
+
+  test('a Kubernetes request timeout from config reaches the provider — a non-positive one is refused there', () => {
+    // The provider's validator is the only offline observer of the field, and
+    // it rejects a non-positive ceiling; a rejection from `0s` therefore proves
+    // the key travelled from config to the provider (#1524).
+    const zero = Config.parseString('actor-ts.discovery.kubernetes.request-timeout = 0s');
+    const positive = Config.parseString('actor-ts.discovery.kubernetes.request-timeout = 3s');
+
+    expect(() => singleProviderDiscovery('kubernetes', discoveryOptionsFrom(zero, { serviceName: 'my-svc' })))
+      .toThrow(/requestTimeoutMs/);
+    expect(singleProviderDiscovery('kubernetes', discoveryOptionsFrom(positive, { serviceName: 'my-svc' })))
       .toBeInstanceOf(KubernetesApiSeedProvider);
   });
 

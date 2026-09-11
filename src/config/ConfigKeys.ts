@@ -1354,6 +1354,7 @@ export const ConfigKeys = {
       dnsPinnedAddresses: 'actor-ts.discovery.dns.pinned-addresses',
     },
     kubernetes: {
+      requestTimeout: 'actor-ts.discovery.kubernetes.request-timeout',
       /** Comment-only in `reference.conf` — unset falls through to `CLUSTER_NAMESPACE`. */
       namespace: 'actor-ts.discovery.kubernetes.namespace',
       /** Comment-only in `reference.conf` — unset means no pinning. */

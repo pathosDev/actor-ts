@@ -57,6 +57,27 @@ const DNS_1123_SUBDOMAIN: KubernetesNameShape = {
  */
 export const DEFAULT_KUBERNETES_NAMESPACE = 'default';
 
+/**
+ * Ceiling on the one HTTPS request the default fetcher makes to the API
+ * server, in ms.
+ *
+ * Without it the request had no bound at all.  An API server that accepts
+ * the TCP connection and then never answers — a control-plane restart, a
+ * `NetworkPolicy` that drops the reply, a stalled admission webhook —
+ * produces neither `'error'` nor `'end'`, and the promise `lookup()` returns
+ * never settles.  Both layers above it, `AggregateSeedProvider.lookup` and
+ * `StableObservation.observe`, are written to survive a provider that
+ * *throws*; a provider that *hangs* stalls the whole bootstrap, and the
+ * ladder never reaches the rung that exists for exactly this case (#1524).
+ *
+ * The value matches `DEFAULT_K8S_OPERATION_TIMEOUT_MS` in
+ * `src/coordination/leases/KubernetesLeaseOptions.ts` and is deliberately
+ * not shared with it: that number feeds the lease renewal loop's in-flight
+ * arithmetic, and retuning a lease would otherwise silently retune discovery.
+ * Two knobs, one value, each explained where it lives.
+ */
+export const DEFAULT_KUBERNETES_DISCOVERY_REQUEST_TIMEOUT_MS = 10_000;
+
 /** Plain options-object shape accepted by a {@link KubernetesApiSeedProvider}. */
 export type KubernetesApiSeedProviderOptionsType = {
   /**
@@ -74,6 +95,15 @@ export type KubernetesApiSeedProviderOptionsType = {
   readonly systemName: string;
   /** Port for the cluster remoting endpoint on each pod. */
   readonly port: number;
+  /**
+   * Ceiling on the request the default fetcher makes, in ms.  Defaults to
+   * {@link DEFAULT_KUBERNETES_DISCOVERY_REQUEST_TIMEOUT_MS}.  Past it the
+   * request is destroyed and `lookup()` rejects, which is what lets the
+   * discovery ladder fall through to its next rung instead of hanging.
+   * Ignored when {@link fetchEndpoints} is supplied — that fetcher owns
+   * its own bound.
+   */
+  readonly requestTimeoutMs?: number;
   /**
    * Override the Endpoints-fetch function — defaults to the in-cluster
    * API.
@@ -142,6 +172,11 @@ export class KubernetesApiSeedProviderOptionsBuilder extends OptionsBuilder<Kube
     return this.set('port', port);
   }
 
+  /** Ceiling on the request the default fetcher makes, in ms.  Defaults to `DEFAULT_KUBERNETES_DISCOVERY_REQUEST_TIMEOUT_MS`. */
+  withRequestTimeoutMs(requestTimeoutMs: number): this {
+    return this.set('requestTimeoutMs', requestTimeoutMs);
+  }
+
   /** Override the Endpoints-fetch function — defaults to the in-cluster API. */
   withFetchEndpoints(fetchEndpoints: () => Promise<string[]>): this {
     return this.set('fetchEndpoints', fetchEndpoints);
@@ -168,6 +203,7 @@ export class KubernetesApiSeedProviderOptionsValidator extends OptionsValidator<
     this.nonEmptyString('serviceName');
     this.nonEmptyString('systemName');
     this.positiveInt('port'); // node-address port (transport-agnostic — see ClusterOptions.port)
+    this.positiveNumber('requestTimeoutMs');
 
     // Cross-field: the shape rule belongs to the default fetcher (#597).
     // `namespace` and `serviceName` are constrained because that fetcher

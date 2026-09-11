@@ -99,6 +99,9 @@ function kubernetesOptionsFor(
   if (resolvedOptions.kubernetesPinnedAddresses !== undefined) {
     options.withPinnedAddresses(resolvedOptions.kubernetesPinnedAddresses);
   }
+  if (resolvedOptions.kubernetesRequestTimeoutMs !== undefined) {
+    options.withRequestTimeoutMs(resolvedOptions.kubernetesRequestTimeoutMs);
+  }
   return options;
 }
 

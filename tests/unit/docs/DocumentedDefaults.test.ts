@@ -70,6 +70,7 @@ import {
 } from '../../../src/discovery/ReceptionistOptions.js';
 import { DEFAULT_DISCOVERY_METHOD } from '../../../src/cluster/ClusterBootstrapOptions.js';
 import { DEFAULT_DNS_CACHE_TTL_MS, DEFAULT_DNS_USE_SRV } from '../../../src/discovery/DnsSeedProviderOptions.js';
+import { DEFAULT_KUBERNETES_DISCOVERY_REQUEST_TIMEOUT_MS } from '../../../src/discovery/KubernetesApiSeedProviderOptions.js';
 import {
   DEFAULT_NUM_SHARDS,
   DEFAULT_PASSIVATION_IDLE_MS,
@@ -406,6 +407,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // bottom of the fallback chain rather than a published default.
   { key: 'actor-ts.discovery.dns.cache-ttl', kind: 'duration', constant: DEFAULT_DNS_CACHE_TTL_MS },
   { key: 'actor-ts.discovery.dns.use-srv', kind: 'bool', constant: DEFAULT_DNS_USE_SRV },
+  { key: 'actor-ts.discovery.kubernetes.request-timeout', kind: 'duration', constant: DEFAULT_KUBERNETES_DISCOVERY_REQUEST_TIMEOUT_MS },
 
   /* --- remote --- */
   { key: 'actor-ts.remote.tcp.port', kind: 'int', constant: DEFAULT_PORT },

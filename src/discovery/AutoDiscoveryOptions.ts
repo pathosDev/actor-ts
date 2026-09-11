@@ -98,6 +98,13 @@ export type AutoDiscoveryOptionsType = {
    */
   readonly kubernetesPinnedAddresses?: readonly string[];
   /**
+   * Ceiling on the one API-server request the Kubernetes rung makes, in
+   * ms.  See {@link KubernetesApiSeedProviderOptionsType.requestTimeoutMs}
+   * — without a bound an API server that accepts and never answers hangs
+   * the whole ladder (#1524).
+   */
+  readonly kubernetesRequestTimeoutMs?: number;
+  /**
    * How long the DNS rung reuses one resolved answer.  Unset takes
    * {@link DEFAULT_DNS_CACHE_TTL_MS}; `0` disables caching.
    */
@@ -169,6 +176,11 @@ export class AutoDiscoveryOptionsBuilder extends OptionsBuilder<AutoDiscoveryOpt
   /** Restrict the Kubernetes rung's pod IPs to these CIDRs.  Unset means no pinning. */
   withKubernetesPinnedAddresses(kubernetesPinnedAddresses: readonly string[]): this {
     return this.set('kubernetesPinnedAddresses', kubernetesPinnedAddresses);
+  }
+
+  /** Ceiling on the Kubernetes rung's API-server request, in ms. */
+  withKubernetesRequestTimeoutMs(kubernetesRequestTimeoutMs: number): this {
+    return this.set('kubernetesRequestTimeoutMs', kubernetesRequestTimeoutMs);
   }
 
   /** How long the DNS rung reuses one answer.  `0` disables caching. */
@@ -261,6 +273,9 @@ export function readAutoDiscoveryOptionsFromConfig(config: Config): Partial<Auto
   }
   if (config.hasPath(keys.kubernetes.namespace)) {
     out.kubernetesNamespace = config.getString(keys.kubernetes.namespace);
+  }
+  if (config.hasPath(keys.kubernetes.requestTimeout)) {
+    out.kubernetesRequestTimeoutMs = config.getDuration(keys.kubernetes.requestTimeout);
   }
   if (config.hasPath(keys.kubernetes.kubernetesPinnedAddresses)) {
     out.kubernetesPinnedAddresses = config.getStringList(keys.kubernetes.kubernetesPinnedAddresses);
