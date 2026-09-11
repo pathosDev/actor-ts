@@ -335,6 +335,24 @@ export const ConfigKeys = {
       requestTimeout: 'actor-ts.http.server.request-timeout',
       /** Comment-only in `reference.conf` — unset means unlimited. */
       maxConnections: 'actor-ts.http.server.max-connections',
+      http2: 'actor-ts.http.server.http2',
+      /**
+       * All comment-only in `reference.conf`: unset means plain HTTP, and
+       * there is no defensible path to publish.  The three `*-file` leaves
+       * are read as paths and the files as PEM when the block is read, so
+       * the option type still carries contents, never paths (#1522).
+       */
+      tls: {
+        certFile: 'actor-ts.http.server.tls.cert-file',
+        keyFile: 'actor-ts.http.server.tls.key-file',
+        caFile: 'actor-ts.http.server.tls.ca-file',
+        requestClientCert: 'actor-ts.http.server.tls.request-client-cert',
+        /**
+         * `reject-unauthorized = false` there leaves a client certificate
+         * unverified — supply `ca-file` instead.
+         */
+        rejectUnauthorized: 'actor-ts.http.server.tls.reject-unauthorized',
+      },
     },
     /**
      * Per-route CORS defaults for the `cors(options, routes)` directive (#878).

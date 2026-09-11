@@ -185,6 +185,22 @@ import { Aside } from '@astrojs/starlight/components';
   per-request actor patterns only.
 </Aside>
 
+## TLS and HTTP/2
+
+Set on the server options like every backend
+(see [TLS and HTTP/2](/http/overview/#tls-and-http2)); Hono hands the pair
+to whichever runtime it is on:
+
+| Runtime | TLS | `http2: true` |
+| --- | --- | --- |
+| Bun | `Bun.serve({ tls })` | `Bun.serve({ http2: true })` — h2 through ALPN, HTTP/1.1 kept; Bun ≥ 1.4.1, refused on an older one |
+| Node | `https.createServer` under `@hono/node-server` | `http2.createSecureServer` with `allowHTTP1` |
+| Deno | `Deno.serve({ cert, key })` | negotiated whenever TLS is on; no knob, so the flag records intent |
+
+Client-certificate verification (`requestClientCert`) reaches the Bun and
+Node sockets; `Deno.serve` has no client-auth option, so on Deno it is
+**refused** at bind rather than accepted and not applied.
+
 ## Where to next
 
 - **[HTTP overview](/http/overview/)** — the bigger

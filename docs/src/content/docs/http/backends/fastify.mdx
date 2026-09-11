@@ -33,10 +33,6 @@ await http.newServerAt('0.0.0.0', 8080)
 new FastifyBackend({
   logger:    false,           // Fastify's built-in logger — leave off; use actor-ts log
   bodyLimit: 1_048_576,       // 1 MiB request body cap
-  tls: {
-    cert: fs.readFileSync('./tls/cert.pem'),
-    key:  fs.readFileSync('./tls/key.pem'),
-  },
 });
 ```
 
@@ -114,22 +110,47 @@ See [Security best practices](/http/security/).
 
 ## TLS
 
+Set it where every backend takes it, on the server options
+(see [TLS and HTTP/2](/http/overview/#tls-and-http2)):
+
 ```ts
-new FastifyBackend({
-  tls: {
-    cert: fs.readFileSync('./tls/cert.pem'),
-    key:  fs.readFileSync('./tls/key.pem'),
-    // For mTLS:
-    ca:                fs.readFileSync('./tls/ca.pem'),
-    requestCert:       true,
-    rejectUnauthorized: true,
-  },
+const serverOptions = HttpServerOptions.create()
+  .withTls({ cert: fs.readFileSync('./tls/cert.pem'), key: fs.readFileSync('./tls/key.pem') })
+  .withHttp2();
+
+await system.extension(HttpExtensionId)
+  .newServerAt('0.0.0.0', 8443)
+  .withServerOptions(serverOptions)
+  .bind(routes);
+```
+
+Fastify is the one backend that takes TLS and HTTP/2 as **factory**
+options — `Fastify({ https, http2 })` — not at `listen()`.  The
+framework-built backend is constructed with them, because `bind()`
+resolves the server options before it constructs the backend.  A backend
+you construct yourself and hand to `useBackend(...)` has to carry them
+itself, and `fastifyFactoryOptions` turns the same server options into
+the factory shape:
+
+```ts
+import { FastifyBackend, fastifyFactoryOptions } from 'actor-ts/http';
+
+const backend = new FastifyBackend({
+  logger: false,
+  ...fastifyFactoryOptions(serverOptions),   // { https: { cert, key, … }, http2 }
 });
 ```
 
-Standard Fastify TLS options.  For most production setups, TLS
-**terminates at the load balancer** — the app speaks plain HTTP
-internally — but in-app TLS is supported when needed.
+A hand-built backend without TLS that is then handed `withTls(...)` is
+**refused** at `bind()` rather than bound as plain HTTP under a setting
+that says otherwise.  (Earlier versions of this page showed
+`new FastifyBackend({ tls: … })`; `tls` is not a Fastify option and was
+spread in and ignored — the server it described was never terminating
+TLS.)
+
+For most production setups TLS still **terminates at the load balancer**
+and the app speaks plain HTTP internally; in-app TLS is for the
+single-process and development cases.
 
 ## Accessing the raw Fastify instance
 

@@ -322,11 +322,15 @@ export class HonoBackend implements HttpServerBackend {
       for (const reg of this.wsRegistered) this.attachWebsocketRoute(app, bridge, reg);
     }
 
+    // TLS and HTTP/2 ride to the runner as-is: it owns the socket, and every
+    // runtime spells the pair differently (#1522).
     const server = await runner.serve({
       host,
       port,
       fetch: honoFetchHandler(app),
       serveOptions: bridge?.serveOptions,
+      tls: serverOptions?.tls,
+      http2: serverOptions?.http2,
     });
     this.server = server;
     // Hono owns no server of its own — the per-runtime runner does — so the

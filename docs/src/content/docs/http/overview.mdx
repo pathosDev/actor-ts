@@ -126,6 +126,68 @@ writing it does anything.  The [configuration
 reference](/reference/configuration/) carries the per-backend table, that
 difference and the sweep caveat on `request-timeout`.
 
+### TLS and HTTP/2
+
+The same object carries the two settings that make the process itself the
+TLS endpoint.  Off by default — behind a reverse proxy or an ingress that
+terminates for you, plain HTTP is still the right answer, and the
+[security page](/http/security/#tls) says how to run that way.  For the
+single-process and development cases, where standing up a terminator just to
+exercise a `Secure` cookie is the friction:
+
+```ts
+import { readFileSync } from 'node:fs';
+import { HttpExtensionId, HttpServerOptions } from 'actor-ts/http';
+
+const serverOptions = HttpServerOptions.create()
+  .withTls({
+    cert: readFileSync('./tls/cert.pem'),
+    key:  readFileSync('./tls/key.pem'),
+    // client certificates, if you terminate mTLS here:
+    // ca: readFileSync('./tls/ca.pem'), requestClientCert: true, rejectUnauthorized: true,
+  })
+  .withHttp2();   // h2 through ALPN, HTTP/1.1 staying available on the same port
+
+await system.extension(HttpExtensionId)
+  .newServerAt('0.0.0.0', 8443)
+  .withServerOptions(serverOptions)
+  .bind(routes);
+```
+
+The material is PEM contents or DER bytes, the raw TCP transport's
+vocabulary; from the config file the same fields are **paths**, read once
+when the block is:
+
+```hocon
+actor-ts.http.server {
+  tls {
+    cert-file = "/etc/actor-ts/tls/cert.pem"
+    key-file  = "/etc/actor-ts/tls/key.pem"
+  }
+  http2 = true
+}
+```
+
+One shape, three runtimes: `Bun.serve({ tls, http2 })`, `https.createServer`
+or `http2.createSecureServer` under `@hono/node-server`, and
+`Deno.serve({ cert, key })`.  HTTP/2 is refused without TLS — h2c is not
+offered — and with it a client that speaks h2 negotiates it while one that
+does not still gets HTTP/1.1 on the same port.  Deno negotiates h2 whenever
+TLS is on and has no knob for it, so there `http2` records intent rather
+than deciding.  `Bun.serve` learned `http2` in Bun 1.4.1, and the runtime
+floor is 1.3.0: on an older Bun the setting is refused at bind rather than
+ignored, since the alternative is HTTP/1.1 served under a setting that
+says otherwise.  Client-certificate verification (`requestClientCert`) is
+honoured on Bun, Node and Fastify; `Deno.serve` has no such option, so on
+Deno it is refused rather than silently ignored.
+
+Which backend does what: **Hono** hands the pair to its runtime's runner;
+**Fastify** takes both as *factory* options, so the framework-built instance
+gets them and one you construct yourself needs
+`fastifyFactoryOptions(serverOptions)` — see [its page](/http/backends/fastify/#tls);
+**Express** has no seam and refuses to bind under either setting rather
+than serve plain HTTP — see [its page](/http/backends/express/#tls).
+
 ## The HTTP client
 
 ```ts

@@ -1,5 +1,7 @@
 import type {
   FetchHandler,
+  HonoServeOptions,
+  HonoServeTls,
   HonoServerHandle,
   HonoServerRunner,
   HonoWebsocketBridge,
@@ -14,19 +16,30 @@ import type {
  * `upgradeWebSocket` from `hono/deno` (which wraps `Deno.upgradeWebSocket`).
  */
 export class DenoHonoRunner implements HonoServerRunner {
-  async serve(options: { host: string; port: number; fetch: FetchHandler; serveOptions?: object }): Promise<HonoServerHandle> {
+  async serve(options: HonoServeOptions): Promise<HonoServerHandle> {
     const deno = (globalThis as { Deno?: DenoGlobal }).Deno;
     if (!deno || typeof deno.serve !== 'function') {
       throw new Error('DenoHonoRunner requires Deno runtime (globalThis.Deno.serve).');
     }
     const ac = new AbortController();
     const server = deno.serve(
-      { hostname: options.host, port: options.port, signal: ac.signal, ...(options.serveOptions ?? {}) },
+      {
+        hostname: options.host,
+        port: options.port,
+        signal: ac.signal,
+        ...(options.tls ? denoTlsOptions(options.tls) : {}),
+        ...(options.serveOptions ?? {}),
+      },
       denoArityHandler(options.fetch),
     );
+    // The port Deno actually bound, not the one that was asked for: with
+    // `port: 0` those differ, and reporting the request back sent every
+    // caller that asked for an ephemeral port to port 0 — which `node:https`
+    // reads as 443.  The other smoke cases had been reserving a port by
+    // hand to avoid exactly this (#1522).
     return {
       host: options.host,
-      port: options.port,
+      port: server.addr?.port ?? options.port,
       async stop(graceful: boolean): Promise<void> {
         if (graceful && typeof server.shutdown === 'function') {
           await server.shutdown();
@@ -103,12 +116,40 @@ function denoArityHandler(fetch: FetchHandler): FetchHandler {
 
 interface DenoHttpServer {
   readonly finished: Promise<void>;
+  /** `Deno.NetAddr` — the address actually bound; `port` is what a `port: 0` request resolved to. */
+  readonly addr?: { readonly port: number };
   shutdown?(): Promise<void>;
+}
+
+/**
+ * `Deno.serve`'s TLS shape: `cert` and `key` as PEM *strings* — it takes no
+ * DER, so bytes are decoded — and nothing else.  There is no client-auth
+ * option at all, and an unknown key is silently ignored, so
+ * `requestClientCert` is refused here rather than accepted and not applied:
+ * a listener that says it demands a client certificate and does not is the
+ * failure mode this whole option shape exists to avoid (#1522).  `ca` on
+ * its own is dropped with the same reasoning made explicit: on Deno it
+ * could only ever have meant client verification, which cannot happen.
+ *
+ * HTTP/2 is not passed because it cannot be: `Deno.serve` negotiates h2
+ * whenever TLS is on and has no knob for it.
+ */
+function denoTlsOptions(tls: HonoServeTls): { cert: string; key: string } {
+  if (tls.requestClientCert) {
+    throw new Error(
+      'DenoHonoRunner: tls.requestClientCert is not supported — Deno.serve has no client-certificate '
+      + 'option, so the demand could only be ignored.  Terminate TLS in front of the process, or use '
+      + 'the Bun or Node runtime, where it is honoured.',
+    );
+  }
+  const pem = (value: string | Uint8Array): string =>
+    typeof value === 'string' ? value : new TextDecoder().decode(value);
+  return { cert: pem(tls.cert!), key: pem(tls.key!) };
 }
 
 interface DenoGlobal {
   serve(
-    options: { hostname: string; port: number; signal?: AbortSignal },
+    options: { hostname: string; port: number; signal?: AbortSignal; cert?: string; key?: string },
     handler: FetchHandler,
   ): DenoHttpServer;
 }

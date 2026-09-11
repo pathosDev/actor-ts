@@ -13,6 +13,8 @@
  * open connections closed.
  */
 
+import type { TlsTransportOptionsType } from '../tcp/TcpBackend.js';
+
 /**
  * The handler a runner installs on its runtime's HTTP server.
  *
@@ -30,6 +32,27 @@
  * signature), so the runners normalise and a unit test asserts it.
  */
 export type FetchHandler = (request: Request, ...runtimeExtras: unknown[]) => Promise<Response> | Response;
+
+/**
+ * TLS for the listening socket, in the raw TCP transport's vocabulary — PEM
+ * contents or DER bytes, never a path.  The server-side subset: `serverName`
+ * is the SNI a *client* sends.  Declared here rather than imported from
+ * `src/http/` for the reason `maxFrameBytes` is passed in rather than
+ * imported: `src/runtime/` sits below `src/http/` (#1522).
+ */
+export type HonoServeTls = Pick<TlsTransportOptionsType, 'cert' | 'key' | 'ca' | 'requestClientCert' | 'rejectUnauthorized'>;
+
+/** What every runner's `serve()` accepts. */
+export type HonoServeOptions = {
+  readonly host: string;
+  readonly port: number;
+  readonly fetch: FetchHandler;
+  readonly serveOptions?: object;
+  /** Terminate TLS on the socket; unset serves plain HTTP. */
+  readonly tls?: HonoServeTls;
+  /** Offer `h2` through ALPN, HTTP/1.1 staying available.  Meaningless without `tls`; the validator above this layer refuses the pair. */
+  readonly http2?: boolean;
+};
 
 export interface HonoServerHandle {
   readonly host: string;
@@ -80,7 +103,7 @@ export type HonoWebsocketBridge = {
 };
 
 export interface HonoServerRunner {
-  serve(options: { host: string; port: number; fetch: FetchHandler; serveOptions?: object }): Promise<HonoServerHandle>;
+  serve(options: HonoServeOptions): Promise<HonoServerHandle>;
   /**
    * Optional capability — all three built-in runners implement it.
    *

@@ -53,9 +53,40 @@ export function isBodyTooLargeError(err: unknown): boolean {
  * user code never interacts with Fastify types unless they explicitly opt
  * in via `backend.withPlugin(...)`.
  */
+/**
+ * The `Fastify({ … })` factory options that a resolved `HttpServerOptions`
+ * asks for — `https` and `http2` — or `{}` when it asks for neither.
+ *
+ * Fastify takes both at *construction*, not at `listen()`, so this is how
+ * the framework-built backend gets them: `HttpExtension` resolves the server
+ * options first and constructs the backend with the answer.  A backend
+ * constructed by hand and handed to `useBackend(...)` has to do the same,
+ * which is why `listen` refuses a `tls` it cannot retrofit (#1522).
+ *
+ * `requestClientCert` becomes `requestCert`, the `node:tls` spelling.
+ */
+export function fastifyFactoryOptions(serverOptions: Partial<HttpServerOptionsType>): object {
+  const tls = serverOptions.tls;
+  if (tls === undefined) return {};
+  const https: Record<string, unknown> = { cert: tls.cert, key: tls.key };
+  if (tls.ca !== undefined) https.ca = tls.ca;
+  if (tls.requestClientCert !== undefined) https.requestCert = tls.requestClientCert;
+  if (tls.rejectUnauthorized !== undefined) https.rejectUnauthorized = tls.rejectUnauthorized;
+  // `allowHTTP1` keeps HTTP/1.1 on the same port; Fastify hands it to
+  // `http2.createSecureServer`, the same shape the Hono/Node runner builds.
+  return serverOptions.http2 === true ? { https: { ...https, allowHTTP1: true }, http2: true } : { https };
+}
+
 export class FastifyBackend implements HttpServerBackend {
   readonly name = 'fastify';
   private readonly app: FastifyLike;
+  /**
+   * Whether `Fastify({ https })` was passed at construction — the only
+   * moment Fastify accepts it.  `listen` checks it against the `tls` it is
+   * handed, so a backend built without TLS never serves plain HTTP under a
+   * setting that says otherwise.
+   */
+  private readonly terminatesTls: boolean;
   private readonly registered: RouteRegistration[] = [];
   private readonly wsRegistered: WebsocketRouteRegistration[] = [];
   private userErrorHandler:
@@ -73,6 +104,7 @@ export class FastifyBackend implements HttpServerBackend {
       bodyLimit: DEFAULT_HTTP_MAX_BODY_BYTES,
       ...options,
     });
+    this.terminatesTls = 'https' in options && (options as { https?: unknown }).https !== undefined;
     // Route EVERY content-type through a raw-buffer parser — we want the
     // bytes to reach the DSL unparsed so user code picks the decoder via
     // pickRequestSerializer.  Fastify's built-in JSON parser would steal
@@ -168,6 +200,17 @@ export class FastifyBackend implements HttpServerBackend {
   }
 
   async listen(host: string, port: number, serverOptions?: Partial<HttpServerOptionsType>): Promise<ServerBinding> {
+    // Fastify took its TLS material at construction or not at all; a `tls`
+    // arriving here on an instance built without one cannot be applied, and
+    // binding plain HTTP under it would be the silent failure #1522 refuses.
+    if (serverOptions?.tls !== undefined && !this.terminatesTls) {
+      throw new Error(
+        'FastifyBackend: HttpServerOptions.tls is set, but this backend was constructed without TLS.  '
+        + 'Fastify takes its certificate at construction: pass `fastifyFactoryOptions(serverOptions)` — or '
+        + '`{ https: { cert, key }, http2 }` yourself — to `new FastifyBackend(...)`, or let the framework '
+        + 'build the backend (leave useBackend unset), which does exactly that.',
+      );
+    }
     if (this.wsRegistered.length > 0) {
       const plugin = await fastifyWebsocketLazy.get();
       // Await the register so the plugin's onRoute hook is installed

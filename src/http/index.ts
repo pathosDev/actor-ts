@@ -148,7 +148,7 @@ export type {
   HttpRedirectMode,
 } from './HttpClientOptions.js';
 
-export { FastifyBackend } from './backend/FastifyBackend.js';
+export { FastifyBackend, fastifyFactoryOptions } from './backend/FastifyBackend.js';
 export { ExpressBackend } from './backend/ExpressBackend.js';
 export { ExpressBackendOptions, ExpressBackendOptionsBuilder, ExpressBackendOptionsValidator } from './backend/ExpressBackendOptions.js';
 export type { ExpressBackendOptionsType } from './backend/ExpressBackendOptions.js';
@@ -158,12 +158,13 @@ export type { HonoBackendOptionsType } from './backend/HonoBackendOptions.js';
 export { DEFAULT_HTTP_MAX_BODY_BYTES } from './Constants.js';
 export {
   DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS,
+  DEFAULT_HTTP_SERVER_HTTP2,
   DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS,
   HttpServerOptions,
   HttpServerOptionsBuilder,
   HttpServerOptionsValidator,
 } from './HttpServerOptions.js';
-export type { HttpServerOptionsType } from './HttpServerOptions.js';
+export type { HttpServerOptionsType, HttpTlsOptionsType } from './HttpServerOptions.js';
 export { DEFAULT_RESPONSE_SECURITY_HEADERS, PAYLOAD_TOO_LARGE_RESPONSE } from './backend/HttpServerBackend.js';
 export type {
   HttpServerBackend,

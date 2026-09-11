@@ -178,6 +178,13 @@ Gestützt auf das `https`-Modul von Node.  Dieselben Vorbehalte
 wie beim Fastify-Backend — typischerweise terminiert TLS am
 Load-Balancer.
 
+Das ist der **einzige** Weg, auf Express TLS zu terminieren: `app.listen()`
+ist `http.createServer` und sonst nichts, `HttpServerOptions.withTls(...)`
+und `withHttp2()` — die das Hono- und das Fastify-Backend beachten —
+werden hier bei `bind()` **abgelehnt**.  Die Alternative wäre gewesen,
+reines HTTP unter einer Einstellung zu binden, die TLS behauptet, und
+genau das ist ausgeschlossen.
+
 ## Peer-Dependency
 
 ```bash
