@@ -24,9 +24,13 @@ import { match } from 'ts-pattern';
 import type { Config } from '../../config/Config.js';
 import { ConfigKeys } from '../../config/ConfigKeys.js';
 import { BrokerActor, type OutboundEnvelope } from '../../io/broker/BrokerActor.js';
+import { metricsOf } from '../../metrics/MetricsExtension.js';
 import { redactedUrlLabel } from '../../util/RedactUrlCredentials.js';
 import { jsonCodec, WebsocketDecodeError, type WebsocketCodec } from './WebsocketCodec.js';
-import { WebsocketClientOptionsValidator } from './WebsocketClientOptions.js';
+import {
+  DEFAULT_WEBSOCKET_INBOUND_LOW_WATER_MARK_DIVISOR,
+  WebsocketClientOptionsValidator,
+} from './WebsocketClientOptions.js';
 import type { WebsocketClientOptions, WebsocketClientOptionsType } from './WebsocketClientOptions.js';
 import {
   websocketClientConnected,
@@ -91,6 +95,26 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
    * same sentence again once per reconnect, forever.
    */
   private keepAliveWarned = false;
+  /**
+   * Decoded inbound frames handed to the mailbox and not yet handed to
+   * `onMessage` — the backlog the inbound high-water mark is measured
+   * against (#1523).  Reset on every connect and clamped at zero on the way
+   * down: frames left over from a previous connection still drain through
+   * the mailbox and would otherwise count against the next one.  The skew
+   * that leaves is bounded by that leftover and errs towards pausing later,
+   * never earlier.
+   */
+  private inboundPending = 0;
+  /** Whether `pause()` has been called on the current socket and not yet undone. */
+  private inboundPaused = false;
+  /** `performance.now()` at the last `pause()`, for the paused-seconds counter. */
+  private inboundPausedSince = 0;
+  /**
+   * Whether the "this runtime cannot pause" warning has been emitted — see
+   * {@link armInboundFlowControl}.  Per actor, like {@link keepAliveWarned}:
+   * the runtime's `WebSocket` does not change across a reconnect.
+   */
+  private inboundFlowControlWarned = false;
 
   constructor(options: WebsocketClientOptions<TOut, TIn> = {}) {
     super(options);
@@ -198,6 +222,10 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
   }
 
   private onWebsocketClientInbound(signal: WebsocketClientInbound<TIn>): void | Promise<void> {
+    // Leaving the mailbox is the event, not finishing `onMessage`: the
+    // backlog the high-water mark bounds is what is *queued*, and a slow
+    // handler holds the next frame in the queue exactly as long either way.
+    this.noteInboundDrained();
     return this.onMessage(signal.message);
   }
 
@@ -238,6 +266,8 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     }
     if (config.hasPath('idleTimeoutMs')) out.idleTimeoutMs = config.getDuration('idleTimeoutMs');
     if (config.hasPath('connectTimeoutMs')) out.connectTimeoutMs = config.getDuration('connectTimeoutMs');
+    if (config.hasPath('inbound-high-water-mark')) out.inboundHighWaterMark = config.getInt('inbound-high-water-mark');
+    if (config.hasPath('inbound-low-water-mark')) out.inboundLowWaterMark = config.getInt('inbound-low-water-mark');
     return out;
   }
 
@@ -418,6 +448,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
         ws.addEventListener('close', () => this.onSocketDown(new Error('websocket closed')));
         ws.addEventListener('error', () => this.onSocketDown(new Error('websocket error')));
         this.armKeepAlive(ws);
+        this.armInboundFlowControl(ws);
         this.self.tell(websocketClientConnected());
         resolve();
       });
@@ -449,6 +480,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     if (!this.socket) return; // already handled this connection's drop
     this.socket = null;
     if (this.keepAliveTimer) { clearInterval(this.keepAliveTimer); this.keepAliveTimer = null; }
+    this.settleInboundPause();
     this.self.tell(websocketClientDisconnected(cause));
     // Trigger BrokerActor's reconnect cycle.
     this.handleConnectionLost(cause);
@@ -569,5 +601,77 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
       return;
     }
     this.self.tell(websocketClientInbound(decoded));
+    this.noteInboundQueued();
+  }
+
+  /* ----------------------- inbound flow control ------------------ */
+
+  /**
+   * Decide, once per connection, whether the high-water mark can be
+   * enforced on this socket — and say so when it cannot.
+   *
+   * The probe is on the socket rather than on the runtime name, the same
+   * way {@link armKeepAlive} asks for `ping`: a hand-rolled `WebsocketLike`
+   * may offer the pair on any runtime, and a future Node may grow it.
+   * Measured today: Bun 1.4.2 has `pause`/`resume`/`isPaused`, Node 26.7
+   * and Deno 2.6.8 have none.  A mark that cannot be enforced is worse
+   * than none, because it is the thing that persuades an operator the
+   * inbound side is bounded — hence the warning rather than silence.
+   */
+  private armInboundFlowControl(ws: WebsocketLike): void {
+    this.inboundPending = 0;
+    this.inboundPaused = false;
+    if (this.options.inboundHighWaterMark === undefined) return;
+    if (typeof ws.pause === 'function' && typeof ws.resume === 'function') return;
+    if (this.inboundFlowControlWarned) return;
+    this.inboundFlowControlWarned = true;
+    this.log.warn(
+      `WebsocketClientActor: inboundHighWaterMark is set (${this.options.inboundHighWaterMark}) on `
+      + `${this.redactedEndpointLabel()}, but this runtime's WebSocket has no pause()/resume() — the `
+      + 'socket cannot be paused, so inbound frames are handed on as they arrive, as before. '
+      + 'Bun 1.4.1+ supports it; Node and Deno do not.',
+    );
+  }
+
+  /** A decoded frame entered the mailbox; pause the socket at the high-water mark. */
+  private noteInboundQueued(): void {
+    this.inboundPending += 1;
+    const high = this.options.inboundHighWaterMark;
+    if (high === undefined || this.inboundPaused || this.inboundPending < high) return;
+    const socket = this.socket;
+    if (socket === null || typeof socket.pause !== 'function') return;
+    try { socket.pause(); } catch { return; }
+    this.inboundPaused = true;
+    this.inboundPausedSince = performance.now();
+  }
+
+  /** A decoded frame left the mailbox; resume a paused socket at the low-water mark. */
+  private noteInboundDrained(): void {
+    if (this.inboundPending > 0) this.inboundPending -= 1;
+    if (!this.inboundPaused) return;
+    const high = this.options.inboundHighWaterMark ?? 0;
+    const low = this.options.inboundLowWaterMark
+      ?? Math.floor(high / DEFAULT_WEBSOCKET_INBOUND_LOW_WATER_MARK_DIVISOR);
+    if (this.inboundPending > low) return;
+    const socket = this.socket;
+    if (socket !== null && typeof socket.resume === 'function') {
+      try { socket.resume(); } catch { /* the connection is going; settle below anyway */ }
+    }
+    this.settleInboundPause();
+  }
+
+  /**
+   * Close out a pause: book the time it lasted and clear the flag.  Called
+   * on resume and when the connection goes while paused, so a socket that
+   * dropped mid-pause is not counted as paused forever.
+   */
+  private settleInboundPause(): void {
+    if (!this.inboundPaused) return;
+    this.inboundPaused = false;
+    const pausedSeconds = (performance.now() - this.inboundPausedSince) / 1000;
+    metricsOf(this.system).counter(
+      'websocket_client_inbound_paused_seconds_total', {},
+      { help: 'Cumulative seconds a WebSocket client socket spent paused by its inbound high-water mark.' },
+    ).inc(pausedSeconds);
   }
 }

@@ -418,6 +418,7 @@ const STOCK_LABELS: Readonly<Record<string, ReadonlyArray<string>>> = {
   persistence_projection_stalled: ['projection'],
   router_scatter_gather_resolved_total: ['outcome'],
   router_scatter_gather_latency_seconds: [],
+  websocket_client_inbound_paused_seconds_total: [],
 };
 
 /**

@@ -67,6 +67,8 @@ interface WebsocketClientOptionsType<TOut, TIn> extends BrokerCommonOptionsType 
   pingIntervalMs?:  number;                         // keepalive interval; default off, payload from keepAliveFrame()
   idleTimeoutMs?:   number;                         // read-idle deadline; default 0 (off)
   connectTimeoutMs?: number;                        // connect deadline; default 0 (off)
+  inboundHighWaterMark?: number;                    // pause the socket at this many queued inbound frames; default off
+  inboundLowWaterMark?: number;                     // resume at this many; default a quarter of the high-water mark
 }
 ```
 
@@ -339,6 +341,46 @@ standardmäßig aus.
 annimmt und den Upgrade nie abschließt, den Actor unbegrenzt in
 `connecting`.
 
+## Eingehende Flusskontrolle
+
+Alles, was auf dieser Seite bisher *Backpressure* hieß, regelt die
+**ausgehende** Richtung: den Sende-Buffer, `maxBufferedBytes`, die
+`BackpressurePolicy`.  Auf der Empfangsseite hat der Client per Default
+gar keine Flusskontrolle — jeder Frame wird dekodiert und in dem Moment
+an die Mailbox gereicht, in dem er ankommt.  Ein Peer, der schneller
+publiziert, als `onMessage` abarbeitet, findet nichts, wogegen er drücken
+könnte, und eine begrenzte Mailbox verwirft dann *dekodierte
+Anwendungsnachrichten* — genau das Falsche.
+
+Eine eingehende Hochwassermarke pausiert stattdessen den Socket, sodass
+TCP das Zurückdrücken übernimmt:
+
+```ts
+const webSocketClientOptions = WebsocketClientOptions.create<ClientMessage, ServerMessage>()
+  .withUrl('wss://realtime.example.com/feed')
+  .withInboundHighWaterMark(256)   // frames queued in the mailbox before pause()
+  .withInboundLowWaterMark(64);    // resume() once the backlog is down to this
+```
+
+Gezählt werden dekodierte Frames, die in der Mailbox warten — an den
+Actor gereicht, aber noch nicht an `onMessage`.  An der Hochwassermarke
+wird der Socket pausiert; sobald der Rückstau auf die Niedrigwassermarke
+abgebaut ist, läuft er weiter.  Die Niedrigwassermarke ist per Default
+ein Viertel der hohen, und am ersten freien Platz weiterzulaufen ist
+bewusst nicht der Default: der Socket würde pro Frame zwischen pausiert
+und lesend flattern.
+
+**In der Praxis nur Bun.**  `pause()` und `resume()` gibt es auf dem
+Client-`WebSocket` von Bun 1.4.1+ und weder auf dem WHATWG-`WebSocket`
+von Node noch dem von Deno.  Der Actor prüft den Socket, nicht den
+Runtime-Namen; fehlt das Paar, bleibt es beim Verhalten oben und er sagt
+das beim Verbinden **einmal** — ein Limit, das angewendet aussieht und es
+nicht ist, ist schlimmer als keins.
+
+`websocket_client_inbound_paused_seconds_total` summiert die Zeit, die
+der Socket pausiert war, sodass der Zustand beobachtbar ist statt aus
+einem Stau auf der Gegenseite gefolgert.
+
 ## HOCON-Config
 
 Client-Defaults lassen sich unter
@@ -352,6 +394,8 @@ actor-ts.io.broker.websocket {
   idleTimeoutMs   = 90000
   connectTimeoutMs = 10000
   maxFrameBytes   = 1048576
+  inbound-high-water-mark = 256   # pause the socket at this many queued inbound frames (Bun 1.4.1+)
+  inbound-low-water-mark  = 64    # resume once the backlog is down to this many
   on-invalid-message = "drop"   # drop | hook | disconnect
   reconnect       { initialDelayMs = 500, maxDelayMs = 30000, factor = 2.0, randomFactor = 0.2 }   // maxAttempts omitted = unlimited (the default)
   circuitBreaker  { failureThreshold = 5, resetMs = 30000 }

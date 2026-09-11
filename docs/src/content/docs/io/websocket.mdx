@@ -66,6 +66,8 @@ interface WebsocketClientOptionsType<TOut, TIn> extends BrokerCommonOptionsType 
   pingIntervalMs?:  number;                         // keepalive interval; default off, payload from keepAliveFrame()
   idleTimeoutMs?:   number;                         // read-idle deadline; default 0 (off)
   connectTimeoutMs?: number;                        // connect deadline; default 0 (off)
+  inboundHighWaterMark?: number;                    // pause the socket at this many queued inbound frames; default off
+  inboundLowWaterMark?: number;                     // resume at this many; default a quarter of the high-water mark
 }
 ```
 
@@ -327,6 +329,43 @@ connections in a loop.  Off by default for exactly that reason.
 never completes the upgrade holds the actor in `connecting`
 indefinitely.
 
+## Inbound flow control
+
+Everything on this page called *backpressure* so far governs the
+**outbound** direction: the send buffer, `maxBufferedBytes`, the
+`BackpressurePolicy`.  On the receive side the client has, by default, no
+flow control at all — every frame is decoded and handed to the mailbox the
+instant it arrives.  A peer that publishes faster than `onMessage` drains
+has nowhere to push back to, and a bounded mailbox then drops *decoded
+application messages*, which is the wrong thing to lose.
+
+An inbound high-water mark pauses the socket instead, so TCP does the
+pushing back:
+
+```ts
+const webSocketClientOptions = WebsocketClientOptions.create<ClientMessage, ServerMessage>()
+  .withUrl('wss://realtime.example.com/feed')
+  .withInboundHighWaterMark(256)   // frames queued in the mailbox before pause()
+  .withInboundLowWaterMark(64);    // resume() once the backlog is down to this
+```
+
+The count is decoded frames waiting in the mailbox — handed to the actor
+and not yet handed to `onMessage`.  At the high-water mark the socket is
+paused; once the backlog has drained to the low-water mark it is resumed.
+The low-water mark defaults to a quarter of the high one, and resuming at
+the first free slot is deliberately not the default: it would flap the
+socket between paused and reading once per frame.
+
+**Bun only, in practice.**  `pause()` and `resume()` exist on Bun 1.4.1+'s
+client `WebSocket` and on neither Node's nor Deno's WHATWG one.  The actor
+probes the socket rather than the runtime name; where the pair is absent
+it keeps the behaviour above and says so **once** at connect time,
+because a limit that looks applied and is not is worse than none.
+
+`websocket_client_inbound_paused_seconds_total` accumulates the time the
+socket spent paused, so the condition is observable rather than inferred
+from a stall on the far side.
+
 ## HOCON config
 
 Client defaults can be set under
@@ -340,6 +379,8 @@ actor-ts.io.broker.websocket {
   idleTimeoutMs   = 90000
   connectTimeoutMs = 10000
   maxFrameBytes   = 1048576
+  inbound-high-water-mark = 256   # pause the socket at this many queued inbound frames (Bun 1.4.1+)
+  inbound-low-water-mark  = 64    # resume once the backlog is down to this many
   on-invalid-message = "drop"   # drop | hook | disconnect
   reconnect       { initialDelayMs = 500, maxDelayMs = 30000, factor = 2.0, randomFactor = 0.2 }   // maxAttempts omitted = unlimited (the default)
   circuitBreaker  { failureThreshold = 5, resetMs = 30000 }

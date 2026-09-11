@@ -657,6 +657,12 @@ import { Aside } from '@astrojs/starlight/components';
   (`onBackpressure: 'drop'`, Default) oder wird geschlossen
   (`'close'`).  Broadcasts an viele langsame Clients sind der Ort,
   wo das zubeißt — wähle die Policy, die zu deinem Protokoll passt.
+
+  Das ist ausschließlich die **ausgehende** Richtung — der Puffer der
+  Frames, die auf den Versand warten.  Ein Client, der schneller empfängt,
+  als er verarbeiten kann, ist die andere Richtung und ein eigener Regler:
+  die [eingehende Hochwassermarke](/de/io/websocket/#eingehende-flusskontrolle)
+  am `WebsocketClientActor`.
 </Aside>
 
 ## Wohin als Nächstes
