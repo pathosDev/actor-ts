@@ -66,6 +66,7 @@ type KubernetesApiSeedProviderOptionsType = {
   serviceName:     string;
   systemName:      string;
   port:            number;
+  requestTimeoutMs?: number;                 // ceiling on the API request, default 10 000
   fetchEndpoints?: () => Promise<string[]>;  // override the in-cluster API
   pinnedAddresses?: readonly string[];       // CIDRs the pod IPs must fall inside
   log?: (message: string, error?: unknown) => void;
@@ -78,11 +79,12 @@ type KubernetesApiSeedProviderOptionsType = {
 | `serviceName` | The Service (or Endpoints) name whose ready pods form the cluster.  A DNS-1123 subdomain. |
 | `systemName` | The actor-system name stamped on each discovered address. |
 | `port` | The cluster-transport port on each backing pod. |
+| `requestTimeoutMs` | Ceiling on the one request the in-cluster fetcher makes, in ms.  Default 10 000.  Past it `lookup()` rejects, so the discovery ladder falls through to its next rung instead of hanging on an API server that accepts and never answers.  HOCON: `actor-ts.discovery.kubernetes.request-timeout`. |
 | `fetchEndpoints` | Override the Endpoints-fetch function — defaults to the in-cluster API.  Also lifts the name rules above. |
 | `pinnedAddresses` | CIDRs the discovered pod IPs must fall inside.  Unset means no pinning. |
 | `log` | Reports addresses dropped by `pinnedAddresses`.  Default: no-op. |
 
-For pods running in-cluster, only the last three fields are
+For pods running in-cluster, only the last four fields are
 optional — the framework reads the Endpoints from the standard API
 at `https://kubernetes.default.svc` using the mounted
 ServiceAccount token.  The other four fields are required.

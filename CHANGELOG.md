@@ -2927,6 +2927,43 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`KubernetesApiSeedProvider` bounds its API-server request** (#1524). The
+  in-cluster fetcher issued its `https.request` with no timeout, no signal
+  and no `'timeout'` handler, so an API server that accepted the connection
+  and never answered — a control-plane restart, a `NetworkPolicy` dropping
+  the reply, a stalled admission webhook — produced neither `'error'` nor
+  `'end'` and `lookup()` never settled. Both layers above are written to
+  survive a provider that *throws*; a provider that *hangs* stalled the
+  whole bootstrap, and the discovery ladder never reached the static
+  fallback that exists for exactly this case.
+
+  New `requestTimeoutMs` on `KubernetesApiSeedProviderOptions` (builder
+  `withRequestTimeoutMs`), `kubernetesRequestTimeoutMs` on the auto-discovery
+  options, and the HOCON leaf `actor-ts.discovery.kubernetes.request-timeout`,
+  shipped at **10 s**. The value matches the lease client's
+  `operation-timeout` and is deliberately not shared with it: that number
+  feeds the lease renewal arithmetic, this one bounds a bootstrap poll.
+
+  **The mechanism the issue proposed does not work on Bun, and that was
+  measured rather than assumed.** `https.request`'s `timeout` option — the
+  lease client's own pattern, held up as the correct example — is a socket
+  timeout, and Bun 1.4.2 never arms it while a TLS handshake is pending:
+  against a server that accepts and writes nothing, `timeout: 300` and
+  `req.setTimeout(300)` both never fire on Bun (five seconds waited) while
+  Node fires them at ~620 ms. A stalled handshake is exactly the outage the
+  bound exists for. The fix therefore uses a wall-clock deadline through an
+  `AbortController` whose abort reason is a named error; both runtimes
+  surface it as the `AbortError`'s `cause`, which the rejection unwraps to.
+  The same hole in the lease client is filed as #1529.
+
+  Bound by a test that aims the request at a `net` server that accepts and
+  never writes, asserting the rejection lands within the ceiling and that an
+  `AggregateSeedProvider` then falls through to its next rung. The cap lives
+  in the fixture, because with the bound removed a pending `node:https`
+  handshake keeps bun's per-test timeout from firing at all — `bun test`
+  printed its header and hung until killed. With the fixture cap the same
+  regression is a red test in under two seconds.
+
 - **A mediator that started after its peers never learned their topics**
   (#1193). `12-pubsub-fanout` timed out at 15 s on roughly one hosted run in
   four, always in the same shape: the first burst, published from the node

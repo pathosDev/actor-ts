@@ -1045,6 +1045,18 @@ actor-ts {
     }
 
     kubernetes {
+      # Ceiling on the one HTTPS request the in-cluster fetcher makes to the
+      # API server.  It is a socket timeout, so a handshake that never
+      # completes and a body that stops mid-stream are bounded alike.  Without
+      # it a server that accepts the connection and never answers -- a
+      # control-plane restart, a NetworkPolicy dropping the reply -- hangs
+      # lookup() forever, and the ladder never falls through to its next rung:
+      # every layer above handles a provider that throws, none a provider that
+      # hangs (#1524).  Same value as the lease client's operation-timeout,
+      # deliberately not shared with it -- that one feeds the lease renewal
+      # arithmetic, this one bounds a bootstrap poll.
+      request-timeout = 10s
+
       # namespace -- the namespace whose Endpoints object is read.  Ships no
       # value on purpose, the remote.tcp.advertised-host shape: this key has
       # the CLUSTER_NAMESPACE variable underneath it, and a key that is always
