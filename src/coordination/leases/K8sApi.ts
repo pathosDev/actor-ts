@@ -200,6 +200,26 @@ export interface K8sFetchClient {
  * header.  Returns `{ status, body }` — the caller is responsible for
  * mapping HTTP status to lease semantics (200 ok, 404 missing,
  * 409 conflict).
+ *
+ * `timeoutMs` is a wall-clock ceiling on the whole exchange, held by an
+ * `AbortController` and not by `https.request`'s `timeout` option — the
+ * same measurement that shaped the seed provider's request (#1524).  That
+ * option is a *socket* timeout, and Bun 1.4.2 never arms it while a TLS
+ * handshake is pending: against a server that accepts and writes nothing,
+ * `timeout: 300` and `req.setTimeout(300)` both never fire (five seconds
+ * waited), while Node fires them at ~620 ms.  A stalled handshake is what
+ * a wedged API server looks like from here, and this bound is the one the
+ * renewal loop's in-flight guard reasons from — so on the project's primary
+ * runtime a holder whose API server stopped answering mid-handshake kept
+ * its renewal wedged on one request instead of timing out and losing the
+ * lease, which is the failure the lease exists to bound (#1529).  The
+ * abort signal fires at the deadline on both runtimes, so the socket
+ * timeout is not kept alongside it: an inactivity bound of N ms can never
+ * fire before a wall-clock bound of the same N.
+ *
+ * The abort carries a named reason, which both runtimes surface as the
+ * `AbortError`'s `cause`; the rejection unwraps to it so `renewalPass`
+ * reports which host went quiet and after how long rather than "aborted".
  */
 export async function k8sRequest(
   creds: K8sCredentials,
@@ -217,8 +237,12 @@ const defaultClient: Lazy<Promise<K8sFetchClient>> = Lazy.of(async () => {
   const { URL } = await import(urlModule) as typeof import('node:url');
   return {
     async request(creds: K8sCredentials, options: K8sRequestOptions): Promise<K8sResponse> {
+      const url = new URL(options.path, creds.apiServerUrl);
+      const deadline = new AbortController();
+      const timer = setTimeout(() => deadline.abort(new Error(
+        `k8s request timeout: no answer from ${url.host} within ${options.timeoutMs}ms`,
+      )), options.timeoutMs);
       return new Promise<K8sResponse>((resolve, reject) => {
-        const url = new URL(options.path, creds.apiServerUrl);
         const bodyString = options.body === undefined ? null : JSON.stringify(options.body);
         const headers: Record<string, string> = {
           Authorization: `Bearer ${creds.authToken}`,
@@ -239,10 +263,11 @@ const defaultClient: Lazy<Promise<K8sFetchClient>> = Lazy.of(async () => {
           // lease ought to be considered lost.  The number comes from the
           // caller (`operationTimeoutMs`) rather than sitting here, because
           // the renewal loop's in-flight guard reasons from it.
-          timeout: options.timeoutMs,
+          signal: deadline.signal,
         }, (res) => {
           const chunks: Buffer[] = [];
           res.on('data', (c: Buffer) => chunks.push(c));
+          res.on('error', reject);
           res.on('end', () => {
             const raw = Buffer.concat(chunks).toString('utf8');
             let parsed: unknown = raw;
@@ -253,11 +278,12 @@ const defaultClient: Lazy<Promise<K8sFetchClient>> = Lazy.of(async () => {
             resolve({ status: res.statusCode ?? 0, body: parsed });
           });
         });
-        req.on('error', reject);
-        req.on('timeout', () => { req.destroy(new Error('k8s request timeout')); });
+        req.on('error', (error: Error & { cause?: unknown }) => {
+          reject(error.name === 'AbortError' && error.cause instanceof Error ? error.cause : error);
+        });
         if (bodyString !== null) req.write(bodyString);
         req.end();
-      });
+      }).finally(() => clearTimeout(timer));
     },
   };
 });

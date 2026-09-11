@@ -64,7 +64,7 @@ type KubernetesLeaseOptionsType = {
 | `authToken` | in-cluster | Bearer-Token für den API-Server — ohne Angabe aus `tokenPath` gelesen. Verlangt `apiServerUrl` + `caCert`. |
 | `caCert` | in-cluster | PEM-kodiertes CA-Zertifikat für das TLS des API-Servers — ohne Angabe aus `caPath` gelesen. Verlangt `apiServerUrl` + `authToken`. |
 | `tokenReloadIntervalMs` | `60000` | Wie lange ein vom ServiceAccount-Mount gelesenes Credential wiederverwendet wird, bevor die Token-Datei erneut geprüft wird. Ohne Wirkung auf ein explizit gesetztes `authToken`. |
-| `operationTimeoutMs` | `10000` | Obergrenze für einen einzelnen Request an den API-Server. |
+| `operationTimeoutMs` | `10000` | Obergrenze für einen einzelnen Request an den API-Server — Wall-Clock über den ganzen Austausch, ein TLS-Handshake, den der Server nie abschließt, ist also mit begrenzt. |
 | `leaseNameMaxLength` | `253` | Längster Objektname, der unverändert gesendet wird; ein längeres `name` wird deterministisch gekürzt. Siehe unten. |
 
 Für Pods, die in-cluster laufen, brauchst du nur `name` — das Framework liest
@@ -374,7 +374,12 @@ seither jemand anderes das Objekt modifiziert hat.
 ist eine Wall-Clock-Taktung, kein Budget pro Request: der Default ist
 `ttlMs / 3` — 5 s bei der oben empfohlenen TTL von 15 s — während der
 HTTP-Client selbst einen Timeout von 10 s hat, ein einzelner Request
-also legitim über zwei Takte laufen kann.  Ein Takt, der einen noch
+also legitim über zwei Takte laufen kann.  Dieser Timeout ist eine
+Wall-Clock-Frist über ein Abort-Signal, kein Socket-Timeout: Bun scharf
+den Socket-Timeout nie, solange ein TLS-Handshake aussteht, und ein
+Halter, dessen API-Server mitten im Handshake stehen blieb, hing früher
+mit seinem Renewal an einem einzigen Request fest, statt die Lease zu
+verlieren (#1529).  Ein Takt, der einen noch
 offenen Request vorfindet, wird **übersprungen**, nicht eingereiht: ein
 Renewal trägt nichts, was der nächste nicht auch trägt.  Ohne diesen
 Schutz werden beide Writes aus demselben Snapshot gebaut und tragen

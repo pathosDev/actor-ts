@@ -1026,15 +1026,16 @@ actor-ts {
 
     kubernetes {
       # Ceiling on the one HTTPS request the in-cluster fetcher makes to the
-      # API server.  It is a socket timeout, so a handshake that never
-      # completes and a body that stops mid-stream are bounded alike.  Without
-      # it a server that accepts the connection and never answers -- a
-      # control-plane restart, a NetworkPolicy dropping the reply -- hangs
-      # lookup() forever, and the ladder never falls through to its next rung:
-      # every layer above handles a provider that throws, none a provider that
-      # hangs (#1524).  Same value as the lease client's operation-timeout,
-      # deliberately not shared with it -- that one feeds the lease renewal
-      # arithmetic, this one bounds a bootstrap poll.
+      # API server.  A wall-clock deadline on the whole exchange, not a socket
+      # timeout: Bun never arms the socket one while a TLS handshake is
+      # pending, and a handshake that never completes is the outage this
+      # exists for.  Without it a server that accepts the connection and
+      # never answers -- a control-plane restart, a NetworkPolicy dropping the
+      # reply -- hangs lookup() forever, and the ladder never falls through to
+      # its next rung: every layer above handles a provider that throws, none
+      # a provider that hangs (#1524).  Same value as the lease client's
+      # operation-timeout, deliberately not shared with it -- that one feeds
+      # the lease renewal arithmetic, this one bounds a bootstrap poll.
       request-timeout = 10s
 
       # namespace -- the namespace whose Endpoints object is read.  Ships no
@@ -1125,7 +1126,11 @@ actor-ts {
         # Hard ceiling on one API-server request.  The renewal loop reasons
         # from this number: at the 15s TTL the docs recommend the renewal
         # interval is 5s, so a single request may legitimately span two ticks
-        # and the in-flight guard drops the one that overlaps.
+        # and the in-flight guard drops the one that overlaps.  A wall-clock
+        # deadline on the whole exchange, held by an abort signal and not by
+        # the socket timeout, which Bun never arms while a TLS handshake is
+        # pending -- the guard's arithmetic rests on this ceiling existing
+        # during exactly that stall (#1529).
         operation-timeout = 10s
 
         # Lease object names longer than this are truncated to a stable head
