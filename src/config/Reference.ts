@@ -1265,9 +1265,34 @@ actor-ts {
     #     DevTools server included.
     #
     #       max-connections = 10000
+    #
+    # TLS is off unless the tls block below names a certificate, and off is
+    # the right answer behind a reverse proxy or an ingress that terminates
+    # for you.  Set, the process itself is the TLS endpoint -- Bun.serve,
+    # https/http2 under @hono/node-server, Deno.serve, and Fastify's https
+    # factory option.  Express has no seam for it and REFUSES to bind rather
+    # than serve plain HTTP under a setting that says otherwise.  The three
+    # *-file leaves are paths, read once when this block is; in code
+    # (withTls) the same fields carry PEM contents, never a path.  Client
+    # certificates (request-client-cert, reject-unauthorized) are honoured on
+    # Bun, Node and Fastify; Deno.serve has no client-auth option, so on Deno
+    # request-client-cert is refused rather than silently ignored (#1522).
+    #
+    #   tls {
+    #     cert-file           = "/etc/actor-ts/tls/cert.pem"
+    #     key-file            = "/etc/actor-ts/tls/key.pem"
+    #     ca-file             = "/etc/actor-ts/tls/ca.pem"   # for client-certificate verification
+    #     request-client-cert = false
+    #     reject-unauthorized = true
+    #   }
     server {
       header-timeout  = 60s   # time to receive the complete headers -- the slow-loris guard
       request-timeout = 300s  # time to receive the ENTIRE request; bounds uploads, never responses
+      # HTTP/2 over the TLS socket, HTTP/1.1 staying available on the same
+      # port.  Refused without tls -- h2c is not offered.  Deno negotiates h2
+      # whenever TLS is on and has no knob for it, so there this records
+      # intent rather than deciding.
+      http2           = false
     }
 
     # Per-route CORS defaults for cors(options, routes).  Leaf names are the

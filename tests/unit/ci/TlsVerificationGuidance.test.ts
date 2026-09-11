@@ -283,7 +283,7 @@ const bindingPattern = (): RegExp => new RegExp(
  * the first version of this guard was evaded, whereas the shapes a store or
  * transport legitimately writes are a closed and short list.
  *
- * All four in-tree code sites match one of these, and they are right to — a
+ * Every in-tree code site matches one of these, and they are right to — a
  * guard that also refused them would be reverted, which is its own way of not
  * guarding.
  */
@@ -296,6 +296,22 @@ const SAFE_VALUE_SHAPES: ReadonlyArray<readonly [string, RegExp]> = [
       String.raw`^[A-Za-z_$][\w$]*(?:(?:\?\.|\.)[A-Za-z_$][\w$]*!?|\[[^\]]+\])*`
       + String.raw`(?:\?\.|\.)${VERIFICATION_KNOB}!?(?:\s*\?\?\s*true)?$`,
     ),
+  ],
+  // The two shapes a HOCON leaf for the knob adds (#1522).  Both are as
+  // narrow as they read: the first is the *name* of a leaf under `actor-ts.`
+  // ending in the kebab spelling of the knob — a `ConfigKeys` entry, which
+  // binds no value at all — and the second is exactly the reader that
+  // forwards what the operator wrote at that leaf, or leaves it unset.
+  // Neither admits a literal; a `false` still has to be written by the
+  // deployment, in its own file, which is the same line the forward above
+  // draws for a value written in code.
+  [
+    'the name of a HOCON leaf for the knob, which binds no value',
+    /^'actor-ts\.[a-z0-9.-]+\.reject-unauthorized'$/,
+  ],
+  [
+    'a forward of the configured value, read by that leaf or left unset',
+    /^config\.hasPath\(keys\.rejectUnauthorized\) \? config\.getBoolean\(keys\.rejectUnauthorized\) : undefined$/,
   ],
 ];
 
@@ -500,6 +516,11 @@ const SAFE_SPELLINGS: ReadonlyArray<readonly [string, string]> = [
   ['a type member, which is not a value at all', 'type Tls = { readonly rejectUnauthorized?: boolean };'],
   ["a forward of the caller's own value", 'tls = { rejectUnauthorized: options.tls.rejectUnauthorized };'],
   ['a forward defaulting safe', 'tls = { rejectUnauthorized: options.tls!.rejectUnauthorized ?? true };'],
+  ['the name of a HOCON leaf', "tls: { rejectUnauthorized: 'actor-ts.http.server.tls.reject-unauthorized' },"],
+  [
+    'a forward of the configured value',
+    'tls = { rejectUnauthorized: config.hasPath(keys.rejectUnauthorized) ? config.getBoolean(keys.rejectUnauthorized) : undefined };',
+  ],
 ];
 
 /**

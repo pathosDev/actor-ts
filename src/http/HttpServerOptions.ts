@@ -27,8 +27,23 @@
  * alone*, which is not the same as any number this file could name — see the
  * constants below for why there are only two.
  */
+import type { TlsTransportOptionsType } from '../runtime/tcp/TcpBackend.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+
+/**
+ * Whether the listening socket negotiates HTTP/2 — `false`.
+ *
+ * Off because it is meaningless without {@link HttpServerOptionsType.tls}
+ * and the validator refuses the pair: this framework does not do h2c.
+ * With TLS on, `true` offers `h2` through ALPN and keeps HTTP/1.1 on the
+ * same port for a client that does not — measured on Bun 1.4.2 (`Bun.serve`
+ * `http2: true`) and Node 26.7 (`http2.createSecureServer` +
+ * `allowHTTP1`), a `node:http2` client negotiates `h2` and an `https`
+ * client still gets `1.1`.  Deno negotiates h2 whenever TLS is on and has
+ * no knob for it, so there the flag records intent rather than deciding.
+ */
+export const DEFAULT_HTTP_SERVER_HTTP2 = false;
 
 /**
  * Time to receive a request's complete header block — 60 s.
@@ -137,7 +152,44 @@ export type HttpServerOptionsType = {
    * DevTools when it is attached to the same server.
    */
   readonly maxConnections?: number;
+  /**
+   * Terminate TLS on the listening socket itself.  Unset — the default —
+   * serves plain HTTP, which is every release before #1522 and remains the
+   * right answer behind a reverse proxy or an ingress that terminates for
+   * you.  Set, the process is the TLS endpoint: `Bun.serve({ tls })`,
+   * `https.createServer` / `http2.createSecureServer` under
+   * `@hono/node-server`, `Deno.serve({ cert, key })`, and Fastify's
+   * `{ https }` factory option.  Express has no seam for it and refuses
+   * rather than serving plain HTTP under a setting that says otherwise.
+   *
+   * The vocabulary is the raw TCP transport's ({@link HttpTlsOptionsType}):
+   * PEM contents or DER bytes, never a file path — the HOCON leaves
+   * `tls.cert-file` / `tls.key-file` / `tls.ca-file` are the paths, read
+   * once when the block is.
+   */
+  readonly tls?: HttpTlsOptionsType;
+  /**
+   * Negotiate HTTP/2 over the TLS socket, keeping HTTP/1.1 available on the
+   * same port.  Default {@link DEFAULT_HTTP_SERVER_HTTP2}.  Refused without
+   * {@link tls}: h2c is not on the table.
+   */
+  readonly http2?: boolean;
 };
+
+/**
+ * What {@link HttpServerOptionsType.tls} carries — the server-side subset of
+ * the TCP transport's TLS options, so the two halves of the process speak
+ * one vocabulary.  `serverName` is the one field left out: it is the SNI a
+ * *client* sends, and a listening socket has no use for it.
+ *
+ * `cert` and `key` are both required once the object exists; the validator
+ * says so, because the type cannot without making `withTls({ cert })` a
+ * compile error that reads worse than the runtime one.
+ */
+export type HttpTlsOptionsType = Pick<
+  TlsTransportOptionsType,
+  'cert' | 'key' | 'ca' | 'requestClientCert' | 'rejectUnauthorized'
+>;
 
 /** Fluent builder for {@link HttpServerOptionsType}. */
 export class HttpServerOptionsBuilder extends OptionsBuilder<HttpServerOptionsType> {
@@ -164,6 +216,16 @@ export class HttpServerOptionsBuilder extends OptionsBuilder<HttpServerOptionsTy
   /** Concurrent connections accepted before new ones are closed.  Unset is unlimited. */
   withMaxConnections(connections: number): this {
     return this.set('maxConnections', connections);
+  }
+
+  /** Terminate TLS on the listening socket — PEM or DER, never a path.  Unset serves plain HTTP. */
+  withTls(tls: HttpTlsOptionsType): this {
+    return this.set('tls', tls);
+  }
+
+  /** Negotiate HTTP/2 over TLS, HTTP/1.1 staying available on the same port.  Refused without `withTls`. */
+  withHttp2(enabled = true): this {
+    return this.set('http2', enabled);
   }
 }
 
@@ -193,6 +255,34 @@ export class HttpServerOptionsValidator extends OptionsValidator<HttpServerOptio
     this.nonNegativeNumber('headerTimeoutMs');
     this.nonNegativeNumber('requestTimeoutMs');
     this.positiveIntOrUnbounded('maxConnections', s.maxConnections);
+    this.tlsRules(s);
+  }
+
+  /**
+   * The two incoherent shapes, refused at `bind()` rather than discovered at
+   * the first handshake.  A certificate without its key (or the reverse)
+   * cannot open a listener anywhere; `http2` without `tls` would be h2c on
+   * Bun, which accepts it, and an error on Node, which does not — and this
+   * framework offers neither.
+   *
+   * The `tls` rules deliberately pass no value: `OptionsError` carries it as
+   * a property and the message is logged at ERROR, and the object holds the
+   * private key.  The reasons name the missing half, which is all a
+   * diagnostic needs (the same line #590 drew for a URL's password).
+   */
+  private tlsRules(s: Partial<HttpServerOptionsType>): void {
+    if (s.tls !== undefined) {
+      if (!s.tls.cert && !s.tls.key) {
+        this.fail('tls', 'needs cert and key — PEM contents or DER bytes, not file paths');
+      } else if (!s.tls.cert) {
+        this.fail('tls', 'has a key but no cert');
+      } else if (!s.tls.key) {
+        this.fail('tls', 'has a cert but no key');
+      }
+    }
+    if (s.http2 === true && s.tls === undefined) {
+      this.fail('http2', 'needs tls — HTTP/2 is negotiated through ALPN on a TLS socket, and h2c is not offered', s.http2);
+    }
   }
 
   /**

@@ -171,6 +171,12 @@ new ExpressBackend(expressBackendOptions);
 Backed by Node's `https` module.  Same caveats as the Fastify
 backend — typically TLS terminates at the load balancer.
 
+This is the **only** way to terminate TLS on Express: `app.listen()` is
+`http.createServer` and nothing else, so `HttpServerOptions.withTls(...)`
+and `withHttp2()` — which the Hono and Fastify backends honour — are
+**refused** here at `bind()`.  The alternative was to bind plain HTTP
+under a setting that says TLS, and that is the one outcome ruled out.
+
 ## Peer dependency
 
 ```bash

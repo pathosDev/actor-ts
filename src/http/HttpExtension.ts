@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { match } from 'ts-pattern';
 import type { ActorSystem } from '../ActorSystem.js';
 import type { Config } from '../config/Config.js';
@@ -13,10 +14,11 @@ import { HttpClient } from './HttpClient.js';
 import type { HttpClientOptions, HttpClientOptionsType, HttpRedirectMode } from './HttpClientOptions.js';
 import {
   DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS,
+  DEFAULT_HTTP_SERVER_HTTP2,
   DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS,
   HttpServerOptionsValidator,
 } from './HttpServerOptions.js';
-import type { HttpServerOptions, HttpServerOptionsType } from './HttpServerOptions.js';
+import type { HttpServerOptions, HttpServerOptionsType, HttpTlsOptionsType } from './HttpServerOptions.js';
 import { requestIdOf } from './middleware/RequestId.js';
 import { resolveSecurityHeaders } from './middleware/SecurityHeaders.js';
 import type { SecurityHeadersOptions } from './middleware/SecurityHeadersOptions.js';
@@ -159,7 +161,25 @@ export class HttpExtension implements Extension {
         return this;
       },
       async bind(routes: Route): Promise<ServerBinding> {
-        const active: HttpServerBackend = backend ?? await backendFromConfig(system.config);
+        // Resolved first, and once: this is the only place the explicit layer
+        // and a system to read config from are both in scope.  It has to
+        // precede the backend, not merely `listen()`, because Fastify takes
+        // TLS and HTTP/2 as *factory* options — a backend built here without
+        // them could not be retrofitted at `listen()` (#1522).  Validating
+        // here also moves an OptionsError from a malformed policy to bind()
+        // rather than to the first connection that trips the bound, which is
+        // where a configuration error belongs.
+        const resolvedServerOptions = mergeOptions<HttpServerOptionsType>(
+          {
+            headerTimeoutMs: DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS,
+            requestTimeoutMs: DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS,
+            http2: DEFAULT_HTTP_SERVER_HTTP2,
+          },
+          httpServerOptionsFromConfig(system.config),
+          (serverOptions ?? {}) as Partial<HttpServerOptionsType>,
+        );
+        new HttpServerOptionsValidator().validate(resolvedServerOptions);
+        const active: HttpServerBackend = backend ?? await backendFromConfig(system.config, resolvedServerOptions);
         // The one place a route tree and an ActorSystem are both in scope, so
         // the one place a directive with a HOCON layer can be resolved (#878).
         const compiled = compile(routes, [], system.config);
@@ -320,22 +340,6 @@ export class HttpExtension implements Extension {
           active.setErrorHandler(errorHandler);
         }
 
-        // Resolved here, once, for the same reason the WebSocket policy above
-        // is: this is the only place the explicit layer and a system to read
-        // config from are both in scope, and the backend needs the numbers one
-        // moment later — at listen(), where they are written onto the server
-        // it just created.  Validating here also moves an OptionsError from a
-        // malformed policy to bind() rather than to the first connection that
-        // trips the bound, which is where a configuration error belongs.
-        const resolvedServerOptions = mergeOptions<HttpServerOptionsType>(
-          {
-            headerTimeoutMs: DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS,
-            requestTimeoutMs: DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS,
-          },
-          httpServerOptionsFromConfig(system.config),
-          (serverOptions ?? {}) as Partial<HttpServerOptionsType>,
-        );
-        new HttpServerOptionsValidator().validate(resolvedServerOptions);
         const raw = await active.listen(host, port, resolvedServerOptions);
         // Wrap `unbind` so it's idempotent — both the auto-registered
         // CoordinatedShutdown task and any manual caller can invoke it
@@ -442,13 +446,22 @@ function logRouteFailure(
  * `import { ActorSystem } from 'actor-ts'` pay Fastify's parse cost (#1005)
  * — the lazy import moves it to the first bind, on an already-async path.
  */
-async function backendFromConfig(config: Config): Promise<HttpServerBackend> {
-  if (!config.hasPath(ConfigKeys.http.backend)) {
-    return new (await import('./backend/FastifyBackend.js')).FastifyBackend();
-  }
+async function backendFromConfig(
+  config: Config,
+  serverOptions: Partial<HttpServerOptionsType>,
+): Promise<HttpServerBackend> {
+  // Fastify alone takes TLS and HTTP/2 at construction — `Fastify({ https,
+  // http2 })` — so the framework-built instance is handed the resolved
+  // answer here.  A `useBackend(new FastifyBackend(…))` never reaches this
+  // function and has to carry its own; `FastifyBackend.listen` says so.
+  const fastify = async (): Promise<HttpServerBackend> => {
+    const { FastifyBackend, fastifyFactoryOptions } = await import('./backend/FastifyBackend.js');
+    return new FastifyBackend(fastifyFactoryOptions(serverOptions));
+  };
+  if (!config.hasPath(ConfigKeys.http.backend)) return fastify();
   const name = config.getString(ConfigKeys.http.backend);
   return await match(name)
-    .with('fastify', async () => new (await import('./backend/FastifyBackend.js')).FastifyBackend())
+    .with('fastify', fastify)
     .with('express', async () => new (await import('./backend/ExpressBackend.js')).ExpressBackend())
     .with('hono', async () => new (await import('./backend/HonoBackend.js')).HonoBackend())
     .otherwise(() => {
@@ -547,6 +560,44 @@ function httpServerOptionsFromConfig(config: Config): Partial<HttpServerOptionsT
     headerTimeoutMs: config.hasPath(keys.headerTimeout) ? config.getDuration(keys.headerTimeout) : undefined,
     requestTimeoutMs: config.hasPath(keys.requestTimeout) ? config.getDuration(keys.requestTimeout) : undefined,
     maxConnections: config.hasPath(keys.maxConnections) ? config.getInt(keys.maxConnections) : undefined,
+    http2: config.hasPath(keys.http2) ? config.getBoolean(keys.http2) : undefined,
+    tls: httpTlsFromConfig(config),
+  };
+}
+
+/**
+ * The `tls` block, with its three `*-file` leaves read as PEM.
+ *
+ * Read here, once, rather than deferred to `listen()`: a missing or
+ * unreadable file is a configuration error and belongs with the other
+ * `ConfigError`s, at the moment the block is read, not at the first
+ * handshake.  `undefined` when the block names no certificate, so an absent
+ * block and a present-but-empty one both mean plain HTTP; a block naming
+ * only one of the pair still comes back with the one it has, and
+ * `HttpServerOptionsValidator` is what refuses it — naming the field, as
+ * every other bad value in this block is refused.
+ */
+function httpTlsFromConfig(config: Config): HttpTlsOptionsType | undefined {
+  const keys = ConfigKeys.http.server.tls;
+  const hasCert = config.hasPath(keys.certFile);
+  const hasKey = config.hasPath(keys.keyFile);
+  if (!hasCert && !hasKey) return undefined;
+  const pem = (key: string): string => {
+    const file = config.getString(key);
+    try {
+      return readFileSync(file, 'utf8');
+    } catch (error) {
+      throw new ConfigError(`${key} = "${file}" could not be read: ${(error as Error).message}`);
+    }
+  };
+  return {
+    cert: hasCert ? pem(keys.certFile) : undefined,
+    key: hasKey ? pem(keys.keyFile) : undefined,
+    ca: config.hasPath(keys.caFile) ? pem(keys.caFile) : undefined,
+    requestClientCert: config.hasPath(keys.requestClientCert) ? config.getBoolean(keys.requestClientCert) : undefined,
+    // Forwarded as the operator wrote it.  `false` at that leaf leaves a
+    // client certificate unverified; the answer is `ca-file` instead.
+    rejectUnauthorized: config.hasPath(keys.rejectUnauthorized) ? config.getBoolean(keys.rejectUnauthorized) : undefined,
   };
 }
 

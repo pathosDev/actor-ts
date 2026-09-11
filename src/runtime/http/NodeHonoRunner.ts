@@ -1,6 +1,8 @@
 import { Lazy } from '../../util/Lazy.js';
 import type {
   FetchHandler,
+  HonoServeOptions,
+  HonoServeTls,
   HonoServerHandle,
   HonoServerRunner,
   HonoWebsocketBridge,
@@ -17,8 +19,9 @@ import type {
  * runtime (the factory dispatches elsewhere).
  */
 export class NodeHonoRunner implements HonoServerRunner {
-  async serve(options: { host: string; port: number; fetch: FetchHandler; serveOptions?: object }): Promise<HonoServerHandle> {
+  async serve(options: HonoServeOptions): Promise<HonoServerHandle> {
     const mod = await loadHonoNodeServer();
+    const secure = options.tls ? await nodeSecureServerFactory(options.tls, options.http2 === true) : {};
 
     // `serve()` returns a node:http Server; we wait for its 'listening'
     // event (via the optional callback) to know the bound port.
@@ -28,6 +31,7 @@ export class NodeHonoRunner implements HonoServerRunner {
           hostname: options.host,
           port: options.port,
           fetch: options.fetch,
+          ...secure,
         }, (info) => {
           resolve(Object.assign(serveResult, { _info: info }) as unknown as NodeHttpServer);
         });
@@ -167,9 +171,49 @@ interface NodeHttpServer {
   address?(): { port: number; address: string } | string | null;
 }
 
+/**
+ * `@hono/node-server`'s `createServer` / `serverOptions` pair: which
+ * `node:*` factory builds the listener and what it is handed.  Typed as the
+ * slice this runner writes, since the module is an optional peer.
+ */
+type NodeServerFactory = {
+  readonly createServer: (options: object, listener?: unknown) => NodeHttpServer;
+  readonly serverOptions: object;
+};
+
+/**
+ * Pick the `node:*` factory a TLS listener needs.
+ *
+ * TLS alone is `https.createServer`; TLS with HTTP/2 is
+ * `http2.createSecureServer` with `allowHTTP1`, which is the one shape that
+ * negotiates `h2` through ALPN *and* keeps HTTP/1.1 on the same port —
+ * measured on Node 26.7: a `node:http2` client gets `alpn=h2`, an `https`
+ * client gets `httpVersion=1.1`, both `200`, against one listener.  Without
+ * `allowHTTP1` the second would be refused with "no application protocol",
+ * which is exactly what the plain `https` server does when an h2 client
+ * tries it (#1522).
+ *
+ * `requestClientCert` becomes `requestCert`, the `node:tls` spelling.
+ */
+async function nodeSecureServerFactory(tls: HonoServeTls, http2: boolean): Promise<NodeServerFactory> {
+  const serverOptions: Record<string, unknown> = { cert: tls.cert, key: tls.key };
+  if (tls.ca !== undefined) serverOptions.ca = tls.ca;
+  if (tls.requestClientCert !== undefined) serverOptions.requestCert = tls.requestClientCert;
+  if (tls.rejectUnauthorized !== undefined) serverOptions.rejectUnauthorized = tls.rejectUnauthorized;
+  if (http2) {
+    const { createSecureServer } = await import('node:http2');
+    return {
+      createServer: createSecureServer as unknown as NodeServerFactory['createServer'],
+      serverOptions: { ...serverOptions, allowHTTP1: true },
+    };
+  }
+  const { createServer } = await import('node:https');
+  return { createServer: createServer as unknown as NodeServerFactory['createServer'], serverOptions };
+}
+
 interface HonoNodeServerModule {
   serve(
-    options: { hostname: string; port: number; fetch: FetchHandler },
+    options: { hostname: string; port: number; fetch: FetchHandler } & Partial<NodeServerFactory>,
     onReady?: (info: { address: string; port: number }) => void,
   ): NodeHttpServer;
 }

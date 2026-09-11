@@ -119,7 +119,8 @@ import {
   DEFAULT_HTTP_CLIENT_REDIRECT_MODE,
   DEFAULT_HTTP_CLIENT_TIMEOUT_MS,
 } from '../../../src/http/HttpClientOptions.js';
-import { DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS, DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS } from '../../../src/http/HttpServerOptions.js';
+import { DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS,
+  DEFAULT_HTTP_SERVER_HTTP2, DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS } from '../../../src/http/HttpServerOptions.js';
 import { DEFAULT_CLEANUP_MS, DEFAULT_MAX_ENTRIES, DEFAULT_TIME_TO_IDLE_MS, DEFAULT_TIME_TO_LIVE_MS } from '../../../src/cache/InMemoryCacheOptions.js';
 import { DEFAULT_MEMCACHED_SERVERS } from '../../../src/cache/MemcachedCacheOptions.js';
 import { DEFAULT_REDIS_DB } from '../../../src/cache/RedisCacheOptions.js';
@@ -618,6 +619,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // carry no leaf, so there is nothing here to assert about them.
   { key: 'actor-ts.http.server.header-timeout', kind: 'duration', constant: DEFAULT_HTTP_SERVER_HEADER_TIMEOUT_MS },
   { key: 'actor-ts.http.server.request-timeout', kind: 'duration', constant: DEFAULT_HTTP_SERVER_REQUEST_TIMEOUT_MS },
+  { key: 'actor-ts.http.server.http2', kind: 'bool', constant: DEFAULT_HTTP_SERVER_HTTP2 },
 
   /* --- cache --- */
   { key: 'actor-ts.cache.in-memory.max-entries', kind: 'int', constant: DEFAULT_MAX_ENTRIES },

@@ -89,9 +89,50 @@ the whole server does.
 
 ## Operational environment
 
-- **TLS terminates at a proxy.** Set [HSTS](/http/middleware/security-headers/)
-  regardless — browsers ignore it over plain HTTP. Don't gate security
+- **TLS terminates at a proxy — or in the process, and the page never said
+  which.** Behind nginx, Caddy or an ingress the app speaks plain HTTP and
+  that stays the production answer: the terminator holds the certificate, and
+  the app sees `X-Forwarded-Proto`, which it never trusts for anything
+  security-relevant on its own.  Two things in this layer assume the https
+  world exists regardless: `Csrf` compares origins against `https` by
+  default, and the `__Host-` cookie prefix it uses requires `Secure`, which
+  is meaningless over plain HTTP.  Both are correct behind a terminator and
+  both fail loudly on a bare quickstart — which is what
+  [`withTls`](/http/overview/#tls-and-http2) exists for: the process itself
+  terminates, on Bun, Node and Deno, so a `Secure` cookie can be exercised
+  without standing up a proxy.  Set [HSTS](/http/middleware/security-headers/)
+  either way — browsers ignore it over plain HTTP.  Don't gate security
   headers on a scheme the app can't see.
+
+  The whole of a minimal terminator, for an app bound with
+  `system.http(8080)` — Caddy provisions the certificate itself and sets
+  `X-Forwarded-Proto` on its own:
+
+  ```text title="Caddyfile"
+  example.com {
+      reverse_proxy 127.0.0.1:8080
+  }
+  ```
+
+  ```nginx title="nginx.conf (server block)"
+  server {
+      listen 443 ssl;
+      server_name example.com;
+      ssl_certificate     /etc/ssl/example.com.pem;
+      ssl_certificate_key /etc/ssl/example.com.key;
+      location / {
+          proxy_pass http://127.0.0.1:8080;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+      }
+  }
+  ```
+
+  What the forwarded headers do here: `X-Forwarded-For` is read only by
+  [`IpAllowlist`](/http/middleware/ip-allowlist/), and only once you have
+  named the proxies; `X-Forwarded-Proto` is read by nothing — `Csrf` gets
+  the scheme from `expectedScheme` instead, precisely because a forwarded
+  scheme is set by whoever sends the request.
 - **Trusting client IPs.** `req.remoteAddress` is the socket peer, not a
   spoofable `X-Forwarded-For` — and "does my proxy overwrite the header" is
   the wrong question, because NGINX, AWS ALB and Cloudflare all **append**

@@ -11,6 +11,60 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **TLS termination and HTTP/2 on the HTTP backends, through one option
+  shape** (#1522, and the code half of #1173). `HttpServerOptions.withTls({
+  cert, key, ca?, requestClientCert?, rejectUnauthorized? })` makes the
+  process itself the TLS endpoint, and `withHttp2()` offers `h2` through
+  ALPN with HTTP/1.1 kept on the same port. The vocabulary is the raw TCP
+  transport's — PEM contents or DER bytes, never a path; from HOCON the
+  same fields are paths, `actor-ts.http.server.tls.{cert-file,key-file,
+  ca-file,request-client-cert,reject-unauthorized}`, read once when the
+  block is, plus `actor-ts.http.server.http2 = false`. Off unless set:
+  behind a terminator plain HTTP stays the production answer, and the
+  security page now says so, alongside what `Csrf` and `__Host-` cookies
+  need — which was #1173's complaint.
+
+  **Measured on all three runtimes, and asserted through what a client
+  negotiated rather than what an option was set to.** Hono hands the pair
+  to its runtime's runner: `Bun.serve({ tls, http2 })`,
+  `https.createServer` / `http2.createSecureServer` + `allowHTTP1` under
+  `@hono/node-server`, `Deno.serve({ cert, key })`. A `node:http2` client
+  gets `alpn=h2` and an `https` client still gets `1.1`, against one
+  listener, on Bun and Node; Deno negotiates h2 whenever TLS is on and has
+  no knob, so there the flag records intent. `Bun.serve` learned `http2` in
+  1.4.1 while the `engines` floor is 1.3.0, so on an older Bun the runner
+  refuses the flag rather than serving HTTP/1.1 under it. Every client in
+  the tests verifies against the test CA in `tests/fixtures/tls/` — never
+  `rejectUnauthorized: false` — because "the process is the TLS endpoint" is
+  the claim, and the cross-runtime smoke case proves it on real Node and
+  real Deno.
+
+  **The validator refuses the incoherent shapes at `bind()`.** `http2`
+  without `tls` — h2c is not offered, though Bun would accept it; a
+  certificate without its key or the reverse. And two backends refuse
+  rather than degrade: **Fastify** takes TLS as a *factory* option, so
+  `bind()` now resolves the server options *before* constructing the
+  framework-built backend and hands them in, while a backend you construct
+  yourself needs `fastifyFactoryOptions(serverOptions)` and is refused at
+  `bind()` if handed `withTls` without it; **Express** has no seam at all and
+  refuses both settings. Serving plain HTTP under a setting that says TLS
+  is the one outcome ruled out everywhere. Client certificates are honoured
+  on Bun, Node and Fastify; `Deno.serve` has no such option, so on Deno
+  `requestClientCert` is refused rather than silently ignored.
+
+  Two things the work turned up and fixed on the way. The Fastify page had
+  been documenting `new FastifyBackend({ tls: { cert, key } })` in both
+  languages — `tls` is not a Fastify option, it was spread in and ignored, so
+  the server that page described never terminated TLS. And `DenoHonoRunner`
+  reported the *requested* port back rather than the bound one, so a
+  `port: 0` bind on Deno told every caller port 0 — which `node:https`
+  reads as 443 — and the other smoke cases had been reserving a port by hand
+  to avoid it. It now reports `Deno.serve`'s `addr.port`.
+
+  Each seam was broken in turn and only its own case went red: the Bun
+  `http2` passthrough, the Node factory choice, the h2c refusal, the Fastify
+  guard and the Express guard.
+
 - **Receiver-side flow control on `WebsocketClientActor`** (#1523).
   `withInboundHighWaterMark(frames)` pauses the socket once that many decoded
   inbound frames are waiting in the mailbox, and `withInboundLowWaterMark`

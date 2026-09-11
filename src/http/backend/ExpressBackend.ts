@@ -237,6 +237,17 @@ export class ExpressBackend implements HttpServerBackend {
   }
 
   async listen(host: string, port: number, serverOptions?: Partial<HttpServerOptionsType>): Promise<ServerBinding> {
+    // Express has no seam for TLS: `app.listen()` is `http.createServer` and
+    // nothing else, so the honest outcomes are bring-your-own
+    // `https.createServer(app)` — documented — or a refusal.  Serving plain
+    // HTTP under a setting that says TLS is the one outcome ruled out (#1522).
+    if (serverOptions?.tls !== undefined || serverOptions?.http2 === true) {
+      throw new Error(
+        'ExpressBackend cannot terminate TLS or negotiate HTTP/2: app.listen() is http.createServer and '
+        + 'nothing else.  Wrap the app in https.createServer / http2.createSecureServer yourself, or use the '
+        + 'Hono or Fastify backend, where HttpServerOptions.tls and http2 are honoured.',
+      );
+    }
     if (!this.app) this.app = await this.createExpressApp();
     // Register our raw-body middleware first so routes see req.rawBody.
     this.app.use(this.rawBodyMiddleware());
