@@ -24,9 +24,12 @@ import { KubernetesApiSeedProviderOptions } from '../../../src/discovery/Kuberne
  *
  * A bare `net` server that accepts and writes nothing is that API server: the
  * HTTPS client sends its ClientHello and waits, and nothing about the stall
- * depends on a certificate that never gets exchanged.  The request's timeout
- * is a *socket* timeout, so the stalled handshake is bounded the same way a
- * stalled body would be.
+ * depends on a certificate that never gets exchanged.  The ceiling is a
+ * wall-clock deadline on the whole exchange, not the request's *socket*
+ * timeout — Bun never arms that one while the handshake is pending, which is
+ * why the stalled handshake and a stalled body are bounded alike only through
+ * the abort signal (measured in `requestEndpoints`' JSDoc; the lease client
+ * had the same hole, #1529).
  */
 
 /** Well under the default, so the timer is what settles the request and not anything else. */
@@ -86,10 +89,9 @@ describe('KubernetesApiSeedProvider — a request that is never answered (#1524)
 
     await expect(settlesWithin(outcome, CEILING_MS + SLACK_MS)).rejects.toThrow(/no answer from 127\.0\.0\.1:\d+ within 300ms/);
     // Rejected because the ceiling fired, not because something else failed
-    // first: fast enough to be the timer, and not so fast it was a refusal.
-    const elapsed = performance.now() - started;
-    expect(elapsed).toBeGreaterThanOrEqual(CEILING_MS * 0.5);
-    expect(elapsed).toBeLessThan(CEILING_MS + SLACK_MS);
+    // first: not so fast it was a refusal.  Only the lower bound — the
+    // fixture cap above already holds the upper one (#1338).
+    expect(performance.now() - started).toBeGreaterThanOrEqual(CEILING_MS * 0.5);
   }, CEILING_MS + SLACK_MS + 2_000);
 
   test('the discovery ladder falls through to its next rung', async () => {

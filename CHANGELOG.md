@@ -3017,6 +3017,37 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`KubernetesLease`'s `operation-timeout` holds through a stalled TLS
+  handshake** (#1529). The lease client bounded each API-server request with
+  `https.request`'s `timeout` option — a *socket* timeout that Bun 1.4.2
+  never arms while a TLS handshake is pending, the same measurement #1524
+  made for the seed provider: against a server that accepts the connection
+  and writes nothing, `timeout: 300` and `req.setTimeout(300)` never fire on
+  Bun (five seconds waited) while Node fires them at ~620 ms. It matters more
+  here: the renewal loop's in-flight guard drops a tick that overlaps a
+  request still on the wire on the assumption that the request has a ceiling,
+  so a holder whose API server stalled mid-handshake kept its renewal wedged
+  on one PUT instead of timing out, firing `onLost` and letting a replica take
+  over — the failure the lease exists to bound. The ceiling is now a
+  wall-clock deadline through an `AbortController`, the abort reason a named
+  error both runtimes surface as the `AbortError`'s `cause`, so `onLost`
+  reads `renewal error: k8s request timeout: no answer from <host> within
+  <n>ms`. The socket timeout is not kept alongside it: an inactivity bound of
+  N ms can never fire before a wall-clock bound of the same N.
+
+  `tests/unit/coordination/K8sApiRequestTimeout.test.ts` aims the real
+  `node:https` client at a `net` server that accepts and never writes, once
+  for the request and once through a holder whose acquire is answered by a
+  stand-in and whose renewal PUT alone goes to the socket — `onLost` fires
+  within the budget, `checkAlive()` reads false. Both cases cap in the fixture,
+  because with the bound removed a pending handshake keeps bun's per-test
+  timeout from firing at all; against the old client both go red as `HUNG`
+  rather than hanging the runner. On the way: `reference.conf`'s
+  `request-timeout` comment from #1524 still called that ceiling a socket
+  timeout, which is precisely the mechanism it had replaced — corrected in
+  all three copies, with the `operation-timeout` comment now saying which
+  mechanism holds and why.
+
 - **`KubernetesApiSeedProvider` bounds its API-server request** (#1524). The
   in-cluster fetcher issued its `https.request` with no timeout, no signal
   and no `'timeout'` handler, so an API server that accepted the connection

@@ -64,7 +64,7 @@ type KubernetesLeaseOptionsType = {
 | `authToken` | in-cluster | Bearer token for the API server — read from `tokenPath` when unset. Requires `apiServerUrl` + `caCert`. |
 | `caCert` | in-cluster | PEM-encoded CA cert for the API server's TLS — read from `caPath` when unset. Requires `apiServerUrl` + `authToken`. |
 | `tokenReloadIntervalMs` | `60000` | How long a credential read from the ServiceAccount mount is reused before the token file is checked again. No effect on an explicit `authToken`. |
-| `operationTimeoutMs` | `10000` | Ceiling on one API-server request. |
+| `operationTimeoutMs` | `10000` | Ceiling on one API-server request — wall-clock, over the whole exchange, so a TLS handshake the server never completes is bounded too. |
 | `leaseNameMaxLength` | `253` | Longest object name sent unchanged; a longer `name` is truncated deterministically. See below. |
 
 For pods running in-cluster you only need `name` — the framework reads the API
@@ -362,7 +362,11 @@ else mutated the object since.
 is a wall-clock cadence, not a per-request budget: the default is
 `ttlMs / 3` — 5 s at the 15 s TTL recommended above — while the HTTP
 client's own timeout is 10 s, so a single request may legitimately span
-two ticks.  A tick that finds one still outstanding is **skipped**, not
+two ticks.  That timeout is a wall-clock deadline held by an abort
+signal, not a socket timeout: Bun never arms the socket one while a TLS
+handshake is pending, and a holder whose API server stalled mid-handshake
+used to keep its renewal wedged on one request instead of losing the
+lease (#1529).  A tick that finds one still outstanding is **skipped**, not
 queued: a renewal carries nothing the next one will not carry.  Without
 that guard the two writes are built from the same snapshot and carry
 the same `resourceVersion`, and the API server rejects one of the
