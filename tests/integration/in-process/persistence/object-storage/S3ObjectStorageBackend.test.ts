@@ -4,7 +4,7 @@
  * stays green even without MinIO running.
  *
  * To run locally:
- *   docker run --rm -p 9000:9000 minio/minio server /data
+ *   docker run --rm -p 9000:9000 quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
  *   S3_ENDPOINT=http://localhost:9000 \
  *   S3_ACCESS_KEY=minioadmin \
  *   S3_SECRET_KEY=minioadmin \

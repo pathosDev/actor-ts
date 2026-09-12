@@ -6,7 +6,10 @@
 #   - It boots in ~1-2s vs LocalStack's 10-15s, so CI minutes stay tight.
 #   - Its S3 implementation is the closest to AWS spec — fewer
 #     quirks-by-MinIO-only than R2 / B2.
-#   - The Bitnami / minio/minio images are stable and tagged.
+#   - MinIO's own registry, quay.io/minio/minio, still publishes the
+#     image.  Docker Hub's minio/minio repository was removed in
+#     2026-09 (the pull fails with "access denied", the API answers
+#     404), which took the nightly run down before a test ran (#1531).
 #
 # Run locally:
 #   bun run test:integration:broker s3
@@ -25,10 +28,15 @@ services:
   # runner itself (it's `bun`-side code so cleanups stay co-located
   # with the test, not split across compose hooks).
   minio:
-    # `latest` deliberately — integration tests want to surface
-    # upstream MinIO regressions as soon as they ship.  Production
-    # users pin a specific version themselves.
-    image: minio/minio:latest
+    # Pinned, unlike the other brokers, which track `:latest` so that
+    # an upstream regression surfaces on the night it ships.  For MinIO
+    # nothing ships any more: quay's `latest` has been an alias of this
+    # release (digest sha256:14cea493…) since 2025-09-07, and every tag
+    # published after it is a `.hotfix.*` rebuild of an older release
+    # line.  A pin says what is actually being tested; a `latest` that
+    # cannot move would only claim to.  Move it deliberately, and run
+    # the suite when you do (#1531).
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin

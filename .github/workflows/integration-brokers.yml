@@ -43,7 +43,9 @@ on:
   workflow_dispatch:
   schedule:
     # Nightly run catches upstream-image regressions (each suite
-    # tracks `:latest` for its broker — that's the whole point).
+    # tracks `:latest` for its broker — that's the whole point — except
+    # MinIO, pinned since nothing ships there any more; see its compose
+    # file, #1531).
     # 03:30 UTC, half-hour offset from integration.yml's 03:00.
     - cron: '30 3 * * *'
 
