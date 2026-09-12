@@ -3017,6 +3017,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The linear-scan guard measures in short windows interleaved across
+  sizes** (#1530). `tests/unit/LinearStringScans.test.ts` asserts that the
+  string scans a remote peer can drive grow ~4× per 4× input rather than
+  ~16× (#1198), from the minimum of a few timed windows per size. It took
+  every window of one size consecutively — three of 10 ms, then the next size
+  — and on the Windows `--parallel` leg a linear scan once read 8.7× against
+  the threshold of 8: whatever slowed the largest input outlasted its 30 ms
+  of measurement, so the minimum was taken over three disturbed windows.
+  Steady contention does not do that — a co-tenant burning or thrashing the
+  same two cores left every shape at ~4× — but a *bursty* one does, and
+  reproduces the failure: two co-tenants alternating 40–100 ms of cache
+  thrash with 60–150 ms of sleep, pinned to the measurement's two logical
+  cores, took the old shape to a worst step of 8.4× and 10.2× (p90 7.3× and
+  7.8×) over 40 runs each. The harness now takes fifty 1 ms windows per size,
+  round-major — every size gets one window per round — so a disturbance has to
+  last the whole ~150 ms measurement to reach a size's minimum: 4.2× and 5.1×
+  worst under the same bursts (p90 4.0×), and through `bun test` itself,
+  fifteen runs of each file under the harsher burst, the old file's scans read
+  p90 6.7× / worst 7.6× against the new one's p90 4.1× / worst 4.8×. The
+  quadratic control still reads 16×; its sizes drop two rungs (125 / 500 /
+  2 000) because fifty windows of a 62 ms call would be three seconds for a
+  fact 2 000 characters already establishes at 4.3 ms. The threshold stays
+  at 8 — widening it was the drive-by the issue ruled out.
+
 - **The MinIO integration suite pulls from `quay.io/minio/minio`, pinned to
   `RELEASE.2025-09-07T16-13-09Z`** (#1531). Docker Hub's `minio/minio`
   repository was removed in 2026-09 — the pull fails with "access denied" and
