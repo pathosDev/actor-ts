@@ -3,10 +3,10 @@
  * we translate the SDK error correctly; this scenario verifies
  * the SERVER actually rejects on the expected condition.  MinIO
  * has supported `If-None-Match: *` PUT since the 2024-08
- * S3-spec update; older MinIO releases would return 501.  We
- * track `minio/minio:latest`, which is well past that — if a
- * future MinIO release ever regresses, this scenario is exactly
- * where it should show up.
+ * S3-spec update; older MinIO releases would return 501.  The
+ * compose file pins `RELEASE.2025-09-07T16-13-09Z`, which is well
+ * past that — and when the pin moves, this scenario is exactly
+ * where a regression should show up.
  */
 import { ObjectStorageConcurrencyError } from '../../../../../src/persistence/object-storage/ObjectStorageBackend.js';
 import { backend, type S3Context } from '../Runner.js';

@@ -3017,6 +3017,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The MinIO integration suite pulls from `quay.io/minio/minio`, pinned to
+  `RELEASE.2025-09-07T16-13-09Z`** (#1531). Docker Hub's `minio/minio`
+  repository was removed in 2026-09 — the pull fails with "access denied" and
+  the Hub API answers 404 — which took the nightly `integration-brokers` run
+  down in the `MinIO (s3)` job before a test ran, leaving
+  `S3ObjectStorageBackend` exercised against nothing but its fake. MinIO's own
+  registry still publishes the image, but not new releases: quay's `latest`
+  has been an alias of that release (digest `sha256:14cea493…`) since
+  2025-09-07 and every tag since is a `.hotfix.*` rebuild of an older line. So
+  this suite pins where the others deliberately track `:latest` — a `latest`
+  that cannot move would only claim to surface regressions — and the compose
+  file says to move the pin on purpose and run the suite when doing so. The
+  local `docker run` recipe in the in-process S3 test follows.
+
 - **`KubernetesLease`'s `operation-timeout` holds through a stalled TLS
   handshake** (#1529). The lease client bounded each API-server request with
   `https.request`'s `timeout` option — a *socket* timeout that Bun 1.4.2
