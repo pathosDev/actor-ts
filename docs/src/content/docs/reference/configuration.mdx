@@ -2487,6 +2487,13 @@ const config = shared.merge(application);
 order the `include` above was reaching for.  Pasting the shared content
 into one file works too.
 
+One caveat: substitutions are resolved when each file is parsed, not once
+over the merged tree.  A `${my.port}` in `shared-cluster.conf` whose
+`my.port` only `application.conf` defines fails at the first `parseFile`
+with `Unresolved substitution` — where a real `include` would have
+produced one document and resolved it.  A value the base file refers to
+has to live in the base file or in the environment.
+
 The parser says all of this when it meets an `include`, quoting the line
 and the target, so a config ported from Akka or Pekko fails with an
 answer rather than a puzzle.

@@ -2635,6 +2635,14 @@ const config = shared.merge(application);
 die Reihenfolge, auf die das `include` oben hinauswollte.  Den geteilten
 Inhalt in eine Datei zu kopieren funktioniert ebenfalls.
 
+Ein Vorbehalt: Substitutionen werden beim Parsen jeder einzelnen Datei
+aufgelöst, nicht einmal über den gemergten Baum.  Ein `${my.port}` in
+`shared-cluster.conf`, dessen `my.port` nur `application.conf` definiert,
+scheitert schon beim ersten `parseFile` mit `Unresolved substitution` —
+wo ein echtes `include` ein einziges Dokument erzeugt und dieses aufgelöst
+hätte.  Ein Wert, auf den die Basisdatei verweist, muss in der Basisdatei
+oder in der Umgebung stehen.
+
 Der Parser sagt all das, wenn er auf ein `include` trifft, und zitiert
 dabei Zeile und Ziel — eine aus Akka oder Pekko portierte Config
 scheitert damit mit einer Antwort statt mit einem Rätsel.

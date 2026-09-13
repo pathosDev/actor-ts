@@ -3017,6 +3017,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The `include` replacement now names its one caveat** (#1071). The
+  parser's refusal and both configuration reference pages recommend
+  `Config.parseFile(shared).merge(Config.parseFile(application))` in place
+  of an `include`, which is right for key/value files and not equivalent
+  once the base file contains a substitution: `Config.parseString` resolves
+  substitutions per source, so a `${my.port}` in the shared file whose
+  `my.port` only the application file defines throws at the first
+  `parseFile`, where one included document would have resolved. The
+  refusal message and the docs (EN + DE) now say so in one sentence — a
+  value the base file refers to must live in that file or in the
+  environment — so a config ported from Akka or Pekko that pairs a template
+  with an overriding file fails with the reason rather than the symptom.
 - **An optional substitution that resolved to nothing dropped the value the
   same file had set before it** (#1536). `port = 2552` followed by
   `port = ${?PORT}` — the override idiom of every Akka and Pekko

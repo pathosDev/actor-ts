@@ -390,11 +390,17 @@ class HoconParser {
     // for `url(…)`, the one form `parseFile` cannot honour.  Advice that fails
     // when followed is the very thing this message exists to stop.
     const base = target !== null && !target.includes('://') ? JSON.stringify(target) : '"base.conf"';
+    // The caveat is part of the advice, not a footnote: substitutions resolve
+    // when each file is parsed, so the merge is only equivalent to an include
+    // while the base file refers to nothing that only the other file defines
+    // (#1071).
     return this.error(
       `${directive} is not supported — actor-ts resolves no include targets, so a config `
       + 'source can never name another file or URL to pull into the process. Merge the '
       + `sources in code instead: Config.parseFile(${base}).merge(Config.parseFile`
-      + '("application.conf")). Pasting the included content in here works too.',
+      + '("application.conf")). Substitutions resolve per source, so a value the base '
+      + 'file refers to must live in that file or in the environment. Pasting the '
+      + 'included content in here works too.',
     );
   }
 

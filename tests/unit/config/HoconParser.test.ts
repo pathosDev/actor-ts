@@ -302,6 +302,11 @@ describe('include directives (#135)', () => {
       .toThrow(/Merge the sources in code instead/);
   });
 
+  test('the merge advice carries its caveat: substitutions resolve per source (#1071)', () => {
+    expect(() => parseHocon('include "shared-cluster.conf"'))
+      .toThrow(/Substitutions resolve per source, so a value the base file refers to must live in that file or in the environment/);
+  });
+
   test('the message no longer reads as a syntax error', () => {
     expect(() => parseHocon('include "x.conf"')).not.toThrow(/Expected '=' or ':'/);
   });
