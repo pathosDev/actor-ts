@@ -4,7 +4,7 @@
  *
  *   bun run examples/config/from-file.ts
  *   ACTOR_TS_CONFIG=./examples/config/application.conf bun run examples/config/from-file.ts
- *   POD_IP=10.0.0.5 SEED_HOST_1=10.0.0.1 SEED_PORT=2552 \
+ *   POD_IP=10.0.0.5 SEED_1=10.0.0.1:2552 SEED_2=10.0.0.2:2552 \
  *     bun run examples/config/from-file.ts
  */
 import { Actor, ActorSystem, ActorSystemOptions } from '../../src/index.js';
@@ -26,6 +26,9 @@ class DiagActor extends Actor<'report'> {
     if (config.hasPath('actor-ts.remote.tcp.host')) {
       console.log('TCP HOST        :', config.getString('actor-ts.remote.tcp.host'));
     }
+    // The same read Cluster.join makes, printed as JSON so that an entry which
+    // failed to resolve into one "host:port" string shows up as its own element.
+    console.log('SEED NODES      :', JSON.stringify(config.getStringList('actor-ts.cluster.seed-nodes')));
     this.self.stop();
   }
 }

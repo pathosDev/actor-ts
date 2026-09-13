@@ -3017,6 +3017,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`examples/config/application.conf` spells its seed list as one
+  substitution per entry, under the key the cluster reads** (#1532). The
+  file built each address by HOCON value concatenation —
+  `${?SEED_HOST_1}":"${?SEED_PORT}` — which `src/config/HoconParser.ts` lists
+  among the features it leaves out (#537): the parser read the line as three
+  adjacent array elements, so `SEED_HOST_1=10.0.0.1 SEED_PORT=2552` produced
+  `["10.0.0.1", ":", 2552, ":", 2552]` rather than two addresses, and an
+  unset host left its `":"`/port pair behind. It was also written under
+  `cluster.seeds`, a key nothing reads — the list `Cluster.join` consults is
+  `cluster.seed-nodes` — so the block was inert as well as malformed, and
+  `examples/config/from-file.ts` never printed it, which is why nothing
+  noticed. The list is now `seed-nodes = [ ${?SEED_1}, ${?SEED_2} ]`, the
+  form `reference.conf` prescribes beside the key, with the whole `host:port`
+  in one variable; the example prints the resolved list as JSON, and its
+  manifest entry sets `SEED_1` alone and expects
+  `SEED NODES      : ["10.0.0.1:2552"]`, so a stray fragment, or an unset
+  entry that fails to drop out, is a red `examples` run. The docs carried a
+  defect of the same class: `reference/configuration.mdx` (EN + DE) showed
+  `fallback-port = ${fallback-port:-2552}` as a "default-if-empty syntax":
+  that is shell parameter expansion, not HOCON, and the parser resolves it as
+  an unresolved required substitution — the snippet is gone, and the prose
+  says that there is no inline default and an unset `${?ENV}` leaves the key
+  to the other layers instead. (The spec's own `a = 1` then `a = ${?UNSET}`
+  idiom drops `a` in this parser where the spec keeps the `1`; that is
+  #1533, and the docs deliberately do not lean on it.)
+
 - **The linear-scan guard measures in short windows interleaved across
   sizes** (#1530). `tests/unit/LinearStringScans.test.ts` asserts that the
   string scans a remote peer can drive grow ~4× per 4× input rather than

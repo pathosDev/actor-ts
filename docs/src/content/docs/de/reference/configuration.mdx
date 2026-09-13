@@ -2604,11 +2604,12 @@ binär (1024).
 port = ${?ACTOR_TS_PORT}              # nutze env, falls gesetzt, sonst fallback
 log-level = ${?LOG_LEVEL}             # gleich
 api-key = ${API_KEY}                  # required — Fehler, wenn env nicht gesetzt
-fallback-port = ${?ENV_PORT}
-fallback-port = ${fallback-port:-2552}  # default-if-empty Syntax
 ```
 
-Verwende `${?ENV}` für optional, `${ENV}` für required.
+Verwende `${?ENV}` für optional, `${ENV}` für required.  Eine
+Inline-Default-Syntax gibt es nicht: ein nicht gesetztes `${?ENV}` lässt den
+Schlüssel in dieser Datei weg, sodass der Wert aus den anderen Schichten kommt
+— `reference.conf` darunter oder ein Code-Override darüber.
 
 ### Includes werden nicht unterstützt
 
