@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { Config } from '../../../src/config/Config.js';
 import {
   deepMerge,
   isForbiddenConfigKey,
@@ -180,6 +181,81 @@ describe('resolveSubstitutions', () => {
     `);
     const resolved = resolveSubstitutions(parsed, {});
     expect(stripUndefined(resolved)).toEqual({ a: 'keep' });
+  });
+});
+
+/**
+ * `port = 2552` followed by `port = ${?PORT}` is the override idiom of every
+ * Akka and Pekko `application.conf`.  Until #1536 the second line replaced the
+ * first at parse time and the unresolved optional was stripped afterwards, so
+ * an unset variable removed the key instead of leaving the default — the
+ * opposite of what the specification says an undefined `${?x}` does.
+ */
+describe('an optional substitution that resolves to nothing keeps the earlier value (#1536)', () => {
+  const resolve = (source: string, env: Record<string, string> = {}) =>
+    stripUndefined(resolveSubstitutions(parseHocon(source), env));
+
+  test('keeps the same-source default when the variable is unset', () => {
+    expect(resolve('fallback-port = 2552\nfallback-port = ${?ENV_PORT}'))
+      .toEqual({ 'fallback-port': 2552 });
+  });
+
+  test('takes the variable when it is set', () => {
+    expect(resolve('fallback-port = 2552\nfallback-port = ${?ENV_PORT}', { ENV_PORT: '9000' }))
+      .toEqual({ 'fallback-port': 9000 });
+  });
+
+  test('holds for a path expression and for an object literal alike', () => {
+    expect(resolve('a.port = 2552\na.port = ${?ENV_PORT}')).toEqual({ a: { port: 2552 } });
+    // The object form goes through `deepMerge`, the other overwrite site.
+    expect(resolve('a { port = 2552 }\na { port = ${?ENV_PORT} }')).toEqual({ a: { port: 2552 } });
+  });
+
+  test('an optional whose previous is itself an optional falls back through the chain', () => {
+    const source = 'x = 1\nx = ${?A}\nx = ${?B}';
+    expect(resolve(source)).toEqual({ x: 1 });
+    expect(resolve(source, { A: '7' })).toEqual({ x: 7 });
+    expect(resolve(source, { A: '7', B: '8' })).toEqual({ x: 8 });
+  });
+
+  test('keeps an earlier object, not only a scalar', () => {
+    expect(resolve('a { x = 1 }\na = ${?X}')).toEqual({ a: { x: 1 } });
+  });
+
+  test('a later plain assignment still replaces an earlier optional', () => {
+    expect(resolve('x = ${?E}\nx = 2552', { E: '1' })).toEqual({ x: 2552 });
+  });
+
+  test('a required substitution after a value still throws when nothing answers it', () => {
+    expect(() => resolve('x = 1\nx = ${X}')).toThrow(/Unresolved substitution: \$\{X\}/);
+  });
+
+  test('an optional that is the first assignment still leaves the key unset', () => {
+    expect(resolve('a = keep\nb = ${?nope}')).toEqual({ a: 'keep' });
+  });
+
+  test('two documents concatenated still equal the two merged, chains included', () => {
+    // `y` falls back through B, then A, then the base document's `0`: the
+    // displaced base value has to join the *tail* of the chain the overlay
+    // already carries, or the merged form would skip the overlay's own default.
+    const base = 'x = 0\ny = 0';
+    const overlay = 'x = 1\nx = ${?Y}\ny = ${?A}\ny = ${?B}';
+    expect(parseHocon(`${base}\n${overlay}`))
+      .toStrictEqual(deepMerge(parseHocon(base), parseHocon(overlay)));
+    expect(resolve(`${base}\n${overlay}`)).toEqual({ x: 1, y: 0 });
+    expect(resolve(`${base}\n${overlay}`, { A: '5' })).toEqual({ x: 1, y: 5 });
+  });
+
+  test('a parsed Config reads the default back — the documented idiom, end to end', () => {
+    const name = 'ACTOR_TS_TEST_1536_UNSET_PORT';
+    const saved = process.env[name];
+    delete process.env[name];
+    try {
+      const config = Config.parseString(`fallback-port = 2552\nfallback-port = \${?${name}}`);
+      expect(config.getNumber('fallback-port')).toBe(2552);
+    } finally {
+      if (saved !== undefined) process.env[name] = saved;
+    }
   });
 });
 

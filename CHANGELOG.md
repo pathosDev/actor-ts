@@ -3017,6 +3017,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **An optional substitution that resolved to nothing dropped the value the
+  same file had set before it** (#1536). `port = 2552` followed by
+  `port = ${?PORT}` — the override idiom of every Akka and Pekko
+  `application.conf` — left `port` absent whenever `PORT` was unset: the
+  parser replaced the `2552` at parse time, the optional then resolved to
+  nothing, and the hole was stripped. The specification says the earlier
+  value remains, and now it does, in one file as across layers — a path
+  expression, an object literal, and a chain of optionals (`x = 1`,
+  `x = ${?A}`, `x = ${?B}`) all fall back to the nearest earlier value. What
+  has not changed: a later plain assignment still wins, an optional that is
+  the key's *first* assignment still leaves it unset, and a required
+  substitution still throws. The displaced value travels on the substitution
+  itself and is attached through one helper at both overwrite sites, so
+  parsing two documents concatenated and merging them parsed separately stay
+  the same operation — `HoconProperties.test.ts` holds them against each
+  other, chains included.
 - **The linear-scan guard measures in short windows interleaved across
   sizes** (#1530). `tests/unit/LinearStringScans.test.ts` asserts that the
   string scans a remote peer can drive grow ~4× per 4× input rather than

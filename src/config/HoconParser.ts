@@ -10,7 +10,10 @@
  *   - Root braces are optional (implicit object).
  *   - Path expressions: `a.b.c = 1` expands to `a { b { c = 1 } }`.
  *   - Object merging: declaring the same key twice deep-merges objects
- *     and otherwise overwrites with the newer value.
+ *     and otherwise overwrites with the newer value — except that an
+ *     optional substitution which resolves to nothing leaves the earlier
+ *     value in place (`port = 2552` then `port = ${?PORT}`), as the
+ *     specification requires.
  *   - Substitutions: `${foo.bar}` (required) and `${?foo.bar}` (optional).
  *     Resolved against the parsed tree first, then the environment.
  *
@@ -32,6 +35,16 @@ export type Substitution = {
   readonly __substitution: true;
   readonly path: string;
   readonly optional: boolean;
+  /**
+   * The value this assignment replaced in the same source, when there was
+   * one.  Only ever set on an optional substitution: it is what the key
+   * falls back to when neither the tree nor the environment answers, so
+   * `port = 2552` followed by `port = ${?PORT}` keeps the `2552` — the
+   * specification's rule for an undefined `${?x}` that would have
+   * overridden an earlier value.  A required substitution either resolves
+   * or throws, so it never needs one.
+   */
+  readonly previous?: ConfigValue;
 };
 
 export function isSubstitution(value: unknown): value is Substitution {
@@ -300,7 +313,7 @@ class HoconParser {
       ) {
         into[key] = deepMerge(into[key] as ConfigObject, value as ConfigObject);
       } else {
-        into[key] = value;
+        into[key] = overrideKeepingPrevious(into[key], value);
       }
       return;
     }
@@ -485,7 +498,14 @@ function resolveOne(
       return fromEnv;
     }
   }
-  if (sub.optional) return undefined as unknown as ConfigValue;
+  if (sub.optional) {
+    // Nothing answered: fall back to what this assignment replaced, if
+    // anything.  The previous value may itself be an optional substitution
+    // (`x = 1`, `x = ${?A}`, `x = ${?B}`), so it is walked, not returned.
+    return sub.previous === undefined
+      ? undefined as unknown as ConfigValue
+      : walk(sub.previous, root, env);
+  }
   throw new Error(`Unresolved substitution: \${${sub.path}}`);
 }
 
@@ -569,10 +589,41 @@ export function deepMerge(base: ConfigObject, overlay: ConfigObject): ConfigObje
     if (isPlainObject(value) && isPlainObject(out[key])) {
       out[key] = deepMerge(out[key] as ConfigObject, value as ConfigObject);
     } else {
-      out[key] = value;
+      out[key] = overrideKeepingPrevious(out[key], value);
     }
   }
   return out;
+}
+
+/**
+ * The one overwrite rule for a key assigned twice, shared by the parser's
+ * `mergeKeyPath` and by `deepMerge` so that parsing two documents
+ * concatenated and merging them parsed separately stay the same operation
+ * (`HoconProperties.test.ts` holds them against each other).
+ *
+ * The newer value wins, as before — except that an optional substitution
+ * carries the value it displaces along, for `resolveOne` to fall back to
+ * when nothing answers it.  Without that, `port = 2552` then
+ * `port = ${?PORT}` — the override idiom of every Akka and Pekko
+ * `application.conf` — dropped `port` whenever the variable was unset,
+ * because the `2552` was gone before resolution began and the unresolved
+ * optional was stripped afterwards (#1536).  On an already-resolved tree
+ * (every cross-layer merge) no substitution survives, so this is the plain
+ * assignment it replaces.
+ *
+ * A displaced value goes to the *tail* of the chain the incoming optional
+ * already carries: a document parsed on its own and then merged onto a base
+ * that set the same key must fall back to its own earlier value first, and
+ * to the base's only after that — the order the concatenated document has.
+ */
+function overrideKeepingPrevious(existing: ConfigValue | undefined, incoming: ConfigValue): ConfigValue {
+  if (!isSubstitution(incoming) || !incoming.optional || existing === undefined) return incoming;
+  return {
+    ...incoming,
+    previous: incoming.previous === undefined
+      ? existing
+      : overrideKeepingPrevious(existing, incoming.previous),
+  };
 }
 
 /** Strip undefined values that originated from optional substitutions. */
