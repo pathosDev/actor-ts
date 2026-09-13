@@ -2457,11 +2457,12 @@ default.
 port = ${?ACTOR_TS_PORT}              # use env if set, else fall through
 log-level = ${?LOG_LEVEL}             # same
 api-key = ${API_KEY}                  # required — error if env is unset
-fallback-port = ${?ENV_PORT}
-fallback-port = ${fallback-port:-2552}  # default-if-empty syntax
 ```
 
-Use `${?ENV}` for optional, `${ENV}` for required.
+Use `${?ENV}` for optional, `${ENV}` for required.  There is no inline
+default syntax: an unset `${?ENV}` leaves the key out of that file, so the
+value comes from the other layers — `reference.conf` beneath it, or a code
+override above it.
 
 ### Includes are not supported
 

@@ -23,7 +23,9 @@
     "  arguments  extra argv for the example.",
     "  environment  extra env vars for the example, merged over the harness's",
     "             own environment. For an example that deliberately refuses to",
-    "             start without a variable — see chat/smoke-test.ts — not for",
+    "             start without a variable — see chat/smoke-test.ts — or for",
+    "             input the assertion needs — see config/from-file.ts, whose",
+    "             expected line prints an empty list without it. Not for",
     "             papering over one that crashes.",
     "  note       anything a reader would otherwise have to re-derive.",
     "  skip       why this one cannot run in CI. Mutually exclusive with the",
@@ -58,7 +60,12 @@
     { "file": "examples/cluster/singleton-cron.ts", "expect": "cron spawned" },
     { "file": "examples/cluster/singleton-hello.ts", "expect": "singleton 'echo'" },
 
-    { "file": "examples/config/from-file.ts", "expect": "MAX FRAME BYTES" },
+    {
+      "file": "examples/config/from-file.ts",
+      "environment": { "SEED_1": "10.0.0.1:2552" },
+      "note": "SEED_1 set and SEED_2 left unset on purpose: the expected line pins that each seed-nodes entry resolves to one host:port string and that an unset entry drops out. With nothing set, the old file (which wrote the list under a key nothing reads, as HOCON concatenation the parser does not implement, #1532) and the fixed one both print [] and the case could not tell them apart. The line is printed last, so it also covers every line before it. A stray SEED_2 in the developer's shell fails this case locally.",
+      "expect": "SEED NODES      : [\"10.0.0.1:2552\"]"
+    },
     { "file": "examples/config/hello-config.ts", "expect": "http backend" },
 
     {
