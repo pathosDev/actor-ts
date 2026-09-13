@@ -3017,6 +3017,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The configuration reference showed a `${key:-default}` form the parser
+  has never accepted, and described one application file as three
+  cumulative layers** (#1537). The environment-substitution sample ended in
+  `fallback-port = ${fallback-port:-2552}  # default-if-empty syntax`, which
+  is a required substitution of a key literally named `fallback-port:-2552`
+  and throws `Unresolved substitution`. Both pages now show HOCON's own
+  idiom — the default first, `${?ENV_PORT}` after it — which #1536 made true
+  inside one file, and say in so many words that `:-` does not exist. The
+  "Loading order" block listed `application.conf (CWD)`, `configFile` and
+  `ACTOR_TS_CONFIG` as layers 2, 3 and 4 that "each overlay on top of the
+  previous", with the variable holding "path or inline HOCON". `Config.load`
+  reads exactly one application file — `configFile`, else `ACTOR_TS_CONFIG`,
+  else `./application.conf`, the first one *set* deciding and a missing
+  file loading nothing rather than falling through — and the variable has
+  only ever been a path. The block is now the real chain in four steps, the
+  "three layers above" that opened *Validation* no longer counts a list it
+  did not match, and the German mirror moves in lockstep.
 - **The `include` replacement now names its one caveat** (#1071). The
   parser's refusal and both configuration reference pages recommend
   `Config.parseFile(shared).merge(Config.parseFile(application))` in place
