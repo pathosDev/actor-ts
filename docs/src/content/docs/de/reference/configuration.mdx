@@ -2604,12 +2604,26 @@ binär (1024).
 port = ${?ACTOR_TS_PORT}              # nutze env, falls gesetzt, sonst fallback
 log-level = ${?LOG_LEVEL}             # gleich
 api-key = ${API_KEY}                  # required — Fehler, wenn env nicht gesetzt
+fallback-port = 2552                  # der Default …
+fallback-port = ${?ENV_PORT}          # … nur ersetzt, wenn ENV_PORT gesetzt ist
 ```
 
-Verwende `${?ENV}` für optional, `${ENV}` für required.  Eine
-Inline-Default-Syntax gibt es nicht: ein nicht gesetztes `${?ENV}` lässt den
-Schlüssel in dieser Datei weg, sodass der Wert aus den anderen Schichten kommt
-— `reference.conf` darunter oder ein Code-Override darüber.
+Verwende `${?ENV}` für optional, `${ENV}` für required.
+
+Eine Default-falls-nicht-gesetzt-Form gibt es nicht.  Alles zwischen den
+Klammern ist der Pfad: `${ENV_PORT:-2552}` wird als Key namens
+`ENV_PORT:-2552` nachgeschlagen und scheitert als unaufgelöste
+Substitution, und `${?ENV_PORT:-2552}` ist optional und löst sich still zu
+nichts auf.  Deklariere erst den Default und danach den optionalen
+Override, wie es die letzten beiden Zeilen tun: eine optionale
+Substitution, die sich zu nichts auflöst, lässt den früheren Wert stehen,
+und eine spätere einfache Zuweisung ersetzt ihn wie gewohnt.
+
+Über Schichten hinweg gilt dasselbe.  Steht der Default in
+`reference.conf` — jeder `actor-ts.*`-Key hat dort einen — oder in einer
+darunter gemergten Datei, entfernt ein nicht gesetztes `${?ENV}` in
+`application.conf` den Key aus dieser Schicht, und die darunter scheint
+durch — genau darauf verlässt sich die erste Zeile oben.
 
 ### Includes werden nicht unterstützt
 
@@ -2635,6 +2649,14 @@ const config = shared.merge(application);
 `merge` legt sein Argument obenauf, die lokale Datei gewinnt also — genau
 die Reihenfolge, auf die das `include` oben hinauswollte.  Den geteilten
 Inhalt in eine Datei zu kopieren funktioniert ebenfalls.
+
+Ein Vorbehalt: Substitutionen werden beim Parsen jeder einzelnen Datei
+aufgelöst, nicht einmal über den gemergten Baum.  Ein `${my.port}` in
+`shared-cluster.conf`, dessen `my.port` nur `application.conf` definiert,
+scheitert schon beim ersten `parseFile` mit `Unresolved substitution` —
+wo ein echtes `include` ein einziges Dokument erzeugt und dieses aufgelöst
+hätte.  Ein Wert, auf den die Basisdatei verweist, muss in der Basisdatei
+oder in der Umgebung stehen.
 
 Der Parser sagt all das, wenn er auf ein `include` trifft, und zitiert
 dabei Zeile und Ziel — eine aus Akka oder Pekko portierte Config
@@ -2709,17 +2731,28 @@ Fehlende Keys werfen, es sei denn, Du prüfst zuerst mit `hasPath`.
 
 ```
 1. REFERENCE_CONF                           ← gebündelte Defaults
-2. application.conf (CWD)                   ← Projekt-Root, auto-geladen
-3. Dateipfad aus `configFile`-Setting       ← expliziter Override
-4. ENV-Var ACTOR_TS_CONFIG                  ← Pfad oder inline HOCON
-5. Konstruktor `config: { ... }`            ← Code-Level-Override
-6. Konstruktor-Feld-Overrides               ← explizite Felder schlagen Config
+2. eine Anwendungsdatei — die erste hiervon, die gesetzt ist:
+     `configFile`-Setting  ›  ENV-Var ACTOR_TS_CONFIG  ›  ./application.conf (CWD)
+3. Konstruktor `config: { ... }`            ← Code-Level-Override
+4. Konstruktor-Feld-Overrides               ← explizite Felder schlagen Config
    (logLevel, dispatcher, scheduler, …)
 ```
 
-Jede Schicht überlagert die vorherige.  Schicht 6
+Jede Schicht überlagert die vorherige.  Schicht 4
 (Konstruktor-Felder) gewinnt immer für die Felder, die sie
 abdeckt; alles andere fließt durch den HOCON-Merge.
+
+Schicht 2 ist eine einzige Datei.  `configFile`, `ACTOR_TS_CONFIG` und
+die CWD-Suche sind drei Arten, sie zu benennen, in dieser Reihenfolge
+probiert — und die erste, die *gesetzt* ist, entscheidet: zeigt
+`configFile` oder `ACTOR_TS_CONFIG` auf eine Datei, die nicht existiert,
+wird nichts geladen, statt zum nächsten Kandidaten weiterzugehen ([Issue
+#996](https://github.com/pathosDev/actor-ts/issues/996) dreht sich darum,
+das beim Start zu melden).  `ACTOR_TS_CONFIG` enthält einen Pfad, nie
+inline HOCON; ein Wert, der nicht der Pfad einer existierenden Datei ist,
+wird genauso behandelt.  Um mehrere Dateien zu schichten, setze sie im
+Code zusammen, wie es [Includes werden nicht
+unterstützt](#includes-werden-nicht-unterstützt) zeigt.
 
 ### Wo der eingebaute Default steht
 
@@ -2773,7 +2806,7 @@ import { Aside } from '@astrojs/starlight/components';
 ## Validierung
 
 Optionswerte werden **einmal validiert, zur Consume-Zeit, auf den
-gemergten Settings** — nachdem die drei obigen Ebenen aufgelöst sind.
+gemergten Settings** — nachdem die obigen Ebenen aufgelöst sind.
 Weil die Prüfung auf dem gemergten Ergebnis läuft, gelten dieselben
 Regeln, egal wie ein Wert ankam: über den fluenten Builder, ein einfaches
 Settings-Objekt oder einen HOCON-Key.  Cross-Field-Regeln (z. B.

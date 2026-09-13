@@ -306,6 +306,26 @@ describe('HOCON properties — substitutions read the tree', () => {
       { numRuns: RUNS },
     );
   });
+
+  /**
+   * The specification's rule for an undefined `${?x}` that would have
+   * overridden an earlier value: the earlier value remains.  Every primitive
+   * the model can produce must survive the override line unchanged (#1536).
+   */
+  test('an unset optional override never removes a value the same document set earlier', () => {
+    const style: RenderStyle = {
+      assignment: '=', separator: 'newline', explicitRootBraces: false,
+      objectShorthand: false, comments: false, indentation: '',
+    };
+    fc.assert(
+      fc.property(primitiveArbitrary, (value) => {
+        const source = `${renderRoot({ port: value }, style)}\nport = \${?UNSET_zzz}`;
+        const resolved = resolveSubstitutions(parseHocon(source), {});
+        expect(resolved['port']).toStrictEqual(value);
+      }),
+      { numRuns: RUNS },
+    );
+  });
 });
 
 describe('HOCON properties — the refusals hold', () => {

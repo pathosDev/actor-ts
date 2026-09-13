@@ -2457,12 +2457,24 @@ default.
 port = ${?ACTOR_TS_PORT}              # use env if set, else fall through
 log-level = ${?LOG_LEVEL}             # same
 api-key = ${API_KEY}                  # required — error if env is unset
+fallback-port = 2552                  # the default …
+fallback-port = ${?ENV_PORT}          # … replaced only when ENV_PORT is set
 ```
 
-Use `${?ENV}` for optional, `${ENV}` for required.  There is no inline
-default syntax: an unset `${?ENV}` leaves the key out of that file, so the
-value comes from the other layers — `reference.conf` beneath it, or a code
-override above it.
+Use `${?ENV}` for optional, `${ENV}` for required.
+
+There is no default-if-unset form.  Everything between the braces is the
+path, so `${ENV_PORT:-2552}` is looked up as a key named `ENV_PORT:-2552`
+and fails as an unresolved substitution, and `${?ENV_PORT:-2552}` is
+optional and silently resolves to nothing.  Declare the default first and
+the optional override after it, as the last two lines do: an optional
+substitution that resolves to nothing leaves the earlier value in place,
+and a later plain assignment replaces it as usual.
+
+The same holds across layers.  With the default in `reference.conf` —
+every `actor-ts.*` key has one — or in a file merged underneath, an unset
+`${?ENV}` in `application.conf` removes the key from that layer and the
+one below shows through, which is what the first line above relies on.
 
 ### Includes are not supported
 
@@ -2487,6 +2499,13 @@ const config = shared.merge(application);
 `merge` layers its argument on top, so the local file wins — the same
 order the `include` above was reaching for.  Pasting the shared content
 into one file works too.
+
+One caveat: substitutions are resolved when each file is parsed, not once
+over the merged tree.  A `${my.port}` in `shared-cluster.conf` whose
+`my.port` only `application.conf` defines fails at the first `parseFile`
+with `Unresolved substitution` — where a real `include` would have
+produced one document and resolved it.  A value the base file refers to
+has to live in the base file or in the environment.
 
 The parser says all of this when it meets an `include`, quoting the line
 and the target, so a config ported from Akka or Pekko fails with an
@@ -2556,17 +2575,27 @@ Missing keys throw unless you check first with `hasPath`.
 
 ```
 1. REFERENCE_CONF                           ← bundled defaults
-2. application.conf (CWD)                   ← project root, auto-loaded
-3. file path from `configFile` setting      ← explicit override
-4. ENV var ACTOR_TS_CONFIG                  ← path or inline HOCON
-5. constructor `config: { ... }`            ← code-level override
-6. constructor field overrides              ← explicit fields beat config
+2. one application file — the first of these that is set:
+     `configFile` setting  ›  ACTOR_TS_CONFIG env var  ›  ./application.conf (CWD)
+3. constructor `config: { ... }`            ← code-level override
+4. constructor field overrides              ← explicit fields beat config
    (logLevel, dispatcher, scheduler, …)
 ```
 
-Each layer overlays on top of the previous.  Layer 6 (constructor
+Each layer overlays on top of the previous.  Layer 4 (constructor
 fields) always wins for the fields it covers; everything else
 flows through the HOCON merge.
+
+Layer 2 is a single file.  `configFile`, `ACTOR_TS_CONFIG` and the CWD
+lookup are three ways of naming it, tried in that order, and the first
+one that is *set* decides — a `configFile` or `ACTOR_TS_CONFIG` that
+points at a file which does not exist loads nothing, rather than moving
+on to the next candidate ([issue
+#996](https://github.com/pathosDev/actor-ts/issues/996) is about saying so
+at startup).  `ACTOR_TS_CONFIG` holds a path, never inline HOCON; a value
+that is not the path of an existing file is treated the same way.  To
+layer several files, compose them in code as [Includes are not
+supported](#includes-are-not-supported) shows.
 
 ### Where the built-in default lives
 
@@ -2618,7 +2647,7 @@ import { Aside } from '@astrojs/starlight/components';
 ## Validation
 
 Option values are **validated once, at consume time, on the merged
-settings** — after the three layers above are resolved.  Because it runs
+settings** — after the layers above are resolved.  Because it runs
 on the merged result, the same rules apply no matter how a value
 arrived: the fluent builder, a plain settings object, or a HOCON key.
 Cross-field rules (e.g. "`downThreshold` must exceed

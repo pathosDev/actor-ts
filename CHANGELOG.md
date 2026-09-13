@@ -3017,6 +3017,51 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The configuration reference showed a `${key:-default}` form the parser
+  has never accepted, and described one application file as three
+  cumulative layers** (#1537). The environment-substitution sample ended in
+  `fallback-port = ${fallback-port:-2552}  # default-if-empty syntax`, which
+  is a required substitution of a key literally named `fallback-port:-2552`
+  and throws `Unresolved substitution`. Both pages now show HOCON's own
+  idiom — the default first, `${?ENV_PORT}` after it — which #1536 made true
+  inside one file, and say in so many words that `:-` does not exist. The
+  "Loading order" block listed `application.conf (CWD)`, `configFile` and
+  `ACTOR_TS_CONFIG` as layers 2, 3 and 4 that "each overlay on top of the
+  previous", with the variable holding "path or inline HOCON". `Config.load`
+  reads exactly one application file — `configFile`, else `ACTOR_TS_CONFIG`,
+  else `./application.conf`, the first one *set* deciding and a missing
+  file loading nothing rather than falling through — and the variable has
+  only ever been a path. The block is now the real chain in four steps, the
+  "three layers above" that opened *Validation* no longer counts a list it
+  did not match, and the German mirror moves in lockstep.
+- **The `include` replacement now names its one caveat** (#1071). The
+  parser's refusal and both configuration reference pages recommend
+  `Config.parseFile(shared).merge(Config.parseFile(application))` in place
+  of an `include`, which is right for key/value files and not equivalent
+  once the base file contains a substitution: `Config.parseString` resolves
+  substitutions per source, so a `${my.port}` in the shared file whose
+  `my.port` only the application file defines throws at the first
+  `parseFile`, where one included document would have resolved. The
+  refusal message and the docs (EN + DE) now say so in one sentence — a
+  value the base file refers to must live in that file or in the
+  environment — so a config ported from Akka or Pekko that pairs a template
+  with an overriding file fails with the reason rather than the symptom.
+- **An optional substitution that resolved to nothing dropped the value the
+  same file had set before it** (#1536). `port = 2552` followed by
+  `port = ${?PORT}` — the override idiom of every Akka and Pekko
+  `application.conf` — left `port` absent whenever `PORT` was unset: the
+  parser replaced the `2552` at parse time, the optional then resolved to
+  nothing, and the hole was stripped. The specification says the earlier
+  value remains, and now it does, in one file as across layers — a path
+  expression, an object literal, and a chain of optionals (`x = 1`,
+  `x = ${?A}`, `x = ${?B}`) all fall back to the nearest earlier value. What
+  has not changed: a later plain assignment still wins, an optional that is
+  the key's *first* assignment still leaves it unset, and a required
+  substitution still throws. The displaced value travels on the substitution
+  itself and is attached through one helper at both overwrite sites, so
+  parsing two documents concatenated and merging them parsed separately stay
+  the same operation — `HoconProperties.test.ts` holds them against each
+  other, chains included.
 - **`examples/config/application.conf` spells its seed list as one
   substitution per entry, under the key the cluster reads** (#1532). The
   file built each address by HOCON value concatenation —
@@ -3040,9 +3085,8 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   an unresolved required substitution — the snippet is gone, and the prose
   says that there is no inline default and an unset `${?ENV}` leaves the key
   to the other layers instead. (The spec's own `a = 1` then `a = ${?UNSET}`
-  idiom drops `a` in this parser where the spec keeps the `1`; that is
-  #1533, and the docs deliberately do not lean on it.)
-
+  idiom dropped `a` in this parser where the spec keeps the `1` — #1533,
+  fixed as #1536 above, after which #1537 put the idiom back on the page.)
 - **The linear-scan guard measures in short windows interleaved across
   sizes** (#1530). `tests/unit/LinearStringScans.test.ts` asserts that the
   string scans a remote peer can drive grow ~4× per 4× input rather than
