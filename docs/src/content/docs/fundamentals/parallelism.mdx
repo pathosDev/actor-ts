@@ -1,0 +1,247 @@
+---
+title: Parallelism
+description: Actors on worker threads from configuration alone — one HOCON number turns a single-threaded system into a mesh of threads, with the application code unchanged. What crosses a thread, what cannot, and what to expect.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+JavaScript runs one thread per actor system.  A worker thread is another
+thread, and the framework can host an actor system on each one — the
+[worker mesh](/cluster/worker-mesh/) does exactly that.  This page is about
+the layer on top of it: **placing actors on those threads without changing
+the application.**  One config number starts the threads, and `system.spawn`
+puts actors on them.
+
+```hocon
+actor-ts.parallelism {
+  workers = auto      # 0 = off (the default) | N | "auto"
+}
+```
+
+```ts
+// unchanged, character for character
+const system = ActorSystem.create('my-app');
+const ref = system.spawn(ImageResizer, 'resizer');
+ref.tell({ kind: 'resize', bytes });
+```
+
+With `workers = 0` the system is the single-threaded one it always was: no
+thread, no cluster, no module import, and `spawn` pays one null check.
+With anything else, `ActorSystem.create` starts a mesh in the background —
+the main thread joins a cluster of its own, spawns the workers, and every
+worker joins it — and `spawn` becomes a placement decision.  An actor
+whose path matches `offload` is created on a worker; every other one is
+created where it always was.  Either way the call is synchronous and
+returns an `ActorRef` whose `path` is the path the actor would have had at
+home.
+
+## The actor module
+
+`spawn(ImageResizer, 'resizer')` hands over a **class object**, and a class
+cannot cross a thread: `postMessage` clones data, never code, and no
+runtime can map a class object back to the module that defined it.  So the
+worker has to `import()` the classes itself, and the two sides agree on a
+name for each one — its **export name**, which survives a minifier and
+tells two classes with the same `.name` apart.
+
+That is the one thing the application provides: a module that exports the
+actor classes to offload.  Only exports — no registration, no decorators:
+
+```ts
+// src/actors.ts
+export { ImageResizer } from './actors/ImageResizer.js';
+export { ReportBuilder } from './actors/ReportBuilder.js';
+```
+
+By convention it is `actors.js` (or `.ts`) **next to the entry module** —
+the file the runtime was asked to run — and then nothing has to be
+configured.  To name another one, or several, do it in code:
+
+```ts
+const parallelism = ParallelismOptions.create()
+  .withModule(new URL('./workers/actors.js', import.meta.url));
+const systemOptions = ActorSystemOptions.create().withParallelism(parallelism);
+const system = ActorSystem.create('my-app', systemOptions);
+```
+
+`module` is deliberately **not** a HOCON key, for the reason
+`worker-cluster.bootstrap` has none: a config file must not decide which
+code a worker runs.  With `workers` above zero and no module anywhere,
+`ActorSystem.create` throws an `OptionsError` naming the paths it looked
+for and the option that names one.
+
+A module may also export a `setup(context)`; the worker runs it once its
+node is up, with the system, the cluster and the registry in hand.  That is
+where an actor a worker should host *from the start* is spawned, and where
+per-actor configuration that cannot cross a thread belongs (see below).
+
+## Configuration
+
+```hocon
+actor-ts.parallelism {
+  workers = 0                      # 0 = off | N | "auto" = available parallelism minus the main thread
+  offload = ["/user/*"]            # path patterns; * = one segment, ** = any depth; /system is refused
+  placement = "consistent-hash"    # consistent-hash (by actor name) | round-robin
+  leader = "main"                  # main | worker — who hosts the shard coordinator and role-less singletons
+  spawn-timeout = 10s              # a worker's acknowledgment of a spawn; then the ref fails
+  buffer-size = 100000             # messages held across every spawn still awaiting its worker
+}
+```
+
+| Key | Meaning |
+| --- | --- |
+| `workers` | `"auto"` is the machine's available parallelism **minus one**, because the main thread is a working member: it runs whatever it did not offload and relays every cross-worker frame. It honours a container's CPU quota where the runtime exposes it (`os.availableParallelism()`), and falls back to `navigator.hardwareConcurrency`. |
+| `offload` | Which top-level actors move. `*` matches one path segment, `**` one or more; `/user/resize-*` is fine. A pattern that could reach `/system` is refused — see [System actors on workers](#system-actors-on-workers). |
+| `placement` | `consistent-hash` hashes the actor's name, so the same name lands on the same worker across restarts of the application. `round-robin` spreads spawns evenly in spawn order. |
+| `leader` | The cluster leader is the lowest-addressed member; `main` keeps it on the main thread, `worker` moves it — and the shard coordinator with it — onto a worker. |
+| `spawn-timeout` | How long a spawn waits for the worker to acknowledge it before the ref fails and what it held goes to dead letters. |
+| `buffer-size` | The bound on messages sent to actors whose workers have not acknowledged them yet, across the whole system. Past it, the rest go to dead letters with one warning. |
+
+The threads themselves — hostnames, ports, cluster roles, the ready timeout,
+restart pacing — are configured where the [worker mesh](/cluster/worker-mesh/)
+reads them: `actor-ts.worker-mesh.*` and `actor-ts.worker-cluster.*`.
+One knob lives in one place.
+
+## What a spawn does
+
+`system.spawn` stays synchronous.  When the path matches `offload`:
+
+1. The name is checked the way a local spawn checks it, on the caller's
+   stack.
+2. A worker is picked — by hash of the name, or round-robin.
+3. A **pending ref** is returned at once.  Its `path`, `equals` and
+   `toString` are settled; a `tell` before the worker has answered is
+   queued, in order, and replayed the moment it does.  An `ask` works the
+   same way.
+4. A spawn frame goes to the worker, which validates the name, creates the
+   actor under its own `/user`, and acknowledges with the path.  The pending
+   ref switches to a remote ref and drains its queue.
+
+A spawn the worker refuses — a class it cannot find, a name already taken
+there — fails the ref: everything it held becomes a dead letter naming the
+ref as recipient, and so does everything sent afterwards.  The reason is
+logged.  A worker that never answers fails the ref at `spawn-timeout`.
+
+Before the mesh is up, spawns wait and their refs buffer.  A mesh that fails
+to start — a module that does not import, a worker that never becomes
+ready — is logged once, fails what was waiting, and makes every later
+offloaded `spawn` throw with the cause.
+
+`system.terminate()` is still the one call the application makes to shut
+down.  It terminates every worker's system first — so an offloaded actor
+gets its `postStop` like a local one — waits for them (bounded by the same
+`shutdown-drain-timeout` the workers use, plus a second), then stops the
+threads and the main thread's own actors.
+
+## Three limits, each with a loud error
+
+<Aside type="caution" title="The factory form does not cross a thread">
+`spawn(() => new Worker(database), 'x')` is a closure.  It cannot be
+cloned, and no worker can rebuild it.  When such a spawn matches `offload`
+it **throws**, naming the two ways out: pass the class — `spawn(Worker,
+'x')`, with `Worker` exported from the actor module — or exclude the path
+from `offload`.  Dependencies an offloaded actor needs are wired on the
+worker side, in the module's `setup`.
+</Aside>
+
+<Aside type="caution" title="Messages lose their prototype on the hop">
+A message to a worker is structured-cloned.  Plain data survives; a class
+instance arrives as a plain object with no methods and no `instanceof` —
+and it does so **silently**.  The project convention, `kind`-discriminated
+plain objects, is exactly the shape that crosses intact.  The same holds
+for `ActorOptions`: a mailbox capacity crosses, a supervisor strategy, a
+dispatcher or a mailbox factory is code and is refused on the caller's
+stack.
+</Aside>
+
+<Aside type="caution" title="Everything on a worker is slower to talk to">
+A local `tell` is an array push.  A cross-thread one is a structured clone
+plus two relay hops through the main thread, on the order of twenty
+microseconds — sixty times a local one, and an `ask` thirty times.  An
+actor that does little work per message is **slower** on a worker than at
+home.  That is what the `offload` allow-list is for: keep the chatty
+actors at home and send the ones that compute.  The measured break-even is
+in the table below.
+</Aside>
+
+## Children stay with their parent
+
+`context.spawn` is not redirected.  A child is constructed in its parent's
+heap — on whichever thread the parent's `onReceive` runs — because
+supervision hands a live `Error` and a ref from child to parent, child
+death watch is a direct link, and parent–child is the chattiest
+relationship in an actor system.  So **the unit of offload is the subtree**:
+an offloaded top-level actor takes its children with it, and load spreads
+through several top-level actors, a router or sharding — not through more
+workers per subtree.  Paths are unaffected: `ref.path.toString()` is the
+same whether the actor is local or offloaded, because a path carries the
+system name and not the thread.
+
+## System actors on workers
+
+`offload` refuses any pattern that could reach `/system` — `/system/*` as
+much as `/*` or `/**` — for two reasons.  Framework actors are created
+through an internal door rather than `spawn`, so the entry would do
+nothing; and no node may address `/system/…` by name across the wire
+anyway.  The error names the route that works, because the wish is
+legitimate and a worker *is* a cluster node, so the placement the cluster
+already has applies to it unchanged:
+
+- a **singleton** or a **sharded entity type** with a role that only the
+  workers carry (`actor-ts.worker-mesh.worker-roles`) runs on a worker;
+- the **shard coordinator** follows the leader, and `leader = "worker"`
+  moves it.  With the default hostnames the main thread sorts first and
+  leads; `leader = "worker"` gives the workers the hostname `compute`, which
+  sorts before `main`.  Hostnames an operator set explicitly are kept, and
+  refused when they contradict the leader.
+
+Per-node infrastructure — the pub-sub mediator, the replicator, shard
+regions, the DevTools probe — exists on every worker anyway; there is
+nothing to move.
+
+## What is visible, and what is not
+
+An offloaded actor is absent from the main thread's cell tree: not in
+`ActorSelection`, not in the DevTools tree of the main thread, not in its
+metrics.  Each worker has its own registry, so **metrics are per process
+and per thread** — scrape every worker.  With `workers = 0` none of this
+applies.
+
+## The measured table
+
+`benchmarks/parallelism/config-scaling.ts` runs the same application under
+`workers = 0, 1, 2, 4, 8, auto` — sixteen actors, one message each per
+iteration — in two shapes: **cpu**, where each message burns a fixed amount
+of the machine's time, and **chatty**, where a message does nothing but
+get answered.  Speed-up against `workers = 0`:
+
+| Shape / workers | 1 | 2 | 4 | 8 | auto (31) |
+| --- | --- | --- | --- | --- | --- |
+| cpu · 10 µs per message | 0.16x | 0.19x | 0.17x | 0.15x | 0.13x |
+| cpu · 100 µs per message | 0.57x | 0.97x | 1.15x | 1.17x | 0.64x |
+| cpu · 1 ms per message | 0.86x | 1.67x | 3.01x | 4.03x | 4.60x |
+| chatty | 0.05x | 0.05x | 0.05x | 0.04x | 0.01x |
+
+*Measured 2026-09-16 on Bun 1.4.2, Windows 11, 32 hardware threads.*
+
+Three things to read off it.  The threads break even at about a hundred
+microseconds of work per message and pay from there — four times faster
+at a millisecond.  A chatty actor is **twenty times slower** on a worker
+than at home, which is the number behind keeping `offload` narrower than
+`/user/*` for an application whose actors mostly forward.  And the ceiling
+is the relay: every frame between two threads, and every gossip round of
+the mesh, passes through the main thread, so `auto` on a 32-thread machine
+loses to eight workers at a hundred microseconds — sixteen actors cannot
+use thirty-one workers, and the idle ones still cost the relay their
+heartbeats.  Size `workers` to the actors that compute, not to the cores.
+
+## Where to next
+
+- **[Worker mesh](/cluster/worker-mesh/)** — the layer underneath: the
+  threads, the broker, the hostnames and restart pacing.
+- **[Dispatchers](/fundamentals/dispatchers/)** — a dispatcher decides
+  *when* an actor runs on its thread; it is not a thread.
+- **[Cluster sharding](/cluster/sharding/overview/)** — spreading one entity type
+  over the workers by role.
+- **[Death watch](/fundamentals/death-watch/)** — `watch()` on an
+  offloaded actor works, across the thread.

@@ -279,6 +279,10 @@ verdrahtet seinen eigenen nur in einen freien Slot.
 
 ## Wie es weitergeht
 
+- **[Parallelität](/de/fundamentals/parallelism/)** — ein Dispatcher
+  entscheidet, *wann* ein Actor auf seinem Thread läuft, nie *auf welchem*;
+  echte Parallelität sind Actors auf Worker-Threads, aus einer
+  Konfigurationszahl.
 - **[Mailboxes](/de/fundamentals/mailboxes/)** — die Queue,
   aus der der Dispatcher zieht.  FIFO / Bounded / Priority.
 - **[Timer und Scheduling](/de/fundamentals/timers-and-scheduling/)** —

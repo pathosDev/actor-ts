@@ -2502,6 +2502,24 @@ Schalter **einzeln**, nicht als Ganzes: `.withPanels({ timeTravel: false })`
 übliche Präzedenz, eine Ebene tiefer angewandt — sonst würde ein einzelnes im
 Code genanntes Panel jedes vom Betrieb abgeschaltete Panel wieder einschalten.
 
+### `actor-ts.parallelism` *(Actors auf Worker-Threads allein per Config)*
+
+| Schlüssel | Default | Zweck |
+| --- | --- | --- |
+| `parallelism.workers` | `0` | `0` ist aus — das Single-Thread-System, Bit für Bit.  Eine Zahl oder `"auto"` (verfügbare Parallelität minus Main-Thread) startet im Hintergrund ein Worker-Mesh und macht `system.spawn` zu einer Platzierungsentscheidung. |
+| `parallelism.offload` | `["/user/*"]` | Pfadmuster der Top-Level-Actors, die auf einen Worker wandern.  `*` ist ein Segment, `**` eines oder mehrere.  Ein Muster, das `/system` erreichen könnte, wird abgelehnt. |
+| `parallelism.placement` | `"consistent-hash"` | Auf welchem Worker ein Actor landet: ein Hash seines Namens, oder `"round-robin"`. |
+| `parallelism.leader` | `"main"` | `"worker"` verschiebt den Cluster-Leader — und den Shard-Coordinator — auf einen Worker, indem die Worker einen Hostnamen bekommen, der vor `main` sortiert. |
+| `parallelism.spawn-timeout` | `10s` | Wie lange ein Spawn auf die Bestätigung seines Workers wartet, bevor die Ref fehlschlägt. |
+| `parallelism.buffer-size` | `100000` | Nachrichten, die über alle noch unbestätigten Spawns gehalten werden; darüber hinaus Dead Letters. |
+
+Das Actor-Modul — die Datei, die die Klassen exportiert, die ein Worker
+spawnen darf — ist Code, nie ein Schlüssel: per Konvention `actors.js`
+neben dem Entry-Modul, sonst `ParallelismOptions.withModule(...)`.
+Hostnamen, Ports, Rollen und Restart-Pacing der Threads sind die
+`worker-mesh.*`- und `worker-cluster.*`-Schlüssel unten.  Siehe
+[Parallelität](/de/fundamentals/parallelism/).
+
 ### `actor-ts.worker-cluster` *(Multi-Runtime-Worker)*
 
 | Key | Default | Zweck |

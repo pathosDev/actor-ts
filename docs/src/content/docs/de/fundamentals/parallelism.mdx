@@ -1,0 +1,262 @@
+---
+title: Parallelität
+description: Actors auf Worker-Threads allein per Konfiguration — eine HOCON-Zahl macht aus einem Single-Thread-System ein Mesh aus Threads, bei unverändertem Anwendungscode. Was über einen Thread geht, was nicht, und was zu erwarten ist.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+JavaScript führt pro Actor-System einen Thread aus.  Ein Worker-Thread
+ist ein weiterer Thread, und das Framework kann auf jedem ein
+Actor-System hosten — genau das tut das [Worker-Mesh](/de/cluster/worker-mesh/).
+Diese Seite handelt von der Schicht darüber: **Actors auf diese Threads zu
+verteilen, ohne die Anwendung zu ändern.**  Eine Konfigurationszahl startet
+die Threads, und `system.spawn` setzt Actors darauf.
+
+```hocon
+actor-ts.parallelism {
+  workers = auto      # 0 = off (the default) | N | "auto"
+}
+```
+
+```ts
+// unchanged, character for character
+const system = ActorSystem.create('my-app');
+const ref = system.spawn(ImageResizer, 'resizer');
+ref.tell({ kind: 'resize', bytes });
+```
+
+Mit `workers = 0` ist das System das Single-Thread-System, das es immer
+war: kein Thread, kein Cluster, kein Modul-Import, und `spawn` zahlt einen
+Null-Check.  Mit jedem anderen Wert startet `ActorSystem.create` im
+Hintergrund ein Mesh — der Main-Thread tritt einem eigenen Cluster bei,
+spawnt die Worker, und jeder Worker tritt bei — und `spawn` wird zu einer
+Platzierungsentscheidung.  Ein Actor, dessen Pfad auf `offload` passt, wird
+auf einem Worker erzeugt; jeder andere dort, wo er immer erzeugt wurde.  In
+beiden Fällen ist der Aufruf synchron und liefert eine `ActorRef`, deren
+`path` der Pfad ist, den der Actor zu Hause gehabt hätte.
+
+## Das Actor-Modul
+
+`spawn(ImageResizer, 'resizer')` übergibt ein **Klassenobjekt**, und eine
+Klasse kann keinen Thread überqueren: `postMessage` klont Daten, nie Code,
+und keine Runtime kann von einem Klassenobjekt auf das Modul zurückschließen,
+das es definiert hat.  Also muss der Worker die Klassen selbst
+`import()`ieren, und beide Seiten einigen sich auf einen Namen für jede —
+ihren **Export-Namen**, der einen Minifier überlebt und zwei Klassen mit
+demselben `.name` auseinanderhält.
+
+Das ist das Einzige, was die Anwendung liefert: ein Modul, das die
+auszulagernden Actor-Klassen exportiert.  Nur Exports — keine Registrierung,
+keine Dekoratoren:
+
+```ts
+// src/actors.ts
+export { ImageResizer } from './actors/ImageResizer.js';
+export { ReportBuilder } from './actors/ReportBuilder.js';
+```
+
+Per Konvention ist es `actors.js` (oder `.ts`) **neben dem Entry-Modul** —
+der Datei, die die Runtime ausführen sollte — und dann muss nichts
+konfiguriert werden.  Ein anderes Modul, oder mehrere, wird im Code benannt:
+
+```ts
+const parallelism = ParallelismOptions.create()
+  .withModule(new URL('./workers/actors.js', import.meta.url));
+const systemOptions = ActorSystemOptions.create().withParallelism(parallelism);
+const system = ActorSystem.create('my-app', systemOptions);
+```
+
+`module` ist bewusst **kein** HOCON-Schlüssel, aus demselben Grund, aus dem
+`worker-cluster.bootstrap` keinen hat: Eine Konfigurationsdatei darf nicht
+entscheiden, welchen Code ein Worker ausführt.  Ist `workers` größer als
+null und nirgends ein Modul zu finden, wirft `ActorSystem.create` einen
+`OptionsError`, der die gesuchten Pfade und die Option nennt, die eines
+benennt.
+
+Ein Modul darf außerdem ein `setup(context)` exportieren; der Worker führt
+es aus, sobald sein Knoten oben ist, mit System, Cluster und Registry in der
+Hand.  Dort wird ein Actor gespawnt, den ein Worker *von Anfang an* hosten
+soll, und dort gehört Actor-Konfiguration hin, die keinen Thread überqueren
+kann (siehe unten).
+
+## Konfiguration
+
+```hocon
+actor-ts.parallelism {
+  workers = 0                      # 0 = off | N | "auto" = available parallelism minus the main thread
+  offload = ["/user/*"]            # path patterns; * = one segment, ** = any depth; /system is refused
+  placement = "consistent-hash"    # consistent-hash (by actor name) | round-robin
+  leader = "main"                  # main | worker — who hosts the shard coordinator and role-less singletons
+  spawn-timeout = 10s              # a worker's acknowledgment of a spawn; then the ref fails
+  buffer-size = 100000             # messages held across every spawn still awaiting its worker
+}
+```
+
+| Schlüssel | Bedeutung |
+| --- | --- |
+| `workers` | `"auto"` ist die verfügbare Parallelität der Maschine **minus eins**, weil der Main-Thread ein arbeitendes Mitglied ist: Er führt aus, was er nicht ausgelagert hat, und relayt jeden Frame zwischen Workern. Ein CPU-Kontingent eines Containers wird berücksichtigt, wo die Runtime es zeigt (`os.availableParallelism()`), sonst greift `navigator.hardwareConcurrency`. |
+| `offload` | Welche Top-Level-Actors wandern. `*` passt auf ein Pfadsegment, `**` auf eines oder mehrere; `/user/resize-*` ist in Ordnung. Ein Muster, das `/system` erreichen könnte, wird abgelehnt — siehe [Systemactors auf Workern](#systemactors-auf-workern). |
+| `placement` | `consistent-hash` hasht den Actor-Namen, sodass derselbe Name über Neustarts der Anwendung hinweg auf demselben Worker landet. `round-robin` verteilt Spawns gleichmäßig in Spawn-Reihenfolge. |
+| `leader` | Der Cluster-Leader ist das Mitglied mit der niedrigsten Adresse; `main` hält ihn auf dem Main-Thread, `worker` verschiebt ihn — und den Shard-Coordinator mit ihm — auf einen Worker. |
+| `spawn-timeout` | Wie lange ein Spawn auf die Bestätigung des Workers wartet, bevor die Ref fehlschlägt und ihr Puffer zu Dead Letters wird. |
+| `buffer-size` | Die Schranke für Nachrichten an Actors, deren Worker sie noch nicht bestätigt haben, über das ganze System. Darüber hinaus gehen die restlichen mit einer einmaligen Warnung zu Dead Letters. |
+
+Die Threads selbst — Hostnamen, Ports, Cluster-Rollen, das Ready-Timeout,
+das Restart-Pacing — werden dort konfiguriert, wo das
+[Worker-Mesh](/de/cluster/worker-mesh/) sie liest: `actor-ts.worker-mesh.*`
+und `actor-ts.worker-cluster.*`.  Ein Knopf lebt an einem Ort.
+
+## Was ein Spawn tut
+
+`system.spawn` bleibt synchron.  Passt der Pfad auf `offload`:
+
+1. Der Name wird so geprüft, wie ein lokaler Spawn ihn prüft, auf dem Stack
+   des Aufrufers.
+2. Ein Worker wird gewählt — per Hash des Namens oder Round-Robin.
+3. Eine **Pending-Ref** wird sofort zurückgegeben.  Ihre `path`, `equals`
+   und `toString` stehen fest; ein `tell`, bevor der Worker geantwortet
+   hat, wird in Reihenfolge gepuffert und in dem Moment nachgespielt, in
+   dem er antwortet.  Ein `ask` funktioniert genauso.
+4. Ein Spawn-Frame geht an den Worker, der den Namen validiert, den Actor
+   unter seinem eigenen `/user` erzeugt und mit dem Pfad bestätigt.  Die
+   Pending-Ref schaltet auf eine Remote-Ref um und leert ihren Puffer.
+
+Ein Spawn, den der Worker ablehnt — eine Klasse, die er nicht findet, ein
+dort schon vergebener Name — lässt die Ref fehlschlagen: Alles, was sie
+hielt, wird zum Dead Letter mit der Ref als Empfänger, und alles danach
+ebenso.  Der Grund wird geloggt.  Ein Worker, der nie antwortet, lässt die
+Ref bei `spawn-timeout` fehlschlagen.
+
+Bevor das Mesh oben ist, warten Spawns und ihre Refs puffern.  Ein Mesh,
+das nicht startet — ein Modul, das sich nicht importieren lässt, ein
+Worker, der nie ready wird — wird einmal geloggt, lässt das Wartende
+fehlschlagen und lässt jeden späteren ausgelagerten `spawn` mit der Ursache
+werfen.
+
+`system.terminate()` bleibt der eine Aufruf, mit dem die Anwendung
+herunterfährt.  Er terminiert zuerst das System jedes Workers — sodass ein
+ausgelagerter Actor sein `postStop` bekommt wie ein lokaler —, wartet auf
+sie (begrenzt durch dasselbe `shutdown-drain-timeout`, das die Worker
+nutzen, plus eine Sekunde), und stoppt dann die Threads und die eigenen
+Actors des Main-Threads.
+
+## Drei Grenzen, jede mit einem lauten Fehler
+
+<Aside type="caution" title="Die Factory-Form überquert keinen Thread">
+`spawn(() => new Worker(database), 'x')` ist eine Closure.  Sie kann nicht
+geklont werden, und kein Worker kann sie nachbauen.  Passt ein solcher
+Spawn auf `offload`, **wirft** er und nennt die zwei Auswege: die Klasse
+übergeben — `spawn(Worker, 'x')`, mit `Worker` aus dem Actor-Modul
+exportiert — oder den Pfad aus `offload` ausnehmen.  Abhängigkeiten, die
+ein ausgelagerter Actor braucht, werden auf der Worker-Seite verdrahtet, im
+`setup` des Moduls.
+</Aside>
+
+<Aside type="caution" title="Nachrichten verlieren auf dem Hop ihren Prototyp">
+Eine Nachricht an einen Worker wird structured-cloned.  Plain Data
+überlebt; eine Klasseninstanz kommt als plain Object ohne Methoden und ohne
+`instanceof` an — und zwar **still**.  Die Projektkonvention,
+`kind`-diskriminierte Plain Objects, ist genau die Form, die intakt
+ankommt.  Dasselbe gilt für `ActorOptions`: Eine Mailbox-Kapazität geht
+über den Thread, eine Supervisor-Strategie, ein Dispatcher oder eine
+Mailbox-Factory ist Code und wird auf dem Stack des Aufrufers abgelehnt.
+</Aside>
+
+<Aside type="caution" title="Alles auf einem Worker ist langsamer zu erreichen">
+Ein lokales `tell` ist ein Array-Push.  Ein Thread-übergreifendes ist ein
+Structured Clone plus zwei Relay-Hops über den Main-Thread, in der
+Größenordnung von zwanzig Mikrosekunden — sechzigmal ein lokales, und ein
+`ask` dreißigmal.  Ein Actor, der pro Nachricht wenig Arbeit tut, ist auf
+einem Worker **langsamer** als zu Hause.  Dafür gibt es die
+`offload`-Allowlist: Die geschwätzigen Actors bleiben zu Hause, die
+rechnenden gehen.  Der gemessene Break-even steht in der Tabelle unten.
+</Aside>
+
+## Kinder bleiben beim Elter
+
+`context.spawn` wird nicht umgelenkt.  Ein Kind wird im Heap seines Elters
+konstruiert — auf dem Thread, auf dem dessen `onReceive` läuft —, weil
+Supervision ein lebendiges `Error` und eine Ref vom Kind zum Elter reicht,
+Death Watch auf Kinder eine direkte Verbindung ist und Eltern–Kind die
+geschwätzigste Beziehung in einem Actor-System ist.  Also ist **die
+Auslagerungseinheit der Teilbaum**: Ein ausgelagerter Top-Level-Actor nimmt
+seine Kinder mit, und Last verteilt sich über mehrere Top-Level-Actors,
+einen Router oder Sharding — nicht über mehr Worker pro Teilbaum.  Pfade
+sind davon unberührt: `ref.path.toString()` ist gleich, ob der Actor lokal
+oder ausgelagert ist, weil ein Pfad den Systemnamen trägt und nicht den
+Thread.
+
+## Systemactors auf Workern
+
+`offload` lehnt jedes Muster ab, das `/system` erreichen könnte —
+`/system/*` genauso wie `/*` oder `/**` —, aus zwei Gründen.
+Framework-Actors werden über eine interne Tür erzeugt statt über `spawn`,
+der Eintrag täte also nichts; und kein Knoten darf `/system/…` ohnehin per
+Namen über die Wire adressieren.  Der Fehler nennt den Weg, der
+funktioniert, denn der Wunsch ist legitim, und ein Worker *ist* ein
+Cluster-Knoten — die Platzierung, die der Cluster schon hat, gilt für ihn
+unverändert:
+
+- ein **Singleton** oder ein **Sharding-Entity-Typ** mit einer Rolle, die
+  nur die Worker tragen (`actor-ts.worker-mesh.worker-roles`), läuft auf
+  einem Worker;
+- der **Shard-Coordinator** folgt dem Leader, und `leader = "worker"`
+  verschiebt ihn.  Mit den Standard-Hostnamen sortiert der Main-Thread
+  zuerst und führt; `leader = "worker"` gibt den Workern den Hostnamen
+  `compute`, der vor `main` sortiert.  Hostnamen, die ein Operator explizit
+  gesetzt hat, bleiben erhalten und werden abgelehnt, wenn sie dem Leader
+  widersprechen.
+
+Infrastruktur pro Knoten — der PubSub-Mediator, der Replikator,
+Shard-Regionen, die DevTools-Sonde — existiert auf jedem Worker ohnehin; da
+ist nichts zu verschieben.
+
+## Was sichtbar ist, und was nicht
+
+Ein ausgelagerter Actor fehlt im Zellbaum des Main-Threads: nicht in
+`ActorSelection`, nicht im DevTools-Baum des Main-Threads, nicht in dessen
+Metriken.  Jeder Worker hat seine eigene Registry, also sind **Metriken pro
+Prozess und pro Thread** — jeden Worker scrapen.  Mit `workers = 0` gilt
+nichts davon.
+
+## Die gemessene Tabelle
+
+`benchmarks/parallelism/config-scaling.ts` lässt dieselbe Anwendung unter
+`workers = 0, 1, 2, 4, 8, auto` laufen — sechzehn Actors, je eine Nachricht
+pro Iteration — in zwei Formen: **cpu**, wo jede Nachricht eine feste Menge
+Maschinenzeit verbrennt, und **chatty**, wo eine Nachricht nichts tut, außer
+beantwortet zu werden.  Speed-up gegenüber `workers = 0`:
+
+| Form / workers | 1 | 2 | 4 | 8 | auto (31) |
+| --- | --- | --- | --- | --- | --- |
+| cpu · 10 µs pro Nachricht | 0.16x | 0.19x | 0.17x | 0.15x | 0.13x |
+| cpu · 100 µs pro Nachricht | 0.57x | 0.97x | 1.15x | 1.17x | 0.64x |
+| cpu · 1 ms pro Nachricht | 0.86x | 1.67x | 3.01x | 4.03x | 4.60x |
+| chatty | 0.05x | 0.05x | 0.05x | 0.04x | 0.01x |
+
+*Gemessen am 2026-09-16 auf Bun 1.4.2, Windows 11, 32 Hardware-Threads.*
+
+Drei Dinge lassen sich ablesen.  Die Threads erreichen den Break-even bei
+etwa hundert Mikrosekunden Arbeit pro Nachricht und zahlen sich ab dort aus
+— viermal schneller bei einer Millisekunde.  Ein geschwätziger Actor ist
+auf einem Worker **zwanzigmal langsamer** als zu Hause; das ist die Zahl,
+aus der folgt, `offload` für eine Anwendung mit vor allem weiterleitenden
+Actors enger als `/user/*` zu halten.  Und die Decke ist das Relay: Jeder
+Frame zwischen zwei Threads und jede Gossip-Runde des Mesh läuft über den
+Main-Thread, weshalb `auto` auf einer 32-Thread-Maschine bei hundert
+Mikrosekunden gegen acht Worker verliert — sechzehn Actors können
+einunddreißig Worker nicht nutzen, und die untätigen kosten das Relay
+trotzdem ihre Heartbeats.  `workers` nach den rechnenden Actors bemessen,
+nicht nach den Kernen.
+
+## Wie es weitergeht
+
+- **[Worker-Mesh](/de/cluster/worker-mesh/)** — die Schicht darunter: die
+  Threads, der Broker, die Hostnamen und das Restart-Pacing.
+- **[Dispatcher](/de/fundamentals/dispatchers/)** — ein Dispatcher
+  entscheidet, *wann* ein Actor auf seinem Thread läuft; er ist kein
+  Thread.
+- **[Cluster-Sharding](/de/cluster/sharding/overview/)** — einen Entity-Typ per
+  Rolle über die Worker verteilen.
+- **[Death Watch](/de/fundamentals/death-watch/)** — `watch()` auf einem
+  ausgelagerten Actor funktioniert, über den Thread hinweg.
