@@ -99,6 +99,14 @@ not a finding.
    constant that drifts in one runner turns the whole table into
    fiction while every individual row still looks plausible.
 
+   The `parallel-workload` scenario (#1565) extends the rule from counts
+   to *work*: its CPU loop — xorshift32 rounds from a seed of the actor
+   and message index — is mirrored bit for bit in every arm, every reply
+   carries the loop's result, and each row publishes the checksum over
+   every reply, which the generator recomputes from `js/workload.ts`
+   alone and refuses when it differs.  A JIT that elided the loop, or an
+   arm that skipped a message, cannot produce a publishable row.
+
 3. **Logging off everywhere.**  An arm that writes log lines is
    measuring its logger.
 
@@ -142,7 +150,7 @@ not a finding.
 
 | arm | what it is | why it is here |
 | --- | ---------- | -------------- |
-| **actor-ts** | this project | the reference implementation of all four scenarios |
+| **actor-ts** | this project | the reference implementation of all five scenarios |
 | **nact** | the most-starred dedicated actor library for Node | the closest neighbour: same model, same runtime, functional API |
 | **XState v5** | the most widely used actor implementation in JavaScript | reach — though it is a statechart library whose actors are the delivery mechanism |
 | **Akka** (JVM, Java) | the reference actor implementation, on another virtual machine | the cross-language question: how much does the runtime cost us? |
@@ -284,8 +292,8 @@ travels with the number into every published table.
 `akka-net/` uses the classic actor API — the one its own documentation leads
 with.  `orleans/` is the virtual-actor model and the only arm here whose
 semantics genuinely differ: grains activate on first call, there is no
-caller-visible create or stop, and a grain call is an RPC.  Three of its four
-rows therefore measure a near-equivalent and say so in a note:
+caller-visible create or stop, and a grain call is an RPC.  Three of its
+single-actor rows therefore measure a near-equivalent and say so in a note:
 activation-on-first-call for spawn, `[OneWay]` for tell, and a driven chain of
 awaited calls for ping-pong.
 
@@ -380,6 +388,13 @@ Measure every arm, each in its own subprocess:
 ```bash
 bun run bench:compare
 ```
+
+The actor-ts arm's `parallel-workload` rows start a worker mesh with
+`actor-ts.parallelism.workers = auto` — one thread per available core but
+one, each hosting an actor system.  On a machine short of memory that is
+more than the process can allocate; `ACTOR_TS_WORKERS=8` caps what `auto`
+resolves to, and the row's note names the count either way.  The
+published figures come from a machine that can afford `auto`.
 
 ### What each arm needs installed
 

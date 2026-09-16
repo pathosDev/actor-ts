@@ -142,6 +142,47 @@ public final class Actors {
         }
     }
 
+    /* ---------------------------- parallel workload ------------------------- */
+
+    /**
+     * Mirrors {@code actorCount} of the {@code parallel-workload} rows in
+     * js/workload.ts; the guardian spawns this many workers up front.
+     */
+    public static final int PARALLEL_ACTORS = 64;
+
+    public record Work(int seed, int rounds, ActorRef<Integer> replyTo) {}
+
+    /** One independent worker: burns the rounds it is handed and replies with the result. */
+    public static Behavior<Work> parallelWorker() {
+        return Behaviors.receive(Work.class)
+                .onMessage(Work.class, message -> {
+                    message.replyTo().tell(workRounds(message.seed(), message.rounds()));
+                    return Behaviors.same();
+                })
+                .build();
+    }
+
+    /**
+     * Mirrors {@code workRounds} in js/workload.ts bit for bit: xorshift32 on
+     * 32-bit lanes with a logical right shift, so the JVM's {@code int} and
+     * JavaScript's {@code >>> 0} produce the same state.
+     */
+    public static int workRounds(int seed, int rounds) {
+        int x = seed;
+        for (int i = 0; i < rounds; i++) {
+            x ^= x << 13;
+            x ^= x >>> 17;
+            x ^= x << 5;
+        }
+        return x;
+    }
+
+    /** Mirrors {@code workSeed} in js/workload.ts: never zero, because xorshift is stuck there. */
+    public static int workSeed(int actorIndex, int messageIndex) {
+        int seed = (actorIndex + 1) * 0x9E3779B1 ^ (messageIndex + 1) * 0x85EBCA77;
+        return seed == 0 ? 1 : seed;
+    }
+
     /* ------------------------------- guardian ------------------------------ */
 
     public sealed interface GuardianCommand permits GetRefs, SpawnBatch, ChildStarted {}
@@ -155,7 +196,8 @@ public final class Actors {
     public record Refs(
             ActorRef<CounterCommand> counter,
             ActorRef<Echo> echo,
-            ActorRef<VolleyCommand> ping) {}
+            ActorRef<VolleyCommand> ping,
+            List<ActorRef<Work>> parallelWorkers) {}
 
     public static Behavior<GuardianCommand> guardian() {
         return Behaviors.setup(Guardian::new);
@@ -176,7 +218,11 @@ public final class Actors {
             ActorRef<Echo> echoRef = context.spawn(echo(), "echo");
             ActorRef<Ping> pongRef = context.spawn(pong(), "pong");
             ActorRef<VolleyCommand> pingRef = context.spawn(ping(pongRef), "ping");
-            this.refs = new Refs(counterRef, echoRef, pingRef);
+            List<ActorRef<Work>> parallelWorkers = new ArrayList<>(PARALLEL_ACTORS);
+            for (int i = 0; i < PARALLEL_ACTORS; i++) {
+                parallelWorkers.add(context.spawn(parallelWorker(), "parallel-" + i));
+            }
+            this.refs = new Refs(counterRef, echoRef, pingRef, List.copyOf(parallelWorkers));
         }
 
         @Override

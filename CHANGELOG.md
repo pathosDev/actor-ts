@@ -11,6 +11,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Comparison scenario `parallel-workload` in all nine arms** (#1565).
+  The four existing scenarios drive one actor or two alternating ones —
+  the actor-model invariant no framework parallelises, so the JVM and .NET
+  arms ran effectively single-threaded on them too, and the suite said
+  nothing about the one property multithreading exists for. The fifth
+  scenario is sixty-four independent actors, one message each per
+  iteration, every message a fixed number of xorshift32 rounds (`load=light`
+  5 000, `load=heavy` 100 000), each arm on its natural parallelism: the
+  JVM and .NET arms over their default schedulers, actor-ts on worker
+  threads through `actor-ts.parallelism.workers = auto` — the same
+  `system.spawn` calls an application makes, the four single-actor rows
+  measured first on a `workers = 0` system so they stay the zero-overhead
+  figures — and nact and XState on one thread, labelled so by note. The
+  work is mirrored bit for bit in TypeScript, Java, Scala and C#, every
+  reply carries the loop's result, and each row publishes the checksum over
+  every reply, which `report.ts` recomputes from `js/workload.ts` and
+  refuses when it differs — completion verification now proves the work
+  was done, not only that the messages were processed; all nine arms agree
+  on the checksums to the bit. The report renders a scenario only once a
+  result file carries it and lists it under "Known gaps" until then, so the
+  figures land whole with the next full measurement (#1331) rather than
+  half-measured. `benchmarks/comparison/README.md` and
+  `reference/benchmarks.mdx` (EN + DE) describe the scenario. Stage 7 of
+  #1566.
+
 - **`OffloadPool` — pure functions on worker threads** (#1558). An
   `await` in a handler yields the event loop and parallelises nothing, so
   pure-JS CPU work — a password hash, a compression, an FFT over a sensor

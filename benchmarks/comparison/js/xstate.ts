@@ -26,7 +26,7 @@
 import { assign, createActor, createMachine, setup, waitFor, type ActorRefLike } from 'xstate';
 import { createRequire } from 'node:module';
 import { runArm, type ArmCase } from './arm.js';
-import { workloadCase } from './workload.js';
+import { workRounds, workSeed, workloadCase, type WorkloadCase } from './workload.js';
 
 const WAIT_TIMEOUT_MS = 60_000;
 
@@ -115,6 +115,66 @@ const pingMachine = setup({
 /** A machine with no behaviour — the spawn scenario's subject. */
 const idleMachine = createMachine({ id: 'idle' });
 
+const SINGLE_THREAD_NOTE =
+  'XState actors run synchronously on the one JavaScript thread: `send` computes the work before it '
+  + 'returns, so the sixty-four actors run one after another — the single-threaded figure for the '
+  + 'same work, the scenario\'s finding rather than a skip.';
+
+type WorkEvent = { type: 'work'; seed: number; rounds: number };
+
+const workerMachine = setup({
+  types: {
+    context: {} as { result: number },
+    events: {} as WorkEvent,
+  },
+}).createMachine({
+  id: 'worker',
+  context: { result: 0 },
+  on: {
+    work: { actions: assign({ result: ({ event }) => workRounds(event.seed, event.rounds) }) },
+  },
+});
+
+/**
+ * The `parallel-workload` rows: sixty-four machines, one event each per
+ * call; the result is read off the snapshot, which `send` has already
+ * updated by the time it returns.
+ */
+class ParallelWorkload {
+  private workers: ReturnType<typeof createActor<typeof workerMachine>>[] = [];
+  private messageIndex = 0;
+  private total = 0;
+
+  constructor(readonly workload: WorkloadCase) {}
+
+  setup(): void {
+    if (this.workers.length > 0) return;
+    const actorCount = this.workload.actorCount ?? 0;
+    for (let i = 0; i < actorCount; i++) this.workers.push(createActor(workerMachine).start());
+  }
+
+  run(): number {
+    const rounds = this.workload.workIterationsPerMessage ?? 0;
+    const message = this.messageIndex++;
+    let correct = 0;
+    for (let actor = 0; actor < this.workers.length; actor++) {
+      const worker = this.workers[actor]!;
+      worker.send({ type: 'work', seed: workSeed(actor, message), rounds });
+      const result = worker.getSnapshot().context.result;
+      if (result === workRounds(workSeed(actor, message), rounds)) correct++;
+      this.total = (this.total + result) >>> 0;
+    }
+    return correct;
+  }
+
+  checksum(): number { return this.total; }
+
+  shutdown(): void {
+    for (const worker of this.workers) worker.stop();
+    this.workers = [];
+  }
+}
+
 function installedVersion(): string {
   try {
     const require = createRequire(import.meta.url);
@@ -137,6 +197,8 @@ async function main(): Promise<void> {
   const tellLarge = workloadCase('tell-throughput', 'batch=10k');
   const askWorkload = workloadCase('ask-round-trip', 'sequential');
   const pingPongWorkload = workloadCase('ping-pong', 'exchanges=10k');
+  const parallelLight = new ParallelWorkload(workloadCase('parallel-workload', 'load=light'));
+  const parallelHeavy = new ParallelWorkload(workloadCase('parallel-workload', 'load=heavy'));
 
   /**
    * `.start()` and `.stop()` are synchronous here, so the confirmation is a
@@ -195,6 +257,13 @@ async function main(): Promise<void> {
         return snapshot.context.completed;
       },
     },
+    ...[parallelLight, parallelHeavy].map((parallel): ArmCase => ({
+      workload: parallel.workload,
+      notes: SINGLE_THREAD_NOTE,
+      setup: () => parallel.setup(),
+      run: () => parallel.run(),
+      checksum: () => parallel.checksum(),
+    })),
   ];
 
   await runArm({
@@ -205,7 +274,7 @@ async function main(): Promise<void> {
       license: 'MIT',
     },
     cases,
-    shutdown: () => { ping.stop(); pong.stop(); counter.stop(); },
+    shutdown: () => { parallelLight.shutdown(); parallelHeavy.shutdown(); ping.stop(); pong.stop(); counter.stop(); },
   });
 }
 

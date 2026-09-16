@@ -34,6 +34,16 @@ internal static class Program
     private const int PingPongIterations = 20;
     private const int PingPongExchanges = 10_000;
     private const int PingPongWarmup = 10;
+    private const int ParallelLightIterations = 200;
+    private const int ParallelLightWarmup = 100;
+    private const int ParallelLightRounds = 5_000;
+    private const int ParallelHeavyIterations = 50;
+    private const int ParallelHeavyWarmup = 20;
+    private const int ParallelHeavyRounds = 100_000;
+
+    private const string ParallelNote =
+        "Sixty-four actors on the default dispatcher, which spreads them over every core; "
+        + "the sixty-four asks per iteration are issued from the driver and awaited together.";
 
     /// <summary>Generous by design: turns a deadlock into a failure, not a bound on a measurement.</summary>
     private static readonly TimeSpan ReplyTimeout = TimeSpan.FromSeconds(60);
@@ -62,6 +72,11 @@ internal static class Program
             var pong = system.ActorOf(Props.Create(() => new Actors.PongActor()), "pong");
             var ping = system.ActorOf(Props.Create(() => new Actors.PingActor(pong)), "ping");
             var coordinator = system.ActorOf(Props.Create(() => new Actors.SpawnCoordinator()), "spawn");
+            var parallelWorkers = new IActorRef[Actors.ParallelActors];
+            for (var i = 0; i < parallelWorkers.Length; i++)
+            {
+                parallelWorkers[i] = system.ActorOf(Props.Create(() => new Actors.ParallelWorkerActor()), $"parallel-{i}");
+            }
 
             var results = new List<Harness.ScenarioResult>
             {
@@ -91,6 +106,11 @@ internal static class Program
                 await Harness.MeasureAsync("ping-pong", "exchanges=10k", "exchange",
                     PingPongIterations, PingPongExchanges, PingPongWarmup, null,
                     async () => await ping.Ask<int>(new Actors.StartVolley(PingPongExchanges), ReplyTimeout)),
+
+                await ParallelCaseAsync(parallelWorkers, "load=light",
+                    ParallelLightIterations, ParallelLightWarmup, ParallelLightRounds),
+                await ParallelCaseAsync(parallelWorkers, "load=heavy",
+                    ParallelHeavyIterations, ParallelHeavyWarmup, ParallelHeavyRounds),
             };
 
             if (Harness.SmokeMode)
@@ -110,6 +130,40 @@ internal static class Program
         }
 
         return 0;
+    }
+
+    /// <summary>
+    /// One <c>parallel-workload</c> row: every call sends one message to each of
+    /// the sixty-four workers, awaits the replies together, and counts the ones
+    /// that carry the result the work must produce.  The checksum over every
+    /// reply — warmup included — is published with the row, and report.ts
+    /// recomputes it from js/workload.ts (#1565).
+    /// </summary>
+    private static async Task<Harness.ScenarioResult> ParallelCaseAsync(
+        IActorRef[] workers, string caseName, int iterations, int warmup, int rounds)
+    {
+        var messageIndex = 0;
+        var checksum = 0L;
+        var measured = await Harness.MeasureAsync("parallel-workload", caseName, "msg",
+            iterations, Actors.ParallelActors, warmup, ParallelNote,
+            async () =>
+            {
+                var message = messageIndex++;
+                var replies = new Task<int>[workers.Length];
+                for (var actor = 0; actor < workers.Length; actor++)
+                {
+                    replies[actor] = workers[actor].Ask<int>(new Actors.Work(Actors.WorkSeed(actor, message), rounds), ReplyTimeout);
+                }
+                var results = await Task.WhenAll(replies);
+                var correct = 0L;
+                for (var actor = 0; actor < results.Length; actor++)
+                {
+                    if (results[actor] == Actors.WorkRounds(Actors.WorkSeed(actor, message), rounds)) correct++;
+                    checksum = (checksum + unchecked((uint)results[actor])) & 0xFFFFFFFFL;
+                }
+                return correct;
+            });
+        return measured with { ActorCount = Actors.ParallelActors, WorkIterationsPerMessage = rounds, Checksum = checksum };
     }
 
     private static async Task<long> TellBatchAsync(IActorRef counter, int batch)

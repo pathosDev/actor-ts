@@ -41,6 +41,17 @@ internal static class Program
     private const int PingPongIterations = 20;
     private const int PingPongExchanges = 10_000;
     private const int PingPongWarmup = 10;
+    private const int ParallelLightIterations = 200;
+    private const int ParallelLightWarmup = 100;
+    private const int ParallelLightRounds = 5_000;
+    private const int ParallelHeavyIterations = 50;
+    private const int ParallelHeavyWarmup = 20;
+    private const int ParallelHeavyRounds = 100_000;
+
+    private const string ParallelNote =
+        "One grain per index, sixty-four of them, activated by the first call and scheduled over "
+        + "every core by the silo; the sixty-four calls per iteration are issued from the driver "
+        + "and awaited together. A grain call is a request/response by construction.";
 
     /// <summary>
     /// How long a tell batch may wait for one-way messages still in flight.
@@ -85,6 +96,11 @@ internal static class Program
             var counter = grains.GetGrain<ICounterGrain>("counter");
             var echo = grains.GetGrain<IEchoGrain>("echo");
             var ping = grains.GetGrain<IPingGrain>("ping");
+            var parallelWorkers = new IParallelWorkerGrain[Workload.ParallelActors];
+            for (var i = 0; i < parallelWorkers.Length; i++)
+            {
+                parallelWorkers[i] = grains.GetGrain<IParallelWorkerGrain>($"parallel-{i}");
+            }
 
             var activation = 0;
 
@@ -109,6 +125,11 @@ internal static class Program
                 await Harness.MeasureAsync("ping-pong", "exchanges=10k", "exchange",
                     PingPongIterations, PingPongExchanges, PingPongWarmup, VolleyNote,
                     async () => await ping.Volley(PingPongExchanges)),
+
+                await ParallelCaseAsync(parallelWorkers, "load=light",
+                    ParallelLightIterations, ParallelLightWarmup, ParallelLightRounds),
+                await ParallelCaseAsync(parallelWorkers, "load=heavy",
+                    ParallelHeavyIterations, ParallelHeavyWarmup, ParallelHeavyRounds),
             };
 
             if (Harness.SmokeMode)
@@ -151,6 +172,40 @@ internal static class Program
         }
         foreach (var grain in references) await grain.Release();
         return activated;
+    }
+
+    /// <summary>
+    /// One <c>parallel-workload</c> row: every call invokes each of the sixty-four
+    /// grains once, awaits the replies together, and counts the ones that carry
+    /// the result the work must produce.  The checksum over every reply — warmup
+    /// included — is published with the row, and report.ts recomputes it from
+    /// js/workload.ts (#1565).
+    /// </summary>
+    private static async Task<Harness.ScenarioResult> ParallelCaseAsync(
+        IParallelWorkerGrain[] workers, string caseName, int iterations, int warmup, int rounds)
+    {
+        var messageIndex = 0;
+        var checksum = 0L;
+        var measured = await Harness.MeasureAsync("parallel-workload", caseName, "msg",
+            iterations, Workload.ParallelActors, warmup, ParallelNote,
+            async () =>
+            {
+                var message = messageIndex++;
+                var replies = new Task<int>[workers.Length];
+                for (var actor = 0; actor < workers.Length; actor++)
+                {
+                    replies[actor] = workers[actor].Work(Workload.WorkSeed(actor, message), rounds);
+                }
+                var results = await Task.WhenAll(replies);
+                var correct = 0L;
+                for (var actor = 0; actor < results.Length; actor++)
+                {
+                    if (results[actor] == Workload.WorkRounds(Workload.WorkSeed(actor, message), rounds)) correct++;
+                    checksum = (checksum + unchecked((uint)results[actor])) & 0xFFFFFFFFL;
+                }
+                return correct;
+            });
+        return measured with { ActorCount = Workload.ParallelActors, WorkIterationsPerMessage = rounds, Checksum = checksum };
     }
 
     private static async Task<long> TellBatchAsync(ICounterGrain counter, int batch)
