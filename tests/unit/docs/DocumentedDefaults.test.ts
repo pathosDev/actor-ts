@@ -37,6 +37,10 @@ import { DEFAULT_WEBSOCKET_POLICY } from '../../../src/http/websocket/WebsocketP
 import { DEFAULT_WORKER_RESTART_POLICY } from '../../../src/worker/WorkerClusterOptions.js';
 import { DEFAULT_MAX_RESTARTS, DEFAULT_RESTART_MAX_BACKOFF_MS, DEFAULT_RESTART_MIN_BACKOFF_MS, DEFAULT_RESTART_RANDOM_FACTOR, DEFAULT_RESTART_WINDOW_MS, DEFAULT_WORKER_BASE_PORT, DEFAULT_WORKER_COUNT, DEFAULT_WORKER_HOSTNAME, DEFAULT_WORKER_READY_TIMEOUT_MS, DEFAULT_WORKER_SYSTEM_NAME } from '../../../src/worker/WorkerClusterOptions.js';
 import {
+  DEFAULT_MESSAGE_BOUNDARY_SERIALIZER_ROUND_TRIP,
+  DEFAULT_MESSAGE_BOUNDARY_STRUCTURED_CLONE,
+} from '../../../src/diagnostics/MessageBoundaryOptions.js';
+import {
   DEFAULT_PARALLELISM_BUFFER_SIZE,
   DEFAULT_PARALLELISM_LEADER,
   DEFAULT_PARALLELISM_OFFLOAD,
@@ -586,6 +590,10 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // `sharding.role` above it: `""` is the published shape of the key, and the
   // reader drops it rather than passing it on (#854).
   { key: 'actor-ts.sharded-daemon-process.liveness-interval', kind: 'duration', constant: DEFAULT_DAEMON_LIVENESS_INTERVAL_MS },
+
+  /* --- message boundary (#1386) --- */
+  { key: 'actor-ts.diagnostics.message-boundary.structured-clone', kind: 'string', constant: DEFAULT_MESSAGE_BOUNDARY_STRUCTURED_CLONE },
+  { key: 'actor-ts.diagnostics.message-boundary.serializer-round-trip', kind: 'string', constant: DEFAULT_MESSAGE_BOUNDARY_SERIALIZER_ROUND_TRIP },
 
   /* --- parallelism (#1563): the module is code-only, so the block has exactly these six leaves --- */
   { key: 'actor-ts.parallelism.workers', kind: 'int', constant: DEFAULT_PARALLELISM_WORKERS },

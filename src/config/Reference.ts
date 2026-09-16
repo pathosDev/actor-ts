@@ -385,6 +385,18 @@ actor-ts {
       # every actor start, every stop and every dead letter.
       event-stream = off
     }
+
+    # What a local tell is held to before it is delivered, so a message that
+    # would not survive a boundary it has not met yet is reported while a
+    # sender is still on the stack.  A worker hop structured-clones a message
+    # -- a class instance arrives as a plain object, silently -- and a cluster
+    # wire runs it through a serializer.  Each check is off | warn | fail:
+    # warn logs once per message type, fail throws out of the tell.  Off in
+    # production; TestKit sets structured-clone = fail.
+    message-boundary {
+      structured-clone = off
+      serializer-round-trip = off
+    }
   }
 
   cluster {

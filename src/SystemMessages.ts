@@ -1,6 +1,7 @@
 import type { ActorRef } from './ActorRef.js';
 import type { LogContextData } from './LogContext.js';
 import type { SpanContext } from './tracing/Tracer.js';
+import { markFrameworkMessage } from './util/FrameworkMessage.js';
 
 /**
  * Gracefully stops an actor after it has processed all currently
@@ -329,3 +330,7 @@ export class AskTimeoutError extends Error {
     this.name = 'AskTimeoutError';
   }
 }
+
+// The framework's own messages, exempt from the message-boundary check
+// (#1386): each crosses the boundaries it needs to by its own mechanism.
+markFrameworkMessage(PoisonPill, Kill, Terminated, ReceiveTimeout, DeadLetter, ActorStarted, ActorStopped, ActorRestarted, DispatcherError, SchedulerError);

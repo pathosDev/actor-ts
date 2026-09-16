@@ -154,7 +154,10 @@ A short tour of what's in the box:
   unauthenticated by default, and it refuses a routable bind without a
   gate.
 - **TestKit** — `TestProbe`, `ManualScheduler`, `MultiNodeSpec` for
-  deterministic tests including cluster scenarios.
+  deterministic tests including cluster scenarios; the message-boundary check
+  is on by default there, so a message that would lose its prototype on a
+  worker hop fails the test that sends it instead of the first deployment
+  with `workers = auto`.
 
 Everything works under any of the three runtimes — runtime-specific backends
 (TCP sockets, worker threads, SQLite, HTTP serve) live behind small

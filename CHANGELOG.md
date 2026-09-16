@@ -11,6 +11,36 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Message-boundary check — the local `tell` answers for the worker hop
+  and the cluster wire** (#1386). A message crosses up to three boundaries
+  with different semantics: in-process by reference, a worker hop by
+  structured clone (prototype gone, methods gone, silently; a function-valued
+  field throws), a cluster wire by serializer. A suite exercises the first
+  almost exclusively, so a message class could be green locally and degrade
+  the first time `actor-ts.parallelism.workers` was switched on.
+  `actor-ts.diagnostics.message-boundary.structured-clone` and
+  `.serializer-round-trip` (`off | warn | fail`, code:
+  `ActorSystemOptions.withMessageBoundary(MessageBoundaryOptions…)`) examine
+  every local `tell` at send time the way the boundary would: the clone check
+  walks the message for any reachable value whose prototype the algorithm
+  does not preserve — a class instance, an `Error` subclass — and clones it
+  for what cannot cross at all; the serializer check encodes and decodes it
+  through the serialization extension. `warn` logs once per message type,
+  `fail` throws a `MessageBoundaryError` out of the `tell`, naming the type,
+  the recipient and what would be lost. Both are off in production and cost
+  one comparison; **`TestKit` turns `structured-clone` to `fail`**, so the
+  place a lossy message class is found is a test. `ActorRef`s anywhere in a
+  message are fine (the wire rewrites them), `/system` recipients are exempt,
+  and the framework's own message classes — `PoisonPill`, `Terminated`,
+  cluster events, pub-sub and receptionist messages, `Success`/`Failure` —
+  carry a marker (`markFrameworkMessage`, `actor-ts/util`) that exempts them:
+  each crosses its boundaries by its own mechanism. Running this repository's
+  suite with the kit default on affected **no** message type, which is the
+  list #1386 asked for. `serializer-round-trip` stays off even in the kit,
+  because the round trip needs a binding for every class an application
+  sends. Docs: the three boundaries on `fundamentals/messages`, the kit's
+  default on `testing/testkit` (EN + DE).
+
 - **Actors on worker threads from configuration alone** (#1563).
   `actor-ts.parallelism.workers = auto` (or a number) makes
   `ActorSystem.create` start a `WorkerMesh` in the background and turns

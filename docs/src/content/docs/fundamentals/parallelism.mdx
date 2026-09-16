@@ -151,7 +151,9 @@ and it does so **silently**.  The project convention, `kind`-discriminated
 plain objects, is exactly the shape that crosses intact.  The same holds
 for `ActorOptions`: a mailbox capacity crosses, a supervisor strategy, a
 dispatcher or a mailbox factory is code and is refused on the caller's
-stack.
+stack.  The [message-boundary check](/fundamentals/messages/#three-boundaries-and-the-check-that-stands-in-for-them)
+finds the lossy message types in a test, before the flag is flipped:
+`TestKit` has it on by default.
 </Aside>
 
 <Aside type="caution" title="Everything on a worker is slower to talk to">

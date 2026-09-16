@@ -1100,6 +1100,10 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this.system.deadLetters.tell(new DeadLetter(env.message, env.sender, this.self));
       return;
     }
+    // On the sender's stack, before the envelope is queued: a `fail` mode
+    // throws out of the `tell` itself, which is the only place the caller
+    // can still be told (#1386).  `null` — the default — is one comparison.
+    if (this.system._messageBoundary !== null) this.system._messageBoundary.check(env.message, this.path);
     this._enqueueUser(env);
   }
 

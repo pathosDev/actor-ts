@@ -1,3 +1,4 @@
+import { markFrameworkMessage } from './FrameworkMessage.js';
 /**
  * Try<T> — a synchronous computation that either yielded a value
  * (`Success<T>`) or threw (`Failure`).  Mirrors Scala's `scala.util.Try`.
@@ -176,3 +177,7 @@ export function trySequence<T>(tries: ReadonlyArray<Try<T>>): Try<T[]> {
   }
   return new Success(out);
 }
+
+// The framework's own messages, exempt from the message-boundary check
+// (#1386): each crosses the boundaries it needs to by its own mechanism.
+markFrameworkMessage(Success, Failure);
