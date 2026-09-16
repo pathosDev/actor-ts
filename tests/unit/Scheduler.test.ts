@@ -1,3 +1,5 @@
+import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { ActorRef } from '../../src/ActorRef.js';
 import { ActorPath } from '../../src/ActorPath.js';
@@ -152,6 +154,119 @@ describe('Scheduler.scheduleAtFixedRateFunction', () => {
     await sleep(80);
     expect(count).toBe(snapshot);
   });
+
+  /**
+   * `fixedRate` runs the first tick *before* it arms its `setInterval`.  A
+   * task that cancels its own handle on that tick settles the cancellable and
+   * drops it from `live` while the interval handle is still `null` — so an
+   * interval armed afterwards is one that neither `cancel()` nor `shutdown()`
+   * can reach again, and it holds the event loop open for the life of the
+   * process.  The seed-retry tick in `Cluster` cancels itself exactly like
+   * this the moment the node is `up` (#1567).
+   *
+   * The interval primitives are spied on rather than the count polled: with
+   * the defect the leaked interval's callback returns early on
+   * `isCancelled`, so `count` stays at 1 either way and a count-based test
+   * passes over the leak.  What discriminates is whether `setInterval` was
+   * called at all.
+   */
+  test('a task that cancels itself on its first tick arms no interval (#1567)', async () => {
+    const armed: unknown[] = [];
+    const cleared: unknown[] = [];
+    const realSetInterval = globalThis.setInterval;
+    const realClearInterval = globalThis.clearInterval;
+    globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => {
+      const handle = realSetInterval(...args);
+      armed.push(handle);
+      return handle;
+    }) as typeof setInterval;
+    globalThis.clearInterval = ((handle: Parameters<typeof clearInterval>[0]) => {
+      cleared.push(handle);
+      realClearInterval(handle);
+    }) as typeof clearInterval;
+    try {
+      const scheduler = new Scheduler();
+      let ticks = 0;
+      const cancellable = scheduler.scheduleAtFixedRateFunction(5, 5, () => {
+        ticks++;
+        cancellable.cancel();
+      });
+      await awaitCondition(() => ticks >= 1, {
+        timeoutMs: 4_000,
+        label: 'the first tick fired',
+      });
+      expect(cancellable.isCancelled).toBe(true);
+      expect(armed).toHaveLength(0);
+      scheduler.shutdown();
+      expect(armed).toHaveLength(0);
+    } finally {
+      globalThis.setInterval = realSetInterval;
+      globalThis.clearInterval = realClearInterval;
+    }
+  });
+
+  /**
+   * The sibling case that always worked, pinned so the fix above cannot
+   * regress it: a task that cancels itself on a *later* tick has an interval
+   * by then, and that interval is cleared — once, and it is the one that was
+   * armed.
+   */
+  test('a task that cancels itself on a later tick clears the interval it armed', async () => {
+    const armed: unknown[] = [];
+    const cleared: unknown[] = [];
+    const realSetInterval = globalThis.setInterval;
+    const realClearInterval = globalThis.clearInterval;
+    globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => {
+      const handle = realSetInterval(...args);
+      armed.push(handle);
+      return handle;
+    }) as typeof setInterval;
+    globalThis.clearInterval = ((handle: Parameters<typeof clearInterval>[0]) => {
+      cleared.push(handle);
+      realClearInterval(handle);
+    }) as typeof clearInterval;
+    try {
+      const scheduler = new Scheduler();
+      let ticks = 0;
+      const cancellable = scheduler.scheduleAtFixedRateFunction(5, 5, () => {
+        ticks++;
+        if (ticks === 2) cancellable.cancel();
+      });
+      await awaitCondition(() => cancellable.isCancelled, {
+        timeoutMs: 4_000,
+        label: 'the second tick cancelled the schedule',
+      });
+      expect(ticks).toBe(2);
+      expect(armed).toHaveLength(1);
+      expect(cleared).toEqual(armed);
+    } finally {
+      globalThis.setInterval = realSetInterval;
+      globalThis.clearInterval = realClearInterval;
+    }
+  });
+
+  /**
+   * The property that actually failed, asserted the only way it can be: from
+   * outside the process.  A leaked interval is invisible in-process — no
+   * handle count on Bun, and the callback that would reveal it returns early
+   * — but a process that does not exit is visible to whoever spawned it.
+   * The fixture cancels a fixed-rate task from its first tick, shuts down,
+   * and returns; before #1567 that process ran until the spawn timeout
+   * killed it.
+   */
+  test('a process whose only fixed-rate task cancelled itself on its first tick exits (#1567)', () => {
+    const fixture = join(import.meta.dir, '__fixtures__', 'scheduler-self-cancelling-fixed-rate.ts');
+    const child = spawnSync(process.execPath, ['run', fixture], {
+      encoding: 'utf8',
+      env: { ...process.env, NO_COLOR: '1' },
+      // Generous against a loaded runner; the fixture itself is done in
+      // ~50 ms, so a run that reaches this limit is the leak, not slowness.
+      timeout: 8_000,
+    });
+    expect(child.stdout, 'the fixture did not run to its shutdown').toContain('self-cancelled=true');
+    expect(child.signal, 'the fixture had to be killed — its event loop never emptied').toBeNull();
+    expect(child.status).toBe(0);
+  }, 15_000);
 
   test('exceptions in the callback do not stop the schedule', async () => {
     const scheduler = new Scheduler();
