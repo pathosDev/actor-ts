@@ -2559,6 +2559,571 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **`context.sender` now names the remote sender across the wire** (#1561).
+  `Cluster.dispatchEnvelope` resolved the target path of an inbound envelope
+  and delivered the body with no sender, although the frame carried the
+  sender's path and the peer's address — so inside a clustered actor
+  `this.sender` was `None` for every message that arrived over any
+  transport, and only the `replyTo` that `ask` injects into the body
+  survived. The receiving node now rebuilds a `RemoteActorRef` to the sender
+  and hands it over as the second argument to `tell`, so replying through
+  `this.sender` works across nodes and a sender-less `tell` still arrives
+  with `context.sender` empty. The sender path is used for nothing but
+  addressing a reply *back to that peer*, so it needs no trust gate on the
+  receiving side — a forged `/system/…` is refused by the peer's own policy
+  when the reply arrives.
+
+  **Behaviour change on the TCP path too, not only on worker threads.** Code
+  that branched on `this.sender.isNone()` to detect a remote caller sees
+  `Some` now. `ShardSenderRef` stays as it was; it is merely no longer the
+  only way a cross-node reply finds its way home. Stage 2 of #1566.
+
+- **Docs toolchain: Astro 7.3 + Starlight 0.42** (#1527). `astro` `^7.1.3` →
+  `^7.3.2`, `@astrojs/starlight` `^0.41.11` → `^0.42.0`,
+  `@astrojs/markdown-remark` `7.2.1` → `^7.3.1`, `starlight-typedoc` `^0.22.0`
+  → `^0.23.1`. Site-only; `docs/package.json` is `private` and never reaches
+  the published closure.
+
+  **The exact `@astrojs/markdown-remark` pin is gone, and it should never have
+  been a pin.** `c85688cf` set it to `7.2.1` to mirror what astro 7.1.3
+  declared as its optional peer — and that exact declaration was an astro bug,
+  fixed in 7.2.10 ("Fixes `@astrojs/markdown-remark` being pinned to an exact
+  version"). Astro 7.3 declares `^7.3.0`, so a caret mirrors it again.
+
+  **What the bump surfaced is worth more than the bump.** Verifying against a
+  baseline `dist/` rather than a green exit caught a live regression:
+  `@astrojs/markdown-remark@7.3.1` corrupts every rendered mermaid diagram
+  under Starlight. 7.3.1 added `rehype-collapse-script-style` — a security fix,
+  so it stays — which moves a `<style>`'s literal CSS into the element's
+  `set:html` property and empties its children. Starlight registers
+  `mdx({ optimize: true })`, whose `rehype-optimize-static` then serialises the
+  surrounding static subtree through `hast-util-to-html` — which has no idea
+  `set:html` is an Astro directive and writes it out as an ordinary attribute.
+  What ships is `<style set:html="…"></style>`: the CSS in an attribute, the
+  element body empty, and the browser applying none of it. Measured here at
+  **423 of 423** mermaid pages, every diagram losing its JetBrains Mono font,
+  its fill colours and its edge animations.
+
+  The fix uses the escape hatch Starlight's own code provides — it only injects
+  `mdx({ optimize: true })` when the site has not registered the integration —
+  so `astro.config.mjs` now registers `mdx({ optimize: false })` itself, after
+  `starlight()` because `astro-expressive-code` refuses to start when `mdx()`
+  precedes it. Pinning back to 7.3.0 would also have worked and was rejected:
+  it dodges the bug by dodging the security fix that came with it, and the
+  version number alone would not have said so.
+
+  Verified by comparing the rendered output against a baseline build of the old
+  versions, because none of this is visible in an exit code: 4951 pages both
+  times, 486 inline mermaid SVGs across `flowchart-v2`/`sequence`/`stateDiagram`,
+  0 unrendered fences, all **423** mermaid pages identical in
+  `viewBox`/`width`/`height`, the `lang-dropdown` override on every page, and
+  Shiki's HOCON (1197) and PromQL (54) block counts unchanged. Every count
+  matched on the *broken* build too — the CSS was still present, just relocated
+  into an attribute — so only the byte comparison of the SVGs found it.
+
+  Build time 3m42s → 4m02s, the cost of `optimize: false`. The audit surface
+  improves: 11 advisories (1 critical, 10 high) → 7 (7 high), with none
+  introduced. The critical is GHSA-26w7-cxv4-gfx2, Astro RCE via AVIF image
+  optimization, fixed in 7.2.8 — the site had been below that fix.
+
+- **Five optional peers admit their new major** (#1520). `mongodb`, `ioredis`,
+  `nodemailer`, `imapflow` and `@libsql/client` each shipped a major since they
+  were pinned, and each range is now **widened rather than moved** — `^6 ||
+  ^7`, `^5 || ^6`, `^9 || ^10`, `^1 || ^2`, `^0.15 || ^0.17 || ^0.18`. Nothing
+  a consumer has installed stops resolving.
+
+  What moves is which version the project actually exercises:
+  `tests/integration/brokers/package.json` takes the new major, so the live
+  suites run against it. All four green against real brokers in Docker —
+  redis-streams 3 of 3, email 4 of 4, mongodb 39 of 39, libsql 39 of 39 — which
+  is the whole reason these were held back from the September sweep rather than
+  waved through.
+
+  **Two of the five needed a fact rather than a green run to be trustworthy.**
+
+  `ioredis@6` defaults to **RESP3**, which was the flagged risk:
+  `RedisStreamsActor` parses `xreadgroup` replies in RESP2 array shape. The
+  suite passes, and the reason it passes is that ioredis pairs
+  `protocol: 3` with `replyMapping: "legacy"` by default — its own
+  documentation calls those shapes *"identical across both protocols"*. So no
+  `protocol: 2` pin is needed and none is added; what would break the adapter
+  is `replyMapping: "resp3"`, which nothing here sets.
+
+  `mongodb@7` cannot be imported on the Bun version `engines` still admits.
+  Its bundled `bson` calls `v8.startupSnapshot.isBuildingSnapshot()` at module
+  scope, and Bun implemented that only in 1.4. Measured on both: v7 throws
+  `ERR_NOT_IMPLEMENTED` on Bun 1.3.0 and imports cleanly on 1.4.2, while v6
+  imports cleanly on both. So the caveat that used to read "version 7 cannot be
+  imported on Bun" becomes conditional — "v7 needs Bun 1.4 or newer" — instead
+  of disappearing, because the floor is still 1.3.0 and a consumer sitting on it
+  has to stay on v6. Docs updated in both languages.
+
+- **BREAKING: the NATS adapters moved off the deprecated `nats` package to
+  nats.js v3** (#1520). npm marks `nats@2.29.3` deprecated — "moved to
+  @nats-io/transport-node" — and v3 split the monolith, so the one optional
+  peer becomes four. Which ones you need depends on which actor you use:
+
+  ```sh
+  bun remove nats
+  bun add @nats-io/transport-node                  # NatsActor
+  bun add @nats-io/jetstream                       # + JetStreamActor
+  bun add @nats-io/kv @nats-io/obj                 # + the KV / object-store actors
+  ```
+
+  No configuration changes and no message shapes move. `mode: 'push' | 'pull'`
+  **stays**, which is worth saying because the plan for this change assumed
+  otherwise: v3 removed `JetStreamClient.subscribe`, but not push consumers —
+  they are reached through `consumers.getPushConsumer(...).consume()` now, and
+  the iteration is the same async iterable the pump already walked.
+
+  Three exported test-seam types changed with the driver.
+  `NatsConnectionLike` loses `jetstream()` and `jetstreamManager()`, because v3
+  made them free functions taking the connection; `JetStreamSubscriptionLike`
+  becomes `JetStreamMessageStreamLike` (stopped rather than destroyed) and
+  `PushConsumerLike` joins it. A test double that implements these needs the
+  new shape, and the four adapters grew module seams — `jetStreamModule()`,
+  `keyValueModule()`, `objectStoreModule()` — so a fake connection alone no
+  longer stands an actor up.
+
+  `fetch`'s `expiresMs` is now clamped to a second. nats.js rejects anything
+  below that client-side before the request leaves, so a shorter request used
+  to be an exception rather than a shorter wait.
+
+  Verified against a live `nats-server -js`: eight scenarios including a
+  driver-shape probe that asserts the hand-written stubs against the real
+  modules — the check that did not exist, and whose absence is what let this
+  driver's surface drift unnoticed in the first place.
+
+- **The coverage run is parallel again, and CI's slowest gate goes from about
+  six minutes to forty seconds** (#1521). `bun test --parallel` was banned from
+  that one step by #1332, for a good reason that has now expired: on bun 1.4.0
+  the flag changed what was *measured* rather than what was tested. Execution
+  was identical — 721 of 723 files reported the same hit count, the numerator
+  byte-for-byte the same 55 293 lines — but 407 files reported a **larger**
+  instrumented-line denominator and none a smaller one, so the aggregate read
+  79.16 % against 93.82 % on the same code and walked straight through the 90 %
+  floor.
+
+  Bun 1.4.1 lists a fix for under-reported coverage across workers, and on the
+  1.4.2 pin (#1519) the defect is measured gone rather than assumed gone. Two
+  runs at one seed, differing only in the flag: over **728 lcov records, zero
+  report a larger denominator**, twenty report one smaller by a line or three
+  (30 lines out of 59 593, 0.05 %), and the numerator is identical at 56 041.
+  Bun's own aggregate agrees to 0.05 points — 94.66 % parallel against 94.61 %
+  serial — and the wall time drops **352 s → 41 s**.
+
+  The flag goes *after* `--coverage`, because `tests/unit/ci/CoverageGate.test.ts`
+  locates the invocation with `startsWith('bun test --coverage')` and would
+  otherwise stop finding it. `tests/unit/ci/WorkflowHygiene.test.ts` keeps its
+  assertion but **inverts** it: the coverage run must now carry the flag, so a
+  silent revert is a red check rather than eight minutes nobody notices. That
+  the inverted guard actually discriminates was verified the only way it can be
+  — by removing the flag and watching it fail.
+
+  What has not changed is the pairing the old note was really about: the floor
+  and the denominator move together. If a future Bun re-inflates the
+  denominator the coverage gate goes red, and the answer then is to drop the
+  flag again, never to lower the floor.
+
+- **The Bun toolchain is pinned to 1.4.2** (#1519), from 1.4.0 (#1328). Two
+  patches shipped since that pin — 1.4.1 with 202 fixes, 1.4.2 with roughly
+  350 upstream WebKit commits — and #1344 had named the next patch as the
+  moment to move. The version lives in `.bun-version`, which all thirteen
+  workflows read through `bun-version-file`, so the CI half is one line;
+  `@types/bun` moves to `^1.4.2` alongside it, which is where 1.4.2 fixes
+  `process.off` against the `@types/node` 24 this repository pins.
+
+  **The supported floor is unchanged** — `engines` still declares Bun
+  >= 1.3.0 and `multi-runtime.yml`'s `bun-floor` leg still tests it. The
+  nineteen integration images keep `oven/bun:1.4-debian`, which tracks 1.4.x
+  by the policy in `tests/integration/Dockerfile.node`'s header and has been
+  serving 1.4.2 since it was published; the `FROM oven/bun:1.4.0` sample in
+  `runtime/overview.mdx` (EN + DE) follows the pin, because a page telling
+  the reader to use an explicit tag should show the one this repository uses.
+
+  What 1.4.1 and 1.4.2 change **here**, checked against the tree rather than
+  read off the release notes: `AsyncLocalStorage` is about twice as fast with
+  no per-await allocation, which is `LogContext.runFresh` once per mailbox
+  turn; the `node:net` and `node:http` fixes (a paused socket that never
+  emitted `'end'`, `net.createServer(cb)` registration, `server.close()`
+  hanging, the `listen()` callback on an EADDRINUSE retry) land on exactly the
+  three HTTP tests failing on Linux today; `bun test --isolate` stopped
+  leaking between files and `--parallel` stopped under-reporting coverage
+  across workers. Three widely-quoted improvements do **not** apply: the 9.2x
+  `Buffer.read*`/`write*` JIT inlining reaches no codec here (they are
+  `DataView` and hand-rolled byte math), the `'online'`-before-first-message
+  fix reaches no worker (`WorkerCluster` runs its own three-message
+  handshake), and the sub-4-second `fetch` timeout regression reached no call
+  site (the shortest deadline in `src/` is ten seconds).
+
+  Validated on 1.4.2 before pinning: `typecheck`, `typecheck:dev`,
+  `typecheck:bench`, `typecheck:compare`; the full suite, 13 943 passing
+  across 643 files with nothing quarantined; the coverage gate at **94.61 %**
+  aggregate with `src/cluster/` 97.79 % and `src/persistence/` 96.20 %, all
+  three floors unchanged; smoke on Bun, Node 26.7 and Deno 2.6.8; 69 runnable
+  examples; `bench:smoke`; `lint:package`, `lint:audit` (clean, unchanged),
+  `check:ui`, `test:ui` and the DevTools UI's own `bun test` half.
+
+  **The workaround catalogue was re-probed row by row (#1329) and only one
+  answer moved.** The quantum-early `setTimeout` of #477 stays fixed — 0 of
+  900 samples early at 20, 30 and 50 ms, identical on both versions, so
+  `TimerTolerance`'s lateness-only slack stands. `Bun.zstdDecompressSync`
+  still takes no options (arity 1), so the `node:zlib`-first ordering in
+  `Compression.ts` remains the security control it was. The `ws` shim still
+  ignores `maxPayload`: `BackendTransportFrameCap.test.ts` is nine of nine
+  green, which is the canary reporting the defect is still there rather than
+  the absence of one. `Bun.serve` still refuses an oversize frame early
+  (45 ms for 8 MiB against a 64 KiB cap) and still closes 1006 rather than a
+  policy 1009. `performance.eventLoopUtilization` is still absent, so the
+  stock-metrics capability row stays truthful with its label extended.
+
+  The one that moved is `node:inspector`. #1339 had asked for more than a
+  constructor that stops throwing, and now there is an answer: a probe that
+  connects, enables `Profiler`, busy-loops for 250 ms and stops **comes back
+  with a populated profile** (non-empty nodes and samples). CPU profiling in
+  DevTools is genuinely reachable on Bun; the docs row and the `ProfilerTap`
+  comment are #1339's to update.
+
+  **Throughput: no measurable difference, and the measurement is worth more
+  than the number.** Eight blocks of a hundred interleaved rounds each, both
+  binaries side by side on one commit, gave deltas of at most 2.6 % against a
+  block-to-block spread of 8 to 13 % — no scenario separates. The first four
+  blocks, run `1.4.0, 1.4.2, 1.4.0, 1.4.2`, had looked like a clean 2–6 %
+  regression with every 1.4.0 block above every 1.4.2 block; running the
+  sequence the other way round dissolved it, so the alternation had been
+  tracking the slot rather than the version. That is a Windows desktop and not
+  the machine of record, so nothing is published from it and #1331's Linux
+  re-measure still decides; what it does establish is that 1.4.2 brought
+  neither a further large regression nor a recovery of the #1344 figures.
+
+- **Every two-sided elapsed-time assertion is gone** (#1338). Twelve tests
+  asserted that something took *less* than N milliseconds — which is an
+  assertion about the machine, not about the code, and the family the flake
+  programme keeps meeting. Each is now the fact it was standing in for:
+
+  - Three push-query cases set `pollIntervalMs` an hour out, so "delivered
+    fast" becomes "delivered by the push path" — a regression now hangs the
+    case instead of passing slowly on a quick machine.
+  - Two distributed-data cases set the gossip interval out of reach, and the
+    `local`-consistency one partitions the peer outright, so "no peer
+    round-trip" is a fact rather than a duration.
+  - `CoordinatedShutdown`'s parallelism check records **one interleaved
+    trace**; the two arrays it used to keep could not tell the schedules apart
+    (both read `['1', '2']` either way), so the wall-clock bound had been
+    carrying the whole assertion.
+  - Four are redundant: the error message, the drained count, and bun's own
+    per-test cap already prove what the stopwatch restated.
+  - Two keep a lower bound only, where elapsed time genuinely is the subject —
+    a fallback that resolves via its own bound rather than a confirmation.
+
+- **The four CRDTs that had no shrinking property coverage now have it, and the
+  unseeded generator that stood in for it is gone** (#1372). `GCounterMap`,
+  `LWWMap`, `MVRegister` and `ORMap` were checked only by a hand-rolled
+  generator over bare `Math.random()`, 25 triples apiece — no shrinking, so a
+  broken merge law reported whichever three large maps the draw produced rather
+  than the two-element pair that breaks it, and no seed, so the failure could
+  not be re-run at all. All nine types are now under `fast-check` with the seed
+  pinned globally by `tests/setup/property-seed.ts`.
+
+  The new `LWWMap` property **failed on its first run**, which is the argument
+  for the change in one line: two maps that both wrote one key at timestamp 3
+  from the same replica, one a value and one a removal. That is `LWWRegister`'s
+  documented tie behaviour (#950) reached one level up rather than a new defect,
+  so the generator now derives both the value and the put/remove choice from
+  `(replica, timestamp)` — modelling "a replica writes one thing at one instant"
+  instead of filtering the case out afterwards with an `fc.pre` that would throw
+  most runs away.
+
+  The counterexample is pinned as an example test regardless, which is the
+  corpus the issue asks for: the generator can no longer produce that case, so
+  without the example nothing would notice if the behaviour changed. The nine
+  now-redundant law loops are removed along with every `Math.random()` call in
+  that file; what stays there is the hand-picked cases that say what each type
+  *means*.
+
+- **BREAKING — `ActorSystem.http(port)` binds loopback when no host is
+  given** (#1408).  It bound the IPv4 wildcard, so the shortest and
+  most-copied form of the shortcut was the one that published the server on
+  every interface.
+
+  *Migration:* a server that should be reachable from outside the host names
+  the interface — `system.http(port, { host })`.  Nothing else moves:
+  `newServerAt(host, port)` always took the host as a required argument, and
+  every example in the tree except the Kubernetes probe endpoint already
+  bound loopback explicitly.
+
+  This is the quiet kind of breaking change, which is why it is called out
+  rather than folded into a list: an affected deployment keeps starting
+  after the upgrade and simply stops being reachable, with nothing in the
+  log connecting that to the change.  The default was found by widening the
+  guard over `examples/` (#756), which had exempted the host-less call on
+  the stated grounds that it was "configuration" — it was not, it was a
+  hard-coded address one function call away.  That guard now pins the
+  default itself instead of the call shape, so the two cannot drift apart
+  again.
+
+- **BREAKING — The dump withholds a value when a whole word of the key's
+  name is `password`, `passphrase`, `secret`, `token`, `key`, `credential`
+  or `auth` — singular or plural, in any path segment, so a branch named
+  `credentials` withholds everything beneath it (#867).**
+
+  Whole words, and the last word of each name at that, because that is the
+  word saying what the value is: `api-key` is a key, but `key-prefix` is a
+  prefix, `passivation-idle` is a timeout and `max-subscribers-per-key` is a
+  count. A preposition moves that head in front of it, and a value drawn
+  from HOCON's boolean vocabulary is never withheld whatever its key is
+  called. A stock configuration withholds twelve keys, every one a
+  credential slot. It is the same list and the same rule the DevTools config
+  panel has used since #553 — the walk, the layer attribution and the
+  redaction now live in one place (`src/diagnostics/ConfigDump.ts`) rather
+  than two, so a key withheld from the panel cannot reach a log file
+  instead.
+
+  Redaction by key name is a heuristic and it is the weaker half of the
+  guarantee: by the time the tree is merged, a `${?DATABASE_PASSWORD}` is an
+  ordinary string, so a secret in a key called `dsn` or `connection-string`
+  is printed in full. Nor is a name whose last word is an identifier or a
+  location read as the thing itself — `kms-key-id` is an id and `token-path`
+  is a filesystem path, and both print. Both `configuration.mdx` pages and
+  `troubleshooting.mdx` say so in as many words, a test pins the gap open so
+  that sentence cannot rot, and the key ships `off` because the defence that
+  does not depend on a guess is not printing the tree. Values are
+  JSON-encoded, so a newline inside one cannot forge a line of the dump it
+  is part of.
+
+  `CONFIG_SECRET_PATTERN`, `CONFIG_NEVER_REDACTED_PATHS` and
+  `CONFIG_REDACTED` live in `src/util/Constants.ts` and are on the
+  `actor-ts/util` subpath; `actor-ts/devtools`'s protocol re-exports all
+  three. The pattern is anchored and applies to one word of a key; the
+  exemption list holds full paths of keys `reference.conf` declares whose
+  names the rule would otherwise read wrong, and `ConfigDump.test.ts`
+  asserts a stock tree's entire withheld set so an addition to it is a
+  visible line in a diff.
+
+  *Migration:* `CONFIG_SECRET_PATTERN` is now anchored and is matched
+  against a single word of a key, not against a whole dotted path —
+  `CONFIG_SECRET_PATTERN.test('a.b.password')` is `false` where it used to
+  be `true`. Apply it per word, or call `resolveConfigLeaves(config)` and
+  read each leaf's `secret` flag, which is the supported way to ask the
+  question. The DevTools config panel consequently shows values it withheld
+  in 0.17.0 — `sharding.passivation-*`, `cassandra.keyspace`,
+  `cache.*.key-prefix`, `cluster.receptionist.max-subscribers-per-key`,
+  `coordination.lease.kubernetes.token-*` and
+  `management.auth-protect-health` — none of which is a credential; a stock
+  configuration now withholds twelve keys instead of thirty-one.
+- **Three object-storage suites state the budget their temp-tree hooks run
+  under, instead of inheriting one nobody chose** (#290, #1282).
+
+  Their `beforeEach` builds a real object-storage tree and their `afterEach`
+  deletes it recursively. Idle that costs single-digit milliseconds; under
+  whole-suite disk contention a hook in `IntegrityTampering` was seen at 11.4 s
+  and two in `ReEncryptionSweep` at 24.8 s and 69.0 s — against bun's
+  undeclared 5 000 ms cap, which reports as `(unnamed)` with "a
+  beforeEach/afterEach hook timed out" and names neither the file, the hook kind
+  nor a cause.
+
+  Neither observation reproduced, and the change is sized for that. It is a
+  bound on work that is unbounded in principle — a recursive delete of a tree
+  whose size the test decides, on a disk the rest of the suite is also using —
+  not a number tuned until a red run went away. The other 22 files with the same
+  hook shape are deliberately left alone: two unreproduced observations do not
+  justify a sweep, and a guard that demanded a budget everywhere would be
+  asserting a hazard rather than a finding.
+
+  Verified rather than assumed: bun 1.4.0 honours the second argument on
+  `beforeEach` and `afterEach`, not only on `beforeAll` — a 6 s hook passes
+  under a 20 s budget and dies at 5 000 ms without one.
+
+- **Every suite runs in CI again, and no environment variable can change that**
+  (#538, #1330).
+
+  Three suites ran in no CI job at all for months: `ACTOR_TS_SKIP_FLAKY_MNS=1`
+  in `test.yml`, `multi-runtime.yml` and `publish.yml`, and three copy-pasted
+  `process.env.… ? describe.skip : describe` ternaries. The stated reason was
+  that Bun on GitHub's hosted runners cannot respawn functional worker threads
+  after the first worker test.
+
+  Both halves of that turned out to be wrong, in different ways:
+
+  - **The worker-thread suites had already earned their way back.** The written
+    exit criterion was fourteen consecutive green nights of
+    `nightly-flakes.yml` running exactly those suites with the flag off. They
+    reached twenty-one — 63 executions on `ubuntu-latest`, not one hang. Nobody
+    had read the criterion against the runs, which is precisely what the
+    workflow predicted about itself: "Nothing accumulates the streak. It is
+    counted by a human reading these annotations, which is the same failure
+    that made the quarantine permanent in the first place."
+  - **`LeaseMajority` was never a runner problem.** Its cause was the
+    split-brain resolution defect fixed under #839 in this release. The
+    quarantine had been hiding a product bug rather than measuring a runner.
+
+  What changed, beyond deleting the flag: `bunfig.toml`'s
+  `coveragePathIgnorePatterns` block (it removed the worker harness from the
+  coverage denominator only because that harness could not run on CI) and
+  `--exclude=worker` in `benchmarks.yml` (same cause, and invisible to a grep
+  for the flag, which is how it would have been missed). Coverage was
+  re-measured over the un-quarantined population and went **up**: 94.39 %
+  aggregate, `src/cluster/` 97.55 %, `src/persistence/` 95.56 %.
+
+  Two mechanisms replace the quarantine, and they are the point of the entry:
+
+  - **`tests/unit/ci/NoEnvironmentGatedSkips.test.ts`** refuses a test whose
+    execution an environment variable decides, because that is exactly the
+    thing a workflow can set — and setting it is how a red suite becomes an
+    absent one. A *capability probe* stays fine and is the shape to reach for:
+    `available ? describe : describe.skip` asks the machine a question no
+    workflow can answer for it. An allow-list entry needs a reason it cannot
+    hide a failure; there is one, for an opt-in re-measurement path that is
+    skipped by default and so cannot hide anything.
+  - **Every job in `.github/workflows/` now declares `timeout-minutes`**, so a
+    suite that stops making progress fails inside the hour instead of burning
+    GitHub's six-hour default — the failure mode the quarantine was justified
+    by in the first place.
+
+  `nightly-flakes.yml` keeps running the three suites on their own, three
+  repeats a night: it is the regression guard now rather than the parole board.
+  The harness's `--skip-quarantined` flag and its environment handling are gone
+  with the mechanism they served, along with the test that pinned them.
+
+- **Cluster sharding now bounds how many shards a rebalance may have in
+  flight at once, and ships that bound switched on** (#850).  The default
+  `HashAllocationStrategy` places a shard by `shardId % candidates.length`,
+  so a node joining changes the answer for most shards simultaneously: at
+  the shipped `number-of-shards = 64` a 2 to 3 node join re-homed 42 shards
+  in a single 2 s tick — each one a shard stop, every entity under it
+  stopped, re-allocated, re-created and, if persistent or remembered,
+  replayed. Two new `actor-ts.sharding` keys configure the ceiling,
+  `rebalance-absolute-limit` (default `0`, meaning no absolute ceiling) and
+  `rebalance-relative-limit` (default `0.1`, a fraction of
+  `number-of-shards`), with matching `withRebalanceAbsoluteLimit` /
+  `withRebalanceRelativeLimit` on `StartShardingOptions` and
+  `ShardCoordinatorOptions`. Where both are set the lower wins, a ceiling
+  never floors below one shard, and `0` for both restores the unbounded
+  behaviour exactly. At the shipped defaults that 42-shard join now
+  converges over roughly seven ticks instead of one, which is the behaviour
+  change worth reading about before an upgrade. Three properties of the
+  bound: it counts shards in flight rather than shards per tick, because a
+  tick fires every `rebalance-interval` while a hand-off may stand for a
+  whole `hand-off-timeout`, so a per-tick six would admit about thirty at
+  once; only the voluntary path is capped, since a region that dies leaves
+  its shards with no owner at all and those are re-homed immediately; and
+  nothing is dropped, with the remainder proposed again on the next tick and
+  the shards that go first picked round-robin across their current owners,
+  so a ceiling never drains one node before touching the next. The ceiling
+  sits at the coordinator rather than inside an allocation strategy, so it
+  applies to the default strategy, to `LeastShardAllocationStrategy` (whose
+  own `maxSimultaneousRebalance` bounds what it proposes, not what the
+  coordinator accepts) and to any strategy you write. #850
+
+- **BREAKING** — the last camelCase HOCON leaves are now kebab-case (#1405).
+  Thirteen leaves moved, in three blocks:
+
+  - `actor-ts.http.client`: `maxResponseBytes` → `max-response-bytes`,
+    `defaultTimeoutMs` → `default-timeout`, `maxRedirects` →
+    `max-redirects`. `redirect` is unchanged.
+  - `actor-ts.http.websocket`: `maxFrameBytes` → `max-frame-bytes`,
+    `onOversizeFrame` → `on-oversize-frame`, `onInvalidMessage` →
+    `on-invalid-message`, `maxBufferedBytes` → `max-buffered-bytes`,
+    `onBackpressure` → `on-backpressure`, `maxConnections` →
+    `max-connections`, `maxPreAttachFrames` → `max-pre-attach-frames`,
+    `maxPreAttachBytes` → `max-pre-attach-bytes`, `acceptTimeoutMs` →
+    `accept-timeout`.
+  - `actor-ts.cache.in-memory`: `maxEntries` → `max-entries`, `cleanupMs` →
+    `cleanup-interval`, `prefixQuotas` → `prefix-quotas`. **The same renames
+    apply under every `actor-ts.cache.<name>.in-memory`**, which shares one
+    reader with the global block.
+
+  `maxConnections` and `prefixQuotas` never appeared as `reference.conf`
+  leaves — they are documented as comments — but both are read, so an
+  operator who set either from the docs has to rename it too.
+
+  The rule the leaf names now follow is the one the rest of the tree already
+  used: the leaf is the kebab-case of the options field with any unit suffix
+  dropped, because HOCON carries the unit in the value. `AGENTS.md`'s
+  lockstep rule is amended to say so.
+
+  `cleanup-interval` is the one rename that also changes the published
+  value: `reference.conf` now ships `60s` instead of `60000`. A bare
+  millisecond number still parses, so `cleanup-interval = 60000` keeps
+  working and `0` still disables the sweep.
+
+  **TypeScript field names and builder methods are unchanged** —
+  `maxResponseBytes`, `cleanupMs`, `withCleanupMs(...)`, `acceptTimeoutMs`
+  all stay exactly as they were. This is a HOCON-only change; `new
+  InMemoryCache({ cleanupMs })` call sites are unaffected.
+
+  **The retired spellings are refused at startup** with a `ConfigError`
+  naming both, rather than ignored. There is no unknown-key detection
+  anywhere in the config loader, so an unrecognised leaf is inert by
+  construction and the built-in default silently applies — and six of the
+  thirteen are security caps a deployment lowers on purpose
+  (`max-frame-bytes`, `max-buffered-bytes`, `max-pre-attach-bytes`,
+  `max-pre-attach-frames`, `max-connections`, `max-response-bytes`).
+  Reverting one of those to the framework default on upgrade, quietly, is
+  the failure mode a rename must not have.
+
+  *Migration:* Every HOCON leaf under `actor-ts.http.client`,
+  `actor-ts.http.websocket` and `actor-ts.cache.*.in-memory` is now
+  kebab-case. Rename them in your `application.conf`; the old spellings are
+  rejected at startup with a `ConfigError` naming both. TypeScript field
+  names and builder methods are unchanged — no code migration is needed.
+
+- **BREAKING — `Behaviors.withStash` validates its capacity (#795).**
+
+  The argument was taken on trust, and because the buffer's overflow guard
+  and its `isFull` are the same comparison, `NaN` or `Infinity` left the
+  stash growing without any limit while `isFull` went on reporting `false` —
+  removing the bound at exactly the place the API documents one, with no
+  throw and no diagnostic. Zero and negative values were the mirror failure,
+  leaving `stash()` throwing `StashOverflowError` on its first call. The
+  capacity must now be an integer of at least 1; the predicate and the error
+  type are the ones `BoundedMailboxOptionsValidator` already applies to the
+  structurally identical `BoundedMailboxOptionsType.capacity`.
+
+  `StashBufferImplementation` re-checks the same rule, so a hand-written
+  `WithStashBehavior` node that never went through the combinator is refused
+  as well.
+
+  **Migration.** Pass an integer of at least 1. A `0` or fractional value
+  now throws `OptionsError` instead of producing a buffer that rejects every
+  `stash()` call, and `NaN` or `Infinity` now throws instead of silently
+  producing an unbounded one.
+
+
+### Fixed
+
+- **A fixed-rate task that cancelled itself on its first tick leaked an
+  interval nothing could clear — and every seeded cluster node kept its
+  process alive after `terminate()`** (#1567). `Scheduler.fixedRate` ran the
+  first tick *before* arming its `setInterval`. A task that calls `cancel()`
+  on its own handle from that tick settles the cancellable and drops it from
+  the scheduler's live set while the interval handle is still `null`; the
+  interval was then armed anyway, into a handle that `cancel()` treated as
+  already settled and `shutdown()` could no longer see. Its callback returned
+  early on every fire, so nothing observable happened — except that the
+  referenced timer held the event loop open for the life of the process.
+
+  This is the shape of `Cluster`'s seed-retry tick, which cancels itself the
+  moment the node is `up`: every node that joined through a seed and lived
+  past the 3 s retry interval — every successfully joined node, in other
+  words — could no longer exit on its own after `leave()` and
+  `ActorSystem.terminate()`. A node torn down within three seconds exited
+  cleanly, which is why no gate noticed: the cluster suites run under the
+  `ManualScheduler`, whose `advance()` lets the `cancelled` flag win over a
+  repeat, `bun test` exits regardless of open handles, and the smoke runner's
+  watchdog demotes a hang to a warning (#1196). Surfaced by the first
+  benchmark over a real worker-thread mesh (#1566, stage 0), whose process
+  ran until `timeout` killed it.
+
+  The interval is now armed only if the cancellable is still live after the
+  first tick. Two tests pin it: one spies on the interval primitives and
+  asserts a self-cancelling first tick arms nothing (with the defect,
+  `setInterval` is called and `clearInterval` never is — a count-based test
+  passes over the leak, because the leaked callback returns early), and one
+  spawns a child process that does exactly this and asserts it exits — the
+  property that actually failed, and the only vantage point from which a
+  leaked handle is visible on Bun.
+
 - **The configuration reference showed a `${key:-default}` form the parser
   has never accepted, and described one application file as three
   cumulative layers** (#1537). The environment-substitution sample ended in

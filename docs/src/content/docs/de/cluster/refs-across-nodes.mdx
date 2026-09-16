@@ -182,6 +182,19 @@ Zwei Wege, das zu erkennen:
 Siehe [Death watch](/de/fundamentals/death-watch/) für die
 Per-Actor-Variante.
 
+### Der Sender kommt mit
+
+Eine Nachricht, die an eine `RemoteActorRef` geschickt wird, trägt
+den Pfad ihres Senders im Envelope, und der empfangende Node baut
+ihn wieder auf: im Ziel-Actor ist `context.sender` eine
+`RemoteActorRef` zurück zu dem Actor, der die Nachricht geschickt
+hat — auf welchem Node auch immer er lebt —, genau wie es bei einem
+lokalen Sender eine lokale Ref wäre.  Eine Antwort über
+`this.sender` funktioniert also über Nodes hinweg, und ein `tell`
+ohne Sender kommt weiterhin mit leerem `context.sender` an.  An der
+Nachricht muss sich dafür nichts ändern — der Pfad war immer auf
+der Wire; er wurde bei der Zustellung nur verworfen.
+
 ## Serialisierung
 
 Der Cluster rahmt das Envelope als **getaggten JSON-Tree** —

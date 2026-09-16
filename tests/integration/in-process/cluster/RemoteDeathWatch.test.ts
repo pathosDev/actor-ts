@@ -242,3 +242,57 @@ describe('death watch across nodes (#918)', () => {
     }
   }, 15_000);
 });
+
+type EchoCommand = { kind: 'hello'; from: string };
+
+/** Replies through `context.sender`, which is the whole point of #1561. */
+class SenderEcho extends Actor<EchoCommand> {
+  senderPaths: string[] = [];
+  override onReceive(command: EchoCommand): void {
+    this.senderPaths.push(this.sender.map((s) => s.path.toString()).getOrElse('none'));
+    this.sender.forEach((s) => s.tell(`echo:${command.from}`));
+  }
+}
+
+class Caller extends Actor<string> {
+  readonly replies: string[] = [];
+  override onReceive(reply: string): void { this.replies.push(reply); }
+}
+
+describe('the sender crosses the wire (#1561)', () => {
+  test('context.sender on the receiving node names the remote sender, and a reply through it arrives', async () => {
+    const [a, b] = await twoNodes('rs-sender');
+    try {
+      let echoInstance: SenderEcho | null = null;
+      const echo = b.system.spawn(() => (echoInstance = new SenderEcho()), 'echo');
+      let callerInstance: Caller | null = null;
+      const caller = a.system.spawn(() => (callerInstance = new Caller()), 'caller');
+      const remote = remoteRef<EchoCommand>(a, b, echo.path.toString());
+
+      remote.tell({ kind: 'hello', from: 'a' }, caller);
+      await waitFor(() => callerInstance?.replies.length === 1, 'the reply via context.sender came back');
+
+      expect(echoInstance!.senderPaths).toEqual([caller.path.toString()]);
+      expect(callerInstance!.replies).toEqual(['echo:a']);
+    } finally {
+      await stopNode(b);
+      await stopNode(a);
+    }
+  }, 15_000);
+
+  test('a tell with no sender still arrives with context.sender empty', async () => {
+    const [a, b] = await twoNodes('rs-no-sender');
+    try {
+      let echoInstance: SenderEcho | null = null;
+      const echo = b.system.spawn(() => (echoInstance = new SenderEcho()), 'echo');
+      const remote = remoteRef<EchoCommand>(a, b, echo.path.toString());
+
+      remote.tell({ kind: 'hello', from: 'anonymous' });
+      await waitFor(() => echoInstance?.senderPaths.length === 1, 'the anonymous tell was received');
+      expect(echoInstance!.senderPaths).toEqual(['none']);
+    } finally {
+      await stopNode(b);
+      await stopNode(a);
+    }
+  }, 15_000);
+});

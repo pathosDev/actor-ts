@@ -103,6 +103,7 @@ import type {
   WireMessage,
 } from './Protocol.js';
 import { decodeRefs, encodeRefs } from './RefCodec.js';
+import { RemoteActorRef } from './RemoteActorRef.js';
 import { RemoteWatcher } from './RemoteWatcher.js';
 import { sanitizeWireKindForLog, sanitizeWireLogContext } from './WireValidation.js';
 import { InMemoryTransport, TcpTransport, type Transport } from './Transport.js';
@@ -2359,7 +2360,14 @@ export class Cluster {
       }
       const refOpt = this.system._resolvePath(segs);
       if (refOpt.isSome()) {
-        refOpt.value.tell(decoded.body as never);
+        // The sender rides along as a ref to wherever the frame came from, so
+        // `context.sender` names the remote actor the way it names a local
+        // one (#1561).  The path is the peer's own claim about itself and is
+        // used for nothing but addressing a reply *back to that peer* — a
+        // forged `/system/…` here is refused by the peer's own trust policy
+        // when the reply arrives, so it needs no gate on this side.
+        const sender = decoded.from === null ? null : new RemoteActorRef(from, decoded.from, this);
+        refOpt.value.tell(decoded.body as never, sender);
         return;
       }
     }

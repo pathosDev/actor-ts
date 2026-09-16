@@ -171,6 +171,18 @@ Two ways to detect this:
 See [Death watch](/fundamentals/death-watch/) for the
 per-actor variant.
 
+### The sender comes along
+
+A message told to a `RemoteActorRef` carries its sender's path in
+the envelope, and the receiving node rebuilds it: inside the
+target actor `context.sender` is a `RemoteActorRef` back to the
+actor that sent the message, on whichever node it lives, exactly
+as it would be a local ref for a local sender.  So replying
+through `this.sender` works across nodes, and a sender-less `tell`
+still arrives with `context.sender` empty.  Nothing about the
+message has to change for this — the path was always on the wire;
+it used to be dropped on delivery.
+
 ## Serialization
 
 The cluster frames the envelope as a **tagged JSON tree** — the same
