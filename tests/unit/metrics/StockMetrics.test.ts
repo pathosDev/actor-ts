@@ -410,6 +410,9 @@ const STOCK_LABELS: Readonly<Record<string, ReadonlyArray<string>>> = {
   cluster_envelope_refusals_total: ['reason', 'frame'],
   distributed_data_quorum_pending: [],
   distributed_data_quorum_timeouts_total: ['operation'],
+  offload_tasks_total: ['task', 'outcome'],
+  offload_queue_depth: [],
+  offload_task_seconds: ['task'],
   distributed_data_quorum_rejected_total: ['operation'],
   distributed_data_dropped_values_total: [],
   distributed_data_gossip_skipped_keys_total: ['reason'],
@@ -443,6 +446,12 @@ const PER_INSTANCE_LABELS: Readonly<Record<string, string>> = {
     + 'you declare; a per-pid fan-out is a cardinality the deployment opted into',
   'persistence_projection_failures_total.projection': 'as above',
   'persistence_projection_stalled.projection': 'as above',
+  'offload_tasks_total.task': 'the export name and module file of an offloaded task — '
+    + 'bounded by the tasks the application defines with defineOffloadTask, never off the '
+    + 'wire, and the label the metric exists to carry: which task is timing out or throwing '
+    + 'is the whole of the alert (#1558)',
+  'offload_tasks_total.outcome': 'a closed set — ok, threw, timeout, aborted, lost, unavailable',
+  'offload_task_seconds.task': 'as offload_tasks_total.task',
   'cluster_sharding_registrations_refused_total.type': 'the sharded type name, taken '
     + 'from this node’s own StartShardingOptions and never off the wire, so it is '
     + 'bounded by the types the deployment starts — the same shape as the '

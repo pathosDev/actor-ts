@@ -1818,6 +1818,18 @@ export const ConfigKeys = {
     spawnTimeout: 'actor-ts.parallelism.spawn-timeout',
     bufferSize: 'actor-ts.parallelism.buffer-size',
   },
+  /** The function-level offload pool — `actor-ts.offload-pool.*` (#1558). */
+  offloadPool: {
+    size: 'actor-ts.offload-pool.size',
+    minSize: 'actor-ts.offload-pool.min-size',
+    maxQueue: 'actor-ts.offload-pool.max-queue',
+    overflow: 'actor-ts.offload-pool.overflow',
+    idleTimeout: 'actor-ts.offload-pool.idle-timeout',
+    taskTimeout: 'actor-ts.offload-pool.task-timeout',
+    maxRestarts: 'actor-ts.offload-pool.max-restarts',
+    restartWindow: 'actor-ts.offload-pool.restart-window',
+    warmUp: 'actor-ts.offload-pool.warm-up',
+  },
   workerMesh: {
     workers: 'actor-ts.worker-mesh.workers',
     mainHostname: 'actor-ts.worker-mesh.main-hostname',

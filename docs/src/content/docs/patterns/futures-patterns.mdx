@@ -280,6 +280,9 @@ import { Aside } from '@astrojs/starlight/components';
   `context.timers.startSingleTimer` for actor-bound delays.
 - **[Retry](/patterns/retry/)** — for retry-then-pipeTo
   combinations.
+- **[Blocking and CPU-bound work](/fundamentals/blocking-and-cpu-bound-work/)** —
+  a promise from `context.offload` is a later message like any other; what
+  a continuation may and may not touch.
 
 The [`pipeTo`](/api/functions/pipeto/),
 [`after`](/api/functions/after/), and

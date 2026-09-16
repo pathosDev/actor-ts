@@ -276,6 +276,20 @@ export {
   DEFAULT_PARALLELISM_SPAWN_TIMEOUT_MS,
   DEFAULT_PARALLELISM_BUFFER_SIZE,
 } from './parallelism/index.js';
+// Function-level offload (#1558): what `context.offload(task, args)` needs
+// in scope — the task naming, the extension id and the errors a run rejects
+// with.  The pool class and its options family stay on `actor-ts/worker`.
+export {
+  defineOffloadTask,
+  OffloadExtensionId,
+  OffloadTaskError,
+  OffloadQueueFullError,
+  OffloadTimeoutError,
+  OffloadAbortedError,
+  OffloadWorkerLostError,
+  OffloadPoolUnavailableError,
+} from './worker/index.js';
+export type { OffloadTask, OffloadRunOptions } from './worker/index.js';
 export type {
   ParallelismOptionsType,
   PlacementStrategy,

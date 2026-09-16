@@ -26,6 +26,8 @@ import {
 } from '../metrics/Constants.js';
 import type { MetricsRegistry } from '../metrics/Metrics.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
+import { OffloadExtensionId, type OffloadRunOptions } from '../worker/OffloadPool.js';
+import type { OffloadTask } from '../worker/OffloadTask.js';
 import { NOOP_TRACER } from '../tracing/NoopTracer.js';
 import type { Span, Tracer } from '../tracing/Tracer.js';
 import type { ActorClassOrFactory } from '../Actor.js';
@@ -915,6 +917,14 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   /* ------------------------- Rate limiting (#83) ------------------------ */
+
+  offload<TArgs extends readonly unknown[], TResult>(
+    task: OffloadTask<TArgs, TResult>,
+    args: TArgs,
+    options?: OffloadRunOptions,
+  ): Promise<TResult> {
+    return this.system.extension(OffloadExtensionId).pool.run(task, args, options);
+  }
 
   throttle(options: ThrottleOptions): void {
     // A builder and a plain object are interchangeable here (a builder is

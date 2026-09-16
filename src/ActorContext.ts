@@ -7,6 +7,8 @@ import type { EntityContext } from './EntityContext.js';
 import type { Logger } from './Logger.js';
 import type { Option } from './util/Option.js';
 import type { ThrottleOptions, ThrottleOnExcess } from './ThrottleOptions.js';
+import type { OffloadRunOptions } from './worker/OffloadPool.js';
+import type { OffloadTask } from './worker/OffloadTask.js';
 
 /** Behaviour is just a message handler. Used for become/unbecome. */
 export type Receive<T> = (message: T) => void | Promise<void>;
@@ -274,6 +276,24 @@ export interface ActorContext<TMessage = unknown> {
 
   /** Remove any active throttle, restoring unlimited dequeue rate. */
   cancelThrottle(): void;
+
+  /**
+   * Run a pure function on a worker thread and get its result back
+   * (#1558) — the system's default `OffloadPool`, built from
+   * `actor-ts.offload-pool.*` on first use.  `task` names an export of a
+   * module (`defineOffloadTask`), because a function cannot cross a thread;
+   * `args` are structured-cloned, and so is the result.
+   *
+   * The result is a **later message**: the handler that started the run has
+   * returned by the time it arrives, so feed it back to yourself
+   * (`pipeTo`, a `tell` to `self`) rather than touching state from the
+   * continuation as if it were still the same turn.
+   */
+  offload<TArgs extends readonly unknown[], TResult>(
+    task: OffloadTask<TArgs, TResult>,
+    args: TArgs,
+    options?: OffloadRunOptions,
+  ): Promise<TResult>;
 }
 
 /**
