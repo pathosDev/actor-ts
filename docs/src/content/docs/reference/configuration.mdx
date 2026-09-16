@@ -2361,7 +2361,7 @@ would switch every panel an operator disabled back on.
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `worker-cluster.workers` | `"auto"` | Number of workers — `"auto"` uses `navigator.hardwareConcurrency`. |
+| `worker-cluster.workers` | `"auto"` | Number of workers — `"auto"` is the machine's available parallelism (`os.availableParallelism()`, which respects a container's CPU quota; `navigator.hardwareConcurrency` as the fallback). |
 | `worker-cluster.system-name` | `"worker-cluster"` | `ActorSystem` name each worker hosts. |
 | `worker-cluster.hostname` | `"worker"` | Host component of each worker's `NodeAddress`. |
 | `worker-cluster.base-port` | `1` | Port of the first worker; each subsequent slot increments. |
@@ -2383,6 +2383,22 @@ and `onWorkerPermanentlyDown` are live objects a config file cannot express,
 and `bootstrap` names a module the runtime will *execute* — `ACTOR_TS_CONFIG`
 and a dropped-in `application.conf` are a wider surface than the call site, so
 it stays a code-only field.
+
+### `actor-ts.worker-mesh` *(the main thread as a mesh member)*
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `worker-mesh.workers` | `"auto"` | Worker count — `"auto"` is the available parallelism **minus one**, because the main thread is a working member; at least 1. |
+| `worker-mesh.main-hostname` | `"main"` | Host component of the main thread's address.  Sorts before the workers' by default, so main leads and hosts the shard coordinator. |
+| `worker-mesh.main-port` | `1` | Port component of the main thread's address — synthetic, nothing binds it. |
+| `worker-mesh.worker-hostname` | `"worker"` | Host component of every worker's address.  One that sorts before `main-hostname` moves the leader onto a worker. |
+| `worker-mesh.base-port` | `2` | Port of the first worker; each slot increments. |
+| `worker-mesh.main-roles` | `[]` | Cluster roles the main thread joins with. |
+| `worker-mesh.worker-roles` | `[]` | Cluster roles every worker joins with — what role-restricted singletons, shards and routers select on. |
+
+The mesh's workers *are* a worker cluster, so the ready timeout and the restart
+pacing are the `worker-cluster.*` keys above.  The actor module (`withModule`)
+and the bootstrap have no key, for the reason `bootstrap` has none.
 
 Validation runs on the merged settings, so every one of these is rejected with
 an `OptionsError` when it comes from a file exactly as it would from code: an

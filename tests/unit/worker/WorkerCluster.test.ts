@@ -18,6 +18,7 @@ import {
 } from './__fixtures__/InMemoryWorkerThread.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 import { WorkerCluster } from '../../../src/worker/WorkerCluster.js';
+import { availableParallelism, resetAvailableParallelismCache } from '../../../src/runtime/Parallelism.js';
 import { WorkerClusterOptions } from '../../../src/worker/WorkerClusterOptions.js';
 import type { WorkerPermanentlyDownInfo } from '../../../src/worker/WorkerClusterOptions.js';
 
@@ -209,12 +210,19 @@ describe('WorkerCluster — worker-count resolution', () => {
     await cluster.terminate();
   });
 
-  test('"auto" without env / nav fallback returns 2', async () => {
-    // Ensure the env var is not set.
+  /**
+   * `'auto'` without the env override is the machine's available parallelism
+   * — the framework's own probe, which prefers `os.availableParallelism()`
+   * over `navigator.hardwareConcurrency` because the latter reports the host
+   * inside a container (#1440, #1562).  The navigator is removed so a runtime
+   * without `os.availableParallelism` would exercise the probe's floor of 2
+   * instead of its second source; on one *with* it, the answer is the OS's.
+   */
+  test('"auto" without env resolves through availableParallelism()', async () => {
     delete process.env.ACTOR_TS_WORKERS;
-    // Also clear any navigator.hardwareConcurrency so the fallback hits.
     const realNav = (globalThis as { navigator?: unknown }).navigator;
     delete (globalThis as { navigator?: unknown }).navigator;
+    resetAvailableParallelismCache();
 
     const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
     try {
@@ -225,10 +233,12 @@ describe('WorkerCluster — worker-count resolution', () => {
       const cluster = await WorkerCluster.spawn(
         workerOptions,
       );
-      expect(cluster.size).toBe(2);
+      expect(cluster.size).toBe(await availableParallelism());
+      expect(cluster.size).toBeGreaterThanOrEqual(2);
       await cluster.terminate();
     } finally {
       if (realNav) (globalThis as { navigator?: unknown }).navigator = realNav;
+      resetAvailableParallelismCache();
     }
   });
 

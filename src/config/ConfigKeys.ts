@@ -1793,6 +1793,21 @@ export const ConfigKeys = {
    * {@link ConfigKeys.worker} below is already taken by the IPC sentinels,
    * which are not config paths at all.
    */
+  /**
+   * `actor-ts.worker-mesh.*` — the main thread joining its own workers (#1562).
+   * The actor module and the bootstrap are deliberately absent, as
+   * `worker-cluster.bootstrap` is: a config file must not decide which code a
+   * worker runs.  The restart knobs are `worker-cluster.*`'s and are read there.
+   */
+  workerMesh: {
+    workers: 'actor-ts.worker-mesh.workers',
+    mainHostname: 'actor-ts.worker-mesh.main-hostname',
+    mainPort: 'actor-ts.worker-mesh.main-port',
+    workerHostname: 'actor-ts.worker-mesh.worker-hostname',
+    basePort: 'actor-ts.worker-mesh.base-port',
+    mainRoles: 'actor-ts.worker-mesh.main-roles',
+    workerRoles: 'actor-ts.worker-mesh.worker-roles',
+  },
   workerCluster: {
     workers: 'actor-ts.worker-cluster.workers',
     systemName: 'actor-ts.worker-cluster.system-name',

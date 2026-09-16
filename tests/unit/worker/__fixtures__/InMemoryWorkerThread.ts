@@ -20,7 +20,20 @@ import type {
   WorkerMessageEvent,
   WorkerSpawnOptions,
 } from '../../../../src/runtime/worker/WorkerBackend.js';
-import type { PortLike } from '../../../../src/cluster/transports/MessageChannelTransport.js';
+import type { ActorSystem } from '../../../../src/ActorSystem.js';
+import type { Cluster } from '../../../../src/cluster/Cluster.js';
+import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
+import {
+  MessageChannelTransport,
+  type PortLike,
+} from '../../../../src/cluster/transports/MessageChannelTransport.js';
+import type { WorkerInitMessage } from '../../../../src/worker/WorkerCluster.js';
+import {
+  runWorkerMeshNode,
+  type ModuleImporter,
+  type WorkerMeshInitData,
+} from '../../../../src/worker/WorkerMeshBootstrap.js';
+import type { WorkerNodeContext } from '../../../../src/worker/WorkerNode.js';
 
 /* ------------------------------- FakeWorker ----------------------------- */
 
@@ -244,4 +257,99 @@ export class FakePort implements PortLike {
   start(): void { this.started = true; }
 
   inject(data: unknown): void { this.onmessage?.({ data }); }
+}
+
+/* ------------------------- In-process mesh node --------------------------- */
+
+/**
+ * Turn a {@link FakeWorker} into a **real mesh node on this thread** (#1562):
+ * the same `runWorkerMeshNode` the shipped bootstrap runs, driven off the
+ * worker's own message channel instead of a `MessagePort`, with no OS thread
+ * anywhere.
+ *
+ * The bridge is the whole trick.  The parent's broker facade talks to a worker
+ * through `worker.postMessage` (main → worker) and the `'message'` listeners
+ * (worker → main); a `MessageChannelTransport` talks to its port through
+ * `port.postMessage` (node → outside) and `port.onmessage` (outside → node).
+ * So: a `worker-transport` frame the parent posts is handed to the port's
+ * `onmessage`, and a frame the transport posts is delivered to the parent's
+ * listeners.  Everything above the bridge — cluster, gossip, refs, the actor
+ * registry, `setup` — is the production code.
+ *
+ * The parent's handshake is answered the way {@link autoHandshake} answers it,
+ * except that `worker-ready` is sent by the bootstrap itself once its node is
+ * up, carrying the registry, and `terminate()` also takes the hosted system
+ * down so the test process exits.
+ */
+export function hostMeshNode(
+  worker: FakeWorker,
+  importModule: ModuleImporter,
+): { readonly node: Promise<{ readonly system: ActorSystem; readonly cluster: Cluster }> } {
+  const origPost = worker.postMessage.bind(worker);
+  const origAdd = worker.addEventListener.bind(worker);
+  const origTerminate = worker.terminate.bind(worker);
+
+  let inbound: ((e: { data: unknown }) => void) | null = null;
+  let resolveNode!: (value: { system: ActorSystem; cluster: Cluster }) => void;
+  let rejectNode!: (error: unknown) => void;
+  const node = new Promise<{ system: ActorSystem; cluster: Cluster }>((resolve, reject) => {
+    resolveNode = resolve;
+    rejectNode = reject;
+  });
+  // The bootstrap's failure surfaces on the parent's side as a handshake that
+  // never completes, exactly as it would in a real worker whose bootstrap
+  // threw; the promise is observed here so a test can read the reason.
+  node.catch(() => {});
+
+  worker.postMessage = (value: unknown): void => {
+    origPost(value);
+    const frame = value as { kind?: string } | null;
+    if (frame?.kind === 'worker-transport') {
+      inbound?.({ data: (value as { envelope: unknown }).envelope });
+      return;
+    }
+    if (frame?.kind !== 'worker-init') return;
+    const init = value as WorkerInitMessage;
+    const port: PortLike = {
+      postMessage(envelope: unknown): void {
+        worker.deliverMessage({ kind: 'worker-transport', envelope });
+      },
+      get onmessage() { return inbound; },
+      set onmessage(handler) { inbound = handler; },
+      close(): void { inbound = null; },
+    };
+    const self = NodeAddress.fromJSON(init.self);
+    const context: WorkerNodeContext<WorkerMeshInitData> = {
+      self,
+      systemName: init.systemName,
+      transport: new MessageChannelTransport(self, port),
+      initData: init.data as WorkerMeshInitData,
+      ready(data?: unknown): void {
+        worker.deliverMessage(data === undefined
+          ? { kind: 'worker-ready', self: init.self }
+          : { kind: 'worker-ready', self: init.self, data });
+      },
+    };
+    runWorkerMeshNode(context, importModule).then(resolveNode, rejectNode);
+  };
+
+  let helloFired = false;
+  worker.addEventListener = (event, handler): void => {
+    origAdd(event, handler);
+    if (event === 'message' && !helloFired) {
+      helloFired = true;
+      queueMicrotask(() => worker.deliverMessage({ kind: 'worker-hello' }));
+    }
+  };
+
+  worker.terminate = async (): Promise<void> => {
+    await origTerminate();
+    const hosted = await node.catch(() => null);
+    if (hosted !== null) {
+      await hosted.cluster.leave();
+      await hosted.system.terminate();
+    }
+  };
+
+  return { node };
 }

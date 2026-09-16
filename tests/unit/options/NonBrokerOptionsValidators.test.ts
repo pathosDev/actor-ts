@@ -867,6 +867,19 @@ describe('WorkerClusterOptionsValidator', () => {
     expect(() => check({ restartMinBackoffMs: 500, restartMaxBackoffMs: 100 }))
       .toThrow(/restartMaxBackoffMs must be >= restartMinBackoffMs \(500\)/);
   });
+
+  /**
+   * Both numbers can come from a config file since #883, and `port()` only
+   * bounds the first slot (#1439).  The boundary is checked from both sides:
+   * a pool whose last slot is exactly 65535 passes, one slot more is refused,
+   * and `'auto'` is left alone because it resolves after validation.
+   */
+  test('rejects a pool whose last slot would sit above the port range', () => {
+    expect(() => check({ basePort: 65_530, workers: 6 })).not.toThrow();
+    expect(() => check({ basePort: 65_530, workers: 7 }))
+      .toThrow(/workers .*last slot would be port 65536, above 65535/);
+    expect(() => check({ basePort: 65_530, workers: 'auto' })).not.toThrow();
+  });
 });
 
 describe('ProducerControllerOptionsValidator', () => {

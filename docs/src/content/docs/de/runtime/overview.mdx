@@ -62,6 +62,7 @@ Was sich unterscheidet:
 | **WebSocket-Server** | `Bun.serve` (eingebaut) | `ws` (Peer-Dep) | `Deno.serve` (Hono) |
 | **HTTP-Server** | Fastify / Bun.serve / Express | Fastify / Express | Fastify |
 | **File-I/O** | `Bun.file` / `node:fs` | `node:fs` | `Deno.open` |
+| **Worker-Threads** | Web-`Worker` | `node:worker_threads` (`parentPort` auf der Worker-Seite) | Web-`Worker` |
 | **Test-Runner** | `bun:test` | `node:test` / vitest / jest | `Deno.test` |
 
 Siehe die

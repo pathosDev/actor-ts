@@ -54,7 +54,11 @@ A short tour of what's in the box:
   timers, become/unbecome, supervision (restart / resume / stop / escalate).
 - **Cluster** — gossip membership, φ-accrual failure detection, split-brain
   resolvers, weakly-up, readiness gating (`cluster.awaitReady`), multiple
-  transports (TCP, MessageChannel, in-memory).
+  transports (TCP, MessageChannel, in-memory), death watch and `context.sender`
+  across nodes.
+- **Worker mesh** — `WorkerMesh` joins the main thread to N worker threads
+  (Bun, Node, Deno) that host actors from a module you name; refs, `ask`,
+  sharding and role-restricted singletons work across the threads.
 - **Cluster sharding + singleton + pub-sub + reliable delivery + receptionist**
   — production patterns from the actor-model tradition.
 - **Two event streams, and the owner says which** — `system.eventStream` is

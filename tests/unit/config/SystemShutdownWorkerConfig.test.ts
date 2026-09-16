@@ -13,6 +13,8 @@ import {
   WorkerClusterOptionsValidator,
 } from '../../../src/worker/WorkerClusterOptions.js';
 import type { WorkerClusterOptionsType } from '../../../src/worker/WorkerClusterOptions.js';
+import { readWorkerMeshOptionsFromConfig, withWorkerMeshConfigDefaults } from '../../../src/worker/WorkerMeshOptions.js';
+import type { WorkerMeshOptionsType } from '../../../src/worker/WorkerMeshOptions.js';
 
 function systemWith(config: ConfigObject, name?: string): ActorSystem {
   const options = ActorSystemOptions.create()
@@ -568,5 +570,68 @@ describe('actor-ts.worker-cluster', () => {
 
     expect(() => new WorkerClusterOptionsValidator().validate(merged))
       .toThrow('restartRandomFactor');
+  });
+});
+
+describe('actor-ts.worker-mesh', () => {
+  /**
+   * Every leaf at a value that is *not* its reference default, so the
+   * assertion pins the accessor, the field and the leaf's spelling — the same
+   * three things the worker-cluster block above pins.  `module` and
+   * `bootstrap` have no leaf on purpose (#1562, same reason as
+   * `worker-cluster.bootstrap`), so an exact-object match here is also the
+   * proof that a config file cannot name the code a worker runs.
+   */
+  test('every leaf reaches its field, through the accessor its literal needs', () => {
+    const config = Config.parseString(`
+      actor-ts.worker-mesh {
+        workers         = 3
+        main-hostname   = "front"
+        main-port       = 10
+        worker-hostname = "core"
+        base-port       = 20
+        main-roles      = ["frontend"]
+        worker-roles    = ["compute", "ingest"]
+      }
+    `);
+
+    expect(readWorkerMeshOptionsFromConfig(config)).toEqual({
+      workers: 3,
+      mainHostname: 'front',
+      mainPort: 10,
+      workerHostname: 'core',
+      basePort: 20,
+      mainRoles: ['frontend'],
+      workerRoles: ['compute', 'ingest'],
+    });
+  });
+
+  test('"auto" stays a string, and an absent leaf stays absent', () => {
+    expect(readWorkerMeshOptionsFromConfig(Config.parseString('actor-ts.worker-mesh.workers = "auto"')))
+      .toEqual({ workers: 'auto' });
+    expect(readWorkerMeshOptionsFromConfig(Config.parseString('actor-ts.worker-mesh.base-port = 7')))
+      .toEqual({ basePort: 7 });
+  });
+
+  test('the reference defaults round-trip to the built-in ones', () => {
+    expect(readWorkerMeshOptionsFromConfig(Config.loadReference())).toEqual({
+      workers: 'auto',
+      mainHostname: 'main',
+      mainPort: 1,
+      workerHostname: 'worker',
+      basePort: 2,
+      mainRoles: [],
+      workerRoles: [],
+    });
+  });
+
+  test('explicit options win over the config file, and an unset field falls through to it', () => {
+    const config = Config.parseString('actor-ts.worker-mesh { workers = 4, worker-hostname = "core" }');
+    const options = { module: 'file:///actors.js', workers: 8 } as WorkerMeshOptionsType;
+    const resolved = withWorkerMeshConfigDefaults(options, config);
+
+    expect(resolved.workers).toBe(8);
+    expect(resolved.workerHostname).toBe('core');
+    expect(resolved.module).toBe('file:///actors.js');
   });
 });
