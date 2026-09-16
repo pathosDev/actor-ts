@@ -28,6 +28,8 @@ import {
   type PortLike,
 } from '../../../../src/cluster/transports/MessageChannelTransport.js';
 import type { WorkerInitMessage } from '../../../../src/worker/WorkerCluster.js';
+import type { WorkerScope } from '../../../../src/runtime/worker/WorkerScope.js';
+import { serveOffload, type OffloadModuleImporter } from '../../../../src/worker/OffloadWorkerBootstrap.js';
 import {
   runWorkerMeshNode,
   type ModuleImporter,
@@ -352,4 +354,47 @@ export function hostMeshNode(
   };
 
   return { node };
+}
+
+/* ----------------------- In-process offload worker ----------------------- */
+
+/**
+ * Turn a `FakeWorker` into an offload worker that runs the production
+ * `serveOffload` on this thread (#1558).  The fake's two directions become a
+ * `WorkerScope`: what the pool `postMessage`s is dispatched to the service's
+ * handler, what the service `post`s is delivered to the pool's listeners.
+ * `importModule` is the seam a test hands its task modules through.
+ *
+ * Returns a handle that can stall the worker — every frame after `stall()`
+ * is swallowed, which is what a task that never returns looks like from the
+ * pool's side — so deadlines and aborts can be exercised without a thread to
+ * hang.
+ */
+export function hostOffloadWorker(
+  worker: FakeWorker,
+  importModule: OffloadModuleImporter,
+): { stall(): void; readonly handled: number } {
+  const origPost = worker.postMessage.bind(worker);
+  const handlers = new Set<(data: unknown) => void>();
+  let stalled = false;
+  let handled = 0;
+  const scope: WorkerScope = {
+    post: (value) => { worker.deliverMessage(value); },
+    onMessage: (handler) => { handlers.add(handler); },
+    offMessage: (handler) => { handlers.delete(handler); },
+  };
+  worker.postMessage = (value: unknown): void => {
+    origPost(value);
+    if (stalled) return;
+    handled++;
+    for (const handler of [...handlers]) handler(value);
+  };
+  // The service posts `offload-ready` synchronously, which reaches the pool's
+  // listener only once it is attached; `spawn` attaches it right after
+  // `spawn()` returns, so the ready frame is deferred a microtask.
+  queueMicrotask(() => { serveOffload(scope, importModule); });
+  return {
+    stall: () => { stalled = true; },
+    get handled() { return handled; },
+  };
 }

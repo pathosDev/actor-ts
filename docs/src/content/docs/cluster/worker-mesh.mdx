@@ -58,7 +58,10 @@ You may never need this page's API at all.  With
 the application code does not change.  That layer, its limits and its
 measured numbers are on [Parallelism](/fundamentals/parallelism/); what
 follows is the mesh underneath it, for when you want to drive the threads
-yourself.
+yourself.  And when the work is a *function* rather than an actor — hash
+this, compress that — a mesh is the wrong weight altogether:
+[`OffloadPool`](/fundamentals/blocking-and-cpu-bound-work/) runs it on a
+worker with no actor system on the far side.
 
 ## High-level API: `WorkerMesh`
 

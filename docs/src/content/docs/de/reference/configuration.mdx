@@ -2502,6 +2502,25 @@ Schalter **einzeln**, nicht als Ganzes: `.withPanels({ timeTravel: false })`
 übliche Präzedenz, eine Ebene tiefer angewandt — sonst würde ein einzelnes im
 Code genanntes Panel jedes vom Betrieb abgeschaltete Panel wieder einschalten.
 
+### `actor-ts.offload-pool` *(reine Funktionen auf Worker-Threads)*
+
+| Schlüssel | Default | Zweck |
+| --- | --- | --- |
+| `offload-pool.size` | `"auto"` | Worker höchstens — `"auto"` ist die verfügbare Parallelität minus Main-Thread. Gespawnt, wenn Tasks sie brauchen. |
+| `offload-pool.min-size` | `0` | Worker, die über Leerlauf hinweg am Leben bleiben. |
+| `offload-pool.max-queue` | `10000` | Tasks, die auf einen Worker warten, bevor `overflow` über den nächsten entscheidet. |
+| `offload-pool.overflow` | `"reject"` | `reject` lässt den Lauf mit `OffloadQueueFullError` fehlschlagen; `wait` hält ihn offen, bis ein Platz frei wird. |
+| `offload-pool.idle-timeout` | `60s` | Ein Worker jenseits von `min-size` ohne Arbeit wird danach abgebaut. |
+| `offload-pool.task-timeout` | `0s` | `0` = keine Deadline, außer `run()` nennt eine. Eine Deadline terminiert den Worker. |
+| `offload-pool.max-restarts` | `10` | Worker-Terminierungen — Crash oder Deadline —, die der Pool innerhalb von `restart-window` ersetzt; `-1` = unbegrenzt. Jenseits des Budgets schlägt jeder Lauf fehl. |
+| `offload-pool.restart-window` | `60s` | Das Fenster, über das das Restart-Budget zählt. |
+| `offload-pool.warm-up` | `off` | Jeden Worker beim Start spawnen statt beim ersten Task, der ihn braucht. |
+
+Der Task — ein benannter Export eines Moduls — und das Worker-Bootstrap
+sind Code, nie Schlüssel, aus demselben Grund, aus dem
+`worker-cluster.bootstrap` keinen hat.  Siehe
+[Blockierende und CPU-lastige Arbeit](/de/fundamentals/blocking-and-cpu-bound-work/).
+
 ### `actor-ts.parallelism` *(Actors auf Worker-Threads allein per Config)*
 
 | Schlüssel | Default | Zweck |

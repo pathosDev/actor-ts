@@ -26,6 +26,44 @@ export { WorkerNode } from './WorkerNode.js';
 export type { WorkerNodeContext } from './WorkerNode.js';
 export { WorkerBroker } from './WorkerBroker.js';
 // The main thread as a member of its own mesh (#1562).
+// Function-level offload (#1558): the pool, its options, the task naming and
+// the errors a run can reject with.  `defineOffloadTask` and the extension id
+// are on the package root too, because `context.offload` is the common door.
+export { OffloadPool, OffloadExtension, OffloadExtensionId } from './OffloadPool.js';
+export type { OffloadRunOptions } from './OffloadPool.js';
+export {
+  OffloadPoolOptions,
+  OffloadPoolOptionsBuilder,
+  OffloadPoolOptionsValidator,
+  readOffloadPoolOptionsFromConfig,
+  DEFAULT_OFFLOAD_POOL_SIZE,
+  DEFAULT_OFFLOAD_MIN_SIZE,
+  DEFAULT_OFFLOAD_MAX_QUEUE,
+  DEFAULT_OFFLOAD_OVERFLOW,
+  DEFAULT_OFFLOAD_IDLE_TIMEOUT_MS,
+  DEFAULT_OFFLOAD_TASK_TIMEOUT_MS,
+  DEFAULT_OFFLOAD_WARM_UP,
+} from './OffloadPoolOptions.js';
+export type { OffloadPoolOptionsType, OffloadOverflow } from './OffloadPoolOptions.js';
+export {
+  defineOffloadTask,
+  OffloadTaskError,
+  OffloadQueueFullError,
+  OffloadTimeoutError,
+  OffloadAbortedError,
+  OffloadWorkerLostError,
+  OffloadPoolUnavailableError,
+} from './OffloadTask.js';
+export type {
+  OffloadTask,
+  OffloadRunMessage,
+  OffloadResultMessage,
+  OffloadErrorMessage,
+  OffloadReadyMessage,
+  OffloadWireMessage,
+} from './OffloadTask.js';
+export { serveOffload } from './OffloadWorkerBootstrap.js';
+export type { OffloadModuleImporter } from './OffloadWorkerBootstrap.js';
 export { WorkerMesh } from './WorkerMesh.js';
 export type { WorkerMeshWorker } from './WorkerMesh.js';
 export { WorkerMeshOptions, WorkerMeshOptionsBuilder, WorkerMeshOptionsValidator } from './WorkerMeshOptions.js';

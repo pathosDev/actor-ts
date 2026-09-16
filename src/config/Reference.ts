@@ -2195,6 +2195,23 @@ actor-ts {
     buffer-size = 100000             # messages held across every spawn still awaiting its worker
   }
 
+  # Pure functions on worker threads (OffloadPool, context.offload).  A task
+  # is a named export of a module -- code, so the module is named in code,
+  # never here -- and its arguments and result are structured-cloned.  The
+  # single-threaded runtime's blocking dispatcher: an await in a handler
+  # yields the loop and parallelises nothing, this does.
+  offload-pool {
+    size = "auto"            # workers at most; "auto" = available parallelism minus the main thread
+    min-size = 0             # workers kept alive through idleness
+    max-queue = 10000        # tasks waiting for a worker before overflow decides
+    overflow = "reject"      # reject (OffloadQueueFullError) | wait (back-pressure)
+    idle-timeout = 60s       # a worker beyond min-size with nothing to do is retired after this
+    task-timeout = 0s        # 0 = no deadline unless run() names one; a deadline terminates the worker
+    max-restarts = 10        # worker terminations (crash, deadline) replaced inside restart-window; -1 = forever
+    restart-window = 60s
+    warm-up = off            # spawn every worker at start instead of on the first task that needs it
+  }
+
   worker-cluster {
     workers = "auto"   # "auto" uses navigator.hardwareConcurrency
     system-name = "worker-cluster"   # ActorSystem name each worker hosts

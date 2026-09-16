@@ -283,6 +283,9 @@ verdrahtet seinen eigenen nur in einen freien Slot.
   entscheidet, *wann* ein Actor auf seinem Thread läuft, nie *auf welchem*;
   echte Parallelität sind Actors auf Worker-Threads, aus einer
   Konfigurationszahl.
+- **[Blockierende und CPU-lastige Arbeit](/de/fundamentals/blocking-and-cpu-bound-work/)** —
+  kein Dispatcher macht einen `*Sync(`-Aufruf oder eine Hash-Schleife
+  billiger; wohin diese Arbeit stattdessen gehört.
 - **[Mailboxes](/de/fundamentals/mailboxes/)** — die Queue,
   aus der der Dispatcher zieht.  FIFO / Bounded / Priority.
 - **[Timer und Scheduling](/de/fundamentals/timers-and-scheduling/)** —

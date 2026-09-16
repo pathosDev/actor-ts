@@ -59,7 +59,11 @@ im Hintergrund ein `WorkerMesh`, und `system.spawn` platziert Actors
 darauf — der Anwendungscode ändert sich nicht.  Diese Schicht, ihre
 Grenzen und ihre gemessenen Zahlen stehen unter
 [Parallelität](/de/fundamentals/parallelism/); was folgt, ist das Mesh
-darunter, für den Fall, dass du die Threads selbst steuern willst.
+darunter, für den Fall, dass du die Threads selbst steuern willst.  Und
+wenn die Arbeit eine *Funktion* ist statt eines Actors — hash das,
+komprimiere jenes —, ist ein Mesh das falsche Gewicht:
+[`OffloadPool`](/de/fundamentals/blocking-and-cpu-bound-work/) lässt sie
+auf einem Worker laufen, ohne Actor-System auf der anderen Seite.
 
 ## High-Level-API: `WorkerMesh`
 

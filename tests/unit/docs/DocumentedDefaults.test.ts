@@ -48,6 +48,15 @@ import {
   DEFAULT_PARALLELISM_SPAWN_TIMEOUT_MS,
   DEFAULT_PARALLELISM_WORKERS,
 } from '../../../src/parallelism/ParallelismOptions.js';
+import {
+  DEFAULT_OFFLOAD_IDLE_TIMEOUT_MS,
+  DEFAULT_OFFLOAD_MAX_QUEUE,
+  DEFAULT_OFFLOAD_MIN_SIZE,
+  DEFAULT_OFFLOAD_OVERFLOW,
+  DEFAULT_OFFLOAD_POOL_SIZE,
+  DEFAULT_OFFLOAD_TASK_TIMEOUT_MS,
+  DEFAULT_OFFLOAD_WARM_UP,
+} from '../../../src/worker/OffloadPoolOptions.js';
 import { DEFAULT_MESH_BASE_PORT, DEFAULT_MESH_MAIN_HOSTNAME, DEFAULT_MESH_MAIN_PORT, DEFAULT_MESH_MAIN_ROLES, DEFAULT_MESH_WORKER_COUNT, DEFAULT_MESH_WORKER_HOSTNAME, DEFAULT_MESH_WORKER_ROLES } from '../../../src/worker/WorkerMeshOptions.js';
 import {
   DEFAULT_MAX_WAIT_MS,
@@ -602,6 +611,17 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.parallelism.leader', kind: 'string', constant: DEFAULT_PARALLELISM_LEADER },
   { key: 'actor-ts.parallelism.spawn-timeout', kind: 'duration', constant: DEFAULT_PARALLELISM_SPAWN_TIMEOUT_MS },
   { key: 'actor-ts.parallelism.buffer-size', kind: 'int', constant: DEFAULT_PARALLELISM_BUFFER_SIZE },
+
+  /* --- offload pool (#1558): the bootstrap is code-only, so the block has exactly these nine leaves --- */
+  { key: 'actor-ts.offload-pool.size', kind: 'string', constant: DEFAULT_OFFLOAD_POOL_SIZE },
+  { key: 'actor-ts.offload-pool.min-size', kind: 'int', constant: DEFAULT_OFFLOAD_MIN_SIZE },
+  { key: 'actor-ts.offload-pool.max-queue', kind: 'int', constant: DEFAULT_OFFLOAD_MAX_QUEUE },
+  { key: 'actor-ts.offload-pool.overflow', kind: 'string', constant: DEFAULT_OFFLOAD_OVERFLOW },
+  { key: 'actor-ts.offload-pool.idle-timeout', kind: 'duration', constant: DEFAULT_OFFLOAD_IDLE_TIMEOUT_MS },
+  { key: 'actor-ts.offload-pool.task-timeout', kind: 'duration', constant: DEFAULT_OFFLOAD_TASK_TIMEOUT_MS },
+  { key: 'actor-ts.offload-pool.max-restarts', kind: 'int', constant: DEFAULT_MAX_RESTARTS },
+  { key: 'actor-ts.offload-pool.restart-window', kind: 'duration', constant: DEFAULT_RESTART_WINDOW_MS },
+  { key: 'actor-ts.offload-pool.warm-up', kind: 'bool', constant: DEFAULT_OFFLOAD_WARM_UP },
 
   /* --- worker cluster --- */
   { key: 'actor-ts.worker-cluster.workers', kind: 'string', constant: DEFAULT_WORKER_COUNT },

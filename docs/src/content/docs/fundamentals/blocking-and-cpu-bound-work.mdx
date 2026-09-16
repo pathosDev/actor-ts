@@ -1,0 +1,254 @@
+---
+title: Blocking and CPU-bound work
+description: Why await in a handler yields the event loop but never parallelises, where CPU-bound work belongs on a single-threaded runtime, and OffloadPool — pure functions on worker threads, with results that come back as later messages.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+An actor system on Bun, Node or Deno runs on one thread.  Every actor's
+`onReceive` runs on it, every timer fires on it, every socket is read on it.
+That is what makes the model cheap — a `tell` is an array push — and it is
+also the one thing that can take the whole process down at once: a handler
+that computes for a hundred milliseconds stalls every actor for a hundred
+milliseconds.  This page is about where work that computes should go.
+
+## `await` is not parallelism
+
+An async `onReceive` is awaited by the actor's cell: the mailbox waits, the
+next message is not delivered until the promise settles.  While the handler
+is suspended at an `await`, the event loop is free and every other actor
+runs — which is exactly right for I/O, where the work happens elsewhere
+(the kernel, a database, a socket) and the `await` is a wait.
+
+It does nothing for CPU.  A loop that hashes a password, compresses a
+buffer or folds an FFT over a sensor window runs to completion on the one
+thread before anything else gets a turn, and wrapping it in `async` or
+`Promise.resolve().then(...)` moves it to a later turn without shortening
+it.  There is no thread pool behind a promise.
+
+<Aside type="caution" title="`*Sync(` in a handler stalls every actor in the process">
+`zlib.gzipSync`, `crypto.pbkdf2Sync`, `fs.readFileSync`, `JSON.parse` over
+a multi-megabyte body — each holds the thread for its whole duration, and
+on a single-threaded runtime the blast radius of that is not the actor but
+the process: every mailbox in it waits.  These are the shortcuts a
+production actor system on another runtime taught us to look for, and the
+ones this page exists to take away.
+</Aside>
+
+## Three tiers
+
+Work that computes belongs in one of three places, and the first is the
+one most often forgotten.
+
+**1. Native async APIs that already run on a thread pool.** The runtime
+ships a thread pool for exactly this, reachable only through the async
+forms: `zlib.gzip` (not `gzipSync`), `crypto.scrypt` / `pbkdf2` / `hkdf`,
+`crypto.subtle.*`, `fs.promises.*`, `dns.promises.*`.  The work runs off
+the main thread and the `await` is a real wait.  If a native async form
+exists for what you do, use it — nothing below beats it.
+
+**2. Worker threads, for pure-JS CPU work.** Two shapes, by what the work
+is:
+
+- a **function** — hash this, compress that, transform this window — goes
+  to the [`OffloadPool`](#offloadpool-pure-functions-on-worker-threads)
+  below: `context.offload(task, args)`, a result back, no actor involved on
+  the far side;
+- an **actor** whose whole life is compute goes to a worker thread of its
+  own, transparently, through [`actor-ts.parallelism.workers`](/fundamentals/parallelism/)
+  — the actor and its subtree run there, and every message to it crosses
+  the thread.  The [worker mesh](/cluster/worker-mesh/) is the layer
+  underneath, for driving the threads by hand.
+
+**3. Native addons that bring their own threads.** A library backed by
+Rust or C++ (an image codec, a database driver) that does its work off the
+JS thread and resolves a promise is tier 1 from the actor's point of view:
+await it.
+
+## Ordering: an offloaded result is a later message
+
+Whichever tier the work runs on, it finishes *after* the handler that
+started it has returned.  The actor may have handled ten more messages by
+then; its state is not what it was.  So the result must come back as a
+**message**, not as a continuation that reaches into state:
+
+```ts
+import { Actor, ActorRef, defineOffloadTask } from 'actor-ts';
+
+const hashPassword = defineOffloadTask<[string], string>(
+  new URL('./hash.js', import.meta.url),
+  'hashPassword',
+);
+
+type Command =
+  | { readonly kind: 'register'; readonly password: string; readonly replyTo: ActorRef<string> }
+  | { readonly kind: 'hashed'; readonly hash: string; readonly replyTo: ActorRef<string> };
+
+class Registrar extends Actor<Command> {
+  private registered = 0;
+
+  override onReceive(command: Command): void {
+    if (command.kind === 'register') {
+      // The result comes back to this actor as a message of its own.
+      void this.context.offload(hashPassword, [command.password])
+        .then((hash) => this.context.self.tell({ kind: 'hashed', hash, replyTo: command.replyTo }));
+    } else {
+      this.registered++;              // state is touched on the actor's own turn
+      command.replyTo.tell(command.hash);
+    }
+  }
+}
+```
+
+The continuation does one thing: it turns the result into a `tell`.  It
+does not increment `registered`, because by the time it runs the actor may
+be mid-way through another message — or restarted, or stopped — and a
+callback that mutates state from outside the actor's turn is the one
+concurrency bug the actor model exists to make impossible.  `pipeTo`
+patterns and `ask` from inside an actor follow the same rule; the
+[futures patterns](/patterns/futures-patterns/) page has the shapes.
+
+## OffloadPool: pure functions on worker threads
+
+The single-threaded runtime's blocking dispatcher.  A task is a **named
+export of a module** — a function cannot cross a thread, so it is named
+rather than passed — and its arguments and result are structured-cloned.
+Every worker imports the module once and keeps it; a run costs the clone
+of its arguments and the clone of its result.
+
+```ts
+// src/hash.ts — pure, importable by a worker, nothing from the framework
+export function hashPassword(password: string): string {
+  let hash = 0;
+  for (let round = 0; round < 200_000; round++) {
+    for (let i = 0; i < password.length; i++) hash = (hash * 31 + password.charCodeAt(i)) | 0;
+  }
+  return hash.toString(16);
+}
+```
+
+```ts
+import { defineOffloadTask } from 'actor-ts';
+
+// Resolved against the caller, so the worker finds the same file.
+const hashPassword = defineOffloadTask<[string], string>(
+  new URL('./hash.js', import.meta.url),
+  'hashPassword',
+);
+```
+
+From inside an actor, `context.offload(task, args, options?)` runs it on
+the system's default pool and resolves with the result.  Outside an actor,
+or for a second pool with its own settings, build one:
+
+```ts
+import { ActorSystem } from 'actor-ts';
+import { OffloadPool, OffloadPoolOptions } from 'actor-ts/worker';
+
+const system = ActorSystem.create('app');
+const offloadPoolOptions = OffloadPoolOptions.create()
+  .withSize(4)
+  .withTaskTimeoutMs(5_000);
+const pool = OffloadPool.start(system, offloadPoolOptions);
+
+const hash = await pool.run(hashPassword, ['correct horse battery staple']);
+```
+
+### What the pool does
+
+Workers are spawned as tasks arrive, up to `size`, and retired beyond
+`min-size` after `idle-timeout` with nothing to do — a quiet pool costs
+nothing.  A task that throws rejects the run with an `OffloadTaskError`
+carrying the worker's error name, message and stack; the worker survives.
+A run past its deadline rejects with `OffloadTimeoutError` and the worker
+is **terminated**, because stopping the thread is the only way to stop
+synchronous JavaScript; the pool spawns a replacement inside a restart
+budget, and past the budget it stops spawning and every run fails at once
+with `OffloadPoolUnavailableError` — louder than a pool that quietly does
+nothing.  A caller's `AbortSignal` cancels a queued run without touching a
+worker, and a running one by terminating its worker, free of the budget.
+`system.terminate()` stops every worker.
+
+```hocon
+actor-ts.offload-pool {
+  size = "auto"            # workers at most; "auto" = available parallelism minus the main thread
+  min-size = 0             # workers kept alive through idleness
+  max-queue = 10000        # tasks waiting for a worker before overflow decides
+  overflow = "reject"      # reject (OffloadQueueFullError) | wait (back-pressure)
+  idle-timeout = 60s       # a worker beyond min-size with nothing to do is retired after this
+  task-timeout = 0s        # 0 = no deadline unless run() names one; a deadline terminates the worker
+  max-restarts = 10        # worker terminations (crash, deadline) replaced inside restart-window; -1 = forever
+  restart-window = 60s
+  warm-up = off            # spawn every worker at start instead of on the first task that needs it
+}
+```
+
+`overflow = "wait"` keeps a run pending until a queue slot frees —
+back-pressure the caller feels as latency rather than as an error.  The
+default rejects, the mailbox's own choice for a bound: a caller that sees
+`OffloadQueueFullError` can shed or retry, one that waits cannot tell
+waiting from a hang.
+
+A transferable inside the arguments — an `ArrayBuffer` under a typed
+array — can be **moved** instead of copied: `pool.run(task, [bytes.buffer],
+{ transfer: [bytes.buffer] })`.  The caller's view is detached afterwards.
+
+The pool reports `offload_tasks_total{task, outcome}`,
+`offload_queue_depth` and `offload_task_seconds{task}`.
+
+### When it pays
+
+The boundary is not free: a hop costs a structured clone each way and two
+event-loop turns, about three microseconds a task when the calls are
+pipelined.  `benchmarks/worker/task-offload-breakeven.ts` measures where the
+pool starts to win against running the same loop inline (Bun 1.4.2, 32
+hardware threads, 32 tasks per iteration):
+
+| work per call | pool(1) | pool(31) |
+| --- | --- | --- |
+| 1 µs | 0.26× | 0.14× |
+| 10 µs | 0.66× | 1.23× |
+| 100 µs | 0.91× | 8.2× |
+| 1 ms | 0.96× | 14.6× |
+| 10 ms | 0.96× | 15.0× |
+
+So the crossover is about **ten microseconds of work per call**, a hundred
+microseconds is where the pool clearly wins, and a task that takes less
+than that belongs inline.  A password hash, a compression, an image
+transform are all well past it.
+
+<Aside type="caution" title="Tasks are pure, and the module URL is the caller's">
+A task sees only its arguments.  It cannot reach the actor, the system, a
+database handle or anything else on the main thread — it runs in another
+isolate with its own module graph.  And `new URL('./hash.js',
+import.meta.url)` is what lets the worker find the file; a bundler that
+inlines modules into one file is the one environment where that fails,
+and `OffloadPoolOptions.withBootstrap` exists for the worker entry the
+same way.
+</Aside>
+
+## Smells
+
+- A `*Sync(` call in a handler — `gzipSync`, `pbkdf2Sync`, `readFileSync`,
+  `execSync`.  Its async form is tier 1; if there is none, tier 2.
+- A `while` or `for` over a large array per message.  Once per message is
+  a hundred times per second; move the loop or shrink the array.
+- A hash or a compression per request, on the actor.  The commonest
+  shortcut, and the one `offload` exists for.
+- `JSON.parse` of a multi-megabyte body on the actor.  Parse on the way in
+  at the edge, offload, or stream.
+- An `O(users)` scan per lookup.  Not a threading problem — an index.
+
+A ratchet guard over the source tree for `*Sync(` calls in handlers is
+tracked as #1540; until it lands, the list above is the review checklist.
+
+## Where to next
+
+- **[Parallelism](/fundamentals/parallelism/)** — whole actors on worker
+  threads, from one config number.
+- **[Dispatchers](/fundamentals/dispatchers/)** — a dispatcher decides
+  *when* an actor runs on its thread; it is not a thread.
+- **[Futures patterns](/patterns/futures-patterns/)** — the shapes for
+  turning a promise back into a message.
+- **[Worker mesh](/cluster/worker-mesh/)** — the threads underneath,
+  driven by hand.

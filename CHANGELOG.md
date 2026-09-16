@@ -11,6 +11,53 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`OffloadPool` — pure functions on worker threads** (#1558). An
+  `await` in a handler yields the event loop and parallelises nothing, so
+  pure-JS CPU work — a password hash, a compression, an FFT over a sensor
+  window — stalled every actor in the process, and the framework offered
+  nothing obviously better than the shortcut. A task is a **named export
+  of a module** (`defineOffloadTask(new URL('./hash.js', import.meta.url),
+  'hashPassword')`), because a function cannot cross a thread; its
+  arguments and result are structured-cloned, a transferable in the
+  arguments can be moved (`transfer`, the #1191 zero-copy path).
+  `context.offload(task, args, { timeoutMs, signal })` runs it on the
+  system's default pool (built from `actor-ts.offload-pool.*` on first
+  use, `OffloadExtensionId`); `OffloadPool.start(system, options)` builds
+  another. Workers spawn as tasks arrive up to `size` (`"auto"` = available
+  parallelism minus the main thread) and retire beyond `min-size` after
+  `idle-timeout`; `max-queue` with `overflow = reject | wait` bounds the
+  queue in the mailbox's vocabulary (`OffloadQueueFullError`); a run past
+  its deadline rejects with `OffloadTimeoutError` and **terminates the
+  worker** — the only way to stop synchronous JavaScript — with a
+  replacement inside a restart budget (`max-restarts`, `restart-window`)
+  and `OffloadPoolUnavailableError` for every run once it is spent; a
+  task that throws rejects with `OffloadTaskError` carrying the worker's
+  name, message and stack; an `AbortSignal` cancels a queued run without
+  touching a worker and a running one by terminating its worker, free of
+  the budget; `system.terminate()` and coordinated shutdown's
+  `service-stop` stop every worker. The worker is a module cache and a
+  message loop — no `ActorSystem`, no cluster — reached through the runtime
+  seam of #1569, so the shipped `offload-worker` runs on Bun, Node and
+  Deno. Metrics `offload_tasks_total{task,outcome}`, `offload_queue_depth`,
+  `offload_task_seconds{task}`. Proven in-process against fake workers
+  running the production worker service, on real threads under `bun test`
+  (parallel CPU work, a transfer that detaches the caller's buffer, a
+  deadline stopping a busy thread), and as a smoke case on all three
+  runtimes from `dist/`. The block is `actor-ts.offload-pool` rather than
+  the proposed `actor-ts.worker.offload`, in lockstep with the options
+  family's name. Stage 5 of #1566.
+
+- **Docs: "Blocking and CPU-bound work"** (#1545) — the page
+  `fundamentals/blocking-and-cpu-bound-work` (EN + DE): why `await` is not
+  parallelism, the three tiers (native async APIs on the runtime's own
+  thread pool, worker threads through `OffloadPool` or
+  `actor-ts.parallelism`, native addons), the ordering rule that an
+  offloaded result is a later message, the `OffloadPool` reference with the
+  measured break-even (`benchmarks/worker/task-offload-breakeven.ts`: the
+  pool overtakes inline at about ten microseconds of work per call, wins
+  clearly at a hundred), and the smells list; cross-linked from
+  `dispatchers`, `dispatcher-tuning` and `futures-patterns`.
+
 - **Message-boundary check — the local `tell` answers for the worker hop
   and the cluster wire** (#1386). A message crosses up to three boundaries
   with different semantics: in-process by reference, a worker hop by

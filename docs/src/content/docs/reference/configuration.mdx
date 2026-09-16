@@ -2357,6 +2357,24 @@ of a file that says `panels { send = false }` leaves `send` off.  That is the
 usual precedence applied one level deeper — otherwise naming one panel in code
 would switch every panel an operator disabled back on.
 
+### `actor-ts.offload-pool` *(pure functions on worker threads)*
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `offload-pool.size` | `"auto"` | Workers at most — `"auto"` is the available parallelism minus the main thread. Spawned as tasks need them. |
+| `offload-pool.min-size` | `0` | Workers kept alive through idleness. |
+| `offload-pool.max-queue` | `10000` | Tasks waiting for a worker before `overflow` decides what happens to the next one. |
+| `offload-pool.overflow` | `"reject"` | `reject` fails the run with `OffloadQueueFullError`; `wait` keeps it pending until a slot frees. |
+| `offload-pool.idle-timeout` | `60s` | A worker beyond `min-size` with nothing to do is retired after this. |
+| `offload-pool.task-timeout` | `0s` | `0` = no deadline unless `run()` names one. A deadline terminates the worker. |
+| `offload-pool.max-restarts` | `10` | Worker terminations — crash or deadline — the pool replaces inside `restart-window`; `-1` = forever. Past the budget every run fails. |
+| `offload-pool.restart-window` | `60s` | The window the restart budget counts over. |
+| `offload-pool.warm-up` | `off` | Spawn every worker at start instead of on the first task that needs it. |
+
+The task — a named export of a module — and the worker bootstrap are code,
+never keys, for the reason `worker-cluster.bootstrap` has none.  See
+[Blocking and CPU-bound work](/fundamentals/blocking-and-cpu-bound-work/).
+
 ### `actor-ts.parallelism` *(actors on worker threads from config alone)*
 
 | Key | Default | Purpose |

@@ -63,6 +63,12 @@ A short tour of what's in the box:
   thread, `terminate()` takes the threads down.  `workers = 0` is today's
   system, bit for bit; children stay with their parent; what cannot cross —
   a factory closure, a class the actor module does not export — fails loudly.
+- **Offload pool** — `context.offload(task, args)` runs a pure function on
+  a worker thread and resolves with the result: the single-threaded runtime's
+  blocking dispatcher, with a queue bound, deadlines that stop a busy thread,
+  a restart budget and structured-clone arguments; `defineOffloadTask` names
+  the function by module URL and export, because a function cannot cross a
+  thread.
 - **Worker mesh** — `WorkerMesh` joins the main thread to N worker threads
   (Bun, Node, Deno) that host actors from a module you name; refs, `ask`,
   sharding and role-restricted singletons work across the threads — the

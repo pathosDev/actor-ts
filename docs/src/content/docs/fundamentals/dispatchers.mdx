@@ -262,6 +262,9 @@ is never taken over — the system wires its own only into a free slot.
 - **[Parallelism](/fundamentals/parallelism/)** — a dispatcher decides
   *when* an actor runs on its thread, never *which* thread; actual
   parallelism is actors on worker threads, from one config number.
+- **[Blocking and CPU-bound work](/fundamentals/blocking-and-cpu-bound-work/)** —
+  no dispatcher makes a `*Sync(` call or a hashing loop cheaper; where that
+  work goes instead.
 - **[Mailboxes](/fundamentals/mailboxes/)** — the queue
   the dispatcher pulls from.  FIFO / bounded / priority.
 - **[Timers and scheduling](/fundamentals/timers-and-scheduling/)** —
