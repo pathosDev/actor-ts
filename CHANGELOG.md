@@ -3017,6 +3017,38 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **A fixed-rate task that cancelled itself on its first tick leaked an
+  interval nothing could clear — and every seeded cluster node kept its
+  process alive after `terminate()`** (#1567). `Scheduler.fixedRate` ran the
+  first tick *before* arming its `setInterval`. A task that calls `cancel()`
+  on its own handle from that tick settles the cancellable and drops it from
+  the scheduler's live set while the interval handle is still `null`; the
+  interval was then armed anyway, into a handle that `cancel()` treated as
+  already settled and `shutdown()` could no longer see. Its callback returned
+  early on every fire, so nothing observable happened — except that the
+  referenced timer held the event loop open for the life of the process.
+
+  This is the shape of `Cluster`'s seed-retry tick, which cancels itself the
+  moment the node is `up`: every node that joined through a seed and lived
+  past the 3 s retry interval — every successfully joined node, in other
+  words — could no longer exit on its own after `leave()` and
+  `ActorSystem.terminate()`. A node torn down within three seconds exited
+  cleanly, which is why no gate noticed: the cluster suites run under the
+  `ManualScheduler`, whose `advance()` lets the `cancelled` flag win over a
+  repeat, `bun test` exits regardless of open handles, and the smoke runner's
+  watchdog demotes a hang to a warning (#1196). Surfaced by the first
+  benchmark over a real worker-thread mesh (#1566, stage 0), whose process
+  ran until `timeout` killed it.
+
+  The interval is now armed only if the cancellable is still live after the
+  first tick. Two tests pin it: one spies on the interval primitives and
+  asserts a self-cancelling first tick arms nothing (with the defect,
+  `setInterval` is called and `clearInterval` never is — a count-based test
+  passes over the leak, because the leaked callback returns early), and one
+  spawns a child process that does exactly this and asserts it exits — the
+  property that actually failed, and the only vantage point from which a
+  leaked handle is visible on Bun.
+
 - **The configuration reference showed a `${key:-default}` form the parser
   has never accepted, and described one application file as three
   cumulative layers** (#1537). The environment-substitution sample ended in
