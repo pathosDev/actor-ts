@@ -292,6 +292,15 @@ export class Scheduler implements Clock {
       timeoutHandle = null;
       if (cancellable.isCancelled || this._cancelled) return;
       this.fireCleared(run);
+      // Re-checked after the first tick, because `run` may have cancelled its
+      // own handle — the seed-retry tick in `Cluster` does exactly that the
+      // moment the node is `up`.  That cancel settles the cancellable and
+      // drops it from `live` while `intervalHandle` is still `null`, so an
+      // interval armed here anyway would be one that neither `cancel()` nor
+      // `shutdown()` can ever reach: a referenced timer firing into an early
+      // return for the life of the process, holding the event loop open
+      // after every system has terminated (#1567).
+      if (cancellable.isCancelled || this._cancelled) return;
       intervalHandle = setInterval(() => {
         if (cancellable.isCancelled || this._cancelled) return;
         this.fireCleared(run);
