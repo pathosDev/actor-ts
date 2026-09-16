@@ -341,8 +341,24 @@ export {
   DiagnosticsOptionsBuilder,
   DiagnosticsOptionsValidator,
   readDiagnosticsOptionsFromConfig,
+  DEFAULT_MESSAGE_BOUNDARY_SERIALIZER_ROUND_TRIP,
+  DEFAULT_MESSAGE_BOUNDARY_STRUCTURED_CLONE,
+  MessageBoundaryOptions,
+  MessageBoundaryOptionsBuilder,
+  MessageBoundaryOptionsValidator,
+  readMessageBoundaryOptionsFromConfig,
+  MessageBoundaryCheck,
+  MessageBoundaryError,
+  describeMessageType,
+  structuredCloneProblem,
 } from './diagnostics/index.js';
-export type { DiagnosticsOptionsType, ResolvedDiagnostics } from './diagnostics/index.js';
+export type {
+  DiagnosticsOptionsType,
+  ResolvedDiagnostics,
+  MessageBoundaryMode,
+  MessageBoundaryOptionsType,
+  MessageBoundaryHost,
+} from './diagnostics/index.js';
 
 // ProcessSignal — the POSIX signal names `installProcessHooks` and the
 // cluster bootstrap's `shutdownOnSignals` accept.  A verbatim mirror of

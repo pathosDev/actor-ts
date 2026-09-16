@@ -160,6 +160,9 @@ Eine Nachricht an einen Worker wird structured-cloned.  Plain Data
 ankommt.  Dasselbe gilt für `ActorOptions`: Eine Mailbox-Kapazität geht
 über den Thread, eine Supervisor-Strategie, ein Dispatcher oder eine
 Mailbox-Factory ist Code und wird auf dem Stack des Aufrufers abgelehnt.
+Der [Message-Boundary-Check](/de/fundamentals/messages/#drei-grenzen-und-der-check-der-für-sie-einsteht)
+findet die verlustbehafteten Nachrichtentypen im Test, bevor der Schalter
+umgelegt wird: `TestKit` hat ihn standardmäßig an.
 </Aside>
 
 <Aside type="caution" title="Alles auf einem Worker ist langsamer zu erreichen">

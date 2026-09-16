@@ -77,6 +77,13 @@ import { systemGroupPolicy, type SystemGroup } from './internal/SystemPaths.js';
 import type { Cluster } from './cluster/Cluster.js';
 import { ClusterExtensionId } from './cluster/ClusterExtension.js';
 import { ParallelismExtension, ParallelismExtensionId } from './parallelism/ParallelismExtension.js';
+import { MessageBoundaryCheck } from './diagnostics/MessageBoundaryCheck.js';
+import {
+  MessageBoundaryOptionsValidator,
+  readMessageBoundaryOptionsFromConfig,
+  type MessageBoundaryOptionsType,
+} from './diagnostics/MessageBoundaryOptions.js';
+import { SerializationExtensionId } from './serialization/SerializationExtension.js';
 import type { ParallelismOptionsType } from './parallelism/ParallelismOptions.js';
 import { PersistenceExtensionId } from './persistence/PersistenceExtension.js';
 import type { HttpServerBackend } from './http/backend/HttpServerBackend.js';
@@ -151,6 +158,12 @@ export class ActorSystem {
    * extension's factory — the one extension the system constructs itself.
    */
   readonly _explicitParallelismOptions: ParallelismOptionsType | undefined;
+  /**
+   * @internal The message-boundary check (#1386) when either of its modes is
+   * on, and `null` otherwise — read by `ActorCell.postUserEnvelope` on every
+   * local `tell`, which is why off costs one comparison and nothing else.
+   */
+  readonly _messageBoundary: MessageBoundaryCheck | null;
   /**
    * The parallelism extension when `actor-ts.parallelism.workers` is above
    * zero, and `null` otherwise — which is what keeps `workers = 0` the code
@@ -400,6 +413,22 @@ export class ActorSystem {
     // `undefined`.
     this._diagnostics = diagnostics;
     this.eventStream.traceSubscriptions = diagnostics.debugEventStream;
+    // Before the guardians, like the diagnostics above: the first `tell` can
+    // happen the moment the first cell exists.  Explicit over HOCON over the
+    // built-in `off`, field by field, so naming one mode leaves the other to
+    // the file.
+    const messageBoundary = mergeOptions<MessageBoundaryOptionsType>(
+      {},
+      readMessageBoundaryOptionsFromConfig(this.config),
+      { ...(options.messageBoundary as Partial<MessageBoundaryOptionsType> | undefined) },
+    );
+    new MessageBoundaryOptionsValidator().validate(messageBoundary);
+    this._messageBoundary = MessageBoundaryCheck.isEnabled(messageBoundary)
+      ? new MessageBoundaryCheck(
+        { log: this.log, serialization: () => this.extensions.get(SerializationExtensionId) },
+        messageBoundary,
+      )
+      : null;
     // After `attachLogger` above, so the dump reaches the configured sinks
     // rather than only whatever the logger writes to before it is wired; and
     // before the guardians, so a system that fails to finish starting has

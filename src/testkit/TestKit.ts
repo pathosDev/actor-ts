@@ -2,6 +2,7 @@ import { ActorSystem } from '../ActorSystem.js';
 import { LogLevel, NoopLogger } from '../Logger.js';
 import { ManualScheduler } from './ManualScheduler.js';
 import { TestProbe } from './TestProbe.js';
+import type { MessageBoundaryOptionsType } from '../diagnostics/MessageBoundaryOptions.js';
 import type { TestKitOptions, TestKitOptionsType } from './TestKitOptions.js';
 import type { TestProbeOptions } from './TestProbeOptions.js';
 
@@ -49,6 +50,16 @@ export class TestKit {
       ...resolvedOptions,
       logger: resolvedOptions.logger ?? (quiet ? new NoopLogger() : undefined),
       logLevel: resolvedOptions.logLevel ?? (quiet ? LogLevel.Off : undefined),
+      // The one place the structured-clone check is on by default (#1386):
+      // a test is where a message class that would not survive a worker hop
+      // should be found, and `fail` is the only mode a quiet kit can show.
+      // A caller who named the option keeps it; `serializerRoundTrip` stays
+      // off, because the round trip needs a binding for every message class
+      // and most suites send classes that never leave the process.
+      messageBoundary: {
+        structuredClone: 'fail',
+        ...(resolvedOptions.messageBoundary as Partial<MessageBoundaryOptionsType> | undefined),
+      },
     });
     return new TestKit(
       system,

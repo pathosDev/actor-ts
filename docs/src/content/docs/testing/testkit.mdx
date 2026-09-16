@@ -67,6 +67,14 @@ With `quiet: false` you get console logs — useful when debugging a
 failing test.  Otherwise, log calls are no-ops, which keeps your
 test output clean.
 
+The kit is also the one place the [message-boundary
+check](/fundamentals/messages/#three-boundaries-and-the-check-that-stands-in-for-them)
+is on by default: `structured-clone = fail`, so a message that would lose
+its prototype on a worker hop — a class instance where a plain object was
+meant — throws a `MessageBoundaryError` out of the `tell` that sends it.
+`TestKitOptions.withMessageBoundary({ structuredClone: 'off' })` keeps a
+suite that sends class instances on purpose green.
+
 ### `tk.createTestProbe(options?)`
 
 ```ts

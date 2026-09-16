@@ -1,6 +1,7 @@
 import { Member } from './Member.js';
 import type { NodeAddress } from './NodeAddress.js';
 import type { Option } from '../util/Option.js';
+import { markFrameworkMessage } from '../util/FrameworkMessage.js';
 
 /* -------------------------------- Self events ------------------------------ */
 
@@ -363,3 +364,7 @@ export type ClusterEvent =
   | ShardRegionRegistered
   | ShardRegionRegistrationRefused
   | MemberConfigurationMismatch;
+
+// The framework's own messages, exempt from the message-boundary check
+// (#1386): each crosses the boundaries it needs to by its own mechanism.
+markFrameworkMessage(SelfUp, SelfRemoved, LeaderChanged, CurrentClusterState, MemberJoined, MemberUp, MemberWeaklyUp, MemberUnreachable, MemberReachable, ReachabilityChanged, MemberDown, MemberLeft, MemberRemoved, ShardMapChanged, ShardRegionRegistered, ShardRegionRegistrationRefused, MemberConfigurationMismatch, ClusterStatsPublished);

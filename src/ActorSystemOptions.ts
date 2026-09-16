@@ -15,6 +15,7 @@ import type { Config } from './config/Config.js';
 import type { ConfigObject } from './config/HoconParser.js';
 import type { DeadLetterQueueOptions } from './deadletters/DeadLetterQueueOptions.js';
 import type { DiagnosticsOptions } from './diagnostics/DiagnosticsOptions.js';
+import type { MessageBoundaryOptions } from './diagnostics/MessageBoundaryOptions.js';
 import type { ParallelismOptions } from './parallelism/ParallelismOptions.js';
 import type { Dispatcher } from './Dispatcher.js';
 import type { Logger, LogLevel } from './Logger.js';
@@ -99,6 +100,13 @@ export type ActorSystemOptionsType = {
    */
   readonly diagnostics?: DiagnosticsOptions;
   /**
+   * What every local `tell` is held to before delivery, layered over
+   * `actor-ts.diagnostics.message-boundary.*` (#1386): the worker hop's
+   * structured clone, the cluster wire's serializer round trip.  Off in
+   * production; `TestKit` turns the clone check to `fail`.
+   */
+  readonly messageBoundary?: MessageBoundaryOptions;
+  /**
    * Actors on worker threads, layered over `actor-ts.parallelism.*` (#1563).
    * The one thing only code can say here is the actor module — `withModule`
    * — because a config file must not decide which code a worker runs; the
@@ -179,6 +187,15 @@ export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorS
    */
   withDiagnostics(diagnostics: NonNullable<ActorSystemOptionsType['diagnostics']>): this {
     return this.set('diagnostics' as keyof T, diagnostics as T[keyof T]);
+  }
+
+  /**
+   * Message-boundary checks, layered over
+   * `actor-ts.diagnostics.message-boundary.*` — whether a local `tell` is
+   * examined the way a worker hop or a cluster wire would examine it.
+   */
+  withMessageBoundary(messageBoundary: NonNullable<ActorSystemOptionsType['messageBoundary']>): this {
+    return this.set('messageBoundary' as keyof T, messageBoundary as T[keyof T]);
   }
 
   /**

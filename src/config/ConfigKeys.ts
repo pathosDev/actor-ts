@@ -186,6 +186,17 @@ export const ConfigKeys = {
     debugEventStream: 'actor-ts.diagnostics.debug.event-stream',
   },
 
+  /**
+   * Message-boundary checks — `actor-ts.diagnostics.message-boundary.*`
+   * (#1386).  Its own group, read by `readMessageBoundaryOptionsFromConfig`
+   * rather than the diagnostics reader, so each reader's guard pins exactly
+   * the leaves it reads.
+   */
+  messageBoundary: {
+    structuredClone: 'actor-ts.diagnostics.message-boundary.structured-clone',
+    serializerRoundTrip: 'actor-ts.diagnostics.message-boundary.serializer-round-trip',
+  },
+
   /** Dispatcher root — `actor-ts.dispatcher.*`. */
   dispatcher: {
     default: 'actor-ts.dispatcher.default',

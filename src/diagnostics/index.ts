@@ -36,3 +36,23 @@ export {
   readDiagnosticsOptionsFromConfig,
 } from './DiagnosticsOptions.js';
 export type { DiagnosticsOptionsType, ResolvedDiagnostics } from './DiagnosticsOptions.js';
+// The message-boundary check (#1386): the options family
+// `ActorSystemOptions.withMessageBoundary(…)` names, the error a `fail` mode
+// throws, and the walk itself for a test that wants to ask what a hop would
+// do to a value without sending it.
+export {
+  DEFAULT_MESSAGE_BOUNDARY_SERIALIZER_ROUND_TRIP,
+  DEFAULT_MESSAGE_BOUNDARY_STRUCTURED_CLONE,
+  MessageBoundaryOptions,
+  MessageBoundaryOptionsBuilder,
+  MessageBoundaryOptionsValidator,
+  readMessageBoundaryOptionsFromConfig,
+} from './MessageBoundaryOptions.js';
+export type { MessageBoundaryMode, MessageBoundaryOptionsType } from './MessageBoundaryOptions.js';
+export {
+  MessageBoundaryCheck,
+  MessageBoundaryError,
+  describeMessageType,
+  structuredCloneProblem,
+} from './MessageBoundaryCheck.js';
+export type { MessageBoundaryHost } from './MessageBoundaryCheck.js';

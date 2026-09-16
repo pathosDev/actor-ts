@@ -118,6 +118,7 @@ export { TokenBucket } from './TokenBucket.js';
 export type { TokenBucketOptions } from './TokenBucket.js';
 
 export { Success, Failure, success, failure, tryOf, trySequence } from './Try.js';
+export { FRAMEWORK_MESSAGE, markFrameworkMessage, isFrameworkMessage } from './FrameworkMessage.js';
 export type { Try } from './Try.js';
 
 export { wrapError } from './WrapError.js';
