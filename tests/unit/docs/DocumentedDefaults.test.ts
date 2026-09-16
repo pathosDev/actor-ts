@@ -36,6 +36,14 @@ import { DEFAULT_DEBUG_EVENT_STREAM, DEFAULT_DEBUG_LIFECYCLE, DEFAULT_DEBUG_UNHA
 import { DEFAULT_WEBSOCKET_POLICY } from '../../../src/http/websocket/WebsocketPolicy.js';
 import { DEFAULT_WORKER_RESTART_POLICY } from '../../../src/worker/WorkerClusterOptions.js';
 import { DEFAULT_MAX_RESTARTS, DEFAULT_RESTART_MAX_BACKOFF_MS, DEFAULT_RESTART_MIN_BACKOFF_MS, DEFAULT_RESTART_RANDOM_FACTOR, DEFAULT_RESTART_WINDOW_MS, DEFAULT_WORKER_BASE_PORT, DEFAULT_WORKER_COUNT, DEFAULT_WORKER_HOSTNAME, DEFAULT_WORKER_READY_TIMEOUT_MS, DEFAULT_WORKER_SYSTEM_NAME } from '../../../src/worker/WorkerClusterOptions.js';
+import {
+  DEFAULT_PARALLELISM_BUFFER_SIZE,
+  DEFAULT_PARALLELISM_LEADER,
+  DEFAULT_PARALLELISM_OFFLOAD,
+  DEFAULT_PARALLELISM_PLACEMENT,
+  DEFAULT_PARALLELISM_SPAWN_TIMEOUT_MS,
+  DEFAULT_PARALLELISM_WORKERS,
+} from '../../../src/parallelism/ParallelismOptions.js';
 import { DEFAULT_MESH_BASE_PORT, DEFAULT_MESH_MAIN_HOSTNAME, DEFAULT_MESH_MAIN_PORT, DEFAULT_MESH_MAIN_ROLES, DEFAULT_MESH_WORKER_COUNT, DEFAULT_MESH_WORKER_HOSTNAME, DEFAULT_MESH_WORKER_ROLES } from '../../../src/worker/WorkerMeshOptions.js';
 import {
   DEFAULT_MAX_WAIT_MS,
@@ -578,6 +586,14 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   // `sharding.role` above it: `""` is the published shape of the key, and the
   // reader drops it rather than passing it on (#854).
   { key: 'actor-ts.sharded-daemon-process.liveness-interval', kind: 'duration', constant: DEFAULT_DAEMON_LIVENESS_INTERVAL_MS },
+
+  /* --- parallelism (#1563): the module is code-only, so the block has exactly these six leaves --- */
+  { key: 'actor-ts.parallelism.workers', kind: 'int', constant: DEFAULT_PARALLELISM_WORKERS },
+  { key: 'actor-ts.parallelism.offload', kind: 'list', constant: DEFAULT_PARALLELISM_OFFLOAD },
+  { key: 'actor-ts.parallelism.placement', kind: 'string', constant: DEFAULT_PARALLELISM_PLACEMENT },
+  { key: 'actor-ts.parallelism.leader', kind: 'string', constant: DEFAULT_PARALLELISM_LEADER },
+  { key: 'actor-ts.parallelism.spawn-timeout', kind: 'duration', constant: DEFAULT_PARALLELISM_SPAWN_TIMEOUT_MS },
+  { key: 'actor-ts.parallelism.buffer-size', kind: 'int', constant: DEFAULT_PARALLELISM_BUFFER_SIZE },
 
   /* --- worker cluster --- */
   { key: 'actor-ts.worker-cluster.workers', kind: 'string', constant: DEFAULT_WORKER_COUNT },

@@ -1799,6 +1799,14 @@ export const ConfigKeys = {
    * `worker-cluster.bootstrap` is: a config file must not decide which code a
    * worker runs.  The restart knobs are `worker-cluster.*`'s and are read there.
    */
+  parallelism: {
+    workers: 'actor-ts.parallelism.workers',
+    offload: 'actor-ts.parallelism.offload',
+    placement: 'actor-ts.parallelism.placement',
+    leader: 'actor-ts.parallelism.leader',
+    spawnTimeout: 'actor-ts.parallelism.spawn-timeout',
+    bufferSize: 'actor-ts.parallelism.buffer-size',
+  },
   workerMesh: {
     workers: 'actor-ts.worker-mesh.workers',
     mainHostname: 'actor-ts.worker-mesh.main-hostname',

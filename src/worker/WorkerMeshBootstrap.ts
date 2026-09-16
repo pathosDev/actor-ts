@@ -1,11 +1,16 @@
-import { Actor } from '../Actor.js';
 import { ActorSystem } from '../ActorSystem.js';
 import { ActorSystemOptions } from '../ActorSystemOptions.js';
 import { Cluster } from '../cluster/Cluster.js';
 import { ClusterOptions } from '../cluster/ClusterOptions.js';
 import type { NodeAddress } from '../cluster/NodeAddress.js';
 import type { ConfigObject } from '../config/HoconParser.js';
+import { collectActorExports, isActorClass, type WorkerActorClass } from '../parallelism/ActorModuleRegistry.js';
+import { ParallelismOptions } from '../parallelism/ParallelismOptions.js';
+import { serveParallelism } from '../parallelism/SpawnProtocol.js';
 import type { WorkerNodeContext } from './WorkerNode.js';
+
+export { isActorClass };
+export type { WorkerActorClass };
 
 /**
  * What the main thread hands every mesh worker in its init frame (#1562).
@@ -32,9 +37,6 @@ export type WorkerMeshReadyData = {
   readonly kind: 'worker-mesh-ready';
   readonly actors: ReadonlyArray<string>;
 };
-
-/** The subset of `Actor` a registry entry is checked against: constructible with no arguments. */
-export type WorkerActorClass = new () => Actor<unknown>;
 
 /**
  * What an actor module's optional `setup` receives, once the worker's node is
@@ -83,7 +85,14 @@ export async function runWorkerMeshNode(
   if (init?.kind !== 'worker-mesh-init') {
     throw new Error('worker-mesh bootstrap: the init frame is not a worker-mesh init — was this worker spawned by WorkerMesh?');
   }
-  const systemOptions = ActorSystemOptions.create().withConfig(init.config);
+  // The effective config carries the main thread's `actor-ts.parallelism.*`
+  // — including a `workers` above zero when the mesh was configured from
+  // HOCON — and a worker that honoured it would start a mesh of its own
+  // inside a mesh, fail for want of a module, and never finish its
+  // handshake.  A worker is a leaf: the explicit option outranks the file.
+  const systemOptions = ActorSystemOptions.create()
+    .withConfig(init.config)
+    .withParallelism(ParallelismOptions.create().withWorkers(0));
   const system = ActorSystem.create(context.systemName, systemOptions);
   const clusterOptions = ClusterOptions.create()
     .withHost(context.self.host)
@@ -94,25 +103,21 @@ export async function runWorkerMeshNode(
   const cluster = await Cluster.join(system, clusterOptions);
 
   const actors = new Map<string, WorkerActorClass>();
-  const origin = new Map<string, string>();
+  const origins = new Map<string, string>();
   const modules: Array<{ readonly href: string; readonly exports: Record<string, unknown> }> = [];
   for (const href of init.modules) {
     const exports = await importModule(href);
     modules.push({ href, exports });
-    for (const [exportName, value] of Object.entries(exports)) {
-      if (!isActorClass(value)) continue;
-      const previous = actors.get(exportName);
-      if (previous !== undefined && previous !== value) {
-        throw new Error(
-          `worker-mesh bootstrap: two actor modules export '${exportName}' — `
-          + `${origin.get(exportName)} and ${href}; an export name is the actor class's `
-          + 'identity across the thread boundary, so it has to be unique',
-        );
-      }
-      actors.set(exportName, value);
-      origin.set(exportName, href);
+    try {
+      collectActorExports(href, exports, actors, origins);
+    } catch (error) {
+      throw new Error(`worker-mesh bootstrap: ${(error as Error).message}`, { cause: error });
     }
   }
+  // Before any `setup` runs, so a spawn frame that arrives while a slow setup
+  // is still awaiting is answered rather than dropped as an unclaimed kind.
+  // Only the seed — the main thread — may ask this worker to spawn.
+  serveParallelism({ system, cluster, actors, trustedPeers: init.seeds });
 
   const setupContext: WorkerMeshSetupContext = { system, cluster, selfAddress: context.self, actors };
   for (const module of modules) {
@@ -125,24 +130,3 @@ export async function runWorkerMeshNode(
   return { system, cluster };
 }
 
-/**
- * An exported value the worker can `spawn`: a class whose prototype chain
- * reaches `Actor`.  The check is structural on purpose — a module bundled
- * separately may carry its own copy of `Actor`, and `instanceof` across two
- * copies is false — so it walks the prototype chain looking for the
- * `onReceive` contract every actor implements.
- */
-export function isActorClass(value: unknown): value is WorkerActorClass {
-  if (typeof value !== 'function') return false;
-  if (value.prototype instanceof Actor) return true;
-  let prototype: unknown = value.prototype;
-  while (prototype !== null && typeof prototype === 'object') {
-    if (Object.prototype.hasOwnProperty.call(prototype, 'onReceive')
-      && typeof (prototype as { onReceive?: unknown }).onReceive === 'function'
-      && prototype !== Object.prototype) {
-      return true;
-    }
-    prototype = Object.getPrototypeOf(prototype);
-  }
-  return false;
-}

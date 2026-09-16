@@ -103,7 +103,7 @@ describe('the exports map and the barrels under src/ agree (#1403)', () => {
     expect(dangling).toEqual([]);
   });
 
-  test('the folded barrels are pinned, so folding a seventh is a decision', () => {
+  test('the folded barrels are pinned, so folding an eighth is a decision', () => {
     // Not a statement of what *should* be folded — a snapshot of what is.  A
     // new subsystem barrel without a subpath lands here first, which is where
     // the choice between "publish it" and "fold it into the root" gets made
@@ -111,12 +111,17 @@ describe('the exports map and the barrels under src/ agree (#1403)', () => {
     // one options family and no runtime object — `ActorSystem` resolves the
     // settings itself — so a subpath would be a second door onto seven names
     // a consumer meets while configuring the system, which is what the root
-    // barrel is for.
+    // barrel is for.  `parallelism` (#1563) was made the same way: an options
+    // family named by `ActorSystemOptions.withParallelism`, an extension id
+    // and the ref `spawn` hands back — met while configuring the system, so
+    // the root barrel is the door; the threads underneath stay on the
+    // published `worker` subpath.
     expect(foldedBarrels).toEqual([
       'config',
       'deadletters',
       'diagnostics',
       'mailbox',
+      'parallelism',
       'pattern',
       'typed',
     ]);
