@@ -182,6 +182,42 @@ Läufen erreicht auf den unruhigsten Zeilen weiterhin 26–30 %, und genau
 deshalb ist jede Zahl oben ein Mittelwert aus hundert und trägt ihre Streuung.
 </Aside>
 
+## Das fünfte Szenario: `parallel-workload`
+
+Die vier Szenarien oben treiben einen Actor oder zwei sich abwechselnde — die
+Invariante des Actor-Modells, die kein Framework parallelisieren kann, sodass
+auch die JVM- und .NET-Arme in diesen Zeilen effektiv single-threaded laufen.
+Über die eine Eigenschaft, für die Multithreading existiert, sagen sie
+nichts.  `parallel-workload` tut es: **vierundsechzig unabhängige Actors, je
+eine Nachricht pro Iteration, jede Nachricht eine feste Zahl
+xorshift32-Runden** — echte CPU-Arbeit, in zwei Größen: `load=light` (5 000
+Runden, einige Mikrosekunden pro Nachricht) und `load=heavy` (100 000 Runden,
+Hunderte Mikrosekunden).
+
+Jeder Arm nutzt seine natürliche Parallelität.  Die JVM- und .NET-Arme
+verteilen die vierundsechzig Actors über ihre Standard-Scheduler, also über
+jeden Kern.  actor-ts platziert sie über
+[`actor-ts.parallelism.workers = auto`](/de/fundamentals/parallelism/) auf
+Worker-Threads — gemessen genau so, wie ein Operator es einschaltet, mit
+denselben `system.spawn`-Aufrufen; die Note der Zeile nennt die Zahl, zu der
+`auto` aufgelöst wurde.  nact und XState lassen sie auf einem Thread laufen,
+und ihre Notes sagen das: Für sie ist das der Befund des Szenarios, kein
+Skip.
+
+Zwei Dinge machen die Zeile ehrlich.  Die Arbeit ist sprachneutral und nicht
+wegoptimierbar: Die Schleife ist in jedem Arm bitgenau gespiegelt
+(32-Bit-Lanes, logische Rechtsshifts), jede Antwort trägt ihr Ergebnis, und
+jeder Arm publiziert die Prüfsumme über jede empfangene Antwort — die der
+Report allein aus der Workload-Definition nachrechnet und bei Abweichung
+verweigert.  Die Vollständigkeitsprüfung reicht damit von „die Nachrichten
+wurden verarbeitet“ bis „die Arbeit wurde getan“.  Und der actor-ts-Arm misst
+seine vier Einzel-Actor-Zeilen, **bevor** er ein Mesh startet, auf einem
+System mit `workers = 0`, sodass diese Zeilen die Null-Overhead-Werte
+bleiben, die das Platzierungs-Feature verspricht.
+
+Das Szenario ist in allen neun Armen implementiert; seine Zahlen erscheinen
+mit der nächsten vollen Hundert-Runden-Messung, ganz oder gar nicht.
+
 ## Methodik
 
 Die Teile, die die Tabelle lesenswert machen:
@@ -298,7 +334,8 @@ ausgeführt hat, liest sich als Vergleich von allem:
 
 - **Kein Clustering, kein Sharding.**  Gegen das Sharding ist eine
   Durchsatz-Regression offen; ein Sharding-Vergleich jetzt würde sie in die
-  erste Zahl einbacken, die jemand sieht.
+  erste Zahl einbacken, die jemand sieht.  Das Szenario `parallel-workload`
+  platziert Actors aus diesem Grund ohne Sharding auf Threads.
 - **Keine Persistenz.**  Die Persistenz-Benchmarks decken nur In-Memory und
   SQLite ab; ein vergleichbarer Arm wäre ein Storage-Engine-Vergleich mit
   Framework-Etikett.

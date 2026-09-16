@@ -31,7 +31,7 @@ import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { ansi, formatNs, formatRate } from '../lib/stats.js';
 import { RESULT_SCHEMA_VERSION, type ComparisonResultFile, type ScenarioResult } from './js/result-file.js';
-import { WORKLOAD, type ScenarioName } from './js/workload.js';
+import { WORKLOAD, expectedChecksum, type ScenarioName } from './js/workload.js';
 
 const COMPARISON_ROOT = resolve(import.meta.dirname ?? '.', '.');
 const RESULTS_DIRECTORY = join(COMPARISON_ROOT, 'results');
@@ -52,6 +52,12 @@ const SCENARIO_DESCRIPTIONS: Readonly<Record<ScenarioName, string>> = {
   'ask-round-trip': 'Sequential request/response round trips, depth 1 — a latency measurement, '
     + 'so the percentiles are the point and throughput is derived.',
   'ping-pong': 'Two actors volleying — the scheduler with nothing else in the way.',
+  'parallel-workload': 'Sixty-four independent actors, one message each per iteration, every message '
+    + 'a fixed number of xorshift32 rounds — the one shape multithreading exists for. Each arm uses '
+    + 'its natural parallelism: the JVM and .NET arms their default schedulers over every core, '
+    + 'actor-ts worker threads through `actor-ts.parallelism.workers = auto`, nact and XState one '
+    + 'thread. Every reply carries the loop\'s result and the row\'s checksum is recomputed before '
+    + 'it is published, so the work is proven done, not assumed.',
 };
 
 type LoadedResult = {
@@ -128,6 +134,24 @@ function validate(results: ReadonlyArray<LoadedResult>): string[] {
           `${label}: warmupIterations ${scenario.warmupIterations}, but js/workload.ts says `
           + `${canonical.warmupIterations}. An arm measured mid-compilation is not comparable.`,
         );
+      }
+      if (canonical.scenario === 'parallel-workload') {
+        if (scenario.actorCount !== canonical.actorCount
+          || scenario.workIterationsPerMessage !== canonical.workIterationsPerMessage) {
+          problems.push(
+            `${label}: actorCount ${scenario.actorCount} × ${scenario.workIterationsPerMessage} rounds, `
+            + `but js/workload.ts says ${canonical.actorCount} × ${canonical.workIterationsPerMessage}. `
+            + 'The arms are not doing the same work.',
+          );
+        }
+        const expected = expectedChecksum(canonical);
+        if (scenario.checksum !== expected) {
+          problems.push(
+            `${label}: checksum ${scenario.checksum}, but the workload's work sums to ${expected}. `
+            + 'The row was measured over work that did not happen — a skipped message, or a loop the '
+            + 'compiler elided — and may not be published (#1565).',
+          );
+        }
       }
       if (canonical.iterations !== scenario.iterations) {
         problems.push(
@@ -316,10 +340,23 @@ function skippedSection(results: ReadonlyArray<LoadedResult>): string {
   ].join('\n');
 }
 
+/**
+ * A scenario no result file has measured yet renders no section: an empty
+ * table under a heading would read as "nobody could do this", when the truth
+ * is "the arms carry it and the next full measurement publishes it" — which
+ * the known-gaps footer says instead (#1565).
+ */
+function isMeasured(scenario: ScenarioName, results: ReadonlyArray<LoadedResult>): boolean {
+  return results.some((r) => r.content.scenarios.some((s) => s.scenario === scenario));
+}
+
 function renderMarkdown(results: ReadonlyArray<LoadedResult>): string {
   const registry: FootnoteRegistry = { markers: new Map(), texts: [] };
   const scenarioNames = [...new Set(WORKLOAD.map((w) => w.scenario))];
-  const sections = scenarioNames.map((scenario) => scenarioSection(scenario, results, registry));
+  const unmeasured = scenarioNames.filter((scenario) => !isMeasured(scenario, results));
+  const sections = scenarioNames
+    .filter((scenario) => isMeasured(scenario, results))
+    .map((scenario) => scenarioSection(scenario, results, registry));
 
   const header = [
     '# Framework comparison — measured results',
@@ -372,6 +409,10 @@ function renderMarkdown(results: ReadonlyArray<LoadedResult>): string {
     '  number moves between releases (#528).',
     '- **The main benchmark suite still publishes no numbers**, and its cluster',
     '  suites never leave the process (#1177).',
+    ...unmeasured.map((scenario) =>
+      `- **\`${scenario}\` is defined and implemented in every arm but not yet measured.** `
+      + 'Its rows appear with the next full `bun run bench:compare` run (#1565, #1331); a '
+      + 'scenario is published whole or not at all.'),
     '',
   ].join('\n');
 

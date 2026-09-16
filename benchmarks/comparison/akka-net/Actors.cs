@@ -98,6 +98,44 @@ internal static class Actors
         }
     }
 
+    /* --------------------------- parallel workload ------------------------- */
+
+    /// <summary>Mirrors <c>actorCount</c> of the <c>parallel-workload</c> rows in js/workload.ts.</summary>
+    internal const int ParallelActors = 64;
+
+    internal sealed record Work(int Seed, int Rounds);
+
+    /// <summary>One independent worker: burns the rounds it is handed and replies with the result.</summary>
+    internal sealed class ParallelWorkerActor : ReceiveActor
+    {
+        public ParallelWorkerActor() => Receive<Work>(message => Sender.Tell(WorkRounds(message.Seed, message.Rounds)));
+    }
+
+    /// <summary>
+    /// Mirrors <c>workRounds</c> in js/workload.ts bit for bit: xorshift32 on
+    /// 32-bit lanes with a logical right shift, so <c>uint</c> here and
+    /// JavaScript's <c>&gt;&gt;&gt; 0</c> produce the same state.  Returned as
+    /// the <c>int</c> bit pattern, which is what crosses as a message.
+    /// </summary>
+    internal static int WorkRounds(int seed, int rounds)
+    {
+        var x = unchecked((uint)seed);
+        for (var i = 0; i < rounds; i++)
+        {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+        }
+        return unchecked((int)x);
+    }
+
+    /// <summary>Mirrors <c>workSeed</c> in js/workload.ts: never zero, because xorshift is stuck there.</summary>
+    internal static int WorkSeed(int actorIndex, int messageIndex)
+    {
+        var seed = unchecked((uint)(actorIndex + 1) * 0x9E3779B1u ^ (uint)(messageIndex + 1) * 0x85EBCA77u);
+        return seed == 0 ? 1 : unchecked((int)seed);
+    }
+
     /* ------------------------------ spawn batch ---------------------------- */
 
     /// <summary>

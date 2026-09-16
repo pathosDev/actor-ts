@@ -229,3 +229,4 @@ comparison of everything:
   number moves between releases (#528).
 - **The main benchmark suite still publishes no numbers**, and its cluster
   suites never leave the process (#1177).
+- **`parallel-workload` is defined and implemented in every arm but not yet measured.** Its rows appear with the next full `bun run bench:compare` run (#1565, #1331); a scenario is published whole or not at all.

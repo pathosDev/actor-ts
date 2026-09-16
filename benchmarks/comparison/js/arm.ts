@@ -61,6 +61,13 @@ export interface ArmCase {
   run(): Promise<number> | number;
   /** Runs after every iteration, warmup included.  Excluded from `p50`/`p99`. */
   teardown?(): Promise<void> | void;
+  /**
+   * `parallel-workload` only: the sum modulo 2^32 of every reply received over
+   * every call, read once the case has run.  Published beside the row so the
+   * report can recompute it from the workload and refuse a row whose work did
+   * not happen (#1565).
+   */
+  checksum?(): number;
 }
 
 /** Everything needed to measure and publish one framework. */
@@ -133,6 +140,11 @@ function toScenarioResult(
     expectedOperations: result.totalOps,
     completedOperations: Math.round(completedPerCall * result.iterations),
     rssDeltaBytes: result.rssDeltaBytes,
+    ...(armCase.workload.actorCount === undefined ? {} : {
+      actorCount: armCase.workload.actorCount,
+      workIterationsPerMessage: armCase.workload.workIterationsPerMessage,
+    }),
+    ...(armCase.checksum === undefined ? {} : { checksum: armCase.checksum() }),
     ...(armCase.notes === undefined ? {} : { notes: armCase.notes }),
   };
 }

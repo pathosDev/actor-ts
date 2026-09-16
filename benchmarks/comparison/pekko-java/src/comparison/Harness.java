@@ -50,7 +50,17 @@ public final class Harness {
             double meanNs, double stddevNs, double minNs, double maxNs,
             double p50Ns, double p95Ns, double p99Ns,
             long expectedOperations, long completedOperations,
-            String notes) {}
+            String notes,
+            Integer actorCount, Integer workIterationsPerMessage, Long checksum) {
+
+        /** The three fields only a {@code parallel-workload} row carries (#1565). */
+        public ScenarioResult withParallelWorkload(int actors, int rounds, long sum) {
+            return new ScenarioResult(scenario, caseName, unit, iterations, opsPerIteration,
+                    warmupIterations, totalNs, opsPerSecond, perOperationNs, meanNs, stddevNs,
+                    minNs, maxNs, p50Ns, p95Ns, p99Ns, expectedOperations, completedOperations,
+                    notes, actors, rounds, sum);
+        }
+    }
 
     /**
      * Warm up, then measure, asserting after every single call that the system
@@ -111,7 +121,7 @@ public final class Harness {
                 warmupIterations, totalNs, opsPerSecond, perOperationNs,
                 mean, Math.sqrt(variance), sorted[0], sorted[sorted.length - 1],
                 percentile(sorted, 0.50), percentile(sorted, 0.95), percentile(sorted, 0.99),
-                totalOps, observedTotal, notes);
+                totalOps, observedTotal, notes, null, null, null);
     }
 
     private static long requireComplete(String scenario, String caseName, int expected, long completed) {

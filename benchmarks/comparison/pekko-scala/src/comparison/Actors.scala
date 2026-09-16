@@ -108,6 +108,39 @@ object Actors:
           partner ! Ping(context.self)
           volleying(partner, next, 0, nextReplyTo)
 
+  /* ---------------------------- parallel workload ------------------------- */
+
+  /** Mirrors `actorCount` of the `parallel-workload` rows in js/workload.ts; the guardian spawns this many. */
+  val ParallelActors = 64
+
+  final case class Work(seed: Int, rounds: Int, replyTo: ActorRef[Int])
+
+  /** One independent worker: burns the rounds it is handed and replies with the result. */
+  def parallelWorker: Behavior[Work] =
+    Behaviors.receiveMessage: message =>
+      message.replyTo ! workRounds(message.seed, message.rounds)
+      Behaviors.same
+
+  /**
+   * Mirrors `workRounds` in js/workload.ts bit for bit: xorshift32 on 32-bit
+   * lanes with a logical right shift, so the JVM's `Int` and JavaScript's
+   * `>>> 0` produce the same state.
+   */
+  def workRounds(seed: Int, rounds: Int): Int =
+    var x = seed
+    var i = 0
+    while i < rounds do
+      x ^= x << 13
+      x ^= x >>> 17
+      x ^= x << 5
+      i += 1
+    x
+
+  /** Mirrors `workSeed` in js/workload.ts: never zero, because xorshift is stuck there. */
+  def workSeed(actorIndex: Int, messageIndex: Int): Int =
+    val seed = (actorIndex + 1) * 0x9E3779B1 ^ (messageIndex + 1) * 0x85EBCA77
+    if seed == 0 then 1 else seed
+
   /* ------------------------------- guardian ------------------------------ */
 
   enum GuardianCommand:
@@ -119,6 +152,7 @@ object Actors:
       counter: ActorRef[CounterCommand],
       echo: ActorRef[Echo],
       ping: ActorRef[VolleyCommand],
+      parallelWorkers: Vector[ActorRef[Work]],
   )
 
   /** A spawn batch in flight: what was asked for, and what has been observed. */
@@ -136,6 +170,7 @@ object Actors:
         context.spawn(counter(), "counter"),
         context.spawn(echo, "echo"),
         context.spawn(ping(context.spawn(pong, "pong")), "ping"),
+        Vector.tabulate(ParallelActors)(i => context.spawn(parallelWorker, s"parallel-$i")),
       )
       running(refs, generation = 0, batch = None)
 
