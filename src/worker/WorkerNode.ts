@@ -5,6 +5,7 @@ import {
   type PortLike,
 } from '../cluster/transports/MessageChannelTransport.js';
 import type { Transport } from '../cluster/Transport.js';
+import { nodeWorkerScope, webWorkerScope, type WorkerScope } from '../runtime/worker/WorkerScope.js';
 import type {
   WorkerHelloMessage,
   WorkerInitMessage,
@@ -20,27 +21,24 @@ export interface WorkerNodeContext<TInit = unknown> {
   ready(): void;
 }
 
-interface WorkerScope {
-  addEventListener?(ev: string, h: (e: { data: unknown }) => void): void;
-  removeEventListener?(ev: string, h: (e: { data: unknown }) => void): void;
-  postMessage?(v: unknown): void;
-  onmessage?: ((e: { data: unknown }) => void) | null;
-}
-
 /**
  * Worker-side helper.  Call `await WorkerNode.join()` from **inside an
  * async function** (`async function main() { … } main();`), NOT as a
  * top-level `await`.  In Bun, top-level await inside a worker suspends
  * the module loader in a way that prevents incoming messages from
  * dispatching to `self.onmessage`, and the handshake hangs forever.
+ *
+ * Runs on every worker the framework can spawn: the Web Worker globals on
+ * Bun and Deno, `parentPort` on Node's `worker_threads` — which has none of
+ * those globals, and where this helper therefore never completed a handshake
+ * before the runtime seam in `WorkerScope` existed (#1569).
  */
 export const WorkerNode = {
   async join<TInit = unknown>(): Promise<WorkerNodeContext<TInit>> {
-    const globalScope = globalThis as unknown as { self?: WorkerScope } & WorkerScope;
-    const selfScope: WorkerScope = globalScope.self ?? globalScope;
-    if (!selfScope) throw new Error('WorkerNode.join() must run inside a Worker');
-
-    const post = selfScope.postMessage ?? globalScope.postMessage;
+    // The Web Worker scope is found synchronously so the hello can go out in
+    // this very turn; only the Node fallback needs an import.
+    const scope = webWorkerScope() ?? await nodeWorkerScope();
+    if (scope === null) throw new Error('WorkerNode.join() must run inside a Worker');
 
     // ---- Phase 1: wait for the init frame from main. ----
     // We install the listener FIRST, arm the timeout second, and only then
@@ -63,9 +61,9 @@ export const WorkerNode = {
        * Armed *before* the hello goes out, so it is always defined by the time
        * a reply could arrive.  That ordering is discipline rather than a guard,
        * and deliberately carries no test: `postMessage` cannot synchronously
-       * re-enter `onmessage` on any runtime this framework targets, so the
-       * reply lands a turn later at the earliest and the two statements between
-       * them cannot interleave with anything.  A test that forced the
+       * re-enter the message handler on any runtime this framework targets, so
+       * the reply lands a turn later at the earliest and the two statements
+       * between them cannot interleave with anything.  A test that forced the
        * re-entrancy would be asserting against a runtime that does not exist.
        */
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -73,37 +71,30 @@ export const WorkerNode = {
       // handler, not window.postMessage.  Messages originate only from the
       // parent that spawned this worker, so `origin` is not applicable here
       // (CodeQL js/missing-origin-check — dismissed as a false positive).
-      const onMessage = (e: { data: unknown }): void => {
-        const data = e.data as Partial<WorkerInitMessage>;
-        if (data && data.kind === 'worker-init') {
-          selfScope.onmessage = null;
+      const onMessage = (data: unknown): void => {
+        const frame = data as Partial<WorkerInitMessage> | null;
+        if (frame && frame.kind === 'worker-init') {
+          scope.offMessage(onMessage);
           if (timer !== undefined) clearTimeout(timer);
-          resolve(data as WorkerInitMessage);
+          resolve(frame as WorkerInitMessage);
         }
       };
-      // Bun delivers worker→worker messages to `self.onmessage` (the DOM
-      // property) even when addEventListener('message', …) is a no-op.  We
-      // set `onmessage` directly so the init frame is seen reliably.
-      selfScope.onmessage = onMessage;
-      // Nothing to cancel on this exit: the callback runs *because* the handle
-      // fired, and clearing a fired handle is a documented no-op on all three
-      // runtimes.  The symmetry with the success branch above is only apparent —
-      // that one cancels a timer that is still live, this one had none.
-      timer = setTimeout(
-        () => { reject(new Error('WorkerNode.join() timed out waiting for init')); },
-        30_000,
-      );
+      scope.onMessage(onMessage);
+      timer = setTimeout(() => {
+        scope.offMessage(onMessage);
+        reject(new Error('WorkerNode.join() timed out waiting for init'));
+      }, 30_000);
       const hello: WorkerHelloMessage = { kind: 'worker-hello' };
-      post?.call(selfScope, hello);
+      scope.post(hello);
     });
 
     const self = NodeAddress.fromJSON(init.self);
 
     // ---- Phase 2: build a PortLike that multiplexes over the worker's
-    //      native postMessage channel.  We already share that channel
-    //      with the init/hello/ready frames — filter by `kind` so
-    //      transport traffic doesn't collide with lifecycle frames. ----
-    const transportPort = buildWorkerPort(selfScope, post);
+    //      native channel.  The same channel carries the init/hello/ready
+    //      frames — filter by `kind` so transport traffic doesn't collide
+    //      with lifecycle frames. ----
+    const transportPort = buildWorkerPort(scope);
     const transport = new MessageChannelTransport(self, transportPort);
 
     return {
@@ -113,40 +104,32 @@ export const WorkerNode = {
       initData: init.data as TInit,
       ready(): void {
         const message: WorkerReadyMessage = { kind: 'worker-ready', self: init.self };
-        post?.call(selfScope, message);
+        scope.post(message);
       },
     };
   },
 };
 
-function buildWorkerPort(
-  selfScope: WorkerScope,
-  post?: (v: unknown) => void,
-): PortLike {
+function buildWorkerPort(scope: WorkerScope): PortLike {
   let handler: ((e: { data: unknown }) => void) | null = null;
-  const listener = (e: { data: unknown }): void => {
-    const message = e.data as { kind?: string } | undefined;
+  const listener = (data: unknown): void => {
+    const message = data as { kind?: string } | null;
     if (message && message.kind === 'worker-transport' && handler) {
       handler({ data: (message as WorkerTransportMessage).envelope });
     }
   };
-  if (typeof selfScope.addEventListener === 'function') {
-    selfScope.addEventListener('message', listener);
-  } else {
-    const prev = selfScope.onmessage;
-    selfScope.onmessage = (e) => {
-      listener(e);
-      prev?.(e);
-    };
-  }
+  scope.onMessage(listener);
   return {
     postMessage(v: unknown) {
       const envelope: BrokeredMessage = v as BrokeredMessage;
       const message: WorkerTransportMessage = { kind: 'worker-transport', envelope };
-      post?.call(selfScope, message);
+      scope.post(message);
     },
     get onmessage() { return handler; },
     set onmessage(h: ((e: { data: unknown }) => void) | null) { handler = h; },
-    close() { handler = null; },
+    close() {
+      handler = null;
+      scope.offMessage(listener);
+    },
   } as PortLike;
 }

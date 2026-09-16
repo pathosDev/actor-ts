@@ -6,11 +6,14 @@ export type {
   WorkerLike,
   WorkerCloseEvent,
   WorkerErrorEvent,
+  WorkerEventMap,
   WorkerMessageEvent,
   WorkerSpawnOptions,
 } from './WorkerBackend.js';
 export { WebWorkerBackend } from './WebWorkerBackend.js';
 export { NodeWorkerBackend } from './NodeWorkerBackend.js';
+export { getWorkerScope, nodeWorkerScope, webWorkerScope } from './WorkerScope.js';
+export type { WorkerScope } from './WorkerScope.js';
 
 let cached: WorkerBackend | null = null;
 let cachedFor: RuntimeKind | null = null;
