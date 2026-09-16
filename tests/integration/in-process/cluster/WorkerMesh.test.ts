@@ -1,8 +1,15 @@
 /**
- * Integration test: stand up two ActorSystems in the same process, each
- * with its own MessageChannelTransport + NodeAddress, and route them
- * through a shared WorkerBroker.  Verifies that the real Cluster /
- * Sharding stack works over the broker exactly as it does over TCP.
+ * The in-process worker-mesh rig: two or three `ActorSystem`s on this
+ * thread, each a real `Cluster` node on a real `MessageChannelTransport`,
+ * routed through one `WorkerBroker` — the star a worker mesh is, with no
+ * thread underneath.  What this file verifies (#1564): membership converges
+ * over the broker, an actor's `tell` reaches an actor on the other node
+ * through a `RemoteActorRef`, a cross-node `ask` brings its reply back to
+ * the asking node (the `RefCodec` reply-ref round trip), the receiver's
+ * `context.sender` names the remote sender (#1561), and an unclustered
+ * node's local traffic is unaffected.  Sharding over this rig is
+ * `WorkerMeshSharding.test.ts`; singletons and the coordinator are
+ * `WorkerMeshSystemActors.test.ts`.
  */
 import { describe, expect, test } from 'bun:test';
 import { Actor } from '../../../../src/Actor.js';
@@ -10,12 +17,15 @@ import { ActorSystem } from '../../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
+import type { ActorRef } from '../../../../src/ActorRef.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
+import { RemoteActorRef } from '../../../../src/cluster/RemoteActorRef.js';
 import {
   MessageChannelTransport,
   type PortLike,
 } from '../../../../src/cluster/transports/MessageChannelTransport.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
+import { TestProbe } from '../../../../src/testkit/TestProbe.js';
 import { WorkerBroker } from '../../../../src/worker/WorkerBroker.js';
 import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
@@ -35,6 +45,9 @@ type Node = {
   cluster: Cluster;
   address: NodeAddress;
 };
+
+type Greeting = { readonly kind: 'greeting'; readonly text: string };
+type Question = { readonly kind: 'question'; readonly text: string; readonly replyTo: ActorRef<string> };
 
 async function startNode(
   systemName: string,
@@ -84,7 +97,7 @@ describe('WorkerBroker ↔ MessageChannelTransport end-to-end', () => {
     broker.close();
   });
 
-  test('messages flow actor-to-actor across the broker', async () => {
+  test('messages flow actor-to-actor across the broker: a tell from node A lands on node B', async () => {
     const broker = new WorkerBroker();
     const addrA = new NodeAddress('wm-msg', 'w', 1);
     const addrB = new NodeAddress('wm-msg', 'w', 2);
@@ -95,11 +108,96 @@ describe('WorkerBroker ↔ MessageChannelTransport end-to-end', () => {
       nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2,
       2_000,
     );
-    // Cluster-Membership reached across broker: that's the acceptance
-    // criterion for this test — the gossip wire traffic was carried
-    // end-to-end by MessageChannelTransport.
-    expect(nodeA.cluster.upMembers().map(m => m.address.toString()).sort())
-      .toEqual([addrA.toString(), addrB.toString()].sort());
+
+    // The receiver lives on B and records what reaches it; a probe on B is
+    // how the test reads the receiver's mailbox without a second hop.
+    const received = new TestProbe(nodeB.system);
+    class Sink extends Actor<Greeting> {
+      override onReceive(message: Greeting): void { received.tell(message); }
+    }
+    nodeB.system.spawn(Sink, 'sink');
+
+    // The sender lives on A and holds nothing but a remote ref to B's actor.
+    const remote = new RemoteActorRef<Greeting>(addrB, `actor-ts://wm-msg/user/sink`, nodeA.cluster);
+    class Greeter extends Actor<string> {
+      override onReceive(text: string): void { remote.tell({ kind: 'greeting', text }); }
+    }
+    const greeter = nodeA.system.spawn(Greeter, 'greeter');
+    greeter.tell('hello across the broker');
+
+    expect(await received.receiveOne(2_000)).toEqual({ kind: 'greeting', text: 'hello across the broker' });
+
+    await stopNode(nodeA); await stopNode(nodeB);
+    broker.close();
+  });
+
+  test('a cross-node ask brings its reply back to the asking node', async () => {
+    const broker = new WorkerBroker();
+    const addrA = new NodeAddress('wm-ask', 'w', 1);
+    const addrB = new NodeAddress('wm-ask', 'w', 2);
+
+    const nodeA = await startNode('wm-ask', addrA, broker);
+    const nodeB = await startNode('wm-ask', addrB, broker, [addrA.toString()]);
+    await waitFor(() =>
+      nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2,
+      2_000,
+    );
+
+    class Echo extends Actor<Question> {
+      override onReceive(question: Question): void {
+        question.replyTo.tell(`${this.cluster.selfAddress.toString()} says ${question.text}`);
+      }
+    }
+    nodeB.system.spawn(Echo, 'echo');
+    const remote = new RemoteActorRef<Question>(addrB, `actor-ts://wm-ask/user/echo`, nodeA.cluster);
+
+    // The reply ref the ask synthesises on A is rewritten to a wire marker
+    // on the way out and rebuilt on B; B's reply crosses back through the
+    // broker to the ref A registered for it.
+    expect(await remote.ask<string>({ kind: 'question', text: 'who are you' }, 2_000))
+      .toBe(`${addrB.toString()} says who are you`);
+
+    await stopNode(nodeA); await stopNode(nodeB);
+    broker.close();
+  });
+
+  test('the receiver sees the remote sender: context.sender names the actor on the other node (#1561)', async () => {
+    const broker = new WorkerBroker();
+    const addrA = new NodeAddress('wm-sender', 'w', 1);
+    const addrB = new NodeAddress('wm-sender', 'w', 2);
+
+    const nodeA = await startNode('wm-sender', addrA, broker);
+    const nodeB = await startNode('wm-sender', addrB, broker, [addrA.toString()]);
+    await waitFor(() =>
+      nodeA.cluster.upMembers().length === 2 && nodeB.cluster.upMembers().length === 2,
+      2_000,
+    );
+
+    const observed = new TestProbe(nodeB.system);
+    class SenderReporter extends Actor<Greeting> {
+      override onReceive(): void {
+        // The sender is a `RemoteActorRef` built from the envelope's `from`;
+        // its path is the sending actor's, and a reply to it crosses back.
+        const sender = this.context.sender;
+        observed.tell(sender.map((ref) => ref.path.toString()).getOrElse('none'));
+        sender.forEach((ref) => (ref as ActorRef<Greeting>).tell({ kind: 'greeting', text: 'and to you' }));
+      }
+    }
+    nodeB.system.spawn(SenderReporter, 'reporter');
+
+    const heardBack = new TestProbe(nodeA.system);
+    const remote = new RemoteActorRef<Greeting>(addrB, `actor-ts://wm-sender/user/reporter`, nodeA.cluster);
+    class Caller extends Actor<Greeting | string> {
+      override onReceive(message: Greeting | string): void {
+        if (typeof message === 'string') remote.tell({ kind: 'greeting', text: message }, this.context.self);
+        else heardBack.tell(message);
+      }
+    }
+    const caller = nodeA.system.spawn(Caller, 'caller');
+    caller.tell('good morning');
+
+    expect(await observed.receiveOne(2_000)).toBe('actor-ts://wm-sender/user/caller');
+    expect(await heardBack.receiveOne(2_000)).toEqual({ kind: 'greeting', text: 'and to you' });
 
     await stopNode(nodeA); await stopNode(nodeB);
     broker.close();
