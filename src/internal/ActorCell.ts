@@ -440,6 +440,20 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     return this._createChild(actorBlueprintOf(actor, options), this._anonymousChildName(), 'generated');
   }
 
+  /**
+   * @internal `spawnAnonymous` in two halves, for a child that may be created
+   * on another node: the name first, so the parallelism extension can settle
+   * a ref's path before the worker has heard of it, and the local spawn under
+   * that name — with the `generated` source, since it carries the reserved
+   * prefix — when the placement stays here after all.
+   */
+  _nextAnonymousName(): string { return this._anonymousChildName(); }
+
+  /** @internal See {@link _nextAnonymousName}. */
+  _spawnWithGeneratedName<T>(actor: ActorClassOrFactory<T>, name: string, options?: ActorOptions<T>): ActorRef<T> {
+    return this._createChild(actorBlueprintOf(actor, options), name, 'generated');
+  }
+
   spawnTyped<T>(behavior: Behavior<T>, name: string): ActorRef<T> {
     return this._createChild(actorBlueprintOf(typedActor<T>(behavior)), name, 'caller');
   }

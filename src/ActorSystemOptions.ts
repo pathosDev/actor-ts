@@ -15,6 +15,7 @@ import type { Config } from './config/Config.js';
 import type { ConfigObject } from './config/HoconParser.js';
 import type { DeadLetterQueueOptions } from './deadletters/DeadLetterQueueOptions.js';
 import type { DiagnosticsOptions } from './diagnostics/DiagnosticsOptions.js';
+import type { ParallelismOptions } from './parallelism/ParallelismOptions.js';
 import type { Dispatcher } from './Dispatcher.js';
 import type { Logger, LogLevel } from './Logger.js';
 import type { LogSink } from './logging/LogSink.js';
@@ -97,6 +98,13 @@ export type ActorSystemOptionsType = {
    * of the config file.
    */
   readonly diagnostics?: DiagnosticsOptions;
+  /**
+   * Actors on worker threads, layered over `actor-ts.parallelism.*` (#1563).
+   * The one thing only code can say here is the actor module — `withModule`
+   * — because a config file must not decide which code a worker runs; the
+   * worker count and everything else fall through to HOCON.
+   */
+  readonly parallelism?: ParallelismOptions;
 };
 
 export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorSystemOptionsType> extends OptionsBuilder<T> {
@@ -171,6 +179,15 @@ export class ActorSystemOptionsBuilder<T extends ActorSystemOptionsType = ActorS
    */
   withDiagnostics(diagnostics: NonNullable<ActorSystemOptionsType['diagnostics']>): this {
     return this.set('diagnostics' as keyof T, diagnostics as T[keyof T]);
+  }
+
+  /**
+   * Parallelism settings, layered over `actor-ts.parallelism.*` — which
+   * actors run on worker threads, and how many threads.  Fields you leave
+   * unset still fall through to HOCON.
+   */
+  withParallelism(parallelism: NonNullable<ActorSystemOptionsType['parallelism']>): this {
+    return this.set('parallelism' as keyof T, parallelism as T[keyof T]);
   }
 }
 

@@ -76,6 +76,8 @@ import { LocalActorRef } from './internal/LocalActorRef.js';
 import { systemGroupPolicy, type SystemGroup } from './internal/SystemPaths.js';
 import type { Cluster } from './cluster/Cluster.js';
 import { ClusterExtensionId } from './cluster/ClusterExtension.js';
+import { ParallelismExtension, ParallelismExtensionId } from './parallelism/ParallelismExtension.js';
+import type { ParallelismOptionsType } from './parallelism/ParallelismOptions.js';
 import { PersistenceExtensionId } from './persistence/PersistenceExtension.js';
 import type { HttpServerBackend } from './http/backend/HttpServerBackend.js';
 import { DEFAULT_HTTP_BIND_HOST } from './http/Constants.js';
@@ -138,6 +140,31 @@ export class ActorSystem {
    * stop cascade starts.  0 skips the drain — see {@link terminate}.
    */
   private readonly shutdownDrainTimeoutMs: number;
+  /**
+   * @internal The same budget, for the parallelism extension: a worker's
+   * system terminates with the identical `shutdown-drain-timeout`, so that is
+   * how long the main thread waits for it before stopping the thread.
+   */
+  get _shutdownDrainTimeoutMs(): number { return this.shutdownDrainTimeoutMs; }
+  /**
+   * @internal What `ActorSystemOptions.withParallelism` carried, kept for the
+   * extension's factory — the one extension the system constructs itself.
+   */
+  readonly _explicitParallelismOptions: ParallelismOptionsType | undefined;
+  /**
+   * The parallelism extension when `actor-ts.parallelism.workers` is above
+   * zero, and `null` otherwise — which is what keeps `workers = 0` the code
+   * path it always was: `spawn` pays one null check and takes the local path.
+   */
+  private readonly _parallelism: ParallelismExtension | null;
+  /**
+   * Work that has to finish *before* the actors are stopped — the parallelism
+   * extension terminating the workers' systems, so an offloaded actor gets
+   * its `postStop` while the main thread's cluster node is still up to hear
+   * back.  Empty on a system that offloads nothing, and then `terminate()` is
+   * the code it always was.
+   */
+  private readonly _terminationPreludes: Array<() => Promise<void>> = [];
   /**
    * @internal Default batch budget for every cell that does not set its own
    * `ActorOptions.throughput` (#409).
@@ -456,6 +483,18 @@ export class ActorSystem {
         () => this.deadLetterQueue.flush(),
       );
     }
+
+    // Last, because a mesh start spawns under `/system` and the extension's
+    // constructor validates `actor-ts.parallelism.*` whether or not it is
+    // enabled — a bad `offload` pattern is a config mistake and fails here,
+    // where every other config mistake fails.  Off, the extension is
+    // constructed and never started; the instance is registered so
+    // `system.extension(ParallelismExtensionId)` answers either way.
+    this._explicitParallelismOptions = options.parallelism as ParallelismOptionsType | undefined;
+    const parallelism = new ParallelismExtension(this, this._explicitParallelismOptions);
+    this.extensions.put(ParallelismExtensionId, parallelism);
+    this._parallelism = parallelism.enabled ? parallelism : null;
+    parallelism._start();
   }
 
   /**
@@ -547,6 +586,10 @@ export class ActorSystem {
     if (this._terminating || this._terminated) {
       throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
     }
+    if (this._parallelism !== null) {
+      const placed = this._parallelism._place(actor, name, options, 'caller');
+      if (placed !== null) return placed;
+    }
     return this.userGuardianCell.spawn(actor, name, options);
   }
 
@@ -560,8 +603,36 @@ export class ActorSystem {
     if (this._terminating || this._terminated) {
       throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
     }
+    if (this._parallelism !== null) {
+      // The name is minted here so the ref's path is settled before the
+      // worker has heard of it; a placement that stays local reuses it.
+      const name = this.userGuardianCell._nextAnonymousName();
+      const placed = this._parallelism._place(actor, name, options, 'generated');
+      if (placed !== null) return placed;
+      return this.userGuardianCell._spawnWithGeneratedName(actor, name, options);
+    }
     return this.userGuardianCell.spawnAnonymous(actor, options);
   }
+
+  /**
+   * @internal Spawn under `/user` with a name the framework generated —
+   * on another node, for an anonymous actor the parallelism extension placed
+   * here.  The reserved `$` prefix is what `spawn` refuses from a caller.
+   */
+  _spawnWithGeneratedName<T>(actor: ActorClassOrFactory<T>, name: string, options?: ActorOptions<T>): ActorRef<T> {
+    if (this._terminating || this._terminated) {
+      throw new Error(`Cannot create actors on a terminated ActorSystem '${this.name}'`);
+    }
+    return this.userGuardianCell._spawnWithGeneratedName(actor, name, options);
+  }
+
+  /** @internal Register work `terminate()` runs before the actors are stopped. */
+  _beforeTerminate(prelude: () => Promise<void>): void {
+    this._terminationPreludes.push(prelude);
+  }
+
+  /** @internal Whether `terminate()` has been called. */
+  _isTerminating(): boolean { return this._terminating || this._terminated; }
 
   /**
    * Spawn a typed Behavior under `/user` with a deterministic name —
@@ -744,21 +815,41 @@ export class ActorSystem {
     if (this._terminating) return this.whenTerminated();
     this._terminating = true;
     const terminated = this.whenTerminated();
+    const startTeardown = (): void => { this.rootCell.enqueueSystem({ kind: 'terminate' }); };
     if (this.shutdownDrainTimeoutMs <= 0) {
-      this.rootCell.enqueueSystem({ kind: 'terminate' });
+      if (this._terminationPreludes.length === 0) {
+        startTeardown();
+      } else {
+        void this.runTerminationPreludes().then(startTeardown, startTeardown);
+      }
       return terminated;
     }
     // Not awaited: `terminate()` stays synchronous up to its first suspension
     // point so `_terminating` is set before any caller can re-enter, and the
     // promise it hands back is `whenTerminated()` either way.
-    const startTeardown = (): void => { this.rootCell.enqueueSystem({ kind: 'terminate' }); };
+    //
     // Same handler on both settlements on purpose.  Nothing in the drain is
     // supposed to throw, and if something ever does, the failure mode must not
     // be a system that never tears down and a `terminate()` that never
     // settles — the drain is an optimisation over the teardown, not a
-    // precondition for it.
-    void this.awaitQuiescence(this.shutdownDrainTimeoutMs).then(startTeardown, startTeardown);
+    // precondition for it.  The preludes come after the drain and before the
+    // stop cascade: the drain lets in-flight replies land, the preludes take
+    // down what lives outside this tree, and only then do the actors stop.
+    const runPreludes = (): Promise<void> => this.runTerminationPreludes();
+    void this.awaitQuiescence(this.shutdownDrainTimeoutMs)
+      .then(runPreludes, runPreludes)
+      .then(startTeardown, startTeardown);
     return terminated;
+  }
+
+  /** Every prelude, together; one that throws is logged and does not hold the others up. */
+  private async runTerminationPreludes(): Promise<void> {
+    const preludes = this._terminationPreludes.splice(0);
+    await Promise.all(preludes.map((prelude) =>
+      prelude().catch((error: unknown) => {
+        this.log.error('a termination prelude failed; shutting the actors down regardless', error);
+      }),
+    ));
   }
 
   /**

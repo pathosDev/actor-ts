@@ -180,6 +180,12 @@
     { "file": "examples/testkit/manual-scheduler.ts", "expect": "after 200 ms advance" },
     { "file": "examples/testkit/testprobe-basics.ts", "expect": "reply sender was" },
 
+    { "file": "examples/parallelism/main.ts", "expect": "checksum -1064996438 over 8 actors" },
+    {
+      "file": "examples/parallelism/actors.ts",
+      "skip": "Not an entry point — the actor module examples/parallelism/main.ts finds by convention; it only exports the Hasher class and produces no output on its own."
+    },
+
     { "file": "examples/typed/behaviors-receive.ts", "expect": "counter @ 3" },
     { "file": "examples/typed/behaviors-supervise.ts", "expect": "poller tick#6" },
 

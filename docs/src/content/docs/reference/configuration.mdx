@@ -2357,6 +2357,23 @@ of a file that says `panels { send = false }` leaves `send` off.  That is the
 usual precedence applied one level deeper — otherwise naming one panel in code
 would switch every panel an operator disabled back on.
 
+### `actor-ts.parallelism` *(actors on worker threads from config alone)*
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `parallelism.workers` | `0` | `0` is off — the single-threaded system, bit for bit.  A number or `"auto"` (available parallelism minus the main thread) starts a worker mesh in the background and turns `system.spawn` into a placement decision. |
+| `parallelism.offload` | `["/user/*"]` | Path patterns of the top-level actors that move to a worker.  `*` is one segment, `**` one or more.  A pattern that could reach `/system` is refused. |
+| `parallelism.placement` | `"consistent-hash"` | Which worker an actor lands on: a hash of its name, or `"round-robin"`. |
+| `parallelism.leader` | `"main"` | `"worker"` moves the cluster leader — and the shard coordinator — onto a worker by giving the workers a hostname that sorts before `main`. |
+| `parallelism.spawn-timeout` | `10s` | How long a spawn waits for its worker's acknowledgment before the ref fails. |
+| `parallelism.buffer-size` | `100000` | Messages held across every spawn still awaiting its worker; past it, dead letters. |
+
+The actor module — the file exporting the classes a worker may spawn — is
+code, never a key: by convention `actors.js` next to the entry module,
+otherwise `ParallelismOptions.withModule(...)`.  The threads' hostnames,
+ports, roles and restart pacing are the `worker-mesh.*` and
+`worker-cluster.*` keys below.  See [Parallelism](/fundamentals/parallelism/).
+
 ### `actor-ts.worker-cluster` *(multi-runtime workers)*
 
 | Key | Default | Purpose |

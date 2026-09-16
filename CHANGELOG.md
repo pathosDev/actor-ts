@@ -11,6 +11,53 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Actors on worker threads from configuration alone** (#1563).
+  `actor-ts.parallelism.workers = auto` (or a number) makes
+  `ActorSystem.create` start a `WorkerMesh` in the background and turns
+  `system.spawn` into a placement decision: a top-level actor whose path
+  matches `actor-ts.parallelism.offload` (default `["/user/*"]`) is created
+  on a worker, every other one where it always was — and the application
+  code does not change. `spawn` stays synchronous and hands back a
+  `PendingRemoteActorRef` whose `path`, `equals` and `toString` are settled
+  at once; a `tell` or `ask` before the worker has acknowledged the spawn is
+  queued in order (bounded system-wide by `buffer-size`, overflow to dead
+  letters) and replayed through the remote ref the moment it does. A spawn
+  the worker refuses, or one that outlives `spawn-timeout`, fails the ref
+  and dead-letters what it held. `spawnAnonymous` is placed too, under a
+  name the main thread mints. `placement` picks the worker by a hash of the
+  actor's name (stable across restarts) or round-robin; `leader = "worker"`
+  moves the cluster leader and the shard coordinator onto a worker by
+  giving the workers a hostname that sorts before `main`, and refuses
+  hostnames an operator set that contradict it. `system.terminate()`
+  terminates every worker's system first — so an offloaded actor gets its
+  `postStop` — waits for them within the shared `shutdown-drain-timeout`
+  plus a second, then stops the threads: the one call the application makes
+  still takes everything down. The actor module is resolved by convention,
+  `actors.js` (or `.ts`) next to the entry module, or named in code with
+  `ActorSystemOptions.withParallelism(ParallelismOptions.withModule(...))`;
+  it is deliberately no HOCON key, and a system with `workers` above zero
+  and no module fails `create()` naming the candidates it looked for. Both
+  sides identify a class by its **export name**. Three limits are errors
+  rather than silence: the factory form of `spawn` cannot cross a thread;
+  a class the module does not export is refused naming the class, the
+  module and the key; an `offload` pattern that could reach `/system` —
+  `/system/*`, `/*`, `/**` — is refused naming the role-based route
+  (`worker-mesh.worker-roles`, `leader`). `ActorOptions` cross as data and
+  are refused when they carry code. Children stay with their parent, so the
+  unit of offload is the subtree. `workers = 0`, the default, is the
+  untouched code path — no mesh, no import, one null check in `spawn` —
+  and a test pins it against a reference system with a spy backend. A new
+  runtime seam, `src/runtime/entry/`, answers where the program started
+  (`Deno.mainModule`, `process.argv[1]`). Proven in-process against fake
+  workers hosting real nodes, on real threads under `bun test`, and as a
+  smoke case on Bun, Node and Deno from `dist/`;
+  `benchmarks/parallelism/config-scaling.ts` runs the same application
+  under `workers = 0, 1, 2, 4, 8, auto` and measured 4.6× at a millisecond
+  of work per message, break-even near a hundred microseconds, and a
+  twenty-fold loss for a chatty actor — the figures behind the `offload`
+  allow-list. New page `fundamentals/parallelism` (EN + DE). Stage 4 of
+  #1566.
+
 - **`WorkerMesh` — the main thread as a member of its own worker mesh**
   (#1562). `WorkerCluster` spawned N threads that each hosted an
   `ActorSystem` + `Cluster` and left the main thread a relay and nothing

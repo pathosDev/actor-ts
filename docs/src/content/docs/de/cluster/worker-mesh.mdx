@@ -51,6 +51,16 @@ Für **Multi-Process**-Parallelität (separate OS-Prozesse) nutze
 den regulären Cluster + TCP-Transport. Worker-Mesh ist speziell
 für den In-Process-Fall.
 
+## Platzierung ohne Code: `actor-ts.parallelism`
+
+Vielleicht brauchst du die API dieser Seite nie.  Mit
+`actor-ts.parallelism.workers` größer als null startet `ActorSystem.create`
+im Hintergrund ein `WorkerMesh`, und `system.spawn` platziert Actors
+darauf — der Anwendungscode ändert sich nicht.  Diese Schicht, ihre
+Grenzen und ihre gemessenen Zahlen stehen unter
+[Parallelität](/de/fundamentals/parallelism/); was folgt, ist das Mesh
+darunter, für den Fall, dass du die Threads selbst steuern willst.
+
 ## High-Level-API: `WorkerMesh`
 
 `WorkerMesh` macht den **Main-Thread zum Mitglied** eines Mesh, das es
@@ -576,6 +586,8 @@ durchgereicht, weil im Cluster noch nichts auf sie schlüsselt.
 
 ## Wohin als Nächstes
 
+- **[Parallelität](/de/fundamentals/parallelism/)** — Actors auf diesem
+  Mesh aus einer Konfigurationszahl, bei unveränderter Anwendung.
 - **[Cluster-Überblick](/de/cluster/overview/)** — das
   Cluster-Modell, an dem das Worker-Mesh teilnimmt.
 - **[Transports](/de/cluster/transports/)** — die

@@ -255,6 +255,39 @@ export {
 } from './CoordinatedShutdown.js';
 export type { ShutdownTask, PhaseDefinition } from './CoordinatedShutdown.js';
 
+// Parallelism — actors on worker threads from configuration alone (#1563).
+// Folded into the root rather than published as a subpath, like
+// `diagnostics`: one options family a consumer meets while configuring the
+// system, the extension id for `system.extension(...)`, and the pending ref
+// because `instanceof` on what `spawn` returned is a legitimate question for
+// a test to ask.  Everything the folded barrel emits is here, which
+// `tests/unit/ExportSurface.test.ts` holds it to.
+export {
+  ParallelismExtension,
+  ParallelismExtensionId,
+  ParallelismOptions,
+  ParallelismOptionsBuilder,
+  ParallelismOptionsValidator,
+  PendingRemoteActorRef,
+  DEFAULT_PARALLELISM_WORKERS,
+  DEFAULT_PARALLELISM_OFFLOAD,
+  DEFAULT_PARALLELISM_PLACEMENT,
+  DEFAULT_PARALLELISM_LEADER,
+  DEFAULT_PARALLELISM_SPAWN_TIMEOUT_MS,
+  DEFAULT_PARALLELISM_BUFFER_SIZE,
+} from './parallelism/index.js';
+export type {
+  ParallelismOptionsType,
+  PlacementStrategy,
+  MeshLeader,
+  ParallelismSpawnMessage,
+  ParallelismSpawnedMessage,
+  ParallelismSpawnFailedMessage,
+  ParallelismTerminateMessage,
+  ParallelismTerminatedMessage,
+  ParallelismWireMessage,
+} from './parallelism/index.js';
+
 // Dead-letter queue — capture, inspection and replay of undeliverable
 // messages.  Reached at runtime through `system.deadLetterQueue`; what the
 // barrel carries is the class, the entry/filter shapes an application names

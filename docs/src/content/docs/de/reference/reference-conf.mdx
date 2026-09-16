@@ -2185,6 +2185,24 @@ actor-ts {
     replay-auto-capture = true       # borrow onEvent from a running actor
   }
 
+  # Actors on worker threads from configuration alone.  workers above zero
+  # starts a worker mesh in the background and moves every top-level user
+  # actor whose path matches offload onto a worker; the application code
+  # does not change.  0 is today's single-threaded system, bit for bit.
+  # The actor module -- the file exporting the classes a worker may spawn --
+  # is code, never a leaf here: by convention actors.js next to the entry
+  # module, otherwise ParallelismOptions.withModule(...).  Hostnames, roles,
+  # ports and restart pacing of the threads are the worker-mesh and
+  # worker-cluster blocks below.
+  parallelism {
+    workers = 0                      # 0 = off | N | "auto" = available parallelism minus the main thread
+    offload = ["/user/*"]            # path patterns; * = one segment, ** = any depth; /system is refused
+    placement = "consistent-hash"    # consistent-hash (by actor name) | round-robin
+    leader = "main"                  # main | worker -- who hosts the shard coordinator and role-less singletons
+    spawn-timeout = 10s              # a worker's acknowledgment of a spawn; then the ref fails
+    buffer-size = 100000             # messages held across every spawn still awaiting its worker
+  }
+
   worker-cluster {
     workers = "auto"   # "auto" uses navigator.hardwareConcurrency
     system-name = "worker-cluster"   # ActorSystem name each worker hosts

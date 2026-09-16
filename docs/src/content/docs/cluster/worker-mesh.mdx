@@ -50,6 +50,16 @@ For **multi-process** parallelism (separate OS processes), use
 regular cluster + TCP transport.  Worker mesh is specifically
 for the in-process case.
 
+## Placement without code: `actor-ts.parallelism`
+
+You may never need this page's API at all.  With
+`actor-ts.parallelism.workers` above zero, `ActorSystem.create` starts a
+`WorkerMesh` in the background and `system.spawn` places actors on it —
+the application code does not change.  That layer, its limits and its
+measured numbers are on [Parallelism](/fundamentals/parallelism/); what
+follows is the mesh underneath it, for when you want to drive the threads
+yourself.
+
 ## High-level API: `WorkerMesh`
 
 `WorkerMesh` makes the **main thread a member** of a mesh it spawns.  It
@@ -556,6 +566,8 @@ wrote it, because nothing in the cluster keys on it yet.
 
 ## Where to next
 
+- **[Parallelism](/fundamentals/parallelism/)** — actors on this mesh
+  from one config number, with the application unchanged.
 - **[Cluster overview](/cluster/overview/)** — the
   cluster model worker-mesh participates in.
 - **[Transports](/cluster/transports/)** — the
