@@ -11,6 +11,30 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Two benchmarks that measure the thread boundary before anything is built
+  on it** (#1566, stage 0 of the transparent-parallelism programme).
+  `benchmarks/worker/mesh-message-cost.ts` runs the same actor local, on a
+  second cluster node in the *same* thread (a real `MessageChannelTransport`
+  through a real `WorkerBroker` — the protocol cost with no scheduling in
+  it) and on a real worker thread, for tell throughput and ask latency, every
+  batch confirmed by asking the counter what it saw. It is the first
+  benchmark in the tree over a real transport (#1177), and its in-thread tier
+  needs no thread at all. `benchmarks/worker/task-offload-breakeven.ts` runs
+  one CPU loop inline, on a single worker and on a pool sized to the machine
+  across 1 µs … 10 ms of work per call, calibrates the sizes to the machine
+  at startup, and prints the crossover.
+
+  Measured on this machine (Bun 1.4.2, 32 hardware threads): a cross-thread
+  tell costs about 21 µs against 320 ns local and a cross-thread ask about
+  180 µs against 6 µs — which is why the placement work (#1563) ships an
+  `offload` allow-list rather than moving every actor — and a pool overtakes
+  inline at roughly 10 µs of work per call, wins clearly at 100 µs, and the
+  hop itself costs about 3 µs a task when pipelined (#1558). The shared loop
+  moved into `_crunch.ts` so the inline baseline and the worker run identical
+  bytes; `_available-parallelism.ts` prefers `os.availableParallelism()` over
+  `navigator.hardwareConcurrency` because the latter reports the host's cores
+  inside a container, and #1562 lifts it into `src/util/`.
+
 - **TLS termination and HTTP/2 on the HTTP backends, through one option
   shape** (#1522, and the code half of #1173). `HttpServerOptions.withTls({
   cert, key, ca?, requestClientCert?, rejectUnauthorized? })` makes the
