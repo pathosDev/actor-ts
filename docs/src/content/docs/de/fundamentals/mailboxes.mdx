@@ -275,15 +275,23 @@ verworfen werden dürfen.  Ihre Tiefe begrenzt stattdessen das, was sie
 erzeugt: ein `create` pro Actor und ein `terminate` pro Stopp, ein
 `childTerminated` pro Kind, das fertig gestoppt hat, ein `failure` pro
 Supervisor-Entscheidung plus das `suspend` / `resume` / `recreate`, das
-diese Entscheidung über den betroffenen Teilbaum verteilt, und ein
-`receiveTimeout` pro abgelaufenem Timer.  Für jedes davon musste vorher
-ein Actor existieren, der es bezahlt hat.
+diese Entscheidung über den betroffenen Teilbaum verteilt, ein
+`receiveTimeout` pro abgelaufenem Timer und ein `watchNotify` pro
+`Terminated`, das von *einem anderen Node* eintrifft — für einen
+Remote-Actor, den die eigenen Actors dieses Nodes beobachtet haben, oder
+für einen Node, in den sie Watches hielten und der den Cluster verlassen
+hat.  Für jedes davon musste vorher ein Actor existieren, der es bezahlt
+hat, oder ein Watch, den einer von ihnen registriert hat.
 
-Eine Death-Watch-Benachrichtigung steht **nicht** auf dieser Liste.  Das
-`Terminated` eines beobachteten Actors landet in der *User*-Queue seines
-Watchers — an der Schranke vorbei, wie oben, aber weiterhin hinter allem,
-was diesem Watcher schon gesagt wurde.  Tausend beobachtete Actors
-erhöhen die System-Queue also um gar nichts.
+Eine lokale Death-Watch-Benachrichtigung steht **nicht** auf dieser
+Liste.  Das `Terminated` eines lokal beobachteten Actors landet in der
+*User*-Queue seines Watchers — an der Schranke vorbei, wie oben, aber
+weiterhin hinter allem, was diesem Watcher schon gesagt wurde.  Tausend
+lokal beobachtete Actors erhöhen die System-Queue also um gar nichts.
+Ein `Terminated`, das ein anderer Node meldet, nimmt einen Hop über die
+System-Queue, um zu genau diesem User-Queue-Signal zu werden; ein Peer
+kann höchstens eines pro Watch schicken, den dieser Node eröffnet hat,
+und ein unaufgefordertes trifft auf nichts.
 
 Du siehst diese Unterscheidung normalerweise nicht —
 System-Nachrichten werden vom Framework emittiert, nicht von deinem

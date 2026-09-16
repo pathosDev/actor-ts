@@ -171,14 +171,29 @@ Zwei Wege, das zu erkennen:
 
 - **`context.watch(remoteRef)`** — eine `Terminated`-Benachrichtigung
   empfangen, wenn der Remote-Actor stoppt *oder* der Remote-Node
-  unerreichbar+downed wird. Das `Terminated.addressTerminated`-Flag
-  unterscheidet "Actor gestoppt" von "Node verloren".
+  downed oder removed wird. Das `Terminated.addressTerminated`-Flag
+  unterscheidet "Actor gestoppt" von "Node verloren", und
+  `existenceConfirmed` ist `false` für einen Pfad, den der ferne
+  Node nicht auflösen konnte.
 - **Cluster-Events abonnieren** — `MemberRemoved` /
   `MemberUnreachable` für die Adresse des Hosts sagt dir, dass der
   ganze Node weg ist.
 
 Siehe [Death watch](/de/fundamentals/death-watch/) für die
 Per-Actor-Variante.
+
+### Der Sender kommt mit
+
+Eine Nachricht, die an eine `RemoteActorRef` geschickt wird, trägt
+den Pfad ihres Senders im Envelope, und der empfangende Node baut
+ihn wieder auf: im Ziel-Actor ist `context.sender` eine
+`RemoteActorRef` zurück zu dem Actor, der die Nachricht geschickt
+hat — auf welchem Node auch immer er lebt —, genau wie es bei einem
+lokalen Sender eine lokale Ref wäre.  Eine Antwort über
+`this.sender` funktioniert also über Nodes hinweg, und ein `tell`
+ohne Sender kommt weiterhin mit leerem `context.sender` an.  An der
+Nachricht muss sich dafür nichts ändern — der Pfad war immer auf
+der Wire; er wurde bei der Zustellung nur verworfen.
 
 ## Serialisierung
 

@@ -8,16 +8,17 @@
  * That argument is only as good as its list of what goes on the queue — and
  * #794 shipped a list with a message on it that nothing emits.
  *
- * `watchNotify` is declared in `SystemCommand` and dispatched by
- * `ActorCell.handleSystemCommand`, and no caller anywhere in `src/` produces
- * one; the cell's own JSDoc says so ("Currently unreachable — nothing in the
- * framework emits `watchNotify`").  A watched death does not travel this lane
- * at all: `_notifyWatcher` reaches a local watcher through
+ * `watchNotify` was declared in `SystemCommand` and dispatched by
+ * `ActorCell.handleSystemCommand` while no caller anywhere in `src/` produced
+ * one — the cell's own JSDoc said so.  A *local* watched death does not travel
+ * this lane at all: `_notifyWatcher` reaches a local watcher through
  * `postSignalEnvelope`, which is the *user* lane, exempt from the bound but
  * still behind everything already told to that watcher.  So "one `watchNotify`
- * per watched death" named a producer that does not exist, and the mailboxes
+ * per watched death" named a producer that did not exist, and the mailboxes
  * page repeated it as "one signal per ... watched death" in both languages —
  * three sentences after the same page says a `Terminated` is a user message.
+ * Since #918 the variant has its one real producer, `RemoteWatcher` — a death
+ * reported by *another* node — and the enumerations name it as exactly that.
  *
  * Naming a phantom producer is the harmless half.  The list also *omitted*
  * `recreate`, which supervision genuinely enqueues on every `Directive.Restart`
@@ -42,15 +43,14 @@ const MAILBOX_SOURCE = join(SOURCE_ROOT, 'internal', 'Mailbox.ts');
 const DOCUMENTATION_ROOT = join(REPOSITORY_ROOT, 'docs', 'src', 'content', 'docs');
 
 /**
- * The one declared variant with no producer, and the reason it stays declared.
+ * Declared variants with no producer, and the reason each stays declared.
  *
  * Checked in both directions — an entry that has grown a producer fails too —
- * the shape `NoDeadConfigKeys`' `KNOWN_DEAD_KEYS` has, so wiring `watchNotify`
- * up cannot land while the enumerations still leave it out.
+ * the shape `NoDeadConfigKeys`' `KNOWN_DEAD_KEYS` has.  `watchNotify` sat here
+ * from #794 until #918 gave it `RemoteWatcher`; wiring it up could not land
+ * while the enumerations still left it out, which is the point of the map.
  */
-const KINDS_WITH_NO_PRODUCER: ReadonlyMap<string, string> = new Map([
-  ['watchNotify', 'kept exempt from the bound so a later wiring cannot take the ordinary door (#729)'],
-]);
+const KINDS_WITH_NO_PRODUCER: ReadonlyMap<string, string> = new Map([]);
 
 /**
  * The paragraph on each mailboxes page that enumerates what fills the queue,
@@ -157,7 +157,7 @@ const paragraphFrom = (page: string, lead: string): string => {
 /* ------------------------------- the invariant ---------------------------- */
 
 describe('the system queue names its real producers — #794', () => {
-  test('exactly one declared SystemCommand has no producer in src/', () => {
+  test('every declared SystemCommand has a producer in src/, except the ones listed', () => {
     const dormant = sorted(new Set([...declaredKinds()].filter((kind) => !producedKinds().has(kind))));
 
     // Both directions: a variant that grew a producer has to leave this map, and

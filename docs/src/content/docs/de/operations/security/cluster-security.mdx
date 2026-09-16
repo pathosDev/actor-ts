@@ -730,6 +730,13 @@ an dem Tag, an dem ihr den Modus anschaltet — dort taucht eine
 unvollständige Allow-List auf. Siehe
 [Konfiguration](/de/reference/configuration/#actor-tsremote).
 
+Dieselbe Policy bewacht den einen anderen Frame, in dem ein Peer
+einen Pfad seiner Wahl nennt: ein `watch`. Ein abgelehnter Pfad
+wird wie ein fehlender beantwortet — `Terminated` mit
+`existenceConfirmed = false` —, sodass ein Watcher nie hängt und
+die Antwort nichts preisgibt, was die Ablehnung nicht ohnehin
+schon täte; die Ablehnung wird unter `frame="watch"` gezählt.
+
 ### Eine Sharding-Direktive braucht den Koordinator dahinter
 
 Dieselbe Überlegung reicht eine Schicht höher, in die

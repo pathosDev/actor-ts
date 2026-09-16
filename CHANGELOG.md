@@ -11,6 +11,38 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Death watch across nodes** (#918). `context.watch(remoteRef)` used to
+  record the subject and do nothing else — the JSDoc promised a `Terminated`
+  unconditionally, and across a node boundary none ever came, so every
+  failover, worker-replacement and resource-release pattern built on death
+  watch waited forever the moment its subject was on another node, and
+  worked perfectly in a single-node test. It now works through the ordinary
+  `watch` / `watchWith` / `unwatch` calls with nothing to configure. Three
+  core wire kinds carry it — `watch`, `unwatch`, `watch-terminated` — and the
+  watching cell receives the answer through the `watchNotify` system command
+  that had existed, unreachable, for exactly this: it is what produces the
+  *branded* `Terminated` the dispatch gate accepts (#769).
+
+  The two `Terminated` fields the docs had called "reserved" now mean
+  something. A path the far node cannot resolve is answered at once with
+  `existenceConfirmed = false`; a node that is downed or removed from the
+  membership surfaces to every watcher of an actor on it as
+  `addressTerminated = true`, synthesised from membership rather than sent
+  by the actor — the half of death watch that node loss is *for*. A node that
+  is merely unreachable does not, because it may come back and the downing
+  provider decides. A watching actor that stops withdraws its remote watches;
+  a node that leaves withdraws every stand-in it planted elsewhere.
+
+  **The watched path is peer-chosen**, exactly as an envelope's target is, so
+  it passes the same `EnvelopeTrust` policy before anything resolves it
+  (#877, #964): `/system/…` is never watchable by name, `untrusted-mode`
+  narrows `/user`, and a refusal is answered like nonexistence — the peer
+  cannot tell a refused path from an absent one, a watcher never hangs on a
+  refusal it cannot see, and the refusal is counted under `frame="watch"`.
+  On a system that never joined a cluster, or for a ref shape the framework
+  cannot watch, `watch()` now **warns** that no `Terminated` can come instead
+  of failing silently. Stage 2 of #1566.
+
 - **Two benchmarks that measure the thread boundary before anything is built
   on it** (#1566, stage 0 of the transparent-parallelism programme).
   `benchmarks/worker/mesh-message-cost.ts` runs the same actor local, on a
@@ -2526,6 +2558,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   rather than prose.
 
 ### Changed
+
+- **`context.sender` now names the remote sender across the wire** (#1561).
+  `Cluster.dispatchEnvelope` resolved the target path of an inbound envelope
+  and delivered the body with no sender, although the frame carried the
+  sender's path and the peer's address — so inside a clustered actor
+  `this.sender` was `None` for every message that arrived over any
+  transport, and only the `replyTo` that `ask` injects into the body
+  survived. The receiving node now rebuilds a `RemoteActorRef` to the sender
+  and hands it over as the second argument to `tell`, so replying through
+  `this.sender` works across nodes and a sender-less `tell` still arrives
+  with `context.sender` empty. The sender path is used for nothing but
+  addressing a reply *back to that peer*, so it needs no trust gate on the
+  receiving side — a forged `/system/…` is refused by the peer's own policy
+  when the reply arrives.
+
+  **Behaviour change on the TCP path too, not only on worker threads.** Code
+  that branched on `this.sender.isNone()` to detect a remote caller sees
+  `Some` now. `ShardSenderRef` stays as it was; it is merely no longer the
+  only way a cross-node reply finds its way home. Stage 2 of #1566.
 
 - **Docs toolchain: Astro 7.3 + Starlight 0.42** (#1527). `astro` `^7.1.3` →
   `^7.3.2`, `@astrojs/starlight` `^0.41.11` → `^0.42.0`,

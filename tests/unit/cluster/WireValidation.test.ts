@@ -148,10 +148,28 @@ describe('validateWireFrame — per-kind shapes', () => {
       },
       { kind: 'envelope', to: '/user/a', from: '/user/b', body: { hello: 'world' } },
       { kind: 'leave', node: address },
+      { kind: 'watch', watcher: 'actor-ts://s/user/w', watchee: 'actor-ts://s/user/x' },
+      { kind: 'unwatch', watcher: 'actor-ts://s/user/w', watchee: 'actor-ts://s/user/x' },
+      {
+        kind: 'watch-terminated',
+        watcher: 'actor-ts://s/user/w', watchee: 'actor-ts://s/user/x', existenceConfirmed: false,
+      },
     ];
     for (const frame of frames) {
       expect(validateWireFrame(frame)).toHaveProperty('message');
     }
+  });
+
+  test('rejects a watch frame missing either path, and a watch-terminated without its boolean (#918)', () => {
+    const watcher = 'actor-ts://s/user/w';
+    expect(validateWireFrame({ kind: 'watch', watcher, watchee: '' }))
+      .toEqual({ problem: '`watchee` is not a non-empty path string' });
+    expect(validateWireFrame({ kind: 'unwatch', watchee: 'actor-ts://s/user/x' }))
+      .toEqual({ problem: '`watcher` is not a non-empty path string' });
+    expect(validateWireFrame({ kind: 'watch-terminated', watcher, watchee: 'actor-ts://s/user/x' }))
+      .toEqual({ problem: '`existenceConfirmed` is not a boolean' });
+    expect(validateWireFrame({ kind: 'watch-terminated', watcher, watchee: 'actor-ts://s/user/x', existenceConfirmed: 'yes' }))
+      .toEqual({ problem: '`existenceConfirmed` is not a boolean' });
   });
 
   test('passes an unknown kind through to its extension handler', () => {

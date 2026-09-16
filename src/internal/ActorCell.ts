@@ -720,6 +720,24 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     this._watching.set(key, ref);
     if (ref instanceof LocalActorRef) {
       ref.getCell()._addWatcher(this.self);
+      return ref;
+    }
+    // Not a cell on this node.  A clustered system hands the watch to its
+    // remote watcher, which sends it to the node the ref names and turns the
+    // answer into a `watchNotify` on this cell (#918).  Anything else — a
+    // remote ref on a system that never joined a cluster, or a ref shape the
+    // framework does not know how to watch — is said out loud: the old
+    // behaviour was to record the subject and never notify, which is the one
+    // outcome worse than refusing.
+    const remoteWatcher = this.system.cluster.map((cluster) => cluster._remoteWatcher);
+    const accepted = remoteWatcher.isSome() && remoteWatcher.value.watch(this.self, ref);
+    if (!accepted) {
+      this.log.warn(
+        `watch(${ref.path}) cannot deliver Terminated: `
+        + (remoteWatcher.isSome()
+          ? 'the ref is neither a local actor nor a remote actor ref'
+          : 'the ref is not local and this system has not joined a cluster'),
+      );
     }
     return ref;
   }
@@ -730,7 +748,9 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     if (!this._watching.delete(key)) return ref;
     if (ref instanceof LocalActorRef) {
       ref.getCell()._removeWatcher(this.self);
+      return ref;
     }
+    this.system.cluster.forEach((cluster) => cluster._remoteWatcher.unwatch(this.self, ref));
     return ref;
   }
 
@@ -1474,21 +1494,23 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
   }
 
   /**
-   * Currently unreachable — nothing in the framework emits `watchNotify`; the
-   * two live notify sites are `finalizeTermination` and `_addWatcher`, both
-   * through {@link _notifyWatcher}.  Kept, and kept exempt from the mailbox
-   * bound like the live paths (#729), so that wiring it later cannot
-   * reintroduce the loss by taking the ordinary door.
+   * A death this node did not witness: the cluster's remote watcher enqueues
+   * this when the far node reports a watched actor stopped, or when the far
+   * node itself left (#918).  Exempt from the mailbox bound like the two local
+   * notify sites (#729) — the framework announces a death once.
    *
-   * It is also the one branded-notification path that does **not** first drive
-   * its subject to `terminated` — the target is whatever the command names.
-   * That is why a watcher whose bookkeeping matters (see
-   * `BackoffSupervisor.handleTerminated`) verifies the subject is really gone
-   * rather than resting on the brand alone (#769).
+   * It is the one branded-notification path that does **not** first drive its
+   * subject to `terminated` — the target is whatever the command names, and
+   * only the sender's node saw the death.  That is why a watcher whose
+   * bookkeeping matters (see `BackoffSupervisor.handleTerminated`) verifies
+   * the subject is really gone rather than resting on the brand alone (#769).
    */
   private onWatchNotify(signal: WatchNotifyCommand): void {
     this.postSignalEnvelope({
-      message: frameworkTerminated(signal.target) as unknown as TMessage,
+      message: frameworkTerminated(signal.target, {
+        existenceConfirmed: signal.existenceConfirmed,
+        addressTerminated: signal.addressTerminated,
+      }) as unknown as TMessage,
       sender: null,
     });
   }
@@ -1657,9 +1679,15 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
       this._watchers.clear();
     }
 
-    // Tell watched targets to drop us from their watcher set
+    // Tell watched targets to drop us from their watcher set — local ones
+    // directly, remote ones through the cluster's remote watcher (#918).
+    let watchedRemotely = false;
     for (const watched of this._watching.values()) {
       if (watched instanceof LocalActorRef) watched.getCell()._removeWatcher(this.self);
+      else watchedRemotely = true;
+    }
+    if (watchedRemotely) {
+      this.system.cluster.forEach((cluster) => cluster._remoteWatcher.unwatchAll(this.self));
     }
     this._watching.clear();
     this._watchWithMessages.clear();

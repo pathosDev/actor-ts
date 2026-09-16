@@ -55,6 +55,10 @@ const CORE_WIRE_KINDS = [
   'gossip',
   'envelope',
   'leave',
+  // Remote death watch (#918) — three core kinds, each with its own arm.
+  'watch',
+  'unwatch',
+  'watch-terminated',
 ] as const;
 
 type ListedWireKind = (typeof CORE_WIRE_KINDS)[number];

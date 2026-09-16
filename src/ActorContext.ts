@@ -136,6 +136,14 @@ export interface ActorContext<TMessage = unknown> {
    * sends it once and has no way to send it again (#729).  A watcher that
    * cannot be reached at all — it has already stopped — gets a dead letter, so
    * the loss is visible rather than silent.
+   *
+   * A `RemoteActorRef` is watched across the cluster (#918): the far node
+   * reports the stop, answers a path it cannot resolve at once with
+   * `existenceConfirmed = false`, and a node that is downed or removed
+   * surfaces as `addressTerminated = true`, synthesised from membership.  On a
+   * system that has not joined a cluster, or for a ref shape the framework
+   * cannot watch, the call records the subject and **warns** that no
+   * `Terminated` can come — it never fails silently.
    */
   watch(ref: ActorRef): ActorRef;
 

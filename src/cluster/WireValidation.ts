@@ -124,6 +124,20 @@ export function wireFrameProblem(frame: { kind: string }): string | null {
       return isNodeAddressData((frame as { node?: unknown }).node)
         ? null : '`node` is not a valid node address';
 
+    case 'watch':
+    case 'unwatch':
+    case 'watch-terminated': {
+      const { watcher, watchee, existenceConfirmed } = frame as {
+        watcher?: unknown; watchee?: unknown; existenceConfirmed?: unknown;
+      };
+      if (typeof watcher !== 'string' || watcher.length === 0) return '`watcher` is not a non-empty path string';
+      if (typeof watchee !== 'string' || watchee.length === 0) return '`watchee` is not a non-empty path string';
+      if (frame.kind === 'watch-terminated' && typeof existenceConfirmed !== 'boolean') {
+        return '`existenceConfirmed` is not a boolean';
+      }
+      return null;
+    }
+
     // An extension's frame kind — see the module note.
     default:
       return null;

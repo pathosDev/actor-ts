@@ -678,6 +678,13 @@ Watch `reason="not-allow-listed"` on the day you turn the mode
 on — it is where an incomplete allow-list shows up. See
 [configuration](/reference/configuration/#actor-tsremote).
 
+The same policy guards the one other frame in which a peer names
+a path of its choosing: a `watch`. A refused path is answered like
+a missing one — `Terminated` with `existenceConfirmed = false` —
+so a watcher never hangs and the answer reveals nothing the
+refusal did not already; the refusal is counted under
+`frame="watch"`.
+
 ### A sharding directive needs the coordinator behind it
 
 The same reasoning reaches one layer up, into the extensions

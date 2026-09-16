@@ -372,21 +372,24 @@ export class Mailbox<T = unknown> {
    * finishes stopping, and per supervision decision one `failure` to the parent
    * plus whatever it fans out over the failing subtree — `suspend`, then
    * `resume`, `recreate` or `terminate` once the directive is known.  One
-   * `receiveTimeout` per armed timer that expires completes the list.
+   * `receiveTimeout` per armed timer that expires, and one `watchNotify` per
+   * `Terminated` that a *remote* watch brings home (#918) — a watch this
+   * node's own actor registered, answered once — complete the list.
    *
-   * `watchNotify` is the declared variant that is deliberately **not** on it,
-   * and putting it there — as "one per watched death" — was this JSDoc's own
-   * first mistake.  Nothing in `src/` emits one; `ActorCell.onWatchNotify` says
-   * so at the arm that would handle it.  Nor does a watched death reach this
-   * queue by another name: `ActorCell._notifyWatcher` hands a local watcher its
+   * `watchNotify` was for a long time the declared variant deliberately **not**
+   * on it, because nothing emitted one; putting it there as "one per watched
+   * death" was this JSDoc's own first mistake.  It still is not how a *local*
+   * death travels: `ActorCell._notifyWatcher` hands a local watcher its
    * `Terminated` through `postSignalEnvelope`, which is the **user** lane —
    * exempt from the bound (see {@link Envelope.undroppable}) and still behind
    * everything already told to that watcher, because that ordering is what
-   * death watch documents.  Watching a thousand actors therefore adds nothing
-   * to the depth here.  The arm stays wired and stays exempt so that giving it
-   * a producer later cannot reintroduce the loss by taking the ordinary door
-   * (#729) — at which point it joins the list above, and the ratio below is
-   * what has to be re-checked for it.
+   * death watch documents.  Watching a thousand local actors adds nothing to
+   * the depth here.  What `RemoteWatcher` enqueues is the one case the arm was
+   * kept wired and exempt for (#729): a death this node did not witness, which
+   * it turns into the branded `Terminated` and re-posts on the user lane.  The
+   * ratio holds for it too — a peer can produce at most one per watch this node
+   * opened, an unsolicited `watch-terminated` matches no entry and enqueues
+   * nothing, and the entry itself was paid for by the watcher's registration.
    *
    * That test is about *volume*, not about who can reach the method, which is
    * why the sharding path does not change the answer even though it looks like
