@@ -11,6 +11,38 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`WorkerMesh` — the main thread as a member of its own worker mesh**
+  (#1562). `WorkerCluster` spawned N threads that each hosted an
+  `ActorSystem` + `Cluster` and left the main thread a relay and nothing
+  more: it never joined, so it could not address a worker actor, an `ask`
+  from it had nowhere to land its reply, and the shard coordinator ran on
+  the lowest-addressed *worker* while the docs said "on main".
+  `WorkerMesh.start(system, options)` registers the main thread's own
+  `MessageChannel` port with the broker under `system.name@main:1`, joins
+  the system to a cluster on it, spawns the workers with a bootstrap the
+  framework ships, and resolves once every member is `up` — so
+  `mesh.refFor(address, '/user/x')` is an ordinary `ActorRef` whose `tell`,
+  `ask` and `watch` cross the thread. Every worker builds its system from
+  the main system's **effective** config (`system.config`, not the file —
+  a builder-set value on main is what the workers run with), imports the
+  actor module(s) named by `withModule`, registers every exported actor
+  class by its **export name**, runs the module's optional `setup`, and
+  reports the registry back on `mesh.workers`. `'auto'` is the available
+  parallelism *minus one*, because the main thread works too; the default
+  hostnames sort main first, so main leads and hosts the coordinator, and a
+  worker hostname that sorts earlier moves both. `actor-ts.worker-mesh.*`
+  carries the seven mesh-specific leaves; the actor module has no key, for
+  the reason `worker-cluster.bootstrap` has none — a config file must not
+  decide which code a worker runs. Proven by the same bootstrap running
+  in-process against `FakeWorker`s that host real cluster nodes, on real
+  threads under `bun test`, and as a smoke case on Bun, Node and Deno from
+  `dist/`. `WorkerCluster` accepts an injected `broker` and `logger`
+  (`withBroker`, `withLogger`), `WorkerHandle` carries the payload a worker
+  attached to `ready(data)`, and the runtime seam's vocabulary —
+  `WorkerLike`, `WorkerEventMap`, `WorkerErrorEvent` and friends — is
+  exported from `actor-ts/worker` (the export half of #1288). Stage 3 of
+  #1566.
+
 - **Death watch across nodes** (#918). `context.watch(remoteRef)` used to
   record the subject and do nothing else — the JSDoc promised a `Terminated`
   unconditionally, and across a node boundary none ever came, so every
@@ -3091,6 +3123,47 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **`WorkerNode.join()` never completed on Node — every worker bootstrap
+  hung out its handshake deadline there** (#1569). The worker-side helper
+  reached its parent through the Web Worker globals, `self.postMessage` out
+  and `self.onmessage` in, and Node's `worker_threads` has none of them:
+  inside a worker `postMessage`, `onmessage`, `self` and
+  `addEventListener` are all absent, and the parent is `parentPort`, a
+  module import. So the hello was posted into nothing and
+  `WorkerCluster.spawn` rejected with "did not become ready" for a worker
+  that had loaded fine — the mesh, the testkit's `ParallelMultiNodeSpec`
+  and every example alike, while the docs said the same code ran on all
+  three runtimes. Nothing noticed because the worker-thread suites run on
+  Bun and the one Node-capable worker script in the tree, a smoke fixture,
+  bridged `parentPort` by hand *because* the helper did not. A worker-side
+  runtime seam now sits next to the parent-side one:
+  `src/runtime/worker/WorkerScope.ts` finds the Web Worker globals
+  synchronously and falls back to `parentPort` behind a dynamic import, and
+  `WorkerNode.join()` speaks that and nothing runtime-specific. The mesh
+  smoke case joins real workers on Node and Deno from `dist/`.
+
+- **`'auto'` worker counts inside a container came up with the host's
+  cores** (#1440, #1562). `navigator.hardwareConcurrency` reports the
+  machine, not the cgroup CPU quota, so an `'auto'` pool on a 2-CPU pod of
+  a 64-core node spawned 64 workers. `src/runtime/Parallelism.ts` prefers
+  `os.availableParallelism()` — quota-aware on Linux — with the navigator as
+  the fallback and the same `2` as the floor; `WorkerCluster` resolves
+  `'auto'` through it, `DEFAULT_WORKER_COUNT` names the default the config
+  reference documents, and the benchmark helper of stage 0 goes with it.
+
+- **A config file could push `base-port + workers` past 65535** (#1439).
+  `port('basePort')` bounded the first slot only; both numbers are config
+  leaves since #883. The validator now refuses a numeric `workers` whose last
+  slot would sit above the port range, naming both values; `'auto'` resolves
+  after validation and is left alone.
+
+- **Worker failures had no logger to reach** (#1276). `WorkerCluster` is a
+  static-constructed pool with no `ActorSystem` in scope, so a crash, a
+  respawn and a retired slot all went to `console.error`. `withLogger`
+  routes them through a `Logger` instead — `WorkerMesh` passes its system's,
+  so a mesh's workers report through the same sinks as everything else —
+  and the console stays the default for a bare pool.
 
 - **A fixed-rate task that cancelled itself on its first tick leaked an
   interval nothing could clear — and every seeded cluster node kept its

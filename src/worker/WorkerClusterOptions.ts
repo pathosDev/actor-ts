@@ -1,12 +1,21 @@
 import type { NodeAddress } from '../cluster/NodeAddress.js';
 import { Config } from '../config/Config.js';
 import { ConfigKeys } from '../config/ConfigKeys.js';
+import type { Logger } from '../Logger.js';
 import type { WorkerBackend } from '../runtime/worker/index.js';
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
+import type { WorkerBroker } from './WorkerBroker.js';
 import type { RestartPolicy } from './WorkerCluster.js';
 
+/**
+ * How many workers to spawn when nothing says: `'auto'`, which resolves to
+ * the machine's available parallelism at spawn time (#1440).  A literal at
+ * the read site until it got a name here, which is what lets the documented
+ * default be checked against the shipped one.
+ */
+export const DEFAULT_WORKER_COUNT: number | 'auto' = 'auto';
 /** `ActorSystem` name each worker hosts when nothing overrides it. */
 export const DEFAULT_WORKER_SYSTEM_NAME = 'worker-cluster';
 /** Hostname component of each worker's {@link NodeAddress}. */
@@ -34,6 +43,9 @@ export const DEFAULT_MAX_RESTARTS = 10;
 /** Sliding window the restart budget counts over. */
 export const DEFAULT_RESTART_WINDOW_MS = 60_000;
 
+/** The top of the port range `port()` enforces on the first slot; the last slot is held to it too (#1439). */
+const MAX_PORT = 65_535;
+
 /**
  * The only URL scheme {@link WorkerClusterOptionsType.bootstrap} may carry.
  *
@@ -59,7 +71,7 @@ export const DEFAULT_RESTART_WINDOW_MS = 60_000;
  * The scheme is only half the allow-list, though — see
  * {@link BOOTSTRAP_ALLOWED_HOST}.
  */
-const BOOTSTRAP_ALLOWED_PROTOCOL = 'file:';
+export const BOOTSTRAP_ALLOWED_PROTOCOL = 'file:';
 
 /**
  * The only authority a `file:` {@link WorkerClusterOptionsType.bootstrap} may
@@ -88,7 +100,7 @@ const BOOTSTRAP_ALLOWED_PROTOCOL = 'file:';
  * `[::1]`, which the parser does *not* erase and which on Windows still name a
  * UNC share rather than a plain path.  Those are refused.
  */
-const BOOTSTRAP_ALLOWED_HOST = '';
+export const BOOTSTRAP_ALLOWED_HOST = '';
 
 /**
  * What a retired slot reports through
@@ -126,6 +138,22 @@ export type WorkerClusterOptionsType = {
   readonly restartWindowMs?: number;
   readonly onWorkerPermanentlyDown?: (info: WorkerPermanentlyDownInfo) => void;
   readonly backend?: WorkerBackend;
+  /**
+   * Where the cluster reports a worker failure, a respawn and a retired slot.
+   * `src/worker/` has no logger of its own — `WorkerCluster.spawn` is a static
+   * with no `ActorSystem` in scope — so without one the reports go to the
+   * console, which is what every earlier version did (#1276).  `WorkerMesh`
+   * passes its system's logger, so a mesh's workers report through the same
+   * sinks as everything else.
+   */
+  readonly logger?: Logger;
+  /**
+   * Route through this broker instead of a fresh one.  `WorkerMesh` registers
+   * the main thread's own port with the broker before it spawns the workers,
+   * which is only possible if the broker exists first — so it owns the broker
+   * and hands it in (#1562).
+   */
+  readonly broker?: WorkerBroker;
 };
 
 /**
@@ -252,6 +280,23 @@ export class WorkerClusterOptionsBuilder extends OptionsBuilder<WorkerClusterOpt
   withBackend(backend: WorkerBackend): this {
     return this.set('backend', backend);
   }
+
+  /**
+   * Report worker failures, respawns and retired slots through this logger
+   * instead of the console.  Not expressible in a config file, like `backend`.
+   * Default: the console.
+   */
+  withLogger(logger: Logger): this {
+    return this.set('logger', logger);
+  }
+
+  /**
+   * Route the workers through a broker the caller owns — the way `WorkerMesh`
+   * puts the main thread's own port on it first.  Default: a fresh broker.
+   */
+  withBroker(broker: WorkerBroker): this {
+    return this.set('broker', broker);
+  }
 }
 
 /** Validates resolved {@link WorkerClusterOptionsType} settings. */
@@ -311,6 +356,20 @@ export class WorkerClusterOptionsValidator extends OptionsValidator<WorkerCluste
     this.nonEmptyString('systemName');
     this.nonEmptyString('hostname');
     this.port('basePort');
+    // `port()` bounds the first slot; each further slot is `basePort + index`,
+    // and since #883 both numbers can come from a config file, so the last
+    // slot has to be inside the range too (#1439).  Only the numeric case can
+    // be checked here — `'auto'` resolves later.
+    if (typeof s.workers === 'number' && s.basePort !== undefined
+      && Number.isInteger(s.workers) && s.workers >= 1
+      && s.basePort + s.workers - 1 > MAX_PORT) {
+      this.fail(
+        'workers',
+        `with basePort ${s.basePort} the last slot would be port ${s.basePort + s.workers - 1}, `
+        + `above ${MAX_PORT}`,
+        s.workers,
+      );
+    }
     this.positiveNumber('readyTimeoutMs');
     // Worth checking now that a config file can supply it: an unknown policy
     // used to fall through the `match` in WorkerCluster and silently mean
@@ -345,7 +404,7 @@ export class WorkerClusterOptionsValidator extends OptionsValidator<WorkerCluste
  * base to resolve against, `new URL('./worker.js')` throws — it just used to
  * throw from inside {@link WorkerCluster.spawn} instead of from the validator.
  */
-function parseBootstrapUrl(bootstrap: URL | string | undefined): URL | undefined {
+export function parseBootstrapUrl(bootstrap: URL | string | undefined): URL | undefined {
   if (bootstrap instanceof URL) return bootstrap;
   if (typeof bootstrap !== 'string') return undefined;
   try {

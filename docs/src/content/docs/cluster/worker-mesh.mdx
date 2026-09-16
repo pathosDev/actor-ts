@@ -3,6 +3,8 @@ title: Worker mesh
 description: Multiple actor systems within a single OS process — one main thread + N worker threads, all participating in one cluster via the MessageChannel transport. Useful for parallelism within a single Bun / Node process.
 ---
 
+import { Aside } from '@astrojs/starlight/components';
+
 JavaScript is single-threaded per actor system.  For
 **parallelism within one OS process**, the framework's
 **worker mesh** runs multiple `ActorSystem`s — one per worker
@@ -48,16 +50,116 @@ For **multi-process** parallelism (separate OS processes), use
 regular cluster + TCP transport.  Worker mesh is specifically
 for the in-process case.
 
-## High-level API: `WorkerCluster`
+## High-level API: `WorkerMesh`
 
-Wiring the broker, channels, and per-worker handshake by hand (see
-[Under the hood](#under-the-hood-manual-wiring) below) is exactly what
-`WorkerCluster` automates.  It spawns a pool of workers from one
-entrypoint module, runs the hello/init/ready handshake, registers each
-worker with a shared `WorkerBroker`, and restarts crashed workers per a
-`restartPolicy`.  The underlying worker primitive is picked per runtime
-— Web Workers on Bun/Deno, `node:worker_threads` on Node — so the same
-code runs everywhere.
+`WorkerMesh` makes the **main thread a member** of a mesh it spawns.  It
+joins your `ActorSystem` to a fresh cluster over a `MessageChannel`,
+spawns N workers with a bootstrap the framework ships, and hands every
+worker the same actor module — so the workers host actors you wrote,
+the main thread can reach them through ordinary `ActorRef`s, and no
+application code runs *inside* a worker script you had to write:
+
+```ts
+// main.ts — the main thread
+import { ActorSystem } from 'actor-ts';
+import { WorkerMesh, WorkerMeshOptions } from 'actor-ts/worker';
+
+const system = ActorSystem.create('my-app');
+const meshOptions = WorkerMeshOptions.create()
+  .withModule(new URL('./actors.js', import.meta.url))
+  .withWorkers('auto');
+const mesh = await WorkerMesh.start(system, meshOptions);
+
+const encoder = mesh.refFor<EncodeCommand>(mesh.addresses[0], '/user/encoder');
+const encoded = await encoder.ask<Encoded>({ kind: 'encode', bytes });
+
+await mesh.terminate();
+```
+
+```ts
+// actors.ts — imported by every worker, by URL
+import { Actor } from 'actor-ts';
+import type { WorkerMeshSetupContext } from 'actor-ts/worker';
+
+export class Encoder extends Actor<EncodeCommand> {
+  override onReceive(command: EncodeCommand): void { /* CPU-bound work */ }
+}
+
+// Optional: runs once per worker after its node is up.
+export function setup(context: WorkerMeshSetupContext): void {
+  context.system.spawn(Encoder, 'encoder');
+}
+```
+
+What `start` does, in order: it registers the main thread's own port
+with a `WorkerBroker` under `system.name@main:1`, joins `system` to a
+cluster on it, spawns the workers with the shipped
+`worker-mesh-bootstrap`, and resolves once every worker has handshaken
+**and** every member is `up`.  Each worker joins the main thread as its
+seed, builds its `ActorSystem` from the main system's **effective**
+configuration — `system.config`, not the file it came from, so a value
+set with a builder on the main thread is the value the workers run with
+— imports the module(s) named by `withModule`, registers every exported
+actor class by its **export name**, runs the module's `setup` if it has
+one, and reports the registry back: `mesh.workers` lists each worker's
+address and the classes it can spawn.
+
+| Option | What |
+| --- | --- |
+| `withModule(url \| url[])` | The actor module(s) every worker imports.  **Required**, and code-only — deliberately not a config key, see below. |
+| `withWorkers(n \| 'auto')` | Worker count.  `'auto'` is the machine's available parallelism **minus one** — the main thread is a working member — floored at 1.  Default `'auto'`. |
+| `withMainHostname(host)` / `withWorkerHostname(host)` | Hostname components of the two sides' addresses.  Defaults `'main'` / `'worker'` — which sorts main first, so main **leads** and hosts the shard coordinator.  A worker hostname that sorts before main's (`'core'`) moves both onto a worker. |
+| `withMainPort(port)` / `withBasePort(port)` | Synthetic port components; nothing binds them.  Defaults `1` / `2`. |
+| `withMainRoles(roles)` / `withWorkerRoles(roles)` | Cluster roles each side joins with — what role-restricted singletons, shards and routers select on.  Default none. |
+| `withReadyTimeoutMs(ms)` | Per-worker handshake deadline, and the membership deadline for the whole mesh.  Default `10000`. |
+| `withRestartPolicy(p)` and the `withRestart…` / `withMaxRestarts` knobs | Passed through to the worker cluster underneath — see its table below. |
+| `withBootstrap(url)` | Escape hatch for a bundler that moved the shipped bootstrap out of `dist/worker/`.  Default: the shipped one. |
+| `withBackend(backend)` | Spawn through this `WorkerBackend` — an in-memory fake in a test.  Default: detected. |
+
+`refFor(address, path)` returns an ordinary `ActorRef`: `tell`, `ask`,
+`watch` all work through it, and the path may be the bare `/user/name`
+form.  `terminate()` takes the workers down first and then leaves the
+cluster; a system that goes through coordinated shutdown takes its mesh
+with it.
+
+<Aside type="note" title="Why the actor module is not a config key">
+  `withModule` names code the workers will *execute*.  A config file —
+  `ACTOR_TS_CONFIG`, a dropped-in `application.conf` — is a wider surface
+  than the call site, and a key there would let something other than the
+  application's own source decide which code runs on a thread.  The same
+  rule keeps `bootstrap` out of `actor-ts.worker-cluster`.  Everything
+  else about the mesh *is* configurable: see
+  [the config block](#the-same-knobs-from-a-config-file).
+</Aside>
+
+<Aside type="caution" title="A message that crosses a thread is cloned">
+  Everything sent to a worker actor goes through structured clone.  A
+  plain-data message with a `kind` discriminant arrives intact; a class
+  instance arrives as a bare object with **no prototype and no methods**,
+  silently.  Write worker-bound messages as data, not objects — and keep
+  the reply path in mind: `context.sender` and `replyTo` both work
+  across the boundary.
+</Aside>
+
+## The manual layer: `WorkerCluster`
+
+`WorkerMesh` is built on `WorkerCluster`, which is what you reach for
+when the automatic shape does not fit — workers that run *different*
+code, workers that host no actors at all, or a bootstrap you want to
+write yourself.  It spawns a pool of workers from one entrypoint module,
+runs the hello/init/ready handshake, registers each worker with a shared
+`WorkerBroker`, and restarts crashed workers per a `restartPolicy`.  The
+underlying worker primitive is picked per runtime — Web Workers on
+Bun/Deno, `node:worker_threads` on Node — and the worker-side helper
+`WorkerNode.join()` speaks whichever the runtime exposes: the Web Worker
+globals, or Node's `parentPort`.
+
+**The main thread is not a member of a `WorkerCluster`.**  It relays every
+frame through the broker and nothing more, which has three consequences
+`WorkerMesh` exists to remove: the main thread cannot address a worker
+actor, an `ask` from it has nowhere to land its reply, and the cluster
+leader — and with it the shard coordinator — is the lowest-addressed
+*worker*.
 
 ```ts
 // main.ts — main thread
@@ -134,7 +236,6 @@ never returned, so nothing else could reach them.  `terminate()` waits
 for the threads to actually go rather than firing and forgetting, within
 the bound described below.
 
-import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Call `WorkerNode.join()` inside an async function">
   ```ts
@@ -166,6 +267,22 @@ actor-ts.worker-cluster {
   restart-random-factor = 0.3
   max-restarts          = 20
   restart-window        = 5m
+}
+```
+
+The mesh has its own block for the fields that are its own — the restart
+knobs stay the worker cluster's, and the actor module has no key for the
+reason given above:
+
+```hocon
+actor-ts.worker-mesh {
+  workers         = "auto"    # available parallelism minus the main thread
+  main-hostname   = "main"
+  main-port       = 1
+  worker-hostname = "worker"  # sort it before main-hostname to let a worker lead
+  base-port       = 2
+  main-roles      = []
+  worker-roles    = ["compute"]
 }
 ```
 
@@ -277,14 +394,22 @@ cross-node traffic.
 TCP transport:                MessageChannelTransport:
 - Sockets, framing            - postMessage between threads
 - Serialized bytes            - Structured cloning (no JSON)
-- Network latency             - Sub-microsecond
+- Network latency             - Tens of microseconds per hop
 - Cross-host                  - Same process only
 ```
 
 Messages between worker systems go through **structured clone** —
 faster than framing and re-parsing text.  It carries the same rich
 types (Map, Set, Date, …) the TCP wire's tagged JSON tree carries,
-without the text round-trip.
+without the text round-trip.  It is still a boundary, and not a cheap
+one next to a local `tell`: measured on the actor path
+(`benchmarks/worker/mesh-message-cost.ts`, Bun 1.4, 32 threads), a
+cross-thread `tell` costs about **20 µs** against ~300 ns local, and a
+cross-thread `ask` about **180 µs** against ~6 µs — the envelope, the
+ref codec, the broker's relay hop and two clones.  An actor that
+exchanges many small messages pays that on every one and gains nothing
+from the thread; an actor that does real CPU work per message gains the
+core.  Place accordingly.
 
 ## Use cases
 
@@ -302,8 +427,13 @@ sharding.start(
 );
 ```
 
-The coordinator (on main) allocates shards to the 4 workers.
-CPU-bound entity work parallelizes across cores.
+With `WorkerMesh` the main thread leads by default and so hosts the
+coordinator, which allocates shards to the workers; role-restricted
+sharding (`withRole('compute')` against `withWorkerRoles(['compute'])`)
+keeps every entity off the main thread.  CPU-bound entity work
+parallelizes across cores.  Under a bare `WorkerCluster` the main thread
+is not a member, and the coordinator runs on the lowest-addressed
+worker instead.
 
 ### Per-worker isolation
 

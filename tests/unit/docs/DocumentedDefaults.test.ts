@@ -35,7 +35,8 @@ import { DEFAULT_LOG_DEAD_LETTERS, DEFAULT_LOG_DEAD_LETTERS_DURING_SHUTDOWN, DEF
 import { DEFAULT_DEBUG_EVENT_STREAM, DEFAULT_DEBUG_LIFECYCLE, DEFAULT_DEBUG_UNHANDLED, DEFAULT_LOG_CONFIG_ON_START } from '../../../src/diagnostics/DiagnosticsOptions.js';
 import { DEFAULT_WEBSOCKET_POLICY } from '../../../src/http/websocket/WebsocketPolicy.js';
 import { DEFAULT_WORKER_RESTART_POLICY } from '../../../src/worker/WorkerClusterOptions.js';
-import { DEFAULT_MAX_RESTARTS, DEFAULT_RESTART_MAX_BACKOFF_MS, DEFAULT_RESTART_MIN_BACKOFF_MS, DEFAULT_RESTART_RANDOM_FACTOR, DEFAULT_RESTART_WINDOW_MS, DEFAULT_WORKER_BASE_PORT, DEFAULT_WORKER_HOSTNAME, DEFAULT_WORKER_READY_TIMEOUT_MS, DEFAULT_WORKER_SYSTEM_NAME } from '../../../src/worker/WorkerClusterOptions.js';
+import { DEFAULT_MAX_RESTARTS, DEFAULT_RESTART_MAX_BACKOFF_MS, DEFAULT_RESTART_MIN_BACKOFF_MS, DEFAULT_RESTART_RANDOM_FACTOR, DEFAULT_RESTART_WINDOW_MS, DEFAULT_WORKER_BASE_PORT, DEFAULT_WORKER_COUNT, DEFAULT_WORKER_HOSTNAME, DEFAULT_WORKER_READY_TIMEOUT_MS, DEFAULT_WORKER_SYSTEM_NAME } from '../../../src/worker/WorkerClusterOptions.js';
+import { DEFAULT_MESH_BASE_PORT, DEFAULT_MESH_MAIN_HOSTNAME, DEFAULT_MESH_MAIN_PORT, DEFAULT_MESH_MAIN_ROLES, DEFAULT_MESH_WORKER_COUNT, DEFAULT_MESH_WORKER_HOSTNAME, DEFAULT_MESH_WORKER_ROLES } from '../../../src/worker/WorkerMeshOptions.js';
 import {
   DEFAULT_MAX_WAIT_MS,
   DEFAULT_POLL_INTERVAL_MS,
@@ -579,6 +580,16 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.sharded-daemon-process.liveness-interval', kind: 'duration', constant: DEFAULT_DAEMON_LIVENESS_INTERVAL_MS },
 
   /* --- worker cluster --- */
+  { key: 'actor-ts.worker-cluster.workers', kind: 'string', constant: DEFAULT_WORKER_COUNT },
+  // The mesh (#1562): its module and bootstrap are code-only like
+  // `worker-cluster.bootstrap`, so the block has exactly these seven leaves.
+  { key: 'actor-ts.worker-mesh.workers', kind: 'string', constant: DEFAULT_MESH_WORKER_COUNT },
+  { key: 'actor-ts.worker-mesh.main-hostname', kind: 'string', constant: DEFAULT_MESH_MAIN_HOSTNAME },
+  { key: 'actor-ts.worker-mesh.main-port', kind: 'int', constant: DEFAULT_MESH_MAIN_PORT },
+  { key: 'actor-ts.worker-mesh.worker-hostname', kind: 'string', constant: DEFAULT_MESH_WORKER_HOSTNAME },
+  { key: 'actor-ts.worker-mesh.base-port', kind: 'int', constant: DEFAULT_MESH_BASE_PORT },
+  { key: 'actor-ts.worker-mesh.main-roles', kind: 'list', constant: DEFAULT_MESH_MAIN_ROLES },
+  { key: 'actor-ts.worker-mesh.worker-roles', kind: 'list', constant: DEFAULT_MESH_WORKER_ROLES },
   { key: 'actor-ts.worker-cluster.system-name', kind: 'string', constant: DEFAULT_WORKER_SYSTEM_NAME },
   { key: 'actor-ts.worker-cluster.hostname', kind: 'string', constant: DEFAULT_WORKER_HOSTNAME },
   { key: 'actor-ts.worker-cluster.base-port', kind: 'int', constant: DEFAULT_WORKER_BASE_PORT },
@@ -1178,7 +1189,6 @@ const LITERAL_AT_THE_READ_SITE: readonly string[] = [
   'actor-ts.http.backend', // 'fastify' — HttpExtension.ts
   'actor-ts.persistence.journal.plugin', // the in-memory journal id — PersistenceExtension.ts
   'actor-ts.persistence.snapshot-store.plugin', // the in-memory store id — PersistenceExtension.ts
-  'actor-ts.worker-cluster.workers', // 'auto' — WorkerCluster.ts
   // '' — ObjectStorageSnapshotStore.ts / ObjectStorageDurableStateStore.ts
   // (`prefix ?? ''`).  Not a placeholder: the empty string IS the shipped
   // default, it is simply written at the read site rather than named (#873).

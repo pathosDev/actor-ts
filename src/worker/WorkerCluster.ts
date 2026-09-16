@@ -4,7 +4,9 @@ import type {
   BrokeredMessage,
   PortLike,
 } from '../cluster/transports/MessageChannelTransport.js';
+import type { Logger } from '../Logger.js';
 import { exponentialBackoff, type BackoffPolicy } from '../pattern/BackoffPolicy.js';
+import { availableParallelism } from '../runtime/Parallelism.js';
 import {
   getWorkerBackend,
   type WorkerBackend,
@@ -15,6 +17,7 @@ import {
 import { RestartBudget } from '../Supervision.js';
 import {
   DEFAULT_MAX_RESTARTS,
+  DEFAULT_WORKER_COUNT,
   DEFAULT_RESTART_MAX_BACKOFF_MS,
   DEFAULT_RESTART_MIN_BACKOFF_MS,
   DEFAULT_RESTART_RANDOM_FACTOR,
@@ -40,6 +43,13 @@ export type WorkerHandle = {
   readonly id: number;
   readonly address: NodeAddress;
   readonly worker: WorkerLike;
+  /**
+   * Whatever the worker put on its `ready()` — `WorkerNode.join()`'s context
+   * lets the bootstrap attach a payload, and the mesh bootstrap uses it to
+   * report the actor classes the worker can spawn (#1562).  `undefined` for a
+   * bootstrap that reported nothing.
+   */
+  readonly readyData: unknown;
 };
 
 export type WorkerHelloMessage = {
@@ -56,6 +66,8 @@ export type WorkerInitMessage = {
 export type WorkerReadyMessage = {
   readonly kind: 'worker-ready';
   readonly self: ReturnType<NodeAddress['toJSON']>;
+  /** Optional payload the bootstrap attached to `ready()` — see {@link WorkerHandle.readyData}. */
+  readonly data?: unknown;
 };
 
 /** Wire frame flowing in both directions on every worker↔main channel. */
@@ -113,6 +125,7 @@ export class WorkerCluster {
     initData: unknown;
     backend?: WorkerBackend;
     onWorkerPermanentlyDown?: (info: WorkerPermanentlyDownInfo) => void;
+    logger?: Logger;
   };
   private closed = false;
 
@@ -138,6 +151,7 @@ export class WorkerCluster {
       restartWindowMs: options.restartWindowMs ?? DEFAULT_RESTART_WINDOW_MS,
       onWorkerPermanentlyDown: options.onWorkerPermanentlyDown,
       backend: options.backend,
+      logger: options.logger,
     };
     this.backoff = exponentialBackoff({
       minMs: this.options.restartMinBackoffMs,
@@ -151,8 +165,8 @@ export class WorkerCluster {
   ): Promise<WorkerCluster> {
     const resolvedOptions = withWorkerClusterConfigDefaults(options as WorkerClusterOptionsType);
     new WorkerClusterOptionsValidator().validate(resolvedOptions);
-    const workers = resolveWorkerCount(resolvedOptions.workers);
-    const broker = new WorkerBroker();
+    const workers = await resolveWorkerCount(resolvedOptions.workers ?? DEFAULT_WORKER_COUNT);
+    const broker = resolvedOptions.broker ?? new WorkerBroker();
     const cluster = new WorkerCluster(broker, resolvedOptions, workers);
     await cluster._start();
     return cluster;
@@ -160,6 +174,8 @@ export class WorkerCluster {
 
   get addresses(): NodeAddress[] { return this.handles.map(h => h.address); }
   get size(): number { return this.handles.length; }
+  /** The live workers, with whatever each reported on `ready()`. */
+  get workers(): ReadonlyArray<WorkerHandle> { return this.handles; }
 
   /**
    * Shut the mesh down and wait for the threads to actually go.
@@ -186,9 +202,8 @@ export class WorkerCluster {
   }
 
   private async _start(): Promise<void> {
-    const total = this.options.workers === 'auto'
-      ? resolveWorkerCount('auto')
-      : (this.options.workers as number);
+    // Already a number: `spawn` resolved `'auto'` before constructing this.
+    const total = this.options.workers as number;
     const ready: Array<Promise<void>> = [];
     for (let i = 0; i < total; i++) {
       const starting = this.spawnOne(i);
@@ -222,7 +237,6 @@ export class WorkerCluster {
       : new URL(this.options.bootstrap);
     const worker = backend.spawn(url, { name: `worker-${index}` });
     this.starting.add(worker);
-    const handle: WorkerHandle = { id: index, address, worker };
 
     const init: WorkerInitMessage = {
       kind: 'worker-init',
@@ -230,10 +244,11 @@ export class WorkerCluster {
       systemName: this.options.systemName,
       data: this.options.initData,
     };
+    let readyData: unknown;
     try {
       // Handshake first (so only one 'message' listener is live during hello/ready),
       // then wire up the broker — otherwise Bun's multiple-listener path is finicky.
-      await this.handshake(worker, init, address);
+      readyData = await this.handshake(worker, init, address);
     } catch (error) {
       // The worker is referenced by two locals and nothing else; letting the
       // rejection propagate used to drop both and leave the thread running for
@@ -255,6 +270,7 @@ export class WorkerCluster {
     const brokerPort = this.brokerFacade(worker);
     this.broker.register(address, brokerPort);
 
+    const handle: WorkerHandle = { id: index, address, worker, readyData };
     this.handles.push(handle);
     this.attachFailureHandlers(index, worker, address);
   }
@@ -281,8 +297,9 @@ export class WorkerCluster {
     } as PortLike;
   }
 
-  private handshake(worker: WorkerLike, init: WorkerInitMessage, address: NodeAddress): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
+  /** Resolves with whatever the worker attached to its `worker-ready` frame. */
+  private handshake(worker: WorkerLike, init: WorkerInitMessage, address: NodeAddress): Promise<unknown> {
+    return new Promise<unknown>((resolve, reject) => {
       const timeout = setTimeout(() => {
         unsubscribe();
         reject(new Error(`Worker ${address} did not become ready within ${this.options.readyTimeoutMs}ms`));
@@ -310,9 +327,9 @@ export class WorkerCluster {
         helloSeen = true;
         worker.postMessage(init);
       };
-      const onWorkerReady = (): void => {
+      const onWorkerReady = (ready: WorkerReadyMessage): void => {
         unsubscribe();
-        resolve();
+        resolve(ready.data);
       };
       /**
        * A bootstrap that throws or fails to resolve an import produces an
@@ -334,7 +351,7 @@ export class WorkerCluster {
         // ignored rather than crashing the handshake.
         match(message)
           .with({ kind: 'worker-hello' }, () => onWorkerHello())
-          .with({ kind: 'worker-ready' }, () => onWorkerReady())
+          .with({ kind: 'worker-ready' }, (ready) => onWorkerReady(ready as WorkerReadyMessage))
           .otherwise(() => {});
       };
       worker.addEventListener('message', onMessage);
@@ -366,7 +383,7 @@ export class WorkerCluster {
       // Not reported during shutdown: killing a worker is allowed to make it
       // complain, and that is not a diagnostic anyone wants.
       if (this.closed) return;
-      reportWorkerFailure(`worker ${index} (${address}) failed`, e.error ?? e.message);
+      this.reportWorkerFailure(`worker ${index} (${address}) failed`, e.error ?? e.message);
       this.onWorkerDown(index, address, true, e.error ?? e.message);
     };
     worker.addEventListener('close', onClose);
@@ -434,7 +451,7 @@ export class WorkerCluster {
     // A respawn that lost the race with `terminate()` rejects by design — the
     // worker it started is already terminated by `spawnOne`'s own guard.
     if (this.closed) return;
-    reportWorkerFailure(`respawning worker ${index} (${address}) failed`, error);
+    this.reportWorkerFailure(`respawning worker ${index} (${address}) failed`, error);
     this.requestRestart(index, address, error);
   }
 
@@ -446,12 +463,10 @@ export class WorkerCluster {
   ): void {
     const listener = this.options.onWorkerPermanentlyDown;
     if (listener === undefined) {
-      // The `Dispatcher.onError` precedent: a default sink beats silence, and
-      // `src/worker/` has no logger to reach for.
-      console.error(
-        `[actor-ts] worker ${index} (${address}) is permanently down — `
+      this.reportWorkerFailure(
+        `worker ${index} (${address}) is permanently down — `
         + `${restarts} restarts inside ${this.options.restartWindowMs}ms exhausted its budget`,
-        error ?? '',
+        error,
       );
       return;
     }
@@ -459,8 +474,24 @@ export class WorkerCluster {
     try {
       listener(info);
     } catch (listenerError) {
-      console.error('[actor-ts] onWorkerPermanentlyDown threw:', listenerError);
+      this.reportWorkerFailure('onWorkerPermanentlyDown threw', listenerError);
     }
+  }
+
+  /**
+   * Report a worker failure — through the logger the options carry, or, when
+   * none was given, on the console as every earlier version did.  The console
+   * branch is the `Dispatcher.onError` precedent: a default sink beats silence,
+   * and a static-constructed pool has no `ActorSystem` to borrow a logger from
+   * (#1276).
+   */
+  private reportWorkerFailure(what: string, error: unknown): void {
+    const logger = this.options.logger;
+    if (logger !== undefined) {
+      logger.error(`${what}: ${describeFailure(error)}`);
+      return;
+    }
+    console.error(`[actor-ts] ${what}:`, error ?? '');
   }
 
   private restartStateFor(index: number): RestartState {
@@ -520,27 +551,24 @@ function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
   deno?.unrefTimer?.(timer as unknown as number);
 }
 
-/**
- * Report a worker failure the framework cannot hand to anyone else.
- *
- * `src/worker/` has no logger and `WorkerCluster` has no `ActorSystem` in scope
- * — it is a static-constructed plain object, and the workers build their own
- * systems after spawning — so this follows `Dispatcher`'s precedent of a
- * prefixed `console.error` rather than inventing a logging seam here.
- */
-function reportWorkerFailure(what: string, error: unknown): void {
-  console.error(`[actor-ts] ${what}:`, error);
+/** One line for a logger: an `Error`'s message, or whatever the value renders as. */
+function describeFailure(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error === undefined || error === null) return '';
+  return String(error);
 }
 
-function resolveWorkerCount(value: number | 'auto' | undefined): number {
+/**
+ * What `'auto'` means: the `ACTOR_TS_WORKERS` environment variable when set —
+ * the operator's override, kept because a container image cannot always carry
+ * a config file — otherwise the machine's available parallelism (#1440).  A
+ * plain count is taken as it is.
+ */
+async function resolveWorkerCount(value: number | 'auto'): Promise<number> {
   if (typeof value === 'number' && value > 0) return value;
   if (typeof process !== 'undefined' && process.env?.ACTOR_TS_WORKERS) {
     const workerCount = parseInt(process.env.ACTOR_TS_WORKERS, 10);
     if (Number.isFinite(workerCount) && workerCount > 0) return workerCount;
   }
-  const nav = (globalThis as unknown as { navigator?: { hardwareConcurrency?: number } }).navigator;
-  if (nav && typeof nav.hardwareConcurrency === 'number' && nav.hardwareConcurrency > 0) {
-    return nav.hardwareConcurrency;
-  }
-  return 2;
+  return availableParallelism();
 }

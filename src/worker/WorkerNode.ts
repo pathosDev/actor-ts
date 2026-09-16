@@ -18,7 +18,12 @@ export interface WorkerNodeContext<TInit = unknown> {
   readonly systemName: string;
   readonly transport: Transport;
   readonly initData: TInit;
-  ready(): void;
+  /**
+   * Tell the main thread this node is up.  `data`, if given, rides on the
+   * ready frame and lands on the main thread's `WorkerHandle.readyData` —
+   * structured-cloneable only, like everything that crosses the channel.
+   */
+  ready(data?: unknown): void;
 }
 
 /**
@@ -102,8 +107,10 @@ export const WorkerNode = {
       systemName: init.systemName,
       transport,
       initData: init.data as TInit,
-      ready(): void {
-        const message: WorkerReadyMessage = { kind: 'worker-ready', self: init.self };
+      ready(data?: unknown): void {
+        const message: WorkerReadyMessage = data === undefined
+          ? { kind: 'worker-ready', self: init.self }
+          : { kind: 'worker-ready', self: init.self, data };
         scope.post(message);
       },
     };

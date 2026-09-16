@@ -2205,6 +2205,20 @@ actor-ts {
     restart-window = 60s
   }
 
+  # The main thread as a member of its own worker mesh (WorkerMesh).  The
+  # actor module and the bootstrap are set in code, never here: a config file
+  # must not decide which code a worker runs.  Restart pacing and the ready
+  # timeout are the worker-cluster block's above.
+  worker-mesh {
+    workers = "auto"          # "auto" = available parallelism minus the main thread, at least 1
+    main-hostname = "main"    # host component of the main thread's address; sorts before the workers', so main leads
+    main-port = 1             # port component of the main thread's address (synthetic, nothing binds it)
+    worker-hostname = "worker"
+    base-port = 2             # first worker's port; each slot increments
+    main-roles = []           # cluster roles the main thread joins with
+    worker-roles = []         # cluster roles every worker joins with
+  }
+
   coordinated-shutdown {
     default-phase-timeout = 5s
     terminate-actor-system = true
