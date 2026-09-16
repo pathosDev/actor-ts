@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { match } from 'ts-pattern';
 import { Actor } from '../../src/Actor.js';
+import { ActorPath } from '../../src/ActorPath.js';
 import { ActorRef } from '../../src/ActorRef.js';
 import { ActorSystem } from '../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
@@ -13,6 +14,7 @@ import {
 } from '../../src/Supervision.js';
 import { ActorStopped, Terminated } from '../../src/SystemMessages.js';
 import { awaitCondition, sleep } from '../util/AwaitCondition.js';
+import { RecordingLogger } from '../util/RecordingLogger.js';
 
 const newSystem = (name = 'watch-unit'): ActorSystem => {
   const sysOptions = ActorSystemOptions.create()
@@ -179,6 +181,40 @@ class Worker extends Actor<'die'> {
 type StartCommand = { readonly kind: 'start' };
 type WorkerLostMessage = { readonly kind: 'workerLost'; readonly name: string };
 type SupervisorMessage = StartCommand | WorkerLostMessage | Terminated;
+
+describe('watch on a ref that is not a local actor (#918)', () => {
+  /** A ref shape the framework cannot watch: no cell here, no node to ask. */
+  class ForeignRef extends ActorRef<unknown> {
+    readonly path = new ActorPath('foreign', null, 'elsewhere');
+    tell(): void { /* goes nowhere */ }
+  }
+
+  class Watching extends Actor<{ kind: 'watch'; subject: ActorRef }> {
+    override onReceive(command: { kind: 'watch'; subject: ActorRef }): void {
+      this.context.watch(command.subject);
+    }
+  }
+
+  test('on a system that never joined a cluster, watch() says out loud that no Terminated can come', async () => {
+    const logger = new RecordingLogger();
+    const systemOptions = ActorSystemOptions.create().withLogger(logger).withLogLevel(LogLevel.Warn);
+    const system = ActorSystem.create('dw-foreign', systemOptions);
+    try {
+      const watcher = system.spawn(Watching, 'watcher');
+      const foreign = new ForeignRef();
+      watcher.tell({ kind: 'watch', subject: foreign });
+      await awaitCondition(
+        () => logger.records.some((r) => r.level === 'warn' && r.message.includes('cannot deliver Terminated')),
+        { timeoutMs: 4_000, label: 'the unsupported watch was reported' },
+      );
+      const warning = logger.records.find((r) => r.message.includes('cannot deliver Terminated'))!;
+      expect(warning.message).toContain(foreign.path.toString());
+      expect(warning.message).toContain('has not joined a cluster');
+    } finally {
+      await system.terminate();
+    }
+  });
+});
 
 describe('watchWith', () => {
   test('delivers the custom message instead of Terminated', async () => {

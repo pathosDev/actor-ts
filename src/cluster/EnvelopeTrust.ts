@@ -49,7 +49,7 @@ export type EnvelopeRefusalReason = 'system-path' | 'not-allow-listed';
  * the series count is bounded by how many seams ask rather than by what anyone
  * sends.
  */
-export type RefusedFrameKind = 'envelope' | 'cluster-client-envelope';
+export type RefusedFrameKind = 'envelope' | 'cluster-client-envelope' | 'watch';
 
 /**
  * Render `['user', 'orders', '7']` as the `/user/orders/7` an operator writes.

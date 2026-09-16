@@ -92,21 +92,26 @@ Drei Felder:
 | Feld | Bedeutung |
 | --- | --- |
 | `actor` | Die Ref, die gestoppt hat.  Dieselbe Instanz, die du an `watch` übergeben hast. |
-| `existenceConfirmed` | Ob das Framework diesen Actor vor seiner Termination existieren sah.  Aktuell immer `true` — jedes vom Framework gelieferte `Terminated` verwendet den Konstruktor-Default. |
-| `addressTerminated` | Reserviert für den Cluster-Fall (ein gesamter **Node** wird unerreichbar, nicht nur dieser Actor).  Aktuell immer `false` — das Framework setzt es noch nicht. |
+| `existenceConfirmed` | Ob ein Node diesen Actor vor seiner Termination existieren sah.  `true` bei jedem lokalen Tod und bei einem Remote-Actor, der gestoppt hat; `false`, wenn du einen Pfad auf einem anderen Node beobachtet hast, der dort ins Leere lief — der ferne Node antwortet sofort, und das Flag ist seine Art zu sagen „nie gesehen". |
+| `addressTerminated` | `true`, wenn die Notification synthetisiert wurde, weil der ganze **Node** des Actors den Cluster verlassen hat — downed oder removed — und nicht, weil der Actor selbst gestoppt hat.  Bei einem lokalen Tod immer `false`. |
 
 Einen bereits gestoppten Actor zu beobachten, liefert `Terminated`
 **sofort** — dein Watcher bekommt immer eine Notification, egal wann
-du registriert hast.  Diese Notification trägt wie jede andere den
-Default `existenceConfirmed = true`; die aktuelle Implementierung
-setzt es nie auf `false`, also verlasse dich nicht darauf als
-Fehlersignal.
+du registriert hast.  Lokal trägt sie wie jede andere
+`existenceConfirmed = true`: der Actor hat existiert, er ist nur
+weg.  Das Flag wird nur über den Cluster hinweg `false`, für einen
+Pfad, den der ferne Node nicht auflösen konnte — verzweige also nur
+dort darauf.
 
-Das `addressTerminated`-Flag ist für Cluster-Setups reserviert, in
-denen ein ganzer Node — nicht nur ein Actor — verschwindet.  Es ist
-aktuell immer `false`: das Framework löst noch keine Node-weiten
-`Terminated`-Notifications aus.  Siehe
-[Cluster](/de/cluster/overview/) für die Membership-Geschichte.
+Das `addressTerminated`-Flag gehört zum Cluster-Fall, in dem ein
+ganzer Node — nicht nur ein Actor — verschwindet.  Wird ein Node,
+in den du eine beobachtete Ref hältst, downed oder aus der
+Membership entfernt, bekommt jeder Watcher eines Actors auf diesem
+Node ein `Terminated` mit gesetztem Flag — aus der Membership
+synthetisiert, nicht vom Actor gesendet.  Siehe
+[Cluster](/de/cluster/overview/) für die Membership-Geschichte und
+[Watchen über den Cluster hinweg](#watchen-über-den-cluster-hinweg)
+unten.
 
 ## Nur die Runtime kann einen Tod verkünden
 
@@ -375,13 +380,35 @@ const remoteEntity = await this.system.actorSelection(
 this.context.watch(remoteEntity);
 ```
 
-Watch funktioniert über Nodes hinweg auf dieselbe Weise — das
-Framework propagiert Termination-Notifications über den
-Cluster-Transport, wenn der beobachtete Actor stoppt.  Node-weite
-Unerreichbarkeit liefert noch kein `Terminated` (das
-`addressTerminated`-Flag ist immer `false`).  Siehe
-[Refs zwischen Nodes](/de/cluster/refs-across-nodes/) für das
-Wire-Protokoll, das das möglich macht.
+Watch funktioniert über Nodes hinweg auf dieselbe Weise.  Dein
+Node schickt einen `watch`-Frame an den Node, den die Ref nennt;
+der pflanzt einen Stellvertreter in das Watcher-Set des
+beobachteten Actors, und wenn der Actor stoppt, antwortet er mit
+einem `watch-terminated`-Frame, der hier als dasselbe gebrandete
+`Terminated` ankommt wie bei einem lokalen Tod — über die
+gewöhnlichen `watch`- / `watchWith`- / `unwatch`-Aufrufe, ohne
+etwas zu konfigurieren.  Zwei Dinge unterscheiden sich vom lokalen
+Fall:
+
+- Ein Pfad, den der ferne Node **nicht auflösen kann**, wird sofort
+  beantwortet, mit `existenceConfirmed = false`.  Dieselbe Antwort
+  deckt einen Pfad ab, den der ferne Node per Namen nicht
+  herausgibt — `/system/…` immer, und unter `untrusted-mode` jeden
+  `/user`-Pfad außerhalb der Allow-List — sodass ein Watcher nie an
+  einer Ablehnung hängt und ein Peer `watch` nicht nutzen kann, um
+  zu sondieren, welche Actors existieren.  Siehe
+  [Cluster-Sicherheit](/de/operations/security/cluster-security/).
+- Ein Node, der **downed oder removed** wird, schickt nichts; dein
+  Node synthetisiert das `Terminated` aus der Membership, mit
+  `addressTerminated = true`.  Ein Node, der nur *unreachable* ist,
+  löst es nicht aus — er kann zurückkommen, und der Downing-Provider
+  entscheidet.
+
+Ein beobachtender Actor, der stoppt, zieht seine Remote-Watches
+zurück, und ein Node, der den Cluster verlässt, zieht jeden
+Stellvertreter zurück, den er anderswo gepflanzt hat.  Siehe
+[Refs zwischen Nodes](/de/cluster/refs-across-nodes/) für den Rest
+der Wire-Geschichte.
 
 ## Was es NICHT ersetzt
 

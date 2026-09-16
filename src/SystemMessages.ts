@@ -72,11 +72,27 @@ const FRAMEWORK_TERMINATIONS = new WeakSet<Terminated>();
  * cell to `terminated` before calling it, which is what makes "branded"
  * equivalent to "the subject really is gone".
  */
-export function frameworkTerminated(actor: ActorRef): Terminated {
-  const terminated = new Terminated(actor);
+export function frameworkTerminated(actor: ActorRef, flags?: TerminatedFlags): Terminated {
+  const terminated = new Terminated(
+    actor,
+    flags?.existenceConfirmed ?? true,
+    flags?.addressTerminated ?? false,
+  );
   FRAMEWORK_TERMINATIONS.add(terminated);
   return terminated;
 }
+
+/**
+ * The two `Terminated` fields only a remote death can set (#918).  A local
+ * death has always seen its subject exist and never loses a node, so the
+ * local sites pass nothing and keep the constructor defaults.
+ */
+export type TerminatedFlags = {
+  /** `false` when the far node resolved the watched path to nothing. */
+  readonly existenceConfirmed?: boolean;
+  /** `true` when the notification was synthesised from the node leaving the cluster. */
+  readonly addressTerminated?: boolean;
+};
 
 /**
  * Did this runtime emit that `Terminated`?

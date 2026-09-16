@@ -88,21 +88,24 @@ Three fields:
 | Field | Meaning |
 | --- | --- |
 | `actor` | The ref that stopped.  Same instance you passed to `watch`. |
-| `existenceConfirmed` | Whether the framework saw this actor exist before its termination.  Currently always `true` — every `Terminated` the framework delivers uses the constructor default. |
-| `addressTerminated` | Reserved for the cluster case (an entire **node** going unreachable, not just this actor).  Currently always `false` — the framework does not yet set it. |
+| `existenceConfirmed` | Whether a node saw this actor exist before its termination.  `true` for every local death and for a remote actor that stopped; `false` when you watched a path on another node that resolved to nothing there — the far node answers at once, and the flag is how it says "never saw it". |
+| `addressTerminated` | `true` when the notification was synthesised because the actor's whole **node** left the cluster — downed or removed — rather than because the actor itself stopped.  Always `false` for a local death. |
 
 Watching an actor that's already stopped delivers `Terminated`
 **immediately** — your watcher always gets a notification, no
-matter when you registered.  That notification carries the
-default `existenceConfirmed = true` like every other; the current
-implementation never sets it `false`, so don't branch on it as an
-error signal.
+matter when you registered.  Locally that notification carries
+`existenceConfirmed = true` like every other: the actor did exist,
+it is just gone.  The flag only turns `false` across the cluster,
+for a path the far node could not resolve, so branch on it there
+and nowhere else.
 
-The `addressTerminated` flag is reserved for cluster setups where
-an entire node — not just one actor — goes away.  It is currently
-always `false`: the framework does not yet raise node-level
-`Terminated` notifications.  See [Cluster](/cluster/overview/) for
-the membership story.
+The `addressTerminated` flag belongs to the cluster case, where an
+entire node — not just one actor — goes away.  When a node you hold
+a watched ref into is downed or removed from the membership, every
+watcher of an actor on that node gets a `Terminated` with the flag
+set, synthesised from membership rather than sent by the actor.
+See [Cluster](/cluster/overview/) for the membership story and
+[Watching across the cluster](#watching-across-the-cluster) below.
 
 ## Only the runtime can announce a death
 
@@ -361,12 +364,30 @@ const remoteEntity = await this.system.actorSelection(
 this.context.watch(remoteEntity);
 ```
 
-Watch works the same way across nodes — the framework propagates
-termination notifications through the cluster transport when the
-watched actor stops.  Node-level unreachability does not yet
-deliver `Terminated` (the `addressTerminated` flag is always
-`false`).  See [Refs across nodes](/cluster/refs-across-nodes/)
-for the wire protocol that makes this work.
+Watch works the same way across nodes.  Your node sends a `watch`
+frame to the node the ref names; that node plants a stand-in in
+the watched actor's watcher set, and when the actor stops it
+answers with a `watch-terminated` frame that arrives here as the
+same branded `Terminated` a local death produces — through the
+ordinary `watch` / `watchWith` / `unwatch` calls, with nothing to
+configure.  Two things differ from the local case:
+
+- A path the far node **cannot resolve** is answered at once, with
+  `existenceConfirmed = false`.  The same answer covers a path the
+  far node refuses to hand out by name — `/system/…` always, and
+  under `untrusted-mode` any `/user` path off the allow-list — so a
+  watcher never hangs on a refusal, and a peer cannot use `watch`
+  to probe which actors exist.  See
+  [Cluster security](/operations/security/cluster-security/).
+- A node that is **downed or removed** sends nothing; your node
+  synthesises the `Terminated` from membership, with
+  `addressTerminated = true`.  A node that is merely *unreachable*
+  does not — it may come back, and the downing provider decides.
+
+A watching actor that stops withdraws its remote watches, and a
+node that leaves withdraws every stand-in it planted elsewhere.
+See [Refs across nodes](/cluster/refs-across-nodes/) for the rest
+of the wire story.
 
 ## What it does NOT replace
 

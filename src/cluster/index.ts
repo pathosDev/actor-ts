@@ -72,7 +72,14 @@ export { NodeAddress } from './NodeAddress.js';
 export type { NodeAddressData } from './NodeAddress.js';
 
 export { Member } from './Member.js';
-export type { MemberData, MemberStatus, WireMessage } from './Protocol.js';
+export type {
+  MemberData,
+  MemberStatus,
+  UnwatchMessage,
+  WatchMessage,
+  WatchTerminatedMessage,
+  WireMessage,
+} from './Protocol.js';
 
 export {
   SelfUp,

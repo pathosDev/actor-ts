@@ -160,8 +160,10 @@ Two ways to detect this:
 
 - **`context.watch(remoteRef)`** — receive a `Terminated`
   notification when the remote actor stops *or* the remote node
-  goes unreachable+downed.  The `Terminated.addressTerminated`
-  flag distinguishes "actor stopped" from "node lost."
+  is downed or removed.  The `Terminated.addressTerminated`
+  flag distinguishes "actor stopped" from "node lost", and
+  `existenceConfirmed` is `false` for a path the far node could
+  not resolve.
 - **Subscribe to cluster events** — `MemberRemoved` /
   `MemberUnreachable` for the host's address tells you the
   whole node is gone.

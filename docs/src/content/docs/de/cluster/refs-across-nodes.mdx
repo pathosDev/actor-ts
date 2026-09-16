@@ -171,8 +171,10 @@ Zwei Wege, das zu erkennen:
 
 - **`context.watch(remoteRef)`** — eine `Terminated`-Benachrichtigung
   empfangen, wenn der Remote-Actor stoppt *oder* der Remote-Node
-  unerreichbar+downed wird. Das `Terminated.addressTerminated`-Flag
-  unterscheidet "Actor gestoppt" von "Node verloren".
+  downed oder removed wird. Das `Terminated.addressTerminated`-Flag
+  unterscheidet "Actor gestoppt" von "Node verloren", und
+  `existenceConfirmed` ist `false` für einen Pfad, den der ferne
+  Node nicht auflösen konnte.
 - **Cluster-Events abonnieren** — `MemberRemoved` /
   `MemberUnreachable` für die Adresse des Hosts sagt dir, dass der
   ganze Node weg ist.

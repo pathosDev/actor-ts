@@ -97,9 +97,13 @@ import type {
   MemberData,
   MemberStatus,
   StorageIdentitiesData,
+  UnwatchMessage,
+  WatchMessage,
+  WatchTerminatedMessage,
   WireMessage,
 } from './Protocol.js';
 import { decodeRefs, encodeRefs } from './RefCodec.js';
+import { RemoteWatcher } from './RemoteWatcher.js';
 import { sanitizeWireKindForLog, sanitizeWireLogContext } from './WireValidation.js';
 import { InMemoryTransport, TcpTransport, type Transport } from './Transport.js';
 import type {
@@ -221,6 +225,8 @@ export class Cluster {
    * does not buy an attacker twice the log volume.
    */
   readonly _envelopeTrust: EnvelopeTrust;
+  /** @internal Death watch across nodes — both halves of it (#918). */
+  readonly _remoteWatcher: RemoteWatcher;
 
   private readonly members = new Map<string, Member>();
   /**
@@ -533,6 +539,7 @@ export class Cluster {
       options.untrustedMode ?? DEFAULT_UNTRUSTED_MODE,
       options.trustedSelectionPaths ?? [],
     );
+    this._remoteWatcher = new RemoteWatcher(this, this.log);
     this.configurationCompatibilityEnforce =
       options.configurationCompatibilityEnforce ?? DEFAULT_CONFIGURATION_COMPATIBILITY_ENFORCE;
     this.configurationCheckedPaths = new Set(
@@ -1320,6 +1327,16 @@ export class Cluster {
   }
 
   /** Register a handler for a specific wire-message discriminator. */
+  /**
+   * @internal Put one frame on the transport as-is.  For the core protocol's
+   * own extension points — remote death watch sends its three kinds through
+   * here — not for user payloads, which go through `_sendEnvelope` so that
+   * embedded refs are rewritten.
+   */
+  _sendWire(to: NodeAddress, message: WireMessage): void {
+    this.transport.send(to, message);
+  }
+
   _onWire(kind: string, handler: (message: WireMessage, from: NodeAddress) => void): () => void {
     this.wireHandlers.set(kind, handler);
     return () => this.wireHandlers.delete(kind);
@@ -1397,6 +1414,7 @@ export class Cluster {
     this.tombstonePruneTimer?.cancel();
     this.selfElectionTimer?.cancel();
     this.statsTimer?.cancel();
+    this._remoteWatcher.shutdown();
     await this.transport.shutdown();
   }
 
@@ -1406,6 +1424,7 @@ export class Cluster {
     this.transport.setHandler((from, message) => this.handleWire(from, message));
     await this.transport.start();
     this.started = true;
+    this._remoteWatcher.start();
 
     // Self is "joining" initially; transitions to "up" once at least
     // one peer has acknowledged us (or we are the seed).  We seed
@@ -1861,7 +1880,22 @@ export class Cluster {
       .with({ kind: 'gossip' }, (m) => this.onGossip(from, m))
       .with({ kind: 'envelope' }, (m) => this.onEnvelope(from, m))
       .with({ kind: 'leave' }, (m) => this.onLeave(from, m))
+      .with({ kind: 'watch' }, (m) => this.onWatch(from, m))
+      .with({ kind: 'unwatch' }, (m) => this.onUnwatch(from, m))
+      .with({ kind: 'watch-terminated' }, (m) => this.onWatchTerminated(from, m))
       .otherwise((m) => this.onUnhandledWire(m, from));
+  }
+
+  private onWatch(from: NodeAddress, message: WatchMessage): void {
+    this._remoteWatcher.onWatch(from, message);
+  }
+
+  private onUnwatch(from: NodeAddress, message: UnwatchMessage): void {
+    this._remoteWatcher.onUnwatch(from, message);
+  }
+
+  private onWatchTerminated(from: NodeAddress, message: WatchTerminatedMessage): void {
+    this._remoteWatcher.onWatchTerminated(from, message);
   }
 
   private onHeartbeatAcknowledgment(): void {

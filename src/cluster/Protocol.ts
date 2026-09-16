@@ -186,7 +186,10 @@ export type WireMessage =
   | HeartbeatAcknowledgmentMessage
   | GossipMessage
   | EnvelopeMessage
-  | LeaveMessage;
+  | LeaveMessage
+  | WatchMessage
+  | UnwatchMessage
+  | WatchTerminatedMessage;
 
 export type HelloMessage = {
   kind: 'hello';
@@ -270,6 +273,49 @@ export type EnvelopeMessage = {
 export type LeaveMessage = {
   kind: 'leave';
   node: NodeAddressData;
+};
+
+/* ----------------------------- Remote death watch ------------------------- */
+
+/**
+ * The three frames of death watch across a node boundary (#918).  Core kinds
+ * rather than an extension's: `context.watch` is core semantics, and a watch
+ * that silently does nothing on a remote ref is the defect they replace.
+ *
+ * Paths travel in the full `actor-ts://…` form, because that is the only form
+ * `parsePathSegments` reads (#1568).  The watcher's node sends `watch` and
+ * `unwatch`; the watchee's node answers with `watch-terminated` — when the
+ * watched actor stops, or at once when it does not exist, in which case
+ * `existenceConfirmed` is `false`.  A node that goes away sends nothing: the
+ * watcher's node synthesises the notification from membership, which is the
+ * half of death watch that node loss is *for*.
+ */
+export type WatchMessage = {
+  kind: 'watch';
+  /** Full path of the watching actor, on the node that sent this frame. */
+  watcher: string;
+  /** Full path of the watched actor, on the node that receives this frame. */
+  watchee: string;
+};
+
+export type UnwatchMessage = {
+  kind: 'unwatch';
+  watcher: string;
+  watchee: string;
+};
+
+export type WatchTerminatedMessage = {
+  kind: 'watch-terminated';
+  /** Full path of the watching actor, on the node that receives this frame. */
+  watcher: string;
+  /** Full path of the actor that stopped, on the node that sent this frame. */
+  watchee: string;
+  /**
+   * `false` when the watched path resolved to nothing on the watchee's node:
+   * the watcher is told the actor is gone without anyone having seen it live,
+   * which is `Terminated.existenceConfirmed`'s whole meaning.
+   */
+  existenceConfirmed: boolean;
 };
 
 /* -------------------------------- Framing -------------------------------- */

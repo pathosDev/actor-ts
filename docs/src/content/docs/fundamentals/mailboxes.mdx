@@ -261,13 +261,19 @@ depth is bounded by what produces them instead: one `create` per actor
 and one `terminate` per stop, one `childTerminated` per child that
 finishes stopping, one `failure` per supervision decision plus the
 `suspend` / `resume` / `recreate` that decision fans out over the
-failing subtree, and one `receiveTimeout` per armed timer that expires.
-Every one of those was paid for by an actor that had to exist first.
+failing subtree, one `receiveTimeout` per armed timer that expires, and
+one `watchNotify` per `Terminated` that arrives from *another node* — a
+remote actor this node's own actors watched, or a node they held
+watches into that left the cluster.  Every one of those was paid for by
+an actor that had to exist first, or by a watch one of them registered.
 
-A death notification is **not** on that list.  A watched actor's
+A local death notification is **not** on that list.  A watched actor's
 `Terminated` goes onto its watcher's *user* queue — past the bound, as
 above, but still behind everything already told to that watcher — so
-watching a thousand actors adds nothing to the system queue at all.
+watching a thousand local actors adds nothing to the system queue at
+all.  A `Terminated` reported by another node takes one system-queue
+hop to become that same user-queue signal; a peer can send at most one
+per watch this node opened, and an unsolicited one matches nothing.
 
 You don't normally see this distinction — system messages are
 emitted by the framework, not by your code.  But understanding it
