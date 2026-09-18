@@ -373,12 +373,26 @@ describe('WorkerMesh — worker metrics on the main thread (#1570)', () => {
         { thread: 'main', worker: 'worker-1' },
       ]);
       for (const age of ages) expect(age.value).toBeLessThan(2);
-      // What the relay merged is what the workers hold, sample for sample.
+      // What the relay merged is what the workers hold, sample for sample —
+      // once a snapshot has caught up.  `merged` is the tick that carried the
+      // fifth delivery, and the worker's registry keeps minting after it (a
+      // `cluster_members_up` on a late gossip merge, a histogram on a first
+      // observation); a family minted between that tick and a read of the
+      // registry here is in the registry and in no snapshot yet.  So the
+      // comparison waits for a snapshot taken after the worker's set stopped
+      // growing, rather than holding a past snapshot against a live registry
+      // — which is what went red twice in 22 whole-file runs under load.
       const hosted = await Promise.all(r.hosted);
       const workerZero = hosted.find((node) => node.cluster.selfAddress.port === 2)!;
-      const own = workerZero.system.extension(MetricsExtensionId).get().collect();
-      const relayed = merged.filter((s) => s.labels.thread === 'worker-0');
-      expect(relayed.map((s) => s.name).sort()).toEqual(own.map((s) => s.name).sort());
+      const ownRegistry = workerZero.system.extension(MetricsExtensionId).get();
+      const familiesOf = (samples: ReadonlyArray<MetricSample>): string => samples.map((s) => s.name).sort().join('\n');
+      const relayedFamilies = (): string => familiesOf(metrics.collectAll().filter((s) => s.labels.thread === 'worker-0'));
+      await awaitCondition(
+        () => relayedFamilies() === familiesOf(ownRegistry.collect()),
+        { timeoutMs: 5_000, label: 'a relayed snapshot caught up with worker-0’s own families' },
+      );
+      // Not vacuous: the set the two agree on is the worker's stock families.
+      expect(relayedFamilies()).toContain('actor_messages_delivered_total');
     } finally {
       await mesh.terminate();
       // Stopped with the mesh: the exposition is the main thread's alone again.
