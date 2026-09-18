@@ -57,7 +57,7 @@ import {
   DEFAULT_OFFLOAD_TASK_TIMEOUT_MS,
   DEFAULT_OFFLOAD_WARM_UP,
 } from '../../../src/worker/OffloadPoolOptions.js';
-import { DEFAULT_MESH_BASE_PORT, DEFAULT_MESH_MAIN_HOSTNAME, DEFAULT_MESH_MAIN_PORT, DEFAULT_MESH_MAIN_ROLES, DEFAULT_MESH_WORKER_COUNT, DEFAULT_MESH_WORKER_HOSTNAME, DEFAULT_MESH_WORKER_ROLES } from '../../../src/worker/WorkerMeshOptions.js';
+import { DEFAULT_MESH_BASE_PORT, DEFAULT_MESH_MAIN_HOSTNAME, DEFAULT_MESH_MAIN_PORT, DEFAULT_MESH_MAIN_ROLES, DEFAULT_MESH_METRICS_RELAY_INTERVAL_MS, DEFAULT_MESH_WORKER_COUNT, DEFAULT_MESH_WORKER_HOSTNAME, DEFAULT_MESH_WORKER_ROLES } from '../../../src/worker/WorkerMeshOptions.js';
 import {
   DEFAULT_MAX_WAIT_MS,
   DEFAULT_POLL_INTERVAL_MS,
@@ -626,7 +626,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   /* --- worker cluster --- */
   { key: 'actor-ts.worker-cluster.workers', kind: 'string', constant: DEFAULT_WORKER_COUNT },
   // The mesh (#1562): its module and bootstrap are code-only like
-  // `worker-cluster.bootstrap`, so the block has exactly these seven leaves.
+  // `worker-cluster.bootstrap`, so the block has exactly these eight leaves.
   { key: 'actor-ts.worker-mesh.workers', kind: 'string', constant: DEFAULT_MESH_WORKER_COUNT },
   { key: 'actor-ts.worker-mesh.main-hostname', kind: 'string', constant: DEFAULT_MESH_MAIN_HOSTNAME },
   { key: 'actor-ts.worker-mesh.main-port', kind: 'int', constant: DEFAULT_MESH_MAIN_PORT },
@@ -634,6 +634,7 @@ const DOCUMENTED_DEFAULTS: readonly DocumentedDefault[] = [
   { key: 'actor-ts.worker-mesh.base-port', kind: 'int', constant: DEFAULT_MESH_BASE_PORT },
   { key: 'actor-ts.worker-mesh.main-roles', kind: 'list', constant: DEFAULT_MESH_MAIN_ROLES },
   { key: 'actor-ts.worker-mesh.worker-roles', kind: 'list', constant: DEFAULT_MESH_WORKER_ROLES },
+  { key: 'actor-ts.worker-mesh.metrics-relay-interval', kind: 'duration', constant: DEFAULT_MESH_METRICS_RELAY_INTERVAL_MS },
   { key: 'actor-ts.worker-cluster.system-name', kind: 'string', constant: DEFAULT_WORKER_SYSTEM_NAME },
   { key: 'actor-ts.worker-cluster.hostname', kind: 'string', constant: DEFAULT_WORKER_HOSTNAME },
   { key: 'actor-ts.worker-cluster.base-port', kind: 'int', constant: DEFAULT_WORKER_BASE_PORT },

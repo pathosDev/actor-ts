@@ -2430,6 +2430,7 @@ it stays a code-only field.
 | `worker-mesh.base-port` | `2` | Port of the first worker; each slot increments. |
 | `worker-mesh.main-roles` | `[]` | Cluster roles the main thread joins with. |
 | `worker-mesh.worker-roles` | `[]` | Cluster roles every worker joins with — what role-restricted singletons, shards and routers select on. |
+| `worker-mesh.metrics-relay-interval` | `10s` | How often the main thread pulls every worker's metrics registry into its own `/metrics`.  While the relay runs, every series carries `thread="main"` or `thread="worker-<slot>"`; a worker's figures are at most one interval old.  `0` switches the relay off and exports the main thread alone — see the [scope of a scrape](/observability/metrics/prometheus-exporter/#scope-per-process-per-thread). |
 
 The mesh's workers *are* a worker cluster, so the ready timeout and the restart
 pacing are the `worker-cluster.*` keys above.  The actor module (`withModule`)

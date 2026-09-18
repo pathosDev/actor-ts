@@ -1796,20 +1796,7 @@ export const ConfigKeys = {
     replayAutoCapture: 'actor-ts.devtools.replay-auto-capture',
   },
 
-  /**
-   * `WorkerCluster.spawn` defaults — `actor-ts.worker-cluster.*`.
-   *
-   * The block is named after the options type it feeds rather than after
-   * "worker", both because that is what it configures and because
-   * {@link ConfigKeys.worker} below is already taken by the IPC sentinels,
-   * which are not config paths at all.
-   */
-  /**
-   * `actor-ts.worker-mesh.*` — the main thread joining its own workers (#1562).
-   * The actor module and the bootstrap are deliberately absent, as
-   * `worker-cluster.bootstrap` is: a config file must not decide which code a
-   * worker runs.  The restart knobs are `worker-cluster.*`'s and are read there.
-   */
+  /** Actors on worker threads from configuration alone — `actor-ts.parallelism.*` (#1563). */
   parallelism: {
     workers: 'actor-ts.parallelism.workers',
     offload: 'actor-ts.parallelism.offload',
@@ -1830,6 +1817,12 @@ export const ConfigKeys = {
     restartWindow: 'actor-ts.offload-pool.restart-window',
     warmUp: 'actor-ts.offload-pool.warm-up',
   },
+  /**
+   * `actor-ts.worker-mesh.*` — the main thread joining its own workers (#1562).
+   * The actor module and the bootstrap are deliberately absent, as
+   * `worker-cluster.bootstrap` is: a config file must not decide which code a
+   * worker runs.  The restart knobs are `worker-cluster.*`'s and are read there.
+   */
   workerMesh: {
     workers: 'actor-ts.worker-mesh.workers',
     mainHostname: 'actor-ts.worker-mesh.main-hostname',
@@ -1838,7 +1831,18 @@ export const ConfigKeys = {
     basePort: 'actor-ts.worker-mesh.base-port',
     mainRoles: 'actor-ts.worker-mesh.main-roles',
     workerRoles: 'actor-ts.worker-mesh.worker-roles',
+    // A duration leaf drops the `Ms` its field carries, as the worker-cluster
+    // block's four do below (#1570).
+    metricsRelayInterval: 'actor-ts.worker-mesh.metrics-relay-interval',
   },
+  /**
+   * `WorkerCluster.spawn` defaults — `actor-ts.worker-cluster.*`.
+   *
+   * The block is named after the options type it feeds rather than after
+   * "worker", both because that is what it configures and because
+   * {@link ConfigKeys.worker} below is already taken by the IPC sentinels,
+   * which are not config paths at all.
+   */
   workerCluster: {
     workers: 'actor-ts.worker-cluster.workers',
     systemName: 'actor-ts.worker-cluster.system-name',

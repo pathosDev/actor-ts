@@ -42,6 +42,20 @@ export const DEFAULT_MESH_WORKER_COUNT: number | 'auto' = 'auto';
 export const DEFAULT_MESH_MAIN_ROLES: ReadonlyArray<string> = [];
 /** Roles every worker joins with when nothing sets them. */
 export const DEFAULT_MESH_WORKER_ROLES: ReadonlyArray<string> = [];
+/**
+ * How often the main thread pulls every worker's metrics registry into its
+ * own `/metrics` (#1570).  `0` switches the relay off.
+ *
+ * Ten seconds against the 15 s scrape interval Prometheus ships with: a
+ * scrape then reads worker figures at most one relay interval old, and a
+ * worker that is alive but silent is visible as a snapshot age above ten
+ * seconds within a scrape or two.  Below the scrape interval on purpose —
+ * matching it would let a scrape land just before the pull and read figures
+ * nearly two intervals stale — and not much below, because each pull is one
+ * frame per worker plus the snapshot back, and the snapshot is the whole
+ * registry.  A deployment scraping faster tunes this down with it.
+ */
+export const DEFAULT_MESH_METRICS_RELAY_INTERVAL_MS = 10_000;
 
 /** Plain options-object shape accepted by {@link WorkerMesh.start}. */
 export type WorkerMeshOptionsType = {
@@ -77,6 +91,11 @@ export type WorkerMeshOptionsType = {
    * every member to be `up`.  Default: the worker cluster's `readyTimeoutMs`.
    */
   readonly readyTimeoutMs?: number;
+  /**
+   * How often the main thread pulls every worker's metrics registry into its
+   * own `/metrics`; `0` = off.  Default: {@link DEFAULT_MESH_METRICS_RELAY_INTERVAL_MS}.
+   */
+  readonly metricsRelayIntervalMs?: number;
   readonly restartPolicy?: RestartPolicy;
   readonly restartMinBackoffMs?: number;
   readonly restartMaxBackoffMs?: number;
@@ -154,6 +173,11 @@ export class WorkerMeshOptionsBuilder extends OptionsBuilder<WorkerMeshOptionsTy
     return this.set('readyTimeoutMs', readyTimeoutMs);
   }
 
+  /** How often worker registries are pulled into the main thread's `/metrics`; `0` = off.  Default: 10000ms. */
+  withMetricsRelayIntervalMs(metricsRelayIntervalMs: number): this {
+    return this.set('metricsRelayIntervalMs', metricsRelayIntervalMs);
+  }
+
   /** Restart policy for crashed / exited workers.  Default: `'on-failure'`. */
   withRestartPolicy(restartPolicy: RestartPolicy): this {
     return this.set('restartPolicy', restartPolicy);
@@ -229,6 +253,8 @@ export class WorkerMeshOptionsValidator extends OptionsValidator<WorkerMeshOptio
       );
     }
     this.positiveNumber('readyTimeoutMs');
+    // Zero is the documented off switch, so non-negative rather than positive.
+    this.nonNegativeNumber('metricsRelayIntervalMs');
     this.oneOf('restartPolicy', ['always', 'on-failure', 'never']);
     this.nonNegativeNumber('restartMinBackoffMs');
     this.nonNegativeNumber('restartMaxBackoffMs');
@@ -288,7 +314,8 @@ export class WorkerMeshOptionsValidator extends OptionsValidator<WorkerMeshOptio
  */
 export type WorkerMeshConfigDefaults = Pick<
   WorkerMeshOptionsType,
-  'workers' | 'mainHostname' | 'mainPort' | 'workerHostname' | 'basePort' | 'mainRoles' | 'workerRoles'
+  | 'workers' | 'mainHostname' | 'mainPort' | 'workerHostname' | 'basePort' | 'mainRoles' | 'workerRoles'
+  | 'metricsRelayIntervalMs'
 >;
 
 /**
@@ -323,6 +350,9 @@ export function readWorkerMeshOptionsFromConfig(
   }
   if (config.hasPath(keys.workerRoles)) {
     out.workerRoles = config.getStringList(keys.workerRoles);
+  }
+  if (config.hasPath(keys.metricsRelayInterval)) {
+    out.metricsRelayIntervalMs = config.getDuration(keys.metricsRelayInterval);
   }
   return out;
 }
