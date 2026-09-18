@@ -97,12 +97,7 @@ const SYSTEM_NAME = 'bench-mesh';
 const MAIN_ADDRESS = new NodeAddress(SYSTEM_NAME, 'main', 1);
 const WORKER_HOSTNAME = 'worker';
 const WORKER_BASE_PORT = 2;
-/**
- * The full URI form, deliberately.  `RemoteActorRef` takes the path
- * `parsePathSegments` will read on the far side, and that reader accepts only
- * `actor-ts://<system>/…` — a bare `/user/counter` parses to no segments, the
- * ref silently targets the system root, and every message to it is dropped.
- */
+/** The full URI form; `RemoteActorRef` also accepts the bare `/user/counter` since #1568. */
 const COUNTER_PATH = `actor-ts://${SYSTEM_NAME}/user/${COUNTER_NAME}`;
 
 /** One tier: a ref to a counter, and how to tear the tier down afterwards. */
