@@ -66,6 +66,22 @@ What it does:
 - **Auto-reconnect** — if a connection drops mid-cluster-life,
   reconnects on the next send.
 
+### What a hop costs
+
+Measured on this transport over loopback, with the far node on a worker
+thread (Bun 1.4.2, Windows 11, 2026-09-18): a cross-node `tell` costs about
+**22 µs** per message and a cross-node `ask` about **245 µs** per round
+trip, against ~260 ns and ~6 µs for the same actor in-process.  That is the
+whole wire — envelope, tagged-JSON frame, socket, `FrameDecoder` and its
+guards, dispatch — and it is within noise of the `MessageChannelTransport`
+hop the [worker mesh](/cluster/worker-mesh/) pays, so the socket itself is
+not the expensive part.  `benchmarks/cluster/tcp-message-cost.ts` is the
+source, and the only benchmark that exercises this transport: the framing
+round-trip needs `TcpTransport` over loopback, as the in-memory transport's
+limits below say, and the far node lives on its own thread because two nodes
+on one event loop lose the tail of a burst to the loopback buffers (#931) —
+the benchmark verifies every batch, so that is a throw, not a number.
+
 ### Runtime backends
 
 `TcpTransport` doesn't talk directly to the OS — it goes through a

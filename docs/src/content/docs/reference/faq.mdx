@@ -141,9 +141,14 @@ comparison against other frameworks:
   "how long does `tell` take" and "how many messages per second" are
   different questions with answers an order of magnitude apart.
 - **`ask` round trip** — **0.9 µs** at p50, depth 1.
-- **Cross-cluster `tell`** — bounded by network + serialization
-  cost.  Sub-millisecond on localhost, ms-range over LAN.  Not yet
-  measured; the cluster benchmarks do not leave the process.
+- **Cross-cluster `tell`** — about **22 µs** per message, and about
+  **245 µs** per `ask` round trip, over a real `TcpTransport` on loopback
+  with the far node on a worker thread (Bun 1.4.2, Windows 11, 32 hardware
+  threads, 2026-09-18; `benchmarks/cluster/tcp-message-cost.ts`, every
+  batch completion-verified).  That is the same per-message cost as the
+  thread hop measured on the [worker mesh](/cluster/worker-mesh/) page, so
+  the socket is not where a cross-node message pays — the protocol is.
+  Over a LAN the round trip is the network's: ms-range.
 
 **A mailbox with depth is doing most of the work in that first figure**, and
 the difference is worth understanding before designing around it.  An actor

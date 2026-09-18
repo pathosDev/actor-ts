@@ -227,6 +227,7 @@ comparison of everything:
   comparison wearing a framework label.
 - **No stored baselines and no regression gate.** Nothing here fails when a
   number moves between releases (#528).
-- **The main benchmark suite still publishes no numbers**, and its cluster
-  suites never leave the process (#1177).
+- **The main benchmark suite still publishes no numbers**; its cluster
+  suites have no row here either, and `cluster/tcp-message-cost.ts` is the
+  one of them that crosses a real socket (#1177).
 - **`parallel-workload` is defined and implemented in every arm but not yet measured.** Its rows appear with the next full `bun run bench:compare` run (#1565, #1331); a scenario is published whole or not at all.

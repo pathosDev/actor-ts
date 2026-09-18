@@ -407,8 +407,9 @@ function renderMarkdown(results: ReadonlyArray<LoadedResult>): string {
     '  comparison wearing a framework label.',
     '- **No stored baselines and no regression gate.** Nothing here fails when a',
     '  number moves between releases (#528).',
-    '- **The main benchmark suite still publishes no numbers**, and its cluster',
-    '  suites never leave the process (#1177).',
+    '- **The main benchmark suite still publishes no numbers**; its cluster',
+    '  suites have no row here either, and `cluster/tcp-message-cost.ts` is the',
+    '  one of them that crosses a real socket (#1177).',
     ...unmeasured.map((scenario) =>
       `- **\`${scenario}\` is defined and implemented in every arm but not yet measured.** `
       + 'Its rows appear with the next full `bun run bench:compare` run (#1565, #1331); a '
