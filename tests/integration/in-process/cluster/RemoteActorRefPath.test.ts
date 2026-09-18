@@ -5,7 +5,7 @@ import { Cluster } from '../../../../src/cluster/Cluster.js';
 import { ClusterOptions } from '../../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
-import { RemoteActorRef } from '../../../../src/cluster/RemoteActorRef.js';
+import { RemoteActorRef, remoteActorPath } from '../../../../src/cluster/RemoteActorRef.js';
 import { decodeRefs, type WireActorRef } from '../../../../src/cluster/RefCodec.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
 
@@ -157,5 +157,80 @@ describe('decoded wire refs carry an honest path (#515)', () => {
     expect(decoded.path.name).toBe('$anonymous-1-3f9c1a0d7b42');
     expect(decoded.path.toString())
       .toBe('actor-ts://remote-path-sys/user/$anonymous-1-3f9c1a0d7b42');
+  });
+});
+
+/**
+ * #1568 — the #515 defect, back for bare input.  `refTo(NODE_A, '/user/alpha')`
+ * used to keep the bare string as `targetPath` — which `tell` puts on the wire
+ * as `to`, `RemoteWatcher` puts on the `watch` frame and `encodeSingleRef`
+ * writes into a `WireActorRef`, and which the far side's `parsePathSegments`
+ * reads as no segments — while `.path` collapsed onto the system root.  So the
+ * `ask` timed out "waiting for reply from actor-ts://remote-path-sys/", two
+ * bare refs to different actors compared equal, and a `watch` answered
+ * `Terminated{existenceConfirmed:false}` at once.  The constructor now
+ * canonicalises **`targetPath`** itself; `.path` follows from it.
+ */
+describe('bare paths (#1568)', () => {
+  const FULL = 'actor-ts://remote-path-sys/user/alpha';
+
+  test('targetPath is canonicalised to the full URI — the field every wire frame reads', () => {
+    expect(refTo(NODE_A, '/user/alpha').targetPath).toBe(FULL);
+    expect(refTo(NODE_A, 'user/alpha').targetPath).toBe(FULL);
+    expect(refTo(NODE_A, '//user/alpha').targetPath).toBe(FULL);
+  });
+
+  test('.path names the actor, not the system root', () => {
+    expect(refTo(NODE_A, '/user/alpha').path.toString()).toBe(FULL);
+    expect(refTo(NODE_A, '/user/alpha').path.name).toBe('alpha');
+  });
+
+  test('toString() renders exactly as the full form does', () => {
+    expect(refTo(NODE_A, '/user/alpha').toString()).toBe(refTo(NODE_A, FULL).toString());
+    expect(refTo(NODE_A, '/user/alpha').toString()).toBe(`${NODE_A}${FULL}`);
+  });
+
+  test('a bare and a full ref to the same actor are equal', () => {
+    expect(refTo(NODE_A, '/user/alpha').equals(refTo(NODE_A, FULL))).toBe(true);
+    expect(refTo(NODE_A, FULL).equals(refTo(NODE_A, '/user/alpha'))).toBe(true);
+  });
+
+  test('bare refs to different actors are not, and keep separate map keys', () => {
+    const alpha = refTo(NODE_A, '/user/alpha');
+    const beta = refTo(NODE_A, '/user/beta');
+    expect(alpha.equals(beta)).toBe(false);
+    expect(new Map([alpha, beta].map((ref) => [ref.path.toString(), ref])).size).toBe(2);
+  });
+
+  test('the bare form resolves against the target node’s system name', () => {
+    const elsewhere = new NodeAddress('other-sys', 'host-c', 9003);
+    expect(refTo(elsewhere, '/user/alpha').targetPath).toBe('actor-ts://other-sys/user/alpha');
+    expect(refTo(elsewhere, '/user/alpha').path.toString()).toBe('actor-ts://other-sys/user/alpha');
+  });
+
+  test('the full form is taken as written — the authority is not second-guessed', () => {
+    // `remoteActorPath` has always rendered under the node's system name and
+    // ignored the authority in the string; canonicalising must not start
+    // rewriting what it never checked.
+    const ref = refTo(NODE_A, 'actor-ts://other-sys/user/alpha');
+    expect(ref.targetPath).toBe('actor-ts://other-sys/user/alpha');
+    expect(ref.path.toString()).toBe(FULL);
+  });
+
+  test('a string that is neither form is an honest path below the root, never a throw', () => {
+    // Decision A1: the same constructor rebuilds a peer's `from` claim and a
+    // `WireActorRef.path` on arrival, where a throw drops the connection.
+    expect(refTo(NODE_A, 'garbage').path.toString()).toBe('actor-ts://remote-path-sys/garbage');
+    expect(refTo(NODE_A, 'garbage').targetPath).toBe('actor-ts://remote-path-sys/garbage');
+    expect(refTo(NODE_A, '').path.toString()).toBe('actor-ts://remote-path-sys/');
+    expect(refTo(NODE_A, '').targetPath).toBe('actor-ts://remote-path-sys/');
+  });
+
+  test('remoteActorPath itself takes the bare form — its other callers share the constructor’s semantics', () => {
+    // `RemoteShardRef`, `RemoteWatcherRef` and `ParallelismExtension._place`
+    // call this directly with full URIs today; the bare form used to yield the
+    // root here exactly as it did in the constructor.
+    expect(remoteActorPath('/user/alpha', 'remote-path-sys').toString()).toBe(FULL);
+    expect(remoteActorPath(FULL, 'remote-path-sys').toString()).toBe(FULL);
   });
 });
