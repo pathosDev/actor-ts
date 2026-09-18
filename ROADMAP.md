@@ -369,7 +369,7 @@ This document tracks the planned direction.  Nothing here is committed work — 
 - Direct worker-to-worker `MessagePort`s — the mesh is a star through the
   main-thread broker by choice (#1191); pending the relay's measured share of
   the hop (a `direct` tier in `benchmarks/worker/mesh-message-cost.ts`,
-  tracked in a follow-up issue)
+  #1576)
 
 ## Documentation
 
