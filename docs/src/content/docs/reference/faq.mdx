@@ -130,7 +130,8 @@ bookkeeping.
 ### What's the per-message overhead?
 
 Measured on Bun 1.3.14, 10 cores of an Intel i9-12900K under Linux, mean of
-a hundred rounds — see
+a hundred rounds, except where a bullet names its own machine — then that
+is the environment its figures come from.  See
 [Benchmarks](/reference/benchmarks/) for the methodology and the
 comparison against other frameworks:
 
@@ -142,10 +143,11 @@ comparison against other frameworks:
   different questions with answers an order of magnitude apart.
 - **`ask` round trip** — **0.9 µs** at p50, depth 1.
 - **Cross-cluster `tell`** — about **22 µs** per message, and about
-  **245 µs** per `ask` round trip, over a real `TcpTransport` on loopback
-  with the far node on a worker thread (Bun 1.4.2, Windows 11, 32 hardware
-  threads, 2026-09-18; `benchmarks/cluster/tcp-message-cost.ts`, every
-  batch completion-verified).  That is the same per-message cost as the
+  **245 µs** per `ask` round trip, both harness means rather than p50s,
+  over a real `TcpTransport` on loopback with the far node on a worker
+  thread (Bun 1.4.2, Windows 11, 32 hardware threads, 2026-09-18;
+  `benchmarks/cluster/tcp-message-cost.ts`, every batch
+  completion-verified).  That is the same per-message cost as the
   thread hop measured on the [worker mesh](/cluster/worker-mesh/) page, so
   the socket is not where a cross-node message pays — the protocol is.
   Over a LAN the round trip is the network's: ms-range.
