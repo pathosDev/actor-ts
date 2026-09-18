@@ -136,7 +136,7 @@ in die dein System ohnehin loggt.
 | `withReadyTimeoutMs(ms)` | Handshake-Frist pro Worker und Membership-Frist für das ganze Mesh.  Default `10000`. |
 | `withRestartPolicy(p)` und die `withRestart…`- / `withMaxRestarts`-Knöpfe | Werden an den Worker-Cluster darunter durchgereicht — siehe dessen Tabelle unten. |
 | `withBootstrap(url)` | Notausgang für einen Bundler, der das mitgelieferte Bootstrap aus `dist/worker/` verschoben hat.  Default: das mitgelieferte. |
-| `withBackend(backend)` | Über dieses `WorkerBackend` spawnen — ein In-Memory-Fake im Test.  Default: erkannt. |
+| `withBackend(backend)` | Über dieses `WorkerBackend` spawnen — ein In-Memory-Fake im Test oder ein eigener Adapter für eine Runtime, die die Erkennung nicht kennt.  Ein eigenes implementiert `WorkerBackend`, liefert ein `WorkerLike` (beide aus `actor-ts/worker` exportiert) und deklariert `containsWorkerErrors`; siehe [Eigene Backends](#eigene-backends).  Default: erkannt. |
 
 `refFor(address, path)` liefert eine gewöhnliche `ActorRef`: `tell`,
 `ask`, `watch` funktionieren darüber, und der Pfad darf die nackte
@@ -247,7 +247,7 @@ void main();
 | `withMaxRestarts(n)` | Restarts pro Slot innerhalb des Fensters, bevor er stillgelegt wird; `-1` für unbegrenzt.  Default `10`. |
 | `withRestartWindowMs(ms)` | Gleitendes Fenster, über das das Restart-Budget zählt; `0` setzt es nie zurück.  Default `60000`. |
 | `withOnWorkerPermanentlyDown(fn)` | Wird einmal pro Slot aufgerufen, dessen Restart-Budget erschöpft ist.  Default: eine `ERROR`-Zeile über den Logger des Pools. |
-| `withBackend(backend)` | Startet über dieses `WorkerBackend` statt über das erkannte — für eine Runtime, die die Erkennung nicht kennt, oder ein In-Memory-Fake im Test.  Default: erkannt. |
+| `withBackend(backend)` | Startet über dieses `WorkerBackend` statt über das erkannte — für eine Runtime, die die Erkennung nicht kennt, oder ein In-Memory-Fake im Test.  Ein eigenes implementiert `WorkerBackend`, liefert ein `WorkerLike` (beide aus `actor-ts/worker` exportiert) und deklariert `containsWorkerErrors`; siehe [Eigene Backends](#eigene-backends).  Default: erkannt. |
 | `withLogger(logger)` | Wohin der Pool Worker-Exits, Respawns, stillgelegte Slots und — wenn er seinen Broker selbst baut — Broker-Drops meldet; siehe [Was das Mesh meldet](#was-das-mesh-meldet).  Default: ein `ConsoleLogger` auf `Info`. |
 | `withBroker(broker)` | Über einen Broker routen, den der Aufrufer besitzt — so, wie `WorkerMesh` zuerst den eigenen Port des Main-Threads darauf legt.  Ein übergebener Broker behält den Logger, mit dem er gebaut wurde.  Default: ein frischer Broker, der über den Logger des Pools meldet. |
 
@@ -419,6 +419,13 @@ binomial(N,2). Der Broker leitet jeden Hop weiter, was die
 Verdrahtung linear hält, aber den Hauptthread zum Relay für den
 gesamten Node-übergreifenden Verkehr macht.
 
+Der Stern ist die gewählte Form, kein erster Entwurf: Direkte
+`MessagePort`s von Worker zu Worker stehen auf der Roadmap, abhängig
+von einer Messung des eigenen Anteils des Relays am Hop (in einem
+Folge-Issue verfolgt), und bis diese Zahl existiert, ist die
+Gegenmaßnahme das Dimensionieren — gib `workers` den Actors, die
+rechnen, nicht denen, die plaudern.
+
 Ein mit `new WorkerBroker()` gebauter Broker meldet die Frames, die er
 verwirft, über einen `ConsoleLogger` auf `Info`;
 `new WorkerBroker(system.log)` leitet sie stattdessen durch die Sinks
@@ -443,6 +450,12 @@ gemessen auf dem Actor-Pfad (`benchmarks/worker/mesh-message-cost.ts`,
 Bun 1.4, 32 Threads) kostet ein Cross-Thread-`tell` etwa **20 µs**
 gegen ~300 ns lokal, ein Cross-Thread-`ask` etwa **180 µs** gegen
 ~6 µs — Envelope, Ref-Codec, der Relay-Hop des Brokers und zwei Klone.
+Dieselben zwei Nodes auf einem Thread zahlen etwa **25 µs** pro `tell`
+und **80 µs** pro `ask` — die In-Process-Stufe desselben Benchmarks —,
+die Rechnung ist also das Protokoll, nicht der Thread.  Eine
+Actor-Nachricht trägt auch keine Transferliste: Ein großer Buffer wird
+bei jedem Hop geklont (durch den Stern wäre ein Verschieben bestenfalls
+zwei Verschiebungen), verschiebe ihn also einmal über `context.offload`.
 Ein Actor, der viele kleine Nachrichten austauscht, zahlt das bei jeder
 einzelnen und gewinnt durch den Thread nichts; ein Actor, der pro
 Nachricht echte CPU-Arbeit leistet, gewinnt den Kern.  Platziere
@@ -494,7 +507,15 @@ tatsächlich abdeckt — und was es kostet:
   Framework abonniert das `error`-Event des Workers auf jeder Runtime;
   ohne dieses Abonnement wirft Node den Worker-Fehler erneut im Host
   und Deno rejected eine interne Promise — beide beenden sich mit `1`,
-  bevor `restartPolicy` überhaupt gefragt wird.
+  bevor `restartPolicy` überhaupt gefragt wird.  Das Abonnement ist die
+  Hälfte des Frameworks; die andere Hälfte ist der *Adapter*, der es
+  einlöst, und das entscheidet sich im Backend, das den Worker gestartet
+  hat.  Die beiden mitgelieferten Backends tun es: Der Node-Adapter
+  reicht das Abonnement an `worker.on('error')` weiter, und der
+  Web-Adapter bricht das native `ErrorEvent` aus dem Listener heraus ab,
+  den er installiert — auf Deno hindert ein nackter Listener die Runtime
+  nicht am erneuten Werfen.  Ein eigenes Backend muss dasselbe tun und
+  sagt, ob es das tut; siehe [Eigene Backends](#eigene-backends).
 - **Ein Fehler erzeugt genau einen Respawn.** Node und Bun senden für
   einen einzigen Throw `error` *und danach* das Exit-Event, Deno nur
   `error` — was zuerst eintrifft, treibt den Restart, das andere wird
@@ -524,6 +545,71 @@ Zwei Runtime-Asymmetrien sind erwähnenswert:
   beobachten.
 </Aside>
 
+### Eigene Backends
+
+`withBackend` nimmt alles, was `WorkerBackend` implementiert — ein
+In-Memory-Fake für einen Test oder einen Adapter für eine Runtime, die
+die Erkennung nicht kennt.  `spawn(url, options)` liefert ein
+`WorkerLike`: die Teilmenge der Web-Worker-Oberfläche, die das Framework
+benutzt (`postMessage`, `addEventListener` / `removeEventListener` für
+`message`, `close` und `error`, und ein `terminate()`, das auflöst,
+sobald der Thread weg ist).  Beide Typen werden aus `actor-ts/worker`
+exportiert.
+
+Das eine, was der Compiler an einem solchen Adapter nicht prüfen kann,
+ist, ob sein `error`-Abonnement den Fehler des Workers **einfängt**.  Ein
+Adapter, der den Handler ablegt und nie verdrahtet, erfüllt den Typ
+genauso gut, und von der Elternseite gibt es keine Sonde, die den
+Unterschied erkennt — also deklariert das Backend es, und die
+Deklaration ist Pflicht:
+
+```ts
+import type { WorkerBackend, WorkerLike, WorkerSpawnOptions } from 'actor-ts/worker';
+
+class InMemoryBackend implements WorkerBackend {
+  // `true` promises that an `error` listener on the returned worker stops
+  // the failure from reaching the host — the per-runtime contract is below.
+  readonly containsWorkerErrors = true;
+
+  spawn(url: URL, options?: WorkerSpawnOptions): WorkerLike {
+    // Your adapter: the object whose `error` wiring the declaration is about.
+    return new InMemoryWorker(url, options?.name);
+  }
+}
+```
+
+Was `true` verspricht, pro Runtime: Auf **Node** wird das Abonnement an
+`worker.on('error')` weitergereicht — ein Emitter ohne `error`-Listener
+wirft im Host erneut, Exit `1`, und `exit` feuert nie; auf **Deno** ruft
+der Listener, den der Adapter installiert, `preventDefault()` auf dem
+nativen `ErrorEvent` auf — ein nackter Listener hindert die Runtime
+nicht daran, den Fehler als unbehandelte Rejection erneut zu werfen; auf
+**Bun** genügt ein weitergereichter Listener.  Ein In-Process-Fake,
+dessen `error`-Listener das Einzige sind, was ein simulierter Fehler je
+erreicht, ist trivial `true`.  Der Umfang ist das `error`-Event: ein
+nicht gefangener Throw, eine unbehandelte Rejection, ein Bootstrap, das
+sich nicht laden lässt — nicht `messageerror`.
+
+Deklariere `false`, und das Framework meldet es **einmal pro
+Backend-Instanz, vor dem ersten Spawn**, über den Logger des Konsumenten
+— `[worker]` für ein Mesh oder einen nackten `WorkerCluster`,
+`[offload]` für einen `OffloadPool`, die Konsole für
+`ParallelMultiNodeSpec` — und macht weiter: Der Spawn wird nie
+verweigert, denn die Deklaration ändert nichts daran, was das Framework
+anders tun könnte.  Die Zeile nennt die Backend-Klasse und sagt, was
+passieren wird — ein nicht gefangener Throw in einem Worker beendet den
+Prozess, statt den Fehler-Handler des Frameworks zu erreichen, und
+erreicht damit auch die Restart-Policy nie —, sodass ein Host, der später
+so stirbt, eine Zeile hat, die erklärt, warum.
+
+Um ein `true` zu *beweisen*, lass einen Worker abstürzen und überlebe:
+Starte über dein Backend ein Bootstrap, das beim Laden wirft, auf Node
+und auf Deno, abonniere `error`, und lass das Überleben des Prozesses
+selbst die Assertion sein — die Form des mitgelieferten Smoke-Falls
+`29-worker-crash-containment`, der dasselbe über sich selbst sagt.
+Weniger als das beweist es nicht; die Deklaration ist das, worauf das
+Framework reagieren kann.
+
 ### Was das Mesh meldet
 
 Jedes der Ereignisse oben erzeugt eine Zeile über den Logger des Pools
@@ -543,6 +629,7 @@ Argument, sodass ein Console-Sink und ein Log-Shipper dasselbe sehen:
 | Ein Ersatz wurde nie ready | `ERROR` | `[worker] respawning worker N (addr) failed: <message>` |
 | Das Budget ist erschöpft und kein `onWorkerPermanentlyDown` gesetzt | `ERROR` | `[worker] worker N (addr) is permanently down — K restarts inside W ms exhausted its budget` |
 | Der Broker weist einen Frame ab | `WARN`; `DEBUG` für ein unbekanntes Ziel | `[worker] broker dropped K frame(s) from <source> — <reason>` |
+| Das Backend deklariert `containsWorkerErrors: false` — einmal pro Backend, vor dem ersten Spawn | `ERROR` | `[worker] worker backend <Class> declares containsWorkerErrors=false — an uncaught throw inside a worker will terminate this process instead of reaching the framework's error handler; …` |
 
 Vier Dinge an diesen Zeilen sind wissenswert:
 

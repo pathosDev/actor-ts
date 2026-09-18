@@ -15,7 +15,7 @@ import {
 describe('WorkerMeshOptionsBuilder', () => {
   test('every withX lands in field x', () => {
     const onDown = (): void => {};
-    const backend = { spawn: () => { throw new Error('unused'); } };
+    const backend = { containsWorkerErrors: true, spawn: () => { throw new Error('unused'); } };
     const options = WorkerMeshOptions.create()
       .withModule(['file:///a.js', new URL('file:///b.js')])
       .withBootstrap('file:///boot.js')

@@ -1032,6 +1032,100 @@ describe('WorkerCluster — what the pool reports (#1276)', () => {
   });
 });
 
+/* ------------------------------------------------------------------------ */
+/* #1288 — a backend that declares it does not contain worker errors        */
+/* ------------------------------------------------------------------------ */
+
+describe('WorkerCluster — backend containment declaration (#1288)', () => {
+  const uncontainedLine = (logger: RecordingLogger): string[] =>
+    logger.records.filter((record) => /containsWorkerErrors=false/.test(record.message)).map((record) => record.message);
+
+  test('a backend declaring false is reported exactly once for the whole pool, before its workers exist', async () => {
+    const logger = new RecordingLogger();
+    // How many lines the log held when the first worker was spawned: the
+    // report has to precede that worker, because it is the one that can kill
+    // the host before anything else says why.
+    let linesAtFirstSpawn = -1;
+    const backend = new FakeWorkerBackend({
+      containsWorkerErrors: false,
+      onSpawn: (spawned) => {
+        if (linesAtFirstSpawn < 0) linesAtFirstSpawn = uncontainedLine(logger).length;
+        autoHandshake(spawned);
+      },
+    });
+
+    const workerOptions = WorkerClusterOptions.create()
+      .withBootstrap(new URL('file:///fake.js'))
+      .withWorkers(2)
+      .withLogger(logger)
+      .withBackend(backend);
+    const cluster = await WorkerCluster.spawn(workerOptions);
+    try {
+      expect(backend.spawned).toHaveLength(2);
+      // One line for two workers — the declaration is a fact about the
+      // backend, not about a spawn.
+      const lines = uncontainedLine(logger);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toBe(
+        '[worker] worker backend FakeWorkerBackend declares containsWorkerErrors=false — an uncaught throw inside '
+        + "a worker will terminate this process instead of reaching the framework's error handler; wire error "
+        + 'containment into its WorkerLike adapter (see cluster/worker-mesh, Failure containment)',
+      );
+      expect(logger.records.filter((record) => /containsWorkerErrors/.test(record.message)).every((record) => record.level === 'error')).toBe(true);
+      expect(linesAtFirstSpawn).toBe(1);
+    } finally {
+      await cluster.terminate();
+    }
+  });
+
+  test('a respawn through the same backend adds no second line — the latch is per backend instance', async () => {
+    const logger = new RecordingLogger();
+    const backend = new FakeWorkerBackend({
+      containsWorkerErrors: false,
+      onSpawn: (spawned) => autoHandshake(spawned),
+    });
+    const workerOptions = WorkerClusterOptions.create()
+      .withBootstrap(new URL('file:///fake.js'))
+      .withWorkers(1)
+      .withRestartPolicy('on-failure')
+      .withRestartMinBackoffMs(FAST_RESTART_BACKOFF_MS)
+      .withRestartRandomFactor(0)
+      .withLogger(logger)
+      .withBackend(backend);
+    const cluster = await WorkerCluster.spawn(workerOptions);
+    try {
+      expect(uncontainedLine(logger)).toHaveLength(1);
+      // The fake still delivers the simulated throw to the `error` listeners
+      // — it declared `false` about a real runtime's behaviour, not about
+      // itself — so the respawn path runs and goes through the resolver again.
+      backend.spawned[0]!.simulateUncaughtThrow();
+      await awaitCondition(() => backend.spawned.length >= 2, {
+        label: 'the throwing worker was replaced through the same backend',
+      });
+      expect(uncontainedLine(logger)).toHaveLength(1);
+    } finally {
+      await cluster.terminate();
+    }
+  });
+
+  test('the default fake — and so every shipped backend — produces no such line', async () => {
+    const logger = new RecordingLogger();
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
+    expect(backend.containsWorkerErrors).toBe(true);
+    const workerOptions = WorkerClusterOptions.create()
+      .withBootstrap(new URL('file:///fake.js'))
+      .withWorkers(2)
+      .withLogger(logger)
+      .withBackend(backend);
+    const cluster = await WorkerCluster.spawn(workerOptions);
+    try {
+      expect(logger.records).toEqual([]);
+    } finally {
+      await cluster.terminate();
+    }
+  });
+});
+
 /**
  * Drive the hello/init/ready handshake from the worker's side by hand, for the
  * cases that need it to complete at a chosen moment rather than as soon as the

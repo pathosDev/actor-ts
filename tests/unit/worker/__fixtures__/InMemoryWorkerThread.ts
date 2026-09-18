@@ -174,12 +174,22 @@ export class FakeWorker implements WorkerLike {
 export type FakeBackendHooks = {
   /** Optional: called when a worker is spawned, before the handshake. */
   onSpawn?: (worker: FakeWorker, url: URL, options: WorkerSpawnOptions | undefined) => void;
+  /**
+   * What the fake declares about its error containment.  `true` unless a
+   * test says otherwise — a simulated failure here reaches nothing but the
+   * `error` listeners, so the fake contains trivially; `false` builds the
+   * backend the consumers' diagnostic is about (#1288).
+   */
+  containsWorkerErrors?: boolean;
 };
 
 export class FakeWorkerBackend implements WorkerBackend {
   readonly spawned: FakeWorker[] = [];
+  readonly containsWorkerErrors: boolean;
 
-  constructor(private readonly hooks: FakeBackendHooks = {}) {}
+  constructor(private readonly hooks: FakeBackendHooks = {}) {
+    this.containsWorkerErrors = hooks.containsWorkerErrors ?? true;
+  }
 
   spawn(url: URL, options?: WorkerSpawnOptions): WorkerLike {
     const worker = new FakeWorker(options?.name ?? `fake-${this.spawned.length}`);

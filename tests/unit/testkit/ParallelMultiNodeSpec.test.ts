@@ -516,6 +516,76 @@ describe('ParallelMultiNodeSpec — handshake', () => {
   });
 });
 
+/* --------- #1288 — a backend that declares no error containment --------- */
+
+/**
+ * Run `body` with `console.error` captured into `errors` — the destination
+ * `onWorkerError` and the containment diagnostic share, because the harness
+ * owns no `ActorSystem` to log through.  The array is handed to the body
+ * live, so a hook running *during* the body can read what has been written
+ * so far.  Only the first argument is kept: the diagnostic is one string,
+ * and `onWorkerError` is not under test here.
+ */
+async function captureErrorsWhile(body: (errors: ReadonlyArray<string>) => Promise<void>): Promise<ReadonlyArray<string>> {
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]): void => { errors.push(String(args[0])); };
+  try {
+    await body(errors);
+    return errors;
+  } finally {
+    console.error = originalError;
+  }
+}
+
+describe('ParallelMultiNodeSpec — backend containment declaration (#1288)', () => {
+  const uncontainedLines = (lines: ReadonlyArray<string>): string[] =>
+    lines.filter((line) => /containsWorkerErrors=false/.test(line));
+
+  test('a backend declaring false is reported once for all roles, before the first worker exists', async () => {
+    // How many diagnostic lines had been written when the first worker was
+    // spawned: that worker is the one that can take the test process with it,
+    // so the line has to be there before it is.
+    let linesAtFirstSpawn = -1;
+    let written: ReadonlyArray<string> = [];
+    const backend = new FakeWorkerBackend({
+      containsWorkerErrors: false,
+      onSpawn: (worker) => {
+        if (linesAtFirstSpawn < 0) linesAtFirstSpawn = uncontainedLines(written).length;
+        autoHandshake(worker);
+      },
+    });
+    const spec = new ParallelMultiNodeSpec({ roles: ['a', 'b'], backend });
+    const errors = await captureErrorsWhile(async (live) => {
+      written = live;
+      try {
+        await spec.start();
+      } finally {
+        await spec.stop();
+      }
+    });
+    expect(backend.spawned).toHaveLength(2);
+    expect(uncontainedLines(errors)).toEqual([
+      'ParallelMultiNodeSpec: worker backend FakeWorkerBackend declares containsWorkerErrors=false — an uncaught '
+      + "throw inside a worker will terminate this process instead of reaching the framework's error handler; "
+      + 'wire error containment into its WorkerLike adapter (see cluster/worker-mesh, Failure containment)',
+    ]);
+    expect(linesAtFirstSpawn).toBe(1);
+  });
+
+  test('the default fake produces no such line', async () => {
+    const { spec } = specWithFakeWorkers(['a', 'b']);
+    const errors = await captureErrorsWhile(async () => {
+      try {
+        await spec.start();
+      } finally {
+        await spec.stop();
+      }
+    });
+    expect(uncontainedLines(errors)).toEqual([]);
+  });
+});
+
 describe('ParallelMultiNodeSpec — bootstrap', () => {
   test('three roles, all see each other Up via worker-side cluster', async () => {
     const spec = new ParallelMultiNodeSpec({

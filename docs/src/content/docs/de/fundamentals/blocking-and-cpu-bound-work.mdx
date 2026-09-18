@@ -229,6 +229,13 @@ ist danach detached.  Die Transferliste nimmt den `ArrayBuffer`, nie die
 Sicht: Ein Eintrag, der nicht transferierbar ist, oder ein bereits
 verschobener Buffer lässt den Lauf sofort mit `OffloadArgumentsError`
 fehlschlagen — der Worker hat nichts erhalten und bleibt unberührt.
+Das Verschieben gilt **nur für die Argumente** — das Ergebnis kommt per
+Structured Clone zurück, wie groß es auch ist.  Ein `SharedArrayBuffer`
+unter den Argumenten wird weder kopiert noch verschoben, sondern
+**geteilt**: Beide Threads lesen und schreiben denselben Speicher,
+`Atomics` ist das Koordinationsprimitiv, und weder eine Transferliste
+noch das Framework sind daran beteiligt — beobachtet auf Bun 1.4.2 und
+Node 26, auf Deno ungetestet.
 
 Der Pool meldet `offload_tasks_total{task, outcome}`,
 `offload_queue_depth` und `offload_task_seconds{task}`.
