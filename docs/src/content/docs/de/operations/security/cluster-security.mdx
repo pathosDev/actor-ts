@@ -349,7 +349,8 @@ Frames kommen als JSON an und wurden früher auf den
 Protokolltyp *gecastet* statt gegen ihn geprüft — ein Peer
 konnte einem Knoten also einen Wert reichen, den der Code
 anschließend las, als stimmte der Typ. Jeder Frame wird jetzt
-geprüft, bevor ihn irgendein Handler sieht:
+geprüft, bevor ihn irgendein Handler sieht — auf jedem
+Transport, das Worker-Mesh eingeschlossen:
 
 - Der Frame muss ein Objekt mit einem String-`kind` sein.
   `null`, ein nackter String und eine Zahl werden abgewiesen —
@@ -377,6 +378,24 @@ kaputter Frame soll einen gesunden Peer nicht seine Leitung
 kosten. Ein Handler, der *wirft*, kappt die Verbindung: das ist
 der Fall, den niemand versteht, und er darf nicht in den
 Socket-Callback des Runtimes entkommen.
+
+Das Worker-Mesh übernimmt die erste Stufe und keine Hälfte der
+zweiten. `MessageChannelTransport` — der Transport, über den ein
+Worker-Thread und der Main-Thread über einen `MessagePort`
+sprechen — prüft die Form des Umschlags selbst und schickt die
+Nutzlast dann durch dasselbe `validateWireFrame` wie die
+Socket-Transporte, sodass auch ein fehlerhafter Frame von einem
+Worker nie einen Handler erreicht. `WorkerBroker`, der zwischen
+den Threads vermittelt, prüft nur die beiden Adressfelder des
+Umschlags — die Nutzlast ist Sache des Transports — und schreibt
+`from` auf den Port um, auf dem der Frame ankam, sodass ein
+Worker nicht für einen Geschwister-Worker sprechen kann. Was
+dieser Pfad nicht kann, ist davon berichten: Ein dort
+abgewiesener Frame wird **stillschweigend verworfen**, und ein
+Handler, der wirft, kostet den Frame, nicht den Port — weder der
+Transport noch der Broker hat einen Logger, über den er
+berichten könnte. Kein `WARN`, kein Peer-Name, kein beanstandetes
+Feld. Das ist #1276.
 
 Frame-Kinds, die Extensions registrieren (Sharding, PubSub,
 Receptionist, DistributedData, DevTools), passieren diese
@@ -421,10 +440,11 @@ die Menge der Peers, die du auf die Leitung lässt — was das
 mTLS-Setup oben für einen Quota- oder Billing-Counter zur
 Voraussetzung macht statt zur Härtungsmaßnahme.
 
-Jede Abweisung wird auf `WARN` mit Peer und beanstandetem Feld
-geloggt, damit ein verworfener Frame diagnostizierbar bleibt —
-eine Versionsabweichung und ein feindlicher Peer sehen im Log
-unterschiedlich aus.
+Auf den Socket-Transporten wird jede Abweisung auf `WARN` mit
+Peer und beanstandetem Feld geloggt, damit ein verworfener Frame
+diagnostizierbar bleibt — eine Versionsabweichung und ein
+feindlicher Peer sehen im Log unterschiedlich aus. Auf dem
+Worker-Pfad wird nichts geloggt; siehe oben.
 
 ## Was das Decodieren eines Frames kostet
 

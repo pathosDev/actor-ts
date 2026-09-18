@@ -332,7 +332,8 @@ one-node cluster.
 Frames arrive as JSON and used to be *cast* to the protocol
 type rather than checked against it, so a peer could hand a
 node a value the code then read as if the type were true.
-Every frame is now validated before any handler sees it:
+Every frame is now validated before any handler sees it, on
+every transport, the worker mesh included:
 
 - The frame must be an object carrying a string `kind`.
   `null`, a bare string and a number are refused — previously
@@ -358,6 +359,22 @@ should not cost a healthy peer its link. A handler that
 *throws* drops the connection — that is the case nobody
 understands, and it must not escape into the runtime's socket
 callback.
+
+The worker mesh takes the first tier and neither half of the
+second. `MessageChannelTransport` — the transport a worker
+thread and the main thread speak over a `MessagePort` — checks
+the envelope's own shape and then runs the payload through the
+same `validateWireFrame` the socket transports use, so a
+malformed frame from a worker never reaches a handler either.
+`WorkerBroker`, which relays between threads, checks only the
+envelope's two address fields — the payload is the transport's
+job — and rewrites `from` to the port the frame arrived on, so
+a worker cannot speak for a sibling. What that path cannot do
+is tell you about it: a frame refused there is **dropped in
+silence**, and a handler that throws costs the frame, not the
+port — neither the transport nor the broker has a logger to
+report through. No `WARN`, no peer name, no offending field.
+That is #1276.
 
 Frame kinds registered by extensions (sharding, pub-sub, the
 receptionist, DistributedData, DevTools) pass this layer and
@@ -397,9 +414,11 @@ therefore trustworthy exactly as far as the set of peers you let
 onto the wire, which makes the mTLS setup above a prerequisite
 for a quota or billing counter rather than a hardening step.
 
-Every rejection is logged at `WARN` naming the peer and the
-offending field, so a dropped frame is diagnosable — a
-version mismatch and a hostile peer look different in the log.
+On the socket transports every rejection is logged at `WARN`
+naming the peer and the offending field, so a dropped frame is
+diagnosable — a version mismatch and a hostile peer look
+different in the log. On the worker path nothing is logged;
+see above.
 
 ## What decoding a frame costs
 
