@@ -296,6 +296,9 @@ describe('the main side of the metrics relay — asking', () => {
   test('stop() cancels the tick, unhooks the wire handler and leaves collectAll() equal to collect()', async () => {
     const r = rig();
     r.relay.start();
+    // A main-thread series of its own, so the equality below is not over two
+    // empty lists — a stamp left behind after stop() has something to land on.
+    r.system.extension(MetricsExtensionId).get().counter('main_total').inc();
     r.snapshot(snapshotOf({ value: 7 }), WORKER_0);
     expect(r.relay.samples()).toHaveLength(1);
     r.relay.stop();
@@ -307,6 +310,7 @@ describe('the main side of the metrics relay — asking', () => {
     expect(r.relay.samples()).toEqual([]);
     const metrics = r.system.extension(MetricsExtensionId);
     expect(metrics.collectAll()).toEqual(metrics.get().collect());
+    expect(metrics.collectAll().map((s) => s.name)).toEqual(['main_total']);
     expect(threadsIn(metrics.collectAll())).not.toContain('main');
     await r.system.terminate();
   });
@@ -414,6 +418,10 @@ describe('the main side of the metrics relay — refusing', () => {
     ['a forged metric name', snapshotOf({ name: 'evil{x="1"} 1\nforged_total' }), 'metric-name grammar'],
     ['a metric name with a space', snapshotOf({ name: 'not valid' }), 'metric-name grammar'],
     ['a forged label key', snapshotOf({ labels: { 'k"} 1\nforged': 'v' } }), 'label-name grammar'],
+    ['a label key outside ASCII', snapshotOf({ labels: { 'schlüssel': 'v' } }), 'label-name grammar'],
+    ['a label key with a leading digit', snapshotOf({ labels: { '1st': 'v' } }), 'label-name grammar'],
+    ['a numeric metric name', snapshotOf({ name: 42 as never }), 'metric-name grammar'],
+    ['a metric name with a trailing newline', snapshotOf({ name: 'ok_total\n' }), 'metric-name grammar'],
     ['the reserved thread label', snapshotOf({ labels: { thread: 'worker-7' } }), 'reserved label "thread"'],
     ['a label value that is an object', snapshotOf({ labels: { class: { nested: true } as never } }), 'not a string, number or boolean'],
     ['a missing help string', snapshotOf({ help: undefined as never }), 'no help string'],
@@ -465,6 +473,37 @@ describe('the main side of the metrics relay — refusing', () => {
       expect(r.relay.samples()).toHaveLength(MAX_RELAYED_SAMPLES_PER_SNAPSHOT);
       expect(r.warnings()).toHaveLength(1);
       expect(r.warnings()[0]).toContain(`more than the ${MAX_RELAYED_SAMPLES_PER_SNAPSHOT} allowed`);
+    } finally {
+      r.relay.stop();
+      await r.system.terminate();
+    }
+  });
+
+  test('a __proto__ label key is inside the grammar and pollutes nothing when stamped', async () => {
+    // Prometheus strips `__`-prefixed label names at ingestion, so the key is
+    // harmless downstream; what matters here is that copying a label object
+    // carrying it as an *own* property (which is what structured clone
+    // delivers) defines a property named `__proto__` rather than setting the
+    // prototype of the stamped copy or of anything else.
+    const r = rig();
+    try {
+      r.relay.start();
+      // An object under `__proto__` is refused on the value rule before any copy is made.
+      const objectValued = JSON.parse('{"__proto__": {"polluted": true}, "class": "A"}') as Record<string, unknown>;
+      r.snapshot(snapshotOf({ labels: objectValued as never }), WORKER_0);
+      expect(r.relay.samples()).toEqual([]);
+      expect(r.warnings()).toHaveLength(1);
+      expect(r.warnings()[0]).toContain('"__proto__"');
+      // A string under it is inside the grammar; the stamped copy carries it as
+      // an own property and its prototype is untouched.
+      const stringValued = JSON.parse('{"__proto__": "x", "class": "A"}') as Record<string, unknown>;
+      r.snapshot(snapshotOf({ labels: stringValued as never }), WORKER_0);
+      const [stamped] = r.relay.samples();
+      expect(stamped).toBeDefined();
+      expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
+      expect(Object.getPrototypeOf(stamped!.labels)).toBe(Object.prototype);
+      expect(Object.keys(stamped!.labels).sort()).toEqual(['__proto__', 'class', 'thread']);
+      expect(Object.getOwnPropertyDescriptor(stamped!.labels, '__proto__')?.value).toBe('x');
     } finally {
       r.relay.stop();
       await r.system.terminate();
