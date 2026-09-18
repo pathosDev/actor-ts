@@ -450,7 +450,7 @@ const PER_INSTANCE_LABELS: Readonly<Record<string, string>> = {
     + 'bounded by the tasks the application defines with defineOffloadTask, never off the '
     + 'wire, and the label the metric exists to carry: which task is timing out or throwing '
     + 'is the whole of the alert (#1558)',
-  'offload_tasks_total.outcome': 'a closed set — ok, threw, timeout, aborted, lost, unavailable',
+  'offload_tasks_total.outcome': 'a closed set — ok, threw, timeout, aborted, lost, invalid-arguments, unavailable',
   'offload_task_seconds.task': 'as offload_tasks_total.task',
   'cluster_sharding_registrations_refused_total.type': 'the sharded type name, taken '
     + 'from this node’s own StartShardingOptions and never off the wire, so it is '

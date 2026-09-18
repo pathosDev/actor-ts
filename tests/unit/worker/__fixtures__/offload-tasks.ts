@@ -28,6 +28,13 @@ export function sumBytes(bytes: Uint8Array): number {
   return total;
 }
 
+/** Takes the buffer itself — the shape a transfer list moves (#1191). */
+export function sumBuffer(buffer: ArrayBuffer): number {
+  let total = 0;
+  for (const byte of new Uint8Array(buffer)) total += byte;
+  return total;
+}
+
 export const NOT_A_FUNCTION = 42;
 
 /** Throws a value that is not an Error — what the worker's error frame has to say about it. */

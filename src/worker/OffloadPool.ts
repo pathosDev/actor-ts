@@ -25,6 +25,7 @@ import {
 } from './OffloadPoolOptions.js';
 import {
   OffloadAbortedError,
+  OffloadArgumentsError,
   OffloadPoolUnavailableError,
   OffloadQueueFullError,
   OffloadTaskError,
@@ -156,8 +157,10 @@ export class OffloadPool {
    * Rejects with `OffloadTaskError` when the task threw, `OffloadTimeoutError`
    * past the deadline, `OffloadAbortedError` on the signal,
    * `OffloadQueueFullError` when the queue is full and `overflow` is
-   * `reject`, `OffloadWorkerLostError` when the worker died under it, and
-   * `OffloadPoolUnavailableError` once the pool is closed or out of budget.
+   * `reject`, `OffloadArgumentsError` when the arguments or the transfer list
+   * cannot cross to the worker, `OffloadWorkerLostError` when the worker died
+   * under it, and `OffloadPoolUnavailableError` once the pool is closed or
+   * out of budget.
    */
   async run<TArgs extends readonly unknown[], TResult>(
     task: OffloadTask<TArgs, TResult>,
@@ -282,7 +285,31 @@ export class OffloadPool {
       exportName: pending.task.exportName,
       args: pending.args,
     };
-    slot.worker.postMessage(frame, pending.transfer === undefined ? undefined : [...pending.transfer]);
+    // Guarded because `postMessage` throws synchronously — a `DataCloneError`
+    // for a transfer entry that is not transferable or an argument that will
+    // not clone — and a throw here has two exits, both wrong (#1571): out of
+    // `run()`'s executor it rejected the caller with the raw error and left
+    // the slot marked busy until the deadline terminated a worker that had
+    // received nothing; out of `onWorkerMessage` it was an uncaught exception
+    // on the main thread.
+    try {
+      slot.worker.postMessage(frame, pending.transfer === undefined ? undefined : [...pending.transfer]);
+    } catch (error) {
+      this.onDispatchRefused(slot, pending, error);
+    }
+  }
+
+  /**
+   * Nothing left this thread, so the worker is as idle as it was: undo the
+   * dispatch — `settle` cancels the deadline and drops the abort listener —
+   * and fail the run with the caller's mistake.  Not a fault of the worker,
+   * so it is neither replaced nor charged to the budget, and the slot takes
+   * the next queued run in the same `pump` pass.
+   */
+  private onDispatchRefused(slot: Slot, pending: PendingRun, cause: unknown): void {
+    slot.running = null;
+    this.settle(pending, null, new OffloadArgumentsError(describeTask(pending.task), cause));
+    this.armIdle(slot);
   }
 
   private settle(pending: PendingRun, result: unknown, error: Error | null): void {
@@ -479,6 +506,7 @@ function outcomeOf(error: Error): string {
   if (error instanceof OffloadTimeoutError) return 'timeout';
   if (error instanceof OffloadAbortedError) return 'aborted';
   if (error instanceof OffloadWorkerLostError) return 'lost';
+  if (error instanceof OffloadArgumentsError) return 'invalid-arguments';
   return 'unavailable';
 }
 

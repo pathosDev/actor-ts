@@ -283,6 +283,7 @@ export {
   defineOffloadTask,
   OffloadExtensionId,
   OffloadTaskError,
+  OffloadArgumentsError,
   OffloadQueueFullError,
   OffloadTimeoutError,
   OffloadAbortedError,
