@@ -81,6 +81,29 @@ Prometheus als gesundes Target ohne Serien akzeptieren würde.
 Scrape in diesem Setup die eigene `/metrics`-Route von prom-client
 und lass `enableMetricsEndpoint` aus.
 
+## Geltungsbereich: pro Prozess, pro Thread
+
+Jedes `ActorSystem` besitzt seine eigene Registry, und `GET /metrics`
+exportiert genau die des Systems, das die Route gebunden hat.  Nichts
+aggregiert über Systeme hinweg, und daraus folgen zwei Deployment-Formen:
+
+- **Cluster-Knoten.**  Jeder Knoten exportiert sich selbst.  Das ist das
+  Prometheus-Modell — jede Instanz scrapen, in der TSDB aggregieren — und
+  das Gegenteil dessen, was [DevTools](/de/observability/devtools/overview/)
+  tut, das für seine eigenen Ansichten Werte über Knoten hinweg
+  föderiert.  Eine Zahl, die in DevTools über Knoten hinweg übereinstimmt,
+  unterscheidet sich unter `/metrics` erwartungsgemäß pro Target.
+- **Worker-Threads.**  Jeder Worker eines [Worker-Mesh](/de/cluster/worker-mesh/)
+  — auch die, die `actor-ts.parallelism.workers` für dich startet
+  ([Parallelität](/de/fundamentals/parallelism/)) — bootet sein eigenes
+  `ActorSystem` mit eigener Registry, und in einem Worker läuft kein
+  Management-Endpunkt.  Ein Scrape des Main-Thread-Endpunkts meldet nur
+  den Main-Thread: **Ein auf einem Worker platzierter Actor ist für
+  Prometheus heute unsichtbar.**  Nichts reicht die Registry eines Workers
+  zurück; #1570 ist das Relay.  Bis es landet, bleibt ein Actor, dessen
+  Metriken du brauchst, auf dem Main-Thread — nimm ihn aus `offload`
+  heraus oder bleib bei `workers = 0`.
+
 ## Manuelles Verdrahten
 
 Wenn du die Management-Routen nicht nutzt, route `GET /metrics`

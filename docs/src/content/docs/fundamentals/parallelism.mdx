@@ -205,9 +205,10 @@ nothing to move.
 
 An offloaded actor is absent from the main thread's cell tree: not in
 `ActorSelection`, not in the DevTools tree of the main thread, not in its
-metrics.  Each worker has its own registry, so **metrics are per process
-and per thread** — scrape every worker.  With `workers = 0` none of this
-applies.
+metrics.  Each worker has its own registry and no management endpoint of
+its own, so **an offloaded actor is invisible to `/metrics` today** — see
+the [scope of a scrape](/observability/metrics/prometheus-exporter/#scope-per-process-per-thread);
+#1570 is the relay.  With `workers = 0` none of this applies.
 
 ## The measured table
 

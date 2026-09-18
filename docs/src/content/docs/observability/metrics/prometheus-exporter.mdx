@@ -80,6 +80,28 @@ as a healthy target with no series. Scrape prom-client's own
 `/metrics` route in that setup and leave `enableMetricsEndpoint`
 off.
 
+## Scope: per process, per thread
+
+Every `ActorSystem` owns its own registry, and `GET /metrics` exports
+exactly the one belonging to the system that bound the route.  Nothing
+aggregates across systems, and two deployment shapes follow from that:
+
+- **Cluster nodes.**  Each node exports itself.  That is the Prometheus
+  model — scrape every instance, aggregate in the TSDB — and it is the
+  opposite of what [DevTools](/observability/devtools/overview/) does,
+  which federates figures across nodes for its own views.  A number that
+  agrees across nodes in DevTools is expected to differ per target under
+  `/metrics`.
+- **Worker threads.**  Each worker of a [worker mesh](/cluster/worker-mesh/)
+  — including the ones `actor-ts.parallelism.workers` starts for you
+  ([parallelism](/fundamentals/parallelism/)) — boots its own
+  `ActorSystem` with its own registry, and no management endpoint runs
+  inside a worker.  A scrape of the main thread's endpoint reports the
+  main thread only: **an actor placed on a worker is invisible to
+  Prometheus today.**  Nothing relays a worker's registry back; #1570 is
+  the relay.  Until it lands, an actor whose metrics you need stays on
+  the main thread — leave it out of `offload`, or keep `workers = 0`.
+
 ## Manual wiring
 
 If you're not using the management routes, route a `GET /metrics`
