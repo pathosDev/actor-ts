@@ -16,9 +16,11 @@ import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import type { MetricSample } from '../../src/metrics/Metrics.js';
 import { MetricsExtensionId } from '../../src/metrics/MetricsExtension.js';
 import { renderPrometheusSamples } from '../../src/metrics/PrometheusExporter.js';
+import { ParallelismOptions } from '../../src/parallelism/ParallelismOptions.js';
 import { WorkerMesh } from '../../src/worker/WorkerMesh.js';
 import { WorkerMeshOptions } from '../../src/worker/WorkerMeshOptions.js';
 import { awaitCondition } from '../util/AwaitCondition.js';
+import { Where } from './internal/ParallelismActors.js';
 import type { WhereCommand } from './internal/WorkerMeshActors.js';
 
 const ASKS_PER_WORKER = 5;
@@ -88,6 +90,59 @@ describe('WorkerMesh metrics relay on real worker threads', () => {
       expect(after.some((s) => 'thread' in s.labels)).toBe(false);
       expect(after.some((s) => s.name === 'worker_mesh_snapshot_age_seconds')).toBe(false);
       await system.terminate();
+    }
+  }, 40_000);
+
+  test('the mesh the parallelism extension starts relays too — the same key, through the effective config', async () => {
+    // The extension builds its mesh options without the relay interval, so
+    // what reaches `WorkerMesh.start` is the HOCON leaf alone; this is the
+    // deployment shape the issue was filed about, end to end.
+    const parallelism = ParallelismOptions.create()
+      .withWorkers(2)
+      .withModule(new URL('./internal/ParallelismActors.ts', import.meta.url));
+    const systemOptions = ActorSystemOptions.create()
+      .withLogger(new NoopLogger())
+      .withLogLevel(LogLevel.Off)
+      .withConfig({
+        'actor-ts': {
+          cluster: {
+            'gossip-interval': '40ms',
+            'failure-detector': { 'heartbeat-interval': '100ms', 'unreachable-after': '2s', 'down-after': '4s' },
+          },
+          'worker-cluster': { 'ready-timeout': '20s' },
+          'worker-mesh': { 'metrics-relay-interval': '200ms' },
+        },
+      })
+      .withParallelism(parallelism);
+    const system = ActorSystem.create('real-para-metrics', systemOptions);
+    const metrics = system.extension(MetricsExtensionId);
+    metrics.enable();
+    try {
+      // Two names that hash to two workers under consistent-hash placement is
+      // not guaranteed, so place enough that both slots get one — every
+      // spawn is a pending ref that buffers until the threads are up.
+      const refs = Array.from({ length: 8 }, (_, i) => system.spawn(Where, `where-${i}`));
+      const homes = await Promise.all(refs.map((ref) => ref.ask<string>({ kind: 'where' }, 20_000)));
+      expect(new Set(homes)).toEqual(new Set(['real-para-metrics@worker:2', 'real-para-metrics@worker:3']));
+
+      await awaitCondition(
+        () => (delivered(metrics.collectAll(), 'worker-0') ?? 0) >= 1
+          && (delivered(metrics.collectAll(), 'worker-1') ?? 0) >= 1,
+        { timeoutMs: 15_000, label: 'both offloaded workers were relayed into the main thread' },
+      );
+      const merged = metrics.collectAll();
+      const perThread = new Map<string, number>();
+      for (const s of merged.filter((sample) => sample.name === 'actor_messages_delivered_total')) {
+        perThread.set(String(s.labels.thread), s.value);
+      }
+      // Eight asks, one delivery each, split across the two workers.
+      expect((perThread.get('worker-0') ?? 0) + (perThread.get('worker-1') ?? 0)).toBe(homes.length);
+      expect(merged.every((s) => typeof s.labels.thread === 'string')).toBe(true);
+    } finally {
+      // `terminate()` is the only call the application makes; it takes the
+      // mesh, and with it the relay, down.
+      await system.terminate();
+      expect(metrics.collectAll().some((s) => 'thread' in s.labels)).toBe(false);
     }
   }, 40_000);
 });
