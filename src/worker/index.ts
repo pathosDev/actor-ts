@@ -70,8 +70,37 @@ export { serveOffload } from './OffloadWorkerBootstrap.js';
 export type { OffloadModuleImporter } from './OffloadWorkerBootstrap.js';
 export { WorkerMesh } from './WorkerMesh.js';
 export type { WorkerMeshWorker } from './WorkerMesh.js';
-export { WorkerMeshOptions, WorkerMeshOptionsBuilder, WorkerMeshOptionsValidator } from './WorkerMeshOptions.js';
+export {
+  WorkerMeshOptions,
+  WorkerMeshOptionsBuilder,
+  WorkerMeshOptionsValidator,
+  DEFAULT_MESH_METRICS_RELAY_INTERVAL_MS,
+} from './WorkerMeshOptions.js';
 export type { WorkerMeshOptionsType } from './WorkerMeshOptions.js';
+// Worker-thread metrics on the main thread's /metrics (#1570): the frames,
+// their kinds, the worker half a custom bootstrap would install, and the
+// snapshot validator — so a consumer speaking the protocol can name its
+// types without reaching into the module path.
+export {
+  MetricsRelay,
+  WORKER_MESH_WIRE_KINDS,
+  describeMetricsSnapshotProblem,
+  serveWorkerMeshMetrics,
+  workerThreadLabelValue,
+} from './MetricsRelay.js';
+export type {
+  MetricsRelayContext,
+  RelayedWorker,
+  WorkerMeshMetricsMessage,
+  WorkerMeshMetricsRequestMessage,
+  WorkerMeshMetricsWorkerContext,
+  WorkerMeshWireMessage,
+} from './MetricsRelay.js';
+export {
+  MAX_QUOTED_PROBLEM_CHARACTERS,
+  MAX_RELAYED_SAMPLES_PER_SNAPSHOT,
+  MAX_REPORTED_SNAPSHOT_PROBLEMS_PER_WORKER,
+} from './Constants.js';
 export { runWorkerMeshNode } from './WorkerMeshBootstrap.js';
 export type {
   WorkerMeshInitData,
