@@ -74,8 +74,11 @@ Aber es bedeutet auch:
   Sie sind `routee-1` bis `routee-N`, vom Router automatisch
   benannt.
 
-Richtige Form für **homogene Worker-Pools** — N zustandslose
-Workers, alle gleich, die einen Stream von Arbeit parallelisieren.
+Richtige Form für **homogene Worker-Pools** — N zustandslose Workers,
+alle gleich, die einen Stream I/O-gebundener Arbeit am Laufen halten.
+Das ist Nebenläufigkeit auf dem Thread des Routers, keine
+CPU-Parallelität; für den Pool, der Threads spannt, siehe
+[Eine Adresse, ein Actor pro Thread](/de/routing/overview/#eine-adresse-ein-actor-pro-thread).
 
 ## Group-Router *(nur Cluster)*
 

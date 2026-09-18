@@ -71,8 +71,11 @@ But it also means:
 - **Routees don't have names you'd recognize.**  They're
   `routee-1` through `routee-N`, auto-named by the router.
 
-Right shape for **homogeneous worker pools** — N stateless
-workers, all the same, parallelizing one stream of work.
+Right shape for **homogeneous worker pools** — N stateless workers,
+all the same, keeping one stream of I/O-bound work flowing.  That is
+concurrency on the router's thread, not CPU parallelism; for the pool
+that spans threads see
+[One address, one actor per thread](/routing/overview/#one-address-one-actor-per-thread).
 
 ## Group router *(cluster only)*
 
