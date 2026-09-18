@@ -3,7 +3,7 @@ import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { extensionId, type Extension } from '../Extension.js';
 import { metricsOf } from '../metrics/MetricsExtension.js';
 import { availableParallelism } from '../runtime/Parallelism.js';
-import { getWorkerBackend, type WorkerBackend, type WorkerLike } from '../runtime/worker/index.js';
+import { resolveWorkerBackend, type WorkerBackend, type WorkerLike } from '../runtime/worker/index.js';
 import type { Cancellable } from '../Scheduler.js';
 import { RestartBudget } from '../Supervision.js';
 import type { OffloadReadyMessage } from './offload-worker.js';
@@ -112,7 +112,14 @@ export class OffloadPool {
   private nextSlot = 0;
   private closed = false;
   private exhausted = false;
-  private backend: WorkerBackend | null;
+  /**
+   * The backend every spawn goes through, memoised on the first one.  Filled
+   * by `resolveWorkerBackend` and never straight from the option — an
+   * explicit backend has to pass through the resolver too, or a custom one
+   * that declares no error containment would be the one case the diagnostic
+   * never sees (#1288).
+   */
+  private backend: WorkerBackend | null = null;
 
   private constructor(
     private readonly system: ActorSystem,
@@ -129,7 +136,6 @@ export class OffloadPool {
       { maxRetries: options.maxRestarts ?? DEFAULT_MAX_RESTARTS, withinTimeRangeMs: options.restartWindowMs ?? DEFAULT_RESTART_WINDOW_MS },
       system.clock,
     );
-    this.backend = options.backend ?? null;
   }
 
   /**
@@ -477,7 +483,13 @@ export class OffloadPool {
     const index = this.nextSlot++;
     this.spawning.add(index);
     try {
-      const backend = this.backend ?? (this.backend = await getWorkerBackend());
+      // The memo keeps the resolved backend across spawns; the resolver behind
+      // it reports a backend that declares no error containment once, before
+      // the first worker exists (#1288).
+      const backend = this.backend ?? (this.backend = await resolveWorkerBackend(
+        this.options.backend,
+        (message) => this.reportUncontainedBackend(message),
+      ));
       if (this.closed) return;
       const worker = backend.spawn(this.bootstrapUrl(), { name: `offload-${index}` });
       const slot: Slot = { index, worker, ready: false, running: null, idleTimer: null, retiring: false };
@@ -488,6 +500,16 @@ export class OffloadPool {
     } finally {
       this.spawning.delete(index);
     }
+  }
+
+  /**
+   * A backend that declared `containsWorkerErrors: false` — at `error`,
+   * through the same `[offload]`-prefixed sink the worker deaths it predicts
+   * would go through; the line is what the log holds when one of those takes
+   * the process with it (#1288).
+   */
+  private reportUncontainedBackend(message: string): void {
+    this.system.log.error(`[offload] ${message}`);
   }
 
   private bootstrapUrl(): URL {

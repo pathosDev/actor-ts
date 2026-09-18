@@ -130,7 +130,7 @@ your system already logs to.
 | `withReadyTimeoutMs(ms)` | Per-worker handshake deadline, and the membership deadline for the whole mesh.  Default `10000`. |
 | `withRestartPolicy(p)` and the `withRestart…` / `withMaxRestarts` knobs | Passed through to the worker cluster underneath — see its table below. |
 | `withBootstrap(url)` | Escape hatch for a bundler that moved the shipped bootstrap out of `dist/worker/`.  Default: the shipped one. |
-| `withBackend(backend)` | Spawn through this `WorkerBackend` — an in-memory fake in a test.  Default: detected. |
+| `withBackend(backend)` | Spawn through this `WorkerBackend` — an in-memory fake in a test, or a custom adapter for a runtime the detection does not know.  A custom one implements `WorkerBackend` and returns a `WorkerLike` (both exported from `actor-ts/worker`) and declares `containsWorkerErrors`; see [Custom backends](#custom-backends).  Default: detected. |
 
 `refFor(address, path)` returns an ordinary `ActorRef`: `tell`, `ask`,
 `watch` all work through it, and the path may be the bare `/user/name`
@@ -238,7 +238,7 @@ void main();
 | `withMaxRestarts(n)` | Restarts granted per slot within the window before it is retired; `-1` for unlimited.  Default `10`. |
 | `withRestartWindowMs(ms)` | Sliding window the restart budget counts over; `0` never resets it.  Default `60000`. |
 | `withOnWorkerPermanentlyDown(fn)` | Called once per slot whose restart budget is spent.  Default: an `ERROR` line through the pool's logger. |
-| `withBackend(backend)` | Spawn through this `WorkerBackend` instead of the detected one — a runtime auto-detection does not know, or an in-memory fake in a test.  Default: detected. |
+| `withBackend(backend)` | Spawn through this `WorkerBackend` instead of the detected one — a runtime auto-detection does not know, or an in-memory fake in a test.  A custom one implements `WorkerBackend` and returns a `WorkerLike` (both exported from `actor-ts/worker`) and declares `containsWorkerErrors`; see [Custom backends](#custom-backends).  Default: detected. |
 | `withLogger(logger)` | Where the pool reports worker exits, respawns, retired slots and — when it builds its own broker — broker drops; see [What the mesh reports](#what-the-mesh-reports).  Default: a `ConsoleLogger` at `Info`. |
 | `withBroker(broker)` | Route through a broker the caller owns, the way `WorkerMesh` puts the main thread's own port on it first.  A broker handed in keeps the logger it was built with.  Default: a fresh broker reporting through the pool's logger. |
 
@@ -480,6 +480,14 @@ covers, and what it costs:
   `error` event on every runtime; without that subscription Node
   re-raises the worker's error on the host and Deno rejects an internal
   promise, and both exit `1` before `restartPolicy` is ever consulted.
+  The subscription is the framework's half; the other half is the
+  *adapter* honouring it, and that is decided inside the backend that
+  spawned the worker.  The two shipped backends do: the Node adapter
+  forwards the subscription to `worker.on('error')`, and the Web adapter
+  cancels the native `ErrorEvent` from inside the listener it installs —
+  on Deno a bare listener does not stop the runtime re-raising.  A
+  backend of your own has to do the same, and says whether it does; see
+  [Custom backends](#custom-backends).
 - **One failure produces one respawn.** Node and Bun emit `error` *and
   then* the exit event for a single throw, and Deno emits only `error` —
   whichever arrives first drives the restart and the other is dropped.
@@ -506,6 +514,67 @@ Two runtime asymmetries are worth knowing:
   framework simply cannot observe it.
 </Aside>
 
+### Custom backends
+
+`withBackend` takes anything that implements `WorkerBackend` — an
+in-memory fake for a test, or an adapter for a runtime the detection
+does not know.  `spawn(url, options)` returns a `WorkerLike`: the subset
+of the Web Worker surface the framework uses (`postMessage`,
+`addEventListener` / `removeEventListener` for `message`, `close` and
+`error`, and a `terminate()` that resolves once the thread is gone).
+Both types are exported from `actor-ts/worker`.
+
+The one thing the compiler cannot check about such an adapter is
+whether its `error` subscription **contains** the worker's failure.  An
+adapter that stores the handler and never wires it satisfies the type
+just as well, and from the parent there is no probe that can tell the
+difference — so the backend declares it, and the declaration is
+required:
+
+```ts
+import type { WorkerBackend, WorkerLike, WorkerSpawnOptions } from 'actor-ts/worker';
+
+class InMemoryBackend implements WorkerBackend {
+  // `true` promises that an `error` listener on the returned worker stops
+  // the failure from reaching the host — the per-runtime contract is below.
+  readonly containsWorkerErrors = true;
+
+  spawn(url: URL, options?: WorkerSpawnOptions): WorkerLike {
+    // Your adapter: the object whose `error` wiring the declaration is about.
+    return new InMemoryWorker(url, options?.name);
+  }
+}
+```
+
+What `true` promises, per runtime: on **Node** the subscription is
+forwarded to `worker.on('error')` — an emitter with no `error` listener
+re-raises on the host, exit `1`, and `exit` never fires; on **Deno** the
+listener the adapter installs calls `preventDefault()` on the native
+`ErrorEvent` — a bare listener does not stop the runtime re-raising as
+an unhandled rejection; on **Bun** a forwarded listener is enough.  An
+in-process fake whose `error` listeners are the only thing a simulated
+failure ever reaches is trivially `true`.  The scope is the `error`
+event: an uncaught throw, an unhandled rejection, a bootstrap that fails
+to load — not `messageerror`.
+
+Declare `false` and the framework reports it **once per backend
+instance, before the first spawn**, through the consumer's logger —
+`[worker]` for a mesh or a bare `WorkerCluster`, `[offload]` for an
+`OffloadPool`, the console for `ParallelMultiNodeSpec` — and continues:
+the spawn is never refused, because the declaration changes nothing the
+framework could do differently.  The line names the backend class and
+says what will happen — an uncaught throw inside a worker terminates
+the process instead of reaching the framework's error handler, and so
+never reaches the restart policy either — so a host that later dies
+that way has one line explaining why.
+
+To *prove* a `true`, crash a worker and survive: spawn a bootstrap that
+throws at load through your backend on Node and on Deno, subscribe
+`error`, and let the process's own survival be the assertion — the
+shape of the in-tree smoke case `29-worker-crash-containment`, which
+says the same about itself.  Nothing short of that proves it; the
+declaration is what the framework can act on.
+
 ### What the mesh reports
 
 Every one of the events above produces a line through the pool's logger
@@ -525,6 +594,7 @@ a log shipper see the same thing:
 | A replacement never became ready | `ERROR` | `[worker] respawning worker N (addr) failed: <message>` |
 | The budget is spent and no `onWorkerPermanentlyDown` is set | `ERROR` | `[worker] worker N (addr) is permanently down — K restarts inside W ms exhausted its budget` |
 | The broker refuses a frame | `WARN`; `DEBUG` for an unknown destination | `[worker] broker dropped K frame(s) from <source> — <reason>` |
+| The backend declares `containsWorkerErrors: false` — once per backend, before the first spawn | `ERROR` | `[worker] worker backend <Class> declares containsWorkerErrors=false — an uncaught throw inside a worker will terminate this process instead of reaching the framework's error handler; …` |
 
 Four things about those lines are worth knowing:
 

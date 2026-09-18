@@ -22,6 +22,14 @@ import type {
  * `spawn(...)` call does the import.
  */
 export class NodeWorkerBackend implements WorkerBackend {
+  /**
+   * Earned by {@link NodeWorkerAdapter.addEventListener}'s `error` branch:
+   * the subscription is forwarded to `worker.on('error')`, which is the whole
+   * of containment on Node — an emitter with no `error` listener re-raises on
+   * the host (#700, #1288).
+   */
+  readonly containsWorkerErrors = true;
+
   spawn(bootstrap: URL, options: WorkerSpawnOptions = {}): WorkerLike {
     // Returning a thenable would break the WorkerBackend contract, which
     // is intentionally sync (mirrors the Web Worker constructor).  We
