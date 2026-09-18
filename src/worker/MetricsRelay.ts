@@ -245,13 +245,23 @@ export class MetricsRelay {
    * renders; a write-through one turns `/metrics` into a 503 anyway.  A worker
    * the main stops asking keeps counting, so re-enabling picks up where it
    * left off.
+   *
+   * "Still here" is membership, not the handle set alone.  Under
+   * `restartPolicy 'never'` a dead worker keeps its handle (#1284), so its
+   * address stays in `workers()` for the life of the mesh while the failure
+   * detector holds its member `down`; the same `down` set that retires its
+   * snapshot keeps a request from going into its port every interval.  The
+   * set is re-read each tick, so a slot whose address re-joins `up` is asked
+   * again without anything else having to notice.
    */
   private onTick(): void {
-    this.retireDeparted();
+    const down = this.downMembers();
+    this.retireDeparted(down);
     const metrics = this.context.system.extension(MetricsExtensionId);
     if (!metrics.isEnabled() || !isCollectable(metrics.get())) return;
     const request: WorkerMeshMetricsRequestMessage = { kind: 'worker-mesh-metrics-request' };
     for (const worker of this.context.workers()) {
+      if (down.has(worker.address.toString())) continue;
       this.context.cluster._sendWire(worker.address, request as unknown as WireMessage);
     }
   }
@@ -326,16 +336,25 @@ export class MetricsRelay {
    * same label with counters starting over — a reset Prometheus's `rate()`
    * already handles.
    */
-  private retireDeparted(): void {
+  private retireDeparted(down: ReadonlySet<string>): void {
     const live = new Set(this.context.workers().map((worker) => worker.address.toString()));
-    const down = new Set(
+    for (const key of [...this.snapshots.keys()]) {
+      if (!live.has(key) || down.has(key)) this.retire(key);
+    }
+  }
+
+  /**
+   * The addresses the failure detector currently holds `down`, keyed like the
+   * snapshot table.  One record per address — the member table is keyed by
+   * `address.toString()` — so a respawned slot re-joining under its old
+   * address replaces the `down` record rather than sitting beside it.
+   */
+  private downMembers(): ReadonlySet<string> {
+    return new Set(
       this.context.cluster.getMembers()
         .filter((member) => member.status === 'down')
         .map((member) => member.address.toString()),
     );
-    for (const key of [...this.snapshots.keys()]) {
-      if (!live.has(key) || down.has(key)) this.retire(key);
-    }
   }
 
   /**

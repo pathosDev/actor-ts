@@ -641,6 +641,31 @@ describe('the main side of the metrics relay — departure and silence', () => {
     }
   });
 
+  test('a member that reads down is not asked either, while its handle is still among the live workers (#1284)', async () => {
+    // Under `restartPolicy 'never'` a dead worker keeps its handle, so its
+    // address stays in `workers()` for the life of the mesh while the failure
+    // detector holds its member `down`.  Retiring the snapshot is half of the
+    // departure; the other half is not sending a request into a port nobody
+    // reads, every interval, until the mesh terminates.
+    const r = rig();
+    try {
+      r.relay.start();
+      r.snapshot(snapshotOf({ value: 1 }), WORKER_0);
+      r.stub.members = [memberUp(MAIN), new Member(WORKER_0, 'down', 2, []), memberUp(WORKER_1)];
+      r.scheduler.advance(INTERVAL_MS);
+      expect(r.relay.samples()).toEqual([]);
+      expect(requestsSent(r).slice(2)).toEqual([WORKER_1.toString()]);
+      // The set is re-read on every tick: a slot whose address comes back `up`
+      // — a respawn re-joining under the same address — is asked again.
+      r.stub.members = [memberUp(MAIN), memberUp(WORKER_0), memberUp(WORKER_1)];
+      r.scheduler.advance(INTERVAL_MS);
+      expect(requestsSent(r).slice(3)).toEqual([WORKER_0.toString(), WORKER_1.toString()]);
+    } finally {
+      r.relay.stop();
+      await r.system.terminate();
+    }
+  });
+
   test('a live worker that stops answering keeps its last snapshot, and its age gauge climbs on the main registry', async () => {
     const r = rig();
     try {
