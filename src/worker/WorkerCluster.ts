@@ -8,7 +8,7 @@ import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { exponentialBackoff, type BackoffPolicy } from '../pattern/BackoffPolicy.js';
 import { availableParallelism } from '../runtime/Parallelism.js';
 import {
-  getWorkerBackend,
+  resolveWorkerBackend,
   type WorkerBackend,
   type WorkerCloseEvent,
   type WorkerErrorEvent,
@@ -248,7 +248,14 @@ export class WorkerCluster {
       this.options.basePort + index,
     );
 
-    const backend = this.options.backend ?? await getWorkerBackend();
+    // Resolved before the spawn, so a backend that declares it does not
+    // contain worker errors is reported *before* the first worker that could
+    // kill the host exists (#1288).  The helper latches per backend instance;
+    // a respawn through the same one says nothing new.
+    const backend = await resolveWorkerBackend(
+      this.options.backend,
+      (message) => this.reportUncontainedBackend(message),
+    );
     const url = this.options.bootstrap instanceof URL
       ? this.options.bootstrap
       : new URL(this.options.bootstrap);
@@ -411,6 +418,16 @@ export class WorkerCluster {
     };
     worker.addEventListener('close', onClose);
     worker.addEventListener('error', onError);
+  }
+
+  /**
+   * A backend that declared `containsWorkerErrors: false` — at `error`, the
+   * level the failure it predicts would be reported at, because the line is
+   * the only warning the log will hold when that failure takes the process
+   * with it (#1288).  Once per backend instance; the helper keeps the latch.
+   */
+  private reportUncontainedBackend(message: string): void {
+    this.log.error(`[worker] ${message}`);
   }
 
   /**

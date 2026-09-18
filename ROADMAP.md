@@ -366,6 +366,10 @@ This document tracks the planned direction.  Nothing here is committed work — 
 - WASM / edge-runtime subpackage — #209
 - Distributed transactions (Orleans-style ACID 2PC across grains) — #171
 - Multi-DC clustering with DC-local failure detection — #149
+- Direct worker-to-worker `MessagePort`s — the mesh is a star through the
+  main-thread broker by choice (#1191); pending the relay's measured share of
+  the hop (a `direct` tier in `benchmarks/worker/mesh-message-cost.ts`,
+  #1576)
 
 ## Documentation
 

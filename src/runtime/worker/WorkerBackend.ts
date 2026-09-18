@@ -83,6 +83,41 @@ export type WorkerSpawnOptions = {
 
 export interface WorkerBackend {
   /**
+   * Whether an `error` subscription on a `WorkerLike` this backend returns
+   * actually *contains* the worker's failure — an uncaught throw, an
+   * unhandled rejection, a bootstrap that fails to load — so that it reaches
+   * the framework's handler instead of terminating the host.
+   *
+   * The framework subscribes `error` on every worker it spawns, but whether
+   * that subscription stops the runtime re-raising is decided inside the
+   * adapter, and the compiler cannot see it: an implementation that stores
+   * the handler and never wires it satisfies {@link WorkerLike} just as well
+   * (#1288).  So the backend declares it.  `true` promises, per runtime:
+   *
+   *   - **Node**: the subscription is forwarded to `worker.on('error')` — an
+   *     `EventEmitter` with no `error` listener re-raises on the host, which
+   *     exits 1 before `exit` ever fires.
+   *   - **Deno**: the listener the adapter installs calls `preventDefault()`
+   *     on the native `ErrorEvent` — a bare listener does not stop the
+   *     runtime re-raising as an unhandled rejection, exit 1.
+   *   - **Bun**: a forwarded listener is enough; the runtime contains the
+   *     throw on its own.
+   *
+   * An in-process fake whose `error` listeners are the only thing a
+   * simulated failure reaches is trivially `true`.  The scope is `error`
+   * only — not `messageerror`, which is #1218.
+   *
+   * Declared `false`, the consumer (`WorkerCluster`, `OffloadPool`,
+   * `ParallelMultiNodeSpec`) reports once through its logger before the first
+   * spawn and continues; nothing else changes, because nothing else *can* —
+   * see `resolveWorkerBackend`.  To prove a `true`: spawn a bootstrap that
+   * throws at load through the backend on Node and on Deno; the process
+   * surviving is the assertion (the shape of the in-tree smoke case
+   * `29-worker-crash-containment`).  A declaration a probe cannot check from
+   * the parent is still the only thing a consumer can key a diagnostic on.
+   */
+  readonly containsWorkerErrors: boolean;
+  /**
    * Spawn a worker from a module URL.  Must use module semantics (ES
    * modules with imports) — the equivalent of `{ type: 'module' }` in the
    * Web Worker spec.

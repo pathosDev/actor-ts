@@ -26,6 +26,7 @@ import {
   defineOffloadTask,
 } from '../../../src/worker/OffloadTask.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
+import { RecordingLogger } from '../../util/RecordingLogger.js';
 import { FakeWorkerBackend, hostOffloadWorker } from './__fixtures__/InMemoryWorkerThread.js';
 
 /**
@@ -361,6 +362,91 @@ describe('context.offload and the default pool from config', () => {
       expect(extension.pool.workerCount).toBe(1);
     } finally {
       await system.terminate();
+    }
+  });
+});
+
+/* -------- #1288 — a backend that declares no error containment ---------- */
+
+describe('OffloadPool — backend containment declaration (#1288)', () => {
+  /**
+   * A pool on a system whose logger records, so the diagnostic is read where
+   * every other `[offload]` line goes — the shipped `rig` installs a
+   * `NoopLogger`, which is right for every other test here and useless for
+   * this one.
+   */
+  const uncontainedLines = (logger: RecordingLogger): string[] =>
+    logger.records.filter((record) => /containsWorkerErrors=false/.test(record.message)).map((record) => record.message);
+
+  function reportingRig(containsWorkerErrors: boolean, size: number): Rig & {
+    readonly logger: RecordingLogger;
+    /** How many diagnostic lines the log held when the first worker was spawned; `-1` until then. */
+    readonly linesAtFirstSpawn: () => number;
+  } {
+    const hosts: Array<ReturnType<typeof hostOffloadWorker>> = [];
+    const logger = new RecordingLogger();
+    let linesAtFirstSpawn = -1;
+    const backend = new FakeWorkerBackend({
+      containsWorkerErrors,
+      onSpawn: (worker) => {
+        if (linesAtFirstSpawn < 0) linesAtFirstSpawn = uncontainedLines(logger).length;
+        hosts.push(hostOffloadWorker(worker, realImport));
+      },
+    });
+    const system = ActorSystem.create('offload-reporting', ActorSystemOptions.create().withLogger(logger));
+    const pool = OffloadPool.start(system, OffloadPoolOptions.create().withSize(size).withBackend(backend));
+    return { system, backend, hosts, pool, logger, linesAtFirstSpawn: () => linesAtFirstSpawn };
+  }
+
+  test('a backend declaring false is reported once at error for the whole pool, before its first worker and not before the pool needs one', async () => {
+    const r = reportingRig(false, 2);
+    try {
+      // Nothing has spawned yet — the pool is lazy — so nothing is said yet.
+      expect(uncontainedLines(r.logger)).toEqual([]);
+      await r.pool.warmUp();
+      expect(r.pool.workerCount).toBe(2);
+      // Two workers, one line: the declaration is about the backend.
+      expect(uncontainedLines(r.logger)).toEqual([
+        '[offload] worker backend FakeWorkerBackend declares containsWorkerErrors=false — an uncaught throw inside '
+        + "a worker will terminate this process instead of reaching the framework's error handler; wire error "
+        + 'containment into its WorkerLike adapter (see cluster/worker-mesh, Failure containment)',
+      ]);
+      expect(r.logger.records.find((record) => /containsWorkerErrors=false/.test(record.message))?.level).toBe('error');
+      // And it preceded the first worker — the one that can take the host down
+      // before anything else says why.
+      expect(r.linesAtFirstSpawn()).toBe(1);
+    } finally {
+      await r.system.terminate();
+    }
+  });
+
+  test('a replacement spawned through the same backend adds no second line', async () => {
+    const r = reportingRig(false, 1);
+    try {
+      const doomed = r.pool.run(hang, []);
+      await awaitCondition(() => r.pool.workerCount === 1 && r.pool.queueDepth === 0, { label: 'dispatched' });
+      expect(uncontainedLines(r.logger)).toHaveLength(1);
+      // The fake still delivers the simulated throw to the pool's `error`
+      // listener — `false` is a declaration about a runtime, not about the
+      // fake — so the budgeted replacement runs and resolves the backend again.
+      r.backend.spawned[0]!.simulateUncaughtThrow('segfault-ish');
+      await expect(doomed).rejects.toThrow(OffloadWorkerLostError);
+      expect(await r.pool.run(add, [5, 5])).toBe(10);
+      expect(r.backend.spawned).toHaveLength(2);
+      expect(uncontainedLines(r.logger)).toHaveLength(1);
+    } finally {
+      await r.system.terminate();
+    }
+  });
+
+  test('the default fake produces no such line', async () => {
+    const r = reportingRig(true, 2);
+    try {
+      await r.pool.warmUp();
+      expect(r.pool.workerCount).toBe(2);
+      expect(uncontainedLines(r.logger)).toEqual([]);
+    } finally {
+      await r.system.terminate();
     }
   });
 });

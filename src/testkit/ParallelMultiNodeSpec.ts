@@ -10,7 +10,7 @@ import { NodeAddress } from '../cluster/NodeAddress.js';
 import { LogLevel } from '../Logger.js';
 import { describeTimeFactor, scaledMs } from './TimeFactor.js';
 import {
-  getWorkerBackend,
+  resolveWorkerBackend,
   type WorkerErrorEvent,
   type WorkerLike,
   type WorkerMessageEvent,
@@ -380,7 +380,13 @@ export class ParallelMultiNodeSpec {
   private async spawnRole(
     role: string, address: NodeAddress, seeds: string[],
   ): Promise<NodeRecord> {
-    const backend = this.options.backend ?? await getWorkerBackend();
+    // Before the spawn: a backend that declares no error containment is
+    // reported before the first worker that could take the test process with
+    // it exists (#1288).  Once per backend instance — the helper latches.
+    const backend = await resolveWorkerBackend(
+      this.options.backend,
+      (message) => this.reportUncontainedBackend(message),
+    );
     const bootstrap = this.options.bootstrapModule
       ?? new URL('./internal/ParallelMultiNodeBootstrap.js', import.meta.url);
     const worker = backend.spawn(bootstrap, { name: `parallel-mns-${role}` });
@@ -497,6 +503,16 @@ export class ParallelMultiNodeSpec {
    */
   private onWorkerError(role: string, event: WorkerErrorEvent): void {
     console.error(`ParallelMultiNodeSpec: worker '${role}' threw:`, event.error ?? event.message);
+  }
+
+  /**
+   * The backend declared `containsWorkerErrors: false`: the `error`
+   * subscription above will not stop a worker's throw from killing the test
+   * process on that backend, and this line is what says why afterwards.  The
+   * same destination as {@link onWorkerError}, for the same reason (#1288).
+   */
+  private reportUncontainedBackend(message: string): void {
+    console.error(`ParallelMultiNodeSpec: ${message}`);
   }
 
   private brokerFacade(worker: WorkerLike): PortLike {

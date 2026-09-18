@@ -2776,6 +2776,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The worker-mesh docs name the star through the main-thread broker as the
+  chosen shape and quote the tier they had left out**
+  (#1191).  `cluster/worker-mesh` states that direct worker-to-worker
+  `MessagePort`s are on the roadmap pending a measurement of the relay's own
+  share of the hop, and that until that number exists the mitigation is
+  sizing — `workers` to the actors that compute, not to the ones that chat.
+  The per-hop paragraph adds the in-process tier of
+  `benchmarks/worker/mesh-message-cost.ts`: the same two nodes on one thread
+  pay about 25 µs per `tell` and 80 µs per `ask`, so the protocol —
+  envelope, ref codec, the relay hop, two clones — is the bill, not the
+  thread; and it says that an actor message carries no transfer list, so a
+  large buffer is cloned on every hop and goes through `context.offload`
+  instead, where it moves once. `fundamentals/blocking-and-cpu-bound-work`
+  says the offload transfer is arguments only and the result is
+  structured-cloned back however large, and that a `SharedArrayBuffer` among
+  the arguments is neither copied nor moved but shared, with `Atomics` as
+  the coordination primitive and nothing from the framework involved —
+  observed on Bun 1.4.2 and Node 26, untested on Deno. `ROADMAP.md` carries
+  the direct-channel line under "Bigger threads", pending a `direct` tier in
+  the mesh-message-cost benchmark that #1576 tracks together with the rule
+  that turns its number into a design issue or an out-of-scope line. No code
+  changed: the survey found the framework needs nothing for a SAB to be
+  shared, `tell` has no transfer slot by design, and a result-direction
+  transfer for offload waits for a consumer that returns more than a number.
+
 - **`context.sender` now names the remote sender across the wire** (#1561).
   `Cluster.dispatchEnvelope` resolved the target path of an inbound envelope
   and delivered the body with no sender, although the frame carried the
@@ -3308,6 +3333,46 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **BREAKING — A custom `WorkerBackend` must declare whether its `error`
+  subscription contains a worker's failure (#1288).**
+
+  `WorkerBackend` gains a required `readonly containsWorkerErrors: boolean`.
+  The framework subscribes `error` on every worker it spawns, but whether
+  that subscription stops Node re-raising the error on the host or Deno
+  rejecting an unhandled promise is decided inside the adapter the backend
+  returns, and the compiler cannot see it — an adapter that stores the
+  handler and never wires it satisfies `WorkerLike` just as well — so a
+  custom backend opted out of #700's containment silently and the host died
+  of the first worker throw with no framework line saying why. Both shipped
+  backends and the in-tree fake declare `true`, each pointing at the adapter
+  line that earns it: the Node adapter forwards the subscription to
+  `worker.on('error')`, the Web adapter cancels the native `ErrorEvent` from
+  inside its listener, which is what Deno needs. On `false`,
+  `WorkerCluster`, `OffloadPool` and `ParallelMultiNodeSpec` report once per
+  backend instance, before the first spawn, through the sink they already
+  report worker deaths to — the `[worker]` logger, `system.log` under
+  `[offload]`, the console — and continue; the spawn is never refused,
+  because the declaration changes nothing the framework could do
+  differently, it only puts a line in the log for the host that later dies
+  that way. One resolver, `resolveWorkerBackend` in
+  `src/runtime/worker/index.ts`, holds the check and the per-instance latch,
+  so the diagnostic exists once and not three times, and `OffloadPool` no
+  longer pre-fills its backend memo from the option, or an explicit backend
+  would have been the one case the diagnostic never saw. The worker-mesh
+  page names `WorkerLike` for the first time, describes the per-runtime
+  contract behind a `true`, adds a "Custom backends" section with what a
+  `false` produces, lists the line under "What the mesh reports", and says
+  how to prove a declaration: spawn a bootstrap that throws at load through
+  the backend on Node and Deno and let the process surviving be the
+  assertion, the shape of smoke case 29.
+
+  *Migration:* Declare `containsWorkerErrors` on your `WorkerBackend`:
+  `true` if an `error` subscription on the `WorkerLike` it returns contains
+  the throw the way the shipped adapters do (forwarded to
+  `worker.on('error')` on Node, `preventDefault()` on the `ErrorEvent`
+  inside the listener on Deno), `false` otherwise — a `false` is reported
+  once at the first spawn and the spawn proceeds.
 
 - **The worker mesh reports every worker exit, every granted respawn and
   every frame its broker drops** (#1276).  `WorkerCluster` holds one logger
