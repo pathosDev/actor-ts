@@ -221,18 +221,33 @@ export class WorkerBroker {
    *
    * The throttle is keyed on the reason and nothing else — the closed union
    * above — never on the source: a per-source map is the map a misbehaving
-   * worker grows, and three counters is the whole of the state here.
+   * worker grows, and three counters is the whole of the state here.  Which
+   * is why the line says `most recently from` and not `from`: the count
+   * covers every port since the reason last reached the log, and the one
+   * address the broker still holds is the port that triggered the flush.
+   * The first version said `from`, so three malformed frames from one worker
+   * and one from another read as three dropped frames from the second —
+   * `EnvelopeTrust.report` had chosen its wording for exactly this reason.
    *
    * The line never carries the frame.  Not `to`, not `payload`, not any
    * string lifted from it: an unvalidated payload string in a log line is the
    * shape that forged whole log lines in #573.  The source address is
    * host-minted and the detail is a fixed string per reason; the one variable
-   * part, the `unroutable` cause, is the *port's* error, not the frame's.
+   * part, the `unroutable` cause, is the *port's* error — and of that only
+   * the name, because a `DataCloneError`'s message echoes the value it could
+   * not clone ({@link describeRefusal}).
    *
    * `unknown-destination` goes out at `debug`, the other two at `warn`
    * (#1276): a malformed frame or a refusing port is a defect somewhere, while
    * gossip to a just-dead worker is what a healthy mesh does after every crash
    * and would otherwise put a WARN over every ordinary respawn.
+   *
+   * This runs inside the port's `onmessage` callback — the host's worker
+   * `message` listener, where nothing catches — so the report goes through
+   * {@link reportThrough} and the two renderers below are written not to
+   * throw.  A throwing logger used to leave here as an uncaught exception:
+   * the shape #701 closed for a malformed frame, reopened by the line that
+   * reports one.
    */
   private onDropped(source: NodeAddress, reason: WorkerBrokerDropReason, error?: unknown): void {
     this.dropCounts[reason] += 1;
@@ -242,12 +257,8 @@ export class WorkerBroker {
     this.lastReportedAt[reason] = now;
     const count = this.suppressed[reason];
     this.suppressed[reason] = 0;
-    const line = `[worker] broker dropped ${count} frame(s) from ${source} — ${dropDetail(reason, error)}`;
-    if (reason === 'unknown-destination') {
-      this.log.debug(line);
-      return;
-    }
-    this.log.warn(line);
+    const line = `[worker] broker dropped ${count} frame(s), most recently from ${source} — ${dropDetail(reason, error)}`;
+    reportThrough(this.log, reason === 'unknown-destination' ? 'debug' : 'warn', line);
   }
 }
 
@@ -264,7 +275,40 @@ function dropDetail(reason: WorkerBrokerDropReason, error: unknown): string {
     return 'no worker is registered at the destination address — expected briefly after a worker dies, '
       + 'while its siblings\' gossip catches up with the failure detector';
   }
-  return `the destination port refused the frame: ${describeFailure(error)}`;
+  return `the destination port refused the frame: ${describeRefusal(error)}`;
+}
+
+/**
+ * What an error's `name` has to look like to be quoted on a log line: an
+ * identifier, bounded.  The runtime's own names all are (`DataCloneError`,
+ * `InvalidStateError`, `TypeError`); a `name` reassigned to arbitrary text —
+ * with a newline in it, say — is not, and is what forged log lines in #573.
+ */
+const ERROR_NAME_SHAPE = /^[A-Za-z_$][\w$]{0,63}$/;
+
+/**
+ * The `unroutable` detail's one variable part: which *kind* of error the
+ * destination port threw, and nothing more.
+ *
+ * The name and never the message.  A `DataCloneError`'s message echoes the
+ * value it could not clone — on Node 26.7 `() => 'SECRET' could not be
+ * cloned.` — so through the message, frame content reaches a line specified
+ * never to carry any.  The name is the runtime's fixed vocabulary and is
+ * also the part an operator needs: it separates a closed port's
+ * `InvalidStateError` from a payload's `DataCloneError`, which the
+ * constructor name (`DOMException` for both) would not.  It is admitted only
+ * in {@link ERROR_NAME_SHAPE}.
+ *
+ * A non-`Error` throwable is described by its type rather than rendered:
+ * `String()` on a null-prototype object throws, and this runs inside the
+ * catch handler of the port's `onmessage` callback, where a second throw
+ * escapes into the host's message listener (#701).
+ */
+function describeRefusal(error: unknown): string {
+  if (error instanceof Error) {
+    return ERROR_NAME_SHAPE.test(error.name) ? error.name : 'an Error';
+  }
+  return `a non-Error ${typeof error}`;
 }
 
 /**
@@ -272,11 +316,53 @@ function dropDetail(reason: WorkerBrokerDropReason, error: unknown): string {
  * as.  Exported for `WorkerCluster`, which reports through the same logger and
  * must render a failure the same way — it is not in `src/worker/index.ts`, so
  * it is not package surface.
+ *
+ * It never throws.  `String()` runs the value's `toString`, and a
+ * null-prototype object has none; every caller is on a failure path inside an
+ * event callback, where the rendering failing is a second failure with
+ * nothing left to catch it.
  */
 export function describeFailure(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (error === undefined || error === null) return '';
-  return String(error);
+  try {
+    return String(error);
+  } catch {
+    return `a non-Error ${typeof error}`;
+  }
+}
+
+/** The `Logger` methods a worker report goes out through, by name. */
+export type ReportLevel = 'debug' | 'info' | 'warn' | 'error';
+
+/**
+ * Hand one line to a caller-supplied logger without letting the logger's own
+ * failure escape.
+ *
+ * Every worker report runs inside a callback nothing above the framework
+ * catches — a `MessagePort`'s `onmessage`, a worker's `close` or `error`
+ * listener — and `Logger` is a documented extension point, so a sink that
+ * throws is a shape the reports have to survive.  Before this, it did not
+ * just escape as an `uncaughtException`: on the close path the exit line
+ * comes before the respawn, so a throwing logger also cost the pool its
+ * replacement worker.
+ *
+ * The fallback is the console and not silence, with the line intact and the
+ * reason appended.  A logger that throws is a configuration defect whose only
+ * remaining channel is the console — the last resort `Dispatcher` (#410),
+ * `Scheduler` (#678) and every log sink's `SinkReporter` keep for the same
+ * situation — and swallowing would make the pool silent exactly when the
+ * operator's sink is broken, which is the black hole the reports exist to
+ * remove.  No throttle of its own: one console line per report the logger
+ * refused, at the reports' own rate, which the fold and the restart backoff
+ * already bound.  Exported for `WorkerCluster`; not on the barrel.
+ */
+export function reportThrough(log: Logger, level: ReportLevel, line: string): void {
+  try {
+    log[level](line);
+  } catch (loggerError) {
+    console.error(`${line} (the configured logger threw while reporting this: ${describeFailure(loggerError)})`);
+  }
 }
 
 /**

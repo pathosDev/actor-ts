@@ -14,6 +14,7 @@ import { WORKER_BROKER_DROP_REPORT_INTERVAL_MS, WorkerBroker } from '../../../sr
 import { NoopLogger } from '../../../src/Logger.js';
 import { hostileEnvelopes } from '../../util/HostileFrames.js';
 import { RecordingLogger } from '../../util/RecordingLogger.js';
+import { ThrowingLogger } from '../../util/ThrowingLogger.js';
 import { FakePort } from './__fixtures__/InMemoryWorkerThread.js';
 
 const addr = (port: number): NodeAddress => new NodeAddress('sys', 'host', port);
@@ -385,7 +386,7 @@ describe('WorkerBroker — drops are counted and reported (#1276)', () => {
     for (const [, frame] of hostileEnvelopes.slice(0, 3)) aPort.inject(frame);
     expect(broker.dropped().malformed).toBe(3);
     expect(messagesAt(logger, 'warn')).toEqual([
-      '[worker] broker dropped 1 frame(s) from sys@host:1 — the envelope is not a BrokeredMessage — '
+      '[worker] broker dropped 1 frame(s), most recently from sys@host:1 — the envelope is not a BrokeredMessage — '
       + 'its address fields failed the shape check, and nothing past them was read',
     ]);
     expect(messagesAt(logger, 'debug')).toEqual([]);
@@ -397,7 +398,7 @@ describe('WorkerBroker — drops are counted and reported (#1276)', () => {
     expect(broker.dropped().malformed).toBe(4);
     const warnings = messagesAt(logger, 'warn');
     expect(warnings).toHaveLength(2);
-    expect(warnings[1]).toMatch(/^\[worker\] broker dropped 3 frame\(s\) from sys@host:1 — /);
+    expect(warnings[1]).toMatch(/^\[worker\] broker dropped 3 frame\(s\), most recently from sys@host:1 — /);
 
     // One short of the interval is still inside it.
     clock.nowMs += WORKER_BROKER_DROP_REPORT_INTERVAL_MS - 1;
@@ -433,7 +434,7 @@ describe('WorkerBroker — drops are counted and reported (#1276)', () => {
     expect(broker.dropped()['unknown-destination']).toBe(1);
     expect(messagesAt(logger, 'warn')).toEqual([]);
     expect(messagesAt(logger, 'debug')).toEqual([
-      '[worker] broker dropped 1 frame(s) from sys@host:1 — no worker is registered at the destination '
+      '[worker] broker dropped 1 frame(s), most recently from sys@host:1 — no worker is registered at the destination '
       + 'address — expected briefly after a worker dies, while its siblings\' gossip catches up with the '
       + 'failure detector',
     ]);
@@ -446,7 +447,9 @@ describe('WorkerBroker — drops are counted and reported (#1276)', () => {
     const aPort = new FakePort();
     const cPort = new FakePort();
     const exploding = new FakePort();
-    exploding.postMessage = (): void => { throw new Error('DataCloneError'); };
+    // The shape a real `MessagePort` throws — a `DOMException` whose *name* is
+    // `DataCloneError`; the line quotes the name, never the message.
+    exploding.postMessage = (): void => { throw new DOMException('The object can not be cloned.', 'DataCloneError'); };
     broker.register(addr(1), aPort);
     broker.register(addr(2), exploding);
     broker.register(addr(3), cPort);
@@ -455,7 +458,7 @@ describe('WorkerBroker — drops are counted and reported (#1276)', () => {
 
     expect(broker.dropped()).toEqual({ ...NO_DROPS, unroutable: 1 });
     expect(messagesAt(logger, 'warn')).toEqual([
-      '[worker] broker dropped 1 frame(s) from sys@host:1 — the destination port refused the frame: DataCloneError',
+      '[worker] broker dropped 1 frame(s), most recently from sys@host:1 — the destination port refused the frame: DataCloneError',
     ]);
     // Still a broker afterwards, and the honest hop is not a drop.
     const good = envelope(addr(1), addr(3));
@@ -523,7 +526,7 @@ describe('WorkerBroker — drops are counted and reported (#1276)', () => {
     for (const record of logger.records) {
       expect(record.message).not.toContain(marker);
       // The one identity the line does carry is the host-minted source.
-      expect(record.message).toContain('from sys@host:1');
+      expect(record.message).toContain('most recently from sys@host:1');
     }
   });
 
@@ -539,7 +542,7 @@ describe('WorkerBroker — drops are counted and reported (#1276)', () => {
       aPort.inject(envelope(addr(1), addr(999)));
 
       const warned = warnSpy.mock.calls.map((call) => String(call[0]));
-      expect(warned.filter((line) => line.includes('[worker] broker dropped 1 frame(s) from sys@host:1 — the envelope is not a BrokeredMessage'))).toHaveLength(1);
+      expect(warned.filter((line) => line.includes('[worker] broker dropped 1 frame(s), most recently from sys@host:1 — the envelope is not a BrokeredMessage'))).toHaveLength(1);
       // `ConsoleLogger` at `Info` hides the debug line, which is the point of
       // that level for the reason that bursts after every crash.
       expect(debugSpy.mock.calls).toEqual([]);
@@ -548,5 +551,119 @@ describe('WorkerBroker — drops are counted and reported (#1276)', () => {
       warnSpy.mockRestore();
       debugSpy.mockRestore();
     }
+  });
+
+  /**
+   * The fold covers every port since the reason last reached the log, but the
+   * line used to say `from <source>` with the port that happened to trigger
+   * the flush — so three malformed frames from worker 1 and one from worker 2
+   * read as "dropped 3 frame(s) from sys@host:2", and an operator went looking
+   * at the wrong worker.  `EnvelopeTrust.report` says `most recently from` for
+   * exactly this reason; the broker's line now does too.
+   */
+  test('the folded line attributes the count to no single port — it names the most recent source', () => {
+    const logger = new RecordingLogger();
+    const clock = new ManualClock();
+    const broker = new WorkerBroker(logger, clock);
+    const aPort = new FakePort();
+    const bPort = new FakePort();
+    broker.register(addr(1), aPort);
+    broker.register(addr(2), bPort);
+
+    // Three from worker 1 inside one interval: one line, two folded.
+    for (let i = 0; i < 3; i++) aPort.inject('not-an-envelope');
+    // Past the interval, one from worker 2 flushes the fold.  The line covers
+    // three drops, of which worker 2 sent exactly one.
+    clock.nowMs += WORKER_BROKER_DROP_REPORT_INTERVAL_MS;
+    bPort.inject('not-an-envelope');
+
+    const warnings = messagesAt(logger, 'warn');
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toMatch(/^\[worker\] broker dropped 3 frame\(s\), most recently from sys@host:2 — /);
+    expect(warnings[1]).not.toMatch(/frame\(s\) from sys@host:2/);
+    expect(broker.dropped().malformed).toBe(4);
+  });
+
+  /**
+   * The report runs inside the port's `onmessage` callback — the host's
+   * worker `message` listener, where nothing above the broker catches — and
+   * `Logger` is a caller-supplied extension point.  A sink that throws used
+   * to take the callback down with it: the same host-killing shape #701
+   * closed for a malformed frame, reopened by the line that reports one.
+   * The drop is still counted, and the line lands on the console with the
+   * reason it had to.
+   */
+  test('a logger that throws cannot escape the port callback — the line falls back to the console', () => {
+    const logger = new ThrowingLogger('the log sink is down');
+    const broker = new WorkerBroker(logger, new ManualClock());
+    const aPort = new FakePort();
+    broker.register(addr(1), aPort);
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(() => aPort.inject('not-an-envelope')).not.toThrow();
+      expect(() => aPort.inject(envelope(addr(1), addr(999)))).not.toThrow();
+
+      expect(logger.calls).toBe(2);
+      expect(broker.dropped()).toEqual({ ...NO_DROPS, malformed: 1, 'unknown-destination': 1 });
+      const fallback = errorSpy.mock.calls.map((call) => String(call[0]));
+      expect(fallback).toHaveLength(2);
+      expect(fallback[0]).toMatch(/^\[worker\] broker dropped 1 frame\(s\), most recently from sys@host:1 — the envelope is not a BrokeredMessage/);
+      expect(fallback[0]).toMatch(/logger threw while reporting this: the log sink is down\)$/);
+      expect(fallback[1]).toMatch(/no worker is registered at the destination address/);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  /**
+   * The `unroutable` detail is rendered inside the catch handler around
+   * `postMessage`, so the rendering itself has to be unable to throw.
+   * `String(error)` is not: a null-prototype throwable has no `toString`,
+   * and the `TypeError` it raised escaped the callback the catch exists to
+   * protect.
+   */
+  test('a port that throws a null-prototype value is contained and described by its type', () => {
+    const logger = new RecordingLogger();
+    const broker = new WorkerBroker(logger, new ManualClock());
+    const aPort = new FakePort();
+    const hostile = new FakePort();
+    hostile.postMessage = (): void => { throw Object.create(null); };
+    broker.register(addr(1), aPort);
+    broker.register(addr(2), hostile);
+
+    expect(() => aPort.inject(envelope(addr(1), addr(2)))).not.toThrow();
+
+    expect(broker.dropped()).toEqual({ ...NO_DROPS, unroutable: 1 });
+    expect(messagesAt(logger, 'warn')).toEqual([
+      '[worker] broker dropped 1 frame(s), most recently from sys@host:1 — the destination port refused the frame: '
+      + 'a non-Error object',
+    ]);
+  });
+
+  /**
+   * On Node 26.7 a `DataCloneError`'s message echoes the value it could not
+   * clone — `() => 'SECRET-IN-SOURCE' could not be cloned.` — which is frame
+   * content by another route, on a line specified never to carry any.  Only
+   * the error's *name* is the runtime's own vocabulary, and only it reaches
+   * the line.
+   */
+  test('the unroutable detail carries the error\'s name and never its message', () => {
+    const logger = new RecordingLogger();
+    const broker = new WorkerBroker(logger, new ManualClock());
+    const aPort = new FakePort();
+    const refusing = new FakePort();
+    refusing.postMessage = (): void => {
+      throw new DOMException("() => 'SECRET-IN-SOURCE' could not be cloned.", 'DataCloneError');
+    };
+    broker.register(addr(1), aPort);
+    broker.register(addr(2), refusing);
+
+    aPort.inject(envelope(addr(1), addr(2)));
+
+    const warnings = messagesAt(logger, 'warn');
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/refused the frame: DataCloneError$/);
+    expect(warnings[0]).not.toContain('SECRET-IN-SOURCE');
+    expect(warnings[0]).not.toContain('could not be cloned');
   });
 });

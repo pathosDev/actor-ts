@@ -18,6 +18,7 @@ import {
 } from './__fixtures__/InMemoryWorkerThread.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
 import { RecordingLogger } from '../../util/RecordingLogger.js';
+import { ThrowingLogger } from '../../util/ThrowingLogger.js';
 import { NoopLogger } from '../../../src/Logger.js';
 import { WorkerCluster } from '../../../src/worker/WorkerCluster.js';
 import { availableParallelism, resetAvailableParallelismCache } from '../../../src/runtime/Parallelism.js';
@@ -958,7 +959,7 @@ describe('WorkerCluster — what the pool reports (#1276)', () => {
 
       expect(cluster.broker.dropped()).toEqual({ malformed: 1, 'unknown-destination': 0, unroutable: 0 });
       expect(messagesAt(logger, 'warn')).toEqual([
-        '[worker] broker dropped 1 frame(s) from worker-cluster@worker:1 — the envelope is not a BrokeredMessage — '
+        '[worker] broker dropped 1 frame(s), most recently from worker-cluster@worker:1 — the envelope is not a BrokeredMessage — '
         + 'its address fields failed the shape check, and nothing past them was read',
       ]);
     } finally {
@@ -1028,6 +1029,76 @@ describe('WorkerCluster — what the pool reports (#1276)', () => {
       warnSpy.mockRestore();
       errorSpy.mockRestore();
       logSpy.mockRestore();
+    }
+  });
+
+  /**
+   * Every close-path report runs inside the worker's `close` listener, where
+   * nothing above the pool catches, and `Logger` is a caller-supplied
+   * extension point.  A sink that throws used to escape that listener — the
+   * host-killing shape #701 closed — and it cost the respawn too: the exit
+   * line comes before `onWorkerDown`, so the throw left the dead slot
+   * unregistered and unreplaced.  Both facts are pinned: the throw is
+   * contained, and the pool still degrades the way it would have without it.
+   */
+  test('a logger that throws cannot escape the close listener, and the respawn it stood in front of still happens', async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
+    const logger = new ThrowingLogger('the log sink is down');
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const workerOptions = WorkerClusterOptions.create()
+        .withBootstrap(new URL('file:///fake.js'))
+        .withWorkers(1)
+        .withRestartPolicy('on-failure')
+        .withRestartMinBackoffMs(FAST_RESTART_BACKOFF_MS)
+        .withRestartRandomFactor(0)
+        .withLogger(logger)
+        .withBackend(backend);
+      const cluster = await WorkerCluster.spawn(workerOptions);
+      try {
+        expect(() => backend.spawned[0]!.simulateCrash(1)).not.toThrow();
+        // The exit line and the granted-restart line were both attempted.
+        expect(logger.calls).toBe(2);
+        await awaitCondition(() => backend.spawned.length >= 2, {
+          label: 'the respawn survived the throwing logger',
+        });
+        // The lines are not lost: each lands on the console with the reason.
+        const fallback = errorSpy.mock.calls.map((call) => String(call[0]));
+        expect(fallback.filter((line) => /^\[worker\] worker 0 \(worker-cluster@worker:1\) exited with code 1 \(the configured logger threw while reporting this: the log sink is down\)$/.test(line))).toHaveLength(1);
+        expect(fallback.filter((line) => /^\[worker\] respawning worker 0 \(worker-cluster@worker:1\) in \d+ ms \(restart 1 of 10 inside 60000 ms\) \(the configured logger threw/.test(line))).toHaveLength(1);
+      } finally {
+        await cluster.terminate();
+      }
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('a logger that throws cannot escape the error listener either', async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
+    const logger = new ThrowingLogger();
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const workerOptions = WorkerClusterOptions.create()
+        .withBootstrap(new URL('file:///fake.js'))
+        .withWorkers(1)
+        .withRestartMinBackoffMs(FAST_RESTART_BACKOFF_MS)
+        .withRestartRandomFactor(0)
+        .withLogger(logger)
+        .withBackend(backend);
+      const cluster = await WorkerCluster.spawn(workerOptions);
+      try {
+        expect(() => backend.spawned[0]!.simulateError('worker boom')).not.toThrow();
+        await awaitCondition(() => backend.spawned.length >= 2, {
+          label: 'the error-driven respawn survived the throwing logger',
+        });
+        const fallback = errorSpy.mock.calls.map((call) => String(call[0]));
+        expect(fallback.some((line) => line.startsWith('[worker] worker 0 (worker-cluster@worker:1) failed: worker boom ('))).toBe(true);
+      } finally {
+        await cluster.terminate();
+      }
+    } finally {
+      errorSpy.mockRestore();
     }
   });
 });

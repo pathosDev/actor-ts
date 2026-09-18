@@ -35,7 +35,7 @@ import type {
   WorkerClusterOptionsType,
   WorkerPermanentlyDownInfo,
 } from './WorkerClusterOptions.js';
-import { WorkerBroker, describeFailure } from './WorkerBroker.js';
+import { WorkerBroker, describeFailure, reportThrough, type ReportLevel } from './WorkerBroker.js';
 
 export type RestartPolicy = 'always' | 'on-failure' | 'never';
 
@@ -413,11 +413,23 @@ export class WorkerCluster {
       consumed = true;
       if (this.closed) return;
       const error = e.error ?? e.message;
-      this.log.error(`[worker] worker ${index} (${address}) failed: ${describeFailure(error)}`);
+      this.report('error', `[worker] worker ${index} (${address}) failed: ${describeFailure(error)}`);
       this.onWorkerDown(index, address, true, error);
     };
     worker.addEventListener('close', onClose);
     worker.addEventListener('error', onError);
+  }
+
+  /**
+   * Every line the pool writes goes through here.  The reports run inside
+   * the worker's `close` and `error` listeners and inside the respawn timer,
+   * where a throw from a caller-supplied `Logger` has nothing above it to
+   * catch — and on the close path it also stood in front of the respawn, so a
+   * throwing sink cost the pool its replacement worker as well as the host
+   * its process.  `reportThrough` says what the fallback is and why.
+   */
+  private report(level: ReportLevel, line: string): void {
+    reportThrough(this.log, level, line);
   }
 
   /**
@@ -427,7 +439,7 @@ export class WorkerCluster {
    * with it (#1288).  Once per backend instance; the helper keeps the latch.
    */
   private reportUncontainedBackend(message: string): void {
-    this.log.error(`[worker] ${message}`);
+    this.report('error', `[worker] ${message}`);
   }
 
   /**
@@ -442,11 +454,7 @@ export class WorkerCluster {
       ? `exited with code ${code}`
       : 'exited without an exit code';
     const line = `[worker] worker ${index} (${address}) ${exit}`;
-    if (crashed) {
-      this.log.warn(line);
-      return;
-    }
-    this.log.info(line);
+    this.report(crashed ? 'warn' : 'info', line);
   }
 
   /**
@@ -464,7 +472,8 @@ export class WorkerCluster {
       this.options.restartPolicy === 'always' ||
       (this.options.restartPolicy === 'on-failure' && crashed);
     if (!should) {
-      this.log.info(
+      this.report(
+        'info',
         `[worker] worker ${index} (${address}) is not respawned — restartPolicy '${this.options.restartPolicy}'`,
       );
       return;
@@ -507,7 +516,8 @@ export class WorkerCluster {
       ? 'restart budget unlimited'
       : `restart ${state.budget.recordedRestarts} of ${this.options.maxRestarts} `
         + `inside ${this.options.restartWindowMs} ms`;
-    this.log.warn(
+    this.report(
+      'warn',
       `[worker] respawning worker ${index} (${address}) in ${Math.round(delayMs)} ms (${budgetDetail})`,
     );
     const timer = setTimeout(() => {
@@ -535,7 +545,7 @@ export class WorkerCluster {
     // A respawn that lost the race with `terminate()` rejects by design — the
     // worker it started is already terminated by `spawnOne`'s own guard.
     if (this.closed) return;
-    this.log.error(`[worker] respawning worker ${index} (${address}) failed: ${describeFailure(error)}`);
+    this.report('error', `[worker] respawning worker ${index} (${address}) failed: ${describeFailure(error)}`);
     this.requestRestart(index, address, error);
   }
 
@@ -555,7 +565,8 @@ export class WorkerCluster {
     const listener = this.options.onWorkerPermanentlyDown;
     if (listener === undefined) {
       const cause = describeFailure(error);
-      this.log.error(
+      this.report(
+        'error',
         `[worker] worker ${index} (${address}) is permanently down — `
         + `${restarts} restarts inside ${this.options.restartWindowMs} ms exhausted its budget`
         + (cause === '' ? '' : `; last failure: ${cause}`),
@@ -566,7 +577,7 @@ export class WorkerCluster {
     try {
       listener(info);
     } catch (listenerError) {
-      this.log.error(`[worker] onWorkerPermanentlyDown threw: ${describeFailure(listenerError)}`);
+      this.report('error', `[worker] onWorkerPermanentlyDown threw: ${describeFailure(listenerError)}`);
     }
   }
 
