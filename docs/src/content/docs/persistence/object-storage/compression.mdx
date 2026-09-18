@@ -69,8 +69,8 @@ storage cost dominates.
 
 zstd support differs by **direction**:
 
-- **Compress (write)** — native only: **Bun** (`Bun.zstdCompressSync`)
-  or **Node** (`zlib.zstdCompressSync`).  There is no
+- **Compress (write)** — native only: **Bun** (`Bun.zstdCompress`)
+  or **Node** (`zlib.zstdCompress`).  There is no
   pure-JS fallback for writing; the optional `fzstd` peer
   dependency is **decompress-only**.  Selecting `zstd` on a runtime
   without native support fails fast — eagerly at plugin
@@ -91,6 +91,12 @@ stays reachable.
 
 `gzip` uses `node:zlib` and works everywhere (Bun, Node, Deno) with
 no extra dependency.
+
+Both algorithms call the runtime's **async** forms — `zlib.gzip`, not
+`gzipSync`; `zlib.zstdCompress`, not `zstdCompressSync` — so a compressor
+called from inside an actor's turn does not hold the thread every other
+actor runs on.  Where that CPU actually lands differs by runtime; see
+[CPU cost](#cpu-cost-rough-guidance).
 
 ## How it works
 
@@ -125,7 +131,7 @@ exhaust memory during recovery (security audit #3).
 `maxOutputLength`, so an over-cap body is refused *before* its output is
 allocated — the bomb never gets the memory it was built to claim.  Every
 path additionally asserts the decoded size, which is what bounds the two
-that cannot take the option (Bun's `Bun.zstdDecompressSync`, reached only
+that cannot take the option (Bun's `Bun.zstdDecompress`, reached only
 on a Bun without zstd in `node:zlib`, and the `fzstd` fallback).  There the
 cap is still enforced, but only after the output exists — so on a runtime
 that falls back to either, treat the bound as a correctness check rather
@@ -208,6 +214,28 @@ depend on payload and runtime:
 zstd's asymmetry (cheap decode at every level) makes it a strong
 default for read-heavy state.  For typical state-store workloads
 (small objects, modest write rate) the CPU cost is invisible.
+
+**Where that CPU lands** differs by runtime, and it matters more than
+how much of it there is.  Compression is called from inside an actor's
+turn, and the framework calls the runtime's **async** zlib forms
+(`zlib.gzip`, `zlib.zstdCompress`, …) rather than the `*Sync` ones.  On
+**Bun and Node** the deflate then runs on the libuv thread pool and the
+actor system keeps running: measured on a 24 MiB body, a 1 ms timer kept
+firing 30–115 times during the call, where the sync forms let it fire
+zero times.  On **Deno 2.6** the async forms defer the call and then run
+it as one main-thread block — correct, but no more live than `gzipSync`
+— so on Deno a large body is [tier-2 work for the
+`OffloadPool`](/fundamentals/blocking-and-cpu-bound-work/); the persistence
+layer deliberately does not route through it on its own.  The pure-JS
+`fzstd` read fallback has no async form and decodes on the main thread on
+every runtime.
+
+The trade the async forms make is throughput for liveness: the streaming
+path costs more per call — on Node an async `gunzip` of the same body ran
+two to three times longer than the sync one — while the event loop stays
+free for the whole of it.  For a state store that is the right side of the
+trade: the extra milliseconds land on the one actor that asked for the
+write, not on the p99 of every actor in the process.
 
 ## Per-actor override
 

@@ -192,13 +192,11 @@ export class WorkerMesh {
   /**
    * An ordinary `ActorRef` to an actor on one of the workers — `tell`, `ask`,
    * `watch` all work through it.  `path` may be the bare `/user/name` form or
-   * the full `actor-ts://…` one; the bare form is resolved against this
-   * mesh's system name, because a `RemoteActorRef` handed a bare path would
-   * silently target the root (#1568).
+   * the full `actor-ts://…` one; the constructor accepts both and resolves the
+   * bare form against the worker's system name, which is this mesh's (#1568).
    */
   refFor<TMessage>(address: NodeAddress, path: string): ActorRef<TMessage> {
-    const fullPath = path.startsWith('/') ? `actor-ts://${this.selfAddress.systemName}${path}` : path;
-    return new RemoteActorRef<TMessage>(address, fullPath, this.cluster);
+    return new RemoteActorRef<TMessage>(address, path, this.cluster);
   }
 
   /**

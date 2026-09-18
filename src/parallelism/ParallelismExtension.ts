@@ -166,8 +166,6 @@ export class ParallelismExtension implements Extension {
     if (!this.patterns.some((pattern) => pattern.matches(path))) return null;
     // The same two checks the local path runs in `_createChild`, on the
     // caller's stack: a bad name is the caller's mistake, not the worker's.
-    // `remoteActorPath` wants the full URI — handed the bare form it yields
-    // the root (#1568).
     const actorPath = remoteActorPath(`actor-ts://${this.system.name}${path}`, this.system.name);
     if (nameSource === 'caller') assertUserAssignableName(name, actorPath.parent!);
     if (this.startupError !== null) {

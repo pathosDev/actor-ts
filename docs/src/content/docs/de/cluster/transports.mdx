@@ -68,6 +68,24 @@ Was er tut:
 - **Auto-Reconnect** — fällt eine Verbindung mitten im
   Cluster-Leben aus, wird beim nächsten Send neu verbunden.
 
+### Was ein Hop kostet
+
+Gemessen auf diesem Transport über Loopback, mit dem fernen Node auf einem
+Worker-Thread (Bun 1.4.2, Windows 11, 18.09.2026): ein Cross-Node-`tell`
+kostet rund **22 µs** pro Nachricht, ein Cross-Node-`ask` rund **245 µs**
+pro Roundtrip — gegenüber ~260 ns und ~6 µs für denselben Actor im Prozess.
+Das ist der ganze Draht — Envelope, getaggter JSON-Frame, Socket,
+`FrameDecoder` samt Guards, Zustellung — und liegt im Rauschen des
+`MessageChannelTransport`-Hops, den das
+[Worker-Mesh](/de/cluster/worker-mesh/) bezahlt; der Socket selbst ist also
+nicht der teure Teil.  Quelle ist `benchmarks/cluster/tcp-message-cost.ts`,
+der einzige Benchmark, der diesen Transport überhaupt übt: der
+Framing-Round-Trip braucht `TcpTransport` über Loopback, wie die Grenzen des
+In-Memory-Transports weiter unten sagen, und der ferne Node läuft auf einem
+eigenen Thread, weil zwei Nodes auf einer Event-Loop das Ende eines Bursts an
+die Loopback-Puffer verlieren (#931) — der Benchmark prüft jeden Batch, das
+wird also ein Throw und keine Zahl.
+
 ### Runtime-Backends
 
 `TcpTransport` redet nicht direkt mit dem OS — er läuft über ein

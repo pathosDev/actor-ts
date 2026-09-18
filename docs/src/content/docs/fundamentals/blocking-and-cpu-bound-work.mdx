@@ -47,6 +47,17 @@ forms: `zlib.gzip` (not `gzipSync`), `crypto.scrypt` / `pbkdf2` / `hkdf`,
 the main thread and the `await` is a real wait.  If a native async form
 exists for what you do, use it — nothing below beats it.
 
+One measured caveat (Node 26, Bun 1.4, Deno 2.6; a 24 MiB body with a
+1 ms timer alive across the `await`): on **Deno**, `node:zlib`'s async
+forms defer the call and then run the deflate as one main-thread block —
+the timer fired 0 times, exactly as under `gzipSync`, where Bun and Node
+let it fire 30–115 times.  `crypto.scrypt` does go to the pool on all
+three.  So on Deno, compressing a large body is **tier 2**: hand it to the
+`OffloadPool` below.  The framework's own object-storage compression calls
+the async forms and documents this residual rather than routing through
+the pool itself — see
+[Compression](/persistence/object-storage/compression/#cpu-cost-rough-guidance).
+
 **2. Worker threads, for pure-JS CPU work.** Two shapes, by what the work
 is:
 
@@ -242,8 +253,17 @@ same way.
   at the edge, offload, or stream.
 - An `O(users)` scan per lookup.  Not a threading problem — an index.
 
-A ratchet guard over the source tree for `*Sync(` calls in handlers is
-tracked as #1540; until it lands, the list above is the review checklist.
+The first smell is guarded: `tests/unit/ci/NoSyncWorkInHandlers.test.ts`
+scans `src/` and `examples/` for a closed list of Node's blocking `*Sync`
+names — zlib, the crypto key derivations, child processes, the
+filesystem, `@grpc/proto-loader` — in mention position, so an aliased
+local or an import specifier counts like a call, and refuses any file
+that mentions one more often than its ledger entry allows.  The ledger
+holds the calls that run before any actor exists (the config chain, TLS
+material, a `.proto` parsed in `preStart`) or in a test harness, each
+with its reason beside it; everything else is red.  It is a ratchet, not
+an adversary — `zlib['gzipSync']` evades it — so the rest of the list
+above stays the review checklist.
 
 ## Where to next
 

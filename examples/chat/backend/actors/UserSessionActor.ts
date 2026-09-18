@@ -196,8 +196,17 @@ export class UserSessionActor extends Actor<SessionMessage> {
     try { this.deps.connection.close(); } catch { /* already closed */ }
   }
 
-  override onReceive(message: SessionMessage): void {
-    match(message)
+  /**
+   * Returns the arm's result so the cell awaits it: a `text` frame that
+   * carries a login derives a scrypt key off the event loop, and the
+   * `Unauthenticated` phase has to hold until that settles.  The runtime
+   * delivers the next message only after the promise does (#1540), which
+   * is what keeps a second frame from interleaving with the login — the
+   * `void promise.then(...)` offload pattern would not, so it is not used
+   * here.  Every other arm is synchronous and returns `undefined`.
+   */
+  override onReceive(message: SessionMessage): void | Promise<void> {
+    return match(message)
       .with({ kind: 'text' }, (m) => this.onText(m))
       .with({ kind: 'binary' }, () => this.onBinary())
       .with({ kind: 'socket-closed' }, () => this.onSocketClosed())
@@ -224,7 +233,7 @@ export class UserSessionActor extends Actor<SessionMessage> {
 
   /* ----------------------------- inbound ----------------------------- */
 
-  private onText(m: TextFrame): void {
+  private onText(m: TextFrame): void | Promise<void> {
     const raw = m.data;
     const command = decodeClient(raw);
     if (!command) {
@@ -232,15 +241,18 @@ export class UserSessionActor extends Actor<SessionMessage> {
       return;
     }
     if (this.phase === 'Unauthenticated') {
-      this.handleUnauthenticated(command);
-      return;
+      return this.handleUnauthenticated(command);
     }
     this.handleAuthenticated(command);
   }
 
-  private handleUnauthenticated(command: ClientMessage): void {
+  private async handleUnauthenticated(command: ClientMessage): Promise<void> {
     if (command.kind === 'login') {
-      const user = validateCredentials(command.username, command.password);
+      // Awaited from the actor's turn: the cell holds the next message
+      // until this settles, so the `phase` check above still holds when
+      // the derivation finishes.  The scrypt itself runs on the thread
+      // pool, so every OTHER actor keeps running meanwhile.
+      const user = await validateCredentials(command.username, command.password);
       if (!user) {
         this.sendServer({ kind: 'login-failed', reason: 'Invalid username or password' });
         this.context.stopSelf();

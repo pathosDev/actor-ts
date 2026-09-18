@@ -11,6 +11,42 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`benchmarks/cluster/tcp-message-cost.ts` measures what an actor message
+  pays to cross a real socket** (#1177).  The same `Counter` actor local and
+  on a second `Cluster` node hosted by a worker thread, joined over a real
+  `TcpTransport` on loopback with no `withTransport`, so the row is the
+  whole wire: envelope, tagged-JSON frame, socket, `FrameDecoder` and its
+  guards, dispatch. It is the first benchmark in the tree that serialises
+  anything; every other cluster suite runs on `InMemoryTransport`. Measured
+  2026-09-18 (Bun 1.4.2, Windows 11, 32 hardware threads): a cross-node
+  `tell` costs about 22 µs per message against ~260 ns local, a cross-node
+  `ask` about 245 µs per round trip against ~6.1 µs — the same per-tell cost
+  as the `MessageChannelTransport` thread hop, so the protocol is the bill,
+  not the wire. Every tell batch is completion-verified by an ask for the
+  count and throws on a shortfall (#1027). There is deliberately no
+  both-nodes-on-one-thread tier: measured, it loses the tail of every burst
+  past ~195 KB of frames silently (1 640 of 10 000 arrive), which is #931;
+  the tier belongs there once #931 lands. The FAQ now quotes the figures
+  where it said "not yet measured" since 2026-08-18,
+  `cluster/transports.mdx` gets a "What a hop costs" section (EN + DE),
+  `benchmarks/README.md` lists the suite, and the comparison report's footer
+  no longer claims the cluster suites never leave the process. Slice (a) of
+  #1177; slice (b) is #1574, slice (c) is #1575.
+
+- **A smoke case drives a real `WorkerCluster` respawn from a real `error`**
+  (#1186).  `tests/smoke/cases/40-worker-respawn-from-error.mjs` spawns a
+  worker from the new `worker-dies-on-command.mjs` fixture, tells it to
+  throw uncaught after its handshake, and asserts that a fresh handle
+  re-fills slot 0 — same `id`, same address, a new ready token — on Bun,
+  Node and Deno. Deno is the arm that binds: it emits no parent-side
+  `close`, so an `error` path that stopped freeing the slot leaves it dead
+  there while Bun and Node still respawn through `close`/`exit` (verified by
+  mutation). The case waits on a referenced poll rather than an event
+  because the respawn timer is unref'd: with nothing else referenced, Node
+  exits 13 during the backoff and Bun and Deno hang, so the poll is what
+  lets the run report a verdict (#1283). No `src/` change; the case was
+  green on day one and its value is binding.
+
 - **Comparison scenario `parallel-workload` in all nine arms** (#1565).
   The four existing scenarios drive one actor or two alternating ones —
   the actor-model invariant no framework parallelises, so the JVM and .NET
@@ -3272,6 +3308,80 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **Object-storage compression no longer holds the event loop**
+  (#1540).  `Compression.ts` called `gzipSync` / `gunzipSync` and the sync
+  zstd forms from inside `async` arrows — promise-shaped from the outside,
+  so every compression test was green while a 24 MiB body held the one
+  thread every actor runs on for its whole encode, and one store's
+  compression landed in the p99 of unrelated actors. Both ladders now call
+  the runtime's async forms — `zlib.gzip` / `zlib.gunzip`,
+  `Bun.zstdCompress` / `zlib.zstdCompress` on the write side,
+  `zlib.zstdDecompress` / `Bun.zstdDecompress` on the read side — through a
+  five-line local callback-to-promise helper, with the canaries probing the
+  async functions that actually serve the reads and writes. Measured (Bun
+  1.4.2, Node 26.7, Deno 2.6.8; 24 MiB body, 1 ms timer alive across the
+  `await`): the sync forms let the timer fire 0 times everywhere, the async
+  forms 30–115 times on Bun and Node. The `node:zlib`-first zstd read order
+  (#580) and the allocation-time `maxOutputLength` cap are unchanged — the
+  `ERR_BUFFER_TOO_LARGE` abort survives the callback form on all three
+  runtimes, so `decompressWithinCap` and the cap tests needed no change. On
+  Deno 2.6 the async forms defer the call and then run it as one main-thread
+  block (0 ticks, measured), so a large body there is `OffloadPool` work —
+  documented on the blocking-work and compression pages (EN + DE) rather
+  than routed, since persistence does not depend on `src/worker`; `fzstd`
+  (pure JS, no async form) stays synchronous. The chat example verifies
+  passwords with `crypto.scrypt` instead of `scryptSync`, the four per-login
+  derivations concurrently (`Promise.all`, 316→95 ms on Node, timing-flat
+  property kept), and `UserSessionActor.onReceive` returns its `match`
+  result so the cell holds the mailbox while the key derives. A new ratchet,
+  `tests/unit/ci/NoSyncWorkInHandlers.test.ts`, refuses any file under
+  `src/` or `examples/` that mentions a closed list of Node's blocking
+  `*Sync` names (zlib, `scrypt`/`pbkdf2`/`hkdf`, `child_process`, `fs`,
+  `@grpc/proto-loader`'s `loadSync`) more often than its ledger entry allows
+  — mentions, not calls, so an aliased local or an import specifier counts;
+  the ledger holds 14 startup/`preStart` mentions in `src/` and 21
+  boot/harness mentions in `examples/`, each with its reason, with no
+  directory exemptions.
+  `tests/unit/persistence/object-storage/CompressionLiveness.test.ts` (a 1
+  ms interval must tick during a 48 MiB compress and decompress per
+  algorithm, and tick in the second half of the window — a
+  deferred-then-blocking call passes the first count and fails the second)
+  and smoke case 41 (gzip round trip and the allocation-time cap on Bun,
+  Node and Deno; the liveness half gated on a capability probe of raw
+  `node:zlib`) bind the behaviour.
+
+- **`RemoteActorRef` accepted a bare `/user/…` path and silently targeted
+  the system root** (#1568).  `new RemoteActorRef(node, '/user/echo',
+  cluster)` kept the string verbatim as `targetPath`, and `tell` put exactly
+  that on the wire as `to`; the receiving node's `parsePathSegments` reads
+  only `actor-ts://<authority>/…`, so the envelope parsed to no segments,
+  skipped tree resolution and was dropped at warn level — silently under the
+  `NoopLogger` every benchmark and most tests run with. On the sending side
+  `.path` collapsed onto the root, so the `ask` timed out "waiting for reply
+  from actor-ts://<sys>/", two bare refs to different actors compared equal
+  and shared one map key (the #515 defect, back for bare input), and
+  `context.watch` answered an immediate
+  `Terminated{existenceConfirmed:false}` while the target lived, because the
+  `watch` frame carries the same field. The constructor now canonicalises
+  `targetPath` itself — `/user/x`, `user/x` and `//user/x` become
+  `actor-ts://<target node's system>/user/x`, a full URI is kept as written,
+  authority included — and derives `.path` from it, so delivery, death
+  watch, `equals`, `toString()` and the ask label agree whichever form was
+  passed. The canonicaliser is the new `canonicalActorPathString(systemName,
+  path)` in `ActorPath.ts`, idempotent and never rejecting its input: a
+  string that is neither form (`''`, `'garbage'`) is read as a path below
+  the root rather than thrown on, because the same constructor rebuilds a
+  peer's `from` claim and a `WireActorRef.path` on arrival, where a throw is
+  answered by dropping the connection. `remoteActorPath` runs its input
+  through the same function, so `RemoteShardRef`, `RemoteWatcherRef` and the
+  parallelism extension share one semantics. The wire reader stays strict on
+  purpose — it is the reader behind `EnvelopeTrust` and the exact-string
+  envelope-handler map — and is now pinned by the first direct
+  `parsePathSegments` tests, asserting that a bare path on the wire still
+  resolves to nothing. `WorkerMesh.refFor` no longer prefixes the path
+  itself and is a plain pass-through; the forms it accepts are unchanged.
+  Documented in the *Refs across nodes* page (EN + DE).
 
 - **`OffloadPool` armed a run before posting it, so a transfer list the
   runtime refused wedged the slot, terminated a healthy worker, or killed

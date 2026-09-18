@@ -72,13 +72,16 @@ type FakeNativeDecoderSpec = {
 
 /**
  * A native-rung stand-in that really decodes, so it passes the canary probe the
- * way the implementation it stands for does.
+ * way the implementation it stands for does.  Promise-shaped like the real
+ * candidates since #1540 moved the ladder onto `zlib.zstdDecompress` and
+ * `Bun.zstdDecompress`; the decode itself is `fzstd`'s synchronous one, which
+ * is fine for a fake — what the resolver awaits is the shape, not the pool.
  */
 function fakeNativeDecoder(
   decodeLog: string[],
   spec: FakeNativeDecoderSpec,
-): (input: Uint8Array, options?: { maxOutputLength?: number }) => Uint8Array {
-  return (input, options) => {
+): (input: Uint8Array, options?: { maxOutputLength?: number }) => Promise<Uint8Array> {
+  return async (input, options) => {
     const output = fzstdDecompress(input);
     if (spec.enforcesCap && options?.maxOutputLength !== undefined && output.length > options.maxOutputLength) {
       // zlib's own wording and error code — `decompressWithinCap` keys the
@@ -220,13 +223,15 @@ describe('zstd read resolution — the fzstd fallback rung (#780)', () => {
   });
 
   test('a native decoder that fails the canary is skipped, and fzstd catches the fall', async () => {
-    // Deno's `node:zlib` exports `zstdDecompressSync` with no native binding
+    // Deno's `node:zlib` exports `zstdDecompress` with no native binding
     // behind it, which is why resolution calls a candidate instead of testing
     // that the symbol exists. This is that runtime, modelled — and it is a live
     // configuration, not a historical one: measured on Deno 2.6.8, both zstd
-    // symbols are present, calling either throws `binding.ZstdDecompress is not
-    // a constructor`, and there is no `Bun` global, so the rung this file
-    // covers is what actually serves a zstd read there today.
+    // symbols are present, calling either (sync or async form) throws
+    // `binding.ZstdDecompress is not a constructor`, and there is no `Bun`
+    // global, so the rung this file covers is what actually serves a zstd read
+    // there today.  The throw is synchronous, out of a function the resolver
+    // expects a promise from — which is exactly how the real binding fails.
     const frame = await nativeZstdFrame();
     setNativeZstdDecompressCandidatesOverride({
       nodeZlib: () => { throw new TypeError('binding.ZstdDecompress is not a constructor'); },
@@ -415,8 +420,8 @@ describe('zstd read resolution — rung order (#580)', () => {
 /**
  * The rung-order block above reaches the Bun rung through the override, which
  * means it never exercises the LINE that puts a decoder there:
- * `loadNativeZstdDecompressCandidates` reads `globalThis.Bun.zstdDecompress-
- * Sync`, and the override returns early before it.  Replace that read with
+ * `loadNativeZstdDecompressCandidates` reads `globalThis.Bun.zstdDecompress`,
+ * and the override returns early before it.  Replace that read with
  * `return { nodeZlib }` and every test in this file stays green, because on
  * Bun and on Node `node:zlib` wins the canary and the second rung is never
  * consulted at all.
@@ -443,11 +448,16 @@ describe('zstd read resolution — rung order (#580)', () => {
  * are told apart by the answer rather than by a label a fake appended.
  */
 describe('zstd read resolution — the runtime read behind the Bun rung (#780)', () => {
-  /** `node:zlib` with its zstd decoder taken away — a Bun that predates it. */
+  /**
+   * `node:zlib` with its zstd decoder taken away — a Bun that predates it.
+   * The ASYNC form is what the resolver reads (#1540), so that is the one the
+   * stand-in breaks; a mock that only took `zstdDecompressSync` away would
+   * leave the real ladder untouched and this whole block asserting nothing.
+   */
   const suppressNodeZlibZstd = (): void => {
     mock.module('node:zlib', () => ({
       ...REAL_NODE_ZLIB,
-      zstdDecompressSync: () => {
+      zstdDecompress: () => {
         throw new TypeError('binding.ZstdDecompress is not a constructor');
       },
     }));
@@ -459,8 +469,8 @@ describe('zstd read resolution — the runtime read behind the Bun rung (#780)',
     // The premise of the two tests below, asserted rather than assumed: they
     // would pass vacuously on a runtime with no `Bun` global, because there
     // the fzstd rung is the correct answer and this file already covers it.
-    const bun = (globalThis as { Bun?: { zstdDecompressSync?: unknown } }).Bun;
-    expect(typeof bun?.zstdDecompressSync).toBe('function');
+    const bun = (globalThis as { Bun?: { zstdDecompress?: unknown } }).Bun;
+    expect(typeof bun?.zstdDecompress).toBe('function');
   });
 
   test("Bun's own global serves the read when node:zlib has no zstd decoder", async () => {

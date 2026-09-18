@@ -150,6 +150,33 @@ der eigenen Maschinerie des Clusters (Sharding-Region,
 Singleton-Proxy, Event-Stream-Subscriber) — `actorSelection` ist
 der Lookup-Notausgang.
 
+### Einen Ref von Hand bauen
+
+Wenn du die Adresse des Nodes und den Namen des Actors schon kennst —
+`mesh.refFor(address, path)` eines Worker-Mesh ist genau das — lässt
+sich ein `RemoteActorRef` direkt bauen.  Sein Konstruktor akzeptiert
+zwei Schreibweisen des Pfads: die nackte Form `/user/name` und die
+volle Form `actor-ts://<system>/user/name`.  Die nackte Form wird gegen
+den System-Namen des **Ziel-Nodes** aufgelöst, und egal welche du
+schreibst, der Ref trägt überall dort die volle Form, wo es darauf
+ankommt — als Ziel des Envelopes auf der Leitung, im `watch`-Frame, in
+`ref.path` und in `equals` — sodass beide Schreibweisen denselben
+Actor benennen.  (Vor #1568 wurde die nackte Form akzeptiert und
+adressierte stillschweigend die System-Wurzel: jede Nachricht daran
+wurde auf der Gegenseite verworfen, und ein `ask` lief mit
+`actor-ts://my-app/` als Ziel in den Timeout.)
+
+```ts
+import { Cluster, NodeAddress, RemoteActorRef } from 'actor-ts/cluster';
+
+const cluster = await Cluster.join(system, clusterOptions);
+const worker = new NodeAddress('my-app', '10.0.0.6', 2552);
+
+const bare = new RemoteActorRef<Job>(worker, '/user/worker', cluster);
+const full = new RemoteActorRef<Job>(worker, 'actor-ts://my-app/user/worker', cluster);
+bare.equals(full);       // true — both carry actor-ts://my-app/user/worker
+```
+
 ## Was passiert, wenn der Remote-Node verschwindet
 
 ```ts

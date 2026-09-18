@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { ActorPath } from '../../src/ActorPath.js';
+import { ActorPath, canonicalActorPathString, parsePathSegments } from '../../src/ActorPath.js';
 
 describe('ActorPath', () => {
   test('root path stringifies to actor-ts://<sys>/', () => {
@@ -145,5 +145,74 @@ describe('ActorPath — name validation (#126, #134)', () => {
     ]) {
       expect(() => root().child(name), `rejected ${name}`).not.toThrow();
     }
+  });
+});
+
+describe('parsePathSegments and canonicalActorPathString (#1568)', () => {
+  describe('parsePathSegments — the wire reader, deliberately strict', () => {
+    test('takes a full URI apart into its segments', () => {
+      expect(parsePathSegments('actor-ts://sys/user/parent/child')).toEqual(['user', 'parent', 'child']);
+    });
+
+    test('a segment-less root yields no segments', () => {
+      expect(parsePathSegments('actor-ts://sys/')).toEqual([]);
+      expect(parsePathSegments('actor-ts://sys')).toEqual([]);
+    });
+
+    test('a bare path yields no segments — and must keep doing so', () => {
+      // Not an oversight.  This is the reader behind `EnvelopeTrust.refusalFor`
+      // (`Cluster.dispatchEnvelope`, `RemoteWatcher.onWatch`) and behind the
+      // exact-string envelope-handler map, and `Protocol.ts` states that the
+      // death-watch frames travel in the full form because it is the only one
+      // read.  A non-canonical spelling that resolved here would be a spelling
+      // the trust policy never saw — the bypass the sharding authority tests
+      // exist for.  Normalisation belongs to the *constructing* side:
+      // `canonicalActorPathString`, below.
+      expect(parsePathSegments('/user/x')).toEqual([]);
+      expect(parsePathSegments('user/x')).toEqual([]);
+      expect(parsePathSegments('')).toEqual([]);
+      expect(parsePathSegments('garbage')).toEqual([]);
+    });
+
+    test('doubled and trailing separators collapse', () => {
+      expect(parsePathSegments('actor-ts://sys//user//x/')).toEqual(['user', 'x']);
+    });
+  });
+
+  describe('canonicalActorPathString — the constructing side', () => {
+    test('a bare path becomes the full URI under the given system name', () => {
+      expect(canonicalActorPathString('sys', '/user/x')).toBe('actor-ts://sys/user/x');
+      expect(canonicalActorPathString('sys', 'user/x')).toBe('actor-ts://sys/user/x');
+      expect(canonicalActorPathString('sys', '//user/x')).toBe('actor-ts://sys/user/x');
+    });
+
+    test('a full URI is returned unchanged, whatever authority it names', () => {
+      expect(canonicalActorPathString('sys', 'actor-ts://sys/user/x')).toBe('actor-ts://sys/user/x');
+      // `remoteActorPath` renders under the *node's* system name regardless of
+      // the authority in the string, so it is not second-guessed here either.
+      expect(canonicalActorPathString('sys', 'actor-ts://other/user/x')).toBe('actor-ts://other/user/x');
+      // The segment-less root several synthetic refs are built with stays one.
+      expect(canonicalActorPathString('sys', 'actor-ts://sys/')).toBe('actor-ts://sys/');
+    });
+
+    test('is idempotent', () => {
+      const once = canonicalActorPathString('sys', '/user/x');
+      expect(canonicalActorPathString('sys', once)).toBe(once);
+    });
+
+    test('a string that is neither form is read as an absolute path, never rejected', () => {
+      // Decision A1 on #1568: the strings reaching this include a peer's `from`
+      // claim and a `WireActorRef.path`, where a throw is answered by dropping
+      // the connection (#563).  So garbage becomes an honest path below the
+      // root — the far side resolves nothing and warns, as before, but the
+      // ref's `.path` says what it points at instead of collapsing onto the root.
+      expect(canonicalActorPathString('sys', '')).toBe('actor-ts://sys/');
+      expect(canonicalActorPathString('sys', 'garbage')).toBe('actor-ts://sys/garbage');
+    });
+
+    test('round-trips through the reader', () => {
+      expect(parsePathSegments(canonicalActorPathString('sys', '/user/x'))).toEqual(['user', 'x']);
+      expect(parsePathSegments(canonicalActorPathString('sys', 'garbage'))).toEqual(['garbage']);
+    });
   });
 });
