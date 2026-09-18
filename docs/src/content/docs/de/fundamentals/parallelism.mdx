@@ -218,9 +218,11 @@ ist nichts zu verschieben.
 
 Ein ausgelagerter Actor fehlt im Zellbaum des Main-Threads: nicht in
 `ActorSelection`, nicht im DevTools-Baum des Main-Threads, nicht in dessen
-Metriken.  Jeder Worker hat seine eigene Registry, also sind **Metriken pro
-Prozess und pro Thread** — jeden Worker scrapen.  Mit `workers = 0` gilt
-nichts davon.
+Metriken.  Jeder Worker hat seine eigene Registry und keinen eigenen
+Management-Endpunkt, also ist **ein ausgelagerter Actor für `/metrics` heute
+unsichtbar** — siehe den
+[Geltungsbereich eines Scrapes](/de/observability/metrics/prometheus-exporter/#geltungsbereich-pro-prozess-pro-thread);
+#1570 ist das Relay.  Mit `workers = 0` gilt nichts davon.
 
 ## Die gemessene Tabelle
 

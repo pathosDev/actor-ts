@@ -3273,6 +3273,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **No metrics page said that a registry is per process — and, with worker
+  threads, per thread** (#1184). Every `ActorSystem` owns its own registry
+  and `GET /metrics` exports exactly the one of the system that bound the
+  route; a worker of a mesh boots its own system with its own registry and
+  no management endpoint, so an actor placed on a worker is invisible to
+  Prometheus — which `actor-ts.parallelism.workers` now does without a line
+  of application code changing. `observability/metrics/prometheus-exporter`
+  gains a "Scope" section (EN + DE) stating both shapes — scrape every
+  cluster node, and worker actors are unscraped today — and
+  `fundamentals/parallelism` no longer says "scrape every worker" where
+  there is nothing to scrape. The relay that would close the gap is #1570.
+
 - **`cluster-security.mdx` claimed every wire rejection is logged, and the
   worker path logs none** (#1275). The page stated the wire-edge guarantees
   without naming a transport — "every frame is validated", "every rejection
