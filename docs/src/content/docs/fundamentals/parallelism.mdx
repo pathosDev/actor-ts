@@ -174,8 +174,10 @@ supervision hands a live `Error` and a ref from child to parent, child
 death watch is a direct link, and parent–child is the chattiest
 relationship in an actor system.  So **the unit of offload is the subtree**:
 an offloaded top-level actor takes its children with it, and load spreads
-through several top-level actors, a router or sharding — not through more
-workers per subtree.  Paths are unaffected: `ref.path.toString()` is the
+through several top-level actors, sharding, or a
+[cluster router over one routee per worker](/routing/overview/#one-address-one-actor-per-thread)
+— a *local* `Router` cannot spread it, since its routees are its children
+— not through more workers per subtree.  Paths are unaffected: `ref.path.toString()` is the
 same whether the actor is local or offloaded, because a path carries the
 system name and not the thread.
 

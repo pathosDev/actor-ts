@@ -6,11 +6,14 @@
  * unregistration, message routing, and close semantics against the
  * `FakePort` shim — no real worker spawned.
  */
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
+import type { Clock } from '../../../src/Clock.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import type { BrokeredMessage } from '../../../src/cluster/transports/MessageChannelTransport.js';
-import { WorkerBroker } from '../../../src/worker/WorkerBroker.js';
+import { WORKER_BROKER_DROP_REPORT_INTERVAL_MS, WorkerBroker } from '../../../src/worker/WorkerBroker.js';
+import { NoopLogger } from '../../../src/Logger.js';
 import { hostileEnvelopes } from '../../util/HostileFrames.js';
+import { RecordingLogger } from '../../util/RecordingLogger.js';
 import { FakePort } from './__fixtures__/InMemoryWorkerThread.js';
 
 const addr = (port: number): NodeAddress => new NodeAddress('sys', 'host', port);
@@ -173,7 +176,9 @@ describe('WorkerBroker — malformed frames', () => {
    */
   for (const [label, frame] of hostileEnvelopes) {
     test(`drops a frame with ${label} instead of throwing`, () => {
-      const broker = new WorkerBroker();
+      // The drop is the subject, its report is not (#1276 covers that below);
+      // the default sink would put a WARN per row on stderr of a green run.
+      const broker = new WorkerBroker(new NoopLogger());
       const aPort = new FakePort();
       const bPort = new FakePort();
       broker.register(addr(1), aPort);
@@ -206,7 +211,7 @@ describe('WorkerBroker — malformed frames', () => {
    * a route the guard does not stand on.
    */
   test('a destination port that throws does not take the broker down with it', () => {
-    const broker = new WorkerBroker();
+    const broker = new WorkerBroker(new NoopLogger());
     const aPort = new FakePort();
     const cPort = new FakePort();
     const exploding = new FakePort();
@@ -225,7 +230,7 @@ describe('WorkerBroker — malformed frames', () => {
   });
 
   test('a hostile frame does not stop the next well-formed one from routing', () => {
-    const broker = new WorkerBroker();
+    const broker = new WorkerBroker(new NoopLogger());
     const aPort = new FakePort();
     const bPort = new FakePort();
     broker.register(addr(1), aPort);
@@ -342,5 +347,206 @@ describe('WorkerBroker — sender identity comes from the channel', () => {
 
     expect(aPort.posted).toEqual([]);
     expect(bPort.posted).toEqual([]);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* #1276 — a drop is counted, and reported as one folded line per reason    */
+/* ------------------------------------------------------------------------ */
+
+describe('WorkerBroker — drops are counted and reported (#1276)', () => {
+  /** A clock the test moves by hand, so the fold can be crossed without a thirty-second wait. */
+  class ManualClock implements Clock {
+    nowMs = 0;
+    now(): number { return this.nowMs; }
+  }
+
+  const NO_DROPS = { malformed: 0, 'unknown-destination': 0, unroutable: 0 };
+  const messagesAt = (logger: RecordingLogger, level: string): string[] =>
+    logger.records.filter((record) => record.level === level).map((record) => record.message);
+
+  test('a fresh broker has dropped nothing, and the snapshot is a copy', () => {
+    const broker = new WorkerBroker(new RecordingLogger());
+    const snapshot = broker.dropped();
+    expect(snapshot).toEqual(NO_DROPS);
+    (snapshot as { malformed: number }).malformed = 99;
+    expect(broker.dropped()).toEqual(NO_DROPS);
+  });
+
+  test('malformed frames are tallied, and fold into one WARN per interval carrying the count', () => {
+    const logger = new RecordingLogger();
+    const clock = new ManualClock();
+    const broker = new WorkerBroker(logger, clock);
+    const aPort = new FakePort();
+    broker.register(addr(1), aPort);
+
+    // Three hostile frames inside one interval: the first is reported at once,
+    // the next two are folded and counted only.
+    for (const [, frame] of hostileEnvelopes.slice(0, 3)) aPort.inject(frame);
+    expect(broker.dropped().malformed).toBe(3);
+    expect(messagesAt(logger, 'warn')).toEqual([
+      '[worker] broker dropped 1 frame(s) from sys@host:1 — the envelope is not a BrokeredMessage — '
+      + 'its address fields failed the shape check, and nothing past them was read',
+    ]);
+    expect(messagesAt(logger, 'debug')).toEqual([]);
+
+    // Past the interval the next drop flushes the fold: the two suppressed
+    // frames plus the one that triggered the line.
+    clock.nowMs += WORKER_BROKER_DROP_REPORT_INTERVAL_MS;
+    aPort.inject(hostileEnvelopes[3]![1]);
+    expect(broker.dropped().malformed).toBe(4);
+    const warnings = messagesAt(logger, 'warn');
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toMatch(/^\[worker\] broker dropped 3 frame\(s\) from sys@host:1 — /);
+
+    // One short of the interval is still inside it.
+    clock.nowMs += WORKER_BROKER_DROP_REPORT_INTERVAL_MS - 1;
+    aPort.inject(hostileEnvelopes[4]![1]);
+    expect(broker.dropped().malformed).toBe(5);
+    expect(messagesAt(logger, 'warn')).toHaveLength(2);
+  });
+
+  test('the fold is keyed on the reason, never on the source port', () => {
+    const logger = new RecordingLogger();
+    const broker = new WorkerBroker(logger, new ManualClock());
+    const aPort = new FakePort();
+    const bPort = new FakePort();
+    broker.register(addr(1), aPort);
+    broker.register(addr(2), bPort);
+
+    aPort.inject('not-an-envelope');
+    bPort.inject('not-an-envelope');
+    // A second source inside the interval buys no second line: a per-source
+    // throttle is the map a misbehaving worker grows.
+    expect(messagesAt(logger, 'warn')).toHaveLength(1);
+    expect(broker.dropped().malformed).toBe(2);
+  });
+
+  test('a well-formed frame to an address nobody registered is counted, and reported at debug', () => {
+    const logger = new RecordingLogger();
+    const broker = new WorkerBroker(logger, new ManualClock());
+    const aPort = new FakePort();
+    broker.register(addr(1), aPort);
+
+    aPort.inject(envelope(addr(1), addr(999)));
+
+    expect(broker.dropped()['unknown-destination']).toBe(1);
+    expect(messagesAt(logger, 'warn')).toEqual([]);
+    expect(messagesAt(logger, 'debug')).toEqual([
+      '[worker] broker dropped 1 frame(s) from sys@host:1 — no worker is registered at the destination '
+      + 'address — expected briefly after a worker dies, while its siblings\' gossip catches up with the '
+      + 'failure detector',
+    ]);
+    expect(aPort.posted).toEqual([]);
+  });
+
+  test('a destination port that throws is counted as unroutable and reported with the port\'s error', () => {
+    const logger = new RecordingLogger();
+    const broker = new WorkerBroker(logger, new ManualClock());
+    const aPort = new FakePort();
+    const cPort = new FakePort();
+    const exploding = new FakePort();
+    exploding.postMessage = (): void => { throw new Error('DataCloneError'); };
+    broker.register(addr(1), aPort);
+    broker.register(addr(2), exploding);
+    broker.register(addr(3), cPort);
+
+    expect(() => aPort.inject(envelope(addr(1), addr(2)))).not.toThrow();
+
+    expect(broker.dropped()).toEqual({ ...NO_DROPS, unroutable: 1 });
+    expect(messagesAt(logger, 'warn')).toEqual([
+      '[worker] broker dropped 1 frame(s) from sys@host:1 — the destination port refused the frame: DataCloneError',
+    ]);
+    // Still a broker afterwards, and the honest hop is not a drop.
+    const good = envelope(addr(1), addr(3));
+    aPort.inject(good);
+    expect(cPort.posted).toEqual([good]);
+    expect(broker.dropped()).toEqual({ ...NO_DROPS, unroutable: 1 });
+  });
+
+  test('each reason keeps its own fold — a drop of one kind does not silence the first of another', () => {
+    const logger = new RecordingLogger();
+    const broker = new WorkerBroker(logger, new ManualClock());
+    const aPort = new FakePort();
+    broker.register(addr(1), aPort);
+
+    aPort.inject('not-an-envelope');
+    aPort.inject(envelope(addr(1), addr(999)));
+
+    expect(broker.dropped()).toEqual({ ...NO_DROPS, malformed: 1, 'unknown-destination': 1 });
+    expect(messagesAt(logger, 'warn')).toHaveLength(1);
+    expect(messagesAt(logger, 'debug')).toHaveLength(1);
+  });
+
+  test('a frame that arrives after close() is neither counted nor reported — shutdown is not a drop', () => {
+    const logger = new RecordingLogger();
+    const broker = new WorkerBroker(logger, new ManualClock());
+    const aPort = new FakePort();
+    broker.register(addr(1), aPort);
+    // The handler `register` installed, captured before `close()` nulls it —
+    // the only way a frame can still reach `onMessage` once the broker has
+    // stopped, which is the backstop this test is about.
+    const handler = aPort.onmessage!;
+    broker.close();
+
+    aPort.inject('not-an-envelope');
+    handler({ data: 'not-an-envelope' });
+    handler({ data: envelope(addr(1), addr(999)) });
+
+    expect(broker.dropped()).toEqual(NO_DROPS);
+    expect(logger.records).toEqual([]);
+  });
+
+  test('no line ever carries anything lifted from the frame', () => {
+    const logger = new RecordingLogger();
+    const broker = new WorkerBroker(logger, new ManualClock());
+    const aPort = new FakePort();
+    const exploding = new FakePort();
+    exploding.postMessage = (): void => { throw new Error('the port refused it'); };
+    broker.register(addr(1), aPort);
+    broker.register(addr(2), exploding);
+    const marker = 'NEVER-IN-A-LOG-LINE';
+
+    // Malformed, with the marker in the payload and in what stands in for `to`.
+    aPort.inject({ from: addr(1).toJSON(), to: marker, payload: { kind: marker } });
+    // Unknown destination, with the marker as the address the sender chose.
+    aPort.inject({
+      from: addr(1).toJSON(),
+      to: { systemName: marker, host: marker, port: 999 },
+      payload: { kind: marker },
+    });
+    // Unroutable, with the marker in the payload the port refused.
+    aPort.inject({ ...envelope(addr(1), addr(2)), payload: { kind: marker } as unknown as BrokeredMessage['payload'] });
+
+    expect(broker.dropped()).toEqual({ malformed: 1, 'unknown-destination': 1, unroutable: 1 });
+    expect(logger.records).toHaveLength(3);
+    for (const record of logger.records) {
+      expect(record.message).not.toContain(marker);
+      // The one identity the line does carry is the host-minted source.
+      expect(record.message).toContain('from sys@host:1');
+    }
+  });
+
+  test('a broker built without a logger reports through the console — the same default sink the pool has', () => {
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    const debugSpy = spyOn(console, 'debug').mockImplementation(() => {});
+    try {
+      const broker = new WorkerBroker();
+      const aPort = new FakePort();
+      broker.register(addr(1), aPort);
+
+      aPort.inject('not-an-envelope');
+      aPort.inject(envelope(addr(1), addr(999)));
+
+      const warned = warnSpy.mock.calls.map((call) => String(call[0]));
+      expect(warned.filter((line) => line.includes('[worker] broker dropped 1 frame(s) from sys@host:1 — the envelope is not a BrokeredMessage'))).toHaveLength(1);
+      // `ConsoleLogger` at `Info` hides the debug line, which is the point of
+      // that level for the reason that bursts after every crash.
+      expect(debugSpy.mock.calls).toEqual([]);
+      expect(broker.dropped()).toEqual({ ...NO_DROPS, malformed: 1, 'unknown-destination': 1 });
+    } finally {
+      warnSpy.mockRestore();
+      debugSpy.mockRestore();
+    }
   });
 });

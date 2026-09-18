@@ -110,8 +110,10 @@ export class WorkerMesh {
     // The main thread's own port goes on the broker *before* any worker
     // exists, which is why the broker is built here and handed in rather than
     // left to `WorkerCluster`: a worker's first gossip to its seed has to find
-    // the seed registered.
-    const broker = new WorkerBroker();
+    // the seed registered.  Built with `system.log`, as the worker cluster
+    // below is, so a dropped frame and a worker exit reach the same sinks as
+    // everything else this system logs (#1276).
+    const broker = new WorkerBroker(system.log);
     const channel = new MessageChannel();
     broker.register(mainAddress, channel.port1 as unknown as PortLike);
     const transport = new MessageChannelTransport(mainAddress, channel.port2 as unknown as PortLike);

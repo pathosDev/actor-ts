@@ -115,7 +115,10 @@ set with a builder on the main thread is the value the workers run with
 — imports the module(s) named by `withModule`, registers every exported
 actor class by its **export name**, runs the module's `setup` if it has
 one, and reports the registry back: `mesh.workers` lists each worker's
-address and the classes it can spawn.
+address and the classes it can spawn.  The mesh hands `system.log` to
+both the worker cluster and the broker it builds, so every line listed
+under [What the mesh reports](#what-the-mesh-reports) reaches the sinks
+your system already logs to.
 
 | Option | What |
 | --- | --- |
@@ -234,8 +237,10 @@ void main();
 | `withRestartRandomFactor(f)` | ± jitter fraction on each respawn delay, in `[0, 1]`.  Default `0.2`. |
 | `withMaxRestarts(n)` | Restarts granted per slot within the window before it is retired; `-1` for unlimited.  Default `10`. |
 | `withRestartWindowMs(ms)` | Sliding window the restart budget counts over; `0` never resets it.  Default `60000`. |
-| `withOnWorkerPermanentlyDown(fn)` | Called once per slot whose restart budget is spent.  Default: a `console.error` line. |
+| `withOnWorkerPermanentlyDown(fn)` | Called once per slot whose restart budget is spent.  Default: an `ERROR` line through the pool's logger. |
 | `withBackend(backend)` | Spawn through this `WorkerBackend` instead of the detected one — a runtime auto-detection does not know, or an in-memory fake in a test.  Default: detected. |
+| `withLogger(logger)` | Where the pool reports worker exits, respawns, retired slots and — when it builds its own broker — broker drops; see [What the mesh reports](#what-the-mesh-reports).  Default: a `ConsoleLogger` at `Info`. |
+| `withBroker(broker)` | Route through a broker the caller owns, the way `WorkerMesh` puts the main thread's own port on it first.  A broker handed in keeps the logger it was built with.  Default: a fresh broker reporting through the pool's logger. |
 
 The returned `WorkerCluster` exposes `size`, `addresses`
 (the `NodeAddress` of each worker), the shared `broker`, and
@@ -401,6 +406,11 @@ binomial(N,2).  The broker relays every hop, which keeps the
 wiring linear but makes the main thread the relay for all
 cross-node traffic.
 
+A broker built with `new WorkerBroker()` reports the frames it drops
+through a `ConsoleLogger` at `Info`; `new WorkerBroker(system.log)`
+routes them through your system's sinks instead, which is what
+`WorkerMesh` does for the broker it builds.
+
 ## How it differs from TCP cluster
 
 ```
@@ -496,7 +506,53 @@ Two runtime asymmetries are worth knowing:
   framework simply cannot observe it.
 </Aside>
 
-Malformed traffic is dropped, not fatal: the broker validates a frame's
+### What the mesh reports
+
+Every one of the events above produces a line through the pool's logger
+— `system.log` in a `WorkerMesh`, `withLogger` on a bare
+`WorkerCluster`, a `ConsoleLogger` at `Info` when neither is given.  The
+lines all carry the `[worker]` prefix, and each carries the fact inside
+the message rather than as a structured argument, so a console sink and
+a log shipper see the same thing:
+
+| Event | Level | Line |
+| --- | --- | --- |
+| A worker's `error` event | `ERROR` | `[worker] worker N (addr) failed: <message>` |
+| A `close` event with a non-zero code, or with none | `WARN` | `[worker] worker N (addr) exited with code C` / `… exited without an exit code` |
+| A `close` event with code 0 | `INFO` | `[worker] worker N (addr) exited with code 0` |
+| The policy leaves the slot down | `INFO` | `[worker] worker N (addr) is not respawned — restartPolicy 'P'` |
+| A restart is granted | `WARN` | `[worker] respawning worker N (addr) in D ms (restart K of M inside W ms)` — `(restart budget unlimited)` under `maxRestarts: -1` |
+| A replacement never became ready | `ERROR` | `[worker] respawning worker N (addr) failed: <message>` |
+| The budget is spent and no `onWorkerPermanentlyDown` is set | `ERROR` | `[worker] worker N (addr) is permanently down — K restarts inside W ms exhausted its budget` |
+| The broker refuses a frame | `WARN`; `DEBUG` for an unknown destination | `[worker] broker dropped K frame(s) from <source> — <reason>` |
+
+Four things about those lines are worth knowing:
+
+- **Deno reports only the error path.** Its parent-side `Worker` emits
+  no `close`, so the exit lines and the "not respawned" line never
+  appear there — a worker that exits without throwing is as invisible
+  to the log as it is to the restart policy.
+- **Bun reports a deliberate `self.close()` as code 1**, so a worker
+  that shuts itself down reads as `exited with code 1` and is respawned
+  under the default `'on-failure'` policy.  The line states the code the
+  runtime gave; it never says "crashed".
+- **A worker the policy leaves down is reported, not removed.** The
+  `INFO` line is the whole of what happens on that branch today: the
+  slot's handle and its broker registration are not released, so `size`
+  still counts it.
+- **Broker drops fold.** The first drop of each reason is reported at
+  once; later ones are counted and folded into one line per reason every
+  30 seconds, carrying the count.  An unknown destination goes out at
+  `DEBUG` because it is the normal shape after a crash — every sibling
+  keeps gossiping to the dead address until the failure detector
+  converges — while a malformed envelope or a port that refuses a frame
+  is a defect somewhere and goes out at `WARN`.  The line names the
+  registered address of the port the frame *arrived on*, never anything
+  lifted from the frame itself, and `broker.dropped()` returns the
+  running tallies per reason.
+
+Malformed traffic is dropped, not fatal — and it is counted and
+reported, as the last row above says: the broker validates a frame's
 `to` and `from` addresses before routing it, so one bad
 `postMessage` from a worker no longer throws inside the host's message
 listener.  The frame's `payload` is validated by the receiving

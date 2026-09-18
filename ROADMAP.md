@@ -348,7 +348,6 @@ This document tracks the planned direction.  Nothing here is committed work — 
 ## Production features (Orleans / Vlingo-inspired)
 
 - Persistent reminders (Orleans-style durable timers) — #168
-- Stateless workers — per-node pool of identical activations — #170
 - Saga / process-manager with compensations — #179
 - Placement strategies (PreferLocal / HashBased / ActivationCountBased) — #169
 
