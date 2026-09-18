@@ -14,6 +14,7 @@ import { ParallelismExtensionId } from '../../../src/parallelism/ParallelismExte
 import { ParallelismOptions } from '../../../src/parallelism/ParallelismOptions.js';
 import { AskTimeoutError } from '../../../src/SystemMessages.js';
 import type { ModuleImporter } from '../../../src/worker/WorkerMeshBootstrap.js';
+import { awaitCondition } from '../../util/AwaitCondition.js';
 import { FakeWorkerBackend, hostMeshNode } from '../worker/__fixtures__/InMemoryWorkerThread.js';
 import type { EncodeCommand, EncodedFrame } from './__fixtures__/encoders.js';
 
@@ -39,6 +40,13 @@ import type { EncodeCommand, EncodedFrame } from './__fixtures__/encoders.js';
 const ENCODERS = new URL('./__fixtures__/encoders.ts', import.meta.url);
 const WORKERS = 3;
 const WORKER_ROLE = 'compute';
+/**
+ * The cap on the one ask that must time out — the main thread's share of a
+ * roleless router's traffic.  Nothing ever answers it, so this is how long the
+ * test waits for a certainty, not a budget for work: the asks that pay a real
+ * round trip run under the default ask timeout.
+ */
+const DROPPED_ASK_TIMEOUT_MS = 500;
 const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..');
 const OVERVIEW_PAGES = {
   en: join(REPOSITORY_ROOT, 'docs', 'src', 'content', 'docs', 'routing', 'overview.mdx'),
@@ -161,6 +169,15 @@ describe('a ClusterRouter over the worker mesh — one routee per worker, one lo
    * node is a routee like any other, and the main thread has no
    * `/user/encoder`: that share of the traffic is dropped where it arrives,
    * with the cluster's one warning per message, and an `ask` for it times out.
+   *
+   * Which ask that is, is known, not discovered: routees are sorted by the
+   * string form of their address, `media@main:1` sorts before every
+   * `media@worker:N`, and the rotation starts at zero — so the **first** ask
+   * is the main thread's share.  It is the one ask that carries an explicit
+   * timeout, because its timeout is the assertion.  The N that must succeed
+   * cross the mesh under the default ask timeout: a fixed cap on a real round
+   * trip is the wall-clock-over-work shape that goes red under whole-suite
+   * `--parallel` (#1282), and until this rewrite every ask here carried one.
    */
   test('without a role the main thread is a routee too, and its share is dropped with a warning', async () => {
     const logger = new WarningRecorder();
@@ -174,21 +191,27 @@ describe('a ClusterRouter over the worker mesh — one routee per worker, one lo
         .withRouteePath('/user/encoder');
       const encoders = system.spawn(ClusterRouter.factory(roleless), 'encoders');
 
-      const answered: string[] = [];
-      const timedOut: unknown[] = [];
-      for (let i = 0; i < WORKERS + 1; i++) {
-        try {
-          answered.push((await encode(encoders, 1_000)).encodedOn);
-        } catch (error) {
-          timedOut.push(error);
-        }
+      let mainThreadShare: unknown;
+      try {
+        mainThreadShare = `answered by ${(await encode(encoders, DROPPED_ASK_TIMEOUT_MS)).encodedOn}`;
+      } catch (error) {
+        mainThreadShare = error;
       }
-      expect(timedOut).toHaveLength(1);
-      expect(timedOut[0]).toBeInstanceOf(AskTimeoutError);
+      expect(mainThreadShare).toBeInstanceOf(AskTimeoutError);
+
+      const answered: string[] = [];
+      for (let i = 0; i < WORKERS; i++) answered.push((await encode(encoders)).encodedOn);
       expect(answered.sort()).toEqual(sortedAddresses(system));
-      const dropped = logger.warnings.filter((line) => line.includes('dropping message to actor-ts://media/user/encoder'));
-      expect(dropped).toHaveLength(1);
-      expect(dropped[0]).toContain('no envelope handler registered');
+
+      // The drop is logged where the envelope lands, on the main node's own
+      // inbound path — a hop this thread's ask never waited on, so the line is
+      // awaited rather than assumed to precede the timeout.
+      const dropped = (): string[] =>
+        logger.warnings.filter((line) => line.includes('dropping message to actor-ts://media/user/encoder'));
+      await awaitCondition(() => dropped().length === 1, {
+        timeoutMs: 4_000, label: 'the main thread warned exactly once about its dropped share',
+      });
+      expect(dropped()[0]).toContain('no envelope handler registered');
     } finally {
       await system.terminate();
     }
