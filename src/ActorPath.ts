@@ -202,3 +202,37 @@ export function parsePathSegments(path: string): string[] {
   const rest = match[1] ?? '';
   return rest.split('/').filter((s) => s.length > 0);
 }
+
+/**
+ * Bring a caller-supplied path string into the one form the wire reads:
+ * `/user/x`, `user/x` and `//user/x` all become `actor-ts://<systemName>/user/x`,
+ * and a string that already starts with `actor-ts://` is returned as it is —
+ * so applying this twice changes nothing, and the authority in a full URI is
+ * not second-guessed, because `remoteActorPath` never checked it either (it
+ * renders under the *node's* system name regardless).
+ *
+ * The constructing side's counterpart of {@link parsePathSegments}, which stays
+ * strict on purpose: it is the reader behind `EnvelopeTrust.refusalFor` and the
+ * exact-string envelope-handler map, and `Protocol.ts` states that the
+ * death-watch frames travel in the full form because it is the only one read.
+ * A non-canonical spelling that resolved *there* would be a spelling the trust
+ * policy never saw — the bypass the sharding authority tests exist for.  So a
+ * bare path is normalised once, when a ref is built, and the wire sees only the
+ * canonical form.  Before this, `RemoteActorRef` kept a bare `targetPath`
+ * verbatim, `tell` put it on the wire as `to`, the far side parsed it to no
+ * segments and dropped the envelope, and the ref's own `.path` collapsed onto
+ * the system root — so the `ask` timed out naming `actor-ts://<sys>/` and two
+ * bare refs to different actors compared equal (#1568).
+ *
+ * Prefix-keyed, never "no segments → throw".  `actor-ts://<sys>/` is a
+ * legitimate segment-less root that synthetic refs are built with, and the
+ * strings that reach this include a peer's `from` claim and a `WireActorRef`'s
+ * `path`, where a throw is answered by dropping the connection (#563).  So a
+ * string that is neither form — `''`, `'garbage'` — is read as an absolute
+ * path below the root: `actor-ts://<sys>/garbage`.  The far side resolves
+ * nothing and warns, as it did before, but the ref now says what it points at.
+ */
+export function canonicalActorPathString(systemName: string, path: string): string {
+  if (path.startsWith('actor-ts://')) return path;
+  return `actor-ts://${systemName}/${path.replace(/^\/+/, '')}`;
+}

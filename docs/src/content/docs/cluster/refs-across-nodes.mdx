@@ -140,6 +140,32 @@ the cluster's own machinery (sharding region, singleton proxy,
 event-stream subscriber) — `actorSelection` is the lookup
 escape hatch.
 
+### Building a ref by hand
+
+When you already know the node's address and the actor's name — a
+worker mesh's `mesh.refFor(address, path)` is exactly this — a
+`RemoteActorRef` can be built directly.  Its constructor accepts two
+spellings of the path: the bare `/user/name` form and the full
+`actor-ts://<system>/user/name` form.  The bare form resolves against
+the **target node's** system name, and whichever you write, the ref
+carries the full form everywhere it matters — as the envelope's target
+on the wire, in the `watch` frame, in `ref.path` and in `equals` — so
+the two spellings name one actor.  (Before #1568 the bare form was
+accepted and silently addressed the system root: every message to it
+was dropped on the far side, and an `ask` timed out naming
+`actor-ts://my-app/`.)
+
+```ts
+import { Cluster, NodeAddress, RemoteActorRef } from 'actor-ts/cluster';
+
+const cluster = await Cluster.join(system, clusterOptions);
+const worker = new NodeAddress('my-app', '10.0.0.6', 2552);
+
+const bare = new RemoteActorRef<Job>(worker, '/user/worker', cluster);
+const full = new RemoteActorRef<Job>(worker, 'actor-ts://my-app/user/worker', cluster);
+bare.equals(full);       // true — both carry actor-ts://my-app/user/worker
+```
+
 ## What happens when the remote node disappears
 
 ```ts

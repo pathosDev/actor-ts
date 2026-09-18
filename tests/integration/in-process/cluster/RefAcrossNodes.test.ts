@@ -12,6 +12,7 @@ import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../../src/cluster/Transport.js';
 import { RemoteActorRef } from '../../../../src/cluster/RemoteActorRef.js';
 import { LogLevel, NoopLogger } from '../../../../src/Logger.js';
+import { Terminated } from '../../../../src/SystemMessages.js';
 import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
 
 /**
@@ -318,6 +319,91 @@ describe('ActorRef serialisation across cluster nodes', () => {
         await expect(remote.ask<string>({ kind: 'ping', id: 'x' }, 150)).rejects.toThrow(
           /Ask timed out after 150ms waiting for reply from actor-ts:\/\/ref-ask-timeout\/user\/not-there/,
         );
+      } finally {
+        await stop(nodeA);
+        await stop(nodeB);
+      }
+    }, 15_000);
+  });
+
+  /**
+   * #1568 — every test above hands the constructor a full `actor-ts://…` URI.
+   * `new RemoteActorRef(node, '/user/echo', cluster)` used to put the bare
+   * string on the wire as `to`, which the receiving node's `parsePathSegments`
+   * reads as no segments: the envelope missed the actor, was dropped at warn
+   * level, and the `ask` timed out naming the system root.  The `watch` frame
+   * carries the same field, so death watch on such a ref answered
+   * `existenceConfirmed: false` at once while the target lived.  The
+   * constructor now canonicalises `targetPath`, so the bare form delivers.
+   */
+  describe('bare paths (#1568)', () => {
+    type Command = { kind: 'ping'; id: string; replyTo: ActorRef<string> };
+
+    class Echo extends Actor<Command> {
+      override onReceive(m: Command): void { m.replyTo.tell(`pong:${m.id}`); }
+    }
+
+    test('a ref built from the bare /user/… form asks and tells through to the actor', async () => {
+      const systemName = 'ref-bare';
+      const nodeA = await startNode(systemName, 58_331, []);
+      const nodeB = await startNode(systemName, 58_332, [`${systemName}@h:58331`]);
+      try {
+        await waitFor(() => nodeB.cluster.upMembers().length === 2);
+
+        const received: string[] = [];
+        class Sink extends Actor<string> {
+          override onReceive(m: string): void { received.push(m); }
+        }
+        nodeA.sys.spawn(Echo, 'echo');
+        nodeA.sys.spawn(Sink, 'sink');
+
+        const echo = new RemoteActorRef<Command>(nodeA.cluster.selfAddress, '/user/echo', nodeB.cluster);
+        expect(await echo.ask<string>({ kind: 'ping', id: 'bare' }, 3_000)).toBe('pong:bare');
+
+        const sink = new RemoteActorRef<string>(nodeA.cluster.selfAddress, '/user/sink', nodeB.cluster);
+        sink.tell('told through a bare path');
+        await waitFor(() => received.length === 1, 3_000, 'the bare tell to arrive on node A');
+        expect(received).toEqual(['told through a bare path']);
+      } finally {
+        await stop(nodeA);
+        await stop(nodeB);
+      }
+    }, 15_000);
+
+    test('watching a bare-path ref reports the target’s real death, not "never existed"', async () => {
+      class Subject extends Actor<'stop'> {
+        override onReceive(): void { this.context.stopSelf(); }
+      }
+      type WatcherCommand = { kind: 'watch'; subject: ActorRef } | Terminated;
+      class Watcher extends Actor<WatcherCommand> {
+        readonly terminations: Terminated[] = [];
+        override onReceive(command: WatcherCommand): void {
+          if (command instanceof Terminated) this.terminations.push(command);
+          else this.context.watch(command.subject);
+        }
+      }
+
+      const systemName = 'ref-bare-watch';
+      const nodeA = await startNode(systemName, 58_341, []);
+      const nodeB = await startNode(systemName, 58_342, [`${systemName}@h:58341`]);
+      try {
+        await waitFor(() => nodeB.cluster.upMembers().length === 2);
+
+        nodeA.sys.spawn(Subject, 'subject');
+        let watcherInstance: Watcher | null = null;
+        const watcher = nodeB.sys.spawn(() => (watcherInstance = new Watcher()), 'watcher');
+        const remote = new RemoteActorRef<'stop'>(nodeA.cluster.selfAddress, '/user/subject', nodeB.cluster);
+        watcher.tell({ kind: 'watch', subject: remote });
+
+        // Frames between two nodes arrive in order, so the first `Terminated`
+        // is the verdict: the unfixed ref got an immediate "never existed";
+        // the fixed one hears nothing until the subject actually stops.
+        remote.tell('stop');
+        await waitFor(() => watcherInstance?.terminations.length === 1, 5_000, 'Terminated on node B');
+        const terminated = watcherInstance!.terminations[0]!;
+        expect(terminated.actor).toBe(remote);
+        expect(terminated.existenceConfirmed).toBe(true);
+        expect(terminated.addressTerminated).toBe(false);
       } finally {
         await stop(nodeA);
         await stop(nodeB);
