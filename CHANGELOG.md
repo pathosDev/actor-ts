@@ -3309,6 +3309,60 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The worker mesh reports every worker exit, every granted respawn and
+  every frame its broker drops** (#1276).  `WorkerCluster` holds one logger
+  — `withLogger`, or a `ConsoleLogger` at `Info` when none is given — and
+  every line carries the `[worker]` prefix: a close event is reported with
+  its raw exit code (`WARN` for a non-zero or missing code, `INFO` for a
+  clean exit), a worker the restart policy leaves down is reported at
+  `INFO`, a granted restart is reported at `WARN` with its delay and the
+  budget it drew on ("restart budget unlimited" under `maxRestarts -1`), and
+  the existing error, failed-respawn and permanently-down lines go through
+  the same logger instead of a console fallback. `WorkerBroker` takes an
+  optional `Logger` (`new WorkerBroker(system.log)`), counts what it refuses
+  per reason — `malformed`, `unknown-destination`, `unroutable` — behind
+  `broker.dropped()`, and folds the report into one line per reason per 30
+  seconds carrying the count, `WARN` for a `malformed` envelope or a
+  refusing port and `DEBUG` for an unknown destination, naming the
+  registered address the frame arrived on and never the frame itself.
+  `WorkerMesh` hands `system.log` to both, so in a mesh all of it reaches
+  the configured sinks. The type `WorkerBrokerDropReason` is exported from
+  `actor-ts/worker`.
+
+- **The routing docs now say what the local `Router` pool actually does, and
+  carry a decision matrix plus the recipe for N identical actors across N
+  threads behind one address** (#170).  Four statements predated 49ddeb49
+  and were never revisited: a stopped routee is pruned on its `Terminated`
+  and a crashed one restarted in place — not left in the pool sending 1-in-N
+  messages to dead letters "until the whole router restarts"; `size` is
+  validated at the factory call and throws `OptionsError`, rather than being
+  a bug the framework "should" catch; a pool buys in-flight concurrency for
+  handlers that `await`, never CPU parallelism
+  (`benchmarks/single-node/router-pool.ts` says so); and `ClusterRouter`
+  does have a `smallest-mailbox` mode, on a cached depth. `pool-vs-group` no
+  longer claims the cluster router notices a stopped routee — routees are
+  derived from membership and never probed, so that node keeps its share and
+  drops it with a warning. `strategies` no longer denies that
+  `Router.scatterGatherFirstCompleted` ships (#1202). The overview's
+  "Routers are not (the only) way to parallelize" gained a five-row matrix —
+  local `Router`, `ClusterRouter` over the worker mesh, `OffloadPool`,
+  `actor-ts.parallelism.workers`, sharded entity — by unit of work, threads,
+  address, pool size, stop/crash behaviour, per-message cost and break-even,
+  quoting only figures the tree already prints (~320 ns / ~21 µs / ~180 µs
+  from `benchmarks/worker/mesh-message-cost.ts`, ~100 µs from the
+  parallelism page, ~10 µs from the CPU-bound page, ~22 µs / ~245 µs TCP
+  from the FAQ). Below it, the recipe the issue asked a
+  `statelessWorkerPool` for: the actor module's `setup()` spawns
+  `/user/encoder` on every worker and a role-filtered `ClusterRouter` on the
+  main thread finds them, with its three traps (a router matching `offload`
+  throws, a role-less router makes the main thread a routee whose share is
+  dropped, `smallest-mailbox` needs `ClusterMailboxDepthAgent.serve` on the
+  workers). `tests/unit/parallelism/ClusterRouterOverMesh.test.ts` runs the
+  recipe on the in-process mesh rig and pins both languages' fences to the
+  code it ran. The CPU-bound page's "Three tiers" names the recipe as tier
+  2's third shape and the parallelism page links it where it used to say "a
+  router" spreads load across threads. EN + DE. The sweep also closes #1202.
+
 - **Object-storage compression no longer holds the event loop**
   (#1540).  `Compression.ts` called `gzipSync` / `gunzipSync` and the sync
   zstd forms from inside `async` arrows — promise-shaped from the outside,
@@ -3439,8 +3493,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `WorkerBroker` drop a refused frame in silence, because neither has a
   logger to report through (#1276). The page now scopes the logging claim to
   the socket transports and says what the worker path does instead: envelope
-  shape and payload validated, `from` rewritten to the arriving port, no log
-  line of any kind. EN + DE.
+  shape and payload validated, `from` rewritten to the arriving port. The
+  broker has since gained its logger and reports what it drops (#1276); the
+  transport still logs nothing — that is #1515. EN + DE.
 
 - **`WorkerNode.join()` never completed on Node — every worker bootstrap
   hung out its handshake deadline there** (#1569). The worker-side helper
@@ -3475,13 +3530,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   leaves since #883. The validator now refuses a numeric `workers` whose last
   slot would sit above the port range, naming both values; `'auto'` resolves
   after validation and is left alone.
-
-- **Worker failures had no logger to reach** (#1276). `WorkerCluster` is a
-  static-constructed pool with no `ActorSystem` in scope, so a crash, a
-  respawn and a retired slot all went to `console.error`. `withLogger`
-  routes them through a `Logger` instead — `WorkerMesh` passes its system's,
-  so a mesh's workers report through the same sinks as everything else —
-  and the console stays the default for a bare pool.
 
 - **A fixed-rate task that cancelled itself on its first tick leaked an
   interval nothing could clear — and every seeded cluster node kept its
