@@ -389,13 +389,20 @@ Worker nie einen Handler erreicht. `WorkerBroker`, der zwischen
 den Threads vermittelt, prüft nur die beiden Adressfelder des
 Umschlags — die Nutzlast ist Sache des Transports — und schreibt
 `from` auf den Port um, auf dem der Frame ankam, sodass ein
-Worker nicht für einen Geschwister-Worker sprechen kann. Was
-dieser Pfad nicht kann, ist davon berichten: Ein dort
-abgewiesener Frame wird **stillschweigend verworfen**, und ein
-Handler, der wirft, kostet den Frame, nicht den Port — weder der
-Transport noch der Broker hat einen Logger, über den er
-berichten könnte. Kein `WARN`, kein Peer-Name, kein beanstandetes
-Feld. Das ist #1276.
+Worker nicht für einen Geschwister-Worker sprechen kann. Der
+Broker **berichtet** auch, was er abweist: Ein fehlerhafter
+Umschlag oder ein Port, der einen Frame verweigert, ist ein
+gefaltetes `WARN` — eine Zeile pro Grund alle 30 Sekunden, mit
+Zähler —, das die registrierte Adresse des Ports nennt, auf dem
+der Frame ankam, und nie die Nutzlast; ein Frame an eine Adresse,
+die niemand registriert hat, ist dieselbe Zeile auf `DEBUG`, denn
+genau das sendet jedes gesunde Geschwister für einen Moment nach
+einem Crash (#1276). Die Transport-Hälfte schweigt weiterhin: Ein
+Frame, den der empfangende `MessageChannelTransport` abweist, und
+ein Handler, der wirft und den Frame statt den Port kostet,
+erzeugen keine Zeile und nennen kein Feld — der Transport hat
+keinen Logger, über den er berichten könnte, und das ist der
+Punkt von #1515, nicht von #1276.
 
 Frame-Kinds, die Extensions registrieren (Sharding, PubSub,
 Receptionist, DistributedData, DevTools), passieren diese
@@ -444,7 +451,8 @@ Auf den Socket-Transporten wird jede Abweisung auf `WARN` mit
 Peer und beanstandetem Feld geloggt, damit ein verworfener Frame
 diagnostizierbar bleibt — eine Versionsabweichung und ein
 feindlicher Peer sehen im Log unterschiedlich aus. Auf dem
-Worker-Pfad wird nichts geloggt; siehe oben.
+Worker-Pfad loggt der Broker ein gefaltetes `WARN` pro Grund und
+der Transport nichts; siehe oben.
 
 ## Was das Decodieren eines Frames kostet
 

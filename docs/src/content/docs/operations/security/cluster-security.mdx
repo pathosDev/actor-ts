@@ -369,12 +369,18 @@ malformed frame from a worker never reaches a handler either.
 `WorkerBroker`, which relays between threads, checks only the
 envelope's two address fields — the payload is the transport's
 job — and rewrites `from` to the port the frame arrived on, so
-a worker cannot speak for a sibling. What that path cannot do
-is tell you about it: a frame refused there is **dropped in
-silence**, and a handler that throws costs the frame, not the
-port — neither the transport nor the broker has a logger to
-report through. No `WARN`, no peer name, no offending field.
-That is #1276.
+a worker cannot speak for a sibling. The broker also **reports**
+what it refuses: a malformed envelope or a port that refuses a
+frame is a folded `WARN` — one line per reason per 30 seconds,
+carrying the count — that names the registered address of the
+port the frame arrived on and never the payload, and a frame to
+an address nobody registered is the same line at `DEBUG`, since
+that is what every healthy sibling sends for a moment after a
+crash (#1276). The transport half is still silent: a frame the
+receiving `MessageChannelTransport` refuses, and a handler that
+throws and costs the frame rather than the port, produce no line
+and name no field — the transport has no logger to report
+through, and that is #1515's item, not #1276's.
 
 Frame kinds registered by extensions (sharding, pub-sub, the
 receptionist, DistributedData, DevTools) pass this layer and
@@ -417,8 +423,9 @@ for a quota or billing counter rather than a hardening step.
 On the socket transports every rejection is logged at `WARN`
 naming the peer and the offending field, so a dropped frame is
 diagnosable — a version mismatch and a hostile peer look
-different in the log. On the worker path nothing is logged;
-see above.
+different in the log. On the worker path the broker logs a
+folded `WARN` per reason and the transport logs nothing; see
+above.
 
 ## What decoding a frame costs
 

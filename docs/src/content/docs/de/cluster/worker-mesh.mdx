@@ -121,7 +121,10 @@ importiert die mit `withModule` benannten Module, registriert jede
 exportierte Actor-Klasse unter ihrem **Export-Namen**, führt das `setup`
 des Moduls aus, falls es eines hat, und meldet die Registry zurück:
 `mesh.workers` listet je Worker Adresse und die Klassen, die er spawnen
-kann.
+kann.  Das Mesh reicht `system.log` sowohl an den Worker-Cluster als
+auch an den Broker weiter, den es baut — jede unter [Was das Mesh
+meldet](#was-das-mesh-meldet) aufgeführte Zeile erreicht also die Sinks,
+in die dein System ohnehin loggt.
 
 | Option | Was |
 | --- | --- |
@@ -243,8 +246,10 @@ void main();
 | `withRestartRandomFactor(f)` | ±-Jitter-Anteil auf jede Respawn-Wartezeit, in `[0, 1]`.  Default `0.2`. |
 | `withMaxRestarts(n)` | Restarts pro Slot innerhalb des Fensters, bevor er stillgelegt wird; `-1` für unbegrenzt.  Default `10`. |
 | `withRestartWindowMs(ms)` | Gleitendes Fenster, über das das Restart-Budget zählt; `0` setzt es nie zurück.  Default `60000`. |
-| `withOnWorkerPermanentlyDown(fn)` | Wird einmal pro Slot aufgerufen, dessen Restart-Budget erschöpft ist.  Default: eine `console.error`-Zeile. |
+| `withOnWorkerPermanentlyDown(fn)` | Wird einmal pro Slot aufgerufen, dessen Restart-Budget erschöpft ist.  Default: eine `ERROR`-Zeile über den Logger des Pools. |
 | `withBackend(backend)` | Startet über dieses `WorkerBackend` statt über das erkannte — für eine Runtime, die die Erkennung nicht kennt, oder ein In-Memory-Fake im Test.  Default: erkannt. |
+| `withLogger(logger)` | Wohin der Pool Worker-Exits, Respawns, stillgelegte Slots und — wenn er seinen Broker selbst baut — Broker-Drops meldet; siehe [Was das Mesh meldet](#was-das-mesh-meldet).  Default: ein `ConsoleLogger` auf `Info`. |
+| `withBroker(broker)` | Über einen Broker routen, den der Aufrufer besitzt — so, wie `WorkerMesh` zuerst den eigenen Port des Main-Threads darauf legt.  Ein übergebener Broker behält den Logger, mit dem er gebaut wurde.  Default: ein frischer Broker, der über den Logger des Pools meldet. |
 
 Das zurückgegebene `WorkerCluster` bietet `size`, `addresses` (die
 `NodeAddress` jedes Workers), den gemeinsamen `broker` und
@@ -414,6 +419,11 @@ binomial(N,2). Der Broker leitet jeden Hop weiter, was die
 Verdrahtung linear hält, aber den Hauptthread zum Relay für den
 gesamten Node-übergreifenden Verkehr macht.
 
+Ein mit `new WorkerBroker()` gebauter Broker meldet die Frames, die er
+verwirft, über einen `ConsoleLogger` auf `Info`;
+`new WorkerBroker(system.log)` leitet sie stattdessen durch die Sinks
+deines Systems — genau das tut `WorkerMesh` für den Broker, den es baut.
+
 ## Wie es sich vom TCP-Cluster unterscheidet
 
 ```
@@ -514,7 +524,54 @@ Zwei Runtime-Asymmetrien sind erwähnenswert:
   beobachten.
 </Aside>
 
-Fehlerhafter Traffic wird verworfen, nicht fatal: Der Broker validiert
+### Was das Mesh meldet
+
+Jedes der Ereignisse oben erzeugt eine Zeile über den Logger des Pools
+— `system.log` in einem `WorkerMesh`, `withLogger` auf einem nackten
+`WorkerCluster`, ein `ConsoleLogger` auf `Info`, wenn keins von beiden
+gegeben ist.  Alle Zeilen tragen das Präfix `[worker]`, und jede trägt
+den Sachverhalt in der Nachricht selbst statt als strukturiertes
+Argument, sodass ein Console-Sink und ein Log-Shipper dasselbe sehen:
+
+| Ereignis | Level | Zeile |
+| --- | --- | --- |
+| Das `error`-Event eines Workers | `ERROR` | `[worker] worker N (addr) failed: <message>` |
+| Ein `close`-Event mit einem Code ungleich null, oder ohne Code | `WARN` | `[worker] worker N (addr) exited with code C` / `… exited without an exit code` |
+| Ein `close`-Event mit Code 0 | `INFO` | `[worker] worker N (addr) exited with code 0` |
+| Die Policy lässt den Slot liegen | `INFO` | `[worker] worker N (addr) is not respawned — restartPolicy 'P'` |
+| Ein Restart wird gewährt | `WARN` | `[worker] respawning worker N (addr) in D ms (restart K of M inside W ms)` — `(restart budget unlimited)` unter `maxRestarts: -1` |
+| Ein Ersatz wurde nie ready | `ERROR` | `[worker] respawning worker N (addr) failed: <message>` |
+| Das Budget ist erschöpft und kein `onWorkerPermanentlyDown` gesetzt | `ERROR` | `[worker] worker N (addr) is permanently down — K restarts inside W ms exhausted its budget` |
+| Der Broker weist einen Frame ab | `WARN`; `DEBUG` für ein unbekanntes Ziel | `[worker] broker dropped K frame(s) from <source> — <reason>` |
+
+Vier Dinge an diesen Zeilen sind wissenswert:
+
+- **Deno meldet nur den Error-Pfad.** Sein elternseitiger `Worker`
+  sendet kein `close`, also erscheinen die Exit-Zeilen und die
+  "not respawned"-Zeile dort nie — ein Worker, der sich ohne Throw
+  beendet, ist für das Log so unsichtbar wie für die Restart-Policy.
+- **Bun meldet ein absichtliches `self.close()` als Code 1**, ein
+  Worker, der sich selbst herunterfährt, liest sich also als
+  `exited with code 1` und wird unter der Default-Policy `'on-failure'`
+  neu gestartet.  Die Zeile nennt den Code, den die Runtime geliefert
+  hat; sie sagt nie "crashed".
+- **Ein Worker, den die Policy liegen lässt, wird gemeldet, nicht
+  entfernt.** Die `INFO`-Zeile ist heute alles, was auf diesem Zweig
+  passiert: Handle und Broker-Registrierung des Slots werden nicht
+  freigegeben, `size` zählt ihn also weiterhin.
+- **Broker-Drops werden gefaltet.** Der erste Drop jedes Grundes wird
+  sofort gemeldet; spätere werden gezählt und alle 30 Sekunden zu einer
+  Zeile pro Grund gefaltet, die den Zähler trägt.  Ein unbekanntes Ziel
+  geht auf `DEBUG` hinaus, weil es nach einem Crash die normale Form ist
+  — jedes Geschwister gossipt weiter an die tote Adresse, bis der
+  Failure Detector konvergiert —, während ein fehlerhafter Umschlag oder
+  ein Port, der einen Frame verweigert, irgendwo ein Defekt ist und auf
+  `WARN` hinausgeht.  Die Zeile nennt die registrierte Adresse des Ports,
+  auf dem der Frame *ankam*, niemals etwas aus dem Frame selbst, und
+  `broker.dropped()` liefert die laufenden Zähler pro Grund.
+
+Fehlerhafter Traffic wird verworfen, nicht fatal — und er wird gezählt
+und gemeldet, wie die letzte Zeile oben sagt: Der Broker validiert
 die Adressen `to` und `from` eines Frames, bevor er ihn weiterleitet —
 ein einzelnes fehlerhaftes `postMessage` aus einem Worker wirft also
 nicht mehr im Message-Listener des Hosts.  Das `payload` des Frames
