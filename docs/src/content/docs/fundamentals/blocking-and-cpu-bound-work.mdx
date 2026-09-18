@@ -218,8 +218,9 @@ The move is **arguments only** — the result is structured-cloned back,
 however large.  A `SharedArrayBuffer` among the arguments is neither
 copied nor moved but **shared**: both threads read and write the same
 memory, `Atomics` is the coordination primitive, and no transfer list
-or framework support is involved — observed on Bun 1.4.2 and Node 26,
-untested on Deno.
+or framework support is involved.  Both are properties of the runtime's
+structured clone, so they hold on Bun 1.4.2, Node 26 and Deno 2.6.8
+alike, and the offload smoke case keeps them held on all three.
 
 The pool reports `offload_tasks_total{task, outcome}`,
 `offload_queue_depth` and `offload_task_seconds{task}`.

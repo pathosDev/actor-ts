@@ -5,12 +5,12 @@
  *
  * This is runtime-sensitive in the strict sense: the cap is enforced by
  * whichever zstd implementation the resolver picked, and the resolver picks
- * differently per runtime.  Bun has two — its own `Bun.zstdDecompressSync`,
+ * differently per runtime.  Bun has two — its own `Bun.zstdDecompress`,
  * which takes no options and materialises the whole frame, and the `node:zlib`
  * shim, which honours `maxOutputLength` — so on Bun the fix is entirely a
  * question of WHICH one gets chosen.  A unit test on Bun cannot see that
  * choice being made anywhere else, and the unit suite never runs on Deno,
- * where `node:zlib` exports a `zstdDecompressSync` whose binding is missing;
+ * where `node:zlib` exports a `zstdDecompress` whose binding is missing;
  * a resolver that trusted the symbol's presence returned that broken function
  * and left the documented `fzstd` fallback unreachable beneath it.
  *
