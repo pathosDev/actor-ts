@@ -24,9 +24,13 @@
  * 150 000 for the default ladder, which is above this line.  That is the
  * intended reading: a snapshot this size is a registry that has already
  * overflowed, and the fix is the label that overflowed it, not a larger cap.
- * The worker keeps counting; the main side reports the drop once and the
- * `worker_mesh_snapshot_age_seconds` series for that worker keeps climbing,
- * so the condition is visible on the same scrape that lacks the series.
+ * The worker keeps counting; the main side reports the drop once and, where
+ * an earlier snapshot from that worker was accepted, its
+ * `worker_mesh_snapshot_age_seconds` series keeps climbing, so the condition
+ * is visible on the same scrape that lacks the series.  That series is
+ * minted by the first *accepted* snapshot — a refused frame is never stored
+ * — so a worker refused from its very first answer has no age series to
+ * climb, and the `warn` line is the only signal.
  */
 export const MAX_RELAYED_SAMPLES_PER_SNAPSHOT = 100_000;
 
@@ -54,3 +58,25 @@ export const MAX_REPORTED_SNAPSHOT_PROBLEMS_PER_WORKER = 8;
  * stock family name whole and is a fraction of a log line.
  */
 export const MAX_QUOTED_PROBLEM_CHARACTERS = 80;
+
+/**
+ * How often each `WorkerBrokerDropReason` may reach the log, whatever the
+ * drop rate (#1276).
+ *
+ * The `EnvelopeTrust.report` shape one layer up: a counter carries the
+ * signal, the log is rate-limited.  A line per dropped frame would let a
+ * worker write the host's log at `postMessage` rate — the amplification
+ * `ENVELOPE_REFUSAL_REPORT_INTERVAL_MS` refuses to hand out on the wire, and a
+ * thread is a cheaper place to post from than a socket.  The first drop of
+ * each reason is reported at once, so an operator sees a wiring mistake
+ * immediately; what this spaces out is the second thousand, folded into one
+ * line carrying the count.
+ *
+ * A constant and not an option for the same reason as its cluster sibling:
+ * there is no deployment in which the useful value differs, and a knob for it
+ * would be a knob for how loud a worker may make the host's log.  It lived in
+ * `WorkerBroker.ts` while it was the subsystem's only tuned constant; the
+ * three above (#1570) made it one of four, and rule 3 of AGENTS.md puts a
+ * tuned interval here.
+ */
+export const WORKER_BROKER_DROP_REPORT_INTERVAL_MS = 30_000;

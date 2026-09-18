@@ -255,16 +255,19 @@ const clusterRouterOptions = ClusterRouterOptions.create<EncodeCommand>()
 const encoders = system.spawn(ClusterRouter.factory(clusterRouterOptions), 'encoders');
 
 const encoded = await encoders.ask<EncodedFrame>({ kind: 'encode', frame: new Uint8Array(4096) });
-console.log(encoded.encodedOn);   // media@worker:2 — then :3, then :4, then :2 again
+console.log(encoded.encodedOn);   // e.g. media@worker:2 — each ask names the next worker in address order, wrapping around
 ```
 
 `whenReady()` is the one wait: the mesh is up and every `setup` has run,
-so the router's first rebuild sees every worker.  Routees are sorted by
-address, so round-robin order is stable across rebuilds.  The
-plain-object form works too —
+so the router's first rebuild sees every worker.  Routees are sorted
+lexically, by the string form of their address — `media@worker:10`
+before `media@worker:2` — so round-robin order is stable across
+rebuilds; for three workers the rotation is `:2`, `:3`, `:4`, `:2` again.
+The plain-object form works too —
 `ClusterRouter.factory({ cluster, routerType: 'round-robin', routeePath: '/user/encoder', role: 'compute' })`.
 
-Three traps, each a message that goes nowhere:
+Three traps — the first two a message that goes nowhere, the third a
+router that balances less than it seems to:
 
 - **The router must not match `offload`.**  `ClusterRouter.factory(…)`
   returns a factory, and a factory is a closure that cannot cross a
@@ -275,19 +278,33 @@ Three traps, each a message that goes nowhere:
   node is a member like any other, and the main thread has no
   `/user/encoder` — so every (N+1)-th message is dropped where it
   arrives, with one warning per message (`no envelope handler
-  registered, dropping message to …`), and an `ask` for it times out.
-  The role is what keeps the main thread out of the pool.
+  registered, dropping message to …`; on a node that has started
+  `ClusterSharding`, the sharding extension takes the unresolved
+  envelope instead and warns `[sharding] no region/coordinator
+  registered for …`), and an `ask` for it times out.  The role is what
+  keeps the main thread out of the pool.
 - **`smallest-mailbox` needs the agent on every worker.**  The router
   reads mailbox depths from a small framework agent on each routee node,
   and a `smallest-mailbox` router starts that agent on its own node only.
   The `ClusterMailboxDepthAgent.serve(context.cluster)` line in `setup`
-  is what makes the workers report; without it nothing breaks, but the
-  strategy falls back to round-robin order for every worker that stays
-  silent.
+  is what makes the workers report; without it nothing breaks, but no
+  routee ever reports, and with no reading anywhere the strategy is
+  plain round-robin.  That fallback is all-or-nothing, not per worker: a
+  worker that stays silent while others report — its reading missing, or
+  older than `mailboxDepthStaleAfterMs` — is **skipped**, not dealt its
+  turn, because the silent node may be the struggling one.
+  [Cluster router](/cluster/cluster-router/#nodes-that-host-routees-but-no-router)
+  states the rule.
 
 What the recipe does not give you: a pool that grows and shrinks with
-demand — that is #212, and today only the `OffloadPool` scales that way —
-and metrics that see across the threads (#1570).
+demand — that is #212, and today only the `OffloadPool` scales that way.
+What it does give you is one scrape for all of it: the mesh relays every
+worker's metrics registry to the main thread (#1570), so once the main
+thread exports `/metrics` the encoders' work is there — each worker's
+figures as `thread="worker-<slot>"` series beside the router's own
+`thread="main"` ones, `sum without (thread)` for the pool's total — see
+the
+[scope of a scrape](/observability/metrics/prometheus-exporter/#scope-per-process-per-thread).
 
 ## Where to next
 

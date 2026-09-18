@@ -373,7 +373,7 @@ a worker cannot speak for a sibling. The broker also **reports**
 what it refuses: a malformed envelope or a port that refuses a
 frame is a folded `WARN` — one line per reason per 30 seconds,
 carrying the count — that names the registered address of the
-port the frame arrived on and never the payload, and a frame to
+port the most recent frame arrived on and never the payload, and a frame to
 an address nobody registered is the same line at `DEBUG`, since
 that is what every healthy sibling sends for a moment after a
 crash (#1276). The transport half is still silent: a frame the

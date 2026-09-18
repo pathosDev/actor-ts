@@ -125,6 +125,16 @@ Tags are `vX.Y.Z`; GitHub Releases are cut as normal **Latest** releases
    never in `README.md`** — the README is the summary and links to the full
    tables for the pins. #1322.
 
+   **The cross-cluster hop is measured by a benchmark `bench:compare` never
+   runs**, and it has surfaces of its own. In the same session, run
+   `bun run benchmarks/cluster/tcp-message-cost.ts` three times in full and
+   quote the mean of the `perOp` column — the tcp rows agree within 8 %
+   between runs, the local `tell` row drifts by a third, so a single run
+   is not a figure. It feeds the cross-cluster `tell`/`ask` bullet in
+   `docs/.../reference/faq.mdx` (EN + DE) and the "What a hop costs"
+   section of `docs/.../cluster/transports.mdx` (EN + DE); both carry the
+   Bun version and the date inline, so those move with the figures. #1177.
+
    The cross-language arms need a JDK and a .NET SDK; if a toolchain is
    missing, re-measure the arms you can rather than skipping the step. Each
    result file carries its own date and commit and `RESULTS.md` prints one

@@ -140,7 +140,8 @@ nicht die Buchhaltung des Frameworks.
 ### Was ist der Overhead pro Nachricht?
 
 Gemessen auf Bun 1.3.14, 10 Kernen eines Intel i9-12900K unter Linux,
-Mittelwert aus hundert Runden —
+Mittelwert aus hundert Runden — außer wo ein Punkt seine eigene Maschine
+nennt; dann stammen seine Zahlen aus dieser Umgebung.
 Methodik und Vergleich mit anderen Frameworks stehen unter
 [Benchmarks](/de/reference/benchmarks/):
 
@@ -153,14 +154,14 @@ Methodik und Vergleich mit anderen Frameworks stehen unter
   auseinanderliegen.
 - **`ask`-Roundtrip** — **0,9 µs** im p50, Tiefe 1.
 - **Cross-Cluster `tell`** — rund **22 µs** pro Nachricht und rund
-  **245 µs** pro `ask`-Roundtrip über einen echten `TcpTransport` auf
-  Loopback, mit dem fernen Node auf einem Worker-Thread (Bun 1.4.2,
-  Windows 11, 32 Hardware-Threads, 18.09.2026;
-  `benchmarks/cluster/tcp-message-cost.ts`, jeder Batch auf Vollständigkeit
-  geprüft).  Das sind dieselben Kosten pro Nachricht wie der Thread-Hop
-  auf der Seite [Worker-Mesh](/de/cluster/worker-mesh/) — nicht der Socket
-  ist es, den eine Cross-Node-Nachricht bezahlt, sondern das Protokoll.
-  Über LAN gehört der Roundtrip dem Netzwerk: ms-Bereich.
+  **245 µs** pro `ask`-Roundtrip, beides Harness-Mittelwerte und keine
+  p50-Werte, über einen echten `TcpTransport` auf Loopback, mit dem fernen
+  Node auf einem Worker-Thread (Bun 1.4.2, Windows 11, 32 Hardware-Threads,
+  18.09.2026; `benchmarks/cluster/tcp-message-cost.ts`, jeder Batch auf
+  Vollständigkeit geprüft).  Das sind dieselben Kosten pro Nachricht wie
+  der Thread-Hop auf der Seite [Worker-Mesh](/de/cluster/worker-mesh/) —
+  nicht der Socket ist es, den eine Cross-Node-Nachricht bezahlt, sondern
+  das Protokoll.  Über LAN gehört der Roundtrip dem Netzwerk: ms-Bereich.
 
 **Den größten Teil der ersten Zahl leistet die Mailbox-Tiefe**, und dieser
 Unterschied gehört verstanden, bevor man darauf hin entwirft.  Ein Actor

@@ -18,22 +18,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   worker was invisible to Prometheus. The main thread now pulls: every
   `actor-ts.worker-mesh.metrics-relay-interval` (default `10s`; `0` switches
   the relay off; `withMetricsRelayIntervalMs` in code) it sends each live
-  worker a `worker-mesh-metrics-request`, the worker answers with its
-  registry's `collect()` verbatim, and `MetricsExtension.collectAll()` —
-  what `GET /metrics` renders now — exports the main thread's samples
-  stamped `thread="main"` followed by each worker's stamped
-  `thread="worker-<slot>"`, so `sum without (thread)` is the process total
-  and `sum by (thread)` the breakdown. The request is also the enable
-  signal: nothing had ever switched a worker's registry on, and the first
-  request does, ahead of the first spawn frame on the same channel, so an
-  offloaded actor's first message is counted. A worker's figures are at most
-  one interval old; a live worker that stops answering keeps its last
-  snapshot exported and
+  worker whose member the failure detector has not taken `down` a
+  `worker-mesh-metrics-request` (under `restartPolicy 'never'` a dead slot
+  keeps its handle, and is no longer asked every interval), the worker
+  answers with its registry's `collect()` verbatim, and
+  `MetricsExtension.collectAll()` — what `GET /metrics` renders now —
+  exports the main thread's samples stamped `thread="main"` followed by each
+  worker's stamped `thread="worker-<slot>"`, so `sum without (thread)` is
+  the process total and `sum by (thread)` the breakdown. The request is also
+  the enable signal: nothing had ever switched a worker's registry on, and
+  the first request does, ahead of the first spawn frame on the same
+  channel, so an offloaded actor's first message is counted. A worker's
+  figures are at most one interval old; a live worker that stops answering
+  keeps its last snapshot exported and
   `worker_mesh_snapshot_age_seconds{worker="worker-<slot>"}` on the main
-  registry says for how long, a slot that leaves the mesh takes its series
-  with it, and a respawned slot returns under the same label with counters
-  starting over. A relayed snapshot is untrusted input from the exporter's
-  side: `from` is checked against the mesh's live workers (channel-derived
+  registry says for how long (a series minted by that worker's first
+  accepted snapshot), a slot that leaves the mesh takes its series with it,
+  and a respawned slot returns under the same label with counters starting
+  over. A relayed snapshot is untrusted input from the exporter's side:
+  `from` is checked against the mesh's live workers (channel-derived
   identity), every name and label key is re-checked against
   `PROMETHEUS_METRIC_NAME_PATTERN` and `PROMETHEUS_LABEL_NAME_PATTERN`
   because relayed samples never passed the registry's own grammar checks,
@@ -63,11 +66,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   both-nodes-on-one-thread tier: measured, it loses the tail of every burst
   past ~195 KB of frames silently (1 640 of 10 000 arrive), which is #931;
   the tier belongs there once #931 lands. The FAQ now quotes the figures
-  where it said "not yet measured" since 2026-08-18,
-  `cluster/transports.mdx` gets a "What a hop costs" section (EN + DE),
-  `benchmarks/README.md` lists the suite, and the comparison report's footer
-  no longer claims the cluster suites never leave the process. Slice (a) of
-  #1177; slice (b) is #1574, slice (c) is #1575.
+  where it said "not yet measured" since 2026-08-18 (labelled as harness
+  means, under a header that says a bullet naming its own machine is
+  measured there), `cluster/transports.mdx` gets a "What a hop costs"
+  section (EN + DE), `benchmarks/README.md` lists the suite, and the
+  comparison report's footer no longer claims the cluster suites never leave
+  the process and cites #1574 for the persistence row it still lacks.
+  `AGENTS.md`'s release recipe names the benchmark and both docs surfaces,
+  so a cut re-measures them instead of shipping figures attributed to a
+  version that never ran them. Slice (a) of #1177; slice (b) is #1574, slice
+  (c) is #1575.
 
 - **A smoke case drives a real `WorkerCluster` respawn from a real `error`**
   (#1186).  `tests/smoke/cases/40-worker-respawn-from-error.mjs` spawns a
@@ -2828,14 +2836,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   says the offload transfer is arguments only and the result is
   structured-cloned back however large, and that a `SharedArrayBuffer` among
   the arguments is neither copied nor moved but shared, with `Atomics` as
-  the coordination primitive and nothing from the framework involved —
-  observed on Bun 1.4.2 and Node 26, untested on Deno. `ROADMAP.md` carries
-  the direct-channel line under "Bigger threads", pending a `direct` tier in
-  the mesh-message-cost benchmark that #1576 tracks together with the rule
-  that turns its number into a design issue or an out-of-scope line. No code
-  changed: the survey found the framework needs nothing for a SAB to be
-  shared, `tell` has no transfer slot by design, and a result-direction
-  transfer for offload waits for a consumer that returns more than a number.
+  the coordination primitive and nothing from the framework involved — on
+  Bun 1.4.2, Node 26 and Deno 2.6.8 alike, and smoke case `39-offload` now
+  holds both sentences on all three: a worker's `Atomics.store` into a SAB
+  argument is visible on the main thread, a SAB in the transfer list is
+  refused with a `DataCloneError`, and a 4 MiB result arrives whole while
+  the worker keeps its copy. `ROADMAP.md` carries the direct-channel line
+  under "Bigger threads", pending a `direct` tier in the mesh-message-cost
+  benchmark that #1576 tracks together with the rule that turns its number
+  into a design issue or an out-of-scope line. No code changed: the survey
+  found the framework needs nothing for a SAB to be shared, `tell` has no
+  transfer slot by design, and a result-direction transfer for offload waits
+  for a consumer that returns more than a number.
 
 - **`context.sender` now names the remote sender across the wire** (#1561).
   `Cluster.dispatchEnvelope` resolved the target path of an inbound envelope
@@ -3424,8 +3436,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   per reason — `malformed`, `unknown-destination`, `unroutable` — behind
   `broker.dropped()`, and folds the report into one line per reason per 30
   seconds carrying the count, `WARN` for a `malformed` envelope or a
-  refusing port and `DEBUG` for an unknown destination, naming the
-  registered address the frame arrived on and never the frame itself.
+  refusing port and `DEBUG` for an unknown destination, saying *most
+  recently from* the registered address the last frame arrived on — the
+  count covers every port since that reason last reached the log — and never
+  the frame itself; for a refusing port the detail carries the error's name
+  (`DataCloneError`, `InvalidStateError`) and never its message, because a
+  `DataCloneError`'s message echoes the value it could not clone. A
+  caller-supplied `Logger` that throws is contained on every report path —
+  the port callback, the `close` and `error` listeners, the respawn timer —
+  and the line falls back to `console.error` with the reason appended, so a
+  broken sink costs neither the pool its respawn nor the host its process.
+  Under `restartWindowMs: 0` the granted-restart and permanently-down lines
+  quote the count alone, without an "inside 0 ms" no restart could fit in.
   `WorkerMesh` hands `system.log` to both, so in a mesh all of it reaches
   the configured sinks. The type `WorkerBrokerDropReason` is exported from
   `actor-ts/worker`.
@@ -3458,11 +3480,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   main thread finds them, with its three traps (a router matching `offload`
   throws, a role-less router makes the main thread a routee whose share is
   dropped, `smallest-mailbox` needs `ClusterMailboxDepthAgent.serve` on the
-  workers). `tests/unit/parallelism/ClusterRouterOverMesh.test.ts` runs the
-  recipe on the in-process mesh rig and pins both languages' fences to the
-  code it ran. The CPU-bound page's "Three tiers" names the recipe as tier
-  2's third shape and the parallelism page links it where it used to say "a
-  router" spreads load across threads. EN + DE. The sweep also closes #1202.
+  workers — a worker silent while others report is skipped, and round-robin
+  applies only when none reports).
+  `tests/unit/parallelism/ClusterRouterOverMesh.test.ts` runs the recipe on
+  the in-process mesh rig and pins both languages' fences to the code it
+  ran. Since #1570 the page also says the routees' figures reach the main
+  thread's `/metrics` under a `thread` label. The CPU-bound page's "Three
+  tiers" names the recipe as tier 2's third shape and the parallelism page
+  links it where it used to say "a router" spreads load across threads. EN +
+  DE. The sweep also closes #1202.
 
 - **Object-storage compression no longer holds the event loop**
   (#1540).  `Compression.ts` called `gzipSync` / `gunzipSync` and the sync

@@ -18,3 +18,32 @@ export function busyWait(ms) {
   while (Date.now() < until) spins++;
   return spins;
 }
+
+/**
+ * Writes `value` into `counters[index]` and reads it back.  `counters` is an
+ * `Int32Array` over a `SharedArrayBuffer`, so the write is meant to land in
+ * the caller's memory rather than in a copy of it — the case compares on its
+ * own view afterwards, which is the only observation that tells shared from
+ * copied.
+ */
+export function storeShared(counters, index, value) {
+  Atomics.store(counters, index, value);
+  return Atomics.load(counters, index);
+}
+
+let heldResult = null;
+
+/**
+ * Returns `size` bytes of `fill` and keeps its own reference to them, so that
+ * `heldByteLength` can say afterwards whether the reply cloned the buffer
+ * (this worker still holds `size` bytes) or moved it (detached, so 0).
+ */
+export function bytesResult(size, fill) {
+  heldResult = new Uint8Array(size).fill(fill);
+  return heldResult;
+}
+
+/** What this worker still holds of its last `bytesResult`; -1 on a worker that never ran one. */
+export function heldByteLength() {
+  return heldResult === null ? -1 : heldResult.byteLength;
+}

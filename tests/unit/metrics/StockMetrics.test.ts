@@ -726,6 +726,35 @@ describe('Exposition-time labels (#1570)', () => {
     }
   });
 
+  test('a source that writes to the main registry is read back by the same collectAll() — the sources run before the registry is read', () => withEnabledSystem(async (sys) => {
+    const metrics = sys.extension(MetricsExtensionId);
+    // The relay's shape, reduced to the seam: on every export the source
+    // *sets* a gauge on the main registry (the snapshot age) and contributes
+    // no rows of its own.  What a scrape carries has to be the value that
+    // scrape's own run of the source wrote — with the order inverted, the
+    // first export has no such series and every later one carries the
+    // previous export's value, and nothing else in the tree notices.
+    let exports = 0;
+    const remove = metrics._addSampleSource(() => {
+      exports++;
+      metrics.get().gauge('source_written_at_export', {}, { help: 'set by the source, read by the same export' }).set(exports);
+      return [];
+    });
+    try {
+      const written = (samples: ReadonlyArray<MetricSample>): number | undefined =>
+        samples.find((s) => s.name === 'source_written_at_export')?.value;
+      // The first export: the series does not exist until the source runs, so
+      // an export that read the registry first would carry no such series at all.
+      expect(written(metrics.collectAll())).toBe(1);
+      // Every later export: the reading is this export's write, not the last one's.
+      expect(written(metrics.collectAll())).toBe(2);
+      expect(written(metrics.collectAll())).toBe(3);
+      expect(exports).toBe(3);
+    } finally {
+      remove();
+    }
+  }));
+
   test('every exposition label is justified, and every justification names a label the merge really stamps', () => {
     for (const [label, why] of Object.entries(EXPOSITION_LABELS)) {
       expect(why.length).toBeGreaterThan(40);

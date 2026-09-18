@@ -14,18 +14,33 @@
  * last green line (#1196).  Failures are settled through try/catch on
  * purpose: see the multi-node suite for what `expect(...).rejects` does to a
  * worker message on Bun.
+ *
+ * Two claims the blocking-and-cpu-bound-work page makes about what crosses
+ * the boundary are held here on all three runtimes, because each is a
+ * property of the runtime's structured clone rather than of the pool
+ * (#1191): a `SharedArrayBuffer` among the arguments is shared — a worker's
+ * `Atomics.store` is visible on this thread — and never accepted in a
+ * transfer list; and a result is cloned back, however large, never moved —
+ * the worker that produced a buffer still holds every byte of it.  The docs
+ * used to hedge "untested on Deno"; this is where that hedge went.
  */
 export const name = 'offload pool';
-export const description = 'pure functions run on real worker threads; errors, deadlines and terminate() behave';
+export const description = 'pure functions run on real worker threads; a SharedArrayBuffer is shared, a result is cloned; errors, deadlines and terminate() behave';
+
+/** Large enough to be the "however large" the docs promise rather than a few inline bytes; small enough for a smoke case. */
+const RESULT_BYTES = 4 * 1024 * 1024;
 
 export async function run({ actorTs, loadEntry }) {
-  const { ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, defineOffloadTask, OffloadTaskError, OffloadTimeoutError } = actorTs;
+  const { ActorSystem, ActorSystemOptions, LogLevel, NoopLogger, defineOffloadTask, OffloadArgumentsError, OffloadTaskError, OffloadTimeoutError } = actorTs;
   const { OffloadPool, OffloadPoolOptions } = await loadEntry('worker');
 
   const tasks = new URL('../fixtures/offload-tasks.mjs', import.meta.url);
   const fibonacci = defineOffloadTask(tasks, 'fibonacci');
   const boom = defineOffloadTask(tasks, 'boom');
   const busyWait = defineOffloadTask(tasks, 'busyWait');
+  const storeShared = defineOffloadTask(tasks, 'storeShared');
+  const bytesResult = defineOffloadTask(tasks, 'bytesResult');
+  const heldByteLength = defineOffloadTask(tasks, 'heldByteLength');
 
   const systemOptions = ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off);
   const system = ActorSystem.create('smoke-offload', systemOptions);
@@ -34,6 +49,36 @@ export async function run({ actorTs, loadEntry }) {
     const results = await Promise.all([25, 25, 25, 25].map((n) => pool.run(fibonacci, [n], { timeoutMs: 30_000 })));
     if (results.some((r) => r !== 75025)) throw new Error(`fibonacci(25) answered ${JSON.stringify(results)}, expected 75025 x4`);
     if (pool.workerCount !== 4) throw new Error(`expected 4 workers, got ${pool.workerCount}`);
+
+    // Shared, not copied: the worker writes into this thread's memory.
+    const counters = new Int32Array(new SharedArrayBuffer(4 * Int32Array.BYTES_PER_ELEMENT));
+    const echoed = await pool.run(storeShared, [counters, 2, 42], { timeoutMs: 30_000 });
+    if (echoed !== 42) throw new Error(`storeShared read back ${echoed} on the worker, expected 42`);
+    const seen = Atomics.load(counters, 2);
+    if (seen !== 42) throw new Error(`the worker's Atomics.store is invisible here (slot 2 reads ${seen}, expected 42): the SharedArrayBuffer was copied, not shared`);
+
+    // Not movable either: a SharedArrayBuffer in the transfer list is the
+    // caller's mistake, refused on this side before any worker sees it.
+    let refused = null;
+    try { await pool.run(storeShared, [counters, 3, 1], { transfer: [counters.buffer] }); } catch (error) { refused = error; }
+    if (!(refused instanceof OffloadArgumentsError) || refused.cause?.name !== 'DataCloneError') {
+      throw new Error(`a SharedArrayBuffer in the transfer list rejected with ${refused?.name} (cause ${refused?.cause?.name}), expected OffloadArgumentsError over a DataCloneError`);
+    }
+    if (Atomics.load(counters, 3) !== 0) throw new Error('a refused run reached a worker: slot 3 was written');
+
+    // Cloned back, however large, and never moved: every byte arrives here,
+    // and the worker that produced them still holds them.  The pool has four
+    // idle workers and dispatch is synchronous, so four runs issued in one
+    // tick land one per worker — exactly one of them ran `bytesResult`.
+    const bytes = await pool.run(bytesResult, [RESULT_BYTES, 7], { timeoutMs: 30_000 });
+    if (!(bytes instanceof Uint8Array) || bytes.byteLength !== RESULT_BYTES) {
+      throw new Error(`bytesResult(${RESULT_BYTES}) came back as ${bytes?.constructor?.name} of ${bytes?.byteLength} bytes`);
+    }
+    if (bytes[0] !== 7 || bytes[RESULT_BYTES - 1] !== 7) throw new Error(`the result's bytes did not survive the clone: first ${bytes[0]}, last ${bytes[RESULT_BYTES - 1]}, expected 7`);
+    const held = await Promise.all(Array.from({ length: pool.workerCount }, () => pool.run(heldByteLength, [], { timeoutMs: 30_000 })));
+    if (held.filter((length) => length === RESULT_BYTES).length !== 1 || held.includes(0)) {
+      throw new Error(`after the reply the workers hold ${JSON.stringify(held)} bytes of the result, expected exactly one to hold ${RESULT_BYTES}: a 0 means the buffer was moved out of its worker rather than cloned`);
+    }
 
     let thrown = null;
     try { await pool.run(boom, ['smoke boom']); } catch (error) { thrown = error; }

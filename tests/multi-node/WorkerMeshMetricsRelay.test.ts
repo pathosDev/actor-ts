@@ -18,17 +18,54 @@ import { MetricsExtensionId } from '../../src/metrics/MetricsExtension.js';
 import { renderPrometheusSamples } from '../../src/metrics/PrometheusExporter.js';
 import { ParallelismOptions } from '../../src/parallelism/ParallelismOptions.js';
 import { WorkerMesh } from '../../src/worker/WorkerMesh.js';
-import { WorkerMeshOptions } from '../../src/worker/WorkerMeshOptions.js';
+import { DEFAULT_MESH_METRICS_RELAY_INTERVAL_MS, WorkerMeshOptions } from '../../src/worker/WorkerMeshOptions.js';
 import { awaitCondition } from '../util/AwaitCondition.js';
 import { Where } from './internal/ParallelismActors.js';
 import type { WhereCommand } from './internal/WorkerMeshActors.js';
 
 const ASKS_PER_WORKER = 5;
 
+/** What both tests put in the HOCON leaf — a fraction of {@link RELAYED_WITHIN_MS}. */
+const RELAY_INTERVAL_MS = 200;
+
+/**
+ * How long a counter minted on a worker may take to reach `collectAll()`:
+ * half the **default** relay interval.  The relay asks once inside
+ * `WorkerMesh.start` and then only on its ticker, so a counter minted after
+ * the mesh is up crosses on the first tick after it — ten seconds in under the
+ * default, a fifth of a second under the leaf both tests set.  A wait bounded
+ * here can therefore be satisfied by the configured interval alone; the
+ * fifteen-second budgets these tests used to carry were satisfied by the
+ * default too, so with the `getDuration` read removed both stayed green and
+ * the leaf reaching `WorkerMesh.start` was not what the suite proved.  The
+ * elapsed-time assertions beside each wait hold the same bound against the
+ * wall clock, because `awaitCondition` scales its budget with the test time
+ * factor and the default interval does not.
+ *
+ * A literal, because `AwaitConditionBudgets` resolves a named budget only
+ * from a `const NAME = <number>;`; the first test below pins it to the
+ * default it is half of, so a raised default cannot leave the bound behind.
+ */
+const RELAYED_WITHIN_MS = 5_000;
+
 const delivered = (samples: ReadonlyArray<MetricSample>, thread: string): number | undefined =>
   samples.find((s) => s.name === 'actor_messages_delivered_total' && s.labels.thread === thread)?.value;
 
+/** Deliveries relayed from every worker thread, summed — the main thread's own row, if any, is not a worker's. */
+const deliveredOnWorkers = (samples: ReadonlyArray<MetricSample>): number =>
+  samples
+    .filter((s) => s.name === 'actor_messages_delivered_total' && String(s.labels.thread).startsWith('worker-'))
+    .reduce((sum, s) => sum + s.value, 0);
+
 describe('WorkerMesh metrics relay on real worker threads', () => {
+  test('the bound both waits rest on is half the default interval, and the leaf is a fraction of it', () => {
+    // The two real-thread tests prove the leaf reached `WorkerMesh.start`
+    // only while the default alone cannot satisfy their waits; this is that
+    // premise, stated where a change to the default trips over it.
+    expect(RELAYED_WITHIN_MS).toBe(DEFAULT_MESH_METRICS_RELAY_INTERVAL_MS / 2);
+    expect(RELAY_INTERVAL_MS * 10).toBeLessThanOrEqual(RELAYED_WITHIN_MS);
+  });
+
   test('two workers’ registries reach the main thread’s collectAll(), stamped, and leave with the mesh', async () => {
     const systemOptions = ActorSystemOptions.create()
       .withLogger(new NoopLogger())
@@ -41,7 +78,7 @@ describe('WorkerMesh metrics relay on real worker threads', () => {
           },
           // From the config file rather than the builder, so the leaf is what
           // reaches `WorkerMesh.start` through the effective config.
-          'worker-mesh': { 'metrics-relay-interval': '200ms' },
+          'worker-mesh': { 'metrics-relay-interval': `${RELAY_INTERVAL_MS}ms` },
         },
       });
     const system = ActorSystem.create('real-mesh-metrics', systemOptions);
@@ -52,6 +89,9 @@ describe('WorkerMesh metrics relay on real worker threads', () => {
       .withWorkers(2)
       .withReadyTimeoutMs(20_000);
     const mesh = await WorkerMesh.start(system, meshOptions);
+    // The relay's ticker was armed inside `start()`, so every request from
+    // here on is a tick of the interval the leaf set — see `RELAYED_WITHIN_MS`.
+    const meshStartedAt = Date.now();
     try {
       for (const address of mesh.addresses) {
         const where = mesh.refFor<WhereCommand>(address, '/user/where');
@@ -61,8 +101,9 @@ describe('WorkerMesh metrics relay on real worker threads', () => {
       await awaitCondition(
         () => (delivered(metrics.collectAll(), 'worker-0') ?? 0) >= ASKS_PER_WORKER
           && (delivered(metrics.collectAll(), 'worker-1') ?? 0) >= ASKS_PER_WORKER,
-        { timeoutMs: 15_000, label: 'both workers’ delivered counters crossed the thread boundary' },
+        { timeoutMs: RELAYED_WITHIN_MS, label: 'both workers’ delivered counters crossed the thread boundary' },
       );
+      expect(Date.now() - meshStartedAt).toBeLessThan(RELAYED_WITHIN_MS);
 
       const merged = metrics.collectAll();
       const threads = new Set(merged.map((s) => String(s.labels.thread)));
@@ -110,7 +151,7 @@ describe('WorkerMesh metrics relay on real worker threads', () => {
             'failure-detector': { 'heartbeat-interval': '100ms', 'unreachable-after': '2s', 'down-after': '4s' },
           },
           'worker-cluster': { 'ready-timeout': '20s' },
-          'worker-mesh': { 'metrics-relay-interval': '200ms' },
+          'worker-mesh': { 'metrics-relay-interval': `${RELAY_INTERVAL_MS}ms` },
         },
       })
       .withParallelism(parallelism);
@@ -123,20 +164,31 @@ describe('WorkerMesh metrics relay on real worker threads', () => {
       // spawn is a pending ref that buffers until the threads are up.
       const refs = Array.from({ length: 8 }, (_, i) => system.spawn(Where, `where-${i}`));
       const homes = await Promise.all(refs.map((ref) => ref.ask<string>({ kind: 'where' }, 20_000)));
+      // The extension issues the buffered spawns only once `WorkerMesh.start`
+      // has returned — and the relay's ticker is armed inside it — so every
+      // answer above postdates the ticker, and the tick that carries the
+      // deliveries is bounded from here the same way as in the first test.
+      const asksAnsweredAt = Date.now();
       expect(new Set(homes)).toEqual(new Set(['real-para-metrics@worker:2', 'real-para-metrics@worker:3']));
 
+      // Wait for the *sum*, not for one delivery per worker: a tick that lands
+      // while the asks are still in flight stores a partial snapshot, and a
+      // per-worker `>= 1` is satisfied by it while the total is still short.
       await awaitCondition(
-        () => (delivered(metrics.collectAll(), 'worker-0') ?? 0) >= 1
-          && (delivered(metrics.collectAll(), 'worker-1') ?? 0) >= 1,
-        { timeoutMs: 15_000, label: 'both offloaded workers were relayed into the main thread' },
+        () => deliveredOnWorkers(metrics.collectAll()) >= homes.length,
+        { timeoutMs: RELAYED_WITHIN_MS, label: 'every offloaded delivery was relayed into the main thread' },
       );
+      expect(Date.now() - asksAnsweredAt).toBeLessThan(RELAYED_WITHIN_MS);
       const merged = metrics.collectAll();
       const perThread = new Map<string, number>();
       for (const s of merged.filter((sample) => sample.name === 'actor_messages_delivered_total')) {
         perThread.set(String(s.labels.thread), s.value);
       }
-      // Eight asks, one delivery each, split across the two workers.
-      expect((perThread.get('worker-0') ?? 0) + (perThread.get('worker-1') ?? 0)).toBe(homes.length);
+      // Eight asks, one delivery each, split across the two workers — and
+      // both took some, as `homes` already said.
+      expect(perThread.get('worker-0') ?? 0).toBeGreaterThanOrEqual(1);
+      expect(perThread.get('worker-1') ?? 0).toBeGreaterThanOrEqual(1);
+      expect(deliveredOnWorkers(merged)).toBe(homes.length);
       expect(merged.every((s) => typeof s.labels.thread === 'string')).toBe(true);
     } finally {
       // `terminate()` is the only call the application makes; it takes the

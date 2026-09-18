@@ -394,7 +394,7 @@ Broker **berichtet** auch, was er abweist: Ein fehlerhafter
 Umschlag oder ein Port, der einen Frame verweigert, ist ein
 gefaltetes `WARN` — eine Zeile pro Grund alle 30 Sekunden, mit
 Zähler —, das die registrierte Adresse des Ports nennt, auf dem
-der Frame ankam, und nie die Nutzlast; ein Frame an eine Adresse,
+der jüngste Frame ankam, und nie die Nutzlast; ein Frame an eine Adresse,
 die niemand registriert hat, ist dieselbe Zeile auf `DEBUG`, denn
 genau das sendet jedes gesunde Geschwister für einen Moment nach
 einem Crash (#1276). Die Transport-Hälfte schweigt weiterhin: Ein
