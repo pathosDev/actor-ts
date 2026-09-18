@@ -11,6 +11,42 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **Worker-thread metrics reach the main thread's `/metrics`**
+  (#1570).  Every worker of a mesh — started by hand with `WorkerMesh.start`
+  or by `actor-ts.parallelism.workers` — boots its own `ActorSystem` with
+  its own registry and no management endpoint, so an actor placed on a
+  worker was invisible to Prometheus. The main thread now pulls: every
+  `actor-ts.worker-mesh.metrics-relay-interval` (default `10s`; `0` switches
+  the relay off; `withMetricsRelayIntervalMs` in code) it sends each live
+  worker a `worker-mesh-metrics-request`, the worker answers with its
+  registry's `collect()` verbatim, and `MetricsExtension.collectAll()` —
+  what `GET /metrics` renders now — exports the main thread's samples
+  stamped `thread="main"` followed by each worker's stamped
+  `thread="worker-<slot>"`, so `sum without (thread)` is the process total
+  and `sum by (thread)` the breakdown. The request is also the enable
+  signal: nothing had ever switched a worker's registry on, and the first
+  request does, ahead of the first spawn frame on the same channel, so an
+  offloaded actor's first message is counted. A worker's figures are at most
+  one interval old; a live worker that stops answering keeps its last
+  snapshot exported and
+  `worker_mesh_snapshot_age_seconds{worker="worker-<slot>"}` on the main
+  registry says for how long, a slot that leaves the mesh takes its series
+  with it, and a respawned slot returns under the same label with counters
+  starting over. A relayed snapshot is untrusted input from the exporter's
+  side: `from` is checked against the mesh's live workers (channel-derived
+  identity), every name and label key is re-checked against
+  `PROMETHEUS_METRIC_NAME_PATTERN` and `PROMETHEUS_LABEL_NAME_PATTERN`
+  because relayed samples never passed the registry's own grammar checks,
+  the reserved `thread` key is refused, the sample count is bounded by
+  `MAX_RELAYED_SAMPLES_PER_SNAPSHOT`, and any problem drops the snapshot
+  whole with one `warn` per reason per worker. With no mesh, or the interval
+  at `0`, `collectAll()` is `collect()` and the exposition is byte for byte
+  what it was; `exportPrometheus(registry)` and `prometheusHandler` keep
+  rendering the main registry alone, and the new
+  `renderPrometheusSamples(samples)` renders any list. Frames, kinds, the
+  worker half and the snapshot validator are exported from
+  `actor-ts/worker`.
+
 - **`benchmarks/cluster/tcp-message-cost.ts` measures what an actor message
   pays to cross a real socket** (#1177).  The same `Counter` actor local and
   on a second `Cluster` node hosted by a worker thread, joined over a real
@@ -3544,9 +3580,10 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   Prometheus — which `actor-ts.parallelism.workers` now does without a line
   of application code changing. `observability/metrics/prometheus-exporter`
   gains a "Scope" section (EN + DE) stating both shapes — scrape every
-  cluster node, and worker actors are unscraped today — and
-  `fundamentals/parallelism` no longer says "scrape every worker" where
-  there is nothing to scrape. The relay that would close the gap is #1570.
+  cluster node, and worker actors reach the main thread's scrape through
+  the mesh relay — and `fundamentals/parallelism` no longer says "scrape
+  every worker" where there is nothing to scrape. The relay is #1570, in
+  this release (see Added).
 
 - **`cluster-security.mdx` claimed every wire rejection is logged, and the
   worker path logs none** (#1275). The page stated the wire-edge guarantees
