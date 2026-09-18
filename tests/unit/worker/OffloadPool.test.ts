@@ -5,6 +5,7 @@ import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Config } from '../../../src/config/Config.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { MetricsExtensionId } from '../../../src/metrics/MetricsExtension.js';
 import { TestProbe } from '../../../src/testkit/TestProbe.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { OffloadExtensionId, OffloadPool } from '../../../src/worker/OffloadPool.js';
@@ -16,6 +17,7 @@ import {
 } from '../../../src/worker/OffloadPoolOptions.js';
 import {
   OffloadAbortedError,
+  OffloadArgumentsError,
   OffloadPoolUnavailableError,
   OffloadQueueFullError,
   OffloadTaskError,
@@ -41,6 +43,7 @@ const asyncDouble = defineOffloadTask<[number], number>(TASKS, 'asyncDouble');
 const boom = defineOffloadTask<[string], never>(TASKS, 'boom');
 const hang = defineOffloadTask<[], never>(TASKS, 'hang');
 const sumBytes = defineOffloadTask<[Uint8Array], number>(TASKS, 'sumBytes');
+const sumBuffer = defineOffloadTask<[ArrayBuffer], number>(TASKS, 'sumBuffer');
 const notAFunction = defineOffloadTask<[], never>(TASKS, 'NOT_A_FUNCTION');
 const missing = defineOffloadTask<[], never>(TASKS, 'nope');
 const throwsPlain = defineOffloadTask<[], never>(TASKS, 'throwsPlain');
@@ -97,6 +100,85 @@ describe('OffloadPool — pure functions on worker threads (#1558)', () => {
       expect(r.pool.workerCount).toBe(1);
       expect(await r.pool.run(add, [1, 1])).toBe(2);
     } finally {
+      await r.system.terminate();
+    }
+  });
+
+  test('a transfer list the runtime refuses fails the run at once with OffloadArgumentsError; the worker received nothing and serves the next run — dispatched from run()', async () => {
+    // No deadline (the default) and no budget: before #1571 the first was the
+    // permanent wedge — the slot stayed marked busy with nothing to free it —
+    // and the second turns a leaked deadline's termination into a visible
+    // OffloadPoolUnavailableError instead of a quiet replacement.
+    const r = rig((o) => o.withSize(1).withMaxRestarts(0));
+    const registry = r.system.extension(MetricsExtensionId).enable();
+    const uncaught: unknown[] = [];
+    const record = (error: unknown): void => { uncaught.push(error); };
+    process.on('uncaughtException', record);
+    try {
+      expect(await r.pool.run(add, [1, 1])).toBe(2);
+      // A correct list moves the buffer — the fake honours a transfer the way a thread does.
+      const moved = new Uint8Array([1, 2, 3, 4]);
+      expect(await r.pool.run(sumBuffer, [moved.buffer], { transfer: [moved.buffer] })).toBe(10);
+      expect(moved.buffer.byteLength).toBe(0);
+
+      // The common mistake: the view where its buffer was meant.
+      const bytes = new Uint8Array([1, 2, 3, 4]);
+      let refused: unknown;
+      try { await r.pool.run(sumBuffer, [bytes.buffer], { transfer: [bytes] }); } catch (error) { refused = error; }
+      expect(refused).toBeInstanceOf(OffloadArgumentsError);
+      expect((refused as OffloadArgumentsError).task).toBe('sumBuffer (offload-tasks.ts)');
+      expect((refused as OffloadArgumentsError).message).toContain('DataCloneError');
+      expect(((refused as OffloadArgumentsError).cause as Error).name).toBe('DataCloneError');
+      // Nothing left this thread: the caller's buffer is intact and the worker saw two frames, not three.
+      expect(bytes.buffer.byteLength).toBe(4);
+      expect(r.hosts[0]!.handled).toBe(2);
+      // The same worker, never terminated, never replaced — and free right now, not after a deadline.
+      expect(await r.pool.run(add, [2, 2])).toBe(4);
+      expect(r.pool.workerCount).toBe(1);
+      expect(r.backend.spawned).toHaveLength(1);
+      expect(r.backend.spawned[0]!.terminated).toBe(false);
+      expect(uncaught).toEqual([]);
+      // Counted as the caller's fault, not as the task throwing.
+      const outcomes = registry.collect().filter((s) => s.name === 'offload_tasks_total').map((s) => [s.labels.outcome, s.value]);
+      expect(outcomes).toContainEqual(['invalid-arguments', 1]);
+      expect(outcomes.find(([outcome]) => outcome === 'threw')).toBeUndefined();
+    } finally {
+      process.off('uncaughtException', record);
+      await r.system.terminate();
+    }
+  });
+
+  test('the same refusal dispatched from the worker’s message callback — a bad run queued behind a busy worker — settles the run and leaves the worker serving', async () => {
+    // A deadline this time, so that before #1571 the outcome is a visible
+    // OffloadTimeoutError 1.5 s later and a terminated worker, rather than a
+    // promise that never settles.  The throw came out of the `message`
+    // listener that dispatched the queued run; on a thread that is an
+    // uncaught exception on the main thread.
+    const r = rig((o) => o.withSize(1).withTaskTimeoutMs(1_500).withMaxRestarts(0));
+    const uncaught: unknown[] = [];
+    const record = (error: unknown): void => { uncaught.push(error); };
+    process.on('uncaughtException', record);
+    try {
+      expect(await r.pool.run(add, [1, 1])).toBe(2);
+      const bytes = new Uint8Array([1, 2, 3, 4]);
+      // `asyncDouble` answers a turn later, so the bad run is queued and is
+      // dispatched by the result frame's listener, not by `run()`.
+      const busy = r.pool.run(asyncDouble, [21]);
+      const queued = r.pool.run(sumBuffer, [bytes.buffer], { transfer: [bytes] });
+      expect(r.pool.queueDepth).toBe(1);
+      expect(await busy).toBe(42);
+      let refused: unknown;
+      try { await queued; } catch (error) { refused = error; }
+      expect(refused).toBeInstanceOf(OffloadArgumentsError);
+      expect(r.pool.queueDepth).toBe(0);
+      expect(r.hosts[0]!.handled).toBe(2);
+      expect(await r.pool.run(add, [3, 3])).toBe(6);
+      expect(r.pool.workerCount).toBe(1);
+      expect(r.backend.spawned).toHaveLength(1);
+      expect(r.backend.spawned[0]!.terminated).toBe(false);
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off('uncaughtException', record);
       await r.system.terminate();
     }
   });

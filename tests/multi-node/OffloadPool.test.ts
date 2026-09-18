@@ -8,7 +8,9 @@
  * runtime, that a task's module is imported by URL inside the thread, that
  * CPU work genuinely runs in parallel with this thread, that a buffer moves
  * by transfer, and that a deadline stops a thread that is busy-waiting —
- * the one thing no in-process fake can show.
+ * the one thing no in-process fake can show.  And that a transfer list the
+ * runtime refuses is refused *here*, on the posting side, without reaching
+ * or costing the thread (#1571).
  */
 import { describe, expect, test } from 'bun:test';
 import { ActorSystem } from '../../src/ActorSystem.js';
@@ -16,7 +18,7 @@ import { ActorSystemOptions } from '../../src/ActorSystemOptions.js';
 import { LogLevel, NoopLogger } from '../../src/Logger.js';
 import { OffloadPool } from '../../src/worker/OffloadPool.js';
 import { OffloadPoolOptions } from '../../src/worker/OffloadPoolOptions.js';
-import { OffloadTaskError, OffloadTimeoutError, defineOffloadTask } from '../../src/worker/OffloadTask.js';
+import { OffloadArgumentsError, OffloadTaskError, OffloadTimeoutError, defineOffloadTask } from '../../src/worker/OffloadTask.js';
 import { fibonacci } from './internal/OffloadTasks.js';
 
 const TASKS = new URL('./internal/OffloadTasks.ts', import.meta.url);
@@ -63,4 +65,46 @@ describe('OffloadPool on real worker threads', () => {
     }
     expect(pool.workerCount).toBe(0);
   }, 60_000);
+
+  test('a Uint8Array view in the transfer list fails the run with OffloadArgumentsError from both dispatch paths; the thread received nothing, is not replaced, and nothing escapes uncaught', async () => {
+    const system = ActorSystem.create('real-offload-refused', ActorSystemOptions.create().withLogger(new NoopLogger()).withLogLevel(LogLevel.Off));
+    // One thread, no deadline, no budget: before #1571 the first path wedged
+    // this slot for good and the second threw out of the worker's `message`
+    // listener — the listener below is what would have caught that.
+    const pool = OffloadPool.start(system, OffloadPoolOptions.create().withSize(1).withMaxRestarts(0));
+    const uncaught: unknown[] = [];
+    const record = (error: unknown): void => { uncaught.push(error); };
+    process.on('uncaughtException', record);
+    try {
+      expect(await pool.run(fibonacciTask, [10], { timeoutMs: 60_000 })).toBe(55);
+      const bytes = new Uint8Array([1, 2, 3, 4]);
+
+      // Dispatched from run(): the thread is idle.  try/catch, for the reason above.
+      let refused: unknown;
+      try { await pool.run(sumBuffer, [bytes.buffer], { transfer: [bytes] }); } catch (error) { refused = error; }
+      expect(refused).toBeInstanceOf(OffloadArgumentsError);
+      expect(((refused as OffloadArgumentsError).cause as Error).name).toBe('DataCloneError');
+      // Nothing moved, because nothing was posted.
+      expect(bytes.buffer.byteLength).toBe(4);
+
+      // Dispatched from the thread's message callback: queued behind a busy run.
+      const busy = pool.run(fibonacciTask, [20], { timeoutMs: 60_000 });
+      const queued = pool.run(sumBuffer, [bytes.buffer], { transfer: [bytes] });
+      expect(pool.queueDepth).toBe(1);
+      expect(await busy).toBe(6765);
+      let refusedFromCallback: unknown;
+      try { await queued; } catch (error) { refusedFromCallback = error; }
+      expect(refusedFromCallback).toBeInstanceOf(OffloadArgumentsError);
+
+      // The same thread serves on — at once, not after a deadline, and with a
+      // budget of zero, so a termination anywhere above would show here as
+      // OffloadPoolUnavailableError.
+      expect(await pool.run(fibonacciTask, [10], { timeoutMs: 60_000 })).toBe(55);
+      expect(pool.workerCount).toBe(1);
+      expect(uncaught).toEqual([]);
+    } finally {
+      process.off('uncaughtException', record);
+      await system.terminate();
+    }
+  }, 30_000);
 });

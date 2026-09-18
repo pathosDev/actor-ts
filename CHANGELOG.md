@@ -3273,6 +3273,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`OffloadPool` armed a run before posting it, so a transfer list the
+  runtime refused wedged the slot, terminated a healthy worker, or killed
+  the host** (#1571). `dispatch()` marked the slot busy, armed the deadline
+  and registered the abort listener, and only then called
+  `worker.postMessage(frame, transfer)` — which throws a `DataCloneError`
+  synchronously for an entry that is not transferable (the common mistake
+  `{ transfer: [bytes] }`, a `Uint8Array` view, where `[bytes.buffer]` was
+  meant), for a buffer an earlier run had already moved, or for an argument
+  structured clone cannot copy. Nothing caught it, and the two ways into
+  `dispatch()` failed differently. From `run()`, the caller's promise
+  rejected with the raw `DataCloneError` and the slot stayed marked busy:
+  the deadline, if there was one, freed it 1.5 s later by **terminating a
+  worker that had received nothing** and charging the restart budget
+  (measured: the next run waited 1524 ms for a 1500 ms deadline); with the
+  default `task-timeout = 0s` there was no deadline, and a size-1 pool was
+  wedged for good. From the worker's `message` listener — the bad run queued
+  behind a busy worker — the throw was an **uncaught exception on the main
+  thread**, host-killing without a handler, the shape #701 / #945 closed on
+  the wire path; the run then either never settled or was reported as a
+  misleading `OffloadTimeoutError`. The `postMessage` is now guarded: a throw
+  undoes the dispatch — slot idle again, deadline cancelled, abort listener
+  dropped — and rejects the run at once with the new `OffloadArgumentsError`
+  (the runtime's error as `cause`), on the package root and
+  `actor-ts/worker`; the worker is neither replaced nor charged, and the
+  slot takes the next queued run in the same pass. `offload_tasks_total`
+  counts it as `outcome="invalid-arguments"` rather than as a task fault.
+  The in-process fake worker now runs the runtimes' own transfer rule
+  through `structuredClone(value, { transfer })` — it accepted any list
+  before, which is exactly why this could not be caught without a thread;
+  a real-thread case covers both dispatch paths under an
+  `uncaughtException` listener. `fundamentals/blocking-and-cpu-bound-work`
+  (EN + DE) says the transfer list takes the `ArrayBuffer`, never the view.
+  Related: #1558, #1191.
+
 - **No metrics page said that a registry is per process — and, with worker
   threads, per thread** (#1184). Every `ActorSystem` owns its own registry
   and `GET /metrics` exports exactly the one of the system that bound the

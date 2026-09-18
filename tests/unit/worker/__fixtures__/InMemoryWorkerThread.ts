@@ -67,7 +67,21 @@ export class FakeWorker implements WorkerLike {
 
   constructor(name: string) { this.name = name; }
 
-  postMessage(value: unknown): void { this.posted.push(value); }
+  postMessage(value: unknown, transfer?: unknown[]): void { this.posted.push(FakeWorker.crossing(value, transfer)); }
+
+  /**
+   * What the worker receives.  Without a transfer list the value itself, by
+   * reference — cloning every frame would refuse the values other suites pass
+   * through on purpose.  With one, the runtimes' own rule, run by the same
+   * algorithm `postMessage` runs: the entries move, so the caller's buffer is
+   * detached, and an entry that is not transferable or was moved already is
+   * refused with a `DataCloneError` before anything reaches the worker.  The
+   * fake accepted any list until #1571, which is exactly how a `Uint8Array`
+   * in a transfer list could not be caught in-process.
+   */
+  static crossing(value: unknown, transfer: unknown[] | undefined): unknown {
+    return transfer === undefined ? value : structuredClone(value, { transfer: transfer as Transferable[] });
+  }
 
   addEventListener<K extends keyof WorkerEventMap>(
     event: K,
@@ -383,11 +397,14 @@ export function hostOffloadWorker(
     onMessage: (handler) => { handlers.add(handler); },
     offMessage: (handler) => { handlers.delete(handler); },
   };
-  worker.postMessage = (value: unknown): void => {
-    origPost(value);
+  worker.postMessage = (value: unknown, transfer?: unknown[]): void => {
+    // Crossed before it is recorded: a refused transfer list throws here, out
+    // of the pool's `postMessage` call, and nothing is delivered — as on a thread.
+    const frame = FakeWorker.crossing(value, transfer);
+    origPost(frame);
     if (stalled) return;
     handled++;
-    for (const handler of [...handlers]) handler(value);
+    for (const handler of [...handlers]) handler(frame);
   };
   // The service posts `offload-ready` synchronously, which reaches the pool's
   // listener only once it is attached; `spawn` attaches it right after

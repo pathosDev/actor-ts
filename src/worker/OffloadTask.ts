@@ -80,6 +80,29 @@ export class OffloadTaskError extends Error {
   }
 }
 
+/**
+ * The run never reached a worker: `postMessage` refused its arguments or its
+ * transfer list before anything left this thread (#1571).  The usual cause is
+ * a `transfer` entry that is not transferable — a `Uint8Array` where its
+ * `.buffer` was meant — or a buffer an earlier run already detached; a value
+ * in `args` that structured clone cannot copy — a function, say — ends the
+ * same way.  The runtime's own error is the `cause`.  Distinct from
+ * `OffloadTaskError` on purpose: the task did not throw, it never ran, and
+ * the worker is untouched — so the pool neither replaces it nor charges the
+ * budget, and `offload_tasks_total` counts the run as `invalid-arguments`
+ * rather than as a task fault.
+ */
+export class OffloadArgumentsError extends Error {
+  constructor(readonly task: string, cause: unknown) {
+    super(
+      `offloaded task ${task} was not dispatched: its arguments could not be handed to the worker `
+      + `(${cause instanceof Error ? `${cause.name}: ${cause.message}` : String(cause)})`,
+      { cause },
+    );
+    this.name = 'OffloadArgumentsError';
+  }
+}
+
 /** The queue is full and `overflow` is `reject`. */
 export class OffloadQueueFullError extends Error {
   constructor(readonly task: string, readonly maxQueue: number) {

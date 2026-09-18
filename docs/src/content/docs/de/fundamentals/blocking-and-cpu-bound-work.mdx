@@ -204,7 +204,10 @@ unterscheiden.
 Ein Transferable in den Argumenten — ein `ArrayBuffer` unter einem Typed
 Array — kann **verschoben** statt kopiert werden: `pool.run(task,
 [bytes.buffer], { transfer: [bytes.buffer] })`.  Die Sicht des Aufrufers
-ist danach detached.
+ist danach detached.  Die Transferliste nimmt den `ArrayBuffer`, nie die
+Sicht: Ein Eintrag, der nicht transferierbar ist, oder ein bereits
+verschobener Buffer lässt den Lauf sofort mit `OffloadArgumentsError`
+fehlschlagen — der Worker hat nichts erhalten und bleibt unberührt.
 
 Der Pool meldet `offload_tasks_total{task, outcome}`,
 `offload_queue_depth` und `offload_task_seconds{task}`.

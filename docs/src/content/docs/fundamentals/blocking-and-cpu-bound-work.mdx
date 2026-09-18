@@ -192,6 +192,9 @@ waiting from a hang.
 A transferable inside the arguments — an `ArrayBuffer` under a typed
 array — can be **moved** instead of copied: `pool.run(task, [bytes.buffer],
 { transfer: [bytes.buffer] })`.  The caller's view is detached afterwards.
+The transfer list takes the `ArrayBuffer`, never the view: an entry that
+is not transferable, or a buffer already moved, fails the run at once with
+`OffloadArgumentsError` — the worker received nothing and is untouched.
 
 The pool reports `offload_tasks_total{task, outcome}`,
 `offload_queue_depth` and `offload_task_seconds{task}`.

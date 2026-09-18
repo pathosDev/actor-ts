@@ -48,6 +48,7 @@ export type { OffloadPoolOptionsType, OffloadOverflow } from './OffloadPoolOptio
 export {
   defineOffloadTask,
   OffloadTaskError,
+  OffloadArgumentsError,
   OffloadQueueFullError,
   OffloadTimeoutError,
   OffloadAbortedError,
