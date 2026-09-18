@@ -96,11 +96,48 @@ aggregates across systems, and two deployment shapes follow from that:
   — including the ones `actor-ts.parallelism.workers` starts for you
   ([parallelism](/fundamentals/parallelism/)) — boots its own
   `ActorSystem` with its own registry, and no management endpoint runs
-  inside a worker.  A scrape of the main thread's endpoint reports the
-  main thread only: **an actor placed on a worker is invisible to
-  Prometheus today.**  Nothing relays a worker's registry back; #1570 is
-  the relay.  Until it lands, an actor whose metrics you need stays on
-  the main thread — leave it out of `offload`, or keep `workers = 0`.
+  inside a worker.  The mesh **relays** them: every
+  `actor-ts.worker-mesh.metrics-relay-interval` (default `10s`) the main
+  thread pulls each worker's registry and exports it beside its own, so
+  `GET /metrics` on the main thread is the whole process.  While the
+  relay runs, every series carries a `thread` label — `main` for the
+  main thread's own samples, `worker-0`, `worker-1`, … for each worker's
+  (the slot, which is also the thread's name) — because two threads
+  report the same stock families under the same labels, and the label is
+  what keeps them apart.  Aggregate across it for a process figure:
+
+  ```promql
+  # Messages delivered by the whole process, all threads
+  sum without (thread) (rate(actor_messages_delivered_total[5m]))
+  # …and per thread, to see whether the offloaded actors carry the load
+  sum by (thread) (rate(actor_messages_delivered_total[5m]))
+  # A worker that has stopped answering the relay
+  worker_mesh_snapshot_age_seconds > 30
+  ```
+
+  A worker's figures are at most one relay interval old.  A worker that
+  is alive but has stopped answering keeps its last snapshot exported —
+  a series that vanishes is the failure mode `503` above exists to
+  prevent — and `worker_mesh_snapshot_age_seconds{worker="worker-N"}`
+  on the main thread says for how long; a worker that leaves the mesh
+  takes its series with it, and a respawned slot comes back under the
+  same label with its counters starting over, a reset `rate()` handles.
+  The first request goes out when the mesh starts and it is also what
+  switches a worker's registry on, so nothing has to be enabled inside
+  a worker; a worker's counting starts with its first request, so an
+  `enable()` on the main thread after the mesh is up takes effect on the
+  next tick.  `metrics-relay-interval = 0` switches the relay off, and
+  with it the `thread` label: a single-threaded system, or a mesh with
+  the relay off, exports exactly the bytes it exported before the relay
+  existed.  Switching workers on is therefore the one moment every
+  series' label set changes — a rule over a raw family
+  (`actor_mailbox_dropped_total > 0`) keeps working, one that compares a
+  family against itself across the change needs the `sum without
+  (thread)` above.  The relay covers a mesh started by hand with
+  `WorkerMesh.start` and the one the parallelism extension starts alike;
+  [OffloadPool](/fundamentals/blocking-and-cpu-bound-work/#offloadpool-pure-functions-on-worker-threads)
+  workers run no `ActorSystem`, and the `offload_*` families are the
+  main thread's already.
 
 ## Manual wiring
 
@@ -120,6 +157,31 @@ const routes = path('metrics',
   })),
 );
 ```
+
+`exportPrometheus(registry)` and `prometheusHandler(registry)` render
+**that registry** — the main thread's own — and nothing else.  On a
+system running a [worker mesh](/cluster/worker-mesh/) the relayed worker
+snapshots live on the `MetricsExtension`, not in the registry, so the
+merged view the management route serves is
+`renderPrometheusSamples(collectAll())`:
+
+```ts
+import { path, get } from 'actor-ts/http';
+import { MetricsExtensionId, renderPrometheusSamples } from 'actor-ts/metrics';
+
+const routes = path('metrics',
+  get(async () => ({
+    status: 200,
+    body: renderPrometheusSamples(system.extension(MetricsExtensionId).collectAll()),
+    contentType: 'text/plain; version=0.0.4',
+    headers: {},
+  })),
+);
+```
+
+`collectAll()` is `collect()` until a mesh registers its relay, so the
+second form is safe to use everywhere and the first is a documented
+half on a mesh.
 
 Bind on a dedicated port if you can — Prometheus's scrapes are
 periodic and shouldn't share the app port.

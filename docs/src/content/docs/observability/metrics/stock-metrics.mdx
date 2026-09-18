@@ -426,6 +426,36 @@ stays; see the stock-label rule at the end of this page.
 See [Projections](/persistence/projections/) for the strategies
 these describe.
 
+## Worker-mesh metrics
+
+A [worker mesh](/cluster/worker-mesh/) relays every worker's registry
+into the main thread's exposition, and one family belongs to the relay
+itself:
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `worker_mesh_snapshot_age_seconds` | gauge | `worker` | Seconds since the main thread last received a metrics snapshot from this worker. |
+
+`worker` is the slot — `worker-0`, `worker-1`, … — the same value the
+relayed samples carry in their `thread` label, so the two join by eye.
+It is bounded by `worker-mesh.workers`, minted by the main thread from
+its own slot table and never off the wire, and the series is removed
+when the slot leaves the mesh.
+
+- Read at scrape time, not at the relay tick, so the value is the age at
+  the moment you asked.  Under the default `10s` interval a healthy
+  worker reads under ten; a worker that is alive but has stopped
+  answering the relay keeps its last snapshot exported and this gauge
+  climbing, which is the alert — `worker_mesh_snapshot_age_seconds > 30`
+  is a working expression.  A snapshot the relay refused (a name outside
+  the exposition grammar, too many samples) leaves the gauge climbing
+  too, with a `warn` line naming the reason.
+- The relayed families themselves are the stock families on this page,
+  minted on the worker and exported here with `thread="worker-N"` added
+  at export.  Every row above applies to them unchanged, one series per
+  thread; see the [scope of a scrape](/observability/metrics/prometheus-exporter/#scope-per-process-per-thread)
+  for the `thread` label and how to aggregate across it.
+
 ## Overhead
 
 There is **no opt-out flag** — stock metrics are always wired into
@@ -496,6 +526,18 @@ import { Aside } from '@astrojs/starlight/components';
   family's label set.  `tests/unit/metrics/StockMetrics.test.ts` now reads
   every stock family out of `src/` and checks the whole inventory against
   this rule, with the two per-instance labels above as named exceptions.
+
+  One label is stamped **at export rather than at a call site**, and the
+  gate keeps it in a table of its own: `thread`, added to every sample
+  while a [worker mesh](/cluster/worker-mesh/) relays its threads'
+  registries into the main thread's exposition — `main` for the main
+  thread's own series, `worker-N` for a worker's.  It satisfies the rule
+  the same way `worker` above does: bounded by `worker-mesh.workers`
+  plus one, and minted from the main thread's own slot table, never from
+  a value a worker sent.  A snapshot that arrives already carrying a
+  `thread` label is refused whole.  It is absent — not empty, absent —
+  from a single-threaded system's exposition, so nothing about the
+  inventory above changes until the relay is on.
 </Aside>
 
 <Aside type="caution" title="Counters reset on restart">

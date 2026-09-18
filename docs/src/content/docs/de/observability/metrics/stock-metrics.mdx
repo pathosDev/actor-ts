@@ -461,6 +461,39 @@ bleibt das Label; siehe die Stock-Label-Regel am Ende dieser Seite.
 Siehe [Projektionen](/de/persistence/projections/) für die
 Strategien, die diese Metriken beschreiben.
 
+## Worker-Mesh-Metriken
+
+Ein [Worker-Mesh](/de/cluster/worker-mesh/) relayt die Registry jedes
+Workers in die Exposition des Main-Threads, und eine Familie gehört dem
+Relay selbst:
+
+| Metrik | Typ | Labels | Bedeutung |
+| --- | --- | --- | --- |
+| `worker_mesh_snapshot_age_seconds` | gauge | `worker` | Sekunden, seit der Main-Thread zuletzt einen Metrik-Snapshot von diesem Worker erhalten hat. |
+
+`worker` ist der Slot — `worker-0`, `worker-1`, … — derselbe Wert, den
+die relayten Samples in ihrem `thread`-Label tragen, sodass sich die
+beiden mit dem Auge verbinden lassen.  Es ist durch
+`worker-mesh.workers` begrenzt, vom Main-Thread aus seiner eigenen
+Slot-Tabelle geprägt und nie vom Draht, und die Serie wird entfernt,
+wenn der Slot das Mesh verlässt.
+
+- Beim Scrape gelesen, nicht beim Relay-Tick, also ist der Wert das
+  Alter in dem Moment, in dem du gefragt hast.  Unter dem Default-Intervall
+  von `10s` liest ein gesunder Worker unter zehn; ein Worker, der lebt,
+  aber dem Relay nicht mehr antwortet, behält seinen letzten exportierten
+  Snapshot und dieser Gauge steigt — das ist der Alarm,
+  `worker_mesh_snapshot_age_seconds > 30` ist ein funktionierender
+  Ausdruck.  Ein Snapshot, den das Relay abgelehnt hat (ein Name
+  außerhalb der Expositionsgrammatik, zu viele Samples), lässt den Gauge
+  ebenfalls steigen, mit einer `warn`-Zeile, die den Grund nennt.
+- Die relayten Familien selbst sind die Stock-Familien dieser Seite, auf
+  dem Worker geprägt und hier mit einem beim Export hinzugefügten
+  `thread="worker-N"` exportiert.  Jede Zeile oben gilt für sie
+  unverändert, eine Serie pro Thread; siehe den
+  [Geltungsbereich eines Scrapes](/de/observability/metrics/prometheus-exporter/#geltungsbereich-pro-prozess-pro-thread)
+  für das `thread`-Label und wie man darüber aggregiert.
+
 ## Overhead
 
 Es gibt **kein Opt-out-Flag** — Stock-Metriken sind immer im
@@ -537,6 +570,19 @@ import { Aside } from '@astrojs/starlight/components';
   `tests/unit/metrics/StockMetrics.test.ts` liest jetzt jede
   Stock-Familie aus `src/` und prüft das gesamte Inventar gegen diese
   Regel, mit den beiden Labels pro Instanz oben als benannte Ausnahmen.
+
+  Ein Label wird **beim Export statt an einer Aufrufstelle** gestempelt,
+  und das Gate führt es in einer eigenen Tabelle: `thread`, das jedem
+  Sample hinzugefügt wird, solange ein [Worker-Mesh](/de/cluster/worker-mesh/)
+  die Registries seiner Threads in die Exposition des Main-Threads
+  relayt — `main` für die eigenen Serien des Main-Threads, `worker-N`
+  für die eines Workers.  Es erfüllt die Regel genauso wie `worker` oben:
+  begrenzt durch `worker-mesh.workers` plus eins, und aus der eigenen
+  Slot-Tabelle des Main-Threads geprägt, nie aus einem Wert, den ein
+  Worker geschickt hat.  Ein Snapshot, der bereits ein `thread`-Label
+  trägt, wird im Ganzen abgelehnt.  In der Exposition eines
+  einthreadigen Systems fehlt es — nicht leer, sondern abwesend —, sodass
+  sich am Inventar oben nichts ändert, bis das Relay läuft.
 </Aside>
 
 <Aside type="caution" title="Counter werden beim Neustart zurückgesetzt">
