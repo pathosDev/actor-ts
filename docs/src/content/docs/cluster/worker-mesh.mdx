@@ -661,7 +661,7 @@ Four things about those lines are worth knowing:
   the running tallies per reason.
 
 Malformed traffic is dropped, not fatal — and it is counted and
-reported, as the last row above says: the broker validates a frame's
+reported, as the *broker refuses a frame* row above says: the broker validates a frame's
 `to` and `from` addresses before routing it, so one bad
 `postMessage` from a worker no longer throws inside the host's message
 listener.  The frame's `payload` is validated by the receiving

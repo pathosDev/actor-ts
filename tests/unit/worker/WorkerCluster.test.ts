@@ -1101,6 +1101,61 @@ describe('WorkerCluster — what the pool reports (#1276)', () => {
       errorSpy.mockRestore();
     }
   });
+
+  /**
+   * `withRestartWindowMs(0)` means the budget never resets, so there is no
+   * window to quote: "restart 1 of 3 inside 0 ms" describes a window no
+   * restart could fit in.  The count stands on its own under a zero window.
+   */
+  test('under restartWindowMs 0 the granted-restart line quotes the count without a window', async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
+    const logger = new RecordingLogger();
+    const workerOptions = reportingOptions(logger, backend)
+      .withMaxRestarts(3)
+      .withRestartWindowMs(0);
+    const cluster = await WorkerCluster.spawn(workerOptions);
+    try {
+      backend.spawned[0]!.simulateCrash(1);
+
+      const respawning = messagesAt(logger, 'warn').filter((m) => /respawning worker 0/.test(m));
+      expect(respawning).toHaveLength(1);
+      expect(respawning[0]).toMatch(/ \(restart 1 of 3\)$/);
+      expect(respawning[0]).not.toMatch(/inside 0 ms/);
+      await awaitCondition(() => backend.spawned.length >= 2, {
+        label: 'the restart under a zero window was granted',
+      });
+    } finally {
+      await cluster.terminate();
+    }
+  });
+
+  test('under restartWindowMs 0 the permanently-down line quotes the count without a window', async () => {
+    // Only the first incarnation handshakes; the one granted replacement times
+    // out, spends the budget of one, and retires the slot.
+    let spawns = 0;
+    const backend = new FakeWorkerBackend({
+      onSpawn: (spawned) => { if (spawns++ === 0) autoHandshake(spawned); },
+    });
+    const logger = new RecordingLogger();
+    const workerOptions = reportingOptions(logger, backend)
+      .withReadyTimeoutMs(20)
+      .withMaxRestarts(1)
+      .withRestartWindowMs(0);
+    const cluster = await WorkerCluster.spawn(workerOptions);
+    try {
+      backend.spawned[0]!.simulateCrash(1);
+      await awaitCondition(
+        () => messagesAt(logger, 'error').some((m) => /is permanently down/.test(m)),
+        { label: 'the retired slot was reported', timeoutMs: 4_000 },
+      );
+      const down = messagesAt(logger, 'error').filter((m) => /is permanently down/.test(m));
+      expect(down).toHaveLength(1);
+      expect(down[0]).toMatch(/is permanently down — 1 restarts exhausted its budget; last failure: /);
+      expect(down[0]).not.toMatch(/inside 0 ms/);
+    } finally {
+      await cluster.terminate();
+    }
+  });
 });
 
 /* ------------------------------------------------------------------------ */

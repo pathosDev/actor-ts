@@ -7,6 +7,7 @@ import {
   type PortLike,
 } from '../cluster/transports/MessageChannelTransport.js';
 import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
+import { WORKER_BROKER_DROP_REPORT_INTERVAL_MS } from './Constants.js';
 
 /**
  * Why the broker refused to forward a frame.
@@ -27,27 +28,6 @@ import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
  * a race the broker absorbs, not a refusal it reports.
  */
 export type WorkerBrokerDropReason = 'malformed' | 'unknown-destination' | 'unroutable';
-
-/**
- * How often each {@link WorkerBrokerDropReason} may reach the log, whatever
- * the drop rate (#1276).
- *
- * The `EnvelopeTrust.report` shape one layer up: a counter carries the
- * signal, the log is rate-limited.  A line per dropped frame would let a
- * worker write the host's log at `postMessage` rate — the amplification
- * `ENVELOPE_REFUSAL_REPORT_INTERVAL_MS` refuses to hand out on the wire, and a
- * thread is a cheaper place to post from than a socket.  The first drop of
- * each reason is reported at once, so an operator sees a wiring mistake
- * immediately; what this spaces out is the second thousand, folded into one
- * line carrying the count.
- *
- * A constant and not an option for the same reason as its cluster sibling:
- * there is no deployment in which the useful value differs, and a knob for it
- * would be a knob for how loud a worker may make the host's log.  It lives here
- * and not in a `src/worker/Constants.ts` because it is the subsystem's only
- * tuned constant and only this file reads it; a second one moves both.
- */
-export const WORKER_BROKER_DROP_REPORT_INTERVAL_MS = 30_000;
 
 /**
  * Main-thread piece of the multi-core cluster.  Collects one `MessagePort`

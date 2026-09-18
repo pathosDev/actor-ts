@@ -514,8 +514,7 @@ export class WorkerCluster {
     // "restart 0 of -1" would be a lie and the line says what is true instead.
     const budgetDetail = this.options.maxRestarts < 0
       ? 'restart budget unlimited'
-      : `restart ${state.budget.recordedRestarts} of ${this.options.maxRestarts} `
-        + `inside ${this.options.restartWindowMs} ms`;
+      : `restart ${state.budget.recordedRestarts} of ${this.options.maxRestarts}${this.windowDetail()}`;
     this.report(
       'warn',
       `[worker] respawning worker ${index} (${address}) in ${Math.round(delayMs)} ms (${budgetDetail})`,
@@ -568,7 +567,7 @@ export class WorkerCluster {
       this.report(
         'error',
         `[worker] worker ${index} (${address}) is permanently down — `
-        + `${restarts} restarts inside ${this.options.restartWindowMs} ms exhausted its budget`
+        + `${restarts} restarts${this.windowDetail()} exhausted its budget`
         + (cause === '' ? '' : `; last failure: ${cause}`),
       );
       return;
@@ -579,6 +578,18 @@ export class WorkerCluster {
     } catch (listenerError) {
       this.report('error', `[worker] onWorkerPermanentlyDown threw: ${describeFailure(listenerError)}`);
     }
+  }
+
+  /**
+   * The window half of a budget line — ` inside W ms`, or nothing under
+   * `restartWindowMs: 0`.  A zero window means the budget never resets
+   * (`RestartBudget` prunes only when `withinTimeRangeMs > 0`), so the count
+   * is over the process lifetime and "inside 0 ms" would describe a window no
+   * restart could fit in.  Shared by the granted-restart and the
+   * permanently-down lines, so the two cannot drift.
+   */
+  private windowDetail(): string {
+    return this.options.restartWindowMs > 0 ? ` inside ${this.options.restartWindowMs} ms` : '';
   }
 
   private restartStateFor(index: number): RestartState {
