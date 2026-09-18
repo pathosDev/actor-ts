@@ -3273,6 +3273,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **`cluster-security.mdx` claimed every wire rejection is logged, and the
+  worker path logs none** (#1275). The page stated the wire-edge guarantees
+  without naming a transport — "every frame is validated", "every rejection
+  is logged at `WARN` naming the peer and the offending field" — and a reader
+  deploying a worker mesh took both as covering it. The first now holds on
+  every transport: `MessageChannelTransport` runs the same `validateWireFrame`
+  the socket transports do (#945). The second never did — the transport and
+  `WorkerBroker` drop a refused frame in silence, because neither has a
+  logger to report through (#1276). The page now scopes the logging claim to
+  the socket transports and says what the worker path does instead: envelope
+  shape and payload validated, `from` rewritten to the arriving port, no log
+  line of any kind. EN + DE.
+
 - **`WorkerNode.join()` never completed on Node — every worker bootstrap
   hung out its handshake deadline there** (#1569). The worker-side helper
   reached its parent through the Web Worker globals, `self.postMessage` out
