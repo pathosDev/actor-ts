@@ -108,9 +108,11 @@ unter `/user/worker`; der Router konstruiert für jeden eine
 Konsequenzen:
 
 - **Lifecycle ist unabhängig.**  Stoppe den Router → Routees laufen
-  weiter.  Stoppe einen Routee → der Router stoppt das Senden an
-  ihn (nachdem die Cluster-Mitgliedschaft es bemerkt), aber der
-  Rest des Pools ist unberührt.
+  weiter.  Stoppe einen Routee → der Router bemerkt es nicht: Routees
+  werden aus der *Mitgliedschaft* abgeleitet, nicht auf Lebendigkeit
+  geprüft, er sendet diesem Node also weiter seinen Anteil, bis der Node
+  selbst geht — und der Node verwirft, was für einen Pfad ankommt, den
+  niemand hat, mit einer Warnung.  Der Rest des Pools ist unberührt.
 - **Topologie-getriebenes Sizing.**  Füge einen Node hinzu → der
   Router nimmt ihn automatisch auf.  Entferne einen Node → der
   Router stoppt das Senden.  Kein Restart nötig.
@@ -166,7 +168,12 @@ Cluster-Router ist immer group-förmig.  Wenn du einen festen Pool
 willst, der zufällig einen Cluster spannt, würdest du einen
 Top-Level-"Deployment"-Actor pro Node schreiben, der die lokalen
 Routees spawnt, plus einen `ClusterRouter`, der sie per Pfad ins
-Visier nimmt.  Siehe
+Visier nimmt.  Auf dem Worker-Mesh ist diese Komposition ein
+dokumentiertes Rezept — das `setup` des Actor-Moduls spawnt den Routee
+auf jedem Worker, und ein `ClusterRouter` auf dem Main-Thread findet
+sie per Pfad und Rolle; siehe
+[Eine Adresse, ein Actor pro Thread](/de/routing/overview/#eine-adresse-ein-actor-pro-thread).
+Für einen Cluster aus Prozessen siehe
 [Sharded Daemon Process](/de/cluster/sharding/sharded-daemon-process/)
 für das Pattern, das "N globale Workers spawnen" am nächsten kommt.
 
@@ -175,7 +182,7 @@ für das Pattern, das "N globale Workers spawnen" am nächsten kommt.
 | Du stoppst... | Pool-Router | Group-Router |
 | --- | --- | --- |
 | Den Router | Alle Routees stoppen (Kinder kaskadieren). | Routees laufen weiter. |
-| Einen Routee | Supervisor restartet ihn (Default); wird er gestoppt, bleibt seine tote Ref im Pool und Round-Robin routet ihm weiter ~jede N-te Nachricht → Dead Letters. | Router stoppt das Senden an ihn (nachdem der Cluster es bemerkt), Geschwister unberührt. |
+| Einen Routee | Gecrasht → an Ort und Stelle vom Supervisor neu gestartet (Default-Strategie). Gestoppt → auf sein `Terminated` entfernt: Der Pool schrumpft um einen, und in die Lücke wird nichts geroutet (#449). | Router sendet weiter an diesen Node, bis sich dessen Mitgliedschaft ändert — er prüft Routees nicht auf Lebendigkeit —, und der Node verwirft diesen Anteil mit einer Warnung; Geschwister unberührt. |
 | Das Actor-System | Alles stoppt normal. | Alles stoppt auf diesem Node; Routees auf anderen Nodes laufen weiter. |
 
 Die Asymmetrie ist wichtig für **sauberen Shutdown** — ein

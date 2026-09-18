@@ -105,9 +105,11 @@ and routes to those.
 Consequences:
 
 - **Lifecycle is independent.**  Stop the router → routees keep
-  running.  Stop a routee → the router stops sending to it
-  (after cluster membership notices), but the rest of the pool
-  is unaffected.
+  running.  Stop a routee → the router does not notice: routees are
+  derived from *membership*, not probed for liveness, so it keeps
+  sending that node its share until the node itself leaves — and the
+  node drops what arrives for a path nobody has, with a warning.  The
+  rest of the pool is unaffected.
 - **Topology-driven sizing.**  Add a node → the router picks it
   up automatically.  Remove a node → the router stops sending.
   No restart needed.
@@ -162,7 +164,12 @@ actor-ts doesn't expose that — the cluster router is always
 group-shaped.  If you want a fixed pool
 that happens to span a cluster, you'd write a top-level
 "deployment" actor per node that spawns the local routees, plus a
-`ClusterRouter` that targets them by path.  See
+`ClusterRouter` that targets them by path.  On the worker mesh that
+composition is a documented recipe — the actor module's `setup` spawns
+the routee on every worker, and a `ClusterRouter` on the main thread
+finds them by path and role; see
+[One address, one actor per thread](/routing/overview/#one-address-one-actor-per-thread).
+For a cluster of processes, see
 [Sharded daemon process](/cluster/sharding/sharded-daemon-process/)
 for the pattern that comes closest to "spawn N global workers."
 
@@ -171,7 +178,7 @@ for the pattern that comes closest to "spawn N global workers."
 | You stop... | Pool router | Group router |
 | --- | --- | --- |
 | The router | All routees stop (children cascade). | Routees keep running. |
-| One routee | Supervisor restarts it (default); if stopped, its dead ref stays in the pool and round-robin keeps routing it ~1-in-N messages → dead letters. | Router stops sending to it (after cluster notices), siblings unaffected. |
+| One routee | Crashed → restarted in place by the supervisor (default strategy). Stopped → pruned on its `Terminated`: the pool shrinks by one and nothing is routed into the gap (#449). | Router keeps sending to that node until its membership changes — it does not probe routee liveness — and the node drops that share with a warning; siblings unaffected. |
 | The actor system | Everything stops normally. | Everything stops on this node; routees on other nodes continue. |
 
 The asymmetry matters for **graceful shutdown** — a pool router
