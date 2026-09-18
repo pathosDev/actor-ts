@@ -24,9 +24,13 @@
  * 150 000 for the default ladder, which is above this line.  That is the
  * intended reading: a snapshot this size is a registry that has already
  * overflowed, and the fix is the label that overflowed it, not a larger cap.
- * The worker keeps counting; the main side reports the drop once and the
- * `worker_mesh_snapshot_age_seconds` series for that worker keeps climbing,
- * so the condition is visible on the same scrape that lacks the series.
+ * The worker keeps counting; the main side reports the drop once and, where
+ * an earlier snapshot from that worker was accepted, its
+ * `worker_mesh_snapshot_age_seconds` series keeps climbing, so the condition
+ * is visible on the same scrape that lacks the series.  That series is
+ * minted by the first *accepted* snapshot — a refused frame is never stored
+ * — so a worker refused from its very first answer has no age series to
+ * climb, and the `warn` line is the only signal.
  */
 export const MAX_RELAYED_SAMPLES_PER_SNAPSHOT = 100_000;
 

@@ -449,7 +449,11 @@ when the slot leaves the mesh.
   climbing, which is the alert — `worker_mesh_snapshot_age_seconds > 30`
   is a working expression.  A snapshot the relay refused (a name outside
   the exposition grammar, too many samples) leaves the gauge climbing
-  too, with a `warn` line naming the reason.
+  too, with a `warn` line naming the reason — provided an earlier
+  snapshot from that worker was accepted.  The series is minted by the
+  first *accepted* snapshot, so a worker refused from its very first
+  answer has no age series at all, and the `warn` line is the only
+  signal.
 - The relayed families themselves are the stock families on this page,
   minted on the worker and exported here with `thread="worker-N"` added
   at export.  Every row above applies to them unchanged, one series per

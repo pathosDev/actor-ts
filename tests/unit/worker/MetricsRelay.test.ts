@@ -265,6 +265,35 @@ describe('the main side of the metrics relay — asking', () => {
     }
   });
 
+  test('start() twice is start() once — one ask per worker, one source, one listener — and stop() leaves nothing behind', async () => {
+    // `MetricsRelay` is a public export of `actor-ts/worker`, so the guard is
+    // API, not an internal nicety: a second `start()` that registered a second
+    // source and armed a second ticker would double every relayed row and
+    // every request, and `stop()` — which unhooks one of each — would leave
+    // the first ticker firing into the cluster after the mesh is gone.
+    const r = rig();
+    try {
+      r.relay.start();
+      r.relay.start();
+      expect(requestsSent(r)).toEqual([WORKER_0.toString(), WORKER_1.toString()]);
+      r.scheduler.advance(INTERVAL_MS);
+      expect(requestsSent(r)).toHaveLength(4);
+      expect(r.stub.listeners).toHaveLength(1);
+      r.snapshot(snapshotOf({ value: 7 }), WORKER_0);
+      const merged = r.system.extension(MetricsExtensionId).collectAll();
+      expect(merged.filter((s) => s.name === 'relayed_total')).toHaveLength(1);
+
+      r.relay.stop();
+      expect(r.stub.listeners).toHaveLength(0);
+      const before = r.stub.sent.length;
+      r.scheduler.advance(INTERVAL_MS * 2);
+      expect(r.stub.sent).toHaveLength(before);
+    } finally {
+      r.relay.stop();
+      await r.system.terminate();
+    }
+  });
+
   test('nothing is asked while the main thread’s metrics are off — enabling them is what starts the pull', async () => {
     const r = rig(false);
     try {
@@ -606,6 +635,31 @@ describe('the main side of the metrics relay — departure and silence', () => {
       r.stub.members = [memberUp(MAIN), new Member(WORKER_0, 'down', 2, []), memberUp(WORKER_1)];
       r.scheduler.advance(INTERVAL_MS);
       expect(r.relay.samples()).toEqual([]);
+    } finally {
+      r.relay.stop();
+      await r.system.terminate();
+    }
+  });
+
+  test('a member that reads down is not asked either, while its handle is still among the live workers (#1284)', async () => {
+    // Under `restartPolicy 'never'` a dead worker keeps its handle, so its
+    // address stays in `workers()` for the life of the mesh while the failure
+    // detector holds its member `down`.  Retiring the snapshot is half of the
+    // departure; the other half is not sending a request into a port nobody
+    // reads, every interval, until the mesh terminates.
+    const r = rig();
+    try {
+      r.relay.start();
+      r.snapshot(snapshotOf({ value: 1 }), WORKER_0);
+      r.stub.members = [memberUp(MAIN), new Member(WORKER_0, 'down', 2, []), memberUp(WORKER_1)];
+      r.scheduler.advance(INTERVAL_MS);
+      expect(r.relay.samples()).toEqual([]);
+      expect(requestsSent(r).slice(2)).toEqual([WORKER_1.toString()]);
+      // The set is re-read on every tick: a slot whose address comes back `up`
+      // — a respawn re-joining under the same address — is asked again.
+      r.stub.members = [memberUp(MAIN), memberUp(WORKER_0), memberUp(WORKER_1)];
+      r.scheduler.advance(INTERVAL_MS);
+      expect(requestsSent(r).slice(3)).toEqual([WORKER_0.toString(), WORKER_1.toString()]);
     } finally {
       r.relay.stop();
       await r.system.terminate();
