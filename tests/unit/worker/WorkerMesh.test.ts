@@ -294,7 +294,7 @@ describe('WorkerMesh — the main thread joins its own workers (#1562)', () => {
 
       await awaitCondition(
         () => logger.records.some((record) => record.level === 'debug'
-          && /^\[worker\] broker dropped \d+ frame\(s\) from mesh@main:1 — no worker is registered/.test(record.message)),
+          && /^\[worker\] broker dropped \d+ frame\(s\), most recently from mesh@main:1 — no worker is registered/.test(record.message)),
         { label: 'the main thread\'s gossip to the dead worker was reported as a broker drop', timeoutMs: 5_000 },
       );
       expect(mesh.broker.dropped()['unknown-destination']).toBeGreaterThan(0);

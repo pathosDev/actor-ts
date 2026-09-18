@@ -628,7 +628,7 @@ a log shipper see the same thing:
 | A restart is granted | `WARN` | `[worker] respawning worker N (addr) in D ms (restart K of M inside W ms)` — `(restart budget unlimited)` under `maxRestarts: -1` |
 | A replacement never became ready | `ERROR` | `[worker] respawning worker N (addr) failed: <message>` |
 | The budget is spent and no `onWorkerPermanentlyDown` is set | `ERROR` | `[worker] worker N (addr) is permanently down — K restarts inside W ms exhausted its budget` |
-| The broker refuses a frame | `WARN`; `DEBUG` for an unknown destination | `[worker] broker dropped K frame(s) from <source> — <reason>` |
+| The broker refuses a frame | `WARN`; `DEBUG` for an unknown destination | `[worker] broker dropped K frame(s), most recently from <source> — <reason>` |
 | The backend declares `containsWorkerErrors: false` — once per backend, before the first spawn | `ERROR` | `[worker] worker backend <Class> declares containsWorkerErrors=false — an uncaught throw inside a worker will terminate this process instead of reaching the framework's error handler; …` |
 | The metrics relay refuses a worker's snapshot — once per reason per worker | `WARN` | `[worker] metrics relay dropped a snapshot from <addr> — <reason>` |
 
@@ -652,13 +652,16 @@ Four things about those lines are worth knowing:
   `DEBUG` because it is the normal shape after a crash — every sibling
   keeps gossiping to the dead address until the failure detector
   converges — while a malformed envelope or a port that refuses a frame
-  is a defect somewhere and goes out at `WARN`.  The line names the
-  registered address of the port the frame *arrived on*, never anything
-  lifted from the frame itself, and `broker.dropped()` returns the
-  running tallies per reason.
+  is a defect somewhere and goes out at `WARN`.  The count covers every
+  port since that reason last reached the log, so the line says *most
+  recently from* and names the registered address of the port the last
+  frame arrived on — never anything lifted from the frame itself, and for
+  a refusing port only the error's name (`DataCloneError`,
+  `InvalidStateError`), never its message.  `broker.dropped()` returns
+  the running tallies per reason.
 
 Malformed traffic is dropped, not fatal — and it is counted and
-reported, as the last row above says: the broker validates a frame's
+reported, as the *broker refuses a frame* row above says: the broker validates a frame's
 `to` and `from` addresses before routing it, so one bad
 `postMessage` from a worker no longer throws inside the host's message
 listener.  The frame's `payload` is validated by the receiving

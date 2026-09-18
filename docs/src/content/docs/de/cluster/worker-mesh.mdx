@@ -653,7 +653,7 @@ Argument, sodass ein Console-Sink und ein Log-Shipper dasselbe sehen:
 | Ein Restart wird gewährt | `WARN` | `[worker] respawning worker N (addr) in D ms (restart K of M inside W ms)` — `(restart budget unlimited)` unter `maxRestarts: -1` |
 | Ein Ersatz wurde nie ready | `ERROR` | `[worker] respawning worker N (addr) failed: <message>` |
 | Das Budget ist erschöpft und kein `onWorkerPermanentlyDown` gesetzt | `ERROR` | `[worker] worker N (addr) is permanently down — K restarts inside W ms exhausted its budget` |
-| Der Broker weist einen Frame ab | `WARN`; `DEBUG` für ein unbekanntes Ziel | `[worker] broker dropped K frame(s) from <source> — <reason>` |
+| Der Broker weist einen Frame ab | `WARN`; `DEBUG` für ein unbekanntes Ziel | `[worker] broker dropped K frame(s), most recently from <source> — <reason>` |
 | Das Backend deklariert `containsWorkerErrors: false` — einmal pro Backend, vor dem ersten Spawn | `ERROR` | `[worker] worker backend <Class> declares containsWorkerErrors=false — an uncaught throw inside a worker will terminate this process instead of reaching the framework's error handler; …` |
 | Das Metrik-Relay lehnt den Snapshot eines Workers ab — einmal pro Grund pro Worker | `WARN` | `[worker] metrics relay dropped a snapshot from <addr> — <reason>` |
 
@@ -679,12 +679,16 @@ Vier Dinge an diesen Zeilen sind wissenswert:
   — jedes Geschwister gossipt weiter an die tote Adresse, bis der
   Failure Detector konvergiert —, während ein fehlerhafter Umschlag oder
   ein Port, der einen Frame verweigert, irgendwo ein Defekt ist und auf
-  `WARN` hinausgeht.  Die Zeile nennt die registrierte Adresse des Ports,
-  auf dem der Frame *ankam*, niemals etwas aus dem Frame selbst, und
-  `broker.dropped()` liefert die laufenden Zähler pro Grund.
+  `WARN` hinausgeht.  Der Zähler umfasst jeden Port, seit dieser Grund
+  zuletzt im Log stand; die Zeile sagt deshalb *most recently from* und
+  nennt die registrierte Adresse des Ports, auf dem der letzte Frame
+  ankam — niemals etwas aus dem Frame selbst, und für einen
+  verweigernden Port nur den Namen des Fehlers (`DataCloneError`,
+  `InvalidStateError`), nie seine Message.  `broker.dropped()` liefert
+  die laufenden Zähler pro Grund.
 
 Fehlerhafter Traffic wird verworfen, nicht fatal — und er wird gezählt
-und gemeldet, wie die letzte Zeile oben sagt: Der Broker validiert
+und gemeldet, wie die Zeile *Der Broker weist einen Frame ab* oben sagt: Der Broker validiert
 die Adressen `to` und `from` eines Frames, bevor er ihn weiterleitet —
 ein einzelnes fehlerhaftes `postMessage` aus einem Worker wirft also
 nicht mehr im Message-Listener des Hosts.  Das `payload` des Frames
