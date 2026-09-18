@@ -64,7 +64,7 @@ ruft die asynchronen Formen auf und dokumentiert diesen Rest, statt selbst
 durch den Pool zu leiten — siehe
 [Komprimierung](/de/persistence/object-storage/compression/#cpu-kosten-grobe-richtwerte).
 
-**2. Worker-Threads, für reine JS-CPU-Arbeit.** Zwei Formen, je nachdem,
+**2. Worker-Threads, für reine JS-CPU-Arbeit.** Drei Formen, je nachdem,
 was die Arbeit ist:
 
 - eine **Funktion** — hash das, komprimiere jenes, transformiere dieses
@@ -75,7 +75,16 @@ was die Arbeit ist:
   Worker-Thread, transparent, über [`actor-ts.parallelism.workers`](/de/fundamentals/parallelism/)
   — der Actor und sein Teilbaum laufen dort, und jede Nachricht an ihn
   überquert den Thread.  Das [Worker-Mesh](/de/cluster/worker-mesh/) ist
-  die Schicht darunter, um die Threads von Hand zu steuern.
+  die Schicht darunter, um die Threads von Hand zu steuern;
+- **N identische Actors**, einer pro Worker, hinter **einer** lokalen
+  Adresse — ein `ClusterRouter` auf dem Main-Thread über den Routee, den
+  das Actor-Modul jedes Workers in `setup` spawnt.  Ein lokaler
+  `Router`-Pool ist *nicht* diese Stufe: Seine Routees sind Kinder auf dem
+  Thread des Routers, er kauft also Nebenläufigkeit für Handler, die
+  warten, und nie einen zweiten Core.  Die
+  [Entscheidungsmatrix](/de/routing/overview/#router-sind-nicht-der-einzige-weg-zur-parallelisierung)
+  im Routing-Überblick stellt die fünf Mechanismen nebeneinander, mit dem
+  Rezept und seinen drei Fallen.
 
 **3. Native Addons, die eigene Threads mitbringen.** Eine Bibliothek mit
 Rust- oder C++-Kern (ein Bild-Codec, ein Datenbanktreiber), die ihre

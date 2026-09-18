@@ -58,8 +58,8 @@ the async forms and documents this residual rather than routing through
 the pool itself — see
 [Compression](/persistence/object-storage/compression/#cpu-cost-rough-guidance).
 
-**2. Worker threads, for pure-JS CPU work.** Two shapes, by what the work
-is:
+**2. Worker threads, for pure-JS CPU work.** Three shapes, by what the
+work is:
 
 - a **function** — hash this, compress that, transform this window — goes
   to the [`OffloadPool`](#offloadpool-pure-functions-on-worker-threads)
@@ -69,7 +69,15 @@ is:
   own, transparently, through [`actor-ts.parallelism.workers`](/fundamentals/parallelism/)
   — the actor and its subtree run there, and every message to it crosses
   the thread.  The [worker mesh](/cluster/worker-mesh/) is the layer
-  underneath, for driving the threads by hand.
+  underneath, for driving the threads by hand;
+- **N identical actors**, one per worker, behind **one** local address —
+  a `ClusterRouter` on the main thread over the routee each worker's actor
+  module spawns in `setup`.  A local `Router` pool is *not* this tier: its
+  routees are children on the router's own thread, so it buys concurrency
+  for handlers that wait and never a second core.  The
+  [decision matrix](/routing/overview/#routers-are-not-the-only-way-to-parallelize)
+  on the routing overview puts the five mechanisms side by side, with the
+  recipe and its three traps.
 
 **3. Native addons that bring their own threads.** A library backed by
 Rust or C++ (an image codec, a database driver) that does its work off the

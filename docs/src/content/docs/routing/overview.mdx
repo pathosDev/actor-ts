@@ -20,12 +20,19 @@ that callers `tell`.  The difference is *what's on the other side*.
 
 ## When to reach for a router
 
-Three patterns:
+Four patterns:
 
-1. **Parallelize CPU-heavy work.**  A single actor is bottlenecked
-   by its one-at-a-time guarantee; a 4-routee round-robin router
-   gives you 4-way parallelism without breaking message ordering
-   *within* a routee.
+1. **Keep I/O-bound handlers flowing.**  A single actor processes one
+   message at a time, so a handler that `await`s a database or an HTTP
+   call parks every later message behind that wait.  A 4-routee
+   round-robin router lets four of them be in flight at once, without
+   breaking message ordering *within* a routee.  That is
+   **concurrency, not CPU parallelism**: the routees are children of the
+   router, on its thread, and the runtime is single-threaded, so four
+   CPU-bound routees finish no sooner than one
+   (`benchmarks/single-node/router-pool.ts` measures exactly this).
+   CPU work goes to [`context.offload`](/fundamentals/blocking-and-cpu-bound-work/)
+   or to [a pool across threads](#routers-are-not-the-only-way-to-parallelize).
 2. **Spread load across nodes.**  A cluster router with role-filtered
    routees gives you fan-out across every node carrying the
    `'compute'` role.  Add a node, the router picks it up; remove a
@@ -141,37 +148,146 @@ For per-routee supervision strategies, configure them on the
 routee options:
 
 ```ts
-import { ActorOptions } from 'actor-ts';
+import { ActorOptions, stoppingStrategy } from 'actor-ts';
 
 const routeeOptions = ActorOptions.create().withSupervisorStrategy(stoppingStrategy);
 
 system.spawn(Router.roundRobin(4, Worker, routeeOptions), 'workers');
 ```
 
-Now any worker that throws is **stopped** instead of restarted —
-and the router watches it die, but its ref stays in the pool.
-Round-robin keeps handing that slot roughly 1-in-N messages, which
-land in dead letters until the whole router restarts.  You'd combine
-this with a higher-level supervisor that decides when to re-spawn
-the whole pool.
+Now any worker that throws is **stopped** instead of restarted — and
+the router, which watches every routee, prunes the dead ref from the
+pool on its `Terminated`.  The pool is one routee smaller, and nothing
+is routed into the gap; what the routee had already accepted is
+dead-lettered by its own stop, as with any stopping actor.  A pool that
+should heal rather than shrink wraps each routee in a
+[`BackoffSupervisor`](/patterns/backoff-supervisor/) —
+`Router.roundRobin(4, BackoffSupervisor.factory({ child: Worker }))` —
+so the slot is refilled after a backoff instead of vanishing.
 
 ## Routers are not (the only) way to parallelize
 
-A router gives you `N` independent actors processing one message
-at a time *each*.  Two alternatives worth knowing:
+A router gives you `N` independent actors processing one message at a
+time *each* — on **one** thread.  Which of the five ways to spread work
+fits depends on what the unit of work is, how many threads it should
+use, and whether the caller wants one address or a function call.
+Every figure below is one the tree already prints, with its source
+named; none is re-measured here.
 
-- **Sharding** is the right tool when each unit of work has a
-  key and you need *exactly one* live actor per key (with
-  failover, rebalancing, etc.).  See
-  [Sharding](/cluster/sharding/overview/).
-- **DistributedPubSub** is the right tool for fan-out where the
-  subscriber set is dynamic — actors come and go, and any of them
-  can receive published events.  See
-  [DistributedPubSub](/cluster/pubsub/).
+| Mechanism | Unit of work | Threads | One local address? | Pool size | On routee stop / crash | Cost per message | Break-even | When |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Local [`Router`](/routing/router/) pool | actor message | 1 — the router's | yes | fixed at spawn | crash → restarted in place by the default strategy; stop → pruned, the pool is one smaller | local `tell` ~320 ns (`benchmarks/worker/mesh-message-cost.ts`) | any `await` in the handler — it buys concurrency, never CPU | handlers that wait on I/O |
+| [`ClusterRouter`](/cluster/cluster-router/) over the [worker mesh](/cluster/worker-mesh/) — the recipe below | actor message | N workers | yes — the router | one routee per worker; follows membership | crash → restarted by its own parent on the worker; stop → the router keeps sending to that node until membership changes | cross-thread `tell` ~21 µs, `ask` ~180 µs (same benchmark) | ~100 µs of work per message ([the measured table](/fundamentals/parallelism/#the-measured-table)) | N identical compute actors behind one ref |
+| [`OffloadPool`](/fundamentals/blocking-and-cpu-bound-work/#offloadpool-pure-functions-on-worker-threads) / `context.offload` | pure function | a demand-driven pool | no — a call, a promise back | grows with demand, shrinks when idle | a failed run rejects its promise; a dead worker is replaced inside a restart budget | ~3 µs per pipelined task (`benchmarks/worker/task-offload-breakeven.ts`) | ~10 µs per call ([when it pays](/fundamentals/blocking-and-cpu-bound-work/#when-it-pays)) | hash, compress, transform — no actor on the far side |
+| [`actor-ts.parallelism.workers`](/fundamentals/parallelism/) with several top-level actors | actor and its subtree | N workers | one ref **per actor**, path unchanged | one worker per spawn, chosen by `placement` | supervised by its worker's guardian; the ref `tell`s, `ask`s and `watch`es across the thread | cross-thread `tell` ~21 µs, `ask` ~180 µs | ~100 µs of work per message | several *different* compute actors, each with its own address |
+| [Sharded entity](/cluster/sharding/overview/) | actor per key | every node or worker carrying the role | by key, through the shard region | exactly one live actor per key | restarted by its shard; relocated on rebalance | the transport's hop: ~21 µs on the mesh, ~22 µs `tell` / ~245 µs `ask` over TCP ([FAQ](/reference/faq/)) | the same ~100 µs, plus the entity's own state | exactly one actor per key, with failover |
 
-Routing is a fixed-size pool with a deterministic strategy.  When
-that's what you need, it's the simplest tool; when it isn't,
-reach for something else.
+[DistributedPubSub](/cluster/pubsub/) is not in the table because it
+answers a different question: fan-out to a *dynamic* subscriber set —
+actors come and go, and any of them can receive published events —
+where a router's routee set is fixed or follows membership.
+
+### One address, one actor per thread
+
+The second row is the shape the other four are not: `N` identical
+actors across `N` threads, and callers holding **one** local ref.
+Nothing ships it as a single call.  It composes from two things that
+do ship: the worker mesh runs the actor module's `setup(context)` on
+every worker once its node is up, and a `ClusterRouter` is a group
+router over whatever lives at one path on every member with a role.
+
+```hocon
+actor-ts.parallelism {
+  workers = "auto"                    # one worker per core, minus the main thread
+  offload = ["/user/offloaded-*"]     # the router below must not match — see the traps
+}
+actor-ts.worker-mesh.worker-roles = ["compute"]
+```
+
+```ts
+// actors.ts — next to the entry module; every worker imports it
+import { Actor, type ActorRef } from 'actor-ts';
+import { ClusterMailboxDepthAgent } from 'actor-ts/cluster';
+import type { WorkerMeshSetupContext } from 'actor-ts/worker';
+
+export type EncodeCommand = {
+  readonly kind: 'encode';
+  readonly frame: Uint8Array;
+  readonly replyTo: ActorRef<EncodedFrame>;
+};
+
+export type EncodedFrame = {
+  readonly bytes: number;
+  /** The address of the node that did the work: which thread, in a mesh. */
+  readonly encodedOn: string;
+};
+
+export class Encoder extends Actor<EncodeCommand> {
+  override onReceive(command: EncodeCommand): void {
+    // The CPU work goes here; the reply names the thread that did it.
+    const encodedOn = this.system.cluster.map((cluster) => cluster.selfAddress.toString()).getOrElse('main');
+    command.replyTo.tell({ bytes: command.frame.byteLength, encodedOn });
+  }
+}
+
+/** Runs once on every worker, after its node has joined the mesh. */
+export function setup(context: WorkerMeshSetupContext): void {
+  context.system.spawn(Encoder, 'encoder');
+  ClusterMailboxDepthAgent.serve(context.cluster);   // only 'smallest-mailbox' reads it
+}
+```
+
+```ts no-compile — imports ./actors.js, the fence above; tests/unit/parallelism/ClusterRouterOverMesh.test.ts runs this block
+// main.ts — the entry module; the router stays on this thread
+import { ActorSystem, ParallelismExtensionId } from 'actor-ts';
+import { ClusterRouter, ClusterRouterOptions } from 'actor-ts/cluster';
+import type { EncodeCommand, EncodedFrame } from './actors.js';
+
+const system = ActorSystem.create('media');
+const parallelism = system.extension(ParallelismExtensionId);
+await parallelism.whenReady();
+
+const clusterRouterOptions = ClusterRouterOptions.create<EncodeCommand>()
+  .withCluster(parallelism.workerMesh!.cluster)
+  .withRouterType('round-robin')
+  .withRouteePath('/user/encoder')
+  .withRole('compute');
+const encoders = system.spawn(ClusterRouter.factory(clusterRouterOptions), 'encoders');
+
+const encoded = await encoders.ask<EncodedFrame>({ kind: 'encode', frame: new Uint8Array(4096) });
+console.log(encoded.encodedOn);   // media@worker:2 — then :3, then :4, then :2 again
+```
+
+`whenReady()` is the one wait: the mesh is up and every `setup` has run,
+so the router's first rebuild sees every worker.  Routees are sorted by
+address, so round-robin order is stable across rebuilds.  The
+plain-object form works too —
+`ClusterRouter.factory({ cluster, routerType: 'round-robin', routeePath: '/user/encoder', role: 'compute' })`.
+
+Three traps, each a message that goes nowhere:
+
+- **The router must not match `offload`.**  `ClusterRouter.factory(…)`
+  returns a factory, and a factory is a closure that cannot cross a
+  thread — a `spawn` whose path matches `offload` throws on the caller's
+  stack, naming the fix.  Keep the pattern off the router's path, as
+  `/user/offloaded-*` above does.
+- **Without `role` the main thread is a routee too.**  The router's own
+  node is a member like any other, and the main thread has no
+  `/user/encoder` — so every (N+1)-th message is dropped where it
+  arrives, with one warning per message (`no envelope handler
+  registered, dropping message to …`), and an `ask` for it times out.
+  The role is what keeps the main thread out of the pool.
+- **`smallest-mailbox` needs the agent on every worker.**  The router
+  reads mailbox depths from a small framework agent on each routee node,
+  and a `smallest-mailbox` router starts that agent on its own node only.
+  The `ClusterMailboxDepthAgent.serve(context.cluster)` line in `setup`
+  is what makes the workers report; without it nothing breaks, but the
+  strategy falls back to round-robin order for every worker that stays
+  silent.
+
+What the recipe does not give you: a pool that grows and shrinks with
+demand — that is #212, and today only the `OffloadPool` scales that way —
+and metrics that see across the threads (#1570).
 
 ## Where to next
 

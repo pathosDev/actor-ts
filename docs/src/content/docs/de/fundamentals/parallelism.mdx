@@ -184,7 +184,10 @@ Death Watch auf Kinder eine direkte Verbindung ist und Eltern–Kind die
 geschwätzigste Beziehung in einem Actor-System ist.  Also ist **die
 Auslagerungseinheit der Teilbaum**: Ein ausgelagerter Top-Level-Actor nimmt
 seine Kinder mit, und Last verteilt sich über mehrere Top-Level-Actors,
-einen Router oder Sharding — nicht über mehr Worker pro Teilbaum.  Pfade
+Sharding oder einen
+[Cluster-Router über einen Routee pro Worker](/de/routing/overview/#eine-adresse-ein-actor-pro-thread)
+— ein *lokaler* `Router` kann sie nicht verteilen, weil seine Routees seine
+Kinder sind — nicht über mehr Worker pro Teilbaum.  Pfade
 sind davon unberührt: `ref.path.toString()` ist gleich, ob der Actor lokal
 oder ausgelagert ist, weil ein Pfad den Systemnamen trägt und nicht den
 Thread.
