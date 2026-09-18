@@ -18,17 +18,38 @@ import type { Labels, MetricSample, MetricsRegistry } from './Metrics.js';
 /**
  * Render the registry's current state as Prometheus text format.
  *
+ * **This registry's samples only.**  A system running a worker mesh has more
+ * to export than its own registry holds — the workers' snapshots reach the
+ * main thread through `MetricsExtension.collectAll` (#1570), and the
+ * management route renders that merged list with
+ * {@link renderPrometheusSamples}.  Manual wiring through this function or
+ * {@link prometheusHandler} renders the main thread alone, which is the right
+ * answer for a single-threaded system and a documented half for a mesh.
+ */
+export function exportPrometheus(registry: MetricsRegistry): string {
+  return renderPrometheusSamples(registry.collect());
+}
+
+/**
+ * Render a sample list as Prometheus text format.
+ *
  * Family names and label keys are interpolated **raw**, because the format
  * offers no escaping for either position — they are the grammar itself.  What
  * makes that safe is the registry refusing anything outside the grammar at
  * registration (`PROMETHEUS_METRIC_NAME_PATTERN` /
  * `PROMETHEUS_LABEL_NAME_PATTERN`, #784), so a name reaching this function has
  * already been checked.  A `MetricsRegistry` implemented outside this package
- * owes the same guarantee: `collect()` is trusted here, one layer past the
- * point where a forged series can still be told from a real one.
+ * owes the same guarantee, and so does anything that hands this function a
+ * list it did not collect itself — the worker-mesh relay re-checks every
+ * relayed name and key against the same two patterns before they get here.
+ * `samples` is trusted, one layer past the point where a forged series can
+ * still be told from a real one.
+ *
+ * Grouping is by family name, so a list that concatenates several registries'
+ * samples renders one `# HELP` / `# TYPE` per family however many threads
+ * contributed rows to it.
  */
-export function exportPrometheus(registry: MetricsRegistry): string {
-  const samples = registry.collect();
+export function renderPrometheusSamples(samples: ReadonlyArray<MetricSample>): string {
   // Group by family name so we emit `# HELP` / `# TYPE` once per family.
   const byName = new Map<string, MetricSample[]>();
   for (const sample of samples) {

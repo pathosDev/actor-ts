@@ -102,9 +102,11 @@ actor-ts.parallelism {
 | `buffer-size` | Die Schranke für Nachrichten an Actors, deren Worker sie noch nicht bestätigt haben, über das ganze System. Darüber hinaus gehen die restlichen mit einer einmaligen Warnung zu Dead Letters. |
 
 Die Threads selbst — Hostnamen, Ports, Cluster-Rollen, das Ready-Timeout,
-das Restart-Pacing — werden dort konfiguriert, wo das
-[Worker-Mesh](/de/cluster/worker-mesh/) sie liest: `actor-ts.worker-mesh.*`
-und `actor-ts.worker-cluster.*`.  Ein Knopf lebt an einem Ort.
+das Restart-Pacing und wie oft die Metriken der Worker in das `/metrics` des
+Main-Threads gezogen werden (`worker-mesh.metrics-relay-interval`) — werden
+dort konfiguriert, wo das [Worker-Mesh](/de/cluster/worker-mesh/) sie liest:
+`actor-ts.worker-mesh.*` und `actor-ts.worker-cluster.*`.  Ein Knopf lebt an
+einem Ort.
 
 ## Was ein Spawn tut
 
@@ -220,12 +222,17 @@ ist nichts zu verschieben.
 ## Was sichtbar ist, und was nicht
 
 Ein ausgelagerter Actor fehlt im Zellbaum des Main-Threads: nicht in
-`ActorSelection`, nicht im DevTools-Baum des Main-Threads, nicht in dessen
-Metriken.  Jeder Worker hat seine eigene Registry und keinen eigenen
-Management-Endpunkt, also ist **ein ausgelagerter Actor für `/metrics` heute
-unsichtbar** — siehe den
-[Geltungsbereich eines Scrapes](/de/observability/metrics/prometheus-exporter/#geltungsbereich-pro-prozess-pro-thread);
-#1570 ist das Relay.  Mit `workers = 0` gilt nichts davon.
+`ActorSelection`, nicht im DevTools-Baum des Main-Threads.  Seine
+**Metriken erreichen den Main-Thread aber**: Alle
+`actor-ts.worker-mesh.metrics-relay-interval` (Default `10s`) zieht das
+Mesh die Registry jedes Workers, und `GET /metrics` auf dem Main-Thread
+exportiert den ganzen Prozess, jede Serie mit `thread="main"` oder
+`thread="worker-N"` — `sum without (thread)` für die Prozesssumme, siehe
+den
+[Geltungsbereich eines Scrapes](/de/observability/metrics/prometheus-exporter/#geltungsbereich-pro-prozess-pro-thread).
+Die Werte eines Workers sind höchstens ein Intervall alt, und
+`worker_mesh_snapshot_age_seconds` sagt, wie alt.  Mit `workers = 0` gilt
+nichts davon, und die Exposition ist exakt die alte.
 
 ## Die gemessene Tabelle
 

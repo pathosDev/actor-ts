@@ -30,6 +30,7 @@ export {
   MetricsExtensionId,
   metricsOf,
 } from './MetricsExtension.js';
+export type { MetricSampleSource } from './MetricsExtension.js';
 export { MailboxDepthSampler } from './MailboxDepthSampler.js';
 export {
   DEFAULT_MAILBOX_DEPTH_SAMPLE_INTERVAL_MS,
@@ -37,12 +38,15 @@ export {
   MAILBOX_DEPTH_BUCKETS_MESSAGES,
   MAILBOX_DEPTH_REPORTING_FLOOR,
   MAILBOX_WAIT_BUCKETS_SECONDS,
+  MAIN_THREAD_LABEL_VALUE,
   PROMETHEUS_LABEL_NAME_PATTERN,
   PROMETHEUS_METRIC_NAME_PATTERN,
+  THREAD_LABEL,
 } from './Constants.js';
 export {
   exportPrometheus,
   prometheusHandler,
+  renderPrometheusSamples,
 } from './PrometheusExporter.js';
 export { promClientRegistry } from './PromClientAdapter.js';
 export {

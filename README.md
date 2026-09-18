@@ -60,9 +60,12 @@ A short tour of what's in the box:
   puts top-level actors on worker threads (Bun, Node, Deno) with the
   application code unchanged: `system.spawn` returns a ref that buffers until
   the worker acknowledges, `ask`, `watch` and `context.sender` cross the
-  thread, `terminate()` takes the threads down.  `workers = 0` is today's
-  system, bit for bit; children stay with their parent; what cannot cross —
-  a factory closure, a class the actor module does not export — fails loudly.
+  thread, `terminate()` takes the threads down.  Offloaded actors stay
+  visible on `/metrics`: the mesh pulls every worker's registry into the
+  main thread's exposition, each series labelled `thread="main"` or
+  `thread="worker-N"`.  `workers = 0` is today's system, bit for bit;
+  children stay with their parent; what cannot cross — a factory closure, a
+  class the actor module does not export — fails loudly.
 - **Offload pool** — `context.offload(task, args)` runs a pure function on
   a worker thread and resolves with the result: the single-threaded runtime's
   blocking dispatcher, with a queue bound, deadlines that stop a busy thread,

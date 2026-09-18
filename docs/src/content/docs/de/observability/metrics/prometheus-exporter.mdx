@@ -97,12 +97,52 @@ aggregiert über Systeme hinweg, und daraus folgen zwei Deployment-Formen:
   — auch die, die `actor-ts.parallelism.workers` für dich startet
   ([Parallelität](/de/fundamentals/parallelism/)) — bootet sein eigenes
   `ActorSystem` mit eigener Registry, und in einem Worker läuft kein
-  Management-Endpunkt.  Ein Scrape des Main-Thread-Endpunkts meldet nur
-  den Main-Thread: **Ein auf einem Worker platzierter Actor ist für
-  Prometheus heute unsichtbar.**  Nichts reicht die Registry eines Workers
-  zurück; #1570 ist das Relay.  Bis es landet, bleibt ein Actor, dessen
-  Metriken du brauchst, auf dem Main-Thread — nimm ihn aus `offload`
-  heraus oder bleib bei `workers = 0`.
+  Management-Endpunkt.  Das Mesh **relayt** sie: Alle
+  `actor-ts.worker-mesh.metrics-relay-interval` (Default `10s`) zieht der
+  Main-Thread die Registry jedes Workers und exportiert sie neben seiner
+  eigenen, sodass `GET /metrics` auf dem Main-Thread der ganze Prozess
+  ist.  Solange das Relay läuft, trägt jede Serie ein `thread`-Label —
+  `main` für die eigenen Samples des Main-Threads, `worker-0`,
+  `worker-1`, … für die jedes Workers (der Slot, der auch der Name des
+  Threads ist) — denn zwei Threads melden dieselben Stock-Familien unter
+  denselben Labels, und das Label ist das, was sie auseinanderhält.
+  Aggregiere darüber für eine Prozesszahl:
+
+  ```promql
+  # Messages delivered by the whole process, all threads
+  sum without (thread) (rate(actor_messages_delivered_total[5m]))
+  # …and per thread, to see whether the offloaded actors carry the load
+  sum by (thread) (rate(actor_messages_delivered_total[5m]))
+  # A worker that has stopped answering the relay
+  worker_mesh_snapshot_age_seconds > 30
+  ```
+
+  Die Werte eines Workers sind höchstens ein Relay-Intervall alt.  Ein
+  Worker, der lebt, aber nicht mehr antwortet, behält seinen letzten
+  exportierten Snapshot — eine Serie, die verschwindet, ist genau die
+  Fehlerform, die das `503` oben verhindert — und
+  `worker_mesh_snapshot_age_seconds{worker="worker-N"}` auf dem
+  Main-Thread sagt, wie lange schon; ein Worker, der das Mesh verlässt,
+  nimmt seine Serien mit, und ein neu gestarteter Slot kommt unter
+  demselben Label zurück, mit Countern, die von vorn beginnen — ein
+  Reset, den `rate()` verkraftet.  Die erste Anfrage geht beim Start des
+  Mesh hinaus und ist zugleich das, was die Registry eines Workers
+  einschaltet, sodass in einem Worker nichts aktiviert werden muss; das
+  Zählen eines Workers beginnt mit seiner ersten Anfrage, also greift
+  ein `enable()` auf dem Main-Thread nach dem Start des Mesh beim
+  nächsten Tick.  `metrics-relay-interval = 0` schaltet das Relay ab und
+  mit ihm das `thread`-Label: Ein einthreadiges System, oder ein Mesh
+  mit abgeschaltetem Relay, exportiert exakt die Bytes, die es vor dem
+  Relay exportiert hat.  Worker einzuschalten ist deshalb der eine
+  Moment, in dem sich die Label-Menge jeder Serie ändert — eine Regel
+  über eine rohe Familie (`actor_mailbox_dropped_total > 0`) funktioniert
+  weiter, eine, die eine Familie über die Änderung hinweg mit sich selbst
+  vergleicht, braucht das `sum without (thread)` von oben.  Das Relay
+  deckt ein von Hand mit `WorkerMesh.start` gestartetes Mesh und das der
+  Parallelismus-Extension gleichermaßen ab;
+  [OffloadPool](/de/fundamentals/blocking-and-cpu-bound-work/#offloadpool-reine-funktionen-auf-worker-threads)-Worker
+  betreiben kein `ActorSystem`, und die `offload_*`-Familien sind bereits
+  die des Main-Threads.
 
 ## Manuelles Verdrahten
 
@@ -122,6 +162,31 @@ const routes = path('metrics',
   })),
 );
 ```
+
+`exportPrometheus(registry)` und `prometheusHandler(registry)` rendern
+**diese Registry** — die eigene des Main-Threads — und nichts sonst.  Auf
+einem System mit [Worker-Mesh](/de/cluster/worker-mesh/) liegen die
+relayten Worker-Snapshots auf der `MetricsExtension`, nicht in der
+Registry, also ist die zusammengeführte Sicht, die die Management-Route
+liefert, `renderPrometheusSamples(collectAll())`:
+
+```ts
+import { path, get } from 'actor-ts/http';
+import { MetricsExtensionId, renderPrometheusSamples } from 'actor-ts/metrics';
+
+const routes = path('metrics',
+  get(async () => ({
+    status: 200,
+    body: renderPrometheusSamples(system.extension(MetricsExtensionId).collectAll()),
+    contentType: 'text/plain; version=0.0.4',
+    headers: {},
+  })),
+);
+```
+
+`collectAll()` ist `collect()`, bis ein Mesh sein Relay registriert, also
+ist die zweite Form überall sicher, und die erste ist auf einem Mesh eine
+dokumentierte Hälfte.
 
 Binde wenn möglich an einen dedizierten Port — Prometheus'
 Scrapes sind periodisch und sollten den App-Port nicht teilen.

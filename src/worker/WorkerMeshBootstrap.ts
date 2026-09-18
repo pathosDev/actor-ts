@@ -7,6 +7,7 @@ import type { ConfigObject } from '../config/HoconParser.js';
 import { collectActorExports, isActorClass, type WorkerActorClass } from '../parallelism/ActorModuleRegistry.js';
 import { ParallelismOptions } from '../parallelism/ParallelismOptions.js';
 import { serveParallelism } from '../parallelism/SpawnProtocol.js';
+import { serveWorkerMeshMetrics } from './MetricsRelay.js';
 import type { WorkerNodeContext } from './WorkerNode.js';
 
 export { isActorClass };
@@ -118,6 +119,10 @@ export async function runWorkerMeshNode(
   // is still awaiting is answered rather than dropped as an unclaimed kind.
   // Only the seed — the main thread — may ask this worker to spawn.
   serveParallelism({ system, cluster, actors, trustedPeers: init.seeds });
+  // Same trust, same timing: the main thread's first metrics request is what
+  // switches this worker's registry on (#1570), and it may arrive before
+  // `setup` has spawned anything.
+  serveWorkerMeshMetrics({ system, cluster, trustedPeers: init.seeds });
 
   const setupContext: WorkerMeshSetupContext = { system, cluster, selfAddress: context.self, actors };
   for (const module of modules) {

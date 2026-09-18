@@ -2245,6 +2245,10 @@ actor-ts {
     base-port = 2             # first worker's port; each slot increments
     main-roles = []           # cluster roles the main thread joins with
     worker-roles = []         # cluster roles every worker joins with
+    # The main thread pulls every worker's metrics registry into its own
+    # /metrics this often; the series carry thread="main" | "worker-<slot>".
+    # 0 switches the relay off and exports the main thread alone.
+    metrics-relay-interval = 10s
   }
 
   coordinated-shutdown {

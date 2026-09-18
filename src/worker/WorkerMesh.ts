@@ -11,6 +11,7 @@ import {
 import { CoordinatedShutdownId, Phases } from '../CoordinatedShutdown.js';
 import { availableParallelism } from '../runtime/Parallelism.js';
 import { OptionsError } from '../util/OptionsValidator.js';
+import { MetricsRelay } from './MetricsRelay.js';
 import { WorkerBroker } from './WorkerBroker.js';
 import { WorkerCluster } from './WorkerCluster.js';
 import { WorkerClusterOptions } from './WorkerClusterOptions.js';
@@ -22,6 +23,7 @@ import {
   DEFAULT_MESH_MAIN_HOSTNAME,
   DEFAULT_MESH_MAIN_PORT,
   DEFAULT_MESH_MAIN_ROLES,
+  DEFAULT_MESH_METRICS_RELAY_INTERVAL_MS,
   DEFAULT_MESH_WORKER_COUNT,
   DEFAULT_MESH_WORKER_HOSTNAME,
   DEFAULT_MESH_WORKER_ROLES,
@@ -32,8 +34,10 @@ import type { WorkerMeshOptions, WorkerMeshOptionsType } from './WorkerMeshOptio
 
 const MESH_SHUTDOWN_TASK_NAME = 'worker-mesh-terminate';
 
-/** One worker of the mesh: where it is, and which actor classes it can spawn by name. */
+/** One worker of the mesh: its slot, where it is, and which actor classes it can spawn by name. */
 export type WorkerMeshWorker = {
+  /** The slot index — `WorkerHandle.id`, and the `N` of the thread's `worker-N` name and metrics label. */
+  readonly id: number;
   readonly address: NodeAddress;
   readonly actors: ReadonlyArray<string>;
 };
@@ -66,6 +70,12 @@ export class WorkerMesh {
   readonly broker: WorkerBroker;
   private readonly workerCluster: WorkerCluster;
   private readonly system: ActorSystem;
+  /**
+   * Pulls the workers' metrics registries into the main thread's `/metrics`
+   * (#1570).  `null` when the interval is `0` — the exposition is then the
+   * main thread's alone, byte for byte as before the relay existed.
+   */
+  private readonly metricsRelay: MetricsRelay | null;
   private closed = false;
 
   private constructor(
@@ -73,12 +83,16 @@ export class WorkerMesh {
     cluster: Cluster,
     broker: WorkerBroker,
     workerCluster: WorkerCluster,
+    metricsRelayIntervalMs: number,
   ) {
     this.system = system;
     this.cluster = cluster;
     this.selfAddress = cluster.selfAddress;
     this.broker = broker;
     this.workerCluster = workerCluster;
+    this.metricsRelay = metricsRelayIntervalMs > 0
+      ? new MetricsRelay({ system, cluster, workers: () => this.workers, intervalMs: metricsRelayIntervalMs })
+      : null;
   }
 
   /**
@@ -165,7 +179,15 @@ export class WorkerMesh {
       throw error;
     }
 
-    const mesh = new WorkerMesh(system, cluster, broker, workerCluster);
+    const mesh = new WorkerMesh(
+      system, cluster, broker, workerCluster,
+      resolved.metricsRelayIntervalMs ?? DEFAULT_MESH_METRICS_RELAY_INTERVAL_MS,
+    );
+    // Once every member is up and before the mesh is handed out: the relay's
+    // first request goes out now, so a caller that enabled metrics before
+    // starting the mesh has every worker's registry live before its first
+    // frame to a worker actor — frames are ordered on one channel.
+    mesh.metricsRelay?.start();
     // The threads must not outlive the system that owns them.  Registered in
     // the same phase as the cluster's own leave and ahead of it by name order
     // — the workers go first, then the main thread leaves what is by then a
@@ -186,6 +208,7 @@ export class WorkerMesh {
   /** Every live worker with the actor classes it reported on `ready()`. */
   get workers(): ReadonlyArray<WorkerMeshWorker> {
     return this.workerCluster.workers.map((handle) => ({
+      id: handle.id,
       address: handle.address,
       actors: actorsReportedBy(handle.readyData),
     }));
@@ -210,6 +233,9 @@ export class WorkerMesh {
     if (this.closed) return;
     this.closed = true;
     this.system.extension(CoordinatedShutdownId).removeTask(Phases.ClusterLeave, MESH_SHUTDOWN_TASK_NAME);
+    // Before the workers go, so no tick asks a thread that is being stopped
+    // and the exposition is the main thread's own again from here on.
+    this.metricsRelay?.stop();
     await this.workerCluster.terminate();
     await this.cluster.leave();
   }
@@ -217,6 +243,7 @@ export class WorkerMesh {
   private async terminateWorkers(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    this.metricsRelay?.stop();
     await this.workerCluster.terminate();
   }
 }

@@ -134,6 +134,7 @@ in die dein System ohnehin loggt.
 | `withMainPort(port)` / `withBasePort(port)` | Synthetische Port-Komponenten; nichts bindet sie.  Defaults `1` / `2`. |
 | `withMainRoles(roles)` / `withWorkerRoles(roles)` | Cluster-Rollen, mit denen jede Seite joint — worauf rollenbeschränkte Singletons, Shards und Router selektieren.  Default keine. |
 | `withReadyTimeoutMs(ms)` | Handshake-Frist pro Worker und Membership-Frist für das ganze Mesh.  Default `10000`. |
+| `withMetricsRelayIntervalMs(ms)` | Wie oft der Main-Thread die Metrik-Registry jedes Workers in sein eigenes `/metrics` zieht; `0` schaltet das Relay ab.  Default `10000`.  Siehe [Metriken](#metriken-ein-scrape-für-jeden-thread) unten. |
 | `withRestartPolicy(p)` und die `withRestart…`- / `withMaxRestarts`-Knöpfe | Werden an den Worker-Cluster darunter durchgereicht — siehe dessen Tabelle unten. |
 | `withBootstrap(url)` | Notausgang für einen Bundler, der das mitgelieferte Bootstrap aus `dist/worker/` verschoben hat.  Default: das mitgelieferte. |
 | `withBackend(backend)` | Über dieses `WorkerBackend` spawnen — ein In-Memory-Fake im Test oder ein eigener Adapter für eine Runtime, die die Erkennung nicht kennt.  Ein eigenes implementiert `WorkerBackend`, liefert ein `WorkerLike` (beide aus `actor-ts/worker` exportiert) und deklariert `containsWorkerErrors`; siehe [Eigene Backends](#eigene-backends).  Default: erkannt. |
@@ -143,6 +144,29 @@ in die dein System ohnehin loggt.
 `/user/name`-Form haben.  `terminate()` nimmt zuerst die Worker herunter
 und verlässt dann den Cluster; ein System, das durch den Coordinated
 Shutdown geht, nimmt sein Mesh mit.
+
+### Metriken: ein Scrape für jeden Thread
+
+Jeder Worker hostet sein eigenes `ActorSystem`, also hat er seine eigene
+`MetricsRegistry` — und keinen eigenen Management-Endpunkt.  Das Mesh
+relayt sie: Alle `metrics-relay-interval` (Default `10s`) schickt der
+Main-Thread jedem lebenden Worker eine Anfrage, der Worker antwortet mit
+den Samples seiner Registry, und `GET /metrics` auf dem Main-Thread
+exportiert den ganzen Prozess.  Die Anfrage ist zugleich das, was die
+Registry eines Workers einschaltet, in einem Worker muss also nichts
+aktiviert werden; aktiviere Metriken auf dem Main-Thread — vor oder nach
+`start()` — und die Worker folgen beim nächsten Tick.  Jede exportierte
+Serie trägt dann `thread="main"` oder `thread="worker-N"`, wobei `N`
+der Slot in `mesh.workers` ist, und
+`worker_mesh_snapshot_age_seconds{worker="worker-N"}` sagt, wie lange
+jeder Worker zuletzt nicht geantwortet hat; ein Slot, der das Mesh
+verlässt, nimmt seine Serien mit, ein neu gestarteter kommt unter
+demselben Label mit frischen Countern zurück.  Setz das Intervall auf
+`0`, und die Exposition ist nur die des Main-Threads, exakt wie zuvor.
+Das Relay läuft für ein hier gestartetes Mesh und für das, das
+`actor-ts.parallelism.workers` startet, gleichermaßen; der
+[Geltungsbereich eines Scrapes](/de/observability/metrics/prometheus-exporter/#geltungsbereich-pro-prozess-pro-thread)
+hat das PromQL und die Vorbehalte.
 
 <Aside type="note" title="Warum das Actor-Modul kein Config-Key ist">
   `withModule` benennt Code, den die Worker *ausführen*.  Eine Config-Datei
@@ -304,13 +328,14 @@ hat aus dem oben genannten Grund keinen Key:
 
 ```hocon
 actor-ts.worker-mesh {
-  workers         = "auto"    # verfügbare Parallelität minus Main-Thread
-  main-hostname   = "main"
-  main-port       = 1
-  worker-hostname = "worker"  # vor main-hostname sortieren lassen, damit ein Worker führt
-  base-port       = 2
-  main-roles      = []
-  worker-roles    = ["compute"]
+  workers                = "auto"    # verfügbare Parallelität minus Main-Thread
+  main-hostname          = "main"
+  main-port              = 1
+  worker-hostname        = "worker"  # vor main-hostname sortieren lassen, damit ein Worker führt
+  base-port              = 2
+  main-roles             = []
+  worker-roles           = ["compute"]
+  metrics-relay-interval = 10s       # Worker-Registries in das /metrics des Main-Threads gezogen; 0 = aus
 }
 ```
 
@@ -630,6 +655,7 @@ Argument, sodass ein Console-Sink und ein Log-Shipper dasselbe sehen:
 | Das Budget ist erschöpft und kein `onWorkerPermanentlyDown` gesetzt | `ERROR` | `[worker] worker N (addr) is permanently down — K restarts inside W ms exhausted its budget` |
 | Der Broker weist einen Frame ab | `WARN`; `DEBUG` für ein unbekanntes Ziel | `[worker] broker dropped K frame(s) from <source> — <reason>` |
 | Das Backend deklariert `containsWorkerErrors: false` — einmal pro Backend, vor dem ersten Spawn | `ERROR` | `[worker] worker backend <Class> declares containsWorkerErrors=false — an uncaught throw inside a worker will terminate this process instead of reaching the framework's error handler; …` |
+| Das Metrik-Relay lehnt den Snapshot eines Workers ab — einmal pro Grund pro Worker | `WARN` | `[worker] metrics relay dropped a snapshot from <addr> — <reason>` |
 
 Vier Dinge an diesen Zeilen sind wissenswert:
 

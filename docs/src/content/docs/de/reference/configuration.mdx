@@ -2578,6 +2578,7 @@ reines Code-Feld.
 | `worker-mesh.base-port` | `2` | Port des ersten Workers; jeder Slot inkrementiert. |
 | `worker-mesh.main-roles` | `[]` | Cluster-Rollen, mit denen der Main-Thread joint. |
 | `worker-mesh.worker-roles` | `[]` | Cluster-Rollen, mit denen jeder Worker joint — worauf rollenbeschränkte Singletons, Shards und Router selektieren. |
+| `worker-mesh.metrics-relay-interval` | `10s` | Wie oft der Main-Thread die Metrik-Registry jedes Workers in sein eigenes `/metrics` zieht.  Solange das Relay läuft, trägt jede Serie `thread="main"` oder `thread="worker-<slot>"`; die Werte eines Workers sind höchstens ein Intervall alt.  `0` schaltet das Relay ab und exportiert nur den Main-Thread — siehe den [Geltungsbereich eines Scrapes](/de/observability/metrics/prometheus-exporter/#geltungsbereich-pro-prozess-pro-thread). |
 
 Die Worker des Mesh *sind* ein Worker-Cluster, deshalb sind Ready-Timeout und
 Restart-Taktung die `worker-cluster.*`-Keys oben.  Das Actor-Modul

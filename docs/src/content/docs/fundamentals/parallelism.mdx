@@ -98,9 +98,11 @@ actor-ts.parallelism {
 | `buffer-size` | The bound on messages sent to actors whose workers have not acknowledged them yet, across the whole system. Past it, the rest go to dead letters with one warning. |
 
 The threads themselves — hostnames, ports, cluster roles, the ready timeout,
-restart pacing — are configured where the [worker mesh](/cluster/worker-mesh/)
-reads them: `actor-ts.worker-mesh.*` and `actor-ts.worker-cluster.*`.
-One knob lives in one place.
+restart pacing, and how often the workers' metrics are pulled into the main
+thread's `/metrics` (`worker-mesh.metrics-relay-interval`) — are configured
+where the [worker mesh](/cluster/worker-mesh/) reads them:
+`actor-ts.worker-mesh.*` and `actor-ts.worker-cluster.*`.  One knob lives in
+one place.
 
 ## What a spawn does
 
@@ -206,11 +208,16 @@ nothing to move.
 ## What is visible, and what is not
 
 An offloaded actor is absent from the main thread's cell tree: not in
-`ActorSelection`, not in the DevTools tree of the main thread, not in its
-metrics.  Each worker has its own registry and no management endpoint of
-its own, so **an offloaded actor is invisible to `/metrics` today** — see
-the [scope of a scrape](/observability/metrics/prometheus-exporter/#scope-per-process-per-thread);
-#1570 is the relay.  With `workers = 0` none of this applies.
+`ActorSelection`, not in the DevTools tree of the main thread.  Its
+**metrics do reach the main thread**: every
+`actor-ts.worker-mesh.metrics-relay-interval` (default `10s`) the mesh
+pulls each worker's registry, and `GET /metrics` on the main thread
+exports the whole process, each series carrying `thread="main"` or
+`thread="worker-N"` — `sum without (thread)` for the process total, see
+the [scope of a scrape](/observability/metrics/prometheus-exporter/#scope-per-process-per-thread).
+A worker's figures are at most one interval old, and
+`worker_mesh_snapshot_age_seconds` says how old.  With `workers = 0` none
+of this applies, and the exposition is exactly what it was.
 
 ## The measured table
 

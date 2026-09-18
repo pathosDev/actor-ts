@@ -128,6 +128,7 @@ your system already logs to.
 | `withMainPort(port)` / `withBasePort(port)` | Synthetic port components; nothing binds them.  Defaults `1` / `2`. |
 | `withMainRoles(roles)` / `withWorkerRoles(roles)` | Cluster roles each side joins with — what role-restricted singletons, shards and routers select on.  Default none. |
 | `withReadyTimeoutMs(ms)` | Per-worker handshake deadline, and the membership deadline for the whole mesh.  Default `10000`. |
+| `withMetricsRelayIntervalMs(ms)` | How often the main thread pulls every worker's metrics registry into its own `/metrics`; `0` switches the relay off.  Default `10000`.  See [Metrics](#metrics-one-scrape-for-every-thread) below. |
 | `withRestartPolicy(p)` and the `withRestart…` / `withMaxRestarts` knobs | Passed through to the worker cluster underneath — see its table below. |
 | `withBootstrap(url)` | Escape hatch for a bundler that moved the shipped bootstrap out of `dist/worker/`.  Default: the shipped one. |
 | `withBackend(backend)` | Spawn through this `WorkerBackend` — an in-memory fake in a test, or a custom adapter for a runtime the detection does not know.  A custom one implements `WorkerBackend` and returns a `WorkerLike` (both exported from `actor-ts/worker`) and declares `containsWorkerErrors`; see [Custom backends](#custom-backends).  Default: detected. |
@@ -137,6 +138,27 @@ your system already logs to.
 form.  `terminate()` takes the workers down first and then leaves the
 cluster; a system that goes through coordinated shutdown takes its mesh
 with it.
+
+### Metrics: one scrape for every thread
+
+Every worker hosts its own `ActorSystem`, so it has its own
+`MetricsRegistry` — and no management endpoint of its own.  The mesh
+relays them: every `metrics-relay-interval` (default `10s`) the main
+thread sends each live worker a request, the worker answers with its
+registry's samples, and `GET /metrics` on the main thread exports the
+whole process.  The request is also what switches a worker's registry
+on, so nothing has to be enabled inside a worker; enable metrics on the
+main thread — before or after `start()` — and the workers follow on the
+next tick.  Every exported series then carries `thread="main"` or
+`thread="worker-N"`, `N` being the slot in `mesh.workers`, and
+`worker_mesh_snapshot_age_seconds{worker="worker-N"}` says how long ago
+each worker last answered; a slot that leaves the mesh takes its series
+with it, a respawned one comes back under the same label with fresh
+counters.  Set the interval to `0` and the exposition is the main
+thread's alone, exactly as before.  The relay runs for a mesh started
+here and for the one `actor-ts.parallelism.workers` starts alike; the
+[scope of a scrape](/observability/metrics/prometheus-exporter/#scope-per-process-per-thread)
+has the PromQL and the caveats.
 
 <Aside type="note" title="Why the actor module is not a config key">
   `withModule` names code the workers will *execute*.  A config file —
@@ -294,13 +316,14 @@ reason given above:
 
 ```hocon
 actor-ts.worker-mesh {
-  workers         = "auto"    # available parallelism minus the main thread
-  main-hostname   = "main"
-  main-port       = 1
-  worker-hostname = "worker"  # sort it before main-hostname to let a worker lead
-  base-port       = 2
-  main-roles      = []
-  worker-roles    = ["compute"]
+  workers                = "auto"    # available parallelism minus the main thread
+  main-hostname          = "main"
+  main-port              = 1
+  worker-hostname        = "worker"  # sort it before main-hostname to let a worker lead
+  base-port              = 2
+  main-roles             = []
+  worker-roles           = ["compute"]
+  metrics-relay-interval = 10s       # workers' registries pulled into the main thread's /metrics; 0 = off
 }
 ```
 
@@ -607,6 +630,7 @@ a log shipper see the same thing:
 | The budget is spent and no `onWorkerPermanentlyDown` is set | `ERROR` | `[worker] worker N (addr) is permanently down — K restarts inside W ms exhausted its budget` |
 | The broker refuses a frame | `WARN`; `DEBUG` for an unknown destination | `[worker] broker dropped K frame(s) from <source> — <reason>` |
 | The backend declares `containsWorkerErrors: false` — once per backend, before the first spawn | `ERROR` | `[worker] worker backend <Class> declares containsWorkerErrors=false — an uncaught throw inside a worker will terminate this process instead of reaching the framework's error handler; …` |
+| The metrics relay refuses a worker's snapshot — once per reason per worker | `WARN` | `[worker] metrics relay dropped a snapshot from <addr> — <reason>` |
 
 Four things about those lines are worth knowing:
 
