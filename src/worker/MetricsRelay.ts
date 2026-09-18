@@ -64,7 +64,16 @@ export type WorkerMeshWireMessage =
   | WorkerMeshMetricsRequestMessage
   | WorkerMeshMetricsMessage;
 
-/** Every kind above, for handler registration and the dead-protocol guard. */
+/**
+ * Every kind above, in one place: what a custom bootstrap registers handlers
+ * for, and what `MetricsRelay.test.ts` walks to assert that each is an
+ * *extension* kind — passed through `wireFrameProblem` to the registered
+ * handler, never refused by a core validator arm.  A kind added here that
+ * lacks that property fails that test rather than surfacing as a snapshot
+ * the cluster dropped before the relay saw it.  The dead-protocol guard
+ * (`DeadProtocolSurface.test.ts`) inventories core kinds only and does not
+ * read this list.
+ */
 export const WORKER_MESH_WIRE_KINDS: ReadonlyArray<WorkerMeshWireMessage['kind']> = [
   'worker-mesh-metrics-request',
   'worker-mesh-metrics',

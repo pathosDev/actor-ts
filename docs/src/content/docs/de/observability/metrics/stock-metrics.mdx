@@ -486,7 +486,11 @@ wenn der Slot das Mesh verlässt.
   `worker_mesh_snapshot_age_seconds > 30` ist ein funktionierender
   Ausdruck.  Ein Snapshot, den das Relay abgelehnt hat (ein Name
   außerhalb der Expositionsgrammatik, zu viele Samples), lässt den Gauge
-  ebenfalls steigen, mit einer `warn`-Zeile, die den Grund nennt.
+  ebenfalls steigen, mit einer `warn`-Zeile, die den Grund nennt —
+  sofern ein früherer Snapshot dieses Workers angenommen wurde.  Die
+  Serie wird mit dem ersten *angenommenen* Snapshot geprägt; ein Worker,
+  der schon mit seiner allerersten Antwort abgelehnt wird, hat also gar
+  keine Alters-Serie, und die `warn`-Zeile ist das einzige Signal.
 - Die relayten Familien selbst sind die Stock-Familien dieser Seite, auf
   dem Worker geprägt und hier mit einem beim Export hinzugefügten
   `thread="worker-N"` exportiert.  Jede Zeile oben gilt für sie
