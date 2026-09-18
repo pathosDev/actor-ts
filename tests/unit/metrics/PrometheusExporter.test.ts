@@ -12,10 +12,11 @@
  *   - Trailing newline on non-empty output.
  */
 import { describe, expect, test } from 'bun:test';
-import { DefaultMetricsRegistry } from '../../../src/metrics/Metrics.js';
+import { DefaultMetricsRegistry, type MetricSample } from '../../../src/metrics/Metrics.js';
 import {
   exportPrometheus,
   prometheusHandler,
+  renderPrometheusSamples,
 } from '../../../src/metrics/PrometheusExporter.js';
 
 describe('exportPrometheus — counters', () => {
@@ -102,6 +103,63 @@ describe('exportPrometheus — formatting', () => {
     const registry = new DefaultMetricsRegistry();
     registry.counter('x_total', {}).inc();
     expect(exportPrometheus(registry).endsWith('\n')).toBe(true);
+  });
+});
+
+describe('renderPrometheusSamples — a sample list from several registries (#1570)', () => {
+  test('exportPrometheus is the renderer over collect(), byte for byte', () => {
+    const registry = new DefaultMetricsRegistry();
+    registry.counter('hits_total', { node: 'n-1' }, { help: 'Hits' }).inc(3);
+    registry.histogram('lat_seconds', {}, { buckets: [0.1, 1] }).observe(0.5);
+    expect(exportPrometheus(registry)).toBe(renderPrometheusSamples(registry.collect()));
+  });
+
+  test('one family contributed by two threads renders a single HELP and TYPE, with one row per label set', () => {
+    const main = new DefaultMetricsRegistry();
+    main.counter('actor_messages_delivered_total', {}, { help: 'Delivered' }).inc(5);
+    const worker = new DefaultMetricsRegistry();
+    worker.counter('actor_messages_delivered_total', {}, { help: 'Delivered' }).inc(7);
+    const stamp = (samples: ReadonlyArray<MetricSample>, thread: string): MetricSample[] =>
+      samples.map((s) => ({ ...s, labels: { ...s.labels, thread } }));
+
+    const text = renderPrometheusSamples([...stamp(main.collect(), 'main'), ...stamp(worker.collect(), 'worker-0')]);
+
+    expect(text.match(/# HELP actor_messages_delivered_total/g)).toHaveLength(1);
+    expect(text.match(/# TYPE actor_messages_delivered_total counter/g)).toHaveLength(1);
+    expect(text).toBe(
+      '# HELP actor_messages_delivered_total Delivered\n'
+      + '# TYPE actor_messages_delivered_total counter\n'
+      + 'actor_messages_delivered_total{thread="main"} 5\n'
+      + 'actor_messages_delivered_total{thread="worker-0"} 7\n',
+    );
+  });
+
+  test('a histogram contributed by two threads keeps each thread’s buckets, sum and count together', () => {
+    const main = new DefaultMetricsRegistry();
+    main.histogram('h_seconds', {}, { buckets: [1] }).observe(0.5);
+    const worker = new DefaultMetricsRegistry();
+    worker.histogram('h_seconds', {}, { buckets: [1] }).observe(2);
+    const stamp = (samples: ReadonlyArray<MetricSample>, thread: string): MetricSample[] =>
+      samples.map((s) => ({ ...s, labels: { ...s.labels, thread } }));
+
+    const text = renderPrometheusSamples([...stamp(main.collect(), 'main'), ...stamp(worker.collect(), 'worker-0')]);
+
+    expect(text.match(/# TYPE h_seconds histogram/g)).toHaveLength(1);
+    expect(text).toBe(
+      '# TYPE h_seconds histogram\n'
+      + 'h_seconds_bucket{le="1",thread="main"} 1\n'
+      + 'h_seconds_bucket{le="+Inf",thread="main"} 1\n'
+      + 'h_seconds_sum{thread="main"} 0.5\n'
+      + 'h_seconds_count{thread="main"} 1\n'
+      + 'h_seconds_bucket{le="1",thread="worker-0"} 0\n'
+      + 'h_seconds_bucket{le="+Inf",thread="worker-0"} 1\n'
+      + 'h_seconds_sum{thread="worker-0"} 2\n'
+      + 'h_seconds_count{thread="worker-0"} 1\n',
+    );
+  });
+
+  test('an empty list renders an empty body', () => {
+    expect(renderPrometheusSamples([])).toBe('');
   });
 });
 

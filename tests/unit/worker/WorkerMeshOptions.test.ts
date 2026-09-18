@@ -27,6 +27,7 @@ describe('WorkerMeshOptionsBuilder', () => {
       .withMainRoles(['frontend'])
       .withWorkerRoles(['compute'])
       .withReadyTimeoutMs(1_234)
+      .withMetricsRelayIntervalMs(2_500)
       .withRestartPolicy('always')
       .withRestartMinBackoffMs(10)
       .withRestartMaxBackoffMs(100)
@@ -46,6 +47,7 @@ describe('WorkerMeshOptionsBuilder', () => {
     expect(options.mainRoles).toEqual(['frontend']);
     expect(options.workerRoles).toEqual(['compute']);
     expect(options.readyTimeoutMs).toBe(1_234);
+    expect(options.metricsRelayIntervalMs).toBe(2_500);
     expect(options.restartPolicy).toBe('always');
     expect(options.restartMinBackoffMs).toBe(10);
     expect(options.restartMaxBackoffMs).toBe(100);
@@ -93,6 +95,10 @@ describe('WorkerMeshOptionsValidator', () => {
     expect(() => check({ mainPort: 0 })).toThrow(OptionsError);
     expect(() => check({ basePort: 70_000 })).toThrow(OptionsError);
     expect(() => check({ readyTimeoutMs: 0 })).toThrow(OptionsError);
+    // Zero is the relay's documented off switch, so it passes where the ready
+    // timeout's zero does not; a negative interval is refused (#1570).
+    expect(() => check({ metricsRelayIntervalMs: 0 })).not.toThrow();
+    expect(() => check({ metricsRelayIntervalMs: -1 })).toThrow(/metricsRelayIntervalMs/);
     expect(() => check({ restartPolicy: 'sometimes' as never })).toThrow(OptionsError);
     expect(() => check({ restartMinBackoffMs: -1 })).toThrow(OptionsError);
     expect(() => check({ restartMaxBackoffMs: -1 })).toThrow(OptionsError);

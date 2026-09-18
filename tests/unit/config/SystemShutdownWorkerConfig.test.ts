@@ -585,16 +585,20 @@ describe('actor-ts.worker-mesh', () => {
   test('every leaf reaches its field, through the accessor its literal needs', () => {
     const config = Config.parseString(`
       actor-ts.worker-mesh {
-        workers         = 3
-        main-hostname   = "front"
-        main-port       = 10
-        worker-hostname = "core"
-        base-port       = 20
-        main-roles      = ["frontend"]
-        worker-roles    = ["compute", "ingest"]
+        workers                = 3
+        main-hostname          = "front"
+        main-port              = 10
+        worker-hostname        = "core"
+        base-port              = 20
+        main-roles             = ["frontend"]
+        worker-roles           = ["compute", "ingest"]
+        metrics-relay-interval = 2500ms
       }
     `);
 
+    // This exact-object match is what binds `metrics-relay-interval` (#1570):
+    // `NoDeadConfigKeys` does not reject a key nothing reads, so a reader that
+    // dropped the leaf would leave every other guard green.
     expect(readWorkerMeshOptionsFromConfig(config)).toEqual({
       workers: 3,
       mainHostname: 'front',
@@ -603,6 +607,7 @@ describe('actor-ts.worker-mesh', () => {
       basePort: 20,
       mainRoles: ['frontend'],
       workerRoles: ['compute', 'ingest'],
+      metricsRelayIntervalMs: 2_500,
     });
   });
 
@@ -611,6 +616,9 @@ describe('actor-ts.worker-mesh', () => {
       .toEqual({ workers: 'auto' });
     expect(readWorkerMeshOptionsFromConfig(Config.parseString('actor-ts.worker-mesh.base-port = 7')))
       .toEqual({ basePort: 7 });
+    // The off switch is a literal zero, read through `getDuration` like `10s` is.
+    expect(readWorkerMeshOptionsFromConfig(Config.parseString('actor-ts.worker-mesh.metrics-relay-interval = 0')))
+      .toEqual({ metricsRelayIntervalMs: 0 });
   });
 
   test('the reference defaults round-trip to the built-in ones', () => {
@@ -622,6 +630,7 @@ describe('actor-ts.worker-mesh', () => {
       basePort: 2,
       mainRoles: [],
       workerRoles: [],
+      metricsRelayIntervalMs: 10_000,
     });
   });
 
