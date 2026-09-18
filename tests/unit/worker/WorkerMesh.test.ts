@@ -8,12 +8,13 @@ import { CoordinatedShutdownId } from '../../../src/CoordinatedShutdown.js';
 import { ClusterOptions } from '../../../src/cluster/ClusterOptions.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { InMemoryTransport } from '../../../src/cluster/Transport.js';
-import { LogLevel, NoopLogger } from '../../../src/Logger.js';
+import { LogLevel, NoopLogger, type Logger } from '../../../src/Logger.js';
 import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { WorkerMesh } from '../../../src/worker/WorkerMesh.js';
 import type { ModuleImporter, WorkerMeshSetupContext } from '../../../src/worker/WorkerMeshBootstrap.js';
 import { WorkerMeshOptions } from '../../../src/worker/WorkerMeshOptions.js';
 import { awaitCondition } from '../../util/AwaitCondition.js';
+import { RecordingLogger } from '../../util/RecordingLogger.js';
 import { FakeWorkerBackend, hostMeshNode } from './__fixtures__/InMemoryWorkerThread.js';
 
 /**
@@ -69,7 +70,11 @@ type Rig = {
   readonly importer: ModuleImporter;
 };
 
-function rig(modules: Record<string, Record<string, unknown>> = {}, systemName = 'mesh'): Rig {
+function rig(
+  modules: Record<string, Record<string, unknown>> = {},
+  systemName = 'mesh',
+  logger: Logger = new NoopLogger(),
+): Rig {
   const observed: Observed[] = [];
   const catalogue: Record<string, Record<string, unknown>> = { [MODULE_URL]: actorsModule(observed), ...modules };
   const importer: ModuleImporter = async (href) => {
@@ -78,8 +83,10 @@ function rig(modules: Record<string, Record<string, unknown>> = {}, systemName =
     return module;
   };
   const backend = new FakeWorkerBackend({ onSpawn: (worker) => { hostMeshNode(worker, importer); } });
+  // An explicit logger wins outright in `resolveLogger`, so the `Off` level
+  // below gates nothing when a test hands in a recording one.
   const systemOptions = ActorSystemOptions.create()
-    .withLogger(new NoopLogger())
+    .withLogger(logger)
     .withLogLevel(LogLevel.Off)
     // Builder-set, never in a file — so a worker that ran with anything but
     // the effective config would read the reference default instead.
@@ -237,6 +244,64 @@ describe('WorkerMesh — the main thread joins its own workers (#1562)', () => {
       timeoutMs: 5_000,
       label: 'every worker terminated with the system',
     });
+  }, 20_000);
+
+  /**
+   * Binds the two places `WorkerMesh.start` threads `system.log` through: the
+   * worker cluster (`withLogger`) and the broker it builds first (#1276).  A
+   * crash on the in-process rig produces the exit and respawn lines from the
+   * first, and — because the main thread keeps gossiping to an address it still
+   * believes `up` — an `unknown-destination` line from the second, at `debug`.
+   * With a fresh `new WorkerBroker()` in the mesh that last line would go to a
+   * `ConsoleLogger` at `Info`, i.e. nowhere a test can see.
+   *
+   * The replacement is deliberately not the subject: its join is
+   * `40-worker-respawn-from-error.mjs`'s to prove on real threads, so the
+   * backoff here is long enough that no replacement spawns before `terminate()`
+   * cancels the timer.
+   */
+  test('the mesh reports through system.log — a worker exit, its granted respawn, and the broker drops that follow', async () => {
+    const logger = new RecordingLogger();
+    const r = rig({}, 'mesh', logger);
+    const options = WorkerMeshOptions.create()
+      .withModule(MODULE_URL)
+      .withWorkers(1)
+      .withRestartMinBackoffMs(5_000)
+      .withRestartRandomFactor(0)
+      .withBackend(r.backend)
+      .withReadyTimeoutMs(8_000);
+    const mesh = await WorkerMesh.start(r.system, options);
+    const crashed = r.backend.spawned[0]!;
+    try {
+      const workerLines = (): string[] => logger.records
+        .filter((record) => record.message.startsWith('[worker]'))
+        .map((record) => `${record.level}: ${record.message}`);
+      expect(workerLines()).toEqual([]);
+      expect(mesh.broker.dropped()).toEqual({ malformed: 0, 'unknown-destination': 0, unroutable: 0 });
+
+      crashed.simulateCrash(1);
+
+      expect(workerLines()).toEqual([
+        'warn: [worker] worker 0 (mesh@worker:2) exited with code 1',
+        'warn: [worker] respawning worker 0 (mesh@worker:2) in 5000 ms (restart 1 of 10 inside 60000 ms)',
+      ]);
+      expect(mesh.size).toBe(0);
+
+      await awaitCondition(
+        () => logger.records.some((record) => record.level === 'debug'
+          && /^\[worker\] broker dropped \d+ frame\(s\) from mesh@main:1 — no worker is registered/.test(record.message)),
+        { label: 'the main thread\'s gossip to the dead worker was reported as a broker drop', timeoutMs: 5_000 },
+      );
+      expect(mesh.broker.dropped()['unknown-destination']).toBeGreaterThan(0);
+      expect(mesh.broker.dropped().malformed).toBe(0);
+      expect(mesh.broker.dropped().unroutable).toBe(0);
+    } finally {
+      await mesh.terminate();
+      // The crashed slot's worker is spliced out of the pool and never
+      // terminated by it; on this rig that worker still hosts a live node.
+      await crashed.terminate();
+      await r.system.terminate();
+    }
   }, 20_000);
 });
 

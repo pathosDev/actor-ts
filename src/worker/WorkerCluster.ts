@@ -4,7 +4,7 @@ import type {
   BrokeredMessage,
   PortLike,
 } from '../cluster/transports/MessageChannelTransport.js';
-import type { Logger } from '../Logger.js';
+import { ConsoleLogger, LogLevel, type Logger } from '../Logger.js';
 import { exponentialBackoff, type BackoffPolicy } from '../pattern/BackoffPolicy.js';
 import { availableParallelism } from '../runtime/Parallelism.js';
 import {
@@ -35,7 +35,7 @@ import type {
   WorkerClusterOptionsType,
   WorkerPermanentlyDownInfo,
 } from './WorkerClusterOptions.js';
-import { WorkerBroker } from './WorkerBroker.js';
+import { WorkerBroker, describeFailure } from './WorkerBroker.js';
 
 export type RestartPolicy = 'always' | 'on-failure' | 'never';
 
@@ -125,16 +125,26 @@ export class WorkerCluster {
     initData: unknown;
     backend?: WorkerBackend;
     onWorkerPermanentlyDown?: (info: WorkerPermanentlyDownInfo) => void;
-    logger?: Logger;
   };
+  /**
+   * Where every report goes — a worker's exit, its granted respawn, a failed
+   * one, a retired slot.  Required rather than optional, and resolved once in
+   * {@link WorkerCluster.spawn}: the option is what the caller may leave out,
+   * the field is what the code reads, and a field that may be `undefined`
+   * puts a "which sink?" branch at every report site.  Every line carries the
+   * `[worker]` prefix, matching `[offload]` and `[parallelism]` (#1276).
+   */
+  private readonly log: Logger;
   private closed = false;
 
   private constructor(
     broker: WorkerBroker,
+    log: Logger,
     options: WorkerClusterOptionsType,
     resolvedWorkers: number,
   ) {
     this.broker = broker;
+    this.log = log;
     this.options = {
       bootstrap: options.bootstrap,
       workers: resolvedWorkers,
@@ -151,7 +161,6 @@ export class WorkerCluster {
       restartWindowMs: options.restartWindowMs ?? DEFAULT_RESTART_WINDOW_MS,
       onWorkerPermanentlyDown: options.onWorkerPermanentlyDown,
       backend: options.backend,
-      logger: options.logger,
     };
     this.backoff = exponentialBackoff({
       minMs: this.options.restartMinBackoffMs,
@@ -166,8 +175,16 @@ export class WorkerCluster {
     const resolvedOptions = withWorkerClusterConfigDefaults(options as WorkerClusterOptionsType);
     new WorkerClusterOptionsValidator().validate(resolvedOptions);
     const workers = await resolveWorkerCount(resolvedOptions.workers ?? DEFAULT_WORKER_COUNT);
-    const broker = resolvedOptions.broker ?? new WorkerBroker();
-    const cluster = new WorkerCluster(broker, resolvedOptions, workers);
+    // A `ConsoleLogger` at `Info` when nothing is given — the same default an
+    // `ActorSystem` falls back to, and a default sink beats silence: `spawn`
+    // is a static with no system in scope to borrow a logger from, and a pool
+    // whose crashes nobody configured a sink for still has to say so.  The one
+    // logger is handed to the broker too, so a bare pool's broker drops reach
+    // the same place its worker exits do; a caller-owned broker keeps the
+    // logger it was built with (#1276).
+    const log = resolvedOptions.logger ?? new ConsoleLogger(LogLevel.Info);
+    const broker = resolvedOptions.broker ?? new WorkerBroker(log);
+    const cluster = new WorkerCluster(broker, log, resolvedOptions, workers);
     await cluster._start();
     return cluster;
   }
@@ -368,35 +385,73 @@ export class WorkerCluster {
    * which is what #700 asked for, respawns twice per crash on two of the three
    * runtimes.  Whichever event arrives first consumes the latch; the other is
    * dropped.
+   *
+   * Both paths report, and both are silent once `terminate()` has run: killing
+   * a worker is allowed to make it complain, and the synthetic `close` events
+   * termination raises are not a diagnostic anyone wants — without the guard
+   * `terminate()` printed one `exited` line per worker (#1276).
    */
   private attachFailureHandlers(index: number, worker: WorkerLike, address: NodeAddress): void {
     let consumed = false;
     const onClose = (e: WorkerCloseEvent): void => {
       if (consumed) return;
       consumed = true;
+      if (this.closed) return;
       const crashed = typeof e?.code === 'number' ? e.code !== 0 : true;
+      this.reportExit(index, address, e?.code, crashed);
       this.onWorkerDown(index, address, crashed, undefined);
     };
     const onError = (e: WorkerErrorEvent): void => {
       if (consumed) return;
       consumed = true;
-      // Not reported during shutdown: killing a worker is allowed to make it
-      // complain, and that is not a diagnostic anyone wants.
       if (this.closed) return;
-      this.reportWorkerFailure(`worker ${index} (${address}) failed`, e.error ?? e.message);
-      this.onWorkerDown(index, address, true, e.error ?? e.message);
+      const error = e.error ?? e.message;
+      this.log.error(`[worker] worker ${index} (${address}) failed: ${describeFailure(error)}`);
+      this.onWorkerDown(index, address, true, error);
     };
     worker.addEventListener('close', onClose);
     worker.addEventListener('error', onError);
   }
 
-  /** Apply `restartPolicy` to a worker that has gone away, and free its slot. */
+  /**
+   * The `close` path's report: the raw exit code, at `warn` when the policy
+   * will read it as a crash and `info` for a clean exit.  The code is stated
+   * as a fact and never as "crashed" — on Bun a deliberate `self.close()`
+   * reports code 1 (#1216), so the line carries what the runtime said and
+   * `crashed` stays what drives the policy.
+   */
+  private reportExit(index: number, address: NodeAddress, code: number | undefined, crashed: boolean): void {
+    const exit = typeof code === 'number'
+      ? `exited with code ${code}`
+      : 'exited without an exit code';
+    const line = `[worker] worker ${index} (${address}) ${exit}`;
+    if (crashed) {
+      this.log.warn(line);
+      return;
+    }
+    this.log.info(line);
+  }
+
+  /**
+   * Apply `restartPolicy` to a worker that has gone away, and free its slot.
+   *
+   * A worker the policy leaves down is reported as such — the pool is one
+   * worker smaller from here on, and nothing else says so (#1276).  The report
+   * is the whole of the change on that branch: that the slot's handle and
+   * broker registration survive the early return is #1284's defect, and the
+   * ordering is left to it.
+   */
   private onWorkerDown(index: number, address: NodeAddress, crashed: boolean, error: unknown): void {
     if (this.closed) return;
     const should =
       this.options.restartPolicy === 'always' ||
       (this.options.restartPolicy === 'on-failure' && crashed);
-    if (!should) return;
+    if (!should) {
+      this.log.info(
+        `[worker] worker ${index} (${address}) is not respawned — restartPolicy '${this.options.restartPolicy}'`,
+      );
+      return;
+    }
     const i = this.handles.findIndex(h => h.address.equals(address));
     if (i < 0) return;
     this.broker.unregister(address);
@@ -426,6 +481,18 @@ export class WorkerCluster {
     // window behind restarts from the minimum delay again instead of staying
     // pinned at the ceiling for the process lifetime.
     const delayMs = this.backoff.delayFor(state.budget.recordedRestarts - 1);
+    // A granted restart used to arm the timer in silence, so a mesh churning
+    // inside its budget looked healthy for the process lifetime (#1276).  The
+    // budget's own tally is quoted, except under an unlimited allowance:
+    // `registerRestart` records nothing when `maxRetries < 0` (#1255), so
+    // "restart 0 of -1" would be a lie and the line says what is true instead.
+    const budgetDetail = this.options.maxRestarts < 0
+      ? 'restart budget unlimited'
+      : `restart ${state.budget.recordedRestarts} of ${this.options.maxRestarts} `
+        + `inside ${this.options.restartWindowMs} ms`;
+    this.log.warn(
+      `[worker] respawning worker ${index} (${address}) in ${Math.round(delayMs)} ms (${budgetDetail})`,
+    );
     const timer = setTimeout(() => {
       state.timer = undefined;
       // `terminate()` may have run during the backoff.
@@ -451,10 +518,17 @@ export class WorkerCluster {
     // A respawn that lost the race with `terminate()` rejects by design — the
     // worker it started is already terminated by `spawnOne`'s own guard.
     if (this.closed) return;
-    this.reportWorkerFailure(`respawning worker ${index} (${address}) failed`, error);
+    this.log.error(`[worker] respawning worker ${index} (${address}) failed: ${describeFailure(error)}`);
     this.requestRestart(index, address, error);
   }
 
+  /**
+   * A retired slot: the callback when the options carry one, otherwise an
+   * `error` line through the logger.  The two are alternatives, not a pair —
+   * a caller who registered the callback has said where this goes.  The last
+   * failure is appended only when the runtime gave one: a close-driven crash
+   * carries no error, and a line ending in a bare colon says nothing.
+   */
   private reportPermanentlyDown(
     index: number,
     address: NodeAddress,
@@ -463,10 +537,11 @@ export class WorkerCluster {
   ): void {
     const listener = this.options.onWorkerPermanentlyDown;
     if (listener === undefined) {
-      this.reportWorkerFailure(
-        `worker ${index} (${address}) is permanently down — `
-        + `${restarts} restarts inside ${this.options.restartWindowMs}ms exhausted its budget`,
-        error,
+      const cause = describeFailure(error);
+      this.log.error(
+        `[worker] worker ${index} (${address}) is permanently down — `
+        + `${restarts} restarts inside ${this.options.restartWindowMs} ms exhausted its budget`
+        + (cause === '' ? '' : `; last failure: ${cause}`),
       );
       return;
     }
@@ -474,24 +549,8 @@ export class WorkerCluster {
     try {
       listener(info);
     } catch (listenerError) {
-      this.reportWorkerFailure('onWorkerPermanentlyDown threw', listenerError);
+      this.log.error(`[worker] onWorkerPermanentlyDown threw: ${describeFailure(listenerError)}`);
     }
-  }
-
-  /**
-   * Report a worker failure — through the logger the options carry, or, when
-   * none was given, on the console as every earlier version did.  The console
-   * branch is the `Dispatcher.onError` precedent: a default sink beats silence,
-   * and a static-constructed pool has no `ActorSystem` to borrow a logger from
-   * (#1276).
-   */
-  private reportWorkerFailure(what: string, error: unknown): void {
-    const logger = this.options.logger;
-    if (logger !== undefined) {
-      logger.error(`${what}: ${describeFailure(error)}`);
-      return;
-    }
-    console.error(`[actor-ts] ${what}:`, error ?? '');
   }
 
   private restartStateFor(index: number): RestartState {
@@ -549,13 +608,6 @@ function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
   }
   const deno = (globalThis as { Deno?: { unrefTimer?: (id: number) => void } }).Deno;
   deno?.unrefTimer?.(timer as unknown as number);
-}
-
-/** One line for a logger: an `Error`'s message, or whatever the value renders as. */
-function describeFailure(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  if (error === undefined || error === null) return '';
-  return String(error);
 }
 
 /**

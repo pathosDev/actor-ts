@@ -10,13 +10,15 @@
  * it outlived this file and handed the fake to every later test that
  * resolved a backend (#520).
  */
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import {
   autoHandshake,
   FakeWorker,
   FakeWorkerBackend,
 } from './__fixtures__/InMemoryWorkerThread.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
+import { RecordingLogger } from '../../util/RecordingLogger.js';
+import { NoopLogger } from '../../../src/Logger.js';
 import { WorkerCluster } from '../../../src/worker/WorkerCluster.js';
 import { availableParallelism, resetAvailableParallelismCache } from '../../../src/runtime/Parallelism.js';
 import { WorkerClusterOptions } from '../../../src/worker/WorkerClusterOptions.js';
@@ -268,6 +270,9 @@ describe('WorkerCluster — restart policy', () => {
       .withRestartPolicy('on-failure')
       .withRestartMinBackoffMs(FAST_RESTART_BACKOFF_MS)
       .withRestartRandomFactor(0)
+      // The crash below is the subject; its report is not, and the default
+      // sink would put it on stderr of a green run (#1276).
+      .withLogger(new NoopLogger())
       .withBackend(backend);
     const cluster = await WorkerCluster.spawn(
       workerOptions,
@@ -290,6 +295,9 @@ describe('WorkerCluster — restart policy', () => {
       .withRestartPolicy('never')
       .withRestartMinBackoffMs(FAST_RESTART_BACKOFF_MS)
       .withRestartRandomFactor(0)
+      // The crash below is the subject; its report is not, and the default
+      // sink would put it on stderr of a green run (#1276).
+      .withLogger(new NoopLogger())
       .withBackend(backend);
     const cluster = await WorkerCluster.spawn(
       workerOptions,
@@ -313,6 +321,9 @@ describe('WorkerCluster — restart policy', () => {
       .withRestartPolicy('always')
       .withRestartMinBackoffMs(FAST_RESTART_BACKOFF_MS)
       .withRestartRandomFactor(0)
+      // The crash below is the subject; its report is not, and the default
+      // sink would put it on stderr of a green run (#1276).
+      .withLogger(new NoopLogger())
       .withBackend(backend);
     const cluster = await WorkerCluster.spawn(
       workerOptions,
@@ -336,6 +347,9 @@ describe('WorkerCluster — restart policy', () => {
       .withRestartPolicy('on-failure')
       .withRestartMinBackoffMs(FAST_RESTART_BACKOFF_MS)
       .withRestartRandomFactor(0)
+      // The crash below is the subject; its report is not, and the default
+      // sink would put it on stderr of a green run (#1276).
+      .withLogger(new NoopLogger())
       .withBackend(backend);
     const cluster = await WorkerCluster.spawn(
       workerOptions,
@@ -357,6 +371,9 @@ describe('WorkerCluster — restart policy', () => {
       .withRestartPolicy('always')
       .withRestartMinBackoffMs(FAST_RESTART_BACKOFF_MS)
       .withRestartRandomFactor(0)
+      // The crash below is the subject; its report is not, and the default
+      // sink would put it on stderr of a green run (#1276).
+      .withLogger(new NoopLogger())
       .withBackend(backend);
     const cluster = await WorkerCluster.spawn(
       workerOptions,
@@ -386,6 +403,9 @@ describe('WorkerCluster — worker error containment', () => {
       .withRestartPolicy('on-failure')
       .withRestartMinBackoffMs(FAST_RESTART_BACKOFF_MS)
       .withRestartRandomFactor(0)
+      // The crash below is the subject; its report is not, and the default
+      // sink would put it on stderr of a green run (#1276).
+      .withLogger(new NoopLogger())
       .withBackend(backend);
     const cluster = await WorkerCluster.spawn(workerOptions);
     expect(backend.spawned.length).toBe(1);
@@ -408,6 +428,9 @@ describe('WorkerCluster — worker error containment', () => {
       .withRestartPolicy('on-failure')
       .withRestartMinBackoffMs(FAST_RESTART_BACKOFF_MS)
       .withRestartRandomFactor(0)
+      // The crash below is the subject; its report is not, and the default
+      // sink would put it on stderr of a green run (#1276).
+      .withLogger(new NoopLogger())
       .withBackend(backend);
     const cluster = await WorkerCluster.spawn(workerOptions);
 
@@ -437,6 +460,9 @@ describe('WorkerCluster — worker error containment', () => {
       // the pair arrives — which is what makes the latch observable at all.
       .withRestartMinBackoffMs(0)
       .withRestartRandomFactor(0)
+      // The crash below is the subject; its report is not, and the default
+      // sink would put it on stderr of a green run (#1276).
+      .withLogger(new NoopLogger())
       .withBackend(backend);
     const cluster = await WorkerCluster.spawn(workerOptions);
     const dead = backend.spawned[0]!;
@@ -500,6 +526,9 @@ describe('WorkerCluster — respawn failure and restart budget', () => {
       .withReadyTimeoutMs(20)
       .withRestartMinBackoffMs(FAST_RESTART_BACKOFF_MS)
       .withRestartRandomFactor(0)
+      // The crash below is the subject; its report is not, and the default
+      // sink would put it on stderr of a green run (#1276).
+      .withLogger(new NoopLogger())
       .withMaxRestarts(1)
       .withOnWorkerPermanentlyDown(() => { /* keep the default console sink quiet */ })
       .withBackend(backend);
@@ -533,6 +562,9 @@ describe('WorkerCluster — respawn failure and restart budget', () => {
       .withRestartMinBackoffMs(FAST_RESTART_BACKOFF_MS)
       .withRestartMaxBackoffMs(FAST_RESTART_BACKOFF_MS)
       .withRestartRandomFactor(0)
+      // The crash below is the subject; its report is not, and the default
+      // sink would put it on stderr of a green run (#1276).
+      .withLogger(new NoopLogger())
       .withMaxRestarts(3)
       .withOnWorkerPermanentlyDown((info) => { down.push(info); })
       .withBackend(backend);
@@ -562,6 +594,9 @@ describe('WorkerCluster — respawn failure and restart budget', () => {
       .withWorkers(1)
       .withRestartMinBackoffMs(120)
       .withRestartRandomFactor(0)
+      // The crash below is the subject; its report is not, and the default
+      // sink would put it on stderr of a green run (#1276).
+      .withLogger(new NoopLogger())
       .withBackend(backend);
     const cluster = await WorkerCluster.spawn(workerOptions);
 
@@ -585,6 +620,9 @@ describe('WorkerCluster — respawn failure and restart budget', () => {
       .withWorkers(1)
       .withRestartMinBackoffMs(150)
       .withRestartRandomFactor(0)
+      // The crash below is the subject; its report is not, and the default
+      // sink would put it on stderr of a green run (#1276).
+      .withLogger(new NoopLogger())
       .withBackend(backend);
     const cluster = await WorkerCluster.spawn(workerOptions);
 
@@ -698,6 +736,9 @@ describe('WorkerCluster — no leaked threads on the failure paths', () => {
       .withReadyTimeoutMs(2_000)
       .withRestartMinBackoffMs(FAST_RESTART_BACKOFF_MS)
       .withRestartRandomFactor(0)
+      // The crash below is the subject; its report is not, and the default
+      // sink would put it on stderr of a green run (#1276).
+      .withLogger(new NoopLogger())
       .withBackend(backend);
     const cluster = await WorkerCluster.spawn(workerOptions);
 
@@ -721,6 +762,273 @@ describe('WorkerCluster — no leaked threads on the failure paths', () => {
     // into an array that is never cleared again.
     expect(cluster.size).toBe(0);
     expect(cluster.broker.registered()).toEqual([]);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* #1276 — what the pool reports, and through which sink                    */
+/* ------------------------------------------------------------------------ */
+
+describe('WorkerCluster — what the pool reports (#1276)', () => {
+  /**
+   * `RecordingLogger` records the message string and drops `...args`, so every
+   * fact these tests read has to be inside the line — which is also the rule
+   * the reports follow, because a structured argument is invisible to a
+   * console sink and to most log shippers.
+   */
+  const reportingOptions = (logger: RecordingLogger, backend: FakeWorkerBackend) => WorkerClusterOptions.create()
+    .withBootstrap(new URL('file:///fake.js'))
+    .withWorkers(1)
+    .withRestartMinBackoffMs(FAST_RESTART_BACKOFF_MS)
+    .withRestartRandomFactor(0)
+    .withLogger(logger)
+    .withBackend(backend);
+
+  const messagesAt = (logger: RecordingLogger, level: string): string[] =>
+    logger.records.filter((record) => record.level === level).map((record) => record.message);
+
+  test('a close event that reads as a crash is reported, and so is the restart it buys', async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
+    const logger = new RecordingLogger();
+    const workerOptions = reportingOptions(logger, backend).withRestartPolicy('on-failure');
+    const cluster = await WorkerCluster.spawn(workerOptions);
+    try {
+      expect(logger.records).toEqual([]);
+      backend.spawned[0]!.simulateCrash(1);
+
+      // Both lines are synchronous with the event: the exit is a fact the
+      // moment it arrives, and the restart is granted before its timer is armed.
+      const warnings = messagesAt(logger, 'warn');
+      expect(warnings.filter((m) => /\[worker\] worker 0 \(worker-cluster@worker:1\) exited with code 1$/.test(m))).toHaveLength(1);
+      expect(warnings.filter((m) => /\[worker\] respawning worker 0 \(worker-cluster@worker:1\) in \d+ ms \(restart 1 of 10 inside 60000 ms\)$/.test(m))).toHaveLength(1);
+      expect(warnings).toHaveLength(2);
+      // The code is a fact, never a verdict: the line does not say "crashed".
+      expect(warnings.some((m) => /crash/.test(m))).toBe(false);
+      expect(messagesAt(logger, 'error')).toEqual([]);
+
+      await awaitCondition(() => backend.spawned.length >= 2, {
+        label: 'the reported respawn actually happened',
+      });
+    } finally {
+      await cluster.terminate();
+    }
+  });
+
+  test("a clean exit under 'on-failure' is reported at info, together with the decision not to respawn", async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
+    const logger = new RecordingLogger();
+    const workerOptions = reportingOptions(logger, backend).withRestartPolicy('on-failure');
+    const cluster = await WorkerCluster.spawn(workerOptions);
+    try {
+      backend.spawned[0]!.simulateCrash(0);
+
+      const infos = messagesAt(logger, 'info');
+      expect(infos.filter((m) => /\[worker\] worker 0 \(worker-cluster@worker:1\) exited with code 0$/.test(m))).toHaveLength(1);
+      expect(infos.filter((m) => /\[worker\] worker 0 \(worker-cluster@worker:1\) is not respawned — restartPolicy 'on-failure'$/.test(m))).toHaveLength(1);
+      expect(messagesAt(logger, 'warn')).toEqual([]);
+      expect(logger.records.some((record) => /respawning/.test(record.message))).toBe(false);
+      // Absence: a respawn would be scheduled behind the backoff, so the wait
+      // has to outlast it before "still one" means anything.
+      await sleep(RESPAWN_SETTLED_MS);
+      expect(backend.spawned.length).toBe(1);
+    } finally {
+      await cluster.terminate();
+    }
+  });
+
+  test("a crash under 'never' is reported as an exit and as a slot the policy leaves down", async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
+    const logger = new RecordingLogger();
+    const workerOptions = reportingOptions(logger, backend).withRestartPolicy('never');
+    const cluster = await WorkerCluster.spawn(workerOptions);
+    try {
+      backend.spawned[0]!.simulateCrash(1);
+
+      expect(messagesAt(logger, 'warn')).toEqual([
+        '[worker] worker 0 (worker-cluster@worker:1) exited with code 1',
+      ]);
+      expect(messagesAt(logger, 'info')).toEqual([
+        "[worker] worker 0 (worker-cluster@worker:1) is not respawned — restartPolicy 'never'",
+      ]);
+      expect(logger.records.some((record) => /respawning/.test(record.message))).toBe(false);
+    } finally {
+      await cluster.terminate();
+    }
+  });
+
+  test('shutdown is silent — the synthetic close events terminate() raises are not reported', async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
+    const logger = new RecordingLogger();
+    const workerOptions = reportingOptions(logger, backend)
+      .withWorkers(3)
+      .withRestartPolicy('always');
+    const cluster = await WorkerCluster.spawn(workerOptions);
+    const before = logger.records.length;
+    // The fixture synthesises a `{ code: 0 }` close per worker on a macrotask,
+    // and `terminate()` resolves only after every one of them has fired — so
+    // by the time this returns, three closes have been through `onClose`.
+    await cluster.terminate();
+    expect(backend.spawned.every((spawned) => spawned.terminated)).toBe(true);
+    expect(logger.records.length).toBe(before);
+    // A late event from a worker that outlived the pool says nothing either.
+    backend.spawned[0]!.simulateCrash(1);
+    expect(logger.records.length).toBe(before);
+  });
+
+  test('under an unlimited budget the restart line says so instead of quoting a tally that is never kept', async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
+    const logger = new RecordingLogger();
+    const workerOptions = reportingOptions(logger, backend).withMaxRestarts(-1);
+    const cluster = await WorkerCluster.spawn(workerOptions);
+    try {
+      backend.spawned[0]!.simulateCrash(1);
+
+      const respawning = messagesAt(logger, 'warn').filter((m) => /respawning worker 0/.test(m));
+      expect(respawning).toHaveLength(1);
+      // `RestartBudget.registerRestart` records nothing when the allowance is
+      // negative (#1255), so "restart 0 of -1" is what a naive line would say.
+      expect(respawning[0]).toMatch(/\(restart budget unlimited\)$/);
+      expect(respawning[0]).not.toMatch(/of -1/);
+      await awaitCondition(() => backend.spawned.length >= 2, {
+        label: 'the unlimited budget granted the respawn',
+      });
+    } finally {
+      await cluster.terminate();
+    }
+  });
+
+  test('an error event is reported at error with the failure text inside the line', async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
+    const logger = new RecordingLogger();
+    const workerOptions = reportingOptions(logger, backend);
+    const cluster = await WorkerCluster.spawn(workerOptions);
+    try {
+      backend.spawned[0]!.simulateError('worker boom');
+
+      expect(messagesAt(logger, 'error')).toEqual([
+        '[worker] worker 0 (worker-cluster@worker:1) failed: worker boom',
+      ]);
+      // An error is a crash for the policy, so the granted restart follows.
+      expect(messagesAt(logger, 'warn').filter((m) => /respawning worker 0/.test(m))).toHaveLength(1);
+      await awaitCondition(() => backend.spawned.length >= 2, {
+        label: 'the error-driven respawn happened',
+      });
+    } finally {
+      await cluster.terminate();
+    }
+  });
+
+  test('a spent budget with no callback is reported once, at error, with the last failure appended', async () => {
+    // Only the first incarnation handshakes; the one granted replacement times
+    // out, spends the budget of one, and retires the slot.
+    let spawns = 0;
+    const backend = new FakeWorkerBackend({
+      onSpawn: (spawned) => { if (spawns++ === 0) autoHandshake(spawned); },
+    });
+    const logger = new RecordingLogger();
+    const workerOptions = reportingOptions(logger, backend)
+      .withReadyTimeoutMs(20)
+      .withMaxRestarts(1);
+    const cluster = await WorkerCluster.spawn(workerOptions);
+    try {
+      backend.spawned[0]!.simulateCrash(1);
+      await awaitCondition(
+        () => messagesAt(logger, 'error').some((m) => /is permanently down/.test(m)),
+        { label: 'the retired slot was reported', timeoutMs: 4_000 },
+      );
+      const errors = messagesAt(logger, 'error');
+      expect(errors.filter((m) => /^\[worker\] respawning worker 0 \(worker-cluster@worker:1\) failed: Worker worker-cluster@worker:1 did not become ready within 20ms$/.test(m))).toHaveLength(1);
+      expect(errors.filter((m) => /^\[worker\] worker 0 \(worker-cluster@worker:1\) is permanently down — 1 restarts inside 60000 ms exhausted its budget; last failure: Worker worker-cluster@worker:1 did not become ready within 20ms$/.test(m))).toHaveLength(1);
+      expect(errors).toHaveLength(2);
+    } finally {
+      await cluster.terminate();
+    }
+  });
+
+  test('a pool that builds its own broker hands it the same logger, so a dropped frame reports there too', async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
+    const logger = new RecordingLogger();
+    const workerOptions = reportingOptions(logger, backend);
+    const cluster = await WorkerCluster.spawn(workerOptions);
+    try {
+      // What a worker's transport puts on its channel reaches the broker
+      // through the cluster's facade; a frame that is not an envelope is the
+      // broker's `malformed` drop.
+      backend.spawned[0]!.deliverMessage({ kind: 'worker-transport', envelope: 'not-an-envelope' });
+
+      expect(cluster.broker.dropped()).toEqual({ malformed: 1, 'unknown-destination': 0, unroutable: 0 });
+      expect(messagesAt(logger, 'warn')).toEqual([
+        '[worker] broker dropped 1 frame(s) from worker-cluster@worker:1 — the envelope is not a BrokeredMessage — '
+        + 'its address fields failed the shape check, and nothing past them was read',
+      ]);
+    } finally {
+      await cluster.terminate();
+    }
+  });
+
+  test('without withLogger the reports reach the console — a default sink beats silence', async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const workerOptions = WorkerClusterOptions.create()
+        .withBootstrap(new URL('file:///fake.js'))
+        .withWorkers(1)
+        .withRestartMinBackoffMs(FAST_RESTART_BACKOFF_MS)
+        .withRestartRandomFactor(0)
+        .withBackend(backend);
+      const cluster = await WorkerCluster.spawn(workerOptions);
+      try {
+        backend.spawned[0]!.simulateCrash(1);
+        // `ConsoleLogger` renders a timestamp and a tag ahead of the message,
+        // so the line is looked for inside the first argument, not equal to it.
+        const warned = warnSpy.mock.calls.map((call) => String(call[0]));
+        expect(warned.some((line) => line.includes('[worker] worker 0 (worker-cluster@worker:1) exited with code 1'))).toBe(true);
+        expect(warned.some((line) => line.includes('[worker] respawning worker 0 (worker-cluster@worker:1) in'))).toBe(true);
+
+        await awaitCondition(() => backend.spawned.length >= 2, { label: 'the replacement was spawned' });
+        backend.spawned[1]!.simulateError('worker boom');
+        const errored = errorSpy.mock.calls.map((call) => String(call[0]));
+        expect(errored.some((line) => line.includes('[worker] worker 0 (worker-cluster@worker:1) failed: worker boom'))).toBe(true);
+      } finally {
+        await cluster.terminate();
+      }
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  test('a NoopLogger keeps the whole pool quiet — nothing bypasses the seam to reach the console', async () => {
+    const backend = new FakeWorkerBackend({ onSpawn: (spawned) => autoHandshake(spawned) });
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const workerOptions = WorkerClusterOptions.create()
+        .withBootstrap(new URL('file:///fake.js'))
+        .withWorkers(1)
+        .withRestartMinBackoffMs(FAST_RESTART_BACKOFF_MS)
+        .withRestartRandomFactor(0)
+        .withLogger(new NoopLogger())
+        .withBackend(backend);
+      const cluster = await WorkerCluster.spawn(workerOptions);
+      try {
+        backend.spawned[0]!.simulateUncaughtThrow('worker boom', 1);
+        await awaitCondition(() => backend.spawned.length >= 2, { label: 'the replacement was spawned' });
+      } finally {
+        await cluster.terminate();
+      }
+      expect(warnSpy.mock.calls).toEqual([]);
+      expect(errorSpy.mock.calls).toEqual([]);
+      expect(logSpy.mock.calls).toEqual([]);
+    } finally {
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
+      logSpy.mockRestore();
+    }
   });
 });
 

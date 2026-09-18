@@ -106,9 +106,10 @@ export const BOOTSTRAP_ALLOWED_HOST = '';
  * What a retired slot reports through
  * {@link WorkerClusterOptionsType.onWorkerPermanentlyDown}.
  *
- * `src/worker/` has no logger of any kind, so before this existed a crash loop
- * was completely silent from the framework's side and its end was invisible
- * (#734).  This callback is the only diagnostic the mesh can offer.
+ * Before this existed a crash loop was completely silent from the framework's
+ * side and its end was invisible (#734).  The callback is the structured form
+ * of that report; without one the same fact goes out as an `error` line
+ * through the pool's logger (#1276).
  */
 export type WorkerPermanentlyDownInfo = {
   /** Slot index — stable across restarts, and what fixes the worker's port. */
@@ -139,12 +140,14 @@ export type WorkerClusterOptionsType = {
   readonly onWorkerPermanentlyDown?: (info: WorkerPermanentlyDownInfo) => void;
   readonly backend?: WorkerBackend;
   /**
-   * Where the cluster reports a worker failure, a respawn and a retired slot.
-   * `src/worker/` has no logger of its own — `WorkerCluster.spawn` is a static
-   * with no `ActorSystem` in scope — so without one the reports go to the
-   * console, which is what every earlier version did (#1276).  `WorkerMesh`
-   * passes its system's logger, so a mesh's workers report through the same
-   * sinks as everything else.
+   * Where the pool reports: a worker's exit with its code, its failure, a
+   * granted respawn with the delay and the budget it drew on, a failed one, a
+   * worker the policy leaves down, a retired slot — and, when the pool builds
+   * its own broker, the frames that broker drops.  `WorkerCluster.spawn` is a
+   * static with no `ActorSystem` in scope, so without one the pool falls back
+   * to a `ConsoleLogger` at `Info` — the same default a system has (#1276).
+   * `WorkerMesh` passes its system's logger, so a mesh's workers report through
+   * the same sinks as everything else.
    */
   readonly logger?: Logger;
   /**
@@ -235,7 +238,8 @@ export class WorkerClusterOptionsBuilder extends OptionsBuilder<WorkerClusterOpt
   /**
    * Called once per slot when its restart budget is spent and no further
    * worker will be started for it.  Not expressible in a config file, for the
-   * same reason as `backend`.  Default: a `console.error` line.
+   * same reason as `backend`.  Default: an `error` line through the pool's
+   * logger.
    */
   withOnWorkerPermanentlyDown(
     onWorkerPermanentlyDown: (info: WorkerPermanentlyDownInfo) => void,
@@ -282,9 +286,9 @@ export class WorkerClusterOptionsBuilder extends OptionsBuilder<WorkerClusterOpt
   }
 
   /**
-   * Report worker failures, respawns and retired slots through this logger
-   * instead of the console.  Not expressible in a config file, like `backend`.
-   * Default: the console.
+   * Report worker exits, failures, granted and failed respawns, retired slots
+   * and the pool's own broker drops through this logger.  Not expressible in
+   * a config file, like `backend`.  Default: a `ConsoleLogger` at `Info`.
    */
   withLogger(logger: Logger): this {
     return this.set('logger', logger);
