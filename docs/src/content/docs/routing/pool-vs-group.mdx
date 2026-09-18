@@ -111,8 +111,11 @@ Consequences:
   running.  Stop a routee → the router does not notice: routees are
   derived from *membership*, not probed for liveness, so it keeps
   sending that node its share until the node itself leaves — and the
-  node drops what arrives for a path nobody has, with a warning.  The
-  rest of the pool is unaffected.
+  node drops what arrives for a path nobody has, with a warning (the
+  cluster's own `no envelope handler registered`, or, on a node that
+  has started `ClusterSharding`, the sharding extension's `[sharding]
+  no region/coordinator registered for …` — it takes every unresolved
+  envelope on that node).  The rest of the pool is unaffected.
 - **Topology-driven sizing.**  Add a node → the router picks it
   up automatically.  Remove a node → the router stops sending.
   No restart needed.
@@ -181,7 +184,7 @@ for the pattern that comes closest to "spawn N global workers."
 | You stop... | Pool router | Group router |
 | --- | --- | --- |
 | The router | All routees stop (children cascade). | Routees keep running. |
-| One routee | Crashed → restarted in place by the supervisor (default strategy). Stopped → pruned on its `Terminated`: the pool shrinks by one and nothing is routed into the gap (#449). | Router keeps sending to that node until its membership changes — it does not probe routee liveness — and the node drops that share with a warning; siblings unaffected. |
+| One routee | Crashed → restarted in place by the supervisor (default strategy). Stopped → pruned on its `Terminated`: the pool shrinks by one and nothing is routed into the gap (#449). | Router keeps sending to that node until its membership changes — it does not probe routee liveness — and the node drops that share with a warning (the cluster's, or the sharding extension's on a node that has started `ClusterSharding`); siblings unaffected. |
 | The actor system | Everything stops normally. | Everything stops on this node; routees on other nodes continue. |
 
 The asymmetry matters for **graceful shutdown** — a pool router

@@ -115,7 +115,11 @@ Konsequenzen:
   werden aus der *Mitgliedschaft* abgeleitet, nicht auf Lebendigkeit
   geprüft, er sendet diesem Node also weiter seinen Anteil, bis der Node
   selbst geht — und der Node verwirft, was für einen Pfad ankommt, den
-  niemand hat, mit einer Warnung.  Der Rest des Pools ist unberührt.
+  niemand hat, mit einer Warnung (der des Clusters selbst, `no envelope
+  handler registered`, oder, auf einem Node, der `ClusterSharding`
+  gestartet hat, der der Sharding-Extension, `[sharding] no
+  region/coordinator registered for …` — sie übernimmt auf diesem Node
+  jeden nicht aufgelösten Envelope).  Der Rest des Pools ist unberührt.
 - **Topologie-getriebenes Sizing.**  Füge einen Node hinzu → der
   Router nimmt ihn automatisch auf.  Entferne einen Node → der
   Router stoppt das Senden.  Kein Restart nötig.
@@ -185,7 +189,7 @@ für das Pattern, das "N globale Workers spawnen" am nächsten kommt.
 | Du stoppst... | Pool-Router | Group-Router |
 | --- | --- | --- |
 | Den Router | Alle Routees stoppen (Kinder kaskadieren). | Routees laufen weiter. |
-| Einen Routee | Gecrasht → an Ort und Stelle vom Supervisor neu gestartet (Default-Strategie). Gestoppt → auf sein `Terminated` entfernt: Der Pool schrumpft um einen, und in die Lücke wird nichts geroutet (#449). | Router sendet weiter an diesen Node, bis sich dessen Mitgliedschaft ändert — er prüft Routees nicht auf Lebendigkeit —, und der Node verwirft diesen Anteil mit einer Warnung; Geschwister unberührt. |
+| Einen Routee | Gecrasht → an Ort und Stelle vom Supervisor neu gestartet (Default-Strategie). Gestoppt → auf sein `Terminated` entfernt: Der Pool schrumpft um einen, und in die Lücke wird nichts geroutet (#449). | Router sendet weiter an diesen Node, bis sich dessen Mitgliedschaft ändert — er prüft Routees nicht auf Lebendigkeit —, und der Node verwirft diesen Anteil mit einer Warnung (der des Clusters, oder der der Sharding-Extension auf einem Node, der `ClusterSharding` gestartet hat); Geschwister unberührt. |
 | Das Actor-System | Alles stoppt normal. | Alles stoppt auf diesem Node; Routees auf anderen Nodes laufen weiter. |
 
 Die Asymmetrie ist wichtig für **sauberen Shutdown** — ein

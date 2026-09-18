@@ -269,16 +269,20 @@ const clusterRouterOptions = ClusterRouterOptions.create<EncodeCommand>()
 const encoders = system.spawn(ClusterRouter.factory(clusterRouterOptions), 'encoders');
 
 const encoded = await encoders.ask<EncodedFrame>({ kind: 'encode', frame: new Uint8Array(4096) });
-console.log(encoded.encodedOn);   // media@worker:2 — then :3, then :4, then :2 again
+console.log(encoded.encodedOn);   // e.g. media@worker:2 — each ask names the next worker in address order, wrapping around
 ```
 
 `whenReady()` ist das eine Warten: Das Mesh ist oben und jedes `setup`
 ist gelaufen, der erste Rebuild des Routers sieht also jeden Worker.
-Routees sind nach Adresse sortiert, die Round-Robin-Reihenfolge ist
-also über Rebuilds hinweg stabil.  Die Plain-Object-Form geht ebenso —
+Routees sind lexikalisch sortiert, nach der String-Form ihrer Adresse —
+`media@worker:10` vor `media@worker:2` —, die Round-Robin-Reihenfolge
+ist also über Rebuilds hinweg stabil; für drei Worker lautet die
+Rotation `:2`, `:3`, `:4`, wieder `:2`.  Die Plain-Object-Form geht
+ebenso —
 `ClusterRouter.factory({ cluster, routerType: 'round-robin', routeePath: '/user/encoder', role: 'compute' })`.
 
-Drei Fallen, jede eine Nachricht, die nirgendwohin geht:
+Drei Fallen — die ersten beiden eine Nachricht, die nirgendwohin geht,
+die dritte ein Router, der weniger ausgleicht, als es scheint:
 
 - **Der Router darf `offload` nicht matchen.**  `ClusterRouter.factory(…)`
   gibt eine Factory zurück, und eine Factory ist eine Closure, die
@@ -289,21 +293,36 @@ Drei Fallen, jede eine Nachricht, die nirgendwohin geht:
   Node des Routers ist ein Member wie jeder andere, und der Main-Thread
   hat keinen `/user/encoder` — jede (N+1)-te Nachricht wird also dort
   verworfen, wo sie ankommt, mit einer Warnung pro Nachricht
-  (`no envelope handler registered, dropping message to …`), und ein
-  `ask` dafür läuft in den Timeout.  Die Rolle ist, was den Main-Thread
-  aus dem Pool hält.
+  (`no envelope handler registered, dropping message to …`; auf einem
+  Node, der `ClusterSharding` gestartet hat, übernimmt stattdessen die
+  Sharding-Extension den nicht aufgelösten Envelope und warnt
+  `[sharding] no region/coordinator registered for …`), und ein `ask`
+  dafür läuft in den Timeout.  Die Rolle ist, was den Main-Thread aus
+  dem Pool hält.
 - **`smallest-mailbox` braucht den Agenten auf jedem Worker.**  Der
   Router liest Mailbox-Tiefen von einem kleinen Framework-Agenten auf
   jedem Routee-Node, und ein `smallest-mailbox`-Router startet diesen
   Agenten nur auf seinem eigenen Node.  Die Zeile
   `ClusterMailboxDepthAgent.serve(context.cluster)` in `setup` ist, was
-  die Worker berichten lässt; ohne sie bricht nichts, aber die Strategie
-  fällt für jeden Worker, der stumm bleibt, auf die
-  Round-Robin-Reihenfolge zurück.
+  die Worker berichten lässt; ohne sie bricht nichts, aber kein Routee
+  berichtet je, und ohne irgendeine Messung ist die Strategie schlichtes
+  Round-Robin.  Dieser Rückfall gilt ganz oder gar nicht, nicht pro
+  Worker: Ein Worker, der stumm bleibt, während andere berichten — seine
+  Messung fehlt oder ist älter als `mailboxDepthStaleAfterMs` —, wird
+  **übersprungen**, statt an die Reihe zu kommen, weil der schweigende
+  Node gerade der sein könnte, der kämpft.
+  [Cluster-Router](/de/cluster/cluster-router/#nodes-mit-routees-aber-ohne-router)
+  nennt die Regel.
 
 Was das Rezept nicht liefert: einen Pool, der mit der Last wächst und
-schrumpft — das ist #212, und heute skaliert nur der `OffloadPool` so —
-und Metriken, die über die Threads hinweg sehen (#1570).
+schrumpft — das ist #212, und heute skaliert nur der `OffloadPool` so.
+Was es liefert, ist ein Scrape für alles: Das Mesh leitet die
+Metrik-Registry jedes Workers an den Main-Thread weiter (#1570); sobald
+der Main-Thread also `/metrics` exportiert, steht die Arbeit der Encoder
+dort — die Werte jedes Workers als `thread="worker-<slot>"`-Serien neben
+den eigenen `thread="main"` des Routers, `sum without (thread)` für die
+Summe des Pools — siehe den
+[Geltungsbereich eines Scrapes](/de/observability/metrics/prometheus-exporter/#geltungsbereich-pro-prozess-pro-thread).
 
 ## Wie es weitergeht
 
