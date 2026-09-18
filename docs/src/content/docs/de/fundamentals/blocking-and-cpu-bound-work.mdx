@@ -52,6 +52,18 @@ Die Arbeit läuft abseits des Main-Threads, und das `await` ist ein echtes
 Warten.  Gibt es für das, was du tust, eine native Async-Form, nimm sie —
 nichts weiter unten schlägt sie.
 
+Ein gemessener Vorbehalt (Node 26, Bun 1.4, Deno 2.6; ein 24-MiB-Body mit
+einem 1-ms-Timer, der über das `await` hinweg läuft): Auf **Deno** schieben
+die asynchronen Formen von `node:zlib` den Aufruf auf und führen das
+Deflate dann als einen Block auf dem Main-Thread aus — der Timer feuerte
+0-mal, genau wie unter `gzipSync`, wo Bun und Node ihn 30–115-mal feuern
+ließen.  `crypto.scrypt` geht auf allen dreien in den Pool.  Auf Deno ist
+das Komprimieren eines großen Bodys also **Stufe 2**: gib es dem
+`OffloadPool` unten.  Die Object-Storage-Komprimierung des Frameworks
+ruft die asynchronen Formen auf und dokumentiert diesen Rest, statt selbst
+durch den Pool zu leiten — siehe
+[Komprimierung](/de/persistence/object-storage/compression/#cpu-kosten-grobe-richtwerte).
+
 **2. Worker-Threads, für reine JS-CPU-Arbeit.** Zwei Formen, je nachdem,
 was die Arbeit ist:
 
@@ -258,9 +270,18 @@ gibt es für den Worker-Entry aus demselben Grund.
   beim Hereinkommen parsen, auslagern oder streamen.
 - Ein `O(users)`-Scan pro Lookup.  Kein Threading-Problem — ein Index.
 
-Ein Ratchet-Guard über den Quellbaum für `*Sync(`-Aufrufe in Handlern wird
-unter #1540 verfolgt; bis er landet, ist die Liste oben die
-Review-Checkliste.
+Der erste Geruch ist abgesichert: `tests/unit/ci/NoSyncWorkInHandlers.test.ts`
+durchsucht `src/` und `examples/` nach einer geschlossenen Liste der
+blockierenden `*Sync`-Namen von Node — zlib, die Crypto-Key-Derivations,
+Kindprozesse, das Dateisystem, `@grpc/proto-loader` — in
+Erwähnungsposition, sodass ein Alias-Local oder ein Import-Specifier wie
+ein Aufruf zählt, und weist jede Datei ab, die einen davon öfter erwähnt,
+als ihr Ledger-Eintrag erlaubt.  Das Ledger hält die Aufrufe, die laufen,
+bevor ein Actor existiert (die Config-Kette, TLS-Material, ein in
+`preStart` geparstes `.proto`), oder in einem Test-Harness, jeder mit
+seinem Grund daneben; alles andere ist rot.  Es ist ein Ratchet, kein
+Gegner — `zlib['gzipSync']` entgeht ihm —, also bleibt der Rest der Liste
+oben die Review-Checkliste.
 
 ## Wie es weitergeht
 

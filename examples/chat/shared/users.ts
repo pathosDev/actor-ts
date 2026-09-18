@@ -2,8 +2,10 @@
  * Hardcoded test credentials for the chat sample.
  *
  * **Production-realistic auth** (since #99):
- *   - `passwordHash` is `<salt-hex>:<hash-hex>` using Node's built-in
- *     `crypto.scryptSync(pw, salt, 32, { N: 16384, r: 8, p: 1 })`.
+ *   - `passwordHash` is `<salt-hex>:<hash-hex>` from Node's built-in
+ *     scrypt with `N: 16384, r: 8, p: 1` and a 32-byte key — produced
+ *     offline with `hashPassword` in `backend/auth/password.ts`, which
+ *     is the one place the parameters live.
  *     scrypt is memory-hard like bcrypt/argon2; a leaked store can't
  *     be brute-forced on commodity hardware.  Verification lives in
  *     `backend/auth/password.ts` and uses `crypto.timingSafeEqual`

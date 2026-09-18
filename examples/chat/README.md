@@ -420,8 +420,10 @@ Implemented since v1:
   reader list).
 - **Production-realistic auth** (#99, Option A).
   - Passwords stored as scrypt hashes (`<salt>:<hash>`) in
-    `shared/users.ts`; verified via `crypto.scryptSync` +
-    `crypto.timingSafeEqual` in `backend/auth/password.ts`.  Plain
+    `shared/users.ts`; verified via `crypto.scrypt` (the async form —
+    the derivation runs on the thread pool, not on the event loop every
+    actor shares, #1540) + `crypto.timingSafeEqual` in
+    `backend/auth/password.ts`.  Plain
     test passwords still listed as comments so the demo's login form
     keeps working out of the box.  Credential validation in
     `credentials.ts` scans every user (verifying against a real hash
