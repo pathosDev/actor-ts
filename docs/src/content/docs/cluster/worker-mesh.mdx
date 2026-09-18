@@ -625,9 +625,9 @@ a log shipper see the same thing:
 | A `close` event with a non-zero code, or with none | `WARN` | `[worker] worker N (addr) exited with code C` / `… exited without an exit code` |
 | A `close` event with code 0 | `INFO` | `[worker] worker N (addr) exited with code 0` |
 | The policy leaves the slot down | `INFO` | `[worker] worker N (addr) is not respawned — restartPolicy 'P'` |
-| A restart is granted | `WARN` | `[worker] respawning worker N (addr) in D ms (restart K of M inside W ms)` — `(restart budget unlimited)` under `maxRestarts: -1` |
+| A restart is granted | `WARN` | `[worker] respawning worker N (addr) in D ms (restart K of M inside W ms)` — `(restart budget unlimited)` under `maxRestarts: -1`, and no `inside W ms` under `restartWindowMs: 0` |
 | A replacement never became ready | `ERROR` | `[worker] respawning worker N (addr) failed: <message>` |
-| The budget is spent and no `onWorkerPermanentlyDown` is set | `ERROR` | `[worker] worker N (addr) is permanently down — K restarts inside W ms exhausted its budget` |
+| The budget is spent and no `onWorkerPermanentlyDown` is set | `ERROR` | `[worker] worker N (addr) is permanently down — K restarts inside W ms exhausted its budget` — without `inside W ms` under `restartWindowMs: 0` |
 | The broker refuses a frame | `WARN`; `DEBUG` for an unknown destination | `[worker] broker dropped K frame(s), most recently from <source> — <reason>` |
 | The backend declares `containsWorkerErrors: false` — once per backend, before the first spawn | `ERROR` | `[worker] worker backend <Class> declares containsWorkerErrors=false — an uncaught throw inside a worker will terminate this process instead of reaching the framework's error handler; …` |
 | The metrics relay refuses a worker's snapshot — once per reason per worker | `WARN` | `[worker] metrics relay dropped a snapshot from <addr> — <reason>` |

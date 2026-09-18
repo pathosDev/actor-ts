@@ -650,9 +650,9 @@ Argument, sodass ein Console-Sink und ein Log-Shipper dasselbe sehen:
 | Ein `close`-Event mit einem Code ungleich null, oder ohne Code | `WARN` | `[worker] worker N (addr) exited with code C` / `… exited without an exit code` |
 | Ein `close`-Event mit Code 0 | `INFO` | `[worker] worker N (addr) exited with code 0` |
 | Die Policy lässt den Slot liegen | `INFO` | `[worker] worker N (addr) is not respawned — restartPolicy 'P'` |
-| Ein Restart wird gewährt | `WARN` | `[worker] respawning worker N (addr) in D ms (restart K of M inside W ms)` — `(restart budget unlimited)` unter `maxRestarts: -1` |
+| Ein Restart wird gewährt | `WARN` | `[worker] respawning worker N (addr) in D ms (restart K of M inside W ms)` — `(restart budget unlimited)` unter `maxRestarts: -1`, und kein `inside W ms` unter `restartWindowMs: 0` |
 | Ein Ersatz wurde nie ready | `ERROR` | `[worker] respawning worker N (addr) failed: <message>` |
-| Das Budget ist erschöpft und kein `onWorkerPermanentlyDown` gesetzt | `ERROR` | `[worker] worker N (addr) is permanently down — K restarts inside W ms exhausted its budget` |
+| Das Budget ist erschöpft und kein `onWorkerPermanentlyDown` gesetzt | `ERROR` | `[worker] worker N (addr) is permanently down — K restarts inside W ms exhausted its budget` — ohne `inside W ms` unter `restartWindowMs: 0` |
 | Der Broker weist einen Frame ab | `WARN`; `DEBUG` für ein unbekanntes Ziel | `[worker] broker dropped K frame(s), most recently from <source> — <reason>` |
 | Das Backend deklariert `containsWorkerErrors: false` — einmal pro Backend, vor dem ersten Spawn | `ERROR` | `[worker] worker backend <Class> declares containsWorkerErrors=false — an uncaught throw inside a worker will terminate this process instead of reaching the framework's error handler; …` |
 | Das Metrik-Relay lehnt den Snapshot eines Workers ab — einmal pro Grund pro Worker | `WARN` | `[worker] metrics relay dropped a snapshot from <addr> — <reason>` |
