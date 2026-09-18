@@ -419,6 +419,13 @@ binomial(N,2). Der Broker leitet jeden Hop weiter, was die
 Verdrahtung linear hält, aber den Hauptthread zum Relay für den
 gesamten Node-übergreifenden Verkehr macht.
 
+Der Stern ist die gewählte Form, kein erster Entwurf: Direkte
+`MessagePort`s von Worker zu Worker stehen auf der Roadmap, abhängig
+von einer Messung des eigenen Anteils des Relays am Hop (in einem
+Folge-Issue verfolgt), und bis diese Zahl existiert, ist die
+Gegenmaßnahme das Dimensionieren — gib `workers` den Actors, die
+rechnen, nicht denen, die plaudern.
+
 Ein mit `new WorkerBroker()` gebauter Broker meldet die Frames, die er
 verwirft, über einen `ConsoleLogger` auf `Info`;
 `new WorkerBroker(system.log)` leitet sie stattdessen durch die Sinks
@@ -443,6 +450,12 @@ gemessen auf dem Actor-Pfad (`benchmarks/worker/mesh-message-cost.ts`,
 Bun 1.4, 32 Threads) kostet ein Cross-Thread-`tell` etwa **20 µs**
 gegen ~300 ns lokal, ein Cross-Thread-`ask` etwa **180 µs** gegen
 ~6 µs — Envelope, Ref-Codec, der Relay-Hop des Brokers und zwei Klone.
+Dieselben zwei Nodes auf einem Thread zahlen etwa **25 µs** pro `tell`
+und **80 µs** pro `ask` — die In-Process-Stufe desselben Benchmarks —,
+die Rechnung ist also das Protokoll, nicht der Thread.  Eine
+Actor-Nachricht trägt auch keine Transferliste: Ein großer Buffer wird
+bei jedem Hop geklont (durch den Stern wäre ein Verschieben bestenfalls
+zwei Verschiebungen), verschiebe ihn also einmal über `context.offload`.
 Ein Actor, der viele kleine Nachrichten austauscht, zahlt das bei jeder
 einzelnen und gewinnt durch den Thread nichts; ein Actor, der pro
 Nachricht echte CPU-Arbeit leistet, gewinnt den Kern.  Platziere
