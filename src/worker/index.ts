@@ -25,6 +25,9 @@ export type {
 export { WorkerNode } from './WorkerNode.js';
 export type { WorkerNodeContext } from './WorkerNode.js';
 export { WorkerBroker } from './WorkerBroker.js';
+// The return type of `WorkerBroker.dropped()`, so the emitted declarations
+// name a type a consumer can import (#1276).
+export type { WorkerBrokerDropReason } from './WorkerBroker.js';
 // The main thread as a member of its own mesh (#1562).
 // Function-level offload (#1558): the pool, its options, the task naming and
 // the errors a run can reject with.  `defineOffloadTask` and the extension id
