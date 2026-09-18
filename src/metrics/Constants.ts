@@ -203,3 +203,39 @@ export const PROMETHEUS_METRIC_NAME_PATTERN = /^[a-zA-Z_:][a-zA-Z0-9_:]*$/;
  * escapes them.
  */
 export const PROMETHEUS_LABEL_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+/* ---------------------- Exposition-time thread label --------------------- */
+
+/**
+ * The one label the exposition adds **at export time** rather than at a call
+ * site (#1570).
+ *
+ * A worker mesh hosts one `ActorSystem` per thread, each with its own
+ * registry, and `MetricsExtension.collectAll` merges the workers' snapshots
+ * into the main thread's exposition.  Two threads then report the same stock
+ * family — `actor_messages_delivered_total` from the main thread and from
+ * `worker-0` are the same name with the same labels — and without a label to
+ * tell them apart the exporter would emit two rows for one series, which a
+ * scraper reads as a duplicate.  So every sample is stamped with which thread
+ * produced it: {@link MAIN_THREAD_LABEL_VALUE} for the main thread's own
+ * registry, `worker-<slot>` for a worker's (the thread's own name, and the
+ * `WorkerHandle.id` it was spawned under).  `sum without (thread)` is the
+ * process total, `sum by (thread)` the breakdown.
+ *
+ * Stamped **only while a relay is active** — a mesh up, its interval above
+ * zero, the main registry enabled.  A single-threaded system exports exactly
+ * the bytes it did before the label existed, so switching workers on is the
+ * one moment every series' label set changes.
+ *
+ * Reserved, in both directions: the main side sets it on its own samples
+ * whatever they carried, and a worker snapshot that already carries the key is
+ * refused whole rather than merged, because a relayed sample claiming to be
+ * another thread's is the exposition-level forgery #784 is about, one field
+ * over.  Vocabulary of the exposition rather than a tuned value, so it lives
+ * beside the two grammar patterns above and not in `src/util/Constants.ts`,
+ * even though the worker subsystem reads it too.
+ */
+export const THREAD_LABEL = 'thread';
+
+/** {@link THREAD_LABEL} value of the main thread's own samples. */
+export const MAIN_THREAD_LABEL_VALUE = 'main';

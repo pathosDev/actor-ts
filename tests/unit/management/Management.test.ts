@@ -399,11 +399,44 @@ describe('managementRoutes — cluster queries', () => {
     await cluster.leave(); await sys.terminate();
   });
 
+  test('/metrics renders the merged view: a contributed sample beside the main thread’s own (#1570)', async () => {
+    const { sys, cluster } = await startNode();
+    const metrics = sys.extension(MetricsExtensionId);
+    metrics.enable().counter('main_only_total', {}, { help: 'main' }).inc(1);
+    // What a worker-mesh relay contributes: already stamped with its thread.
+    const remove = metrics._addSampleSource(() => [
+      { name: 'main_only_total', help: 'main', kind: 'counter', labels: { thread: 'worker-0' }, value: 7 },
+    ]);
+    const routes = managementRoutes(sys, cluster, { enableMetricsEndpoint: true });
+    const http = sys.extension(HttpExtensionId);
+    const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);
+
+    const merged = await (await fetch(`http://127.0.0.1:${binding.port}/metrics`)).text();
+    expect(merged.match(/# TYPE main_only_total counter/g)).toHaveLength(1);
+    expect(merged).toContain('main_only_total{thread="main"} 1');
+    expect(merged).toContain('main_only_total{thread="worker-0"} 7');
+
+    // Without a source the route is exactly `exportPrometheus(registry)` again.
+    remove();
+    const alone = await (await fetch(`http://127.0.0.1:${binding.port}/metrics`)).text();
+    expect(alone).toContain('main_only_total 1');
+    expect(alone).not.toContain('thread=');
+
+    await binding.unbind();
+    await cluster.leave(); await sys.terminate();
+  });
+
   test('/metrics refuses a registry it cannot read, and leaves /health alone', async () => {
     const { sys, cluster } = await startNode();
     // The documented "one scrape endpoint" wiring: the operator's own
     // collector holds the values, and this registry keeps no copy (#744).
     sys.extension(MetricsExtensionId).useRegistry(new WriteThroughRegistry());
+    // A contributor does not rescue it: the check is on the main registry,
+    // and a 503 over a merged body of worker rows alone would be the same
+    // half-scrape #744 refused, with different rows (#1570).
+    sys.extension(MetricsExtensionId)._addSampleSource(() => [
+      { name: 'relayed_total', help: '', kind: 'counter', labels: { thread: 'worker-0' }, value: 1 },
+    ]);
     const routes = managementRoutes(sys, cluster, { enableMetricsEndpoint: true });
     const http = sys.extension(HttpExtensionId);
     const binding = await http.newServerAt('127.0.0.1', 0).bind(routes);

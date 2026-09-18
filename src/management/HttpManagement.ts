@@ -20,8 +20,8 @@ import {
   type Middleware,
   type Route,
 } from '../http/index.js';
-import { exportPrometheus } from '../metrics/PrometheusExporter.js';
-import { metricsOf } from '../metrics/MetricsExtension.js';
+import { renderPrometheusSamples } from '../metrics/PrometheusExporter.js';
+import { MetricsExtensionId } from '../metrics/MetricsExtension.js';
 import { isCollectable } from '../metrics/Metrics.js';
 import { CLUSTER_MEMBERSHIP_CHECK_NAME } from '../cluster/ClusterHealthChecks.js';
 import { isHealthy } from './HealthCheck.js';
@@ -240,11 +240,19 @@ export function managementRoutes(
    * therefore be a guard that holds for one wiring order and not the other,
    * while taking `/health` and `/ready` down with it on the order it does
    * catch; the route that is actually wrong is the one that should fail.
+   *
+   * The body is `collectAll()`, not `collect()` (#1570): a worker mesh relays
+   * its threads' registries into the main thread's extension, and this route
+   * is where the merged view is meant to surface.  The collectability check
+   * stays on the main registry alone — it is the one whose `collect()` this
+   * process would otherwise misreport as empty; a worker that installed a
+   * write-through registry is the relay's to notice, and it contributes
+   * nothing rather than turning the whole scrape into a 503.
    */
   const metricsRoute: Route = options.enableMetricsEndpoint
     ? get(async () => {
-      const registry = metricsOf(system);
-      if (!isCollectable(registry)) {
+      const metrics = system.extension(MetricsExtensionId);
+      if (!isCollectable(metrics.get())) {
         return complete(
           Status.ServiceUnavailable,
           'metrics endpoint unavailable: the installed MetricsRegistry does not '
@@ -255,7 +263,7 @@ export function managementRoutes(
       }
       return {
         status: Status.OK,
-        body: exportPrometheus(registry),
+        body: renderPrometheusSamples(metrics.collectAll()),
         contentType: 'text/plain; version=0.0.4; charset=utf-8',
       };
     })
