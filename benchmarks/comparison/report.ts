@@ -403,7 +403,7 @@ function renderMarkdown(results: ReadonlyArray<LoadedResult>): string {
     '  against sharding (#529); publishing a sharded comparison now would bake it',
     '  into the first number anyone sees.',
     '- **No persistence row.** The persistence benchmarks cover in-memory and',
-    '  SQLite only (#1177), so the comparable arm would be a storage-engine',
+    '  SQLite only (#1574), so the comparable arm would be a storage-engine',
     '  comparison wearing a framework label.',
     '- **No stored baselines and no regression gate.** Nothing here fails when a',
     '  number moves between releases (#528).',
