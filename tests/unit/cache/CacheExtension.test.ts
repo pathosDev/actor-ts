@@ -207,8 +207,11 @@ describe('CacheExtension', () => {
       const ext = sys.extension(CacheExtensionId);
 
       expect(() => ext.cache('sessions')).toThrow(ConfigError);
+      // Every metacharacter, not only the dot: an escaper that handles one of
+      // them is the incomplete sanitiser CodeQL flagged as alerts #18/#19 (#1593).
+      const escapedRoot = root.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       expect(() => ext.cache('sessions'))
-        .toThrow(new RegExp(`${root.replace(/\./g, '\\.')}\\.maxEntries[\\s\\S]*${root.replace(/\./g, '\\.')}\\.max-entries`));
+        .toThrow(new RegExp(`${escapedRoot}\\.maxEntries[\\s\\S]*${escapedRoot}\\.max-entries`));
       await sys.terminate();
     });
 

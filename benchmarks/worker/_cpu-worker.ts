@@ -27,6 +27,9 @@ const workerScope = globalThis as unknown as {
   postMessage(v: unknown): void;
 };
 
+// No origin check, and none is possible: a dedicated worker's `onmessage`, not
+// `window.postMessage` — the only sender is the benchmark that spawned this
+// thread.  CodeQL js/missing-origin-check — dismissed (#1593).
 workerScope.onmessage = (ev) => {
   const message = ev.data;
   if (message.kind !== 'crunch') return;

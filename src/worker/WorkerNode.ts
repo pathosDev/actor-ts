@@ -72,10 +72,6 @@ export const WorkerNode = {
        * re-entrancy would be asserting against a runtime that does not exist.
        */
       let timer: ReturnType<typeof setTimeout> | undefined;
-      // No origin check: this is a dedicated Worker / worker_threads message
-      // handler, not window.postMessage.  Messages originate only from the
-      // parent that spawned this worker, so `origin` is not applicable here
-      // (CodeQL js/missing-origin-check — dismissed as a false positive).
       const onMessage = (data: unknown): void => {
         const frame = data as Partial<WorkerInitMessage> | null;
         if (frame && frame.kind === 'worker-init') {

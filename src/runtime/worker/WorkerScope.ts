@@ -52,6 +52,11 @@ export function webWorkerScope(): WorkerScope | null {
     post: (value) => { post.call(scope, value); },
     onMessage: (handler) => {
       if (handlers.size === 0) {
+        // No origin check, and none is possible: this is a dedicated worker's
+        // `onmessage`, not `window.postMessage`.  The event carries no origin
+        // and the port is private to the parent that spawned the thread, so
+        // there is nothing to compare against; consumers discriminate on
+        // `kind` instead.  CodeQL js/missing-origin-check — dismissed (#1593).
         scope.onmessage = (event) => { for (const h of [...handlers]) h(event?.data); };
       }
       handlers.add(handler);
