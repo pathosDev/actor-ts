@@ -144,7 +144,7 @@
     "test:coverage": "bun test --coverage",
     "test:coverage:gate": "bun scripts/coverage-gate.mjs",
     "test:stress": "bun scripts/stress-test.mjs",
-    "test:integration": "docker compose -f tests/integration/docker-compose.integration.yml up --build --abort-on-container-exit --exit-code-from controller",
+    "test:integration": "docker compose -f tests/integration/docker-compose.integration.yml up --build --abort-on-container-failure --exit-code-from controller",
     "test:integration:teardown": "docker compose -f tests/integration/docker-compose.integration.yml down -v --remove-orphans",
     "test:integration:broker": "bun scripts/integration-compose.mjs",
     "test:integration:broker:teardown": "bun scripts/integration-compose.mjs --down",
