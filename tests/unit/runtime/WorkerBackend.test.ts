@@ -108,8 +108,9 @@ describe('runtime/worker — the containment declaration (#1288)', () => {
     // '@ts-expect-error' directive") — run it after touching the interface.
     // @ts-expect-error a backend without containsWorkerErrors is not a WorkerBackend
     const undeclared: WorkerBackend = { spawn: (): WorkerLike => inertWorker };
-    // Still a real object at runtime, and the resolver treats "undeclared"
-    // as neither `true` nor `false` — the compiler is the gate for that case.
+    // Still a real object at runtime — and one the resolver reports as
+    // declaring nothing about containment (below), because the compiler gates
+    // only the TypeScript caller.
     expect(typeof undeclared.spawn).toBe('function');
   });
 
@@ -156,6 +157,47 @@ describe('runtime/worker — the containment declaration (#1288)', () => {
     expect(reports).toHaveLength(1);
     expect(reports[0]).toStartWith('an anonymous worker backend declares containsWorkerErrors=false');
     expect(reports[0]).not.toContain('Object');
+  });
+
+  // The compiler is the gate for a TypeScript caller, and only for one: the
+  // package runs on Node as plain ESM, a cast gets a stub past the check, a
+  // shape copied from an older version predates the member.  At runtime each
+  // of those is a backend that declares *nothing*, and the verification of
+  // #1288 measured that an `=== false` check let every one of them spawn in
+  // silence — the exact silence the issue is titled after, for that class of
+  // consumer.  So anything that is not `true` is reported, with a wording
+  // that says what was found.
+  const undeclaredShapes: ReadonlyArray<[string, () => WorkerBackend]> = [
+    ['no member at all (a plain-JavaScript backend, or a cast)',
+      () => ({ spawn: (): WorkerLike => inertWorker }) as unknown as WorkerBackend],
+    ['containsWorkerErrors: undefined',
+      () => ({ containsWorkerErrors: undefined, spawn: (): WorkerLike => inertWorker }) as unknown as WorkerBackend],
+    ["the string 'false' — an environment variable that never became a boolean",
+      () => ({ containsWorkerErrors: 'false', spawn: (): WorkerLike => inertWorker }) as unknown as WorkerBackend],
+  ];
+  for (const [shape, make] of undeclaredShapes) {
+    test(`a backend with ${shape} is reported once as declaring nothing about containment`, async () => {
+      const reports: string[] = [];
+      const backend = make();
+      const report = (m: string): void => { reports.push(m); };
+      expect(await resolveWorkerBackend(backend, report)).toBe(backend);
+      expect(reports).toHaveLength(1);
+      expect(reports[0]).toStartWith('an anonymous worker backend declares nothing about containment');
+      expect(reports[0]).toContain('containsWorkerErrors');
+      expect(reports[0]).toContain('will terminate this process');
+      // Same latch as a `false`: the second resolution through the instance is silent.
+      await resolveWorkerBackend(backend, report);
+      expect(reports).toHaveLength(1);
+    });
+  }
+
+  test('a class that forgot the member is named, and the wording is not the false one', async () => {
+    class ForgetfulBackend { spawn(): WorkerLike { return inertWorker; } }
+    const reports: string[] = [];
+    await resolveWorkerBackend(new ForgetfulBackend() as unknown as WorkerBackend, (m) => { reports.push(m); });
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toStartWith('worker backend ForgetfulBackend declares nothing about containment');
+    expect(reports[0]).not.toContain('containsWorkerErrors=false');
   });
 });
 

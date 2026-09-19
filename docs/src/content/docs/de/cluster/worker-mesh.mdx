@@ -615,17 +615,21 @@ erreicht, ist trivial `true`.  Der Umfang ist das `error`-Event: ein
 nicht gefangener Throw, eine unbehandelte Rejection, ein Bootstrap, das
 sich nicht laden lässt — nicht `messageerror`.
 
-Deklariere `false`, und das Framework meldet es **einmal pro
-Backend-Instanz, vor dem ersten Spawn**, über den Logger des Konsumenten
-— `[worker]` für ein Mesh oder einen nackten `WorkerCluster`,
-`[offload]` für einen `OffloadPool`, die Konsole für
-`ParallelMultiNodeSpec` — und macht weiter: Der Spawn wird nie
-verweigert, denn die Deklaration ändert nichts daran, was das Framework
-anders tun könnte.  Die Zeile nennt die Backend-Klasse und sagt, was
-passieren wird — ein nicht gefangener Throw in einem Worker beendet den
-Prozess, statt den Fehler-Handler des Frameworks zu erreichen, und
-erreicht damit auch die Restart-Policy nie —, sodass ein Host, der später
-so stirbt, eine Zeile hat, die erklärt, warum.
+Deklariere `false` — oder deklariere nichts, wie es ein in reinem
+JavaScript geschriebenes Backend, ein Cast oder eine aus einer älteren
+Version kopierte Shape zur Laufzeit tut, am Compiler vorbei —, und das
+Framework meldet es **einmal pro Backend-Instanz, vor dem ersten
+Spawn**, über den Logger des Konsumenten — `[worker]` für ein Mesh oder
+einen nackten `WorkerCluster`, `[offload]` für einen `OffloadPool`, die
+Konsole für `ParallelMultiNodeSpec` — und macht weiter: Der Spawn wird
+nie verweigert, denn die Deklaration ändert nichts daran, was das
+Framework anders tun könnte.  Die Zeile nennt die Backend-Klasse, sagt,
+was sie vorgefunden hat (`declares containsWorkerErrors=false` oder
+`declares nothing about containment`), und was passieren wird — ein
+nicht gefangener Throw in einem Worker beendet den Prozess, statt den
+Fehler-Handler des Frameworks zu erreichen, und erreicht damit auch die
+Restart-Policy nie —, sodass ein Host, der später so stirbt, eine Zeile
+hat, die erklärt, warum.  Nur ein explizites `true` bleibt stumm.
 
 Um ein `true` zu *beweisen*, lass einen Worker abstürzen und überlebe:
 Starte über dein Backend ein Bootstrap, das beim Laden wirft, auf Node
@@ -654,7 +658,7 @@ Argument, sodass ein Console-Sink und ein Log-Shipper dasselbe sehen:
 | Ein Ersatz wurde nie ready | `ERROR` | `[worker] respawning worker N (addr) failed: <message>` |
 | Das Budget ist erschöpft und kein `onWorkerPermanentlyDown` gesetzt | `ERROR` | `[worker] worker N (addr) is permanently down — K restarts inside W ms exhausted its budget` — ohne `inside W ms` unter `restartWindowMs: 0` |
 | Der Broker weist einen Frame ab | `WARN`; `DEBUG` für ein unbekanntes Ziel | `[worker] broker dropped K frame(s), most recently from <source> — <reason>` |
-| Das Backend deklariert `containsWorkerErrors: false` — einmal pro Backend, vor dem ersten Spawn | `ERROR` | `[worker] worker backend <Class> declares containsWorkerErrors=false — an uncaught throw inside a worker will terminate this process instead of reaching the framework's error handler; …` |
+| Das Backend deklariert `containsWorkerErrors: false` oder gar nichts — einmal pro Backend, vor dem ersten Spawn | `ERROR` | `[worker] worker backend <Class> declares containsWorkerErrors=false — an uncaught throw inside a worker will terminate this process instead of reaching the framework's error handler; …` — `declares nothing about containment (containsWorkerErrors is not true)`, wenn das Member zur Laufzeit fehlt |
 | Das Metrik-Relay lehnt den Snapshot eines Workers ab — einmal pro Grund pro Worker | `WARN` | `[worker] metrics relay dropped a snapshot from <addr> — <reason>` |
 
 Vier Dinge an diesen Zeilen sind wissenswert:

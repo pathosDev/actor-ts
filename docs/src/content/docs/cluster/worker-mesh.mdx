@@ -592,16 +592,21 @@ failure ever reaches is trivially `true`.  The scope is the `error`
 event: an uncaught throw, an unhandled rejection, a bootstrap that fails
 to load — not `messageerror`.
 
-Declare `false` and the framework reports it **once per backend
-instance, before the first spawn**, through the consumer's logger —
-`[worker]` for a mesh or a bare `WorkerCluster`, `[offload]` for an
-`OffloadPool`, the console for `ParallelMultiNodeSpec` — and continues:
-the spawn is never refused, because the declaration changes nothing the
-framework could do differently.  The line names the backend class and
-says what will happen — an uncaught throw inside a worker terminates
-the process instead of reaching the framework's error handler, and so
-never reaches the restart policy either — so a host that later dies
-that way has one line explaining why.
+Declare `false` — or declare nothing, which is what a backend written
+in plain JavaScript, a cast, or a shape copied from an older version
+looks like at runtime, past the compiler — and the framework reports it
+**once per backend instance, before the first spawn**, through the
+consumer's logger — `[worker]` for a mesh or a bare `WorkerCluster`,
+`[offload]` for an `OffloadPool`, the console for
+`ParallelMultiNodeSpec` — and continues: the spawn is never refused,
+because the declaration changes nothing the framework could do
+differently.  The line names the backend class, says which it found
+(`declares containsWorkerErrors=false`, or `declares nothing about
+containment`) and what will happen — an uncaught throw inside a worker
+terminates the process instead of reaching the framework's error
+handler, and so never reaches the restart policy either — so a host
+that later dies that way has one line explaining why.  Only an explicit
+`true` is silent.
 
 To *prove* a `true`, crash a worker and survive: spawn a bootstrap that
 throws at load through your backend on Node and on Deno, subscribe
@@ -629,7 +634,7 @@ a log shipper see the same thing:
 | A replacement never became ready | `ERROR` | `[worker] respawning worker N (addr) failed: <message>` |
 | The budget is spent and no `onWorkerPermanentlyDown` is set | `ERROR` | `[worker] worker N (addr) is permanently down — K restarts inside W ms exhausted its budget` — without `inside W ms` under `restartWindowMs: 0` |
 | The broker refuses a frame | `WARN`; `DEBUG` for an unknown destination | `[worker] broker dropped K frame(s), most recently from <source> — <reason>` |
-| The backend declares `containsWorkerErrors: false` — once per backend, before the first spawn | `ERROR` | `[worker] worker backend <Class> declares containsWorkerErrors=false — an uncaught throw inside a worker will terminate this process instead of reaching the framework's error handler; …` |
+| The backend declares `containsWorkerErrors: false`, or nothing at all — once per backend, before the first spawn | `ERROR` | `[worker] worker backend <Class> declares containsWorkerErrors=false — an uncaught throw inside a worker will terminate this process instead of reaching the framework's error handler; …` — `declares nothing about containment (containsWorkerErrors is not true)` when the member is missing at runtime |
 | The metrics relay refuses a worker's snapshot — once per reason per worker | `WARN` | `[worker] metrics relay dropped a snapshot from <addr> — <reason>` |
 
 Four things about those lines are worth knowing:
