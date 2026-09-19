@@ -202,6 +202,21 @@ describe('bare paths (#1568)', () => {
     expect(new Map([alpha, beta].map((ref) => [ref.path.toString(), ref])).size).toBe(2);
   });
 
+  test('a traversal or control-character segment throws — the bare form is not a way around assertValidName', () => {
+    // Decision on the #1568 verification: the constructor is total for
+    // *spellings* (bare, full, garbage) but not for *segments*. A bare '..'
+    // used to canonicalise onto a root ref and now reaches assertValidName
+    // through the ActorPath it builds, exactly as the full spelling
+    // 'actor-ts://sys/..' always did — so a peer gains nothing it did not
+    // have, and the wire's drop policy (#563) answers the throw the same way
+    // for both. Pinned so the throw is a documented property, not an accident
+    // a future "never throws" clean-up removes.
+    for (const bad of ['..', '/user/..', 'user/./x', 'user\\x', 'user/\u0007x']) {
+      expect(() => refTo(NODE_A, bad)).toThrow(/Invalid actor name/);
+    }
+    expect(() => refTo(NODE_A, 'actor-ts://remote-path-sys/user/..')).toThrow(/Invalid actor name/);
+  });
+
   test('the bare form resolves against the target node’s system name', () => {
     const elsewhere = new NodeAddress('other-sys', 'host-c', 9003);
     expect(refTo(elsewhere, '/user/alpha').targetPath).toBe('actor-ts://other-sys/user/alpha');

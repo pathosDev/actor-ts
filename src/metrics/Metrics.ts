@@ -59,6 +59,7 @@
 import {
   PROMETHEUS_LABEL_NAME_PATTERN,
   PROMETHEUS_METRIC_NAME_PATTERN,
+  THREAD_LABEL,
 } from './Constants.js';
 import {
   DEFAULT_MAX_SERIES_PER_FAMILY,
@@ -550,13 +551,27 @@ function assertValidMetricName(name: string): void {
 }
 
 /**
- * Reject a label key the exposition cannot carry safely (#784).
+ * Reject a label key the exposition cannot carry safely (#784), and the one
+ * key the exposition reserves for itself (#1570).
  *
  * Same rule and same reasoning as {@link assertValidMetricName}, one field
  * over: `renderLabels` quotes and escapes the value and cannot do either
  * for the key.  The family name travels into the message because a bad key
  * is otherwise hard to place — the tuple is usually built several frames
  * away from the call that registers it.
+ *
+ * {@link THREAD_LABEL} is refused here, at the mint, rather than reconciled
+ * at export.  While a worker mesh relays its threads' registries into one
+ * scrape, `MetricsExtension.collectAll` stamps every sample with the thread
+ * that produced it; an application label under the same key was overwritten
+ * on the main thread — two values became two rows with one identical label
+ * set, which a Prometheus scrape rejects wholesale — and on a worker it made
+ * the relay refuse that thread's whole snapshot.  Both were a single-threaded
+ * deployment's silent time bomb: the label was legal until the day workers
+ * were switched on.  Refused when the family is minted, it is an error at the
+ * developer's desk instead, on every thread alike, with the rename in the
+ * message.  A whole-key match, deliberately: `thread_pool` and `threads`
+ * are exactly the labels the rule must leave alone.
  */
 function assertValidLabelKeys(name: string, labels: Labels): void {
   for (const key of Object.keys(labels)) {
@@ -567,6 +582,14 @@ function assertValidLabelKeys(name: string, labels: Labels): void {
         `the Prometheus exposition grammar and cannot be escaped, so they must be ` +
         `developer-chosen constants — put request-derived data in the label value ` +
         `(bounded with bucketize), never in the key.`,
+      );
+    }
+    if (key === THREAD_LABEL) {
+      throw new Error(
+        `Reserved label key ${JSON.stringify(THREAD_LABEL)} on metric ${JSON.stringify(name)}: ` +
+        `the exposition stamps every sample with the thread that produced it while a worker ` +
+        `mesh relays its registries (#1570), so an application label under this key would be ` +
+        `overwritten on the main thread and refused on a worker — rename the label.`,
       );
     }
   }

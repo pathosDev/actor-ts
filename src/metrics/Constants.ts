@@ -227,13 +227,19 @@ export const PROMETHEUS_LABEL_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
  * the bytes it did before the label existed, so switching workers on is the
  * one moment every series' label set changes.
  *
- * Reserved, in both directions: the main side sets it on its own samples
- * whatever they carried, and a worker snapshot that already carries the key is
- * refused whole rather than merged, because a relayed sample claiming to be
- * another thread's is the exposition-level forgery #784 is about, one field
- * over.  Vocabulary of the exposition rather than a tuned value, so it lives
- * beside the two grammar patterns above and not in `src/util/Constants.ts`,
- * even though the worker subsystem reads it too.
+ * Reserved, at three points.  `DefaultMetricsRegistry` refuses it as an
+ * application label key when a family is minted, on every thread alike, so
+ * the collision cannot arise from a registry of ours — the alternative was a
+ * label that was legal in a single-threaded deployment and silently
+ * overwritten (main) or snapshot-refused (worker) the day the mesh went on.
+ * The two export-side rules stay as the trust boundary for samples the
+ * registry did not mint: the main side sets it on its own samples whatever
+ * they carried, and a worker snapshot that already carries the key is refused
+ * whole rather than merged, because a relayed sample claiming to be another
+ * thread's is the exposition-level forgery #784 is about, one field over.
+ * Vocabulary of the exposition rather than a tuned value, so it lives beside
+ * the two grammar patterns above and not in `src/util/Constants.ts`, even
+ * though the worker subsystem reads it too.
  */
 export const THREAD_LABEL = 'thread';
 
