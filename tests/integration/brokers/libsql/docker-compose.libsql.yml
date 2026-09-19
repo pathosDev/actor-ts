@@ -12,9 +12,14 @@ name: actor-ts-integration-libsql
 
 services:
   libsql:
-    # `latest` deliberately — surface upstream regressions as soon as they
-    # ship.  Production users pin their own version (or use hosted Turso).
-    image: ghcr.io/tursodatabase/libsql-server:latest
+    # Pinned to the newest *release*, and Dependabot moves it (#1597).  This
+    # is the one pin that changed what is tested: `latest` on ghcr.io is a
+    # main-branch build (`org.opencontainers.image.version: latest`, revision
+    # d6c75af6, built 2026-08-23), so the suite had been running against an
+    # unreleased server for months.  A new release now arrives as a PR that
+    # runs this suite.  Production users pin their own version (or use hosted
+    # Turso).
+    image: ghcr.io/tursodatabase/libsql-server:v0.24.33
     environment:
       # Standalone primary: no replication, which is all the contract needs.
       SQLD_NODE: primary

@@ -1,7 +1,7 @@
 /**
  * MariaDB live-integration runner (#324).
  *
- * Boots against the mariadb:latest container, waits for the port, then
+ * Boots against the pinned `mariadb` container, waits for the port, then
  * runs the shared SQL persistence contract (journal + snapshot +
  * durable-state) against the real `MariaDbJournal` /
  * `MariaDbSnapshotStore` / `MariaDbDurableStateStore` via the `mariadb`

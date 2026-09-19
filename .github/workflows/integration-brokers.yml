@@ -42,10 +42,12 @@ on:
       - '.github/workflows/integration-brokers.yml'
   workflow_dispatch:
   schedule:
-    # Nightly run catches upstream-image regressions (each suite
-    # tracks `:latest` for its broker — that's the whole point — except
-    # MinIO, pinned since nothing ships there any more; see its compose
-    # file, #1531).
+    # Nightly run.  Every broker image is pinned now and Dependabot moves
+    # the pins as PRs that run this matrix (#1597), so an upstream image
+    # regression arrives attributed to a bump rather than here.  What the
+    # night still catches is the part that floats by design — the runner
+    # images install the brokers manifest unfrozen, so a driver patch
+    # inside a declared range lands underneath a run — plus any flake.
     # 03:30 UTC, half-hour offset from integration.yml's 03:00.
     - cron: '30 3 * * *'
 

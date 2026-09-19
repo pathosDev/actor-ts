@@ -12,8 +12,12 @@ name: actor-ts-integration-mariadb
 
 services:
   mariadb:
-    # `latest` deliberately — surface upstream MariaDB regressions early.
-    image: mariadb:latest
+    # Pinned to the release `latest` resolved to when the pin was written, and
+    # Dependabot moves it (#1597): a new MariaDB arrives as a PR that runs this
+    # suite, so an upstream regression still surfaces within a day — attributable
+    # to the bump, instead of turning the nightly red underneath a run.
+    # Production users pin their own version.
+    image: mariadb:13.0.2
     environment:
       MARIADB_ROOT_PASSWORD: root
       MARIADB_DATABASE: actor_ts_test

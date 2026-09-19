@@ -2,13 +2,15 @@
 # (the default branch).
 # Docs: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 #
-# **Every tracked `package.json` has an entry here**, and
+# **Every tracked manifest Dependabot can read has an entry here** — each
+# `package.json`, Dockerfile, compose file and `.csproj` — and
 # `tests/unit/ci/WorkflowHygiene.test.ts` fails when one does not.  The
-# repository carries thirteen manifests and this file watched exactly one of
-# them until #1596.  What the other twelve got was *security* updates, which
-# Dependabot opens from the dependency graph regardless of this file (the
-# `npm_and_yarn group across N directories` PRs); a non-advisory bump never
-# reached them, and keeping them current was a hand sweep (#1520).
+# repository carries thirteen `package.json` and this file watched exactly
+# one of them until #1596.  What the other twelve got was *security*
+# updates, which Dependabot opens from the dependency graph regardless of
+# this file (the `npm_and_yarn group across N directories` PRs); a
+# non-advisory bump never reached them, and keeping them current was a hand
+# sweep (#1520).  The images and the .NET arms followed in #1597.
 #
 # **The ecosystem follows the lockfile CI installs from.**  The `npm` updater
 # reads `package-lock.json` and has no code for `bun.lock` at all, so on a
@@ -229,6 +231,139 @@ updates:
       # dependency across the directories it appears in.
       per-dependency:
         group-by: "dependency-name"
+
+  # ── .NET benchmark arms: `*.csproj` + `packages.lock.json` ────────────
+
+  # The two .NET arms of the framework comparison (#27).  Pinned exactly, and
+  # a merge here is a re-measure trigger like the JS arms above.  The two
+  # `Microsoft.Orleans.*` packages ship in lockstep and are grouped at every
+  # update type — the codeql-action reasoning below, one ecosystem over — so
+  # a major never arrives as two PRs that are each broken alone.  The JVM
+  # arms next door have no entry: Dependabot has no Mill ecosystem, so
+  # `build.mill`, `.mill-version` and the `jvmId` JDK pin move by hand.
+  - package-ecosystem: "nuget"
+    directories:
+      - "/benchmarks/comparison/akka-net"
+      - "/benchmarks/comparison/orleans"
+    schedule:
+      interval: "daily"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      orleans:
+        patterns:
+          - "Microsoft.Orleans.*"
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── Integration images ─────────────────────────────────────────────────
+
+  # The 19 runner images, every one `FROM oven/bun:1.4-debian@sha256:…`
+  # (#1597).  The policy is in `tests/integration/Dockerfile.node` and this
+  # entry is written to honour it, not to bend it: the minor is pinned and
+  # moves together with `.bun-version` in one reviewed commit, so `oven/bun`
+  # majors and minors are ignored here and never proposed — the @types/node
+  # reasoning above, for an image.  What Dependabot moves is the *digest*,
+  # which is how the 1.4.x patch releases that used to float in silently
+  # now arrive: as one PR that builds the runner images.  One catch-all
+  # group, because a rebuild is one change across 19 files, not 19 PRs.
+  # Listed explicitly, like the `examples.yml` and `integration-brokers.yml`
+  # matrices; the guard test fails until a new suite's directory is here.
+  - package-ecosystem: "docker"
+    directories:
+      - "/tests/integration"
+      - "/tests/integration/brokers/amqp"
+      - "/tests/integration/brokers/cassandra"
+      - "/tests/integration/brokers/cockroachdb"
+      - "/tests/integration/brokers/dynamodb"
+      - "/tests/integration/brokers/email"
+      - "/tests/integration/brokers/grpc"
+      - "/tests/integration/brokers/k8s"
+      - "/tests/integration/brokers/kafka"
+      - "/tests/integration/brokers/libsql"
+      - "/tests/integration/brokers/mariadb"
+      - "/tests/integration/brokers/mongodb"
+      - "/tests/integration/brokers/mqtt"
+      - "/tests/integration/brokers/mssql"
+      - "/tests/integration/brokers/nats"
+      - "/tests/integration/brokers/postgres"
+      - "/tests/integration/brokers/redis-streams"
+      - "/tests/integration/brokers/s3"
+      - "/tests/integration/brokers/yugabytedb"
+    schedule:
+      interval: "daily"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      runner-image:
+        patterns:
+          - "*"
+    ignore:
+      - dependency-name: "oven/bun"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+
+  # The broker containers — every `image:` in the compose files names a
+  # release (#1597; the policy is in tests/integration/brokers/README.md,
+  # "Image pins").  A new upstream release arrives as a PR, and the
+  # `integration-brokers.yml` path filter runs the whole matrix on it, so
+  # the regression the old `:latest` was meant to surface still surfaces
+  # within a day — attributed to a bump instead of to a nightly.  Minors
+  # and patches grouped into one PR; a major gets its own, per image, which
+  # is also the review posture: a broker major is the bump most likely to
+  # need the suite read alongside it.  Two of the compose files pull no
+  # image at all — `/tests/integration` and `grpc` build every service from
+  # a runner Dockerfile — and are listed anyway, so the guard test can hold
+  # "every compose file is named by exactly one entry" without an exemption
+  # list; Dependabot finds nothing there and says so.
+  - package-ecosystem: "docker-compose"
+    directories:
+      - "/tests/integration"
+      - "/tests/integration/brokers/amqp"
+      - "/tests/integration/brokers/cassandra"
+      - "/tests/integration/brokers/cockroachdb"
+      - "/tests/integration/brokers/dynamodb"
+      - "/tests/integration/brokers/email"
+      - "/tests/integration/brokers/grpc"
+      - "/tests/integration/brokers/k8s"
+      - "/tests/integration/brokers/kafka"
+      - "/tests/integration/brokers/libsql"
+      - "/tests/integration/brokers/mariadb"
+      - "/tests/integration/brokers/mongodb"
+      - "/tests/integration/brokers/mqtt"
+      - "/tests/integration/brokers/mssql"
+      - "/tests/integration/brokers/nats"
+      - "/tests/integration/brokers/postgres"
+      - "/tests/integration/brokers/redis-streams"
+      - "/tests/integration/brokers/s3"
+      - "/tests/integration/brokers/yugabytedb"
+    schedule:
+      interval: "daily"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
 
   # GitHub Actions versions used in workflows themselves.
   #

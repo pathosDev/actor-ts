@@ -21,9 +21,12 @@ name: actor-ts-integration-cassandra
 
 services:
   cassandra:
-    # `latest` deliberately — integration tests want to surface upstream
-    # regressions as soon as they ship.  Production users pin themselves.
-    image: cassandra:latest
+    # Pinned to the release `latest` resolved to when the pin was written, and
+    # Dependabot moves it (#1597): a new Cassandra arrives as a PR that runs this
+    # suite, so an upstream regression still surfaces within a day — attributable
+    # to the bump, instead of turning the nightly red underneath a run.
+    # Production users pin their own version.
+    image: cassandra:5.0.9
     environment:
       CASSANDRA_CLUSTER_NAME: actor-ts-integration
       # The snitch is left at the image default (`SimpleSnitch`), which reports

@@ -12,10 +12,13 @@ name: actor-ts-integration-mssql
 
 services:
   mssql:
-    # 2022-latest rather than a bare `latest`: Microsoft publishes no moving
-    # `latest` tag for this image, and the DDL relies on the 1700-byte
-    # nonclustered index-key limit introduced in SQL Server 2016.
-    image: mcr.microsoft.com/mssql/server:2022-latest
+    # The 2022 line: Microsoft publishes no moving `latest` tag for this
+    # image, and the DDL relies on the 1700-byte nonclustered index-key limit
+    # introduced in SQL Server 2016.  Pinned to the cumulative update
+    # `2022-latest` resolved to when the pin was written (#1597).  Dependabot
+    # reads the CU number as part of the tag's suffix and so will not propose
+    # the next one — this pin moves by hand, like MinIO's.
+    image: mcr.microsoft.com/mssql/server:2022-CU27-ubuntu-22.04
     environment:
       ACCEPT_EULA: "Y"
       MSSQL_SA_PASSWORD: "Actor_ts_integration_1"

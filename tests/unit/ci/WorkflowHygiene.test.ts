@@ -218,10 +218,6 @@ function dependabotEntries(): DependabotEntry[] {
   return out;
 }
 
-/** The entries that watch a `package.json`; `github-actions` watches workflows. */
-const manifestEntries: readonly DependabotEntry[] = dependabotEntries()
-  .filter(({ ecosystem }) => ecosystem === 'npm' || ecosystem === 'bun');
-
 /**
  * A `directory:` / `directories:` value against a manifest's directory.
  * Dependabot normalises a trailing slash away and lets `directories:` carry
@@ -233,12 +229,61 @@ const matchesDirectory = (pattern: string, directory: string): boolean => {
   return matchesPattern(normalised, directory);
 };
 
+/**
+ * The kinds of manifest Dependabot can watch in this repository, and which
+ * ecosystems may watch each. `matches` is the basename rule the matching
+ * Dependabot file fetcher applies (`/dockerfile|containerfile/i` for docker;
+ * `(docker-)?compose(-\w+)?(\.[\w-]+)?\.ya?ml` for docker-compose), so a file
+ * Dependabot would read is a file this guard expects to be watched.
+ */
+type ManifestKind = {
+  readonly kind: 'package.json' | 'Dockerfile' | 'compose file' | 'csproj';
+  /** Git pathspecs that list the candidates; `matches` decides. */
+  readonly pathspecs: readonly string[];
+  readonly matches: (name: string) => boolean;
+  readonly ecosystems: readonly string[];
+};
+
+const MANIFEST_KINDS: readonly ManifestKind[] = [
+  {
+    kind: 'package.json',
+    pathspecs: ['*package.json'],
+    matches: (name) => name === 'package.json',
+    ecosystems: ['npm', 'bun'],
+  },
+  {
+    kind: 'Dockerfile',
+    // Both spellings: git pathspecs are case-sensitive on the Linux runner,
+    // and Dependabot's rule is not.
+    pathspecs: ['*Dockerfile*', '*dockerfile*', '*Containerfile*', '*containerfile*'],
+    matches: (name) => /dockerfile|containerfile/i.test(name),
+    ecosystems: ['docker'],
+  },
+  {
+    kind: 'compose file',
+    pathspecs: ['*compose*.yml', '*compose*.yaml'],
+    matches: (name) => /^(docker-)?compose(-\w+)?(\.[\w-]+)?\.ya?ml$/i.test(name),
+    ecosystems: ['docker-compose'],
+  },
+  {
+    kind: 'csproj',
+    pathspecs: ['*.csproj'],
+    matches: (name) => name.endsWith('.csproj'),
+    ecosystems: ['nuget'],
+  },
+];
+
+/** The entries that watch a manifest of some kind; `github-actions` watches workflows. */
+const manifestEntries: readonly DependabotEntry[] = dependabotEntries()
+  .filter(({ ecosystem }) => MANIFEST_KINDS.some((kind) => kind.ecosystems.includes(ecosystem)));
+
 type TrackedManifest = {
+  readonly kind: ManifestKind['kind'];
   /** Dependabot-style: `/` for the root, `/docs`, `/examples/chat/frontend-next`, … */
   readonly directory: string;
-  /** Repository-relative path of the `package.json`, POSIX separators. */
+  /** Repository-relative path, POSIX separators. */
   readonly path: string;
-  /** Lockfile names committed beside it, out of `bun.lock` and `package-lock.json`. */
+  /** Lockfile names committed beside a `package.json`, out of `bun.lock` and `package-lock.json`. */
   readonly lockfiles: readonly string[];
 };
 
@@ -247,7 +292,7 @@ const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..');
 const LOCKFILE_NAMES = ['bun.lock', 'package-lock.json'] as const;
 
 /**
- * Every tracked `package.json`, with the lockfiles tracked beside it.
+ * Every tracked manifest of every kind, with the lockfiles tracked beside it.
  *
  * The git index rather than a directory walk, as in
  * `tests/unit/ci/ComparisonLauncherModes.test.ts`: the population Dependabot
@@ -258,7 +303,11 @@ const LOCKFILE_NAMES = ['bun.lock', 'package-lock.json'] as const;
 function trackedManifests(): TrackedManifest[] {
   const listed = spawnSync(
     'git',
-    ['ls-files', '-z', '--', '*package.json', ...LOCKFILE_NAMES.map((name) => `*${name}`)],
+    [
+      'ls-files', '-z', '--',
+      ...MANIFEST_KINDS.flatMap(({ pathspecs }) => pathspecs),
+      ...LOCKFILE_NAMES.map((name) => `*${name}`),
+    ],
     { cwd: REPOSITORY_ROOT, encoding: 'utf8' },
   );
 
@@ -270,27 +319,46 @@ function trackedManifests(): TrackedManifest[] {
   if (listed.status !== 0) throw new Error(`git ls-files exited ${listed.status}: ${listed.stderr}`);
 
   const lockfilesByDirectory = new Map<string, string[]>();
-  const manifestPaths: string[] = [];
-  for (const path of listed.stdout.split('\0')) {
+  const found: { kind: ManifestKind['kind']; path: string }[] = [];
+  for (const path of new Set(listed.stdout.split('\0'))) {
     if (path === '') continue;
     const name = posix.basename(path);
-    const directory = posix.dirname(path);
-    if (name === 'package.json') manifestPaths.push(path);
-    else if ((LOCKFILE_NAMES as readonly string[]).includes(name)) {
+    if ((LOCKFILE_NAMES as readonly string[]).includes(name)) {
+      const directory = posix.dirname(path);
       lockfilesByDirectory.set(directory, [...(lockfilesByDirectory.get(directory) ?? []), name]);
+      continue;
     }
+    const kind = MANIFEST_KINDS.find(({ matches }) => matches(name));
+    if (kind) found.push({ kind: kind.kind, path });
   }
-  return manifestPaths.sort().map((path) => {
-    const directory = posix.dirname(path);
-    return {
-      path,
-      directory: directory === '.' ? '/' : `/${directory}`,
-      lockfiles: (lockfilesByDirectory.get(directory) ?? []).sort(),
-    };
-  });
+  return found
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map(({ kind, path }) => {
+      const directory = posix.dirname(path);
+      return {
+        kind,
+        path,
+        directory: directory === '.' ? '/' : `/${directory}`,
+        lockfiles: kind === 'package.json' ? (lockfilesByDirectory.get(directory) ?? []).sort() : [],
+      };
+    });
 }
 
 const manifests: readonly TrackedManifest[] = trackedManifests();
+
+const manifestsOfKind = (kind: ManifestKind['kind']): TrackedManifest[] =>
+  manifests.filter((manifest) => manifest.kind === kind);
+
+/** The entries whose ecosystem may watch a manifest of this kind. */
+const entriesFor = ({ kind }: TrackedManifest): DependabotEntry[] => {
+  const ecosystems = MANIFEST_KINDS.find((candidate) => candidate.kind === kind)?.ecosystems ?? [];
+  return manifestEntries.filter(({ ecosystem }) => ecosystems.includes(ecosystem));
+};
+
+/** The entries of this kind's ecosystems that name the manifest's directory. */
+const watching = (manifest: TrackedManifest): DependabotEntry[] =>
+  entriesFor(manifest).filter(({ directories }) =>
+    directories.some((pattern) => matchesDirectory(pattern, manifest.directory)));
 
 /**
  * The updater that can write the lockfile CI installs from. `examples.yml`
@@ -298,10 +366,13 @@ const manifests: readonly TrackedManifest[] = trackedManifests();
  * updater has no code for `bun.lock` at all; everywhere else the install is
  * `bun install --frozen-lockfile`, which only the `bun` updater can keep
  * green. A manifest with no lockfile is updated manifest-only by either, and
- * takes `bun` because that is what installs it.
+ * takes `bun` because that is what installs it. The other kinds have one
+ * ecosystem each.
  */
-const expectedEcosystem = ({ lockfiles }: TrackedManifest): 'npm' | 'bun' =>
-  (lockfiles.includes('package-lock.json') ? 'npm' : 'bun');
+const expectedEcosystem = ({ kind, lockfiles }: TrackedManifest): string => {
+  if (kind === 'package.json') return lockfiles.includes('package-lock.json') ? 'npm' : 'bun';
+  return MANIFEST_KINDS.find((candidate) => candidate.kind === kind)?.ecosystems[0] ?? '';
+};
 
 /**
  * The highest `lockfileVersion` the Dependabot `bun` updater reads. It
@@ -323,13 +394,47 @@ function lockfileVersion(path: string): number | undefined {
 }
 
 /** Every `bun.lock` a `bun` entry watches, with the manifest it belongs to. */
-const watchedBunLockfiles = manifests
+const watchedBunLockfiles = manifestsOfKind('package.json')
   .filter((manifest) => manifest.lockfiles.includes('bun.lock'))
-  .filter((manifest) => manifestEntries.some(
-    (entry) => entry.ecosystem === 'bun'
-      && entry.directories.some((pattern) => matchesDirectory(pattern, manifest.directory)),
-  ))
+  .filter((manifest) => watching(manifest).some(({ ecosystem }) => ecosystem === 'bun'))
   .map((manifest) => ({ directory: manifest.directory, path: posix.join(posix.dirname(manifest.path), 'bun.lock') }));
+
+type ImageReference = {
+  readonly path: string;
+  readonly line: number;
+  /** The reference as written, e.g. `oven/bun:1.4-debian@sha256:…` or `postgres:18.6`. */
+  readonly image: string;
+};
+
+/**
+ * Every `FROM` of every tracked Dockerfile. `FROM x AS stage` keeps only `x`;
+ * a later `FROM stage` names no image and is skipped. `FROM ${ARG}` is not a
+ * shape this repository uses, and would be reported as an unpinned image.
+ */
+const baseImages: readonly ImageReference[] = manifestsOfKind('Dockerfile').flatMap(({ path }) => {
+  const stages = new Set<string>();
+  return readFileSync(join(REPOSITORY_ROOT, path), 'utf8').split(/\r?\n/).flatMap((text, index) => {
+    const match = /^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)(?:\s+AS\s+(\S+))?\s*$/i.exec(text);
+    if (!match) return [];
+    const image = match[1]!;
+    if (match[2]) stages.add(match[2]);
+    return stages.has(image) ? [] : [{ path, line: index + 1, image }];
+  });
+});
+
+/** Every `image:` of every tracked compose file. */
+const composeImages: readonly ImageReference[] = manifestsOfKind('compose file').flatMap(({ path }) =>
+  readFileSync(join(REPOSITORY_ROOT, path), 'utf8').split(/\r?\n/).flatMap((text, index) => {
+    const match = /^\s*image:\s*["']?([^"'#\s]+)["']?\s*(?:#.*)?$/.exec(text);
+    return match ? [{ path, line: index + 1, image: match[1]! }] : [];
+  }));
+
+/** The tag of an image reference, or `undefined` when it has none. */
+const imageTag = (image: string): string | undefined => {
+  const withoutDigest = image.split('@')[0]!;
+  const colon = withoutDigest.indexOf(':', withoutDigest.lastIndexOf('/') + 1);
+  return colon < 0 ? undefined : withoutDigest.slice(colon + 1);
+};
 
 type WorkflowJob = {
   readonly workflow: string;
@@ -1160,12 +1265,18 @@ describe('workflow hygiene', () => {
 
 describe('dependabot manifest coverage', () => {
   test('the manifest listing and the entry parser found their subjects', () => {
-    // Thirteen today: the root, docs, the DevTools UI, the comparison
-    // benchmarks, the broker runners and eight example frontends. Pinned from
-    // below so a listing that quietly shrinks — a pathspec that stops matching
-    // on some platform, say — is a failure rather than a `test.each` over less.
-    // Removing a manifest lowers this deliberately, in the same commit.
-    expect(manifests.length).toBeGreaterThanOrEqual(13);
+    // Pinned from below, per kind, so a listing that quietly shrinks — a
+    // pathspec that stops matching on some platform, say — is a failure
+    // rather than a `test.each` over less. Removing a manifest lowers the
+    // number deliberately, in the same commit. Thirteen package.json (the
+    // root, docs, the DevTools UI, the comparison benchmarks, the broker
+    // runners and eight example frontends), the integration runner image and
+    // eighteen broker runners, their compose files plus the integration one,
+    // and the two .NET arms.
+    expect(manifestsOfKind('package.json').length).toBeGreaterThanOrEqual(13);
+    expect(manifestsOfKind('Dockerfile').length).toBeGreaterThanOrEqual(19);
+    expect(manifestsOfKind('compose file').length).toBeGreaterThanOrEqual(19);
+    expect(manifestsOfKind('csproj').length).toBeGreaterThanOrEqual(2);
     expect(manifests.map(({ directory }) => directory)).toContain('/');
     // Both lockfile shapes are present, or the ecosystem rule below is never
     // exercised in one of its two directions.
@@ -1174,28 +1285,36 @@ describe('dependabot manifest coverage', () => {
       && !lockfiles.includes('package-lock.json'))).toBe(true);
     // The entry parser needs no vacuity check of its own: an entry it fails to
     // read leaves its manifests unwatched, and the coverage tests below fail
-    // loudly for those. The lockfile-version `test.each` is the one that
-    // would pass over an empty list.
+    // loudly for those. The `test.each`es over derived lists are the ones
+    // that would pass over an empty list.
     expect(watchedBunLockfiles.length).toBeGreaterThan(0);
+    expect(baseImages.length).toBeGreaterThanOrEqual(19);
+    expect(composeImages.length).toBeGreaterThanOrEqual(17);
   });
 
   /**
    * #1596 — a manifest no entry names gets version updates from nobody. It
    * still gets *security* updates, which Dependabot opens from the dependency
    * graph regardless of this file, and that is exactly what hid the gap: the
-   * PR list was not empty, it was just never a non-advisory bump.
+   * PR list was not empty, it was just never a non-advisory bump. #1597
+   * widened the rule from `package.json` to every kind Dependabot can read.
    *
    * Exactly one entry, not at least one: two entries on the same directory
-   * open two PRs per bump, each stale the moment the other merges.
+   * open two PRs per bump, each stale the moment the other merges. Counted
+   * per kind — a broker directory is legitimately named by a `docker` and a
+   * `docker-compose` entry, one for its Dockerfile and one for its compose.
    */
   test.each([...manifests])('$path is watched by exactly one Dependabot entry', (manifest) => {
-    const watching = manifestEntries.filter(({ directories }) =>
-      directories.some((pattern) => matchesDirectory(pattern, manifest.directory)));
+    const entries = watching(manifest);
+    const ecosystems = entriesFor(manifest).length > 0
+      ? [...new Set(entriesFor(manifest).map(({ ecosystem }) => ecosystem))]
+      : MANIFEST_KINDS.find(({ kind }) => kind === manifest.kind)?.ecosystems ?? [];
     expect(
-      watching.map(({ ecosystem, line }) => `${ecosystem} entry at dependabot.yml:${line}`),
-      `${manifest.path} is named by ${watching.length} entries in .github/dependabot.yml. `
-      + `Every tracked package.json needs exactly one — add a package-ecosystem entry for `
-      + `"${manifest.directory}" (or a line in an existing directories: list).`,
+      entries.map(({ ecosystem, line }) => `${ecosystem} entry at dependabot.yml:${line}`),
+      `${manifest.path} is named by ${entries.length} ${ecosystems.join('/')} entries in `
+      + '.github/dependabot.yml. Every tracked manifest needs exactly one — add a '
+      + `package-ecosystem entry for "${manifest.directory}" (or a line in an existing `
+      + 'directories: list).',
     ).toHaveLength(1);
   });
 
@@ -1206,33 +1325,40 @@ describe('dependabot manifest coverage', () => {
    * `package-lock.json`. Cross them and every PR the entry opens is red on
    * the frozen install by construction — the root spent five months that way
    * (#817), and the in-range updates it could not see never surfaced at all.
+   * The other kinds have a single ecosystem, so this pins that too.
    */
   test.each([...manifests])('$path is watched by the updater that writes its lockfile', (manifest) => {
-    const watching = manifestEntries.find(({ directories }) =>
-      directories.some((pattern) => matchesDirectory(pattern, manifest.directory)));
-    if (!watching) return; // the test above already fails for this manifest
+    const entry = watching(manifest)[0];
+    if (!entry) return; // the test above already fails for this manifest
     const expected = expectedEcosystem(manifest);
+    const beside = manifest.kind === 'package.json'
+      ? `sits beside ${manifest.lockfiles.join(' and ') || 'no lockfile'}, so its`
+      : `is a ${manifest.kind}, so its`;
     expect(
-      watching.ecosystem,
-      `${manifest.path} sits beside ${manifest.lockfiles.join(' and ') || 'no lockfile'}, so its `
-      + `Dependabot entry has to be package-ecosystem: "${expected}" — the "${watching.ecosystem}" `
-      + `updater at dependabot.yml:${watching.line} cannot write the lockfile CI installs from, `
-      + 'and every PR it opens is red on the frozen install by construction.',
+      entry.ecosystem,
+      `${manifest.path} ${beside} Dependabot entry has to be package-ecosystem: "${expected}" — `
+      + `the "${entry.ecosystem}" updater at dependabot.yml:${entry.line} cannot write the `
+      + 'lockfile CI installs from, and every PR it opens is red on the frozen install by '
+      + 'construction.',
     ).toBe(expected);
   });
 
   /**
-   * The converse: a directory an entry names has to hold a manifest, or the
-   * entry errors on every run and updates nothing — invisible from the PR
-   * list, like the gap above, and easy to leave behind when a directory moves.
+   * The converse: a directory an entry names has to hold a manifest of that
+   * entry's kind, or the entry errors on every run and updates nothing —
+   * invisible from the PR list, like the gap above, and easy to leave behind
+   * when a directory moves.
    */
   test.each(manifestEntries.flatMap(({ ecosystem, line, directories }) =>
     directories.map((pattern) => ({ ecosystem, line, pattern }))))(
     '$ecosystem entry at line $line names a tracked manifest with $pattern',
-    ({ pattern }) => {
+    ({ ecosystem, pattern }) => {
+      const kinds = MANIFEST_KINDS.filter((kind) => kind.ecosystems.includes(ecosystem)).map(({ kind }) => kind);
       expect(
-        manifests.filter(({ directory }) => matchesDirectory(pattern, directory)).map(({ path }) => path),
-        `No tracked package.json sits at "${pattern}" — the entry updates nothing. `
+        manifests
+          .filter(({ kind, directory }) => kinds.includes(kind) && matchesDirectory(pattern, directory))
+          .map(({ path }) => path),
+        `No tracked ${kinds.join('/')} sits at "${pattern}" — the entry updates nothing. `
         + 'Point it at a manifest that exists or remove it.',
       ).not.toEqual([]);
     },
@@ -1260,4 +1386,40 @@ describe('dependabot manifest coverage', () => {
       ).toBeLessThanOrEqual(DEPENDABOT_BUN_LOCKFILE_VERSION_CEILING);
     },
   );
+
+  /**
+   * #1597 — a runner image is pinned to a digest, so the tree says which
+   * image a run used. `oven/bun:1.4-debian` is a pointer its publisher moves
+   * on every 1.4.x rebuild; the policy in `tests/integration/Dockerfile.node`
+   * is that the minor moves with `.bun-version`, and the `docker` entry moves
+   * the digest, which is how patch releases now arrive — as a PR, not
+   * underneath a nightly. A tag without a digest floats again, silently.
+   */
+  test.each([...baseImages])('$path:$line pins its base image to a digest', ({ image }) => {
+    expect(
+      image,
+      `"${image}" names a tag its publisher can move. Pin the digest too — `
+      + '<image>:<tag>@sha256:<64 hex> (the multi-arch index digest from the registry) — '
+      + 'and let the docker entry in .github/dependabot.yml move it.',
+    ).toMatch(/@sha256:[0-9a-f]{64}$/);
+  });
+
+  /**
+   * #1597 — every broker container names a release. `latest` carries no
+   * version Dependabot could move, so a new upstream release used to land in
+   * the nightly with nothing in the tree to attribute a red run to; a pin is
+   * the thing Dependabot can propose a bump against, running the suite on the
+   * PR. `2022-latest` is the same floating pointer with a prefix.
+   */
+  test.each([...composeImages])('$path:$line pins its image to a release', ({ image }) => {
+    const tag = imageTag(image);
+    expect(tag, `"${image}" has no tag at all, which is "latest" spelled implicitly.`).toBeDefined();
+    expect(
+      tag!,
+      `"${image}" floats: "${tag}" is a pointer the publisher moves. Pin the release it `
+      + 'resolves to today (the version tag sharing its digest) and let the docker-compose '
+      + 'entry in .github/dependabot.yml move it — see "Image pins" in '
+      + 'tests/integration/brokers/README.md.',
+    ).not.toMatch(/^latest$|-latest$/);
+  });
 });

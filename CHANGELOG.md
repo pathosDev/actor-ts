@@ -2852,6 +2852,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **Every broker image is pinned to a release, every runner image to a
+  digest, and Dependabot watches both — and the .NET benchmark arms**
+  (#1597). Sixteen of the seventeen `image:` lines in the integration compose
+  files were `:latest` (one `2022-latest`), on the argument written beside
+  them that an upstream regression should surface as soon as it ships rather
+  than when someone remembers a pin. That bought two things it did not say: a
+  broker release turned the nightly red *underneath* a run with nothing in the
+  tree to attribute it to, and no run was reproducible afterwards. One of the
+  sixteen was not even a release — `ghcr.io/tursodatabase/libsql-server:latest`
+  is a main-branch build (built 2026-08-23 from `d6c75af6`, version label
+  `latest`) while the newest release is `v0.24.33` from 2025-12-19, so that
+  suite had been testing an unreleased server for months.
+
+  Each pin is the release the floating tag resolved to when it was written,
+  found by digest rather than guessed, so the switch changed what is tested
+  exactly once — libsql-server, now on `v0.24.33`. The nineteen runner
+  Dockerfiles keep `oven/bun:1.4-debian` and gain its multi-arch index digest
+  (the same image as `1.4.2-debian`, matching `.bun-version`): the policy in
+  `tests/integration/Dockerfile.node` — the minor moves with `.bun-version`,
+  patches flow — is unchanged, and the `docker` entry is written to honour it,
+  ignoring `oven/bun` majors and minors so what Dependabot moves is the digest,
+  as one PR across the nineteen files. A `docker-compose` entry over the same
+  directories opens a broker release as a PR that `integration-brokers.yml`
+  runs, minors and patches grouped, a major on its own; a `nuget` entry covers
+  the two .NET arms, with the `Microsoft.Orleans.*` pair grouped at every
+  update type. Two pins Dependabot cannot follow move by hand like MinIO's:
+  `mssql/server:2022-CU27-ubuntu-22.04` and `yugabyte:2026.1.1.2-b9`, both
+  because the moving part sits in what it treats as the tag's suffix. The
+  guard in `tests/unit/ci/WorkflowHygiene.test.ts` now spans every kind of
+  manifest Dependabot can read here — Dockerfiles, compose files and `.csproj`
+  are each named by exactly one entry of the matching ecosystem, every `FROM`
+  carries a digest, no `image:` is `latest` or `*-latest`. The JVM arms stay
+  by hand: Dependabot has no Mill ecosystem.
+
 - **Dependabot watches every `package.json`, through the updater that can
   write the lockfile beside it** (#1596). The repository tracks thirteen
   manifests and `.github/dependabot.yml` watched one — the root, through the

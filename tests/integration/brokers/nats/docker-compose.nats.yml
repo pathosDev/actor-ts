@@ -13,10 +13,12 @@ name: actor-ts-integration-nats
 
 services:
   nats:
-    # `latest` deliberately — integration tests want to surface
-    # upstream NATS regressions as soon as they ship.  Production
-    # users pin a specific version themselves.
-    image: nats:latest
+    # Pinned to the release `latest` resolved to when the pin was written, and
+    # Dependabot moves it (#1597): a new NATS arrives as a PR that runs this
+    # suite, so an upstream regression still surfaces within a day — attributable
+    # to the bump, instead of turning the nightly red underneath a run.
+    # Production users pin their own version.
+    image: nats:2.15.0
     # `-p 4222` for client traffic.  No healthcheck here: the
     # NATS image is built on `scratch` and ships no shell / curl /
     # wget / nc, so docker-compose has no way to probe readiness

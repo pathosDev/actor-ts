@@ -11,10 +11,12 @@ name: actor-ts-integration-redis-streams
 
 services:
   redis:
-    # `latest` deliberately — integration tests want to surface
-    # upstream Redis regressions as soon as they ship.  Production
-    # users pin a specific version themselves.
-    image: redis:latest
+    # Pinned to the release `latest` resolved to when the pin was written, and
+    # Dependabot moves it (#1597): a new Redis arrives as a PR that runs this
+    # suite, so an upstream regression still surfaces within a day — attributable
+    # to the bump, instead of turning the nightly red underneath a run.
+    # Production users pin their own version.
+    image: redis:8.10.1
     # `stream-node-max-entries 10` is what makes the MAXLEN ~ scenario
     # deterministic.  `~` trims whole macro nodes and never a partial one, and
     # a node is sealed at whichever of stream-node-max-entries (default 100) or
