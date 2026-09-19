@@ -114,8 +114,8 @@ interpretiert die Segmente nicht — es ist nur String-Matching.
 
 Bei `Publish(topic, message)`:
 
-1. Der lokale Mediator schlägt das Topic in seiner `Map<topic,
-   { local, remoteNodes }>` nach.
+1. Der lokale Mediator schlägt das Topic in seiner
+   `Map<topic, { local, remoteNodes }>` nach.
 2. **Lokale Subscriber** empfangen direkt — `local.values()`, jeder
    bekommt ein `tell`.
 3. **Remote-Nodes** mit Subscribern bekommen einen Envelope pro

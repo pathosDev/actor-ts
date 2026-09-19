@@ -209,16 +209,17 @@ default rejects, the mailbox's own choice for a bound: a caller that sees
 waiting from a hang.
 
 A transferable inside the arguments — an `ArrayBuffer` under a typed
-array — can be **moved** instead of copied: `pool.run(task, [bytes.buffer],
-{ transfer: [bytes.buffer] })`.  The caller's view is detached afterwards.
-The transfer list takes the `ArrayBuffer`, never the view: an entry that
-is not transferable, or a buffer already moved, fails the run at once with
-`OffloadArgumentsError` — the worker received nothing and is untouched.
-The move is **arguments only** — the result is structured-cloned back,
-however large.  A `SharedArrayBuffer` among the arguments is neither
-copied nor moved but **shared**: both threads read and write the same
-memory, `Atomics` is the coordination primitive, and no transfer list
-or framework support is involved.  Both are properties of the runtime's
+array — can be **moved** instead of copied:
+`pool.run(task, [bytes.buffer], { transfer: [bytes.buffer] })`.  The
+caller's view is detached afterwards.  The transfer list takes the
+`ArrayBuffer`, never the view: an entry that is not transferable, or a
+buffer already moved, fails the run at once with `OffloadArgumentsError`
+— the worker received nothing and is untouched.  The move is
+**arguments only** — the result is structured-cloned back, however
+large.  A `SharedArrayBuffer` among the arguments is neither copied nor
+moved but **shared**: both threads read and write the same memory,
+`Atomics` is the coordination primitive, and no transfer list or
+framework support is involved.  Both are properties of the runtime's
 structured clone, so they hold on Bun 1.4.2, Node 26 and Deno 2.6.8
 alike, and the offload smoke case keeps them held on all three.
 

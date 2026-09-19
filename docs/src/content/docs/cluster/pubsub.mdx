@@ -113,8 +113,8 @@ interpret the segments — it's just string matching.
 
 On `Publish(topic, message)`:
 
-1. The local mediator looks up the topic in its `Map<topic,
-   { local, remoteNodes }>`.
+1. The local mediator looks up the topic in its
+   `Map<topic, { local, remoteNodes }>`.
 2. **Local subscribers** receive directly — `local.values()`,
    each gets a `tell`.
 3. **Remote nodes** with subscribers get one envelope per node
