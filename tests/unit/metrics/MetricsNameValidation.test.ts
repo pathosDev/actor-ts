@@ -153,6 +153,64 @@ describe('DefaultMetricsRegistry — metric name validation (#784)', () => {
   });
 });
 
+describe('DefaultMetricsRegistry — the reserved label key `thread` (#1570)', () => {
+  // The exposition stamps every sample with the thread that produced it once
+  // a worker mesh relays its registries into the main thread's scrape.  An
+  // application label with the same key was, before this, silently
+  // overwritten to `thread="main"` — two values became two rows with one
+  // identical label set, which a Prometheus scrape rejects wholesale — and on
+  // a worker it made the relay drop that thread's entire snapshot.  Refusing
+  // the key where labels are minted turns both into an error at the
+  // developer's desk, on every thread, with a message that says what to do.
+  type Kind = 'counter' | 'gauge' | 'histogram';
+  const mint = (registry: DefaultMetricsRegistry, kind: Kind): unknown => (
+    kind === 'counter' ? registry.counter('jobs_total', { thread: 'io' })
+      : kind === 'gauge' ? registry.gauge('jobs_total', { thread: 'io' })
+        : registry.histogram('jobs_total', { thread: 'io' })
+  );
+  for (const kind of ['counter', 'gauge', 'histogram'] as const) {
+    test(`${kind}: a tuple carrying \`thread\` is refused when the family is minted, and nothing is minted`, () => {
+      const registry = new DefaultMetricsRegistry();
+      expect(() => mint(registry, kind)).toThrow(/Reserved label key "thread"/);
+      expect(registry.collect()).toEqual([]);
+    });
+  }
+
+  test('the message names the metric and says what to do instead', () => {
+    const registry = new DefaultMetricsRegistry();
+    let message = '';
+    try {
+      registry.counter('jobs_total', { route: '/a', thread: 'cpu' });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain('"jobs_total"');
+    expect(message).toContain('rename');
+    expect(message).toContain('#1570');
+  });
+
+  test('is a whole-key match — `thread_pool` and `threads` are ordinary keys', () => {
+    // The check must not become a prefix or substring rule: a pool metric
+    // labelled by `thread_pool` is exactly the kind of label the rule is
+    // meant to leave alone.
+    const registry = new DefaultMetricsRegistry();
+    expect(() => registry.counter('jobs_total', { thread_pool: 'io' })).not.toThrow();
+    expect(() => registry.gauge('threads_active', { threads: '4' })).not.toThrow();
+    expect(registry.collect()).toHaveLength(2);
+  });
+
+  test('a series the exposition stamps can no longer collide with one the application labelled', () => {
+    // The verifier's reproduction: two values of an application `thread`
+    // label rendered as two `jobs_total{thread="main"}` rows once a relay was
+    // active.  With the key refused at mint, the registry never holds such a
+    // series, so the export-time stamp has nothing to overwrite.
+    const registry = new DefaultMetricsRegistry();
+    expect(() => registry.counter('jobs_total', { thread: 'io' }).inc()).toThrow(/Reserved label key/);
+    expect(() => registry.counter('jobs_total', { thread: 'cpu' }).inc()).toThrow(/Reserved label key/);
+    expect(registry.collect().filter((sample) => sample.name === 'jobs_total')).toEqual([]);
+  });
+});
+
 describe('DefaultMetricsRegistry — label key validation (#784)', () => {
   test('rejects a key that would close the quoted value early, and mints nothing', () => {
     const registry = new DefaultMetricsRegistry();

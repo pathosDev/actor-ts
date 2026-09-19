@@ -538,10 +538,14 @@ import { Aside } from '@astrojs/starlight/components';
   thread's own series, `worker-N` for a worker's.  It satisfies the rule
   the same way `worker` above does: bounded by `worker-mesh.workers`
   plus one, and minted from the main thread's own slot table, never from
-  a value a worker sent.  A snapshot that arrives already carrying a
-  `thread` label is refused whole.  It is absent — not empty, absent —
-  from a single-threaded system's exposition, so nothing about the
-  inventory above changes until the relay is on.
+  a value a worker sent.  The key is reserved: `DefaultMetricsRegistry`
+  refuses `thread` as an application label when the family is minted,
+  on every thread, so a collision is a startup error at the developer's
+  desk rather than a scrape that drops a thread's series — and a snapshot
+  that arrives already carrying a `thread` label is refused whole, since
+  no registry of ours can have produced it.  It is absent — not empty,
+  absent — from a single-threaded system's exposition, so nothing about
+  the inventory above changes until the relay is on.
 </Aside>
 
 <Aside type="caution" title="Counters reset on restart">

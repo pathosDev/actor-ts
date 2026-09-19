@@ -583,8 +583,13 @@ import { Aside } from '@astrojs/starlight/components';
   für die eines Workers.  Es erfüllt die Regel genauso wie `worker` oben:
   begrenzt durch `worker-mesh.workers` plus eins, und aus der eigenen
   Slot-Tabelle des Main-Threads geprägt, nie aus einem Wert, den ein
-  Worker geschickt hat.  Ein Snapshot, der bereits ein `thread`-Label
-  trägt, wird im Ganzen abgelehnt.  In der Exposition eines
+  Worker geschickt hat.  Der Schlüssel ist reserviert: die
+  `DefaultMetricsRegistry` lehnt `thread` als Anwendungs-Label beim
+  Anlegen der Familie ab, auf jedem Thread, sodass eine Kollision ein
+  Startfehler am Schreibtisch des Entwicklers ist und kein Scrape, der die
+  Serien eines Threads fallen lässt — und ein Snapshot, der bereits ein
+  `thread`-Label trägt, wird im Ganzen abgelehnt, denn keine unserer
+  Registries kann ihn erzeugt haben.  In der Exposition eines
   einthreadigen Systems fehlt es — nicht leer, sondern abwesend —, sodass
   sich am Inventar oben nichts ändert, bis das Relay läuft.
 </Aside>
