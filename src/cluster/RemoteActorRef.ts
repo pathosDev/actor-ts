@@ -24,6 +24,9 @@ import type { EnvelopeMessage } from './Protocol.js';
  * `.path` alone would have fixed the label and left delivery and death watch
  * broken.  The reader stays strict for a reason, stated on
  * {@link canonicalActorPathString}; the wire never sees a bare path from here.
+ * Any spelling is accepted; any *segment* that `assertValidName` refuses —
+ * `.`, `..`, a backslash, a control character — throws from the constructor,
+ * bare or full alike, as it does at every other path entry point.
  */
 export class RemoteActorRef<TMessage = unknown> extends ActorRef<TMessage> {
   readonly path: ActorPath;

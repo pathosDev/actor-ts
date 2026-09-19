@@ -231,6 +231,15 @@ export function parsePathSegments(path: string): string[] {
  * string that is neither form — `''`, `'garbage'` — is read as an absolute
  * path below the root: `actor-ts://<sys>/garbage`.  The far side resolves
  * nothing and warns, as it did before, but the ref now says what it points at.
+ *
+ * Total for spellings, not for segments.  This function itself never throws,
+ * but the `ActorPath` a caller builds from its result still goes through
+ * `assertValidName`, so a `.` or `..` segment, a backslash or a control
+ * character throws there — for a bare `'..'` as for the full
+ * `actor-ts://<sys>/..`, which was refused the same way before bare input
+ * was canonicalised at all.  A peer-fed site therefore reaches nothing through
+ * the bare form that the full form did not already reach, and the drop policy
+ * that answers the throw is the same for both.
  */
 export function canonicalActorPathString(systemName: string, path: string): string {
   if (path.startsWith('actor-ts://')) return path;
