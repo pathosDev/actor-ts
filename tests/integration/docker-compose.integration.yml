@@ -6,8 +6,16 @@
 # no host-level privileged mode, no docker-socket access.
 #
 # Run locally:
-#   bun run test:integration            # build + up + auto-exit on controller
+#   bun run test:integration            # build + up; ends when the last container exits
 #   bun run test:integration:teardown   # docker compose down -v
+#
+# The `up` runs with `--abort-on-container-failure`, not
+# `--abort-on-container-exit` (#1594): a node that exits 0 mid-run — 13's
+# victim after its CoordinatedShutdown — is a scenario event, not the end
+# of the run, while a node that exits non-zero still aborts it at once.
+# Under that flag compose returns only when the LAST container is gone,
+# so the controller's final scenario (17) shuts every remaining node
+# down; a green run ends with five clean node exits and the controller's.
 #
 # CI (.github/workflows/integration.yml) calls the same scripts —
 # no CI-only magic.
@@ -108,8 +116,9 @@ services:
 
   # The controller container drives every scenario; its exit code
   # is the test result.  `--exit-code-from controller` in the npm
-  # script bubbles it back up.  No NET_ADMIN — the controller only
-  # makes HTTP calls into the node containers.
+  # script bubbles it back up — unless a node exits non-zero first,
+  # in which case that code is the run's.  No NET_ADMIN — the
+  # controller only makes HTTP calls into the node containers.
   controller:
     build:
       context: ../..

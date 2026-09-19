@@ -3435,6 +3435,37 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **The multi-node integration run went red the moment a node exited
+  cleanly — which, since #1567, scenario 13's victim does** (#1594).
+  `bun run test:integration` ran compose with `--abort-on-container-exit`,
+  under which the first exit of *any* container ends the run: the victim
+  finished its `CoordinatedShutdown` pipeline, its process exited 0 because
+  nothing held the event loop open any more, and compose stopped the
+  controller mid-poll — a SIGTERM the `--exit-code-from controller` relay
+  reported as 143, with every scenario passing. The suite had been written
+  against the leaked interval #1567 removed, which is what kept the victim's
+  container alive after its own shutdown; the comment in scenario 13 that the
+  control port survives `ServiceUnbind` was never true either, since every
+  `newServerAt().bind()` is auto-registered there.
+
+  The run now uses `--abort-on-container-failure`: a node exiting 0 is a
+  scenario event, a node exiting non-zero still aborts the run at once with
+  its code, and compose returns only when the last container is gone. That
+  last clause turned into the suite's closing assertion. A final scenario
+  asks every node still answering — member or already left — for a
+  coordinated shutdown, one at a time, and requires its control port to close;
+  the exit itself is observed where it can be, at the container boundary. So
+  every push now checks the property #1567 was about and only a process
+  boundary can see: a node that has left and terminated exits on its own. A
+  node that lingers ten seconds past its actor system's termination is a
+  leaked handle, and `NodeRunner` now exits it with code 3 from an
+  `unref()`'d watchdog, which the same flag turns into an immediate red run
+  naming the container rather than a hang until `timeout-minutes`.
+  `tests/unit/ci/IntegrationHarnessCascade.test.ts` pins the flag, the
+  shutdown scenario's place at the end of the list — a scenario appended
+  after it would skip, silently green, on the empty cluster it finds — and
+  the watchdog's non-zero exit. The broker suites keep the exit-cascade
+  flag deliberately: their fixtures never exit on their own.
 - **BREAKING — A custom `WorkerBackend` must declare whether its `error`
   subscription contains a worker's failure (#1288).**
 

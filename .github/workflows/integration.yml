@@ -84,7 +84,14 @@ jobs:
         # Surfacing the failure path: when a scenario fails, the
         # controller exits 1 → docker-compose exits 1 → this step
         # exits 1 → workflow turns red.  The `--exit-code-from
-        # controller` flag in the npm script is the relay.
+        # controller` flag in the npm script is the relay.  A node
+        # container exiting non-zero aborts the run with ITS code
+        # (`--abort-on-container-failure`); one exiting 0 does not
+        # end anything — the run ends when the last container is
+        # gone, which the controller's final scenario brings about
+        # (#1594).  A run that hangs after "all scenarios passed"
+        # is therefore a node that did not exit, and NodeRunner's
+        # watchdog turns that into exit code 3 within ten seconds.
 
       - name: Capture container logs on failure
         if: failure()

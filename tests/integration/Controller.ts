@@ -7,6 +7,14 @@
  * --exit-code-from controller` propagates the result to the shell
  * / CI runner.
  *
+ * The run does not end with this process, though.  Compose runs under
+ * `--abort-on-container-failure` (#1594): a node exiting 0 mid-run is a
+ * scenario event, not the end of the run — 13's victim does exactly that
+ * — and the run ends only when the LAST container is gone.  So the final
+ * scenario shuts every remaining node down, and a green run's last lines
+ * are the nodes' own exits.  A node that exits non-zero at any point still
+ * aborts the run at once, with its code.
+ *
  * Configured via env:
  *   NODES   — comma-separated list of node hostnames (`node-a,node-b,...`)
  *   MGMT_TOKEN     — bearer token configured on every node
@@ -32,6 +40,7 @@ import { scenario as coordinatedShutdown } from './scenarios/13-coordinated-shut
 import { scenario as backpressure } from './scenarios/14-backpressure.js';
 import { scenario as dnsSeedDiscovery } from './scenarios/15-dns-seed-discovery.js';
 import { scenario as readinessGates } from './scenarios/16-readiness-gates.js';
+import { scenario as clusterShutdown } from './scenarios/17-cluster-shutdown.js';
 import type { ControllerContext, Scenario } from './scenarios/Types.js';
 
 const NODES = (process.env.NODES ?? '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -55,7 +64,9 @@ const context: ControllerContext = {
 // stays at full membership), destructive scenarios (those that
 // remove members via `/test/leave` or `/cluster/down`) run last.
 // 05 onwards may not assume the original 5-node count — they
-// inspect `context.nodes` and degrade gracefully.
+// inspect `context.nodes` and degrade gracefully.  17 is the end of
+// the list by construction: it takes the cluster down, and a scenario
+// after it would skip rather than fail on the empty cluster it finds.
 const scenarios: Scenario[] = [
   membershipConvergence,
   splitBrain,
@@ -73,6 +84,7 @@ const scenarios: Scenario[] = [
   shardingRebalance,    // — removes one node via cluster.leave()
   singletonFailover,    // — removes ANOTHER node via cluster.leave()
   coordinatedShutdown,  // — removes a THIRD node via CoordinatedShutdown.run()
+  clusterShutdown,      // — shuts down every node still answering; nothing runs after it
 ];
 
 async function main(): Promise<void> {
