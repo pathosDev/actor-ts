@@ -3466,6 +3466,32 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   after it would skip, silently green, on the empty cluster it finds — and
   the watchdog's non-zero exit. The broker suites keep the exit-cascade
   flag deliberately: their fixtures never exit on their own.
+- **The documentation site did not build: a code span wrapped onto a line
+  starting with `{` was parsed as an MDX flow expression** (#1595). The
+  English `fundamentals/blocking-and-cpu-bound-work.mdx` broke its
+  `pool.run(task, [bytes.buffer], { transfer: [bytes.buffer] })` sample
+  across a line break with the `{` first on the continuation line, and
+  `astro build` stopped with `Could not parse expression with acorn` — MDX
+  tries a brace-led line as a flow expression before it looks at inline
+  code, hands the text between the braces to acorn as JavaScript, and
+  `transfer: [bytes.buffer]` is not an expression. The German mirror
+  wrapped one word earlier and was fine. `docs-checks` had been red on
+  every `develop` push since the page was written.
+
+  The sentence is rewrapped (whitespace only, prose untouched), as are two
+  sibling lines on `cluster/pubsub.mdx` (EN + DE) that carried
+  `{ local, remoteNodes }>` at line start: they built only because a
+  sequence expression happens to be valid JavaScript and the trailing text
+  made the construct back off — one edit from the same failure, and a
+  valid expression alone on its line would have rendered evaluated instead
+  of failing. `tests/unit/docs/NoBraceLedLines.test.ts` now refuses any
+  documentation line outside a fenced block or the frontmatter that starts
+  with `{`, in both languages, with an allow-list for the day a page wants
+  a real flow expression (none does). It is a policy rather than a parser
+  — telling a broken span from a valid expression needs acorn, which the
+  root install deliberately lacks — and, like `FrontmatterParses`, it runs
+  in `bun test` because the four-minute site build is the one gate nobody
+  runs before committing.
 - **BREAKING — A custom `WorkerBackend` must declare whether its `error`
   subscription contains a worker's failure (#1288).**
 
