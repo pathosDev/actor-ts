@@ -40,14 +40,46 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   identity), every name and label key is re-checked against
   `PROMETHEUS_METRIC_NAME_PATTERN` and `PROMETHEUS_LABEL_NAME_PATTERN`
   because relayed samples never passed the registry's own grammar checks,
-  the reserved `thread` key is refused, the sample count is bounded by
-  `MAX_RELAYED_SAMPLES_PER_SNAPSHOT`, and any problem drops the snapshot
-  whole with one `warn` per reason per worker. With no mesh, or the interval
-  at `0`, `collectAll()` is `collect()` and the exposition is byte for byte
-  what it was; `exportPrometheus(registry)` and `prometheusHandler` keep
-  rendering the main registry alone, and the new
+  the reserved `thread` key is refused — and `DefaultMetricsRegistry`
+  refuses it as an application label at the mint, on every thread, so the
+  collision cannot arise (BREAKING, see *Changed*) —, the sample count is
+  bounded by `MAX_RELAYED_SAMPLES_PER_SNAPSHOT`, and any problem drops the
+  snapshot whole with one `warn` per reason per worker. With no mesh, or the
+  interval at `0`, `collectAll()` is `collect()` and the exposition is byte
+  for byte what it was; `exportPrometheus(registry)` and `prometheusHandler`
+  keep rendering the main registry alone, and the new
   `renderPrometheusSamples(samples)` renders any list. Frames, kinds, the
   worker half and the snapshot validator are exported from
+  `actor-ts/worker`.
+
+- **The worker mesh reports every worker exit, every granted respawn and
+  every frame its broker drops** (#1276).  `WorkerCluster` holds one logger
+  — `withLogger`, or a `ConsoleLogger` at `Info` when none is given — and
+  every line carries the `[worker]` prefix: a close event is reported with
+  its raw exit code (`WARN` for a non-zero or missing code, `INFO` for a
+  clean exit), a worker the restart policy leaves down is reported at
+  `INFO`, a granted restart is reported at `WARN` with its delay and the
+  budget it drew on ("restart budget unlimited" under `maxRestarts -1`), and
+  the existing error, failed-respawn and permanently-down lines go through
+  the same logger instead of a console fallback. `WorkerBroker` takes an
+  optional `Logger` (`new WorkerBroker(system.log)`), counts what it refuses
+  per reason — `malformed`, `unknown-destination`, `unroutable` — behind
+  `broker.dropped()`, and folds the report into one line per reason per 30
+  seconds carrying the count, `WARN` for a `malformed` envelope or a
+  refusing port and `DEBUG` for an unknown destination, saying *most
+  recently from* the registered address the last frame arrived on — the
+  count covers every port since that reason last reached the log — and never
+  the frame itself; for a refusing port the detail carries the error's name
+  (`DataCloneError`, `InvalidStateError`) and never its message, because a
+  `DataCloneError`'s message echoes the value it could not clone. A
+  caller-supplied `Logger` that throws is contained on every report path —
+  the port callback, the `close` and `error` listeners, the respawn timer —
+  and the line falls back to `console.error` with the reason appended, so a
+  broken sink costs neither the pool its respawn nor the host its process.
+  Under `restartWindowMs: 0` the granted-restart and permanently-down lines
+  quote the count alone, without an "inside 0 ms" no restart could fit in.
+  `WorkerMesh` hands `system.log` to both, so in a mesh all of it reaches
+  the configured sinks. The type `WorkerBrokerDropReason` is exported from
   `actor-ts/worker`.
 
 - **`benchmarks/cluster/tcp-message-cost.ts` measures what an actor message
@@ -2820,6 +2852,27 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **BREAKING — `thread` is a reserved metric label key** (#1570).
+  `DefaultMetricsRegistry` refuses a label tuple that carries the key
+  `thread` when the family is minted — counter, gauge and histogram alike,
+  on the main thread and on every worker — with `Reserved label key "thread"
+  on metric "…"` and the rename in the message. The exposition stamps every
+  sample with the thread that produced it while a worker mesh relays its
+  registries, and an application label under the same key was a
+  single-threaded deployment's silent time bomb: legal until the day workers
+  were switched on, then overwritten to `thread="main"` on the main thread
+  (two values, two rows with one identical label set, which a Prometheus
+  scrape rejects wholesale) and, on a worker, the reason the relay refused
+  that thread's whole snapshot every tick. Refused at the mint it is an
+  error at the developer's desk instead. A whole-key match: `thread_pool`
+  and `threads` are ordinary keys. The export-side rules stay as the trust
+  boundary for samples no registry of ours minted.
+
+  *Migration:* Rename any application label named `thread` (`{ thread: … }`
+  → `{ worker_thread: … }`, `{ pool: … }`, whatever it means). The relay's
+  `thread` label — `main` / `worker-<slot>` — is added at export and is not
+  something a registry call sets.
+
 - **The worker-mesh docs name the star through the main-thread broker as the
   chosen shape and quote the tier they had left out**
   (#1191).  `cluster/worker-mesh` states that direct worker-to-worker
@@ -3396,10 +3449,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   backends and the in-tree fake declare `true`, each pointing at the adapter
   line that earns it: the Node adapter forwards the subscription to
   `worker.on('error')`, the Web adapter cancels the native `ErrorEvent` from
-  inside its listener, which is what Deno needs. On `false`,
-  `WorkerCluster`, `OffloadPool` and `ParallelMultiNodeSpec` report once per
-  backend instance, before the first spawn, through the sink they already
-  report worker deaths to — the `[worker]` logger, `system.log` under
+  inside its listener, which is what Deno needs. On anything but an explicit
+  `true` — a `false`, or a declaration missing at runtime, which is what a
+  plain-JavaScript backend, a cast or a shape copied from an older version
+  looks like past the compiler — `WorkerCluster`, `OffloadPool` and
+  `ParallelMultiNodeSpec` report once per backend instance, before the first
+  spawn, through the sink they already report worker deaths to, and the line
+  says which it found (`declares containsWorkerErrors=false`, or `declares
+  nothing about containment`) — the `[worker]` logger, `system.log` under
   `[offload]`, the console — and continue; the spawn is never refused,
   because the declaration changes nothing the framework could do
   differently, it only puts a line in the log for the host that later dies
@@ -3419,38 +3476,9 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `true` if an `error` subscription on the `WorkerLike` it returns contains
   the throw the way the shipped adapters do (forwarded to
   `worker.on('error')` on Node, `preventDefault()` on the `ErrorEvent`
-  inside the listener on Deno), `false` otherwise — a `false` is reported
-  once at the first spawn and the spawn proceeds.
-
-- **The worker mesh reports every worker exit, every granted respawn and
-  every frame its broker drops** (#1276).  `WorkerCluster` holds one logger
-  — `withLogger`, or a `ConsoleLogger` at `Info` when none is given — and
-  every line carries the `[worker]` prefix: a close event is reported with
-  its raw exit code (`WARN` for a non-zero or missing code, `INFO` for a
-  clean exit), a worker the restart policy leaves down is reported at
-  `INFO`, a granted restart is reported at `WARN` with its delay and the
-  budget it drew on ("restart budget unlimited" under `maxRestarts -1`), and
-  the existing error, failed-respawn and permanently-down lines go through
-  the same logger instead of a console fallback. `WorkerBroker` takes an
-  optional `Logger` (`new WorkerBroker(system.log)`), counts what it refuses
-  per reason — `malformed`, `unknown-destination`, `unroutable` — behind
-  `broker.dropped()`, and folds the report into one line per reason per 30
-  seconds carrying the count, `WARN` for a `malformed` envelope or a
-  refusing port and `DEBUG` for an unknown destination, saying *most
-  recently from* the registered address the last frame arrived on — the
-  count covers every port since that reason last reached the log — and never
-  the frame itself; for a refusing port the detail carries the error's name
-  (`DataCloneError`, `InvalidStateError`) and never its message, because a
-  `DataCloneError`'s message echoes the value it could not clone. A
-  caller-supplied `Logger` that throws is contained on every report path —
-  the port callback, the `close` and `error` listeners, the respawn timer —
-  and the line falls back to `console.error` with the reason appended, so a
-  broken sink costs neither the pool its respawn nor the host its process.
-  Under `restartWindowMs: 0` the granted-restart and permanently-down lines
-  quote the count alone, without an "inside 0 ms" no restart could fit in.
-  `WorkerMesh` hands `system.log` to both, so in a mesh all of it reaches
-  the configured sinks. The type `WorkerBrokerDropReason` is exported from
-  `actor-ts/worker`.
+  inside the listener on Deno), `false` otherwise — a `false`, or no
+  declaration at runtime, is reported once at the first spawn and the spawn
+  proceeds; only an explicit `true` is silent.
 
 - **The routing docs now say what the local `Router` pool actually does, and
   carry a decision matrix plus the recipe for N identical actors across N
@@ -3550,14 +3578,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   authority included — and derives `.path` from it, so delivery, death
   watch, `equals`, `toString()` and the ask label agree whichever form was
   passed. The canonicaliser is the new `canonicalActorPathString(systemName,
-  path)` in `ActorPath.ts`, idempotent and never rejecting its input: a
-  string that is neither form (`''`, `'garbage'`) is read as a path below
-  the root rather than thrown on, because the same constructor rebuilds a
-  peer's `from` claim and a `WireActorRef.path` on arrival, where a throw is
-  answered by dropping the connection. `remoteActorPath` runs its input
-  through the same function, so `RemoteShardRef`, `RemoteWatcherRef` and the
-  parallelism extension share one semantics. The wire reader stays strict on
-  purpose — it is the reader behind `EnvelopeTrust` and the exact-string
+  path)` in `ActorPath.ts`, idempotent and total for spellings: a string
+  that is neither form (`''`, `'garbage'`) is read as a path below the root
+  rather than thrown on, because the same constructor rebuilds a peer's
+  `from` claim and a `WireActorRef.path` on arrival, where a throw is
+  answered by dropping the connection. Segments are another matter: a `.` or
+  `..`, a backslash or a control character throws from the constructor
+  through `assertValidName`, for a bare `'..'` as for the full
+  `actor-ts://sys/..` — which was refused the same way before — so a peer
+  reaches nothing through the bare form it could not already reach, and the
+  throw is now pinned. `remoteActorPath` runs its input through the same
+  function, so `RemoteShardRef`, `RemoteWatcherRef` and the parallelism
+  extension share one semantics. The wire reader stays strict on purpose —
+  it is the reader behind `EnvelopeTrust` and the exact-string
   envelope-handler map — and is now pinned by the first direct
   `parsePathSegments` tests, asserting that a bare path on the wire still
   resolves to nothing. `WorkerMesh.refFor` no longer prefixes the path
