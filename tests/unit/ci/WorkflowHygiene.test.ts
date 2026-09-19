@@ -1,5 +1,6 @@
+import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, posix } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 
 /**
@@ -159,6 +160,176 @@ const coupledActions: readonly CoupledAction[] = (() => {
     .map(([action, paths]) => ({ action, paths: [...paths].sort() }))
     .filter(({ paths }) => paths.length > 1);
 })();
+
+/**
+ * `.github/dependabot.yml` once more — this time for *which manifests it
+ * watches at all*, and through which updater.
+ *
+ * #1596: the repository tracks thirteen `package.json` files and the file
+ * watched one of them, through an `npm` entry that cannot read the `bun.lock`
+ * beside it. Nothing noticed for five months, because the failure mode is
+ * an absence — a PR that never opens — and no other check reads this file.
+ */
+type DependabotEntry = {
+  /** `bun`, `npm`, `github-actions`, … */
+  readonly ecosystem: string;
+  /** 1-based line of the `- package-ecosystem:` item, for messages. */
+  readonly line: number;
+  /** The `directory:` value, or every item of the `directories:` list. */
+  readonly directories: readonly string[];
+};
+
+/**
+ * Every `- package-ecosystem:` item with the directories it names. Same
+ * regex-over-YAML trade-off as the parsers above: a list item is a directory
+ * only while `directories:` is the nearest preceding key, so the `labels:` and
+ * `update-types:` lists in the same entry are not mistaken for one.
+ */
+function dependabotEntries(): DependabotEntry[] {
+  const out: { ecosystem: string; line: number; directories: string[] }[] = [];
+  let inDirectories = false;
+  dependabotLines.forEach((line, index) => {
+    if (line.trim() === '' || line.trim().startsWith('#')) return;
+    const entry = /^\s*-\s*package-ecosystem:\s*"([^"]+)"\s*$/.exec(line);
+    if (entry) {
+      out.push({ ecosystem: entry[1]!, line: index + 1, directories: [] });
+      inDirectories = false;
+      return;
+    }
+    const current = out[out.length - 1];
+    if (!current) return;
+    const single = /^\s*directory:\s*"([^"]+)"\s*$/.exec(line);
+    if (single) {
+      current.directories.push(single[1]!);
+      inDirectories = false;
+      return;
+    }
+    if (/^\s*directories:\s*$/.test(line)) {
+      inDirectories = true;
+      return;
+    }
+    const item = /^\s*-\s*"([^"]+)"\s*$/.exec(line);
+    if (inDirectories && item) {
+      current.directories.push(item[1]!);
+      return;
+    }
+    inDirectories = false; // any other key ends the list
+  });
+  return out;
+}
+
+/** The entries that watch a `package.json`; `github-actions` watches workflows. */
+const manifestEntries: readonly DependabotEntry[] = dependabotEntries()
+  .filter(({ ecosystem }) => ecosystem === 'npm' || ecosystem === 'bun');
+
+/**
+ * A `directory:` / `directories:` value against a manifest's directory.
+ * Dependabot normalises a trailing slash away and lets `directories:` carry
+ * `*`; the same segment walk as {@link matchesPattern}, so a glob here is
+ * matched the way the group patterns are.
+ */
+const matchesDirectory = (pattern: string, directory: string): boolean => {
+  const normalised = pattern.length > 1 && pattern.endsWith('/') ? pattern.slice(0, -1) : pattern;
+  return matchesPattern(normalised, directory);
+};
+
+type TrackedManifest = {
+  /** Dependabot-style: `/` for the root, `/docs`, `/examples/chat/frontend-next`, … */
+  readonly directory: string;
+  /** Repository-relative path of the `package.json`, POSIX separators. */
+  readonly path: string;
+  /** Lockfile names committed beside it, out of `bun.lock` and `package-lock.json`. */
+  readonly lockfiles: readonly string[];
+};
+
+const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..');
+
+const LOCKFILE_NAMES = ['bun.lock', 'package-lock.json'] as const;
+
+/**
+ * Every tracked `package.json`, with the lockfiles tracked beside it.
+ *
+ * The git index rather than a directory walk, as in
+ * `tests/unit/ci/ComparisonLauncherModes.test.ts`: the population Dependabot
+ * sees is what a clone contains, which excludes an untracked scratch manifest
+ * and every `node_modules/` — and a walk that skipped those by name would be
+ * asserting its own exclusion list.
+ */
+function trackedManifests(): TrackedManifest[] {
+  const listed = spawnSync(
+    'git',
+    ['ls-files', '-z', '--', '*package.json', ...LOCKFILE_NAMES.map((name) => `*${name}`)],
+    { cwd: REPOSITORY_ROOT, encoding: 'utf8' },
+  );
+
+  // Deliberately not a skip, and thrown at load so the whole file goes red: a
+  // coverage guard that passes when it cannot list the manifests is worth
+  // less than no guard, and every context this suite runs in is a git
+  // working tree.
+  if (listed.error) throw new Error(`could not run git ls-files: ${listed.error.message}`);
+  if (listed.status !== 0) throw new Error(`git ls-files exited ${listed.status}: ${listed.stderr}`);
+
+  const lockfilesByDirectory = new Map<string, string[]>();
+  const manifestPaths: string[] = [];
+  for (const path of listed.stdout.split('\0')) {
+    if (path === '') continue;
+    const name = posix.basename(path);
+    const directory = posix.dirname(path);
+    if (name === 'package.json') manifestPaths.push(path);
+    else if ((LOCKFILE_NAMES as readonly string[]).includes(name)) {
+      lockfilesByDirectory.set(directory, [...(lockfilesByDirectory.get(directory) ?? []), name]);
+    }
+  }
+  return manifestPaths.sort().map((path) => {
+    const directory = posix.dirname(path);
+    return {
+      path,
+      directory: directory === '.' ? '/' : `/${directory}`,
+      lockfiles: (lockfilesByDirectory.get(directory) ?? []).sort(),
+    };
+  });
+}
+
+const manifests: readonly TrackedManifest[] = trackedManifests();
+
+/**
+ * The updater that can write the lockfile CI installs from. `examples.yml`
+ * runs `npm ci` wherever a `package-lock.json` is committed, and the npm
+ * updater has no code for `bun.lock` at all; everywhere else the install is
+ * `bun install --frozen-lockfile`, which only the `bun` updater can keep
+ * green. A manifest with no lockfile is updated manifest-only by either, and
+ * takes `bun` because that is what installs it.
+ */
+const expectedEcosystem = ({ lockfiles }: TrackedManifest): 'npm' | 'bun' =>
+  (lockfiles.includes('package-lock.json') ? 'npm' : 'bun');
+
+/**
+ * The highest `lockfileVersion` the Dependabot `bun` updater reads. It
+ * bundles Bun 1.3.14, and since dependabot/dependabot-core#15896 a newer
+ * stamp fails the entry outright (`DependencyFileNotSupported`) instead of
+ * being silently downgraded — dependabot/dependabot-core#16071 raises the
+ * ceiling and is open. Bun 1.4 stamps a fresh lockfile 2 but preserves an
+ * existing 1 on every re-save, so the exposure is a `bun.lock` regenerated
+ * from scratch: it keeps installing and quietly stops being updated. Raise
+ * this when #16071 lands; until then restamp the file (v1 and v2 are
+ * identical apart from the number — v2 only added parse-time strictness).
+ */
+const DEPENDABOT_BUN_LOCKFILE_VERSION_CEILING = 1;
+
+/** The `"lockfileVersion": N` stamp at the top of a text `bun.lock`. */
+function lockfileVersion(path: string): number | undefined {
+  const match = /"lockfileVersion":\s*(\d+)/.exec(readFileSync(join(REPOSITORY_ROOT, path), 'utf8'));
+  return match ? Number(match[1]) : undefined;
+}
+
+/** Every `bun.lock` a `bun` entry watches, with the manifest it belongs to. */
+const watchedBunLockfiles = manifests
+  .filter((manifest) => manifest.lockfiles.includes('bun.lock'))
+  .filter((manifest) => manifestEntries.some(
+    (entry) => entry.ecosystem === 'bun'
+      && entry.directories.some((pattern) => matchesDirectory(pattern, manifest.directory)),
+  ))
+  .map((manifest) => ({ directory: manifest.directory, path: posix.join(posix.dirname(manifest.path), 'bun.lock') }));
 
 type WorkflowJob = {
   readonly workflow: string;
@@ -985,4 +1156,108 @@ describe('workflow hygiene', () => {
       + 'execute third-party code — split the privileged step into its own job.',
     ).toBeUndefined();
   });
+});
+
+describe('dependabot manifest coverage', () => {
+  test('the manifest listing and the entry parser found their subjects', () => {
+    // Thirteen today: the root, docs, the DevTools UI, the comparison
+    // benchmarks, the broker runners and eight example frontends. Pinned from
+    // below so a listing that quietly shrinks — a pathspec that stops matching
+    // on some platform, say — is a failure rather than a `test.each` over less.
+    // Removing a manifest lowers this deliberately, in the same commit.
+    expect(manifests.length).toBeGreaterThanOrEqual(13);
+    expect(manifests.map(({ directory }) => directory)).toContain('/');
+    // Both lockfile shapes are present, or the ecosystem rule below is never
+    // exercised in one of its two directions.
+    expect(manifests.some(({ lockfiles }) => lockfiles.includes('package-lock.json'))).toBe(true);
+    expect(manifests.some(({ lockfiles }) => lockfiles.includes('bun.lock')
+      && !lockfiles.includes('package-lock.json'))).toBe(true);
+    // The entry parser needs no vacuity check of its own: an entry it fails to
+    // read leaves its manifests unwatched, and the coverage tests below fail
+    // loudly for those. The lockfile-version `test.each` is the one that
+    // would pass over an empty list.
+    expect(watchedBunLockfiles.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * #1596 — a manifest no entry names gets version updates from nobody. It
+   * still gets *security* updates, which Dependabot opens from the dependency
+   * graph regardless of this file, and that is exactly what hid the gap: the
+   * PR list was not empty, it was just never a non-advisory bump.
+   *
+   * Exactly one entry, not at least one: two entries on the same directory
+   * open two PRs per bump, each stale the moment the other merges.
+   */
+  test.each([...manifests])('$path is watched by exactly one Dependabot entry', (manifest) => {
+    const watching = manifestEntries.filter(({ directories }) =>
+      directories.some((pattern) => matchesDirectory(pattern, manifest.directory)));
+    expect(
+      watching.map(({ ecosystem, line }) => `${ecosystem} entry at dependabot.yml:${line}`),
+      `${manifest.path} is named by ${watching.length} entries in .github/dependabot.yml. `
+      + `Every tracked package.json needs exactly one — add a package-ecosystem entry for `
+      + `"${manifest.directory}" (or a line in an existing directories: list).`,
+    ).toHaveLength(1);
+  });
+
+  /**
+   * The updater has to be the one that writes the lockfile CI installs from.
+   * The `npm` updater edits `package-lock.json` and has no code for
+   * `bun.lock`; the `bun` updater regenerates `bun.lock` and never touches
+   * `package-lock.json`. Cross them and every PR the entry opens is red on
+   * the frozen install by construction — the root spent five months that way
+   * (#817), and the in-range updates it could not see never surfaced at all.
+   */
+  test.each([...manifests])('$path is watched by the updater that writes its lockfile', (manifest) => {
+    const watching = manifestEntries.find(({ directories }) =>
+      directories.some((pattern) => matchesDirectory(pattern, manifest.directory)));
+    if (!watching) return; // the test above already fails for this manifest
+    const expected = expectedEcosystem(manifest);
+    expect(
+      watching.ecosystem,
+      `${manifest.path} sits beside ${manifest.lockfiles.join(' and ') || 'no lockfile'}, so its `
+      + `Dependabot entry has to be package-ecosystem: "${expected}" — the "${watching.ecosystem}" `
+      + `updater at dependabot.yml:${watching.line} cannot write the lockfile CI installs from, `
+      + 'and every PR it opens is red on the frozen install by construction.',
+    ).toBe(expected);
+  });
+
+  /**
+   * The converse: a directory an entry names has to hold a manifest, or the
+   * entry errors on every run and updates nothing — invisible from the PR
+   * list, like the gap above, and easy to leave behind when a directory moves.
+   */
+  test.each(manifestEntries.flatMap(({ ecosystem, line, directories }) =>
+    directories.map((pattern) => ({ ecosystem, line, pattern }))))(
+    '$ecosystem entry at line $line names a tracked manifest with $pattern',
+    ({ pattern }) => {
+      expect(
+        manifests.filter(({ directory }) => matchesDirectory(pattern, directory)).map(({ path }) => path),
+        `No tracked package.json sits at "${pattern}" — the entry updates nothing. `
+        + 'Point it at a manifest that exists or remove it.',
+      ).not.toEqual([]);
+    },
+  );
+
+  /**
+   * A `bun.lock` the updater cannot parse fails its entry on every run, and
+   * nothing else notices: the file installs fine under the repository's own
+   * Bun, the PR list simply stays empty. `devtools-ui/bun.lock` was born under
+   * 1.4.0 with a 2 (`65548aa9`) and is restamped; see the constant for why
+   * the ceiling is where it is.
+   */
+  test.each(watchedBunLockfiles)(
+    '$path carries a lockfileVersion the Dependabot bun updater can read',
+    ({ path }) => {
+      const version = lockfileVersion(path);
+      expect(version, `${path} has no "lockfileVersion" stamp`).toBeDefined();
+      expect(
+        version!,
+        `${path} is stamped lockfileVersion ${version}, and the Dependabot bun updater reads `
+        + `${DEPENDABOT_BUN_LOCKFILE_VERSION_CEILING} at most — its entry fails on every run and `
+        + 'opens nothing. Restamp the file (the content is identical across the two versions '
+        + 'and Bun 1.4 preserves the lower stamp), or raise the ceiling once '
+        + 'dependabot/dependabot-core#16071 has landed.',
+      ).toBeLessThanOrEqual(DEPENDABOT_BUN_LOCKFILE_VERSION_CEILING);
+    },
+  );
 });
