@@ -14,9 +14,12 @@ name: actor-ts-integration-cockroachdb
 
 services:
   cockroachdb:
-    # `latest` deliberately — surface upstream regressions as soon as they
-    # ship.  Production users pin their own version.
-    image: cockroachdb/cockroach:latest
+    # Pinned to the release `latest` resolved to when the pin was written, and
+    # Dependabot moves it (#1597): a new CockroachDB arrives as a PR that runs this
+    # suite, so an upstream regression still surfaces within a day — attributable
+    # to the bump, instead of turning the nightly red underneath a run.
+    # Production users pin their own version.
+    image: cockroachdb/cockroach:v26.2.6
     # Single node, no TLS: this is a throwaway test instance, and insecure
     # mode is what lets the runner connect with `sslmode=disable`.
     command: start-single-node --insecure

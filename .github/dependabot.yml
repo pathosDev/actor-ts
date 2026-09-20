@@ -1,11 +1,55 @@
-# Dependabot config — daily dependency scans, opens PRs against main.
+# Dependabot config — daily dependency scans, opening PRs against `develop`
+# (the default branch).
 # Docs: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+#
+# **Every tracked manifest Dependabot can read has an entry here** — each
+# `package.json`, Dockerfile, compose file and `.csproj` — and
+# `tests/unit/ci/WorkflowHygiene.test.ts` fails when one does not.  The
+# repository carries thirteen `package.json` and this file watched exactly
+# one of them until #1596.  What the other twelve got was *security*
+# updates, which Dependabot opens from the dependency graph regardless of
+# this file (the `npm_and_yarn group across N directories` PRs); a
+# non-advisory bump never reached them, and keeping them current was a hand
+# sweep (#1520).  The images and the .NET arms followed in #1597.
+#
+# **The ecosystem follows the lockfile CI installs from.**  The `npm` updater
+# reads `package-lock.json` and has no code for `bun.lock` at all, so on a
+# Bun-installed directory it works manifest-only: a caret range already
+# admits every minor and patch, an in-range release changes nothing it can
+# see, and the root's minor-and-patch group opened not one PR in five months
+# — while every major it did open went red on `--frozen-lockfile` until
+# someone regenerated `bun.lock` by hand (#817).  The `bun` updater runs
+# `bun install <dep>@<version> --save-text-lockfile` and commits the result,
+# so its PRs arrive green and in-range updates surface.  Neither updater
+# touches `peerDependencies` — the parser reads `dependencies`,
+# `devDependencies` and `optionalDependencies` — so no peer floor moves as a
+# side effect.  Security updates are unaffected either way; they never came
+# from these entries.
+#
+# One entry per Bun directory, deliberately not a `directories:` list: a
+# grouped update across directories is a single PR, and the DevTools UI half
+# of one is red by construction (see that entry), which must not hold a root
+# or docs bump hostage.
+#
+# **The updater's Bun reads `lockfileVersion` 1 and nothing newer.**  It
+# bundles 1.3.14, and since dependabot/dependabot-core#15896 a newer stamp is
+# a hard `DependencyFileNotSupported` for that entry — no PRs, no downgrade;
+# dependabot/dependabot-core#16071 raises the ceiling and is still open.  Bun
+# 1.4 stamps a *fresh* `bun.lock` 2 but preserves an existing 1 on every
+# re-save, so the exposure is a lockfile regenerated from scratch, which then
+# silently stops being updated.  The content of a v1 and a v2 lockfile is
+# identical — v2 only added parse-time strictness — so the fix is to restamp
+# the file to 1.  The guard test pins the ceiling and names this paragraph.
 
 version: 2
 
 updates:
-  # npm peer-deps + dependencies + devDependencies in package.json
-  - package-ecosystem: "npm"
+  # ── Bun-installed manifests: `package.json` + `bun.lock` ──────────────
+
+  # The library.  actor-ts is published, so Dependabot leaves an in-range
+  # requirement alone and moves `bun.lock` only; a major rewrites the range,
+  # as it always did.
+  - package-ecosystem: "bun"
     directory: "/"
     schedule:
       interval: "daily"
@@ -14,14 +58,18 @@ updates:
     open-pull-requests-limit: 10
     labels:
       - "dependencies"
+    # `chore` plus Dependabot's own scope gives `chore(deps)` /
+    # `chore(deps-dev)`, the two scopes AGENTS.md lists.  A prefix that
+    # already carries a scope doubles it — `chore(deps)(deps-dev): …` is what
+    # every root PR in the log reads.
     commit-message:
-      prefix: "chore(deps)"
+      prefix: "chore"
       include: "scope"
-    # Group minor + patch updates so each ecosystem gets one PR per day
+    # Group minor + patch updates so each manifest gets one PR per day
     # rather than 15.  Major bumps still get their own PRs (we want to
     # eyeball those individually).
     groups:
-      npm-minor-and-patch:
+      minor-and-patch:
         update-types:
           - "minor"
           - "patch"
@@ -38,6 +86,284 @@ updates:
       - dependency-name: "@types/node"
         update-types:
           - "version-update:semver-major"
+
+  # The Starlight site.  `docs-checks.yml` installs it frozen on every PR
+  # and builds it, so a bump that does not resolve, or one that breaks the
+  # rendering (#1527), is red here rather than at the release deploy (#473).
+  # No `@types/node` rule here: TypeDoc compiles `../src` with the *root*
+  # tsconfig, so the root's pin is the one that guards the library, and the
+  # copy in this manifest only types the site's own scripts.
+  - package-ecosystem: "bun"
+    directory: "/docs"
+    schedule:
+      interval: "daily"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # The DevTools UI toolchain (#483).  **Its PRs are red by construction and
+  # that is the signal**: `bun run check:ui` compares the `source-hash` in
+  # `src/devtools/generated/UiAssets.ts` against the UI sources *and this
+  # directory's `package.json`*, because the Angular and ECharts versions are
+  # baked into the embedded bundle.  A bump here therefore needs
+  # `bun run build:ui` and the regenerated module in the same merge — the
+  # same step any change under `devtools-ui/` needs — and the `build`
+  # workflow says so until it has it.
+  #
+  # `bun.lock` here is stamped `lockfileVersion: 1` on purpose; it was born
+  # under Bun 1.4.0 as a 2 (`65548aa9`) and the updater cannot read a 2 (file
+  # header).  Bun 1.4 preserves the 1 on every re-save.
+  - package-ecosystem: "bun"
+    directory: "/devtools-ui"
+    schedule:
+      interval: "daily"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # The frameworks measured against actor-ts (#27).  Pinned exactly, and a
+  # merge here is a re-measure trigger: each result file names the version
+  # it ran, and the release checklist re-runs `bench:compare` before the
+  # tables are updated.  `benchmarks.yml` installs the directory frozen and
+  # type-checks it, so a bump that breaks an arm's compile is red on the PR.
+  - package-ecosystem: "bun"
+    directory: "/benchmarks/comparison"
+    schedule:
+      interval: "daily"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # The live-broker runner manifest.  No lockfile by design — every
+  # `Dockerfile.runner` installs it unfrozen, so the images already float
+  # inside the declared ranges — which makes this entry manifest-only: what
+  # it surfaces is a driver release *outside* a range, the one kind of bump
+  # the floating install can never pick up.  `integration-brokers.yml` runs
+  # the suites against the bumped driver on the PR.
+  - package-ecosystem: "bun"
+    directory: "/tests/integration/brokers"
+    schedule:
+      interval: "daily"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── npm-installed manifests: `package.json` + `package-lock.json` ─────
+
+  # The eight bundled example frontends.  `examples.yml` builds each one
+  # with `npm ci` from `package-lock.json`, so the npm updater is the one
+  # that can keep the lockfile CI reads in step with the manifest.  Each
+  # directory also carries a `bun.lock` that nothing in CI installs and that
+  # this entry does not write — whether that file stays at all is #1402, and
+  # until it is decided the `bun install --frozen-lockfile --dry-run` leg in
+  # `examples.yml` goes red on the directories a PR touches, naming the
+  # lockfile to sync.
+  #
+  # Listed explicitly rather than globbed, like the matrix in
+  # `examples.yml`: a new frontend is a deliberate line here, and the guard
+  # test fails until it has one.  One `directories:` list rather than eight
+  # entries, because the chat and voice pairs share a toolchain: the
+  # minor-and-patch group spans all eight (one PR a day, not eight), and the
+  # per-dependency group lands a major in both halves of a pair at once —
+  # ungrouped, `directories:` opens one PR per directory per dependency.
+  - package-ecosystem: "npm"
+    directories:
+      - "/examples/chat/frontend-angular"
+      - "/examples/chat/frontend-next"
+      - "/examples/chat/frontend-react"
+      - "/examples/chat/frontend-svelte"
+      - "/examples/voice/frontend-angular"
+      - "/examples/voice/frontend-next"
+      - "/examples/voice/frontend-react"
+      - "/examples/voice/frontend-svelte"
+    schedule:
+      interval: "daily"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+      # Everything the first group does not take — the majors — one PR per
+      # dependency across the directories it appears in.
+      per-dependency:
+        group-by: "dependency-name"
+
+  # ── .NET benchmark arms: `*.csproj` + `packages.lock.json` ────────────
+
+  # The two .NET arms of the framework comparison (#27).  Pinned exactly, and
+  # a merge here is a re-measure trigger like the JS arms above.  The two
+  # `Microsoft.Orleans.*` packages ship in lockstep and are grouped at every
+  # update type — the codeql-action reasoning below, one ecosystem over — so
+  # a major never arrives as two PRs that are each broken alone.  The JVM
+  # arms next door have no entry: Dependabot has no Mill ecosystem, so
+  # `build.mill`, `.mill-version` and the `jvmId` JDK pin move by hand.
+  - package-ecosystem: "nuget"
+    directories:
+      - "/benchmarks/comparison/akka-net"
+      - "/benchmarks/comparison/orleans"
+    schedule:
+      interval: "daily"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      orleans:
+        patterns:
+          - "Microsoft.Orleans.*"
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # ── Integration images ─────────────────────────────────────────────────
+
+  # The 19 runner images, every one `FROM oven/bun:1.4-debian@sha256:…`
+  # (#1597).  The policy is in `tests/integration/Dockerfile.node` and this
+  # entry is written to honour it, not to bend it: the minor is pinned and
+  # moves together with `.bun-version` in one reviewed commit, so `oven/bun`
+  # majors and minors are ignored here and never proposed — the @types/node
+  # reasoning above, for an image.  What Dependabot moves is the *digest*,
+  # which is how the 1.4.x patch releases that used to float in silently
+  # now arrive: as one PR that builds the runner images.  One catch-all
+  # group, because a rebuild is one change across 19 files, not 19 PRs.
+  # Listed explicitly, like the `examples.yml` and `integration-brokers.yml`
+  # matrices; the guard test fails until a new suite's directory is here.
+  - package-ecosystem: "docker"
+    directories:
+      - "/tests/integration"
+      - "/tests/integration/brokers/amqp"
+      - "/tests/integration/brokers/cassandra"
+      - "/tests/integration/brokers/cockroachdb"
+      - "/tests/integration/brokers/dynamodb"
+      - "/tests/integration/brokers/email"
+      - "/tests/integration/brokers/grpc"
+      - "/tests/integration/brokers/k8s"
+      - "/tests/integration/brokers/kafka"
+      - "/tests/integration/brokers/libsql"
+      - "/tests/integration/brokers/mariadb"
+      - "/tests/integration/brokers/mongodb"
+      - "/tests/integration/brokers/mqtt"
+      - "/tests/integration/brokers/mssql"
+      - "/tests/integration/brokers/nats"
+      - "/tests/integration/brokers/postgres"
+      - "/tests/integration/brokers/redis-streams"
+      - "/tests/integration/brokers/s3"
+      - "/tests/integration/brokers/yugabytedb"
+    schedule:
+      interval: "daily"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      runner-image:
+        patterns:
+          - "*"
+    ignore:
+      - dependency-name: "oven/bun"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+
+  # The broker containers — every `image:` in the compose files names a
+  # release (#1597; the policy is in tests/integration/brokers/README.md,
+  # "Image pins").  A new upstream release arrives as a PR, and the
+  # `integration-brokers.yml` path filter runs the whole matrix on it, so
+  # the regression the old `:latest` was meant to surface still surfaces
+  # within a day — attributed to a bump instead of to a nightly.  Minors
+  # and patches grouped into one PR; a major gets its own, per image, which
+  # is also the review posture: a broker major is the bump most likely to
+  # need the suite read alongside it.  Two of the compose files pull no
+  # image at all — `/tests/integration` and `grpc` build every service from
+  # a runner Dockerfile — and are listed anyway, so the guard test can hold
+  # "every compose file is named by exactly one entry" without an exemption
+  # list; Dependabot finds nothing there and says so.
+  - package-ecosystem: "docker-compose"
+    directories:
+      - "/tests/integration"
+      - "/tests/integration/brokers/amqp"
+      - "/tests/integration/brokers/cassandra"
+      - "/tests/integration/brokers/cockroachdb"
+      - "/tests/integration/brokers/dynamodb"
+      - "/tests/integration/brokers/email"
+      - "/tests/integration/brokers/grpc"
+      - "/tests/integration/brokers/k8s"
+      - "/tests/integration/brokers/kafka"
+      - "/tests/integration/brokers/libsql"
+      - "/tests/integration/brokers/mariadb"
+      - "/tests/integration/brokers/mongodb"
+      - "/tests/integration/brokers/mqtt"
+      - "/tests/integration/brokers/mssql"
+      - "/tests/integration/brokers/nats"
+      - "/tests/integration/brokers/postgres"
+      - "/tests/integration/brokers/redis-streams"
+      - "/tests/integration/brokers/s3"
+      - "/tests/integration/brokers/yugabytedb"
+    schedule:
+      interval: "daily"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
 
   # GitHub Actions versions used in workflows themselves.
   #

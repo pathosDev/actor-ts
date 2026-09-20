@@ -16,12 +16,22 @@
 # toolchain moves in one reviewed commit, never underneath a run.  Patch
 # releases still flow (`1.4-debian` tracks 1.4.x); majors/minors do not.
 #
+# The digest behind the tag is pinned too (#1597), so the tree says which
+# image a run actually used — `1.4-debian` is a pointer the publisher moves
+# on every 1.4.x rebuild, and a red nightly could not be attributed to one.
+# Dependabot's `docker` entry moves the digest (that is how patch releases
+# flow now, as a PR that builds these images) and is told to ignore the
+# major and minor of `oven/bun`, so `1.5-debian` is never proposed: that
+# bump stays the reviewed commit with `.bun-version`, and the digest below
+# is the multi-arch index — identical to `1.4.2-debian` when it was pinned.
+# The 18 `brokers/*/Dockerfile.runner` carry the same pin and point here.
+#
 # Debian over Alpine because we need `apt-get` for `iproute2` +
 # `iptables` (the `tc` / `iptables` binaries that
 # `lib/Partition.ts` shells out to).  `slim` would also work and
 # would save ~50 MB; sticking with the full `debian` for the more-
 # standard userland (less surprise debugging container internals).
-FROM oven/bun:1.4-debian
+FROM oven/bun:1.4-debian@sha256:4f6e31d1a54d6a3dd312daef655fc998101b5043d52e12592ac293ef04b9bc73
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \

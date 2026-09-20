@@ -11,13 +11,16 @@ name: actor-ts-integration-mongodb
 
 services:
   mongodb:
-    # `latest` deliberately — surface upstream regressions as soon as they ship.
-    # Production users pin their own version.
-    #
     # A plain standalone `mongod`, not a replica set: the backend deliberately
     # needs no multi-document transactions (see MongoJournal's docblock), so the
     # suite proves it works on the simplest possible deployment.
-    image: mongo:latest
+    #
+    # Pinned to the release `latest` resolved to when the pin was written, and
+    # Dependabot moves it (#1597): a new MongoDB arrives as a PR that runs this
+    # suite, so an upstream regression still surfaces within a day — attributable
+    # to the bump, instead of turning the nightly red underneath a run.
+    # Production users pin their own version.
+    image: mongo:8.3.11
     healthcheck:
       # `mongosh` ships with the image, and a successful ping is a stronger gate
       # than an open port — the server accepts connections only after storage

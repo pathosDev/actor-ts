@@ -13,10 +13,14 @@ name: actor-ts-integration-mqtt
 
 services:
   mosquitto:
-    # `latest` deliberately — integration tests want to surface
-    # upstream Mosquitto regressions as soon as they ship.  Production
-    # users pin a specific version themselves.
-    image: eclipse-mosquitto:latest
+    # Pinned to the release `latest` resolved to when the pin was written, and
+    # Dependabot moves it (#1597): a new Mosquitto arrives as a PR that runs this
+    # suite, so an upstream regression still surfaces within a day — attributable
+    # to the bump, instead of turning the nightly red underneath a run.
+    # Production users pin their own version.
+    # `-alpine` because that is what the official image's `latest` is — no
+    # plain `2.1.2` tag exists; `openssl` is the other variant.
+    image: eclipse-mosquitto:2.1.2-alpine
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
     # Quick health probe — `mosquitto_sub` ships with the image and

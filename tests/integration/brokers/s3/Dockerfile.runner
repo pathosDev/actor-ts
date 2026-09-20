@@ -5,7 +5,10 @@
 # dedicated test-package.json.  The CMD is the only per-runner
 # diff.
 
-FROM oven/bun:1.4-debian
+# Digest-pinned so the tree says which image a run used.  Dependabot moves the
+# digest as 1.4.x is rebuilt; the minor moves with `.bun-version`, by hand —
+# the policy is in tests/integration/Dockerfile.node.  #1597
+FROM oven/bun:1.4-debian@sha256:4f6e31d1a54d6a3dd312daef655fc998101b5043d52e12592ac293ef04b9bc73
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \

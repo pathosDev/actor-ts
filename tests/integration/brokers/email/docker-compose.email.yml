@@ -26,9 +26,12 @@ name: actor-ts-integration-email
 
 services:
   greenmail:
-    # `latest` deliberately, like every other suite here — integration
-    # tests want upstream regressions to surface as soon as they ship.
-    image: greenmail/standalone:latest
+    # Pinned to the release `latest` resolved to when the pin was written, and
+    # Dependabot moves it (#1597): a new GreenMail arrives as a PR that runs this
+    # suite, so an upstream regression still surfaces within a day — attributable
+    # to the bump, instead of turning the nightly red underneath a run.
+    # Production users pin their own version.
+    image: greenmail/standalone:2.1.14
     environment:
       # `setup.test.all` starts SMTP/IMAP/POP3 on the documented test
       # ports; the bridge only ever uses 3025 and 3143.
