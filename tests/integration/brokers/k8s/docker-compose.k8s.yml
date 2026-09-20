@@ -23,7 +23,7 @@ services:
     # suite, so an upstream regression still surfaces within a day — attributable
     # to the bump, instead of turning the nightly red underneath a run.
     # Production users pin their own version.
-    image: rancher/k3s:v1.34.1-k3s1
+    image: rancher/k3s:v1.37.0-k3s1
     # k3s server runs with privileged because it needs to mount its
     # own cgroups + iptables for kube-proxy.  This is a test-only
     # container on a dev/CI host — the security trade-off is
