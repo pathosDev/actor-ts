@@ -90,9 +90,15 @@ updates:
   # The Starlight site.  `docs-checks.yml` installs it frozen on every PR
   # and builds it, so a bump that does not resolve, or one that breaks the
   # rendering (#1527), is red here rather than at the release deploy (#473).
-  # No `@types/node` rule here: TypeDoc compiles `../src` with the *root*
-  # tsconfig, so the root's pin is the one that guards the library, and the
-  # copy in this manifest only types the site's own scripts.
+  # `@types/node` tracks the `engines` floor here as well.  This entry used
+  # to exempt it — TypeDoc compiles `../src` with the *root* tsconfig, so the
+  # root's pin is the one that guards the library, and the copy in this
+  # manifest only types the site's own scripts — and the first day of the
+  # entry took the exemption to 26 (#1601), which is types for a Node the
+  # docs never run on: `docs-checks.yml` and `docs.yml` set up 24.  One Node
+  # story instead (#1616): every Bun-installed manifest that declares
+  # `@types/node` declares the floor's major and carries this rule, and
+  # `tests/unit/ci/TypesNodeFloor.test.ts` holds both together.
   - package-ecosystem: "bun"
     directory: "/docs"
     schedule:
@@ -109,6 +115,10 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      - dependency-name: "@types/node"
+        update-types:
+          - "version-update:semver-major"
 
   # The DevTools UI toolchain (#483).  **Its PRs are red by construction and
   # that is the signal**: `bun run check:ui` compares the `source-hash` in
