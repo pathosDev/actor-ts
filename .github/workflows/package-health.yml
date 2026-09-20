@@ -107,7 +107,7 @@ jobs:
       # dependency graph, and the graph does not resolve this repository's root
       # Bun lockfile.  It records `fastify ^5.12.3` — the unresolved range out
       # of package.json — and carries no `find-my-way` entry at all, while
-      # bun.lock pins fastify@5.12.3 and find-my-way@9.7.0.  Which is why the
+      # bun.lock pins fastify@5.12.5 and find-my-way@9.7.0.  Which is why the
       # only Dependabot alerts this repository has ever produced come from the
       # npm lockfiles under `examples/`, and the HIGH advisories that sat in
       # the shipped closure produced none.  `bun audit` reads bun.lock
