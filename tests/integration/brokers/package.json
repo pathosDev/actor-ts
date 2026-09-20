@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Dependency manifest for the live broker test runners. Mirrors what an end-user would install per the docs (actor-ts's own runtime deps + one regular `dependencies` entry per adapter peer-dep), so the Dockerfile.runner images need ZERO peer-dep tricks at install time. See ./README.md for the full rationale.",
   "dependencies": {
-    "fastify": "^5.12.3",
+    "fastify": "^5.12.5",
     "ts-pattern": "^5.9.0",
     "@aws-sdk/client-s3": "^3.1128.0",
     "@aws-sdk/client-dynamodb": "^3.1128.0",
