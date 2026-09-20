@@ -34,6 +34,14 @@ export function storeShared(counters, index, value) {
 let heldResult = null;
 
 /**
+ * One id per worker: every thread imports its own instance of this module,
+ * and `crypto.randomUUID()` is a global on all three runtimes.  The case
+ * groups `heldByteLength` replies by it, because four runs issued in one
+ * tick are not guaranteed to land on four different workers (#1615).
+ */
+const WORKER_ID = crypto.randomUUID();
+
+/**
  * Returns `size` bytes of `fill` and keeps its own reference to them, so that
  * `heldByteLength` can say afterwards whether the reply cloned the buffer
  * (this worker still holds `size` bytes) or moved it (detached, so 0).
@@ -43,7 +51,10 @@ export function bytesResult(size, fill) {
   return heldResult;
 }
 
-/** What this worker still holds of its last `bytesResult`; -1 on a worker that never ran one. */
+/**
+ * What this worker still holds of its last `bytesResult` — -1 on a worker
+ * that never ran one — tagged with the worker it comes from.
+ */
 export function heldByteLength() {
-  return heldResult === null ? -1 : heldResult.byteLength;
+  return { worker: WORKER_ID, held: heldResult === null ? -1 : heldResult.byteLength };
 }

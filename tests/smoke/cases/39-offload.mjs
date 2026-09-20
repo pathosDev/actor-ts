@@ -67,17 +67,26 @@ export async function run({ actorTs, loadEntry }) {
     if (Atomics.load(counters, 3) !== 0) throw new Error('a refused run reached a worker: slot 3 was written');
 
     // Cloned back, however large, and never moved: every byte arrives here,
-    // and the worker that produced them still holds them.  The pool has four
-    // idle workers and dispatch is synchronous, so four runs issued in one
-    // tick land one per worker — exactly one of them ran `bytesResult`.
+    // and the worker that produced them still holds them.  Four runs issued
+    // in one tick do NOT land one per worker, though: the pool grows lazily,
+    // counts a worker as alive from the moment it is spawned, and dispatches
+    // only to one that has said it is ready — so on a runner where a thread
+    // takes a while to boot, the fourth run queues behind whichever worker
+    // frees first, which is the producer, and it answers twice (#1615,
+    // `[4194304,-1,-1,4194304]` on the Windows Node leg).  Each reply names
+    // its worker, and the claim is made over the distinct workers that
+    // answered: the producer is ready by definition and idle after its reply,
+    // so it is always among them.
     const bytes = await pool.run(bytesResult, [RESULT_BYTES, 7], { timeoutMs: 30_000 });
     if (!(bytes instanceof Uint8Array) || bytes.byteLength !== RESULT_BYTES) {
       throw new Error(`bytesResult(${RESULT_BYTES}) came back as ${bytes?.constructor?.name} of ${bytes?.byteLength} bytes`);
     }
     if (bytes[0] !== 7 || bytes[RESULT_BYTES - 1] !== 7) throw new Error(`the result's bytes did not survive the clone: first ${bytes[0]}, last ${bytes[RESULT_BYTES - 1]}, expected 7`);
-    const held = await Promise.all(Array.from({ length: pool.workerCount }, () => pool.run(heldByteLength, [], { timeoutMs: 30_000 })));
+    const replies = await Promise.all(Array.from({ length: pool.workerCount }, () => pool.run(heldByteLength, [], { timeoutMs: 30_000 })));
+    const heldByWorker = new Map(replies.map((reply) => [reply.worker, reply.held]));
+    const held = [...heldByWorker.values()];
     if (held.filter((length) => length === RESULT_BYTES).length !== 1 || held.includes(0)) {
-      throw new Error(`after the reply the workers hold ${JSON.stringify(held)} bytes of the result, expected exactly one to hold ${RESULT_BYTES}: a 0 means the buffer was moved out of its worker rather than cloned`);
+      throw new Error(`after the reply the ${heldByWorker.size} worker(s) that answered hold ${JSON.stringify(held)} bytes of the result, expected exactly one to hold ${RESULT_BYTES}: a 0 means the buffer was moved out of its worker rather than cloned`);
     }
 
     let thrown = null;
