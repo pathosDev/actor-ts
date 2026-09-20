@@ -1,11 +1,12 @@
 {
   "lockfileVersion": 1,
+  "configVersion": 0,
   "workspaces": {
     "": {
       "name": "actor-ts-comparison-benchmarks",
       "devDependencies": {
         "nact": "7.6.2",
-        "xstate": "5.32.5",
+        "xstate": "5.33.2",
       },
     },
   },
@@ -14,6 +15,6 @@
 
     "nact": ["nact@7.6.2", "", { "dependencies": { "denque": "^1.2.3" } }, "sha512-rEAwMbuv/rIaa+DLoPfZE/5CjnlVabS9bwSY/UpFSp0OfcOS5hRpe9F3KmS1U26G0TgrkFb+66BbVhsnEF0rwA=="],
 
-    "xstate": ["xstate@5.32.5", "", {}, "sha512-ULazi1oe6wGrXl0Frb6otSlkm5HLifbbVTkMk5kkSKqz4TkxJaVpnl6jOJwKeid3ORPxYyZQgNLUSYX9q65SIA=="],
+    "xstate": ["xstate@5.33.2", "", {}, "sha512-8tC7yXgeCvpT8gKEeEje6ikJJG1wpnoLiXe+HfECW8m10ubMd3QxKOwWA8KxPJVBcLwfdRoMKYxIBGYKmo37/A=="],
   }
 }
