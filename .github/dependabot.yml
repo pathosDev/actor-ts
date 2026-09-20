@@ -138,6 +138,22 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    # `typescript` here follows Angular's compiler window, not latest:
+    # `@angular/compiler-cli` and `@angular/build` 22.1 declare
+    # `typescript >=6.0 <6.1`, and the `~6.0.3` tilde in the manifest is that
+    # window written as a range (#483).  The updater does not read peer
+    # ranges, so the first day of this entry proposed 7.0.2 (#1604), under
+    # which `bun run build:ui` dies before it compiles a file — "Angular
+    # compilation initialization failed".  A 6.1 would fail the same way and
+    # arrives as a minor, because the tilde does not admit it and the
+    # updater rewrites the range.  Both are ignored; patches inside 6.0.x
+    # still flow.  When Angular widens the window, the tilde and this rule
+    # move together — the `@types/node` reasoning at the root.  #1612
+    ignore:
+      - dependency-name: "typescript"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
 
   # The frameworks measured against actor-ts (#27).  Pinned exactly, and a
   # merge here is a re-measure trigger: each result file names the version
