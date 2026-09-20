@@ -247,6 +247,23 @@ updates:
       # dependency across the directories it appears in.
       per-dependency:
         group-by: "dependency-name"
+    # `typescript` across the eight frontends stops at Angular's compiler
+    # window.  The two Angular pairs pin `~6.0.3` because `@angular/build`
+    # 22.1 declares `typescript >=6.0 <6.1`; the other six sit at `~5.9.3`.
+    # The first day of this entry proposed 7.0.2 for all eight in one PR
+    # (#1610), and 7.0 is not a bigger 6: its `.` export is `lib/version.cjs`
+    # and the legacy compiler API is gone, so `@angular/compiler-cli` dies at
+    # initialisation (measured on the DevTools UI, #1612) and `svelte-check` 4
+    # has nothing to load.  `next build` 16 runs under it and Vite never
+    # loads it — which is why the six could move and the pair cannot, and
+    # the per-dependency group lands one bump in every directory at once.
+    # So the pair holds the six: anything from 6.1 up is ignored here, a
+    # `5.9 → 6.0` still arrives (6.0 keeps the API), and the rule goes when
+    # Angular and svelte-check accept 7 — or when this entry is split so the
+    # pair can hold back alone.
+    ignore:
+      - dependency-name: "typescript"
+        versions: [">=6.1"]
 
   # ── .NET benchmark arms: `*.csproj` + `packages.lock.json` ────────────
 
