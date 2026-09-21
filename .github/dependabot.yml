@@ -309,7 +309,16 @@ updates:
       orleans:
         patterns:
           - "Microsoft.Orleans.*"
+      # The Orleans pair is excluded here explicitly, although the docs say a
+      # dependency joins the first group it matches: on the first run the
+      # 10.2.2 → 10.2.3 bump opened as the `orleans` group (#1607) *and*
+      # inside this group (#1608, together with Akka), and Dependabot closed
+      # the former as superseded once the latter merged.  Across
+      # `directories:` the precedence evidently does not hold, and two PRs
+      # for one bump is exactly the shape the group above exists to prevent.
       minor-and-patch:
+        exclude-patterns:
+          - "Microsoft.Orleans.*"
         update-types:
           - "minor"
           - "patch"
