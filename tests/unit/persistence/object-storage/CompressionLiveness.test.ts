@@ -40,11 +40,25 @@ import {
  * vacuously with a sub-millisecond call, or fails it for the wrong reason.
  * So each leg asserts the precondition first — the work took at least
  * {@link MINIMUM_WORK_MS} — and names the fix ("grow the fixture") when it
- * does not hold.  48 MiB of a repeated 16 KiB pseudo-random block measured
- * 135 ms (gzip level 9), 190 ms (gunzip), 340 ms (zstd level 22) and 185 ms
- * (zstd decompress) on Bun 1.4.2; the zstd compress leg uses the ultra level
- * because level 3 finishes the same input in 20 ms and level 19 in 85 ms,
- * neither a safe margin over the floor.
+ * does not hold.  The margin is judged on the fastest machine that runs the
+ * suite, not on the one the fixture was sized on: 48 MiB of a repeated
+ * 16 KiB pseudo-random block took 135 ms for gzip level 9 here on Bun 1.4.2,
+ * 123–128 ms on two Linux runners and **49.5 ms** on a third, faster one —
+ * every leg 2.5× quicker in that run — which is the precondition tripping
+ * on a runner class, not a slow day (#1621).  So the gzip compress leg and
+ * both decompress legs work on 160 MiB: gzip level 9 scales gently (139–186
+ * ms at 48 MiB, 557–616 ms at 160 MiB here), which puts the fastest runner
+ * near 165 ms, over three times the floor.
+ *
+ * The zstd compress leg stays at 48 MiB, as a prefix of the same buffer,
+ * because level 22 has a cliff rather than a slope: 48 MiB compresses in
+ * 0.26–0.38 s here, 96 MiB in 3.7–5.4 s and 128 MiB in 5.2–5.4 s — the
+ * ultra levels run a 128 MiB window — and 5 s is the per-test cap.  The
+ * ultra level is still the right one for the work: level 3 finishes the
+ * 48 MiB in 20 ms and level 19 in 85 ms, neither a safe margin over the
+ * floor.  The decode legs are unaffected, because they produce their frame
+ * at the default level and measure only the bytes coming back out (0.6–0.8 s
+ * for either algorithm at 160 MiB here).
  *
  * Bun only, like every `bun test` file — the cross-runtime half lives in
  * `tests/smoke/cases/41-object-storage-gzip-cap-liveness.mjs`, where Deno's
@@ -56,13 +70,15 @@ import {
 const MINIMUM_WORK_MS = 50;
 const TICK_INTERVAL_MS = 1;
 
-const FIXTURE_BYTES = 48 * 1024 * 1024;
+const FIXTURE_BYTES = 160 * 1024 * 1024;
+/** The zstd level-22 compress leg's input — see the header for the cliff above this. */
+const ZSTD_COMPRESS_BYTES = 48 * 1024 * 1024;
 const BLOCK_BYTES = 16 * 1024;
 
 /**
  * A pseudo-random block repeated to the fixture size: real compression work
  * (the block itself is incompressible) that still shrinks, so the decompress
- * legs read a small frame back out to 48 MiB.  `Math.imul` keeps the LCG in
+ * legs read a small frame back out to 160 MiB.  `Math.imul` keeps the LCG in
  * 32-bit arithmetic — a plain `*` overflows 2^53 and the sequence collapses
  * into a short cycle that compresses to nothing and finishes in no time.
  */
@@ -131,11 +147,13 @@ type LivenessLeg = {
   readonly algorithm: CompressionAlgo;
   /** The level the compress leg runs at — chosen for work, not for ratio. */
   readonly compressLevel: number;
+  /** What the compress leg encodes: the whole fixture, or the prefix that keeps zstd 22 off its cliff. */
+  readonly compressInput: Uint8Array;
 };
 
 const LEGS: readonly LivenessLeg[] = [
-  { algorithm: 'gzip', compressLevel: 9 },
-  { algorithm: 'zstd', compressLevel: 22 },
+  { algorithm: 'gzip', compressLevel: 9, compressInput: FIXTURE },
+  { algorithm: 'zstd', compressLevel: 22, compressInput: FIXTURE.subarray(0, ZSTD_COMPRESS_BYTES) },
 ];
 
 afterEach(() => {
@@ -144,17 +162,17 @@ afterEach(() => {
   resetCompressionCache();
 });
 
-describe.each([...LEGS])('$algorithm keeps the event loop turning (#1540)', ({ algorithm, compressLevel }) => {
+describe.each([...LEGS])('$algorithm keeps the event loop turning (#1540)', ({ algorithm, compressLevel, compressInput }) => {
   test('compress yields to a 1 ms interval while the body encodes', async () => {
     const compressor = compressorFor(algorithm);
-    const reading = await measure(() => compressor.compress(FIXTURE, compressLevel));
-    expectLive(reading, `${algorithm} compress at level ${compressLevel}`);
+    const reading = await measure(() => compressor.compress(compressInput, compressLevel));
+    expectLive(reading, `${algorithm} compress at level ${compressLevel} of ${compressInput.byteLength} bytes`);
   });
 
   test('decompress yields to a 1 ms interval while the body decodes', async () => {
     const compressor = compressorFor(algorithm);
-    // The default level — the decode leg is about the 48 MiB coming back out,
-    // and the frame that produces it is not what is being measured.
+    // The default level — the decode leg is about the 160 MiB coming back
+    // out, and the frame that produces it is not what is being measured.
     const frame = await compressor.compress(FIXTURE);
     const reading = await measure(() => compressor.decompress(frame));
     expectLive(reading, `${algorithm} decompress of ${FIXTURE_BYTES} bytes`);
