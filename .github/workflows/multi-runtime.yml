@@ -154,7 +154,11 @@ jobs:
       # The root typecheck reaches the DevTools UI through
       # scripts/ui-toolchain.mjs, which skips locally and fails hard under CI
       # (#483) — so CI is where the nested Angular install has to exist.
-      - run: bun run ui:install
+      # Frozen for the reason above, and written out rather than
+      # `bun run ui:install`: that script is the developer's unfrozen
+      # regenerate command, and through it this was the one CI install the
+      # frozen-install guard could not see (#1622).
+      - run: bun install --frozen-lockfile --cwd devtools-ui
       - run: bun run typecheck
       # Every suite, including the three that were quarantined behind
       # `ACTOR_TS_SKIP_FLAKY_MNS` until #538's criterion was met and #839
@@ -199,8 +203,8 @@ jobs:
   # defect a Linux-only matrix cannot see.
   #
   # Deliberately narrower than `unit-bun` above.  No `typecheck` and no
-  # `ui:install`: the compiler's output does not depend on the OS, and the
-  # Angular toolchain is a slow install whose staleness gate lives in the
+  # DevTools UI install: the compiler's output does not depend on the OS, and
+  # the Angular toolchain is a slow install whose staleness gate lives in the
   # `build` workflow.  What is left is what is actually platform-sensitive —
   # the suite, and the cross-runtime smoke cases that open real sockets and
   # spawn real processes.

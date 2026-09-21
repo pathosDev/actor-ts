@@ -147,8 +147,17 @@ jobs:
       # guard skips a missing toolchain locally and fails hard under CI (#483),
       # so the UI is type-checked on every run rather than only by whoever
       # happens to have installed it.
+      #
+      # Frozen, like the root install above, and written out rather than
+      # `bun run ui:install`: that script is the developer's command — the
+      # nested counterpart of a bare `bun install`, which is how
+      # devtools-ui/bun.lock gets regenerated after a manifest edit — and
+      # through it this was the one CI install that resolved its ranges afresh
+      # (#1622).  A `bun run` here is also read through to the script it runs
+      # by tests/unit/ci/WorkflowHygiene.test.ts now, so the flag is required
+      # either way.
       - name: Install the DevTools UI toolchain
-        run: bun run ui:install
+        run: bun install --frozen-lockfile --cwd devtools-ui
 
       - name: Typecheck
         run: bun run typecheck
