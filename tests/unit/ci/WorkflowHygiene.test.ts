@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 
@@ -478,21 +478,225 @@ type InstallStep = {
   readonly workflow: string;
   readonly line: number;
   readonly command: string;
+  /**
+   * Where the command was read from when the step did not write it out —
+   * `package.json#scripts.ui:install`, say — so a failure names the script
+   * that holds the install rather than the `bun run` line that called it.
+   */
+  readonly via?: string;
 };
 
-/** `bun install …` invocations, as a `run:` value or inside a block scalar. */
-function installSteps({ name, lines }: WorkflowFile): InstallStep[] {
-  const out: InstallStep[] = [];
+type PackageScripts = Readonly<Record<string, string>>;
+
+type Manifest = {
+  /** Repo-relative, `package.json` for the root. */
+  readonly path: string;
+  readonly scripts: PackageScripts;
+};
+
+const manifestsByDirectory = new Map<string, Manifest>();
+
+/**
+ * The `package.json` a step's `bun run <name>` resolves against.
+ *
+ * `bun run` takes the nearest manifest upward from its working directory, so
+ * `working-directory: docs` runs `docs/package.json`'s scripts and a directory
+ * with no manifest of its own runs its parent's — the root, for every test and
+ * script directory in this tree. Read the same way, or a `bun run build`
+ * under `docs/` would be checked against the root's `build`, which is a
+ * different command.
+ */
+function manifestAt(directory: string): Manifest {
+  const cached = manifestsByDirectory.get(directory);
+  if (cached) return cached;
+  let current = posix.normalize(directory.replaceAll('\\', '/'));
+  for (;;) {
+    const path = current === '.' ? 'package.json' : posix.join(current, 'package.json');
+    if (existsSync(join(REPOSITORY_ROOT, path))) {
+      const parsed: { scripts?: PackageScripts } = JSON.parse(readFileSync(join(REPOSITORY_ROOT, path), 'utf8'));
+      const manifest = { path, scripts: parsed.scripts ?? {} };
+      manifestsByDirectory.set(directory, manifest);
+      return manifest;
+    }
+    if (current === '.' || current === '/') throw new Error(`no package.json above ${directory}`);
+    current = posix.dirname(current);
+  }
+}
+
+type ScriptStep = {
+  readonly workflow: string;
+  readonly line: number;
+  /** The name after `bun run`. */
+  readonly script: string;
+  /** The step's `working-directory:`, `.` when it has none — an expression when it is a matrix value. */
+  readonly directory: string;
+};
+
+/**
+ * The step's `working-directory:`, or `.` when it declares none.
+ *
+ * A step's keys all sit at one indentation, so the step is the run of lines
+ * at that indentation (and deeper) between the `- ` that opens it and the next
+ * `- ` at the same column — the same reading `artifactUploads` does. `index`
+ * is any line of the step whose keys sit at the step's own indentation; for a
+ * line inside a block scalar, pass the `run:` key's index instead. Only the
+ * step-level key is modelled: no workflow here sets a job-level
+ * `defaults.run.working-directory`, and reading one would be a guess this
+ * file cannot check.
+ */
+function workingDirectoryOf(lines: readonly string[], index: number): string {
+  const stepIndent = keyIndentOf(lines[index] ?? '');
+  const opensStep = (line: string): boolean => /^\s*- /.test(line) && keyIndentOf(line) === stepIndent;
+  const siblings: string[] = [];
+  for (let back = index; back >= 0; back--) {
+    const line = lines[back] ?? '';
+    if (line.trim() === '') continue;
+    if (keyIndentOf(line) < stepIndent) break;
+    if (keyIndentOf(line) === stepIndent) siblings.push(line);
+    if (opensStep(line)) break;
+  }
+  for (let next = index + 1; next < lines.length; next++) {
+    const line = lines[next] ?? '';
+    if (line.trim() === '') continue;
+    if (keyIndentOf(line) < stepIndent || opensStep(line)) break;
+    if (keyIndentOf(line) === stepIndent) siblings.push(line);
+  }
+  for (const line of siblings) {
+    const match = /^[\s-]*working-directory:\s*(.+?)\s*$/.exec(line);
+    if (match) return (match[1] ?? '.').replace(/^(['"])(.*)\1$/, '$2');
+  }
+  return '.';
+}
+
+type ScriptLine = {
+  /** 1-based: the `run:` line for a scalar, the body line inside a block. */
+  readonly line: number;
+  readonly text: string;
+  /** Index of the `run:` key the line belongs to, for reading the step's other keys. */
+  readonly key: number;
+};
+
+/**
+ * Every line of every `run:` script: the scalar value on the key's own line,
+ * or each line of a `|` / `>` block. A block ends where `runScriptsOf` ends
+ * one — at the first non-blank line indented no deeper than the key — so a
+ * command nested inside a shell `if` is still the step's, whatever column it
+ * sits in.
+ */
+function scriptLinesOf(lines: readonly string[]): ScriptLine[] {
+  const out: ScriptLine[] = [];
   lines.forEach((line, index) => {
-    const match = /^\s*(?:- )?run:\s*(bun install\b.*)$/.exec(line)
-      ?? /^\s*(bun install\b.*)$/.exec(line);
-    if (!match) return;
-    out.push({ workflow: name, line: index + 1, command: (match[1] ?? '').trim() });
+    const run = /^\s*(?:- )?run:\s*(.*)$/.exec(line);
+    if (!run) return;
+    const value = (run[1] ?? '').trim();
+    if (!/^[|>][-+]?$/.test(value)) {
+      if (value !== '') out.push({ line: index + 1, text: value, key: index });
+      return;
+    }
+    const indent = keyIndentOf(line);
+    for (let next = index + 1; next < lines.length; next++) {
+      const candidate = lines[next] ?? '';
+      if (candidate.trim() !== '' && keyIndentOf(candidate) <= indent) break;
+      out.push({ line: next + 1, text: candidate.trim(), key: index });
+    }
   });
   return out;
 }
 
-const installs = workflows.flatMap(installSteps);
+/**
+ * A shell line split at `&&`, `||`, `;` and `|` — what the shell runs between
+ * two operators. Nothing else is parsed: the scripts here are one-liners with
+ * no quoting to respect, and the gain is that `cd docs && bun install` still
+ * yields the install.
+ */
+const segmentsOf = (text: string): string[] =>
+  text.split(/\s*(?:&&|\|\||;|\|)\s*/).map((segment) => segment.trim()).filter((segment) => segment !== '');
+
+const BUN_RUN = /^bun run ([^\s&|;]+)/;
+const BUN_INSTALL = /^bun install\b/;
+
+/**
+ * `bun run <script>` invocations, in a `run:` value or a block-scalar line,
+ * with the working directory the script name resolves in.
+ *
+ * A `bun run` is opaque to every line-shaped assertion in this file: the
+ * command it stands for lives in a `package.json`, not in the workflow. Three
+ * workflows installed the DevTools UI toolchain through `bun run ui:install`,
+ * and the frozen-install assertion below never saw an install there (#1622).
+ * These are the steps to read through.
+ */
+function scriptSteps({ name, lines }: WorkflowFile): ScriptStep[] {
+  const out: ScriptStep[] = [];
+  for (const { line, text, key } of scriptLinesOf(lines)) {
+    for (const segment of segmentsOf(text)) {
+      const match = BUN_RUN.exec(segment);
+      if (match) out.push({ workflow: name, line, script: match[1] ?? '', directory: workingDirectoryOf(lines, key) });
+    }
+  }
+  return out;
+}
+
+type ScriptCommand = {
+  /** One segment of a script body. */
+  readonly command: string;
+  /** The script whose body holds the segment: the entry point, or a script it chained to. */
+  readonly script: string;
+};
+
+/**
+ * Every command a script runs, with `bun run <other>` followed one script
+ * into the next rather than reported as a command of its own. `seen` stops a
+ * cycle — a script that calls itself fails at run time, not here — and a name
+ * that is not a script (a file, `bun run benchmarks/run-all.ts`) contributes
+ * nothing.
+ */
+function commandsRunBy(script: string, scripts: PackageScripts, seen = new Set<string>()): ScriptCommand[] {
+  if (seen.has(script)) return [];
+  seen.add(script);
+  const body = scripts[script];
+  if (body === undefined) return [];
+  return segmentsOf(body).flatMap((command) => {
+    const nested = BUN_RUN.exec(command);
+    return nested ? commandsRunBy(nested[1] ?? '', scripts, seen) : [{ command, script }];
+  });
+}
+
+/**
+ * `bun install …` invocations, whether written out or reached through a
+ * `package.json` script.
+ *
+ * Written out: any segment of a `run:` script that starts with `bun install`.
+ * Through a script: every `bun run <name>` step is resolved against the
+ * manifest its working directory selects (`manifestAt`), and each
+ * `bun install` segment the script runs — directly or through a chained
+ * `bun run` — becomes an install step of its own, carrying `via`. A step whose
+ * working directory is a GitHub expression names no manifest this file can
+ * read; it is left out here and reported by `unresolvableScriptSteps`, so it
+ * fails rather than passes.
+ */
+function installSteps(file: WorkflowFile, manifestIn: (directory: string) => Manifest = manifestAt): InstallStep[] {
+  const { name, lines } = file;
+  const out: InstallStep[] = [];
+  for (const { line, text } of scriptLinesOf(lines)) {
+    for (const command of segmentsOf(text)) {
+      if (BUN_INSTALL.test(command)) out.push({ workflow: name, line, command });
+    }
+  }
+  for (const step of scriptSteps(file)) {
+    if (GITHUB_EXPRESSION.test(step.directory)) continue;
+    const manifest = manifestIn(step.directory);
+    for (const { command, script } of commandsRunBy(step.script, manifest.scripts)) {
+      if (!BUN_INSTALL.test(command)) continue;
+      const via = `${manifest.path}#scripts.${script}${script === step.script ? '' : ` (called by ${step.script})`}`;
+      out.push({ workflow: name, line: step.line, command, via });
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+// `installs` is computed below `keyIndentOf`, beside `runScripts`, for the
+// reason given there: `workingDirectoryOf` reads it, and an eager scan placed
+// here would run inside its temporal dead zone.
 
 /** A single backslash, spelled so no shell heredoc or editor can eat it. */
 const BACKSLASH = String.fromCharCode(92);
@@ -633,6 +837,14 @@ const uploads = workflows.flatMap(artifactUploads);
 // beside the function would throw at import.
 const runScripts = workflows.flatMap(runScriptsOf);
 
+// Same reason: `installSteps` reaches `keyIndentOf` through `scriptLinesOf`
+// and `workingDirectoryOf`, and `GITHUB_EXPRESSION` directly.
+const installs = workflows.flatMap((file) => installSteps(file));
+
+/** `bun run` steps whose working directory is an expression, so no manifest can be read for them. */
+const unresolvableScriptSteps = workflows.flatMap((file) =>
+  scriptSteps(file).filter((step) => GITHUB_EXPRESSION.test(step.directory)));
+
 /**
  * A path with a dot-prefixed segment in it. `.` and `..` are navigation, not
  * hidden names, so they do not count — `./dist` is an ordinary path.
@@ -645,6 +857,30 @@ const isHiddenPath = (path: string): boolean =>
 
 /** Anything that fetches and executes somebody else's code on the runner. */
 const INSTALL_COMMAND = /\b(bun install|bunx|npm ci|npm install|npx|pnpm install|yarn install)\b/;
+
+/**
+ * The first thing a job runs that matches `INSTALL_COMMAND`, whether the step
+ * spells it out or reaches it through a `package.json` script — annotated with
+ * the script when it did. `undefined` when the job runs none.
+ *
+ * Reading through `bun run` closes the same blind spot here that the
+ * frozen-install assertion had (#1622): a job's own lines never show what a
+ * script does. A job's lines are a slice of the file, so the step scanner reads
+ * them as a file of their own; a matrix working directory is
+ * `unresolvableScriptSteps`' business.
+ */
+function thirdPartyCodeRunBy(job: WorkflowJob, manifestIn: (directory: string) => Manifest = manifestAt): string | undefined {
+  const written = job.lines.find((line) => INSTALL_COMMAND.test(line) && !line.trim().startsWith('#'));
+  if (written !== undefined) return written.trim();
+  return scriptSteps({ name: job.workflow, lines: job.lines })
+    .filter((step) => !GITHUB_EXPRESSION.test(step.directory))
+    .flatMap((step) => {
+      const manifest = manifestIn(step.directory);
+      return commandsRunBy(step.script, manifest.scripts)
+        .map(({ command, script }) => `${command} (${manifest.path}#scripts.${script})`);
+    })
+    .find((command) => INSTALL_COMMAND.test(command));
+}
 
 const declaresPermissions = (file: WorkflowFile): boolean =>
   file.lines.some((line) => /^permissions:/.test(line))
@@ -978,13 +1214,179 @@ describe('workflow hygiene', () => {
    * lockfile records and nobody can reproduce. Every install in CI is frozen;
    * a Dependabot PR going red here means `bun.lock` needs regenerating (#817),
    * which is the signal, not a bug.
+   *
+   * An install reached through a `package.json` script counts the same way
+   * (#1622). The fix there is usually not to freeze the script — `ui:install`
+   * is the developer's command, the nested counterpart of a bare root
+   * `bun install`, and freezing it would take away the way the lockfile gets
+   * regenerated — but to write the frozen install out in the workflow step,
+   * which is what the three DevTools UI installs do now.
    */
-  test.each(installs)('$workflow:$line installs from the lockfile', ({ command }) => {
+  test.each(installs)('$workflow:$line installs from the lockfile', ({ command, via }) => {
     expect(
       command,
-      `"${command}" resolves dependencies afresh instead of installing what `
-      + 'bun.lock records. Add --frozen-lockfile.',
+      `"${command}"${via ? ` (${via})` : ''} resolves dependencies afresh instead `
+      + 'of installing what the lockfile records. Add --frozen-lockfile'
+      + (via
+        ? ' — by writing the install out in the workflow step with the flag, the way '
+          + 'the DevTools UI install is; a script a developer runs to regenerate the '
+          + 'lockfile stays unfrozen.'
+        : '.'),
     ).toContain('--frozen-lockfile');
+  });
+
+  test('the scanner found the installs it reasons about', () => {
+    // The assertion above is a `test.each` over this list, and an empty list
+    // would satisfy it by running nothing at all.
+    expect(
+      installs.map((step) => `${step.workflow}:${step.line}`),
+      'No `bun install` was found in .github/workflows/. Either CI stopped '
+      + 'installing anything or this scanner stopped reading it; both are worth '
+      + 'failing on.',
+    ).not.toEqual([]);
+  });
+
+  test('the scanner reads an install through the package.json script that runs it', () => {
+    // The shape that was invisible until #1622: three workflows installed the
+    // DevTools UI toolchain as `bun run ui:install`, and the only `bun install`
+    // in sight was in package.json.
+    const file: WorkflowFile = {
+      name: 'fixture.yml',
+      lines: [
+        'jobs:',
+        '  build:',
+        '    steps:',
+        '      - name: Install the toolchain',
+        '        run: bun run toolchain:install',
+      ],
+    };
+    const manifest: Manifest = {
+      path: 'package.json',
+      scripts: { 'toolchain:install': 'bun install --cwd toolchain' },
+    };
+    expect(installSteps(file, () => manifest)).toEqual([
+      {
+        workflow: 'fixture.yml',
+        line: 5,
+        command: 'bun install --cwd toolchain',
+        via: 'package.json#scripts.toolchain:install',
+      },
+    ]);
+  });
+
+  test('the scanner follows a script through the scripts it chains to', () => {
+    const file: WorkflowFile = {
+      name: 'fixture.yml',
+      lines: [
+        'jobs:',
+        '  build:',
+        '    steps:',
+        '      - run: |',
+        '          echo preparing',
+        '          if [ -n "$CI" ]; then',
+        '            bun run ci:prepare',
+        '          fi',
+      ],
+    };
+    const manifest: Manifest = {
+      path: 'package.json',
+      scripts: {
+        'ci:prepare': 'bun run clean && bun run toolchain:install && bunx tsc',
+        'clean': 'rm -rf dist',
+        'toolchain:install': 'cd toolchain && bun install --frozen-lockfile',
+      },
+    };
+    expect(installSteps(file, () => manifest)).toEqual([
+      {
+        workflow: 'fixture.yml',
+        line: 7,
+        command: 'bun install --frozen-lockfile',
+        via: 'package.json#scripts.toolchain:install (called by ci:prepare)',
+      },
+    ]);
+  });
+
+  test("a step's working-directory selects the manifest its script is read from", () => {
+    // `docs.yml` runs `bun run build` under `working-directory: docs`. Read
+    // against the root, that is `build:ui && tsc`; read against docs/, it is
+    // the site build. The fixture gives the two manifests opposite answers.
+    const step = (lines: readonly string[]): WorkflowFile => ({
+      name: 'fixture.yml',
+      lines: ['jobs:', '  build:', '    steps:', ...lines],
+    });
+    const manifests = new Map<string, Manifest>([
+      ['.', { path: 'package.json', scripts: { build: 'bunx tsc' } }],
+      ['docs', { path: 'docs/package.json', scripts: { build: 'bun install && astro build' } }],
+    ]);
+    const manifestIn = (directory: string): Manifest => {
+      const manifest = manifests.get(directory);
+      if (!manifest) throw new Error(`unexpected directory ${directory}`);
+      return manifest;
+    };
+
+    expect(installSteps(step(['      - run: bun run build']), manifestIn)).toEqual([]);
+    expect(installSteps(step([
+      '      - name: Build the site',
+      '        working-directory: docs',
+      '        run: bun run build',
+    ]), manifestIn)).toEqual([
+      { workflow: 'fixture.yml', line: 6, command: 'bun install', via: 'docs/package.json#scripts.build' },
+    ]);
+    // The key may follow `run:` and the command may sit inside a block scalar;
+    // the step is the same step.
+    expect(installSteps(step([
+      '      - run: |',
+      '          bun run build',
+      '        working-directory: docs',
+      '      - run: bun run build',
+    ]), manifestIn)).toEqual([
+      { workflow: 'fixture.yml', line: 5, command: 'bun install', via: 'docs/package.json#scripts.build' },
+    ]);
+  });
+
+  test('a bun run under a matrix working directory is reported, not passed', () => {
+    const file: WorkflowFile = {
+      name: 'fixture.yml',
+      lines: [
+        'jobs:',
+        '  build:',
+        '    steps:',
+        '      - working-directory: ${{ matrix.directory }}',
+        '        run: bun run build',
+      ],
+    };
+    expect(scriptSteps(file)).toEqual([
+      { workflow: 'fixture.yml', line: 5, script: 'build', directory: '${{ matrix.directory }}' },
+    ]);
+    expect(installSteps(file, () => { throw new Error('no manifest can be read for an expression'); }))
+      .toEqual([]);
+  });
+
+  /**
+   * The complement of the fixture above, over the real tree: a `bun run`
+   * whose manifest this file cannot name would pass the frozen-install
+   * assertion by never reaching it. None exists today; the matrix steps in
+   * `examples.yml` write `npm ci` and `bun install --frozen-lockfile` out,
+   * which is the way to add one.
+   */
+  test('every bun run step names a working directory the guard can read', () => {
+    expect(
+      unresolvableScriptSteps.map((step) => `${step.workflow}:${step.line} bun run ${step.script} in ${step.directory}`),
+      'A `bun run` under a working-directory that is a GitHub expression resolves '
+      + 'against a manifest this guard cannot read, so an install in that script '
+      + 'would never reach the frozen-install assertion. Write the command out in '
+      + 'the step (with --frozen-lockfile if it installs), or pin the directory.',
+    ).toEqual([]);
+  });
+
+  test('the manifest reader finds the root scripts, a nested manifest, and walks up to the nearest one', () => {
+    // The fixture tests inject their manifests; this is what binds the real
+    // scan to disk. `ui:install` is the install the scanner was blind to.
+    expect(manifestAt('.').path).toBe('package.json');
+    expect(manifestAt('.').scripts['ui:install']).toMatch(BUN_INSTALL);
+    expect(manifestAt('docs').path).toBe('docs/package.json');
+    expect(manifestAt('docs/src').path).toBe('docs/package.json');
+    expect(manifestAt('tests/unit/ci').path).toBe('package.json');
   });
 
   /**
@@ -1253,13 +1655,31 @@ describe('workflow hygiene', () => {
 
   test.each(jobs)('$workflow#$name keeps write access away from installs', (job) => {
     if (!job.lines.some((line) => /^\s+contents:\s*write\s*$/.test(line))) return;
-    const offender = job.lines.find((line) => INSTALL_COMMAND.test(line) && !line.trim().startsWith('#'));
+    const offender = thirdPartyCodeRunBy(job);
     expect(
       offender,
-      `${job.workflow}#${job.name} grants contents: write and runs "${offender?.trim()}". `
+      `${job.workflow}#${job.name} grants contents: write and runs "${offender}". `
       + 'A job holding a credential that can push to the repository must not '
       + 'execute third-party code — split the privileged step into its own job.',
     ).toBeUndefined();
+  });
+
+  test('write access is checked against what a script runs, not only what the step spells out', () => {
+    const job: WorkflowJob = {
+      workflow: 'fixture.yml',
+      name: 'badge',
+      lines: [
+        '    permissions:',
+        '      contents: write',
+        '    steps:',
+        '      - run: bun run build',
+      ],
+    };
+    const scripts = { 'build': 'bun run build:ui && bunx tsc', 'build:ui': 'bun scripts/build-devtools-ui.mjs' };
+    expect(thirdPartyCodeRunBy(job, () => ({ path: 'package.json', scripts })))
+      .toBe('bunx tsc (package.json#scripts.build)');
+    expect(thirdPartyCodeRunBy(job, () => ({ path: 'package.json', scripts: { build: 'bun scripts/build.mjs' } })))
+      .toBeUndefined();
   });
 });
 
