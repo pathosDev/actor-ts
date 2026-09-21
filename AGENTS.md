@@ -404,6 +404,18 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   `bun run build:lib` is `tsc` alone, for the jobs that want `dist/` and have
   no opinion about the UI.
 
+  **`ui:install` is the developer's command and stays unfrozen** — it is the
+  nested counterpart of a bare root `bun install`, the way `devtools-ui/bun.lock`
+  gets regenerated after a manifest edit. CI does not call it: the three
+  workflows that need the toolchain write `bun install --frozen-lockfile --cwd
+  devtools-ui` out, like every other install in CI (#622), so an edit to
+  `devtools-ui/package.json` needs the regenerated `bun.lock` in the same
+  commit or the frozen install goes red. Through the script it was the one CI
+  install that resolved its ranges afresh, and the one
+  `tests/unit/ci/WorkflowHygiene.test.ts` could not see; that guard now reads a
+  `bun run <script>` through to the manifest the step runs in, so moving an
+  install behind a script is not a way past it (#1622).
+
   The UI has **two test runners, and their file patterns must stay disjoint**.
   The framework-free half (`format`, `history`, `flamegraph`, `profileTree`,
   `stateDiff`, `actorsTree`, `uptime`, and the chart-option builders) runs

@@ -76,8 +76,17 @@ jobs:
       # separate, deliberately un-hoisted install (#483), so without this the
       # publish would fail at the last possible moment — after the tag and the
       # GitHub Release already exist.
+      #
+      # Frozen matters more here than anywhere: `build:ui` regenerates the
+      # embedded bundle from this tree and that regenerated module is what
+      # gets packed, so an unfrozen resolve shipped a DevTools bundle built
+      # from whatever devtools-ui/package.json's ranges resolved to that day —
+      # under a provenance attestation, and invisible to `check:ui`, whose hash
+      # covers the ranges and not the bytes.  Written out rather than
+      # `bun run ui:install` because that script is the developer's unfrozen
+      # regenerate command (#1622).
       - name: Install the DevTools UI toolchain
-        run: bun run ui:install
+        run: bun install --frozen-lockfile --cwd devtools-ui
 
       # Node 24 (the `engines` floor) bundles npm >= 11.5.1, which is the
       # minimum for trusted publishing — no separate npm upgrade step needed.

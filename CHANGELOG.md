@@ -4792,6 +4792,33 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **The DevTools UI toolchain is installed frozen in CI, and the
+  frozen-install guard reads through `bun run <script>`** (#1622).  Three
+  workflows installed the nested Angular toolchain as `bun run ui:install`,
+  whose body is `bun install --cwd devtools-ui` — the one install in CI
+  without `--frozen-lockfile` (#622), so the UI typecheck and its Vitest
+  suite ran against whatever `devtools-ui/package.json`'s ranges resolved to
+  that morning, and `publish.yml`, whose `prepublishOnly` rebuilds the
+  embedded bundle from the same tree, packed a DevTools bundle built from an
+  unrecorded resolve under a provenance attestation.  `check:ui` could not
+  notice: its hash covers the ranges, not the bytes.  The three steps now
+  write `bun install --frozen-lockfile --cwd devtools-ui` out; `ui:install`
+  stays the developer's unfrozen command, the nested counterpart of a bare
+  root `bun install` and the way the lockfile gets regenerated.
+
+  The guard was blind to it by construction — `installSteps()` in
+  `tests/unit/ci/WorkflowHygiene.test.ts` matched literal `bun install` on
+  workflow lines, and a `package.json` script is not a workflow line.  It now
+  resolves every `bun run <name>` step against the manifest its
+  `working-directory:` selects (walking up to the nearest one, as bun does),
+  follows chained `bun run`s, and holds each `bun install` segment it finds to
+  the same assertion, naming the script in the failure; a `bun run` under a
+  `${{ matrix.* }}` directory, whose manifest it cannot read, is reported
+  rather than passed.  The write-access assertion (`contents: write` never
+  beside an install) reads through scripts the same way.  Applied to the tree
+  before the workflow change, the extended guard failed on exactly the three
+  UI installs.
+
 - **`cors()` no longer echoes an `Origin` it cannot serialise back**
   (#1516).  `Access-Control-Allow-Origin` carried the request header
   verbatim whenever the matcher was a predicate.
