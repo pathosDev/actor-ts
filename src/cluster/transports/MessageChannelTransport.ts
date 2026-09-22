@@ -207,9 +207,15 @@ export class MessageChannelTransport implements Transport {
    * invariant as though it enforced it; nothing could observe its removal,
    * because there was nothing there to observe.
    *
-   * The *caller's* ordering is what earns this set its bound: {@link onFrame}
-   * validates the payload before it gets here, so a sender that never posts a
-   * legal frame never takes a slot — see
+   * {@link onFrame} validates the payload before it gets here, so a sender that
+   * never posts a legal frame never takes a slot.  That keeps *garbage* out of
+   * the map and nothing more: one schema-valid heartbeat under an invented
+   * `from` is all a slot costs, so the ordering does not decide who gets in
+   * first and does not bound who can fill it.  What the cap costs when it is
+   * full — a legitimate peer that arrives late is never listed, and the
+   * readiness check says so for the life of the process — is the mirror failure
+   * {@link MAX_KNOWN_CHANNEL_PEERS} spells out, together with the two reasons
+   * the shipped wirings do not reach it.  Both sides are asserted in
    * `tests/unit/cluster/TransportFrameGuardContract.test.ts`.
    */
   private rememberPeer(from: NodeAddress): void {

@@ -25,7 +25,9 @@
  */
 import { afterEach, describe, expect, test } from 'bun:test';
 import { NoopLogger } from '../../../src/Logger.js';
+import { transportReachesCluster } from '../../../src/cluster/ClusterHealthChecks.js';
 import { MAX_KNOWN_CHANNEL_PEERS } from '../../../src/cluster/Constants.js';
+import { Member } from '../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { encodeFrame, type WireMessage } from '../../../src/cluster/Protocol.js';
 import {
@@ -402,17 +404,23 @@ describe('MessageChannelTransport — the known-peer set is bounded', () => {
   });
 
   /**
-   * What the cap counts, and therefore who can fill it.
+   * What the cap counts, and — just as much — what that does *not* buy.
    *
    * `onFrame` validates the payload *before* it records the sender, so a peer
    * that never sends a frame the wire schema accepts never earns a slot.  With
    * the two steps the other way round the set would count anything that clears
-   * the envelope guard — and since `peers()` is bounded at
-   * {@link MAX_KNOWN_CHANNEL_PEERS} and refuses the newest once full, a stranger
-   * posting cheap garbage under a thousand invented addresses would fill it and
-   * then keep a genuine peer out of the readiness check for the life of the
-   * process.  The cap and the ordering are one mechanism: neither alone is the
-   * bound.
+   * the envelope guard, which is cheaper still.
+   *
+   * It is worth being exact about what the ordering closes, because the first
+   * version of this comment was not.  It keeps *garbage* out of the map.  It
+   * does **not** make the map hard to fill: a schema-valid heartbeat under an
+   * invented `from` costs a stranger nothing, and a thousand of them fill the
+   * cap — after which a genuine peer arriving late is never listed and the
+   * readiness check reports this node unready against it for the life of the
+   * process (asserted below).  The cap and the ordering are two mechanisms
+   * answering two questions: the ordering decides what counts as a sender, the
+   * cap decides how many are remembered, and neither makes the other
+   * unnecessary or sufficient.
    */
   test('a sender whose payload is refused never earns a place in the set', async () => {
     const self = freshAddress();
@@ -453,7 +461,23 @@ describe('MessageChannelTransport — the known-peer set is bounded', () => {
     await transport.shutdown();
   });
 
-  test('a frame from a stranger is still delivered after the cap fills', async () => {
+  /**
+   * The cap's mirror failure, named rather than merely observed.
+   *
+   * Refusing the newest is the right half of the trade — see
+   * {@link MAX_KNOWN_CHANNEL_PEERS} — but it is a trade, and this is the side
+   * it costs: a peer whose first valid frame arrives after the set is full is
+   * **never listed**, nothing ever removes an entry, and `peers()` has one
+   * reader that cares.  `transportReachesCluster` reports the node not ready
+   * unless an expected member is still named there, so a set filled ahead of a
+   * legitimate peer keeps that node out of its load balancer for the life of
+   * the process.  The frames themselves keep arriving throughout, which is why
+   * this is a readiness failure and not a delivery one.
+   *
+   * Asserting it here is what makes a later move to eviction or pruning
+   * re-argue the trade instead of silently reversing it.
+   */
+  test('a frame from a stranger is still delivered after the cap fills, but the stranger is never ready', async () => {
     // The cap bounds the bookkeeping, never the traffic: refusing frames once
     // the set filled would trade a memory leak for a denial of service.
     const self = freshAddress();
@@ -462,6 +486,13 @@ describe('MessageChannelTransport — the known-peer set is bounded', () => {
     const received: WireMessage[] = [];
     transport.setHandler((_from, message) => received.push(message));
     await transport.start();
+
+    // The control: an established peer, recorded before the flood, and the
+    // reason the readiness assertion below means anything.
+    const established = new NodeAddress(SYSTEM, '10.0.0.7', 8_888);
+    port.inject({
+      from: established.toJSON(), to: self.toJSON(), payload: wellFormedFrame(established),
+    });
 
     for (let i = 0; i < MAX_KNOWN_CHANNEL_PEERS; i += 1) {
       const peer = new NodeAddress(SYSTEM, '10.0.0.4', 1_000 + i);
@@ -474,6 +505,24 @@ describe('MessageChannelTransport — the known-peer set is bounded', () => {
 
     expect(received.length).toBe(1);
     expect(transport.peers().some((peer) => peer.equals(late))).toBe(false);
+
+    // …and 100 more frames do not change that: nothing retries a refused slot.
+    for (let i = 0; i < 100; i += 1) {
+      port.inject({ from: late.toJSON(), to: self.toJSON(), payload: wellFormedFrame(late) });
+    }
+    expect(received.length).toBe(101);
+    expect(transport.peers().some((peer) => peer.equals(late))).toBe(false);
+
+    // The consequence, in the one reader that has it: not ready against the
+    // late peer, ready against the established one, on the same `peers()`.
+    const listed = transport.peers();
+    expect(transportReachesCluster(
+      [new Member(self, 'up', 1), new Member(late, 'up', 1)], self, listed,
+    )).toBe(false);
+    expect(transportReachesCluster(
+      [new Member(self, 'up', 1), new Member(established, 'up', 1)], self, listed,
+    )).toBe(true);
+
     await transport.shutdown();
   });
 });
