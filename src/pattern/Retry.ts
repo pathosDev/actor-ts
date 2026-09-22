@@ -1,4 +1,28 @@
 import type { Scheduler } from '../Scheduler.js';
+import { OptionsError } from '../util/OptionsValidator.js';
+
+/**
+ * Refuse a `RetryOptions` value, the way the rest of the tree refuses one.
+ *
+ * `OptionsError` rather than the bare `Error` these checks used to throw.
+ * Every other refused argument in the framework raises it — `assertAskTimeout`,
+ * `assertStashCapacity`, every `OptionsValidator` subclass — and the
+ * difference is not cosmetic: `retry` wraps a caller's factory, so the error
+ * that comes back out of it is *usually* the factory's own.  A plain `Error`
+ * from the option checks is indistinguishable from that, and a caller
+ * branching on "was my call refused or did my dependency fail?" had nothing to
+ * branch on.  Pre-1.0, changing the class is a hard cut rather than a
+ * deprecation; `OptionsError extends Error`, so a `catch` that only reads
+ * `.message` is unaffected.
+ */
+function refuse(field: string, reason: string, value: unknown): never {
+  throw new OptionsError(
+    `retry: ${field} ${reason} (got ${OptionsError.renderValue(value)})`,
+    'retry',
+    field,
+    value,
+  );
+}
 
 export type RetryOptions = {
   /** Total attempts including the initial call.  Must be >= 1. */
@@ -136,13 +160,36 @@ function applyJitter(base: number, randomFactor: number, random: () => number): 
  */
 export async function retry<T>(factory: () => Promise<T>, options: RetryOptions): Promise<T> {
   const max = options.attempts;
-  if (max < 1) throw new Error(`retry: attempts must be >= 1 (got ${max})`);
+  if (max < 1) refuse('attempts', 'must be >= 1', max);
   const base = options.delayMs ?? 0;
   const factor = options.factor ?? 1;
   const maxDelay = options.maxDelayMs ?? DEFAULT_MAX_RETRY_DELAY_MS;
   const randomFactor = options.randomFactor ?? 0;
   if (randomFactor < 0 || randomFactor > 1) {
-    throw new Error(`retry: randomFactor must be in [0, 1] (got ${randomFactor})`);
+    refuse('randomFactor', 'must be in [0, 1]', randomFactor);
+  }
+  // The other three knobs of the schedule, refused here for the reason the
+  // two above are (#771, #1509).  Left unchecked they all land on the same
+  // outcome: the product below is `NaN`, negative or zero, `if (delay > 0)`
+  // is false, and the wait is skipped *entirely* — so `retry` busy-loops
+  // against the dependency that is already failing.  That is the failure
+  // direction the timer clamp exists to invert, reached through the options
+  // instead of through the arithmetic, and none of the shapes needs a typo:
+  // an absent configuration field arrives as `undefined` and any arithmetic
+  // over it as `NaN`.
+  //
+  // `Infinity` is legal for `maxDelayMs` alone, because there it *means*
+  // something — the documented opt-out of the default ceiling, after which
+  // the 32-bit timer clamp is what bounds the schedule.  As a base or a
+  // multiplier it means nothing a finite delay can come out of.
+  if (!Number.isFinite(base) || base < 0) {
+    refuse('delayMs', 'must be a non-negative finite number', base);
+  }
+  if (!Number.isFinite(factor) || factor <= 0) {
+    refuse('factor', 'must be a positive finite number', factor);
+  }
+  if (Number.isNaN(maxDelay) || maxDelay < 0) {
+    refuse('maxDelayMs', 'must be >= 0 (Number.POSITIVE_INFINITY for no ceiling)', maxDelay);
   }
   const random = options.random ?? Math.random;
   const shouldRetry = options.shouldRetry ?? ((): boolean => true);

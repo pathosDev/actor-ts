@@ -55,6 +55,21 @@ Vier Knöpfe kooperieren zur Steuerung des Delays zwischen Versuchen:
 | `maxDelayMs` | Obergrenze für jedes einzelne Delay.  Default `60_000` (eine Minute).  Für einen unbegrenzten Zeitplan `Number.POSITIVE_INFINITY` übergeben — dann bleibt nur noch das 32-Bit-Timer-Limit, auf das `retry` bedingungslos klemmt (siehe den Overflow-Hinweis am Ende dieser Seite). |
 | `randomFactor` | Jitter-Anteil in `[0, 1]`.  Das Delay wird auf `Delay × (1 ± randomFactor)` gestreut.  Default `0` (kein Jitter). |
 
+Ein fehlerhafter Wert für einen davon wird dort, wo du `retry`
+aufrufst, **abgelehnt** — mit einem `OptionsError`, bevor die Factory
+ein einziges Mal läuft: `delayMs` endlich und mindestens `0`, `factor`
+endlich und über `0`, `maxDelayMs` mindestens `0` (oder
+`Number.POSITIVE_INFINITY` für den unbegrenzten Zeitplan),
+`randomFactor` innerhalb von `[0, 1]`.  Ungeprüft landen sie alle an
+derselben Stelle — ein berechnetes Delay, das `NaN`, negativ oder null
+ist und von der Schleife übersprungen wird — eine einzige vertippte
+Option würde das Backoff also in eine Hot Loop gegen die ohnehin
+ausgefallene Dependency verwandeln.  Das ist genau die Richtung, die
+das Klemmen am Ende dieser Seite umkehren soll, hier über die Optionen
+statt über die Arithmetik erreicht.  Deshalb wird abgelehnt statt
+geklemmt: es gibt kein sinnvolles Ersatz-Delay, wenn das angeforderte
+keine Zahl ist.
+
 ```ts
 // Konstant 500ms zwischen Versuchen:
 retry(factory, { attempts: 5, delayMs: 500 });
