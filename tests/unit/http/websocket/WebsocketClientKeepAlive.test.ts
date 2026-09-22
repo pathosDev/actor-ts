@@ -166,6 +166,25 @@ class HeartbeatClient extends DefaultKeepAliveClient {
 }
 
 /**
+ * A client that overrides the hook and then always declines — the shape
+ * `keepAliveFrame`'s own JSDoc calls "by its own choice and without the
+ * warning an un-overridden hook earns".
+ *
+ * `armKeepAlive` decides by prototype identity, not by calling the hook, so
+ * this subclass arms a timer.  On a runtime with no `ping()` that timer puts
+ * zero bytes on the wire — which is the shape #751 reported, minus the
+ * framework's authorship, and is deliberate.  A probe would have to call
+ * `keepAliveFrame()` at connect time, and it cannot tell "this class has no
+ * keepalive" from "the application has nothing to say right now"; those want
+ * opposite answers.  The warning is not repeated here for the same reason it
+ * exists at all: it tells an operator the *framework* cannot send, and here
+ * the subclass can and has chosen not to, once per tick, forever.
+ */
+class NullKeepAliveClient extends DefaultKeepAliveClient {
+  protected override keepAliveFrame(): WebsocketFrame | null { return null; }
+}
+
+/**
  * A heartbeat client that reports every `sendRaw` made on its behalf.
  *
  * This is the direct form of #1514's claim, and it holds whether or not a
@@ -625,5 +644,61 @@ describe('WebsocketClientActor — keepalive (#751)', () => {
     // Both frames reached the wire, and neither was handed to the buffer's
     // entry point on the way.
     expect(recordedRawSends).toEqual([]);
+  });
+
+  /**
+   * An override that always returns `null` arms a timer that sends nothing,
+   * silently — and that is the decision, not an oversight.
+   *
+   * It is the reported failure mode of #751 reproduced by a subclass rather
+   * than by the framework, which is why it is pinned rather than warned
+   * about.  `armKeepAlive` asks whether `keepAliveFrame` is overridden, not
+   * what it returns, and the two are different questions: a probe at connect
+   * time cannot tell "this class has no keepalive" from "the application has
+   * nothing to say right now", and it would have to invent a speculative
+   * frame to ask.  The warning belongs to a framework that cannot send;
+   * here the subclass can and has declined, and a line per tick would be the
+   * same sentence forever on a deliberate choice.
+   *
+   * Without a test the arming logic could drift either way and nobody would
+   * notice — into warning on a deliberate silence, or into refusing to arm
+   * for an override that merely paused.  So: the timer exists, it fires, and
+   * it says nothing.
+   */
+  test('an override that always returns null arms a silent timer, and no warning', async () => {
+    const socket = new SilentSocket();
+    const log = await connectedClient('ws-keepalive-null-frame', socket, NullKeepAliveClient);
+
+    // The timer has to be *running* — "nothing was sent" is also true of a
+    // timer that was never armed, and this decision is about the other one.
+    await awaitCondition(() => keepAliveTicks >= 2, {
+      timeoutMs: 4_000,
+      label: 'the keepalive timer fired twice',
+    });
+    expect(recordedKeepAliveTimers()).toEqual([KEEP_ALIVE_INTERVAL_MS]);
+    expect(socket.sent).toEqual([]);
+    expect(keepAliveWarnings(log)).toEqual([]);
+  });
+
+  /**
+   * The same override where the runtime does have `ping()`.
+   *
+   * The documented fallback: a tick on which the hook declines still emits
+   * the protocol control frame, so "always null" costs an application-level
+   * keepalive, not every keepalive.
+   */
+  test('a null frame still falls back to native ping() where there is one', async () => {
+    const socket = new PingingSocket();
+    const log = await connectedClient('ws-keepalive-null-ping', socket, NullKeepAliveClient);
+
+    await awaitCondition(() => socket.pingCount >= 2, {
+      timeoutMs: 4_000,
+      label: 'the native ping fired twice for a declining hook',
+    });
+    // A control frame is not a message: the hook declined, so nothing
+    // application-level went out.
+    expect(socket.sent).toEqual([]);
+    expect(recordedKeepAliveTimers()).toEqual([KEEP_ALIVE_INTERVAL_MS]);
+    expect(keepAliveWarnings(log)).toEqual([]);
   });
 });
