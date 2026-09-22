@@ -717,9 +717,11 @@ export abstract class ReplicatedEventSourcedActor<Command, Event, State>
         this._observedCapacityWarned = true;
         this.log.warn(
           `replicated-es '${this.persistenceId}': the event history reached ${this._events.length} events ` +
-          `(maxObservedEvents() = ${this.maxObservedEvents()}); remote envelopes are refused from here on. ` +
+          `(maxObservedEvents() = ${this.maxObservedEvents()}); remote envelopes are refused from here on, ` +
+          `and the refusal is permanent for this entity — a snapshot carries the whole history and recovery ` +
+          `re-seeds it, so restarting does not clear it. ` +
           `Refused rather than evicted — dropping history changes the fold and dropping deduplication keys ` +
-          `reopens double-apply. Raise the hook, or snapshot and compact (#535).`,
+          `reopens double-apply. Raising the hook is the only relief today; compaction is #535.`,
         );
       }
       return;

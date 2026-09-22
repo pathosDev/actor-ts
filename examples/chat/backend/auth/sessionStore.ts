@@ -46,6 +46,18 @@
  * reach by accident.  Production sets `CHAT_TOKEN_SECRET` to a strong
  * random value, shared across every cluster node so resume works
  * during failover.
+ *
+ * **When the decision happens** is a separate property from what it
+ * decides, and {@link resolveSessionSecret} exists to make it callable
+ * on its own.  The store is constructed late — it needs a
+ * `DistributedDataHandle`, which needs a cluster — so a throw from the
+ * constructor lands after the node has created its data directory,
+ * registered its persistence plug-ins and bound its cluster transport.
+ * None of that is undone on the way out: the entry point's `catch`
+ * calls `process.exit(1)` before any shutdown task is registered.  A
+ * missing credential should cost a process that never started, not one
+ * that started and then fell over, so `main.ts` resolves the secret as
+ * its first act and hands the result here.
  */
 import * as crypto from 'node:crypto';
 import { LWWMap } from '../../../../src/crdt/index.js';
@@ -74,12 +86,86 @@ type TokenPayload = {
   readonly e: number;
 };
 
+/**
+ * The signing key this run settled on, and how it got there.
+ *
+ * Carried as a pair rather than as a bare string so the verdict travels
+ * with the key: a caller that resolved early cannot re-derive
+ * `usingDemoSecret` from the key without comparing against the demo
+ * constant, and a comparison is a second place for the rule to live.
+ */
+export type ResolvedSessionSecret = {
+  /** The HMAC key, already decided — never the empty string. */
+  readonly secret: string;
+  /** True iff {@link DEMO_FALLBACK_SECRET} is what `secret` holds. */
+  readonly usingDemoSecret: boolean;
+};
+
+/**
+ * Decide which secret this run signs with, or throw.
+ *
+ * Split out of the constructor so the decision can be made before the
+ * node does anything observable — see the note at the top of this file.
+ * It reads only the environment and its own argument, so calling it
+ * twice is free and calling it first is the point.
+ *
+ * @param override the constructor's explicit secret, when there is one.
+ * @throws when no secret is configured and the run has not opted in to
+ *   {@link DEMO_FALLBACK_SECRET}.
+ */
+export function resolveSessionSecret(override?: string): ResolvedSessionSecret {
+  // An empty string counts as unset, deliberately — `CHAT_TOKEN_SECRET=`
+  // in an env file would otherwise key the HMAC on zero bytes, which is
+  // worse than the published constant, not better.
+  //
+  // The empty string is the *only* value treated that way, and in particular
+  // this is not trimmed the way `demoSecretAllowed` trims its flag.  A secret
+  // is opaque: ` hunter2 ` and `hunter2` are different keys, the code has no
+  // basis for deciding which one the operator meant, and silently picking the
+  // trimmed one would sign tokens under a key no node can be told to
+  // reproduce.  A value of `' '` therefore starts normally, with
+  // `usingDemoSecret` false and no warning — it is a one-byte secret, which
+  // is a terrible one, but the entropy of a key is not something this can
+  // judge and a guess at it would be worse than the honest answer.  The empty
+  // string is exempt only because it cannot be a key at all.
+  const configured = override !== undefined && override !== ''
+    ? override
+    : process.env[TOKEN_SECRET_VARIABLE];
+  if (!configured && !demoSecretAllowed()) {
+    throw new Error(
+      `${TOKEN_SECRET_VARIABLE} is not set. Session tokens are HMAC-signed, `
+      + 'so without it this sample would sign them with a constant published '
+      + 'in its own source, and anyone could mint a token for any user. Set '
+      + `${TOKEN_SECRET_VARIABLE} to a strong random value, shared by every `
+      + `cluster node — or set ${DEMO_SECRET_OPT_IN_VARIABLE}=1 to accept the `
+      + 'demo secret for a local run.',
+    );
+  }
+  // `||`, not `??`: `configured` is the *environment's* value on the branch
+  // above, and that can be the empty string — the one case the comment at the
+  // top of this function exists for.  `??` only steps over `null` and
+  // `undefined`, so an opted-in run with `CHAT_TOKEN_SECRET=` in its env file
+  // skipped the throw (the guard reads `!configured`, which is correct) and
+  // then keyed the HMAC on zero bytes anyway, while `usingDemoSecret` and the
+  // warning both said the demo secret was in use.
+  return {
+    secret: configured || DEMO_FALLBACK_SECRET,
+    usingDemoSecret: !configured,
+  };
+}
+
 export class SessionStore {
   private readonly secret: Buffer;
   /** True iff this run opted in to the demo secret — logged at startup. */
   readonly usingDemoSecret: boolean;
 
   /**
+   * @param dd the handle backing the revocation list.
+   * @param secret an explicit secret (tests), or a
+   *   {@link ResolvedSessionSecret} from an earlier
+   *   {@link resolveSessionSecret} — which is what `main.ts` passes, so
+   *   that the throw below has already happened by the time a cluster
+   *   exists.  Omitted, the environment decides here.
    * @throws when no secret is configured and the run has not opted in
    *   to {@link DEMO_FALLBACK_SECRET}.  Failing here rather than at
    *   the first forged token is the whole point: a signing key that is
@@ -87,34 +173,16 @@ export class SessionStore {
    */
   constructor(
     private readonly dd: DistributedDataHandle,
-    /** Override for tests; production uses `CHAT_TOKEN_SECRET` env. */
-    secret?: string,
+    secret?: string | ResolvedSessionSecret,
   ) {
-    // An empty string counts as unset, deliberately — `CHAT_TOKEN_SECRET=`
-    // in an env file would otherwise key the HMAC on zero bytes, which is
-    // worse than the published constant, not better.
-    const configured = secret !== undefined && secret !== ''
+    // `typeof … === 'object'` separates the two forms exactly: the other two
+    // things `secret` can be are `string` and `undefined`, and both are the
+    // resolve-here case.
+    const resolved = typeof secret === 'object'
       ? secret
-      : process.env[TOKEN_SECRET_VARIABLE];
-    this.usingDemoSecret = !configured;
-    if (!configured && !demoSecretAllowed()) {
-      throw new Error(
-        `${TOKEN_SECRET_VARIABLE} is not set. Session tokens are HMAC-signed, `
-        + 'so without it this sample would sign them with a constant published '
-        + 'in its own source, and anyone could mint a token for any user. Set '
-        + `${TOKEN_SECRET_VARIABLE} to a strong random value, shared by every `
-        + `cluster node — or set ${DEMO_SECRET_OPT_IN_VARIABLE}=1 to accept the `
-        + 'demo secret for a local run.',
-      );
-    }
-    // `||`, not `??`: `configured` is the *environment's* value on the branch
-    // above, and that can be the empty string — the one case the comment at
-    // the top of this constructor exists for.  `??` only steps over `null` and
-    // `undefined`, so an opted-in run with `CHAT_TOKEN_SECRET=` in its env file
-    // skipped the throw (the guard reads `!configured`, which is correct) and
-    // then keyed the HMAC on zero bytes anyway, while `usingDemoSecret` and the
-    // warning both said the demo secret was in use.
-    this.secret = Buffer.from(configured || DEMO_FALLBACK_SECRET, 'utf-8');
+      : resolveSessionSecret(secret);
+    this.usingDemoSecret = resolved.usingDemoSecret;
+    this.secret = Buffer.from(resolved.secret, 'utf-8');
   }
 
   /** Mint a JWT-style token binding `username`, `issuedAt`, `exp`. */
@@ -196,6 +264,18 @@ export class SessionStore {
  * would read `CHAT_ALLOW_DEMO_SECRET=0` — which whoever typed it meant
  * as "off" — as an opt-in, and an opt-in that turns itself on is not
  * one.
+ *
+ * **Trimmed**, unlike the secret itself, and the asymmetry is the point
+ * rather than an oversight.  This variable is a *flag*: its whole
+ * meaning is the choice it records, an env file written
+ * `CHAT_ALLOW_DEMO_SECRET= 1` records that choice as plainly as one
+ * without the space, and refusing it would fail a start-up over a
+ * variable the operator did set — with a message about a variable they
+ * did not.  The trim costs nothing, because no legitimate value of a
+ * two-valued flag differs from another only in surrounding whitespace.
+ *
+ * {@link resolveSessionSecret} does not trim `CHAT_TOKEN_SECRET`, for
+ * the reason stated there: a key is opaque and every byte of it counts.
  */
 function demoSecretAllowed(): boolean {
   const value = process.env[DEMO_SECRET_OPT_IN_VARIABLE]?.trim().toLowerCase();

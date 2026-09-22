@@ -237,20 +237,32 @@ export const DEFAULT_D1_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 export const MAX_PERSISTENCE_ID_LENGTH = 255;
 
 /**
- * Longest accepted event tag, and most tags one event may carry.  Both cap
- * the row-size and tag-index growth an application can cause from user input
- * (#131 family) — see `TagValidator` for the full set of risks tag validation
- * closes.
+ * Longest accepted event tag.
+ *
+ * Caps, with {@link MAX_TAGS_PER_EVENT}, the row-size and tag-index growth an
+ * application can cause from user input (#131 family) — see `TagValidator`
+ * for the full set of risks tag validation closes.
  */
 export const MAX_TAG_LENGTH = 255;
+
+/**
+ * Most tags one event may carry — the count half of the bound
+ * {@link MAX_TAG_LENGTH} describes.
+ *
+ * Its own block because the two are separate rules over separate growth: one
+ * over-long tag widens a row, sixty-five short ones widen the tag index.
+ * `assertValidTags` checks them independently and names each in what it
+ * throws, and this one is per *event* rather than per append since #631.
+ */
 export const MAX_TAGS_PER_EVENT = 64;
 
 /** Sequence-number padding — matches `Number.MAX_SAFE_INTEGER`'s 16 digits with headroom. */
 export const SEQ_PADDING = 20;
 
 /**
- * Key-namespace segment the object-storage snapshot store writes under, and
- * the one the durable-state store writes under (#716).
+ * Key-namespace segment the object-storage snapshot store writes under —
+ * one half of the split that keeps the two stores' corpora apart, the other
+ * being {@link OBJECT_STORAGE_DURABLE_STATE_NAMESPACE} (#716).
  *
  * The two stores used to share a namespace, because `registerObjectStoragePlugins`
  * hands them the same `backend` and the same `prefix` and each laid its
@@ -264,12 +276,30 @@ export const SEQ_PADDING = 20;
  * `SnapshotIntegrityError` — an actor that could not start, reachable through
  * the framework's own one-call wiring with no application mistake at all.
  *
- * A namespace segment fixes it at the layout level rather than by filtering
- * afterwards: the two corpora cannot collide because they never share a
- * directory.  The segment sits between the operator's `prefix` and the
- * `persistenceId` — `<prefix>snapshots/<pid>/<seq>.json`,
- * `<prefix>state/<pid>/state.json` — so the per-entity directory that bounds
- * every LIST is preserved, and `prefix` keeps meaning what it meant.
+ * A namespace segment separates the two corpora at the layout level: they
+ * cannot collide because they never share a directory.  The segment sits
+ * between the operator's `prefix` and the `persistenceId` —
+ * `<prefix>snapshots/<pid>/<seq>.json`, `<prefix>state/<pid>/state.json` — so
+ * the per-entity directory that bounds every LIST is preserved, and `prefix`
+ * keeps meaning what it meant.
+ *
+ * **The split is not what closes that collision**, and the distinction is
+ * worth stating because the layout change is the expensive half.
+ * `snapshotSequenceOf` accepts a leaf only when it is exactly
+ * {@link SEQ_PADDING} digits followed by `.json` — 25 characters — so
+ * `'state.json'` fails the first of its four rules on length alone and can
+ * never be the key `loadLatest` returns, namespaces or no namespaces.
+ * Measured rather than reasoned: a well-formed durable-state body written to
+ * `<prefix>snapshots/<pid>/state.json`, where it still sorts after every
+ * sequence key, leaves `loadLatest` answering with the real snapshot.
+ *
+ * What the split buys is **defence in depth on the corpora themselves**.  Two
+ * sets of objects that are disjoint by *prefix* can be given lifecycle rules,
+ * backup selections and a `ReEncryptionSweep` scope in terms the bucket and
+ * its operator both evaluate — rather than ones that hold only because one
+ * filename fails a length check inside this package.  That is what the
+ * breaking key-layout change is for; the reported defect was closed by the
+ * filter beside it.
  *
  * They live here rather than beside either store because three files must
  * agree on them: both stores write them, and `ReEncryptionSweep`'s default
@@ -277,6 +307,20 @@ export const SEQ_PADDING = 20;
  * key layout is how a layout silently forks.
  */
 export const OBJECT_STORAGE_SNAPSHOT_NAMESPACE = 'snapshots/';
+
+/**
+ * Key-namespace segment the object-storage durable-state store writes under:
+ * `<prefix>state/<persistenceId>/state.json`, one object per entity,
+ * rewritten in place.
+ *
+ * The other half of the split {@link OBJECT_STORAGE_SNAPSHOT_NAMESPACE}
+ * explains, and it lives beside it for the same reason — three files have to
+ * agree on the layout, so neither segment may be spelled out a second time.
+ *
+ * Its own block rather than a shared one because it is separately public: it
+ * is a barrel export, and `ObjectStorageDurableStateStore` links it from the
+ * key-layout note that tells an operator where their state actually is.
+ */
 export const OBJECT_STORAGE_DURABLE_STATE_NAMESPACE = 'state/';
 
 /**
@@ -384,8 +428,18 @@ export const MAX_VECTOR_CLOCK_ENTRIES = 4_096;
  *
  * 100 000 is above what the documented workload for this pattern reaches
  * (small-write / many-read entities) and far below the point at which a refold
- * storm is survivable, so an actor approaching it wants snapshots or a lower
- * `maxObservedEvents()` rather than a bigger number.
+ * storm is survivable.
+ *
+ * Reaching it is a **one-way switch for the entity**, and nothing an operator
+ * can do today undoes it.  The bound counts the observed history, which holds
+ * this replica's *own* persists as well as its peers', so a busy honest
+ * replica reaches it on its own writes; and a snapshot is the full `events`
+ * array rather than a checkpoint, which recovery re-seeds the history from —
+ * so neither snapshotting nor discarding the journal sheds an event, and the
+ * refusal comes back with the actor.  An entity that expects to approach the
+ * bound therefore wants a *larger* `maxObservedEvents()` chosen up front, or a
+ * smaller one if its legitimate history is smaller than this; compaction, the
+ * thing that would genuinely unstick it, is #535.
  */
 export const DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS = 100_000;
 

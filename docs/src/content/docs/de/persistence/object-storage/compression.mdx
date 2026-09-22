@@ -84,13 +84,30 @@ zstd-Support unterscheidet sich je **Richtung**:
   Runtime ohne natives zstd anderswo geschriebene zstd-Bodies
   trotzdem **lesen** kann, sobald `fzstd` installiert ist.
 
-Beide Richtungen wählen eine Implementierung, indem sie sie
-**aufrufen** — nicht, indem sie prüfen, ob die Funktion existiert.
-Auf Deno fällt beides auseinander: `node:zlib` exportiert dort
+Die **nativen** Kandidaten — die Compressoren ebenso wie die beiden
+nativen Decompressoren — werden gewählt, indem sie **aufgerufen**
+werden, nicht indem geprüft wird, ob die Funktion existiert.  Auf Deno
+fällt beides auseinander: `node:zlib` exportiert dort
 zstd-Einsprungpunkte, hinter denen kein Binding steht.  So bekommt ein
 Runtime ohne funktionierendes zstd die Meldung des Frameworks, die die
 fehlende Fähigkeit benennt, und der `fzstd`-Fallback darunter bleibt
-erreichbar.
+erreichbar.  Die `fzstd`-Stufe ist die eine, die *nicht* per Aufruf
+geprüft wird, und das bewusst: reines JavaScript, kein natives Binding,
+das fehlen könnte — ein erfolgreicher **Import** beantwortet also schon,
+was der Aufruf fragen würde.
+
+Die beiden Punkte oben lesen sich unabhängig voneinander und sind es
+nicht, deshalb sei die Folge ausdrücklich genannt: Ein Runtime ohne
+natives zstd kann zstd-Bodies **lesen**, aber es lässt sich nicht auf
+`zstd` *konfigurieren*.  Die Wahl eines Algorithmus drückt
+Schreibabsicht aus, also prüft die Registrierung den Compress-Pfad —
+eine Deno-Replika, die `zstd` einstellt, um zu den Bun-Writern zu
+passen, denen sie folgt, startet damit nicht.  Konfiguriere einen
+solchen Leser stattdessen mit `gzip` (oder `none`): Der konfigurierte
+Algorithmus entscheidet nur, was der Store **schreibt**, während jeder
+Read gemäß dem `ATS1`-Flag des Bodys selbst dekodiert — ein auf gzip
+konfigurierter Store liest die zstd-Bodies seiner Peers also
+unverändert.
 
 `gzip` nutzt `node:zlib` und läuft überall (Bun, Node, Deno) ohne
 Zusatz-Dependency.

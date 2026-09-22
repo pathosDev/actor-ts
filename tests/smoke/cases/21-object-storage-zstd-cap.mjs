@@ -65,6 +65,45 @@ export async function run({ actorTs, loadEntry }) {
         /zstd (compression|decompression)/.test(text) && /gzip|fzstd/.test(text),
         `a zstd write failed without naming zstd and a way forward: ${text}`,
       );
+      // And here the case stops, deliberately — recorded because the obvious
+      // next assertion is that the same runtime can still READ a zstd body
+      // through the `fzstd` rung, which is a documented promise and is the one
+      // zstd read path such a runtime has (#1419).
+      //
+      // It is a gate that is missing, not a capability: measured on Deno 2.6.8,
+      // the write fails on the async forms and the read through `fzstd`
+      // succeeds.  Reaching it from here needs a zstd body this runtime cannot
+      // itself produce, and both ways of getting one were weighed and declined
+      // for now:
+      //
+      //   - A committed framed body pins more than it looks like it does.  It
+      //     fixes the `ATS1` header (`BodyCodec.ts`, flags byte 0b10 = zstd),
+      //     the durable-state JSON envelope inside the frame, and — on disk —
+      //     the filesystem backend's key layout, because nothing below the
+      //     store is reachable from a published entry point in isolation.  A
+      //     legitimate change to any of the three regenerates the fixture.
+      //     (That the bytes stop decoding is also the cross-version read
+      //     guarantee such a fixture would buy; it is both sides of one coin.)
+      //   - Spawning a sibling native runtime to write the body at run time
+      //     pins nothing and exercises the interoperability claim itself.  The
+      //     Deno leg already runs with `--allow-run` and `bun`/`node` are on
+      //     PATH wherever `bun run smoke:deno` runs, and cases 28/29 spawn
+      //     children already — but of the SAME runtime, so a cross-runtime
+      //     spawn is a new shape, and it has to FAIL rather than skip when no
+      //     sibling is found or it is the same non-gate as this early return.
+      //     That is the way back in when the cross-runtime read is worth
+      //     gating.
+      //
+      // Either way the reader has to be configured `gzip` or `none` — never
+      // `zstd`.  `probeCompressionAvailability('zstd')` probes the COMPRESS
+      // path, so a store configured for zstd cannot start on a runtime without
+      // native zstd at all, while `decodeBody` picks the decompressor from the
+      // body's own header — so a gzip-configured store reads a zstd body fine.
+      //
+      // Meanwhile the rung itself is not untested: the unit seam executes it on
+      // Bun, in `tests/unit/persistence/object-storage/
+      // ZstdDecompressResolution.test.ts`.  What is absent is the cross-runtime
+      // half, and that is the whole of what this comment records.
       return;
     }
 

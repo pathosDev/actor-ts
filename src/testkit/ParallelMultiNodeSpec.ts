@@ -1,4 +1,8 @@
 import { match } from 'ts-pattern';
+import {
+  DEFAULT_CONTROL_RPC_TIMEOUT_MS,
+  ParallelMultiNodeSpecOptionsValidator,
+} from './ParallelMultiNodeSpecOptions.js';
 import type { ParallelMultiNodeSpecOptions, ParallelMultiNodeSpecOptionsType } from './ParallelMultiNodeSpecOptions.js';
 import type {
   BrokeredMessage,
@@ -164,6 +168,9 @@ export class ParallelMultiNodeSpec {
       // other, the #538 quarantine having been measured against its own exit
       // criterion and lifted.
       awaitTimeoutMs: scaledMs(options.awaitTimeoutMs ?? 30_000),
+      // Scaled here and not at the arming site, for the reason above: the
+      // number the message reports has to be the number that was waited.
+      controlRpcTimeoutMs: scaledMs(options.controlRpcTimeoutMs ?? DEFAULT_CONTROL_RPC_TIMEOUT_MS),
       logLevel: options.logLevel ?? LogLevel.Off,
       addresses: options.addresses,
       failureDetector: options.failureDetector,
@@ -172,6 +179,10 @@ export class ParallelMultiNodeSpec {
       bootstrapModule: options.bootstrapModule,
       backend: options.backend,
     };
+    // Once, on the merged settings, so a builder and a plain object are held
+    // to the same rules — and after the spread, so a cross-field rule would
+    // see the resolved values (#1508).
+    new ParallelMultiNodeSpecOptionsValidator().validate(this.options);
   }
 
   /* ---------------------------- lifecycle --------------------------- */
@@ -607,8 +618,34 @@ export class ParallelMultiNodeSpec {
       let helloSeen = false;
       const onWorkerHello = (_hello: WorkerHelloMessage): void => {
         if (helloSeen) return;
+        try {
+          worker.postMessage(init);
+        } catch (error) {
+          onInitFrameRefused(error);
+          return;
+        }
+        // Latched on the successful post: a post that threw sent nothing, so
+        // there is no init frame for a later hello to duplicate.
         helloSeen = true;
-        worker.postMessage(init);
+      };
+      /**
+       * `init.data` is not all harness-built — `scenarioInitDataFor` is the
+       * test's own function and its return value rides in that frame — so the
+       * clone `postMessage` runs on this thread can refuse it, throwing a
+       * `DataCloneError` from inside this listener where nothing above it
+       * catches.  The same guard `WorkerCluster.handshake` carries, for the
+       * same reason and with the same effect: without it `start()` never
+       * settled, it waited out the handshake budget for a frame that had
+       * never left the harness (#1515).
+       */
+      const onInitFrameRefused = (cause: unknown): void => {
+        clearTimeout(timeout);
+        worker.removeEventListener('message', onMessage);
+        reject(new Error(
+          `Worker ${addr} could not be sent its init frame — the role's init data must be `
+          + `structured-cloneable (${cause instanceof Error ? cause.message : String(cause)})`,
+          { cause },
+        ));
       };
       const onWorkerReady = (_ready: WorkerReadyMessage): void => {
         clearTimeout(timeout);
@@ -633,9 +670,12 @@ export class ParallelMultiNodeSpec {
 
   /**
    * Send a control request to a worker and await its response.
-   * Times out after 5s — RPC failures usually indicate the worker
-   * is wedged; fast timeouts surface the issue rather than hanging
-   * the test forever.
+   * Times out after `controlRpcTimeoutMs` (5 s by default) — RPC failures
+   * usually indicate the worker is wedged; fast timeouts surface the issue
+   * rather than hanging the test forever.  A spec option since #1508: the
+   * default is bun's own per-test cap, so a suite that wants to observe this
+   * deadline rather than be pre-empted by the runner has to be able to move
+   * it.
    *
    * The rejection names the **role** as well as the request kind.  Which
    * question went unanswered is only half of what the reader needs: with
@@ -652,7 +692,7 @@ export class ParallelMultiNodeSpec {
     }
     const requestId = this.nextRequestId++;
     return new Promise<R>((resolve, reject) => {
-      const controlRpcMs = scaledMs(5_000);
+      const controlRpcMs = this.options.controlRpcTimeoutMs;
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
         reject(new Error(
