@@ -285,6 +285,26 @@ expression, and answers with a full collection scan instead of an index walk.
 A filter built straight out of request data is therefore refused rather than
 handed to the store.
 
+Two shapes are refused for the *structure* rather than the members: an operator
+that is not an array at all (`{ all: 'orders' }`, which used to be walked
+character by character and answered a question nobody asked) and a filter root
+that is neither a tag string nor an object (`42`, `null`, which read all three
+operators as `undefined` — the spec that matches *every* event, so a malformed
+filter would have widened the query instead of failing it).
+
+**Both entrances refuse at the call, not on the first result.**
+`currentEventsByTag` rejects its promise, and `eventsByTag` **throws
+synchronously** — the stream is never handed out.  So a `try`/`catch` wrapped
+around only the `for await` loop never sees the error; wrap the call to
+`eventsByTag` itself.
+
+The length bound has one consequence worth knowing.  Writes have been capped
+since v0.12.0, so a tag longer than the cap can only come from a journal this
+library wrote at v0.11.0 or earlier, or from a foreign writer.  Such events are
+no longer reachable **by tag** — the filter that would ask for them is refused —
+and stay reachable by `persistenceId`; a fresh append is what puts them back on
+the tag index.
+
 **The read rules are deliberately narrower than the write rules.**  An empty
 tag, a repeated tag, a comma and a control character are all rejected by
 `assertValidTags` when an event is persisted — and all four stay perfectly

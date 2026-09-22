@@ -287,8 +287,17 @@ export type TagFilterSpec = {
 
 /**
  * Normalise a {@link TagFilter} into the canonical {@link TagFilterSpec}
- * form.  A bare string `t` becomes `{ all: [t] }`; an object is
- * shallow-copied so callers can't mutate it after the fact.
+ * form.  A bare string `t` becomes `{ all: [t] }`; an object is copied — the
+ * object *and* each operator list — so callers can't mutate it after the fact.
+ *
+ * Copying the lists is what makes that sentence true rather than nearly true.
+ * The object spread alone left `spec.any` as the caller's own array, and
+ * `MongoQuery.currentEventsByTag` hands exactly that array to `fetchAndRefine`
+ * inside `{ tags: { $in: anyTags } }`, which then awaits `openForQuery()`
+ * before `.find()` reads it — so an application that mutated its filter array
+ * during that await changed the query *after* the validation below had
+ * approved it.  One allocation per query buys the boundary the paragraph
+ * claims.
  *
  * **And validated** (#738).  This is the one function every backend's tag
  * query routes through — `InMemoryQuery` normalises in both `eventsByTag` and
@@ -322,10 +331,14 @@ export function normalizeTagFilter(filter: TagFilter): TagFilterSpec {
   assertValidFilterTags('all', filter.all);
   assertValidFilterTags('any', filter.any);
   assertValidFilterTags('not', filter.not);
+  // Each operator list is copied, not just the object around it.  `undefined`
+  // stays `undefined` rather than becoming `[]`: an absent `any` imposes no
+  // constraint while `any: []` matches nothing, so normalising the two together
+  // would change what a filter means.
   return {
-    all: filter.all,
-    any: filter.any,
-    not: filter.not,
+    all: filter.all && [...filter.all],
+    any: filter.any && [...filter.any],
+    not: filter.not && [...filter.not],
   };
 }
 

@@ -130,7 +130,14 @@ export class WorkerMesh {
     const broker = new WorkerBroker(system.log);
     const channel = new MessageChannel();
     broker.register(mainAddress, channel.port1 as unknown as PortLike);
-    const transport = new MessageChannelTransport(mainAddress, channel.port2 as unknown as PortLike);
+    // …and so is the main thread's own transport (#1515).  The broker reports
+    // what it refuses to route; this reports what it refuses to deliver, which
+    // is the other half of the same channel and was the last silent edge on
+    // this path.  Without it a worker running a skewed version has its frames
+    // dropped here with nothing in the main system's log to say so.
+    const transport = new MessageChannelTransport(
+      mainAddress, channel.port2 as unknown as PortLike, system.log,
+    );
     const clusterOptions = ClusterOptions.create()
       .withHost(mainAddress.host)
       .withPort(mainAddress.port)

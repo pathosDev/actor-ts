@@ -240,3 +240,105 @@ describe('Config reads durations and sizes own-property-only (#785)', () => {
     expect(config.getBytes('sz')).toBe(4096);
   });
 });
+
+// #785 hardened `parseDuration` / `parseSize`, which is only half the path.
+// `getDuration` and `getBytes` short-circuit on `typeof value === 'number'` and
+// hand the value back without ever calling a parser, so the postcondition those
+// two functions now promise was simply not on the numeric branch — and `NaN` and
+// `Infinity` are both `'number'` to `typeof`.
+//
+// The two branches are reachable from different places, which is why both are
+// pinned below.  A *numeric* non-finite value needs a code-supplied overrides
+// object (`ActorSystemOptions.withConfig`, `Config.fromObject`) — HOCON text
+// cannot carry one, because `HoconParser` tests `Number.isFinite` on a numeric
+// literal and falls back to a string.  That fallback is exactly what leaves
+// `getNumber` open on its *string* branch: the overflowing literal arrives as a
+// string, `getNumber`'s own numeric regex matches it, and `Number(...)` returns
+// the `Infinity` the parser refused to produce.  So `getNumber` is reachable
+// from an `application.conf` a user wrote, not only from code.
+describe('Config refuses a non-finite number, duration or size (#1513)', () => {
+  test('a NaN drain budget is refused, and the error names the key', () => {
+    // `Number(process.env.DRAIN_MS)` with the variable unset is the realistic
+    // origin, and it is nowhere near the key it lands on — so naming the path
+    // is the whole value of failing here rather than at the timer.
+    const config = Config.fromObject({
+      'actor-ts': { system: { 'shutdown-drain-timeout': Number.NaN } },
+    });
+    expect(() => config.getDuration('actor-ts.system.shutdown-drain-timeout')).toThrow(ConfigError);
+    expect(() => config.getDuration('actor-ts.system.shutdown-drain-timeout')).toThrow(
+      /Config at "actor-ts\.system\.shutdown-drain-timeout" is not a finite duration \(got NaN\)/,
+    );
+  });
+
+  test('an infinite duration is refused in both signs', () => {
+    const positive = Config.fromObject({ d: Number.POSITIVE_INFINITY });
+    expect(() => positive.getDuration('d')).toThrow(/is not a finite duration \(got Infinity\)/);
+    const negative = Config.fromObject({ d: Number.NEGATIVE_INFINITY });
+    expect(() => negative.getDuration('d')).toThrow(/is not a finite duration \(got -Infinity\)/);
+  });
+
+  test('a non-finite byte bound is refused instead of disabling the cap', () => {
+    // `limit > NaN` and `limit > Infinity` are both false, so either one turns
+    // a frame cap into no cap at all.
+    const notANumber = Config.fromObject({
+      'actor-ts': { cluster: { remote: { 'max-frame-bytes': Number.NaN } } },
+    });
+    expect(() => notANumber.getBytes('actor-ts.cluster.remote.max-frame-bytes')).toThrow(
+      /Config at "actor-ts\.cluster\.remote\.max-frame-bytes" is not a finite size \(got NaN\)/,
+    );
+    const infinite = Config.fromObject({
+      'actor-ts': { cluster: { remote: { 'max-frame-bytes': Number.POSITIVE_INFINITY } } },
+    });
+    expect(() => infinite.getBytes('actor-ts.cluster.remote.max-frame-bytes')).toThrow(
+      /is not a finite size \(got Infinity\)/,
+    );
+  });
+
+  test('getNumber refuses a non-finite numeric override', () => {
+    // The same class one branch over: `getInt` was already safe by accident,
+    // because `Number.isInteger` is false for both, but `getNumber` feeds
+    // thresholds that are compared with `>` — `unreachable-threshold`,
+    // `down-threshold` — where an Infinity never trips and downing stops.
+    expect(() => Config.fromObject({ n: Number.NaN }).getNumber('n')).toThrow(
+      /Config at "n" is not a finite number \(got NaN\)/,
+    );
+    expect(() => Config.fromObject({ n: Number.POSITIVE_INFINITY }).getNumber('n')).toThrow(
+      /is not a finite number \(got Infinity\)/,
+    );
+  });
+
+  test('getNumber refuses an overflowing literal written in HOCON text', () => {
+    // Not a code override: the parser keeps a literal this long as a *string*
+    // precisely because it is not finite, and `getNumber`'s string branch then
+    // `Number()`s it back into the Infinity the parser declined to build.
+    const config = Config.parseString(`n = ${'9'.repeat(400)}`);
+    expect(() => config.getNumber('n')).toThrow(/is not a finite number \(got Infinity\)/);
+    expect(() => config.getInt('n')).toThrow(ConfigError);
+  });
+
+  // The other direction, and the one that catches an over-broad fix: routing
+  // the numeric branch through `parseDuration` / `parseSize` instead of
+  // checking it would also start *rounding*, because `parseSize` rounds to the
+  // nearest byte.  Every finite numeric value has to come back exactly as it
+  // went in.
+  test('a finite numeric value is returned unchanged, fractions included', () => {
+    const config = Config.fromObject({ whole: 1_500, fraction: 1.7, negative: -500, zero: 0 });
+    expect(config.getDuration('whole')).toBe(1_500);
+    expect(config.getDuration('fraction')).toBe(1.7);
+    expect(config.getDuration('negative')).toBe(-500);
+    expect(config.getBytes('whole')).toBe(1_500);
+    expect(config.getBytes('fraction')).toBe(1.7);
+    expect(config.getBytes('zero')).toBe(0);
+    expect(config.getNumber('fraction')).toBe(1.7);
+    expect(config.getNumber('zero')).toBe(0);
+  });
+
+  test('the string branches keep the messages #785 gave them', () => {
+    // A fix applied to the wrong layer — hardening `requireValue`, say — would
+    // change what a bad *string* reports, and these two messages are what
+    // `Duration.test.ts` and `Size.test.ts` pin the parsers on.
+    const config = Config.parseString('d = 1constructor\nsz = 1constructor');
+    expect(() => config.getDuration('d')).toThrow(/Unknown duration unit "constructor"/);
+    expect(() => config.getBytes('sz')).toThrow(/Unknown size unit "constructor"/);
+  });
+});

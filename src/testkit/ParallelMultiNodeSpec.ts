@@ -127,8 +127,20 @@ export class ParallelMultiNodeSpec {
   private readonly nodes = new Map<string, NodeRecord>();
   private readonly broker = new MultiNodeBroker();
   private started = false;
-  private nextReqId = 1;
-  /** Pending RPC promises keyed by reqId. */
+  /**
+   * One counter for the whole spec, on purpose — not one per role.
+   *
+   * #777's suggested fix offered a per-role counter as an option and it was
+   * declined.  The correlation matches on `role` and `expectedKind` as well
+   * as on the number, so a value two roles happen to share is harmless, and
+   * when one does arrive from the wrong worker
+   * {@link onMisdirectedControlFrame} says so by name.  A per-role counter
+   * would make that collision rarer without making it safer, and rarer is
+   * the worse property here: that warning is the only thing that surfaces a
+   * custom `bootstrapModule` or a scenario posting frames it should not.
+   */
+  private nextRequestId = 1;
+  /** Pending RPC promises keyed by the `reqId` the harness stamped. */
   private readonly pending = new Map<number, PendingControlRequest>();
 
   constructor(optionsInput: ParallelMultiNodeSpecOptions) {
@@ -143,17 +155,14 @@ export class ParallelMultiNodeSpec {
       roles: options.roles,
       seedRoles: options.seedRoles ?? [options.roles[0]!],
       gossipIntervalMs: options.gossipIntervalMs ?? 100,
-      // 30s default (vs. 15s in MultiNodeSpec) — worker-thread bootstrap
-      // is slower than the in-process variant.  NOTE: the worker-thread
-      // suites that use this harness are QUARANTINED on GitHub's hosted
-      // runners — Bun there cannot respawn functional workers after the
-      // first test (they spawn + handshake, then never run; reproducible
-      // only on the hosted runners, never locally or in Docker).  See #538
-      // for the quarantine and its exit criterion.  They run locally + in
-      // Docker, where this budget is ample (convergence is ~4-5s).
-      // Scaled once, at resolution (#1376).  This spec is the one the
-      // factor was written for: it drives real worker threads, which is
-      // where a hosted runner's slowness actually shows.
+      // 30s default (vs. 15s in MultiNodeSpec) — worker-thread bootstrap is
+      // slower than the in-process variant, and this budget is ample for it
+      // (convergence is ~4-5s).  Scaled once, at resolution (#1376).  This
+      // spec is the one the factor was written for: it drives real worker
+      // threads, which is where a hosted runner's slowness actually shows —
+      // and the suites that use it run on GitHub's hosted runners like any
+      // other, the #538 quarantine having been measured against its own exit
+      // criterion and lifted.
       awaitTimeoutMs: scaledMs(options.awaitTimeoutMs ?? 30_000),
       logLevel: options.logLevel ?? LogLevel.Off,
       addresses: options.addresses,
@@ -200,12 +209,13 @@ export class ParallelMultiNodeSpec {
     const errs: Error[] = [];
     for (const node of this.nodes.values()) {
       if (node.removed) continue;
-      // AWAIT termination.  On Bun `Worker.terminate()` returns a promise
-      // that resolves once the worker thread is actually gone; firing it
-      // without awaiting leaked live worker threads across tests.  On a
-      // 2-core CI runner those leaked workers (busy on a now-dead
-      // transport) starved every subsequent worker-thread test to zero
-      // CPU — control RPCs timed out and no gossip ever flowed (#flaky-ci).
+      // Terminate through the helper, and AWAIT it — what `terminate()` does
+      // and does not promise is stated once, on `terminateAndWait` (#1277).
+      // The consequence is what belongs here: dropping that await leaked live
+      // worker threads across tests, and on a 2-core CI runner those leaked
+      // workers (busy on a now-dead transport) starved every subsequent
+      // worker-thread test to zero CPU — control RPCs timed out and no gossip
+      // ever flowed.
       try { if (node.worker) await this.terminateAndWait(node.worker); } catch (e) { errs.push(e as Error); }
     }
     this.broker.close();
@@ -241,9 +251,8 @@ export class ParallelMultiNodeSpec {
     try { await this.controlRpc(node, { kind: 'mns-test.leave' }); }
     catch { /* ignore — graceful leave is best-effort */ }
     // After cluster.leave returns, the worker has closed its
-    // transport; we still have to terminate the worker process.
-    // AWAIT it — an un-awaited terminate leaks the worker thread (see
-    // the note in stop()).
+    // transport; we still have to terminate the worker process — through
+    // `terminateAndWait`, for the reason stated there (#1277).
     if (node.worker) {
       try { await this.terminateAndWait(node.worker); } catch { /* ignore */ }
     }
@@ -340,35 +349,73 @@ export class ParallelMultiNodeSpec {
   }
 
   /**
-   * Terminate a worker and WAIT until it has actually exited.  Bun's
-   * `Worker.terminate()` is fire-and-forget (returns void), so simply
-   * awaiting it does not guarantee the OS thread is gone before the next
-   * test spawns more — which on a 2-core CI runner left dead/starved
-   * workers piling up.  Here we kick `terminate()` and then await the
-   * worker's `close` event (bounded, so a runtime that emits no close
-   * event doesn't hang teardown).
+   * Terminate a worker and WAIT until it has actually exited.
+   *
+   * **The one statement of Bun's `terminate()` contract in this file** (#1277):
+   * it is fire-and-forget, so awaiting it does not guarantee the OS thread is
+   * gone before the next test spawns more — which on a 2-core CI runner left
+   * dead/starved workers piling up.  So this kicks `terminate()` and then
+   * awaits the worker's own `close` event instead; every teardown path goes
+   * through here rather than awaiting `terminate()` directly, and the
+   * comments at those call sites point back at this one.
+   *
+   * The wait is **bounded** because a runtime that emits no `close` event at
+   * all would otherwise hang teardown for good.  The bound is the exception,
+   * not the path taken — so it is *cancelled* the moment `close` arrives,
+   * rather than left to expire: `stop()` runs five times over two workers in
+   * this harness's own suite, and an uncancelled fallback leaves every one of
+   * those teardowns holding a 3 s timer it will never use (#1508).  Cancelled,
+   * not unref'd: an unref'd timer is still armed and still runs its callback
+   * whenever something else keeps the loop alive.
    */
   private async terminateAndWait(worker: WorkerLike): Promise<void> {
     const closed = new Promise<void>((resolve) => {
       let done = false;
-      const fin = (): void => { if (!done) { done = true; resolve(); } };
+      let fallback: ReturnType<typeof setTimeout> | undefined;
+      const fin = (): void => {
+        if (done) return;
+        done = true;
+        clearTimeout(fallback);
+        resolve();
+      };
       try { worker.addEventListener('close', fin); } catch { /* ignore */ }
-      setTimeout(fin, 3_000);
+      fallback = setTimeout(fin, 3_000);
     });
     try { await worker.terminate(); } catch { /* ignore */ }
     await closed;
   }
 
+  /**
+   * Poll `cond` until it is true, or `timeoutMs` is up.
+   *
+   * A throw is a retry, and has to be: the conditions here query a worker over
+   * the control channel while a cluster is still converging, so throwing is a
+   * normal intermediate state rather than a verdict.  What is *not* normal is
+   * losing it — the swallow is the amplifier #777 names in its own body.  A
+   * mis-correlated reply is only one way in (a `run-command-response`
+   * settling a `getMembers` leaves `members` undefined and the `.filter(…)`
+   * throws); every other throw inside `cond` ended the same way, as a timeout
+   * that named the wait and nothing about why it never finished.  So the last
+   * one is kept and appended, which is the difference between a message that
+   * sends the reader to convergence and one that names the actual failure.
+   *
+   * The *last* rather than the first: an early throw is usually the cluster
+   * not being up yet, and the one still happening when the budget ran out is
+   * the one that was never going to stop.
+   */
   private async awaitCondition(
     cond: () => Promise<boolean>, description: string, timeoutMs: number,
   ): Promise<void> {
     const deadline = Date.now() + timeoutMs;
+    let lastError: string | undefined;
     while (Date.now() < deadline) {
-      try { if (await cond()) return; } catch { /* retry */ }
+      try { if (await cond()) return; }
+      catch (e) { lastError = e instanceof Error ? e.message : String(e); }
       await new Promise((r) => setTimeout(r, 50));
     }
     throw new Error(
-      `ParallelMultiNodeSpec: timeout after ${timeoutMs} ms${describeTimeFactor()} — ${description}`,
+      `ParallelMultiNodeSpec: timeout after ${timeoutMs} ms${describeTimeFactor()} — ${description}`
+      + (lastError === undefined ? '' : `; last error: ${lastError}`),
     );
   }
 
@@ -445,8 +492,9 @@ export class ParallelMultiNodeSpec {
    * that role's RPC.  The wrong value is the smaller half of the damage — a
    * `run-command-response` settling a `getMembers` yields `members ===
    * undefined`, the `.filter(…)` in `awaitMembers`'s condition throws,
-   * `awaitCondition` swallows the throw as a retry, and the spec fails 30 s
-   * later naming a convergence that was never the problem.
+   * `awaitCondition` retries past the throw, and the spec fails 30 s later
+   * naming a convergence that was never the problem — with the thrown message
+   * appended since #1508, which is what makes that failure readable at all.
    *
    * Only a worker that *originates* an `mns-test.*` frame can produce the
    * collision — a custom `bootstrapModule`, or a scenario module posting raw
@@ -456,15 +504,15 @@ export class ParallelMultiNodeSpec {
   private onControlFrame(role: string, event: WorkerMessageEvent): void {
     const frame = (event.data ?? undefined) as { kind?: string; reqId?: number } | undefined;
     if (!frame?.kind || !frame.kind.startsWith('mns-test.')) return;
-    const reqId = frame.reqId;
-    if (reqId === undefined) return;
-    const pending = this.pending.get(reqId);
+    const requestId = frame.reqId;
+    if (requestId === undefined) return;
+    const pending = this.pending.get(requestId);
     if (!pending) return;
     if (pending.role !== role || pending.expectedKind !== frame.kind) {
-      this.onMisdirectedControlFrame(role, frame.kind, reqId, pending);
+      this.onMisdirectedControlFrame(role, frame.kind, requestId, pending);
       return;
     }
-    this.pending.delete(reqId);
+    this.pending.delete(requestId);
     clearTimeout(pending.timer);
     pending.resolve(frame as ControlResponse);
   }
@@ -474,18 +522,19 @@ export class ParallelMultiNodeSpec {
    *
    * Dropped rather than settled, and the entry is left pending so the genuine
    * reply can still land — or `controlRpc`'s own 5 s timer fires and names the
-   * request that went unanswered, which is a far shorter walk to the cause than
-   * the `await*` timeout the mis-correlation produced.  Reported for the same
-   * reason `onWorkerError` is: the harness owns no `ActorSystem` to log
-   * through, and a silent drop leaves the reader with a timeout and no clue
-   * that a stray frame ever existed.
+   * role and the request that went unanswered, which is a far shorter walk to
+   * the cause than the `await*` timeout the mis-correlation produced.  The two
+   * lines are a pair, and both name a role for that reason (#1508).  Reported
+   * for the same reason `onWorkerError` is: the harness owns no `ActorSystem`
+   * to log through, and a silent drop leaves the reader with a timeout and no
+   * clue that a stray frame ever existed.
    */
   private onMisdirectedControlFrame(
-    role: string, kind: string, reqId: number, pending: PendingControlRequest,
+    role: string, kind: string, requestId: number, pending: PendingControlRequest,
   ): void {
     console.warn(
       `ParallelMultiNodeSpec: dropped control frame '${kind}' from role '${role}' `
-      + `(reqId ${reqId}) — that reqId belongs to a '${pending.expectedKind}' `
+      + `(reqId ${requestId}) — that reqId belongs to a '${pending.expectedKind}' `
       + `awaited from role '${pending.role}'`,
     );
   }
@@ -587,6 +636,12 @@ export class ParallelMultiNodeSpec {
    * Times out after 5s — RPC failures usually indicate the worker
    * is wedged; fast timeouts surface the issue rather than hanging
    * the test forever.
+   *
+   * The rejection names the **role** as well as the request kind.  Which
+   * question went unanswered is only half of what the reader needs: with
+   * three or more roles in flight the interesting fact is which worker
+   * stopped answering, and until #1508 the only line that said so was the
+   * misdirected-frame warning, which is written on a different failure.
    */
   private controlRpc<R extends ControlResponse>(
     node: NodeRecord,
@@ -595,23 +650,27 @@ export class ParallelMultiNodeSpec {
     if (!node.worker) {
       return Promise.reject(new Error(`controlRpc: role '${node.role}' has been crashed/left`));
     }
-    const reqId = this.nextReqId++;
+    const requestId = this.nextRequestId++;
     return new Promise<R>((resolve, reject) => {
       const controlRpcMs = scaledMs(5_000);
       const timer = setTimeout(() => {
-        this.pending.delete(reqId);
+        this.pending.delete(requestId);
         reject(new Error(
-          `controlRpc(${request.kind}): timed out after ${controlRpcMs}ms${describeTimeFactor()}`,
+          `controlRpc(${request.kind}) to role '${node.role}': `
+          + `timed out after ${controlRpcMs}ms${describeTimeFactor()}`,
         ));
       }, controlRpcMs);
-      this.pending.set(reqId, {
+      this.pending.set(requestId, {
         role: node.role,
         expectedKind: `${request.kind}-response`,
         resolve: (v) => resolve(v as R),
         reject,
         timer,
       });
-      node.worker!.postMessage({ ...request, reqId });
+      // `reqId` is the wire property the worker bootstrap answers on, and a
+      // custom `bootstrapModule` reads it by that name — spelled out here only
+      // on this side of the boundary (#1508).
+      node.worker!.postMessage({ ...request, reqId: requestId });
     });
   }
 }

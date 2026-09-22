@@ -44,15 +44,43 @@ export const CONTEXT_LENGTH_PREFIX_BYTES = 4;
  */
 export const HMAC_TAG_LENGTH = 16;
 
-function getSubtle(): SubtleCrypto {
+/**
+ * Resolve `SubtleCrypto`, or throw naming what needed it.
+ *
+ * Three capabilities in this directory hard-require WebCrypto — client-side
+ * encryption (`Encryption.ts`), body integrity (here) and the filesystem
+ * backend's compare-and-swap ETag (#786) — and each had written out the same
+ * six-line guard.  Three copies of one decision is three places for it to
+ * drift, and the third was added with a JSDoc saying it *followed* the other
+ * two, which is an argument for calling one of them.
+ *
+ * `purpose` is appended to the shared opening sentence and is the half of
+ * the message that identifies anything: the opener tells an operator that
+ * WebCrypto is missing, the tail tells them which subsystem to stop
+ * configuring.  So it is a required parameter with no default — a default
+ * would be a fourth message that names nothing, reachable by omission.
+ *
+ * **It lives here** rather than in a module of its own because this file is
+ * the directory's only one that imports nothing, so every WebCrypto consumer
+ * can reach it without any possibility of a cycle — the same property
+ * `Constants.ts` and `XOptions.ts` files are given deliberately.  A
+ * dedicated `WebCrypto.ts` would read better at the call sites and is the
+ * shape to move to when this directory is next opened for structural work.
+ *
+ * Lazily, never captured at module load: capturing it at import time crashed
+ * the import itself on runtimes without WebCrypto, which is what made the
+ * registration-time probes below possible (#18, #59).
+ */
+export function requireSubtle(purpose: string): SubtleCrypto {
   const subtle = (globalThis.crypto as Crypto | undefined)?.subtle;
   if (!subtle) {
-    throw new Error(
-      'SubtleCrypto is not available in this runtime.  Body integrity '
-      + 'requires WebCrypto — Node, Bun, or Deno.',
-    );
+    throw new Error(`SubtleCrypto is not available in this runtime.  ${purpose}`);
   }
   return subtle;
+}
+
+function getSubtle(): SubtleCrypto {
+  return requireSubtle('Body integrity requires WebCrypto — Node, Bun, or Deno.');
 }
 
 /**

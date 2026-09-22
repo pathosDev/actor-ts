@@ -93,6 +93,36 @@ export class NodeAddress {
       && value.length <= MAX_NODE_INCARNATION_LENGTH;
   }
 
+  /**
+   * Whether `value` is a port this node will accept off the wire.
+   *
+   * A **safe** positive integer, deliberately *not* a TCP port — the same rule
+   * `ClusterOptionsValidator` states and for the same reason: under
+   * `InMemoryTransport` the port is a synthetic node discriminator (tests use
+   * five-digit values), and an address is transport-agnostic.  Whether a port
+   * is dialable is `TcpTransport`'s business.
+   *
+   * *Safe* rather than merely integral, because {@link toString} is what the
+   * rest of the cluster identifies a node by and it is not injective over the
+   * integers.  `Number.prototype.toString` switches to exponent notation at
+   * 1e21, so `port: 1e21` renders as `sys@host:1e+21`, and {@link parse} reads
+   * that back with `parseInt` — which stops at the `e` and yields port **1**.
+   * An address admitted that way is recorded under one identity and comes back
+   * as another, and `peers()` feeds `transportReachesCluster`, which compares
+   * exactly those strings (#1515).  Above `Number.MAX_SAFE_INTEGER` there is a
+   * second reason: adjacent integers stop being distinct doubles, so two peers
+   * that wrote different ports would compare `equals`.  The safe-integer bound
+   * is below 1e21 and closes both.
+   *
+   * Lives here rather than in `WireValidation` for the same reason
+   * {@link isIncarnation} does: {@link fromJSON} throws on what the wire guard
+   * admits, so a second copy of the rule is a host-killing throw waiting for
+   * the two to drift.  `isNodeAddressData` spends this one.
+   */
+  static isPort(value: unknown): value is number {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
+  }
+
   toJSON(): NodeAddressData {
     const data: NodeAddressData = { systemName: this.systemName, host: this.host, port: this.port };
     // Omitted when unset rather than written as `null`, for the reason
@@ -120,11 +150,9 @@ export class NodeAddress {
    * frame guard rejects malformed addresses before they get here. This is the
    * backstop for the paths that reach it another way.
    *
-   * `port` is checked as a **positive integer, not a TCP port** — the same rule
-   * `ClusterOptionsValidator` states and for the same reason: under
-   * `InMemoryTransport` the port is a synthetic node discriminator (tests use
-   * five-digit values), and an address is transport-agnostic.  Whether a port
-   * is dialable is `TcpTransport`'s business.
+   * `port` is checked by {@link isPort} — a **safe positive integer, not a TCP
+   * port** — which is the one place that rule lives, so this and the wire
+   * guard cannot disagree about what an address is.
    *
    * `incarnation` is optional and validated only when present: a peer running a
    * version that predates the field sends none, and refusing its addresses
@@ -134,10 +162,11 @@ export class NodeAddress {
     const { systemName, host, port, incarnation } = data ?? {};
     if (typeof systemName !== 'string' || systemName.length === 0
       || typeof host !== 'string' || host.length === 0
-      || typeof port !== 'number' || !Number.isInteger(port) || port <= 0
+      || !NodeAddress.isPort(port)
       || (incarnation !== undefined && !NodeAddress.isIncarnation(incarnation))) {
       throw new Error(
-        `Invalid node address: expected { systemName: string, host: string, port: positive integer, `
+        `Invalid node address: expected { systemName: string, host: string, `
+        + `port: positive integer up to ${Number.MAX_SAFE_INTEGER}, `
         + `incarnation?: string of 1..${MAX_NODE_INCARNATION_LENGTH} chars }, `
         + `got ${JSON.stringify(data)}`,
       );

@@ -66,6 +66,7 @@ export {
   CONFIG_SECRET_PATTERN,
   CONFIG_NEVER_REDACTED_PATHS,
   CONFIG_REDACTED,
+  DEFAULT_DROP_REPORT_INTERVAL_MS,
 } from './Constants.js';
 
 export { Left, Right, left, right, eitherOf, eitherSequence } from './Either.js';

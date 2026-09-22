@@ -11,6 +11,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **The ParallelMultiNodeSpec documentation now states the control-channel
+  contract a custom bootstrapModule has to satisfy, in both languages: the
+  four request kinds, the reply named after the request with -response
+  appended, the reqId echo, the requirement that the reply come from the
+  worker that was asked, and what a broken reply does** (#1508). Only the
+  reqId echo was ever enforced before the correlation fix, so a replacement
+  bootstrap that answered under a different name, or from the wrong worker,
+  used to work and now times out.
+
+- **A repository guard refuses a literal C0 control byte in any hand-written
+  .ts, .mjs or .mdx source** (#1508). A raw NUL inside a template literal in
+  the shared tag-join test fake made git report that entire file as binary,
+  so a commit advertising a comment change in it shipped with no diff a
+  reviewer could read. The byte is now written as an escape, which leaves
+  the runtime string identical and the file reviewable, and the fake's
+  deduplication key separator is pinned by a test of its own — dropping it
+  merges two distinct events while every pre-existing test stays green. The
+  guard allows TAB, CR and LF, so Windows checkouts are unaffected, and it
+  is a ratchet with one grandfathered entry rather than a hard zero.
+
+- **The object-storage plugin probes WebCrypto at registration when the
+  configured backend is the filesystem one** (#1507). Since the
+  compare-and-swap ETag became a SHA-256 digest that backend requires
+  WebCrypto with compression, encryption and integrity all set to none — the
+  default, and exactly the configuration that skips the three existing codec
+  probes — so on a runtime without it the failure landed on the first put,
+  inside a persistence write, instead of at plugin registration.
+  validateObjectStoragePeerDeps now calls probeFilesystemEtagAvailability
+  for a filesystem backend, which is the same shape and the same argument as
+  the integrity probe added under #613: a capability nothing probes fails at
+  first use. The S3 backend forwards IfMatch to the service and derives
+  nothing locally, so it is not subject to the probe, and a custom backend
+  answers for its own requirements.
+
 - **The WebSocket origin guard is exercised through every HTTP backend**
   (#1508). Every origin test in the tree drove `compile()` and the compiled
   `authorize()` directly, and every client in the backend suite dialled
@@ -112,6 +146,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `WorkerMesh` hands `system.log` to both, so in a mesh all of it reaches
   the configured sinks. The type `WorkerBrokerDropReason` is exported from
   `actor-ts/worker`.
+
+  `MessageChannelTransport` counts and reports what it drops, which is the
+  half `TcpTransport` always had and this class never did. A malformed
+  envelope, a payload the wire checks refuse and a handler that throws each
+  bump a per-reason tally readable through the new `dropped()` and reach the
+  logger as one folded `WARN` per reason per 30 seconds, carrying the count
+  and the sender; the payload one quotes the reason the check gave, which is
+  what separates a version skew from a hostile peer. The constructor takes
+  an optional `Logger` third, defaulting to a `ConsoleLogger` at `Info` so a
+  transport built without one is never silent — silence was the defect, and
+  the path that most needs the default is two transports wired port to port
+  with no broker in front to report instead. A worker mesh hands its
+  main-thread transport `system.log`, so both halves of the channel reach
+  the sinks that system configures. The line never carries the frame, and
+  the sender on it is escaped: a broker rewrites `from` to the arriving port
+  and so mints it, but on the broker-less path it is the peer's own claim
+  and a node address need only carry non-empty strings, so a host containing
+  a newline would otherwise forge whole log lines (#1515).
 
 - **`benchmarks/cluster/tcp-message-cost.ts` measures what an actor message
   pays to cross a real socket** (#1177).  The same `Counter` actor local and
@@ -2883,6 +2935,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The filesystem object-storage backend derives the current object's ETag
+  only where ifMatch reads its value** (#1507). put digested the bytes
+  already on disk on every overwrite, although ifNoneMatch: '*' needs only
+  to know that bytes exist — which the read has already answered — and a put
+  carrying no precondition needs neither. Unconditional was the right shape
+  while the ETag was a 32-bit loop over bytes already in memory; it is a
+  WebCrypto call now, and the two callers that dominate the path both put
+  without any CAS option, so every snapshot save and every durable-state
+  upsert holding no cached ETag paid for a token nobody compares.
+
+- **The Durations and Sizes reference now lists every unit both parsers
+  accept — 34 duration spellings and 38 size spellings, against the seven
+  and five it published before — and says what is refused** (#1512). The
+  size list was actively misleading: it described B/K/M/G/T as binary by
+  default without mentioning that KB/MB/GB/TB/PB are decimal, so a reader
+  who wrote 16MB expecting the documented binary default got 16 000 000
+  bytes instead of 16 777 216, an error that grows from 2.4 % at K to 10 %
+  at T. Both forms now sit side by side in one table, P is present where it
+  was absent entirely, and each subsection states that an unrecognized unit
+  throws Unknown duration unit / Unknown size unit — own-property-only, so
+  constructor is refused like any other — while anything that does not come
+  out finite throws Invalid duration / Invalid size. Also recorded: a
+  duration takes a sign and a bare fraction where a size takes neither, and
+  the three codepoints that render as a micro sign all fold onto one unit.
+
 - **The test that claims the WebSocket client's keepalive timer does not
   outlive its socket now asserts on the timer** (#1508). It asserted only
   that the socket stopped receiving, and that is satisfied by machinery the
@@ -3619,6 +3696,82 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **ParallelMultiNodeSpec cancels the fallback bound it arms while
+  terminating a worker, instead of leaving it to expire** (#1508). The bound
+  exists so that a runtime emitting no close event cannot hang teardown; on
+  every runtime that does emit one it was pure residue, and one run of the
+  harness's own suite ended holding ten three-second timers it would never
+  use.
+
+- **ParallelMultiNodeSpec's await* helpers now append the last error their
+  condition threw to the timeout message** (#1508). A condition that queries
+  a worker legitimately throws while a cluster is converging, so the retry
+  stays, but the reason is no longer discarded: a timeout that named only
+  what was being waited for was the amplifier that turned a mis-correlated
+  control reply into an unrelated thirty-second convergence failure.
+
+- **ParallelMultiNodeSpec's control-RPC timeout now names the role that went
+  silent, not only the request kind** (#1508). With three or more roles in
+  flight the message said which question went unanswered and left the reader
+  to work out which worker had stopped answering; the only line that carried
+  the role was the misdirected-frame warning, which is written on a
+  different failure entirely.
+
+- **A brokered envelope whose `from.port` is an accessor answering the
+  envelope guard and `NodeAddress.fromJSON` differently no longer throws out
+  of the `MessagePort` callback** (#1515). The guard and `fromJSON` now
+  agree on every value, but they are still two separate reads of the same
+  field, and `fromJSON` sat outside every `try` the inbound edge had — so
+  one posted object was an uncaught top-level error that takes the thread,
+  the main-thread actor system and every sibling worker with it. Not
+  reachable across a thread boundary, because a real `MessagePort`
+  structured-clones the envelope and that strips accessors; reachable
+  through any in-process port, which is what the testkit's broker, the mesh
+  fixtures and every port-to-port wiring use, and this transport is exported
+  surface that accepts any of them. The refusal is now the same drop the
+  envelope guard would have made, and it keeps its own `catch` rather than
+  joining the handler's, so a refused envelope and a handler nobody
+  understands stay different events.
+
+- **A node address off the wire is held to a safe positive integer port, one
+  rule spent by both the decode guard and `NodeAddress.fromJSON`** (#1515).
+  The rule was written out twice and had drifted from what
+  `NodeAddress.toString()` can carry: `Number.prototype.toString` switches
+  to exponent notation at 1e21, so a schema-valid frame under `from.port =
+  1e21` was delivered, recorded by `MessageChannelTransport` as
+  `sys@host:1e+21`, and listed by `peers()` as `sys@host:1` — the readiness
+  check compares exactly those strings, so the node reported ready against a
+  peer it had never heard from and not ready against the one it had. Above
+  `Number.MAX_SAFE_INTEGER` there is a second reason the bound covers:
+  adjacent integers stop being distinct doubles, so two peers that wrote
+  different ports would compare equal. Every synthetic port the framework
+  itself mints is untouched. The new `NodeAddress.isPort` is where that rule
+  now lives, beside `isIncarnation`, which is what makes the transport's
+  long-standing claim that the guard and `fromJSON` cannot disagree actually
+  true. `MessageChannelTransport` also keeps its known peers as recorded
+  address objects rather than re-parsing their own string form, so `peers()`
+  no longer drops what the string form does not carry — an `incarnation` a
+  peer sent was silently lost.
+
+- **Config.getDuration, getBytes and getNumber refused a non-finite value
+  only when it arrived as a string** (#1513). #785 gave parseDuration and
+  parseSize a finite postcondition, but a value supplied as a number
+  short-circuits before the delegation, so a code overrides object carrying
+  Number(process.env.SOME_MS) with the variable unset reached
+  actor-ts.system.shutdown-drain-timeout as a NaN — where it defeats the
+  documented 0 opt-out (NaN <= 0 is false) and makes deadline = Date.now() +
+  NaN, so the drain budget was silently zero. A byte cap failed open the
+  other way, since every comparison against NaN is false. getNumber was open
+  on its string branch too, and that half needs no code override: the HOCON
+  parser keeps a numeric literal as a string exactly when it is not finite,
+  so an overflowing literal in a hand-written application.conf survived as
+  one and getNumber's own regex turned it back into Infinity, feeding
+  unreachable-threshold and down-threshold, which are compared with > and
+  therefore never trip. All three now report a ConfigError naming the path.
+  The Infinity opt-outs reference.conf documents (accept-timeout,
+  max-decompressed-bytes) are unaffected — both are set through their
+  options builders, which do not pass through these accessors.
+
 - **A WebSocket client no longer lets a superseded socket speak for the
   connection that replaced it** (#1514). `onSocketDown` guarded only on
   `this.socket !== null`, which answers whether some connection is up rather
@@ -4011,6 +4164,14 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   shape and payload validated, `from` rewritten to the arriving port. The
   broker has since gained its logger and reports what it drops (#1276); the
   transport still logs nothing — that is #1515. EN + DE.
+
+  The existing [Unreleased] bullet for #1275 ends 'The broker has since
+  gained its logger and reports what it drops (#1276); the transport still
+  logs nothing — that is #1515. EN + DE.' (CHANGELOG.md:4012-4013). That
+  deferral is spent and the clause is now false: the transport reports too.
+  The sentence should say instead that both halves of the channel now report
+  what they refuse — the broker what it will not route, the transport what
+  it will not deliver — each as a folded WARN per reason.
 
 - **`WorkerNode.join()` never completed on Node — every worker bootstrap
   hung out its handshake deadline there** (#1569). The worker-side helper
@@ -5637,6 +5798,21 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   for another, while the pair turns an unrecoverable integrity error into
   correct recovery.
 
+  ObjectStorageSnapshotStore.save refuses a sequence number the store's own
+  reader cannot address. The reader demands a leaf of exactly the padding
+  width that parses back to a safe integer, while save checked only
+  Number.isFinite(seq) && seq >= 0, so the two halves of one store disagreed
+  about what a sequence number is and the writing half was the permissive
+  one. save('p', 1.5) wrote snapshots/p/000000000000000001.5.json and
+  save('p', 12345678901234567890) wrote twenty digits that are no longer the
+  number asked for; neither is reachable again through the API, because
+  loadLatest skips them, delete never matches them and keepN pruning never
+  counts them, so the object is invisible, undeletable and accumulates
+  forever. The old parser matched both keys, which is what made this a
+  regression rather than a pre-existing gap. The rule is now the reader's
+  own, Number.isSafeInteger(seq) && seq >= 0, and it throws a JournalError
+  before anything is written (#716).
+
   **Migration.** Snapshots need none — they are a recovery accelerator, not
   a source of truth, so a load finding nothing replays the journal and the
   next save writes at the new key. Durable state does, and
@@ -5657,7 +5833,11 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   keyring's active master key. A destination that already holds an object is
   never overwritten and sources stay in place, so the pass is repeatable;
   re-run it with `deleteSource: true` to retire them once the upgrade is
-  verified.
+  verified. A caller passing a fractional sequence, or one past
+  Number.MAX_SAFE_INTEGER, now gets a thrown JournalError where the call
+  previously resolved. Those writes produced objects the store could never
+  read, delete or prune, so pass a safe non-negative integer;
+  Number.MAX_SAFE_INTEGER itself is still accepted and reads back.
 
 - **`ConsumerController` serialises its handler, and bounds the out-of-order
   set** (#643, #728).
@@ -5832,26 +6012,34 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   own `onMessage` or fans out to another actor — while a join to a filter it
   already holds, and the subclass's own subscriptions, stay silent.
 
-- **The filesystem object-storage CAS token is a SHA-256 digest rather than
-  a 32-bit hash** (#786).
+- **BREAKING — The filesystem object-storage CAS token is a SHA-256 digest
+  rather than a 32-bit hash** (#786). The ETag is the durable-state
+  optimistic-concurrency token — put re-derives it from disk to evaluate
+  ifMatch — so its equality check rested on four bytes of a
+  non-cryptographic hash. It is now a SHA-256 digest of the body truncated
+  to 16 bytes. A colliding 49-byte pair was constructed by birthday search
+  in seconds, and the lost update it enables is now a regression test: an
+  attacker holding write access to the store authors the intervening
+  revision so that its ETag equals the one a CAS holder has already read,
+  and the holder's stale ifMatch then passes over content that changed
+  underneath them. The preconditions still stack — the S3 backend was never
+  affected, the per-key O_EXCL advisory lock removes the ordinary race, and
+  a forged body must match the byte length too — but this is a demonstrated
+  lost update rather than a hygiene argument. Two claims in the original
+  account were wrong and are corrected in the source: the attack is the
+  intervening writer, not a stale writer computing a body to match an ETag
+  they already hold, which buys nothing because put compares against the
+  bytes on disk; and the old hash was never trivially invertible, because
+  hash = (hash * 0x01000193) >>> 0 is a float64 multiply that rounds above
+  2^53, measurably not textbook FNV-1a and with an effective space near
+  2^30.8 rather than 2^32, so even odds arrive around 50 000 same-length
+  bodies. The ETag keeps its shape and stays opaque to every caller, so
+  nothing that stores or compares one needs changing.
 
-  The ETag is the durable-state optimistic-concurrency token — `put`
-  re-derives it from disk to evaluate `ifMatch` — so its equality check
-  rested on four bytes of a non-cryptographic, trivially invertible hash. It
-  is now a SHA-256 digest of the body truncated to 16 bytes. No exploit was
-  demonstrated and the preconditions are narrow: the S3 backend was never
-  affected, the per-key `O_EXCL` advisory lock already removes the ordinary
-  race, a forged body must match the byte length too, and an attacker would
-  need both to drive the plaintext and to hold write access. The point is
-  that a CAS token should not be a 32-bit non-cryptographic hash, not that
-  there was a live exploit.
-
-  The ETag keeps its shape and stays opaque to every caller, so nothing that
-  stores or compares one needs changing. Values minted before this release
-  will not match ones minted after, which matters only for an ETag persisted
-  across the upgrade — the durable-state store recovers on its own, since a
-  mismatch drops the cached entry and the next attempt re-reads the real
-  one.
+  **Migration.** ETag values minted before this release do not match ones
+  minted after. That matters only for an ETag a consumer persisted across
+  the upgrade; the durable-state store recovers on its own, since a mismatch
+  drops its cached entry and the next attempt re-reads the real one.
 
 
 - **BREAKING — The worker-mesh handshake latches on the first hello, and
@@ -6110,6 +6298,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   notes only that tag queries in the window cannot use the un-migrated
   side's index and are slow rather than wrong (#1507).
 
+  MariaDbQuery no longer claims the pinned utf8mb4_bin makes its tag index
+  as selective as Postgres's. It does for case and accent, which is what the
+  pin was for; utf8mb4_bin is PAD SPACE, so trailing-space variants still
+  fold together on MariaDB and do not on Postgres, and the pre-filter stays
+  less selective for them however new the table is. Answers are unaffected,
+  because RelationalQuery re-checks every row against the events table's own
+  tags column, so the cost is rows fetched and discarded. The dialect test
+  behind the collation pin also derives its list of DDL emitters from each
+  dialect's own keys instead of naming four by hand, so a fifth DDL family
+  cannot escape the assertion that exactly persistence_id and tag are
+  collated (#1507).
+
   **Migration.** New databases pick the collation up automatically. An
   existing one does not — the guarded `CREATE TABLE` never revisits a table
   it finds, and nothing at startup reports the mismatch. Run the `ALTER
@@ -6149,6 +6349,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   write and all stay queryable, because a journal written before a rule
   existed must remain inspectable — and `{ all: [''] }` is how the empty-tag
   bucket is found in the first place.
+
+  normalizeTagFilter now copies each operator list, not only the object
+  around them. Its JSDoc promised a sanitisation boundary it did not
+  provide: the returned spec shared the caller's all, any and not arrays,
+  and MongoQuery carries spec.any into its $in document across an await on
+  openForQuery, so an application mutating its own filter array during that
+  window changed a query the validation had already approved. An absent
+  operator deliberately stays absent rather than becoming an empty list,
+  since any: [] matches nothing while an absent any imposes no constraint.
+  The documentation gains what the guard landed without: the two structural
+  refusals — an operator that is not an array, and a filter root that is
+  neither a tag string nor an object — and the fact that currentEventsByTag
+  and eventsByTag both refuse at the call rather than on the first result,
+  so a try/catch wrapped around only the for-await loop never sees the
+  error. The validator also records the one population the length rule
+  strands: a tag longer than the cap can only come from a journal written
+  before v0.12.0 or by a foreign writer, and those events stay readable by
+  persistenceId while no longer being queryable by tag (#1507).
 
   **Migration.** A tag-filter member longer than `MAX_TAG_LENGTH` (255) now
   throws instead of resolving to no events. It could never have matched,

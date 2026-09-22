@@ -72,7 +72,7 @@ type ParallelMultiNodeSpecOptionsType = {
 | `scenarioInitDataFor` | Per-Rolle-Daten, die an das `setup(context)` des Szenarios weitergereicht werden. |
 | `failureDetector` | Failure-Detector-Overrides. |
 | `awaitTimeoutMs` | Default-`await*`-Timeout. Default 30 s — Worker-Bootstrap ist langsamer als in-process. |
-| `bootstrapModule` | Überschreibt den gebündelten Worker-Einstiegspunkt (fortgeschritten). |
+| `bootstrapModule` | Überschreibt den gebündelten Worker-Einstiegspunkt (fortgeschritten) — übernimmt damit den Control-Channel, siehe den Vertrag weiter unten. |
 
 ## Das Szenario-Modul
 
@@ -110,6 +110,47 @@ Sharding-Regionen, …). Die Harness tauscht mit ihm nur
 JSON-serialisierbare Kommando/Antwort-Paare aus — Closures können
 die Worker-Grenze nicht überqueren, weshalb Szenario-Code in einer
 eigenen, per URL geladenen Datei lebt statt inline im Test.
+
+## Der Vertrag für einen eigenen Bootstrap
+
+Ein Szenario-Modul setzt auf dem gebündelten Bootstrap auf.
+`bootstrapModule` ersetzt diesen Bootstrap vollständig — und übernimmt damit
+auch den **Control-Channel**: das `postMessage`-Protokoll, über das die
+Harness jeden Worker ansteuert, auf demselben Socket wie der
+Cluster-Handshake. Es gibt vier Requests, und jede Antwort trägt den Namen
+des Requests, den sie beantwortet, mit angehängtem `-response`:
+
+```ts
+type ControlRequestKind =
+  | 'mns-test.query-members'   // → 'mns-test.query-members-response'  { reqId, members }
+  | 'mns-test.query-leader'    // → 'mns-test.query-leader-response'   { reqId, leader }
+  | 'mns-test.leave'           // → 'mns-test.leave-response'          { reqId, error? }
+  | 'mns-test.run-command';    // → 'mns-test.run-command-response'    { reqId, result, error? }
+```
+
+Drei Regeln entscheiden, ob eine Antwort angenommen wird, und alle drei
+werden geprüft:
+
+- **Die `reqId` zurückspiegeln.** Jeder Request trägt eine; die Antwort gibt
+  dieselbe Zahl zurück. Daran schlüsselt die Harness ihre offenen Aufrufe.
+- **Den passenden Kind verwenden.** Die Harness bildet den Namen, den sie
+  akzeptiert, indem sie `-response` an den gesendeten Kind anhängt — eine
+  wohlgeformte Payload unter einem anderen Namen ist keine Antwort.
+- **Aus dem Worker antworten, der gefragt wurde.** Eine Antwort auf die
+  Frage an Rolle `a`, gepostet vom Worker der Rolle `b`, wird abgelehnt,
+  selbst wenn Kind und `reqId` beide passen.
+
+Eine Antwort, die eine davon verletzt, wird **fallen gelassen**, nicht
+zurückgewiesen: Die Harness schreibt eine `console.warn`, die den verworfenen
+Frame und den Aufruf benennt, zu dem diese `reqId` wirklich gehört, lässt den
+Aufruf offen — falls die echte Antwort noch kommt — und lässt ihn 5 s später
+mit einer Meldung scheitern, die Rolle und unbeantworteten Request nennt.
+
+Nur die erste Regel galt schon immer. Vor dem Korrelations-Fix wurde eine
+Antwort allein über die `reqId` zugeordnet, sodass ein Bootstrap, der unter
+einem anderen Namen oder aus dem falschen Worker antwortete, zufällig
+funktionierte — der Grund, warum dieser Vertrag hier steht statt nur
+implizit zu gelten.
 
 ## Die Worker ansteuern
 

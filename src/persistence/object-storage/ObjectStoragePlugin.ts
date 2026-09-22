@@ -11,7 +11,10 @@ import {
   validateMasterKeyRing,
 } from './Encryption.js';
 import { probeIntegrityAvailability } from './Integrity.js';
-import { FilesystemObjectStorageBackend } from './FilesystemObjectStorageBackend.js';
+import {
+  FilesystemObjectStorageBackend,
+  probeFilesystemEtagAvailability,
+} from './FilesystemObjectStorageBackend.js';
 import {
   S3ObjectStorageBackend,
   type S3Credentials,
@@ -213,9 +216,10 @@ export async function registerObjectStoragePlugins(
 }
 
 /**
- * Probe every codec peer-dep the configured options may need.  Public
- * so callers can pre-validate (e.g. at app bootstrap) independently of
- * actually registering the plugin.
+ * Probe every runtime capability the configured options may need — the
+ * codec peer-deps, and the backend's own requirements.  Public so callers
+ * can pre-validate (e.g. at app bootstrap) independently of actually
+ * registering the plugin.
  */
 export async function validateObjectStoragePeerDeps(
   options: ObjectStoragePluginOptions,
@@ -244,6 +248,20 @@ export async function validateObjectStoragePeerDeps(
   const integrityConfigs = collectIntegrityConfigs(resolvedOptions.integrity);
   if (integrityConfigs.some((c) => c.mode === 'hmac-sha256')) {
     await probeIntegrityAvailability();
+  }
+
+  // ETag: the filesystem backend derives its compare-and-swap token from
+  // SHA-256 (#786), so it needs SubtleCrypto whatever the codecs above are
+  // set to — including the default, where all three are `'none'` and every
+  // probe above sits the call out.  Same argument as integrity's own probe
+  // (#613): nothing else looks, so without this the failure surfaces on the
+  // first `put`, inside a persistence write.
+  //
+  // Backend-specific by construction, not a blanket WebCrypto requirement:
+  // S3 forwards `IfMatch` to the service and returns the service's own ETag,
+  // and a `custom` backend answers for itself.
+  if (resolvedOptions.backend?.kind === 'filesystem') {
+    await probeFilesystemEtagAvailability();
   }
 }
 
