@@ -1275,6 +1275,81 @@ describe('ReliableDelivery — dedup map resource budget (#728)', () => {
     await kit.system.terminate();
   });
 
+  test('a delivery still in the handler is not swept out from under itself', async () => {
+    // The sweep runs from a raw scheduler callback, so it is the one thing in
+    // this class that mutates the map while a handler is awaited — and the
+    // handler duration is not part of the TTL it compares against, because
+    // `touch` stamps `lastSeenAtMs` on *arrival*.  Without the re-stamp after
+    // the handler resolves, a handler that outlives the TTL has its entry
+    // deleted mid-flight, `markDelivered` writes to a detached object, and the
+    // retransmit that was queued behind it opens a fresh window and runs the
+    // handler a second time.  That contradicts the consumer-controller page,
+    // which says a retransmit arriving while its own sequence is still being
+    // handled "is absorbed as the duplicate it is" with no exception attached.
+    //
+    // Unreachable at the shipped defaults (300 s TTL against a 500 ms
+    // resendTimeout) and it costs only an at-least-once duplicate, which is
+    // why the fix is one line rather than a lock: the entry has to be put
+    // *back* into the live map, not merely re-stamped in place.
+    const kit = quietKit('rd-sweep-under-handler');
+    const entered: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    // The handler blocks on a promise this test resolves, so nothing here
+    // waits on a wall-clock guess: the sweep firing mid-handler is observed as
+    // `trackedProducers === 0`, and the release is explicit.
+    let releaseHandler = (): void => {};
+    const handlerGate = new Promise<void>((resolve) => { releaseHandler = resolve; });
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: async (m) => {
+        entered.push(m);
+        if (entered.length === 1) await handlerGate;
+      },
+      // No cap, so only age can reclaim — the sweep is the sole mutator the
+      // in-flight delivery races against.
+      maxProducers: Infinity,
+      producerIdleTtlMs: 50,
+    }, 'sweep-under-handler-consumer');
+
+    deliver(consumer, probe, 'slow-handler-producer', 1, 'seq-1');
+    await awaitCondition(() => entered.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the handler was entered for the first delivery',
+    });
+    // The precondition, and it holds in a fixed tree too: the re-stamp happens
+    // once the handler resolves, so while it is running the entry really is
+    // swept.  Waiting for the deletion is what makes the case exercise the
+    // window rather than hoping to land in it.
+    await awaitCondition(() => slot.controller?.trackedProducers === 0, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'the idle sweep reached the entry while its handler was running',
+    });
+
+    // The producer's retransmit, queued behind the in-flight delivery because
+    // the cell serialises them.
+    deliver(consumer, probe, 'slow-handler-producer', 1, 'seq-1-retransmit');
+    releaseHandler();
+
+    // Two acknowledgments: one for the delivery that was handled, one for the
+    // retransmit that was recognised as its duplicate.  Without the re-stamp
+    // the retransmit opens a fresh window instead, which also acknowledges —
+    // so the ack count is the wait, and the handler entries are the assertion.
+    await awaitCondition(() => probe.messageCount === 2, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'both the delivery and its retransmit were acknowledged',
+    });
+    // An absence — the handler must not have been entered a second time — and
+    // an absence cannot be polled for, so settle past where the second entry
+    // would have shown up.  The ack above already proves the retransmit was
+    // processed, so this only has to outlast one more mailbox turn.
+    await sleep(60);
+    expect(entered).toEqual(['seq-1']);
+
+    await kit.system.terminate();
+  });
+
   test('Infinity on both bounds is the documented opt-out', async () => {
     // Retention only: five distinct producers, no cap to evict them and no
     // sweep to age them out.  This case cannot see whether `preStart` armed
