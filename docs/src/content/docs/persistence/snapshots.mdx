@@ -121,7 +121,7 @@ accepts them:
 | `D1SnapshotStore` | Cloudflare D1 — SQLite at the edge. | No. |
 | `CassandraSnapshotStore` | Distributed — Cassandra / ScyllaDB. | No. |
 | `ObjectStorageSnapshotStore` | Filesystem / S3 with optional encryption. | Yes — all three, on write and on read. |
-| `CachedSnapshotStore` | Wraps another store with a read-through cache. | Whatever the wrapped store declares. |
+| `CachedSnapshotStore` | Wraps another store with a read-through cache. | Whatever the wrapped store declares; an `encryption()` hook also bypasses the cache — see below. |
 
 A `No` in that column is enforced, not just documented.  Setting
 `encryption()` or `integrity()` on an actor backed by one of those
@@ -137,6 +137,16 @@ A store that declares nothing at all — a third-party implementation
 predating the declaration — is treated as *unknown* and is never
 refused, on the same reasoning as `storageLocality`: a store must not
 be misjudged by a default it did not choose.
+
+`CachedSnapshotStore` is the one row whose answer is not the whole
+story.  It forwards the three hooks to the wrapped store untouched, so
+the column reads as the wrapped store's — but the cache it fills holds
+the *decoded* state.  An actor declaring `encryption()`, or a wrapped
+store that encrypts at rest, is therefore served past the cache, with
+a one-time advisory, until
+`CachedSnapshotStoreOptions.withAllowPlaintextCache(true)` acknowledges
+that the cache is as protected as the store; see
+[Cached snapshot store — Security](/persistence/snapshot-stores/cached-snapshot-store/#security--the-cache-holds-plaintext).
 
 The journal and the snapshot store are independent; you can mix
 them (e.g., Cassandra journal + object-storage snapshot store).

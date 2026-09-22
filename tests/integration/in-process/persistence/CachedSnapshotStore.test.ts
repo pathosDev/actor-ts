@@ -335,6 +335,54 @@ describe('CachedSnapshotStore — plaintext cache guard', () => {
     expect((await cache.get('snap:pid-open')).isSome()).toBe(true);
     expect(warnings).toEqual([]);
   });
+
+  test('a refused loadLatest evicts the plaintext an earlier unguarded load cached', async () => {
+    // The rollout shape #782's verification recorded: an actor gains an
+    // `encryption()` hook, but the cache it shares still holds the state its
+    // previous version loaded without one.  Refusing to cache the *new* load
+    // is not enough — the old entry would sit there in plaintext until the
+    // next `save`, or for `ttlMs`, whichever came first.
+    const counting = new CountingStore(new HonouringStore());
+    const cache = new InMemoryCache();
+    const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create().withCache(cache);
+    const store = new CachedSnapshotStore(counting, cachedSnapshotStoreOptions);
+    await store.save('pid-mixed', 1, { ssn: '078-05-1120' });
+    await store.loadLatest('pid-mixed');  // unguarded: populates the cache
+    expect((await cache.get('snap:pid-mixed')).isSome()).toBe(true);
+
+    const warnings = await captureWarnings(async () => {
+      const served = await store.loadLatest<{ ssn: string }>('pid-mixed', encryptedOptions);
+      // Refusing to cache is still not refusing to serve.
+      expect(served.toNullable()?.state).toEqual({ ssn: '078-05-1120' });
+    });
+
+    expect((await cache.get('snap:pid-mixed')).isNone()).toBe(true);
+    expect(counting.loadLatestCalls).toBe(2);
+    expect(warnings).toHaveLength(1);
+  });
+
+  test('every refused load evicts — the eviction is per load, the advisory per store', async () => {
+    // The advisory is deliberately once per store.  The eviction must not
+    // ride on it: the second entity behind the same cache is exposed exactly
+    // as the first was, and its refused load is the silent one.
+    const counting = new CountingStore(new HonouringStore());
+    const cache = new InMemoryCache();
+    const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create().withCache(cache);
+    const store = new CachedSnapshotStore(counting, cachedSnapshotStoreOptions);
+    await store.save('pid-first', 1, { balance: 1 });
+    await store.save('pid-second', 1, { balance: 2 });
+    await store.loadLatest('pid-first');
+    await store.loadLatest('pid-second');
+
+    const warnings = await captureWarnings(async () => {
+      await store.loadLatest('pid-first', encryptedOptions);   // warns, and evicts
+      await store.loadLatest('pid-second', encryptedOptions);  // silent, and must still evict
+    });
+
+    expect(warnings).toHaveLength(1);
+    expect((await cache.get('snap:pid-first')).isNone()).toBe(true);
+    expect((await cache.get('snap:pid-second')).isNone()).toBe(true);
+  });
 });
 
 /**
@@ -502,5 +550,30 @@ describe('CachedSnapshotStore — encryption configured on the wrapped store (#7
 
     expect((await cache.get('snap:secret-1')).isNone()).toBe(true);
     expect((await cache.get('snap:open-1')).isSome()).toBe(true);
+  });
+
+  test('a refused load evicts the plaintext cached before the store was configured to encrypt', async () => {
+    // The redeploy #782's verification describes: the same bucket and the
+    // same external cache, and `withEncryption(...)` added to the store in
+    // between.  The entry the previous deployment cached in plaintext must
+    // not outlive the first refused load — `ttlMs` was the only thing that
+    // bounded it, and nothing else on this route ever touches the entry.
+    const cache = new InMemoryCache();
+    const cachedSnapshotStoreOptions = CachedSnapshotStoreOptions.create().withCache(cache);
+    const before = new CachedSnapshotStore(storeConfigured(), cachedSnapshotStoreOptions);
+    await before.save('pid-secret', 1, { iban: SECRET });
+    await before.loadLatest('pid-secret');
+    expect(JSON.stringify(await cache.get('snap:pid-secret'))).toContain(SECRET);
+
+    const after = new CachedSnapshotStore(storeConfigured(clientSideEncryption), cachedSnapshotStoreOptions);
+    const warnings = await captureWarnings(async () => {
+      const served = await after.loadLatest<{ iban: string }>('pid-secret');
+      expect(served.toNullable()?.state.iban).toBe(SECRET);
+    });
+
+    expect(JSON.stringify(await cache.get('snap:pid-secret'))).not.toContain(SECRET);
+    expect((await cache.get('snap:pid-secret')).isNone()).toBe(true);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("the store's own configuration keeps this persistenceId encrypted");
   });
 });
