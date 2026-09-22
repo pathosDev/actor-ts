@@ -130,6 +130,17 @@ const encode = (text: string): Uint8Array => new TextEncoder().encode(text);
  * the microtask queue without a turn of the event loop in which foreign work
  * could run.  Any that did could only inflate the count, and the budget below
  * has three orders of magnitude of room.
+ *
+ * **How far a leak would reach** is worth stating exactly, because the obvious
+ * answer is wrong.  `--parallel` — the CI mode since #1521 — does *not* give a
+ * test file its own process: two files probed together on bun 1.4.2 report the
+ * same `process.pid` and the same `threadId`.  What it gives is a fresh realm
+ * per file, so `String.prototype` is a different object in each and a patch
+ * abandoned here could not be seen there.  Run the same probe without the flag
+ * and the files share one realm — the second file read the first one's
+ * wrapper.  That mode is a plain `bun test <path>`, which is how this file is
+ * usually run while it is being worked on, so the `finally` below is not
+ * belt-and-braces over the runner's isolation: it is the whole of it.
  */
 async function countTouchedCharacters(body: () => Promise<void>): Promise<number> {
   const originalIndexOf = String.prototype.indexOf;
