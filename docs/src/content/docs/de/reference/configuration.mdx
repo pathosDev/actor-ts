@@ -2455,7 +2455,7 @@ registriert hat und die Rolle sie herausgefiltert hat.
 | `devtools.allowed-origins` | `[]` | Zusätzliche Origins, die den WebSocket des Taps öffnen dürfen.  Same-Origin ist immer erlaubt; das hier erweitert nur. |
 | `devtools.panels.actors` | `true` | Aktor-Baum, Mailbox-Tiefen und Cell-Zustände. |
 | `devtools.panels.cluster` | `true` | Cluster-Topologie, Shard-Maps, Membership-Timeline. |
-| `devtools.panels.tracing` | `true` | Span-Flamegraph und -Wasserfall. |
+| `devtools.panels.tracing` | `true` | Span-Flamegraph und -Wasserfall — seine Payload-Spalte trägt jede Actor-Nachricht, die während des DevTools-Attach vorbeikam, serialisiert. |
 | `devtools.panels.explain` | `true` | Explain-Plan pro Aktor. |
 | `devtools.panels.time-travel` | `true` | Journal-Browsing und State-Rekonstruktion — das Panel, das rohe persistierte Events zeigt. |
 | `devtools.panels.profiler` | `true` | Aktor-Profiler. |

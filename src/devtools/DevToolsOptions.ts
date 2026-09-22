@@ -21,7 +21,17 @@ export type DevToolsPanelOptionsType = {
   readonly actors?: boolean;
   /** Cluster topology, shard maps, membership timeline (#204).  Default `true`. */
   readonly cluster?: boolean;
-  /** Span flame graph / waterfall (#217).  Default `true`. */
+  /**
+   * Span flame graph / waterfall (#217).  Default `true`.
+   *
+   * Its Payload column carries the serialised body of every actor
+   * message that passed while DevTools was attached, so it belongs with
+   * {@link timeTravel}, {@link deadLetters} and {@link eventStream}
+   * anywhere those contents are not the operator's to read.  The
+   * switch-these-off guidance named only the other three, which left the
+   * panel with the broadest payload coverage of the four off the list
+   * (#1420).
+   */
   readonly tracing?: boolean;
   /** Per-actor explain plan (#218).  Default `true`. */
   readonly explain?: boolean;
@@ -39,8 +49,8 @@ export type DevToolsPanelOptionsType = {
    * actually recording — `deadLetters.store` defaults to `'off'`.
    *
    * Shows message payloads, so it is switched off alongside
-   * {@link timeTravel} anywhere the payloads are not the operator's to
-   * read.
+   * {@link tracing} and {@link timeTravel} anywhere the payloads are not
+   * the operator's to read.
    */
   readonly deadLetters?: boolean;
   /**
@@ -48,9 +58,9 @@ export type DevToolsPanelOptionsType = {
    * Default `true`.
    *
    * Shows every published event, payload included, so it is switched off
-   * alongside {@link timeTravel} and {@link deadLetters} anywhere those
-   * payloads are not the operator's to read.  Nothing is observed until a
-   * panel actually subscribes.
+   * alongside {@link tracing}, {@link timeTravel} and {@link deadLetters}
+   * anywhere those payloads are not the operator's to read.  Nothing is
+   * observed until a panel actually subscribes.
    */
   readonly eventStream?: boolean;
   /**
