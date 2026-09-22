@@ -59,7 +59,7 @@ new ConsumerController<T>({
 
 Wenn der Consumer zwischen **2** und **4** crasht, erreicht das
 ACK den Producer nie.  Der Producer retransmittiert nach
-`resendTimeoutMs`.  Der In-Memory-Dedup des Controllers ist nach
+`resendTimeout`.  Der In-Memory-Dedup des Controllers ist nach
 dem Crash weg, also läuft der Handler für dieselbe Seq erneut —
 mach ihn idempotent oder persistiere die processed-Seq zusammen
 mit dem Business-State.
@@ -183,7 +183,7 @@ Consumer auf node-A verarbeitet msg #5; Controller queued das ACK
 node-A crasht, bevor das ACK-Tell abgeschlossen ist
 ```
 
-Producer sieht im `resendTimeoutMs`-Fenster kein ACK →
+Producer sieht im `resendTimeout`-Fenster kein ACK →
 retransmittiert.
 
 Wenn der Consumer **sharded** ist (die Entity wandert beim
@@ -203,7 +203,7 @@ zurück, und Du bekommst volle Wiederverarbeitung.
 Das ACK ist **Fire-and-Forget** vom Controller zum `replyTo` des
 Producers.  Der Controller wartet nicht auf die Zustellung —
 wenn das Netzwerk das ACK verliert, retransmittiert der Producer
-nach `resendTimeoutMs`, und der Dedup des Controllers re-ACKt
+nach `resendTimeout`, und der Dedup des Controllers re-ACKt
 sofort.
 
 Das heißt: **Dein Handler zahlt keine Latenz-Kosten für das
@@ -256,6 +256,20 @@ stillschweigend auf At-most-once herabgestuft und dabei Erfolg melden.  Beachte,
 was das Signal weiterhin *nicht* verspricht: es sagt, dass der Consumer die
 Verantwortung für die Seq übernommen hat — bei einer erneuten Zustellung heißt
 das, der Handler lief bei einem *früheren* Versuch, nicht bei diesem.
+
+Der **Geltungsbereich des Tokens ist ein Producer, nicht eine Nachricht**.  Es
+wird einmal pro `ProducerController`-Konstruktion gezogen und auf jedes
+Delivery gestempelt, das diese Inkarnation sendet — alles, was legitim ein
+Delivery erhält (Dein Consumer, ein Handler, der es weiterreicht, ein
+Router-Fan-out), kann damit jede andere in-flight-Seq dieses Producers
+settlen, solange der Actor lebt.  Das ist Absicht und kein Versehen: Wer ein
+Delivery hält, ist ohnehin diejenige Partei, die es ACKen soll, und ohne
+Delivery hat sie überhaupt kein `replyTo`, um den Producer zu erreichen.  Es
+hält außerdem den Dedup-Key des Consumers stabil, denn dieser Key ist
+`(producerId, incarnation)` — ein Token pro Nachricht würde das Fenster bei
+jeder Sequenz zurücksetzen.  Was es *nicht* gibt, ist eine Capability, die Du
+pro Nachricht weitergeben kannst: ein Delivery an eine weniger vertraute
+Komponente weiterzureichen, gibt ihr den ganzen Producer.
 
 Die Prüfung sitzt beim Producer, weil nur diese Seite etwas Unerratbares hat,
 gegen das sie prüfen kann.  Der Consumer ACKt an das `replyTo` des Envelopes

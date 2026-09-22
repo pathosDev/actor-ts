@@ -731,6 +731,60 @@ describe('ReliableDelivery — acknowledgment authentication (#730)', () => {
     await kit.system.terminate();
   });
 
+  test('one incarnation token settles every send of that producer, not just the delivery it rode on', async () => {
+    // The *scope* of the token, recorded rather than assumed.  #730 asked for
+    // a per-delivery unguessable nonce; what shipped is one token per
+    // controller construction, so any party that legitimately receives one
+    // delivery holds something that settles every other in-flight seq of that
+    // producer.  See `ProducerController.incarnation` for why that is adequate
+    // under the issue's threat model and what it buys in exchange.
+    //
+    // Written as an equality on the two tokens and then exercised across
+    // sequences, so narrowing the token later fails HERE — with both values in
+    // the message — instead of leaving the prose that describes this scope
+    // quietly stale.
+    const kit = quietKit('rd-incarnation-scope');
+    const confirmations: Array<{ body: string; err: Error | null }> = [];
+    const probe = kit.createTestProbe();
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(probe as never)
+      // Long enough that no retransmit can confuse the count below, and a
+      // window of two so both sends are genuinely in flight at once.
+      .withResendTimeout(5_000)
+      .withWindowSize(2);
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+    producer.tell('first', (err) => { confirmations.push({ body: 'first', err }); });
+    producer.tell('second', (err) => { confirmations.push({ body: 'second', err }); });
+
+    const first = await probe.receiveOne(4_000) as Delivery<string>;
+    const second = await probe.receiveOne(4_000) as Delivery<string>;
+    expect(first.seq).toBe(1);
+    expect(second.seq).toBe(2);
+    expect(second.incarnation).toBe(first.incarnation);
+
+    // An acknowledgment for the SECOND send, built from the token the FIRST
+    // delivery carried.  A forwarding handler or a router fan-out that only
+    // ever saw delivery 1 can do exactly this.
+    producer.ref.tell({
+      kind: 'reliable-delivery.ack',
+      producerId: first.producerId,
+      incarnation: first.incarnation,
+      seq: second.seq,
+    } as never);
+
+    await awaitCondition(() => confirmations.length === 1, {
+      timeoutMs: 4_000,
+      label: "the second send was settled by the first delivery's token",
+    });
+    // And only that one: seq 1 is still in flight, so its caller has not been
+    // told anything.  A token good for the whole controller is not a token
+    // good for settling sends nobody acknowledged.
+    expect(confirmations).toEqual([{ body: 'second', err: null }]);
+
+    producer.stop();
+    await kit.system.terminate();
+  });
+
   test('two producers sharing a producerId cannot settle sends for one another', async () => {
     // Not an attack — two processes that both left `producerId` at the same
     // configured string.  Before the incarnation check either one's ack would
@@ -1045,10 +1099,19 @@ const spawnBoundedConsumer = (
 }, name);
 
 /**
- * Hand-rolled envelope, because the budget cases turn on a `producerId` and a
- * `seq` the *sender* chose.  A `ProducerController` mints one id per
- * construction and never leaves a gap open, which is precisely the traffic
- * these bounds do not exist for.
+ * Hand-rolled envelope, because most of the budget cases turn on a
+ * `producerId` and a `seq` the *sender* chose — a flood of distinct ids, a
+ * sequence withheld forever, a seq out of nowhere.  A `ProducerController`
+ * mints one id per construction and numbers from 1, so it cannot be made to
+ * produce any of those shapes.
+ *
+ * It is **not** that a real producer never reaches these bounds, which this
+ * comment used to say.  One refusing handler opens a gap the producer keeps
+ * sending past — `DEFAULT_MAX_OUT_OF_ORDER`'s own note documents that the
+ * stream keeps flowing and that this cap is the only thing that stops it —
+ * and two cases below use a real `ProducerController` for exactly that: one
+ * measures how far past an open gap it reaches, the other holds the gap open
+ * until the consumer is parked at the cap.
  */
 const deliver = (
   consumer: ActorRef<Delivery<string>>,
@@ -1271,6 +1334,81 @@ describe('ReliableDelivery — dedup map resource budget (#728)', () => {
       label: 'the swept producer was handled again',
     });
     expect(received).toEqual(['busy-first', 'idle-first', 'idle-after-sweep']);
+
+    await kit.system.terminate();
+  });
+
+  test('a delivery still in the handler is not swept out from under itself', async () => {
+    // The sweep runs from a raw scheduler callback, so it is the one thing in
+    // this class that mutates the map while a handler is awaited — and the
+    // handler duration is not part of the TTL it compares against, because
+    // `touch` stamps `lastSeenAtMs` on *arrival*.  Without the re-stamp after
+    // the handler resolves, a handler that outlives the TTL has its entry
+    // deleted mid-flight, `markDelivered` writes to a detached object, and the
+    // retransmit that was queued behind it opens a fresh window and runs the
+    // handler a second time.  That contradicts the consumer-controller page,
+    // which says a retransmit arriving while its own sequence is still being
+    // handled "is absorbed as the duplicate it is" with no exception attached.
+    //
+    // Unreachable at the shipped defaults (300 s TTL against a 500 ms
+    // resendTimeout) and it costs only an at-least-once duplicate, which is
+    // why the fix is one line rather than a lock: the entry has to be put
+    // *back* into the live map, not merely re-stamped in place.
+    const kit = quietKit('rd-sweep-under-handler');
+    const entered: string[] = [];
+    const probe = kit.createTestProbe();
+    const slot: ControllerSlot = { controller: null };
+    // The handler blocks on a promise this test resolves, so nothing here
+    // waits on a wall-clock guess: the sweep firing mid-handler is observed as
+    // `trackedProducers === 0`, and the release is explicit.
+    let releaseHandler = (): void => {};
+    const handlerGate = new Promise<void>((resolve) => { releaseHandler = resolve; });
+    const consumer = spawnBoundedConsumer(kit, slot, {
+      handler: async (m) => {
+        entered.push(m);
+        if (entered.length === 1) await handlerGate;
+      },
+      // No cap, so only age can reclaim — the sweep is the sole mutator the
+      // in-flight delivery races against.
+      maxProducers: Infinity,
+      producerIdleTtlMs: 50,
+    }, 'sweep-under-handler-consumer');
+
+    deliver(consumer, probe, 'slow-handler-producer', 1, 'seq-1');
+    await awaitCondition(() => entered.length === 1, {
+      timeoutMs: 4_000,
+      label: 'the handler was entered for the first delivery',
+    });
+    // The precondition, and it holds in a fixed tree too: the re-stamp happens
+    // once the handler resolves, so while it is running the entry really is
+    // swept.  Waiting for the deletion is what makes the case exercise the
+    // window rather than hoping to land in it.
+    await awaitCondition(() => slot.controller?.trackedProducers === 0, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'the idle sweep reached the entry while its handler was running',
+    });
+
+    // The producer's retransmit, queued behind the in-flight delivery because
+    // the cell serialises them.
+    deliver(consumer, probe, 'slow-handler-producer', 1, 'seq-1-retransmit');
+    releaseHandler();
+
+    // Two acknowledgments: one for the delivery that was handled, one for the
+    // retransmit that was recognised as its duplicate.  Without the re-stamp
+    // the retransmit opens a fresh window instead, which also acknowledges —
+    // so the ack count is the wait, and the handler entries are the assertion.
+    await awaitCondition(() => probe.messageCount === 2, {
+      timeoutMs: 4_000,
+      intervalMs: 10,
+      label: 'both the delivery and its retransmit were acknowledged',
+    });
+    // An absence — the handler must not have been entered a second time — and
+    // an absence cannot be polled for, so settle past where the second entry
+    // would have shown up.  The ack above already proves the retransmit was
+    // processed, so this only has to outlast one more mailbox turn.
+    await sleep(60);
+    expect(entered).toEqual(['seq-1']);
 
     await kit.system.terminate();
   });
@@ -1586,6 +1724,115 @@ describe('ReliableDelivery — out-of-order window bound (#728, #643)', () => {
     expect(slot.controller?.outOfOrderFor(producerId)).toBe(total - 1);
     expect(slot.controller?.outOfOrderFor(producerId))
       .toBeGreaterThan(DEFAULT_WINDOW_SIZE - 1);
+
+    producer.stop();
+    await kit.system.terminate();
+  });
+
+  test('a real producer stalls at the cap, holds there, and drains once the gap closes', async () => {
+    // Every case above hand-rolls its envelopes, and the cap cases had to:
+    // they turn on a sequence the sender simply never sends.  But that left
+    // the bound's interaction with the framework's *own* sender asserted
+    // nowhere, which is what let the `windowSize - 1` premise stand for so
+    // long — and the two claims that matter most are precisely about a real
+    // producer.  `DEFAULT_MAX_OUT_OF_ORDER`'s note says the stall "lifts the
+    // moment the missing sequence lands"; `consumer-controller.mdx` says
+    // reaching the cap "never drops one either; it costs a stall".
+    //
+    // A producer plus one refusing handler is exactly that traffic, and it
+    // also pins the half nothing else does: retransmission on this path is
+    // *unbounded* (`ProducerController.send` re-arms its timer with no
+    // ceiling), which is the only reason a refusal is a stall and not a drop.
+    // A finite `maxAttempts` (#646) shorter than the hold below turns this
+    // case red — and, measured, leaves every other case in this file green.
+    const kit = quietKit('rd-real-producer-at-the-cap');
+    const entered: string[] = [];
+    const handled: string[] = [];
+    const slot: ControllerSlot = { controller: null };
+    const producerId = 'stalling-producer';
+    const cap = 8;
+    const total = 40;
+    // How many times the first sequence is refused before the gap is allowed
+    // to close.  Each refusal is one retransmit, so this is the gap's width in
+    // resend periods — counted rather than timed, which is what makes "held
+    // open across several resend periods" a fact and not a wall-clock guess.
+    const refusalsBeforeTheGapCloses = 5;
+    // Released by the test, not by a counter, so the accepting retransmit
+    // cannot arrive before the assertions on the stalled state have run.
+    let holdTheGapOpen = true;
+
+    const consumerRef = spawnBoundedConsumer(kit, slot, {
+      handler: (body) => {
+        entered.push(body);
+        // A handler that throws is the same state a lossy hop produces: seq 1
+        // is never acknowledged, so `contiguous` never advances and every
+        // later sequence piles up above it until the cap refuses the rest.
+        if (body === 'm-1' && holdTheGapOpen) throw new Error('the gap this case holds open');
+        handled.push(body);
+      },
+      // Both other bounds off: only the out-of-order cap may refuse anything.
+      maxProducers: Infinity,
+      producerIdleTtlMs: Infinity,
+      maxOutOfOrder: cap,
+    }, 'real-producer-cap-consumer');
+
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(consumerRef as never)
+      .withProducerId(producerId)
+      // Short enough that several resend periods fit inside one test, and the
+      // only figure here that is a wall-clock choice rather than a count.
+      .withResendTimeout(40);
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+
+    for (let i = 1; i <= total; i++) producer.tell(`m-${i}`);
+
+    // Sampled on every poll: an implementation that admitted one past the cap
+    // would race back down to it before any single assertion could read it.
+    let peakOutOfOrder = 0;
+    const refusalsSoFar = (): number => entered.filter((b) => b === 'm-1').length;
+    const sampleAndCountRefusals = (): number => {
+      const current = slot.controller?.outOfOrderFor(producerId) ?? 0;
+      if (current > peakOutOfOrder) peakOutOfOrder = current;
+      return refusalsSoFar();
+    };
+
+    await awaitCondition(
+      () => sampleAndCountRefusals() >= refusalsBeforeTheGapCloses,
+      {
+        timeoutMs: 4_000,
+        intervalMs: 5,
+        label: 'the first sequence was refused across several resend periods',
+      },
+    );
+
+    // Stalled, and stalled exactly at the cap.  `handled` holding precisely
+    // `cap` bodies is the other half: the sequences above the gap that fit
+    // were handled, and every one past them was refused rather than admitted.
+    expect(peakOutOfOrder).toBe(cap);
+    expect(slot.controller?.outOfOrderFor(producerId)).toBe(cap);
+    expect(handled).toHaveLength(cap);
+
+    holdTheGapOpen = false;
+
+    // The stall lifts on the producer's own retransmit — nothing here re-sends
+    // anything — and it lifts completely: the retained run drains in one pass
+    // and every refused sequence is accepted on a later attempt.
+    await awaitCondition(
+      () => handled.length === total && slot.controller?.outOfOrderFor(producerId) === 0,
+      {
+        timeoutMs: 4_000,
+        intervalMs: 10,
+        label: 'the closing sequence drained the window and the whole stream landed',
+      },
+    );
+    expect(peakOutOfOrder).toBe(cap);
+    // Nothing dropped and nothing doubled: every body exactly once, however
+    // many times the refused ones were retransmitted in between.
+    expect([...handled].sort()).toEqual(
+      Array.from({ length: total }, (_, i) => `m-${i + 1}`).sort(),
+    );
+    // The gap really was held across retransmits rather than closing early.
+    expect(refusalsSoFar()).toBeGreaterThanOrEqual(refusalsBeforeTheGapCloses);
 
     producer.stop();
     await kit.system.terminate();

@@ -201,6 +201,18 @@ zerfallen, und ein Retransmit, der eintrifft, während seine eigene Seq noch
 behandelt wird, wird als das Duplikat absorbiert, das er ist, statt den Handler
 ein zweites Mal laufen zu lassen.
 
+Das gilt, wie lange der Handler auch läuft — auch über `producerIdleTtlMs`
+hinaus.  Der Idle-Sweep läuft aus einem Scheduler-Callback und nicht über die
+Mailbox, er ist also das Einzige, was einen Dedup-Eintrag erreichen kann,
+während dessen eigener Handler noch läuft — und der Zeitstempel, gegen den er
+vergleicht, wird beim *Eintreffen* des Deliveries gesetzt, nicht bei der
+Rückkehr des Handlers.  Deshalb stempelt der Controller den Eintrag neu, sobald
+der Handler resolved, bevor er die Sequenz verbucht: ein Delivery wird so nie
+unter sich selbst weggeräumt.  Ein langsamer Handler kostet Dich an der Grenze
+trotzdem nichts — der Wiedereintrag ersetzt einen Producer, der nachweislich
+nicht untätig ist, und kann die Map deshalb nicht über `maxProducers` hinaus
+wachsen lassen.
+
 Die Inkarnation ist es, die einen *neu gestarteten* Producer aus dem
 Dedup-Fenster heraushält: er verwendet seine Sequenznummern wieder, seine
 Inkarnation aber nicht — seine Nachrichten sind also neu und keine Duplikate.
