@@ -250,17 +250,26 @@ ref.tell({ kind: 'unsubscribe', topic: 'y/#', target: someHandler });
   Aktor, wird er automatisch entfernt (und ein Broker-UNSUBSCRIBE feuert,
   sobald ein Pattern keine Konsumenten mehr hat).
 - Ein externes `subscribe`, das ein Filter einführt, das der Aktor **noch
-  nicht** hielt, wird auf Info-Level geloggt.  Hängt es sich an ein bereits
-  vorhandenes Filter an, bleibt es still — das ändert am Broker nichts —
-  und ebenso das eigene `subscribe()` der Subklasse, im Konstruktor wie zur
-  Laufzeit.
+  nicht** hielt, wird auf Info-Level geloggt — und ebenso eines, dessen
+  `qos` die Regel darüber aus einem bereits gehaltenen Filter heraushält:
+  eine abgelehnte Anfrage ist für einen Betreiber so viel wert wie ein
+  neues Filter, denn sonst sieht der Sender nur ein erfolgreiches
+  Re-SUBSCRIBE.  Ein bloßes Anhängen bleibt still: es führt weder ein
+  Filter noch einen Konsumenten ein, den es nicht schon gab, und hat um
+  nichts gebeten, was es nicht bekam.  Ebenso das eigene `subscribe()` der
+  Subklasse, im Konstruktor wie zur Laufzeit.  Umsonst ist ein Anhängen am
+  Broker allerdings nicht — im verbundenen Zustand stellt es das SUBSCRIBE
+  neu aus, und ein MQTT-Re-SUBSCRIBE spielt die Retained-Nachrichten des
+  Filters an jeden Konsumenten dieses Patterns erneut aus.
 
-Der Eintrag nennt das Filter, das QoS, das das SUBSCRIBE tatsächlich trägt,
-und ob passende Nachrichten an das eigene `onMessage` des Aktors gehen oder
-an einen anderen Aktor fan-outen:
+Der erste Eintrag nennt das Filter, das QoS, das das SUBSCRIBE tatsächlich
+trägt, und ob passende Nachrichten an das eigene `onMessage` des Aktors
+gehen oder an einen anderen Aktor fan-outen; der zweite nennt das
+angefragte QoS neben dem beibehaltenen:
 
 ```text
 MqttActor: external subscribe introduced broker filter 'tele/#' at QoS 1, delivering to actor 'actor-ts://sensors/user/mirror'
+MqttActor: external subscribe asked QoS 0 for filter 'own/#', which the actor already holds at QoS 2; kept QoS 2
 ```
 
 Das ist das Gegengewicht zur ersten Regel, keine Einschränkung davon.  Einen

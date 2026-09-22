@@ -315,6 +315,12 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     }
     if (fromExternal && introduced) {
       this.announceIntroducedFilter(topic, entry.qos, options.target);
+    } else if (
+      fromExternal
+      && options.qos !== undefined
+      && this.effectiveQos(options.qos) !== this.effectiveQos(entry.qos)
+    ) {
+      this.announceKeptQos(topic, options.qos, entry.qos);
     }
     if (this.connectionState === 'connected' && this.client) {
       this.brokerSubscribe(topic, entry.qos);
@@ -350,11 +356,22 @@ export abstract class MqttActor<T = unknown, TSelf = never>
    * is otherwise visible only in a heap dump.
    *
    * Both silences are as much of the contract as the record.  A *join* to a
-   * filter already in the registry says nothing new — the broker feed and the
-   * set of consumers already existed — and the subclass's own `subscribe()`
-   * is the operator's own declaration, so announcing it would put a line in
-   * the log for every actor that starts and bury the one line that means
-   * something.
+   * filter already in the registry introduces no filter and no consumer set
+   * that did not exist, and the subclass's own `subscribe()` is the operator's
+   * own declaration, so announcing it would put a line in the log for every
+   * actor that starts and bury the one line that means something.
+   *
+   * The join is silent because nothing was asked for, though — not because
+   * nothing happened.  A join whose `qos` the guard kept out *did* ask for
+   * something and did not get it, and {@link announceKeptQos} says so.  Nor is
+   * a join a no-op at the broker: {@link registerSubscription} re-issues the
+   * SUBSCRIBE while connected, and an MQTT re-SUBSCRIBE replays the filter's
+   * retained messages (always on 3.1.1, on 5.0 unless `retainHandling` says
+   * otherwise), so a join is observable at the actor as a retained replay to
+   * `onMessage` and to every target.  Skipping the round-trip when the
+   * effective QoS is unchanged would remove both the replay and the
+   * round-trip; that is a behaviour change rather than a wording one, and is
+   * not made here.
    *
    * Printed: the filter; the QoS the SUBSCRIBE actually carries, which is not
    * necessarily the command's (an existing entry keeps its own, an absent one
@@ -386,6 +403,35 @@ export abstract class MqttActor<T = unknown, TSelf = never>
       'MqttActor: external subscribe introduced broker filter '
       + `'${sanitizeForSubscribeLog(topic)}' at QoS ${this.effectiveQos(qos)}, `
       + `delivering to ${destination}`,
+    );
+  }
+
+  /**
+   * Announce an external `subscribe` whose `qos` the actor kept out of a
+   * pattern it already holds (#1510).
+   *
+   * The refusal is {@link registerSubscription}'s guard and is the right
+   * behaviour; doing it in silence was not.  The command still produces a
+   * broker SUBSCRIBE, so the sender observes a success at a QoS it did not ask
+   * for, and a controller legitimately retuning a filter fails with no signal
+   * anywhere — no record, no dead letter, nothing in the re-SUBSCRIBE it can
+   * see.  Same ground as {@link announceIntroducedFilter}: the refusal is
+   * defensible precisely because an operator can see it happen.
+   *
+   * Both numbers are the *effective* QoS — what the broker is given, after an
+   * entry that named none resolves to the actor's default.  Comparing the
+   * stored values instead would announce a refusal on a command that asked for
+   * exactly what it got, which is the failure mode this record exists to
+   * avoid: a record that reads as an observation and is not one.
+   *
+   * The filter is sanitized for the reason {@link sanitizeForSubscribeLog}
+   * gives — it is sender-chosen text on a success path a sender can drive.
+   */
+  private announceKeptQos(topic: string, asked: MqttQos, kept: MqttQos | undefined): void {
+    this.log.info(
+      `MqttActor: external subscribe asked QoS ${this.effectiveQos(asked)} for filter `
+      + `'${sanitizeForSubscribeLog(topic)}', which the actor already holds at QoS `
+      + `${this.effectiveQos(kept)}; kept QoS ${this.effectiveQos(kept)}`,
     );
   }
 

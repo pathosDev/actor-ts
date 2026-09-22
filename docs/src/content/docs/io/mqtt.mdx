@@ -239,16 +239,25 @@ ref.tell({ kind: 'unsubscribe', topic: 'y/#', target: someHandler });
   pruned automatically (and a broker UNSUBSCRIBE fires once a pattern has
   no consumers left).
 - An external `subscribe` that introduces a filter the actor did **not**
-  already hold is logged at info.  Joining a filter it already holds is
-  silent — that changes nothing at the broker — and so is the subclass's
-  own `subscribe()`, in the constructor or at runtime.
+  already hold is logged at info, and so is one whose `qos` the rule above
+  kept out of a filter the actor already holds — a refused request is
+  worth as much to an operator as a new filter, and the sender sees only
+  a successful re-SUBSCRIBE otherwise.  A plain join stays silent: it
+  introduces neither a filter nor a consumer that did not exist, and it
+  asked for nothing it did not get.  So does the subclass's own
+  `subscribe()`, in the constructor or at runtime.  A join is not free at
+  the broker, though — while connected it re-issues the SUBSCRIBE, and an
+  MQTT re-SUBSCRIBE replays the filter's retained messages to every
+  consumer of that pattern.
 
-The record names the filter, the QoS the SUBSCRIBE actually carries, and
-whether matching messages go to the actor's own `onMessage` or fan out to
-another actor:
+The first record names the filter, the QoS the SUBSCRIBE actually carries,
+and whether matching messages go to the actor's own `onMessage` or fan out
+to another actor; the second names the QoS that was asked for beside the
+one that was kept:
 
 ```text
 MqttActor: external subscribe introduced broker filter 'tele/#' at QoS 1, delivering to actor 'actor-ts://sensors/user/mirror'
+MqttActor: external subscribe asked QoS 0 for filter 'own/#', which the actor already holds at QoS 2; kept QoS 2
 ```
 
 That is the counterweight to the first rule rather than a restriction on

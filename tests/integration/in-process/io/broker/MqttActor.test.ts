@@ -741,6 +741,124 @@ describe('MqttActor external-subscribe visibility', () => {
     }
   });
 
+  /**
+   * The join is silent because it changes nothing; a refused `qos` is a join
+   * that asked for something and did not get it, which is not the same thing.
+   *
+   * The guard that keeps the QoS is right, and the sender still sees a
+   * successful re-SUBSCRIBE — at a QoS it did not ask for.  A controller
+   * legitimately retuning a filter therefore failed with no signal anywhere:
+   * no log record, no dead letter, nothing in the reply.  That is the same
+   * argument that put the introduced-filter record in (#783): the refusal is
+   * defensible precisely because an operator can see it happen.
+   */
+  test('an external subscribe whose QoS the actor keeps says so once', async () => {
+    const { sys, log } = makeLoggingSystem();
+    try {
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withQos(1);
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'own/#', qos: 2 }],
+      });
+      const ref = await boot(sys, actor, 'mqtt-visibility-refused-qos');
+      ref.tell({ kind: 'subscribe', topic: 'own/#', qos: 0 });
+      await awaitCondition(() => subscribeAdvisories(log).length >= 1, {
+        timeoutMs: 4_000, label: 'the kept QoS was recorded',
+      });
+      await sleep(SETTLE_MS);  // exactly one record; see SETTLE_MS
+      const advisories = subscribeAdvisories(log);
+      expect(advisories).toHaveLength(1);
+      const message = advisories[0]!.message;
+      expect(message).toContain('own/#');
+      expect(message).toContain('QoS 0');  // what the command asked for
+      expect(message).toContain('QoS 2');  // what the SUBSCRIBE carried
+      // The record has to agree with the wire, or it reads as an observation
+      // of something that did not happen.
+      expect(actor.module.last().subscribes).toEqual([
+        { topic: 'own/#', qos: 2 },
+        { topic: 'own/#', qos: 2 },
+      ]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  /**
+   * What separates the record from the silence is whether the broker would
+   * have seen a different number, not whether the two fields differ.
+   *
+   * An entry that named no QoS of its own resolves to the actor's default at
+   * SUBSCRIBE time, so `{ qos: 1 }` against a default of 1 is a request
+   * *granted* — comparing the stored values instead of the effective ones
+   * would announce a refusal that did not occur, on a command that asked for
+   * precisely what it got.
+   */
+  test('a join that would change nothing about the QoS stays silent', async () => {
+    const { sys, log } = makeLoggingSystem();
+    try {
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withQos(1);
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'explicit/#', qos: 2 }, { topic: 'default/#' }],
+      });
+      const ref = await boot(sys, actor, 'mqtt-visibility-granted-qos');
+      // Asks for exactly what the entry holds.
+      ref.tell({ kind: 'subscribe', topic: 'explicit/#', qos: 2 });
+      // Asks for the actor's default, which is what this entry resolves to.
+      ref.tell({ kind: 'subscribe', topic: 'default/#', qos: 1 });
+      // And one that really is refused, so the two silences are measured
+      // against a record that had to travel the same mailbox behind them.
+      ref.tell({ kind: 'subscribe', topic: 'explicit/#', qos: 0 });
+      await awaitCondition(() => subscribeAdvisories(log).length >= 1, {
+        timeoutMs: 4_000, label: 'the refused QoS was recorded',
+      });
+      await sleep(SETTLE_MS);  // the two granted joins are absences; see SETTLE_MS
+      const advisories = subscribeAdvisories(log);
+      expect(advisories).toHaveLength(1);
+      expect(advisories[0]!.message).toContain('QoS 0');
+      expect(advisories[0]!.message).not.toContain('default/#');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  /**
+   * The new record is a second sender-drivable success path, so it inherits the
+   * hostile-filter rule rather than being trusted because it is a refusal.
+   *
+   * Nothing here needs a subclass to cooperate: a sender introduces the filter
+   * itself and then joins its own filter at a different QoS, which reaches the
+   * record with text it chose end to end.  A CR or LF in it forges a second
+   * line that reads exactly like a genuine one — and a log line claiming a QoS
+   * refusal is a more useful thing to forge than most.
+   */
+  test('the kept-QoS record escapes a filter the sender chose', async () => {
+    const { sys, log } = makeLoggingSystem();
+    try {
+      const forged = 'forged\ninfo  MqttActor: external subscribe/#';
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({ options: mqttOptions });
+      const ref = await boot(sys, actor, 'mqtt-visibility-kept-hostile');
+      ref.tell({ kind: 'subscribe', topic: forged, qos: 0 });  // introduces it
+      ref.tell({ kind: 'subscribe', topic: forged, qos: 2 });  // joins it, QoS kept
+      await awaitCondition(() => subscribeAdvisories(log).length >= 2, {
+        timeoutMs: 4_000, label: 'both records for the forged filter arrived',
+      });
+      await sleep(SETTLE_MS);  // exactly two records; see SETTLE_MS
+      const advisories = subscribeAdvisories(log);
+      expect(advisories).toHaveLength(2);
+      expect(advisories[1]!.message).toContain('QoS 2');
+      expect(advisories[1]!.message).not.toContain('\n');
+      expect(advisories[1]!.message).toContain('\\u000a');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
   test("the subclass's own subscriptions are silent, in the constructor and at runtime", async () => {
     const { sys, log } = makeLoggingSystem();
     try {
