@@ -287,6 +287,53 @@ re-processes events one node already handled — or skips the ones
 the other node's cursor is past.  See [storage locality &
 identity](/persistence/overview/#storage-locality--identity).
 
+### The composite key has a length budget
+
+`DurableStateOffsetStore` does not store a cursor under your
+`persistenceId`.  It stores it under a **composite** —
+`projection|seq|persistenceId` for a by-persistence-id projection,
+`projection|tag|tag` for a by-tag one — and that string becomes the
+`persistenceId` of the underlying `DurableStateStore`, whose column
+every relational dialect declares `VARCHAR(255)` / `NVARCHAR(255)`.
+
+So the framework can compose a key you never wrote.  A 250-character
+`persistenceId` is legal on its own (the limit is 255), but under a
+projection named `orders-projection` the composite is 272 characters.
+The store refuses it rather than passing it on, with an error naming
+both halves — neither alone identifies the trouble, since the same id
+under a shorter projection name is fine:
+
+```text
+Projection offset key is 272 characters, over the 255-character
+durable_state.persistence_id column: projection "orders-projection" (17)
++ "|seq|" + persistenceId "order-xxx…" (250). Shorten the projection
+name or the persistenceId — ...
+```
+
+The budget for the second half is **255 − the projection name − 5**.
+Under `orders-projection` that leaves 233 characters.  A by-tag
+projection spends the same budget on the rendered tag filter
+(`all(a,b)+any(c)`), so a filter over several tags can outgrow it
+without any one tag being unusual.
+
+Refusing here rather than letting the database decide is deliberate,
+because the databases disagree and none of the answers is one you can
+act on:
+
+- SQL Server, and MariaDB in strict mode (the default since 10.2.4),
+  raise a truncation error — loud, but naming a column you never wrote.
+- MariaDB with strict mode off truncates to 255, and two projections
+  whose names share a prefix then share one cursor row.  Nothing
+  fails; the projection simply skips events.
+- Postgres and SQLite store `TEXT` and keep the whole thing, so the
+  same code works until the read model moves.
+
+Loads are refused as well as writes, so a projection that could never
+commit its cursor fails before it runs your handler rather than after.
+
+`InMemoryOffsetStore` has no such bound — its keys are `Map` keys, not
+column values.
+
 ## Polling
 
 ```ts

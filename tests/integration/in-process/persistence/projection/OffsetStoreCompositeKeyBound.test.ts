@@ -151,6 +151,16 @@ describe('DurableStateOffsetStore — the composite key is bounded', () => {
     expect(PROJECTION_NAME.length + SEPARATOR_LENGTH + LONG_PERSISTENCE_ID.length).toBe(272);
   });
 
+  test('the budget quoted in the docs is the budget the store enforces', () => {
+    // `docs/…/persistence/projections.mdx` (EN + DE) tells the reader the
+    // second half gets `255 − the projection name − 5`, and spells that out
+    // as 233 characters under `orders-projection`.  A documented number with
+    // nothing asserting it is a number that goes stale the first time either
+    // constant moves; the two tests below this one then show that 233 is
+    // accepted and 234 is not.
+    expect(FITTING_PERSISTENCE_ID).toHaveLength(233);
+  });
+
   test('saveSequence refuses the composite and names both halves', async () => {
     const backend = new RecordingDurableStateStore();
     const offsetStore = new DurableStateOffsetStore(backend);
