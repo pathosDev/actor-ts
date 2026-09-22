@@ -31,7 +31,16 @@ export class MsSqlJournalOptionsBuilder extends StoreSerializerOptionsBuilder<Ms
     return this.set('url', url);
   }
 
-  /** `mssql` config object (server/port/user/password/database/options/pool). */
+  /**
+   * `mssql` config object (server/port/user/password/database/options/pool)
+   * — e.g. `{ server, database, user, password,
+   * options: { encrypt: true, cryptoCredentialsDetails: { ca: fs.readFileSync('rds-ca.pem') } } }`.
+   *
+   * Supply the signing CA rather than telling the driver to trust the server
+   * certificate, which switches verification off: encryption without
+   * verification authenticates nobody, and this link carries the journal.  See
+   * https://actor-ts.dev/operations/security/tls-everywhere/.
+   */
   withPoolConfig(poolConfig: Record<string, unknown>): this {
     return this.set('poolConfig', poolConfig);
   }
