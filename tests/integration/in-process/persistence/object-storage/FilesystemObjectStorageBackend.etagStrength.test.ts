@@ -151,6 +151,51 @@ async function withoutSubtleCrypto<Result>(body: () => Promise<Result>): Promise
   }
 }
 
+/**
+ * Run `body` with `globalThis.crypto.subtle.digest` counted, and report the
+ * count alongside the result.
+ *
+ * The count is taken at WebCrypto rather than inside `computeEtag`, which is
+ * module-private and would in any case report one derivation per call however
+ * many times the caller makes it.  The question these cases ask is how often
+ * `put` *reaches* the derivation, so the only honest place to count is the
+ * primitive underneath it.
+ *
+ * The stand-in forwards `getRandomValues` and `randomUUID` for the reason
+ * {@link withoutSubtleCrypto} gives, and exposes nothing on `subtle` but
+ * `digest`: that is the whole of this backend's WebCrypto surface, so a
+ * future call to anything else should fail here loudly rather than be
+ * silently forwarded and uncounted.
+ */
+async function countingDigests<Result>(
+  body: () => Promise<Result>,
+): Promise<{ readonly result: Result; readonly digests: number }> {
+  const realCrypto = globalThis.crypto;
+  const realSubtle = realCrypto.subtle;
+  let digests = 0;
+  const counting = {
+    getRandomValues: <View extends ArrayBufferView | null>(array: View): View =>
+      realCrypto.getRandomValues(array),
+    randomUUID: () => realCrypto.randomUUID(),
+    subtle: {
+      digest: (algorithm: AlgorithmIdentifier, data: BufferSource): Promise<ArrayBuffer> => {
+        digests += 1;
+        return realSubtle.digest(algorithm, data);
+      },
+    },
+  } as unknown as Crypto;
+  Object.defineProperty(globalThis, 'crypto', {
+    value: counting, configurable: true, writable: true,
+  });
+  try {
+    return { result: await body(), digests };
+  } finally {
+    Object.defineProperty(globalThis, 'crypto', {
+      value: realCrypto, configurable: true, writable: true,
+    });
+  }
+}
+
 describe('FilesystemObjectStorageBackend — CAS token strength (#786)', () => {
   test('the etag carries a 128-bit digest, not a 32-bit one', async () => {
     const { etag } = await backend.put('strength/width', bytes('hello'));
@@ -251,9 +296,21 @@ describe('FilesystemObjectStorageBackend — CAS token strength (#786)', () => {
     // a first write finds no bytes to digest, so it never reaches the call at
     // all — and it is what makes this test discriminating rather than a second
     // copy of the one above.
-    await backend.put('strength/relabel', bytes('v1'));
+    //
+    // The `ifMatch` is not decoration.  Since the read-current digest became
+    // conditional, an overwrite that passes no CAS option no longer reaches
+    // it at all: the only derivation left on that path is the one over the
+    // body being written, and this case would quietly become a duplicate of
+    // "a stronger token is worth nothing if it can be silently downgraded"
+    // while staying green — measured, not assumed.  The value is irrelevant
+    // (the digest throws before any comparison); what matters is that the
+    // branch is entered.
+    const first = bytes('v1');
+    await backend.put('strength/relabel', first);
+    const firstEtag = await expectedEtag(first);
     const error = await withoutSubtleCrypto(() =>
-      backend.put('strength/relabel', bytes('v2')).then(() => null, (e: unknown) => e));
+      backend.put('strength/relabel', bytes('v2'), { ifMatch: firstEtag })
+        .then(() => null, (e: unknown) => e));
     expect((error as Error).message).toMatch(/SubtleCrypto is not available/);
     expect((error as Error).message).not.toMatch(/put-read-current/);
   });
@@ -268,5 +325,70 @@ describe('FilesystemObjectStorageBackend — CAS token strength (#786)', () => {
     await expect(
       backend.put('strength/legacy', bytes('v2'), { ifMatch: legacyFnv1aEtag(body) }),
     ).rejects.toBeInstanceOf(ObjectStorageConcurrencyError);
+  });
+});
+
+/**
+ * **Where the digest is derived, as distinct from what it is.**
+ *
+ * The cases above all read a token out of a return value or drive one back
+ * through `ifMatch`; none of them can see a derivation whose value is
+ * discarded.  That is exactly what `put` used to do on every overwrite: it
+ * digested the object already on disk unconditionally, although only the
+ * `ifMatch` branch reads that value — `ifNoneMatch: '*'` needs to know that
+ * bytes exist, not what they hash to, and a put with no CAS option at all
+ * needs neither.
+ *
+ * While the etag was a 32-bit loop over the body that was the right shape:
+ * the derivation was free and unconditional code is simpler.  With SHA-256
+ * behind WebCrypto it is a real call on the hot path of every durable-state
+ * upsert and every snapshot save, neither of which passes a CAS option
+ * (`ObjectStorageSnapshotStore.save` puts bare).
+ *
+ * So these cases count the calls rather than inspect the values, because the
+ * saving is invisible to any assertion about the etag itself — and counting
+ * both directions matters: a guard that skipped the derivation where
+ * `ifMatch` *does* need it would leave every case above green while breaking
+ * the comparison, which is why the last case here is a floor and not a
+ * ceiling.
+ */
+describe('FilesystemObjectStorageBackend — when the etag digest is derived', () => {
+  test('a first write derives exactly the one etag it returns', async () => {
+    const { result, digests } = await countingDigests(() =>
+      backend.put('digest/first', bytes('v1')));
+    expect(result.etag).toBe(await expectedEtag(bytes('v1')));
+    expect(digests).toBe(1);
+  });
+
+  test('an overwrite with no CAS option derives one digest, not two', async () => {
+    await backend.put('digest/plain', bytes('v1'));
+    const { digests } = await countingDigests(() =>
+      backend.put('digest/plain', bytes('v2')));
+    // The body being written, and nothing for the bytes being replaced.
+    expect(digests).toBe(1);
+  });
+
+  test("an ifNoneMatch:'*' conflict derives no digest at all", async () => {
+    await backend.put('digest/create-conflict', bytes('v1'));
+    const { digests } = await countingDigests(() =>
+      backend.put('digest/create-conflict', bytes('v2'), { ifNoneMatch: '*' })
+        .then(() => null, () => null));
+    // The branch asks whether bytes are there, which `readFile` already
+    // answered; it never reads the token's value.
+    expect(digests).toBe(0);
+  });
+
+  test('an ifMatch overwrite still derives the current object it compares against', async () => {
+    const first = bytes('v1');
+    await backend.put('digest/cas', first);
+    // Derived before the counter is installed, so the expectation counts
+    // only what `put` itself does.
+    const firstEtag = await expectedEtag(first);
+    const { digests } = await countingDigests(() =>
+      backend.put('digest/cas', bytes('v2'), { ifMatch: firstEtag }));
+    // One for the bytes on disk — the comparison's left-hand side — and one
+    // for the body being written.  Dropping either is a different defect
+    // from the one the cases above are about.
+    expect(digests).toBe(2);
   });
 });

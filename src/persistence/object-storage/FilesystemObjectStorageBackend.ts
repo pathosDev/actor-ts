@@ -362,26 +362,40 @@ export class FilesystemObjectStorageBackend implements ObjectStorageBackend {
             `filesystem put-read-current failed for ${key}`, e,
           );
         }
-        // ENOENT → object doesn't exist yet; `existing` stays undefined, and
-        // so does the `currentEtag` derived from it below.
+        // ENOENT → object doesn't exist yet; `existing` stays undefined,
+        // which is what both CAS branches below read it for.
       }
-      // Digest outside the `try`, deliberately.  Only `readFile` is the read
-      // this branch is reporting on; a `computeEtag` failure is a WebCrypto
-      // fault and would otherwise be relabelled "put-read-current failed",
-      // pointing at the disk for a problem that is not there.
-      const currentEtag = existing === undefined ? undefined : await computeEtag(existing);
 
       // Validate CAS preconditions.
-      if (options.ifNoneMatch === '*' && currentEtag !== undefined) {
+      //
+      // `ifNoneMatch: '*'` asks whether bytes are *there*, which `readFile`
+      // has already answered.  It used to test the derived etag's
+      // definedness instead — same answer, one SHA-256 to reach it.
+      if (options.ifNoneMatch === '*' && existing !== undefined) {
         throw new ObjectStorageConcurrencyError(
           key, `key ${key} already exists; ifNoneMatch=* rejected`,
         );
       }
-      if (options.ifMatch !== undefined && currentEtag !== options.ifMatch) {
-        throw new ObjectStorageConcurrencyError(
-          key,
-          `etag mismatch on ${key}: expected ${options.ifMatch}, actual ${currentEtag ?? '<absent>'}`,
-        );
+      if (options.ifMatch !== undefined) {
+        // Derived inside the branch that reads its value, not beside the
+        // read above.  Unconditional was the right shape while the etag was
+        // a 32-bit loop over the bytes already in memory; since #786 it is a
+        // SHA-256 through WebCrypto, and the two callers that dominate this
+        // path — `ObjectStorageSnapshotStore.save` and every durable-state
+        // upsert that holds no cached etag — put with no CAS option at all
+        // and would pay for a token nobody compares.
+        //
+        // Outside the read's own `try` for the reason it always was: only
+        // `readFile` is the read that branch reports on, and a `computeEtag`
+        // failure is a WebCrypto fault that "put-read-current failed" would
+        // send an operator to check the disk for.
+        const currentEtag = existing === undefined ? undefined : await computeEtag(existing);
+        if (currentEtag !== options.ifMatch) {
+          throw new ObjectStorageConcurrencyError(
+            key,
+            `etag mismatch on ${key}: expected ${options.ifMatch}, actual ${currentEtag ?? '<absent>'}`,
+          );
+        }
       }
 
       // Atomic write: write to a per-process temp file, then rename.
