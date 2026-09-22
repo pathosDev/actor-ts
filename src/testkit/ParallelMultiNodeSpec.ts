@@ -607,8 +607,34 @@ export class ParallelMultiNodeSpec {
       let helloSeen = false;
       const onWorkerHello = (_hello: WorkerHelloMessage): void => {
         if (helloSeen) return;
+        try {
+          worker.postMessage(init);
+        } catch (error) {
+          onInitFrameRefused(error);
+          return;
+        }
+        // Latched on the successful post: a post that threw sent nothing, so
+        // there is no init frame for a later hello to duplicate.
         helloSeen = true;
-        worker.postMessage(init);
+      };
+      /**
+       * `init.data` is not all harness-built — `scenarioInitDataFor` is the
+       * test's own function and its return value rides in that frame — so the
+       * clone `postMessage` runs on this thread can refuse it, throwing a
+       * `DataCloneError` from inside this listener where nothing above it
+       * catches.  The same guard `WorkerCluster.handshake` carries, for the
+       * same reason and with the same effect: without it `start()` never
+       * settled, it waited out the handshake budget for a frame that had
+       * never left the harness (#1515).
+       */
+      const onInitFrameRefused = (cause: unknown): void => {
+        clearTimeout(timeout);
+        worker.removeEventListener('message', onMessage);
+        reject(new Error(
+          `Worker ${addr} could not be sent its init frame — the role's init data must be `
+          + `structured-cloneable (${cause instanceof Error ? cause.message : String(cause)})`,
+          { cause },
+        ));
       };
       const onWorkerReady = (_ready: WorkerReadyMessage): void => {
         clearTimeout(timeout);

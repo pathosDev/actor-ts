@@ -530,6 +530,60 @@ describe('ParallelMultiNodeSpec — handshake', () => {
       await spec.stop();
     }
   });
+
+  test('an init frame postMessage refuses fails start() instead of the whole process', async () => {
+    // The harness's `init.data` is not all harness-built: `scenarioInitDataFor`
+    // is the test's own function and its return value rides in that frame, so
+    // the same DataCloneError `WorkerCluster.handshake` can take lands here
+    // too — synchronously, inside the harness's own `message` listener, where
+    // nothing above it catches (#1515, the testkit copy of #775's latch).
+    let escaped: unknown;
+    const backend = new FakeWorkerBackend({
+      onSpawn: (worker) => {
+        worker.postMessage = (): never => {
+          throw new DOMException('cannot clone', 'DataCloneError');
+        };
+        const add = worker.addEventListener.bind(worker);
+        let greeted = false;
+        worker.addEventListener = (event, handler): void => {
+          add(event, handler);
+          if (event !== 'message' || greeted) return;
+          greeted = true;
+          // Caught so the unguarded shape is observable rather than fatal.
+          queueMicrotask(() => {
+            try { worker.deliverMessage({ kind: 'worker-hello' }); }
+            catch (error) { escaped = error; }
+          });
+        };
+      },
+    });
+    const spec = new ParallelMultiNodeSpec({
+      roles: ['a'],
+      scenarioInitDataFor: () => ({ notCloneable: () => 1 }),
+      backend,
+    });
+
+    // Raced rather than awaited: unguarded, `start()` never settles at all —
+    // it waits out the handshake's own ten-second budget, which is twice
+    // bun's per-test cap, so the assertion below would be replaced by the one
+    // message that names nothing.
+    const outcome = await Promise.race([
+      spec.start().then(() => 'started' as const, (error: unknown) => error),
+      // The elapsed time IS the assertion here: what the guard prevents is a
+      // `start()` that never settles, and nothing about a promise that is
+      // simply pending can be polled for.
+      new Promise<'still waiting'>((resolve) => { setTimeout(() => resolve('still waiting'), 500); }),
+    ]);
+
+    try {
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toMatch(/could not be sent its init frame/);
+      expect(((outcome as Error).cause as Error | undefined)?.name).toBe('DataCloneError');
+      expect(escaped).toBeUndefined();
+    } finally {
+      await spec.stop();
+    }
+  });
 });
 
 /* --------- #1288 — a backend that declares no error containment --------- */

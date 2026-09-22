@@ -348,8 +348,50 @@ export class WorkerCluster {
       let helloSeen = false;
       const onWorkerHello = (): void => {
         if (helloSeen) return;
+        try {
+          worker.postMessage(init);
+        } catch (error) {
+          onInitFrameRefused(error);
+          return;
+        }
+        // Latched on the *successful* post, which is the order the failure
+        // handling around it already reads in (#700, #701): a post that threw
+        // sent nothing, so there is no init frame for a later hello to be a
+        // duplicate of.  Nothing can slip between the two statements —
+        // `postMessage` does not synchronously re-enter this listener on any
+        // runtime the framework targets, which is the same property
+        // `WorkerNode.join()` relies on for its own two-statement ordering.
         helloSeen = true;
-        worker.postMessage(init);
+      };
+      /**
+       * `postMessage` structured-clones on the *posting* thread, so an
+       * `initData` the algorithm refuses — a function, an object carrying one
+       * — throws a `DataCloneError` right here, inside the host's `message`
+       * listener.  Unguarded that throw had two exits and both were wrong: on
+       * Node it left the listener as an uncaught exception and took the
+       * process with it, and where something did contain it the handshake sat
+       * out the whole `readyTimeoutMs` before blaming a worker that had
+       * received nothing.  `OffloadPool.dispatch` is the same shape with the
+       * same answer (#1571); this is the handshake's (#1515).
+       *
+       * Nothing left this thread, so the worker is not at fault and there is
+       * nothing to wait for: fail the spawn now, naming the field that can
+       * carry an unclonable value.  Rendered through `describeFailure` like
+       * every other failure this class reports, which for a `DataCloneError`
+       * means the runtime's own "`() => 1` could not be cloned" — the part
+       * that says *which* value.  That echo is why `WorkerBroker` keeps the
+       * same message off its `unroutable` log line, and why it is right here:
+       * this is a rejection handed back to the caller of `spawn()`, and the
+       * value it quotes is the `initData` that caller just passed in.  The
+       * error object itself rides along as the `cause`.
+       */
+      const onInitFrameRefused = (cause: unknown): void => {
+        unsubscribe();
+        reject(new Error(
+          `Worker ${address} could not be sent its init frame — initData must be `
+          + `structured-cloneable (${describeFailure(cause)})`,
+          { cause },
+        ));
       };
       const onWorkerReady = (ready: WorkerReadyMessage): void => {
         unsubscribe();
