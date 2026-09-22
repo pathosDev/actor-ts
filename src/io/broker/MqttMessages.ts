@@ -162,11 +162,30 @@ export type MqttSubscribeCommand<T = unknown> = {
   readonly kind: 'subscribe';
   readonly topic: string;
   readonly target?: ActorRef<MqttMessage<T>>;
+  /**
+   * Requested QoS — it applies only to a pattern **this command creates**.
+   * On a pattern the actor already holds it is ignored, the held QoS stands,
+   * and the actor writes one info record naming both values; a subclass
+   * changes the QoS of its own pattern with `subscribe(topic, { qos })`.
+   *
+   * Spelled out here because this is where the rule is read: the field is
+   * optional and the SUBSCRIBE still succeeds, so a caller composing the
+   * command in an editor would otherwise see nothing to suggest the value can
+   * be dropped.  See *External control* in the MQTT docs.  #783, #1510.
+   */
   readonly qos?: MqttQos;
 };
 
 /**
- * Remove a subscription (own delivery, or a specific `target`).
+ * Remove a subscription — as a command, only ever one an external `subscribe`
+ * put there.
+ *
+ * Omitting `target` detaches every externally attached target at once; naming
+ * one detaches that one.  Neither form touches the actor's own `onMessage`
+ * delivery or a target the subclass declared with `subscribe(topic, { target
+ * })`, so this command cannot silence a subclass's constructor-declared
+ * subscription in either form it was declared.  The subclass's own protected
+ * `unsubscribe` is not restricted this way.  #1510.
  *
  * Named variant of {@link MqttCommand}.
  */
