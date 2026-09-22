@@ -731,6 +731,60 @@ describe('ReliableDelivery — acknowledgment authentication (#730)', () => {
     await kit.system.terminate();
   });
 
+  test('one incarnation token settles every send of that producer, not just the delivery it rode on', async () => {
+    // The *scope* of the token, recorded rather than assumed.  #730 asked for
+    // a per-delivery unguessable nonce; what shipped is one token per
+    // controller construction, so any party that legitimately receives one
+    // delivery holds something that settles every other in-flight seq of that
+    // producer.  See `ProducerController.incarnation` for why that is adequate
+    // under the issue's threat model and what it buys in exchange.
+    //
+    // Written as an equality on the two tokens and then exercised across
+    // sequences, so narrowing the token later fails HERE — with both values in
+    // the message — instead of leaving the prose that describes this scope
+    // quietly stale.
+    const kit = quietKit('rd-incarnation-scope');
+    const confirmations: Array<{ body: string; err: Error | null }> = [];
+    const probe = kit.createTestProbe();
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(probe as never)
+      // Long enough that no retransmit can confuse the count below, and a
+      // window of two so both sends are genuinely in flight at once.
+      .withResendTimeout(5_000)
+      .withWindowSize(2);
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+    producer.tell('first', (err) => { confirmations.push({ body: 'first', err }); });
+    producer.tell('second', (err) => { confirmations.push({ body: 'second', err }); });
+
+    const first = await probe.receiveOne(4_000) as Delivery<string>;
+    const second = await probe.receiveOne(4_000) as Delivery<string>;
+    expect(first.seq).toBe(1);
+    expect(second.seq).toBe(2);
+    expect(second.incarnation).toBe(first.incarnation);
+
+    // An acknowledgment for the SECOND send, built from the token the FIRST
+    // delivery carried.  A forwarding handler or a router fan-out that only
+    // ever saw delivery 1 can do exactly this.
+    producer.ref.tell({
+      kind: 'reliable-delivery.ack',
+      producerId: first.producerId,
+      incarnation: first.incarnation,
+      seq: second.seq,
+    } as never);
+
+    await awaitCondition(() => confirmations.length === 1, {
+      timeoutMs: 4_000,
+      label: "the second send was settled by the first delivery's token",
+    });
+    // And only that one: seq 1 is still in flight, so its caller has not been
+    // told anything.  A token good for the whole controller is not a token
+    // good for settling sends nobody acknowledged.
+    expect(confirmations).toEqual([{ body: 'second', err: null }]);
+
+    producer.stop();
+    await kit.system.terminate();
+  });
+
   test('two producers sharing a producerId cannot settle sends for one another', async () => {
     // Not an attack — two processes that both left `producerId` at the same
     // configured string.  Before the incarnation check either one's ack would

@@ -88,6 +88,32 @@ export class ProducerController<T> extends Actor<ProducerSend<T> | Acknowledgmen
    * from a retransmit, and — being unguessable — is also what an
    * {@link Acknowledgment} has to echo before this actor will act on it
    * (#730).
+   *
+   * **One token per construction, where #730 suggested one per delivery.**
+   * The deviation is recorded here because the commit that closed the issue
+   * did not: the criterion asked for a per-delivery nonce, and this is
+   * strictly wider.  Every send of this incarnation carries the same string,
+   * so any party that legitimately receives *one* delivery — the consumer, a
+   * handler that forwards it on, a router fan-out — holds a token that
+   * settles every other in-flight seq of this producer for the rest of the
+   * actor's life.
+   *
+   * Adequate under the issue's own threat model, which is an attacker who can
+   * tell this actor but is not the consumer: the party holding a delivery is
+   * the one that acknowledges it anyway, and without that delivery it could
+   * not reach `replyTo` at all.  64 bits is ample against guessing
+   * (see {@link PRODUCER_INCARNATION_LENGTH}).  What the wider scope buys is
+   * not only a saved per-seq map: the consumer keys its dedup entry on
+   * (producerId, incarnation), so a per-delivery token would change that key
+   * on every sequence and reset the window each time — measured, narrowing it
+   * to `incarnation + seq` fails two consumer-side cases in
+   * `tests/unit/delivery/ReliableDelivery.test.ts` for exactly that reason.
+   *
+   * "one incarnation token settles every send of that producer" in that file
+   * pins the scope, so a future per-delivery token turns the record red
+   * instead of leaving this note stale.  #1237 is the open consumer-side
+   * sibling: nothing binds an inbound delivery to its sender, so a forged
+   * incarnation still resets a consumer's window.
    */
   private readonly incarnation = randomId(PRODUCER_INCARNATION_LENGTH);
   private readonly resendTimeoutMs: number;
