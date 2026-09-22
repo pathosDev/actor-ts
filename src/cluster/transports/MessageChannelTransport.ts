@@ -143,11 +143,27 @@ export class MessageChannelTransport implements Transport {
    *    spend (#701), and running it here is what makes the transport safe when
    *    there is no broker in between: two of these can be wired port-to-port,
    *    which is exactly how the manual mesh in `worker-mesh.mdx` does it.  Once
-   *    it passes, `fromJSON` cannot throw — both spend `NodeAddress.isPort` and
-   *    `NodeAddress.isIncarnation`, which is where the two field rules with any
-   *    substance to them live, so there is one rule rather than two that agree.
-   *    They *were* two: the port half was written out on both sides and drifted
-   *    from what `toString` can carry, which is what #1515 closed.
+   *    it passes, `fromJSON` agrees with it on every *value* — both spend
+   *    `NodeAddress.isPort` and `NodeAddress.isIncarnation`, which is where the
+   *    two field rules with any substance to them live, so there is one rule
+   *    rather than two that agree.  They *were* two: the port half was written
+   *    out on both sides and drifted from what `toString` can carry, which is
+   *    what #1515 closed.
+   *
+   *    Agreeing on every value is still not "cannot throw", which is what this
+   *    read used to claim, and the gap is that the guard and `fromJSON` are two
+   *    *reads* of the same field.  A `from` whose `port` is an accessor
+   *    answering `2552` to the first and `1e21` to the second passes the guard
+   *    and throws out of `fromJSON` — outside the `try` below, which only ever
+   *    wrapped the handler, so straight out of the `onmessage` callback.  A
+   *    real `MessagePort` structured-clones the envelope and strips accessors,
+   *    but this class takes any {@link PortLike} and is exported package
+   *    surface; the testkit's broker and every port-to-port wiring pass the
+   *    object itself.  So `fromJSON` gets a `try` of its own, and the refusal
+   *    is the same one step 1 would have made.  Keeping it separate from the
+   *    handler's `try` is deliberate: a refused envelope and a handler nobody
+   *    understands are different failures, and one `catch` over both would say
+   *    so nowhere.
    * 2. {@link validateWireFrame} — the payload, which is what every handler
    *    below `Cluster.handleWire` reads as if its declared type were true.  A
    *    gossip frame carrying a member `status` outside the legal set is
@@ -163,7 +179,13 @@ export class MessageChannelTransport implements Transport {
     if (!isBrokeredMessage(env)) return;
     const checked = validateWireFrame(env.payload);
     if ('problem' in checked) return;
-    const from = NodeAddress.fromJSON(env.from);
+    let from: NodeAddress;
+    try {
+      from = NodeAddress.fromJSON(env.from);
+    } catch {
+      /* Step 1a — see the JSDoc: the guard's read and this one are two reads. */
+      return;
+    }
     this.rememberPeer(from);
     try {
       this.handler(from, checked.message);

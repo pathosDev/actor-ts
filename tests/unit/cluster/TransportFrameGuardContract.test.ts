@@ -276,6 +276,48 @@ describe('MessageChannelTransport — the posted envelope', () => {
     });
   }
 
+  test('an envelope whose `from` answers the guard and `fromJSON` differently is dropped', async () => {
+    // The guard reads `from.port` and `NodeAddress.fromJSON` reads it again, so
+    // an accessor that answers differently on the two reads passes the guard
+    // and then throws out of `fromJSON` — back into the `onmessage` callback
+    // this whole file exists to keep clean, and *outside* the try/catch, which
+    // only ever wrapped the handler.
+    //
+    // A real `MessagePort` structured-clones the envelope, which strips
+    // accessors, so this is not reachable across a thread boundary.  It is
+    // reachable through an in-process `PortLike`, which is what the testkit's
+    // broker, the mesh's own fixtures and any port-to-port wiring use — and
+    // `MessageChannelTransport` is exported package surface that takes any
+    // `PortLike` at all.  Found while binding #1515's port rule.
+    const self = freshAddress();
+    const peer = freshAddress();
+    let reads = 0;
+    const shiftyFrom = {
+      systemName: peer.systemName,
+      host: peer.host,
+      get port(): number { reads += 1; return reads === 1 ? peer.port : 1e21; },
+    };
+    const port = new FakePort();
+    const transport = new MessageChannelTransport(self, port);
+    const received: WireMessage[] = [];
+    transport.setHandler((_from, message) => received.push(message));
+    await transport.start();
+
+    expect(() => port.inject({
+      from: shiftyFrom, to: self.toJSON(), payload: wellFormedFrame(peer),
+    })).not.toThrow();
+
+    expect(received).toEqual([]);
+    expect(transport.peers()).toEqual([]);
+
+    // And the edge still works afterwards — a contained refusal, not a dead port.
+    const honest = freshAddress();
+    port.inject({ from: honest.toJSON(), to: self.toJSON(), payload: wellFormedFrame(honest) });
+    expect(received.length).toBe(1);
+
+    await transport.shutdown();
+  });
+
   test('an envelope whose `from` carries an over-long incarnation is dropped', async () => {
     // The one case that proves `isBrokeredMessage` and `NodeAddress.fromJSON`
     // agree rather than merely overlapping: `incarnation` is optional, so a
