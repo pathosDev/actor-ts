@@ -11,6 +11,39 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **`controlRpcTimeoutMs` on `ParallelMultiNodeSpecOptions`, so the
+  harness's per-RPC budget is no longer a literal** (#1508). It was the one
+  deadline in this spec a caller could not move, and the literal is 5 000 ms
+  — bun's own per-test cap — so a suite that wants to observe the timeout
+  rather than be pre-empted by the runner had to reach past the option
+  surface to do it. The default keeps the value the literal had and is
+  scaled once at resolution, like `awaitTimeoutMs`, so the number the
+  rejection reports is the number that was waited. A non-positive budget is
+  refused: it arms a timer that fires on the next turn, and every RPC then
+  fails naming a worker that never went silent.
+
+- **`ParallelMultiNodeSpecOptionsValidator`, which holds the harness's
+  `bootstrapModule` to the rule every other worker entry is held to**
+  (#1508). One wave fixed two sibling defects in the worker handshake and
+  touched both copies for one of them and only one copy for the other: the
+  testkit got the first-hello latch and not the constraint on what a worker
+  may be told to execute, so a `data:`, `http:` or `file://a-server/…`
+  specifier reached a real worker thread here while
+  `WorkerClusterOptionsValidator` refused each of them. It is one call into
+  the shared worker-entry check, run once in the constructor on the merged
+  settings, and a no-op on an unset `bootstrapModule`, which is the ordinary
+  case and keeps the bundled bootstrap.
+
+- **The export-surface test now pins the internal seams that no barrel
+  re-exports: the zstd decompression-candidate override, the
+  compression-cache reset and the decompressor-rung reporter in object
+  storage, and the runtime-detection override** (#1507). Each pinned
+  module's complete export set is asserted unreachable from every door the
+  package has, by name and by reference identity, so an aliased re-export is
+  caught as well. A companion test asserts those doors actually loaded,
+  because a reachability check that searches an empty set is green for the
+  same reason a correct one is.
+
 - **The ParallelMultiNodeSpec documentation now states the control-channel
   contract a custom bootstrapModule has to satisfy, in both languages: the
   four request kinds, the reply named after the request with -response
@@ -2935,6 +2968,57 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The zstd read ladder's last arm — the error a runtime with neither
+  native zstd nor the `fzstd` peer gets — is executed by a test for the
+  first time** (#1419). It runs in a child process, because nothing inside
+  `bun test` can make the peer's import fail: bun evaluates a `mock.module`
+  factory at registration, so a factory that throws throws out of the
+  registration call and leaves the specifier resolving, and a resolver
+  plugin that refused it could never be uninstalled and would take the peer
+  away from every suite that ran afterwards. The arm now carries that record
+  at the site. The compression pages also say what their runtime-support
+  section always implied and never stated: a runtime without native zstd can
+  read zstd bodies but cannot be configured for `zstd`, because registration
+  probes the compress path while every read picks its decompressor from the
+  body's own header — so such a reader is configured `gzip` or `none`. The
+  object-storage zstd smoke case records why it still stops at the failed
+  write instead of reading a body back, and what a committed frame or a
+  cross-runtime spawn would each cost.
+
+- **Every option slot that names a module a worker executes is held to one
+  shared rule, and two spellings that used to slip through it are refused**
+  (#1515). The allow-list existed as four hand-written copies with three
+  different wordings across `WorkerClusterOptions.bootstrap`,
+  `WorkerMeshOptions.module` and `.bootstrap`,
+  `OffloadPoolOptions.bootstrap` and `ParallelismOptions.module` and
+  `.bootstrap` — six slots — so `OffloadPoolOptions` had already drifted to
+  saying only that a spelling was wrong. They now share
+  `checkWorkerModuleUrl`, which adds the two rules the copies made
+  expensive: a scheme-relative `file:worker.js`, `file:./worker.js` or the
+  bare `file:`, which the URL parser does not reject but silently anchors at
+  the filesystem root, and a specifier naming a directory. Both reached
+  Node's `ERR_INVALID_FILE_URL_PATH` from inside the `Worker` constructor
+  instead — late, and naming no field, which is the defect the required-ness
+  guard beside them was added to fix. Nothing that worked stops working:
+  every refused spelling failed at spawn before, it just failed later and
+  less legibly.
+
+- **The observed-events ceiling on a ReplicatedEventSourcedActor is
+  documented as what it is: a one-way switch for that entity** (#1507). The
+  bound counts the replica's own persists as well as its peers', a snapshot
+  stores the whole event history rather than a checkpoint, and recovery
+  re-seeds the history from that snapshot — so neither snapshotting nor
+  discarding the journal sheds an event, and the refusal comes back with the
+  actor. The refusal WARN told operators to "snapshot and compact" and the
+  DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS JSDoc said an actor approaching the
+  bound "wants snapshots"; both offered relief the code does not provide.
+  Raising maxObservedEvents() is the only relief that exists today, and
+  compaction (#535) is named as what would genuinely unstick it. Two new
+  EnvelopeTrust tests pin the permanence: one restarts the entity on the
+  same journal and snapshot store, one restarts it on an emptied journal so
+  the snapshot alone refills the history, and both expect the next peer
+  envelope refused with a fresh WARN.
+
 - **The filesystem object-storage backend derives the current object's ETag
   only where ifMatch reads its value** (#1507). put digested the bytes
   already on disk on every overwrite, although ifNoneMatch: '*' needs only
@@ -3695,6 +3779,22 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **An init frame the structured-clone algorithm refuses now fails the spawn
+  instead of the process** (#1515). `postMessage` clones on the posting
+  thread, so an `initData` it cannot copy — a function, an object carrying
+  one — throws a `DataCloneError` synchronously from inside the host's own
+  message listener, and both worker handshakes posted it unguarded. Measured
+  on Node 26.7.0: the process exited 1 on an uncaught `DOMException
+  [DataCloneError]` raised at `onWorkerHello`; where something did contain
+  the throw, `spawn()` then sat out the whole `readyTimeoutMs` and blamed a
+  worker that had received nothing. `WorkerCluster.handshake` and the
+  testkit's `ParallelMultiNodeSpec` copy now guard the post the way
+  `OffloadPool.dispatch` does: nothing left this thread, so the handshake is
+  unsubscribed and failed at once, naming the field that can carry an
+  unclonable value and keeping the runtime's own error as the `cause`. The
+  first-hello latch moves behind the successful post, since a post that
+  threw sent nothing for a later hello to duplicate.
 
 - **ParallelMultiNodeSpec cancels the fallback bound it arms while
   terminating a worker, instead of leaving it to expire** (#1508). The bound
@@ -5645,6 +5745,31 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   one line above reads `!configured` and was always right; only the
   assignment disagreed with it.
 
+  The chat sample now resolves its session-token secret as the first act of
+  start-up, so a node with no CHAT_TOKEN_SECRET and no
+  CHAT_ALLOW_DEMO_SECRET stops before it creates its data directory,
+  registers its SQLite plug-ins or binds its cluster transport. The refusal
+  itself is unchanged; what changed is that it no longer costs a
+  half-started node that the entry point's error path never unwinds, because
+  the shutdown task that would close the stores and leave the cluster is
+  registered far below the point that threw. A spawned-node test asserts the
+  exit code, the message, the absent data directory and the absence of the
+  transport-bound log line, and asserts that --help still answers without a
+  secret, since that is where an operator reads which variable to set
+  (#1512).
+
+  Every in-repo instruction for starting a chat backend now names the
+  session-token secret those commands have needed since the fail-closed
+  change: the program's own --help output, the file headers of
+  backend/main.ts, backend/config.ts, smoke-test.ts and failover-test.ts,
+  and the run line in the root README. The example gate could not catch any
+  of this, because the manifest injects the demo opt-in for the chat case
+  and skips the failover script, so no automated run ever executes a
+  documented bare command. A new suite spawns --help and reads the headers
+  instead. The German chat-sample page also has its remaining English code
+  comments translated, and the chat README no longer describes the refusal
+  as happening at store construction (#1512).
+
 - **The zstd fallback path is reachable from a test at last** (#780).
 
   The resolver prefers native zstd, then the runtime global, then the
@@ -5668,6 +5793,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   The rest of #780 — eighteen optional peers said to have no coverage — was
   already closed by the two-context dependency design and its guards; the
   arithmetic in the issue no longer reproduces.
+
+  A candidate is accepted by being called against a canary frame — the two
+  native decompress candidates, that is. The optional `fzstd` peer is
+  accepted on a successful import instead, because it is pure JavaScript
+  with no native binding that could be missing, so loading it already
+  answers what a call would ask; the resolver's own comment has said so
+  since the fallback landed. The compression pages carried the same
+  imprecision in both languages and now make the distinction, with a guard
+  that reads them against the source so the claim and the mechanism cannot
+  drift apart again (#1507).
 
 
 - **Bounded what the decoders will descend, and published the ceilings as a
@@ -5812,6 +5947,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   regression rather than a pre-existing gap. The rule is now the reader's
   own, Number.isSafeInteger(seq) && seq >= 0, and it throws a JournalError
   before anything is written (#716).
+
+  The object-storage key-namespace documentation now says which half of the
+  #716 fix closed the reported collision. The snapshot store's leaf-shape
+  filter rejects state.json on its own — a leaf it reads is exactly twenty
+  digits followed by .json, and state.json is ten characters — so the
+  collision is closed whether or not the two stores share a directory. The
+  disjoint snapshots/ and state/ namespaces are defence in depth on the
+  corpora themselves: two sets of objects that are disjoint by prefix can
+  carry lifecycle rules, backup selections and a re-encryption sweep scope
+  stated in terms the bucket itself evaluates, rather than ones that hold
+  only because a filename fails a length check inside the package (#1507).
 
   **Migration.** Snapshots need none — they are a recovery accelerator, not
   a source of truth, so a load finding nothing replays the journal and the
@@ -6081,6 +6227,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   there (#778). The cross-subsystem `unref` sweep the file's own marker
   proposed is deliberately not done: the helper has a single caller, and
   #1283 argues that call is itself wrong.
+
+  The first-hello latch narrows the worker-side protocol contract, and the
+  Migration paragraph should say so. A bootstrap that posts `worker-hello`
+  before it installs a message handler used to be rescued by its next hello;
+  it now loses its only init frame on Bun and Deno, where an undeliverable
+  frame is dropped rather than queued, and then waits out the full
+  `readyTimeoutMs` with no error. `WorkerNode.join()` listens first and says
+  hello afterwards, which is what makes the latch safe — a property of this
+  framework's worker half and not of the wire protocol, and one a
+  hand-written bootstrap owes too. It is stated on `WorkerHelloMessage`, on
+  the worker-mesh page in both languages, and asserted by a test for the
+  first time (#1515).
 
   **Migration.** Pass `bootstrap` as a `file:` URL —
   `WorkerClusterOptions.create().withBootstrap(new URL('./worker.js',
