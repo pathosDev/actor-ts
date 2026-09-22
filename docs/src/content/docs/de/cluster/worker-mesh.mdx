@@ -255,6 +255,18 @@ async function main(): Promise<void> {
 void main();
 ```
 
+**Wer den Handshake selbst schreibt, sagt zuletzt Hallo.**  Der
+Main-Thread beantwortet das *erste* `worker-hello` und wiederholt sich
+nie, der `worker-init`-Frame geht also genau einmal raus — und auf Bun
+und Deno wird ein Frame, der ankommt, bevor der Worker einen
+Message-Handler installiert hat, verworfen statt eingereiht.  Ein
+Bootstrap, das grüßt, bevor es zuhört, verliert damit seinen einzigen
+Init-Frame, und der Fehlschlag ist ein Schweigen: Der Pool wartet die
+gesamte `readyTimeoutMs` ab und meldet einen Worker, der nie bereit
+wurde.  `WorkerNode.join()` installiert zuerst den Listener und postet
+das Hallo danach — dieselbe Reihenfolge schuldet ein selbst
+geschriebenes Bootstrap.
+
 | Option | Was |
 | --- | --- |
 | `withBootstrap(url)` | Worker-Entrypoint-Modul.  **Pflicht**, und muss eine `file:`-URL **ohne Host** sein — `new URL('./worker-node.js', import.meta.url)` erzeugt genau das.  Ein `data:`-, `blob:`- oder entfernter Specifier wird abgelehnt, weil er dem Worker-Konstruktor Code von außerhalb des Deployments übergeben würde, und ein Host auf der `file:`-URL ebenso: `file://ein-server/share/worker.js` ist ein UNC-Pfad, das Entrypoint-Modul käme also von jenem Server.  `file://localhost/…` bleibt akzeptiert — diesen Host löscht der URL-Parser, auf allen drei Runtimes. |

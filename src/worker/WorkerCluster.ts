@@ -52,10 +52,35 @@ export type WorkerHandle = {
   readonly readyData: unknown;
 };
 
+/**
+ * What a worker says to open the handshake: *I am up, send me my identity*.
+ *
+ * **Say it last.**  The parent answers the first hello and never repeats
+ * itself — see the latch in {@link WorkerCluster.handshake} — so the init
+ * frame is posted exactly once, and a worker that greets before it has a
+ * message handler installed loses it on Bun and Deno, where a frame nothing
+ * is listening for is dropped rather than queued.  The symptom is not an
+ * error but a silence: the parent waits out its whole `readyTimeoutMs` and
+ * then reports a worker that never became ready.
+ *
+ * {@link WorkerNode.join} gets this right and is the reason to use it: it
+ * installs the listener, arms its own timeout, and only then posts the hello.
+ * A hand-written bootstrap — the frames are exported so one can be written —
+ * owes the same order (#775, #1515).
+ */
 export type WorkerHelloMessage = {
   readonly kind: 'worker-hello';
 };
 
+/**
+ * The parent's answer to the first hello, and the only one it sends: the
+ * address this worker is to take, the `ActorSystem` name to build, and
+ * whatever `withInitData` carried.
+ *
+ * Every field crosses by structured clone, `data` included — a value the
+ * algorithm refuses fails the spawn rather than the worker (see
+ * {@link WorkerClusterOptionsBuilder.withInitData}).
+ */
 export type WorkerInitMessage = {
   readonly kind: 'worker-init';
   readonly self: ReturnType<NodeAddress['toJSON']>;
@@ -63,6 +88,12 @@ export type WorkerInitMessage = {
   readonly data: unknown;
 };
 
+/**
+ * What ends the handshake: the worker has built its system, joined, and is
+ * reachable at `self`.  Until it arrives the parent is holding the slot open
+ * against `readyTimeoutMs`, so a bootstrap sends it once its node is actually
+ * usable — not once `join()` returned.
+ */
 export type WorkerReadyMessage = {
   readonly kind: 'worker-ready';
   readonly self: ReturnType<NodeAddress['toJSON']>;
@@ -341,9 +372,20 @@ export class WorkerCluster {
        * a config blob, a seed list.  Without the latch a worker stuck in
        * `for (;;) postMessage({ kind: 'worker-hello' })` buys an arbitrarily
        * expensive main-thread clone per one-word frame, for the whole
-       * `readyTimeoutMs` window.  Re-sending init cannot help a worker that
-       * missed the first one either: the frame is identical and the channel is
-       * ordered, so a repeat is pure cost (#775).
+       * `readyTimeoutMs` window (#775).
+       *
+       * A repeat cannot help a worker that was already listening — the frame
+       * is identical and the channel is ordered — and that is the only case
+       * the latch is safe for, which the earlier wording here overstated.  A
+       * worker that says hello *before* installing its message handler does
+       * lose the init frame on Bun and Deno, where a frame with no handler to
+       * receive it is dropped rather than queued (Node queues it), so a repeat
+       * would have rescued exactly that worker.  What makes the latch safe is
+       * that {@link WorkerNode.join} installs its listener first and only then
+       * says hello — a property of this framework's worker half, not of the
+       * wire protocol, and one a hand-written bootstrap has to keep.  It is
+       * stated on {@link WorkerHelloMessage} for that reason, and asserted by
+       * `tests/unit/worker/WorkerNode.test.ts` (#1515).
        */
       let helloSeen = false;
       const onWorkerHello = (): void => {
