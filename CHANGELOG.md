@@ -11,6 +11,25 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **An external MQTT subscribe whose QoS the actor keeps now says so, once,
+  at info** (#1510). The QoS guard was correct but silent:
+  registerSubscription skipped the write and still issued the broker
+  SUBSCRIBE unconditionally, so a sender observed a successful re-SUBSCRIBE
+  at a QoS it had not asked for and got no signal anywhere that its request
+  had been refused — no log record, no dead letter, nothing in the
+  round-trip. Measured on the pre-record tree, an external subscribe of
+  'own/#' at QoS 0 over a constructor QoS-2 entry produced two SUBSCRIBEs at
+  QoS 2, zero log records at every level and zero dead letters, so a
+  controller legitimately retuning a filter failed exactly as quietly as a
+  hostile one. One record per refused command now names both the QoS asked
+  for and the QoS kept, with the filter escaped and length-capped like the
+  introduced-filter record beside it, because a sender can drive this
+  success path at will. A join that asks for nothing, or asks for the QoS
+  the SUBSCRIBE already carries, stays silent, as does the subclass's own
+  subscribe. Both numbers are the effective QoS the broker is given, so a
+  command that asks for the actor's default on an entry that named none is a
+  request granted rather than one refused.
+
 - **Worker-thread metrics reach the main thread's `/metrics`**
   (#1570).  Every worker of a mesh — started by hand with `WorkerMesh.start`
   or by `actor-ts.parallelism.workers` — boots its own `ActorSystem` with
@@ -3508,6 +3527,44 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Fixed
 
+- **BREAKING — An external unsubscribe can no longer silence an MqttActor
+  subclass's declared fan-out** (#1510). The removal path cleared the whole
+  target set with no record of who had attached what, so the guarantee the
+  class advertises — a controller that cannot silence the subclass's
+  constructor-declared subscription must not be able to downgrade it either
+  — was bypassable in two messages whenever the subclass declared its
+  subscription in the target form, this.subscribe('own/#', { qos: 2, target:
+  workerRef }), which is documented usage and the fan-out shape the MQTT
+  page shows first. A pattern declared that way has no own-delivery to fall
+  back on, so an external unsubscribe emptied the entry, deleted it and
+  issued a broker UNSUBSCRIBE, after which a plain subscribe re-created the
+  pattern at its own QoS — the guard covers a rewrite, not a creation.
+  Measured on the pre-fix tree the subclass's worker then received nothing
+  while its declared feed surfaced in the actor's own onMessage at QoS 0, so
+  the loss was a redirect and not only a downgrade. Fan-out targets now
+  carry their origin, and an external command may detach only what an
+  external subscribe attached, whether or not it names the target; the
+  subclass's own unsubscribe is unrestricted, because it owns the registry.
+
+  **Migration.** An external { kind: 'unsubscribe', topic } no longer
+  detaches fan-out targets the subclass declared itself, and { kind:
+  'unsubscribe', topic, target } no longer detaches one it names; both still
+  remove every target an external subscribe attached. To detach a target the
+  subclass declared, call unsubscribe(topic, { target }) from inside the
+  subclass.
+
+- **Distinct label tuples are distinct series again** (#1513). The key
+  identifying a tuple joined `k=v` pairs with a separator that a label value
+  could itself contain, so `{ a: 'x\x1fb=y' }` and `{ a: 'x', b: 'y' }`
+  collapsed onto one series: the second caller was handed the first one's
+  series, carrying the first one's labels, with both counts added under them
+  — no error and no warning. The key is now an injective encoding of the
+  sorted pairs, which a different separator would not have achieved because
+  any character can appear in a value, and the Prometheus exporter shares
+  that one helper instead of carrying a second copy with the same collision
+  in it — so two tuples the registry keeps apart also keep their bucket
+  rows, `_sum` and `_count` apart in the exposition.
+
 - **The multi-node integration run went red the moment a node exited
   cleanly — which, since #1567, scenario 13's victim does** (#1594).
   `bun run test:integration` ran compose with `--abort-on-container-exit`,
@@ -4517,6 +4574,33 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   silently back on `JSON.stringify` — the defect this entry describes,
   reachable again through one peer-supplied element of an unexpected shape.
 
+  A tombstone vetoes by tag on every merge now, not only inside the bucket
+  its element happened to be filed under. `ORSet.fromJSON` re-files each
+  element under the caller's identity, but a bucket whose element was
+  removed and never re-added carries no instance to re-identify from and
+  stays under the sender's key, so the per-bucket lookup never saw it: a
+  post-remove frame and a stale pre-remove frame from the same replica, both
+  decoded under `{ identity: (i) => i.sku }`, merged back to one live
+  element where the same pair decoded blind merged to none, and "once
+  removed, always removed" did not hold. The condition is the repair path
+  rather than a misconfigured cluster, which is what the code comment
+  claimed: an identity is a closure and never travels, so a peer on the
+  default rule and a durable record written before the identity was
+  configured are both filed under a key the receiver would not have chosen,
+  and both are exactly what the re-key is fed. Tags are minted once per add
+  from 96 bits of entropy, so a tombstoned tag can never be legitimately
+  live under another key; the flattened veto is therefore identical to the
+  old lookup for state this library produced and stricter only where a
+  frame's buckets and elements disagree. No wire change, and `ORMap`
+  inherits it through `ORMap.merge` delegating key liveness to its keyset.
+  Two smaller corrections ride along: `ORMap`'s identity remap hands back a
+  keyset over the entry ceiling untouched instead of running a `JSON.parse`
+  per element before `ORSet.fromJSON` gets to refuse it — one refused frame
+  cost 1 parse with no identity and 4 098 with one — and `ORSet.toJSON` no
+  longer tells callers to pass the sender's identity to `fromJSON`, which is
+  the contract the re-key exists to replace. The sets page also names #1421
+  for the nested-identity limit it already described (#1511).
+
 
 - **The supervisor's control ticks are private symbols, and the system queue
   documents its own bound** (#770, #794).
@@ -4692,6 +4776,24 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `streamSeq` stays on the message, where it belongs — for log lines and
   application-side deduplication.
 
+  All four JetStream settle commands now report an unknown `ackToken` at
+  `warn`, not only `acknowledgment`. `negativeAcknowledgment`, `terminate`
+  and `inProgress` each dropped the command in total silence, not even at
+  `debug`, which is exactly the signal a caller needs while converting four
+  settle call sites to the delivery-scoped token and missing one; a dropped
+  `terminate` is the worst of them, since the caller asked for a permanent
+  drop and instead got the ack-timeout's `nak()` and endless redelivery.
+  Under `ackPolicy: 'none'` the miss goes to `debug` instead: the token is
+  minted and shipped in that mode but names nothing, so a consumer that
+  settles defensively would otherwise take a warning per message at full
+  delivery rate, carrying an explanation that is false there. A connection
+  loss is now one aggregate warning naming how many deliveries were in
+  flight, with the per-delivery detail demoted to `debug` — a flapping
+  connection on a consumer with `maxAcknowledgmentPending` in the hundreds
+  wrote that many warnings per flap — and the doubled `JetStreamActor: pump
+  JetStreamActor:` prefix that every catch-path line carried is gone
+  (#1510).
+
 
 - **`ConfigKeys`, `CircuitBreakerOptionsValidator`, `isPlainObject` and
   `readDeadLetterQueueOptionsFromConfig` reached no entry point** (#1403).
@@ -4801,6 +4903,40 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   (`fundamentals/throttling`, EN + DE).
 
 ### Security
+
+- **The release workflow no longer runs the dependency tree beside the
+  credential that publishes the package** (#703). publish.yml is split into
+  an uncredentialed pack job that installs, builds, typechecks, tests and
+  runs npm pack, and a publish job holding id-token: write that neither
+  checks out the repository nor installs anything -- it downloads the
+  tarball, reads the version out of those same bytes and ships them with npm
+  publish --provenance --access public --ignore-scripts. Previously a single
+  job ran both frozen installs, the whole suite and prepublishOnly next to a
+  token that npm trades for a one-shot publish credential, so any package in
+  the two closures could have shipped a release under a provenance
+  attestation. trustedDependencies: [] on the root manifest pins the other
+  half: nothing in the root closure carries an install-time script today,
+  and a dependency that acquires one now surfaces as a bun pm untrusted line
+  instead of running silently. The WorkflowHygiene guard that kept contents:
+  write away from installs now covers id-token: write too.
+
+- **The MQTT page now states the trust boundary it had left implicit:
+  possession of an MqttActor ref is the boundary, cluster members included**
+  (#1510). A valid member holding the ref can subscribe itself to anything
+  the underlying client is entitled to read, exactly as a local actor can,
+  and no per-command trust hook would change that, because the capability
+  travels with the ref rather than with the command. The page says what to
+  do instead — do not register that actor with the receptionist, do not hand
+  its ref across nodes, give private traffic its own actor — and records
+  where the refusal's secondary argument does not reach: being able to
+  publish to a topic tree is not being able to read everything the broker
+  serves that client, so the publish capability explains why the fan-out
+  stays open, not why reading it is harmless. The primary ground is
+  untouched: the fan-out is the actor's advertised contract. The rules an
+  external command is subject to also moved to where a caller reads them — a
+  JSDoc on MqttSubscribeCommand.qos and on MqttUnsubscribeCommand, and a
+  paragraph in the class JSDoc — rather than living only in a private
+  method's comment and on the docs page.
 
 - **`SECURITY.md`'s out-of-scope list now states that a worker thread of the
   mesh is in-process code the operator loaded, so a per-worker inbound
@@ -5577,8 +5713,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `DefaultMetricsRegistry` now rejects a name outside
   `[a-zA-Z_:][a-zA-Z0-9_:]*` and a label key outside
   `[a-zA-Z_][a-zA-Z0-9_]*` when a family or a series is first minted, and
-  `exportPrometheus` escapes the carriage return in label values and in `#
-  HELP` alongside the backslash, line feed and quote it already handled.
+  The exporter now removes the carriage return — and every other C0 control
+  except tab — from label values and from `# HELP` text, instead of escaping
+  it. `\r` is not one of the three escapes the 0.0.4 table defines, and
+  prometheus/common's parser treats an escape it does not define as a syntax
+  error for the whole body, so a single label value carrying a control
+  character cost the entire scrape on Pushgateway, the node_exporter
+  textfile collector and `promtool check metrics`. Neither Go parser ever
+  split a line on the raw byte the escape replaced, so nothing is lost by
+  dropping it; readers that do split on a lone carriage return are served by
+  the removal just as well. The backslash, line feed and double quote keep
+  the escapes the table does define. Two label values differing only in
+  stripped controls now render as the same series, so strip them at the
+  source.
 
   Both checks sit after their own memo hit, so an increment on an
   established series costs no regular expression, and the label-key check
