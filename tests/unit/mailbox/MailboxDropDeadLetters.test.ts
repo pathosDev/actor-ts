@@ -502,4 +502,37 @@ describe('the deadLetterDrops JSDoc describes the letter it produces — #1509',
     // is the error to keep out.
     expect(jsDoc).not.toContain('what every other loss path in the framework carries');
   });
+
+  /** A run of `//` lines, from a sentence unique to it up to the code it guards. */
+  const commentBefore = (source: string, opening: string, terminator: string): string => {
+    const start = source.indexOf(opening);
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf(terminator, start);
+    expect(end).toBeGreaterThan(start);
+    return source.slice(start, end).replace(/^\s*\/\/\s?/gm, ' ').replace(/\s+/g, ' ');
+  };
+
+  test("shedLeastImportant's guard names a route that can still reach it", () => {
+    const source = readFileSync(
+      join(import.meta.dir, '..', '..', '..', 'src', 'mailbox', 'PriorityMailbox.ts'),
+      'utf8',
+    );
+    const clause = commentBefore(
+      source,
+      'Undefined only when every entry',
+      'if (shed !== undefined)',
+    );
+
+    // The clause used to attribute the all-undroppable state to a stash
+    // replay, and that was true when it was written — `prependUser` then
+    // re-entered `enqueue` for every envelope.  It is not true now:
+    // `PriorityMailbox.prependUser` routes an undroppable envelope to
+    // `enqueueSignal`, which is exempt from the bound and never reaches
+    // `shedLeastImportant` at all.  A guard explained by a route that can no
+    // longer arrive reads as dead code to whoever considers deleting it.
+    expect(clause).not.toContain('replaying a stashed one');
+    // The lane the replay takes instead, named so the correction stays
+    // checkable rather than only current.
+    expect(clause).toContain('enqueueSignal');
+  });
 });
