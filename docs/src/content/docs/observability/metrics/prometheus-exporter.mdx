@@ -327,5 +327,7 @@ import { Aside } from '@astrojs/starlight/components';
 - **[Stock metrics](/observability/metrics/stock-metrics/)** —
   the framework's auto-recorded metrics that appear here.
 
-The [`exportPrometheus`](/api/functions/exportprometheus/)
-function reference covers the full API.
+`exportPrometheus`, `prometheusHandler` and `renderPrometheusSamples`
+ship from the `actor-ts/metrics` sub-path.  The generated
+[API reference](/api/) is built from the root `actor-ts` barrel alone,
+so this page is the reference for the three of them.
