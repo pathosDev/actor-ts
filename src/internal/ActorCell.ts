@@ -2246,11 +2246,12 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
     // own domain message just below.
     let delivered = message;
     let failure: Error | null = null;
-    // A `Terminated` this cell is not going to honour is consumed rather than
+    // A `Terminated` this cell is not going to honour is refused rather than
     // delivered — but it is still a dispatch, so it still ends in the epilogue,
     // exactly as it did when that epilogue was a `finally` and this was an
     // early `return` through it.  Two reasons reach it: the signal has no
-    // provenance, or it names a subject we are not watching.
+    // provenance, or it names a subject we are not watching.  Both dead-letter
+    // it on the way out (#1098), so neither is a silent drop.
     let consumed = false;
     let result: void | Promise<void> = undefined;
     try {
@@ -2273,6 +2274,23 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
         } else {
           const key = watchKeyOf(message.actor);
           if (!this._watching.has(key)) {
+            // Ours, but naming a subject this cell no longer watches — an
+            // `unwatch` that lost the race with a death already queued, a
+            // notification for a watch a restart outlived, or the replay of a
+            // notification the behavior stashed, because the registration is
+            // retired by the *first* delivery and a stash does not put it back
+            // (#1098).  Whichever it was, the cell has nothing left to tell
+            // them apart with, so this used to end as a silent drop: an actor
+            // that parked a death while it was busy never heard about it
+            // again and nothing anywhere said so.
+            //
+            // Dead-lettered like the no-provenance branch above, and for the
+            // same reason `fundamentals/death-watch.mdx` gives: a notification
+            // that cannot be delivered is visible rather than gone.  Not
+            // redelivered — that would mean holding the registration open
+            // across the stash, which is a different change and needs a seam
+            // the typed `StashBuffer` does not have yet (#1319).
+            this.system.deadLetters.tell(new DeadLetter(message, env.sender, this.self));
             consumed = true;
           } else {
             this._watching.delete(key);
@@ -2281,12 +2299,21 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
             // no way to reach the per-watcher map.  Doing it here also covers
             // the immediate `Terminated` that `_addWatcher` sends when the
             // target is already gone, because `watchWith` records the message
-            // before it registers.  The envelope keeps the original signal, so
-            // a trace or an explain plan still shows the death that caused this
-            // dispatch.
+            // before it registers.
             if (this._watchWithMessages.has(key)) {
               delivered = this._watchWithMessages.get(key) as TMessage;
               this._watchWithMessages.delete(key);
+              // Re-point the envelope the stash would park at the message the
+              // behavior is actually handed (#1098).  `watchWith` exists to
+              // say "tell me in my own protocol", and a protocol message that
+              // was parked has to come back — but `stash()` parks
+              // `_currentEnvelope`, which still carried the signal, so the
+              // replay met the retired-watch gate above and was consumed.  The
+              // copy is what moves: `env` itself is untouched, so the trace
+              // and the explain-plan entry for *this* dispatch still name the
+              // death that caused it, and only the stashed copy reads as the
+              // domain message it will replay as.
+              this._currentEnvelope = { ...env, message: delivered };
             }
           }
         }

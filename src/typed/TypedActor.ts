@@ -620,6 +620,16 @@ class TypedActorContextImplementation<T> implements TypedActorContext<T> {
  * handled before the replay did — the exact inversion stashing exists to
  * prevent (#639).  `prependUserMessages` puts them back at the head instead,
  * matching `ActorContext.unstashAll`.
+ *
+ * Sharing the replay means sharing its one asymmetry, which is worth saying
+ * here because the buffer looks like it should be exempt: parking a bare
+ * `Terminated` and unstashing it dead-letters the signal rather than handing
+ * it back (#1098).  The registration is consumed by the death it describes, so
+ * it is gone before the replay reaches the dispatch, and taking the envelope
+ * out of the picture changes nothing about that.  A `watchWith` death is the
+ * case that does round-trip, on both sides for the same reason: what the
+ * behavior is handed — and therefore what gets stashed — is a protocol
+ * message, which the death-watch gate has no opinion about.
  */
 class StashBufferImplementation<T> implements StashBuffer<T> {
   private readonly buffer: T[] = [];

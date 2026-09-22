@@ -169,6 +169,12 @@ export interface ActorContext<TMessage = unknown> {
    * the same reason the `Terminated` it replaces is (#729) — a death is
    * announced once.
    *
+   * It is also what {@link stash} parks.  The behavior is handed `message`, so
+   * parking it parks a protocol message, and it replays on `unstashAll()` like
+   * any other (#1098).  That is the one thing a plain {@link watch} cannot
+   * offer: there the parked message is the signal itself, and the registration
+   * that would admit it a second time was retired by the first delivery.
+   *
    * Last call wins: `watchWith` on an already-watched ref replaces whatever the
    * previous `watch`/`watchWith` registered, and a later plain `watch` drops the
    * custom message again.  The registration is consumed by the death it
@@ -204,6 +210,19 @@ export interface ActorContext<TMessage = unknown> {
    * Buffer the message currently being handled.  It is reinserted into the
    * mailbox when `unstashAll()` is called.  Throws if called outside a
    * user-message handler or if the stash is full.
+   *
+   * A death-watch notification is the one message whose round trip is not
+   * symmetric, and it is worth knowing which half you are on before you park
+   * one (#1098).  A registration is consumed by the death it describes, so it
+   * is already gone when the replay arrives.  Under {@link watchWith} that
+   * costs nothing — what gets parked is the domain message the behavior was
+   * handed, and it comes back as the ordinary user message it always was.
+   * Under a plain {@link watch} the parked message *is* the `Terminated`, and
+   * the cell has nothing left to recognise it by: it becomes a dead letter
+   * instead of a second delivery.  So park a death you mean to come back to
+   * only when you registered it with `watchWith`; otherwise handle it where it
+   * arrives, or record what you need from it before stashing something of your
+   * own.
    */
   stash(): void;
 
