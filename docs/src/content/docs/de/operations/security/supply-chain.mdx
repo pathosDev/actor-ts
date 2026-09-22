@@ -166,6 +166,29 @@ braucht, und kein Job, der ins Repository schreiben darf, führt
 zugleich fremde Install-Skripte aus. Dieselbe Testdatei prüft alle
 drei Punkte.
 
+Diese letzte Regel gilt auch für die Publishing-Credential, nicht
+nur für die Scopes, die ins Repository schreiben. `id-token:
+write` erzeugt das OIDC-Token, das npm gegen ein einmalig
+gültiges Publish-Token eintauscht — ein Job, der es hält, kann
+also ein Release veröffentlichen, und damit ist es der denkbar
+ungeeignetste Scope, um daneben einen Dependency-Baum
+auszuführen. Der Release-Workflow baut, testet und packt das
+Tarball deshalb in einem Job ganz ohne Credential und
+veröffentlicht dieses Artefakt aus einem Job heraus, der weder
+das Repository auscheckt noch irgendetwas installiert. Beide
+kommunizieren ausschließlich über das gepackte Tarball, und der
+Versions-Guard liest die Version aus genau diesen Bytes statt aus
+einer zweiten Kopie des Baums.
+
+`trustedDependencies: []` in der Root-`package.json` schließt die
+andere Hälfte. Bun führt Install-Skripte einer Dependency nur für
+die dort genannten Pakete aus, und eine leere Liste beschreibt
+diesen Closure heute ehrlich — nichts darin hat ein
+Install-Skript. Der Punkt ist, was danach passiert: Eine
+Dependency, die eines hinzubekommt, taucht als
+`bun pm untrusted`-Zeile auf, die man sich ansieht, statt einfach
+zu laufen.
+
 ## Etwas melden
 
 [`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md)

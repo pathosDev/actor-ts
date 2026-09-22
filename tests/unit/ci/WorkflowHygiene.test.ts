@@ -887,6 +887,38 @@ const declaresPermissions = (file: WorkflowFile): boolean =>
   || jobsOf(file).every((job) => job.lines.some((line) => /^\s+permissions:/.test(line)));
 
 /**
+ * A job-level grant of a scope whose credential reaches beyond the run itself.
+ *
+ * `contents: write` pushes to the repository; `id-token: write` mints the OIDC
+ * token npm's Trusted Publishing trades for a one-shot publish token, so a job
+ * holding it can ship `actor-ts` to the registry under a provenance
+ * attestation. Different blast radius, same shape of mistake — hence one
+ * pattern rather than two assertions.
+ *
+ * The trailing-comment branch is not defensive padding: publish.yml annotates
+ * its grant on the same line (`id-token: write  # Required for …`), so the
+ * end-anchored spelling this grew out of reads that job as granting nothing and
+ * lets the guard pass on exactly the job it was broadened for. Quoting is
+ * allowed for the same reason — `write` and `'write'` are one value to YAML,
+ * and a guard that can be stepped around by typing an apostrophe is decoration.
+ */
+const PRIVILEGED_WRITE_SCOPE = /^\s+(contents|id-token):\s*(['"]?)write\2\s*(?:#.*)?$/;
+
+/**
+ * `permissions: write-all`, the shorthand that grants every scope at once —
+ * both of the ones above among them. Written as a scalar on the `permissions:`
+ * key itself rather than as an entry under it, so the scope pattern cannot see
+ * it, and it would otherwise be the one spelling that turns the guard off
+ * completely while reading as though it grants more.
+ */
+const WRITE_ALL_SHORTHAND = /^\s+permissions:\s*(['"]?)write-all\1\s*(?:#.*)?$/;
+
+/** The privileged scopes a job grants itself, in the order they are written. */
+const privilegedWriteScopesOf = (job: WorkflowJob): string[] =>
+  job.lines.flatMap((line) =>
+    (WRITE_ALL_SHORTHAND.test(line) ? ['write-all'] : PRIVILEGED_WRITE_SCOPE.exec(line)?.[1] ?? []));
+
+/**
  * `test.yml` alone maintains the README badges, so the two assertions below are
  * scoped to it by name — a repo-wide version would match nothing in the other
  * ten workflows and would need a permanent exemption list to say so.
@@ -1390,18 +1422,6 @@ describe('workflow hygiene', () => {
   });
 
   /**
-   * #622 — a job that can write to the repository must not also be the job
-   * that runs thousands of other people's postinstall scripts. test.yml used
-   * to hold `contents: write` plus a persisted git credential in the job that
-   * installed and executed the entire devDependency tree, purely so it could
-   * push a README badge afterwards; the badge now lives in its own job that
-   * installs nothing.
-   *
-   * Scoped to `contents: write` on purpose. publish.yml legitimately runs an
-   * install next to `id-token: write` — narrowing that one is #703, and
-   * asserting it here would only produce a permanent exemption entry.
-   */
-  /**
    * A job with no `timeout-minutes` inherits GitHub's six-hour default, and a
    * suite that stops making progress then burns six hours of a hosted runner
    * before anyone learns anything from it.
@@ -1653,15 +1673,79 @@ describe('workflow hygiene', () => {
     ).toBeGreaterThan(0);
   });
 
+  /**
+   * #622 — a job that can write to the repository must not also be the job
+   * that runs thousands of other people's postinstall scripts. test.yml used
+   * to hold `contents: write` plus a persisted git credential in the job that
+   * installed and executed the entire devDependency tree, purely so it could
+   * push a README badge afterwards; the badge now lives in its own job that
+   * installs nothing.
+   *
+   * #703 widened it to `id-token: write`, which was exempt until then on the
+   * grounds that publish.yml "legitimately" ran an install beside it. It did
+   * not: that token buys a one-shot npm publish credential, so the exemption
+   * said a compromised dev dependency may mint a token that ships `actor-ts`
+   * under a provenance attestation — a worse outcome than the push-to-repo one
+   * the guard already refused. publish.yml now packs in an uncredentialed job
+   * and publishes the resulting tarball from a job with no checkout and no
+   * install, which is the same answer #622 gave and the same one the
+   * sbom/attach-sbom pair in that file was already built on.
+   */
   test.each(jobs)('$workflow#$name keeps write access away from installs', (job) => {
-    if (!job.lines.some((line) => /^\s+contents:\s*write\s*$/.test(line))) return;
+    const granted = privilegedWriteScopesOf(job);
+    if (granted.length === 0) return;
     const offender = thirdPartyCodeRunBy(job);
     expect(
       offender,
-      `${job.workflow}#${job.name} grants contents: write and runs "${offender}". `
-      + 'A job holding a credential that can push to the repository must not '
-      + 'execute third-party code — split the privileged step into its own job.',
+      `${job.workflow}#${job.name} grants ${granted.join(' + ')} and runs "${offender}". `
+      + 'A job holding a credential that can push to the repository — or mint an '
+      + 'npm publish token — must not execute third-party code: split the '
+      + 'privileged step into its own job that neither checks out nor installs.',
     ).toBeUndefined();
+  });
+
+  test('the guard above evaluates every job that holds a privileged scope', () => {
+    // `test.each` + an early return means a pattern that matched nothing would
+    // pass once per job while asserting nothing at all — the failure mode this
+    // guard shipped with, since publish.yml writes its grant with a trailing
+    // comment. Pinned by name so a job that loses its scope, or a new one that
+    // gains it, is a decision rather than a silent drop in coverage.
+    expect(
+      jobs.filter((job) => privilegedWriteScopesOf(job).length > 0)
+        .map((job) => `${job.workflow}#${job.name}`)
+        .sort(),
+    ).toEqual([
+      'docs.yml#deploy',
+      'graphify.yml#rebuild',
+      'publish.yml#attach-sbom',
+      'publish.yml#publish',
+      'test.yml#badge',
+    ]);
+  });
+
+  test('the privileged-scope scanner reads the spellings a job can actually use', () => {
+    // Every line here is a way of granting the same thing, and the three marked
+    // below got through while this guard was being broadened (#703). The
+    // quoted forms are identical to YAML, and `write-all` grants id-token and
+    // contents together — the one spelling that would silence the guard
+    // entirely while reading as though it asks for more.
+    const grants = (line: string): string[] =>
+      privilegedWriteScopesOf({ workflow: 'fixture.yml', name: 'j', lines: [line] });
+
+    expect(grants('      id-token: write')).toEqual(['id-token']);
+    expect(grants('      id-token: write   # annotated, as publish.yml writes it')).toEqual(['id-token']);
+    expect(grants("      id-token: 'write'")).toEqual(['id-token']); // got through
+    expect(grants('      id-token: "write"')).toEqual(['id-token']); // got through
+    expect(grants('    permissions: write-all')).toEqual(['write-all']); // got through
+    expect(grants('      contents: write')).toEqual(['contents']);
+    expect(grants(`      id-token: write${String.fromCharCode(13)}`)).toEqual(['id-token']);
+
+    // And the shapes it must keep ignoring, so the broadening did not simply
+    // make the pattern match more of the file.
+    expect(grants('      # id-token: write')).toEqual([]);
+    expect(grants('      contents: read')).toEqual([]);
+    expect(grants('      pages: write')).toEqual([]);
+    expect(grants('      id-token: writeable')).toEqual([]);
   });
 
   test('write access is checked against what a script runs, not only what the step spells out', () => {

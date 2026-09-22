@@ -147,10 +147,23 @@ Tags are `vX.Y.Z`; GitHub Releases are cut as normal **Latest** releases
    style of prior releases.
 
 Publishing the release triggers `.github/workflows/publish.yml`, which
-runs typecheck + test + build and then `npm publish --provenance` via
-**npm Trusted Publishing (OIDC)** — no long-lived token. It is
-version-guarded, so re-running is safe. Locally, `prepublishOnly` runs
-clean + build + typecheck + test.
+runs in **two jobs, and the split is the security property** (#703): a
+`pack` job with no credential at all runs clean + build + typecheck +
+test + test:ui and `npm pack`s the tarball, and a `publish` job that
+neither checks out nor installs downloads that tarball and ships it with
+`npm publish --provenance --access public --ignore-scripts` via **npm
+Trusted Publishing (OIDC)** — no long-lived token. So nothing from the
+dependency tree ever executes beside `id-token: write`. Keep it that
+way: a step added to the `publish` job is a step running next to a
+credential that can publish the package, and
+`tests/unit/ci/WorkflowHygiene.test.ts` fails on an install there.
+
+It is version-guarded — the guard reads the version out of the packed
+tarball, not the working tree — so re-running is safe. Locally,
+`prepublishOnly` (clean + build + typecheck + test + test:ui) is still
+the net under a `npm publish` run by hand from a clone; CI does not rely
+on it, because `npm pack` runs `prepack`/`postpack` only and
+`npm publish <tarball>` runs no lifecycle script at all.
 
 ## Breaking changes
 

@@ -157,6 +157,26 @@ job that needs it, and no job that can write to the repository
 also runs third-party install scripts. The same test file asserts
 all three.
 
+That last rule covers the publishing credential, not just the
+ones that write to the repository. `id-token: write` mints the
+OIDC token npm exchanges for a one-shot publish token, so a job
+holding it can ship a release — which makes it the worst scope of
+all to run a dependency tree beside. The release workflow
+therefore builds, tests and packs the tarball in a job that holds
+no credential, and publishes that artifact from a job that
+neither checks out the repository nor installs anything. The two
+communicate only through the packed tarball, and the version
+guard reads its version out of those same bytes rather than out
+of a second copy of the tree.
+
+`trustedDependencies: []` in the root `package.json` closes the
+other half. Bun runs a dependency's install scripts only for
+packages named there, and an empty list is the honest description
+of this closure today — nothing in it has an install script. The
+point is what happens next: a dependency that acquires one shows
+up as a `bun pm untrusted` line to be looked at, instead of
+simply running.
+
 ## Reporting something
 
 [`SECURITY.md`](https://github.com/pathosDev/actor-ts/blob/main/SECURITY.md)
