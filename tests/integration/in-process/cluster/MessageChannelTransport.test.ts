@@ -8,6 +8,7 @@ import {
 import type { WireMessage } from '../../../../src/cluster/Protocol.js';
 import { WorkerBroker } from '../../../../src/worker/WorkerBroker.js';
 import { awaitCondition, sleep } from '../../../util/AwaitCondition.js';
+import { hostileEnvelopes, hostileWirePayloads } from '../../../util/HostileFrames.js';
 
 /**
  * `MessagePort` delivery is a task, not a microtask, and under load the
@@ -148,6 +149,76 @@ describe('MessageChannelTransport', () => {
     expect(listed.length).toBe(1);
     expect(listed[0]!.toString()).toBe(peer.toString());
     expect(listed[0]!.incarnation).toBe('incarnation-7');
+
+    await transport.shutdown();
+  });
+
+  /**
+   * The corpus over a **real** `MessageChannel` — #945's third acceptance
+   * criterion in its literal wording, which nothing asserted until now.
+   *
+   * `TransportFrameGuardContract` runs every hostile row against this
+   * transport, but through `FakePort`, whose `inject()` calls `onmessage`
+   * inline.  That proves "the throw does not leave `onFrame`"; it does not
+   * prove "the throw does not leave a real `MessagePort` callback", which is
+   * the claim the criterion makes and the one that matters, because that
+   * callback has no caller to unwind into — an escape is an uncaught
+   * top-level error that takes the thread, the main-thread system and every
+   * sibling worker with it.
+   *
+   * What makes this an assertion and not a hope: bun attributes an uncaught
+   * error from that callback to the running test.  Verified by deleting the
+   * `try` around the handler in `MessageChannelTransport.onFrame` and watching
+   * this test fail with `handler exploded` rather than pass (#1508).
+   *
+   * Every row is structured-clone-safe by construction — the payload corpus is
+   * JSON-representable so the `TcpTransport` arm can encode it, and the
+   * envelope corpus is plain objects plus `undefined`, which clones fine.
+   *
+   * Three senders, so `peers()` says something: `attacker` only ever posts
+   * refused frames, `thrower` posts a legal one the handler explodes on, and
+   * `honest` posts the frame that proves the port still works.
+   */
+  test('the whole hostile corpus crosses a real MessageChannel without escaping (#945)', async () => {
+    const self = new NodeAddress('sys', 'h', 1);
+    const attacker = new NodeAddress('sys', 'h', 2);
+    const thrower = new NodeAddress('sys', 'h', 3);
+    const honest = new NodeAddress('sys', 'h', 4);
+    const [brokerPort, workerPort] = makePair();
+
+    const transport = new MessageChannelTransport(self, workerPort);
+    const received: WireMessage[] = [];
+    let thrown = 0;
+    transport.setHandler((from, message) => {
+      if (from.equals(thrower)) { thrown += 1; throw new Error('handler exploded'); }
+      received.push(message);
+    });
+    await transport.start();
+
+    for (const [, envelope] of hostileEnvelopes) brokerPort.postMessage(envelope);
+    for (const [, payload] of hostileWirePayloads) {
+      brokerPort.postMessage({ from: attacker.toJSON(), to: self.toJSON(), payload });
+    }
+    brokerPort.postMessage({
+      from: thrower.toJSON(), to: self.toJSON(),
+      payload: { kind: 'heartbeat', from: thrower.toJSON(), seq: 1, ts: 0 },
+    });
+    // Last, and frames are ordered on one channel — so its arrival is also the
+    // proof that everything above it had already been dealt with.
+    brokerPort.postMessage({
+      from: honest.toJSON(), to: self.toJSON(),
+      payload: { kind: 'heartbeat', from: honest.toJSON(), seq: 1, ts: 0 },
+    });
+
+    await awaitDelivered(received, 1, 'the frame after the corpus');
+
+    expect(thrown).toBe(1);
+    expect(received.length).toBe(1);
+    expect(received[0]!.kind).toBe('heartbeat');
+    // The refused senders earned no slot; the two that posted something the
+    // wire schema accepts did — including the one whose handler then threw.
+    expect(transport.peers().map((peer) => peer.toString()).sort())
+      .toEqual([thrower.toString(), honest.toString()].sort());
 
     await transport.shutdown();
   });
