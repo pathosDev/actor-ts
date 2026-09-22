@@ -273,6 +273,21 @@ scheme embeds a credential (some brokers put an API key in the path), note
 that it reaches the log here at info, the same way it already does in this
 actor's subscribe-failure and undecodable-payload warnings.
 
+Which makes **possession of the ref the trust boundary** — cluster members
+included.  A valid member holding this actor's ref can subscribe itself to
+anything the underlying client is entitled to read, exactly as a local
+actor can; there is no per-command trust hook, and one would not help,
+because the capability travels with the ref rather than with the command.
+Note that this is a read capability and the publish rule beside it is a
+write one: being able to publish to a topic tree is not the same as being
+able to read everything the broker serves that client, so "it can already
+publish" explains why the fan-out stays open, not why reading is
+harmless.  A feed that must stay private therefore must not have its actor
+registered with the receptionist or its ref handed across nodes.  Give that
+traffic its own `MqttActor`, keep the ref inside the subsystem that owns
+it, and let the externally controllable one carry the topics you are
+willing to have mirrored.
+
 Since these commands are plain objects, keep any `TSelf` you define off
 the `kind` values `publish` / `subscribe` / `unsubscribe` — otherwise it
 would be dispatched as a command instead of reaching `onSelfMessage`.

@@ -286,6 +286,22 @@ API-Key in den Pfad), beachte: es landet hier auf Info-Level im Log, genau so
 wie bereits in den Warnungen dieses Aktors zu fehlgeschlagenem Subscribe und
 nicht dekodierbarem Payload.
 
+Damit ist **der Besitz des Refs die Vertrauensgrenze** — Cluster-Mitglieder
+eingeschlossen.  Ein gültiges Mitglied, das das Ref dieses Aktors hält, kann
+sich auf alles subscriben, was der darunterliegende Client lesen darf, genau
+wie ein lokaler Aktor; einen Trust-Hook pro Kommando gibt es nicht, und er
+würde auch nicht helfen, weil die Capability am Ref hängt und nicht am
+Kommando.  Beachte dabei: das hier ist eine Lese-Capability, die
+Publish-Regel daneben eine Schreib-Capability — in einen Topic-Baum
+publishen zu können heißt nicht, alles lesen zu können, was der Broker
+diesem Client ausliefert.  „Es kann ohnehin publishen" erklärt also, warum
+der Fan-out offen bleibt, nicht, warum Lesen harmlos wäre.  Ein Feed, der
+privat bleiben muss, darf seinen Aktor deshalb nicht bei der Receptionist
+registrieren und sein Ref nicht über Knotengrenzen reichen.  Gib diesem
+Verkehr einen eigenen `MqttActor`, halte das Ref in dem Subsystem, dem es
+gehört, und lass den extern steuerbaren die Topics tragen, deren Spiegelung
+du in Kauf nimmst.
+
 Da diese Kommandos einfache Objekte sind, halte ein selbst definiertes
 `TSelf` von den `kind`-Werten `publish` / `subscribe` / `unsubscribe`
 fern — sonst würde es als Kommando dispatcht, statt `onSelfMessage` zu

@@ -85,6 +85,13 @@ type SubscriptionEntry<T> = {
  * `subscribe` command with no `target` routes to this actor's own
  * `onMessage`, with a `target` fans out to that actor.
  *
+ * That control is additive, not authoritative.  A command may create a
+ * pattern and attach a target to one, but it never rewrites the QoS of a
+ * pattern this actor already holds — the `qos` is ignored there and the
+ * actor records that it was — and it can detach only what an external
+ * `subscribe` attached.  Whatever the subclass declared, as own delivery
+ * or as a target, survives every command.  #783, #1510.
+ *
  * Lifecycle events (inbound / connected / disconnected) are delivered
  * through the mailbox, so `onMessage` and the hooks always run on the
  * actor thread (single-threaded, per-connection order preserved).
