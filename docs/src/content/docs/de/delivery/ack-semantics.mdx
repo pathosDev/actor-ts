@@ -59,7 +59,7 @@ new ConsumerController<T>({
 
 Wenn der Consumer zwischen **2** und **4** crasht, erreicht das
 ACK den Producer nie.  Der Producer retransmittiert nach
-`resendTimeoutMs`.  Der In-Memory-Dedup des Controllers ist nach
+`resendTimeout`.  Der In-Memory-Dedup des Controllers ist nach
 dem Crash weg, also läuft der Handler für dieselbe Seq erneut —
 mach ihn idempotent oder persistiere die processed-Seq zusammen
 mit dem Business-State.
@@ -183,7 +183,7 @@ Consumer auf node-A verarbeitet msg #5; Controller queued das ACK
 node-A crasht, bevor das ACK-Tell abgeschlossen ist
 ```
 
-Producer sieht im `resendTimeoutMs`-Fenster kein ACK →
+Producer sieht im `resendTimeout`-Fenster kein ACK →
 retransmittiert.
 
 Wenn der Consumer **sharded** ist (die Entity wandert beim
@@ -203,7 +203,7 @@ zurück, und Du bekommst volle Wiederverarbeitung.
 Das ACK ist **Fire-and-Forget** vom Controller zum `replyTo` des
 Producers.  Der Controller wartet nicht auf die Zustellung —
 wenn das Netzwerk das ACK verliert, retransmittiert der Producer
-nach `resendTimeoutMs`, und der Dedup des Controllers re-ACKt
+nach `resendTimeout`, und der Dedup des Controllers re-ACKt
 sofort.
 
 Das heißt: **Dein Handler zahlt keine Latenz-Kosten für das

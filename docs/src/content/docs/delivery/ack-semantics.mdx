@@ -58,7 +58,7 @@ new ConsumerController<T>({
 
 If the consumer crashes between **2** and **4**, the ack never
 reaches the producer.  Producer retransmits after
-`resendTimeoutMs`.  The controller's in-memory dedup is gone
+`resendTimeout`.  The controller's in-memory dedup is gone
 after the crash, so the same seq runs the handler again — make
 it idempotent, or persist processed-seq alongside business
 state.
@@ -179,7 +179,7 @@ Consumer on node-A processes msg #5; controller queues the Ack
 Node-A crashes before the Ack tell completes
 ```
 
-Producer doesn't see Ack within `resendTimeoutMs` → retransmits.
+Producer doesn't see Ack within `resendTimeout` → retransmits.
 
 If the consumer is **sharded** (the entity moves during
 failover), the new instance:
@@ -198,7 +198,7 @@ every rebalance and you get full reprocessing.
 The Ack is **fire-and-forget** from the controller to the
 producer's `replyTo`.  The controller doesn't await its
 delivery — if the network drops the Ack, the producer
-retransmits after `resendTimeoutMs` and the controller's
+retransmits after `resendTimeout` and the controller's
 dedup re-acks immediately.
 
 This means: **your handler doesn't pay any latency cost for
