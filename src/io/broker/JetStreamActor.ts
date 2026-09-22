@@ -388,9 +388,21 @@ export class JetStreamActor extends BrokerActor<
       // while it settles would be iterating a map that is being mutated.
       const inFlight = [...this.pending.values()];
       this.pending.clear();
+      // One line per disconnect, not one per delivery.  Every entry reaches
+      // the shared catch in `deliverAndAwaitAcknowledgment` separately, and a
+      // push consumer with `maxAcknowledgmentPending` in the hundreds turns a
+      // flapping connection into hundreds of warn lines per flap.  The count
+      // is what an operator acts on; the individual sequences are detail, and
+      // `PendingSettleFailure` is what routes them to `debug` (#1510).
+      this.log.warn(
+        `JetStreamActor: connection lost with ${inFlight.length} `
+        + `${inFlight.length === 1 ? 'delivery' : 'deliveries'} in flight `
+        + `— letting the consumer redeliver`,
+      );
       for (const pendingAck of inFlight) {
-        pendingAck.fail(new Error(
-          `JetStreamActor: connection lost before ack/nak/term for `
+        pendingAck.fail(new PendingSettleFailure(
+          'connectionLost',
+          `connection lost before ack/nak/term for `
           + `streamSeq=${pendingAck.streamSeq} (ackToken=${pendingAck.ackToken})`,
         ));
       }
@@ -556,8 +568,9 @@ export class JetStreamActor extends BrokerActor<
           // #710 turned a superseded entry into an evictor of the live one.
           // Cheap, and it keeps this correct under any future re-keying.
           if (this.pending.get(ackToken) === entry) this.pending.delete(ackToken);
-          reject(new Error(
-            `JetStreamActor: no ack/nak/term for streamSeq=${streamSeq} `
+          reject(new PendingSettleFailure(
+            'acknowledgmentTimeout',
+            `no ack/nak/term for streamSeq=${streamSeq} `
             + `(ackToken=${ackToken}) within ${ackTimeoutMs}ms`,
           ));
         }, ackTimeoutMs);
@@ -571,7 +584,22 @@ export class JetStreamActor extends BrokerActor<
         this.pending.set(ackToken, entry);
       });
     } catch (err) {
-      this.log.warn(`JetStreamActor: pump ${(err as Error).message} — letting consumer redeliver`);
+      // One prefix, not two.  Both messages above used to carry
+      // `JetStreamActor: ` themselves, so every line this wrote read
+      // `JetStreamActor: pump JetStreamActor: …` — inherited from the
+      // ack-timeout message and then copied by the connection-lost one
+      // (#1510).  The prefix belongs to the site that logs, not to the site
+      // that builds the reason.
+      const line = `JetStreamActor: pump ${(err as Error).message} — letting consumer redeliver`;
+      // The level is read off the failure's tag, never off its text: a
+      // connection loss is already summarised by the one aggregate line
+      // `disconnectImplementation` wrote, and this is the detail behind it.
+      // An ack-timeout names one handler that did not answer and stays WARN.
+      if (err instanceof PendingSettleFailure && err.failureKind === 'connectionLost') {
+        this.log.debug(line);
+      } else {
+        this.log.warn(line);
+      }
       try { handle.nak(); } catch { /* best-effort */ }
     }
   }
@@ -787,6 +815,31 @@ type PendingAcknowledgment = {
   readonly done: () => void;
   readonly fail: (err: Error) => void;
 };
+
+/** The two ways a delivery's ack wait ends without a settle command. */
+type PendingSettleFailureKind = 'connectionLost' | 'acknowledgmentTimeout';
+
+/**
+ * The rejection `deliverAndAwaitAcknowledgment` catches, carrying which of
+ * the two ways the wait ended.
+ *
+ * The tag is what keeps the two log levels apart, and it is a field rather
+ * than a substring match on the message because a level read off prose makes
+ * the wording of a log line load-bearing.  An ack-timeout names one handler
+ * that did not answer in time and stays WARN; a connection loss fails every
+ * in-flight entry at once and is summarised by the single aggregate line
+ * `disconnectImplementation` writes, so its per-delivery detail is `debug`
+ * (#1510).
+ */
+class PendingSettleFailure extends Error {
+  readonly failureKind: PendingSettleFailureKind;
+
+  constructor(failureKind: PendingSettleFailureKind, message: string) {
+    super(message);
+    this.name = 'PendingSettleFailure';
+    this.failureKind = failureKind;
+  }
+}
 
 /**
  * JetStream API error codes, as the server reports them.

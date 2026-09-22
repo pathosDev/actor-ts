@@ -317,6 +317,26 @@ class CapturingLogger implements Logger {
   get terminateWarnings(): string[] {
     return this.warnings.filter((w) => w.includes('message dropped permanently'));
   }
+
+  /**
+   * The one aggregate record a disconnect writes, naming how many deliveries
+   * were in flight.  Matched on that phrase rather than on "connection lost",
+   * which the per-delivery detail line carries too.
+   */
+  get connectionLostWarnings(): string[] {
+    return this.warnings.filter((w) => w.includes('connection lost with'));
+  }
+
+  /**
+   * Records prefixed twice — `JetStreamActor: pump JetStreamActor: …`.
+   *
+   * Every catch-path line read that way until #1510: the `Error` messages the
+   * ack-timeout and the disconnect built carried the actor prefix already,
+   * and the shared catch re-added it.
+   */
+  get doublyPrefixedWarnings(): string[] {
+    return this.warnings.filter((w) => w.includes('JetStreamActor: pump JetStreamActor:'));
+  }
 }
 
 /** An `ActorSystem` whose logger is the caller's, at `LogLevel.Warn`. */
@@ -1511,6 +1531,98 @@ describe('JetStreamActor — delivery-scoped acknowledgment tokens (#710)', () =
       await awaitCondition(() => afterReconnect.acked, {
         timeoutMs: 4_000, label: 'the live delivery was acknowledged by its own token',
       });
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('a disconnect with five deliveries in flight writes one aggregate WARN, not one per delivery', async () => {
+    // Routing every in-flight delivery through the shared catch made each
+    // reconnect emit one WARN per outstanding delivery, where the pre-#710
+    // path had been silent.  On a consumer with `maxAcknowledgmentPending` in
+    // the hundreds a flapping connection then produces hundreds of warn lines
+    // per flap — so the count is the WARN and the per-delivery detail is
+    // `debug` (#1510).  Pull mode, because the push pump awaits each delivery
+    // in turn and can only ever have one in flight.
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-disconnect-aggregate', logger);
+    /** Long enough that no ack-timeout fires inside this case. */
+    const ackTimeoutMs = 4_000;
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
+        .withConsumer({ durable: 'puller', mode: 'pull', ackWaitMs: ackTimeoutMs })
+        .withAcknowledgmentTimeout(ackTimeoutMs)
+        .withReconnect({ initialDelayMs: 5, maxDelayMs: 5, factor: 1, randomFactor: 0 });
+      const { actor, mock, target } = await bootActorOfKind(
+        sys, jetstreamOptions, (built) => new ReconnectingMockJetStreamActor(built),
+      );
+      const inFlight = [10, 11, 12, 13, 14].map((seq) => makeHandle(seq));
+      mock.connections[0]!.js.pullConsumers.get('ORDERS::puller')!.enqueueBatch(inFlight);
+      actor.tell({ kind: 'fetch', batch: 5, expiresMs: 100 });
+      await awaitForwarded(target, 5);
+
+      mock.dropConnection();
+      // The best-effort `nak()` is the last thing the shared catch does, so
+      // five naks means all five catch paths have run and every line they
+      // write is already in the log.  That is what makes "exactly one" here
+      // an exact claim rather than a poll that returned early.
+      await awaitCondition(() => inFlight.every((handle) => handle.nakCount === 1), {
+        timeoutMs: 4_000,
+        label: 'all five in-flight deliveries were failed and nak\'d by the disconnect',
+      });
+
+      expect(logger.connectionLostWarnings).toHaveLength(1);
+      expect(logger.connectionLostWarnings[0]).toBe(
+        'JetStreamActor: connection lost with 5 deliveries in flight — letting the consumer redeliver',
+      );
+      // The per-delivery lines went to `debug`, so the WARN log carries the
+      // aggregate and nothing else from this disconnect.
+      expect(logger.warnings.filter((w) => w.includes('before ack/nak/term'))).toEqual([]);
+      // And no line is prefixed twice.
+      expect(logger.doublyPrefixedWarnings).toEqual([]);
+
+      // Let the reconnect finish before teardown, so the system is not torn
+      // down through a connect that is still in flight.
+      await awaitCondition(
+        () => mock.connections.length >= 2 && mock.publicConnectionState() === 'connected',
+        { timeoutMs: 4_000, label: 'the actor reconnected on a fresh connection' },
+      );
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('an ack-timeout stays at WARN, and its line carries the prefix once', async () => {
+    // The other half of the level split: a timeout names one handler that did
+    // not answer in time, which is still the operator's business.  It shares
+    // the catch with the connection-lost case, so a fix that moved the whole
+    // catch to `debug` would silence this too (#1510).
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-timeout-warn', logger);
+    /** Short on purpose: the case has to outlive one whole ack window. */
+    const ackTimeoutMs = 60;
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'S', subjects: ['s.>'] })
+        .withConsumer({ durable: 'd', ackWaitMs: ackTimeoutMs })
+        .withAcknowledgmentTimeout(ackTimeoutMs);
+      const { mock } = await bootActor(sys, jetstreamOptions);
+      const handle = makeHandle(8);
+      mock.mockConnection.js.subscription.push(handle);
+      await awaitCondition(() => handle.naked, {
+        timeoutMs: 4_000, label: 'the ack timeout naked the un-acknowledged handle',
+      });
+
+      const timeoutWarnings = logger.warnings.filter((w) => w.includes('no ack/nak/term'));
+      expect(timeoutWarnings).toHaveLength(1);
+      expect(timeoutWarnings[0]).toBe(
+        `JetStreamActor: pump no ack/nak/term for streamSeq=8 (ackToken=1) `
+        + `within ${ackTimeoutMs}ms — letting consumer redeliver`,
+      );
+      expect(logger.doublyPrefixedWarnings).toEqual([]);
     } finally {
       await sys.terminate();
     }

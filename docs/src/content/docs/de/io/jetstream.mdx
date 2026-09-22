@@ -251,6 +251,18 @@ des Tokens: Die adressierte Zustellung ist bereits abgelaufen, wurde
 bereits aufgelöst oder stammt von vor einem Reconnect — die Nachricht wird
 also erneut zugestellt und erneut verarbeitet.
 
+**Ein Verbindungsverlust löst jede laufende Zustellung lokal auf.**  Jede
+wird fehlgeschlagen, best-effort `nak`'t, damit der Server sie erneut
+zustellt, und ihr Ack-Timeout wird entschärft — der Reconnect startet also
+mit leerer Pending-Map, und ein Settle-Befehl, der noch für eine Zustellung
+von vor dem Verbindungsverlust unterwegs ist, läuft ins Leere (siehe oben).
+Der Verlust ist **eine** `warn`-Zeile, die nennt, wie viele Zustellungen in
+Flight waren; das Detail pro Zustellung geht auf `debug`, denn eine
+flatternde Verbindung würde bei einem Consumer mit `maxAcknowledgmentPending`
+im dreistelligen Bereich sonst Hunderte Warnungen pro Flattern schreiben.
+Ein Ack-Timeout bleibt auf `warn`: Das benennt einen einzelnen Handler, der
+nicht rechtzeitig geantwortet hat.
+
 ## Push- vs. Pull-Consumer
 
 - **Push** *(Default)* — der Server streamt Nachrichten; die interne

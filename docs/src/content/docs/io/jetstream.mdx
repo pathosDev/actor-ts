@@ -240,6 +240,16 @@ by all four commands, naming the command and the token: the delivery it
 addressed already timed out, was settled, or predates a reconnect, so the
 message will be redelivered and reprocessed.
 
+**A connection loss settles every in-flight delivery locally.**  Each one is
+failed, `nak`'d best-effort so the server redelivers it, and its ack-timeout
+disarmed — the reconnect then starts from an empty pending map, and any
+settle command still travelling for a pre-disconnect delivery misses (see
+above).  The loss is **one** `warn` naming how many deliveries were in
+flight; the per-delivery detail goes to `debug`, because a flapping
+connection on a consumer with `maxAcknowledgmentPending` in the hundreds
+would otherwise write hundreds of warnings per flap.  An ack-timeout stays
+at `warn`: that one names a single handler that did not answer in time.
+
 ## Push vs pull consumers
 
 - **Push** *(default)* — the server streams messages; the actor's
