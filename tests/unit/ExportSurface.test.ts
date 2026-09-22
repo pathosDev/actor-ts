@@ -229,3 +229,148 @@ describe('the four names the folded barrels dropped (#1403)', () => {
     );
   });
 });
+
+/**
+ * Every door a name can be reached through: the root barrel, all published
+ * subpaths, and the folded barrels.  The folded ones are redundant while the
+ * block above holds them to the root's contents — they are read anyway, so
+ * this guard does not rest on another test passing.
+ *
+ * Loading all of them costs ~230 ms of the file's ~410 ms, measured.  It
+ * happens once at module scope for the reason the `barrelNamespace` comment
+ * gives: bun's per-test cap is 5 000 ms, and the question below is not
+ * answerable from a subset of the doors.
+ */
+const doorNamespaces = new Map<string, Record<string, unknown>>([['.', rootNamespace]]);
+for (const name of publishedSubpaths) doorNamespaces.set(`./${name}`, await barrelNamespace(name));
+for (const [name, namespace] of foldedNamespaces) doorNamespaces.set(`src/${name}/`, namespace);
+
+/**
+ * A module under `src/` that no barrel re-exports, pinned with every value
+ * name it emits.
+ *
+ * Four of these are internal *seams*, and each says so in its own doc comment:
+ * `setNativeZstdDecompressCandidatesOverride` suppresses `node:zlib`
+ * process-wide, giving up the allocation-time bound #580 exists to buy;
+ * `resetCompressionCache` clears that override; `zstdDecompressorRung` reports
+ * which rung of the ladder decoded (#1422); `setRuntimeOverride` forces
+ * `detectRuntime()`.  Those four sentences were the whole guarantee — nothing
+ * under `tests/` read them, so a barrel-widening sweep could have published a
+ * production kill-switch with every gate green.
+ *
+ * The other exports are pinned alongside rather than exempted, because
+ * reachability is the same question for all of them and the *set* is what a
+ * sweep widens.  Publishing a new name stays free — it simply leaves the
+ * unreachable set; keeping a new one internal costs a line here, which is
+ * where that choice gets made instead of defaulted.  It is the shape the util
+ * block above already has with the direction reversed: there the barrel must
+ * cover the whole directory, here no barrel may reach the module at all.
+ */
+type InternalModule = {
+  readonly modulePath: readonly string[];
+  readonly valueExports: readonly string[];
+};
+
+const internalModules: readonly InternalModule[] = [
+  {
+    modulePath: ['persistence', 'object-storage', 'Compression.ts'],
+    valueExports: [
+      'compressorFor',
+      'probeCompressionAvailability',
+      'resetCompressionCache',
+      'setNativeZstdDecompressCandidatesOverride',
+      'zstdDecompressorRung',
+    ],
+  },
+  {
+    modulePath: ['runtime', 'Detect.ts'],
+    valueExports: ['detectRuntime', 'hasBun', 'hasDeno', 'highResNow', 'setRuntimeOverride'],
+  },
+];
+
+const internalNamespaces = new Map<string, Record<string, unknown>>();
+for (const { modulePath } of internalModules) {
+  internalNamespaces.set(
+    modulePath.join('/'),
+    (await import(pathToFileURL(join(sourceRoot, ...modulePath)).href)) as Record<string, unknown>,
+  );
+}
+
+/**
+ * The doors `name` can be reached from, by either route a re-export takes.
+ * The name compare catches `export { setRuntimeOverride }`; the identity
+ * compare catches `export { setRuntimeOverride as forceRuntime }`, which a
+ * name compare reads as absent.  Identity is only asked of reference types —
+ * two modules exporting the number 3 are not the same export, and a value
+ * compare there would be noise rather than a signal.
+ *
+ * Where it stops, measured rather than assumed: a barrel that exports a
+ * *wrapper* (`export function forceRuntimeKind(kind) { setRuntimeOverride(kind) }`)
+ * publishes the seam's effect behind a new function object, and both compares
+ * miss it — the whole file stays green.  Catching that needs a call graph, not
+ * a namespace.  The guard's claim is therefore the narrow one: no door
+ * re-exports these bindings, under this name or any other.
+ */
+const doorsEmitting = (name: string, binding: unknown): string[] => {
+  const hasReferenceIdentity =
+    typeof binding === 'function' || (typeof binding === 'object' && binding !== null);
+  return [...doorNamespaces.entries()]
+    .filter(
+      ([, namespace]) =>
+        name in namespace ||
+        (hasReferenceIdentity && Object.values(namespace).some((value) => value === binding)),
+    )
+    .map(([door]) => door);
+};
+
+describe('the internal seams no barrel publishes stay unreachable (#1507)', () => {
+  test('every door is loaded, so the tests below are not asking an empty set', () => {
+    // A reachability test is only as good as the set it searches, and both
+    // ways of losing that set are silent: a door dropped from the map, or one
+    // whose namespace came back empty.  Either would leave every test in this
+    // block green while covering nothing — the failure this whole file exists
+    // to refuse, turned on the file itself.
+    expect(doorNamespaces.size).toBe(1 + publishedSubpaths.size + foldedBarrels.length);
+    const empty = [...doorNamespaces.entries()]
+      .filter(([, namespace]) => Object.keys(namespace).length === 0)
+      .map(([door]) => door);
+    expect(empty).toEqual([]);
+  });
+
+  for (const { modulePath, valueExports } of internalModules) {
+    const relative = modulePath.join('/');
+
+    test(`src/${relative} emits exactly the names pinned here`, () => {
+      // Both directions at once.  A renamed or deleted seam drops off the
+      // left — which is what stops the reachability test below from passing
+      // over a name that no longer exists — and a sixth export lands on the
+      // right, while the choice between publishing it and keeping it internal
+      // is still open.
+      const namespace = internalNamespaces.get(relative)!;
+      expect(Object.keys(namespace).sort()).toEqual([...valueExports].sort());
+    });
+
+    test(`no door reaches anything src/${relative} exports`, () => {
+      const namespace = internalNamespaces.get(relative)!;
+      const reachable = Object.keys(namespace)
+        .flatMap((name) =>
+          doorsEmitting(name, namespace[name]).map((door) => `${name} via ${door}`),
+        )
+        .sort();
+      expect(reachable).toEqual([]);
+    });
+  }
+
+  test('no pinned module is one the util barrel has to cover (#1404)', () => {
+    // The two blocks state opposite contracts, so no module may be under both.
+    // `src/util/` owes the subpath a re-export for every value it emits —
+    // which is how `DEFAULT_DROP_REPORT_INTERVAL_MS` was caught missing one —
+    // and a name withheld there is declared in `testOnlyExports` above, with
+    // the underscore that marks it.  Declaring a util module internal here
+    // would read as a second, quieter way to be exempt from that.
+    const overlapping = internalModules
+      .map(({ modulePath }) => modulePath.join('/'))
+      .filter((relative) => relative.startsWith('util/'));
+    expect(overlapping).toEqual([]);
+  });
+});
