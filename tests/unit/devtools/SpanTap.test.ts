@@ -608,6 +608,113 @@ describe('SpanTap — restoring the tracing switches', () => {
   });
 });
 
+/**
+ * #1512 — the snapshot/restore above is not re-entrant.
+ *
+ * Two taps on one system, uninstalled in the order they were installed: the
+ * second had snapshotted the first one's recorder as "the tracer that was
+ * there before" and both switches as on.  The first uninstall cleared
+ * everything; the second then put a dead recorder back and switched root spans
+ * and payloads on again — the #714 end state, on a system with no DevTools
+ * left on it, and strictly worse than before the restore existed, which never
+ * touched the switches.  Only the newest tap's snapshot can be right, so a
+ * second live tap is refused at install rather than reasoned about at
+ * uninstall.  The public path stopped getting here with the `attach()` guard;
+ * two directly constructed taps, or two `DevToolsServer`s, still could.
+ */
+describe('SpanTap — one live tap per system', () => {
+  test('a second install on the same system is refused and leaves the first alone', () => {
+    const system = newSystem('span-second-tap');
+    const tracing = system.extension(TracingExtensionId);
+    const first = new SpanTap(system, 100, 20);
+    const second = new SpanTap(system, 100, 20);
+    first.install(() => {});
+    const installed = tracerOf(system);
+
+    expect(() => second.install(() => {})).toThrow('already installed');
+    // The refusal snapshotted and swapped nothing: the first tap's recorder is
+    // still the tracer, and both switches are still the first tap's.
+    expect(tracerOf(system)).toBe(installed);
+    expect(tracing.isRecordingRootSpans()).toBe(true);
+    expect(tracing.isCapturingMessagePayloads()).toBe(true);
+
+    // The refused tap has nothing to undo, so uninstalling it is inert —
+    // which is what makes uninstalling the pair in either order the same.
+    second.uninstall();
+    expect(tracerOf(system)).toBe(installed);
+    expect(tracing.isRecordingRootSpans()).toBe(true);
+
+    // And the first tap's uninstall puts the system back as it found it: the
+    // end state the out-of-order restore used to miss.
+    first.uninstall();
+    expect(tracing.isEnabled()).toBe(false);
+    expect(tracing.isRecordingRootSpans()).toBe(false);
+    expect(tracing.isCapturingMessagePayloads()).toBe(false);
+  });
+
+  test('with an exporter underneath, the exporter comes back and nothing else', () => {
+    // The case the finding is about: the second tap's stale snapshot would
+    // have re-enabled the first tap's tee over the exporter with both
+    // switches on, so message bodies kept leaving the process.
+    const system = newSystem('span-second-tap-exporter');
+    const tracing = system.extension(TracingExtensionId);
+    const exporter = new RecordingTracer();
+    tracing.enable(exporter);
+    const first = new SpanTap(system, 100, 20);
+    const second = new SpanTap(system, 100, 20);
+    first.install(() => {});
+    expect(() => second.install(() => {})).toThrow('already installed');
+
+    first.uninstall();
+    second.uninstall();
+    expect(tracerOf(system)).toBe(exporter);
+    expect(tracing.isRecordingRootSpans()).toBe(false);
+    expect(tracing.isCapturingMessagePayloads()).toBe(false);
+  });
+
+  test('installing the same tap twice is refused too', () => {
+    // A re-install would snapshot the tap's own recorder as the tracer to
+    // restore — the same corruption with one object.
+    const system = newSystem('span-tap-reinstall');
+    const tap = new SpanTap(system, 100, 20);
+    tap.install(() => {});
+    try {
+      expect(() => tap.install(() => {})).toThrow('already installed');
+    } finally {
+      tap.uninstall();
+    }
+  });
+
+  test('the slot frees at uninstall, so a later tap installs again', () => {
+    // attach / detach / attach on one system goes through here.
+    const system = newSystem('span-tap-cycle');
+    const first = new SpanTap(system, 100, 20);
+    first.install(() => {});
+    first.uninstall();
+    const second = new SpanTap(system, 100, 20);
+    expect(() => second.install(() => {})).not.toThrow();
+    try {
+      expect(system.extension(TracingExtensionId).isRecordingRootSpans()).toBe(true);
+    } finally {
+      second.uninstall();
+    }
+  });
+
+  test('taps on different systems do not see each other', () => {
+    const one = newSystem('span-tap-system-one');
+    const two = newSystem('span-tap-system-two');
+    const tapOne = new SpanTap(one, 100, 20);
+    const tapTwo = new SpanTap(two, 100, 20);
+    tapOne.install(() => {});
+    try {
+      expect(() => tapTwo.install(() => {})).not.toThrow();
+    } finally {
+      tapTwo.uninstall();
+      tapOne.uninstall();
+    }
+  });
+});
+
 /** The attribute the whole finding is about, spelled once. */
 const PAYLOAD_ATTRIBUTE = 'actor.message.payload';
 
