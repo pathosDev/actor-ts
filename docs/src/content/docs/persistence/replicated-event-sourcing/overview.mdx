@@ -195,6 +195,16 @@ import { Aside } from '@astrojs/starlight/components';
   rather than eviction is deliberate: dropping events changes the fold,
   and dropping identities re-opens double-apply.  Lower the hook for an
   entity whose legitimate history is small.
+
+  **The refusal is permanent for that entity.**  The ceiling counts the
+  observed history, which includes this replica's own persists — so an
+  entirely honest replica reaches it by writing enough of its own events,
+  after which it stops accepting any peer's.  And nothing clears it: a
+  snapshot stores the whole history rather than a checkpoint, and
+  recovery re-seeds the history from it, so neither snapshotting nor
+  discarding the journal sheds an event and the refusal comes back with
+  the actor.  Raising the hook is the only relief today; compaction is
+  tracked as #535.
 </Aside>
 
 ## The pieces
