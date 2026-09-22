@@ -309,11 +309,17 @@ const keysetIdentity = (id: string): string => JSON.stringify(id);
  * bound that exists to stop a peer's frame doing unbounded decode work
  * (#698), and it costs a `JSON.parse` per keyset element — so a hostile
  * `ORMap` needed one honest entry in `values`, enough to make `localIds`
- * non-empty, and an arbitrarily large `keyset.elements` behind it.  Measured
- * on a 200 000-element keyset: rejected in 15.8 ms with no identity against
- * 212.3 ms with one.  Linear rather than quadratic, hence a cheap ceiling
- * check rather than a redesign; the refusal itself stays `ORSet`'s to make,
- * in its own words, so there is one message for one condition.
+ * non-empty, and an arbitrarily large `keyset.elements` behind it.
+ *
+ * The amplification *is* that parse, so the figure worth pinning is the count
+ * rather than a duration: rejecting one frame of `MAX_CRDT_ENTRIES + 1`
+ * elements cost 1 `JSON.parse` with no identity and 4 098 with one, which is
+ * what `DistributedDataDecodeIdentity.test.ts` asserts.  In wall-clock on a
+ * 200 000-element keyset it ranged from 27 ms against 119 ms warm to 16 ms
+ * against 212 ms cold — the spread is the JIT, the ratio is the parse.
+ * Linear rather than quadratic, hence a cheap ceiling check rather than a
+ * redesign; the refusal itself stays `ORSet`'s to make, in its own words, so
+ * there is one message for one condition.
  */
 function remapKeysetIds(keyset: ORSetJson, localIds: ReadonlyMap<string, string>): ORSetJson {
   const elements: unknown = keyset?.elements;
