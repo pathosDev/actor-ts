@@ -88,6 +88,33 @@ Removing a key from `ORMap` uses the OR-semantics — tagged
 operation that concurrent re-adds can override.  Same "add wins"
 semantics as ORSet.
 
+### Identity of nested values
+
+An `ORMap` recovers its own key identity when it decodes a frame,
+but the CRDTs stored *inside* it stay on the default
+`JSON.stringify` rule — the boundary the sets page
+[spells out](/distributed-data/crdt-types/sets/#identity-inside-distributeddata),
+including why handing the outer function down would be worse than
+the gap (#1421).  It matters most where the values are sets:
+`ORMap<RoomId, ORSet<UserId>>` is a shape this page recommends,
+and the inner `ORSet` is exactly what does not get your identity
+back.
+
+Map-specific is *which operation can still fix it*.  `update`
+reuses the value already under the key, so the `factory` — the one
+place the inner identity lives — never runs for a key that arrived
+by gossip, and a second `update` does not teach it either.  After
+a `remove`, `get` no longer sees the key, so the next `update`
+does run the factory and the value it builds carries your
+identity.
+
+That is a fresh start rather than a repair, and the difference
+matters: the value that was under the key is gone, which is what a
+remove means, and a peer still holding the pre-remove state files
+its elements under its own keys again on the next merge.  Removing
+a key is a way to get a *new* value onto your identity, never a
+way to re-key an existing one.
+
 ## GCounterMap
 
 ```ts
