@@ -93,8 +93,9 @@ type TransportArm = {
    * (#563).  The other two have nothing to close, so "mirrors dropping the
    * connection" can only mean dropping the frame — closing anything there
    * would mean tearing down the whole registry or the whole `MessagePort` over
-   * one frame.  What is *not* negotiable, and is asserted for all three, is
-   * that the throw never leaves the seam.
+   * one frame.  What is *not* negotiable is that the throw never leaves the
+   * seam — required of all three, though **not asserted the same way for all
+   * three**: see the in-memory arm's `settle`.
    */
   readonly keepsTheEdgeAfterAThrow: boolean;
 };
@@ -130,9 +131,30 @@ const inMemoryArm: TransportArm = {
     await attacker.start();
     return {
       deliver: (payload) => attacker.send(victim.self, payload as WireMessage),
-      // `send` defers through `queueMicrotask`, so a throw here surfaces as a
-      // top-level error rather than out of `deliver` — which is why the
-      // portable half of the contract is "the handler was not called".
+      // `send` defers through `queueMicrotask` (`Transport.ts`), so nothing
+      // this arm does can throw out of `deliver`.  Two consequences, and the
+      // second is the one worth being honest about.
+      //
+      // The **drop** half is unaffected: `expect(received).toEqual([])` after
+      // `settle` is a real assertion, and the `not.toThrow()` wrapper around
+      // `deliver` above is vacuous *for this arm only* — kept because it is the
+      // whole assertion for the other two, where `deliver` is synchronous.
+      //
+      // The **containment** half rests on the runner rather than on an
+      // `expect`.  An escaping throw is an unhandled error inside a microtask,
+      // and bun attributes it to the running test — verified by deleting the
+      // guard in `InMemoryTransport.send` and watching 'a throwing handler does
+      // not escape the seam' fail with `handler exploded`.  That is a real
+      // mechanism, but it is the runner's and not this file's, so a runner that
+      // swallowed it would leave this arm silently unchecked.
+      //
+      // An uncaught-error trap here would make it an assertion, and on bun
+      // 1.4.2 it cannot: measured, a throw escaping a `queueMicrotask` reaches
+      // *none* of `process.on('uncaughtException')`,
+      // `globalThis.addEventListener('error')` or `globalThis.onerror` — the
+      // test runner intercepts it first and fails the test.  There is nothing
+      // left to install the trap on, so this is stated rather than closed
+      // (#1515).
       settle: () => Promise.resolve(),
       close: async () => { await attacker.shutdown(); await victim.shutdown(); },
     };
