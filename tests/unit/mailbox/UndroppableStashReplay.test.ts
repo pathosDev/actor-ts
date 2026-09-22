@@ -122,10 +122,12 @@ class UntypedStashingWatcher extends Actor<WatcherMessage> {
   }
 
   private onTerminated(): void {
-    // Once only: the replayed notification is consumed rather than redelivered
-    // (the cell retires the watch registration first), but a future change to
-    // that would otherwise turn this actor into a stash loop.
-    if (probe.stashed.value) return;
+    // Reached once: the cell retires the watch registration before it invokes
+    // the handler, so the replayed notification meets a cell that is no longer
+    // watching and is dead-lettered rather than handed back (#1098).  This
+    // used to carry a "once only" guard against the stash loop a redelivery
+    // would have caused; what the replay does is now decided, so the guard
+    // only hid a second call it can no longer receive.
     this.context.stash();
     probe.stashed.value = true;
   }
@@ -144,7 +146,10 @@ class UntypedStashingWatcher extends Actor<WatcherMessage> {
 /* ------------------------- the typed half, as a behavior ------------------- */
 
 const onTypedTerminated = (stash: StashBuffer<WatcherMessage>, signal: Terminated): Behavior<WatcherMessage> => {
-  if (probe.stashed.value) return Behaviors.same;
+  // No "once only" guard here either, and for the same reason as its untyped
+  // twin above: the typed replay goes through `prependUserMessages` and meets
+  // the same retired-watch gate, so it is dead-lettered rather than handed
+  // back (#1098).
   stash.stash(signal);
   probe.stashed.value = true;
   return Behaviors.same;
