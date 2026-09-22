@@ -300,8 +300,12 @@ class CapturingTarget extends Actor<JetStreamMessage> {
  */
 class CapturingLogger implements Logger {
   readonly warnings: string[] = [];
-  readonly level = LogLevel.Warn;
-  debug(): void {}
+  // Annotated rather than inferred, and `debug` takes its parameter even
+  // though it drops it: both are what a subclass has to be able to override
+  // (see {@link DebugCapturingLogger}), and inferring `LogLevel.Warn` or a
+  // zero-parameter `debug` makes that override a `typecheck:dev` error.
+  readonly level: LogLevel = LogLevel.Warn;
+  debug(_message: string): void {}
   info(): void {}
   warn(message: string): void { this.warnings.push(message); }
   error(): void {}
@@ -336,6 +340,36 @@ class CapturingLogger implements Logger {
    */
   get doublyPrefixedWarnings(): string[] {
     return this.warnings.filter((w) => w.includes('JetStreamActor: pump JetStreamActor:'));
+  }
+}
+
+/**
+ * The same capture, opened down to `debug`.
+ *
+ * Needed wherever a claim is about a line the actor deliberately writes
+ * *below* WARN: "the per-delivery detail went to `debug`" is two claims — it
+ * is gone from WARN **and** it is still written — and a WARN-only capture can
+ * only see the first.  The prefix is the case in point: re-adding
+ * `JetStreamActor: ` to the connection-lost message left a WARN-only capture
+ * green, because the line it doubles is not a warning any more (#1510).
+ *
+ * Kept separate rather than merged into {@link CapturingLogger} so the cases
+ * that assert an *absence* of warnings keep the narrow gate they were written
+ * against.
+ */
+class DebugCapturingLogger extends CapturingLogger {
+  readonly debugs: string[] = [];
+  override readonly level = LogLevel.Debug;
+  override debug(message: string): void { this.debugs.push(message); }
+
+  /** DEBUG records from the shared catch in `deliverAndAwaitAcknowledgment`. */
+  get pumpDebugs(): string[] {
+    return this.debugs.filter((d) => d.includes('JetStreamActor: pump '));
+  }
+
+  /** DEBUG records prefixed twice — the `debug` half of the same defect. */
+  get doublyPrefixedDebugs(): string[] {
+    return this.debugs.filter((d) => d.includes('JetStreamActor: pump JetStreamActor:'));
   }
 }
 
@@ -1638,7 +1672,7 @@ describe('JetStreamActor — delivery-scoped acknowledgment tokens (#710)', () =
     // per flap — so the count is the WARN and the per-delivery detail is
     // `debug` (#1510).  Pull mode, because the push pump awaits each delivery
     // in turn and can only ever have one in flight.
-    const logger = new CapturingLogger();
+    const logger = new DebugCapturingLogger();
     const sys = observedSystem('js-disconnect-aggregate', logger);
     /** Long enough that no ack-timeout fires inside this case. */
     const ackTimeoutMs = 4_000;
@@ -1672,10 +1706,18 @@ describe('JetStreamActor — delivery-scoped acknowledgment tokens (#710)', () =
         'JetStreamActor: connection lost with 5 deliveries in flight — letting the consumer redeliver',
       );
       // The per-delivery lines went to `debug`, so the WARN log carries the
-      // aggregate and nothing else from this disconnect.
+      // aggregate and nothing else from this disconnect…
       expect(logger.warnings.filter((w) => w.includes('before ack/nak/term'))).toEqual([]);
-      // And no line is prefixed twice.
+      // …and they are still *written*, which is the other half of "demoted to
+      // `debug`" and the half a WARN-only capture cannot see.
+      expect(logger.pumpDebugs).toEqual([10, 11, 12, 13, 14].map((streamSeq, index) =>
+        `JetStreamActor: pump connection lost before ack/nak/term for `
+        + `streamSeq=${streamSeq} (ackToken=${index + 1}) — letting consumer redeliver`));
+      // No line is prefixed twice — at either level.  The `debug` half is
+      // load-bearing here: the connection-lost message is the one that used
+      // to carry the prefix a second time, and it is no longer a warning.
       expect(logger.doublyPrefixedWarnings).toEqual([]);
+      expect(logger.doublyPrefixedDebugs).toEqual([]);
 
       // Let the reconnect finish before teardown, so the system is not torn
       // down through a connect that is still in flight.
