@@ -20,10 +20,17 @@ export type SseEvent = {
 export type SseCommand = never;  // SSE is read-only
 
 /**
- * Safety cap on the pending event buffer (chars).  A well-behaved server
- * delimits events with `\n\n` frequently; this bounds the damage from one
- * that never does (security audit BRK-2).  1 MiB is far above any real
- * single SSE event.
+ * Safety cap on the pending event buffer (chars).  A well-behaved server ends
+ * an event with a blank line frequently — in any of the three framings the
+ * grammar allows, `\n\n`, `\r\n\r\n` or `\r\r`, all of which reach the
+ * delimiter search as `\n\n` (#1510) — and this bounds the damage from one
+ * that never does (security audit BRK-2).  1 MiB is far above any real single
+ * SSE event.
+ *
+ * Measured against the characters as they *arrive*, while what the buffer
+ * keeps is the normalised form, which is never longer.  So normalising cannot
+ * loosen the cap: a CRLF-framed feed reaches it no later than the same bytes
+ * framed with LF would.
  */
 const SSE_MAX_BUFFER_CHARS = 1_048_576;
 
@@ -217,8 +224,8 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
         this.noteInboundActivity();
         const text = decoder.decode(value, { stream: true });
         // Cap the pending buffer: a hostile / MITM'd endpoint that streams
-        // bytes without an event delimiter (`\n\n`) would otherwise grow it
-        // without bound (security audit BRK-2).  Measured on what the chunk
+        // bytes without ever ending an event would otherwise grow it without
+        // bound (security audit BRK-2).  Measured on what the chunk
         // *would* make pending, before any of it is split off, so the bound is
         // the one the cap has always enforced.  What it does not bound is the
         // work spent reaching it — that is `SseEventBuffer`'s job (#749).
@@ -250,6 +257,15 @@ export class SseActor extends BrokerActor<SseOptionsType, SseCommand, never> {
 
 /* --------------------- inline SSE wire-format parser ------------------- */
 
+/**
+ * Cut one completed block into its fields.
+ *
+ * Splitting on `'\n'` alone is correct because of where this is called from
+ * and nowhere else: `SseEventBuffer` normalises the grammar's CRLF and lone-CR
+ * terminators to LF on the way in, so a block can no longer carry a `\r` for
+ * `split` to leave glued to the end of every value (#1510).  Anything that
+ * ever hands this function unbuffered wire text has to normalise it first.
+ */
 function parseEventBlock(block: string): SseEvent | null {
   let event = 'message';
   let id: string | undefined;

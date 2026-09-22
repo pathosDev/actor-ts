@@ -420,3 +420,118 @@ describe('SseEventBuffer', () => {
     expect(buffer.pendingLength()).toBe(0);
   });
 });
+
+/**
+ * The three line terminators the SSE grammar allows, and the one that arrives
+ * in two pieces (#1510).
+ *
+ * The wire format is defined over CRLF, LF *and* a lone CR, and the reader
+ * understood exactly one of them: the delimiter search was `'\n\n'` and
+ * `parseEventBlock` split on `'\n'`.  So a conformant `\r\n\r\n` feed
+ * completed no block at all — it grew the pending buffer until the 1 MiB cap
+ * declared it hostile and dropped the connection — and a feed that mixed the
+ * framings delivered values with a carriage return still glued to the end of
+ * them.  The docs promised "parsing rules that follow the SSE spec" the whole
+ * time.
+ *
+ * Normalising at the buffer boundary is what keeps the fix a single place: the
+ * delimiter search, the cut and the field parser all see LF-only text
+ * afterwards, so none of them needs a second spelling of "line ending".  What
+ * that costs is one seam decision, which is the last two tests here — a
+ * per-chunk `replace` gets both of them wrong, in opposite directions.
+ */
+describe('SseEventBuffer — CR and CRLF framing (#1510)', () => {
+  test('a CRLF-framed feed yields the same blocks an LF-framed one does', () => {
+    const buffer = new SseEventBuffer();
+    expect(buffer.push('data: one\r\n\r\ndata: two\r\n\r\n')).toEqual(['data: one', 'data: two']);
+    expect(buffer.pendingLength()).toBe(0);
+  });
+
+  test('a CR-framed feed does too', () => {
+    // The framing nothing in the old reader could see: not one `\n` in it, so
+    // the delimiter search had nothing to find however much arrived.
+    const buffer = new SseEventBuffer();
+    expect(buffer.push('data: one\r\rdata: two\r\r')).toEqual(['data: one', 'data: two']);
+    expect(buffer.pendingLength()).toBe(0);
+  });
+
+  test('a CR ending one chunk and an LF starting the next are one terminator, not two', () => {
+    // `data: one\r\ndata: two\r\n\r\n` is ONE event with two data lines, and
+    // here its first CRLF straddles a read.  Converting the chunk-final CR to
+    // an LF and then counting the LF that arrives next turns the pair into a
+    // blank line and dispatches `one` on its own, half an event early — which
+    // is what a `replace` applied per chunk with no seam state does.
+    const buffer = new SseEventBuffer();
+    expect(buffer.push('data: one\r')).toEqual([]);
+    expect(buffer.push('\ndata: two\r\n\r\n')).toEqual(['data: one\ndata: two']);
+    expect(buffer.pendingLength()).toBe(0);
+  });
+
+  test('a lone CR at a seam still terminates its line', () => {
+    // The other branch of the same decision, and the reason the seam state is
+    // a flag rather than a character held back: what follows this chunk-final
+    // CR is not an LF, so the CR stood on its own and the blank line after it
+    // completes the block.  A carry that withheld the CR until it knew would
+    // also withhold it at end of stream, where no next chunk is coming.
+    const buffer = new SseEventBuffer();
+    expect(buffer.push('data: one\r')).toEqual([]);
+    expect(buffer.push('\rdata: two')).toEqual(['data: one']);
+    expect(buffer.pendingLength()).toBe(9);
+  });
+
+  test('an empty chunk between a CR and its LF does not split the terminator', () => {
+    // `TextDecoder.decode` returns `''` for a chunk that is entirely the lead
+    // bytes of a multi-byte character, and the seam state has to survive it
+    // exactly as the pending characters do.
+    const buffer = new SseEventBuffer();
+    expect(buffer.push('data: one\r')).toEqual([]);
+    expect(buffer.push('')).toEqual([]);
+    expect(buffer.push('\ndata: two\r\n\r\n')).toEqual(['data: one\ndata: two']);
+    expect(buffer.pendingLength()).toBe(0);
+  });
+});
+
+describe('SseActor — CR and CRLF framing reaches the parser as LF (#1510)', () => {
+  test('a CRLF-framed feed delivers its events with no carriage return on a value', async () => {
+    // The second half of the defect: even where a block did complete, every
+    // field value `parseEventBlock` cut out of it ended in the `\r` that
+    // `split('\n')` left behind, so `data` was `'one\r'` and an `id` compared
+    // against a server-issued string never matched.
+    const received: SseEvent[] = [];
+    const actor = new ProbeSseActor({ target: collectingTarget(received) });
+
+    await actor.consumeStream(streamOf([
+      encode('event: tick\r\ndata: one\r\nid: 100\r\n\r\n'),
+      encode('data: two\r\n\r\n'),
+    ]));
+
+    expect(received).toEqual([
+      { event: 'tick', data: 'one', id: '100' },
+      { event: 'message', data: 'two', id: undefined },
+    ]);
+  });
+
+  test('a CR-framed feed does too', async () => {
+    const received: SseEvent[] = [];
+    const actor = new ProbeSseActor({ target: collectingTarget(received) });
+
+    await actor.consumeStream(streamOf([encode('data: one\r\rdata: two\r\r')]));
+
+    expect(received).toEqual([
+      { event: 'message', data: 'one', id: undefined },
+      { event: 'message', data: 'two', id: undefined },
+    ]);
+  });
+
+  test('multiline data framed with CRLF joins on LF, as the LF-framed form does', async () => {
+    // The joined value is the parser's own output rather than a slice of the
+    // wire, so it is the assertion that would still read `'line-1\r\nline-2'`
+    // if the normalisation lived in the delimiter search alone.
+    const received: SseEvent[] = [];
+    const actor = new ProbeSseActor({ target: collectingTarget(received) });
+
+    await actor.consumeStream(streamOf([encode('data: line-1\r\ndata: line-2\r\n\r\n')]));
+
+    expect(received).toEqual([{ event: 'message', data: 'line-1\nline-2', id: undefined }]);
+  });
+});

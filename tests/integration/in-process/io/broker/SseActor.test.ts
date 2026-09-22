@@ -67,6 +67,60 @@ describe('SseActor — round-trip via Bun.serve', () => {
     await sys.terminate();
     server.stop(true);
   });
+
+  test('a feed framed with CRLF parses the same way, over a live connection (#1510)', async () => {
+    // The framing the reader used to be blind to.  `\r\n\r\n` is a conformant
+    // delimiter and the search was for `'\n\n'`, so a feed like this one
+    // completed no block at all: it grew the pending buffer read by read until
+    // the 1 MiB cap declared it hostile and dropped the connection.  Nothing
+    // else here would have noticed, because every other test in this file
+    // frames with LF.
+    //
+    // The writes split the first delimiter down the middle — `\r` ends one,
+    // `\n` opens the next — so the live path exercises the seam as well as the
+    // framing.  A runtime that coalesces the two into one read still asserts
+    // the framing; it just stops asserting the seam, which the unit suite
+    // pins deterministically.
+    const server = Bun.serve({
+      port: 0,
+      fetch() {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller): void {
+            const enc = new TextEncoder();
+            controller.enqueue(enc.encode('event: tick\r\ndata: one\r\nid: 100\r'));
+            controller.enqueue(enc.encode('\n\r\ndata: two\r\ndata: three\r\n\r\n'));
+            controller.close();
+          },
+        });
+        return new Response(stream, { headers: { 'content-type': 'text/event-stream' } });
+      },
+    });
+
+    const sys = quietSystem('sse-crlf');
+    try {
+      const collector = new CollectActor();
+      const target = sys.spawnAnonymous(() => collector);
+      const sseOptions = SseOptions.create()
+        .withUrl(`http://localhost:${server.port}/`)
+        .withTarget(target)
+        .withReconnect(false);
+      sys.spawnAnonymous(() => new SseActor(sseOptions));
+
+      await awaitCondition(() => collector.received.length === 2, {
+        timeoutMs: 4_000, label: 'both CRLF-framed SSE events were parsed and forwarded',
+      });
+
+      // Values arrive clean: `split('\n')` over an un-normalised block leaves
+      // the `\r` on the end of every one of them.
+      expect(collector.received[0]).toEqual({ event: 'tick', data: 'one', id: '100' });
+      expect(collector.received[1]).toEqual({
+        event: 'message', data: 'two\nthree', id: undefined,
+      });
+    } finally {
+      await sys.terminate();
+      server.stop(true);
+    }
+  });
 });
 
 /* ------------------- liveness: read-idle + connect deadline (#753) ------- */
