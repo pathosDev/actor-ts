@@ -28,6 +28,20 @@ import type {
   WebsocketPolicyOptions,
 } from './WebsocketPolicy.js';
 
+/**
+ * Every `websocket()` route requires a same-origin upgrade unless it says
+ * otherwise (#756).  It is here rather than as a literal beside the guard it
+ * feeds because it is a security posture, not a routing detail: the option
+ * shipped defaulting to `false`, so the control was on for whoever already
+ * knew to ask for it and off for everyone else, and flipping it back is a
+ * one-character edit in a file whose reviewers are reading a routing
+ * directive.  Declared where the field is declared and documented, the flip
+ * has to be a named, deliberate edit — and
+ * `OriginAllowlist.test.ts` derives a bare route's expected answer from this
+ * value, so the declaration and the guard cannot drift apart in silence.
+ */
+export const DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN = true;
+
 /** The options a `websocket()` route may carry — codec + per-connection policy. */
 export interface WebsocketRouteOptionsType<TOut, TIn> extends WebsocketPolicyOptions {
   /** Wire codec.  Default: `jsonCodec<TOut, TIn>()`. */
@@ -62,7 +76,8 @@ export interface WebsocketRouteOptionsType<TOut, TIn> extends WebsocketPolicyOpt
    * compare against.  A reverse proxy that rewrites `Host` but not `Origin`
    * will therefore fail the check; list the real origins instead.
    *
-   * **Default: `true`** — every `websocket()` route rejects a cross-origin
+   * **Default: {@link DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN} (`true`)** —
+   * every `websocket()` route rejects a cross-origin
    * browser upgrade unless it says otherwise (#756).  It shipped defaulting
    * to `false`, which left the control on for whoever already knew to ask for
    * it and off for everyone else; a route whose auth is ambient (a session

@@ -7,7 +7,10 @@ import {
   type Route,
 } from '../../../../src/http/Route.js';
 import { websocket } from '../../../../src/http/websocket/WebsocketRoute.js';
-import { WebsocketRouteOptions } from '../../../../src/http/websocket/WebsocketRouteOptions.js';
+import {
+  DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN,
+  WebsocketRouteOptions,
+} from '../../../../src/http/websocket/WebsocketRouteOptions.js';
 import { Status, type HttpRequest } from '../../../../src/http/Types.js';
 import type { WebsocketServerRef } from '../../../../src/http/websocket/WebsocketMessages.js';
 
@@ -202,6 +205,27 @@ describe('websocket() — the same-origin default and its opt-out (#756)', () =>
     expect((await endpoint.authorize(request({
       origin: 'https://internal.example.com', host: 'internal.example.com',
     })))!.status).toBe(Status.Forbidden);
+  });
+
+  test('the bare-route behaviour is read off DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN', async () => {
+    // The default's *value* used to live only as the literal `?? true` in
+    // `WebsocketRoute.ts`, while `WebsocketRouteOptions.ts` was where it was
+    // documented — two files kept in step by prose alone, and a flip is a
+    // one-character edit in the file whose reviewers are reading a routing
+    // directive.  Both halves are pinned here, and the behavioural
+    // expectation is *derived* from the constant rather than written out, so
+    // changing either one alone turns this red.
+    const sameOriginRequiredByDefault: boolean = DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN;
+    const endpoint = wsEndpoint(websocket('/ws', target));
+    const foreign = await endpoint.authorize(request({
+      origin: 'https://evil.example',
+      host: 'app.example.com',
+    }));
+    expect(foreign !== null).toBe(sameOriginRequiredByDefault);
+    if (foreign !== null) expect(foreign.status).toBe(Status.Forbidden);
+    // …and the value itself, so a future flip has to be a named, deliberate
+    // edit rather than a silent one (#756).
+    expect(DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN).toBe(true);
   });
 
   test('an allowlist alone still admits its own origin and refuses the rest', async () => {
