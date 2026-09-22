@@ -117,6 +117,17 @@ export function resolveSessionSecret(override?: string): ResolvedSessionSecret {
   // An empty string counts as unset, deliberately — `CHAT_TOKEN_SECRET=`
   // in an env file would otherwise key the HMAC on zero bytes, which is
   // worse than the published constant, not better.
+  //
+  // The empty string is the *only* value treated that way, and in particular
+  // this is not trimmed the way `demoSecretAllowed` trims its flag.  A secret
+  // is opaque: ` hunter2 ` and `hunter2` are different keys, the code has no
+  // basis for deciding which one the operator meant, and silently picking the
+  // trimmed one would sign tokens under a key no node can be told to
+  // reproduce.  A value of `' '` therefore starts normally, with
+  // `usingDemoSecret` false and no warning — it is a one-byte secret, which
+  // is a terrible one, but the entropy of a key is not something this can
+  // judge and a guess at it would be worse than the honest answer.  The empty
+  // string is exempt only because it cannot be a key at all.
   const configured = override !== undefined && override !== ''
     ? override
     : process.env[TOKEN_SECRET_VARIABLE];
@@ -253,6 +264,18 @@ export class SessionStore {
  * would read `CHAT_ALLOW_DEMO_SECRET=0` — which whoever typed it meant
  * as "off" — as an opt-in, and an opt-in that turns itself on is not
  * one.
+ *
+ * **Trimmed**, unlike the secret itself, and the asymmetry is the point
+ * rather than an oversight.  This variable is a *flag*: its whole
+ * meaning is the choice it records, an env file written
+ * `CHAT_ALLOW_DEMO_SECRET= 1` records that choice as plainly as one
+ * without the space, and refusing it would fail a start-up over a
+ * variable the operator did set — with a message about a variable they
+ * did not.  The trim costs nothing, because no legitimate value of a
+ * two-valued flag differs from another only in surrounding whitespace.
+ *
+ * {@link resolveSessionSecret} does not trim `CHAT_TOKEN_SECRET`, for
+ * the reason stated there: a key is opaque and every byte of it counts.
  */
 function demoSecretAllowed(): boolean {
   const value = process.env[DEMO_SECRET_OPT_IN_VARIABLE]?.trim().toLowerCase();
