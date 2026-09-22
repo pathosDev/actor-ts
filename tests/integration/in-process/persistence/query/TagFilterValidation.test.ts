@@ -177,6 +177,56 @@ describe('normalizeTagFilter — rules that deliberately do not transfer', () =>
   });
 });
 
+describe('normalizeTagFilter — the spec it returns is detached from the caller', () => {
+  /**
+   * The JSDoc above `normalizeTagFilter` has always promised that "an object is
+   * shallow-copied so callers can't mutate it after the fact".  Copying the
+   * *object* is not copying the operator *arrays*, and the arrays are what a
+   * backend carries: `MongoQuery.currentEventsByTag` puts `spec.any` straight
+   * into `{ tags: { $in: anyTags } }` and hands that to `fetchAndRefine`, which
+   * awaits `openForQuery()` before `.find()` reads it.  So a caller that
+   * mutates its own filter array during that await changes the query that runs
+   * — past the validation that just approved it.
+   *
+   * Narrow in practice and exactly the sentence sitting above a security
+   * guard, which is why it is bound rather than reworded.
+   */
+  test('each operator list is copied, so a post-validation mutation cannot reach the query', () => {
+    const callerOwnedAll = ['orders'];
+    const callerOwnedAny = ['debit'];
+    const callerOwnedNot = ['archived'];
+    const spec = normalizeTagFilter({
+      all: callerOwnedAll,
+      any: callerOwnedAny,
+      not: callerOwnedNot,
+    });
+
+    expect(spec.all).not.toBe(callerOwnedAll);
+    expect(spec.any).not.toBe(callerOwnedAny);
+    expect(spec.not).not.toBe(callerOwnedNot);
+
+    // The payload from the issue, written into the caller's array *after* the
+    // filter passed validation — the shape the guard exists to refuse.
+    callerOwnedAll[0] = operatorExpression as unknown as string;
+    callerOwnedAny[0] = operatorExpression as unknown as string;
+    callerOwnedNot[0] = operatorExpression as unknown as string;
+
+    expect(spec.all).toEqual(['orders']);
+    expect(spec.any).toEqual(['debit']);
+    expect(spec.not).toEqual(['archived']);
+  });
+
+  test('an absent operator stays absent rather than becoming an empty list', () => {
+    // `any: []` matches nothing and `not: undefined` imposes no constraint, so
+    // a copy that turned one into the other would change what the filter means
+    // — the plausible way to write the copy wrong.
+    const spec = normalizeTagFilter({ all: ['orders'] });
+    expect(spec.any).toBeUndefined();
+    expect(spec.not).toBeUndefined();
+    expect(spec).toEqual({ all: ['orders'], any: undefined, not: undefined });
+  });
+});
+
 describe('every backend inherits the guard', () => {
   test('InMemoryQuery refuses the filter instead of quietly matching nothing', async () => {
     // The baseline behaviour this replaces: `tags.includes(<object>)` is false
