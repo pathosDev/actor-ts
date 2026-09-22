@@ -14,10 +14,14 @@
  * is ~200-400 ms per role.  Tests use generous timeouts to absorb
  * that startup cost without flaking under load.
  *
- * Two blocks are the exception and spawn nothing: `construction`, and the
- * control-RPC correlation block, which drives in-memory fake workers through
- * the `backend` option.  Both stay outside the quarantine below, so they are
- * the only part of this file CI ever executes.
+ * Not every block pays that, though: `construction`, the control-RPC
+ * correlation block, `terminateAndWait`, the control-RPC timeout, the
+ * throwing-condition block and the handshake latch all spawn nothing at all.
+ * They drive in-memory fake workers through the `backend` option, which is
+ * what lets them assert on a deadline or a teardown deterministically rather
+ * than waiting one out.  When this file was quarantined (`#538`, lifted) they
+ * were the only part of it CI ever executed; the note below is the
+ * measurement that ended that.
  */
 import { describeTimeFactor, scaledMs } from '../../../src/testkit/TimeFactor.js';
 import { readFileSync } from 'node:fs';
