@@ -18,9 +18,9 @@ afterEach(async () => {
 });
 
 function newSystem(name: string, logger: Logger = new NoopLogger()): ActorSystem {
-  const options = ActorSystemOptions.create()
-    .withLogger(logger)
-    .withLogLevel(LogLevel.Off);
+  // No `withLogLevel`: it is ignored whenever a logger is passed — the
+  // level belongs to the logger, and `NoopLogger`'s is `Off` already.
+  const options = ActorSystemOptions.create().withLogger(logger);
   const system = ActorSystem.create(name, options);
   systems.push(system);
   return system;
@@ -725,6 +725,9 @@ const PAYLOAD_ATTRIBUTE = 'actor.message.payload';
  * push into the root's list instead of starting one nobody reads.
  */
 class RecordingLogger implements Logger {
+  // Declarative only: `warn` records unconditionally, and the tap warns
+  // through `system.log`, which is this very object — nothing on that path
+  // reads the level, so the assertions below hold with `Off` here as well.
   readonly level = LogLevel.Debug;
   readonly warnings: string[] = [];
 
