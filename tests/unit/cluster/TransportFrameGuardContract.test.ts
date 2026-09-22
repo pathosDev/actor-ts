@@ -24,8 +24,12 @@
  * thing that does not exist in `src/` and whose absence is the defect.
  */
 import { afterEach, describe, expect, test } from 'bun:test';
-import { NoopLogger } from '../../../src/Logger.js';
+import type { Clock } from '../../../src/Clock.js';
+import { NoopLogger, type Logger } from '../../../src/Logger.js';
+import { DEFAULT_DROP_REPORT_INTERVAL_MS } from '../../../src/util/Constants.js';
+import { transportReachesCluster } from '../../../src/cluster/ClusterHealthChecks.js';
 import { MAX_KNOWN_CHANNEL_PEERS } from '../../../src/cluster/Constants.js';
+import { Member } from '../../../src/cluster/Member.js';
 import { NodeAddress } from '../../../src/cluster/NodeAddress.js';
 import { encodeFrame, type WireMessage } from '../../../src/cluster/Protocol.js';
 import {
@@ -35,6 +39,7 @@ import {
 } from '../../../src/cluster/Transport.js';
 import { MessageChannelTransport } from '../../../src/cluster/transports/MessageChannelTransport.js';
 import { hostileEnvelopes, hostileWirePayloads } from '../../util/HostileFrames.js';
+import { RecordingLogger } from '../../util/RecordingLogger.js';
 import { FakePort } from '../worker/__fixtures__/InMemoryWorkerThread.js';
 
 const SYSTEM = 'frame-guard';
@@ -91,8 +96,9 @@ type TransportArm = {
    * (#563).  The other two have nothing to close, so "mirrors dropping the
    * connection" can only mean dropping the frame — closing anything there
    * would mean tearing down the whole registry or the whole `MessagePort` over
-   * one frame.  What is *not* negotiable, and is asserted for all three, is
-   * that the throw never leaves the seam.
+   * one frame.  What is *not* negotiable is that the throw never leaves the
+   * seam — required of all three, though **not asserted the same way for all
+   * three**: see the in-memory arm's `settle`.
    */
   readonly keepsTheEdgeAfterAThrow: boolean;
 };
@@ -128,9 +134,30 @@ const inMemoryArm: TransportArm = {
     await attacker.start();
     return {
       deliver: (payload) => attacker.send(victim.self, payload as WireMessage),
-      // `send` defers through `queueMicrotask`, so a throw here surfaces as a
-      // top-level error rather than out of `deliver` — which is why the
-      // portable half of the contract is "the handler was not called".
+      // `send` defers through `queueMicrotask` (`Transport.ts`), so nothing
+      // this arm does can throw out of `deliver`.  Two consequences, and the
+      // second is the one worth being honest about.
+      //
+      // The **drop** half is unaffected: `expect(received).toEqual([])` after
+      // `settle` is a real assertion, and the `not.toThrow()` wrapper around
+      // `deliver` above is vacuous *for this arm only* — kept because it is the
+      // whole assertion for the other two, where `deliver` is synchronous.
+      //
+      // The **containment** half rests on the runner rather than on an
+      // `expect`.  An escaping throw is an unhandled error inside a microtask,
+      // and bun attributes it to the running test — verified by deleting the
+      // guard in `InMemoryTransport.send` and watching 'a throwing handler does
+      // not escape the seam' fail with `handler exploded`.  That is a real
+      // mechanism, but it is the runner's and not this file's, so a runner that
+      // swallowed it would leave this arm silently unchecked.
+      //
+      // An uncaught-error trap here would make it an assertion, and on bun
+      // 1.4.2 it cannot: measured, a throw escaping a `queueMicrotask` reaches
+      // *none* of `process.on('uncaughtException')`,
+      // `globalThis.addEventListener('error')` or `globalThis.onerror` — the
+      // test runner intercepts it first and fails the test.  There is nothing
+      // left to install the trap on, so this is stated rather than closed
+      // (#1515).
       settle: () => Promise.resolve(),
       close: async () => { await attacker.shutdown(); await victim.shutdown(); },
     };
@@ -144,7 +171,7 @@ const messageChannelArm: TransportArm = {
     const self = freshAddress();
     const peer = freshAddress();
     const port = new FakePort();
-    const transport = new MessageChannelTransport(self, port);
+    const transport = new MessageChannelTransport(self, port, new NoopLogger());
     transport.setHandler(handler);
     await transport.start();
     return {
@@ -264,7 +291,7 @@ describe('MessageChannelTransport — the posted envelope', () => {
   for (const [label, envelope] of hostileEnvelopes) {
     test(`drops an envelope with ${label} without reaching the handler`, async () => {
       const port = new FakePort();
-      const transport = new MessageChannelTransport(freshAddress(), port);
+      const transport = new MessageChannelTransport(freshAddress(), port, new NoopLogger());
       const received: WireMessage[] = [];
       transport.setHandler((_from, message) => received.push(message));
       await transport.start();
@@ -276,6 +303,48 @@ describe('MessageChannelTransport — the posted envelope', () => {
     });
   }
 
+  test('an envelope whose `from` answers the guard and `fromJSON` differently is dropped', async () => {
+    // The guard reads `from.port` and `NodeAddress.fromJSON` reads it again, so
+    // an accessor that answers differently on the two reads passes the guard
+    // and then throws out of `fromJSON` — back into the `onmessage` callback
+    // this whole file exists to keep clean, and *outside* the try/catch, which
+    // only ever wrapped the handler.
+    //
+    // A real `MessagePort` structured-clones the envelope, which strips
+    // accessors, so this is not reachable across a thread boundary.  It is
+    // reachable through an in-process `PortLike`, which is what the testkit's
+    // broker, the mesh's own fixtures and any port-to-port wiring use — and
+    // `MessageChannelTransport` is exported package surface that takes any
+    // `PortLike` at all.  Found while binding #1515's port rule.
+    const self = freshAddress();
+    const peer = freshAddress();
+    let reads = 0;
+    const shiftyFrom = {
+      systemName: peer.systemName,
+      host: peer.host,
+      get port(): number { reads += 1; return reads === 1 ? peer.port : 1e21; },
+    };
+    const port = new FakePort();
+    const transport = new MessageChannelTransport(self, port, new NoopLogger());
+    const received: WireMessage[] = [];
+    transport.setHandler((_from, message) => received.push(message));
+    await transport.start();
+
+    expect(() => port.inject({
+      from: shiftyFrom, to: self.toJSON(), payload: wellFormedFrame(peer),
+    })).not.toThrow();
+
+    expect(received).toEqual([]);
+    expect(transport.peers()).toEqual([]);
+
+    // And the edge still works afterwards — a contained refusal, not a dead port.
+    const honest = freshAddress();
+    port.inject({ from: honest.toJSON(), to: self.toJSON(), payload: wellFormedFrame(honest) });
+    expect(received.length).toBe(1);
+
+    await transport.shutdown();
+  });
+
   test('an envelope whose `from` carries an over-long incarnation is dropped', async () => {
     // The one case that proves `isBrokeredMessage` and `NodeAddress.fromJSON`
     // agree rather than merely overlapping: `incarnation` is optional, so a
@@ -284,7 +353,7 @@ describe('MessageChannelTransport — the posted envelope', () => {
     const self = freshAddress();
     const peer = freshAddress();
     const port = new FakePort();
-    const transport = new MessageChannelTransport(self, port);
+    const transport = new MessageChannelTransport(self, port, new NoopLogger());
     const received: WireMessage[] = [];
     transport.setHandler((_from, message) => received.push(message));
     await transport.start();
@@ -314,7 +383,7 @@ describe('MessageChannelTransport — the known-peer set is bounded', () => {
   async function floodDistinctPeers(count: number): Promise<MessageChannelTransport> {
     const self = freshAddress();
     const port = new FakePort();
-    const transport = new MessageChannelTransport(self, port);
+    const transport = new MessageChannelTransport(self, port, new NoopLogger());
     transport.setHandler(() => {});
     await transport.start();
     for (let i = 0; i < count; i += 1) {
@@ -337,7 +406,7 @@ describe('MessageChannelTransport — the known-peer set is bounded', () => {
     // flood of strangers take a healthy node out of its load balancer.
     const self = freshAddress();
     const port = new FakePort();
-    const transport = new MessageChannelTransport(self, port);
+    const transport = new MessageChannelTransport(self, port, new NoopLogger());
     transport.setHandler(() => {});
     await transport.start();
 
@@ -360,22 +429,28 @@ describe('MessageChannelTransport — the known-peer set is bounded', () => {
   });
 
   /**
-   * What the cap counts, and therefore who can fill it.
+   * What the cap counts, and — just as much — what that does *not* buy.
    *
    * `onFrame` validates the payload *before* it records the sender, so a peer
    * that never sends a frame the wire schema accepts never earns a slot.  With
    * the two steps the other way round the set would count anything that clears
-   * the envelope guard — and since `peers()` is bounded at
-   * {@link MAX_KNOWN_CHANNEL_PEERS} and refuses the newest once full, a stranger
-   * posting cheap garbage under a thousand invented addresses would fill it and
-   * then keep a genuine peer out of the readiness check for the life of the
-   * process.  The cap and the ordering are one mechanism: neither alone is the
-   * bound.
+   * the envelope guard, which is cheaper still.
+   *
+   * It is worth being exact about what the ordering closes, because the first
+   * version of this comment was not.  It keeps *garbage* out of the map.  It
+   * does **not** make the map hard to fill: a schema-valid heartbeat under an
+   * invented `from` costs a stranger nothing, and a thousand of them fill the
+   * cap — after which a genuine peer arriving late is never listed and the
+   * readiness check reports this node unready against it for the life of the
+   * process (asserted below).  The cap and the ordering are two mechanisms
+   * answering two questions: the ordering decides what counts as a sender, the
+   * cap decides how many are remembered, and neither makes the other
+   * unnecessary or sufficient.
    */
   test('a sender whose payload is refused never earns a place in the set', async () => {
     const self = freshAddress();
     const port = new FakePort();
-    const transport = new MessageChannelTransport(self, port);
+    const transport = new MessageChannelTransport(self, port, new NoopLogger());
     const received: WireMessage[] = [];
     transport.setHandler((_from, message) => received.push(message));
     await transport.start();
@@ -411,15 +486,38 @@ describe('MessageChannelTransport — the known-peer set is bounded', () => {
     await transport.shutdown();
   });
 
-  test('a frame from a stranger is still delivered after the cap fills', async () => {
+  /**
+   * The cap's mirror failure, named rather than merely observed.
+   *
+   * Refusing the newest is the right half of the trade — see
+   * {@link MAX_KNOWN_CHANNEL_PEERS} — but it is a trade, and this is the side
+   * it costs: a peer whose first valid frame arrives after the set is full is
+   * **never listed**, nothing ever removes an entry, and `peers()` has one
+   * reader that cares.  `transportReachesCluster` reports the node not ready
+   * unless an expected member is still named there, so a set filled ahead of a
+   * legitimate peer keeps that node out of its load balancer for the life of
+   * the process.  The frames themselves keep arriving throughout, which is why
+   * this is a readiness failure and not a delivery one.
+   *
+   * Asserting it here is what makes a later move to eviction or pruning
+   * re-argue the trade instead of silently reversing it.
+   */
+  test('a frame from a stranger is still delivered after the cap fills, but the stranger is never ready', async () => {
     // The cap bounds the bookkeeping, never the traffic: refusing frames once
     // the set filled would trade a memory leak for a denial of service.
     const self = freshAddress();
     const port = new FakePort();
-    const transport = new MessageChannelTransport(self, port);
+    const transport = new MessageChannelTransport(self, port, new NoopLogger());
     const received: WireMessage[] = [];
     transport.setHandler((_from, message) => received.push(message));
     await transport.start();
+
+    // The control: an established peer, recorded before the flood, and the
+    // reason the readiness assertion below means anything.
+    const established = new NodeAddress(SYSTEM, '10.0.0.7', 8_888);
+    port.inject({
+      from: established.toJSON(), to: self.toJSON(), payload: wellFormedFrame(established),
+    });
 
     for (let i = 0; i < MAX_KNOWN_CHANNEL_PEERS; i += 1) {
       const peer = new NodeAddress(SYSTEM, '10.0.0.4', 1_000 + i);
@@ -432,6 +530,195 @@ describe('MessageChannelTransport — the known-peer set is bounded', () => {
 
     expect(received.length).toBe(1);
     expect(transport.peers().some((peer) => peer.equals(late))).toBe(false);
+
+    // …and 100 more frames do not change that: nothing retries a refused slot.
+    for (let i = 0; i < 100; i += 1) {
+      port.inject({ from: late.toJSON(), to: self.toJSON(), payload: wellFormedFrame(late) });
+    }
+    expect(received.length).toBe(101);
+    expect(transport.peers().some((peer) => peer.equals(late))).toBe(false);
+
+    // The consequence, in the one reader that has it: not ready against the
+    // late peer, ready against the established one, on the same `peers()`.
+    const listed = transport.peers();
+    expect(transportReachesCluster(
+      [new Member(self, 'up', 1), new Member(late, 'up', 1)], self, listed,
+    )).toBe(false);
+    expect(transportReachesCluster(
+      [new Member(self, 'up', 1), new Member(established, 'up', 1)], self, listed,
+    )).toBe(true);
+
     await transport.shutdown();
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* MessageChannelTransport only — a drop is counted and reported (#1515)     */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * The half `TcpTransport` always had and this transport never did.
+ *
+ * `TcpTransport.onData` puts a `WARN` on the log for both of its tiers, naming
+ * the peer and the offending field, and #945's own evidence quoted those calls
+ * as the reference behaviour — while this class returned or swallowed at all
+ * three of its refusal points with nothing observable anywhere.  A
+ * version-skewed worker therefore had its frames black-holed on the multi-core
+ * path with no signal at all, which is strictly worse than before the guard
+ * existed, when the frame at least arrived.
+ *
+ * The shape is `WorkerBroker`'s, one hop away and since #1276: a per-reason
+ * tally that never rate-limits, and a log line that does.
+ */
+describe('MessageChannelTransport — drops are counted and reported (#1515)', () => {
+  /** A clock the test moves by hand, so the fold can be crossed without a thirty-second wait. */
+  class ManualClock implements Clock {
+    nowMs = 0;
+    now(): number { return this.nowMs; }
+  }
+
+  const NO_DROPS = { 'malformed-envelope': 0, 'malformed-frame': 0, 'handler-threw': 0 };
+  const warningsOf = (logger: RecordingLogger): string[] =>
+    logger.records.filter((record) => record.level === 'warn').map((record) => record.message);
+
+  /** A transport on a `FakePort`, with the log and the clock in the test's hands. */
+  function openCounted(handler: WireHandler = () => {}, logger: Logger = new RecordingLogger()): {
+    transport: MessageChannelTransport;
+    port: FakePort;
+    clock: ManualClock;
+    self: NodeAddress;
+    peer: NodeAddress;
+  } {
+    const self = freshAddress();
+    const peer = freshAddress();
+    const port = new FakePort();
+    const clock = new ManualClock();
+    const transport = new MessageChannelTransport(self, port, logger, clock);
+    transport.setHandler(handler);
+    void transport.start();
+    return { transport, port, clock, self, peer };
+  }
+
+  test('a fresh transport has dropped nothing, and the snapshot is a copy', () => {
+    const { transport } = openCounted();
+    const snapshot = transport.dropped();
+    expect(snapshot).toEqual(NO_DROPS);
+    (snapshot as { 'malformed-envelope': number })['malformed-envelope'] = 99;
+    expect(transport.dropped()).toEqual(NO_DROPS);
+  });
+
+  test('every hostile envelope is counted once, under `malformed-envelope`', () => {
+    const { transport, port } = openCounted();
+    for (const [, envelope] of hostileEnvelopes) port.inject(envelope);
+    expect(transport.dropped()).toEqual({
+      ...NO_DROPS, 'malformed-envelope': hostileEnvelopes.length,
+    });
+  });
+
+  test('every hostile payload is counted once, under `malformed-frame`', () => {
+    const { transport, port, self, peer } = openCounted();
+    for (const [, payload] of hostileWirePayloads) {
+      port.inject({ from: peer.toJSON(), to: self.toJSON(), payload });
+    }
+    expect(transport.dropped()).toEqual({
+      ...NO_DROPS, 'malformed-frame': hostileWirePayloads.length,
+    });
+  });
+
+  /**
+   * The three reasons are three counters, not one.
+   *
+   * This is the assertion that separates the guards: a single `try` wrapped
+   * around `fromJSON`, `rememberPeer` and the handler together contains every
+   * throw just as well and satisfies every *containment* test in this file —
+   * and then reports a refused envelope and a handler nobody understands as
+   * the same event, which is the one thing an operator needs to tell apart.
+   */
+  test('a throwing handler is its own reason, not the envelope guard\'s', () => {
+    const { transport, port, self, peer } = openCounted(() => { throw new Error('handler exploded'); });
+
+    port.inject({ from: peer.toJSON(), to: self.toJSON(), payload: wellFormedFrame(peer) });
+    port.inject('not-an-envelope');
+
+    expect(transport.dropped()).toEqual({
+      ...NO_DROPS, 'handler-threw': 1, 'malformed-envelope': 1,
+    });
+  });
+
+  test('drops fold into one WARN per reason per interval, carrying the count', () => {
+    const logger = new RecordingLogger();
+    const { port, clock, self, peer } = openCounted(() => {}, logger);
+
+    // Three refusals inside one interval: the first is reported at once, the
+    // next two are counted only.
+    for (let i = 0; i < 3; i += 1) port.inject('not-an-envelope');
+    expect(warningsOf(logger)).toEqual([
+      'message-channel transport dropped 1 frame(s) — the envelope is not a BrokeredMessage — '
+      + 'its address fields failed the shape check, and nothing past them was read',
+    ]);
+
+    // Past the interval the next drop flushes the fold: the two suppressed
+    // plus the one that triggered the line.
+    clock.nowMs += DEFAULT_DROP_REPORT_INTERVAL_MS;
+    port.inject('not-an-envelope');
+    expect(warningsOf(logger)).toHaveLength(2);
+    expect(warningsOf(logger)[1]).toMatch(/^message-channel transport dropped 3 frame\(s\) — /);
+
+    // One short of the interval is still inside it.
+    clock.nowMs += DEFAULT_DROP_REPORT_INTERVAL_MS - 1;
+    port.inject('not-an-envelope');
+    expect(warningsOf(logger)).toHaveLength(2);
+
+    // A *different* reason has its own budget and reports straight away, even
+    // though the first reason is still folded — the throttle is per reason.
+    port.inject({ from: peer.toJSON(), to: self.toJSON(), payload: { kind: 'hello' } });
+    const warnings = warningsOf(logger);
+    expect(warnings).toHaveLength(3);
+    expect(warnings[2]).toBe(
+      `message-channel transport dropped 1 frame(s), most recently from ${peer} — `
+      + 'the payload is not a frame this node accepts: `self` is not a valid node address',
+    );
+  });
+
+  /**
+   * The line carries the sender, and the sender is not always trustworthy.
+   *
+   * Through a broker `from` is rewritten to the arriving port (#774).  Wired
+   * port-to-port it is whatever the peer wrote, and `isNodeAddressData` asks
+   * only for non-empty strings — so a `host` with a newline in it is a
+   * well-formed address that would forge as many log lines as it likes.  This
+   * is #573 one layer down, on the line that reports a dropped frame.
+   */
+  test('a newline in the sender\'s host cannot forge a second log line', () => {
+    const logger = new RecordingLogger();
+    const { port, self } = openCounted(() => {}, logger);
+
+    port.inject({
+      from: { systemName: 'sys', host: 'evil\nWARN  forged line', port: 7 },
+      to: self.toJSON(),
+      payload: { kind: 'hello' },
+    });
+
+    const warnings = warningsOf(logger);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).not.toContain('\n');
+    expect(warnings[0]).toContain('evil\\u000aWARN  forged line');
+  });
+
+  /**
+   * The report runs inside the port's `onmessage`, where nothing catches, and
+   * `Logger` is a documented extension point — so a sink that throws would
+   * otherwise reopen the exact hole #945 closed, with the line that reports a
+   * dropped frame.
+   */
+  test('a logger that throws does not escape the callback', () => {
+    const throwingLogger = new RecordingLogger();
+    throwingLogger.warn = (): never => { throw new Error('sink exploded'); };
+    const { transport, port } = openCounted(() => {}, throwingLogger);
+
+    expect(() => port.inject('not-an-envelope')).not.toThrow();
+    // …and the drop is still counted, which is the half that does not depend
+    // on the sink working at all.
+    expect(transport.dropped()['malformed-envelope']).toBe(1);
   });
 });

@@ -644,9 +644,12 @@ Framework reagieren kann.
 Jedes der Ereignisse oben erzeugt eine Zeile über den Logger des Pools
 — `system.log` in einem `WorkerMesh`, `withLogger` auf einem nackten
 `WorkerCluster`, ein `ConsoleLogger` auf `Info`, wenn keins von beiden
-gegeben ist.  Alle Zeilen tragen das Präfix `[worker]`, und jede trägt
-den Sachverhalt in der Nachricht selbst statt als strukturiertes
-Argument, sodass ein Console-Sink und ein Log-Shipper dasselbe sehen:
+gegeben ist.  Die Zeilen des Pools selbst tragen das Präfix `[worker]`;
+die *Transport*-Zeile unten ist die eine, die das nicht tut, denn sie
+kommt vom Cluster-Transport statt vom Pool und wird auch von Nodes
+erzeugt, die gar keinen Pool haben.  Jede Zeile trägt den Sachverhalt
+in der Nachricht selbst statt als strukturiertes Argument, sodass ein
+Console-Sink und ein Log-Shipper dasselbe sehen:
 
 | Ereignis | Level | Zeile |
 | --- | --- | --- |
@@ -658,10 +661,11 @@ Argument, sodass ein Console-Sink und ein Log-Shipper dasselbe sehen:
 | Ein Ersatz wurde nie ready | `ERROR` | `[worker] respawning worker N (addr) failed: <message>` |
 | Das Budget ist erschöpft und kein `onWorkerPermanentlyDown` gesetzt | `ERROR` | `[worker] worker N (addr) is permanently down — K restarts inside W ms exhausted its budget` — ohne `inside W ms` unter `restartWindowMs: 0` |
 | Der Broker weist einen Frame ab | `WARN`; `DEBUG` für ein unbekanntes Ziel | `[worker] broker dropped K frame(s), most recently from <source> — <reason>` |
+| Der Transport eines Nodes weist einen Frame ab, den der Broker geroutet hat | `WARN` | `message-channel transport dropped K frame(s), most recently from <sender> — <reason>` — ohne `most recently from`, wenn der Umschlag selbst abgewiesen wurde, denn dann war kein Absender lesbar |
 | Das Backend deklariert `containsWorkerErrors: false` oder gar nichts — einmal pro Backend, vor dem ersten Spawn | `ERROR` | `[worker] worker backend <Class> declares containsWorkerErrors=false — an uncaught throw inside a worker will terminate this process instead of reaching the framework's error handler; …` — `declares nothing about containment (containsWorkerErrors is not true)`, wenn das Member zur Laufzeit fehlt |
 | Das Metrik-Relay lehnt den Snapshot eines Workers ab — einmal pro Grund pro Worker | `WARN` | `[worker] metrics relay dropped a snapshot from <addr> — <reason>` |
 
-Vier Dinge an diesen Zeilen sind wissenswert:
+Fünf Dinge an diesen Zeilen sind wissenswert:
 
 - **Deno meldet nur den Error-Pfad.** Sein elternseitiger `Worker`
   sendet kein `close`, also erscheinen die Exit-Zeilen und die
@@ -690,9 +694,22 @@ Vier Dinge an diesen Zeilen sind wissenswert:
   verweigernden Port nur den Namen des Fehlers (`DataCloneError`,
   `InvalidStateError`), nie seine Message.  `broker.dropped()` liefert
   die laufenden Zähler pro Grund.
+- **Transport-Drops werden genauso gefaltet**, pro Grund, auf denselben
+  30 Sekunden — und der Zähler dahinter ist `transport.dropped()`, mit
+  drei eigenen Gründen: ein fehlerhafter Umschlag, eine Nutzlast, die
+  die Wire-Prüfungen abweisen, und ein Handler, der geworfen hat.  Die
+  Nutzlast-Variante zitiert den Grund, den die Prüfung geliefert hat —
+  daran unterscheidet man eine Versionsabweichung von einem feindlichen
+  Peer.  Die Zeile trägt nie den Frame, und der Absender darauf wird
+  escaped: Über einen Broker wird `from` auf den ankommenden Port
+  umgeschrieben und ist damit vom Host vergeben, aber ein
+  Port-zu-Port-verdrahteter Kanal hat keinen Broker, der das tut, und
+  eine Node-Adresse muss nur nichtleere Strings tragen.
 
-Fehlerhafter Traffic wird verworfen, nicht fatal — und er wird gezählt
-und gemeldet, wie die Zeile *Der Broker weist einen Frame ab* oben sagt: Der Broker validiert
+Fehlerhafter Traffic wird verworfen, nicht fatal — und auf beiden
+Hälften des Kanals wird er gezählt und gemeldet, wie die Zeilen *Der
+Broker weist einen Frame ab* und *Der Transport eines Nodes weist einen
+Frame ab* oben sagen.  Der Broker validiert
 die Adressen `to` und `from` eines Frames, bevor er ihn weiterleitet —
 ein einzelnes fehlerhaftes `postMessage` aus einem Worker wirft also
 nicht mehr im Message-Listener des Hosts.  Das `payload` des Frames

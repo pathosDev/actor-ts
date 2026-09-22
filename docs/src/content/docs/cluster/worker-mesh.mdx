@@ -620,9 +620,12 @@ declaration is what the framework can act on.
 Every one of the events above produces a line through the pool's logger
 — `system.log` in a `WorkerMesh`, `withLogger` on a bare
 `WorkerCluster`, a `ConsoleLogger` at `Info` when neither is given.  The
-lines all carry the `[worker]` prefix, and each carries the fact inside
-the message rather than as a structured argument, so a console sink and
-a log shipper see the same thing:
+pool's own lines carry the `[worker]` prefix; the *transport* row below
+is the one that does not, because it comes from the cluster transport
+rather than from the pool and is emitted by nodes with no pool at all.
+Each line carries the fact inside the message rather than as a
+structured argument, so a console sink and a log shipper see the same
+thing:
 
 | Event | Level | Line |
 | --- | --- | --- |
@@ -634,10 +637,11 @@ a log shipper see the same thing:
 | A replacement never became ready | `ERROR` | `[worker] respawning worker N (addr) failed: <message>` |
 | The budget is spent and no `onWorkerPermanentlyDown` is set | `ERROR` | `[worker] worker N (addr) is permanently down — K restarts inside W ms exhausted its budget` — without `inside W ms` under `restartWindowMs: 0` |
 | The broker refuses a frame | `WARN`; `DEBUG` for an unknown destination | `[worker] broker dropped K frame(s), most recently from <source> — <reason>` |
+| A node's transport refuses a frame the broker did route | `WARN` | `message-channel transport dropped K frame(s), most recently from <sender> — <reason>` — no `most recently from` when the refusal was the envelope itself, because then no sender was readable |
 | The backend declares `containsWorkerErrors: false`, or nothing at all — once per backend, before the first spawn | `ERROR` | `[worker] worker backend <Class> declares containsWorkerErrors=false — an uncaught throw inside a worker will terminate this process instead of reaching the framework's error handler; …` — `declares nothing about containment (containsWorkerErrors is not true)` when the member is missing at runtime |
 | The metrics relay refuses a worker's snapshot — once per reason per worker | `WARN` | `[worker] metrics relay dropped a snapshot from <addr> — <reason>` |
 
-Four things about those lines are worth knowing:
+Five things about those lines are worth knowing:
 
 - **Deno reports only the error path.** Its parent-side `Worker` emits
   no `close`, so the exit lines and the "not respawned" line never
@@ -664,12 +668,23 @@ Four things about those lines are worth knowing:
   a refusing port only the error's name (`DataCloneError`,
   `InvalidStateError`), never its message.  `broker.dropped()` returns
   the running tallies per reason.
+- **Transport drops fold the same way, per reason, on the same
+  30 seconds** — and the counter behind them is
+  `transport.dropped()`, keyed on three reasons of its own: a
+  malformed envelope, a payload the wire checks refuse, and a handler
+  that threw.  The payload one quotes the reason the check gave, which
+  is what separates a version skew from a hostile peer.  The line never
+  carries the frame, and the sender on it is escaped: through a broker
+  `from` is rewritten to the arriving port and so host-minted, but a
+  channel wired port-to-port has no broker to do that, and a node
+  address only has to carry non-empty strings.
 
-Malformed traffic is dropped, not fatal — and it is counted and
-reported, as the *broker refuses a frame* row above says: the broker validates a frame's
-`to` and `from` addresses before routing it, so one bad
-`postMessage` from a worker no longer throws inside the host's message
-listener.  The frame's `payload` is validated by the receiving
+Malformed traffic is dropped, not fatal — and on both halves of the
+channel it is counted and reported, as the *broker refuses a frame* and
+*a node's transport refuses a frame* rows above say.  The broker
+validates a frame's `to` and `from` addresses before routing it, so one
+bad `postMessage` from a worker no longer throws inside the host's
+message listener.  The frame's `payload` is validated by the receiving
 transport, not by the broker — it goes through the same wire checks a
 TCP peer's frames do, one that fails them never reaches a handler, and
 a handler that throws is contained instead of escaping the port's

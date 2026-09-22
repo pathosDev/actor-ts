@@ -77,6 +77,19 @@ export const hostileEnvelopes: ReadonlyArray<HostileFrame> = [
     to: address(2).toJSON(),
     payload: { kind: 'ping' },
   }],
+  // The row that is not a type confusion: `1e21` is a number, an integer and
+  // positive, so the old rule admitted it — and `(1e21).toString()` is
+  // `'1e+21'`, which `NodeAddress.parse` reads back with `parseInt` as port
+  // **1**.  A schema-valid heartbeat under this `from` was delivered, recorded
+  // as `sys@host:1e+21` and listed by `peers()` as `sys@host:1`, which is the
+  // string `transportReachesCluster` compares against a member (#1515).
+  // Appended rather than inserted: `tests/unit/worker/WorkerBroker.test.ts`
+  // indexes three of the rows above by position.
+  ['`from.port` beyond the safe-integer range (#1515)', {
+    from: { systemName: 'sys', host: 'host', port: 1e21 },
+    to: address(2).toJSON(),
+    payload: { kind: 'ping' },
+  }],
 ];
 
 /**
