@@ -1,4 +1,6 @@
 import { OptionsBuilder } from '../util/OptionsBuilder.js';
+import { OptionsValidator } from '../util/OptionsValidator.js';
+import { checkWorkerModuleUrl } from '../worker/WorkerClusterOptions.js';
 import type { FailureDetectorOptionsType } from '../cluster/FailureDetectorOptions.js';
 import type { LogLevel } from '../Logger.js';
 import type { WorkerBackend } from '../runtime/worker/index.js';
@@ -76,7 +78,14 @@ export class ParallelMultiNodeSpecOptionsBuilder extends OptionsBuilder<Parallel
     return this.set('logLevel', logLevel);
   }
 
-  /** URL of the bootstrap script.  Defaults to the bundled one. */
+  /**
+   * URL of the bootstrap script.  Defaults to the bundled one.
+   *
+   * Held to the allow-list every worker entry in the framework is held to —
+   * an absolute, host-less `file:` URL naming a file — because it is the same
+   * kind of thing: a module a worker thread will execute.  See
+   * {@link ParallelMultiNodeSpecOptionsValidator}.
+   */
   withBootstrapModule(bootstrapModule: URL): this {
     return this.set('bootstrapModule', bootstrapModule);
   }
@@ -89,6 +98,36 @@ export class ParallelMultiNodeSpecOptionsBuilder extends OptionsBuilder<Parallel
    */
   withBackend(backend: WorkerBackend): this {
     return this.set('backend', backend);
+  }
+}
+
+/**
+ * Validates resolved {@link ParallelMultiNodeSpecOptionsType} settings.
+ *
+ * The harness had none, which is the asymmetry #1508 records: the two sibling
+ * fixes of one wave landed unevenly, and this copy of the worker handshake
+ * took #775's first-hello latch but not #776's constraint on what a worker may
+ * be told to execute.  `bootstrapModule` went straight to `backend.spawn`,
+ * so a `data:`, `http:` or `file://a-server/…` specifier that
+ * `WorkerClusterOptionsValidator` refuses reached a real worker thread here.
+ *
+ * A developer-controlled harness is a weaker threat model than an application,
+ * and that is the argument for leaving it alone — but it is not an argument
+ * for the two spellings differing, and the rule costs one call now that the
+ * allow-list is one shared helper instead of four copies (#1515).
+ */
+export class ParallelMultiNodeSpecOptionsValidator
+  extends OptionsValidator<ParallelMultiNodeSpecOptionsType> {
+  constructor() {
+    super('ParallelMultiNodeSpecOptions');
+  }
+
+  protected rules(s: Partial<ParallelMultiNodeSpecOptionsType>): void {
+    // Unset is the ordinary case — it keeps the bundled bootstrap — so this
+    // stays a no-op on `undefined`, like every check helper.
+    if (s.bootstrapModule === undefined) return;
+    const rejection = checkWorkerModuleUrl(s.bootstrapModule);
+    if (rejection !== undefined) this.fail('bootstrapModule', rejection.reason, rejection.value);
   }
 }
 

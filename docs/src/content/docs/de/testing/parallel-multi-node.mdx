@@ -72,7 +72,7 @@ type ParallelMultiNodeSpecOptionsType = {
 | `scenarioInitDataFor` | Per-Rolle-Daten, die an das `setup(context)` des Szenarios weitergereicht werden. |
 | `failureDetector` | Failure-Detector-Overrides. |
 | `awaitTimeoutMs` | Default-`await*`-Timeout. Default 30 s — Worker-Bootstrap ist langsamer als in-process. |
-| `bootstrapModule` | Überschreibt den gebündelten Worker-Einstiegspunkt (fortgeschritten) — übernimmt damit den Control-Channel, siehe den Vertrag weiter unten. |
+| `bootstrapModule` | Überschreibt den gebündelten Worker-Einstiegspunkt (fortgeschritten) — übernimmt damit den Control-Channel, siehe den Vertrag weiter unten. Es gilt dieselbe Schreibweisen-Regel wie für jeden anderen Worker-Einstiegspunkt im Framework: eine absolute `file:`-URL ohne Host, die eine Datei benennt — genau das erzeugt `new URL('./my-bootstrap.ts', import.meta.url)`. Ein `data:`-, `blob:`- oder entfernter Specifier, eine `file:`-URL mit Host, ein schema-relatives `file:worker.js` oder ein Verzeichnis wird beim Konstruieren der Spec mit einem `OptionsError` abgelehnt. |
 
 ## Das Szenario-Modul
 

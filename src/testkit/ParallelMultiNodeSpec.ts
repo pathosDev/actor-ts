@@ -1,4 +1,5 @@
 import { match } from 'ts-pattern';
+import { ParallelMultiNodeSpecOptionsValidator } from './ParallelMultiNodeSpecOptions.js';
 import type { ParallelMultiNodeSpecOptions, ParallelMultiNodeSpecOptionsType } from './ParallelMultiNodeSpecOptions.js';
 import type {
   BrokeredMessage,
@@ -172,6 +173,10 @@ export class ParallelMultiNodeSpec {
       bootstrapModule: options.bootstrapModule,
       backend: options.backend,
     };
+    // Once, on the merged settings, so a builder and a plain object are held
+    // to the same rules — and after the spread, so a cross-field rule would
+    // see the resolved values (#1508).
+    new ParallelMultiNodeSpecOptionsValidator().validate(this.options);
   }
 
   /* ---------------------------- lifecycle --------------------------- */

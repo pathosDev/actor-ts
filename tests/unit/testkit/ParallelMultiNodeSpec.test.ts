@@ -28,6 +28,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { ParallelMultiNodeSpec } from '../../../src/testkit/ParallelMultiNodeSpec.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import type { MemberSnapshot } from '../../../src/testkit/internal/ParallelMultiNodeBootstrap.js';
 import {
   autoHandshake,
@@ -56,6 +57,36 @@ describe('ParallelMultiNodeSpec — construction', () => {
 
   test('rejects duplicate roles', () => {
     expect(() => new ParallelMultiNodeSpec({ roles: ['a', 'b', 'a'] })).toThrow(/unique/);
+  });
+
+  test('holds bootstrapModule to the rule every worker entry is held to', () => {
+    // The asymmetry #1508 records: the testkit took #775's hello latch and not
+    // #776's scheme constraint, so `bootstrapModule` went to `backend.spawn`
+    // unchecked while the same specifier on `WorkerClusterOptions.bootstrap`
+    // was refused.  It is one call into the shared helper now (#1515), which
+    // is what D-Q17 decided over copying the rule a fifth time.
+    for (const bootstrapModule of [
+      new URL('data:text/javascript,1'),
+      new URL('http://example.invalid/bootstrap.js'),
+      new URL('file://attacker.example.com/share/bootstrap.js'),
+      new URL('file:///srv/app/'),
+    ]) {
+      let caught: unknown;
+      try { new ParallelMultiNodeSpec({ roles: ['a'], bootstrapModule }); }
+      catch (error) { caught = error; }
+      expect(caught, `${bootstrapModule.href} was accepted`).toBeInstanceOf(OptionsError);
+      expect((caught as OptionsError).field).toBe('bootstrapModule');
+    }
+  });
+
+  test('takes an import.meta.url-relative bootstrap, and none at all', () => {
+    expect(() => new ParallelMultiNodeSpec({
+      roles: ['a'],
+      bootstrapModule: new URL('./internal/ParallelMultiNodeBootstrap.js', import.meta.url),
+    })).not.toThrow();
+    // Unset is the ordinary case and keeps the bundled bootstrap: every check
+    // helper is a no-op on `undefined`, and so is this one.
+    expect(() => new ParallelMultiNodeSpec({ roles: ['a'] })).not.toThrow();
   });
 });
 
