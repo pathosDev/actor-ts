@@ -1349,6 +1349,25 @@ class ReconnectingMockJetStreamActor extends JetStreamActor {
   publicConnectionState(): string { return this.connectionState; }
 }
 
+/**
+ * A mock whose ack window can be re-timed **between** two deliveries.
+ *
+ * `deliverAndAwaitAcknowledgment` reads `acknowledgmentTimeout` off the
+ * resolved options once per delivery, so changing it between two fetches is
+ * what lets a case arm a *short* timer on the stale delivery and a long one
+ * on the live redelivery.  Without it both timers are armed milliseconds
+ * apart and fire milliseconds apart, and the case would be racing the second
+ * one to get its acknowledgment in — a flake, not a test.
+ */
+class RetimableMockJetStreamActor extends MockJetStreamActor {
+  /** Re-time the window the *next* delivery gets; armed timers keep theirs. */
+  retimeAcknowledgmentWindow(ms: number): void {
+    // The resolved options are a plain snapshot object, not a frozen one —
+    // the cast only sheds `readonly`.
+    (this.publicResolvedOptions() as { acknowledgmentTimeout?: number }).acknowledgmentTimeout = ms;
+  }
+}
+
 describe('JetStreamActor — delivery-scoped acknowledgment tokens (#710)', () => {
   test('two overlapping pull deliveries of one streamSeq are settled independently', async () => {
     const sysOptions = ActorSystemOptions.create()
@@ -1396,6 +1415,81 @@ describe('JetStreamActor — delivery-scoped acknowledgment tokens (#710)', () =
       });
 
       // Each command reached its own delivery and no other.
+      expect(firstDelivery.acked).toBe(false);
+      expect(redelivery.naked).toBe(false);
+      expect(redelivery.nakCount).toBe(0);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test("a stale delivery's ack-timeout fires while the live redelivery is pending, and leaves it alone", async () => {
+    // Step 4 of #710, which no shipped case drove: the *stale* entry's own
+    // `setTimeout` firing — and running its `pending.delete` — while a live
+    // delivery of the same `streamSeq` is still outstanding.  The overlap
+    // case above settles the stale delivery with an explicit
+    // `negativeAcknowledgment` instead, and the ack-timeout case has a single
+    // delivery, so the identity-checked delete in the timer rested on reading
+    // rather than on a test (#1508).
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-stale-timer', logger);
+    /** Short enough that the stale entry's timer fires inside this case. */
+    const staleWindowMs = 300;
+    /** Wide enough that the live redelivery's own timer cannot. */
+    const liveWindowMs = 4_000;
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'ORDERS', subjects: ['orders.>'] })
+        .withConsumer({ durable: 'puller', mode: 'pull', ackWaitMs: staleWindowMs })
+        .withAcknowledgmentTimeout(staleWindowMs);
+      const { actor, mock, target } = await bootActorOfKind(
+        sys, jetstreamOptions, (built) => new RetimableMockJetStreamActor(built),
+      );
+      const pullConsumer = mock.mockConnection.js.pullConsumers.get('ORDERS::puller')!;
+      const firstDelivery = makeHandle(4242);
+      const redelivery = makeRedelivery(4242, 2);
+      pullConsumer.enqueueBatch([firstDelivery]);
+      pullConsumer.enqueueBatch([redelivery]);
+
+      actor.tell({ kind: 'fetch', batch: 1, expiresMs: 100 });
+      await awaitForwarded(target, 1);
+      // The redelivery gets a window of its own, so the two timers are 300 ms
+      // and 4 s wide rather than both 300 ms and armed a millisecond apart.
+      mock.retimeAcknowledgmentWindow(liveWindowMs);
+      actor.tell({ kind: 'fetch', batch: 1, expiresMs: 100 });
+      await awaitForwarded(target, 2);
+
+      // The premise, checked rather than assumed: two live deliveries of one
+      // message, and the stale one's timer has *not* fired yet.  A runner slow
+      // enough to have burned the whole 300 ms getting here fails this line
+      // instead of passing the case without ever reaching the overlap.
+      expect(target.received.map((m) => m.streamSeq)).toEqual([4242, 4242]);
+      expect(firstDelivery.naked).toBe(false);
+      const liveToken = target.received[1]!.ackToken;
+
+      // Now let the stale entry's timer run: it rejects its own wait, naks
+      // its own handle, and deletes its own key.
+      await awaitCondition(() => firstDelivery.naked, {
+        timeoutMs: 4_000,
+        label: "the stale delivery's ack-timeout fired while the redelivery was pending",
+      });
+
+      // The live entry is still registered *after* that delete ran — an
+      // `inProgress` naming its token finds it and reports nothing.  Under
+      // the per-message key with an unconditional delete, this is exactly
+      // where the live entry had gone.
+      actor.tell({ kind: 'inProgress', ackToken: liveToken });
+      await awaitCondition(() => redelivery.working_called, {
+        timeoutMs: 4_000, label: 'the in-progress signal reached the live redelivery',
+      });
+      expect(logger.unknownTokenWarnings).toEqual([]);
+
+      // …and it can still be settled by its own token.
+      actor.tell({ kind: 'acknowledgment', ackToken: liveToken });
+      await awaitCondition(() => redelivery.acked, {
+        timeoutMs: 4_000, label: 'the live redelivery was acknowledged by its own token',
+      });
       expect(firstDelivery.acked).toBe(false);
       expect(redelivery.naked).toBe(false);
       expect(redelivery.nakCount).toBe(0);
