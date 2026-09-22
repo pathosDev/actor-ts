@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { spawnSync } from 'node:child_process';
 import { ZstdErrorCode, decompress as fzstdDecompress } from 'fzstd';
+import { join } from 'node:path';
 import * as nodeZlibModule from 'node:zlib';
 import { constants as zlibConstants, zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import {
@@ -360,6 +362,78 @@ describe('zstd read resolution — the fzstd rung is the real peer, not just the
       'the rung reported in some other decoder\'s vocabulary, so its body is not fzstd',
     ).toBe(ZstdErrorCode.UnexpectedEOF);
   });
+});
+
+/**
+ * Below the `fzstd` rung the ladder has one arm left — "No zstd decompressor
+ * available" — and nothing ran it.  It needs both native candidates to fail the
+ * canary AND the peer to fail to import, and only the first half has a seam
+ * (#1419).
+ *
+ * The second half cannot have one **in this process**, which is a measurement
+ * rather than a judgement.  `mock.module('fzstd', () => { throw … })` is the
+ * obvious tool and does not work: bun 1.4.2 evaluates the factory at
+ * REGISTRATION, so the throw comes out of `mock.module(…)` itself and the
+ * specifier goes on resolving normally — as do an async factory that rejects and
+ * a namespace whose `decompress` getter throws, both of which bun also evaluates
+ * eagerly.  What is left is refusing to RESOLVE the specifier, which is a
+ * property of a module graph: `Bun.plugin` can express it, has no uninstall, and
+ * would therefore take `fzstd` away from this very file and from
+ * `tests/unit/ci/OptionalPeerModuleShapes.test.ts` for the rest of the run —
+ * #1422's leak with nothing able to undo it.
+ *
+ * So the arm is executed in a child, and only the child's stdout crosses back.
+ * The fixture prints its premises alongside the result: a plugin that silently
+ * stopped matching leaves a runtime that still has `fzstd`, which reads a frame
+ * perfectly and would let a bare "it threw" assertion pass for the wrong reason.
+ */
+describe('zstd read resolution — the arm below the last rung (#1419)', () => {
+  test('a runtime with neither native zstd nor fzstd names the capability and the package', () => {
+    const fixture = join(import.meta.dir, '__fixtures__', 'zstd-no-decompressor.ts');
+    const child = spawnSync(process.execPath, ['run', fixture], {
+      encoding: 'utf8',
+      env: { ...process.env, NO_COLOR: '1' },
+      // The fixture is a compress, two decodes and an import — tens of
+      // milliseconds plus process start.  A run that reaches this limit is a
+      // hang, not a slow machine.
+      timeout: 30_000,
+    });
+    const output = child.stdout ?? '';
+    expect(child.signal, `the fixture had to be killed; stderr: ${child.stderr ?? ''}`).toBeNull();
+    expect(child.status, `the fixture exited non-zero; stderr: ${child.stderr ?? ''}`).toBe(0);
+
+    // The premises first, because each of them failing would leave the assertion
+    // below passing for a reason that has nothing to do with the arm.
+    expect(
+      output,
+      'the child could not write a zstd frame, so it never had native zstd to suppress',
+    ).toMatch(/^wrote=\d+$/m);
+    expect(
+      output,
+      'a missing fzstd broke the NATIVE read, so the peer is being consulted above the natives',
+    ).toContain('native-read=ok');
+    expect(
+      output,
+      'the resolver plugin did not fire, so the child still had fzstd and proved nothing',
+    ).toContain('peer-import=failed');
+
+    const armLine = output.split(/\r?\n/).find((line) => line.startsWith('no-decompressor='));
+    expect(armLine, `the fixture printed no verdict; stdout: ${output}`).toBeDefined();
+    const message = (armLine ?? '').slice('no-decompressor='.length);
+    // At the START, not somewhere inside: the arm exists to REPLACE the loader's
+    // error, and one that merely appended this would read the same to a grep.
+    expect(message).toMatch(/^No zstd decompressor available\./);
+    expect(
+      message,
+      'the arm named no way forward, which is the whole of what it adds over rethrowing',
+    ).toContain('npm install fzstd');
+    // …and the loader's own text survives as the cause, so "the peer is not
+    // installed" stays distinguishable from "the peer is installed and broken".
+    expect(
+      message,
+      'the arm discarded the underlying failure, leaving nothing to tell the two apart',
+    ).toContain("suppressed by the fixture's resolver plugin");
+  }, 45_000);
 });
 
 describe('zstd read resolution — rung order (#580)', () => {
