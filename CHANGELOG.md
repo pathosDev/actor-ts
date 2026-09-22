@@ -6493,7 +6493,7 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `DefaultMetricsRegistry` now rejects a name outside
   `[a-zA-Z_:][a-zA-Z0-9_:]*` and a label key outside
   `[a-zA-Z_][a-zA-Z0-9_]*` when a family or a series is first minted, and
-  The exporter now removes the carriage return — and every other C0 control
+  the exporter now removes the carriage return — and every other C0 control
   except tab — from label values and from `# HELP` text, instead of escaping
   it. `\r` is not one of the three escapes the 0.0.4 table defines, and
   prometheus/common's parser treats an escape it does not define as a syntax

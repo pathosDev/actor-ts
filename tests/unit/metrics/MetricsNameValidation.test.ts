@@ -26,6 +26,7 @@ import { exportPrometheus } from '../../../src/metrics/PrometheusExporter.js';
 import {
   PROMETHEUS_LABEL_NAME_PATTERN,
   PROMETHEUS_METRIC_NAME_PATTERN,
+  RESERVED_LABEL_PREFIX as RESERVED_LABEL_PREFIX_FROM_BARREL,
 } from '../../../src/metrics/index.js';
 
 /** The walkthrough payload from the report, as a metric name. */
@@ -568,5 +569,18 @@ describe('the exposition grammars are reachable from the metrics barrel (#784)',
     expect(PROMETHEUS_LABEL_NAME_PATTERN.global).toBe(false);
     expect(PROMETHEUS_METRIC_NAME_PATTERN.test('hits_total')).toBe(true);
     expect(PROMETHEUS_METRIC_NAME_PATTERN.test('hits_total')).toBe(true);
+  });
+  test('the reserved label prefix is exported too, and is the one both doors use', () => {
+    // A caller asking the grammar alone gets `true` for `__name__`, and the
+    // registry then throws: the prefix rule is a second question, so the
+    // constant that answers it has to be reachable from the same barrel
+    // (#1513).
+    expect(RESERVED_LABEL_PREFIX_FROM_BARREL).toBe(RESERVED_LABEL_PREFIX);
+    expect(PROMETHEUS_LABEL_NAME_PATTERN.test('__name__')).toBe(true);
+    expect('__name__'.startsWith(RESERVED_LABEL_PREFIX_FROM_BARREL)).toBe(true);
+
+    const registry = new DefaultMetricsRegistry();
+    expect(() => registry.counter('hits_total', { __name__: 'forged_series' }))
+      .toThrow();
   });
 });
