@@ -142,8 +142,16 @@ export class Config {
 
   getNumber(path: string): number {
     const value = this.requireValue(path);
-    if (typeof value === 'number') return value;
-    if (typeof value === 'string' && /^-?\d+(\.\d+)?$/.test(value)) return Number(value);
+    if (typeof value === 'number') return requireFinite(path, 'number', value);
+    // The string branch is not merely symmetry here.  `HoconParser` keeps a
+    // numeric literal as a *string* exactly when it is not finite, so a literal
+    // long enough to overflow a double arrives as one — and the regex below
+    // matches it, which is how `Number(...)` hands back the `Infinity` the
+    // parser declined to build.  `getDuration` and `getBytes` are covered on
+    // this branch already, by the parsers they delegate to.
+    if (typeof value === 'string' && /^-?\d+(\.\d+)?$/.test(value)) {
+      return requireFinite(path, 'number', Number(value));
+    }
     throw typeError(path, 'number', value);
   }
 
@@ -161,7 +169,7 @@ export class Config {
   /** Duration in milliseconds. */
   getDuration(path: string): number {
     const value = this.requireValue(path);
-    if (typeof value === 'number') return value;
+    if (typeof value === 'number') return requireFinite(path, 'duration', value);
     if (typeof value === 'string') return parseDuration(value);
     throw typeError(path, 'duration', value);
   }
@@ -169,7 +177,7 @@ export class Config {
   /** Byte count. */
   getBytes(path: string): number {
     const value = this.requireValue(path);
-    if (typeof value === 'number') return value;
+    if (typeof value === 'number') return requireFinite(path, 'size', value);
     if (typeof value === 'string') return parseSize(value);
     throw typeError(path, 'size', value);
   }
@@ -290,6 +298,38 @@ export class ConfigError extends Error {
 function typeError(path: string, expected: string, actual: unknown): ConfigError {
   const actualType = actual === null ? 'null' : Array.isArray(actual) ? 'list' : typeof actual;
   return new ConfigError(`Config at "${path}" is not a ${expected} (got ${actualType})`);
+}
+
+/**
+ * Refuse a number no consumer downstream can compute with.
+ *
+ * `NaN` and `±Infinity` are `'number'` to `typeof`, so the three numeric
+ * accessors used to short-circuit on them and hand them straight back.  #785
+ * gave `parseDuration` and `parseSize` a finite postcondition, but a value that
+ * arrives as a *number* never reaches either parser — the accessor returns
+ * before the delegation — so that postcondition covered only half the path.
+ *
+ * Reported through {@link ConfigError} rather than by the parsers' own message
+ * because this one can name the **path**, and that is the whole difference the
+ * check makes.  A non-finite value gets in via a code-supplied overrides object
+ * (`ActorSystemOptions.withConfig`, `Config.fromObject`) — the canonical origin
+ * being `Number(process.env.SOME_MS)` with the variable unset, which is a
+ * `NaN` produced nowhere near the key it lands on.  It then fails open rather
+ * than loudly: `actor-ts.system.shutdown-drain-timeout` has no options
+ * validator between the read and `setTimeout`, and a `NaN` there defeats the
+ * documented `<= 0` opt-out *and* makes `deadline = Date.now() + NaN`, so the
+ * drain budget is silently zero.  A cap read with `getBytes` goes the other
+ * way: every comparison against `NaN` is false, so the cap stops capping.
+ *
+ * The `Infinity` opt-outs `reference.conf` documents (`accept-timeout`,
+ * `max-decompressed-bytes`) are unaffected — both say "code only" and are set
+ * through their options builders, which do not pass through here.
+ */
+function requireFinite(path: string, expected: string, value: number): number {
+  if (!Number.isFinite(value)) {
+    throw new ConfigError(`Config at "${path}" is not a finite ${expected} (got ${value})`);
+  }
+  return value;
 }
 
 /**

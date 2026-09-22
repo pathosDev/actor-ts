@@ -26,6 +26,11 @@
  * `NaN` — which then disables a `>` cap, since every comparison against `NaN`
  * is false (#785).
  *
+ * `Object.freeze` is the third piece, for the reason given beside `UNIT_MS`:
+ * it is the one of the three no behavioural test can reach, because the table
+ * is module-private and no export hands it out, so it is asserted at source
+ * level by `tests/unit/config/UnitTableHardening.test.ts` instead.
+ *
  * `satisfies` is load-bearing: `Object.setPrototypeOf` is typed to return
  * `any`, so without it the entries below would go unchecked.
  */
@@ -76,12 +81,12 @@ export function parseSize(input: string | number): number {
   if (/^\d+$/.test(trimmed)) return finiteBytes(parseInt(trimmed, 10), input);
   const match = trimmed.match(/^(\d+(?:\.\d+)?)\s*([A-Za-z]+)$/);
   if (!match) throw new Error(`Invalid size: ${input}`);
-  const [, num, unitRaw] = match;
+  const [, quantity, unitRaw] = match;
   const unit = unitRaw!.toLowerCase();
   // Positive — "is it declared here" — rather than a list of names to refuse;
   // see the note on the same guard in `Duration.ts`.
   if (!Object.hasOwn(BYTE_UNITS, unit)) {
     throw new Error(`Unknown size unit "${unitRaw}" in ${input}`);
   }
-  return finiteBytes(Math.round(parseFloat(num!) * BYTE_UNITS[unit]), input);
+  return finiteBytes(Math.round(parseFloat(quantity!) * BYTE_UNITS[unit]), input);
 }

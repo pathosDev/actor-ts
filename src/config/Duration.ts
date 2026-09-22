@@ -21,12 +21,24 @@
  * the `Object` function instead of `undefined`.  `constructor` is the whole
  * exposure — every other inherited member is mixed-case and cannot survive the
  * `.toLowerCase()` in {@link parseDuration}.  The old `factor === undefined`
- * guard therefore waved it through, and `parseFloat(num) * Object` yielded a
+ * guard therefore waved it through, and `parseFloat(quantity) * Object` yielded a
  * silent `NaN` where every other unrecognised unit throws (#785).
  *
  * The same treatment `DEFAULT_MIME_TYPES` got in #608, and the value-side
- * counterpart of #589 / #406, which hardened the config *key* path while
- * leaving this one open.
+ * counterpart of the pair that hardened the config *key* path from opposite
+ * ends — #406 on the way in, dropping `__proto__` and its siblings before they
+ * can enter a tree, and #589 on the way out, making every lookup descend own
+ * properties only.  Neither reaches this table, and the reason is worth being
+ * exact about: what is indexed here was never a config *key*.  It is a config
+ * **value** that this file then turns into one, which is the whole door both
+ * of those issues left open.
+ *
+ * `Object.freeze` is the third piece, and the only one no behavioural test can
+ * bind: the table is module-private and no export reaches it, so nothing
+ * outside this file can attempt the mutation the freeze refuses.  It guards
+ * against a later edit *here* — a unit added at runtime, or a factor
+ * reassigned — and `tests/unit/config/UnitTableHardening.test.ts` therefore
+ * asserts all three at source level rather than through {@link parseDuration}.
  *
  * `satisfies` is load-bearing: `Object.setPrototypeOf` is typed to return
  * `any`, so without it the entries below would go unchecked and the outer
@@ -87,8 +99,14 @@ const UNIT_MS: Readonly<Record<string, number>> = Object.freeze(
  * zero and the `<= 0` opt-out never fires either) and
  * `actor-ts.coordinated-shutdown.default-phase-timeout` (copied into all twelve
  * canonical phases and handed to `setTimeout`, which coerces `NaN` to 0, so
- * every shutdown task times out at once).  Failing loudly here is the only
- * place that covers both (#785).
+ * every shutdown task times out at once) (#785).
+ *
+ * What it covers is every duration that is **parsed**, which is not the same as
+ * every duration a config can hold: `Config.getDuration` returns a value that
+ * arrives as a *number* without calling this function at all, so a code-supplied
+ * overrides object carrying a real `NaN` used to reach those same two keys past
+ * this check entirely.  `Config.requireFinite` is the half that covers that
+ * branch, and the two together are what the paragraph above claims (#1513).
  */
 function finiteDuration(milliseconds: number, input: string | number): number {
   if (!Number.isFinite(milliseconds)) throw new Error(`Invalid duration: ${input}`);
@@ -112,7 +130,7 @@ export function parseDuration(input: string | number): number {
   // duration rather than as an unknown unit.
   const match = trimmed.match(/^([+-]?\d+(?:\.\d+)?)\s*([A-Za-zµΜμ]+)$/);
   if (!match) throw new Error(`Invalid duration: ${input}`);
-  const [, num, unitRaw] = match;
+  const [, quantity, unitRaw] = match;
   // NFKC first, then lower case, and the order is not interchangeable: NFKC is
   // what folds the micro sign onto the Greek mu (`toLowerCase` leaves U+00B5
   // exactly where it is), and lower-casing is what folds the capital.  Applied
@@ -127,5 +145,5 @@ export function parseDuration(input: string | number): number {
   if (!Object.hasOwn(UNIT_MS, unit)) {
     throw new Error(`Unknown duration unit "${unitRaw}" in ${input}`);
   }
-  return finiteDuration(parseFloat(num!) * UNIT_MS[unit], input);
+  return finiteDuration(parseFloat(quantity!) * UNIT_MS[unit], input);
 }
