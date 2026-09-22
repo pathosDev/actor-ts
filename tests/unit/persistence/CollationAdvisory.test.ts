@@ -402,6 +402,55 @@ describe('unknown is not evidence', () => {
   });
 });
 
+describe('the Docker-gated half is wired to the same needle', () => {
+  /**
+   * The two live-database scenarios filter `console.warn` on one phrase, and
+   * they run where this suite does not — so nothing would notice a reworded
+   * message leaving them matching nothing and passing vacuously.  This is a
+   * coupling guard over the runners' source, not a behaviour test: it says the
+   * phrase they grep for is the phrase the advisory actually emits, and that
+   * the scenarios are reached from `runScenarios` at all.
+   */
+  const NEEDLE = 'on a case-folding collation';
+
+  const runnerSource = (backend: string): string => readFileSync(
+    join(import.meta.dir, '..', '..', 'integration', 'brokers', backend, 'Runner.ts'),
+    'utf8',
+  );
+
+  test('the emitted message carries the needle', async () => {
+    const pool = new CollationPool(mariaDbDialect);
+    pool.catalogue.set('events', identityColumnsOn(FOLDING));
+
+    const warnings = await captureWarnings(async () => {
+      await journalOver(pool, mariaDbDialect).highestSeq('probe');
+    });
+
+    expect(warnings[0]).toContain(NEEDLE);
+  });
+
+  test('both broker runners filter on it and run their scenarios', () => {
+    // Reduced to a summary before asserting: the runners are 250-line files,
+    // and a bare `toContain` over one prints the whole thing on failure.
+    const wiring = ['mariadb', 'mssql'].map((backend) => {
+      const source = runnerSource(backend);
+      return {
+        backend,
+        filtersOnTheNeedle: source.includes(NEEDLE),
+        reachedFromRunScenarios: source.includes('collationAdvisoryScenarios(poolConfig)'),
+        // One scenario per direction: the folding schema is named, the schema
+        // this framework created is silent.
+        scenarios: source.match(/name: '(?:mariadb|mssql):collation/g)?.length ?? 0,
+      };
+    });
+
+    expect(wiring).toEqual([
+      { backend: 'mariadb', filtersOnTheNeedle: true, reachedFromRunScenarios: true, scenarios: 2 },
+      { backend: 'mssql', filtersOnTheNeedle: true, reachedFromRunScenarios: true, scenarios: 2 },
+    ]);
+  });
+});
+
 describe('cost: once per table per store open, never per operation', () => {
   test('a second operation issues no further catalogue read', async () => {
     const pool = new CollationPool(mariaDbDialect);
