@@ -1045,10 +1045,19 @@ const spawnBoundedConsumer = (
 }, name);
 
 /**
- * Hand-rolled envelope, because the budget cases turn on a `producerId` and a
- * `seq` the *sender* chose.  A `ProducerController` mints one id per
- * construction and never leaves a gap open, which is precisely the traffic
- * these bounds do not exist for.
+ * Hand-rolled envelope, because most of the budget cases turn on a
+ * `producerId` and a `seq` the *sender* chose — a flood of distinct ids, a
+ * sequence withheld forever, a seq out of nowhere.  A `ProducerController`
+ * mints one id per construction and numbers from 1, so it cannot be made to
+ * produce any of those shapes.
+ *
+ * It is **not** that a real producer never reaches these bounds, which this
+ * comment used to say.  One refusing handler opens a gap the producer keeps
+ * sending past — `DEFAULT_MAX_OUT_OF_ORDER`'s own note documents that the
+ * stream keeps flowing and that this cap is the only thing that stops it —
+ * and two cases below use a real `ProducerController` for exactly that: one
+ * measures how far past an open gap it reaches, the other holds the gap open
+ * until the consumer is parked at the cap.
  */
 const deliver = (
   consumer: ActorRef<Delivery<string>>,
@@ -1661,6 +1670,115 @@ describe('ReliableDelivery — out-of-order window bound (#728, #643)', () => {
     expect(slot.controller?.outOfOrderFor(producerId)).toBe(total - 1);
     expect(slot.controller?.outOfOrderFor(producerId))
       .toBeGreaterThan(DEFAULT_WINDOW_SIZE - 1);
+
+    producer.stop();
+    await kit.system.terminate();
+  });
+
+  test('a real producer stalls at the cap, holds there, and drains once the gap closes', async () => {
+    // Every case above hand-rolls its envelopes, and the cap cases had to:
+    // they turn on a sequence the sender simply never sends.  But that left
+    // the bound's interaction with the framework's *own* sender asserted
+    // nowhere, which is what let the `windowSize - 1` premise stand for so
+    // long — and the two claims that matter most are precisely about a real
+    // producer.  `DEFAULT_MAX_OUT_OF_ORDER`'s note says the stall "lifts the
+    // moment the missing sequence lands"; `consumer-controller.mdx` says
+    // reaching the cap "never drops one either; it costs a stall".
+    //
+    // A producer plus one refusing handler is exactly that traffic, and it
+    // also pins the half nothing else does: retransmission on this path is
+    // *unbounded* (`ProducerController.send` re-arms its timer with no
+    // ceiling), which is the only reason a refusal is a stall and not a drop.
+    // A finite `maxAttempts` (#646) shorter than the hold below turns this
+    // case red — and, measured, leaves every other case in this file green.
+    const kit = quietKit('rd-real-producer-at-the-cap');
+    const entered: string[] = [];
+    const handled: string[] = [];
+    const slot: ControllerSlot = { controller: null };
+    const producerId = 'stalling-producer';
+    const cap = 8;
+    const total = 40;
+    // How many times the first sequence is refused before the gap is allowed
+    // to close.  Each refusal is one retransmit, so this is the gap's width in
+    // resend periods — counted rather than timed, which is what makes "held
+    // open across several resend periods" a fact and not a wall-clock guess.
+    const refusalsBeforeTheGapCloses = 5;
+    // Released by the test, not by a counter, so the accepting retransmit
+    // cannot arrive before the assertions on the stalled state have run.
+    let holdTheGapOpen = true;
+
+    const consumerRef = spawnBoundedConsumer(kit, slot, {
+      handler: (body) => {
+        entered.push(body);
+        // A handler that throws is the same state a lossy hop produces: seq 1
+        // is never acknowledged, so `contiguous` never advances and every
+        // later sequence piles up above it until the cap refuses the rest.
+        if (body === 'm-1' && holdTheGapOpen) throw new Error('the gap this case holds open');
+        handled.push(body);
+      },
+      // Both other bounds off: only the out-of-order cap may refuse anything.
+      maxProducers: Infinity,
+      producerIdleTtlMs: Infinity,
+      maxOutOfOrder: cap,
+    }, 'real-producer-cap-consumer');
+
+    const producerOptions = ProducerControllerOptions.create<string>()
+      .withConsumer(consumerRef as never)
+      .withProducerId(producerId)
+      // Short enough that several resend periods fit inside one test, and the
+      // only figure here that is a wall-clock choice rather than a count.
+      .withResendTimeout(40);
+    const producer = ReliableDelivery.producer<string>(kit.system, producerOptions);
+
+    for (let i = 1; i <= total; i++) producer.tell(`m-${i}`);
+
+    // Sampled on every poll: an implementation that admitted one past the cap
+    // would race back down to it before any single assertion could read it.
+    let peakOutOfOrder = 0;
+    const refusalsSoFar = (): number => entered.filter((b) => b === 'm-1').length;
+    const sampleAndCountRefusals = (): number => {
+      const current = slot.controller?.outOfOrderFor(producerId) ?? 0;
+      if (current > peakOutOfOrder) peakOutOfOrder = current;
+      return refusalsSoFar();
+    };
+
+    await awaitCondition(
+      () => sampleAndCountRefusals() >= refusalsBeforeTheGapCloses,
+      {
+        timeoutMs: 4_000,
+        intervalMs: 5,
+        label: 'the first sequence was refused across several resend periods',
+      },
+    );
+
+    // Stalled, and stalled exactly at the cap.  `handled` holding precisely
+    // `cap` bodies is the other half: the sequences above the gap that fit
+    // were handled, and every one past them was refused rather than admitted.
+    expect(peakOutOfOrder).toBe(cap);
+    expect(slot.controller?.outOfOrderFor(producerId)).toBe(cap);
+    expect(handled).toHaveLength(cap);
+
+    holdTheGapOpen = false;
+
+    // The stall lifts on the producer's own retransmit — nothing here re-sends
+    // anything — and it lifts completely: the retained run drains in one pass
+    // and every refused sequence is accepted on a later attempt.
+    await awaitCondition(
+      () => handled.length === total && slot.controller?.outOfOrderFor(producerId) === 0,
+      {
+        timeoutMs: 4_000,
+        intervalMs: 10,
+        label: 'the closing sequence drained the window and the whole stream landed',
+      },
+    );
+    expect(peakOutOfOrder).toBe(cap);
+    // Nothing dropped and nothing doubled: every body exactly once, however
+    // many times the refused ones were retransmitted in between.
+    expect([...handled].sort()).toEqual(
+      Array.from({ length: total }, (_, i) => `m-${i + 1}`).sort(),
+    );
+    // The gap really was held across retransmits rather than closing early.
+    expect(refusalsSoFar()).toBeGreaterThanOrEqual(refusalsBeforeTheGapCloses);
 
     producer.stop();
     await kit.system.terminate();

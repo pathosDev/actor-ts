@@ -35,6 +35,30 @@ type InFlight<T> = {
   readonly seq: number;
   readonly body: T;
   readonly confirm?: ConfirmationCallback;
+  /**
+   * Transmissions of this sequence so far, counted by {@link send} and read by
+   * nothing.  **Kept deliberately, not dead weight:** it is the hook #646
+   * reserves for a `maxAttempts` ceiling, and a count is the only unit such a
+   * ceiling can be expressed in.
+   *
+   * That nothing reads it is itself load-bearing.  The resend timer in
+   * {@link send} re-arms unconditionally, so retransmission on this path is
+   * unbounded — which is exactly what makes the consumer's out-of-order
+   * refusal (`ConsumerController.handleDelivery`, which withholds the
+   * acknowledgment by design) a *stall* rather than a drop.  Both delivery
+   * pages say so in those words: reaching the cap "never drops one either; it
+   * costs a stall", and the producer retries "until ack arrives or producer
+   * stops".
+   *
+   * So #646 carries an interaction it does not name: a ceiling that cannot
+   * tell a consumer *refusing* a sequence from a consumer that is gone turns
+   * that documented stall into a silent drop, and would have to distinguish
+   * the two or surface the give-up through `confirm(error)`.  The guard is
+   * "a real producer stalls at the cap, holds there, and drains once the gap
+   * closes" in `tests/unit/delivery/ReliableDelivery.test.ts`, which holds a
+   * gap open across several resend periods; measured against a ceiling of
+   * three attempts it is the only case in that file that goes red.
+   */
   attempts: number;
   timer: Cancellable | null;
 };
