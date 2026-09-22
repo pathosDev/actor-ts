@@ -59,6 +59,7 @@
 import {
   PROMETHEUS_LABEL_NAME_PATTERN,
   PROMETHEUS_METRIC_NAME_PATTERN,
+  RESERVED_LABEL_PREFIX,
   THREAD_LABEL,
 } from './Constants.js';
 import {
@@ -578,8 +579,47 @@ function assertValidMetricName(name: string): void {
 }
 
 /**
- * Reject a label key the exposition cannot carry safely (#784), and the one
- * key the exposition reserves for itself (#1570).
+ * Why the exposition reserves this label key, or `null` when it does not
+ * (#1570, #1513).
+ *
+ * **One predicate, two doors.**  {@link assertValidLabelKeys} refuses a
+ * reserved key when a family is minted; `MetricsRelay`'s
+ * `describeSampleProblem` refuses a relayed snapshot carrying one, because a
+ * worker's samples never passed a registry of ours.  Spelled out twice — which
+ * is how they stood — the two drift, and a rule on one side only is worse than
+ * no rule at all: either a key the mint refuses still reaches the exposition
+ * through a worker, or a key every call site may mint makes a worker's whole
+ * snapshot disappear for a reason no stack trace names.  So the rule lives
+ * here, and the two sites differ only in how they frame the answer: a throw
+ * naming the call that is wrong, a log line naming the snapshot that was
+ * dropped.
+ *
+ * The reason is therefore phrased as a property of the *key* rather than of
+ * either door — it has to read correctly in both messages.
+ *
+ * {@link THREAD_LABEL} is a whole-key match and
+ * {@link RESERVED_LABEL_PREFIX} a prefix one, which is the difference between
+ * a key this project reserves (`thread_pool` and `threads` must stay legal)
+ * and a namespace the server reserves (`__meta_*` is open-ended by design).
+ */
+export function describeReservedLabelKey(key: string): string | null {
+  if (key === THREAD_LABEL) {
+    return `the exposition stamps every sample with the thread that produced it while a worker ` +
+      `mesh relays its registries (#1570), so an application label under this key would be ` +
+      `overwritten on the main thread and refused on a worker`;
+  }
+  if (key.startsWith(RESERVED_LABEL_PREFIX)) {
+    return `Prometheus reserves label names beginning with "${RESERVED_LABEL_PREFIX}" for the ` +
+      `server's own use (#1513): it drops them after relabeling, and a scrape job configured ` +
+      `with honor_labels: true keeps a "__name__" among them and files the sample under the ` +
+      `name that label carries — the forged series #784 is about, one layer later`;
+  }
+  return null;
+}
+
+/**
+ * Reject a label key the exposition cannot carry safely (#784), and the keys
+ * the exposition reserves for itself (#1570, #1513).
  *
  * Same rule and same reasoning as {@link assertValidMetricName}, one field
  * over: `renderLabels` quotes and escapes the value and cannot do either
@@ -587,18 +627,23 @@ function assertValidMetricName(name: string): void {
  * is otherwise hard to place — the tuple is usually built several frames
  * away from the call that registers it.
  *
- * {@link THREAD_LABEL} is refused here, at the mint, rather than reconciled
- * at export.  While a worker mesh relays its threads' registries into one
- * scrape, `MetricsExtension.collectAll` stamps every sample with the thread
- * that produced it; an application label under the same key was overwritten
- * on the main thread — two values became two rows with one identical label
- * set, which a Prometheus scrape rejects wholesale — and on a worker it made
- * the relay refuse that thread's whole snapshot.  Both were a single-threaded
- * deployment's silent time bomb: the label was legal until the day workers
- * were switched on.  Refused when the family is minted, it is an error at the
- * developer's desk instead, on every thread alike, with the rename in the
- * message.  A whole-key match, deliberately: `thread_pool` and `threads`
- * are exactly the labels the rule must leave alone.
+ * The reservations are refused here, at the mint, rather than reconciled at
+ * export.  For {@link THREAD_LABEL} that is because
+ * `MetricsExtension.collectAll` stamps every sample with the thread that
+ * produced it while a worker mesh relays its threads' registries into one
+ * scrape: an application label under the same key was overwritten on the main
+ * thread — two values became two rows with one identical label set, which a
+ * Prometheus scrape rejects wholesale — and on a worker it made the relay
+ * refuse that thread's whole snapshot.  For {@link RESERVED_LABEL_PREFIX} it
+ * is because the forgery the grammar check stops in the name position returns
+ * in the key position under `honor_labels`.  Both were a silent time bomb of
+ * somebody else's configuration: legal here, wrong at the server.  Refused
+ * when the family is minted, they are an error at the developer's desk
+ * instead, with the rename in the message.
+ *
+ * Which keys are reserved is {@link describeReservedLabelKey}'s answer, not
+ * this function's — the worker relay asks the same question of a snapshot it
+ * did not mint.
  */
 function assertValidLabelKeys(name: string, labels: Labels): void {
   for (const key of Object.keys(labels)) {
@@ -611,12 +656,11 @@ function assertValidLabelKeys(name: string, labels: Labels): void {
         `(bounded with bucketize), never in the key.`,
       );
     }
-    if (key === THREAD_LABEL) {
+    const reserved = describeReservedLabelKey(key);
+    if (reserved !== null) {
       throw new Error(
-        `Reserved label key ${JSON.stringify(THREAD_LABEL)} on metric ${JSON.stringify(name)}: ` +
-        `the exposition stamps every sample with the thread that produced it while a worker ` +
-        `mesh relays its registries (#1570), so an application label under this key would be ` +
-        `overwritten on the main thread and refused on a worker — rename the label.`,
+        `Reserved label key ${JSON.stringify(key)} on metric ${JSON.stringify(name)}: ` +
+        `${reserved} — rename the label.`,
       );
     }
   }
@@ -634,6 +678,10 @@ function assertValidLabelKeys(name: string, labels: Labels): void {
  * and collapse the overflow series onto a real one.  Label values are
  * unrestricted, so the marker survives the scrape and stays greppable in
  * an alert rule (`{path="__overflow__"}`).
+ *
+ * That reservation is now the registry's rule as well as this constant's
+ * reason — see {@link RESERVED_LABEL_PREFIX}, which refuses the prefix in
+ * the key position while leaving this value exactly where it is.
  */
 export const METRICS_OVERFLOW_LABEL_VALUE = '__overflow__';
 

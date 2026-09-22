@@ -172,9 +172,23 @@ scrape hours later:
 
 - a metric name must match `[a-zA-Z_:][a-zA-Z0-9_:]*`
 - a label key must match `[a-zA-Z_][a-zA-Z0-9_]*` — no colon
+- a label key may not begin with `__`
 
-Anything else throws.  The per-tenant or per-route breakdown belongs in a
-label **value**, bounded at the source (see *`bucketize`* below):
+Anything else throws.
+
+The third rule is the same forgery one layer further on.  Prometheus
+reserves `__`-prefixed label names for itself and drops them after
+relabeling — but `__name__` *is* the series name, and a scrape job
+configured with `honor_labels: true` keeps the target's value for it.  So
+a perfectly well-formed `hits_total{__name__="forged_series"} 1` leaves
+the exporter honest and is filed by the server under `forged_series`.
+`client_golang` and `client_python` refuse the prefix at the same point.
+Only the **key** side is reserved: `__` in a label *value* is untouched,
+which is why the cardinality cap's `__overflow__` marker is a value and
+not a name.
+
+The per-tenant or per-route breakdown belongs in a label **value**,
+bounded at the source (see *`bucketize`* below):
 
 ```ts
 // ✓ — constant name, constant key, the varying part in the value
