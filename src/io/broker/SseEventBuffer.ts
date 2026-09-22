@@ -26,6 +26,15 @@
  * previous chunk, so the search resumes one character *before* the join, never
  * at it.
  *
+ * **Line endings are normalised here, and only here** (#1510).  The SSE
+ * grammar terminates a line with CRLF, LF *or* a lone CR, so a conformant feed
+ * may never contain a single `'\n\n'`; until this buffer accepted all three,
+ * a `\r\n\r\n`-framed stream completed no block at all and grew until the
+ * actor's 1 MiB cap declared it hostile.  Converting on the way in — rather
+ * than teaching the delimiter search, the cut and the field parser three
+ * spellings each — is what keeps that a single decision, and it is the reason
+ * {@link SseEventBuffer.push} is the only place a `\r` is ever seen.
+ *
  * Same defect and same shape as `TcpInboundBuffer` (#610) on the byte side,
  * deliberately not shared with it: that one owns a `Uint8Array` slab framed by
  * a pluggable strategy, this one owns decoded characters split on a fixed
@@ -34,10 +43,25 @@
  */
 
 /**
- * The blank line that terminates one SSE event block.  Wire vocabulary of the
- * format parsed beside it, not a tuned value.
+ * The blank line that terminates one SSE event block, **after** the line
+ * endings of the arriving chunk have been normalised to LF.  Wire vocabulary
+ * of the format parsed beside it, not a tuned value — and not a claim that the
+ * wire itself only ever frames with LF, which is the reading this comment
+ * invited before #1510 gave it something to be true of.
  */
 const EVENT_DELIMITER = '\n\n';
+
+/**
+ * The two line terminators the SSE grammar allows besides LF: a CR followed by
+ * an LF, and a lone CR.
+ *
+ * Written `\r\n?` rather than `\r|\r\n` because alternation is ordered and the
+ * regex engine takes the first branch that matches — `/\r|\r\n/` would consume
+ * the CR alone and leave the LF standing, turning every CRLF into a blank line
+ * and every event into two.  The optional-suffix form cannot express that
+ * mistake.
+ */
+const CARRIAGE_RETURN_TERMINATOR = /\r\n?/g;
 
 export class SseEventBuffer {
   /**
@@ -49,6 +73,22 @@ export class SseEventBuffer {
    */
   private parts: string[] = [];
   private pending = 0;
+
+  /**
+   * Whether the chunk before this one ended on a CR — the seam state of the
+   * line-ending normalisation, and the one thing a per-chunk `replace` cannot
+   * know.
+   *
+   * It is a flag and not a withheld character, deliberately.  A CR is a line
+   * terminator on its own, so converting it the moment it arrives is always
+   * right; what the *next* chunk decides is only whether a leading LF belongs
+   * to it — making the pair one terminator — or opens a line of its own.
+   * Holding the CR back until that is known would be the other way to get the
+   * pair right, and it loses the last event of a CR-framed feed: at end of
+   * stream there is no next chunk to resolve the carry, so a terminator the
+   * grammar considers complete would never be applied.
+   */
+  private lastChunkEndedInCarriageReturn = false;
 
   /**
    * Characters buffered without a delimiter — zero when the stream has drained
@@ -66,18 +106,52 @@ export class SseEventBuffer {
    *
    * Invariant that keeps the search local: what stays buffered after `push`
    * never contains a delimiter, so a chunk only has to be examined against the
-   * seam it lands on and not against anything older.
+   * seam it lands on and not against anything older.  The second invariant is
+   * newer and is what the rest of the reader rests on: nothing buffered here
+   * contains a CR, because {@link SseEventBuffer.normaliseLineEndings} runs
+   * before any of it is kept (#1510).
    */
   push(chunk: string): string[] {
-    if (chunk.length === 0) return [];
+    const normalised = this.normaliseLineEndings(chunk);
+    if (normalised.length === 0) return [];
     const seam = this.seamCharacter();
-    const carriesDelimiter = (seam + chunk).indexOf(EVENT_DELIMITER) >= 0;
-    this.parts.push(chunk);
-    this.pending += chunk.length;
+    const carriesDelimiter = (seam + normalised).indexOf(EVENT_DELIMITER) >= 0;
+    this.parts.push(normalised);
+    this.pending += normalised.length;
     return carriesDelimiter ? this.splitCompletedBlocks() : [];
   }
 
   /* ----------------------------- internals ----------------------------- */
+
+  /**
+   * Rewrite the chunk's CRLF and lone-CR terminators as LF, carrying the one
+   * decision that cannot be made inside a single chunk across the seam.
+   *
+   * The seam case is the whole difficulty: a terminator may arrive in two
+   * pieces, `\r` at the end of one read and `\n` at the start of the next, and
+   * that pair is **one** terminator.  So a leading LF is dropped when the
+   * previous chunk ended on a CR — the CR was already converted, and keeping
+   * the LF as well would manufacture a blank line and dispatch half an event.
+   * Everything else the SSE grammar says about line endings is chunk-local.
+   *
+   * An empty chunk returns before the seam state is touched: `TextDecoder`
+   * yields `''` for a read that is entirely the lead bytes of a multi-byte
+   * character, and letting that clear the flag would split a terminator that a
+   * split codepoint happened to land between.
+   *
+   * The scan is over the arriving chunk and nothing older, which is the
+   * property #749 is about; `includes` short-circuits on the first CR and the
+   * overwhelmingly common LF-framed chunk pays one pass and no allocation.
+   */
+  private normaliseLineEndings(chunk: string): string {
+    if (chunk.length === 0) return '';
+    const body = this.lastChunkEndedInCarriageReturn && chunk.startsWith('\n')
+      ? chunk.slice(1)
+      : chunk;
+    this.lastChunkEndedInCarriageReturn = chunk.endsWith('\r');
+    if (!body.includes('\r')) return body;
+    return body.replace(CARRIAGE_RETURN_TERMINATOR, '\n');
+  }
 
   /**
    * The last buffered character, or `''` when nothing is pending — the one
