@@ -227,10 +227,16 @@ ref.tell({ kind: 'unsubscribe', topic: 'y/#', target: someHandler });
 - Ein `subscribe` **ohne `target`** liefert passende Nachrichten an das
   eigene `onMessage` des Aktors; mit `target` fan-outet es an jenen
   Aktor.  Überlappende Patterns liefern an jedes Ref höchstens einmal.
-- Ein `unsubscribe` mit `target` entfernt jenes Target.  **Ohne
-  `target`** entfernt es alle *fremden* Targets, lässt aber die eigene
-  Subscription des Aktors bestehen — ein externer Controller kann die
-  im Konstruktor deklarierte Subscription der Subklasse nicht stummschalten.
+- Ein `unsubscribe` entfernt nur, was ein externes `subscribe` angehängt
+  hat: das Target, das es nennt, oder — **ohne `target`** — alle extern
+  angehängten Targets auf einmal.  Die eigene `onMessage`-Zustellung des
+  Aktors entfernt es nie, und ebensowenig ein Target, das die Subklasse
+  selbst per `subscribe(topic, { target })` deklariert hat — auch dann
+  nicht, wenn das Kommando genau dieses Target nennt.  Ein externer
+  Controller kann die im Konstruktor deklarierte Subscription der
+  Subklasse nicht stummschalten, in welcher der beiden Formen sie auch
+  deklariert wurde.  Aus der Subklasse heraus entfernt
+  `unsubscribe(topic, { target })` jedes Target, egal wer es anhängte.
 - Das `qos` eines `subscribe` gilt nur für ein Pattern, **das das Kommando
   selbst anlegt**.  Nennt es ein bereits vorhandenes Pattern, hängt es sich
   mit dem dort registrierten QoS an; sein eigenes `qos` wird dabei

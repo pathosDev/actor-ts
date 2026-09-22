@@ -39,14 +39,26 @@ export type MqttPublishOptions = {
   readonly userProperties?: MqttUserProperties;
 };
 
+/**
+ * Who attached a fan-out target: the subclass (`subscribe()` or the `preStart`
+ * flush of a constructor declaration) or an external `subscribe` command.
+ *
+ * The distinction is what an external `unsubscribe` is measured against — an
+ * external command may detach only what an external command attached — so it
+ * travels with the target rather than with the pattern.  One pattern routinely
+ * carries both: a subclass declares its worker and a controller mirrors the
+ * same feed somewhere else.  #1510.
+ */
+type TargetOrigin = 'own' | 'external';
+
 /** One subscription pattern's routing state. */
 type SubscriptionEntry<T> = {
   /** Requested QoS, or undefined → resolve to `qos` at SUBSCRIBE time. */
   qos?: MqttQos;
   /** Deliver matching messages to this actor's own `onMessage`. */
   deliverToSelf: boolean;
-  /** Foreign actors to fan matching messages out to. */
-  readonly targets: Set<ActorRef<MqttMessage<T>>>;
+  /** Foreign actors to fan matching messages out to, each with its origin. */
+  readonly targets: Map<ActorRef<MqttMessage<T>>, TargetOrigin>;
 };
 
 /**
@@ -147,9 +159,10 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   }
 
   /**
-   * Remove a subscription.  With `target`, removes that foreign target;
-   * without, removes this actor's own `onMessage` delivery for `topic`.
-   * A broker UNSUBSCRIBE fires once the pattern has no consumers left.
+   * Remove a subscription.  With `target`, removes that foreign target —
+   * whoever attached it, since the subclass owns the registry; without,
+   * removes this actor's own `onMessage` delivery for `topic`.  A broker
+   * UNSUBSCRIBE fires once the pattern has no consumers left.
    */
   protected unsubscribe(topic: string, options: { target?: ActorRef<MqttMessage<T>> } = {}): void {
     this.removeSubscription(topic, options.target, false);
@@ -252,7 +265,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     for (const [pattern, entry] of this.registry) {
       if (!matchesMqttPattern(pattern, message.topic)) continue;
       if (entry.deliverToSelf) toSelf = true;
-      for (const ref of entry.targets) {
+      for (const ref of entry.targets.keys()) {
         if (!seen.has(ref)) { seen.add(ref); ref.tell(message); }
       }
     }
@@ -289,13 +302,13 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     let entry = this.registry.get(topic);
     const introduced = entry === undefined;
     if (!entry) {
-      entry = { qos: options.qos, deliverToSelf: false, targets: new Set() };
+      entry = { qos: options.qos, deliverToSelf: false, targets: new Map() };
       this.registry.set(topic, entry);
     } else if (options.qos !== undefined && !fromExternal) {
       entry.qos = options.qos;  // last-writer-wins among the actor's own calls
     }
     if (options.target) {
-      entry.targets.add(options.target);
+      this.attachTarget(entry, options.target, fromExternal ? 'external' : 'own');
       this.watchTarget(options.target, topic);
     } else {
       entry.deliverToSelf = true;
@@ -306,6 +319,24 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     if (this.connectionState === 'connected' && this.client) {
       this.brokerSubscribe(topic, entry.qos);
     }
+  }
+
+  /**
+   * Record a fan-out target together with the {@link TargetOrigin} that decides
+   * who may detach it again.
+   *
+   * `'own'` wins when both name the same ref, and the asymmetry is the point:
+   * a controller mirroring a feed the subclass already declared must not
+   * acquire the right to take the subclass's copy away by asking for it a
+   * second time.  The reverse — the subclass declaring a ref a controller
+   * attached earlier — is the subclass adopting it, which it may do.
+   */
+  private attachTarget(
+    entry: SubscriptionEntry<T>,
+    target: ActorRef<MqttMessage<T>>,
+    origin: TargetOrigin,
+  ): void {
+    if (origin === 'own' || !entry.targets.has(target)) entry.targets.set(target, origin);
   }
 
   /**
@@ -359,11 +390,19 @@ export abstract class MqttActor<T = unknown, TSelf = never>
   }
 
   /**
-   * @param fromExternal true for an external `unsubscribe` command with
-   *   no target — drops all foreign targets but keeps the actor's own
-   *   subscription (a controller must not be able to silence the
-   *   subclass's constructor-declared subscription).  false for the
-   *   protected `unsubscribe(topic)` — drops only the own delivery.
+   * @param fromExternal true for an external `unsubscribe` command — it may
+   *   detach only what an external `subscribe` attached, whether it names the
+   *   target or not, and never touches the actor's own `onMessage` delivery.
+   *   A controller must not be able to silence the subclass's
+   *   constructor-declared subscription, and clearing every target used to be
+   *   exactly that whenever the subclass declared its subscription in the
+   *   target form: the entry emptied, was deleted, and a broker UNSUBSCRIBE
+   *   went out — after which a plain `subscribe` re-created the pattern at its
+   *   own QoS, because {@link registerSubscription} guards a rewrite and not a
+   *   creation.  Two messages from any holder of the ref, and the guarantee
+   *   this pair of methods advertises was gone.  false for the protected
+   *   `unsubscribe` — it owns the registry, so it drops the named target
+   *   whatever its origin, or the own delivery when none is named.  #1510.
    */
   private removeSubscription(
     topic: string,
@@ -373,11 +412,16 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     const entry = this.registry.get(topic);
     if (!entry) return;
     if (target) {
-      entry.targets.delete(target);
-      this.unwatchTarget(target, topic);
+      if (!fromExternal || entry.targets.get(target) === 'external') {
+        entry.targets.delete(target);
+        this.unwatchTarget(target, topic);
+      }
     } else if (fromExternal) {
-      for (const ref of entry.targets) this.unwatchTarget(ref, topic);
-      entry.targets.clear();
+      for (const [ref, origin] of [...entry.targets]) {
+        if (origin !== 'external') continue;
+        entry.targets.delete(ref);
+        this.unwatchTarget(ref, topic);
+      }
     } else {
       entry.deliverToSelf = false;
     }
@@ -405,7 +449,7 @@ export abstract class MqttActor<T = unknown, TSelf = never>
     for (const pattern of watchEntry.patterns) {
       const entry = this.registry.get(pattern);
       if (!entry) continue;
-      for (const target of entry.targets) {
+      for (const target of entry.targets.keys()) {
         if (target.path.toString() === key) { entry.targets.delete(target); break; }
       }
       if (!entry.deliverToSelf && entry.targets.size === 0) {

@@ -475,7 +475,7 @@ describe('MqttActor external-command provenance', () => {
     }
   });
 
-  test('an external unsubscribe with no target clears foreign targets and keeps the own subscription', async () => {
+  test('an external unsubscribe with no target clears the targets external commands attached', async () => {
     const sys = makeSystem();
     try {
       const inbox = new InboxActor<unknown>();
@@ -483,16 +483,16 @@ describe('MqttActor external-command provenance', () => {
       const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
       const actor = new TestMqttActor({
         options: mqttOptions,
-        ctorSubs: [
-          { topic: 'shared/#' },                    // the subclass's own delivery
-          { topic: 'shared/#', target: inboxRef },  // a foreign fan-out target
-        ],
+        ctorSubs: [{ topic: 'shared/#' }],  // the subclass's own delivery
       });
       const ref = await boot(sys, actor);
+      // Attached from outside, so an outside command may take it away again —
+      // this is the half of the rule that still removes something.
+      ref.tell({ kind: 'subscribe', topic: 'shared/#', target: inboxRef });
       ref.tell({ kind: 'unsubscribe', topic: 'shared/#' });
-      // Command and inbound signal share one mailbox, so FIFO puts the
-      // unsubscribe strictly before this message: the routing decision below is
-      // taken against the post-command registry, with no wait in between.
+      // Commands and the inbound signal share one mailbox, so FIFO puts both
+      // strictly before this message: the routing decision below is taken
+      // against the post-command registry, with no wait in between.
       actor.module.last().fireMessage('shared/x', enc.encode('after'));
       await awaitCondition(() => actor.inbound.length >= 1, {
         timeoutMs: 4_000,
@@ -502,6 +502,154 @@ describe('MqttActor external-command provenance', () => {
       expect(actor.inbound.map((m) => m.topic)).toEqual(['shared/x']);
       expect(inbox.received).toHaveLength(0);
       // The pattern still has a consumer, so it was never dropped at the broker.
+      expect(actor.module.last().unsubscribes).toEqual([]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  /**
+   * The shape the guarantee is actually stated for, and the one it used to miss.
+   *
+   * `deliverToSelf` is not the only thing a subclass declares: `subscribe(topic,
+   * { target })` is documented usage and the fan-out form the MQTT page shows
+   * first, and a pattern declared that way has no own delivery to fall back on.
+   * Clearing every target on an external `unsubscribe` therefore emptied the
+   * entry, deleted it, and issued a broker UNSUBSCRIBE — after which a plain
+   * `subscribe` re-created the pattern at whatever QoS it named, because
+   * `registerSubscription` guards a rewrite but not a creation.  Two messages
+   * from any holder of the ref, and the subclass's exactly-once feed came back
+   * at at-most-once pointed somewhere else (#1510).
+   *
+   * Targets carry their origin now, so the external branch removes only what an
+   * external command attached.  All three consequences are asserted below: the
+   * declared target keeps receiving, the feed is not redirected into the actor's
+   * own `onMessage`, and the surviving entry still has a QoS worth guarding.
+   */
+  test('an external unsubscribe with no target keeps a target the subclass declared', async () => {
+    const sys = makeSystem();
+    try {
+      const worker = new InboxActor<unknown>();
+      const workerRef = sys.spawn(() => worker, 'worker-declared') as ActorRef<MqttMessage<unknown>>;
+      const mqttOptions = MqttOptions.create()
+        .withBrokerUrl('mqtt://x')
+        .withQos(0);
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'own/#', qos: 2, target: workerRef }],
+      });
+      const ref = await boot(sys, actor, 'mqtt-declared-target');
+      expect(actor.module.last().subscribes).toEqual([{ topic: 'own/#', qos: 2 }]);
+
+      ref.tell({ kind: 'unsubscribe', topic: 'own/#' });
+      actor.module.last().fireMessage('own/x', enc.encode('still mine'));
+      await awaitCondition(() => worker.received.length >= 1, {
+        timeoutMs: 4_000,
+        label: 'the declared target still receives after an external unsubscribe',
+      });
+      await sleep(SETTLE_MS);  // the redirected copy is an absence; see SETTLE_MS
+      expect(worker.received.map((m) => m.topic)).toEqual(['own/x']);
+      // Not a redirect either: the declared feed did not fall back into this
+      // actor's own handler, which is where the probe found it.
+      expect(actor.inbound).toHaveLength(0);
+      // The entry kept a consumer, so the pattern was never dropped at the broker.
+      expect(actor.module.last().unsubscribes).toEqual([]);
+
+      // And because the entry survived, the QoS guard still has something to
+      // guard: the follow-up joins at QoS 2 instead of re-creating at 0.
+      ref.tell({ kind: 'subscribe', topic: 'own/#', qos: 0 });
+      await awaitCondition(() => actor.module.last().subscribes.length >= 2, {
+        timeoutMs: 4_000, label: 'the external subscribe reached the broker',
+      });
+      await sleep(SETTLE_MS);  // the subscribe list is asserted exactly; see SETTLE_MS
+      expect(actor.module.last().subscribes).toEqual([
+        { topic: 'own/#', qos: 2 },
+        { topic: 'own/#', qos: 2 },
+      ]);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  /**
+   * Knowing a ref is not owning it.
+   *
+   * The no-target branch is where the bypass was found, but naming the ref
+   * outright is the same capability spelled differently — a fan-out target is
+   * routinely a ref the rest of the system already holds, so a rule that only
+   * covered the anonymous form would leave the guarantee true by obscurity.
+   * The origin travels with the target rather than with the shape of the
+   * command, so both forms answer the same question.  The subclass's own
+   * `unsubscribe(topic, { target })` is unaffected: it owns the registry.
+   */
+  test('an external unsubscribe naming a target removes only one attached from outside', async () => {
+    const sys = makeSystem();
+    try {
+      const declared = new InboxActor<unknown>();
+      const declaredRef = sys.spawn(() => declared, 'target-declared') as ActorRef<MqttMessage<unknown>>;
+      const attached = new InboxActor<unknown>();
+      const attachedRef = sys.spawn(() => attached, 'target-attached') as ActorRef<MqttMessage<unknown>>;
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'fan/#', target: declaredRef }],
+      });
+      const ref = await boot(sys, actor, 'mqtt-targeted-unsubscribe');
+      ref.tell({ kind: 'subscribe', topic: 'fan/#', target: attachedRef });
+      ref.tell({ kind: 'unsubscribe', topic: 'fan/#', target: declaredRef });
+      ref.tell({ kind: 'unsubscribe', topic: 'fan/#', target: attachedRef });
+      actor.module.last().fireMessage('fan/x', enc.encode('one'));
+      await awaitCondition(() => declared.received.length >= 1, {
+        timeoutMs: 4_000, label: 'the declared target survived the targeted unsubscribe',
+      });
+      await sleep(SETTLE_MS);  // the detached target's copy is an absence; see SETTLE_MS
+      expect(declared.received.map((m) => m.topic)).toEqual(['fan/x']);
+      expect(attached.received).toHaveLength(0);
+      expect(actor.module.last().unsubscribes).toEqual([]);
+
+      // The subclass detaching its own declared target is the control: the rule
+      // is about where the command came from, not about which ref it names.
+      actor.doUnsubscribe('fan/#', { target: declaredRef });
+      await awaitCondition(() => actor.module.last().unsubscribes.includes('fan/#'), {
+        timeoutMs: 4_000, label: 'the emptied pattern was unsubscribed at the broker',
+      });
+      expect(actor.module.last().unsubscribes).toEqual(['fan/#']);
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  /**
+   * The bypass the rule above invites, and the reason the origin is written
+   * once rather than on every attach.
+   *
+   * A target's origin is a claim about who put it there, and an external
+   * `subscribe` naming a ref the subclass already declared is a second claim on
+   * the same slot.  Letting the later one win costs the controller exactly one
+   * extra message to walk back into the branch it was just refused: claim the
+   * ref, then detach it.  `attachTarget` keeps `'own'` for that reason — a
+   * controller may mirror a feed the subclass declared, and may take its own
+   * mirror away again, but never acquires the subclass's copy by asking for it.
+   */
+  test('an external subscribe re-naming a declared target does not make it detachable', async () => {
+    const sys = makeSystem();
+    try {
+      const worker = new InboxActor<unknown>();
+      const workerRef = sys.spawn(() => worker, 'worker-reclaimed') as ActorRef<MqttMessage<unknown>>;
+      const mqttOptions = MqttOptions.create().withBrokerUrl('mqtt://x');
+      const actor = new TestMqttActor({
+        options: mqttOptions,
+        ctorSubs: [{ topic: 'own/#', target: workerRef }],
+      });
+      const ref = await boot(sys, actor, 'mqtt-reclaimed-target');
+      ref.tell({ kind: 'subscribe', topic: 'own/#', target: workerRef });
+      ref.tell({ kind: 'unsubscribe', topic: 'own/#', target: workerRef });
+      actor.module.last().fireMessage('own/x', enc.encode('mine'));
+      await awaitCondition(() => worker.received.length >= 1, {
+        timeoutMs: 4_000, label: 'the declared target survived the claim-then-detach pair',
+      });
+      await sleep(SETTLE_MS);  // a second copy would mean two live entries; see SETTLE_MS
+      expect(worker.received.map((m) => m.topic)).toEqual(['own/x']);
       expect(actor.module.last().unsubscribes).toEqual([]);
     } finally {
       await sys.terminate();
