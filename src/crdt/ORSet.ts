@@ -200,11 +200,21 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
   }
 
   toJSON(): ORSetJson {
-    // Wire shape — each element is JSON-stringified verbatim so
-    // the default round-trip works.  Custom identity does NOT
-    // change the wire shape: callers must pass the same `identity`
-    // option to `fromJSON` to reconstruct a set with the same
-    // dedup rule.
+    // Wire shape — each element is JSON-stringified verbatim so the default
+    // round-trip works.  A custom identity does not change that shape, and
+    // the reason is what makes the frame portable: an element *key* is
+    // identity-function output, while `elementValues` carries the instance
+    // itself.  A decoder therefore never has to reproduce the sender's rule —
+    // it reads each element back out and files it under its own, which is
+    // exactly what `fromJSON` does with an `identity` option (#766).
+    //
+    // This used to instruct callers to pass the sender's identity to
+    // `fromJSON` to get the same dedup rule back.  That was the contract #766
+    // was filed against: an identity is a closure and never travels, so the
+    // supported and interesting case is the receiver passing a *different*
+    // one — a peer on the default rule, or a durable record written before
+    // the identity was configured, decoded by a replica that has since
+    // learned it.
     //
     // Built with `Object.fromEntries` rather than by assignment: an element
     // key is identity-function output, so a custom identity can produce the one
