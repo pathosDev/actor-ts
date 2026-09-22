@@ -441,17 +441,25 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   a per-clone problem with per-clone fixes (`git diff --stat`, a pathspec
   exclude, `.git/info/attributes`).
 - **Security scanning is CI-side, with one local half.** `bun run
-  lint:audit` is `bun audit --audit-level=high` over `bun.lock` and gates
-  `package-health.yml`; run it after any dependency change, because that
-  is the one that can turn it red. It reads the lockfile deliberately —
-  GitHub's dependency graph resolves only the ranges in `package.json`,
-  so Dependabot and `dependency-review-action` are blind to the shipped
-  closure and are not used as gates here. **Nothing is suppressed today.**
-  The gate landed with eleven `--ignore`d advisory IDs, every high the
-  closure carried at the time, and #779 cleared them with an in-range
-  lockfile refresh — the shape a red audit almost always wants, and the
-  first thing to try. A suppression that is ever needed again goes into
-  the script by ID *and* into the table in `SECURITY.md`;
+  lint:audit` is `bun audit --audit-level=high` over a Bun lockfile, and
+  `package-health.yml` runs it over every one CI installs: at the root
+  for `bun.lock`, under `docs/` for `docs/bun.lock` (the script is in
+  that manifest too), and with the same flags written out in the step
+  for `devtools-ui/bun.lock` — that manifest is hashed into the embedded
+  UI bundle, so a script there would cost a `build:ui`. Run it in the
+  directory whose lockfile moved after any dependency change, because
+  that is the one that can turn it red; a fourth Bun closure a workflow
+  starts installing fails `tests/unit/ci/SecurityPolicy.test.ts` until a
+  step audits it (#1413). It reads the lockfile deliberately — GitHub's
+  dependency graph resolves only the ranges in `package.json`, so
+  Dependabot and `dependency-review-action` are blind to every one of
+  those closures and are not used as gates here.
+  **Nothing is suppressed today.** The gate landed with eleven
+  `--ignore`d advisory IDs, every high the closure carried at the time,
+  and #779 cleared them with an in-range lockfile refresh — the shape a
+  red audit almost always wants, and the first thing to try. A
+  suppression that is ever needed again goes into the script by ID
+  *and* into the table in `SECURITY.md`;
   `tests/unit/ci/SecurityPolicy.test.ts` fails if the two sets differ, and
   it holds the "nothing is suppressed" sentences on `SECURITY.md`, the
   supply-chain page (EN + DE) and this paragraph to that list in both

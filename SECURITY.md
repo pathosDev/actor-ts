@@ -116,15 +116,24 @@ relying on when they install a published version:
 | Gate | Where | What it catches |
 | --- | --- | --- |
 | **CodeQL** (`javascript-typescript`) | `.github/workflows/codeql.yml` — pull requests, pushes to `main`/`develop`, weekly | Injection, path traversal, unsafe deserialization and the rest of the `security-extended` query suite. Results land in the repository's code-scanning alerts. |
-| **`bun audit`** | `.github/workflows/package-health.yml` — same triggers plus a weekly cron | Published advisories against the versions `bun.lock` actually pins. |
+| **`bun audit`** | `.github/workflows/package-health.yml` — same triggers plus a weekly cron | Published advisories against the versions the Bun lockfiles CI installs actually pin: `bun.lock`, `docs/bun.lock` and `devtools-ui/bun.lock`. |
 | **SHA-pinned actions** | `tests/unit/ci/WorkflowHygiene.test.ts` | A mutable action tag being repointed under a job that holds a publishing credential. |
 | **npm provenance** | `.github/workflows/publish.yml` | Ties the published tarball to the workflow run and commit that built it. |
 | **CycloneDX SBOM** | `.github/workflows/publish.yml` | Attached to every GitHub Release, so a consumer can diff the closure without reconstructing it. |
 
-`bun audit` reads `bun.lock`. GitHub's dependency graph does not resolve
-that file — it records the unresolved ranges from `package.json` — which
-is why Dependabot's alerts on this repository have only ever come from
-the npm lockfiles under `examples/`, and why `actions/dependency-review-action`
+`bun audit` reads a lockfile, and the job runs it over each Bun lockfile
+CI installs: `bun.lock`, the shipped closure; `docs/bun.lock`, which the
+documentation build installs; and `devtools-ui/bun.lock`, which the
+DevTools UI build installs inside the publishing job. The two nested
+ones were read by nothing until
+[#1413](https://github.com/pathosDev/actor-ts/issues/1413) and carried
+nine high advisories between them, all with in-range fixes, while the
+root gate stayed green; `tests/unit/ci/SecurityPolicy.test.ts` now
+fails when a workflow installs a Bun closure the job does not audit.
+GitHub's dependency graph does not resolve any of those files — it
+records the unresolved ranges from `package.json` — which is why
+Dependabot's alerts on this repository have only ever come from the npm
+lockfiles under `examples/`, and why `actions/dependency-review-action`
 is deliberately *not* used here.
 
 ## Accepted advisories
