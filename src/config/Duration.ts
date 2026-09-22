@@ -21,7 +21,7 @@
  * the `Object` function instead of `undefined`.  `constructor` is the whole
  * exposure — every other inherited member is mixed-case and cannot survive the
  * `.toLowerCase()` in {@link parseDuration}.  The old `factor === undefined`
- * guard therefore waved it through, and `parseFloat(num) * Object` yielded a
+ * guard therefore waved it through, and `parseFloat(quantity) * Object` yielded a
  * silent `NaN` where every other unrecognised unit throws (#785).
  *
  * The same treatment `DEFAULT_MIME_TYPES` got in #608, and the value-side
@@ -118,7 +118,7 @@ export function parseDuration(input: string | number): number {
   // duration rather than as an unknown unit.
   const match = trimmed.match(/^([+-]?\d+(?:\.\d+)?)\s*([A-Za-zµΜμ]+)$/);
   if (!match) throw new Error(`Invalid duration: ${input}`);
-  const [, num, unitRaw] = match;
+  const [, quantity, unitRaw] = match;
   // NFKC first, then lower case, and the order is not interchangeable: NFKC is
   // what folds the micro sign onto the Greek mu (`toLowerCase` leaves U+00B5
   // exactly where it is), and lower-casing is what folds the capital.  Applied
@@ -133,5 +133,5 @@ export function parseDuration(input: string | number): number {
   if (!Object.hasOwn(UNIT_MS, unit)) {
     throw new Error(`Unknown duration unit "${unitRaw}" in ${input}`);
   }
-  return finiteDuration(parseFloat(num!) * UNIT_MS[unit], input);
+  return finiteDuration(parseFloat(quantity!) * UNIT_MS[unit], input);
 }
