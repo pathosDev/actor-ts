@@ -586,6 +586,153 @@ describe('ParallelMultiNodeSpec — backend containment declaration (#1288)', ()
   });
 });
 
+/* ---------- terminateAndWait's fallback timer (#1508, from #777) -------- */
+
+/** One `setTimeout` armed while a {@link TimerLedger} was installed. */
+type ArmedTimer = {
+  readonly delayMs: number;
+  readonly handle: ReturnType<typeof setTimeout>;
+  /**
+   * Run this timer's callback now, cancelling the real one first so it cannot
+   * also run later.  Deadlines measured in seconds are what the harness uses
+   * to turn a hang into a message; firing one by hand is what lets a test
+   * observe the message without paying the seconds.
+   */
+  readonly fire: () => void;
+};
+
+/** What the code under test armed and what it cancelled, in order. */
+type TimerLedger = {
+  readonly armed: ArmedTimer[];
+  readonly cleared: unknown[];
+};
+
+/**
+ * Wrap the global `setTimeout` / `clearTimeout` so a test can see which
+ * deadlines the harness armed and which of them it cancelled again.
+ *
+ * There is no clock seam to inject here and there should not be one: these are
+ * teardown deadlines, not scheduling, and the harness deliberately owns no
+ * `ActorSystem` whose `Scheduler` it could borrow.  The wrappers delegate to
+ * the real functions, so nothing about the timing changes; they exist only to
+ * record.  Both are restored before any assertion runs — leaving a wrapper
+ * installed would make every later test in the file observe this one.
+ */
+function installTimerLedger(): { readonly ledger: TimerLedger; readonly restore: () => void } {
+  const armed: ArmedTimer[] = [];
+  const cleared: unknown[] = [];
+  const timers = globalThis as unknown as {
+    setTimeout: (handler: (...args: unknown[]) => void, delayMs?: number) => ReturnType<typeof setTimeout>;
+    clearTimeout: (handle: ReturnType<typeof setTimeout> | undefined) => void;
+  };
+  const realSetTimeout = timers.setTimeout;
+  const realClearTimeout = timers.clearTimeout;
+  timers.setTimeout = (handler, delayMs) => {
+    const handle = realSetTimeout(handler, delayMs);
+    armed.push({
+      delayMs: delayMs ?? 0,
+      handle,
+      fire: (): void => { realClearTimeout(handle); handler(); },
+    });
+    return handle;
+  };
+  timers.clearTimeout = (handle) => { cleared.push(handle); realClearTimeout(handle); };
+  return {
+    ledger: { armed, cleared },
+    restore: (): void => { timers.setTimeout = realSetTimeout; timers.clearTimeout = realClearTimeout; },
+  };
+}
+
+/** The timers `body` armed and cancelled, for a body that has to be awaited. */
+async function timersArmedWhile(body: () => Promise<void>): Promise<TimerLedger> {
+  const { ledger, restore } = installTimerLedger();
+  try {
+    await body();
+    return ledger;
+  } finally {
+    restore();
+  }
+}
+
+/** `terminateAndWait`'s fallback bound — the literal the helper arms. */
+const TERMINATE_FALLBACK_MS = 3_000;
+
+/**
+ * Workers that terminate without ever emitting `close` — the runtime the
+ * fallback bound exists for.
+ *
+ * {@link autoHandshake} is wired first and the `close` subscription is dropped
+ * on top of it, so everything except the exit signal behaves normally.
+ */
+function silentCloseBackend(): FakeWorkerBackend {
+  return new FakeWorkerBackend({
+    onSpawn: (worker) => {
+      autoHandshake(worker);
+      const add = worker.addEventListener.bind(worker);
+      worker.addEventListener = (event, handler): void => {
+        if (event === 'close') return;
+        add(event, handler);
+      };
+    },
+  });
+}
+
+describe('ParallelMultiNodeSpec — terminateAndWait', () => {
+  test('the fallback bound is cancelled when the close event wins', async () => {
+    // The bound exists for a runtime that emits no `close` at all.  Every
+    // runtime this harness actually runs on does emit one, and the fake here
+    // emits it on the next macrotask — so on the path that is taken in
+    // practice the timer is pure residue, and `stop()` is called five times
+    // over two workers in this file alone.  Left armed, one CI run of this
+    // file ends holding ten 3 s timers it will never use.
+    const { spec } = specWithFakeWorkers(['a', 'b']);
+    await spec.start();
+
+    const ledger = await timersArmedWhile(() => spec.stop());
+
+    const fallbacks = ledger.armed.filter((timer) => timer.delayMs === TERMINATE_FALLBACK_MS);
+    expect(fallbacks).toHaveLength(2);
+    // Cancelled, not merely unref'd: an unref'd timer is still armed and still
+    // runs its callback if anything else keeps the loop alive.
+    const surviving = fallbacks.filter((timer) => !ledger.cleared.includes(timer.handle));
+    expect(surviving).toHaveLength(0);
+  });
+
+  test('a worker that never emits close still finishes teardown on the bound', async () => {
+    // The other half of the pair, and the half a cancellation in the wrong
+    // place breaks silently: `clearTimeout` after `terminate()` resolves but
+    // before `closed` is awaited passes the test above and removes the only
+    // thing that can ever finish teardown here.
+    const backend = silentCloseBackend();
+    const spec = new ParallelMultiNodeSpec({ roles: ['a'], backend });
+    await spec.start();
+
+    const { ledger, restore } = installTimerLedger();
+    try {
+      // `stop()` arms both timers synchronously, before it awaits anything:
+      // the bound, and the macrotask hop the fake's `terminate()` settles on.
+      const stopped = spec.stop();
+      const fallback = ledger.armed.find((timer) => timer.delayMs === TERMINATE_FALLBACK_MS);
+      const terminateHop = ledger.armed.find((timer) => timer.delayMs === 0);
+      expect(fallback).toBeDefined();
+      expect(terminateHop).toBeDefined();
+
+      // Let `terminate()` settle, then check the state teardown is left in:
+      // it is not finished, and the bound is still armed.  A cancellation
+      // placed on this side of `await closed` shows up exactly here.
+      terminateHop!.fire();
+      expect(await hasSettled(stopped)).toBe(false);
+      expect(ledger.cleared).not.toContain(fallback!.handle);
+
+      fallback!.fire();
+      await stopped;
+    } finally {
+      restore();
+    }
+    expect(backend.spawned[0]!.terminated).toBe(true);
+  });
+});
+
 describe('ParallelMultiNodeSpec — bootstrap', () => {
   test('three roles, all see each other Up via worker-side cluster', async () => {
     const spec = new ParallelMultiNodeSpec({

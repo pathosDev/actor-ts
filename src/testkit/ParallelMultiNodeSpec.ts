@@ -200,12 +200,13 @@ export class ParallelMultiNodeSpec {
     const errs: Error[] = [];
     for (const node of this.nodes.values()) {
       if (node.removed) continue;
-      // AWAIT termination.  On Bun `Worker.terminate()` returns a promise
-      // that resolves once the worker thread is actually gone; firing it
-      // without awaiting leaked live worker threads across tests.  On a
-      // 2-core CI runner those leaked workers (busy on a now-dead
-      // transport) starved every subsequent worker-thread test to zero
-      // CPU — control RPCs timed out and no gossip ever flowed (#flaky-ci).
+      // Terminate through the helper, and AWAIT it — what `terminate()` does
+      // and does not promise is stated once, on `terminateAndWait` (#1277).
+      // The consequence is what belongs here: dropping that await leaked live
+      // worker threads across tests, and on a 2-core CI runner those leaked
+      // workers (busy on a now-dead transport) starved every subsequent
+      // worker-thread test to zero CPU — control RPCs timed out and no gossip
+      // ever flowed.
       try { if (node.worker) await this.terminateAndWait(node.worker); } catch (e) { errs.push(e as Error); }
     }
     this.broker.close();
@@ -241,9 +242,8 @@ export class ParallelMultiNodeSpec {
     try { await this.controlRpc(node, { kind: 'mns-test.leave' }); }
     catch { /* ignore — graceful leave is best-effort */ }
     // After cluster.leave returns, the worker has closed its
-    // transport; we still have to terminate the worker process.
-    // AWAIT it — an un-awaited terminate leaks the worker thread (see
-    // the note in stop()).
+    // transport; we still have to terminate the worker process — through
+    // `terminateAndWait`, for the reason stated there (#1277).
     if (node.worker) {
       try { await this.terminateAndWait(node.worker); } catch { /* ignore */ }
     }
@@ -340,20 +340,37 @@ export class ParallelMultiNodeSpec {
   }
 
   /**
-   * Terminate a worker and WAIT until it has actually exited.  Bun's
-   * `Worker.terminate()` is fire-and-forget (returns void), so simply
-   * awaiting it does not guarantee the OS thread is gone before the next
-   * test spawns more — which on a 2-core CI runner left dead/starved
-   * workers piling up.  Here we kick `terminate()` and then await the
-   * worker's `close` event (bounded, so a runtime that emits no close
-   * event doesn't hang teardown).
+   * Terminate a worker and WAIT until it has actually exited.
+   *
+   * **The one statement of Bun's `terminate()` contract in this file** (#1277):
+   * it is fire-and-forget, so awaiting it does not guarantee the OS thread is
+   * gone before the next test spawns more — which on a 2-core CI runner left
+   * dead/starved workers piling up.  So this kicks `terminate()` and then
+   * awaits the worker's own `close` event instead; every teardown path goes
+   * through here rather than awaiting `terminate()` directly, and the
+   * comments at those call sites point back at this one.
+   *
+   * The wait is **bounded** because a runtime that emits no `close` event at
+   * all would otherwise hang teardown for good.  The bound is the exception,
+   * not the path taken — so it is *cancelled* the moment `close` arrives,
+   * rather than left to expire: `stop()` runs five times over two workers in
+   * this harness's own suite, and an uncancelled fallback leaves every one of
+   * those teardowns holding a 3 s timer it will never use (#1508).  Cancelled,
+   * not unref'd: an unref'd timer is still armed and still runs its callback
+   * whenever something else keeps the loop alive.
    */
   private async terminateAndWait(worker: WorkerLike): Promise<void> {
     const closed = new Promise<void>((resolve) => {
       let done = false;
-      const fin = (): void => { if (!done) { done = true; resolve(); } };
+      let fallback: ReturnType<typeof setTimeout> | undefined;
+      const fin = (): void => {
+        if (done) return;
+        done = true;
+        clearTimeout(fallback);
+        resolve();
+      };
       try { worker.addEventListener('close', fin); } catch { /* ignore */ }
-      setTimeout(fin, 3_000);
+      fallback = setTimeout(fin, 3_000);
     });
     try { await worker.terminate(); } catch { /* ignore */ }
     await closed;
