@@ -291,8 +291,11 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
    * that is not there.
    */
   protected override handleIdleTimeout(cause: Error): void {
-    if (this.socket) { try { this.socket.close(); } catch { /* ignore */ } }
-    this.onSocketDown(cause);
+    // Captured before the close, because a runtime that answers it
+    // synchronously runs the `close` listener — and that nulls the field.
+    const socket = this.socket;
+    if (socket) { try { socket.close(); } catch { /* ignore */ } }
+    this.onSocketDown(cause, socket);
   }
 
   /**
@@ -483,8 +486,10 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
         this.socket = ws;
         this.unrecognisedFrameWarned = false;
         ws.addEventListener('message', (ev: { data: unknown }) => this.handleInbound(ev.data));
-        ws.addEventListener('close', () => this.onSocketDown(new Error('websocket closed')));
-        ws.addEventListener('error', () => this.onSocketDown(new Error('websocket error')));
+        // Both listeners name the socket they speak for: a runtime is free
+        // to deliver either one after this socket has been replaced.
+        ws.addEventListener('close', () => this.onSocketDown(new Error('websocket closed'), ws));
+        ws.addEventListener('error', () => this.onSocketDown(new Error('websocket error'), ws));
         this.armKeepAlive(ws);
         this.armInboundFlowControl(ws);
         this.self.tell(websocketClientConnected());
@@ -514,8 +519,32 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
 
   /* ----------------------- inbound ------------------------------- */
 
-  private onSocketDown(cause: Error): void {
+  /**
+   * One connection went down — from an observed `close`/`error`, from an
+   * elapsed read deadline, or from our own oversize close.
+   *
+   * `ws` is the socket the report is *about*, and it is the whole of the
+   * guard.  `this.socket !== null` alone answers "is some connection up",
+   * which is a different question and gave the wrong answer for a late event
+   * from a **superseded** socket (#1514).  Against a blackholed peer — the
+   * deployment `idleTimeoutMs` was built for (#753) — the client's own
+   * `close()` cannot complete its handshake, so the runtime's close/error
+   * arrives whenever TCP gives up, which can be after the reconnect has
+   * already succeeded.  The same window opens without any deadline, because
+   * a real `WebSocket` fires `error` *and then* `close` for one drop and a
+   * short backoff fits between them.  Either way the old guard read the
+   * stale event as the current connection dropping: a second
+   * `onDisconnected` for a healthy connection, the working socket closed,
+   * and a third dial.
+   *
+   * A `null` `ws` is therefore not "unknown, proceed anyway" but "the
+   * connection this call was about is already gone", which is the same
+   * early return — `handleIdleTimeout` reaches it when its own `close()`
+   * fired the listener synchronously.
+   */
+  private onSocketDown(cause: Error, ws: WebsocketLike | null): void {
     if (!this.socket) return; // already handled this connection's drop
+    if (ws !== this.socket) return; // a superseded socket's event, not ours
     this.socket = null;
     if (this.keepAliveTimer) { clearInterval(this.keepAliveTimer); this.keepAliveTimer = null; }
     this.settleInboundPause();
@@ -573,7 +602,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     // before the close settles it everywhere; the socket is captured first
     // because `onSocketDown` clears the field.
     const socket = this.socket;
-    this.onSocketDown(new Error('oversize inbound frame'));
+    this.onSocketDown(new Error('oversize inbound frame'), socket);
     try { socket?.close(1009, 'message too big'); } catch { /* ignore */ }
   }
 
