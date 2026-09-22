@@ -192,6 +192,17 @@ recovery rejected it and the actor could not start.  No invalid
 `persistenceId` was needed: one call to wire the plugin up, and
 one entity used both ways.
 
+That collision is closed twice over, and the namespaces are the
+second of the two.  The leaf-shape filter above already rejects
+`state.json` on its own — a leaf this store reads is exactly
+twenty digits and `.json`, and `state.json` is ten characters —
+so a shared directory would no longer produce the wrong answer.
+What the namespaces add is a corpus that is disjoint by
+*prefix*, which is what lets lifecycle rules, backup selections
+and a re-encryption sweep be scoped to one store's objects in
+terms your bucket can evaluate, rather than in terms of a
+filename failing a length check inside the framework.
+
 <Aside type="caution" title="Upgrading an existing bucket">
   The namespaces are a **breaking** key-layout change.  A bucket
   written by an earlier version holds

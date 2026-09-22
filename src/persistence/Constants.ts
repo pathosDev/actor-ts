@@ -276,12 +276,30 @@ export const SEQ_PADDING = 20;
  * `SnapshotIntegrityError` — an actor that could not start, reachable through
  * the framework's own one-call wiring with no application mistake at all.
  *
- * A namespace segment fixes it at the layout level rather than by filtering
- * afterwards: the two corpora cannot collide because they never share a
- * directory.  The segment sits between the operator's `prefix` and the
- * `persistenceId` — `<prefix>snapshots/<pid>/<seq>.json`,
- * `<prefix>state/<pid>/state.json` — so the per-entity directory that bounds
- * every LIST is preserved, and `prefix` keeps meaning what it meant.
+ * A namespace segment separates the two corpora at the layout level: they
+ * cannot collide because they never share a directory.  The segment sits
+ * between the operator's `prefix` and the `persistenceId` —
+ * `<prefix>snapshots/<pid>/<seq>.json`, `<prefix>state/<pid>/state.json` — so
+ * the per-entity directory that bounds every LIST is preserved, and `prefix`
+ * keeps meaning what it meant.
+ *
+ * **The split is not what closes that collision**, and the distinction is
+ * worth stating because the layout change is the expensive half.
+ * `snapshotSequenceOf` accepts a leaf only when it is exactly
+ * {@link SEQ_PADDING} digits followed by `.json` — 25 characters — so
+ * `'state.json'` fails the first of its four rules on length alone and can
+ * never be the key `loadLatest` returns, namespaces or no namespaces.
+ * Measured rather than reasoned: a well-formed durable-state body written to
+ * `<prefix>snapshots/<pid>/state.json`, where it still sorts after every
+ * sequence key, leaves `loadLatest` answering with the real snapshot.
+ *
+ * What the split buys is **defence in depth on the corpora themselves**.  Two
+ * sets of objects that are disjoint by *prefix* can be given lifecycle rules,
+ * backup selections and a `ReEncryptionSweep` scope in terms the bucket and
+ * its operator both evaluate — rather than ones that hold only because one
+ * filename fails a length check inside this package.  That is what the
+ * breaking key-layout change is for; the reported defect was closed by the
+ * filter beside it.
  *
  * They live here rather than beside either store because three files must
  * agree on them: both stores write them, and `ReEncryptionSweep`'s default
