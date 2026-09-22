@@ -502,6 +502,75 @@ describe('Behaviors.withStash — capacity validation', () => {
   });
 
   /**
+   * The positive half of the same route (#1508).
+   *
+   * The block above establishes that a hand-written node is re-checked, and
+   * that is all it establishes: every valid-capacity stash test in this file
+   * reaches the buffer through `Behaviors.withStash`, so the literal route was
+   * exercised on its rejecting path only.  Read together they announce
+   * coverage of a route they cover half of — a guard that rejected a perfectly
+   * good literal would be invisible here, and `WithStashBehavior` is exported
+   * from the package precisely so that a caller may write one.
+   *
+   * So: the capacity the literal names is the capacity the buffer enforces,
+   * the inner factory runs with a real buffer, and `unstashAll` replays what
+   * it parked.  All four messages are told in one tick, so they are queued
+   * before the first turn runs and the order below is fixed rather than raced.
+   */
+  test('a hand-built with-stash node with a valid capacity is honoured end to end', async () => {
+    const sys = newSys('typed-stash-bypass-valid');
+
+    const factoryCalls: string[] = [];
+    const sizesAfterStash: number[] = [];
+    const overflows: unknown[] = [];
+    const replayed: string[] = [];
+    const handWritten: WithStashBehavior<string> = {
+      kind: 'with-stash',
+      capacity: 2,
+      factory: (stash): Behavior<string> => {
+        factoryCalls.push('factory');
+        const ready: Behavior<string> = Behaviors.receiveMessage((message) => {
+          replayed.push(message);
+          return Behaviors.same;
+        });
+        return Behaviors.receiveMessage<string>((message) => {
+          if (message === 'replay') {
+            stash.unstashAll();
+            return ready;
+          }
+          try {
+            stash.stash(message);
+            sizesAfterStash.push(stash.size);
+          } catch (e) {
+            overflows.push(e);
+          }
+          return Behaviors.same;
+        });
+      },
+    };
+
+    const ref = sys.spawnTypedAnonymous(handWritten);
+    ref.tell('a');
+    ref.tell('b');
+    ref.tell('c');
+    ref.tell('replay');
+
+    await awaitCondition(
+      () => replayed.length === 2,
+      { timeoutMs: 3_000, label: 'the literal-node buffer replayed both parked messages' },
+    );
+    expect(factoryCalls).toEqual(['factory']);
+    // Two admitted, then the bound — the capacity on the literal and nothing
+    // else is what decides where the third message goes.
+    expect(sizesAfterStash).toEqual([1, 2]);
+    expect(overflows.length).toBe(1);
+    expect((overflows[0] as Error).name).toBe('StashOverflowError');
+    expect(replayed).toEqual(['a', 'b']);
+
+    await sys.terminate();
+  });
+
+  /**
    * The other half of "loud and terminal": the rejection has to *end*
    * somewhere.
    *
