@@ -87,8 +87,14 @@ const UNIT_MS: Readonly<Record<string, number>> = Object.freeze(
  * zero and the `<= 0` opt-out never fires either) and
  * `actor-ts.coordinated-shutdown.default-phase-timeout` (copied into all twelve
  * canonical phases and handed to `setTimeout`, which coerces `NaN` to 0, so
- * every shutdown task times out at once).  Failing loudly here is the only
- * place that covers both (#785).
+ * every shutdown task times out at once) (#785).
+ *
+ * What it covers is every duration that is **parsed**, which is not the same as
+ * every duration a config can hold: `Config.getDuration` returns a value that
+ * arrives as a *number* without calling this function at all, so a code-supplied
+ * overrides object carrying a real `NaN` used to reach those same two keys past
+ * this check entirely.  `Config.requireFinite` is the half that covers that
+ * branch, and the two together are what the paragraph above claims (#1513).
  */
 function finiteDuration(milliseconds: number, input: string | number): number {
   if (!Number.isFinite(milliseconds)) throw new Error(`Invalid duration: ${input}`);
