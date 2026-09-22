@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { NoopLogger } from '../../../../src/Logger.js';
 import { NodeAddress } from '../../../../src/cluster/NodeAddress.js';
 import {
   MessageChannelTransport,
@@ -186,7 +187,11 @@ describe('MessageChannelTransport', () => {
     const honest = new NodeAddress('sys', 'h', 4);
     const [brokerPort, workerPort] = makePair();
 
-    const transport = new MessageChannelTransport(self, workerPort);
+    // A `NoopLogger` only because this test deliberately produces a drop of
+    // every reason: the folded `WARN`s are what `TransportFrameGuardContract`
+    // asserts, and here they would be ~25 lines of console noise.  The default
+    // sink is a `ConsoleLogger` precisely so a transport is never silent.
+    const transport = new MessageChannelTransport(self, workerPort, new NoopLogger());
     const received: WireMessage[] = [];
     let thrown = 0;
     transport.setHandler((from, message) => {
