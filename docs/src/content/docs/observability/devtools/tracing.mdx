@@ -90,14 +90,22 @@ From code, the same switches are
 `system.extension(TracingExtensionId).recordRootSpans(…)` and
 `captureMessagePayloads(…)`.
 
-<Aside type="caution" title="A tracer you already had keeps exporting — payloads included">
-Attaching does not replace an existing tracer, it tees into it. So
-while DevTools is attached, the spans your exporter ships carry
-`actor.message.payload` — the whole message, serialised — out to
-whatever backend that is, under its retention and access rules rather
-than your application's. DevTools logs one warning line at attach when
-it switches that on. Detaching restores the two switches together with
-the tracer, so the export goes back to exactly what it was.
+<Aside type="caution" title="A tracer you already had keeps exporting — but not the message bodies">
+Attaching does not replace an existing tracer, it tees into it — and
+the tee is deliberately not transparent. When DevTools is what switched
+payload capture on, `actor.message.payload` — the whole message,
+serialised — goes to the panel and is *withheld* from the tracer that
+was already installed. Attaching a debugger therefore cannot push
+message contents out to a backend you never pointed them at, under its
+retention and access rules rather than your application's.
+
+A capture you had set yourself is a different thing and is left alone:
+those spans keep carrying the attribute out, as they did before. So
+while DevTools is attached, `captureMessagePayloads` can read as on
+while your own exporter shows no such attribute — DevTools logs one
+line at attach saying so, and that line is the only place the
+difference is visible. Detaching restores the two switches together
+with the tracer, so the export goes back to exactly what it was.
 </Aside>
 
 ## Starting a trace yourself

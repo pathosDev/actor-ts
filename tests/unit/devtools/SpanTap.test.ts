@@ -532,7 +532,7 @@ describe('SpanTap — restoring the tracing switches', () => {
     expect(tracing.isCapturingMessagePayloads()).toBe(false);
   });
 
-  test('the pre-existing exporter stops receiving message bodies at detach', async () => {
+  test('the pre-existing exporter stops receiving spans at detach', async () => {
     // The flags are the mechanism; this is the consequence, asserted on the
     // tracer the application configured — the one whose spans leave the
     // process.
@@ -547,7 +547,13 @@ describe('SpanTap — restoring the tracing switches', () => {
     const ref = system.spawn(OrderActor, 'orders');
     ref.tell({ kind: 'place', id: 7 });
     await settle(80);
-    expect(withPayload().length).toBeGreaterThan(0);
+    // Spans do reach it — which is what makes the check after the detach
+    // mean anything — but never a body.  This assertion used to read
+    // `withPayload().length > 0`, and that was the #714 end state holding
+    // for the duration of the attach rather than past it; the tee now
+    // withholds the attribute it was DevTools that switched on (#1420).
+    expect(exporter.recorded().length).toBeGreaterThan(0);
+    expect(withPayload()).toHaveLength(0);
 
     tap.uninstall();
     const exported = exporter.recorded().length;
@@ -569,7 +575,11 @@ describe('SpanTap — restoring the tracing switches', () => {
     try {
       const warnings = logger.warningsAbout(PAYLOAD_ATTRIBUTE);
       expect(warnings).toHaveLength(1);
-      expect(warnings[0]).toContain('keeps exporting');
+      // What it says changed with #1420: the bodies no longer reach that
+      // backend, and the line exists because the tee stopped being
+      // transparent to keep them out of it.
+      expect(warnings[0]).toContain('withholding');
+      expect(warnings[0]).toContain('do not reach that backend');
     } finally {
       tap.uninstall();
     }
