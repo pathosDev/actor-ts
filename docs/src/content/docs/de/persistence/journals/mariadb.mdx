@@ -220,6 +220,16 @@ nullable.  Die Kollation einer indizierten Spalte zu ändern ist keine
 In-Place-Änderung, InnoDB baut jede Tabelle also neu auf: plane einen Lock
 für die Dauer und Plattenplatz für eine zweite Kopie ein.
 
+Zwischen den ersten beiden Statements vergleicht der Join der Tag-Queries
+eine `events`-Spalte mit einer `events_tags`-Spalte anderer Kollation.
+MariaDB verweigert das nicht so wie SQL Server: wo eine Seite `_bin` und die
+andere `_ci` desselben Zeichensatzes ist, gewinnt die `_bin`-Kollation, der
+Join läuft also unter `utf8mb4_bin` und liefert die richtigen Zeilen — aber
+die noch nicht umgestellte Seite kann ihren Index für den Vergleich nicht
+nutzen, Tag-Queries sind in diesem Fenster also langsam statt falsch.  Eine
+`tagsTable`, die auf eine *neue* Tabelle neben einem alten `events` zeigt,
+ist dieses Fenster auf Dauer, bis auch `events` umkollationiert ist.
+
 Prüfe **vor** der Migration auf Schaden, solange `GROUP BY` noch die
 faltende Kollation benutzt:
 

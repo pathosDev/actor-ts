@@ -276,9 +276,12 @@ startup says so.
 
 SQL Server refuses to re-collate a column that an index or constraint
 depends on (error 5074), so each table is drop, alter, recreate.  Run it
-once per database, with no node writing:
+once per database, as **one transaction**, with no node writing:
 
 ```sql
+SET XACT_ABORT ON;
+BEGIN TRANSACTION;
+
 ALTER TABLE events DROP CONSTRAINT PK_events;
 DROP INDEX idx_events_pid ON events;
 ALTER TABLE events ALTER COLUMN persistence_id
@@ -312,12 +315,32 @@ ALTER TABLE durable_state DROP CONSTRAINT PK_durable_state;
 ALTER TABLE durable_state ALTER COLUMN persistence_id
   NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
 ALTER TABLE durable_state ADD CONSTRAINT PK_durable_state PRIMARY KEY (persistence_id);
+
+COMMIT;
 ```
 
 `ALTER COLUMN` replaces the **whole** definition, so `NOT NULL` has to be
 repeated — omit it and the column silently becomes nullable.  Substitute
 your own table names if you overrode `eventsTable`, `tagsTable`,
 `snapshotsTable` or `table`.
+
+The transaction is not ceremony.  Tag queries join `events_tags` to
+`events` on `persistence_id`, and between the block that re-collates
+`events` and the block that re-collates `events_tags` the two columns
+carry different collations — SQL Server then refuses the join outright
+with error 468, *Cannot resolve the collation conflict*: a hard failure,
+not a wrong answer, so nothing downstream can paper over it.  DDL is
+transactional on SQL Server, which is what closes that window: a reader
+blocks on the schema lock until `COMMIT` instead of seeing the mixed
+state, and with `XACT_ABORT` on, a statement that fails — an index named
+differently from the default, say — rolls the whole batch back rather
+than leaving half the tables converted.  Neither replaces stopping the
+writers; they make the window invisible to whatever you forgot to stop.
+
+The same conflict is permanent, not transient, for a `tagsTable` pointed
+at a *new* table beside a legacy `events`: the new table is created with
+the `BIN2` pin, the old one keeps the instance default, and every tag
+query fails with 468 until `events` is re-collated too.
 
 Check for damage **before** migrating, while the folding collation is still
 what `GROUP BY` uses:

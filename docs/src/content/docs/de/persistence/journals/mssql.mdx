@@ -285,9 +285,13 @@ Instanz-Standard, und beim Start sagt das nichts.
 
 SQL Server weigert sich, eine Spalte umzukollationieren, von der ein Index oder
 Constraint abhängt (Fehler 5074) — pro Tabelle heißt das also: droppen, ändern,
-neu anlegen.  Führe das einmal pro Datenbank aus, während kein Knoten schreibt:
+neu anlegen.  Führe das einmal pro Datenbank aus, als **eine Transaktion**,
+während kein Knoten schreibt:
 
 ```sql
+SET XACT_ABORT ON;
+BEGIN TRANSACTION;
+
 ALTER TABLE events DROP CONSTRAINT PK_events;
 DROP INDEX idx_events_pid ON events;
 ALTER TABLE events ALTER COLUMN persistence_id
@@ -321,12 +325,33 @@ ALTER TABLE durable_state DROP CONSTRAINT PK_durable_state;
 ALTER TABLE durable_state ALTER COLUMN persistence_id
   NVARCHAR(255) COLLATE Latin1_General_100_BIN2 NOT NULL;
 ALTER TABLE durable_state ADD CONSTRAINT PK_durable_state PRIMARY KEY (persistence_id);
+
+COMMIT;
 ```
 
 `ALTER COLUMN` ersetzt die **gesamte** Definition, `NOT NULL` muss also
 wiederholt werden — lässt du es weg, wird die Spalte stillschweigend nullable.
 Setze deine eigenen Tabellennamen ein, wenn du `eventsTable`, `tagsTable`,
 `snapshotsTable` oder `table` überschrieben hast.
+
+Die Transaktion ist kein Zeremoniell.  Tag-Queries joinen `events_tags` über
+`persistence_id` an `events`, und zwischen dem Block, der `events`
+umkollationiert, und dem Block, der `events_tags` umkollationiert, tragen die
+beiden Spalten verschiedene Kollationen — SQL Server verweigert den Join dann
+rundheraus mit Fehler 468, *Cannot resolve the collation conflict*: ein hartes
+Scheitern, keine falsche Antwort, nichts weiter unten kann es also
+überdecken.  DDL ist auf SQL Server transaktional, und genau das schließt
+dieses Fenster: ein Leser blockiert bis zum `COMMIT` am Schema-Lock, statt den
+gemischten Zustand zu sehen, und mit eingeschaltetem `XACT_ABORT` rollt ein
+scheiterndes Statement — etwa ein Index, der anders heißt als der Standard —
+den gesamten Batch zurück, statt die Hälfte der Tabellen umgestellt
+zurückzulassen.  Beides ersetzt nicht das Anhalten der Writer; es macht das
+Fenster unsichtbar für das, was du anzuhalten vergessen hast.
+
+Derselbe Konflikt ist dauerhaft statt vorübergehend bei einer `tagsTable`, die
+auf eine *neue* Tabelle neben einem alten `events` zeigt: die neue Tabelle
+wird mit dem `BIN2`-Pin angelegt, die alte behält den Instanz-Standard, und
+jede Tag-Query scheitert mit 468, bis auch `events` umkollationiert ist.
 
 Prüfe **vor** der Migration auf Schaden, solange `GROUP BY` noch die faltende
 Kollation benutzt:
