@@ -47,16 +47,22 @@ export function isWireFrame(value: unknown): value is { kind: string } {
  * every `gossip.members[].address` and `leave.node` — which is why an
  * *optional* `incarnation` is checked here rather than required: making it
  * required would refuse all seven at once from any peer that predates the field
- * (#940).  The length bound it is held to is the point of checking it at all;
- * `NodeAddress.isIncarnation` states it, so this guard and
- * `NodeAddress.fromJSON` cannot disagree.
+ * (#940).
+ *
+ * The two field rules with any substance to them — what a port is and what an
+ * incarnation is — are `NodeAddress.isPort` and `NodeAddress.isIncarnation`,
+ * spent from here rather than restated.  `NodeAddress.fromJSON` *throws* on
+ * what this guard lets through, on the premise that the two agree, and the
+ * premise is only worth having if there is one rule to agree on: the port half
+ * was written out twice and drifted from what `toString` can actually carry
+ * (#1515).
  */
 export function isNodeAddressData(value: unknown): value is NodeAddressData {
   if (typeof value !== 'object' || value === null) return false;
   const { systemName, host, port, incarnation } = value as Partial<NodeAddressData>;
   return typeof systemName === 'string' && systemName.length > 0
     && typeof host === 'string' && host.length > 0
-    && isPort(port)
+    && NodeAddress.isPort(port)
     && (incarnation === undefined || NodeAddress.isIncarnation(incarnation));
 }
 
@@ -253,16 +259,6 @@ function hasControlCharacters(value: string): boolean {
       || code === LINE_SEPARATOR || code === PARAGRAPH_SEPARATOR) return true;
   }
   return false;
-}
-
-/**
- * A positive integer, deliberately *not* the TCP range — see
- * `NodeAddress.fromJSON` and `ClusterOptionsValidator`, which state the same
- * rule: under `InMemoryTransport` the port is a synthetic node discriminator,
- * so capping at 65535 here would reject addresses the framework itself mints.
- */
-function isPort(value: unknown): value is number {
-  return typeof value === 'number' && Number.isInteger(value) && value > 0;
 }
 
 function isStringArray(value: unknown): value is string[] {

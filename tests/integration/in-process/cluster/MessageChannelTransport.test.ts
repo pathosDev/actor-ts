@@ -120,6 +120,37 @@ describe('MessageChannelTransport', () => {
 
     await transport.shutdown();
   });
+
+  test('peers() reports the address that arrived, not a re-parse of its string form (#1515)', async () => {
+    // `peers()` used to rebuild each entry with `NodeAddress.parse`, which made
+    // a `toString`/`parse` round trip part of what this transport promises —
+    // and that round trip drops whatever the string form does not carry.
+    // `incarnation` is the reachable case: it is an accepted optional wire
+    // field, `toString` deliberately excludes it (it names a *slot*, not a
+    // process), so a peer that identified its process was reported as one that
+    // had not.  The recorded object is what the readiness check and every
+    // diagnostic actually want.
+    const self = new NodeAddress('sys', 'h', 1);
+    const peer = new NodeAddress('sys', 'h', 2, 'incarnation-7');
+    const [brokerPort, workerPort] = makePair();
+    const transport = new MessageChannelTransport(self, workerPort);
+    const handled: unknown[] = [];
+    transport.setHandler(() => { handled.push(null); });
+    await transport.start();
+
+    brokerPort.postMessage({
+      from: peer.toJSON(), to: self.toJSON(),
+      payload: { kind: 'heartbeat', from: peer.toJSON(), seq: 1, ts: 0 },
+    });
+    await awaitDelivered(handled, 1, 'peer fidelity');
+
+    const listed = transport.peers();
+    expect(listed.length).toBe(1);
+    expect(listed[0]!.toString()).toBe(peer.toString());
+    expect(listed[0]!.incarnation).toBe('incarnation-7');
+
+    await transport.shutdown();
+  });
 });
 
 describe('WorkerBroker', () => {

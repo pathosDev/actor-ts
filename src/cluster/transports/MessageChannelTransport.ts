@@ -68,7 +68,19 @@ export class MessageChannelTransport implements Transport {
   private readonly port: PortLike;
   private handler: WireHandler = () => {};
   private running = false;
-  private readonly knownPeers = new Set<string>();
+  /**
+   * The senders {@link peers} reports, keyed on the string form because that is
+   * what identity is here — and holding the {@link NodeAddress} itself because
+   * that is what {@link peers} owes its caller.
+   *
+   * A `Set<string>` re-parsed in `peers()`, which is what this was, made the
+   * round trip through `toString`/`parse` part of the transport's contract, and
+   * that round trip is lossy for anything `parse` reads differently from what
+   * `toString` wrote (#1515).  `NodeAddress.isPort` closes the wire side of
+   * that; keeping the recorded object closes the parse side, and it is what
+   * `TcpTransport.byPeer` already does.
+   */
+  private readonly knownPeers = new Map<string, NodeAddress>();
 
   constructor(self: NodeAddress, port: PortLike) {
     this.self = self;
@@ -104,7 +116,7 @@ export class MessageChannelTransport implements Transport {
   }
 
   peers(): NodeAddress[] {
-    return Array.from(this.knownPeers).map(s => NodeAddress.parse(s));
+    return Array.from(this.knownPeers.values());
   }
 
   /* -------------------------------- Internal ------------------------------- */
@@ -131,8 +143,11 @@ export class MessageChannelTransport implements Transport {
    *    spend (#701), and running it here is what makes the transport safe when
    *    there is no broker in between: two of these can be wired port-to-port,
    *    which is exactly how the manual mesh in `worker-mesh.mdx` does it.  Once
-   *    it passes, `fromJSON` cannot throw — `isNodeAddressData` and `fromJSON`
-   *    check one rule, stated in `WireValidation` so the two cannot drift.
+   *    it passes, `fromJSON` cannot throw — both spend `NodeAddress.isPort` and
+   *    `NodeAddress.isIncarnation`, which is where the two field rules with any
+   *    substance to them live, so there is one rule rather than two that agree.
+   *    They *were* two: the port half was written out on both sides and drifted
+   *    from what `toString` can carry, which is what #1515 closed.
    * 2. {@link validateWireFrame} — the payload, which is what every handler
    *    below `Cluster.handleWire` reads as if its declared type were true.  A
    *    gossip frame carrying a member `status` outside the legal set is
@@ -163,12 +178,12 @@ export class MessageChannelTransport implements Transport {
    * the oldest evicted.
    *
    * That the cap can never turn an established peer into an unknown one — which
-   * matters, because the readiness check reads this set — is a property of the
-   * set and not of anything written here: `add` on a key already present is a
-   * no-op, so the only thing the cap can refuse is a key the set does not have.
-   * This used to open with a `has` short-circuit stating the invariant as
-   * though it enforced it; nothing could observe its removal, because there was
-   * nothing there to observe.
+   * matters, because the readiness check reads this map — is a property of the
+   * map and not of anything written here: `set` on a key already present leaves
+   * the size alone, so the only thing the cap can refuse is a key the map does
+   * not have.  This used to open with a `has` short-circuit stating the
+   * invariant as though it enforced it; nothing could observe its removal,
+   * because there was nothing there to observe.
    *
    * The *caller's* ordering is what earns this set its bound: {@link onFrame}
    * validates the payload before it gets here, so a sender that never posts a
@@ -177,6 +192,6 @@ export class MessageChannelTransport implements Transport {
    */
   private rememberPeer(from: NodeAddress): void {
     if (this.knownPeers.size >= MAX_KNOWN_CHANNEL_PEERS) return;
-    this.knownPeers.add(from.toString());
+    this.knownPeers.set(from.toString(), from);
   }
 }
