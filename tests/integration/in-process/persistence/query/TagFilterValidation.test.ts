@@ -17,9 +17,11 @@
  * the empty-tag query #740 names as the way to find a bad `''` bucket, and it
  * would do so with every existing test still green.
  */
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { MAX_TAGS_PER_EVENT, MAX_TAG_LENGTH } from '../../../../../src/persistence/Constants.js';
-import { JournalError } from '../../../../../src/persistence/JournalTypes.js';
+import { JournalError, type PersistentEvent } from '../../../../../src/persistence/JournalTypes.js';
 import { InMemoryJournal } from '../../../../../src/persistence/journals/InMemoryJournal.js';
 import { MongoJournal } from '../../../../../src/persistence/journals/MongoJournal.js';
 import { MongoJournalOptions } from '../../../../../src/persistence/journals/MongoJournalOptions.js';
@@ -38,12 +40,13 @@ import { MongoQuery } from '../../../../../src/persistence/query/MongoQuery.js';
 import { RelationalQuery } from '../../../../../src/persistence/query/RelationalQuery.js';
 import { SqliteQuery } from '../../../../../src/persistence/query/SqliteQuery.js';
 import {
+  eventMatchesTagFilter,
   normalizeTagFilter,
   offsetStart,
   type TagFilter,
 } from '../../../../../src/persistence/query/PersistenceQuery.js';
 import { assertValidFilterTags as publiclyExportedAssertValidFilterTags } from '../../../../../src/persistence/index.js';
-import { assertValidFilterTags } from '../../../../../src/persistence/storage/TagValidator.js';
+import { assertValidFilterTags, assertValidTags } from '../../../../../src/persistence/storage/TagValidator.js';
 import { FakeCassandraClient } from '../FakeCassandraClient.js';
 import { FakeMariaDbPool } from '../FakeMariaDbPool.js';
 import { FakeMongoClient } from '../FakeMongoClient.js';
@@ -380,6 +383,96 @@ describe('every backend inherits the guard', () => {
     const ledger = await query.currentEventsByTag<string>('ledger', offsetStart);
     expect(ledger.map((tagged) => tagged.event.event)).toEqual(['a']);
     await journal.close();
+  });
+});
+
+/**
+ * The Length rule is the one read-side rule that can take an answer away, and
+ * the file justifies transferring it with "since every write has been held to
+ * the same cap since #136 a longer filter member can only ever match nothing".
+ * #136 landed on 2026-07-22, between v0.11.0 and v0.12.0 — so a journal this
+ * library wrote before that, or one a foreign writer filled, really can hold a
+ * tag longer than `MAX_TAG_LENGTH`, and for those rows the premise is false.
+ *
+ * The rule stays (dropping it re-opens the #738 query surface).  What this
+ * describe pins is the population it strands and the route that is left, so
+ * the caveat beside the rule is a statement about the tree rather than a note.
+ */
+describe('over-long tags written before the cap: the population the Length rule strands', () => {
+  const legacyTag = 'x'.repeat(MAX_TAG_LENGTH + 1);
+
+  test('no supported write can produce one, so the population is closed', () => {
+    // Which is what makes it a *legacy* population rather than a live hazard:
+    // the only sources are actor-ts <= 0.11.0 and a writer that is not this
+    // library at all — the same population the comma rule is kept off the read
+    // side for.
+    expect(() => assertValidTags([legacyTag])).toThrow(/tag too long/);
+    expect(() => assertValidTags(['x'.repeat(MAX_TAG_LENGTH)])).not.toThrow();
+  });
+
+  test('the refinement step would match it, and the filter never reaches it', () => {
+    // `eventMatchesTagFilter` is the final in-memory step of every backend's
+    // tag query and is perfectly willing to match the row.  So the answer is
+    // withdrawn by the guard, not by the storage layer — which is the whole
+    // reason the exception is worth writing down.
+    expect(eventMatchesTagFilter([legacyTag], { all: [legacyTag] })).toBe(true);
+    expect(() => normalizeTagFilter({ all: [legacyTag] }))
+      .toThrow(/exceeding the .*-character limit/);
+  });
+
+  test('both tag entrances refuse it, so there is no escape hatch on that path', async () => {
+    const journal = new InMemoryJournal();
+    await journal.append('account-1', [{ event: 'a', tags: ['ledger'] }], 0);
+    // Forging the row rather than appending it is the point: `assertValidTags`
+    // has refused this shape since #136, so a journal cannot be brought into
+    // this state through any supported call — only by predating the rule.
+    const streams = (journal as unknown as {
+      readonly streams: Map<string, PersistentEvent<unknown>[]>;
+    }).streams;
+    const stored = streams.get('account-1')!;
+    stored[0] = { ...stored[0]!, tags: [legacyTag] };
+    const query = new InMemoryQuery(journal);
+
+    await expect(query.currentEventsByTag(legacyTag, offsetStart))
+      .rejects.toThrow(/exceeding the .*-character limit/);
+    expect(() => query.eventsByTag(legacyTag, offsetStart))
+      .toThrow(/exceeding the .*-character limit/);
+    expect(() => normalizeTagFilter({ any: [legacyTag] })).toThrow();
+    expect(() => normalizeTagFilter({ not: [legacyTag] })).toThrow();
+  });
+
+  test('reading by persistence id still returns it — the route the caveat names', async () => {
+    const journal = new InMemoryJournal();
+    await journal.append('account-1', [{ event: 'a', tags: ['ledger'] }], 0);
+    const streams = (journal as unknown as {
+      readonly streams: Map<string, PersistentEvent<unknown>[]>;
+    }).streams;
+    const stored = streams.get('account-1')!;
+    stored[0] = { ...stored[0]!, tags: [legacyTag] };
+    const query = new InMemoryQuery(journal);
+
+    const byId = await query.currentEventsByPersistenceId<string>('account-1', 1);
+    expect(byId.map((event) => event.event)).toEqual(['a']);
+    expect(byId[0]?.tags).toEqual([legacyTag]);
+  });
+
+  test('the exception is recorded beside the rule it qualifies', () => {
+    // A caveat in the module header would be a caveat nobody reads while
+    // deciding whether the Length rule may transfer, and the transfer decision
+    // is made bullet by bullet in `assertValidFilterTags`'s JSDoc. So this
+    // scopes to that one bullet rather than to the file.
+    const source = readFileSync(
+      join(import.meta.dir, '..', '..', '..', '..', '..',
+        'src', 'persistence', 'storage', 'TagValidator.ts'),
+      'utf8',
+    );
+    const lengthBullet = source.slice(
+      source.indexOf('**Length**'),
+      source.indexOf('**Comma**'),
+    );
+    expect(lengthBullet.length).toBeGreaterThan(0);
+    expect(lengthBullet).toContain('0.12.0');
+    expect(lengthBullet).toContain('persistenceId');
   });
 });
 
