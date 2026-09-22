@@ -21,15 +21,23 @@ import { PATH_TRAVERSAL_SEGMENTS } from '../../util/Constants.js';
  *     stream) or rejected deep inside a driver.  {@link
  *     MAX_PERSISTENCE_ID_LENGTH} is that width, not one more.
  *   - **Path separators.** The object-storage stores lay an id out as a
- *     *directory*: `<prefix><persistenceId>/<seq>.json`, and read it back
- *     by listing the prefix `<prefix><persistenceId>/`.  A `/` in the id
- *     therefore nests one stream *inside* another — `a`'s listing then
- *     also returns `a/b`'s snapshots, and since the seq is parsed off the
- *     key's tail, `loadLatest` hands actor `a` actor `a/b`'s state and
- *     `delete` prunes it.  `\` is a separator too on the filesystem
- *     backend under Windows.  Same reasoning, same rule as
- *     `assertValidName` for actor names (#134): a separator does not make
- *     a name look wrong, it changes the *structure* the name sits in.
+ *     *directory* — `<prefix>snapshots/<persistenceId>/<seq>.json` for a
+ *     snapshot, `<prefix>state/<persistenceId>/state.json` for durable
+ *     state — and read it back by listing that prefix.  A `/` in the id
+ *     therefore nests one stream *inside* another: `a`'s listing also
+ *     returns `a/b`'s objects.  What follows from that is narrower than it
+ *     was.  Until #716 the seq was parsed off the key's tail, so the
+ *     nested object was read as one of `a`'s own and `loadLatest` handed
+ *     actor `a` actor `a/b`'s state; the reader now demands an exact leaf
+ *     shape directly under the entity's directory, so `loadLatest`,
+ *     `delete` and `keepN` pruning skip a key one level deeper alike.  The
+ *     id is refused anyway, and this is the reason to keep quoting: two
+ *     streams sharing a directory is a naming collision, not a shape a
+ *     store should have to defend against on every read.  `\` is a
+ *     separator too on the filesystem backend under Windows.  Same
+ *     reasoning, same rule as `assertValidName` for actor names (#134): a
+ *     separator does not make a name look wrong, it changes the
+ *     *structure* the name sits in.
  *   - **`.` / `..`.** Traversal meaning rather than a separator, and the
  *     same consequence one level up.  (The filesystem backend's own key
  *     validator already rejects a `..` *segment*; this closes the id

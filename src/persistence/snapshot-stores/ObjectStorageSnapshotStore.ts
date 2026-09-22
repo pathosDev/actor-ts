@@ -147,7 +147,19 @@ export class ObjectStorageSnapshotStore implements SnapshotStore {
     state: S,
     options?: PersistenceOptions,
   ): Promise<Snapshot<S>> {
-    if (!Number.isFinite(seq) || seq < 0) {
+    // `isSafeInteger`, not `isFinite`, and that is the reader's rule rather
+    // than a new one (#716): {@link snapshotSequenceOf} accepts a leaf only
+    // when it is exactly {@link SEQ_PADDING} digits and parses back to a
+    // safe integer.  While `save` checked only finiteness the two halves of
+    // this store disagreed about what a sequence number is, and the writing
+    // half was the permissive one — so `save('p', 1.5)` wrote
+    // `…/000000000000000001.5.json` and `save('p', 2 ** 53)` wrote a leaf of
+    // digits that are no longer the number asked for.  Neither is reachable
+    // again through this API: `loadLatest` skips them, `delete` never
+    // matches them, `keepN` pruning never counts them.  A loud failure here
+    // costs the caller a bad sequence; the alternative was an object that
+    // accumulates forever.
+    if (!Number.isSafeInteger(seq) || seq < 0) {
       throw new JournalError(`SnapshotStore.save: invalid sequence ${seq}`);
     }
     // Per-call options (from the actor) take precedence over the
