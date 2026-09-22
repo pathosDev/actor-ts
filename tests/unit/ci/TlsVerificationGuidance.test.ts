@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 
@@ -200,8 +200,32 @@ const WARNING_PHRASES: ReadonlyArray<readonly [string, string]> = [
   ['what is lost without it', 'authenticates nobody'],
 ];
 
-/** Where the reasoning lives in full.  Quoted, so a page rename is loud. */
+/**
+ * Where the reasoning lives in full.  Quoted, and checked against the tree
+ * below: quoting alone made nothing loud (#1508).  The constant was only ever
+ * compared against the JSDocs that carry it, so the page could be renamed with
+ * every assertion in this file green and the shipped links pointing at a 404.
+ */
 const TLS_PAGE = 'https://actor-ts.dev/operations/security/tls-everywhere/';
+
+/**
+ * The documentation site's origin.  The page path is *derived* from
+ * {@link TLS_PAGE} against it rather than written a second time, so the
+ * existence check cannot drift from the link it is checking — and the
+ * derivation is asserted non-vacuous, so a rewritten constant cannot satisfy it
+ * by pointing nowhere in particular.
+ */
+const SITE_ORIGIN = 'https://actor-ts.dev/';
+
+/** `operations/security/tls-everywhere` — the page's path relative to either content root. */
+const TLS_PAGE_PATH = TLS_PAGE.slice(SITE_ORIGIN.length).replace(/\/$/, '');
+
+/**
+ * Both language trees a page has to exist in.  The German mirror is a 1:1
+ * structure, so a rename that only moved the English page would leave `/de/`
+ * readers on a 404 while the English link still resolved.
+ */
+const DOCS_CONTENT_ROOTS: ReadonlyArray<string> = ['docs/src/content/docs', 'docs/src/content/docs/de'];
 
 /**
  * The four surfaces a developer reaches for when wiring TLS to Postgres: the
@@ -482,6 +506,26 @@ describe('Postgres poolConfig documents the safe TLS shape (#755)', () => {
       expect(lowercase, `${file} no longer states ${what}`).toContain(phrase);
     }
   });
+});
+
+describe('the page the guidance links to exists (#1508)', () => {
+  test('the link is on the documentation site, so a page path can be derived from it', () => {
+    // Guards the guard: the existence check below derives its path from the
+    // constant, and a constant rewritten to some other host, or to the site
+    // root, would give it nothing to check rather than something false.
+    expect(TLS_PAGE.startsWith(SITE_ORIGIN), `${TLS_PAGE} is not under ${SITE_ORIGIN}`).toBe(true);
+    expect(TLS_PAGE_PATH, 'the link names no page').not.toBe('');
+  });
+
+  for (const root of DOCS_CONTENT_ROOTS) {
+    test(`${root} carries it`, () => {
+      const page = join(REPOSITORY_ROOT, root, `${TLS_PAGE_PATH}.mdx`);
+      expect(
+        existsSync(page),
+        `${TLS_PAGE} is linked from the poolConfig JSDocs but no page exists at ${relativeToRoot(page)}`,
+      ).toBe(true);
+    });
+  }
 });
 
 /**
