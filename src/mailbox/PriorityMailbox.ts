@@ -164,9 +164,14 @@ export class PriorityMailbox<T = unknown> extends DroppingMailbox<T> {
     this.insert(envelope);
     const shed = this.removeOldest();
     // Undefined only when every entry — the arrival included — is a lifecycle
-    // notification that may not be dropped, which `prependUser` can produce by
-    // replaying a stashed one (#729).  The guard was already here for the
-    // discipline #407 established: count removals, not intentions.
+    // notification that may not be dropped, which a direct `enqueue` of an
+    // undroppable envelope can produce (#729).  A stash replay no longer can:
+    // {@link prependUser} routes an undroppable envelope to `enqueueSignal`,
+    // which is exempt from the bound and never reaches this method.  Worth
+    // stating, because a guard explained by a route that can no longer arrive
+    // reads as dead code to whoever considers deleting it.  The guard was
+    // already here for the discipline #407 established: count removals, not
+    // intentions.
     if (shed !== undefined) this.reportDrop(shed === envelope ? 'drop-new' : 'drop-head', shed);
   }
 

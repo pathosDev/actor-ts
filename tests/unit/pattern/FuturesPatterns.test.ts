@@ -3,6 +3,8 @@ import { Actor } from '../../../src/Actor.js';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { LogLevel, NoopLogger } from '../../../src/Logger.js';
 import { after, pipeTo, retry, Success, Failure } from '../../../src/pattern/index.js';
+import type { RetryOptions } from '../../../src/pattern/index.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import { ManualScheduler } from '../../../src/testkit/ManualScheduler.js';
 import { TestKit } from '../../../src/testkit/TestKit.js';
 import { TestKitOptions } from '../../../src/testkit/TestKitOptions.js';
@@ -370,6 +372,88 @@ describe('retry', () => {
     // guard cannot be tightened into rejecting the documented extremes.
     expect(await retry(async () => 'ok', { attempts: 2, delayMs: 1, randomFactor: 0 })).toBe('ok');
     expect(await retry(async () => 'ok', { attempts: 2, delayMs: 1, randomFactor: 1 })).toBe('ok');
+  });
+
+  /**
+   * The rest of the schedule is validated too, and for the same reason as
+   * `randomFactor` (#771, #1509).
+   *
+   * `attempts` and `randomFactor` were checked; `delayMs`, `factor` and
+   * `maxDelayMs` were not, and every malformed value of the three lands on the
+   * same outcome — `if (delay > 0)` is false and the wait is skipped
+   * altogether, so `retry` busy-loops against a dependency that is already
+   * failing.  Measured with the `sleep` seam on four attempts before the
+   * guards existed: `{delayMs: 0, factor: Infinity}` asked for no sleep at
+   * all, `{delayMs: -1000}` and `{delayMs: NaN}` the same, `{delayMs: 1000,
+   * factor: -2}` asked for `[1000, 4000]` — one wait short, with the sign
+   * swallowed by the even power — and `{maxDelayMs: NaN}` for nothing.
+   *
+   * That is "a misconfiguration degrades to no wait at all", which is the
+   * failure direction the whole clamp exists to invert, arrived at through the
+   * options rather than through the arithmetic.  The page says an overflowing
+   * configuration degrades to "waits ~24.9 days ... rather than to waits not
+   * at all"; these shapes are the second one.
+   *
+   * The third column is the field the error has to name.  The structured field
+   * is what a caller can branch on, and getting it wrong would leave a
+   * diagnostic that says the right thing about the wrong knob.
+   */
+  const malformedSchedules: readonly (readonly [string, Partial<RetryOptions>, string])[] = [
+    ['a negative delayMs', { delayMs: -1_000 }, 'delayMs'],
+    ['a NaN delayMs', { delayMs: Number.NaN }, 'delayMs'],
+    ['an infinite delayMs', { delayMs: Number.POSITIVE_INFINITY }, 'delayMs'],
+    ['a zero factor', { delayMs: 1_000, factor: 0 }, 'factor'],
+    ['a negative factor', { delayMs: 1_000, factor: -2 }, 'factor'],
+    ['an infinite factor', { delayMs: 0, factor: Number.POSITIVE_INFINITY }, 'factor'],
+    ['a NaN factor', { delayMs: 1_000, factor: Number.NaN }, 'factor'],
+    ['a NaN maxDelayMs', { delayMs: 1_000, maxDelayMs: Number.NaN }, 'maxDelayMs'],
+    ['a negative maxDelayMs', { delayMs: 1_000, maxDelayMs: -5 }, 'maxDelayMs'],
+  ];
+
+  for (const [label, shape, field] of malformedSchedules) {
+    test(`refuses ${label} before the first attempt`, async () => {
+      const requestedDelays: number[] = [];
+      let factoryCalls = 0;
+      let caught: unknown = null;
+      try {
+        await retry(async () => { factoryCalls++; throw new Error('fail'); }, {
+          attempts: 4,
+          sleep: (ms) => { requestedDelays.push(ms); return Promise.resolve(); },
+          ...shape,
+        });
+      } catch (e) { caught = e; }
+
+      // `OptionsError`, like every other refused argument in the tree — a
+      // caller can discriminate it from the error the factory itself threw,
+      // which a bare `Error` from here is indistinguishable from.
+      expect(caught).toBeInstanceOf(OptionsError);
+      expect((caught as OptionsError).options).toBe('retry');
+      expect((caught as OptionsError).field).toBe(field);
+      // Refused at entry, not on the first delay: the factory has side effects
+      // by definition, and a misconfigured schedule must not get to run one
+      // before it is reported.
+      expect(factoryCalls).toBe(0);
+      expect(requestedDelays).toEqual([]);
+    });
+  }
+
+  test('the legal extremes of the schedule stay legal', async () => {
+    // Each of these sits on an edge one of the guards above could swallow if
+    // it were written one comparison too wide: `delayMs: 0` is the documented
+    // default, `maxDelayMs: Infinity` is the documented opt-out of the
+    // ceiling, and `factor: 1` is the documented constant schedule.
+    const requestedDelays: number[] = [];
+    const sleep = (ms: number): Promise<void> => { requestedDelays.push(ms); return Promise.resolve(); };
+
+    expect(await retry(async () => 'ok', { attempts: 2, delayMs: 0, sleep })).toBe('ok');
+    expect(await retry(async () => 'ok', {
+      attempts: 2,
+      delayMs: 1,
+      maxDelayMs: Number.POSITIVE_INFINITY,
+      sleep,
+    })).toBe('ok');
+    expect(await retry(async () => 'ok', { attempts: 2, delayMs: 1, factor: 1, sleep })).toBe('ok');
+    expect(await retry(async () => 'ok', { attempts: 2, delayMs: 1, maxDelayMs: 0, sleep })).toBe('ok');
   });
 });
 

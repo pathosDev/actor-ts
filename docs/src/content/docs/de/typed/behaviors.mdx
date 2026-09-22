@@ -220,11 +220,20 @@ wichtigsten Zusagen: `unstashAll()` legt die gepufferten Nachrichten
 was währenddessen ankam, und was beim Stoppen oder Neustarten noch
 geparkt ist, geht zu **Dead Letters**, statt zu verschwinden.
 
-`capacity` muss eine ganze Zahl von mindestens 1 sein — `0`, ein
-negativer Wert, ein Bruchwert, `NaN` und `Infinity` werfen alle einen
+`capacity` muss eine ganze Zahl zwischen 1 und `2 ** 32 - 1` sein — `0`,
+ein negativer Wert, ein Bruchwert, `NaN` und `Infinity` werfen alle einen
 `OptionsError`, dort wo du das Behavior baust: eine Schranke, die kein
 Vergleich je erfüllen kann (`NaN` und `Infinity` vor allem), ließe den
 Puffer unbegrenzt wachsen, während `isFull` weiterhin `false` meldet.
+
+Das obere Ende wird aus demselben Grund abgelehnt, einen Schritt weiter
+gedacht.  `Number.MAX_VALUE` ist für JavaScript eine ganze Zahl, kam also
+durch die Prüfung und benannte dabei eine Decke, die das dahinterliegende
+Array gar nicht indizieren kann — ein Stash, der 50 000 Nachrichten
+aufnahm und weiterhin `isFull === false` meldete.  `2 ** 32 - 1` ist der
+letzte Index, den ein Array hat; eine Kapazität darüber ist eine
+Schranke, die der Vergleich nie erreicht, wieviel Heap der Prozess auch
+bekommt.
 
 Zwei Unterschiede zur Context-Form, beide beabsichtigt.  Die Kapazität
 ist die, die du `withStash` übergibst — pro Behavior, statt einer für den

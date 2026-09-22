@@ -55,6 +55,20 @@ Four knobs cooperate to control the delay between attempts:
 | `maxDelayMs` | Upper bound on any single delay.  Default `60_000` (one minute).  Pass `Number.POSITIVE_INFINITY` for an unbounded schedule — then only the 32-bit timer limit is left, which `retry` clamps to unconditionally (see the overflow note at the end of this page). |
 | `randomFactor` | Jitter fraction in `[0, 1]`.  The delay is spread to `delay × (1 ± randomFactor)`.  Default `0` (no jitter). |
 
+A malformed value for any of them is **refused** where you call
+`retry`, with an `OptionsError`, before the factory runs once:
+`delayMs` finite and at least `0`, `factor` finite and above `0`,
+`maxDelayMs` at least `0` (or `Number.POSITIVE_INFINITY` for the
+unbounded schedule), `randomFactor` inside `[0, 1]`.  Unchecked they
+all arrive at the same place — a computed delay that is `NaN`,
+negative or zero, which the loop skips — so a single mistyped option
+would turn the backoff into a hot loop against the dependency that is
+already failing.  That is the direction the clamp at the end of this
+page exists to invert, reached through the options instead of through
+the arithmetic, so it is refused rather than clamped: there is no
+sensible delay to fall back to when the one you asked for is not a
+number.
+
 ```ts
 // Constant 500ms between attempts:
 retry(factory, { attempts: 5, delayMs: 500 });
