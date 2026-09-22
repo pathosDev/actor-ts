@@ -1,4 +1,9 @@
-import type { Labels, MetricSample, MetricsRegistry } from './Metrics.js';
+import {
+  seriesKey,
+  type Labels,
+  type MetricSample,
+  type MetricsRegistry,
+} from './Metrics.js';
 
 /**
  * Prometheus 0.0.4 text-format exposition.
@@ -66,10 +71,12 @@ export function renderPrometheusSamples(samples: ReadonlyArray<MetricSample>): s
     if (head.kind === 'histogram') {
       // Histogram emission: bucket rows, then _sum and _count.
       // Layout per series: all bucket rows for one label set, then _sum + _count
-      // for that label set.  We separate by labelKey first.
+      // for that label set.  We separate by series key first — the registry's
+      // own, not a second copy of it (#1513): two tuples the registry keeps
+      // apart have to stay apart here, or their rows interleave.
       const byLabel = new Map<string, MetricSample[]>();
       for (const sample of group) {
-        const key = labelKey(sample.labels);
+        const key = seriesKey(sample.labels);
         let arr = byLabel.get(key);
         if (!arr) { arr = []; byLabel.set(key, arr); }
         arr.push(sample);
@@ -132,11 +139,6 @@ function renderLabels(labels: Labels): string {
     .map((key) => `${key}="${escapeLabelValue(String(labels[key]))}"`)
     .join(',');
   return `{${inner}}`;
-}
-
-function labelKey(labels: Labels): string {
-  return Object.keys(labels).sort()
-    .map((key) => `${key}=${String(labels[key])}`).join('\x1f');
 }
 
 /**

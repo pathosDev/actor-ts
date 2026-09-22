@@ -198,6 +198,32 @@ describe('renderPrometheusSamples — a sample list from several registries (#15
   test('an empty list renders an empty body', () => {
     expect(renderPrometheusSamples([])).toBe('');
   });
+
+  test('a histogram whose two label sets used to share a grouping key keeps them apart (#1513)', () => {
+    // The renderer groups a histogram's rows by label set so that each set's
+    // buckets are followed by its own `_sum` and `_count` — the layout the
+    // comment above the grouping promises.  It did that with a second,
+    // private copy of the registry's series key, which had the registry's
+    // collision in it: `{ a: 'x\x1fb=y' }` and `{ a: 'x', b: 'y' }` joined to
+    // one string, so both sets landed in one group and the rows interleaved.
+    // Sharing one helper is what keeps the two answers to "same series?" from
+    // drifting apart again.
+    const registry = new DefaultMetricsRegistry();
+    registry.histogram('h_seconds', { a: 'x\x1fb=y' }, { buckets: [1] }).observe(0.5);
+    registry.histogram('h_seconds', { a: 'x', b: 'y' }, { buckets: [1] }).observe(2);
+
+    expect(exportPrometheus(registry)).toBe(
+      '# TYPE h_seconds histogram\n'
+      + 'h_seconds_bucket{a="xb=y",le="1"} 1\n'
+      + 'h_seconds_bucket{a="xb=y",le="+Inf"} 1\n'
+      + 'h_seconds_sum{a="xb=y"} 0.5\n'
+      + 'h_seconds_count{a="xb=y"} 1\n'
+      + 'h_seconds_bucket{a="x",b="y",le="1"} 0\n'
+      + 'h_seconds_bucket{a="x",b="y",le="+Inf"} 1\n'
+      + 'h_seconds_sum{a="x",b="y"} 2\n'
+      + 'h_seconds_count{a="x",b="y"} 1\n',
+    );
+  });
 });
 
 describe('prometheusHandler', () => {
