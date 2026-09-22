@@ -11,6 +11,18 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **The WebSocket origin guard is exercised through every HTTP backend**
+  (#1508). Every origin test in the tree drove `compile()` and the compiled
+  `authorize()` directly, and every client in the backend suite dialled
+  without an `Origin` header, so only the guard's allow-on-missing branch
+  had ever run at that level — a backend that stopped running a route's
+  innermost authorization on upgrade would have unguarded every
+  `websocket()` route in every consumer's application while the test suite,
+  the cross-runtime smoke matrix and the coverage badge all stayed green.
+  Five cases on the shared suite now cover a refused foreign origin, a
+  refused opaque `null`, an admitted missing origin, an admitted same-host
+  origin and the explicit opt-out, and the three backend files run them.
+
 - **An external MQTT subscribe whose QoS the actor keeps now says so, once,
   at info** (#1510). The QoS guard was correct but silent:
   registerSubscription skipped the write and still issued the broker
@@ -2871,6 +2883,76 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The test that claims the WebSocket client's keepalive timer does not
+  outlive its socket now asserts on the timer** (#1508). It asserted only
+  that the socket stopped receiving, and that is satisfied by machinery the
+  timer has nothing to do with: `onSocketDown` nulls the socket handle
+  first, so a tick reaches nothing whether its interval was cleared or not.
+  Measured both ways — with the `clearInterval` deleted the old body stayed
+  green while the timer went on firing four more times in the same window,
+  and the plausible wrong fix of guarding the tick instead of clearing the
+  timer leaves exactly the per-period wake-up the comment was about. The
+  suite now counts invocations of the keepalive interval's handler, which is
+  the one instrument that separates a timer that was cleared from a timer
+  that still runs and returns early, and the assertion reads 5 and 6 against
+  those two mutants where it expects 1.
+
+- **The consumer's out-of-order cap is now exercised against a real
+  `ProducerController` rather than only against hand-rolled envelopes**
+  (#1508). A producer sending past a handler that refuses one sequence is
+  exactly the traffic the cap exists for, and nothing covered it, which is
+  how the retired `windowSize - 1` premise stood unchallenged for as long as
+  it did. The new case parks the retained set at exactly the cap while the
+  first sequence is refused across five retransmits, then watches the whole
+  run drain and all forty bodies arrive exactly once when the gap closes. It
+  also pins the half nothing else did: retransmission on that path is
+  unbounded, and that is the only reason a refusal at the cap is a stall
+  rather than a drop. A finite ceiling of three attempts, applied as a
+  probe, fails this case alone and leaves every other case in the file
+  green. The test helper's comment claiming a real producer never leaves a
+  gap open is corrected in the same pass.
+
+- **The producer incarnation token is now documented as scoped to one
+  producer rather than to one delivery** (#1511). #730's criterion asked for
+  a per-delivery unguessable nonce; what shipped is one token per controller
+  construction, stamped on every delivery that incarnation sends, so any
+  party which legitimately receives one delivery can settle every other
+  in-flight sequence of that producer for the actor's lifetime. That is
+  adequate under the issue's own threat model, where the holder of a
+  delivery is the acknowledging party anyway and has no other route to the
+  producer's reply address, and it is what keeps the consumer's
+  `(producerId, incarnation)` dedup key stable, since a per-message token
+  would reset the window on every sequence. What it does not give is a
+  capability that can be handed out per message. The field's JSDoc and both
+  ack-semantics pages now say so, a test pins the scope so a future
+  per-delivery token turns the record red instead of leaving the prose
+  stale, and #1237 is named as the open consumer-side sibling. The unread
+  `attempts` counter on the producer's in-flight record is annotated in the
+  same pass as #646's reserved hook, together with the interaction #646 does
+  not name: a retry ceiling that cannot tell a consumer refusing a sequence
+  from a consumer that is gone turns the documented stall into a silent
+  drop.
+
+- **The two retry delay ceilings moved into a new
+  `src/pattern/Constants.ts`, which the subsystem lacked while sixteen
+  siblings had one, and the jitter helper duplicated between `Retry` and
+  `BackoffPolicy` under a comment asserting the two were identical is now
+  one exported function that both use** (#1509). Neither constant is on the
+  `pattern` barrel: both were module-private before the move.
+
+- **Four decisions around mailboxes and the backoff supervisor now say what
+  they actually decided** (#1509). The `deadLetterDrops` option describes
+  the attribution its dead letters carry — the envelope's MDC context and
+  trace, which no other loss path has — instead of claiming they carry what
+  every other loss path carries. `BackoffSupervisor` records why the respawn
+  tick takes no dedicated internal channel, and where the per-eviction
+  dead-letter cost is bounded for every producer rather than per producer.
+  `PriorityMailbox`'s all-undroppable guard names a route that can still
+  reach it, the stash replay having moved to the exempt lane. And the
+  mailbox-sizing page says, in both languages and on the factor an operator
+  actually multiplies, that `capacity x bytes_per_message` bounds the user
+  queue and not the actor's footprint.
+
 - **Every broker image is pinned to a release, every runner image to a
   digest, and Dependabot watches both — and the .NET benchmark arms**
   (#1597). Sixteen of the seventeen `image:` lines in the integration compose
@@ -3519,6 +3601,16 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   `WithStashBehavior` node that never went through the combinator is refused
   as well.
 
+  The accepted range is an integer between 1 and `2 ** 32 - 1`, not merely
+  an integer of at least 1. `Number.isInteger(Number.MAX_VALUE)` is `true`,
+  so the integer check admitted capacities the buffer's backing array can
+  never index: measured, such a stash took 50 000 messages and still
+  reported `isFull === false` — exactly the unbounded buffer the guard
+  exists to refuse, reached through the half of its domain it did not cover.
+  A capacity above the ceiling is refused with its own message, because that
+  value is an integer and the comparison against it is well defined; it is
+  the array that cannot get there (#1509).
+
   **Migration.** Pass an integer of at least 1. A `0` or fractional value
   now throws `OptionsError` instead of producing a buffer that rejects every
   `stash()` call, and `NaN` or `Infinity` now throws instead of silently
@@ -3526,6 +3618,81 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 
 ### Fixed
+
+- **A WebSocket client no longer lets a superseded socket speak for the
+  connection that replaced it** (#1514). `onSocketDown` guarded only on
+  `this.socket !== null`, which answers whether some connection is up rather
+  than whether the event's own connection is still the current one, and none
+  of the three listeners registered on a socket said which socket they spoke
+  for. Two ordinary paths reach the gap. Against a blackholed peer, the
+  deployment the read deadline exists for, the client's own `close()` cannot
+  complete its handshake, so the runtime's close or error arrives whenever
+  TCP gives up, which can be after the reconnect has already succeeded; and
+  without any deadline at all a real `WebSocket` fires error and then close
+  for one drop, so a backoff shorter than the gap between them fits the
+  whole reconnect in between. Measured with fakes, a late event fired a
+  second disconnect for a healthy connection, closed the socket that was
+  working and dialled a third. The `message` listener was the same gap with
+  worse consequences: a frame the runtime had already buffered reached the
+  handler after its own connection had been reported gone, refreshed the
+  read deadline of the connection that replaced it with traffic that was not
+  its own, and, when oversize, closed whichever socket was current —
+  measured at 2 MiB, it closed the healthy connection and dialled a third.
+  All three listeners now name their socket and return early unless it is
+  still the live one.
+
+- **The SSE client now accepts all three line terminators the wire format
+  allows — `\r\n` and a lone `\r` as well as `\n`** (#1510). A conformant
+  feed framed with `\r\n\r\n` previously completed no event at all: the
+  delimiter search was for `'\n\n'`, so the pending buffer simply grew read
+  by read until the 1 MiB safety cap declared the feed hostile and dropped
+  the connection, and the reconnect cycle then replayed that against a
+  server doing nothing wrong. A feed that mixed the framings fared no
+  better, because the field parser split on `'\n'` and left the `\r` on the
+  end of every value it cut out. Line endings are now normalised to LF at
+  the buffer boundary, which is also where the one case a per-chunk rewrite
+  cannot see is handled: a terminator split across two network reads — a
+  `\r` ending one and an `\n` opening the next — counts once rather than
+  twice. The safety cap is unchanged and still measured on the characters as
+  they arrive, so normalising can only make it fire earlier, never later.
+
+- **The ack-semantics pages named `resendTimeoutMs` where they meant the
+  producer option** (#1472). That is the private field the controller
+  resolves the option into; the option itself is `resendTimeout` and its
+  builder setter is `withResendTimeout`, so a reader who copied the name got
+  a key that does nothing. Three occurrences per language are corrected, and
+  no occurrence of the old spelling remains anywhere under `docs/`.
+
+- **A consumer handler that runs longer than `producerIdleTtlMs` no longer
+  has its own dedup entry swept out from under it** (#1512). The idle sweep
+  runs from a scheduler callback rather than through the mailbox, so it was
+  the one thing able to delete an entry while its handler was awaited, and
+  the timestamp it compares against is stamped when the delivery arrives
+  rather than when the handler returns. `markDelivered` then wrote to a
+  detached object, the sequence was not in the live window, and the
+  producer's retransmit ran the handler a second time. The controller now
+  re-stamps the entry once the handler resolves, before recording the
+  sequence, which makes the documented guarantee true without an exception:
+  a retransmit arriving while its own sequence is still being handled is
+  absorbed as the duplicate it is. The re-insert cannot push the map past
+  `maxProducers`, because deliveries are serialised so no new producer can
+  be admitted while one is awaited and the sweep only ever removes. The
+  handler-throw path deliberately does not re-stamp: nothing was marked
+  delivered there, and the retransmit that refusal invites is meant to
+  re-enter the handler. Unreachable at the shipped defaults, a 300 s
+  time-to-live against a 500 ms resend timeout, and it cost only an
+  at-least-once duplicate the protocol already permits.
+
+- **A rejected option value is rendered the same way wherever the framework
+  refuses one** (#1509). `Behaviors.withStash('10', ...)` reported `capacity
+  must be an integer >= 1 (got 10)`, which reads as a complaint about an
+  integer the caller did pass, and `withStash([], ...)` reported `(got )`
+  with nothing in it at all — both of them the untyped-JavaScript arrival
+  the guard's own comment says it exists to catch. One renderer now serves
+  that guard, `ActorRef.ask`'s timeout check and every `OptionsValidator`
+  message: strings are quoted, other non-numbers are rendered structurally,
+  and numbers keep going through `String` so `NaN` and `Infinity` stay
+  legible.
 
 - **BREAKING — An external unsubscribe can no longer silence an MqttActor
   subclass's declared fan-out** (#1510). The removal path cleared the whole
@@ -4492,6 +4659,48 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   fallback where a runtime has one, and an interval that can send nothing
   now logs one warning at connect time and starts no timer (#751).
 
+  The same-origin default that every `websocket()` route now carries is
+  documented with its limits, and its value lives in one place. `Origin` and
+  `Host` are both client-sent, so a page that reaches the server under a
+  name of its own — DNS rebinding — presents a matching pair and passes the
+  same-origin arm; the comparison is scheme-blind as well, so an `http://`
+  page on the same host and port passes a check an `https://` listener might
+  read as same-origin. What that exposes is a route whose authentication is
+  the network itself, `IpAllowlist` or trusting loopback, rather than one
+  with a cookie session, because no cookies for the real host travel with a
+  rebound page — such a route should name its origins in `allowedOrigins`
+  instead of relying on the default alone. The mechanism is unchanged.
+  Alongside the caveat, the `allowedOrigins` JSDoc stops claiming that
+  leaving it unset means no origin check, which contradicted both the code
+  and the documentation pages in the file a caller reads in their editor,
+  and the default's value moves out of the routing directive into
+  `DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN` beside the field it defaults, with
+  a test deriving a bare route's expected answer from it so the two cannot
+  drift (#1514).
+
+  A WebSocket client keepalive is written straight to the live socket
+  instead of through `sendRaw()`, so it can no longer enter the outbound
+  resend buffer. `sendRaw()` is `enqueueOutbound`, the application's
+  bounded, FIFO-evicting replay queue, and a heartbeat fails both of that
+  queue's premises: it is addressed to one socket, so replaying it onto the
+  next one sends a keepalive for a connection that no longer exists against
+  a period that has already elapsed, and it competes for a bounded slot, so
+  on a full buffer it evicts a real message to make room for itself. The
+  window is narrow but reachable and nothing else closed it — every teardown
+  path clears the keepalive timer except `handleConnectionLost`, which
+  `BrokerActor` reaches when a `dispatchOutgoing` throws and which schedules
+  a reconnect without running `disconnectImplementation`, leaving the actor
+  offline for the length of the backoff while still holding a live socket
+  handle and a live timer. Measured with `outboundBuffer: 1`: four
+  buffer-overflow evictions in one backoff window, the application's own
+  message lost, and a stale heartbeat as the first frame on the replacement
+  socket; under `reconnect: false` there is no backoff to end it and the
+  timer buffers forever. A tick now runs only while its own socket is still
+  the connected one, and a refused send is swallowed for the same reason a
+  refused `ping()` is — a keepalive stops a proxy closing an idle
+  connection, and it is `idleTimeoutMs`, not this timer, that concludes a
+  connection is gone (#1514).
+
   **Migration.** A route whose page is served from a different origin than
   the socket must say so with `withAllowedOrigins([...])`, or restore the
   old behaviour with `withRequireSameOrigin(false)`; a route that wants its
@@ -4533,6 +4742,20 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   price is one cache round-trip per refused load.
   `withAllowPlaintextCache(true)` is the acknowledgement that restores the
   caching.
+
+  `retry` validates `delayMs`, `factor` and `maxDelayMs` before the first
+  attempt instead of silently skipping every wait. Only `attempts` and
+  `randomFactor` were checked, so a negative, `NaN` or infinite base, a
+  non-positive or non-finite factor, and a `NaN` or negative ceiling each
+  produced a delay the loop discarded — the backoff turned into a hot loop
+  against the dependency that was already failing, which is the failure
+  direction the timer clamp exists to invert, reached through the options
+  instead of through the arithmetic. `maxDelayMs: Number.POSITIVE_INFINITY`
+  stays legal as the documented opt-out of the ceiling. All of `retry`'s
+  option refusals now raise `OptionsError` rather than a bare `Error`, so a
+  caller can tell a refused call from a failed dependency; only the class
+  changed, the message texts are unchanged, and `OptionsError` extends
+  `Error` (#1509).
 
   **Migration.** A caller relying on an uncapped multi-day retry wait must
   now set `maxDelayMs` explicitly. A `CachedSnapshotStore` wrapping an
@@ -4769,13 +4992,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   default push mode. That last path is one the issue report explicitly said
   did not exist.
 
-  **Migration.** The four settle commands take `ackToken` instead of
-  `streamSeq`: `{ kind: 'acknowledgment', streamSeq: message.streamSeq }`
-  becomes `{ kind: 'acknowledgment', ackToken: message.ackToken }`, and the
-  same for `negativeAcknowledgment`, `terminate` and `inProgress`.
-  `streamSeq` stays on the message, where it belongs — for log lines and
-  application-side deduplication.
-
   All four JetStream settle commands now report an unknown `ackToken` at
   `warn`, not only `acknowledgment`. `negativeAcknowledgment`, `terminate`
   and `inProgress` each dropped the command in total silence, not even at
@@ -4793,6 +5009,13 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   wrote that many warnings per flap — and the doubled `JetStreamActor: pump
   JetStreamActor:` prefix that every catch-path line carried is gone
   (#1510).
+
+  **Migration.** The four settle commands take `ackToken` instead of
+  `streamSeq`: `{ kind: 'acknowledgment', streamSeq: message.streamSeq }`
+  becomes `{ kind: 'acknowledgment', ackToken: message.ackToken }`, and the
+  same for `negativeAcknowledgment`, `terminate` and `inProgress`.
+  `streamSeq` stays on the message, where it belongs — for log lines and
+  application-side deduplication.
 
 
 - **`ConfigKeys`, `CircuitBreakerOptionsValidator`, `isPlainObject` and
@@ -5574,6 +5797,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   rewritten to another host or to the site root fails rather than checking
   nothing (#1508).
 
+  The CORS options table and the `allowedHeaders` JSDoc stop calling the
+  echoed `Access-Control-Allow-Headers` value sanitised. They read "echo the
+  (sanitised) request headers" in both languages, a dozen lines above the
+  aside insisting the value is filtered rather than trimmed, that a name
+  carrying anything else is dropped whole, and that the field is omitted
+  entirely when nothing survives — and sanitised is the word that change
+  spent three paragraphs repudiating, because a character-class scrub is
+  exactly what it replaced. All three sites now describe the filter, and the
+  module-private helper is named for filtering rather than sanitising
+  (#1514).
+
 - **An external `subscribe` can no longer rewrite an `MqttActor` subclass's
   declared QoS** (#783).
 
@@ -5861,17 +6095,6 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   SPACE, so trailing-space equality survives on MariaDB and MySQL; there is
   no portable NO PAD binary collation to pin.
 
-  **Migration.** New databases pick the collation up automatically. An
-  existing one does not — the guarded `CREATE TABLE` never revisits a table
-  it finds, and nothing at startup reports the mismatch. Run the `ALTER
-  TABLE … MODIFY` (MariaDB, MySQL) or the drop-constraint / `ALTER COLUMN` /
-  recreate sequence (SQL Server, which refuses to re-collate a column an
-  index depends on) given on the MariaDB and SQL Server journal pages, with
-  no node writing. Check for already-merged streams first: the ALTER splits
-  them apart again, and those actors then fail recovery with
-  `JournalIntegrityError` on the resulting sequence gap. The pages carry a
-  query that detects them.
-
   The SQL Server recipe is one transaction with `XACT_ABORT` on, and both
   pages name what the migration window does to tag queries.
   `RelationalQuery` joins `events_tags` to `events` on `persistence_id`, and
@@ -5886,6 +6109,17 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   collation wins over a `_ci` one of the same character set — so its page
   notes only that tag queries in the window cannot use the un-migrated
   side's index and are slow rather than wrong (#1507).
+
+  **Migration.** New databases pick the collation up automatically. An
+  existing one does not — the guarded `CREATE TABLE` never revisits a table
+  it finds, and nothing at startup reports the mismatch. Run the `ALTER
+  TABLE … MODIFY` (MariaDB, MySQL) or the drop-constraint / `ALTER COLUMN` /
+  recreate sequence (SQL Server, which refuses to re-collate a column an
+  index depends on) given on the MariaDB and SQL Server journal pages, with
+  no node writing. Check for already-merged streams first: the ALTER splits
+  them apart again, and those actors then fail recovery with
+  `JournalIntegrityError` on the resulting sequence gap. The pages carry a
+  query that detects them.
 
 - **BREAKING — Read-side tag filters are validated where every backend meets
   them (#738).**
