@@ -201,9 +201,16 @@ Ids, die du selbst erzeugst.
 Das DDL ist `CREATE TABLE IF NOT EXISTS`, und `autoCreateTables` ist
 standardmäßig `true` — eine **bestehende Datenbank übernimmt das also
 nicht**: das Framework fasst eine vorgefundene Tabelle nie wieder an.  Neue
-Deployments bekommen die Kollation stillschweigend, alte behalten den
-Server-Standard, und gewarnt wird in keiner der beiden Richtungen.  Führe
-das einmal pro Datenbank aus, während kein Knoten schreibt:
+Deployments bekommen die Kollation stillschweigend; eine ältere Datenbank
+behält den Server-Standard, bis du die Migration unten ausführst — aber
+nicht mehr unbemerkt.  Jeder Store liest beim Öffnen seine eigenen Tabellen
+aus `information_schema` und **warnt beim Start**, wenn eine
+`persistence_id`- oder `tag`-Spalte mit einer nicht-binären Kollation
+zurückkommt; er nennt Tabelle, Spalte und die gefundene Kollation.  Dieser
+Lesezugriff braucht keine DDL-Rechte und läuft unabhängig davon, ob
+`autoCreateTables` gesetzt ist — denn ein vom Betrieb selbst verwaltetes
+Schema ist genau das, das am ehesten älter ist als der Pin.  Führe das
+einmal pro Datenbank aus, während kein Knoten schreibt:
 
 ```sql
 ALTER TABLE events        MODIFY persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL;
@@ -229,6 +236,13 @@ die noch nicht umgestellte Seite kann ihren Index für den Vergleich nicht
 nutzen, Tag-Queries sind in diesem Fenster also langsam statt falsch.  Eine
 `tagsTable`, die auf eine *neue* Tabelle neben einem alten `events` zeigt,
 ist dieses Fenster auf Dauer, bis auch `events` umkollationiert ist.
+
+Die Startwarnung meldet **pro Spalte**, und genau das unterscheidet diesen
+Zustand von einem unangetasteten Schema: startet ein Knoten mitten in der
+Migration neu, nennt die Warnung nur die noch offenen Spalten und sagt, dass
+das Schema halb migriert ist.  Eine `tagsTable` neben einem alten `events`
+liest sich genauso — bei jedem Öffnen des Stores, bis die Migration fertig
+ist.
 
 Prüfe **vor** der Migration auf Schaden, solange `GROUP BY` noch die
 faltende Kollation benutzt:
@@ -330,12 +344,18 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Eine bestehende Datenbank behält die alte Kollation">
   `CREATE TABLE IF NOT EXISTS` fasst eine bereits vorhandene Tabelle nie
   wieder an — eine vor dem `COLLATE utf8mb4_bin` angelegte Datenbank behält
-  also den case-insensitiven Server-Standard, und beim Start sagt das
-  nichts.  Zwei Ids, die sich nur in der Groß-/Kleinschreibung
-  unterscheiden, teilen sich dann auf diesem Backend einen Event-Stream und
-  bleiben auf jedem anderen getrennt.  Führe die
+  also den case-insensitiven Server-Standard.  Zwei Ids, die sich nur in der
+  Groß-/Kleinschreibung unterscheiden, teilen sich dann auf diesem Backend
+  einen Event-Stream und bleiben auf jedem anderen getrennt.  Der Store
+  **warnt beim Start**, wenn er das vorfindet, und nennt Tabelle, Spalte und
+  gelesene Kollation — einmal pro Store, und nie als Fehler: ein Hinweis,
+  der eine laufende Datenbank lahmlegen kann, wäre ein schlechterer Tausch
+  als das, was er meldet.  Führe die
   [`ALTER TABLE`-Migration](#bestehendes-schema-migrieren) aus; prüfe vorher
-  auf bereits verschmolzene Streams.
+  auf bereits verschmolzene Streams.  Eine binäre Kollation, die du selbst
+  gewählt hast — `utf8mb4_nopad_bin` oder MySQL 8s `utf8mb4_0900_bin` —
+  bleibt stumm: geprüft wird auf einen faltenden Vergleich, nicht auf die
+  Schreibweise dieser Seite.
 </Aside>
 
 <Aside type="caution" title="TLS zu einer Managed-Instanz">

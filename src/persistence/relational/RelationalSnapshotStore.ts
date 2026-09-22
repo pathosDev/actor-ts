@@ -84,6 +84,10 @@ export class RelationalSnapshotStore extends RelationalStore implements Snapshot
     return this.dialect.snapshotDdl(this.table);
   }
 
+  protected ownedTables(): ReadonlyArray<string> {
+    return [this.table];
+  }
+
   async save<S>(persistenceId: string, seq: number, state: S, _options?: PersistenceOptions): Promise<Snapshot<S>> {
     const pool = await this.ensureOpen();
     const now = Date.now();

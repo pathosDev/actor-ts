@@ -280,8 +280,15 @@ setzt.
 Das DDL ist mit `IF OBJECT_ID(…) IS NULL` abgesichert, und `autoCreateTables`
 ist standardmäßig `true` — eine **bestehende Datenbank übernimmt das also
 nicht**: das Framework fasst eine vorgefundene Tabelle nie wieder an.  Neue
-Deployments bekommen die Kollation stillschweigend, alte behalten den
-Instanz-Standard, und beim Start sagt das nichts.
+Deployments bekommen die Kollation stillschweigend; eine ältere Datenbank
+behält den Instanz-Standard, bis du die Migration unten ausführst — aber
+nicht mehr unbemerkt.  Jeder Store liest beim Öffnen seine eigenen Tabellen
+aus `sys.columns` und **warnt beim Start**, wenn eine `persistence_id`- oder
+`tag`-Spalte mit einer nicht-binären Kollation zurückkommt; er nennt Tabelle,
+Spalte und die gefundene Kollation.  Dieser Lesezugriff braucht keine
+DDL-Rechte und läuft unabhängig davon, ob `autoCreateTables` gesetzt ist —
+denn ein vom Betrieb selbst verwaltetes Schema, also genau der Fall, den
+diese Seite zum Vorab-Anlegen empfiehlt, ist am ehesten älter als der Pin.
 
 SQL Server weigert sich, eine Spalte umzukollationieren, von der ein Index oder
 Constraint abhängt (Fehler 5074) — pro Tabelle heißt das also: droppen, ändern,
@@ -353,6 +360,13 @@ auf eine *neue* Tabelle neben einem alten `events` zeigt: die neue Tabelle
 wird mit dem `BIN2`-Pin angelegt, die alte behält den Instanz-Standard, und
 jede Tag-Query scheitert mit 468, bis auch `events` umkollationiert ist.
 
+Die Startwarnung meldet **pro Spalte**, und genau das unterscheidet diesen
+Zustand von einem unangetasteten Schema: sie nennt nur die Spalten, die noch
+auf einer faltenden Kollation stehen, und sagt, dass das Schema halb migriert
+ist und eine Tag-Query über beide rundheraus mit 468 scheitern kann.  Eine
+`tagsTable` neben einem alten `events` liest sich genauso — bei jedem Öffnen
+des Stores, bis `events` umgestellt ist.
+
 Prüfe **vor** der Migration auf Schaden, solange `GROUP BY` noch die faltende
 Kollation benutzt:
 
@@ -408,12 +422,17 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="Eine bestehende Datenbank behält die alte Kollation">
   Das abgesicherte `CREATE TABLE` fasst eine bereits vorhandene Tabelle nie
   wieder an — eine vor dem `COLLATE Latin1_General_100_BIN2` angelegte
-  Datenbank behält also den case-insensitiven Instanz-Standard, und beim Start
-  sagt das nichts.  Zwei Ids, die sich nur in der Groß-/Kleinschreibung
-  unterscheiden, teilen sich dann auf diesem Backend einen Event-Stream (und
-  eine Durable-State-Zeile) und bleiben auf jedem anderen getrennt.  Führe die
-  [Migration](#bestehendes-schema-migrieren) aus; prüfe vorher auf bereits
-  verschmolzene Streams.
+  Datenbank behält also den case-insensitiven Instanz-Standard.  Zwei Ids, die
+  sich nur in der Groß-/Kleinschreibung unterscheiden, teilen sich dann auf
+  diesem Backend einen Event-Stream (und eine Durable-State-Zeile) und bleiben
+  auf jedem anderen getrennt.  Der Store **warnt beim Start**, wenn er das
+  vorfindet, und nennt Tabelle, Spalte und gelesene Kollation — einmal pro
+  Store, und nie als Fehler: ein Hinweis, der eine laufende Datenbank
+  lahmlegen kann, wäre ein schlechterer Tausch als das, was er meldet.  Führe
+  die [Migration](#bestehendes-schema-migrieren) aus; prüfe vorher auf bereits
+  verschmolzene Streams.  Eine andere `BIN2`-Kollation, die du selbst gewählt
+  hast, bleibt stumm: geprüft wird auf einen faltenden Vergleich, nicht auf
+  die Schreibweise dieser Seite.
 </Aside>
 
 <Aside type="caution" title="TLS ist im Treiber standardmäßig an">

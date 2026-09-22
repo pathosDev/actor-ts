@@ -74,6 +74,27 @@ export interface SqlDialect {
    */
   storageIdentityDdl?(table: string): string[];
 
+  /* ----------------------------- catalogue ------------------------------ */
+
+  /**
+   * Statement reading the declared collation of one table's columns back out
+   * of the server's catalogue (#1412).
+   *
+   * The table name is the statement's **only parameter**, not an
+   * interpolation, so nothing here needs `assertSafeIdentifier` and the
+   * statement is one constant string per dialect.  It must alias its two
+   * output columns to `column_name` and `collation_name` — the catalogues
+   * disagree on both spelling and case (`information_schema.COLUMNS` shouts,
+   * `sys.columns` calls them `name` and `collation_name`) and
+   * {@link RelationalStore} reads one shape.  A row for a column that has no
+   * collation (a `BIGINT`, a blob) reports `collation_name` as null.
+   *
+   * Optional, and left undefined by a dialect whose text comparison is
+   * byte-exact by construction: Postgres `TEXT` and SQLite have no collation
+   * to get wrong, so there is nothing to advise about.
+   */
+  columnCollationsSql?(): string;
+
   /* -------------------------- dialect-owned DML ------------------------- */
 
   /** Tag-row insert that silently skips a row that already exists. */
@@ -124,6 +145,43 @@ export interface SqlDialect {
    * someone else's append.
    */
   isSerializationConflictError(error: unknown): boolean;
+}
+
+/**
+ * The columns whose *comparison* the relational family depends on, and
+ * therefore the only ones {@link SqlDialect.columnCollationsSql} is read for.
+ *
+ * `persistence_id` is the name of an event stream and half of the events
+ * primary key; `tag` keys the projection index.  Everything else a relational
+ * store stores is a value that is never compared as a string — the payload,
+ * the serialized tag list, the minted `identity` of `storage_identity` — and
+ * the DDL leaves those on the server default on purpose, so flagging them
+ * would report the intended state as a defect.  That makes this list the
+ * classification rather than a tuned value, which is why it sits beside the
+ * member it is read through.
+ */
+export const COLLATION_SENSITIVE_COLUMNS: ReadonlySet<string> = new Set(['persistence_id', 'tag']);
+
+/**
+ * Collations whose comparison is code point by code point.
+ *
+ * Matched on the **shape of the name**, not against the collation this
+ * project's DDL happens to pin, and that distinction is the whole point
+ * (#1412).  `utf8mb4_nopad_bin` is a MariaDB operator's deliberately
+ * *stricter* choice, `utf8mb4_0900_bin` is what MySQL 8 offers, SQL Server
+ * has a whole `*_BIN2` family and TiDB pins its own (#1127) — a rule of the
+ * shape "not the collation we write" would nag every one of those on every
+ * start, which is how an advisory trains people to ignore it.  `binary` is
+ * the collation MySQL/MariaDB report for a column on the `binary` charset.
+ */
+const BINARY_COLLATION_PATTERN = /(?:^binary|_bin2?)$/i;
+
+/**
+ * True when `collation` compares code point by code point, so two ids
+ * differing in case or accent stay two ids.
+ */
+export function isBinaryCollation(collation: string): boolean {
+  return BINARY_COLLATION_PATTERN.test(collation);
 }
 
 /**
