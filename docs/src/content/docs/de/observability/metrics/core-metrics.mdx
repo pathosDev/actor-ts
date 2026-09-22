@@ -186,6 +186,16 @@ weiter unten):
 metrics.counter('http_requests_total', { tenant: tenantLabel }).inc();
 ```
 
+Beide Grammatiken sind exportiert — `PROMETHEUS_METRIC_NAME_PATTERN` und
+`PROMETHEUS_LABEL_NAME_PATTERN` aus `actor-ts/metrics` —, sodass Code,
+der einen Namen oder einen Key aus etwas anderem als einem Literal
+zusammensetzt, dieselbe Frage stellen kann, die die Registry gleich
+stellen wird, und „diese Metrik würde abgelehnt“ an der eigenen Grenze
+melden kann, statt mehrere Frames tiefer einen Throw zu fangen.  Es sind
+dieselben Objekte, die die Registry konsultiert, und genau sie schuldet
+eine eigene `MetricsRegistry` dem Renderer: siehe
+[Der Renderer vertraut seiner Eingabe](/de/observability/metrics/prometheus-exporter/#der-renderer-vertraut-seiner-eingabe).
+
 ### Kardinalitätsdisziplin
 
 ```ts

@@ -181,6 +181,15 @@ label **value**, bounded at the source (see *`bucketize`* below):
 metrics.counter('http_requests_total', { tenant: tenantLabel }).inc();
 ```
 
+Both grammars are exported — `PROMETHEUS_METRIC_NAME_PATTERN` and
+`PROMETHEUS_LABEL_NAME_PATTERN` from `actor-ts/metrics` — so code that
+assembles a name or a key from anything but a literal can ask the same
+question the registry is about to ask, and report "this metric would be
+rejected" at its own boundary instead of catching a throw several frames
+in.  They are the same objects the registry consults, and they are what a
+custom `MetricsRegistry` owes the renderer: see
+[the renderer trusts its input](/observability/metrics/prometheus-exporter/#the-renderer-trusts-its-input).
+
 ### Cardinality discipline
 
 ```ts
