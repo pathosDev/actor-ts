@@ -119,6 +119,15 @@ export class RelationalJournal extends RelationalStore implements Journal {
     return this.dialect.journalDdl(this.tables);
   }
 
+  /**
+   * All three, not just `events`: a `tagsTable` pointed at a new table beside
+   * a legacy `events` is exactly the mixed state the collation probe exists to
+   * name, and the meta table's `persistence_id` keys the compaction mark.
+   */
+  protected ownedTables(): ReadonlyArray<string> {
+    return [this.tables.events, this.tables.tags, this.tables.meta];
+  }
+
   async append<E>(
     persistenceId: string,
     entries: ReadonlyArray<JournalEntry<E>>,

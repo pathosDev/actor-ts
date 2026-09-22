@@ -203,30 +203,46 @@ assembled rather than collected, **you** own that check.  A sample named
 `x_total 1\nnode_up{job="prod"} 0\n#` renders as those three lines, and
 whatever scrapes it cannot tell the forged `node_up` from a real one —
 an alert on `node_up == 0` is silenced as effectively as by a fixed
-outage.  The two grammars are exported for exactly this:
+outage.  The two grammars are exported for exactly this, and the two
+reserved keys with them:
 
 ```ts
 import {
   PROMETHEUS_LABEL_NAME_PATTERN,
   PROMETHEUS_METRIC_NAME_PATTERN,
+  RESERVED_LABEL_PREFIX,
+  THREAD_LABEL,
   renderPrometheusSamples,
   type MetricSample,
 } from 'actor-ts/metrics';
 
+const usableLabelKey = (key: string): boolean =>
+  PROMETHEUS_LABEL_NAME_PATTERN.test(key)
+  && key !== THREAD_LABEL
+  && !key.startsWith(RESERVED_LABEL_PREFIX);
+
 const trustworthy = (sample: MetricSample): boolean =>
   PROMETHEUS_METRIC_NAME_PATTERN.test(sample.name)
-  && Object.keys(sample.labels).every((key) => PROMETHEUS_LABEL_NAME_PATTERN.test(key));
+  && Object.keys(sample.labels).every(usableLabelKey);
 
 // `samples` came from somewhere this package never checked.
 const renderForeign = (samples: ReadonlyArray<MetricSample>): string =>
   renderPrometheusSamples(samples.filter(trustworthy));
 ```
 
+The grammars are the injection half; the two reserved keys are the forgery
+the grammars do not catch.  `thread` is the label the exposition stamps
+itself while a worker mesh is relaying (#1570), and `__` is the server's
+own namespace — a `__name__` among a sample's labels is honoured by a
+scrape job running `honor_labels: true`, which then files the sample under
+whatever name that label carries (#1513).
+
 The worker-mesh relay is the worked example: a snapshot arriving from a
 worker crosses a thread boundary, so the relay re-checks every name and
-every label key against those same two patterns before the samples reach
-the renderer.  Nothing minted by `system.metrics` needs this — the check
-already happened at the call that minted it.
+every label key — both grammars and both reservations, through the same
+helper the registry uses — before the samples reach the renderer.  Nothing
+minted by `system.metrics` needs this: the check already happened at the
+call that minted it.
 
 ## Naming conventions
 

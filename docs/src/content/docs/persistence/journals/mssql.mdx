@@ -271,8 +271,15 @@ table's nonclustered key already imposes.
 The DDL is guarded with `IF OBJECT_ID(…) IS NULL` and `autoCreateTables`
 defaults to `true`, so **an existing database does not pick this up**: the
 framework never revisits a table it finds.  New deployments get the
-collation silently, old ones keep the instance default, and nothing at
-startup says so.
+collation silently; an older database keeps the instance default until you
+run the migration below — but it no longer does so quietly.  Each store
+reads its own tables out of `sys.columns` when it opens and **warns at
+startup** if a `persistence_id` or `tag` column comes back on a collation
+that is not binary, naming the table, the column and the collation it
+found.  That read needs no DDL rights and runs whether or not
+`autoCreateTables` is set, because a schema the operator manages — the case
+this page tells you to pre-provision — is the one most likely to predate
+the pin.
 
 SQL Server refuses to re-collate a column that an index or constraint
 depends on (error 5074), so each table is drop, alter, recreate.  Run it
@@ -342,6 +349,13 @@ at a *new* table beside a legacy `events`: the new table is created with
 the `BIN2` pin, the old one keeps the instance default, and every tag
 query fails with 468 until `events` is re-collated too.
 
+The startup warning reports **per column**, which is what tells that state
+apart from an untouched schema: it names only the columns still on a
+folding collation, and says the schema is half migrated and that a tag
+query across the two can fail outright with 468.  A `tagsTable` beside a
+legacy `events` reads the same way, every time the store opens, until
+`events` is converted.
+
 Check for damage **before** migrating, while the folding collation is still
 what `GROUP BY` uses:
 
@@ -395,11 +409,16 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="An existing database keeps the old collation">
   The guarded `CREATE TABLE` never revisits a table that already exists, so
   a database created before the `COLLATE Latin1_General_100_BIN2` pin keeps
-  the instance's case-insensitive default — and nothing at startup says so.
-  Two ids differing only in case then share one event stream (and one
-  durable-state row) on this backend, and stay distinct on every other one.
-  Run the [migration](#migrating-an-existing-schema); check for
-  already-merged streams first.
+  the instance's case-insensitive default.  Two ids differing only in case
+  then share one event stream (and one durable-state row) on this backend,
+  and stay distinct on every other one.  The store **warns at startup** when
+  it finds that state, naming table, column and the collation it read —
+  once per store, and never a failure: an advisory that could take a working
+  database down would be a worse trade than the one it reports.  Run the
+  [migration](#migrating-an-existing-schema); check for already-merged
+  streams first.  Another `BIN2` collation you chose yourself is silent,
+  since the check is for a folding comparison and not for this page's
+  spelling.
 </Aside>
 
 <Aside type="caution" title="TLS is on by default in the driver">

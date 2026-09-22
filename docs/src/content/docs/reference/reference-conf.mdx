@@ -2170,9 +2170,10 @@ actor-ts {
     allowed-origins = []
 
     # A panel switched off here is off for good -- its data never leaves the
-    # process, whatever a client asks for.  time-travel, dead-letters and
-    # event-stream are the three that surface message payloads.  An explicit
-    # panels object in code overrides these switch by switch, not wholesale.
+    # process, whatever a client asks for.  tracing, time-travel,
+    # dead-letters and event-stream are the four that surface message
+    # payloads.  An explicit panels object in code overrides these switch by
+    # switch, not wholesale.
     panels {
       actors = true
       cluster = true

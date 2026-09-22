@@ -130,6 +130,16 @@ export const msSqlDialect: SqlDialect = {
            CONSTRAINT [PK_${table}] PRIMARY KEY ([singleton])`),
   ],
 
+  // `sys.columns` is keyed on `object_id`, so the table name is resolved by
+  // `OBJECT_ID(@p1)` — which takes a parameter and resolves in the connected
+  // user's default schema, exactly as every unqualified table name in this
+  // dialect does.  An unknown table makes `OBJECT_ID` null and the read comes
+  // back empty rather than failing, which is the behaviour the advisory wants.
+  columnCollationsSql: () =>
+    `SELECT c.name AS column_name, c.collation_name AS collation_name
+           FROM sys.columns c
+          WHERE c.object_id = OBJECT_ID(@p1)`,
+
   // No `INSERT IGNORE` / `ON CONFLICT DO NOTHING` in T-SQL.  `INSERT … SELECT …
   // WHERE NOT EXISTS` is the portable equivalent; the caller ignores the row
   // count, and a genuine race here is impossible because the events row for the

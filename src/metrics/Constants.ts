@@ -245,3 +245,36 @@ export const THREAD_LABEL = 'thread';
 
 /** {@link THREAD_LABEL} value of the main thread's own samples. */
 export const MAIN_THREAD_LABEL_VALUE = 'main';
+
+/* -------------------- Label keys the server reserves ------------------- */
+
+/**
+ * Prefix Prometheus reserves on a **label name** for its own use (#1513).
+ *
+ * The server drops `__`-prefixed labels after relabeling, so one that reaches
+ * it is at best invisible — but `__name__` is not one of the invisible ones:
+ * it *is* the series name, and a scrape job configured with
+ * `honor_labels: true` keeps the target's value for it.  An application label
+ * `__name__="forged_series"` on an honestly-named family is then filed under
+ * `forged_series`, which is precisely the forged series
+ * {@link PROMETHEUS_METRIC_NAME_PATTERN} exists to prevent (#784) — reached
+ * one layer later rather than closed.  `client_golang`
+ * (`reservedLabelPrefix`) and `client_python`
+ * (`RESERVED_METRIC_LABEL_NAME_RE`) refuse the prefix at the same point, for
+ * the same reason.
+ *
+ * A prefix and not a list of the server's current label names: `__address__`,
+ * `__scheme__` and the `__meta_*` family move between Prometheus releases and
+ * between service-discovery mechanisms, and the reservation is the part that
+ * does not.
+ *
+ * It constrains the key side only, which is the asymmetry that makes
+ * `METRICS_OVERFLOW_LABEL_VALUE` (`__overflow__`) legal and deliberate: a
+ * label **value** is unrestricted, survives ingestion untouched, and is
+ * exactly where a marker that must stay greppable belongs.
+ *
+ * Vocabulary of the exposition rather than a tuned value, so it lives here
+ * beside {@link THREAD_LABEL} and the two grammars, even though the worker
+ * subsystem reads it too.
+ */
+export const RESERVED_LABEL_PREFIX = '__';

@@ -211,31 +211,48 @@ die du zusammengebaut statt eingesammelt hast, gehört diese Prüfung
 Zeilen, und wer das scrapet, kann das gefälschte `node_up` nicht von
 einem echten unterscheiden — ein Alert auf `node_up == 0` wird so
 zuverlässig stummgeschaltet wie durch einen behobenen Ausfall.  Genau
-dafür sind die beiden Grammatiken exportiert:
+dafür sind die beiden Grammatiken exportiert, und die beiden reservierten
+Keys mit ihnen:
 
 ```ts
 import {
   PROMETHEUS_LABEL_NAME_PATTERN,
   PROMETHEUS_METRIC_NAME_PATTERN,
+  RESERVED_LABEL_PREFIX,
+  THREAD_LABEL,
   renderPrometheusSamples,
   type MetricSample,
 } from 'actor-ts/metrics';
 
+const usableLabelKey = (key: string): boolean =>
+  PROMETHEUS_LABEL_NAME_PATTERN.test(key)
+  && key !== THREAD_LABEL
+  && !key.startsWith(RESERVED_LABEL_PREFIX);
+
 const trustworthy = (sample: MetricSample): boolean =>
   PROMETHEUS_METRIC_NAME_PATTERN.test(sample.name)
-  && Object.keys(sample.labels).every((key) => PROMETHEUS_LABEL_NAME_PATTERN.test(key));
+  && Object.keys(sample.labels).every(usableLabelKey);
 
 // `samples` came from somewhere this package never checked.
 const renderForeign = (samples: ReadonlyArray<MetricSample>): string =>
   renderPrometheusSamples(samples.filter(trustworthy));
 ```
 
+Die Grammatiken sind die Injection-Hälfte; die beiden reservierten Keys
+sind die Fälschung, die die Grammatiken nicht abfangen.  `thread` ist das
+Label, das die Exposition selbst stempelt, solange ein Worker-Mesh relayt
+(#1570), und `__` ist der Namensraum des Servers — ein `__name__` unter
+den Labels eines Samples wird von einem Scrape-Job mit
+`honor_labels: true` übernommen, der das Sample dann unter dem Namen
+ablegt, den dieses Label trägt (#1513).
+
 Das Worker-Mesh-Relay ist das ausgearbeitete Beispiel: Ein Snapshot aus
 einem Worker überquert eine Thread-Grenze, also prüft das Relay jeden
-Namen und jeden Label-Key erneut gegen dieselben beiden Muster, bevor die
-Samples den Renderer erreichen.  Für alles, was `system.metrics` selbst
-angelegt hat, braucht es das nicht — die Prüfung ist beim anlegenden
-Aufruf schon passiert.
+Namen und jeden Label-Key erneut — beide Grammatiken und beide
+Reservierungen, über denselben Helper, den auch die Registry benutzt —,
+bevor die Samples den Renderer erreichen.  Für alles, was
+`system.metrics` selbst angelegt hat, braucht es das nicht: Die Prüfung
+ist beim anlegenden Aufruf schon passiert.
 
 ## Namenskonventionen
 

@@ -16,11 +16,17 @@
  * where a payload in a label *value* still cannot break out either.
  */
 import { describe, expect, test } from 'bun:test';
-import { DefaultMetricsRegistry, NoopMetricsRegistry } from '../../../src/metrics/Metrics.js';
+import { RESERVED_LABEL_PREFIX } from '../../../src/metrics/Constants.js';
+import {
+  DefaultMetricsRegistry,
+  METRICS_OVERFLOW_LABEL_VALUE,
+  NoopMetricsRegistry,
+} from '../../../src/metrics/Metrics.js';
 import { exportPrometheus } from '../../../src/metrics/PrometheusExporter.js';
 import {
   PROMETHEUS_LABEL_NAME_PATTERN,
   PROMETHEUS_METRIC_NAME_PATTERN,
+  RESERVED_LABEL_PREFIX as RESERVED_LABEL_PREFIX_FROM_BARREL,
 } from '../../../src/metrics/index.js';
 
 /** The walkthrough payload from the report, as a metric name. */
@@ -208,6 +214,141 @@ describe('DefaultMetricsRegistry — the reserved label key `thread` (#1570)', (
     expect(() => registry.counter('jobs_total', { thread: 'io' }).inc()).toThrow(/Reserved label key/);
     expect(() => registry.counter('jobs_total', { thread: 'cpu' }).inc()).toThrow(/Reserved label key/);
     expect(registry.collect().filter((sample) => sample.name === 'jobs_total')).toEqual([]);
+  });
+});
+
+/**
+ * The `__` prefix the server reserves for itself (#1513).
+ *
+ * Prometheus reserves label names beginning with `__`: they are dropped after
+ * relabeling in the normal case, and a scrape job configured with
+ * `honor_labels: true` honours a `__name__` among them and files the sample
+ * under the name *that label* carries.  So `counter('hits_total', { __name__:
+ * 'forged_series' })` renders an honest-looking
+ * `hits_total{__name__="forged_series"} 1` and the server writes down
+ * `forged_series` — #784's forged series, reached one layer later instead of
+ * closed.  `client_golang` (`reservedLabelPrefix = "__"`) and `client_python`
+ * (`RESERVED_METRIC_LABEL_NAME_RE`) refuse the prefix at the same point.
+ *
+ * The refusal is a **second rule**, not a narrowed grammar: the exposition
+ * grammar really does admit these keys, and
+ * {@link PROMETHEUS_LABEL_NAME_PATTERN} is exported for callers to pre-check
+ * their own keys against the format.  Narrowing the pattern instead would make
+ * that exported answer wrong about the format it names.
+ */
+describe('DefaultMetricsRegistry — the reserved `__` label-key prefix (#1513)', () => {
+  type Kind = 'counter' | 'gauge' | 'histogram';
+  const mint = (registry: DefaultMetricsRegistry, kind: Kind): unknown => (
+    kind === 'counter' ? registry.counter('hits_total', { __name__: 'forged_series' })
+      : kind === 'gauge' ? registry.gauge('hits_total', { __name__: 'forged_series' })
+        : registry.histogram('hits_total', { __name__: 'forged_series' })
+  );
+
+  for (const kind of ['counter', 'gauge', 'histogram'] as const) {
+    test(`${kind}: a tuple carrying \`__name__\` is refused at the mint, and nothing is minted`, () => {
+      const registry = new DefaultMetricsRegistry();
+      expect(() => mint(registry, kind)).toThrow(/Reserved label key "__name__"/);
+      // Not merely "it threw": the forged series must not reach a scrape.
+      expect(registry.collect()).toEqual([]);
+      expect(exportPrometheus(registry)).toBe('');
+    });
+  }
+
+  test('the walkthrough from the report no longer renders a forgeable series', () => {
+    const registry = new DefaultMetricsRegistry();
+    expect(() => registry.counter('hits_total', { __name__: 'forged_series' }).inc())
+      .toThrow(/Reserved label key/);
+    expect(exportPrometheus(registry)).not.toContain('forged_series');
+  });
+
+  test('the message names the key, the family, the reason and what to do', () => {
+    const registry = new DefaultMetricsRegistry();
+    let message = '';
+    try {
+      registry.counter('hits_total', { route: '/a', __name__: 'forged_series' });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain('Reserved label key "__name__"');
+    expect(message).toContain('"hits_total"');
+    expect(message).toContain('honor_labels');
+    expect(message).toContain('rename');
+    expect(message).toContain('#1513');
+  });
+
+  test('every `__`-prefixed key is refused, not just `__name__`', () => {
+    // The rule is the prefix, not a list of the server's current label names:
+    // `__address__`, `__meta_*` and the rest move between Prometheus releases,
+    // and a list would be stale on the next one.
+    const registry = new DefaultMetricsRegistry();
+    for (const key of ['__name__', '__address__', '__meta_kubernetes_pod_name', '___x']) {
+      expect(() => registry.counter('hits_total', { [key]: 'v' })).toThrow(/Reserved label key/);
+    }
+    expect(registry.collect()).toEqual([]);
+  });
+
+  test('`__` on its own is the prefix, so it is refused too', () => {
+    // A `startsWith` rule and a `/^__./` rule differ on exactly this key, and
+    // Prometheus reserves it: the name *is* the prefix.
+    const registry = new DefaultMetricsRegistry();
+    expect(() => registry.counter('hits_total', { __: 'v' })).toThrow(/Reserved label key "__"/);
+  });
+
+  test('keys that only look reserved stay legal', () => {
+    // The discriminators. A rule written as a substring match, a single-`_`
+    // prefix, or an anywhere-in-the-key test would take one of these with it —
+    // and `_private` is the shape prom-client's own grammar exists to allow.
+    const registry = new DefaultMetricsRegistry();
+    expect(() => registry.counter('hits_total', { _private: 'v' }).inc()).not.toThrow();
+    expect(() => registry.counter('hits_total', { a__b: 'v' }).inc()).not.toThrow();
+    expect(() => registry.counter('hits_total', { x__: 'v' }).inc()).not.toThrow();
+    expect(() => registry.counter('hits_total', { _: 'v' }).inc()).not.toThrow();
+    expect(registry.collect()).toHaveLength(4);
+  });
+
+  test('the rule is about the key — a `__` label *value* is still legal', () => {
+    // Load-bearing: `METRICS_OVERFLOW_LABEL_VALUE` is `__overflow__`, chosen
+    // precisely because a value survives ingestion where a name would not, and
+    // the cap writes it onto every dimension of an overflow series. A rule
+    // applied to values would silently disarm the cardinality cap.
+    const registry = new DefaultMetricsRegistry({ maxSeriesPerFamily: 1 });
+    expect(() => registry.counter('hits_total', { path: METRICS_OVERFLOW_LABEL_VALUE }).inc()).not.toThrow();
+    expect(registry.collect().map((sample) => sample.labels['path']))
+      .toEqual([METRICS_OVERFLOW_LABEL_VALUE]);
+  });
+
+  test('the overflow series a full family folds into is still minted', () => {
+    // The same point from the cap's own side: the overflow tuple is built
+    // inside the registry, after the key check, and every one of its values is
+    // `__overflow__`.
+    const registry = new DefaultMetricsRegistry({ maxSeriesPerFamily: 1 });
+    const warn = console.warn;
+    console.warn = (): void => {};
+    try {
+      registry.counter('hits_total', { path: '/a' }).inc();
+      registry.counter('hits_total', { path: '/b' }).inc();
+    } finally {
+      console.warn = warn;
+    }
+    expect(registry.collect().map((sample) => sample.labels['path']).sort())
+      .toEqual(['/a', METRICS_OVERFLOW_LABEL_VALUE]);
+  });
+
+  test('the prefix is the constant beside the other exposition vocabulary', () => {
+    // Pins the value and the home: `Constants.ts`, next to `THREAD_LABEL` and
+    // the two grammars, rather than a literal inlined at each of the two doors
+    // that enforce it.
+    expect(RESERVED_LABEL_PREFIX).toBe('__');
+  });
+
+  test('the exposition grammar still admits the prefix — the refusal is a separate rule', () => {
+    // A narrowed `PROMETHEUS_LABEL_NAME_PATTERN` is the plausible wrong fix: it
+    // refuses the same keys, and every assertion above stays green. What it
+    // breaks is the exported pattern's promise — it names the *format*, and the
+    // format admits `__name__`. A caller pre-checking a key would then be told
+    // its key is ungrammatical when it is merely reserved.
+    expect(PROMETHEUS_LABEL_NAME_PATTERN.test('__name__')).toBe(true);
+    expect(PROMETHEUS_LABEL_NAME_PATTERN.test(RESERVED_LABEL_PREFIX)).toBe(true);
   });
 });
 
@@ -428,5 +569,18 @@ describe('the exposition grammars are reachable from the metrics barrel (#784)',
     expect(PROMETHEUS_LABEL_NAME_PATTERN.global).toBe(false);
     expect(PROMETHEUS_METRIC_NAME_PATTERN.test('hits_total')).toBe(true);
     expect(PROMETHEUS_METRIC_NAME_PATTERN.test('hits_total')).toBe(true);
+  });
+  test('the reserved label prefix is exported too, and is the one both doors use', () => {
+    // A caller asking the grammar alone gets `true` for `__name__`, and the
+    // registry then throws: the prefix rule is a second question, so the
+    // constant that answers it has to be reachable from the same barrel
+    // (#1513).
+    expect(RESERVED_LABEL_PREFIX_FROM_BARREL).toBe(RESERVED_LABEL_PREFIX);
+    expect(PROMETHEUS_LABEL_NAME_PATTERN.test('__name__')).toBe(true);
+    expect('__name__'.startsWith(RESERVED_LABEL_PREFIX_FROM_BARREL)).toBe(true);
+
+    const registry = new DefaultMetricsRegistry();
+    expect(() => registry.counter('hits_total', { __name__: 'forged_series' }))
+      .toThrow();
   });
 });
