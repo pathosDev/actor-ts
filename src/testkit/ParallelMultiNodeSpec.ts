@@ -127,6 +127,18 @@ export class ParallelMultiNodeSpec {
   private readonly nodes = new Map<string, NodeRecord>();
   private readonly broker = new MultiNodeBroker();
   private started = false;
+  /**
+   * One counter for the whole spec, on purpose — not one per role.
+   *
+   * #777's suggested fix offered a per-role counter as an option and it was
+   * declined.  The correlation matches on `role` and `expectedKind` as well
+   * as on the number, so a value two roles happen to share is harmless, and
+   * when one does arrive from the wrong worker
+   * {@link onMisdirectedControlFrame} says so by name.  A per-role counter
+   * would make that collision rarer without making it safer, and rarer is
+   * the worse property here: that warning is the only thing that surfaces a
+   * custom `bootstrapModule` or a scenario posting frames it should not.
+   */
   private nextRequestId = 1;
   /** Pending RPC promises keyed by the `reqId` the harness stamped. */
   private readonly pending = new Map<number, PendingControlRequest>();
@@ -143,17 +155,14 @@ export class ParallelMultiNodeSpec {
       roles: options.roles,
       seedRoles: options.seedRoles ?? [options.roles[0]!],
       gossipIntervalMs: options.gossipIntervalMs ?? 100,
-      // 30s default (vs. 15s in MultiNodeSpec) — worker-thread bootstrap
-      // is slower than the in-process variant.  NOTE: the worker-thread
-      // suites that use this harness are QUARANTINED on GitHub's hosted
-      // runners — Bun there cannot respawn functional workers after the
-      // first test (they spawn + handshake, then never run; reproducible
-      // only on the hosted runners, never locally or in Docker).  See #538
-      // for the quarantine and its exit criterion.  They run locally + in
-      // Docker, where this budget is ample (convergence is ~4-5s).
-      // Scaled once, at resolution (#1376).  This spec is the one the
-      // factor was written for: it drives real worker threads, which is
-      // where a hosted runner's slowness actually shows.
+      // 30s default (vs. 15s in MultiNodeSpec) — worker-thread bootstrap is
+      // slower than the in-process variant, and this budget is ample for it
+      // (convergence is ~4-5s).  Scaled once, at resolution (#1376).  This
+      // spec is the one the factor was written for: it drives real worker
+      // threads, which is where a hosted runner's slowness actually shows —
+      // and the suites that use it run on GitHub's hosted runners like any
+      // other, the #538 quarantine having been measured against its own exit
+      // criterion and lifted.
       awaitTimeoutMs: scaledMs(options.awaitTimeoutMs ?? 30_000),
       logLevel: options.logLevel ?? LogLevel.Off,
       addresses: options.addresses,
