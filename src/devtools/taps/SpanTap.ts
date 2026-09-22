@@ -41,6 +41,22 @@ const MESSAGE_TYPE_ATTRIBUTE = 'actor.message.type';
 const SENDER_ATTRIBUTE = 'actor.sender';
 const MESSAGE_PAYLOAD_ATTRIBUTE = 'actor.message.payload';
 
+/**
+ * The systems that carry a live tap, so a second one is refused.
+ *
+ * The snapshot below is only right for the newest tap.  A second tap
+ * installed over a first records the first's recorder as the tracer to
+ * put back and both switches as on; uninstalling the pair in install
+ * order — what two `DevToolsServer`s stopped separately do — then
+ * re-enables a dead recorder and both switches on a system with no
+ * DevTools left on it, the #714 end state by another route (#1512).
+ * Refusing at install is cheaper and more honest than chaining the
+ * snapshots, and the extension never asks for two.  Keyed by
+ * `ActorSystem` and weak, like the persistence-id registry, so
+ * disposable test systems leak nothing.
+ */
+const systemsWithLiveTap = new WeakSet<ActorSystem>();
+
 export class SpanTap implements DevToolsTap {
   readonly stream: DevToolsStreamId = 'spans';
 
@@ -84,6 +100,13 @@ export class SpanTap implements DevToolsTap {
   ) {}
 
   install(emit: (payload: DevToolsStreamPayload) => void): void {
+    if (systemsWithLiveTap.has(this.system)) {
+      throw new Error(
+        'A SpanTap is already installed on this ActorSystem — one DevTools attachment per '
+        + 'system. Detach it before installing another.',
+      );
+    }
+    systemsWithLiveTap.add(this.system);
     this.emit = emit;
     const tracing = this.system.extension(TracingExtensionId);
     this.previousTracer = tracing.isEnabled() ? tracing.get() : null;
@@ -119,6 +142,12 @@ export class SpanTap implements DevToolsTap {
   uninstall(): void {
     if (!this.installed) return;
     this.installed = false;
+    // Only a tap that installed gets here — the early return above is
+    // what keeps a refused tap's `uninstall()` from releasing the live
+    // tap's entry.  Released before the restore rather than after, so a
+    // restore that threw would not also keep the system closed to the
+    // next attach.
+    systemsWithLiveTap.delete(this.system);
     this.stopTicking();
     this.recent = [];
 
