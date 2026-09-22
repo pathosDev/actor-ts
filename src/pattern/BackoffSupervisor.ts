@@ -611,6 +611,19 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
  * name entries in the actor's own `TimerScheduler`, which is reachable only
  * from inside the actor, so there is no channel for a collision to arrive on.
  *
+ * The issue asked for one of two things — verified provenance, or a dedicated
+ * internal channel the ticks travel on instead — and this answers the first.
+ * The second is not available to a supervisor: the only lane a message can
+ * arrive on that a `tell` cannot reach is the system queue, and its door,
+ * `ActorCell.enqueueSystem`, is `@internal` and has no user-level equivalent;
+ * a `BackoffSupervisor` is an ordinary `Actor`, so building one would mean
+ * opening that door to every actor rather than to this one.  Nor does the
+ * scheduler substitute for it: arming the respawn with
+ * `scheduleOnceFunction` would take the tick off the mailbox entirely and run
+ * `respawn()` from the timer's callback — outside the actor's turn, against
+ * state the next message is about to read.  The sentinel is therefore the
+ * whole of the answer here, and provenance is what it has to carry.
+ *
  * Honest scope, so nobody reads more into this than it carries: no trust
  * boundary was crossed.  A symbol survives neither JSON nor CBOR, so no
  * cluster peer could ever produce one, and the only caller who could is
