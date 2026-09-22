@@ -446,6 +446,16 @@ const zstdDecompressLazy: Lazy<Promise<ZstdDecompressFunction>> = Lazy.of<Promis
     resolvedZstdDecompressorRung = 'fzstd';
     return async (i: Uint8Array): Promise<Uint8Array> => fzstd.decompress(i);
   } catch (e) {
+    // The ladder's last arm, and the one region of this file no in-process test
+    // can reach: it needs the two native candidates suppressed AND the `import`
+    // above to fail, and nothing inside `bun test` can produce the second half.
+    // `mock.module` cannot — bun evaluates the factory at registration, so a
+    // throwing one throws out of `mock.module(…)` and leaves the specifier
+    // resolving — and a `Bun.plugin` that refused to resolve it has no uninstall,
+    // so it would take `fzstd` away from every suite after it (#1422).  So the
+    // arm is executed from a child process instead, by
+    // `tests/unit/persistence/object-storage/__fixtures__/zstd-no-decompressor.ts`
+    // through `ZstdDecompressResolution.test.ts` (#1419).
     throw new Error(
       'No zstd decompressor available.  Either run on Bun / Node, '
       + 'or install the `fzstd` peer dependency: '
