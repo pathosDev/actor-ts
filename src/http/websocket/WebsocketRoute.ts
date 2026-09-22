@@ -25,7 +25,10 @@ import {
   resolveWebsocketPolicy,
   type ResolvedWebsocketPolicy,
 } from './WebsocketPolicy.js';
-import { WebsocketRouteOptionsValidator } from './WebsocketRouteOptions.js';
+import {
+  DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN,
+  WebsocketRouteOptionsValidator,
+} from './WebsocketRouteOptions.js';
 import type { WebsocketRouteOptions, WebsocketRouteOptionsType } from './WebsocketRouteOptions.js';
 
 /** `websocket(target)` — mount at the enclosing path. */
@@ -80,15 +83,19 @@ export function websocket<TOut, TIn, TSelf = never>(
   // It has to be here rather than in middleware: an upgrade is a GET, and
   // the CSRF middleware treats GET as a safe method and waves it through.
   //
-  // `requireSameOrigin` defaults to **true** (#756).  It shipped defaulting to
-  // `false`, which made every user route CSWSH-exposed until its author
-  // remembered an option they had to know existed — while DevTools, the one
-  // route in the tree that thought about it, installed the same guard
-  // unconditionally.  A security control that is only on for the people who
-  // already knew to ask for it is not a control, and pre-1.0 permits the hard
-  // cut; `withRequireSameOrigin(false)` is the explicit opt-out for a route
-  // that genuinely serves a different origin.
-  const originGuard = makeOriginGuard(options.allowedOrigins, options.requireSameOrigin ?? true);
+  // `requireSameOrigin` defaults to `DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN`
+  // (#756), declared beside the field it defaults rather than written out here
+  // as a literal.  It shipped defaulting to `false`, which made every user
+  // route CSWSH-exposed until its author remembered an option they had to know
+  // existed — while DevTools, the one route in the tree that thought about it,
+  // installed the same guard unconditionally.  A security control that is only
+  // on for the people who already knew to ask for it is not a control, and
+  // pre-1.0 permits the hard cut; `withRequireSameOrigin(false)` is the
+  // explicit opt-out for a route that genuinely serves a different origin.
+  const originGuard = makeOriginGuard(
+    options.allowedOrigins,
+    options.requireSameOrigin ?? DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN,
+  );
 
   const node: Route = originGuard
     ? { kind: 'websocket', connect, resolvePolicy, authorize: originGuard }

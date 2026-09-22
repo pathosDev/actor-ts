@@ -256,7 +256,21 @@ websocket('/ws', chat);              // same-origin required
 
 Verglichen wird nur der Host, denn `Host` trägt kein Schema.  Ein Reverse-Proxy,
 der `Host`, aber nicht `Origin` umschreibt, fällt deshalb durch die Prüfung —
-trag dort die echten Origins in `allowedOrigins` ein.
+trag dort die echten Origins in `allowedOrigins` ein.  Nur den Host zu
+vergleichen heißt zugleich **schemablind**: eine `http://`-Seite auf demselben
+`host:port` kommt durch, die Regel ersetzt also nicht, Klartext abzulehnen.
+
+Beide Header kommen vom Client, und das begrenzt, was die Regel zusagen kann.
+Eine Seite, die diesen Server unter einem eigenen Namen erreicht
+(**DNS-Rebinding**), sendet `Origin` und `Host` übereinstimmend und kommt damit
+durch den Same-Origin-Arm.  Das ist die übliche Schwäche jeder
+Same-Origin-Prüfung auf Basis von `Host`, und genau dafür gibt es
+`allowedOrigins`.  Gewonnen ist damit *Erreichbarkeit*, keine Session: der
+Browser hängt keine Cookies des echten Hosts an — relevant ist also eine Route,
+deren Authentifizierung **das Netz selbst** ist (`IpAllowlist` oder Vertrauen
+auf Loopback).  Trag bei so einer
+Route die erwarteten Origins in `allowedOrigins` ein, statt dich auf diesen Arm
+zu verlassen.
 
 #### `allowedOrigins` — andere Origins benennen
 
