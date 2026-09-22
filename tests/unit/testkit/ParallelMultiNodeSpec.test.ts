@@ -407,17 +407,23 @@ function controlFrameKindsIn(file: string): string[] {
 }
 
 /**
- * The eight kinds the harness and the worker bootstrap have to agree on.
+ * The eight kinds the harness, the worker bootstrap and the documentation
+ * have to agree on.
  *
- * They are declared twice — once in `ParallelMultiNodeSpec.ts` for the side
- * that sends requests and correlates replies, once in
- * `internal/ParallelMultiNodeBootstrap.ts` for the side that answers them — and
- * the two declarations reference nothing in common, so `tsc` sees no relation
- * between them at all.  That was tolerable while `reqId` alone settled an RPC;
- * since #777 the correlation also matches on `expectedKind`, i.e. on the
- * request kind with `-response` appended, so a rename on one side turns every
- * reply from the other into a misdirected frame and every `await*` into its
- * uninformative timeout.  Nothing in CI would notice.
+ * They are declared four times — in `ParallelMultiNodeSpec.ts` for the side
+ * that sends requests and correlates replies, in
+ * `internal/ParallelMultiNodeBootstrap.ts` for the side that answers them, and
+ * in both languages of the `parallel-multi-node` page for the third side: an
+ * author of a custom `bootstrapModule`, who replaces the second file and has
+ * nothing but that page to write against.  No two of the four reference
+ * anything in common, so `tsc` sees no relation between them at all.
+ *
+ * That was tolerable while `reqId` alone settled an RPC; since #777 the
+ * correlation also matches on `expectedKind`, i.e. on the request kind with
+ * `-response` appended, so a rename on one side turns every reply from the
+ * other into a misdirected frame and every `await*` into its uninformative
+ * timeout.  Nothing in CI would notice — and the documented copy is the one
+ * that would go stale in silence longest, because nothing compiles it at all.
  */
 const CONTROL_FRAME_KINDS = [
   'mns-test.leave',
@@ -430,10 +436,16 @@ const CONTROL_FRAME_KINDS = [
   'mns-test.run-command-response',
 ] as const;
 
-describe('ParallelMultiNodeSpec — the two copies of the control vocabulary', () => {
+/** Where the `parallel-multi-node` page lives, per language. */
+const DOCUMENTATION_PAGES = ['testing', join('de', 'testing')].map(
+  (language) => join('docs', 'src', 'content', 'docs', language, 'parallel-multi-node.mdx'),
+);
+
+describe('ParallelMultiNodeSpec — the copies of the control vocabulary', () => {
   for (const file of [
     join('src', 'testkit', 'ParallelMultiNodeSpec.ts'),
     join('src', 'testkit', 'internal', 'ParallelMultiNodeBootstrap.ts'),
+    ...DOCUMENTATION_PAGES,
   ]) {
     test(`${file} names exactly the agreed kinds`, () => {
       expect(controlFrameKindsIn(file)).toEqual([...CONTROL_FRAME_KINDS]);
