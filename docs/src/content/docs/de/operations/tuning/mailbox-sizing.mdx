@@ -188,7 +188,11 @@ Drei Faktoren:
 1. **Worst-Case-Burst-Größe** — wieviele Nachrichten im
    Worst-Case-Fenster ankommen, bevor der Consumer drainen kann.
 2. **Speicher pro Nachricht** — `capacity × bytes_per_message`
-   begrenzt die Speicherkosten.
+   begrenzt die Speicherkosten *der User-Queue*.  Die
+   System-Spur wird bewusst nie gedeckelt — diese Rechnung
+   begrenzt also den Teil der Mailbox, den du konfigurierst,
+   nicht den Speicherbedarf des Actors; siehe
+   [Mailboxes](/de/fundamentals/mailboxes/).
 3. **Latenz-Budget** — `capacity / drain_rate` begrenzt die
    Worst-Case-Latenz, die eine Nachricht vor der Verarbeitung
    wartet.
