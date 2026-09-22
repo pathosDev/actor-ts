@@ -83,6 +83,9 @@ boundary specific rather than obvious, so it is written out here.
 - Anything requiring an attacker who already has code execution in the
   actor system's own process, or read access to its configuration and
   key material.
+- A worker thread of the mesh is in-process code the operator loaded,
+  so a per-worker inbound budget on the broker is out of scope: bounding
+  what a buggy worker can send is robustness, not an attacker boundary.
 - Denial of service by an operator against their own system — an
   unbounded mailbox that a local caller fills, a dispatcher starved by
   application code.
