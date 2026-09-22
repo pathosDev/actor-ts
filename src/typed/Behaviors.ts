@@ -58,7 +58,20 @@ export type LogMessagesOptions<T> = {
 };
 
 /**
- * Reject a stash capacity that is not an integer `>= 1`.
+ * Largest stash capacity there is any point in naming: the last index a
+ * JavaScript array has.
+ *
+ * Stays in this file rather than moving to a `Constants.ts` because it is not
+ * a tuned value — it is fixed by the primitive the buffer is built on, the
+ * way `Encryption.ts`'s `IV_LENGTH` is fixed by the cipher beside it.  Nothing
+ * else reads it: the second caller of {@link assertStashCapacity} passes a
+ * capacity, not a bound.
+ */
+const MAXIMUM_STASH_CAPACITY = 2 ** 32 - 1;
+
+/**
+ * Reject a stash capacity that is not an integer between `1` and
+ * {@link MAXIMUM_STASH_CAPACITY} inclusive.
  *
  * The domain is `OptionsValidator.positiveInt`'s, and deliberately so: it is
  * the rule `BoundedMailboxOptionsValidator` already applies to the
@@ -85,6 +98,21 @@ export type LogMessagesOptions<T> = {
  * capacity is refused because a bound between two message counts is a defect
  * at the call site, not a bound anyone meant to draw.
  *
+ * **The upper end is refused for the same reason as `Infinity`, one step
+ * further along.**  `Number.isInteger(Number.MAX_VALUE)` is `true`, so the
+ * integer check alone admitted `1.8e308` and every value between it and
+ * {@link MAXIMUM_STASH_CAPACITY}; measured, that stash took 50 000 messages
+ * and still answered `isFull === false`, which is verbatim the symptom the
+ * paragraph above calls "a stash whose bound never compares true".  The
+ * predicate promised more than it enforced and the error text said so out
+ * loud, which is the gap this closes.  The ceiling is the array's, not a
+ * policy: `buffer.length` cannot exceed `2 ** 32 - 1`, so past that the
+ * comparison the bound is made of can never come true no matter how much heap
+ * the process is given.  It parts company with `OptionsValidator.positiveInt`
+ * here, deliberately — that helper has the identical hole, but it guards
+ * option fields whose consumers are not a backing array, so the bound that is
+ * real here has nothing to be for there.
+ *
  * Written out rather than run through an `OptionsValidator` subclass for the
  * reason `ActorRef`'s `assertAskTimeout` is: this is one predicate over one
  * positional argument, with no `XOptions.ts` family for it to belong to.
@@ -102,6 +130,20 @@ export function assertStashCapacity(capacity: number, origin: string): void {
     throw new OptionsError(
       `${origin}: capacity must be an integer >= 1 (got ${OptionsError.renderValue(capacity)})`
       + ' — a stash whose bound never compares true is not bounded at all',
+      origin,
+      'capacity',
+      capacity,
+    );
+  }
+  // Its own clause, because it fails the other way round: this value *is* an
+  // integer and the comparison against it *is* well-defined — it is the array
+  // behind the bound that cannot get there.  Telling this caller their
+  // capacity "never compares true" would misdescribe it.
+  if (capacity > MAXIMUM_STASH_CAPACITY) {
+    throw new OptionsError(
+      `${origin}: capacity must be at most ${MAXIMUM_STASH_CAPACITY}`
+      + ` (got ${OptionsError.renderValue(capacity)})`
+      + ' — a bound the backing array can never reach is not a bound at all',
       origin,
       'capacity',
       capacity,
@@ -163,10 +205,12 @@ export const Behaviors = {
    * Expose a capacity-bounded stash buffer.  The inner behavior can stash
    * user messages (e.g. during init) and call `stash.unstashAll()` later.
    *
-   * `capacity` must be an integer `>= 1`; `0`, a negative, a fractional value,
-   * `NaN` and `Infinity` throw {@link OptionsError} — see
-   * {@link assertStashCapacity} for why a bound that never compares true is
-   * worse than no bound at all.  The rejection lands here, on the caller's
+   * `capacity` must be an integer in `[1, 2 ** 32 - 1]`; `0`, a negative, a
+   * fractional value, `NaN`, `Infinity` and anything past the array ceiling
+   * throw {@link OptionsError} — see {@link assertStashCapacity} for why a
+   * bound that never compares true is worse than no bound at all, and why an
+   * astronomically large integer is the same defect wearing an integer's
+   * clothes.  The rejection lands here, on the caller's
    * stack while the behavior is still a value, rather than later inside the
    * actor that adopts it.
    */

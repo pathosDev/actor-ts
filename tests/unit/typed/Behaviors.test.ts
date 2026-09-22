@@ -350,30 +350,51 @@ describe('Behaviors.withStash — capacity validation', () => {
   const innerBehavior = (): Behavior<string> =>
     Behaviors.receiveMessage(() => Behaviors.same);
 
+  /** The two clauses the guard closes with, one per half of its domain. */
+  const NEVER_COMPARES_TRUE =
+    ' — a stash whose bound never compares true is not bounded at all';
+  const PAST_THE_ARRAY_CEILING =
+    ' — a bound the backing array can never reach is not a bound at all';
+
   /**
-   * `[label, capacity, rendered]` — the third column is how the diagnostic has
-   * to spell the value back.
+   * `[label, capacity, rendered, tail]`.
    *
-   * It is a column rather than `String(capacity)` because the two rows at the
-   * bottom are exactly the ones `String` renders wrongly, and a test that
-   * builds its expectation the same way the code does cannot see that: `'10'`
-   * came back as `got 10`, telling a JavaScript caller their `10` was rejected
-   * for not being an integer, and `[]` came back as `got ` — an empty
-   * diagnostic naming nothing at all.  Both are the untyped-JavaScript arrival
-   * the guard's own comment says the `Number.isInteger` check is there to
-   * catch, so the message that reports it has to survive the same input.
+   * The third column is how the diagnostic has to spell the value back.  It is
+   * a column rather than `String(capacity)` because two of the rows are
+   * exactly the ones `String` renders wrongly, and a test that builds its
+   * expectation the same way the code does cannot see that: `'10'` came back
+   * as `got 10`, telling a JavaScript caller their `10` was rejected for not
+   * being an integer, and `[]` came back as `got ` — an empty diagnostic
+   * naming nothing at all.  Both are the untyped-JavaScript arrival the
+   * guard's own comment says the `Number.isInteger` check is there to catch,
+   * so the message that reports it has to survive the same input.
+   *
+   * The fourth column is which half of the domain refused the value, and it is
+   * asserted rather than shared because the two halves fail for opposite
+   * reasons.  `NaN` defeats the bound by comparing false; `Number.MAX_VALUE`
+   * satisfies `Number.isInteger` and defeats it by naming a ceiling no array
+   * can hold.  A message that told the second caller their value "never
+   * compares true" would be the same class of defect as the `got 10` above.
    */
-  const rejected: readonly (readonly [string, number, string])[] = [
-    ['NaN', Number.NaN, 'NaN'],
-    ['Infinity', Number.POSITIVE_INFINITY, 'Infinity'],
-    ['zero', 0, '0'],
-    ['a negative', -1, '-1'],
-    ['a fractional', 2.5, '2.5'],
-    ['a string', '10' as unknown as number, '"10"'],
-    ['an empty array', [] as unknown as number, '[]'],
+  const rejected: readonly (readonly [string, number, string, string])[] = [
+    ['NaN', Number.NaN, 'NaN', NEVER_COMPARES_TRUE],
+    ['Infinity', Number.POSITIVE_INFINITY, 'Infinity', NEVER_COMPARES_TRUE],
+    ['zero', 0, '0', NEVER_COMPARES_TRUE],
+    ['a negative', -1, '-1', NEVER_COMPARES_TRUE],
+    ['a fractional', 2.5, '2.5', NEVER_COMPARES_TRUE],
+    ['a string', '10' as unknown as number, '"10"', NEVER_COMPARES_TRUE],
+    ['an empty array', [] as unknown as number, '[]', NEVER_COMPARES_TRUE],
+    // #1509: an integer larger than the backing array can index. The issue's
+    // headline symptom was measured on the first of these — `withStash`
+    // admitted `Number.MAX_VALUE`, and 50 000 `stash()` calls later the buffer
+    // reported `size=50000 isFull=false`, which is the unbounded stash the
+    // guard above exists to refuse, reached through the half it did not cover.
+    ['Number.MAX_VALUE', Number.MAX_VALUE, '1.7976931348623157e+308', PAST_THE_ARRAY_CEILING],
+    ['Number.MAX_SAFE_INTEGER', Number.MAX_SAFE_INTEGER, '9007199254740991', PAST_THE_ARRAY_CEILING],
+    ['one past the array ceiling', 2 ** 32, '4294967296', PAST_THE_ARRAY_CEILING],
   ];
 
-  for (const [label, capacity, rendered] of rejected) {
+  for (const [label, capacity, rendered, tail] of rejected) {
     test(`rejects ${label} capacity with an OptionsError`, () => {
       expect(() => Behaviors.withStash<string>(capacity, innerBehavior)).toThrow(OptionsError);
       // The field and the offending value travel on the error, so a caller
@@ -398,9 +419,7 @@ describe('Behaviors.withStash — capacity validation', () => {
         // survive `ActorInitializationError`, which carries a string.
         expect(error.message.startsWith('Behaviors.withStash: ')).toBe(true);
         expect(error.message).toContain(`(got ${rendered})`);
-        expect(error.message.endsWith(
-          ' — a stash whose bound never compares true is not bounded at all',
-        )).toBe(true);
+        expect(error.message.endsWith(tail)).toBe(true);
       }
     });
   }
@@ -409,6 +428,17 @@ describe('Behaviors.withStash — capacity validation', () => {
     const behavior = Behaviors.withStash<string>(1, innerBehavior);
     expect(behavior.kind).toBe('with-stash');
     expect((behavior as WithStashBehavior<string>).capacity).toBe(1);
+  });
+
+  test('accepts the array ceiling itself, so the bound cannot creep downwards', () => {
+    // The upper bound is `2 ** 32 - 1` because that is the last index a
+    // JavaScript array has, not because anyone would configure it — and a
+    // closed interval has to be closed at both ends or the next change is free
+    // to pick a rounder number that refuses a capacity this one accepted.
+    // Building the node allocates nothing, so this costs what the row above
+    // costs.
+    const behavior = Behaviors.withStash<string>(2 ** 32 - 1, innerBehavior);
+    expect((behavior as WithStashBehavior<string>).capacity).toBe(4_294_967_295);
   });
 
   /**
