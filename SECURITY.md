@@ -121,7 +121,7 @@ relying on when they install a published version:
 | **CodeQL** (`javascript-typescript`) | `.github/workflows/codeql.yml` — pull requests, pushes to `main`/`develop`, weekly | Injection, path traversal, unsafe deserialization and the rest of the `security-extended` query suite. Results land in the repository's code-scanning alerts. |
 | **`bun audit`** | `.github/workflows/package-health.yml` — same triggers plus a weekly cron | Published advisories against the versions the Bun lockfiles CI installs actually pin: `bun.lock`, `docs/bun.lock` and `devtools-ui/bun.lock`. |
 | **SHA-pinned actions** | `tests/unit/ci/WorkflowHygiene.test.ts` | A mutable action tag being repointed under a job that holds a publishing credential. |
-| **npm provenance** | `.github/workflows/publish.yml` | Ties the published tarball to the workflow run and commit that built it. |
+| **npm provenance** | `.github/workflows/publish.yml` | Ties the published tarball to the workflow run and commit that built it. The tarball is built, tested and packed in a job holding no credential, then published from a job that neither checks out the repository nor installs anything — so a compromised dependency cannot reach the token that publishes it (#703). |
 | **CycloneDX SBOM** | `.github/workflows/publish.yml` | Attached to every GitHub Release, so a consumer can diff the closure without reconstructing it. |
 
 `bun audit` reads a lockfile, and the job runs it over each Bun lockfile

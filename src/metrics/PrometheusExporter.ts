@@ -1,4 +1,9 @@
-import type { Labels, MetricSample, MetricsRegistry } from './Metrics.js';
+import {
+  seriesKey,
+  type Labels,
+  type MetricSample,
+  type MetricsRegistry,
+} from './Metrics.js';
 
 /**
  * Prometheus 0.0.4 text-format exposition.
@@ -66,10 +71,12 @@ export function renderPrometheusSamples(samples: ReadonlyArray<MetricSample>): s
     if (head.kind === 'histogram') {
       // Histogram emission: bucket rows, then _sum and _count.
       // Layout per series: all bucket rows for one label set, then _sum + _count
-      // for that label set.  We separate by labelKey first.
+      // for that label set.  We separate by series key first — the registry's
+      // own, not a second copy of it (#1513): two tuples the registry keeps
+      // apart have to stay apart here, or their rows interleave.
       const byLabel = new Map<string, MetricSample[]>();
       for (const sample of group) {
-        const key = labelKey(sample.labels);
+        const key = seriesKey(sample.labels);
         let arr = byLabel.get(key);
         if (!arr) { arr = []; byLabel.set(key, arr); }
         arr.push(sample);
@@ -134,44 +141,77 @@ function renderLabels(labels: Labels): string {
   return `{${inner}}`;
 }
 
-function labelKey(labels: Labels): string {
-  return Object.keys(labels).sort()
-    .map((key) => `${key}=${String(labels[key])}`).join('\x1f');
-}
+/**
+ * Characters removed from a label value and from a `# HELP` string before
+ * either is written: the C0 controls, minus the two the exposition has an
+ * answer for (#1414).
+ *
+ * **TAB and LF are the exceptions, for opposite reasons.**  LF is one of the
+ * three entries in the 0.0.4 escape table, so it is escaped rather than
+ * dropped.  TAB is ordinary data to both Go readers — a quoted value is lexed
+ * as `[^\\"]` and a HELP string as `C [^\n]` — so it needs nothing done to
+ * it.  Everything else in the range has neither an escape to render it with
+ * nor a reader that wants it raw.
+ *
+ * The `g` flag is load-bearing and harmless here: without it only the first
+ * control of a run would go, and `String.replace` resets `lastIndex` itself.
+ * (Contrast the two grammar patterns in `Constants.ts`, which are read with
+ * `.test` and must *not* carry it.)
+ */
+const STRIPPED_CONTROL_CHARACTERS_PATTERN = /[\x00-\x08\x0b-\x1f]/g;
 
 /**
  * Escape a label value for the quoted position `key="…"`.
  *
  * The backslash pass runs first, so the backslashes the later passes
- * introduce are not escaped a second time.
+ * introduce are not escaped a second time.  The control strip runs ahead of
+ * all of them and commutes with them: the escape passes only ever insert
+ * `\`, `n` and `"`, none of which the strip matches.
  *
- * **The carriage return is escaped even though the 0.0.4 escape table names
- * only `\\`, `\n` and `"`** (#784).  A label value is the one field of the
- * exposition that legitimately carries data, and a bare `\r` left in it
- * reaches the scraper's line handling as a control character — which is the
- * same line-splitting primitive `\n` is, in a format that is defined line by
- * line.  Emitting the two-character sequence is the conservative half of that
- * trade: the value can no longer terminate a line, at the price of a
- * sequence the strictest readers of the escape table do not define.
+ * **The escape table has exactly three entries — `\\`, `\n` and `"` — and a
+ * character outside it cannot be escaped, only removed** (#1414).  #784
+ * emitted `\r` for a carriage return, on the reasoning that a bare CR reaches
+ * a scraper's line handling as "the same line-splitting primitive `\n` is".
+ * It does not, for either Go reader: both accept a raw CR inside a quoted
+ * value — the classic parser rejects only a raw LF and writes every other
+ * byte, and the scrape lexer's value class `[^\\"]` includes CR — so nothing
+ * was being split for them.  What the escape *did* do is hand
+ * prometheus/common's classic parser an escape it does not define, which it
+ * treats as a syntax error for the **whole body**: one label value with a CR
+ * in it, and the entire scrape is rejected by Pushgateway, the node_exporter
+ * textfile collector and `promtool check metrics` alike.
+ *
+ * Removing the byte keeps the half of #784 that was real — a reader that
+ * splits lines on a lone CR (a Python `splitlines`-style scraper) no longer
+ * sees a value end a line — and costs one narrow thing worth naming: two
+ * values differing only in stripped controls now render as the same series,
+ * where before they differed by an unprintable byte.  A control character in
+ * a label value is a bug at its source either way; this is the reading of it
+ * that no reader has to guess about.
  */
-function escapeLabelValue(v: string): string {
-  return v
+function escapeLabelValue(value: string): string {
+  return value
+    .replace(STRIPPED_CONTROL_CHARACTERS_PATTERN, '')
     .replace(/\\/g, '\\\\')
     .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r')
     .replace(/"/g, '\\"');
 }
 
 /**
  * Escape a `# HELP` string.  Unquoted and terminated by the end of the line,
- * so it needs the two line-ending characters neutralised and the backslash
- * that carries them, but not the double quote.
+ * so it needs the line feed neutralised and the backslash that carries it,
+ * but not the double quote.
+ *
+ * Same control policy as {@link escapeLabelValue}, for the same measured
+ * reason one field over: the classic parser reads a HELP string through the
+ * identical escape table, so the `\r` #784 emitted here rejected the body
+ * just as surely (#1414).
  */
-function escapeHelp(v: string): string {
-  return v
+function escapeHelp(value: string): string {
+  return value
+    .replace(STRIPPED_CONTROL_CHARACTERS_PATTERN, '')
     .replace(/\\/g, '\\\\')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r');
+    .replace(/\n/g, '\\n');
 }
 
 function formatNumber(n: number): string {

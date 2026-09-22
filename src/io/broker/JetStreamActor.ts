@@ -93,6 +93,14 @@ export type JetStreamMessage = {
    * from the pending-ack map (#710).  Never send it back to the broker; it
    * means nothing outside this actor instance and does not survive a
    * reconnect.
+   *
+   * **Inert under `ackPolicy: 'none'`.**  The token is still minted and
+   * shipped in that mode, because the field is not optional and the delivery
+   * is otherwise identical — but nothing is registered against it, so it
+   * names no delivery and every settle command carrying it is ignored.  The
+   * drop is reported at `debug` there rather than at `warn`, since in that
+   * mode it is the documented behaviour and not a lost acknowledgment
+   * (#1510).
    */
   readonly ackToken: number;
   /** Server-assigned timestamp in ms since epoch. */
@@ -200,6 +208,19 @@ export type JetStreamCommand =
   | TerminateCommand
   | InProgressCommand
   | FetchCommand;
+
+/**
+ * The four commands that settle one delivery, by the `kind` they carry.
+ *
+ * It is the `kind` rather than a prose verb because the log line built from
+ * it is read next to the call site that sent the command: an operator
+ * correlating a drop against their own `tell` wants the word they wrote.
+ */
+type SettleCommandKind =
+  | AcknowledgmentCommand['kind']
+  | NegativeAcknowledgmentCommand['kind']
+  | TerminateCommand['kind']
+  | InProgressCommand['kind'];
 
 export class JetStreamActor extends BrokerActor<
   JetStreamOptionsType, JetStreamCommand, JetStreamPublish
@@ -367,9 +388,21 @@ export class JetStreamActor extends BrokerActor<
       // while it settles would be iterating a map that is being mutated.
       const inFlight = [...this.pending.values()];
       this.pending.clear();
+      // One line per disconnect, not one per delivery.  Every entry reaches
+      // the shared catch in `deliverAndAwaitAcknowledgment` separately, and a
+      // push consumer with `maxAcknowledgmentPending` in the hundreds turns a
+      // flapping connection into hundreds of warn lines per flap.  The count
+      // is what an operator acts on; the individual sequences are detail, and
+      // `PendingSettleFailure` is what routes them to `debug` (#1510).
+      this.log.warn(
+        `JetStreamActor: connection lost with ${inFlight.length} `
+        + `${inFlight.length === 1 ? 'delivery' : 'deliveries'} in flight `
+        + `— letting the consumer redeliver`,
+      );
       for (const pendingAck of inFlight) {
-        pendingAck.fail(new Error(
-          `JetStreamActor: connection lost before ack/nak/term for `
+        pendingAck.fail(new PendingSettleFailure(
+          'connectionLost',
+          `connection lost before ack/nak/term for `
           + `streamSeq=${pendingAck.streamSeq} (ackToken=${pendingAck.ackToken})`,
         ));
       }
@@ -517,6 +550,10 @@ export class JetStreamActor extends BrokerActor<
       });
     }
 
+    // No pending entry in this mode — the token above was minted and shipped
+    // anyway, and {@link findPendingAcknowledgment} is where that is accounted
+    // for: a settle command naming it is ignored at `debug` rather than at
+    // `warn`, because here the miss is the mode rather than a lost ack.
     if (this.options.consumer?.ackPolicy === 'none') return;
 
     try {
@@ -531,8 +568,9 @@ export class JetStreamActor extends BrokerActor<
           // #710 turned a superseded entry into an evictor of the live one.
           // Cheap, and it keeps this correct under any future re-keying.
           if (this.pending.get(ackToken) === entry) this.pending.delete(ackToken);
-          reject(new Error(
-            `JetStreamActor: no ack/nak/term for streamSeq=${streamSeq} `
+          reject(new PendingSettleFailure(
+            'acknowledgmentTimeout',
+            `no ack/nak/term for streamSeq=${streamSeq} `
             + `(ackToken=${ackToken}) within ${ackTimeoutMs}ms`,
           ));
         }, ackTimeoutMs);
@@ -546,27 +584,76 @@ export class JetStreamActor extends BrokerActor<
         this.pending.set(ackToken, entry);
       });
     } catch (err) {
-      this.log.warn(`JetStreamActor: pump ${(err as Error).message} — letting consumer redeliver`);
+      // One prefix, not two.  Both messages above used to carry
+      // `JetStreamActor: ` themselves, so every line this wrote read
+      // `JetStreamActor: pump JetStreamActor: …` — inherited from the
+      // ack-timeout message and then copied by the connection-lost one
+      // (#1510).  The prefix belongs to the site that logs, not to the site
+      // that builds the reason.
+      const line = `JetStreamActor: pump ${(err as Error).message} — letting consumer redeliver`;
+      // The level is read off the failure's tag, never off its text: a
+      // connection loss is already summarised by the one aggregate line
+      // `disconnectImplementation` wrote, and this is the detail behind it.
+      // An ack-timeout names one handler that did not answer and stays WARN.
+      if (err instanceof PendingSettleFailure && err.failureKind === 'connectionLost') {
+        this.log.debug(line);
+      } else {
+        this.log.warn(line);
+      }
       try { handle.nak(); } catch { /* best-effort */ }
     }
   }
 
+  /**
+   * The pending entry a settle command names, or `undefined` with the miss
+   * already reported — the one door all four settle handlers go through.
+   *
+   * `warn`, not `debug`: a miss means a settle command for a delivery that is
+   * genuinely no longer in flight, so the message will be redelivered and
+   * reprocessed — an at-least-once contract the operator wants to see.  At
+   * `debug` (below the `LogLevel.Info` default) the drop was invisible in
+   * every default deployment, which is what let #710 run silently.
+   *
+   * Only `onAcknowledgment` had that line; the other three were a bare
+   * `if (!pendingAck) return;` and dropped the command with no signal at any
+   * level.  The characteristic bug of the #710 migration is a caller who
+   * converts three of its four settle call sites to the delivery-scoped token
+   * and misses one, and three of the four gave that caller nothing — worst of
+   * them a dropped `terminate`, where the caller asked for a permanent drop
+   * and instead gets the ack-timeout's `nak()` and endless redelivery, which
+   * is the silent-reprocessing outcome #710 was filed about, reached through
+   * a door the fix left open (#1510).
+   *
+   * Under `ackPolicy: 'none'` the miss is the *normal* case rather than a
+   * symptom, so it goes to `debug` there: nothing is ever registered in that
+   * mode (see {@link deliverAndAwaitAcknowledgment}), so a consumer that
+   * settles defensively would take the warn once per message at full delivery
+   * rate — carrying an explanation that is false in that mode, since no
+   * delivery timed out, was settled, or predates anything.
+   */
+  private findPendingAcknowledgment(
+    settleKind: SettleCommandKind, ackToken: number,
+  ): PendingAcknowledgment | undefined {
+    const pendingAck = this.pending.get(ackToken);
+    if (pendingAck) return pendingAck;
+    if (this.options.consumer?.ackPolicy === 'none') {
+      this.log.debug(
+        `JetStreamActor: ackPolicy none: ${settleKind} for ackToken=${ackToken} — ignored; `
+        + `the token is minted per delivery but names nothing in this mode`,
+      );
+      return undefined;
+    }
+    this.log.warn(
+      `JetStreamActor: ${settleKind} for unknown ackToken=${ackToken} — ignored; `
+      + `the delivery it names already timed out, was settled, or predates a reconnect`,
+    );
+    return undefined;
+  }
+
   private onAcknowledgment(command: AcknowledgmentCommand): void {
     const { ackToken } = command;
-    const pendingAck = this.pending.get(ackToken);
-    if (!pendingAck) {
-      // `warn`, not `debug`: a miss here means an acknowledgment for a
-      // delivery that is genuinely no longer in flight, so the message will
-      // be redelivered and reprocessed — an at-least-once contract the
-      // operator wants to see.  At `debug` (below the `LogLevel.Info`
-      // default) the drop was invisible in every default deployment, which
-      // is what let #710 run silently.
-      this.log.warn(
-        `JetStreamActor: acknowledgment for unknown ackToken=${ackToken} — ignored; `
-        + `the delivery it names already timed out, was settled, or predates a reconnect`,
-      );
-      return;
-    }
+    const pendingAck = this.findPendingAcknowledgment(command.kind, ackToken);
+    if (!pendingAck) return;
     try { pendingAck.handle.ack(); }
     catch (err) {
       pendingAck.fail(err instanceof Error ? err : new Error(String(err)));
@@ -579,7 +666,7 @@ export class JetStreamActor extends BrokerActor<
 
   private onNegativeAcknowledgment(command: NegativeAcknowledgmentCommand): void {
     const { ackToken, delayMs } = command;
-    const pendingAck = this.pending.get(ackToken);
+    const pendingAck = this.findPendingAcknowledgment(command.kind, ackToken);
     if (!pendingAck) return;
     try {
       if (typeof delayMs === 'number' && delayMs > 0) {
@@ -594,7 +681,7 @@ export class JetStreamActor extends BrokerActor<
 
   private onTerminate(command: TerminateCommand): void {
     const { ackToken, reason } = command;
-    const pendingAck = this.pending.get(ackToken);
+    const pendingAck = this.findPendingAcknowledgment(command.kind, ackToken);
     if (!pendingAck) return;
     this.log.warn(
       `JetStreamActor: term for streamSeq=${pendingAck.streamSeq}`
@@ -607,7 +694,7 @@ export class JetStreamActor extends BrokerActor<
 
   private onInProgress(command: InProgressCommand): void {
     const { ackToken } = command;
-    const pendingAck = this.pending.get(ackToken);
+    const pendingAck = this.findPendingAcknowledgment(command.kind, ackToken);
     if (!pendingAck) return;
     try { pendingAck.handle.working(); } catch { /* */ }
   }
@@ -728,6 +815,31 @@ type PendingAcknowledgment = {
   readonly done: () => void;
   readonly fail: (err: Error) => void;
 };
+
+/** The two ways a delivery's ack wait ends without a settle command. */
+type PendingSettleFailureKind = 'connectionLost' | 'acknowledgmentTimeout';
+
+/**
+ * The rejection `deliverAndAwaitAcknowledgment` catches, carrying which of
+ * the two ways the wait ended.
+ *
+ * The tag is what keeps the two log levels apart, and it is a field rather
+ * than a substring match on the message because a level read off prose makes
+ * the wording of a log line load-bearing.  An ack-timeout names one handler
+ * that did not answer in time and stays WARN; a connection loss fails every
+ * in-flight entry at once and is summarised by the single aggregate line
+ * `disconnectImplementation` writes, so its per-delivery detail is `debug`
+ * (#1510).
+ */
+class PendingSettleFailure extends Error {
+  readonly failureKind: PendingSettleFailureKind;
+
+  constructor(failureKind: PendingSettleFailureKind, message: string) {
+    super(message);
+    this.name = 'PendingSettleFailure';
+    this.failureKind = failureKind;
+  }
+}
 
 /**
  * JetStream API error codes, as the server reports them.

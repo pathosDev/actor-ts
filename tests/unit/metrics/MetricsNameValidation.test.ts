@@ -299,7 +299,24 @@ describe('DefaultMetricsRegistry — label key validation (#784)', () => {
   });
 });
 
-describe('exportPrometheus — a validated name cannot be broken out of (#784)', () => {
+/**
+ * Label-value escaping — the boundary #784 stops at, and did not move.
+ *
+ * **This block is green on the pre-#784 tree, by design** (#1508).
+ * `escapeLabelValue` already escaped the double quote and the line feed
+ * before that change, so the payload below could never break out of its
+ * quoted position, and running this body against the exporter as it stood at
+ * `a3196924^` passes.
+ *
+ * It belongs on this page because the boundary is what makes the name and key
+ * checks *necessary* — a value is the one field of the exposition that may
+ * carry data, so anything derived from a request has to end up here — but it
+ * is not evidence that either check exists, and #784's binding ledger counted
+ * it as if it were.  What does bind #784 is every block above this one; the
+ * carriage-return half it added is pinned in `PrometheusExporter.test.ts`,
+ * where it has since become a strip rather than an escape (#1414).
+ */
+describe('exportPrometheus — label-value escaping, the boundary #784 stops at', () => {
   test('the payload in a label value renders as one escaped series, not two', () => {
     const registry = new DefaultMetricsRegistry();
     registry.counter('hits_total', { tenant: 'x"} 1\nnode_up{job="prod"} 0\n#' }).inc();
