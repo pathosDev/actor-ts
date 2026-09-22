@@ -1394,7 +1394,13 @@ export class ActorCell<TMessage = unknown> implements ActorContext<TMessage> {
    *
    * - **system commands first, every iteration.**  They can suspend, restart
    *   or stop the actor, so re-draining between user messages is what keeps a
-   *   long batch as responsive to lifecycle as an unbatched turn was.
+   *   long batch as responsive to lifecycle as an unbatched turn was.  That
+   *   inner drain carries **no per-turn budget, on purpose** — the refusal is
+   *   argued at {@link Mailbox.enqueueSystem} (#794), which is also where the
+   *   producer ratio that bounds the lane instead is enumerated.  A budget
+   *   here would interleave a supervision decision with the user traffic that
+   *   decision exists to gate, which is the worse trade; proposing one starts
+   *   there, not at this loop.
    * - **`state !== 'running'`** covers a `PoisonPill` handled mid-batch, and
    *   `failToParent` flipping running -> suspended from inside a handler that
    *   threw.  Continuing would deliver messages to an actor its supervisor is
