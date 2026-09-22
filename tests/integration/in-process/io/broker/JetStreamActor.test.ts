@@ -640,17 +640,21 @@ describe('JetStreamActor — ack/nak/term', () => {
     }
   });
 
-  test('ackPolicy=none skips the handshake — every message is forwarded immediately', async () => {
-    const sysOptions = ActorSystemOptions.create()
-      .withLogger(new NoopLogger())
-      .withLogLevel(LogLevel.Off);
-    const sys = ActorSystem.create('js-none', sysOptions);
+  test('ackPolicy=none skips the handshake — every message is forwarded immediately, and a defensive settle is not a WARN', async () => {
+    // The logger is the second half of this case (#1510).  Under `'none'` the
+    // actor still mints an `ackToken` and ships it, but registers nothing
+    // against it — so once all four settle handlers report a miss at WARN, a
+    // fire-and-hose consumer that acks defensively takes that WARN once per
+    // message, at full delivery rate, carrying an explanation ("already timed
+    // out, was settled, or predates a reconnect") that is false in this mode.
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-none', logger);
     try {
       const jetstreamOptions = JetStreamOptions.create()
         .withServers(['nats://fake:4222'])
         .withStream({ name: 'S', subjects: ['s.>'] })
         .withConsumer({ durable: 'd', ackPolicy: 'none' });
-      const { mock, target } = await bootActor(sys, jetstreamOptions);
+      const { actor, mock, target } = await bootActor(sys, jetstreamOptions);
       const h1 = makeHandle(1);
       const h2 = makeHandle(2);
       mock.mockConnection.js.subscription.push(h1);
@@ -661,6 +665,26 @@ describe('JetStreamActor — ack/nak/term', () => {
       expect(target.received.map((resolveNext) => resolveNext.streamSeq)).toEqual([1, 2]);
       expect(h1.acked).toBe(false);   // pump didn't call ack
       expect(h2.acked).toBe(false);
+
+      // A defensive consumer settling every mode the same way.
+      for (const message of target.received) {
+        actor.tell({ kind: 'acknowledgment', ackToken: message.ackToken });
+        actor.tell({ kind: 'negativeAcknowledgment', ackToken: message.ackToken });
+        actor.tell({ kind: 'terminate', ackToken: message.ackToken, reason: 'defensive' });
+        actor.tell({ kind: 'inProgress', ackToken: message.ackToken });
+      }
+      // "No WARN" is an absence, and the anchor for it is a *later* command
+      // whose WARN is unconditional: the mailbox is FIFO, so seeing the
+      // push-mode `fetch` refusal means all eight settles above were handled.
+      actor.tell({ kind: 'fetch', batch: 1 });
+      await awaitCondition(
+        () => logger.warnings.some((w) => w.includes('fetch on push-mode')),
+        { timeoutMs: 4_000, label: 'the anchor command behind the eight settles was refused' },
+      );
+      expect(logger.unknownTokenWarnings).toEqual([]);
+      // …and `terminate` in particular does not claim a message was dropped:
+      // in this mode nothing was tracked, so nothing was dropped.
+      expect(logger.terminateWarnings).toEqual([]);
     } finally {
       await sys.terminate();
     }
@@ -697,6 +721,60 @@ describe('JetStreamActor — ack/nak/term', () => {
       // And the consequence is named, not just the event: the message will be
       // redelivered and reprocessed.
       expect(logger.unknownTokenWarnings[0]).toContain('already timed out, was settled, or predates a reconnect');
+    } finally {
+      await sys.terminate();
+    }
+  });
+
+  test('the other three settle commands report an unknown ackToken at WARN too, naming themselves', async () => {
+    // `onAcknowledgment` was the only handler the #710 fix gave the WARN to;
+    // `onNegativeAcknowledgment`, `onTerminate` and `onInProgress` stayed a
+    // bare `if (!pendingAck) return;` and dropped the command in total
+    // silence — not even at `debug` (#1510).  That matters most on the very
+    // migration the fix forced: a caller converting four settle call sites to
+    // the delivery-scoped token and missing one gets no signal from three of
+    // them, and a dropped `terminate` is the worst of the four — the caller
+    // asked for a permanent drop and instead gets the ack-timeout's `nak()`
+    // and endless redelivery, which is the silent-reprocessing outcome #710
+    // was filed about.
+    const logger = new CapturingLogger();
+    const sys = observedSystem('js-unknown-settles', logger);
+    try {
+      const jetstreamOptions = JetStreamOptions.create()
+        .withServers(['nats://fake:4222'])
+        .withStream({ name: 'S', subjects: ['s.>'] })
+        .withConsumer({ durable: 'd' });
+      const { actor } = await bootActor(sys, jetstreamOptions);
+      // No handle pushed, so no pending entry for any of the three.
+      actor.tell({ kind: 'negativeAcknowledgment', ackToken: 4242 });
+      actor.tell({ kind: 'terminate', ackToken: 4243, reason: 'poison' });
+      actor.tell({ kind: 'inProgress', ackToken: 4244 });
+      await awaitCondition(() => logger.unknownTokenWarnings.length >= 3, {
+        timeoutMs: 4_000,
+        label: 'all three unknown-token drops were reported at WARN',
+      });
+      // The upper half of "exactly three": a later command whose WARN is
+      // unconditional, reached through the same FIFO mailbox.
+      actor.tell({ kind: 'fetch', batch: 1 });
+      await awaitCondition(
+        () => logger.warnings.some((w) => w.includes('fetch on push-mode')),
+        { timeoutMs: 4_000, label: 'the anchor command behind the three settles was refused' },
+      );
+
+      expect(logger.unknownTokenWarnings).toHaveLength(3);
+      // Each line names the command that missed, not just "a settle": the
+      // three fail in different ways and the caller has to know which of its
+      // call sites is the unconverted one.
+      expect(logger.unknownTokenWarnings[0])
+        .toContain('negativeAcknowledgment for unknown ackToken=4242');
+      expect(logger.unknownTokenWarnings[1]).toContain('terminate for unknown ackToken=4243');
+      expect(logger.unknownTokenWarnings[2]).toContain('inProgress for unknown ackToken=4244');
+      for (const warning of logger.unknownTokenWarnings) {
+        expect(warning).toContain('already timed out, was settled, or predates a reconnect');
+      }
+      // The dropped `terminate` reported a miss, not a drop — no message was
+      // permanently discarded, because none was in flight.
+      expect(logger.terminateWarnings).toEqual([]);
     } finally {
       await sys.terminate();
     }

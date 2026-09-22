@@ -229,7 +229,16 @@ it back to the broker or persist it: it means nothing outside the actor
 instance that issued it, and it does not survive a reconnect.
 
 Set `ackPolicy: 'none'` for pure fire-and-hose delivery where no ack is
-expected.
+expected.  Messages still carry an `ackToken` in that mode, but **the token
+names nothing**: the actor registers no delivery, so every
+`acknowledgment` / `negativeAcknowledgment` / `terminate` / `inProgress`
+naming it is ignored.  A consumer that settles defensively is not doing
+anything wrong — the drop is reported at `debug` there, not at `warn`.
+
+A settle command that misses in any *other* mode **is** reported at `warn`,
+by all four commands, naming the command and the token: the delivery it
+addressed already timed out, was settled, or predates a reconnect, so the
+message will be redelivered and reprocessed.
 
 ## Push vs pull consumers
 

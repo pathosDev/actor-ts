@@ -238,7 +238,18 @@ Actor-Instanz, die es vergeben hat, bedeutet es nichts, und es übersteht
 keinen Reconnect.
 
 Setze `ackPolicy: 'none'` für reine Fire-and-Hose-Zustellung ohne
-erwartetes Ack.
+erwartetes Ack.  Nachrichten tragen auch in diesem Modus ein `ackToken`,
+aber **das Token benennt nichts**: Der Actor registriert keine Zustellung,
+also wird jedes `acknowledgment` / `negativeAcknowledgment` / `terminate` /
+`inProgress` darauf ignoriert.  Ein Consumer, der vorsorglich quittiert,
+macht dabei nichts falsch — der Drop wird hier auf `debug` gemeldet, nicht
+auf `warn`.
+
+Ein Settle-Befehl, der in einem *anderen* Modus ins Leere läuft, **wird**
+auf `warn` gemeldet, bei allen vier Befehlen, mit Nennung des Befehls und
+des Tokens: Die adressierte Zustellung ist bereits abgelaufen, wurde
+bereits aufgelöst oder stammt von vor einem Reconnect — die Nachricht wird
+also erneut zugestellt und erneut verarbeitet.
 
 ## Push- vs. Pull-Consumer
 
