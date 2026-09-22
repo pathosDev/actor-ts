@@ -21,9 +21,10 @@ import {
  * suite passes unchanged whichever one is in force.  It cannot tell a
  * four-byte token from a sixteen-byte one, which is precisely the property
  * #786 is about: this is the durable-state optimistic-concurrency token, so
- * an attacker who drives the plaintext and holds write access can *compute* a
- * colliding body rather than search for one, and win a CAS check they should
- * lose.
+ * an attacker who holds write access to the store can search for a body
+ * colliding with the etag a CAS holder has already read, write it as the
+ * *intervening* revision, and have the holder's stale `ifMatch` pass over
+ * content that changed underneath them.
  *
  * So the assertions below are about the derivation itself, and they are
  * deliberately of three different kinds — each catches a wrong fix the other
@@ -47,16 +48,22 @@ import {
  * value, and a change that strengthened the reported etag while leaving the
  * comparison on the old one would pass.
  *
- * **What is deliberately not claimed here.**  No collision was constructed
- * against the old token, and the preconditions for the original finding stack
- * up (this backend rather than S3, which forwards `IfMatch` to the service and
- * is unaffected; an attacker who both drives the plaintext and holds write
- * access; a forged body matching the byte length as well, since the length is
- * a literal component of the string).  The per-key `O_EXCL` advisory lock
- * already removes the ordinary race — it simply cannot make the comparison
- * itself sound.  This suite is the hygiene property written down as a gate: a
- * security-relevant equality check does not rest on a four-byte
- * non-cryptographic hash.
+ * **What is claimed, and what is not.**  This file's header used to say no
+ * collision had been constructed and to settle for the hygiene property — a
+ * security-relevant equality check should not rest on a four-byte
+ * non-cryptographic hash.  Both halves were superseded by the #786
+ * verification pass: a colliding 49-byte pair was built by birthday search
+ * in seconds, and the lost update it enables is driven end to end by the
+ * last `describe` in this file.  The old header also repeated the original
+ * mechanism, which was backwards — see that `describe` for the correction
+ * and for why the shipped hash was neither textbook FNV-1a nor invertible.
+ *
+ * The preconditions do still stack: this backend rather than S3, which
+ * forwards `IfMatch` to the service and is unaffected; an attacker holding
+ * write access to the store; a body matching the byte length as well, since
+ * the length is a literal component of the string.  And the per-key `O_EXCL`
+ * advisory lock still removes the ordinary race — it simply cannot make the
+ * comparison itself sound.
  */
 
 /** `"fs-<hex>-<byte length>"`, decomposed so each part can be asserted on. */
@@ -334,6 +341,100 @@ describe('FilesystemObjectStorageBackend — CAS token strength (#786)', () => {
     await expect(
       backend.put('strength/legacy', bytes('v2'), { ifMatch: legacyFnv1aEtag(body) }),
     ).rejects.toBeInstanceOf(ObjectStorageConcurrencyError);
+  });
+});
+
+/**
+ * The lost update itself, driven through a constructed collision.
+ *
+ * Everything above argues from the *shape* of the token — its width, its
+ * primitive, its format.  This is the defect: two different bodies that the
+ * pre-#786 construction cannot tell apart, and the write they let through.
+ *
+ * The pair below was found by birthday search over random 49-byte bodies, in
+ * seconds.  That is worth stating precisely, because the original account of
+ * #786 got it wrong twice.  It said the old hash was "trivially invertible by
+ * construction" — it was not: the shipped line was `hash = (hash *
+ * 0x01000193) >>> 0`, a float64 multiply whose exact product exceeds 2^53 and
+ * rounds, so it is not textbook FNV-1a and is not a bijection.  Measured
+ * while building this fixture, it disagrees with a `Math.imul` FNV-1a on 2000
+ * of 2000 random 49-byte bodies, and the rounding costs it space as well: 43
+ * collisions in 400 000 random 49-byte bodies puts the effective size near
+ * 2^30.8, so even odds arrive around 50 000 bodies rather than the ~65 000 a
+ * full 32-bit space would need.  A search, then — not an inversion, and
+ * cheaper than the number that was quoted.
+ *
+ * And the attack runs the other way round from the one first described.  A
+ * stale writer computing a body that matches an etag *they* hold gains
+ * nothing, because `put` compares `ifMatch` against the etag of the bytes on
+ * disk — their own new body never enters the comparison.  The mechanism is
+ * the **intervening writer**: they author the body that lands in between so
+ * that its etag equals what the CAS holder already read.  The holder's stale
+ * precondition then passes over content that changed underneath them, and
+ * their write clobbers it.  For `ObjectStorageDurableStateStore` that is the
+ * revision check failing open.
+ */
+
+/**
+ * Two distinct 49-byte bodies with one pre-#786 etag: `"fs-69574da1-49"`.
+ *
+ * Kept as literals rather than re-derived by a search in the test.  A search
+ * makes the case depend on a random draw and on the old construction still
+ * being implemented correctly in {@link legacyFnv1aEtag}; a pair pins the
+ * finding itself, and the first assertion below checks the collision is real
+ * rather than assuming it.
+ */
+const COLLIDING_BODY_A = 'A-hou_kSMxl_S3n6WFvGsrvW29uaJOmvQJNuK3ls3DWkcT5WJ';
+const COLLIDING_BODY_B = '58crsNx-sPA4eaSXCo1H0RWlFdWBqwTflpHAQBJZXBuEsteGD';
+
+describe('FilesystemObjectStorageBackend — the constructed collision (#786)', () => {
+  test('the pair really does collide under the pre-#786 construction', async () => {
+    // The premise of the two cases below, asserted rather than asserted-to.
+    // Same length as well as same hash: the length is a literal component of
+    // the etag string, so a pair differing in it would collide in neither
+    // construction and prove nothing.
+    expect(COLLIDING_BODY_A).not.toBe(COLLIDING_BODY_B);
+    expect(COLLIDING_BODY_A.length).toBe(COLLIDING_BODY_B.length);
+    expect(legacyFnv1aEtag(bytes(COLLIDING_BODY_A)))
+      .toBe(legacyFnv1aEtag(bytes(COLLIDING_BODY_B)));
+  });
+
+  test('the shipped etag separates them', async () => {
+    const { etag: etagA } = await backend.put('collision/a', bytes(COLLIDING_BODY_A));
+    const { etag: etagB } = await backend.put('collision/b', bytes(COLLIDING_BODY_B));
+    expect(etagA).not.toBe(etagB);
+  });
+
+  test('an intervening writer cannot make a stale ifMatch pass', async () => {
+    // The lost update, end to end.
+    //
+    //   1. The holder reads the object and keeps its etag.
+    //   2. An attacker overwrites it with the colliding body — a legitimate
+    //      write, and one the per-key lock has nothing to say about.
+    //   3. The holder writes back under its now-stale precondition.
+    //
+    // Step 3 must be refused.  Under the pre-#786 token it succeeded, because
+    // the etag of the attacker's body on disk equalled the one the holder was
+    // holding, and the holder's write then destroyed content it had never
+    // seen.
+    await backend.put('collision/cas', bytes(COLLIDING_BODY_A));
+    const held = await backend.get('collision/cas');
+    expect(held.isSome()).toBe(true);
+    const heldEtag = held.isSome() ? held.value.etag : '';
+
+    await backend.put('collision/cas', bytes(COLLIDING_BODY_B));
+
+    await expect(
+      backend.put('collision/cas', bytes('the holder\'s own next revision'), { ifMatch: heldEtag }),
+    ).rejects.toBeInstanceOf(ObjectStorageConcurrencyError);
+
+    // Refused *and* nothing written: the attacker's body is still there, so
+    // the holder will re-read and notice rather than silently win.
+    const after = await backend.get('collision/cas');
+    expect(after.isSome()).toBe(true);
+    if (after.isSome()) {
+      expect(new TextDecoder().decode(after.value.body)).toBe(COLLIDING_BODY_B);
+    }
   });
 });
 

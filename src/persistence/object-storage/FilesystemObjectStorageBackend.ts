@@ -997,27 +997,48 @@ export async function probeFilesystemEtagAvailability(): Promise<void> {
  * `ObjectStorageDurableStateStore` builds that `ifMatch` from the etag it
  * cached — so equality here *is* the durable-state concurrency check.
  *
- * It used to be a 32-bit FNV-1a xor'd with the length, and the comment here
+ * It used to be a 32-bit hash xor'd with the length, and the comment here
  * scoped its invariant to "different bytes → different etag with very high
- * probability".  That is an accidental-collision claim, and it was true: a
- * chance collision needs ~65k distinct same-length bodies at one key, which no
- * durable-state record produces.  The claim a CAS token actually has to make
- * is the adversarial one, and FNV-1a makes none — it is trivially invertible
- * by construction, so a stale writer who drives the plaintext can *compute* a
- * body matching an etag they still hold rather than search for one, and win a
- * CAS check they should lose.
+ * probability" — an accidental-collision claim, where what a CAS token owes
+ * is an adversarial one.  Two further things this comment said about that
+ * were **wrong**, both inherited from the issue body rather than measured,
+ * and the #786 verification pass corrected them.  They are restated here
+ * rather than quietly deleted, because this JSDoc is the repository's
+ * permanent explanation of a security decision and the next report in this
+ * family will be calibrated against it.
  *
- * **Be precise about how live that is.**  Nobody constructed the collision,
- * the preconditions stack (this backend rather than S3, an attacker who both
- * drives the plaintext and holds write access, and a body whose *length* also
- * matches since the length is a literal component of the string), and the
- * per-key `O_EXCL` lock in {@link acquireLock} already removes the ordinary
- * race — it just cannot make the comparison itself sound, because a colliding
- * body passes it whether or not it was taken under the lock.  The S3 backend
- * was never affected: it forwards `IfMatch` to the service and returns S3's
- * own ETag.  So the defensible statement is the hygiene one — a
- * security-relevant equality check should not rest on a four-byte
- * non-cryptographic hash — not that there is an exploit in the field.
+ * **The attack was described backwards.**  It said a stale writer could
+ * *compute* a body matching an etag they still hold.  That buys nothing:
+ * `put` derives the comparison's left-hand side from the body **on disk**,
+ * so the writer's own new body never enters it.  The real mechanism runs the
+ * other way round — an attacker authors the **intervening** body so that its
+ * etag equals the one a CAS holder has already read.  The holder's stale
+ * `ifMatch` then passes over content that changed underneath them and their
+ * write clobbers it: a lost update, and for `ObjectStorageDurableStateStore`
+ * the revision check itself failing open.
+ *
+ * **And the old hash was not invertible**, because it was not textbook
+ * FNV-1a.  The shipped line was `hash = (hash * 0x01000193) >>> 0` — a
+ * float64 multiply whose exact product exceeds 2^53 and rounds, which
+ * destroys the bijection "trivially invertible by construction" rested on;
+ * measured, it disagrees with a `Math.imul` FNV-1a on 2000 of 2000 random
+ * 49-byte bodies.  The rounding costs it space as well, which is the half
+ * that matters: 43 collisions in 400 000 random 49-byte bodies puts the
+ * effective size near 2^30.8 rather than 2^32, so even odds arrive around
+ * 50 000 bodies and not the ~65 000 quoted above.  A birthday **search**,
+ * then — cheaper than the number that was given, and not an inversion.
+ *
+ * **The collision was constructed**, in seconds, and the pair is a fixture
+ * in `FilesystemObjectStorageBackend.etagStrength.test.ts` that drives the
+ * stale-`ifMatch` write through it.  So the statement here is no longer the
+ * hygiene one this comment settled for.  What does still hold: the
+ * preconditions stack (this backend rather than S3, an attacker holding
+ * write access to the store, and a body whose *length* matches too, since
+ * the length is a literal component of the string), and the per-key `O_EXCL`
+ * lock in {@link acquireLock} removes the ordinary race — it simply cannot
+ * make the comparison sound, because a colliding body passes it whether or
+ * not it was taken under the lock.  The S3 backend was never affected: it
+ * forwards `IfMatch` to the service and returns S3's own ETag.
  *
  * **No cheap fallback, deliberately.**  `Integrity.ts` and `Encryption.ts`
  * next door resolve `SubtleCrypto` and throw when it is absent; this goes
@@ -1029,6 +1050,24 @@ export async function probeFilesystemEtagAvailability(): Promise<void> {
  * even load on needs one: it already hard-depends on `node:fs/promises`, and
  * every runtime the framework supports that has that also exposes WebCrypto
  * as a global (Bun, Node ≥ 24, Deno).
+ *
+ * **What WebCrypto costs, since the choice was never written down.**  Over a
+ * 256-byte body, after a 200-iteration warmup on Bun 1.4.2:
+ * `subtle.digest('SHA-256')` is 34 µs against 1.1 µs for `node:crypto`'s
+ * synchronous `createHash('sha256')` — 32x — and that is the call, not
+ * promise overhead, since a bare `await Promise.resolve()` measures 0.18 µs
+ * on the same run.  `node:crypto` was reachable: this backend already
+ * hard-depends on `node:fs/promises`, so it is available wherever the
+ * backend can load at all.
+ *
+ * It stays WebCrypto, and the number is what makes that a decision rather
+ * than an oversight.  34 µs is noise beside the filesystem round-trips every
+ * `put` performs regardless; the direction reverses with size, where the
+ * digest beats the old per-byte JS loop by an order of magnitude at 1 MB;
+ * and on a multi-MB body an off-thread digest is what #1540's
+ * no-synchronous-work policy asks for, where `createHash` would block the
+ * loop.  Parity with `Encryption.ts` and `Integrity.ts` — which resolve
+ * `SubtleCrypto` through the same {@link requireSubtle} — settles the rest.
  */
 async function computeEtag(body: Uint8Array): Promise<string> {
   const subtle = requireEtagSubtle();
