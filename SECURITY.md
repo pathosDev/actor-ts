@@ -83,6 +83,9 @@ boundary specific rather than obvious, so it is written out here.
 - Anything requiring an attacker who already has code execution in the
   actor system's own process, or read access to its configuration and
   key material.
+- A worker thread of the mesh is in-process code the operator loaded,
+  so a per-worker inbound budget on the broker is out of scope: bounding
+  what a buggy worker can send is robustness, not an attacker boundary.
 - Denial of service by an operator against their own system — an
   unbounded mailbox that a local caller fills, a dispatcher starved by
   application code.
@@ -116,15 +119,24 @@ relying on when they install a published version:
 | Gate | Where | What it catches |
 | --- | --- | --- |
 | **CodeQL** (`javascript-typescript`) | `.github/workflows/codeql.yml` — pull requests, pushes to `main`/`develop`, weekly | Injection, path traversal, unsafe deserialization and the rest of the `security-extended` query suite. Results land in the repository's code-scanning alerts. |
-| **`bun audit`** | `.github/workflows/package-health.yml` — same triggers plus a weekly cron | Published advisories against the versions `bun.lock` actually pins. |
+| **`bun audit`** | `.github/workflows/package-health.yml` — same triggers plus a weekly cron | Published advisories against the versions the Bun lockfiles CI installs actually pin: `bun.lock`, `docs/bun.lock` and `devtools-ui/bun.lock`. |
 | **SHA-pinned actions** | `tests/unit/ci/WorkflowHygiene.test.ts` | A mutable action tag being repointed under a job that holds a publishing credential. |
 | **npm provenance** | `.github/workflows/publish.yml` | Ties the published tarball to the workflow run and commit that built it. |
 | **CycloneDX SBOM** | `.github/workflows/publish.yml` | Attached to every GitHub Release, so a consumer can diff the closure without reconstructing it. |
 
-`bun audit` reads `bun.lock`. GitHub's dependency graph does not resolve
-that file — it records the unresolved ranges from `package.json` — which
-is why Dependabot's alerts on this repository have only ever come from
-the npm lockfiles under `examples/`, and why `actions/dependency-review-action`
+`bun audit` reads a lockfile, and the job runs it over each Bun lockfile
+CI installs: `bun.lock`, the shipped closure; `docs/bun.lock`, which the
+documentation build installs; and `devtools-ui/bun.lock`, which the
+DevTools UI build installs inside the publishing job. The two nested
+ones were read by nothing until
+[#1413](https://github.com/pathosDev/actor-ts/issues/1413) and carried
+nine high advisories between them, all with in-range fixes, while the
+root gate stayed green; `tests/unit/ci/SecurityPolicy.test.ts` now
+fails when a workflow installs a Bun closure the job does not audit.
+GitHub's dependency graph does not resolve any of those files — it
+records the unresolved ranges from `package.json` — which is why
+Dependabot's alerts on this repository have only ever come from the npm
+lockfiles under `examples/`, and why `actions/dependency-review-action`
 is deliberately *not* used here.
 
 ## Accepted advisories
@@ -147,9 +159,17 @@ bump:
 `@fastify/static`, `brace-expansion`, `fast-uri` (both major lines),
 `find-my-way` and `ws` all had a fixed release inside the range
 `package.json` already declared. So only `bun.lock` moved. No
-dependency range was widened, no `overrides` entry was added, and a
-consumer installing `actor-ts` resolves the fixed versions from the
-published manifest exactly as this repository does.
+dependency range was widened and no `overrides` entry was added, so a
+consumer installing `actor-ts` resolves the fixed versions of the
+runtime closure — `fastify`, `ts-pattern` and their transitives — from
+the published manifest exactly as this repository does. That claim
+stops at the runtime closure. The optional peers' ranges were not
+raised, because a peer floor is a consumer-visible change: `ws` is
+still declared as `^8.0.0`, a range that admits releases carrying a
+published high advisory fixed only in 8.21.0, so a consumer pinned to
+one of them resolves it whatever this repository's lockfile says, and
+their own audit is what tells them. (The advisory is deliberately not
+named here: an ID under this heading reads as an accepted one.)
 
 If a suppression is ever needed again it belongs back here as a table —
 advisory, package, severity, and the path it is reached through — and
