@@ -2490,18 +2490,70 @@ gc-cadence = 10m            # minutes
 ttl = 24h                   # hours
 ```
 
-Recognized units: `ns`, `us`, `ms`, `s`, `m`, `h`, `d`.
+Recognized units, case-insensitive, with or without a space before them:
+
+| Amount | Spellings |
+| --- | --- |
+| nanoseconds | `ns` `nano` `nanos` `nanosecond` `nanoseconds` |
+| microseconds | `us` `μs` `micro` `micros` `microsecond` `microseconds` |
+| milliseconds | `ms` `milli` `millis` `millisecond` `milliseconds` |
+| seconds | `s` `sec` `secs` `second` `seconds` |
+| minutes | `m` `min` `mins` `minute` `minutes` |
+| hours | `h` `hr` `hrs` `hour` `hours` |
+| days | `d` `day` `days` |
+
+A bare number is milliseconds.  A leading sign and a fraction are both
+accepted — `-500ms` and `1.5s` are valid.  All three spellings of the micro
+sign reach the same unit, so text copied from elsewhere parses: `μs`
+(U+03BC, what the table is keyed on), `µs` (U+00B5, what a keyboard
+produces) and `Μs` (U+039C).
+
+Two things are refused at parse time rather than quietly becoming a number
+nobody can use:
+
+- **An unrecognized unit** — `Unknown duration unit "..." in ...`.  The
+  lookup reads the unit table's *own* keys only, the same way
+  [reads see own keys only](#reads-see-own-keys-only) guards the key path,
+  so `constructor` is refused like any other unknown unit instead of
+  resolving through the prototype chain.
+- **Anything that is not a finite number of milliseconds** — `Invalid
+  duration: ...`.  That covers a literal long enough to overflow a double,
+  and any spelling the pattern does not match, exponent notation (`1e3`)
+  included.
 
 ### Sizes
 
 ```hocon
-max-frame-bytes = 16M       # 16 777 216 bytes
+max-frame-bytes = 16M       # 16 777 216 bytes — binary
+upload-limit    = 16MB      # 16 000 000 bytes — decimal
 buffer = 64K
 heap = 2G
 ```
 
-Recognized units: `B`, `K`, `M`, `G`, `T` — binary (1024) by
-default.
+Recognized units, case-insensitive, with or without a space before them:
+
+| Amount | Binary (1024) | Decimal (1000) |
+| --- | --- | --- |
+| bytes | `B` `byte` `bytes` | — |
+| kilo | `K` `KiB` `kibibyte` `kibibytes` | `KB` `kilobyte` `kilobytes` |
+| mega | `M` `MiB` `mebibyte` `mebibytes` | `MB` `megabyte` `megabytes` |
+| giga | `G` `GiB` `gibibyte` `gibibytes` | `GB` `gigabyte` `gigabytes` |
+| tera | `T` `TiB` `tebibyte` `tebibytes` | `TB` `terabyte` `terabytes` |
+| peta | `P` `PiB` `pebibyte` `pebibytes` | `PB` `petabyte` `petabytes` |
+
+The single letter is binary, as HOCON specifies, and so is the `iB` form;
+only the bare `B` suffix is decimal.  The two diverge as they scale — `16MB`
+is 4.9 % smaller than `16M`, and at `T` the gap is 10 % — so a cap written
+in the unintended one is a cap in the wrong place.
+
+Unlike a duration, a size takes **no sign**, and a bare number must be a
+whole count of bytes: `-1K` and `1.5` are both `Invalid size`.  A fraction
+*with* a unit is fine and rounds to the nearest byte, so `1.5K` is 1536.
+
+The same two refusals apply, with the messages spelled for sizes:
+`Unknown size unit "..." in ...` for a unit that is not in the table —
+`constructor` included, for the reason above — and `Invalid size: ...` for
+anything that does not come out a finite byte count.
 
 ### Environment substitution
 
