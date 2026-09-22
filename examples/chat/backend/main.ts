@@ -2,8 +2,12 @@
  * Chat backend entry point.
  *
  * Run a 3-node TCP cluster locally — every node runs the same
- * binary; the cluster picks one to host the HTTP front door:
+ * binary; the cluster picks one to host the HTTP front door.  Each
+ * node refuses to start without a session-token secret (#791), so
+ * export one first — `CHAT_TOKEN_SECRET`, the same strong random
+ * value on every node, for anything past a laptop:
  *
+ *   export CHAT_ALLOW_DEMO_SECRET=1
  *   bun examples/chat/backend/main.ts --port 2551
  *   bun examples/chat/backend/main.ts --port 2552 --seeds localhost:2551
  *   bun examples/chat/backend/main.ts --port 2553 --seeds localhost:2551
