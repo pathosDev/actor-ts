@@ -83,7 +83,13 @@ import { describe, expect, test } from 'bun:test';
  *   - **The other ways to disable verification** — a `checkServerIdentity`
  *     that returns `undefined`, a custom `secureContext` or agent, or the
  *     `NODE_TLS_REJECT_UNAUTHORIZED` environment variable.  None of them is
- *     this key, and none of them is checked here.
+ *     this key, and none of them is checked here.  SQL Server's driver spells
+ *     the same decision `trustServerCertificate` and inverts it into
+ *     `rejectUnauthorized` itself, so that key written in code is invisible
+ *     here too.  Nothing in `src/` writes it — the SQL Server stores hand
+ *     `poolConfig` to `new mssql.ConnectionPool(...)` untouched, which is the
+ *     seam the positive half below covers — and a scanner for it is the second
+ *     design #1416 weighs, deliberately not built.
  *   - **Anything outside {@link SCAN_ROOTS}** — `tests/` (which has to be able
  *     to write the unsafe shape as a fixture, and does, at the bottom of this
  *     file) and the code samples in `docs/`, which are MDX rather than
@@ -97,9 +103,12 @@ import { describe, expect, test } from 'bun:test';
  * Those limits are fixtures too, at the bottom of this file, so the paragraph
  * above is executable rather than a claim.
  *
- * Then the positive half, which is what actually binds #755: the four Postgres
- * `poolConfig` surfaces must *show* the safe form and link the TLS page.
- * Property 1 alone would be satisfied by a JSDoc that says nothing at all.
+ * Then the positive half, which is what actually binds #755 and #1416: the
+ * twelve relational `poolConfig` surfaces — Postgres, MariaDB and SQL Server,
+ * the shared connection type plus one builder per store each — must *show* the
+ * safe form for their driver and link the TLS page.  Property 1 alone would be
+ * satisfied by a JSDoc that says nothing at all, and for SQL Server it is
+ * satisfied by construction, because that driver spells the knob differently.
  *
  * Note what the fixed JSDoc deliberately does **not** do: it names the knob in
  * prose ("switching certificate verification off") instead of spelling the
@@ -108,7 +117,7 @@ import { describe, expect, test } from 'bun:test';
  * unsafe snippet at the point of decision still hands over the paste — which
  * is the failure mode #755 is about.  That is a documentation judgement, and
  * this file's carve-out exists for the one site where naming the value is
- * unavoidable, not to spare the maintainers of these four.
+ * unavoidable, not to spare the maintainers of these twelve.
  */
 
 const REPOSITORY_ROOT = join(import.meta.dir, '..', '..', '..');
@@ -187,9 +196,6 @@ const WARNING_MARKERS: ReadonlyArray<string> = [
   '✗',
 ];
 
-/** The safe illustration, identical on all four Postgres surfaces. */
-const SAFE_ILLUSTRATION = "ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') }";
-
 /**
  * The two things the prose has to *say*, beyond showing the safe shape.
  *
@@ -208,6 +214,95 @@ const SAFE_ILLUSTRATION = "ssl: { rejectUnauthorized: true, ca: fs.readFileSync(
 const WARNING_PHRASES: ReadonlyArray<readonly [string, string]> = [
   ['the remedy, as prose rather than as a copyable value', 'supply the signing ca'],
   ['what is lost without it', 'authenticates nobody'],
+];
+
+/**
+ * One relational backend's `poolConfig` surfaces and what their JSDocs have
+ * to show and must not spell.
+ */
+type RelationalBackend = {
+  readonly name: string;
+  /** The shape to copy, identical on every surface of the backend; it may wrap. */
+  readonly illustration: string;
+  /**
+   * The copyable unsafe value, in any spelling of the pair — `:` or `=`, any
+   * whitespace, either case — so that neither the object form nor the
+   * connection-string form of the knob gets written out where a hover shows
+   * it.  The prose names the knob; it never hands over the paste.
+   */
+  readonly unsafeSpelling: RegExp;
+  /**
+   * `[file, anchor]` per surface.  The anchor is the declaration line whose
+   * JSDoc is under test, and it has to match that line *alone*: `withPoolConfig(`
+   * matched the class-level usage example first in five of the eight non-Postgres
+   * builders, and the block above that line is the class comment, so a table
+   * copied from the Postgres rows would have bound the wrong block and passed or
+   * failed for the wrong reason (#1416).  The test refuses an ambiguous anchor.
+   */
+  readonly sites: ReadonlyArray<readonly [string, string]>;
+};
+
+/** node-postgres and the `mariadb` connector both take Node's own TLS options, so one shape serves both. */
+const NODE_TLS_ILLUSTRATION = "ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') }";
+
+/**
+ * {@link DISABLED_VERIFICATION} in the spellings prose could hand over as a
+ * paste: the key bare, quoted or in a code span, `:` or `=`, the value likewise
+ * — `` `rejectUnauthorized` = `false` `` reads as a value to copy just as the
+ * bare pair does.
+ */
+const NODE_TLS_UNSAFE_SPELLING = /rejectUnauthorized['"\x60]?\s*[:=]\s*['"\x60]?false/i;
+
+/**
+ * The twelve surfaces a developer reaches for when wiring TLS to a relational
+ * journal: per backend the shared connection type plus one builder per store.
+ * `poolConfig` is a `Record<string, unknown>` on every one of them, so the
+ * compiler has nothing to say about its contents and the doc comment is the
+ * whole contract.
+ *
+ * SQL Server's shape is the odd one out because its driver is: tedious takes
+ * the CA through `cryptoCredentialsDetails`, which it hands to
+ * `tls.createSecureContext`, and spells the switch that turns verification
+ * off `trustServerCertificate` — inverting it into `rejectUnauthorized`
+ * itself, which is why a connection string's `TrustServerCertificate=` is the
+ * same knob under a third name.  The prose on those four surfaces names that
+ * switch without writing its value, exactly as the Postgres prose names
+ * "switching certificate verification off" (#1416).
+ */
+const RELATIONAL_BACKENDS: ReadonlyArray<RelationalBackend> = [
+  {
+    name: 'Postgres',
+    illustration: NODE_TLS_ILLUSTRATION,
+    unsafeSpelling: NODE_TLS_UNSAFE_SPELLING,
+    sites: [
+      ['src/persistence/journals/PostgresClient.ts', 'readonly poolConfig?:'],
+      ['src/persistence/journals/PostgresJournalOptions.ts', 'withPoolConfig(poolConfig:'],
+      ['src/persistence/snapshot-stores/PostgresSnapshotStoreOptions.ts', 'withPoolConfig(poolConfig:'],
+      ['src/persistence/durable-state-stores/PostgresDurableStateStoreOptions.ts', 'withPoolConfig(poolConfig:'],
+    ],
+  },
+  {
+    name: 'MariaDB',
+    illustration: NODE_TLS_ILLUSTRATION,
+    unsafeSpelling: NODE_TLS_UNSAFE_SPELLING,
+    sites: [
+      ['src/persistence/journals/MariaDbClient.ts', 'readonly poolConfig?:'],
+      ['src/persistence/journals/MariaDbJournalOptions.ts', 'withPoolConfig(poolConfig:'],
+      ['src/persistence/snapshot-stores/MariaDbSnapshotStoreOptions.ts', 'withPoolConfig(poolConfig:'],
+      ['src/persistence/durable-state-stores/MariaDbDurableStateStoreOptions.ts', 'withPoolConfig(poolConfig:'],
+    ],
+  },
+  {
+    name: 'SQL Server',
+    illustration: "options: { encrypt: true, cryptoCredentialsDetails: { ca: fs.readFileSync('rds-ca.pem') } }",
+    unsafeSpelling: /trustServerCertificate['"\x60]?\s*[:=]\s*['"\x60]?true/i,
+    sites: [
+      ['src/persistence/journals/MsSqlClient.ts', 'readonly poolConfig?:'],
+      ['src/persistence/journals/MsSqlJournalOptions.ts', 'withPoolConfig(poolConfig:'],
+      ['src/persistence/snapshot-stores/MsSqlSnapshotStoreOptions.ts', 'withPoolConfig(poolConfig:'],
+      ['src/persistence/durable-state-stores/MsSqlDurableStateStoreOptions.ts', 'withPoolConfig(poolConfig:'],
+    ],
+  },
 ];
 
 /**
@@ -236,19 +331,6 @@ const TLS_PAGE_PATH = TLS_PAGE.slice(SITE_ORIGIN.length).replace(/\/$/, '');
  * readers on a 404 while the English link still resolved.
  */
 const DOCS_CONTENT_ROOTS: ReadonlyArray<string> = ['docs/src/content/docs', 'docs/src/content/docs/de'];
-
-/**
- * The four surfaces a developer reaches for when wiring TLS to Postgres: the
- * shared connection type plus one builder per store.  `poolConfig` is a
- * `Record<string, unknown>` on every one of them, so the compiler has nothing
- * to say about its contents and the doc comment is the whole contract.
- */
-const POSTGRES_POOL_CONFIG_SITES: ReadonlyArray<readonly [string, string]> = [
-  ['src/persistence/journals/PostgresClient.ts', 'readonly poolConfig?:'],
-  ['src/persistence/journals/PostgresJournalOptions.ts', 'withPoolConfig('],
-  ['src/persistence/snapshot-stores/PostgresSnapshotStoreOptions.ts', 'withPoolConfig('],
-  ['src/persistence/durable-state-stores/PostgresDurableStateStoreOptions.ts', 'withPoolConfig('],
-];
 
 function sourceFiles(directory: string, out: string[] = []): string[] {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
@@ -556,29 +638,35 @@ describe('TLS verification guidance in shipped source (#755)', () => {
   });
 });
 
-describe('Postgres poolConfig documents the safe TLS shape (#755)', () => {
-  test.each(POSTGRES_POOL_CONFIG_SITES)('%s illustrates ssl with a CA and links the TLS page', (file, anchor) => {
-    const lines = readFileSync(join(REPOSITORY_ROOT, file), 'utf8').split(/\r?\n/);
-    const index = lines.findIndex((line) => line.includes(anchor));
-    if (index < 0) throw new Error(`no line containing ${anchor} in ${file}`);
+describe('relational poolConfig documents the safe TLS shape (#755, #1416)', () => {
+  for (const backend of RELATIONAL_BACKENDS) {
+    for (const [file, anchor] of backend.sites) {
+      test(`${file} illustrates ${backend.name} TLS with a CA and links the TLS page`, () => {
+        const lines = readFileSync(join(REPOSITORY_ROOT, file), 'utf8').split(/\r?\n/);
+        const matches = lines.flatMap((line, index) => (line.includes(anchor) ? [index] : []));
+        // Exactly one, so the block read below is the declaration's own JSDoc
+        // and not whichever earlier comment happened to quote the method.
+        expect(matches, `${JSON.stringify(anchor)} must match exactly one line of ${file}`).toHaveLength(1);
 
-    // Joined without the leading ` * `, so the illustration may wrap.
-    const documentation = precedingCommentBlock(lines, index)
-      .split('\n')
-      .map((line) => line.replace(/^\s*(\/\*\*?|\*\/|\*)\s?/, ''))
-      .join(' ');
+        // Joined without the leading ` * `, so the illustration may wrap.
+        const documentation = precedingCommentBlock(lines, matches[0]!)
+          .split('\n')
+          .map((line) => line.replace(/^\s*(\/\*\*?|\*\/|\*)\s?/, ''))
+          .join(' ');
 
-    expect(documentation).toContain(SAFE_ILLUSTRATION);
-    expect(documentation).toContain(TLS_PAGE);
-    // The knob is named in prose, never spelled out as a copyable value.
-    expect(documentation).not.toContain(DISABLED_VERIFICATION);
-    // And the prose says the two things that make it guidance rather than a
-    // snippet: what to do instead, and what is lost by not doing it.
-    const lowercase = documentation.toLowerCase();
-    for (const [what, phrase] of WARNING_PHRASES) {
-      expect(lowercase, `${file} no longer states ${what}`).toContain(phrase);
+        expect(documentation).toContain(backend.illustration);
+        expect(documentation).toContain(TLS_PAGE);
+        // The knob is named in prose, never spelled out as a copyable value.
+        expect(documentation).not.toMatch(backend.unsafeSpelling);
+        // And the prose says the two things that make it guidance rather than a
+        // snippet: what to do instead, and what is lost by not doing it.
+        const lowercase = documentation.toLowerCase();
+        for (const [what, phrase] of WARNING_PHRASES) {
+          expect(lowercase, `${file} no longer states ${what}`).toContain(phrase);
+        }
+      });
     }
-  });
+  }
 });
 
 describe('the page the guidance links to exists (#1508)', () => {
@@ -652,6 +740,7 @@ const BLIND_SPOTS: ReadonlyArray<readonly [string, string]> = [
   ['a key assembled at runtime', "config.ssl = { ['reject' + 'Unauthorized']: false };"],
   ['a key behind a constant', 'config.ssl = { [KNOB]: false };'],
   ['a different knob with the same effect', 'config.ssl = { checkServerIdentity: () => undefined };'],
+  ["SQL Server's spelling of the same decision", 'config.options = { trustServerCertificate: true };'],
   ['the environment', "process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';"],
 ];
 

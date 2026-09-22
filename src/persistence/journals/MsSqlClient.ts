@@ -61,12 +61,32 @@ export type MsSqlConnection = {
    * Connection string, e.g.
    * `Server=host,1433;Database=app;User Id=sa;Password=…;Encrypt=true`, or the
    * `mssql://user:pass@host:1433/db` URL form.
+   *
+   * A connection string carries the switch `poolConfig` warns about too,
+   * spelled `TrustServerCertificate=`, and has no key for a CA — so a server
+   * behind a private CA needs `poolConfig`, where the CA can be given.
    */
   readonly url?: string;
   /**
    * `mssql` config object — `{ server, port, user, password, database,
-   * options: { encrypt, trustServerCertificate }, pool: { max } }`.  Takes
-   * precedence over `url`.
+   * options: { encrypt: true, cryptoCredentialsDetails: { ca: fs.readFileSync('rds-ca.pem') } },
+   * pool: { max } }`.  Takes precedence over `url`.
+   *
+   * That `options` shape is the one to copy, and the illustration is
+   * load-bearing: this doc comment is what an editor shows the moment someone
+   * asks how to wire TLS here, which makes it guidance at the point of
+   * decision.  The driver encrypts by default and verifies the server's
+   * certificate against `cryptoCredentialsDetails`, which tedious hands to
+   * `tls.createSecureContext`; `serverName` is the name that certificate has
+   * to carry when it differs from `server`.  Supply the signing CA — a managed
+   * instance publishes one — rather than telling the driver to trust the
+   * server certificate to make a self-signed peer stop complaining: that
+   * switch turns verification off, and encryption without verification
+   * authenticates nobody, so anything on the path to the database can present
+   * its own certificate and read or rewrite the journal, which is the
+   * application's system of record.  The object lands in
+   * `new mssql.ConnectionPool(...)` verbatim; nothing filters it.
+   * See https://actor-ts.dev/operations/security/tls-everywhere/.
    */
   readonly poolConfig?: Record<string, unknown>;
   /**
