@@ -147,9 +147,17 @@ bump:
 `@fastify/static`, `brace-expansion`, `fast-uri` (both major lines),
 `find-my-way` and `ws` all had a fixed release inside the range
 `package.json` already declared. So only `bun.lock` moved. No
-dependency range was widened, no `overrides` entry was added, and a
-consumer installing `actor-ts` resolves the fixed versions from the
-published manifest exactly as this repository does.
+dependency range was widened and no `overrides` entry was added, so a
+consumer installing `actor-ts` resolves the fixed versions of the
+runtime closure — `fastify`, `ts-pattern` and their transitives — from
+the published manifest exactly as this repository does. That claim
+stops at the runtime closure. The optional peers' ranges were not
+raised, because a peer floor is a consumer-visible change: `ws` is
+still declared as `^8.0.0`, a range that admits releases carrying a
+published high advisory fixed only in 8.21.0, so a consumer pinned to
+one of them resolves it whatever this repository's lockfile says, and
+their own audit is what tells them. (The advisory is deliberately not
+named here: an ID under this heading reads as an accepted one.)
 
 If a suppression is ever needed again it belongs back here as a table —
 advisory, package, severity, and the path it is reached through — and

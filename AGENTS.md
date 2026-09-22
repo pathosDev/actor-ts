@@ -446,11 +446,20 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
   is the one that can turn it red. It reads the lockfile deliberately —
   GitHub's dependency graph resolves only the ranges in `package.json`,
   so Dependabot and `dependency-review-action` are blind to the shipped
-  closure and are not used as gates here. Advisories that predate the
-  gate are suppressed by ID in the script *and* listed in `SECURITY.md`;
-  `tests/unit/ci/SecurityPolicy.test.ts` fails if the two sets differ, so
-  never silence one without the other. **CodeQL** (`codeql.yml`, pull
-  requests + weekly) and the workflow-hygiene invariants asserted by
+  closure and are not used as gates here. **Nothing is suppressed today.**
+  The gate landed with eleven `--ignore`d advisory IDs, every high the
+  closure carried at the time, and #779 cleared them with an in-range
+  lockfile refresh — the shape a red audit almost always wants, and the
+  first thing to try. A suppression that is ever needed again goes into
+  the script by ID *and* into the table in `SECURITY.md`;
+  `tests/unit/ci/SecurityPolicy.test.ts` fails if the two sets differ, and
+  it holds the "nothing is suppressed" sentences on `SECURITY.md`, the
+  supply-chain page (EN + DE) and this paragraph to that list in both
+  directions — they go when the first suppression lands and come back
+  when the last one is dropped. So never silence one without the other,
+  and never leave the sentence standing over a list that is not empty.
+  **CodeQL** (`codeql.yml`, pull requests + weekly) and the
+  workflow-hygiene invariants asserted by
   `tests/unit/ci/WorkflowHygiene.test.ts` — SHA-pinned actions, explicit
   read-only workflow permissions, frozen installs — are the rest of it.
   A new workflow file has to satisfy that test on the first `bun test`.
@@ -515,7 +524,8 @@ run-local files (`manifest.json`, `cost.json`, `.graphify_*`) are ignored.
     lint:audit` is the gate that decides whether a peer *can* live there at
     all — a driver whose closure carries an unfixable high advisory cannot,
     and that is a security decision, not a packaging one. Do not reach for a
-    new `--ignore`: every suppression in `lint:audit` predates the gate, and
+    new `--ignore`: the list has been empty since #779 — the eleven it
+    started with predated the gate and left with an in-range refresh — and
     adding one to get a change through is how a gate stops gating. Record the
     gap in the guard's allow-list instead and raise it.
 

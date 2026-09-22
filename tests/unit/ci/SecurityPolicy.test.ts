@@ -17,13 +17,15 @@ import { describe, expect, test } from 'bun:test';
  * the instructions arrived nowhere (#539). Deleting the file would restore
  * exactly that state, silently.
  *
- * The second is the audit baseline. `lint:audit` suppresses advisory IDs that
- * were already in the closure when the gate landed; a suppression that nobody
- * can see is a gate that has quietly stopped gating, which is the failure mode
- * #1194 taught this repository to write assertions against. Requiring every
- * suppressed ID to appear in `SECURITY.md` — and every listed ID to still be
- * suppressed — makes the list impossible to grow in the dark and impossible to
- * leave behind once #779 removes the advisories.
+ * The second is the audit baseline. `lint:audit` landed with eleven
+ * `--ignore`d advisory IDs — every high the closure carried at the time — and
+ * a suppression that nobody can see is a gate that has quietly stopped
+ * gating, which is the failure mode #1194 taught this repository to write
+ * assertions against. Requiring every suppressed ID to appear in
+ * `SECURITY.md` — and every listed ID to still be suppressed — made the list
+ * impossible to grow in the dark, and when #779 emptied it with an in-range
+ * lockfile refresh (5c4d2cfd), impossible to leave behind: the list is empty,
+ * the pages say so, and both facts are asserted below in both directions.
  *
  * The third is the route around that list. A dependency override rewrites the
  * resolved closure `bun audit` reads, so it can retire an advisory without
@@ -56,12 +58,17 @@ const EMPTINESS_CLAIMS: ReadonlyArray<readonly [string, string]> = [
   ['SECURITY.md', '**there are no accepted ones**'],
   [join('docs', SUPPLY_CHAIN_PATH), 'Nothing is suppressed.'],
   [join('docs', 'de', SUPPLY_CHAIN_PATH), 'Es ist nichts unterdrückt.'],
+  // The working standards are the page every contributor — and every coding
+  // agent, which loads them as project context — reads before the policy.
+  // They described the baseline in the present tense for two weeks after
+  // #779 had emptied it (#1508).
+  ['AGENTS.md', '**Nothing is suppressed today.**'],
 ];
 
 const collapsed = (text: string): string => text.replace(/\s+/g, ' ');
 
-const claimSources: ReadonlyArray<readonly [string, string]> = [
-  ['SECURITY.md', collapsed(securityPolicy)],
+/** The supply-chain page and its German mirror — the two that document the gate for a reader. */
+const mirrorSources: ReadonlyArray<readonly [string, string]> = [
   [
     join('docs', SUPPLY_CHAIN_PATH),
     collapsed(readFileSync(join(DOCUMENTATION_ROOT, SUPPLY_CHAIN_PATH), 'utf8')),
@@ -70,6 +77,12 @@ const claimSources: ReadonlyArray<readonly [string, string]> = [
     join('docs', 'de', SUPPLY_CHAIN_PATH),
     collapsed(readFileSync(join(DOCUMENTATION_ROOT, 'de', SUPPLY_CHAIN_PATH), 'utf8')),
   ],
+];
+
+const claimSources: ReadonlyArray<readonly [string, string]> = [
+  ['SECURITY.md', collapsed(securityPolicy)],
+  ['AGENTS.md', collapsed(readFileSync(join(REPOSITORY_ROOT, 'AGENTS.md'), 'utf8'))],
+  ...mirrorSources,
 ];
 
 const packageHealthWorkflow = readFileSync(
@@ -247,7 +260,8 @@ describe('security policy', () => {
       + 'script but missing from the table is a gate that stopped gating '
       + 'without saying so; an advisory left in the table after its suppression '
       + 'was dropped is a policy claiming risk the project no longer carries. '
-      + 'Both halves move together — see #779, which removes them.',
+      + 'Both halves move together: #779 emptied both at once, and this is '
+      + 'what keeps one from coming back without the other.',
     ).toEqual([...suppressedAdvisories]);
   });
 
@@ -355,7 +369,7 @@ describe('security policy', () => {
     // so all three move when the manifest does.
     const rangeQuotations: ReadonlyArray<readonly [string, string]> = [
       ['.github/workflows/package-health.yml', auditGateComment],
-      ...claimSources.filter(([file]) => file !== 'SECURITY.md'),
+      ...mirrorSources,
     ];
     for (const [file, source] of rangeQuotations) {
       expect(
@@ -425,8 +439,7 @@ describe('security policy', () => {
     expect(cron[4], NOT_WEEKLY).not.toBe('*');
     expect(cron[2], NOT_WEEKLY).toBe('*');
 
-    for (const [file, source] of claimSources) {
-      if (file === 'SECURITY.md') continue;
+    for (const [file, source] of mirrorSources) {
       expect(source, `${file} no longer names the workflow that runs the gate.`)
         .toContain(WORKFLOW_PATH);
       expect(
