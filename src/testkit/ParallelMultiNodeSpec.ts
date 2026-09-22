@@ -1,5 +1,8 @@
 import { match } from 'ts-pattern';
-import { ParallelMultiNodeSpecOptionsValidator } from './ParallelMultiNodeSpecOptions.js';
+import {
+  DEFAULT_CONTROL_RPC_TIMEOUT_MS,
+  ParallelMultiNodeSpecOptionsValidator,
+} from './ParallelMultiNodeSpecOptions.js';
 import type { ParallelMultiNodeSpecOptions, ParallelMultiNodeSpecOptionsType } from './ParallelMultiNodeSpecOptions.js';
 import type {
   BrokeredMessage,
@@ -165,6 +168,9 @@ export class ParallelMultiNodeSpec {
       // other, the #538 quarantine having been measured against its own exit
       // criterion and lifted.
       awaitTimeoutMs: scaledMs(options.awaitTimeoutMs ?? 30_000),
+      // Scaled here and not at the arming site, for the reason above: the
+      // number the message reports has to be the number that was waited.
+      controlRpcTimeoutMs: scaledMs(options.controlRpcTimeoutMs ?? DEFAULT_CONTROL_RPC_TIMEOUT_MS),
       logLevel: options.logLevel ?? LogLevel.Off,
       addresses: options.addresses,
       failureDetector: options.failureDetector,
@@ -664,9 +670,12 @@ export class ParallelMultiNodeSpec {
 
   /**
    * Send a control request to a worker and await its response.
-   * Times out after 5s — RPC failures usually indicate the worker
-   * is wedged; fast timeouts surface the issue rather than hanging
-   * the test forever.
+   * Times out after `controlRpcTimeoutMs` (5 s by default) — RPC failures
+   * usually indicate the worker is wedged; fast timeouts surface the issue
+   * rather than hanging the test forever.  A spec option since #1508: the
+   * default is bun's own per-test cap, so a suite that wants to observe this
+   * deadline rather than be pre-empted by the runner has to be able to move
+   * it.
    *
    * The rejection names the **role** as well as the request kind.  Which
    * question went unanswered is only half of what the reader needs: with
@@ -683,7 +692,7 @@ export class ParallelMultiNodeSpec {
     }
     const requestId = this.nextRequestId++;
     return new Promise<R>((resolve, reject) => {
-      const controlRpcMs = scaledMs(5_000);
+      const controlRpcMs = this.options.controlRpcTimeoutMs;
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
         reject(new Error(

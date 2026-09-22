@@ -7,6 +7,21 @@ import type { WorkerBackend } from '../runtime/worker/index.js';
 
 type AddressMap = Readonly<Record<string, { host: string; port: number }>>;
 
+/**
+ * How long one control RPC — `getMembers`, `getLeader`, `leave`, `runIn` —
+ * may go unanswered before it is failed with the role that went silent.
+ *
+ * Short on purpose, and much shorter than `awaitTimeoutMs`: an RPC that does
+ * not come back means the worker is wedged, and a fast deadline surfaces that
+ * instead of hanging the test until the `await*` budget runs out.  It is
+ * scaled by the time factor like every other deadline here.
+ *
+ * Five seconds is also bun's own per-test cap, which is the reason this is an
+ * option at all (#1508): a suite that wants to *observe* the timeout has to
+ * be able to set a budget the runner will not pre-empt.
+ */
+export const DEFAULT_CONTROL_RPC_TIMEOUT_MS = 5_000;
+
 /** Plain options-object shape accepted by a {@link ParallelMultiNodeSpec}. */
 export type ParallelMultiNodeSpecOptionsType = {
   readonly roles: ReadonlyArray<string>;
@@ -19,6 +34,8 @@ export type ParallelMultiNodeSpecOptionsType = {
   readonly failureDetector?: Partial<FailureDetectorOptionsType>;
   readonly gossipIntervalMs?: number;
   readonly awaitTimeoutMs?: number;
+  /** Per-RPC budget on the control channel.  Default: {@link DEFAULT_CONTROL_RPC_TIMEOUT_MS}. */
+  readonly controlRpcTimeoutMs?: number;
   readonly logLevel?: LogLevel;
   /** URL of the bootstrap script.  Defaults to the bundled one. */
   readonly bootstrapModule?: URL;
@@ -73,6 +90,14 @@ export class ParallelMultiNodeSpecOptionsBuilder extends OptionsBuilder<Parallel
     return this.set('awaitTimeoutMs', awaitTimeoutMs);
   }
 
+  /**
+   * How long one control RPC may go unanswered, in ms.  Default:
+   * {@link DEFAULT_CONTROL_RPC_TIMEOUT_MS}.
+   */
+  withControlRpcTimeoutMs(controlRpcTimeoutMs: number): this {
+    return this.set('controlRpcTimeoutMs', controlRpcTimeoutMs);
+  }
+
   /** Log level. */
   withLogLevel(logLevel: LogLevel): this {
     return this.set('logLevel', logLevel);
@@ -123,6 +148,9 @@ export class ParallelMultiNodeSpecOptionsValidator
   }
 
   protected rules(s: Partial<ParallelMultiNodeSpecOptionsType>): void {
+    // Zero or negative arms a timer that fires on the next turn, so every RPC
+    // fails and the harness reports workers that "went silent".
+    this.positiveNumber('controlRpcTimeoutMs');
     // Unset is the ordinary case — it keeps the bundled bootstrap — so this
     // stays a no-op on `undefined`, like every check helper.
     if (s.bootstrapModule === undefined) return;

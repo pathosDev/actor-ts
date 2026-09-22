@@ -883,6 +883,41 @@ describe('ParallelMultiNodeSpec — the control-RPC timeout', () => {
       await spec.stop();
     }
   });
+
+  test('takes its budget from the spec option, scaled like every other deadline', async () => {
+    // The budget was a literal inside `controlRpc`, which made it the one
+    // deadline in this harness a test could not move — and 5 s is *bun's own
+    // per-test cap*, so any suite that wanted to observe the timeout had to
+    // reach past the option surface to do it (#1508).  Scaled at resolution
+    // like `awaitTimeoutMs`, not at the arming site, so a scaled run reports
+    // the number it actually waited.
+    const backend = new FakeWorkerBackend({ onSpawn: (worker) => { autoHandshake(worker); } });
+    const spec = new ParallelMultiNodeSpec({ roles: ['a'], controlRpcTimeoutMs: 800, backend });
+    try {
+      await spec.start();
+      const { value: membersPromise, ledger } = timersArmedBy(() => spec.getMembers('a'));
+
+      expect(ledger.armed.map((timer) => timer.delayMs)).toContain(scaledMs(800));
+      expect(ledger.armed.map((timer) => timer.delayMs)).not.toContain(scaledMs(CONTROL_RPC_MS));
+      ledger.armed.find((timer) => timer.delayMs === scaledMs(800))!.fire();
+
+      let caught: unknown;
+      try { await membersPromise; } catch (error) { caught = error; }
+      expect((caught as Error).message).toBe(
+        "controlRpc(mns-test.query-members) to role 'a': timed out after "
+        + `${scaledMs(800)}ms${describeTimeFactor()}`,
+      );
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('refuses a budget that would fire before anything could answer', () => {
+    // A zero or negative budget arms a timer that fires on the next turn, so
+    // every RPC fails and the harness reports a worker that went silent.
+    expect(() => new ParallelMultiNodeSpec({ roles: ['a'], controlRpcTimeoutMs: 0 }))
+      .toThrow(/controlRpcTimeoutMs must be a positive finite number/);
+  });
 });
 
 /* ------ what a throwing condition leaves behind (#1508, from #777) ------ */
