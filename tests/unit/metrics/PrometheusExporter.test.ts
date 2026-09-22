@@ -16,12 +16,20 @@
  *   - Trailing newline on non-empty output.
  */
 import { describe, expect, test } from 'bun:test';
-import { DefaultMetricsRegistry, type MetricSample } from '../../../src/metrics/Metrics.js';
+import {
+  DefaultMetricsRegistry,
+  type MetricSample,
+  type MetricsRegistry,
+} from '../../../src/metrics/Metrics.js';
 import {
   exportPrometheus,
   prometheusHandler,
   renderPrometheusSamples,
 } from '../../../src/metrics/PrometheusExporter.js';
+import {
+  PROMETHEUS_LABEL_NAME_PATTERN,
+  PROMETHEUS_METRIC_NAME_PATTERN,
+} from '../../../src/metrics/index.js';
 
 describe('exportPrometheus — counters', () => {
   test('counter family renders HELP, TYPE and one row per labelled series', () => {
@@ -223,6 +231,133 @@ describe('renderPrometheusSamples — a sample list from several registries (#15
       + 'h_seconds_sum{a="x",b="y"} 2\n'
       + 'h_seconds_count{a="x",b="y"} 1\n',
     );
+  });
+});
+
+/**
+ * What the renderer trusts, written down as behaviour rather than as a
+ * comment (#1513).
+ *
+ * `renderPrometheusSamples` interpolates family names and label keys **raw**,
+ * because the 0.0.4 format offers no escaping for either position — they are
+ * the grammar itself.  What makes that safe is the registry refusing anything
+ * outside the grammar at registration (#784), so every name that reaches the
+ * renderer through `DefaultMetricsRegistry` has already been checked.
+ *
+ * Both halves of that sentence are load-bearing and neither was tested.  The
+ * renderer is a **public seam**: `exportPrometheus` takes any
+ * `MetricsRegistry`, and since #1570 `renderPrometheusSamples` takes any list
+ * at all.  A registry implemented outside this package, or a list assembled
+ * by hand, inherits the obligation — and if it does not meet it, the forged
+ * series renders verbatim.  These tests state that, so a future render-time
+ * re-check is a deliberate change with a red test in front of it rather than
+ * a silent one, and so the documented cost of *not* re-checking (no regex per
+ * family per scrape) stays a measurable claim.
+ */
+describe('renderPrometheusSamples — the renderer trusts its input (#1513)', () => {
+  /** The report's forged-series payload, in each of the two raw positions. */
+  const FORGED_SAMPLES: ReadonlyArray<MetricSample> = [
+    {
+      name: 'x_total 1\nnode_up{job="prod"} 0\n# d',
+      help: '', kind: 'counter', labels: {}, value: 1,
+    },
+    {
+      name: 'ok_total', help: '', kind: 'counter', value: 1,
+      labels: { 'k" 1\nnode_up{job="prod"} 0\n#x': 'v' },
+    },
+  ];
+
+  /** A `MetricsRegistry` from outside this package, checking nothing. */
+  const foreignRegistryOf = (samples: ReadonlyArray<MetricSample>): MetricsRegistry => ({
+    counter: () => { throw new Error('this characterisation only reads collect()'); },
+    gauge: () => { throw new Error('this characterisation only reads collect()'); },
+    histogram: () => { throw new Error('this characterisation only reads collect()'); },
+    collect: () => samples,
+    remove: () => false,
+    clear: () => {},
+  });
+
+  /**
+   * Calls a shipped pattern receives while `body` runs.  The twin of the
+   * helper in `MetricsNameValidation.test.ts` — bun runs each test file in
+   * its own module graph, so the two cannot share one without a helper module
+   * that is not a test.  An own `test` property shadows
+   * `RegExp.prototype.test` for the duration and is deleted in a `finally`,
+   * because a leaked counter would follow a module-level singleton into
+   * unrelated suites.
+   */
+  function patternCallsDuring(pattern: RegExp, body: () => void): number {
+    const shipped = RegExp.prototype.test;
+    let calls = 0;
+    Object.defineProperty(pattern, 'test', {
+      configurable: true,
+      value(this: RegExp, input: string): boolean {
+        calls += 1;
+        return shipped.call(this, input);
+      },
+    });
+    try {
+      body();
+    } finally {
+      delete (pattern as { test?: unknown }).test;
+    }
+    return calls;
+  }
+
+  test('a forged family name in a hand-built list renders verbatim', () => {
+    const text = renderPrometheusSamples([FORGED_SAMPLES[0]!]);
+    expect(text).toContain('node_up{job="prod"} 0');
+    // Not "an oddly named series": a whole extra line a scraper reads as one.
+    expect(text.split('\n')).toContain('node_up{job="prod"} 0');
+  });
+
+  test('a forged label key does the same, one field over', () => {
+    const text = renderPrometheusSamples([FORGED_SAMPLES[1]!]);
+    expect(text.split('\n')).toContain('node_up{job="prod"} 0');
+  });
+
+  test('a foreign MetricsRegistry reaches the same place through exportPrometheus', () => {
+    // `exportPrometheus` is `renderPrometheusSamples(registry.collect())`, so
+    // implementing the interface outside this package is the other way in.
+    expect(exportPrometheus(foreignRegistryOf(FORGED_SAMPLES)))
+      .toBe(renderPrometheusSamples(FORGED_SAMPLES));
+    expect(exportPrometheus(foreignRegistryOf(FORGED_SAMPLES)))
+      .toContain('node_up{job="prod"} 0');
+  });
+
+  test('neither grammar is consulted during a render — that is the cost being avoided', () => {
+    // The JSDoc's reason for trusting the input is that a re-check would cost
+    // a regex per family per scrape.  This is that claim as a number: zero
+    // today, and any render-time check makes it non-zero here first.
+    expect(patternCallsDuring(PROMETHEUS_METRIC_NAME_PATTERN, () => {
+      renderPrometheusSamples(FORGED_SAMPLES);
+    })).toBe(0);
+    expect(patternCallsDuring(PROMETHEUS_LABEL_NAME_PATTERN, () => {
+      renderPrometheusSamples(FORGED_SAMPLES);
+    })).toBe(0);
+  });
+
+  test('the counter is not vacuous — registration does consult both', () => {
+    // Guards the two zeros above: a helper that never increments, or patterns
+    // nothing reads any more, would also read 0 there.
+    const registry = new DefaultMetricsRegistry();
+    expect(patternCallsDuring(PROMETHEUS_METRIC_NAME_PATTERN, () => {
+      registry.counter('hits_total', { route: '/a' }).inc();
+    })).toBe(1);
+    expect(patternCallsDuring(PROMETHEUS_LABEL_NAME_PATTERN, () => {
+      registry.counter('misses_total', { route: '/a' }).inc();
+    })).toBe(1);
+  });
+
+  test('the framework’s own registry cannot produce such a sample', () => {
+    // The other direction of the contract: the obligation is met at
+    // registration for anything minted here, which is why the renderer may
+    // skip it.  A registry from outside inherits the obligation instead.
+    const registry = new DefaultMetricsRegistry();
+    expect(() => registry.counter(FORGED_SAMPLES[0]!.name)).toThrow(/Invalid metric name/);
+    expect(() => registry.counter('ok_total', FORGED_SAMPLES[1]!.labels))
+      .toThrow(/Invalid label key/);
+    expect(exportPrometheus(registry)).toBe('');
   });
 });
 

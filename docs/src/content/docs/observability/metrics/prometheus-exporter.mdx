@@ -186,6 +186,48 @@ half on a mesh.
 Bind on a dedicated port if you can — Prometheus's scrapes are
 periodic and shouldn't share the app port.
 
+### The renderer trusts its input
+
+`renderPrometheusSamples` writes family names and label keys **raw** —
+the text format offers no escaping for either position, because they
+*are* its grammar.  What makes that safe is the registry: it refuses a
+name outside `[a-zA-Z_:][a-zA-Z0-9_:]*` and a label key outside
+`[a-zA-Z_][a-zA-Z0-9_]*` when the series is minted, so anything it
+collected has already been checked.  The renderer does not check again,
+deliberately — that would cost a regular expression per family on every
+scrape, for a question that was answered once at registration.
+
+So the obligation travels with the input.  If you implement
+`MetricsRegistry` yourself, or hand `renderPrometheusSamples` a list you
+assembled rather than collected, **you** own that check.  A sample named
+`x_total 1\nnode_up{job="prod"} 0\n#` renders as those three lines, and
+whatever scrapes it cannot tell the forged `node_up` from a real one —
+an alert on `node_up == 0` is silenced as effectively as by a fixed
+outage.  The two grammars are exported for exactly this:
+
+```ts
+import {
+  PROMETHEUS_LABEL_NAME_PATTERN,
+  PROMETHEUS_METRIC_NAME_PATTERN,
+  renderPrometheusSamples,
+  type MetricSample,
+} from 'actor-ts/metrics';
+
+const trustworthy = (sample: MetricSample): boolean =>
+  PROMETHEUS_METRIC_NAME_PATTERN.test(sample.name)
+  && Object.keys(sample.labels).every((key) => PROMETHEUS_LABEL_NAME_PATTERN.test(key));
+
+// `samples` came from somewhere this package never checked.
+const renderForeign = (samples: ReadonlyArray<MetricSample>): string =>
+  renderPrometheusSamples(samples.filter(trustworthy));
+```
+
+The worker-mesh relay is the worked example: a snapshot arriving from a
+worker crosses a thread boundary, so the relay re-checks every name and
+every label key against those same two patterns before the samples reach
+the renderer.  Nothing minted by `system.metrics` needs this — the check
+already happened at the call that minted it.
+
 ## Naming conventions
 
 ```

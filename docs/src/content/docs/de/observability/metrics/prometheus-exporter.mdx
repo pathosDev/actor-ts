@@ -191,6 +191,52 @@ dokumentierte Hälfte.
 Binde wenn möglich an einen dedizierten Port — Prometheus'
 Scrapes sind periodisch und sollten den App-Port nicht teilen.
 
+### Der Renderer vertraut seiner Eingabe
+
+`renderPrometheusSamples` schreibt Familiennamen und Label-Keys **roh** —
+das Textformat bietet für keine der beiden Positionen ein Escaping, denn
+sie *sind* seine Grammatik.  Sicher macht das die Registry: Sie weist
+einen Namen außerhalb von `[a-zA-Z_:][a-zA-Z0-9_:]*` und einen Label-Key
+außerhalb von `[a-zA-Z_][a-zA-Z0-9_]*` schon beim Anlegen der Serie
+zurück, also ist alles, was sie eingesammelt hat, bereits geprüft.  Der
+Renderer prüft bewusst nicht erneut — das kostete einen regulären
+Ausdruck pro Familie bei jedem Scrape, für eine Frage, die bei der
+Registrierung einmal beantwortet wurde.
+
+Die Pflicht wandert also mit der Eingabe.  Wenn du `MetricsRegistry`
+selbst implementierst oder `renderPrometheusSamples` eine Liste gibst,
+die du zusammengebaut statt eingesammelt hast, gehört diese Prüfung
+**dir**.  Ein Sample mit dem Namen
+`x_total 1\nnode_up{job="prod"} 0\n#` rendert als genau diese drei
+Zeilen, und wer das scrapet, kann das gefälschte `node_up` nicht von
+einem echten unterscheiden — ein Alert auf `node_up == 0` wird so
+zuverlässig stummgeschaltet wie durch einen behobenen Ausfall.  Genau
+dafür sind die beiden Grammatiken exportiert:
+
+```ts
+import {
+  PROMETHEUS_LABEL_NAME_PATTERN,
+  PROMETHEUS_METRIC_NAME_PATTERN,
+  renderPrometheusSamples,
+  type MetricSample,
+} from 'actor-ts/metrics';
+
+const trustworthy = (sample: MetricSample): boolean =>
+  PROMETHEUS_METRIC_NAME_PATTERN.test(sample.name)
+  && Object.keys(sample.labels).every((key) => PROMETHEUS_LABEL_NAME_PATTERN.test(key));
+
+// `samples` came from somewhere this package never checked.
+const renderForeign = (samples: ReadonlyArray<MetricSample>): string =>
+  renderPrometheusSamples(samples.filter(trustworthy));
+```
+
+Das Worker-Mesh-Relay ist das ausgearbeitete Beispiel: Ein Snapshot aus
+einem Worker überquert eine Thread-Grenze, also prüft das Relay jeden
+Namen und jeden Label-Key erneut gegen dieselben beiden Muster, bevor die
+Samples den Renderer erreichen.  Für alles, was `system.metrics` selbst
+angelegt hat, braucht es das nicht — die Prüfung ist beim anlegenden
+Aufruf schon passiert.
+
 ## Namenskonventionen
 
 ```
