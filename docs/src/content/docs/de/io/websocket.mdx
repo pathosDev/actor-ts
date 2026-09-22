@@ -279,11 +279,24 @@ class KeepAlive extends WebsocketClientActor<ClientMessage, ServerMessage> {
 }
 ```
 
-Der Frame geht über `sendRaw()` hinaus, umgeht also den Codec —
-kodiere ihn selbst.  Das Framework liefert bewusst keinen
-Default-Frame: erfundene Bytes wären eine unangekündigte Nachricht in
-*deinem* Protokoll, und ein Peer, der bei einer unbekannten Nachricht
-schließt, würde von seinem eigenen Keep-Alive gekappt.
+Der Frame umgeht den Codec — kodiere ihn selbst.  Das Framework
+liefert bewusst keinen Default-Frame: erfundene Bytes wären eine
+unangekündigte Nachricht in *deinem* Protokoll, und ein Peer, der bei
+einer unbekannten Nachricht schließt, würde von seinem eigenen
+Keep-Alive gekappt.
+
+**Ein Keep-Alive wird direkt auf den offenen Socket geschrieben,
+niemals über den Outbound-Buffer.**  Es ist nicht `sendRaw()` unter
+anderem Namen, und der Unterschied zeigt sich genau dann, wenn die
+Verbindung in Schwierigkeiten ist.  Ein Tick, der keine offene
+Verbindung vorfindet, sendet überhaupt nichts: er wird nicht gepuffert,
+solange die Verbindung getrennt ist, nach dem Reconnect nicht erneut
+gesendet und belegt nie einen Slot, den eine Anwendungsnachricht
+innehatte.  Ein wiederholt gesendetes Heartbeat wäre ein Keep-Alive für
+eine Verbindung, die es nicht mehr gibt, gemessen gegen eine bereits
+verstrichene Periode — und bei vollem Buffer würde es dafür eine echte
+Nachricht verdrängen.  Ein Frame, den du *sehr wohl* erneut gesendet
+haben willst, gehört in `sendRaw()`, das genau das Gegenteil zusagt.
 
 **Ohne die Überschreibung hat der Timer womöglich nichts zu senden.**
 Er fällt dann auf das native `WebSocket.ping()` der Runtime zurück, und
