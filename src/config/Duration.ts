@@ -25,8 +25,20 @@
  * silent `NaN` where every other unrecognised unit throws (#785).
  *
  * The same treatment `DEFAULT_MIME_TYPES` got in #608, and the value-side
- * counterpart of #589 / #406, which hardened the config *key* path while
- * leaving this one open.
+ * counterpart of the pair that hardened the config *key* path from opposite
+ * ends — #406 on the way in, dropping `__proto__` and its siblings before they
+ * can enter a tree, and #589 on the way out, making every lookup descend own
+ * properties only.  Neither reaches this table, and the reason is worth being
+ * exact about: what is indexed here was never a config *key*.  It is a config
+ * **value** that this file then turns into one, which is the whole door both
+ * of those issues left open.
+ *
+ * `Object.freeze` is the third piece, and the only one no behavioural test can
+ * bind: the table is module-private and no export reaches it, so nothing
+ * outside this file can attempt the mutation the freeze refuses.  It guards
+ * against a later edit *here* — a unit added at runtime, or a factor
+ * reassigned — and `tests/unit/config/UnitTableHardening.test.ts` therefore
+ * asserts all three at source level rather than through {@link parseDuration}.
  *
  * `satisfies` is load-bearing: `Object.setPrototypeOf` is typed to return
  * `any`, so without it the entries below would go unchecked and the outer

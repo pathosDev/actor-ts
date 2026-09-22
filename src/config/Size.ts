@@ -26,6 +26,11 @@
  * `NaN` — which then disables a `>` cap, since every comparison against `NaN`
  * is false (#785).
  *
+ * `Object.freeze` is the third piece, for the reason given beside `UNIT_MS`:
+ * it is the one of the three no behavioural test can reach, because the table
+ * is module-private and no export hands it out, so it is asserted at source
+ * level by `tests/unit/config/UnitTableHardening.test.ts` instead.
+ *
  * `satisfies` is load-bearing: `Object.setPrototypeOf` is typed to return
  * `any`, so without it the entries below would go unchecked.
  */
