@@ -53,11 +53,20 @@ export interface WebsocketRouteOptionsType<TOut, TIn> extends WebsocketPolicyOpt
    * 403.  A **missing** `Origin` (non-browser client: native WebSocket,
    * server-to-server) is allowed — CSWSH rides a victim browser's ambient
    * cookie/session credentials, so a request without an Origin can't be
-   * that attack.  Comparison is case-insensitive.  Unset → no origin check.
+   * that attack.  Comparison is case-insensitive.
    *
-   * Bearer-token auth is already resistant (browsers can't set the
-   * `Authorization` header on a WS handshake); set this when the route's
-   * auth is ambient (cookie / `IpAllowlist`).
+   * **Unset → only {@link requireSameOrigin} applies**, and that is on by
+   * default (#756), so a bare route still answers 403 to a foreign `Origin`.
+   * What switches the check off entirely is `withRequireSameOrigin(false)`
+   * with no list.
+   *
+   * Name the page's own origin here when the page is served from somewhere
+   * else — a frontend on its own dev server, or a CDN.  A page this server
+   * serves is covered by the default already, so the list is for the origins
+   * the `Host` comparison cannot reach.  Bearer-token auth is resistant
+   * without either rule (browsers can't set the `Authorization` header on a
+   * WS handshake); the origin rules earn their keep where the route's auth
+   * is ambient (cookie / `IpAllowlist`).
    */
   readonly allowedOrigins?: ReadonlyArray<string>;
   /**
@@ -115,9 +124,12 @@ export class WebsocketRouteOptionsBuilder<TOut = unknown, TIn = unknown>
   }
 
   /**
-   * Restrict the upgrade to these browser origins (CSWSH defence).  A
-   * present-but-unlisted `Origin` gets 403; a missing `Origin` (non-browser
-   * client) is allowed.  Case-insensitive.
+   * Widen the upgrade to these browser origins, on top of the same-origin
+   * rule (CSWSH defence).  An `Origin` that is neither listed nor this
+   * server's own `Host` gets 403; a missing `Origin` (non-browser client) is
+   * allowed.  Case-insensitive.  Since #756 the two rules combine, so this is
+   * not the only check the route has — see
+   * {@link withRequireSameOrigin} for the one it adds to.
    */
   withAllowedOrigins(origins: ReadonlyArray<string>): this {
     return this.set('allowedOrigins', origins);
