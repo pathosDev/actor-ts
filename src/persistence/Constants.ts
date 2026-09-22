@@ -410,8 +410,18 @@ export const MAX_VECTOR_CLOCK_ENTRIES = 4_096;
  *
  * 100 000 is above what the documented workload for this pattern reaches
  * (small-write / many-read entities) and far below the point at which a refold
- * storm is survivable, so an actor approaching it wants snapshots or a lower
- * `maxObservedEvents()` rather than a bigger number.
+ * storm is survivable.
+ *
+ * Reaching it is a **one-way switch for the entity**, and nothing an operator
+ * can do today undoes it.  The bound counts the observed history, which holds
+ * this replica's *own* persists as well as its peers', so a busy honest
+ * replica reaches it on its own writes; and a snapshot is the full `events`
+ * array rather than a checkpoint, which recovery re-seeds the history from —
+ * so neither snapshotting nor discarding the journal sheds an event, and the
+ * refusal comes back with the actor.  An entity that expects to approach the
+ * bound therefore wants a *larger* `maxObservedEvents()` chosen up front, or a
+ * smaller one if its legitimate history is smaller than this; compaction, the
+ * thing that would genuinely unstick it, is #535.
  */
 export const DEFAULT_MAX_REPLICATED_OBSERVED_EVENTS = 100_000;
 
