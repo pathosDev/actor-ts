@@ -1,5 +1,7 @@
 import type { Scheduler } from '../Scheduler.js';
 import { OptionsError } from '../util/OptionsValidator.js';
+import { applyJitter } from './BackoffPolicy.js';
+import { DEFAULT_MAX_RETRY_DELAY_MS, MAX_TIMER_DELAY_MS } from './Constants.js';
 
 /**
  * Refuse a `RetryOptions` value, the way the rest of the tree refuses one.
@@ -85,69 +87,6 @@ export type RetryOptions = {
 
 const setTimeoutSleep = (ms: number): Promise<void> =>
   new Promise(resolve => setTimeout(resolve, ms));
-
-/**
- * The largest delay `setTimeout` — the primitive `setTimeoutSleep` above
- * picks — can actually represent.  Its argument is coerced to a 32-bit
- * signed integer, and anything larger silently becomes `1`, so an
- * exponential backoff that overflows does not wait longer: it stops waiting
- * altogether and turns into a hot loop against the dependency that is
- * already failing (#771).
- *
- * Clamping is therefore not a cap on what the caller may ask for, it is the
- * direction the failure has to fall in: "waits ~24.9 days" is a
- * misconfiguration an operator can see and fix, "waits 1 ms" looks like the
- * retry working.  It applies to an injected `sleep` too — a delay this large
- * is a bug wherever it is awaited, and making the clamp conditional would
- * make the one path that matters the one no test can observe.
- */
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
-
-/**
- * Built-in default for {@link RetryOptions.maxDelayMs} (#771).
- *
- * The option used to default to `Number.POSITIVE_INFINITY`, on the reasoning
- * that a caller who wants a ceiling asks for one.  What that actually bought
- * was a schedule whose upper bound was `MAX_TIMER_DELAY_MS` — a retry loop
- * that, having exhausted the operator's patience, went on waiting for
- * ~24.9 days per attempt.  Nobody configures that on purpose; it is what an
- * omitted cap plus `factor > 1` arrives at on its own, which makes it the
- * wrong thing for the *default* to mean.
- *
- * One minute is the ceiling the surrounding project already converged on for
- * a backoff a human is waiting behind (`exponentialBackoff` requires a finite
- * `maxMs`; the broker reconnect loop and the WebSocket client both cap at
- * 30 s), doubled because `retry` wraps a single call rather than a
- * reconnect loop and one lost minute is cheaper here than one lost hour.
- *
- * A caller who genuinely wants the old, uncapped schedule still has it —
- * `maxDelayMs: Number.POSITIVE_INFINITY` — and gets the timer clamp with it.
- */
-const DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
-
-/**
- * `base × (1 ± randomFactor)`, floored at 0.
- *
- * Deliberately local rather than a call into
- * `pattern/BackoffPolicy` — `exponentialBackoff` hardcodes base 2 and so
- * cannot express `RetryOptions.factor`, and it *throws* unless `maxMs` is
- * finite, which is exactly the omitted-cap shape `retry` has to keep
- * accepting.  The same trade-off `BrokerActor._jitteredBackoff` records for
- * the reconnect path (#652).  The jitter contract is identical to the
- * primitive's.
- *
- * The floor is kept for that identity rather than for an effect no test can
- * reach: `retry`'s one call site guards the result with `delay > 0`, so a
- * sub-zero product is skipped with or without the `Math.max` — even under an
- * injected `random` outside `[0, 1)`.  It is not dead code, it is the half of
- * a copied contract that the copy's caller happens to make redundant, and
- * dropping it here would leave two spellings of one documented jitter rule.
- */
-function applyJitter(base: number, randomFactor: number, random: () => number): number {
-  if (randomFactor === 0) return base;
-  // random() returns [0, 1); map to [-randomFactor, +randomFactor].
-  return Math.max(0, base * (1 + (random() * 2 - 1) * randomFactor));
-}
 
 /**
  * Invoke `factory` up to `options.attempts` times with configurable
