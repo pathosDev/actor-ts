@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { mariaDbDialect } from '../../../src/persistence/relational/MariaDbDialect.js';
 import { msSqlDialect } from '../../../src/persistence/relational/MsSqlDialect.js';
@@ -445,6 +447,29 @@ describe('identity columns carry a deterministic collation (#707)', () => {
         expect(norm(statement)).not.toMatch(/COLLATE/i);
       }
     }
+  });
+
+  test('MariaDbQuery does not claim parity with Postgres that the collation does not give', () => {
+    // `utf8mb4_bin` is PAD SPACE, so `'order '` and `'order'` are one value on
+    // MariaDB and two on Postgres — the pin closes case and accent, not
+    // trailing whitespace. `MariaDbQuery`'s JSDoc read "so the index is as
+    // selective here as on Postgres", which the dialect's own comment
+    // contradicts two files away and the fake's comment contradicts a third
+    // time. Cosmetic in its effect (`RelationalQuery`'s JS refinement discards
+    // the extra rows, so answers stay right) and not in its cost: a reader
+    // deciding whether an `ALTER TABLE` is still needed is reading exactly
+    // this paragraph.
+    //
+    // Asserted as a pair deliberately. Requiring the mechanism alone would be
+    // satisfied by a fix that names PAD SPACE and leaves the parity claim
+    // standing; forbidding the claim alone would be satisfied by deleting the
+    // caveat instead of correcting it.
+    const source = readFileSync(
+      join(import.meta.dir, '..', '..', '..', 'src', 'persistence', 'query', 'MariaDbQuery.ts'),
+      'utf8',
+    );
+    expect(source).toContain('PAD SPACE');
+    expect(source).not.toMatch(/as selective here as on Postgres/);
   });
 });
 
