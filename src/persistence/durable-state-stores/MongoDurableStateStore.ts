@@ -17,6 +17,7 @@ import { DEFAULT_DURABLE_STATE_TABLE } from '../Constants.js';
 import { MongoStore } from '../journals/MongoStore.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
+import { assertStringPersistenceId } from '../storage/PersistenceIdValidator.js';
 import {
   MongoDurableStateStoreOptionsValidator,
   type MongoDurableStateStoreOptions,
@@ -85,6 +86,10 @@ export class MongoDurableStateStore extends MongoStore implements DurableStateSt
     state: S,
     _options?: PersistenceOptions,
   ): Promise<DurableStateRecord<S>> {
+    // Before the revision check, deliberately: both arguments can be wrong at
+    // once, and a non-string id reported as a revision problem sends the
+    // caller hunting a concurrency bug that is not there.
+    assertStringPersistenceId(persistenceId, 'MongoDurableStateStore.upsert');
     // A bogus revision is a caller bug, not a lost race — reporting it as a
     // concurrency conflict would invite an endless retry loop.
     if (!Number.isInteger(expectedRevision) || expectedRevision < 0) {
@@ -129,6 +134,7 @@ export class MongoDurableStateStore extends MongoStore implements DurableStateSt
   }
 
   async load<S>(persistenceId: string, _options?: PersistenceOptions): Promise<Option<DurableStateRecord<S>>> {
+    assertStringPersistenceId(persistenceId, 'MongoDurableStateStore.load');
     const { database } = await this.ensureOpen();
     const document = await this.states(database).findOne({ _id: persistenceId });
     if (!document) return none;
@@ -141,6 +147,7 @@ export class MongoDurableStateStore extends MongoStore implements DurableStateSt
   }
 
   async delete(persistenceId: string): Promise<void> {
+    assertStringPersistenceId(persistenceId, 'MongoDurableStateStore.delete');
     const { database } = await this.ensureOpen();
     await this.states(database).deleteOne({ _id: persistenceId });
   }

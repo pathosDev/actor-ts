@@ -59,7 +59,10 @@ import { PATH_TRAVERSAL_SEGMENTS } from '../../util/Constants.js';
  * **Read paths deliberately do not validate.**  Only writes are refused,
  * so data already stored under an id that is invalid under these rules
  * stays readable — `journal.read(oldId, 1)` still returns it, which is
- * what makes this breaking change recoverable.
+ * what makes this breaking change recoverable.  The one thing a read
+ * does refuse is an id that is not a *string* at all; that is
+ * {@link assertStringPersistenceId}, which checks the type and nothing
+ * else, precisely so the promise above survives it.
  */
 
 /**
@@ -122,4 +125,50 @@ export function assertValidPersistenceId(persistenceId: string, origin?: string)
   if (reason === null) return;
   const where = origin === undefined ? '' : ` (${origin})`;
   throw new Error(`Invalid persistenceId ${JSON.stringify(persistenceId)}${where}: ${reason}`);
+}
+
+/**
+ * Refuse a `persistenceId` that is not a string before it becomes a query
+ * document value — the read-side twin of #738, found while verifying it
+ * (#1507).
+ *
+ * The `string` in the signature is erased at runtime, and an application that
+ * serves a per-entity feed from request data hands `read` whatever the body
+ * parser produced: `?id[$gte]=` arrives as `{ $gte: '' }`.  Every other
+ * backend binds the id as a driver parameter and the driver refuses a
+ * non-string there.  The MongoDB stores put it into the filter document, where
+ * MongoDB reads an object as an operator expression, and `{ $gte: '' }`
+ * selects every stream — `read` then returns other actors' events,
+ * `deleteMany` empties them, and the `{ _id: … }` upsert behind the compaction
+ * mark raises whichever stream's mark it happens to match.  Unlike the tag path
+ * there is no JS refinement downstream to blunt it, so the check has to sit in
+ * front of the query, on every method that takes an id.
+ *
+ * **It belongs to all three MongoDB stores, not only the journal.**  The
+ * snapshot store and the durable-state store reach their collections through
+ * the same filter documents and lose the same way: `loadLatest` hands over
+ * whichever stream sorted highest, `delete` empties the collection, and the two
+ * upserts — `MongoSnapshotStore.save` and `MongoDurableStateStore.upsert` —
+ * carry the id in their *filter*, so an operator expression there rewrites a
+ * neighbour's document in place and reports success to the caller.  That is why
+ * this lives here beside {@link assertValidPersistenceId} rather than inside
+ * one store: a second spelling of the same guard is worse than none.
+ *
+ * Only the *type* is checked, deliberately.  {@link assertValidPersistenceId}
+ * owns the write side and says why reads stay open: a stream stored under an id
+ * that today's rules would refuse must remain readable, and a legacy id is
+ * still a string.  Nothing about the value is rendered into the message —
+ * it is caller-supplied, and its runtime type is what the caller needs.
+ *
+ * `origin` names the qualified call site (`'MongoJournal.read'`), the same
+ * shape the write-side validator already took.
+ */
+export function assertStringPersistenceId(persistenceId: string, origin?: string): void {
+  if (typeof persistenceId === 'string') return;
+  const runtimeType = persistenceId === null ? 'null' : Array.isArray(persistenceId) ? 'array' : typeof persistenceId;
+  const where = origin === undefined ? '' : ` (${origin})`;
+  throw new Error(
+    `Invalid persistenceId${where}: must be a string, got ${runtimeType} `
+    + '— a non-string value reaches MongoDB as an operator expression and would select other streams',
+  );
 }
