@@ -274,11 +274,26 @@ const failFast = { initialDelayMs: 20, maxDelayMs: 20, maxAttempts: 1, randomFac
 class RefusalRecordingSseActor extends SseActor {
   readonly refusals: string[] = [];
 
+  /**
+   * Whether the actor's own `AbortController` was already aborted when each
+   * refusal left `connectImplementation`.
+   *
+   * Sampled *here*, one frame above the abort, because that is the only place
+   * the answer is still the actor's: `disconnectImplementation` drops the
+   * controller on teardown, and the next attempt's `_closeTransport` aborts
+   * the stale one anyway, so a later reading cannot say who did it.  The
+   * private field is reached through a cast rather than exposed — the
+   * mechanism under test is the abort, not a new surface on the actor.
+   */
+  readonly abortedOnRefusal: boolean[] = [];
+
   protected override async connectImplementation(): Promise<void> {
     try {
       await super.connectImplementation();
     } catch (rejection) {
       this.refusals.push((rejection as Error).message);
+      const internals = this as unknown as { aborter: AbortController | null };
+      this.abortedOnRefusal.push(internals.aborter?.signal.aborted ?? false);
       throw rejection;
     }
   }
@@ -484,7 +499,17 @@ describe('SseActor — a refused connect releases the body (#787)', () => {
         timeoutMs: 4_000, label: 'the connect refused the foreign content type',
       });
       expect(actor.refusals[0]).toContain('non-event-stream body');
-      // The claim: released now, not when the retry eventually tears down.
+      // The claim, at the layer that makes it: the refusal aborted the
+      // actor's own controller before it rethrew.  This is what discriminates
+      // the mechanism, and the server-side observation below no longer can —
+      // bun >= 1.4.2 releases a dropped, unread response body on its own after
+      // ~1 s, so with the abort deleted the `request.signal` still fires and
+      // the test still passes in ~1 050 ms, inside its own 2 000 ms budget.
+      // Measured both ways (#1510); widening the budget cannot separate them,
+      // because what is being timed is the runtime's cleanup and not the
+      // actor's.
+      expect(actor.abortedOnRefusal).toEqual([true]);
+      // And end to end: the socket really is released, not merely signalled.
       await awaitCondition(() => aborted.length > 0, {
         timeoutMs: 2_000, label: 'the refused response was aborted, not abandoned',
       });
