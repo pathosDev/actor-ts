@@ -197,7 +197,12 @@ import { Aside } from '@astrojs/starlight/components';
   ```
   Das ist Absicht — Message-Inhalte können PII oder große
   Payloads enthalten. Füge eigene Attribute manuell dort hinzu,
-  wo es sicher und nützlich ist.
+  wo es sicher und nützlich ist. Der Default gilt, bis jemand
+  die Payload-Erfassung einschaltet — `captureMessagePayloads(true)`
+  in deinem eigenen Code, oder ein DevTools-Attach, das sie für
+  das ganze System einschaltet und einen Tracer, den du schon
+  hattest, bis zum Detach
+  [die Message-Bodies exportieren lässt](/de/observability/devtools/tracing/).
 </Aside>
 
 <Aside type="caution" title="`pipeTo` propagiert den aktiven Span nicht">
