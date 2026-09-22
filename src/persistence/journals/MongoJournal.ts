@@ -6,7 +6,10 @@ import {
 } from '../JournalTypes.js';
 import type { Serializer } from '../../serialization/Serializer.js';
 import { decodePayload, encodePayload } from '../storage/PayloadCodec.js';
-import { assertValidPersistenceId } from '../storage/PersistenceIdValidator.js';
+import {
+  assertStringPersistenceId,
+  assertValidPersistenceId,
+} from '../storage/PersistenceIdValidator.js';
 import { assertValidEntryTags } from '../storage/TagValidator.js';
 import {
   buildMongoResource,
@@ -160,7 +163,7 @@ export class MongoJournal extends MongoStore implements Journal {
   }
 
   async read<E>(persistenceId: string, fromSeq: number, toSeq?: number): Promise<PersistentEvent<E>[]> {
-    assertStringPersistenceId(persistenceId, 'read');
+    assertStringPersistenceId(persistenceId, 'MongoJournal.read');
     const { database } = await this.ensureOpen();
     try {
       const documents = await this.eventDocuments(database)
@@ -177,7 +180,7 @@ export class MongoJournal extends MongoStore implements Journal {
   }
 
   async highestSeq(persistenceId: string): Promise<number> {
-    assertStringPersistenceId(persistenceId, 'highestSeq');
+    assertStringPersistenceId(persistenceId, 'MongoJournal.highestSeq');
     const { database } = await this.ensureOpen();
     try {
       return await this.readHead(database, persistenceId);
@@ -187,7 +190,7 @@ export class MongoJournal extends MongoStore implements Journal {
   }
 
   async delete(persistenceId: string, toSeq: number): Promise<void> {
-    assertStringPersistenceId(persistenceId, 'delete');
+    assertStringPersistenceId(persistenceId, 'MongoJournal.delete');
     const { database } = await this.ensureOpen();
     try {
       await this.eventDocuments(database).deleteMany({ persistenceId, sequenceNr: { $lte: toSeq } });
@@ -207,7 +210,7 @@ export class MongoJournal extends MongoStore implements Journal {
 
   /** The same `$max` upsert `delete` ends with, without the `deleteMany`. */
   async raiseCompactionMark(persistenceId: string, throughSeq: number): Promise<void> {
-    assertStringPersistenceId(persistenceId, 'raiseCompactionMark');
+    assertStringPersistenceId(persistenceId, 'MongoJournal.raiseCompactionMark');
     const { database } = await this.ensureOpen();
     try {
       await this.meta(database).updateOne(
@@ -272,39 +275,6 @@ export class MongoJournal extends MongoStore implements Journal {
     const { database } = await this.ensureOpen();
     return { events: this.eventDocuments(database) };
   }
-}
-
-/**
- * Refuse a `persistenceId` that is not a string before it becomes a query
- * document value — the read-side twin of #738, found while verifying it
- * (#1507).
- *
- * The `string` in the signature is erased at runtime, and an application that
- * serves a per-entity feed from request data hands `read` whatever the body
- * parser produced: `?id[$gte]=` arrives as `{ $gte: '' }`.  Every other
- * backend binds the id as a driver parameter and the driver refuses a
- * non-string there.  This one puts it into the filter document, where MongoDB
- * reads an object as an operator expression, and `{ $gte: '' }` selects every
- * stream — `read` then returns other actors' events, `deleteMany` empties
- * them, and the `{ _id: … }` upsert behind the compaction mark raises whichever
- * stream's mark it happens to match.  Unlike the tag path there is no JS
- * refinement downstream to blunt it, so the check has to sit in front of the
- * query, on every method that takes an id: `append` already has it through
- * `assertValidPersistenceId`; the four others get it here.
- *
- * Only the *type* is checked, deliberately.  `assertValidPersistenceId` owns
- * the write side and says why reads stay open: a stream stored under an id
- * that today's rules would refuse must remain readable, and a legacy id is
- * still a string.  Nothing about the value is rendered into the message —
- * it is caller-supplied, and its runtime type is what the caller needs.
- */
-function assertStringPersistenceId(persistenceId: string, operation: string): void {
-  if (typeof persistenceId === 'string') return;
-  const runtimeType = persistenceId === null ? 'null' : Array.isArray(persistenceId) ? 'array' : typeof persistenceId;
-  throw new Error(
-    `Invalid persistenceId (MongoJournal.${operation}): must be a string, got ${runtimeType} `
-    + '— a non-string value reaches MongoDB as an operator expression and would select other streams',
-  );
 }
 
 /** Shared row mapping — also used by `MongoQuery`. */
