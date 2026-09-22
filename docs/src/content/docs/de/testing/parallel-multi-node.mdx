@@ -59,6 +59,7 @@ type ParallelMultiNodeSpecOptionsType = {
   failureDetector?:     Partial<FailureDetectorOptionsType>;
   gossipIntervalMs?:    number;
   awaitTimeoutMs?:      number;                   // Default 30_000 (Worker-Bootstrap ist langsamer)
+  controlRpcTimeoutMs?: number;                   // Default 5_000 (ein Control-RPC)
   logLevel?:            LogLevel;
   bootstrapModule?:     URL;                      // überschreibt den gebündelten Worker-Bootstrap
 };
@@ -72,7 +73,8 @@ type ParallelMultiNodeSpecOptionsType = {
 | `scenarioInitDataFor` | Per-Rolle-Daten, die an das `setup(context)` des Szenarios weitergereicht werden. |
 | `failureDetector` | Failure-Detector-Overrides. |
 | `awaitTimeoutMs` | Default-`await*`-Timeout. Default 30 s — Worker-Bootstrap ist langsamer als in-process. |
-| `bootstrapModule` | Überschreibt den gebündelten Worker-Einstiegspunkt (fortgeschritten) — übernimmt damit den Control-Channel, siehe den Vertrag weiter unten. |
+| `controlRpcTimeoutMs` | Wie lange ein einzelner Control-RPC (`getMembers`, `getLeader`, `leave`, `runIn`) unbeantwortet bleiben darf, bevor er unter Nennung der verstummten Rolle fehlschlägt. Default 5 s — bewusst viel kürzer als `awaitTimeoutMs`: Ein RPC, der nicht zurückkommt, heißt, dass der Worker feststeckt, und eine kurze Frist zeigt das, statt den Test hängen zu lassen. Beide werden mit dem Zeitfaktor skaliert. |
+| `bootstrapModule` | Überschreibt den gebündelten Worker-Einstiegspunkt (fortgeschritten) — übernimmt damit den Control-Channel, siehe den Vertrag weiter unten. Es gilt dieselbe Schreibweisen-Regel wie für jeden anderen Worker-Einstiegspunkt im Framework: eine absolute `file:`-URL ohne Host, die eine Datei benennt — genau das erzeugt `new URL('./my-bootstrap.ts', import.meta.url)`. Ein `data:`-, `blob:`- oder entfernter Specifier, eine `file:`-URL mit Host, ein schema-relatives `file:worker.js` oder ein Verzeichnis wird beim Konstruieren der Spec mit einem `OptionsError` abgelehnt. |
 
 ## Das Szenario-Modul
 

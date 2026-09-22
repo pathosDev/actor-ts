@@ -28,6 +28,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
 import { ParallelMultiNodeSpec } from '../../../src/testkit/ParallelMultiNodeSpec.js';
+import { OptionsError } from '../../../src/util/OptionsValidator.js';
 import type { MemberSnapshot } from '../../../src/testkit/internal/ParallelMultiNodeBootstrap.js';
 import {
   autoHandshake,
@@ -56,6 +57,36 @@ describe('ParallelMultiNodeSpec — construction', () => {
 
   test('rejects duplicate roles', () => {
     expect(() => new ParallelMultiNodeSpec({ roles: ['a', 'b', 'a'] })).toThrow(/unique/);
+  });
+
+  test('holds bootstrapModule to the rule every worker entry is held to', () => {
+    // The asymmetry #1508 records: the testkit took #775's hello latch and not
+    // #776's scheme constraint, so `bootstrapModule` went to `backend.spawn`
+    // unchecked while the same specifier on `WorkerClusterOptions.bootstrap`
+    // was refused.  It is one call into the shared helper now (#1515), which
+    // is what D-Q17 decided over copying the rule a fifth time.
+    for (const bootstrapModule of [
+      new URL('data:text/javascript,1'),
+      new URL('http://example.invalid/bootstrap.js'),
+      new URL('file://attacker.example.com/share/bootstrap.js'),
+      new URL('file:///srv/app/'),
+    ]) {
+      let caught: unknown;
+      try { new ParallelMultiNodeSpec({ roles: ['a'], bootstrapModule }); }
+      catch (error) { caught = error; }
+      expect(caught, `${bootstrapModule.href} was accepted`).toBeInstanceOf(OptionsError);
+      expect((caught as OptionsError).field).toBe('bootstrapModule');
+    }
+  });
+
+  test('takes an import.meta.url-relative bootstrap, and none at all', () => {
+    expect(() => new ParallelMultiNodeSpec({
+      roles: ['a'],
+      bootstrapModule: new URL('./internal/ParallelMultiNodeBootstrap.js', import.meta.url),
+    })).not.toThrow();
+    // Unset is the ordinary case and keeps the bundled bootstrap: every check
+    // helper is a no-op on `undefined`, and so is this one.
+    expect(() => new ParallelMultiNodeSpec({ roles: ['a'] })).not.toThrow();
   });
 });
 
@@ -530,6 +561,60 @@ describe('ParallelMultiNodeSpec — handshake', () => {
       await spec.stop();
     }
   });
+
+  test('an init frame postMessage refuses fails start() instead of the whole process', async () => {
+    // The harness's `init.data` is not all harness-built: `scenarioInitDataFor`
+    // is the test's own function and its return value rides in that frame, so
+    // the same DataCloneError `WorkerCluster.handshake` can take lands here
+    // too — synchronously, inside the harness's own `message` listener, where
+    // nothing above it catches (#1515, the testkit copy of #775's latch).
+    let escaped: unknown;
+    const backend = new FakeWorkerBackend({
+      onSpawn: (worker) => {
+        worker.postMessage = (): never => {
+          throw new DOMException('cannot clone', 'DataCloneError');
+        };
+        const add = worker.addEventListener.bind(worker);
+        let greeted = false;
+        worker.addEventListener = (event, handler): void => {
+          add(event, handler);
+          if (event !== 'message' || greeted) return;
+          greeted = true;
+          // Caught so the unguarded shape is observable rather than fatal.
+          queueMicrotask(() => {
+            try { worker.deliverMessage({ kind: 'worker-hello' }); }
+            catch (error) { escaped = error; }
+          });
+        };
+      },
+    });
+    const spec = new ParallelMultiNodeSpec({
+      roles: ['a'],
+      scenarioInitDataFor: () => ({ notCloneable: () => 1 }),
+      backend,
+    });
+
+    // Raced rather than awaited: unguarded, `start()` never settles at all —
+    // it waits out the handshake's own ten-second budget, which is twice
+    // bun's per-test cap, so the assertion below would be replaced by the one
+    // message that names nothing.
+    const outcome = await Promise.race([
+      spec.start().then(() => 'started' as const, (error: unknown) => error),
+      // The elapsed time IS the assertion here: what the guard prevents is a
+      // `start()` that never settles, and nothing about a promise that is
+      // simply pending can be polled for.
+      new Promise<'still waiting'>((resolve) => { setTimeout(() => resolve('still waiting'), 500); }),
+    ]);
+
+    try {
+      expect(outcome).toBeInstanceOf(Error);
+      expect((outcome as Error).message).toMatch(/could not be sent its init frame/);
+      expect(((outcome as Error).cause as Error | undefined)?.name).toBe('DataCloneError');
+      expect(escaped).toBeUndefined();
+    } finally {
+      await spec.stop();
+    }
+  });
 });
 
 /* --------- #1288 — a backend that declares no error containment --------- */
@@ -797,6 +882,41 @@ describe('ParallelMultiNodeSpec — the control-RPC timeout', () => {
     } finally {
       await spec.stop();
     }
+  });
+
+  test('takes its budget from the spec option, scaled like every other deadline', async () => {
+    // The budget was a literal inside `controlRpc`, which made it the one
+    // deadline in this harness a test could not move — and 5 s is *bun's own
+    // per-test cap*, so any suite that wanted to observe the timeout had to
+    // reach past the option surface to do it (#1508).  Scaled at resolution
+    // like `awaitTimeoutMs`, not at the arming site, so a scaled run reports
+    // the number it actually waited.
+    const backend = new FakeWorkerBackend({ onSpawn: (worker) => { autoHandshake(worker); } });
+    const spec = new ParallelMultiNodeSpec({ roles: ['a'], controlRpcTimeoutMs: 800, backend });
+    try {
+      await spec.start();
+      const { value: membersPromise, ledger } = timersArmedBy(() => spec.getMembers('a'));
+
+      expect(ledger.armed.map((timer) => timer.delayMs)).toContain(scaledMs(800));
+      expect(ledger.armed.map((timer) => timer.delayMs)).not.toContain(scaledMs(CONTROL_RPC_MS));
+      ledger.armed.find((timer) => timer.delayMs === scaledMs(800))!.fire();
+
+      let caught: unknown;
+      try { await membersPromise; } catch (error) { caught = error; }
+      expect((caught as Error).message).toBe(
+        "controlRpc(mns-test.query-members) to role 'a': timed out after "
+        + `${scaledMs(800)}ms${describeTimeFactor()}`,
+      );
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('refuses a budget that would fire before anything could answer', () => {
+    // A zero or negative budget arms a timer that fires on the next turn, so
+    // every RPC fails and the harness reports a worker that went silent.
+    expect(() => new ParallelMultiNodeSpec({ roles: ['a'], controlRpcTimeoutMs: 0 }))
+      .toThrow(/controlRpcTimeoutMs must be a positive finite number/);
   });
 });
 

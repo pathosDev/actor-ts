@@ -128,7 +128,7 @@ in die dein System ohnehin loggt.
 
 | Option | Was |
 | --- | --- |
-| `withModule(url \| url[])` | Die Actor-Module, die jeder Worker importiert.  **Pflicht**, und nur im Code — bewusst kein Config-Key, siehe unten. |
+| `withModule(url \| url[])` | Die Actor-Module, die jeder Worker importiert.  **Pflicht**, und nur im Code — bewusst kein Config-Key, siehe unten.  Es gilt dieselbe Schreibweisen-Regel wie für `withBootstrap` bei `WorkerCluster`, denn es ist dieselbe Art von Sache: Code, den ein Worker ausführt. |
 | `withWorkers(n \| 'auto')` | Worker-Anzahl.  `'auto'` ist die verfügbare Parallelität der Maschine **minus eins** — der Main-Thread ist ein arbeitendes Mitglied —, mindestens 1.  Default `'auto'`. |
 | `withMainHostname(host)` / `withWorkerHostname(host)` | Hostname-Komponenten der Adressen beider Seiten.  Defaults `'main'` / `'worker'` — main sortiert vorn, also **führt** main und hostet den Shard-Coordinator.  Ein Worker-Hostname, der vor main sortiert (`'core'`), verschiebt beides auf einen Worker. |
 | `withMainPort(port)` / `withBasePort(port)` | Synthetische Port-Komponenten; nichts bindet sie.  Defaults `1` / `2`. |
@@ -255,9 +255,21 @@ async function main(): Promise<void> {
 void main();
 ```
 
+**Wer den Handshake selbst schreibt, sagt zuletzt Hallo.**  Der
+Main-Thread beantwortet das *erste* `worker-hello` und wiederholt sich
+nie, der `worker-init`-Frame geht also genau einmal raus — und auf Bun
+und Deno wird ein Frame, der ankommt, bevor der Worker einen
+Message-Handler installiert hat, verworfen statt eingereiht.  Ein
+Bootstrap, das grüßt, bevor es zuhört, verliert damit seinen einzigen
+Init-Frame, und der Fehlschlag ist ein Schweigen: Der Pool wartet die
+gesamte `readyTimeoutMs` ab und meldet einen Worker, der nie bereit
+wurde.  `WorkerNode.join()` installiert zuerst den Listener und postet
+das Hallo danach — dieselbe Reihenfolge schuldet ein selbst
+geschriebenes Bootstrap.
+
 | Option | Was |
 | --- | --- |
-| `withBootstrap(url)` | Worker-Entrypoint-Modul.  **Pflicht**, und muss eine `file:`-URL **ohne Host** sein — `new URL('./worker-node.js', import.meta.url)` erzeugt genau das.  Ein `data:`-, `blob:`- oder entfernter Specifier wird abgelehnt, weil er dem Worker-Konstruktor Code von außerhalb des Deployments übergeben würde, und ein Host auf der `file:`-URL ebenso: `file://ein-server/share/worker.js` ist ein UNC-Pfad, das Entrypoint-Modul käme also von jenem Server.  `file://localhost/…` bleibt akzeptiert — diesen Host löscht der URL-Parser, auf allen drei Runtimes. |
+| `withBootstrap(url)` | Worker-Entrypoint-Modul.  **Pflicht**, und muss eine absolute `file:`-URL **ohne Host** sein, die eine **Datei** benennt — `new URL('./worker-node.js', import.meta.url)` erzeugt genau das.  Ein `data:`-, `blob:`- oder entfernter Specifier wird abgelehnt, weil er dem Worker-Konstruktor Code von außerhalb des Deployments übergeben würde, und ein Host auf der `file:`-URL ebenso: `file://ein-server/share/worker.js` ist ein UNC-Pfad, das Entrypoint-Modul käme also von jenem Server.  Zwei Schreibweisen, die *absolut aussehen*, werden ebenfalls abgelehnt, weil der URL-Parser sie stillschweigend umschreibt und die Runtime danach mit einem Fehler scheitert, der kein Feld benennt: `file:worker.js` (und das nackte `file:`) ist schema-relativ und wird an der Wurzel des Dateisystems verankert, und `file:///srv/app/` benennt ein Verzeichnis.  `file://localhost/…` bleibt akzeptiert — diesen Host löscht der URL-Parser, auf allen drei Runtimes. |
 | `withWorkers(n \| 'auto')` | Pool-Größe; `'auto'` nutzt die Hardware-Concurrency.  Default `'auto'`. |
 | `withSystemName(name)` | `ActorSystem`-Name, den jeder Worker hostet.  Default `'worker-cluster'`. |
 | `withHostname(host)` | Hostname-Komponente der Adresse jedes Workers.  Default `'worker'`. |
