@@ -55,3 +55,27 @@ describe('the #770 refusal covers both halves of what it refuses', () => {
     expect(block).toContain('scheduleOnceFunction');
   });
 });
+
+describe('the unconditional stash eviction says where its cost is bounded', () => {
+  test("evictOldestStashed's JSDoc names #1179 rather than only its attribution", () => {
+    const block = blockOpeningWith(
+      readFileSync(SUPERVISOR_SOURCE, 'utf8'),
+      'Make room in a full stash',
+    );
+
+    // The asymmetry that needed answering: the mailbox path made the same
+    // per-message dead letter opt-in (`BoundedMailboxOptionsType.deadLetterDrops`,
+    // default `false`) on the grounds of what it costs, while this one
+    // dead-letters every eviction unconditionally.  The block argued the case
+    // from *attribution* — "not on the sender's stack" — which answers who
+    // pays rather than how much, so the two decisions read as contradicting
+    // each other on the question neither had addressed.
+    expect(block).toContain('deadLetterDrops');
+    // The answer is that the magnitude is bounded for every producer at the
+    // publish side, not per producer: that is #1179's storm suppression, and
+    // naming it is what makes this a decision a reader can follow rather than
+    // an omission.
+    expect(block).toContain('#1179');
+    expect(block).toContain('#773');
+  });
+});

@@ -389,6 +389,21 @@ export class BackoffSupervisor<T> extends Actor<unknown> {
    * runs inside the supervisor's own `onReceive` rather than on the sender's
    * stack, so nothing here is charged to whoever produced the burst.
    *
+   * **Where the per-message cost is bounded, since attribution is not the
+   * whole answer.**  `BoundedMailboxOptionsType.deadLetterDrops` makes the
+   * same publish opt-in and defaults it off, and it does so on grounds of
+   * *magnitude* rather than of whose stack the work lands on — a durable
+   * capture plus a synchronous fan-out per shed message, under exactly the
+   * pressure a bound exists to absorb.  That argument does not stop applying
+   * because the stack changed: a sustained flood against a supervisor in a
+   * backoff window pays it once per eviction here too.  What answers it is
+   * that the bound belongs on the publish side rather than per producer —
+   * rate-limiting, sampling and suppression of the dead-letter stream are
+   * #1179, sited in `DeadLetterRef.tell` after the sink so a complete record
+   * never becomes a lossy one.  A knob of its own here would be a third
+   * place to configure one answer, and it would have to be HOCON-backed to
+   * be worth having (#773).
+   *
    * **The warning is aggregated, not per message.**  One `log.warn` per
    * evicted message meant a supervisor stuck in a long backoff window turned
    * a message flood into a log flood at exactly the same rate.  The line now
