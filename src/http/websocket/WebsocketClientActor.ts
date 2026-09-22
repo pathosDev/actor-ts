@@ -485,7 +485,7 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
         this.connectAbort = null;
         this.socket = ws;
         this.unrecognisedFrameWarned = false;
-        ws.addEventListener('message', (ev: { data: unknown }) => this.handleInbound(ev.data));
+        ws.addEventListener('message', (ev: { data: unknown }) => this.handleInbound(ev.data, ws));
         // Both listeners name the socket they speak for: a runtime is free
         // to deliver either one after this socket has been replaced.
         ws.addEventListener('close', () => this.onSocketDown(new Error('websocket closed'), ws));
@@ -635,7 +635,24 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
     );
   }
 
-  private handleInbound(data: unknown): void {
+  /**
+   * One inbound payload from `ws`, or nothing at all when `ws` is no longer
+   * the connection.
+   *
+   * The third listener on a socket needs the same guard the `close` and
+   * `error` ones got (#1514), and here every consequence of missing it lands
+   * on a *different* connection.  Nothing removes a superseded socket's
+   * listeners, so a frame the runtime had already buffered still arrives —
+   * after the actor has told the application that connection is gone.
+   * Acting on it would deliver a message out of order with its own
+   * `onDisconnected`, refresh the *live* connection's read deadline with
+   * traffic that is not its own — the one thing `idleTimeoutMs` must never
+   * do (#753) — and, for an oversize frame, close whichever socket
+   * `this.socket` currently is.  Measured before the guard: a 2 MiB frame on
+   * a superseded socket closed the healthy connection and dialled a third.
+   */
+  private handleInbound(data: unknown, ws: WebsocketLike): void {
+    if (ws !== this.socket) return; // a superseded socket's frame, not ours
     // First, before every reason this frame might be rejected: an
     // unrecognised, oversize or undecodable frame is still the peer speaking,
     // and the read-idle deadline asks whether it is there, not whether it is

@@ -62,6 +62,9 @@ const LATE_EVENT_SETTLE_MS = 40;
 /** Every `onDisconnected` cause the client under test reported, in order. */
 const recordedDisconnects: string[] = [];
 
+/** Every payload the client under test received through `onMessage`. */
+const recordedMessages: string[] = [];
+
 /**
  * A socket whose `close()` answers nothing — the blackholed peer.
  *
@@ -117,7 +120,9 @@ class IdleProbeClient extends WebsocketClientActor<WebsocketFrame, WebsocketFram
     recordedDisconnects.push(cause?.message ?? '<no cause>');
   }
 
-  onMessage(_frame: WebsocketFrame): void {}
+  onMessage(frame: WebsocketFrame): void {
+    recordedMessages.push(String(frame.data));
+  }
 }
 
 /** The same client without a read deadline, for the error-then-close order. */
@@ -139,7 +144,9 @@ class NoDeadlineProbeClient extends WebsocketClientActor<WebsocketFrame, Websock
     recordedDisconnects.push(cause?.message ?? '<no cause>');
   }
 
-  onMessage(_frame: WebsocketFrame): void {}
+  onMessage(frame: WebsocketFrame): void {
+    recordedMessages.push(String(frame.data));
+  }
 }
 
 type ProbeClientClass = new () => WebsocketClientActor<WebsocketFrame, WebsocketFrame>;
@@ -149,6 +156,7 @@ describe('WebsocketClientActor — a superseded socket (#1514)', () => {
 
   beforeEach(() => {
     recordedDisconnects.length = 0;
+    recordedMessages.length = 0;
   });
 
   afterEach(async () => {
@@ -266,5 +274,103 @@ describe('WebsocketClientActor — a superseded socket (#1514)', () => {
     expect(recordedDisconnects).toHaveLength(1);
     expect(sockets).toHaveLength(2);
     expect(sockets[1]!.closeCalls).toBe(0);
+  });
+
+  /**
+   * The `message` listener is the third one on that socket, and it was the
+   * same gap — found while fixing the other two.
+   *
+   * Nothing removes a superseded socket's listeners, so a frame the runtime
+   * had already buffered is still delivered, and `handleInbound` acted on it
+   * as if it had come from the live connection.  Every consequence belongs
+   * to a connection the application has already been told is gone: the frame
+   * reaches `onMessage` *after* its own `onDisconnected`; the read deadline
+   * of the connection that replaced it is refreshed by traffic that is not
+   * its own, which is the one thing `idleTimeoutMs` must never do (#753);
+   * and an oversize frame runs `rejectOversizeFrame`, which closes whatever
+   * `this.socket` currently is.
+   *
+   * Measured before the fix, with a 2 MiB frame on the superseded socket:
+   * `onDisconnected` fired a second time with `oversize inbound frame`, the
+   * healthy socket was closed, and a third socket was dialled.
+   */
+  test('a late message from the superseded socket is not the live connection\'s', async () => {
+    const sockets = dialingClient('ws-superseded-message', NoDeadlineProbeClient);
+
+    await awaitCondition(() => sockets.length >= 1 && sockets[0]!.isOpen, {
+      timeoutMs: 4_000,
+      label: 'the client opened its first socket',
+    });
+    sockets[0]!.fire('error');
+    await awaitCondition(() => sockets.length >= 2 && sockets[1]!.isOpen, {
+      timeoutMs: 4_000,
+      label: 'the client reconnected onto a second socket',
+    });
+
+    // An ordinary frame the runtime had already buffered for the old socket.
+    sockets[0]!.fire('message', { data: 'stale' });
+    // And one over the default 1 MiB cap, which is the destructive shape:
+    // `rejectOversizeFrame` closes `this.socket`, whichever socket that is.
+    sockets[0]!.fire('message', { data: 'x'.repeat(2 * 1024 * 1024) });
+    // One real frame on the live socket, so the delivery assertion below is
+    // about *which* socket was heard, not about whether anything was.
+    sockets[1]!.fire('message', { data: 'live' });
+
+    await awaitCondition(() => recordedMessages.includes('live'), {
+      timeoutMs: 4_000,
+      label: 'the frame from the live socket reached onMessage',
+    });
+    // An absence beside it: the stale frame had a head start of two turns.
+    await sleep(LATE_EVENT_SETTLE_MS);
+    expect(recordedMessages).toEqual(['live']);
+    expect(recordedDisconnects).toHaveLength(1);
+    expect(sockets).toHaveLength(2);
+    expect(sockets[1]!.closeCalls).toBe(0);
+  });
+
+  /**
+   * The frame is not merely dropped — the peer is not credited for it
+   * either.
+   *
+   * This is the half that survives the near-miss fix.  Placing the guard
+   * *after* `noteInboundActivity` reads as generous ("the peer did speak"),
+   * and is the one outcome `idleTimeoutMs` must never produce: the deadline
+   * asks whether *this* connection's peer is still there, and a socket the
+   * client has already given up on cannot answer for it.  Traffic on the old
+   * socket would then hold the read deadline of the new one open forever —
+   * the blackholed-peer state #753 exists to end, restored by the very
+   * feature meant to detect it.
+   *
+   * So the live socket is kept silent while the superseded one is driven at
+   * a quarter of the deadline for twice its length, and the assertion is
+   * that the live socket timed out anyway, on its own schedule.
+   */
+  test('a superseded socket\'s traffic does not refresh the live read deadline', async () => {
+    const sockets = dialingClient('ws-superseded-deadline', IdleProbeClient);
+
+    await awaitCondition(() => sockets.length >= 1 && sockets[0]!.isOpen, {
+      timeoutMs: 4_000,
+      label: 'the client opened its first socket',
+    });
+    // Dropped well before its own deadline, so the only deadline in play
+    // below belongs to the replacement.
+    sockets[0]!.fire('error');
+    await awaitCondition(() => sockets.length >= 2 && sockets[1]!.isOpen, {
+      timeoutMs: 4_000,
+      label: 'the client reconnected onto a second socket',
+    });
+
+    for (let index = 0; index < 8; index++) {
+      sockets[0]!.fire('message', { data: `stale-${index}` });
+      // Paced, not batched: `noteInboundActivity` writes a timestamp, so
+      // eight frames in one turn would be indistinguishable from one.
+      await sleep(IDLE_TIMEOUT_MS / 4);
+    }
+
+    // Twice the deadline has passed with the live socket silent throughout.
+    expect(recordedDisconnects.length).toBeGreaterThanOrEqual(2);
+    expect(recordedDisconnects[1]).toContain('idle timeout');
+    // And none of that traffic was delivered as this connection's.
+    expect(recordedMessages).toEqual([]);
   });
 });
