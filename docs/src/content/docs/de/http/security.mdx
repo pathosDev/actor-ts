@@ -367,6 +367,17 @@ Server-zu-Server-Dialer —, ist nicht betroffen, denn
 Cross-Site-WebSocket-Hijacking braucht einen Browser, und ein Browser sendet
 den Header immer.
 
+Wisse, was dieser Default *nicht* abdeckt. `Origin` und `Host` sind beides
+Client-Header: eine Seite, die diesen Server unter einem eigenen Namen erreicht
+(DNS-Rebinding), liefert ein übereinstimmendes Paar und kommt durch den
+Same-Origin-Arm; der Vergleich ist außerdem schemablind, eine `http://`-Seite
+auf demselben `host:port` kommt ebenfalls durch. Gewonnen ist damit
+Erreichbarkeit, keine Session — Cookies des echten Hosts gehen nicht mit —,
+betroffen ist also eine Route, deren Authentifizierung *das Netz selbst* ist:
+`IpAllowlist` oder Vertrauen auf Loopback. Trag bei so einer Route die Origins
+mit `withAllowedOrigins([...])` fest ein, statt dich allein auf den Default zu
+verlassen.
+
 Lege außerdem Auth-Middleware um die Route — `withMiddleware` läuft zur
 Upgrade-Zeit und gated damit den Handshake. Und binde den Server auf Loopback,
 solange er nicht von woanders erreichbar sein soll.

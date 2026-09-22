@@ -83,7 +83,19 @@ export interface WebsocketRouteOptionsType<TOut, TIn> extends WebsocketPolicyOpt
    *
    * The comparison is host-only, because `Host` carries no scheme to
    * compare against.  A reverse proxy that rewrites `Host` but not `Origin`
-   * will therefore fail the check; list the real origins instead.
+   * will therefore fail the check; list the real origins instead.  Host-only
+   * also means **scheme-blind**: an `http://` page on the same `host:port`
+   * passes, so this rule is not a substitute for refusing plaintext.
+   *
+   * **`Origin` and `Host` both come from the client**, which bounds what the
+   * rule can promise.  A page that reaches this server under a name of its
+   * own — DNS rebinding — sends the two headers in agreement and passes this
+   * arm; that is the standard weakness of any same-origin check built on
+   * `Host`, and it is why {@link allowedOrigins} exists.  What it buys is
+   * *reachability* rather than a session, since the browser attaches no
+   * cookies for the real host — so the shape that matters is a route whose
+   * auth **is** the network (`IpAllowlist`, trusting loopback).  Pin
+   * {@link allowedOrigins} on such a route instead of leaning on this arm.
    *
    * **Default: {@link DEFAULT_WEBSOCKET_REQUIRE_SAME_ORIGIN} (`true`)** —
    * every `websocket()` route rejects a cross-origin

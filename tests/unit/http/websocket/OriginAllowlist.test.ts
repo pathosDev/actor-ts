@@ -123,6 +123,35 @@ describe('websocket() — requireSameOrigin', () => {
     expect(denied!.status).toBe(Status.Forbidden);
   });
 
+  // The two limits of a host-only comparison, pinned here because the JSDoc
+  // and `http/websocket.mdx` now name them.  Neither is a defect to fix on
+  // this branch: `WebsocketRoute.ts` documents the host-only choice (`Host`
+  // carries no scheme), and whether the rule should grow an `expectedScheme`
+  // the way `Csrf.ts` did in #604 is a design question on #1514.  What these
+  // do is make the prose falsifiable — a mechanism change that narrows either
+  // one turns them red, so the caveats cannot outlive the behaviour they
+  // describe.
+  test('the compare is scheme-blind — an http:// Origin on the same host:port passes', async () => {
+    const endpoint = wsEndpoint(websocket('/ws', target, sameOrigin));
+    expect(await endpoint.authorize(request({
+      origin: 'http://app.example.com:8443',
+      host: 'app.example.com:8443',
+    }))).toBeNull();
+  });
+
+  test('Origin and Host both come from the client, so a matching forged pair passes', async () => {
+    // The DNS-rebinding shape, and the standard weakness of any same-origin
+    // check built on `Host` — which is why `allowedOrigins` exists.  What it
+    // buys is reachability, not a session: the browser sends no cookies for
+    // the real host, so the exposure is a route whose auth is the network
+    // (`IpAllowlist`, loopback trust) rather than one with a cookie session.
+    const endpoint = wsEndpoint(websocket('/ws', target));
+    expect(await endpoint.authorize(request({
+      origin: 'http://evil.example',
+      host: 'evil.example',
+    }))).toBeNull();
+  });
+
   test('combines with allowedOrigins — either rule admits', async () => {
     const options = WebsocketRouteOptions.create()
       .withRequireSameOrigin(true)
