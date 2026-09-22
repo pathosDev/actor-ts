@@ -127,8 +127,8 @@ export class ParallelMultiNodeSpec {
   private readonly nodes = new Map<string, NodeRecord>();
   private readonly broker = new MultiNodeBroker();
   private started = false;
-  private nextReqId = 1;
-  /** Pending RPC promises keyed by reqId. */
+  private nextRequestId = 1;
+  /** Pending RPC promises keyed by the `reqId` the harness stamped. */
   private readonly pending = new Map<number, PendingControlRequest>();
 
   constructor(optionsInput: ParallelMultiNodeSpecOptions) {
@@ -456,15 +456,15 @@ export class ParallelMultiNodeSpec {
   private onControlFrame(role: string, event: WorkerMessageEvent): void {
     const frame = (event.data ?? undefined) as { kind?: string; reqId?: number } | undefined;
     if (!frame?.kind || !frame.kind.startsWith('mns-test.')) return;
-    const reqId = frame.reqId;
-    if (reqId === undefined) return;
-    const pending = this.pending.get(reqId);
+    const requestId = frame.reqId;
+    if (requestId === undefined) return;
+    const pending = this.pending.get(requestId);
     if (!pending) return;
     if (pending.role !== role || pending.expectedKind !== frame.kind) {
-      this.onMisdirectedControlFrame(role, frame.kind, reqId, pending);
+      this.onMisdirectedControlFrame(role, frame.kind, requestId, pending);
       return;
     }
-    this.pending.delete(reqId);
+    this.pending.delete(requestId);
     clearTimeout(pending.timer);
     pending.resolve(frame as ControlResponse);
   }
@@ -481,11 +481,11 @@ export class ParallelMultiNodeSpec {
    * that a stray frame ever existed.
    */
   private onMisdirectedControlFrame(
-    role: string, kind: string, reqId: number, pending: PendingControlRequest,
+    role: string, kind: string, requestId: number, pending: PendingControlRequest,
   ): void {
     console.warn(
       `ParallelMultiNodeSpec: dropped control frame '${kind}' from role '${role}' `
-      + `(reqId ${reqId}) — that reqId belongs to a '${pending.expectedKind}' `
+      + `(reqId ${requestId}) — that reqId belongs to a '${pending.expectedKind}' `
       + `awaited from role '${pending.role}'`,
     );
   }
@@ -595,23 +595,26 @@ export class ParallelMultiNodeSpec {
     if (!node.worker) {
       return Promise.reject(new Error(`controlRpc: role '${node.role}' has been crashed/left`));
     }
-    const reqId = this.nextReqId++;
+    const requestId = this.nextRequestId++;
     return new Promise<R>((resolve, reject) => {
       const controlRpcMs = scaledMs(5_000);
       const timer = setTimeout(() => {
-        this.pending.delete(reqId);
+        this.pending.delete(requestId);
         reject(new Error(
           `controlRpc(${request.kind}): timed out after ${controlRpcMs}ms${describeTimeFactor()}`,
         ));
       }, controlRpcMs);
-      this.pending.set(reqId, {
+      this.pending.set(requestId, {
         role: node.role,
         expectedKind: `${request.kind}-response`,
         resolve: (v) => resolve(v as R),
         reject,
         timer,
       });
-      node.worker!.postMessage({ ...request, reqId });
+      // `reqId` is the wire property the worker bootstrap answers on, and a
+      // custom `bootstrapModule` reads it by that name — spelled out here only
+      // on this side of the boundary (#1508).
+      node.worker!.postMessage({ ...request, reqId: requestId });
     });
   }
 }
