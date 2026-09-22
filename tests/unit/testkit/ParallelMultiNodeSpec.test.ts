@@ -654,6 +654,16 @@ async function timersArmedWhile(body: () => Promise<void>): Promise<TimerLedger>
   }
 }
 
+/** The same, for a body that arms its timers before it returns. */
+function timersArmedBy<T>(body: () => T): { readonly value: T; readonly ledger: TimerLedger } {
+  const { ledger, restore } = installTimerLedger();
+  try {
+    return { value: body(), ledger };
+  } finally {
+    restore();
+  }
+}
+
 /** `terminateAndWait`'s fallback bound — the literal the helper arms. */
 const TERMINATE_FALLBACK_MS = 3_000;
 
@@ -730,6 +740,47 @@ describe('ParallelMultiNodeSpec — terminateAndWait', () => {
       restore();
     }
     expect(backend.spawned[0]!.terminated).toBe(true);
+  });
+});
+
+/* ---------- what the control-RPC timeout says (#1508, from #777) -------- */
+
+/** `controlRpc`'s own budget — the literal it arms, before scaling. */
+const CONTROL_RPC_MS = 5_000;
+
+describe('ParallelMultiNodeSpec — the control-RPC timeout', () => {
+  test('names the role that went silent, not only the request kind', async () => {
+    // The pair the CHANGELOG describes is the warning plus this timer, and
+    // the warning is the only half that names a role: with three or more
+    // roles in flight the timer said which *question* went unanswered and
+    // left the reader to work out which worker had stopped answering.
+    const { spec } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      // Role 'b' deliberately, not the first one: a message built from
+      // `roles[0]` reads correctly on a single-role spec and is wrong on
+      // every spec that has more than one worker to lose.
+      const { value: membersPromise, ledger } = timersArmedBy(() => spec.getMembers('b'));
+
+      const rpcTimer = ledger.armed.find((timer) => timer.delayMs === scaledMs(CONTROL_RPC_MS));
+      expect(rpcTimer).toBeDefined();
+      // Fired by hand rather than waited out.  The budget is 5 000 ms and
+      // bun's per-test cap is 5 000 ms, so a test that waits for this timer
+      // races the runner and reports `this test timed out after 5000ms` —
+      // the one message that names nothing — instead of the one under test.
+      rpcTimer!.fire();
+
+      let caught: unknown;
+      try { await membersPromise; } catch (error) { caught = error; }
+
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toBe(
+        "controlRpc(mns-test.query-members) to role 'b': timed out after "
+        + `${scaledMs(CONTROL_RPC_MS)}ms${describeTimeFactor()}`,
+      );
+    } finally {
+      await spec.stop();
+    }
   });
 });
 

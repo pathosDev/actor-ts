@@ -513,11 +513,12 @@ export class ParallelMultiNodeSpec {
    *
    * Dropped rather than settled, and the entry is left pending so the genuine
    * reply can still land — or `controlRpc`'s own 5 s timer fires and names the
-   * request that went unanswered, which is a far shorter walk to the cause than
-   * the `await*` timeout the mis-correlation produced.  Reported for the same
-   * reason `onWorkerError` is: the harness owns no `ActorSystem` to log
-   * through, and a silent drop leaves the reader with a timeout and no clue
-   * that a stray frame ever existed.
+   * role and the request that went unanswered, which is a far shorter walk to
+   * the cause than the `await*` timeout the mis-correlation produced.  The two
+   * lines are a pair, and both name a role for that reason (#1508).  Reported
+   * for the same reason `onWorkerError` is: the harness owns no `ActorSystem`
+   * to log through, and a silent drop leaves the reader with a timeout and no
+   * clue that a stray frame ever existed.
    */
   private onMisdirectedControlFrame(
     role: string, kind: string, requestId: number, pending: PendingControlRequest,
@@ -626,6 +627,12 @@ export class ParallelMultiNodeSpec {
    * Times out after 5s — RPC failures usually indicate the worker
    * is wedged; fast timeouts surface the issue rather than hanging
    * the test forever.
+   *
+   * The rejection names the **role** as well as the request kind.  Which
+   * question went unanswered is only half of what the reader needs: with
+   * three or more roles in flight the interesting fact is which worker
+   * stopped answering, and until #1508 the only line that said so was the
+   * misdirected-frame warning, which is written on a different failure.
    */
   private controlRpc<R extends ControlResponse>(
     node: NodeRecord,
@@ -640,7 +647,8 @@ export class ParallelMultiNodeSpec {
       const timer = setTimeout(() => {
         this.pending.delete(requestId);
         reject(new Error(
-          `controlRpc(${request.kind}): timed out after ${controlRpcMs}ms${describeTimeFactor()}`,
+          `controlRpc(${request.kind}) to role '${node.role}': `
+          + `timed out after ${controlRpcMs}ms${describeTimeFactor()}`,
         ));
       }, controlRpcMs);
       this.pending.set(requestId, {
