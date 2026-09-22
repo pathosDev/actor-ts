@@ -124,11 +124,11 @@ Direktnachrichten, Tipp-Indikatoren, Lesebestätigungen und das
 Auth-Hardening.
 
 ```bash
-# Against the cluster you already have up:
+# Gegen den Cluster, der bereits läuft:
 bun examples/chat/smoke-test.ts
 
-# Or let it bring its own node up, on ports of its own —
-# that node needs a token secret like any other:
+# Oder den Test seinen eigenen Node hochfahren lassen, auf eigenen Ports -
+# der braucht wie jeder andere ein Token-Secret:
 CHAT_ALLOW_DEMO_SECRET=1 bun examples/chat/smoke-test.ts --spawn-backend
 ```
 
