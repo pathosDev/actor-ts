@@ -35,7 +35,7 @@ responses get `Access-Control-Allow-Origin` + `Vary: Origin`.
 | `withAnyOrigin()` | `origins` | Allow any origin (`*`). Must be explicit — **code-only**. |
 | `withOriginPredicate(predicate)` | `origins` | Decide per request; a throwing predicate denies. A predicate that accepts a value which is not a well-formed origin also denies — see below. **Code-only**. |
 | `withMethods(...m)` | `methods` | `Access-Control-Allow-Methods`. Default: the methods registered at the pattern. Config: `methods`. |
-| `withAllowedHeaders(...h)` | `allowedHeaders` | Default: echo the (sanitised) request headers. Config: `allowed-headers`. |
+| `withAllowedHeaders(...h)` | `allowedHeaders` | Default: echo the request's header names, filtered to RFC 7230 tokens — a name carrying anything else is dropped whole, and the field is omitted when none survive. See below. Config: `allowed-headers`. |
 | `withExposedHeaders(...h)` | `exposedHeaders` | `Access-Control-Expose-Headers`. Config: `exposed-headers`. |
 | `withCredentials(flag?)` | `credentials` | `Access-Control-Allow-Credentials: true`. Config: `credentials`. |
 | `withMaxAge(seconds)` | `maxAge` | Preflight cache duration. Config: `max-age`. |

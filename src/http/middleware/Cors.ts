@@ -244,6 +244,10 @@ const REQUEST_HEADER_TOKEN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
  * that are legal tokens and bounding the result at
  * {@link MAXIMUM_ECHOED_CORS_HEADERS_LENGTH}.  Never echoes raw client bytes.
  *
+ * Named for what it does — it *filters* a list — rather than for what its
+ * predecessor did.  "Sanitise" describes a scrub, and the scrub is precisely
+ * the shape #792 replaced.
+ *
  * The value is a comma-separated list of header *names*, so it is validated as
  * one — element by element, an element that is not a token dropped whole —
  * rather than scrubbed character by character.  Its predecessor did the latter
@@ -262,7 +266,7 @@ const REQUEST_HEADER_TOKEN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/;
  * `TypeError` on one.  What did reach the wire was HTAB and U+00A0, which all
  * six of those accept.  Filtering to tokens no longer depends on any of it.
  */
-function sanitiseRequestHeaders(value: string): string {
+function filterRequestHeaderNames(value: string): string {
   const names: string[] = [];
   let length = 0;
   for (const element of value.split(',')) {
@@ -327,7 +331,7 @@ function preflightResponse(settings: CorsRouteOptions, methods: ReadonlyArray<st
     // Nothing legal left to echo → omit the field rather than send an empty
     // one.  Both deny every non-simple header, but only the absent form says
     // so; `Access-Control-Allow-Headers: ` reads as a bug in the server.
-    const echoed = sanitiseRequestHeaders(request.headers['access-control-request-headers'] ?? '');
+    const echoed = filterRequestHeaderNames(request.headers['access-control-request-headers'] ?? '');
     if (echoed.length > 0) headers['access-control-allow-headers'] = echoed;
   }
   if (settings.credentials) headers['access-control-allow-credentials'] = 'true';
