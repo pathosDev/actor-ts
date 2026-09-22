@@ -59,9 +59,13 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
    *                identity-string) lets `value()` return the
    *                original instances even when a custom identity
    *                callback is configured.
-   * `tombstones` — tags removed for an element-key.  Veto on merge
-   *                so a stale state from a slow peer can't resurrect
-   *                an already-removed tag.
+   * `tombstones` — tags removed, filed under the element-key they were
+   *                removed for.  Veto on merge so a stale state from a
+   *                slow peer can't resurrect an already-removed tag.
+   *                The bucketing is bookkeeping, not the rule: `merge`
+   *                vetoes by tag across every bucket, because a frame
+   *                can arrive with its buckets and its elements filed
+   *                under different keys (#1511).
    */
   private constructor(
     private readonly elements: ReadonlyMap<string, ElementEntry<E>>,
@@ -155,18 +159,34 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
     // 1. Tombstones are unioned — once removed, always removed.
     const mergedTombstones = unionMapOfSets(this.tombstones, other.tombstones);
 
-    // 2. Elements are merged per-key: union the tag sets, drop any
-    //    tag that appears in the merged tombstones, then drop empty
-    //    entries so `has` / `value` reflect cleanly.
+    // 2. The veto is **by tag, not per bucket** (#1511).  A tag is minted once,
+    //    for one element, from 96 bits of entropy (#722), so a tag tombstoned
+    //    under any key can never be legitimately live under another — which
+    //    makes the flattened set exactly as selective as the per-bucket lookup
+    //    for state this library produced, and strictly more selective for
+    //    state whose buckets and elements no longer agree on a key.
+    //
+    //    That disagreement is ordinary rather than exotic.  An identity never
+    //    travels on the wire, so a peer on the default rule, or a durable
+    //    record written before the identity was configured, files an element
+    //    under a key this replica would not have chosen; `fromJSON` re-files
+    //    the element, but a tombstone whose element was removed and never
+    //    re-added has no instance left in the frame to move with it and stays
+    //    under the sender's key.  Vetoing per bucket then missed it and the
+    //    removed element came back on the next merge with a slower peer.
+    const vetoedTags = flattenMapOfSets(mergedTombstones);
+
+    // 3. Elements are merged per-key: union the tag sets, drop any
+    //    tombstoned tag, then drop empty entries so `has` / `value`
+    //    reflect cleanly.
     const allKeys = new Set<string>([...this.elements.keys(), ...other.elements.keys()]);
     const mergedElements = new Map<string, ElementEntry<E>>();
     for (const key of allKeys) {
       const ours = this.elements.get(key);
       const theirs = other.elements.get(key);
-      const tomb = mergedTombstones.get(key) ?? EMPTY_SET;
       const merged = new Set<string>();
-      if (ours) for (const tag of ours.tags) if (!tomb.has(tag)) merged.add(tag);
-      if (theirs) for (const tag of theirs.tags) if (!tomb.has(tag)) merged.add(tag);
+      if (ours) for (const tag of ours.tags) if (!vetoedTags.has(tag)) merged.add(tag);
+      if (theirs) for (const tag of theirs.tags) if (!vetoedTags.has(tag)) merged.add(tag);
       if (merged.size > 0) {
         // Prefer the locally-known element; fall back to the peer's.
         const element = ours?.element ?? theirs?.element as E;
@@ -174,7 +194,7 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
       }
     }
 
-    // No third step: tags carry their own entropy, so nothing has to be
+    // No fourth step: tags carry their own entropy, so nothing has to be
     // carried across a merge to keep the next-issued one fresh.
     return new ORSet<E>(mergedElements, mergedTombstones, this.identity);
   }
@@ -288,7 +308,19 @@ export class ORSet<E> implements Crdt<ORSet<E>> {
   }
 }
 
-const EMPTY_SET: ReadonlySet<string> = new Set();
+/**
+ * Every tag in every bucket, as one set — the veto `merge` applies.
+ *
+ * Built rather than kept as a second field: it is derived state, and a derived
+ * field is one refactor away from disagreeing with what derives it.  The pass
+ * is linear in the tombstone count, which `unionMapOfSets` has just walked
+ * anyway, so the merge keeps the shape of its cost.
+ */
+function flattenMapOfSets(map: ReadonlyMap<string, ReadonlySet<string>>): ReadonlySet<string> {
+  const out = new Set<string>();
+  for (const tagSet of map.values()) for (const tag of tagSet) out.add(tag);
+  return out;
+}
 
 function unionMapOfSets(
   ours: ReadonlyMap<string, ReadonlySet<string>>,
@@ -333,16 +365,22 @@ function mapOfSetsToObject(
  * A bucket whose element is *not* in `localKeys` stays where it arrived, and
  * that covers two different cases.  The ordinary one is the default path,
  * where nothing was re-keyed at all and every bucket keeps its wire key.  The
- * one worth knowing about is an **orphan** bucket — an element removed and
- * never re-added, so the frame carries its tags but no instance to
- * re-identify from.  Its tags still veto anything that arrives under the same
- * key, which is every peer that shares the sender's identity; what they no
- * longer veto is the same element arriving from a peer whose identity differs
- * from the sender's, because the two now file it under different keys.  That
- * residual is confined to a cluster whose replicas disagree about the
- * identity for a key — the misconfiguration this decode exists to stop
- * happening by accident — and closing it properly means keying tombstones by
- * tag rather than by element, which is a wire change.
+ * other is an **orphan** bucket — an element removed and never re-added, so
+ * the frame carries its tags but no instance to re-identify from — and it is
+ * left alone deliberately: guessing a key for it means `JSON.parse`-ing the
+ * sender's, which only succeeds when the sender was on the default identity
+ * and silently does the wrong thing when it was not.
+ *
+ * Where the bucket sits therefore does not decide what it vetoes.  {@link
+ * ORSet.merge} vetoes **by tag across every bucket** (#1511), so an orphan
+ * bucket refuses its tags wherever the element they belong to turns up — under
+ * the sender's key, under this replica's, or under a third peer's.  It has to:
+ * an identity never travels on the wire, so a peer on the default rule and a
+ * durable record written before the identity was configured *both* file an
+ * element under a key this replica would not have chosen, and both are exactly
+ * what the re-key above is fed.  Keying the tombstones by tag on the wire
+ * would make the position irrelevant as well, but that is a wire change and
+ * the veto does not need one.
  */
 function objectToMapOfSets(
   obj: Record<string, string[]>,
