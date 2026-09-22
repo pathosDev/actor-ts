@@ -237,20 +237,32 @@ export const DEFAULT_D1_MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 export const MAX_PERSISTENCE_ID_LENGTH = 255;
 
 /**
- * Longest accepted event tag, and most tags one event may carry.  Both cap
- * the row-size and tag-index growth an application can cause from user input
- * (#131 family) — see `TagValidator` for the full set of risks tag validation
- * closes.
+ * Longest accepted event tag.
+ *
+ * Caps, with {@link MAX_TAGS_PER_EVENT}, the row-size and tag-index growth an
+ * application can cause from user input (#131 family) — see `TagValidator`
+ * for the full set of risks tag validation closes.
  */
 export const MAX_TAG_LENGTH = 255;
+
+/**
+ * Most tags one event may carry — the count half of the bound
+ * {@link MAX_TAG_LENGTH} describes.
+ *
+ * Its own block because the two are separate rules over separate growth: one
+ * over-long tag widens a row, sixty-five short ones widen the tag index.
+ * `assertValidTags` checks them independently and names each in what it
+ * throws, and this one is per *event* rather than per append since #631.
+ */
 export const MAX_TAGS_PER_EVENT = 64;
 
 /** Sequence-number padding — matches `Number.MAX_SAFE_INTEGER`'s 16 digits with headroom. */
 export const SEQ_PADDING = 20;
 
 /**
- * Key-namespace segment the object-storage snapshot store writes under, and
- * the one the durable-state store writes under (#716).
+ * Key-namespace segment the object-storage snapshot store writes under —
+ * one half of the split that keeps the two stores' corpora apart, the other
+ * being {@link OBJECT_STORAGE_DURABLE_STATE_NAMESPACE} (#716).
  *
  * The two stores used to share a namespace, because `registerObjectStoragePlugins`
  * hands them the same `backend` and the same `prefix` and each laid its
@@ -277,6 +289,20 @@ export const SEQ_PADDING = 20;
  * key layout is how a layout silently forks.
  */
 export const OBJECT_STORAGE_SNAPSHOT_NAMESPACE = 'snapshots/';
+
+/**
+ * Key-namespace segment the object-storage durable-state store writes under:
+ * `<prefix>state/<persistenceId>/state.json`, one object per entity,
+ * rewritten in place.
+ *
+ * The other half of the split {@link OBJECT_STORAGE_SNAPSHOT_NAMESPACE}
+ * explains, and it lives beside it for the same reason — three files have to
+ * agree on the layout, so neither segment may be spelled out a second time.
+ *
+ * Its own block rather than a shared one because it is separately public: it
+ * is a barrel export, and `ObjectStorageDurableStateStore` links it from the
+ * key-layout note that tells an operator where their state actually is.
+ */
 export const OBJECT_STORAGE_DURABLE_STATE_NAMESPACE = 'state/';
 
 /**
