@@ -11,6 +11,39 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Added
 
+- **The MariaDB and SQL Server stores read their own tables out of the
+  server's catalogue when they open, and warn when a `persistence_id` or
+  `tag` column is on a collation that folds case or accents** (#1412). That
+  is the state a database created before the #707 pin is left in, because
+  `CREATE TABLE IF NOT EXISTS` and its guarded T-SQL equivalent never
+  revisit a table they find: two ids differing only in case are one event
+  stream there and two on Postgres, SQLite, MongoDB and DynamoDB, and until
+  now nothing at startup said so. The warning names the table, the column
+  and the collation it found and points at the journal page's migration
+  recipe; it is a `console.warn`, once per store, and never a failure. The
+  catalogue read is an optional `SqlDialect.columnCollationsSql?()` —
+  `information_schema.COLUMNS` scoped to `DATABASE()` on MariaDB,
+  `sys.columns` through `OBJECT_ID` on SQL Server, absent on Postgres and
+  SQLite where `TEXT` has no collation to get wrong — with the table name
+  bound as the statement's only parameter. It runs whether or not
+  `autoCreateTables` is set, because a read-only catalogue query needs no
+  DDL rights and an operator-managed schema is the population most likely to
+  predate the pin; a read that fails or comes back empty stays silent, since
+  unknown is not evidence and an advisory must not turn a working store into
+  an outage. Collations are classified by binary-ness rather than against
+  the collation the DDL pins, so a deliberate `utf8mb4_nopad_bin`, MySQL 8's
+  `utf8mb4_0900_bin` and the `*_BIN2` family stay silent. The report is per
+  column, which is what makes a half-migrated schema legible: `events`
+  converted and `events_tags` not, or a `tagsTable` pointed at a new table
+  beside a legacy `events`, names only the columns still to convert and says
+  a tag query across the two fails outright on SQL Server with error 468 and
+  loses the index on MariaDB (#1507). The MariaDB and SQL Server journal
+  pages describe the warning in both languages instead of stating that
+  nothing reports the mismatch, and two live scenarios per backend in the
+  Docker broker suites check that a real server accepts the statement,
+  labels the rows as asked, and honours the `COLLATE` clause in the
+  dialect's own DDL.
+
 - **`controlRpcTimeoutMs` on `ParallelMultiNodeSpecOptions`, so the
   harness's per-RPC budget is no longer a literal** (#1508). It was the one
   deadline in this spec a caller could not move, and the literal is 5 000 ms
@@ -2968,6 +3001,19 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Changed
 
+- **The maps page now carries the nested-CRDT identity boundary in both
+  languages** (#1421). It points at the sets page's identity section rather
+  than restating the argument, so two pages cannot drift into disagreeing
+  about one boundary, and adds the half that is specific to a map:
+  `ORMap.update` reuses the value already under a key, so the inner factory
+  never runs for a key that arrived by gossip and a second `update` does not
+  teach it either. Removing the key and re-adding it does run the factory,
+  but that starts the value over rather than re-keying it, and a peer still
+  holding the pre-remove state files its elements under `JSON.stringify`
+  again on the next merge. A guard derives both cross-reference anchors from
+  the sets pages' own heading text, because nothing else resolves an in-page
+  fragment, and asserts the described sequence by execution.
+
 - **The warning DevTools logs when it attaches to a system that is already
   tracing now covers both switches it flips, not just one** (#1512). It
   returned early whenever the application had already set
@@ -5439,6 +5485,33 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
 ### Security
 
+- **BREAKING — A label key beginning with `__` is refused where it is minted
+  and where it is relayed** (#1513). Prometheus reserves `__`-prefixed label
+  names for itself and drops them after relabeling, but `__name__` is not
+  one of the dropped ones: it *is* the series name, and a scrape job
+  configured with `honor_labels: true` keeps the target's value for it.
+  `counter('hits_total', { __name__: 'forged_series' })` therefore rendered
+  a perfectly well-formed `hits_total{__name__="forged_series"} 1` that the
+  server filed under `forged_series` — the forged series #784 refuses in the
+  name position, reached one layer later rather than closed. `client_golang`
+  and `client_python` refuse the prefix at the same point.
+  `RESERVED_LABEL_PREFIX` joins `THREAD_LABEL` and the two grammars in
+  `src/metrics/Constants.ts`, and both doors now ask one shared helper
+  rather than a hand-copied predicate each: `DefaultMetricsRegistry` when a
+  family is minted, and the worker-mesh relay for a snapshot no registry of
+  ours produced. A prefix rather than a list of the server's current label
+  names, because `__address__`, `__scheme__` and the `__meta_*` family move
+  between Prometheus releases while the reservation does not. It is a second
+  rule and not a narrowed grammar: `PROMETHEUS_LABEL_NAME_PATTERN` still
+  describes the exposition format, which does admit `__name__`. Only the key
+  side is reserved — a `__` prefix in a label *value* is untouched, which is
+  what keeps the cardinality cap's `__overflow__` marker legal. A relayed
+  sample carrying a `__proto__` label key is now refused on this rule
+  whatever its value, where before only an object under it was refused.
+
+  **Migration.** Rename any label key that begins with `__` — the prefix
+  belongs to the server. A `__` prefix in a label *value* needs no change.
+
 - **Attaching DevTools no longer pushes message bodies into a tracer the
   application already had** (#1420). Switching payload capture on is what
   DevTools does for its own Payload column, and on a system that was already
@@ -5551,6 +5624,23 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
   tag path. Only the type is checked, so a stream stored under a legacy id
   stays readable and compactable, and `MongoQuery` inherits the guard
   through the journal.
+
+  The MongoDB snapshot store and durable-state store now refuse a
+  `persistenceId` that is not a string, closing the same hole the journal
+  closed earlier in this release. A persistence id that reached the call as
+  an object — what a request body parser produces from `?id[$gte]=` —
+  becomes an operator expression in the filter document rather than a value,
+  and selects every stream: `loadLatest` handed over another entity's whole
+  snapshot, `load` returned a neighbour's durable state under the caller's
+  own id, and `delete` emptied the collection. The two upserts are guarded
+  for the same reason, because their id rides in the filter: `save` and
+  `upsert` rewrote a neighbour's document in place and reported success to
+  the caller. Only the type is checked, so a stream stored under an id
+  today's rules would refuse stays readable, saveable and deletable. The
+  guard is now one exported function shared by all three stores instead of a
+  module-local copy in the journal, and the persistence-ID guarantee in the
+  persistent-actor guide is narrowed to the claim it actually makes, about
+  an id's content.
 
 - **BREAKING — DevTools.attach() refuses a system DevTools is already
   mounted into, and SpanTap refuses a second live tap on one ActorSystem**
@@ -6580,14 +6670,15 @@ breaking.  See `ROADMAP.md` for what's coming, and `README.md` →
 
   **Migration.** New databases pick the collation up automatically. An
   existing one does not — the guarded `CREATE TABLE` never revisits a table
-  it finds, and nothing at startup reports the mismatch. Run the `ALTER
-  TABLE … MODIFY` (MariaDB, MySQL) or the drop-constraint / `ALTER COLUMN` /
-  recreate sequence (SQL Server, which refuses to re-collate a column an
-  index depends on) given on the MariaDB and SQL Server journal pages, with
-  no node writing. Check for already-merged streams first: the ALTER splits
-  them apart again, and those actors then fail recovery with
-  `JournalIntegrityError` on the resulting sequence gap. The pages carry a
-  query that detects them.
+  it finds — but the store now says so: at open it reads its own tables out
+  of the catalogue and warns, naming the table, the column and the collation
+  found (#1412). Run the `ALTER TABLE … MODIFY` (MariaDB, MySQL) or the
+  drop-constraint / `ALTER COLUMN` / recreate sequence (SQL Server, which
+  refuses to re-collate a column an index depends on) given on the MariaDB
+  and SQL Server journal pages, with no node writing. Check for
+  already-merged streams first: the ALTER splits them apart again, and those
+  actors then fail recovery with `JournalIntegrityError` on the resulting
+  sequence gap. The pages carry a query that detects them.
 
 - **BREAKING — Read-side tag filters are validated where every backend meets
   them (#738).**
