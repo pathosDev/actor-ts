@@ -76,6 +76,14 @@ denn die interessanten Nachrichten sind die, die schon vorbei sind. Panel
   unangetastet auf einem, wo du sie selbst gesetzt hattest. Das ist der
   Handel, den `DevTools.attach` eingeht — ein System, das sich das nicht
   leisten kann, sollte keinen Debugger angehängt haben.
+- **Auf einem System, das ohnehin exportiert, kostet dieses Volumen
+  Geld.** Das Framework propagiert nur, vor dem Attach öffnete ein
+  schlichtes `ref.tell` also gar keinen Span, und dein Exporter sah nur
+  die Traces, die du selbst gesetzt hast. Ab dem Attach sieht er einen
+  Root-Span pro Actor-Nachricht — deine Nachrichtenrate, nicht deine
+  Sampling-Rate, landet bei dem Ingest dahinter. DevTools hält das in der
+  Zeile fest, die es beim Attach schreibt, und zwar unabhängig davon, ob
+  die Payload-Erfassung schon an war.
 - DevTools' eigene Actors sind ausgenommen — weder als Root-Span noch
   als Kind-Span, denn seine Probes empfangen Event-Stream-Publishes
   *während* einer Anwendungsnachricht und tauchten sonst mitten in deren
@@ -106,11 +114,15 @@ Eine Erfassung, die du selbst gesetzt hattest, ist etwas anderes und
 bleibt unangetastet: Diese Spans tragen das Attribut weiterhin hinaus,
 genau wie vorher. Solange DevTools attached ist, kann
 `captureMessagePayloads` also als eingeschaltet gelten, während dein
-eigener Exporter kein solches Attribut zeigt — DevTools schreibt beim
-Attach eine Zeile, die das festhält, und diese Zeile ist die einzige
-Stelle, an der der Unterschied sichtbar wird. Beim Detach werden die
-beiden Schalter zusammen mit dem Tracer wiederhergestellt, der Export ist
-danach also wieder genau der von vorher.
+eigener Exporter kein solches Attribut zeigt.
+
+Was der Attach diesem Exporter sehr wohl hinzufügt, ist *Volumen* — ein
+Root-Span pro Nachricht, wie im Punkt oben beschrieben. DevTools schreibt
+beim Attach eine einzige Zeile, die den jeweils umgelegten Schalter
+benennt, und diese Zeile ist die einzige Stelle, an der einer der beiden
+Unterschiede sichtbar wird. Beim Detach werden die beiden Schalter
+zusammen mit dem Tracer wiederhergestellt, der Export ist danach also
+wieder genau der von vorher.
 </Aside>
 
 ## Einen Trace selbst starten
