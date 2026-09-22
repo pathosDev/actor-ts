@@ -47,9 +47,36 @@ class TestServer extends WebsocketServerActor<SOut, SIn> {
   }
 }
 
-function wsOpen(url: string, timeoutMs = 3000): Promise<WebSocket> {
+/** Extra headers to put on the HTTP upgrade request. */
+type UpgradeHeaders = Readonly<Record<string, string>>;
+
+/**
+ * The options-taking half of Bun's `WebSocket` constructor.  The global is
+ * typed by `lib.dom` here (`tsconfig.dev.json` loads `DOM` for the whole
+ * tree), and lib.dom's second parameter is the sub-protocol list — so
+ * `Bun.WebSocketOptions` has to be reached through a cast rather than by
+ * overload resolution.  The cast is narrow on purpose: it names the real Bun
+ * signature instead of `any`, so a Bun release that changes the option shape
+ * still fails the compile.
+ */
+const WebSocketWithOptions = WebSocket as unknown as
+  new (url: string, options: Bun.WebSocketOptions) => WebSocket;
+
+/**
+ * Dial with optional upgrade headers.  Every other client in this suite uses
+ * the bare form, which sends **no `Origin` at all** — that is exactly why the
+ * origin guard had no backend-level coverage: only its fail-open branch had
+ * ever run here.  Bun's `WebSocket` honours `{ headers }` on the constructor
+ * (verified against a `node:http` upgrade capture: the header arrives
+ * verbatim, `Host` stays the one the client computes for the bound address).
+ */
+function dial(url: string, headers?: UpgradeHeaders): WebSocket {
+  return headers === undefined ? new WebSocket(url) : new WebSocketWithOptions(url, { headers });
+}
+
+function wsOpen(url: string, timeoutMs = 3000, headers?: UpgradeHeaders): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url);
+    const ws = dial(url, headers);
     const timer = setTimeout(() => reject(new Error('timeout opening ws')), timeoutMs);
     ws.onopen = () => {
       clearTimeout(timer);
@@ -97,9 +124,9 @@ function nextClose(ws: WebSocket, timeoutMs = 3000): Promise<number> {
 }
 
 /** Resolve if the upgrade is rejected (never opens); reject if it opens. */
-function expectUpgradeRejected(url: string, timeoutMs = 3000): Promise<void> {
+function expectUpgradeRejected(url: string, timeoutMs = 3000, headers?: UpgradeHeaders): Promise<void> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(url);
+    const ws = dial(url, headers);
     let opened = false;
     const timer = setTimeout(() => (opened ? reject(new Error('opened unexpectedly')) : resolve()), timeoutMs);
     ws.onopen = () => {
@@ -331,6 +358,68 @@ export function runWebsocketBackendSuite(label: string, makeBackend: () => HttpS
       ws.send(JSON.stringify({ kind: 'ping', n: 3 }));
       expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 3 });
       ws.close();
+    });
+
+    /**
+     * The origin guard is every route's default since #756, and until now no
+     * test drove it through a backend at all: every origin case in the tree
+     * calls `compile(route)` and invokes `endpoint.authorize(request)` by
+     * hand, while every client here dials the bare native `WebSocket`, which
+     * sends no `Origin`.  So only the fail-open branch of `makeOriginGuard`
+     * had ever run at this level.  A backend refactor that stopped running
+     * the innermost `authorize` on upgrade would silently unguard every
+     * `websocket()` route in every consumer's application, with `bun test`,
+     * the smoke matrix and the coverage badge all staying green — before the
+     * flip that cost an opt-in feature, after it the default security
+     * posture.
+     *
+     * It is also the evidence the flip itself cited.  "The whole in-process
+     * WebSocket integration suite is green" was true and could not have
+     * failed on the axis that changed, because nothing in it sent an
+     * `Origin`.  Now it can.  And it binds what the pages assert — the 403
+     * happens "on all three backends", which the three `*Websocket.test.ts`
+     * callers of this suite are what makes true.
+     */
+    describe('origin guard at the upgrade seam (#756)', () => {
+      test('a foreign Origin is refused before the handshake', async () => {
+        const { base } = await bindServer([], (s) => websocket('/ws', s));
+        await expectUpgradeRejected(`${base}/ws`, 3000, { origin: 'https://evil.example' });
+      });
+
+      test('the opaque origin null is refused', async () => {
+        const { base } = await bindServer([], (s) => websocket('/ws', s));
+        await expectUpgradeRejected(`${base}/ws`, 3000, { origin: 'null' });
+      });
+
+      test('no Origin at all opens and round-trips (non-browser client)', async () => {
+        const { base } = await bindServer([], (s) => websocket('/ws', s));
+        const ws = await wsOpen(`${base}/ws`);
+        ws.send(JSON.stringify({ kind: 'ping', n: 11 }));
+        expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 11 });
+        ws.close();
+      });
+
+      test('an Origin naming this server opens and round-trips', async () => {
+        const { base, binding } = await bindServer([], (s) => websocket('/ws', s));
+        // The same-origin arm compares against the `Host` the client sends for
+        // the bound address, so this is the loopback origin on that same port.
+        const ws = await wsOpen(`${base}/ws`, 3000, { origin: `http://127.0.0.1:${binding.port}` });
+        ws.send(JSON.stringify({ kind: 'ping', n: 12 }));
+        expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 12 });
+        ws.close();
+      });
+
+      test('withRequireSameOrigin(false) admits the foreign Origin again', async () => {
+        const { base } = await bindServer([], (s) => {
+          const routeOptions = WebsocketRouteOptions.create()
+            .withRequireSameOrigin(false);
+          return websocket('/ws', s, routeOptions);
+        });
+        const ws = await wsOpen(`${base}/ws`, 3000, { origin: 'https://evil.example' });
+        ws.send(JSON.stringify({ kind: 'ping', n: 13 }));
+        expect(await nextMessage<{ kind: string; n: number }>(ws)).toEqual({ kind: 'pong', n: 13 });
+        ws.close();
+      });
     });
 
     test('HTTP and WebSocket routes coexist in one tree', async () => {

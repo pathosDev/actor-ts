@@ -113,7 +113,26 @@ function validateBaseOpts(options: { minMs: number; maxMs: number }): void {
   }
 }
 
-function applyJitter(base: number, randomFactor: number, random: () => number): number {
+/**
+ * `base × (1 ± randomFactor)`, floored at 0 — the project's one spelling of
+ * the jitter rule.
+ *
+ * Exported because `retry` needs the same rule and cannot get it by calling
+ * {@link exponentialBackoff}: that one hardcodes base 2, so it cannot express
+ * `RetryOptions.factor`, and it *throws* unless `maxMs` is finite, which is
+ * exactly the omitted-cap shape `retry` has to keep accepting — the same
+ * trade-off `BrokerActor._jitteredBackoff` records for the reconnect path
+ * (#652).  None of that argues against sharing the helper underneath, and the
+ * copy `Retry.ts` carried claimed to be identical to this one with nothing
+ * keeping it so (#1509).  `BackoffPolicy` owns it rather than `Constants.ts`
+ * because it is behaviour, and because both built-ins here are its first
+ * callers.
+ *
+ * The floor stays even though `retry`'s call site guards the result with
+ * `delay > 0` and so cannot observe it: it is half of a documented contract,
+ * and the two callers must not need to know which half applies to them.
+ */
+export function applyJitter(base: number, randomFactor: number, random: () => number): number {
   if (randomFactor === 0) return base;
   // random() returns [0, 1); map to [-randomFactor, +randomFactor].
   const sign = random() * 2 - 1;

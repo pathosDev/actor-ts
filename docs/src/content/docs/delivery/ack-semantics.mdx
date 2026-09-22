@@ -58,7 +58,7 @@ new ConsumerController<T>({
 
 If the consumer crashes between **2** and **4**, the ack never
 reaches the producer.  Producer retransmits after
-`resendTimeoutMs`.  The controller's in-memory dedup is gone
+`resendTimeout`.  The controller's in-memory dedup is gone
 after the crash, so the same seq runs the handler again — make
 it idempotent, or persist processed-seq alongside business
 state.
@@ -179,7 +179,7 @@ Consumer on node-A processes msg #5; controller queues the Ack
 Node-A crashes before the Ack tell completes
 ```
 
-Producer doesn't see Ack within `resendTimeoutMs` → retransmits.
+Producer doesn't see Ack within `resendTimeout` → retransmits.
 
 If the consumer is **sharded** (the entity moves during
 failover), the new instance:
@@ -198,7 +198,7 @@ every rebalance and you get full reprocessing.
 The Ack is **fire-and-forget** from the controller to the
 producer's `replyTo`.  The controller doesn't await its
 delivery — if the network drops the Ack, the producer
-retransmits after `resendTimeoutMs` and the controller's
+retransmits after `resendTimeout` and the controller's
 dedup re-acks immediately.
 
 This means: **your handler doesn't pay any latency cost for
@@ -248,6 +248,19 @@ stream to at-most-once while reporting success.  Note what the signal still
 does *not* promise: it says the consumer accepted responsibility for the seq,
 so for a redelivery it means the handler ran on an *earlier* attempt, not on
 this one.
+
+The token's **scope is one producer, not one message**.  It is minted once per
+`ProducerController` construction and stamped on every delivery that
+incarnation sends, so anything that legitimately receives one delivery — your
+consumer, a handler that forwards it on, a router fan-out — can settle every
+other in-flight seq of that producer, for as long as the actor lives.  That is
+deliberate rather than an oversight: the party holding a delivery is the one
+expected to acknowledge it, and without a delivery it has no `replyTo` to
+reach the producer with in the first place.  It is also what keeps the
+consumer's dedup key stable, since that key is `(producerId, incarnation)` and
+a per-message token would reset the window on every sequence.  What it does
+*not* give you is a capability you can hand out per message: forwarding one
+delivery to a component you trust less hands it the whole producer.
 
 The check sits on the producer because that is the only side with something
 unguessable to check against.  The consumer Acks to the `replyTo` on the

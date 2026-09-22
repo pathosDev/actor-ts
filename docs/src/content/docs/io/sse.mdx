@@ -93,7 +93,7 @@ type SseEvent = {
 ```
 
 The client parses the SSE wire format — events separated by a blank
-line (`\n\n`), fields as `field: value`:
+line, fields as `field: value`:
 
 ```
 data: hello
@@ -109,6 +109,12 @@ data: line-2
 
 Parsing rules that follow the SSE spec:
 
+- **Line endings.**  A line ends with `\n`, `\r\n` **or** `\r` — all
+  three, as the spec allows.  A feed framed with `\r\n\r\n` or `\r\r`
+  therefore parses exactly like the `\n\n` example above, and no
+  carriage return survives on a field value.  A terminator that
+  arrives split across two network reads — a `\r` ending one, an `\n`
+  opening the next — counts once, not twice.
 - **Default event name.**  A block without an `event:` field
   arrives with `event: 'message'`.
 - **Multiline data.**  Multiple `data:` lines in one block are
