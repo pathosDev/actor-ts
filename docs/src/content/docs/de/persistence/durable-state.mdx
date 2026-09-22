@@ -320,6 +320,22 @@ er für Chiffrat hält.  `compression()` ist ein Performance-Hinweis,
 warnt also einmal, und der Datensatz wird unkomprimiert
 geschrieben; `{ mode: 'none' }` wird überall akzeptiert.
 
+Einen der beiden Authentifikatoren zu konfigurieren —
+`client-aes256-gcm` oder `hmac-sha256` — erkauft neben
+Vertraulichkeit und Manipulationserkennung noch etwas Zweites:
+Erst dadurch bekommt der Object-Storage-Store eine
+**Verschiebungserkennung**.  Jeder Write bindet den Body an den
+Storage-Key, auf den er geht; ein Datensatz, der später unter
+dem Key einer anderen Entity auftaucht, wird abgelehnt, und
+dafür ist nichts einzuschalten.  Ohne einen davon — der
+Standard — bemerkt es auf dieser Ebene nichts: Ein
+Durable-State-Body ist `{ revision, state, timestamp }` und
+nennt keine Entity, und `load` antwortet mit der
+`persistenceId`, nach der gefragt wurde.  Der Snapshot-Store
+steht nicht an derselben Stelle;
+[Was Verschlüsselung nicht abdeckt](/de/persistence/object-storage/encryption/#was-verschlüsselung-nicht-abdeckt)
+legt den Unterschied dar.
+
 Siehe
 [Object-Storage-Verschlüsselung](/de/persistence/object-storage/encryption/)
 für die Durable-State-Verschlüsselungs-Story und
