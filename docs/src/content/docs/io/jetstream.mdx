@@ -229,7 +229,26 @@ it back to the broker or persist it: it means nothing outside the actor
 instance that issued it, and it does not survive a reconnect.
 
 Set `ackPolicy: 'none'` for pure fire-and-hose delivery where no ack is
-expected.
+expected.  Messages still carry an `ackToken` in that mode, but **the token
+names nothing**: the actor registers no delivery, so every
+`acknowledgment` / `negativeAcknowledgment` / `terminate` / `inProgress`
+naming it is ignored.  A consumer that settles defensively is not doing
+anything wrong — the drop is reported at `debug` there, not at `warn`.
+
+A settle command that misses in any *other* mode **is** reported at `warn`,
+by all four commands, naming the command and the token: the delivery it
+addressed already timed out, was settled, or predates a reconnect, so the
+message will be redelivered and reprocessed.
+
+**A connection loss settles every in-flight delivery locally.**  Each one is
+failed, `nak`'d best-effort so the server redelivers it, and its ack-timeout
+disarmed — the reconnect then starts from an empty pending map, and any
+settle command still travelling for a pre-disconnect delivery misses (see
+above).  The loss is **one** `warn` naming how many deliveries were in
+flight; the per-delivery detail goes to `debug`, because a flapping
+connection on a consumer with `maxAcknowledgmentPending` in the hundreds
+would otherwise write hundreds of warnings per flap.  An ack-timeout stays
+at `warn`: that one names a single handler that did not answer in time.
 
 ## Push vs pull consumers
 
