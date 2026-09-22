@@ -16,7 +16,7 @@ const metrics = system.extension(MetricsExtensionId);
 
 // Inside an HTTP handler:
 get(async () => {
-  const text = exportPrometheus(metrics.registry);
+  const text = exportPrometheus(metrics.get());
   return { status: 200, body: text, contentType: 'text/plain; version=0.0.4' };
 });
 ```
@@ -151,7 +151,7 @@ import { exportPrometheus } from 'actor-ts/metrics';
 const routes = path('metrics',
   get(async () => ({
     status: 200,
-    body: exportPrometheus(metrics.registry),
+    body: exportPrometheus(metrics.get()),
     contentType: 'text/plain; version=0.0.4',
     headers: {},
   })),
