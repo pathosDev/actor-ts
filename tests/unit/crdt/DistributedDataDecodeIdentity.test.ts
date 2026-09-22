@@ -20,7 +20,7 @@
  * application first names it (a gossip that arrives first, a durable reload)
  * is re-keyed on that first `update`; the tests at the bottom drive both.
  */
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe, expect, spyOn, test } from 'bun:test';
 import { ActorSystem } from '../../../src/ActorSystem.js';
 import { ActorSystemOptions } from '../../../src/ActorSystemOptions.js';
 import { Cluster } from '../../../src/cluster/Cluster.js';
@@ -44,6 +44,7 @@ import type {
   CrdtIdentityFunction, CrdtJson, ORMapJson, ORSetJson,
 } from '../../../src/crdt/index.js';
 import { CrdtDecodeError } from '../../../src/crdt/CrdtWireValidation.js';
+import { MAX_CRDT_ENTRIES } from '../../../src/crdt/Constants.js';
 import { InMemoryDurableStateStore } from '../../../src/persistence/durable-state-stores/InMemoryDurableStateStore.js';
 import type { WireMessage } from '../../../src/cluster/Protocol.js';
 import { awaitCondition, sleep } from '../../util/AwaitCondition.js';
@@ -457,6 +458,68 @@ describe('ORMap.fromJSON — re-keys entries and keyset together', () => {
     } catch (e) { thrown = e; }
     expect(thrown).toBeInstanceOf(CrdtDecodeError);
     expect((thrown as Error).message).toContain("ORSet.elements['bad-key']");
+  });
+
+  test('an oversized keyset costs the remap nothing before it is refused', () => {
+    // `remapKeysetIds` walks every keyset element with a `JSON.parse` each,
+    // and it used to do that *before* `ORSet.fromJSON` applied the entry
+    // ceiling that exists precisely to stop a peer's frame doing unbounded
+    // decode work (#698).  A hostile frame needs one honest entry in `values`
+    // — enough to make `localIds` non-empty and put the remap on the path —
+    // and an arbitrarily large `keyset.elements` behind it.
+    //
+    // Counting `JSON.parse` rather than wall-clock: the amplification is the
+    // per-element parse, and a timing assertion on a shared runner is a flake
+    // waiting to be filed.  Before the guard, the same rejected frame cost 1
+    // parse without an identity and MAX_CRDT_ENTRIES + 2 with one.
+    const honest = ORMap.empty<Tenant, GCounter>()
+      .put('peer', { id: 't-1', label: 'first' }, GCounter.empty().increment('peer', 1))
+      .toJSON();
+    const oversized: Record<string, string[]> = {};
+    for (let i = 0; i <= MAX_CRDT_ENTRIES; i++) oversized[`"id-${i}"`] = ['peer#tag'];
+    const frame: ORMapJson = {
+      ...honest,
+      keyset: { kind: 'ORSet', elements: oversized, tombstones: {} },
+    };
+
+    const parse = spyOn(JSON, 'parse');
+    try {
+      const refusedParseCount = (options?: { readonly identity: (t: Tenant) => string }): number => {
+        parse.mockClear();
+        let thrown: unknown;
+        try {
+          ORMap.fromJSON<Tenant, GCounter>(frame, decodeCounter, options);
+        } catch (e) { thrown = e; }
+        const calls = parse.mock.calls.length;
+        expect(thrown).toBeInstanceOf(CrdtDecodeError);
+        return calls;
+      };
+
+      const blind = refusedParseCount();
+      expect(refusedParseCount({ identity: byId })).toBe(blind);
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  test('a keyset at the ceiling still re-keys', () => {
+    // The guard is a ceiling, not a switch: a frame `ORSet.fromJSON` would
+    // accept has to go through the remap as before, or the cheap fix for an
+    // amplification would have quietly turned the re-key off for large maps.
+    const honest = ORMap.empty<Tenant, GCounter>()
+      .put('peer', { id: 't-1', label: 'first' }, GCounter.empty().increment('peer', 1))
+      .toJSON();
+    const atCeiling: Record<string, string[]> = { ...honest.keyset.elements };
+    for (let i = Object.keys(atCeiling).length; i < MAX_CRDT_ENTRIES; i++) {
+      atCeiling[`"filler-${i}"`] = [`peer#filler-${i}`];
+    }
+    expect(Object.keys(atCeiling)).toHaveLength(MAX_CRDT_ENTRIES);
+
+    const decoded = ORMap.fromJSON<Tenant, GCounter>(
+      { ...honest, keyset: { ...honest.keyset, elements: atCeiling } },
+      decodeCounter, { identity: byId },
+    );
+    expect(decoded.has({ id: 't-1', label: 'renamed' })).toBe(true);
   });
 
   test('the default path is byte-identical to what it always was', () => {
