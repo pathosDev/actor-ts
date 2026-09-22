@@ -417,10 +417,25 @@ import { Aside } from '@astrojs/starlight/components';
 </Aside>
 
 <Aside type="caution" title="TLS ist im Treiber standardmäßig an">
-  `mssql` setzt `encrypt: true` als Default.  Gegen einen Server mit
-  selbstsigniertem Zertifikat musst du dieses entweder installieren oder
-  `options: { trustServerCertificate: true }` setzen — letzteres schaltet die
-  Chain-Prüfung ab, also bitte nur in der Entwicklung.
+  ```ts
+  poolConfig: {
+    server: 'db.example.com', database: 'app',
+    user: 'actor_ts', password: process.env.MSSQL_PASSWORD,
+    options: { encrypt: true, cryptoCredentialsDetails: { ca: fs.readFileSync('rds-ca.pem') } },
+  }
+  ```
+  `mssql` verschlüsselt per Default (`encrypt: true`) und prüft das
+  Server-Zertifikat.  Gegen eine private CA oder ein selbstsigniertes
+  Zertifikat gibst du dem Treiber die signierende CA in
+  `cryptoCredentialsDetails` mit — tedious reicht dieses Objekt an
+  `tls.createSecureContext` durch — und setzt `serverName`, wenn der Name im
+  Zertifikat von `server` abweicht.  Das andere Angebot des Treibers, dem
+  Server-Zertifikat blind zu vertrauen (ein Connection-String schreibt es als
+  `TrustServerCertificate=`), schaltet die Prüfung ab: die Verbindung bleibt
+  verschlüsselt, authentifiziert aber niemanden, und alles auf dem Weg zur
+  Datenbank kann ein eigenes Zertifikat vorlegen und das Journal lesen oder
+  umschreiben.  Die vollständige Begründung steht unter
+  [TLS everywhere](/de/operations/security/tls-everywhere/#sql-server).
 </Aside>
 
 <Aside type="caution" title="Kein In-Process-Event-Bus">

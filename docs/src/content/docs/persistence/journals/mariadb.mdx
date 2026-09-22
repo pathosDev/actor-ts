@@ -324,6 +324,25 @@ import { Aside } from '@astrojs/starlight/components';
   already-merged streams first.
 </Aside>
 
+<Aside type="caution" title="TLS to a managed instance">
+  ```ts
+  poolConfig: {
+    host: 'db.example.com', port: 3306, database: 'app',
+    user: 'actor_ts', password: process.env.MARIADB_PASSWORD,
+    ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') },
+  }
+  ```
+  Pass `ssl` through `poolConfig` when the server requires TLS.  The
+  connector takes Node's own TLS options there, so this is the Postgres
+  shape verbatim: supply the signing CA — a managed instance publishes one
+  — rather than switching certificate verification off to make a
+  self-signed peer stop complaining.  Encryption without verification
+  authenticates nobody, and anything on the path to the database can then
+  read or rewrite the journal.  The object reaches `mariadb.createPool(...)`
+  verbatim; the reasoning in full is on
+  [TLS everywhere](/operations/security/tls-everywhere/#mariadb).
+</Aside>
+
 ## Where to next
 
 - **[PostgreSQL](/persistence/journals/postgres/)** — the sibling backend,

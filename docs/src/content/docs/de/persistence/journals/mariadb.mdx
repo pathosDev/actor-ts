@@ -338,6 +338,25 @@ import { Aside } from '@astrojs/starlight/components';
   auf bereits verschmolzene Streams.
 </Aside>
 
+<Aside type="caution" title="TLS zu einer Managed-Instanz">
+  ```ts
+  poolConfig: {
+    host: 'db.example.com', port: 3306, database: 'app',
+    user: 'actor_ts', password: process.env.MARIADB_PASSWORD,
+    ssl: { rejectUnauthorized: true, ca: fs.readFileSync('rds-ca.pem') },
+  }
+  ```
+  Reiche `ssl` über `poolConfig` durch, wenn der Server TLS verlangt.  Der
+  Connector nimmt dort Nodes eigene TLS-Optionen, das ist also wörtlich die
+  Postgres-Form: gib die signierende CA mit — eine Managed-Instanz
+  veröffentlicht eine — statt die Zertifikatsprüfung abzuschalten, damit ein
+  selbstsigniertes Gegenüber aufhört, sich zu beschweren.  Verschlüsselung
+  ohne Prüfung authentifiziert niemanden, und alles auf dem Weg zur Datenbank
+  kann das Journal dann lesen oder umschreiben.  Das Objekt erreicht
+  `mariadb.createPool(...)` unverändert; die vollständige Begründung steht
+  unter [TLS everywhere](/de/operations/security/tls-everywhere/#mariadb).
+</Aside>
+
 ## Wie geht's weiter
 
 - **[PostgreSQL](/de/persistence/journals/postgres/)** — das Geschwister-Backend,
