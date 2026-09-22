@@ -19,7 +19,7 @@
  * the `backend` option.  Both stay outside the quarantine below, so they are
  * the only part of this file CI ever executes.
  */
-import { scaledMs } from '../../../src/testkit/TimeFactor.js';
+import { describeTimeFactor, scaledMs } from '../../../src/testkit/TimeFactor.js';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, test } from 'bun:test';
@@ -730,6 +730,110 @@ describe('ParallelMultiNodeSpec — terminateAndWait', () => {
       restore();
     }
     expect(backend.spawned[0]!.terminated).toBe(true);
+  });
+});
+
+/* ------ what a throwing condition leaves behind (#1508, from #777) ------ */
+
+describe('ParallelMultiNodeSpec — a condition that keeps throwing', () => {
+  test('the await* timeout carries the last error the condition threw', async () => {
+    // #777's own body names this as the amplifier: `awaitCondition` retries
+    // past every throw and the timeout it finally raises names only what was
+    // being waited for.  A mis-correlated reply is one way to get there — a
+    // `run-command-response` settling a `getMembers` leaves `members`
+    // undefined and the `.filter(…)` throws — but any other throw inside the
+    // condition produced the same unattributed timeout.
+    const { spec } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      // A crashed role is the cheapest condition that throws on every poll,
+      // and it throws the harness's own sentence rather than an
+      // engine-worded TypeError, so the whole message can be asserted.
+      await spec.crash('b');
+
+      let caught: unknown;
+      try { await spec.awaitMembers('b', 2, 200); } catch (error) { caught = error; }
+
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).toBe(
+        `ParallelMultiNodeSpec: timeout after 200 ms${describeTimeFactor()} — `
+        + 'awaitMembers(b, expected=2); '
+        + "last error: controlRpc: role 'b' has been crashed/left",
+      );
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('a condition that simply stays false names no error', async () => {
+    // The other half: the suffix is evidence, not decoration.  A condition
+    // that polls cleanly and is merely not true yet must not grow one.
+    const { spec, workerFor } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      const workerA = workerFor('a');
+      const postToWorkerA = workerA.postMessage.bind(workerA);
+      workerA.postMessage = (value: unknown): void => {
+        postToWorkerA(value);
+        const frame = (value ?? undefined) as { kind?: string; reqId?: number } | undefined;
+        if (frame?.kind !== 'mns-test.query-members' || frame.reqId === undefined) return;
+        workerA.deliverMessage({
+          kind: 'mns-test.query-members-response', reqId: frame.reqId, members: MEMBERS_OF_A,
+        });
+      };
+
+      let caught: unknown;
+      try { await spec.awaitMembers('a', 99, 200); } catch (error) { caught = error; }
+
+      expect((caught as Error).message).toBe(
+        `ParallelMultiNodeSpec: timeout after 200 ms${describeTimeFactor()} — `
+        + 'awaitMembers(a, expected=99)',
+      );
+    } finally {
+      await spec.stop();
+    }
+  });
+
+  test('the error kept is the last one, not the first', async () => {
+    // An early throw is usually the cluster not being up yet; the one still
+    // happening when the budget ran out is the one that was never going to
+    // stop.  Bound by numbering the polls, so keeping the first would report
+    // `poll 1` against a counter that reached six.
+    const { spec, workerFor } = specWithFakeWorkers(['a', 'b']);
+    try {
+      await spec.start();
+      const workerA = workerFor('a');
+      const postToWorkerA = workerA.postMessage.bind(workerA);
+      let polls = 0;
+      workerA.postMessage = (value: unknown): void => {
+        postToWorkerA(value);
+        const frame = (value ?? undefined) as { kind?: string; reqId?: number } | undefined;
+        if (frame?.kind !== 'mns-test.query-members' || frame.reqId === undefined) return;
+        polls += 1;
+        const attempt = polls;
+        // A reply whose member view throws when `awaitMembers` filters it —
+        // the shape a mis-correlated reply leaves behind, with a message this
+        // test can tell one poll's from another's.
+        workerA.deliverMessage({
+          kind: 'mns-test.query-members-response',
+          reqId: frame.reqId,
+          members: { filter: (): never => { throw new Error(`poll ${attempt} threw`); } },
+        });
+      };
+
+      let caught: unknown;
+      try { await spec.awaitMembers('a', 2, 300); } catch (error) { caught = error; }
+
+      // ~6 polls fit in the budget; a single-poll run would need a 250 ms
+      // stall inside one in-memory iteration, and would prove nothing.
+      expect(polls).toBeGreaterThan(1);
+      expect((caught as Error).message).toBe(
+        `ParallelMultiNodeSpec: timeout after 300 ms${describeTimeFactor()} — `
+        + `awaitMembers(a, expected=2); last error: poll ${polls} threw`,
+      );
+    } finally {
+      await spec.stop();
+    }
   });
 });
 

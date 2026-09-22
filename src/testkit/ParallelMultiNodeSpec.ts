@@ -376,16 +376,37 @@ export class ParallelMultiNodeSpec {
     await closed;
   }
 
+  /**
+   * Poll `cond` until it is true, or `timeoutMs` is up.
+   *
+   * A throw is a retry, and has to be: the conditions here query a worker over
+   * the control channel while a cluster is still converging, so throwing is a
+   * normal intermediate state rather than a verdict.  What is *not* normal is
+   * losing it — the swallow is the amplifier #777 names in its own body.  A
+   * mis-correlated reply is only one way in (a `run-command-response`
+   * settling a `getMembers` leaves `members` undefined and the `.filter(…)`
+   * throws); every other throw inside `cond` ended the same way, as a timeout
+   * that named the wait and nothing about why it never finished.  So the last
+   * one is kept and appended, which is the difference between a message that
+   * sends the reader to convergence and one that names the actual failure.
+   *
+   * The *last* rather than the first: an early throw is usually the cluster
+   * not being up yet, and the one still happening when the budget ran out is
+   * the one that was never going to stop.
+   */
   private async awaitCondition(
     cond: () => Promise<boolean>, description: string, timeoutMs: number,
   ): Promise<void> {
     const deadline = Date.now() + timeoutMs;
+    let lastError: string | undefined;
     while (Date.now() < deadline) {
-      try { if (await cond()) return; } catch { /* retry */ }
+      try { if (await cond()) return; }
+      catch (e) { lastError = e instanceof Error ? e.message : String(e); }
       await new Promise((r) => setTimeout(r, 50));
     }
     throw new Error(
-      `ParallelMultiNodeSpec: timeout after ${timeoutMs} ms${describeTimeFactor()} — ${description}`,
+      `ParallelMultiNodeSpec: timeout after ${timeoutMs} ms${describeTimeFactor()} — ${description}`
+      + (lastError === undefined ? '' : `; last error: ${lastError}`),
     );
   }
 
@@ -462,8 +483,9 @@ export class ParallelMultiNodeSpec {
    * that role's RPC.  The wrong value is the smaller half of the damage — a
    * `run-command-response` settling a `getMembers` yields `members ===
    * undefined`, the `.filter(…)` in `awaitMembers`'s condition throws,
-   * `awaitCondition` swallows the throw as a retry, and the spec fails 30 s
-   * later naming a convergence that was never the problem.
+   * `awaitCondition` retries past the throw, and the spec fails 30 s later
+   * naming a convergence that was never the problem — with the thrown message
+   * appended since #1508, which is what makes that failure readable at all.
    *
    * Only a worker that *originates* an `mns-test.*` frame can produce the
    * collision — a custom `bootstrapModule`, or a scenario module posting raw
