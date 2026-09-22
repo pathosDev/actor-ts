@@ -260,10 +260,12 @@ const devtoolsOptions = DevToolsOptions.create()
 ```
 
 Time travel is the one to think about first: it is the panel that
-surfaces raw persisted events — closely followed by
-[dead letters](/observability/devtools/dead-letters/) and the
-[event stream](/observability/devtools/event-stream/), which both show
-message payloads.
+surfaces raw persisted events — closely followed by the three that show
+message payloads: [dead letters](/observability/devtools/dead-letters/),
+the [event stream](/observability/devtools/event-stream/), and
+[tracing](/observability/devtools/tracing/), whose Payload column
+carries the serialised body of every actor message that passed while
+DevTools was attached.
 
 ## Security
 
