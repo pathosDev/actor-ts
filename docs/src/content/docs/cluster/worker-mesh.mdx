@@ -122,7 +122,7 @@ your system already logs to.
 
 | Option | What |
 | --- | --- |
-| `withModule(url \| url[])` | The actor module(s) every worker imports.  **Required**, and code-only — deliberately not a config key, see below. |
+| `withModule(url \| url[])` | The actor module(s) every worker imports.  **Required**, and code-only — deliberately not a config key, see below.  Held to the same spelling rule as `WorkerCluster`'s `withBootstrap`, because it is the same kind of thing: code a worker will execute. |
 | `withWorkers(n \| 'auto')` | Worker count.  `'auto'` is the machine's available parallelism **minus one** — the main thread is a working member — floored at 1.  Default `'auto'`. |
 | `withMainHostname(host)` / `withWorkerHostname(host)` | Hostname components of the two sides' addresses.  Defaults `'main'` / `'worker'` — which sorts main first, so main **leads** and hosts the shard coordinator.  A worker hostname that sorts before main's (`'core'`) moves both onto a worker. |
 | `withMainPort(port)` / `withBasePort(port)` | Synthetic port components; nothing binds them.  Defaults `1` / `2`. |
@@ -257,7 +257,7 @@ owes too.
 
 | Option | What |
 | --- | --- |
-| `withBootstrap(url)` | Worker entrypoint module.  **Required**, and must be a `file:` URL **with no host** — `new URL('./worker-node.js', import.meta.url)` produces exactly that.  A `data:`, `blob:` or remote specifier is rejected because it would hand the worker constructor code from outside the deployment, and so is a host on the `file:` URL: `file://a-server/share/worker.js` is a UNC path, so the entry module would be fetched off that server.  `file://localhost/…` stays accepted — the URL parser erases that host, on all three runtimes. |
+| `withBootstrap(url)` | Worker entrypoint module.  **Required**, and must be an absolute, host-less `file:` URL that names a **file** — `new URL('./worker-node.js', import.meta.url)` produces exactly that.  A `data:`, `blob:` or remote specifier is rejected because it would hand the worker constructor code from outside the deployment, and so is a host on the `file:` URL: `file://a-server/share/worker.js` is a UNC path, so the entry module would be fetched off that server.  Two spellings that *look* absolute are rejected too, because the URL parser quietly rewrites them and the runtime then fails with an error that names no field: `file:worker.js` (and the bare `file:`) is scheme-relative and gets anchored at the filesystem root, and `file:///srv/app/` names a directory.  `file://localhost/…` stays accepted — the URL parser erases that host, on all three runtimes. |
 | `withWorkers(n \| 'auto')` | Pool size; `'auto'` uses hardware concurrency.  Default `'auto'`. |
 | `withSystemName(name)` | `ActorSystem` name each worker hosts.  Default `'worker-cluster'`. |
 | `withHostname(host)` | Hostname component of each worker's address.  Default `'worker'`. |

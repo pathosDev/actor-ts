@@ -39,6 +39,9 @@ import {
   type ClusterSingletonManagerOptionsType,
 } from '../../../src/cluster/singleton/ClusterSingletonManagerOptions.js';
 import { WorkerClusterOptionsValidator, type WorkerClusterOptionsType } from '../../../src/worker/WorkerClusterOptions.js';
+import { WorkerMeshOptionsValidator } from '../../../src/worker/WorkerMeshOptions.js';
+import { OffloadPoolOptionsValidator } from '../../../src/worker/OffloadPoolOptions.js';
+import { ParallelismOptionsValidator } from '../../../src/parallelism/ParallelismOptions.js';
 import {
   DEFAULT_WINDOW_SIZE,
   ProducerControllerOptionsValidator,
@@ -879,6 +882,132 @@ describe('WorkerClusterOptionsValidator', () => {
     expect(() => check({ basePort: 65_530, workers: 7 }))
       .toThrow(/workers .*last slot would be port 65536, above 65535/);
     expect(() => check({ basePort: 65_530, workers: 'auto' })).not.toThrow();
+  });
+});
+
+/* ------- one worker-entry rule, six slots that carry it (#1515) --------- */
+
+/**
+ * Every options slot that names a module a worker will **execute**, with the
+ * validator that guards it.
+ *
+ * The rule lived as four hand-written copies with three different message
+ * wordings, so a new constraint had to be written four times and two of them
+ * were already shorter than the first — `OffloadPoolOptions` said only "must
+ * use the file: scheme" where `WorkerClusterOptions` explained why.  They now
+ * share `checkWorkerModuleUrl`, and this table is what says so: every row
+ * below is driven through all six slots, so a slot that drifts back to its
+ * own copy shows up as a row that stopped applying to it.
+ */
+const WORKER_ENTRY_SLOTS: ReadonlyArray<{
+  readonly slot: string;
+  readonly field: string;
+  readonly validate: (specifier: URL | string) => void;
+}> = [
+  {
+    slot: 'WorkerClusterOptions.bootstrap',
+    field: 'bootstrap',
+    validate: (bootstrap) => new WorkerClusterOptionsValidator().validate({ bootstrap }),
+  },
+  {
+    slot: 'WorkerMeshOptions.module',
+    field: 'module',
+    validate: (module) => new WorkerMeshOptionsValidator().validate({ module }),
+  },
+  {
+    slot: 'WorkerMeshOptions.bootstrap',
+    field: 'bootstrap',
+    // `module` is required there, so a valid one rides along on every row.
+    validate: (bootstrap) => new WorkerMeshOptionsValidator()
+      .validate({ module: 'file:///actors.js', bootstrap }),
+  },
+  {
+    slot: 'OffloadPoolOptions.bootstrap',
+    field: 'bootstrap',
+    validate: (bootstrap) => new OffloadPoolOptionsValidator().validate({ bootstrap }),
+  },
+  {
+    slot: 'ParallelismOptions.module',
+    field: 'module',
+    validate: (module) => new ParallelismOptionsValidator().validate({ module }),
+  },
+  {
+    slot: 'ParallelismOptions.bootstrap',
+    field: 'bootstrap',
+    validate: (bootstrap) => new ParallelismOptionsValidator().validate({ bootstrap }),
+  },
+];
+
+/**
+ * The spellings the rule refuses, and the clause each one must be refused by.
+ *
+ * The last four are the ones the shipped allow-list still admitted, probed
+ * against it across 21 candidates (#1515): WHATWG normalises `file:worker.js`,
+ * `file:` and `file:./worker.js` to `file:///worker.js` / `file:///`, so the
+ * scheme and host checks saw a perfectly ordinary host-less `file:` URL and
+ * the "must be an absolute URL" message never applied — it only ever caught
+ * the *schemeless* relative forms.  Node then threw `ERR_INVALID_FILE_URL_PATH`
+ * from inside the Worker constructor, which is late and names no field: the
+ * exact defect the required-ness guard one line above was added to fix.
+ */
+const REFUSED_WORKER_ENTRIES: ReadonlyArray<{ readonly specifier: string; readonly clause: RegExp }> = [
+  { specifier: './worker.js', clause: /must be an absolute URL/ },
+  { specifier: 'data:text/javascript,console.log(1)', clause: /must use the file: scheme/ },
+  { specifier: 'https://example.invalid/worker.js', clause: /must use the file: scheme/ },
+  { specifier: 'file://attacker.example.com/share/worker.js', clause: /must be a host-less file: URL/ },
+  // Backslashes are slashes to a special scheme, so this is the UNC path
+  // spelled the way Windows spells it and it must be refused as one — the
+  // scheme-relative clause would also match the string and say something that
+  // is not true of where the parser put it.
+  { specifier: 'file:\\\\attacker.example.com\\share\\worker.js', clause: /must be a host-less file: URL/ },
+  { specifier: 'file:worker.js', clause: /scheme-relative/ },
+  { specifier: 'file:', clause: /scheme-relative/ },
+  { specifier: 'file:./worker.js', clause: /scheme-relative/ },
+  { specifier: 'file:///srv/app/', clause: /names a directory/ },
+];
+
+/** What every slot has always taken, and still must. */
+const ACCEPTED_WORKER_ENTRIES: ReadonlyArray<string> = [
+  'file:///worker.js',
+  'file:///srv/app/worker.js',
+  // The one authority WHATWG erases — it reaches the host check already
+  // indistinguishable from the plain form.
+  'file://localhost/srv/app/worker.js',
+  // What `new URL('./worker.js', import.meta.url)` produces on Windows.
+  'file:///C:/srv/app/worker.js',
+];
+
+describe('the worker-entry URL rule', () => {
+  for (const { slot, field, validate } of WORKER_ENTRY_SLOTS) {
+    test(`${slot} refuses every spelling the rule refuses`, () => {
+      for (const { specifier, clause } of REFUSED_WORKER_ENTRIES) {
+        let caught: unknown;
+        try { validate(specifier); } catch (error) { caught = error; }
+        expect(caught, `${slot} accepted ${JSON.stringify(specifier)}`).toBeInstanceOf(OptionsError);
+        expect((caught as OptionsError).field).toBe(field);
+        expect((caught as OptionsError).message).toMatch(clause);
+      }
+    });
+
+    test(`${slot} keeps taking the forms the docs and examples produce`, () => {
+      for (const specifier of ACCEPTED_WORKER_ENTRIES) {
+        expect(() => validate(specifier), `${slot} refused ${specifier}`).not.toThrow();
+        expect(() => validate(new URL(specifier)), `${slot} refused URL(${specifier})`).not.toThrow();
+      }
+    });
+  }
+
+  test('the directory rule holds for a URL object, the scheme-relative one cannot', () => {
+    // `pathname` survives construction, so a directory is refused either way.
+    expect(() => new WorkerClusterOptionsValidator().validate({ bootstrap: new URL('file:///srv/app/') }))
+      .toThrow(/names a directory/);
+    // The scheme-relative spelling does not: `new URL('file:worker.js')` is
+    // already `file:///worker.js`, byte-identical to the form that is meant,
+    // and nothing on the object remembers how it was written.  That is why the
+    // rule is stated over the *string* input and says so — a caller who has
+    // built the `URL` has also had it corrected for them.
+    expect(() => new WorkerClusterOptionsValidator().validate({ bootstrap: new URL('file:worker.js') }))
+      .not.toThrow();
   });
 });
 

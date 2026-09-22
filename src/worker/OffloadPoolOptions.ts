@@ -5,11 +5,9 @@ import { OptionsBuilder } from '../util/OptionsBuilder.js';
 import { mergeOptions } from '../util/OptionsMerge.js';
 import { OptionsValidator } from '../util/OptionsValidator.js';
 import {
-  BOOTSTRAP_ALLOWED_HOST,
-  BOOTSTRAP_ALLOWED_PROTOCOL,
+  checkWorkerModuleUrl,
   DEFAULT_MAX_RESTARTS,
   DEFAULT_RESTART_WINDOW_MS,
-  parseBootstrapUrl,
 } from './WorkerClusterOptions.js';
 
 /**
@@ -100,17 +98,14 @@ export class OffloadPoolOptionsValidator extends OptionsValidator<OffloadPoolOpt
     if (s.bootstrap !== undefined) this.bootstrapUrl(s.bootstrap);
   }
 
+  /**
+   * The worker entry a pool spawns is held to the allow-list every other
+   * worker entry is (#776, shared since #1515) — this copy had drifted to the
+   * shortest wording of the four and said only *that* a spelling was wrong.
+   */
   private bootstrapUrl(value: URL | string): void {
-    const url = parseBootstrapUrl(value);
-    if (url === undefined) {
-      this.fail('bootstrap', "must be an absolute URL — resolve it against the caller with new URL('./x.js', import.meta.url)", value);
-    }
-    if (url.protocol !== BOOTSTRAP_ALLOWED_PROTOCOL) {
-      this.fail('bootstrap', `must use the ${BOOTSTRAP_ALLOWED_PROTOCOL} scheme`, url.href);
-    }
-    if (url.host !== BOOTSTRAP_ALLOWED_HOST) {
-      this.fail('bootstrap', 'must be a host-less file: URL', url.href);
-    }
+    const rejection = checkWorkerModuleUrl(value);
+    if (rejection !== undefined) this.fail('bootstrap', rejection.reason, rejection.value);
   }
 }
 

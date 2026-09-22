@@ -77,6 +77,18 @@ describe('WorkerMeshOptionsValidator', () => {
     expect(() => check({ module: 'file://localhost/actors.js' })).not.toThrow();
   });
 
+  test('the two rules the shared worker-entry check added reach both slots', () => {
+    // Both spellings normalise into something the scheme and host checks are
+    // happy with, so until the four copies became one helper every slot took
+    // them and failed later, inside the Worker constructor (#1515).  The whole
+    // table lives in tests/unit/options/NonBrokerOptionsValidators.test.ts;
+    // this is the mesh's row of it, kept where a reader of this file is.
+    expect(() => check({ module: 'file:actors.js' })).toThrow(/module .*scheme-relative/);
+    expect(() => check({ module: 'file:///srv/app/' })).toThrow(/module names a directory/);
+    expect(() => check({ bootstrap: 'file:boot.js' })).toThrow(/bootstrap .*scheme-relative/);
+    expect(() => check({ bootstrap: 'file:///srv/app/' })).toThrow(/bootstrap names a directory/);
+  });
+
   test('refuses a worker count that is neither a positive integer nor auto', () => {
     expect(() => check({ workers: 0 })).toThrow(OptionsError);
     expect(() => check({ workers: 1.5 })).toThrow(OptionsError);
