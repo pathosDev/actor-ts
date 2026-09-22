@@ -142,12 +142,19 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
    * would be an unannounced message in *your* protocol, and a peer that closes
    * on an unknown message would be severed by its own keepalive.
    *
-   * The frame goes out through {@link sendRaw}, so it bypasses the codec —
-   * encode it yourself if the protocol has a heartbeat message of its own:
+   * The frame bypasses the codec — encode it yourself if the protocol has a
+   * heartbeat message of its own:
    *
    *     protected override keepAliveFrame(): WebsocketFrame {
    *       return { kind: 'text', data: JSON.stringify({ kind: 'heartbeat' }) };
    *     }
+   *
+   * It is written **straight to the live socket**, not through
+   * {@link sendRaw}: a keepalive is never buffered while disconnected and
+   * never replayed after a reconnect, and a tick that finds no live
+   * connection sends nothing at all rather than queueing behind the
+   * application's own messages (see {@link sendKeepAlive}).  A frame you
+   * want resent belongs in `sendRaw`, which is a different promise.
    *
    * Overriding this method is also what tells the connect-time check that a
    * keepalive is possible at all (see {@link armKeepAlive}).  A tick on which
@@ -378,7 +385,8 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
 
   /**
    * One keepalive tick: the application's frame when there is one, otherwise
-   * the runtime's native control frame.
+   * the runtime's native control frame — on the socket it was armed for, and
+   * only while that socket is the live one.
    *
    * The order is the point.  An application frame is the only kind a proxy
    * that inspects payload can see, and the only kind a peer's own
@@ -388,11 +396,41 @@ export abstract class WebsocketClientActor<TOut, TIn, TSelf = never>
    * rather than being dropped, so a tick on which the hook has nothing to say
    * does not silently become no traffic at all on the one runtime that can
    * still send something.
+   *
+   * **The frame goes straight to `ws.send`, never through {@link sendRaw}**,
+   * and the guard above it is the other half of the same decision (#1514).
+   * `sendRaw` is `enqueueOutbound`, which is the *application's* resend
+   * buffer: a bounded, FIFO-evicting queue of messages to replay on the next
+   * connection.  A heartbeat fails both of that buffer's premises.  It is
+   * addressed to one socket, so replaying it onto the next one sends a
+   * keepalive for a connection that no longer exists, against a period that
+   * already elapsed; and it competes for a bounded slot, so on a full buffer
+   * it evicts an application message to make room for itself.
+   *
+   * The window where that happens is narrow but real, and nothing else
+   * closes it.  Every teardown path clears this timer — except
+   * `handleConnectionLost`, which `BrokerActor` reaches when a
+   * `dispatchOutgoing` throws: it flips the state to `disconnected` and
+   * schedules a reconnect *without* running `disconnectImplementation`, so
+   * for the length of the backoff the actor is offline while still holding a
+   * live socket handle and a live keepalive timer.  Measured with
+   * `outboundBuffer: 1`: four evictions in one backoff window, the
+   * application's own message lost, and a stale `heartbeat` as the first
+   * frame on the replacement socket.  With `reconnect: false` there is no
+   * backoff to end it and the timer buffers forever.
+   *
+   * A refused send is swallowed rather than reported, for the same reason a
+   * refused `ping()` is: a keepalive stops a proxy *closing* an idle
+   * connection, and it is `idleTimeoutMs` — not this timer — that concludes
+   * a connection is gone.  Routing the failure into `handleConnectionLost`
+   * instead would hand a keepalive the power to tear down a connection that
+   * the application is still using successfully.
    */
   private sendKeepAlive(ws: WebsocketLike): void {
+    if (this.connectionState !== 'connected' || ws !== this.socket) return;
     const frame = this.keepAliveFrame();
     if (frame !== null) {
-      this.sendRaw(frame);
+      try { ws.send(frame.data); } catch { /* ignore — see above */ }
       return;
     }
     // A socket that refuses a ping is not a reason to drop a connection that
