@@ -231,6 +231,19 @@ samples.
 The exporter handles the formatting; you don't construct it
 manually.
 
+A label value is the one field that carries data, and the 0.0.4 escape
+table defines exactly three escapes for it — `\\`, `\n` and `"`.  The
+exporter emits those three and nothing else: every other C0 control
+character (carriage return, NUL, the unit separator, …) is **removed**
+from the value and from the `# HELP` text rather than escaped, because an
+escape outside that table makes `prometheus/common`-based readers —
+Pushgateway, the `node_exporter` textfile collector, `promtool check
+metrics` — reject the *whole* scrape body, not just the one series.  A
+tab survives; so does a line feed, as `\n`.  The practical consequence:
+two label values that differ only in control characters become the same
+series, so strip or replace them at the source rather than relying on
+this.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Don't expose /metrics publicly">

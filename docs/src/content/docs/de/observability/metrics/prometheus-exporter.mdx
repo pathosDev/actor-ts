@@ -237,6 +237,19 @@ Das ist okay — Prometheus ist mit seinen Samples
 Der Exporter übernimmt die Formatierung; du baust sie nicht
 manuell.
 
+Ein Label-Wert ist das einzige Feld, das Daten trägt, und die
+0.0.4-Escape-Tabelle definiert dafür genau drei Escapes — `\\`, `\n` und
+`"`.  Der Exporter schreibt diese drei und sonst keine: Jedes andere
+C0-Steuerzeichen (Carriage Return, NUL, der Unit Separator, …) wird aus
+dem Wert und aus dem `# HELP`-Text **entfernt** statt escaped, denn ein
+Escape außerhalb dieser Tabelle lässt Reader auf Basis von
+`prometheus/common` — Pushgateway, den `node_exporter`-Textfile-Collector,
+`promtool check metrics` — den *gesamten* Scrape-Body verwerfen, nicht
+nur die eine Serie.  Ein Tab überlebt; ein Line Feed ebenso, als `\n`.
+Die praktische Folge: Zwei Label-Werte, die sich nur in Steuerzeichen
+unterscheiden, werden zur selben Serie — entferne oder ersetze sie
+deshalb an der Quelle, statt dich hierauf zu verlassen.
+
 import { Aside } from '@astrojs/starlight/components';
 
 <Aside type="caution" title="Exponiere `/metrics` nicht öffentlich">

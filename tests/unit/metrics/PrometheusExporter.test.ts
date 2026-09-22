@@ -6,9 +6,13 @@
  *   - Counter names typically end in `_total` — we don't enforce, but
  *     the test data follows the convention.
  *   - Histogram emits `_bucket{le="X"}`, then `_sum`, then `_count`.
- *   - Label values are escaped (backslash, newline, carriage return,
- *     double-quote) and `# HELP` for all but the quote — the two line
- *     terminators because the format is read line by line (#784).
+ *   - Label values are escaped (backslash, line feed, double-quote) and
+ *     `# HELP` for all but the quote — exactly the escape table 0.0.4
+ *     defines, and nothing beyond it (#784, #1414).
+ *   - Every other C0 control except TAB is **removed** from both
+ *     positions rather than escaped, because an escape the table does not
+ *     define makes prometheus/common's parser reject the whole body
+ *     (#1414).
  *   - Trailing newline on non-empty output.
  */
 import { describe, expect, test } from 'bun:test';
@@ -44,16 +48,49 @@ describe('exportPrometheus — counters', () => {
     expect(text).toContain('msg="a\\"b\\nc\\\\d"');
   });
 
-  test('a carriage return in a label value is escaped, not passed through (#784)', () => {
+  test('a carriage return is removed from both positions, not escaped (#1414)', () => {
     const registry = new DefaultMetricsRegistry();
     registry.counter('m_total', { msg: 'a\rb' }, { help: 'one\rtwo' }).inc();
     const text = exportPrometheus(registry);
-    // The exposition is line-oriented, and a bare CR reaches a scraper's line
-    // handling as a control character exactly the way LF does — so neither
-    // may survive into the body, in either position.
-    expect(text).toContain('msg="a\\rb"');
-    expect(text).toContain('# HELP m_total one\\rtwo');
+    // `\r` is not in the 0.0.4 escape table, and the two Go readers disagree
+    // about one that appears anyway: prometheus/common's classic parser takes
+    // an undefined escape for a syntax error and fails the *whole body* with
+    // it, while the scrape-path lexer hands the two characters through as
+    // data.  Removing the byte is the one outcome both accept — and it still
+    // serves the readers that motivated #784, the ones that split a line on a
+    // lone CR.
+    expect(text).toContain('msg="ab"');
+    expect(text).toContain('# HELP m_total onetwo');
     expect(text.includes('\r')).toBe(false);
+    expect(text.includes('\\r')).toBe(false);
+  });
+
+  test('every other C0 control goes with it, in both positions, and TAB stays (#1414)', () => {
+    // The CR was never alone: before #1414 the exporter passed NUL, SOH, the
+    // unit separator and the rest through raw in both positions, so the body
+    // carried control bytes the moment a label value did.  They leave under
+    // one rule rather than a special case for the character an issue happened
+    // to name.  TAB is the exception both Go lexers explicitly admit
+    // (`[^\\"]` for a quoted value, `C [^\n]` for a HELP string).
+    const registry = new DefaultMetricsRegistry();
+    registry.counter('c_total', { msg: 'a\x00b\x01c\x1fd\te' }, { help: 'p\x01q\x1br\ts' }).inc();
+    const text = exportPrometheus(registry);
+    expect(text).toContain('msg="abcd\te"');
+    expect(text).toContain('# HELP c_total pqr\ts');
+    // And nothing anywhere in the body a reader could take for a control
+    // byte: TAB (0x09) and the line separators (0x0a) are the two survivors.
+    expect(/[\x00-\x08\x0b-\x1f]/.test(text)).toBe(false);
+  });
+
+  test('a line feed is escaped rather than removed — it is in the escape table (#1414)', () => {
+    // The rule is not "controls are dangerous, delete them": it is "the
+    // escape table has three entries, and a character outside it cannot be
+    // escaped at all".  LF is inside it, so it keeps the escape it had.
+    const registry = new DefaultMetricsRegistry();
+    registry.counter('n_total', { msg: 'a\nb' }, { help: 'one\ntwo' }).inc();
+    const text = exportPrometheus(registry);
+    expect(text).toContain('msg="a\\nb"');
+    expect(text).toContain('# HELP n_total one\\ntwo');
   });
 });
 
