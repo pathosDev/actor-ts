@@ -43,9 +43,9 @@ export class DevToolsExtension implements Extension {
    * a mount has none, so `attach` built another `DevToolsServer`, pointed
    * `server` at it and orphaned the mounted one.  `detach()` then stopped
    * the newer server only, and every tap of the mounted one — the
-   * `SpanTap` teeing message payloads into the application's exporter
-   * with both switches on, among them — stayed installed for the life of
-   * the process while `isAttached()` said false (#1512).
+   * `SpanTap` teeing one root span per actor message into the
+   * application's exporter, among them — stayed installed for the life
+   * of the process while `isAttached()` said false (#1512).
    */
   async attach(options: DevToolsOptions = {}): Promise<DevToolsBinding> {
     if (this.binding !== null) {
