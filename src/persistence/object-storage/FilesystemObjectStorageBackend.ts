@@ -3,6 +3,7 @@ import { none, some, type Option } from '../../util/Option.js';
 import { randomId } from '../../util/RandomString.js';
 import { wrapError } from '../../util/WrapError.js';
 import { makeKeyValidator, ObjectStorageWriteKeyRules } from '../storage/KeyValidator.js';
+import { requireSubtle } from './Integrity.js';
 import {
   ObjectStorageBackendError,
   ObjectStorageConcurrencyError,
@@ -942,6 +943,29 @@ async function acquireLock(
 const ETAG_DIGEST_BYTES = 16;
 
 /**
+ * `SubtleCrypto` or an {@link ObjectStorageBackendError}, for the etag.
+ *
+ * The guard itself is the directory's shared {@link requireSubtle} — this
+ * used to be a third verbatim copy of those six lines, under a JSDoc saying
+ * it followed the two next door, which is an argument for calling one of
+ * them.  What stays local is the error *class*: everything a backend throws
+ * has to be catchable as an `ObjectStorageBackendError`, so a bare `Error`
+ * escaping from here would be the one fault in `put` that a caller
+ * discriminating on backend failures could not see.  The message is carried
+ * across unchanged; only the wrapper is added.
+ */
+function requireEtagSubtle(): SubtleCrypto {
+  try {
+    return requireSubtle(
+      'The filesystem object-storage backend derives its compare-and-swap '
+      + 'ETag from SHA-256 and so requires WebCrypto — Node, Bun, or Deno.',
+    );
+  } catch (e) {
+    throw new ObjectStorageBackendError((e as Error).message, e);
+  }
+}
+
+/**
  * Content-derived ETag — `"fs-<32 hex chars>-<byte length>"`, where the hex
  * is SHA-256 over the body truncated to {@link ETAG_DIGEST_BYTES}.
  *
@@ -974,8 +998,10 @@ const ETAG_DIGEST_BYTES = 16;
  * non-cryptographic hash — not that there is an exploit in the field.
  *
  * **No cheap fallback, deliberately.**  `Integrity.ts` and `Encryption.ts`
- * next door resolve `SubtleCrypto` the same way and throw when it is absent;
- * this follows them rather than `IdempotencyKey.ts`, which degrades to FNV-1a
+ * next door resolve `SubtleCrypto` and throw when it is absent; this goes
+ * through the same {@link requireSubtle} they do — by calling it rather than
+ * by copying it a third time — and not after `IdempotencyKey.ts`, which
+ * degrades to FNV-1a
  * for exotic runtimes.  A silent downgrade path would reinstate exactly the
  * defect above on whichever runtime took it, and no runtime this backend can
  * even load on needs one: it already hard-depends on `node:fs/promises`, and
@@ -983,14 +1009,7 @@ const ETAG_DIGEST_BYTES = 16;
  * as a global (Bun, Node ≥ 24, Deno).
  */
 async function computeEtag(body: Uint8Array): Promise<string> {
-  const subtle = (globalThis.crypto as Crypto | undefined)?.subtle;
-  if (!subtle) {
-    throw new ObjectStorageBackendError(
-      'SubtleCrypto is not available in this runtime.  The filesystem '
-      + 'object-storage backend derives its compare-and-swap ETag from '
-      + 'SHA-256 and so requires WebCrypto — Node, Bun, or Deno.',
-    );
-  }
+  const subtle = requireEtagSubtle();
   // Cast through BufferSource — TS 5.7+'s DOM types tighten the
   // `BufferSource` constraint in a way that doesn't match
   // `Uint8Array<ArrayBufferLike>` cleanly.  Same cast, same reason, as

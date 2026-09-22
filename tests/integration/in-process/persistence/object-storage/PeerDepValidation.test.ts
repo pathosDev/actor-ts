@@ -173,6 +173,12 @@ describe('eager peer-dep validation (#18, #59)', () => {
     try {
       await expect(probeEncryptionAvailability())
         .rejects.toThrow(/SubtleCrypto is not available/);
+      // The opener is shared by every WebCrypto requirement in this
+      // directory; the tail is the only part that says which one.  Pinned
+      // separately so a refactor that lifts the guard into one helper cannot
+      // quietly collapse the three messages into one generic string.
+      await expect(probeEncryptionAvailability())
+        .rejects.toThrow(/Client-side encryption requires WebCrypto/);
     } finally {
       Object.defineProperty(globalThis, 'crypto', {
         value: realCrypto,
@@ -221,6 +227,10 @@ describe('eager peer-dep validation (#18, #59)', () => {
     try {
       await expect(probeIntegrityAvailability())
         .rejects.toThrow(/SubtleCrypto is not available/);
+      // Same reasoning as the encryption probe above: the tail is what
+      // distinguishes this requirement from the other two.
+      await expect(probeIntegrityAvailability())
+        .rejects.toThrow(/Body integrity requires WebCrypto/);
     } finally {
       Object.defineProperty(globalThis, 'crypto', {
         value: realCrypto,

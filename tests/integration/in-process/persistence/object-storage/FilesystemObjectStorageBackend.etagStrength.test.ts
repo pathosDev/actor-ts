@@ -269,6 +269,14 @@ describe('FilesystemObjectStorageBackend — CAS token strength (#786)', () => {
       backend.put('strength/no-fallback', bytes('hello')).then(() => null, (e: unknown) => e));
     expect(error).toBeInstanceOf(ObjectStorageBackendError);
     expect((error as Error).message).toMatch(/SubtleCrypto is not available/);
+    // And it says *which* capability went missing.  The three WebCrypto
+    // requirements in this directory — client-side encryption, body
+    // integrity, and this etag — share the sentence above and differ only in
+    // what follows it, so the shared opener is the half of the message that
+    // identifies nothing.  Asserting only on it would let a refactor that
+    // collapsed the three into one generic string pass while an operator lost
+    // the only clue saying which subsystem to configure.
+    expect((error as Error).message).toMatch(/compare-and-swap ETag from SHA-256/);
     // Refused, not degraded: nothing weaker came back in its place.
     expect((error as Error).message).not.toMatch(ETAG_PATTERN);
   });
@@ -282,6 +290,7 @@ describe('FilesystemObjectStorageBackend — CAS token strength (#786)', () => {
       backend.get('strength/no-fallback-read').then(() => null, (e: unknown) => e));
     expect(error).toBeInstanceOf(ObjectStorageBackendError);
     expect((error as Error).message).toMatch(/SubtleCrypto is not available/);
+    expect((error as Error).message).toMatch(/compare-and-swap ETag from SHA-256/);
   });
 
   test('a WebCrypto fault on overwrite blames WebCrypto, not the disk read', async () => {
