@@ -412,7 +412,7 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
   remove(name: string, labels: Labels = {}): boolean {
     const family = this.families.get(name);
     if (family === undefined) return false;
-    const key = labelKey(labels);
+    const key = seriesKey(labels);
     // The overflow child is the one series that is not evictable.  It is the
     // record that this family discarded tuples, so deleting it would erase
     // the evidence; and `overflowKey` doubles as the once-per-family flag
@@ -467,7 +467,7 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
   private childOf<M>(
     name: string, family: Family, labels: Labels, factory: () => M,
   ): M {
-    const key = labelKey(labels);
+    const key = seriesKey(labels);
     const existing = family.children.get(key);
     if (existing) return existing.metric as unknown as M;
     // After the memo hit, for the same reason as in `familyOf`: a tuple the
@@ -501,7 +501,7 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
   ): M {
     if (family.overflowKey === undefined) {
       const overflowLabels = overflowLabelsOf(Object.keys(labels));
-      const key = labelKey(overflowLabels);
+      const key = seriesKey(overflowLabels);
       family.overflowKey = key;
       if (!family.children.has(key)) {
         family.children.set(key, { labels: overflowLabels, metric: factory() as never });
@@ -512,11 +512,38 @@ export class DefaultMetricsRegistry implements MetricsRegistry {
   }
 }
 
-/** Stable string key for a label set — used as the inner-map key. */
-function labelKey(labels: Labels): string {
-  const keys = Object.keys(labels).sort();
-  if (keys.length === 0) return '';
-  return keys.map((k) => `${k}=${String(labels[k])}`).join('\x1f');
+/**
+ * Stable, **injective** string key for a label tuple — the inner-map key of a
+ * family's children, the key {@link DefaultMetricsRegistry.remove} looks up,
+ * and the key the exporter groups a histogram's rows by.
+ *
+ * One helper for all three deliberately (#1513): they have to agree on when
+ * two tuples are the same series, and the exporter used to carry its own copy
+ * of the encoding, so the two answers could drift.
+ *
+ * *Injective* is the load-bearing word.  The first version joined `k=v` pairs
+ * with `\x1f`, and a label *value* is deliberately unrestricted — so
+ * `{ a: 'x\x1fb=y' }` and `{ a: 'x', b: 'y' }` produced the same string, and
+ * the second caller silently got the first one's series, labels and counts
+ * included.  Moving to a rarer separator only moves the hole: any character
+ * can appear in a value.  `JSON.stringify` over the sorted `[key, value]`
+ * pairs cannot collide, because it escapes the quotes and backslashes that
+ * delimit each string, so distinct pair lists have distinct encodings.
+ *
+ * Values go through `String` first, which is *not* injective on
+ * {@link LabelValue} — and must not be: `{ code: 500 }` and `{ code: '500' }`
+ * are both `code="500"` in the exposition, so they are one series there and
+ * have to be one series here.  The key is injective on what is rendered, not
+ * on what was passed.
+ *
+ * Sorted, so label order at the call site is irrelevant.  The encoding is
+ * in-memory only — nothing persists it, sends it or parses it back — so it
+ * may change again without a migration.
+ */
+export function seriesKey(labels: Labels): string {
+  return JSON.stringify(
+    Object.keys(labels).sort().map((key) => [key, String(labels[key])]),
+  );
 }
 
 /* --------------------------- Name validation ------------------------- */
