@@ -145,6 +145,8 @@ describe('WebsocketClientActor — keepalive (#751)', () => {
   const systems: ActorSystem[] = [];
   /** Delays of every interval scheduled while a test is running. */
   let scheduledDelays: number[] = [];
+  /** How often a keepalive interval's handler has actually run. */
+  let keepAliveTicks = 0;
   let nativeSetInterval: typeof globalThis.setInterval;
 
   /**
@@ -157,12 +159,27 @@ describe('WebsocketClientActor — keepalive (#751)', () => {
   const recordedKeepAliveTimers = (): number[] =>
     scheduledDelays.filter((delay) => delay === KEEP_ALIVE_INTERVAL_MS);
 
+  /**
+   * The wrapper counts **ticks**, not sends, and that distinction is the
+   * whole of `#1508`'s finding about the stop-on-drop test below.  A
+   * keepalive that reaches the socket is observable as a `sent` entry, but a
+   * keepalive that *fires and does nothing* — the state a stale timer is in
+   * once its socket is gone — reaches nothing and is invisible from the
+   * socket's side.  Counting at the timer boundary is the only instrument
+   * here that separates "the timer was cleared" from "the timer still runs
+   * and every tick returns early", and those are the two hypotheses the test
+   * has to tell apart.
+   */
   beforeEach(() => {
     scheduledDelays = [];
+    keepAliveTicks = 0;
     nativeSetInterval = globalThis.setInterval;
     globalThis.setInterval = ((handler: TimerHandler, delay?: number, ...args: unknown[]) => {
       if (typeof delay === 'number') scheduledDelays.push(delay);
-      return (nativeSetInterval as (...a: unknown[]) => unknown)(handler, delay, ...args);
+      const counted = delay === KEEP_ALIVE_INTERVAL_MS && typeof handler === 'function'
+        ? (...handlerArgs: unknown[]): unknown => { keepAliveTicks++; return handler(...handlerArgs); }
+        : handler;
+      return (nativeSetInterval as (...a: unknown[]) => unknown)(counted, delay, ...args);
     }) as typeof globalThis.setInterval;
   });
 
@@ -284,6 +301,18 @@ describe('WebsocketClientActor — keepalive (#751)', () => {
     expect(log.records.filter((record) => record.message.includes('keepAliveFrame'))).toEqual([]);
   });
 
+  /**
+   * The assertion is on the **timer**, not on the socket — #1508.
+   *
+   * This test used to check only that `socket.sent` stopped growing, and that
+   * is satisfied by machinery that has nothing to do with the timer: once
+   * `onSocketDown` has nulled `this.socket`, a tick reaches no socket whether
+   * the interval was cleared or not.  Measured: deleting the `clearInterval`
+   * from `onSocketDown` left the old body green while the timer went on
+   * firing four more times in the same window.  A dropped connection keeping
+   * a wake-up per period forever is exactly the leak the comment claimed to
+   * pin, so the count that goes flat has to be the tick count.
+   */
   test('the keepalive stops when the connection drops', async () => {
     const socket = new SilentSocket();
     await connectedClient('ws-keepalive-stops', socket, HeartbeatClient);
@@ -293,12 +322,17 @@ describe('WebsocketClientActor — keepalive (#751)', () => {
       label: 'the first keepalive frame reached the socket',
     });
     socket.fire('close');
-    const afterClose = socket.sent.length;
+    const ticksAtClose = keepAliveTicks;
+    const sentAtClose = socket.sent.length;
 
-    // An absence again: the timer must not outlive the socket it was armed
-    // for, or a dropped connection keeps a wake-up per period forever.
+    // An absence again: five periods is long enough that a surviving timer
+    // would have woken several times, and a counter that is already flat
+    // cannot be polled for.
     await sleep(FIVE_PERIODS_MS);
-    expect(socket.sent.length).toBe(afterClose);
+    expect(keepAliveTicks).toBe(ticksAtClose);
+    // Kept beside it rather than replaced: the wire staying quiet is still
+    // the user-visible half, it just does not imply the half above.
+    expect(socket.sent.length).toBe(sentAtClose);
   });
 
   /**
