@@ -194,8 +194,15 @@ pin — avoid trailing whitespace in ids you generate.
 The DDL is `CREATE TABLE IF NOT EXISTS` and `autoCreateTables` defaults to
 `true`, so **an existing database does not pick this up**: the framework
 never revisits a table it finds.  New deployments get the collation
-silently, old ones keep the server default, and nothing warns either way.
-Run this once per database, with no node writing:
+silently; an older database keeps the server default until you run the
+migration below — but it no longer does so quietly.  Each store reads its
+own tables out of `information_schema` when it opens and **warns at
+startup** if a `persistence_id` or `tag` column comes back on a collation
+that is not binary, naming the table, the column and the collation it
+found.  That read needs no DDL rights and runs whether or not
+`autoCreateTables` is set, because a schema the operator manages is the one
+most likely to predate the pin.  Run this once per database, with no node
+writing:
 
 ```sql
 ALTER TABLE events        MODIFY persistence_id VARCHAR(255) COLLATE utf8mb4_bin NOT NULL;
@@ -221,6 +228,12 @@ side not yet converted cannot use its index for the comparison, so tag
 queries in that window are slow rather than wrong.  A `tagsTable` pointed
 at a *new* table beside a legacy `events` is that window made permanent,
 until `events` is re-collated too.
+
+The startup warning reports **per column**, which is what tells that state
+apart from an untouched schema: restart a node mid-migration and the
+warning names only the columns still to convert, and says the schema is
+half migrated.  A `tagsTable` beside a legacy `events` reads the same way,
+every time the store opens, until you finish the job.
 
 Check for damage **before** migrating, while the folding collation is still
 what `GROUP BY` uses:
@@ -317,11 +330,16 @@ import { Aside } from '@astrojs/starlight/components';
 <Aside type="caution" title="An existing database keeps the old collation">
   `CREATE TABLE IF NOT EXISTS` never revisits a table that already exists,
   so a database created before the `COLLATE utf8mb4_bin` pin keeps the
-  server's case-insensitive default — and nothing at startup says so.  Two
-  ids differing only in case then share one event stream on this backend
-  and stay distinct on every other one.  Run the
+  server's case-insensitive default.  Two ids differing only in case then
+  share one event stream on this backend and stay distinct on every other
+  one.  The store **warns at startup** when it finds that state, naming
+  table, column and the collation it read — once per store, and never a
+  failure: an advisory that could take a working database down would be a
+  worse trade than the one it reports.  Run the
   [`ALTER TABLE` migration](#migrating-an-existing-schema); check for
-  already-merged streams first.
+  already-merged streams first.  A binary collation you chose yourself —
+  `utf8mb4_nopad_bin`, or MySQL 8's `utf8mb4_0900_bin` — is silent, since
+  the check is for a folding comparison and not for this page's spelling.
 </Aside>
 
 <Aside type="caution" title="TLS to a managed instance">

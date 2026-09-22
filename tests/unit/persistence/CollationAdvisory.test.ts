@@ -451,6 +451,42 @@ describe('the Docker-gated half is wired to the same needle', () => {
   });
 });
 
+describe('the journal pages stop saying nothing warns', () => {
+  /**
+   * Both pages carried the recipe and the caveat, and both said in two places
+   * that startup reports nothing — which was true and is now false.  Asserted
+   * as a pair per page, in both languages, because that is what discriminates
+   * a real fix: forbidding the stale sentence alone is satisfied by deleting
+   * it, and requiring the new one alone is satisfied by a page that promises a
+   * warning two paragraphs above a claim that none exists.
+   */
+  const page = (language: 'en' | 'de', backend: string): string => readFileSync(
+    join(import.meta.dir, '..', '..', '..', 'docs', 'src', 'content', 'docs',
+      ...(language === 'de' ? ['de'] : []), 'persistence', 'journals', `${backend}.mdx`),
+    'utf8',
+  );
+
+  const STALE = {
+    en: /nothing (?:at startup says so|warns either way)/i,
+    de: /beim Start sagt das nichts|gewarnt wird in keiner der beiden Richtungen/i,
+  } as const;
+  const DESCRIBES_THE_WARNING = { en: 'warns at startup', de: 'warnt beim Start' } as const;
+
+  for (const backend of ['mariadb', 'mssql']) {
+    for (const language of ['en', 'de'] as const) {
+      test(`${language}/${backend} describes the warning instead of its absence`, () => {
+        // Reduced to a summary before asserting: these pages are 400 lines,
+        // and a bare `toMatch` over one prints the whole thing on failure.
+        const source = page(language, backend);
+        expect({
+          stillClaimsNothingWarns: STALE[language].test(source),
+          describesTheWarning: source.includes(DESCRIBES_THE_WARNING[language]),
+        }).toEqual({ stillClaimsNothingWarns: false, describesTheWarning: true });
+      });
+    }
+  }
+});
+
 describe('cost: once per table per store open, never per operation', () => {
   test('a second operation issues no further catalogue read', async () => {
     const pool = new CollationPool(mariaDbDialect);
