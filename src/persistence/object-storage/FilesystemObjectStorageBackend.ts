@@ -966,6 +966,28 @@ function requireEtagSubtle(): SubtleCrypto {
 }
 
 /**
+ * Probe whether WebCrypto is available for the etag.  Resolves on success,
+ * throws the {@link ObjectStorageBackendError} {@link computeEtag} would
+ * throw on the first `put` otherwise.
+ *
+ * Called by `validateObjectStoragePeerDeps` when the configured backend is
+ * this one, for the reason the encryption and integrity probes next door
+ * exist (#18, #59) and the one #613 gave for integrity needing its own:
+ * **a capability nothing probes fails at first use**.  Since #786 this
+ * backend hard-requires WebCrypto with every codec set to `'none'` — which
+ * is the default, and the configuration that skips all three of those probes
+ * — so without this one the failure lands inside a persistence write on a
+ * runtime the deployment could have been told about at registration.
+ *
+ * Only this backend.  The S3 one forwards `IfMatch` to the service and
+ * returns the service's own ETag, so it derives nothing locally and was
+ * never part of #786; a `custom` backend answers for its own requirements.
+ */
+export async function probeFilesystemEtagAvailability(): Promise<void> {
+  requireEtagSubtle();
+}
+
+/**
  * Content-derived ETag — `"fs-<32 hex chars>-<byte length>"`, where the hex
  * is SHA-256 over the body truncated to {@link ETAG_DIGEST_BYTES}.
  *
